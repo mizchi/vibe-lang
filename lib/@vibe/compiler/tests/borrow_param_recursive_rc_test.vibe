@@ -4,37 +4,37 @@ import ./codegen_test_support.vibe {
 
 fn run_value(wasm: Bytes, label: String) -> String with Fs + Process {
   let path = String::concat("/tmp/_borrow_recursive_", String::concat(label, ".wasm"))
-  Fs::write_bytes(path, wasm)
+  Fs::write_bytes(path, bytes = wasm)
   let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
   if Array::length(out) > 0 {
-    Array::get(out, 0)
+    Array::get(out, at = 0)
   } else {
     "<no output>"
   }
 }
 
 fn assert_lanes(src: String, label: String, expected: String) -> Unit with Exception + Fs + Process + Console {
-  inspect(run_value(compile_wasi(src, "main"), String::concat(label, "_bump")), content = expected)
-  inspect(run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc")), content = expected)
-  inspect(run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow")), content = expected)
+  inspect(run_value(wasm = compile_wasi(source = src, entry = "main"), label = String::concat(label, "_bump")), content = expected)
+  inspect(run_value(wasm = compile_wasi_rc(source = src, entry = "main"), label = String::concat(label, "_rc")), content = expected)
+  inspect(run_value(wasm = compile_wasi_rc_shadow(source = src, entry = "main"), label = String::concat(label, "_shadow")), content = expected)
 }
 
 test "a recursive reader leaves its caller's array live" {
   let src = "fn walk(xs: Array[Int], n: Int) -> Int {\n  if n == 0 { Array::length(xs) }\n  else { Array::get(xs, 0) + walk(xs, n - 1) }\n}\nfn main() -> Int {\n  let xs = [7, 2, 9]\n  let mut sum = 0\n  let mut i = 0\n  while i < 50 {\n    sum = sum + walk(xs, 20) + Array::get(xs, 2)\n    i = i + 1\n  }\n  sum\n}"
-  assert_lanes(src, "read", "7600")
+  assert_lanes(src = src, label = "read", expected = "7600")
 }
 
 test "a returned array remains owned through recursive argument permutations" {
   let src = "fn rotate(a: Array[Int], b: Array[Int], c: Array[Int], n: Int) -> Array[Int] {\n  if n == 0 { a } else { rotate(b, c, a, n - 1) }\n}\nfn main() -> Int {\n  let a = [17]\n  let b = [5, 6]\n  let c = [2, 3, 4]\n  let got = rotate(a, b, c, 2)\n  let churn = [9, 10, 11]\n  Array::get(a, 0) - Array::get(got, 0) + Array::length(churn)\n}"
-  assert_lanes(src, "rotate", "18")
+  assert_lanes(src = src, label = "rotate", expected = "18")
 }
 
 test "deep wrappers and mutually recursive readers preserve the caller's array" {
   let src = "fn left(xs: Array[Int], n: Int) -> Int {\n  if n == 0 { Array::get(xs, 0) } else { right(xs, n - 1) }\n}\nfn right(xs: Array[Int], n: Int) -> Int {\n  if n == 0 { Array::length(xs) } else { left(xs, n - 1) }\n}\nfn mid(xs: Array[Int]) -> Int { left(xs, 20) }\nfn outer(xs: Array[Int]) -> Int { mid(xs) }\nfn main() -> Int {\n  let xs = [7, 2, 9]\n  let mut sum = 0\n  let mut i = 0\n  while i < 50 {\n    sum = sum + outer(xs) + Array::get(xs, 2)\n    i = i + 1\n  }\n  sum\n}"
-  assert_lanes(src, "mutual_wrappers", "800")
+  assert_lanes(src = src, label = "mutual_wrappers", expected = "800")
 }
 
 test "a shadowing function parameter keeps the owned call convention" {
   let src = "fn reader(xs: Array[Int]) -> Int { Array::length(xs) }\nfn owned(xs: Array[Int]) -> Array[Int] { xs }\nfn wrapper(xs: Array[Int], reader: (Array[Int]) -> Array[Int]) -> Array[Int] { reader(xs) }\nfn main() -> Int {\n  let xs = [17, 2]\n  let got = wrapper(xs, owned)\n  let churn = [3, 4, 5]\n  Array::get(xs, 0) - Array::get(got, 0) + Array::length(churn)\n}"
-  assert_lanes(src, "parameter_shadow", "3")
+  assert_lanes(src = src, label = "parameter_shadow", expected = "3")
 }

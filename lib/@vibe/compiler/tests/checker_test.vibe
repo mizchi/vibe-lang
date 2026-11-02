@@ -15,20 +15,20 @@ import ./checker_test_support.vibe {
 //# Misc
 
 test "literal int" {
-  assert(types_equal(check(EInt(42), EnvEmpty), CtInt))
+  assert(types_equal(a = check(expr = EInt(42), env = EnvEmpty), b = CtInt))
 }
 
 test "literal string" {
-  assert(types_equal(check(EString("hello", -1), EnvEmpty), CtString))
+  assert(types_equal(a = check(expr = EString("hello", -1), env = EnvEmpty), b = CtString))
 }
 
 test "literal bool" {
-  assert(types_equal(check(EBool(true), EnvEmpty), CtBool))
+  assert(types_equal(a = check(expr = EBool(true), env = EnvEmpty), b = CtBool))
 }
 
 test "index rejects a concrete non-indexable receiver" {
   let caught = handle {
-    let _ = check(ECall(EIdent("__index", -1), [EInt(1), EInt(0)], -1, []), EnvEmpty)
+    let _ = check(expr = ECall(EIdent("__index", -1), [EInt(1), EInt(0)], -1, []), env = EnvEmpty)
     ""
   } with { Exception::Throw(msg) => msg }
   assert(caught == "cannot index a non-indexable value (expected Array, String, or Bytes)")
@@ -36,26 +36,26 @@ test "index rejects a concrete non-indexable receiver" {
 
 test "index rejects a concrete non-Int subscript" {
   let caught = handle {
-    let _ = check(ECall(EIdent("__index", -1), [
+    let _ = check(expr = ECall(EIdent("__index", -1), [
       EArray([EInt(1)]),
       EString("zero", -1)
-    ], -1, []), EnvEmpty)
+    ], -1, []), env = EnvEmpty)
     ""
   } with { Exception::Throw(msg) => msg }
   assert(caught == "index must be an Int")
 }
 
 test "literal float" {
-  assert(types_equal(check(EFloat(3.14), EnvEmpty), CtDouble))
+  assert(types_equal(a = check(expr = EFloat(3.14), env = EnvEmpty), b = CtDouble))
 }
 
 test "unit" {
-  assert(types_equal(check(EUnit, EnvEmpty), CtUnit))
+  assert(types_equal(a = check(expr = EUnit, env = EnvEmpty), b = CtUnit))
 }
 
 test "ident from env" {
-  let env = env_bind(EnvEmpty, "x", CtInt)
-  assert(types_equal(check(EIdent("x", -1), env), CtInt))
+  let env = env_bind(env = EnvEmpty, name = "x", ty = CtInt)
+  assert(types_equal(a = check(expr = EIdent("x", -1), env = env), b = CtInt))
 }
 
 test "ident builtin without a value form" {
@@ -71,11 +71,11 @@ test "ident builtin without a value form" {
   // `String::concat` used to be this case's subject and is now a value, which
   // is exactly what #2442 changed.
   let caught = handle {
-    let _ = check(EIdent("Fs::read_file", -1), EnvEmpty)
+    let _ = check(expr = EIdent("Fs::read_file", -1), env = EnvEmpty)
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(caught, "Fs::read_file"))
-  assert(String::contains(caught, "not a value"))
+  assert(String::contains(caught, needle = "Fs::read_file"))
+  assert(String::contains(caught, needle = "not a value"))
 }
 
 test "ident builtin with a value form" {
@@ -85,13 +85,13 @@ test "ident builtin with a value form" {
   // table slot. `fixtures/frozen_array_copies_test.vibe` and
   // `fixtures/builtin_value_form_test.vibe` call them through a binding and
   // pass, so the checker must keep admitting them.
-  let ty = check(EIdent("FrozenArray::from_array", -1), EnvEmpty)
+  let ty = check(expr = EIdent("FrozenArray::from_array", -1), env = EnvEmpty)
   let is_fn = match ty {
     CtFn(_, _, _) => true,
     _ => false
   }
   assert(is_fn)
-  let ty2 = check(EIdent("String::concat", -1), EnvEmpty)
+  let ty2 = check(expr = EIdent("String::concat", -1), env = EnvEmpty)
   let is_fn2 = match ty2 {
     CtFn(_, _, _) => true,
     _ => false
@@ -101,7 +101,7 @@ test "ident builtin with a value form" {
 
 test "ident unknown" {
   let caught = handle {
-    let _ = check(EIdent("nonexistent", -1), EnvEmpty)
+    let _ = check(expr = EIdent("nonexistent", -1), env = EnvEmpty)
     false
   } with { Exception::Throw(_) => true }
   assert(caught)
@@ -109,40 +109,40 @@ test "ident unknown" {
 
 test "let binding" {
   let expr = ELet("x", EInt(1), EIdent("x", -1), -1)
-  assert(types_equal(check(expr, EnvEmpty), CtInt))
+  assert(types_equal(a = check(expr = expr, env = EnvEmpty), b = CtInt))
 }
 
 test "seq returns last" {
   let expr = ESeq(EInt(1), EString("hello", -1))
-  assert(types_equal(check(expr, EnvEmpty), CtString))
+  assert(types_equal(a = check(expr = expr, env = EnvEmpty), b = CtString))
 }
 
 test "if returns then type" {
   let expr = EIf(EBool(true), EInt(42), EInt(0))
-  assert(types_equal(check(expr, EnvEmpty), CtInt))
+  assert(types_equal(a = check(expr = expr, env = EnvEmpty), b = CtInt))
 }
 
 test "binop comparison" {
   let expr = EBinOp("==", EInt(1), EInt(2), -1)
-  assert(types_equal(check(expr, EnvEmpty), CtBool))
+  assert(types_equal(a = check(expr = expr, env = EnvEmpty), b = CtBool))
 }
 
 test "binop double comparison" {
   let expr = EBinOp("<", EFloat(1.0), EFloat(2.0), -1)
-  assert(types_equal(check(expr, EnvEmpty), CtBool))
+  assert(types_equal(a = check(expr = expr, env = EnvEmpty), b = CtBool))
 }
 
 test "perform builtin effect result feeds order comparison" {
-  let env = env_bind(EnvEmpty, "index", CtInt)
+  let env = env_bind(env = EnvEmpty, name = "index", ty = CtInt)
   let expr = EBinOp(">", ECall(EIdent("perform", -1), [
     EIdent("Env::ArgsLen", -1)
   ], -1, []), EIdent("index", -1), -1)
-  assert(types_equal(check(expr, env), CtBool))
+  assert(types_equal(a = check(expr = expr, env = env), b = CtBool))
 }
 
 test "binop invalid string ordering" {
   let caught = handle {
-    let _ = check(EBinOp("<", EString("a", -1), EString("b", -1), -1), EnvEmpty)
+    let _ = check(expr = EBinOp("<", EString("a", -1), EString("b", -1), -1), env = EnvEmpty)
     false
   } with { Exception::Throw(_) => true }
   assert(caught)
@@ -150,7 +150,7 @@ test "binop invalid string ordering" {
 
 test "binop invalid bool logic operands" {
   let caught = handle {
-    let _ = check(EBinOp("&&", EInt(1), EInt(2), -1), EnvEmpty)
+    let _ = check(expr = EBinOp("&&", EInt(1), EInt(2), -1), env = EnvEmpty)
     false
   } with { Exception::Throw(_) => true }
   assert(caught)
@@ -158,27 +158,27 @@ test "binop invalid bool logic operands" {
 
 test "binop arithmetic" {
   let expr = EBinOp("+", EInt(1), EInt(2), -1)
-  assert(types_equal(check(expr, EnvEmpty), CtInt))
+  assert(types_equal(a = check(expr = expr, env = EnvEmpty), b = CtInt))
 }
 
 test "binop double arithmetic" {
   let expr = EBinOp("+", EFloat(1.5), EFloat(2.5), -1)
-  assert(types_equal(check(expr, EnvEmpty), CtDouble))
+  assert(types_equal(a = check(expr = expr, env = EnvEmpty), b = CtDouble))
 }
 
 test "binop string concat" {
   let expr = EBinOp("+", EString("a", -1), EString("b", -1), -1)
-  assert(types_equal(check(expr, EnvEmpty), CtString))
+  assert(types_equal(a = check(expr = expr, env = EnvEmpty), b = CtString))
 }
 
 test "unary not" {
   let expr = EUnaryOp("!", EBool(true))
-  assert(types_equal(check(expr, EnvEmpty), CtBool))
+  assert(types_equal(a = check(expr = expr, env = EnvEmpty), b = CtBool))
 }
 
 test "unary negate double" {
   let expr = EUnaryOp("-", EFloat(5.0))
-  assert(types_equal(check(expr, EnvEmpty), CtDouble))
+  assert(types_equal(a = check(expr = expr, env = EnvEmpty), b = CtDouble))
 }
 
 /// #994: dot-call syntax on a builtin receiver (`s.length()`, `a.set(...)`)
@@ -192,34 +192,34 @@ test "unary negate double" {
 /// assert the located rejection instead of a tolerated success. The
 /// qualified spelling (`String::length(s)`) is unaffected.
 test "method call: string.length() is rejected (builtin dot-call has no codegen lowering)" {
-  let env = env_bind(EnvEmpty, "s", CtString)
+  let env = env_bind(env = EnvEmpty, name = "s", ty = CtString)
   let expr = ECall(EDot(EIdent("s", -1), "length", -1, -1), array_empty(), -1, [
   ])
   let caught = handle {
-    let _ = check(expr, env)
+    let _ = check(expr = expr, env = env)
     false
   } with { Exception::Throw(_) => true }
   assert(caught)
 }
 
 test "method call: string.concat(string) is rejected (builtin dot-call has no codegen lowering)" {
-  let env = env_bind(EnvEmpty, "s", CtString)
+  let env = env_bind(env = EnvEmpty, name = "s", ty = CtString)
   let expr = ECall(EDot(EIdent("s", -1), "concat", -1, -1), [
     EString("world", -1)
   ], -1, [])
   let caught = handle {
-    let _ = check(expr, env)
+    let _ = check(expr = expr, env = env)
     false
   } with { Exception::Throw(_) => true }
   assert(caught)
 }
 
 test "method call: array.length() is rejected (builtin dot-call has no codegen lowering)" {
-  let env = env_bind(EnvEmpty, "a", CtArray(CtInt))
+  let env = env_bind(env = EnvEmpty, name = "a", ty = CtArray(CtInt))
   let expr = ECall(EDot(EIdent("a", -1), "length", -1, -1), array_empty(), -1, [
   ])
   let caught = handle {
-    let _ = check(expr, env)
+    let _ = check(expr = expr, env = env)
     false
   } with { Exception::Throw(_) => true }
   assert(caught)
@@ -230,5 +230,5 @@ test "builtin Array::truncate returns Unit" {
     EArray([EInt(1), EInt(2)]),
     EInt(1)
   ], -1, [])
-  assert(types_equal(check(expr, EnvEmpty), CtUnit))
+  assert(types_equal(a = check(expr = expr, env = EnvEmpty), b = CtUnit))
 }

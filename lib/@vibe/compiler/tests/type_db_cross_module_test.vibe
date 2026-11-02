@@ -67,7 +67,7 @@ import @vibe/compiler/cache {
 
 //# Functions
 
-fn remove_file_if_exists(path: String) -> Unit with Fs {
+fn remove_file_if_exists(_ path: String) -> Unit with Fs {
   if Fs::exists(path) {
     Fs::remove(path)
   } else {
@@ -75,12 +75,12 @@ fn remove_file_if_exists(path: String) -> Unit with Fs {
   }
 }
 
-fn string_to_bytes(s: String) -> Bytes {
+fn string_to_bytes(_ s: String) -> Bytes {
   let out = Bytes::new()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Bytes::push(out, String::char_code_at(s, i))
+    Bytes::push(out, value = String::char_code_at(s, at = i))
     i = i + 1
   }
   out
@@ -90,13 +90,13 @@ fn string_to_bytes(s: String) -> Bytes {
 /// (typing_module_fingerprint, the one spelling of the formula) under the
 /// default typing-semantics seed.
 fn build_test_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
-  typing_module_fingerprint(compact_string_fingerprint(source), dep_fps, "unchecked")
+  typing_module_fingerprint(source_fingerprint = compact_string_fingerprint(source), dep_fps = dep_fps, typing_semantics_seed = "unchecked")
 }
 
-fn checked_test_env(source: String) -> TypeEnv with Env + Exception {
+fn checked_test_env(_ source: String) -> TypeEnv with Env + Exception {
   let path = "projection_fixture.vibe"
-  let checked = db_typecheck(db_set_source(db_new(), path, source), path)
-  match db_check_env(checked, path) {
+  let checked = db_typecheck(db = db_set_source(db = db_new(), path = path, source = source), path = path)
+  match db_check_env(db = checked, path = path) {
     Some(env) => env,
     None => throw("projection fixture produced no checked environment")
   }
@@ -104,13 +104,13 @@ fn checked_test_env(source: String) -> TypeEnv with Env + Exception {
 
 fn remove_typecheck_fs_cache(path: String, source: String, fingerprint: String) -> Unit with Env + Fs {
   let source_fp = compact_string_fingerprint(source)
-  remove_file_if_exists(persistent_dep_list_cache_path(path, source_fp))
-  remove_file_if_exists(persistent_module_header_cache_path(path, source_fp))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path, source_fp))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = path, source_fingerprint = source_fp))
+  remove_file_if_exists(persistent_module_header_cache_path(path = path, source_fingerprint = source_fp))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = path, source_fingerprint = source_fp))
   remove_file_if_exists(persistent_type_env_cache_path(fingerprint))
 }
 
-fn retained_trait_node_tags(env: TypeEnv) -> String {
+fn retained_trait_node_tags(_ env: TypeEnv) -> String {
   match env {
     EnvEmpty => "",
     EnvBind(_, _, rest) => retained_trait_node_tags(rest),
@@ -136,9 +136,9 @@ fn import_kind_provider_env() -> TypeEnv {
   ], EnvBind("make", env_value_binding(CtFn([], CtInt, None)), EnvEmpty), [], []))
 }
 
-fn projected_import_kind_error(source: String) -> String with Env {
+fn projected_import_kind_error(_ source: String) -> String with Env {
   handle {
-    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", source), import_kind_provider_env())
+    let _ = check_program_with_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = import_kind_provider_env())
     ""
   } with { Exception::Throw(message) => message }
 }
@@ -154,8 +154,8 @@ test "kind-qualified imports match projected declaration authority" {
 }
 
 test "type alias imports reject structs and enums" {
-  assert(String::contains(projected_import_kind_error("import ./provider.vibe { type Record }"), "import kind mismatch: `Record` is a struct, not a type alias"))
-  assert(String::contains(projected_import_kind_error("import ./provider.vibe { type Choice }"), "import kind mismatch: `Choice` is an enum, not a type alias"))
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { type Record }"), needle = "import kind mismatch: `Record` is a struct, not a type alias"))
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { type Choice }"), needle = "import kind mismatch: `Choice` is an enum, not a type alias"))
 }
 
 test "projected import kinds use each source module instead of merged name order" {
@@ -170,46 +170,46 @@ test "projected import kinds use each source module instead of merged name order
   let alias_first = "import ./alias.vibe { type X as AliasX }\nimport ./record.vibe { struct X as RecordX }"
   let struct_first = "import ./record.vibe { struct X as RecordX }\nimport ./alias.vibe { type X as AliasX }"
   let first_error = handle {
-    let _ = projected_checked_env(alias_first, "workspace/main.vibe", [
+    let _ = projected_checked_env(source = alias_first, path = "workspace/main.vibe", deps = [
       alias_path,
       struct_path
-    ], [(alias_path, alias_env), (struct_path, struct_env)])
+    ], full_cache = [(alias_path, alias_env), (struct_path, struct_env)])
     ""
   } with { Exception::Throw(message) => message }
   let second_error = handle {
-    let _ = projected_checked_env(struct_first, "workspace/main.vibe", [
+    let _ = projected_checked_env(source = struct_first, path = "workspace/main.vibe", deps = [
       struct_path,
       alias_path
-    ], [(struct_path, struct_env), (alias_path, alias_env)])
+    ], full_cache = [(struct_path, struct_env), (alias_path, alias_env)])
     ""
   } with { Exception::Throw(message) => message }
-  assert(String::contains(first_error, "are different types that share the name `X`"))
-  assert(String::contains(second_error, "are different types that share the name `X`"))
+  assert(String::contains(first_error, needle = "are different types that share the name `X`"))
+  assert(String::contains(second_error, needle = "are different types that share the name `X`"))
   let mismatch = handle {
-    let _ = projected_import_env_for_test("import ./alias.vibe { struct X as Wrong }\nimport ./record.vibe { struct X as RecordX }", "workspace/main.vibe", [
+    let _ = projected_import_env_for_test(source = "import ./alias.vibe { struct X as Wrong }\nimport ./record.vibe { struct X as RecordX }", path = "workspace/main.vibe", deps = [
       alias_path,
       struct_path
-    ], [(alias_path, alias_env), (struct_path, struct_env)])
+    ], full_cache = [(alias_path, alias_env), (struct_path, struct_env)])
     ""
   } with { Exception::Throw(message) => message }
-  assert(String::contains(mismatch, "import kind mismatch: `X` is a type alias, not a struct"))
+  assert(String::contains(mismatch, needle = "import kind mismatch: `X` is a type alias, not a struct"))
 }
 
 test "import kind classification ignores an unrelated trait matching the alias" {
   let message = projected_import_kind_error("import ./provider.vibe { enum Record as Marker }")
-  assert(String::contains(message, "import kind mismatch: `Record` is a struct, not an enum"))
+  assert(String::contains(message, needle = "import kind mismatch: `Record` is a struct, not an enum"))
 }
 
 test "ordinary value exports do not inherit builtin type authority by name" {
   let dep_path = "workspace/value.vibe"
   let dep_env = checked_test_env("export let i32 = 1")
   let message = handle {
-    let _ = projected_import_env_for_test("import ./value.vibe { type i32 }", "workspace/main.vibe", [
+    let _ = projected_import_env_for_test(source = "import ./value.vibe { type i32 }", path = "workspace/main.vibe", deps = [
       dep_path
-    ], [(dep_path, dep_env)])
+    ], full_cache = [(dep_path, dep_env)])
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "import kind mismatch: `i32` is a value, not a type alias"))
+  assert(String::contains(message, needle = "import kind mismatch: `i32` is a value, not a type alias"))
 }
 
 test "builtin type authority survives a re-exporting module" {
@@ -217,7 +217,7 @@ test "builtin type authority survives a re-exporting module" {
   // without a forgeable TypeDef payload.
   let env = EnvTypeDefs(array_empty(), ["Int"], EnvEmpty)
   let message = handle {
-    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./builtin_wrapper.vibe { type Int }"), env)
+    let _ = check_program_with_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = "import ./builtin_wrapper.vibe { type Int }"), initial_env = env)
     ""
   } with { Exception::Throw(error) => error }
   assert(message == "")
@@ -229,37 +229,37 @@ test "import kind classification uses the published declaration on name collisio
     TDAlias("Public", [], CtNamed("Hidden", []))
   ], ["Public"], EnvBind("Hidden", env_value_binding(CtInt), EnvEmpty))
   let message = handle {
-    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./collision.vibe { type Hidden }"), env)
+    let _ = check_program_with_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = "import ./collision.vibe { type Hidden }"), initial_env = env)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "import kind mismatch: `Hidden` is a value, not a type alias"))
+  assert(String::contains(message, needle = "import kind mismatch: `Hidden` is a value, not a type alias"))
 }
 
 test "struct imports reject enums" {
-  assert(String::contains(projected_import_kind_error("import ./provider.vibe { struct Choice }"), "import kind mismatch: `Choice` is an enum, not a struct"))
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { struct Choice }"), needle = "import kind mismatch: `Choice` is an enum, not a struct"))
 }
 
 test "enum imports reject effects" {
-  assert(String::contains(projected_import_kind_error("import ./provider.vibe { enum Audit }"), "import kind mismatch: `Audit` is an effect, not an enum"))
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { enum Audit }"), needle = "import kind mismatch: `Audit` is an effect, not an enum"))
 }
 
 test "effect imports reject traits" {
-  assert(String::contains(projected_import_kind_error("import ./provider.vibe { effect Marker }"), "import kind mismatch: `Marker` is a trait, not an effect"))
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { effect Marker }"), needle = "import kind mismatch: `Marker` is a trait, not an effect"))
 }
 
 test "trait imports reject aliases" {
-  assert(String::contains(projected_import_kind_error("import ./provider.vibe { trait Alias }"), "import kind mismatch: `Alias` is a type alias, not a trait"))
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { trait Alias }"), needle = "import kind mismatch: `Alias` is a type alias, not a trait"))
 }
 
 test "kind-qualified imports reject values and effect sets" {
-  assert(String::contains(projected_import_kind_error("import ./provider.vibe { enum make }"), "import kind mismatch: `make` is a value, not an enum"))
-  assert(String::contains(projected_import_kind_error("import ./provider.vibe { effect Audits }"), "import kind mismatch: `Audits` is an effect set, not an effect"))
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { enum make }"), needle = "import kind mismatch: `make` is a value, not an enum"))
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { effect Audits }"), needle = "import kind mismatch: `Audits` is an effect set, not an effect"))
 }
 
 test "opaque builtin type bindings retain type qualifier authority" {
   let env = EnvBind("Int", env_value_binding(CtInt), EnvEmpty)
   let message = handle {
-    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import @vibe/builtin { type Int }"), env)
+    let _ = check_program_with_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = "import @vibe/builtin { type Int }"), initial_env = env)
     ""
   } with { Exception::Throw(error) => error }
   assert(message == "")
@@ -270,7 +270,7 @@ test "merged trait and type names remain ambiguous after per-source validation" 
   ], EnvEmpty, [], []))
   let source = "import ./record.vibe { struct X as RecordX }\nimport ./marker.vibe { trait X as MarkerX }"
   let message = handle {
-    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", source), env)
+    let _ = check_program_with_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = env)
     ""
   } with { Exception::Throw(error) => error }
   assert(message == "")
@@ -280,30 +280,30 @@ test "colliding published kinds validate the requested qualifier" {
   let env = EnvTypeDefs([TDStruct("X", [], [], [])], ["X"], EnvTraitDef("X", [], false, [
   ], EnvEmpty, [], []))
   let invalid = handle {
-    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./dep.vibe { enum X }"), env)
+    let _ = check_program_with_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = "import ./dep.vibe { enum X }"), initial_env = env)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(invalid, "import kind mismatch"))
+  assert(String::contains(invalid, needle = "import kind mismatch"))
   assert(projected_import_kind_error("import ./provider.vibe { struct Record }") == "")
   let trait_message = handle {
-    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./dep.vibe { trait X }"), env)
+    let _ = check_program_with_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = "import ./dep.vibe { trait X }"), initial_env = env)
     ""
   } with { Exception::Throw(error) => error }
   assert(trait_message == "")
 }
 
 test "private declarations report exportability instead of an ineffective kind edit" {
-  let message = typedef_surface_pair_error("/tmp/vibe_private_kind_followup", "struct Hidden { value: Int }\nexport fn public() -> Int { 1 }", "import ./dep.vibe { type Hidden }\nexport let value = 1\n")
-  assert(String::contains(message, "is not exported by"))
-  assert(!String::contains(message, "import kind mismatch"))
+  let message = typedef_surface_pair_error(dir = "/tmp/vibe_private_kind_followup", dep_src = "struct Hidden { value: Int }\nexport fn public() -> Int { 1 }", main_src = "import ./dep.vibe { type Hidden }\nexport let value = 1\n")
+  assert(String::contains(message, needle = "is not exported by"))
+  assert(!String::contains(message, needle = "import kind mismatch"))
 }
 
 fn imported_forall_bound_label(env: TypeEnv, name: String) -> String {
-  match env_lookup(env, name) {
+  match env_lookup(env = env, name = name) {
     Some(CtForAll(_, bounds, _)) => if Array::length(bounds) == 1 {
-      let (_, labels) = Array::get(bounds, 0)
+      let (_, labels) = Array::get(bounds, at = 0)
       if Array::length(labels) == 1 {
-        Array::get(labels, 0)
+        Array::get(labels, at = 0)
       } else {
         ""
       }
@@ -316,45 +316,45 @@ fn imported_forall_bound_label(env: TypeEnv, name: String) -> String {
 
 fn typecheck_fs_pair_error(dep_path: String, dep_src: String, main_path: String, main_src: String) -> String with Env + Fs {
   handle {
-    let db = db_set_source(db_set_source(db_new(), dep_path, dep_src), main_path, main_src)
-    let _ = db_typecheck_fs(db, main_path)
+    let db = db_set_source(db = db_set_source(db = db_new(), path = dep_path, source = dep_src), path = main_path, source = main_src)
+    let _ = db_typecheck_fs(db = db, path = main_path)
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
 fn typecheck_db_pair_error(dep_src: String, main_src: String) -> String with Env + Exception {
   handle {
-    let db = db_set_source(db_set_source(db_new(), "mem/dep.vibe", dep_src), "mem/main.vibe", main_src)
-    let _ = db_typecheck(db, "mem/main.vibe")
+    let db = db_set_source(db = db_set_source(db = db_new(), path = "mem/dep.vibe", source = dep_src), path = "mem/main.vibe", source = main_src)
+    let _ = db_typecheck(db = db, path = "mem/main.vibe")
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
 fn typecheck_db_reexport_chain_error(dep_src: String, mid_src: String, main_src: String) -> String with Env + Exception {
   handle {
-    let db = db_set_source(db_set_source(db_set_source(db_new(), "mem/dep.vibe", dep_src), "mem/mid.vibe", mid_src), "mem/main.vibe", main_src)
-    let _ = db_typecheck(db, "mem/main.vibe")
+    let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = "mem/dep.vibe", source = dep_src), path = "mem/mid.vibe", source = mid_src), path = "mem/main.vibe", source = main_src)
+    let _ = db_typecheck(db = db, path = "mem/main.vibe")
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
 test "forward alias bodies stay resolved across module projection" {
   let dep_source = "export type Pair = StringMap[Int, String]\ntype StringMap[A, B] = (A, B)"
-  let pair_binding_is_resolved = match env_lookup(checked_test_env(dep_source), "Pair") {
+  let pair_binding_is_resolved = match env_lookup(env = checked_test_env(dep_source), name = "Pair") {
     Some(CtTuple(items)) => Array::length(items) == 2,
     _ => false
   }
   assert(pair_binding_is_resolved)
   let main_source = "import ./dep.vibe { type Pair }\nlet bad: Pair = 1"
-  let message = typecheck_db_pair_error(dep_source, main_source)
-  assert(String::contains(message, "binding type mismatch for bad"))
+  let message = typecheck_db_pair_error(dep_src = dep_source, main_src = main_source)
+  assert(String::contains(message, needle = "binding type mismatch for bad"))
 }
 
 test "alias snapshots in exported struct fields stay resolved across module projection" {
   let dep_source = "type Pair = StringMap[Int, String]\nexport struct Box { value: Pair }\ntype StringMap[A, B] = (A, B)"
   let main_source = "import ./dep.vibe { struct Box }\nlet bad = Box::{ value: 1 }"
-  let message = typecheck_db_pair_error(dep_source, main_source)
-  assert(String::contains(message, "field type mismatch for value"))
+  let message = typecheck_db_pair_error(dep_src = dep_source, main_src = main_source)
+  assert(String::contains(message, needle = "field type mismatch for value"))
 }
 
 // #3536: a cyclic alias is refused at its declaration now, so the check has
@@ -366,22 +366,22 @@ test "recursive alias refresh does not grow with unrelated statements" {
     let _ = checked_test_env(source)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "type alias `A` refers to itself"))
+  assert(String::contains(message, needle = "type alias `A` refers to itself"))
 }
 
 test "recursive aliases do not freeze same-name acyclic declarations" {
   let message = handle {
-    let _ = check_program_with_env_result([
+    let _ = check_program_with_env_result(stmts = [
       STypeAlias(false, "A", array_empty(), TyName("B")),
       SModule(false, "Nested", [
         STypeAlias(false, "A", array_empty(), TyName("A")),
         STypeAlias(false, "B", array_empty(), TyName("Int"))
       ]),
       SLet(false, false, "bad", Some(TyName("A")), EString("x", -1))
-    ], EnvEmpty)
+    ], initial_env = EnvEmpty)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "binding type mismatch for bad"))
+  assert(String::contains(message, needle = "binding type mismatch for bad"))
 }
 
 test "acyclic aliases resolve when dependencies zig-zag across source order" {
@@ -390,12 +390,12 @@ test "acyclic aliases resolve when dependencies zig-zag across source order" {
     let _ = checked_test_env(source)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "binding type mismatch for bad"))
+  assert(String::contains(message, needle = "binding type mismatch for bad"))
 }
 
 test "outer aliases are revalidated after nested module type declarations" {
   let message = handle {
-    let _ = check_program_with_env_result([
+    let _ = check_program_with_env_result(stmts = [
       STypeAlias(false, "M", array_empty(), TyApp("Map", [
         TyName("Key"),
         TyName("Int")
@@ -403,29 +403,29 @@ test "outer aliases are revalidated after nested module type declarations" {
       SModule(false, "Nested", [
         STypeAlias(false, "Key", array_empty(), TyName("Int"))
       ])
-    ], EnvEmpty)
+    ], initial_env = EnvEmpty)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "the builtin map is String-keyed"))
+  assert(String::contains(message, needle = "the builtin map is String-keyed"))
 }
 
 test "alias dependencies resolve across nested scope boundaries" {
-  let checked = check_program_with_env_result([
+  let checked = check_program_with_env_result(stmts = [
     STypeAlias(false, "A", array_empty(), TyName("B")),
     STypeAlias(false, "C", array_empty(), TyName("D")),
     SModule(false, "Nested", [
       STypeAlias(false, "B", array_empty(), TyName("C")),
       STypeAlias(false, "D", array_empty(), TyName("Int"))
     ])
-  ], EnvEmpty)
-  match env_lookup(checked.final_env, "A") {
+  ], initial_env = EnvEmpty)
+  match env_lookup(env = checked.final_env, name = "A") {
     Some(CtInt) => (),
     _ => assert(false)
   }
 }
 
 test "nested type heads are known before outer alias validation" {
-  let checked = check_program_with_env_result([
+  let checked = check_program_with_env_result(stmts = [
     STypeAlias(false, "Pair", array_empty(), TyApp("StringMap", [
       TyName("Int"),
       TyName("String")
@@ -436,15 +436,15 @@ test "nested type heads are known before outer alias validation" {
         TyName("B")
       ]))
     ])
-  ], EnvEmpty)
-  match env_lookup(checked.final_env, "Pair") {
+  ], initial_env = EnvEmpty)
+  match env_lookup(env = checked.final_env, name = "Pair") {
     Some(CtTuple(items)) => assert(Array::length(items) == 2),
     _ => assert(false)
   }
 }
 
 test "nested type heads are known before outer payload validation" {
-  let _ = check_program_with_env_result([
+  let _ = check_program_with_env_result(stmts = [
     SStruct(false, "Box", [
       ("value", TyApp("StringMap", [TyName("Int"), TyName("String")]))
     ], array_empty(), array_empty(), array_empty()),
@@ -463,23 +463,23 @@ test "nested type heads are known before outer payload validation" {
         TyName("B")
       ]))
     ])
-  ], EnvEmpty)
+  ], initial_env = EnvEmpty)
 }
 
 test "nested type heads replace stale outer unknown-name diagnostics" {
-  let checked = check_program_with_env_result([
+  let checked = check_program_with_env_result(stmts = [
     SStruct(false, "Box", [("value", TyName("Pair"))], array_empty(), array_empty(), array_empty()),
     SEnum(false, "Choice", array_empty(), [("Pick", [TyName("Pair")])], array_empty()),
     SModule(false, "Nested", [
       STypeAlias(false, "Pair", array_empty(), TyName("Int"))
     ])
-  ], EnvEmpty)
+  ], initial_env = EnvEmpty)
   let mut saw_box = false
   let mut i = 0
   while i < Array::length(checked.type_defs) {
-    match Array::get(checked.type_defs, i) {
+    match Array::get(checked.type_defs, at = i) {
       TDStruct("Box", fields, _, _) => if Array::length(fields) == 1 {
-        let (field_name, field_type) = Array::get(fields, 0)
+        let (field_name, field_type) = Array::get(fields, at = 0)
         saw_box = field_name == "value" && field_type == CtInt
       } else {
         ()
@@ -492,7 +492,7 @@ test "nested type heads replace stale outer unknown-name diagnostics" {
 }
 
 test "completed root recheck replaces stale module diagnostics" {
-  let _ = check_program_with_env_result([
+  let _ = check_program_with_env_result(stmts = [
     SModule(false, "First", [
       SLet(false, false, "good", Some(TyApp("StringMap", [
         TyName("Int"),
@@ -505,7 +505,7 @@ test "completed root recheck replaces stale module diagnostics" {
         TyName("B")
       ]))
     ])
-  ], EnvEmpty)
+  ], initial_env = EnvEmpty)
 }
 
 test "suberror refresh locates its marker across same-name types" {
@@ -534,15 +534,15 @@ test "suberror refresh locates its marker across same-name types" {
   ]) {
     Some(observation) => {
       let env = observation.checked_program.final_env
-      match env_lookup(env, "X") {
+      match env_lookup(env = env, name = "X") {
         Some(CtFn(params, CtStruct("X"), _)) => if Array::length(params) == 1 {
-          assert(Array::get(params, 0) == CtString)
+          assert(Array::get(params, at = 0) == CtString)
         } else {
           assert(false)
         },
         _ => assert(false)
       }
-      match env_lookup(env, "Y") {
+      match env_lookup(env = env, name = "Y") {
         Some(CtFn(params, CtEnum("X"), _)) => assert(Array::length(params) == 1),
         _ => assert(false)
       }
@@ -556,12 +556,12 @@ test "completed alias diagnostics precede later use diagnostics" {
     let _ = checked_test_env("type Bad = Map[Key, Int]\ntype Key = Int\nfn f(m: Bad) -> Int { 0 }")
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "the body of type alias `Bad`"))
+  assert(String::contains(message, needle = "the body of type alias `Bad`"))
 }
 
 test "nested sibling aliases revalidate earlier alias map keys" {
   let message = handle {
-    let _ = check_program_with_env_result([
+    let _ = check_program_with_env_result(stmts = [
       SModule(false, "First", [
         STypeAlias(false, "M", array_empty(), TyApp("Map", [
           TyName("Key"),
@@ -571,14 +571,14 @@ test "nested sibling aliases revalidate earlier alias map keys" {
       SModule(false, "Second", [
         STypeAlias(false, "Key", array_empty(), TyName("Int"))
       ])
-    ], EnvEmpty)
+    ], initial_env = EnvEmpty)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "the builtin map is String-keyed"))
+  assert(String::contains(message, needle = "the builtin map is String-keyed"))
 }
 
 test "nested sibling aliases refresh earlier struct payloads" {
-  let checked = check_program_with_env_result([
+  let checked = check_program_with_env_result(stmts = [
     SModule(false, "First", [
       STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
       SStruct(false, "Box", [("value", TyName("Alias"))], array_empty(), array_empty(), array_empty())
@@ -586,13 +586,13 @@ test "nested sibling aliases refresh earlier struct payloads" {
     SModule(false, "Second", [
       STypeAlias(false, "Pair", array_empty(), TyName("Int"))
     ])
-  ], EnvEmpty)
+  ], initial_env = EnvEmpty)
   let mut found = false
   let mut i = 0
   while i < Array::length(checked.type_defs) {
-    match Array::get(checked.type_defs, i) {
+    match Array::get(checked.type_defs, at = i) {
       TDStruct("Box", fields, _, _) => if Array::length(fields) == 1 {
-        let (field_name, field_type) = Array::get(fields, 0)
+        let (field_name, field_type) = Array::get(fields, at = 0)
         found = field_name == "value" && field_type == CtInt
       } else {
         ()
@@ -606,7 +606,7 @@ test "nested sibling aliases refresh earlier struct payloads" {
 
 test "nested sibling aliases recheck earlier constructor uses" {
   let message = handle {
-    let _ = check_program_with_env_result([
+    let _ = check_program_with_env_result(stmts = [
       SModule(false, "First", [
         STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
         SStruct(false, "Box", [("value", TyName("Alias"))], array_empty(), array_empty(), array_empty()),
@@ -617,15 +617,15 @@ test "nested sibling aliases recheck earlier constructor uses" {
       SModule(false, "Second", [
         STypeAlias(false, "Pair", array_empty(), TyName("Int"))
       ])
-    ], EnvEmpty)
+    ], initial_env = EnvEmpty)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "expected Int, got String"))
+  assert(String::contains(message, needle = "expected Int, got String"))
 }
 
 test "nested aliases recheck earlier outer constructor uses" {
   let message = handle {
-    let _ = check_program_with_env_result([
+    let _ = check_program_with_env_result(stmts = [
       STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
       SStruct(false, "Box", [("value", TyName("Alias"))], array_empty(), array_empty(), array_empty()),
       SLet(false, false, "bad", None, ECall(EIdent("Box", -1), [
@@ -634,25 +634,25 @@ test "nested aliases recheck earlier outer constructor uses" {
       SModule(false, "Second", [
         STypeAlias(false, "Pair", array_empty(), TyName("Int"))
       ])
-    ], EnvEmpty)
+    ], initial_env = EnvEmpty)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "expected Int, got String"))
+  assert(String::contains(message, needle = "expected Int, got String"))
 }
 
 test "nested aliases rebuild earlier outer binding types" {
   let message = handle {
-    let _ = check_program_with_env_result([
+    let _ = check_program_with_env_result(stmts = [
       STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
       SLet(false, false, "value", Some(TyName("Alias")), EInt(1)),
       SModule(false, "Second", [
         STypeAlias(false, "Pair", array_empty(), TyName("Int"))
       ]),
       SLet(false, false, "bad", Some(TyName("String")), EIdent("value", -1))
-    ], EnvEmpty)
+    ], initial_env = EnvEmpty)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "binding type mismatch for bad"))
+  assert(String::contains(message, needle = "binding type mismatch for bad"))
 }
 
 test "completed aliases rebuild retained root type observations" {
@@ -665,12 +665,12 @@ test "completed aliases rebuild retained root type observations" {
   ]) {
     Some(observation) => {
       assert(Array::length(observation.entries) == 1)
-      let (_, _, root_type) = Array::get(observation.entries, 0)
+      let (_, _, root_type) = Array::get(observation.entries, at = 0)
       match root_type {
         CtFn(_, CtInt, _) => (),
         _ => assert(false)
       }
-      match env_lookup(observation.checked_program.final_env, "make") {
+      match env_lookup(env = observation.checked_program.final_env, name = "make") {
         Some(CtFn(_, CtInt, _)) => (),
         _ => assert(false)
       }
@@ -689,9 +689,9 @@ test "completed rechecks preserve pre-partition statement paths" {
   ]) {
     Some(observation) => {
       assert(Array::length(observation.entries) == 1)
-      let (path, _, root_type) = Array::get(observation.entries, 0)
+      let (path, _, root_type) = Array::get(observation.entries, at = 0)
       assert(Array::length(path) == 1)
-      assert(Array::get(path, 0) == 0)
+      assert(Array::get(path, at = 0) == 0)
       match root_type {
         CtFn(_, CtInt, _) => (),
         _ => assert(false)
@@ -703,7 +703,7 @@ test "completed rechecks preserve pre-partition statement paths" {
 
 test "nested sibling aliases revalidate earlier suberror map keys" {
   let message = handle {
-    let _ = check_program_with_env_result([
+    let _ = check_program_with_env_result(stmts = [
       SModule(false, "First", [
         SSuberror(false, "Bad", [
           ("Bad", [TyApp("Map", [TyName("Key"), TyName("Int")])])
@@ -712,10 +712,10 @@ test "nested sibling aliases revalidate earlier suberror map keys" {
       SModule(false, "Second", [
         STypeAlias(false, "Key", array_empty(), TyName("Int"))
       ])
-    ], EnvEmpty)
+    ], initial_env = EnvEmpty)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "the builtin map is String-keyed"))
+  assert(String::contains(message, needle = "the builtin map is String-keyed"))
 }
 
 test "recursive-alias reachability memoizes shared diamond suffixes" {
@@ -728,14 +728,14 @@ test "recursive-alias reachability memoizes shared diamond suffixes" {
       TyName(String::concat("A", next_suffix)),
       TyName(String::concat("B", next_suffix))
     ])
-    Array::push(stmts, STypeAlias(false, String::concat("A", suffix), array_empty(), body))
-    Array::push(stmts, STypeAlias(false, String::concat("B", suffix), array_empty(), body))
+    Array::push(stmts, value = STypeAlias(false, String::concat("A", suffix), array_empty(), body))
+    Array::push(stmts, value = STypeAlias(false, String::concat("B", suffix), array_empty(), body))
     i = i + 1
   }
-  Array::push(stmts, STypeAlias(false, "A16", array_empty(), TyName("Int")))
-  Array::push(stmts, STypeAlias(false, "B16", array_empty(), TyName("Int")))
-  let checked = check_program_with_env_result(stmts, EnvEmpty)
-  match env_lookup(checked.final_env, "A0") {
+  Array::push(stmts, value = STypeAlias(false, "A16", array_empty(), TyName("Int")))
+  Array::push(stmts, value = STypeAlias(false, "B16", array_empty(), TyName("Int")))
+  let checked = check_program_with_env_result(stmts = stmts, initial_env = EnvEmpty)
+  match env_lookup(env = checked.final_env, name = "A0") {
     Some(_) => (),
     None => assert(false)
   }
@@ -751,18 +751,18 @@ test "acyclic alias DAGs reject exponential expansion" {
       TyName(String::concat("A", next_suffix)),
       TyName(String::concat("B", next_suffix))
     ])
-    Array::push(stmts, STypeAlias(false, String::concat("A", suffix), array_empty(), body))
-    Array::push(stmts, STypeAlias(false, String::concat("B", suffix), array_empty(), body))
+    Array::push(stmts, value = STypeAlias(false, String::concat("A", suffix), array_empty(), body))
+    Array::push(stmts, value = STypeAlias(false, String::concat("B", suffix), array_empty(), body))
     i = i + 1
   }
-  Array::push(stmts, STypeAlias(false, "A30", array_empty(), TyName("Int")))
-  Array::push(stmts, STypeAlias(false, "B30", array_empty(), TyName("Int")))
+  Array::push(stmts, value = STypeAlias(false, "A30", array_empty(), TyName("Int")))
+  Array::push(stmts, value = STypeAlias(false, "B30", array_empty(), TyName("Int")))
   let message = handle {
-    let _ = check_program_with_env_result(stmts, EnvEmpty)
+    let _ = check_program_with_env_result(stmts = stmts, initial_env = EnvEmpty)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "type alias expansion exceeds"))
-  assert(String::contains(message, "replace the shared alias DAG with a nominal struct or enum"))
+  assert(String::contains(message, needle = "type alias expansion exceeds"))
+  assert(String::contains(message, needle = "replace the shared alias DAG with a nominal struct or enum"))
 }
 
 test "dependency-first alias DAGs reject expansion before refresh" {
@@ -778,15 +778,15 @@ test "dependency-first alias DAGs reject expansion before refresh" {
       TyName(String::concat("A", current_suffix)),
       TyName(String::concat("B", current_suffix))
     ])
-    Array::push(stmts, STypeAlias(false, String::concat("A", suffix), array_empty(), body))
-    Array::push(stmts, STypeAlias(false, String::concat("B", suffix), array_empty(), body))
+    Array::push(stmts, value = STypeAlias(false, String::concat("A", suffix), array_empty(), body))
+    Array::push(stmts, value = STypeAlias(false, String::concat("B", suffix), array_empty(), body))
     i = i - 1
   }
   let message = handle {
-    let _ = check_program_with_env_result(stmts, EnvEmpty)
+    let _ = check_program_with_env_result(stmts = stmts, initial_env = EnvEmpty)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "type alias expansion exceeds"))
+  assert(String::contains(message, needle = "type alias expansion exceeds"))
 }
 
 test "unused eager alias arguments still count toward expansion" {
@@ -797,14 +797,14 @@ test "unused eager alias arguments still count toward expansion" {
     i = i + 1
   }
   let message = handle {
-    let _ = check_program_with_env_result([
+    let _ = check_program_with_env_result(stmts = [
       STypeAlias(false, "Root", array_empty(), TyApp("Ignore", [nested])),
       STypeAlias(false, "Ignore", ["T"], TyName("Int")),
       STypeAlias(false, "Dup", ["T"], TyTuple([TyName("T"), TyName("T")]))
-    ], EnvEmpty)
+    ], initial_env = EnvEmpty)
     ""
   } with { Exception::Throw(error) => error }
-  assert(String::contains(message, "type alias expansion exceeds"))
+  assert(String::contains(message, needle = "type alias expansion exceeds"))
 }
 
 test "nested identity aliases preserve their small resolved result" {
@@ -814,30 +814,30 @@ test "nested identity aliases preserve their small resolved result" {
     nested = TyApp("Id", [nested])
     i = i + 1
   }
-  let checked = check_program_with_env_result([
+  let checked = check_program_with_env_result(stmts = [
     STypeAlias(false, "Root", array_empty(), nested),
     STypeAlias(false, "Id", ["T"], TyName("T"))
-  ], EnvEmpty)
-  match env_lookup(checked.final_env, "Root") {
+  ], initial_env = EnvEmpty)
+  match env_lookup(env = checked.final_env, name = "Root") {
     Some(CtInt) => (),
     _ => assert(false)
   }
 }
 
 fn projected_checked_env(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> TypeEnv with Env + Exception {
-  let import_env = projected_import_env_for_test(source, path, deps, full_cache)
-  check_program_with_projected_import_env_result(parse_program_with_path(path, source), import_env).final_env
+  let import_env = projected_import_env_for_test(source = source, path = path, deps = deps, full_cache = full_cache)
+  check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = path, source = source), initial_env = import_env).final_env
 }
 
 test "imported helpers retain region dependency contracts" {
   let dep_source = "export struct Slot { callback: () -> Array[Int] }\nexport fn unwrap(slot: Slot) -> () -> Array[Int] {\n  let callback = slot.callback\n  callback\n}"
   let main_source = "import ./dep.vibe { Slot, unwrap }\nlet escaped = region r {\n  let values = MutList::empty(r)\n  unwrap(Slot::{ callback: () -> Array[Int] { MutList::to_array(values) } })\n}\nlet _ = escaped()"
-  let message = typecheck_db_pair_error(dep_source, main_source)
-  assert(String::contains(message, "region escapes its scope"))
+  let message = typecheck_db_pair_error(dep_src = dep_source, main_src = main_source)
+  assert(String::contains(message, needle = "region escapes its scope"))
 }
 
 fn assert_module_origin(env: TypeEnv, bound_name: String, expected_path: String, expected_source_name: String) -> Unit {
-  match env_lookup_binding(env, bound_name) {
+  match env_lookup_binding(env = env, name = bound_name) {
     Some(binding) => match binding.origin {
       BindingOriginModuleExport(path, source_name) => {
         assert(path == expected_path)
@@ -850,7 +850,7 @@ fn assert_module_origin(env: TypeEnv, bound_name: String, expected_path: String,
 }
 
 fn assert_unavailable_origin(env: TypeEnv, name: String) -> Unit {
-  match env_lookup_binding(env, name) {
+  match env_lookup_binding(env = env, name = name) {
     Some(binding) => match binding.origin {
       BindingOriginUnavailable => (),
       _ => assert(false)
@@ -863,26 +863,26 @@ fn assert_unavailable_origin(env: TypeEnv, name: String) -> Unit {
 
 test "cross-module type propagation" {
   let db0 = db_new()
-  let db1 = db_set_source(db_set_source(db0, "a.vibe", "import ./b.vibe { y }\nexport let x = y"), "b.vibe", "export let y = 42")
-  let db2 = db_typecheck(db1, "a.vibe")
-  let b_y_is_int = match db_check_env(db2, "b.vibe") {
-    Some(e) => match env_lookup(e, "y") {
+  let db1 = db_set_source(db = db_set_source(db = db0, path = "a.vibe", source = "import ./b.vibe { y }\nexport let x = y"), path = "b.vibe", source = "export let y = 42")
+  let db2 = db_typecheck(db = db1, path = "a.vibe")
+  let b_y_is_int = match db_check_env(db = db2, path = "b.vibe") {
+    Some(e) => match env_lookup(env = e, name = "y") {
       Some(CtInt) => true,
       _ => false
     },
     None => false
   }
   assert(b_y_is_int)
-  let a_y_is_published = match db_check_env(db2, "a.vibe") {
-    Some(e) => match env_lookup(e, "y") {
+  let a_y_is_published = match db_check_env(db = db2, path = "a.vibe") {
+    Some(e) => match env_lookup(env = e, name = "y") {
       Some(_) => true,
       None => false
     },
     None => false
   }
   assert(!a_y_is_published)
-  let a_x_is_int = match db_check_env(db2, "a.vibe") {
-    Some(e) => match env_lookup(e, "x") {
+  let a_x_is_int = match db_check_env(db = db2, path = "a.vibe") {
+    Some(e) => match env_lookup(env = e, name = "x") {
       Some(CtInt) => true,
       _ => false
     },
@@ -896,10 +896,10 @@ test "cross-module re-export propagates enum constructors" {
   let ast_src = "export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"
   let index_src = "export ./ast.vibe { TypeExpr }"
   let main_src = "import ./index.vibe { TypeExpr }\nexport let ann: TypeExpr = TyTuple([TyName(\"Int\")])"
-  let db1 = db_set_source(db_set_source(db_set_source(db0, "main.vibe", main_src), "index.vibe", index_src), "ast.vibe", ast_src)
-  let db2 = db_typecheck(db1, "main.vibe")
-  let has_ann = match db_check_env(db2, "main.vibe") {
-    Some(e) => match env_lookup(e, "ann") {
+  let db1 = db_set_source(db = db_set_source(db = db_set_source(db = db0, path = "main.vibe", source = main_src), path = "index.vibe", source = index_src), path = "ast.vibe", source = ast_src)
+  let db2 = db_typecheck(db = db1, path = "main.vibe")
+  let has_ann = match db_check_env(db = db2, path = "main.vibe") {
+    Some(e) => match env_lookup(env = e, name = "ann") {
       Some(CtUnknown) => false,
       Some(_) => true,
       _ => false
@@ -907,8 +907,8 @@ test "cross-module re-export propagates enum constructors" {
     None => false
   }
   assert(has_ann)
-  let has_ctor = match db_check_env(db2, "main.vibe") {
-    Some(e) => match env_lookup(e, "TyTuple") {
+  let has_ctor = match db_check_env(db = db2, path = "main.vibe") {
+    Some(e) => match env_lookup(env = e, name = "TyTuple") {
       Some(CtUnknown) => false,
       Some(_) => true,
       _ => false
@@ -925,19 +925,19 @@ test "db_typecheck_fs: re-exported enum type imports constructors" {
   let ast_src = "export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"
   let index_src = "export ./vibe_compiler_reexport_enum_ctor_fs_ast.vibe { TypeExpr }"
   let main_src = "import ./vibe_compiler_reexport_enum_ctor_fs_index.vibe { TypeExpr }\nexport { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
-  Fs::write_bytes(ast_path, string_to_bytes(ast_src))
-  Fs::write_bytes(index_path, string_to_bytes(index_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let ast_fp = build_test_fingerprint(ast_src, array_empty())
-  let index_fp = build_test_fingerprint(index_src, [(ast_path, ast_fp)])
-  let main_fp = build_test_fingerprint(main_src, [(index_path, index_fp)])
-  remove_typecheck_fs_cache(ast_path, ast_src, ast_fp)
-  remove_typecheck_fs_cache(index_path, index_src, index_fp)
-  remove_typecheck_fs_cache(main_path, main_src, main_fp)
-  let db1 = db_set_source(db_set_source(db_set_source(db_new(), ast_path, ast_src), index_path, index_src), main_path, main_src)
-  let db2 = db_typecheck_fs(db1, main_path)
-  let has_ctor = match db_check_env(db2, main_path) {
-    Some(e) => match env_lookup(e, "TyTuple") {
+  Fs::write_bytes(ast_path, bytes = string_to_bytes(ast_src))
+  Fs::write_bytes(index_path, bytes = string_to_bytes(index_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let ast_fp = build_test_fingerprint(source = ast_src, dep_fps = array_empty())
+  let index_fp = build_test_fingerprint(source = index_src, dep_fps = [(ast_path, ast_fp)])
+  let main_fp = build_test_fingerprint(source = main_src, dep_fps = [(index_path, index_fp)])
+  remove_typecheck_fs_cache(path = ast_path, source = ast_src, fingerprint = ast_fp)
+  remove_typecheck_fs_cache(path = index_path, source = index_src, fingerprint = index_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = main_fp)
+  let db1 = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = ast_path, source = ast_src), path = index_path, source = index_src), path = main_path, source = main_src)
+  let db2 = db_typecheck_fs(db = db1, path = main_path)
+  let has_ctor = match db_check_env(db = db2, path = main_path) {
+    Some(e) => match env_lookup(env = e, name = "TyTuple") {
       Some(CtUnknown) => false,
       Some(_) => true,
       _ => false
@@ -957,19 +957,19 @@ test "db_typecheck_fs: extensionless directory re-export imports enum constructo
   let index_src = "export ./ast.vibe { TypeExpr }"
   let main_src = "import ./core { TypeExpr }\nexport { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
   Fs::mkdir_p(core_dir)
-  Fs::write_bytes(ast_path, string_to_bytes(ast_src))
-  Fs::write_bytes(index_path, string_to_bytes(index_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let ast_fp = build_test_fingerprint(ast_src, array_empty())
-  let index_fp = build_test_fingerprint(index_src, [(ast_path, ast_fp)])
-  let main_fp = build_test_fingerprint(main_src, [(index_path, index_fp)])
-  remove_typecheck_fs_cache(ast_path, ast_src, ast_fp)
-  remove_typecheck_fs_cache(index_path, index_src, index_fp)
-  remove_typecheck_fs_cache(main_path, main_src, main_fp)
-  let db1 = db_set_source(db_set_source(db_set_source(db_new(), ast_path, ast_src), index_path, index_src), main_path, main_src)
-  let db2 = db_typecheck_fs(db1, main_path)
-  let has_ctor = match db_check_env(db2, main_path) {
-    Some(e) => match env_lookup(e, "TyTuple") {
+  Fs::write_bytes(ast_path, bytes = string_to_bytes(ast_src))
+  Fs::write_bytes(index_path, bytes = string_to_bytes(index_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let ast_fp = build_test_fingerprint(source = ast_src, dep_fps = array_empty())
+  let index_fp = build_test_fingerprint(source = index_src, dep_fps = [(ast_path, ast_fp)])
+  let main_fp = build_test_fingerprint(source = main_src, dep_fps = [(index_path, index_fp)])
+  remove_typecheck_fs_cache(path = ast_path, source = ast_src, fingerprint = ast_fp)
+  remove_typecheck_fs_cache(path = index_path, source = index_src, fingerprint = index_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = main_fp)
+  let db1 = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = ast_path, source = ast_src), path = index_path, source = index_src), path = main_path, source = main_src)
+  let db2 = db_typecheck_fs(db = db1, path = main_path)
+  let has_ctor = match db_check_env(db = db2, path = main_path) {
+    Some(e) => match env_lookup(env = e, name = "TyTuple") {
       Some(CtUnknown) => false,
       Some(_) => true,
       _ => false
@@ -983,18 +983,18 @@ test "projected checker keeps alias re-exports surface-only" {
   let dep_path = "workspace/dep.vibe"
   let dep_env = checked_test_env("export let direct = 1\nexport let renamed = \"ok\"\nexport enum Choice { Pick(Int) }")
   let source = "import ./dep.vibe { direct, renamed as alias, Choice, Pick as ExplicitPick }\nexport ./dep.vibe { direct, renamed as forwarded }\nlet use_alias: String = alias\nlet use_direct: Int = direct"
-  let checked = projected_checked_env(source, "workspace/main.vibe", [dep_path], [
+  let checked = projected_checked_env(source = source, path = "workspace/main.vibe", deps = [dep_path], full_cache = [
     (dep_path, dep_env)
   ])
-  assert_module_origin(checked, "direct", dep_path, "direct")
-  assert_module_origin(checked, "alias", dep_path, "renamed")
-  inspect(env_lookup(checked, "forwarded") == None, "true")
-  assert_module_origin(checked, "Choice", dep_path, "Choice")
-  assert_module_origin(checked, "ExplicitPick", dep_path, "Pick")
+  assert_module_origin(env = checked, bound_name = "direct", expected_path = dep_path, expected_source_name = "direct")
+  assert_module_origin(env = checked, bound_name = "alias", expected_path = dep_path, expected_source_name = "renamed")
+  inspect(env_lookup(env = checked, name = "forwarded") == None, "true")
+  assert_module_origin(env = checked, bound_name = "Choice", expected_path = dep_path, expected_source_name = "Choice")
+  assert_module_origin(env = checked, bound_name = "ExplicitPick", expected_path = dep_path, expected_source_name = "Pick")
   // Importing the enum attaches its automatic companion using the
   // dependency's actual candidate name.
-  assert_module_origin(checked, "Pick", dep_path, "Pick")
-  match (env_lookup(checked, "use_alias"), env_lookup(checked, "use_direct")) {
+  assert_module_origin(env = checked, bound_name = "Pick", expected_path = dep_path, expected_source_name = "Pick")
+  match (env_lookup(env = checked, name = "use_alias"), env_lookup(env = checked, name = "use_direct")) {
     (Some(CtString), Some(CtInt)) => (),
     _ => assert(false)
   }
@@ -1004,24 +1004,24 @@ test "projected checker keeps an aliased re-export out of local scope" {
   let dep_path = "workspace/dep.vibe"
   let dep_env = checked_test_env("export let renamed = \"ok\"")
   let message = handle {
-    let _ = projected_checked_env("export ./dep.vibe { renamed as forwarded }\nlet local_use = forwarded", "workspace/main.vibe", [
+    let _ = projected_checked_env(source = "export ./dep.vibe { renamed as forwarded }\nlet local_use = forwarded", path = "workspace/main.vibe", deps = [
       dep_path
-    ], [(dep_path, dep_env)])
+    ], full_cache = [(dep_path, dep_env)])
     ""
   } with { Exception::Throw(msg) => msg }
-  inspect(String::contains(message, "unknown name: forwarded"), "true")
+  inspect(String::contains(message, needle = "unknown name: forwarded"), "true")
 }
 
 test "projected checker does not let builtin assert_eq claim a re-export alias" {
   let dep_path = "workspace/dep.vibe"
   let dep_env = checked_test_env("export fn cmp(a: Int, b: Int) -> Int { a + b }")
   let message = handle {
-    let _ = projected_checked_env("export ./dep.vibe { cmp as assert_eq }\nlet local_use = assert_eq(1, 2)", "workspace/main.vibe", [
+    let _ = projected_checked_env(source = "export ./dep.vibe { cmp as assert_eq }\nlet local_use = assert_eq(1, 2)", path = "workspace/main.vibe", deps = [
       dep_path
-    ], [(dep_path, dep_env)])
+    ], full_cache = [(dep_path, dep_env)])
     ""
   } with { Exception::Throw(msg) => msg }
-  inspect(String::contains(message, "unknown name: assert_eq"), "true")
+  inspect(String::contains(message, needle = "unknown name: assert_eq"), "true")
 }
 
 test "projected checker root keeps path with cached payloads" {
@@ -1031,17 +1031,17 @@ test "projected checker root keeps path with cached payloads" {
   let first_env = env_cache(checked_test_env(shared_source))
   let second_env = env_cache(checked_test_env(shared_source))
   let source = "import ./first.vibe { value as firstCopy, other as otherCopy }\nimport ./second.vibe { value as secondCopy }"
-  let checked = projected_checked_env(source, "workspace/main.vibe", [
+  let checked = projected_checked_env(source = source, path = "workspace/main.vibe", deps = [
     first_path,
     second_path
-  ], [(first_path, first_env), (second_path, second_env)])
-  match (env_lookup(checked, "firstCopy"), env_lookup(checked, "secondCopy"), env_lookup(checked, "otherCopy")) {
+  ], full_cache = [(first_path, first_env), (second_path, second_env)])
+  match (env_lookup(env = checked, name = "firstCopy"), env_lookup(env = checked, name = "secondCopy"), env_lookup(env = checked, name = "otherCopy")) {
     (Some(CtInt), Some(CtInt), Some(CtInt)) => (),
     _ => assert(false)
   }
-  assert_module_origin(checked, "firstCopy", first_path, "value")
-  assert_module_origin(checked, "secondCopy", second_path, "value")
-  assert_module_origin(checked, "otherCopy", first_path, "other")
+  assert_module_origin(env = checked, bound_name = "firstCopy", expected_path = first_path, expected_source_name = "value")
+  assert_module_origin(env = checked, bound_name = "secondCopy", expected_path = second_path, expected_source_name = "value")
+  assert_module_origin(env = checked, bound_name = "otherCopy", expected_path = first_path, expected_source_name = "other")
 }
 
 test "projected checker rejects two imports binding the same local" {
@@ -1052,13 +1052,13 @@ test "projected checker rejects two imports binding the same local" {
   let second_env = env_cache(checked_test_env(shared_source))
   let source = "import ./first.vibe { value as chosen }\nimport ./second.vibe { value as chosen }"
   let message = handle {
-    let _ = projected_checked_env(source, "workspace/main.vibe", [
+    let _ = projected_checked_env(source = source, path = "workspace/main.vibe", deps = [
       first_path,
       second_path
-    ], [(first_path, first_env), (second_path, second_env)])
+    ], full_cache = [(first_path, first_env), (second_path, second_env)])
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(message, "duplicate declaration: chosen"))
+  assert(String::contains(message, needle = "duplicate declaration: chosen"))
 }
 
 /// #2915, the in-memory half. The walk builds `import_env` by projecting this
@@ -1077,7 +1077,7 @@ test "typedb walk resolves an aliased import to the import, not the local name i
   let dep_src = "export fn f(a: Int, b: Int, c: Int) -> Int {\n  a + b + c\n}"
   let main_src = "import ./dep.vibe { f as nf }\nfn f(a: Int, b: Int) -> Int {\n  a + b\n}\nexport fn use_it(a: Int) -> Int {\n  nf(a, a, a)\n}"
   // Before the fix: "function arity mismatch for nf: expected 2 args, got 3".
-  inspect(typecheck_db_pair_error(dep_src, main_src), "")
+  inspect(typecheck_db_pair_error(dep_src = dep_src, main_src = main_src), "")
 }
 
 /// The control: the SAME alias with the colliding local renamed `f` -> `g`.
@@ -1087,7 +1087,7 @@ test "typedb walk resolves an aliased import to the import, not the local name i
 test "typedb walk: a non-colliding local was never affected (#2915 control)" {
   let dep_src = "export fn f(a: Int, b: Int, c: Int) -> Int {\n  a + b + c\n}"
   let main_src = "import ./dep.vibe { f as nf }\nfn g(a: Int, b: Int) -> Int {\n  a + b\n}\nexport fn use_it(a: Int) -> Int {\n  nf(a, a, a)\n}"
-  inspect(typecheck_db_pair_error(dep_src, main_src), "")
+  inspect(typecheck_db_pair_error(dep_src = dep_src, main_src = main_src), "")
 }
 
 test "projected checker root local hoist shadows imports while generic replay stays legacy" {
@@ -1098,51 +1098,51 @@ test "projected checker root local hoist shadows imports while generic replay st
   // hoist that let it win is reachable only in a program that is reported.
   // Both checker APIs report it, naming the edit.
   let clash = "import ./dep.vibe { value, source as alias }\nlet value: String = \"local\""
-  let clash_env = projected_import_env_for_test(clash, "workspace/main.vibe", [
+  let clash_env = projected_import_env_for_test(source = clash, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
+  ], full_cache = [(dep_path, dep_env)])
   let projected_clash = handle {
-    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", clash), clash_env)
+    let _ = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = clash), initial_env = clash_env)
     ""
   } with { Exception::Throw(e) => e }
-  assert(String::contains(projected_clash, "rename `value` here, or drop it from `import ./dep.vibe { .. }`"))
+  assert(String::contains(projected_clash, needle = "rename `value` here, or drop it from `import ./dep.vibe { .. }`"))
   let legacy_clash = handle {
-    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", clash), clash_env)
+    let _ = check_program_with_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = clash), initial_env = clash_env)
     ""
   } with { Exception::Throw(e) => e }
-  assert(String::contains(legacy_clash, "rename `value` here, or drop it from `import ./dep.vibe { .. }`"))
+  assert(String::contains(legacy_clash, needle = "rename `value` here, or drop it from `import ./dep.vibe { .. }`"))
   // The edit the message names: with the import aliased away the root
   // `value` is the program's own -- its declared type, and no import origin
   // left behind by the projected env -- while the generic checker API still
   // retains its historical replay of the alias.
   let source = "import ./dep.vibe { value as dep_value, source as alias }\nlet value: String = \"local\""
-  let stmts = parse_program_with_path("workspace/main.vibe", source)
-  let import_env = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let stmts = parse_program_with_path(path = "workspace/main.vibe", source = source)
+  let import_env = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
-  let projected = check_program_with_projected_import_env_result(stmts, import_env).final_env
-  match env_lookup(projected, "value") {
+  ], full_cache = [(dep_path, dep_env)])
+  let projected = check_program_with_projected_import_env_result(stmts = stmts, initial_env = import_env).final_env
+  match env_lookup(env = projected, name = "value") {
     Some(CtString) => (),
     _ => assert(false)
   }
-  assert_unavailable_origin(projected, "value")
+  assert_unavailable_origin(env = projected, name = "value")
   // The generic checker API intentionally retains its historical replay.
-  let legacy = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", source), import_env).final_env
-  match env_lookup(legacy, "alias") {
+  let legacy = check_program_with_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = import_env).final_env
+  match env_lookup(env = legacy, name = "alias") {
     Some(CtUnknown) => (),
     _ => assert(false)
   }
-  assert_unavailable_origin(legacy, "alias")
+  assert_unavailable_origin(env = legacy, name = "alias")
 }
 
 test "projected checker nested modules retain legacy import replay" {
   let dep_path = "workspace/dep.vibe"
   let dep_env = checked_test_env("export let source = \"text\"")
   let source = "import ./dep.vibe { source as alias }"
-  let import_env = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let import_env = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
-  let checked = check_program_with_projected_import_env_result([
+  ], full_cache = [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(stmts = [
     SModule(false, "Nested", [
       SImport("./dep.vibe", [
         ImportItem::{ kind: None, name: "source", alias: Some("alias") }
@@ -1152,25 +1152,25 @@ test "projected checker nested modules retain legacy import replay" {
       // mode would retain String and reject the annotation.
       SLet(false, false, "nested", Some(TyName("Int")), EIdent("alias", -1))
     ])
-  ], import_env).final_env
-  assert_module_origin(checked, "alias", dep_path, "source")
+  ], initial_env = import_env).final_env
+  assert_module_origin(env = checked, bound_name = "alias", expected_path = dep_path, expected_source_name = "source")
 }
 
 test "projected import origins survive public and persistent surfaces" {
   let dep_path = "workspace/dep.vibe"
   let dep_env = checked_test_env("export let value = 1")
   let source = "export ./dep.vibe { value }"
-  let stmts = parse_program_with_path("workspace/main.vibe", source)
-  let checked = projected_checked_env(source, "workspace/main.vibe", [dep_path], [
+  let stmts = parse_program_with_path(path = "workspace/main.vibe", source = source)
+  let checked = projected_checked_env(source = source, path = "workspace/main.vibe", deps = [dep_path], full_cache = [
     (dep_path, dep_env)
   ])
-  assert_module_origin(checked, "value", dep_path, "value")
-  let published = checked_module_public_env(stmts, checked)
-  assert_module_origin(published, "value", dep_path, "value")
+  assert_module_origin(env = checked, bound_name = "value", expected_path = dep_path, expected_source_name = "value")
+  let published = checked_module_public_env(stmts = stmts, full_checked_env = checked)
+  assert_module_origin(env = published, bound_name = "value", expected_path = dep_path, expected_source_name = "value")
   let encoded = persistent_type_env_cache_text(published)
   match parse_persistent_type_env(encoded) {
     Some(decoded) => {
-      assert_module_origin(decoded, "value", dep_path, "value")
+      assert_module_origin(env = decoded, bound_name = "value", expected_path = dep_path, expected_source_name = "value")
       assert(persistent_type_env_cache_text(decoded) == encoded)
     },
     None => assert(false)
@@ -1178,7 +1178,7 @@ test "projected import origins survive public and persistent surfaces" {
 }
 
 fn assert_type_definition_module_origin(env: TypeEnv, name: String, expected_path: String, expected_source_name: String) -> Unit {
-  match env_type_definition_origin(env, name) {
+  match env_type_definition_origin(env = env, name = name) {
     Some(BindingOriginModuleExport(path, source_name)) => {
       assert(path == expected_path)
       assert(source_name == expected_source_name)
@@ -1198,20 +1198,20 @@ test "public struct dependency closure preserves imported type provenance" {
   ], EnvEmpty)
   let provider_path = "workspace/provider.vibe"
   let source = "import @vibe/builtin { struct AsyncIter }\nexport struct Holder { stream: AsyncIter[Int] }"
-  let stmts = parse_program_with_path(provider_path, source)
-  let checked = projected_checked_env(source, provider_path, [builtin_path], [
+  let stmts = parse_program_with_path(path = provider_path, source = source)
+  let checked = projected_checked_env(source = source, path = provider_path, deps = [builtin_path], full_cache = [
     (builtin_path, builtin_env)
   ])
-  let published = checked_module_public_env(stmts, checked)
+  let published = checked_module_public_env(stmts = stmts, full_checked_env = checked)
   assert(Array::length(env_type_defs(published)) == 2)
   assert(Array::length(env_selectable_type_defs(published)) == 1)
-  assert(Array::get(env_selectable_type_defs(published), 0) == "Holder")
-  assert_type_definition_module_origin(published, "AsyncIter", builtin_path, "AsyncIter")
+  assert(Array::get(env_selectable_type_defs(published), at = 0) == "Holder")
+  assert_type_definition_module_origin(env = published, name = "AsyncIter", expected_path = builtin_path, expected_source_name = "AsyncIter")
   match parse_persistent_type_env(persistent_type_env_cache_text(published)) {
     Some(decoded) => {
       assert(Array::length(env_type_defs(decoded)) == 2)
       assert(Array::length(env_selectable_type_defs(decoded)) == 1)
-      assert_type_definition_module_origin(decoded, "AsyncIter", builtin_path, "AsyncIter")
+      assert_type_definition_module_origin(env = decoded, name = "AsyncIter", expected_path = builtin_path, expected_source_name = "AsyncIter")
     },
     None => assert(false)
   }
@@ -1222,36 +1222,36 @@ test "projected checker alias retains source type for diagnostics" {
   let dep_env = checked_test_env("export let source = \"text\"")
   let source = "import ./dep.vibe { source as alias }\nlet wrong: Int = alias"
   let message = handle {
-    let _ = projected_checked_env(source, "workspace/main.vibe", [dep_path], [
+    let _ = projected_checked_env(source = source, path = "workspace/main.vibe", deps = [dep_path], full_cache = [
       (dep_path, dep_env)
     ])
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(message, "expected Int, got String"))
+  assert(String::contains(message, needle = "expected Int, got String"))
 }
 
 test "exact dep projection resolves the selected package and directory candidates" {
   let store_env = checked_test_env("export let value = 1")
   let workspace_env = checked_test_env("export let value = \"workspace\"")
-  let package_env = projected_import_env_for_test("import @scope/name { value }", "main.vibe", [
+  let package_env = projected_import_env_for_test(source = "import @scope/name { value }", path = "main.vibe", deps = [
     "lib/@scope/name/index.vpkg"
-  ], [
+  ], full_cache = [
     (".vibe/store/@scope/name/index.vpkg", store_env),
     ("lib/@scope/name/index.vpkg", workspace_env)
   ])
-  match env_lookup(package_env, "value") {
+  match env_lookup(env = package_env, name = "value") {
     Some(CtString) => (),
     _ => assert(false)
   }
   let plain_env = checked_test_env("export let value = 1")
   let index_env = checked_test_env("export let value = \"index\"")
-  let directory_env = projected_import_env_for_test("export ./core { value }", "workspace/main.vibe", [
+  let directory_env = projected_import_env_for_test(source = "export ./core { value }", path = "workspace/main.vibe", deps = [
     "workspace/core/index.vibe"
-  ], [
+  ], full_cache = [
     ("workspace/core.vibe", plain_env),
     ("workspace/core/index.vibe", index_env)
   ])
-  match env_lookup(directory_env, "value") {
+  match env_lookup(env = directory_env, name = "value") {
     Some(CtString) => (),
     _ => assert(false)
   }
@@ -1263,34 +1263,34 @@ test "exact dep projection preserves duplicate order without binding re-export a
   let string_env = checked_test_env("export let value = \"first\"")
   let source = "import ./dep.vibe { value as imported }\nexport ./dep.vibe { value as reexported }"
   let deps = [dep_path, dep_path]
-  let first_int = projected_import_env_for_test(source, "workspace/main.vibe", deps, [
+  let first_int = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = deps, full_cache = [
     (dep_path, int_env),
     (dep_path, string_env)
   ])
-  match env_lookup(first_int, "imported") {
+  match env_lookup(env = first_int, name = "imported") {
     Some(CtInt) => (),
     _ => assert(false)
   }
-  inspect(env_lookup(first_int, "reexported") == None, "true")
-  let first_string = projected_import_env_for_test(source, "workspace/main.vibe", deps, [
+  inspect(env_lookup(env = first_int, name = "reexported") == None, "true")
+  let first_string = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = deps, full_cache = [
     (dep_path, string_env),
     (dep_path, int_env)
   ])
-  match env_lookup(first_string, "imported") {
+  match env_lookup(env = first_string, name = "imported") {
     Some(CtString) => (),
     _ => assert(false)
   }
-  inspect(env_lookup(first_string, "reexported") == None, "true")
+  inspect(env_lookup(env = first_string, name = "reexported") == None, "true")
 }
 
 test "exact dep projection fails closed when a resolved row is missing" {
   let message = handle {
-    let _ = projected_import_env_for_test("import ./dep.vibe { value }", "workspace/main.vibe", [
+    let _ = projected_import_env_for_test(source = "import ./dep.vibe { value }", path = "workspace/main.vibe", deps = [
       "workspace/dep.vibe"
-    ], [])
+    ], full_cache = [])
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(message, "type_db: missing resolved dependency environment: workspace/dep.vibe"))
+  assert(String::contains(message, needle = "type_db: missing resolved dependency environment: workspace/dep.vibe"))
 }
 
 test "exact dep projection gives explicit trait aliases precedence over selected values" {
@@ -1298,20 +1298,20 @@ test "exact dep projection gives explicit trait aliases precedence over selected
   let generic_value = CtForAll([7], [(7, ["Marker"])], CtFn([CtVar(7)], CtVar(7), None))
   let dep_env = EnvTraitDef("Marker", [], false, [], EnvTraitImpl("Marker", CtInt, EnvBind("accept", env_value_binding(generic_value), EnvEmpty)), [
   ], [])
-  let value_first = projected_import_env_for_test("import ./dep.vibe { accept, trait Marker as Local }", "workspace/main.vibe", [
+  let value_first = projected_import_env_for_test(source = "import ./dep.vibe { accept, trait Marker as Local }", path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
-  let trait_first = projected_import_env_for_test("import ./dep.vibe { trait Marker as Local, accept }", "workspace/main.vibe", [
+  ], full_cache = [(dep_path, dep_env)])
+  let trait_first = projected_import_env_for_test(source = "import ./dep.vibe { trait Marker as Local, accept }", path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
-  assert(trait_defined(value_first, "Local"))
-  assert(trait_defined(trait_first, "Local"))
-  assert(!trait_defined(value_first, "Marker"))
-  assert(!trait_defined(trait_first, "Marker"))
+  ], full_cache = [(dep_path, dep_env)])
+  assert(trait_defined(env = value_first, name = "Local"))
+  assert(trait_defined(env = trait_first, name = "Local"))
+  assert(!trait_defined(env = value_first, name = "Marker"))
+  assert(!trait_defined(env = trait_first, name = "Marker"))
   assert(retained_trait_node_tags(value_first) == "def:Local;impl:Local;")
   assert(retained_trait_node_tags(trait_first) == "def:Local;impl:Local;")
-  assert(imported_forall_bound_label(value_first, "accept") == "Local")
-  assert(imported_forall_bound_label(trait_first, "accept") == "Local")
+  assert(imported_forall_bound_label(env = value_first, name = "accept") == "Local")
+  assert(imported_forall_bound_label(env = trait_first, name = "accept") == "Local")
 }
 
 test "trait imports derive qualified operations without exposing bare names" {
@@ -1319,18 +1319,18 @@ test "trait imports derive qualified operations without exposing bare names" {
   let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
   let dep_env = checked_test_env(dep_source)
   let source = "import ./dep.vibe { trait Measurable }\nlet answer = Measurable::measure(42)"
-  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
-  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
-  inspect(env_lookup(checked, "Measurable::measure") != None, content = "true")
-  inspect(env_lookup(checked, "measure") == None, content = "true")
+  ], full_cache = [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = projected).final_env
+  inspect(env_lookup(env = checked, name = "Measurable::measure") != None, content = "true")
+  inspect(env_lookup(env = checked, name = "measure") == None, content = "true")
   let bare_error = handle {
     let bare_source = "import ./dep.vibe { trait Measurable }\nlet answer = measure(42)"
-    let bare_env = projected_import_env_for_test(bare_source, "workspace/main.vibe", [
+    let bare_env = projected_import_env_for_test(source = bare_source, path = "workspace/main.vibe", deps = [
       dep_path
-    ], [(dep_path, dep_env)])
-    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", bare_source), bare_env)
+    ], full_cache = [(dep_path, dep_env)])
+    let _ = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = bare_source), initial_env = bare_env)
     ""
   } with { Exception::Throw(message) => message }
   assert(bare_error != "")
@@ -1341,11 +1341,11 @@ test "trait import aliases derive operations under the local namespace" {
   let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
   let dep_env = checked_test_env(dep_source)
   let source = "import ./dep.vibe { trait Measurable as Metric }\nlet answer = Metric::measure(42)"
-  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
-  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
-  inspect(env_lookup(checked, "Metric::measure") != None, content = "true")
+  ], full_cache = [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = projected).final_env
+  inspect(env_lookup(env = checked, name = "Metric::measure") != None, content = "true")
 }
 
 test "#2357: imported subtraits derive inherited namespace operations" {
@@ -1353,11 +1353,11 @@ test "#2357: imported subtraits derive inherited namespace operations" {
   let dep_source = "export trait Measurable { measure(Self) -> Int }\nexport trait Sized: Measurable { bump(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nimpl Sized for Int { bump(self) -> Int { self + 1 } }"
   let dep_env = checked_test_env(dep_source)
   let source = "import ./dep.vibe { trait Sized }\nlet answer = Sized::measure(20) + Sized::bump(20)"
-  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
+  ], full_cache = [(dep_path, dep_env)])
   let message = handle {
-    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected)
+    let _ = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = projected)
     ""
   } with { Exception::Throw(message) => message }
   inspect(message, "")
@@ -1368,11 +1368,11 @@ test "#2357: aliased subtraits derive inherited namespace operations" {
   let dep_source = "export trait Measurable { measure(Self) -> Int }\nexport trait Sized: Measurable { bump(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nimpl Sized for Int { bump(self) -> Int { self + 1 } }"
   let dep_env = checked_test_env(dep_source)
   let source = "import ./dep.vibe { trait Sized as Dimensioned }\nlet answer = Dimensioned::measure(20) + Dimensioned::bump(20)"
-  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
+  ], full_cache = [(dep_path, dep_env)])
   let message = handle {
-    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected)
+    let _ = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = projected)
     ""
   } with { Exception::Throw(message) => message }
   inspect(message, "")
@@ -1383,11 +1383,11 @@ test "#2357: a value alias does not activate a projected trait namespace" {
   let dep_source = "export trait Marker { mark(Self) -> Int }\nexport fn accept[T: Marker](value: T) -> T { value }"
   let dep_env = checked_test_env(dep_source)
   let source = "import ./dep.vibe { accept as Marker }"
-  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
-  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
-  inspect(env_lookup(checked, "Marker::mark") == None, content = "true")
+  ], full_cache = [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = projected).final_env
+  inspect(env_lookup(env = checked, name = "Marker::mark") == None, content = "true")
 }
 
 test "#2357: importing a trait activates exported namespace helpers but not bare names" {
@@ -1395,12 +1395,12 @@ test "#2357: importing a trait activates exported namespace helpers but not bare
   let dep_source = "export trait Iterator[T] { iter_length(Self) -> Int\n  iter_get(Self, Int) -> T }\nexport fn Iterator::count[C: Iterator, T](values: C) -> Int { C::iter_length(values) }"
   let dep_env = checked_test_env(dep_source)
   let source = "import ./dep.vibe { trait Iterator }"
-  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
-  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
-  inspect(env_lookup(checked, "Iterator::count") != None, content = "true")
-  inspect(env_lookup(checked, "count") == None, content = "true")
+  ], full_cache = [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = projected).final_env
+  inspect(env_lookup(env = checked, name = "Iterator::count") != None, content = "true")
+  inspect(env_lookup(env = checked, name = "count") == None, content = "true")
 }
 
 test "#2357: a trait alias renames its exported namespace helpers" {
@@ -1408,13 +1408,13 @@ test "#2357: a trait alias renames its exported namespace helpers" {
   let dep_source = "export trait Iterator[T] { iter_length(Self) -> Int\n  iter_get(Self, Int) -> T }\nexport fn Iterator::count[C: Iterator, T](values: C) -> Int { C::iter_length(values) }"
   let dep_env = checked_test_env(dep_source)
   let source = "import ./dep.vibe { trait Iterator as Iter }"
-  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
-  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
-  inspect(env_lookup(checked, "Iter::count") != None, content = "true")
-  inspect(env_lookup(checked, "Iterator::count") == None, content = "true")
-  inspect(env_lookup(checked, "count") == None, content = "true")
+  ], full_cache = [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = projected).final_env
+  inspect(env_lookup(env = checked, name = "Iter::count") != None, content = "true")
+  inspect(env_lookup(env = checked, name = "Iterator::count") == None, content = "true")
+  inspect(env_lookup(env = checked, name = "count") == None, content = "true")
 }
 
 test "#2357: imported trait namespaces reject conflicting local operations" {
@@ -1422,11 +1422,11 @@ test "#2357: imported trait namespaces reject conflicting local operations" {
   let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
   let dep_env = checked_test_env(dep_source)
   let source = "import ./dep.vibe { trait Measurable }\nfn Measurable::measure(_value: Int) -> Int { 0 }\nlet answer = Measurable::measure(42)"
-  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
+  ], full_cache = [(dep_path, dep_env)])
   let message = handle {
-    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected)
+    let _ = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = projected)
     ""
   } with { Exception::Throw(message) => message }
   inspect(message, "remove declaration `Measurable::measure`: trait operations are generated from `trait Measurable`")
@@ -1437,11 +1437,11 @@ test "#2357: aliased trait namespaces reject conflicting local operations" {
   let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
   let dep_env = checked_test_env(dep_source)
   let source = "import ./dep.vibe { trait Measurable as Metric }\nfn Metric::measure(_value: Int) -> Int { 0 }\nlet answer = Metric::measure(42)"
-  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
+  ], full_cache = [(dep_path, dep_env)])
   let message = handle {
-    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected)
+    let _ = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = projected)
     ""
   } with { Exception::Throw(message) => message }
   inspect(message, "remove declaration `Metric::measure`: trait operations are generated from `trait Metric`")
@@ -1452,11 +1452,11 @@ test "#2357: inherited imported operations reserve the subtrait namespace" {
   let dep_source = "export trait Measurable { measure(Self) -> Int }\nexport trait Sized: Measurable { bump(Self) -> Int }"
   let dep_env = checked_test_env(dep_source)
   let source = "import ./dep.vibe { trait Sized as Dimensioned }\nfn Dimensioned::measure(_value: Int) -> Int { 0 }"
-  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+  let projected = projected_import_env_for_test(source = source, path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
+  ], full_cache = [(dep_path, dep_env)])
   let message = handle {
-    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected)
+    let _ = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = source), initial_env = projected)
     ""
   } with { Exception::Throw(message) => message }
   inspect(message, "remove declaration `Dimensioned::measure`: trait operations are generated from `trait Dimensioned`")
@@ -1468,19 +1468,19 @@ test "trait-only re-exports preserve derived qualified operations" {
   let dep_env = checked_test_env(dep_source)
   let facade_path = "workspace/facade.vibe"
   let facade_source = "export ./dep.vibe { trait Measurable }"
-  let facade_stmts = parse_program_with_path(facade_path, facade_source)
-  let facade_import_env = projected_import_env_for_test(facade_source, facade_path, [
+  let facade_stmts = parse_program_with_path(path = facade_path, source = facade_source)
+  let facade_import_env = projected_import_env_for_test(source = facade_source, path = facade_path, deps = [
     dep_path
-  ], [(dep_path, dep_env)])
-  let facade_checked = check_program_with_projected_import_env_result(facade_stmts, facade_import_env).final_env
-  let facade_public = checked_module_public_env(facade_stmts, facade_checked)
-  inspect(env_lookup(facade_public, "Measurable::measure") == None, content = "true")
+  ], full_cache = [(dep_path, dep_env)])
+  let facade_checked = check_program_with_projected_import_env_result(stmts = facade_stmts, initial_env = facade_import_env).final_env
+  let facade_public = checked_module_public_env(stmts = facade_stmts, full_checked_env = facade_checked)
+  inspect(env_lookup(env = facade_public, name = "Measurable::measure") == None, content = "true")
   let main_source = "import ./facade.vibe { trait Measurable }\nlet answer = Measurable::measure(42)"
-  let main_env = projected_import_env_for_test(main_source, "workspace/main.vibe", [
+  let main_env = projected_import_env_for_test(source = main_source, path = "workspace/main.vibe", deps = [
     facade_path
-  ], [(facade_path, facade_public)])
-  let main_checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", main_source), main_env).final_env
-  inspect(env_lookup(main_checked, "Measurable::measure") != None, content = "true")
+  ], full_cache = [(facade_path, facade_public)])
+  let main_checked = check_program_with_projected_import_env_result(stmts = parse_program_with_path(path = "workspace/main.vibe", source = main_source), initial_env = main_env).final_env
+  inspect(env_lookup(env = main_checked, name = "Measurable::measure") != None, content = "true")
 }
 
 test "applied trait impl projection preserves explicit trait aliases" {
@@ -1490,19 +1490,19 @@ test "applied trait impl projection preserves explicit trait aliases" {
   let dep_env = EnvTraitDef("Value", [], false, [], EnvTraitImpl(source_ref, CtInt, EnvEmpty), [
     "A"
   ], [])
-  let projected = projected_import_env_for_test("import ./dep.vibe { trait Value as ImportedValue }", "workspace/main.vibe", [
+  let projected = projected_import_env_for_test(source = "import ./dep.vibe { trait Value as ImportedValue }", path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
-  assert(trait_defined(projected, local_ref))
-  assert(type_implements_trait(projected, SubstEmpty, CtInt, local_ref))
+  ], full_cache = [(dep_path, dep_env)])
+  assert(trait_defined(env = projected, name = local_ref))
+  assert(type_implements_trait(env = projected, s = SubstEmpty, ty = CtInt, trait_name = local_ref))
 }
 
 test "public trait surfaces retain applied impl instances" {
   let source = "export trait Value[A]\nimpl Value[Int] for Int"
-  let stmts = parse_program_with_path("workspace/dep.vibe", source)
-  let published = checked_module_public_env(stmts, checked_test_env(source))
+  let stmts = parse_program_with_path(path = "workspace/dep.vibe", source = source)
+  let published = checked_module_public_env(stmts = stmts, full_checked_env = checked_test_env(source))
   let applied = trait_ref_key(TyApp("Value", [TyName("Int")]))
-  assert(type_implements_trait(published, SubstEmpty, CtInt, applied))
+  assert(type_implements_trait(env = published, s = SubstEmpty, ty = CtInt, trait_name = applied))
 }
 
 test "#2310: projected re-export aliases exclude local declaration authority" {
@@ -1510,12 +1510,12 @@ test "#2310: projected re-export aliases exclude local declaration authority" {
   let dep_env = EnvTraitDef("Marker", [], false, [], EnvTypeDefs([
     TDAlias("Original", [], CtInt)
   ], ["Original"], EnvEmpty), [], [])
-  let import_env = projected_import_env_for_test("export ./dep.vibe { type Original as PublicT, trait Marker as PublicMarker }", "workspace/main.vibe", [
+  let import_env = projected_import_env_for_test(source = "export ./dep.vibe { type Original as PublicT, trait Marker as PublicMarker }", path = "workspace/main.vibe", deps = [
     dep_path
-  ], [(dep_path, dep_env)])
+  ], full_cache = [(dep_path, dep_env)])
   assert(Array::length(env_type_defs(import_env)) == 0)
   assert(Array::length(env_selectable_type_defs(import_env)) == 0)
-  assert(!trait_defined(import_env, "PublicMarker"))
+  assert(!trait_defined(env = import_env, name = "PublicMarker"))
 }
 
 test "db_typecheck_fs: missing imported trait impl fails cold and with a warm dependency interface" {
@@ -1523,19 +1523,19 @@ test "db_typecheck_fs: missing imported trait impl fails cold and with a warm de
   let main_path = "/tmp/vibe_compiler_trait_authority_missing_impl_main.vibe"
   let dep_src = "export trait Required\nexport fn accept[T: Required](x: T) -> Int { let _ = x; 1 }"
   let main_src = "import ./vibe_compiler_trait_authority_missing_impl_dep.vibe { trait Required, accept }\nexport let result = accept(1)"
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let main_fp = build_test_fingerprint(main_src, [(dep_path, dep_fp)])
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(main_path, main_src, main_fp)
-  let cold_error = typecheck_fs_pair_error(dep_path, dep_src, main_path, main_src)
-  assert(String::contains(cold_error, "no impl `Required` for `Int`"))
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  let main_fp = build_test_fingerprint(source = main_src, dep_fps = [(dep_path, dep_fp)])
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = main_fp)
+  let cold_error = typecheck_fs_pair_error(dep_path = dep_path, dep_src = dep_src, main_path = main_path, main_src = main_src)
+  assert(String::contains(cold_error, needle = "no impl `Required` for `Int`"))
   // Keep the dependency TypeEnv cache written by the cold run, but force the
   // root through import assembly again.
-  remove_typecheck_fs_cache(main_path, main_src, main_fp)
-  let warm_error = typecheck_fs_pair_error(dep_path, dep_src, main_path, main_src)
-  assert(String::contains(warm_error, "no impl `Required` for `Int`"))
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = main_fp)
+  let warm_error = typecheck_fs_pair_error(dep_path = dep_path, dep_src = dep_src, main_path = main_path, main_src = main_src)
+  assert(String::contains(warm_error, needle = "no impl `Required` for `Int`"))
 }
 
 test "db_typecheck_fs: different dependency traits cannot share a local alias" {
@@ -1545,24 +1545,24 @@ test "db_typecheck_fs: different dependency traits cannot share a local alias" {
   let first_src = "export trait First { tag(Self) -> Int }\nimpl First for Int { tag(self) -> Int { 1 } }"
   let second_src = "export trait Second { tag(Self) -> Int }\nimpl Second for String { tag(self) -> Int { 2 } }"
   let main_src = "import ./vibe_compiler_trait_authority_collision_first.vibe { trait First as Local }\nimport ./vibe_compiler_trait_authority_collision_second.vibe { trait Second as Local }"
-  Fs::write_bytes(first_path, string_to_bytes(first_src))
-  Fs::write_bytes(second_path, string_to_bytes(second_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let first_fp = build_test_fingerprint(first_src, array_empty())
-  let second_fp = build_test_fingerprint(second_src, array_empty())
-  let main_fp = build_test_fingerprint(main_src, [
+  Fs::write_bytes(first_path, bytes = string_to_bytes(first_src))
+  Fs::write_bytes(second_path, bytes = string_to_bytes(second_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let first_fp = build_test_fingerprint(source = first_src, dep_fps = array_empty())
+  let second_fp = build_test_fingerprint(source = second_src, dep_fps = array_empty())
+  let main_fp = build_test_fingerprint(source = main_src, dep_fps = [
     (first_path, first_fp),
     (second_path, second_fp)
   ])
-  remove_typecheck_fs_cache(first_path, first_src, first_fp)
-  remove_typecheck_fs_cache(second_path, second_src, second_fp)
-  remove_typecheck_fs_cache(main_path, main_src, main_fp)
+  remove_typecheck_fs_cache(path = first_path, source = first_src, fingerprint = first_fp)
+  remove_typecheck_fs_cache(path = second_path, source = second_src, fingerprint = second_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = main_fp)
   let error = handle {
-    let db = db_set_source(db_set_source(db_set_source(db_new(), first_path, first_src), second_path, second_src), main_path, main_src)
-    let _ = db_typecheck_fs(db, main_path)
+    let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = first_path, source = first_src), path = second_path, source = second_src), path = main_path, source = main_src)
+    let _ = db_typecheck_fs(db = db, path = main_path)
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(error, "ambiguous trait import alias 'Local'"))
+  assert(String::contains(error, needle = "ambiguous trait import alias 'Local'"))
 }
 
 test "db_typecheck_fs: selected generic impl bounds retain authority cold and warm" {
@@ -1570,18 +1570,18 @@ test "db_typecheck_fs: selected generic impl bounds retain authority cold and wa
   let main_path = "/tmp/vibe_compiler_trait_authority_generic_main.vibe"
   let dep_src = "export trait Marker { mark(Self) -> Int }\ntrait Other\nimpl Other for Int\nimpl [T: Other] Marker for Array[T] { mark(self) -> Int { Array::length(self) } }\nexport fn accept[T: Marker](x: T) -> Int { let _ = x; 1 }"
   let main_src = "import ./vibe_compiler_trait_authority_generic_dep.vibe { trait Marker, accept }\nexport let result = accept([1])"
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let main_fp = build_test_fingerprint(main_src, [(dep_path, dep_fp)])
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(main_path, main_src, main_fp)
-  let cold = db_typecheck_fs(db_set_source(db_set_source(db_new(), dep_path, dep_src), main_path, main_src), main_path)
-  assert(db_check_env(cold, main_path) != None)
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  let main_fp = build_test_fingerprint(source = main_src, dep_fps = [(dep_path, dep_fp)])
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = main_fp)
+  let cold = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = dep_path, source = dep_src), path = main_path, source = main_src), path = main_path)
+  assert(db_check_env(db = cold, path = main_path) != None)
   // Force import assembly while preserving the dependency's persistent env.
-  remove_typecheck_fs_cache(main_path, main_src, main_fp)
-  let warm = db_typecheck_fs(db_set_source(db_set_source(db_new(), dep_path, dep_src), main_path, main_src), main_path)
-  assert(db_check_env(warm, main_path) != None)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = main_fp)
+  let warm = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = dep_path, source = dep_src), path = main_path, source = main_src), path = main_path)
+  assert(db_check_env(db = warm, path = main_path) != None)
 }
 
 test "db_typecheck_fs: selected trait alias publishes only its projected authority" {
@@ -1589,17 +1589,17 @@ test "db_typecheck_fs: selected trait alias publishes only its projected authori
   let main_path = "/tmp/vibe_compiler_trait_authority_selected_main.vibe"
   let dep_src = "export trait Marker\nimpl Marker for Int\nexport fn accept[T: Marker](x: T) -> Int { let _ = x; 1 }"
   let main_src = "import ./vibe_compiler_trait_authority_selected_dep.vibe { accept, trait Marker as Local }\nexport { Local }\nexport let result = accept(1)"
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let main_fp = build_test_fingerprint(main_src, [(dep_path, dep_fp)])
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(main_path, main_src, main_fp)
-  let checked = db_typecheck_fs(db_set_source(db_set_source(db_new(), dep_path, dep_src), main_path, main_src), main_path)
-  match db_check_env(checked, main_path) {
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  let main_fp = build_test_fingerprint(source = main_src, dep_fps = [(dep_path, dep_fp)])
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = main_fp)
+  let checked = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = dep_path, source = dep_src), path = main_path, source = main_src), path = main_path)
+  match db_check_env(db = checked, path = main_path) {
     Some(env) => {
-      assert(trait_defined(env, "Local"))
-      assert(!trait_defined(env, "Marker"))
+      assert(trait_defined(env = env, name = "Local"))
+      assert(!trait_defined(env = env, name = "Marker"))
     },
     None => assert(false)
   }
@@ -1610,15 +1610,15 @@ test "db_typecheck_fs: duplicate trait aliases are rejected as ambiguous" {
   let main_path = "/tmp/vibe_compiler_trait_authority_ambiguous_main.vibe"
   let dep_src = "export trait Marker\nimpl Marker for Int"
   let main_src = "import ./vibe_compiler_trait_authority_ambiguous_dep.vibe { trait Marker as First, trait Marker as Second }"
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (dep_path, dep_fp)
   ]))
-  let error = typecheck_fs_pair_error(dep_path, dep_src, main_path, main_src)
-  assert(String::contains(error, "ambiguous trait import 'Marker'"))
+  let error = typecheck_fs_pair_error(dep_path = dep_path, dep_src = dep_src, main_path = main_path, main_src = main_src)
+  assert(String::contains(error, needle = "ambiguous trait import 'Marker'"))
 }
 
 test "db_typecheck_fs: same-named traits with different definitions from two packages are rejected" {
@@ -1628,23 +1628,23 @@ test "db_typecheck_fs: same-named traits with different definitions from two pac
   let first_src = "export trait Hash { hash(Self) -> Int }\nimpl Hash for Int { hash(self) -> Int { self } }"
   let second_src = "export trait Hash"
   let main_src = "import ./vibe_compiler_trait_dup_def_first.vibe { trait Hash }\nimport ./vibe_compiler_trait_dup_def_second.vibe { trait Hash }"
-  Fs::write_bytes(first_path, string_to_bytes(first_src))
-  Fs::write_bytes(second_path, string_to_bytes(second_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let first_fp = build_test_fingerprint(first_src, array_empty())
-  let second_fp = build_test_fingerprint(second_src, array_empty())
-  remove_typecheck_fs_cache(first_path, first_src, first_fp)
-  remove_typecheck_fs_cache(second_path, second_src, second_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(first_path, bytes = string_to_bytes(first_src))
+  Fs::write_bytes(second_path, bytes = string_to_bytes(second_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let first_fp = build_test_fingerprint(source = first_src, dep_fps = array_empty())
+  let second_fp = build_test_fingerprint(source = second_src, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = first_path, source = first_src, fingerprint = first_fp)
+  remove_typecheck_fs_cache(path = second_path, source = second_src, fingerprint = second_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (first_path, first_fp),
     (second_path, second_fp)
   ]))
   let error = handle {
-    let db = db_set_source(db_set_source(db_set_source(db_new(), first_path, first_src), second_path, second_src), main_path, main_src)
-    let _ = db_typecheck_fs(db, main_path)
+    let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = first_path, source = first_src), path = second_path, source = second_src), path = main_path, source = main_src)
+    let _ = db_typecheck_fs(db = db, path = main_path)
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(error, "trait 'Hash' has two different definitions"))
+  assert(String::contains(error, needle = "trait 'Hash' has two different definitions"))
 }
 
 test "db_typecheck_fs: differing traits selected through value bounds are rejected" {
@@ -1656,23 +1656,23 @@ test "db_typecheck_fs: differing traits selected through value bounds are reject
   let first_src = "export trait Hash { hash(Self) -> Int }\nimpl Hash for Int { hash(self) -> Int { self } }\nexport fn by_hash[T: Hash](x: T) -> Int { let _ = x; 1 }"
   let second_src = "export trait Hash\nimpl Hash for Int\nexport fn also_hash[T: Hash](x: T) -> Int { let _ = x; 2 }"
   let main_src = "import ./vibe_compiler_trait_dup_bound_first.vibe { by_hash }\nimport ./vibe_compiler_trait_dup_bound_second.vibe { also_hash }"
-  Fs::write_bytes(first_path, string_to_bytes(first_src))
-  Fs::write_bytes(second_path, string_to_bytes(second_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let first_fp = build_test_fingerprint(first_src, array_empty())
-  let second_fp = build_test_fingerprint(second_src, array_empty())
-  remove_typecheck_fs_cache(first_path, first_src, first_fp)
-  remove_typecheck_fs_cache(second_path, second_src, second_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(first_path, bytes = string_to_bytes(first_src))
+  Fs::write_bytes(second_path, bytes = string_to_bytes(second_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let first_fp = build_test_fingerprint(source = first_src, dep_fps = array_empty())
+  let second_fp = build_test_fingerprint(source = second_src, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = first_path, source = first_src, fingerprint = first_fp)
+  remove_typecheck_fs_cache(path = second_path, source = second_src, fingerprint = second_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (first_path, first_fp),
     (second_path, second_fp)
   ]))
   let error = handle {
-    let db = db_set_source(db_set_source(db_set_source(db_new(), first_path, first_src), second_path, second_src), main_path, main_src)
-    let _ = db_typecheck_fs(db, main_path)
+    let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = first_path, source = first_src), path = second_path, source = second_src), path = main_path, source = main_src)
+    let _ = db_typecheck_fs(db = db, path = main_path)
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(error, "trait 'Hash' has two different definitions"))
+  assert(String::contains(error, needle = "trait 'Hash' has two different definitions"))
 }
 
 test "db_typecheck_fs: one trait reached through a re-export module is not a conflict" {
@@ -1682,20 +1682,20 @@ test "db_typecheck_fs: one trait reached through a re-export module is not a con
   let base_src = "export trait Marker { tag(Self) -> Int }\nimpl Marker for Int { tag(self) -> Int { 1 } }"
   let facade_src = "import ./vibe_compiler_trait_reexport_base.vibe { trait Marker }\nexport { Marker }"
   let main_src = "import ./vibe_compiler_trait_reexport_base.vibe { trait Marker }\nimport ./vibe_compiler_trait_reexport_facade.vibe { trait Marker }\nexport fn use_it[T: Marker](x: T) -> Int { let _ = x; 0 }\nexport let result = use_it(1)"
-  Fs::write_bytes(base_path, string_to_bytes(base_src))
-  Fs::write_bytes(facade_path, string_to_bytes(facade_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let base_fp = build_test_fingerprint(base_src, array_empty())
-  let facade_fp = build_test_fingerprint(facade_src, [(base_path, base_fp)])
-  remove_typecheck_fs_cache(base_path, base_src, base_fp)
-  remove_typecheck_fs_cache(facade_path, facade_src, facade_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(base_path, bytes = string_to_bytes(base_src))
+  Fs::write_bytes(facade_path, bytes = string_to_bytes(facade_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let base_fp = build_test_fingerprint(source = base_src, dep_fps = array_empty())
+  let facade_fp = build_test_fingerprint(source = facade_src, dep_fps = [(base_path, base_fp)])
+  remove_typecheck_fs_cache(path = base_path, source = base_src, fingerprint = base_fp)
+  remove_typecheck_fs_cache(path = facade_path, source = facade_src, fingerprint = facade_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (base_path, base_fp),
     (facade_path, facade_fp)
   ]))
-  let checked = db_typecheck_fs(db_set_source(db_set_source(db_set_source(db_new(), base_path, base_src), facade_path, facade_src), main_path, main_src), main_path)
-  match db_check_env(checked, main_path) {
-    Some(env) => assert(trait_defined(env, "Marker")),
+  let checked = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = base_path, source = base_src), path = facade_path, source = facade_src), path = main_path, source = main_src), path = main_path)
+  match db_check_env(db = checked, path = main_path) {
+    Some(env) => assert(trait_defined(env = env, name = "Marker")),
     None => assert(false)
   }
 }
@@ -1711,20 +1711,20 @@ test "db_typecheck_fs: a re-export that aliases the supertrait is still the same
   let base_src = "export trait Parent { pa(Self) -> Int }\nexport trait Child: Parent { ch(Self) -> Int }\nimpl Parent for Int { pa(self) -> Int { 1 } }\nimpl Child for Int { ch(self) -> Int { 2 } }"
   let facade_src = "import ./vibe_compiler_trait_reexport_super_alias_base.vibe { trait Parent as P, trait Child }\nexport { Child }"
   let main_src = "import ./vibe_compiler_trait_reexport_super_alias_base.vibe { trait Child }\nimport ./vibe_compiler_trait_reexport_super_alias_facade.vibe { trait Child }\nexport fn use_it[T: Child](x: T) -> Int { let _ = x; 0 }\nexport let result = use_it(1)"
-  Fs::write_bytes(base_path, string_to_bytes(base_src))
-  Fs::write_bytes(facade_path, string_to_bytes(facade_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let base_fp = build_test_fingerprint(base_src, array_empty())
-  let facade_fp = build_test_fingerprint(facade_src, [(base_path, base_fp)])
-  remove_typecheck_fs_cache(base_path, base_src, base_fp)
-  remove_typecheck_fs_cache(facade_path, facade_src, facade_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(base_path, bytes = string_to_bytes(base_src))
+  Fs::write_bytes(facade_path, bytes = string_to_bytes(facade_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let base_fp = build_test_fingerprint(source = base_src, dep_fps = array_empty())
+  let facade_fp = build_test_fingerprint(source = facade_src, dep_fps = [(base_path, base_fp)])
+  remove_typecheck_fs_cache(path = base_path, source = base_src, fingerprint = base_fp)
+  remove_typecheck_fs_cache(path = facade_path, source = facade_src, fingerprint = facade_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (base_path, base_fp),
     (facade_path, facade_fp)
   ]))
-  let checked = db_typecheck_fs(db_set_source(db_set_source(db_set_source(db_new(), base_path, base_src), facade_path, facade_src), main_path, main_src), main_path)
-  match db_check_env(checked, main_path) {
-    Some(env) => assert(trait_defined(env, "Child")),
+  let checked = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = base_path, source = base_src), path = facade_path, source = facade_src), path = main_path, source = main_src), path = main_path)
+  match db_check_env(db = checked, path = main_path) {
+    Some(env) => assert(trait_defined(env = env, name = "Child")),
     None => assert(false)
   }
 }
@@ -1733,24 +1733,24 @@ test "db_typecheck_fs: source update bypasses current-run cache" {
   let path = "/tmp/vibe_compiler_type_db_fs_source_update.vibe"
   let source1 = "export let value = 1"
   let source2 = "export let value = \"updated\""
-  let fp1 = build_test_fingerprint(source1, array_empty())
-  let fp2 = build_test_fingerprint(source2, array_empty())
-  remove_typecheck_fs_cache(path, source1, fp1)
-  remove_typecheck_fs_cache(path, source2, fp2)
-  Fs::write_bytes(path, string_to_bytes(source1))
-  let db1 = db_typecheck_fs(db_set_source(db_new(), path, source1), path)
-  let is_int = match db_check_env(db1, path) {
-    Some(e) => match env_lookup(e, "value") {
+  let fp1 = build_test_fingerprint(source = source1, dep_fps = array_empty())
+  let fp2 = build_test_fingerprint(source = source2, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = path, source = source1, fingerprint = fp1)
+  remove_typecheck_fs_cache(path = path, source = source2, fingerprint = fp2)
+  Fs::write_bytes(path, bytes = string_to_bytes(source1))
+  let db1 = db_typecheck_fs(db = db_set_source(db = db_new(), path = path, source = source1), path = path)
+  let is_int = match db_check_env(db = db1, path = path) {
+    Some(e) => match env_lookup(env = e, name = "value") {
       Some(CtInt) => true,
       _ => false
     },
     None => false
   }
   assert(is_int)
-  Fs::write_bytes(path, string_to_bytes(source2))
-  let db2 = db_typecheck_fs(db_set_source(db1, path, source2), path)
-  let is_string = match db_check_env(db2, path) {
-    Some(e) => match env_lookup(e, "value") {
+  Fs::write_bytes(path, bytes = string_to_bytes(source2))
+  let db2 = db_typecheck_fs(db = db_set_source(db = db1, path = path, source = source2), path = path)
+  let is_string = match db_check_env(db = db2, path = path) {
+    Some(e) => match env_lookup(env = e, name = "value") {
       Some(CtString) => true,
       _ => false
     },
@@ -1761,10 +1761,10 @@ test "db_typecheck_fs: source update bypasses current-run cache" {
 
 test "cross-module cold/warm consistency" {
   let db0 = db_new()
-  let db1 = db_set_source(db_set_source(db0, "a.vibe", "import ./b.vibe { y }\nlet x = y"), "b.vibe", "export let y = 42")
-  let db2 = db_typecheck(db1, "a.vibe")
+  let db1 = db_set_source(db = db_set_source(db = db0, path = "a.vibe", source = "import ./b.vibe { y }\nlet x = y"), path = "b.vibe", source = "export let y = 42")
+  let db2 = db_typecheck(db = db1, path = "a.vibe")
   let count1 = db_typecheck_count(db2)
-  let db3 = db_typecheck(db2, "a.vibe")
+  let db3 = db_typecheck(db = db2, path = "a.vibe")
   let count2 = db_typecheck_count(db3)
   assert(eq(count1, count2))
 }
@@ -1778,7 +1778,7 @@ test "cross-module cold/warm consistency" {
 ///
 /// The three sources are written fresh and their caches cleared, so the walk
 /// really checks all three rather than reusing a persistent type env.
-fn write_two_bad_leaves(tag: String) -> String with Env + Exception + Fs {
+fn write_two_bad_leaves(_ tag: String) -> String with Env + Exception + Fs {
   let dir = String::concat("/tmp/vibe_compiler_diag_collect_", tag)
   let alpha_path = String::concat(dir, "/alpha.vibe")
   let beta_path = String::concat(dir, "/beta.vibe")
@@ -1787,14 +1787,14 @@ fn write_two_bad_leaves(tag: String) -> String with Env + Exception + Fs {
   let beta_src = "export let b: Int = \"beta is not an Int\""
   let main_src = "import ./alpha.vibe { a }\nimport ./beta.vibe { b }\nexport let m = a + b"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(alpha_path, string_to_bytes(alpha_src))
-  Fs::write_bytes(beta_path, string_to_bytes(beta_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let alpha_fp = build_test_fingerprint(alpha_src, array_empty())
-  let beta_fp = build_test_fingerprint(beta_src, array_empty())
-  remove_typecheck_fs_cache(alpha_path, alpha_src, alpha_fp)
-  remove_typecheck_fs_cache(beta_path, beta_src, beta_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(alpha_path, bytes = string_to_bytes(alpha_src))
+  Fs::write_bytes(beta_path, bytes = string_to_bytes(beta_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let alpha_fp = build_test_fingerprint(source = alpha_src, dep_fps = array_empty())
+  let beta_fp = build_test_fingerprint(source = beta_src, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = alpha_path, source = alpha_src, fingerprint = alpha_fp)
+  remove_typecheck_fs_cache(path = beta_path, source = beta_src, fingerprint = beta_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (alpha_path, alpha_fp),
     (beta_path, beta_fp)
   ]))
@@ -1809,19 +1809,19 @@ fn write_two_bad_leaves(tag: String) -> String with Env + Exception + Fs {
 /// arm), so seeding only main would leave alpha and beta unchecked and the
 /// single diagnostic would be main's own unresolved import -- the opposite of
 /// what these tests are about.
-fn typecheck_fs_error(dir: String) -> String with Env + Fs {
+fn typecheck_fs_error(_ dir: String) -> String with Env + Fs {
   let alpha_path = String::concat(dir, "/alpha.vibe")
   let beta_path = String::concat(dir, "/beta.vibe")
   let main_path = String::concat(dir, "/main.vibe")
   handle {
-    let db0 = db_set_source(db_set_source(db_set_source(db_new(), alpha_path, Fs::read_file(alpha_path)), beta_path, Fs::read_file(beta_path)), main_path, Fs::read_file(main_path))
-    let _db = db_typecheck_fs(db0, main_path)
+    let db0 = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = alpha_path, source = Fs::read_file(alpha_path)), path = beta_path, source = Fs::read_file(beta_path)), path = main_path, source = Fs::read_file(main_path))
+    let _db = db_typecheck_fs(db = db0, path = main_path)
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
-fn count_lines(s: String) -> Int {
-  Array::length(String::split(s, "\n"))
+fn count_lines(_ s: String) -> Int {
+  Array::length(String::split(s, sep = "\n"))
 }
 
 test "db_typecheck_fs: fail-fast is still the default (#1259)" {
@@ -1830,7 +1830,7 @@ test "db_typecheck_fs: fail-fast is still the default (#1259)" {
   // ONE diagnostic, for one of the two bad leaves -- unchanged from before
   // collection existed. The walk stops there; `main` is never reached.
   assert(eq(count_lines(err), 1))
-  assert(String::contains(err, "/alpha.vibe: ") || String::contains(err, "/beta.vibe: "))
+  assert(String::contains(err, needle = "/alpha.vibe: ") || String::contains(err, needle = "/beta.vibe: "))
 }
 
 test "db_typecheck_fs: collected diagnostics are canonically ordered (#1259)" {
@@ -1857,12 +1857,12 @@ test "db_typecheck_fs: collected diagnostics are canonically ordered (#1259)" {
   // Both leaves reported, one per line, alpha before beta (canonical order is
   // module path first, and "alpha" < "beta").
   assert(eq(count_lines(err_identity), 2))
-  let lines = String::split(err_identity, "\n")
-  assert(String::starts_with(Array::get(lines, 0), String::concat(alpha_path, ": ")))
-  assert(String::starts_with(Array::get(lines, 1), String::concat(beta_path, ": ")))
+  let lines = String::split(err_identity, sep = "\n")
+  assert(String::starts_with(Array::get(lines, at = 0), prefix = String::concat(alpha_path, ": ")))
+  assert(String::starts_with(Array::get(lines, at = 1), prefix = String::concat(beta_path, ": ")))
   // `main` is BLOCKED by both, not broken: it must not add a cascade
   // diagnostic of its own about `a` or `b` being unknown.
-  assert(!String::contains(err_identity, "/main.vibe"))
+  assert(!String::contains(err_identity, needle = "/main.vibe"))
 }
 
 /// #1259 (Codex review of PR #1264): a SYNTAX error is raised while the plan
@@ -1884,29 +1884,29 @@ test "db_typecheck_fs: syntax errors in independent leaves are both collected (#
   let beta_src = "export let b: Int = )))"
   let main_src = "import ./alpha.vibe { a }\nimport ./beta.vibe { b }\nexport let m = a + b"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(alpha_path, string_to_bytes(alpha_src))
-  Fs::write_bytes(beta_path, string_to_bytes(beta_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  remove_typecheck_fs_cache(alpha_path, alpha_src, build_test_fingerprint(alpha_src, array_empty()))
-  remove_typecheck_fs_cache(beta_path, beta_src, build_test_fingerprint(beta_src, array_empty()))
+  Fs::write_bytes(alpha_path, bytes = string_to_bytes(alpha_src))
+  Fs::write_bytes(beta_path, bytes = string_to_bytes(beta_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  remove_typecheck_fs_cache(path = alpha_path, source = alpha_src, fingerprint = build_test_fingerprint(source = alpha_src, dep_fps = array_empty()))
+  remove_typecheck_fs_cache(path = beta_path, source = beta_src, fingerprint = build_test_fingerprint(source = beta_src, dep_fps = array_empty()))
   set_collect_module_diagnostics(true)
   let err = typecheck_fs_error(dir)
   set_collect_module_diagnostics(false)
   assert(eq(count_lines(err), 2))
-  let lines = String::split(err, "\n")
-  assert(String::starts_with(Array::get(lines, 0), String::concat(alpha_path, ": ")))
-  assert(String::starts_with(Array::get(lines, 1), String::concat(beta_path, ": ")))
+  let lines = String::split(err, sep = "\n")
+  assert(String::starts_with(Array::get(lines, at = 0), prefix = String::concat(alpha_path, ": ")))
+  assert(String::starts_with(Array::get(lines, at = 1), prefix = String::concat(beta_path, ": ")))
   // Blocked, not broken: main imports both, so it adds no cascade of its own.
-  assert(!String::contains(err, "/main.vibe"))
+  assert(!String::contains(err, needle = "/main.vibe"))
 }
 
 test "cross-module delta recomputation" {
   let db0 = db_new()
-  let db1 = db_set_source(db_set_source(db_set_source(db0, "a.vibe", "import ./b.vibe { y }\nlet x = y"), "b.vibe", "export let y = 1"), "c.vibe", "let z = 99")
-  let db2 = db_typecheck(db_typecheck(db1, "a.vibe"), "c.vibe")
+  let db1 = db_set_source(db = db_set_source(db = db_set_source(db = db0, path = "a.vibe", source = "import ./b.vibe { y }\nlet x = y"), path = "b.vibe", source = "export let y = 1"), path = "c.vibe", source = "let z = 99")
+  let db2 = db_typecheck(db = db_typecheck(db = db1, path = "a.vibe"), path = "c.vibe")
   assert(eq(db_typecheck_count(db2), 3))
-  let db3 = db_set_source(db2, "b.vibe", "export let y = 2")
-  let db4 = db_typecheck(db3, "a.vibe")
+  let db3 = db_set_source(db = db2, path = "b.vibe", source = "export let y = 2")
+  let db4 = db_typecheck(db = db3, path = "a.vibe")
   assert(eq(db_typecheck_count(db4), 5))
 }
 
@@ -1921,11 +1921,11 @@ fn export_surface_error(paths: Array[String], entry: String) -> String with Env 
     let mut db = db_new()
     let mut i = 0
     while i < Array::length(paths) {
-      let p = Array::get(paths, i)
-      db = db_set_source(db, p, Fs::read_file(p))
+      let p = Array::get(paths, at = i)
+      db = db_set_source(db = db, path = p, source = Fs::read_file(p))
       i = i + 1
     }
-    let _db = db_typecheck_fs(db, entry)
+    let _db = db_typecheck_fs(db = db, path = entry)
     ""
   } with { Exception::Throw(msg) => msg }
 }
@@ -1934,14 +1934,14 @@ fn typedef_surface_pair_error(dir: String, dep_src: String, main_src: String) ->
   let dep_path = String::concat(dir, "/dep.vibe")
   let main_path = String::concat(dir, "/main.vibe")
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (dep_path, dep_fp)
   ]))
-  export_surface_error([dep_path, main_path], main_path)
+  export_surface_error(paths = [dep_path, main_path], entry = main_path)
 }
 
 test "db_typecheck_fs: importing a private (non-export) name is reported (#1533)" {
@@ -1951,15 +1951,15 @@ test "db_typecheck_fs: importing a private (non-export) name is reported (#1533)
   let dep_src = "fn private_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn public_fn(x: Int) -> Int {\n  private_fn(x)\n}\n"
   let main_src = "import ./dep.vibe { private_fn }\nexport let m = private_fn(1)\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (dep_path, dep_fp)
   ]))
-  let err = export_surface_error([dep_path, main_path], main_path)
-  assert(String::contains(err, "imported name 'private_fn' is not exported by"))
+  let err = export_surface_error(paths = [dep_path, main_path], entry = main_path)
+  assert(String::contains(err, needle = "imported name 'private_fn' is not exported by"))
 }
 
 test "db_typecheck_fs: the exported name from the same module imports cleanly (#1533 control)" {
@@ -1969,14 +1969,14 @@ test "db_typecheck_fs: the exported name from the same module imports cleanly (#
   let dep_src = "fn private_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn public_fn(x: Int) -> Int {\n  private_fn(x)\n}\n"
   let main_src = "import ./dep.vibe { public_fn }\nexport let m = public_fn(1)\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (dep_path, dep_fp)
   ]))
-  let err = export_surface_error([dep_path, main_path], main_path)
+  let err = export_surface_error(paths = [dep_path, main_path], entry = main_path)
   assert(err == "")
 }
 
@@ -1989,19 +1989,19 @@ test "db_typecheck_fs: a pass-through import is not on the middleman's surface (
   let mid_src = "import ./dep.vibe { public_fn }\n\nexport fn mid_fn(x: Int) -> Int {\n  public_fn(x)\n}\n"
   let main_src = "import ./mid.vibe { public_fn }\nexport let m = public_fn(1)\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let mid_fp = build_test_fingerprint(mid_src, [(dep_path, dep_fp)])
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(mid_path, mid_src, mid_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, bytes = string_to_bytes(mid_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  let mid_fp = build_test_fingerprint(source = mid_src, dep_fps = [(dep_path, dep_fp)])
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = mid_path, source = mid_src, fingerprint = mid_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (mid_path, mid_fp)
   ]))
-  let err = export_surface_error([dep_path, mid_path, main_path], main_path)
-  assert(String::contains(err, "imported name 'public_fn' is not exported by"))
-  assert(String::contains(err, "mid.vibe"))
+  let err = export_surface_error(paths = [dep_path, mid_path, main_path], entry = main_path)
+  assert(String::contains(err, needle = "imported name 'public_fn' is not exported by"))
+  assert(String::contains(err, needle = "mid.vibe"))
 }
 
 test "db_typecheck_fs: a local parameter shadows a same-named import (#1583)" {
@@ -2016,14 +2016,14 @@ test "db_typecheck_fs: a local parameter shadows a same-named import (#1583)" {
   let dep_src = "export fn helper(env: Int) -> Int {\n  env + 100\n}\n"
   let main_src = "import ./dep.vibe { helper }\n\nfn use_it(helper: Int) -> Int {\n  helper + 1\n}\n\nexport let m = use_it(5) + helper(1)\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (dep_path, dep_fp)
   ]))
-  let err = export_surface_error([dep_path, main_path], main_path)
+  let err = export_surface_error(paths = [dep_path, main_path], entry = main_path)
   assert(err == "")
 }
 
@@ -2036,17 +2036,17 @@ test "db_typecheck_fs: a re-exported name IS on the middleman's surface (#1533 c
   let mid_src = "export ./dep.vibe { public_fn }\n"
   let main_src = "import ./mid.vibe { public_fn }\nexport let m = public_fn(1)\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let mid_fp = build_test_fingerprint(mid_src, [(dep_path, dep_fp)])
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(mid_path, mid_src, mid_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, bytes = string_to_bytes(mid_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  let mid_fp = build_test_fingerprint(source = mid_src, dep_fps = [(dep_path, dep_fp)])
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = mid_path, source = mid_src, fingerprint = mid_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (mid_path, mid_fp)
   ]))
-  let err = export_surface_error([dep_path, mid_path, main_path], main_path)
+  let err = export_surface_error(paths = [dep_path, mid_path, main_path], entry = main_path)
   assert(err == "")
 }
 
@@ -2059,17 +2059,17 @@ test "db_typecheck_fs: an aliased re-export stays importable by a consumer (#228
   let mid_src = "export ./dep.vibe { public_fn as forwarded }\n"
   let main_src = "import ./mid.vibe { forwarded }\nexport let m = forwarded(1)\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let mid_fp = build_test_fingerprint(mid_src, [(dep_path, dep_fp)])
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(mid_path, mid_src, mid_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, bytes = string_to_bytes(mid_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  let mid_fp = build_test_fingerprint(source = mid_src, dep_fps = [(dep_path, dep_fp)])
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = mid_path, source = mid_src, fingerprint = mid_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (mid_path, mid_fp)
   ]))
-  inspect(export_surface_error([dep_path, mid_path, main_path], main_path), "")
+  inspect(export_surface_error(paths = [dep_path, mid_path, main_path], entry = main_path), "")
 }
 
 test "#2310: an aliased type re-export is not a local declaration" {
@@ -2079,15 +2079,15 @@ test "#2310: an aliased type re-export is not a local declaration" {
   let dep_src = "export type Original = Int\n"
   let mid_src = "export ./dep.vibe { type Original as PublicT }\nexport let local: PublicT = 1\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(mid_path, mid_src, build_test_fingerprint(mid_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, bytes = string_to_bytes(mid_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = mid_path, source = mid_src, fingerprint = build_test_fingerprint(source = mid_src, dep_fps = [
     (dep_path, dep_fp)
   ]))
-  let err = export_surface_error([dep_path, mid_path], mid_path)
-  assert(String::contains(err, "unknown type `PublicT`"))
+  let err = export_surface_error(paths = [dep_path, mid_path], entry = mid_path)
+  assert(String::contains(err, needle = "unknown type `PublicT`"))
 }
 
 test "#2310: an aliased trait re-export is not a local declaration" {
@@ -2097,15 +2097,15 @@ test "#2310: an aliased trait re-export is not a local declaration" {
   let dep_src = "export trait Marker\n"
   let mid_src = "export ./dep.vibe { trait Marker as PublicMarker }\nexport fn local[T: PublicMarker](value: T) -> Int { let _ = value; 1 }\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(mid_path, mid_src, build_test_fingerprint(mid_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, bytes = string_to_bytes(mid_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = mid_path, source = mid_src, fingerprint = build_test_fingerprint(source = mid_src, dep_fps = [
     (dep_path, dep_fp)
   ]))
-  let err = export_surface_error([dep_path, mid_path], mid_path)
-  assert(String::contains(err, "unknown trait: PublicMarker"))
+  let err = export_surface_error(paths = [dep_path, mid_path], entry = mid_path)
+  assert(String::contains(err, needle = "unknown trait: PublicMarker"))
 }
 
 test "#2310: aliased type and trait re-exports remain importable downstream" {
@@ -2117,24 +2117,24 @@ test "#2310: aliased type and trait re-exports remain importable downstream" {
   let mid_src = "export ./dep.vibe { type Original as PublicT, trait Marker as PublicMarker }\n"
   let main_src = "import ./mid.vibe { type PublicT, trait PublicMarker }\nexport fn use_it[T: PublicMarker](value: T) -> PublicT { let _ = value; 1 }\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
-  Fs::write_bytes(main_path, string_to_bytes(main_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let mid_fp = build_test_fingerprint(mid_src, [(dep_path, dep_fp)])
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(mid_path, mid_src, mid_fp)
-  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, bytes = string_to_bytes(mid_src))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  let mid_fp = build_test_fingerprint(source = mid_src, dep_fps = [(dep_path, dep_fp)])
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = mid_path, source = mid_src, fingerprint = mid_fp)
+  remove_typecheck_fs_cache(path = main_path, source = main_src, fingerprint = build_test_fingerprint(source = main_src, dep_fps = [
     (mid_path, mid_fp)
   ]))
-  inspect(export_surface_error([dep_path, mid_path, main_path], main_path), "")
+  inspect(export_surface_error(paths = [dep_path, mid_path, main_path], entry = main_path), "")
 }
 
 test "#2310: in-memory TypeDb retains aliased declaration re-exports" {
   let dep_src = "export type Original = Int\nexport trait Marker\nimpl Marker for Int\n"
   let mid_src = "export ./dep.vibe { type Original as PublicT, trait Marker as PublicMarker }\n"
   let main_src = "import ./mid.vibe { type PublicT, trait PublicMarker }\nexport fn use_it[T: PublicMarker](value: T) -> PublicT { let _ = value; 1 }\n"
-  inspect(typecheck_db_reexport_chain_error(dep_src, mid_src, main_src), "")
+  inspect(typecheck_db_reexport_chain_error(dep_src = dep_src, mid_src = mid_src, main_src = main_src), "")
 }
 
 test "#2310: plain type and trait re-exports retain local compatibility" {
@@ -2144,114 +2144,114 @@ test "#2310: plain type and trait re-exports retain local compatibility" {
   let dep_src = "export type PublicT = Int\nexport trait Marker\nimpl Marker for Int\n"
   let mid_src = "export ./dep.vibe { type PublicT, trait Marker }\nexport fn local[T: Marker](value: T) -> PublicT { let _ = value; 1 }\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
-  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
-  let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
-  remove_typecheck_fs_cache(mid_path, mid_src, build_test_fingerprint(mid_src, [
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, bytes = string_to_bytes(mid_src))
+  let dep_fp = build_test_fingerprint(source = dep_src, dep_fps = array_empty())
+  remove_typecheck_fs_cache(path = dep_path, source = dep_src, fingerprint = dep_fp)
+  remove_typecheck_fs_cache(path = mid_path, source = mid_src, fingerprint = build_test_fingerprint(source = mid_src, dep_fps = [
     (dep_path, dep_fp)
   ]))
-  inspect(export_surface_error([dep_path, mid_path], mid_path), "")
+  inspect(export_surface_error(paths = [dep_path, mid_path], entry = mid_path), "")
 }
 
 test "db_typecheck_fs: private struct enum and alias declarations are not importable" {
-  let struct_err = typedef_surface_pair_error("/tmp/vibe_private_struct_authority", "struct Secret { value: Int }\n", "import ./dep.vibe { Secret }\nexport let value = Secret(1)\n")
-  assert(String::contains(struct_err, "imported name 'Secret' is not exported by"))
-  let enum_err = typedef_surface_pair_error("/tmp/vibe_private_enum_authority", "enum Secret { Hidden(Int) }\n", "import ./dep.vibe { Secret }\nexport let value = Hidden(1)\n")
-  assert(String::contains(enum_err, "imported name 'Secret' is not exported by"))
-  let alias_err = typedef_surface_pair_error("/tmp/vibe_private_alias_authority", "type Secret = Int\n", "import ./dep.vibe { Secret }\nexport let value: Secret = 1\n")
-  assert(String::contains(alias_err, "imported name 'Secret' is not exported by"))
+  let struct_err = typedef_surface_pair_error(dir = "/tmp/vibe_private_struct_authority", dep_src = "struct Secret { value: Int }\n", main_src = "import ./dep.vibe { Secret }\nexport let value = Secret(1)\n")
+  assert(String::contains(struct_err, needle = "imported name 'Secret' is not exported by"))
+  let enum_err = typedef_surface_pair_error(dir = "/tmp/vibe_private_enum_authority", dep_src = "enum Secret { Hidden(Int) }\n", main_src = "import ./dep.vibe { Secret }\nexport let value = Hidden(1)\n")
+  assert(String::contains(enum_err, needle = "imported name 'Secret' is not exported by"))
+  let alias_err = typedef_surface_pair_error(dir = "/tmp/vibe_private_alias_authority", dep_src = "type Secret = Int\n", main_src = "import ./dep.vibe { Secret }\nexport let value: Secret = 1\n")
+  assert(String::contains(alias_err, needle = "imported name 'Secret' is not exported by"))
 }
 
 test "db_typecheck_fs: public struct enum and alias declarations remain importable" {
-  let err = typedef_surface_pair_error("/tmp/vibe_public_typedef_authority", "export struct PublicStruct { value: Int }\nexport enum PublicEnum { PublicCase(Int) }\nexport type PublicAlias = Int\n", "import ./dep.vibe { PublicStruct, PublicEnum, PublicAlias }\nexport let s = PublicStruct(1)\nexport let e = PublicCase(1)\nexport let a: PublicAlias = 1\n")
+  let err = typedef_surface_pair_error(dir = "/tmp/vibe_public_typedef_authority", dep_src = "export struct PublicStruct { value: Int }\nexport enum PublicEnum { PublicCase(Int) }\nexport type PublicAlias = Int\n", main_src = "import ./dep.vibe { PublicStruct, PublicEnum, PublicAlias }\nexport let s = PublicStruct(1)\nexport let e = PublicCase(1)\nexport let a: PublicAlias = 1\n")
   assert(err == "")
 }
 
 test "db_typecheck_fs: imported generic alias enum and struct aliases retain formals" {
-  let err = typedef_surface_pair_error("/tmp/vibe_generic_typedef_alias_authority", "export type Wrap[T] = Array[T]\nexport enum Choice[T] { Pick(T) }\nexport struct Box[T] { value: T }\n", "import ./dep.vibe { Wrap as LocalWrap, Choice as LocalChoice, Box as LocalBox }\nexport let xs: LocalWrap[Int] = [1]\nexport let picked: LocalChoice[Int] = Pick(1)\nexport fn unbox(value: LocalBox[String]) -> String { value.value }\n")
+  let err = typedef_surface_pair_error(dir = "/tmp/vibe_generic_typedef_alias_authority", dep_src = "export type Wrap[T] = Array[T]\nexport enum Choice[T] { Pick(T) }\nexport struct Box[T] { value: T }\n", main_src = "import ./dep.vibe { Wrap as LocalWrap, Choice as LocalChoice, Box as LocalBox }\nexport let xs: LocalWrap[Int] = [1]\nexport let picked: LocalChoice[Int] = Pick(1)\nexport fn unbox(value: LocalBox[String]) -> String { value.value }\n")
   assert(err == "")
 }
 
 test "db_typecheck_fs: a local typedef shadows imported declaration authority" {
-  let err = typedef_surface_pair_error("/tmp/vibe_local_typedef_shadow", "export type Label = Int\n", "import ./dep.vibe { Label }\ntype Label = String\nexport fn use_label(value: Label) -> String { value }\n")
+  let err = typedef_surface_pair_error(dir = "/tmp/vibe_local_typedef_shadow", dep_src = "export type Label = Int\n", main_src = "import ./dep.vibe { Label }\ntype Label = String\nexport fn use_label(value: Label) -> String { value }\n")
   assert(err == "")
 }
 
 test "#2292: a local suberror shadows imported declaration authority" {
-  let err = typedef_surface_pair_error("/tmp/vibe_local_suberror_shadow", "export type Label = Int\n", "import ./dep.vibe { Label }\nsuberror Label(String)\nexport fn make_label() -> Label { Label(\"local\") }\n")
+  let err = typedef_surface_pair_error(dir = "/tmp/vibe_local_suberror_shadow", dep_src = "export type Label = Int\n", main_src = "import ./dep.vibe { Label }\nsuberror Label(String)\nexport fn make_label() -> Label { Label(\"local\") }\n")
   assert(err == "")
-  let reverse_err = typedef_surface_pair_error("/tmp/vibe_local_suberror_shadow_reverse", "export type Label = Int\n", "suberror Label(String)\nimport ./dep.vibe { Label }\nexport fn make_label() -> Label { Label(\"local\") }\n")
+  let reverse_err = typedef_surface_pair_error(dir = "/tmp/vibe_local_suberror_shadow_reverse", dep_src = "export type Label = Int\n", main_src = "suberror Label(String)\nimport ./dep.vibe { Label }\nexport fn make_label() -> Label { Label(\"local\") }\n")
   assert(reverse_err == "")
-  let alias_err = typedef_surface_pair_error("/tmp/vibe_local_suberror_shadow_alias_control", "export type Label = Int\n", "import ./dep.vibe { Label as ImportedLabel }\nsuberror Label(String)\nexport let imported: ImportedLabel = 1\nexport fn make_label() -> Label { Label(\"local\") }\n")
+  let alias_err = typedef_surface_pair_error(dir = "/tmp/vibe_local_suberror_shadow_alias_control", dep_src = "export type Label = Int\n", main_src = "import ./dep.vibe { Label as ImportedLabel }\nsuberror Label(String)\nexport let imported: ImportedLabel = 1\nexport fn make_label() -> Label { Label(\"local\") }\n")
   assert(alias_err == "")
 }
 
 test "db_typecheck_fs: selected effects and effectsets retain operation authority" {
-  let effect_err = typedef_surface_pair_error("/tmp/vibe_selected_effect_authority", "export effect Audit { Emit(String) -> Unit }\n", "import ./dep.vibe { Audit }\nexport fn write() -> Unit with Audit { perform Audit::Emit(\"x\") }\n")
+  let effect_err = typedef_surface_pair_error(dir = "/tmp/vibe_selected_effect_authority", dep_src = "export effect Audit { Emit(String) -> Unit }\n", main_src = "import ./dep.vibe { Audit }\nexport fn write() -> Unit with Audit { perform Audit::Emit(\"x\") }\n")
   assert(effect_err == "")
   // Selecting a public effectset transports its private member as closure for
   // the row and operation signature, without making that member selectable.
-  let set_err = typedef_surface_pair_error("/tmp/vibe_selected_effectset_authority", "effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", "import ./dep.vibe { Audits }\nexport fn write() -> Unit with Audits { perform Audit::Emit(\"x\") }\n")
+  let set_err = typedef_surface_pair_error(dir = "/tmp/vibe_selected_effectset_authority", dep_src = "effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", main_src = "import ./dep.vibe { Audits }\nexport fn write() -> Unit with Audits { perform Audit::Emit(\"x\") }\n")
   assert(set_err == "")
 }
 
 test "db_typecheck: effect and effectset authority match the fs lane" {
-  let public_err = typecheck_db_pair_error("export effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", "import ./dep.vibe { Audits }\nexport fn write() -> Unit with Audits { perform Audit::Emit(\"x\") }\n")
+  let public_err = typecheck_db_pair_error(dep_src = "export effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", main_src = "import ./dep.vibe { Audits }\nexport fn write() -> Unit with Audits { perform Audit::Emit(\"x\") }\n")
   assert(public_err == "")
-  let private_err = typecheck_db_pair_error("effect Secret { Emit(String) -> Unit }\n", "import ./dep.vibe { Secret }\nexport let value = 1\n")
-  assert(String::contains(private_err, "imported name 'Secret' is not exported by"))
+  let private_err = typecheck_db_pair_error(dep_src = "effect Secret { Emit(String) -> Unit }\n", main_src = "import ./dep.vibe { Secret }\nexport let value = 1\n")
+  assert(String::contains(private_err, needle = "imported name 'Secret' is not exported by"))
 }
 
 test "db_typecheck_fs: private unknown effects and effectsets are not selectable" {
-  let private_effect = typedef_surface_pair_error("/tmp/vibe_private_effect_authority", "effect Secret { Emit(String) -> Unit }\n", "import ./dep.vibe { Secret }\nexport let value = 1\n")
-  assert(String::contains(private_effect, "imported name 'Secret' is not exported by"))
-  let private_set = typedef_surface_pair_error("/tmp/vibe_private_effectset_authority", "effect Audit { Emit(String) -> Unit }\neffectset Secrets = { Audit }\n", "import ./dep.vibe { Secrets }\nexport let value = 1\n")
-  assert(String::contains(private_set, "imported name 'Secrets' is not exported by"))
+  let private_effect = typedef_surface_pair_error(dir = "/tmp/vibe_private_effect_authority", dep_src = "effect Secret { Emit(String) -> Unit }\n", main_src = "import ./dep.vibe { Secret }\nexport let value = 1\n")
+  assert(String::contains(private_effect, needle = "imported name 'Secret' is not exported by"))
+  let private_set = typedef_surface_pair_error(dir = "/tmp/vibe_private_effectset_authority", dep_src = "effect Audit { Emit(String) -> Unit }\neffectset Secrets = { Audit }\n", main_src = "import ./dep.vibe { Secrets }\nexport let value = 1\n")
+  assert(String::contains(private_set, needle = "imported name 'Secrets' is not exported by"))
   // Audit crosses this boundary only as the public Audits closure; it cannot
   // be selected directly by a downstream package.
-  let closure_member = typedef_surface_pair_error("/tmp/vibe_private_effect_closure_authority", "effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", "import ./dep.vibe { Audit }\nexport let value = 1\n")
-  assert(String::contains(closure_member, "imported name 'Audit' is not exported by"))
-  let unknown = typedef_surface_pair_error("/tmp/vibe_unknown_effect_authority", "export effect Audit { Emit(String) -> Unit }\n", "import ./dep.vibe { Missing }\nexport let value = 1\n")
-  assert(String::contains(unknown, "imported name 'Missing' is not exported by"))
+  let closure_member = typedef_surface_pair_error(dir = "/tmp/vibe_private_effect_closure_authority", dep_src = "effect Audit { Emit(String) -> Unit }\nexport effectset Audits = { Audit }\n", main_src = "import ./dep.vibe { Audit }\nexport let value = 1\n")
+  assert(String::contains(closure_member, needle = "imported name 'Audit' is not exported by"))
+  let unknown = typedef_surface_pair_error(dir = "/tmp/vibe_unknown_effect_authority", dep_src = "export effect Audit { Emit(String) -> Unit }\n", main_src = "import ./dep.vibe { Missing }\nexport let value = 1\n")
+  assert(String::contains(unknown, needle = "imported name 'Missing' is not exported by"))
 }
 
 test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck as v9" {
   let dir = "/tmp/vibe_v4_cache_cold_recheck"
   let path = String::concat(dir, "/main.vibe")
   let source = "export let value = 1\n"
-  let fingerprint = build_test_fingerprint(source, array_empty())
+  let fingerprint = build_test_fingerprint(source = source, dep_fps = array_empty())
   Fs::mkdir_p(dir)
-  Fs::write_bytes(path, string_to_bytes(source))
-  remove_typecheck_fs_cache(path, source, fingerprint)
-  let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
+  Fs::write_bytes(path, bytes = string_to_bytes(source))
+  remove_typecheck_fs_cache(path = path, source = source, fingerprint = fingerprint)
+  let _ = db_typecheck_fs(db = db_set_source(db = db_new(), path = path, source = source), path = path)
   let env_path = persistent_type_env_cache_path(fingerprint)
-  let leaf_path = persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source))
-  Fs::write_file(env_path, "version\t3\nenv\t1:0\n")
-  let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
-  assert(String::starts_with(Fs::read_file(env_path), "version\t11\nenv\t"))
-  Fs::write_file(env_path, "version\t10\nenv\t1:Z\n")
-  Fs::write_file(leaf_path, "version\t1\nnot-a-fingerprint\n")
-  let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
-  assert(String::starts_with(Fs::read_file(env_path), "version\t11\nenv\t"))
+  let leaf_path = persistent_leaf_fingerprint_cache_path(path = path, source_fingerprint = compact_string_fingerprint(source))
+  Fs::write_file(env_path, contents = "version\t3\nenv\t1:0\n")
+  let _ = db_typecheck_fs(db = db_set_source(db = db_new(), path = path, source = source), path = path)
+  assert(String::starts_with(Fs::read_file(env_path), prefix = "version\t11\nenv\t"))
+  Fs::write_file(env_path, contents = "version\t10\nenv\t1:Z\n")
+  Fs::write_file(leaf_path, contents = "version\t1\nnot-a-fingerprint\n")
+  let _ = db_typecheck_fs(db = db_set_source(db = db_new(), path = path, source = source), path = path)
+  assert(String::starts_with(Fs::read_file(env_path), prefix = "version\t11\nenv\t"))
 }
 
 test "db_typecheck: an imported effect does not leak through a non-re-exporting module (#1549)" {
   let err = handle {
     let db0 = db_new()
-    let db1 = db_set_source(db_set_source(db_set_source(db0, "mem/a.vibe", "export effect Audit { Emit(String) -> Unit }\n"), "mem/b.vibe", "import ./a.vibe { Audit }\nexport let marker = 1\n"), "mem/c.vibe", "import ./b.vibe { Audit }\nexport let marker = 1\n")
-    let _ = db_typecheck(db1, "mem/c.vibe")
+    let db1 = db_set_source(db = db_set_source(db = db_set_source(db = db0, path = "mem/a.vibe", source = "export effect Audit { Emit(String) -> Unit }\n"), path = "mem/b.vibe", source = "import ./a.vibe { Audit }\nexport let marker = 1\n"), path = "mem/c.vibe", source = "import ./b.vibe { Audit }\nexport let marker = 1\n")
+    let _ = db_typecheck(db = db1, path = "mem/c.vibe")
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(err, "imported name 'Audit' is not exported by"))
-  assert(String::contains(err, "./b.vibe"))
+  assert(String::contains(err, needle = "imported name 'Audit' is not exported by"))
+  assert(String::contains(err, needle = "./b.vibe"))
 }
 
 test "db_typecheck: an explicit effect re-export remains importable (#1549)" {
   let err = handle {
     let db0 = db_new()
-    let db1 = db_set_source(db_set_source(db_set_source(db0, "mem/a.vibe", "export effect Audit { Emit(String) -> Unit }\n"), "mem/b.vibe", "export ./a.vibe { Audit }\n"), "mem/c.vibe", "import ./b.vibe { Audit }\nexport fn write() -> Unit with Audit { perform Audit::Emit(\"ok\") }\n")
-    let _ = db_typecheck(db1, "mem/c.vibe")
+    let db1 = db_set_source(db = db_set_source(db = db_set_source(db = db0, path = "mem/a.vibe", source = "export effect Audit { Emit(String) -> Unit }\n"), path = "mem/b.vibe", source = "export ./a.vibe { Audit }\n"), path = "mem/c.vibe", source = "import ./b.vibe { Audit }\nexport fn write() -> Unit with Audit { perform Audit::Emit(\"ok\") }\n")
+    let _ = db_typecheck(db = db1, path = "mem/c.vibe")
     ""
   } with { Exception::Throw(msg) => msg }
   assert(err == "")
@@ -2260,34 +2260,34 @@ test "db_typecheck: an explicit effect re-export remains importable (#1549)" {
 test "db_typecheck: empty local dependencies cannot grant ambient authority (#1549)" {
   let db0 = db_new()
   let random_err = handle {
-    let db1 = db_set_source(db_set_source(db0, "mem/empty.vibe", "export let marker = 1\n"), "mem/main.vibe", "import ./empty.vibe { Random, Fs }\nexport let marker = 1\n")
-    let _ = db_typecheck(db1, "mem/main.vibe")
+    let db1 = db_set_source(db = db_set_source(db = db0, path = "mem/empty.vibe", source = "export let marker = 1\n"), path = "mem/main.vibe", source = "import ./empty.vibe { Random, Fs }\nexport let marker = 1\n")
+    let _ = db_typecheck(db = db1, path = "mem/main.vibe")
     ""
   } with { Exception::Throw(msg) => msg }
   let fs_err = handle {
-    let db1 = db_set_source(db_set_source(db_new(), "mem/empty.vibe", "export let marker = 1\n"), "mem/main.vibe", "import ./empty.vibe { Fs }\nexport let marker = 1\n")
-    let _ = db_typecheck(db1, "mem/main.vibe")
+    let db1 = db_set_source(db = db_set_source(db = db_new(), path = "mem/empty.vibe", source = "export let marker = 1\n"), path = "mem/main.vibe", source = "import ./empty.vibe { Fs }\nexport let marker = 1\n")
+    let _ = db_typecheck(db = db1, path = "mem/main.vibe")
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(random_err, "imported name 'Random' is not exported by"))
-  assert(String::contains(fs_err, "imported name 'Fs' is not exported by"))
+  assert(String::contains(random_err, needle = "imported name 'Random' is not exported by"))
+  assert(String::contains(fs_err, needle = "imported name 'Fs' is not exported by"))
 }
 
 test "db_typecheck_fs: @vibe/fs contract explicitly grants Fs authority (#1549)" {
   let path = "lib/@vibe/compiler/tests/type_db_package_fs_authority.vibe"
   let source = "import @vibe/fs { Fs }\nexport fn write(path: String) -> Unit with Fs { perform Fs::WriteFile(path, \"ok\") }\n"
   let contract_path = "lib/@vibe/fs/index.vpkg"
-  let contract_source = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+  let contract_source = ingest_source_text_fs(path = contract_path, raw = Fs::read_file(contract_path))
   let fs_path = "lib/@vibe/fs/fs.vibe"
   let effect_path = "lib/@vibe/fs/fs_effect.vibe"
   let aliases_path = "lib/@vibe/fs/fs_aliases.vibe"
-  let db0 = db_set_source(db_new(), contract_path, contract_source)
-  let db1 = db_set_source(db0, fs_path, ingest_source_text_fs(fs_path, Fs::read_file(fs_path)))
-  let db2 = db_set_source(db1, effect_path, ingest_source_text_fs(effect_path, Fs::read_file(effect_path)))
-  let db3 = db_set_source(db2, aliases_path, ingest_source_text_fs(aliases_path, Fs::read_file(aliases_path)))
+  let db0 = db_set_source(db = db_new(), path = contract_path, source = contract_source)
+  let db1 = db_set_source(db = db0, path = fs_path, source = ingest_source_text_fs(path = fs_path, raw = Fs::read_file(fs_path)))
+  let db2 = db_set_source(db = db1, path = effect_path, source = ingest_source_text_fs(path = effect_path, raw = Fs::read_file(effect_path)))
+  let db3 = db_set_source(db = db2, path = aliases_path, source = ingest_source_text_fs(path = aliases_path, raw = Fs::read_file(aliases_path)))
   let err = handle {
-    let db = db_set_source(db3, path, source)
-    let _ = db_typecheck_fs(db, path)
+    let db = db_set_source(db = db3, path = path, source = source)
+    let _ = db_typecheck_fs(db = db, path = path)
     ""
   } with { Exception::Throw(msg) => msg }
   assert(err == "")

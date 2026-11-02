@@ -56,7 +56,7 @@ let aliases = [
   "Array::truncate"
 ]
 
-fn rejection(source: String) -> String {
+fn rejection(_ source: String) -> String {
   handle {
     let _ = check_program(parse_program(lex(source)))
     ""
@@ -64,42 +64,42 @@ fn rejection(source: String) -> String {
 }
 
 test "MutList identity dispatch preserves region and index rejection diagnostics" {
-  assert(String::contains(rejection("let bad = MutList::empty(0)"), "MutList::empty requires the region token bound by `region r { ... }`"))
-  assert(String::contains(rejection("let bad = region r { let values = MutList::empty(r); MutList::get(values, \"bad\") }"), "MutList::get expects an Int index, got String"))
-  assert(String::contains(rejection("let bad = region r { let values = MutList::empty(r); MutList::truncate(values, \"bad\") }"), "MutList::truncate expects an Int length, got String"))
+  assert(String::contains(rejection("let bad = MutList::empty(0)"), needle = "MutList::empty requires the region token bound by `region r { ... }`"))
+  assert(String::contains(rejection("let bad = region r { let values = MutList::empty(r); MutList::get(values, \"bad\") }"), needle = "MutList::get expects an Int index, got String"))
+  assert(String::contains(rejection("let bad = region r { let values = MutList::empty(r); MutList::truncate(values, \"bad\") }"), needle = "MutList::truncate expects an Int length, got String"))
   // This family has no builtin value-form signature yet; do not manufacture
   // a wrapper from a spelling merely because direct calls have an identity.
-  assert(String::contains(rejection("let length = MutList::length"), "unknown name: MutList::length"))
+  assert(String::contains(rejection("let length = MutList::length"), needle = "unknown name: MutList::length"))
 }
 
 test "every MutList operation resolves once with shared arity and lowering" {
   let mut i = 0
   while i < Array::length(names) {
-    let name = Array::get(names, i)
+    let name = Array::get(names, at = i)
     let operation = resolved_builtin_operation_from_source(name)
     assert_eq(operation, 6 + i)
-    assert_eq(builtin_operation_arity(operation), Array::get(arities, i))
-    assert_eq(builtin_operation_alias(operation), Array::get(aliases, i))
+    assert_eq(builtin_operation_arity(operation), Array::get(arities, at = i))
+    assert_eq(builtin_operation_alias(operation), Array::get(aliases, at = i))
     assert_eq(resolved_callee_operation(builtin_callee_resolution(name)), operation)
     let resolution: Array[Int] = []
-    assert_eq(resolve_builtin_callee(EnvEmpty, name, 40, resolution), operation)
+    assert_eq(resolve_builtin_callee(env = EnvEmpty, name = name, ident_off = 40, resolution = resolution), operation)
     let params: Array[Type] = []
     let args: Array[Expr] = []
     let mut j = 0
-    while j < Array::get(arities, i) {
-      Array::push(params, CtInt)
-      Array::push(args, EInt(j))
+    while j < Array::get(arities, at = i) {
+      Array::push(params, value = CtInt)
+      Array::push(args, value = EInt(j))
       j = j + 1
     }
-    let shadowed = env_bind(EnvEmpty, name, CtFn(params, CtString, None))
+    let shadowed = env_bind(env = EnvEmpty, name = name, ty = CtFn(params, CtString, None))
     let errors: Array[String] = []
-    let (result, _, _) = check_expr(ECall(EIdent(name, 40), args, 40, resolution), shadowed, [
-    ], SubstEmpty, 0, errors, [])
+    let (result, _, _) = check_expr(expr = ECall(EIdent(name, 40), args, 40, resolution), env = shadowed, defs = [
+    ], s = SubstEmpty, c = 0, errors = errors, tytab = [])
     assert_eq(result, CtString)
     assert_eq(Array::length(errors), 0)
     assert_eq(resolved_callee_operation(resolution), 0 - 1)
     // A compiler factory explicitly targeting the builtin ignores that shadow.
-    assert_eq(resolve_builtin_callee(shadowed, name, builtin_ref_offset(), resolution), operation)
+    assert_eq(resolve_builtin_callee(env = shadowed, name = name, ident_off = builtin_ref_offset(), resolution = resolution), operation)
     i = i + 1
   }
   assert_eq(builtin_operation_arity(65535), 0 - 1)
@@ -107,15 +107,15 @@ test "every MutList operation resolves once with shared arity and lowering" {
 }
 
 test "the checker retains the MutList scalar read operation on its call" {
-  let env = env_bind(EnvEmpty, "values", CtNamed("MutList", [
+  let env = env_bind(env = EnvEmpty, name = "values", ty = CtNamed("MutList", [
     CtInt,
     CtNamed("#region_1", [])
   ]))
   let resolution: Array[Int] = []
   let errors: Array[String] = []
-  let (result, _, _) = check_expr(ECall(EIdent("MutList::length", 17), [
+  let (result, _, _) = check_expr(expr = ECall(EIdent("MutList::length", 17), [
     EIdent("values", 34)
-  ], 17, resolution), env, [], SubstEmpty, 0, errors, [])
+  ], 17, resolution), env = env, defs = [], s = SubstEmpty, c = 0, errors = errors, tytab = [])
   assert_eq(result, CtInt)
   assert_eq(Array::length(errors), 0)
   assert_eq(resolved_callee_operation(resolution), 11)
@@ -124,7 +124,7 @@ test "the checker retains the MutList scalar read operation on its call" {
 test "binary transport retains all operation identities without source spellings" {
   for operation in [0 - 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] {
     let bytes = Bytes::new()
-    ast_binary_write_expr(bytes, ECall(EIdent("diagnostic_name", 1048576), [], 1048576, [
+    ast_binary_write_expr(buf = bytes, e = ECall(EIdent("diagnostic_name", 1048576), [], 1048576, [
       operation
     ]))
     match ast_binary_read_expr(ast_binary_reader_new(bytes)) {
@@ -147,52 +147,52 @@ test "callee IDs above seven survive mixed channel union and offset rebasing" {
   while operation <= 17 {
     if operation != 0 {
       let offset = 1048576 + operation
-      resolved_callee_capture_record(offset, operation)
+      resolved_callee_capture_record(offset = offset, operation = operation)
       let cell: Array[Int] = []
-      Array::push(cells, cell)
-      Array::push(before, SExpr(ECall(EIdent("diagnostic_name", offset), [], offset, cell)))
-      Array::push(after, SExpr(ECall(EIdent("diagnostic_name", offset + 91), [], offset + 91, cell)))
+      Array::push(cells, value = cell)
+      Array::push(before, value = SExpr(ECall(EIdent("diagnostic_name", offset), [], offset, cell)))
+      Array::push(after, value = SExpr(ECall(EIdent("diagnostic_name", offset + 91), [], offset + 91, cell)))
     }
     operation = operation + 1
   }
   let rows = resolved_callee_capture_rows()
   // Invalid operations must not manufacture a row in the adjacent offset.
-  resolved_callee_capture_record(1048576, 65535)
-  resolved_callee_capture_record(1048576, 65536)
-  resolved_callee_capture_record(1048576, 0 - 2)
+  resolved_callee_capture_record(offset = 1048576, operation = 65535)
+  resolved_callee_capture_record(offset = 1048576, operation = 65536)
+  resolved_callee_capture_record(offset = 1048576, operation = 0 - 2)
   assert_eq(Array::length(resolved_callee_capture_rows()), 18)
-  restore_resolved_callees(before, rows)
+  restore_resolved_callees(stmts = before, rows = rows)
   let mut i = 0
   while i < Array::length(cells) {
-    assert_eq(resolved_callee_operation(Array::get(cells, i)), if i == 0 {
+    assert_eq(resolved_callee_operation(Array::get(cells, at = i)), if i == 0 {
       0 - 1
     } else {
       i
     })
-    Array::truncate(Array::get(cells, i), 0)
+    Array::truncate(Array::get(cells, at = i), length = 0)
     i = i + 1
   }
-  let mixed = Array::slice(rows, 0, Array::length(rows))
+  let mixed = Array::slice(rows, start = 0, end = Array::length(rows))
   for tag in [0, 1, 2, 3, 4, 5, 6] {
-    Array::push(mixed, 33 * 16 + tag)
+    Array::push(mixed, value = 33 * 16 + tag)
   }
-  module_typed_lowering_memo_put("callee_rows.vibe", "fp", mixed, [], [])
-  let rebased = union_module_typed_lowering_offsets(["callee_rows.vibe"], [91])
+  module_typed_lowering_memo_put(path = "callee_rows.vibe", fingerprint = "fp", offsets = mixed, eq_offs = [], eq_keys = [])
+  let rebased = union_module_typed_lowering_offsets(flat_paths = ["callee_rows.vibe"], flat_bases = [91])
   assert_eq(Array::length(rebased), Array::length(mixed))
-  restore_resolved_callees(after, rebased)
+  restore_resolved_callees(stmts = after, rows = rebased)
   i = 0
   while i < Array::length(cells) {
-    assert_eq(resolved_callee_operation(Array::get(cells, i)), if i == 0 {
+    assert_eq(resolved_callee_operation(Array::get(cells, at = i)), if i == 0 {
       0 - 1
     } else {
       i
     })
-    assert_eq(Array::get(rebased, i), resolved_callee_row_rebase(Array::get(rows, i), 91))
-    assert_eq(resolved_callee_row_rebase(Array::get(rebased, i), 0 - 91), Array::get(rows, i))
+    assert_eq(Array::get(rebased, at = i), resolved_callee_row_rebase(row = Array::get(rows, at = i), base = 91))
+    assert_eq(resolved_callee_row_rebase(row = Array::get(rebased, at = i), base = 0 - 91), Array::get(rows, at = i))
     i = i + 1
   }
   for tag in [0, 1, 2, 3, 4, 5, 6] {
-    assert_eq(Array::get(rebased, Array::length(rows) + tag), (33 + 91) * 16 + tag)
+    assert_eq(Array::get(rebased, at = Array::length(rows) + tag), (33 + 91) * 16 + tag)
   }
   resolved_callee_capture_reset()
   module_typed_lowering_memo_reset()

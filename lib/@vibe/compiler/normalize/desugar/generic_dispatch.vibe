@@ -50,11 +50,11 @@ import ./witness_targets.vibe {
   collect_constructor_recvs, infer_impl_target_expr
 }
 
-export fn collect_impl_infos(stmts: Array[Stmt]) -> Array[GenericImplInfo] {
+export fn collect_impl_infos(_ stmts: Array[Stmt]) -> Array[GenericImplInfo] {
   let out = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImpl(tparams, _, trait_name, target) => {
         let dispatch_target = match target {
           TyName(name) => if Array::length(tparams) > 0 {
@@ -66,8 +66,8 @@ export fn collect_impl_infos(stmts: Array[Stmt]) -> Array[GenericImplInfo] {
           },
           _ => target
         }
-        Array::push(out, GenericImplInfo::{
-          owner: impl_method_owner(tparams, trait_name, target),
+        Array::push(out, value = GenericImplInfo::{
+          owner: impl_method_owner(tparams = tparams, trait_name = trait_name, target = target),
           trait_name,
           type_params: tparams,
           target: dispatch_target
@@ -91,16 +91,16 @@ fn impl_info_for_binding(stmts: Array[Stmt], at: Int, owner: String, traits: Arr
   let mut active_trait = ""
   let mut done = false
   while j >= 0 && !done {
-    match Array::get(stmts, j) {
+    match Array::get(stmts, at = j) {
       SImpl(tps, _, tr, target) => {
-        if impl_method_owner(tps, tr, target) == owner {
+        if impl_method_owner(tparams = tps, trait_name = tr, target = target) == owner {
           active_trait = tr
         }
         done = true
       },
       SLet(_, _, name, _, _) => {
         let head = qualified_head(builtin_shadow_source_name(name))
-        if head != owner && (lookup_trait_sigs(traits, head) is None) {
+        if head != owner && (lookup_trait_sigs(traits = traits, name = head) is None) {
           done = true
         }
       },
@@ -129,40 +129,40 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, fname, _, body) => match body {
-        EFn(tparams, bounds, params, ret, _, _) => if already_threaded(bounds, params) {
+        EFn(tparams, bounds, params, ret, _, _) => if already_threaded(bounds = bounds, params = params) {
           ()
         } else {
-          let impl_info = impl_info_for_binding(stmts, i, qualified_head(builtin_shadow_source_name(fname)), traits, gimpl_infos)
+          let impl_info = impl_info_for_binding(stmts = stmts, at = i, owner = qualified_head(builtin_shadow_source_name(fname)), traits = traits, infos = gimpl_infos)
           let is_impl_method = match impl_info {
             Some(_) => true,
             None => false
           }
-          let constructor_recvs = collect_constructor_recvs(tparams, params, stmts)
+          let constructor_recvs = collect_constructor_recvs(tparams = tparams, params = params, stmts = stmts)
           let threaded = empty_threaded()
           let nested_recvs: Array[(String, Int, TypeExpr)] = []
           let mut bi = 0
           while bi < Array::length(bounds) {
-            let (tp, trait_list) = Array::get(bounds, bi)
+            let (tp, trait_list) = Array::get(bounds, at = bi)
             let tpname = type_param_name(tp)
             let mut ti = 0
             while ti < Array::length(trait_list) {
-              let tr = Array::get(trait_list, ti)
-              match lookup_trait_sigs(traits, tr) {
+              let tr = Array::get(trait_list, at = ti)
+              match lookup_trait_sigs(traits = traits, name = tr) {
                 Some(sigs) => {
-                  let ridx = find_recv_index(params, tpname)
+                  let ridx = find_recv_index(params = params, tp = tpname)
                   if ridx >= 0 {
-                    Array::push(threaded, (tpname, tr, ridx))
+                    Array::push(threaded, value = (tpname, tr, ridx))
                   } else if is_impl_method {
                     // bounded generic-impl method: T is nested in `self: C[T]`,
                     // so there is no inferable receiver argument — the witness
                     // dict is supplied when C's witness is built. Thread with -1.
-                    Array::push(threaded, (tpname, tr, 0 - 1))
+                    Array::push(threaded, value = (tpname, tr, 0 - 1))
                   } else {
-                    let cidx = find_constructor_recv_index(params, tpname, stmts)
+                    let cidx = find_constructor_recv_index(params = params, tp = tpname, stmts = stmts)
                     if cidx >= 0 {
-                      Array::push(threaded, (tpname, tr, encode_constructor_recv_index(cidx)))
+                      Array::push(threaded, value = (tpname, tr, encode_constructor_recv_index(cidx)))
                     } else {
                       // #1199 bug 1: T may still appear, just wrapped one level
                       // in an `Array[T]` param (`fn f[T: Hash](xs: Array[T])`)
@@ -175,19 +175,19 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
                       // and the call site was emitted short its dict arg
                       // (invalid wasm), not merely "less generic than it could
                       // be" as the direct-receiver miss would read.
-                      let widx = find_array_elem_recv_index(params, tpname)
+                      let widx = find_array_elem_recv_index(params = params, tp = tpname)
                       if widx >= 0 {
-                        Array::push(threaded, (tpname, tr, encode_array_elem_recv_index(widx)))
+                        Array::push(threaded, value = (tpname, tr, encode_array_elem_recv_index(widx)))
                       } else {
                         // #3287: `T` only nested (`a: Option[T]`). A marker
                         // trait has no dictionary to pass, so it threads
                         // nothing, as before.
-                        let nested = find_nested_recv_indices(params, tpname)
+                        let nested = find_nested_recv_indices(params = params, tp = tpname)
                         if Array::length(nested) > 0 && Array::length(sigs) > 0 {
-                          Array::push(threaded, (tpname, tr, encode_nested_recv_index(Array::get(nested, 0))))
+                          Array::push(threaded, value = (tpname, tr, encode_nested_recv_index(Array::get(nested, at = 0))))
                           for ni in nested {
-                            match Array::get(params, ni).1 {
-                              Some(ann) => Array::push(nested_recvs, (tpname, ni, ann)),
+                            match Array::get(params, at = ni).1 {
+                              Some(ann) => Array::push(nested_recvs, value = (tpname, ni, ann)),
                               None => ()
                             }
                           }
@@ -205,9 +205,9 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
             bi = bi + 1
           }
           if Array::length(threaded) > 0 || is_impl_method {
-            let result_constructor = return_constructor_param(ret, threaded, stmts)
+            let result_constructor = return_constructor_param(ret = ret, threaded = threaded, stmts = stmts)
             match impl_info {
-              Some(info) => Array::push(out, DictGen::{
+              Some(info) => Array::push(out, value = DictGen::{
                 name: fname,
                 type_params: tparams,
                 threaded,
@@ -221,7 +221,7 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
                   p.1
                 }
               }),
-              None => Array::push(out, DictGen::{
+              None => Array::push(out, value = DictGen::{
                 name: fname,
                 type_params: tparams,
                 threaded,
@@ -254,7 +254,7 @@ export fn lookup_gen_entry(gens: Array[DictGen], name: String) -> Option[DictGen
   let mut result = None
   while i > 0 && result is None {
     i = i - 1
-    let gen = Array::get(gens, i)
+    let gen = Array::get(gens, at = i)
     if gen.name == name {
       result = Some(gen)
     } else {
@@ -265,7 +265,7 @@ export fn lookup_gen_entry(gens: Array[DictGen], name: String) -> Option[DictGen
 }
 
 export fn lookup_gen(gens: Array[DictGen], name: String) -> Option[Array[(String, String, Int)]] {
-  match lookup_gen_entry(gens, name) {
+  match lookup_gen_entry(gens = gens, name = name) {
     Some(gen) => Some(gen.threaded),
     None => None
   }
@@ -299,26 +299,26 @@ export fn matching_generic_impl_method(gens: Array[DictGen], cname: String, trai
   let mut super_result = None
   let mut super_count = 0
   while i < Array::length(gens) {
-    let gen = Array::get(gens, i)
+    let gen = Array::get(gens, at = i)
     let bindings = []
     if impl_target_head(match gen.impl_target {
       Some(target) => target,
       None => TyName("")
-    }) == cname && String::ends_with(builtin_shadow_source_name(gen.name), String::concat("::", method)) {
+    }) == cname && String::ends_with(builtin_shadow_source_name(gen.name), suffix = String::concat("::", method)) {
       match gen.impl_target {
-        Some(target) => if impl_target_pattern_matches(target, actual, gen.impl_params, bindings) && impl_trait_pattern_matches(gen.impl_trait, trait_name, gen.impl_params, bindings) {
+        Some(target) => if impl_target_pattern_matches(pattern = target, actual = actual, params = gen.impl_params, bindings = bindings) && impl_trait_pattern_matches(template_key = gen.impl_trait, actual_key = trait_name, params = gen.impl_params, bindings = bindings) {
           result = Some(gen.name)
           i = Array::length(gens)
         } else {
           let super_bindings = []
-          if impl_target_pattern_matches(target, actual, gen.impl_params, super_bindings) && trait_ref_name(gen.impl_trait) != trait_ref_name(trait_name) && dtd_trait_entails(gen.impl_trait, trait_name) {
+          if impl_target_pattern_matches(pattern = target, actual = actual, params = gen.impl_params, bindings = super_bindings) && trait_ref_name(gen.impl_trait) != trait_ref_name(trait_name) && dtd_trait_entails(sub = gen.impl_trait, super_name = trait_name) {
             super_result = Some(gen.name)
             super_count = super_count + 1
           } else {
             ()
           }
           match actual {
-            TyName(actual_head) => if actual_head == cname && generic_impl_target_is_total(target, gen.impl_params) && impl_trait_pattern_matches(gen.impl_trait, trait_name, gen.impl_params, bindings) {
+            TyName(actual_head) => if actual_head == cname && generic_impl_target_is_total(target = target, params = gen.impl_params) && impl_trait_pattern_matches(template_key = gen.impl_trait, actual_key = trait_name, params = gen.impl_params, bindings = bindings) {
               erased_result = Some(gen.name)
               erased_count = erased_count + 1
             } else (),
@@ -349,8 +349,8 @@ export fn matching_generic_impl_method(gens: Array[DictGen], cname: String, trai
 fn instantiate_impl_trait(gen: DictGen, bindings: Array[(String, TypeExpr)]) -> Option[String] {
   match trait_ref_from_key(gen.impl_trait) {
     Some(reference) => {
-      let instantiated = substitute_impl_bindings(reference, bindings)
-      if type_expr_mentions_param(instantiated, gen.impl_params) {
+      let instantiated = substitute_impl_bindings(ty = reference, bindings = bindings)
+      if type_expr_mentions_param(ty = instantiated, params = gen.impl_params) {
         None
       } else {
         Some(trait_ref_key(instantiated))
@@ -367,9 +367,9 @@ fn instantiate_impl_trait(gen: DictGen, bindings: Array[(String, TypeExpr)]) -> 
 /// been inferred. Multiple compatible impl families remain unresolved rather
 /// than choosing one and silently dispatching to the wrong implementation.
 export fn specialize_applied_trait_for_target(trait_name: String, callee_params: Array[String], actual_target: TypeExpr, gens: Array[DictGen]) -> String {
-  let candidates = applied_trait_candidates(trait_name, callee_params, actual_target, gens)
+  let candidates = applied_trait_candidates(trait_name = trait_name, callee_params = callee_params, actual_target = actual_target, gens = gens)
   if Array::length(candidates) == 1 {
-    Array::get(candidates, 0)
+    Array::get(candidates, at = 0)
   } else {
     trait_name
   }
@@ -380,30 +380,30 @@ export fn specialize_applied_trait_for_target(trait_name: String, callee_params:
 /// without duplicates. Empty when the bound mentions no callee formal.
 export fn applied_trait_candidates(trait_name: String, callee_params: Array[String], actual_target: TypeExpr, gens: Array[DictGen]) -> Array[String] {
   let candidates = empty_str_array()
-  if !trait_ref_mentions_param(trait_name, callee_params) {
+  if !trait_ref_mentions_param(trait_name = trait_name, params = callee_params) {
     candidates
   } else match trait_ref_from_key(trait_name) {
     None => candidates,
     Some(requested) => {
       let mut i = 0
       while i < Array::length(gens) {
-        let gen = Array::get(gens, i)
+        let gen = Array::get(gens, at = i)
         match gen.impl_target {
           Some(target) => if trait_ref_name(gen.impl_trait) == trait_ref_name(trait_name) {
             let bindings = []
-            let target_matches = if impl_target_pattern_matches(target, actual_target, gen.impl_params, bindings) {
+            let target_matches = if impl_target_pattern_matches(pattern = target, actual = actual_target, params = gen.impl_params, bindings = bindings) {
               true
             } else match actual_target {
-              TyName(actual_head) => actual_head == impl_target_head(target) && generic_impl_target_is_total(target, gen.impl_params),
+              TyName(actual_head) => actual_head == impl_target_head(target) && generic_impl_target_is_total(target = target, params = gen.impl_params),
               _ => false
             }
             if target_matches {
-              match instantiate_impl_trait(gen, bindings) {
+              match instantiate_impl_trait(gen = gen, bindings = bindings) {
                 Some(candidate) => match trait_ref_from_key(candidate) {
                   Some(candidate_ref) => {
                     let requested_bindings = []
-                    if impl_target_pattern_matches(requested, candidate_ref, callee_params, requested_bindings) && !str_array_contains(candidates, candidate) {
-                      Array::push(candidates, candidate)
+                    if impl_target_pattern_matches(pattern = requested, actual = candidate_ref, params = callee_params, bindings = requested_bindings) && !str_array_contains(arr = candidates, val = candidate) {
+                      Array::push(candidates, value = candidate)
                     } else {
                       ()
                     }
@@ -438,21 +438,21 @@ export fn call_arg_formal_bindings(param_types: Array[Option[TypeExpr]], args: A
   let mut conflict = false
   let mut i = 0
   while i < Array::length(param_types) && i < Array::length(args) && !conflict {
-    match Array::get(param_types, i) {
-      Some(ann) => if type_expr_mentions_param(ann, callee_params) {
-        match infer_impl_target_expr(Array::get(args, i), struct_sets, var_types, fn_returns) {
+    match Array::get(param_types, at = i) {
+      Some(ann) => if type_expr_mentions_param(ty = ann, params = callee_params) {
+        match infer_impl_target_expr(arg = Array::get(args, at = i), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
           Some(actual) => {
             let local: Array[(String, TypeExpr)] = []
-            if impl_target_pattern_matches(ann, actual, callee_params, local) {
+            if impl_target_pattern_matches(pattern = ann, actual = actual, params = callee_params, bindings = local) {
               for binding in local {
                 let (formal, ty) = binding
-                match impl_pattern_binding(out, formal) {
+                match impl_pattern_binding(bindings = out, name = formal) {
                   Some(prior) => if impl_target_key(prior) != impl_target_key(ty) {
                     conflict = true
                   } else {
                     ()
                   },
-                  None => Array::push(out, binding)
+                  None => Array::push(out, value = binding)
                 }
               }
             } else {
@@ -483,14 +483,14 @@ export fn narrow_applied_trait_candidates(trait_name: String, callee_params: Arr
   match trait_ref_from_key(trait_name) {
     None => candidates,
     Some(requested) => {
-      let narrowed_request = substitute_impl_bindings(requested, bindings)
+      let narrowed_request = substitute_impl_bindings(ty = requested, bindings = bindings)
       let out = empty_str_array()
       for candidate in candidates {
         match trait_ref_from_key(candidate) {
           Some(candidate_ref) => {
             let scratch = []
-            if impl_target_pattern_matches(narrowed_request, candidate_ref, callee_params, scratch) {
-              Array::push(out, candidate)
+            if impl_target_pattern_matches(pattern = narrowed_request, actual = candidate_ref, params = callee_params, bindings = scratch) {
+              Array::push(out, value = candidate)
             } else {
               ()
             }
@@ -521,14 +521,14 @@ export fn narrow_applied_trait_candidates(trait_name: String, callee_params: Arr
 /// with a body binds the impl's formals, and falls back to the impl target as
 /// before.
 export fn generic_impl_bound_target(gens: Array[DictGen], method_name: String, type_param: String, sig_params: Array[TypeExpr], actual: TypeExpr) -> Option[TypeExpr] {
-  match lookup_gen_entry(gens, method_name) {
-    Some(gen) => match own_formal_target(gen, type_param, sig_params, actual) {
+  match lookup_gen_entry(gens = gens, name = method_name) {
+    Some(gen) => match own_formal_target(gen = gen, type_param = type_param, sig_params = sig_params, actual = actual) {
       Some(found) => Some(found),
       None => match gen.impl_target {
         Some(target) => {
           let bindings = []
-          if impl_target_pattern_matches(target, actual, gen.impl_params, bindings) {
-            impl_pattern_binding(bindings, type_param)
+          if impl_target_pattern_matches(pattern = target, actual = actual, params = gen.impl_params, bindings = bindings) {
+            impl_pattern_binding(bindings = bindings, name = type_param)
           } else {
             None
           }
@@ -540,7 +540,7 @@ export fn generic_impl_bound_target(gens: Array[DictGen], method_name: String, t
   }
 }
 
-fn is_self_type(t: TypeExpr) -> Bool {
+fn is_self_type(_ t: TypeExpr) -> Bool {
   match t {
     TyName(n) => n == "Self",
     _ => false
@@ -556,9 +556,9 @@ fn own_formal_target(gen: DictGen, type_param: String, sig_params: Array[TypeExp
   let anns: Array[TypeExpr] = []
   let mut i = 0
   while i < Array::length(sig_params) && i < Array::length(gen.param_types) {
-    if is_self_type(Array::get(sig_params, i)) {
-      match Array::get(gen.param_types, i) {
-        Some(ann) => Array::push(anns, ann),
+    if is_self_type(Array::get(sig_params, at = i)) {
+      match Array::get(gen.param_types, at = i) {
+        Some(ann) => Array::push(anns, value = ann),
         None => ()
       }
     } else {
@@ -570,8 +570,8 @@ fn own_formal_target(gen: DictGen, type_param: String, sig_params: Array[TypeExp
   for ann in anns {
     if out is None {
       let bindings = []
-      if impl_target_pattern_matches(ann, actual, formals, bindings) {
-        out = impl_pattern_binding(bindings, type_param)
+      if impl_target_pattern_matches(pattern = ann, actual = actual, params = formals, bindings = bindings) {
+        out = impl_pattern_binding(bindings = bindings, name = type_param)
       } else {
         ()
       }

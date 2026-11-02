@@ -10,8 +10,8 @@ import @vibe/compiler/query {
 
 //# Functions
 
-fn plan_of(source: String) -> String with Exception {
-  rc_plan_source(source, "")
+fn plan_of(_ source: String) -> String with Exception {
+  rc_plan_source(source = source, fn_filter = "")
 }
 
 test "a tracked-let rebuild arm gets a reuse pair in the plan" {
@@ -20,8 +20,8 @@ test "a tracked-let rebuild arm gets a reuse pair in the plan" {
   // fusion could not stage (its spine had planned actions).
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec rebuild: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = rebuild(a)\n      let b2 = rebuild(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nlet main: () -> Int = () -> {\n  match rebuild(Pair(Leaf(1), Leaf(2))) {\n    Pair(_, _) => 1,\n    Leaf(_) => 0\n  }\n}"
   let plan = plan_of(src)
-  assert(String::contains(plan, "rebuild n reuse_token:2 1"))
-  assert(String::contains(plan, "rebuild n reuse_alloc:2 1"))
+  assert(String::contains(plan, needle = "rebuild n reuse_token:2 1"))
+  assert(String::contains(plan, needle = "rebuild n reuse_alloc:2 1"))
 }
 
 test "rows carry the arity the codegen authorizes by" {
@@ -32,10 +32,10 @@ test "rows carry the arity the codegen authorizes by" {
   // and the query could not reconstruct the plan it reports.
   let src = "enum Node {\n  Uno(Node);\n  Duo(Node, Node);\n  Z(Int)\n}\nlet rec walk: (Node) -> Node = (n) -> {\n  match n {\n    Uno(x) => {\n      let x2 = walk(x)\n      Uno(x2)\n    },\n    Duo(a, b) => {\n      let a2 = walk(a)\n      let b2 = walk(b)\n      Duo(a2, b2)\n    },\n    _ => Z(0)\n  }\n}\nlet main: () -> Int = () -> {\n  match walk(Duo(Z(1), Z(2))) {\n    _ => 0\n  }\n}"
   let plan = plan_of(src)
-  assert(String::contains(plan, "walk n reuse_token:1 1"))
-  assert(String::contains(plan, "walk n reuse_token:2 1"))
-  assert(String::contains(plan, "walk n reuse_alloc:1 1"))
-  assert(String::contains(plan, "walk n reuse_alloc:2 1"))
+  assert(String::contains(plan, needle = "walk n reuse_token:1 1"))
+  assert(String::contains(plan, needle = "walk n reuse_token:2 1"))
+  assert(String::contains(plan, needle = "walk n reuse_alloc:1 1"))
+  assert(String::contains(plan, needle = "walk n reuse_alloc:2 1"))
 }
 
 test "a pure-borrow bind pairs, and so does a doubly-consumed one (held)" {
@@ -47,11 +47,11 @@ test "a pure-borrow bind pairs, and so does a doubly-consumed one (held)" {
   // admitted where the first slices declined it.
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec total3: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total3(a) + total3(b),\n    Leaf(v) => v\n  }\n}\nlet own: (Node) -> Node = (m) -> Pair(m, Leaf(0))\nlet rec reshape: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let w = total3(a)\n      let b2 = reshape(b)\n      Pair(Leaf(w), b2)\n    },\n    _ => Leaf(1)\n  }\n}\nlet dbl: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, _) => Pair(own(a), own(a)),\n    _ => Leaf(1)\n  }\n}\nlet main: () -> Int = () -> {\n  match reshape(Leaf(0)) {\n    _ => match dbl(own(Leaf(1))) {\n      _ => 0\n    }\n  }\n}"
   let plan = plan_of(src)
-  assert(String::contains(plan, "reshape n reuse_token:2 1"))
-  assert(String::contains(plan, "dbl n reuse_token:2 1"))
+  assert(String::contains(plan, needle = "reshape n reuse_token:2 1"))
+  assert(String::contains(plan, needle = "dbl n reuse_token:2 1"))
   // total3's Pair arm rebuilds nothing (its value is a sum), so it holds
   // no same-arity constructor site and stays unpaired.
-  assert(!String::contains(plan, "total3 n reuse_token"))
+  assert(!String::contains(plan, needle = "total3 n reuse_token"))
 }
 
 test "a same-arity constructor anywhere in the arm pairs; a function call of that arity does not" {
@@ -65,12 +65,12 @@ test "a same-arity constructor anywhere in the arm pairs; a function call of tha
   // stays unpaired (its Leaf arm is an ordinary arity-1 rebuild and pairs).
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec total: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\nlet rec prune: (Node, Int) -> Node = (n, d) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = prune(a, d - 1)\n      let b2 = prune(b, d - 1)\n      if d > 0 {\n        Pair(a2, b2)\n      } else {\n        Leaf(total(a2) + total(b2))\n      }\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nlet stamp: (Node, Array[Int]) -> Node = (n, log) -> {\n  match n {\n    Pair(a, b) => {\n      Array::push(log, 1)\n      Pair(b, a)\n    },\n    Leaf(v) => Leaf(v)\n  }\n}\nlet nest: (Node, Node) -> Node = (n, m) -> {\n  match n {\n    Pair(a, b) => match m {\n      Leaf(_) => Pair(b, a),\n      _ => Leaf(0)\n    },\n    Leaf(v) => Leaf(v)\n  }\n}\nlet pair2: (Node, Node) -> Node = (x, y) -> Pair(x, y)\nlet mk: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => pair2(b, a),\n    Leaf(v) => Leaf(v)\n  }\n}\nlet main: () -> Int = () -> {\n  let log: Array[Int] = []\n  match nest(stamp(prune(mk(Pair(Leaf(1), Leaf(2))), 1), log), Leaf(0)) {\n    _ => 0\n  }\n}"
   let plan = plan_of(src)
-  assert(String::contains(plan, "prune n reuse_token:2 1"))
-  assert(String::contains(plan, "prune n reuse_alloc:2 1"))
-  assert(String::contains(plan, "stamp n reuse_token:2 1"))
-  assert(String::contains(plan, "nest n reuse_token:2 1"))
-  assert(!String::contains(plan, "mk n reuse_token:2"))
-  assert(String::contains(plan, "mk n reuse_token:1 1"))
+  assert(String::contains(plan, needle = "prune n reuse_token:2 1"))
+  assert(String::contains(plan, needle = "prune n reuse_alloc:2 1"))
+  assert(String::contains(plan, needle = "stamp n reuse_token:2 1"))
+  assert(String::contains(plan, needle = "nest n reuse_token:2 1"))
+  assert(!String::contains(plan, needle = "mk n reuse_token:2"))
+  assert(String::contains(plan, needle = "mk n reuse_token:1 1"))
 }
 
 test "arms that keep the scrutinee alive or change arity stay unpaired" {
@@ -79,8 +79,8 @@ test "arms that keep the scrutinee alive or change arity stay unpaired" {
   // pattern (no decomposition to reuse). Neither may pair.
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet keep: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let c = Pair(a, b)\n      n\n    },\n    Leaf(v) => n\n  }\n}\nlet shrink: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, _) => Leaf(0),\n    _ => Leaf(1)\n  }\n}\nlet main: () -> Int = () -> 0"
   let plan = plan_of(src)
-  assert(!String::contains(plan, "keep n reuse_token"))
-  assert(!String::contains(plan, "shrink n reuse_token"))
+  assert(!String::contains(plan, needle = "keep n reuse_token"))
+  assert(!String::contains(plan, needle = "shrink n reuse_token"))
 }
 
 test "a lifted non-ident scrutinee reports its reuse pair on the lifted temp" {
@@ -91,8 +91,8 @@ test "a lifted non-ident scrutinee reports its reuse pair on the lifted temp" {
   // body that has no such row (#2411 review).
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec mk: (Int) -> Node = (d) -> {\n  if d <= 0 {\n    Leaf(1)\n  } else {\n    Pair(mk(d - 1), mk(d - 1))\n  }\n}\nlet crunch: (Int) -> Node = (d) -> {\n  match mk(d) {\n    Pair(a, b) => {\n      let a2 = a\n      let b2 = b\n      Pair(a2, b2)\n    },\n    _ => Leaf(0)\n  }\n}\nlet main: () -> Int = () -> 0"
   let plan = plan_of(src)
-  assert(String::contains(plan, "crunch __m_scrut_0 reuse_token:2 1"))
-  assert(String::contains(plan, "crunch __m_scrut_0 reuse_alloc:2 1"))
+  assert(String::contains(plan, needle = "crunch __m_scrut_0 reuse_token:2 1"))
+  assert(String::contains(plan, needle = "crunch __m_scrut_0 reuse_alloc:2 1"))
 }
 
 test "a nested lambda's rebuild match never pairs into the enclosing plan" {
@@ -105,7 +105,7 @@ test "a nested lambda's rebuild match never pairs into the enclosing plan" {
   // it in its own tail.
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet outer: (Node) -> Int = (n) -> {\n  let t = Pair(n, Leaf(1))\n  let f = (x: Int) -> {\n    match t {\n      Pair(a, b) => {\n        let a2 = a\n        let b2 = b\n        Pair(a2, b2)\n      },\n      _ => Leaf(0)\n    }\n  }\n  match t {\n    Pair(_, _) => 1,\n    _ => 0\n  }\n}\nlet main: () -> Int = () -> 0"
   let plan = plan_of(src)
-  assert(!String::contains(plan, "outer t reuse_token"))
+  assert(!String::contains(plan, needle = "outer t reuse_token"))
 }
 
 test "a control transfer inside the arm blocks the pairing" {
@@ -114,6 +114,6 @@ test "a control transfer inside the arm blocks the pairing" {
   // leaves the lambda, not the arm).
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet bail: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      if false {\n        return Leaf(0)\n      } else {\n        ()\n      }\n      Pair(a, b)\n    },\n    _ => Leaf(1)\n  }\n}\nlet lam_ok: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let f = (x: Int) -> {\n        return x\n      }\n      let a2 = a\n      let b2 = b\n      Pair(a2, b2)\n    },\n    _ => Leaf(1)\n  }\n}\nlet main: () -> Int = () -> 0"
   let plan = plan_of(src)
-  assert(!String::contains(plan, "bail n reuse_token"))
-  assert(String::contains(plan, "lam_ok n reuse_token:2 1"))
+  assert(!String::contains(plan, needle = "bail n reuse_token"))
+  assert(String::contains(plan, needle = "lam_ok n reuse_token:2 1"))
 }

@@ -42,13 +42,13 @@ import ./utilities.vibe {
 /// unqualified) by convention, so any captured local fails the test -- the pass
 /// can never hoist a capturing lambda. Bare lowercase top-level helpers also fail,
 /// so such lambdas are left alone (a safe miss, not a miscompile).
-fn dlh_name_ok(n: String) -> Bool {
+fn dlh_name_ok(_ n: String) -> Bool {
   if n == "perform" || n == "throw" || n == "resume" {
     true
-  } else if String::index_of(n, "::") >= 0 {
+  } else if String::index_of(n, needle = "::") >= 0 {
     true
   } else if String::length(n) > 0 {
-    let c = String::char_code_at(n, 0)
+    let c = String::char_code_at(n, at = 0)
     c >= 65 && c <= 90
   } else {
     false
@@ -56,12 +56,12 @@ fn dlh_name_ok(n: String) -> Bool {
 }
 
 fn dlh_with(arr: Array[String], name: String) -> Array[String] {
-  let out = Array::slice(arr, 0, Array::length(arr))
-  Array::push(out, name)
+  let out = Array::slice(arr, start = 0, end = Array::length(arr))
+  Array::push(out, value = name)
   out
 }
 
-export fn dlh_strip_tilde(n: String) -> String {
+export fn dlh_strip_tilde(_ n: String) -> String {
   let ln = String::length(n)
   if ln > 0 && n[ln - 1: ln] == "~" {
     n[0: ln - 1]
@@ -76,7 +76,7 @@ export fn dlh_strip_tilde(n: String) -> String {
 /// closure bug and compiled fine as a local closure; hoisting it to top-level
 /// would relocate its bare suberror-ctor references (`KeyInvalid`) out of the
 /// scope that resolves them (`undefined variable (local): KeyInvalid @call`).
-fn dlh_has_perform(expr: Expr) -> Bool {
+fn dlh_has_perform(_ expr: Expr) -> Bool {
   match expr {
     ECall(callee, args, _, _) => {
       let head = match callee {
@@ -90,7 +90,7 @@ fn dlh_has_perform(expr: Expr) -> Bool {
       // relocated out of resolving scope). Recurse into the payload so a real
       // perform nested inside a throw payload still triggers.
       let is_throw_shape = if head && Array::length(args) == 1 {
-        match Array::get(args, 0) {
+        match Array::get(args, at = 0) {
           ECall(op_callee, _, _, _) => match op_callee {
             EIdent(op_n, _) => is_exception_throw_operation(op_n),
             _ => false
@@ -106,7 +106,7 @@ fn dlh_has_perform(expr: Expr) -> Bool {
         let mut i = 0
         let mut found = dlh_has_perform(callee)
         while i < Array::length(args) {
-          if dlh_has_perform(Array::get(args, i)) {
+          if dlh_has_perform(Array::get(args, at = i)) {
             found = true
           } else {
             ()
@@ -169,7 +169,7 @@ fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
         _ => false
       }
       if head && Array::length(args) == 1 {
-        let operand = Array::get(args, 0)
+        let operand = Array::get(args, at = 0)
         let qname = match operand {
           EIdent(qn, _) => Some(qn),
           ECall(op_callee, _, _, _) => match op_callee {
@@ -184,10 +184,10 @@ fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
               Some((h, _)) => h,
               None => qn
             }
-            if str_array_contains(out, ename) {
+            if str_array_contains(arr = out, val = ename) {
               ()
             } else {
-              Array::push(out, ename)
+              Array::push(out, value = ename)
             }
           } else {
             ()
@@ -197,63 +197,63 @@ fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
       } else {
         ()
       }
-      dlh_collect_performed_effect_names(callee, out)
+      dlh_collect_performed_effect_names(expr = callee, out = out)
       let mut i = 0
       while i < Array::length(args) {
-        dlh_collect_performed_effect_names(Array::get(args, i), out)
+        dlh_collect_performed_effect_names(expr = Array::get(args, at = i), out = out)
         i = i + 1
       }
     },
     EBinOp(_, l, r, _) => {
-      dlh_collect_performed_effect_names(l, out)
-      dlh_collect_performed_effect_names(r, out)
+      dlh_collect_performed_effect_names(expr = l, out = out)
+      dlh_collect_performed_effect_names(expr = r, out = out)
     },
-    EUnaryOp(_, e) => dlh_collect_performed_effect_names(e, out),
+    EUnaryOp(_, e) => dlh_collect_performed_effect_names(expr = e, out = out),
     EIf(c, t, e) => {
-      dlh_collect_performed_effect_names(c, out)
-      dlh_collect_performed_effect_names(t, out)
-      dlh_collect_performed_effect_names(e, out)
+      dlh_collect_performed_effect_names(expr = c, out = out)
+      dlh_collect_performed_effect_names(expr = t, out = out)
+      dlh_collect_performed_effect_names(expr = e, out = out)
     },
     ELet(_, v, b, _) => {
-      dlh_collect_performed_effect_names(v, out)
-      dlh_collect_performed_effect_names(b, out)
+      dlh_collect_performed_effect_names(expr = v, out = out)
+      dlh_collect_performed_effect_names(expr = b, out = out)
     },
     ELetRec(_, v, b) => {
-      dlh_collect_performed_effect_names(v, out)
-      dlh_collect_performed_effect_names(b, out)
+      dlh_collect_performed_effect_names(expr = v, out = out)
+      dlh_collect_performed_effect_names(expr = b, out = out)
     },
     ELetMut(_, v, b, _) => {
-      dlh_collect_performed_effect_names(v, out)
-      dlh_collect_performed_effect_names(b, out)
+      dlh_collect_performed_effect_names(expr = v, out = out)
+      dlh_collect_performed_effect_names(expr = b, out = out)
     },
     EAssign(_, v, c, _) => {
-      dlh_collect_performed_effect_names(v, out)
-      dlh_collect_performed_effect_names(c, out)
+      dlh_collect_performed_effect_names(expr = v, out = out)
+      dlh_collect_performed_effect_names(expr = c, out = out)
     },
     EAssignOp(_, _, v, c, _) => {
-      dlh_collect_performed_effect_names(v, out)
-      dlh_collect_performed_effect_names(c, out)
+      dlh_collect_performed_effect_names(expr = v, out = out)
+      dlh_collect_performed_effect_names(expr = c, out = out)
     },
     ESeq(a, b) => {
-      dlh_collect_performed_effect_names(a, out)
-      dlh_collect_performed_effect_names(b, out)
+      dlh_collect_performed_effect_names(expr = a, out = out)
+      dlh_collect_performed_effect_names(expr = b, out = out)
     },
     EWhile(c, b) => {
-      dlh_collect_performed_effect_names(c, out)
-      dlh_collect_performed_effect_names(b, out)
+      dlh_collect_performed_effect_names(expr = c, out = out)
+      dlh_collect_performed_effect_names(expr = b, out = out)
     },
     EForIn(_, _, it, b) => {
-      dlh_collect_performed_effect_names(it, out)
-      dlh_collect_performed_effect_names(b, out)
+      dlh_collect_performed_effect_names(expr = it, out = out)
+      dlh_collect_performed_effect_names(expr = b, out = out)
     },
-    EDot(o, _, _, _) => dlh_collect_performed_effect_names(o, out),
-    ELabeledArg(_, _, e) => dlh_collect_performed_effect_names(e, out),
-    EReturn(e) => dlh_collect_performed_effect_names(e, out),
+    EDot(o, _, _, _) => dlh_collect_performed_effect_names(expr = o, out = out),
+    ELabeledArg(_, _, e) => dlh_collect_performed_effect_names(expr = e, out = out),
+    EReturn(e) => dlh_collect_performed_effect_names(expr = e, out = out),
     EMatch(s, arms) => {
-      dlh_collect_performed_effect_names(s, out)
-      dlh_collect_performed_effect_names_arms(arms, out)
+      dlh_collect_performed_effect_names(expr = s, out = out)
+      dlh_collect_performed_effect_names_arms(arms = arms, out = out)
     },
-    EHandle(s, _) => dlh_collect_performed_effect_names(s, out),
+    EHandle(s, _) => dlh_collect_performed_effect_names(expr = s, out = out),
     _ => ()
   }
 }
@@ -261,31 +261,31 @@ fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
 fn dlh_collect_performed_effect_names_arms(arms: Array[(Pat, Expr)], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    let (_, b) = Array::get(arms, i)
-    dlh_collect_performed_effect_names(b, out)
+    let (_, b) = Array::get(arms, at = i)
+    dlh_collect_performed_effect_names(expr = b, out = out)
     i = i + 1
   }
 }
 
-fn dlh_join_comma(names: Array[String]) -> String {
+fn dlh_join_comma(_ names: Array[String]) -> String {
   let mut out = ""
   let mut i = 0
   while i < Array::length(names) {
     if i == 0 {
-      out = Array::get(names, i)
+      out = Array::get(names, at = i)
     } else {
-      out = String::concat(String::concat(out, ", "), Array::get(names, i))
+      out = String::concat(String::concat(out, ", "), Array::get(names, at = i))
     }
     i = i + 1
   }
   out
 }
 
-fn dlh_has_perform_arms(arms: Array[(Pat, Expr)]) -> Bool {
+fn dlh_has_perform_arms(_ arms: Array[(Pat, Expr)]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(arms) {
-    let (_, b) = Array::get(arms, i)
+    let (_, b) = Array::get(arms, at = i)
     if dlh_has_perform(b) {
       found = true
     } else {
@@ -301,150 +301,150 @@ fn dlh_has_perform_arms(arms: Array[(Pat, Expr)]) -> Bool {
 /// non-top-level name (capture or bare-helper call) and must not be hoisted.
 fn dlh_scan_free(expr: Expr, bound: Array[String], bad: Array[String]) -> Unit {
   match expr {
-    EIdent(n, _) => if dlh_name_ok(n) || str_array_contains(bound, n) {
+    EIdent(n, _) => if dlh_name_ok(n) || str_array_contains(arr = bound, val = n) {
       ()
     } else {
-      Array::push(bad, n)
+      Array::push(bad, value = n)
     },
     EBinOp(_, l, r, _) => {
-      dlh_scan_free(l, bound, bad)
-      dlh_scan_free(r, bound, bad)
+      dlh_scan_free(expr = l, bound = bound, bad = bad)
+      dlh_scan_free(expr = r, bound = bound, bad = bad)
     },
-    EUnaryOp(_, e) => dlh_scan_free(e, bound, bad),
+    EUnaryOp(_, e) => dlh_scan_free(expr = e, bound = bound, bad = bad),
     ECall(callee, args, _, _) => {
-      dlh_scan_free(callee, bound, bad)
+      dlh_scan_free(expr = callee, bound = bound, bad = bad)
       let mut i = 0
       while i < Array::length(args) {
-        dlh_scan_free(Array::get(args, i), bound, bad)
+        dlh_scan_free(expr = Array::get(args, at = i), bound = bound, bad = bad)
         i = i + 1
       }
     },
     ETuple(es) => {
       let mut i = 0
       while i < Array::length(es) {
-        dlh_scan_free(Array::get(es, i), bound, bad)
+        dlh_scan_free(expr = Array::get(es, at = i), bound = bound, bad = bad)
         i = i + 1
       }
     },
     EArray(es) => {
       let mut i = 0
       while i < Array::length(es) {
-        dlh_scan_free(Array::get(es, i), bound, bad)
+        dlh_scan_free(expr = Array::get(es, at = i), bound = bound, bad = bad)
         i = i + 1
       }
     },
-    ESpread(e) => dlh_scan_free(e, bound, bad),
+    ESpread(e) => dlh_scan_free(expr = e, bound = bound, bad = bad),
     EContinue(es) => {
       let mut i = 0
       while i < Array::length(es) {
-        dlh_scan_free(Array::get(es, i), bound, bad)
+        dlh_scan_free(expr = Array::get(es, at = i), bound = bound, bad = bad)
         i = i + 1
       }
     },
     ERecord(_, fs, _) => {
       let mut i = 0
       while i < Array::length(fs) {
-        let (_, v) = Array::get(fs, i)
-        dlh_scan_free(v, bound, bad)
+        let (_, v) = Array::get(fs, at = i)
+        dlh_scan_free(expr = v, bound = bound, bad = bad)
         i = i + 1
       }
     },
     EMap(fs) => {
       let mut i = 0
       while i < Array::length(fs) {
-        let (_, v) = Array::get(fs, i)
-        dlh_scan_free(v, bound, bad)
+        let (_, v) = Array::get(fs, at = i)
+        dlh_scan_free(expr = v, bound = bound, bad = bad)
         i = i + 1
       }
     },
     EIf(c, t, e) => {
-      dlh_scan_free(c, bound, bad)
-      dlh_scan_free(t, bound, bad)
-      dlh_scan_free(e, bound, bad)
+      dlh_scan_free(expr = c, bound = bound, bad = bad)
+      dlh_scan_free(expr = t, bound = bound, bad = bad)
+      dlh_scan_free(expr = e, bound = bound, bad = bad)
     },
     ELet(name, v, b, _) => {
-      dlh_scan_free(v, bound, bad)
-      dlh_scan_free(b, dlh_with(bound, name), bad)
+      dlh_scan_free(expr = v, bound = bound, bad = bad)
+      dlh_scan_free(expr = b, bound = dlh_with(arr = bound, name = name), bad = bad)
     },
     ELetRec(name, v, b) => {
-      let b2 = dlh_with(bound, name)
-      dlh_scan_free(v, b2, bad)
-      dlh_scan_free(b, b2, bad)
+      let b2 = dlh_with(arr = bound, name = name)
+      dlh_scan_free(expr = v, bound = b2, bad = bad)
+      dlh_scan_free(expr = b, bound = b2, bad = bad)
     },
     ELetMut(name, v, b, _) => {
-      dlh_scan_free(v, bound, bad)
-      dlh_scan_free(b, dlh_with(bound, name), bad)
+      dlh_scan_free(expr = v, bound = bound, bad = bad)
+      dlh_scan_free(expr = b, bound = dlh_with(arr = bound, name = name), bad = bad)
     },
     EAssign(name, v, c, _) => {
-      if dlh_name_ok(name) || str_array_contains(bound, name) {
+      if dlh_name_ok(name) || str_array_contains(arr = bound, val = name) {
         ()
       } else {
-        Array::push(bad, name)
+        Array::push(bad, value = name)
       }
-      dlh_scan_free(v, bound, bad)
-      dlh_scan_free(c, bound, bad)
+      dlh_scan_free(expr = v, bound = bound, bad = bad)
+      dlh_scan_free(expr = c, bound = bound, bad = bad)
     },
     EAssignOp(name, _, v, c, _) => {
-      if dlh_name_ok(name) || str_array_contains(bound, name) {
+      if dlh_name_ok(name) || str_array_contains(arr = bound, val = name) {
         ()
       } else {
-        Array::push(bad, name)
+        Array::push(bad, value = name)
       }
-      dlh_scan_free(v, bound, bad)
-      dlh_scan_free(c, bound, bad)
+      dlh_scan_free(expr = v, bound = bound, bad = bad)
+      dlh_scan_free(expr = c, bound = bound, bad = bad)
     },
     ESeq(a, b) => {
-      dlh_scan_free(a, bound, bad)
-      dlh_scan_free(b, bound, bad)
+      dlh_scan_free(expr = a, bound = bound, bad = bad)
+      dlh_scan_free(expr = b, bound = bound, bad = bad)
     },
     EWhile(c, b) => {
-      dlh_scan_free(c, bound, bad)
-      dlh_scan_free(b, bound, bad)
+      dlh_scan_free(expr = c, bound = bound, bad = bad)
+      dlh_scan_free(expr = b, bound = bound, bad = bad)
     },
     EForIn(name, idxn, it, b) => {
-      dlh_scan_free(it, bound, bad)
-      let mut b2 = dlh_with(bound, name)
+      dlh_scan_free(expr = it, bound = bound, bad = bad)
+      let mut b2 = dlh_with(arr = bound, name = name)
       b2 = match idxn {
-        Some(inm) => dlh_with(b2, inm),
+        Some(inm) => dlh_with(arr = b2, name = inm),
         None => b2
       }
-      dlh_scan_free(b, b2, bad)
+      dlh_scan_free(expr = b, bound = b2, bad = bad)
     },
-    EDot(o, _, _, _) => dlh_scan_free(o, bound, bad),
-    ELabeledArg(_, _, e) => dlh_scan_free(e, bound, bad),
-    EReturn(e) => dlh_scan_free(e, bound, bad),
+    EDot(o, _, _, _) => dlh_scan_free(expr = o, bound = bound, bad = bad),
+    ELabeledArg(_, _, e) => dlh_scan_free(expr = e, bound = bound, bad = bad),
+    EReturn(e) => dlh_scan_free(expr = e, bound = bound, bad = bad),
     EBreak(opt) => match opt {
-      Some(e) => dlh_scan_free(e, bound, bad),
+      Some(e) => dlh_scan_free(expr = e, bound = bound, bad = bad),
       None => ()
     },
     EFn(_, _, params, _, _, body) => {
       let mut inner = bound
       let mut i = 0
       while i < Array::length(params) {
-        let (pn, _) = Array::get(params, i)
-        inner = dlh_with(inner, dlh_strip_tilde(pn))
+        let (pn, _) = Array::get(params, at = i)
+        inner = dlh_with(arr = inner, name = dlh_strip_tilde(pn))
         i = i + 1
       }
-      dlh_scan_free(body, inner, bad)
+      dlh_scan_free(expr = body, bound = inner, bad = bad)
     },
     EMatch(s, arms) => {
-      dlh_scan_free(s, bound, bad)
-      dlh_scan_arms(arms, bound, bad)
+      dlh_scan_free(expr = s, bound = bound, bad = bad)
+      dlh_scan_arms(arms = arms, bound = bound, bad = bad)
     },
     EHandle(s, arms) => {
-      dlh_scan_free(s, bound, bad)
-      dlh_scan_arms(arms, bound, bad)
+      dlh_scan_free(expr = s, bound = bound, bad = bad)
+      dlh_scan_arms(arms = arms, bound = bound, bad = bad)
     },
     ELoop(params, b) => {
       let mut b2 = bound
       let mut i = 0
       while i < Array::length(params) {
-        let (pn, init) = Array::get(params, i)
-        dlh_scan_free(init, bound, bad)
-        b2 = dlh_with(b2, pn)
+        let (pn, init) = Array::get(params, at = i)
+        dlh_scan_free(expr = init, bound = bound, bad = bad)
+        b2 = dlh_with(arr = b2, name = pn)
         i = i + 1
       }
-      dlh_scan_free(b, b2, bad)
+      dlh_scan_free(expr = b, bound = b2, bad = bad)
     },
     _ => ()
   }
@@ -453,16 +453,16 @@ fn dlh_scan_free(expr: Expr, bound: Array[String], bad: Array[String]) -> Unit {
 fn dlh_scan_arms(arms: Array[(Pat, Expr)], bound: Array[String], bad: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    let (p, b) = Array::get(arms, i)
+    let (p, b) = Array::get(arms, at = i)
     let mut ab = bound
     let pb = empty_str_array()
-    collect_pat_binders(p, pb)
+    collect_pat_binders(p = p, out = pb)
     let mut j = 0
     while j < Array::length(pb) {
-      ab = dlh_with(ab, Array::get(pb, j))
+      ab = dlh_with(arr = ab, name = Array::get(pb, at = j))
       j = j + 1
     }
-    dlh_scan_free(b, ab, bad)
+    dlh_scan_free(expr = b, bound = ab, bad = bad)
     i = i + 1
   }
 }
@@ -476,27 +476,27 @@ fn dlh_subst(expr: Expr, from: String, to: String) -> Expr {
     } else {
       expr
     },
-    EBinOp(op, l, r, boff) => EBinOp(op, dlh_subst(l, from, to), dlh_subst(r, from, to), boff),
-    EUnaryOp(op, e) => EUnaryOp(op, dlh_subst(e, from, to)),
-    ECall(callee, args, off, callee_resolution) => ECall(dlh_subst(callee, from, to), for a in args {
-      dlh_subst(a, from, to)
+    EBinOp(op, l, r, boff) => EBinOp(op, dlh_subst(expr = l, from = from, to = to), dlh_subst(expr = r, from = from, to = to), boff),
+    EUnaryOp(op, e) => EUnaryOp(op, dlh_subst(expr = e, from = from, to = to)),
+    ECall(callee, args, off, callee_resolution) => ECall(dlh_subst(expr = callee, from = from, to = to), for a in args {
+      dlh_subst(expr = a, from = from, to = to)
     }, off, callee_resolution),
     ETuple(es) => ETuple(for e in es {
-      dlh_subst(e, from, to)
+      dlh_subst(expr = e, from = from, to = to)
     }),
     EArray(es) => EArray(for e in es {
-      dlh_subst(e, from, to)
+      dlh_subst(expr = e, from = from, to = to)
     }),
-    ESpread(e) => ESpread(dlh_subst(e, from, to)),
+    ESpread(e) => ESpread(dlh_subst(expr = e, from = from, to = to)),
     EContinue(es) => EContinue(for e in es {
-      dlh_subst(e, from, to)
+      dlh_subst(expr = e, from = from, to = to)
     }),
     ERecord(rn, fs, targs) => {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(fs) {
-        let (k, v) = Array::get(fs, i)
-        Array::push(out, (k, dlh_subst(v, from, to)))
+        let (k, v) = Array::get(fs, at = i)
+        Array::push(out, value = (k, dlh_subst(expr = v, from = from, to = to)))
         i = i + 1
       }
       ERecord(rn, out, targs)
@@ -505,55 +505,55 @@ fn dlh_subst(expr: Expr, from: String, to: String) -> Expr {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(fs) {
-        let (k, v) = Array::get(fs, i)
-        Array::push(out, (k, dlh_subst(v, from, to)))
+        let (k, v) = Array::get(fs, at = i)
+        Array::push(out, value = (k, dlh_subst(expr = v, from = from, to = to)))
         i = i + 1
       }
       EMap(out)
     },
-    EIf(c, t, e) => EIf(dlh_subst(c, from, to), dlh_subst(t, from, to), dlh_subst(e, from, to)),
-    ELet(name, v, b, soff) => ELet(name, dlh_subst(v, from, to), if name == from {
+    EIf(c, t, e) => EIf(dlh_subst(expr = c, from = from, to = to), dlh_subst(expr = t, from = from, to = to), dlh_subst(expr = e, from = from, to = to)),
+    ELet(name, v, b, soff) => ELet(name, dlh_subst(expr = v, from = from, to = to), if name == from {
       b
     } else {
-      dlh_subst(b, from, to)
+      dlh_subst(expr = b, from = from, to = to)
     }, soff),
     ELetRec(name, v, b) => if name == from {
       ELetRec(name, v, b)
     } else {
-      ELetRec(name, dlh_subst(v, from, to), dlh_subst(b, from, to))
+      ELetRec(name, dlh_subst(expr = v, from = from, to = to), dlh_subst(expr = b, from = from, to = to))
     },
-    ELetMut(name, v, b, soff) => ELetMut(name, dlh_subst(v, from, to), if name == from {
+    ELetMut(name, v, b, soff) => ELetMut(name, dlh_subst(expr = v, from = from, to = to), if name == from {
       b
     } else {
-      dlh_subst(b, from, to)
+      dlh_subst(expr = b, from = from, to = to)
     }, soff),
-    EAssign(name, v, c, target_off) => EAssign(name, dlh_subst(v, from, to), dlh_subst(c, from, to), target_off),
-    EAssignOp(name, op, v, c, target_off) => EAssignOp(name, op, dlh_subst(v, from, to), dlh_subst(c, from, to), target_off),
-    ESeq(a, b) => ESeq(dlh_subst(a, from, to), dlh_subst(b, from, to)),
-    EWhile(c, b) => EWhile(dlh_subst(c, from, to), dlh_subst(b, from, to)),
+    EAssign(name, v, c, target_off) => EAssign(name, dlh_subst(expr = v, from = from, to = to), dlh_subst(expr = c, from = from, to = to), target_off),
+    EAssignOp(name, op, v, c, target_off) => EAssignOp(name, op, dlh_subst(expr = v, from = from, to = to), dlh_subst(expr = c, from = from, to = to), target_off),
+    ESeq(a, b) => ESeq(dlh_subst(expr = a, from = from, to = to), dlh_subst(expr = b, from = from, to = to)),
+    EWhile(c, b) => EWhile(dlh_subst(expr = c, from = from, to = to), dlh_subst(expr = b, from = from, to = to)),
     EForIn(name, idxn, it, b) => {
       let shadow = name == from || (match idxn {
         Some(inm) => inm == from,
         None => false
       })
-      EForIn(name, idxn, dlh_subst(it, from, to), if shadow {
+      EForIn(name, idxn, dlh_subst(expr = it, from = from, to = to), if shadow {
         b
       } else {
-        dlh_subst(b, from, to)
+        dlh_subst(expr = b, from = from, to = to)
       })
     },
-    EDot(o, f, off, fdoff) => EDot(dlh_subst(o, from, to), f, off, fdoff),
-    ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_subst(e, from, to)),
-    EReturn(e) => EReturn(dlh_subst(e, from, to)),
+    EDot(o, f, off, fdoff) => EDot(dlh_subst(expr = o, from = from, to = to), f, off, fdoff),
+    ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_subst(expr = e, from = from, to = to)),
+    EReturn(e) => EReturn(dlh_subst(expr = e, from = from, to = to)),
     EBreak(opt) => match opt {
-      Some(e) => EBreak(Some(dlh_subst(e, from, to))),
+      Some(e) => EBreak(Some(dlh_subst(expr = e, from = from, to = to))),
       None => expr
     },
     EFn(tp, bnds, params, rt, eff, body) => {
       let mut shadow = false
       let mut i = 0
       while i < Array::length(params) {
-        let (pn, _) = Array::get(params, i)
+        let (pn, _) = Array::get(params, at = i)
         if dlh_strip_tilde(pn) == from {
           shadow = true
         } else {
@@ -564,29 +564,29 @@ fn dlh_subst(expr: Expr, from: String, to: String) -> Expr {
       if shadow {
         expr
       } else {
-        EFn(tp, bnds, params, rt, eff, dlh_subst(body, from, to))
+        EFn(tp, bnds, params, rt, eff, dlh_subst(expr = body, from = from, to = to))
       }
     },
-    EMatch(s, arms) => EMatch(dlh_subst(s, from, to), dlh_subst_arms(arms, from, to)),
-    EHandle(s, arms) => EHandle(dlh_subst(s, from, to), dlh_subst_arms(arms, from, to)),
+    EMatch(s, arms) => EMatch(dlh_subst(expr = s, from = from, to = to), dlh_subst_arms(arms = arms, from = from, to = to)),
+    EHandle(s, arms) => EHandle(dlh_subst(expr = s, from = from, to = to), dlh_subst_arms(arms = arms, from = from, to = to)),
     ELoop(params, b) => {
       let mut shadow = false
       let out = array_empty()
       let mut i = 0
       while i < Array::length(params) {
-        let (pn, init) = Array::get(params, i)
+        let (pn, init) = Array::get(params, at = i)
         if pn == from {
           shadow = true
         } else {
           ()
         }
-        Array::push(out, (pn, dlh_subst(init, from, to)))
+        Array::push(out, value = (pn, dlh_subst(expr = init, from = from, to = to)))
         i = i + 1
       }
       ELoop(out, if shadow {
         b
       } else {
-        dlh_subst(b, from, to)
+        dlh_subst(expr = b, from = from, to = to)
       })
     },
     _ => expr
@@ -597,14 +597,14 @@ fn dlh_subst_arms(arms: Array[(Pat, Expr)], from: String, to: String) -> Array[(
   let out = array_empty()
   let mut i = 0
   while i < Array::length(arms) {
-    let (p, b) = Array::get(arms, i)
+    let (p, b) = Array::get(arms, at = i)
     let pb = empty_str_array()
-    collect_pat_binders(p, pb)
-    let shadow = str_array_contains(pb, from)
-    Array::push(out, (p, if shadow {
+    collect_pat_binders(p = p, out = pb)
+    let shadow = str_array_contains(arr = pb, val = from)
+    Array::push(out, value = (p, if shadow {
       b
     } else {
-      dlh_subst(b, from, to)
+      dlh_subst(expr = b, from = from, to = to)
     }))
     i = i + 1
   }
@@ -631,7 +631,7 @@ fn dlh_subst_arms(arms: Array[(Pat, Expr)], from: String, to: String) -> Array[(
 /// `name` itself could.
 
 fn dlh_marker_only_called_directly(expr: Expr, marker: String) -> Bool {
-  !dinsp_scan(expr, 4, marker)
+  !dinsp_scan(expr = expr, mode = 4, name = marker)
 }
 
 /// Rewrite every `ECall(EIdent(marker), args, off)` into `ECall(EIdent(fresh),
@@ -650,35 +650,35 @@ fn dlh_prepend_and_rename_calls(expr: Expr, marker: String, fresh: String, extra
           EIdent(en, coff)
         }
         ECall(EIdent(fresh, coff), Array::concat(extra_args, for a in args {
-          dlh_prepend_and_rename_calls(a, marker, fresh, extra_names)
+          dlh_prepend_and_rename_calls(expr = a, marker = marker, fresh = fresh, extra_names = extra_names)
         }), off, callee_resolution)
       } else {
-        ECall(dlh_prepend_and_rename_calls(callee, marker, fresh, extra_names), for a in args {
-          dlh_prepend_and_rename_calls(a, marker, fresh, extra_names)
+        ECall(dlh_prepend_and_rename_calls(expr = callee, marker = marker, fresh = fresh, extra_names = extra_names), for a in args {
+          dlh_prepend_and_rename_calls(expr = a, marker = marker, fresh = fresh, extra_names = extra_names)
         }, off, callee_resolution)
       },
-      _ => ECall(dlh_prepend_and_rename_calls(callee, marker, fresh, extra_names), for a in args {
-        dlh_prepend_and_rename_calls(a, marker, fresh, extra_names)
+      _ => ECall(dlh_prepend_and_rename_calls(expr = callee, marker = marker, fresh = fresh, extra_names = extra_names), for a in args {
+        dlh_prepend_and_rename_calls(expr = a, marker = marker, fresh = fresh, extra_names = extra_names)
       }, off, callee_resolution)
     },
-    EBinOp(op, l, r, boff) => EBinOp(op, dlh_prepend_and_rename_calls(l, marker, fresh, extra_names), dlh_prepend_and_rename_calls(r, marker, fresh, extra_names), boff),
-    EUnaryOp(op, e) => EUnaryOp(op, dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
+    EBinOp(op, l, r, boff) => EBinOp(op, dlh_prepend_and_rename_calls(expr = l, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = r, marker = marker, fresh = fresh, extra_names = extra_names), boff),
+    EUnaryOp(op, e) => EUnaryOp(op, dlh_prepend_and_rename_calls(expr = e, marker = marker, fresh = fresh, extra_names = extra_names)),
     ETuple(es) => ETuple(for e in es {
-      dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)
+      dlh_prepend_and_rename_calls(expr = e, marker = marker, fresh = fresh, extra_names = extra_names)
     }),
     EArray(es) => EArray(for e in es {
-      dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)
+      dlh_prepend_and_rename_calls(expr = e, marker = marker, fresh = fresh, extra_names = extra_names)
     }),
-    ESpread(e) => ESpread(dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
+    ESpread(e) => ESpread(dlh_prepend_and_rename_calls(expr = e, marker = marker, fresh = fresh, extra_names = extra_names)),
     EContinue(es) => EContinue(for e in es {
-      dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)
+      dlh_prepend_and_rename_calls(expr = e, marker = marker, fresh = fresh, extra_names = extra_names)
     }),
     ERecord(rn, fs, targs) => {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(fs) {
-        let (k, v) = Array::get(fs, i)
-        Array::push(out, (k, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names)))
+        let (k, v) = Array::get(fs, at = i)
+        Array::push(out, value = (k, dlh_prepend_and_rename_calls(expr = v, marker = marker, fresh = fresh, extra_names = extra_names)))
         i = i + 1
       }
       ERecord(rn, out, targs)
@@ -687,54 +687,54 @@ fn dlh_prepend_and_rename_calls(expr: Expr, marker: String, fresh: String, extra
       let out = array_empty()
       let mut i = 0
       while i < Array::length(fs) {
-        let (k, v) = Array::get(fs, i)
-        Array::push(out, (k, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names)))
+        let (k, v) = Array::get(fs, at = i)
+        Array::push(out, value = (k, dlh_prepend_and_rename_calls(expr = v, marker = marker, fresh = fresh, extra_names = extra_names)))
         i = i + 1
       }
       EMap(out)
     },
-    EIf(c, t, e) => EIf(dlh_prepend_and_rename_calls(c, marker, fresh, extra_names), dlh_prepend_and_rename_calls(t, marker, fresh, extra_names), dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
-    ELet(n, v, b, soff) => ELet(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names), soff),
-    ELetRec(n, v, b) => ELetRec(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
-    ELetMut(n, v, b, soff) => ELetMut(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names), soff),
-    EAssign(n, v, c, target_off) => EAssign(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(c, marker, fresh, extra_names), target_off),
-    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(c, marker, fresh, extra_names), target_off),
-    ESeq(a, b) => ESeq(dlh_prepend_and_rename_calls(a, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
-    EWhile(c, b) => EWhile(dlh_prepend_and_rename_calls(c, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
-    EForIn(n, idxn, it, b) => EForIn(n, idxn, dlh_prepend_and_rename_calls(it, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
-    EDot(o, f, off, fdoff) => EDot(dlh_prepend_and_rename_calls(o, marker, fresh, extra_names), f, off, fdoff),
-    ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
-    EReturn(e) => EReturn(dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
+    EIf(c, t, e) => EIf(dlh_prepend_and_rename_calls(expr = c, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = t, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = e, marker = marker, fresh = fresh, extra_names = extra_names)),
+    ELet(n, v, b, soff) => ELet(n, dlh_prepend_and_rename_calls(expr = v, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names), soff),
+    ELetRec(n, v, b) => ELetRec(n, dlh_prepend_and_rename_calls(expr = v, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names)),
+    ELetMut(n, v, b, soff) => ELetMut(n, dlh_prepend_and_rename_calls(expr = v, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names), soff),
+    EAssign(n, v, c, target_off) => EAssign(n, dlh_prepend_and_rename_calls(expr = v, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = c, marker = marker, fresh = fresh, extra_names = extra_names), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, dlh_prepend_and_rename_calls(expr = v, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = c, marker = marker, fresh = fresh, extra_names = extra_names), target_off),
+    ESeq(a, b) => ESeq(dlh_prepend_and_rename_calls(expr = a, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names)),
+    EWhile(c, b) => EWhile(dlh_prepend_and_rename_calls(expr = c, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names)),
+    EForIn(n, idxn, it, b) => EForIn(n, idxn, dlh_prepend_and_rename_calls(expr = it, marker = marker, fresh = fresh, extra_names = extra_names), dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names)),
+    EDot(o, f, off, fdoff) => EDot(dlh_prepend_and_rename_calls(expr = o, marker = marker, fresh = fresh, extra_names = extra_names), f, off, fdoff),
+    ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_prepend_and_rename_calls(expr = e, marker = marker, fresh = fresh, extra_names = extra_names)),
+    EReturn(e) => EReturn(dlh_prepend_and_rename_calls(expr = e, marker = marker, fresh = fresh, extra_names = extra_names)),
     EBreak(opt) => EBreak(match opt {
-      Some(e) => Some(dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
+      Some(e) => Some(dlh_prepend_and_rename_calls(expr = e, marker = marker, fresh = fresh, extra_names = extra_names)),
       None => None
     }),
-    EFn(tp, bnds, params, rt, eff, body) => EFn(tp, bnds, params, rt, eff, dlh_prepend_and_rename_calls(body, marker, fresh, extra_names)),
-    EMatch(s, arms) => EMatch(dlh_prepend_and_rename_calls(s, marker, fresh, extra_names), for a in arms {
+    EFn(tp, bnds, params, rt, eff, body) => EFn(tp, bnds, params, rt, eff, dlh_prepend_and_rename_calls(expr = body, marker = marker, fresh = fresh, extra_names = extra_names)),
+    EMatch(s, arms) => EMatch(dlh_prepend_and_rename_calls(expr = s, marker = marker, fresh = fresh, extra_names = extra_names), for a in arms {
       let (p, b) = a
-      (p, dlh_prepend_and_rename_calls(b, marker, fresh, extra_names))
+      (p, dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names))
     }),
-    EHandle(s, arms) => EHandle(dlh_prepend_and_rename_calls(s, marker, fresh, extra_names), for a in arms {
+    EHandle(s, arms) => EHandle(dlh_prepend_and_rename_calls(expr = s, marker = marker, fresh = fresh, extra_names = extra_names), for a in arms {
       let (p, b) = a
-      (p, dlh_prepend_and_rename_calls(b, marker, fresh, extra_names))
+      (p, dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names))
     }),
     ELoop(params, b) => ELoop(for p in params {
       let (pn, init) = p
-      (pn, dlh_prepend_and_rename_calls(init, marker, fresh, extra_names))
-    }, dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
+      (pn, dlh_prepend_and_rename_calls(expr = init, marker = marker, fresh = fresh, extra_names = extra_names))
+    }, dlh_prepend_and_rename_calls(expr = b, marker = marker, fresh = fresh, extra_names = extra_names)),
     _ => expr
   }
 }
 
-fn dlh_dedup_names(names: Array[String]) -> Array[String] {
+fn dlh_dedup_names(_ names: Array[String]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(names) {
-    let n = Array::get(names, i)
-    if str_array_contains(out, n) {
+    let n = Array::get(names, at = i)
+    if str_array_contains(arr = out, val = n) {
       ()
     } else {
-      Array::push(out, n)
+      Array::push(out, value = n)
     }
     i = i + 1
   }
@@ -760,7 +760,7 @@ fn dlh_names_ever_assigned(expr: Expr, names: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(names) {
-    found = dinsp_scan(expr, 5, Array::get(names, i))
+    found = dinsp_scan(expr = expr, mode = 5, name = Array::get(names, at = i))
     i = i + 1
   }
   found
@@ -785,7 +785,7 @@ fn dlh_names_ever_assigned(expr: Expr, names: Array[String]) -> Bool {
 /// `dlh_has_perform`. Naming a literal is semantics-preserving; RELOCATING
 /// one to the top level is not (that gate's own comment records a
 /// suberror-ctor scoping break), so widening this must not widen that.
-fn dlh_row_is_effectful(eff: Option[String]) -> Bool {
+fn dlh_row_is_effectful(_ eff: Option[String]) -> Bool {
   match eff {
     Some(s) => String::trim(s) != "",
     None => false
@@ -808,11 +808,11 @@ fn dlh_row_is_effectful(eff: Option[String]) -> Bool {
 /// closure completely untouched by this pass, restoring the pre-existing
 /// (working) behavior for that case while keeping the IIFE/HOF-arg fix
 /// for genuinely effectful literals.
-fn dlh_args_have_literal_efn(args: Array[Expr]) -> Bool {
+fn dlh_args_have_literal_efn(_ args: Array[Expr]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(args) && !found {
-    match Array::get(args, i) {
+    match Array::get(args, at = i) {
       EFn(_, _, _, _, _, fbody) => if dlh_has_perform(fbody) {
         found = true
       } else {
@@ -854,37 +854,37 @@ fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, resolutio
   let lits = array_empty()
   let mut i = 0
   while i < Array::length(args) {
-    let a = Array::get(args, i)
+    let a = Array::get(args, at = i)
     match a {
       EFn(_, _, _, _, _, fbody) => if dlh_has_perform(fbody) {
-        let idx = Array::get(ctr, 0)
-        Array::set(ctr, 0, idx + 1)
+        let idx = Array::get(ctr, at = 0)
+        Array::set(ctr, at = 0, value = idx + 1)
         let nm = "__dlh_arglit_\{idx}"
-        Array::push(lits, (nm, a))
-        Array::push(new_args, EIdent(nm, off))
+        Array::push(lits, value = (nm, a))
+        Array::push(new_args, value = EIdent(nm, off))
       } else {
-        Array::push(new_args, a)
+        Array::push(new_args, value = a)
       },
       ELabeledArg(lbl, mname, inner) => match inner {
         EFn(_, _, _, _, _, fbody) => if dlh_has_perform(fbody) {
-          let idx = Array::get(ctr, 0)
-          Array::set(ctr, 0, idx + 1)
+          let idx = Array::get(ctr, at = 0)
+          Array::set(ctr, at = 0, value = idx + 1)
           let nm = "__dlh_arglit_\{idx}"
-          Array::push(lits, (nm, inner))
-          Array::push(new_args, ELabeledArg(lbl, mname, EIdent(nm, off)))
+          Array::push(lits, value = (nm, inner))
+          Array::push(new_args, value = ELabeledArg(lbl, mname, EIdent(nm, off)))
         } else {
-          Array::push(new_args, a)
+          Array::push(new_args, value = a)
         },
-        _ => Array::push(new_args, a)
+        _ => Array::push(new_args, value = a)
       },
-      other => Array::push(new_args, other)
+      other => Array::push(new_args, value = other)
     }
     i = i + 1
   }
   let mut wrapped = ECall(callee, new_args, off, resolution)
   let mut k = Array::length(lits) - 1
   while k >= 0 {
-    let (nm, lit) = Array::get(lits, k)
+    let (nm, lit) = Array::get(lits, at = k)
     wrapped = ELet(nm, lit, wrapped, off)
     k = k - 1
   }
@@ -931,7 +931,7 @@ fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, resolutio
 /// needs the index.
 export fn hoisted_lambda_owner_of_stmt(stmt: Stmt, idx: Int) -> String {
   let (kind, name) = dlh_owner_class(stmt)
-  dlh_owner_key_of(kind, name, idx)
+  dlh_owner_key_of(kind = kind, name = name, idx = idx)
 }
 
 /// The owner KIND and name of `stmt`: 0 a plain name, 1 a test, 2 a bench, 3
@@ -943,7 +943,7 @@ export fn hoisted_lambda_owner_of_stmt(stmt: Stmt, idx: Int) -> String {
 /// under the wrong module (`SLetPat` in Codex's round on #2623, then the
 /// binderless case the round after). A shape this one does not name cannot be
 /// named differently by the other.
-fn dlh_owner_class(stmt: Stmt) -> (Int, String) {
+fn dlh_owner_class(_ stmt: Stmt) -> (Int, String) {
   match stmt {
     SLet(_, _, name, _, _) => (0, name),
     SLetMut(name, _, _) => (0, name),
@@ -951,11 +951,11 @@ fn dlh_owner_class(stmt: Stmt) -> (Int, String) {
     SBench(name, _) => (2, name),
     SLetPat(pat, _) => {
       let binders = empty_str_array()
-      collect_pat_binders(pat, binders)
+      collect_pat_binders(p = pat, out = binders)
       if Array::length(binders) == 0 {
         (3, "")
       } else {
-        (0, Array::get(binders, 0))
+        (0, Array::get(binders, at = 0))
       }
     },
     _ => (3, "")
@@ -978,20 +978,20 @@ fn dlh_owner_key_of(kind: Int, name: String, idx: Int) -> String {
 }
 
 fn dlh_set_owner(stmt: Stmt, idx: Int) -> Unit {
-  Array::set(dlh_owner_idx, 0, idx)
-  Array::set(dlh_owner_kind, 0, 0)
+  Array::set(dlh_owner_idx, at = 0, value = idx)
+  Array::set(dlh_owner_kind, at = 0, value = 0)
   let (kind, name) = dlh_owner_class(stmt)
-  Array::set(dlh_owner_kind, 0, kind)
-  Array::set(dlh_owner_name, 0, name)
+  Array::set(dlh_owner_kind, at = 0, value = kind)
+  Array::set(dlh_owner_name, at = 0, value = name)
 }
 
 /// The recorded owner as a key. Called once per lambda actually hoisted.
 fn dlh_owner_key() -> String {
-  dlh_owner_key_of(Array::get(dlh_owner_kind, 0), Array::get(dlh_owner_name, 0), Array::get(dlh_owner_idx, 0))
+  dlh_owner_key_of(kind = Array::get(dlh_owner_kind, at = 0), name = Array::get(dlh_owner_name, at = 0), idx = Array::get(dlh_owner_idx, at = 0))
 }
 
-fn dlh_anonymous_owner_key(idx: Int) -> String {
-  let tag = Array::get(dlh_module_tag, 0)
+fn dlh_anonymous_owner_key(_ idx: Int) -> String {
+  let tag = Array::get(dlh_module_tag, at = 0)
   if String::length(tag) == 0 {
     ":s:\{idx}"
   } else {
@@ -1042,12 +1042,12 @@ fn dlh_hoisted_name(idx: Int, name: String) -> String {
 /// a partial answer: a caller that attributed a synthesized definition to a
 /// half-decoded owner would be silently wrong (#2618's collision, one level
 /// down), whereas `None` leaves the caller on whatever rule it already had.
-export fn hoisted_lambda_owner_key(name: String) -> Option[String] {
-  if String::starts_with(name, dlh_hoisted_prefix) {
+export fn hoisted_lambda_owner_key(_ name: String) -> Option[String] {
+  if String::starts_with(name, prefix = dlh_hoisted_prefix) {
     let n = String::length(name)
     let start = String::length(dlh_hoisted_prefix)
-    let digits_end = dlh_digit_run_end(name, start, n)
-    let owner_len = dlh_owner_len_at(name, start, digits_end, n)
+    let digits_end = dlh_digit_run_end(s = name, i = start, n = n)
+    let owner_len = dlh_owner_len_at(s = name, i = start, end = digits_end, n = n)
     // An owner is never empty: `dlh_owner_key` returns either a declaration's
     // name or a `:t:` / `:b:` / `:s:` form.
     if owner_len <= 0 {
@@ -1056,16 +1056,16 @@ export fn hoisted_lambda_owner_key(name: String) -> Option[String] {
       let owner_start = digits_end + 1
       let owner_end = owner_start + owner_len
       let ctr_start = owner_end + 1
-      let ctr_end = dlh_digit_run_end(name, ctr_start, n)
+      let ctr_end = dlh_digit_run_end(s = name, i = ctr_start, n = n)
       let local_start = ctr_end + 1
-      if owner_end >= n || String::char_code_at(name, owner_end) != 95 {
+      if owner_end >= n || String::char_code_at(name, at = owner_end) != 95 {
         None
-      } else if ctr_end == ctr_start || ctr_end >= n || String::char_code_at(name, ctr_end) != 95 {
+      } else if ctr_end == ctr_start || ctr_end >= n || String::char_code_at(name, at = ctr_end) != 95 {
         None
-      } else if !dlh_is_local_name(name, local_start, n) {
+      } else if !dlh_is_local_name(s = name, i = local_start, n = n) {
         None
       } else {
-        Some(String::substring(name, owner_start, owner_end))
+        Some(String::substring(name, start = owner_start, end = owner_end))
       }
     }
   } else {
@@ -1081,14 +1081,14 @@ fn dlh_is_local_name(s: String, i: Int, n: Int) -> Bool {
   if i >= n {
     false
   } else {
-    let c0 = String::char_code_at(s, i)
+    let c0 = String::char_code_at(s, at = i)
     if !((c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122) || c0 == 95) {
       false
     } else {
       let mut j = i + 1
       let mut ok = true
       while j < n {
-        let c = String::char_code_at(s, j)
+        let c = String::char_code_at(s, at = j)
         if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 {
           j = j + 1
         } else {
@@ -1104,7 +1104,7 @@ fn dlh_is_local_name(s: String, i: Int, n: Int) -> Bool {
 /// The index just past the digit run starting at `i`.
 fn dlh_digit_run_end(s: String, i: Int, n: Int) -> Int {
   let mut j = i
-  while j < n && String::char_code_at(s, j) >= 48 && String::char_code_at(s, j) <= 57 {
+  while j < n && String::char_code_at(s, at = j) >= 48 && String::char_code_at(s, at = j) <= 57 {
     j = j + 1
   }
   j
@@ -1115,14 +1115,14 @@ fn dlh_digit_run_end(s: String, i: Int, n: Int) -> Int {
 /// Bounded by the name's own length while it accumulates, so a long digit run
 /// can never overflow into a wrapped (negative, or spuriously small) value.
 fn dlh_owner_len_at(s: String, i: Int, end: Int, n: Int) -> Int {
-  if end == i || end >= n || String::char_code_at(s, end) != 95 {
+  if end == i || end >= n || String::char_code_at(s, at = end) != 95 {
     0 - 1
   } else {
     let mut acc = 0
     let mut j = i
     let mut overflow = false
     while j < end {
-      acc = acc * 10 + (String::char_code_at(s, j) - 48)
+      acc = acc * 10 + (String::char_code_at(s, at = j) - 48)
       if acc > n {
         overflow = true
         j = end
@@ -1139,7 +1139,7 @@ fn dlh_owner_len_at(s: String, i: Int, end: Int, n: Int) -> Int {
 }
 
 fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
-  dlh_hoist_arg_bindings(expr, hoisted, ctr, 0)
+  dlh_hoist_arg_bindings(expr = expr, hoisted = hoisted, ctr = ctr, literal_args = 0)
 }
 
 /// Only the outer `literal_args` lets were just synthesized for inline call
@@ -1166,7 +1166,7 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
         }
         let eff_fixed = if eff_is_blank {
           let performed = empty_str_array()
-          dlh_collect_performed_effect_names(fbody, performed)
+          dlh_collect_performed_effect_names(expr = fbody, out = performed)
           if Array::length(performed) == 0 {
             eff
           } else {
@@ -1175,22 +1175,22 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
         } else {
           eff
         }
-        let hoisted_fn = dlh_hoist_expr(EFn(tp, bnds, params, rt, eff_fixed, fbody), hoisted, ctr)
+        let hoisted_fn = dlh_hoist_expr(expr = EFn(tp, bnds, params, rt, eff_fixed, fbody), hoisted = hoisted, ctr = ctr)
         let rest = if literal_args > 0 {
-          dlh_hoist_arg_bindings(b, hoisted, ctr, literal_args - 1)
+          dlh_hoist_arg_bindings(expr = b, hoisted = hoisted, ctr = ctr, literal_args = literal_args - 1)
         } else {
-          dlh_hoist_expr(b, hoisted, ctr)
+          dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr)
         }
         let bad = empty_str_array()
         let mut pb = empty_str_array()
         let mut i = 0
         while i < Array::length(params) {
-          let (pn, _) = Array::get(params, i)
-          pb = dlh_with(pb, dlh_strip_tilde(pn))
+          let (pn, _) = Array::get(params, at = i)
+          pb = dlh_with(arr = pb, name = dlh_strip_tilde(pn))
           i = i + 1
         }
         match hoisted_fn {
-          EFn(_, _, _, _, _, hb) => dlh_scan_free(hb, pb, bad),
+          EFn(_, _, _, _, _, hb) => dlh_scan_free(expr = hb, bound = pb, bad = bad),
           _ => ()
         }
         // A source-bound, explicitly row-annotated closure used as a value retains
@@ -1200,17 +1200,17 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
         // Substitute only unshadowed uses before testing for a value escape.
         let hoistable = dlh_has_perform(fbody) && Array::length(bad) == 0 && (literal_args > 0 || eff_is_blank || {
           let mut marker = ":dlh-direct"
-          while dinsp_scan(rest, 2, marker) {
+          while dinsp_scan(expr = rest, mode = 2, name = marker) {
             marker = String::concat(marker, ":")
           }
-          dlh_marker_only_called_directly(dlh_subst(rest, name, marker), marker)
+          dlh_marker_only_called_directly(expr = dlh_subst(expr = rest, from = name, to = marker), marker = marker)
         })
         if hoistable {
-          let idx = Array::get(ctr, 0)
-          Array::set(ctr, 0, idx + 1)
-          let fresh = dlh_hoisted_name(idx, name)
-          Array::push(hoisted, SLet(false, false, fresh, None, hoisted_fn))
-          dlh_subst(rest, name, fresh)
+          let idx = Array::get(ctr, at = 0)
+          Array::set(ctr, at = 0, value = idx + 1)
+          let fresh = dlh_hoisted_name(idx = idx, name = name)
+          Array::push(hoisted, value = SLet(false, false, fresh, None, hoisted_fn))
+          dlh_subst(expr = rest, from = name, to = fresh)
         } else if dlh_has_perform(fbody) && Array::length(bad) > 0 {
           // #1069: `bad` is non-empty (the lambda captures at least one
           // ordinary enclosing local) but it still performs -- the exact
@@ -1225,12 +1225,12 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
           // ORIGINAL (unchanged, currently-broken-for-this-shape) local-let
           // behavior when it can't -- never worse than before this change,
           // only sometimes better.
-          let idx = Array::get(ctr, 0)
-          Array::set(ctr, 0, idx + 1)
+          let idx = Array::get(ctr, at = 0)
+          Array::set(ctr, at = 0, value = idx + 1)
           let marker = "__dlh_cc_marker_\{idx}"
-          let rest_marked = dlh_subst(rest, name, marker)
+          let rest_marked = dlh_subst(expr = rest, from = name, to = marker)
           let captured = dlh_dedup_names(bad)
-          if dlh_marker_only_called_directly(rest_marked, marker) && !dlh_names_ever_assigned(fbody, captured) && !dlh_names_ever_assigned(rest, captured) {
+          if dlh_marker_only_called_directly(expr = rest_marked, marker = marker) && !dlh_names_ever_assigned(expr = fbody, names = captured) && !dlh_names_ever_assigned(expr = rest, names = captured) {
             let extra_params = for cn in captured {
               (cn, None)
             }
@@ -1239,9 +1239,9 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
               EFn(tp2, bnds2, _, rt2, eff2, hb2) => EFn(tp2, bnds2, new_params, rt2, eff2, hb2),
               _ => hoisted_fn
             }
-            let fresh = dlh_hoisted_name(idx, name)
-            Array::push(hoisted, SLet(false, false, fresh, None, hoisted_fn2))
-            dlh_prepend_and_rename_calls(rest_marked, marker, fresh, captured)
+            let fresh = dlh_hoisted_name(idx = idx, name = name)
+            Array::push(hoisted, value = SLet(false, false, fresh, None, hoisted_fn2))
+            dlh_prepend_and_rename_calls(expr = rest_marked, marker = marker, fresh = fresh, extra_names = captured)
           } else {
             ELet(name, hoisted_fn, rest, soff)
           }
@@ -1249,10 +1249,10 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
           ELet(name, hoisted_fn, rest, soff)
         }
       },
-      _ => ELet(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr), soff)
+      _ => ELet(name, dlh_hoist_expr(expr = v, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr), soff)
     },
-    EBinOp(op, l, r, boff) => EBinOp(op, dlh_hoist_expr(l, hoisted, ctr), dlh_hoist_expr(r, hoisted, ctr), boff),
-    EUnaryOp(op, e) => EUnaryOp(op, dlh_hoist_expr(e, hoisted, ctr)),
+    EBinOp(op, l, r, boff) => EBinOp(op, dlh_hoist_expr(expr = l, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = r, hoisted = hoisted, ctr = ctr), boff),
+    EUnaryOp(op, e) => EUnaryOp(op, dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)),
     // A bare IIFE -- `(() -> ... { perform ... })()` -- calls an `EFn`
     // literal directly with NO enclosing `ELet` at all. Every hoist/
     // closure-conversion rule above (capture-free hoist, #1069's
@@ -1268,13 +1268,13 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
     // ELet/EFn logic above with no new closure-conversion code.
     ECall(callee, args, off, callee_resolution) => match callee {
       EFn(_, _, _, _, ceff, cfbody) => if dlh_has_perform(cfbody) || dlh_row_is_effectful(ceff) {
-        let idx = Array::get(ctr, 0)
-        Array::set(ctr, 0, idx + 1)
+        let idx = Array::get(ctr, at = 0)
+        Array::set(ctr, at = 0, value = idx + 1)
         let iife_name = "__dlh_iife_\{idx}"
-        dlh_hoist_expr(ELet(iife_name, callee, ECall(EIdent(iife_name, off), args, off, callee_resolution), off), hoisted, ctr)
+        dlh_hoist_expr(expr = ELet(iife_name, callee, ECall(EIdent(iife_name, off), args, off, callee_resolution), off), hoisted = hoisted, ctr = ctr)
       } else {
-        ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
-          dlh_hoist_expr(a, hoisted, ctr)
+        ECall(dlh_hoist_expr(expr = callee, hoisted = hoisted, ctr = ctr), for a in args {
+          dlh_hoist_expr(expr = a, hoisted = hoisted, ctr = ctr)
         }, off, callee_resolution)
       },
       _ => if dlh_args_have_literal_efn(args) {
@@ -1295,30 +1295,30 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
         // order as the literal appearing inline) so the existing ELet/EFn
         // hoist logic above turns it into an ordinary named function
         // reference, exactly like the already-working named-closure case.
-        let (wrapped, literal_args) = dlh_letbind_literal_args(callee, args, off, callee_resolution, ctr)
-        dlh_hoist_arg_bindings(wrapped, hoisted, ctr, literal_args)
+        let (wrapped, literal_args) = dlh_letbind_literal_args(callee = callee, args = args, off = off, resolution = callee_resolution, ctr = ctr)
+        dlh_hoist_arg_bindings(expr = wrapped, hoisted = hoisted, ctr = ctr, literal_args = literal_args)
       } else {
-        ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
-          dlh_hoist_expr(a, hoisted, ctr)
+        ECall(dlh_hoist_expr(expr = callee, hoisted = hoisted, ctr = ctr), for a in args {
+          dlh_hoist_expr(expr = a, hoisted = hoisted, ctr = ctr)
         }, off, callee_resolution)
       }
     },
     ETuple(es) => ETuple(for e in es {
-      dlh_hoist_expr(e, hoisted, ctr)
+      dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)
     }),
     EArray(es) => EArray(for e in es {
-      dlh_hoist_expr(e, hoisted, ctr)
+      dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)
     }),
-    ESpread(e) => ESpread(dlh_hoist_expr(e, hoisted, ctr)),
+    ESpread(e) => ESpread(dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)),
     EContinue(es) => EContinue(for e in es {
-      dlh_hoist_expr(e, hoisted, ctr)
+      dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)
     }),
     ERecord(rn, fs, targs) => {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(fs) {
-        let (k, v) = Array::get(fs, i)
-        Array::push(out, (k, dlh_hoist_expr(v, hoisted, ctr)))
+        let (k, v) = Array::get(fs, at = i)
+        Array::push(out, value = (k, dlh_hoist_expr(expr = v, hoisted = hoisted, ctr = ctr)))
         i = i + 1
       }
       ERecord(rn, out, targs)
@@ -1327,39 +1327,39 @@ fn dlh_hoist_arg_bindings(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int], lit
       let out = array_empty()
       let mut i = 0
       while i < Array::length(fs) {
-        let (k, v) = Array::get(fs, i)
-        Array::push(out, (k, dlh_hoist_expr(v, hoisted, ctr)))
+        let (k, v) = Array::get(fs, at = i)
+        Array::push(out, value = (k, dlh_hoist_expr(expr = v, hoisted = hoisted, ctr = ctr)))
         i = i + 1
       }
       EMap(out)
     },
-    EIf(c, t, e) => EIf(dlh_hoist_expr(c, hoisted, ctr), dlh_hoist_expr(t, hoisted, ctr), dlh_hoist_expr(e, hoisted, ctr)),
-    ELetRec(name, v, b) => ELetRec(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
-    ELetMut(name, v, b, soff) => ELetMut(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr), soff),
-    EAssign(name, v, c, target_off) => EAssign(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(c, hoisted, ctr), target_off),
-    EAssignOp(name, op, v, c, target_off) => EAssignOp(name, op, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(c, hoisted, ctr), target_off),
-    ESeq(a, b) => ESeq(dlh_hoist_expr(a, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
-    EWhile(c, b) => EWhile(dlh_hoist_expr(c, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
-    EForIn(name, idxn, it, b) => EForIn(name, idxn, dlh_hoist_expr(it, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
-    EDot(o, f, off, fdoff) => EDot(dlh_hoist_expr(o, hoisted, ctr), f, off, fdoff),
-    ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_hoist_expr(e, hoisted, ctr)),
-    EReturn(e) => EReturn(dlh_hoist_expr(e, hoisted, ctr)),
+    EIf(c, t, e) => EIf(dlh_hoist_expr(expr = c, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = t, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)),
+    ELetRec(name, v, b) => ELetRec(name, dlh_hoist_expr(expr = v, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr)),
+    ELetMut(name, v, b, soff) => ELetMut(name, dlh_hoist_expr(expr = v, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr), soff),
+    EAssign(name, v, c, target_off) => EAssign(name, dlh_hoist_expr(expr = v, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = c, hoisted = hoisted, ctr = ctr), target_off),
+    EAssignOp(name, op, v, c, target_off) => EAssignOp(name, op, dlh_hoist_expr(expr = v, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = c, hoisted = hoisted, ctr = ctr), target_off),
+    ESeq(a, b) => ESeq(dlh_hoist_expr(expr = a, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr)),
+    EWhile(c, b) => EWhile(dlh_hoist_expr(expr = c, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr)),
+    EForIn(name, idxn, it, b) => EForIn(name, idxn, dlh_hoist_expr(expr = it, hoisted = hoisted, ctr = ctr), dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr)),
+    EDot(o, f, off, fdoff) => EDot(dlh_hoist_expr(expr = o, hoisted = hoisted, ctr = ctr), f, off, fdoff),
+    ELabeledArg(l, m, e) => ELabeledArg(l, m, dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)),
+    EReturn(e) => EReturn(dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)),
     EBreak(opt) => match opt {
-      Some(e) => EBreak(Some(dlh_hoist_expr(e, hoisted, ctr))),
+      Some(e) => EBreak(Some(dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr))),
       None => expr
     },
-    EFn(tp, bnds, params, rt, eff, body) => EFn(tp, bnds, params, rt, eff, dlh_hoist_expr(body, hoisted, ctr)),
-    EMatch(s, arms) => EMatch(dlh_hoist_expr(s, hoisted, ctr), dlh_hoist_arms(arms, hoisted, ctr)),
-    EHandle(s, arms) => EHandle(dlh_hoist_expr(s, hoisted, ctr), dlh_hoist_arms(arms, hoisted, ctr)),
+    EFn(tp, bnds, params, rt, eff, body) => EFn(tp, bnds, params, rt, eff, dlh_hoist_expr(expr = body, hoisted = hoisted, ctr = ctr)),
+    EMatch(s, arms) => EMatch(dlh_hoist_expr(expr = s, hoisted = hoisted, ctr = ctr), dlh_hoist_arms(arms = arms, hoisted = hoisted, ctr = ctr)),
+    EHandle(s, arms) => EHandle(dlh_hoist_expr(expr = s, hoisted = hoisted, ctr = ctr), dlh_hoist_arms(arms = arms, hoisted = hoisted, ctr = ctr)),
     ELoop(params, b) => {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(params) {
-        let (pn, init) = Array::get(params, i)
-        Array::push(out, (pn, dlh_hoist_expr(init, hoisted, ctr)))
+        let (pn, init) = Array::get(params, at = i)
+        Array::push(out, value = (pn, dlh_hoist_expr(expr = init, hoisted = hoisted, ctr = ctr)))
         i = i + 1
       }
-      ELoop(out, dlh_hoist_expr(b, hoisted, ctr))
+      ELoop(out, dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr))
     },
     _ => expr
   }
@@ -1369,8 +1369,8 @@ fn dlh_hoist_arms(arms: Array[(Pat, Expr)], hoisted: Array[Stmt], ctr: Array[Int
   let out = array_empty()
   let mut i = 0
   while i < Array::length(arms) {
-    let (p, b) = Array::get(arms, i)
-    Array::push(out, (p, dlh_hoist_expr(b, hoisted, ctr)))
+    let (p, b) = Array::get(arms, at = i)
+    Array::push(out, value = (p, dlh_hoist_expr(expr = b, hoisted = hoisted, ctr = ctr)))
     i = i + 1
   }
   out
@@ -1378,12 +1378,12 @@ fn dlh_hoist_arms(arms: Array[(Pat, Expr)], hoisted: Array[Stmt], ctr: Array[Int
 
 fn dlh_hoist_stmt(stmt: Stmt, hoisted: Array[Stmt], ctr: Array[Int]) -> Stmt {
   match stmt {
-    SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, dlh_hoist_expr(body, hoisted, ctr)),
-    SLetMut(name, ty, body) => SLetMut(name, ty, dlh_hoist_expr(body, hoisted, ctr)),
-    STest(name, body) => STest(name, dlh_hoist_expr(body, hoisted, ctr)),
-    SBench(name, body) => SBench(name, dlh_hoist_expr(body, hoisted, ctr)),
-    SExpr(e) => SExpr(dlh_hoist_expr(e, hoisted, ctr)),
-    SLetPat(pat, e) => SLetPat(pat, dlh_hoist_expr(e, hoisted, ctr)),
+    SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, dlh_hoist_expr(expr = body, hoisted = hoisted, ctr = ctr)),
+    SLetMut(name, ty, body) => SLetMut(name, ty, dlh_hoist_expr(expr = body, hoisted = hoisted, ctr = ctr)),
+    STest(name, body) => STest(name, dlh_hoist_expr(expr = body, hoisted = hoisted, ctr = ctr)),
+    SBench(name, body) => SBench(name, dlh_hoist_expr(expr = body, hoisted = hoisted, ctr = ctr)),
+    SExpr(e) => SExpr(dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)),
+    SLetPat(pat, e) => SLetPat(pat, dlh_hoist_expr(expr = e, hoisted = hoisted, ctr = ctr)),
     _ => stmt
   }
 }
@@ -1394,14 +1394,14 @@ fn dlh_hoist_stmt(stmt: Stmt, hoisted: Array[Stmt], ctr: Array[Int]) -> Stmt {
 /// back as an equal tree. Asking first skips rebuilding it node by node
 /// (~9 MB of the self-compile heap). A top-level function's own `EFn` is not
 /// nested; only its body is searched.
-fn dlh_stmt_has_nested_lambda(stmt: Stmt) -> Bool {
+fn dlh_stmt_has_nested_lambda(_ stmt: Stmt) -> Bool {
   let is_fn = (e: Expr) -> match e {
     EFn(_, _, _, _, _, _) => true,
     _ => false
   }
   let body_has = (body: Expr) -> match body {
-    EFn(_, _, _, _, _, fbody) => expr_any_node(fbody, is_fn),
-    _ => expr_any_node(body, is_fn)
+    EFn(_, _, _, _, _, fbody) => expr_any_node(expr = fbody, pred = is_fn),
+    _ => expr_any_node(expr = body, pred = is_fn)
   }
   match stmt {
     SLet(_, _, _, _, body) => body_has(body),
@@ -1420,32 +1420,32 @@ fn dlh_stmt_has_nested_lambda(stmt: Stmt) -> Bool {
 /// name carries the declaration it came out of (`dlh_owner_name`), so what a module
 /// mints depends on that module alone -- see `dlh_owner`'s comment for why a
 /// program-wide counter cannot survive a per-module run.
-export fn desugar_hoist_local_lambdas(stmts: Array[Stmt]) -> Unit {
+export fn desugar_hoist_local_lambdas(_ stmts: Array[Stmt]) -> Unit {
   let hoisted = array_empty()
   let hoisted_owner: Array[Int] = []
   let n = dtd_own_end(stmts)
   let ctr = [0]
   let mut i = 0
   while i < n {
-    Array::set(ctr, 0, 0)
-    dlh_set_owner(Array::get(stmts, i), i)
+    Array::set(ctr, at = 0, value = 0)
+    dlh_set_owner(stmt = Array::get(stmts, at = i), idx = i)
     let before = Array::length(hoisted)
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     if dlh_stmt_has_nested_lambda(stmt) {
-      Array::set(stmts, i, dlh_hoist_stmt(stmt, hoisted, ctr))
+      Array::set(stmts, at = i, value = dlh_hoist_stmt(stmt = stmt, hoisted = hoisted, ctr = ctr))
     }
     let mut b = before
     while b < Array::length(hoisted) {
-      Array::push(hoisted_owner, i)
+      Array::push(hoisted_owner, value = i)
       b = b + 1
     }
     i = i + 1
   }
-  Array::set(dlh_owner_name, 0, "")
+  Array::set(dlh_owner_name, at = 0, value = "")
   if Array::length(hoisted) == 0 {
     ()
   } else {
-    dlh_place_after_owners(stmts, hoisted, hoisted_owner)
+    dlh_place_after_owners(stmts = stmts, hoisted = hoisted, hoisted_owner = hoisted_owner)
   }
 }
 
@@ -1474,9 +1474,9 @@ fn dlh_place_after_owners(stmts: Array[Stmt], hoisted: Array[Stmt], hoisted_owne
   let mut hi = 0
   let mut si = 0
   while si < total {
-    Array::push(ordered, Array::get(stmts, si))
-    while hi < Array::length(hoisted) && Array::get(hoisted_owner, hi) == si {
-      Array::push(ordered, Array::get(hoisted, hi))
+    Array::push(ordered, value = Array::get(stmts, at = si))
+    while hi < Array::length(hoisted) && Array::get(hoisted_owner, at = hi) == si {
+      Array::push(ordered, value = Array::get(hoisted, at = hi))
       hi = hi + 1
     }
     si = si + 1
@@ -1486,24 +1486,24 @@ fn dlh_place_after_owners(stmts: Array[Stmt], hoisted: Array[Stmt], hoisted_owne
   // `stmts`), and if one appeared it lands where the pass used to put every
   // hoist -- the end -- rather than nowhere.
   while hi < Array::length(hoisted) {
-    Array::push(ordered, Array::get(hoisted, hi))
+    Array::push(ordered, value = Array::get(hoisted, at = hi))
     hi = hi + 1
   }
   // The module's own region grew, and the dependency-interface block after it
   // moved by the same amount -- the same bookkeeping the trait namespace
   // operations do when they insert next to their trait.
-  Array::set(dtd_own_growth, 0, Array::get(dtd_own_growth, 0) + Array::length(hoisted))
-  if Array::get(dtd_own_limit, 0) >= 0 {
-    Array::set(dtd_own_limit, 0, Array::get(dtd_own_limit, 0) + Array::length(hoisted))
+  Array::set(dtd_own_growth, at = 0, value = Array::get(dtd_own_growth, at = 0) + Array::length(hoisted))
+  if Array::get(dtd_own_limit, at = 0) >= 0 {
+    Array::set(dtd_own_limit, at = 0, value = Array::get(dtd_own_limit, at = 0) + Array::length(hoisted))
   } else {
     ()
   }
   let mut oi = 0
   while oi < Array::length(ordered) {
     if oi < total {
-      Array::set(stmts, oi, Array::get(ordered, oi))
+      Array::set(stmts, at = oi, value = Array::get(ordered, at = oi))
     } else {
-      Array::push(stmts, Array::get(ordered, oi))
+      Array::push(stmts, value = Array::get(ordered, at = oi))
     }
     oi = oi + 1
   }

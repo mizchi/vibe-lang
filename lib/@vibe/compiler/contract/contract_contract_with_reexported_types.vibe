@@ -54,7 +54,7 @@ fn ctr_expand_sig_row(sig: String, es_names: Array[String], es_members_list: Arr
     sig
   } else {
     let marker = " with { "
-    let idx = String::index_of(sig, marker)
+    let idx = String::index_of(sig, needle = marker)
     if idx < 0 {
       sig
     } else {
@@ -63,13 +63,13 @@ fn ctr_expand_sig_row(sig: String, es_names: Array[String], es_members_list: Arr
       if slen < idx + mlen + 2 {
         sig
       } else {
-        let last_two = String::substring(sig, slen - 2, slen)
+        let last_two = String::substring(sig, start = slen - 2, end = slen)
         if last_two != " }" {
           sig
         } else {
-          let head = String::substring(sig, 0, idx)
-          let row = String::substring(sig, idx + mlen, slen - 2)
-          let expanded = ctr_es_expand_row_string(row, es_names, es_members_list)
+          let head = String::substring(sig, start = 0, end = idx)
+          let row = String::substring(sig, start = idx + mlen, end = slen - 2)
+          let expanded = ctr_es_expand_row_string(row = row, es_names = es_names, es_members_list = es_members_list)
           String::concat(head, String::concat(marker, String::concat(expanded, " }")))
         }
       }
@@ -97,14 +97,14 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
   let reexported = collect_reexported_names(impl_stmts)
   let mut di = 0
   while di < Array::length(decls) {
-    let (dname, dsig) = Array::get(decls, di)
+    let (dname, dsig) = Array::get(decls, at = di)
     // ADR-0071 (#755): compare EXPANDED forms so a contract signature
     // spelled with an effectset alias matches an implementation spelled
     // with the literal operations it expands to (or vice versa) -- `dsig`
     // itself (used in error messages / satisfied tracking below) stays the
     // original, as-written text so a mismatch still quotes what the user
     // actually typed, not an internal normalized form.
-    let dsig_expanded = ctr_expand_sig_row(dsig, ctr_es_names, ctr_es_members_list)
+    let dsig_expanded = ctr_expand_sig_row(sig = dsig, es_names = ctr_es_names, es_members_list = ctr_es_members_list)
     // A declaration is satisfied by ANY exported def with a matching
     // signature. Same-name defs in OTHER package files (private aliases,
     // domain-local helpers) are legal and never violations by themselves —
@@ -120,11 +120,11 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
     let mut best_msg = ""
     let mut fi = 0
     while fi < Array::length(defs) {
-      let (fname, fsig_opt, fexported) = Array::get(defs, fi)
+      let (fname, fsig_opt, fexported) = Array::get(defs, at = fi)
       if fname == dname {
         seen_any = true
         match fsig_opt {
-          Some(fsig) => if ctr_expand_sig_row(fsig, ctr_es_names, ctr_es_members_list) == dsig_expanded {
+          Some(fsig) => if ctr_expand_sig_row(sig = fsig, es_names = ctr_es_names, es_members_list = ctr_es_members_list) == dsig_expanded {
             if fexported {
               satisfied = true
             } else {
@@ -144,23 +144,23 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
     }
     if satisfied {
       ()
-    } else if array_contains_string(reexported, dname) {
+    } else if array_contains_string(xs = reexported, target = dname) {
       ()
     } else if seen_any {
-      Array::push(errors, best_msg)
+      Array::push(errors, value = best_msg)
     } else {
-      Array::push(errors, "contract declaration '\{dname}' has no implementation")
+      Array::push(errors, value = "contract declaration '\{dname}' has no implementation")
     }
     di = di + 1
   }
   let mut ei = 0
   while ei < Array::length(defs) {
-    let (fname, _fsig_opt, fexported) = Array::get(defs, ei)
+    let (fname, _fsig_opt, fexported) = Array::get(defs, at = ei)
     if fexported {
       let mut declared = false
       let mut ci = 0
       while ci < Array::length(decls) {
-        let (dname, _dsig) = Array::get(decls, ci)
+        let (dname, _dsig) = Array::get(decls, at = ci)
         if dname == fname {
           declared = true
         } else ()
@@ -169,21 +169,21 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
       if declared {
         ()
       } else {
-        Array::push(errors, "exported '\{fname}' is not declared in the contract")
+        Array::push(errors, value = "exported '\{fname}' is not declared in the contract")
       }
     } else ()
     ei = ei + 1
   }
   let type_defs = collect_impl_type_defs(impl_stmts)
-  let reexported_type_defs = collect_reexported_type_defs(impl_stmts, type_defs)
+  let reexported_type_defs = collect_reexported_type_defs(impl_stmts = impl_stmts, type_defs = type_defs)
   let mut resolved_rti = 0
   while resolved_rti < Array::length(resolved_reexported_type_defs) {
-    Array::push(reexported_type_defs, Array::get(resolved_reexported_type_defs, resolved_rti))
+    Array::push(reexported_type_defs, value = Array::get(resolved_reexported_type_defs, at = resolved_rti))
     resolved_rti = resolved_rti + 1
   }
   let mut oi = 0
   while oi < Array::length(opaque_names) {
-    let (oname, oparams) = Array::get(opaque_names, oi)
+    let (oname, oparams) = Array::get(opaque_names, at = oi)
     // #847: a re-exported name satisfies the declaration, but an aliased
     // source declaration present in this implementation set carries its
     // parameter kinds into the same conformance check as a direct definition.
@@ -202,18 +202,18 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
     // kind matches this opaque declaration. Count it as an implementation only
     // after the loader (or the local statement set) resolves kind metadata.
     // Missing and cyclic facade chains therefore fail closed.
-    let mut ofound = Array::length(oparams) == 0 && array_contains_string(reexported, oname)
+    let mut ofound = Array::length(oparams) == 0 && array_contains_string(xs = reexported, target = oname)
     let mut rti = 0
     while rti < Array::length(reexported_type_defs) {
-      let (rtname, rtparams) = Array::get(reexported_type_defs, rti)
+      let (rtname, rtparams) = Array::get(reexported_type_defs, at = rti)
       if rtname == oname {
         ofound = true
         if Array::length(oparams) != Array::length(rtparams) {
-          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), re-exported implementation defines \{Array::length(rtparams)}")
-        } else if same_type_param_kinds(oparams, rtparams) {
+          Array::push(errors, value = "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), re-exported implementation defines \{Array::length(rtparams)}")
+        } else if same_type_param_kinds(left = oparams, right = rtparams) {
           ()
         } else {
-          Array::push(errors, "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, re-exported implementation defines \{render_type_params(rtparams)}")
+          Array::push(errors, value = "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, re-exported implementation defines \{render_type_params(rtparams)}")
         }
       } else {
         ()
@@ -224,9 +224,9 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
       Some(params) => {
         ofound = true
         if Array::length(oparams) != Array::length(params) {
-          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), builtin defines \{Array::length(params)}")
-        } else if !same_type_param_kinds(oparams, params) {
-          Array::push(errors, "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, builtin defines \{render_type_params(params)}")
+          Array::push(errors, value = "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), builtin defines \{Array::length(params)}")
+        } else if !same_type_param_kinds(left = oparams, right = params) {
+          Array::push(errors, value = "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, builtin defines \{render_type_params(params)}")
         } else {
           ()
         }
@@ -235,22 +235,22 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
     }
     let mut ti = 0
     while ti < Array::length(type_defs) {
-      let (tname, texported, tparams) = Array::get(type_defs, ti)
+      let (tname, texported, tparams) = Array::get(type_defs, at = ti)
       if tname == oname {
         ofound = true
         if texported {
           ()
         } else {
-          Array::push(errors, "opaque type '\{oname}' is implemented but not exported by its implementation file")
+          Array::push(errors, value = "opaque type '\{oname}' is implemented but not exported by its implementation file")
         }
         // #739: the contract's declared type-parameter count is part of the
         // surface — `type Box[T]` is not satisfied by a nullary `enum Box`.
         if Array::length(oparams) != Array::length(tparams) {
-          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), implementation defines \{Array::length(tparams)}")
-        } else if same_type_param_kinds(oparams, tparams) {
+          Array::push(errors, value = "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), implementation defines \{Array::length(tparams)}")
+        } else if same_type_param_kinds(left = oparams, right = tparams) {
           ()
         } else {
-          Array::push(errors, "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, implementation defines \{render_type_params(tparams)}")
+          Array::push(errors, value = "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, implementation defines \{render_type_params(tparams)}")
         }
       } else ()
       ti = ti + 1
@@ -258,18 +258,18 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
     if ofound {
       ()
     } else {
-      Array::push(errors, "opaque type '\{oname}' has no implementation")
+      Array::push(errors, value = "opaque type '\{oname}' has no implementation")
     }
     oi = oi + 1
   }
   let mut xi = 0
   while xi < Array::length(type_defs) {
-    let (tname, texported, _) = Array::get(type_defs, xi)
+    let (tname, texported, _) = Array::get(type_defs, at = xi)
     if texported {
       let mut tdeclared = false
       let mut oj = 0
       while oj < Array::length(opaque_names) {
-        let (ojname, _) = Array::get(opaque_names, oj)
+        let (ojname, _) = Array::get(opaque_names, at = oj)
         if ojname == tname {
           tdeclared = true
         } else ()
@@ -278,7 +278,7 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
       if tdeclared {
         ()
       } else {
-        Array::push(errors, "exported type '\{tname}' is not declared in the contract (declare it as `opaque type \{tname}` or define it transparently in the contract)")
+        Array::push(errors, value = "exported type '\{tname}' is not declared in the contract (declare it as `opaque type \{tname}` or define it transparently in the contract)")
       }
     } else ()
     xi = xi + 1
@@ -291,11 +291,11 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
   // either a declared fn or a declared opaque type.
   let mut rxi = 0
   while rxi < Array::length(reexported) {
-    let exported_name = Array::get(reexported, rxi)
+    let exported_name = Array::get(reexported, at = rxi)
     let mut rdeclared = false
     let mut rdi = 0
     while rdi < Array::length(decls) {
-      let (dname, _) = Array::get(decls, rdi)
+      let (dname, _) = Array::get(decls, at = rdi)
       if dname == exported_name {
         rdeclared = true
       } else ()
@@ -306,7 +306,7 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
     } else {
       let mut roi = 0
       while roi < Array::length(opaque_names) {
-        let (oname, _) = Array::get(opaque_names, roi)
+        let (oname, _) = Array::get(opaque_names, at = roi)
         if oname == exported_name {
           rdeclared = true
         } else ()
@@ -316,7 +316,7 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
     if rdeclared {
       ()
     } else {
-      Array::push(errors, "re-exported '\{exported_name}' is not declared in the contract")
+      Array::push(errors, value = "re-exported '\{exported_name}' is not declared in the contract")
     }
     rxi = rxi + 1
   }
@@ -334,7 +334,7 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
   let tf_defs = contract_type_family_defs(contract_type_defs)
   let mut tfi = 0
   while tfi < Array::length(tf_defs) {
-    let tf_name = match Array::get(tf_defs, tfi) {
+    let tf_name = match Array::get(tf_defs, at = tfi) {
       SStruct(_, sname, _, _, _, _) => sname,
       SEnum(_, ename, _, _, _) => ename,
       STypeAlias(_, aname, _, _) => aname,
@@ -345,9 +345,9 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
     } else {
       let mut iti = 0
       while iti < Array::length(impl_type_defs) {
-        let (itname, _, _) = Array::get(impl_type_defs, iti)
+        let (itname, _, _) = Array::get(impl_type_defs, at = iti)
         if itname == tf_name {
-          Array::push(errors, "transparent contract type '\{tf_name}' is re-defined by an implementation file -- the contract definition is the single definition site; remove the local definition (a re-definition is a second runtime type identity, #1879)")
+          Array::push(errors, value = "transparent contract type '\{tf_name}' is re-defined by an implementation file -- the contract definition is the single definition site; remove the local definition (a re-definition is a second runtime type identity, #1879)")
           iti = Array::length(impl_type_defs)
         } else {
           iti = iti + 1
@@ -363,7 +363,7 @@ export fn check_contract_with_reexported_types(decls: Array[(String, String)], o
 /// re-export metadata. The loader uses the richer entry point above after it
 /// resolves each re-export source.
 export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], impl_stmts: Array[Stmt], contract_type_defs: Array[Stmt]) -> Array[String] {
-  check_contract_with_reexported_types(decls, opaque_names, impl_stmts, contract_type_defs, [
+  check_contract_with_reexported_types(decls = decls, opaque_names = opaque_names, impl_stmts = impl_stmts, contract_type_defs = contract_type_defs, resolved_reexported_type_defs = [
   ])
 }
 
@@ -372,21 +372,21 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
 /// (struct / enum / type alias — the definition IS the contract, so it lives
 /// here and passes into the facade verbatim, exported). Anything else is
 /// rejected (subpath re-exports arrive with @scope resolution, #730).
-export fn classify_contract_stmts(stmts: Array[Stmt]) -> (Array[String], Array[Stmt]) with Exception {
+export fn classify_contract_stmts(_ stmts: Array[Stmt]) -> (Array[String], Array[Stmt]) with Exception {
   let raws = array_empty()
   let type_defs = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SImport(raw_path, _) => Array::push(raws, raw_path),
-      SStruct(_, name, fields, derives, mut_names, tparams) => Array::push(type_defs, SStruct(true, name, fields, derives, mut_names, tparams)),
-      SEnum(_, name, tparams, ctors, derives) => Array::push(type_defs, SEnum(true, name, tparams, ctors, derives)),
-      STypeAlias(_, name, tparams, ty) => Array::push(type_defs, STypeAlias(true, name, tparams, ty)),
+    match Array::get(stmts, at = i) {
+      SImport(raw_path, _) => Array::push(raws, value = raw_path),
+      SStruct(_, name, fields, derives, mut_names, tparams) => Array::push(type_defs, value = SStruct(true, name, fields, derives, mut_names, tparams)),
+      SEnum(_, name, tparams, ctors, derives) => Array::push(type_defs, value = SEnum(true, name, tparams, ctors, derives)),
+      STypeAlias(_, name, tparams, ty) => Array::push(type_defs, value = STypeAlias(true, name, tparams, ty)),
       // #752: a transparent EFFECT definition — like transparent types, the
       // definition IS the contract (effect rows are core contract surface,
       // ADR-0063). It passes into the facade verbatim, exported; the
       // implementation files use the effect but must not re-define it.
-      SEffectDef(_, ename, etparams, eops) => Array::push(type_defs, SEffectDef(true, ename, etparams, eops)),
+      SEffectDef(_, ename, etparams, eops) => Array::push(type_defs, value = SEffectDef(true, ename, etparams, eops)),
       // ADR-0071 (#755) step 5: an `effectset` is likewise a transparent,
       // compile-time-only alias (no runtime identity of its own, same as
       // SEffectDef) -- the ADR's Decision section explicitly calls out
@@ -395,7 +395,7 @@ export fn classify_contract_stmts(stmts: Array[Stmt]) -> (Array[String], Array[S
       // SEffectDef immediately above. The checker (checker_stmt.vibe)
       // still independently validates cycle/collision on every effectset
       // it type-checks, including ones that arrive via this contract path.
-      SEffectSet(_, esname, esmembers) => Array::push(type_defs, SEffectSet(true, esname, esmembers)),
+      SEffectSet(_, esname, esmembers) => Array::push(type_defs, value = SEffectSet(true, esname, esmembers)),
       // #729's original message said "a .vibei contract" -- this classifier
       // is shared plumbing for BOTH `index.vpkg` (ADR-0070's boundary file,
       // docs/internal/design/module-system-oracle.md) and the legacy `index.vibei` spelling
@@ -428,13 +428,13 @@ export fn contract_type_family_offsets(stmts: Array[Stmt], stmt_at: Array[Int]) 
   let mut i = 0
   while i < Array::length(stmts) {
     let one = array_empty()
-    Array::push(one, Array::get(stmts, i))
+    Array::push(one, value = Array::get(stmts, at = i))
     let is_family = handle {
       let (_raws, tds) = classify_contract_stmts(one)
       Array::length(contract_type_family_defs(tds)) == 1
     } with { Exception::Throw(_) => false }
     if is_family && i < lim {
-      Array::push(out, Array::get(stmt_at, i))
+      Array::push(out, value = Array::get(stmt_at, at = i))
     } else {
       ()
     }
@@ -457,19 +457,19 @@ export fn contract_type_family_decl_positions(source: String, stmts: Array[Stmt]
   // a declaration on line 13 reported `line 1:8`, which is token index 8 read
   // as offset 8. `contract_classify_diagnostic` already does this conversion;
   // this function was written without it.
-  let offs = contract_type_family_offsets(stmts, stmt_at)
+  let offs = contract_type_family_offsets(stmts = stmts, stmt_at = stmt_at)
   let lim = Array::length(starts)
   let out = array_empty()
   let mut i = 0
   while i < Array::length(offs) {
-    let tok = Array::get(offs, i)
+    let tok = Array::get(offs, at = i)
     if tok >= 0 && tok < lim {
-      let (l, c) = offset_to_line_col(source, Array::get(starts, tok))
-      Array::push(out, String::concat(__to_string(l), String::concat(":", __to_string(c))))
+      let (l, c) = offset_to_line_col(source = source, offset = Array::get(starts, at = tok))
+      Array::push(out, value = String::concat(__to_string(l), String::concat(":", __to_string(c))))
     } else {
       // No position rather than a wrong one; the generator omits the marker
       // and the reader keeps the stub's own line.
-      Array::push(out, "")
+      Array::push(out, value = "")
     }
     i = i + 1
   }
@@ -492,11 +492,11 @@ export fn contract_effective_decls(decls_raw: Array[(String, String)], pkg_versi
   let out = array_empty()
   let mut i = 0
   while i < Array::length(decls_raw) {
-    let (dname, dsig) = Array::get(decls_raw, i)
-    if contract_decl_is_filtered(dname, dsig, pkg_version) {
+    let (dname, dsig) = Array::get(decls_raw, at = i)
+    if contract_decl_is_filtered(dname = dname, dsig = dsig, pkg_version = pkg_version) {
       ()
     } else {
-      Array::push(out, (dname, dsig))
+      Array::push(out, value = (dname, dsig))
     }
     i = i + 1
   }
@@ -523,11 +523,11 @@ export fn contract_effective_decl_indices(decls_raw: Array[(String, String)], pk
   let out = array_empty()
   let mut i = 0
   while i < Array::length(decls_raw) {
-    let (dname, dsig) = Array::get(decls_raw, i)
-    if contract_decl_is_filtered(dname, dsig, pkg_version) {
+    let (dname, dsig) = Array::get(decls_raw, at = i)
+    if contract_decl_is_filtered(dname = dname, dsig = dsig, pkg_version = pkg_version) {
       ()
     } else {
-      Array::push(out, i)
+      Array::push(out, value = i)
     }
     i = i + 1
   }
@@ -546,14 +546,14 @@ export fn contract_effective_decl_indices(decls_raw: Array[(String, String)], pk
 ///
 /// Names only. Two declarations of one name are a duplicate whatever their
 /// signatures: the facade allocates by name, so the second can never bind.
-export fn contract_duplicate_decl_index(decls: Array[(String, String)]) -> Int {
+export fn contract_duplicate_decl_index(_ decls: Array[(String, String)]) -> Int {
   let mut i = 0
   let mut found = 0 - 1
   while i < Array::length(decls) && found < 0 {
-    let (iname, _) = Array::get(decls, i)
+    let (iname, _) = Array::get(decls, at = i)
     let mut j = 0
     while j < i && found < 0 {
-      let (jname, _) = Array::get(decls, j)
+      let (jname, _) = Array::get(decls, at = j)
       if jname == iname {
         found = i
       } else {
@@ -580,12 +580,12 @@ export fn contract_duplicate_decl_index(decls: Array[(String, String)]) -> Int {
 /// that was not monotone, and binary search over one can anchor on valid code.
 /// This asks about each statement on its own, so there is no predicate shape
 /// to get wrong.
-export fn contract_unsupported_stmt_index(stmts: Array[Stmt]) -> Int {
+export fn contract_unsupported_stmt_index(_ stmts: Array[Stmt]) -> Int {
   let mut i = 0
   let mut found = 0 - 1
   while i < Array::length(stmts) && found < 0 {
     let one = array_empty()
-    Array::push(one, Array::get(stmts, i))
+    Array::push(one, value = Array::get(stmts, at = i))
     let bad = handle {
       let (_raws, _defs) = classify_contract_stmts(one)
       false
@@ -600,7 +600,7 @@ export fn contract_unsupported_stmt_index(stmts: Array[Stmt]) -> Int {
 }
 
 /// Compat shim for the strict v1 shape (implementation imports only).
-export fn contract_impl_import_raw_paths(stmts: Array[Stmt]) -> Array[String] with Exception {
+export fn contract_impl_import_raw_paths(_ stmts: Array[Stmt]) -> Array[String] with Exception {
   let (raws, _) = classify_contract_stmts(stmts)
   raws
 }
@@ -614,15 +614,15 @@ export fn contract_impl_import_raw_paths(stmts: Array[Stmt]) -> Array[String] wi
 /// re-defining it locally compiled into a second identity that trapped at
 /// runtime, #1879). Effects / effectsets stay in the facade: their use
 /// sites resolve through the row machinery, not through value names.
-export fn contract_type_family_defs(type_defs: Array[Stmt]) -> Array[Stmt] {
+export fn contract_type_family_defs(_ type_defs: Array[Stmt]) -> Array[Stmt] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(type_defs) {
-    let td = Array::get(type_defs, i)
+    let td = Array::get(type_defs, at = i)
     match td {
-      SStruct(_, _, _, _, _, _) => Array::push(out, td),
-      SEnum(_, _, _, _, _) => Array::push(out, td),
-      STypeAlias(_, _, _, _) => Array::push(out, td),
+      SStruct(_, _, _, _, _, _) => Array::push(out, value = td),
+      SEnum(_, _, _, _, _) => Array::push(out, value = td),
+      STypeAlias(_, _, _, _) => Array::push(out, value = td),
       _ => ()
     }
     i = i + 1
@@ -674,20 +674,20 @@ export let vpkg_types_decl_marker: String = "// vibe: decl-at "
 /// one diagnostic across lines -- crafted path components could even resemble
 /// further diagnostics. Round-tripping stays exact internally; only what is
 /// printed is escaped.
-export fn vpkg_path_escape_one_line(path: String) -> String {
+export fn vpkg_path_escape_one_line(_ path: String) -> String {
   let sb = StringBuilder::new()
   let n = String::length(path)
   let mut i = 0
   while i < n {
-    let c = String::char_code_at(path, i)
+    let c = String::char_code_at(path, at = i)
     if c == 92 {
-      StringBuilder::push(sb, "\\\\")
+      StringBuilder::push(sb, value = "\\\\")
     } else if c == 10 {
-      StringBuilder::push(sb, "\\n")
+      StringBuilder::push(sb, value = "\\n")
     } else if c == 13 {
-      StringBuilder::push(sb, "\\r")
+      StringBuilder::push(sb, value = "\\r")
     } else {
-      StringBuilder::push(sb, String::substring(path, i, i + 1))
+      StringBuilder::push(sb, value = String::substring(path, start = i, end = i + 1))
     }
     i = i + 1
   }
@@ -697,29 +697,29 @@ export fn vpkg_path_escape_one_line(path: String) -> String {
 /// Inverse of `vpkg_path_escape_one_line`. An unrecognized escape is passed through
 /// verbatim rather than dropped: a stub written by some other producer should
 /// degrade to a wrong-looking path, never to a silently shortened one.
-fn vpkg_marker_decode(text: String) -> String {
+fn vpkg_marker_decode(_ text: String) -> String {
   let sb = StringBuilder::new()
   let n = String::length(text)
   let mut i = 0
   while i < n {
-    let c = String::char_code_at(text, i)
+    let c = String::char_code_at(text, at = i)
     if c == 92 && i + 1 < n {
-      let d = String::char_code_at(text, i + 1)
+      let d = String::char_code_at(text, at = i + 1)
       if d == 110 {
-        StringBuilder::push(sb, "\n")
+        StringBuilder::push(sb, value = "\n")
         i = i + 2
       } else if d == 114 {
-        StringBuilder::push(sb, "\r")
+        StringBuilder::push(sb, value = "\r")
         i = i + 2
       } else if d == 92 {
-        StringBuilder::push(sb, "\\")
+        StringBuilder::push(sb, value = "\\")
         i = i + 2
       } else {
-        StringBuilder::push(sb, String::substring(text, i, i + 1))
+        StringBuilder::push(sb, value = String::substring(text, start = i, end = i + 1))
         i = i + 1
       }
     } else {
-      StringBuilder::push(sb, String::substring(text, i, i + 1))
+      StringBuilder::push(sb, value = String::substring(text, start = i, end = i + 1))
       i = i + 1
     }
   }
@@ -732,24 +732,24 @@ fn vpkg_marker_decode(text: String) -> String {
 /// wildcard; a typo (`Intt`) is not in that set and is reported. Compiler-owned
 /// heads (`Map`, `MutMap`, ...) go through `is_builtin_type_name`. A
 /// declaration's own generic binders shadow its references locally only.
-fn ctm_name_is_type_head(n: String) -> Bool {
+fn ctm_name_is_type_head(_ n: String) -> Bool {
   if String::length(n) == 0 {
     false
   } else {
-    let c = String::char_code_at(n, 0)
+    let c = String::char_code_at(n, at = 0)
     c >= 65 && c <= 90
   }
 }
 
-export fn contract_imported_type_names(extra: Array[Stmt]) -> Array[(String, Int)] {
+export fn contract_imported_type_names(_ extra: Array[Stmt]) -> Array[(String, Int)] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(extra) {
-    match Array::get(extra, i) {
+    match Array::get(extra, at = i) {
       SImport(_, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let local = match item.alias {
             Some(a) => a,
             None => item.name
@@ -765,7 +765,7 @@ export fn contract_imported_type_names(extra: Array[Stmt]) -> Array[(String, Int
             None => ctm_name_is_type_head(local)
           }
           if imports_type {
-            Array::push(out, (local, 0))
+            Array::push(out, value = (local, 0))
           } else {
             ()
           }
@@ -790,25 +790,25 @@ export fn contract_type_provenance(extra: Array[Stmt], opaque_names: Array[(Stri
   let out = array_empty()
   let mut oi = 0
   while oi < Array::length(opaque_names) {
-    let (name, params) = Array::get(opaque_names, oi)
-    Array::push(out, (name, Array::length(params)))
+    let (name, params) = Array::get(opaque_names, at = oi)
+    Array::push(out, value = (name, Array::length(params)))
     oi = oi + 1
   }
   let imported = contract_imported_type_names(extra)
   let mut ii = 0
   while ii < Array::length(imported) {
-    Array::push(out, Array::get(imported, ii))
+    Array::push(out, value = Array::get(imported, at = ii))
     ii = ii + 1
   }
   out
 }
 
-fn ctm_opaque_name_list(opaque_names: Array[(String, Int)]) -> Array[String] {
+fn ctm_opaque_name_list(_ opaque_names: Array[(String, Int)]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(opaque_names) {
-    let (n, _) = Array::get(opaque_names, i)
-    Array::push(out, n)
+    let (n, _) = Array::get(opaque_names, at = i)
+    Array::push(out, value = n)
     i = i + 1
   }
   out
@@ -821,57 +821,57 @@ fn ctm_deferred_type_names(tds: Array[Stmt], opaque_names: Array[String]) -> (Ar
   while i < Array::length(tds) {
     let scratch = array_empty()
     let binders = array_empty()
-    match Array::get(tds, i) {
+    match Array::get(tds, at = i) {
       SStruct(_, sname, fields, _, _, stp) => {
-        Array::push(declared, sname)
+        Array::push(declared, value = sname)
         let mut ti = 0
         while ti < Array::length(stp) {
-          Array::push(binders, Array::get(stp, ti))
+          Array::push(binders, value = Array::get(stp, at = ti))
           ti = ti + 1
         }
         let mut fi = 0
         while fi < Array::length(fields) {
-          let (_, fte) = Array::get(fields, fi)
-          ctm_collect_type_expr_heads(fte, scratch)
+          let (_, fte) = Array::get(fields, at = fi)
+          ctm_collect_type_expr_heads(te = fte, out = scratch)
           fi = fi + 1
         }
       },
       SEnum(_, ename, eparams, variants, _) => {
-        Array::push(declared, ename)
+        Array::push(declared, value = ename)
         let mut pi = 0
         while pi < Array::length(eparams) {
-          Array::push(binders, Array::get(eparams, pi))
+          Array::push(binders, value = Array::get(eparams, at = pi))
           pi = pi + 1
         }
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (_, vtypes) = Array::get(variants, vi)
+          let (_, vtypes) = Array::get(variants, at = vi)
           let mut vti = 0
           while vti < Array::length(vtypes) {
-            ctm_collect_type_expr_heads(Array::get(vtypes, vti), scratch)
+            ctm_collect_type_expr_heads(te = Array::get(vtypes, at = vti), out = scratch)
             vti = vti + 1
           }
           vi = vi + 1
         }
       },
       STypeAlias(_, aname, aparams, body) => {
-        Array::push(declared, aname)
+        Array::push(declared, value = aname)
         let mut api = 0
         while api < Array::length(aparams) {
-          Array::push(binders, Array::get(aparams, api))
+          Array::push(binders, value = Array::get(aparams, at = api))
           api = api + 1
         }
-        ctm_collect_type_expr_heads(body, scratch)
+        ctm_collect_type_expr_heads(te = body, out = scratch)
       },
       _ => ()
     }
     let mut si = 0
     while si < Array::length(scratch) {
-      let sn = Array::get(scratch, si)
-      if ctm_str_list_has(binders, sn) {
+      let sn = Array::get(scratch, at = si)
+      if ctm_str_list_has(items = binders, wanted = sn) {
         ()
       } else {
-        Array::push(referenced, sn)
+        Array::push(referenced, value = sn)
       }
       si = si + 1
     }
@@ -880,11 +880,11 @@ fn ctm_deferred_type_names(tds: Array[Stmt], opaque_names: Array[String]) -> (Ar
   let out = array_empty()
   let mut ri = 0
   while ri < Array::length(referenced) {
-    let n = Array::get(referenced, ri)
-    if is_builtin_type_name(n) || ctm_str_list_has(declared, n) || ctm_str_list_has(out, n) {
+    let n = Array::get(referenced, at = ri)
+    if is_builtin_type_name(n) || ctm_str_list_has(items = declared, wanted = n) || ctm_str_list_has(items = out, wanted = n) {
       ()
-    } else if ctm_str_list_has(opaque_names, n) {
-      Array::push(out, n)
+    } else if ctm_str_list_has(items = opaque_names, wanted = n) {
+      Array::push(out, value = n)
     } else {
       ()
     }
@@ -896,29 +896,29 @@ fn ctm_deferred_type_names(tds: Array[Stmt], opaque_names: Array[String]) -> (Ar
 fn ctm_collect_type_expr_heads(te: TypeExpr, out: Array[String]) -> Unit {
   match te {
     TyUnit => (),
-    TyName(n) => Array::push(out, n),
+    TyName(n) => Array::push(out, value = n),
     TyApp(n, args) => {
-      Array::push(out, n)
+      Array::push(out, value = n)
       let mut i = 0
       while i < Array::length(args) {
-        ctm_collect_type_expr_heads(Array::get(args, i), out)
+        ctm_collect_type_expr_heads(te = Array::get(args, at = i), out = out)
         i = i + 1
       }
     },
     TyTuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        ctm_collect_type_expr_heads(Array::get(elems, i), out)
+        ctm_collect_type_expr_heads(te = Array::get(elems, at = i), out = out)
         i = i + 1
       }
     },
     TyFn(params, ret, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        ctm_collect_type_expr_heads(Array::get(params, i), out)
+        ctm_collect_type_expr_heads(te = Array::get(params, at = i), out = out)
         i = i + 1
       }
-      ctm_collect_type_expr_heads(ret, out)
+      ctm_collect_type_expr_heads(te = ret, out = out)
     }
   }
 }
@@ -927,7 +927,7 @@ fn ctm_str_list_has(items: Array[String], wanted: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(items) && !found {
-    if Array::get(items, i) == wanted {
+    if Array::get(items, at = i) == wanted {
       found = true
     } else {
       i = i + 1
@@ -955,11 +955,11 @@ export let vpkg_deferred_type_names_prefix: String = "__vpkg_deferred_type_names
 /// modules meet in one merge.
 export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_path: String, opaque_names: Array[(String, Int)], decl_pos: Array[String]) -> String {
   let lines = array_empty()
-  Array::push(lines, vpkg_types_module_marker)
+  Array::push(lines, value = vpkg_types_module_marker)
   // Provenance, so a process holding only this text can still name the
   // contract. Emitted even when empty so the header shape is uniform.
-  Array::push(lines, String::concat(vpkg_types_contract_marker, vpkg_path_escape_one_line(contract_path)))
-  let (decl_names, deferred) = ctm_deferred_type_names(tds, ctm_opaque_name_list(opaque_names))
+  Array::push(lines, value = String::concat(vpkg_types_contract_marker, vpkg_path_escape_one_line(contract_path)))
+  let (decl_names, deferred) = ctm_deferred_type_names(tds = tds, opaque_names = ctm_opaque_name_list(opaque_names))
   if Array::length(deferred) == 0 {
     ()
   } else {
@@ -967,7 +967,7 @@ export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_pa
     // declarations named BEFORE the `:` (Codex round 3 on #2162: in a
     // whole-program merge an unscoped sentinel would excuse an unrelated
     // declaration that misspelled or forgot to import one of these names).
-    Array::push(lines, "let \{vpkg_deferred_type_names_prefix}\{uniq}__: String = \"\{String::join(decl_names, " ")} : \{String::join(deferred, " ")}\"\n")
+    Array::push(lines, value = "let \{vpkg_deferred_type_names_prefix}\{uniq}__: String = \"\{String::join(decl_names, " ")} : \{String::join(deferred, " ")}\"\n")
   }
   let mut i = 0
   while i < Array::length(tds) {
@@ -975,19 +975,19 @@ export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_pa
     // simply omitted: the reader falls back to the stub's own position, which
     // is what every stub written before this marker existed will do.
     if i < Array::length(decl_pos) {
-      let dp = Array::get(decl_pos, i)
+      let dp = Array::get(decl_pos, at = i)
       if dp == "" {
         ()
       } else {
-        Array::push(lines, String::concat(vpkg_types_decl_marker, dp))
+        Array::push(lines, value = String::concat(vpkg_types_decl_marker, dp))
       }
     } else {
       ()
     }
-    Array::push(lines, print_stmt(Array::get(tds, i)))
+    Array::push(lines, value = print_stmt(Array::get(tds, at = i)))
     i = i + 1
   }
-  String::concat(String::join(lines, "\n"), "\n")
+  String::concat(String::join(lines, sep = "\n"), "\n")
 }
 
 /// #2317: the contract `line:col` for a 1-based line of a materialized types
@@ -1001,7 +1001,7 @@ export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_pa
 /// "" for a stub written before the marker existed, so the caller keeps the
 /// stub's own position rather than inventing one.
 export fn vpkg_types_decl_pos_for_line(source: String, stub_line: Int) -> String {
-  let lines = String::split(source, "\n")
+  let lines = String::split(source, sep = "\n")
   let n = Array::length(lines)
   let lim = if stub_line - 1 < n {
     stub_line - 1
@@ -1011,9 +1011,9 @@ export fn vpkg_types_decl_pos_for_line(source: String, stub_line: Int) -> String
   let mut i = 0
   let mut found = ""
   while i < lim {
-    let line = Array::get(lines, i)
-    if String::starts_with(line, vpkg_types_decl_marker) {
-      found = String::trim(String::substring(line, String::length(vpkg_types_decl_marker), String::length(line)))
+    let line = Array::get(lines, at = i)
+    if String::starts_with(line, prefix = vpkg_types_decl_marker) {
+      found = String::trim(String::substring(line, start = String::length(vpkg_types_decl_marker), end = String::length(line)))
     } else {
       ()
     }
@@ -1029,15 +1029,15 @@ export fn vpkg_types_decl_pos_for_line(source: String, stub_line: Int) -> String
 /// worker lane, which never runs the loader. "" when absent, so a stub
 /// generated before this marker existed keeps the caller's fallback rather
 /// than producing a guess.
-export fn vpkg_types_contract_of_source(source: String) -> String {
-  let lines = String::split(source, "\n")
+export fn vpkg_types_contract_of_source(_ source: String) -> String {
+  let lines = String::split(source, sep = "\n")
   let n = Array::length(lines)
   let mut i = 0
   let mut found = ""
   while i < n && found == "" {
-    let line = Array::get(lines, i)
-    if String::starts_with(line, vpkg_types_contract_marker) {
-      let raw = String::substring(line, String::length(vpkg_types_contract_marker), String::length(line))
+    let line = Array::get(lines, at = i)
+    if String::starts_with(line, prefix = vpkg_types_contract_marker) {
+      let raw = String::substring(line, start = String::length(vpkg_types_contract_marker), end = String::length(line))
       // Verbatim, except a trailing CR. The marker is written with no padding,
       // so trimming can only corrupt: a directory name may legally begin with
       // a space, and the diagnostic would then name a file that does not exist
@@ -1047,8 +1047,8 @@ export fn vpkg_types_contract_of_source(source: String) -> String {
       let raw_len = String::length(raw)
       // Strip a trailing CR before decoding: the writer ESCAPES a real CR, so
       // a literal one here can only have come from a CRLF line ending.
-      let line_body = if raw_len > 0 && String::char_code_at(raw, raw_len - 1) == 13 {
-        String::substring(raw, 0, raw_len - 1)
+      let line_body = if raw_len > 0 && String::char_code_at(raw, at = raw_len - 1) == 13 {
+        String::substring(raw, start = 0, end = raw_len - 1)
       } else {
         raw
       }
@@ -1064,18 +1064,18 @@ export fn vpkg_types_contract_of_source(source: String) -> String {
 /// #1840: the `type <Name>` item list for importing / re-exporting the
 /// materialized types module (a `type` import binds the typedef AND, for an
 /// enum, its constructors — both bare and `Enum::Ctor`-qualified).
-export fn contract_types_item_names(tds: Array[Stmt]) -> Array[String] {
+export fn contract_types_item_names(_ tds: Array[Stmt]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(tds) {
-    match Array::get(tds, i) {
+    match Array::get(tds, at = i) {
       // This line is a compiler-owned carrier for already-checked transparent
       // declarations, not a user's kind-qualified import claim. Keep it bare
       // so parsing records ImportItem.kind=None; `type` would falsely assert
       // that structs/enums are aliases under import-kind Phase 1.
-      SStruct(_, name, _, _, _, _) => Array::push(out, name),
-      SEnum(_, name, _, _, _) => Array::push(out, name),
-      STypeAlias(_, name, _, _) => Array::push(out, name),
+      SStruct(_, name, _, _, _, _) => Array::push(out, value = name),
+      SEnum(_, name, _, _, _) => Array::push(out, value = name),
+      STypeAlias(_, name, _, _) => Array::push(out, value = name),
       _ => ()
     }
     i = i + 1
@@ -1099,24 +1099,24 @@ export let vpkg_contract_effects_sibling_slot: String = "SIBLING"
 /// The carrier line for `type_defs` (a contract's classified declarations), or
 /// "" when it declares no effect or effectset. Items are space-separated: an
 /// effect as `Name=Op1,Op2`, an effectset as its bare name.
-export fn contract_effect_names_line(type_defs: Array[Stmt]) -> String {
+export fn contract_effect_names_line(_ type_defs: Array[Stmt]) -> String {
   let names = array_empty()
   let mut i = 0
   while i < Array::length(type_defs) {
-    match Array::get(type_defs, i) {
+    match Array::get(type_defs, at = i) {
       // `Name=Op1,Op2`: the operations travel too, so a sibling's row naming
       // an operation the contract does not declare is still refused.
       SEffectDef(_, name, _, ops) => {
         let op_names = array_empty()
         let mut oi = 0
         while oi < Array::length(ops) {
-          let (op_name, _, _) = Array::get(ops, oi)
-          Array::push(op_names, op_name)
+          let (op_name, _, _) = Array::get(ops, at = oi)
+          Array::push(op_names, value = op_name)
           oi = oi + 1
         }
-        Array::push(names, String::concat(name, String::concat("=", String::join(op_names, ","))))
+        Array::push(names, value = String::concat(name, String::concat("=", String::join(op_names, sep = ","))))
       },
-      SEffectSet(_, name, _) => Array::push(names, name),
+      SEffectSet(_, name, _) => Array::push(names, value = name),
       _ => ()
     }
     i = i + 1
@@ -1132,7 +1132,7 @@ export fn contract_effect_names_line(type_defs: Array[Stmt]) -> String {
 /// (keyword `export`) the materialized types module.
 export fn contract_types_module_line(keyword: String, types_path: String, tds: Array[Stmt]) -> String {
   let items = contract_types_item_names(tds)
-  String::concat(keyword, String::concat(" ", String::concat(types_path, String::concat(" { ", String::concat(String::join(items, ", "), " }\n")))))
+  String::concat(keyword, String::concat(" ", String::concat(types_path, String::concat(" { ", String::concat(String::join(items, sep = ", "), " }\n")))))
 }
 
 /// #897 (ADR-0070 Phase 1): does every item of a qualified `import <path> as
@@ -1144,13 +1144,13 @@ export fn contract_types_module_line(keyword: String, types_path: String, tds: A
 /// unqualified form is shared with sibling impl files -- the namespaced form's
 /// whole point is to keep `mod.x` the ONLY way in, so propagating it verbatim
 /// would defeat that.
-fn import_items_are_dot_qualified(items: Array[ImportItem]) -> Bool {
+fn import_items_are_dot_qualified(_ items: Array[ImportItem]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(items) && !found {
-    let alias = Array::get(items, i).alias
+    let alias = Array::get(items, at = i).alias
     match alias {
-      Some(a) => if String::index_of(a, ".") >= 0 {
+      Some(a) => if String::index_of(a, needle = ".") >= 0 {
         found = true
       } else {
         ()
@@ -1173,14 +1173,14 @@ fn import_items_are_dot_qualified(items: Array[ImportItem]) -> Bool {
 /// namespace-qualified (see `import_items_are_dot_qualified`). Relative
 /// impl-file imports (`import ./impl.vibe {}`) and the namespaced `as mod
 /// only` form are excluded -- neither participates in directory-shared scope.
-export fn contract_directory_shared_imports(stmts: Array[Stmt]) -> Array[Stmt] {
+export fn contract_directory_shared_imports(_ stmts: Array[Stmt]) -> Array[Stmt] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImport(raw_path, items) =>
-      if String::starts_with(raw_path, "@") && !import_items_are_dot_qualified(items) {
-        Array::push(out, SImport(raw_path, items))
+      if String::starts_with(raw_path, prefix = "@") && !import_items_are_dot_qualified(items) {
+        Array::push(out, value = SImport(raw_path, items))
       } else {
         ()
       },
@@ -1201,7 +1201,7 @@ export fn contract_directory_shared_imports(stmts: Array[Stmt]) -> Array[Stmt] {
 /// `SImport` back to valid `import <path> { name [as alias], ... }` syntax
 /// (parser.vibe/printer.vibe), so this needs no bespoke formatting. Empty
 /// input -> "" (nothing to prepend).
-export fn contract_directory_shared_import_prefix_text(stmts: Array[Stmt]) -> String {
+export fn contract_directory_shared_import_prefix_text(_ stmts: Array[Stmt]) -> String {
   let shared = contract_directory_shared_imports(stmts)
   if Array::length(shared) == 0 {
     ""
@@ -1209,10 +1209,10 @@ export fn contract_directory_shared_import_prefix_text(stmts: Array[Stmt]) -> St
     let lines = array_empty()
     let mut i = 0
     while i < Array::length(shared) {
-      Array::push(lines, print_stmt(Array::get(shared, i)))
+      Array::push(lines, value = print_stmt(Array::get(shared, at = i)))
       i = i + 1
     }
-    String::concat(String::join(lines, "\n"), "\n")
+    String::concat(String::join(lines, sep = "\n"), "\n")
   }
 }
 
@@ -1231,13 +1231,13 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
   // sibling impl units (the facade is not: facade → impl would become a
   // cycle). Effects / effectsets / anything non-type-family stay verbatim.
   if types_path != "" {
-    Array::push(lines, contract_types_module_line("export", types_path, type_defs))
+    Array::push(lines, value = contract_types_module_line(keyword = "export", types_path = types_path, tds = type_defs))
   } else {
     ()
   }
   let mut tdi = 0
   while tdi < Array::length(type_defs) {
-    let td = Array::get(type_defs, tdi)
+    let td = Array::get(type_defs, at = tdi)
     let in_types_module = if types_path == "" {
       false
     } else {
@@ -1251,7 +1251,7 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
     if in_types_module {
       ()
     } else {
-      Array::push(lines, print_stmt(td))
+      Array::push(lines, value = print_stmt(td))
     }
     tdi = tdi + 1
   }
@@ -1261,7 +1261,7 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
   let builtin_exports = array_empty()
   let mut boi = 0
   while boi < Array::length(opaque_names) {
-    let (oname, oparams) = Array::get(opaque_names, boi)
+    let (oname, oparams) = Array::get(opaque_names, at = boi)
     let oarity = Array::length(oparams)
     let expected_arity = if oname == "Option" {
       1
@@ -1273,32 +1273,32 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
       None => oname == "Option" && oarity == 1
     }
     if is_builtin_type {
-      Array::push(builtin_exports, oname)
-      Array::push(allocated, "type \{oname}")
+      Array::push(builtin_exports, value = oname)
+      Array::push(allocated, value = "type \{oname}")
     } else ()
     boi = boi + 1
   }
   let mut bdi = 0
   while bdi < Array::length(decls) {
-    let (dname, _) = Array::get(decls, bdi)
+    let (dname, _) = Array::get(decls, at = bdi)
     match lookup_registry_builtin(dname) {
       Some(_) => {
-        Array::push(builtin_exports, dname)
-        Array::push(allocated, dname)
+        Array::push(builtin_exports, value = dname)
+        Array::push(allocated, value = dname)
       },
       None => if dname == "Int::to_string" {
-        Array::push(builtin_exports, dname)
-        Array::push(allocated, dname)
+        Array::push(builtin_exports, value = dname)
+        Array::push(allocated, value = dname)
       } else ()
     }
     bdi = bdi + 1
   }
   if Array::length(builtin_exports) > 0 {
-    Array::push(lines, "export { \{String::join(builtin_exports, ", ")} }")
+    Array::push(lines, value = "export { \{String::join(builtin_exports, ", ")} }")
   } else ()
   let mut ui = 0
   while ui < Array::length(impl_units) {
-    let (raw, unit_stmts) = Array::get(impl_units, ui)
+    let (raw, unit_stmts) = Array::get(impl_units, at = ui)
     let unit_types = collect_impl_type_defs(unit_stmts)
     // #847: a unit may satisfy a declaration purely via `export ./other.vibe
     // { name }` (no direct SLet/SStruct/... def of its own) — `check_contract`
@@ -1310,14 +1310,14 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
     let names = array_empty()
     let mut oi = 0
     while oi < Array::length(opaque_names) {
-      let (oname, _) = Array::get(opaque_names, oi)
+      let (oname, _) = Array::get(opaque_names, at = oi)
       // Built once per name: spelled inside the scan below, it allocated a
       // fresh string per comparison, ~10 MB of the self-compile heap.
       let okey = "type \{oname}"
       let mut otaken = false
       let mut oai = 0
       while oai < Array::length(allocated) {
-        if Array::get(allocated, oai) == okey {
+        if Array::get(allocated, at = oai) == okey {
           otaken = true
         } else ()
         oai = oai + 1
@@ -1325,10 +1325,10 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
       if otaken {
         ()
       } else {
-        let mut here = array_contains_string(unit_reexported, oname)
+        let mut here = array_contains_string(xs = unit_reexported, target = oname)
         let mut uti = 0
         while uti < Array::length(unit_types) {
-          let (tname, _, _) = Array::get(unit_types, uti)
+          let (tname, _, _) = Array::get(unit_types, at = uti)
           if tname == oname {
             here = true
           } else ()
@@ -1338,19 +1338,19 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
           // Generated facade carrier: this does not assert that the opaque
           // implementation is a type alias (it may be a struct or enum).
           // Keep the import item bare so Phase 1 records kind=None.
-          Array::push(names, oname)
-          Array::push(allocated, okey)
+          Array::push(names, value = oname)
+          Array::push(allocated, value = okey)
         } else ()
       }
       oi = oi + 1
     }
     let mut di = 0
     while di < Array::length(decls) {
-      let (dname, _) = Array::get(decls, di)
+      let (dname, _) = Array::get(decls, at = di)
       let mut taken = false
       let mut ai = 0
       while ai < Array::length(allocated) {
-        if Array::get(allocated, ai) == dname {
+        if Array::get(allocated, at = ai) == dname {
           taken = true
         } else ()
         ai = ai + 1
@@ -1358,13 +1358,13 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
       if taken {
         ()
       } else {
-        let mut defined_here = array_contains_string(unit_reexported, dname)
+        let mut defined_here = array_contains_string(xs = unit_reexported, target = dname)
         // The top-level `let`s `collect_impl_fn_defs` lists, read in place:
         // only the name and the export flag matter here, not the signature
         // text that collector renders for every definition.
         let mut fi = 0
         while fi < Array::length(unit_stmts) {
-          match Array::get(unit_stmts, fi) {
+          match Array::get(unit_stmts, at = fi) {
             SLet(fexp, _, fname, _, _) => if fname == dname && fexp {
               defined_here = true
             } else (),
@@ -1373,14 +1373,14 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
           fi = fi + 1
         }
         if defined_here {
-          Array::push(names, dname)
-          Array::push(allocated, dname)
+          Array::push(names, value = dname)
+          Array::push(allocated, value = dname)
         } else ()
       }
       di = di + 1
     }
     if Array::length(names) > 0 {
-      Array::push(lines, "export \{raw} { \{String::join(names, ", ")} }")
+      Array::push(lines, value = "export \{raw} { \{String::join(names, ", ")} }")
     } else {
       // #753: an impl unit with no allocated names must STILL appear in the
       // facade. A facade with no import/export lines re-header-parses (the
@@ -1389,12 +1389,12 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
       // test files beside the package into its dep set — an `import .` test
       // then manufactures "type_db: import cycle detected". Zero-name impl
       // units are real for all-transparent-type packages (@vibe/ast).
-      Array::push(lines, "import \{raw} {}")
+      Array::push(lines, value = "import \{raw} {}")
     }
     ui = ui + 1
   }
   if Array::length(allocated) != Array::length(decls) + Array::length(opaque_names) {
     throw("contract facade: some declarations have no implementation file (run check_contract first)")
   } else ()
-  String::concat(String::join(lines, "\n"), "\n")
+  String::concat(String::join(lines, sep = "\n"), "\n")
 }

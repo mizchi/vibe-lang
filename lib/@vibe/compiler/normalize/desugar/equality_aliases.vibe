@@ -24,8 +24,8 @@ fn eq_subst_lookup(params: Array[String], args: Array[TypeExpr], n: String) -> O
   let mut i = 0
   let mut found = None
   while i < Array::length(params) && i < Array::length(args) {
-    if type_param_name(Array::get(params, i)) == type_param_name(n) {
-      found = Some(Array::get(args, i))
+    if type_param_name(Array::get(params, at = i)) == type_param_name(n) {
+      found = Some(Array::get(args, at = i))
     } else {
       ()
     }
@@ -36,15 +36,15 @@ fn eq_subst_lookup(params: Array[String], args: Array[TypeExpr], n: String) -> O
 
 export fn eq_subst_ty(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
   match ty {
-    TyName(n) => match eq_subst_lookup(params, args, n) {
+    TyName(n) => match eq_subst_lookup(params = params, args = args, n = n) {
       Some(arg) => arg,
       None => ty
     },
     TyApp(n, xs) => {
       let subst_xs = for x in xs {
-        eq_subst_ty(x, params, args)
+        eq_subst_ty(ty = x, params = params, args = args)
       }
-      match eq_subst_lookup(params, args, n) {
+      match eq_subst_lookup(params = params, args = args, n = n) {
         Some(TyName(hn)) => TyApp(hn, subst_xs),
         Some(TyApp(hn, _)) => TyApp(hn, subst_xs),
         // #3288: `Unit` at a constructor parameter is the checker's fill for
@@ -56,20 +56,20 @@ export fn eq_subst_ty(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]
       }
     },
     TyFn(ps, result, effect) => TyFn(for p in ps {
-      eq_subst_ty(p, params, args)
-    }, eq_subst_ty(result, params, args), effect),
+      eq_subst_ty(ty = p, params = params, args = args)
+    }, eq_subst_ty(ty = result, params = params, args = args), effect),
     TyTuple(xs) => TyTuple(for x in xs {
-      eq_subst_ty(x, params, args)
+      eq_subst_ty(ty = x, params = params, args = args)
     }),
     _ => ty
   }
 }
 
-fn eq_alias_name_exists(name: String) -> Bool {
+fn eq_alias_name_exists(_ name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(dtd_eq_type_aliases) {
-    if Array::get(dtd_eq_type_aliases, i).0 == name {
+    if Array::get(dtd_eq_type_aliases, at = i).0 == name {
       found = true
     } else {
       ()
@@ -79,7 +79,7 @@ fn eq_alias_name_exists(name: String) -> Bool {
   found
 }
 
-fn eq_ty_mentions_alias(ty: TypeExpr) -> Bool {
+fn eq_ty_mentions_alias(_ ty: TypeExpr) -> Bool {
   match ty {
     TyName(name) => eq_alias_name_exists(name),
     TyApp(head, args) => if eq_alias_name_exists(head) {
@@ -97,11 +97,11 @@ fn eq_ty_mentions_alias(ty: TypeExpr) -> Bool {
   }
 }
 
-fn eq_tys_mention_alias(ts: Array[TypeExpr]) -> Bool {
+fn eq_tys_mention_alias(_ ts: Array[TypeExpr]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(ts) {
-    if eq_ty_mentions_alias(Array::get(ts, i)) {
+    if eq_ty_mentions_alias(Array::get(ts, at = i)) {
       found = true
     } else {
       ()
@@ -111,30 +111,30 @@ fn eq_tys_mention_alias(ts: Array[TypeExpr]) -> Bool {
   found
 }
 
-export fn eq_expand_alias_ty(ty: TypeExpr) -> TypeExpr {
+export fn eq_expand_alias_ty(_ ty: TypeExpr) -> TypeExpr {
   if Array::length(dtd_eq_type_aliases) == 0 {
     ty
   } else if !eq_ty_mentions_alias(ty) {
     ty
   } else {
-    eq_expand_alias_ty_seen(ty, array_empty())
+    eq_expand_alias_ty_seen(ty = ty, seen = array_empty())
   }
 }
 
 fn eq_expand_alias_ty_seen(ty: TypeExpr, seen: Array[String]) -> TypeExpr {
   match ty {
-    TyName(name) => eq_expand_alias_app(name, array_empty(), ty, seen),
+    TyName(name) => eq_expand_alias_app(head = name, args = array_empty(), fallback = ty, seen = seen),
     TyApp(head, args) => {
       let expanded_args = for arg in args {
-        eq_expand_alias_ty_seen(arg, seen)
+        eq_expand_alias_ty_seen(ty = arg, seen = seen)
       }
-      eq_expand_alias_app(head, expanded_args, TyApp(head, expanded_args), seen)
+      eq_expand_alias_app(head = head, args = expanded_args, fallback = TyApp(head, expanded_args), seen = seen)
     },
     TyFn(params, result, effect) => TyFn(for param in params {
-      eq_expand_alias_ty_seen(param, seen)
-    }, eq_expand_alias_ty_seen(result, seen), effect),
+      eq_expand_alias_ty_seen(ty = param, seen = seen)
+    }, eq_expand_alias_ty_seen(ty = result, seen = seen), effect),
     TyTuple(items) => TyTuple(for item in items {
-      eq_expand_alias_ty_seen(item, seen)
+      eq_expand_alias_ty_seen(ty = item, seen = seen)
     }),
     TyUnit => TyUnit
   }
@@ -145,16 +145,16 @@ fn eq_expand_alias_app(head: String, args: Array[TypeExpr], fallback: TypeExpr, 
   let mut out = fallback
   let mut found = false
   while i < Array::length(dtd_eq_type_aliases) {
-    let alias = Array::get(dtd_eq_type_aliases, i)
+    let alias = Array::get(dtd_eq_type_aliases, at = i)
     if !found && alias.0 == head && Array::length(alias.1) == Array::length(args) {
-      if str_array_contains(seen, head) {
+      if str_array_contains(arr = seen, val = head) {
         out = TyName("__EqAliasCycle")
       } else {
         let next_seen = for item in seen {
           item
         }
-        Array::push(next_seen, head)
-        out = eq_expand_alias_ty_seen(eq_subst_ty(alias.2, alias.1, args), next_seen)
+        Array::push(next_seen, value = head)
+        out = eq_expand_alias_ty_seen(ty = eq_subst_ty(ty = alias.2, params = alias.1, args = args), seen = next_seen)
       }
       found = true
     } else {

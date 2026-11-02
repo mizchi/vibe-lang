@@ -38,22 +38,22 @@ import ./equality_aliases.vibe {
 let hash_key_suffix = "::hash_key"
 
 /// The owner `T` of a `T::hash_key` binding, or "" for any other name.
-export fn hash_key_owner(binding: String) -> String {
+export fn hash_key_owner(_ binding: String) -> String {
   let n = String::length(binding)
   let k = String::length(hash_key_suffix)
-  if n > k && String::ends_with(binding, hash_key_suffix) {
-    String::substring(binding, 0, n - k)
+  if n > k && String::ends_with(binding, suffix = hash_key_suffix) {
+    String::substring(binding, start = 0, end = n - k)
   } else {
     ""
   }
 }
 
 /// The program's type aliases, as `(name, parameters, target)`.
-fn hash_key_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeExpr)] {
+fn hash_key_aliases(_ stmts: Array[Stmt]) -> Array[(String, Array[String], TypeExpr)] {
   let out: Array[(String, Array[String], TypeExpr)] = array_empty()
   for stmt in stmts {
     match stmt {
-      STypeAlias(_, name, params, target) => Array::push(out, (name, params, target)),
+      STypeAlias(_, name, params, target) => Array::push(out, value = (name, params, target)),
       _ => ()
     }
   }
@@ -63,7 +63,7 @@ fn hash_key_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeExp
 /// `ty` with every alias in `aliases` expanded, at any depth. A cycle (which
 /// the checker refuses) stops at a fixed depth instead of looping.
 fn hash_key_expand(ty: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)]) -> TypeExpr {
-  hks_expand(ty, aliases, 32)
+  hks_expand(ty = ty, aliases = aliases, depth = 32)
 }
 
 fn hks_expand(ty: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)], depth: Int) -> TypeExpr {
@@ -71,25 +71,25 @@ fn hks_expand(ty: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)], d
     ty
   } else {
     match ty {
-      TyName(n) => match hks_alias(aliases, n, 0) {
-        Some((_, target)) => hks_expand(target, aliases, depth - 1),
+      TyName(n) => match hks_alias(aliases = aliases, name = n, arity = 0) {
+        Some((_, target)) => hks_expand(ty = target, aliases = aliases, depth = depth - 1),
         None => ty
       },
       TyApp(h, args) => {
         let xs = for a in args {
-          hks_expand(a, aliases, depth)
+          hks_expand(ty = a, aliases = aliases, depth = depth)
         }
-        match hks_alias(aliases, h, Array::length(xs)) {
-          Some((params, target)) => hks_expand(eq_subst_ty(target, params, xs), aliases, depth - 1),
+        match hks_alias(aliases = aliases, name = h, arity = Array::length(xs)) {
+          Some((params, target)) => hks_expand(ty = eq_subst_ty(ty = target, params = params, args = xs), aliases = aliases, depth = depth - 1),
           None => TyApp(h, xs)
         }
       },
       TyTuple(items) => TyTuple(for t in items {
-        hks_expand(t, aliases, depth)
+        hks_expand(ty = t, aliases = aliases, depth = depth)
       }),
       TyFn(ps, r, eff) => TyFn(for p in ps {
-        hks_expand(p, aliases, depth)
-      }, hks_expand(r, aliases, depth), eff),
+        hks_expand(ty = p, aliases = aliases, depth = depth)
+      }, hks_expand(ty = r, aliases = aliases, depth = depth), eff),
       TyUnit => TyUnit
     }
   }
@@ -116,7 +116,7 @@ fn hks_alias(aliases: Array[(String, Array[String], TypeExpr)], name: String, ar
 /// review). A supertrait cycle, which the checker refuses, stops at a fixed
 /// depth instead of looping.
 fn hks_trait_method(stmts: Array[Stmt], trait_name: String, method: String) -> Option[(Array[TypeExpr], TypeExpr)] {
-  hks_trait_method_deep(stmts, trait_name, method, 32)
+  hks_trait_method_deep(stmts = stmts, trait_name = trait_name, method = method, depth = 32)
 }
 
 fn hks_trait_method_deep(stmts: Array[Stmt], trait_name: String, method: String, depth: Int) -> Option[(Array[TypeExpr], TypeExpr)] {
@@ -136,7 +136,7 @@ fn hks_trait_method_deep(stmts: Array[Stmt], trait_name: String, method: String,
           }
         }
         for s in sups {
-          Array::push(supers, s)
+          Array::push(supers, value = s)
         }
       } else {
         ()
@@ -147,7 +147,7 @@ fn hks_trait_method_deep(stmts: Array[Stmt], trait_name: String, method: String,
   if (out is None) && depth > 0 {
     for s in supers {
       if out is None {
-        out = hks_trait_method_deep(stmts, s, method, depth - 1)
+        out = hks_trait_method_deep(stmts = stmts, trait_name = s, method = method, depth = depth - 1)
       } else {
         ()
       }
@@ -169,7 +169,7 @@ fn hks_trait_method_deep(stmts: Array[Stmt], trait_name: String, method: String,
 /// gives its nominal head. Its parameter is that application with `Self`
 /// filled in, over the impl's type parameters, so it keys `Box[Int]` and not
 /// `Box[String]`.
-export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[String], TypeExpr)], Array[(String, String)]) {
+export fn hash_key_definitions(_ stmts: Array[Stmt]) -> (Array[(String, Array[String], TypeExpr)], Array[(String, String)]) {
   let good: Array[(String, Array[String], TypeExpr)] = array_empty()
   let bad: Array[(String, String)] = array_empty()
   let aliases = hash_key_aliases(stmts)
@@ -193,7 +193,7 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
   for stmt in stmts {
     match stmt {
       SImpl(tparams, _, trait_name, target) => {
-        impl_prefix = impl_method_owner(tparams, trait_name, target) + "::"
+        impl_prefix = impl_method_owner(tparams = tparams, trait_name = trait_name, target = target) + "::"
         impl_trait = trait_name
         impl_applied = match target {
           TyApp(_, _) => Some(target),
@@ -203,8 +203,8 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
           type_param_name(tp)
         }
       },
-      SLet(_, _, name, ann, value) => if !hks_is_trait_operation(name, traits) {
-        let in_impl = impl_prefix != "" && String::starts_with(name, impl_prefix)
+      SLet(_, _, name, ann, value) => if !hks_is_trait_operation(name = name, traits = traits) {
+        let in_impl = impl_prefix != "" && String::starts_with(name, prefix = impl_prefix)
         if !in_impl {
           impl_prefix = ""
         } else {
@@ -217,28 +217,28 @@ export fn hash_key_definitions(stmts: Array[Stmt]) -> (Array[(String, Array[Stri
         // nor a written `Box::hash_key`, and read as one it keyed a
         // `Box[Int]` field by `Other`'s method and cost a `derive (Hash)`
         // type its derived key for every other application.
-        let foreign = in_impl && owner != impl_method_owner_head(owner) && !hks_trait_reaches(stmts, trait_ref_name(impl_trait), "Hash", 32)
+        let foreign = in_impl && owner != impl_method_owner_head(owner) && !hks_trait_reaches(stmts = stmts, trait_name = trait_ref_name(impl_trait), goal = "Hash", depth = 32)
         if owner != "" && !foreign {
           let trait_sig = if in_impl {
-            hks_trait_method(stmts, impl_trait, "hash_key")
+            hks_trait_method(stmts = stmts, trait_name = impl_trait, method = "hash_key")
           } else {
             None
           }
-          let (problem, vars, param) = hks_judge(owner, ann, value, trait_sig, in_impl, aliases)
+          let (problem, vars, param) = hks_judge(owner = owner, ann = ann, value = value, trait_sig = trait_sig, in_impl = in_impl, aliases = aliases)
           if problem == "" {
             match impl_applied {
               Some(target) => if in_impl {
-                let applied = eq_subst_ty(param, ["Self"], [
-                  hash_key_expand(target, aliases)
+                let applied = eq_subst_ty(ty = param, params = ["Self"], args = [
+                  hash_key_expand(ty = target, aliases = aliases)
                 ])
-                Array::push(good, (owner, Array::concat(impl_vars, vars), applied))
+                Array::push(good, value = (owner, Array::concat(impl_vars, vars), applied))
               } else {
-                Array::push(good, (owner, vars, param))
+                Array::push(good, value = (owner, vars, param))
               },
-              None => Array::push(good, (owner, vars, param))
+              None => Array::push(good, value = (owner, vars, param))
             }
           } else {
-            Array::push(bad, (owner, problem))
+            Array::push(bad, value = (owner, problem))
           }
         } else {
           ()
@@ -268,7 +268,7 @@ fn hks_trait_reaches(stmts: Array[Stmt], trait_name: String, goal: String, depth
       match stmt {
         STrait(_, name, sups, _, _, _) => if !out && name == trait_name {
           for sup in sups {
-            if !out && hks_trait_reaches(stmts, trait_ref_name(sup), goal, depth - 1) {
+            if !out && hks_trait_reaches(stmts = stmts, trait_name = trait_ref_name(sup), goal = goal, depth = depth - 1) {
               out = true
             } else {
               ()
@@ -285,11 +285,11 @@ fn hks_trait_reaches(stmts: Array[Stmt], trait_name: String, goal: String, depth
 }
 
 /// The names of the traits `stmts` declares.
-fn hks_trait_names(stmts: Array[Stmt]) -> Array[String] {
+fn hks_trait_names(_ stmts: Array[Stmt]) -> Array[String] {
   let out: Array[String] = array_empty()
   for stmt in stmts {
     match stmt {
-      STrait(_, name, _, _, _, _) => Array::push(out, name),
+      STrait(_, name, _, _, _, _) => Array::push(out, value = name),
       _ => ()
     }
   }
@@ -298,8 +298,8 @@ fn hks_trait_names(stmts: Array[Stmt]) -> Array[String] {
 
 /// Is `name` a trait namespace operation: `Trait::op` for a trait in `traits`?
 fn hks_is_trait_operation(name: String, traits: Array[String]) -> Bool {
-  let sep = String::index_of(name, "::")
-  sep > 0 && hks_contains(traits, String::substring(name, 0, sep))
+  let sep = String::index_of(name, needle = "::")
+  sep > 0 && hks_contains(xs = traits, x = String::substring(name, start = 0, end = sep))
 }
 
 /// `(problem, type variables, parameter type)`; the problem is "" when the
@@ -312,7 +312,7 @@ fn hks_is_trait_operation(name: String, traits: Array[String]) -> Bool {
 /// helper, `Map::set_by` -- printed (#3551 review). Any non-empty row is
 /// refused, a row variable (`with e`) included; `with ()` is the empty row.
 fn hks_judge(owner: String, ann: Option[TypeExpr], value: Expr, trait_sig: Option[(Array[TypeExpr], TypeExpr)], in_impl: Bool, aliases: Array[(String, Array[String], TypeExpr)]) -> (String, Array[String], TypeExpr) {
-  let (problem, vars, param) = hks_judge_signature(owner, ann, value, trait_sig, in_impl, aliases)
+  let (problem, vars, param) = hks_judge_signature(owner = owner, ann = ann, value = value, trait_sig = trait_sig, in_impl = in_impl, aliases = aliases)
   if problem != "" {
     (problem, vars, param)
   } else {
@@ -338,9 +338,9 @@ fn hks_judge(owner: String, ann: Option[TypeExpr], value: Expr, trait_sig: Optio
 
 /// A stored effect row (`"A, B"`; `""` or `None` when empty) in its source
 /// spelling (`A + B`), or "" for the empty row.
-fn hks_row_text(eff: Option[String]) -> String {
+fn hks_row_text(_ eff: Option[String]) -> String {
   match eff {
-    Some(r) => String::join(String::split(r, ", "), " + "),
+    Some(r) => String::join(String::split(r, sep = ", "), sep = " + "),
     None => ""
   }
 }
@@ -350,17 +350,17 @@ let hash_key_row_prefix = "declares `with "
 /// The problem recorded for a `hash_key` that declares the effect row `row`
 /// (source spelling): `declares `with Console``. It travels in
 /// `hash_key_fact_marker` rows too, so `hash_key_problem_row` reads it back.
-fn hash_key_row_problem(row: String) -> String {
+fn hash_key_row_problem(_ row: String) -> String {
   hash_key_row_prefix + row + "`"
 }
 
 /// The row a `hash_key_row_problem` names (`Console`), or "" for any other
 /// problem.
-export fn hash_key_problem_row(problem: String) -> String {
+export fn hash_key_problem_row(_ problem: String) -> String {
   let n = String::length(problem)
   let k = String::length(hash_key_row_prefix)
-  if n > k + 1 && String::starts_with(problem, hash_key_row_prefix) && String::ends_with(problem, "`") {
-    String::substring(problem, k, n - 1)
+  if n > k + 1 && String::starts_with(problem, prefix = hash_key_row_prefix) && String::ends_with(problem, suffix = "`") {
+    String::substring(problem, start = k, end = n - 1)
   } else {
     ""
   }
@@ -383,7 +383,7 @@ fn hks_judge_signature(owner: String, ann: Option[TypeExpr], value: Expr, trait_
       if Array::length(params) != 1 {
         ("takes " + Int::to_string(Array::length(params)) + " parameters", vars, TyUnit)
       } else {
-        let (pname, written) = Array::get(params, 0)
+        let (pname, written) = Array::get(params, at = 0)
         // `__rc_heap` is the RC planner's heap marker (perceus
         // `inferred_heap_type`), put on an unannotated parameter before this
         // pass runs, so `hash_key(self)` arrives as `self: __rc_heap`. It is
@@ -401,7 +401,7 @@ fn hks_judge_signature(owner: String, ann: Option[TypeExpr], value: Expr, trait_
           Some(t) => Some(t),
           None => match fallback {
             Some((ps, _)) => if Array::length(ps) == 1 {
-              Some(Array::get(ps, 0))
+              Some(Array::get(ps, at = 0))
             } else {
               None
             },
@@ -420,12 +420,12 @@ fn hks_judge_signature(owner: String, ann: Option[TypeExpr], value: Expr, trait_
             None => None
           }
         }
-        hks_check(owner, vars, param, result, aliases)
+        hks_check(owner = owner, vars = vars, param = param, result = result, aliases = aliases)
       }
     },
     _ => match declared {
       Some((ps, r)) => if Array::length(ps) == 1 {
-        hks_check(owner, array_empty(), Some(Array::get(ps, 0)), Some(r), aliases)
+        hks_check(owner = owner, vars = array_empty(), param = Some(Array::get(ps, at = 0)), result = Some(r), aliases = aliases)
       } else {
         ("takes " + Int::to_string(Array::length(ps)) + " parameters", array_empty(), TyUnit)
       },
@@ -438,7 +438,7 @@ fn hks_check(owner: String, vars: Array[String], param: Option[TypeExpr], result
   match param {
     None => ("has no type annotation on its parameter", vars, TyUnit),
     Some(p0) => {
-      let p = hash_key_expand(p0, aliases)
+      let p = hash_key_expand(ty = p0, aliases = aliases)
       let head = impl_method_owner_head(owner)
       let takes_owner = match p {
         TyName(n) => n == head || n == "Self",
@@ -451,7 +451,7 @@ fn hks_check(owner: String, vars: Array[String], param: Option[TypeExpr], result
         match result {
           None => ("has no `-> String` annotation", vars, p),
           Some(r0) => {
-            let r = hash_key_expand(r0, aliases)
+            let r = hash_key_expand(ty = r0, aliases = aliases)
             let is_string = match r {
               TyName(n) => n == "String",
               _ => false
@@ -477,13 +477,13 @@ export fn hash_key_fact_marker(owner: String, problem: String) -> String {
 }
 
 /// `Some((T, problem))` for a `hash_key_fact_marker` row.
-export fn hash_key_fact_marker_read(row: String) -> Option[(String, String)] {
-  if String::starts_with(row, "!") {
-    let space = String::index_of(row, " ")
+export fn hash_key_fact_marker_read(_ row: String) -> Option[(String, String)] {
+  if String::starts_with(row, prefix = "!") {
+    let space = String::index_of(row, needle = " ")
     if space > 0 {
-      let owner = hash_key_owner(String::substring(row, 1, space))
+      let owner = hash_key_owner(String::substring(row, start = 1, end = space))
       if owner != "" {
-        Some((owner, String::substring(row, space + 1, String::length(row))))
+        Some((owner, String::substring(row, start = space + 1, end = String::length(row))))
       } else {
         None
       }
@@ -510,32 +510,32 @@ export fn hash_key_fact_pattern(owner: String, vars: Array[String], param: TypeE
 /// `Some((T, decoded))` for a `hash_key_fact_pattern` row; `decoded` is the
 /// `(type variables, parameter type)` it carries, or `None` when the row does
 /// not decode.
-export fn hash_key_fact_pattern_read(row: String) -> Option[(String, Option[(Array[String], TypeExpr)])] {
-  let space = String::index_of(row, " ")
-  let owner = if String::starts_with(row, "?") && space > 0 {
-    hash_key_owner(String::substring(row, 1, space))
+export fn hash_key_fact_pattern_read(_ row: String) -> Option[(String, Option[(Array[String], TypeExpr)])] {
+  let space = String::index_of(row, needle = " ")
+  let owner = if String::starts_with(row, prefix = "?") && space > 0 {
+    hash_key_owner(String::substring(row, start = 1, end = space))
   } else {
     ""
   }
   if owner == "" {
     None
   } else {
-    let text = String::substring(row, space + 1, String::length(row))
+    let text = String::substring(row, start = space + 1, end = String::length(row))
     let at = [0]
-    let decoded = match hks_decode(text, at) {
+    let decoded = match hks_decode(s = text, at = at) {
       Some(TyTuple(names)) => {
         let vars: Array[String] = array_empty()
         let mut ok = true
         for n in names {
           match n {
-            TyName(v) => Array::push(vars, v),
+            TyName(v) => Array::push(vars, value = v),
             _ => {
               ok = false
             }
           }
         }
-        match hks_decode(text, at) {
-          Some(param) => if ok && Array::get(at, 0) == String::length(text) {
+        match hks_decode(s = text, at = at) {
+          Some(param) => if ok && Array::get(at, at = 0) == String::length(text) {
             Some((vars, param))
           } else {
             None
@@ -552,7 +552,7 @@ export fn hash_key_fact_pattern_read(row: String) -> Option[(String, Option[(Arr
 /// A type as a self-delimiting string: `N<len>:<name>`, `A<len>:<head><n>:`
 /// and its `n` arguments, `T<n>:` and its items, `F<n>:` and its parameters,
 /// result and effect row (`E<len>:<row>` or `-`), and `U`.
-fn hks_encode(t: TypeExpr) -> String {
+fn hks_encode(_ t: TypeExpr) -> String {
   match t {
     TyName(n) => "N" + hks_text(n),
     TyApp(h, args) => "A" + hks_text(h) + hks_items(args),
@@ -565,55 +565,55 @@ fn hks_encode(t: TypeExpr) -> String {
   }
 }
 
-fn hks_text(s: String) -> String {
+fn hks_text(_ s: String) -> String {
   Int::to_string(String::length(s)) + ":" + s
 }
 
-fn hks_items(ts: Array[TypeExpr]) -> String {
+fn hks_items(_ ts: Array[TypeExpr]) -> String {
   Int::to_string(Array::length(ts)) + ":" + String::join(for t in ts {
     hks_encode(t)
-  }, "")
+  }, sep = "")
 }
 
 /// The type `hks_encode` wrote at `at[0]`, advancing past it.
 fn hks_decode(s: String, at: Array[Int]) -> Option[TypeExpr] {
-  let i = Array::get(at, 0)
+  let i = Array::get(at, at = 0)
   if i >= String::length(s) {
     None
   } else {
-    let tag = String::substring(s, i, i + 1)
-    Array::set(at, 0, i + 1)
+    let tag = String::substring(s, start = i, end = i + 1)
+    Array::set(at, at = 0, value = i + 1)
     if tag == "U" {
       Some(TyUnit)
     } else if tag == "N" {
-      match hks_decode_text(s, at) {
+      match hks_decode_text(s = s, at = at) {
         Some(n) => Some(TyName(n)),
         None => None
       }
     } else if tag == "A" {
-      match hks_decode_text(s, at) {
-        Some(h) => match hks_decode_items(s, at) {
+      match hks_decode_text(s = s, at = at) {
+        Some(h) => match hks_decode_items(s = s, at = at) {
           Some(args) => Some(TyApp(h, args)),
           None => None
         },
         None => None
       }
     } else if tag == "T" {
-      match hks_decode_items(s, at) {
+      match hks_decode_items(s = s, at = at) {
         Some(items) => Some(TyTuple(items)),
         None => None
       }
     } else if tag == "F" {
-      match hks_decode_items(s, at) {
-        Some(ps) => match hks_decode(s, at) {
+      match hks_decode_items(s = s, at = at) {
+        Some(ps) => match hks_decode(s = s, at = at) {
           Some(r) => {
-            let j = Array::get(at, 0)
-            if j < String::length(s) && String::substring(s, j, j + 1) == "-" {
-              Array::set(at, 0, j + 1)
+            let j = Array::get(at, at = 0)
+            if j < String::length(s) && String::substring(s, start = j, end = j + 1) == "-" {
+              Array::set(at, at = 0, value = j + 1)
               Some(TyFn(ps, r, None))
-            } else if j < String::length(s) && String::substring(s, j, j + 1) == "E" {
-              Array::set(at, 0, j + 1)
-              match hks_decode_text(s, at) {
+            } else if j < String::length(s) && String::substring(s, start = j, end = j + 1) == "E" {
+              Array::set(at, at = 0, value = j + 1)
+              match hks_decode_text(s = s, at = at) {
                 Some(e) => Some(TyFn(ps, r, Some(e))),
                 None => None
               }
@@ -633,14 +633,14 @@ fn hks_decode(s: String, at: Array[Int]) -> Option[TypeExpr] {
 
 /// The `<n>:` count at `at[0]`, advancing past it.
 fn hks_decode_count(s: String, at: Array[Int]) -> Option[Int] {
-  let i = Array::get(at, 0)
-  let colon = String::index_of(String::substring(s, i, String::length(s)), ":")
+  let i = Array::get(at, at = 0)
+  let colon = String::index_of(String::substring(s, start = i, end = String::length(s)), needle = ":")
   if colon <= 0 {
     None
   } else {
-    match Int::parse(String::substring(s, i, i + colon)) {
+    match Int::parse(String::substring(s, start = i, end = i + colon)) {
       Some(n) => if n >= 0 {
-        Array::set(at, 0, i + colon + 1)
+        Array::set(at, at = 0, value = i + colon + 1)
         Some(n)
       } else {
         None
@@ -651,12 +651,12 @@ fn hks_decode_count(s: String, at: Array[Int]) -> Option[Int] {
 }
 
 fn hks_decode_text(s: String, at: Array[Int]) -> Option[String] {
-  match hks_decode_count(s, at) {
+  match hks_decode_count(s = s, at = at) {
     Some(n) => {
-      let i = Array::get(at, 0)
+      let i = Array::get(at, at = 0)
       if i + n <= String::length(s) {
-        Array::set(at, 0, i + n)
-        Some(String::substring(s, i, i + n))
+        Array::set(at, at = 0, value = i + n)
+        Some(String::substring(s, start = i, end = i + n))
       } else {
         None
       }
@@ -666,14 +666,14 @@ fn hks_decode_text(s: String, at: Array[Int]) -> Option[String] {
 }
 
 fn hks_decode_items(s: String, at: Array[Int]) -> Option[Array[TypeExpr]] {
-  match hks_decode_count(s, at) {
+  match hks_decode_count(s = s, at = at) {
     Some(n) => {
       let out: Array[TypeExpr] = array_empty()
       let mut ok = true
       let mut k = 0
       while ok && k < n {
-        match hks_decode(s, at) {
-          Some(t) => Array::push(out, t),
+        match hks_decode(s = s, at = at) {
+          Some(t) => Array::push(out, value = t),
           None => {
             ok = false
           }
@@ -699,44 +699,44 @@ export fn hash_key_takes(pattern: TypeExpr, vars: Array[String], ty: TypeExpr) -
     _ => {
       let names: Array[String] = array_empty()
       let binds: Array[TypeExpr] = array_empty()
-      hks_match(pattern, ty, vars, names, binds)
+      hks_match(pattern = pattern, ty = ty, vars = vars, names = names, binds = binds)
     }
   }
 }
 
 fn hks_match(pattern: TypeExpr, ty: TypeExpr, vars: Array[String], names: Array[String], binds: Array[TypeExpr]) -> Bool {
   match pattern {
-    TyName(v) => if hks_contains(vars, v) {
+    TyName(v) => if hks_contains(xs = vars, x = v) {
       let mut found: Option[TypeExpr] = None
       let mut i = 0
       while i < Array::length(names) {
-        if Array::get(names, i) == v {
-          found = Some(Array::get(binds, i))
+        if Array::get(names, at = i) == v {
+          found = Some(Array::get(binds, at = i))
         } else {
           ()
         }
         i = i + 1
       }
       match found {
-        Some(prev) => hks_same(prev, ty),
+        Some(prev) => hks_same(a = prev, b = ty),
         None => {
-          Array::push(names, v)
-          Array::push(binds, ty)
+          Array::push(names, value = v)
+          Array::push(binds, value = ty)
           true
         }
       }
     } else {
-      hks_same(pattern, ty)
+      hks_same(a = pattern, b = ty)
     },
     TyApp(h, ps) => match ty {
-      TyApp(th, ts) => h == th && hks_match_all(ps, ts, vars, names, binds),
+      TyApp(th, ts) => h == th && hks_match_all(ps = ps, ts = ts, vars = vars, names = names, binds = binds),
       _ => false
     },
     TyTuple(ps) => match ty {
-      TyTuple(ts) => hks_match_all(ps, ts, vars, names, binds),
+      TyTuple(ts) => hks_match_all(ps = ps, ts = ts, vars = vars, names = names, binds = binds),
       _ => false
     },
-    _ => hks_same(pattern, ty)
+    _ => hks_same(a = pattern, b = ty)
   }
 }
 
@@ -747,7 +747,7 @@ fn hks_match_all(ps: Array[TypeExpr], ts: Array[TypeExpr], vars: Array[String], 
     let mut ok = true
     let mut i = 0
     while ok && i < Array::length(ps) {
-      ok = hks_match(Array::get(ps, i), Array::get(ts, i), vars, names, binds)
+      ok = hks_match(pattern = Array::get(ps, at = i), ty = Array::get(ts, at = i), vars = vars, names = names, binds = binds)
       i = i + 1
     }
     ok
@@ -761,15 +761,15 @@ fn hks_same(a: TypeExpr, b: TypeExpr) -> Bool {
       _ => false
     },
     TyApp(x, xs) => match b {
-      TyApp(y, ys) => x == y && hks_same_all(xs, ys),
+      TyApp(y, ys) => x == y && hks_same_all(xs = xs, ys = ys),
       _ => false
     },
     TyTuple(xs) => match b {
-      TyTuple(ys) => hks_same_all(xs, ys),
+      TyTuple(ys) => hks_same_all(xs = xs, ys = ys),
       _ => false
     },
     TyFn(xs, xr, xe) => match b {
-      TyFn(ys, yr, ye) => hks_same_row(xe, ye) && hks_same_all(xs, ys) && hks_same(xr, yr),
+      TyFn(ys, yr, ye) => hks_same_row(a = xe, b = ye) && hks_same_all(xs = xs, ys = ys) && hks_same(a = xr, b = yr),
       _ => false
     },
     TyUnit => b is TyUnit
@@ -793,7 +793,7 @@ fn hks_same_all(xs: Array[TypeExpr], ys: Array[TypeExpr]) -> Bool {
     let mut ok = true
     let mut i = 0
     while ok && i < Array::length(xs) {
-      ok = hks_same(Array::get(xs, i), Array::get(ys, i))
+      ok = hks_same(a = Array::get(xs, at = i), b = Array::get(ys, at = i))
       i = i + 1
     }
     ok

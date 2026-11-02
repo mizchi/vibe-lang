@@ -35,70 +35,70 @@ import @vibe/blake3/simd {
 fn prepare_assembly_source(source: String, rc: Bool) -> LinkedModulePreparation with Exception {
   let path = "prepared-構築.vibe"
   merged_offset_space_reset()
-  merged_offset_space_add(path, source, 0)
+  merged_offset_space_add(path = path, source = source, base = 0)
   let (tokens, starts, _) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
   let owners: Array[Int] = []
   for stmt in stmts {
-    Array::push(owners, 0)
+    Array::push(owners, value = 0)
   }
   let nls: Array[Int] = []
   let mut i = 0
   while i < String::length(source) {
-    if String::char_code_at(source, i) == 10 {
-      Array::push(nls, i)
+    if String::char_code_at(source, at = i) == 10 {
+      Array::push(nls, value = i)
     } else ()
     i = i + 1
   }
   let prov = DbgProv::{ files: [path], stmt_file_id: owners, file_nls: [nls] }
-  lc_prepare_module_with_split_grants(stmts, "main", [(path, source)], [], false, rc, false, false, false, false, false, prov, codegen_body_cache_discard(), codegen_body_cache_discard(), 0, -1, [
-  ], [], [], [], [], module_split_none(), lc_render_unused, [])
+  lc_prepare_module_with_split_grants(stmts = stmts, entry_name_in = "main", srcs = [(path, source)], linked_imports = [], library_mode = false, enable_rc = rc, coverage = false, debug_trace = false, debug_break = false, rc_shadow = false, enable_late_dce = false, prov = prov, body_cache_in = codegen_body_cache_discard(), body_cache_out = codegen_body_cache_discard(), slice_lo = 0, slice_hi = -1, checker_float_call_offsets = [
+  ], checker_int_render_offsets = [], checker_bool_render_offsets = [], checker_eq_offsets = [], checker_eq_type_keys = [], split = module_split_none(), render = lc_render_unused, grants = [])
 }
 
-fn owned_product(product: CodegenBodyCache) -> CodegenBodyCache with Exception {
+fn owned_product(_ product: CodegenBodyCache) -> CodegenBodyCache with Exception {
   match linear_body_cache_from_bytes(codegen_body_cache_to_bytes(product)) {
     Some(value) => value,
     None => throw("test product transport failed")
   }
 }
 
-fn zero_bytes(bytes: Bytes) -> Unit {
+fn zero_bytes(_ bytes: Bytes) -> Unit {
   let mut i = 0
   while i < Bytes::length(bytes) {
-    Bytes::set(bytes, i, 0); i = i + 1
+    Bytes::set(bytes, at = i, value = 0); i = i + 1
   }
 }
 
 fn refuses_assembly(packet: Bytes, shared: Bytes, packet_digest: String, context_digest: String) -> Unit with Exception {
   let result = handle {
-    read_function_assembly(packet, shared, packet_digest, context_digest)
+    read_function_assembly(bytes = packet, shared = shared, packet_digest = packet_digest, context_digest = context_digest)
     "accepted"
   } with { Exception::Throw(message) => message }
   assert(result != "accepted")
 }
 
 fn swap_assembly_row[T](values: Array[T], a: Int, b: Int) -> Unit {
-  let value = Array::get(values, a)
-  Array::set(values, a, Array::get(values, b))
-  Array::set(values, b, value)
+  let value = Array::get(values, at = a)
+  Array::set(values, at = a, value = Array::get(values, at = b))
+  Array::set(values, at = b, value = value)
 }
 
 fn check_assembly(source: String, rc: Bool, large: Bool, order_probe: Bool) -> Unit with Exception {
-  let expected = lc_finish_linked_module(prepare_assembly_source(source, rc))
-  let prepared = prepare_assembly_source(source, rc)
-  let ctx = function_context_new(prepared.functions, prepared.input, false, false, rc, false)
+  let expected = lc_finish_linked_module(prepare_assembly_source(source = source, rc = rc))
+  let prepared = prepare_assembly_source(source = source, rc = rc)
+  let ctx = function_context_new(plan = prepared.functions, input = prepared.input, debug_break = false, debug_trace = false, enable_rc = rc, rc_shadow = false)
   let shared = write_function_context(ctx)
   let context_digest = blake3_bytes_simd(shared)
   let n = prepared.input.num_user_funcs
   // Independently decode real assigned ranges, then merge reverse completion.
   // None of their expressions or output buffers comes from the parent heap.
   let left_ctx = read_function_context(shared)
-  let left_job = read_function_job(left_ctx, write_function_job(ctx, context_digest, 0, n / 2), context_digest)
-  let left = owned_product(run_function_range(left_ctx, left_job.lo, left_job.hi))
+  let left_job = read_function_job(ctx = left_ctx, bytes = write_function_job(ctx = ctx, digest = context_digest, lo = 0, hi = n / 2), digest = context_digest)
+  let left = owned_product(run_function_range(ctx = left_ctx, lo = left_job.lo, hi = left_job.hi))
   let right_ctx = read_function_context(shared)
-  let right_job = read_function_job(right_ctx, write_function_job(ctx, context_digest, n / 2, n), context_digest)
-  let right = owned_product(run_function_range(right_ctx, right_job.lo, right_job.hi))
-  let products = codegen_body_cache_merge(right, left)
+  let right_job = read_function_job(ctx = right_ctx, bytes = write_function_job(ctx = ctx, digest = context_digest, lo = n / 2, hi = n), digest = context_digest)
+  let right = owned_product(run_function_range(ctx = right_ctx, lo = right_job.lo, hi = right_job.hi))
+  let products = codegen_body_cache_merge(a = right, b = left)
   let assembly = function_assembly_new(prepared)
   assert(prepared.used)
   let consumed = handle {
@@ -106,11 +106,11 @@ fn check_assembly(source: String, rc: Bool, large: Bool, order_probe: Bool) -> U
   } with { Exception::Throw(message) => message }
   assert(consumed == "module preparation: already consumed")
   // A standalone packet must never inherit an ambient AST string-reference pool.
-  let packet = ast_binary_with_string_pool(FrozenArray::from_array([
+  let packet = ast_binary_with_string_pool(strings = FrozenArray::from_array([
     "vibe-function-assembly-1",
     context_digest
-  ]), () -> {
-    write_function_assembly(assembly, context_digest)
+  ]), action = () -> {
+    write_function_assembly(state = assembly, context_digest = context_digest)
   })
   let packet_digest = blake3_bytes_simd(packet)
   if large {
@@ -118,34 +118,34 @@ fn check_assembly(source: String, rc: Bool, large: Bool, order_probe: Bool) -> U
     assert(Bytes::length(packet) < 64 * 1024)
   } else ()
   // These checks independently exercise outer receipts and inner codec checks.
-  let changed_packet = Bytes::slice(packet, 0, Bytes::length(packet))
-  Bytes::set(changed_packet, Bytes::length(changed_packet) - 1, 123)
-  refuses_assembly(changed_packet, shared, packet_digest, context_digest)
-  let changed_context = Bytes::slice(shared, 0, Bytes::length(shared))
-  Bytes::set(changed_context, Bytes::length(changed_context) - 1, 123)
-  refuses_assembly(packet, changed_context, packet_digest, context_digest)
+  let changed_packet = Bytes::slice(packet, start = 0, end = Bytes::length(packet))
+  Bytes::set(changed_packet, at = Bytes::length(changed_packet) - 1, value = 123)
+  refuses_assembly(packet = changed_packet, shared = shared, packet_digest = packet_digest, context_digest = context_digest)
+  let changed_context = Bytes::slice(shared, start = 0, end = Bytes::length(shared))
+  Bytes::set(changed_context, at = Bytes::length(changed_context) - 1, value = 123)
+  refuses_assembly(packet = packet, shared = changed_context, packet_digest = packet_digest, context_digest = context_digest)
   for cut in [0, 1, 20, Bytes::length(packet) - 1] {
-    let short = Bytes::slice(packet, 0, cut)
-    refuses_assembly(short, shared, blake3_bytes_simd(short), context_digest)
+    let short = Bytes::slice(packet, start = 0, end = cut)
+    refuses_assembly(packet = short, shared = shared, packet_digest = blake3_bytes_simd(short), context_digest = context_digest)
   }
-  let extra = Bytes::slice(packet, 0, Bytes::length(packet))
-  Bytes::push(extra, 42)
-  refuses_assembly(extra, shared, blake3_bytes_simd(extra), context_digest)
-  let wrong_version = Bytes::slice(packet, 0, Bytes::length(packet))
-  Bytes::set(wrong_version, String::length("vibe-function-assembly-1"), '9')
-  refuses_assembly(wrong_version, shared, blake3_bytes_simd(wrong_version), context_digest)
-  let invalid_bool = Bytes::slice(packet, 0, Bytes::length(packet))
+  let extra = Bytes::slice(packet, start = 0, end = Bytes::length(packet))
+  Bytes::push(extra, value = 42)
+  refuses_assembly(packet = extra, shared = shared, packet_digest = blake3_bytes_simd(extra), context_digest = context_digest)
+  let wrong_version = Bytes::slice(packet, start = 0, end = Bytes::length(packet))
+  Bytes::set(wrong_version, at = String::length("vibe-function-assembly-1"), value = '9')
+  refuses_assembly(packet = wrong_version, shared = shared, packet_digest = blake3_bytes_simd(wrong_version), context_digest = context_digest)
+  let invalid_bool = Bytes::slice(packet, start = 0, end = Bytes::length(packet))
   let reader = ast_binary_reader_new(invalid_bool)
   ast_binary_read_string_checked(reader)
   ast_binary_read_string_checked(reader)
-  Bytes::set(invalid_bool, reader.pos, 2)
-  refuses_assembly(invalid_bool, shared, blake3_bytes_simd(invalid_bool), context_digest)
-  let invalid_header = Bytes::slice(packet, 0, Bytes::length(packet))
-  Bytes::set(invalid_header, 1, 255)
-  refuses_assembly(invalid_header, shared, blake3_bytes_simd(invalid_header), context_digest)
+  Bytes::set(invalid_bool, at = reader.pos, value = 2)
+  refuses_assembly(packet = invalid_bool, shared = shared, packet_digest = blake3_bytes_simd(invalid_bool), context_digest = context_digest)
+  let invalid_header = Bytes::slice(packet, start = 0, end = Bytes::length(packet))
+  Bytes::set(invalid_header, at = 1, value = 255)
+  refuses_assembly(packet = invalid_header, shared = shared, packet_digest = blake3_bytes_simd(invalid_header), context_digest = context_digest)
   // Enter the actual literal decoder with matching outer digests and binding;
   // a receipt mismatch alone would not prove that UTF-8 is checked here.
-  let invalid_utf8 = Bytes::slice(shared, 0, Bytes::length(shared))
+  let invalid_utf8 = Bytes::slice(shared, start = 0, end = Bytes::length(shared))
   let literal_reader = ast_binary_reader_new(invalid_utf8)
   ast_binary_read_string_checked(literal_reader)
   let count = ast_binary_read_varint_checked(literal_reader)
@@ -154,41 +154,41 @@ fn check_assembly(source: String, rc: Bool, large: Bool, order_probe: Bool) -> U
   while literal < count && !changed {
     let size = ast_binary_read_varint_checked(literal_reader)
     if size > 0 {
-      Bytes::set(invalid_utf8, literal_reader.pos, 255)
+      Bytes::set(invalid_utf8, at = literal_reader.pos, value = 255)
       changed = true
     } else ()
     literal = literal + 1
   }
   assert(changed)
   let invalid_context_digest = blake3_bytes_simd(invalid_utf8)
-  let bound_packet = Bytes::slice(packet, 0, Bytes::length(packet))
+  let bound_packet = Bytes::slice(packet, start = 0, end = Bytes::length(packet))
   let binding_reader = ast_binary_reader_new(bound_packet)
   ast_binary_read_string_checked(binding_reader)
   assert(ast_binary_read_varint_checked(binding_reader) == 64)
   let mut digit = 0
   while digit < 64 {
-    Bytes::set(bound_packet, binding_reader.pos + digit, String::char_code_at(invalid_context_digest, digit))
+    Bytes::set(bound_packet, at = binding_reader.pos + digit, value = String::char_code_at(invalid_context_digest, at = digit))
     digit = digit + 1
   }
-  refuses_assembly(bound_packet, invalid_utf8, blake3_bytes_simd(bound_packet), invalid_context_digest)
-  let received = read_function_assembly(packet, shared, packet_digest, context_digest)
+  refuses_assembly(packet = bound_packet, shared = invalid_utf8, packet_digest = blake3_bytes_simd(bound_packet), context_digest = invalid_context_digest)
+  let received = read_function_assembly(bytes = packet, shared = shared, packet_digest = packet_digest, context_digest = context_digest)
   // Nothing beyond primitive owned data may survive the preparation boundary.
-  Array::truncate(prepared.functions.bodies, 0)
-  Array::truncate(prepared.functions.source_types, 0)
-  Array::truncate(prepared.input.stmts, 0)
-  Array::truncate(prepared.input.fn_stmt_indices, 0)
-  Array::truncate(prepared.input.str_strs, 0)
-  Array::truncate(prepared.input.fn_names_list, 0)
-  Array::truncate(prepared.sections.str_offsets, 0)
-  Array::truncate(prepared.sections.prov.files, 0)
+  Array::truncate(prepared.functions.bodies, length = 0)
+  Array::truncate(prepared.functions.source_types, length = 0)
+  Array::truncate(prepared.input.stmts, length = 0)
+  Array::truncate(prepared.input.fn_stmt_indices, length = 0)
+  Array::truncate(prepared.input.str_strs, length = 0)
+  Array::truncate(prepared.input.fn_names_list, length = 0)
+  Array::truncate(prepared.sections.str_offsets, length = 0)
+  Array::truncate(prepared.sections.prov.files, length = 0)
   merged_offset_space_reset()
-  merged_offset_space_add("unrelated.vibe", "unrelated source", 0)
+  merged_offset_space_add(path = "unrelated.vibe", source = "unrelated source", base = 0)
   zero_bytes(packet)
   zero_bytes(shared)
   let invalid = owned_product(products)
-  Array::truncate(invalid.fn_meta_i32, 0)
+  Array::truncate(invalid.fn_meta_i32, length = 0)
   let bad_product = handle {
-    finish_function_assembly(received, invalid); "accepted"
+    finish_function_assembly(state = received, products = invalid); "accepted"
   } with { Exception::Throw(message) => message }
   assert(bad_product == "function product: function columns or count differ")
   assert(!received.replay.used)
@@ -197,42 +197,42 @@ fn check_assembly(source: String, rc: Bool, large: Bool, order_probe: Bool) -> U
   if order_probe {
     let reordered = owned_product(products)
     assert(Array::length(reordered.lam_indices) >= 2)
-    assert(Array::get(reordered.lam_owner, 0) == Array::get(reordered.lam_owner, 1))
-    swap_assembly_row(reordered.lam_indices, 0, 1)
-    swap_assembly_row(reordered.lam_owner, 0, 1)
-    swap_assembly_row(reordered.lam_bodies, 0, 1)
-    swap_assembly_row(reordered.lam_param_counts, 0, 1)
-    swap_assembly_row(reordered.lam_captures, 0, 1)
-    swap_assembly_row(reordered.lam_meta_i32, 0, 1)
-    swap_assembly_row(reordered.lam_meta_i64, 0, 1)
+    assert(Array::get(reordered.lam_owner, at = 0) == Array::get(reordered.lam_owner, at = 1))
+    swap_assembly_row(values = reordered.lam_indices, a = 0, b = 1)
+    swap_assembly_row(values = reordered.lam_owner, a = 0, b = 1)
+    swap_assembly_row(values = reordered.lam_bodies, a = 0, b = 1)
+    swap_assembly_row(values = reordered.lam_param_counts, a = 0, b = 1)
+    swap_assembly_row(values = reordered.lam_captures, a = 0, b = 1)
+    swap_assembly_row(values = reordered.lam_meta_i32, a = 0, b = 1)
+    swap_assembly_row(values = reordered.lam_meta_i64, a = 0, b = 1)
     let disorder = handle {
-      finish_function_assembly(received, reordered); "accepted"
+      finish_function_assembly(state = received, products = reordered); "accepted"
     } with { Exception::Throw(message) => message }
     assert(disorder == "function product: lambda rows are not in planned order")
     assert(!received.replay.used)
     assert(Array::length(received.sections.lt_w.bodies) == 0)
     assert(Array::length(received.sections.table_slots_used) == 0)
   } else ()
-  let actual = finish_function_assembly(received, products)
+  let actual = finish_function_assembly(state = received, products = products)
   assert(Bytes::compare(expected, actual) == 0)
   let again = handle {
-    finish_function_assembly(received, products); "accepted"
+    finish_function_assembly(state = received, products = products); "accepted"
   } with { Exception::Throw(message) => message }
   assert(again == "function assembly: assembly was already consumed")
 }
 
 test "owned assembly finishes real products after discarding all preparing syntax" {
   for rc in [false, true] {
-    check_assembly("let seed = 23\nfn helper(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int {\n  let f = (x: Int) -> helper(seed, x)\n  f(5)\n}\n", rc, false, false)
-    check_assembly("fn main() -> Unit allows Console { println(\"構築\") }\n", rc, false, false)
-    check_assembly("fn main() -> Int allows Exception {\n handle { throw(\"boom\") } with { Exception::Throw(_) => { 7 } }\n}\n", rc, false, false)
-    check_assembly("fn divide(n: Int) -> Int {\n n / 0\n}\nfn main() -> Int { divide(7) }\n", rc, false, false)
+    check_assembly(source = "let seed = 23\nfn helper(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int {\n  let f = (x: Int) -> helper(seed, x)\n  f(5)\n}\n", rc = rc, large = false, order_probe = false)
+    check_assembly(source = "fn main() -> Unit allows Console { println(\"構築\") }\n", rc = rc, large = false, order_probe = false)
+    check_assembly(source = "fn main() -> Int allows Exception {\n handle { throw(\"boom\") } with { Exception::Throw(_) => { 7 } }\n}\n", rc = rc, large = false, order_probe = false)
+    check_assembly(source = "fn divide(n: Int) -> Int {\n n / 0\n}\nfn main() -> Int { divide(7) }\n", rc = rc, large = false, order_probe = false)
   }
 }
 
 test "decoded assembly preserves per-owner lambda order validation before mutation" {
   for rc in [false, true] {
-    check_assembly("fn choose(n: Int) -> (Int) -> Int { if n > 0 { (x) -> x - 2 } else { (x) -> x + 100 } }\nfn main() -> Int { let f = choose(1); f(9) }", rc, false, true)
+    check_assembly(source = "fn choose(n: Int) -> (Int) -> Int { if n > 0 { (x) -> x - 2 } else { (x) -> x + 100 } }\nfn main() -> Int { let f = choose(1); f(9) }", rc = rc, large = false, order_probe = true)
   }
 }
 
@@ -240,10 +240,10 @@ test "assembly packet reuses the shared literal pool instead of encoding it agai
   let parts: Array[String] = []
   let mut i = 0
   while i < 8192 {
-    Array::push(parts, "literal_pool_6b7c8d9e_unchanged_0123456789")
+    Array::push(parts, value = "literal_pool_6b7c8d9e_unchanged_0123456789")
     i = i + 1
   }
-  let source = "fn main() -> Unit allows Console { println(\"" + String::join(parts, "") + "\") }\n"
-  check_assembly(source, false, true, false)
-  check_assembly(source, true, true, false)
+  let source = "fn main() -> Unit allows Console { println(\"" + String::join(parts, sep = "") + "\") }\n"
+  check_assembly(source = source, rc = false, large = true, order_probe = false)
+  check_assembly(source = source, rc = true, large = true, order_probe = false)
 }

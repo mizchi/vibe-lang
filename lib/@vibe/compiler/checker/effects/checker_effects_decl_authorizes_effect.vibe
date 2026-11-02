@@ -63,17 +63,17 @@ import ./checker_effects_throw_payload_kind.vibe {
 
 /// #2964 / #3015: does the row name exception kinds and no erased
 /// `Exception` label?
-fn row_is_kinded_exception_only(labels: Array[String]) -> Bool {
+fn row_is_kinded_exception_only(_ labels: Array[String]) -> Bool {
   !row_has_erased_exception(labels) && Array::length(exception_effect_labels(labels)) > 0
 }
 
 /// Does a row carry the ERASED exception effect (`Exception` /
 /// `Exception::Throw`, kind empty), the spelling that admits every kind?
-export fn row_has_erased_exception(labels: Array[String]) -> Bool {
+export fn row_has_erased_exception(_ labels: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(labels) {
-    let l = Array::get(labels, i)
+    let l = Array::get(labels, at = i)
     if is_exception_label(l) && String::length(exception_label_kind(l)) == 0 {
       found = true
     } else {
@@ -86,13 +86,13 @@ export fn row_has_erased_exception(labels: Array[String]) -> Bool {
 
 /// The kinded exception labels (`Exception[K]`, kind non-empty) among a
 /// handle's discharged effect names.
-export fn kinded_exception_labels(labels: Array[String]) -> Array[String] {
+export fn kinded_exception_labels(_ labels: Array[String]) -> Array[String] {
   let out = no_str_labels()
   let mut i = 0
   while i < Array::length(labels) {
-    let l = Array::get(labels, i)
-    if is_exception_label(l) && String::length(exception_label_kind(l)) > 0 && String::index_of(l, "::") < 0 {
-      Array::push(out, l)
+    let l = Array::get(labels, at = i)
+    if is_exception_label(l) && String::length(exception_label_kind(l)) > 0 && String::index_of(l, needle = "::") < 0 {
+      Array::push(out, value = l)
     } else {
       ()
     }
@@ -104,15 +104,15 @@ export fn kinded_exception_labels(labels: Array[String]) -> Array[String] {
 /// `labels` without the exception family and without the kinded-handle
 /// marker: what an enclosing row still authorizes inside a kinded handle
 /// (everything but exceptions, which the handle now owns).
-export fn labels_without_exception_family(labels: Array[String]) -> Array[String] {
+export fn labels_without_exception_family(_ labels: Array[String]) -> Array[String] {
   let out = no_str_labels()
   let mut i = 0
   while i < Array::length(labels) {
-    let l = Array::get(labels, i)
+    let l = Array::get(labels, at = i)
     if is_exception_label(l) || is_kinded_handle_pseudo_label(l) {
       ()
     } else {
-      Array::push(out, l)
+      Array::push(out, value = l)
     }
     i = i + 1
   }
@@ -133,13 +133,13 @@ export fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Boo
     // below, where the `?` label never matches, and `optional_grant_for`
     // names the edit.
     let core = strip_authority_grade(eff_name)
-    decl_authorizes_optional_op(labels, core) || decl_authorizes_op(labels, core)
-  } else if effect_row_has_label(Some(labels), eff_name) && !row_label_args_differ(eff_name, requirement_marked_for(eff_name)) {
+    decl_authorizes_optional_op(labels = labels, op_name = core) || decl_authorizes_op(labels = labels, op_name = core)
+  } else if effect_row_has_label(row = Some(labels), wanted = eff_name) && !row_label_args_differ(declared = eff_name, marked = requirement_marked_for(eff_name)) {
     // #3095: the same spelling can still name two types -- `with State[Int]`
     // inside a lambda binding `[Int]` names its formal, while `get(5)`
     // requires the builtin.
     true
-  } else if console_authorizes_legacy(labels, eff_name) {
+  } else if console_authorizes_legacy(labels = labels, eff_name = eff_name) {
     true
   } else if is_exception_effect_name(eff_name) {
     // ADR-0085 Phase 3 (#1344): the exception effect is authorized by KIND.
@@ -164,7 +164,7 @@ export fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Boo
     // of a pattern binder or a field, a callback typed `with Exception`, a
     // callee declared `with Exception` -- and the function then raised a kind
     // it does not declare. The erased spelling `with Exception` stays gradual.
-    let strict = effect_row_has_label(Some(labels), kinded_handle_marker()) || row_is_kinded_exception_only(labels)
+    let strict = effect_row_has_label(row = Some(labels), wanted = kinded_handle_marker()) || row_is_kinded_exception_only(labels)
     // #3541: in the body of an erased arm that reads its binder, the erased
     // label covers only the thrown message (`erased_covers_only_messages`).
     let only_messages = erased_covers_only_messages(labels)
@@ -172,14 +172,14 @@ export fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Boo
     let mut kinded_found = false
     let mut alias_i = 0
     while alias_i < Array::length(labels) {
-      let declared_label = Array::get(labels, alias_i)
+      let declared_label = Array::get(labels, at = alias_i)
       let declared_kind = exception_label_kind(declared_label)
       let covers = if strict {
-        String::length(required_kind) > 0 && String::length(declared_kind) > 0 && exception_kinds_same(declared_kind, required_kind)
+        String::length(required_kind) > 0 && String::length(declared_kind) > 0 && exception_kinds_same(a = declared_kind, b = required_kind)
       } else if String::length(declared_kind) == 0 && only_messages {
         erased_exception_covers_kind(required_kind)
       } else {
-        exception_kinds_compatible(declared_kind, required_kind)
+        exception_kinds_compatible(declared_kind = declared_kind, required_kind = required_kind)
       }
       if is_exception_label(declared_label) && covers {
         alias_found = true
@@ -192,7 +192,7 @@ export fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Boo
     // #3541: a kind other than the message let out by a named function's
     // erased row is charged to its callers (`record_erased_row_leak`).
     if alias_found && !kinded_found && !erased_exception_covers_kind(required_kind) {
-      record_erased_row_leak(labels, required_kind)
+      record_erased_row_leak(labels = labels, kind = required_kind)
     }
     alias_found
   } else {
@@ -207,11 +207,11 @@ export fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Boo
     // covers is an exception of UNRESOLVED kind (`throw(payload)` re-raising
     // what a handle caught from a `with e` callback, `TaskGroup::run`): the
     // payload may be the caller's own, which only `e` names.
-    row_base_membership(labels, eff_name) || (is_exception_label(eff_name) && String::length(exception_label_kind(eff_name)) == 0 && row_has_effect_var(labels))
+    row_base_membership(labels = labels, eff_name = eff_name) || (is_exception_label(eff_name) && String::length(exception_label_kind(eff_name)) == 0 && row_has_effect_var(labels))
   }
 }
 
-fn row_has_effect_var(labels: Array[String]) -> Bool {
+fn row_has_effect_var(_ labels: Array[String]) -> Bool {
   let mut found = false
   for l in labels {
     if label_is_effect_var(l) {
@@ -234,9 +234,9 @@ export fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
   // in it would land in the kinded arm. Every charge of a row variable
   // (a callback parameter, a local closure, `apply(f)`, the typed
   // fallback) asks this question, so they all refuse it.
-  if kinded_handle_open_row_var(labels, op_name) {
+  if kinded_handle_open_row_var(labels = labels, v = op_name) {
     false
-  } else if decl_authorizes_effect(labels, effect_name_of_op(op_name)) || decl_authorizes_effect(labels, op_name) {
+  } else if decl_authorizes_effect(labels = labels, eff_name = effect_name_of_op(op_name)) || decl_authorizes_effect(labels = labels, eff_name = op_name) {
     true
   } else {
     // #2985 review (Codex P0): under a kinded handle the erased-compatible
@@ -247,18 +247,18 @@ export fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
     let mut i = 0
     let mut found = false
     while i < Array::length(labels) {
-      let lab = Array::get(labels, i)
+      let lab = Array::get(labels, at = i)
       let equal = if strict {
-        is_exception_label(lab) && is_exception_label(op_name) && String::length(exception_label_kind(op_name)) > 0 && String::length(exception_label_kind(lab)) > 0 && exception_kinds_same(exception_label_kind(lab), exception_label_kind(op_name))
+        is_exception_label(lab) && is_exception_label(op_name) && String::length(exception_label_kind(op_name)) > 0 && String::length(exception_label_kind(lab)) > 0 && exception_kinds_same(a = exception_label_kind(lab), b = exception_label_kind(op_name))
       } else if lab != op_name && is_exception_label(lab) && is_exception_label(op_name) && String::length(exception_label_kind(lab)) == 0 && erased_covers_only_messages(labels) {
         // #3541: as in `decl_authorizes_effect`.
         erased_exception_covers_kind(exception_label_kind(op_name))
       } else {
-        exception_effect_labels_equal(lab, op_name)
+        exception_effect_labels_equal(left = lab, right = op_name)
       }
       // #3095: equal spellings, as in `decl_authorizes_effect`, can name two
       // types.
-      if equal && !row_label_args_differ(lab, requirement_marked_for(op_name)) {
+      if equal && !row_label_args_differ(declared = lab, marked = requirement_marked_for(op_name)) {
         found = true
       }
       i = i + 1
@@ -267,30 +267,30 @@ export fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
   }
 }
 
-export fn set_entry_user_effect_operations(stmts: Array[Stmt]) -> Unit {
-  Array::truncate(entry_user_effect_operations, 0)
-  collect_entry_user_effect_operations(stmts, entry_user_effect_operations)
+export fn set_entry_user_effect_operations(_ stmts: Array[Stmt]) -> Unit {
+  Array::truncate(entry_user_effect_operations, length = 0)
+  collect_entry_user_effect_operations(stmts = stmts, out = entry_user_effect_operations)
 }
 
-export fn user_provider_collision_errors(stmts: Array[Stmt]) -> Array[EffectError] {
+export fn user_provider_collision_errors(_ stmts: Array[Stmt]) -> Array[EffectError] {
   let errors = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SEffectDef(_, effect_name, _, operations) => {
         let mut oi = 0
         while oi < Array::length(operations) {
-          let (op_name, _, _) = Array::get(operations, oi)
+          let (op_name, _, _) = Array::get(operations, at = oi)
           let operation = String::concat(effect_name, String::concat("::", op_name))
           if standard_provider_owns_operation(operation) {
-            Array::push(errors, EEProviderOperationCollision(operation))
+            Array::push(errors, value = EEProviderOperationCollision(operation))
           } else {
             ()
           }
           oi = oi + 1
         }
       },
-      SModule(_, _, body) => append_eff_errs(errors, user_provider_collision_errors(body)),
+      SModule(_, _, body) => append_eff_errs(dst = errors, src = user_provider_collision_errors(body)),
       _ => ()
     }
     i = i + 1
@@ -298,11 +298,11 @@ export fn user_provider_collision_errors(stmts: Array[Stmt]) -> Array[EffectErro
   errors
 }
 
-fn entry_label_is_user_declared_operation(label: String) -> Bool {
-  String::index_of(label, "::") > 0 && effect_row_has_label(Some(entry_user_effect_operations), label)
+fn entry_label_is_user_declared_operation(_ label: String) -> Bool {
+  String::index_of(label, needle = "::") > 0 && effect_row_has_label(row = Some(entry_user_effect_operations), wanted = label)
 }
 
-export fn standard_provider_owns_operation(label: String) -> Bool {
+export fn standard_provider_owns_operation(_ label: String) -> Bool {
   match builtin_call_effect(label) {
     Some(owner) => is_entry_admitted_effect(owner) && label == canonical_builtin_name(label),
     None => false
@@ -313,23 +313,23 @@ export fn standard_provider_owns_operation(label: String) -> Bool {
 /// A bare provider name (`Fs`) is authority for that namespace. A qualified
 /// label is authority only when it is an exact registry-owned operation
 /// (`Console::write_stream`). `Console::Get` is not frozen as host Console.
-export fn strip_authority_grade(label: String) -> String {
+export fn strip_authority_grade(_ label: String) -> String {
   let n = String::length(label)
-  if n > 0 && String::char_code_at(label, n - 1) == 63 {
-    String::substring(label, 0, n - 1)
+  if n > 0 && String::char_code_at(label, at = n - 1) == 63 {
+    String::substring(label, start = 0, end = n - 1)
   } else {
     label
   }
 }
 
-export fn authority_is_optional(label: String) -> Bool {
+export fn authority_is_optional(_ label: String) -> Bool {
   let n = String::length(label)
-  n > 0 && String::char_code_at(label, n - 1) == 63
+  n > 0 && String::char_code_at(label, at = n - 1) == 63
 }
 
-export fn is_instantiate_authority(label: String) -> Bool {
+export fn is_instantiate_authority(_ label: String) -> Bool {
   let core = strip_authority_grade(label)
-  if String::index_of(core, "::") < 0 {
+  if String::index_of(core, needle = "::") < 0 {
     has_standard_host_provider(core)
   } else {
     standard_provider_owns_operation(core)
@@ -340,11 +340,11 @@ export fn is_instantiate_authority(label: String) -> Bool {
 /// Required owned operations are Granted; Optional ones are NotGranted
 /// (non-TTY instantiate default). Labels that are not instantiate
 /// authority are dropped — check_entry_declared_effects already rejects them.
-export fn freeze_binding_lock(labels: Array[String]) -> Array[(String, String)] {
+export fn freeze_binding_lock(_ labels: Array[String]) -> Array[(String, String)] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(labels) {
-    let lab = Array::get(labels, i)
+    let lab = Array::get(labels, at = i)
     if is_instantiate_authority(lab) {
       let core = strip_authority_grade(lab)
       let status = if authority_is_optional(lab) {
@@ -352,7 +352,7 @@ export fn freeze_binding_lock(labels: Array[String]) -> Array[(String, String)] 
       } else {
         "Granted"
       }
-      Array::push(out, (core, status))
+      Array::push(out, value = (core, status))
     } else {
       ()
     }
@@ -374,18 +374,18 @@ export fn freeze_binding_lock(labels: Array[String]) -> Array[(String, String)] 
 ///
 /// Empty when the program declares no entry, which is the honest answer for a
 /// library: there is no grant to preflight.
-export fn entry_declared_authority(stmts: Array[Stmt]) -> Array[String] {
+export fn entry_declared_authority(_ stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, ty, body) => if is_program_entry_name(name) {
-        let labels = fn_binding_effects(ty, body)
+        let labels = fn_binding_effects(ty = ty, body = body)
         let mut j = 0
         while j < Array::length(labels) {
-          let lab = Array::get(labels, j)
+          let lab = Array::get(labels, at = j)
           if is_instantiate_authority(lab) {
-            Array::push(out, lab)
+            Array::push(out, value = lab)
           } else {
             ()
           }
@@ -405,10 +405,10 @@ fn host_grant_covers(host_granted: Array[String], core: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(host_granted) && !found {
-    let g = Array::get(host_granted, i)
+    let g = Array::get(host_granted, at = i)
     if g == core {
       found = true
-    } else if String::index_of(g, "::") < 0 && has_standard_host_provider(g) {
+    } else if String::index_of(g, needle = "::") < 0 && has_standard_host_provider(g) {
       if core == g || effect_name_of_op(core) == g {
         found = true
       } else {
@@ -430,10 +430,10 @@ fn host_grant_covers(host_granted: Array[String], core: String) -> Bool {
 /// string, and they drift the moment the two mappings live apart. The
 /// comparison is on the lowercased provider name, so `--allow-fs` and
 /// `--deny-fs` both answer `Fs` (#2828, ADR-0088 L1).
-export fn authority_for_capability_flag(flag: String) -> String {
-  let rest = if String::starts_with(flag, "--allow-") {
+export fn authority_for_capability_flag(_ flag: String) -> String {
+  let rest = if String::starts_with(flag, prefix = "--allow-") {
     flag[8: String::length(flag)]
-  } else if String::starts_with(flag, "--deny-") {
+  } else if String::starts_with(flag, prefix = "--deny-") {
     flag[7: String::length(flag)]
   } else {
     ""
@@ -445,7 +445,7 @@ export fn authority_for_capability_flag(flag: String) -> String {
     let mut i = 0
     let mut found = ""
     while i < Array::length(names) {
-      let n = Array::get(names, i)
+      let n = Array::get(names, at = i)
       if lowercase_ascii(n) == rest {
         found = n
       } else {
@@ -459,15 +459,15 @@ export fn authority_for_capability_flag(flag: String) -> String {
 
 /// ASCII lowercase. The provider names are ASCII by construction (they are
 /// vibe identifiers), so this needs no Unicode case table.
-fn lowercase_ascii(s: String) -> String {
+fn lowercase_ascii(_ s: String) -> String {
   let acc = StringBuilder::new()
   let mut i = 0
   while i < String::length(s) {
-    let c = String::byte_at(s, i)
+    let c = String::byte_at(s, at = i)
     if c >= 65 && c <= 90 {
-      StringBuilder::push(acc, String::from_byte(c + 32))
+      StringBuilder::push(acc, value = String::from_byte(c + 32))
     } else {
-      StringBuilder::push(acc, String::from_byte(c))
+      StringBuilder::push(acc, value = String::from_byte(c))
     }
     i = i + 1
   }
@@ -500,8 +500,8 @@ fn lowercase_ascii(s: String) -> String {
 /// Deriving it here too is what makes the pair one rule instead of two, which
 /// is this issue's criterion: no semantic decision left that is keyed on an
 /// effect NAME.
-export fn allow_flag_for_authority(core: String) -> String {
-  let provider = if String::index_of(core, "::") < 0 {
+export fn allow_flag_for_authority(_ core: String) -> String {
+  let provider = if String::index_of(core, needle = "::") < 0 {
     core
   } else {
     effect_name_of_op(core)
@@ -519,19 +519,19 @@ export fn preflight_instantiate(labels: Array[String], host_granted: Array[Strin
   let out = array_empty()
   let mut i = 0
   while i < Array::length(labels) {
-    let lab = Array::get(labels, i)
+    let lab = Array::get(labels, at = i)
     if is_instantiate_authority(lab) {
       let core = strip_authority_grade(lab)
-      let granted = host_grant_covers(host_granted, core)
+      let granted = host_grant_covers(host_granted = host_granted, core = core)
       if authority_is_optional(lab) {
         let status = if granted {
           "Granted"
         } else {
           "NotGranted"
         }
-        Array::push(out, (core, status))
+        Array::push(out, value = (core, status))
       } else if granted {
-        Array::push(out, (core, "Granted"))
+        Array::push(out, value = (core, "Granted"))
       } else {
         throw(String::concat("instantiate preflight: required `", String::concat(core, String::concat("` is not granted; pass `", String::concat(allow_flag_for_authority(core), String::concat("` before main starts, or mark it optional (`allows ", String::concat(core, "?`)")))))))
       }
@@ -548,7 +548,7 @@ fn authority_covers_operation(auth: String, emitted: String) -> Bool {
     false
   } else if auth == emitted {
     true
-  } else if String::index_of(auth, "::") < 0 && standard_provider_owns_operation(emitted) {
+  } else if String::index_of(auth, needle = "::") < 0 && standard_provider_owns_operation(emitted) {
     effect_name_of_op(emitted) == auth
   } else if auth == "Console" && is_legacy_console_provider(effect_name_of_op(emitted)) {
     // The instantiate-grant half of #2102's containment. `allows` is a
@@ -572,7 +572,7 @@ fn authority_covers_operation(auth: String, emitted: String) -> Bool {
 fn optional_label_covers_op(lab: String, op_name: String) -> Bool {
   if authority_is_optional(lab) {
     let core = strip_authority_grade(lab)
-    core == op_name || core == effect_name_of_op(op_name) || authority_covers_operation(core, op_name)
+    core == op_name || core == effect_name_of_op(op_name) || authority_covers_operation(auth = core, emitted = op_name)
   } else {
     false
   }
@@ -587,8 +587,8 @@ export fn required_grant_covering_op(labels: Array[String], op_name: String) -> 
   let mut i = 0
   let mut found = ""
   while i < Array::length(labels) && String::length(found) == 0 {
-    let lab = Array::get(labels, i)
-    if authority_covers_operation(lab, op_name) {
+    let lab = Array::get(labels, at = i)
+    if authority_covers_operation(auth = lab, emitted = op_name) {
       found = lab
     } else {
       ()
@@ -602,7 +602,7 @@ export fn decl_authorizes_optional_op(labels: Array[String], op_name: String) ->
   let mut i = 0
   let mut found = false
   while i < Array::length(labels) && !found {
-    if optional_label_covers_op(Array::get(labels, i), op_name) {
+    if optional_label_covers_op(lab = Array::get(labels, at = i), op_name = op_name) {
       found = true
     } else {
       ()
@@ -612,7 +612,7 @@ export fn decl_authorizes_optional_op(labels: Array[String], op_name: String) ->
   found
 }
 
-export fn perform_question_op_name(arg: Expr) -> Option[String] {
+export fn perform_question_op_name(_ arg: Expr) -> Option[String] {
   match arg {
     ECall(op_callee, _, _, _) => match op_callee {
       EIdent(op_name, _) => Some(op_name),
@@ -622,57 +622,57 @@ export fn perform_question_op_name(arg: Expr) -> Option[String] {
   }
 }
 
-export fn entry_user_operation_requires_handler(label: String) -> Bool {
+export fn entry_user_operation_requires_handler(_ label: String) -> Bool {
   // #1961: a source-declared operation is algebraic even when its spelling
   // matches a host provider. Exact collisions are rejected separately and
   // never grant provider authority from the text of the perform.
   entry_label_is_user_declared_operation(label)
 }
 
-export fn entry_unresolved_labels(labels: Array[String]) -> Array[String] {
+export fn entry_unresolved_labels(_ labels: Array[String]) -> Array[String] {
   let out = no_str_labels()
   let mut i = 0
   while i < Array::length(labels) {
-    let label = Array::get(labels, i)
+    let label = Array::get(labels, at = i)
     if label_is_effect_var(label) {
-      Array::push(out, label)
+      Array::push(out, value = label)
     } else {
       ()
     }
     i = i + 1
   }
-  sort_labels(labels_union(no_str_labels(), out))
+  sort_labels(labels_union(a = no_str_labels(), b = out))
 }
 
-export fn entry_unadmitted_labels(labels: Array[String]) -> Array[String] {
+export fn entry_unadmitted_labels(_ labels: Array[String]) -> Array[String] {
   let out = no_str_labels()
   let mut i = 0
   while i < Array::length(labels) {
-    let label = Array::get(labels, i)
+    let label = Array::get(labels, at = i)
     // Row variables are separated above so they receive the closed-row hint;
     // this list contains only concrete effects that lack an entry owner.
     // The Optional grade is a property of the grant, not of the label's
     // owner: classify `Fs::read_file?` as `Fs::read_file`.
     let core = strip_authority_grade(label)
     if !label_is_effect_var(label) && (entry_user_operation_requires_handler(core) || !is_entry_admitted_effect(core)) {
-      Array::push(out, label)
+      Array::push(out, value = label)
     } else {
       ()
     }
     i = i + 1
   }
-  sort_labels(labels_union(no_str_labels(), out))
+  sort_labels(labels_union(a = no_str_labels(), b = out))
 }
 
-export fn entry_handler_labels(labels: Array[String]) -> Array[String] {
+export fn entry_handler_labels(_ labels: Array[String]) -> Array[String] {
   let out = no_str_labels()
   let mut i = 0
   while i < Array::length(labels) {
-    let base = effect_name_of_op(Array::get(labels, i))
-    if effect_row_has_label(Some(out), base) {
+    let base = effect_name_of_op(Array::get(labels, at = i))
+    if effect_row_has_label(row = Some(out), wanted = base) {
       ()
     } else {
-      Array::push(out, base)
+      Array::push(out, value = base)
     }
     i = i + 1
   }
@@ -688,11 +688,11 @@ export fn optional_grant_for(declared: Array[String], missing: Array[String]) ->
   let mut op = ""
   let mut grant = ""
   while i < Array::length(missing) && String::length(grant) == 0 {
-    let m = Array::get(missing, i)
+    let m = Array::get(missing, at = i)
     let mut di = 0
     while di < Array::length(declared) && String::length(grant) == 0 {
-      let lab = Array::get(declared, di)
-      if optional_label_covers_op(lab, m) {
+      let lab = Array::get(declared, at = di)
+      if optional_label_covers_op(lab = lab, op_name = m) {
         op = m
         grant = lab
       } else {

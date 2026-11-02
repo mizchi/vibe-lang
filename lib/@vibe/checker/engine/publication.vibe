@@ -525,7 +525,7 @@ fn engine_interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) 
     }
     i = i + 1
   }
-  let defs = env_type_defs(env = checked_env)
+  let defs = env_type_defs(checked_env)
   let out = array_empty()
   let mut ni = 0
   while ni < Array::length(names) {
@@ -533,7 +533,7 @@ fn engine_interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) 
     // Publish only the name the module selected. Its declaration closure is
     // retained separately by restrict_env_to_export_surface so a private
     // field/signature type remains interpretable without becoming selectable.
-    if engine_typedef_projection_contains(defs = defs, name = name) || is_explicit_builtin_declaration(name = name) {
+    if engine_typedef_projection_contains(defs = defs, name = name) || is_explicit_builtin_declaration(name) {
       // Builtin/registry declarations have no user TypeDef payload, but an
       // explicit export gives them the same selected-surface authority as a
       // contract declaration. They are never accepted merely by import name.
@@ -659,9 +659,9 @@ fn engine_restrict_env_to_export_surface_with_defs(value_surface: Array[String],
   }
 }
 fn engine_restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv, strict: Bool) -> TypeEnv {
-  let all_defs = env_type_defs(env = env)
+  let all_defs = env_type_defs(env)
   let restricted = engine_restrict_env_to_export_surface_with_defs(value_surface = value_surface, trait_surface = trait_surface, type_surface = type_surface, env = env, all_defs = all_defs, members = engine_env_type_member_names(env), strict = strict)
-  if Array::length(type_surface) > 0 && Array::length(env_selectable_type_defs(env = restricted)) == 0 {
+  if Array::length(type_surface) > 0 && Array::length(env_selectable_type_defs(restricted)) == 0 {
     // Opaque builtins and re-exported contracts can grant type authority
     // without carrying a forgeable TypeDef payload. Keep one surface node for
     // that case; concrete closures already carry their own surface node.
@@ -679,8 +679,8 @@ fn engine_prepend_explicit_builtin_value_markers(value_surface: Array[String], e
   let mut i = 0
   while i < Array::length(value_surface) {
     let name = Array::get(value_surface, at = i)
-    if is_explicit_builtin_declaration(name = name) && env_lookup(env = env, name = name) == None {
-      out = EnvBind(name, env_value_binding(ty = CtUnknown), out)
+    if is_explicit_builtin_declaration(name) && env_lookup(env = env, name = name) == None {
+      out = EnvBind(name, env_value_binding(CtUnknown), out)
     } else {
       ()
     }
@@ -727,7 +727,7 @@ fn engine_append_env_tail(head: TypeEnv, tail: TypeEnv) -> TypeEnv {
 /// from publishing `TaskGroup::spawn_suspend` through `TaskGroup`. An ordinary
 /// module keeps the older companion rule.
 export fn engine_checked_module_public_env_for_path(path: String, stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv with Exception {
-  engine_checked_module_public_env_publishing(stmts = stmts, full_checked_env = full_checked_env, reexport_declarations = reexport_declarations, strict = is_contract_ext(path = path))
+  engine_checked_module_public_env_publishing(stmts = stmts, full_checked_env = full_checked_env, reexport_declarations = reexport_declarations, strict = is_contract_ext(path))
 }
 export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv, strict: Bool) -> TypeEnv with Exception {
   // Local declarations stay ahead of the publication-only projection, which
@@ -740,7 +740,7 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
   // Builtin declarations have no TypeDef node to survive the restriction.
   // Their explicit selected surface still needs a transport node, otherwise
   // the importer cannot distinguish this export from an empty dependency.
-  let with_builtin_types = if Array::length(type_surface) > 0 && Array::length(env_type_defs(env = published)) == 0 {
+  let with_builtin_types = if Array::length(type_surface) > 0 && Array::length(env_type_defs(published)) == 0 {
     EnvTypeDefs(array_empty(), type_surface, published)
   } else {
     published
@@ -750,9 +750,9 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
   // builtin_shadow_marker_prefix. Bound HERE, in the one publication every
   // lane goes through (the FS wave loop, the #906 worker, and the in-memory
   // walk in runtime.vibe), so no lane can publish an unmarked env.
-  let published_env = engine_bind_builtin_shadow_markers(env = engine_prepend_explicit_builtin_value_markers(value_surface = value_surface, env = with_builtin_types), names = collect_builtin_shadowing_names(stmts = stmts))
+  let published_env = engine_bind_builtin_shadow_markers(env = engine_prepend_explicit_builtin_value_markers(value_surface = value_surface, env = with_builtin_types), names = collect_builtin_shadowing_names(stmts))
   match unresolved_aggregate_export_name(stmts = stmts, env = published_env) {
-    Some(name) => throw(unresolved_export_message(name = name)),
+    Some(name) => throw(unresolved_export_message(name)),
     None => ()
   }
   let (wrappers, unknown) = irc_show_wrapper_facts(stmts = stmts, env = full_checked_env)
@@ -784,14 +784,14 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
 /// at all (Codex on #3605).
 fn engine_bind_erased_kinds_markers(publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
   let mut acc = published
-  for row in env_erased_kinds_rows(env = publication_env) {
+  for row in env_erased_kinds_rows(publication_env) {
     let (fname, ty) = row
     let carries = match ty {
       CtNamed(_, items) => Array::length(items) > 0,
       _ => false
     }
     if carries && engine_env_has_value(env = published, name = fname) {
-      acc = env_bind(env = acc, name = erased_kinds_marker(name = fname), ty = ty)
+      acc = env_bind(env = acc, name = erased_kinds_marker(fname), ty = ty)
     } else {
       ()
     }
@@ -804,10 +804,10 @@ fn engine_bind_erased_kinds_markers(publication_env: TypeEnv, published: TypeEnv
 /// one its own import brought in, so both are read off the same chain.
 fn engine_bind_retention_summary_markers(publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
   let mut acc = published
-  for row in env_retention_summary_rows(env = publication_env) {
+  for row in env_retention_summary_rows(publication_env) {
     let (fname, ty) = row
     if engine_env_has_value(env = published, name = fname) {
-      acc = env_bind(env = acc, name = retention_summary_marker(name = fname), ty = ty)
+      acc = env_bind(env = acc, name = retention_summary_marker(fname), ty = ty)
     } else {
       ()
     }
@@ -833,7 +833,7 @@ fn engine_bind_param_name_markers(stmts: Array[Stmt], publication_env: TypeEnv, 
           let (pn, _) = param
           Array::push(fields, value = (pn, CtUnit))
         }
-        acc = env_bind(env = acc, name = param_names_marker(name = fname), ty = CtRecord(fields))
+        acc = env_bind(env = acc, name = param_names_marker(fname), ty = CtRecord(fields))
       } else {
         ()
       },
@@ -843,14 +843,14 @@ fn engine_bind_param_name_markers(stmts: Array[Stmt], publication_env: TypeEnv, 
   // The markers this module's imports brought in, for what it re-publishes:
   // a re-exported function, or the companions of a re-exported type. An own
   // top-level binding of the same name hides the imported marker.
-  for row in env_param_name_rows(env = publication_env) {
+  for row in env_param_name_rows(publication_env) {
     let (fname, names) = row
     if engine_env_has_value(env = published, name = fname) && !engine_stmts_bind_top_level(stmts = stmts, name = fname) {
       let fields: Array[(String, Type)] = []
       for pn in names {
         Array::push(fields, value = (pn, CtUnit))
       }
-      acc = env_bind(env = acc, name = param_names_marker(name = fname), ty = CtRecord(fields))
+      acc = env_bind(env = acc, name = param_names_marker(fname), ty = CtRecord(fields))
     } else {
       ()
     }
@@ -1179,7 +1179,7 @@ export fn engine_interface_decl_lines(stmts: Array[Stmt], include_private: Bool,
   engine_interface_sorted_unique(lines)
 }
 fn engine_interface_public_decl_lines(_ stmts: Array[Stmt]) -> Array[String] {
-  engine_interface_decl_lines(stmts = stmts, include_private = false, aggregate = aggregate_export_names(stmts = stmts))
+  engine_interface_decl_lines(stmts = stmts, include_private = false, aggregate = aggregate_export_names(stmts))
 }
 /// A trace-only canonical token-stream identity. It length-delimits each token's
 /// kind and exact source lexeme, retaining every parser-visible distinction even
@@ -1247,7 +1247,7 @@ export fn engine_incremental_interface_identity(source: String, env: TypeEnv) ->
   let mut i = 0
   while i < Array::length(names) {
     let name = Array::get(names, at = i)
-    match engine_interface_export_row(stmts = stmts, bindings = env_flat_bindings(env = env), name = name) {
+    match engine_interface_export_row(stmts = stmts, bindings = env_flat_bindings(env), name = name) {
       Some(row) => StringBuilder::push(out, value = row),
       // #2762 made this unreachable from the checker's own lanes: a module
       // whose `export { }` names nothing is refused before it can be
@@ -1275,7 +1275,7 @@ export fn engine_incremental_interface_identity(source: String, env: TypeEnv) ->
 /// variables and sorts/deduplicates bounds and effects. This is not the
 /// persistent TypeEnv codec and is never read by a cache lookup.
 export fn engine_incremental_checked_env_identity(_ env: TypeEnv) -> String with Exception {
-  let bindings = env_flat_bindings(env = env)
+  let bindings = env_flat_bindings(env)
   let raw_names = array_empty()
   let mut b = 0
   while b < Array::length(bindings) {

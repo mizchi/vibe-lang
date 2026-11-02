@@ -8,20 +8,20 @@ import @vibe/compiler/syntax {
   lex, parse_program
 }
 
-fn check_error(source: String) -> String {
+fn check_error(_ source: String) -> String {
   handle {
     let _ = check_program(parse_program(lex(source)))
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
-fn assert_erased(source: String) -> Unit {
+fn assert_erased(_ source: String) -> Unit {
   let message = check_error(source)
-  assert(String::contains(message, "pass an explicit renderer"))
-  assert(String::contains(message, "type parameter `T`"))
+  assert(String::contains(message, needle = "pass an explicit renderer"))
+  assert(String::contains(message, needle = "type parameter `T`"))
 }
 
-fn lowering_error(source: String) -> String {
+fn lowering_error(_ source: String) -> String {
   handle {
     let stmts = parse_program(lex(source))
     desugar_trait_dicts(stmts)
@@ -44,7 +44,7 @@ test "#2840: conditionals retain their checked type" {
 test "#2840: a marker Show bound does not provide a renderer" {
   let source = "trait Show\nfn render[T: Show](a: T) -> String { \"v=\\{a}\" }"
   assert_erased(source)
-  assert(String::contains(lowering_error(source), "pass an explicit renderer"))
+  assert(String::contains(lowering_error(source), needle = "pass an explicit renderer"))
 }
 
 test "#2840: an unrelated Eq bound is not a renderer" {
@@ -69,16 +69,16 @@ test "#2840: direct show shims remain available for call-site rendering" {
 
 test "#2840: lowered shim calls cannot render a caller's erased formal" {
   let src = "fn shim[T](a: T) -> String { __to_string(a) }\nfn render[T](a: T) -> String { let prefix = \"v=\"; String::concat(prefix, shim(a)) }"
-  assert(String::contains(lowering_error(src), "pass an explicit renderer"))
+  assert(String::contains(lowering_error(src), needle = "pass an explicit renderer"))
 }
 
 test "#2840: the lowering lane also rejects a non-shim body" {
-  assert(String::contains(lowering_error("fn render[T](a: T) -> String { \"v=\\{a}\" }"), "pass an explicit renderer"))
+  assert(String::contains(lowering_error("fn render[T](a: T) -> String { \"v=\\{a}\" }"), needle = "pass an explicit renderer"))
 }
 
 test "#2840: a generic renderer taken as a value cannot bypass call-site rendering" {
   let src = "fn shim[T](a: T) -> String { __to_string(a) }\nfn main() -> String { let render = shim; render(true) }"
-  assert(String::contains(lowering_error(src), "wrap the renderer in a lambda with a concrete parameter type"))
+  assert(String::contains(lowering_error(src), needle = "wrap the renderer in a lambda with a concrete parameter type"))
 }
 
 test "#2840: method-bearing witnesses and concrete shim calls still lower" {
@@ -91,13 +91,13 @@ test "#2840: method-bearing witnesses and concrete shim calls still lower" {
 // the program is rejected, and the checker is where that now lives.
 test "#2840: builtin type spellings cannot disguise a formal" {
   let src = "fn render[Bool](a: Bool) -> String { \"v=\\{a}\" }"
-  assert(String::contains(check_error(src), "type parameter `Bool`"))
+  assert(String::contains(check_error(src), needle = "type parameter `Bool`"))
 }
 
 test "#2840: a non-Self method is not a renderer witness" {
   let source = "trait Show { to_string(Int) -> String }\nfn render[T: Show](a: T) -> String { \"v=\\{a}\" }"
   assert_erased(source)
-  assert(String::contains(lowering_error(source), "pass an explicit renderer"))
+  assert(String::contains(lowering_error(source), needle = "pass an explicit renderer"))
 }
 
 test "#2840: annotated generic let bindings follow the same rule" {
@@ -121,7 +121,7 @@ test "#2840: shadowing the renderer-state spelling does not grant an exemption" 
 // original #2840 name.
 test "#2840: wrapping a shim argument does not hide its erased type" {
   let source = "fn shim[T](a: T) -> String { __to_string(a) }\nfn render[T](a: T, c: Bool) -> String { String::concat(\"v=\", shim(if c { a } else { a })) }"
-  assert(String::contains(check_error(source), "pass an explicit renderer"))
+  assert(String::contains(check_error(source), needle = "pass an explicit renderer"))
 }
 
 // #2773: the CHECKER's half of the case above.
@@ -137,7 +137,7 @@ test "#2840: wrapping a shim argument does not hide its erased type" {
 // channels emit the SAME message text; only the channel distinguishes them.
 test "#2773: a shim call's erased argument is caught by the CHECKER" {
   let source = "fn shim[T](a: T) -> String { __to_string(a) }\nfn render[T](a: T, c: Bool) -> String { String::concat(\"v=\", shim(if c { a } else { a })) }"
-  assert(String::contains(check_error(source), "pass an explicit renderer"))
+  assert(String::contains(check_error(source), needle = "pass an explicit renderer"))
 }
 
 // The control the check above needs: a shim call whose argument is CONCRETE
@@ -185,6 +185,6 @@ test "#2840: renderer dictionary selection ignores incompatible methods in eithe
 
 test "#2840: every erased wrapper element still requires its own witness" {
   let source = "trait Render { to_string(Self) -> String }\nfn render[T: Render, U](anchor: T, value: (T, U)) -> String { \"v=\\{value}\" }"
-  assert(String::contains(check_error(source), "type parameter `U`"))
-  assert(String::contains(lowering_error(source), "type parameter `U`"))
+  assert(String::contains(check_error(source), needle = "type parameter `U`"))
+  assert(String::contains(lowering_error(source), needle = "type parameter `U`"))
 }

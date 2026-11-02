@@ -218,15 +218,15 @@ export fn record_array_receiver(capture: Option[TypedOccurrenceRoleLaneCapture],
   if callee_off >= 0 && array_receiver_reads(name) {
     // A formal is filed as its own variable, which the extraction looks up
     // in `scheme_constrained_formals`.
-    record_receiver_kind(capture, callee_off, if formal {
-      subst_apply(s, arg_ty)
+    record_receiver_kind(capture = capture, bracket_off = callee_off, recv_ty = if formal {
+      subst_apply(s = s, ty = arg_ty)
     } else {
       arg_ty
-    }, subst_apply(s, arg_ty), if formal {
+    }, resolved = subst_apply(s = s, ty = arg_ty), kind = if formal {
       6
     } else {
       5
-    }, s)
+    }, s = s)
   } else {
     ()
   }
@@ -236,7 +236,7 @@ export fn record_array_receiver(capture: Option[TypedOccurrenceRoleLaneCapture],
 /// `Array::push_all`) files its SECOND operand under -- one byte into the
 /// callee's name, where no other expression can start -- so the refusal can
 /// name the operand that is actually unresolved.
-export fn array_reader_second_key(callee_off: Int) -> Int {
+export fn array_reader_second_key(_ callee_off: Int) -> Int {
   if callee_off >= 0 {
     callee_off + 1
   } else {
@@ -251,21 +251,21 @@ export fn array_reader_second_key(callee_off: Int) -> Int {
 /// its callers -- a Map argument is then a type error at the call -- rather
 /// than an open type the pass has to refuse.
 export fn bind_array_arg(capture: Option[TypedOccurrenceRoleLaneCapture], name: String, callee_off: Int, arg_ty: Type, s: Subst, c: Int) -> (Subst, Int) {
-  let formal = match subst_apply(s, arg_ty) {
+  let formal = match subst_apply(s = s, ty = arg_ty) {
     CtVar(fv) => eq_formal_row_of(fv) >= 0,
     _ => false
   }
-  record_array_receiver(capture, name, callee_off, arg_ty, s, formal)
-  bind_builtin_arg_var(subst_apply(s, arg_ty), 9, s, c)
+  record_array_receiver(capture = capture, name = name, callee_off = callee_off, arg_ty = arg_ty, s = s, formal = formal)
+  bind_builtin_arg_var(arg_ty = subst_apply(s = s, ty = arg_ty), want = 9, s = s, c = c)
 }
 
 export fn tab_identifier_ty(tytab: Array[(Int, Type)], ident_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Unit {
-  append_legacy_typed_occurrence(tytab, ident_off, ty, capture, "Identifier", lane)
+  append_legacy_typed_occurrence(tytab = tytab, offset = ident_off, ty = ty, capture = capture, role = "Identifier", lane = lane)
 }
 
 export fn tab_call_ty(tytab: Array[(Int, Type)], call_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Type {
   if call_off >= 0 {
-    append_legacy_typed_occurrence(tytab, call_off, ty, capture, "CallResult", lane)
+    append_legacy_typed_occurrence(tytab = tytab, offset = call_off, ty = ty, capture = capture, role = "CallResult", lane = lane)
   } else {
     ()
   }
@@ -283,15 +283,15 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
   let mut out_c = c
   if name == "__set_field" && Array::length(args) == 3 {
     // review-lint: allow-by-name-call-arm -- a `mut` check on the field-write sugar `obj.f = x`, which reaches here spelled `__set_field`; it types nothing, so it is not one of the #3179 call arms
-    match Array::get(args, 1) {
+    match Array::get(args, at = 1) {
       EString(field, _) => {
         let throwaway = array_empty()
         let throwtab = array_empty()
-        let (obj_ty, obj_s, obj_c) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
+        let (obj_ty, obj_s, obj_c) = ce(Array::get(args, at = 0), env, defs, s, c, throwaway, throwtab)
         // #829: also recognise an INSTANTIATED generic struct receiver
         // (`CtNamed(S, targs)`), so `mut`-field enforcement and the written-
         // value type check cover generic structs too.
-        let recv_struct = match subst_apply(s, obj_ty) {
+        let recv_struct = match subst_apply(s = s, ty = obj_ty) {
           CtStruct(sn) => Some((sn, array_empty())),
           CtNamed(sn, sargs) => Some((sn, sargs)),
           _ => None
@@ -299,12 +299,12 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
         match recv_struct {
           Some(recv_info) => {
             let (sname, recv_targs) = recv_info
-            match find_typedef(defs, sname) {
+            match find_typedef(defs = defs, name = sname) {
               Some(TDStruct(_, dfields, mut_names, s_tparams)) => {
                 let mut found = false
                 let mut i = 0
                 while i < Array::length(mut_names) {
-                  if Array::get(mut_names, i) == field {
+                  if Array::get(mut_names, at = i) == field {
                     found = true
                   } else {
                     ()
@@ -316,7 +316,7 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
                 } else {
                   // #3548: anchored at the written receiver, and leading with
                   // the declaration edit.
-                  Array::push(errors, String::concat("declare the field `mut ", String::concat(field, String::concat("` in `struct ", String::concat(sname, String::concat("` to assign to it here, or build a new value instead: cannot assign to non-`mut` field `", String::concat(field, String::concat("` of struct ", String::concat(sname, off_marker(railway_expr_off(Array::get(args, 0))))))))))))
+                  Array::push(errors, value = String::concat("declare the field `mut ", String::concat(field, String::concat("` in `struct ", String::concat(sname, String::concat("` to assign to it here, or build a new value instead: cannot assign to non-`mut` field `", String::concat(field, String::concat("` of struct ", String::concat(sname, off_marker(railway_expr_off(Array::get(args, at = 0))))))))))))
                 }
                 // The written value must match the field's declared type
                 // (`p.x = "s"` for `x: Int` was accepted). Ground-gated via
@@ -325,7 +325,7 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
                 let mut has_field = false
                 let mut fi = 0
                 while fi < Array::length(dfields) {
-                  let (fn2, ft) = Array::get(dfields, fi)
+                  let (fn2, ft) = Array::get(dfields, at = fi)
                   if fn2 == field {
                     fty = ft
                     has_field = true
@@ -336,13 +336,13 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
                 }
                 if has_field {
                   // #3572: a write reaches the field as a read does.
-                  let _ = owned_head_field_ty(defs, subst_apply(s, obj_ty), field, CtUnknown, errors, off_marker(tail_expr_off(Array::get(args, 2))))
-                  let (val_ty, val_s, val_c) = ce(Array::get(args, 2), env, defs, obj_s, obj_c, throwaway, throwtab)
+                  let _ = owned_head_field_ty(defs = defs, recv = subst_apply(s = s, ty = obj_ty), field = field, ft = CtUnknown, errors = errors, marker = off_marker(tail_expr_off(Array::get(args, at = 2))))
+                  let (val_ty, val_s, val_c) = ce(Array::get(args, at = 2), env, defs, obj_s, obj_c, throwaway, throwtab)
                   // #829: instantiate a generic field's declared type from the
                   // receiver's type args so the written value is checked against
                   // the CONCRETE field type; a non-applied receiver keeps the
                   // raw (rigid) type, which check_assignable tolerates.
-                  let inst_fty = inst_struct_field_ty(fty, s_tparams, recv_targs)
+                  let inst_fty = inst_struct_field_ty(ft = fty, tparams = s_tparams, targs = recv_targs)
                   //
                   // #3537: the write CONSTRAINS the receiver, so its
                   // substitution is handed back to the call's own flow. A
@@ -352,14 +352,14 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
                   // left `T` open, and a later read typed it `Int`. The two
                   // throwaway checks thread their counter so no variable they
                   // mint can collide with one the caller mints next.
-                  out_s = check_assignable(subst_apply(val_s, inst_fty), subst_apply(val_s, val_ty), val_s, errors, String::concat("type mismatch writing field `", String::concat(field, "`")), tail_expr_off(Array::get(args, 2)))
+                  out_s = check_assignable(expected = subst_apply(s = val_s, ty = inst_fty), actual = subst_apply(s = val_s, ty = val_ty), s = val_s, errors = errors, what = String::concat("type mismatch writing field `", String::concat(field, "`")), off = tail_expr_off(Array::get(args, at = 2)))
                   out_c = val_c
                   // #3387 (Codex on #3407): a function written into a field is
                   // stored as the literal's is, so the generic effect it
                   // performs is compared with the field's row, or with the one
                   // in scope when the field's type names none. Read in the
                   // value's own substitution, where its labels are bound.
-                  let _ = struct_field_effect_inst_check(env, Array::get(args, 2), val_ty, inst_fty, val_s, subst_apply(s, obj_ty), field, defs, errors)
+                  let _ = struct_field_effect_inst_check(env = env, value = Array::get(args, at = 2), value_ty = val_ty, field_ty = inst_fty, s = val_s, recv = subst_apply(s = s, ty = obj_ty), field = field, defs = defs, errors = errors)
                   ()
                 } else {
                   ()
@@ -383,7 +383,7 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
 /// mask for positions 1 and 2. This is the single checker-owned inventory for
 /// shipped primitives and standard-library mutable wrappers; aliases are listed
 /// beside their canonical spelling.
-fn retaining_write_argument_mask(source_name: String) -> Int {
+fn retaining_write_argument_mask(_ source_name: String) -> Int {
   let name = canonical_builtin_name(source_name)
   if name == "Array::push" || name == "ArrayBuilder::push" || name == "Array::push_all" || name == "Array::truncate" || name == "MutList::push" || name == "MutList::truncate" || name == "MutSet::add" || name == "HashSet::add" || name == "MutSortedSet::add" || name == "SortedSet::add" || name == "PriorityQueue::push" || name == "Deque::push_back" || name == "Deque::push_front" {
     1
@@ -416,23 +416,23 @@ export fn retaining_write_region_check(name: String, args: Array[Expr], env: Typ
       if is_retained && value_index < Array::length(args) {
         let throwaway = array_empty()
         let throwtab = array_empty()
-        let (val_ty, s1, c1) = ce(Array::get(args, value_index), env, defs, s, c, throwaway, throwtab)
-        let stored_ty = subst_apply(s1, val_ty)
-        if container_write_crosses_region(Array::get(args, 0), stored_ty, env) {
-          Array::push(errors, String::concat(region_write_escape_message(stored_ty, env, "region escapes its scope: a container write stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(Array::get(args, value_index)))))
-        } else if retention_type_hides_region(stored_ty, defs) {
+        let (val_ty, s1, c1) = ce(Array::get(args, at = value_index), env, defs, s, c, throwaway, throwtab)
+        let stored_ty = subst_apply(s = s1, ty = val_ty)
+        if container_write_crosses_region(target = Array::get(args, at = 0), ty = stored_ty, env = env) {
+          Array::push(errors, value = String::concat(region_write_escape_message(ty = stored_ty, env = env, region_message = "region escapes its scope: a container write stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(Array::get(args, at = value_index)))))
+        } else if retention_type_hides_region(t = stored_ty, defs = defs) {
           // #3343 (Codex on #3359): a value whose type may hide a region --
           // a struct built from the token, a handle under an annotation that
           // erased its region, a closure -- is asked by what it reads, one
           // region at a time: the target may be outer to an inner region and
           // local to an outer one.
-          let carried = retention_value_regions(Array::get(args, value_index), env, defs, s1)
+          let carried = retention_value_regions(expr = Array::get(args, at = value_index), env = env, defs = defs, s = s1)
           let mut refused = false
           for rname in retention_active_region_names(env) {
             let region_ty = CtNamed(rname, [])
-            if !refused && retention_region_listed(carried, rname) && container_write_crosses_region(Array::get(args, 0), region_ty, env) {
+            if !refused && retention_region_listed(names = carried, rname = rname) && container_write_crosses_region(target = Array::get(args, at = 0), ty = region_ty, env = env) {
               refused = true
-              Array::push(errors, String::concat(region_write_escape_message(region_ty, env, "region escapes its scope: a container write stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(Array::get(args, value_index)))))
+              Array::push(errors, value = String::concat(region_write_escape_message(ty = region_ty, env = env, region_message = "region escapes its scope: a container write stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(Array::get(args, at = value_index)))))
             } else {
               ()
             }
@@ -467,17 +467,17 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
   if env_has_active_region(env) {
     let mut ai = 0
     while ai < Array::length(args) && ai < Array::length(param_tys) {
-      match subst_apply(s, Array::get(param_tys, ai)) {
-        CtFn(ptys, _, _) => match lapw_callback_literal(Array::get(args, ai), env) {
+      match subst_apply(s = s, ty = Array::get(param_tys, at = ai)) {
+        CtFn(ptys, _, _) => match lapw_callback_literal(arg = Array::get(args, at = ai), env = env) {
           Some((EFn(_, _, ps, _, _, body), scan_env)) => {
             let mut pi = 0
             while pi < Array::length(ps) && pi < Array::length(ptys) {
-              let (pn, pann) = Array::get(ps, pi)
+              let (pn, pann) = Array::get(ps, at = pi)
               let pname = lapw_base_name(pn)
-              let pty = subst_apply(s, Array::get(ptys, pi))
+              let pty = subst_apply(s = s, ty = Array::get(ptys, at = pi))
               match pann {
-                None => if type_mentions_active_region(pty, env) {
-                  lapw_scan(body, pname, pty, [], scan_env, errors)
+                None => if type_mentions_active_region(ty = pty, env = env) {
+                  lapw_scan(e = body, pname = pname, pty = pty, bound = [], env = scan_env, errors = errors)
                 } else {
                   ()
                 },
@@ -489,14 +489,14 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
           _ => {
             let mut carries = false
             for pt in ptys {
-              if type_mentions_active_region(subst_apply(s, pt), env) {
+              if type_mentions_active_region(ty = subst_apply(s = s, ty = pt), env = env) {
                 carries = true
               } else {
                 ()
               }
             }
             if carries {
-              lapw_refuse_mut_callback(Array::get(args, ai), env, errors)
+              lapw_refuse_mut_callback(arg = Array::get(args, at = ai), env = env, errors = errors)
             } else {
               ()
             }
@@ -518,16 +518,16 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
 /// receives each element, so its writes are checked with the element type.
 export fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Subst, env: TypeEnv, errors: Array[String]) -> Unit {
   if env_has_active_region(env) {
-    match subst_apply(s, recv_ty) {
+    match subst_apply(s = s, ty = recv_ty) {
       CtArray(elem) => {
-        let ety = subst_apply(s, elem)
-        match lapw_callback_literal(arg, env) {
+        let ety = subst_apply(s = s, ty = elem)
+        match lapw_callback_literal(arg = arg, env = env) {
           Some((EFn(_, _, ps, _, _, body), scan_env)) => if pidx < Array::length(ps) {
-            let (pn, pann) = Array::get(ps, pidx)
+            let (pn, pann) = Array::get(ps, at = pidx)
             let pname = lapw_base_name(pn)
             match pann {
-              None => if type_mentions_active_region(ety, env) {
-                lapw_scan(body, pname, ety, [], scan_env, errors)
+              None => if type_mentions_active_region(ty = ety, env = env) {
+                lapw_scan(e = body, pname = pname, pty = ety, bound = [], env = scan_env, errors = errors)
               } else {
                 ()
               },
@@ -536,8 +536,8 @@ export fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Su
           } else {
             ()
           },
-          _ => if type_mentions_active_region(ety, env) {
-            lapw_refuse_mut_callback(arg, env, errors)
+          _ => if type_mentions_active_region(ty = ety, env = env) {
+            lapw_refuse_mut_callback(arg = arg, env = env, errors = errors)
           } else {
             ()
           }
@@ -557,7 +557,7 @@ export fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Su
 fn lapw_callback_literal(arg: Expr, env: TypeEnv) -> Option[(Expr, TypeEnv)] {
   match arg {
     EFn(_, _, _, _, _, _) => Some((arg, env)),
-    EIdent(n, _) => retention_local_closure_literal(env, n),
+    EIdent(n, _) => retention_local_closure_literal(env = env, name = n),
     _ => None
   }
 }
@@ -570,12 +570,12 @@ fn lapw_callback_literal(arg: Expr, env: TypeEnv) -> Option[(Expr, TypeEnv)] {
 fn lapw_refuse_mut_callback(arg: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
   match arg {
     EIdent(n, _) => {
-      let untraced = match env_mut_escape(env, n) {
+      let untraced = match env_mut_escape(env = env, name = n) {
         Some(_) => true,
-        None => retention_local_callback_unresolved(env, n)
+        None => retention_local_callback_unresolved(env = env, name = n)
       }
       if untraced {
-        lapw_report(String::concat("bind `", String::concat(n, "` to the closure with `let`, or write the closure at the call: a callback this check cannot trace to its closure (a `let mut`, an alias of one, or a closure a call produced) cannot be checked here for storing a value of the active region outside it")), arg, errors)
+        lapw_report(message = String::concat("bind `", String::concat(n, "` to the closure with `let`, or write the closure at the call: a callback this check cannot trace to its closure (a `let mut`, an alias of one, or a closure a call produced) cannot be checked here for storing a value of the active region outside it")), value = arg, errors = errors)
       } else {
         ()
       }
@@ -589,11 +589,11 @@ fn lapw_refuse_mut_callback(arg: Expr, env: TypeEnv, errors: Array[String]) -> U
 /// write is asked only where its target is outer there and `pname` still
 /// names the parameter.
 fn lapw_scan(e: Expr, pname: String, pty: Type, bound: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
-  let param_visible = !lapw_has(bound, pname)
+  let param_visible = !lapw_has(names = bound, name = pname)
   match e {
     ECall(EIdent(callee, _), args, _, _) => {
       let mask = retaining_write_argument_mask(callee)
-      if param_visible && mask != 0 && Array::length(args) > 0 && lapw_target_outer(Array::get(args, 0), bound) {
+      if param_visible && mask != 0 && Array::length(args) > 0 && lapw_target_outer(target = Array::get(args, at = 0), bound = bound) {
         let mut vi = 1
         while vi <= 2 && vi < Array::length(args) {
           let retained = if vi == 1 {
@@ -601,9 +601,9 @@ fn lapw_scan(e: Expr, pname: String, pty: Type, bound: Array[String], env: TypeE
           } else {
             mask == 2 || mask == 3
           }
-          let value = Array::get(args, vi)
-          if retained && lapw_stores_param(value, pname) && container_write_crosses_region(Array::get(args, 0), pty, env) {
-            lapw_report(region_write_escape_message(pty, env, "region escapes its scope: a container write stores a value that captures this region into an outer binding"), value, errors)
+          let value = Array::get(args, at = vi)
+          if retained && lapw_stores_param(value = value, pname = pname) && container_write_crosses_region(target = Array::get(args, at = 0), ty = pty, env = env) {
+            lapw_report(message = region_write_escape_message(ty = pty, env = env, region_message = "region escapes its scope: a container write stores a value that captures this region into an outer binding"), value = value, errors = errors)
           } else {
             ()
           }
@@ -613,86 +613,86 @@ fn lapw_scan(e: Expr, pname: String, pty: Type, bound: Array[String], env: TypeE
         ()
       }
       for a in args {
-        lapw_scan(a, pname, pty, bound, env, errors)
+        lapw_scan(e = a, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
       }
       ()
     },
     EAssign(n, v, c, _) => {
-      if param_visible && !lapw_has(bound, n) && lapw_stores_param(v, pname) && assignment_crosses_region(n, pty, env) {
-        lapw_report(region_write_escape_message(pty, env, "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), v, errors)
+      if param_visible && !lapw_has(names = bound, name = n) && lapw_stores_param(value = v, pname = pname) && assignment_crosses_region(name = n, ty = pty, env = env) {
+        lapw_report(message = region_write_escape_message(ty = pty, env = env, region_message = "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), value = v, errors = errors)
       } else {
         ()
       }
-      lapw_scan(v, pname, pty, bound, env, errors)
-      lapw_scan(c, pname, pty, bound, env, errors)
+      lapw_scan(e = v, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
+      lapw_scan(e = c, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
     },
     ELet(n, v, b, _) => {
-      lapw_scan(v, pname, pty, bound, env, errors)
-      lapw_scan(b, pname, pty, lapw_with(bound, [n]), env, errors)
-      lapw_scan_alias(n, v, b, pname, pty, bound, env, errors)
+      lapw_scan(e = v, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
+      lapw_scan(e = b, pname = pname, pty = pty, bound = lapw_with(bound = bound, names = [n]), env = env, errors = errors)
+      lapw_scan_alias(n = n, v = v, body = b, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
     },
     ELetMut(n, v, b, _) => {
-      lapw_scan(v, pname, pty, bound, env, errors)
-      lapw_scan(b, pname, pty, lapw_with(bound, [n]), env, errors)
+      lapw_scan(e = v, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
+      lapw_scan(e = b, pname = pname, pty = pty, bound = lapw_with(bound = bound, names = [n]), env = env, errors = errors)
       // A binding the body assigns the parameter to holds it as well, from
       // the assignment on; it is scanned from the start, because a loop can
       // reach an earlier write after the assignment (Codex on #3452).
-      if !lapw_stores_param(v, pname) && !lapw_has(bound, pname) && lapw_assigns_param(b, n, pname) {
-        lapw_scan(b, n, pty, lapw_without(bound, n), env, errors)
+      if !lapw_stores_param(value = v, pname = pname) && !lapw_has(names = bound, name = pname) && lapw_assigns_param(e = b, n = n, pname = pname) {
+        lapw_scan(e = b, pname = n, pty = pty, bound = lapw_without(bound = bound, name = n), env = env, errors = errors)
       } else {
-        lapw_scan_alias(n, v, b, pname, pty, bound, env, errors)
+        lapw_scan_alias(n = n, v = v, body = b, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
       }
     },
     ELetRec(n, v, b) => {
-      let inner = lapw_with(bound, [n])
-      lapw_scan(v, pname, pty, inner, env, errors)
-      lapw_scan(b, pname, pty, inner, env, errors)
+      let inner = lapw_with(bound = bound, names = [n])
+      lapw_scan(e = v, pname = pname, pty = pty, bound = inner, env = env, errors = errors)
+      lapw_scan(e = b, pname = pname, pty = pty, bound = inner, env = env, errors = errors)
     },
     EFn(_, _, ps, _, _, body) => {
       let names: Array[String] = []
       for p in ps {
-        Array::push(names, lapw_base_name(p.0))
+        Array::push(names, value = lapw_base_name(p.0))
       }
-      lapw_scan(body, pname, pty, lapw_with(bound, names), env, errors)
+      lapw_scan(e = body, pname = pname, pty = pty, bound = lapw_with(bound = bound, names = names), env = env, errors = errors)
     },
     EMatch(sc, arms) => {
-      lapw_scan(sc, pname, pty, bound, env, errors)
+      lapw_scan(e = sc, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
       for arm in arms {
         let names: Array[String] = []
-        lapw_pat_binders(arm.0, names)
-        lapw_scan(arm.1, pname, pty, lapw_with(bound, names), env, errors)
+        lapw_pat_binders(p = arm.0, out = names)
+        lapw_scan(e = arm.1, pname = pname, pty = pty, bound = lapw_with(bound = bound, names = names), env = env, errors = errors)
       }
       ()
     },
     EHandle(bd, arms) => {
-      lapw_scan(bd, pname, pty, bound, env, errors)
+      lapw_scan(e = bd, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
       for arm in arms {
         let names: Array[String] = []
-        lapw_pat_binders(arm.0, names)
-        lapw_scan(arm.1, pname, pty, lapw_with(bound, names), env, errors)
+        lapw_pat_binders(p = arm.0, out = names)
+        lapw_scan(e = arm.1, pname = pname, pty = pty, bound = lapw_with(bound = bound, names = names), env = env, errors = errors)
       }
       ()
     },
     EForIn(n, idx, it, b) => {
-      lapw_scan(it, pname, pty, bound, env, errors)
+      lapw_scan(e = it, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
       let names = [n]
       match idx {
-        Some(i) => Array::push(names, i),
+        Some(i) => Array::push(names, value = i),
         None => ()
       }
-      lapw_scan(b, pname, pty, lapw_with(bound, names), env, errors)
+      lapw_scan(e = b, pname = pname, pty = pty, bound = lapw_with(bound = bound, names = names), env = env, errors = errors)
     },
     ELoop(pairs, b) => {
       let names: Array[String] = []
       for pair in pairs {
-        lapw_scan(pair.1, pname, pty, bound, env, errors)
-        Array::push(names, pair.0)
+        lapw_scan(e = pair.1, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
+        Array::push(names, value = pair.0)
       }
-      lapw_scan(b, pname, pty, lapw_with(bound, names), env, errors)
+      lapw_scan(e = b, pname = pname, pty = pty, bound = lapw_with(bound = bound, names = names), env = env, errors = errors)
     },
     _ => {
       for child in expr_children(e) {
-        lapw_scan(child, pname, pty, bound, env, errors)
+        lapw_scan(e = child, pname = pname, pty = pty, bound = bound, env = env, errors = errors)
       }
       ()
     }
@@ -707,10 +707,10 @@ fn lapw_scan_alias(n: String, v: Expr, body: Expr, pname: String, pty: Type, bou
   // `let c = c` rebinds the parameter's own spelling to the parameter, so it
   // is scanned under that name too (Codex on #3447); the ordinary `let` scan
   // takes `c` for a new local there.
-  if !lapw_has(bound, pname) && lapw_stores_param(v, pname) {
+  if !lapw_has(names = bound, name = pname) && lapw_stores_param(value = v, pname = pname) {
     // An earlier binder of the same spelling is shadowed by this one, so it
     // does not hide the alias (Codex on #3447).
-    lapw_scan(body, n, pty, lapw_without(bound, n), env, errors)
+    lapw_scan(e = body, pname = n, pty = pty, bound = lapw_without(bound = bound, name = n), env = env, errors = errors)
   } else {
     ()
   }
@@ -720,7 +720,7 @@ fn lapw_without(bound: Array[String], name: String) -> Array[String] {
   let out: Array[String] = []
   for n in bound {
     if n != name {
-      Array::push(out, n)
+      Array::push(out, value = n)
     } else {
       ()
     }
@@ -731,10 +731,10 @@ fn lapw_without(bound: Array[String], name: String) -> Array[String] {
 fn lapw_with(bound: Array[String], names: Array[String]) -> Array[String] {
   let out: Array[String] = []
   for n in bound {
-    Array::push(out, n)
+    Array::push(out, value = n)
   }
   for n in names {
-    Array::push(out, n)
+    Array::push(out, value = n)
   }
   out
 }
@@ -743,8 +743,8 @@ fn lapw_with(bound: Array[String], names: Array[String]) -> Array[String] {
 /// (its parameter was known there) is not reported twice.
 fn lapw_report(message: String, value: Expr, errors: Array[String]) -> Unit {
   let line = String::concat(message, off_marker(tail_expr_off(value)))
-  if !lapw_has(errors, line) {
-    Array::push(errors, line)
+  if !lapw_has(names = errors, name = line) {
+    Array::push(errors, value = line)
   } else {
     ()
   }
@@ -759,13 +759,13 @@ fn lapw_report(message: String, value: Expr, errors: Array[String]) -> Unit {
 fn lapw_stores_param(value: Expr, pname: String) -> Bool {
   match value {
     EIdent(n, _) => n == pname,
-    EIf(_, t, el) => lapw_stores_param(t, pname) || lapw_stores_param(el, pname),
+    EIf(_, t, el) => lapw_stores_param(value = t, pname = pname) || lapw_stores_param(value = el, pname = pname),
     EMatch(_, arms) => {
       let mut found = false
       for arm in arms {
         let names: Array[String] = []
-        lapw_pat_binders(arm.0, names)
-        if !lapw_has(names, pname) && lapw_stores_param(arm.1, pname) {
+        lapw_pat_binders(p = arm.0, out = names)
+        if !lapw_has(names = names, name = pname) && lapw_stores_param(value = arm.1, pname = pname) {
           found = true
         } else {
           ()
@@ -773,26 +773,26 @@ fn lapw_stores_param(value: Expr, pname: String) -> Bool {
       }
       found
     },
-    ESeq(_, b) => lapw_stores_param(b, pname),
+    ESeq(_, b) => lapw_stores_param(value = b, pname = pname),
     // A binder of the parameter's own spelling (`let c = c; c`) hides it in
     // the body, which then carries it only through the binding (Codex on
     // #3452: the value assigned to a mutable alias).
-    ELet(n, v, b, _) => n != pname && lapw_stores_param(b, pname) || lapw_stores_param(b, n) && lapw_stores_param(v, pname),
+    ELet(n, v, b, _) => n != pname && lapw_stores_param(value = b, pname = pname) || lapw_stores_param(value = b, pname = n) && lapw_stores_param(value = v, pname = pname),
     // A mutable binding carries the parameter the way an immutable one does
     // (Codex on #3447: `{ let mut alias = c; alias }`), and so does one the
     // body assigns it to anywhere, a branch included (Codex on #3452: `if f {
     // alias = Some(c) } else { () }; alias`).
-    ELetMut(n, v, b, _) => n != pname && lapw_stores_param(b, pname) || lapw_stores_param(b, n) && (lapw_stores_param(v, pname) || lapw_assigns_param(b, n, pname)),
+    ELetMut(n, v, b, _) => n != pname && lapw_stores_param(value = b, pname = pname) || lapw_stores_param(value = b, pname = n) && (lapw_stores_param(value = v, pname = pname) || lapw_assigns_param(e = b, n = n, pname = pname)),
     // An assignment keeps the rest of its block as its continuation, and a
     // value assigned to a name the continuation hands back is carried too
     // (Codex on #3452: `let mut alias = 0; alias = c; alias`).
-    EAssign(m, v, c, _) => lapw_stores_param(c, pname) || m != pname && lapw_stores_param(c, m) && lapw_stores_param(v, pname),
-    EAssignOp(_, _, _, c, _) => lapw_stores_param(c, pname),
-    ECall(EIdent(ctor, _), cargs, _, _) => callee_is_ctor_name(ctor) && lapw_any_stores(cargs, pname),
-    ETuple(items) => lapw_any_stores(items, pname),
-    EArray(items) => lapw_any_stores(items, pname),
-    ERecord(_, fields, _) => lapw_fields_store(fields, pname),
-    EMap(fields) => lapw_fields_store(fields, pname),
+    EAssign(m, v, c, _) => lapw_stores_param(value = c, pname = pname) || m != pname && lapw_stores_param(value = c, pname = m) && lapw_stores_param(value = v, pname = pname),
+    EAssignOp(_, _, _, c, _) => lapw_stores_param(value = c, pname = pname),
+    ECall(EIdent(ctor, _), cargs, _, _) => callee_is_ctor_name(ctor) && lapw_any_stores(items = cargs, pname = pname),
+    ETuple(items) => lapw_any_stores(items = items, pname = pname),
+    EArray(items) => lapw_any_stores(items = items, pname = pname),
+    ERecord(_, fields, _) => lapw_fields_store(fields = fields, pname = pname),
+    EMap(fields) => lapw_fields_store(fields = fields, pname = pname),
     _ => false
   }
 }
@@ -802,31 +802,31 @@ fn lapw_stores_param(value: Expr, pname: String) -> Bool {
 /// and assigns `n` counts, since it can run.
 fn lapw_assigns_param(e: Expr, n: String, pname: String) -> Bool {
   match e {
-    EAssign(t, v, rest, _) => t == n && lapw_stores_param(v, pname) || lapw_assigns_param(v, n, pname) || lapw_assigns_param(rest, n, pname),
-    ELet(x, v, b, _) => lapw_assigns_param(v, n, pname) || x != n && lapw_assigns_param(b, n, pname),
-    ELetMut(x, v, b, _) => lapw_assigns_param(v, n, pname) || x != n && lapw_assigns_param(b, n, pname),
-    ELetRec(x, v, b) => x != n && (lapw_assigns_param(v, n, pname) || lapw_assigns_param(b, n, pname)),
+    EAssign(t, v, rest, _) => t == n && lapw_stores_param(value = v, pname = pname) || lapw_assigns_param(e = v, n = n, pname = pname) || lapw_assigns_param(e = rest, n = n, pname = pname),
+    ELet(x, v, b, _) => lapw_assigns_param(e = v, n = n, pname = pname) || x != n && lapw_assigns_param(e = b, n = n, pname = pname),
+    ELetMut(x, v, b, _) => lapw_assigns_param(e = v, n = n, pname = pname) || x != n && lapw_assigns_param(e = b, n = n, pname = pname),
+    ELetRec(x, v, b) => x != n && (lapw_assigns_param(e = v, n = n, pname = pname) || lapw_assigns_param(e = b, n = n, pname = pname)),
     EFn(_, _, ps, _, _, body) => {
       let names: Array[String] = []
       for p in ps {
-        Array::push(names, lapw_base_name(p.0))
+        Array::push(names, value = lapw_base_name(p.0))
       }
-      !lapw_has(names, n) && lapw_assigns_param(body, n, pname)
+      !lapw_has(names = names, name = n) && lapw_assigns_param(e = body, n = n, pname = pname)
     },
-    EMatch(sc, arms) => lapw_assigns_param(sc, n, pname) || lapw_arms_assign(arms, n, pname),
-    EHandle(bd, arms) => lapw_assigns_param(bd, n, pname) || lapw_arms_assign(arms, n, pname),
+    EMatch(sc, arms) => lapw_assigns_param(e = sc, n = n, pname = pname) || lapw_arms_assign(arms = arms, n = n, pname = pname),
+    EHandle(bd, arms) => lapw_assigns_param(e = bd, n = n, pname = pname) || lapw_arms_assign(arms = arms, n = n, pname = pname),
     EForIn(x, idx, it, b) => {
       let hidden = x == n || match idx {
         Some(i) => i == n,
         None => false
       }
-      lapw_assigns_param(it, n, pname) || !hidden && lapw_assigns_param(b, n, pname)
+      lapw_assigns_param(e = it, n = n, pname = pname) || !hidden && lapw_assigns_param(e = b, n = n, pname = pname)
     },
     ELoop(pairs, b) => {
       let mut found = false
       let mut hidden = false
       for pair in pairs {
-        if lapw_assigns_param(pair.1, n, pname) {
+        if lapw_assigns_param(e = pair.1, n = n, pname = pname) {
           found = true
         } else {
           ()
@@ -837,12 +837,12 @@ fn lapw_assigns_param(e: Expr, n: String, pname: String) -> Bool {
           ()
         }
       }
-      found || !hidden && lapw_assigns_param(b, n, pname)
+      found || !hidden && lapw_assigns_param(e = b, n = n, pname = pname)
     },
     _ => {
       let mut found = false
       for child in expr_children(e) {
-        if lapw_assigns_param(child, n, pname) {
+        if lapw_assigns_param(e = child, n = n, pname = pname) {
           found = true
         } else {
           ()
@@ -857,8 +857,8 @@ fn lapw_arms_assign(arms: Array[(Pat, Expr)], n: String, pname: String) -> Bool 
   let mut found = false
   for arm in arms {
     let names: Array[String] = []
-    lapw_pat_binders(arm.0, names)
-    if !lapw_has(names, n) && lapw_assigns_param(arm.1, n, pname) {
+    lapw_pat_binders(p = arm.0, out = names)
+    if !lapw_has(names = names, name = n) && lapw_assigns_param(e = arm.1, n = n, pname = pname) {
       found = true
     } else {
       ()
@@ -870,7 +870,7 @@ fn lapw_arms_assign(arms: Array[(Pat, Expr)], n: String, pname: String) -> Bool 
 fn lapw_fields_store(fields: Array[(String, Expr)], pname: String) -> Bool {
   let mut found = false
   for f in fields {
-    if lapw_stores_param(f.1, pname) {
+    if lapw_stores_param(value = f.1, pname = pname) {
       found = true
     } else {
       ()
@@ -882,7 +882,7 @@ fn lapw_fields_store(fields: Array[(String, Expr)], pname: String) -> Bool {
 fn lapw_any_stores(items: Array[Expr], pname: String) -> Bool {
   let mut found = false
   for item in items {
-    if lapw_stores_param(item, pname) {
+    if lapw_stores_param(value = item, pname = pname) {
       found = true
     } else {
       ()
@@ -894,34 +894,34 @@ fn lapw_any_stores(items: Array[Expr], pname: String) -> Bool {
 /// A target named by a binding in scope inside the literal is not outer.
 fn lapw_target_outer(target: Expr, bound: Array[String]) -> Bool {
   match target {
-    EIdent(n, _) => !lapw_has(bound, n),
-    EDot(obj, _, _, _) => lapw_target_outer(obj, bound),
+    EIdent(n, _) => !lapw_has(names = bound, name = n),
+    EDot(obj, _, _, _) => lapw_target_outer(target = obj, bound = bound),
     _ => true
   }
 }
 
 fn lapw_pat_binders(p: Pat, out: Array[String]) -> Unit {
   match p {
-    PBind(n) => Array::push(out, n),
+    PBind(n) => Array::push(out, value = n),
     PCtor(_, ps) => {
       for q in ps {
-        lapw_pat_binders(q, out)
+        lapw_pat_binders(p = q, out = out)
       }
       ()
     },
     PTuple(ps) => {
       for q in ps {
-        lapw_pat_binders(q, out)
+        lapw_pat_binders(p = q, out = out)
       }
       ()
     },
     POr(a, b) => {
-      lapw_pat_binders(a, out)
-      lapw_pat_binders(b, out)
+      lapw_pat_binders(p = a, out = out)
+      lapw_pat_binders(p = b, out = out)
     },
     PStruct(_, fields) => {
       for f in fields {
-        lapw_pat_binders(f.1, out)
+        lapw_pat_binders(p = f.1, out = out)
       }
       ()
     },
@@ -941,10 +941,10 @@ fn lapw_has(names: Array[String], name: String) -> Bool {
   found
 }
 
-fn lapw_base_name(pn: String) -> String {
+fn lapw_base_name(_ pn: String) -> String {
   let ln = String::length(pn)
-  if ln > 0 && (String::byte_at(pn, ln - 1) == 126 || String::byte_at(pn, ln - 1) == 63) {
-    String::substring(pn, 0, ln - 1)
+  if ln > 0 && (String::byte_at(pn, at = ln - 1) == 126 || String::byte_at(pn, at = ln - 1) == 63) {
+    String::substring(pn, start = 0, end = ln - 1)
   } else {
     pn
   }
@@ -953,7 +953,7 @@ fn lapw_base_name(pn: String) -> String {
 /// Nominal struct identity intentionally omits field types. Reconstruct only
 /// the tail record literal's local let environment so a region-return check can
 /// inspect the actual field values without changing the public nominal type.
-fn named_record_provenance_key(name: String) -> String {
+fn named_record_provenance_key(_ name: String) -> String {
   String::concat("__region_named_record__", name)
 }
 
@@ -969,14 +969,14 @@ fn bind_named_record_provenance(name: String, val: Expr, env: TypeEnv, defs: Arr
         let throwaway = array_empty()
         let throwtab = array_empty()
         let (field_ty, field_s, _) = ce(value, env, defs, s, c, throwaway, throwtab)
-        Array::push(field_types, (field_name, subst_apply(field_s, field_ty)))
+        Array::push(field_types, value = (field_name, subst_apply(s = field_s, ty = field_ty)))
       }
-      env_bind(env, named_record_provenance_key(name), CtRecord(field_types))
+      env_bind(env = env, name = named_record_provenance_key(name), ty = CtRecord(field_types))
     } else {
       env
     },
-    EIdent(alias, _) => match env_lookup(env, named_record_provenance_key(alias)) {
-      Some(provenance) => env_bind(env, named_record_provenance_key(name), provenance),
+    EIdent(alias, _) => match env_lookup(env = env, name = named_record_provenance_key(alias)) {
+      Some(provenance) => env_bind(env = env, name = named_record_provenance_key(name), ty = provenance),
       None => env
     },
     _ => env
@@ -985,17 +985,17 @@ fn bind_named_record_provenance(name: String, val: Expr, env: TypeEnv, defs: Arr
 
 fn named_record_tail_mentions_region(expr: Expr, env: TypeEnv, region_name: String) -> Bool {
   match expr {
-    EIdent(name, _) => match env_lookup(env, named_record_provenance_key(name)) {
-      Some(provenance) => type_mentions_named(provenance, region_name),
+    EIdent(name, _) => match env_lookup(env = env, name = named_record_provenance_key(name)) {
+      Some(provenance) => type_mentions_named(ty = provenance, name = region_name),
       None => false
     },
     EDot(obj, field, _, _) => match obj {
-      EIdent(name, _) => match env_lookup(env, named_record_provenance_key(name)) {
+      EIdent(name, _) => match env_lookup(env = env, name = named_record_provenance_key(name)) {
         Some(CtRecord(fields)) => {
           let mut found = false
           for entry in fields {
             let (field_name, field_ty) = entry
-            if field_name == field && type_mentions_named(field_ty, region_name) {
+            if field_name == field && type_mentions_named(ty = field_ty, name = region_name) {
               found = true
             } else {
               ()
@@ -1018,11 +1018,11 @@ fn named_record_tail_mentions_region(expr: Expr, env: TypeEnv, region_name: Stri
 fn tail_returns_binding(expr: Expr, name: String) -> Bool {
   match expr {
     EIdent(found, _) => found == name,
-    ELet(_, _, body, _) => tail_returns_binding(body, name),
-    ELetMut(_, _, body, _) => tail_returns_binding(body, name),
-    ELetRec(_, _, body) => tail_returns_binding(body, name),
-    ESeq(_, right) => tail_returns_binding(right, name),
-    EIf(_, then_expr, else_expr) => tail_returns_binding(then_expr, name) || tail_returns_binding(else_expr, name),
+    ELet(_, _, body, _) => tail_returns_binding(expr = body, name = name),
+    ELetMut(_, _, body, _) => tail_returns_binding(expr = body, name = name),
+    ELetRec(_, _, body) => tail_returns_binding(expr = body, name = name),
+    ESeq(_, right) => tail_returns_binding(expr = right, name = name),
+    EIf(_, then_expr, else_expr) => tail_returns_binding(expr = then_expr, name = name) || tail_returns_binding(expr = else_expr, name = name),
     _ => false
   }
 }
@@ -1042,7 +1042,7 @@ fn tail_region_check(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
   }
 }
 
-fn tail_region_closed_ground_fn(expr: Expr) -> Bool {
+fn tail_region_closed_ground_fn(_ expr: Expr) -> Bool {
   match expr {
     EFn(tparams, tbounds, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(tbounds) == 0 && Array::length(params) == 0 && ret_ty == None && effect == None {
       match body {
@@ -1063,23 +1063,23 @@ fn tail_region_closed_ground_fn(expr: Expr) -> Bool {
 export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, region_name: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
   match expr {
     ELet(name, val, body, _) => {
-      let (val_ty, s1, c1) = tail_region_check(val, env, defs, s, c, ce)
-      let next_env = bind_named_record_provenance(name, val, env_bind(env, name, val_ty), defs, s1, c1, ce)
-      (tail_returns_binding(body, name) && tail_named_record_mentions_region(val, env, defs, s, c, region_name, ce)) || tail_named_record_mentions_region(body, next_env, defs, s1, c1, region_name, ce)
+      let (val_ty, s1, c1) = tail_region_check(expr = val, env = env, defs = defs, s = s, c = c, ce = ce)
+      let next_env = bind_named_record_provenance(name = name, val = val, env = env_bind(env = env, name = name, ty = val_ty), defs = defs, s = s1, c = c1, ce = ce)
+      (tail_returns_binding(expr = body, name = name) && tail_named_record_mentions_region(expr = val, env = env, defs = defs, s = s, c = c, region_name = region_name, ce = ce)) || tail_named_record_mentions_region(expr = body, env = next_env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce)
     },
     ELetMut(name, val, body, _) => {
-      let (val_ty, s1, c1) = tail_region_check(val, env, defs, s, c, ce)
-      let next_env = bind_named_record_provenance(name, val, env_bind_mut(env, name, val_ty, false), defs, s1, c1, ce)
-      tail_named_record_mentions_region(body, next_env, defs, s1, c1, region_name, ce)
+      let (val_ty, s1, c1) = tail_region_check(expr = val, env = env, defs = defs, s = s, c = c, ce = ce)
+      let next_env = bind_named_record_provenance(name = name, val = val, env = env_bind_mut(env = env, name = name, ty = val_ty, escapes = false), defs = defs, s = s1, c = c1, ce = ce)
+      tail_named_record_mentions_region(expr = body, env = next_env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce)
     },
     ESeq(left, right) => {
       let (s1, c1) = if tail_region_closed_ground_fn(left) {
         (s, c)
       } else {
-        let (_, next_s, next_c) = tail_region_check(left, env, defs, s, c, ce)
+        let (_, next_s, next_c) = tail_region_check(expr = left, env = env, defs = defs, s = s, c = c, ce = ce)
         (next_s, next_c)
       }
-      tail_named_record_mentions_region(right, env, defs, s1, c1, region_name, ce)
+      tail_named_record_mentions_region(expr = right, env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce)
     },
     ECall(callee, args, _, _) => {
       let throwaway = array_empty()
@@ -1088,25 +1088,25 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
       let mut builtin_constructor_found = false
       match callee {
         EIdent("Some", _) => for arg in args {
-          if tail_named_record_mentions_region(arg, env, defs, s1, c1, region_name, ce) {
+          if tail_named_record_mentions_region(expr = arg, env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
             builtin_constructor_found = true
           }
         },
         _ => ()
       }
-      match subst_apply(s1, callee_ty) {
+      match subst_apply(s = s1, ty = callee_ty) {
         CtFn(param_tys, ret_ty, callee_effect) => {
-          let resolved_ret = subst_apply(s1, ret_ty)
+          let resolved_ret = subst_apply(s = s1, ty = ret_ty)
           let mut found = false
-          let limit = min_int(Array::length(param_tys), Array::length(args))
+          let limit = min_int(a = Array::length(param_tys), b = Array::length(args))
           let mut i = 0
           while i < limit {
             let markers = array_empty()
-            collect_internal_provenance(Array::get(param_tys, i), markers)
+            collect_internal_provenance(ty = Array::get(param_tys, at = i), out = markers)
             let mut depends = false
             for marker_label in markers {
               match param_marker_index(marker_label) {
-                Some(marker) => if type_has_param_marker(resolved_ret, marker) {
+                Some(marker) => if type_has_param_marker(ty = resolved_ret, marker = marker) {
                   depends = true
                 } else {
                   ()
@@ -1114,24 +1114,24 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
                 None => ()
               }
             }
-            if depends && tail_named_record_mentions_region(Array::get(args, i), env, defs, s1, c1, region_name, ce) {
+            if depends && tail_named_record_mentions_region(expr = Array::get(args, at = i), env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
               found = true
             }
             i = i + 1
           }
           match callee_effect {
-            Some(row) => if String::contains(row, "#aliasparam[") {
-              for raw in String::split(row, ",") {
+            Some(row) => if String::contains(row, needle = "#aliasparam[") {
+              for raw in String::split(row, sep = ",") {
                 let label = String::trim(raw)
-                if String::starts_with(label, "#aliasparam[") {
-                  let close = String::index_of(label, "]")
+                if String::starts_with(label, prefix = "#aliasparam[") {
+                  let close = String::index_of(label, needle = "]")
                   let mut index = 0
                   let mut p = 12
                   while p < close {
-                    index = index * 10 + (String::char_code_at(label, p) - 48)
+                    index = index * 10 + (String::char_code_at(label, at = p) - 48)
                     p = p + 1
                   }
-                  if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
+                  if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(expr = Array::get(args, at = index), env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
                     found = true
                   }
                 }
@@ -1142,17 +1142,17 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
             None => ()
           }
           match callee_effect {
-            Some(row) => for raw in String::split(row, ",") {
+            Some(row) => for raw in String::split(row, sep = ",") {
               let label = String::trim(raw)
-              if String::starts_with(label, "#fieldparam[") {
-                let close = String::index_of(label, "]")
+              if String::starts_with(label, prefix = "#fieldparam[") {
+                let close = String::index_of(label, needle = "]")
                 let mut index = 0
                 let mut p = 12
                 while p < close {
-                  index = index * 10 + (String::char_code_at(label, p) - 48)
+                  index = index * 10 + (String::char_code_at(label, at = p) - 48)
                   p = p + 1
                 }
-                if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
+                if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(expr = Array::get(args, at = index), env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
                   found = true
                 }
               }
@@ -1160,10 +1160,10 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
             None => ()
           }
           match callee {
-            EIdent(callee_name, _) => match env_lookup(env, String::concat("__field_contract__", callee_name)) {
+            EIdent(callee_name, _) => match env_lookup(env = env, name = String::concat("__field_contract__", callee_name)) {
               Some(CtNamed(index_text, _)) => {
                 let index = decimal_index(index_text)
-                if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
+                if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(expr = Array::get(args, at = index), env = env, defs = defs, s = s1, c = c1, region_name = region_name, ce = ce) {
                   found = true
                 }
               },
@@ -1185,7 +1185,7 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
         let throwaway = array_empty()
         let throwtab = array_empty()
         let (field_ty, next_s, next_c) = ce(value, env, defs, s1, c1, throwaway, throwtab)
-        if type_mentions_named(subst_apply(next_s, field_ty), region_name) {
+        if type_mentions_named(ty = subst_apply(s = next_s, ty = field_ty), name = region_name) {
           found = true
         } else {
           ()
@@ -1200,7 +1200,7 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
     EArray(items) => {
       let mut found = false
       for item in items {
-        if tail_named_record_mentions_region(item, env, defs, s, c, region_name, ce) {
+        if tail_named_record_mentions_region(expr = item, env = env, defs = defs, s = s, c = c, region_name = region_name, ce = ce) {
           found = true
         }
       }
@@ -1209,7 +1209,7 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
     ETuple(items) => {
       let mut found = false
       for item in items {
-        if tail_named_record_mentions_region(item, env, defs, s, c, region_name, ce) {
+        if tail_named_record_mentions_region(expr = item, env = env, defs = defs, s = s, c = c, region_name = region_name, ce = ce) {
           found = true
         }
       }
@@ -1219,7 +1219,7 @@ export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Arra
       let throwaway = array_empty()
       let throwtab = array_empty()
       let (expr_ty, next_s, _) = ce(expr, env, defs, s, c, throwaway, throwtab)
-      named_record_tail_mentions_region(expr, env, region_name) || type_mentions_named(subst_apply(next_s, expr_ty), region_name)
+      named_record_tail_mentions_region(expr = expr, env = env, region_name = region_name) || type_mentions_named(ty = subst_apply(s = next_s, ty = expr_ty), name = region_name)
     }
   }
 }
@@ -1229,31 +1229,31 @@ fn expression_mentions_active_region_scan(expr: Expr, cur: TypeEnv, full: TypeEn
     EnvEmpty => false,
     EnvBind(name, binding, rest) => if name == "#active_region" {
       match binding.ty {
-        CtNamed(region_name, _) => tail_named_record_mentions_region(expr, full, defs, s, c, region_name, ce) || expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
-        _ => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce)
+        CtNamed(region_name, _) => tail_named_record_mentions_region(expr = expr, env = full, defs = defs, s = s, c = c, region_name = region_name, ce = ce) || expression_mentions_active_region_scan(expr = expr, cur = rest, full = full, defs = defs, s = s, c = c, ce = ce),
+        _ => expression_mentions_active_region_scan(expr = expr, cur = rest, full = full, defs = defs, s = s, c = c, ce = ce)
       }
     } else {
-      expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce)
+      expression_mentions_active_region_scan(expr = expr, cur = rest, full = full, defs = defs, s = s, c = c, ce = ce)
     },
-    EnvShowWrappers(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
-    EnvMutCell(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
-    EnvTraitDef(_, _, _, _, rest, _, _) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
-    EnvTraitImpl(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
-    EnvTraitImplGen(_, _, _, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
-    EnvTypeDefs(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
-    EnvCached(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvShowWrappers(_, _, rest) => expression_mentions_active_region_scan(expr = expr, cur = rest, full = full, defs = defs, s = s, c = c, ce = ce),
+    EnvMutCell(_, _, rest) => expression_mentions_active_region_scan(expr = expr, cur = rest, full = full, defs = defs, s = s, c = c, ce = ce),
+    EnvTraitDef(_, _, _, _, rest, _, _) => expression_mentions_active_region_scan(expr = expr, cur = rest, full = full, defs = defs, s = s, c = c, ce = ce),
+    EnvTraitImpl(_, _, rest) => expression_mentions_active_region_scan(expr = expr, cur = rest, full = full, defs = defs, s = s, c = c, ce = ce),
+    EnvTraitImplGen(_, _, _, _, rest) => expression_mentions_active_region_scan(expr = expr, cur = rest, full = full, defs = defs, s = s, c = c, ce = ce),
+    EnvTypeDefs(_, _, rest) => expression_mentions_active_region_scan(expr = expr, cur = rest, full = full, defs = defs, s = s, c = c, ce = ce),
+    EnvCached(_, _, rest) => expression_mentions_active_region_scan(expr = expr, cur = rest, full = full, defs = defs, s = s, c = c, ce = ce),
     EnvFlat(_) => false
   }
 }
 
 export fn expression_mentions_active_region(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
-  expression_mentions_active_region_scan(expr, env, env, defs, s, c, ce)
+  expression_mentions_active_region_scan(expr = expr, cur = env, full = env, defs = defs, s = s, c = c, ce = ce)
 }
 
 /// An arm pattern is a CATCH-ALL (makes a match exhaustive regardless of which
 /// constructors precede it) when it is a wildcard or a bare binding. `POr` is a
 /// catch-all if either side is.
-export fn pat_is_catchall(pat: Pat) -> Bool {
+export fn pat_is_catchall(_ pat: Pat) -> Bool {
   match pat {
     PWild => true,
     PBind(_) => true,
@@ -1270,13 +1270,13 @@ export fn pat_is_catchall(pat: Pat) -> Bool {
 export fn collect_bool_pats_into(pat: Pat, acc: Array[String]) -> Unit {
   match pat {
     PBool(b) => if b {
-      Array::push(acc, "true")
+      Array::push(acc, value = "true")
     } else {
-      Array::push(acc, "false")
+      Array::push(acc, value = "false")
     },
     POr(l, r) => {
-      collect_bool_pats_into(l, acc)
-      collect_bool_pats_into(r, acc)
+      collect_bool_pats_into(pat = l, acc = acc)
+      collect_bool_pats_into(pat = r, acc = acc)
     },
     _ => ()
   }
@@ -1286,7 +1286,7 @@ export fn flat_names_contain(names: Array[String], target: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(names) && !found {
-    if Array::get(names, i) == target {
+    if Array::get(names, at = i) == target {
       found = true
     } else {
       i = i + 1
@@ -1297,10 +1297,10 @@ export fn flat_names_contain(names: Array[String], target: String) -> Bool {
 
 export fn collect_ctor_names_into(pat: Pat, acc: Array[String]) -> Unit {
   match pat {
-    PCtor(name, _) => Array::push(acc, pattern_ctor_base_name(name)),
+    PCtor(name, _) => Array::push(acc, value = pattern_ctor_base_name(name)),
     POr(l, r) => {
-      collect_ctor_names_into(l, acc)
-      collect_ctor_names_into(r, acc)
+      collect_ctor_names_into(pat = l, acc = acc)
+      collect_ctor_names_into(pat = r, acc = acc)
     },
     _ => ()
   }
@@ -1361,7 +1361,7 @@ fn formal_field_access_message(tparam: String, field: String) -> String {
 /// still open answer, for the reason `eq_formal_row_of` gives -- an auxiliary
 /// re-check can hand one variable id to two sibling binders.
 export fn open_formal_name_for_var(id: Int, s: Subst) -> String {
-  formal_name_for_var(id, s, true)
+  formal_name_for_var(id = id, s = s, open_only = true)
 }
 
 /// The lookup behind `open_formal_name_for_var`. `open_only = false` also
@@ -1373,12 +1373,12 @@ fn formal_name_for_var(id: Int, s: Subst, open_only: Bool) -> String {
   let mut i = Array::length(eq_formal_vars) - 1
   let mut found = ""
   while i >= 0 && found == "" {
-    let (vid, name) = Array::get(eq_formal_vars, i)
-    if !open_only || eq_group_is_open(Array::get(eq_formal_group, i)) {
+    let (vid, name) = Array::get(eq_formal_vars, at = i)
+    if !open_only || eq_group_is_open(Array::get(eq_formal_group, at = i)) {
       if vid == id {
         found = name
       } else {
-        match subst_apply(s, CtVar(vid)) {
+        match subst_apply(s = s, ty = CtVar(vid)) {
           CtVar(rep) => if rep == id {
             found = name
           },
@@ -1415,27 +1415,27 @@ export fn resolve_deferred_field_reads(s: Subst, defs: Array[TypeDef], errors: A
   let mut cur = s
   let mut i = 0
   while i < Array::length(deferred_field_reads) {
-    let (vid, field, field_off, dot_off, recv, result_id) = Array::get(deferred_field_reads, i)
-    match subst_apply(cur, CtVar(vid)) {
+    let (vid, field, field_off, dot_off, recv, result_id) = Array::get(deferred_field_reads, at = i)
+    match subst_apply(s = cur, ty = CtVar(vid)) {
       CtVar(rep) => {
-        let formal = formal_name_for_var(rep, cur, open_only)
+        let formal = formal_name_for_var(id = rep, s = cur, open_only = open_only)
         if formal != "" {
-          Array::push(errors, String::concat(formal_field_access_message(formal, field), field_read_marker(field, field_off, dot_off)))
+          Array::push(errors, value = String::concat(formal_field_access_message(tparam = formal, field = field), field_read_marker(field = field, field_off = field_off, dot_off = dot_off)))
         } else {
-          Array::push(kept, (vid, field, field_off, dot_off, recv, result_id))
+          Array::push(kept, value = (vid, field, field_off, dot_off, recv, result_id))
         }
       },
       resolved => {
-        let fty = field_read_type(resolved, field, defs, cur, errors, field_off, dot_off)
-        cur = unify_deferred_field_result(result_id, fty, cur, defs, field, field_off, dot_off, errors)
+        let fty = field_read_type(resolved = resolved, field = field, defs = defs, s1 = cur, errors = errors, field_off = field_off, dot_off = dot_off)
+        cur = unify_deferred_field_result(result_id = result_id, fty = fty, s = cur, defs = defs, field = field, field_off = field_off, dot_off = dot_off, errors = errors)
       }
     }
     i = i + 1
   }
-  Array::truncate(deferred_field_reads, 0)
+  Array::truncate(deferred_field_reads, length = 0)
   let mut k = 0
   while k < Array::length(kept) {
-    Array::push(deferred_field_reads, Array::get(kept, k))
+    Array::push(deferred_field_reads, value = Array::get(kept, at = k))
     k = k + 1
   }
   cur
@@ -1445,7 +1445,7 @@ export fn resolve_deferred_field_reads(s: Subst, defs: Array[TypeDef], errors: A
 /// when the AST has it, else the dot.
 fn field_read_marker(field: String, field_off: Int, dot_off: Int) -> String {
   if field_off >= 0 {
-    off_marker_len(field_off, String::length(field))
+    off_marker_len(off = field_off, len = String::length(field))
   } else {
     off_marker(dot_off)
   }
@@ -1471,14 +1471,14 @@ fn field_read_marker(field: String, field_off: Int, dot_off: Int) -> String {
 fn unify_deferred_field_result(result_id: Int, fty: Type, s: Subst, defs: Array[TypeDef], field: String, field_off: Int, dot_off: Int, errors: Array[String]) -> Subst {
   match fty {
     CtUnknown => s,
-    _ => match unify(CtVar(result_id), fty, s) {
+    _ => match unify(a = CtVar(result_id), b = fty, s = s) {
       Some(ns) => ns,
       None => {
-        let existing = subst_apply(s, CtVar(result_id))
-        if type_mentions_unknown_named(existing, defs) || type_mentions_unknown_named(fty, defs) {
+        let existing = subst_apply(s = s, ty = CtVar(result_id))
+        if type_mentions_unknown_named(ty = existing, defs = defs) || type_mentions_unknown_named(ty = fty, defs = defs) {
           s
         } else {
-          Array::push(errors, String::concat("field access `.", String::concat(field, String::concat("` has type ", String::concat(type_to_string(subst_apply(s, fty)), String::concat(" once its receiver is known, but the value was already used as ", String::concat(type_to_string(existing), field_read_marker(field, field_off, dot_off))))))))
+          Array::push(errors, value = String::concat("field access `.", String::concat(field, String::concat("` has type ", String::concat(type_to_string(subst_apply(s = s, ty = fty)), String::concat(" once its receiver is known, but the value was already used as ", String::concat(type_to_string(existing), field_read_marker(field = field, field_off = field_off, dot_off = dot_off))))))))
           s
         }
       }
@@ -1491,7 +1491,7 @@ fn unify_deferred_field_result(result_id: Int, fty: Type, s: Subst, defs: Array[
 fn type_mentions_unknown_named(ty: Type, defs: Array[TypeDef]) -> Bool {
   match ty {
     CtNamed(n, args) => {
-      let known = match find_typedef(defs, n) {
+      let known = match find_typedef(defs = defs, name = n) {
         Some(_) => true,
         None => match resolve_builtin(n) {
           Some(_) => true,
@@ -1504,28 +1504,28 @@ fn type_mentions_unknown_named(ty: Type, defs: Array[TypeDef]) -> Bool {
         let mut i = 0
         let mut found = false
         while i < Array::length(args) && !found {
-          found = type_mentions_unknown_named(Array::get(args, i), defs)
+          found = type_mentions_unknown_named(ty = Array::get(args, at = i), defs = defs)
           i = i + 1
         }
         found
       }
     },
     CtApplied(head, args) => {
-      let mut found = type_mentions_unknown_named(head, defs)
+      let mut found = type_mentions_unknown_named(ty = head, defs = defs)
       let mut i = 0
       while i < Array::length(args) && !found {
-        found = type_mentions_unknown_named(Array::get(args, i), defs)
+        found = type_mentions_unknown_named(ty = Array::get(args, at = i), defs = defs)
         i = i + 1
       }
       found
     },
-    CtArray(e) => type_mentions_unknown_named(e, defs),
-    CtOption(e) => type_mentions_unknown_named(e, defs),
+    CtArray(e) => type_mentions_unknown_named(ty = e, defs = defs),
+    CtOption(e) => type_mentions_unknown_named(ty = e, defs = defs),
     CtTuple(es) => {
       let mut i = 0
       let mut found = false
       while i < Array::length(es) && !found {
-        found = type_mentions_unknown_named(Array::get(es, i), defs)
+        found = type_mentions_unknown_named(ty = Array::get(es, at = i), defs = defs)
         i = i + 1
       }
       found
@@ -1534,17 +1534,17 @@ fn type_mentions_unknown_named(ty: Type, defs: Array[TypeDef]) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(fields) && !found {
-        let (_, fty) = Array::get(fields, i)
-        found = type_mentions_unknown_named(fty, defs)
+        let (_, fty) = Array::get(fields, at = i)
+        found = type_mentions_unknown_named(ty = fty, defs = defs)
         i = i + 1
       }
       found
     },
     CtFn(ps, r, _) => {
-      let mut found = type_mentions_unknown_named(r, defs)
+      let mut found = type_mentions_unknown_named(ty = r, defs = defs)
       let mut i = 0
       while i < Array::length(ps) && !found {
-        found = type_mentions_unknown_named(Array::get(ps, i), defs)
+        found = type_mentions_unknown_named(ty = Array::get(ps, at = i), defs = defs)
         i = i + 1
       }
       found
@@ -1582,10 +1582,10 @@ fn type_mentions_unknown_named(ty: Type, defs: Array[TypeDef]) -> Bool {
 /// reaches the method's return type before it is generalized); rows on other
 /// variables are left for `refuse_generalized_field_reads`.
 export fn resolve_impl_self_field_reads(binding_name: String, val: Expr, vt: Type, s: Subst, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Subst {
-  let sep = String::index_of(binding_name, "::")
+  let sep = String::index_of(binding_name, needle = "::")
   let self_first = match val {
     EFn(_, _, params, _, _, _) => if Array::length(params) > 0 {
-      let (pname, _) = Array::get(params, 0)
+      let (pname, _) = Array::get(params, at = 0)
       pname == "self"
     } else {
       false
@@ -1595,15 +1595,15 @@ export fn resolve_impl_self_field_reads(binding_name: String, val: Expr, vt: Typ
   if sep < 0 || !self_first {
     s
   } else {
-    let owner_full = String::substring(binding_name, 0, sep)
+    let owner_full = String::substring(binding_name, start = 0, end = sep)
     let owner = impl_method_owner_head(owner_full)
-    let method = String::substring(binding_name, sep + 2, String::length(binding_name))
-    match impl_method_target(env, env, owner, owner_full, method) {
+    let method = String::substring(binding_name, start = sep + 2, end = String::length(binding_name))
+    match impl_method_target(chain = env, full = env, type_name = owner, owner_full = owner_full, method_name = method) {
       None => s,
       Some(target) => {
-        let self_rep = match subst_apply(s, vt) {
+        let self_rep = match subst_apply(s = s, ty = vt) {
           CtFn(ptypes, _, _) => if Array::length(ptypes) > 0 {
-            match subst_apply(s, Array::get(ptypes, 0)) {
+            match subst_apply(s = s, ty = Array::get(ptypes, at = 0)) {
               CtVar(id) => id,
               _ => 0 - 1
             }
@@ -1619,23 +1619,23 @@ export fn resolve_impl_self_field_reads(binding_name: String, val: Expr, vt: Typ
           let mut cur = s
           let mut i = 0
           while i < Array::length(deferred_field_reads) {
-            let (vid, field, field_off, dot_off, recv, result_id) = Array::get(deferred_field_reads, i)
-            let is_self = match subst_apply(cur, CtVar(vid)) {
+            let (vid, field, field_off, dot_off, recv, result_id) = Array::get(deferred_field_reads, at = i)
+            let is_self = match subst_apply(s = cur, ty = CtVar(vid)) {
               CtVar(rep) => rep == self_rep,
               _ => false
             }
             if is_self {
-              let fty = field_read_type(target, field, defs, cur, errors, field_off, dot_off)
-              cur = unify_deferred_field_result(result_id, fty, cur, defs, field, field_off, dot_off, errors)
+              let fty = field_read_type(resolved = target, field = field, defs = defs, s1 = cur, errors = errors, field_off = field_off, dot_off = dot_off)
+              cur = unify_deferred_field_result(result_id = result_id, fty = fty, s = cur, defs = defs, field = field, field_off = field_off, dot_off = dot_off, errors = errors)
             } else {
-              Array::push(kept, (vid, field, field_off, dot_off, recv, result_id))
+              Array::push(kept, value = (vid, field, field_off, dot_off, recv, result_id))
             }
             i = i + 1
           }
-          Array::truncate(deferred_field_reads, 0)
+          Array::truncate(deferred_field_reads, length = 0)
           let mut k = 0
           while k < Array::length(kept) {
-            Array::push(deferred_field_reads, Array::get(kept, k))
+            Array::push(deferred_field_reads, value = Array::get(kept, at = k))
             k = k + 1
           }
           cur
@@ -1657,32 +1657,32 @@ export fn resolve_impl_self_field_reads(binding_name: String, val: Expr, vt: Typ
 fn impl_method_target(chain: TypeEnv, full: TypeEnv, type_name: String, owner_full: String, method_name: String) -> Option[Type] {
   match chain {
     EnvEmpty => None,
-    EnvBind(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    EnvBind(_, _, rest) => impl_method_target(chain = rest, full = full, type_name = type_name, owner_full = owner_full, method_name = method_name),
     // Declared OR inherited: `impl Child for P` may define `base_m`, a method
     // of `trait Child: Base`'s supertrait, and the env then records an impl of
     // `Child` for `P`, not of `Base`. `trait_method_sig_deep` walks the
     // supertraits (measured: `trait_supertrait_bound_struct.vibe` was refused
     // as an open receiver with the flat `trait_methods_declare` test).
     EnvTraitDef(trait_name, _, _, _, rest, _, _) => {
-      let declares = match trait_method_sig_deep(full, trait_name, method_name) {
+      let declares = match trait_method_sig_deep(env = full, trait_name = trait_name, method_name = method_name) {
         Some(_) => true,
         None => false
       }
       if declares {
-        match env_trait_impl_target_for(full, trait_name, type_name, owner_full) {
+        match env_trait_impl_target_for(env = full, trait_name = trait_name, type_name = type_name, owner_full = owner_full) {
           Some(target) => Some(target),
-          None => impl_method_target(rest, full, type_name, owner_full, method_name)
+          None => impl_method_target(chain = rest, full = full, type_name = type_name, owner_full = owner_full, method_name = method_name)
         }
       } else {
-        impl_method_target(rest, full, type_name, owner_full, method_name)
+        impl_method_target(chain = rest, full = full, type_name = type_name, owner_full = owner_full, method_name = method_name)
       }
     },
-    EnvTraitImpl(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
-    EnvTraitImplGen(_, _, _, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
-    EnvShowWrappers(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
-    EnvMutCell(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
-    EnvTypeDefs(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
-    EnvCached(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    EnvTraitImpl(_, _, rest) => impl_method_target(chain = rest, full = full, type_name = type_name, owner_full = owner_full, method_name = method_name),
+    EnvTraitImplGen(_, _, _, _, rest) => impl_method_target(chain = rest, full = full, type_name = type_name, owner_full = owner_full, method_name = method_name),
+    EnvShowWrappers(_, _, rest) => impl_method_target(chain = rest, full = full, type_name = type_name, owner_full = owner_full, method_name = method_name),
+    EnvMutCell(_, _, rest) => impl_method_target(chain = rest, full = full, type_name = type_name, owner_full = owner_full, method_name = method_name),
+    EnvTypeDefs(_, _, rest) => impl_method_target(chain = rest, full = full, type_name = type_name, owner_full = owner_full, method_name = method_name),
+    EnvCached(_, _, rest) => impl_method_target(chain = rest, full = full, type_name = type_name, owner_full = owner_full, method_name = method_name),
     EnvFlat(_) => None
   }
 }
@@ -1692,22 +1692,22 @@ fn impl_method_target(chain: TypeEnv, full: TypeEnv, type_name: String, owner_fu
 fn env_trait_impl_target_for(env: TypeEnv, trait_name: String, type_name: String, owner_full: String) -> Option[Type] {
   match env {
     EnvEmpty => None,
-    EnvBind(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
-    EnvTraitDef(_, _, _, _, rest, _, _) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
-    EnvTraitImpl(tn, target, rest) => if impl_key_matches(tn, trait_name, owner_full) && type_constructor_name(target) == type_name {
+    EnvBind(_, _, rest) => env_trait_impl_target_for(env = rest, trait_name = trait_name, type_name = type_name, owner_full = owner_full),
+    EnvTraitDef(_, _, _, _, rest, _, _) => env_trait_impl_target_for(env = rest, trait_name = trait_name, type_name = type_name, owner_full = owner_full),
+    EnvTraitImpl(tn, target, rest) => if impl_key_matches(tn = tn, trait_name = trait_name, owner_full = owner_full) && type_constructor_name(target) == type_name {
       Some(target)
     } else {
-      env_trait_impl_target_for(rest, trait_name, type_name, owner_full)
+      env_trait_impl_target_for(env = rest, trait_name = trait_name, type_name = type_name, owner_full = owner_full)
     },
-    EnvTraitImplGen(tn, _, _, target, rest) => if impl_key_matches(tn, trait_name, owner_full) && type_constructor_name(target) == type_name {
+    EnvTraitImplGen(tn, _, _, target, rest) => if impl_key_matches(tn = tn, trait_name = trait_name, owner_full = owner_full) && type_constructor_name(target) == type_name {
       Some(target)
     } else {
-      env_trait_impl_target_for(rest, trait_name, type_name, owner_full)
+      env_trait_impl_target_for(env = rest, trait_name = trait_name, type_name = type_name, owner_full = owner_full)
     },
-    EnvShowWrappers(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
-    EnvMutCell(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
-    EnvTypeDefs(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
-    EnvCached(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
+    EnvShowWrappers(_, _, rest) => env_trait_impl_target_for(env = rest, trait_name = trait_name, type_name = type_name, owner_full = owner_full),
+    EnvMutCell(_, _, rest) => env_trait_impl_target_for(env = rest, trait_name = trait_name, type_name = type_name, owner_full = owner_full),
+    EnvTypeDefs(_, _, rest) => env_trait_impl_target_for(env = rest, trait_name = trait_name, type_name = type_name, owner_full = owner_full),
+    EnvCached(_, _, rest) => env_trait_impl_target_for(env = rest, trait_name = trait_name, type_name = type_name, owner_full = owner_full),
     EnvFlat(_) => None
   }
 }
@@ -1719,15 +1719,15 @@ fn env_trait_impl_target_for(env: TypeEnv, trait_name: String, type_name: String
 /// provenance, as for `resolve_impl_self_field_reads`; any other binding gets
 /// `env` back unchanged.
 export fn bind_impl_self_type(env: TypeEnv, binding_name: String, defs: Array[TypeDef]) -> TypeEnv {
-  let sep = String::index_of(binding_name, "::")
+  let sep = String::index_of(binding_name, needle = "::")
   if sep < 0 {
     env
   } else {
-    let owner_full = String::substring(binding_name, 0, sep)
-    let method = String::substring(binding_name, sep + 2, String::length(binding_name))
-    match impl_method_target(env, env, impl_method_owner_head(owner_full), owner_full, method) {
-      Some(target) => if impl_self_target_is_type(target, defs) {
-        env_bind(env, impl_self_type_key, target)
+    let owner_full = String::substring(binding_name, start = 0, end = sep)
+    let method = String::substring(binding_name, start = sep + 2, end = String::length(binding_name))
+    match impl_method_target(chain = env, full = env, type_name = impl_method_owner_head(owner_full), owner_full = owner_full, method_name = method) {
+      Some(target) => if impl_self_target_is_type(target = target, defs = defs) {
+        env_bind(env = env, name = impl_self_type_key, ty = target)
       } else {
         env
       },
@@ -1772,22 +1772,22 @@ export fn refuse_generalized_field_reads(gen: Type, s: Subst, errors: Array[Stri
       let kept: Array[(Int, String, Int, Int, String, Int)] = []
       let mut i = 0
       while i < Array::length(deferred_field_reads) {
-        let (vid, field, field_off, dot_off, recv, result_id) = Array::get(deferred_field_reads, i)
-        let quantified = match subst_apply(s, CtVar(vid)) {
-          CtVar(rep) => int_array_has(vars, rep),
+        let (vid, field, field_off, dot_off, recv, result_id) = Array::get(deferred_field_reads, at = i)
+        let quantified = match subst_apply(s = s, ty = CtVar(vid)) {
+          CtVar(rep) => int_array_has(items = vars, wanted = rep),
           _ => false
         }
         if quantified {
-          Array::push(errors, String::concat(open_receiver_field_access_message(recv, field), field_read_marker(field, field_off, dot_off)))
+          Array::push(errors, value = String::concat(open_receiver_field_access_message(recv = recv, field = field), field_read_marker(field = field, field_off = field_off, dot_off = dot_off)))
         } else {
-          Array::push(kept, (vid, field, field_off, dot_off, recv, result_id))
+          Array::push(kept, value = (vid, field, field_off, dot_off, recv, result_id))
         }
         i = i + 1
       }
-      Array::truncate(deferred_field_reads, 0)
+      Array::truncate(deferred_field_reads, length = 0)
       let mut k = 0
       while k < Array::length(kept) {
-        Array::push(deferred_field_reads, Array::get(kept, k))
+        Array::push(deferred_field_reads, value = Array::get(kept, at = k))
         k = k + 1
       }
     },
@@ -1803,24 +1803,24 @@ export fn refuse_generalized_field_reads(gen: Type, s: Subst, errors: Array[Stri
 /// that caller, which resolves the pending variable first.
 export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s1: Subst, errors: Array[String], field_off: Int, dot_off: Int) -> Type {
   match resolved {
-    CtStruct(sname) => match find_typedef(defs, sname) {
+    CtStruct(sname) => match find_typedef(defs = defs, name = sname) {
       Some(td) => match td {
         TDStruct(_, fields, _, _) => {
           let rec find_field: (Int) -> Option[Type] = (i) -> {
             if i >= Array::length(fields) {
               None
             } else {
-              let (fname, ftype) = Array::get(fields, i)
+              let (fname, ftype) = Array::get(fields, at = i)
               if fname == field {
                 Some(ftype)
               } else find_field(i + 1)
             }
           }
           match find_field(0) {
-            Some(ft) => owned_head_field_ty(defs, resolved, field, ft, errors, field_read_marker(field, field_off, dot_off)),
+            Some(ft) => owned_head_field_ty(defs = defs, recv = resolved, field = field, ft = ft, errors = errors, marker = field_read_marker(field = field, field_off = field_off, dot_off = dot_off)),
             None => {
-              Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), if field_off >= 0 {
-                off_marker_len(field_off, String::length(field))
+              Array::push(errors, value = String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), if field_off >= 0 {
+                off_marker_len(off = field_off, len = String::length(field))
               } else {
                 off_marker(dot_off)
               }))
@@ -1841,7 +1841,7 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
         if i >= Array::length(rec_fields) {
           None
         } else {
-          let (fname, ftype) = Array::get(rec_fields, i)
+          let (fname, ftype) = Array::get(rec_fields, at = i)
           if fname == field {
             Some(ftype)
           } else find_field_r(i + 1)
@@ -1850,8 +1850,8 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
       match find_field_r(0) {
         Some(ft) => ft,
         None => {
-          Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on ", type_to_string(resolved)))), if field_off >= 0 {
-            off_marker_len(field_off, String::length(field))
+          Array::push(errors, value = String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on ", type_to_string(resolved)))), if field_off >= 0 {
+            off_marker_len(off = field_off, len = String::length(field))
           } else {
             off_marker(dot_off)
           }))
@@ -1865,24 +1865,24 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
     // CtUnknown, letting `String::length(b.v)` compile to silent garbage).
     // A CtNamed head that is not a known struct (Stream/i64/unresolved
     // type params, cross-module names) stays tolerated as before.
-    CtNamed(gname, gargs) => match find_typedef(defs, gname) {
+    CtNamed(gname, gargs) => match find_typedef(defs = defs, name = gname) {
       Some(td) => match td {
         TDStruct(_, gfields, _, gtparams) => {
           let rec find_field_g: (Int) -> Option[Type] = (i) -> {
             if i >= Array::length(gfields) {
               None
             } else {
-              let (fname, ftype) = Array::get(gfields, i)
+              let (fname, ftype) = Array::get(gfields, at = i)
               if fname == field {
                 Some(ftype)
               } else find_field_g(i + 1)
             }
           }
           match find_field_g(0) {
-            Some(ft) => owned_head_field_ty(defs, resolved, field, inst_struct_field_ty(ft, gtparams, gargs), errors, field_read_marker(field, field_off, dot_off)),
+            Some(ft) => owned_head_field_ty(defs = defs, recv = resolved, field = field, ft = inst_struct_field_ty(ft = ft, tparams = gtparams, targs = gargs), errors = errors, marker = field_read_marker(field = field, field_off = field_off, dot_off = dot_off)),
             None => {
-              Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", gname))), if field_off >= 0 {
-                off_marker_len(field_off, String::length(field))
+              Array::push(errors, value = String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", gname))), if field_off >= 0 {
+                off_marker_len(off = field_off, len = String::length(field))
               } else {
                 off_marker(dot_off)
               }))
@@ -1910,8 +1910,8 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
         // (`unknown field 'foreign' on struct Holder`) before this
         // change -- that half was never broken.
         TDEnum(ename, _, _) => {
-          Array::push(errors, String::concat(enum_field_access_message(ename, field), if field_off >= 0 {
-            off_marker_len(field_off, String::length(field))
+          Array::push(errors, value = String::concat(enum_field_access_message(enum_name = ename, field = field), if field_off >= 0 {
+            off_marker_len(off = field_off, len = String::length(field))
           } else {
             off_marker(dot_off)
           }))
@@ -1978,27 +1978,27 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
         // through `Crate`'s offset. The head is the formal, so the read is
         // refused naming it.
         let applied_formal = if is_hkt_app(resolved) {
-          match Array::get(gargs, 0) {
-            CtNamed(hname, _) => if String::starts_with(hname, "#hktformal.") {
-              String::substring(hname, 11, String::length(hname))
+          match Array::get(gargs, at = 0) {
+            CtNamed(hname, _) => if String::starts_with(hname, prefix = "#hktformal.") {
+              String::substring(hname, start = 11, end = String::length(hname))
             } else {
               ""
             },
-            CtVar(hvid) => open_formal_name_for_var(hvid, s1),
+            CtVar(hvid) => open_formal_name_for_var(id = hvid, s = s1),
             _ => ""
           }
         } else {
           ""
         }
-        if String::starts_with(gname, "#hktformal.") {
-          Array::push(errors, String::concat(formal_field_access_message(String::substring(gname, 11, String::length(gname)), field), if field_off >= 0 {
-            off_marker_len(field_off, String::length(field))
+        if String::starts_with(gname, prefix = "#hktformal.") {
+          Array::push(errors, value = String::concat(formal_field_access_message(tparam = String::substring(gname, start = 11, end = String::length(gname)), field = field), if field_off >= 0 {
+            off_marker_len(off = field_off, len = String::length(field))
           } else {
             off_marker(dot_off)
           }))
           CtUnknown
         } else if applied_formal != "" {
-          Array::push(errors, String::concat(formal_field_access_message(applied_formal, field), field_read_marker(field, field_off, dot_off)))
+          Array::push(errors, value = String::concat(formal_field_access_message(tparam = applied_formal, field = field), field_read_marker(field = field, field_off = field_off, dot_off = dot_off)))
           CtUnknown
         } else {
           let owned_arity = match compiler_owned_type_arity(gname) {
@@ -2006,8 +2006,8 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
             None => 0 - 1
           }
           if owned_arity >= 1 && Array::length(gargs) == owned_arity {
-            Array::push(errors, String::concat(builtin_field_access_message(gname, field), if field_off >= 0 {
-              off_marker_len(field_off, String::length(field))
+            Array::push(errors, value = String::concat(builtin_field_access_message(type_name = gname, field = field), if field_off >= 0 {
+              off_marker_len(off = field_off, len = String::length(field))
             } else {
               off_marker(dot_off)
             }))
@@ -2023,10 +2023,10 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
     // numeric index and the tuple arity is known, bounds-check it.
     CtTuple(elems) => match parse_tuple_index(field) {
       Some(idx) => if idx >= 0 && idx < Array::length(elems) {
-        Array::get(elems, idx)
+        Array::get(elems, at = idx)
       } else {
-        Array::push(errors, String::concat(String::concat("tuple index ", String::concat(field, String::concat(" out of range for a ", String::concat(__to_string(Array::length(elems)), "-tuple")))), if field_off >= 0 {
-          off_marker_len(field_off, String::length(field))
+        Array::push(errors, value = String::concat(String::concat("tuple index ", String::concat(field, String::concat(" out of range for a ", String::concat(__to_string(Array::length(elems)), "-tuple")))), if field_off >= 0 {
+          off_marker_len(off = field_off, len = String::length(field))
         } else {
           off_marker(dot_off)
         }))
@@ -2043,8 +2043,8 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
       // `t.f(x)` is `ECall(EDot(t, "f"), args)` and is typed by the
       // ECall arm, so refusing here cannot take a call with it.
       None => {
-        Array::push(errors, String::concat(tuple_named_field_message(field, Array::length(elems)), if field_off >= 0 {
-          off_marker_len(field_off, String::length(field))
+        Array::push(errors, value = String::concat(tuple_named_field_message(field = field, arity = Array::length(elems)), if field_off >= 0 {
+          off_marker_len(off = field_off, len = String::length(field))
         } else {
           off_marker(dot_off)
         }))
@@ -2126,11 +2126,11 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
       // compiled clean and answered 30064771306. The head is the formal, so
       // the read is refused naming it.
       let formal_receiver = match other {
-        CtVar(vid) => open_formal_name_for_var(vid, s1),
+        CtVar(vid) => open_formal_name_for_var(id = vid, s = s1),
         CtApplied(head, _) => match head {
-          CtVar(hvid) => open_formal_name_for_var(hvid, s1),
-          CtNamed(hname, _) => if String::starts_with(hname, "#hktformal.") {
-            String::substring(hname, 11, String::length(hname))
+          CtVar(hvid) => open_formal_name_for_var(id = hvid, s = s1),
+          CtNamed(hname, _) => if String::starts_with(hname, prefix = "#hktformal.") {
+            String::substring(hname, start = 11, end = String::length(hname))
           } else {
             ""
           },
@@ -2164,8 +2164,8 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
         _ => false
       }
       if formal_receiver != "" {
-        Array::push(errors, String::concat(formal_field_access_message(formal_receiver, field), if field_off >= 0 {
-          off_marker_len(field_off, String::length(field))
+        Array::push(errors, value = String::concat(formal_field_access_message(tparam = formal_receiver, field = field), if field_off >= 0 {
+          off_marker_len(off = field_off, len = String::length(field))
         } else {
           off_marker(dot_off)
         }))
@@ -2174,17 +2174,17 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
         // different one: a variant payload is reached by matching, not by
         // naming a field. CLAUDE.md — the diagnostic leads with the edit.
         let message = if enum_receiver {
-          enum_field_access_message(type_to_string(other), field)
+          enum_field_access_message(enum_name = type_to_string(other), field = field)
         } else if builtin_receiver {
           // `type_name_prefix` and not `type_to_string`: the message
           // names the QUALIFIED call to write instead, so it needs the
           // bare head (`Array`), not the instantiation (`Array[Int]`).
-          builtin_field_access_message(type_name_prefix(other), field)
+          builtin_field_access_message(type_name = type_name_prefix(other), field = field)
         } else {
           String::concat("field access `.", String::concat(field, "` on a non-struct value"))
         }
-        Array::push(errors, String::concat(message, if field_off >= 0 {
-          off_marker_len(field_off, String::length(field))
+        Array::push(errors, value = String::concat(message, if field_off >= 0 {
+          off_marker_len(off = field_off, len = String::length(field))
         } else {
           off_marker(dot_off)
         }))
@@ -2196,7 +2196,7 @@ export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s
   }
 }
 
-export fn map_literal_ground(t: Type) -> Bool {
+export fn map_literal_ground(_ t: Type) -> Bool {
   match t {
     CtInt => true,
     CtDouble => true,
@@ -2230,8 +2230,8 @@ fn take_lambda_param_seeds() -> Array[Option[Type]] {
   if Array::length(lambda_param_seed_cell) == 0 {
     []
   } else {
-    let seeds = Array::get(lambda_param_seed_cell, 0)
-    Array::truncate(lambda_param_seed_cell, 0)
+    let seeds = Array::get(lambda_param_seed_cell, at = 0)
+    Array::truncate(lambda_param_seed_cell, length = 0)
     seeds
   }
 }
@@ -2245,7 +2245,7 @@ fn take_lambda_param_seeds() -> Array[Option[Type]] {
 /// typed `Double` here compiled to an integer add over two boxed values and
 /// printed `0` for `1.5 + 2.0` (measured). Left unseeded, it stays refused,
 /// with the edit (`Array::fold`'s accumulator check) -- never silently wrong.
-fn lambda_seed_type_lowers(t: Type) -> Bool {
+fn lambda_seed_type_lowers(_ t: Type) -> Bool {
   match t {
     CtInt => true,
     CtString => true,
@@ -2259,25 +2259,25 @@ fn lambda_seed_type_lowers(t: Type) -> Bool {
 /// is a non-generic lambda literal with exactly `expected.length` parameters.
 /// Only the expectations `lambda_seed_type_lowers` admits are kept.
 export fn seed_lambda_params(arg: Expr, expected: Array[Type], s: Subst) -> Unit {
-  Array::truncate(lambda_param_seed_cell, 0)
+  Array::truncate(lambda_param_seed_cell, length = 0)
   match arg {
     EFn(tparams, _, params, _, _, _) => if Array::length(tparams) == 0 && Array::length(params) == Array::length(expected) {
       let seeds: Array[Option[Type]] = []
       let mut any = false
       let mut i = 0
       while i < Array::length(params) {
-        let (_, ann) = Array::get(params, i)
-        let want = subst_apply(s, Array::get(expected, i))
+        let (_, ann) = Array::get(params, at = i)
+        let want = subst_apply(s = s, ty = Array::get(expected, at = i))
         if (ann is None) && lambda_seed_type_lowers(want) {
-          Array::push(seeds, Some(want))
+          Array::push(seeds, value = Some(want))
           any = true
         } else {
-          Array::push(seeds, None)
+          Array::push(seeds, value = None)
         }
         i = i + 1
       }
       if any {
-        Array::push(lambda_param_seed_cell, seeds)
+        Array::push(lambda_param_seed_cell, value = seeds)
       } else {
         ()
       }
@@ -2293,13 +2293,13 @@ export fn seed_lambda_params(arg: Expr, expected: Array[Type], s: Subst) -> Unit
 /// left with their parameters in a scratch substitution (the call's own
 /// unification does the same, later).
 export fn seed_lambda_arg_from_call(arg: Expr, param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Unit {
-  Array::truncate(lambda_param_seed_cell, 0)
+  Array::truncate(lambda_param_seed_cell, length = 0)
   let ai = Array::length(arg_tys)
   if ai < Array::length(param_tys) && (arg is EFn(_, _, _, _, _, _)) {
     let mut scratch = s
     let mut j = 0
     while j < ai {
-      match unify(Array::get(param_tys, j), Array::get(arg_tys, j), scratch) {
+      match unify(a = Array::get(param_tys, at = j), b = Array::get(arg_tys, at = j), s = scratch) {
         Some(su) => {
           scratch = su
         },
@@ -2307,8 +2307,8 @@ export fn seed_lambda_arg_from_call(arg: Expr, param_tys: Array[Type], arg_tys: 
       }
       j = j + 1
     }
-    match subst_apply(scratch, Array::get(param_tys, ai)) {
-      CtFn(eps, _, _) => seed_lambda_params(arg, eps, scratch),
+    match subst_apply(s = scratch, ty = Array::get(param_tys, at = ai)) {
+      CtFn(eps, _, _) => seed_lambda_params(arg = arg, expected = eps, s = scratch),
       _ => ()
     }
   } else {
@@ -2320,8 +2320,8 @@ fn take_run_body_param() -> Option[Type] {
   if Array::length(run_body_param_cell) == 0 {
     None
   } else {
-    let expected = Array::get(run_body_param_cell, 0)
-    Array::truncate(run_body_param_cell, 0)
+    let expected = Array::get(run_body_param_cell, at = 0)
+    Array::truncate(run_body_param_cell, length = 0)
     Some(expected)
   }
 }
@@ -2344,14 +2344,14 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       // fails with a misleading missing-impl error.
       let mut rti = 0
       while rti < Array::length(tbounds) {
-        let (_, declared_bounds) = Array::get(tbounds, rti)
+        let (_, declared_bounds) = Array::get(tbounds, at = rti)
         let mut rbi = 0
         while rbi < Array::length(declared_bounds) {
-          let bound = Array::get(declared_bounds, rbi)
-          if env_has_reexport_surface_binding(env, trait_ref_name(bound)) {
-            Array::push(errors, String::concat("unknown trait: ", trait_reference_display(bound)))
+          let bound = Array::get(declared_bounds, at = rbi)
+          if env_has_reexport_surface_binding(env = env, name = trait_ref_name(bound)) {
+            Array::push(errors, value = String::concat("unknown trait: ", trait_reference_display(bound)))
           } else {
-            validate_trait_reference(env, bound, "bound", errors)
+            validate_trait_reference(env = env, key = bound, context = "bound", errors = errors)
           }
           rbi = rbi + 1
         }
@@ -2371,10 +2371,10 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       let hkt_related = array_empty()
       let mut hki = 0
       while hki < Array::length(params) {
-        match Array::get(params, hki) {
+        match Array::get(params, at = hki) {
           (_, Some(ste)) => {
-            collect_hkt_related_formals(ste, tparams, hkt_related)
-            collect_hkt_related_formals_in_type(resolve_type_expr_shadowed(ste, defs, tparams), tparams, hkt_related)
+            collect_hkt_related_formals(te = ste, formals = tparams, out = hkt_related)
+            collect_hkt_related_formals_in_type(ty = resolve_type_expr_shadowed(te = ste, defs = defs, shadow = tparams), formals = tparams, out = hkt_related)
           },
           _ => ()
         }
@@ -2382,25 +2382,25 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       }
       match ret_ty {
         Some(srte) => {
-          collect_hkt_related_formals(srte, tparams, hkt_related)
-          collect_hkt_related_formals_in_type(resolve_type_expr_shadowed(srte, defs, tparams), tparams, hkt_related)
+          collect_hkt_related_formals(te = srte, formals = tparams, out = hkt_related)
+          collect_hkt_related_formals_in_type(ty = resolve_type_expr_shadowed(te = srte, defs = defs, shadow = tparams), formals = tparams, out = hkt_related)
         },
         None => ()
       }
       let mut tpi = 0
       while tpi < tplen {
-        let tpkey = Array::get(tparams, tpi)
+        let tpkey = Array::get(tparams, at = tpi)
         let tpname = type_param_name(tpkey)
         match fresh_var(c0) {
           (tv, nc) => {
             let vid = nc - 1
-            Array::push(tparam_ids, vid)
+            Array::push(tparam_ids, value = vid)
             let tblen = Array::length(tbounds)
             let mut bounds = array_empty()
             let mut tbi = 0
             let mut found_bounds = false
             while tbi < tblen {
-              let (bname, blist) = Array::get(tbounds, tbi)
+              let (bname, blist) = Array::get(tbounds, at = tbi)
               if !found_bounds && bname == tpkey {
                 bounds = blist
                 found_bounds = true
@@ -2412,20 +2412,20 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
             // assignable to F[B] or Array[Int]. Plain `T` and trait-bounded
             // formals stay unification vars (#2130 local annotations, Iterator
             // dispatch, region provenance).
-            let body_ty = if Array::length(bounds) == 0 && checker_string_array_has(hkt_related, tpname) {
+            let body_ty = if Array::length(bounds) == 0 && checker_string_array_has(items = hkt_related, wanted = tpname) {
               CtNamed(String::concat("#hktformal.", tpname), array_empty())
             } else {
               tv
             }
-            record_eq_formal_var(vid, tpname, type_param_arity(tpkey), eq_gid, match body_ty {
+            record_eq_formal_var(vid = vid, name = tpname, arity = type_param_arity(tpkey), gid = eq_gid, rigid = match body_ty {
               CtNamed(_, _) => true,
               _ => false
             })
             // Mask both kind markers from an outer generic that used the same
             // formal name. `CtBool` is an explicit false sentinel; the
             // signature scan below shadows it with `CtUnit` for a present use.
-            tp_env = env_bind(env_bind(env_bind(env_bind(tp_env, tpname, body_ty), marker, CtUnit), String::concat(fapp_applied_marker_prefix, tpname), CtBool), String::concat(fapp_unapplied_marker_prefix, tpname), CtBool)
-            scheme_env = env_bind(env_bind(scheme_env, tpname, tv), marker, CtUnit)
+            tp_env = env_bind(env = env_bind(env = env_bind(env = env_bind(env = tp_env, name = tpname, ty = body_ty), name = marker, ty = CtUnit), name = String::concat(fapp_applied_marker_prefix, tpname), ty = CtBool), name = String::concat(fapp_unapplied_marker_prefix, tpname), ty = CtBool)
+            scheme_env = env_bind(env = env_bind(env = scheme_env, name = tpname, ty = tv), name = marker, ty = CtUnit)
             c0 = nc
           }
         }
@@ -2433,15 +2433,15 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       }
       tpi = 0
       while tpi < tplen {
-        let tpkey = Array::get(tparams, tpi)
+        let tpkey = Array::get(tparams, at = tpi)
         let tpname = type_param_name(tpkey)
-        let vid = Array::get(tparam_ids, tpi)
+        let vid = Array::get(tparam_ids, at = tpi)
         let tblen = Array::length(tbounds)
         let mut bounds = array_empty()
         let mut tbi = 0
         let mut found_bounds = false
         while tbi < tblen {
-          let (bname, blist) = Array::get(tbounds, tbi)
+          let (bname, blist) = Array::get(tbounds, at = tbi)
           if !found_bounds && bname == tpkey {
             bounds = blist
             found_bounds = true
@@ -2449,50 +2449,50 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
           tbi = tbi + 1
         }
         let owned_bounds = for bound in bounds {
-          bind_trait_bound_tparams(bind_trait_bound_self_reference(bound, tpname), tparams, tparam_ids)
+          bind_trait_bound_tparams(key = bind_trait_bound_self_reference(key = bound, binder = tpname), tparams = tparams, ids = tparam_ids)
         }
         s0 = if Array::length(owned_bounds) == 0 {
           s0
         } else {
-          subst_add_bound(s0, vid, owned_bounds)
+          subst_add_bound(s = s0, id = vid, bounds = owned_bounds)
         }
         tpi = tpi + 1
       }
       let sig_applied = array_empty()
       let sig_unapplied = array_empty()
       let is_sig_tp = (n) -> {
-        formals_contain_source_name(tparams, n) && formals_source_arity(tparams, n) == 0
+        formals_contain_source_name(formals = tparams, name = n) && formals_source_arity(formals = tparams, name = n) == 0
       }
       let mut spi = 0
       while spi < Array::length(params) {
-        match Array::get(params, spi) {
-          (_, Some(ste)) => collect_formal_kind_uses(ste, is_sig_tp, sig_applied, sig_unapplied),
+        match Array::get(params, at = spi) {
+          (_, Some(ste)) => collect_formal_kind_uses(te = ste, is_formal = is_sig_tp, applied = sig_applied, unapplied = sig_unapplied),
           _ => ()
         }
         spi = spi + 1
       }
       match ret_ty {
-        Some(srte) => collect_formal_kind_uses(srte, is_sig_tp, sig_applied, sig_unapplied),
+        Some(srte) => collect_formal_kind_uses(te = srte, is_formal = is_sig_tp, applied = sig_applied, unapplied = sig_unapplied),
         None => ()
       }
       let mut ski = 0
       while ski < Array::length(sig_applied) {
-        let sfn = Array::get(sig_applied, ski)
-        if checker_string_array_has(sig_unapplied, sfn) {
-          Array::push(errors, formal_application_error(sfn, "the function signature"))
+        let sfn = Array::get(sig_applied, at = ski)
+        if checker_string_array_has(items = sig_unapplied, wanted = sfn) {
+          Array::push(errors, value = formal_application_error(fname = sfn, where_label = "the function signature"))
         } else {
           ()
         }
-        tp_env = env_bind(tp_env, String::concat(fapp_applied_marker_prefix, sfn), CtUnit)
+        tp_env = env_bind(env = tp_env, name = String::concat(fapp_applied_marker_prefix, sfn), ty = CtUnit)
         ski = ski + 1
       }
       ski = 0
       while ski < Array::length(sig_unapplied) {
-        tp_env = env_bind(tp_env, String::concat(fapp_unapplied_marker_prefix, Array::get(sig_unapplied, ski)), CtUnit)
+        tp_env = env_bind(env = tp_env, name = String::concat(fapp_unapplied_marker_prefix, Array::get(sig_unapplied, at = ski)), ty = CtUnit)
         ski = ski + 1
       }
       let plen = Array::length(params)
-      let mut fn_env = env_bind(tp_env, "__capture_boundary__", CtUnit)
+      let mut fn_env = env_bind(env = tp_env, name = "__capture_boundary__", ty = CtUnit)
       let mut s1 = s0
       let mut c1 = c0
       // #2125: the row VARIABLES this signature's own effect row declares.
@@ -2507,14 +2507,14 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       // `CtNamed` (measured) -- the very shape this issue is about.
       let declared_row_binders = row_variable_labels(effect)
       // A function's own `with` row names exception kinds; check them as types.
-      report_exception_kinds_in_row(effect, defs, tparams, fn_env, errors, true)
+      report_exception_kinds_in_row(row = effect, defs = defs, shadow = tparams, env = fn_env, errors = errors, record_kinds = true)
       let param_types = array_empty()
       let mut pi = 0
       while pi < plen {
-        let (raw_name, ann) = Array::get(params, pi)
+        let (raw_name, ann) = Array::get(params, at = pi)
         let nlen = String::length(raw_name)
         let name = if nlen > 0 {
-          let lc = String::char_code_at(raw_name, nlen - 1)
+          let lc = String::char_code_at(raw_name, at = nlen - 1)
           if lc == '~' || lc == '?' {
             raw_name[0: nlen - 1]
           } else raw_name
@@ -2523,8 +2523,8 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
           Some(te) => {
             // #1512: `tparams` shadow `defs`, so `resolve_tparams_in` below
             // still finds `CtNamed(<tparam>, [])` to map onto the fresh var.
-            let resolved = resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams))
-            let pt2 = resolve_tparams_in(resolved, fn_env)
+            let resolved = resolve_type_expr_shadowed(te = te, defs = defs, shadow = formal_shadow(te = te, env = env, own = tparams))
+            let pt2 = resolve_tparams_in(ty = resolved, env = fn_env)
             // #2125: an unresolvable name here becomes a wildcard at every
             // call site, so `f("s")` and `f(1)` both pass the SAME slot.
             //
@@ -2533,12 +2533,12 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
             // that is the actionable edit -- reporting its annotation on top
             // would only bury it, since a witness dictionary's type has no
             // TypeDef either.
-            if String::starts_with(name, "__dict_") {
+            if String::starts_with(name, prefix = "__dict_") {
               ()
             } else {
-              report_unknown_type_names(te, defs, tparams, fn_env, declared_row_binders, String::concat(String::concat("parameter `", name), "`"), errors)
-              report_bare_generic_heads_in_env(te, defs, tparams, fn_env, String::concat(String::concat("parameter `", name), "`"), errors)
-              report_formal_applications(te, tparams, String::concat(String::concat("parameter `", name), "`"), errors)
+              report_unknown_type_names(te = te, defs = defs, shadow = tparams, env = fn_env, row_binders = declared_row_binders, where_label = String::concat(String::concat("parameter `", name), "`"), errors = errors)
+              report_bare_generic_heads_in_env(te = te, defs = defs, shadow = tparams, env = fn_env, where_label = String::concat(String::concat("parameter `", name), "`"), errors = errors)
+              report_formal_applications(te = te, formals = tparams, where_label = String::concat(String::concat("parameter `", name), "`"), errors = errors)
             }
             (pt2, s1, c1)
           },
@@ -2550,8 +2550,8 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         // #3547: an unannotated parameter starts as the type the call
         // expects of it (`take_lambda_param_seeds`).
         let ns = if pi < Array::length(param_seeds) {
-          match Array::get(param_seeds, pi) {
-            Some(expected) => match unify(pt, expected, ns) {
+          match Array::get(param_seeds, at = pi) {
+            Some(expected) => match unify(a = pt, b = expected, s = ns) {
               Some(seeded) => seeded,
               None => ns
             },
@@ -2566,7 +2566,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         // which reports the mismatch.
         let ns = if plen == 1 {
           match run_body_param {
-            Some(expected) => match unify(pt, expected, ns) {
+            Some(expected) => match unify(a = pt, b = expected, s = ns) {
               Some(seeded) => seeded,
               None => ns
             },
@@ -2582,38 +2582,38 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         // a function argument is, so a call of the parameter is judged too.
         let has_override = pi < Array::length(retention_override)
         let (pt, ns) = if has_override {
-          let (expected, _, _, _) = Array::get(retention_override, pi)
-          match unify(pt, expected, ns) {
+          let (expected, _, _, _) = Array::get(retention_override, at = pi)
+          match unify(a = pt, b = expected, s = ns) {
             Some(seeded) => (expected, seeded),
             None => (expected, ns)
           }
         } else {
           (pt, ns)
         }
-        let marked_pt = add_param_capture_dependency(pt, nc)
+        let marked_pt = add_param_capture_dependency(ty = pt, index = nc)
         let marked_nc = nc + 1
-        fn_env = env_bind(fn_env, name, marked_pt)
-        fn_env = env_bind(fn_env, String::concat("__param_marker__", name), CtNamed(String::concat("#param[", String::concat(__to_string(nc), "]")), [
+        fn_env = env_bind(env = fn_env, name = name, ty = marked_pt)
+        fn_env = env_bind(env = fn_env, name = String::concat("__param_marker__", name), ty = CtNamed(String::concat("#param[", String::concat(__to_string(nc), "]")), [
         ]))
         if has_override {
-          let (_, predates, callee, carried) = Array::get(retention_override, pi)
+          let (_, predates, callee, carried) = Array::get(retention_override, at = pi)
           // What the argument carries where its type does not show it (a
           // struct built from the token), so a write of the parameter is
           // judged by the argument's value rather than by every region the
           // parameter is declared inside.
-          fn_env = retention_bind_param_carry(fn_env, name, carried)
+          fn_env = retention_bind_param_carry(env = fn_env, name = name, regions = carried)
           if Array::length(predates) > 0 {
-            fn_env = env_bind(fn_env, String::concat("__region_outer_alias__", name), CtTuple(for rname in predates {
+            fn_env = env_bind(env = fn_env, name = String::concat("__region_outer_alias__", name), ty = CtTuple(for rname in predates {
               CtNamed(rname, [])
             }))
           } else {
             ()
           }
-          fn_env = retention_bind_param_callee(fn_env, name, callee)
+          fn_env = retention_bind_param_callee(env = fn_env, name = name, callee = callee)
         } else {
           ()
         }
-        Array::push(param_types, marked_pt)
+        Array::push(param_types, value = marked_pt)
         s1 = ns
         c1 = marked_nc
         pi = pi + 1
@@ -2622,15 +2622,15 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       // checked at every call site (the call branch keys on this same
       // shape), so a spawned closure may capture or pass it on.
       if plen >= 2 && param_types_are_spawn_shaped(param_types) {
-        let (last_raw, _) = Array::get(params, plen - 1)
+        let (last_raw, _) = Array::get(params, at = plen - 1)
         let last_len = String::length(last_raw)
         let last_name = if last_len > 0 {
-          let lc = String::char_code_at(last_raw, last_len - 1)
+          let lc = String::char_code_at(last_raw, at = last_len - 1)
           if lc == '~' || lc == '?' {
             last_raw[0: last_len - 1]
           } else last_raw
         } else last_raw
-        fn_env = env_bind(fn_env, spawn_safe_marker(last_name), CtUnit)
+        fn_env = env_bind(env = fn_env, name = spawn_safe_marker(last_name), ty = CtUnit)
       } else {
         ()
       }
@@ -2650,16 +2650,16 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       let annotated_body_env = match ret_ty {
         Some(rte) => {
           // #2125: see the parameter arm above.
-          report_unknown_type_names(rte, defs, tparams, fn_env, declared_row_binders, "the return type", errors)
-          report_bare_generic_heads_in_env(rte, defs, tparams, fn_env, "the return type", errors)
-          report_formal_applications(rte, tparams, "the return type", errors)
-          env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, formal_shadow(rte, env, tparams)), fn_env))
+          report_unknown_type_names(te = rte, defs = defs, shadow = tparams, env = fn_env, row_binders = declared_row_binders, where_label = "the return type", errors = errors)
+          report_bare_generic_heads_in_env(te = rte, defs = defs, shadow = tparams, env = fn_env, where_label = "the return type", errors = errors)
+          report_formal_applications(te = rte, formals = tparams, where_label = "the return type", errors = errors)
+          env_bind(env = fn_env, name = "__return__", ty = resolve_tparams_in(ty = resolve_type_expr_shadowed(te = rte, defs = defs, shadow = formal_shadow(te = rte, env = env, own = tparams)), env = fn_env))
         },
-        None => env_bind(fn_env, "__return__", CtUnknown)
+        None => env_bind(env = fn_env, name = "__return__", ty = CtUnknown)
       }
       let (return_provenance, return_c) = fresh_var(c1)
-      let return_env = env_bind(annotated_body_env, "__return_provenance__", return_provenance)
-      let top_level = match env_lookup(env, "#interp.top.fn") {
+      let return_env = env_bind(env = annotated_body_env, name = "__return_provenance__", ty = return_provenance)
+      let top_level = match env_lookup(env = env, name = "#interp.top.fn") {
         Some(CtBool) => true,
         _ => false
       }
@@ -2667,8 +2667,8 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       // Consume the marker so a nested lambda cannot inherit the exemption.
       // #3341: a lambda also records the instantiations it performs at, so the
       // place it is used can compare them (`effect_inst_pairs`).
-      let (row_inst_env, s1_inst, c1_inst, effect_inst_pairs) = bind_lambda_effect_instantiations(return_env, effect, defs, tparams, errors, s1, return_c, top_level, tplen > 0)
-      let body_env = env_bind(env_bind(row_inst_env, "#interp.top.fn", CtUnit), "#interp.shim.body", if top_level && interp_is_shim_body(params, body) {
+      let (row_inst_env, s1_inst, c1_inst, effect_inst_pairs) = bind_lambda_effect_instantiations(env = return_env, row = effect, defs = defs, tparams = tparams, errors = errors, s = s1, c = return_c, top_level = top_level, generic = tplen > 0)
+      let body_env = env_bind(env = env_bind(env = row_inst_env, name = "#interp.top.fn", ty = CtUnit), name = "#interp.shim.body", ty = if top_level && interp_is_shim_body(params = params, body = body) {
         CtBool
       } else {
         CtUnit
@@ -2679,18 +2679,18 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       // annotation can hide it, or, where the type may hide one, by what the
       // values it returns (its tail and every explicit `return`) read.
       if retention_rechecking {
-        let body_ty = subst_apply(s2_body, bt)
+        let body_ty = subst_apply(s = s2_body, ty = bt)
         // The values explicit `return`s hand back, merged by the EReturn arm.
-        let returned_ty = subst_apply(s2_body, return_provenance)
-        let hidden = if retention_type_hides_region(body_ty, defs) || retention_type_hides_region(returned_ty, defs) {
-          retention_result_regions(body, body_env, defs, s2_body)
+        let returned_ty = subst_apply(s = s2_body, ty = return_provenance)
+        let hidden = if retention_type_hides_region(t = body_ty, defs = defs) || retention_type_hides_region(t = returned_ty, defs = defs) {
+          retention_result_regions(body = body, env = body_env, defs = defs, s = s2_body)
         } else {
           array_empty()
         }
         let carried = array_empty()
         for rname in retention_active_region_names(body_env) {
-          if type_mentions_named(body_ty, rname) || type_mentions_named(returned_ty, rname) || retention_region_listed(hidden, rname) {
-            Array::push(carried, rname)
+          if type_mentions_named(ty = body_ty, name = rname) || type_mentions_named(ty = returned_ty, name = rname) || retention_region_listed(names = hidden, rname = rname) {
+            Array::push(carried, value = rname)
           } else {
             ()
           }
@@ -2706,7 +2706,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       // `T` and one that became a concrete type gets the concrete verdict.
       // The substitution comes back extended by the resolved reads' result
       // variables, so the body type below already carries the field types.
-      let s2 = resolve_deferred_field_reads(s2_body, defs, errors, true)
+      let s2 = resolve_deferred_field_reads(s = s2_body, defs = defs, errors = errors, open_only = true)
       if eq_gid >= 0 {
         eq_group_end()
       } else {
@@ -2714,8 +2714,8 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       }
       let (base_ret, s3) = match ret_ty {
         Some(te) => {
-          let resolved = resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams))
-          let resolved_ret = resolve_tparams_in(resolved, fn_env)
+          let resolved = resolve_type_expr_shadowed(te = te, defs = defs, shadow = formal_shadow(te = te, env = env, own = tparams))
+          let resolved_ret = resolve_tparams_in(ty = resolved, env = fn_env)
           // #1451: check_assignable, not a raw `unify`, so the IMPLICIT
           // tail-expression return follows the same rules as an EXPLICIT
           // `return e` -- the EReturn arm already calls check_assignable with
@@ -2741,51 +2741,51 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
           // SLet/ELet then tags those with `[@fn=name]` so locate_type_error
           // recovers the function name instead of a synthetic 0:0 range.
           check_assignable_set_end(string_lit_end(body))
-          let ns_ret = check_assignable(resolved_ret, bt, s2, errors, "return type mismatch", tail_expr_off(body))
+          let ns_ret = check_assignable(expected = resolved_ret, actual = bt, s = s2, errors = errors, what = "return type mismatch", off = tail_expr_off(body))
           // #3341: a returned function value is used at the declared row.
-          let ns = effect_inst_annotation_check(body_env, body, bt, resolved_ret, ns_ret, "the returned function", "the return type's row", defs, errors)
-          (merge_capture_provenance(subst_apply(ns, resolved_ret), subst_apply(ns, bt)), ns)
+          let ns = effect_inst_annotation_check(env = body_env, value = body, value_ty = bt, want_ty = resolved_ret, s = ns_ret, subject = "the returned function", slot = "the return type's row", defs = defs, errors = errors)
+          (merge_capture_provenance(expected = subst_apply(s = ns, ty = resolved_ret), actual = subst_apply(s = ns, ty = bt)), ns)
         },
-        None => (subst_apply(s2, bt), s2)
+        None => (subst_apply(s = s2, ty = bt), s2)
       }
       let mut final_ret = base_ret
       match return_provenance {
-        CtVar(return_id) => if return_provenance_was_written(tytab, return_id) {
-          final_ret = merge_capture_provenance(final_ret, subst_apply(s3, return_provenance))
+        CtVar(return_id) => if return_provenance_was_written(tytab = tytab, id = return_id) {
+          final_ret = merge_capture_provenance(expected = final_ret, actual = subst_apply(s = s3, ty = return_provenance))
         },
         _ => ()
       }
-      let capture_effect = closure_capture_row(effect, body, params, fn_env, s3)
+      let capture_effect = closure_capture_row(effect = effect, body = body, params = params, env = fn_env, s = s3)
       let mut checked_effect = capture_effect
-      for index in direct_result_param_indices(body, params) {
+      for index in direct_result_param_indices(body = body, params = params) {
         let pty = if index >= 0 && index < Array::length(param_types) {
-          subst_apply(s3, Array::get(param_types, index))
+          subst_apply(s = s3, ty = Array::get(param_types, at = index))
         } else {
           CtUnit
         }
         if type_can_carry_region(pty) {
-          checked_effect = merge_provenance_row(checked_effect, Some(String::concat("#aliasparam[", String::concat(__to_string(index), "]"))))
+          checked_effect = merge_provenance_row(expected = checked_effect, actual = Some(String::concat("#aliasparam[", String::concat(__to_string(index), "]"))))
         }
       }
-      let dependency_effect = match direct_result_field_param_index(body, params) {
+      let dependency_effect = match direct_result_field_param_index(body = body, params = params) {
         Some(index) => if type_can_carry_region(if index >= 0 && index < Array::length(param_types) {
-          subst_apply(s3, Array::get(param_types, index))
+          subst_apply(s = s3, ty = Array::get(param_types, at = index))
         } else {
           CtUnit
         }) {
-          merge_provenance_row(checked_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]"))))
+          merge_provenance_row(expected = checked_effect, actual = Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]"))))
         } else {
           checked_effect
         },
         None => {
           let mut enum_dependency_effect = checked_effect
-          for index in direct_result_enum_payload_param_indices(body, params, defs) {
+          for index in direct_result_enum_payload_param_indices(body = body, params = params, defs = defs) {
             if type_can_carry_region(if index >= 0 && index < Array::length(param_types) {
-              subst_apply(s3, Array::get(param_types, index))
+              subst_apply(s = s3, ty = Array::get(param_types, at = index))
             } else {
               CtUnit
             }) {
-              enum_dependency_effect = merge_provenance_row(enum_dependency_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]"))))
+              enum_dependency_effect = merge_provenance_row(expected = enum_dependency_effect, actual = Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]"))))
             }
           }
           enum_dependency_effect
@@ -2818,21 +2818,21 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       let escaping = if tplen == 0 {
         array_empty()
       } else {
-        captured_escape_tvars(body, params, env, s3)
+        captured_escape_tvars(body = body, params = params, env = env, s = s3)
       }
       let mut esi = 0
       while esi < tplen {
-        let evid = Array::get(tparam_ids, esi)
+        let evid = Array::get(tparam_ids, at = esi)
         let binder_ids = array_empty()
-        escape_tvars_into(subst_apply(s3, CtVar(evid)), binder_ids)
-        let etpname = type_param_name(Array::get(tparams, esi))
+        escape_tvars_into(ty = subst_apply(s = s3, ty = CtVar(evid)), out = binder_ids)
+        let etpname = type_param_name(Array::get(tparams, at = esi))
         let mut eci = 0
         let mut ereported = false
         while eci < Array::length(escaping) {
-          let (ecname, ecids) = Array::get(escaping, eci)
-          if !ereported && esc_ids_intersect(binder_ids, ecids) {
+          let (ecname, ecids) = Array::get(escaping, at = eci)
+          if !ereported && esc_ids_intersect(a = binder_ids, b = ecids) {
             ereported = true
-            Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("move `", ecname), "` inside the lambda, or drop `["), etpname), "]` and every `"), etpname), "` in its signature: the captured `"), String::concat(String::concat(String::concat(String::concat(ecname, "` fixes `"), etpname), "`, so every call would use one value at a different type"), off_marker(railway_expr_off(body)))))
+            Array::push(errors, value = String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("move `", ecname), "` inside the lambda, or drop `["), etpname), "]` and every `"), etpname), "` in its signature: the captured `"), String::concat(String::concat(String::concat(String::concat(ecname, "` fixes `"), etpname), "`, so every call would use one value at a different type"), off_marker(railway_expr_off(body)))))
           } else {
             ()
           }
@@ -2842,12 +2842,12 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       }
       // #3318: a formal the row names must stay generic in the body.
       if tplen > 0 {
-        pinned_row_formal_errors(tparams, tparam_ids, effect, body, defs, s, s2_body, s2, s3, errors)
+        pinned_row_formal_errors(tparams = tparams, tparam_ids = tparam_ids, row = effect, body = body, defs = defs, s_in = s, s_body = s2_body, s_deferred = s2, s_final = s3, errors = errors)
         // #3536: two declared formals the body made one type. Judged only on
         // an otherwise clean declaration, so a body error is not re-reported
         // as the collapse it left behind.
         if Array::length(errors) == efn_err_start {
-          collapsed_formal_errors(tparams, tparam_ids, body, s, s2_body, s2, s3, errors)
+          collapsed_formal_errors(tparams = tparams, tparam_ids = tparam_ids, body = body, s_in = s, s_body = s2_body, s_deferred = s2, s_final = s3, errors = errors)
         } else {
           ()
         }
@@ -2857,18 +2857,18 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       let keep_ids = array_empty()
       let mut ki0 = 0
       while ki0 < Array::length(tparam_ids) {
-        let kid = Array::get(tparam_ids, ki0)
+        let kid = Array::get(tparam_ids, at = ki0)
         // Keep only still-open bindings. `type_is_ground` is false for every
         // `CtNamed`, so it would leave `T := Box[Int]` quantified and `f(1)`
         // would typecheck. `type_fully_concrete` zonks that and still keeps
         // a nullary `#ctor.Array` / `#hktformal.F` / unbound vars. HKT
         // constructor params are rigid in the body and simply unbound in s3.
-        let still_free = match subst_lookup(s3, kid) {
-          Some(t) => !type_fully_concrete(t) && !scheme_formal_head_bound(subst_apply(s3, t)),
+        let still_free = match subst_lookup(s = s3, id = kid) {
+          Some(t) => !type_fully_concrete(t) && !scheme_formal_head_bound(subst_apply(s = s3, ty = t)),
           None => true
         }
         if still_free {
-          Array::push(keep_ids, kid)
+          Array::push(keep_ids, value = kid)
         } else {
           ()
         }
@@ -2885,20 +2885,20 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       if tplen > 0 {
         let mut hbi = 0
         while hbi < tplen {
-          let hid = Array::get(tparam_ids, hbi)
-          if int_array_has(keep_ids, hid) {
+          let hid = Array::get(tparam_ids, at = hbi)
+          if int_array_has(items = keep_ids, wanted = hid) {
             ()
           } else {
-            match subst_lookup(s3, hid) {
+            match subst_lookup(s = s3, id = hid) {
               Some(t) => {
-                let tvs = collect_tvars(subst_apply(s3, t))
+                let tvs = collect_tvars(subst_apply(s = s3, ty = t))
                 let mut tvi = 0
                 while tvi < Array::length(tvs) {
-                  let tv = Array::get(tvs, tvi)
-                  if int_array_has(head_bound_vars, tv) || int_array_has(tparam_ids, tv) {
+                  let tv = Array::get(tvs, at = tvi)
+                  if int_array_has(items = head_bound_vars, wanted = tv) || int_array_has(items = tparam_ids, wanted = tv) {
                     ()
                   } else {
-                    Array::push(head_bound_vars, tv)
+                    Array::push(head_bound_vars, value = tv)
                   }
                   tvi = tvi + 1
                 }
@@ -2914,39 +2914,39 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       let head_bound_env = if Array::length(head_bound_vars) == 0 {
         array_empty()
       } else {
-        env_reachable_tvars(expr, env, s3, None)
+        env_reachable_tvars(val = expr, env = env, s = s3, self_name = None)
       }
       let mut sfi = 0
       while sfi < tplen {
-        let sfid = Array::get(tparam_ids, sfi)
-        if int_array_has(keep_ids, sfid) {
+        let sfid = Array::get(tparam_ids, at = sfi)
+        if int_array_has(items = keep_ids, wanted = sfid) {
           ()
         } else {
-          Array::push(efn_substituted_formals, sfid)
+          Array::push(efn_substituted_formals, value = sfid)
         }
         sfi = sfi + 1
       }
-      let inferred_ret = subst_apply_except(s3, final_ret, keep_ids)
+      let inferred_ret = subst_apply_except(s = s3, ty = final_ret, keep = keep_ids)
       let scheme_ret_raw = match ret_ty {
-        Some(te) => subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams)), scheme_env), keep_ids),
+        Some(te) => subst_apply_except(s = s3, ty = resolve_tparams_in(ty = resolve_type_expr_shadowed(te = te, defs = defs, shadow = formal_shadow(te = te, env = env, own = tparams)), env = scheme_env), keep = keep_ids),
         None => inferred_ret
       }
-      let scheme_ret = merge_capture_provenance(scheme_ret_raw, inferred_ret)
+      let scheme_ret = merge_capture_provenance(expected = scheme_ret_raw, actual = inferred_ret)
       let scheme_params = array_empty()
       let mut spi2 = 0
       while spi2 < plen {
-        let inferred_pt = subst_apply_except(s3, Array::get(param_types, spi2), keep_ids)
-        match Array::get(params, spi2) {
-          (_, Some(pte)) => Array::push(scheme_params, merge_capture_provenance(subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(pte, defs, formal_shadow(pte, env, tparams)), scheme_env), keep_ids), inferred_pt)),
-          _ => Array::push(scheme_params, inferred_pt)
+        let inferred_pt = subst_apply_except(s = s3, ty = Array::get(param_types, at = spi2), keep = keep_ids)
+        match Array::get(params, at = spi2) {
+          (_, Some(pte)) => Array::push(scheme_params, value = merge_capture_provenance(expected = subst_apply_except(s = s3, ty = resolve_tparams_in(ty = resolve_type_expr_shadowed(te = pte, defs = defs, shadow = formal_shadow(te = pte, env = env, own = tparams)), env = scheme_env), keep = keep_ids), actual = inferred_pt)),
+          _ => Array::push(scheme_params, value = inferred_pt)
         }
         spi2 = spi2 + 1
       }
       if tplen > 0 {
-        generic_bare_row_payload_errors(effect_inst_pairs, tparams, tparam_ids, s3, body, errors)
+        generic_bare_row_payload_errors(pairs = effect_inst_pairs, tparams = tparams, tparam_ids = tparam_ids, s = s3, body = body, errors = errors)
       }
       let fn_ty = if tplen == 0 {
-        CtFn(param_types, final_ret, lambda_effect_inst_row(dependency_effect, effect, effect_inst_pairs))
+        CtFn(param_types, final_ret, lambda_effect_inst_row(effect = dependency_effect, row = effect, pairs = effect_inst_pairs))
       } else {
         CtFn(scheme_params, scheme_ret, dependency_effect)
       }
@@ -2956,10 +2956,10 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         let var_bounds = array_empty()
         let mut vbi = 0
         while vbi < tplen {
-          let vid = Array::get(tparam_ids, vbi)
-          let bl = subst_bounds_for(s3, vid)
+          let vid = Array::get(tparam_ids, at = vbi)
+          let bl = subst_bounds_for(s = s3, id = vid)
           if Array::length(bl) != 0 {
-            Array::push(var_bounds, (vid, bl))
+            Array::push(var_bounds, value = (vid, bl))
           } else {
             ()
           }
@@ -2969,23 +2969,23 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         // formals (so a positional reading of the first `tplen` ids is kept).
         let scheme_ids = array_empty()
         for tid in tparam_ids {
-          Array::push(scheme_ids, tid)
+          Array::push(scheme_ids, value = tid)
         }
         for hv in head_bound_vars {
-          if int_array_has(head_bound_env, hv) {
+          if int_array_has(items = head_bound_env, wanted = hv) {
             ()
           } else {
-            Array::push(scheme_ids, hv)
-            Array::push(keep_ids, hv)
-            let hbl = subst_bounds_for(s3, hv)
+            Array::push(scheme_ids, value = hv)
+            Array::push(keep_ids, value = hv)
+            let hbl = subst_bounds_for(s = s3, id = hv)
             if Array::length(hbl) != 0 {
-              Array::push(var_bounds, (hv, hbl))
+              Array::push(var_bounds, value = (hv, hbl))
             } else {
               ()
             }
           }
         }
-        (CtForAll(scheme_ids, var_bounds, subst_apply_except(s3, fn_ty, keep_ids)), s3, c2)
+        (CtForAll(scheme_ids, var_bounds, subst_apply_except(s = s3, ty = fn_ty, keep = keep_ids)), s3, c2)
       }
     },
     _ => (CtUnknown, s, c)

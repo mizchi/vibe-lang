@@ -32,7 +32,7 @@ import @vibe/compiler/codegen/common_extractors {
 /// read a key the producer never wrote and classify nothing, silently.
 export fn gc_offset_says_int(e: Expr, ctx: CompileCtxGc) -> Bool {
   let off = typed_lowering_arg_offset(e)
-  off >= 0 && array_contains_int(ctx.gc_int_render_offsets, off)
+  off >= 0 && array_contains_int(arr = ctx.gc_int_render_offsets, v = off)
 }
 
 /// #2462/#2464: does the CHECKER say this render/`eq` argument is a `Bool`?
@@ -40,7 +40,7 @@ export fn gc_offset_says_int(e: Expr, ctx: CompileCtxGc) -> Bool {
 /// reading the same channel under the same key.
 fn gc_offset_says_bool(e: Expr, ctx: CompileCtxGc) -> Bool {
   let off = typed_lowering_arg_offset(e)
-  off >= 0 && array_contains_int(ctx.gc_bool_render_offsets, off)
+  off >= 0 && array_contains_int(arr = ctx.gc_bool_render_offsets, v = off)
 }
 
 /// #2424: did the CHECKER say this exact node is a `Double`?
@@ -64,7 +64,7 @@ fn gc_offset_says_bool(e: Expr, ctx: CompileCtxGc) -> Bool {
 /// `typed_lowering_arg_offset` IS its call offset.
 fn gc_offset_says_float(e: Expr, ctx: CompileCtxGc) -> Bool {
   let off = typed_lowering_float_key(e)
-  off >= 0 && array_contains_int(ctx.gc_float_call_offsets, off)
+  off >= 0 && array_contains_int(arr = ctx.gc_float_call_offsets, v = off)
 }
 
 /// #2158: does `fname` name a user function DECLARED `-> Double` / `-> Float`?
@@ -72,10 +72,10 @@ fn gc_offset_says_float(e: Expr, ctx: CompileCtxGc) -> Bool {
 /// `local_names` first: the table is keyed by NAME, and a local binding of
 /// the same name is a different callable (#2156 review).
 fn gc_fn_returns_float(local_names: Array[String], ctx: CompileCtxGc, fname: String) -> Bool {
-  if find_local_slot(local_names, fname) >= 0 {
+  if find_local_slot(names = local_names, name = fname) >= 0 {
     false
   } else {
-    array_contains_str(ctx.gc_float_ret_fns, fname)
+    array_contains_str(arr = ctx.gc_float_ret_fns, s = fname)
   }
 }
 
@@ -88,20 +88,20 @@ fn gc_fn_returns_float(local_names: Array[String], ctx: CompileCtxGc, fname: Str
 /// name reused with a non-float binding in a sibling scope is not
 /// misclassified via its old, now-stale slot entry.
 export fn gc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
-  gc_offset_says_float(e, ctx) || gc_expr_is_floatish_syntactic(e, local_names, ctx)
+  gc_offset_says_float(e = e, ctx = ctx) || gc_expr_is_floatish_syntactic(e = e, local_names = local_names, ctx = ctx)
 }
 
 fn gc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
   match e {
     EFloat(_) => true,
     EIdent(fname, _) => {
-      let slot = find_local_slot(local_names, fname)
-      slot >= 0 && array_contains_int(ctx.gc_float_locals, slot)
+      let slot = find_local_slot(names = local_names, name = fname)
+      slot >= 0 && array_contains_int(arr = ctx.gc_float_locals, v = slot)
     },
-    EBinOp(op, l, r, _) => (op == "+" || op == "-" || op == "*" || op == "/") && (gc_expr_is_floatish(l, local_names, ctx) || gc_expr_is_floatish(r, local_names, ctx)),
-    EUnaryOp(op, x) => op == "-" && gc_expr_is_floatish(x, local_names, ctx),
+    EBinOp(op, l, r, _) => (op == "+" || op == "-" || op == "*" || op == "/") && (gc_expr_is_floatish(e = l, local_names = local_names, ctx = ctx) || gc_expr_is_floatish(e = r, local_names = local_names, ctx = ctx)),
+    EUnaryOp(op, x) => op == "-" && gc_expr_is_floatish(e = x, local_names = local_names, ctx = ctx),
     ECall(fcallee, _, call_off, _) => match fcallee {
-      EIdent(cn, _) => array_contains_int(ctx.gc_float_call_offsets, call_off) || cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || gc_fn_returns_float(local_names, ctx, cn),
+      EIdent(cn, _) => array_contains_int(arr = ctx.gc_float_call_offsets, v = call_off) || cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || gc_fn_returns_float(local_names = local_names, ctx = ctx, fname = cn),
       _ => false
     },
     // #2426 follow-up (Codex review on #2430): a Double arriving through a
@@ -118,7 +118,7 @@ fn gc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: Compi
     // route `__to_string` and `==`, where widening the answer changes more
     // than one lowering, and their gap is #2424's subject rather than this
     // one's.
-    EIf(_, jt, jf) => gc_expr_is_floatish(jt, local_names, ctx) && gc_expr_is_floatish(jf, local_names, ctx),
+    EIf(_, jt, jf) => gc_expr_is_floatish(e = jt, local_names = local_names, ctx = ctx) && gc_expr_is_floatish(e = jf, local_names = local_names, ctx = ctx),
     // A join arm that ends in its OWN binder -- `if c { let x = 0.0; x }` --
     // is the shape a bare body recursion misses: the body is `EIdent(x)` and
     // `x` has no slot at classification time (Codex review on #2432).
@@ -130,29 +130,29 @@ fn gc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: Compi
     // needs the binding's TYPE, i.e. #2424's channel.
     ELet(jlbn, jlbv, jlb, _) => match jlb {
       EIdent(jlbn2, _) => if jlbn == jlbn2 {
-        gc_expr_is_floatish(jlbv, local_names, ctx)
+        gc_expr_is_floatish(e = jlbv, local_names = local_names, ctx = ctx)
       } else {
-        gc_expr_is_floatish(jlb, local_names, ctx)
+        gc_expr_is_floatish(e = jlb, local_names = local_names, ctx = ctx)
       },
-      _ => gc_expr_is_floatish(jlb, local_names, ctx)
+      _ => gc_expr_is_floatish(e = jlb, local_names = local_names, ctx = ctx)
     },
     ELetRec(jrbn, jrbv, jrb) => match jrb {
       EIdent(jrbn2, _) => if jrbn == jrbn2 {
-        gc_expr_is_floatish(jrbv, local_names, ctx)
+        gc_expr_is_floatish(e = jrbv, local_names = local_names, ctx = ctx)
       } else {
-        gc_expr_is_floatish(jrb, local_names, ctx)
+        gc_expr_is_floatish(e = jrb, local_names = local_names, ctx = ctx)
       },
-      _ => gc_expr_is_floatish(jrb, local_names, ctx)
+      _ => gc_expr_is_floatish(e = jrb, local_names = local_names, ctx = ctx)
     },
     ELetMut(jmbn, jmbv, jmb, _) => match jmb {
       EIdent(jmbn2, _) => if jmbn == jmbn2 {
-        gc_expr_is_floatish(jmbv, local_names, ctx)
+        gc_expr_is_floatish(e = jmbv, local_names = local_names, ctx = ctx)
       } else {
-        gc_expr_is_floatish(jmb, local_names, ctx)
+        gc_expr_is_floatish(e = jmb, local_names = local_names, ctx = ctx)
       },
-      _ => gc_expr_is_floatish(jmb, local_names, ctx)
+      _ => gc_expr_is_floatish(e = jmb, local_names = local_names, ctx = ctx)
     },
-    ESeq(_, jsb) => gc_expr_is_floatish(jsb, local_names, ctx),
+    ESeq(_, jsb) => gc_expr_is_floatish(e = jsb, local_names = local_names, ctx = ctx),
     EMatch(_, jarms) => {
       let jn = Array::length(jarms)
       if jn == 0 {
@@ -161,8 +161,8 @@ fn gc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: Compi
         let mut jall = true
         let mut ji = 0
         while ji < jn {
-          let (_, jbody) = Array::get(jarms, ji)
-          if !gc_expr_is_floatish(jbody, local_names, ctx) {
+          let (_, jbody) = Array::get(jarms, at = ji)
+          if !gc_expr_is_floatish(e = jbody, local_names = local_names, ctx = ctx) {
             jall = false
           } else {
             ()
@@ -185,14 +185,14 @@ fn gc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: Compi
 /// generic runtime `__to_string` dispatch, which cannot tell them apart.
 /// #2462/#2464: the checker's answer first, then the syntactic arms.
 export fn gc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
-  if gc_offset_says_bool(e, ctx) {
+  if gc_offset_says_bool(e = e, ctx = ctx) {
     true
   } else {
     match e {
       EBool(_) => true,
       EIdent(fname, _) => {
-        let slot = find_local_slot(local_names, fname)
-        slot >= 0 && array_contains_int(ctx.gc_bool_locals, slot)
+        let slot = find_local_slot(names = local_names, name = fname)
+        slot >= 0 && array_contains_int(arr = ctx.gc_bool_locals, v = slot)
       },
       EBinOp(op, _, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||",
       EUnaryOp(op, _) => op == "!",
@@ -216,7 +216,7 @@ export fn gc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCt
       // separately rather than half-fixed here.
       ECall(callee, args, _, _) => match callee {
         EIdent(cn, _) =>
-        (cn == "not" && Array::length(args) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && gc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) || gc_builtin_ret_is_bool(cn, local_names, ctx),
+        (cn == "not" && Array::length(args) == 1 && find_local_slot(names = local_names, name = "not") < 0 && func_table_user_index_of(ft = ctx.func_table, name = "not", num_user_funcs = ctx.num_user_funcs) < 0 && gc_expr_is_boolish(e = Array::get(args, at = 0), local_names = local_names, ctx = ctx)) || gc_builtin_ret_is_bool(n = cn, local_names = local_names, ctx = ctx),
         _ => false
       },
       _ => false
@@ -235,5 +235,5 @@ fn gc_builtin_ret_is_bool(n: String, local_names: Array[String], ctx: CompileCtx
   // A local of the same name, or a USER function of that name, owns the call
   // -- its return type is unknown here, so classify nothing rather than
   // assume Bool. Same two guards the linear `cc_builtin_call_ret_kind` applies.
-  known && find_local_slot(local_names, n) < 0 && func_table_user_index_of(ctx.func_table, n, ctx.num_user_funcs) < 0
+  known && find_local_slot(names = local_names, name = n) < 0 && func_table_user_index_of(ft = ctx.func_table, name = n, num_user_funcs = ctx.num_user_funcs) < 0
 }

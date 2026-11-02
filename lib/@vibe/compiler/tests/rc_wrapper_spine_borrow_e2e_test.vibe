@@ -24,18 +24,18 @@ import ./codegen_test_support.vibe {
 
 fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
   let path = String::concat("/tmp/_wrapper_spine_e2e_", String::concat(label, ".wasm"))
-  Fs::write_bytes(path, bytes)
+  Fs::write_bytes(path, bytes = bytes)
   let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
   if Array::length(out) > 0 {
-    Array::get(out, 0)
+    Array::get(out, at = 0)
   } else {
     "<no output>"
   }
 }
 
 fn assert_bump_rc_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Console {
-  let bump = run_value(compile_wasi(src, "main"), String::concat(label, "_bump"))
-  let rc = run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc"))
+  let bump = run_value(bytes = compile_wasi(source = src, entry = "main"), label = String::concat(label, "_bump"))
+  let rc = run_value(bytes = compile_wasi_rc(source = src, entry = "main"), label = String::concat(label, "_rc"))
   inspect(bump, content = expected)
   inspect(rc, content = expected)
   0
@@ -60,7 +60,7 @@ test "a block ending in a borrow-returning call does not own what it hands back"
   // the free list and `filler` is given it straight back. The later read of
   // `xs[0]` then answers 15 (the filler) instead of 7.
   let src = String::concat(prelude, "let pick: (Bool) -> Int = (c) -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let t = {\n      let k = 0\n      Array::get(xs, k)\n    }\n    if c {\n      t\n    } else {\n      Leaf(9)\n    }\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> {\n  pick(false)\n}")
-  let _ = assert_bump_rc_agree(src, "block_borrow_call", "90715")
+  let _ = assert_bump_rc_agree(src = src, label = "block_borrow_call", expected = "90715")
   ()
 }
 
@@ -69,7 +69,7 @@ test "the same hole with no branch anywhere in the value" {
   // the trigger -- the block wrapper alone is. Recorded on the issue as the
   // variant that rules out the per-path release work (#2389) as a cause.
   let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let t = {\n      let k = 0\n      Array::get(xs, k)\n    }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> {\n  pick()\n}")
-  let _ = assert_bump_rc_agree(src, "block_straight_line", "70715")
+  let _ = assert_bump_rc_agree(src = src, label = "block_straight_line", expected = "70715")
   ()
 }
 
@@ -78,61 +78,61 @@ test "a block ending in an allocation still owns it" {
   // assertion: move_through_wrapper in fixtures/rc_reclaim_leak_test.vibe
   // pins that separately, since a leaked owner still gives the right value.
   let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let k = 1\n    Pair(Leaf(k), Leaf(2))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> {\n  pick()\n}")
-  let _ = assert_bump_rc_agree(src, "block_alloc", "30715")
+  let _ = assert_bump_rc_agree(src = src, label = "block_alloc", expected = "30715")
   ()
 }
 
 test "an outer owner retained for a later use survives a wrapper" {
   let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let x = Pair(Leaf(3), Leaf(4))\n  let r = {\n    let t = { let k = 0; x }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(x) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
-  let _ = assert_bump_rc_agree(src, "outer_owner_live", "70715")
+  let _ = assert_bump_rc_agree(src = src, label = "outer_owner_live", expected = "70715")
   ()
 }
 
 test "a wrapper returning an outer borrowed alias keeps the container alive" {
   let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let x = Array::get(xs, 0)\n    let alias = x\n    let t = { let k = 0; alias }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
-  let _ = assert_bump_rc_agree(src, "outer_borrow_alias", "70715")
+  let _ = assert_bump_rc_agree(src = src, label = "outer_borrow_alias", expected = "70715")
   ()
 }
 
 test "a bare projection returned through a block stays borrowed" {
   let src = String::concat(prelude, "struct Holder { node: Node }\nlet pick: () -> Int = () -> {\n  let holder = Holder::{ node: Pair(Leaf(3), Leaf(4)) }\n  let r = {\n    let t = { let k = 0; holder.node }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(holder.node) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
-  let _ = assert_bump_rc_agree(src, "bare_projection", "70715")
+  let _ = assert_bump_rc_agree(src = src, label = "bare_projection", expected = "70715")
   ()
 }
 
 test "a pattern payload returned through a block owns its retained reference" {
   let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let t = {\n      let k = 0\n      match Array::get(xs, 0) {\n        Pair(left, _) => left,\n        Leaf(v) => Leaf(v)\n      }\n    }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
-  let _ = assert_bump_rc_agree(src, "borrowed_pattern_payload", "30715")
+  let _ = assert_bump_rc_agree(src = src, label = "borrowed_pattern_payload", expected = "30715")
   ()
 }
 
 test "an inner borrow-returning call alias keeps the container alive" {
   let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\nlet t = { let x = Array::get(xs, 0); x }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
-  let _ = assert_bump_rc_agree(src, "inner_borrowed_alias", "70715")
+  let _ = assert_bump_rc_agree(src = src, label = "inner_borrowed_alias", expected = "70715")
   ()
 }
 
 test "an unassigned outer mutable borrow owns a retained reference" {
   let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\nlet mut x = Array::get(xs, 0)\nlet t = { let k = 0; x }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
-  let _ = assert_bump_rc_agree(src, "outer_mut_unassigned", "70715")
+  let _ = assert_bump_rc_agree(src = src, label = "outer_mut_unassigned", expected = "70715")
   ()
 }
 
 test "an assigned outer mutable value preserves the original container" {
   let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\nlet mut x = Array::get(xs, 0)\nx = Pair(Leaf(5), Leaf(6))\nlet t = { let k = 0; x }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
-  let _ = assert_bump_rc_agree(src, "outer_mut_assigned", "110715")
+  let _ = assert_bump_rc_agree(src = src, label = "outer_mut_assigned", expected = "110715")
   ()
 }
 
 test "an assigned outer mutable value remains alive after the wrapper drops" {
   let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\nlet mut x = Array::get(xs, 0)\nx = Pair(Leaf(5), Leaf(6))\nlet z = { let t = { let k = 0; x }; Leaf(total(t)) }\nlet junk = Pair(Leaf(8), Leaf(9))\nlet t = x\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
-  let _ = assert_bump_rc_agree(src, "outer_mut_live", "110715")
+  let _ = assert_bump_rc_agree(src = src, label = "outer_mut_live", expected = "110715")
   ()
 }
 
 test "a mutable slot retains a borrowed replacement" {
   let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let mut x = Array::get(xs, 0)\n    x = Array::get(xs, 0)\n    let t = { let k = 0; x }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
-  let _ = assert_bump_rc_agree(src, "outer_mut_reborrow", "70715")
+  let _ = assert_bump_rc_agree(src = src, label = "outer_mut_reborrow", expected = "70715")
   ()
 }
 
@@ -140,24 +140,24 @@ test "a mutable initializer resolves a global before its own binder" {
   // Leave the slot unused so its scope-end drop runs before filler reuses
   // freed storage. The pending binder must not hide the borrow contract.
   let src = String::concat(prelude, "let peek = (xs: Array[Node], k: Int) -> Node { Array::get(xs, k) }\nlet pick = () -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let mut peek = peek(xs, 0)\n    Leaf(9)\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main = () -> Int { pick() }")
-  let _ = assert_bump_rc_agree(src, "mut_pending_global", "90715")
+  let _ = assert_bump_rc_agree(src = src, label = "mut_pending_global", expected = "90715")
   ()
 }
 
 test "a wrapped mutable initializer resolves a global before its own binder" {
   let src = String::concat(prelude, "let peek = (xs: Array[Node], k: Int) -> Node { Array::get(xs, k) }\nlet pick = () -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let mut peek = { let k = 0; peek(xs, k) }\n    Leaf(9)\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main = () -> Int { pick() }")
-  let _ = assert_bump_rc_agree(src, "mut_pending_wrapped_global", "90715")
+  let _ = assert_bump_rc_agree(src = src, label = "mut_pending_wrapped_global", expected = "90715")
   ()
 }
 
 test "an immutable initializer resolves a global before its own binder" {
   let src = String::concat(prelude, "let peek = (xs: Array[Node], k: Int) -> Node { Array::get(xs, k) }\nlet pick = () -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let peek = peek(xs, 0)\n    Leaf(9)\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main = () -> Int { pick() }")
-  let _ = assert_bump_rc_agree(src, "let_pending_global", "90715")
+  let _ = assert_bump_rc_agree(src = src, label = "let_pending_global", expected = "90715")
   ()
 }
 
 test "a mutable initializer still resolves an existing local callee" {
   let src = String::concat(prelude, "let peek = (xs: Array[Node], k: Int) -> Node { Array::get(xs, k) }\nlet pick = () -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let peek = (k: Int) -> Node { Pair(Leaf(k), Leaf(k + 1)) }\n  let r = {\n    let mut peek = peek(5)\n    Leaf(9)\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main = () -> Int { pick() }")
-  let _ = assert_bump_rc_agree(src, "mut_pending_local", "90715")
+  let _ = assert_bump_rc_agree(src = src, label = "mut_pending_local", expected = "90715")
   ()
 }

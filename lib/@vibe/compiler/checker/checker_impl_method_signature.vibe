@@ -77,9 +77,9 @@ export struct ImplMethodOrigins {
 }
 
 fn push_origin(out: MutMap[String, Array[ImplMethodOrigin]], name: String, origin: ImplMethodOrigin) -> Unit {
-  match MutMap::get(out, name) {
-    Some(list) => Array::push(list, origin),
-    None => MutMap::set(out, name, [origin])
+  match MutMap::get(out, k = name) {
+    Some(list) => Array::push(list, value = origin),
+    None => MutMap::set(out, k = name, v = [origin])
   }
 }
 
@@ -114,9 +114,9 @@ export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int, env: TypeEn
   let derives: Array[(String, Array[String])] = []
   for st in stmts {
     match st {
-      STrait(_, tname, _, _, _, _) => Array::push(local_traits, tname),
-      SStruct(_, sname, _, sderives, _, _) => Array::push(derives, (sname, sderives)),
-      SEnum(_, ename, _, _, ederives) => Array::push(derives, (ename, ederives)),
+      STrait(_, tname, _, _, _, _) => Array::push(local_traits, value = tname),
+      SStruct(_, sname, _, sderives, _, _) => Array::push(derives, value = (sname, sderives)),
+      SEnum(_, ename, _, _, ederives) => Array::push(derives, value = (ename, ederives)),
       _ => ()
     }
   }
@@ -125,9 +125,9 @@ export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int, env: TypeEn
   let by_head: MutMap[String, Array[Int]] = MutMap::new_string()
   let mut k = from
   while k < Array::length(stmts) {
-    match Array::get(stmts, k) {
+    match Array::get(stmts, at = k) {
       SImpl(tparams, tbounds, trait_key, target) => {
-        let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
+        let prefix = String::concat(impl_method_owner(tparams = tparams, trait_name = trait_key, target = target), "::")
         // Trait operation bindings (`let Tr::m = ..`, synthesized ahead of
         // checking) may sit between the marker and its methods -- not only
         // this trait's: a supertrait's (`let Base::get` after `impl Child`)
@@ -139,19 +139,19 @@ export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int, env: TypeEn
         let mut j = k + 1
         let mut more = true
         while more && j < Array::length(stmts) {
-          match Array::get(stmts, j) {
-            SLet(_, _, qname, _, _) => if String::starts_with(qname, prefix) && String::length(qname) > String::length(prefix) {
-              push_origin(out, qname, ImplMethodOrigin::{
+          match Array::get(stmts, at = j) {
+            SLet(_, _, qname, _, _) => if String::starts_with(qname, prefix = prefix) && String::length(qname) > String::length(prefix) {
+              push_origin(out = out, name = qname, origin = ImplMethodOrigin::{
                 tparams: tparams,
                 bounds: tbounds,
                 trait_key: trait_key,
                 target: target,
-                method: String::substring(qname, String::length(prefix), String::length(qname)),
+                method: String::substring(qname, start = String::length(prefix), end = String::length(qname)),
                 fallback: false
               })
-              Array::push(written, qname)
+              Array::push(written, value = qname)
               j = j + 1
-            } else if names_trait_operation(qname, local_traits, env) {
+            } else if names_trait_operation(qname = qname, local_traits = local_traits, env = env) {
               j = j + 1
             } else {
               more = false
@@ -162,7 +162,7 @@ export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int, env: TypeEn
           }
         }
         let at = Array::length(blocks)
-        Array::push(blocks, ImplBlock::{
+        Array::push(blocks, value = ImplBlock::{
           tparams: tparams,
           bounds: tbounds,
           trait_key: trait_key,
@@ -170,9 +170,9 @@ export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int, env: TypeEn
           written: written
         })
         let head = impl_target_head(target)
-        match MutMap::get(by_head, head) {
-          Some(list) => Array::push(list, at),
-          None => MutMap::set(by_head, head, [at])
+        match MutMap::get(by_head, k = head) {
+          Some(list) => Array::push(list, value = at),
+          None => MutMap::set(by_head, k = head, v = [at])
         }
         k = j
       },
@@ -182,7 +182,7 @@ export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int, env: TypeEn
     }
   }
   if Array::length(blocks) > 0 {
-    collect_fallback_origins(stmts, from, blocks, by_head, out)
+    collect_fallback_origins(stmts = stmts, from = from, blocks = blocks, by_head = by_head, out = out)
   } else {
     ()
   }
@@ -192,10 +192,10 @@ export fn collect_impl_method_origins(stmts: Array[Stmt], from: Int, env: TypeEn
 /// Is `qname` a trait operation binding (`Tr::m` for a trait declared in this
 /// list or visible in `env`)?
 fn names_trait_operation(qname: String, local_traits: Array[String], env: TypeEnv) -> Bool {
-  let sep = String::index_of(qname, "::")
+  let sep = String::index_of(qname, needle = "::")
   if sep > 0 {
-    let head = String::substring(qname, 0, sep)
-    string_list_has(local_traits, head) || (trait_definition(env, head) is Some)
+    let head = String::substring(qname, start = 0, end = sep)
+    string_list_has(names = local_traits, wanted = head) || (trait_definition(env = env, name = head) is Some)
   } else {
     false
   }
@@ -206,17 +206,17 @@ fn names_trait_operation(qname: String, local_traits: Array[String], env: TypeEn
 fn collect_fallback_origins(stmts: Array[Stmt], from: Int, blocks: Array[ImplBlock], by_head: MutMap[String, Array[Int]], out: MutMap[String, Array[ImplMethodOrigin]]) -> Unit {
   let mut i = from
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, qname, _, _) => {
-        let sep = String::index_of(qname, "::")
-        if sep > 0 && String::index_of(qname, "$impl$") < 0 {
-          let method = String::substring(qname, sep + 2, String::length(qname))
-          match MutMap::get(by_head, String::substring(qname, 0, sep)) {
+        let sep = String::index_of(qname, needle = "::")
+        if sep > 0 && String::index_of(qname, needle = "$impl$") < 0 {
+          let method = String::substring(qname, start = sep + 2, end = String::length(qname))
+          match MutMap::get(by_head, k = String::substring(qname, start = 0, end = sep)) {
             Some(list) => for at in list {
-              let block = Array::get(blocks, at)
-              let own = impl_method_binding_name(block.tparams, block.trait_key, block.target, method)
-              if !string_list_has(block.written, own) {
-                push_origin(out, qname, ImplMethodOrigin::{
+              let block = Array::get(blocks, at = at)
+              let own = impl_method_binding_name(tparams = block.tparams, trait_name = block.trait_key, target = block.target, method = method)
+              if !string_list_has(names = block.written, wanted = own) {
+                push_origin(out = out, name = qname, origin = ImplMethodOrigin::{
                   tparams: block.tparams,
                   bounds: block.bounds,
                   trait_key: block.trait_key,
@@ -242,7 +242,7 @@ fn collect_fallback_origins(stmts: Array[Stmt], from: Int, blocks: Array[ImplBlo
 
 /// The impls a method binding belongs to (empty for any other binding).
 export fn impl_method_origins_of(origins: ImplMethodOrigins, binding_name: String) -> Array[ImplMethodOrigin] {
-  match MutMap::get(origins.by_name, binding_name) {
+  match MutMap::get(origins.by_name, k = binding_name) {
     Some(list) => list,
     None => []
   }
@@ -269,7 +269,7 @@ fn impl_method_marker(trait_head: String, owner: String, method: String, part: S
     "|",
     param,
     "]"
-  ], "")
+  ], sep = "")
 }
 
 /// The tail of a diagnostic about `origin`'s method. A method in the block
@@ -291,21 +291,21 @@ fn origin_marker(origin: ImplMethodOrigin, trait_head: String, owner: String, tr
       "::",
       method,
       "]"
-    ], "")
+    ], sep = "")
   } else {
-    impl_method_marker(trait_head, owner, method, part, param)
+    impl_method_marker(trait_head = trait_head, owner = owner, method = method, part = part, param = param)
   }
 }
 
 /// Does `ty` mention one of `names` (an impl's formals, rigid here)?
 fn mentions_formal(ty: Type, names: Array[String]) -> Bool {
   match ty {
-    CtNamed(name, args) => if Array::length(args) == 0 && string_list_has(names, name) {
+    CtNamed(name, args) => if Array::length(args) == 0 && string_list_has(names = names, wanted = name) {
       true
     } else {
       let mut hit = false
       for a in args {
-        if !hit && mentions_formal(a, names) {
+        if !hit && mentions_formal(ty = a, names = names) {
           hit = true
         } else {
           ()
@@ -313,12 +313,12 @@ fn mentions_formal(ty: Type, names: Array[String]) -> Bool {
       }
       hit
     },
-    CtArray(elem) => mentions_formal(elem, names),
-    CtOption(elem) => mentions_formal(elem, names),
+    CtArray(elem) => mentions_formal(ty = elem, names = names),
+    CtOption(elem) => mentions_formal(ty = elem, names = names),
     CtTuple(items) => {
       let mut hit = false
       for item in items {
-        if !hit && mentions_formal(item, names) {
+        if !hit && mentions_formal(ty = item, names = names) {
           hit = true
         } else {
           ()
@@ -327,9 +327,9 @@ fn mentions_formal(ty: Type, names: Array[String]) -> Bool {
       hit
     },
     CtFn(params, ret, _) => {
-      let mut hit = mentions_formal(ret, names)
+      let mut hit = mentions_formal(ty = ret, names = names)
       for p in params {
-        if !hit && mentions_formal(p, names) {
+        if !hit && mentions_formal(ty = p, names = names) {
           hit = true
         } else {
           ()
@@ -365,11 +365,11 @@ enum GenericMiss {
 /// the method's typing fixed there.
 fn generic_miss_of(written: Option[TypeExpr], own_names: Array[String], impl_names: Array[String], has: Type, method_names: Array[String], method_rigid: Array[String]) -> GenericMiss {
   match written {
-    Some(TyName(n)) => if string_list_has(own_names, n) {
-      if string_list_has(impl_names, n) {
+    Some(TyName(n)) => if string_list_has(names = own_names, wanted = n) {
+      if string_list_has(names = impl_names, wanted = n) {
         ImplFormal(n)
       } else {
-        match shared_method_generic(has, method_names, method_rigid) {
+        match shared_method_generic(has = has, method_names = method_names, method_rigid = method_rigid) {
           Some(other) => Shared(other),
           None => BodyFixed
         }
@@ -389,8 +389,8 @@ fn shared_method_generic(has: Type, method_names: Array[String], method_rigid: A
       let mut found: Option[String] = None
       let mut i = 0
       while i < Array::length(method_rigid) {
-        if Array::get(method_rigid, i) == n {
-          found = Some(Array::get(method_names, i))
+        if Array::get(method_rigid, at = i) == n {
+          found = Some(Array::get(method_names, at = i))
         } else {
           ()
         }
@@ -405,11 +405,11 @@ fn shared_method_generic(has: Type, method_names: Array[String], method_rigid: A
 }
 
 /// A binder name for the suggested edit that none of `taken` spells.
-fn fresh_binder_name(taken: Array[String]) -> String {
+fn fresh_binder_name(_ taken: Array[String]) -> String {
   let candidates = ["Y", "Z", "U", "V", "A", "B"]
   let mut pick = ""
   for c in candidates {
-    if String::length(pick) == 0 && !string_list_has(taken, c) {
+    if String::length(pick) == 0 && !string_list_has(names = taken, wanted = c) {
       pick = c
     } else {
       ()
@@ -432,10 +432,10 @@ fn fresh_binder_name(taken: Array[String]) -> String {
 /// no binder for, which a `WrittenOther` edit declares first; `taken` is
 /// every name a suggested fresh binder must avoid.
 fn method_generic_message(shown: String, trait_disp: String, method: String, method_names: Array[String], unbound: Array[String], taken: Array[String], sparams: Array[TypeExpr], sret: TypeExpr, param: String, miss: GenericMiss, has: Type, want: Type, tail: String) -> String {
-  let formals = String::join(method_names, ", ")
+  let formals = String::join(method_names, sep = ", ")
   let has_text = type_to_string(has)
   let position = if String::length(param) > 0 {
-    String::join(["parameter `", param, "` of ", shown], "")
+    String::join(["parameter `", param, "` of ", shown], sep = "")
   } else {
     String::concat("the return type of ", shown)
   }
@@ -446,9 +446,9 @@ fn method_generic_message(shown: String, trait_disp: String, method: String, met
           "declare ",
           shown,
           " generic over `",
-          String::join(unbound, ", "),
+          String::join(unbound, sep = ", "),
           "` and "
-        ], "")
+        ], sep = "")
       } else {
         ""
       }
@@ -459,7 +459,7 @@ fn method_generic_message(shown: String, trait_disp: String, method: String, met
         " to `",
         type_to_string(want),
         "`"
-      ], "")
+      ], sep = "")
     },
     BodyFixed => if String::length(param) > 0 {
       String::join([
@@ -470,7 +470,7 @@ fn method_generic_message(shown: String, trait_disp: String, method: String, met
         "`, which its body uses as `",
         has_text,
         "`"
-      ], "")
+      ], sep = "")
     } else {
       String::join([
         "keep ",
@@ -480,14 +480,14 @@ fn method_generic_message(shown: String, trait_disp: String, method: String, met
         "`, which its body fixes to `",
         has_text,
         "`"
-      ], "")
+      ], sep = "")
     },
     Shared(other) => {
       let fresh = fresh_binder_name(taken)
       let at = if String::length(param) > 0 {
-        String::join(["take `", param, ": ", fresh, "`"], "")
+        String::join(["take `", param, ": ", fresh, "`"], sep = "")
       } else {
-        String::join(["return `", fresh, "`"], "")
+        String::join(["return `", fresh, "`"], sep = "")
       }
       String::join([
         "declare another type parameter on ",
@@ -499,14 +499,14 @@ fn method_generic_message(shown: String, trait_disp: String, method: String, met
         " instead of the one it shares with `",
         other,
         "`"
-      ], "")
+      ], sep = "")
     },
     ImplFormal(formal) => {
       let fresh = fresh_binder_name(taken)
       let at = if String::length(param) > 0 {
-        String::join(["take `", param, ": ", fresh, "`"], "")
+        String::join(["take `", param, ": ", fresh, "`"], sep = "")
       } else {
-        String::join(["return `", fresh, "`"], "")
+        String::join(["return `", fresh, "`"], sep = "")
       }
       String::join([
         "declare ",
@@ -518,13 +518,13 @@ fn method_generic_message(shown: String, trait_disp: String, method: String, met
         " instead of the impl's `",
         formal,
         "`, which the receiver fixes"
-      ], "")
+      ], sep = "")
     }
   }
   let only = match miss {
-    ImplFormal(formal) => String::join(["the impl's `", formal, "`"], ""),
-    Shared(other) => String::join(["the type chosen for `", other, "`"], ""),
-    _ => String::join(["`", has_text, "`"], "")
+    ImplFormal(formal) => String::join(["the impl's `", formal, "`"], sep = ""),
+    Shared(other) => String::join(["the type chosen for `", other, "`"], sep = ""),
+    _ => String::join(["`", has_text, "`"], sep = "")
   }
   let verb = if String::length(param) > 0 {
     "receives"
@@ -536,7 +536,7 @@ fn method_generic_message(shown: String, trait_disp: String, method: String, met
     ": trait `",
     trait_disp,
     "` declares `",
-    signature_text(method, sparams, sret),
+    signature_text(method = method, params = sparams, ret = sret),
     "` generic over `",
     formals,
     "`, and a caller through the trait chooses `",
@@ -546,7 +546,7 @@ fn method_generic_message(shown: String, trait_disp: String, method: String, met
     " every type there, not only ",
     only,
     tail
-  ], "")
+  ], sep = "")
 }
 
 /// Every binder name in scope at the impl method, which a suggested fresh
@@ -554,13 +554,13 @@ fn method_generic_message(shown: String, trait_disp: String, method: String, met
 fn binder_names_taken(own_names: Array[String], impl_names: Array[String], method_names: Array[String]) -> Array[String] {
   let out: Array[String] = []
   for n in own_names {
-    Array::push(out, n)
+    Array::push(out, value = n)
   }
   for n in impl_names {
-    Array::push(out, n)
+    Array::push(out, value = n)
   }
   for n in method_names {
-    Array::push(out, n)
+    Array::push(out, value = n)
   }
   out
 }
@@ -573,9 +573,9 @@ fn unbound_method_names(method_rigid: Array[String], method_names: Array[String]
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(method_names) {
-    let name = Array::get(method_names, i)
-    if Array::get(method_rigid, i) != name || !string_list_has(own_names, name) {
-      Array::push(out, name)
+    let name = Array::get(method_names, at = i)
+    if Array::get(method_rigid, at = i) != name || !string_list_has(names = own_names, wanted = name) {
+      Array::push(out, value = name)
     } else {
       ()
     }
@@ -591,8 +591,8 @@ fn unbound_method_names(method_rigid: Array[String], method_names: Array[String]
 fn pin_written_impl_formals(written: Option[TypeExpr], actual: Type, own_names: Array[String], impl_names: Array[String], defs: Array[TypeDef], s: Subst) -> Subst {
   match written {
     Some(te) => {
-      let pinned = keep_impl_formals(resolve_type_expr_shadowed(te, defs, own_names), own_names, impl_names)
-      match unify(pinned, actual, s) {
+      let pinned = keep_impl_formals(ty = resolve_type_expr_shadowed(te = te, defs = defs, shadow = own_names), own_names = own_names, impl_names = impl_names)
+      match unify(a = pinned, b = actual, s = s) {
         Some(next) => next,
         None => s
       }
@@ -605,25 +605,25 @@ fn pin_written_impl_formals(written: Option[TypeExpr], actual: Type, own_names: 
 /// rigid name, any other binder becomes `CtUnknown`.
 fn keep_impl_formals(ty: Type, own_names: Array[String], impl_names: Array[String]) -> Type {
   match ty {
-    CtNamed(name, args) => if Array::length(args) == 0 && string_list_has(own_names, name) {
-      if string_list_has(impl_names, name) {
+    CtNamed(name, args) => if Array::length(args) == 0 && string_list_has(names = own_names, wanted = name) {
+      if string_list_has(names = impl_names, wanted = name) {
         ty
       } else {
         CtUnknown
       }
     } else {
       CtNamed(name, for a in args {
-        keep_impl_formals(a, own_names, impl_names)
+        keep_impl_formals(ty = a, own_names = own_names, impl_names = impl_names)
       })
     },
-    CtArray(elem) => CtArray(keep_impl_formals(elem, own_names, impl_names)),
-    CtOption(elem) => CtOption(keep_impl_formals(elem, own_names, impl_names)),
+    CtArray(elem) => CtArray(keep_impl_formals(ty = elem, own_names = own_names, impl_names = impl_names)),
+    CtOption(elem) => CtOption(keep_impl_formals(ty = elem, own_names = own_names, impl_names = impl_names)),
     CtTuple(items) => CtTuple(for item in items {
-      keep_impl_formals(item, own_names, impl_names)
+      keep_impl_formals(ty = item, own_names = own_names, impl_names = impl_names)
     }),
     CtFn(params, ret, eff) => CtFn(for p in params {
-      keep_impl_formals(p, own_names, impl_names)
-    }, keep_impl_formals(ret, own_names, impl_names), eff),
+      keep_impl_formals(ty = p, own_names = own_names, impl_names = impl_names)
+    }, keep_impl_formals(ty = ret, own_names = own_names, impl_names = impl_names), eff),
     CtApplied(_, _) => CtUnknown,
     CtConstructor(_, _) => CtUnknown,
     CtForAll(_, _, _) => CtUnknown,
@@ -639,9 +639,9 @@ fn keep_impl_formals(ty: Type, own_names: Array[String], impl_names: Array[Strin
 /// the function declares there, and `narrow` is the concrete target the impl
 /// could be narrowed to (empty when the position is not the receiver).
 fn fallback_generic_message(origin: ImplMethodOrigin, owner: String, method: String, trait_disp: String, impl_names: Array[String], param: String, has: Type, want: Type, narrow: String) -> String {
-  let formals = String::join(impl_names, ", ")
+  let formals = String::join(impl_names, sep = ", ")
   let (wants, takes) = if String::length(param) > 0 {
-    (String::join(["taking `", param, ": ", type_to_string(want), "`"], ""), String::join([
+    (String::join(["taking `", param, ": ", type_to_string(want), "`"], sep = ""), String::join([
       "takes `",
       param,
       ": ",
@@ -651,18 +651,18 @@ fn fallback_generic_message(origin: ImplMethodOrigin, owner: String, method: Str
       ": ",
       type_to_string(want),
       "`"
-    ], ""))
+    ], sep = ""))
   } else {
-    (String::join(["returning `", type_to_string(want), "`"], ""), String::join([
+    (String::join(["returning `", type_to_string(want), "`"], sep = ""), String::join([
       "returns `",
       type_to_string(has),
       "`, not `",
       type_to_string(want),
       "`"
-    ], ""))
+    ], sep = ""))
   }
   let narrowed = if String::length(narrow) > 0 {
-    String::join(["`impl ", trait_disp, " for ", narrow, "`"], "")
+    String::join(["`impl ", trait_disp, " for ", narrow, "`"], sep = "")
   } else {
     "a concrete target"
   }
@@ -696,17 +696,17 @@ fn fallback_generic_message(origin: ImplMethodOrigin, owner: String, method: Str
     "::",
     method,
     "]"
-  ], "")
+  ], sep = "")
 }
 
 /// A labeled (`x~`) or optional (`x?`) parameter keeps its marker on the
 /// name; the diagnostic names the bare parameter.
-fn param_base(raw_name: String) -> String {
+fn param_base(_ raw_name: String) -> String {
   let len = String::length(raw_name)
   if len > 0 {
-    let last = String::char_code_at(raw_name, len - 1)
+    let last = String::char_code_at(raw_name, at = len - 1)
     if last == 126 || last == 63 {
-      String::substring(raw_name, 0, len - 1)
+      String::substring(raw_name, start = 0, end = len - 1)
     } else {
       raw_name
     }
@@ -718,18 +718,18 @@ fn param_base(raw_name: String) -> String {
 fn signature_text(method: String, params: Array[TypeExpr], ret: TypeExpr) -> String {
   let parts: Array[String] = []
   for p in params {
-    Array::push(parts, print_type_expr(p))
+    Array::push(parts, value = print_type_expr(p))
   }
   String::join([
     method,
     "(",
-    String::join(parts, ", "),
+    String::join(parts, sep = ", "),
     ") -> ",
     print_type_expr(ret)
-  ], "")
+  ], sep = "")
 }
 
-fn plural_parameters(n: Int) -> String {
+fn plural_parameters(_ n: Int) -> String {
   if n == 1 {
     "1 parameter"
   } else {
@@ -743,7 +743,7 @@ fn string_list_has(names: Array[String], wanted: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(names) && !found {
-    found = Array::get(names, i) == wanted
+    found = Array::get(names, at = i) == wanted
     i = i + 1
   }
   found
@@ -773,7 +773,7 @@ fn method_rigid_index(scope: ExpectedScope, name: String) -> Int {
   let mut i = 0
   let mut found = 0 - 1
   while i < Array::length(scope.method_names) && found < 0 {
-    if Array::get(scope.method_names, i) == name {
+    if Array::get(scope.method_names, at = i) == name {
       found = i
     } else {
       ()
@@ -787,7 +787,7 @@ fn applied_index(scope: ExpectedScope, name: String) -> Int {
   let mut i = 0
   let mut found = 0 - 1
   while i < Array::length(scope.applied_names) && found < 0 {
-    if Array::get(scope.applied_names, i) == name {
+    if Array::get(scope.applied_names, at = i) == name {
       found = i
     } else {
       ()
@@ -801,7 +801,7 @@ fn applied_index(scope: ExpectedScope, name: String) -> Int {
 /// the trait's own module declares and this one does not import; the
 /// refusal then says to import it (`unselected_type_names`).
 fn known_type_name(scope: ExpectedScope, name: String) -> Bool {
-  match find_typedef(scope.defs, name) {
+  match find_typedef(defs = scope.defs, name = name) {
     Some(_) => true,
     None => is_builtin_type_name(name) || match compiler_owned_type_arity(name) {
       Some(_) => true,
@@ -815,34 +815,34 @@ fn known_type_name(scope: ExpectedScope, name: String) -> Bool {
 fn unselected_type_names_into(scope: ExpectedScope, ty: Type, out: Array[String]) -> Unit {
   match ty {
     CtNamed(name, args) => {
-      if name == "Self" || string_list_has(scope.impl_names, name) || string_list_has(scope.method_rigid, name) || known_type_name(scope, name) || string_list_has(out, name) {
+      if name == "Self" || string_list_has(names = scope.impl_names, wanted = name) || string_list_has(names = scope.method_rigid, wanted = name) || known_type_name(scope = scope, name = name) || string_list_has(names = out, wanted = name) {
         ()
       } else {
-        Array::push(out, name)
+        Array::push(out, value = name)
       }
       for a in args {
-        unselected_type_names_into(scope, a, out)
+        unselected_type_names_into(scope = scope, ty = a, out = out)
       }
       ()
     },
-    CtArray(elem) => unselected_type_names_into(scope, elem, out),
-    CtOption(elem) => unselected_type_names_into(scope, elem, out),
+    CtArray(elem) => unselected_type_names_into(scope = scope, ty = elem, out = out),
+    CtOption(elem) => unselected_type_names_into(scope = scope, ty = elem, out = out),
     CtTuple(items) => {
       for item in items {
-        unselected_type_names_into(scope, item, out)
+        unselected_type_names_into(scope = scope, ty = item, out = out)
       }
       ()
     },
     CtFn(params, ret, _) => {
       for p in params {
-        unselected_type_names_into(scope, p, out)
+        unselected_type_names_into(scope = scope, ty = p, out = out)
       }
-      unselected_type_names_into(scope, ret, out)
+      unselected_type_names_into(scope = scope, ty = ret, out = out)
     },
     CtRecord(fields) => {
       for field in fields {
         let (_, fty) = field
-        unselected_type_names_into(scope, fty, out)
+        unselected_type_names_into(scope = scope, ty = fty, out = out)
       }
       ()
     },
@@ -855,18 +855,18 @@ fn unselected_type_names_into(scope: ExpectedScope, ty: Type, out: Array[String]
 /// cannot be imported.
 fn unselected_type_hint(scope: ExpectedScope, want: Type, trait_disp: String) -> String {
   let names: Array[String] = []
-  unselected_type_names_into(scope, want, names)
+  unselected_type_names_into(scope = scope, ty = want, out = names)
   if Array::length(names) == 0 {
     ""
   } else {
-    let shown = String::join(["`", String::join(names, "`, `"), "`"], "")
+    let shown = String::join(["`", String::join(names, sep = "`, `"), "`"], sep = "")
     String::join([
       "; ",
       shown,
       " is named by trait `",
       trait_disp,
       "`'s signature but not in scope here: import it to write it, or, if it is not exported, leave the position unannotated so the method is generic over it"
-    ], "")
+    ], sep = "")
   }
 }
 
@@ -874,24 +874,24 @@ fn fill_expected(scope: ExpectedScope, ty: Type) -> Type {
   match ty {
     CtNamed(name, args) => if name == "Self" && Array::length(args) == 0 {
       scope.self_ty
-    } else if string_list_has(scope.open_names, name) {
+    } else if string_list_has(names = scope.open_names, wanted = name) {
       CtUnknown
-    } else if method_rigid_index(scope, name) >= 0 {
+    } else if method_rigid_index(scope = scope, name = name) >= 0 {
       if Array::length(args) == 0 {
-        let rigid = Array::get(scope.method_rigid, method_rigid_index(scope, name))
+        let rigid = Array::get(scope.method_rigid, at = method_rigid_index(scope = scope, name = name))
         CtNamed(rigid, [])
       } else {
         CtUnknown
       }
     } else {
-      let at = applied_index(scope, name)
+      let at = applied_index(scope = scope, name = name)
       if at >= 0 {
         if Array::length(args) == 0 {
-          Array::get(scope.applied_types, at)
+          Array::get(scope.applied_types, at = at)
         } else {
           CtUnknown
         }
-      } else if string_list_has(scope.impl_names, name) {
+      } else if string_list_has(names = scope.impl_names, wanted = name) {
         if Array::length(args) == 0 {
           ty
         } else {
@@ -907,21 +907,21 @@ fn fill_expected(scope: ExpectedScope, ty: Type) -> Type {
         // refused at the import -- so only a position the impl leaves
         // generic meets it.
         CtNamed(name, for a in args {
-          fill_expected(scope, a)
+          fill_expected(scope = scope, ty = a)
         })
       }
     },
-    CtArray(elem) => CtArray(fill_expected(scope, elem)),
-    CtOption(elem) => CtOption(fill_expected(scope, elem)),
+    CtArray(elem) => CtArray(fill_expected(scope = scope, ty = elem)),
+    CtOption(elem) => CtOption(fill_expected(scope = scope, ty = elem)),
     CtTuple(items) => CtTuple(for item in items {
-      fill_expected(scope, item)
+      fill_expected(scope = scope, ty = item)
     }),
     CtFn(params, ret, eff) => CtFn(for p in params {
-      fill_expected(scope, p)
-    }, fill_expected(scope, ret), eff),
+      fill_expected(scope = scope, ty = p)
+    }, fill_expected(scope = scope, ty = ret), eff),
     CtRecord(fields) => CtRecord(for field in fields {
       let (fname, fty) = field
-      (fname, fill_expected(scope, fty))
+      (fname, fill_expected(scope = scope, ty = fty))
     }),
     // A higher-kinded application, a bare constructor and a quantified type
     // are not compared here: the kinded binders they come from have no
@@ -944,17 +944,17 @@ fn self_as(ty: Type, self_ty: Type) -> Type {
       self_ty
     } else {
       CtNamed(name, for a in args {
-        self_as(a, self_ty)
+        self_as(ty = a, self_ty = self_ty)
       })
     },
-    CtArray(elem) => CtArray(self_as(elem, self_ty)),
-    CtOption(elem) => CtOption(self_as(elem, self_ty)),
+    CtArray(elem) => CtArray(self_as(ty = elem, self_ty = self_ty)),
+    CtOption(elem) => CtOption(self_as(ty = elem, self_ty = self_ty)),
     CtTuple(items) => CtTuple(for item in items {
-      self_as(item, self_ty)
+      self_as(ty = item, self_ty = self_ty)
     }),
     CtFn(params, ret, eff) => CtFn(for p in params {
-      self_as(p, self_ty)
-    }, self_as(ret, self_ty), eff),
+      self_as(ty = p, self_ty = self_ty)
+    }, self_as(ty = ret, self_ty = self_ty), eff),
     _ => ty
   }
 }
@@ -963,7 +963,7 @@ fn method_declared_here(methods: Array[(String, Array[TypeExpr], TypeExpr)], met
   let mut i = 0
   let mut found = false
   while i < Array::length(methods) && !found {
-    let (mname, _, _) = Array::get(methods, i)
+    let (mname, _, _) = Array::get(methods, at = i)
     found = mname == method
     i = i + 1
   }
@@ -971,7 +971,7 @@ fn method_declared_here(methods: Array[(String, Array[TypeExpr], TypeExpr)], met
 }
 
 /// Does no parameter in `tparams` take arguments of its own (`F[_]`)?
-fn all_plain_params(tparams: Array[String]) -> Bool {
+fn all_plain_params(_ tparams: Array[String]) -> Bool {
   let mut plain = true
   for tp in tparams {
     if type_param_arity(tp) > 0 {
@@ -987,17 +987,17 @@ fn all_plain_params(tparams: Array[String]) -> Bool {
 /// `trait_method_sig_binders_deep` finds the signature: `trait_key` itself,
 /// then its supertraits in order.
 fn declaring_trait_params(env: TypeEnv, trait_key: String, method: String) -> Option[Array[String]] {
-  match trait_definition(env, trait_key) {
+  match trait_definition(env = env, name = trait_key) {
     None => None,
     Some(def) => {
       let (supers, methods, tparams, _) = def
-      if method_declared_here(methods, method) {
+      if method_declared_here(methods = methods, method = method) {
         Some(tparams)
       } else {
         let mut found: Option[Array[String]] = None
         for sup in supers {
           if found is None {
-            found = declaring_trait_params(env, sup, method)
+            found = declaring_trait_params(env = env, trait_key = sup, method = method)
           } else {
             ()
           }
@@ -1015,16 +1015,16 @@ fn declaring_trait_params(env: TypeEnv, trait_key: String, method: String) -> Op
 /// `declaring_trait_params` finds its formals.
 fn declaring_method_bounds(env: TypeEnv, trait_key: String, method: String) -> Array[(String, Array[String])] {
   let out: Array[(String, Array[String])] = []
-  match trait_definition(env, trait_key) {
+  match trait_definition(env = env, name = trait_key) {
     None => (),
     Some(def) => {
       let (supers, methods, _, method_gens) = def
-      if method_declared_here(methods, method) {
+      if method_declared_here(methods = methods, method = method) {
         for g in method_gens {
           let (mname, _, gbounds) = g
           if mname == method {
             for b in gbounds {
-              Array::push(out, b)
+              Array::push(out, value = b)
             }
           } else {
             ()
@@ -1033,9 +1033,9 @@ fn declaring_method_bounds(env: TypeEnv, trait_key: String, method: String) -> A
       } else {
         let mut done = false
         for sup in supers {
-          if !done && (declaring_trait_params(env, sup, method) is Some) {
-            for b in declaring_method_bounds(env, sup, method) {
-              Array::push(out, b)
+          if !done && (declaring_trait_params(env = env, trait_key = sup, method = method) is Some) {
+            for b in declaring_method_bounds(env = env, trait_key = sup, method = method) {
+              Array::push(out, value = b)
             }
             done = true
           } else {
@@ -1055,7 +1055,7 @@ fn bounds_on(bounds: Array[(String, Array[String])], name: String) -> Array[Stri
     let (key, traits) = b
     if type_param_name(key) == name {
       for t in traits {
-        Array::push(out, t)
+        Array::push(out, value = t)
       }
     } else {
       ()
@@ -1070,13 +1070,13 @@ fn bounds_on(bounds: Array[(String, Array[String])], name: String) -> Array[Stri
 fn bound_implied(env: TypeEnv, wanted: String, have: Array[String], seen: Array[String]) -> Bool {
   let mut hit = false
   for h in have {
-    if hit || string_list_has(seen, h) {
+    if hit || string_list_has(names = seen, wanted = h) {
       ()
     } else if h == wanted {
       hit = true
     } else {
-      Array::push(seen, h)
-      hit = bound_implied(env, wanted, trait_supers(env, h), seen)
+      Array::push(seen, value = h)
+      hit = bound_implied(env = env, wanted = wanted, have = trait_supers(env = env, name = h), seen = seen)
     }
   }
   hit
@@ -1087,7 +1087,7 @@ fn binder_text(name: String, traits: Array[String]) -> String {
   if Array::length(traits) == 0 {
     name
   } else {
-    String::join([name, ": ", String::join(traits, " + ")], "")
+    String::join([name, ": ", String::join(traits, sep = " + ")], sep = "")
   }
 }
 
@@ -1124,19 +1124,19 @@ struct BinderScope {
 /// judged here; `subst` is the probe substitution after the signature
 /// matched, which maps each binder's id to the rigid name it met.
 fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: String, owner: String, trait_disp: String, method: String, scope: BinderScope, subst: Subst, errors: Array[String]) -> Unit {
-  let shown = String::join(["`", owner, "::", method, "`"], "")
+  let shown = String::join(["`", owner, "::", method, "`"], sep = "")
   let mut i = 0
   while i < Array::length(scope.own_tparams) && i < Array::length(scope.scheme_ids) {
-    let tp = Array::get(scope.own_tparams, i)
+    let tp = Array::get(scope.own_tparams, at = i)
     let name = type_param_name(tp)
-    let wanted = bounds_on(scope.own_bounds, name)
+    let wanted = bounds_on(bounds = scope.own_bounds, name = name)
     if type_param_arity(tp) == 0 && Array::length(wanted) > 0 {
-      match subst_apply(subst, CtVar(Array::get(scope.scheme_ids, i))) {
+      match subst_apply(s = subst, ty = CtVar(Array::get(scope.scheme_ids, at = i))) {
         CtNamed(met, met_args) => if Array::length(met_args) == 0 {
           let mut at = 0 - 1
           let mut mi = 0
           while mi < Array::length(scope.method_rigid) {
-            if at < 0 && Array::get(scope.method_rigid, mi) == met {
+            if at < 0 && Array::get(scope.method_rigid, at = mi) == met {
               at = mi
             } else {
               ()
@@ -1144,33 +1144,33 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
             mi = mi + 1
           }
           if at >= 0 {
-            let tname = Array::get(scope.method_names, at)
-            let have = bounds_on(scope.method_bounds, tname)
+            let tname = Array::get(scope.method_names, at = at)
+            let have = bounds_on(bounds = scope.method_bounds, name = tname)
             for w in wanted {
-              if bound_implied(env, w, have, []) {
+              if bound_implied(env = env, wanted = w, have = have, seen = []) {
                 ()
               } else {
                 let grown: Array[String] = []
                 for h in have {
-                  Array::push(grown, h)
+                  Array::push(grown, value = h)
                 }
-                Array::push(grown, w)
+                Array::push(grown, value = w)
                 let chosen = if Array::length(have) == 0 {
                   String::join([
                     "may choose any type for `",
                     tname,
                     "`, since the trait declares no bound on it"
-                  ], "")
+                  ], sep = "")
                 } else {
                   String::join([
                     "may choose any type for `",
                     tname,
                     "` that satisfies `",
-                    String::join(have, " + "),
+                    String::join(have, sep = " + "),
                     "`"
-                  ], "")
+                  ], sep = "")
                 }
-                Array::push(errors, String::join([
+                Array::push(errors, value = String::join([
                   "drop the `",
                   w,
                   "` bound from `",
@@ -1182,7 +1182,7 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
                   "`'s `",
                   method,
                   "[",
-                  binder_text(tname, grown),
+                  binder_text(name = tname, traits = grown),
                   "]`: a caller through the trait ",
                   chosen,
                   ", so nothing provides `",
@@ -1190,33 +1190,33 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
                   "` for `",
                   name,
                   "`",
-                  origin_marker(origin, trait_head, owner, trait_disp, method, "binder", name)
-                ], ""))
+                  origin_marker(origin = origin, trait_head = trait_head, owner = owner, trait_disp = trait_disp, method = method, part = "binder", param = name)
+                ], sep = ""))
               }
             }
-          } else if string_list_has(scope.impl_names, met) {
-            let have = bounds_on(origin.bounds, met)
+          } else if string_list_has(names = scope.impl_names, wanted = met) {
+            let have = bounds_on(bounds = origin.bounds, name = met)
             for w in wanted {
-              if bound_implied(env, w, have, []) {
+              if bound_implied(env = env, wanted = w, have = have, seen = []) {
                 ()
               } else {
                 let grown: Array[String] = []
                 for h in have {
-                  Array::push(grown, h)
+                  Array::push(grown, value = h)
                 }
-                Array::push(grown, w)
+                Array::push(grown, value = w)
                 let promised = if Array::length(have) == 0 {
-                  String::join(["declares no bound on `", met, "`"], "")
+                  String::join(["declares no bound on `", met, "`"], sep = "")
                 } else {
                   String::join([
                     "promises only `",
-                    String::join(have, " + "),
+                    String::join(have, sep = " + "),
                     "` for `",
                     met,
                     "`"
-                  ], "")
+                  ], sep = "")
                 }
-                Array::push(errors, String::join([
+                Array::push(errors, value = String::join([
                   "drop the `",
                   w,
                   "` bound from `",
@@ -1226,7 +1226,7 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
                   ", or add it to the impl's `",
                   met,
                   "` (`[",
-                  binder_text(met, grown),
+                  binder_text(name = met, traits = grown),
                   "]` on `impl ",
                   trait_disp,
                   " for ",
@@ -1238,8 +1238,8 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
                   "` for `",
                   name,
                   "`",
-                  origin_marker(origin, trait_head, owner, trait_disp, method, "binder", name)
-                ], ""))
+                  origin_marker(origin = origin, trait_head = trait_head, owner = owner, trait_disp = trait_disp, method = method, part = "binder", param = name)
+                ], sep = ""))
               }
             }
           } else {
@@ -1297,17 +1297,17 @@ fn check_binder_bounds(origin: ImplMethodOrigin, env: TypeEnv, trait_head: Strin
 /// substitution; the unification here is a probe and is discarded, so the
 /// method's own typing is unchanged.
 export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: Type, s: Subst, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Unit {
-  let owner_prefix = String::concat(impl_method_owner(origin.tparams, origin.trait_key, origin.target), "::")
+  let owner_prefix = String::concat(impl_method_owner(tparams = origin.tparams, trait_name = origin.trait_key, target = origin.target), "::")
   let method = origin.method
   let owner = impl_target_head(origin.target)
   let trait_head = trait_ref_name(origin.trait_key)
   let trait_disp = trait_reference_display(origin.trait_key)
-  let shown = String::join(["`", owner, "::", method, "`"], "")
-  match trait_definition(env, origin.trait_key) {
+  let shown = String::join(["`", owner, "::", method, "`"], sep = "")
+  match trait_definition(env = env, name = origin.trait_key) {
     None => (),
     Some(def) => {
       let (_, _, trait_tparams, _) = def
-      match trait_method_sig_binders_deep(env, origin.trait_key, method) {
+      match trait_method_sig_binders_deep(env = env, trait_name = origin.trait_key, method_name = method) {
         // A method the trait does not declare. Refused only where the binding
         // name proves it was written inside the impl block: an applied impl's
         // owner (`Box$impl$..`) is a name no declaration can spell. A plain
@@ -1315,8 +1315,8 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
         // to, and a free function right after the block would be refused with
         // it -- so that case stays accepted until the parser records which
         // bindings an impl block produced.
-        None => if !origin.fallback && String::contains(owner_prefix, "$impl$") {
-          Array::push(errors, String::join([
+        None => if !origin.fallback && String::contains(owner_prefix, needle = "$impl$") {
+          Array::push(errors, value = String::join([
             "remove method `",
             method,
             "` from `impl ",
@@ -1328,8 +1328,8 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
             "`: the trait declares no method `",
             method,
             "`, so nothing can call it through the trait",
-            origin_marker(origin, trait_head, owner, trait_disp, method, "name", "")
-          ], ""))
+            origin_marker(origin = origin, trait_head = trait_head, owner = owner, trait_disp = trait_disp, method = method, part = "name", param = "")
+          ], sep = ""))
         } else {
           ()
         },
@@ -1346,15 +1346,15 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
             ": trait `",
             trait_disp,
             "` declares `",
-            signature_text(method, sparams, sret),
+            signature_text(method = method, params = sparams, ret = sret),
             "`"
-          ], "")
+          ], sep = "")
           let n_impl = Array::length(params)
           let n_trait = Array::length(sparams)
           if n_impl > n_trait {
-            let (extra_raw, _) = Array::get(params, n_trait)
+            let (extra_raw, _) = Array::get(params, at = n_trait)
             let extra = param_base(extra_raw)
-            Array::push(errors, String::join([
+            Array::push(errors, value = String::join([
               "remove parameter `",
               extra,
               "` from ",
@@ -1362,10 +1362,10 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
               declares,
               ", which takes ",
               plural_parameters(n_trait),
-              origin_marker(origin, trait_head, owner, trait_disp, method, "param", extra)
-            ], ""))
+              origin_marker(origin = origin, trait_head = trait_head, owner = owner, trait_disp = trait_disp, method = method, part = "param", param = extra)
+            ], sep = ""))
           } else if n_impl < n_trait {
-            Array::push(errors, String::join([
+            Array::push(errors, value = String::join([
               "add ",
               plural_parameters(n_trait - n_impl),
               " to ",
@@ -1373,14 +1373,14 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
               declares,
               ", which takes ",
               plural_parameters(n_trait),
-              origin_marker(origin, trait_head, owner, trait_disp, method, "name", "")
-            ], ""))
+              origin_marker(origin = origin, trait_head = trait_head, owner = owner, trait_disp = trait_disp, method = method, part = "name", param = "")
+            ], sep = ""))
           } else {
             // The row: a trait method declares no effects.
             let labels = row_labels(eff)
             if Array::length(labels) > 0 {
-              let row = String::join(labels, ", ")
-              Array::push(errors, String::join([
+              let row = String::join(labels, sep = ", ")
+              Array::push(errors, value = String::join([
                 "remove `with ",
                 row,
                 "` from ",
@@ -1389,8 +1389,8 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
                 ", which performs no effects; a caller through the trait does not authorize `",
                 row,
                 "`",
-                origin_marker(origin, trait_head, owner, trait_disp, method, "row", "")
-              ], ""))
+                origin_marker(origin = origin, trait_head = trait_head, owner = owner, trait_disp = trait_disp, method = method, part = "row", param = "")
+              ], sep = ""))
             } else {
               ()
             }
@@ -1408,7 +1408,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
             if !kinded_impl {
               let impl_names: Array[String] = []
               for tp in origin.tparams {
-                Array::push(impl_names, type_param_name(tp))
+                Array::push(impl_names, value = type_param_name(tp))
               }
               // Trait parameters the impl head applies are substituted when
               // none is kinded. The signature names the formals of the trait
@@ -1421,7 +1421,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
               let applied_args = trait_ref_args(origin.trait_key)
               // Unless the declaring trait is found, no binder is known to be
               // the method's own, and all of them stay open.
-              let (decl_known, decl_tparams) = match declaring_trait_params(env, origin.trait_key, method) {
+              let (decl_known, decl_tparams) = match declaring_trait_params(env = env, trait_key = origin.trait_key, method = method) {
                 Some(ps) => (true, ps),
                 None => (false, [])
               }
@@ -1436,7 +1436,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
               if substitutable {
                 let mut ai = 0
                 while ai < n_applied {
-                  Array::push(applied_names, type_param_name(Array::get(decl_tparams, ai)))
+                  Array::push(applied_names, value = type_param_name(Array::get(decl_tparams, at = ai)))
                   ai = ai + 1
                 }
               } else {
@@ -1455,25 +1455,25 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
               // generic stays open.
               let decl_names: Array[String] = []
               for tp in decl_tparams {
-                Array::push(decl_names, type_param_name(tp))
+                Array::push(decl_names, value = type_param_name(tp))
               }
               let open_names: Array[String] = []
               let method_names: Array[String] = []
               let method_rigid: Array[String] = []
               for b in binders {
                 let bname = type_param_name(b)
-                if string_list_has(applied_names, bname) {
+                if string_list_has(names = applied_names, wanted = bname) {
                   ()
-                } else if decl_known && !string_list_has(decl_names, bname) && type_param_arity(b) == 0 {
-                  Array::push(method_names, bname)
+                } else if decl_known && !string_list_has(names = decl_names, wanted = bname) && type_param_arity(b) == 0 {
+                  Array::push(method_names, value = bname)
                   // An impl formal of the same spelling is a different type.
-                  Array::push(method_rigid, if string_list_has(impl_names, bname) {
+                  Array::push(method_rigid, value = if string_list_has(names = impl_names, wanted = bname) {
                     String::concat(bname, "'")
                   } else {
                     bname
                   })
                 } else {
-                  Array::push(open_names, bname)
+                  Array::push(open_names, value = bname)
                 }
               }
               // The impl's formals stay RIGID for a fallback too. The witness
@@ -1487,12 +1487,12 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
               // there, which meet the rigid `T`.
               let shadow: Array[String] = ["Self"]
               for b in binders {
-                Array::push(shadow, type_param_name(b))
+                Array::push(shadow, value = type_param_name(b))
               }
               for n in impl_names {
-                Array::push(shadow, n)
+                Array::push(shadow, value = n)
               }
-              let raw_self = resolve_type_expr_shadowed(origin.target, defs, impl_names)
+              let raw_self = resolve_type_expr_shadowed(te = origin.target, defs = defs, shadow = impl_names)
               let pre_scope = ExpectedScope::{
                 defs: defs,
                 self_ty: CtUnknown,
@@ -1519,12 +1519,12 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
                 match raw_self {
                   CtConstructor(_, _) => CtUnknown,
                   CtApplied(_, _) => CtUnknown,
-                  _ => fill_expected(pre_scope, raw_self)
+                  _ => fill_expected(scope = pre_scope, ty = raw_self)
                 }
               }
               if substitutable {
                 for a in applied_args {
-                  Array::push(applied_types, fill_expected(pre_scope, resolve_type_expr_shadowed(a, defs, impl_names)))
+                  Array::push(applied_types, value = fill_expected(scope = pre_scope, ty = resolve_type_expr_shadowed(te = a, defs = defs, shadow = impl_names)))
                 }
               } else {
                 ()
@@ -1543,7 +1543,7 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
               // (`own_tparams`); `check_binder_bounds` reads their bounds
               // once the signature has matched.
               let no_ids: Array[Int] = []
-              let (scheme_ids, actual) = match subst_apply(s, vt) {
+              let (scheme_ids, actual) = match subst_apply(s = s, ty = vt) {
                 CtForAll(ids, _, body) => (ids, body),
                 other => (no_ids, other)
               }
@@ -1558,36 +1558,36 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
                   // formal first: `T` is the impl's, not the caller's choice.
                   let own_names: Array[String] = []
                   for tp in own_tparams {
-                    Array::push(own_names, type_param_name(tp))
+                    Array::push(own_names, value = type_param_name(tp))
                   }
                   if Array::length(method_names) > 0 {
                     let mut wi = 0
                     while wi < n_trait {
-                      let (_, written) = Array::get(params, wi)
-                      cur = pin_written_impl_formals(written, Array::get(aparams, wi), own_names, impl_names, defs, cur)
+                      let (_, written) = Array::get(params, at = wi)
+                      cur = pin_written_impl_formals(written = written, actual = Array::get(aparams, at = wi), own_names = own_names, impl_names = impl_names, defs = defs, s = cur)
                       wi = wi + 1
                     }
-                    cur = pin_written_impl_formals(written_ret, aret, own_names, impl_names, defs, cur)
+                    cur = pin_written_impl_formals(written = written_ret, actual = aret, own_names = own_names, impl_names = impl_names, defs = defs, s = cur)
                   } else {
                     ()
                   }
                   let mut pi = 0
                   while pi < n_trait {
-                    let want = fill_expected(scope, resolve_type_expr_shadowed(Array::get(sparams, pi), defs, shadow))
-                    match unify(want, self_as(Array::get(aparams, pi), self_ty), cur) {
+                    let want = fill_expected(scope = scope, ty = resolve_type_expr_shadowed(te = Array::get(sparams, at = pi), defs = defs, shadow = shadow))
+                    match unify(a = want, b = self_as(ty = Array::get(aparams, at = pi), self_ty = self_ty), s = cur) {
                       Some(next) => {
                         cur = next
                       },
                       None => {
-                        let (raw, _) = Array::get(params, pi)
+                        let (raw, _) = Array::get(params, at = pi)
                         let pname = param_base(raw)
-                        let has = self_as(subst_apply(cur, Array::get(aparams, pi)), self_ty)
-                        if mentions_formal(want, method_rigid) {
-                          let (_, written) = Array::get(params, pi)
-                          let miss = generic_miss_of(written, own_names, impl_names, has, method_names, method_rigid)
-                          Array::push(errors, method_generic_message(shown, trait_disp, method, method_names, unbound_method_names(method_rigid, method_names, own_names), binder_names_taken(own_names, impl_names, method_names), sparams, sret, pname, miss, has, want, origin_marker(origin, trait_head, owner, trait_disp, method, "param", pname)))
-                        } else if origin.fallback && mentions_formal(want, impl_names) {
-                          let narrow = match Array::get(sparams, pi) {
+                        let has = self_as(ty = subst_apply(s = cur, ty = Array::get(aparams, at = pi)), self_ty = self_ty)
+                        if mentions_formal(ty = want, names = method_rigid) {
+                          let (_, written) = Array::get(params, at = pi)
+                          let miss = generic_miss_of(written = written, own_names = own_names, impl_names = impl_names, has = has, method_names = method_names, method_rigid = method_rigid)
+                          Array::push(errors, value = method_generic_message(shown = shown, trait_disp = trait_disp, method = method, method_names = method_names, unbound = unbound_method_names(method_rigid = method_rigid, method_names = method_names, own_names = own_names), taken = binder_names_taken(own_names = own_names, impl_names = impl_names, method_names = method_names), sparams = sparams, sret = sret, param = pname, miss = miss, has = has, want = want, tail = origin_marker(origin = origin, trait_head = trait_head, owner = owner, trait_disp = trait_disp, method = method, part = "param", param = pname)))
+                        } else if origin.fallback && mentions_formal(ty = want, names = impl_names) {
+                          let narrow = match Array::get(sparams, at = pi) {
                             TyName(sn) => if sn == "Self" {
                               type_to_string(has)
                             } else {
@@ -1595,9 +1595,9 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
                             },
                             _ => ""
                           }
-                          Array::push(errors, fallback_generic_message(origin, owner, method, trait_disp, impl_names, pname, has, want, narrow))
+                          Array::push(errors, value = fallback_generic_message(origin = origin, owner = owner, method = method, trait_disp = trait_disp, impl_names = impl_names, param = pname, has = has, want = want, narrow = narrow))
                         } else {
-                          Array::push(errors, String::join([
+                          Array::push(errors, value = String::join([
                             "change parameter `",
                             pname,
                             "` of ",
@@ -1606,36 +1606,36 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
                             type_to_string(want),
                             "`",
                             declares,
-                            unselected_type_hint(scope, want, trait_disp),
-                            origin_marker(origin, trait_head, owner, trait_disp, method, "param", pname)
-                          ], ""))
+                            unselected_type_hint(scope = scope, want = want, trait_disp = trait_disp),
+                            origin_marker(origin = origin, trait_head = trait_head, owner = owner, trait_disp = trait_disp, method = method, part = "param", param = pname)
+                          ], sep = ""))
                         }
                       }
                     }
                     pi = pi + 1
                   }
-                  let want_ret = fill_expected(scope, resolve_type_expr_shadowed(sret, defs, shadow))
-                  let after_ret = match unify(want_ret, self_as(aret, self_ty), cur) {
+                  let want_ret = fill_expected(scope = scope, ty = resolve_type_expr_shadowed(te = sret, defs = defs, shadow = shadow))
+                  let after_ret = match unify(a = want_ret, b = self_as(ty = aret, self_ty = self_ty), s = cur) {
                     Some(next) => next,
                     None => {
-                      if mentions_formal(want_ret, method_rigid) {
-                        let has_ret = self_as(subst_apply(cur, aret), self_ty)
-                        let miss = generic_miss_of(written_ret, own_names, impl_names, has_ret, method_names, method_rigid)
-                        Array::push(errors, method_generic_message(shown, trait_disp, method, method_names, unbound_method_names(method_rigid, method_names, own_names), binder_names_taken(own_names, impl_names, method_names), sparams, sret, "", miss, has_ret, want_ret, origin_marker(origin, trait_head, owner, trait_disp, method, "ret", "")))
-                      } else if origin.fallback && mentions_formal(want_ret, impl_names) {
-                        let has_ret = self_as(subst_apply(cur, aret), self_ty)
-                        Array::push(errors, fallback_generic_message(origin, owner, method, trait_disp, impl_names, "", has_ret, want_ret, ""))
+                      if mentions_formal(ty = want_ret, names = method_rigid) {
+                        let has_ret = self_as(ty = subst_apply(s = cur, ty = aret), self_ty = self_ty)
+                        let miss = generic_miss_of(written = written_ret, own_names = own_names, impl_names = impl_names, has = has_ret, method_names = method_names, method_rigid = method_rigid)
+                        Array::push(errors, value = method_generic_message(shown = shown, trait_disp = trait_disp, method = method, method_names = method_names, unbound = unbound_method_names(method_rigid = method_rigid, method_names = method_names, own_names = own_names), taken = binder_names_taken(own_names = own_names, impl_names = impl_names, method_names = method_names), sparams = sparams, sret = sret, param = "", miss = miss, has = has_ret, want = want_ret, tail = origin_marker(origin = origin, trait_head = trait_head, owner = owner, trait_disp = trait_disp, method = method, part = "ret", param = "")))
+                      } else if origin.fallback && mentions_formal(ty = want_ret, names = impl_names) {
+                        let has_ret = self_as(ty = subst_apply(s = cur, ty = aret), self_ty = self_ty)
+                        Array::push(errors, value = fallback_generic_message(origin = origin, owner = owner, method = method, trait_disp = trait_disp, impl_names = impl_names, param = "", has = has_ret, want = want_ret, narrow = ""))
                       } else {
-                        Array::push(errors, String::join([
+                        Array::push(errors, value = String::join([
                           "change the return type of ",
                           shown,
                           " to `",
                           type_to_string(want_ret),
                           "`",
                           declares,
-                          unselected_type_hint(scope, want_ret, trait_disp),
-                          origin_marker(origin, trait_head, owner, trait_disp, method, "ret", "")
-                        ], ""))
+                          unselected_type_hint(scope = scope, want = want_ret, trait_disp = trait_disp),
+                          origin_marker(origin = origin, trait_head = trait_head, owner = owner, trait_disp = trait_disp, method = method, part = "ret", param = "")
+                        ], sep = ""))
                       }
                       cur
                     }
@@ -1650,10 +1650,10 @@ export fn check_impl_method_signature(origin: ImplMethodOrigin, val: Expr, vt: T
                       scheme_ids: scheme_ids,
                       method_names: method_names,
                       method_rigid: method_rigid,
-                      method_bounds: declaring_method_bounds(env, origin.trait_key, method),
+                      method_bounds: declaring_method_bounds(env = env, trait_key = origin.trait_key, method = method),
                       impl_names: impl_names
                     }
-                    check_binder_bounds(origin, env, trait_head, owner, trait_disp, method, binders, after_ret, errors)
+                    check_binder_bounds(origin = origin, env = env, trait_head = trait_head, owner = owner, trait_disp = trait_disp, method = method, scope = binders, subst = after_ret, errors = errors)
                   } else {
                     ()
                   }
@@ -1680,15 +1680,15 @@ fn super_declaring_method(env: TypeEnv, supers: Array[String], method: String, s
   let mut found: Option[String] = None
   for sup in supers {
     let missing = found is None
-    if missing && !string_list_has(seen, sup) {
-      Array::push(seen, sup)
-      match trait_definition(env, sup) {
+    if missing && !string_list_has(names = seen, wanted = sup) {
+      Array::push(seen, value = sup)
+      match trait_definition(env = env, name = sup) {
         Some(def) => {
           let (sup_supers, methods, _, _) = def
-          found = if method_declared_here(methods, method) {
+          found = if method_declared_here(methods = methods, method = method) {
             Some(sup)
           } else {
-            super_declaring_method(env, sup_supers, method, seen)
+            super_declaring_method(env = env, supers = sup_supers, method = method, seen = seen)
           }
         },
         None => ()
@@ -1713,18 +1713,18 @@ fn super_declaring_method(env: TypeEnv, supers: Array[String], method: String, s
 /// dispatches to, so it is never a second definition.
 fn block_super_methods(block: ImplBlock, env: TypeEnv) -> Array[(String, String)] {
   let out: Array[(String, String)] = []
-  let prefix = String::concat(impl_method_owner(block.tparams, block.trait_key, block.target), "::")
-  if String::contains(prefix, "$impl$") {
-    match trait_definition(env, block.trait_key) {
+  let prefix = String::concat(impl_method_owner(tparams = block.tparams, trait_name = block.trait_key, target = block.target), "::")
+  if String::contains(prefix, needle = "$impl$") {
+    match trait_definition(env = env, name = block.trait_key) {
       Some(def) => {
         let (supers, methods, _, _) = def
         for written in block.written {
-          let method = String::substring(written, String::length(prefix), String::length(written))
-          if method_declared_here(methods, method) {
+          let method = String::substring(written, start = String::length(prefix), end = String::length(written))
+          if method_declared_here(methods = methods, method = method) {
             ()
           } else {
-            match super_declaring_method(env, supers, method, [block.trait_key]) {
-              Some(declaring) => Array::push(out, (declaring, method)),
+            match super_declaring_method(env = env, supers = supers, method = method, seen = [block.trait_key]) {
+              Some(declaring) => Array::push(out, value = (declaring, method)),
               None => ()
             }
           }
@@ -1756,7 +1756,7 @@ fn derives_trait(origins: ImplMethodOrigins, type_name: String, trait_name: Stri
   let mut hit = false
   for entry in origins.derives {
     let (name, derives) = entry
-    if name == type_name && string_list_has(derives, trait_name) {
+    if name == type_name && string_list_has(names = derives, wanted = trait_name) {
       hit = true
     } else {
       ()
@@ -1766,14 +1766,14 @@ fn derives_trait(origins: ImplMethodOrigins, type_name: String, trait_name: Stri
 }
 
 /// `impl Key for Box[T]`, as a diagnostic names a block.
-fn impl_block_text(block: ImplBlock) -> String {
+fn impl_block_text(_ block: ImplBlock) -> String {
   String::join([
     "`impl ",
     trait_reference_display(block.trait_key),
     " for ",
     print_type_expr(block.target),
     "`"
-  ], "")
+  ], sep = "")
 }
 
 /// The parsed block of the `SImpl` being checked: the first with its trait,
@@ -1781,12 +1781,12 @@ fn impl_block_text(block: ImplBlock) -> String {
 /// or -1.
 fn impl_block_index(origins: ImplMethodOrigins, tparams: Array[String], trait_key: String, target_expr: TypeExpr) -> Int {
   let shown = print_type_expr(target_expr)
-  let formals = String::join(tparams, ",")
+  let formals = String::join(tparams, sep = ",")
   let mut at = -1
   let mut i = 0
   while at < 0 && i < Array::length(origins.blocks) {
-    let block = Array::get(origins.blocks, i)
-    if block.trait_key == trait_key && String::join(block.tparams, ",") == formals && print_type_expr(block.target) == shown {
+    let block = Array::get(origins.blocks, at = i)
+    if block.trait_key == trait_key && String::join(block.tparams, sep = ",") == formals && print_type_expr(block.target) == shown {
       at = i
     } else {
       ()
@@ -1812,19 +1812,19 @@ fn impl_block_index(origins: ImplMethodOrigins, tparams: Array[String], trait_ke
 /// imported impl) and the blocks parsed before this one, so each pair is
 /// reported once, at the later of the two.
 export fn check_impl_supertrait_method_overlap(origins: ImplMethodOrigins, tparams: Array[String], trait_key: String, target_expr: TypeExpr, target: Type, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Unit {
-  let at = impl_block_index(origins, tparams, trait_key, target_expr)
+  let at = impl_block_index(origins = origins, tparams = tparams, trait_key = trait_key, target_expr = target_expr)
   if at >= 0 {
-    let block = Array::get(origins.blocks, at)
-    let own = block_super_methods(block, env)
+    let block = Array::get(origins.blocks, at = at)
+    let own = block_super_methods(block = block, env = env)
     let owner = impl_target_head(target_expr)
     let this_text = impl_block_text(block)
     let this_disp = trait_reference_display(trait_key)
     for entry in own {
       let (declaring, method) = entry
-      match overlapping_impl_target_for(env, declaring, tparams, target) {
+      match overlapping_impl_target_for(env = env, trait_name = declaring, new_params = tparams, new_target = target) {
         Some(existing) => {
           let sup = trait_reference_display(declaring)
-          let edit = if derives_trait(origins, owner, trait_ref_name(declaring)) {
+          let edit = if derives_trait(origins = origins, type_name = owner, trait_name = trait_ref_name(declaring)) {
             String::join([
               "drop `",
               sup,
@@ -1834,7 +1834,7 @@ export fn check_impl_supertrait_method_overlap(origins: ImplMethodOrigins, tpara
               method,
               "` from ",
               this_text
-            ], "")
+            ], sep = "")
           } else if type_to_string(existing) == owner {
             // A whole-family implementation declared elsewhere: a derive in
             // the type's own module registers exactly this shape.
@@ -1850,7 +1850,7 @@ export fn check_impl_supertrait_method_overlap(origins: ImplMethodOrigins, tpara
               "` (or its `impl ",
               sup,
               "`)"
-            ], "")
+            ], sep = "")
           } else {
             String::join([
               "remove `",
@@ -1862,9 +1862,9 @@ export fn check_impl_supertrait_method_overlap(origins: ImplMethodOrigins, tpara
               "` for `",
               type_to_string(existing),
               "`"
-            ], "")
+            ], sep = "")
           }
-          Array::push(errors, String::join([
+          Array::push(errors, value = String::join([
             edit,
             ": `",
             owner,
@@ -1883,22 +1883,22 @@ export fn check_impl_supertrait_method_overlap(origins: ImplMethodOrigins, tpara
             "` would run different `",
             method,
             "` on the same value",
-            impl_method_marker(trait_ref_name(trait_key), owner, method, "name", "")
-          ], ""))
+            impl_method_marker(trait_head = trait_ref_name(trait_key), owner = owner, method = method, part = "name", param = "")
+          ], sep = ""))
         },
         None => ()
       }
     }
     let mut j = 0
     while j < at {
-      let other = Array::get(origins.blocks, j)
-      let other_own = block_super_methods(other, env)
+      let other = Array::get(origins.blocks, at = j)
+      let other_own = block_super_methods(block = other, env = env)
       if Array::length(other_own) > 0 {
-        let other_target = resolve_type_expr_shadowed(other.target, defs, other.tparams)
+        let other_target = resolve_type_expr_shadowed(te = other.target, defs = defs, shadow = other.tparams)
         for entry in other_own {
           let (declaring, method) = entry
           let direct = trait_ref_name(trait_key) == trait_ref_name(declaring)
-          if (direct || super_methods_have(own, declaring, method)) && impl_trait_and_target_patterns_overlap(declaring, other.tparams, other_target, declaring, tparams, target) {
+          if (direct || super_methods_have(methods = own, declaring = declaring, method = method)) && impl_trait_and_target_patterns_overlap(left_trait = declaring, left_params = other.tparams, left_target = other_target, right_trait = declaring, right_params = tparams, right_target = target) {
             let sup = trait_reference_display(declaring)
             let edit = if direct {
               String::join([
@@ -1908,7 +1908,7 @@ export fn check_impl_supertrait_method_overlap(origins: ImplMethodOrigins, tpara
                 impl_block_text(other),
                 ", or remove this ",
                 this_text
-              ], "")
+              ], sep = "")
             } else {
               String::join([
                 "remove `",
@@ -1917,9 +1917,9 @@ export fn check_impl_supertrait_method_overlap(origins: ImplMethodOrigins, tpara
                 this_text,
                 " or from ",
                 impl_block_text(other)
-              ], "")
+              ], sep = "")
             }
-            Array::push(errors, String::join([
+            Array::push(errors, value = String::join([
               edit,
               ": both implement `",
               sup,
@@ -1930,8 +1930,8 @@ export fn check_impl_supertrait_method_overlap(origins: ImplMethodOrigins, tpara
               "`, and callers through different bounds would run different `",
               method,
               "` on the same value",
-              impl_method_marker(trait_ref_name(other.trait_key), impl_target_head(other.target), method, "name", "")
-            ], ""))
+              impl_method_marker(trait_head = trait_ref_name(other.trait_key), owner = impl_target_head(other.target), method = method, part = "name", param = "")
+            ], sep = ""))
           } else {
             ()
           }

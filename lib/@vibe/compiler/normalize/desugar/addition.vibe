@@ -38,9 +38,9 @@ fn add_dict(binds: Array[(String, String, String, Array[String])], traits: Array
   let mut found = None
   for bind in binds {
     let (tp, tr, dict, _) = bind
-    if (found is None) && tp == formal && formal_in_scope(tp) && dtd_trait_entails(tr, "Add") {
-      match lookup_trait_sigs(traits, tr) {
-        Some(sigs) => if (trait_method_binder(tr, "add") is None) && trait_sigs_first_self_binary(sigs, "add", "Self") {
+    if (found is None) && tp == formal && formal_in_scope(tp) && dtd_trait_entails(sub = tr, super_name = "Add") {
+      match lookup_trait_sigs(traits = traits, name = tr) {
+        Some(sigs) => if (trait_method_binder(trait_name = tr, method = "add") is None) && trait_sigs_first_self_binary(sigs = sigs, method = "add", result = "Self") {
           found = Some(dict)
         },
         None => ()
@@ -61,7 +61,7 @@ fn add_parameter(e: Expr, vars: Array[(String, String)]) -> String {
       let mut out = ""
       let mut done = false
       while i >= 0 && !done {
-        let (k, v) = Array::get(vars, i)
+        let (k, v) = Array::get(vars, at = i)
         if k == mask {
           done = true
         }
@@ -79,7 +79,7 @@ fn add_parameter(e: Expr, vars: Array[(String, String)]) -> String {
 export fn addition_witness(l: Expr, r: Expr, rl: Expr, rr: Expr, off: Int, binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], vars: Array[(String, String)]) -> Option[Expr] with Exception {
   let typed_formal = match impl_target_from_key(dtd_typed_eq_key_for(off)) {
     Some(TyApp(head, args)) => if head == typed_add_row_head() && Array::length(args) == 1 {
-      match Array::get(args, 0) {
+      match Array::get(args, at = 0) {
         TyName(name) => name,
         _ => ""
       }
@@ -89,15 +89,15 @@ export fn addition_witness(l: Expr, r: Expr, rl: Expr, rr: Expr, off: Int, binds
   let formal = if typed_formal != "" {
     typed_formal
   } else {
-    let left = add_parameter(l, vars)
-    if left != "" && (add_dict(binds, traits, left) is Some) {
+    let left = add_parameter(e = l, vars = vars)
+    if left != "" && (add_dict(binds = binds, traits = traits, formal = left) is Some) {
       left
     }
     else {
-      add_parameter(r, vars)
+      add_parameter(e = r, vars = vars)
     }
   }
-  match add_dict(binds, traits, formal) {
+  match add_dict(binds = binds, traits = traits, formal = formal) {
     Some(dict) => Some(ECall(EDot(EIdent(dict, -1), "add", -1, -1), [rl, rr], -1, [
     ])),
     None => if typed_formal != "" {
@@ -109,22 +109,22 @@ export fn addition_witness(l: Expr, r: Expr, rl: Expr, rr: Expr, off: Int, binds
 }
 
 export fn rewrite_addition(l: Expr, r: Expr, rl: Expr, rr: Expr, off: Int, binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], structs: Array[(String, Array[String])], vars: Array[(String, String)], returns: Array[(String, String)]) -> Expr with Exception {
-  match addition_witness(l, r, rl, rr, off, binds, traits, vars) {
+  match addition_witness(l = l, r = r, rl = rl, rr = rr, off = off, binds = binds, traits = traits, vars = vars) {
     Some(call) => call,
     None => {
-      let stringish = (match infer_arg_type_name(l, structs, vars, returns) {
+      let stringish = (match infer_arg_type_name(arg = l, struct_sets = structs, var_types = vars, fn_returns = returns) {
         Some(t) => t == "String",
         None => false
-      }) || (match infer_arg_type_name(r, structs, vars, returns) {
+      }) || (match infer_arg_type_name(arg = r, struct_sets = structs, var_types = vars, fn_returns = returns) {
         Some(t) => t == "String",
         None => false
       })
       if stringish {
         ECall(builtin_ref("String::concat"), [rl, rr], -1, [])
       }
-      else if is_erased_generic_operand(l, r, structs, vars, returns) {
-        refuse_rowless_untyped_operand("+", l, r, structs, vars, returns)
-        if Array::get(dtd_rowless_build, 0) && Array::any(binds, (b) -> add_dict(binds, traits, b.0) is Some) {
+      else if is_erased_generic_operand(l = l, r = r, struct_sets = structs, var_types = vars, fn_returns = returns) {
+        refuse_rowless_untyped_operand(op = "+", l = l, r = r, struct_sets = structs, var_types = vars, fn_returns = returns)
+        if Array::get(dtd_rowless_build, at = 0) && Array::any(binds, f = (b) -> add_dict(binds = binds, traits = traits, formal = b.0) is Some) {
           throw("bind the operands of `+` with their concrete type first: this build has no checker row identifying the lexical Add witness")
         }
         ECall(builtin_ref("__generic_add"), [rl, rr], -1, [])

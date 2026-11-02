@@ -114,22 +114,22 @@ import ./checker_stmt_labeled_name_check_expr.vibe {
 fn tps_local_type_names_into(stmts: Array[Stmt], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SStruct(_, name, _, _, _, _) => Array::push(out, name),
-      SEnum(_, name, _, _, _) => Array::push(out, name),
+    match Array::get(stmts, at = i) {
+      SStruct(_, name, _, _, _, _) => Array::push(out, value = name),
+      SEnum(_, name, _, _, _) => Array::push(out, value = name),
       // #2141: `module` blocks are rejected by the parser (#728), so source
       // cannot produce an SModule -- recursed anyway so a synthetic or
       // legacy producer stays covered.
-      SModule(_, _, body) => tps_local_type_names_into(body, out),
+      SModule(_, _, body) => tps_local_type_names_into(stmts = body, out = out),
       _ => ()
     }
     i = i + 1
   }
 }
 
-fn tps_local_type_names(stmts: Array[Stmt]) -> Array[String] {
+fn tps_local_type_names(_ stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty()
-  tps_local_type_names_into(stmts, out)
+  tps_local_type_names_into(stmts = stmts, out = out)
   out
 }
 
@@ -137,7 +137,7 @@ fn tps_names_contains(names: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(names) && !found {
-    if Array::get(names, i) == name {
+    if Array::get(names, at = i) == name {
       found = true
     } else {
       ()
@@ -150,8 +150,8 @@ fn tps_names_contains(names: Array[String], name: String) -> Bool {
 fn tps_report(tparams: Array[String], local_types: Array[String], where_label: String, anchor: String, errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(tparams) {
-    let tp = type_param_name(Array::get(tparams, i))
-    if tps_names_contains(local_types, tp) {
+    let tp = type_param_name(Array::get(tparams, at = i))
+    if tps_names_contains(names = local_types, name = tp) {
       // The ` [@fn=name]` suffix is the #1941 side-channel marker: binder
       // lists carry no offset of their own, so the diagnostic anchors on the
       // declaration name and locate_type_error turns it into a real line:col
@@ -165,7 +165,7 @@ fn tps_report(tparams: Array[String], local_types: Array[String], where_label: S
       } else {
         ""
       }
-      Array::push(errors, String::concat("type parameter `", String::concat(tp, String::concat("` of ", String::concat(where_label, String::concat(" shadows the declared type `", String::concat(tp, String::concat("`; rename the type parameter or the declared type -- generated generic helpers resolve type names by spelling, so a shadowed formal silently takes the declared type's semantics (#2141)", located))))))))
+      Array::push(errors, value = String::concat("type parameter `", String::concat(tp, String::concat("` of ", String::concat(where_label, String::concat(" shadows the declared type `", String::concat(tp, String::concat("`; rename the type parameter or the declared type -- generated generic helpers resolve type names by spelling, so a shadowed formal silently takes the declared type's semantics (#2141)", located))))))))
     } else {
       ()
     }
@@ -175,14 +175,14 @@ fn tps_report(tparams: Array[String], local_types: Array[String], where_label: S
 
 fn tps_scan_expr(e: Expr, local_types: Array[String], where_label: String, anchor: String, errors: Array[String]) -> Unit {
   match e {
-    EFn(tparams, _, _, _, _, _) => tps_report(tparams, local_types, where_label, anchor, errors),
+    EFn(tparams, _, _, _, _, _) => tps_report(tparams = tparams, local_types = local_types, where_label = where_label, anchor = anchor, errors = errors),
     _ => ()
   }
   let mark = expr_children_push(e)
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    tps_scan_expr(expr_child_at(i), local_types, where_label, anchor, errors)
+    tps_scan_expr(e = expr_child_at(i), local_types = local_types, where_label = where_label, anchor = anchor, errors = errors)
     i = i + 1
   }
   expr_children_pop(mark)
@@ -205,8 +205,8 @@ fn tps_decl_label(kind: String, name: String) -> String {
 /// functions; witness structs are `<Trait>Dict`), so the post-desugar merged
 /// re-check lane stays clean.
 fn tps_reserved_prefix_report(kind: String, name: String, errors: Array[String]) -> Unit {
-  if String::starts_with(name, "__Vfp_") {
-    Array::push(errors, String::concat(kind, String::concat(" `", String::concat(name, "` uses the reserved `__Vfp_` prefix (compiler-generated type-variable spellings) -- rename the type (#2141)"))))
+  if String::starts_with(name, prefix = "__Vfp_") {
+    Array::push(errors, value = String::concat(kind, String::concat(" `", String::concat(name, "` uses the reserved `__Vfp_` prefix (compiler-generated type-variable spellings) -- rename the type (#2141)"))))
   } else {
     ()
   }
@@ -265,9 +265,9 @@ fn tps_reserved_prefix_report(kind: String, name: String, errors: Array[String])
 /// dependency, so a cached check can never turn a leak into a clean result.
 /// `scripts/check_builtin_shadowing.sh` keeps watching the tree for the
 /// bare-name and alias shapes this leaves alone.
-export fn collect_builtin_shadowing_names(stmts: Array[Stmt]) -> Array[String] {
+export fn collect_builtin_shadowing_names(_ stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty()
-  bfs_collect(stmts, out)
+  bfs_collect(stmts = stmts, out = out)
   out
 }
 
@@ -278,21 +278,21 @@ fn bfs_collect(stmts: Array[Stmt], out: Array[String]) -> Unit {
   let export_items = bfs_export_items(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(exported, _, name, _, body) => bfs_note(exported || string_array_contains_exact(export_items, name), name, body, trait_names, declared_types, exported_types, out),
-      SModule(_, _, body) => bfs_collect(body, out),
+    match Array::get(stmts, at = i) {
+      SLet(exported, _, name, _, body) => bfs_note(exported = exported || string_array_contains_exact(items = export_items, wanted = name), name = name, body = body, trait_names = trait_names, declared_types = declared_types, exported_types = exported_types, out = out),
+      SModule(_, _, body) => bfs_collect(stmts = body, out = out),
       _ => ()
     }
     i = i + 1
   }
 }
 
-fn bfs_local_trait_names(stmts: Array[Stmt]) -> Array[String] {
+fn bfs_local_trait_names(_ stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      STrait(_, tname, _, _, _, _) => Array::push(out, tname),
+    match Array::get(stmts, at = i) {
+      STrait(_, tname, _, _, _, _) => Array::push(out, value = tname),
       _ => ()
     }
     i = i + 1
@@ -302,15 +302,15 @@ fn bfs_local_trait_names(stmts: Array[Stmt]) -> Array[String] {
 
 /// The names an `export { a, b }` list publishes: a private `let` named there
 /// travels with the export plan, like an `export let`.
-fn bfs_export_items(stmts: Array[Stmt]) -> Array[String] {
+fn bfs_export_items(_ stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SExport(items) => {
         let mut j = 0
         while j < Array::length(items) {
-          Array::push(out, Array::get(items, j))
+          Array::push(out, value = Array::get(items, at = j))
           j = j + 1
         }
       },
@@ -325,13 +325,13 @@ fn bfs_export_items(stmts: Array[Stmt]) -> Array[String] {
 /// The merge's two rename passes, mirrored -- see the collector's doc.
 fn bfs_stays_global(exported: Bool, name: String, head: String, trait_names: Array[String], declared_types: Array[String], exported_types: Array[String]) -> Bool {
   if exported {
-    !(string_array_contains_exact(trait_names, head) || (name == "Array::flatmap" && string_array_contains_exact(trait_names, "Iterator")))
+    !(string_array_contains_exact(items = trait_names, wanted = head) || (name == "Array::flatmap" && string_array_contains_exact(items = trait_names, wanted = "Iterator")))
   } else {
-    string_array_contains_exact(exported_types, head) || !string_array_contains_exact(declared_types, head)
+    string_array_contains_exact(items = exported_types, wanted = head) || !string_array_contains_exact(items = declared_types, wanted = head)
   }
 }
 
-fn bfs_builtin_owned(name: String) -> Bool {
+fn bfs_builtin_owned(_ name: String) -> Bool {
   let canonical = canonical_builtin_name(name)
   match lookup_registry_builtin(canonical) {
     Some(_) => true,
@@ -340,17 +340,17 @@ fn bfs_builtin_owned(name: String) -> Bool {
 }
 
 fn bfs_note(exported: Bool, name: String, body: Expr, trait_names: Array[String], declared_types: Array[String], exported_types: Array[String], out: Array[String]) -> Unit {
-  let sep = String::index_of(name, "::")
+  let sep = String::index_of(name, needle = "::")
   if sep < 0 {
     ()
   } else {
     match body {
       EFn(_, _, _, _, _, _) => {
-        let head = String::substring(name, 0, sep)
-        if string_array_contains_exact(out, name) || !bfs_stays_global(exported, name, head, trait_names, declared_types, exported_types) {
+        let head = String::substring(name, start = 0, end = sep)
+        if string_array_contains_exact(items = out, wanted = name) || !bfs_stays_global(exported = exported, name = name, head = head, trait_names = trait_names, declared_types = declared_types, exported_types = exported_types) {
           ()
         } else if bfs_builtin_owned(name) {
-          Array::push(out, name)
+          Array::push(out, value = name)
         } else {
           ()
         }
@@ -391,12 +391,12 @@ fn bfs_note(exported: Bool, name: String, body: Expr, trait_names: Array[String]
 fn collect_reserved_value_prefix_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, name, _, _) => rvp_report(name, errors),
-      SLetMut(name, _, _) => rvp_report(name, errors),
-      SExternLet(name, _) => rvp_report(name, errors),
-      SLetPat(pat, _) => rvp_report_pat(pat, errors),
-      SModule(_, _, body) => collect_reserved_value_prefix_errors(body, errors),
+    match Array::get(stmts, at = i) {
+      SLet(_, _, name, _, _) => rvp_report(name = name, errors = errors),
+      SLetMut(name, _, _) => rvp_report(name = name, errors = errors),
+      SExternLet(name, _) => rvp_report(name = name, errors = errors),
+      SLetPat(pat, _) => rvp_report_pat(pat = pat, errors = errors),
+      SModule(_, _, body) => collect_reserved_value_prefix_errors(stmts = body, errors = errors),
       _ => ()
     }
     i = i + 1
@@ -404,10 +404,10 @@ fn collect_reserved_value_prefix_errors(stmts: Array[Stmt], errors: Array[String
 }
 
 fn rvp_report(name: String, errors: Array[String]) -> Unit {
-  if String::starts_with(name, "__vibe_") {
-    Array::push(errors, String::concat("rename `", String::concat(name, "`: the `__vibe_` prefix is reserved for definitions the compiler generates (the Double runtime prelude's `__vibe_double_to_string`, for one), and a program's own top-level definition spelled that way would silently take the generated one's place (#2652)")))
-  } else if String::starts_with(name, "__hs_") {
-    Array::push(errors, String::concat("rename `", String::concat(name, "`: the `__hs_` prefix is reserved for the host-stream reader the compiler generates (`__hs_next` and its finisher `__hs_fin`, for two), and a program's own top-level definition spelled that way would share a name with the generated one")))
+  if String::starts_with(name, prefix = "__vibe_") {
+    Array::push(errors, value = String::concat("rename `", String::concat(name, "`: the `__vibe_` prefix is reserved for definitions the compiler generates (the Double runtime prelude's `__vibe_double_to_string`, for one), and a program's own top-level definition spelled that way would silently take the generated one's place (#2652)")))
+  } else if String::starts_with(name, prefix = "__hs_") {
+    Array::push(errors, value = String::concat("rename `", String::concat(name, "`: the `__hs_` prefix is reserved for the host-stream reader the compiler generates (`__hs_next` and its finisher `__hs_fin`, for two), and a program's own top-level definition spelled that way would share a name with the generated one")))
   } else {
     ()
   }
@@ -415,18 +415,18 @@ fn rvp_report(name: String, errors: Array[String]) -> Unit {
 
 fn rvp_report_pat(pat: Pat, errors: Array[String]) -> Unit {
   match pat {
-    PBind(name) => rvp_report(name, errors),
-    PCtor(_, items) => rvp_report_pats(items, errors),
-    PTuple(items) => rvp_report_pats(items, errors),
+    PBind(name) => rvp_report(name = name, errors = errors),
+    PCtor(_, items) => rvp_report_pats(items = items, errors = errors),
+    PTuple(items) => rvp_report_pats(items = items, errors = errors),
     POr(a, b) => {
-      rvp_report_pat(a, errors)
-      rvp_report_pat(b, errors)
+      rvp_report_pat(pat = a, errors = errors)
+      rvp_report_pat(pat = b, errors = errors)
     },
     PStruct(_, fields) => {
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, p) = Array::get(fields, i)
-        rvp_report_pat(p, errors)
+        let (_, p) = Array::get(fields, at = i)
+        rvp_report_pat(pat = p, errors = errors)
         i = i + 1
       }
     },
@@ -437,7 +437,7 @@ fn rvp_report_pat(pat: Pat, errors: Array[String]) -> Unit {
 fn rvp_report_pats(items: Array[Pat], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
-    rvp_report_pat(Array::get(items, i), errors)
+    rvp_report_pat(pat = Array::get(items, at = i), errors = errors)
     i = i + 1
   }
 }
@@ -445,13 +445,13 @@ fn rvp_report_pats(items: Array[Pat], errors: Array[String]) -> Unit {
 fn collect_reserved_type_prefix_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SStruct(_, name, _, _, _, _) => tps_reserved_prefix_report("struct", name, errors),
-      SEnum(_, name, _, _, _) => tps_reserved_prefix_report("enum", name, errors),
-      STypeAlias(_, name, _, _) => tps_reserved_prefix_report("type alias", name, errors),
+    match Array::get(stmts, at = i) {
+      SStruct(_, name, _, _, _, _) => tps_reserved_prefix_report(kind = "struct", name = name, errors = errors),
+      SEnum(_, name, _, _, _) => tps_reserved_prefix_report(kind = "enum", name = name, errors = errors),
+      STypeAlias(_, name, _, _) => tps_reserved_prefix_report(kind = "type alias", name = name, errors = errors),
       // #2141: unreachable from source (#728 removed module blocks);
       // recursed for any synthetic/legacy producer.
-      SModule(_, _, body) => collect_reserved_type_prefix_errors(body, errors),
+      SModule(_, _, body) => collect_reserved_type_prefix_errors(stmts = body, errors = errors),
       _ => ()
     }
     i = i + 1
@@ -461,18 +461,18 @@ fn collect_reserved_type_prefix_errors(stmts: Array[Stmt], errors: Array[String]
 fn tps_scan_stmts(stmts: Array[Stmt], local_types: Array[String], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SStruct(_, name, _, _, _, tparams) => tps_report(tparams, local_types, tps_decl_label("struct", name), name, errors),
-      SEnum(_, name, tparams, _, _) => tps_report(tparams, local_types, tps_decl_label("enum", name), name, errors),
-      SLet(_, _, name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
-      SLetMut(name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
-      SLetPat(_, e) => tps_scan_expr(e, local_types, "a `let` pattern binding", "", errors),
-      SExpr(e) => tps_scan_expr(e, local_types, "a top-level expression", "", errors),
-      STest(name, e) => tps_scan_expr(e, local_types, tps_decl_label("test", name), "", errors),
-      SBench(name, e) => tps_scan_expr(e, local_types, tps_decl_label("bench", name), "", errors),
+    match Array::get(stmts, at = i) {
+      SStruct(_, name, _, _, _, tparams) => tps_report(tparams = tparams, local_types = local_types, where_label = tps_decl_label(kind = "struct", name = name), anchor = name, errors = errors),
+      SEnum(_, name, tparams, _, _) => tps_report(tparams = tparams, local_types = local_types, where_label = tps_decl_label(kind = "enum", name = name), anchor = name, errors = errors),
+      SLet(_, _, name, _, e) => tps_scan_expr(e = e, local_types = local_types, where_label = tps_decl_label(kind = "declaration", name = name), anchor = name, errors = errors),
+      SLetMut(name, _, e) => tps_scan_expr(e = e, local_types = local_types, where_label = tps_decl_label(kind = "declaration", name = name), anchor = name, errors = errors),
+      SLetPat(_, e) => tps_scan_expr(e = e, local_types = local_types, where_label = "a `let` pattern binding", anchor = "", errors = errors),
+      SExpr(e) => tps_scan_expr(e = e, local_types = local_types, where_label = "a top-level expression", anchor = "", errors = errors),
+      STest(name, e) => tps_scan_expr(e = e, local_types = local_types, where_label = tps_decl_label(kind = "test", name = name), anchor = "", errors = errors),
+      SBench(name, e) => tps_scan_expr(e = e, local_types = local_types, where_label = tps_decl_label(kind = "bench", name = name), anchor = "", errors = errors),
       // #2141: unreachable from source (#728 removed module blocks);
       // recursed for any synthetic/legacy producer.
-      SModule(_, _, body) => tps_scan_stmts(body, local_types, errors),
+      SModule(_, _, body) => tps_scan_stmts(stmts = body, local_types = local_types, errors = errors),
       _ => ()
     }
     i = i + 1
@@ -483,7 +483,7 @@ fn tps_scan_stmts(stmts: Array[Stmt], local_types: Array[String], errors: Array[
 /// Alias / effect / trait / struct-field `F[A]` is a well-kinded constructor
 /// use; `report_formal_applications` is the shared rule with fn signatures.
 fn fapp_report(te: TypeExpr, formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
-  report_formal_applications(te, formals, where_label, errors)
+  report_formal_applications(te = te, formals = formals, where_label = where_label, errors = errors)
 }
 
 /// #2286: the label for a struct FIELD diagnostic.
@@ -507,11 +507,11 @@ fn fapp_report(te: TypeExpr, formals: Array[String], where_label: String, errors
 /// Keying by struct alone reported ``the signature of `Child::lookup` `` for
 /// one of those -- a declaration that does not exist (Codex review on #2313).
 export fn struct_field_decl_label(struct_name: String, field_name: String) -> String {
-  let owning_trait = synthesized_dict_field_trait(struct_name, field_name)
+  let owning_trait = synthesized_dict_field_trait(struct_name = struct_name, field_name = field_name)
   if owning_trait == "" {
     String::concat(String::concat(String::concat("field `", field_name), "` of struct `"), String::concat(struct_name, "`"))
   } else {
-    fapp_decl_label(owning_trait, field_name)
+    fapp_decl_label(owner = owning_trait, member = field_name)
   }
 }
 
@@ -525,8 +525,8 @@ fn fapp_method_binds_name(method_gens: Array[(String, Array[String], Array[(Stri
   let mut i = 0
   let mut found = false
   while i < Array::length(method_gens) && !found {
-    let (gname, gtp, _) = Array::get(method_gens, i)
-    if gname == mname && fapp_formals_have_name(gtp, name) {
+    let (gname, gtp, _) = Array::get(method_gens, at = i)
+    if gname == mname && fapp_formals_have_name(formals = gtp, name = name) {
       found = true
     } else {
       ()
@@ -543,7 +543,7 @@ fn fapp_formals_have_name(formals: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(formals) && !found {
-    if type_param_name(Array::get(formals, i)) == name {
+    if type_param_name(Array::get(formals, at = i)) == name {
       found = true
     } else {
       ()
@@ -556,11 +556,11 @@ fn fapp_formals_have_name(formals: Array[String], name: String) -> Bool {
 fn fapp_applied_formals_across(tes: Array[TypeExpr], formals: Array[String]) -> Array[String] {
   let applied = array_empty()
   let is_formal = (head) -> {
-    string_array_contains_exact(formals, head)
+    string_array_contains_exact(items = formals, wanted = head)
   }
   let mut i = 0
   while i < Array::length(tes) {
-    collect_formal_applications_by(Array::get(tes, i), is_formal, applied)
+    collect_formal_applications_by(te = Array::get(tes, at = i), is_formal = is_formal, out = applied)
     i = i + 1
   }
   applied
@@ -577,28 +577,28 @@ fn fapp_unkinded_application_error(tname: String, mname: String, formal: String)
   let head = String::concat(String::concat("constructor parameter `", formal), "` is applied in ")
   let mid = String::concat(String::concat(", but `", formal), "` is declared as a complete type that no impl can satisfy")
   let tail = String::concat(String::concat("; declare it as a type constructor -- spell it `", formal), String::concat(String::concat("[_]` in trait `", tname), "`'s parameter list"))
-  String::concat(String::concat(head, fapp_decl_label(tname, mname)), String::concat(mid, tail))
+  String::concat(String::concat(head, fapp_decl_label(owner = tname, member = mname)), String::concat(mid, tail))
 }
 
 fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      STypeAlias(_, name, params, te) => fapp_report(te, params, String::concat(String::concat("the body of type alias `", name), "`"), errors),
+    match Array::get(stmts, at = i) {
+      STypeAlias(_, name, params, te) => fapp_report(te = te, formals = params, where_label = String::concat(String::concat("the body of type alias `", name), "`"), errors = errors),
       SEffectDef(_, ename, eparams, ops) => {
         let effect_tes = array_empty()
         let mut oi = 0
         while oi < Array::length(ops) {
-          let (_, opparams, opret) = Array::get(ops, oi)
+          let (_, opparams, opret) = Array::get(ops, at = oi)
           let mut pi = 0
           while pi < Array::length(opparams) {
-            Array::push(effect_tes, Array::get(opparams, pi))
+            Array::push(effect_tes, value = Array::get(opparams, at = pi))
             pi = pi + 1
           }
-          Array::push(effect_tes, opret)
+          Array::push(effect_tes, value = opret)
           oi = oi + 1
         }
-        report_formal_applications_across(effect_tes, eparams, String::concat(String::concat("effect `", ename), "`"), errors)
+        report_formal_applications_across(tes = effect_tes, formals = eparams, where_label = String::concat(String::concat("effect `", ename), "`"), errors = errors)
       },
       STrait(_, tname, _, methods, method_gens, tparams) => {
         // A header parameter's kind is aggregated across the whole trait, so
@@ -615,44 +615,44 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
         let trait_label = String::concat(String::concat("trait `", tname), "`")
         let mut hi = 0
         while hi < Array::length(tparams) {
-          let header_key = Array::get(tparams, hi)
+          let header_key = Array::get(tparams, at = hi)
           let header_name = type_param_name(header_key)
           let visible_tes = array_empty()
           let mut mj = 0
           while mj < Array::length(methods) {
-            let (mname_j, mparams_j, mret_j) = Array::get(methods, mj)
-            if !fapp_method_binds_name(method_gens, mname_j, header_name) {
+            let (mname_j, mparams_j, mret_j) = Array::get(methods, at = mj)
+            if !fapp_method_binds_name(method_gens = method_gens, mname = mname_j, name = header_name) {
               let mut pj = 0
               while pj < Array::length(mparams_j) {
-                Array::push(visible_tes, Array::get(mparams_j, pj))
+                Array::push(visible_tes, value = Array::get(mparams_j, at = pj))
                 pj = pj + 1
               }
-              Array::push(visible_tes, mret_j)
+              Array::push(visible_tes, value = mret_j)
             } else {
               ()
             }
             mj = mj + 1
           }
           let header_only = array_empty()
-          Array::push(header_only, header_key)
-          report_formal_applications_across(visible_tes, header_only, trait_label, errors)
+          Array::push(header_only, value = header_key)
+          report_formal_applications_across(tes = visible_tes, formals = header_only, where_label = trait_label, errors = errors)
           hi = hi + 1
         }
         let mut mi = 0
         while mi < Array::length(methods) {
-          let (mname, mparams, mret) = Array::get(methods, mi)
+          let (mname, mparams, mret) = Array::get(methods, at = mi)
           // Method-local formals are checked per method. Header formals were
           // checked across the whole trait above because their kind belongs
           // to the trait declaration, not one member.
           let formals = array_empty()
-          Array::push(formals, "Self")
+          Array::push(formals, value = "Self")
           let mut gi = 0
           while gi < Array::length(method_gens) {
-            let (gname, gtp, _) = Array::get(method_gens, gi)
+            let (gname, gtp, _) = Array::get(method_gens, at = gi)
             if gname == mname {
               let mut gj = 0
               while gj < Array::length(gtp) {
-                Array::push(formals, Array::get(gtp, gj))
+                Array::push(formals, value = Array::get(gtp, at = gj))
                 gj = gj + 1
               }
             } else {
@@ -663,19 +663,19 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
           let method_tes = array_empty()
           let mut pi = 0
           while pi < Array::length(mparams) {
-            Array::push(method_tes, Array::get(mparams, pi))
+            Array::push(method_tes, value = Array::get(mparams, at = pi))
             pi = pi + 1
           }
-          Array::push(method_tes, mret)
-          report_formal_applications_across(method_tes, formals, fapp_decl_label(tname, mname), errors)
-          let applied_method_formals = fapp_applied_formals_across(method_tes, formals)
+          Array::push(method_tes, value = mret)
+          report_formal_applications_across(tes = method_tes, formals = formals, where_label = fapp_decl_label(owner = tname, member = mname), errors = errors)
+          let applied_method_formals = fapp_applied_formals_across(tes = method_tes, formals = formals)
           let mut afi = 0
           while afi < Array::length(applied_method_formals) {
-            let applied_name = Array::get(applied_method_formals, afi)
+            let applied_name = Array::get(applied_method_formals, at = afi)
             if applied_name == "Self" {
-              Array::push(errors, String::concat(String::concat("`Self` is a complete type and cannot be applied in ", fapp_decl_label(tname, mname)), "; write `Self`, not `Self[...]`"))
+              Array::push(errors, value = String::concat(String::concat("`Self` is a complete type and cannot be applied in ", fapp_decl_label(owner = tname, member = mname)), "; write `Self`, not `Self[...]`"))
             } else {
-              Array::push(errors, fapp_unkinded_application_error(tname, mname, applied_name))
+              Array::push(errors, value = fapp_unkinded_application_error(tname = tname, mname = mname, formal = applied_name))
             }
             afi = afi + 1
           }
@@ -688,24 +688,24 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
           let unshadowed_tparams = array_empty()
           let mut ti = 0
           while ti < Array::length(tparams) {
-            let tparam = Array::get(tparams, ti)
-            if !fapp_formals_have_name(formals, type_param_name(tparam)) {
-              Array::push(unshadowed_tparams, tparam)
+            let tparam = Array::get(tparams, at = ti)
+            if !fapp_formals_have_name(formals = formals, name = type_param_name(tparam)) {
+              Array::push(unshadowed_tparams, value = tparam)
             } else {
               ()
             }
             ti = ti + 1
           }
-          let applied_header_formals = fapp_applied_formals_across(method_tes, unshadowed_tparams)
+          let applied_header_formals = fapp_applied_formals_across(tes = method_tes, formals = unshadowed_tparams)
           let mut ahi = 0
           while ahi < Array::length(applied_header_formals) {
-            Array::push(errors, fapp_unkinded_application_error(tname, mname, Array::get(applied_header_formals, ahi)))
+            Array::push(errors, value = fapp_unkinded_application_error(tname = tname, mname = mname, formal = Array::get(applied_header_formals, at = ahi)))
             ahi = ahi + 1
           }
           mi = mi + 1
         }
       },
-      SModule(_, _, body) => collect_decl_formal_application_errors(body, errors),
+      SModule(_, _, body) => collect_decl_formal_application_errors(stmts = body, errors = errors),
       _ => ()
     }
     i = i + 1
@@ -720,41 +720,41 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
 fn collect_formal_exception_kind_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, _, EFn(tparams, _, params, ret, eff, _)) => if Array::length(tparams) > 0 {
         let formals = array_empty()
         let mut ti = 0
         while ti < Array::length(tparams) {
-          Array::push(formals, type_param_name(Array::get(tparams, ti)))
+          Array::push(formals, value = type_param_name(Array::get(tparams, at = ti)))
           ti = ti + 1
         }
         let rows = array_empty()
         match eff {
-          Some(row) => Array::push(rows, row),
+          Some(row) => Array::push(rows, value = row),
           None => ()
         }
         let mut pi = 0
         while pi < Array::length(params) {
-          match Array::get(params, pi) {
-            (_, Some(pte)) => fek_rows_in_texpr(pte, rows),
+          match Array::get(params, at = pi) {
+            (_, Some(pte)) => fek_rows_in_texpr(te = pte, out = rows),
             _ => ()
           }
           pi = pi + 1
         }
         match ret {
-          Some(rte) => fek_rows_in_texpr(rte, rows),
+          Some(rte) => fek_rows_in_texpr(te = rte, out = rows),
           None => ()
         }
         let mut ri = 0
         let mut reported = false
         while ri < Array::length(rows) && !reported {
-          let (kind, formal) = fek_formal_kind_in_row(Array::get(rows, ri), formals)
+          let (kind, formal) = fek_formal_kind_in_row(row = Array::get(rows, at = ri), formals = formals)
           if String::length(kind) > 0 {
             reported = true
             let mut m = String::concat("the exception kind `Exception[", String::concat(kind, String::concat("]` of '", String::concat(name, "' names its type parameter `"))))
             m = String::concat(m, String::concat(formal, "`, but a row does not substitute a type parameter at a call site, so no caller could discharge it -- write a concrete kind (`Exception[String]`), or return the failure as a value of an enum you declare (`enum Res[V, E] { Ok(V); Err(E) }`, returning `Res[V, "))
             m = String::concat(m, String::concat(formal, String::concat("]`) [@fn=", String::concat(name, "]"))))
-            Array::push(errors, m)
+            Array::push(errors, value = m)
           }
           ri = ri + 1
         }
@@ -773,27 +773,27 @@ export fn fek_rows_in_texpr(te: TypeExpr, out: Array[String]) -> Unit {
   match te {
     TyFn(ps, r, eff) => {
       match eff {
-        Some(row) => Array::push(out, row),
+        Some(row) => Array::push(out, value = row),
         None => ()
       }
       let mut i = 0
       while i < Array::length(ps) {
-        fek_rows_in_texpr(Array::get(ps, i), out)
+        fek_rows_in_texpr(te = Array::get(ps, at = i), out = out)
         i = i + 1
       }
-      fek_rows_in_texpr(r, out)
+      fek_rows_in_texpr(te = r, out = out)
     },
     TyApp(_, args) => {
       let mut i = 0
       while i < Array::length(args) {
-        fek_rows_in_texpr(Array::get(args, i), out)
+        fek_rows_in_texpr(te = Array::get(args, at = i), out = out)
         i = i + 1
       }
     },
     TyTuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        fek_rows_in_texpr(Array::get(items, i), out)
+        fek_rows_in_texpr(te = Array::get(items, at = i), out = out)
         i = i + 1
       }
     },
@@ -801,7 +801,7 @@ export fn fek_rows_in_texpr(te: TypeExpr, out: Array[String]) -> Unit {
   }
 }
 
-fn fek_ident_char(c: Int) -> Bool {
+fn fek_ident_char(_ c: Int) -> Bool {
   (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95
 }
 
@@ -815,7 +815,7 @@ fn fek_formal_kind_in_row(row: String, formals: Array[String]) -> (String, Strin
   let mut formal_out = ""
   let mut scanning = true
   while scanning {
-    let rel = String::index_of(String::substring(row, from, n), head)
+    let rel = String::index_of(String::substring(row, start = from, end = n), needle = head)
     if rel < 0 {
       scanning = false
     } else {
@@ -823,7 +823,7 @@ fn fek_formal_kind_in_row(row: String, formals: Array[String]) -> (String, Strin
       let mut j = kopen
       let mut depth = 1
       while j < n && depth > 0 {
-        let c = String::char_code_at(row, j)
+        let c = String::char_code_at(row, at = j)
         if c == 91 {
           depth = depth + 1
         } else if c == 93 {
@@ -836,19 +836,19 @@ fn fek_formal_kind_in_row(row: String, formals: Array[String]) -> (String, Strin
       } else {
         n
       }
-      let kind = String::substring(row, kopen, close)
+      let kind = String::substring(row, start = kopen, end = close)
       let klen = String::length(kind)
       let mut k = 0
       while k < klen && String::length(formal_out) == 0 {
-        if fek_ident_char(String::char_code_at(kind, k)) {
+        if fek_ident_char(String::char_code_at(kind, at = k)) {
           let st = k
-          while k < klen && fek_ident_char(String::char_code_at(kind, k)) {
+          while k < klen && fek_ident_char(String::char_code_at(kind, at = k)) {
             k = k + 1
           }
-          let word = String::substring(kind, st, k)
+          let word = String::substring(kind, start = st, end = k)
           let mut fi = 0
           while fi < Array::length(formals) {
-            if Array::get(formals, fi) == word {
+            if Array::get(formals, at = fi) == word {
               formal_out = word
             }
             fi = fi + 1
@@ -881,13 +881,13 @@ fn fek_formal_kind_in_row(row: String, formals: Array[String]) -> (String, Strin
 /// instead of the declared ones, its reports name exactly the shadowed
 /// spellings. Keyed by `effect_shadow_key`, so the effects pass applies each
 /// declaration's set to that declaration alone.
-export fn builtin_named_type_params(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+export fn builtin_named_type_params(_ stmts: Array[Stmt]) -> Array[(String, Array[String])] {
   let out = array_empty()
   let mut si = 0
   while si < Array::length(stmts) {
-    let stmt = Array::get(stmts, si)
+    let stmt = Array::get(stmts, at = si)
     let hits = array_empty()
-    tps_scan_stmts([stmt], [
+    tps_scan_stmts(stmts = [stmt], local_types = [
       "Int",
       "String",
       "Bool",
@@ -897,23 +897,23 @@ export fn builtin_named_type_params(stmts: Array[Stmt]) -> Array[(String, Array[
       "Unit",
       "Array",
       "Option"
-    ], hits)
+    ], errors = hits)
     if Array::length(hits) > 0 {
       let names = array_empty()
       let mut i = 0
       while i < Array::length(hits) {
-        let msg = Array::get(hits, i)
-        let a = String::index_of(msg, "`")
+        let msg = Array::get(hits, at = i)
+        let a = String::index_of(msg, needle = "`")
         if a >= 0 {
-          let rest = String::substring(msg, a + 1, String::length(msg))
-          let b = String::index_of(rest, "`")
+          let rest = String::substring(msg, start = a + 1, end = String::length(msg))
+          let b = String::index_of(rest, needle = "`")
           if b > 0 {
-            Array::push(names, String::substring(rest, 0, b))
+            Array::push(names, value = String::substring(rest, start = 0, end = b))
           }
         }
         i = i + 1
       }
-      Array::push(out, (effect_shadow_key(stmt), names))
+      Array::push(out, value = (effect_shadow_key(stmt), names))
     }
     si = si + 1
   }
@@ -935,20 +935,20 @@ export fn row_nominal_type_names(stmts: Array[Stmt], env: TypeEnv, defs: Array[T
   let renamed = array_empty()
   let mut ti = 0
   while ti < Array::length(stmts) {
-    match Array::get(stmts, ti) {
-      SStruct(_, name, _, _, _, _) => Array::push(candidates, name),
-      SEnum(_, name, _, _, _) => Array::push(candidates, name),
-      STypeAlias(_, name, _, _) => Array::push(blocked, name),
+    match Array::get(stmts, at = ti) {
+      SStruct(_, name, _, _, _, _) => Array::push(candidates, value = name),
+      SEnum(_, name, _, _, _) => Array::push(candidates, value = name),
+      STypeAlias(_, name, _, _) => Array::push(blocked, value = name),
       SImport(_, items) => {
         let mut ii = 0
         while ii < Array::length(items) {
-          let item = Array::get(items, ii)
+          let item = Array::get(items, at = ii)
           match item.alias {
             Some(alias) => {
-              Array::push(renamed, item.name)
-              Array::push(blocked, alias)
+              Array::push(renamed, value = item.name)
+              Array::push(blocked, value = alias)
             },
-            None => Array::push(imported, item.name)
+            None => Array::push(imported, value = item.name)
           }
           ii = ii + 1
         }
@@ -962,29 +962,29 @@ export fn row_nominal_type_names(stmts: Array[Stmt], env: TypeEnv, defs: Array[T
   // RemoteBox }` leaves a row's `Box` naming the local type (#3102 review).
   let mut ri = 0
   while ri < Array::length(renamed) {
-    let n = Array::get(renamed, ri)
-    if !tps_names_contains(candidates, n) {
-      Array::push(blocked, n)
+    let n = Array::get(renamed, at = ri)
+    if !tps_names_contains(names = candidates, name = n) {
+      Array::push(blocked, value = n)
     }
     ri = ri + 1
   }
   let nominal_defs = array_empty()
-  row_nominal_scan_defs(env_type_defs(env), blocked, nominal_defs)
-  row_nominal_scan_defs(defs, blocked, nominal_defs)
+  row_nominal_scan_defs(defs = env_type_defs(env), blocked = blocked, nominal_defs = nominal_defs)
+  row_nominal_scan_defs(defs = defs, blocked = blocked, nominal_defs = nominal_defs)
   let mut ii = 0
   while ii < Array::length(imported) {
-    let n = Array::get(imported, ii)
-    if tps_names_contains(nominal_defs, n) {
-      Array::push(candidates, n)
+    let n = Array::get(imported, at = ii)
+    if tps_names_contains(names = nominal_defs, name = n) {
+      Array::push(candidates, value = n)
     }
     ii = ii + 1
   }
   let out = array_empty()
   let mut ci = 0
   while ci < Array::length(candidates) {
-    let n = Array::get(candidates, ci)
-    if !tps_names_contains(blocked, n) && !tps_names_contains(out, n) {
-      Array::push(out, n)
+    let n = Array::get(candidates, at = ci)
+    if !tps_names_contains(names = blocked, name = n) && !tps_names_contains(names = out, name = n) {
+      Array::push(out, value = n)
     }
     ci = ci + 1
   }
@@ -994,10 +994,10 @@ export fn row_nominal_type_names(stmts: Array[Stmt], env: TypeEnv, defs: Array[T
 fn row_nominal_scan_defs(defs: Array[TypeDef], blocked: Array[String], nominal_defs: Array[String]) -> Unit {
   let mut di = 0
   while di < Array::length(defs) {
-    match Array::get(defs, di) {
-      TDAlias(name, _, _) => Array::push(blocked, name),
-      TDStruct(name, _, _, _) => Array::push(nominal_defs, name),
-      TDEnum(name, _, _) => Array::push(nominal_defs, name),
+    match Array::get(defs, at = di) {
+      TDAlias(name, _, _) => Array::push(blocked, value = name),
+      TDStruct(name, _, _, _) => Array::push(nominal_defs, value = name),
+      TDEnum(name, _, _) => Array::push(nominal_defs, value = name),
       _ => ()
     }
     di = di + 1
@@ -1005,26 +1005,26 @@ fn row_nominal_scan_defs(defs: Array[TypeDef], blocked: Array[String], nominal_d
 }
 
 export fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
-  collect_formal_exception_kind_errors(stmts, errors)
-  collect_reserved_type_prefix_errors(stmts, errors)
-  collect_reserved_value_prefix_errors(stmts, errors)
-  collect_decl_formal_application_errors(stmts, errors)
+  collect_formal_exception_kind_errors(stmts = stmts, errors = errors)
+  collect_reserved_type_prefix_errors(stmts = stmts, errors = errors)
+  collect_reserved_value_prefix_errors(stmts = stmts, errors = errors)
+  collect_decl_formal_application_errors(stmts = stmts, errors = errors)
   let local_types = tps_local_type_names(stmts)
   if Array::length(local_types) == 0 {
     ()
   } else {
-    tps_scan_stmts(stmts, local_types, errors)
+    tps_scan_stmts(stmts = stmts, local_types = local_types, errors = errors)
   }
 }
 
 export fn push_unique_error_strings(found: Array[String], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(found) {
-    let message = Array::get(found, i)
-    if string_array_contains_exact(errors, message) {
+    let message = Array::get(found, at = i)
+    if string_array_contains_exact(items = errors, wanted = message) {
       ()
     } else {
-      Array::push(errors, message)
+      Array::push(errors, value = message)
     }
     i = i + 1
   }
@@ -1034,10 +1034,10 @@ export fn insert_unique_error_strings(found: Array[String], errors: Array[String
   if Array::length(found) == 0 {
     ()
   } else {
-    let suffix = Array::slice(errors, at, Array::length(errors))
-    Array::truncate(errors, at)
-    push_unique_error_strings(found, errors)
-    push_unique_error_strings(suffix, errors)
+    let suffix = Array::slice(errors, start = at, end = Array::length(errors))
+    Array::truncate(errors, length = at)
+    push_unique_error_strings(found = found, errors = errors)
+    push_unique_error_strings(found = suffix, errors = errors)
   }
 }
 
@@ -1050,31 +1050,31 @@ export fn check_completed_decl_map_keys(stmts: Array[Stmt], defs: Array[TypeDef]
   let mut i = 0
   while i < Array::length(stmts) {
     let found = array_empty()
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       STypeAlias(_, name, params, te) => {
         let where_label = String::concat(String::concat("the body of type alias `", name), "`")
-        report_map_key_types(te, defs, params, where_label, found)
-        report_decl_bare_generic_heads(te, defs, params, where_label, found)
+        report_map_key_types(te = te, defs = defs, shadow = params, where_label = where_label, errors = found)
+        report_decl_bare_generic_heads(te = te, defs = defs, shadow = params, where_label = where_label, errors = found)
       },
       SStruct(_, name, fields, _, _, params) => {
         let mut fi = 0
         while fi < Array::length(fields) {
-          let (field_name, field_type) = Array::get(fields, fi)
-          let where_label = struct_field_decl_label(name, field_name)
-          report_map_key_types(field_type, defs, params, where_label, found)
-          report_decl_bare_generic_heads(field_type, defs, params, where_label, found)
+          let (field_name, field_type) = Array::get(fields, at = fi)
+          let where_label = struct_field_decl_label(struct_name = name, field_name = field_name)
+          report_map_key_types(te = field_type, defs = defs, shadow = params, where_label = where_label, errors = found)
+          report_decl_bare_generic_heads(te = field_type, defs = defs, shadow = params, where_label = where_label, errors = found)
           fi = fi + 1
         }
       },
       SEnum(_, name, params, variants, _) => {
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (variant_name, payloads) = Array::get(variants, vi)
+          let (variant_name, payloads) = Array::get(variants, at = vi)
           let mut pi = 0
           while pi < Array::length(payloads) {
             let where_label = String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", variant_name)), "`")
-            report_map_key_types(Array::get(payloads, pi), defs, params, where_label, found)
-            report_decl_bare_generic_heads(Array::get(payloads, pi), defs, params, where_label, found)
+            report_map_key_types(te = Array::get(payloads, at = pi), defs = defs, shadow = params, where_label = where_label, errors = found)
+            report_decl_bare_generic_heads(te = Array::get(payloads, at = pi), defs = defs, shadow = params, where_label = where_label, errors = found)
             pi = pi + 1
           }
           vi = vi + 1
@@ -1083,12 +1083,12 @@ export fn check_completed_decl_map_keys(stmts: Array[Stmt], defs: Array[TypeDef]
       SSuberror(_, name, variants) => {
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (variant_name, payloads) = Array::get(variants, vi)
+          let (variant_name, payloads) = Array::get(variants, at = vi)
           let mut pi = 0
           while pi < Array::length(payloads) {
             let where_label = String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", variant_name)), "`")
-            report_map_key_types(Array::get(payloads, pi), defs, array_empty(), where_label, found)
-            report_decl_bare_generic_heads(Array::get(payloads, pi), defs, array_empty(), where_label, found)
+            report_map_key_types(te = Array::get(payloads, at = pi), defs = defs, shadow = array_empty(), where_label = where_label, errors = found)
+            report_decl_bare_generic_heads(te = Array::get(payloads, at = pi), defs = defs, shadow = array_empty(), where_label = where_label, errors = found)
             pi = pi + 1
           }
           vi = vi + 1
@@ -1097,22 +1097,22 @@ export fn check_completed_decl_map_keys(stmts: Array[Stmt], defs: Array[TypeDef]
       SEffectDef(_, name, params, ops) => {
         let mut oi = 0
         while oi < Array::length(ops) {
-          let (op_name, op_params, op_ret) = Array::get(ops, oi)
-          let where_label = fapp_decl_label(name, op_name)
+          let (op_name, op_params, op_ret) = Array::get(ops, at = oi)
+          let where_label = fapp_decl_label(owner = name, member = op_name)
           let mut pi = 0
           while pi < Array::length(op_params) {
-            report_map_key_types(Array::get(op_params, pi), defs, params, where_label, found)
-            report_decl_bare_generic_heads(Array::get(op_params, pi), defs, params, where_label, found)
+            report_map_key_types(te = Array::get(op_params, at = pi), defs = defs, shadow = params, where_label = where_label, errors = found)
+            report_decl_bare_generic_heads(te = Array::get(op_params, at = pi), defs = defs, shadow = params, where_label = where_label, errors = found)
             pi = pi + 1
           }
-          report_map_key_types(op_ret, defs, params, where_label, found)
-          report_decl_bare_generic_heads(op_ret, defs, params, where_label, found)
+          report_map_key_types(te = op_ret, defs = defs, shadow = params, where_label = where_label, errors = found)
+          report_decl_bare_generic_heads(te = op_ret, defs = defs, shadow = params, where_label = where_label, errors = found)
           oi = oi + 1
         }
       },
       _ => ()
     }
-    push_unique_error_strings(found, errors)
+    push_unique_error_strings(found = found, errors = errors)
     i = i + 1
   }
 }
@@ -1123,26 +1123,26 @@ export fn check_completed_decl_map_keys(stmts: Array[Stmt], defs: Array[TypeDef]
 fn substituted_type_node_count(ty: Type, params: Array[String], arg_counts: Array[Int], limit: Int) -> Int {
   match ty {
     CtNamed(name, args) => {
-      let param_idx = type_param_index(params, name)
+      let param_idx = type_param_index(params = params, name = name)
       if param_idx >= 0 && param_idx < Array::length(arg_counts) {
-        Array::get(arg_counts, param_idx)
+        Array::get(arg_counts, at = param_idx)
       } else {
         let mut total = 1
         let mut i = 0
         while i < Array::length(args) && total <= limit {
-          total = capped_type_node_add(total, substituted_type_node_count(Array::get(args, i), params, arg_counts, limit), limit)
+          total = capped_type_node_add(total = total, extra = substituted_type_node_count(ty = Array::get(args, at = i), params = params, arg_counts = arg_counts, limit = limit), limit = limit)
           i = i + 1
         }
         total
       }
     },
-    CtArray(elem) => capped_type_node_add(1, substituted_type_node_count(elem, params, arg_counts, limit), limit),
-    CtOption(elem) => capped_type_node_add(1, substituted_type_node_count(elem, params, arg_counts, limit), limit),
+    CtArray(elem) => capped_type_node_add(total = 1, extra = substituted_type_node_count(ty = elem, params = params, arg_counts = arg_counts, limit = limit), limit = limit),
+    CtOption(elem) => capped_type_node_add(total = 1, extra = substituted_type_node_count(ty = elem, params = params, arg_counts = arg_counts, limit = limit), limit = limit),
     CtTuple(elems) => {
       let mut total = 1
       let mut i = 0
       while i < Array::length(elems) && total <= limit {
-        total = capped_type_node_add(total, substituted_type_node_count(Array::get(elems, i), params, arg_counts, limit), limit)
+        total = capped_type_node_add(total = total, extra = substituted_type_node_count(ty = Array::get(elems, at = i), params = params, arg_counts = arg_counts, limit = limit), limit = limit)
         i = i + 1
       }
       total
@@ -1151,23 +1151,23 @@ fn substituted_type_node_count(ty: Type, params: Array[String], arg_counts: Arra
       let mut total = 1
       let mut i = 0
       while i < Array::length(fn_params) && total <= limit {
-        total = capped_type_node_add(total, substituted_type_node_count(Array::get(fn_params, i), params, arg_counts, limit), limit)
+        total = capped_type_node_add(total = total, extra = substituted_type_node_count(ty = Array::get(fn_params, at = i), params = params, arg_counts = arg_counts, limit = limit), limit = limit)
         i = i + 1
       }
       if total <= limit {
-        total = capped_type_node_add(total, substituted_type_node_count(ret, params, arg_counts, limit), limit)
+        total = capped_type_node_add(total = total, extra = substituted_type_node_count(ty = ret, params = params, arg_counts = arg_counts, limit = limit), limit = limit)
       } else {
         ()
       }
       total
     },
-    CtForAll(_, _, body) => capped_type_node_add(1, substituted_type_node_count(body, array_empty(), array_empty(), limit), limit),
+    CtForAll(_, _, body) => capped_type_node_add(total = 1, extra = substituted_type_node_count(ty = body, params = array_empty(), arg_counts = array_empty(), limit = limit), limit = limit),
     CtRecord(fields) => {
       let mut total = 1
       let mut i = 0
       while i < Array::length(fields) && total <= limit {
-        let (_, field_type) = Array::get(fields, i)
-        total = capped_type_node_add(total, substituted_type_node_count(field_type, array_empty(), array_empty(), limit), limit)
+        let (_, field_type) = Array::get(fields, at = i)
+        total = capped_type_node_add(total = total, extra = substituted_type_node_count(ty = field_type, params = array_empty(), arg_counts = array_empty(), limit = limit), limit = limit)
         i = i + 1
       }
       total
@@ -1180,17 +1180,17 @@ fn type_expr_arg_expansion_stats(args: Array[TypeExpr], defs: Array[TypeDef], sh
   let stats = array_empty()
   let mut i = 0
   while i < Array::length(args) {
-    Array::push(stats, type_expr_expansion_stats(Array::get(args, i), defs, shadow, capped_aliases, limit))
+    Array::push(stats, value = type_expr_expansion_stats(te = Array::get(args, at = i), defs = defs, shadow = shadow, capped_aliases = capped_aliases, limit = limit))
     i = i + 1
   }
   stats
 }
 
-fn type_expr_result_sizes(stats: Array[(Int, Int)]) -> Array[Int] {
+fn type_expr_result_sizes(_ stats: Array[(Int, Int)]) -> Array[Int] {
   let sizes = array_empty()
   let mut i = 0
   while i < Array::length(stats) {
-    Array::push(sizes, Array::get(stats, i).0)
+    Array::push(sizes, value = Array::get(stats, at = i).0)
     i = i + 1
   }
   sizes
@@ -1203,17 +1203,17 @@ fn type_expr_children_expansion_stats(child_stats: Array[(Int, Int)], root_size:
   let mut peak = 0
   let mut i = 0
   while i < Array::length(child_stats) && result_sum <= limit {
-    let child = Array::get(child_stats, i)
-    let child_peak = capped_type_node_add(result_sum, child.1, limit)
+    let child = Array::get(child_stats, at = i)
+    let child_peak = capped_type_node_add(total = result_sum, extra = child.1, limit = limit)
     if child_peak > peak {
       peak = child_peak
     } else {
       ()
     }
-    result_sum = capped_type_node_add(result_sum, child.0, limit)
+    result_sum = capped_type_node_add(total = result_sum, extra = child.0, limit = limit)
     i = i + 1
   }
-  let result_size = capped_type_node_add(root_size, result_sum, limit)
+  let result_size = capped_type_node_add(total = root_size, extra = result_sum, limit = limit)
   if result_size > peak {
     peak = result_size
   } else {
@@ -1224,22 +1224,22 @@ fn type_expr_children_expansion_stats(child_stats: Array[(Int, Int)], root_size:
 
 fn named_type_expr_expansion_stats(name: String, arg_stats: Array[(Int, Int)], defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> (Int, Int) {
   let arg_counts = type_expr_result_sizes(arg_stats)
-  let args = type_expr_children_expansion_stats(arg_stats, 0, limit)
-  if string_array_contains_exact(shadow, name) {
-    type_expr_children_expansion_stats(arg_stats, 1, limit)
+  let args = type_expr_children_expansion_stats(child_stats = arg_stats, root_size = 0, limit = limit)
+  if string_array_contains_exact(items = shadow, wanted = name) {
+    type_expr_children_expansion_stats(child_stats = arg_stats, root_size = 1, limit = limit)
   } else {
-    let idx = typedef_index_of_from(defs, name, 0)
-    if idx >= 0 && int_array_contains(capped_aliases, idx) {
+    let idx = typedef_index_of_from(defs = defs, name = name, from = 0)
+    if idx >= 0 && int_array_contains(items = capped_aliases, wanted = idx) {
       (limit + 1, limit + 1)
     } else if idx >= 0 {
-      match Array::get(defs, idx) {
+      match Array::get(defs, at = idx) {
         TDAlias(_, params, body) => {
           // `resolve_type_expr_core_shadowed` eagerly materializes every
           // argument before substituting the alias body, even when a formal is
           // unused. Direct argument results and the cloned result coexist, but
           // a nested argument's transient peak does not remain live afterward.
-          let result_size = substituted_type_node_count(body, params, arg_counts, limit)
-          let own_peak = capped_type_node_add(args.0, result_size, limit)
+          let result_size = substituted_type_node_count(ty = body, params = params, arg_counts = arg_counts, limit = limit)
+          let own_peak = capped_type_node_add(total = args.0, extra = result_size, limit = limit)
           let peak = if args.1 > own_peak {
             args.1
           } else {
@@ -1247,10 +1247,10 @@ fn named_type_expr_expansion_stats(name: String, arg_stats: Array[(Int, Int)], d
           }
           (result_size, peak)
         },
-        _ => type_expr_children_expansion_stats(arg_stats, 1, limit)
+        _ => type_expr_children_expansion_stats(child_stats = arg_stats, root_size = 1, limit = limit)
       }
     } else {
-      type_expr_children_expansion_stats(arg_stats, 1, limit)
+      type_expr_children_expansion_stats(child_stats = arg_stats, root_size = 1, limit = limit)
     }
   }
 }
@@ -1265,47 +1265,47 @@ fn type_expr_expansion_stats(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
     TyUnit => (1, 1),
     TyName(name) => match resolve_builtin(name) {
       Some(_) => (1, 1),
-      None => named_type_expr_expansion_stats(name, array_empty(), defs, shadow, capped_aliases, limit)
+      None => named_type_expr_expansion_stats(name = name, arg_stats = array_empty(), defs = defs, shadow = shadow, capped_aliases = capped_aliases, limit = limit)
     },
     TyApp(name, args) => {
-      let arg_stats = type_expr_arg_expansion_stats(args, defs, shadow, capped_aliases, limit)
+      let arg_stats = type_expr_arg_expansion_stats(args = args, defs = defs, shadow = shadow, capped_aliases = capped_aliases, limit = limit)
       if name == "Array" && Array::length(arg_stats) == 1 {
-        type_expr_children_expansion_stats(arg_stats, 1, limit)
+        type_expr_children_expansion_stats(child_stats = arg_stats, root_size = 1, limit = limit)
       } else if name == "Option" && Array::length(arg_stats) == 1 {
-        type_expr_children_expansion_stats(arg_stats, 1, limit)
-      } else if name == "StringMap" && Array::length(arg_stats) == 1 && !string_array_contains_exact(shadow, name) && typedef_index_of_from(defs, name, 0) < 0 {
-        type_expr_children_expansion_stats(arg_stats, 2, limit)
+        type_expr_children_expansion_stats(child_stats = arg_stats, root_size = 1, limit = limit)
+      } else if name == "StringMap" && Array::length(arg_stats) == 1 && !string_array_contains_exact(items = shadow, wanted = name) && typedef_index_of_from(defs = defs, name = name, from = 0) < 0 {
+        type_expr_children_expansion_stats(child_stats = arg_stats, root_size = 2, limit = limit)
       } else {
-        named_type_expr_expansion_stats(name, arg_stats, defs, shadow, capped_aliases, limit)
+        named_type_expr_expansion_stats(name = name, arg_stats = arg_stats, defs = defs, shadow = shadow, capped_aliases = capped_aliases, limit = limit)
       }
     },
-    TyTuple(elems) => type_expr_children_expansion_stats(type_expr_arg_expansion_stats(elems, defs, shadow, capped_aliases, limit), 1, limit),
+    TyTuple(elems) => type_expr_children_expansion_stats(child_stats = type_expr_arg_expansion_stats(args = elems, defs = defs, shadow = shadow, capped_aliases = capped_aliases, limit = limit), root_size = 1, limit = limit),
     TyFn(fn_params, ret, _) => {
-      let children = type_expr_arg_expansion_stats(fn_params, defs, shadow, capped_aliases, limit)
-      Array::push(children, type_expr_expansion_stats(ret, defs, shadow, capped_aliases, limit))
-      type_expr_children_expansion_stats(children, 1, limit)
+      let children = type_expr_arg_expansion_stats(args = fn_params, defs = defs, shadow = shadow, capped_aliases = capped_aliases, limit = limit)
+      Array::push(children, value = type_expr_expansion_stats(te = ret, defs = defs, shadow = shadow, capped_aliases = capped_aliases, limit = limit))
+      type_expr_children_expansion_stats(child_stats = children, root_size = 1, limit = limit)
     }
   }
 }
 
 export fn type_expr_expansion_node_count(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Int {
-  type_expr_expansion_stats(te, defs, shadow, capped_aliases, limit).1
+  type_expr_expansion_stats(te = te, defs = defs, shadow = shadow, capped_aliases = capped_aliases, limit = limit).1
 }
 
 export fn report_alias_expansion_limit(name: String, errors: Array[String]) -> Unit {
   let message = String::concat(String::concat(String::concat("type alias expansion exceeds ", __to_string(alias_expansion_node_limit())), String::concat(" nodes for `", name)), "`; replace the shared alias DAG with a nominal struct or enum")
-  if string_array_contains_exact(errors, message) {
+  if string_array_contains_exact(items = errors, wanted = message) {
     ()
   } else {
-    Array::push(errors, message)
+    Array::push(errors, value = message)
   }
 }
 
-export fn errors_contain_alias_expansion_limit(errors: Array[String]) -> Bool {
+export fn errors_contain_alias_expansion_limit(_ errors: Array[String]) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(errors) && !found {
-    if String::starts_with(Array::get(errors, i), "type alias expansion exceeds ") {
+    if String::starts_with(Array::get(errors, at = i), prefix = "type alias expansion exceeds ") {
       found = true
     } else {
       i = i + 1
@@ -1322,7 +1322,7 @@ export fn errors_contain_alias_expansion_limit(errors: Array[String]) -> Bool {
 /// against a node limit before allocation, then rejected with an actionable
 /// diagnostic instead of exhausting memory.
 export fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: Int, to: Int, errors: Array[String]) -> Unit {
-  let rounds = local_alias_def_count(defs, from, to)
+  let rounds = local_alias_def_count(defs = defs, from = from, to = to)
   let recursive = recursive_alias_flags(stmts)
   let capped_aliases = array_empty()
   let limit = alias_expansion_node_limit()
@@ -1331,15 +1331,15 @@ export fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef],
     let taken = array_empty()
     let mut i = Array::length(stmts) - 1
     while i >= 0 {
-      match Array::get(stmts, i) {
+      match Array::get(stmts, at = i) {
         STypeAlias(_, name, params, te) => {
-          let idx = completed_alias_index_reverse(defs, name, from, to, taken)
-          if idx >= 0 && !Array::get(recursive, i) && !int_array_contains(capped_aliases, idx) {
-            if type_expr_expansion_node_count(te, defs, params, capped_aliases, limit) > limit {
-              Array::push(capped_aliases, idx)
-              report_alias_expansion_limit(name, errors)
+          let idx = completed_alias_index_reverse(defs = defs, name = name, from = from, to = to, taken = taken)
+          if idx >= 0 && !Array::get(recursive, at = i) && !int_array_contains(items = capped_aliases, wanted = idx) {
+            if type_expr_expansion_node_count(te = te, defs = defs, shadow = params, capped_aliases = capped_aliases, limit = limit) > limit {
+              Array::push(capped_aliases, value = idx)
+              report_alias_expansion_limit(name = name, errors = errors)
             } else {
-              Array::set(defs, idx, TDAlias(name, params, type_exception_rows_resolved(resolve_type_expr_shadowed(te, defs, params))))
+              Array::set(defs, at = idx, value = TDAlias(name, params, type_exception_rows_resolved(resolve_type_expr_shadowed(te = te, defs = defs, shadow = params))))
             }
           } else {
             ()
@@ -1361,24 +1361,24 @@ export fn refresh_completed_payload_defs(stmts: Array[Stmt], defs: Array[TypeDef
   let taken = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SStruct(_, name, fields, _, mut_fields, params) => {
-        let idx = completed_type_def_index(defs, TDStruct(name, array_empty(), mut_fields, params), from, to, taken)
+        let idx = completed_type_def_index(defs = defs, probe = TDStruct(name, array_empty(), mut_fields, params), from = from, to = to, taken = taken)
         if idx >= 0 {
           let resolved = for field in fields {
             let (field_name, field_type) = field
-            (field_name, type_exception_rows_resolved(resolve_type_expr_shadowed(field_type, defs, params)))
+            (field_name, type_exception_rows_resolved(resolve_type_expr_shadowed(te = field_type, defs = defs, shadow = params)))
           }
-          Array::set(defs, idx, TDStruct(name, resolved, mut_fields, params))
+          Array::set(defs, at = idx, value = TDStruct(name, resolved, mut_fields, params))
         } else {
           ()
         }
       },
       SEnum(_, name, params, variants, _) => {
-        let idx = completed_type_def_index(defs, TDEnum(name, params, array_empty()), from, to, taken)
+        let idx = completed_type_def_index(defs = defs, probe = TDEnum(name, params, array_empty()), from = from, to = to, taken = taken)
         if idx >= 0 {
           let binder_types = if idx < Array::length(type_def_binders) {
-            for binder in Array::get(type_def_binders, idx) {
+            for binder in Array::get(type_def_binders, at = idx) {
               CtVar(binder)
             }
           } else {
@@ -1387,38 +1387,38 @@ export fn refresh_completed_payload_defs(stmts: Array[Stmt], defs: Array[TypeDef
           let resolved = for variant in variants {
             let (variant_name, payloads) = variant
             (variant_name, for payload in payloads {
-              subst_type_params(type_exception_rows_resolved(resolve_type_expr_shadowed(payload, defs, params)), params, binder_types)
+              subst_type_params(ty = type_exception_rows_resolved(resolve_type_expr_shadowed(te = payload, defs = defs, shadow = params)), params = params, args = binder_types)
             })
           }
-          Array::set(defs, idx, TDEnum(name, params, resolved))
+          Array::set(defs, at = idx, value = TDEnum(name, params, resolved))
         } else {
           ()
         }
       },
       SSuberror(_, name, variants) => {
-        let idx = completed_type_def_index(defs, TDEnum(name, array_empty(), array_empty()), from, to, taken)
+        let idx = completed_type_def_index(defs = defs, probe = TDEnum(name, array_empty(), array_empty()), from = from, to = to, taken = taken)
         if idx >= 0 {
           let resolved = for variant in variants {
             let (variant_name, payloads) = variant
             (variant_name, for payload in payloads {
-              resolve_type_expr(payload, defs)
+              resolve_type_expr(te = payload, defs = defs)
             })
           }
-          Array::set(defs, idx, TDEnum(name, array_empty(), resolved))
+          Array::set(defs, at = idx, value = TDEnum(name, array_empty(), resolved))
         } else {
           ()
         }
       },
       SEffectDef(_, name, params, ops) => {
-        let idx = completed_type_def_index(defs, TDEffect(name, array_empty(), params), from, to, taken)
+        let idx = completed_type_def_index(defs = defs, probe = TDEffect(name, array_empty(), params), from = from, to = to, taken = taken)
         if idx >= 0 {
           let resolved = for op in ops {
             let (op_name, op_params, ret) = op
             (op_name, for param in op_params {
-              resolve_type_expr_shadowed(param, defs, params)
-            }, resolve_type_expr_shadowed(ret, defs, params))
+              resolve_type_expr_shadowed(te = param, defs = defs, shadow = params)
+            }, resolve_type_expr_shadowed(te = ret, defs = defs, shadow = params))
           }
-          Array::set(defs, idx, TDEffect(name, resolved, params))
+          Array::set(defs, at = idx, value = TDEffect(name, resolved, params))
         } else {
           ()
         }
@@ -1432,20 +1432,20 @@ export fn refresh_completed_payload_defs(stmts: Array[Stmt], defs: Array[TypeDef
 fn replace_first_env_binding(env: TypeEnv, wanted: String, ty: Type, replaced: Array[Bool]) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
-    EnvBind(name, binding, rest) => if !Array::get(replaced, 0) && name == wanted {
-      Array::set(replaced, 0, true)
-      EnvBind(name, env_value_binding_with_origin(ty, binding.origin), rest)
+    EnvBind(name, binding, rest) => if !Array::get(replaced, at = 0) && name == wanted {
+      Array::set(replaced, at = 0, value = true)
+      EnvBind(name, env_value_binding_with_origin(ty = ty, origin = binding.origin), rest)
     } else {
-      EnvBind(name, binding, replace_first_env_binding(rest, wanted, ty, replaced))
+      EnvBind(name, binding, replace_first_env_binding(env = rest, wanted = wanted, ty = ty, replaced = replaced))
     },
-    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, replace_first_env_binding(rest, wanted, ty, replaced), params, method_gens),
-    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, replace_first_env_binding(rest, wanted, ty, replaced)),
-    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, replace_first_env_binding(rest, wanted, ty, replaced)),
-    EnvTypeDefs(node_defs, selectable, rest) => EnvTypeDefs(node_defs, selectable, replace_first_env_binding(rest, wanted, ty, replaced)),
-    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, replace_first_env_binding(rest, wanted, ty, replaced)),
-    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, replace_first_env_binding(rest, wanted, ty, replaced)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, replace_first_env_binding(env = rest, wanted = wanted, ty = ty, replaced = replaced), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, replace_first_env_binding(env = rest, wanted = wanted, ty = ty, replaced = replaced)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, replace_first_env_binding(env = rest, wanted = wanted, ty = ty, replaced = replaced)),
+    EnvTypeDefs(node_defs, selectable, rest) => EnvTypeDefs(node_defs, selectable, replace_first_env_binding(env = rest, wanted = wanted, ty = ty, replaced = replaced)),
+    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, replace_first_env_binding(env = rest, wanted = wanted, ty = ty, replaced = replaced)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, replace_first_env_binding(env = rest, wanted = wanted, ty = ty, replaced = replaced)),
     EnvFlat(bindings) => EnvFlat(bindings),
-    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names, bindings, replace_first_env_binding(rest, wanted, ty, replaced))
+    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names = names, bindings = bindings, rest = replace_first_env_binding(env = rest, wanted = wanted, ty = ty, replaced = replaced))
   }
 }
 
@@ -1462,7 +1462,7 @@ fn later_equals_owner_count(stmts: Array[Stmt], after: Int, type_name: String) -
   let mut count = 0
   let mut i = after + 1
   while i < Array::length(stmts) {
-    if stmt_owns_equals_marker(Array::get(stmts, i), type_name) {
+    if stmt_owns_equals_marker(stmt = Array::get(stmts, at = i), type_name = type_name) {
       count = count + 1
     } else {
       ()
@@ -1478,22 +1478,22 @@ fn refresh_suberror_owned_bindings(env: TypeEnv, suberror_name: String, variants
     EnvEmpty => EnvEmpty,
     EnvBind(name, binding, rest) => if name == marker {
       if markers_to_skip > 0 {
-        EnvBind(name, binding, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip - 1))
+        EnvBind(name, binding, refresh_suberror_owned_bindings(env = rest, suberror_name = suberror_name, variants = variants, markers_to_skip = markers_to_skip - 1))
       } else {
         let mut refreshed_rest = rest
         let mut vi = Array::length(variants) - 1
         while vi >= 0 {
-          let (variant_name, payloads) = Array::get(variants, vi)
+          let (variant_name, payloads) = Array::get(variants, at = vi)
           let ctor_ty = if Array::length(payloads) == 0 {
             CtEnum(suberror_name)
           } else {
             CtFn(payloads, CtEnum(suberror_name), constructor_dependency_row(Array::length(payloads)))
           }
-          refreshed_rest = replace_first_env_binding(refreshed_rest, variant_name, ctor_ty, [
+          refreshed_rest = replace_first_env_binding(env = refreshed_rest, wanted = variant_name, ty = ctor_ty, replaced = [
             false
           ])
           if Array::length(payloads) > 0 {
-            refreshed_rest = replace_first_env_binding(refreshed_rest, fn_return_env_name(variant_name), CtEnum(suberror_name), [
+            refreshed_rest = replace_first_env_binding(env = refreshed_rest, wanted = fn_return_env_name(variant_name), ty = CtEnum(suberror_name), replaced = [
               false
             ])
           } else {
@@ -1504,16 +1504,16 @@ fn refresh_suberror_owned_bindings(env: TypeEnv, suberror_name: String, variants
         EnvBind(name, binding, refreshed_rest)
       }
     } else {
-      EnvBind(name, binding, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip))
+      EnvBind(name, binding, refresh_suberror_owned_bindings(env = rest, suberror_name = suberror_name, variants = variants, markers_to_skip = markers_to_skip))
     },
-    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip), params, method_gens),
-    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
-    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
-    EnvTypeDefs(node_defs, selectable, rest) => EnvTypeDefs(node_defs, selectable, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
-    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
-    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_suberror_owned_bindings(env = rest, suberror_name = suberror_name, variants = variants, markers_to_skip = markers_to_skip), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_suberror_owned_bindings(env = rest, suberror_name = suberror_name, variants = variants, markers_to_skip = markers_to_skip)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_suberror_owned_bindings(env = rest, suberror_name = suberror_name, variants = variants, markers_to_skip = markers_to_skip)),
+    EnvTypeDefs(node_defs, selectable, rest) => EnvTypeDefs(node_defs, selectable, refresh_suberror_owned_bindings(env = rest, suberror_name = suberror_name, variants = variants, markers_to_skip = markers_to_skip)),
+    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, refresh_suberror_owned_bindings(env = rest, suberror_name = suberror_name, variants = variants, markers_to_skip = markers_to_skip)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_suberror_owned_bindings(env = rest, suberror_name = suberror_name, variants = variants, markers_to_skip = markers_to_skip)),
     EnvFlat(bindings) => EnvFlat(bindings),
-    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names, bindings, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip))
+    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names = names, bindings = bindings, rest = refresh_suberror_owned_bindings(env = rest, suberror_name = suberror_name, variants = variants, markers_to_skip = markers_to_skip))
   }
 }
 
@@ -1522,13 +1522,13 @@ export fn refresh_completed_suberror_env(stmts: Array[Stmt], env: TypeEnv, defs:
   let mut refreshed = env
   let mut i = Array::length(stmts) - 1
   while i >= 0 {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SSuberror(_, name, _) => {
-        let idx = completed_type_def_index_reverse(defs, TDEnum(name, array_empty(), array_empty()), from, to, taken)
+        let idx = completed_type_def_index_reverse(defs = defs, probe = TDEnum(name, array_empty(), array_empty()), from = from, to = to, taken = taken)
         if idx >= 0 {
-          match Array::get(defs, idx) {
+          match Array::get(defs, at = idx) {
             TDEnum(_, _, variants) => {
-              refreshed = refresh_suberror_owned_bindings(refreshed, name, variants, later_equals_owner_count(stmts, i, name))
+              refreshed = refresh_suberror_owned_bindings(env = refreshed, suberror_name = name, variants = variants, markers_to_skip = later_equals_owner_count(stmts = stmts, after = i, type_name = name))
             },
             _ => ()
           }
@@ -1547,7 +1547,7 @@ fn local_alias_def_count(defs: Array[TypeDef], from: Int, to: Int) -> Int {
   let mut count = 0
   let mut i = from
   while i < to {
-    match Array::get(defs, i) {
+    match Array::get(defs, at = i) {
       TDAlias(_, _, _) => {
         count = count + 1
       },
@@ -1565,18 +1565,18 @@ fn completed_alias_index_reverse(defs: Array[TypeDef], name: String, from: Int, 
   let mut i = to - 1
   let mut found = 0 - 1
   while i >= from && found < 0 {
-    let matches = match Array::get(defs, i) {
+    let matches = match Array::get(defs, at = i) {
       TDAlias(n, _, _) => n == name,
       _ => false
     }
-    if matches && !int_array_contains(taken, i) {
+    if matches && !int_array_contains(items = taken, wanted = i) {
       found = i
     } else {
       i = i - 1
     }
   }
   if found >= 0 {
-    Array::push(taken, found)
+    Array::push(taken, value = found)
   } else {
     ()
   }
@@ -1598,14 +1598,14 @@ fn completed_type_def_index(defs: Array[TypeDef], probe: TypeDef, from: Int, to:
   let mut i = from
   let mut found = 0 - 1
   while i < to && found < 0 {
-    if type_def_same_head(Array::get(defs, i), probe) && !int_array_contains(taken, i) {
+    if type_def_same_head(left = Array::get(defs, at = i), right = probe) && !int_array_contains(items = taken, wanted = i) {
       found = i
     } else {
       i = i + 1
     }
   }
   if found >= 0 {
-    Array::push(taken, found)
+    Array::push(taken, value = found)
   } else {
     ()
   }
@@ -1616,14 +1616,14 @@ fn completed_type_def_index_reverse(defs: Array[TypeDef], probe: TypeDef, from: 
   let mut i = to - 1
   let mut found = 0 - 1
   while i >= from && found < 0 {
-    if type_def_same_head(Array::get(defs, i), probe) && !int_array_contains(taken, i) {
+    if type_def_same_head(left = Array::get(defs, at = i), right = probe) && !int_array_contains(items = taken, wanted = i) {
       found = i
     } else {
       i = i - 1
     }
   }
   if found >= 0 {
-    Array::push(taken, found)
+    Array::push(taken, value = found)
   } else {
     ()
   }
@@ -1634,39 +1634,39 @@ fn refresh_completed_type(ty: Type, defs: Array[TypeDef], shadow: Array[String],
   match ty {
     CtNamed(name, args) => {
       let refreshed_args = for arg in args {
-        refresh_completed_type(arg, defs, shadow, seen)
+        refresh_completed_type(ty = arg, defs = defs, shadow = shadow, seen = seen)
       }
-      if string_array_contains_exact(shadow, name) || string_array_contains_exact(seen, name) {
+      if string_array_contains_exact(items = shadow, wanted = name) || string_array_contains_exact(items = seen, wanted = name) {
         CtNamed(name, refreshed_args)
-      } else match find_typedef(defs, name) {
+      } else match find_typedef(defs = defs, name = name) {
         Some(TDAlias(_, params, target)) => {
-          let next_seen = Array::slice(seen, 0, Array::length(seen))
-          Array::push(next_seen, name)
-          refresh_completed_type(subst_type_params(target, params, refreshed_args), defs, shadow, next_seen)
+          let next_seen = Array::slice(seen, start = 0, end = Array::length(seen))
+          Array::push(next_seen, value = name)
+          refresh_completed_type(ty = subst_type_params(ty = target, params = params, args = refreshed_args), defs = defs, shadow = shadow, seen = next_seen)
         },
         _ => CtNamed(name, refreshed_args)
       }
     },
     CtTuple(items) => CtTuple(for item in items {
-      refresh_completed_type(item, defs, shadow, seen)
+      refresh_completed_type(ty = item, defs = defs, shadow = shadow, seen = seen)
     }),
-    CtArray(item) => CtArray(refresh_completed_type(item, defs, shadow, seen)),
-    CtOption(item) => CtOption(refresh_completed_type(item, defs, shadow, seen)),
-    CtApplied(head, args) => apply_type_constructor(refresh_completed_type(head, defs, shadow, seen), for arg in args {
-      refresh_completed_type(arg, defs, shadow, seen)
+    CtArray(item) => CtArray(refresh_completed_type(ty = item, defs = defs, shadow = shadow, seen = seen)),
+    CtOption(item) => CtOption(refresh_completed_type(ty = item, defs = defs, shadow = shadow, seen = seen)),
+    CtApplied(head, args) => apply_type_constructor(head = refresh_completed_type(ty = head, defs = defs, shadow = shadow, seen = seen), args = for arg in args {
+      refresh_completed_type(ty = arg, defs = defs, shadow = shadow, seen = seen)
     }),
     CtFn(params, ret, row) => CtFn(for param in params {
-      refresh_completed_type(param, defs, shadow, seen)
-    }, refresh_completed_type(ret, defs, shadow, seen), match row {
+      refresh_completed_type(ty = param, defs = defs, shadow = shadow, seen = seen)
+    }, refresh_completed_type(ty = ret, defs = defs, shadow = shadow, seen = seen), match row {
       // #3028: a constructor's signature is refreshed here once the
       // declarations are complete; its rows' kinds resolve with its payloads.
       Some(r) => Some(exception_row_resolved(r)),
       None => None
     }),
-    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, refresh_completed_type(body, defs, shadow, seen)),
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, refresh_completed_type(ty = body, defs = defs, shadow = shadow, seen = seen)),
     CtRecord(fields) => CtRecord(for field in fields {
       let (name, field_ty) = field
-      (name, refresh_completed_type(field_ty, defs, shadow, seen))
+      (name, refresh_completed_type(ty = field_ty, defs = defs, shadow = shadow, seen = seen))
     }),
     _ => ty
   }
@@ -1680,19 +1680,19 @@ fn refresh_completed_env_type_def(node_def: TypeDef, completed_def: TypeDef, def
     },
     TDStruct(name, fields, mut_fields, params) => TDStruct(name, for field in fields {
       let (field_name, field_ty) = field
-      (field_name, refresh_completed_type(field_ty, defs, params, array_empty()))
+      (field_name, refresh_completed_type(ty = field_ty, defs = defs, shadow = params, seen = array_empty()))
     }, mut_fields, params),
     TDEnum(name, params, variants) => TDEnum(name, params, for variant in variants {
       let (variant_name, payloads) = variant
       (variant_name, for payload in payloads {
-        refresh_completed_type(payload, defs, params, array_empty())
+        refresh_completed_type(ty = payload, defs = defs, shadow = params, seen = array_empty())
       })
     }),
     TDEffect(name, ops, params) => TDEffect(name, for op in ops {
       let (op_name, op_params, ret) = op
       (op_name, for param in op_params {
-        refresh_completed_type(param, defs, params, array_empty())
-      }, refresh_completed_type(ret, defs, params, array_empty()))
+        refresh_completed_type(ty = param, defs = defs, shadow = params, seen = array_empty())
+      }, refresh_completed_type(ty = ret, defs = defs, shadow = params, seen = array_empty()))
     }, params),
     TDEffectSet(name, members) => TDEffectSet(name, members)
   }
@@ -1701,23 +1701,23 @@ fn refresh_completed_env_type_def(node_def: TypeDef, completed_def: TypeDef, def
 fn refresh_alias_env_binding(env: TypeEnv, name: String, body: Type) -> TypeEnv {
   match env {
     EnvBind(bound_name, binding, rest) => if bound_name == name {
-      EnvBind(bound_name, env_value_binding_with_origin(body, binding.origin), rest)
+      EnvBind(bound_name, env_value_binding_with_origin(ty = body, origin = binding.origin), rest)
     } else {
       env
     },
-    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names, bindings, refresh_alias_env_binding(rest, name, body)),
+    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names = names, bindings = bindings, rest = refresh_alias_env_binding(env = rest, name = name, body = body)),
     _ => env
   }
 }
 
 fn refresh_type_env_prefix(env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
   match env {
-    EnvBind(name, binding, rest) => EnvBind(name, env_value_binding_with_origin(refresh_completed_type(binding.ty, defs, array_empty(), array_empty()), binding.origin), refresh_type_env_prefix(rest, defs)),
-    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, refresh_completed_type(target, defs, array_empty(), array_empty()), refresh_type_env_prefix(rest, defs)),
-    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, refresh_completed_type(target, defs, params, array_empty()), refresh_type_env_prefix(rest, defs)),
-    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, refresh_type_env_prefix(rest, defs)),
-    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_type_env_prefix(rest, defs)),
-    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names, bindings, refresh_type_env_prefix(rest, defs)),
+    EnvBind(name, binding, rest) => EnvBind(name, env_value_binding_with_origin(ty = refresh_completed_type(ty = binding.ty, defs = defs, shadow = array_empty(), seen = array_empty()), origin = binding.origin), refresh_type_env_prefix(env = rest, defs = defs)),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, refresh_completed_type(ty = target, defs = defs, shadow = array_empty(), seen = array_empty()), refresh_type_env_prefix(env = rest, defs = defs)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, refresh_completed_type(ty = target, defs = defs, shadow = params, seen = array_empty()), refresh_type_env_prefix(env = rest, defs = defs)),
+    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, refresh_type_env_prefix(env = rest, defs = defs)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_type_env_prefix(env = rest, defs = defs)),
+    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names = names, bindings = bindings, rest = refresh_type_env_prefix(env = rest, defs = defs)),
     _ => env
   }
 }
@@ -1730,44 +1730,44 @@ export fn refresh_completed_type_env(env: TypeEnv, defs: Array[TypeDef], from: I
     env
   } else match env {
     EnvEmpty => EnvEmpty,
-    EnvBind(name, binding, rest) => EnvBind(name, binding, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
-    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_completed_type_env(rest, defs, from, to, taken, local_count), params, method_gens),
-    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
-    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
+    EnvBind(name, binding, rest) => EnvBind(name, binding, refresh_completed_type_env(env = rest, defs = defs, from = from, to = to, taken = taken, local_count = local_count)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_completed_type_env(env = rest, defs = defs, from = from, to = to, taken = taken, local_count = local_count), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_completed_type_env(env = rest, defs = defs, from = from, to = to, taken = taken, local_count = local_count)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_completed_type_env(env = rest, defs = defs, from = from, to = to, taken = taken, local_count = local_count)),
     EnvTypeDefs(node_defs, selectable, rest) => {
       let refreshed = array_empty()
       let mut refreshed_rest = rest
       let mut refresh_prefix = false
       let mut i = 0
       while i < Array::length(node_defs) {
-        let node_def = Array::get(node_defs, i)
-        let idx = completed_type_def_index_reverse(defs, node_def, from, to, taken)
+        let node_def = Array::get(node_defs, at = i)
+        let idx = completed_type_def_index_reverse(defs = defs, probe = node_def, from = from, to = to, taken = taken)
         if idx >= 0 {
-          let completed_def = Array::get(defs, idx)
-          Array::push(refreshed, refresh_completed_env_type_def(node_def, completed_def, defs))
+          let completed_def = Array::get(defs, at = idx)
+          Array::push(refreshed, value = refresh_completed_env_type_def(node_def = node_def, completed_def = completed_def, defs = defs))
           match completed_def {
             TDAlias(name, _, body) => {
-              refreshed_rest = refresh_alias_env_binding(refreshed_rest, name, body)
+              refreshed_rest = refresh_alias_env_binding(env = refreshed_rest, name = name, body = body)
             },
             _ => {
               refresh_prefix = true
             }
           }
         } else {
-          Array::push(refreshed, node_def)
+          Array::push(refreshed, value = node_def)
         }
         i = i + 1
       }
       let completed_rest = if refresh_prefix {
-        refresh_type_env_prefix(refreshed_rest, defs)
+        refresh_type_env_prefix(env = refreshed_rest, defs = defs)
       } else {
         refreshed_rest
       }
-      EnvTypeDefs(refreshed, selectable, refresh_completed_type_env(completed_rest, defs, from, to, taken, local_count))
+      EnvTypeDefs(refreshed, selectable, refresh_completed_type_env(env = completed_rest, defs = defs, from = from, to = to, taken = taken, local_count = local_count))
     },
-    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
-    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
+    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, refresh_completed_type_env(env = rest, defs = defs, from = from, to = to, taken = taken, local_count = local_count)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_completed_type_env(env = rest, defs = defs, from = from, to = to, taken = taken, local_count = local_count)),
     EnvFlat(bindings) => EnvFlat(bindings),
-    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names, bindings, refresh_completed_type_env(rest, defs, from, to, taken, local_count))
+    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names = names, bindings = bindings, rest = refresh_completed_type_env(env = rest, defs = defs, from = from, to = to, taken = taken, local_count = local_count))
   }
 }

@@ -14,61 +14,61 @@ fn misc_no_params() -> Array[Type] {
   array_empty()
 }
 
-fn misc_one_param(a: Type) -> Array[Type] {
+fn misc_one_param(_ a: Type) -> Array[Type] {
   let arr = misc_no_params()
-  Array::push(arr, a)
+  Array::push(arr, value = a)
   arr
 }
 
 fn misc_two_params(a: Type, b: Type) -> Array[Type] {
   let arr = misc_no_params()
-  Array::push(arr, a)
-  Array::push(arr, b)
+  Array::push(arr, value = a)
+  Array::push(arr, value = b)
   arr
 }
 
-fn lookup_arithmetic_helper(name: String) -> Option[Type] {
+fn lookup_arithmetic_helper(_ name: String) -> Option[Type] {
   if name == "add" || name == "sub" || name == "mul" {
-    Some(CtFn(misc_two_params(CtInt, CtInt), CtInt, None))
+    Some(CtFn(misc_two_params(a = CtInt, b = CtInt), CtInt, None))
   } else if name == "lt" {
-    Some(CtFn(misc_two_params(CtInt, CtInt), CtBool, None))
+    Some(CtFn(misc_two_params(a = CtInt, b = CtInt), CtBool, None))
   } else {
     None
   }
 }
 
-fn lookup_none(name: String) -> Option[Type] {
+fn lookup_none(_ name: String) -> Option[Type] {
   if name == "None" {
     Some(CtOption(CtUnknown))
   }
   else None
 }
 
-fn lookup_some(name: String) -> Option[Type] {
+fn lookup_some(_ name: String) -> Option[Type] {
   if name == "Some" {
     Some(CtFn(misc_one_param(CtUnknown), CtOption(CtUnknown), None))
   }
   else None
 }
 
-fn lookup_index(name: String) -> Option[Type] {
+fn lookup_index(_ name: String) -> Option[Type] {
   if name == "__index" {
-    Some(CtFn(misc_two_params(CtUnknown, CtUnknown), CtUnknown, None))
+    Some(CtFn(misc_two_params(a = CtUnknown, b = CtUnknown), CtUnknown, None))
   }
   else if name == "__set_field" {
     // Build the param list inline rather than via the shared `misc_three_params`
     // helper: adding a second call site for that private helper triggered a
     // namespace-hash collision in the wasm bundler (#492).
     let set_field_params = misc_no_params()
-    Array::push(set_field_params, CtUnknown)
-    Array::push(set_field_params, CtString)
-    Array::push(set_field_params, CtUnknown)
+    Array::push(set_field_params, value = CtUnknown)
+    Array::push(set_field_params, value = CtString)
+    Array::push(set_field_params, value = CtUnknown)
     Some(CtFn(set_field_params, CtUnit, None))
   }
   else None
 }
 
-fn lookup_throw(name: String) -> Option[Type] {
+fn lookup_throw(_ name: String) -> Option[Type] {
   if name == "throw" {
     // #786: `throw` accepts any value, not just String — a `suberror` value
     // (`throw(KeyInvalid("x"))`) is thrown through the same Exception effect.
@@ -103,7 +103,7 @@ fn lookup_throw(name: String) -> Option[Type] {
 /// "this is not text" without saying what it says, and the arm cannot recover
 /// that -- its binder is `CtUnknown`, so no `T::to_string` and no `[T: Show]`
 /// witness resolves there. Same shape, same cell, same one-unwind window.
-fn lookup_exn_kind(name: String) -> Option[Type] {
+fn lookup_exn_kind(_ name: String) -> Option[Type] {
   if name == "__exn_kind" || name == "__exn_message" {
     Some(CtFn(misc_no_params(), CtString, None))
   }
@@ -128,17 +128,17 @@ fn lookup_exn_kind(name: String) -> Option[Type] {
 /// USER-declared functions: a struct that declares its own `T::iter_length` /
 /// `T::iter_get` is iterable, and that path never consulted the rows below.
 /// Verified end to end with a `for v in bag` over such a struct.
-fn lookup_iter_intrinsic(name: String) -> Option[Type] {
+fn lookup_iter_intrinsic(_ name: String) -> Option[Type] {
   if name == "Map::iter_get" {
     // Map iteration yields keys. Keep the value parameter erased, but retain
     // the nominal receiver so arbitrary integers cannot reach raw key loads.
-    Some(CtFn(misc_two_params(CtNamed("Map", [CtUnknown, CtUnknown]), CtInt), CtString, None))
+    Some(CtFn(misc_two_params(a = CtNamed("Map", [CtUnknown, CtUnknown]), b = CtInt), CtString, None))
   } else {
     None
   }
 }
 
-fn lookup_misc_group_a(name: String) -> Option[Type] {
+fn lookup_misc_group_a(_ name: String) -> Option[Type] {
   // #2913: `lookup_neg` used to sit between these two. `__neg` is a PHANTOM --
   // it is typed nowhere else, lowered nowhere at all (no occurrence outside
   // the checker, its own `declare` and one test), and it ICEs in every form:
@@ -160,11 +160,11 @@ fn lookup_misc_group_a(name: String) -> Option[Type] {
   }
 }
 
-fn lookup_misc_group_e(name: String) -> Option[Type] {
+fn lookup_misc_group_e(_ name: String) -> Option[Type] {
   if name == "__rec_field" {
     // record-pattern desugar: __rec_field(record, index) -> field value.
     // Lenient (field type unknown); only needs to resolve, not constrain.
-    Some(CtFn(misc_two_params(CtUnknown, CtInt), CtUnknown, None))
+    Some(CtFn(misc_two_params(a = CtUnknown, b = CtInt), CtUnknown, None))
   } else {
     match lookup_iter_intrinsic(name) {
       Some(t) => Some(t),
@@ -173,7 +173,7 @@ fn lookup_misc_group_e(name: String) -> Option[Type] {
   }
 }
 
-fn lookup_double_to_int(name: String) -> Option[Type] {
+fn lookup_double_to_int(_ name: String) -> Option[Type] {
   // `Double::to_int` is registry-backed; `Float::to_int` is a fallback-only
   // spelling over the same representation (an f32 value held as an f64), so
   // it lowers through the same saturating truncation.
@@ -183,7 +183,7 @@ fn lookup_double_to_int(name: String) -> Option[Type] {
   else None
 }
 
-fn lookup_int_to_double(name: String) -> Option[Type] {
+fn lookup_int_to_double(_ name: String) -> Option[Type] {
   if name == "Int::to_string" {
     // Documented in the cheatsheet's conversion set but never wired up —
     // codegen lowers it to the `__to_string` integer path (#740 fallout:
@@ -193,7 +193,7 @@ fn lookup_int_to_double(name: String) -> Option[Type] {
   else None
 }
 
-fn lookup_double_to_i64_bits(name: String) -> Option[Type] {
+fn lookup_double_to_i64_bits(_ name: String) -> Option[Type] {
   if name == "Double::to_i64_bits_lo" || name == "Double::to_i64_bits_hi" {
     Some(CtFn(misc_one_param(CtDouble), CtInt, None))
   }
@@ -203,12 +203,12 @@ fn lookup_double_to_i64_bits(name: String) -> Option[Type] {
     // (ADR-0055 Blocker-2). `-1.5` is 0xBFF8000000000000, already out of
     // range, so the single-`Int` `Double::from_i64_bits` cannot express any
     // negative double at all. Each 32-bit half fits comfortably. (#2651)
-    Some(CtFn(misc_two_params(CtInt, CtInt), CtDouble, None))
+    Some(CtFn(misc_two_params(a = CtInt, b = CtInt), CtDouble, None))
   }
   else None
 }
 
-fn lookup_misc_group_c(name: String) -> Option[Type] {
+fn lookup_misc_group_c(_ name: String) -> Option[Type] {
   match lookup_throw(name) {
     Some(t) => Some(t),
     None => match lookup_int_to_double(name) {
@@ -221,14 +221,14 @@ fn lookup_misc_group_c(name: String) -> Option[Type] {
   }
 }
 
-fn lookup_misc_group_d(name: String) -> Option[Type] {
+fn lookup_misc_group_d(_ name: String) -> Option[Type] {
   lookup_some(name)
 }
 
 /// Double::to_string / Float::to_string are fallback-only spellings; codegen
 /// lowers them through `double_to_string_expr` / `float_to_string_expr`, the
 /// shortest round-trip spelling of the f64 or of the f32 respectively.
-fn lookup_double_to_string(name: String) -> Option[Type] {
+fn lookup_double_to_string(_ name: String) -> Option[Type] {
   if name == "Double::to_string" {
     Some(CtFn(misc_one_param(CtDouble), CtString, None))
   }
@@ -240,16 +240,16 @@ fn lookup_double_to_string(name: String) -> Option[Type] {
 
 /// Native single-opcode f64 ops (f64.abs/floor/ceil/min/max) — cheap to wire
 /// up since wasm has direct instructions for all of them.
-fn lookup_double_unary_op(name: String) -> Option[Type] {
+fn lookup_double_unary_op(_ name: String) -> Option[Type] {
   if name == "Double::abs" || name == "Double::floor" || name == "Double::ceil" {
     Some(CtFn(misc_one_param(CtDouble), CtDouble, None))
   }
   else None
 }
 
-fn lookup_double_binary_op(name: String) -> Option[Type] {
+fn lookup_double_binary_op(_ name: String) -> Option[Type] {
   if name == "Double::max" || name == "Double::min" {
-    Some(CtFn(misc_two_params(CtDouble, CtDouble), CtDouble, None))
+    Some(CtFn(misc_two_params(a = CtDouble, b = CtDouble), CtDouble, None))
   }
   else None
 }
@@ -262,7 +262,7 @@ fn lookup_double_binary_op(name: String) -> Option[Type] {
 /// checker-side entry win over the prelude definition and silently swap in
 /// different (wrong-for-edge-cases) codegen — this previously broke
 /// lib/@vibe/builtin/int_test.vibe after a #767 attempt added them.
-fn lookup_int_parse(name: String) -> Option[Type] {
+fn lookup_int_parse(_ name: String) -> Option[Type] {
   if name == "Int::parse" {
     Some(CtFn(misc_one_param(CtString), CtOption(CtInt), None))
   }
@@ -272,7 +272,7 @@ fn lookup_int_parse(name: String) -> Option[Type] {
   else None
 }
 
-fn lookup_misc_group_f(name: String) -> Option[Type] {
+fn lookup_misc_group_f(_ name: String) -> Option[Type] {
   match lookup_double_to_string(name) {
     Some(t) => Some(t),
     None => match lookup_double_unary_op(name) {
@@ -285,7 +285,7 @@ fn lookup_misc_group_f(name: String) -> Option[Type] {
   }
 }
 
-export fn lookup_misc(name: String) -> Option[Type] {
+export fn lookup_misc(_ name: String) -> Option[Type] {
   match lookup_misc_group_a(name) {
     Some(t) => Some(t),
     None => match lookup_misc_group_c(name) {

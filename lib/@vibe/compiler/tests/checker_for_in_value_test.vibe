@@ -14,19 +14,19 @@ import @vibe/compiler/runtime {
 
 //# Helpers
 
-fn first_check_error(source: String) -> String {
+fn first_check_error(_ source: String) -> String {
   handle {
     let _ = check_program(parse_program(lex(source)))
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
-fn first_located_check_error(source: String) -> String {
+fn first_located_check_error(_ source: String) -> String {
   handle {
     let (tokens, starts, _) = lex_with_offsets(source)
-    let _ = check_program(parse_program_located(tokens, starts, source))
+    let _ = check_program(parse_program_located(tokens = tokens, starts = starts, source = source))
     ""
-  } with { Exception::Throw(msg) => locate_type_error(source, msg) }
+  } with { Exception::Throw(msg) => locate_type_error(source = source, msg = msg) }
 }
 
 //# Tests
@@ -34,20 +34,20 @@ fn first_located_check_error(source: String) -> String {
 test "#1679: pull-closure for cannot be consumed as an Array value" {
   let source = "fn main() -> Int {\n  let pull: () -> Option[Int] = () -> { None }\n  let xs = for x in pull { x }\n  Array::length(xs)\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "non-Array `for` does not produce a value"))
+  assert(String::contains(msg, needle = "non-Array `for` does not produce a value"))
 }
 
 test "#1679: non-Array value diagnostic points at the iterand" {
   let source = "fn main() -> Int {\n  let pull: () -> Option[Int] = () -> { None }\n  let xs = for x in pull { x }\n  Array::length(xs)\n}\n"
   let msg = first_located_check_error(source)
-  assert(String::starts_with(msg, "line 3:"))
-  assert(String::contains(msg, "non-Array `for` does not produce a value"))
+  assert(String::starts_with(msg, prefix = "line 3:"))
+  assert(String::contains(msg, needle = "non-Array `for` does not produce a value"))
 }
 
 test "#1679: an unclassifiable for iterand fails closed in value position" {
   let source = "fn consume[T](it: T) -> Int {\n  let xs = for x in it { x }\n  Array::length(xs)\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "cannot determine whether this `for` produces an Array"))
+  assert(String::contains(msg, needle = "cannot determine whether this `for` produces an Array"))
 }
 
 test "#1559: an unclassifiable for iterand is rejected as a statement" {
@@ -65,8 +65,8 @@ test "#1559: an unclassifiable for iterand is rejected as a statement" {
   // `Attempt` is refused in a signature, so it cannot stand in here.)
   let source = "fn consume(it: HostResponse) -> Unit {\n  for x in it { let _ = x; () }\n  ()\n}\nfn main() -> Unit { () }\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "cannot classify this `for` iterand"))
-  assert(String::contains(msg, "annotate"))
+  assert(String::contains(msg, needle = "cannot classify this `for` iterand"))
+  assert(String::contains(msg, needle = "annotate"))
 }
 
 test "#1559: a statement for over a concrete Array still typechecks" {
@@ -87,25 +87,25 @@ test "#1679: statement-position pull-closure for remains valid" {
 test "#1679 review: discarded if does not make a consumed nested for statement-shaped" {
   let source = "fn main() -> Unit {\n  let pull: () -> Option[Int] = () -> { None }\n  if true {\n    let xs = for x in pull { x }\n    let _ = Array::length(xs)\n    ()\n  } else { () }\n  ()\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "non-Array `for` does not produce a value"))
+  assert(String::contains(msg, needle = "non-Array `for` does not produce a value"))
 }
 
 test "#1679 review: discarded block does not hide a consumed nested for" {
   let source = "fn main() -> Unit {\n  let pull: () -> Option[Int] = () -> { None }\n  {\n    let xs = for x in pull { x }\n    let _ = Array::length(xs)\n    ()\n  }\n  ()\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "non-Array `for` does not produce a value"))
+  assert(String::contains(msg, needle = "non-Array `for` does not produce a value"))
 }
 
 test "#1679 review: discarded inline call does not leak discard into its lambda body" {
   let source = "fn main() -> Unit {\n  let pull: () -> Option[Int] = () -> { None }\n  (() -> Unit {\n    let xs = for x in pull { x }\n    let _ = Array::length(xs)\n    ()\n  })()\n  ()\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "non-Array `for` does not produce a value"))
+  assert(String::contains(msg, needle = "non-Array `for` does not produce a value"))
 }
 
 test "#1679 review: a user binding cannot forge statement position" {
   let source = "fn main() -> Int {\n  let __discarded_expression_root__ = ()\n  let pull: () -> Option[Int] = () -> { None }\n  let xs = for x in pull { x }\n  Array::length(xs)\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "non-Array `for` does not produce a value"))
+  assert(String::contains(msg, needle = "non-Array `for` does not produce a value"))
 }
 
 test "#1679: Array for still produces a value" {
@@ -121,5 +121,5 @@ test "#1679 review: pull-closure iterator preserves its index binding" {
 test "#1679: HostStream index binding is rejected instead of dropped" {
   let source = "fn consume(stream: HostStream) -> Unit with Async {\n  for i, byte in stream { let _ = byte + i; () }\n  ()\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "index binding is only supported"))
+  assert(String::contains(msg, needle = "index binding is only supported"))
 }

@@ -34,11 +34,11 @@ import @vibe/compiler/codegen/wasm_emit {
 //# Functions
 
 /// Push `memory.size * 65536` (linear memory size in BYTES) as an i64.
-fn emit_mem_size_bytes(b: Bytes) -> Unit {
-  bytebuf_push(b, 63)
-  bytebuf_push(b, 0)
+fn emit_mem_size_bytes(_ b: Bytes) -> Unit {
+  bytebuf_push(buf = b, byte = 63)
+  bytebuf_push(buf = b, byte = 0)
   emit_i64_extend_i32_u(b)
-  emit_i64_const(b, 65536)
+  emit_i64_const(buf = b, value = 65536)
   emit_i64_mul(b)
 }
 
@@ -53,24 +53,24 @@ fn emit_mem_size_bytes(b: Bytes) -> Unit {
 /// such comparisons to "not equal". The residual it gives up on (two distinct
 /// integers with equal low words comparing equal) is the accepted #678 hole.
 fn emit_looks_like_string(b: Bytes, slot: Int) -> Unit {
-  emit_local_get(b, slot)
-  emit_i64_const(b, 32)
-  bytebuf_push(b, 136)
-  emit_local_get(b, slot)
-  emit_i64_const(b, 4294967295)
+  emit_local_get(buf = b, idx = slot)
+  emit_i64_const(buf = b, value = 32)
+  bytebuf_push(buf = b, byte = 136)
+  emit_local_get(buf = b, idx = slot)
+  emit_i64_const(buf = b, value = 4294967295)
   emit_i64_and(b)
   emit_i64_add(b)
   emit_mem_size_bytes(b)
   emit_i64_le_s(b)
 }
 
-export fn gen_eq_body(str_eq_idx: Int) -> Bytes {
+export fn gen_eq_body(_ str_eq_idx: Int) -> Bytes {
   let b = bytebuf_new()
-  emit_local_get(b, 0)
-  emit_local_get(b, 1)
+  emit_local_get(buf = b, idx = 0)
+  emit_local_get(buf = b, idx = 1)
   emit_i64_eq(b)
   emit_if_i64(b)
-  emit_i64_const(b, 1)
+  emit_i64_const(buf = b, value = 1)
   emit_else(b)
   // The operands are bit-different. Falling back to `str_eq` here is only valid
   // when both are genuine string fat-pointers; a raw integer (e.g. a 61-bit
@@ -79,15 +79,15 @@ export fn gen_eq_body(str_eq_idx: Int) -> Bytes {
   // makes `str_eq`'s byte loop read out of bounds (the #664 class of bug, here
   // surfacing for `==`/`!=` on Int >= 2^32). Gate the fallback on both operands
   // looking like real strings; otherwise the values are simply not equal.
-  emit_looks_like_string(b, 0)
-  emit_looks_like_string(b, 1)
-  bytebuf_push(b, 113)
+  emit_looks_like_string(b = b, slot = 0)
+  emit_looks_like_string(b = b, slot = 1)
+  bytebuf_push(buf = b, byte = 113)
   emit_if_i64(b)
-  emit_local_get(b, 0)
-  emit_local_get(b, 1)
-  emit_call(b, str_eq_idx)
+  emit_local_get(buf = b, idx = 0)
+  emit_local_get(buf = b, idx = 1)
+  emit_call(buf = b, func_idx = str_eq_idx)
   emit_else(b)
-  emit_i64_const(b, 0)
+  emit_i64_const(buf = b, value = 0)
   emit_end(b)
   emit_end(b)
   b
@@ -130,13 +130,13 @@ export fn gen_eq_body(str_eq_idx: Int) -> Bytes {
 /// #664/#678 already carry for `eq`/`str_lex_diff`, just with a much smaller
 /// trigger window than the plain heuristic's "any small int".
 fn emit_looks_like_string_strict(b: Bytes, slot: Int) -> Unit {
-  emit_looks_like_string(b, slot)
-  emit_local_get(b, slot)
-  emit_i64_const(b, 32)
-  bytebuf_push(b, 136)
-  emit_i64_const(b, 64)
+  emit_looks_like_string(b = b, slot = slot)
+  emit_local_get(buf = b, idx = slot)
+  emit_i64_const(buf = b, value = 32)
+  bytebuf_push(buf = b, byte = 136)
+  emit_i64_const(buf = b, value = 64)
   emit_i64_ge_s(b)
-  bytebuf_push(b, 113)
+  bytebuf_push(buf = b, byte = 113)
 }
 
 /// #973: runtime dispatch for `<`/`>`/`<=`/`>=` on an ERASED generic type
@@ -180,27 +180,27 @@ export fn gen_generic_rel_diff_body(enable_rc: Bool, str_lex_diff_idx: Int) -> B
     1
   }
   let b = bytebuf_new()
-  emit_looks_like_string_strict(b, 0)
-  emit_looks_like_string_strict(b, 1)
-  bytebuf_push(b, 113)
+  emit_looks_like_string_strict(b = b, slot = 0)
+  emit_looks_like_string_strict(b = b, slot = 1)
+  bytebuf_push(buf = b, byte = 113)
   emit_if_i64(b)
-  emit_local_get(b, 0)
-  emit_local_get(b, 1)
-  emit_call(b, str_lex_diff_idx)
+  emit_local_get(buf = b, idx = 0)
+  emit_local_get(buf = b, idx = 1)
+  emit_call(buf = b, func_idx = str_lex_diff_idx)
   emit_else(b)
-  emit_local_get(b, 0)
-  emit_local_get(b, 1)
+  emit_local_get(buf = b, idx = 0)
+  emit_local_get(buf = b, idx = 1)
   emit_i64_lt_s(b)
   emit_if_i64(b)
-  emit_i64_const(b, neg1)
+  emit_i64_const(buf = b, value = neg1)
   emit_else(b)
-  emit_local_get(b, 0)
-  emit_local_get(b, 1)
+  emit_local_get(buf = b, idx = 0)
+  emit_local_get(buf = b, idx = 1)
   emit_i64_gt_s(b)
   emit_if_i64(b)
-  emit_i64_const(b, pos1)
+  emit_i64_const(buf = b, value = pos1)
   emit_else(b)
-  emit_i64_const(b, 0)
+  emit_i64_const(buf = b, value = 0)
   emit_end(b)
   emit_end(b)
   emit_end(b)
@@ -225,23 +225,23 @@ export fn gen_generic_rel_diff_body(enable_rc: Bool, str_lex_diff_idx: Int) -> B
 /// erased `[T: Add]` parameter escaped the wrap contract.
 export fn gen_generic_add_body(enable_rc: Bool, str_concat_idx: Int) -> Bytes {
   let b = bytebuf_new()
-  emit_looks_like_string_strict(b, 0)
-  emit_looks_like_string_strict(b, 1)
-  bytebuf_push(b, 113)
+  emit_looks_like_string_strict(b = b, slot = 0)
+  emit_looks_like_string_strict(b = b, slot = 1)
+  bytebuf_push(buf = b, byte = 113)
   emit_if_i64(b)
-  emit_local_get(b, 0)
-  emit_local_get(b, 1)
-  emit_call(b, str_concat_idx)
+  emit_local_get(buf = b, idx = 0)
+  emit_local_get(buf = b, idx = 1)
+  emit_call(buf = b, func_idx = str_concat_idx)
   emit_else(b)
-  emit_local_get(b, 0)
-  emit_local_get(b, 1)
+  emit_local_get(buf = b, idx = 0)
+  emit_local_get(buf = b, idx = 1)
   emit_i64_add(b)
   if enable_rc {
     ()
   } else {
-    emit_i64_const(b, 1)
+    emit_i64_const(buf = b, value = 1)
     emit_i64_shl(b)
-    emit_i64_const(b, 1)
+    emit_i64_const(buf = b, value = 1)
     emit_i64_shr_s(b)
   }
   emit_end(b)

@@ -73,12 +73,12 @@ import ./checker_effects_throw_payload_kind.vibe {
 
 /// #2964: every missing label is the ERASED exception (`Exception` /
 /// `Exception::Throw`).
-fn missing_is_erased_exception_only(missing: String) -> Bool {
-  let parts = String::split(missing, ",")
+fn missing_is_erased_exception_only(_ missing: String) -> Bool {
+  let parts = String::split(missing, sep = ",")
   let mut ok = Array::length(parts) > 0
   let mut i = 0
   while i < Array::length(parts) {
-    let p = String::trim(Array::get(parts, i))
+    let p = String::trim(Array::get(parts, at = i))
     // #1963: the exception policy's predicates, not the spelling -- the
     // legacy `Error` alias is the same erased exception.
     if !is_exception_label(p) || String::length(exception_label_kind(p)) > 0 {
@@ -92,13 +92,13 @@ fn missing_is_erased_exception_only(missing: String) -> Bool {
 }
 
 /// #2964: the declared row names a kinded exception and no erased one.
-fn declared_is_kinded_exception(declared: String) -> Bool {
-  let parts = String::split(declared, ",")
+fn declared_is_kinded_exception(_ declared: String) -> Bool {
+  let parts = String::split(declared, sep = ",")
   let mut kinded = false
   let mut erased = false
   let mut i = 0
   while i < Array::length(parts) {
-    let p = String::trim(Array::get(parts, i))
+    let p = String::trim(Array::get(parts, at = i))
     if !is_exception_label(p) {
       ()
     } else if String::length(exception_label_kind(p)) > 0 {
@@ -111,7 +111,7 @@ fn declared_is_kinded_exception(declared: String) -> Bool {
   kinded && !erased
 }
 
-export fn effect_error_to_string(err: EffectError) -> String {
+export fn effect_error_to_string(_ err: EffectError) -> String {
   match err {
     // #3520: lead with the edit, which depends on where the call sits, and
     // point at the callee.
@@ -173,19 +173,19 @@ export fn effect_error_to_string(err: EffectError) -> String {
       let block = entry_block_display_name(fname)
       let where_ = if fname == "#lambda:" || String::length(fname) == 0 {
         "this handle's body"
-      } else if String::starts_with(fname, "#lambda:") {
-        String::concat("the lambda '", String::concat(String::substring(fname, 8, String::length(fname)), "'"))
+      } else if String::starts_with(fname, prefix = "#lambda:") {
+        String::concat("the lambda '", String::concat(String::substring(fname, start = 8, end = String::length(fname)), "'"))
       } else if String::length(block) > 0 {
         block
       } else {
         String::concat("'", String::concat(fname, "'"))
       }
-      let name = if String::contains(binder, " ") {
+      let name = if String::contains(binder, needle = " ") {
         "e"
       } else {
         binder
       }
-      let first = Array::get(String::split(offending, ","), 0)
+      let first = Array::get(String::split(offending, sep = ","), at = 0)
       let edit = String::concat("write `", String::concat(String::trim(first), String::concat("::Throw(", String::concat(name, ")` to catch it"))))
       let why = String::concat(": the erased arm `Exception::Throw(", String::concat(name, String::concat(")` reads `", String::concat(name, String::concat("` as the thrown message, a `String`, and the kind is not carried at run time, but in ", String::concat(where_, String::concat(" the handled body raises { ", String::concat(offending, " }"))))))))
       let more = "\nhint: a kinded arm binds the payload at its own type; for several kinds, nest one handle per kind, or leave the payload unread (`Exception::Throw(_)`), which catches every kind. A callee declared with the erased `with Exception` raises the kinds its body throws"
@@ -197,28 +197,28 @@ export fn effect_error_to_string(err: EffectError) -> String {
       }
     },
     EEErasedValueOtherKind(fname, value, offending, off) => {
-      let first = String::trim(Array::get(String::split(offending, ","), 0))
+      let first = String::trim(Array::get(String::split(offending, sep = ","), at = 0))
       let where_ = erased_error_place(fname)
       let edit = String::concat("declare `", String::concat(value, String::concat("` `with ", String::concat(first, "` instead of the erased `with Exception`, and the parameter, annotation or field it is passed to with that kind (or a row variable alone, `with e`, with no erased `Exception` beside it)"))))
       let why = String::concat(": the row of `", String::concat(value, String::concat("` is the erased `with Exception`, but it raises { ", String::concat(offending, String::concat(" }, and in ", String::concat(where_, " it is used as a value whose row does not name that kind; a function value typed with the erased row raises only messages (`String`) to the code that calls it, so an erased arm `Exception::Throw(m)` would read the payload as a `String`"))))))
       let more = String::concat("\nhint: a call `", String::concat(value, String::concat("(..)` and an unannotated alias `let f = ", String::concat(value, String::concat("` keep the kinds, and a receiver declared `with Exception + ", String::concat(first, String::concat("` takes `", String::concat(value, "` as it is"))))))))
-      erased_error_at(String::concat(edit, String::concat(why, more)), off)
+      erased_error_at(body = String::concat(edit, String::concat(why, more)), off = off)
     },
     EEErasedClosureOtherKind(fname, offending, off) => {
-      let first = String::trim(Array::get(String::split(offending, ","), 0))
+      let first = String::trim(Array::get(String::split(offending, sep = ","), at = 0))
       let where_ = erased_error_place(fname)
       let edit = String::concat("write `with ", String::concat(first, "` in this closure's function type (or throw a `String`)"))
       let why = String::concat(": its row is the erased `with Exception`, which raises only messages (`String`) to the code that calls the closure, but in ", String::concat(where_, String::concat(" its body raises { ", String::concat(offending, " }"))))
       let more = "\nhint: the kind is not carried at run time, so an erased arm `Exception::Throw(m)` around a call of the closure would read the payload as a `String`; the row is the parameter's, the annotation's or the field's the closure is written for, or its own"
-      erased_error_at(String::concat(edit, String::concat(why, more)), off)
+      erased_error_at(body = String::concat(edit, String::concat(why, more)), off = off)
     },
     EEKindedHandleOpenRow(fname, handler, vars, off) => {
       let block = entry_block_display_name(fname)
       // A handle in a local lambda's body names that lambda (#3540).
       let where_ = if fname == "#lambda:" {
         "this lambda"
-      } else if String::starts_with(fname, "#lambda:") {
-        String::concat("the lambda '", String::concat(String::substring(fname, 8, String::length(fname)), "'"))
+      } else if String::starts_with(fname, prefix = "#lambda:") {
+        String::concat("the lambda '", String::concat(String::substring(fname, start = 8, end = String::length(fname)), "'"))
       } else if String::length(block) > 0 {
         block
       } else {
@@ -267,7 +267,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
         // function's -- the one edit that also works for a
         // `TaskGroup::spawn_suspend` task, whose row cannot name them.
         String::concat("\nhint: drop this closure's row so it uses the enclosing function's effects; a row written on it instead must be 'with ", String::concat(row_as_source(required), "', and a parameter the closure is passed to must accept that row too"))
-      } else if String::contains(required, "[?]") {
+      } else if String::contains(required, needle = "[?]") {
         // #3408 (Codex on #3409): a generic function passed by NAME to a
         // callee that runs it has no call here to fix its formals, so the
         // instantiation its row names is unknown (`Box[?]`) and no row
@@ -305,8 +305,8 @@ export fn effect_error_to_string(err: EffectError) -> String {
       // A kind the row syntax cannot spell is pasted through an alias, whose
       // declaration leads the hint.
       let decls = row_unspellable_kind_decls(required)
-      let hint = if String::length(decls) > 0 && String::starts_with(hint, "\nhint: ") {
-        String::concat("\nhint: ", String::concat(decls, String::substring(hint, 7, String::length(hint))))
+      let hint = if String::length(decls) > 0 && String::starts_with(hint, prefix = "\nhint: ") {
+        String::concat("\nhint: ", String::concat(decls, String::substring(hint, start = 7, end = String::length(hint))))
       } else {
         hint
       }
@@ -476,11 +476,11 @@ export fn effect_error_to_string(err: EffectError) -> String {
 // prelude — which use `Async` only in the disciplined async_iter terminals —
 // stay green while `for` over an async stream becomes sound (#2+#3).
 
-export fn effect_opt_is_async(eff: Option[String]) -> Bool {
-  effect_row_contains_label(eff, "Async")
+export fn effect_opt_is_async(_ eff: Option[String]) -> Bool {
+  effect_row_contains_label(eff = eff, wanted = "Async")
 }
 
-fn is_stdin_provider_surface(name: String) -> Bool {
+fn is_stdin_provider_surface(_ name: String) -> Bool {
   name == "Stdin::read_via_stream" || name == "StdinStream::next" || name == "StdinStream::close" || name == "StdinStream::read_chunk"
 }
 
@@ -491,9 +491,9 @@ fn is_stdin_provider_surface(name: String) -> Bool {
 /// conditionals, returned/container values, and unknown HOF transport without
 /// attempting the generic effect-flow propagation deliberately deferred by
 /// #1536. An explicitly effectful user wrapper remains an ordinary function.
-fn check_stdin_provider_direct_calls_expr(expr: Expr) -> Array[EffectError] {
+fn check_stdin_provider_direct_calls_expr(_ expr: Expr) -> Array[EffectError] {
   let out = array_empty()
-  check_stdin_provider_direct_calls_expr_into(expr, out)
+  check_stdin_provider_direct_calls_expr_into(expr = expr, out = out)
   out
 }
 
@@ -503,7 +503,7 @@ fn check_stdin_provider_direct_calls_expr_into(expr: Expr, out: Array[EffectErro
       if is_stdin_provider_surface(name) {
         let mut ai = 0
         while ai < Array::length(args) {
-          check_stdin_provider_direct_calls_expr_into(Array::get(args, ai), out)
+          check_stdin_provider_direct_calls_expr_into(expr = Array::get(args, at = ai), out = out)
           ai = ai + 1
         }
       } else {
@@ -511,14 +511,14 @@ fn check_stdin_provider_direct_calls_expr_into(expr: Expr, out: Array[EffectErro
         let end = expr_children_top()
         let mut i = mark
         while i < end {
-          check_stdin_provider_direct_calls_expr_into(expr_child_at(i), out)
+          check_stdin_provider_direct_calls_expr_into(expr = expr_child_at(i), out = out)
           i = i + 1
         }
         expr_children_pop(mark)
       }
     },
     EIdent(name, _) => if is_stdin_provider_surface(name) {
-      Array::push(out, EEStdinProviderValueReference(name))
+      Array::push(out, value = EEStdinProviderValueReference(name))
     } else {
       ()
     },
@@ -527,7 +527,7 @@ fn check_stdin_provider_direct_calls_expr_into(expr: Expr, out: Array[EffectErro
       let end = expr_children_top()
       let mut i = mark
       while i < end {
-        check_stdin_provider_direct_calls_expr_into(expr_child_at(i), out)
+        check_stdin_provider_direct_calls_expr_into(expr = expr_child_at(i), out = out)
         i = i + 1
       }
       expr_children_pop(mark)
@@ -535,7 +535,7 @@ fn check_stdin_provider_direct_calls_expr_into(expr: Expr, out: Array[EffectErro
   }
 }
 
-fn check_stdin_provider_direct_calls_stmt(stmt: Stmt) -> Array[EffectError] {
+fn check_stdin_provider_direct_calls_stmt(_ stmt: Stmt) -> Array[EffectError] {
   match stmt {
     SLet(_, _, _, _, body) => check_stdin_provider_direct_calls_expr(body),
     SLetMut(_, _, body) => check_stdin_provider_direct_calls_expr(body),
@@ -549,11 +549,11 @@ fn check_stdin_provider_direct_calls_stmt(stmt: Stmt) -> Array[EffectError] {
   }
 }
 
-export fn check_stdin_provider_direct_calls_stmts(stmts: Array[Stmt]) -> Array[EffectError] {
+export fn check_stdin_provider_direct_calls_stmts(_ stmts: Array[Stmt]) -> Array[EffectError] {
   let errors = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    append_eff_errs(errors, check_stdin_provider_direct_calls_stmt(Array::get(stmts, i)))
+    append_eff_errs(dst = errors, src = check_stdin_provider_direct_calls_stmt(Array::get(stmts, at = i)))
     i = i + 1
   }
   errors
@@ -574,18 +574,18 @@ let afe_async_primitive_memo: Array[MutMap[String, Int]] = [
 ]
 
 export fn afe_reset_entry_memos() -> Unit {
-  Array::set(afe_async_primitive_memo, 0, MutMap::new_string())
-  Array::set(afe_builtin_async_iter_cell, 0, -1)
-  Array::set(afe_callable_body_index, 0, MutMap::new_string())
+  Array::set(afe_async_primitive_memo, at = 0, value = MutMap::new_string())
+  Array::set(afe_builtin_async_iter_cell, at = 0, value = -1)
+  Array::set(afe_callable_body_index, at = 0, value = MutMap::new_string())
 }
 
 export fn is_async_primitive(name: String, env: TypeEnv) -> Bool {
-  let memo = Array::get(afe_async_primitive_memo, 0)
-  match MutMap::get(memo, name) {
+  let memo = Array::get(afe_async_primitive_memo, at = 0)
+  match MutMap::get(memo, k = name) {
     Some(v) => v == 1,
     None => {
-      let answer = is_async_primitive_uncached(name, env)
-      MutMap::set(memo, name, if answer {
+      let answer = is_async_primitive_uncached(name = name, env = env)
+      MutMap::set(memo, k = name, v = if answer {
         1
       } else {
         0
@@ -608,7 +608,7 @@ fn is_async_primitive_uncached(name: String, env: TypeEnv) -> Bool {
       None => false
     }
   } else {
-    match env_lookup(env, name) {
+    match env_lookup(env = env, name = name) {
       Some(_) => false,
       None => {
         let normalized = canonical_builtin_name(name)
@@ -624,11 +624,11 @@ fn is_async_primitive_uncached(name: String, env: TypeEnv) -> Bool {
   }
 }
 
-fn afe_has_recorded_builtin_async_iter_import(name: String) -> Bool {
+fn afe_has_recorded_builtin_async_iter_import(_ name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(afe_builtin_async_iter_import_names) && !found {
-    if Array::get(afe_builtin_async_iter_import_names, i) == name {
+    if Array::get(afe_builtin_async_iter_import_names, at = i) == name {
       found = true
     } else {
       i = i + 1
@@ -646,11 +646,11 @@ fn afe_has_recorded_builtin_async_iter_import(name: String) -> Bool {
 /// resolved it from the constructor's return metadata and lowered the loop
 /// through `Chan::next` with an injected `await`. Verified against a repro
 /// that RAN the await loop.
-fn afe_type_head_name(t: Type) -> Option[String] {
+fn afe_type_head_name(_ t: Type) -> Option[String] {
   match t {
     CtNamed(n, args) => if n == "#hkt" {
       if Array::length(args) >= 1 {
-        match Array::get(args, 0) {
+        match Array::get(args, at = 0) {
           CtVar(_) => None,
           other => afe_type_head_name(other)
         }
@@ -669,7 +669,7 @@ fn afe_type_head_name(t: Type) -> Option[String] {
 }
 
 /// Head name of a source annotation (`s: AsyncIter[Int]` -> "AsyncIter").
-fn afe_texpr_head_name(t: TypeExpr) -> Option[String] {
+fn afe_texpr_head_name(_ t: TypeExpr) -> Option[String] {
   match t {
     TyName(n) => Some(n),
     TyApp(n, _) => Some(n),
@@ -741,19 +741,19 @@ export fn afe_bind_params(locals: AfeLocals, params: Array[(String, Option[TypeE
   let mut cur = locals
   let mut i = 0
   while i < Array::length(params) {
-    let (pname, ptype) = Array::get(params, i)
+    let (pname, ptype) = Array::get(params, at = i)
     let name = effect_param_base_name(pname)
     let head = match ptype {
       Some(te) => match afe_texpr_head_name(te) {
-        Some(h) => Some(afe_tag_async_iter_head(h, afe_type_binding_is_builtin_async_iter(env))),
+        Some(h) => Some(afe_tag_async_iter_head(head = h, provenanced = afe_type_binding_is_builtin_async_iter(env))),
         None => None
       },
       None => None
     }
-    cur = afe_bind_local(cur, name, head)
+    cur = afe_bind_local(locals = cur, name = name, head = head)
     cur = match ptype {
-      Some(te) => afe_bind_annotation_payloads(cur, name, te, env),
-      None => afe_clear_annotation_payloads(cur, name)
+      Some(te) => afe_bind_annotation_payloads(locals = cur, name = name, te = te, env = env),
+      None => afe_clear_annotation_payloads(locals = cur, name = name)
     }
     i = i + 1
   }
@@ -771,22 +771,22 @@ export fn afe_bind_params(locals: AfeLocals, params: Array[(String, Option[TypeE
 /// Recorded: `Option[T]` (`Some`), `Result[T, E]` (`Ok`, `Err`) and a tuple
 /// annotation (its shape, which `.0` / `.1` projections already read).
 fn afe_bind_annotation_payloads(locals: AfeLocals, name: String, te: TypeExpr, env: TypeEnv) -> AfeLocals {
-  let cleared = afe_clear_annotation_payloads(locals, name)
+  let cleared = afe_clear_annotation_payloads(locals = locals, name = name)
   match te {
     TyApp(head, args) => if head == "Option" && Array::length(args) == 1 {
-      afe_bind_local(cleared, afe_ctor_payload_key(name, "Some"), Some(afe_payload_heads_csv(args, env)))
+      afe_bind_local(locals = cleared, name = afe_ctor_payload_key(name = name, ctor = "Some"), head = Some(afe_payload_heads_csv(items = args, env = env)))
     } else if head == "Result" && Array::length(args) == 2 {
-      let with_ok = afe_bind_local(cleared, afe_ctor_payload_key(name, "Ok"), Some(afe_payload_heads_csv([
-        Array::get(args, 0)
-      ], env)))
-      afe_bind_local(with_ok, afe_ctor_payload_key(name, "Err"), Some(afe_payload_heads_csv([
-        Array::get(args, 1)
-      ], env)))
+      let with_ok = afe_bind_local(locals = cleared, name = afe_ctor_payload_key(name = name, ctor = "Ok"), head = Some(afe_payload_heads_csv(items = [
+        Array::get(args, at = 0)
+      ], env = env)))
+      afe_bind_local(locals = with_ok, name = afe_ctor_payload_key(name = name, ctor = "Err"), head = Some(afe_payload_heads_csv(items = [
+        Array::get(args, at = 1)
+      ], env = env)))
     } else {
       cleared
     },
     TyTuple(items) => if Array::length(items) > 0 {
-      afe_bind_local(cleared, afe_tuple_shape_key(name), Some(afe_payload_heads_csv(items, env)))
+      afe_bind_local(locals = cleared, name = afe_tuple_shape_key(name), head = Some(afe_payload_heads_csv(items = items, env = env)))
     } else {
       cleared
     },
@@ -798,12 +798,12 @@ fn afe_bind_annotation_payloads(locals: AfeLocals, name: String, te: TypeExpr, e
 fn afe_metadata_key_is(key: String, prefix: String, name: String) -> Bool {
   let start = String::length(prefix)
   let len = String::length(name)
-  if String::length(key) != start + len || !String::starts_with(key, prefix) {
+  if String::length(key) != start + len || !String::starts_with(key, prefix = prefix) {
     return false
   }
   let mut i = 0
   while i < len {
-    if String::char_code_at(key, start + i) != String::char_code_at(name, i) {
+    if String::char_code_at(key, at = start + i) != String::char_code_at(name, at = i) {
       return false
     }
     i = i + 1
@@ -812,25 +812,25 @@ fn afe_metadata_key_is(key: String, prefix: String, name: String) -> Bool {
 }
 
 fn afe_metadata_key_bit(key: String, name: String, wanted: Int) -> Int {
-  if !String::starts_with(key, "__") {
+  if !String::starts_with(key, prefix = "__") {
     return 0
   }
-  if (wanted&1) != 0 && afe_metadata_key_is(key, "__ctorpay$Some$", name) {
+  if (wanted&1) != 0 && afe_metadata_key_is(key = key, prefix = "__ctorpay$Some$", name = name) {
     1
   }
-  else if (wanted&2) != 0 && afe_metadata_key_is(key, "__ctorpay$Ok$", name) {
+  else if (wanted&2) != 0 && afe_metadata_key_is(key = key, prefix = "__ctorpay$Ok$", name = name) {
     2
   }
-  else if (wanted&4) != 0 && afe_metadata_key_is(key, "__ctorpay$Err$", name) {
+  else if (wanted&4) != 0 && afe_metadata_key_is(key = key, prefix = "__ctorpay$Err$", name = name) {
     4
   }
-  else if (wanted&8) != 0 && afe_metadata_key_is(key, "__tupshape$", name) {
+  else if (wanted&8) != 0 && afe_metadata_key_is(key = key, prefix = "__tupshape$", name = name) {
     8
   }
-  else if (wanted&16) != 0 && afe_metadata_key_is(key, "__arrelem$", name) {
+  else if (wanted&16) != 0 && afe_metadata_key_is(key = key, prefix = "__arrelem$", name = name) {
     16
   }
-  else if (wanted&32) != 0 && afe_metadata_key_is(key, "__local_fn_return$", name) {
+  else if (wanted&32) != 0 && afe_metadata_key_is(key = key, prefix = "__local_fn_return$", name = name) {
     32
   }
   else {
@@ -851,7 +851,7 @@ fn afe_mask_metadata(locals: AfeLocals, name: String, wanted: Int) -> AfeLocals 
     match cur {
       AlNil => done = true,
       AlBind(key, _, rest) => {
-        let bit = afe_metadata_key_bit(key, name, wanted)
+        let bit = afe_metadata_key_bit(key = key, name = name, wanted = wanted)
         if bit != 0 && (seen&bit) == 0 {
           out = AlMask(key, out)
           seen = seen|bit
@@ -859,7 +859,7 @@ fn afe_mask_metadata(locals: AfeLocals, name: String, wanted: Int) -> AfeLocals 
         cur = rest
       },
       AlMask(key, rest) => {
-        seen = seen|afe_metadata_key_bit(key, name, wanted)
+        seen = seen|afe_metadata_key_bit(key = key, name = name, wanted = wanted)
         cur = rest
       }
     }
@@ -870,7 +870,7 @@ fn afe_mask_metadata(locals: AfeLocals, name: String, wanted: Int) -> AfeLocals 
 /// A rebinding of `name` without an annotation hides the payload heads an
 /// outer annotated binding of the same name recorded.
 fn afe_clear_annotation_payloads(locals: AfeLocals, name: String) -> AfeLocals {
-  afe_mask_metadata(locals, name, 7)
+  afe_mask_metadata(locals = locals, name = name, wanted = 7)
 }
 
 fn afe_ctor_payload_key(name: String, ctor: String) -> String {
@@ -881,20 +881,20 @@ fn afe_payload_heads_csv(items: Array[TypeExpr], env: TypeEnv) -> String {
   let parts = array_empty()
   let mut i = 0
   while i < Array::length(items) {
-    let part = match afe_texpr_head_name(Array::get(items, i)) {
-      Some(h) => afe_tag_async_iter_head(h, afe_type_binding_is_builtin_async_iter(env)),
+    let part = match afe_texpr_head_name(Array::get(items, at = i)) {
+      Some(h) => afe_tag_async_iter_head(head = h, provenanced = afe_type_binding_is_builtin_async_iter(env)),
       None => ""
     }
-    Array::push(parts, part)
+    Array::push(parts, value = part)
     i = i + 1
   }
   afe_join_csv(parts)
 }
 
 /// The constructor name without its qualifier (`Option::Some` -> `Some`).
-fn afe_bare_ctor(cn: String) -> String {
-  let parts = String::split(cn, "::")
-  Array::get(parts, Array::length(parts) - 1)
+fn afe_bare_ctor(_ cn: String) -> String {
+  let parts = String::split(cn, sep = "::")
+  Array::get(parts, at = Array::length(parts) - 1)
 }
 
 /// Bind the plain binders of `pats` to the heads in `csv`, position by
@@ -904,10 +904,10 @@ fn afe_bind_pats_to_heads(acc: AfeLocals, pats: Array[Pat], csv: String) -> AfeL
   let mut cur = acc
   let mut i = 0
   while i < Array::length(pats) && i < Array::length(heads) {
-    let h = Array::get(heads, i)
-    match Array::get(pats, i) {
+    let h = Array::get(heads, at = i)
+    match Array::get(pats, at = i) {
       PBind(n) => if String::length(h) > 0 {
-        cur = afe_bind_local(cur, n, Some(h))
+        cur = afe_bind_local(locals = cur, name = n, head = Some(h))
       } else {
         ()
       },
@@ -940,11 +940,11 @@ fn afe_field_type_key(struct_name: String, field: String) -> String {
 fn afe_field_head_with_origin(head: String, env: TypeEnv) -> String {
   if head == "AsyncIter" {
     let from_binding = afe_type_binding_is_builtin_async_iter(env)
-    let from_definition = match env_type_definition_origin(env, head) {
+    let from_definition = match env_type_definition_origin(env = env, name = head) {
       Some(origin) => afe_origin_is_builtin_async_iter(origin),
       None => false
     }
-    afe_tag_async_iter_head(head, from_binding || from_definition)
+    afe_tag_async_iter_head(head = head, provenanced = from_binding || from_definition)
   } else {
     head
   }
@@ -952,7 +952,7 @@ fn afe_field_head_with_origin(head: String, env: TypeEnv) -> String {
 
 fn afe_record_field_type(struct_name: String, field: String, head: String, env: TypeEnv) -> Unit {
   if String::length(head) > 0 {
-    Array::push(afe_field_types_cell, (afe_field_type_key(struct_name, field), afe_field_head_with_origin(head, env)))
+    Array::push(afe_field_types_cell, value = (afe_field_type_key(struct_name = struct_name, field = field), afe_field_head_with_origin(head = head, env = env)))
   } else {
     ()
   }
@@ -961,33 +961,33 @@ fn afe_record_field_type(struct_name: String, field: String, head: String, env: 
 fn afe_collect_field_types(stmts: Array[Stmt], env: TypeEnv) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SStruct(_, sname, fields, _, _, _) => {
         let mut j = 0
         while j < Array::length(fields) {
-          let (fname, fty) = Array::get(fields, j)
-          afe_record_field_type(sname, fname, texpr_head_name_afe(fty), env)
+          let (fname, fty) = Array::get(fields, at = j)
+          afe_record_field_type(struct_name = sname, field = fname, head = texpr_head_name_afe(fty), env = env)
           j = j + 1
         }
       },
-      SModule(_, _, inner) => afe_collect_field_types(inner, env),
+      SModule(_, _, inner) => afe_collect_field_types(stmts = inner, env = env),
       _ => ()
     }
     i = i + 1
   }
 }
 
-fn afe_collect_env_field_types(env: TypeEnv) -> Unit {
+fn afe_collect_env_field_types(_ env: TypeEnv) -> Unit {
   let defs = env_type_defs(env)
   let mut i = 0
   while i < Array::length(defs) {
-    match Array::get(defs, i) {
+    match Array::get(defs, at = i) {
       TDStruct(sname, fields, _, _) => {
         let mut j = 0
         while j < Array::length(fields) {
-          let (fname, fty) = Array::get(fields, j)
+          let (fname, fty) = Array::get(fields, at = j)
           match afe_type_head_name(fty) {
-            Some(head) => afe_record_field_type(sname, fname, head, env),
+            Some(head) => afe_record_field_type(struct_name = sname, field = fname, head = head, env = env),
             None => ()
           }
           j = j + 1
@@ -999,7 +999,7 @@ fn afe_collect_env_field_types(env: TypeEnv) -> Unit {
   }
 }
 
-fn texpr_head_name_afe(t: TypeExpr) -> String {
+fn texpr_head_name_afe(_ t: TypeExpr) -> String {
   match t {
     TyName(n) => n,
     TyApp(n, _) => n,
@@ -1008,17 +1008,17 @@ fn texpr_head_name_afe(t: TypeExpr) -> String {
 }
 
 export fn afe_set_field_types(stmts: Array[Stmt], env: TypeEnv) -> Unit {
-  Array::truncate(afe_field_types_cell, 0)
-  afe_collect_field_types(stmts, env)
+  Array::truncate(afe_field_types_cell, length = 0)
+  afe_collect_field_types(stmts = stmts, env = env)
   afe_collect_env_field_types(env)
 }
 
 fn afe_lookup_field_type(struct_name: String, field: String) -> Option[String] {
-  let key = afe_field_type_key(struct_name, field)
+  let key = afe_field_type_key(struct_name = struct_name, field = field)
   let mut i = 0
   let mut out = None
   while i < Array::length(afe_field_types_cell) {
-    let (k, v) = Array::get(afe_field_types_cell, i)
+    let (k, v) = Array::get(afe_field_types_cell, at = i)
     if k == key {
       out = Some(v)
       i = Array::length(afe_field_types_cell)
@@ -1029,11 +1029,11 @@ fn afe_lookup_field_type(struct_name: String, field: String) -> Option[String] {
   out
 }
 
-fn afe_applied_constructor_var(t: Type) -> Option[Int] {
+fn afe_applied_constructor_var(_ t: Type) -> Option[Int] {
   match t {
     CtApplied(CtVar(id), _) => Some(id),
     CtNamed(n, args) => if n == "#hkt" && Array::length(args) >= 1 {
-      match Array::get(args, 0) {
+      match Array::get(args, at = 0) {
         CtVar(id) => Some(id),
         _ => None
       }
@@ -1045,7 +1045,7 @@ fn afe_applied_constructor_var(t: Type) -> Option[Int] {
 }
 
 fn afe_lookup_alias(env: TypeEnv, name: String) -> Option[(Array[String], Type)] {
-  match find_typedef(env_type_defs(env), name) {
+  match find_typedef(defs = env_type_defs(env), name = name) {
     Some(TDAlias(_, params, body)) => Some((params, body)),
     _ => None
   }
@@ -1056,31 +1056,31 @@ fn afe_expand_constructor_alias(t: Type, env: TypeEnv, fuel: Int) -> Type {
     t
   } else {
     match t {
-      CtForAll(ids, bounds, body) => CtForAll(ids, bounds, afe_expand_constructor_alias(body, env, fuel)),
-      CtNamed(name, args) => match afe_lookup_alias(env, name) {
+      CtForAll(ids, bounds, body) => CtForAll(ids, bounds, afe_expand_constructor_alias(t = body, env = env, fuel = fuel)),
+      CtNamed(name, args) => match afe_lookup_alias(env = env, name = name) {
         Some((params, body)) => if Array::length(params) == Array::length(args) {
-          afe_expand_constructor_alias(resolve_type_alias_params(body, params, args), env, fuel - 1)
+          afe_expand_constructor_alias(t = resolve_type_alias_params(ty = body, params = params, args = args), env = env, fuel = fuel - 1)
         } else if Array::length(params) == 0 {
-          afe_expand_constructor_alias(body, env, fuel - 1)
+          afe_expand_constructor_alias(t = body, env = env, fuel = fuel - 1)
         } else {
           t
         },
         None => t
       },
       CtApplied(head, args) => {
-        let expanded_head = afe_expand_constructor_alias(head, env, fuel - 1)
+        let expanded_head = afe_expand_constructor_alias(t = head, env = env, fuel = fuel - 1)
         match expanded_head {
-          CtNamed(name, _) => match afe_lookup_alias(env, name) {
+          CtNamed(name, _) => match afe_lookup_alias(env = env, name = name) {
             Some((params, body)) => if Array::length(params) == Array::length(args) {
-              afe_expand_constructor_alias(resolve_type_alias_params(body, params, args), env, fuel - 1)
+              afe_expand_constructor_alias(t = resolve_type_alias_params(ty = body, params = params, args = args), env = env, fuel = fuel - 1)
             } else {
               CtApplied(expanded_head, args)
             },
             None => CtApplied(expanded_head, args)
           },
-          CtConstructor(name, _) => match afe_lookup_alias(env, name) {
+          CtConstructor(name, _) => match afe_lookup_alias(env = env, name = name) {
             Some((params, body)) => if Array::length(params) == Array::length(args) {
-              afe_expand_constructor_alias(resolve_type_alias_params(body, params, args), env, fuel - 1)
+              afe_expand_constructor_alias(t = resolve_type_alias_params(ty = body, params = params, args = args), env = env, fuel = fuel - 1)
             } else {
               CtApplied(expanded_head, args)
             },
@@ -1100,16 +1100,16 @@ fn afe_expand_constructor_alias(t: Type, env: TypeEnv, fuel: Int) -> Type {
 /// the memo above.
 let afe_builtin_async_iter_cell: Array[Int] = [-1]
 
-export fn afe_type_binding_is_builtin_async_iter(env: TypeEnv) -> Bool {
-  let cached = Array::get(afe_builtin_async_iter_cell, 0)
+export fn afe_type_binding_is_builtin_async_iter(_ env: TypeEnv) -> Bool {
+  let cached = Array::get(afe_builtin_async_iter_cell, at = 0)
   if cached >= 0 {
     cached == 1
   } else {
-    let answer = match env_lookup_binding(env, "AsyncIter") {
+    let answer = match env_lookup_binding(env = env, name = "AsyncIter") {
       Some(binding) => afe_origin_is_builtin_async_iter(binding.origin),
       None => false
     }
-    Array::set(afe_builtin_async_iter_cell, 0, if answer {
+    Array::set(afe_builtin_async_iter_cell, at = 0, value = if answer {
       1
     } else {
       0
@@ -1128,7 +1128,7 @@ fn afe_tag_async_iter_head(head: String, provenanced: Bool) -> String {
   }
 }
 
-export fn afe_display_iter_head(head: String) -> String {
+export fn afe_display_iter_head(_ head: String) -> String {
   if head == afe_builtin_async_iter_head {
     "AsyncIter"
   } else {
@@ -1136,19 +1136,19 @@ export fn afe_display_iter_head(head: String) -> String {
   }
 }
 
-fn afe_tuple_shape_key(name: String) -> String {
+fn afe_tuple_shape_key(_ name: String) -> String {
   String::concat("__tupshape$", name)
 }
 
-fn afe_array_elem_key(name: String) -> String {
+fn afe_array_elem_key(_ name: String) -> String {
   String::concat("__arrelem$", name)
 }
 
-fn afe_local_fn_return_key(name: String) -> String {
+fn afe_local_fn_return_key(_ name: String) -> String {
   String::concat("__local_fn_return$", name)
 }
 
-fn afe_digit_index(field: String) -> Option[Int] {
+fn afe_digit_index(_ field: String) -> Option[Int] {
   let n = String::length(field)
   if n == 0 {
     None
@@ -1157,7 +1157,7 @@ fn afe_digit_index(field: String) -> Option[Int] {
     let mut acc = 0
     let mut ok = true
     while i < n {
-      let c = String::char_code_at(field, i)
+      let c = String::char_code_at(field, at = i)
       if c >= 48 && c <= 57 {
         acc = acc * 10 + (c - 48)
       } else {
@@ -1173,31 +1173,31 @@ fn afe_digit_index(field: String) -> Option[Int] {
   }
 }
 
-fn afe_split_csv(sentinel: String) -> Array[String] {
+fn afe_split_csv(_ sentinel: String) -> Array[String] {
   let out = array_empty()
   let mut rest = sentinel
   let mut go = true
   while go {
-    let comma = String::index_of(rest, ",")
+    let comma = String::index_of(rest, needle = ",")
     if comma < 0 {
-      Array::push(out, rest)
+      Array::push(out, value = rest)
       go = false
     } else {
-      Array::push(out, String::substring(rest, 0, comma))
-      rest = String::substring(rest, comma + 1, String::length(rest))
+      Array::push(out, value = String::substring(rest, start = 0, end = comma))
+      rest = String::substring(rest, start = comma + 1, end = String::length(rest))
     }
   }
   out
 }
 
-fn afe_join_csv(parts: Array[String]) -> String {
+fn afe_join_csv(_ parts: Array[String]) -> String {
   let mut acc = ""
   let mut i = 0
   while i < Array::length(parts) {
     acc = if i == 0 {
-      Array::get(parts, i)
+      Array::get(parts, at = i)
     } else {
-      String::concat(acc, String::concat(",", Array::get(parts, i)))
+      String::concat(acc, String::concat(",", Array::get(parts, at = i)))
     }
     i = i + 1
   }
@@ -1206,10 +1206,10 @@ fn afe_join_csv(parts: Array[String]) -> String {
 
 fn afe_prepend_expr(head: Expr, rest: Array[Expr]) -> Array[Expr] {
   let out = array_empty()
-  Array::push(out, head)
+  Array::push(out, value = head)
   let mut i = 0
   while i < Array::length(rest) {
-    Array::push(out, Array::get(rest, i))
+    Array::push(out, value = Array::get(rest, at = i))
     i = i + 1
   }
   out
@@ -1222,9 +1222,9 @@ fn afe_prepend_expr(head: Expr, rest: Array[Expr]) -> Array[Expr] {
 /// an unknown head.
 fn afe_call_result_head(callee_type: Type, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match callee_type {
-    CtForAll(_, _, body) => afe_call_result_head(body, args, env, locals),
+    CtForAll(_, _, body) => afe_call_result_head(callee_type = body, args = args, env = env, locals = locals),
     CtFn(params, ret, _) => {
-      let expanded = afe_expand_constructor_alias(ret, env, 8)
+      let expanded = afe_expand_constructor_alias(t = ret, env = env, fuel = 8)
       match afe_type_head_name(expanded) {
         Some(head) => Some(head),
         None => match afe_applied_constructor_var(expanded) {
@@ -1232,11 +1232,11 @@ fn afe_call_result_head(callee_type: Type, args: Array[Expr], env: TypeEnv, loca
             let mut i = 0
             let mut result = None
             while i < Array::length(params) && i < Array::length(args) {
-              match afe_applied_constructor_var(Array::get(params, i)) {
+              match afe_applied_constructor_var(Array::get(params, at = i)) {
                 Some(param_var) => {
                   let same_constructor = param_var == result_var
                   if same_constructor {
-                    match afe_expr_head_name(Array::get(args, i), env, locals) {
+                    match afe_expr_head_name(e = Array::get(args, at = i), env = env, locals = locals) {
                       Some(head) => {
                         result = Some(head)
                         i = Array::length(params)
@@ -1268,7 +1268,7 @@ fn afe_callee_is_builtin_async_iter(env: TypeEnv, name: String) -> Bool {
   if afe_has_recorded_builtin_async_iter_import(name) {
     true
   } else {
-    match env_lookup_binding(env, name) {
+    match env_lookup_binding(env = env, name = name) {
       Some(binding) => afe_origin_is_builtin_async_iter(binding.origin),
       None => false
     }
@@ -1279,7 +1279,7 @@ fn afe_finish_call_head(head: String, env: TypeEnv, callee: String) -> String {
   if head == afe_builtin_async_iter_head {
     head
   } else {
-    afe_tag_async_iter_head(head, afe_callee_is_builtin_async_iter(env, callee) || afe_type_binding_is_builtin_async_iter(env))
+    afe_tag_async_iter_head(head = head, provenanced = afe_callee_is_builtin_async_iter(env = env, name = callee) || afe_type_binding_is_builtin_async_iter(env))
   }
 }
 
@@ -1301,32 +1301,32 @@ fn afe_heads_agree(left: Option[String], right: Option[String]) -> Option[String
 }
 
 fn afe_bind_shapes(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
-  afe_bind_shapes_from(locals, locals, name, val, env)
+  afe_bind_shapes_from(acc = locals, outer = locals, name = name, val = val, env = env)
 }
 
 /// `afe_bind_shapes` with the scope `val` is read in (`outer`) kept apart from
 /// the one the shapes are added to (`acc`).
 fn afe_bind_shapes_from(acc: AfeLocals, outer: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
   let locals = outer
-  let without = afe_mask_metadata(acc, name, 24)
+  let without = afe_mask_metadata(locals = acc, name = name, wanted = 24)
   match val {
     ETuple(items) => if Array::length(items) > 0 {
       let parts = array_empty()
       let mut i = 0
       while i < Array::length(items) {
-        let part = match afe_expr_head_name(Array::get(items, i), env, locals) {
+        let part = match afe_expr_head_name(e = Array::get(items, at = i), env = env, locals = locals) {
           Some(h) => h,
           None => ""
         }
-        Array::push(parts, part)
+        Array::push(parts, value = part)
         i = i + 1
       }
-      afe_bind_local(without, afe_tuple_shape_key(name), Some(afe_join_csv(parts)))
+      afe_bind_local(locals = without, name = afe_tuple_shape_key(name), head = Some(afe_join_csv(parts)))
     } else {
       without
     },
     EArray(items) => if Array::length(items) > 0 {
-      afe_bind_local(without, afe_array_elem_key(name), afe_expr_head_name(Array::get(items, 0), env, locals))
+      afe_bind_local(locals = without, name = afe_array_elem_key(name), head = afe_expr_head_name(e = Array::get(items, at = 0), env = env, locals = locals))
     } else {
       without
     },
@@ -1338,7 +1338,7 @@ fn afe_fn_return_head(val: Expr, env: TypeEnv) -> Option[String] {
   match val {
     EFn(_, _, _, ret, _, _) => match ret {
       Some(te) => match afe_texpr_head_name(te) {
-        Some(h) => Some(afe_tag_async_iter_head(h, afe_type_binding_is_builtin_async_iter(env))),
+        Some(h) => Some(afe_tag_async_iter_head(head = h, provenanced = afe_type_binding_is_builtin_async_iter(env))),
         None => None
       },
       None => None
@@ -1348,16 +1348,16 @@ fn afe_fn_return_head(val: Expr, env: TypeEnv) -> Option[String] {
 }
 
 fn afe_bind_local_fn_return(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
-  match afe_fn_return_head(val, env) {
+  match afe_fn_return_head(val = val, env = env) {
     Some(head) => AlBind(afe_local_fn_return_key(name), head, locals),
-    None => afe_mask_metadata(locals, name, 32)
+    None => afe_mask_metadata(locals = locals, name = name, wanted = 32)
   }
 }
 
 export fn afe_bind_value(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
-  let with_head = afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))
-  let with_fn = afe_bind_local_fn_return(with_head, name, val, env)
-  afe_bind_value_payloads(afe_bind_shapes(with_fn, name, val, env), name, val, env)
+  let with_head = afe_bind_local(locals = locals, name = name, head = afe_expr_head_name(e = val, env = env, locals = locals))
+  let with_fn = afe_bind_local_fn_return(locals = with_head, name = name, val = val, env = env)
+  afe_bind_value_payloads(locals = afe_bind_shapes(locals = with_fn, name = name, val = val, env = env), name = name, val = val, env = env)
 }
 
 /// #3198 review: an annotated `let` (the parser's `((__asc: T) -> __asc)(v)`)
@@ -1365,15 +1365,15 @@ export fn afe_bind_value(locals: AfeLocals, name: String, val: Expr, env: TypeEn
 /// hides the ones an outer binding of the same name recorded.
 fn afe_bind_value_payloads(locals: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
   match afe_ascribed_type(val) {
-    Some(te) => afe_bind_annotation_payloads(locals, name, te, env),
-    None => afe_clear_annotation_payloads(locals, name)
+    Some(te) => afe_bind_annotation_payloads(locals = locals, name = name, te = te, env = env),
+    None => afe_clear_annotation_payloads(locals = locals, name = name)
   }
 }
 
-fn afe_ascribed_type(val: Expr) -> Option[TypeExpr] {
+fn afe_ascribed_type(_ val: Expr) -> Option[TypeExpr] {
   match val {
     ECall(EFn(_, _, params, _, _, EIdent(bname, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 {
-      let (pname, pty) = Array::get(params, 0)
+      let (pname, pty) = Array::get(params, at = 0)
       if pname == "__asc" && bname == "__asc" {
         pty
       } else {
@@ -1389,10 +1389,10 @@ fn afe_ascribed_type(val: Expr) -> Option[TypeExpr] {
 /// The evidence planner carries a local row annotation through a named
 /// function value (including a chain of immutable aliases). A conditional or
 /// other computed value still has no corresponding evidence binding.
-export fn afe_ascribed_name_type(val: Expr) -> Option[TypeExpr] {
+export fn afe_ascribed_name_type(_ val: Expr) -> Option[TypeExpr] {
   match val {
     ECall(_, args, _, _) => if Array::length(args) == 1 {
-      match Array::get(args, 0) {
+      match Array::get(args, at = 0) {
         EIdent(_, _) => afe_ascribed_type(val),
         _ => None
       }
@@ -1409,15 +1409,15 @@ export fn afe_ascribed_name_type(val: Expr) -> Option[TypeExpr] {
 /// body's, so `loop (it = it) { for x in it { .. } }` keeps the async
 /// iterator head the outer `it` carries.
 export fn afe_bind_value_from(acc: AfeLocals, outer: AfeLocals, name: String, val: Expr, env: TypeEnv) -> AfeLocals {
-  let with_head = afe_bind_local(acc, name, afe_expr_head_name(val, env, outer))
-  let with_fn = afe_bind_local_fn_return(with_head, name, val, env)
-  afe_bind_value_payloads(afe_bind_shapes_from(with_fn, outer, name, val, env), name, val, env)
+  let with_head = afe_bind_local(locals = acc, name = name, head = afe_expr_head_name(e = val, env = env, locals = outer))
+  let with_fn = afe_bind_local_fn_return(locals = with_head, name = name, val = val, env = env)
+  afe_bind_value_payloads(locals = afe_bind_shapes_from(acc = with_fn, outer = outer, name = name, val = val, env = env), name = name, val = val, env = env)
 }
 
 /// The scope a match arm's body is read in. #3177: every pattern binder masks
 /// the outer scope, and the binders whose head the scrutinee reveals carry it.
 export fn afe_match_arm_locals(scrut: Expr, pat: Pat, env: TypeEnv, locals: AfeLocals) -> AfeLocals {
-  afe_match_arm_locals_onto(scrut, pat, env, locals, afe_mask_pat_binders(locals, pat))
+  afe_match_arm_locals_onto(scrut = scrut, pat = pat, env = env, outer = locals, acc = afe_mask_pat_binders(locals = locals, pat = pat))
 }
 
 /// `afe_match_arm_locals` with the scope the scrutinee is read in (`outer`)
@@ -1425,13 +1425,13 @@ export fn afe_match_arm_locals(scrut: Expr, pat: Pat, env: TypeEnv, locals: AfeL
 /// shadow the very name its scrutinee reads (`match it { Some(it) => .. }`).
 fn afe_match_arm_locals_onto(scrut: Expr, pat: Pat, env: TypeEnv, outer: AfeLocals, acc: AfeLocals) -> AfeLocals {
   match pat {
-    PBind(name) => afe_bind_local(acc, name, afe_expr_head_name(scrut, env, outer)),
+    PBind(name) => afe_bind_local(locals = acc, name = name, head = afe_expr_head_name(e = scrut, env = env, locals = outer)),
     PCtor(raw_cn, sub) => match scrut {
-      ECall(EIdent(name, _), args, _, _) => if name == pattern_ctor_base_name(raw_cn) || String::ends_with(name, String::concat("::", pattern_ctor_base_name(raw_cn))) {
+      ECall(EIdent(name, _), args, _, _) => if name == pattern_ctor_base_name(raw_cn) || String::ends_with(name, suffix = String::concat("::", pattern_ctor_base_name(raw_cn))) {
         let mut cur = acc
         let mut i = 0
         while i < Array::length(sub) && i < Array::length(args) {
-          cur = afe_match_arm_locals_onto(Array::get(args, i), Array::get(sub, i), env, outer, cur)
+          cur = afe_match_arm_locals_onto(scrut = Array::get(args, at = i), pat = Array::get(sub, at = i), env = env, outer = outer, acc = cur)
           i = i + 1
         }
         cur
@@ -1440,8 +1440,8 @@ fn afe_match_arm_locals_onto(scrut: Expr, pat: Pat, env: TypeEnv, outer: AfeLoca
       },
       // #3198 review: a NAME whose annotation recorded this constructor's
       // payload heads (`o: Option[Countdown]`, `Some(c)`).
-      EIdent(sname, _) => match afe_lookup_local(outer, afe_ctor_payload_key(sname, afe_bare_ctor(raw_cn))) {
-        Some(csv) => afe_bind_pats_to_heads(acc, sub, csv),
+      EIdent(sname, _) => match afe_lookup_local(locals = outer, name = afe_ctor_payload_key(name = sname, ctor = afe_bare_ctor(raw_cn))) {
+        Some(csv) => afe_bind_pats_to_heads(acc = acc, pats = sub, csv = csv),
         None => acc
       },
       _ => acc
@@ -1451,13 +1451,13 @@ fn afe_match_arm_locals_onto(scrut: Expr, pat: Pat, env: TypeEnv, outer: AfeLoca
         let mut cur = acc
         let mut i = 0
         while i < Array::length(items) && i < Array::length(vals) {
-          cur = afe_match_arm_locals_onto(Array::get(vals, i), Array::get(items, i), env, outer, cur)
+          cur = afe_match_arm_locals_onto(scrut = Array::get(vals, at = i), pat = Array::get(items, at = i), env = env, outer = outer, acc = cur)
           i = i + 1
         }
         cur
       },
-      EIdent(sname, _) => match afe_lookup_local(outer, afe_tuple_shape_key(sname)) {
-        Some(csv) => afe_bind_pats_to_heads(acc, items, csv),
+      EIdent(sname, _) => match afe_lookup_local(locals = outer, name = afe_tuple_shape_key(sname)) {
+        Some(csv) => afe_bind_pats_to_heads(acc = acc, pats = items, csv = csv),
         None => acc
       },
       _ => acc
@@ -1473,16 +1473,16 @@ fn afe_match_arm_locals_onto(scrut: Expr, pat: Pat, env: TypeEnv, outer: AfeLoca
 /// match-bound `await` called in a row-free lambda demanded `Async`).
 export fn afe_mask_pat_binders(locals: AfeLocals, pat: Pat) -> AfeLocals {
   match pat {
-    PBind(name) => afe_mask_metadata(afe_bind_local(locals, name, None), name, 15),
-    PCtor(_, sub) => afe_mask_pats_binders(locals, sub),
-    PTuple(items) => afe_mask_pats_binders(locals, items),
-    POr(a, b) => afe_mask_pat_binders(afe_mask_pat_binders(locals, a), b),
+    PBind(name) => afe_mask_metadata(locals = afe_bind_local(locals = locals, name = name, head = None), name = name, wanted = 15),
+    PCtor(_, sub) => afe_mask_pats_binders(locals = locals, pats = sub),
+    PTuple(items) => afe_mask_pats_binders(locals = locals, pats = items),
+    POr(a, b) => afe_mask_pat_binders(locals = afe_mask_pat_binders(locals = locals, pat = a), pat = b),
     PStruct(_, fields) => {
       let mut cur = locals
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
-        cur = afe_mask_pat_binders(cur, fp)
+        let (_, fp) = Array::get(fields, at = i)
+        cur = afe_mask_pat_binders(locals = cur, pat = fp)
         i = i + 1
       }
       cur
@@ -1495,7 +1495,7 @@ fn afe_mask_pats_binders(locals: AfeLocals, pats: Array[Pat]) -> AfeLocals {
   let mut cur = locals
   let mut i = 0
   while i < Array::length(pats) {
-    cur = afe_mask_pat_binders(cur, Array::get(pats, i))
+    cur = afe_mask_pat_binders(locals = cur, pat = Array::get(pats, at = i))
     i = i + 1
   }
   cur
@@ -1506,15 +1506,15 @@ fn afe_tuple_elem_head(obj: Expr, field: String, env: TypeEnv, locals: AfeLocals
     None => None,
     Some(idx) => match obj {
       ETuple(items) => if idx >= 0 && idx < Array::length(items) {
-        afe_expr_head_name(Array::get(items, idx), env, locals)
+        afe_expr_head_name(e = Array::get(items, at = idx), env = env, locals = locals)
       } else {
         None
       },
-      EIdent(name, _) => match afe_lookup_local(locals, afe_tuple_shape_key(name)) {
+      EIdent(name, _) => match afe_lookup_local(locals = locals, name = afe_tuple_shape_key(name)) {
         Some(sentinel) => {
           let parts = afe_split_csv(sentinel)
           if idx >= 0 && idx < Array::length(parts) {
-            let elem = Array::get(parts, idx)
+            let elem = Array::get(parts, at = idx)
             if String::length(elem) > 0 {
               Some(elem)
             } else {
@@ -1533,10 +1533,10 @@ fn afe_tuple_elem_head(obj: Expr, field: String, env: TypeEnv, locals: AfeLocals
 
 fn afe_array_elem_head(args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
   if Array::length(args) == 2 {
-    match Array::get(args, 0) {
-      EIdent(arrname, _) => afe_lookup_local(locals, afe_array_elem_key(arrname)),
+    match Array::get(args, at = 0) {
+      EIdent(arrname, _) => afe_lookup_local(locals = locals, name = afe_array_elem_key(arrname)),
       EArray(items) => if Array::length(items) > 0 {
-        afe_expr_head_name(Array::get(items, 0), env, locals)
+        afe_expr_head_name(e = Array::get(items, at = 0), env = env, locals = locals)
       } else {
         None
       },
@@ -1552,28 +1552,28 @@ fn afe_array_elem_head(args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Op
 /// for a call the checker types as that builtin (`builtin_call_arm`); a
 /// program's own function of either spelling is read from its declaration.
 fn afe_ident_call_head(f: String, f_off: Int, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
-  if (f == "Array::get" || f == "__index") && builtin_call_arm(env, f, Array::length(args), f_off) != "" {
-    match afe_array_elem_head(args, env, locals) {
+  if (f == "Array::get" || f == "__index") && builtin_call_arm(env = env, name = f, argc = Array::length(args), callee_off = f_off) != "" {
+    match afe_array_elem_head(args = args, env = env, locals = locals) {
       Some(head) => Some(head),
-      None => afe_ident_call_head_generic(f, args, env, locals)
+      None => afe_ident_call_head_generic(f = f, args = args, env = env, locals = locals)
     }
   } else {
-    afe_ident_call_head_generic(f, args, env, locals)
+    afe_ident_call_head_generic(f = f, args = args, env = env, locals = locals)
   }
 }
 
 fn afe_ident_call_head_generic(f: String, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
-  match afe_lookup_local(locals, afe_local_fn_return_key(f)) {
+  match afe_lookup_local(locals = locals, name = afe_local_fn_return_key(f)) {
     Some(head) => Some(head),
-    None => afe_ident_call_head_env(f, args, env, locals)
+    None => afe_ident_call_head_env(f = f, args = args, env = env, locals = locals)
   }
 }
 
 fn afe_ident_call_head_env(f: String, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
-  match env_lookup(env, f) {
-    Some(callee_type) => match afe_call_result_head(callee_type, args, env, locals) {
-      Some(head) => Some(afe_finish_call_head(head, env, f)),
-      None => match env_lookup_binding(env, f) {
+  match env_lookup(env = env, name = f) {
+    Some(callee_type) => match afe_call_result_head(callee_type = callee_type, args = args, env = env, locals = locals) {
+      Some(head) => Some(afe_finish_call_head(head = head, env = env, callee = f)),
+      None => match env_lookup_binding(env = env, name = f) {
         Some(binding) => if afe_origin_is_builtin_async_iter(binding.origin) || afe_has_recorded_builtin_async_iter_import(f) {
           Some(afe_builtin_async_iter_head)
         } else {
@@ -1583,15 +1583,15 @@ fn afe_ident_call_head_env(f: String, args: Array[Expr], env: TypeEnv, locals: A
       }
     },
     _ => match lookup_builtin(f) {
-      Some(callee_type) => match afe_call_result_head(callee_type, args, env, locals) {
-        Some(head) => Some(afe_finish_call_head(head, env, f)),
+      Some(callee_type) => match afe_call_result_head(callee_type = callee_type, args = args, env = env, locals = locals) {
+        Some(head) => Some(afe_finish_call_head(head = head, env = env, callee = f)),
         None => if afe_has_recorded_builtin_async_iter_import(f) {
           Some(afe_builtin_async_iter_head)
         } else {
           None
         }
       },
-      _ => match env_lookup_binding(env, f) {
+      _ => match env_lookup_binding(env = env, name = f) {
         Some(binding) => if afe_origin_is_builtin_async_iter(binding.origin) || afe_has_recorded_builtin_async_iter_import(f) {
           Some(afe_builtin_async_iter_head)
         } else {
@@ -1608,12 +1608,12 @@ fn afe_ident_call_head_env(f: String, args: Array[Expr], env: TypeEnv, locals: A
 }
 
 fn afe_dot_call_head(obj: Expr, method: String, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
-  match afe_expr_head_name(obj, env, locals) {
+  match afe_expr_head_name(e = obj, env = env, locals = locals) {
     Some(receiver) => {
       let display = afe_display_iter_head(receiver)
       let qualified = String::concat(display, String::concat("::", method))
-      let call_args = afe_prepend_expr(obj, args)
-      match afe_ident_call_head(qualified, 0 - 1, call_args, env, locals) {
+      let call_args = afe_prepend_expr(head = obj, rest = args)
+      match afe_ident_call_head(f = qualified, f_off = 0 - 1, args = call_args, env = env, locals = locals) {
         Some(head) => Some(head),
         None => if receiver == afe_builtin_async_iter_head && afe_is_async_iter_publication_name(qualified) {
           Some(afe_builtin_async_iter_head)
@@ -1627,19 +1627,19 @@ fn afe_dot_call_head(obj: Expr, method: String, args: Array[Expr], env: TypeEnv,
 }
 
 fn afe_iife_head(params: Array[(String, Option[TypeExpr])], body: Expr, args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> Option[String] {
-  let mut body_locals = afe_bind_params(locals, params, env)
+  let mut body_locals = afe_bind_params(locals = locals, params = params, env = env)
   let mut i = 0
   while i < Array::length(params) {
-    let (name, _) = Array::get(params, i)
+    let (name, _) = Array::get(params, at = i)
     let inferred = if i < Array::length(args) {
-      afe_expr_head_name(Array::get(args, i), env, locals)
+      afe_expr_head_name(e = Array::get(args, at = i), env = env, locals = locals)
     } else {
       None
     }
-    body_locals = afe_bind_local(body_locals, name, inferred)
+    body_locals = afe_bind_local(locals = body_locals, name = name, head = inferred)
     i = i + 1
   }
-  afe_expr_head_name(body, env, body_locals)
+  afe_expr_head_name(e = body, env = env, locals = body_locals)
 }
 
 fn afe_handler_arm_head(arm_body: Expr, expected: String, env: TypeEnv, locals: AfeLocals) -> Option[String] {
@@ -1649,29 +1649,29 @@ fn afe_handler_arm_head(arm_body: Expr, expected: String, env: TypeEnv, locals: 
     } else {
       None
     },
-    ELet(name, val, body, _) => afe_handler_arm_head(body, expected, env, afe_bind_value(locals, name, val, env)),
-    ELetMut(name, val, body, _) => afe_handler_arm_head(body, expected, env, afe_bind_value(locals, name, val, env)),
-    ELetRec(name, val, body) => afe_handler_arm_head(body, expected, env, afe_bind_value(locals, name, val, env)),
-    EReturn(inner) => afe_handler_arm_head(inner, expected, env, locals),
-    EAssign(_, _, continuation, _) => afe_handler_arm_head(continuation, expected, env, locals),
-    EAssignOp(_, _, _, continuation, _) => afe_handler_arm_head(continuation, expected, env, locals),
-    ESeq(_, result) => afe_handler_arm_head(result, expected, env, locals),
-    EIf(_, then_branch, else_branch) => afe_heads_agree(afe_handler_arm_head(then_branch, expected, env, locals), afe_handler_arm_head(else_branch, expected, env, locals)),
-    _ => afe_expr_head_name(arm_body, env, locals)
+    ELet(name, val, body, _) => afe_handler_arm_head(arm_body = body, expected = expected, env = env, locals = afe_bind_value(locals = locals, name = name, val = val, env = env)),
+    ELetMut(name, val, body, _) => afe_handler_arm_head(arm_body = body, expected = expected, env = env, locals = afe_bind_value(locals = locals, name = name, val = val, env = env)),
+    ELetRec(name, val, body) => afe_handler_arm_head(arm_body = body, expected = expected, env = env, locals = afe_bind_value(locals = locals, name = name, val = val, env = env)),
+    EReturn(inner) => afe_handler_arm_head(arm_body = inner, expected = expected, env = env, locals = locals),
+    EAssign(_, _, continuation, _) => afe_handler_arm_head(arm_body = continuation, expected = expected, env = env, locals = locals),
+    EAssignOp(_, _, _, continuation, _) => afe_handler_arm_head(arm_body = continuation, expected = expected, env = env, locals = locals),
+    ESeq(_, result) => afe_handler_arm_head(arm_body = result, expected = expected, env = env, locals = locals),
+    EIf(_, then_branch, else_branch) => afe_heads_agree(left = afe_handler_arm_head(arm_body = then_branch, expected = expected, env = env, locals = locals), right = afe_handler_arm_head(arm_body = else_branch, expected = expected, env = env, locals = locals)),
+    _ => afe_expr_head_name(e = arm_body, env = env, locals = locals)
   }
 }
 
 fn afe_op_name_matches(name: String, op: String) -> Bool {
-  name == op || String::ends_with(name, String::concat("::", op)) || String::ends_with(op, String::concat("::", name))
+  name == op || String::ends_with(name, suffix = String::concat("::", op)) || String::ends_with(op, suffix = String::concat("::", name))
 }
 
 fn afe_handler_consumes_op(arms: Array[(Pat, Expr)], op: String) -> Bool {
   let mut i = 0
   let mut consumes = false
   while i < Array::length(arms) && !consumes {
-    let (pat, _) = Array::get(arms, i)
+    let (pat, _) = Array::get(arms, at = i)
     match pat {
-      PCtor(name, _) => if afe_op_name_matches(name, op) {
+      PCtor(name, _) => if afe_op_name_matches(name = name, op = op) {
         consumes = true
       } else {
         ()
@@ -1694,24 +1694,24 @@ export let afe_reachability_values: Array[Bool] = array_empty()
 export let afe_reachability_stack: Array[String] = array_empty()
 
 fn afe_add_callable_body(name: String, params: Array[(String, Option[TypeExpr])], effect: Option[String], body: Expr) -> Unit {
-  Array::push(afe_callable_bodies, (name, params, effect, body))
-  let index = Array::get(afe_callable_body_index, 0)
-  let row = match MutMap::get(index, name) {
+  Array::push(afe_callable_bodies, value = (name, params, effect, body))
+  let index = Array::get(afe_callable_body_index, at = 0)
+  let row = match MutMap::get(index, k = name) {
     Some(_) => 0,
     None => Array::length(afe_callable_bodies)
   }
-  MutMap::set(index, name, row)
+  MutMap::set(index, k = name, v = row)
 }
 
-export fn afe_collect_callable_bodies(stmts: Array[Stmt]) -> Unit {
+export fn afe_collect_callable_bodies(_ stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, _, EFn(_, _, params, _, effect, body)) => {
-        afe_add_callable_body(name, params, effect, body)
+        afe_add_callable_body(name = name, params = params, effect = effect, body = body)
       },
       SFnDecl(_, name, EFn(_, _, params, _, effect, body), _, _) => {
-        afe_add_callable_body(name, params, effect, body)
+        afe_add_callable_body(name = name, params = params, effect = effect, body = body)
       },
       SModule(_, _, body) => afe_collect_callable_bodies(body),
       _ => ()
@@ -1720,10 +1720,10 @@ export fn afe_collect_callable_bodies(stmts: Array[Stmt]) -> Unit {
   }
 }
 
-fn afe_lookup_callable_body(name: String) -> Option[(Array[(String, Option[TypeExpr])], Option[String], Expr)] {
-  match MutMap::get(Array::get(afe_callable_body_index, 0), name) {
+fn afe_lookup_callable_body(_ name: String) -> Option[(Array[(String, Option[TypeExpr])], Option[String], Expr)] {
+  match MutMap::get(Array::get(afe_callable_body_index, at = 0), k = name) {
     Some(row) => if row > 0 {
-      let (_, params, effect, body) = Array::get(afe_callable_bodies, row - 1)
+      let (_, params, effect, body) = Array::get(afe_callable_bodies, at = row - 1)
       Some((params, effect, body))
     } else {
       None
@@ -1732,11 +1732,11 @@ fn afe_lookup_callable_body(name: String) -> Option[(Array[(String, Option[TypeE
   }
 }
 
-fn afe_payload_call_is_active(name: String) -> Bool {
+fn afe_payload_call_is_active(_ name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(afe_payload_call_stack) && !found {
-    found = Array::get(afe_payload_call_stack, i) == name
+    found = Array::get(afe_payload_call_stack, at = i) == name
     i = i + 1
   }
   found
@@ -1746,12 +1746,12 @@ fn afe_callable_may_perform(effect: Option[String], op: String) -> Bool {
   match effect_row_parse(effect) {
     // A row variable is whatever a caller supplies, so it may carry `op`
     // (#3595 stopped `decl_authorizes_op` from reading it that way).
-    Some(labels) => afe_row_has_var(labels) || decl_authorizes_op(labels, op),
+    Some(labels) => afe_row_has_var(labels) || decl_authorizes_op(labels = labels, op_name = op),
     None => false
   }
 }
 
-fn afe_row_has_var(labels: Array[String]) -> Bool {
+fn afe_row_has_var(_ labels: Array[String]) -> Bool {
   let mut found = false
   for l in labels {
     if label_is_effect_var(l) {
@@ -1765,12 +1765,12 @@ fn afe_reachability_key(name: String, op: String) -> String {
   String::concat(name, String::concat("\t", op))
 }
 
-fn afe_reachability_cache_get(key: String) -> Option[Bool] {
+fn afe_reachability_cache_get(_ key: String) -> Option[Bool] {
   let mut i = 0
   let mut out = None
   while i < Array::length(afe_reachability_keys) {
-    if Array::get(afe_reachability_keys, i) == key {
-      out = Some(Array::get(afe_reachability_values, i))
+    if Array::get(afe_reachability_keys, at = i) == key {
+      out = Some(Array::get(afe_reachability_values, at = i))
       i = Array::length(afe_reachability_keys)
     } else {
       i = i + 1
@@ -1779,11 +1779,11 @@ fn afe_reachability_cache_get(key: String) -> Option[Bool] {
   out
 }
 
-fn afe_reachability_is_active(key: String) -> Bool {
+fn afe_reachability_is_active(_ key: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(afe_reachability_stack) && !found {
-    found = Array::get(afe_reachability_stack, i) == key
+    found = Array::get(afe_reachability_stack, at = i) == key
     i = i + 1
   }
   found
@@ -1792,15 +1792,15 @@ fn afe_reachability_is_active(key: String) -> Bool {
 fn afe_expr_may_perform(expr: Expr, op: String) -> Bool {
   match expr {
     EHandle(body, arms) => {
-      let mut found = if afe_handler_consumes_op(arms, op) {
+      let mut found = if afe_handler_consumes_op(arms = arms, op = op) {
         false
       } else {
-        afe_expr_may_perform(body, op)
+        afe_expr_may_perform(expr = body, op = op)
       }
       let mut i = 0
       while i < Array::length(arms) && !found {
-        let (_, arm_body) = Array::get(arms, i)
-        found = afe_expr_may_perform(arm_body, op)
+        let (_, arm_body) = Array::get(arms, at = i)
+        found = afe_expr_may_perform(expr = arm_body, op = op)
         i = i + 1
       }
       found
@@ -1809,20 +1809,20 @@ fn afe_expr_may_perform(expr: Expr, op: String) -> Bool {
     ECall(callee, args, _, _) => {
       let mut found = match callee {
         EIdent("perform", _) => if Array::length(args) == 1 {
-          match Array::get(args, 0) {
-            ECall(EIdent(op_name, _), _, _, _) => afe_op_name_matches(op_name, op),
+          match Array::get(args, at = 0) {
+            ECall(EIdent(op_name, _), _, _, _) => afe_op_name_matches(name = op_name, op = op),
             _ => false
           }
         } else {
           false
         },
-        EFn(_, _, _, _, _, body) => afe_expr_may_perform(body, op),
-        EIdent(name, _) => afe_callable_reaches_op(name, op),
+        EFn(_, _, _, _, _, body) => afe_expr_may_perform(expr = body, op = op),
+        EIdent(name, _) => afe_callable_reaches_op(name = name, op = op),
         _ => false
       }
       let mut i = 0
       while i < Array::length(args) && !found {
-        found = afe_expr_may_perform(Array::get(args, i), op)
+        found = afe_expr_may_perform(expr = Array::get(args, at = i), op = op)
         i = i + 1
       }
       found
@@ -1832,7 +1832,7 @@ fn afe_expr_may_perform(expr: Expr, op: String) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(children) && !found {
-        found = afe_expr_may_perform(Array::get(children, i), op)
+        found = afe_expr_may_perform(expr = Array::get(children, at = i), op = op)
         i = i + 1
       }
       found
@@ -1841,7 +1841,7 @@ fn afe_expr_may_perform(expr: Expr, op: String) -> Bool {
 }
 
 fn afe_callable_reaches_op(name: String, op: String) -> Bool {
-  let key = afe_reachability_key(name, op)
+  let key = afe_reachability_key(name = name, op = op)
   match afe_reachability_cache_get(key) {
     Some(value) => value,
     None => if afe_reachability_is_active(key) {
@@ -1849,12 +1849,12 @@ fn afe_callable_reaches_op(name: String, op: String) -> Bool {
     } else match afe_lookup_callable_body(name) {
       Some((_, effect, body)) => {
         let stack_len = Array::length(afe_reachability_stack)
-        Array::push(afe_reachability_stack, key)
-        let result = afe_callable_may_perform(effect, op) && afe_expr_may_perform(body, op)
-        Array::truncate(afe_reachability_stack, stack_len)
+        Array::push(afe_reachability_stack, value = key)
+        let result = afe_callable_may_perform(effect = effect, op = op) && afe_expr_may_perform(expr = body, op = op)
+        Array::truncate(afe_reachability_stack, length = stack_len)
         if result {
-          Array::push(afe_reachability_keys, key)
-          Array::push(afe_reachability_values, true)
+          Array::push(afe_reachability_keys, value = key)
+          Array::push(afe_reachability_values, value = true)
         } else {
           ()
         }
@@ -1866,16 +1866,16 @@ fn afe_callable_reaches_op(name: String, op: String) -> Bool {
 }
 
 fn afe_callable_body_locals(params: Array[(String, Option[TypeExpr])], args: Array[Expr], env: TypeEnv, locals: AfeLocals) -> AfeLocals {
-  let mut body_locals = afe_bind_params(locals, params, env)
+  let mut body_locals = afe_bind_params(locals = locals, params = params, env = env)
   let mut i = 0
   while i < Array::length(params) {
-    let (name, _) = Array::get(params, i)
+    let (name, _) = Array::get(params, at = i)
     let inferred = if i < Array::length(args) {
-      afe_expr_head_name(Array::get(args, i), env, locals)
+      afe_expr_head_name(e = Array::get(args, at = i), env = env, locals = locals)
     } else {
       None
     }
-    body_locals = afe_bind_local(body_locals, name, inferred)
+    body_locals = afe_bind_local(locals = body_locals, name = name, head = inferred)
     i = i + 1
   }
   body_locals
@@ -1884,43 +1884,43 @@ fn afe_callable_body_locals(params: Array[(String, Option[TypeExpr])], args: Arr
 fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env: TypeEnv, locals: AfeLocals, out: Array[Option[String]]) -> Unit {
   match expr {
     EHandle(body, arms) => {
-      if !afe_handler_consumes_op(arms, op) {
-        afe_collect_perform_payloads(body, op, payload_index, env, locals, out)
+      if !afe_handler_consumes_op(arms = arms, op = op) {
+        afe_collect_perform_payloads(expr = body, op = op, payload_index = payload_index, env = env, locals = locals, out = out)
       } else {
         ()
       }
       let mut i = 0
       while i < Array::length(arms) {
-        let (pat, arm_body) = Array::get(arms, i)
-        let arm_locals = afe_handler_arm_locals(body, pat, env, locals)
-        afe_collect_perform_payloads(arm_body, op, payload_index, env, arm_locals, out)
+        let (pat, arm_body) = Array::get(arms, at = i)
+        let arm_locals = afe_handler_arm_locals(body = body, pat = pat, env = env, locals = locals)
+        afe_collect_perform_payloads(expr = arm_body, op = op, payload_index = payload_index, env = env, locals = arm_locals, out = out)
         i = i + 1
       }
     },
     EFn(_, _, _, _, _, _) => (),
     ELet(name, val, body, _) => {
-      afe_collect_perform_payloads(val, op, payload_index, env, locals, out)
-      afe_collect_perform_payloads(body, op, payload_index, env, afe_bind_value(locals, name, val, env), out)
+      afe_collect_perform_payloads(expr = val, op = op, payload_index = payload_index, env = env, locals = locals, out = out)
+      afe_collect_perform_payloads(expr = body, op = op, payload_index = payload_index, env = env, locals = afe_bind_value(locals = locals, name = name, val = val, env = env), out = out)
     },
     ELetMut(name, val, body, _) => {
-      afe_collect_perform_payloads(val, op, payload_index, env, locals, out)
-      afe_collect_perform_payloads(body, op, payload_index, env, afe_bind_value(locals, name, val, env), out)
+      afe_collect_perform_payloads(expr = val, op = op, payload_index = payload_index, env = env, locals = locals, out = out)
+      afe_collect_perform_payloads(expr = body, op = op, payload_index = payload_index, env = env, locals = afe_bind_value(locals = locals, name = name, val = val, env = env), out = out)
     },
     ELetRec(name, val, body) => {
-      let rec_locals = afe_bind_value(locals, name, val, env)
-      afe_collect_perform_payloads(val, op, payload_index, env, rec_locals, out)
-      afe_collect_perform_payloads(body, op, payload_index, env, rec_locals, out)
+      let rec_locals = afe_bind_value(locals = locals, name = name, val = val, env = env)
+      afe_collect_perform_payloads(expr = val, op = op, payload_index = payload_index, env = env, locals = rec_locals, out = out)
+      afe_collect_perform_payloads(expr = body, op = op, payload_index = payload_index, env = env, locals = rec_locals, out = out)
     },
     EAssign(name, val, continuation, _) => {
-      afe_collect_perform_payloads(val, op, payload_index, env, locals, out)
-      afe_collect_perform_payloads(continuation, op, payload_index, env, afe_bind_value(locals, name, val, env), out)
+      afe_collect_perform_payloads(expr = val, op = op, payload_index = payload_index, env = env, locals = locals, out = out)
+      afe_collect_perform_payloads(expr = continuation, op = op, payload_index = payload_index, env = env, locals = afe_bind_value(locals = locals, name = name, val = val, env = env), out = out)
     },
     ECall(callee, args, _, _) => {
       match callee {
         EIdent(name, _) => if name == "perform" && Array::length(args) == 1 {
-          match Array::get(args, 0) {
-            ECall(EIdent(op_name, _), oargs, _, _) => if afe_op_name_matches(op_name, op) && payload_index >= 0 && payload_index < Array::length(oargs) {
-              Array::push(out, afe_expr_head_name(Array::get(oargs, payload_index), env, locals))
+          match Array::get(args, at = 0) {
+            ECall(EIdent(op_name, _), oargs, _, _) => if afe_op_name_matches(name = op_name, op = op) && payload_index >= 0 && payload_index < Array::length(oargs) {
+              Array::push(out, value = afe_expr_head_name(e = Array::get(oargs, at = payload_index), env = env, locals = locals))
             } else {
               ()
             },
@@ -1933,18 +1933,18 @@ fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env:
       }
       match callee {
         EFn(_, _, params, _, _, body) => {
-          let body_locals = afe_callable_body_locals(params, args, env, locals)
-          afe_collect_perform_payloads(body, op, payload_index, env, body_locals, out)
+          let body_locals = afe_callable_body_locals(params = params, args = args, env = env, locals = locals)
+          afe_collect_perform_payloads(expr = body, op = op, payload_index = payload_index, env = env, locals = body_locals, out = out)
         },
         EIdent(name, _) => if name == "perform" || afe_payload_call_is_active(name) {
           ()
         } else match afe_lookup_callable_body(name) {
-          Some((params, effect, body)) => if afe_callable_may_perform(effect, op) && afe_callable_reaches_op(name, op) {
+          Some((params, effect, body)) => if afe_callable_may_perform(effect = effect, op = op) && afe_callable_reaches_op(name = name, op = op) {
             let stack_len = Array::length(afe_payload_call_stack)
-            Array::push(afe_payload_call_stack, name)
-            let body_locals = afe_callable_body_locals(params, args, env, locals)
-            afe_collect_perform_payloads(body, op, payload_index, env, body_locals, out)
-            Array::truncate(afe_payload_call_stack, stack_len)
+            Array::push(afe_payload_call_stack, value = name)
+            let body_locals = afe_callable_body_locals(params = params, args = args, env = env, locals = locals)
+            afe_collect_perform_payloads(expr = body, op = op, payload_index = payload_index, env = env, locals = body_locals, out = out)
+            Array::truncate(afe_payload_call_stack, length = stack_len)
           } else {
             ()
           },
@@ -1954,7 +1954,7 @@ fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env:
       }
       let mut i = 0
       while i < Array::length(args) {
-        afe_collect_perform_payloads(Array::get(args, i), op, payload_index, env, locals, out)
+        afe_collect_perform_payloads(expr = Array::get(args, at = i), op = op, payload_index = payload_index, env = env, locals = locals, out = out)
         i = i + 1
       }
     },
@@ -1962,7 +1962,7 @@ fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env:
       let children = expr_children(expr)
       let mut i = 0
       while i < Array::length(children) {
-        afe_collect_perform_payloads(Array::get(children, i), op, payload_index, env, locals, out)
+        afe_collect_perform_payloads(expr = Array::get(children, at = i), op = op, payload_index = payload_index, env = env, locals = locals, out = out)
         i = i + 1
       }
     }
@@ -1971,15 +1971,15 @@ fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env:
 
 fn afe_perform_payload_head(body: Expr, op: String, payload_index: Int, env: TypeEnv, locals: AfeLocals) -> Option[String] {
   let payloads = array_empty()
-  afe_collect_perform_payloads(body, op, payload_index, env, locals, payloads)
+  afe_collect_perform_payloads(expr = body, op = op, payload_index = payload_index, env = env, locals = locals, out = payloads)
   if Array::length(payloads) == 0 {
     None
   } else {
     let mut i = 1
-    let mut result = Array::get(payloads, 0)
+    let mut result = Array::get(payloads, at = 0)
     while i < Array::length(payloads) {
       match result {
-        Some(expected) => match Array::get(payloads, i) {
+        Some(expected) => match Array::get(payloads, at = i) {
           Some(actual) => if actual != expected {
             result = None
           } else {
@@ -2005,12 +2005,12 @@ fn afe_perform_payload_head(body: Expr, op: String, payload_index: Int, env: Typ
 export fn afe_handler_arm_locals(body: Expr, pat: Pat, env: TypeEnv, locals: AfeLocals) -> AfeLocals {
   match pat {
     PCtor(cn, sub) => {
-      let mut arm_locals = afe_mask_pat_binders(locals, pat)
+      let mut arm_locals = afe_mask_pat_binders(locals = locals, pat = pat)
       let mut i = 0
       while i < Array::length(sub) {
-        match Array::get(sub, i) {
+        match Array::get(sub, at = i) {
           PBind(name) => {
-            arm_locals = afe_bind_local(arm_locals, name, afe_perform_payload_head(body, cn, i, env, locals))
+            arm_locals = afe_bind_local(locals = arm_locals, name = name, head = afe_perform_payload_head(body = body, op = cn, payload_index = i, env = env, locals = locals))
           },
           _ => ()
         }
@@ -2018,20 +2018,20 @@ export fn afe_handler_arm_locals(body: Expr, pat: Pat, env: TypeEnv, locals: Afe
       }
       arm_locals
     },
-    _ => afe_mask_pat_binders(locals, pat)
+    _ => afe_mask_pat_binders(locals = locals, pat = pat)
   }
 }
 
 fn afe_handle_head(body: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: AfeLocals) -> Option[String] {
-  match afe_expr_head_name(body, env, locals) {
+  match afe_expr_head_name(e = body, env = env, locals = locals) {
     None => None,
     Some(expected) => {
       let mut i = 0
       let mut agrees = true
       while i < Array::length(arms) && agrees {
-        let (pat, arm_body) = Array::get(arms, i)
-        let arm_locals = afe_handler_arm_locals(body, pat, env, locals)
-        match afe_handler_arm_head(arm_body, expected, env, arm_locals) {
+        let (pat, arm_body) = Array::get(arms, at = i)
+        let arm_locals = afe_handler_arm_locals(body = body, pat = pat, env = env, locals = locals)
+        match afe_handler_arm_head(arm_body = arm_body, expected = expected, env = env, locals = arm_locals) {
           Some(actual) => {
             let same = actual == expected
             if !same {
@@ -2063,9 +2063,9 @@ fn afe_match_head(scrut: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: A
     let mut result = None
     let mut agrees = true
     while i < Array::length(arms) && agrees {
-      let (pat, body) = Array::get(arms, i)
-      let arm_locals = afe_match_arm_locals(scrut, pat, env, locals)
-      match afe_expr_head_name(body, env, arm_locals) {
+      let (pat, body) = Array::get(arms, at = i)
+      let arm_locals = afe_match_arm_locals(scrut = scrut, pat = pat, env = env, locals = locals)
+      match afe_expr_head_name(e = body, env = env, locals = arm_locals) {
         Some(head) => match result {
           Some(expected) => {
             let same = head == expected
@@ -2094,32 +2094,32 @@ fn afe_match_head(scrut: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: A
 }
 
 fn afe_collect_loop_head(expr: Expr, env: TypeEnv, locals: AfeLocals, expected: Array[String], valid: Array[Bool]) -> Unit {
-  if !Array::get(valid, 0) {
+  if !Array::get(valid, at = 0) {
     ()
   } else {
     match expr {
       EAssign("__loop_result", value, continuation, _) => {
-        match afe_expr_head_name(value, env, locals) {
+        match afe_expr_head_name(e = value, env = env, locals = locals) {
           Some(actual) => if Array::length(expected) == 0 {
-            Array::push(expected, actual)
-          } else if Array::get(expected, 0) != actual {
-            Array::set(valid, 0, false)
+            Array::push(expected, value = actual)
+          } else if Array::get(expected, at = 0) != actual {
+            Array::set(valid, at = 0, value = false)
           } else {
             ()
           },
-          None => Array::set(valid, 0, false)
+          None => Array::set(valid, at = 0, value = false)
         }
-        afe_collect_loop_head(continuation, env, locals, expected, valid)
+        afe_collect_loop_head(expr = continuation, env = env, locals = locals, expected = expected, valid = valid)
       },
-      EBreak(Some(value)) => match afe_expr_head_name(value, env, locals) {
+      EBreak(Some(value)) => match afe_expr_head_name(e = value, env = env, locals = locals) {
         Some(actual) => if Array::length(expected) == 0 {
-          Array::push(expected, actual)
-        } else if Array::get(expected, 0) != actual {
-          Array::set(valid, 0, false)
+          Array::push(expected, value = actual)
+        } else if Array::get(expected, at = 0) != actual {
+          Array::set(valid, at = 0, value = false)
         } else {
           ()
         },
-        None => Array::set(valid, 0, false)
+        None => Array::set(valid, at = 0, value = false)
       },
       ELetMut("__loop_result", _, _, _) => (),
       ELoop(_, _) => (),
@@ -2127,36 +2127,36 @@ fn afe_collect_loop_head(expr: Expr, env: TypeEnv, locals: AfeLocals, expected: 
       EForIn(_, _, _, _) => (),
       EFn(_, _, _, _, _, _) => (),
       ELet(name, value, body, _) => {
-        afe_collect_loop_head(value, env, locals, expected, valid)
-        afe_collect_loop_head(body, env, afe_bind_value(locals, name, value, env), expected, valid)
+        afe_collect_loop_head(expr = value, env = env, locals = locals, expected = expected, valid = valid)
+        afe_collect_loop_head(expr = body, env = env, locals = afe_bind_value(locals = locals, name = name, val = value, env = env), expected = expected, valid = valid)
       },
       ELetMut(name, value, body, _) => {
-        afe_collect_loop_head(value, env, locals, expected, valid)
-        afe_collect_loop_head(body, env, afe_bind_value(locals, name, value, env), expected, valid)
+        afe_collect_loop_head(expr = value, env = env, locals = locals, expected = expected, valid = valid)
+        afe_collect_loop_head(expr = body, env = env, locals = afe_bind_value(locals = locals, name = name, val = value, env = env), expected = expected, valid = valid)
       },
       EMatch(scrut, arms) => {
-        afe_collect_loop_head(scrut, env, locals, expected, valid)
+        afe_collect_loop_head(expr = scrut, env = env, locals = locals, expected = expected, valid = valid)
         let mut i = 0
-        while i < Array::length(arms) && Array::get(valid, 0) {
-          let (pat, body) = Array::get(arms, i)
-          afe_collect_loop_head(body, env, afe_match_arm_locals(scrut, pat, env, locals), expected, valid)
+        while i < Array::length(arms) && Array::get(valid, at = 0) {
+          let (pat, body) = Array::get(arms, at = i)
+          afe_collect_loop_head(expr = body, env = env, locals = afe_match_arm_locals(scrut = scrut, pat = pat, env = env, locals = locals), expected = expected, valid = valid)
           i = i + 1
         }
       },
       EHandle(body, arms) => {
-        afe_collect_loop_head(body, env, locals, expected, valid)
+        afe_collect_loop_head(expr = body, env = env, locals = locals, expected = expected, valid = valid)
         let mut i = 0
-        while i < Array::length(arms) && Array::get(valid, 0) {
-          let (_, arm_body) = Array::get(arms, i)
-          afe_collect_loop_head(arm_body, env, locals, expected, valid)
+        while i < Array::length(arms) && Array::get(valid, at = 0) {
+          let (_, arm_body) = Array::get(arms, at = i)
+          afe_collect_loop_head(expr = arm_body, env = env, locals = locals, expected = expected, valid = valid)
           i = i + 1
         }
       },
       _ => {
         let children = expr_children(expr)
         let mut i = 0
-        while i < Array::length(children) && Array::get(valid, 0) {
-          afe_collect_loop_head(Array::get(children, i), env, locals, expected, valid)
+        while i < Array::length(children) && Array::get(valid, at = 0) {
+          afe_collect_loop_head(expr = Array::get(children, at = i), env = env, locals = locals, expected = expected, valid = valid)
           i = i + 1
         }
       }
@@ -2169,9 +2169,9 @@ fn afe_parameterized_loop_head(body: Expr, env: TypeEnv, locals: AfeLocals) -> O
     ESeq(EWhile(_, loop_body), EIdent("__loop_result", _)) => {
       let expected = array_empty()
       let valid = [true]
-      afe_collect_loop_head(loop_body, env, locals, expected, valid)
-      if Array::get(valid, 0) && Array::length(expected) == 1 {
-        Some(Array::get(expected, 0))
+      afe_collect_loop_head(expr = loop_body, env = env, locals = locals, expected = expected, valid = valid)
+      if Array::get(valid, at = 0) && Array::length(expected) == 1 {
+        Some(Array::get(expected, at = 0))
       } else {
         None
       }
@@ -2184,15 +2184,15 @@ fn afe_loop_head(inits: Array[(String, Expr)], body: Expr, env: TypeEnv, locals:
   let mut body_locals = locals
   let mut i = 0
   while i < Array::length(inits) {
-    let (name, val) = Array::get(inits, i)
-    body_locals = afe_bind_value(body_locals, name, val, env)
+    let (name, val) = Array::get(inits, at = i)
+    body_locals = afe_bind_value(locals = body_locals, name = name, val = val, env = env)
     i = i + 1
   }
   let expected = array_empty()
   let valid = [true]
-  afe_collect_loop_head(body, env, body_locals, expected, valid)
-  if Array::get(valid, 0) && Array::length(expected) == 1 {
-    Some(Array::get(expected, 0))
+  afe_collect_loop_head(expr = body, env = env, locals = body_locals, expected = expected, valid = valid)
+  if Array::get(valid, at = 0) && Array::length(expected) == 1 {
+    Some(Array::get(expected, at = 0))
   } else {
     None
   }
@@ -2200,63 +2200,63 @@ fn afe_loop_head(inits: Array[(String, Expr)], body: Expr, env: TypeEnv, locals:
 
 export fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: AfeLocals) -> Option[String] {
   match e {
-    EIdent(n, _) => match afe_lookup_local(locals, n) {
+    EIdent(n, _) => match afe_lookup_local(locals = locals, name = n) {
       Some(h) => Some(h),
-      None => match env_lookup(env, n) {
+      None => match env_lookup(env = env, name = n) {
         Some(t) => match afe_type_head_name(t) {
-          Some(head) => Some(afe_tag_async_iter_head(head, afe_callee_is_builtin_async_iter(env, n) || afe_type_binding_is_builtin_async_iter(env))),
+          Some(head) => Some(afe_tag_async_iter_head(head = head, provenanced = afe_callee_is_builtin_async_iter(env = env, name = n) || afe_type_binding_is_builtin_async_iter(env))),
           None => None
         },
         None => None
       }
     },
     ERecord(n, _, _) => if String::length(n) > 0 {
-      Some(afe_tag_async_iter_head(n, afe_type_binding_is_builtin_async_iter(env)))
+      Some(afe_tag_async_iter_head(head = n, provenanced = afe_type_binding_is_builtin_async_iter(env)))
     } else {
       None
     },
-    EDot(obj, field, _, _) => match afe_tuple_elem_head(obj, field, env, locals) {
+    EDot(obj, field, _, _) => match afe_tuple_elem_head(obj = obj, field = field, env = env, locals = locals) {
       Some(head) => Some(head),
-      None => match afe_expr_head_name(obj, env, locals) {
-        Some(otype) => afe_lookup_field_type(afe_display_iter_head(otype), field),
+      None => match afe_expr_head_name(e = obj, env = env, locals = locals) {
+        Some(otype) => afe_lookup_field_type(struct_name = afe_display_iter_head(otype), field = field),
         None => None
       }
     },
     ECall(callee, args, _, _) => match callee {
-      EIdent(f, f_off) => afe_ident_call_head(f, f_off, args, env, locals),
-      EDot(obj, method, _, _) => afe_dot_call_head(obj, method, args, env, locals),
-      EFn(_, _, params, _, _, body) => afe_iife_head(params, body, args, env, locals),
+      EIdent(f, f_off) => afe_ident_call_head(f = f, f_off = f_off, args = args, env = env, locals = locals),
+      EDot(obj, method, _, _) => afe_dot_call_head(obj = obj, method = method, args = args, env = env, locals = locals),
+      EFn(_, _, params, _, _, body) => afe_iife_head(params = params, body = body, args = args, env = env, locals = locals),
       _ => None
     },
-    ELet(name, val, body, _) => afe_expr_head_name(body, env, afe_bind_value(locals, name, val, env)),
+    ELet(name, val, body, _) => afe_expr_head_name(e = body, env = env, locals = afe_bind_value(locals = locals, name = name, val = val, env = env)),
     ELetMut(name, val, body, _) => if name == "__loop_result" {
-      afe_parameterized_loop_head(body, env, locals)
+      afe_parameterized_loop_head(body = body, env = env, locals = locals)
     } else {
-      afe_expr_head_name(body, env, afe_bind_value(locals, name, val, env))
+      afe_expr_head_name(e = body, env = env, locals = afe_bind_value(locals = locals, name = name, val = val, env = env))
     },
     ELetRec(name, val, body) => {
-      let rec_locals = afe_bind_value(locals, name, val, env)
-      afe_expr_head_name(body, env, rec_locals)
+      let rec_locals = afe_bind_value(locals = locals, name = name, val = val, env = env)
+      afe_expr_head_name(e = body, env = env, locals = rec_locals)
     },
-    EReturn(inner) => afe_expr_head_name(inner, env, locals),
-    EAssign(_, _, continuation, _) => afe_expr_head_name(continuation, env, locals),
-    EAssignOp(_, _, _, continuation, _) => afe_expr_head_name(continuation, env, locals),
-    ESeq(_, result) => afe_expr_head_name(result, env, locals),
-    EIf(_, then_branch, else_branch) => afe_heads_agree(afe_expr_head_name(then_branch, env, locals), afe_expr_head_name(else_branch, env, locals)),
-    EMatch(scrut, arms) => afe_match_head(scrut, arms, env, locals),
-    EHandle(body, arms) => afe_handle_head(body, arms, env, locals),
-    ELoop(inits, body) => afe_loop_head(inits, body, env, locals),
+    EReturn(inner) => afe_expr_head_name(e = inner, env = env, locals = locals),
+    EAssign(_, _, continuation, _) => afe_expr_head_name(e = continuation, env = env, locals = locals),
+    EAssignOp(_, _, _, continuation, _) => afe_expr_head_name(e = continuation, env = env, locals = locals),
+    ESeq(_, result) => afe_expr_head_name(e = result, env = env, locals = locals),
+    EIf(_, then_branch, else_branch) => afe_heads_agree(left = afe_expr_head_name(e = then_branch, env = env, locals = locals), right = afe_expr_head_name(e = else_branch, env = env, locals = locals)),
+    EMatch(scrut, arms) => afe_match_head(scrut = scrut, arms = arms, env = env, locals = locals),
+    EHandle(body, arms) => afe_handle_head(body = body, arms = arms, env = env, locals = locals),
+    ELoop(inits, body) => afe_loop_head(inits = inits, body = body, env = env, locals = locals),
     _ => None
   }
 }
 
 /// #3601: where an erased-row diagnostic happened, as its message names it.
-fn erased_error_place(fname: String) -> String {
+fn erased_error_place(_ fname: String) -> String {
   let block = entry_block_display_name(fname)
   if fname == "#lambda:" || String::length(fname) == 0 {
     "this expression"
-  } else if String::starts_with(fname, "#lambda:") {
-    String::concat("the lambda '", String::concat(String::substring(fname, 8, String::length(fname)), "'"))
+  } else if String::starts_with(fname, prefix = "#lambda:") {
+    String::concat("the lambda '", String::concat(String::substring(fname, start = 8, end = String::length(fname)), "'"))
   } else if String::length(block) > 0 {
     block
   } else {

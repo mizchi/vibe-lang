@@ -34,7 +34,7 @@ fn find_ctor_in_defs(defs: Array[TypeDef], ctor_name: String) -> Option[(String,
     if di >= dlen {
       None
     } else {
-      let d = Array::get(defs, di)
+      let d = Array::get(defs, at = di)
       match d {
         TDEnum(enum_name, _, variants) => {
           let vlen = Array::length(variants)
@@ -42,7 +42,7 @@ fn find_ctor_in_defs(defs: Array[TypeDef], ctor_name: String) -> Option[(String,
             if vi >= vlen {
               go_defs(di + 1)
             } else {
-              let (vname, vtypes) = Array::get(variants, vi)
+              let (vname, vtypes) = Array::get(variants, at = vi)
               if vname == ctor_name {
                 Some((enum_name, vtypes))
               } else {
@@ -81,14 +81,14 @@ export fn check_qualified_pattern_refs(refs: Array[(String, String)], defs: Arra
   let n = Array::length(refs)
   let mut i = 0
   while i < n {
-    let (qualifier, variant) = Array::get(refs, i)
-    match find_enum_typedef(defs, qualifier) {
+    let (qualifier, variant) = Array::get(refs, at = i)
+    match find_enum_typedef(defs = defs, name = qualifier) {
       Some(TDEnum(ename, _, variants)) => {
         let vlen = Array::length(variants)
         let mut vi = 0
         let mut owns = false
         while vi < vlen {
-          let (vname, _) = Array::get(variants, vi)
+          let (vname, _) = Array::get(variants, at = vi)
           if vname == variant {
             owns = true
           } else {
@@ -103,7 +103,7 @@ export fn check_qualified_pattern_refs(refs: Array[(String, String)], defs: Arra
           // is echoed with the qualifier as WRITTEN (`qualifier`), which differ
           // when the qualifier is an alias. Identical spelling in the common
           // case, so this only shows up on the alias path.
-          Array::push(errors, String::concat("enum `", String::concat(ename, String::concat("` has no variant `", String::concat(variant, String::concat("` (in pattern `", String::concat(qualifier, String::concat("::", String::concat(variant, "`)")))))))))
+          Array::push(errors, value = String::concat("enum `", String::concat(ename, String::concat("` has no variant `", String::concat(variant, String::concat("` (in pattern `", String::concat(qualifier, String::concat("::", String::concat(variant, "`)")))))))))
         }
       },
       _ => ()
@@ -114,14 +114,14 @@ export fn check_qualified_pattern_refs(refs: Array[(String, String)], defs: Arra
 
 /// True if `pat` binds at least one variable, at any nesting depth (through
 /// PCtor/PTuple/PStruct/POr).
-fn pat_binds_any(pat: Pat) -> Bool {
+fn pat_binds_any(_ pat: Pat) -> Bool {
   match pat {
     PBind(_) => true,
     PCtor(_, pats) => {
       let mut i = 0
       let mut found = false
       while i < Array::length(pats) {
-        if pat_binds_any(Array::get(pats, i)) {
+        if pat_binds_any(Array::get(pats, at = i)) {
           found = true
         } else {
           ()
@@ -134,7 +134,7 @@ fn pat_binds_any(pat: Pat) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(pats) {
-        if pat_binds_any(Array::get(pats, i)) {
+        if pat_binds_any(Array::get(pats, at = i)) {
           found = true
         } else {
           ()
@@ -148,7 +148,7 @@ fn pat_binds_any(pat: Pat) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(fields) {
-        let (_, fpat) = Array::get(fields, i)
+        let (_, fpat) = Array::get(fields, at = i)
         if pat_binds_any(fpat) {
           found = true
         } else {
@@ -179,9 +179,9 @@ fn pat_binds_any(pat: Pat) -> Bool {
 /// -- a reader of other languages expects either an equality test or an
 /// error. An or-pattern is skipped: its alternatives bind separately, and a
 /// binding in one is refused on its own (pat_has_unsupported_or_binding).
-export fn pat_repeated_binder(pat: Pat) -> String {
+export fn pat_repeated_binder(_ pat: Pat) -> String {
   let seen: Array[String] = []
-  prb_walk(pat, seen)
+  prb_walk(pat = pat, seen = seen)
 }
 
 fn prb_seen_has(seen: Array[String], name: String) -> Bool {
@@ -196,20 +196,20 @@ fn prb_seen_has(seen: Array[String], name: String) -> Bool {
 
 fn prb_walk(pat: Pat, seen: Array[String]) -> String {
   match pat {
-    PBind(n) => if prb_seen_has(seen, n) {
+    PBind(n) => if prb_seen_has(seen = seen, name = n) {
       n
     } else {
-      Array::push(seen, n)
+      Array::push(seen, value = n)
       ""
     },
-    PCtor(_, pats) => prb_walk_all(pats, seen),
-    PTuple(pats) => prb_walk_all(pats, seen),
+    PCtor(_, pats) => prb_walk_all(pats = pats, seen = seen),
+    PTuple(pats) => prb_walk_all(pats = pats, seen = seen),
     PStruct(_, fields) => {
       let mut found = ""
       let mut i = 0
       while i < Array::length(fields) && found == "" {
-        let (_, fp) = Array::get(fields, i)
-        found = prb_walk(fp, seen)
+        let (_, fp) = Array::get(fields, at = i)
+        found = prb_walk(pat = fp, seen = seen)
         i = i + 1
       }
       found
@@ -222,20 +222,20 @@ fn prb_walk_all(pats: Array[Pat], seen: Array[String]) -> String {
   let mut found = ""
   let mut i = 0
   while i < Array::length(pats) && found == "" {
-    found = prb_walk(Array::get(pats, i), seen)
+    found = prb_walk(pat = Array::get(pats, at = i), seen = seen)
     i = i + 1
   }
   found
 }
 
-export fn pat_has_unsupported_or_binding(pat: Pat) -> Bool {
+export fn pat_has_unsupported_or_binding(_ pat: Pat) -> Bool {
   match pat {
     POr(a, b) => pat_binds_any(a) || pat_binds_any(b) || pat_has_unsupported_or_binding(a) || pat_has_unsupported_or_binding(b),
     PCtor(_, pats) => {
       let mut i = 0
       let mut found = false
       while i < Array::length(pats) {
-        if pat_has_unsupported_or_binding(Array::get(pats, i)) {
+        if pat_has_unsupported_or_binding(Array::get(pats, at = i)) {
           found = true
         } else {
           ()
@@ -248,7 +248,7 @@ export fn pat_has_unsupported_or_binding(pat: Pat) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(pats) {
-        if pat_has_unsupported_or_binding(Array::get(pats, i)) {
+        if pat_has_unsupported_or_binding(Array::get(pats, at = i)) {
           found = true
         } else {
           ()
@@ -261,7 +261,7 @@ export fn pat_has_unsupported_or_binding(pat: Pat) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(fields) {
-        let (_, fpat) = Array::get(fields, i)
+        let (_, fpat) = Array::get(fields, at = i)
         if pat_has_unsupported_or_binding(fpat) {
           found = true
         } else {
@@ -301,14 +301,14 @@ export fn pat_has_unsupported_or_binding(pat: Pat) -> Bool {
 /// is not yet known is no stricter than before.
 fn cp_struct_field_ty(defs: Array[TypeDef], scrutinee_ty: Type, field: String) -> Type {
   match scrutinee_ty {
-    CtStruct(sname) => cp_declared_field_ty(defs, sname, field),
-    CtNamed(sname, targs) => match find_typedef(defs, sname) {
+    CtStruct(sname) => cp_declared_field_ty(defs = defs, sname = sname, field = field),
+    CtNamed(sname, targs) => match find_typedef(defs = defs, name = sname) {
       Some(TDStruct(_, _, _, tparams)) => {
-        let ft = cp_declared_field_ty(defs, sname, field)
+        let ft = cp_declared_field_ty(defs = defs, sname = sname, field = field)
         match ft {
           CtUnknown => CtUnknown,
           _ => if Array::length(tparams) > 0 && Array::length(tparams) == Array::length(targs) {
-            subst_type_params(ft, tparams, targs)
+            subst_type_params(ty = ft, params = tparams, args = targs)
           } else {
             ft
           }
@@ -321,14 +321,14 @@ fn cp_struct_field_ty(defs: Array[TypeDef], scrutinee_ty: Type, field: String) -
 }
 
 fn cp_declared_field_ty(defs: Array[TypeDef], sname: String, field: String) -> Type {
-  match find_typedef(defs, sname) {
+  match find_typedef(defs = defs, name = sname) {
     Some(TDStruct(_, fields, _, _)) => {
       let flen = Array::length(fields)
       let rec go: (Int) -> Type = (i) -> {
         if i >= flen {
           CtUnknown
         } else {
-          let (fname, ftype) = Array::get(fields, i)
+          let (fname, ftype) = Array::get(fields, at = i)
           if fname == field {
             ftype
           } else {
@@ -345,7 +345,7 @@ fn cp_declared_field_ty(defs: Array[TypeDef], sname: String, field: String) -> T
 export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> TypeEnv {
   match pat {
     PWild => env,
-    PBind(name) => env_bind(env, name, scrutinee_ty),
+    PBind(name) => env_bind(env = env, name = name, ty = scrutinee_ty),
     // A literal pattern can only match a scrutinee of its own type. When the
     // scrutinee resolves to a concrete type that is NOT that literal's type
     // (`match 5 { "x" => .. }`, or a nested `Some(true)` over `Option[Int]`),
@@ -360,7 +360,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
         CtVar(_) => (),
         CtUnknown => (),
         CtNamed(_, _) => (),
-        _ => Array::push(errors, "integer literal pattern cannot match a non-Int scrutinee")
+        _ => Array::push(errors, value = "integer literal pattern cannot match a non-Int scrutinee")
       }
       env
     },
@@ -373,12 +373,12 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
         CtFloat => if Float::to_double(Double::to_float(pv)) == pv {
           ()
         } else {
-          Array::push(errors, "float literal pattern is not a `Float` value and can never match this `Float` scrutinee: add the `f` suffix to round it to f32 (`1.1f`)")
+          Array::push(errors, value = "float literal pattern is not a `Float` value and can never match this `Float` scrutinee: add the `f` suffix to round it to f32 (`1.1f`)")
         },
         CtVar(_) => (),
         CtUnknown => (),
         CtNamed(_, _) => (),
-        _ => Array::push(errors, "float literal pattern cannot match a non-Double scrutinee")
+        _ => Array::push(errors, value = "float literal pattern cannot match a non-Double scrutinee")
       }
       env
     },
@@ -388,7 +388,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
         CtVar(_) => (),
         CtUnknown => (),
         CtNamed(_, _) => (),
-        _ => Array::push(errors, "string literal pattern cannot match a non-String scrutinee")
+        _ => Array::push(errors, value = "string literal pattern cannot match a non-String scrutinee")
       }
       env
     },
@@ -398,7 +398,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
         CtVar(_) => (),
         CtUnknown => (),
         CtNamed(_, _) => (),
-        _ => Array::push(errors, "boolean literal pattern cannot match a non-Bool scrutinee")
+        _ => Array::push(errors, value = "boolean literal pattern cannot match a non-Bool scrutinee")
       }
       env
     },
@@ -417,7 +417,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
       }
       let ctor_payload = match builtin_payload {
         Some(types) => Some(("Option", types)),
-        None => find_ctor_in_defs(defs, name)
+        None => find_ctor_in_defs(defs = defs, ctor_name = name)
       }
       match ctor_payload {
         Some(info) => {
@@ -453,12 +453,12 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
           // scrutinee's actual type args.
           let payload_types = match scrutinee_ty {
             CtNamed(_, sargs) => if Array::length(sargs) > 0 {
-              match env_lookup(env, name) {
+              match env_lookup(env = env, name = name) {
                 Some(scheme) => match scheme {
                   CtForAll(param_var_ids, _, inner) => if Array::length(param_var_ids) == Array::length(sargs) {
                     match inner {
                       CtFn(fn_payload_tys, _, _) => for pt in fn_payload_tys {
-                        send_subst_vars(pt, param_var_ids, sargs)
+                        send_subst_vars(ty = pt, vids = param_var_ids, args = sargs)
                       },
                       _ => raw_payload
                     }
@@ -497,7 +497,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
             _ => false
           }
           if non_enum_scrutinee {
-            Array::push(errors, String::concat("constructor pattern `", String::concat(name, String::concat("` (of ", String::concat(enum_name, ") cannot match this scrutinee type")))))
+            Array::push(errors, value = String::concat("constructor pattern `", String::concat(name, String::concat("` (of ", String::concat(enum_name, ") cannot match this scrutinee type")))))
           } else {
             ()
           }
@@ -507,7 +507,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
           // `Option` (its `None` carries a synthetic 1-element payload).
           if enum_name != "Option" && splen != ptlen {
             // #3548: lead with the edit -- one sub-pattern per field.
-            Array::push(errors, String::concat("write one sub-pattern per field of `", String::concat(name, String::concat("` (`_` for a field you do not need): constructor pattern `", String::concat(name, String::concat("` expects ", String::concat(__to_string(ptlen), String::concat(" field(s) but binds ", __to_string(splen)))))))))
+            Array::push(errors, value = String::concat("write one sub-pattern per field of `", String::concat(name, String::concat("` (`_` for a field you do not need): constructor pattern `", String::concat(name, String::concat("` expects ", String::concat(__to_string(ptlen), String::concat(" field(s) but binds ", __to_string(splen)))))))))
           } else {
             ()
           }
@@ -516,11 +516,11 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
               acc_env
             } else {
               let sub_ty = if i < ptlen {
-                Array::get(payload_types, i)
+                Array::get(payload_types, at = i)
               } else {
                 CtUnknown
               }
-              let next_env = check_pattern(Array::get(sub_pats, i), sub_ty, acc_env, defs, errors)
+              let next_env = check_pattern(pat = Array::get(sub_pats, at = i), scrutinee_ty = sub_ty, env = acc_env, defs = defs, errors = errors)
               bind_subs(i + 1, next_env)
             }
           }
@@ -532,7 +532,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
             if i >= splen {
               acc_env
             } else {
-              let next_env = check_pattern(Array::get(sub_pats, i), CtUnknown, acc_env, defs, errors)
+              let next_env = check_pattern(pat = Array::get(sub_pats, at = i), scrutinee_ty = CtUnknown, env = acc_env, defs = defs, errors = errors)
               bind_unknown(i + 1, next_env)
             }
           }
@@ -550,7 +550,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
           // tuple (binding `c` to garbage). Tuples have a fixed, fully known
           // arity, so this is always a real error.
           if plen != elen {
-            Array::push(errors, String::concat("tuple pattern binds ", String::concat(__to_string(plen), String::concat(" elements but the value is a ", String::concat(__to_string(elen), "-tuple")))))
+            Array::push(errors, value = String::concat("tuple pattern binds ", String::concat(__to_string(plen), String::concat(" elements but the value is a ", String::concat(__to_string(elen), "-tuple")))))
           } else {
             ()
           }
@@ -559,11 +559,11 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
               acc_env
             } else {
               let et = if i < elen {
-                Array::get(elem_tys, i)
+                Array::get(elem_tys, at = i)
               } else {
                 CtUnknown
               }
-              let next_env = check_pattern(Array::get(pats, i), et, acc_env, defs, errors)
+              let next_env = check_pattern(pat = Array::get(pats, at = i), scrutinee_ty = et, env = acc_env, defs = defs, errors = errors)
               bind_tuple(i + 1, next_env)
             }
           }
@@ -593,7 +593,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
             _ => false
           }
           if concrete_non_tuple {
-            Array::push(errors, String::concat("tuple pattern binds ", String::concat(__to_string(plen), " elements but the value is not a tuple")))
+            Array::push(errors, value = String::concat("tuple pattern binds ", String::concat(__to_string(plen), " elements but the value is not a tuple")))
           } else {
             ()
           }
@@ -601,7 +601,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
             if i >= plen {
               acc_env
             } else {
-              let next_env = check_pattern(Array::get(pats, i), CtUnknown, acc_env, defs, errors)
+              let next_env = check_pattern(pat = Array::get(pats, at = i), scrutinee_ty = CtUnknown, env = acc_env, defs = defs, errors = errors)
               bind_unk(i + 1, next_env)
             }
           }
@@ -609,23 +609,23 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
         }
       }
     },
-    POr(left, _right) => check_pattern(left, scrutinee_ty, env, defs, errors),
+    POr(left, _right) => check_pattern(pat = left, scrutinee_ty = scrutinee_ty, env = env, defs = defs, errors = errors),
     PStruct(_, fields) => {
       let flen = Array::length(fields)
       let rec bind_fields: (Int, TypeEnv) -> TypeEnv = (i, acc_env) -> {
         if i >= flen {
           acc_env
         } else {
-          let (fname, fpat) = Array::get(fields, i)
+          let (fname, fpat) = Array::get(fields, at = i)
           // #3572: as for a field read (`field_read_type`).
-          let field_ty = match elided_owned_head_field_refusal(defs, scrutinee_ty, fname) {
+          let field_ty = match elided_owned_head_field_refusal(defs = defs, recv = scrutinee_ty, field = fname) {
             Some(message) => {
-              Array::push(errors, message)
+              Array::push(errors, value = message)
               CtUnknown
             },
-            None => cp_struct_field_ty(defs, scrutinee_ty, fname)
+            None => cp_struct_field_ty(defs = defs, scrutinee_ty = scrutinee_ty, field = fname)
           }
-          let next_env = check_pattern(fpat, field_ty, acc_env, defs, errors)
+          let next_env = check_pattern(pat = fpat, scrutinee_ty = field_ty, env = acc_env, defs = defs, errors = errors)
           bind_fields(i + 1, next_env)
         }
       }
@@ -653,15 +653,15 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, env: Typ
       match scrutinee_ty {
         CtOption(elem) => if builtin {
           if name == "Some" && Array::length(sub_pats) == 1 {
-            ctor_pattern_scrutinee_mismatch(Array::get(sub_pats, 0), elem, env, defs)
+            ctor_pattern_scrutinee_mismatch(pat = Array::get(sub_pats, at = 0), scrutinee_ty = elem, env = env, defs = defs)
           } else {
             None
           }
         } else {
-          Some(cp_never_matches_owned(name, owner, find_ctor_in_defs(defs, name), scrutinee_ty, defs))
+          Some(cp_never_matches_owned(name = name, owner = owner, declared = find_ctor_in_defs(defs = defs, ctor_name = name), scrutinee_ty = scrutinee_ty, defs = defs))
         },
         _ => {
-          let declared = find_ctor_in_defs(defs, name)
+          let declared = find_ctor_in_defs(defs = defs, ctor_name = name)
           let user_ctor = match declared {
             Some(_) => true,
             None => false
@@ -672,18 +672,18 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, env: Typ
             if user_ctor {
               None
             } else {
-              Some(cp_never_matches_owned(name, owner, declared, scrutinee_ty, defs))
+              Some(cp_never_matches_owned(name = name, owner = owner, declared = declared, scrutinee_ty = scrutinee_ty, defs = defs))
             }
           } else {
-            match cp_nominal_variants(scrutinee_ty, defs) {
+            match cp_nominal_variants(ty = scrutinee_ty, defs = defs) {
               // The scrutinee's own constructor: its payload patterns are
               // checked against the variant's field types (Codex on #3420:
               // `Wrap(Some(n))` with `Wrap(Array[Int])`). A field typed by
               // the enum's own parameter stays a variable, and is tolerated.
-              Some(variants) => if cp_names_has(variants, name) {
-                cp_sub_patterns_mismatch(sub_pats, cp_variant_payload(scrutinee_ty, env, defs, name), env, defs)
+              Some(variants) => if cp_names_has(names = variants, name = name) {
+                cp_sub_patterns_mismatch(pats = sub_pats, tys = cp_variant_payload(ty = scrutinee_ty, env = env, defs = defs, name = name), env = env, defs = defs)
               } else {
-                Some(cp_never_matches_owned(name, owner, declared, scrutinee_ty, defs))
+                Some(cp_never_matches_owned(name = name, owner = owner, declared = declared, scrutinee_ty = scrutinee_ty, defs = defs))
               },
               None => None
             }
@@ -692,12 +692,12 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, env: Typ
       }
     },
     PTuple(pats) => match scrutinee_ty {
-      CtTuple(elem_tys) => cp_sub_patterns_mismatch(pats, elem_tys, env, defs),
+      CtTuple(elem_tys) => cp_sub_patterns_mismatch(pats = pats, tys = elem_tys, env = env, defs = defs),
       _ => None
     },
-    POr(left, right) => match ctor_pattern_scrutinee_mismatch(left, scrutinee_ty, env, defs) {
+    POr(left, right) => match ctor_pattern_scrutinee_mismatch(pat = left, scrutinee_ty = scrutinee_ty, env = env, defs = defs) {
       Some(msg) => Some(msg),
-      None => ctor_pattern_scrutinee_mismatch(right, scrutinee_ty, env, defs)
+      None => ctor_pattern_scrutinee_mismatch(pat = right, scrutinee_ty = scrutinee_ty, env = env, defs = defs)
     },
     _ => None
   }
@@ -714,7 +714,7 @@ fn cp_sub_patterns_mismatch(pats: Array[Pat], tys: Array[Type], env: TypeEnv, de
     while i < Array::length(pats) {
       match out {
         None => {
-          out = ctor_pattern_scrutinee_mismatch(Array::get(pats, i), Array::get(tys, i), env, defs)
+          out = ctor_pattern_scrutinee_mismatch(pat = Array::get(pats, at = i), scrutinee_ty = Array::get(tys, at = i), env = env, defs = defs)
         },
         Some(_) => ()
       }
@@ -738,13 +738,13 @@ fn cp_variant_payload(ty: Type, env: TypeEnv, defs: Array[TypeDef], name: String
     _ => ("", array_empty())
   }
   let out: Array[Type] = []
-  match find_typedef(defs, head) {
+  match find_typedef(defs = defs, name = head) {
     Some(TDEnum(_, _, variants)) => {
       for v in variants {
         let (vname, vtypes) = v
         if vname == name {
           for t in vtypes {
-            Array::push(out, t)
+            Array::push(out, value = t)
           }
         }
       }
@@ -755,10 +755,10 @@ fn cp_variant_payload(ty: Type, env: TypeEnv, defs: Array[TypeDef], name: String
   if Array::length(sargs) == 0 {
     out
   } else {
-    match env_lookup(env, name) {
+    match env_lookup(env = env, name = name) {
       Some(CtForAll(param_var_ids, _, CtFn(fn_payload_tys, _, _))) => if Array::length(param_var_ids) == Array::length(sargs) && Array::length(fn_payload_tys) == Array::length(out) {
         for pt in fn_payload_tys {
-          send_subst_vars(pt, param_var_ids, sargs)
+          send_subst_vars(ty = pt, vids = param_var_ids, args = sargs)
         }
       } else {
         out
@@ -769,7 +769,7 @@ fn cp_variant_payload(ty: Type, env: TypeEnv, defs: Array[TypeDef], name: String
 }
 
 /// `E::A` names the variant `A`.
-fn cp_ctor_base_name(name: String) -> String {
+fn cp_ctor_base_name(_ name: String) -> String {
   let mut cut = 0
   let mut i = 0
   let n = String::length(name)
@@ -784,7 +784,7 @@ fn cp_ctor_base_name(name: String) -> String {
 
 /// A concrete type no constructor pattern but its own can match, with no
 /// declaration to consult: a scalar, a function, an `Array` or a tuple.
-fn cp_scrutinee_is_structural(ty: Type) -> Bool {
+fn cp_scrutinee_is_structural(_ ty: Type) -> Bool {
   match ty {
     CtInt => true,
     CtDouble => true,
@@ -815,7 +815,7 @@ fn cp_nominal_variants(ty: Type, defs: Array[TypeDef]) -> Option[Array[(String, 
   if head == "" {
     None
   } else {
-    match find_typedef(defs, head) {
+    match find_typedef(defs = defs, name = head) {
       Some(td) => match td {
         // The definition already owns this immutable variant list. Callers
         // inspect it without building a second array of all constructor names.
@@ -845,10 +845,10 @@ fn cp_names_has(names: Array[(String, Array[Type])], name: String) -> Bool {
 /// (`Maybe::Some`, #3422): the message names that owner, not `Option`.
 fn cp_never_matches_owned(name: String, owner: String, declared: Option[(String, Array[Type])], scrutinee_ty: Type, defs: Array[TypeDef]) -> String {
   if owner == "" {
-    cp_ctor_never_matches(name, declared, scrutinee_ty, defs)
+    cp_ctor_never_matches(name = name, declared = declared, scrutinee_ty = scrutinee_ty, defs = defs)
   } else {
     let ty_text = type_to_string(scrutinee_ty)
-    let edit = cp_pattern_edit(scrutinee_ty, ty_text, defs)
+    let edit = cp_pattern_edit(ty = scrutinee_ty, ty_text = ty_text, defs = defs)
     "constructor pattern `\{owner}::\{name}` (of `\{owner}`) never matches a value of type `\{ty_text}` -- \{edit}, or remove the arm"
   }
 }
@@ -866,7 +866,7 @@ fn cp_ctor_never_matches(name: String, declared: Option[(String, Array[Type])], 
       None => ""
     }
   }
-  let edit = cp_pattern_edit(scrutinee_ty, ty_text, defs)
+  let edit = cp_pattern_edit(ty = scrutinee_ty, ty_text = ty_text, defs = defs)
   if owner == "" {
     "unknown constructor `\{name}` in a pattern on a value of type `\{ty_text}`: no enum declares it, so the arm never matches -- \{edit}, or remove the arm"
   } else {
@@ -881,7 +881,7 @@ fn cp_ctor_never_matches(name: String, declared: Option[(String, Array[Type])], 
 fn cp_pattern_edit(ty: Type, ty_text: String, defs: Array[TypeDef]) -> String {
   match ty {
     CtOption(_) => "match it with `Some(..)` or `None`",
-    _ => match cp_nominal_variants(ty, defs) {
+    _ => match cp_nominal_variants(ty = ty, defs = defs) {
       Some(variants) => if Array::length(variants) > 0 {
         let names = for variant in variants {
           let (name, _) = variant

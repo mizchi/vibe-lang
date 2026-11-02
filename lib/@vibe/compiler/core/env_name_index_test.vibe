@@ -9,37 +9,37 @@ import ./env_name_index.vibe {
 test "cached names resolve to the first row ID, including hash collisions" {
   let index = env_name_index_new(["Aa", "Aa", "BB", "zz"])
   inspect(env_name_index_length(index), "4")
-  inspect(env_name_index_find(index, "Aa"), "0")
-  inspect(env_name_index_find(index, "BB"), "2")
-  inspect(env_name_index_find(index, "missing"), "-1")
-  inspect(env_name_index_at(index, 1), "Aa")
+  inspect(env_name_index_find(index = index, name = "Aa"), "0")
+  inspect(env_name_index_find(index = index, name = "BB"), "2")
+  inspect(env_name_index_find(index = index, name = "missing"), "-1")
+  inspect(env_name_index_at(index = index, row = 1), "Aa")
   inspect(env_name_index_is_sorted(index), "true")
 }
 
 test "the index owns its names and later caller mutations cannot change IDs" {
   let names = ["a", "b"]
   let index = env_name_index_new(names)
-  Array::set(names, 0, "changed")
-  Array::push(names, "extra")
-  inspect(env_name_index_find(index, "a"), "0")
-  inspect(env_name_index_find(index, "changed"), "-1")
-  inspect(env_name_index_find(index, "extra"), "-1")
+  Array::set(names, at = 0, value = "changed")
+  Array::push(names, value = "extra")
+  inspect(env_name_index_find(index = index, name = "a"), "0")
+  inspect(env_name_index_find(index = index, name = "changed"), "-1")
+  inspect(env_name_index_find(index = index, name = "extra"), "-1")
   inspect(env_name_index_length(index), "2")
 }
 
 test "empty and singleton indexes resolve without a hash table" {
   let empty = env_name_index_new([])
-  inspect(env_name_index_find(empty, "x"), "-1")
+  inspect(env_name_index_find(index = empty, name = "x"), "-1")
   let single = env_name_index_new(["x"])
-  inspect(env_name_index_find(single, "x"), "0")
-  inspect(env_name_index_find(single, "y"), "-1")
+  inspect(env_name_index_find(index = single, name = "x"), "0")
+  inspect(env_name_index_find(index = single, name = "y"), "-1")
 }
 
 test "malformed name order remains detectable by artifact validators" {
   let index = env_name_index_new(["z", "a"])
   inspect(env_name_index_is_sorted(index), "false")
-  inspect(env_name_index_at(index, 0), "z")
-  inspect(env_name_index_at(index, 1), "a")
+  inspect(env_name_index_at(index = index, row = 0), "z")
+  inspect(env_name_index_at(index = index, row = 1), "a")
 }
 
 test "repeated hits and misses do not allocate lookup results" {
@@ -48,8 +48,8 @@ test "repeated hits and misses do not allocate lookup results" {
   let mut total = 0
   let mut i = 0
   while i < 1000 {
-    total = total + env_name_index_find(index, "BB")
-    total = total + env_name_index_find(index, "missing")
+    total = total + env_name_index_find(index = index, name = "BB")
+    total = total + env_name_index_find(index = index, name = "missing")
     i = i + 1
   }
   let allocated = Profiler::heap_bytes() - before
@@ -57,12 +57,12 @@ test "repeated hits and misses do not allocate lookup results" {
   inspect(allocated, "0")
 }
 
-fn colliding_name(bits: Int) -> String {
+fn colliding_name(_ bits: Int) -> String {
   let out = StringBuilder::new()
-  StringBuilder::push(out, "b")
+  StringBuilder::push(out, value = "b")
   let mut mask = 32
   while mask > 0 {
-    StringBuilder::push(out, if (bits&mask) == 0 {
+    StringBuilder::push(out, value = if (bits&mask) == 0 {
       "Aa"
     } else {
       "BB"
@@ -80,7 +80,7 @@ test "collision chains wrap around the table and a colliding miss terminates" {
   let names: Array[String] = []
   let mut i = 0
   while i < 63 {
-    Array::push(names, colliding_name(i))
+    Array::push(names, value = colliding_name(i))
     i = i + 1
   }
   let index = env_name_index_new(names)
@@ -88,9 +88,9 @@ test "collision chains wrap around the table and a colliding miss terminates" {
   i = 0
   while i < 63 {
     // Rebuild the spelling so hits cannot depend on string identity.
-    assert(env_name_index_find(index, colliding_name(i)) == i)
+    assert(env_name_index_find(index = index, name = colliding_name(i)) == i)
     i = i + 1
   }
-  inspect(env_name_index_find(index, colliding_name(63)), "-1")
+  inspect(env_name_index_find(index = index, name = colliding_name(63)), "-1")
   inspect(env_name_index_length(index), "63")
 }

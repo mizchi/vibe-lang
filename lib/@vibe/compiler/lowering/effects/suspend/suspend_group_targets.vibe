@@ -14,15 +14,15 @@ export fn scps_group_members(groups: Array[(String, Array[String])], target: Str
   }
   [target]
 }
-fn group_arm_members(arms: Array[(Pat, Expr)]) -> Array[String] {
+fn group_arm_members(_ arms: Array[(Pat, Expr)]) -> Array[String] {
   let out: Array[String] = []
   for arm in arms {
     let (pat, _) = arm
     let qname = edp_pat_qname(pat)
     if !is_exception_throw_handler_name(qname) {
       match edp_split_qualified(qname) {
-        (Some(name), _) => if !edp_str_array_contains(out, name) {
-          Array::push(out, name)
+        (Some(name), _) => if !edp_str_array_contains(arr = out, v = name) {
+          Array::push(out, value = name)
         },
         _ => ()
       }
@@ -36,7 +36,7 @@ fn group_members_equal(a: Array[String], b: Array[String]) -> Bool {
   }
   let mut i = 0
   while i < Array::length(a) {
-    if !edp_str_array_contains(b, Array::get(a, i)) {
+    if !edp_str_array_contains(arr = b, v = Array::get(a, at = i)) {
       return false
     }
     i = i + 1
@@ -50,92 +50,92 @@ export fn scps_group_target(arms: Array[(Pat, Expr)], groups: Array[(String, Arr
   }
   for group in groups {
     let (name, old) = group
-    if group_members_equal(old, members) {
+    if group_members_equal(a = old, b = members) {
       return name
     }
   }
-  Array::get(members, 0)
+  Array::get(members, at = 0)
 }
 fn group_collect_expr(expr: Expr, groups: Array[(String, Array[String])], occupied: Array[String]) -> Unit {
   match expr {
     EHandle(_, arms) => {
       for arm in arms {
-        group_note_pattern(arm.0, occupied)
+        group_note_pattern(pat = arm.0, occupied = occupied)
       }
       let members = group_arm_members(arms)
       if Array::length(members) > 1 {
         let mut found = false
         for group in groups {
-          let (_, old) = group; if group_members_equal(old, members) {
+          let (_, old) = group; if group_members_equal(a = old, b = members) {
             found = true
           }
         }
         if !found {
-          Array::push(groups, ("$scps_group_" + __to_string(Array::length(groups)), members))
+          Array::push(groups, value = ("$scps_group_" + __to_string(Array::length(groups)), members))
         }
       }
     },
     EMatch(_, arms) => {
       for arm in arms {
-        group_note_pattern(arm.0, occupied)
+        group_note_pattern(pat = arm.0, occupied = occupied)
       }; ()
     },
-    EIdent(name, _) => group_note_name(name, occupied),
-    ELet(name, _, _, _) => group_note_name(name, occupied),
-    ELetMut(name, _, _, _) => group_note_name(name, occupied),
-    ELetRec(name, _, _) => group_note_name(name, occupied),
-    EAssign(name, _, _, _) => group_note_name(name, occupied),
-    EAssignOp(name, _, _, _, _) => group_note_name(name, occupied),
+    EIdent(name, _) => group_note_name(name = name, occupied = occupied),
+    ELet(name, _, _, _) => group_note_name(name = name, occupied = occupied),
+    ELetMut(name, _, _, _) => group_note_name(name = name, occupied = occupied),
+    ELetRec(name, _, _) => group_note_name(name = name, occupied = occupied),
+    EAssign(name, _, _, _) => group_note_name(name = name, occupied = occupied),
+    EAssignOp(name, _, _, _, _) => group_note_name(name = name, occupied = occupied),
     EFn(_, _, params, _, _, _) => {
       for param in params {
-        group_note_name(param.0, occupied)
+        group_note_name(name = param.0, occupied = occupied)
       }; ()
     },
     EForIn(name, index, _, _) => {
-      group_note_name(name, occupied); match index {
-        Some(n) => group_note_name(n, occupied),
+      group_note_name(name = name, occupied = occupied); match index {
+        Some(n) => group_note_name(name = n, occupied = occupied),
         None => ()
       }
     },
     ELoop(pairs, _) => {
       for pair in pairs {
-        group_note_name(pair.0, occupied)
+        group_note_name(name = pair.0, occupied = occupied)
       }; ()
     },
-    ERecord(name, _, _) => group_note_name(name, occupied),
+    ERecord(name, _, _) => group_note_name(name = name, occupied = occupied),
     _ => ()
   }
   for child in expr_children(expr) {
-    group_collect_expr(child, groups, occupied)
+    group_collect_expr(expr = child, groups = groups, occupied = occupied)
   }
   ()
 }
 // Keep the whole generated runtime family clear of source names, including
 // compiler-generated input graphs whose identifiers may contain `$`.
 fn group_note_name(name: String, occupied: Array[String]) -> Unit {
-  if String::contains(name, "$scps_group_") {
-    Array::push(occupied, name)
+  if String::contains(name, needle = "$scps_group_") {
+    Array::push(occupied, value = name)
   }
 }
 fn group_note_pattern(pat: Pat, occupied: Array[String]) -> Unit {
   match pat {
-    PBind(name) => group_note_name(name, occupied),
+    PBind(name) => group_note_name(name = name, occupied = occupied),
     PCtor(name, pats) => {
-      group_note_name(name, occupied); for p in pats {
-        group_note_pattern(p, occupied)
+      group_note_name(name = name, occupied = occupied); for p in pats {
+        group_note_pattern(pat = p, occupied = occupied)
       }; ()
     },
     PTuple(pats) => {
       for p in pats {
-        group_note_pattern(p, occupied)
+        group_note_pattern(pat = p, occupied = occupied)
       }; ()
     },
     POr(a, b) => {
-      group_note_pattern(a, occupied); group_note_pattern(b, occupied)
+      group_note_pattern(pat = a, occupied = occupied); group_note_pattern(pat = b, occupied = occupied)
     },
     PStruct(name, fields) => {
-      group_note_name(name, occupied); for field in fields {
-        group_note_pattern(field.1, occupied)
+      group_note_name(name = name, occupied = occupied); for field in fields {
+        group_note_pattern(pat = field.1, occupied = occupied)
       }; ()
     },
     _ => ()
@@ -144,52 +144,52 @@ fn group_note_pattern(pat: Pat, occupied: Array[String]) -> Unit {
 fn group_collect_stmt(stmt: Stmt, groups: Array[(String, Array[String])], occupied: Array[String]) -> Unit {
   match stmt {
     SLet(_, _, name, _, expr) => {
-      group_note_name(name, occupied); group_collect_expr(expr, groups, occupied)
+      group_note_name(name = name, occupied = occupied); group_collect_expr(expr = expr, groups = groups, occupied = occupied)
     },
     SLetMut(name, _, expr) => {
-      group_note_name(name, occupied); group_collect_expr(expr, groups, occupied)
+      group_note_name(name = name, occupied = occupied); group_collect_expr(expr = expr, groups = groups, occupied = occupied)
     },
-    SExpr(expr) => group_collect_expr(expr, groups, occupied),
-    STest(_, expr) => group_collect_expr(expr, groups, occupied),
-    SBench(_, expr) => group_collect_expr(expr, groups, occupied),
+    SExpr(expr) => group_collect_expr(expr = expr, groups = groups, occupied = occupied),
+    STest(_, expr) => group_collect_expr(expr = expr, groups = groups, occupied = occupied),
+    SBench(_, expr) => group_collect_expr(expr = expr, groups = groups, occupied = occupied),
     SLetPat(pat, expr) => {
-      group_note_pattern(pat, occupied); group_collect_expr(expr, groups, occupied)
+      group_note_pattern(pat = pat, occupied = occupied); group_collect_expr(expr = expr, groups = groups, occupied = occupied)
     },
     SFnDecl(_, name, expr, requires, ensures) => {
-      group_note_name(name, occupied); group_collect_expr(expr, groups, occupied)
+      group_note_name(name = name, occupied = occupied); group_collect_expr(expr = expr, groups = groups, occupied = occupied)
       for clause in requires {
-        group_collect_expr(clause, groups, occupied)
+        group_collect_expr(expr = clause, groups = groups, occupied = occupied)
       }
       for clause in ensures {
-        group_collect_expr(clause, groups, occupied)
+        group_collect_expr(expr = clause, groups = groups, occupied = occupied)
       }
       ()
     },
-    SEffectDef(_, name, _, _) => group_note_name(name, occupied),
-    SStruct(_, name, _, _, _, _) => group_note_name(name, occupied),
-    STrait(_, name, _, _, _, _) => group_note_name(name, occupied),
-    STypeAlias(_, name, _, _) => group_note_name(name, occupied),
+    SEffectDef(_, name, _, _) => group_note_name(name = name, occupied = occupied),
+    SStruct(_, name, _, _, _, _) => group_note_name(name = name, occupied = occupied),
+    STrait(_, name, _, _, _, _) => group_note_name(name = name, occupied = occupied),
+    STypeAlias(_, name, _, _) => group_note_name(name = name, occupied = occupied),
     SEnum(_, name, _, variants, _) => {
-      group_note_name(name, occupied); for variant in variants {
-        group_note_name(variant.0, occupied)
+      group_note_name(name = name, occupied = occupied); for variant in variants {
+        group_note_name(name = variant.0, occupied = occupied)
       }; ()
     },
     SSuberror(_, name, variants) => {
-      group_note_name(name, occupied); for variant in variants {
-        group_note_name(variant.0, occupied)
+      group_note_name(name = name, occupied = occupied); for variant in variants {
+        group_note_name(name = variant.0, occupied = occupied)
       }; ()
     },
     SAliasDecl(a, b) => {
-      group_note_name(a, occupied); group_note_name(b, occupied)
+      group_note_name(name = a, occupied = occupied); group_note_name(name = b, occupied = occupied)
     },
     SExport(names) => {
       for name in names {
-        group_note_name(name, occupied)
+        group_note_name(name = name, occupied = occupied)
       }; ()
     },
     SModule(_, name, children) => {
-      group_note_name(name, occupied); for child in children {
-        group_collect_stmt(child, groups, occupied)
+      group_note_name(name = name, occupied = occupied); for child in children {
+        group_collect_stmt(stmt = child, groups = groups, occupied = occupied)
       }; ()
     },
     _ => ()
@@ -197,40 +197,40 @@ fn group_collect_stmt(stmt: Stmt, groups: Array[(String, Array[String])], occupi
 }
 fn group_name_occupied(occupied: Array[String], name: String) -> Bool {
   for source_name in occupied {
-    if String::contains(source_name, name) {
+    if String::contains(source_name, needle = name) {
       return true
     }
   }
   false
 }
-export fn scps_collect_groups(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+export fn scps_collect_groups(_ stmts: Array[Stmt]) -> Array[(String, Array[String])] {
   let groups: Array[(String, Array[String])] = []
   let occupied: Array[String] = []
   for stmt in stmts {
-    group_collect_stmt(stmt, groups, occupied)
+    group_collect_stmt(stmt = stmt, groups = groups, occupied = occupied)
   }
   let mut serial = 0
   let mut i = 0
   while i < Array::length(groups) {
     let mut name = "$scps_group_" + __to_string(serial)
-    while group_name_occupied(occupied, name) {
+    while group_name_occupied(occupied = occupied, name = name) {
       serial = serial + 1; name = "$scps_group_" + __to_string(serial)
     }
-    let (_, members) = Array::get(groups, i)
-    Array::set(groups, i, (name, members))
+    let (_, members) = Array::get(groups, at = i)
+    Array::set(groups, at = i, value = (name, members))
     serial = serial + 1
     i = i + 1
   }
   groups
 }
 export fn scps_group_op_name(groups: Array[(String, Array[String])], target: String, qname: String) -> String {
-  let ci = String::index_of(qname, "::")
+  let ci = String::index_of(qname, needle = "::")
   let suffix = if ci > 0 {
     qname[ci + 2: String::length(qname)]
   } else {
     qname
   }
-  let members = scps_group_members(groups, target)
+  let members = scps_group_members(groups = groups, target = target)
   if Array::length(members) < 2 {
     return suffix
   }
@@ -241,7 +241,7 @@ export fn scps_group_op_name(groups: Array[(String, Array[String])], target: Str
   }
   let mut i = 0
   while i < Array::length(members) {
-    if Array::get(members, i) == head {
+    if Array::get(members, at = i) == head {
       return __to_string(i) + "_" + suffix
     }
     i = i + 1

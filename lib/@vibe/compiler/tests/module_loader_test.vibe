@@ -31,8 +31,8 @@ fn empty_loading() -> Array[String] {
 test "check_module: single file no imports" {
   let source = "let x = 42"
   let sources = array_empty()
-  let env = check_module(source, "main.vibe", sources, empty_loading(), empty_cache())
-  match env_lookup(env, "x") {
+  let env = check_module(source = source, path = "main.vibe", sources = sources, loading = empty_loading(), checked_cache = empty_cache())
+  match env_lookup(env = env, name = "x") {
     Some(_) => assert(true),
     None => assert(false)
   }
@@ -42,8 +42,8 @@ test "check_module: file with import resolves types" {
   let helper_src = "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"
   let main_src = "import ./helpers.vibe { add }\nlet result = add(1, 2)"
   let sources = [("helpers.vibe", helper_src)]
-  let env = check_module(main_src, "main.vibe", sources, empty_loading(), empty_cache())
-  match env_lookup(env, "result") {
+  let env = check_module(source = main_src, path = "main.vibe", sources = sources, loading = empty_loading(), checked_cache = empty_cache())
+  match env_lookup(env = env, name = "result") {
     Some(_) => assert(true),
     None => assert(false)
   }
@@ -53,8 +53,8 @@ test "check_module: import with alias" {
   let helper_src = "export let greet: () -> String = () -> { \"hi\" }"
   let main_src = "import ./helpers.vibe { greet as hello }\nlet msg = hello()"
   let sources = [("helpers.vibe", helper_src)]
-  let env = check_module(main_src, "main.vibe", sources, empty_loading(), empty_cache())
-  match env_lookup(env, "msg") {
+  let env = check_module(source = main_src, path = "main.vibe", sources = sources, loading = empty_loading(), checked_cache = empty_cache())
+  match env_lookup(env = env, name = "msg") {
     Some(_) => assert(true),
     None => assert(false)
   }
@@ -65,8 +65,8 @@ test "check_module: transitive imports" {
   let mid_src = "import ./base.vibe { base_val }\nexport let mid_val = base_val"
   let main_src = "import ./mid.vibe { mid_val }\nlet result = mid_val"
   let sources = [("base.vibe", base_src), ("mid.vibe", mid_src)]
-  let env = check_module(main_src, "main.vibe", sources, empty_loading(), empty_cache())
-  match env_lookup(env, "result") {
+  let env = check_module(source = main_src, path = "main.vibe", sources = sources, loading = empty_loading(), checked_cache = empty_cache())
+  match env_lookup(env = env, name = "result") {
     Some(_) => assert(true),
     None => assert(false)
   }
@@ -77,8 +77,8 @@ test "check_module: re-exported enum type imports constructors through index mod
   let index_src = "export ./ast.vibe { TypeExpr }"
   let main_src = "import ./core { TypeExpr }\nlet ann: TypeExpr = TyTuple([TyName(\"Int\")])"
   let sources = [("core/ast.vibe", ast_src), ("core/index.vibe", index_src)]
-  let env = check_module(main_src, "main.vibe", sources, empty_loading(), empty_cache())
-  match env_lookup(env, "ann") {
+  let env = check_module(source = main_src, path = "main.vibe", sources = sources, loading = empty_loading(), checked_cache = empty_cache())
+  match env_lookup(env = env, name = "ann") {
     Some(CtUnknown) => assert(false),
     Some(_) => assert(true),
     None => assert(false)
@@ -89,19 +89,19 @@ test "check_module: cache avoids duplicate checking" {
   let helper_src = "export let x = 1"
   let sources = [("helpers.vibe", helper_src)]
   let cache = empty_cache()
-  let _ = check_module("import ./helpers.vibe { x }\nlet a = x", "a.vibe", sources, empty_loading(), cache)
+  let _ = check_module(source = "import ./helpers.vibe { x }\nlet a = x", path = "a.vibe", sources = sources, loading = empty_loading(), checked_cache = cache)
   assert(Array::length(cache) > 0)
-  let _ = check_module("import ./helpers.vibe { x }\nlet b = x", "b.vibe", sources, empty_loading(), cache)
+  let _ = check_module(source = "import ./helpers.vibe { x }\nlet b = x", path = "b.vibe", sources = sources, loading = empty_loading(), checked_cache = cache)
   assert(true)
 }
 
 test "check_module: cached module does not reparse helper source for exports" {
   let cache = empty_cache()
   let good_sources = [("helpers.vibe", "export let x = 1")]
-  let _ = check_module("import ./helpers.vibe { x }\nlet a = x", "a.vibe", good_sources, empty_loading(), cache)
+  let _ = check_module(source = "import ./helpers.vibe { x }\nlet a = x", path = "a.vibe", sources = good_sources, loading = empty_loading(), checked_cache = cache)
   let broken_sources = [("helpers.vibe", "export let x =")]
-  let env = check_module("import ./helpers.vibe { x }\nlet b = x", "b.vibe", broken_sources, empty_loading(), cache)
-  match env_lookup(env, "b") {
+  let env = check_module(source = "import ./helpers.vibe { x }\nlet b = x", path = "b.vibe", sources = broken_sources, loading = empty_loading(), checked_cache = cache)
+  match env_lookup(env = env, name = "b") {
     Some(_) => assert(true),
     None => assert(false)
   }
@@ -111,8 +111,8 @@ test "check_module: non-exported name not imported" {
   let helper_src = "let private_fn: () -> Int = () -> { 42 }\nexport let public_fn: () -> Int = () -> { 1 }"
   let main_src = "import ./helpers.vibe { private_fn }\nlet r = private_fn()"
   let sources = [("helpers.vibe", helper_src)]
-  let env = check_module(main_src, "main.vibe", sources, empty_loading(), empty_cache())
-  match env_lookup(env, "r") {
+  let env = check_module(source = main_src, path = "main.vibe", sources = sources, loading = empty_loading(), checked_cache = empty_cache())
+  match env_lookup(env = env, name = "r") {
     Some(CtUnknown) => assert(true),
     None => assert(true),
     _ => assert(true)
@@ -130,8 +130,8 @@ test "collect_merged_stmts rewrites `as` aliases to the original name (#1584)" {
     ("main.vibe", main_src)
   ])
   let text = print_program(merged)
-  assert(String::contains(text, "env_probe"))
-  assert(!String::contains(text, "ep("))
+  assert(String::contains(text, needle = "env_probe"))
+  assert(!String::contains(text, needle = "ep("))
 }
 
 test "collect_merged_stmts: a top-level def shadows a same-named import alias (#1584)" {
@@ -145,6 +145,6 @@ test "collect_merged_stmts: a top-level def shadows a same-named import alias (#
     ("main.vibe", main_src)
   ])
   let text = print_program(merged)
-  assert(String::contains(text, "shade()"))
-  assert(!String::contains(text, "tint()"))
+  assert(String::contains(text, needle = "shade()"))
+  assert(!String::contains(text, needle = "tint()"))
 }

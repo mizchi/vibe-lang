@@ -236,8 +236,8 @@ fn gc_user_fn_owns_name(ctx: CompileCtxGc, name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(names) {
-    if Array::get(names, i) == name {
-      found = Array::get(ctx.func_table.indices, i) - ctx.func_offset >= 0
+    if Array::get(names, at = i) == name {
+      found = Array::get(ctx.func_table.indices, at = i) - ctx.func_offset >= 0
       i = Array::length(names)
     } else {
       i = i + 1
@@ -252,8 +252,8 @@ fn builtin_value_closure(name: String, arity: Int) -> Expr {
   let mut i = 0
   while i < arity {
     let param = String::concat("__builtin_value_arg", Int::to_string(i))
-    Array::push(params, (param, None))
-    Array::push(args, EIdent(param, -1))
+    Array::push(params, value = (param, None))
+    Array::push(args, value = EIdent(param, -1))
     i = i + 1
   }
   EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), args, -1, builtin_callee_resolution(name)))
@@ -266,7 +266,7 @@ fn builtin_value_closure(name: String, arity: Int) -> Expr {
 /// packed (ptr<<32)|len strings by CONTENT — raw i64.eq made every
 /// string-vs-string `==` a pointer compare, so the gc-compiled compiler failed
 /// its own types_equal with "return type mismatch: expected Int, got Int".
-fn gc_expr_is_intish(e: Expr) -> Bool {
+fn gc_expr_is_intish(_ e: Expr) -> Bool {
   match e {
     EInt(_) => true,
     EBool(_) => true,
@@ -286,13 +286,13 @@ fn gc_expr_is_intish(e: Expr) -> Bool {
 /// CURRENT slot, exactly as gc_expr_is_boolish (backend_scalar_class.vibe) does, so a name rebound in
 /// a sibling scope is not read through its stale entry.
 fn gc_value_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
-  if gc_offset_says_int(e, ctx) {
+  if gc_offset_says_int(e = e, ctx = ctx) {
     true
   } else {
     match e {
       EIdent(iname, _) => {
-        let slot = find_local_slot(local_names, iname)
-        slot >= 0 && array_contains_int(ctx.gc_int_locals, slot)
+        let slot = find_local_slot(names = local_names, name = iname)
+        slot >= 0 && array_contains_int(arr = ctx.gc_int_locals, v = slot)
       },
       // `-x` carries the operand's type, so it is logged only when the operand
       // is. Handled HERE rather than in `gc_expr_is_intish` on purpose: that one
@@ -308,7 +308,7 @@ fn gc_value_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) ->
       EUnaryOp(op, x) => if op == "!" || op == "~" {
         true
       } else if op == "-" {
-        gc_value_is_intish(x, local_names, ctx)
+        gc_value_is_intish(e = x, local_names = local_names, ctx = ctx)
       } else {
         false
       },
@@ -324,10 +324,10 @@ fn gc_value_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) ->
 fn gc_is_ctor_expr(e: Expr, ctx: CompileCtxGc) -> Bool {
   match e {
     ECall(callee, _, _, _) => match callee {
-      EIdent(cname, _) => ctor_table_index_of(ctx.gc_ctor_table, cname) >= 0,
+      EIdent(cname, _) => ctor_table_index_of(ct = ctx.gc_ctor_table, name = cname) >= 0,
       _ => false
     },
-    EIdent(iname, _) => ctor_table_index_of(ctx.gc_ctor_table, iname) >= 0,
+    EIdent(iname, _) => ctor_table_index_of(ct = ctx.gc_ctor_table, name = iname) >= 0,
     _ => false
   }
 }
@@ -343,28 +343,28 @@ fn gc_is_ctor_expr(e: Expr, ctx: CompileCtxGc) -> Bool {
 /// keeps the generic compare.
 fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, field_exprs: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
-  Array::push(local_names, "[gc-temp]__gceqa")
+  Array::push(local_names, value = "[gc-temp]__gceqa")
   let bptr = next_local + 1
-  Array::push(local_names, "[gc-temp]__gceqb")
+  Array::push(local_names, value = "[gc-temp]__gceqb")
   let nl1 = cefn(buf, lhs, local_names, next_local + 2, ctx, ld)
-  emit_local_set(buf, aptr)
+  emit_local_set(buf = buf, idx = aptr)
   let nl2 = cefn(buf, rhs, local_names, nl1, ctx, ld)
-  emit_local_set(buf, bptr)
-  let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-  emit_i64_const(buf, 1)
+  emit_local_set(buf = buf, idx = bptr)
+  let (eq_fidx, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
+  emit_i64_const(buf = buf, value = 1)
   let mut i = 0
   while i < num {
-    emit_local_get(buf, aptr)
+    emit_local_get(buf = buf, idx = aptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, i * 8)
-    emit_local_get(buf, bptr)
+    emit_i64_load(buf = buf, align = 3, offset = i * 8)
+    emit_local_get(buf = buf, idx = bptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, i * 8)
-    if i < Array::length(field_exprs) && gc_expr_is_intish(Array::get(field_exprs, i)) {
+    emit_i64_load(buf = buf, align = 3, offset = i * 8)
+    if i < Array::length(field_exprs) && gc_expr_is_intish(Array::get(field_exprs, at = i)) {
       emit_i64_eq(buf)
       emit_i64_extend_i32_s(buf)
     } else {
-      emit_call(buf, eq_fidx)
+      emit_call(buf = buf, func_idx = eq_fidx)
     }
     emit_i64_and(buf)
     i = i + 1
@@ -381,103 +381,103 @@ fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, field_exp
 /// argument expressions when one is in scope, empty otherwise.
 fn emit_gc_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, field_exprs: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
-  Array::push(local_names, "[gc-temp]__gcceqa")
+  Array::push(local_names, value = "[gc-temp]__gcceqa")
   let bptr = next_local + 1
-  Array::push(local_names, "[gc-temp]__gcceqb")
+  Array::push(local_names, value = "[gc-temp]__gcceqb")
   let nl1 = cefn(buf, lhs, local_names, next_local + 2, ctx, ld)
-  emit_i64_const(buf, -2)
+  emit_i64_const(buf = buf, value = -2)
   emit_i64_and(buf)
-  emit_local_set(buf, aptr)
+  emit_local_set(buf = buf, idx = aptr)
   let nl2 = cefn(buf, rhs, local_names, nl1, ctx, ld)
-  emit_i64_const(buf, -2)
+  emit_i64_const(buf = buf, value = -2)
   emit_i64_and(buf)
-  emit_local_set(buf, bptr)
-  emit_local_get(buf, aptr)
+  emit_local_set(buf = buf, idx = bptr)
+  emit_local_get(buf = buf, idx = aptr)
   emit_i32_wrap_i64(buf)
-  emit_i32_load(buf, 2, 0)
-  emit_local_get(buf, bptr)
+  emit_i32_load(buf = buf, align = 2, offset = 0)
+  emit_local_get(buf = buf, idx = bptr)
   emit_i32_wrap_i64(buf)
-  emit_i32_load(buf, 2, 0)
+  emit_i32_load(buf = buf, align = 2, offset = 0)
   emit_i32_eq(buf)
   emit_if_i64(buf)
-  let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+  let (eq_fidx, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
   if fc == 63 {
     // #724 round 2: DYNAMIC field count (fc 63 sentinel) — see the linear
     // emit_ctor_struct_eq: equal tags imply equal argc, loop over argc@4.
     let res_l = nl2
     let cnt_l = nl2 + 1
     let ii_l = nl2 + 2
-    Array::push(local_names, "[gc-temp]__gcceq_res")
-    Array::push(local_names, "[gc-temp]__gcceq_cnt")
-    Array::push(local_names, "[gc-temp]__gcceq_i")
-    emit_i64_const(buf, 1)
-    emit_local_set(buf, res_l)
-    emit_local_get(buf, aptr)
+    Array::push(local_names, value = "[gc-temp]__gcceq_res")
+    Array::push(local_names, value = "[gc-temp]__gcceq_cnt")
+    Array::push(local_names, value = "[gc-temp]__gcceq_i")
+    emit_i64_const(buf = buf, value = 1)
+    emit_local_set(buf = buf, idx = res_l)
+    emit_local_get(buf = buf, idx = aptr)
     emit_i32_wrap_i64(buf)
-    emit_i32_load(buf, 2, 4)
+    emit_i32_load(buf = buf, align = 2, offset = 4)
     emit_i64_extend_i32_u(buf)
-    emit_local_set(buf, cnt_l)
-    emit_i64_const(buf, 0)
-    emit_local_set(buf, ii_l)
+    emit_local_set(buf = buf, idx = cnt_l)
+    emit_i64_const(buf = buf, value = 0)
+    emit_local_set(buf = buf, idx = ii_l)
     emit_block_void(buf)
     emit_loop_void(buf)
-    emit_local_get(buf, ii_l)
-    emit_local_get(buf, cnt_l)
+    emit_local_get(buf = buf, idx = ii_l)
+    emit_local_get(buf = buf, idx = cnt_l)
     emit_i64_ge_s(buf)
-    emit_br_if(buf, 1)
-    emit_local_get(buf, res_l)
-    emit_local_get(buf, aptr)
+    emit_br_if(buf = buf, label = 1)
+    emit_local_get(buf = buf, idx = res_l)
+    emit_local_get(buf = buf, idx = aptr)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, ii_l)
+    emit_local_get(buf = buf, idx = ii_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 8)
+    emit_i32_const(buf = buf, value = 8)
     emit_i32_mul(buf)
     emit_i32_add(buf)
-    emit_i64_load(buf, 3, 8)
-    emit_local_get(buf, bptr)
+    emit_i64_load(buf = buf, align = 3, offset = 8)
+    emit_local_get(buf = buf, idx = bptr)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, ii_l)
+    emit_local_get(buf = buf, idx = ii_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 8)
+    emit_i32_const(buf = buf, value = 8)
     emit_i32_mul(buf)
     emit_i32_add(buf)
-    emit_i64_load(buf, 3, 8)
-    emit_call(buf, eq_fidx)
+    emit_i64_load(buf = buf, align = 3, offset = 8)
+    emit_call(buf = buf, func_idx = eq_fidx)
     emit_i64_and(buf)
-    emit_local_set(buf, res_l)
-    emit_local_get(buf, ii_l)
-    emit_i64_const(buf, 1)
+    emit_local_set(buf = buf, idx = res_l)
+    emit_local_get(buf = buf, idx = ii_l)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_add(buf)
-    emit_local_set(buf, ii_l)
-    emit_br(buf, 0)
+    emit_local_set(buf = buf, idx = ii_l)
+    emit_br(buf = buf, label = 0)
     emit_end(buf)
     emit_end(buf)
-    emit_local_get(buf, res_l)
+    emit_local_get(buf = buf, idx = res_l)
     emit_else(buf)
-    emit_i64_const(buf, 0)
+    emit_i64_const(buf = buf, value = 0)
     emit_end(buf)
     nl2 + 3
   } else {
-    emit_i64_const(buf, 1)
+    emit_i64_const(buf = buf, value = 1)
     let mut i = 0
     while i < fc {
-      emit_local_get(buf, aptr)
+      emit_local_get(buf = buf, idx = aptr)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 8 + i * 8)
-      emit_local_get(buf, bptr)
+      emit_i64_load(buf = buf, align = 3, offset = 8 + i * 8)
+      emit_local_get(buf = buf, idx = bptr)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 8 + i * 8)
-      if i < Array::length(field_exprs) && gc_expr_is_intish(Array::get(field_exprs, i)) {
+      emit_i64_load(buf = buf, align = 3, offset = 8 + i * 8)
+      if i < Array::length(field_exprs) && gc_expr_is_intish(Array::get(field_exprs, at = i)) {
         emit_i64_eq(buf)
         emit_i64_extend_i32_s(buf)
       } else {
-        emit_call(buf, eq_fidx)
+        emit_call(buf = buf, func_idx = eq_fidx)
       }
       emit_i64_and(buf)
       i = i + 1
     }
     emit_else(buf)
-    emit_i64_const(buf, 0)
+    emit_i64_const(buf = buf, value = 0)
     emit_end(buf)
     nl2
   }
@@ -505,8 +505,8 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
   }
   // #724: aggregate shape of a bare-ident operand tracked at its `let`
   // (kind*64+n, or -1) — mirrors the linear backend's emit_eq_value.
-  let lhs_agg = agg_info_of_ident(ctx.gc_agg_local_slots, lhs, local_names)
-  let rhs_agg = agg_info_of_ident(ctx.gc_agg_local_slots, rhs, local_names)
+  let lhs_agg = agg_info_of_ident(arr = ctx.gc_agg_local_slots, e = lhs, local_names = local_names)
+  let rhs_agg = agg_info_of_ident(arr = ctx.gc_agg_local_slots, e = rhs, local_names = local_names)
   if lhs_is_tuple || rhs_is_tuple {
     let num = match lhs {
       ETuple(les) => Array::length(les),
@@ -522,16 +522,16 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
         _ => array_empty()
       }
     }
-    emit_gc_tuple_struct_eq(buf, lhs, rhs, num, elems, local_names, next_local, ctx, ld, cefn)
+    emit_gc_tuple_struct_eq(buf = buf, lhs = lhs, rhs = rhs, num = num, field_exprs = elems, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, cefn = cefn)
   } else if lhs_agg / 64 == 1 || rhs_agg / 64 == 1 {
     let tn = if lhs_agg / 64 == 1 {
       lhs_agg % 64
     } else {
       rhs_agg % 64
     }
-    emit_gc_tuple_struct_eq(buf, lhs, rhs, tn, array_empty(), local_names, next_local, ctx, ld, cefn)
-  } else if gc_is_ctor_expr(lhs, ctx) || gc_is_ctor_expr(rhs, ctx) {
-    let clit = if gc_is_ctor_expr(lhs, ctx) {
+    emit_gc_tuple_struct_eq(buf = buf, lhs = lhs, rhs = rhs, num = tn, field_exprs = array_empty(), local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, cefn = cefn)
+  } else if gc_is_ctor_expr(e = lhs, ctx = ctx) || gc_is_ctor_expr(e = rhs, ctx = ctx) {
+    let clit = if gc_is_ctor_expr(e = lhs, ctx = ctx) {
       lhs
     } else {
       rhs
@@ -541,7 +541,7 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
       _ => array_empty()
     }
     let cfc = Array::length(cargs_lit)
-    emit_gc_ctor_struct_eq(buf, lhs, rhs, cfc, cargs_lit, local_names, next_local, ctx, ld, cefn)
+    emit_gc_ctor_struct_eq(buf = buf, lhs = lhs, rhs = rhs, fc = cfc, field_exprs = cargs_lit, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, cefn = cefn)
   } else if lhs_agg / 64 == 2 || rhs_agg / 64 == 2 {
     // Tag comparison short-circuits unequal variants before any field read,
     // so walking the larger tracked field count is safe (see the linear
@@ -561,8 +561,8 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
     } else {
       rfc
     }
-    emit_gc_ctor_struct_eq(buf, lhs, rhs, cfc, array_empty(), local_names, next_local, ctx, ld, cefn)
-  } else if gc_expr_is_floatish(lhs, local_names, ctx) || gc_expr_is_floatish(rhs, local_names, ctx) {
+    emit_gc_ctor_struct_eq(buf = buf, lhs = lhs, rhs = rhs, fc = cfc, field_exprs = array_empty(), local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, cefn = cefn)
+  } else if gc_expr_is_floatish(e = lhs, local_names = local_names, ctx = ctx) || gc_expr_is_floatish(e = rhs, local_names = local_names, ctx = ctx) {
     // #2426: Double equality, which reached no float comparison at all before.
     // Both arms below answer on the RAW BITS -- `gc_expr_is_intish` claims
     // `+ - * /` from the operator alone and emits `i64.eq`, and the `eq`
@@ -588,7 +588,7 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
     emit_f64_eq(buf)
     emit_i64_extend_i32_s(buf)
     nlf2
-  } else if gc_expr_is_intish(lhs) || gc_expr_is_intish(rhs) || gc_offset_says_int(lhs, ctx) || gc_offset_says_int(rhs, ctx) {
+  } else if gc_expr_is_intish(lhs) || gc_expr_is_intish(rhs) || gc_offset_says_int(e = lhs, ctx = ctx) || gc_offset_says_int(e = rhs, ctx = ctx) {
     // #3513: the checker's `Int` answer for an operand counts too; the shape
     // test alone left every binding and call result on the `eq` fall-back.
     let nl1 = cefn(buf, lhs, local_names, next_local, ctx, ld)
@@ -599,8 +599,8 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
   } else {
     let nl1 = cefn(buf, lhs, local_names, next_local, ctx, ld)
     let nl2 = cefn(buf, rhs, local_names, nl1, ctx, ld)
-    let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-    emit_call(buf, eq_fidx)
+    let (eq_fidx, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
+    emit_call(buf = buf, func_idx = eq_fidx)
     nl2
   }
 }
@@ -610,7 +610,7 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
 /// proven reference-result body. `allow_tail` is reset for ordinary children,
 /// so aggregates, indirect calls, captures, and joins remain impossible.
 fn gc_native_array_body_is_safe_tail(expr: Expr, name: String, allow_tail: Bool, ctx: CompileCtxGc) -> Bool {
-  gc_native_array_escape_gate(expr, name, allow_tail, ctx.gc_direct_abi_names, ctx.gc_direct_abi_param_refs)
+  gc_native_array_escape_gate(expr = expr, name = name, allow_tail = allow_tail, abi_names = ctx.gc_direct_abi_names, abi_param_refs = ctx.gc_direct_abi_param_refs)
 }
 
 /// Same gate, reading the direct-ABI evidence tables directly instead of a
@@ -623,33 +623,33 @@ fn gc_native_array_escape_gate(expr: Expr, name: String, allow_tail: Bool, abi_n
   match expr {
     EIdent(n, _) => n != name || allow_tail,
     ECall(EIdent(fname, _), args, _, _) => {
-      let direct_idx = gc_direct_abi_name_slot(abi_names, fname)
+      let direct_idx = gc_direct_abi_name_slot(abi_names = abi_names, name = fname)
       if direct_idx >= 0 {
-        let refs = Array::get(abi_param_refs, direct_idx)
+        let refs = Array::get(abi_param_refs, at = direct_idx)
         let mut i = 0
         let mut ok = Array::length(refs) == Array::length(args)
         while i < Array::length(args) {
-          let is_target = match Array::get(args, i) {
+          let is_target = match Array::get(args, at = i) {
             EIdent(n, _) => n == name,
             _ => false
           }
           if is_target {
-            if !Array::get(refs, i) {
+            if !Array::get(refs, at = i) {
               ok = false
             } else {
               ()
             }
-          } else if Array::get(refs, i) && gc_arg_is_reference_join(Array::get(args, i)) {
+          } else if Array::get(refs, at = i) && gc_arg_is_reference_join(Array::get(args, at = i)) {
             // #1541 join: a reference parameter may be fed by an `if` whose
             // arms are themselves reference-lane values, so `name` reaching
             // the callee through an arm is the same proven crossing as
             // reaching it directly. The condition is an ordinary i64 child.
-            if !gc_native_array_join_arg_is_safe(Array::get(args, i), name, abi_names, abi_param_refs) {
+            if !gc_native_array_join_arg_is_safe(arg = Array::get(args, at = i), name = name, abi_names = abi_names, abi_param_refs = abi_param_refs) {
               ok = false
             } else {
               ()
             }
-          } else if !gc_native_array_escape_gate(Array::get(args, i), name, false, abi_names, abi_param_refs) {
+          } else if !gc_native_array_escape_gate(expr = Array::get(args, at = i), name = name, allow_tail = false, abi_names = abi_names, abi_param_refs = abi_param_refs) {
             ok = false
           } else {
             ()
@@ -668,24 +668,24 @@ fn gc_native_array_escape_gate(expr: Expr, name: String, allow_tail: Bool, abi_n
           -1
         }
         if expected > 0 && Array::length(args) == expected {
-          match Array::get(args, 0) {
+          match Array::get(args, at = 0) {
             EIdent(n, _) => if n == name {
               let mut i = 1
               let mut ok = true
               while i < Array::length(args) {
-                if !gc_native_array_escape_gate(Array::get(args, i), name, false, abi_names, abi_param_refs) {
+                if !gc_native_array_escape_gate(expr = Array::get(args, at = i), name = name, allow_tail = false, abi_names = abi_names, abi_param_refs = abi_param_refs) {
                   ok = false
                 }
                 i = i + 1
               }
               ok
             } else {
-              gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs)
+              gc_native_array_children_are_safe(expr = expr, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs)
             },
-            _ => gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs)
+            _ => gc_native_array_children_are_safe(expr = expr, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs)
           }
         } else {
-          gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs)
+          gc_native_array_children_are_safe(expr = expr, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs)
         }
       }
     },
@@ -694,15 +694,15 @@ fn gc_native_array_escape_gate(expr: Expr, name: String, allow_tail: Bool, abi_n
     ELet(alias, EIdent(source, _), body, _) => if alias != name && source == name {
       // Check both spellings: the original binding remains in scope after a
       // plain alias and must not be smuggled into an unsupported i64 use.
-      gc_native_array_escape_gate(body, alias, allow_tail, abi_names, abi_param_refs) && gc_native_array_escape_gate(body, name, allow_tail, abi_names, abi_param_refs)
+      gc_native_array_escape_gate(expr = body, name = alias, allow_tail = allow_tail, abi_names = abi_names, abi_param_refs = abi_param_refs) && gc_native_array_escape_gate(expr = body, name = name, allow_tail = allow_tail, abi_names = abi_names, abi_param_refs = abi_param_refs)
     } else {
-      alias != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs)
+      alias != name && gc_native_array_children_are_safe(expr = expr, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs)
     },
-    ELet(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
-    ELetMut(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
-    ELetRec(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
-    EAssign(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
-    EAssignOp(n, _, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
+    ELet(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr = expr, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs),
+    ELetMut(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr = expr, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs),
+    ELetRec(n, _, _) => n != name && gc_native_array_children_are_safe(expr = expr, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs),
+    EAssign(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr = expr, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs),
+    EAssignOp(n, _, _, _, _) => n != name && gc_native_array_children_are_safe(expr = expr, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs),
     EFn(_, _, _, _, _, _) => false,
     EMatch(_, _) => false,
     EHandle(_, _) => false,
@@ -711,11 +711,11 @@ fn gc_native_array_escape_gate(expr: Expr, name: String, allow_tail: Bool, abi_n
     // Both arms of a tail `if` are themselves tails, so a reference result may
     // flow out through either. With `allow_tail` false this is exactly the
     // generic child walk it replaces.
-    EIf(cond, then_e, else_e) => gc_native_array_escape_gate(cond, name, false, abi_names, abi_param_refs) && gc_native_array_escape_gate(then_e, name, allow_tail, abi_names, abi_param_refs) && gc_native_array_escape_gate(else_e, name, allow_tail, abi_names, abi_param_refs),
-    EReturn(value) => gc_native_array_escape_gate(value, name, allow_tail, abi_names, abi_param_refs),
+    EIf(cond, then_e, else_e) => gc_native_array_escape_gate(expr = cond, name = name, allow_tail = false, abi_names = abi_names, abi_param_refs = abi_param_refs) && gc_native_array_escape_gate(expr = then_e, name = name, allow_tail = allow_tail, abi_names = abi_names, abi_param_refs = abi_param_refs) && gc_native_array_escape_gate(expr = else_e, name = name, allow_tail = allow_tail, abi_names = abi_names, abi_param_refs = abi_param_refs),
+    EReturn(value) => gc_native_array_escape_gate(expr = value, name = name, allow_tail = allow_tail, abi_names = abi_names, abi_param_refs = abi_param_refs),
     EBreak(_) => false,
     EContinue(_) => false,
-    _ => gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs)
+    _ => gc_native_array_children_are_safe(expr = expr, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs)
   }
 }
 
@@ -724,7 +724,7 @@ fn gc_native_array_children_are_safe(expr: Expr, name: String, abi_names: Array[
   let mut i = 0
   let mut ok = true
   while i < Array::length(children) {
-    if !gc_native_array_escape_gate(Array::get(children, i), name, false, abi_names, abi_param_refs) {
+    if !gc_native_array_escape_gate(expr = Array::get(children, at = i), name = name, allow_tail = false, abi_names = abi_names, abi_param_refs = abi_param_refs) {
       ok = false
     }
     i = i + 1
@@ -746,28 +746,28 @@ fn gc_native_array_children_are_safe(expr: Expr, name: String, abi_names: Array[
 /// receiver position of a native array op consumes it correctly.
 fn gc_native_struct_ref_field_reads_are_ops(expr: Expr, name: String, ctx: CompileCtxGc, ns_struct_idx: Int, local_names: Array[String]) -> Bool {
   match expr {
-    EDot(EIdent(obj, _), field, _, _) => obj != name || !gc_ctor_field_is_ref(ctx.gc_ctor_table, ns_struct_idx, field),
+    EDot(EIdent(obj, _), field, _, _) => obj != name || !gc_ctor_field_is_ref(ct = ctx.gc_ctor_table, struct_idx = ns_struct_idx, field = field),
     ECall(EIdent(fname, _), args, _, _) => {
       if fname == "__set_field" && Array::length(args) == 3 {
-        match (Array::get(args, 0), Array::get(args, 1)) {
-          (EIdent(obj, _), EString(field, -1)) => if obj == name && gc_ctor_field_is_ref(ctx.gc_ctor_table, ns_struct_idx, field) {
-            gc_expr_can_compile_native_array_ref(Array::get(args, 2), local_names, ctx)
+        match (Array::get(args, at = 0), Array::get(args, at = 1)) {
+          (EIdent(obj, _), EString(field, -1)) => if obj == name && gc_ctor_field_is_ref(ct = ctx.gc_ctor_table, struct_idx = ns_struct_idx, field = field) {
+            gc_expr_can_compile_native_array_ref(expr = Array::get(args, at = 2), local_names = local_names, ctx = ctx)
           } else {
-            gc_native_struct_ref_field_reads_are_ops(Array::get(args, 2), name, ctx, ns_struct_idx, local_names)
+            gc_native_struct_ref_field_reads_are_ops(expr = Array::get(args, at = 2), name = name, ctx = ctx, ns_struct_idx = ns_struct_idx, local_names = local_names)
           },
-          _ => gc_native_struct_ref_field_children_are_ops(expr, name, ctx, ns_struct_idx, local_names)
+          _ => gc_native_struct_ref_field_children_are_ops(expr = expr, name = name, ctx = ctx, ns_struct_idx = ns_struct_idx, local_names = local_names)
         }
       } else {
         let is_op = (fname == "Array::length" && Array::length(args) == 1) || (fname == "Array::get" && Array::length(args) == 2) || (fname == "Array::set" && Array::length(args) == 3)
         let mut ok = true
         let mut i = 0
         while i < Array::length(args) {
-          let arg = Array::get(args, i)
+          let arg = Array::get(args, at = i)
           let receiver_ok = i == 0 && is_op && (match arg {
             EDot(EIdent(obj2, _), _, _, _) => obj2 == name,
             _ => false
           })
-          if !receiver_ok && !gc_native_struct_ref_field_reads_are_ops(arg, name, ctx, ns_struct_idx, local_names) {
+          if !receiver_ok && !gc_native_struct_ref_field_reads_are_ops(expr = arg, name = name, ctx = ctx, ns_struct_idx = ns_struct_idx, local_names = local_names) {
             ok = false
           } else {
             ()
@@ -777,7 +777,7 @@ fn gc_native_struct_ref_field_reads_are_ops(expr: Expr, name: String, ctx: Compi
         ok
       }
     },
-    _ => gc_native_struct_ref_field_children_are_ops(expr, name, ctx, ns_struct_idx, local_names)
+    _ => gc_native_struct_ref_field_children_are_ops(expr = expr, name = name, ctx = ctx, ns_struct_idx = ns_struct_idx, local_names = local_names)
   }
 }
 
@@ -786,7 +786,7 @@ fn gc_native_struct_ref_field_children_are_ops(expr: Expr, name: String, ctx: Co
   let mut i = 0
   let mut ok = true
   while i < Array::length(children) {
-    if !gc_native_struct_ref_field_reads_are_ops(Array::get(children, i), name, ctx, ns_struct_idx, local_names) {
+    if !gc_native_struct_ref_field_reads_are_ops(expr = Array::get(children, at = i), name = name, ctx = ctx, ns_struct_idx = ns_struct_idx, local_names = local_names) {
       ok = false
     } else {
       ()
@@ -809,12 +809,12 @@ fn gc_native_struct_scope_is_safe(expr: Expr, name: String) -> Bool {
     // STORED value is an ordinary expression and still has to be checked, or
     // `p.x = p` would smuggle the struct out through its own field.
     ECall(EIdent(sf_callee, _), sf_args, _, _) => if sf_callee == "__set_field" && Array::length(sf_args) == 3 {
-      match Array::get(sf_args, 0) {
-        EIdent(_, _) => gc_native_struct_scope_is_safe(Array::get(sf_args, 2), name),
-        _ => gc_native_struct_children_are_safe(expr, name)
+      match Array::get(sf_args, at = 0) {
+        EIdent(_, _) => gc_native_struct_scope_is_safe(expr = Array::get(sf_args, at = 2), name = name),
+        _ => gc_native_struct_children_are_safe(expr = expr, name = name)
       }
     } else {
-      gc_native_struct_children_are_safe(expr, name)
+      gc_native_struct_children_are_safe(expr = expr, name = name)
     },
     EFn(_, _, _, _, _, _) => false,
     EMatch(_, _) => false,
@@ -823,12 +823,12 @@ fn gc_native_struct_scope_is_safe(expr: Expr, name: String) -> Bool {
     ELoop(_, _) => false,
     EBreak(_) => false,
     EContinue(_) => false,
-    ELet(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
-    ELetMut(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
-    ELetRec(n, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
-    EAssign(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
-    EAssignOp(n, _, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
-    _ => gc_native_struct_children_are_safe(expr, name)
+    ELet(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr = expr, name = name),
+    ELetMut(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr = expr, name = name),
+    ELetRec(n, _, _) => n != name && gc_native_struct_children_are_safe(expr = expr, name = name),
+    EAssign(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr = expr, name = name),
+    EAssignOp(n, _, _, _, _) => n != name && gc_native_struct_children_are_safe(expr = expr, name = name),
+    _ => gc_native_struct_children_are_safe(expr = expr, name = name)
   }
 }
 
@@ -837,7 +837,7 @@ fn gc_native_struct_children_are_safe(expr: Expr, name: String) -> Bool {
   let mut i = 0
   let mut ok = true
   while i < Array::length(children) {
-    if !gc_native_struct_scope_is_safe(Array::get(children, i), name) {
+    if !gc_native_struct_scope_is_safe(expr = Array::get(children, at = i), name = name) {
       ok = false
     } else {
       ()
@@ -858,11 +858,11 @@ fn gc_native_struct_field_set_matches(declared: Array[String], fields: Array[(St
     let mut di = 0
     let mut all = true
     while di < Array::length(declared) {
-      let target = Array::get(declared, di)
+      let target = Array::get(declared, at = di)
       let mut fi = 0
       let mut found = false
       while fi < Array::length(fields) {
-        let (fname, _) = Array::get(fields, fi)
+        let (fname, _) = Array::get(fields, at = fi)
         if fname == target {
           found = true
           fi = Array::length(fields)
@@ -888,7 +888,7 @@ fn gc_native_struct_binding_index(ctx: CompileCtxGc, record_name: String, fields
     let mut si = 0
     let mut found = 0 - 1
     while si < Array::length(ctx.gc_ctor_table.struct_names) {
-      if Array::get(ctx.gc_ctor_table.struct_names, si) == record_name {
+      if Array::get(ctx.gc_ctor_table.struct_names, at = si) == record_name {
         found = si
         si = Array::length(ctx.gc_ctor_table.struct_names)
       } else {
@@ -903,7 +903,7 @@ fn gc_native_struct_binding_index(ctx: CompileCtxGc, record_name: String, fields
     let mut si = 0
     let mut found = 0 - 1
     while si < Array::length(ctx.gc_ctor_table.struct_names) {
-      if gc_native_struct_field_set_matches(Array::get(ctx.gc_ctor_table.struct_field_names, si), fields) {
+      if gc_native_struct_field_set_matches(declared = Array::get(ctx.gc_ctor_table.struct_field_names, at = si), fields = fields) {
         if found >= 0 {
           return 0 - 1
         } else {
@@ -919,19 +919,19 @@ fn gc_native_struct_binding_index(ctx: CompileCtxGc, record_name: String, fields
 }
 
 fn gc_native_struct_ref_initializers_are_compatible(ctx: CompileCtxGc, ns_struct_idx: Int, fields: Array[(String, Expr)], local_names: Array[String]) -> Bool {
-  let declared = Array::get(ctx.gc_ctor_table.struct_field_names, ns_struct_idx)
-  let refs = Array::get(ctx.gc_ctor_table.struct_field_is_ref, ns_struct_idx)
+  let declared = Array::get(ctx.gc_ctor_table.struct_field_names, at = ns_struct_idx)
+  let refs = Array::get(ctx.gc_ctor_table.struct_field_is_ref, at = ns_struct_idx)
   let mut di = 0
   let mut ok = true
   while di < Array::length(declared) {
-    if Array::get(refs, di) {
-      let target = Array::get(declared, di)
+    if Array::get(refs, at = di) {
+      let target = Array::get(declared, at = di)
       let mut fi = 0
       let mut compatible = false
       while fi < Array::length(fields) {
-        let (fname, value) = Array::get(fields, fi)
+        let (fname, value) = Array::get(fields, at = fi)
         if fname == target {
-          compatible = gc_expr_can_compile_native_array_ref(value, local_names, ctx)
+          compatible = gc_expr_can_compile_native_array_ref(expr = value, local_names = local_names, ctx = ctx)
           fi = Array::length(fields)
         } else {
           fi = fi + 1
@@ -950,7 +950,7 @@ fn gc_native_struct_ref_initializers_are_compatible(ctx: CompileCtxGc, ns_struct
   ok
 }
 
-fn gc_arg_is_reference_join(arg: Expr) -> Bool {
+fn gc_arg_is_reference_join(_ arg: Expr) -> Bool {
   match arg {
     EIf(_, _, _) => true,
     _ => false
@@ -962,25 +962,25 @@ fn gc_arg_is_reference_join(arg: Expr) -> Bool {
 /// ordinary child, so a reference appearing there is still rejected.
 fn gc_native_array_join_arg_is_safe(arg: Expr, name: String, abi_names: Array[String], abi_param_refs: Array[Array[Bool]]) -> Bool {
   match arg {
-    EIf(cond, then_e, else_e) => gc_native_array_escape_gate(cond, name, false, abi_names, abi_param_refs) && gc_native_array_join_arg_is_safe(then_e, name, abi_names, abi_param_refs) && gc_native_array_join_arg_is_safe(else_e, name, abi_names, abi_param_refs),
+    EIf(cond, then_e, else_e) => gc_native_array_escape_gate(expr = cond, name = name, allow_tail = false, abi_names = abi_names, abi_param_refs = abi_param_refs) && gc_native_array_join_arg_is_safe(arg = then_e, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs) && gc_native_array_join_arg_is_safe(arg = else_e, name = name, abi_names = abi_names, abi_param_refs = abi_param_refs),
     EIdent(_, _) => true,
-    _ => gc_native_array_escape_gate(arg, name, false, abi_names, abi_param_refs)
+    _ => gc_native_array_escape_gate(expr = arg, name = name, allow_tail = false, abi_names = abi_names, abi_param_refs = abi_param_refs)
   }
 }
 
 /// End a lexical child expression without reusing its wasm local slots.
 /// The returned high-water mark still determines the function's local count.
 fn gc_restore_local_scope(local_names: Array[String], ctx: CompileCtxGc, keep: Int, high_water: Int) -> Unit {
-  Array::truncate(local_names, keep)
-  agg_log_reset_above(ctx.gc_agg_local_slots, keep)
-  gc_slot_log_reset_above(ctx.gc_bool_locals, keep)
-  gc_slot_log_reset_above(ctx.gc_int_locals, keep)
-  gc_slot_log_reset_above(ctx.ref_local_indices, keep)
-  gc_slot_log_reset_above(ctx.gc_float_locals, keep)
-  gc_slot_log_reset_above(ctx.gc_native_array_locals, keep)
-  gc_slot_map_reset_above(ctx.gc_native_struct_scope, keep)
+  Array::truncate(local_names, length = keep)
+  agg_log_reset_above(arr = ctx.gc_agg_local_slots, floor = keep)
+  gc_slot_log_reset_above(arr = ctx.gc_bool_locals, floor = keep)
+  gc_slot_log_reset_above(arr = ctx.gc_int_locals, floor = keep)
+  gc_slot_log_reset_above(arr = ctx.ref_local_indices, floor = keep)
+  gc_slot_log_reset_above(arr = ctx.gc_float_locals, floor = keep)
+  gc_slot_log_reset_above(arr = ctx.gc_native_array_locals, floor = keep)
+  gc_slot_map_reset_above(map = ctx.gc_native_struct_scope, floor = keep)
   while Array::length(local_names) < high_water {
-    Array::push(local_names, "")
+    Array::push(local_names, value = "")
   }
 }
 
@@ -989,27 +989,27 @@ fn gc_restore_local_scope(local_names: Array[String], ctx: CompileCtxGc, keep: I
 /// unable to accidentally feed a reference to the legacy local.set path.
 fn gc_compile_let_i64(buf: Bytes, name: String, name_slot: Int, value: Expr, body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   let local_idx = next_local
-  if gc_expr_is_floatish(value, local_names, ctx) {
-    Array::push(ctx.gc_float_locals, local_idx)
-  } else if gc_expr_is_boolish(value, local_names, ctx) {
-    Array::push(ctx.gc_bool_locals, local_idx)
-  } else if gc_value_is_intish(value, local_names, ctx) {
+  if gc_expr_is_floatish(e = value, local_names = local_names, ctx = ctx) {
+    Array::push(ctx.gc_float_locals, value = local_idx)
+  } else if gc_expr_is_boolish(e = value, local_names = local_names, ctx = ctx) {
+    Array::push(ctx.gc_bool_locals, value = local_idx)
+  } else if gc_value_is_intish(e = value, local_names = local_names, ctx = ctx) {
     // #2405: last, so a value that is both boolish and intish by shape (a
     // comparison) keeps its boolish classification -- that one renders
     // "true"/"false", and Bool and Int share this lane's representation, so
     // reading it as an Int would print 1.
-    Array::push(ctx.gc_int_locals, local_idx)
+    Array::push(ctx.gc_int_locals, value = local_idx)
   } else {
     ()
   }
   let agg_entry = match value {
     ETuple(tels) => 64 + Array::length(tels),
     ERecord(_, rfields, _) => 128 + Array::length(rfields),
-    _ => if gc_is_ctor_expr(value, ctx) {
+    _ => if gc_is_ctor_expr(e = value, ctx = ctx) {
       match value {
         ECall(_, cargs, _, _) => {
           let fcnt = if Array::length(cargs) == 1 {
-            match Array::get(cargs, 0) {
+            match Array::get(cargs, at = 0) {
               ERecord(_, crf, _) => Array::length(crf),
               _ => Array::length(cargs)
             }
@@ -1023,9 +1023,9 @@ fn gc_compile_let_i64(buf: Bytes, name: String, name_slot: Int, value: Expr, bod
     } else {
       match value {
         EIdent(src_nm, _) => {
-          let src_slot = find_local_slot(local_names, src_nm)
+          let src_slot = find_local_slot(names = local_names, name = src_nm)
           if src_slot >= 0 {
-            let src_info = agg_slot_lookup(ctx.gc_agg_local_slots, src_slot)
+            let src_info = agg_slot_lookup(arr = ctx.gc_agg_local_slots, slot = src_slot)
             if src_info > 0 {
               src_info
             } else {
@@ -1036,8 +1036,8 @@ fn gc_compile_let_i64(buf: Bytes, name: String, name_slot: Int, value: Expr, bod
           }
         },
         ECall(vcal, _, _, _) => match vcal {
-          EIdent(cfn, _) => if find_local_slot(local_names, cfn) < 0 {
-            let rinfo = agg_ret_lookup_indexed(ctx.gc_agg_ret_names_sorted, ctx.gc_agg_ret_names_sorted_pos, ctx.gc_agg_ret_infos, cfn)
+          EIdent(cfn, _) => if find_local_slot(names = local_names, name = cfn) < 0 {
+            let rinfo = agg_ret_lookup_indexed(sorted = ctx.gc_agg_ret_names_sorted, pos = ctx.gc_agg_ret_names_sorted_pos, infos = ctx.gc_agg_ret_infos, fname = cfn)
             if rinfo > 0 {
               rinfo
             } else {
@@ -1052,11 +1052,11 @@ fn gc_compile_let_i64(buf: Bytes, name: String, name_slot: Int, value: Expr, bod
       }
     }
   }
-  Array::push(ctx.gc_agg_local_slots, local_idx * 256 + agg_entry)
+  Array::push(ctx.gc_agg_local_slots, value = local_idx * 256 + agg_entry)
   let nl = ce(buf, value, local_names, next_local + 1, ld)
-  emit_local_set(buf, local_idx)
-  gc_restore_local_scope(local_names, ctx, name_slot + 1, nl)
-  Array::set(local_names, name_slot, name)
+  emit_local_set(buf = buf, idx = local_idx)
+  gc_restore_local_scope(local_names = local_names, ctx = ctx, keep = name_slot + 1, high_water = nl)
+  Array::set(local_names, at = name_slot, value = name)
   ce(buf, body, local_names, nl, ld)
 }
 
@@ -1076,11 +1076,11 @@ fn gc_is_untagged_wrap_arith(e: Expr, local_names: Array[String], ctx: CompileCt
     EBinOp(op, lhs, rhs, _) => if op == "<<" {
       true
     } else if op == "+" || op == "-" || op == "*" || op == "/" {
-      !gc_expr_is_floatish(lhs, local_names, ctx) && !gc_expr_is_floatish(rhs, local_names, ctx)
+      !gc_expr_is_floatish(e = lhs, local_names = local_names, ctx = ctx) && !gc_expr_is_floatish(e = rhs, local_names = local_names, ctx = ctx)
     } else {
       false
     },
-    EUnaryOp(op, operand) => op == "-" && !gc_expr_is_floatish(operand, local_names, ctx),
+    EUnaryOp(op, operand) => op == "-" && !gc_expr_is_floatish(e = operand, local_names = local_names, ctx = ctx),
     _ => false
   }
 }
@@ -1089,10 +1089,10 @@ fn gc_is_untagged_wrap_arith(e: Expr, local_names: Array[String], ctx: CompileCt
 /// the shifted side of `<<`) elide a wrap-arith operand's trailing renorm.
 fn gc_compile_int_operand(buf: Bytes, op: String, is_lhs: Bool, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with Exception {
   let tolerant = op == "+" || op == "-" || op == "*" || (op == "<<" && is_lhs)
-  if tolerant && gc_is_untagged_wrap_arith(e, local_names, ctx) {
-    gc_compile_wrap_arith_loose(buf, e, local_names, next_local, ctx, ld)
+  if tolerant && gc_is_untagged_wrap_arith(e = e, local_names = local_names, ctx = ctx) {
+    gc_compile_wrap_arith_loose(buf = buf, e = e, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
   } else {
-    compile_expr_gc(buf, e, local_names, next_local, ctx, ld)
+    compile_expr_gc(buf = buf, expr = e, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
   }
 }
 
@@ -1103,21 +1103,21 @@ fn gc_emit_int_div_zero_guard(buf: Bytes, op: String, divisor: Expr, site_off: I
   if ctx.gc_div_zero_abort_func_idx < 0 || !(op == "/" || op == "%") || !int_divisor_may_be_zero(divisor) {
     slot
   } else {
-    let loc_fat = str_table_fat_or_zero(ctx.str_table, int_div_site_text(site_off))
-    Array::push(local_names, "[gc-temp]__div_d")
-    emit_local_tee(buf, slot)
+    let loc_fat = str_table_fat_or_zero(st = ctx.str_table, s = int_div_site_text(site_off))
+    Array::push(local_names, value = "[gc-temp]__div_d")
+    emit_local_tee(buf = buf, idx = slot)
     emit_i64_eqz(buf)
     emit_if_void(buf)
-    emit_i64_const(buf, if op == "/" {
+    emit_i64_const(buf = buf, value = if op == "/" {
       0
     } else {
       1
     })
-    emit_i64_const(buf, loc_fat)
-    emit_i64_const(buf, 0)
-    emit_call(buf, ctx.gc_div_zero_abort_func_idx)
+    emit_i64_const(buf = buf, value = loc_fat)
+    emit_i64_const(buf = buf, value = 0)
+    emit_call(buf = buf, func_idx = ctx.gc_div_zero_abort_func_idx)
     emit_end(buf)
-    emit_local_get(buf, slot)
+    emit_local_get(buf = buf, idx = slot)
     slot + 1
   }
 }
@@ -1129,21 +1129,21 @@ fn gc_emit_int_div_zero_guard(buf: Bytes, op: String, divisor: Expr, site_off: I
 fn gc_compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with Exception {
   match e {
     EBinOp(op, lhs, rhs, boff) => {
-      let nl1 = gc_compile_int_operand(buf, op, true, lhs, local_names, next_local, ctx, ld)
-      let nl2 = gc_compile_int_operand(buf, op, false, rhs, local_names, nl1, ctx, ld)
+      let nl1 = gc_compile_int_operand(buf = buf, op = op, is_lhs = true, e = lhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
+      let nl2 = gc_compile_int_operand(buf = buf, op = op, is_lhs = false, e = rhs, local_names = local_names, next_local = nl1, ctx = ctx, ld = ld)
       let nl3 = if op == "<<" || op == ">>" {
-        Array::push(local_names, "[gc-temp]__shift_n")
-        emit_shift_count_clamp(buf, nl2)
+        Array::push(local_names, value = "[gc-temp]__shift_n")
+        emit_shift_count_clamp(buf = buf, tmp = nl2)
         nl2 + 1
       } else {
-        gc_emit_int_div_zero_guard(buf, op, rhs, boff, ctx, local_names, nl2)
+        gc_emit_int_div_zero_guard(buf = buf, op = op, divisor = rhs, site_off = boff, ctx = ctx, local_names = local_names, slot = nl2)
       }
-      emit_binop_op(buf, op)
+      emit_binop_op(buf = buf, op = op)
       nl3
     },
     EUnaryOp(_, operand) => {
-      emit_i64_const(buf, 0)
-      let nl = gc_compile_int_operand(buf, "-", false, operand, local_names, next_local, ctx, ld)
+      emit_i64_const(buf = buf, value = 0)
+      let nl = gc_compile_int_operand(buf = buf, op = "-", is_lhs = false, e = operand, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
       emit_i64_sub(buf)
       nl
     },
@@ -1153,15 +1153,15 @@ fn gc_compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], 
 
 fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int) -> Int with Exception {
   let ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception = (b, e, ln, nl, d) -> {
-    compile_expr_gc(b, e, ln, nl, ctx, d)
+    compile_expr_gc(buf = b, expr = e, local_names = ln, next_local = nl, ctx = ctx, ld = d)
   }
   match expr {
     EInt(n) => {
-      emit_i64_const(buf, n)
+      emit_i64_const(buf = buf, value = n)
       next_local
     },
     EBool(b_val) => {
-      emit_i64_const(buf, if b_val {
+      emit_i64_const(buf = buf, value = if b_val {
         1
       } else {
         0
@@ -1177,13 +1177,13 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // left behind and silently miscompiled every float literal whenever the
       // COMPILER ITSELF was RC-built (gate 40h: 91527 vs 101557). Split the
       // pattern -- each half is <= 2^32-1 and fits.
-      emit_f64_const_lohi(buf, Double::to_i64_bits_lo(v), Double::to_i64_bits_hi(v))
+      emit_f64_const_lohi(buf = buf, lo = Double::to_i64_bits_lo(v), hi = Double::to_i64_bits_hi(v))
       emit_i64_reinterpret_f64(buf)
       next_local
     },
     EString(s, _) => {
-      let idx = str_table_index_of(ctx.str_table, s)
-      emit_str_ref(buf, Array::get(ctx.str_table.offsets, idx), Array::get(ctx.str_table.lengths, idx))
+      let idx = str_table_index_of(st = ctx.str_table, s = s)
+      emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = idx), length = Array::get(ctx.str_table.lengths, at = idx))
       next_local
     },
     EIdent(raw_name, _) => {
@@ -1202,7 +1202,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         if i < 0 {
           -1
         }
-        else if Array::get(local_names, i) == name {
+        else if Array::get(local_names, at = i) == name {
           i
         }
         else try_local(i - 1)
@@ -1211,44 +1211,44 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       if local_idx >= 0 {
         // #3357: a ref cell is a SLOT, not a name -- a later `let f` inside
         // a captured `let mut f`'s scope is its own plain local.
-        if array_contains_int(ctx.ref_local_indices, local_idx) {
+        if array_contains_int(arr = ctx.ref_local_indices, v = local_idx) {
           // #538: ref cells are 8-byte linear-memory cells (NOT wasm-gc
           // structs): a (ref $t) value cannot cross the i64 world -- storing
           // a captured cell into a closure env emitted invalid wasm.
-          emit_local_get(buf, local_idx)
+          emit_local_get(buf = buf, idx = local_idx)
           emit_i32_wrap_i64(buf)
-          emit_i64_load(buf, 3, 0)
+          emit_i64_load(buf = buf, align = 3, offset = 0)
         } else {
-          emit_local_get(buf, local_idx)
+          emit_local_get(buf = buf, idx = local_idx)
         }
         next_local
       } else {
-        let ctor_idx = ctor_table_index_of(ctx.gc_ctor_table, name)
+        let ctor_idx = ctor_table_index_of(ct = ctx.gc_ctor_table, name = name)
         if ctor_idx >= 0 {
-          let tag_c = Array::get(ctx.gc_ctor_table.tags, ctor_idx)
+          let tag_c = Array::get(ctx.gc_ctor_table.tags, at = ctor_idx)
           let ptr_l = next_local
-          Array::push(local_names, "[gc-temp]__ctor_ptr")
-          emit_global_get(buf, 0)
+          Array::push(local_names, value = "[gc-temp]__ctor_ptr")
+          emit_global_get(buf = buf, idx = 0)
           emit_i64_extend_i32_u(buf)
-          emit_local_set(buf, ptr_l)
-          emit_global_get(buf, 0)
-          emit_i32_const(buf, 8)
+          emit_local_set(buf = buf, idx = ptr_l)
+          emit_global_get(buf = buf, idx = 0)
+          emit_i32_const(buf = buf, value = 8)
           emit_i32_add(buf)
-          emit_global_set(buf, 0)
+          emit_global_set(buf = buf, idx = 0)
           // #415: gc-lane heap bump must grow linear memory like the linear
           // backend does -- without this any allocation past the initial page
           // traps OOB (the gc smoke fixture only ever allocated a few bytes).
           emit_heap_memory_grow_check(buf)
-          emit_local_get(buf, ptr_l)
+          emit_local_get(buf = buf, idx = ptr_l)
           emit_i32_wrap_i64(buf)
-          emit_i32_const(buf, tag_c)
-          emit_i32_store(buf, 2, 0)
-          emit_local_get(buf, ptr_l)
+          emit_i32_const(buf = buf, value = tag_c)
+          emit_i32_store(buf = buf, align = 2, offset = 0)
+          emit_local_get(buf = buf, idx = ptr_l)
           emit_i32_wrap_i64(buf)
-          emit_i32_const(buf, 0)
-          emit_i32_store(buf, 2, 4)
-          emit_local_get(buf, ptr_l)
-          emit_i64_const(buf, 1)
+          emit_i32_const(buf = buf, value = 0)
+          emit_i32_store(buf = buf, align = 2, offset = 4)
+          emit_local_get(buf = buf, idx = ptr_l)
+          emit_i64_const(buf = buf, value = 1)
           emit_i64_or(buf)
           next_local + 1
         } else {
@@ -1256,7 +1256,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           let mut const_i = -1
           let mut __gc = 0
           while __gc < Array::length(ctx.gc_const_names) {
-            if Array::get(ctx.gc_const_names, __gc) == name {
+            if Array::get(ctx.gc_const_names, at = __gc) == name {
               const_i = __gc
               __gc = Array::length(ctx.gc_const_names)
             } else {
@@ -1264,12 +1264,12 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             }
           }
           if const_i >= 0 {
-            if Array::get(ctx.gc_const_kinds, const_i) == 1 {
-              let cs = Array::get(ctx.gc_const_svals, const_i)
-              let csi = str_table_index_of(ctx.str_table, cs)
-              emit_str_ref(buf, Array::get(ctx.str_table.offsets, csi), Array::get(ctx.str_table.lengths, csi))
+            if Array::get(ctx.gc_const_kinds, at = const_i) == 1 {
+              let cs = Array::get(ctx.gc_const_svals, at = const_i)
+              let csi = str_table_index_of(st = ctx.str_table, s = cs)
+              emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = csi), length = Array::get(ctx.str_table.lengths, at = csi))
             } else {
-              emit_i64_const(buf, Array::get(ctx.gc_const_ivals, const_i))
+              emit_i64_const(buf = buf, value = Array::get(ctx.gc_const_ivals, at = const_i))
             }
             return next_local
           }
@@ -1277,7 +1277,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           let mut glob_i = -1
           let mut __gg = 0
           while __gg < Array::length(ctx.gc_global_names) {
-            if Array::get(ctx.gc_global_names, __gg) == name {
+            if Array::get(ctx.gc_global_names, at = __gg) == name {
               glob_i = __gg
               __gg = Array::length(ctx.gc_global_names)
             } else {
@@ -1285,7 +1285,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             }
           }
           if glob_i >= 0 {
-            emit_global_get(buf, 1 + glob_i)
+            emit_global_get(buf = buf, idx = 1 + glob_i)
             return next_local
           }
           // #2442: a pure builtin in value position, eta-expanded. See the
@@ -1296,14 +1296,14 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           // constant or a computed global on this lane, and answering those
           // with an eta-expansion is a wrong answer rather than a refusal).
           // A user function that declares a registry name still wins (#2448).
-          if builtin_value_form_arity(name) >= 0 && !gc_user_fn_owns_name(ctx, name) {
-            return ce(buf, builtin_value_closure(name, builtin_value_form_arity(name)), local_names, next_local, ld)
+          if builtin_value_form_arity(name) >= 0 && !gc_user_fn_owns_name(ctx = ctx, name = name) {
+            return ce(buf, builtin_value_closure(name = name, arity = builtin_value_form_arity(name)), local_names, next_local, ld)
           }
           let fn_len = Array::length(ctx.func_table.names)
           let mut fni = -1
           let mut __fj = 0
           while __fj < fn_len {
-            if Array::get(ctx.func_table.names, __fj) == name {
+            if Array::get(ctx.func_table.names, at = __fj) == name {
               fni = __fj
               __fj = fn_len
             } else {
@@ -1315,10 +1315,10 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             // error. Same wording as the two linear-backend sites.
             throw(String::concat(String::concat(codegen_unresolved_name_prefix(), name), String::concat("` (gc ident", codegen_unresolved_name_suffix())))
           }
-          let fidx = Array::get(ctx.func_table.indices, fni)
+          let fidx = Array::get(ctx.func_table.indices, at = fni)
           let table_slot = fidx - ctx.func_offset
-          Array::push(ctx.table_slots_used, table_slot)
-          emit_i64_const(buf, (table_slot<<2)|2)
+          Array::push(ctx.table_slots_used, value = table_slot)
+          emit_i64_const(buf = buf, value = (table_slot<<2)|2)
           next_local
         }
       }
@@ -1332,7 +1332,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       emit_i64_eqz(buf)
       if op == "&&" {
         emit_if_i64(buf)
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
         emit_else(buf)
         let nl2 = ce(buf, rhs, local_names, nl1, ld)
         emit_end(buf)
@@ -1341,18 +1341,18 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         emit_if_i64(buf)
         let nl2 = ce(buf, rhs, local_names, nl1, ld)
         emit_else(buf)
-        emit_i64_const(buf, 1)
+        emit_i64_const(buf = buf, value = 1)
         emit_end(buf)
         nl2
       }
     } else if op == "==" {
-      emit_gc_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr_gc)
+      emit_gc_eq_value(buf = buf, lhs = lhs, rhs = rhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, cefn = compile_expr_gc)
     } else if op == "!=" {
-      let nle = emit_gc_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr_gc)
+      let nle = emit_gc_eq_value(buf = buf, lhs = lhs, rhs = rhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, cefn = compile_expr_gc)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
       nle
-    } else if (op == "+" || op == "-" || op == "*" || op == "/") && (gc_expr_is_floatish(lhs, local_names, ctx) || gc_expr_is_floatish(rhs, local_names, ctx)) {
+    } else if (op == "+" || op == "-" || op == "*" || op == "/") && (gc_expr_is_floatish(e = lhs, local_names = local_names, ctx = ctx) || gc_expr_is_floatish(e = rhs, local_names = local_names, ctx = ctx)) {
       // Float arithmetic: locals hold raw f64 bits in i64; reinterpret both
       // sides, run the f64 op, reinterpret back. The unconditional i64 ops
       // below compute garbage on float bits (linear routes these through
@@ -1373,7 +1373,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       }
       emit_i64_reinterpret_f64(buf)
       nl2
-    } else if (op == "<" || op == ">" || op == "<=" || op == ">=") && (gc_expr_is_floatish(lhs, local_names, ctx) || gc_expr_is_floatish(rhs, local_names, ctx)) {
+    } else if (op == "<" || op == ">" || op == "<=" || op == ">=") && (gc_expr_is_floatish(e = lhs, local_names = local_names, ctx = ctx) || gc_expr_is_floatish(e = rhs, local_names = local_names, ctx = ctx)) {
       // Float ordering: signed-i64 compare of raw f64 bits inverts the order
       // whenever both sides are negative (and misranks mixed signs vs -0.0),
       // so route through real f64 comparisons (mirrors the linear lane).
@@ -1397,20 +1397,20 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // untagged i64s, which otherwise wrap at 64 bits — diverging from the
       // linear lane with no diagnostic). Wrapping consumers elide the
       // operand's own trailing renorm (gc_compile_int_operand above).
-      let nl1 = gc_compile_int_operand(buf, op, true, lhs, local_names, next_local, ctx, ld)
-      let nl2 = gc_compile_int_operand(buf, op, false, rhs, local_names, nl1, ctx, ld)
+      let nl1 = gc_compile_int_operand(buf = buf, op = op, is_lhs = true, e = lhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
+      let nl2 = gc_compile_int_operand(buf = buf, op = op, is_lhs = false, e = rhs, local_names = local_names, next_local = nl1, ctx = ctx, ld = ld)
       let nl3 = if op == "<<" || op == ">>" {
-        Array::push(local_names, "[gc-temp]__shift_n")
-        emit_shift_count_clamp(buf, nl2)
+        Array::push(local_names, value = "[gc-temp]__shift_n")
+        emit_shift_count_clamp(buf = buf, tmp = nl2)
         nl2 + 1
       } else {
-        gc_emit_int_div_zero_guard(buf, op, rhs, gc_binop_site_off, ctx, local_names, nl2)
+        gc_emit_int_div_zero_guard(buf = buf, op = op, divisor = rhs, site_off = gc_binop_site_off, ctx = ctx, local_names = local_names, slot = nl2)
       }
-      emit_binop_op(buf, op)
-      emit_arith_wrap_int(buf, false, op)
+      emit_binop_op(buf = buf, op = op)
+      emit_arith_wrap_int(buf = buf, enable_rc = false, op = op)
       nl3
     },
-    EUnaryOp(op, operand) => if op == "-" && gc_expr_is_floatish(operand, local_names, ctx) {
+    EUnaryOp(op, operand) => if op == "-" && gc_expr_is_floatish(e = operand, local_names = local_names, ctx = ctx) {
       // `0 - bits` integer-negates the f64 bit pattern; use f64.neg instead.
       let nl = ce(buf, float_operand_unmarked(operand), local_names, next_local, ld)
       emit_f64_reinterpret_i64(buf)
@@ -1418,10 +1418,10 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       emit_i64_reinterpret_f64(buf)
       nl
     } else if op == "-" {
-      emit_i64_const(buf, 0)
-      let nl = gc_compile_int_operand(buf, "-", false, operand, local_names, next_local, ctx, ld)
+      emit_i64_const(buf = buf, value = 0)
+      let nl = gc_compile_int_operand(buf = buf, op = "-", is_lhs = false, e = operand, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
       emit_i64_sub(buf)
-      emit_arith_wrap_int(buf, false, "-")
+      emit_arith_wrap_int(buf = buf, enable_rc = false, op = "-")
       nl
     } else if op == "!" {
       let nl = ce(buf, operand, local_names, next_local, ld)
@@ -1433,7 +1433,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // so -1 is spelled directly -- the linear lane's RC branch needs
       // tagged(-1) = -2 for the same operation.
       let nl = ce(buf, operand, local_names, next_local, ld)
-      emit_i64_const(buf, 0 - 1)
+      emit_i64_const(buf = buf, value = 0 - 1)
       emit_i64_xor(buf)
       nl
     } else {
@@ -1446,14 +1446,14 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           // #538 P4.5: `==`/`!=` route through emit_gc_eq_value (structural
           // tuple/ctor compare, string content via the `eq` builtin); the
           // result is shaped back into the raw comparison's i32 0/1.
-          let cnl = emit_gc_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr_gc)
+          let cnl = emit_gc_eq_value(buf = buf, lhs = clhs, rhs = crhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, cefn = compile_expr_gc)
           emit_i32_wrap_i64(buf)
           cnl
         } else if cop == "!=" {
-          let cnl = emit_gc_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr_gc)
+          let cnl = emit_gc_eq_value(buf = buf, lhs = clhs, rhs = crhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, cefn = compile_expr_gc)
           emit_i64_eqz(buf)
           cnl
-        } else if (cop == "<" || cop == ">" || cop == "<=" || cop == ">=") && (gc_expr_is_floatish(clhs, local_names, ctx) || gc_expr_is_floatish(crhs, local_names, ctx)) {
+        } else if (cop == "<" || cop == ">" || cop == "<=" || cop == ">=") && (gc_expr_is_floatish(e = clhs, local_names = local_names, ctx = ctx) || gc_expr_is_floatish(e = crhs, local_names = local_names, ctx = ctx)) {
           // Same f64-vs-raw-bits ordering fix as the EBinOp float comparison
           // branch; the fast path leaves the comparison's i32 for the `if`.
           let cnl1 = ce(buf, clhs, local_names, next_local, ld)
@@ -1495,7 +1495,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           cnl
         },
         EBool(b_val) => {
-          emit_i32_const(buf, if b_val {
+          emit_i32_const(buf = buf, value = if b_val {
             1
           } else {
             0
@@ -1512,8 +1512,8 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // reference the result cannot be described by a single-byte blocktype,
       // so the `if` names the reserved func type instead. Everything else stays
       // on the i64 blocktype byte-for-byte.
-      if gc_join_is_native_ref(then_e, else_e, local_names, ctx) {
-        emit_if_type_index(buf, ctx.gc_native_array_block_type_idx)
+      if gc_join_is_native_ref(then_e = then_e, else_e = else_e, local_names = local_names, ctx = ctx) {
+        emit_if_type_index(buf = buf, type_idx = ctx.gc_native_array_block_type_idx)
       } else {
         emit_if_i64(buf)
       }
@@ -1525,33 +1525,33 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       let names_len_before = Array::length(local_names)
       let nl_then = ce(buf, then_e, local_names, nl1, ld_inner)
       emit_else(buf)
-      Array::truncate(local_names, names_len_before)
-      agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
-      gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
-      gc_slot_log_reset_above(ctx.gc_int_locals, names_len_before)
-      gc_slot_log_reset_above(ctx.ref_local_indices, names_len_before)
-      gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
-      gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
-      gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_before)
+      Array::truncate(local_names, length = names_len_before)
+      agg_log_reset_above(arr = ctx.gc_agg_local_slots, floor = names_len_before)
+      gc_slot_log_reset_above(arr = ctx.gc_bool_locals, floor = names_len_before)
+      gc_slot_log_reset_above(arr = ctx.gc_int_locals, floor = names_len_before)
+      gc_slot_log_reset_above(arr = ctx.ref_local_indices, floor = names_len_before)
+      gc_slot_log_reset_above(arr = ctx.gc_float_locals, floor = names_len_before)
+      gc_slot_log_reset_above(arr = ctx.gc_native_array_locals, floor = names_len_before)
+      gc_slot_map_reset_above(map = ctx.gc_native_struct_scope, floor = names_len_before)
       // #1985: the else arm reuses the then arm's slots -- the linear lane's
       // numbering -- unless it may bind a TYPED local of its own, in which
       // case it starts above everything the then arm allocated. Stacking the
       // arms unconditionally grew a frame's local count as 2^nesting-depth on
       // code that never had a typed local to protect.
-      let else_start = gc_sibling_scope_start(ctx, local_names, else_e, nl1, nl_then)
+      let else_start = gc_sibling_scope_start(ctx = ctx, local_names = local_names, scope = else_e, base = nl1, stacked = nl_then)
       while Array::length(local_names) < else_start {
-        Array::push(local_names, "")
+        Array::push(local_names, value = "")
       }
       let nl_else = ce(buf, else_e, local_names, else_start, ld_inner)
       emit_end(buf)
-      Array::truncate(local_names, names_len_before)
-      agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
-      gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
-      gc_slot_log_reset_above(ctx.gc_int_locals, names_len_before)
-      gc_slot_log_reset_above(ctx.ref_local_indices, names_len_before)
-      gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
-      gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
-      gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_before)
+      Array::truncate(local_names, length = names_len_before)
+      agg_log_reset_above(arr = ctx.gc_agg_local_slots, floor = names_len_before)
+      gc_slot_log_reset_above(arr = ctx.gc_bool_locals, floor = names_len_before)
+      gc_slot_log_reset_above(arr = ctx.gc_int_locals, floor = names_len_before)
+      gc_slot_log_reset_above(arr = ctx.ref_local_indices, floor = names_len_before)
+      gc_slot_log_reset_above(arr = ctx.gc_float_locals, floor = names_len_before)
+      gc_slot_log_reset_above(arr = ctx.gc_native_array_locals, floor = names_len_before)
+      gc_slot_map_reset_above(map = ctx.gc_native_struct_scope, floor = names_len_before)
       // `nl_else` is the high-water mark on its own only while the arms are
       // stacked; once they share slots (#1985) either arm can be the taller.
       let max_nl = if nl_else > nl_then {
@@ -1560,45 +1560,45 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         nl_then
       }
       while Array::length(local_names) < max_nl {
-        Array::push(local_names, "")
+        Array::push(local_names, value = "")
       }
       max_nl
     },
-    ECall(callee, args, _, callee_resolution) => compile_call_gc(buf, callee, args, callee_resolution, local_names, next_local, ctx, ld, ce),
+    ECall(callee, args, _, callee_resolution) => compile_call_gc(buf = buf, callee = callee, args = args, resolution = callee_resolution, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce),
     ELet(name, value, body, _) => {
       let local_idx = next_local
       let name_slot = Array::length(local_names)
-      Array::push(local_names, name)
+      Array::push(local_names, value = name)
       // A non-recursive binder is not visible in its own initializer. Reserve
       // its wasm slot but hide the source name until the body (#2160; mirrors
       // the linear lane's #1120 masking).
-      Array::set(local_names, name_slot, "")
+      Array::set(local_names, at = name_slot, value = "")
       let scoped_nl = match value {
         // #1702: a record literal bound to a local that never leaves field-read
         // position lives in a real wasm-gc struct instead of linear memory.
         ERecord(ns_name, ns_fields, _) => {
-          let ns_struct_idx = gc_native_struct_binding_index(ctx, ns_name, ns_fields)
-          if ctx.gc_native_struct_type_base >= 0 && ctx.gc_native_array_frame_ok && ns_struct_idx >= 0 && gc_native_struct_ref_initializers_are_compatible(ctx, ns_struct_idx, ns_fields, local_names) && gc_native_struct_scope_is_safe(body, name) && gc_native_struct_ref_field_reads_are_ops(body, name, ctx, ns_struct_idx, local_names) {
-            let ns_declared = Array::get(ctx.gc_ctor_table.struct_field_names, ns_struct_idx)
-            let ns_field_refs = Array::get(ctx.gc_ctor_table.struct_field_is_ref, ns_struct_idx)
-            gc_slot_map_set(ctx.gc_native_struct_scope, local_idx, ns_struct_idx)
-            gc_slot_map_set(ctx.gc_native_struct_decl, local_idx, ns_struct_idx)
+          let ns_struct_idx = gc_native_struct_binding_index(ctx = ctx, record_name = ns_name, fields = ns_fields)
+          if ctx.gc_native_struct_type_base >= 0 && ctx.gc_native_array_frame_ok && ns_struct_idx >= 0 && gc_native_struct_ref_initializers_are_compatible(ctx = ctx, ns_struct_idx = ns_struct_idx, fields = ns_fields, local_names = local_names) && gc_native_struct_scope_is_safe(expr = body, name = name) && gc_native_struct_ref_field_reads_are_ops(expr = body, name = name, ctx = ctx, ns_struct_idx = ns_struct_idx, local_names = local_names) {
+            let ns_declared = Array::get(ctx.gc_ctor_table.struct_field_names, at = ns_struct_idx)
+            let ns_field_refs = Array::get(ctx.gc_ctor_table.struct_field_is_ref, at = ns_struct_idx)
+            gc_slot_map_set(map = ctx.gc_native_struct_scope, slot = local_idx, value = ns_struct_idx)
+            gc_slot_map_set(map = ctx.gc_native_struct_decl, slot = local_idx, value = ns_struct_idx)
             // struct.new takes its fields as operands, so they go on the stack in
             // DECLARED order however the literal spelled them.
             let mut ns_nl = next_local + 1
             let mut ns_di = 0
             while ns_di < Array::length(ns_declared) {
-              let ns_target = Array::get(ns_declared, ns_di)
+              let ns_target = Array::get(ns_declared, at = ns_di)
               let mut ns_fi = 0
               let mut ns_emitted = false
               while ns_fi < Array::length(ns_fields) {
-                let (ns_fname, ns_fval) = Array::get(ns_fields, ns_fi)
+                let (ns_fname, ns_fval) = Array::get(ns_fields, at = ns_fi)
                 if !ns_emitted && ns_fname == ns_target {
                   // #1542: a field declared `Array[Int]` holds `(ref null $array)`,
                   // so its operand has to be produced on the reference lane rather
                   // than as a tagged i64.
-                  ns_nl = if Array::get(ns_field_refs, ns_di) {
-                    gc_compile_native_array_ref(buf, ns_fval, local_names, ns_nl, ctx, ld, ce)
+                  ns_nl = if Array::get(ns_field_refs, at = ns_di) {
+                    gc_compile_native_array_ref(buf = buf, expr = ns_fval, local_names = local_names, next_local = ns_nl, ctx = ctx, ld = ld, ce = ce)
                   } else {
                     ce(buf, ns_fval, local_names, ns_nl, ld)
                   }
@@ -1615,71 +1615,71 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
               }
               ns_di = ns_di + 1
             }
-            emit_struct_new(buf, ctx.gc_native_struct_type_base + ns_struct_idx)
-            emit_local_set(buf, local_idx)
-            gc_restore_local_scope(local_names, ctx, name_slot + 1, ns_nl)
-            Array::set(local_names, name_slot, name)
+            emit_struct_new(buf = buf, type_idx = ctx.gc_native_struct_type_base + ns_struct_idx)
+            emit_local_set(buf = buf, idx = local_idx)
+            gc_restore_local_scope(local_names = local_names, ctx = ctx, keep = name_slot + 1, high_water = ns_nl)
+            Array::set(local_names, at = name_slot, value = name)
             ce(buf, body, local_names, ns_nl, ld)
           } else {
-            gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
+            gc_compile_let_i64(buf = buf, name = name, name_slot = name_slot, value = value, body = body, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
           }
         },
-        EArray(native_elems) => if ctx.gc_native_array_frame_ok && ctx.gc_native_array_type_idx >= 0 && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
+        EArray(native_elems) => if ctx.gc_native_array_frame_ok && ctx.gc_native_array_type_idx >= 0 && gc_native_array_body_is_safe_tail(expr = body, name = name, allow_tail = ctx.gc_direct_abi_current_return_ref, ctx = ctx) {
           // This local is a `(ref null $native_i64_array)`, never an i64.
-          Array::push(ctx.gc_native_array_locals, local_idx)
-          Array::push(ctx.gc_native_array_local_types, local_idx)
-          emit_i32_const(buf, Array::length(native_elems))
-          emit_array_new_default(buf, ctx.gc_native_array_type_idx)
-          emit_local_set(buf, local_idx)
+          Array::push(ctx.gc_native_array_locals, value = local_idx)
+          Array::push(ctx.gc_native_array_local_types, value = local_idx)
+          emit_i32_const(buf = buf, value = Array::length(native_elems))
+          emit_array_new_default(buf = buf, type_idx = ctx.gc_native_array_type_idx)
+          emit_local_set(buf = buf, idx = local_idx)
           let mut native_nl = next_local + 1
           let mut ni = 0
           while ni < Array::length(native_elems) {
-            emit_local_get(buf, local_idx)
-            emit_i32_const(buf, ni)
-            native_nl = ce(buf, Array::get(native_elems, ni), local_names, native_nl, ld)
-            emit_array_set(buf, ctx.gc_native_array_type_idx)
+            emit_local_get(buf = buf, idx = local_idx)
+            emit_i32_const(buf = buf, value = ni)
+            native_nl = ce(buf, Array::get(native_elems, at = ni), local_names, native_nl, ld)
+            emit_array_set(buf = buf, type_idx = ctx.gc_native_array_type_idx)
             ni = ni + 1
           }
-          gc_restore_local_scope(local_names, ctx, name_slot + 1, native_nl)
-          Array::set(local_names, name_slot, name)
+          gc_restore_local_scope(local_names = local_names, ctx = ctx, keep = name_slot + 1, high_water = native_nl)
+          Array::set(local_names, at = name_slot, value = name)
           ce(buf, body, local_names, native_nl, ld)
         } else {
-          gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
+          gc_compile_let_i64(buf = buf, name = name, name_slot = name_slot, value = value, body = body, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
         },
         EIdent(source, _) => {
-          let source_slot = find_local_slot(local_names, source)
-          if source_slot >= 0 && array_contains_int(ctx.gc_native_array_locals, source_slot) && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
-            Array::push(ctx.gc_native_array_locals, local_idx)
-            Array::push(ctx.gc_native_array_local_types, local_idx)
-            emit_local_get(buf, source_slot)
-            emit_local_set(buf, local_idx)
-            gc_restore_local_scope(local_names, ctx, name_slot + 1, next_local + 1)
-            Array::set(local_names, name_slot, name)
+          let source_slot = find_local_slot(names = local_names, name = source)
+          if source_slot >= 0 && array_contains_int(arr = ctx.gc_native_array_locals, v = source_slot) && gc_native_array_body_is_safe_tail(expr = body, name = name, allow_tail = ctx.gc_direct_abi_current_return_ref, ctx = ctx) {
+            Array::push(ctx.gc_native_array_locals, value = local_idx)
+            Array::push(ctx.gc_native_array_local_types, value = local_idx)
+            emit_local_get(buf = buf, idx = source_slot)
+            emit_local_set(buf = buf, idx = local_idx)
+            gc_restore_local_scope(local_names = local_names, ctx = ctx, keep = name_slot + 1, high_water = next_local + 1)
+            Array::set(local_names, at = name_slot, value = name)
             ce(buf, body, local_names, next_local + 1, ld)
           } else {
-            gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
+            gc_compile_let_i64(buf = buf, name = name, name_slot = name_slot, value = value, body = body, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
           }
         },
-        ECall(_, _, _, _) => if gc_expr_can_compile_native_array_ref(value, local_names, ctx) && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
-          Array::push(ctx.gc_native_array_locals, local_idx)
-          Array::push(ctx.gc_native_array_local_types, local_idx)
+        ECall(_, _, _, _) => if gc_expr_can_compile_native_array_ref(expr = value, local_names = local_names, ctx = ctx) && gc_native_array_body_is_safe_tail(expr = body, name = name, allow_tail = ctx.gc_direct_abi_current_return_ref, ctx = ctx) {
+          Array::push(ctx.gc_native_array_locals, value = local_idx)
+          Array::push(ctx.gc_native_array_local_types, value = local_idx)
           let native_nl = ce(buf, value, local_names, next_local + 1, ld)
-          emit_local_set(buf, local_idx)
-          gc_restore_local_scope(local_names, ctx, name_slot + 1, native_nl)
-          Array::set(local_names, name_slot, name)
+          emit_local_set(buf = buf, idx = local_idx)
+          gc_restore_local_scope(local_names = local_names, ctx = ctx, keep = name_slot + 1, high_water = native_nl)
+          Array::set(local_names, at = name_slot, value = name)
           ce(buf, body, local_names, native_nl, ld)
         } else {
-          gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
+          gc_compile_let_i64(buf = buf, name = name, name_slot = name_slot, value = value, body = body, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
         },
-        _ => gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
+        _ => gc_compile_let_i64(buf = buf, name = name, name_slot = name_slot, value = value, body = body, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
       }
-      gc_restore_local_scope(local_names, ctx, name_slot, scoped_nl)
+      gc_restore_local_scope(local_names = local_names, ctx = ctx, keep = name_slot, high_water = scoped_nl)
       scoped_nl
     },
     ELetRec(name, value, body) => {
       let local_idx = next_local
       let name_slot = Array::length(local_names)
-      Array::push(local_names, name)
+      Array::push(local_names, value = name)
       // The closure's env slot for its own name is patched after the closure
       // exists, so the slot index must come from the SAME capture list
       // `compile_lambda_gc` builds for this lambda: same function, same
@@ -1693,11 +1693,11 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // that ignored the enclosing names did not.
       let self_cap_idx = match value {
         EFn(_, _, params, _, _, fn_body) => {
-          let (caps, _, _) = collect_lambda_captures_gc(params, fn_body, ctx, local_names)
+          let (caps, _, _) = collect_lambda_captures_gc(params = params, fn_body = fn_body, ctx = ctx, encl = local_names)
           let mut found = -1
           let mut bci = 0
           while bci < Array::length(caps) {
-            if Array::get(caps, bci) == name {
+            if Array::get(caps, at = bci) == name {
               found = bci
             }
             bci = bci + 1
@@ -1707,27 +1707,27 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         _ => -1
       }
       let nl = ce(buf, value, local_names, next_local + 1, ld)
-      emit_local_set(buf, local_idx)
+      emit_local_set(buf = buf, idx = local_idx)
       if self_cap_idx >= 0 {
-        emit_local_get(buf, local_idx)
-        emit_i64_const(buf, -4)
+        emit_local_get(buf = buf, idx = local_idx)
+        emit_i64_const(buf = buf, value = -4)
         emit_i64_and(buf)
         emit_i32_wrap_i64(buf)
-        emit_local_get(buf, local_idx)
-        emit_i64_store(buf, 3, 8 + self_cap_idx * 8)
+        emit_local_get(buf = buf, idx = local_idx)
+        emit_i64_store(buf = buf, align = 3, offset = 8 + self_cap_idx * 8)
       }
       // #3338: the binder's scope ends with its body, as an ELet's does
       // (#3225). A lambda captures every enclosing name that shadows a
       // top-level function, so a name left behind here would hijack a later
       // closure's `twice(..)`, as it already hijacked a later direct call.
       let scoped_nl = ce(buf, body, local_names, nl, ld)
-      gc_restore_local_scope(local_names, ctx, name_slot, scoped_nl)
+      gc_restore_local_scope(local_names = local_names, ctx = ctx, keep = name_slot, high_water = scoped_nl)
       scoped_nl
     },
     ELetMut(name, value, body, _) => {
       let local_idx = next_local
       let name_slot = Array::length(local_names)
-      Array::push(local_names, name)
+      Array::push(local_names, value = name)
       // #3338: the ELet discipline -- the initializer cannot see the binder
       // it initializes (#2160, the linear lane's #1120 masks `let mut` too),
       // and the binder's scope ends with its body (#3225). Both matter more
@@ -1735,24 +1735,24 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // top-level function: in `let mut twice = (x) -> twice(x)` the call is
       // the top-level `twice`, and a `let mut` whose block has ended must not
       // shadow it afterwards.
-      Array::set(local_names, name_slot, "")
-      let scoped_nl = if mut_needs_ref_cell(body, name) {
-        if gc_expr_is_floatish(value, local_names, ctx) {
-          Array::push(ctx.gc_float_locals, local_idx)
+      Array::set(local_names, at = name_slot, value = "")
+      let scoped_nl = if mut_needs_ref_cell(body = body, name = name) {
+        if gc_expr_is_floatish(e = value, local_names = local_names, ctx = ctx) {
+          Array::push(ctx.gc_float_locals, value = local_idx)
         }
         // Linear-memory cell: local = cell address (i64), value stored at +0.
-        emit_global_get(buf, 0)
+        emit_global_get(buf = buf, idx = 0)
         emit_i64_extend_i32_u(buf)
-        emit_local_set(buf, local_idx)
-        emit_global_get(buf, 0)
-        emit_i32_const(buf, 8)
+        emit_local_set(buf = buf, idx = local_idx)
+        emit_global_get(buf = buf, idx = 0)
+        emit_i32_const(buf = buf, value = 8)
         emit_i32_add(buf)
-        emit_global_set(buf, 0)
+        emit_global_set(buf = buf, idx = 0)
         emit_heap_memory_grow_check(buf)
-        emit_local_get(buf, local_idx)
+        emit_local_get(buf = buf, idx = local_idx)
         emit_i32_wrap_i64(buf)
         let nl = ce(buf, value, local_names, next_local + 1, ld)
-        emit_i64_store(buf, 3, 0)
+        emit_i64_store(buf = buf, align = 3, offset = 0)
         // #3357: the cell is marked by SLOT, once the initializer has
         // compiled (it cannot see the binder it initializes), and the mark
         // goes with the slot when the binder's scope ends
@@ -1763,20 +1763,20 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         // is a plain local and only this binding is read through the cell.
         // `ref_cell_names` was keyed by NAME and read every same-named
         // binding in the scope through this cell (#3357).
-        Array::push(ctx.ref_local_indices, local_idx)
-        gc_restore_local_scope(local_names, ctx, name_slot + 1, nl)
-        Array::set(local_names, name_slot, name)
+        Array::push(ctx.ref_local_indices, value = local_idx)
+        gc_restore_local_scope(local_names = local_names, ctx = ctx, keep = name_slot + 1, high_water = nl)
+        Array::set(local_names, at = name_slot, value = name)
         ce(buf, body, local_names, nl, ld)
       } else {
-        if gc_expr_is_floatish(value, local_names, ctx) {
+        if gc_expr_is_floatish(e = value, local_names = local_names, ctx = ctx) {
           // #1032: logged by SLOT (local_idx), not name -- see
           // gc_float_locals' doc comment on CompileCtxGc.
-          Array::push(ctx.gc_float_locals, local_idx)
-        } else if gc_expr_is_boolish(value, local_names, ctx) {
+          Array::push(ctx.gc_float_locals, value = local_idx)
+        } else if gc_expr_is_boolish(e = value, local_names = local_names, ctx = ctx) {
           // #1015: logged by SLOT (local_idx), not name -- see
           // gc_bool_locals' doc comment on CompileCtxGc.
-          Array::push(ctx.gc_bool_locals, local_idx)
-        } else if gc_value_is_intish(value, local_names, ctx) {
+          Array::push(ctx.gc_bool_locals, value = local_idx)
+        } else if gc_value_is_intish(e = value, local_names = local_names, ctx = ctx) {
           // #2422: `let mut` was the third binding form the int log missed
           // (annotated params and aliases were the other two), so
           // `let mut x = 64 << 32` rendered as the empty string.
@@ -1785,54 +1785,54 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           // becomes a heap CELL whose local holds the cell ADDRESS, not the
           // value, and classifying the address as an Int would be exactly the
           // confusion this log exists to prevent.
-          Array::push(ctx.gc_int_locals, local_idx)
+          Array::push(ctx.gc_int_locals, value = local_idx)
         } else {
           ()
         }
         let nl = ce(buf, value, local_names, next_local + 1, ld)
-        emit_local_set(buf, local_idx)
-        gc_restore_local_scope(local_names, ctx, name_slot + 1, nl)
-        Array::set(local_names, name_slot, name)
+        emit_local_set(buf = buf, idx = local_idx)
+        gc_restore_local_scope(local_names = local_names, ctx = ctx, keep = name_slot + 1, high_water = nl)
+        Array::set(local_names, at = name_slot, value = name)
         ce(buf, body, local_names, nl, ld)
       }
-      gc_restore_local_scope(local_names, ctx, name_slot, scoped_nl)
+      gc_restore_local_scope(local_names = local_names, ctx = ctx, keep = name_slot, high_water = scoped_nl)
       scoped_nl
     },
     EAssign(name, value, body, _) => {
-      let idx = resolve_local(local_names, name, "gc_var")
-      if array_contains_int(ctx.ref_local_indices, idx) {
-        emit_local_get(buf, idx)
+      let idx = resolve_local(names = local_names, name = name, tag = "gc_var")
+      if array_contains_int(arr = ctx.ref_local_indices, v = idx) {
+        emit_local_get(buf = buf, idx = idx)
         emit_i32_wrap_i64(buf)
         let nl = ce(buf, value, local_names, next_local, ld)
-        emit_i64_store(buf, 3, 0)
+        emit_i64_store(buf = buf, align = 3, offset = 0)
         ce(buf, body, local_names, nl, ld)
       } else {
         let nl = ce(buf, value, local_names, next_local, ld)
-        emit_local_set(buf, idx)
+        emit_local_set(buf = buf, idx = idx)
         ce(buf, body, local_names, nl, ld)
       }
     },
     EAssignOp(name, op, value, body, target_off) => {
-      let idx = resolve_local(local_names, name, "gc_var")
-      if (op == "+" || op == "-" || op == "*" || op == "/") && (array_contains_int(ctx.gc_float_locals, idx) || gc_expr_is_floatish(value, local_names, ctx)) {
+      let idx = resolve_local(names = local_names, name = name, tag = "gc_var")
+      if (op == "+" || op == "-" || op == "*" || op == "/") && (array_contains_int(arr = ctx.gc_float_locals, v = idx) || gc_expr_is_floatish(e = value, local_names = local_names, ctx = ctx)) {
         ce(buf, EAssign(name, EBinOp(op, EIdent(name, -1), value, -1), body, target_off), local_names, next_local, ld)
-      } else if array_contains_int(ctx.ref_local_indices, idx) {
-        emit_local_get(buf, idx)
+      } else if array_contains_int(arr = ctx.ref_local_indices, v = idx) {
+        emit_local_get(buf = buf, idx = idx)
         emit_i32_wrap_i64(buf)
-        emit_local_get(buf, idx)
+        emit_local_get(buf = buf, idx = idx)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 0)
-        let nl = gc_emit_int_div_zero_guard(buf, op, value, first_offset(value), ctx, local_names, ce(buf, value, local_names, next_local, ld))
-        emit_assignop_op(buf, op)
-        emit_arith_wrap_int(buf, false, op)
-        emit_i64_store(buf, 3, 0)
+        emit_i64_load(buf = buf, align = 3, offset = 0)
+        let nl = gc_emit_int_div_zero_guard(buf = buf, op = op, divisor = value, site_off = first_offset(value), ctx = ctx, local_names = local_names, slot = ce(buf, value, local_names, next_local, ld))
+        emit_assignop_op(buf = buf, op = op)
+        emit_arith_wrap_int(buf = buf, enable_rc = false, op = op)
+        emit_i64_store(buf = buf, align = 3, offset = 0)
         ce(buf, body, local_names, nl, ld)
       } else {
-        emit_local_get(buf, idx)
-        let nl = gc_emit_int_div_zero_guard(buf, op, value, first_offset(value), ctx, local_names, ce(buf, value, local_names, next_local, ld))
-        emit_assignop_op(buf, op)
-        emit_arith_wrap_int(buf, false, op)
-        emit_local_set(buf, idx)
+        emit_local_get(buf = buf, idx = idx)
+        let nl = gc_emit_int_div_zero_guard(buf = buf, op = op, divisor = value, site_off = first_offset(value), ctx = ctx, local_names = local_names, slot = ce(buf, value, local_names, next_local, ld))
+        emit_assignop_op(buf = buf, op = op)
+        emit_arith_wrap_int(buf = buf, enable_rc = false, op = op)
+        emit_local_set(buf = buf, idx = idx)
         ce(buf, body, local_names, nl, ld)
       }
     },
@@ -1845,57 +1845,57 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       let num_elems = Array::length(elems)
       let alloc_size = num_elems * 8
       let ptr_local = next_local
-      Array::push(local_names, "[gc-temp]__tuple_ptr")
+      Array::push(local_names, value = "[gc-temp]__tuple_ptr")
       let mut nl = next_local + 1
-      emit_global_get(buf, 0)
+      emit_global_get(buf = buf, idx = 0)
       emit_i64_extend_i32_u(buf)
-      emit_local_tee(buf, ptr_local)
+      emit_local_tee(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, alloc_size)
+      emit_i32_const(buf = buf, value = alloc_size)
       emit_i32_add(buf)
-      emit_global_set(buf, 0)
+      emit_global_set(buf = buf, idx = 0)
       // #415: gc-lane heap bump must grow linear memory like the linear
       // backend does -- without this any allocation past the initial page
       // traps OOB (the gc smoke fixture only ever allocated a few bytes).
       emit_heap_memory_grow_check(buf)
       let mut ti = 0
       while ti < num_elems {
-        emit_local_get(buf, ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        nl = ce(buf, Array::get(elems, ti), local_names, nl, ld)
-        emit_i64_store(buf, 3, ti * 8)
+        nl = ce(buf, Array::get(elems, at = ti), local_names, nl, ld)
+        emit_i64_store(buf = buf, align = 3, offset = ti * 8)
         ti = ti + 1
       }
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       nl
     },
-    EMatch(scrutinee, arms) => compile_match_gc(buf, scrutinee, arms, local_names, next_local, ctx, ld, ce),
+    EMatch(scrutinee, arms) => compile_match_gc(buf = buf, scrutinee = scrutinee, arms = arms, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce),
     EArray(elems) => {
-      let (arr_new_idx, _, _) = resolve_func(ctx.func_table, "array_new")
-      let (arr_push_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let (arr_new_idx, _, _) = resolve_func(ft = ctx.func_table, name = "array_new")
+      let (arr_push_idx, _, _) = resolve_func(ft = ctx.func_table, name = "Array::push")
       let arr_local = next_local
       if ctx.func_offset > 0 && arr_new_idx >= ctx.func_offset {
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
       } else {
         ()
       }
-      emit_call(buf, arr_new_idx)
-      emit_local_set(buf, arr_local)
-      Array::push(local_names, "[gc-temp]__arr_lit")
+      emit_call(buf = buf, func_idx = arr_new_idx)
+      emit_local_set(buf = buf, idx = arr_local)
+      Array::push(local_names, value = "[gc-temp]__arr_lit")
       let mut nl = next_local + 1
       let mut ei = 0
       while ei < Array::length(elems) {
-        emit_local_get(buf, arr_local)
-        nl = ce(buf, Array::get(elems, ei), local_names, nl, ld)
+        emit_local_get(buf = buf, idx = arr_local)
+        nl = ce(buf, Array::get(elems, at = ei), local_names, nl, ld)
         if ctx.func_offset > 0 && arr_push_idx >= ctx.func_offset {
-          emit_i64_const(buf, 0)
+          emit_i64_const(buf = buf, value = 0)
         } else {
           ()
         }
-        emit_call(buf, arr_push_idx)
+        emit_call(buf = buf, func_idx = arr_push_idx)
         ei = ei + 1
       }
-      emit_local_get(buf, arr_local)
+      emit_local_get(buf = buf, idx = arr_local)
       nl
     },
     EForIn(var_name, index_name, iter_expr, body) => {
@@ -1907,158 +1907,158 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // (and subst_apply's CtFn param map) produced EMPTY arrays when the
       // gc-compiled compiler ran — every 1+-param function type resolved and
       // printed as `()`, failing unify with "expected X, got X" diagnostics.
-      let (arr_new_idx, _, _) = resolve_func(ctx.func_table, "array_new")
-      let (arr_len_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
-      let (arr_get_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
-      let (arr_push_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let (arr_new_idx, _, _) = resolve_func(ft = ctx.func_table, name = "array_new")
+      let (arr_len_idx, _, _) = resolve_func(ft = ctx.func_table, name = "Array::length")
+      let (arr_get_idx, _, _) = resolve_func(ft = ctx.func_table, name = "Array::get")
+      let (arr_push_idx, _, _) = resolve_func(ft = ctx.func_table, name = "Array::push")
       let names_len_at_forin = Array::length(local_names)
       let result_local = next_local
       let arr_local = next_local + 1
       let i_local = next_local + 2
-      Array::push(local_names, "[gc-temp]__forin_res")
-      Array::push(local_names, "[gc-temp]__forin_arr")
-      Array::push(local_names, "[gc-temp]__forin_i")
+      Array::push(local_names, value = "[gc-temp]__forin_res")
+      Array::push(local_names, value = "[gc-temp]__forin_arr")
+      Array::push(local_names, value = "[gc-temp]__forin_i")
       if ctx.func_offset > 0 && arr_new_idx >= ctx.func_offset {
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
       } else {
         ()
       }
-      emit_call(buf, arr_new_idx)
-      emit_local_set(buf, result_local)
+      emit_call(buf = buf, func_idx = arr_new_idx)
+      emit_local_set(buf = buf, idx = result_local)
       let nl1pre = ce(buf, iter_expr, local_names, next_local + 3, ld)
-      emit_local_set(buf, arr_local)
+      emit_local_set(buf = buf, idx = arr_local)
       // #1295: String is a packed `(offset << 32) | length` value, not an
       // Array heap pointer. Detect nonempty packed strings and materialize
       // their character codes before entering the existing Array loop.
       // Array pointers have zero high bits, so they bypass this conversion.
-      let (str_len_idx, _, _) = resolve_func(ctx.func_table, "String::length")
-      let (str_ccat_idx, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
+      let (str_len_idx, _, _) = resolve_func(ft = ctx.func_table, name = "String::length")
+      let (str_ccat_idx, _, _) = resolve_func(ft = ctx.func_table, name = "String::char_code_at")
       let conv_local = nl1pre
       let j_local = nl1pre + 1
-      Array::push(local_names, "[gc-temp]__forin_string_chars")
-      Array::push(local_names, "[gc-temp]__forin_string_i")
+      Array::push(local_names, value = "[gc-temp]__forin_string_chars")
+      Array::push(local_names, value = "[gc-temp]__forin_string_i")
       let nl1 = nl1pre + 2
-      emit_local_get(buf, arr_local)
-      emit_i64_const(buf, 32)
+      emit_local_get(buf = buf, idx = arr_local)
+      emit_i64_const(buf = buf, value = 32)
       emit_i64_shr_s(buf)
       emit_i64_eqz(buf)
       emit_if_void(buf)
       emit_else(buf)
       if ctx.func_offset > 0 && arr_new_idx >= ctx.func_offset {
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
       } else {
         ()
       }
-      emit_call(buf, arr_new_idx)
-      emit_local_set(buf, conv_local)
-      emit_i64_const(buf, 0)
-      emit_local_set(buf, j_local)
+      emit_call(buf = buf, func_idx = arr_new_idx)
+      emit_local_set(buf = buf, idx = conv_local)
+      emit_i64_const(buf = buf, value = 0)
+      emit_local_set(buf = buf, idx = j_local)
       emit_block_void(buf)
       emit_loop_void(buf)
-      emit_local_get(buf, j_local)
-      emit_local_get(buf, arr_local)
+      emit_local_get(buf = buf, idx = j_local)
+      emit_local_get(buf = buf, idx = arr_local)
       if ctx.func_offset > 0 && str_len_idx >= ctx.func_offset {
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
       } else {
         ()
       }
-      emit_call(buf, str_len_idx)
+      emit_call(buf = buf, func_idx = str_len_idx)
       emit_i64_ge_s(buf)
-      emit_br_if(buf, 1)
-      emit_local_get(buf, conv_local)
-      emit_local_get(buf, arr_local)
-      emit_local_get(buf, j_local)
+      emit_br_if(buf = buf, label = 1)
+      emit_local_get(buf = buf, idx = conv_local)
+      emit_local_get(buf = buf, idx = arr_local)
+      emit_local_get(buf = buf, idx = j_local)
       if ctx.func_offset > 0 && str_ccat_idx >= ctx.func_offset {
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
       } else {
         ()
       }
-      emit_call(buf, str_ccat_idx)
+      emit_call(buf = buf, func_idx = str_ccat_idx)
       if ctx.func_offset > 0 && arr_push_idx >= ctx.func_offset {
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
       } else {
         ()
       }
-      emit_call(buf, arr_push_idx)
-      emit_local_get(buf, j_local)
-      emit_i64_const(buf, 1)
+      emit_call(buf = buf, func_idx = arr_push_idx)
+      emit_local_get(buf = buf, idx = j_local)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_add(buf)
-      emit_local_set(buf, j_local)
-      emit_br(buf, 0)
+      emit_local_set(buf = buf, idx = j_local)
+      emit_br(buf = buf, label = 0)
       emit_end(buf)
       emit_end(buf)
-      emit_local_get(buf, conv_local)
-      emit_local_set(buf, arr_local)
+      emit_local_get(buf = buf, idx = conv_local)
+      emit_local_set(buf = buf, idx = arr_local)
       emit_end(buf)
-      emit_i64_const(buf, 0)
-      emit_local_set(buf, i_local)
+      emit_i64_const(buf = buf, value = 0)
+      emit_local_set(buf = buf, idx = i_local)
       emit_block_void(buf)
       emit_loop_void(buf)
-      emit_local_get(buf, i_local)
-      emit_local_get(buf, arr_local)
+      emit_local_get(buf = buf, idx = i_local)
+      emit_local_get(buf = buf, idx = arr_local)
       if ctx.func_offset > 0 && arr_len_idx >= ctx.func_offset {
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
       } else {
         ()
       }
-      emit_call(buf, arr_len_idx)
+      emit_call(buf = buf, func_idx = arr_len_idx)
       emit_i64_ge_s(buf)
-      emit_br_if(buf, 1)
+      emit_br_if(buf = buf, label = 1)
       let var_local = match index_name {
         Some(idx_name) => {
-          emit_local_get(buf, i_local)
-          emit_local_set(buf, nl1)
-          Array::push(local_names, idx_name)
+          emit_local_get(buf = buf, idx = i_local)
+          emit_local_set(buf = buf, idx = nl1)
+          Array::push(local_names, value = idx_name)
           nl1 + 1
         },
         None => nl1
       }
-      emit_local_get(buf, arr_local)
-      emit_local_get(buf, i_local)
+      emit_local_get(buf = buf, idx = arr_local)
+      emit_local_get(buf = buf, idx = i_local)
       if ctx.func_offset > 0 && arr_get_idx >= ctx.func_offset {
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
       } else {
         ()
       }
-      emit_call(buf, arr_get_idx)
-      emit_local_set(buf, var_local)
-      Array::push(local_names, var_name)
+      emit_call(buf = buf, func_idx = arr_get_idx)
+      emit_local_set(buf = buf, idx = var_local)
+      Array::push(local_names, value = var_name)
       // #1967: step the index before the body. `continue` is `br` to this
       // loop header (`ld = 0`). If the increment stayed after the body, an
       // even-element `continue` retried the same `i` forever.
-      emit_local_get(buf, i_local)
-      emit_i64_const(buf, 1)
+      emit_local_get(buf = buf, idx = i_local)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_add(buf)
-      emit_local_set(buf, i_local)
+      emit_local_set(buf = buf, idx = i_local)
       let nl3 = var_local + 1
       // Same innermost-loop ld reset as EWhile.
       let nl4 = ce(buf, body, local_names, nl3, 0)
       let body_val = nl4
-      Array::push(local_names, "[gc-temp]__forin_val")
-      emit_local_set(buf, body_val)
-      emit_local_get(buf, result_local)
-      emit_local_get(buf, body_val)
+      Array::push(local_names, value = "[gc-temp]__forin_val")
+      emit_local_set(buf = buf, idx = body_val)
+      emit_local_get(buf = buf, idx = result_local)
+      emit_local_get(buf = buf, idx = body_val)
       if ctx.func_offset > 0 && arr_push_idx >= ctx.func_offset {
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
       } else {
         ()
       }
-      emit_call(buf, arr_push_idx)
-      emit_br(buf, 0)
+      emit_call(buf = buf, func_idx = arr_push_idx)
+      emit_br(buf = buf, label = 0)
       emit_end(buf)
       emit_end(buf)
-      emit_local_get(buf, result_local)
+      emit_local_get(buf = buf, idx = result_local)
       // Restore the outer name scope (loop-internal binds must not shadow
       // later lookups) while preserving slot numbering — linear parity.
       let final_nl = nl4 + 1
-      Array::truncate(local_names, names_len_at_forin)
-      agg_log_reset_above(ctx.gc_agg_local_slots, names_len_at_forin)
-      gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_at_forin)
-      gc_slot_log_reset_above(ctx.gc_int_locals, names_len_at_forin)
-      gc_slot_log_reset_above(ctx.ref_local_indices, names_len_at_forin)
-      gc_slot_log_reset_above(ctx.gc_float_locals, names_len_at_forin)
+      Array::truncate(local_names, length = names_len_at_forin)
+      agg_log_reset_above(arr = ctx.gc_agg_local_slots, floor = names_len_at_forin)
+      gc_slot_log_reset_above(arr = ctx.gc_bool_locals, floor = names_len_at_forin)
+      gc_slot_log_reset_above(arr = ctx.gc_int_locals, floor = names_len_at_forin)
+      gc_slot_log_reset_above(arr = ctx.ref_local_indices, floor = names_len_at_forin)
+      gc_slot_log_reset_above(arr = ctx.gc_float_locals, floor = names_len_at_forin)
       while Array::length(local_names) < final_nl {
-        Array::push(local_names, "")
+        Array::push(local_names, value = "")
       }
       final_nl
     },
@@ -2073,16 +2073,16 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           // #538 P4.5: same emit_gc_eq_value routing as the EIf fast path;
           // each branch leaves the raw comparison's i32 0/1 shape so the
           // shared i32_eqz inversion below applies uniformly.
-          let wnl = emit_gc_eq_value(buf, wlhs, wrhs, local_names, next_local, ctx, 0, compile_expr_gc)
+          let wnl = emit_gc_eq_value(buf = buf, lhs = wlhs, rhs = wrhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = 0, cefn = compile_expr_gc)
           emit_i32_wrap_i64(buf)
           emit_i32_eqz(buf)
           wnl
         } else if wcop == "!=" {
-          let wnl = emit_gc_eq_value(buf, wlhs, wrhs, local_names, next_local, ctx, 0, compile_expr_gc)
+          let wnl = emit_gc_eq_value(buf = buf, lhs = wlhs, rhs = wrhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = 0, cefn = compile_expr_gc)
           emit_i64_eqz(buf)
           emit_i32_eqz(buf)
           wnl
-        } else if (wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=") && (gc_expr_is_floatish(wlhs, local_names, ctx) || gc_expr_is_floatish(wrhs, local_names, ctx)) {
+        } else if (wcop == "<" || wcop == ">" || wcop == "<=" || wcop == ">=") && (gc_expr_is_floatish(e = wlhs, local_names = local_names, ctx = ctx) || gc_expr_is_floatish(e = wrhs, local_names = local_names, ctx = ctx)) {
           // Same f64-vs-raw-bits ordering fix as the EBinOp/EIf float
           // comparison branches; leaves the i32 for the shared eqz below.
           let wnl1 = ce(buf, wlhs, local_names, next_local, 0)
@@ -2131,27 +2131,27 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           wnl
         }
       }
-      emit_br_if(buf, 1)
+      emit_br_if(buf = buf, label = 1)
       let nl2 = ce(buf, body, local_names, nl1, 0)
       emit_drop(buf)
-      emit_br(buf, 0)
+      emit_br(buf = buf, label = 0)
       emit_end(buf)
       emit_end(buf)
-      emit_i64_const(buf, 0)
+      emit_i64_const(buf = buf, value = 0)
       nl2
     },
     EBreak(_) => {
-      emit_br(buf, ld + 1)
-      emit_i64_const(buf, 0)
+      emit_br(buf = buf, label = ld + 1)
+      emit_i64_const(buf = buf, value = 0)
       next_local
     },
     EContinue(_) => {
-      emit_br(buf, ld)
-      emit_i64_const(buf, 0)
+      emit_br(buf = buf, label = ld)
+      emit_i64_const(buf = buf, value = 0)
       next_local
     },
     EUnit => {
-      emit_i64_const(buf, 0)
+      emit_i64_const(buf = buf, value = 0)
       next_local
     },
     EReturn(ret_expr) => {
@@ -2160,37 +2160,37 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       nl
     },
     EFn(_, _, params, _, _, fn_body) =>
-    compile_lambda_gc(buf, params, fn_body, local_names, next_local, ctx, ld, compile_expr_gc),
+    compile_lambda_gc(buf = buf, params = params, fn_body = fn_body, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, compile_fn = compile_expr_gc),
     EDot(obj, field, _, _) => {
       // #538: numeric field = tuple index (`t.0`). gc tuples are raw untagged
       // pointers with elements at i*8 (no header) -- see ETuple above.
-      let fc0 = String::char_code_at(field, 0)
+      let fc0 = String::char_code_at(field, at = 0)
       if fc0 >= 48 && fc0 <= 57 {
         let mut tidx = 0
         let mut tp = 0
         while tp < String::length(field) {
-          tidx = tidx * 10 + (String::char_code_at(field, tp) - 48)
+          tidx = tidx * 10 + (String::char_code_at(field, at = tp) - 48)
           tp = tp + 1
         }
         let nl_t = ce(buf, obj, local_names, next_local, ld)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, tidx * 8)
+        emit_i64_load(buf = buf, align = 3, offset = tidx * 8)
         return nl_t
       }
       // #1702: a native wasm-gc struct local. Its exact struct was fixed at the
       // binding site, so the field index is static -- and the tag dispatch below
       // is not merely unnecessary but impossible: the value carries no tag.
       let ns_slot = match obj {
-        EIdent(ns_obj, _) => find_local_slot(local_names, ns_obj),
+        EIdent(ns_obj, _) => find_local_slot(names = local_names, name = ns_obj),
         _ => 0 - 1
       }
-      let ns_struct_idx = gc_slot_map_get(ctx.gc_native_struct_scope, ns_slot)
+      let ns_struct_idx = gc_slot_map_get(map = ctx.gc_native_struct_scope, slot = ns_slot)
       if ns_struct_idx >= 0 {
-        let ns_declared = Array::get(ctx.gc_ctor_table.struct_field_names, ns_struct_idx)
+        let ns_declared = Array::get(ctx.gc_ctor_table.struct_field_names, at = ns_struct_idx)
         let mut ns_fidx = 0 - 1
         let mut ns_i = 0
         while ns_i < Array::length(ns_declared) {
-          if ns_fidx < 0 && Array::get(ns_declared, ns_i) == field {
+          if ns_fidx < 0 && Array::get(ns_declared, at = ns_i) == field {
             ns_fidx = ns_i
           } else {
             ()
@@ -2205,8 +2205,8 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         } else {
           ()
         }
-        emit_local_get(buf, ns_slot)
-        emit_struct_get(buf, ctx.gc_native_struct_type_base + ns_struct_idx, ns_fidx)
+        emit_local_get(buf = buf, idx = ns_slot)
+        emit_struct_get(buf = buf, type_idx = ctx.gc_native_struct_type_base + ns_struct_idx, field_idx = ns_fidx)
         return next_local
       } else {
         ()
@@ -2215,41 +2215,41 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // (compile_expr_tail4.vibe) — static load when every declaring struct
       // agrees on the slot, runtime dispatch on the value's ctor tag when
       // they disagree, first candidate as the untagged/legacy fallback.
-      let cands = struct_field_candidates(ctx.gc_ctor_table, field)
+      let cands = struct_field_candidates(ct = ctx.gc_ctor_table, field = field)
       if Array::length(cands) == 0 {
         throw(String::concat("unknown struct field: ", field))
       }
-      let (_, idx0) = Array::get(cands, 0)
+      let (_, idx0) = Array::get(cands, at = 0)
       let dispatch = struct_field_dispatch_cases(cands)
       let nl1 = ce(buf, obj, local_names, next_local, ld)
-      emit_i64_const(buf, -2)
+      emit_i64_const(buf = buf, value = -2)
       emit_i64_and(buf)
       if Array::length(dispatch) == 0 {
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 8 + idx0 * 8)
+        emit_i64_load(buf = buf, align = 3, offset = 8 + idx0 * 8)
         nl1
       } else {
         let obj_l = nl1
-        Array::push(local_names, "[gc-temp]__dot_obj")
-        emit_local_set(buf, obj_l)
+        Array::push(local_names, value = "[gc-temp]__dot_obj")
+        emit_local_set(buf = buf, idx = obj_l)
         let mut di = 0
         while di < Array::length(dispatch) {
-          let (dtag, didx) = Array::get(dispatch, di)
-          emit_local_get(buf, obj_l)
+          let (dtag, didx) = Array::get(dispatch, at = di)
+          emit_local_get(buf = buf, idx = obj_l)
           emit_i32_wrap_i64(buf)
-          emit_i32_load(buf, 2, 0)
-          emit_i32_const(buf, dtag)
+          emit_i32_load(buf = buf, align = 2, offset = 0)
+          emit_i32_const(buf = buf, value = dtag)
           emit_i32_eq(buf)
           emit_if_i64(buf)
-          emit_local_get(buf, obj_l)
+          emit_local_get(buf = buf, idx = obj_l)
           emit_i32_wrap_i64(buf)
-          emit_i64_load(buf, 3, 8 + didx * 8)
+          emit_i64_load(buf = buf, align = 3, offset = 8 + didx * 8)
           emit_else(buf)
           di = di + 1
         }
-        emit_local_get(buf, obj_l)
+        emit_local_get(buf = buf, idx = obj_l)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 8 + idx0 * 8)
+        emit_i64_load(buf = buf, align = 3, offset = 8 + idx0 * 8)
         let mut de = 0
         while de < Array::length(dispatch) {
           emit_end(buf)
@@ -2270,31 +2270,31 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       let lit_names = array_empty()
       let mut lni = 0
       while lni < flen {
-        let (lfn, _) = Array::get(fields, lni)
-        Array::push(lit_names, lfn)
+        let (lfn, _) = Array::get(fields, at = lni)
+        Array::push(lit_names, value = lfn)
         lni = lni + 1
       }
       let rec_si = if rec_rn == "" {
         -1
       } else {
-        struct_index_by_field_set(ctx.gc_ctor_table, lit_names)
+        struct_index_by_field_set(ct = ctx.gc_ctor_table, lit_names = lit_names)
       }
       let rec_tag = if rec_si >= 0 {
-        struct_tag_by_index(ctx.gc_ctor_table, rec_si)
+        struct_tag_by_index(ct = ctx.gc_ctor_table, si = rec_si)
       } else {
         0
       }
       let rec_fields = if rec_si >= 0 {
-        let def_fnames = Array::get(ctx.gc_ctor_table.struct_field_names, rec_si)
+        let def_fnames = Array::get(ctx.gc_ctor_table.struct_field_names, at = rec_si)
         let ordered = array_empty()
         let mut oi = 0
         while oi < Array::length(def_fnames) {
-          let target_name = Array::get(def_fnames, oi)
+          let target_name = Array::get(def_fnames, at = oi)
           let mut ri2 = 0
           while ri2 < flen {
-            let (rfn, rfv) = Array::get(fields, ri2)
+            let (rfn, rfv) = Array::get(fields, at = ri2)
             if rfn == target_name {
-              Array::push(ordered, (rfn, rfv))
+              Array::push(ordered, value = (rfn, rfv))
               ri2 = flen
             } else {
               ri2 = ri2 + 1
@@ -2308,43 +2308,43 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       }
       let obj_size = 8 + flen * 8
       let ptr_local = next_local
-      Array::push(local_names, "[gc-temp]__rec_ptr")
-      emit_global_get(buf, 0)
+      Array::push(local_names, value = "[gc-temp]__rec_ptr")
+      emit_global_get(buf = buf, idx = 0)
       emit_i64_extend_i32_u(buf)
-      emit_local_set(buf, ptr_local)
-      emit_global_get(buf, 0)
-      emit_i32_const(buf, obj_size)
+      emit_local_set(buf = buf, idx = ptr_local)
+      emit_global_get(buf = buf, idx = 0)
+      emit_i32_const(buf = buf, value = obj_size)
       emit_i32_add(buf)
-      emit_global_set(buf, 0)
+      emit_global_set(buf = buf, idx = 0)
       // #415: gc-lane heap bump must grow linear memory like the linear
       // backend does -- without this any allocation past the initial page
       // traps OOB (the gc smoke fixture only ever allocated a few bytes).
       emit_heap_memory_grow_check(buf)
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, rec_tag)
-      emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, ptr_local)
+      emit_i32_const(buf = buf, value = rec_tag)
+      emit_i32_store(buf = buf, align = 2, offset = 0)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, flen)
-      emit_i32_store(buf, 2, 4)
+      emit_i32_const(buf = buf, value = flen)
+      emit_i32_store(buf = buf, align = 2, offset = 4)
       let mut nl_r = next_local + 1
       let mut ri = 0
       while ri < flen {
-        let (_, fexpr) = Array::get(rec_fields, ri)
+        let (_, fexpr) = Array::get(rec_fields, at = ri)
         nl_r = ce(buf, fexpr, local_names, nl_r, ld)
         let val_local = nl_r
-        Array::push(local_names, "[gc-temp]__rec_val")
-        emit_local_set(buf, val_local)
+        Array::push(local_names, value = "[gc-temp]__rec_val")
+        emit_local_set(buf = buf, idx = val_local)
         nl_r = nl_r + 1
-        emit_local_get(buf, ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_local_get(buf, val_local)
-        emit_i64_store(buf, 3, 8 + ri * 8)
+        emit_local_get(buf = buf, idx = val_local)
+        emit_i64_store(buf = buf, align = 3, offset = 8 + ri * 8)
         ri = ri + 1
       }
-      emit_local_get(buf, ptr_local)
-      emit_i64_const(buf, 1)
+      emit_local_get(buf = buf, idx = ptr_local)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_or(buf)
       nl_r
     },
@@ -2380,7 +2380,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       if Array::length(harms) == 0 {
         ce(buf, body, local_names, next_local, ld)
       } else {
-        let (hpat, hexpr) = Array::get(harms, 0)
+        let (hpat, hexpr) = Array::get(harms, at = 0)
         let mut hpat_ok = false
         match hpat {
           PCtor(hname, _) => {
@@ -2395,12 +2395,12 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         }
         emit_block_i64(buf)
         emit_block_i64(buf)
-        bytebuf_push(buf, 31)
-        bytebuf_push(buf, 126)
-        leb128_encode_u32(buf, 1)
-        bytebuf_push(buf, 0)
-        leb128_encode_u32(buf, 0)
-        leb128_encode_u32(buf, 0)
+        bytebuf_push(buf = buf, byte = 31)
+        bytebuf_push(buf = buf, byte = 126)
+        leb128_encode_u32(buf = buf, value = 1)
+        bytebuf_push(buf = buf, byte = 0)
+        leb128_encode_u32(buf = buf, value = 0)
+        leb128_encode_u32(buf = buf, value = 0)
         let body_ld = if ld >= 0 {
           ld + 3
         } else {
@@ -2408,7 +2408,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         }
         let nl_b = ce(buf, body, local_names, next_local, body_ld)
         emit_end(buf)
-        emit_br(buf, 1)
+        emit_br(buf = buf, label = 1)
         emit_end(buf)
         // payload (i64) on stack: bind the Throw arg if the pattern names it.
         let names_before_h = Array::length(local_names)
@@ -2416,11 +2416,11 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         match hpat {
           PCtor(_, hargs) => {
             if Array::length(hargs) > 0 {
-              match Array::get(hargs, 0) {
+              match Array::get(hargs, at = 0) {
                 PBind(hbname) => {
                   let hb_l = Array::length(local_names)
-                  emit_local_set(buf, hb_l)
-                  Array::push(local_names, hbname)
+                  emit_local_set(buf = buf, idx = hb_l)
+                  Array::push(local_names, value = hbname)
                   if hb_l + 1 > nl_h {
                     nl_h = hb_l + 1
                   }
@@ -2440,12 +2440,12 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         }
         let nl_h2 = ce(buf, hexpr, local_names, Array::length(local_names), harm_ld)
         emit_end(buf)
-        Array::truncate(local_names, names_before_h)
-        agg_log_reset_above(ctx.gc_agg_local_slots, names_before_h)
-        gc_slot_log_reset_above(ctx.gc_bool_locals, names_before_h)
-        gc_slot_log_reset_above(ctx.gc_int_locals, names_before_h)
-        gc_slot_log_reset_above(ctx.ref_local_indices, names_before_h)
-        gc_slot_log_reset_above(ctx.gc_float_locals, names_before_h)
+        Array::truncate(local_names, length = names_before_h)
+        agg_log_reset_above(arr = ctx.gc_agg_local_slots, floor = names_before_h)
+        gc_slot_log_reset_above(arr = ctx.gc_bool_locals, floor = names_before_h)
+        gc_slot_log_reset_above(arr = ctx.gc_int_locals, floor = names_before_h)
+        gc_slot_log_reset_above(arr = ctx.ref_local_indices, floor = names_before_h)
+        gc_slot_log_reset_above(arr = ctx.gc_float_locals, floor = names_before_h)
         if nl_h2 > nl_h {
           nl_h = nl_h2
         }
@@ -2457,7 +2457,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         // lookups then read the never-executed catch-arm local instead of the
         // successful handle result (observed as a corrupted Array on wasm-gc).
         while Array::length(local_names) < nl_h {
-          Array::push(local_names, "")
+          Array::push(local_names, value = "")
         }
         nl_h
       }
@@ -2474,39 +2474,39 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       }
       let malloc_size = 8 + mcap * 16
       let mptr = next_local
-      Array::push(local_names, "[gc-temp]__maplit_ptr")
-      emit_global_get(buf, 0)
+      Array::push(local_names, value = "[gc-temp]__maplit_ptr")
+      emit_global_get(buf = buf, idx = 0)
       emit_i64_extend_i32_u(buf)
-      emit_local_set(buf, mptr)
-      emit_global_get(buf, 0)
-      emit_i32_const(buf, malloc_size)
+      emit_local_set(buf = buf, idx = mptr)
+      emit_global_get(buf = buf, idx = 0)
+      emit_i32_const(buf = buf, value = malloc_size)
       emit_i32_add(buf)
-      emit_global_set(buf, 0)
+      emit_global_set(buf = buf, idx = 0)
       emit_heap_memory_grow_check(buf)
-      emit_local_get(buf, mptr)
+      emit_local_get(buf = buf, idx = mptr)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, mflen)
-      emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, mptr)
+      emit_i32_const(buf = buf, value = mflen)
+      emit_i32_store(buf = buf, align = 2, offset = 0)
+      emit_local_get(buf = buf, idx = mptr)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, mcap)
-      emit_i32_store(buf, 2, 4)
+      emit_i32_const(buf = buf, value = mcap)
+      emit_i32_store(buf = buf, align = 2, offset = 4)
       let mut mnl = next_local + 1
       let mut mi = 0
       while mi < mflen {
-        let (mkey, mval) = Array::get(mfields, mi)
-        let mk_idx = str_table_index_of(ctx.str_table, mkey)
-        emit_local_get(buf, mptr)
+        let (mkey, mval) = Array::get(mfields, at = mi)
+        let mk_idx = str_table_index_of(st = ctx.str_table, s = mkey)
+        emit_local_get(buf = buf, idx = mptr)
         emit_i32_wrap_i64(buf)
-        emit_str_ref(buf, Array::get(ctx.str_table.offsets, mk_idx), Array::get(ctx.str_table.lengths, mk_idx))
-        emit_i64_store(buf, 3, 8 + mi * 16)
-        emit_local_get(buf, mptr)
+        emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = mk_idx), length = Array::get(ctx.str_table.lengths, at = mk_idx))
+        emit_i64_store(buf = buf, align = 3, offset = 8 + mi * 16)
+        emit_local_get(buf = buf, idx = mptr)
         emit_i32_wrap_i64(buf)
         mnl = ce(buf, mval, local_names, mnl, ld)
-        emit_i64_store(buf, 3, 16 + mi * 16)
+        emit_i64_store(buf = buf, align = 3, offset = 16 + mi * 16)
         mi = mi + 1
       }
-      emit_local_get(buf, mptr)
+      emit_local_get(buf = buf, idx = mptr)
       mnl
     },
     EStringInterp(_) => throw("GC codegen: EStringInterp must be resolved before codegen (call resolve_interp_stmts first)"),

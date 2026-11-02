@@ -41,14 +41,14 @@ import @vibe/compiler/syntax {
 
 //# Functions
 
-fn diags_of(src: String) -> String {
+fn diags_of(_ src: String) -> String {
   handle {
     let _ = check_program(parse_program(lex(src)))
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
-fn rejects(src: String) -> Bool {
+fn rejects(_ src: String) -> Bool {
   String::length(diags_of(src)) > 0
 }
 
@@ -68,9 +68,9 @@ test "a marker Eq bound at a declared struct is refused" {
 
 test "the refusal names the edit, not just the missing impl" {
   let msg = diags_of(String::concat(eq_prelude, "let r = bare(Pt::{ v: 1 }, Pt::{ v: 1 })\n"))
-  inspect(String::contains(msg, "is a marker trait (declared with no methods)"), "true")
-  inspect(String::contains(msg, "compare `Pt` by REFERENCE"), "true")
-  inspect(String::contains(msg, "Give `Eq` an `equals(Self, Self) -> Bool` method"), "true")
+  inspect(String::contains(msg, needle = "is a marker trait (declared with no methods)"), "true")
+  inspect(String::contains(msg, needle = "compare `Pt` by REFERENCE"), "true")
+  inspect(String::contains(msg, needle = "Give `Eq` an `equals(Self, Self) -> Bool` method"), "true")
 }
 
 test "the same bound at a scalar is accepted" {
@@ -134,15 +134,15 @@ test "an Ord refusal does not advise giving Ord a method" {
   // reference (#3327).
   let src = "trait Ord\nimpl Ord for Int\nstruct Token {\n  value: Int\n}\nimpl Ord for Token\nfn smaller[T: Ord](a: T, b: T) -> Bool {\n  a < b\n}\nlet r = smaller(Token::{ value: 1 }, Token::{ value: 2 })\n"
   let msg = diags_of(src)
-  inspect(String::contains(msg, "giving `Ord` a method would not help"), "true")
-  inspect(String::contains(msg, "at least one method"), "false")
+  inspect(String::contains(msg, needle = "giving `Ord` a method would not help"), "true")
+  inspect(String::contains(msg, needle = "at least one method"), "false")
 }
 
 test "a marker Eq bound at a struct with no impl does not claim one is declared" {
   let src = "trait Eq\nstruct Pt {\n  v: Int\n}\nfn bare[T: Eq](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = bare(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
   let msg = diags_of(src)
-  inspect(String::contains(msg, "declaring `impl Eq for Pt` would not help"), "true")
-  inspect(String::contains(msg, "IS declared"), "false")
+  inspect(String::contains(msg, needle = "declaring `impl Eq for Pt` would not help"), "true")
+  inspect(String::contains(msg, needle = "IS declared"), "false")
 }
 
 // #3327: a bound that EXTENDS a marker comparison trait. Measured on main at
@@ -150,9 +150,9 @@ test "a marker Eq bound at a struct with no impl does not claim one is declared"
 // two equal values at run time.
 test "a subtrait of a marker Eq is refused at a declared struct" {
   let msg = diags_of(String::concat(key_prelude, "let r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"))
-  inspect(String::contains(msg, "no impl `Eq` for `Pt` (`Key` extends `Eq`)"), "true")
-  inspect(String::contains(msg, "compare `Pt` by REFERENCE"), "true")
-  inspect(String::contains(msg, "Give `Eq` an `equals(Self, Self) -> Bool` method"), "true")
+  inspect(String::contains(msg, needle = "no impl `Eq` for `Pt` (`Key` extends `Eq`)"), "true")
+  inspect(String::contains(msg, needle = "compare `Pt` by REFERENCE"), "true")
+  inspect(String::contains(msg, needle = "Give `Eq` an `equals(Self, Self) -> Bool` method"), "true")
 }
 
 test "a subtrait of a marker Eq is refused at Double" {
@@ -166,7 +166,7 @@ test "a subtrait of a marker Eq is accepted at a by-value scalar" {
 
 test "the supertrait chain is followed" {
   let src = "trait Eq\ntrait A: Eq\ntrait B: A\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt\nimpl A for Pt\nimpl B for Pt\nfn same[T: B](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
-  inspect(String::contains(diags_of(src), "no impl `Eq` for `Pt` (`B` extends `Eq`)"), "true")
+  inspect(String::contains(diags_of(src), needle = "no impl `Eq` for `Pt` (`B` extends `Eq`)"), "true")
 }
 
 test "a method of the subtrait's own does not make its marker parent compare" {
@@ -203,13 +203,13 @@ test "the witness is the flattened dictionary's first equals: Good first is acce
   // Codex on #3349: the flattening keeps `Good`'s `equals(Self, Self)` and
   // drops `Bad`'s by name, so `==` dispatches through `Good`'s. A scan of the
   // whole closure refused this bound for the `equals` the dictionary drops.
-  inspect(rejects(two_equals_src("Good", "Bad", "  equals(a: Pt, b: Pt) -> Bool {\n    a.v == b.v\n  }\n")), "false")
+  inspect(rejects(two_equals_src(first = "Good", second = "Bad", body = "  equals(a: Pt, b: Pt) -> Bool {\n    a.v == b.v\n  }\n")), "false")
 }
 
 test "the witness is the flattened dictionary's first equals: Bad first is refused" {
   // Here the kept `equals` is `Bad`'s `(Int, Int)`, which `==` does not call,
   // so the comparison would fall back to the builtin one.
-  inspect(rejects(two_equals_src("Bad", "Good", "  equals(a: Int, b: Int) -> Bool {\n    true\n  }\n")), "true")
+  inspect(rejects(two_equals_src(first = "Bad", second = "Good", body = "  equals(a: Int, b: Int) -> Bool {\n    true\n  }\n")), "true")
 }
 
 test "a subtrait of the builtin Eq is untouched" {
@@ -221,7 +221,7 @@ test "a subtrait of the builtin Eq is untouched" {
 
 test "a subtrait of the prelude's marker Ord is refused at a struct" {
   let src = "trait Ordered: Ord\nstruct Token {\n  value: Int\n}\nimpl Ord for Token\nimpl Ordered for Token\nfn keep[T: Ordered](a: T) -> T {\n  a\n}\nlet r = keep(Token::{ value: 1 })\n"
-  inspect(String::contains(diags_of(src), "no impl `Ord` for `Token` (`Ordered` extends `Ord`)"), "true")
+  inspect(String::contains(diags_of(src), needle = "no impl `Ord` for `Token` (`Ordered` extends `Ord`)"), "true")
 }
 
 test "a subtrait of a non-comparison marker is untouched" {
@@ -235,8 +235,8 @@ test "a subtrait of a non-comparison marker is untouched" {
 test "an Eq whose methods do not include equals(Self, Self) is refused at a struct" {
   let src = "trait Eq {\n  tag(Self) -> Int\n}\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt {\n  tag(a: Pt) -> Int {\n    a.v\n  }\n}\nfn same[T: Eq](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
   let msg = diags_of(src)
-  inspect(String::contains(msg, "`Eq` declares no `equals(Self, Self) -> Bool`"), "true")
-  inspect(String::contains(msg, "marker trait"), "false")
+  inspect(String::contains(msg, needle = "`Eq` declares no `equals(Self, Self) -> Bool`"), "true")
+  inspect(String::contains(msg, needle = "marker trait"), "false")
 }
 
 test "the same Eq is accepted at a by-value scalar" {
@@ -246,17 +246,17 @@ test "the same Eq is accepted at a by-value scalar" {
 
 test "an Ord with a method is refused at a struct" {
   let src = "trait Ord {\n  rank(Self) -> Int\n}\nstruct Token {\n  value: Int\n}\nimpl Ord for Token {\n  rank(a: Token) -> Int {\n    a.value\n  }\n}\nfn smaller[T: Ord](a: T, b: T) -> Bool {\n  a < b\n}\nlet r = smaller(Token::{ value: 2 }, Token::{ value: 1 })\n"
-  inspect(String::contains(diags_of(src), "`<` on the erased type has no witness to dispatch through"), "true")
+  inspect(String::contains(diags_of(src), needle = "`<` on the erased type has no witness to dispatch through"), "true")
 }
 
 test "an Add with a method is refused at Double" {
   let src = "trait Add {\n  plus(Self, Self) -> Self\n}\nimpl Add for Double {\n  plus(a: Double, b: Double) -> Double {\n    a + b\n  }\n}\nfn add2[T: Add](a: T, b: T) -> T {\n  a + b\n}\nlet r = add2(1.5, 2.25)\n"
-  inspect(String::contains(diags_of(src), "no impl `Add` for `Double`"), "true")
+  inspect(String::contains(diags_of(src), needle = "no impl `Add` for `Double`"), "true")
 }
 
 /// A marker `Eq` and a generic impl of `Same` whose parameter is bounded by
 /// `bound`; the caller appends the instantiation.
-fn generic_impl_src(bound: String) -> String {
+fn generic_impl_src(_ bound: String) -> String {
   let head = "trait Eq\ntrait Key: Eq\nimpl Eq for Int\nimpl Key for Int\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt\nimpl Key for Pt\ntrait Same {\n  same(Self, Self) -> Bool\n}\nstruct Box[T] {\n  v: T\n}\n"
   let imp = String::concat("impl [T: ", String::concat(bound, "] Same for Box[T] {\n  same(a: Box[T], b: Box[T]) -> Bool {\n    a.v == b.v\n  }\n}\nfn f[U: Same](a: U, b: U) -> Bool {\n  U::same(a, b)\n}\n"))
   String::concat(head, imp)
@@ -264,12 +264,12 @@ fn generic_impl_src(bound: String) -> String {
 
 test "a generic impl's comparison bound is refused at a struct argument" {
   let msg = diags_of(String::concat(generic_impl_src("Eq"), "let r = f(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } })\n"))
-  inspect(String::contains(msg, "no impl `Same` for `Box[Pt]` (its generic impl needs `Pt: Eq`)"), "true")
+  inspect(String::contains(msg, needle = "no impl `Same` for `Box[Pt]` (its generic impl needs `Pt: Eq`)"), "true")
 }
 
 test "a generic impl's subtrait bound is refused the same way" {
   let msg = diags_of(String::concat(generic_impl_src("Key"), "let r = f(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } })\n"))
-  inspect(String::contains(msg, "(its generic impl needs `Pt: Key`, and `Key` extends `Eq`)"), "true")
+  inspect(String::contains(msg, needle = "(its generic impl needs `Pt: Key`, and `Key` extends `Eq`)"), "true")
 }
 
 test "a direct call of the generic impl's method is refused too" {
@@ -288,8 +288,8 @@ test "a subtrait's generic impl names its refused parameter bound" {
   // Codex on #3349: the hint matched only impls of `Base` itself, so this was
   // a bare "no impl `Base` for `Box[Pt]`".
   let msg = diags_of(String::concat(subtrait_impl_src, "let r = f(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } })\n"))
-  inspect(String::contains(msg, "no impl `Base` for `Box[Pt]` (its generic impl needs `Pt: Eq`)"), "true")
-  inspect(String::contains(msg, "Give `Eq` an `equals(Self, Self) -> Bool` method"), "true")
+  inspect(String::contains(msg, needle = "no impl `Base` for `Box[Pt]` (its generic impl needs `Pt: Eq`)"), "true")
+  inspect(String::contains(msg, needle = "Give `Eq` an `equals(Self, Self) -> Bool` method"), "true")
 }
 
 test "a subtrait's generic impl still applies at a by-value scalar" {
@@ -298,7 +298,7 @@ test "a subtrait's generic impl still applies at a by-value scalar" {
 
 test "over the builtin Eq, a wrong-shaped first equals is refused and named" {
   let src = "trait Good {\n  equals(Self, Self) -> Bool\n}\ntrait Bad {\n  equals(Int, Int) -> Bool\n}\ntrait Key: Bad + Good + Eq\nstruct Pt {\n  v: Int\n}\nimpl Key for Pt {\n  equals(a: Int, b: Int) -> Bool {\n    true\n  }\n}\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
-  inspect(String::contains(diags_of(src), "witness dictionary keeps is `Bad`'s"), "true")
+  inspect(String::contains(diags_of(src), needle = "witness dictionary keeps is `Bad`'s"), "true")
 }
 
 test "over the builtin Eq, a right-shaped first equals is accepted" {
@@ -311,6 +311,6 @@ test "an applied Eq bound gets the equality edit" {
   // so this equality refusal ended with the `<` advice.
   let src = "trait Eq[A]\nstruct Pt {\n  v: Int\n}\nimpl Eq[Int] for Pt\nfn same[T: Eq[Int]](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
   let msg = diags_of(src)
-  inspect(String::contains(msg, "Give `Eq[Int]` an `equals(Self, Self) -> Bool` method"), "true")
-  inspect(String::contains(msg, "would not help"), "false")
+  inspect(String::contains(msg, needle = "Give `Eq[Int]` an `equals(Self, Self) -> Bool` method"), "true")
+  inspect(String::contains(msg, needle = "would not help"), "false")
 }

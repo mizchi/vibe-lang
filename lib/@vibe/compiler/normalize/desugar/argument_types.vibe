@@ -71,27 +71,27 @@ import ./utilities.vibe {
 /// arity).
 fn dtd_tuple_elem_type_name(obj: Expr, field: String, var_types: Array[(String, String)]) -> Option[String] {
   match obj {
-    EIdent(n, _) => if constructor_binding_is_masked(var_types, n) {
+    EIdent(n, _) => if constructor_binding_is_masked(var_types = var_types, name = n) {
       None
     } else match dtd_tuple_index_of(field) {
       Some(idx) => {
-        let parts = match lookup_var_type(var_types, tuple_shape_key(n)) {
+        let parts = match lookup_var_type(var_types = var_types, name = tuple_shape_key(n)) {
           Some(sentinel) => tuple_shape_parts(sentinel),
           // The recursive record answers for a name the per-tuple sentinel
           // never covered (one bound from an array element, say); the equality
           // sentinel answers for a tuple PARAMETER, which seeds only that one.
           None => {
-            let from_shape = dtd_tuple_parts_of_shape(lookup_var_type(var_types, shape_key(n)))
+            let from_shape = dtd_tuple_parts_of_shape(lookup_var_type(var_types = var_types, name = shape_key(n)))
             if Array::length(from_shape) > 0 {
               from_shape
             } else {
-              dtd_tuple_parts_of_shape(lookup_var_type(var_types, eq_shape_key(n)))
+              dtd_tuple_parts_of_shape(lookup_var_type(var_types = var_types, name = eq_shape_key(n)))
             }
           }
         }
         {
           if idx >= 0 && idx < Array::length(parts) {
-            let elem = Array::get(parts, idx)
+            let elem = Array::get(parts, at = idx)
             // A composite element is a SHAPE, not a type name -- `t.0.1` is not
             // a spelling this resolves, and handing a shape to the `<` rewrite
             // would name a type that does not exist.
@@ -151,9 +151,9 @@ fn ty_mentions_decl_formal(t: TypeExpr, formals: Array[String]) -> Bool {
       found
     },
     TyApp(h, args) => {
-      let mut found = ty_mentions_decl_formal(TyName(h), formals)
+      let mut found = ty_mentions_decl_formal(t = TyName(h), formals = formals)
       for a in args {
-        if ty_mentions_decl_formal(a, formals) {
+        if ty_mentions_decl_formal(t = a, formals = formals) {
           found = true
         } else {
           ()
@@ -164,7 +164,7 @@ fn ty_mentions_decl_formal(t: TypeExpr, formals: Array[String]) -> Bool {
     TyTuple(items) => {
       let mut found = false
       for x in items {
-        if ty_mentions_decl_formal(x, formals) {
+        if ty_mentions_decl_formal(t = x, formals = formals) {
           found = true
         } else {
           ()
@@ -173,9 +173,9 @@ fn ty_mentions_decl_formal(t: TypeExpr, formals: Array[String]) -> Bool {
       found
     },
     TyFn(ps, r, _) => {
-      let mut found = ty_mentions_decl_formal(r, formals)
+      let mut found = ty_mentions_decl_formal(t = r, formals = formals)
       for p in ps {
-        if ty_mentions_decl_formal(p, formals) {
+        if ty_mentions_decl_formal(t = p, formals = formals) {
           found = true
         } else {
           ()
@@ -187,7 +187,7 @@ fn ty_mentions_decl_formal(t: TypeExpr, formals: Array[String]) -> Bool {
   }
 }
 
-fn ty_head_name(t: TypeExpr) -> String {
+fn ty_head_name(_ t: TypeExpr) -> String {
   match t {
     TyName(n) => n,
     TyApp(n, _) => n,
@@ -200,7 +200,7 @@ fn ty_head_name(t: TypeExpr) -> String {
 /// the most recent entry's: a later binding of `n` shadows every earlier one,
 /// so an earlier head that agrees does not make a stale type current.
 fn recorded_type_of_name(var_types: Array[(String, String)], n: String, t: TypeExpr) -> Option[TypeExpr] {
-  let current = match lookup_var_type(var_types, n) {
+  let current = match lookup_var_type(var_types = var_types, name = n) {
     Some(latest) => latest == ty_head_name(t),
     None => true
   }
@@ -222,27 +222,27 @@ fn projection_receiver_type(obj: Expr, struct_sets: Array[(String, Array[String]
     } else {
       None
     },
-    EIdent(n, _) => if constructor_binding_is_masked(var_types, n) {
+    EIdent(n, _) => if constructor_binding_is_masked(var_types = var_types, name = n) {
       None
     } else {
       // A parameter whose annotation mentions a formal records its whole
       // shape here (`p: Pair[U]` is `{g:Pair,U}`); a concrete one under the
       // equality shape; a `let` its impl target.
-      let fsh = eq_formal_shape_of_name(var_types, n)
+      let fsh = eq_formal_shape_of_name(var_types = var_types, n = n)
       if String::length(fsh) > 0 {
         // This row already belongs to the current binding. Its expanded
         // alias head need not equal the annotation's original spelling.
         Some(shape_to_eq_ty(fsh))
       } else {
-        match lookup_var_type(var_types, eq_shape_key(n)) {
+        match lookup_var_type(var_types = var_types, name = eq_shape_key(n)) {
           Some(sh) => if String::length(sh) > 0 {
-            recorded_type_of_name(var_types, n, shape_to_eq_ty(sh))
+            recorded_type_of_name(var_types = var_types, n = n, t = shape_to_eq_ty(sh))
           } else {
             None
           },
-          None => match lookup_var_type(var_types, impl_target_var_key(n)) {
+          None => match lookup_var_type(var_types = var_types, name = impl_target_var_key(n)) {
             Some(key) => match impl_target_from_key(key) {
-              Some(t) => recorded_type_of_name(var_types, n, t),
+              Some(t) => recorded_type_of_name(var_types = var_types, n = n, t = t),
               None => None
             },
             None => None
@@ -250,16 +250,16 @@ fn projection_receiver_type(obj: Expr, struct_sets: Array[(String, Array[String]
         }
       }
     },
-    EDot(inner, f, _, _) => match dtd_field_projection(inner, f, struct_sets, var_types, fn_returns) {
+    EDot(inner, f, _, _) => match dtd_field_projection(obj = inner, field = f, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
       FieldTyped(t) => Some(t),
       _ => None
     },
-    ECall(EIdent(f, _), _, _, _) => match eq_fn_result_of_name(var_types, f) {
+    ECall(EIdent(f, _), _, _, _) => match eq_fn_result_of_name(var_types = var_types, n = f) {
       Some(t) => Some(t),
-      None => if constructor_binding_is_masked(var_types, f) {
+      None => if constructor_binding_is_masked(var_types = var_types, name = f) {
         None
       } else {
-        match fn_return_type(fn_returns, impl_target_fn_key(f)) {
+        match fn_return_type(fn_returns = fn_returns, fname = impl_target_fn_key(f)) {
           Some(key) => impl_target_from_key(key),
           None => None
         }
@@ -271,7 +271,7 @@ fn projection_receiver_type(obj: Expr, struct_sets: Array[(String, Array[String]
     Some(t) => Some(t),
     None => match obj {
       EDot(_, _, _, _) => None,
-      _ => match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+      _ => match infer_arg_type_name(arg = obj, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
         Some(head) => Some(TyName(head)),
         None => None
       }
@@ -281,7 +281,7 @@ fn projection_receiver_type(obj: Expr, struct_sets: Array[(String, Array[String]
 
 /// #3613: the type of the projection `obj.field` -- see `FieldProjection`.
 export fn dtd_field_projection(obj: Expr, field: String, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> FieldProjection {
-  match projection_receiver_type(obj, struct_sets, var_types, fn_returns) {
+  match projection_receiver_type(obj = obj, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
     None => FieldUndeclared,
     Some(rt) => {
       let (head, args) = match eq_expand_alias_ty(rt) {
@@ -293,17 +293,17 @@ export fn dtd_field_projection(obj: Expr, field: String, struct_sets: Array[(Str
       let mut decided = false
       let mut di = 0
       while di < Array::length(dtd_struct_field_decls) && !decided {
-        let (sname, formals, fields) = Array::get(dtd_struct_field_decls, di)
+        let (sname, formals, fields) = Array::get(dtd_struct_field_decls, at = di)
         if sname == head {
           let mut fi = 0
           while fi < Array::length(fields) && !decided {
-            let (fname, fty) = Array::get(fields, fi)
+            let (fname, fty) = Array::get(fields, at = fi)
             if fname == field {
               decided = true
-              result = if !ty_mentions_decl_formal(fty, formals) {
+              result = if !ty_mentions_decl_formal(t = fty, formals = formals) {
                 FieldTyped(fty)
               } else if Array::length(args) == Array::length(formals) {
-                let t = eq_subst_ty(fty, formals, args)
+                let t = eq_subst_ty(ty = fty, params = formals, args = args)
                 if ty_contains_eq_unknown(t) {
                   FieldUnreadable(fty)
                 } else {
@@ -332,7 +332,7 @@ export fn dtd_field_projection(obj: Expr, field: String, struct_sets: Array[(Str
 /// this answer steers compares a function by content at any type.
 export fn dtd_projection_is_unreadable(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
   match e {
-    EDot(obj, field, _, _) => match dtd_field_projection(obj, field, struct_sets, var_types, fn_returns) {
+    EDot(obj, field, _, _) => match dtd_field_projection(obj = obj, field = field, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
       FieldUnreadable(TyFn(_, _, _)) => false,
       FieldUnreadable(_) => true,
       _ => false
@@ -343,12 +343,12 @@ export fn dtd_projection_is_unreadable(e: Expr, struct_sets: Array[(String, Arra
 
 /// The head name `infer_arg_type_name` reports for a projected field's type: a
 /// formal by its source spelling, as a bare `x: T` parameter records it.
-fn field_head_name(t: TypeExpr) -> Option[String] {
+fn field_head_name(_ t: TypeExpr) -> Option[String] {
   let head = ty_head_name(t)
   if String::length(head) == 0 || head == "?EqUnknown" {
     None
   } else if is_marked_formal_name(head) {
-    Some(String::substring(head, String::length(scope_formal_mark_prefix), String::length(head)))
+    Some(String::substring(head, start = String::length(scope_formal_mark_prefix), end = String::length(head)))
   } else {
     Some(head)
   }
@@ -367,16 +367,16 @@ fn field_head_name(t: TypeExpr) -> Option[String] {
 /// replaces -- a wrong name synthesizes a witness for the wrong impl, where
 /// None only fails to synthesize one.
 fn dtd_binop_builtin_operand_type(bl: Expr, br: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
-  let lt = dtd_type_name_or_empty(bl, struct_sets, var_types, fn_returns)
-  let rt = dtd_type_name_or_empty(br, struct_sets, var_types, fn_returns)
-  dtd_builtin_arith_agreement(lt, rt)
+  let lt = dtd_type_name_or_empty(e = bl, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+  let rt = dtd_type_name_or_empty(e = br, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+  dtd_builtin_arith_agreement(lt = lt, rt = rt)
 }
 
 /// `infer_arg_type_name` with the unknown case flattened to "" -- the same
 /// convention `dtd_scalar_shape` uses in this file, so an agreement test is a
 /// string comparison rather than two nested `Option` matches.
 fn dtd_type_name_or_empty(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
-  match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+  match infer_arg_type_name(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
     Some(t) => t,
     None => ""
   }
@@ -387,13 +387,13 @@ fn dtd_type_name_or_empty(e: Expr, struct_sets: Array[(String, Array[String])], 
 /// to answer this head-only query. Full equality still reads the field type.
 fn cached_field_head(obj: Expr, field: String, var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match obj {
-    EIdent(n, _) => if constructor_binding_is_masked(var_types, n) {
+    EIdent(n, _) => if constructor_binding_is_masked(var_types = var_types, name = n) {
       None
-    } else match lookup_var_type(var_types, n) {
+    } else match lookup_var_type(var_types = var_types, name = n) {
       Some(head) => if formal_in_scope(head) {
         None
       } else {
-        fn_return_type(fn_returns, struct_field_type_key(head, field))
+        fn_return_type(fn_returns = fn_returns, fname = struct_field_type_key(struct_name = head, field = field))
       },
       None => None
     },
@@ -420,15 +420,15 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
     // (#2680). The tail position and an unbound chain never reach this
     // inference, which is why only the bound spelling crashed.
     EBinOp(bop, bl, br, _) => if bop == "+" {
-      let lt = dtd_type_name_or_empty(bl, struct_sets, var_types, fn_returns)
-      let rt = dtd_type_name_or_empty(br, struct_sets, var_types, fn_returns)
+      let lt = dtd_type_name_or_empty(e = bl, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+      let rt = dtd_type_name_or_empty(e = br, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
       if lt == "String" || rt == "String" {
         Some("String")
       } else {
-        dtd_builtin_arith_agreement(lt, rt)
+        dtd_builtin_arith_agreement(lt = lt, rt = rt)
       }
     } else if bop == "-" || bop == "*" || bop == "/" {
-      dtd_binop_builtin_operand_type(bl, br, struct_sets, var_types, fn_returns)
+      dtd_binop_builtin_operand_type(bl = bl, br = br, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
     } else if bop == "%" || bop == "&" || bop == "|" || bop == "^" || bop == "<<" || bop == ">>" {
       // The checker types these as Int whatever the operands are (`operands
       // must be Int`), so if the program checks at all, the result is Int.
@@ -452,12 +452,12 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
     EIdent(name, _) => if name == "None" {
       Some("Option")
     } else {
-      match lookup_var_type(var_types, name) {
+      match lookup_var_type(var_types = var_types, name = name) {
         Some(t) => Some(t),
         // #2527: only a constructor-shaped name may fall through to the flat
         // program-wide table -- see dtd_name_is_constructor_shaped.
         None => if dtd_name_is_constructor_shaped(name) {
-          ctor_enum_of_name(fn_returns, name)
+          ctor_enum_of_name(fn_returns = fn_returns, name = name)
         } else {
           None
         }
@@ -483,15 +483,15 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
     // projection substitutes the receiver's arguments, so `p.a` on
     // `p: Pair[U]` is `U`, rather than the declaration's `T`. Unreadable
     // arguments never contribute a guessed formal name.
-    EDot(obj, field, _, _) => match dtd_tuple_elem_type_name(obj, field, var_types) {
+    EDot(obj, field, _, _) => match dtd_tuple_elem_type_name(obj = obj, field = field, var_types = var_types) {
       Some(elem) => Some(elem),
-      None => match cached_field_head(obj, field, var_types, fn_returns) {
+      None => match cached_field_head(obj = obj, field = field, var_types = var_types, fn_returns = fn_returns) {
         Some(head) => Some(head),
-        None => match dtd_field_projection(obj, field, struct_sets, var_types, fn_returns) {
+        None => match dtd_field_projection(obj = obj, field = field, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
           FieldTyped(t) => field_head_name(t),
           FieldUnreadable(_) => None,
-          FieldUndeclared => match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
-            Some(otype) => fn_return_type(fn_returns, struct_field_type_key(otype, field)),
+          FieldUndeclared => match infer_arg_type_name(arg = obj, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+            Some(otype) => fn_return_type(fn_returns = fn_returns, fname = struct_field_type_key(struct_name = otype, field = field)),
             None => None
           }
         }
@@ -516,16 +516,16 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
       // failing synth_dicts and emitting a call short its dictionary
       // argument(s) (invalid wasm) instead of a resolved or forwarded dict.
       EIdent("Array::get", _) => if Array::length(cargs) == 2 {
-        match Array::get(cargs, 0) {
-          EIdent(arrname, _) => array_elem_type_of(var_types, arrname),
+        match Array::get(cargs, at = 0) {
+          EIdent(arrname, _) => array_elem_type_of(var_types = var_types, name = arrname),
           _ => None
         }
       } else {
         None
       },
       EIdent("__index", _) => if Array::length(cargs) == 2 {
-        match Array::get(cargs, 0) {
-          EIdent(arrname, _) => array_elem_type_of(var_types, arrname),
+        match Array::get(cargs, at = 0) {
+          EIdent(arrname, _) => array_elem_type_of(var_types = var_types, name = arrname),
           _ => None
         }
       } else {
@@ -587,23 +587,23 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
       // the pull-closure loop (#822: the pull desugar called the stream value
       // as a closure — call_indirect on an array pointer = table OOB trap).
       EIdent("String::to_bytes", _) => Some("ByteStream"),
-      EIdent(fname, _) => match lookup_var_type(var_types, local_fn_return_key(fname)) {
+      EIdent(fname, _) => match lookup_var_type(var_types = var_types, name = local_fn_return_key(fname)) {
         Some(head) => Some(head),
-        None => if constructor_binding_is_masked(var_types, fname) {
+        None => if constructor_binding_is_masked(var_types = var_types, name = fname) {
           None
-        } else if fname == "Array::with_capacity" && !fn_exists(fn_returns, fname) {
+        } else if fname == "Array::with_capacity" && !fn_exists(fn_returns = fn_returns, fname = fname) {
           // A reserved array needs the same witness head as an array literal.
           // Local bindings and entry-file definitions retain their own result.
           Some("Array")
         } else {
-          ctor_enum_of_name(fn_returns, fname)
+          ctor_enum_of_name(fn_returns = fn_returns, name = fname)
         }
       },
       // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
       // recover the operand's type head from the annotation so an annotated
       // `let a: Option[Int] = None` records `a -> "Option"` for `==` dispatch.
       EFn(_, _, params, _, _, _) => if Array::length(params) == 1 {
-        let (_, ann) = Array::get(params, 0)
+        let (_, ann) = Array::get(params, at = 0)
         match ann {
           Some(TyName(n)) => Some(n),
           Some(TyApp(n, _)) => Some(n),
@@ -630,14 +630,14 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
       // type, falling back to the bare method name (prelude functions like
       // `Result::and_then` / `and_then` register both forms in `fn_returns`).
       EDot(dobj, dmethod, _, _) => {
-        let recv_tn = infer_arg_type_name(dobj, struct_sets, var_types, fn_returns)
+        let recv_tn = infer_arg_type_name(arg = dobj, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
         let qual_rt = match recv_tn {
-          Some(tn) => fn_return_type(fn_returns, String::concat(tn, String::concat("::", dmethod))),
+          Some(tn) => fn_return_type(fn_returns = fn_returns, fname = String::concat(tn, String::concat("::", dmethod))),
           None => None
         }
         match qual_rt {
           Some(rt) => Some(rt),
-          None => fn_return_type(fn_returns, dmethod)
+          None => fn_return_type(fn_returns = fn_returns, fname = dmethod)
         }
       },
       _ => None
@@ -669,27 +669,27 @@ export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[Strin
     EUnaryOp(op, inner) => if op == "~" {
       Some("Int")
     } else if op == "-" || op == "+" {
-      infer_arg_type_name(inner, struct_sets, var_types, fn_returns)
+      infer_arg_type_name(arg = inner, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
     } else {
       None
     },
     ERecord(rn, fields, _) => if String::length(rn) == 0 {
       None
-    } else if struct_set_has(struct_sets, rn) {
+    } else if struct_set_has(struct_sets = struct_sets, name = rn) {
       Some(rn)
     } else {
       let names = empty_str_array()
       let mut i = 0
       while i < Array::length(fields) {
-        let (fname, _) = Array::get(fields, i)
-        Array::push(names, fname)
+        let (fname, _) = Array::get(fields, at = i)
+        Array::push(names, value = fname)
         i = i + 1
       }
       let mut j = 0
       let mut result = None
       while j < Array::length(struct_sets) {
-        let (sname, sfields) = Array::get(struct_sets, j)
-        if field_sets_match(names, sfields) {
+        let (sname, sfields) = Array::get(struct_sets, at = j)
+        if field_sets_match(a = names, b = sfields) {
           result = Some(sname)
           j = Array::length(struct_sets)
         } else {
@@ -719,26 +719,26 @@ export fn is_erased_generic_operand(l: Expr, r: Expr, struct_sets: Array[(String
   // #2141: an enclosing binder's formal is erased even when the (merged)
   // program declares a same-spelled type -- the formal shadows it, so the
   // concrete-name fast paths must not fire.
-  let lg = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
-    Some(t) => formal_in_scope(t) || !is_concrete_or_known_type_name(t, struct_sets),
+  let lg = match infer_arg_type_name(arg = l, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+    Some(t) => formal_in_scope(t) || !is_concrete_or_known_type_name(t = t, struct_sets = struct_sets),
     None => false
   }
-  let rg = match infer_arg_type_name(r, struct_sets, var_types, fn_returns) {
-    Some(t) => formal_in_scope(t) || !is_concrete_or_known_type_name(t, struct_sets),
+  let rg = match infer_arg_type_name(arg = r, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+    Some(t) => formal_in_scope(t) || !is_concrete_or_known_type_name(t = t, struct_sets = struct_sets),
     None => false
   }
   // #3613: a field declared with its struct's type parameter, on a receiver
   // whose arguments are not readable here, has no static type at this site;
   // the runtime dispatch is the one lowering that does not need it.
-  lg || rg || dtd_projection_is_unreadable(l, struct_sets, var_types, fn_returns) || dtd_projection_is_unreadable(r, struct_sets, var_types, fn_returns)
+  lg || rg || dtd_projection_is_unreadable(e = l, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) || dtd_projection_is_unreadable(e = r, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
 }
 
 /// Prefer the anonymous-record sentinel for a `let` value, falling back to the
 /// ordinary type inference used for trait dispatch / `==` / the Map-index rewrite.
 export fn anon_or_infer(val: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
-  match anon_record_inferred(val, struct_sets) {
+  match anon_record_inferred(val = val, struct_sets = struct_sets) {
     Some(s) => Some(s),
-    None => infer_arg_type_name(val, struct_sets, var_types, fn_returns)
+    None => infer_arg_type_name(arg = val, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
   }
 }
 
@@ -755,17 +755,17 @@ export fn anon_or_infer(val: Expr, struct_sets: Array[(String, Array[String])], 
 /// still dispatches at run time, which is sound because the checker admits
 /// `+` / `<` on a formal only at Int and String instantiations.
 export fn refuse_rowless_untyped_operand(op: String, l: Expr, r: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit with Exception {
-  if Array::get(dtd_rowless_build, 0) {
-    refuse_rowless_untyped_one(op, l, struct_sets, var_types, fn_returns)
-    refuse_rowless_untyped_one(op, r, struct_sets, var_types, fn_returns)
+  if Array::get(dtd_rowless_build, at = 0) {
+    refuse_rowless_untyped_one(op = op, operand = l, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+    refuse_rowless_untyped_one(op = op, operand = r, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
   } else {
     ()
   }
 }
 
 fn refuse_rowless_untyped_one(op: String, operand: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit with Exception {
-  match infer_arg_type_name(operand, struct_sets, var_types, fn_returns) {
-    Some(t) => if !formal_in_scope(t) && !is_concrete_or_known_type_name(t, struct_sets) {
+  match infer_arg_type_name(arg = operand, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+    Some(t) => if !formal_in_scope(t) && !is_concrete_or_known_type_name(t = t, struct_sets = struct_sets) {
       let off = typed_lowering_arg_offset(operand)
       let at = if off >= 0 {
         String::concat(" [@off=", String::concat(Int::to_string(off), "]"))

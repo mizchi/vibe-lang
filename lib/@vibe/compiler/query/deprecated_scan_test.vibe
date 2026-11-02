@@ -11,19 +11,19 @@ import ./deprecated_scan.vibe {
 //# Helpers
 
 fn no_deps() -> Array[String] {
-  Array::slice([""], 0, 0)
+  Array::slice([""], start = 0, end = 0)
 }
 
 fn warn_count(entry: String, deps: Array[String]) -> Int with Exception {
-  Array::length(deprecated_warning_lines(entry, deps))
+  Array::length(deprecated_warning_lines(entry_source = entry, dep_sources = deps))
 }
 
 fn first_warning(entry: String, deps: Array[String]) -> String with Exception {
-  let lines = deprecated_warning_lines(entry, deps)
+  let lines = deprecated_warning_lines(entry_source = entry, dep_sources = deps)
   if Array::length(lines) == 0 {
     ""
   } else {
-    Array::get(lines, 0)
+    Array::get(lines, at = 0)
   }
 }
 
@@ -33,7 +33,7 @@ fn contains(haystack: String, needle: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i + nl <= hl {
-    if String::equals(String::substring(haystack, i, i + nl), needle) {
+    if String::equals(String::substring(haystack, start = i, end = i + nl), needle) {
       found = true
     } else {
       i = i + 1
@@ -49,68 +49,68 @@ test "a handler set and an effect row emit no warning" {
   // warning that announced its migration is gone with it.
   let canonical = "fn safe() -> Int { handle { risky() } with { Exception::Throw(_) => 99 } }"
   let row = "fn risky() -> Int with Exception { 1 }"
-  assert_eq(Array::length(deprecated_warning_lines(canonical, no_deps())), 0)
-  assert_eq(Array::length(deprecated_warning_lines(row, no_deps())), 0)
+  assert_eq(Array::length(deprecated_warning_lines(entry_source = canonical, dep_sources = no_deps())), 0)
+  assert_eq(Array::length(deprecated_warning_lines(entry_source = row, dep_sources = no_deps())), 0)
 }
 
 test "deprecated fn: a use warns, the declaration itself does not" {
   let src = "#deprecated\nfn old_thing(x: Int) -> Int {\n  x\n}\nfn caller() -> Int {\n  old_thing(1)\n}"
-  assert_eq(warn_count(src, no_deps()), 1)
-  let w = first_warning(src, no_deps())
-  assert(contains(w, "'old_thing' is deprecated"))
-  assert(contains(w, "line 6"))
+  assert_eq(warn_count(entry = src, deps = no_deps()), 1)
+  let w = first_warning(entry = src, deps = no_deps())
+  assert(contains(haystack = w, needle = "'old_thing' is deprecated"))
+  assert(contains(haystack = w, needle = "line 6"))
 }
 
 test "deprecated with message: the message rides along" {
   let src = "#deprecated(\"use new_thing\")\nfn old_thing() -> Int {\n  1\n}\nfn caller() -> Int {\n  old_thing()\n}"
-  let w = first_warning(src, no_deps())
-  assert(contains(w, "is deprecated: use new_thing"))
+  let w = first_warning(entry = src, deps = no_deps())
+  assert(contains(haystack = w, needle = "is deprecated: use new_thing"))
 }
 
 test "no marker: no warnings" {
   let src = "fn plain() -> Int {\n  1\n}\nfn caller() -> Int {\n  plain()\n}"
-  assert_eq(warn_count(src, no_deps()), 0)
+  assert_eq(warn_count(entry = src, deps = no_deps()), 0)
 }
 
 test "marked but unused: no warnings" {
   let src = "#deprecated\nfn old_thing() -> Int {\n  1\n}\nfn caller() -> Int {\n  2\n}"
-  assert_eq(warn_count(src, no_deps()), 0)
+  assert_eq(warn_count(entry = src, deps = no_deps()), 0)
 }
 
 test "qualified fn declaration: qualified use warns" {
   let src = "#deprecated(\"use MutMap::set\")\nfn OldMap::set(x: Int) -> Int {\n  x\n}\nfn caller() -> Int {\n  OldMap::set(1)\n}"
-  assert_eq(warn_count(src, no_deps()), 1)
-  assert(contains(first_warning(src, no_deps()), "'OldMap::set' is deprecated: use MutMap::set"))
+  assert_eq(warn_count(entry = src, deps = no_deps()), 1)
+  assert(contains(haystack = first_warning(entry = src, deps = no_deps()), needle = "'OldMap::set' is deprecated: use MutMap::set"))
 }
 
 test "deprecated enum: a type-annotation use warns" {
   let src = "#deprecated\nenum OldHue {\n  Red\n}\nfn pick(h: OldHue) -> Int {\n  1\n}"
-  assert_eq(warn_count(src, no_deps()), 1)
-  assert(contains(first_warning(src, no_deps()), "'OldHue' is deprecated"))
+  assert_eq(warn_count(entry = src, deps = no_deps()), 1)
+  assert(contains(haystack = first_warning(entry = src, deps = no_deps()), needle = "'OldHue' is deprecated"))
 }
 
 test "deprecated let and export let are collected" {
   let src = "#deprecated\nexport let old_limit = 10\nfn caller() -> Int {\n  old_limit\n}"
-  assert_eq(warn_count(src, no_deps()), 1)
+  assert_eq(warn_count(entry = src, deps = no_deps()), 1)
 }
 
 test "marker in a dep source: entry uses warn" {
   let dep = "#deprecated(\"use fresh\")\nexport fn stale(x: Int) -> Int {\n  x\n}"
   let entry = "fn caller() -> Int {\n  stale(1) + stale(2)\n}"
   let deps = no_deps()
-  Array::push(deps, dep)
-  assert_eq(warn_count(entry, deps), 2)
-  assert(contains(first_warning(entry, deps), "'stale' is deprecated: use fresh"))
+  Array::push(deps, value = dep)
+  assert_eq(warn_count(entry = entry, deps = deps), 2)
+  assert(contains(haystack = first_warning(entry = entry, deps = deps), needle = "'stale' is deprecated: use fresh"))
 }
 
 test "each use warns once, in source order" {
   let src = "#deprecated\nfn old_thing() -> Int {\n  1\n}\nfn a() -> Int {\n  old_thing()\n}\nfn b() -> Int {\n  old_thing()\n}"
-  assert_eq(warn_count(src, no_deps()), 2)
+  assert_eq(warn_count(entry = src, deps = no_deps()), 2)
 }
 
 test "a different name that merely contains the deprecated one is silent" {
   let src = "#deprecated\nfn old() -> Int {\n  1\n}\nfn old_two() -> Int {\n  2\n}\nfn caller() -> Int {\n  old_two()\n}"
-  assert_eq(warn_count(src, no_deps()), 0)
+  assert_eq(warn_count(entry = src, deps = no_deps()), 0)
 }
 
 //# The real ADR-0100 (3) collection aliases
@@ -131,18 +131,18 @@ fn collection_alias_dep() -> Array[String] {
 
 test "the shipped MutMap aliases warn and name their replacement" {
   let entry = "fn build() -> Int {\n  let m = HashMap::new_string()\n  HashMap::set(m, \"a\", 1)\n  1\n}"
-  let lines = deprecated_warning_lines(entry, collection_alias_dep())
+  let lines = deprecated_warning_lines(entry_source = entry, dep_sources = collection_alias_dep())
   // one per USE, not one per declaration
   assert_eq(Array::length(lines), 2)
-  assert(contains(Array::get(lines, 0), "'HashMap::new_string' is deprecated: use MutMap::new_string"))
-  assert(contains(Array::get(lines, 1), "'HashMap::set' is deprecated: use MutMap::set"))
+  assert(contains(haystack = Array::get(lines, at = 0), needle = "'HashMap::new_string' is deprecated: use MutMap::new_string"))
+  assert(contains(haystack = Array::get(lines, at = 1), needle = "'HashMap::set' is deprecated: use MutMap::set"))
   // and they are WARNINGS, not errors -- the migration must not break builds
-  assert(contains(Array::get(lines, 0), "warning:"))
+  assert(contains(haystack = Array::get(lines, at = 0), needle = "warning:"))
 }
 
 test "the new MutMap spelling is silent" {
   let entry = "fn build() -> Int {\n  let m = MutMap::new_string()\n  MutMap::set(m, \"a\", 1)\n  1\n}"
-  assert_eq(warn_count(entry, collection_alias_dep()), 0)
+  assert_eq(warn_count(entry = entry, deps = collection_alias_dep()), 0)
 }
 
 test "the deprecated TYPE alias warns from an annotation" {
@@ -151,7 +151,7 @@ test "the deprecated TYPE alias warns from an annotation" {
   // contract parser used to reject the directive, so the shipped file
   // could not carry it.
   let entry = "fn take(m: HashMap[String, Int]) -> Int {\n  1\n}"
-  assert(contains(first_warning(entry, collection_alias_dep()), "'HashMap' is deprecated: use MutMap"))
+  assert(contains(haystack = first_warning(entry = entry, deps = collection_alias_dep()), needle = "'HashMap' is deprecated: use MutMap"))
 }
 
 test "a vpkg-shaped type alias row warns the same way as an impl-file marker" {
@@ -159,28 +159,28 @@ test "a vpkg-shaped type alias row warns the same way as an impl-file marker" {
     "#deprecated(\"use MutMap\")\ntype HashMap[K, V] = MutMap[K, V]\nfn HashMap::new_string[V]() -> MutMap[String, V]"
   ]
   let entry = "fn take(m: HashMap[String, Int]) -> Int {\n  1\n}"
-  assert(contains(first_warning(entry, deps), "'HashMap' is deprecated: use MutMap"))
+  assert(contains(haystack = first_warning(entry = entry, deps = deps), needle = "'HashMap' is deprecated: use MutMap"))
 }
 
 test "legacy type alias HashMap warns from the language table" {
   let entry = "fn take(m: HashMap[String, Int]) -> Int {\n  1\n}"
-  assert(contains(first_warning(entry, no_deps()), "'HashMap' is deprecated: use MutMap"))
+  assert(contains(haystack = first_warning(entry = entry, deps = no_deps()), needle = "'HashMap' is deprecated: use MutMap"))
 }
 
 test "legacy type alias HashMap is silent when the entry did not import it" {
   let entry = "fn HashMap::new_string() -> Int {\n  1\n}\nfn use_it() -> Int {\n  HashMap::new_string()\n}"
-  assert_eq(Array::length(deprecated_warning_lines_visible(entry, no_deps(), visible([
+  assert_eq(Array::length(deprecated_warning_lines_visible(entry_source = entry, dep_sources = no_deps(), visible_names = visible([
     "MutMap"
   ]))), 0)
 }
 
 test "legacy type alias HashMap warns when the entry imported the type" {
   let entry = "import @vibe/core {\n  HashMap\n}\nfn take(m: HashMap[String, Int]) -> Int {\n  1\n}"
-  let lines = deprecated_warning_lines_visible(entry, no_deps(), visible([
+  let lines = deprecated_warning_lines_visible(entry_source = entry, dep_sources = no_deps(), visible_names = visible([
     "HashMap"
   ]))
   assert(Array::length(lines) > 0)
-  assert(contains(Array::get(lines, 0), "'HashMap' is deprecated: use MutMap"))
+  assert(contains(haystack = Array::get(lines, at = 0), needle = "'HashMap' is deprecated: use MutMap"))
 }
 
 //# Visibility filter (Codex review, PR #1713, P2)
@@ -191,7 +191,7 @@ test "legacy type alias HashMap warns when the entry imported the type" {
 //# collection plus a token-level scanner is too wide the other way, so a
 //# dependency's marker only counts for a name the entry actually imported.
 
-fn visible(names: Array[String]) -> Option[Array[String]] {
+fn visible(_ names: Array[String]) -> Option[Array[String]] {
   Some(names)
 }
 
@@ -202,12 +202,12 @@ test "a dep marker for a name the entry did NOT import is ignored" {
   let deps = [
     "#deprecated(\"use MutMap::new_string\")\nexport fn HashMap::new_string() -> Int {\n  2\n}"
   ]
-  assert_eq(Array::length(deprecated_warning_lines_visible(entry, deps, visible([
+  assert_eq(Array::length(deprecated_warning_lines_visible(entry_source = entry, dep_sources = deps, visible_names = visible([
     "MutMap"
   ]))), 0)
   // ... and the unfiltered form is exactly what would have warned wrongly,
   // which is why the filter has to exist rather than be assumed unnecessary.
-  assert(Array::length(deprecated_warning_lines(entry, deps)) > 0)
+  assert(Array::length(deprecated_warning_lines(entry_source = entry, dep_sources = deps)) > 0)
 }
 
 test "a dep marker for a name the entry DID import still warns" {
@@ -215,20 +215,20 @@ test "a dep marker for a name the entry DID import still warns" {
   let deps = [
     "#deprecated(\"use MutMap::new_string\")\nexport fn HashMap::new_string() -> Int {\n  2\n}"
   ]
-  let lines = deprecated_warning_lines_visible(entry, deps, visible([
+  let lines = deprecated_warning_lines_visible(entry_source = entry, dep_sources = deps, visible_names = visible([
     "HashMap::new_string"
   ]))
   assert(Array::length(lines) > 0)
-  assert(contains(Array::get(lines, 0), "use MutMap::new_string"))
+  assert(contains(haystack = Array::get(lines, at = 0), needle = "use MutMap::new_string"))
 }
 
 test "a marker the ENTRY declares needs no import to count" {
   let entry = "#deprecated(\"use fresh\")\nfn stale() -> Int {\n  1\n}\nfn caller() -> Int {\n  stale()\n}"
-  let lines = deprecated_warning_lines_visible(entry, no_deps(), visible(Array::slice([
+  let lines = deprecated_warning_lines_visible(entry_source = entry, dep_sources = no_deps(), visible_names = visible(Array::slice([
     ""
-  ], 0, 0)))
+  ], start = 0, end = 0)))
   assert_eq(Array::length(lines), 1)
-  assert(contains(Array::get(lines, 0), "'stale' is deprecated: use fresh"))
+  assert(contains(haystack = Array::get(lines, at = 0), needle = "'stale' is deprecated: use fresh"))
 }
 
 //# Shipped type aliases live only in the package contract (index.vpkg).
@@ -240,26 +240,26 @@ test "a marker the ENTRY declares needs no import to count" {
 
 test "String::char_code_at warns and names byte_at" {
   let entry = "fn n(s: String) -> Int {\n  String::char_code_at(s, 0)\n}"
-  let lines = deprecated_warning_lines(entry, no_deps())
+  let lines = deprecated_warning_lines(entry_source = entry, dep_sources = no_deps())
   assert_eq(Array::length(lines), 1)
-  assert(contains(Array::get(lines, 0), "'String::char_code_at' is deprecated: use String::byte_at"))
+  assert(contains(haystack = Array::get(lines, at = 0), needle = "'String::char_code_at' is deprecated: use String::byte_at"))
 }
 
 test "String::byte_at is silent" {
   let entry = "fn n(s: String) -> Int {\n  String::byte_at(s, 0)\n}"
-  assert_eq(warn_count(entry, no_deps()), 0)
+  assert_eq(warn_count(entry = entry, deps = no_deps()), 0)
 }
 
 test "String::from_char_code warns and names from_byte" {
   let entry = "fn n() -> String {\n  String::from_char_code(65)\n}"
-  let lines = deprecated_warning_lines(entry, no_deps())
+  let lines = deprecated_warning_lines(entry_source = entry, dep_sources = no_deps())
   assert_eq(Array::length(lines), 1)
-  assert(contains(Array::get(lines, 0), "'String::from_char_code' is deprecated: use String::from_byte"))
+  assert(contains(haystack = Array::get(lines, at = 0), needle = "'String::from_char_code' is deprecated: use String::from_byte"))
 }
 
 test "String::from_byte is silent" {
   let entry = "fn n() -> String {\n  String::from_byte(65)\n}"
-  assert_eq(warn_count(entry, no_deps()), 0)
+  assert_eq(warn_count(entry = entry, deps = no_deps()), 0)
 }
 
 //# #2203: uses inside a string interpolation were the measured blind spot --
@@ -268,28 +268,28 @@ test "String::from_byte is silent" {
 
 test "deprecated use inside a string interpolation warns with a real position" {
   let entry = "fn n() -> String {\n  \"c = \\{String::from_char_code(65)}\"\n}"
-  let lines = deprecated_warning_lines(entry, no_deps())
+  let lines = deprecated_warning_lines(entry_source = entry, dep_sources = no_deps())
   assert_eq(Array::length(lines), 1)
   // The snippet's fragment-relative col shifts back by its absolute source
   // offset (#947): `String` starts at byte 27 of line 2 -> col 10.
-  assert(contains(Array::get(lines, 0), "line 2:col 10: 'String::from_char_code' is deprecated: use String::from_byte"))
+  assert(contains(haystack = Array::get(lines, at = 0), needle = "line 2:col 10: 'String::from_char_code' is deprecated: use String::from_byte"))
 }
 
 test "non-deprecated use inside a string interpolation is silent" {
   let entry = "fn n() -> String {\n  \"c = \\{String::from_byte(65)}\"\n}"
-  assert_eq(warn_count(entry, no_deps()), 0)
+  assert_eq(warn_count(entry = entry, deps = no_deps()), 0)
 }
 
 test "deprecated use inside a nested interpolation warns" {
   let entry = "fn n(b: Bool) -> String {\n  \"x = \\{if b { \"\\{String::from_char_code(65)}\" } else { \"n\" }}\"\n}"
-  let lines = deprecated_warning_lines(entry, no_deps())
+  let lines = deprecated_warning_lines(entry_source = entry, dep_sources = no_deps())
   assert_eq(Array::length(lines), 1)
-  assert(contains(Array::get(lines, 0), "'String::from_char_code' is deprecated"))
+  assert(contains(haystack = Array::get(lines, at = 0), needle = "'String::from_char_code' is deprecated"))
 }
 
 test "StringBuilder::freeze stays silent until a bootstrap bump" {
   let entry = "fn n() -> Array[Int] {\n  ArrayBuilder::freeze(ArrayBuilder::new())\n}"
-  assert_eq(warn_count(entry, no_deps()), 0)
+  assert_eq(warn_count(entry = entry, deps = no_deps()), 0)
 }
 
 /// #1962 chose option 1, so the CamelCase name is the OPERATION's spelling and
@@ -300,26 +300,26 @@ test "StringBuilder::freeze stays silent until a bootstrap bump" {
 /// handler-interception tests own, not a deprecation.
 test "Profiler::NowUs, the operation spelling, is silent" {
   let entry = "fn n() -> Int {\n  Profiler::NowUs()\n}"
-  assert_eq(warn_count(entry, no_deps()), 0)
+  assert_eq(warn_count(entry = entry, deps = no_deps()), 0)
 }
 
 test "Profiler::now_us is silent" {
   let entry = "fn n() -> Int {\n  Profiler::now_us()\n}"
-  assert_eq(warn_count(entry, no_deps()), 0)
+  assert_eq(warn_count(entry = entry, deps = no_deps()), 0)
 }
 
 test "Map::has warns and names has_key" {
   let entry = "fn n(m: Map[String, Int], k: String) -> Bool {\n  Map::has(m, k)\n}"
-  let lines = deprecated_warning_lines(entry, no_deps())
+  let lines = deprecated_warning_lines(entry_source = entry, dep_sources = no_deps())
   assert_eq(Array::length(lines), 1)
-  assert(contains(Array::get(lines, 0), "'Map::has' is deprecated: use Map::has_key"))
+  assert(contains(haystack = Array::get(lines, at = 0), needle = "'Map::has' is deprecated: use Map::has_key"))
 }
 
 test "Map::has_key and MutMap::has stay silent" {
   let entry = "fn n(m: Map[String, Int], k: String) -> Bool {\n  Map::has_key(m, k)\n}"
-  assert_eq(warn_count(entry, no_deps()), 0)
+  assert_eq(warn_count(entry = entry, deps = no_deps()), 0)
   let entry2 = "fn n() -> Bool {\n  MutMap::has(MutMap::new_string(), \"a\")\n}"
-  assert_eq(warn_count(entry2, no_deps()), 0)
+  assert_eq(warn_count(entry = entry2, deps = no_deps()), 0)
 }
 
 test "stdin_stream alias warns and names StdinStream::read_chunk" {
@@ -327,5 +327,5 @@ test "stdin_stream alias warns and names StdinStream::read_chunk" {
     "#deprecated(\"use StdinStream::read_chunk\")\nexport fn stdin_stream(chunk_size: Int) -> Int {\n  chunk_size\n}"
   ]
   let entry = "fn n() -> Int {\n  stdin_stream(4)\n}"
-  assert(contains(first_warning(entry, deps), "'stdin_stream' is deprecated: use StdinStream::read_chunk"))
+  assert(contains(haystack = first_warning(entry = entry, deps = deps), needle = "'stdin_stream' is deprecated: use StdinStream::read_chunk"))
 }

@@ -40,33 +40,33 @@ import @vibe/compiler/entry/source_compile/gc_only {
 
 /// The shared prelude: an effect and a top-level `fn` that performs it.
 /// `body` supplies whatever the case under test adds.
-fn program(body: String) -> String {
+fn program(_ body: String) -> String {
   "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once() -> Int with Ask {\n  perform Ask::Get()\n}\n\n\{body}"
 }
 
-fn compiles_linear(src: String) -> Bool {
+fn compiles_linear(_ src: String) -> Bool {
   handle {
-    let bytes = compile_source_wasi(src, "__no_entry__")
+    let bytes = compile_source_wasi(source = src, entry_name = "__no_entry__")
     Bytes::length(bytes) > 8
   } with { Exception::Throw(_) => false }
 }
 
-fn compiles_gc(src: String) -> Bool {
+fn compiles_gc(_ src: String) -> Bool {
   handle {
-    let bytes = compile_source_gc_only(src, "__no_entry__")
+    let bytes = compile_source_gc_only(source = src, entry_name = "__no_entry__")
     Bytes::length(bytes) > 8
   } with { Exception::Throw(_) => false }
 }
 
-fn compiles_both(src: String) -> Bool with Exception {
+fn compiles_both(_ src: String) -> Bool with Exception {
   compiles_linear(src) && compiles_gc(src)
 }
 
 /// The diagnostic a rejected program produces, or "" when it compiles.
 /// `effect_lowering_prelude` throws its first error as the message string.
-fn reject_message(src: String) -> String {
+fn reject_message(_ src: String) -> String {
   handle {
-    let _ = compile_source_wasi(src, "__no_entry__")
+    let _ = compile_source_wasi(source = src, entry_name = "__no_entry__")
     ""
   } with { Exception::Throw(msg) => msg }
 }
@@ -159,7 +159,7 @@ test "#3124: a lambda parameter that shadows a pure fn is not read as that fn" {
   assert(!compiles_linear(without_top))
   assert(!compiles_linear(with_top))
   let msg = reject_message(with_top)
-  assert(String::contains(msg, "the call to 'apply'"))
+  assert(String::contains(msg, needle = "the call to 'apply'"))
 }
 
 test "#3124: a let inside the lambda that shadows a pure fn is not read as that fn" {
@@ -180,7 +180,7 @@ test "#3124: a pure local lambda does not make an unrelated parameter of its spe
   let without_local = program("\{through}test \"t\" {\n\{call}  assert_eq(r, 85)\n}\n")
   assert(!compiles_linear(without_local))
   assert(!compiles_linear(with_local))
-  assert(String::contains(reject_message(with_local), "the call to 'side'"))
+  assert(String::contains(reject_message(with_local), needle = "the call to 'side'"))
 }
 
 test "#3124: two pure lambdas may share a spelling" {
@@ -200,9 +200,9 @@ test "#2137: a call through an expression says so instead of naming nothing" {
   let src = program("test \"t\" {\n  let r = handle {\n    ((n: Int) -> Int {\n      n\n    })(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(!compiles_linear(src))
   let msg = reject_message(src)
-  assert(String::contains(msg, "handle of effect 'Ask' cannot be compiled here"))
-  assert(String::contains(msg, "calls through an expression rather than a name"))
-  assert(!String::contains(msg, "the handled body may only"))
+  assert(String::contains(msg, needle = "handle of effect 'Ask' cannot be compiled here"))
+  assert(String::contains(msg, needle = "calls through an expression rather than a name"))
+  assert(!String::contains(msg, needle = "the handled body may only"))
 }
 
 test "#2137: an opaque callee one level down is not blamed on the handled body" {
@@ -213,10 +213,10 @@ test "#2137: an opaque callee one level down is not blamed on the handled body" 
   let src = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int {\n      n\n    })\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
   assert(!compiles_linear(src))
   let msg = reject_message(src)
-  assert(String::contains(msg, "handle of effect 'Ask' cannot be compiled here"))
-  assert(String::contains(msg, "No call in the handled body itself is opaque"))
-  assert(String::contains(msg, "look one level down"))
-  assert(!String::contains(msg, "the handled body may only"))
+  assert(String::contains(msg, needle = "handle of effect 'Ask' cannot be compiled here"))
+  assert(String::contains(msg, needle = "No call in the handled body itself is opaque"))
+  assert(String::contains(msg, needle = "look one level down"))
+  assert(!String::contains(msg, needle = "the handled body may only"))
   // The repair it offers -- give the parameter the row -- compiles.
   let repaired = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int with Ask) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int with Ask {\n      n\n    })\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
   assert(compiles_both(repaired))
@@ -231,10 +231,10 @@ test "#3118: no branch of this diagnostic names a pass or an ADR" {
   let msgs = [reject_message(opaque_expr), reject_message(deeper)]
   let mut i = 0
   while i < Array::length(msgs) {
-    let m = Array::get(msgs, i)
+    let m = Array::get(msgs, at = i)
     assert(String::length(m) > 0)
-    assert(!String::contains(m, "replay engine"))
-    assert(!String::contains(m, "ADR-0076"))
+    assert(!String::contains(m, needle = "replay engine"))
+    assert(!String::contains(m, needle = "ADR-0076"))
     i = i + 1
   }
 }
@@ -247,11 +247,11 @@ test "#3180: a rowless closure that performs is named, and both edits compile" {
   let src = program("fn run() -> Int with Ask {\n  let side = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n")
   assert(!compiles_linear(src))
   let msg = reject_message(src)
-  assert(String::contains(msg, "give the local closure `side` an effect row"))
-  assert(String::contains(msg, "with Ask { .. }"))
-  assert(String::contains(msg, "directly in the handled body"))
-  assert(!String::contains(msg, "can never fire"))
-  assert(!String::contains(msg, "reaches no"))
+  assert(String::contains(msg, needle = "give the local closure `side` an effect row"))
+  assert(String::contains(msg, needle = "with Ask { .. }"))
+  assert(String::contains(msg, needle = "directly in the handled body"))
+  assert(!String::contains(msg, needle = "can never fire"))
+  assert(!String::contains(msg, needle = "reaches no"))
   // The two edits it offers. (fixtures/handle_rowless_closure_row_edit_test
   // .vibe runs them: each answers through the inner handler.)
   let driver = "\ntest \"t\" {\n  let r = handle {\n    run()\n  } with {\n    Ask::Get() => resume(1)\n  }\n  assert_eq(r, 42)\n}\n"
@@ -269,13 +269,13 @@ test "#3270: a rowless closure behind an alias annotation is named too" {
   let lets = ["let", "let mut"]
   let mut i = 0
   while i < Array::length(lets) {
-    let src = program(String::concat("type Thunk = () -> Int\n\nfn run() -> Int with Ask {\n  ", String::concat(Array::get(lets, i), " side: Thunk = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n")))
+    let src = program(String::concat("type Thunk = () -> Int\n\nfn run() -> Int with Ask {\n  ", String::concat(Array::get(lets, at = i), " side: Thunk = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n")))
     assert(!compiles_linear(src))
     let msg = reject_message(src)
-    assert(String::contains(msg, "give the local closure `side` an effect row"))
-    assert(String::contains(msg, "with Ask { .. }"))
-    assert(!String::contains(msg, "can never fire"))
-    assert(!String::contains(msg, "reaches no"))
+    assert(String::contains(msg, needle = "give the local closure `side` an effect row"))
+    assert(String::contains(msg, needle = "with Ask { .. }"))
+    assert(!String::contains(msg, needle = "can never fire"))
+    assert(!String::contains(msg, needle = "reaches no"))
     i = i + 1
   }
   // The edit as the message spells it -- the row on an unannotated literal.
@@ -293,9 +293,9 @@ test "#3347: a rowless alias is read through a chain and a type argument" {
   ]
   let mut i = 0
   while i < Array::length(decls) {
-    let src = program(String::concat(Array::get(decls, i), "\nfn run() -> Int with Ask {\n  let side: Thunk = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n"))
+    let src = program(String::concat(Array::get(decls, at = i), "\nfn run() -> Int with Ask {\n  let side: Thunk = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n"))
     assert(!compiles_linear(src))
-    assert(String::contains(reject_message(src), "give the local closure `side` an effect row"))
+    assert(String::contains(reject_message(src), needle = "give the local closure `side` an effect row"))
     i = i + 1
   }
 }
@@ -317,6 +317,6 @@ test "#3347: an alias that carries the row is not a rowless closure" {
   // written out: a call through an effect-typed mutable local.
   let written = program("fn run() -> Int with Ask {\n  let mut side: () -> Int with Ask = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n")
   let aliased = program("type Thunk = () -> Int with Ask\n\nfn run() -> Int with Ask {\n  let mut side: Thunk = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n")
-  assert(String::contains(reject_message(written), "cannot compile a call through mutable local `side`"))
-  assert(String::contains(reject_message(aliased), "cannot compile a call through mutable local `side`"))
+  assert(String::contains(reject_message(written), needle = "cannot compile a call through mutable local `side`"))
+  assert(String::contains(reject_message(aliased), needle = "cannot compile a call through mutable local `side`"))
 }

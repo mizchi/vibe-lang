@@ -277,11 +277,11 @@ import ./checker_throw_kind_of_type.vibe {
 }
 
 fn tab_dot_projection_ty(tytab: Array[(Int, Type)], dot_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Unit {
-  append_legacy_typed_occurrence(tytab, dot_off, ty, capture, "DotProjection", lane)
+  append_legacy_typed_occurrence(tytab = tytab, offset = dot_off, ty = ty, capture = capture, role = "DotProjection", lane = lane)
 }
 
 fn tab_dot_field_name_ty(tytab: Array[(Int, Type)], field_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Unit {
-  append_legacy_typed_occurrence(tytab, field_off, ty, capture, "DotFieldName", lane)
+  append_legacy_typed_occurrence(tytab = tytab, offset = field_off, ty = ty, capture = capture, role = "DotFieldName", lane = lane)
 }
 
 /// #3248: the marker an unknown assignment target carries. ` [@assign-target=N]`
@@ -289,7 +289,7 @@ fn tab_dot_field_name_ty(tytab: Array[(Int, Type)], field_off: Int, ty: Type, ca
 /// locator can read the token's own extent back, `r#name` included). A
 /// synthesized assignment has no token (`off < 0`) and gets the bare
 /// ` [@assign-target]`, which the locator strips without inventing a position.
-fn assign_target_marker(off: Int) -> String {
+fn assign_target_marker(_ off: Int) -> String {
   if off >= 0 {
     String::concat(" [@assign-target=", String::concat(__to_string(off), "]"))
   } else {
@@ -334,7 +334,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // The right child is processed by this iterative loop, not by a
         // recursive call. Keep its frame so nested spine values receive the
         // exact `expr_children` prefix.
-        typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(right)))
+        typed_occurrence_capture_enter_virtual_child(capture = capture, expected_child = 1, expected_children = Array::length(expr_children(right)))
         cur = right
       },
       ELet(name, val, body, let_off) => {
@@ -343,13 +343,13 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // calls through the new name are checked by type, so this one value
         // position is not refused (see `spawn_value_let_rhs_cell`).
         if let_rhs_is_alias(val) {
-          Array::push(spawn_value_let_rhs_cell, true)
+          Array::push(spawn_value_let_rhs_cell, value = true)
         } else {
           ()
         }
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
-        Array::truncate(spawn_value_let_rhs_cell, 0)
-        attach_unlocated_decl_name_marker(errors, err_before, name)
+        Array::truncate(spawn_value_let_rhs_cell, length = 0)
+        attach_unlocated_decl_name_marker(errors = errors, from = err_before, name = name)
         // #938 value restriction: a builder is a MUTABLE container, so its
         // element var must stay un-quantified — generalizing
         // `CtNamed("ArrayBuilder", [v])` would re-instantiate a fresh v at
@@ -359,34 +359,34 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // a builder's; #2459: a variable free in the ENVIRONMENT is not this
         // binding's to quantify. See let_generalize for why those are two
         // rules and not one.
-        let gen0 = let_generalize(val, vt, cenv, defs, ns, None)
+        let gen0 = let_generalize(val = val, vt = vt, env = cenv, defs = defs, s = ns, self_name = None)
         // #3057: a local alias (`let h = f`) is quantified afresh, possibly
         // in another order than `f`, so the row markers it copied are
         // respelled against its own quantifier list, as a top-level one's are.
         let gen = match val {
           EFn(_, _, _, _, _, _) => gen0,
-          _ => publish_row_formals(gen0, val, cenv, defs, ns)
+          _ => publish_row_formals(t = gen0, val = val, env = cenv, defs = defs, s = ns)
         }
         // #2848: a field read on a parameter this binding just quantified.
-        refuse_generalized_field_reads(gen, ns, errors)
+        refuse_generalized_field_reads(gen = gen, s = ns, errors = errors)
         // #3297: an `==` on a parameter this binding just quantified.
-        refuse_generalized_eq_sites(val, vt, gen, ns, defs, errors)
+        refuse_generalized_eq_sites(val = val, vt = vt, gen = gen, s = ns, defs = defs, errors = errors)
         // #3050: the binding's own type -- the generalized one its uses
         // instantiate, not the monotype before quantification (#3104 review).
-        record_local_let_type(let_off, gen, lane)
-        let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
-        note_local_generic_binding(val, gen, cenv)
+        record_local_let_type(let_off = let_off, ty = gen, lane = lane)
+        let aliases_outer = spine_region_active && expression_aliases_outer_binding(expr = val, env = cenv)
+        note_local_generic_binding(val = val, bound = gen, env = cenv)
         let def_env = cenv
-        cenv = checker_bind_call_header(cenv, name, gen, val)
+        cenv = checker_bind_call_header(env = cenv, name = name, ty = gen, value = val)
         // #3548: the guard desugar binds the scrutinee to the match temp, and
         // the fall-through match it reads that temp in has no offset; keep
         // the written scrutinee's, scoped like the temp, to locate a refusal.
         if name == match_scrutinee_temp() {
-          cenv = env_bind(cenv, match_temp_anchor_key(), CtNamed(Int::to_string(railway_expr_off(val)), array_empty()))
+          cenv = env_bind(env = cenv, name = match_temp_anchor_key(), ty = CtNamed(Int::to_string(railway_expr_off(val)), array_empty()))
         } else {
           ()
         }
-        cenv = bind_function_dependency_contracts(cenv, name, val)
+        cenv = bind_function_dependency_contracts(env = cenv, name = name, value = val)
         // #3152: record what a local closure captured, read in the scope it
         // was written in, so a later `TaskGroup::spawn(n, name)` -- or a
         // spawned body that calls `name` -- is checked like the literal.
@@ -395,37 +395,37 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // `let_rhs_is_alias` does.
         match let_rhs_closure_literal(val) {
           Some(EFn(_, _, fparams, _, _, fbody)) => {
-            cenv = env_bind(cenv, spawn_caps_marker(name), CtTuple(closure_capture_facts(def_env, fbody, fparams)))
+            cenv = env_bind(env = cenv, name = spawn_caps_marker(name), ty = CtTuple(closure_capture_facts(env = def_env, body = fbody, params = fparams)))
           },
           _ => ()
         }
         if aliases_outer {
-          cenv = env_bind(cenv, String::concat("__region_outer_alias__", name), CtUnit)
+          cenv = env_bind(env = cenv, name = String::concat("__region_outer_alias__", name), ty = CtUnit)
         } else {
           ()
         }
         // #3343: what a call of `name` reaches -- the closure literal, or the
         // callee an alias stands for -- so a call inside a region can check
         // the body for what it keeps.
-        cenv = retention_bind_let(cenv, name, val, gen, false)
+        cenv = retention_bind_let(env = cenv, name = name, val = val, ty = gen, is_rec = false)
         // #3343 (Codex on #3359): inside a region, record which regions the
         // value carries where its type may hide them, so a later write,
         // return or call of `name` is judged by the value it was bound to.
         if spine_region_active {
-          cenv = retention_bind_carry(cenv, def_env, name, val, body, subst_apply(ns, gen), defs, ns, let_off)
+          cenv = retention_bind_carry(env = cenv, def_env = def_env, name = name, val = val, scope = body, ty = subst_apply(s = ns, ty = gen), defs = defs, s = ns, let_off = let_off)
         } else {
           ()
         }
         s1 = ns
         c1 = nc
-        typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
+        typed_occurrence_capture_enter_virtual_child(capture = capture, expected_child = 1, expected_children = Array::length(expr_children(body)))
         cur = body
       },
       ELetMut(name, val, body, let_off) => {
         let err_before = Array::length(errors)
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
-        attach_unlocated_decl_name_marker(errors, err_before, name)
-        record_local_let_type(let_off, vt, lane)
+        attach_unlocated_decl_name_marker(errors = errors, from = err_before, name = name)
+        record_local_let_type(let_off = let_off, ty = vt, lane = lane)
         // `loop` desugars to `let mut __loop_result = 0; while true { ...
         // __loop_result = <break value> ... }` (parser_expr_primary.vibe) —
         // the 0 is only a slot placeholder, but binding its CtInt here pinned
@@ -439,34 +439,34 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // same-named one outside it. Consumers read it back with
         // `env_mut_escape` (checker_spawnable) instead of re-deriving
         // mutability from the raw AST.
-        let escapes = mut_binding_escapes(body, name)
+        let escapes = mut_binding_escapes(body = body, name = name)
         let mut_def_env = cenv
         if name == "__loop_result" {
           let (lr_tv, nc2) = fresh_var(nc)
-          cenv = env_bind_mut(cenv, name, lr_tv, escapes)
+          cenv = env_bind_mut(env = cenv, name = name, ty = lr_tv, escapes = escapes)
           c1 = nc2
         } else {
-          cenv = checker_bind_mut_call_header(cenv, name, vt, val, escapes)
+          cenv = checker_bind_mut_call_header(env = cenv, name = name, ty = vt, value = val, escapes = escapes)
           c1 = nc
         }
         // #3343 (Codex on #3359): what the binding may carry -- what it
         // starts with and what is written into it anywhere in its scope --
         // for a later walk of this body or write of the binding.
         if spine_region_active {
-          cenv = retention_note_let_mut(cenv, mut_def_env, name, val, body, subst_apply(ns, vt), defs, ns, let_off)
+          cenv = retention_note_let_mut(env = cenv, def_env = mut_def_env, name = name, val = val, scope = body, ty = subst_apply(s = ns, ty = vt), defs = defs, s = ns, let_off = let_off)
         } else {
           ()
         }
         s1 = ns
-        typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
+        typed_occurrence_capture_enter_virtual_child(capture = capture, expected_child = 1, expected_children = Array::length(expr_children(body)))
         cur = body
       },
       ELetRec(name, val, body) => {
         let (tv, c1b) = fresh_var(c1)
         let err_before = Array::length(errors)
-        let (vt, ns, nc) = ce(val, checker_bind_call_header(cenv, name, tv, val), defs, s1, c1b, errors, tytab, capture, lane)
-        attach_unlocated_decl_name_marker(errors, err_before, name)
-        let s2 = match unify(tv, vt, ns) {
+        let (vt, ns, nc) = ce(val, checker_bind_call_header(env = cenv, name = name, ty = tv, value = val), defs, s1, c1b, errors, tytab, capture, lane)
+        attach_unlocated_decl_name_marker(errors = errors, from = err_before, name = name)
+        let s2 = match unify(a = tv, b = vt, s = ns) {
           Some(su) => su,
           None => ns
         }
@@ -482,32 +482,32 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // to the unchecked arm. `ELet` above already passes the value's type
         // (`vt`); after the `unify(tv, vt, ..)` just above the two agree, so
         // this is the same binding through a type the call path can read.
-        let gen = let_generalize(val, subst_apply(s2, tv), cenv, defs, s2, Some(name))
+        let gen = let_generalize(val = val, vt = subst_apply(s = s2, ty = tv), env = cenv, defs = defs, s = s2, self_name = Some(name))
         // #2848: see the ELet arm.
-        refuse_generalized_field_reads(gen, s2, errors)
-        refuse_generalized_eq_sites(val, subst_apply(s2, tv), gen, s2, defs, errors)
+        refuse_generalized_field_reads(gen = gen, s = s2, errors = errors)
+        refuse_generalized_eq_sites(val = val, vt = subst_apply(s = s2, ty = tv), gen = gen, s = s2, defs = defs, errors = errors)
         // #3106: hover on a `let rec` called only as a callee, as #3050 does
         // for `let` -- keyed by its value, since `ELetRec` has no offset.
-        record_local_let_rec_type(val, body, gen, lane)
-        note_local_generic_binding(val, gen, cenv)
-        cenv = checker_bind_call_header(cenv, name, gen, val)
-        cenv = bind_function_dependency_contracts(cenv, name, val)
-        cenv = retention_bind_let(cenv, name, val, gen, true)
+        record_local_let_rec_type(value = val, body = body, ty = gen, lane = lane)
+        note_local_generic_binding(val = val, bound = gen, env = cenv)
+        cenv = checker_bind_call_header(env = cenv, name = name, ty = gen, value = val)
+        cenv = bind_function_dependency_contracts(env = cenv, name = name, value = val)
+        cenv = retention_bind_let(env = cenv, name = name, val = val, ty = gen, is_rec = true)
         s1 = s2
         c1 = nc
-        typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
+        typed_occurrence_capture_enter_virtual_child(capture = capture, expected_child = 1, expected_children = Array::length(expr_children(body)))
         cur = body
       },
       _ => {
         // `cur` already owns the active virtual right-child frame. Calling
         // the wrapper here would add a fictional child before checking it.
-        result = check_expr_capture_impl(cur, cenv, defs, s1, c1, errors, tytab, capture, lane, false)
+        result = check_expr_capture_impl(expr = cur, env = cenv, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = false)
         done = true
       }
     }
   }
-  typed_occurrence_capture_record_virtual_spine_returns(capture, start_frame_depth, result.0, lane)
-  typed_occurrence_capture_restore_frame_depth(capture, start_frame_depth)
+  typed_occurrence_capture_record_virtual_spine_returns(capture = capture, start_depth = start_frame_depth, ty = result.0, lane = lane)
+  typed_occurrence_capture_restore_frame_depth(capture = capture, expected_depth = start_frame_depth)
   result
 }
 
@@ -518,7 +518,7 @@ fn resume_continuation_marker() -> Type {
   CtNamed("$resume_continuation", [])
 }
 
-fn resume_is_continuation(t: Type) -> Bool {
+fn resume_is_continuation(_ t: Type) -> Bool {
   match t {
     CtNamed(name, _) => name == "$resume_continuation",
     _ => false
@@ -550,7 +550,7 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
       // to switch this check off -- `Op => resume("str")` for an Int
       // operation compiled when a `fn resume` existed, and resumed the
       // perform with a string. Only a binder inside the arm shadows it.
-      let resume_shadowed = match env_lookup(env, "resume") {
+      let resume_shadowed = match env_lookup(env = env, name = "resume") {
         Some(bound) => !resume_is_continuation(bound),
         None => false
       }
@@ -561,27 +561,27 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
           // statement-position Unit tolerance elsewhere; the existing idiom
           // `Print(s) => resume(0)` for `Print(String) -> Unit` stays legal).
           if nm == "resume" && !resume_shadowed && Array::length(args) == 1 && !(ret_ty is CtUnit) {
-            let (aty, ns, nc) = check_expr_capture(Array::get(args, 0), env, defs, s1, c1, errors, tytab, capture, "AuxiliaryResumeValueRecheck")
+            let (aty, ns, nc) = check_expr_capture(expr = Array::get(args, at = 0), env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = "AuxiliaryResumeValueRecheck")
             c1 = nc
-            s1 = check_assignable(ret_ty, subst_apply(ns, aty), ns, errors, "resume value type mismatch", tail_expr_off(Array::get(args, 0)))
+            s1 = check_assignable(expected = ret_ty, actual = subst_apply(s = ns, ty = aty), s = ns, errors = errors, what = "resume value type mismatch", off = tail_expr_off(Array::get(args, at = 0)))
           } else if nm == "resume" && !resume_shadowed && Array::length(args) == 0 && !(ret_ty is CtUnit) {
             // #828: `resume()` on a value-returning op used to reach codegen,
             // which indexes resume args[0] unconditionally — a compiler ICE
             // with no diagnostic. Reject it here instead.
-            Array::push(errors, "resume expects a value (the operation returns a non-Unit type); resume() with no argument is only valid for Unit-returning operations")
+            Array::push(errors, value = "resume expects a value (the operation returns a non-Unit type); resume() with no argument is only valid for Unit-returning operations")
           } else {
             ()
           }
         },
         _ => {
-          let (cs, cc) = check_resume_values(callee, ret_ty, env, defs, s1, c1, errors, tytab, capture)
+          let (cs, cc) = check_resume_values(e = callee, ret_ty = ret_ty, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture)
           s1 = cs
           c1 = cc
         }
       }
       let mut ri = 0
       while ri < Array::length(args) {
-        let (as1, ac1) = check_resume_values(Array::get(args, ri), ret_ty, env, defs, s1, c1, errors, tytab, capture)
+        let (as1, ac1) = check_resume_values(e = Array::get(args, at = ri), ret_ty = ret_ty, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture)
         s1 = as1
         c1 = ac1
         ri = ri + 1
@@ -590,35 +590,35 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
     },
     EHandle(_, _) => (s, c),
     ELet(ln, v, b, _) => {
-      let (vs, vc) = check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture)
-      check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, vs, vc, errors, tytab, capture)
+      let (vs, vc) = check_resume_values(e = v, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
+      check_resume_values(e = b, ret_ty = ret_ty, env = env_bind(env = env, name = ln, ty = CtUnknown), defs = defs, s = vs, c = vc, errors = errors, tytab = tytab, capture = capture)
     },
     ELetMut(ln, v, b, _) => {
-      let (vs, vc) = check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture)
-      check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, vs, vc, errors, tytab, capture)
+      let (vs, vc) = check_resume_values(e = v, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
+      check_resume_values(e = b, ret_ty = ret_ty, env = env_bind(env = env, name = ln, ty = CtUnknown), defs = defs, s = vs, c = vc, errors = errors, tytab = tytab, capture = capture)
     },
     ELetRec(ln, v, b) => {
-      let renv = env_bind(env, ln, CtUnknown)
-      let (vs, vc) = check_resume_values(v, ret_ty, renv, defs, s, c, errors, tytab, capture)
-      check_resume_values(b, ret_ty, renv, defs, vs, vc, errors, tytab, capture)
+      let renv = env_bind(env = env, name = ln, ty = CtUnknown)
+      let (vs, vc) = check_resume_values(e = v, ret_ty = ret_ty, env = renv, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
+      check_resume_values(e = b, ret_ty = ret_ty, env = renv, defs = defs, s = vs, c = vc, errors = errors, tytab = tytab, capture = capture)
     },
     ESeq(a, b) => {
-      let (as1, ac1) = check_resume_values(a, ret_ty, env, defs, s, c, errors, tytab, capture)
-      check_resume_values(b, ret_ty, env, defs, as1, ac1, errors, tytab, capture)
+      let (as1, ac1) = check_resume_values(e = a, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
+      check_resume_values(e = b, ret_ty = ret_ty, env = env, defs = defs, s = as1, c = ac1, errors = errors, tytab = tytab, capture = capture)
     },
     EIf(cnd, t, el) => {
-      let (cs, cc) = check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab, capture)
-      let (ts, tc) = check_resume_values(t, ret_ty, env, defs, cs, cc, errors, tytab, capture)
-      check_resume_values(el, ret_ty, env, defs, ts, tc, errors, tytab, capture)
+      let (cs, cc) = check_resume_values(e = cnd, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
+      let (ts, tc) = check_resume_values(e = t, ret_ty = ret_ty, env = env, defs = defs, s = cs, c = cc, errors = errors, tytab = tytab, capture = capture)
+      check_resume_values(e = el, ret_ty = ret_ty, env = env, defs = defs, s = ts, c = tc, errors = errors, tytab = tytab, capture = capture)
     },
     EMatch(scr, marms) => {
-      let (ms, mc) = check_resume_values(scr, ret_ty, env, defs, s, c, errors, tytab, capture)
+      let (ms, mc) = check_resume_values(e = scr, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
       let mut s1 = ms
       let mut c1 = mc
       let mut mi = 0
       while mi < Array::length(marms) {
-        let (mp, mb) = Array::get(marms, mi)
-        let (as1, ac1) = check_resume_values(mb, ret_ty, resume_walk_bind_pat(mp, env), defs, s1, c1, errors, tytab, capture)
+        let (mp, mb) = Array::get(marms, at = mi)
+        let (as1, ac1) = check_resume_values(e = mb, ret_ty = ret_ty, env = resume_walk_bind_pat(p = mp, env = env), defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture)
         s1 = as1
         c1 = ac1
         mi = mi + 1
@@ -626,29 +626,29 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
       (s1, c1)
     },
     EWhile(cnd, b) => {
-      let (cs, cc) = check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab, capture)
-      check_resume_values(b, ret_ty, env, defs, cs, cc, errors, tytab, capture)
+      let (cs, cc) = check_resume_values(e = cnd, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
+      check_resume_values(e = b, ret_ty = ret_ty, env = env, defs = defs, s = cs, c = cc, errors = errors, tytab = tytab, capture = capture)
     },
     EForIn(fname, fidx, it, b) => {
       let fenv = match fidx {
-        Some(fi) => env_bind(env_bind(env, fname, CtUnknown), fi, CtUnknown),
-        None => env_bind(env, fname, CtUnknown)
+        Some(fi) => env_bind(env = env_bind(env = env, name = fname, ty = CtUnknown), name = fi, ty = CtUnknown),
+        None => env_bind(env = env, name = fname, ty = CtUnknown)
       }
-      let (is1, ic1) = check_resume_values(it, ret_ty, env, defs, s, c, errors, tytab, capture)
-      check_resume_values(b, ret_ty, fenv, defs, is1, ic1, errors, tytab, capture)
+      let (is1, ic1) = check_resume_values(e = it, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
+      check_resume_values(e = b, ret_ty = ret_ty, env = fenv, defs = defs, s = is1, c = ic1, errors = errors, tytab = tytab, capture = capture)
     },
     EBinOp(_, l, r, _) => {
-      let (ls, lc) = check_resume_values(l, ret_ty, env, defs, s, c, errors, tytab, capture)
-      check_resume_values(r, ret_ty, env, defs, ls, lc, errors, tytab, capture)
+      let (ls, lc) = check_resume_values(e = l, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
+      check_resume_values(e = r, ret_ty = ret_ty, env = env, defs = defs, s = ls, c = lc, errors = errors, tytab = tytab, capture = capture)
     },
-    EUnaryOp(_, inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab, capture),
+    EUnaryOp(_, inner) => check_resume_values(e = inner, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture),
     EAssign(_, v, b, _) => {
-      let (vs, vc) = check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture)
-      check_resume_values(b, ret_ty, env, defs, vs, vc, errors, tytab, capture)
+      let (vs, vc) = check_resume_values(e = v, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
+      check_resume_values(e = b, ret_ty = ret_ty, env = env, defs = defs, s = vs, c = vc, errors = errors, tytab = tytab, capture = capture)
     },
     EAssignOp(_, _, v, b, _) => {
-      let (vs, vc) = check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture)
-      check_resume_values(b, ret_ty, env, defs, vs, vc, errors, tytab, capture)
+      let (vs, vc) = check_resume_values(e = v, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
+      check_resume_values(e = b, ret_ty = ret_ty, env = env, defs = defs, s = vs, c = vc, errors = errors, tytab = tytab, capture = capture)
     },
     EFn(_, _, fparams, _, _, fb) => {
       // The lambda's own parameters are binders for its body (#3005: a
@@ -657,20 +657,20 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
       let mut fenv = env
       let mut fpi = 0
       while fpi < Array::length(fparams) {
-        let (fpn, _) = Array::get(fparams, fpi)
-        fenv = env_bind(fenv, resume_walk_param_base(fpn), CtUnknown)
+        let (fpn, _) = Array::get(fparams, at = fpi)
+        fenv = env_bind(env = fenv, name = resume_walk_param_base(fpn), ty = CtUnknown)
         fpi = fpi + 1
       }
-      check_resume_values(fb, ret_ty, fenv, defs, s, c, errors, tytab, capture)
+      check_resume_values(e = fb, ret_ty = ret_ty, env = fenv, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture)
     },
-    EReturn(inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab, capture),
-    EDot(obj, _, _, _) => check_resume_values(obj, ret_ty, env, defs, s, c, errors, tytab, capture),
+    EReturn(inner) => check_resume_values(e = inner, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture),
+    EDot(obj, _, _, _) => check_resume_values(e = obj, ret_ty = ret_ty, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture),
     ETuple(items) => {
       let mut s1 = s
       let mut c1 = c
       let mut ti = 0
       while ti < Array::length(items) {
-        let (is1, ic1) = check_resume_values(Array::get(items, ti), ret_ty, env, defs, s1, c1, errors, tytab, capture)
+        let (is1, ic1) = check_resume_values(e = Array::get(items, at = ti), ret_ty = ret_ty, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture)
         s1 = is1
         c1 = ic1
         ti = ti + 1
@@ -682,7 +682,7 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
       let mut c1 = c
       let mut ti = 0
       while ti < Array::length(items) {
-        let (is1, ic1) = check_resume_values(Array::get(items, ti), ret_ty, env, defs, s1, c1, errors, tytab, capture)
+        let (is1, ic1) = check_resume_values(e = Array::get(items, at = ti), ret_ty = ret_ty, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture)
         s1 = is1
         c1 = ic1
         ti = ti + 1
@@ -700,55 +700,55 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     EString(_, _) => (CtString, s, c),
     EBool(_) => (CtBool, s, c),
     EUnit => (CtUnit, s, c),
-    EIdent(name, ident_off) => if String::starts_with(name, "__fapp_") || String::starts_with(name, trait_erased_type_param_prefix) {
+    EIdent(name, ident_off) => if String::starts_with(name, prefix = "__fapp_") || String::starts_with(name, prefix = trait_erased_type_param_prefix) {
       // #2268 (Codex round 6 on #2267): both prefixes name compiler-internal
       // env markers bound with ordinary EnvBind. Letting source resolve one
       // as a value would check clean (the marker's CtUnit) and then die in
       // codegen, which has no such local -- a check-passes/codegen-fails
       // hole. Reserve the spellings and reject BEFORE resolution can find
       // the marker.
-      Array::push(errors, String::concat(String::concat(String::concat("`", name), "` uses a reserved compiler-internal prefix (type-formal markers) -- rename the identifier"), off_marker_len(ident_off, String::length(name))))
+      Array::push(errors, value = String::concat(String::concat(String::concat("`", name), "` uses a reserved compiler-internal prefix (type-formal markers) -- rename the identifier"), off_marker_len(off = ident_off, len = String::length(name))))
       (CtUnknown, s, c)
-    } else match env_lookup_unless_synthesized_builtin(env, railway_ident_lookup_name(name), ident_off) {
+    } else match env_lookup_unless_synthesized_builtin(env = env, name = railway_ident_lookup_name(name), ident_off = ident_off) {
       Some(t) => {
-        checker_check_defaulted_value(env, railway_ident_lookup_name(name), ident_off, errors)
+        checker_check_defaulted_value(env = env, name = railway_ident_lookup_name(name), offset = ident_off, errors = errors)
         let let_rhs = Array::length(spawn_value_let_rhs_cell) != 0
-        Array::truncate(spawn_value_let_rhs_cell, 0)
-        if !let_rhs && type_is_call_checked(s, t) {
+        Array::truncate(spawn_value_let_rhs_cell, length = 0)
+        if !let_rhs && type_is_call_checked(s = s, t = t) {
           // #3125 / #3153: a spawn- or run-shaped function reaching anything
           // but a call or a `let` would be applied where its check cannot see
           // the closure (`apply2(TaskGroup::spawn, n, () -> xs)` ran a
           // capture of a plain `Array`). Refuse it here instead.
-          let is_run = type_is_run_shaped(resolve_bare_var(s, t))
+          let is_run = type_is_run_shaped(resolve_bare_var(s = s, t = t))
           let reason = if is_run {
             "` cannot be used as a value here: the check that keeps a task group inside its `TaskGroup::run` body runs where it is called, so the body it is applied to would go unchecked -- call it directly (`TaskGroup::run((g) -> ...)`) or bind it with a local `let` and call that name"
           } else {
             "` cannot be used as a value here: the `Spawnable` capture check runs where it is called, so the closure it is applied to would go unchecked -- call it directly (`TaskGroup::spawn(n, () -> ...)`) or bind it with a local `let` and call that name"
           }
-          Array::push(errors, String::concat(String::concat(String::concat("`", name), reason), off_marker_len(ident_off, String::length(name))))
+          Array::push(errors, value = String::concat(String::concat(String::concat("`", name), reason), off_marker_len(off = ident_off, len = String::length(name))))
         } else {
           ()
         }
-        let (ti00, c00, new_bounds) = instantiate(t, c)
+        let (ti00, c00, new_bounds) = instantiate(ty = t, c = c)
         // #3386: a formal only the rows name gets this instantiation's own
         // variable. A bare `let g = f` alias is left to the effect pass, which
         // respells its rows (see the `own_row` flag below).
         let (ti0, s00, c0) = if let_rhs {
           (ti00, s, c00)
         } else {
-          label_row_only_formals(t, ti00, defs, s, c00)
+          label_row_only_formals(scheme = t, inst = ti00, defs = defs, s = s, c = c00)
         }
         // #3387: the rows of a generic function taken as a value are bound
         // to this instantiation here, before the value travels.
-        let (ti, s0, c1) = bind_generic_value_effect_instantiations(t, ti0, defs, s00, c0, !let_rhs)
-        note_generic_callback_instance(t, ti)
+        let (ti, s0, c1) = bind_generic_value_effect_instantiations(scheme = t, inst = ti0, defs = defs, s = s00, c = c0, own_row = !let_rhs)
+        note_generic_callback_instance(scheme = t, inst = ti)
         let nblen = Array::length(new_bounds)
         let mut s1 = s0
         let mut bi = 0
         while bi < nblen {
-          let (vid, bounds) = Array::get(new_bounds, bi)
+          let (vid, bounds) = Array::get(new_bounds, at = bi)
           if Array::length(bounds) != 0 {
-            s1 = subst_add_bound(s1, vid, bounds)
+            s1 = subst_add_bound(s = s1, id = vid, bounds = bounds)
           }
           bi = bi + 1
         }
@@ -756,14 +756,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // keyed by its real source offset, for typed-hover (vibe type-at) on
         // locals and parameters. Synthetic idents (off < 0) are skipped.
         if ident_off >= 0 {
-          tab_identifier_ty(tytab, ident_off, ti, capture, lane)
+          tab_identifier_ty(tytab = tytab, ident_off = ident_off, ty = ti, capture = capture, lane = lane)
         } else {
           ()
         }
         (ti, s1, c1)
       },
-      None => match lookup_builtin_in_env(env, railway_ident_lookup_name(name)) {
-        Some(t) => if builtin_ident_is_value(railway_ident_lookup_name(name), t) {
+      None => match lookup_builtin_in_env(env = env, name = railway_ident_lookup_name(name)) {
+        Some(t) => if builtin_ident_is_value(name = railway_ident_lookup_name(name), t = t) {
           // A non-function builtin is a value: a nullary constructor (`None`)
           // lowers through the `ctor_table` arm. This is what #2274's
           // bare-name exemption was really protecting -- rejecting every
@@ -776,43 +776,43 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // builtin without this rejection.
           // #2451: bind the row's own variables, freshened for this
           // occurrence, rather than the erased row's independent unknowns.
-          let (value_ty, value_c) = builtin_ident_value_type(railway_ident_lookup_name(name), t, c)
+          let (value_ty, value_c) = builtin_ident_value_type(name = railway_ident_lookup_name(name), erased = t, c = c)
           if ident_off >= 0 {
-            tab_identifier_ty(tytab, ident_off, value_ty, capture, lane)
+            tab_identifier_ty(tytab = tytab, ident_off = ident_off, ty = value_ty, capture = capture, lane = lane)
           } else {
             ()
           }
           (value_ty, s, value_c)
         } else {
-          Array::push(errors, call_only_builtin_ident_error(name, t, ident_off))
+          Array::push(errors, value = call_only_builtin_ident_error(name = name, ty = t, ident_off = ident_off))
           (CtUnknown, s, c)
         },
-        None => match resolve_trait_method_ident(name, env, defs, s) {
+        None => match resolve_trait_method_ident(name = name, env = env, defs = defs, s = s) {
           Some(mty) => {
             if ident_off >= 0 {
-              tab_identifier_ty(tytab, ident_off, mty, capture, lane)
+              tab_identifier_ty(tytab = tytab, ident_off = ident_off, ty = mty, capture = capture, lane = lane)
             } else {
               ()
             }
             (mty, s, c)
           },
-          None => match resolve_qualified_ctor_ident(name, env, defs, c) {
+          None => match resolve_qualified_ctor_ident(name = name, env = env, defs = defs, c = c) {
             Some(ct) => {
-              let (ti, c1, new_bounds) = instantiate(ct, c)
+              let (ti, c1, new_bounds) = instantiate(ty = ct, c = c)
               let nblen = Array::length(new_bounds)
               let mut s1 = s
               let mut bi = 0
               while bi < nblen {
-                let (vid, bounds) = Array::get(new_bounds, bi)
+                let (vid, bounds) = Array::get(new_bounds, at = bi)
                 if Array::length(bounds) != 0 {
-                  s1 = subst_add_bound(s1, vid, bounds)
+                  s1 = subst_add_bound(s = s1, id = vid, bounds = bounds)
                 } else {
                   ()
                 }
                 bi = bi + 1
               }
               if ident_off >= 0 {
-                tab_identifier_ty(tytab, ident_off, ti, capture, lane)
+                tab_identifier_ty(tytab = tytab, ident_off = ident_off, ty = ti, capture = capture, lane = lane)
               } else {
                 ()
               }
@@ -820,16 +820,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             },
             None => {
               if name == "__try_v" {
-                Array::push(errors, String::concat("`?` could not unwrap this value (the lowered binder is not in scope)", off_marker(ident_off)))
+                Array::push(errors, value = String::concat("`?` could not unwrap this value (the lowered binder is not in scope)", off_marker(ident_off)))
               } else if name == "_" {
                 // #2201: `_` is syntax the reader used in the wrong position,
                 // not a name they thought existed -- "unknown name: _" answers
                 // the wrong question. Name its two expression roles instead.
-                Array::push(errors, String::concat("`_` is not a value here: it is only a pipe slot (in the call directly after `|>`) or a lambda section (as part of a larger expression, e.g. `_ * 2`)", off_marker_len(ident_off, 1)))
+                Array::push(errors, value = String::concat("`_` is not a value here: it is only a pipe slot (in the call directly after `|>`) or a lambda section (as part of a larger expression, e.g. `_ * 2`)", off_marker_len(off = ident_off, len = 1)))
               } else {
-                match marker_default_dispatch_error(name, env, s) {
-                  Some(msg) => Array::push(errors, String::concat(msg, off_marker_len(ident_off, String::length(name)))),
-                  None => Array::push(errors, String::concat(String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), impl_method_spelling_hint(name, env)), off_marker_len(ident_off, String::length(name))))
+                match marker_default_dispatch_error(name = name, env = env, s = s) {
+                  Some(msg) => Array::push(errors, value = String::concat(msg, off_marker_len(off = ident_off, len = String::length(name)))),
+                  None => Array::push(errors, value = String::concat(String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), impl_method_spelling_hint(name = name, env = env)), off_marker_len(off = ident_off, len = String::length(name))))
                 }
               }
               (CtUnknown, s, c)
@@ -838,13 +838,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
     },
-    ESeq(_, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
-    ELet(_, _, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
-    ELetRec(_, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
-    ELetMut(_, _, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
+    ESeq(_, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root),
+    ELet(_, _, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root),
+    ELetRec(_, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root),
+    ELetMut(_, _, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root),
     EIf(cond, then_e, else_e) => {
-      let (ct, s1, c1) = check_expr_capture(cond, env, defs, s, c, errors, tytab, capture, lane)
-      let resolved_ct = subst_apply(s1, ct)
+      let (ct, s1, c1) = check_expr_capture(expr = cond, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let resolved_ct = subst_apply(s = s1, ty = ct)
       match resolved_ct {
         CtBool => (),
         CtUnknown => (),
@@ -862,21 +862,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             CtOption(_) => "; match it, or pass a Bool"
             _ => ""
           }
-          Array::push(errors, String::concat("if condition must be Bool, got ", String::concat(type_to_string(resolved_ct), String::concat(hint, off_marker(railway_expr_off(cond))))))
+          Array::push(errors, value = String::concat("if condition must be Bool, got ", String::concat(type_to_string(resolved_ct), String::concat(hint, off_marker(railway_expr_off(cond))))))
         }
       }
       let header_fork = checker_call_header_snapshot()
-      let (tt, s2, c2) = check_expr_capture(then_e, env, defs, s1, c1, errors, tytab, capture, lane)
+      let (tt, s2, c2) = check_expr_capture(expr = then_e, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
       checker_call_header_rewind(header_fork)
-      let (et, s3, c3) = check_expr_capture(else_e, env, defs, s2, c2, errors, tytab, capture, lane)
+      let (et, s3, c3) = check_expr_capture(expr = else_e, env = env, defs = defs, s = s2, c = c2, errors = errors, tytab = tytab, capture = capture, lane = lane)
       checker_call_header_merge(header_fork)
       // The two branches must agree when both yield a real value (previously
       // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
       // is tolerated: `if c { stmt }` desugars to an `else ()` whose value is
       // discarded, and a statement-position `if` need not have matching arms.
-      let s3 = refine_open_option_branch(tt, et, refine_open_option_branch(et, tt, s3))
-      let rtt = subst_apply(s3, tt)
-      let ret = subst_apply(s3, et)
+      let s3 = refine_open_option_branch(result = tt, other = et, s = refine_open_option_branch(result = et, other = tt, s = s3))
+      let rtt = subst_apply(s = s3, ty = tt)
+      let ret = subst_apply(s = s3, ty = et)
       // When one branch yields Unit (an else-less `if`, whose missing else is
       // `()`, or an explicit `()` branch), the branches need not agree and the
       // expression yields Unit as a VALUE — so `let x: Int = if c { 1 }` is
@@ -899,11 +899,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           CtUnit => (s3, CtUnit),
           _ => match ret {
             CtUnit => (s3, CtUnit),
-            _ => match branch_join_widens(rtt, ret, s3) {
+            _ => match branch_join_widens(anchor = rtt, later = ret, s = s3) {
               // #3598: a pure then-branch beside an effectful else-branch
               // joins at the else-branch's (wider) type, as the swapped
               // spelling always did.
-              Some(widened_s) => (widened_s, join_char_branch(merge_value_effect_provenance(et, tt, widened_s), tt, widened_s)),
+              Some(widened_s) => (widened_s, join_char_branch(joined = merge_value_effect_provenance(expected = et, actual = tt, s = widened_s), other = tt, s = widened_s)),
               None => {
                 // #2198: a literal else-branch carries no offset, which left this
                 // diagnostic file-only. Keep the else anchor when it exists (pinned
@@ -926,8 +926,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 } else {
                   check_assignable_set_end(string_lit_end(then_e))
                 }
-                let joined_s = check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off)
-                (joined_s, join_char_branch(merge_value_effect_provenance(tt, et, joined_s), et, joined_s))
+                let joined_s = check_assignable(expected = rtt, actual = ret, s = s3, errors = errors, what = "if branches have incompatible types", off = branch_off)
+                (joined_s, join_char_branch(joined = merge_value_effect_provenance(expected = tt, actual = et, s = joined_s), other = et, s = joined_s))
               }
             }
           }
@@ -935,10 +935,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       (if_ty, s3b, c3)
     },
-    ECall(_, _, _, _) => check_call_expr(expr, env, defs, s, c, errors, tytab, capture, lane, discarded_root, check_expr_capture, check_expr_nested, check_unmatched_call_args),
+    ECall(_, _, _, _) => check_call_expr(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = discarded_root, check_child = check_expr_capture, check_plain = check_expr_nested, check_args = check_unmatched_call_args),
     EBinOp(op, left, right, boff) => {
-      let (left_ty, s1, c1) = check_expr_capture(left, env, defs, s, c, errors, tytab, capture, lane)
-      let (right_ty, s2, c2) = check_expr_capture(right, env, defs, s1, c1, errors, tytab, capture, lane)
+      let (left_ty, s1, c1) = check_expr_capture(expr = left, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (right_ty, s2, c2) = check_expr_capture(expr = right, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
       // The DIAGNOSTIC anchor stays on an operand (the left reads as the
       // start of the offending expression, the right is the fallback for
       // `1 + x`) -- moving diagnostics to the #2435 operator offset is a
@@ -956,16 +956,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // operator's own offset (#2435) is where the reader looks.
         boff
       }
-      let left_applied = subst_apply(s2, left_ty)
-      let right_applied = subst_apply(s2, right_ty)
+      let left_applied = subst_apply(s = s2, ty = left_ty)
+      let right_applied = subst_apply(s = s2, ty = right_ty)
       // #2391 slice 2 / #2435: the typed String-lowering channel. The types
       // recorded here may still be unresolved variables; the extraction
       // resolves them against the FINAL substitution, so a binding unified
       // after this binop still classifies. The recorder anchors on the
       // binop's OWN operator offset (exact identity), with the operand walk
       // only as the fallback for desugar-synthesized binops.
-      record_string_binop_operands(capture, op, boff, left, right, left_applied, right_applied)
-      let (result_ty, s3) = infer_binop_type(op, left_applied, right_applied, env, s2, errors, tytab, bin_off)
+      record_string_binop_operands(capture = capture, op = op, own_off = boff, left = left, right = right, left_ty = left_applied, right_ty = right_applied)
+      let (result_ty, s3) = infer_binop_type(op = op, left_ty = left_applied, right_ty = right_applied, env = env, s = s2, errors = errors, tytab = tytab, off = bin_off)
       // #3549: a function has no content to compare, so `==` on a value
       // whose comparator would reach one could only answer by identity.
       let eq_typed = match result_ty {
@@ -974,20 +974,20 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       // A comparison with a payload-less constructor (`x == None`) decides by
       // the variant alone and never reaches a function.
-      if eq_typed && (op == "==" || op == "!=") && !eq_operand_is_nullary_ctor(left, defs) && !eq_operand_is_nullary_ctor(right, defs) {
-        match eq_function_operand_refusal(op, left_applied, s3, defs) {
-          Some(msg) => Array::push(errors, String::concat(msg, off_marker(bin_off))),
+      if eq_typed && (op == "==" || op == "!=") && !eq_operand_is_nullary_ctor(e = left, defs = defs) && !eq_operand_is_nullary_ctor(e = right, defs = defs) {
+        match eq_function_operand_refusal(op = op, operand = left_applied, s = s3, defs = defs) {
+          Some(msg) => Array::push(errors, value = String::concat(msg, off_marker(bin_off))),
           None => ()
         }
       } else {
         ()
       }
-      let bin_result = subst_apply(s3, result_ty)
+      let bin_result = subst_apply(s = s3, ty = result_ty)
       // #3543: an arithmetic result typed `Float` is rounded to f32 after
       // the checker ran; the row tells the rewrite which operators to wrap.
       match bin_result {
         CtFloat => if op == "+" || op == "-" || op == "*" || op == "/" {
-          record_float_arith(capture, boff, 9)
+          record_float_arith(capture = capture, off = boff, kind = 9)
         } else {
           ()
         },
@@ -996,22 +996,22 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // #3629: a `Double` / `Float` operation whose operands the lowering
       // may not see as floats (a generic call's result, an index), filed so
       // the post-check rewrite marks them; see `float_operand_binop`.
-      if float_operand_binop(op, bin_result, subst_apply(s3, left_applied), subst_apply(s3, right_applied)) {
-        record_float_arith(capture, boff, 11)
+      if float_operand_binop(op = op, result = bin_result, left = subst_apply(s = s3, ty = left_applied), right = subst_apply(s = s3, ty = right_applied)) {
+        record_float_arith(capture = capture, off = boff, kind = 11)
       } else {
         ()
       }
       if op == "+" {
-        record_add_formal(capture, boff, bin_result, env, s3)
+        record_add_formal(capture = capture, off = boff, ty = bin_result, env = env, s = s3)
       }
       (bin_result, s3, c2)
     },
     EUnaryOp(op, operand) => {
-      let (operand_ty, s1, c1) = check_expr_capture(operand, env, defs, s, c, errors, tytab, capture, lane)
+      let (operand_ty, s1, c1) = check_expr_capture(expr = operand, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
       if op == "!" {
-        match subst_apply(s1, operand_ty) {
+        match subst_apply(s = s1, ty = operand_ty) {
           CtBool => (CtBool, s1, c1),
-          CtVar(_) => match unify(operand_ty, CtBool, s1) {
+          CtVar(_) => match unify(a = operand_ty, b = CtBool, s = s1) {
             Some(s2) => (CtBool, s2, c1),
             None => (CtUnknown, s1, c1)
           },
@@ -1020,9 +1020,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // A type formal / Unknown operand is tolerated (may resolve to
             // Bool); #2408 widened "concrete" to the declared, builtin-head and
             // container routes that `type_is_ground` answers `false` for.
-            let flag = unary_operand_is_definitely_wrong(other, defs)
+            let flag = unary_operand_is_definitely_wrong(t = other, defs = defs)
             if flag {
-              Array::push(errors, "operand of `!` must be Bool")
+              Array::push(errors, value = "operand of `!` must be Bool")
             } else {
               ()
             }
@@ -1030,22 +1030,22 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
         }
       } else if op == "-" {
-        match subst_apply(s1, operand_ty) {
+        match subst_apply(s = s1, ty = operand_ty) {
           // #3653: a float negation files a float-operand row, so the
           // post-check rewrite marks its operand and neither lowering reads a
           // float the syntax does not show (a destructured binder) as an Int.
           CtDouble => {
-            record_float_arith(capture, typed_negation_operand_key(operand), 14)
+            record_float_arith(capture = capture, off = typed_negation_operand_key(operand), kind = 14)
             (CtDouble, s1, c1)
           },
           // #3543: negating an f32 value is exact, so `-x` stays a Float.
           CtFloat => {
-            record_float_arith(capture, typed_negation_operand_key(operand), 14)
-            record_float_arith(capture, typed_negation_operand_key(operand), 15)
+            record_float_arith(capture = capture, off = typed_negation_operand_key(operand), kind = 14)
+            record_float_arith(capture = capture, off = typed_negation_operand_key(operand), kind = 15)
             (CtFloat, s1, c1)
           },
           CtInt => (CtInt, s1, c1),
-          CtVar(_) => match unify(operand_ty, CtInt, s1) {
+          CtVar(_) => match unify(a = operand_ty, b = CtInt, s = s1) {
             Some(s2) => (CtInt, s2, c1),
             None => (CtUnknown, s1, c1)
           },
@@ -1054,9 +1054,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // silently. A type formal / Unknown operand is tolerated; #2408
             // widened "concrete" -- `-x` on a `Cell[Int]` used to compile clean
             // and return -237, the complemented struct pointer.
-            let flag = unary_operand_is_definitely_wrong(other, defs)
+            let flag = unary_operand_is_definitely_wrong(t = other, defs = defs)
             if flag {
-              Array::push(errors, "operand of unary `-` must be Int or Double (or Float)")
+              Array::push(errors, value = "operand of unary `-` must be Int or Double (or Float)")
             } else {
               ()
             }
@@ -1068,9 +1068,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // because the value being complemented is the 63-bit two's complement
         // integer. Typed here rather than after the `x ^ -1` lowering so the
         // diagnostic names the operator the author actually wrote.
-        match subst_apply(s1, operand_ty) {
+        match subst_apply(s = s1, ty = operand_ty) {
           CtInt => (CtInt, s1, c1),
-          CtVar(_) => match unify(operand_ty, CtInt, s1) {
+          CtVar(_) => match unify(a = operand_ty, b = CtInt, s = s1) {
             Some(s2) => (CtInt, s2, c1),
             None => (CtUnknown, s1, c1)
           },
@@ -1078,9 +1078,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // #2408: the four routes this used to spell out inline are now
             // the shared predicate, because `!` and unary `-` had the
             // identical hole and were fixed by pointing at the same one.
-            let flag = unary_operand_is_definitely_wrong(other, defs)
+            let flag = unary_operand_is_definitely_wrong(t = other, defs = defs)
             if flag {
-              Array::push(errors, "operand of `~` must be Int")
+              Array::push(errors, value = "operand of `~` must be Int")
             } else {
               ()
             }
@@ -1090,48 +1090,48 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       } else (CtUnknown, s1, c1)
     },
     EAssign(name, val, body, target_off) => {
-      let (vt, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
-      let assigned_ty = subst_apply(s1, vt)
+      let (vt, s1, c1) = check_expr_capture(expr = val, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let assigned_ty = subst_apply(s = s1, ty = vt)
       // #3343 (Codex on #3359): a value whose type may hide the region is
       // asked by what it reads, too (`retention_assign_hidden_region`).
-      let predates_region = binding_predates_active_region(name, env)
-      let hidden_region = if predates_region && !assignment_crosses_region(name, assigned_ty, env) {
-        retention_assign_hidden_region(name, val, assigned_ty, env, defs, s1)
+      let predates_region = binding_predates_active_region(name = name, env = env)
+      let hidden_region = if predates_region && !assignment_crosses_region(name = name, ty = assigned_ty, env = env) {
+        retention_assign_hidden_region(name = name, val = val, val_ty = assigned_ty, env = env, defs = defs, s = s1)
       } else {
         ""
       }
-      if assignment_crosses_region(name, assigned_ty, env) || (predates_region && (hidden_region != "" || expression_mentions_active_region(val, env, defs, s1, c1, check_expr_nested))) {
+      if assignment_crosses_region(name = name, ty = assigned_ty, env = env) || (predates_region && (hidden_region != "" || expression_mentions_active_region(expr = val, env = env, defs = defs, s = s1, c = c1, ce = check_expr_nested))) {
         let shown_ty = if hidden_region != "" {
           CtNamed(hidden_region, [])
         } else {
           assigned_ty
         }
-        Array::push(errors, String::concat(region_write_escape_message(shown_ty, env, "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(val))))
+        Array::push(errors, value = String::concat(region_write_escape_message(ty = shown_ty, env = env, region_message = "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(val))))
       }
       // The assigned value must be assignable to the variable's type
       // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).
-      let s1b = match env_lookup(env, name) {
-        Some(var_ty) => check_assignable_for(var_ty, subst_apply(s1, vt), s1, errors, "assignment type mismatch for ", name, tail_expr_off(val)),
+      let s1b = match env_lookup(env = env, name = name) {
+        Some(var_ty) => check_assignable_for(expected = var_ty, actual = subst_apply(s = s1, ty = vt), s = s1, errors = errors, what_head = "assignment type mismatch for ", what_tail = name, off = tail_expr_off(val)),
         // The mutability pass only knows which bindings are mutable. Letting
         // an absent target reach it reports the misleading `let mut` edit.
         None => {
-          Array::push(errors, String::concat("unknown name: ", String::concat(name, assign_target_marker(target_off))))
+          Array::push(errors, value = String::concat("unknown name: ", String::concat(name, assign_target_marker(target_off))))
           s1
         }
       }
-      checker_assign_call_header(env, name, val)
-      check_expr_capture(body, env, defs, s1b, c1, errors, tytab, capture, lane)
+      checker_assign_call_header(env = env, name = name, value = val)
+      check_expr_capture(expr = body, env = env, defs = defs, s = s1b, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
     },
     EAssignOp(name, aop, val, body, target_off) => {
-      let (val_ty, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
-      let s1f = match env_lookup(env, name) {
+      let (val_ty, s1, c1) = check_expr_capture(expr = val, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let s1f = match env_lookup(env = env, name = name) {
         Some(target_ty) => {
           // #3543: a compound assignment on a `Float` (or of one) is typed as
           // the binop it stands for, so `x += 1.5` on a Float is refused the
           // way `x + 1.5` is, and the row tells the rewrite to round the sum.
           // Other compound assignments keep their existing, untyped checking.
-          let target_applied = subst_apply(s1, target_ty)
-          let val_applied = subst_apply(s1, val_ty)
+          let target_applied = subst_apply(s = s1, ty = target_ty)
+          let val_applied = subst_apply(s = s1, ty = val_ty)
           let float_involved = match target_applied {
             CtFloat => true,
             _ => match val_applied {
@@ -1139,11 +1139,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               _ => false
             }
           }
-          let s1f_inner = if (float_involved || (aop == "+" && add_formal_for_type(target_applied, env, s1) != "")) && (aop == "+" || aop == "-" || aop == "*" || aop == "/") {
-            let (res_ty, s1r) = infer_binop_type(aop, target_applied, val_applied, env, s1, errors, tytab, target_off)
-            match subst_apply(s1r, res_ty) {
+          let s1f_inner = if (float_involved || (aop == "+" && add_formal_for_type(ty = target_applied, env = env, s = s1) != "")) && (aop == "+" || aop == "-" || aop == "*" || aop == "/") {
+            let (res_ty, s1r) = infer_binop_type(op = aop, left_ty = target_applied, right_ty = val_applied, env = env, s = s1, errors = errors, tytab = tytab, off = target_off)
+            match subst_apply(s = s1r, ty = res_ty) {
               CtFloat => match target_applied {
-                CtFloat => record_float_arith(capture, target_off, 10),
+                CtFloat => record_float_arith(capture = capture, off = target_off, kind = 10),
                 _ => ()
               },
               _ => ()
@@ -1155,28 +1155,28 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // #3629: the compound-assignment half of `float_operand_binop`,
           // keyed by the target offset like the Float row above.
           if aop == "+" || aop == "-" || aop == "*" || aop == "/" {
-            match subst_apply(s1f_inner, target_ty) {
-              CtDouble => record_float_arith(capture, target_off, 12),
-              CtFloat => record_float_arith(capture, target_off, 12),
+            match subst_apply(s = s1f_inner, ty = target_ty) {
+              CtDouble => record_float_arith(capture = capture, off = target_off, kind = 12),
+              CtFloat => record_float_arith(capture = capture, off = target_off, kind = 12),
               _ => ()
             }
           } else {
             ()
           }
           if aop == "+" {
-            record_add_formal(capture, target_off, subst_apply(s1f_inner, target_ty), env, s1f_inner)
+            record_add_formal(capture = capture, off = target_off, ty = subst_apply(s = s1f_inner, ty = target_ty), env = env, s = s1f_inner)
           }
           s1f_inner
         },
         None => {
-          Array::push(errors, String::concat("unknown name: ", String::concat(name, assign_target_marker(target_off))))
+          Array::push(errors, value = String::concat("unknown name: ", String::concat(name, assign_target_marker(target_off))))
           s1
         }
       }
-      check_expr_capture(body, env, defs, s1f, c1, errors, tytab, capture, lane)
+      check_expr_capture(expr = body, env = env, defs = defs, s = s1f, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
     },
     EMatch(scrutinee, arms) => {
-      let (scr_ty, s1, c1) = check_expr_capture(scrutinee, env, defs, s, c, errors, tytab, capture, lane)
+      let (scr_ty, s1, c1) = check_expr_capture(expr = scrutinee, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
       let alen = Array::length(arms)
       if alen == 0 {
         // #809: a match with ZERO arms is only produced by the guard desugar
@@ -1190,7 +1190,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         let at = if scr_off >= 0 {
           scr_off
         } else {
-          match env_lookup(env, match_temp_anchor_key()) {
+          match env_lookup(env = env, name = match_temp_anchor_key()) {
             Some(CtNamed(digits, _)) => match Int::parse(digits) {
               Some(n) => n,
               None => 0 - 1
@@ -1198,7 +1198,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => 0 - 1
           }
         }
-        Array::push(errors, String::concat("add an unguarded arm or `_ => ..` after the guarded ones: non-exhaustive match: no unguarded arm covers the scrutinee (all guards may fail)", off_marker(at)))
+        Array::push(errors, value = String::concat("add an unguarded arm or `_ => ..` after the guarded ones: non-exhaustive match: no unguarded arm covers the scrutinee (all guards may fail)", off_marker(at)))
         (CtUnknown, s1, c1)
       }
       else {
@@ -1209,12 +1209,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         let exh_base = Array::length(errors)
         // #1947: identify `let*` / `?` after lowering so diagnostics name
         // the written operator instead of the synthetic match / `return None`.
-        let rk = railway_kind_from_match(scrutinee, arms)
-        let rail_env = railway_origin_env(env, rk)
+        let rk = railway_kind_from_match(scrutinee = scrutinee, arms = arms)
+        let rail_env = railway_origin_env(env = env, kind = rk)
         if rk != 0 {
-          let zonked_scr = subst_apply(s1, scr_ty)
+          let zonked_scr = subst_apply(s = s1, ty = scr_ty)
           if type_is_concrete_non_option(zonked_scr) {
-            Array::push(errors, railway_not_option_msg(rk, type_to_string(zonked_scr), railway_anchor_off(arms, scrutinee)))
+            Array::push(errors, value = railway_not_option_msg(kind = rk, got = type_to_string(zonked_scr), off = railway_anchor_off(arms = arms, scrutinee = scrutinee)))
           } else {
             ()
           }
@@ -1235,7 +1235,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         let mut ai = 0
         let header_arms = checker_call_header_snapshot()
         while ai < alen {
-          let (pat, body) = Array::get(arms, ai)
+          let (pat, body) = Array::get(arms, at = ai)
           // #951: `A(v) | B(v) => v` (or any or-pattern binding a variable in
           // either branch) passes `check_pattern` (which only walks the LEFT
           // branch) but codegen has no per-branch binding-extraction path for
@@ -1252,38 +1252,38 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             } else {
               railway_expr_off(scrutinee)
             }
-            Array::push(errors, String::concat("or-pattern bindings are not supported yet: `A(v) | B(v)`-style patterns cannot bind variables in an or-branch (rewrite without a shared binding, e.g. separate arms with the same body, or bind after matching)", off_marker(or_off)))
+            Array::push(errors, value = String::concat("or-pattern bindings are not supported yet: `A(v) | B(v)`-style patterns cannot bind variables in an or-branch (rewrite without a shared binding, e.g. separate arms with the same body, or bind after matching)", off_marker(or_off)))
           } else {
             ()
           }
           let repeated = pat_repeated_binder(pat)
           if repeated != "" {
-            Array::push(errors, String::concat("rename one of the two `\{repeated}` in this pattern: a pattern binds each name once (to compare two parts, bind them apart and test `a == b` in a guard)", off_marker(railway_expr_off(scrutinee))))
+            Array::push(errors, value = String::concat("rename one of the two `\{repeated}` in this pattern: a pattern binds each name once (to compare two parts, bind them apart and test `a == b` in a guard)", off_marker(railway_expr_off(scrutinee))))
           }
           let pat_err_before = Array::length(errors)
-          let arm_env = check_pattern(pat, scr_ty, rail_env, defs, errors)
+          let arm_env = check_pattern(pat = pat, scrutinee_ty = scr_ty, env = rail_env, defs = defs, errors = errors)
           // #3640: `Some(t)` out of a spawn-shaped function's optional closure
           // parameter is trusted like the parameter (`spawn_safe_marker`).
-          let arm_env = match spawn_safe_option_binder(env, scrutinee, pat) {
-            Some(t) => env_bind(arm_env, spawn_safe_marker(t), CtUnit),
+          let arm_env = match spawn_safe_option_binder(env = env, scrutinee = scrutinee, pat = pat) {
+            Some(t) => env_bind(env = arm_env, name = spawn_safe_marker(t), ty = CtUnit),
             None => arm_env
           }
           // #3548: a pattern carries no offset, so what `check_pattern`
           // reports (a constructor bound with the wrong arity, ...) is
           // anchored at its arm -- the body, or the scrutinee when the body
           // has none -- rather than printed with no position at all.
-          anchor_unlocated_errors(errors, pat_err_before, railway_expr_off(body), railway_expr_off(scrutinee))
+          anchor_unlocated_errors(errors = errors, from = pat_err_before, off = railway_expr_off(body), fallback = railway_expr_off(scrutinee))
           // #3419: a constructor the scrutinee's type cannot have makes the
           // arm dead code. A `let*` / `?` desugar is reported above instead.
           if rk == 0 {
-            match ctor_pattern_scrutinee_mismatch(pat, subst_apply(si, scr_ty), rail_env, defs) {
-              Some(msg) => Array::push(errors, String::concat(msg, off_marker(railway_expr_off(scrutinee)))),
+            match ctor_pattern_scrutinee_mismatch(pat = pat, scrutinee_ty = subst_apply(s = si, ty = scr_ty), env = rail_env, defs = defs) {
+              Some(msg) => Array::push(errors, value = String::concat(msg, off_marker(railway_expr_off(scrutinee)))),
               None => ()
             }
           } else {
             ()
           }
-          let (arm_ty, ns, nc) = check_expr_capture(body, arm_env, defs, si, ci, errors, tytab, capture, lane)
+          let (arm_ty, ns, nc) = check_expr_capture(expr = body, env = arm_env, defs = defs, s = si, c = ci, errors = errors, tytab = tytab, capture = capture, lane = lane)
           checker_call_header_rewind(header_arms)
           si = ns
           ci = nc
@@ -1300,8 +1300,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             if arm_tail_all_return(body) {
               ()
             } else {
-              si = refine_open_option_branch(result_ty, arm_ty, si)
-              result_ty = join_char_branch(merge_value_effect_provenance(result_ty, arm_ty, si), arm_ty, si)
+              si = refine_open_option_branch(result = result_ty, other = arm_ty, s = si)
+              result_ty = join_char_branch(joined = merge_value_effect_provenance(expected = result_ty, actual = arm_ty, s = si), other = arm_ty, s = si)
             }
             // Tolerate a `CtUnit` arm (statement-position match); rely on
             // check_assignable's ground/ground gate otherwise. Also tolerate a
@@ -1309,7 +1309,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // lowers to `match val { Some(v) => v, None => return None }` — the
             // `return` arm yields no value to the match, so it must not force
             // the match's result type (it would clash `T` vs `Option[T]`).
-            let r2 = subst_apply(si, arm_ty)
+            let r2 = subst_apply(s = si, ty = arm_ty)
             si = if arm_tail_all_return(body) {
               si
             } else {
@@ -1320,16 +1320,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 } else {
                   // A `Unit` first arm is a statement-position match, the
                   // way a `Unit` branch makes an `if` a statement.
-                  match subst_apply(si, result_ty) {
+                  match subst_apply(s = si, ty = result_ty) {
                     CtUnit => si,
                     // #3598: an arm wider in its function rows than the
                     // arms before it becomes the match's type.
-                    _ => match branch_join_widens(result_ty, r2, si) {
+                    _ => match branch_join_widens(anchor = result_ty, later = r2, s = si) {
                       Some(widened_s) => {
-                        result_ty = join_char_branch(merge_value_effect_provenance(arm_ty, result_ty, widened_s), result_ty, widened_s)
+                        result_ty = join_char_branch(joined = merge_value_effect_provenance(expected = arm_ty, actual = result_ty, s = widened_s), other = result_ty, s = widened_s)
                         widened_s
                       },
-                      None => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", tail_expr_off(body))
+                      None => check_assignable(expected = result_ty, actual = r2, s = si, errors = errors, what = "match arms have incompatible types", off = tail_expr_off(body))
                     }
                   }
                 }
@@ -1338,31 +1338,31 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
           ai = ai + 1
         }
-        report_railway_after_arms(rk, env, si, result_ty, arms, scrutinee, errors)
+        report_railway_after_arms(kind = rk, env = env, s = si, result_ty = result_ty, arms = arms, scrutinee = scrutinee, errors = errors)
         // Exhaustiveness: when the scrutinee is a concrete user enum, the arms
         // must either include a catch-all (`_` / bind) or cover EVERY variant —
         // otherwise an unhandled variant traps at runtime. Conservative: only a
         // concrete enum whose definition is known is checked; anything else
         // (builtin Option/bool, type vars, non-enum) is left alone.
-        let enum_name_opt = match subst_apply(si, scr_ty) {
+        let enum_name_opt = match subst_apply(s = si, ty = scr_ty) {
           CtEnum(en) => Some(en),
           CtNamed(en, _) => Some(en),
           _ => None
         }
         match enum_name_opt {
-          Some(en) => match find_typedef(defs, en) {
+          Some(en) => match find_typedef(defs = defs, name = en) {
             Some(TDEnum(_, _, variants)) => {
               let mut has_catchall = false
               let covered = array_empty()
               let mut ax = 0
               while ax < Array::length(arms) {
-                let (apat, _) = Array::get(arms, ax)
+                let (apat, _) = Array::get(arms, at = ax)
                 if pat_is_catchall(apat) {
                   has_catchall = true
                 } else {
                   ()
                 }
-                collect_ctor_names_into(apat, covered)
+                collect_ctor_names_into(pat = apat, acc = covered)
                 ax = ax + 1
               }
               if has_catchall {
@@ -1370,11 +1370,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               } else {
                 let mut vi = 0
                 while vi < Array::length(variants) {
-                  let (vname, _) = Array::get(variants, vi)
+                  let (vname, _) = Array::get(variants, at = vi)
                   let mut found = false
                   let mut ci2 = 0
                   while ci2 < Array::length(covered) {
-                    if Array::get(covered, ci2) == vname {
+                    if Array::get(covered, at = ci2) == vname {
                       found = true
                     } else {
                       ()
@@ -1384,7 +1384,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   if found {
                     ()
                   } else {
-                    Array::push(errors, String::concat("non-exhaustive match: variant `", String::concat(vname, String::concat("` of enum ", String::concat(en, String::concat(" is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))))))
+                    Array::push(errors, value = String::concat("non-exhaustive match: variant `", String::concat(vname, String::concat("` of enum ", String::concat(en, String::concat(" is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))))))
                   }
                   vi = vi + 1
                 }
@@ -1418,31 +1418,31 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           _ => false
         }
         if alen >= 2 || flat_guard_residual {
-          match subst_apply(si, scr_ty) {
+          match subst_apply(s = si, ty = scr_ty) {
             CtOption(_) => {
               let mut opt_catchall = false
               let opt_covered = array_empty()
               let mut oax = 0
               while oax < Array::length(arms) {
-                let (oapat, _) = Array::get(arms, oax)
+                let (oapat, _) = Array::get(arms, at = oax)
                 if pat_is_catchall(oapat) {
                   opt_catchall = true
                 } else {
                   ()
                 }
-                collect_ctor_names_into(oapat, opt_covered)
+                collect_ctor_names_into(pat = oapat, acc = opt_covered)
                 oax = oax + 1
               }
               if opt_catchall {
                 ()
               } else {
-                if !flat_names_contain(opt_covered, "Some") {
-                  Array::push(errors, String::concat("non-exhaustive match: variant `Some` of Option is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
+                if !flat_names_contain(names = opt_covered, target = "Some") {
+                  Array::push(errors, value = String::concat("non-exhaustive match: variant `Some` of Option is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
                 } else {
                   ()
                 }
-                if !flat_names_contain(opt_covered, "None") {
-                  Array::push(errors, String::concat("non-exhaustive match: variant `None` of Option is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
+                if !flat_names_contain(names = opt_covered, target = "None") {
+                  Array::push(errors, value = String::concat("non-exhaustive match: variant `None` of Option is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
                 } else {
                   ()
                 }
@@ -1453,25 +1453,25 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               let bool_covered = array_empty()
               let mut bax = 0
               while bax < Array::length(arms) {
-                let (bapat, _) = Array::get(arms, bax)
+                let (bapat, _) = Array::get(arms, at = bax)
                 if pat_is_catchall(bapat) {
                   bool_catchall = true
                 } else {
                   ()
                 }
-                collect_bool_pats_into(bapat, bool_covered)
+                collect_bool_pats_into(pat = bapat, acc = bool_covered)
                 bax = bax + 1
               }
               if bool_catchall {
                 ()
               } else {
-                if !flat_names_contain(bool_covered, "true") {
-                  Array::push(errors, String::concat("non-exhaustive match: `true` is not handled for a Bool scrutinee (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
+                if !flat_names_contain(names = bool_covered, target = "true") {
+                  Array::push(errors, value = String::concat("non-exhaustive match: `true` is not handled for a Bool scrutinee (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
                 } else {
                   ()
                 }
-                if !flat_names_contain(bool_covered, "false") {
-                  Array::push(errors, String::concat("non-exhaustive match: `false` is not handled for a Bool scrutinee (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
+                if !flat_names_contain(names = bool_covered, target = "false") {
+                  Array::push(errors, value = String::concat("non-exhaustive match: `false` is not handled for a Bool scrutinee (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
                 } else {
                   ()
                 }
@@ -1492,12 +1492,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           let exh_pats = array_empty()
           let mut exh_i = 0
           while exh_i < alen {
-            let (exh_p, _) = Array::get(arms, exh_i)
-            Array::push(exh_pats, exh_p)
+            let (exh_p, _) = Array::get(arms, at = exh_i)
+            Array::push(exh_pats, value = exh_p)
             exh_i = exh_i + 1
           }
-          match match_nonexhaustive_witness(subst_apply(si, scr_ty), exh_pats, defs) {
-            Some(exh_wit) => Array::push(errors, String::concat("non-exhaustive match: pattern `", String::concat(exh_wit, String::concat("` is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee)))))),
+          match match_nonexhaustive_witness(scr_ty = subst_apply(s = si, ty = scr_ty), pats = exh_pats, defs = defs) {
+            Some(exh_wit) => Array::push(errors, value = String::concat("non-exhaustive match: pattern `", String::concat(exh_wit, String::concat("` is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee)))))),
             None => ()
           }
         } else {
@@ -1525,19 +1525,19 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let mut henv_shared = env
       let mut hpi = 0
       while hpi < Array::length(harms) {
-        let (hppat, _) = Array::get(harms, hpi)
+        let (hppat, _) = Array::get(harms, at = hpi)
         match hppat {
           PCtor(hpq, _) => {
-            let hpci = String::index_of(hpq, "::")
+            let hpci = String::index_of(hpq, needle = "::")
             if hpci > 0 {
-              let hpeff = String::substring(hpq, 0, hpci)
-              if effect_is_declared(defs, hpeff) && !flat_names_contain(hinst_seen, hpeff) {
-                let hpetps = effect_tparams(defs, hpeff)
+              let hpeff = String::substring(hpq, start = 0, end = hpci)
+              if effect_is_declared(defs = defs, eff = hpeff) && !flat_names_contain(names = hinst_seen, target = hpeff) {
+                let hpetps = effect_tparams(defs = defs, eff = hpeff)
                 if Array::length(hpetps) > 0 {
-                  let (hptargs, hpnc) = effect_fresh_targs(hpetps, hc0)
+                  let (hptargs, hpnc) = effect_fresh_targs(etps = hpetps, c = hc0)
                   hc0 = hpnc
-                  Array::push(hinst_seen, hpeff)
-                  henv_shared = env_bind(henv_shared, effect_inst_env_key(hpeff), CtTuple(hptargs))
+                  Array::push(hinst_seen, value = hpeff)
+                  henv_shared = env_bind(env = henv_shared, name = effect_inst_env_key(hpeff), ty = CtTuple(hptargs))
                 } else {
                   ()
                 }
@@ -1553,7 +1553,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         hpi = hpi + 1
       }
       let hsites_from = Array::length(call_callee_sites)
-      let (hty, hs, hc) = check_expr_capture(body, henv_shared, defs, s, hc0, errors, tytab, capture, lane)
+      let (hty, hs, hc) = check_expr_capture(expr = body, env = henv_shared, defs = defs, s = s, c = hc0, errors = errors, tytab = tytab, capture = capture, lane = lane)
       // #813: validate handler arms against DECLARED effects (TDEffect).
       // Previously arms were never checked at all: a typo'd op name silently
       // handled a different op, payload binds carried garbage types, and
@@ -1576,11 +1576,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let mut hai = 0
       while hai < Array::length(harms) {
         // A split or-pattern arm carries its group stamp around the body.
-        let (hpat, hbody_stamped) = Array::get(harms, hai)
+        let (hpat, hbody_stamped) = Array::get(harms, at = hai)
         let (hgroup, hbody) = handler_or_arm_stamp(hbody_stamped)
         // The body's substitution gives the actual payload type. Diagnose
         // the pattern before names it failed to bind are read by the arm.
-        reject_handler_arm_payload_patterns(hpat, hbody, body, henv_shared, defs, hs1, harms, errors)
+        reject_handler_arm_payload_patterns(arm_pat = hpat, arm_body = hbody, handle_body = body, env = henv_shared, defs = defs, s = hs1, siblings = harms, errors = errors)
         // A handler arm binds its payloads in order, so `E::Op(x, x)` used
         // to let the second payload shadow the first: refused as the `match`
         // arm's `(x, x)` is.
@@ -1591,30 +1591,30 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else {
             railway_expr_off(body)
           }
-          Array::push(errors, String::concat("rename one of the two `\{hrepeated}` in this handler arm: a pattern binds each name once (to compare two payloads, bind them apart and test `a == b` in the arm body)", off_marker(hrep_off)))
+          Array::push(errors, value = String::concat("rename one of the two `\{hrepeated}` in this handler arm: a pattern binds each name once (to compare two payloads, bind them apart and test `a == b` in the arm body)", off_marker(hrep_off)))
         }
         match hpat {
           PCtor(hqname, hbinds) => {
-            let hci = String::index_of(hqname, "::")
-            if hci > 0 && effect_is_declared(defs, String::substring(hqname, 0, hci)) {
-              match effect_op_sig(defs, hqname) {
+            let hci = String::index_of(hqname, needle = "::")
+            if hci > 0 && effect_is_declared(defs = defs, eff = String::substring(hqname, start = 0, end = hci)) {
+              match effect_op_sig(defs = defs, qname = hqname) {
                 Some(hsig) => {
                   let (hparams_decl, hret_decl) = hsig
-                  let heff_name = String::substring(hqname, 0, hci)
-                  let hetps = effect_tparams(defs, heff_name)
+                  let heff_name = String::substring(hqname, start = 0, end = hci)
+                  let hetps = effect_tparams(defs = defs, eff = heff_name)
                   let (hparams, hret) = if Array::length(hetps) > 0 {
-                    let (htargs, hnc) = effect_instantiate(henv_shared, heff_name, hetps, hc1)
+                    let (htargs, hnc) = effect_instantiate(env = henv_shared, eff = heff_name, etps = hetps, c = hc1)
                     hc1 = hnc
                     (for p in hparams_decl {
-                      subst_type_params(p, hetps, htargs)
-                    }, subst_type_params(hret_decl, hetps, htargs))
+                      subst_type_params(ty = p, params = hetps, args = htargs)
+                    }, subst_type_params(ty = hret_decl, params = hetps, args = htargs))
                   } else {
                     (hparams_decl, hret_decl)
                   }
                   // #3301 (Codex on #3337): the copies of an or-pattern arm
                   // are compared at the type this handle instantiated, not
                   // at the declaration's template.
-                  record_handler_or_arm_resume(hor_instance, hgroup, hbody, hqname, hret)
+                  record_handler_or_arm_resume(instance = hor_instance, group = hgroup, body = hbody, qname = hqname, ret = hret)
                   let hplen = Array::length(hparams)
                   let hblen = Array::length(hbinds)
                   // The op's declared arity, plus optionally one trailing
@@ -1628,9 +1628,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     // #828: this shape is EITHER a payload-arity typo or an
                     // intended k-convention continuation — say both, since a
                     // plain extra binder was misdiagnosed as k-convention.
-                    Array::push(errors, String::concat("handler arm ", String::concat(hqname, String::concat(String::concat(" expects ", String::concat(__to_string(hplen), " payload binding(s), got ")), String::concat(__to_string(hblen), " — either drop the extra binder, or if it was meant as a non-tail continuation (k-convention): that is not supported by the build path; use resume(v) (#814, evidence-passing handlers #817)")))))
+                    Array::push(errors, value = String::concat("handler arm ", String::concat(hqname, String::concat(String::concat(" expects ", String::concat(__to_string(hplen), " payload binding(s), got ")), String::concat(__to_string(hblen), " — either drop the extra binder, or if it was meant as a non-tail continuation (k-convention): that is not supported by the build path; use resume(v) (#814, evidence-passing handlers #817)")))))
                   } else if hblen != hplen {
-                    Array::push(errors, String::concat("handler arm ", String::concat(hqname, String::concat(" expects ", String::concat(__to_string(hplen), " payload binding(s)")))))
+                    Array::push(errors, value = String::concat("handler arm ", String::concat(hqname, String::concat(" expects ", String::concat(__to_string(hplen), " payload binding(s)")))))
                   } else {
                     ()
                   }
@@ -1653,15 +1653,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let mut hbi = 0
                   let mut hbinds_shadow_resume = false
                   while hbi < hblen {
-                    match Array::get(hbinds, hbi) {
+                    match Array::get(hbinds, at = hbi) {
                       PBind(hbname) => {
                         if hbname == "resume" {
                           hbinds_shadow_resume = true
                         } else {
                           ()
                         }
-                        henv = env_bind(henv, hbname, if hbi < hplen {
-                          Array::get(hparams, hbi)
+                        henv = env_bind(env = henv, name = hbname, ty = if hbi < hplen {
+                          Array::get(hparams, at = hbi)
                         } else {
                           CtUnknown
                         })
@@ -1692,15 +1692,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   // is checked against the OPERATION's return type below --
                   // which is what catches `if c { resume("ok") } else { 7 }`
                   // for a String operation (Codex P0 on #2985).
-                  let harm_suspends = arm_refs_resume_value(hbody, hbinds_shadow_resume)
+                  let harm_suspends = arm_refs_resume_value(e = hbody, sh = hbinds_shadow_resume)
                   let henv_arm = if hbinds_shadow_resume {
                     henv
                   } else if harm_suspends {
-                    env_bind(henv, "resume", CtFn([hret], subst_apply(hs1, hres), None))
+                    env_bind(env = henv, name = "resume", ty = CtFn([hret], subst_apply(s = hs1, ty = hres), None))
                   } else {
-                    env_bind(henv, "resume", CtFn([hret], hret, None))
+                    env_bind(env = henv, name = "resume", ty = CtFn([hret], hret, None))
                   }
-                  let (harm_ty, hns, hnc) = check_expr_capture(hbody, henv_arm, defs, hs1, hc1, errors, tytab, capture, lane)
+                  let (harm_ty, hns, hnc) = check_expr_capture(expr = hbody, env = henv_arm, defs = defs, s = hs1, c = hc1, errors = errors, tytab = tytab, capture = capture, lane = lane)
                   checker_call_header_rewind(header_handlers)
                   hs1 = hns
                   hc1 = hnc
@@ -1728,18 +1728,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let mut harm_bare = false
                   if hbinds_shadow_resume {
                     harm_bare = true
-                    Array::push(errors, String::concat("handler arm `", String::concat(hqname, String::concat("` binds a payload named `resume`, which hides the continuation: rename the binder so the arm can end in resume(...)", off_marker(tail_expr_off(hbody))))))
+                    Array::push(errors, value = String::concat("handler arm `", String::concat(hqname, String::concat("` binds a payload named `resume`, which hides the continuation: rename the binder so the arm can end in resume(...)", off_marker(tail_expr_off(hbody))))))
                   } else if !harm_suspends {
-                    match arm_first_bare_tail(hbody, false) {
+                    match arm_first_bare_tail(e = hbody, sh = false) {
                       Some(bare) => {
                         harm_bare = true
                         // #3548: a literal tail has no offset; the arm's own
                         // is the nearest, and the message says which tail.
                         let bare_off = railway_expr_off(bare)
                         if bare_off >= 0 {
-                          Array::push(errors, String::concat("handler arm `", String::concat(hqname, String::concat("` must pass its value back with resume(...): write `resume(<value>)` here, or leave the arm with `return` / `throw` -- a tail value without resume(...) does not resume the perform", off_marker(bare_off)))))
+                          Array::push(errors, value = String::concat("handler arm `", String::concat(hqname, String::concat("` must pass its value back with resume(...): write `resume(<value>)` here, or leave the arm with `return` / `throw` -- a tail value without resume(...) does not resume the perform", off_marker(bare_off)))))
                         } else {
-                          Array::push(errors, String::concat("handler arm `", String::concat(hqname, String::concat("` must pass its value back with resume(...) on every branch: a branch of this arm ends in a plain value -- write `resume(<value>)` there, or leave the arm with `return` / `throw` -- a tail value without resume(...) does not resume the perform", off_marker(railway_expr_off(hbody))))))
+                          Array::push(errors, value = String::concat("handler arm `", String::concat(hqname, String::concat("` must pass its value back with resume(...) on every branch: a branch of this arm ends in a plain value -- write `resume(<value>)` there, or leave the arm with `return` / `throw` -- a tail value without resume(...) does not resume the perform", off_marker(railway_expr_off(hbody))))))
                         }
                       },
                       None => ()
@@ -1747,13 +1747,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   } else {
                     ()
                   }
-                  let harm_now = subst_apply(hs1, harm_ty)
+                  let harm_now = subst_apply(s = hs1, ty = harm_ty)
                   if harm_suspends {
-                    let hres_now = subst_apply(hs1, hres)
+                    let hres_now = subst_apply(s = hs1, ty = hres)
                     if hres_now is CtUnknown {
                       hres = harm_now
                     } else {
-                      hs1 = check_assignable(hres_now, harm_now, hs1, errors, "handler arm value type mismatch with the handle body's type", tail_expr_off(hbody))
+                      hs1 = check_assignable(expected = hres_now, actual = harm_now, s = hs1, errors = errors, what = "handler arm value type mismatch with the handle body's type", off = tail_expr_off(hbody))
                     }
                   } else if harm_bare || arm_tail_all_return(hbody) {
                     // A bare tail was already refused above, and its type
@@ -1763,8 +1763,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     // checked against `__return__` (Codex P2 on #2985).
                     ()
                   } else {
-                    let hret_now = subst_apply(hs1, hret)
-                    hs1 = check_assignable(hret_now, harm_now, hs1, errors, "handler arm value type mismatch with the operation's return type", tail_expr_off(hbody))
+                    let hret_now = subst_apply(s = hs1, ty = hret)
+                    hs1 = check_assignable(expected = hret_now, actual = harm_now, s = hs1, errors = errors, what = "handler arm value type mismatch with the operation's return type", off = tail_expr_off(hbody))
                   }
                   // resume(x): x must be assignable to the op's declared
                   // return type (ground-gated). Throwaway walk — nested
@@ -1776,21 +1776,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let hresume_env = if hbinds_shadow_resume {
                     henv
                   } else {
-                    env_bind(henv, "resume", resume_continuation_marker())
+                    env_bind(env = henv, name = "resume", ty = resume_continuation_marker())
                   }
-                  let (hrv_s, hrv_c) = check_resume_values(hbody, hret, hresume_env, defs, hs1, hc1, errors, tytab, capture)
+                  let (hrv_s, hrv_c) = check_resume_values(e = hbody, ret_ty = hret, env = hresume_env, defs = defs, s = hs1, c = hc1, errors = errors, tytab = tytab, capture = capture)
                   hs1 = hrv_s
                   hc1 = hrv_c
                 },
-                None => Array::push(errors, String::concat("handler arm `", String::concat(String::substring(hqname, hci + 2, String::length(hqname)), String::concat("` is not an operation of effect ", String::substring(hqname, 0, hci)))))
+                None => Array::push(errors, value = String::concat("handler arm `", String::concat(String::substring(hqname, start = hci + 2, end = String::length(hqname)), String::concat("` is not an operation of effect ", String::substring(hqname, start = 0, end = hci)))))
               }
-            } else if hci > 0 && is_exception_effect_name(String::substring(hqname, 0, hci)) {
+            } else if hci > 0 && is_exception_effect_name(String::substring(hqname, start = 0, end = hci)) {
               // #640 Stage 1: Error arms stay OUT of the #813 arm validation
               // above (payload/arity/exhaustiveness unchanged), but a
               // resume(...) inside one is rejected — Error is non-resumable
               // (`throw` / `perform Exception::Throw` unwind for good; the arm's
               // value IS the handle result, so the resume never ran).
-              reject_resume_in_error_arm(hbody, errors)
+              reject_resume_in_error_arm(e = hbody, errors = errors)
               // #938: an Error arm never resumes, so its value IS the handle
               // result — type the body (Throw's payload binds as String) and
               // unify with the handle body's type. Ground-gated, so arms
@@ -1800,7 +1800,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // arm body is typed (below).
               let mut ea_erased: Option[(String, Type)] = None
               if Array::length(hbinds) == 1 {
-                match Array::get(hbinds, 0) {
+                match Array::get(hbinds, at = 0) {
                   PBind(eabname) => {
                     // #2963: a KINDED arm (`Exception[IoErr]::Throw(e)`) binds
                     // its payload at the kind's type -- that is the one thing
@@ -1833,10 +1833,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     // pinned to String; a use at another type is refused with
                     // the kinded arm as the edit, since only
                     // `Exception[K]::Throw(e)` knows the payload's type.
-                    let eakind = exception_effect_kind(String::substring(hqname, 0, hci))
+                    let eakind = exception_effect_kind(String::substring(hqname, start = 0, end = hci))
                     let eaty = if String::length(eakind) > 0 {
                       handle {
-                        let (kind_te, _) = parse_type(lex(eakind), 0)
+                        let (kind_te, _) = parse_type(tokens = lex(eakind), pos = 0)
                         // A formal is a BINDER, so it wins over `defs`: with
                         // `import ./m { Hue as T }` in scope, plain resolution
                         // turned the kind's `T` into `Hue` before the env
@@ -1844,42 +1844,42 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         // imported enum while the instantiation threw an Int
                         // (Codex P0 on #2985, the #1510 shape). The names the
                         // env binds as type variables are shadowed first.
-                        let kind_shadow = exception_kind_formals_in_env(kind_te, eaenv, array_empty())
+                        let kind_shadow = exception_kind_formals_in_env(te = kind_te, env = eaenv, acc = array_empty())
                         // #3018: the kind is a TYPE, and an undeclared one
                         // (`Exception[IoError]` with no `IoError` in scope) was
                         // bound as an opaque nominal the arm body could hand
                         // to `String::length`. Refused like an unknown type in
                         // a `let` annotation.
-                        report_unknown_type_names(kind_te, defs, kind_shadow, eaenv, array_empty(), "an exception kind", errors)
+                        report_unknown_type_names(te = kind_te, defs = defs, shadow = kind_shadow, env = eaenv, row_binders = array_empty(), where_label = "an exception kind", errors = errors)
                         // #3033: the arm's kind is compared as the type it names.
-                        record_exception_kind_resolution(eakind, kind_te, defs, kind_shadow)
-                        resolve_tparams_in(resolve_type_expr_shadowed(kind_te, defs, kind_shadow), eaenv)
+                        record_exception_kind_resolution(kind = eakind, kind_te = kind_te, defs = defs, formals = kind_shadow)
+                        resolve_tparams_in(ty = resolve_type_expr_shadowed(te = kind_te, defs = defs, shadow = kind_shadow), env = eaenv)
                       } with { Exception::Throw(_unreadable) => CtUnknown }
                     } else {
                       let (ea_tv, ea_nc) = fresh_var(hc1)
                       // A rethrow `throw(m)` stays a throw of no known kind.
-                      Array::push(erased_throw_binder_vars, hc1)
+                      Array::push(erased_throw_binder_vars, value = hc1)
                       hc1 = ea_nc
                       ea_erased = Some((eabname, ea_tv))
                       ea_tv
                     }
-                    eaenv = env_bind(eaenv, eabname, eaty)
+                    eaenv = env_bind(env = eaenv, name = eabname, ty = eaty)
                   },
                   // #2983: an arm that does not bind its payload
                   // (`Exception[Nope]::Throw(_)`) still names its kind, and
                   // the kind must be a type in scope exactly as above -- an
                   // undeclared name or an effectset was accepted here.
                   _ => {
-                    let wkind = exception_effect_kind(String::substring(hqname, 0, hci))
+                    let wkind = exception_effect_kind(String::substring(hqname, start = 0, end = hci))
                     if String::length(wkind) > 0 {
                       handle {
-                        let (wkind_te, _) = parse_type(lex(wkind), 0)
-                        let wshadow = exception_kind_formals_in_env(wkind_te, eaenv, array_empty())
-                        report_unknown_type_names(wkind_te, defs, wshadow, eaenv, array_empty(), "an exception kind", errors)
+                        let (wkind_te, _) = parse_type(tokens = lex(wkind), pos = 0)
+                        let wshadow = exception_kind_formals_in_env(te = wkind_te, env = eaenv, acc = array_empty())
+                        report_unknown_type_names(te = wkind_te, defs = defs, shadow = wshadow, env = eaenv, row_binders = array_empty(), where_label = "an exception kind", errors = errors)
                         // #3033: compared as the type it names, as a binding
                         // arm's is -- `Exception[E]::Throw(_)` with `type E =
                         // IoErr` catches `IoErr` (Codex on #3061).
-                        record_exception_kind_resolution(wkind, wkind_te, defs, wshadow)
+                        record_exception_kind_resolution(kind = wkind, kind_te = wkind_te, defs = defs, formals = wshadow)
                       } with { Exception::Throw(_unreadable) => () }
                     }
                   }
@@ -1893,27 +1893,27 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // code binds may reach state the value escaped to.
               let ea_mark = match ea_erased {
                 Some((ea_name, ea_tv)) => match ea_tv {
-                  CtVar(ea_id) => erased_throw_arm_enter(ea_id, ea_name, hbody, (x, off) -> !builtin_resolves_at(eaenv, x, off)),
+                  CtVar(ea_id) => erased_throw_arm_enter(var_id = ea_id, binder = ea_name, body = hbody, outer_state = (x, off) -> !builtin_resolves_at(env = eaenv, name = x, ident_off = off)),
                   _ => 0 - 1
                 },
                 None => 0 - 1
               }
-              let (earm_ty, eans, eanc) = check_expr_capture(hbody, eaenv, defs, hs1, hc1, errors, tytab, capture, lane)
+              let (earm_ty, eans, eanc) = check_expr_capture(expr = hbody, env = eaenv, defs = defs, s = hs1, c = hc1, errors = errors, tytab = tytab, capture = capture, lane = lane)
               checker_call_header_rewind(header_handlers)
               if ea_mark >= 0 {
                 erased_throw_arm_leave(ea_mark)
               }
               hs1 = eans
               hc1 = eanc
-              let eres_now = subst_apply(hs1, hres)
-              let earm_now = subst_apply(hs1, earm_ty)
+              let eres_now = subst_apply(s = hs1, ty = hres)
+              let earm_now = subst_apply(s = hs1, ty = earm_ty)
               if eres_now is CtUnknown {
                 hres = earm_now
               } else {
-                hs1 = check_assignable(eres_now, earm_now, hs1, errors, "handler arm value type mismatch with the handle body's type", tail_expr_off(hbody))
+                hs1 = check_assignable(expected = eres_now, actual = earm_now, s = hs1, errors = errors, what = "handler arm value type mismatch with the handle body's type", off = tail_expr_off(hbody))
               }
               match ea_erased {
-                Some((ea_name, ea_tv)) => hs1 = erased_throw_binder_settle(ea_name, ea_tv, hs1, errors, tail_expr_off(hbody)),
+                Some((ea_name, ea_tv)) => hs1 = erased_throw_binder_settle(name = ea_name, var = ea_tv, s = hs1, errors = errors, off = tail_expr_off(hbody)),
                 None => ()
               }
             } else {
@@ -1934,9 +1934,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // is not matched by either effect lowering, so an or-pattern of
             // them would run for every payload; the split left it whole.
             if handler_or_arm_tests_payload(hpat) {
-              Array::push(errors, String::concat("write one handler arm per operation and test the payload with `if` in its body (`P(n) => if n == 1 { .. } else { .. }`): an or-pattern handler arm cannot match a payload's value (`P(1) | Q(_) => ..`)", off_marker(por_off)))
+              Array::push(errors, value = String::concat("write one handler arm per operation and test the payload with `if` in its body (`P(n) => if n == 1 { .. } else { .. }`): an or-pattern handler arm cannot match a payload's value (`P(1) | Q(_) => ..`)", off_marker(por_off)))
             } else {
-              Array::push(errors, String::concat("write one handler arm per operation, or `_` for the payloads: an or-pattern arm cannot bind a payload (`A(v) | B(v) => ..`), but separate arms may repeat the same body", off_marker(por_off)))
+              Array::push(errors, value = String::concat("write one handler arm per operation, or `_` for the payloads: an or-pattern arm cannot bind a payload (`A(v) | B(v) => ..`), but separate arms may repeat the same body", off_marker(por_off)))
             }
           },
           _ => ()
@@ -1952,13 +1952,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       checker_call_header_merge(header_handlers)
       let mut hxi = 0
       while hxi < Array::length(harms) {
-        let (hxpat, _) = Array::get(harms, hxi)
+        let (hxpat, _) = Array::get(harms, at = hxi)
         match hxpat {
           PCtor(hxq, _) => {
-            let hxci = String::index_of(hxq, "::")
-            if hxci > 0 && effect_is_declared(defs, String::substring(hxq, 0, hxci)) {
-              Array::push(hx_eff, String::substring(hxq, 0, hxci))
-              Array::push(hx_ops, String::substring(hxq, hxci + 2, String::length(hxq)))
+            let hxci = String::index_of(hxq, needle = "::")
+            if hxci > 0 && effect_is_declared(defs = defs, eff = String::substring(hxq, start = 0, end = hxci)) {
+              Array::push(hx_eff, value = String::substring(hxq, start = 0, end = hxci))
+              Array::push(hx_ops, value = String::substring(hxq, start = hxci + 2, end = String::length(hxq)))
             } else {
               ()
             }
@@ -1968,15 +1968,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         hxi = hxi + 1
       }
       if Array::length(hx_eff) > 0 {
-        match find_typedef(defs, Array::get(hx_eff, 0)) {
+        match find_typedef(defs = defs, name = Array::get(hx_eff, at = 0)) {
           Some(TDEffect(_, hx_decl_ops, _)) => {
             let mut hoi = 0
             while hoi < Array::length(hx_decl_ops) {
-              let (hx_op_name, _, _) = Array::get(hx_decl_ops, hoi)
+              let (hx_op_name, _, _) = Array::get(hx_decl_ops, at = hoi)
               let mut hx_found = false
               let mut hoj = 0
               while hoj < Array::length(hx_ops) {
-                if Array::get(hx_ops, hoj) == hx_op_name {
+                if Array::get(hx_ops, at = hoj) == hx_op_name {
                   hx_found = true
                 } else {
                   ()
@@ -1986,7 +1986,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               if hx_found {
                 ()
               } else {
-                Array::push(errors, String::concat("non-exhaustive handler: operation `", String::concat(hx_op_name, String::concat("` of effect ", String::concat(Array::get(hx_eff, 0), " has no arm — performing it would trap at runtime; add an arm for it")))))
+                Array::push(errors, value = String::concat("non-exhaustive handler: operation `", String::concat(hx_op_name, String::concat("` of effect ", String::concat(Array::get(hx_eff, at = 0), " has no arm — performing it would trap at runtime; add an arm for it")))))
               }
               hoi = hoi + 1
             }
@@ -2001,37 +2001,37 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let hinst_resolved: Array[(String, Array[Type])] = []
       let mut hri = 0
       while hri < Array::length(hinst_seen) {
-        let hr_eff = Array::get(hinst_seen, hri)
-        match env_lookup(henv_shared, effect_inst_env_key(hr_eff)) {
+        let hr_eff = Array::get(hinst_seen, at = hri)
+        match env_lookup(env = henv_shared, name = effect_inst_env_key(hr_eff)) {
           Some(CtTuple(hr_targs)) => {
             let resolved_args = array_empty()
             let mut hai = 0
             while hai < Array::length(hr_targs) {
-              Array::push(resolved_args, subst_apply(hs1, Array::get(hr_targs, hai)))
+              Array::push(resolved_args, value = subst_apply(s = hs1, ty = Array::get(hr_targs, at = hai)))
               hai = hai + 1
             }
-            Array::push(hinst_resolved, (hr_eff, resolved_args))
+            Array::push(hinst_resolved, value = (hr_eff, resolved_args))
           },
           _ => ()
         }
         hri = hri + 1
       }
-      check_handle_inst_vs_callee_rows(body, hinst_resolved, env, defs, hs1, errors)
+      check_handle_inst_vs_callee_rows(body = body, insts = hinst_resolved, env = env, defs = defs, s = hs1, errors = errors)
       // #3540: a closure that performs what this handle answers must not
       // leave it (checker_handle_closure_escape.vibe).
-      refuse_handle_bound_escape(body, harms, hty, env, defs, hs1, hsites_from, errors)
+      refuse_handle_bound_escape(body = body, arms = harms, body_ty = hty, env = env, defs = defs, s = hs1, sites_from = hsites_from, errors = errors)
       (hres, hs1, hc1)
     },
     EWhile(cond, body) => {
-      let (ct, s1, c1) = check_expr_capture(cond, env, defs, s, c, errors, tytab, capture, lane)
-      let resolved_ct = subst_apply(s1, ct)
+      let (ct, s1, c1) = check_expr_capture(expr = cond, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let resolved_ct = subst_apply(s = s1, ty = ct)
       match resolved_ct {
         CtBool => (),
         CtUnknown => (),
         CtVar(_) => (),
-        _ => Array::push(errors, "while condition must be Bool")
+        _ => Array::push(errors, value = "while condition must be Bool")
       }
-      let (_, s2, c2) = check_expr_capture(body, env_bind(env, "__in_loop__", CtUnit), defs, s1, c1, errors, tytab, capture, lane)
+      let (_, s2, c2) = check_expr_capture(expr = body, env = env_bind(env = env, name = "__in_loop__", ty = CtUnit), defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
       (CtUnit, s2, c2)
     },
     ELoop(params, body) => {
@@ -2040,14 +2040,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let mut c1 = c
       let mut i = 0
       while i < Array::length(params) {
-        let (name, init) = Array::get(params, i)
-        let (pt, ns, nc) = check_expr_capture(init, env1, defs, s1, c1, errors, tytab, capture, lane)
-        env1 = env_bind(env1, name, pt)
+        let (name, init) = Array::get(params, at = i)
+        let (pt, ns, nc) = check_expr_capture(expr = init, env = env1, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+        env1 = env_bind(env = env1, name = name, ty = pt)
         s1 = ns
         c1 = nc
         i = i + 1
       }
-      let (_, s2, c2) = check_expr_capture(body, env_bind(env1, "__in_loop__", CtUnit), defs, s1, c1, errors, tytab, capture, lane)
+      let (_, s2, c2) = check_expr_capture(expr = body, env = env_bind(env = env1, name = "__in_loop__", ty = CtUnit), defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
       (CtUnit, s2, c2)
     },
     EForIn(name, index_name, iterable, body) => {
@@ -2055,7 +2055,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // `__await_iter(s)` marker to unwrap here -- the iterable is checked
       // directly, and whether the loop awaits each step is decided from the
       // iterand's type in the dict-passing desugar.
-      let (it, s1a, c1a) = check_expr_capture(iterable, env, defs, s, c, errors, tytab, capture, lane)
+      let (it, s1a, c1a) = check_expr_capture(expr = iterable, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
       // #3148: file the iterand for the trait-dictionary pass, which lowers a
       // Map iterand to its keys and refuses one whose type never resolves --
       // the loop reads its value as an Array, so a Map (or a value that may
@@ -2068,22 +2068,22 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // reaches the declaration's scheme; it is filed as kind 8, which is
       // refused unless every caller was checked against that scheme
       // (`scheme_formal_constrained`).
-      let forin_formal = match subst_apply(s1a, it) {
+      let forin_formal = match subst_apply(s = s1a, ty = it) {
         CtVar(fv) => eq_formal_row_of(fv) >= 0,
         _ => false
       }
       // A formal the body already bound to an Array is filed from its raw
       // type, whose variable chain still names it (#3156 review).
-      record_receiver_kind(capture, typed_lowering_arg_offset(iterable), if forin_formal {
-        subst_apply(s1a, it)
+      record_receiver_kind(capture = capture, bracket_off = typed_lowering_arg_offset(iterable), recv_ty = if forin_formal {
+        subst_apply(s = s1a, ty = it)
       } else {
         it
-      }, subst_apply(s1a, it), if forin_formal {
+      }, resolved = subst_apply(s = s1a, ty = it), kind = if forin_formal {
         8
       } else {
         7
-      }, s1a)
-      let (s1, c1) = bind_builtin_arg_var(subst_apply(s1a, it), 9, s1a, c1a)
+      }, s = s1a)
+      let (s1, c1) = bind_builtin_arg_var(arg_ty = subst_apply(s = s1a, ty = it), want = 9, s = s1a, c = c1a)
       // Element type bound by `for x in it`:
       //   - `Array[T]`                       -> T
       //   - a parameterized iterator type
@@ -2101,7 +2101,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       //     fresh unification var, so the loop body's usage constrains the
       //     element instead of `CtUnknown` silently accepting any element use and
       //     dropping element-type safety.
-      let it_resolved = subst_apply(s1, it)
+      let it_resolved = subst_apply(s = s1, ty = it)
       // #1679: only the residual builtin EForIn lowering collects body values.
       // Trait iterators, pull closures, HostStream and indexed user Iterators
       // are rewritten after checking to a Unit-valued EWhile.  Claiming
@@ -2118,7 +2118,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // the Array binding above -- that binding constrains callers, it is not
       // evidence about what the loop lowers to inside the generic body.
       let class_ty = if forin_formal {
-        subst_apply(s1a, it)
+        subst_apply(s = s1a, ty = it)
       } else {
         it_resolved
       }
@@ -2129,9 +2129,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           1
         } else if nm == "HostStream" {
           0
-        } else if type_name_has_iterator_impl(env, nm) {
+        } else if type_name_has_iterator_impl(env = env, type_name = nm) {
           0
-        } else match find_typedef(defs, nm) {
+        } else match find_typedef(defs = defs, name = nm) {
           Some(_) => 0,
           None => -1
         },
@@ -2150,20 +2150,20 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // drop diagnosed below (#1763 review).
       let index_preserved = match it_resolved {
         CtFn(_, _, _) => true,
-        CtNamed(nm, _) => match (env_lookup(env, String::concat(nm, "::iter_length")), env_lookup(env, String::concat(nm, "::iter_get"))) {
+        CtNamed(nm, _) => match (env_lookup(env = env, name = String::concat(nm, "::iter_length")), env_lookup(env = env, name = String::concat(nm, "::iter_get"))) {
           (Some(_), Some(_)) => true,
           _ => false
         },
-        CtStruct(nm) => match (env_lookup(env, String::concat(nm, "::iter_length")), env_lookup(env, String::concat(nm, "::iter_get"))) {
+        CtStruct(nm) => match (env_lookup(env = env, name = String::concat(nm, "::iter_length")), env_lookup(env = env, name = String::concat(nm, "::iter_get"))) {
           (Some(_), Some(_)) => true,
           _ => false
         },
         _ => false
       }
       if collection_class == 0 && !discarded_root {
-        Array::push(errors, String::concat("non-Array `for` does not produce a value; use it as a statement and accumulate explicitly, or call an iterator collection function", off_marker(railway_expr_off(iterable))))
+        Array::push(errors, value = String::concat("non-Array `for` does not produce a value; use it as a statement and accumulate explicitly, or call an iterator collection function", off_marker(railway_expr_off(iterable))))
       } else if collection_class < 0 && !discarded_root {
-        Array::push(errors, String::concat("cannot determine whether this `for` produces an Array; give the iterand a concrete Array type or use the loop as a statement", off_marker(railway_expr_off(iterable))))
+        Array::push(errors, value = String::concat("cannot determine whether this `for` produces an Array; give the iterand a concrete Array type or use the loop as a statement", off_marker(railway_expr_off(iterable))))
       } else if collection_class < 0 {
         // #1559: a rigid type parameter (`T`) as the iterand used to lower
         // to the residual Array loop and trap. A still-open inference var
@@ -2171,7 +2171,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // fresh var when their return is not yet in the env, and the
         // compiler itself iterates those in statement position.
         let rigid_param = match class_ty {
-          CtNamed(nm, args) => Array::length(args) == 0 && nm != "HostStream" && match find_typedef(defs, nm) {
+          CtNamed(nm, args) => Array::length(args) == 0 && nm != "HostStream" && match find_typedef(defs = defs, name = nm) {
             None => true,
             Some(_) => false
           },
@@ -2179,7 +2179,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           _ => false
         }
         if rigid_param {
-          Array::push(errors, String::concat("cannot classify this `for` iterand; annotate it or pass a concrete Array, iterator, or pull closure", off_marker(railway_expr_off(iterable))))
+          Array::push(errors, value = String::concat("cannot classify this `for` iterand; annotate it or pass a concrete Array, iterator, or pull closure", off_marker(railway_expr_off(iterable))))
         } else {
           ()
         }
@@ -2188,7 +2188,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       match index_name {
         Some(_) => if collection_class != 1 && !index_preserved {
-          Array::push(errors, String::concat("a `for` index binding is only supported when the iterator lowering preserves a counter; this iterator lowering would drop the index", off_marker(railway_expr_off(iterable))))
+          Array::push(errors, value = String::concat("a `for` index binding is only supported when the iterator lowering preserves a counter; this iterator lowering would drop the index", off_marker(railway_expr_off(iterable))))
         } else {
           ()
         },
@@ -2197,7 +2197,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let (et, c1b) = match it_resolved {
         CtArray(elem) => (elem, c1),
         CtNamed(nm, args) => if Array::length(args) > 0 {
-          (Array::get(args, 0), c1)
+          (Array::get(args, at = 0), c1)
         } else if nm == "HostStream" {
           // #1341: `for b in <host stream>` reads bytes (spec §3.18), so the
           // loop variable is Int, not a fresh variable. Before the host stream
@@ -2207,10 +2207,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           (CtInt, c1)
         } else if nm == "ByteStream" {
           (CtInt, c1)
-        } else if type_name_has_iterator_impl(env, nm) {
+        } else if type_name_has_iterator_impl(env = env, type_name = nm) {
           fresh_var(c1)
         } else (CtUnknown, c1),
-        CtStruct(nm) => if type_name_has_iterator_impl(env, nm) {
+        CtStruct(nm) => if type_name_has_iterator_impl(env = env, type_name = nm) {
           fresh_var(c1)
         } else (CtUnknown, c1),
         other => {
@@ -2228,19 +2228,19 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => false
           }
           if flag {
-            Array::push(errors, "for loop requires an iterable (Array or iterator)")
+            Array::push(errors, value = "for loop requires an iterable (Array or iterator)")
           } else {
             ()
           }
           (CtUnknown, c1)
         }
       }
-      let env2 = env_bind(env, name, et)
+      let env2 = env_bind(env = env, name = name, ty = et)
       let env3 = match index_name {
-        Some(index_name) => env_bind(env2, index_name, CtInt),
+        Some(index_name) => env_bind(env = env2, name = index_name, ty = CtInt),
         None => env2
       }
-      let (bt, s2, c2) = check_expr_capture(body, env_bind(env3, "__in_loop__", CtUnit), defs, s1, c1b, errors, tytab, capture, lane)
+      let (bt, s2, c2) = check_expr_capture(expr = body, env = env_bind(env = env3, name = "__in_loop__", ty = CtUnit), defs = defs, s = s1, c = c1b, errors = errors, tytab = tytab, capture = capture, lane = lane)
       (CtArray(bt), s2, c2)
     },
     // #897: `mod.x` against a qualified-import namespace (`import ... as mod
@@ -2257,25 +2257,25 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // NOT independently bound -- see the matching comment on the ECall
       // callee-is-EDot arm above for the full rationale.
       let qualified_key = match obj {
-        EIdent(ns, _) => match env_lookup(env, ns) {
+        EIdent(ns, _) => match env_lookup(env = env, name = ns) {
           Some(_) => None,
           None => Some(String::concat(ns, String::concat(".", field)))
         },
         _ => None
       }
       let qualified_hit = match qualified_key {
-        Some(k) => env_lookup(env, k),
+        Some(k) => env_lookup(env = env, name = k),
         None => None
       }
       match qualified_hit {
         Some(_) => match qualified_key {
-          Some(k) => check_expr_capture(EIdent(k, field_off), env, defs, s, c, errors, tytab, capture, "SyntheticRewrite"),
+          Some(k) => check_expr_capture(expr = EIdent(k, field_off), env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = "SyntheticRewrite"),
           None => (CtUnknown, s, c)
         },
         None => {
-          let (obj_ty, s1, c1) = check_expr_capture(obj, env, defs, s, c, errors, tytab, capture, lane)
-          let resolved = subst_apply(s1, obj_ty)
-          let field_ty0 = field_read_type(resolved, field, defs, s1, errors, field_off, dot_off)
+          let (obj_ty, s1, c1) = check_expr_capture(expr = obj, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
+          let resolved = subst_apply(s = s1, ty = obj_ty)
+          let field_ty0 = field_read_type(resolved = resolved, field = field, defs = defs, s1 = s1, errors = errors, field_off = field_off, dot_off = dot_off)
           // #2848 (Codex on #2864): a receiver that is STILL an unsolved
           // variable here -- an unannotated lambda parameter, typically -- may
           // be unified with a type parameter, or with a concrete non-struct,
@@ -2295,9 +2295,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // what the value flows into is remembered and checked against the
           // field's real type when the receiver resolves.
           let (field_ty, c_after) = match resolved {
-            CtVar(pending_id) => if open_formal_name_for_var(pending_id, s1) == "" {
+            CtVar(pending_id) => if open_formal_name_for_var(id = pending_id, s = s1) == "" {
               let (result_tv, nc) = fresh_var(c1)
-              Array::push(deferred_field_reads, (pending_id, field, field_off, dot_off, match obj {
+              Array::push(deferred_field_reads, value = (pending_id, field, field_off, dot_off, match obj {
                 EIdent(recv_name, _) => recv_name,
                 _ => ""
               }, nc - 1))
@@ -2307,15 +2307,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             },
             _ => (field_ty0, c1)
           }
-          let (inst_field_ty, field_s, field_c) = bind_struct_field_effect_instantiations(field_ty, resolved, defs, s1, c_after)
+          let (inst_field_ty, field_s, field_c) = bind_struct_field_effect_instantiations(t = field_ty, recv = resolved, defs = defs, s = s1, c = c_after)
           // Record this field-access node's (raw, pre-final-subst) projection type
           // keyed by its real source offset, for typed-hover on `obj.field`.
           // Synthetic accesses (dot_off < 0) are skipped. #645: the field token's
           // own offset gets the same entry, so hovering the field NAME (not just
           // the base) resolves the projection type.
           let dependent_field_ty = match obj {
-            EIdent(base_name, _) => match env_lookup(env, String::concat("__param_marker__", base_name)) {
-              Some(CtNamed(marker_label, _)) => add_param_capture_dependency(inst_field_ty, match param_marker_index(marker_label) {
+            EIdent(base_name, _) => match env_lookup(env = env, name = String::concat("__param_marker__", base_name)) {
+              Some(CtNamed(marker_label, _)) => add_param_capture_dependency(ty = inst_field_ty, index = match param_marker_index(marker_label) {
                 Some(marker) => marker,
                 None => 0 - 1
               }),
@@ -2324,12 +2324,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => inst_field_ty
           }
           if dot_off >= 0 {
-            tab_dot_projection_ty(tytab, dot_off, dependent_field_ty, capture, lane)
+            tab_dot_projection_ty(tytab = tytab, dot_off = dot_off, ty = dependent_field_ty, capture = capture, lane = lane)
           } else {
             ()
           }
           if field_off >= 0 && field_off != dot_off {
-            tab_dot_field_name_ty(tytab, field_off, dependent_field_ty, capture, lane)
+            tab_dot_field_name_ty(tytab = tytab, field_off = field_off, ty = dependent_field_ty, capture = capture, lane = lane)
           } else {
             ()
           }
@@ -2337,30 +2337,30 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
     },
-    EFn(_, _, _, _, _, _) => check_lambda_expr(expr, env, defs, s, c, errors, tytab, capture, lane, discarded_root, check_expr_capture),
+    EFn(_, _, _, _, _, _) => check_lambda_expr(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = discarded_root, check_child = check_expr_capture),
     EBreak(opt) => {
       // `break` is only meaningful inside a loop. Loop bodies bind the
       // `__in_loop__` sentinel; its absence means this `break` is outside any
       // loop (`() -> { break }`). Threaded through env, so if/match/let/seq
       // inside a loop still see it; a nested function does not introduce one, so
       // a `break` there is (conservatively) left unchecked rather than flagged.
-      let in_loop = match env_lookup(env, "__in_loop__") {
+      let in_loop = match env_lookup(env = env, name = "__in_loop__") {
         Some(_) => true,
         None => {
-          Array::push(errors, "`break` outside a loop")
+          Array::push(errors, value = "`break` outside a loop")
           false
         }
       }
       match opt {
         Some(e) => {
-          let (_, s1, c1) = check_expr_capture(e, env, defs, s, c, errors, tytab, capture, lane)
+          let (_, s1, c1) = check_expr_capture(expr = e, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
           // Parameterized `loop (...)` rewrites `break value` to an assignment
           // plus a bare break before checking. Any payload that survives here
           // therefore belongs to a non-value `break` target: `while`, bare
           // `loop {}`, or `for-in`. Both backends used to omit that expression
           // entirely, including effects.
           if in_loop {
-            Array::push(errors, String::concat("this loop form does not accept a `break` value; remove the payload, or use parameterized `loop (...)` to return one", off_marker(railway_expr_off(e))))
+            Array::push(errors, value = String::concat("this loop form does not accept a `break` value; remove the payload, or use parameterized `loop (...)` to return one", off_marker(railway_expr_off(e))))
           } else {
             ()
           }
@@ -2378,16 +2378,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
     },
     EContinue(args) => {
-      match env_lookup(env, "__in_loop__") {
+      match env_lookup(env = env, name = "__in_loop__") {
         Some(_) => (),
-        None => Array::push(errors, "`continue` outside a loop")
+        None => Array::push(errors, value = "`continue` outside a loop")
       }
       let alen = Array::length(args)
       let mut s1 = s
       let mut c1 = c
       let mut ai = 0
       while ai < alen {
-        let (_, ns, nc) = check_expr_capture(Array::get(args, ai), env, defs, s1, c1, errors, tytab, capture, lane)
+        let (_, ns, nc) = check_expr_capture(expr = Array::get(args, at = ai), env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
         s1 = ns
         c1 = nc
         ai = ai + 1
@@ -2403,14 +2403,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let field_tys = array_empty()
       let mut fi = 0
       while fi < flen {
-        let (fname, fval) = Array::get(fields, fi)
+        let (fname, fval) = Array::get(fields, at = fi)
         // A field may be given only once in a record literal (`P::{ x: 1, x: 2 }`
         // silently kept the last). Report a duplicate by scanning the names
         // already collected.
         let mut dj = 0
         let mut dup = false
         while dj < Array::length(field_tys) {
-          let (pn, _) = Array::get(field_tys, dj)
+          let (pn, _) = Array::get(field_tys, at = dj)
           if pn == fname {
             dup = true
           } else {
@@ -2419,12 +2419,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           dj = dj + 1
         }
         if dup {
-          Array::push(errors, String::concat("duplicate field `", String::concat(fname, "` in record literal")))
+          Array::push(errors, value = String::concat("duplicate field `", String::concat(fname, "` in record literal")))
         } else {
           ()
         }
-        let (ft, ns, nc) = check_expr_capture(fval, env, defs, s1, c1, errors, tytab, capture, lane)
-        Array::push(field_tys, (fname, ft))
+        let (ft, ns, nc) = check_expr_capture(expr = fval, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+        Array::push(field_tys, value = (fname, ft))
         s1 = ns
         c1 = nc
         fi = fi + 1
@@ -2437,18 +2437,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // field silently landed in another field's slot. Anonymous literals
       // (rn == "") keep the field-set path unchanged.
       if rn != "" {
-        match find_typedef(defs, rn) {
+        match find_typedef(defs = defs, name = rn) {
           Some(td) => match td {
             TDStruct(_, dfields, _, s_tparams) => {
               // Unknown literal fields (present in the literal, absent from
               // the declaration).
               let mut ui = 0
               while ui < Array::length(field_tys) {
-                let (an, _) = Array::get(field_tys, ui)
+                let (an, _) = Array::get(field_tys, at = ui)
                 let mut known = false
                 let mut uj = 0
                 while uj < Array::length(dfields) {
-                  let (dn, _) = Array::get(dfields, uj)
+                  let (dn, _) = Array::get(dfields, at = uj)
                   if dn == an {
                     known = true
                   } else {
@@ -2457,7 +2457,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   uj = uj + 1
                 }
                 if !known {
-                  Array::push(errors, String::concat("unknown field `", String::concat(an, String::concat("` for struct ", rn))))
+                  Array::push(errors, value = String::concat("unknown field `", String::concat(an, String::concat("` for struct ", rn))))
                 } else {
                   ()
                 }
@@ -2480,7 +2480,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               let tplen = Array::length(s_tparams)
               let ntargs = Array::length(targs)
               if ntargs > 0 && ntargs != tplen {
-                Array::push(errors, "struct \{rn} expects \{tplen} type argument(s), got \{ntargs} in `\{rn}[...]::{ ... }` (#886 explicit struct type arguments)")
+                Array::push(errors, value = "struct \{rn} expects \{tplen} type argument(s), got \{ntargs} in `\{rn}[...]::{ ... }` (#886 explicit struct type arguments)")
               }
               let use_explicit = ntargs > 0 && ntargs == tplen
               let fresh_targs = array_empty()
@@ -2499,13 +2499,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 let resolved = array_empty()
                 let mut tpi = 0
                 while tpi < tplen {
-                  Array::push(resolved, resolve_tparams_in(resolve_type_expr_shadowed(Array::get(targs, tpi), defs, formal_shadow(Array::get(targs, tpi), env, array_empty())), env))
+                  Array::push(resolved, value = resolve_tparams_in(ty = resolve_type_expr_shadowed(te = Array::get(targs, at = tpi), defs = defs, shadow = formal_shadow(te = Array::get(targs, at = tpi), env = env, own = array_empty())), env = env))
                   tpi = tpi + 1
                 }
-                let reified = resolve_type_constructor_args(s_tparams, targs, resolved, defs, array_empty())
+                let reified = resolve_type_constructor_args(params = s_tparams, source_args = targs, resolved_args = resolved, defs = defs, shadow = array_empty())
                 let mut ri = 0
                 while ri < Array::length(reified) {
-                  Array::push(fresh_targs, Array::get(reified, ri))
+                  Array::push(fresh_targs, value = Array::get(reified, at = ri))
                   ri = ri + 1
                 }
               } else {
@@ -2518,10 +2518,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                       // stored there binds it (`Holder[$4]`, `$4` =
                       // `Console`) instead of the struct's own spelling
                       // `r`, which every declaration shares.
-                      if struct_param_is_row(defs, dfields, type_param_name(Array::get(s_tparams, tpi))) {
-                        Array::push(fresh_targs, CtNamed("$\{c2}", array_empty()))
+                      if struct_param_is_row(defs = defs, fields = dfields, formal = type_param_name(Array::get(s_tparams, at = tpi))) {
+                        Array::push(fresh_targs, value = CtNamed("$\{c2}", array_empty()))
                       } else {
-                        Array::push(fresh_targs, tv)
+                        Array::push(fresh_targs, value = tv)
                       }
                       c2 = nc
                     }
@@ -2538,26 +2538,26 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 let row_labels: Array[Array[String]] = []
                 for df in dfields {
                   let (dfn, dfty) = df
-                  match lookup_actual_field_ty(field_tys, dfn) {
-                    Some(aty) => collect_struct_row_labels(defs, dfty, aty, s_tparams, s1, row_formals, row_labels),
+                  match lookup_actual_field_ty(actual = field_tys, name = dfn) {
+                    Some(aty) => collect_struct_row_labels(defs = defs, field_ty = dfty, value_ty = aty, tparams = s_tparams, s = s1, formals = row_formals, labels = row_labels),
                     None => ()
                   }
                 }
-                s1 = bind_struct_row_unions(s_tparams, fresh_targs, row_formals, row_labels, s1)
+                s1 = bind_struct_row_unions(tparams = s_tparams, targs = fresh_targs, formals = row_formals, labels = row_labels, s = s1)
               }
               // Missing declared fields (absent from the literal).
               let mut mi = 0
               while mi < Array::length(dfields) {
-                let (dn, dty0) = Array::get(dfields, mi)
+                let (dn, dty0) = Array::get(dfields, at = mi)
                 // Check field values against the INSTANTIATED declared type
                 // (rigid params substituted by the fresh vars above); a
                 // non-generic struct keeps the raw declared type as before.
                 let dty = if tplen > 0 {
-                  inst_struct_field_ty(dty0, s_tparams, fresh_targs)
+                  inst_struct_field_ty(ft = dty0, tparams = s_tparams, targs = fresh_targs)
                 } else {
                   dty0
                 }
-                match lookup_actual_field_ty(field_tys, dn) {
+                match lookup_actual_field_ty(actual = field_tys, name = dn) {
                   Some(aty) => {
                     // Value type check (ground-gated like check_record_fields).
                     // #3589: a nested struct's row argument may be narrower
@@ -2565,21 +2565,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     // a `Pair[Console, Env]`); `widen_struct_row_args` admits
                     // that at a covariant row parameter only.
                     let aty_checked = if tplen > 0 {
-                      widen_struct_row_args(defs, subst_apply(s1, dty), subst_apply(s1, aty))
+                      widen_struct_row_args(defs = defs, expected = subst_apply(s = s1, ty = dty), actual = subst_apply(s = s1, ty = aty))
                     } else {
-                      subst_apply(s1, aty)
+                      subst_apply(s = s1, ty = aty)
                     }
-                    s1 = check_assignable_for(dty, aty_checked, s1, errors, "struct field type mismatch for ", dn, lookup_field_expr_off(fields, dn))
+                    s1 = check_assignable_for(expected = dty, actual = aty_checked, s = s1, errors = errors, what_head = "struct field type mismatch for ", what_tail = dn, off = lookup_field_expr_off(fields = fields, name = dn))
                     // Compare latent payloads before the struct's field type
                     // replaces the value's own instantiation evidence.
                     for field in fields {
                       let (fname, value) = field
                       if fname == dn {
-                        s1 = struct_field_effect_inst_check(env, value, aty, dty, s1, CtNamed(rn, fresh_targs), dn, defs, errors)
+                        s1 = struct_field_effect_inst_check(env = env, value = value, value_ty = aty, field_ty = dty, s = s1, recv = CtNamed(rn, fresh_targs), field = dn, defs = defs, errors = errors)
                       }
                     }
                   },
-                  None => Array::push(errors, String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", rn))))
+                  None => Array::push(errors, value = String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", rn))))
                 }
                 mi = mi + 1
               }
@@ -2592,11 +2592,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // A parameter used only in a function field's effect row is
               // still part of the struct's identity. Keep its concrete
               // arguments even when every ordinary field type is ground.
-              if tplen == 0 && (struct_fields_ground(dfields, defs, s_tparams) || struct_fields_ground_builtin_named(dfields)) {
+              if tplen == 0 && (struct_fields_ground(dfields = dfields, defs = defs, tparams = s_tparams) || struct_fields_ground_builtin_named(dfields)) {
                 (CtStruct(rn), s1, c2)
               } else if tplen > 0 {
                 let inst_targs = for ta in fresh_targs {
-                  subst_apply(s1, ta)
+                  subst_apply(s = s1, ty = ta)
                 }
                 (CtNamed(rn, inst_targs), s1, c2)
               } else {
@@ -2604,7 +2604,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               }
             },
             _ => {
-              Array::push(errors, String::concat("`", String::concat(rn, "` is not a struct (struct literal)")))
+              Array::push(errors, value = String::concat("`", String::concat(rn, "` is not a struct (struct literal)")))
               (CtUnknown, s1, c1)
             }
           },
@@ -2620,16 +2620,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // which unifies with everything, so `let n: String = Nope::{ v: 1 }`
           // checked clean and read the struct as a string.
           None => {
-            let s2f = check_record_fields(defs, field_tys, s1, errors)
-            let rec_tyf = match resolve_record_struct_name(defs, field_tys) {
+            let s2f = check_record_fields(defs = defs, actual = field_tys, s = s1, errors = errors)
+            let rec_tyf = match resolve_record_struct_name(defs = defs, actual = field_tys) {
               Some(sname) => CtStruct(sname),
               None => {
                 let lit_off = if flen > 0 {
-                  railway_expr_off(Array::get(fields, 0).1)
+                  railway_expr_off(Array::get(fields, at = 0).1)
                 } else {
                   -1
                 }
-                Array::push(errors, "unknown type `\{rn}` in struct literal -- declare `struct \{rn} { .. }`, or import it (`import ./module.vibe { struct \{rn} }`)\{off_marker(lit_off)}")
+                Array::push(errors, value = "unknown type `\{rn}` in struct literal -- declare `struct \{rn} { .. }`, or import it (`import ./module.vibe { struct \{rn} }`)\{off_marker(lit_off)}")
                 CtUnknown
               }
             }
@@ -2663,8 +2663,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let tys = array_empty()
       let mut ti = 0
       while ti < ilen {
-        let (it, ns, nc) = check_expr_capture(Array::get(items, ti), env, defs, s1, c1, errors, tytab, capture, lane)
-        Array::push(tys, it)
+        let (it, ns, nc) = check_expr_capture(expr = Array::get(items, at = ti), env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+        Array::push(tys, value = it)
         s1 = ns
         c1 = nc
         ti = ti + 1
@@ -2701,7 +2701,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // element adds 0.01% to the heap high-water mark (#3353).
         let mut ai = 0
         while ai < ilen {
-          let (it, ns, nc) = check_expr_capture(Array::get(items, ai), env, defs, s1, c1, errors, tytab, capture, lane)
+          let (it, ns, nc) = check_expr_capture(expr = Array::get(items, at = ai), env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
           s1 = ns
           c1 = nc
           if ai == 0 {
@@ -2709,14 +2709,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else {
             // #3598: an element wider in its function rows than the ones
             // before it becomes the element type, as for `if` branches.
-            match branch_join_widens(elem_ty, subst_apply(s1, it), s1) {
+            match branch_join_widens(anchor = elem_ty, later = subst_apply(s = s1, ty = it), s = s1) {
               Some(widened_s) => {
                 s1 = widened_s
-                elem_ty = merge_value_effect_provenance(it, elem_ty, s1)
+                elem_ty = merge_value_effect_provenance(expected = it, actual = elem_ty, s = s1)
               },
               None => {
-                s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
-                elem_ty = merge_value_effect_provenance(elem_ty, it, s1)
+                s1 = check_assignable(expected = elem_ty, actual = subst_apply(s = s1, ty = it), s = s1, errors = errors, what = "array elements have incompatible types", off = railway_expr_off(Array::get(items, at = ai)))
+                elem_ty = merge_value_effect_provenance(expected = elem_ty, actual = it, s = s1)
               }
             }
           }
@@ -2726,19 +2726,19 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
     },
     EReturn(e) => {
-      let (et, s1, c1) = check_expr_capture(e, env, defs, s, c, errors, tytab, capture, lane)
+      let (et, s1, c1) = check_expr_capture(expr = e, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
       // Check the returned value against the enclosing function's annotated
       // return type (bound as `__return__` by the EFn arm). Ground-gated via
       // check_assignable, so a generic return type is not over-rejected.
-      match env_lookup(env, "__return__") {
+      match env_lookup(env = env, name = "__return__") {
         Some(rt) => {
-          let rte = subst_apply(s1, rt)
-          let ate = subst_apply(s1, et)
+          let rte = subst_apply(s = s1, ty = rt)
+          let ate = subst_apply(s = s1, ty = et)
           // #1947: `?` lowers to `return None`. The EMatch railway hook
           // reports that in source-level terms; do not also emit
           // `got Option[?]` against the synthetic None.
-          let skip_railway_none = match env_lookup(env, "__railway_q__") {
-            Some(_) => railway_is_ident(e, "None"),
+          let skip_railway_none = match env_lookup(env = env, name = "__railway_q__") {
+            Some(_) => railway_is_ident(e = e, want = "None"),
             None => false
           }
           if skip_railway_none {
@@ -2747,20 +2747,20 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // Explicit `return e`: anchor on `e` itself, so this spelling locates
             // the same way the implicit tail-expression return does above.
             check_assignable_set_end(string_lit_end(e))
-            let _ = check_assignable(rte, ate, s1, errors, "return type mismatch", railway_expr_off(e))
+            let _ = check_assignable(expected = rte, actual = ate, s = s1, errors = errors, what = "return type mismatch", off = railway_expr_off(e))
             ()
           }
         },
         None => ()
       }
-      let s2 = match env_lookup(env, "__return_provenance__") {
+      let s2 = match env_lookup(env = env, name = "__return_provenance__") {
         Some(CtVar(id)) => {
           mark_return_provenance_written(id)
-          append_legacy_typed_occurrence(tytab, return_provenance_key(id), CtUnit, capture, "ReturnProvenance", "SyntheticRewrite")
-          let previous = subst_apply(s1, CtVar(id))
+          append_legacy_typed_occurrence(tytab = tytab, offset = return_provenance_key(id), ty = CtUnit, capture = capture, role = "ReturnProvenance", lane = "SyntheticRewrite")
+          let previous = subst_apply(s = s1, ty = CtVar(id))
           let merged = match previous {
-            CtVar(_) => subst_apply(s1, et),
-            _ => merge_capture_provenance(previous, subst_apply(s1, et))
+            CtVar(_) => subst_apply(s = s1, ty = et),
+            _ => merge_capture_provenance(expected = previous, actual = subst_apply(s = s1, ty = et))
           }
           SubstBind(id, merged, s1)
         },
@@ -2786,16 +2786,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let mut mchk_v = false
       let mut mi = 0
       while mi < Array::length(mpairs) {
-        let (_, mve) = Array::get(mpairs, mi)
-        let (mvt, mvs, mvc) = check_expr_capture(mve, env, defs, ms1, mc1, errors, tytab, capture, lane)
+        let (_, mve) = Array::get(mpairs, at = mi)
+        let (mvt, mvs, mvc) = check_expr_capture(expr = mve, env = env, defs = defs, s = ms1, c = mc1, errors = errors, tytab = tytab, capture = capture, lane = lane)
         ms1 = mvs
         mc1 = mvc
         if mi == 0 {
           mvty = mvt
-          mchk_v = map_literal_ground(subst_apply(ms1, mvt))
+          mchk_v = map_literal_ground(subst_apply(s = ms1, ty = mvt))
         } else {
           if mchk_v {
-            ms1 = check_assignable(mvty, subst_apply(ms1, mvt), ms1, errors, "map literal values have incompatible types", railway_expr_off(mve))
+            ms1 = check_assignable(expected = mvty, actual = subst_apply(s = ms1, ty = mvt), s = ms1, errors = errors, what = "map literal values have incompatible types", off = railway_expr_off(mve))
           } else {
             ()
           }
@@ -2814,12 +2814,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         let (mv0, mc2) = fresh_var(mc1)
         (CtNamed("Map", [CtString, mv0]), ms1, mc2)
       } else {
-        (CtNamed("Map", [CtString, subst_apply(ms1, mvty)]), ms1, mc1)
+        (CtNamed("Map", [CtString, subst_apply(s = ms1, ty = mvty)]), ms1, mc1)
       }
     },
     ELabeledArg(_, _, la_val) => {
       let (known, value_env) = checker_labeled_argument_context(env)
-      let (value_ty, la_s, la_c) = check_expr_capture(la_val, value_env, defs, s, c, errors, tytab, capture, lane)
+      let (value_ty, la_s, la_c) = check_expr_capture(expr = la_val, env = value_env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
       (if known {
         value_ty
       } else {
@@ -2846,11 +2846,11 @@ export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: 
     None
   }
   let result = match capture {
-    None => check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, lane, false),
+    None => check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = None, lane = lane, discarded_root = false),
     Some(_) => {
-      typed_occurrence_capture_enter_expression(capture, expr)
-      let result = check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, capture, lane, false)
-      typed_occurrence_capture_record_direct_return(capture, result.0, lane)
+      typed_occurrence_capture_enter_expression(capture = capture, expr = expr)
+      let result = check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = false)
+      typed_occurrence_capture_record_direct_return(capture = capture, ty = result.0, lane = lane)
       typed_occurrence_capture_exit_expression(capture)
       result
     }
@@ -2874,11 +2874,11 @@ fn check_expr_capture_discarded_root(expr: Expr, env: TypeEnv, defs: Array[TypeD
     None
   }
   let result = match capture {
-    None => check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, lane, true),
+    None => check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = None, lane = lane, discarded_root = true),
     Some(_) => {
-      typed_occurrence_capture_enter_expression(capture, expr)
-      let result = check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, capture, lane, true)
-      typed_occurrence_capture_record_direct_return(capture, result.0, lane)
+      typed_occurrence_capture_enter_expression(capture = capture, expr = expr)
+      let result = check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = true)
+      typed_occurrence_capture_record_direct_return(capture = capture, ty = result.0, lane = lane)
       typed_occurrence_capture_exit_expression(capture)
       result
     }
@@ -2904,7 +2904,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
     EnvEmpty => env,
     _ => checker_seed_mut_call_headers(env)
   }
-  let result = check_expr_capture(expr, checked_env, defs, s, c, errors, tytab, None, "Primary")
+  let result = check_expr_capture(expr = expr, env = checked_env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = None, lane = "Primary")
   call_placement_capture_end()
   result
 }
@@ -2920,7 +2920,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
 fn check_expr_nested(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst, Int) {
   check_assignable_set_type_defs(defs)
   let saved_headers = checker_call_header_probe_begin()
-  let result = check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary", false)
+  let result = check_expr_capture_impl(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = None, lane = "Primary", discarded_root = false)
   checker_call_header_probe_end(saved_headers)
   result
 }
@@ -2939,7 +2939,7 @@ fn check_unmatched_call_args(args: Array[Expr], env: TypeEnv, defs: Array[TypeDe
   let mut c1 = c
   let mut i = 0
   while i < Array::length(args) {
-    let (_, ns, nc) = check_expr_capture(Array::get(args, i), env, defs, s1, c1, errors, tytab, capture, lane)
+    let (_, ns, nc) = check_expr_capture(expr = Array::get(args, at = i), env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
     s1 = ns
     c1 = nc
     i = i + 1
@@ -2955,10 +2955,10 @@ fn check_unmatched_call_args(args: Array[Expr], env: TypeEnv, defs: Array[TypeDe
 /// `String` is accepted. Any other type is refused with the edit: only a
 /// kinded arm knows its payload's type.
 fn erased_throw_binder_settle(name: String, var: Type, s: Subst, errors: Array[String], off: Int) -> Subst {
-  let now = subst_apply(s, var)
+  let now = subst_apply(s = s, ty = var)
   match now {
     CtString => s,
-    CtVar(_) => match unify(now, CtString, s) {
+    CtVar(_) => match unify(a = now, b = CtString, s = s) {
       Some(s2) => s2,
       None => s
     },
@@ -2966,7 +2966,7 @@ fn erased_throw_binder_settle(name: String, var: Type, s: Subst, errors: Array[S
       let shown = type_to_string(now)
       let edit = String::concat("write `Exception[", String::concat(shown, String::concat("]::Throw(", String::concat(name, String::concat(")` to catch a thrown `", String::concat(shown, "`"))))))
       let why = String::concat(": the erased `Exception::Throw(", String::concat(name, String::concat(")` arm binds `", String::concat(name, String::concat("` as the thrown message, a `String`, and this arm uses it as `", String::concat(shown, "`"))))))
-      Array::push(errors, String::concat(edit, String::concat(why, off_marker(off))))
+      Array::push(errors, value = String::concat(edit, String::concat(why, off_marker(off))))
       s
     }
   }

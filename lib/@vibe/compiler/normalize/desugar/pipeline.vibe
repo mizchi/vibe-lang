@@ -174,8 +174,8 @@ import ./witness_targets.vibe {
 }
 
 /// In-place lowering of array-literal spreads across the whole program (#790).
-export fn desugar_array_spread(stmts: Array[Stmt]) -> Unit {
-  lower_array_spreads(stmts, dtd_own_end(stmts))
+export fn desugar_array_spread(_ stmts: Array[Stmt]) -> Unit {
+  lower_array_spreads(stmts = stmts, end = dtd_own_end(stmts))
 }
 
 /// Entry point: in-place dictionary-passing desugaring. No-op unless the program
@@ -183,12 +183,12 @@ export fn desugar_array_spread(stmts: Array[Stmt]) -> Unit {
 /// single-file pipeline desugars before generic-stripping and codegen re-runs on
 /// the same stmts after) finds the bounds already stripped (so no function is
 /// re-threaded) and skips dict structs that already exist.
-export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
-  desugar_trait_dicts_with_typed_eq(stmts, array_empty(), array_empty())
+export fn desugar_trait_dicts(_ stmts: Array[Stmt]) -> Unit with Exception {
+  desugar_trait_dicts_with_typed_eq(stmts = stmts, typed_eq_offsets = array_empty(), typed_eq_keys = array_empty())
 }
 
 export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
-  dtd_whole_program(stmts, typed_eq_offsets, typed_eq_keys, false)
+  dtd_whole_program(stmts = stmts, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys, rowless_build = false)
 }
 
 /// #3456: the whole-program entry for a BUILD lane with no checker rows for
@@ -200,8 +200,8 @@ export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets
 /// typed name has no type here but the OUTER binding's, which renders the
 /// value as the wrong type when the shadow changes it. Such a site is refused
 /// with the edit (annotate the shadowing `let`) rather than answered.
-export fn desugar_trait_dicts_rowless_build(stmts: Array[Stmt]) -> Unit with Exception {
-  dtd_whole_program(stmts, array_empty(), array_empty(), true)
+export fn desugar_trait_dicts_rowless_build(_ stmts: Array[Stmt]) -> Unit with Exception {
+  dtd_whole_program(stmts = stmts, typed_eq_offsets = array_empty(), typed_eq_keys = array_empty(), rowless_build = true)
 }
 
 fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], rowless_build: Bool) -> Unit with Exception {
@@ -212,16 +212,16 @@ fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_
   } else {
     ()
   }
-  Array::set(dtd_rowless_build, 0, rowless_build)
+  Array::set(dtd_rowless_build, at = 0, value = rowless_build)
   // #3132: this pass synthesizes `Array::get` / `Array::length` / ... calls
   // (interpolation, structural `==`, iteration), which must reach the
   // builtin. Every entry pipeline reaches here before its first such
   // synthesis; a program's own definition of one of those names is moved
   // aside first. A no-op when the linked prelude already ran it.
   rename_builtin_shadow_defs(stmts)
-  Array::set(dtd_own_limit, 0, 0 - 1)
-  Array::set(dtd_ctx_len, 0, 0)
-  Array::set(dlh_module_tag, 0, "")
+  Array::set(dtd_own_limit, at = 0, value = 0 - 1)
+  Array::set(dtd_ctx_len, at = 0, value = 0)
+  Array::set(dlh_module_tag, at = 0, value = "")
   // A whole program carries no per-module facts (#2647 Codex round 8). Cleared
   // on ENTRY rather than trusted to have been cleared on the way out, because
   // `dtd_run` ends in `eq_refusals_report`, which THROWS: a module lowering
@@ -237,7 +237,7 @@ fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_
   // wants the union across the modules of one split run, and resets once at
   // that boundary (#2642 review, Codex P2).
   eq_deferred_reset()
-  dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+  dtd_run(stmts = stmts, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys)
   // #3144 round 4: a witness field is named by COMPUTING `<Type>::<method>`,
   // which for an impl method at a listed name (`impl Measured for String {
   // length(..) }`) is the source spelling of a definition renamed above.
@@ -268,7 +268,7 @@ fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_
 /// the declaration that owns it and so is already module-unique; pass "" to
 /// number the nameless ones by position, as the whole-program entry does.
 export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Array[Stmt] with Exception {
-  desugar_trait_dicts_module_with_facts(own, ctx, module_tag, typed_eq_offsets, typed_eq_keys, module_trait_facts_none())
+  desugar_trait_dicts_module_with_facts(own = own, ctx = ctx, module_tag = module_tag, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys, facts = module_trait_facts_none())
 }
 
 /// The same entry given the whole-program facts a partition cannot derive
@@ -276,48 +276,48 @@ export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], module_
 /// above passes none, which is right for a MEASUREMENT and wrong for a
 /// production driver -- a caller that means to compile passes real ones.
 export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], facts: ModuleTraitFacts) -> Array[Stmt] with Exception {
-  Array::set(dtd_rowless_build, 0, false)
+  Array::set(dtd_rowless_build, at = 0, value = false)
   dtd_facts_set(facts)
   let stmts: Array[Stmt] = []
   let mut i = 0
   while i < Array::length(own) {
-    Array::push(stmts, Array::get(own, i))
+    Array::push(stmts, value = Array::get(own, at = i))
     i = i + 1
   }
   let mut ci = 0
   while ci < Array::length(ctx) {
-    Array::push(stmts, Array::get(ctx, ci))
+    Array::push(stmts, value = Array::get(ctx, at = ci))
     ci = ci + 1
   }
-  Array::set(dtd_own_limit, 0, Array::length(own))
-  Array::set(dtd_ctx_len, 0, Array::length(ctx))
-  Array::set(dtd_own_growth, 0, 0)
-  Array::set(dlh_module_tag, 0, module_tag)
-  dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+  Array::set(dtd_own_limit, at = 0, value = Array::length(own))
+  Array::set(dtd_ctx_len, at = 0, value = Array::length(ctx))
+  Array::set(dtd_own_growth, at = 0, value = 0)
+  Array::set(dlh_module_tag, at = 0, value = module_tag)
+  dtd_run(stmts = stmts, typed_eq_offsets = typed_eq_offsets, typed_eq_keys = typed_eq_keys)
   // #3144 round 4: as in the whole-program entry. The module's own
   // definitions and its context's are both in `stmts`, so a witness naming
   // either is pointed at the renamed definition.
   rename_builtin_shadow_defs(stmts)
   let own_n = Array::length(own)
-  let own_end = own_n + Array::get(dtd_own_growth, 0)
+  let own_end = own_n + Array::get(dtd_own_growth, at = 0)
   let mut wi = 0
   while wi < own_end {
     if wi < own_n {
-      Array::set(own, wi, Array::get(stmts, wi))
+      Array::set(own, at = wi, value = Array::get(stmts, at = wi))
     } else {
-      Array::push(own, Array::get(stmts, wi))
+      Array::push(own, value = Array::get(stmts, at = wi))
     }
     wi = wi + 1
   }
   let synthesized: Array[Stmt] = []
   let mut si = own_end + Array::length(ctx)
   while si < Array::length(stmts) {
-    Array::push(synthesized, Array::get(stmts, si))
+    Array::push(synthesized, value = Array::get(stmts, at = si))
     si = si + 1
   }
-  Array::set(dtd_own_limit, 0, 0 - 1)
-  Array::set(dtd_ctx_len, 0, 0)
-  Array::set(dlh_module_tag, 0, "")
+  Array::set(dtd_own_limit, at = 0, value = 0 - 1)
+  Array::set(dtd_ctx_len, at = 0, value = 0)
+  Array::set(dlh_module_tag, at = 0, value = "")
   dtd_facts_set(module_trait_facts_none())
   synthesized
 }
@@ -345,12 +345,12 @@ export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stm
 /// `to_string` for them. A declaration written without those derives gains
 /// them here; one that defines such an operation by hand instead is refused,
 /// since its signature need not be the one the importers were checked against.
-fn dtd_append_prelude_ordering(stmts: Array[Stmt]) -> Unit with Exception {
+fn dtd_append_prelude_ordering(_ stmts: Array[Stmt]) -> Unit with Exception {
   if dtd_stmts_derive_ord(stmts) && dtd_ordering_foreign_shadow(stmts) {
     throw("`derive (Ord)` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), but a module in this program declares its own `Ordering` or one of those constructors; rename that declaration")
   } else if !stmts_shadow_prelude_ordering(stmts) {
     if stmts_use_prelude_ordering(stmts) {
-      Array::push(stmts, prelude_ordering_stmt())
+      Array::push(stmts, value = prelude_ordering_stmt())
     }
   } else {
     dtd_complete_prelude_ordering_derives(stmts)
@@ -359,7 +359,7 @@ fn dtd_append_prelude_ordering(stmts: Array[Stmt]) -> Unit with Exception {
 
 /// Does some top-level statement shadow the prelude `Ordering` other than an
 /// exact-shaped `enum Ordering { Less; Equal; Greater }` declaration?
-fn dtd_ordering_foreign_shadow(stmts: Array[Stmt]) -> Bool {
+fn dtd_ordering_foreign_shadow(_ stmts: Array[Stmt]) -> Bool {
   let mut found = false
   for stmt in stmts {
     let one = [stmt]
@@ -372,16 +372,16 @@ fn dtd_ordering_foreign_shadow(stmts: Array[Stmt]) -> Bool {
 
 /// Give an exact-shaped `Ordering` declaration the prelude's `Eq` / `Ord` /
 /// `Show` derives it lacks, refusing one whose operation the program defines.
-fn dtd_complete_prelude_ordering_derives(stmts: Array[Stmt]) -> Unit with Exception {
+fn dtd_complete_prelude_ordering_derives(_ stmts: Array[Stmt]) -> Unit with Exception {
   let mut i = 0
   while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     if stmts_declare_prelude_ordering_shape([stmt]) {
       match stmt {
         SEnum(exported, name, params, variants, derives) => {
           let completed = array_empty()
           for d in derives {
-            Array::push(completed, d)
+            Array::push(completed, value = d)
           }
           for pair in [
             ("Eq", "Ordering::equals"),
@@ -398,14 +398,14 @@ fn dtd_complete_prelude_ordering_derives(stmts: Array[Stmt]) -> Unit with Except
             // A hand-written operation is refused whether or not the derive is
             // listed: `desugar_derives` lets a source definition replace the
             // generated one, and its signature need not be the prelude's.
-            if dtd_stmts_define_value(stmts, op) {
+            if dtd_stmts_define_value(stmts = stmts, wanted = op) {
               throw(String::concat("`enum Ordering { Less; Equal; Greater }` is spelled exactly like the prelude, so it carries the prelude's `derive (Eq, Ord, Show)`; `", String::concat(op, "` is also written by hand -- remove it and derive it, or rename the type")))
             }
             if !present {
-              Array::push(completed, wanted)
+              Array::push(completed, value = wanted)
             }
           }
-          Array::set(stmts, i, SEnum(exported, name, params, variants, completed))
+          Array::set(stmts, at = i, value = SEnum(exported, name, params, variants, completed))
         },
         _ => ()
       }
@@ -428,7 +428,7 @@ fn dtd_stmts_define_value(stmts: Array[Stmt], wanted: String) -> Bool {
 }
 
 /// Does any struct or enum in `stmts` derive `Ord`?
-fn dtd_stmts_derive_ord(stmts: Array[Stmt]) -> Bool {
+fn dtd_stmts_derive_ord(_ stmts: Array[Stmt]) -> Bool {
   let mut found = false
   for stmt in stmts {
     let derives = match stmt {
@@ -448,24 +448,24 @@ fn dtd_stmts_derive_ord(stmts: Array[Stmt]) -> Bool {
 fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
   // #2441: (re)populate the typed-`==` table for THIS program before any
   // rewrite can read it.
-  Array::truncate(dtd_typed_eq_offs, 0)
-  Array::truncate(dtd_typed_eq_keys, 0)
+  Array::truncate(dtd_typed_eq_offs, length = 0)
+  Array::truncate(dtd_typed_eq_keys, length = 0)
   // #3066: the render rows ride the same channel under the
   // `typed_render_row_head` wrapper; they are split off here so a `==` lookup
   // never reads one.
-  Array::truncate(dtd_typed_render_offs, 0)
-  Array::truncate(dtd_typed_render_keys, 0)
+  Array::truncate(dtd_typed_render_offs, length = 0)
+  Array::truncate(dtd_typed_render_keys, length = 0)
   let render_prefix = impl_target_key(TyApp(typed_render_row_head(), [
     TyName("Int")
   ]))
-  let render_head_len = String::index_of(render_prefix, impl_target_key(TyName("Int")))
-  let render_head = String::substring(render_prefix, 0, render_head_len)
+  let render_head_len = String::index_of(render_prefix, needle = impl_target_key(TyName("Int")))
+  let render_head = String::substring(render_prefix, start = 0, end = render_head_len)
   // #3133: the index-receiver rows, split off the same way.
-  Array::truncate(dtd_typed_index_offs, 0)
-  Array::truncate(dtd_typed_index_verdicts, 0)
-  Array::truncate(dtd_index_refusals, 0)
-  Array::truncate(dtd_typed_forin_offs, 0)
-  Array::truncate(dtd_typed_forin_verdicts, 0)
+  Array::truncate(dtd_typed_index_offs, length = 0)
+  Array::truncate(dtd_typed_index_verdicts, length = 0)
+  Array::truncate(dtd_index_refusals, length = 0)
+  Array::truncate(dtd_typed_forin_offs, length = 0)
+  Array::truncate(dtd_typed_forin_verdicts, length = 0)
   let forin_map_key = impl_target_key(TyApp(typed_forin_row_head(), [
     TyName(typed_index_map_verdict())
   ]))
@@ -508,33 +508,33 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   let f32_negation_offs: Array[Int] = []
   let mut teq_i = 0
   while teq_i < Array::length(typed_eq_offsets) {
-    let tkey = Array::get(typed_eq_keys, teq_i)
+    let tkey = Array::get(typed_eq_keys, at = teq_i)
     if tkey == f32_binop_key {
-      Array::push(f32_binop_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(f32_binop_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == f32_assign_key {
-      Array::push(f32_assign_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(f32_assign_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == fop_binop_key {
-      Array::push(fop_binop_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(fop_binop_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == fop_assign_key {
-      Array::push(fop_assign_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(fop_assign_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == fop_negation_key {
-      Array::push(fop_negation_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(fop_negation_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == f32_negation_key {
-      Array::push(f32_negation_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(f32_negation_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == forin_map_key {
-      dtd_typed_row_insert(dtd_typed_forin_offs, dtd_typed_forin_verdicts, Array::get(typed_eq_offsets, teq_i), typed_index_map_verdict())
+      dtd_typed_row_insert(dtd_typed_index_offs = dtd_typed_forin_offs, dtd_typed_index_verdicts = dtd_typed_forin_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_map_verdict())
     } else if tkey == forin_open_key {
-      dtd_typed_row_insert(dtd_typed_forin_offs, dtd_typed_forin_verdicts, Array::get(typed_eq_offsets, teq_i), typed_index_open_verdict())
+      dtd_typed_row_insert(dtd_typed_index_offs = dtd_typed_forin_offs, dtd_typed_index_verdicts = dtd_typed_forin_verdicts, off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_open_verdict())
     } else if tkey == index_map_key {
-      dtd_typed_index_insert(Array::get(typed_eq_offsets, teq_i), typed_index_map_verdict())
+      dtd_typed_index_insert(off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_map_verdict())
     } else if tkey == index_open_key {
-      dtd_typed_index_insert(Array::get(typed_eq_offsets, teq_i), typed_index_open_verdict())
-    } else if render_head_len > 0 && String::starts_with(tkey, render_head) {
-      Array::push(dtd_typed_render_offs, Array::get(typed_eq_offsets, teq_i))
-      Array::push(dtd_typed_render_keys, tkey)
+      dtd_typed_index_insert(off = Array::get(typed_eq_offsets, at = teq_i), verdict = typed_index_open_verdict())
+    } else if render_head_len > 0 && String::starts_with(tkey, prefix = render_head) {
+      Array::push(dtd_typed_render_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+      Array::push(dtd_typed_render_keys, value = tkey)
     } else {
-      Array::push(dtd_typed_eq_offs, Array::get(typed_eq_offsets, teq_i))
-      Array::push(dtd_typed_eq_keys, tkey)
+      Array::push(dtd_typed_eq_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+      Array::push(dtd_typed_eq_keys, value = tkey)
     }
     teq_i = teq_i + 1
   }
@@ -545,12 +545,12 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // Compare source calls before optimizers can replace their callees or add
   // hoisted capture arguments. Their subsequent positional calls are already
   // canonical and must not be interpreted as fresh written arguments.
-  lower_checked_call_placements(stmts, true)
+  lower_checked_call_placements(stmts = stmts, require_checked = true)
   // #3543: round every `Float` arithmetic result to f32 before any pass
   // below copies or hoists the expressions that hold one. #3629: and mark
   // every float operation's operands, before the `+` / `<` rewrite below
   // can read a generic call's result as a type formal.
-  rewrite_float_arith_stmts(stmts, f32_binop_offs, f32_assign_offs, fop_binop_offs, fop_assign_offs, fop_negation_offs, f32_negation_offs)
+  rewrite_float_arith_stmts(stmts = stmts, binop_offs = f32_binop_offs, assign_offs = f32_assign_offs, operand_offs = fop_binop_offs, operand_assign_offs = fop_assign_offs, negation_offs = fop_negation_offs, f32_negation_offs = f32_negation_offs)
   // #790: lower array-literal spreads first, so no downstream pass or codegen
   // ever sees a raw ESpread.
   desugar_array_spread(stmts)
@@ -656,11 +656,11 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   dtd_trait_supers_set(supers_map)
   // #3580: read with the supers graph when a call through a trait bound
   // passes the witnesses of the method's own bounded formals.
-  dtd_inject_builtin_eq(stmts, traits_raw)
-  dtd_inject_builtin_add(stmts, traits_raw)
-  dtd_trait_method_binders_set(stmts, traits_raw)
+  dtd_inject_builtin_eq(stmts = stmts, traits_raw = traits_raw)
+  dtd_inject_builtin_add(stmts = stmts, traits_raw = traits_raw)
+  dtd_trait_method_binders_set(stmts = stmts, traits_raw = traits_raw)
   let trait_type_params = collect_trait_type_params(stmts)
-  let traits = flatten_traits(traits_raw, supers_map)
+  let traits = flatten_traits(traits_raw = traits_raw, supers_map = supers_map)
   // Rank-1 method generics (#684): re-attach each trait method's `[X: Bound]`
   // binder to its impl free functions (and annotate their params) BEFORE
   // build_gens, so `C::m` is registered as a bounded generic and the existing
@@ -668,16 +668,16 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // idempotent) when no trait declares a method-level binder. Also run from
   // `check_program` so the FS-compile path (which type-checks before this pass)
   // sees the `X` binding and can resolve `X::method` in the impl body.
-  inject_trait_method_generics_with(stmts, traits)
+  inject_trait_method_generics_with(stmts = stmts, traits = traits)
   let struct_sets = collect_struct_field_sets(stmts)
   let fn_returns = collect_fn_returns(stmts)
   add_context_renderer_returns(fn_returns)
   let gimpl_infos = collect_impl_infos(stmts)
-  let gens = build_gens(stmts, traits, gimpl_infos)
-  Array::truncate(dtd_constructor_local_returns, 0)
-  Array::truncate(dtd_constructor_callable_bodies, 0)
-  Array::set(dtd_constructor_tracking, 0, gens_use_constructor_receiver(gens) && stmts_use_constructor_witness(stmts, gens))
-  if Array::get(dtd_constructor_tracking, 0) {
+  let gens = build_gens(stmts = stmts, traits = traits, gimpl_infos = gimpl_infos)
+  Array::truncate(dtd_constructor_local_returns, length = 0)
+  Array::truncate(dtd_constructor_callable_bodies, length = 0)
+  Array::set(dtd_constructor_tracking, at = 0, value = gens_use_constructor_receiver(gens) && stmts_use_constructor_witness(stmts = stmts, gens = gens))
+  if Array::get(dtd_constructor_tracking, at = 0) {
     collect_constructor_callable_bodies(stmts)
     let mut previous_count = -1
     while previous_count != Array::length(dtd_constructor_local_returns) {
@@ -688,35 +688,35 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
     ()
   }
   // #839: see `collect_toplevel_anon_records` / the `rewrite_stmt` doc comment.
-  let toplevel_vars = if Array::get(dtd_constructor_tracking, 0) {
-    collect_toplevel_constructor_vars(stmts, gens, struct_sets, fn_returns)
+  let toplevel_vars = if Array::get(dtd_constructor_tracking, at = 0) {
+    collect_toplevel_constructor_vars(stmts = stmts, gens = gens, struct_sets = struct_sets, fn_returns = fn_returns)
   } else {
-    collect_toplevel_anon_records(stmts, struct_sets)
+    collect_toplevel_anon_records(stmts = stmts, struct_sets = struct_sets)
   }
   // #1374: reset the exception-kind pass state. An already-declared cell means
   // an earlier run of this pass on this same program already wrapped every
   // throw, so the rewrite below stays off.
-  Array::set(dtd_exn_kind_state, 0, if exn_kind_cell_present(stmts) {
+  Array::set(dtd_exn_kind_state, at = 0, value = if exn_kind_cell_present(stmts) {
     1
   } else {
     0
   })
-  Array::set(dtd_exn_kind_state, 1, 0)
-  Array::set(dtd_exn_kind_state, 2, 0)
+  Array::set(dtd_exn_kind_state, at = 1, value = 0)
+  Array::set(dtd_exn_kind_state, at = 2, value = 0)
   exn_rethrow_reset()
   let mut i = 0
   while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     if !dtd_is_own_index(i) {
       ()
     } else {
       dtd_fresh_reset_for_decl()
       match merged_source_boundary_local_names(stmt) {
         Some(local_names) => {
-          user_assert_eq_set_merged_source(stmts, i + 1, local_names)
+          user_assert_eq_set_merged_source(stmts = stmts, start = i + 1, names = local_names)
           dtd_builtin_iterator_set_boundary(local_names)
         },
-        None => Array::set(stmts, i, rewrite_stmt(stmt, gens, traits, struct_sets, fn_returns, toplevel_vars))
+        None => Array::set(stmts, at = i, value = rewrite_stmt(stmt = stmt, gens = gens, traits = traits, struct_sets = struct_sets, fn_returns = fn_returns, toplevel_vars = toplevel_vars))
       }
     }
     i = i + 1
@@ -732,7 +732,7 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   emit_recorded_bytes_equals(stmts)
   // #1374: append the cell only for a program that actually reads or writes it,
   // so a throw-free program's output is unchanged.
-  if Array::get(dtd_exn_kind_state, 1) == 1 {
+  if Array::get(dtd_exn_kind_state, at = 1) == 1 {
     ensure_exn_kind_cell(stmts)
   } else {
     ()
@@ -743,7 +743,7 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   } else {
     let mut ti = 0
     while ti < Array::length(traits) {
-      let (trait_name, sigs) = Array::get(traits, ti)
+      let (trait_name, sigs) = Array::get(traits, at = ti)
       // #2523: the builtin `Eq` is injected as SIGNATURES (dtd_inject_builtin_eq),
       // never as a statement, so `dtd_trait_declared_here` is false for it and
       // this guard skipped its dict struct -- which is exactly why a
@@ -757,8 +757,8 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
       // The dict struct is this pass's OWN output -- it appends one for every
       // method-bearing trait already -- so emitting it for the injected trait
       // adds nothing the pass does not otherwise produce.
-      let injected_builtin = (trait_name == dtd_eq_witness_trait() || trait_name == "Add") && !dtd_trait_declared_anywhere(stmts, trait_name)
-      if struct_decl_exists(stmts, dict_struct_name(trait_name)) || (!dtd_trait_declared_here(stmts, trait_name) && !injected_builtin) {
+      let injected_builtin = (trait_name == dtd_eq_witness_trait() || trait_name == "Add") && !dtd_trait_declared_anywhere(stmts = stmts, trait_name = trait_name)
+      if struct_decl_exists(stmts = stmts, name = dict_struct_name(trait_name)) || (!dtd_trait_declared_here(stmts = stmts, trait_name = trait_name) && !injected_builtin) {
         ()
       } else {
         // #2286: record the provenance at the ONE point a dict struct is
@@ -766,11 +766,11 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
         // DECLARES it, which for an inherited method is a supertrait rather
         // than `trait_name`.
         let dict_name = dict_struct_name(trait_name)
-        let owners = flatten_trait_owners(trait_name, traits_raw, supers_map)
+        let owners = flatten_trait_owners(tname = trait_name, traits_raw = traits_raw, supers_map = supers_map)
         let mut si = 0
         while si < Array::length(sigs) {
-          let (mname, _mparams, _mret) = Array::get(sigs, si)
-          Array::push(dtd_synth_dict_fields, (dict_name, mname, lookup_str_pair(owners, mname, trait_name)))
+          let (mname, _mparams, _mret) = Array::get(sigs, at = si)
+          Array::push(dtd_synth_dict_fields, value = (dict_name, mname, lookup_str_pair(pairs = owners, key = mname, fallback = trait_name)))
           si = si + 1
         }
         // #2523: `make_dict_struct_stmt` keeps `Self` verbatim in the field
@@ -785,9 +785,9 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
           let tp: Array[String] = ["Self"]
           tp
         } else {
-          lookup_trait_type_params(trait_type_params, trait_name)
+          lookup_trait_type_params(entries = trait_type_params, trait_name = trait_name)
         }
-        Array::push(stmts, make_dict_struct_stmt(trait_name, method_witness_dict_sigs(traits, trait_name, sigs), dict_tparams))
+        Array::push(stmts, value = make_dict_struct_stmt(trait_name = trait_name, sigs = method_witness_dict_sigs(traits = traits, trait_name = trait_name, sigs = sigs), tparams = dict_tparams))
       }
       ti = ti + 1
     }
@@ -827,9 +827,9 @@ fn eq_refusals_report() -> Unit with Exception {
     let mut i = 0
     while i < Array::length(dtd_eq_refusals) {
       let reason = if i == 0 {
-        Array::get(dtd_eq_refusals, i)
+        Array::get(dtd_eq_refusals, at = i)
       } else {
-        eq_strip_off_marker(Array::get(dtd_eq_refusals, i))
+        eq_strip_off_marker(Array::get(dtd_eq_refusals, at = i))
       }
       out = String::concat(out, String::concat(if i == 0 {
         ""
@@ -843,17 +843,17 @@ fn eq_refusals_report() -> Unit with Exception {
 }
 
 /// `msg` without its ` [@off=N]` site marker, if it has one.
-fn eq_strip_off_marker(msg: String) -> String {
-  let mi = String::index_of(msg, " [@off=")
+fn eq_strip_off_marker(_ msg: String) -> String {
+  let mi = String::index_of(msg, needle = " [@off=")
   if mi < 0 {
     msg
   } else {
-    let rest = String::substring(msg, mi, String::length(msg))
-    let close = String::index_of(rest, "]")
+    let rest = String::substring(msg, start = mi, end = String::length(msg))
+    let close = String::index_of(rest, needle = "]")
     if close < 0 {
-      String::substring(msg, 0, mi)
+      String::substring(msg, start = 0, end = mi)
     } else {
-      String::concat(String::substring(msg, 0, mi), String::substring(rest, close + 1, String::length(rest)))
+      String::concat(String::substring(msg, start = 0, end = mi), String::substring(rest, start = close + 1, end = String::length(rest)))
     }
   }
 }

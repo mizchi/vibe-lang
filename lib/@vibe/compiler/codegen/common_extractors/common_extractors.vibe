@@ -37,11 +37,11 @@ export fn ascription_call_value(callee: Expr, args: Array[Expr]) -> Option[Expr]
       EFn(tparams, bounds, params, ret, effect, body) => if Array::length(tparams) == 0 && Array::length(bounds) == 0 && Array::length(params) == 1 {
         match (ret, effect) {
           (None, None) => {
-            let (name, _) = Array::get(params, 0)
-            if name == "__asc" || String::starts_with(name, "__shadow_") && String::ends_with(name, "___asc") {
+            let (name, _) = Array::get(params, at = 0)
+            if name == "__asc" || String::starts_with(name, prefix = "__shadow_") && String::ends_with(name, suffix = "___asc") {
               match body {
                 EIdent(value, _) => if value == name {
-                  Some(Array::get(args, 0))
+                  Some(Array::get(args, at = 0))
                 } else None,
                 _ => None
               }
@@ -63,7 +63,7 @@ export fn ascription_call_value(callee: Expr, args: Array[Expr]) -> Option[Expr]
 /// char-offsets; for ECall/EDot prefer the node's own offset, else recurse into
 /// the callee/base. A statement's offset is thus derived from its VALUE
 /// subexpression. Flat single match, tail-recursive into one child per arm.
-export fn first_offset(e: Expr) -> Int {
+export fn first_offset(_ e: Expr) -> Int {
   match e {
     EIdent(_, off) => off,
     ECall(callee, _, off, _) => if off >= 0 {
@@ -94,7 +94,7 @@ export fn first_offset(e: Expr) -> Int {
 /// #3126: may `divisor` be zero at run time? `false` only for a literal that
 /// is not: `x / 16`, `x % -3`. That is the one shape needing no guard at all,
 /// and the common one in a hot loop (`i % 2`, `n / 10`).
-export fn int_divisor_may_be_zero(divisor: Expr) -> Bool {
+export fn int_divisor_may_be_zero(_ divisor: Expr) -> Bool {
   match divisor {
     EInt(n) => n == 0,
     EUnaryOp(op, EInt(n)) => op != "-" || n == 0,
@@ -109,7 +109,7 @@ export fn int_divisor_may_be_zero(divisor: Expr) -> Bool {
 /// operand this answers `true` for is a `Double` division and never traps.
 /// Only ever `true` for a `Double`: anything it cannot read says `false`,
 /// which keeps the site (an unused helper, never a missing one).
-fn expr_is_syntactic_double(e: Expr) -> Bool {
+fn expr_is_syntactic_double(_ e: Expr) -> Bool {
   match e {
     EFloat(_) => true,
     EUnaryOp(op, x) => op == "-" && expr_is_syntactic_double(x),
@@ -125,7 +125,7 @@ fn expr_is_syntactic_double(e: Expr) -> Bool {
 /// carries no operator position), or `("", 0, 0)` when the offset cannot be
 /// placed in a source file. The string-pool pass and codegen both ask through
 /// here, so the string codegen looks up is the one the pool seeded.
-export fn int_div_site(off: Int) -> (String, Int, Int) {
+export fn int_div_site(_ off: Int) -> (String, Int, Int) {
   if off < 0 {
     ("", 0, 0)
   } else {
@@ -135,7 +135,7 @@ export fn int_div_site(off: Int) -> (String, Int, Int) {
 
 /// #3126: `int_div_site` as one `path:line:col` string, or "" -- the form
 /// the gc lane embeds whole, since it has no integer printer to assemble one.
-export fn int_div_site_text(off: Int) -> String {
+export fn int_div_site_text(_ off: Int) -> String {
   let (path, line, col) = int_div_site(off)
   if String::length(path) == 0 {
     ""
@@ -150,11 +150,11 @@ export fn int_div_site_text(off: Int) -> String {
 /// arguments of the parser's `__let_refuted(EString(pattern, offset))` arm.
 /// The string-pool pass and both codegen lanes ask through here, so the
 /// string codegen looks up is the one the pool seeded. "" for any other shape.
-export fn let_refuted_message(args: Array[Expr]) -> String {
+export fn let_refuted_message(_ args: Array[Expr]) -> String {
   if Array::length(args) != 1 {
     ""
   } else {
-    match Array::get(args, 0) {
+    match Array::get(args, at = 0) {
       EString(text, off) => {
         let loc = int_div_site_text(off)
         let head = String::concat("let pattern `", String::concat(text, "` did not match"))
@@ -172,7 +172,7 @@ export fn let_refuted_message(args: Array[Expr]) -> String {
 
 /// #3126: the source offset an `Int` division trap reports for `e`, or -1
 /// when `e` is not a `/` / `%` whose divisor may be zero.
-fn int_div_site_off(e: Expr) -> Int {
+fn int_div_site_off(_ e: Expr) -> Int {
   match e {
     EBinOp(op, lhs, rhs, off) => if (op == "/" || op == "%") && int_divisor_may_be_zero(rhs) && !expr_is_syntactic_double(lhs) && !expr_is_syntactic_double(rhs) {
       if off >= 0 {
@@ -216,31 +216,31 @@ export fn collect_int_div_sites(stmts: Array[Stmt], out: Array[String], seen: Mu
   let found = [false]
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => collect_int_div_sites_expr(expr, out, seen, whole, found),
-      SLetMut(_, _, expr) => collect_int_div_sites_expr(expr, out, seen, whole, found),
-      SExpr(expr) => collect_int_div_sites_expr(expr, out, seen, whole, found),
-      STest(_, expr) => collect_int_div_sites_expr(expr, out, seen, whole, found),
-      SBench(_, expr) => collect_int_div_sites_expr(expr, out, seen, whole, found),
+    match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, expr) => collect_int_div_sites_expr(e = expr, out = out, seen = seen, whole = whole, found = found),
+      SLetMut(_, _, expr) => collect_int_div_sites_expr(e = expr, out = out, seen = seen, whole = whole, found = found),
+      SExpr(expr) => collect_int_div_sites_expr(e = expr, out = out, seen = seen, whole = whole, found = found),
+      STest(_, expr) => collect_int_div_sites_expr(e = expr, out = out, seen = seen, whole = whole, found = found),
+      SBench(_, expr) => collect_int_div_sites_expr(e = expr, out = out, seen = seen, whole = whole, found = found),
       _ => ()
     }
     i = i + 1
   }
-  Array::get(found, 0)
+  Array::get(found, at = 0)
 }
 
 fn collect_int_div_sites_expr(e: Expr, out: Array[String], seen: MutSet[String], whole: Bool, found: Array[Bool]) -> Unit {
   let off = int_div_site_off(e)
   if off != 0 - 1 {
-    Array::set(found, 0, true)
+    Array::set(found, at = 0, value = true)
     let loc = if whole {
       int_div_site_text(off)
     } else {
       let (path, _, _) = int_div_site(off)
       path
     }
-    if String::length(loc) > 0 && MutSet::insert(seen, loc) {
-      Array::push(out, loc)
+    if String::length(loc) > 0 && MutSet::insert(seen, x = loc) {
+      Array::push(out, value = loc)
     } else {
       ()
     }
@@ -251,7 +251,7 @@ fn collect_int_div_sites_expr(e: Expr, out: Array[String], seen: MutSet[String],
   let top = expr_children_top()
   let mut k = mark
   while k < top {
-    collect_int_div_sites_expr(expr_child_at(k), out, seen, whole, found)
+    collect_int_div_sites_expr(e = expr_child_at(k), out = out, seen = seen, whole = whole, found = found)
     k = k + 1
   }
   expr_children_pop(mark)
@@ -266,7 +266,7 @@ export fn offset_to_line(nl: Array[Int], off: Int) -> Int {
   let mut hi = Array::length(nl)
   while lo < hi {
     let mid = lo + (hi - lo) / 2
-    if Array::get(nl, mid) < off {
+    if Array::get(nl, at = mid) < off {
       lo = mid + 1
     } else {
       hi = mid
@@ -277,13 +277,13 @@ export fn offset_to_line(nl: Array[Int], off: Int) -> Int {
 
 /// Interior-line breakpoints: build a sorted array of the char-offsets of each
 /// '\n' in `src`. Empty when `src` is empty.
-export fn build_newline_offsets(src: String) -> Array[Int] {
+export fn build_newline_offsets(_ src: String) -> Array[Int] {
   let arr = array_empty()
   let n = String::length(src)
   let mut i = 0
   while i < n {
-    if String::char_code_at(src, i) == 10 {
-      Array::push(arr, i)
+    if String::char_code_at(src, at = i) == 10 {
+      Array::push(arr, value = i)
     } else {
       ()
     }
@@ -292,28 +292,28 @@ export fn build_newline_offsets(src: String) -> Array[Int] {
   arr
 }
 
-export fn get_ebinop_lhs(expr: Expr) -> Expr with Exception {
+export fn get_ebinop_lhs(_ expr: Expr) -> Expr with Exception {
   match expr {
     EBinOp(_, lhs, _, _) => lhs,
     _ => throw("not EBinOp")
   }
 }
 
-export fn get_ebinop_rhs(expr: Expr) -> Expr with Exception {
+export fn get_ebinop_rhs(_ expr: Expr) -> Expr with Exception {
   match expr {
     EBinOp(_, _, rhs, _) => rhs,
     _ => throw("not EBinOp")
   }
 }
 
-export fn get_ecall_args(expr: Expr) -> Array[Expr] with Exception {
+export fn get_ecall_args(_ expr: Expr) -> Array[Expr] with Exception {
   match expr {
     ECall(_, args, _, _) => args,
     _ => throw("not ECall")
   }
 }
 
-export fn get_efn_params(expr: Expr) -> Array[(String, Option[TypeExpr])] with Exception {
+export fn get_efn_params(_ expr: Expr) -> Array[(String, Option[TypeExpr])] with Exception {
   match expr {
     EFn(_, _, params, _, _, _) => params,
     _ => throw("not EFn")
@@ -324,7 +324,7 @@ export fn get_efn_params(expr: Expr) -> Array[(String, Option[TypeExpr])] with E
 /// names one of these is an ERASED formal, not the same-spelled declared type
 /// the merged program may also carry -- annotation-driven shape seeding must
 /// skip it.
-export fn get_efn_tparams(expr: Expr) -> Array[String] with Exception {
+export fn get_efn_tparams(_ expr: Expr) -> Array[String] with Exception {
   match expr {
     EFn(tparams, _, _, _, _, _) => tparams,
     _ => throw("not EFn")
@@ -336,21 +336,21 @@ export fn get_efn_tparams(expr: Expr) -> Array[String] with Exception {
 /// codegen is otherwise untyped, so a declared `-> Double` is the only way a
 /// call site can learn that the value it is about to render is a float rather
 /// than an Int with the same bit width (#2158).
-export fn get_efn_ret(expr: Expr) -> Option[TypeExpr] with Exception {
+export fn get_efn_ret(_ expr: Expr) -> Option[TypeExpr] with Exception {
   match expr {
     EFn(_, _, _, ret, _, _) => ret,
     _ => throw("not EFn")
   }
 }
 
-export fn get_eint_value(expr: Expr) -> Int with Exception {
+export fn get_eint_value(_ expr: Expr) -> Int with Exception {
   match expr {
     EInt(n) => n,
     _ => throw("not EInt")
   }
 }
 
-export fn get_eseq_first(expr: Expr) -> Expr with Exception {
+export fn get_eseq_first(_ expr: Expr) -> Expr with Exception {
   match expr {
     ESeq(first, _) => first,
     _ => throw("not ESeq")
@@ -358,7 +358,7 @@ export fn get_eseq_first(expr: Expr) -> Expr with Exception {
 }
 
 /// Extract arms from EMatch (non-recursive to avoid stale binding bug in let rec)
-export fn get_match_arms(expr: Expr) -> Array[(Pat, Expr)] with Exception {
+export fn get_match_arms(_ expr: Expr) -> Array[(Pat, Expr)] with Exception {
   match expr {
     EMatch(_, arms) => arms,
     _ => throw("get_match_arms: not an EMatch")
@@ -366,14 +366,14 @@ export fn get_match_arms(expr: Expr) -> Array[(Pat, Expr)] with Exception {
 }
 
 /// Extract name from PBind
-export fn get_pbind_name(p: Pat) -> String with Exception {
+export fn get_pbind_name(_ p: Pat) -> String with Exception {
   match p {
     PBind(name) => name,
     _ => throw("get_pbind_name: not a PBind")
   }
 }
 
-export fn get_pctor_args(p: Pat) -> Array[Pat] with Exception {
+export fn get_pctor_args(_ p: Pat) -> Array[Pat] with Exception {
   match p {
     PCtor(_, args) => args,
     _ => throw("get_pctor_args: not a PCtor")
@@ -381,7 +381,7 @@ export fn get_pctor_args(p: Pat) -> Array[Pat] with Exception {
 }
 
 /// Extract PCtor name and args
-export fn get_pctor_name(p: Pat) -> String with Exception {
+export fn get_pctor_name(_ p: Pat) -> String with Exception {
   match p {
     PCtor(name, _) => pattern_ctor_base_name(name),
     _ => throw("get_pctor_name: not a PCtor")
@@ -389,63 +389,63 @@ export fn get_pctor_name(p: Pat) -> String with Exception {
 }
 
 /// Extract PInt value
-export fn get_pint_value(p: Pat) -> Int with Exception {
+export fn get_pint_value(_ p: Pat) -> Int with Exception {
   match p {
     PInt(n) => n,
     _ => throw("get_pint_value: not a PInt")
   }
 }
 
-export fn get_pfloat_value(p: Pat) -> Double with Exception {
+export fn get_pfloat_value(_ p: Pat) -> Double with Exception {
   match p {
     PFloat(v) => v,
     _ => throw("get_pfloat_value: not a PFloat")
   }
 }
 
-export fn get_eassign_val(expr: Expr) -> Expr with Exception {
+export fn get_eassign_val(_ expr: Expr) -> Expr with Exception {
   match expr {
     EAssign(_, val, _, _) => val,
     _ => throw("not EAssign")
   }
 }
 
-export fn get_ebool_value(expr: Expr) -> Bool with Exception {
+export fn get_ebool_value(_ expr: Expr) -> Bool with Exception {
   match expr {
     EBool(b) => b,
     _ => throw("not EBool")
   }
 }
 
-export fn get_eforin_body(expr: Expr) -> Expr with Exception {
+export fn get_eforin_body(_ expr: Expr) -> Expr with Exception {
   match expr {
     EForIn(_, _, _, body) => body,
     _ => throw("not EForIn")
   }
 }
 
-export fn get_eforin_iter(expr: Expr) -> Expr with Exception {
+export fn get_eforin_iter(_ expr: Expr) -> Expr with Exception {
   match expr {
     EForIn(_, _, iter, _) => iter,
     _ => throw("not EForIn")
   }
 }
 
-export fn get_eforin_name(expr: Expr) -> String with Exception {
+export fn get_eforin_name(_ expr: Expr) -> String with Exception {
   match expr {
     EForIn(name, _, _, _) => name,
     _ => throw("not EForIn")
   }
 }
 
-export fn get_eforin_index(expr: Expr) -> Option[String] with Exception {
+export fn get_eforin_index(_ expr: Expr) -> Option[String] with Exception {
   match expr {
     EForIn(_, index_name, _, _) => index_name,
     _ => throw("not EForIn")
   }
 }
 
-export fn get_eident_name(expr: Expr) -> String with Exception {
+export fn get_eident_name(_ expr: Expr) -> String with Exception {
   match expr {
     EIdent(name, _) => name,
     _ => throw("not EIdent")
@@ -455,56 +455,56 @@ export fn get_eident_name(expr: Expr) -> String with Exception {
 /// #2389: the identifier's source offset -- what a per-use plan action is
 /// keyed by (#2257). -1 for a synthesized occurrence (and for every
 /// occurrence when the source was parsed without offsets).
-export fn get_eident_off(expr: Expr) -> Int with Exception {
+export fn get_eident_off(_ expr: Expr) -> Int with Exception {
   match expr {
     EIdent(_, off) => off,
     _ => throw("not EIdent")
   }
 }
 
-export fn get_eletmut_val(expr: Expr) -> Expr with Exception {
+export fn get_eletmut_val(_ expr: Expr) -> Expr with Exception {
   match expr {
     ELetMut(_, val, _, _) => val,
     _ => throw("not ELetMut")
   }
 }
 
-export fn get_eletrec_val(expr: Expr) -> Expr with Exception {
+export fn get_eletrec_val(_ expr: Expr) -> Expr with Exception {
   match expr {
     ELetRec(_, val, _) => val,
     _ => throw("not ELetRec")
   }
 }
 
-export fn get_eseq_second(expr: Expr) -> Expr with Exception {
+export fn get_eseq_second(_ expr: Expr) -> Expr with Exception {
   match expr {
     ESeq(_, second) => second,
     _ => throw("not ESeq")
   }
 }
 
-export fn get_ereturn_expr(expr: Expr) -> Expr with Exception {
+export fn get_ereturn_expr(_ expr: Expr) -> Expr with Exception {
   match expr {
     EReturn(e) => e,
     _ => throw("not EReturn")
   }
 }
 
-export fn get_eunaryop_op(expr: Expr) -> String with Exception {
+export fn get_eunaryop_op(_ expr: Expr) -> String with Exception {
   match expr {
     EUnaryOp(op, _) => op,
     _ => throw("not EUnaryOp")
   }
 }
 
-export fn get_ewhile_body(expr: Expr) -> Expr with Exception {
+export fn get_ewhile_body(_ expr: Expr) -> Expr with Exception {
   match expr {
     EWhile(_, body) => body,
     _ => throw("not EWhile")
   }
 }
 
-export fn get_ewhile_cond(expr: Expr) -> Expr with Exception {
+export fn get_ewhile_cond(_ expr: Expr) -> Expr with Exception {
   match expr {
     EWhile(cond, _) => cond,
     _ => throw("not EWhile")
@@ -512,7 +512,7 @@ export fn get_ewhile_cond(expr: Expr) -> Expr with Exception {
 }
 
 /// Extract PBool value
-export fn get_pbool_value(p: Pat) -> Bool with Exception {
+export fn get_pbool_value(_ p: Pat) -> Bool with Exception {
   match p {
     PBool(v) => v,
     _ => throw("get_pbool_value: not a PBool")
@@ -520,14 +520,14 @@ export fn get_pbool_value(p: Pat) -> Bool with Exception {
 }
 
 /// Extract sub-patterns from PTuple
-export fn get_ptuple_pats(p: Pat) -> Array[Pat] with Exception {
+export fn get_ptuple_pats(_ p: Pat) -> Array[Pat] with Exception {
   match p {
     PTuple(pats) => pats,
     _ => throw("get_ptuple_pats: not a PTuple")
   }
 }
 
-export fn get_slet_export(stmt: Stmt) -> Bool with Exception {
+export fn get_slet_export(_ stmt: Stmt) -> Bool with Exception {
   match stmt {
     SLet(is_export, _, _, _, _) => is_export,
     _ => throw("not SLet")
@@ -535,7 +535,7 @@ export fn get_slet_export(stmt: Stmt) -> Bool with Exception {
 }
 
 /// Check if a pattern is unconditionally matching (catch-all)
-export fn is_catchall_pat(p: Pat) -> Bool {
+export fn is_catchall_pat(_ p: Pat) -> Bool {
   match p {
     PWild => true,
     PBind(_) => true,
@@ -544,7 +544,7 @@ export fn is_catchall_pat(p: Pat) -> Bool {
       let mut i = 0
       let mut all_catch = true
       while i < Array::length(pats) {
-        if !is_catchall_pat(Array::get(pats, i)) {
+        if !is_catchall_pat(Array::get(pats, at = i)) {
           all_catch = false
         }
         i = i + 1
@@ -559,7 +559,7 @@ export fn is_catchall_pat(p: Pat) -> Bool {
       let mut i = 0
       let mut all_catch = true
       while i < Array::length(fields) {
-        let (_, sp) = Array::get(fields, i)
+        let (_, sp) = Array::get(fields, at = i)
         if !is_catchall_pat(sp) {
           all_catch = false
         }
@@ -593,52 +593,52 @@ export fn emit_assignop_op(buf: Bytes, op: String) -> Unit with Exception {
   }
 }
 
-export fn emit_memory_copy(buf: Bytes) -> Unit {
-  bytebuf_push(buf, op_prefix)
-  leb128_encode_u32(buf, 10)
-  bytebuf_push(buf, 0)
-  bytebuf_push(buf, 0)
+export fn emit_memory_copy(_ buf: Bytes) -> Unit {
+  bytebuf_push(buf = buf, byte = op_prefix)
+  leb128_encode_u32(buf = buf, value = 10)
+  bytebuf_push(buf = buf, byte = 0)
+  bytebuf_push(buf = buf, byte = 0)
 }
 
 /// memory.fill: stack operands (dest, value, size) -> fills `size` bytes at
 /// `dest` with the low byte of `value`. Bulk-memory op 11 (same 0xFC prefix
 /// family as memory.copy above). Used to zero-init (or 0xFF-sentinel-init) a
 /// fresh hash-index table in one instruction instead of a store loop.
-export fn emit_memory_fill(buf: Bytes) -> Unit {
-  bytebuf_push(buf, op_prefix)
-  leb128_encode_u32(buf, 11)
-  bytebuf_push(buf, 0)
+export fn emit_memory_fill(_ buf: Bytes) -> Unit {
+  bytebuf_push(buf = buf, byte = op_prefix)
+  leb128_encode_u32(buf = buf, value = 11)
+  bytebuf_push(buf = buf, byte = 0)
 }
 
-export fn get_earray_elems(expr: Expr) -> Array[Expr] with Exception {
+export fn get_earray_elems(_ expr: Expr) -> Array[Expr] with Exception {
   match expr {
     EArray(elems) => elems,
     _ => throw("not EArray")
   }
 }
 
-export fn get_eassign_body(expr: Expr) -> Expr with Exception {
+export fn get_eassign_body(_ expr: Expr) -> Expr with Exception {
   match expr {
     EAssign(_, _, body, _) => body,
     _ => throw("not EAssign")
   }
 }
 
-export fn get_eassign_name(expr: Expr) -> String with Exception {
+export fn get_eassign_name(_ expr: Expr) -> String with Exception {
   match expr {
     EAssign(name, _, _, _) => name,
     _ => throw("not EAssign")
   }
 }
 
-export fn get_eassignop_op(expr: Expr) -> String with Exception {
+export fn get_eassignop_op(_ expr: Expr) -> String with Exception {
   match expr {
     EAssignOp(_, op, _, _, _) => op,
     _ => throw("not EAssignOp")
   }
 }
 
-export fn get_ecall_callee(expr: Expr) -> Expr with Exception {
+export fn get_ecall_callee(_ expr: Expr) -> Expr with Exception {
   match expr {
     ECall(callee, _, _, _) => callee,
     _ => throw("not ECall")
@@ -649,42 +649,42 @@ export fn get_ecall_callee(expr: Expr) -> Expr with Exception {
 /// with offsets. This is the key `CompileCtx.float_call_offsets` is filed
 /// under; -1 is never in that table (the checker only records `off >= 0`), so
 /// an unlocated call reads as "not classified" rather than as a lookup hit.
-export fn get_ecall_off(expr: Expr) -> Int with Exception {
+export fn get_ecall_off(_ expr: Expr) -> Int with Exception {
   match expr {
     ECall(_, _, off, _) => off,
     _ => throw("not ECall")
   }
 }
 
-export fn get_efloat_value(expr: Expr) -> Double with Exception {
+export fn get_efloat_value(_ expr: Expr) -> Double with Exception {
   match expr {
     EFloat(v) => v,
     _ => throw("not EFloat")
   }
 }
 
-export fn get_eletmut_body(expr: Expr) -> Expr with Exception {
+export fn get_eletmut_body(_ expr: Expr) -> Expr with Exception {
   match expr {
     ELetMut(_, _, body, _) => body,
     _ => throw("not ELetMut")
   }
 }
 
-export fn get_eletmut_name(expr: Expr) -> String with Exception {
+export fn get_eletmut_name(_ expr: Expr) -> String with Exception {
   match expr {
     ELetMut(name, _, _, _) => name,
     _ => throw("not ELetMut")
   }
 }
 
-export fn get_eletrec_body(expr: Expr) -> Expr with Exception {
+export fn get_eletrec_body(_ expr: Expr) -> Expr with Exception {
   match expr {
     ELetRec(_, _, body) => body,
     _ => throw("not ELetRec")
   }
 }
 
-export fn get_eletrec_name(expr: Expr) -> String with Exception {
+export fn get_eletrec_name(_ expr: Expr) -> String with Exception {
   match expr {
     ELetRec(name, _, _) => name,
     _ => throw("not ELetRec")
@@ -692,7 +692,7 @@ export fn get_eletrec_name(expr: Expr) -> String with Exception {
 }
 
 /// Extract elements from ETuple
-export fn get_etuple_elems(expr: Expr) -> Array[Expr] with Exception {
+export fn get_etuple_elems(_ expr: Expr) -> Array[Expr] with Exception {
   match expr {
     ETuple(elems) => elems,
     _ => throw("get_etuple_elems: not an ETuple")
@@ -704,7 +704,7 @@ export fn str_table_lookup(strs: Array[String], s: String) -> Int with Exception
   let mut i = 0
   let mut found = -1
   while i < len {
-    if String::equals(Array::get(strs, i), s) {
+    if String::equals(Array::get(strs, at = i), s) {
       found = i
       i = len
     } else {
@@ -719,12 +719,12 @@ export fn str_table_lookup(strs: Array[String], s: String) -> Int with Exception
 
 /// Find the index of the first catch-all pattern in match arms
 /// Returns num_arms if no catch-all found
-export fn find_catchall_idx(arms: Array[(Pat, Expr)]) -> Int {
+export fn find_catchall_idx(_ arms: Array[(Pat, Expr)]) -> Int {
   let num = Array::length(arms)
   let mut idx = 0
   let mut result = num
   while idx < num {
-    let (p, _) = Array::get(arms, idx)
+    let (p, _) = Array::get(arms, at = idx)
     if is_catchall_pat(p) {
       result = idx
       idx = num
@@ -735,21 +735,21 @@ export fn find_catchall_idx(arms: Array[(Pat, Expr)]) -> Int {
   result
 }
 
-export fn get_eassignop_val(expr: Expr) -> Expr with Exception {
+export fn get_eassignop_val(_ expr: Expr) -> Expr with Exception {
   match expr {
     EAssignOp(_, _, val, _, _) => val,
     _ => throw("not EAssignOp")
   }
 }
 
-export fn get_estring_value(expr: Expr) -> String with Exception {
+export fn get_estring_value(_ expr: Expr) -> String with Exception {
   match expr {
     EString(s, _) => s,
     _ => throw("not EString")
   }
 }
 
-export fn get_eunaryop_expr(expr: Expr) -> Expr with Exception {
+export fn get_eunaryop_expr(_ expr: Expr) -> Expr with Exception {
   match expr {
     EUnaryOp(_, e) => e,
     _ => throw("not EUnaryOp")
@@ -757,7 +757,7 @@ export fn get_eunaryop_expr(expr: Expr) -> Expr with Exception {
 }
 
 /// Extract PString value
-export fn get_pstring_value(p: Pat) -> String with Exception {
+export fn get_pstring_value(_ p: Pat) -> String with Exception {
   match p {
     PString(s) => s,
     _ => throw("get_pstring_value: not a PString")
@@ -769,7 +769,7 @@ export fn array_contains_str(arr: Array[String], s: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < len {
-    if String::equals(Array::get(arr, i), s) {
+    if String::equals(Array::get(arr, at = i), s) {
       found = true
       i = len
     } else {
@@ -789,7 +789,7 @@ export fn array_contains_int(arr: Array[Int], v: Int) -> Bool {
   let mut i = 0
   let mut found = false
   while i < len {
-    if Array::get(arr, i) == v {
+    if Array::get(arr, at = i) == v {
       found = true
       i = len
     } else {
@@ -799,14 +799,14 @@ export fn array_contains_int(arr: Array[Int], v: Int) -> Bool {
   found
 }
 
-export fn get_eassignop_body(expr: Expr) -> Expr with Exception {
+export fn get_eassignop_body(_ expr: Expr) -> Expr with Exception {
   match expr {
     EAssignOp(_, _, _, body, _) => body,
     _ => throw("not EAssignOp")
   }
 }
 
-export fn get_eassignop_name(expr: Expr) -> String with Exception {
+export fn get_eassignop_name(_ expr: Expr) -> String with Exception {
   match expr {
     EAssignOp(name, _, _, _, _) => name,
     _ => throw("not EAssignOp")
@@ -814,14 +814,14 @@ export fn get_eassignop_name(expr: Expr) -> String with Exception {
 }
 
 /// Extract scrutinee from EMatch (non-recursive to avoid stale binding bug in let rec)
-export fn get_match_scrutinee(expr: Expr) -> Expr with Exception {
+export fn get_match_scrutinee(_ expr: Expr) -> Expr with Exception {
   match expr {
     EMatch(scrutinee, _) => scrutinee,
     _ => throw("get_match_scrutinee: not an EMatch")
   }
 }
 
-export fn get_ecall_resolution(expr: Expr) -> Array[Int] with Exception {
+export fn get_ecall_resolution(_ expr: Expr) -> Array[Int] with Exception {
   match expr {
     ECall(_, _, _, resolution) => resolution,
     _ => throw("get_ecall_resolution: expected a call")

@@ -48,7 +48,7 @@ let merged_location_scopes: Array[MergedOffsetLocations] = []
 
 export fn merged_offset_locations_snapshot() -> MergedOffsetLocations {
   if Array::length(merged_location_scopes) > 0 {
-    Array::get(merged_location_scopes, Array::length(merged_location_scopes) - 1)
+    Array::get(merged_location_scopes, at = Array::length(merged_location_scopes) - 1)
   } else {
     let paths: Array[String] = []
     let bases: Array[Int] = []
@@ -57,16 +57,16 @@ export fn merged_offset_locations_snapshot() -> MergedOffsetLocations {
     let placed: Array[Bool] = []
     let mut i = 0
     while i < Array::length(merged_offset_paths) {
-      let source = Array::get(merged_offset_sources, i)
+      let source = Array::get(merged_offset_sources, at = i)
       // #3656: a directory-shared sibling is placed from the end of the block
       // the loader prepended, where the file on disk begins.
       let skip = loader_prepended_prefix_bytes(source)
       let real = skip > 0 || !merged_offset_is_synthesized(source)
-      Array::push(paths, Array::get(merged_offset_paths, i))
-      Array::push(bases, Array::get(merged_offset_bases, i) + skip)
-      Array::push(lengths, String::length(source) - skip)
-      Array::push(placed, real)
-      Array::push(newlines, if real {
+      Array::push(paths, value = Array::get(merged_offset_paths, at = i))
+      Array::push(bases, value = Array::get(merged_offset_bases, at = i) + skip)
+      Array::push(lengths, value = String::length(source) - skip)
+      Array::push(placed, value = real)
+      Array::push(newlines, value = if real {
         merged_offset_newlines(i)
       } else {
         []
@@ -93,12 +93,12 @@ export fn with_merged_offset_locations[T](locations: MergedOffsetLocations, acti
   } else ()
   let mut i = 0
   while i < n {
-    if Array::get(locations.bases, i) < 0 || Array::get(locations.lengths, i) < 0 {
+    if Array::get(locations.bases, at = i) < 0 || Array::get(locations.lengths, at = i) < 0 {
       throw("merged locations: negative source range")
     } else ()
     let mut previous = -1
-    for off in Array::get(locations.newlines, i) {
-      if off <= previous || off >= Array::get(locations.lengths, i) {
+    for off in Array::get(locations.newlines, at = i) {
+      if off <= previous || off >= Array::get(locations.lengths, at = i) {
         throw("merged locations: invalid newline offsets")
       } else ()
       previous = off
@@ -106,13 +106,13 @@ export fn with_merged_offset_locations[T](locations: MergedOffsetLocations, acti
     i = i + 1
   }
   let depth = Array::length(merged_location_scopes)
-  Array::push(merged_location_scopes, locations)
+  Array::push(merged_location_scopes, value = locations)
   handle {
     let result = action()
-    Array::truncate(merged_location_scopes, depth)
+    Array::truncate(merged_location_scopes, length = depth)
     result
   } with { Exception::Throw(message) => {
-    Array::truncate(merged_location_scopes, depth)
+    Array::truncate(merged_location_scopes, length = depth)
     throw(message)
   } }
 }
@@ -120,37 +120,37 @@ export fn with_merged_offset_locations[T](locations: MergedOffsetLocations, acti
 /// Forget the recorded merge. Called by every merge before it records, and by
 /// the CLI before each compile.
 export fn merged_offset_space_reset() -> Unit {
-  Array::truncate(merged_offset_paths, 0)
-  Array::truncate(merged_offset_sources, 0)
-  Array::truncate(merged_offset_bases, 0)
-  Array::truncate(merged_offset_nls, 0)
-  Array::truncate(merged_offset_nls_built, 0)
+  Array::truncate(merged_offset_paths, length = 0)
+  Array::truncate(merged_offset_sources, length = 0)
+  Array::truncate(merged_offset_bases, length = 0)
+  Array::truncate(merged_offset_nls, length = 0)
+  Array::truncate(merged_offset_nls_built, length = 0)
 }
 
 /// Record that `path`, parsed from `source`, occupies merged offsets
 /// `[base, base + length(source)]`.
 export fn merged_offset_space_add(path: String, source: String, base: Int) -> Unit {
-  Array::push(merged_offset_paths, path)
-  Array::push(merged_offset_sources, source)
-  Array::push(merged_offset_bases, base)
+  Array::push(merged_offset_paths, value = path)
+  Array::push(merged_offset_sources, value = source)
+  Array::push(merged_offset_bases, value = base)
   let unbuilt: Array[Int] = []
-  Array::push(merged_offset_nls, unbuilt)
-  Array::push(merged_offset_nls_built, false)
+  Array::push(merged_offset_nls, value = unbuilt)
+  Array::push(merged_offset_nls_built, value = false)
 }
 
 /// The file that owns merged offset `off`, as `(path, source, local offset)`.
 /// `None` when no merge is recorded or `off` lies outside every file's range
 /// -- an alias-collision clone's range sits past the last file, and a clone is
 /// a second copy of code whose position is not the one the reader wrote.
-export fn merged_offset_owner(off: Int) -> Option[(String, String, Int)] {
+export fn merged_offset_owner(_ off: Int) -> Option[(String, String, Int)] {
   let n = Array::length(merged_offset_paths)
   let mut found: Option[(String, String, Int)] = None
   let mut i = 0
   while i < n {
-    let base = Array::get(merged_offset_bases, i)
-    let source = Array::get(merged_offset_sources, i)
+    let base = Array::get(merged_offset_bases, at = i)
+    let source = Array::get(merged_offset_sources, at = i)
     if off >= base && off <= base + String::length(source) {
-      found = Some((Array::get(merged_offset_paths, i), source, off - base))
+      found = Some((Array::get(merged_offset_paths, at = i), source, off - base))
       i = n
     } else {
       i = i + 1
@@ -173,23 +173,23 @@ export fn merged_offset_owner(off: Int) -> Option[(String, String, Int)] {
 ///
 /// Called once per division site by the string-pool pass and again by
 /// codegen, so each file's newline table is built once and searched.
-export fn merged_offset_line_col(off: Int) -> (String, Int, Int) {
+export fn merged_offset_line_col(_ off: Int) -> (String, Int, Int) {
   if Array::length(merged_location_scopes) > 0 {
-    let locations = Array::get(merged_location_scopes, Array::length(merged_location_scopes) - 1)
+    let locations = Array::get(merged_location_scopes, at = Array::length(merged_location_scopes) - 1)
     let mut i = 0
     while off >= 0 && i < Array::length(locations.paths) {
-      let base = Array::get(locations.bases, i)
-      if off >= base && off - base <= Array::get(locations.lengths, i) {
-        if !Array::get(locations.placed, i) {
+      let base = Array::get(locations.bases, at = i)
+      if off >= base && off - base <= Array::get(locations.lengths, at = i) {
+        if !Array::get(locations.placed, at = i) {
           return ("", 0, 0)
         } else ()
         let local = off - base
-        let nls = Array::get(locations.newlines, i)
+        let nls = Array::get(locations.newlines, at = i)
         let mut lo = 0
         let mut hi = Array::length(nls)
         while lo < hi {
           let mid = (lo + hi) / 2
-          if Array::get(nls, mid) < local {
+          if Array::get(nls, at = mid) < local {
             lo = mid + 1
           } else {
             hi = mid
@@ -198,9 +198,9 @@ export fn merged_offset_line_col(off: Int) -> (String, Int, Int) {
         let col = if lo == 0 {
           local + 1
         } else {
-          local - Array::get(nls, lo - 1)
+          local - Array::get(nls, at = lo - 1)
         }
-        return (Array::get(locations.paths, i), lo + 1, col)
+        return (Array::get(locations.paths, at = i), lo + 1, col)
       } else ()
       i = i + 1
     }
@@ -210,8 +210,8 @@ export fn merged_offset_line_col(off: Int) -> (String, Int, Int) {
   let mut file = 0 - 1
   let mut i = 0
   while i < n {
-    let base = Array::get(merged_offset_bases, i)
-    if off >= base && off <= base + String::length(Array::get(merged_offset_sources, i)) {
+    let base = Array::get(merged_offset_bases, at = i)
+    if off >= base && off <= base + String::length(Array::get(merged_offset_sources, at = i)) {
       file = i
       i = n
     } else {
@@ -221,16 +221,16 @@ export fn merged_offset_line_col(off: Int) -> (String, Int, Int) {
   let skip = if file < 0 {
     0
   } else {
-    loader_prepended_prefix_bytes(Array::get(merged_offset_sources, file))
+    loader_prepended_prefix_bytes(Array::get(merged_offset_sources, at = file))
   }
   if off < 0 || file < 0 {
     ("", 0, 0)
-  } else if skip == 0 && merged_offset_is_synthesized(Array::get(merged_offset_sources, file)) {
+  } else if skip == 0 && merged_offset_is_synthesized(Array::get(merged_offset_sources, at = file)) {
     ("", 0, 0)
-  } else if off - Array::get(merged_offset_bases, file) < skip {
+  } else if off - Array::get(merged_offset_bases, at = file) < skip {
     ("", 0, 0)
   } else {
-    let local = off - Array::get(merged_offset_bases, file) - skip
+    let local = off - Array::get(merged_offset_bases, at = file) - skip
     let nls = merged_offset_newlines(file)
     // The count of newlines strictly before `local` is the 0-based line; the
     // last of them ends the previous line.
@@ -238,7 +238,7 @@ export fn merged_offset_line_col(off: Int) -> (String, Int, Int) {
     let mut hi = Array::length(nls)
     while lo < hi {
       let mid = (lo + hi) / 2
-      if Array::get(nls, mid) < local {
+      if Array::get(nls, at = mid) < local {
         lo = mid + 1
       } else {
         hi = mid
@@ -247,9 +247,9 @@ export fn merged_offset_line_col(off: Int) -> (String, Int, Int) {
     let col = if lo == 0 {
       local + 1
     } else {
-      local - Array::get(nls, lo - 1)
+      local - Array::get(nls, at = lo - 1)
     }
-    (Array::get(merged_offset_paths, file), lo + 1, col)
+    (Array::get(merged_offset_paths, at = file), lo + 1, col)
   }
 }
 
@@ -259,22 +259,22 @@ export fn merged_offset_line_col(off: Int) -> (String, Int, Int) {
 /// import `contract`, so the lines are spelled here. Matching the whole
 /// marker, not the `// vibe: ` prefix, keeps a user file that merely starts
 /// with such a comment located (#3126 review).
-fn merged_offset_is_synthesized(source: String) -> Bool {
-  String::starts_with(source, "// vibe: contract facade (desugared from .vibei)\n") || String::starts_with(source, "// vibe: vpkg directory-shared imports (#897)\n") || String::starts_with(source, "// vibe: vpkg contract types module (#1840)\n")
+fn merged_offset_is_synthesized(_ source: String) -> Bool {
+  String::starts_with(source, prefix = "// vibe: contract facade (desugared from .vibei)\n") || String::starts_with(source, prefix = "// vibe: vpkg directory-shared imports (#897)\n") || String::starts_with(source, prefix = "// vibe: vpkg contract types module (#1840)\n")
 }
 
-fn merged_offset_newlines(file: Int) -> Array[Int] {
-  if Array::get(merged_offset_nls_built, file) {
-    Array::get(merged_offset_nls, file)
+fn merged_offset_newlines(_ file: Int) -> Array[Int] {
+  if Array::get(merged_offset_nls_built, at = file) {
+    Array::get(merged_offset_nls, at = file)
   } else {
     // Counted in the file on disk (#3656), which is where `local` is counted.
-    let source = loader_physical_text(Array::get(merged_offset_sources, file))
+    let source = loader_physical_text(Array::get(merged_offset_sources, at = file))
     let len = String::length(source)
     // Counted first, so the table is allocated once at its final size.
     let mut count = 0
     let mut c = 0
     while c < len {
-      if String::byte_at(source, c) == 10 {
+      if String::byte_at(source, at = c) == 10 {
         count = count + 1
       }
       c = c + 1
@@ -282,15 +282,15 @@ fn merged_offset_newlines(file: Int) -> Array[Int] {
     let nls: Array[Int] = Array::with_capacity(count)
     let mut k = 0
     while k < len {
-      if String::char_code_at(source, k) == 10 {
-        Array::push(nls, k)
+      if String::char_code_at(source, at = k) == 10 {
+        Array::push(nls, value = k)
       } else {
         ()
       }
       k = k + 1
     }
-    Array::set(merged_offset_nls, file, nls)
-    Array::set(merged_offset_nls_built, file, true)
+    Array::set(merged_offset_nls, at = file, value = nls)
+    Array::set(merged_offset_nls_built, at = file, value = true)
     nls
   }
 }

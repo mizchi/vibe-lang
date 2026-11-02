@@ -88,16 +88,16 @@ import ./utilities.vibe {
 export fn ehp_collect_stmts(stmts: Array[Stmt], performed: Array[(String, Int)], handled: Array[(String, Int)]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, body) => ehp_collect_expr(body, performed, handled),
-      SLetMut(_, _, body) => ehp_collect_expr(body, performed, handled),
-      SLetPat(_, body) => ehp_collect_expr(body, performed, handled),
-      STest(_, body) => ehp_collect_expr(body, performed, handled),
-      SBench(_, body) => ehp_collect_expr(body, performed, handled),
-      SExample(_, body) => ehp_collect_expr(body, performed, handled),
-      SExpr(body) => ehp_collect_expr(body, performed, handled),
-      SFnDecl(_, _, body, _, _) => ehp_collect_expr(body, performed, handled),
-      SModule(_, _, body) => ehp_collect_stmts(body, performed, handled),
+    match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, body) => ehp_collect_expr(e = body, performed = performed, handled = handled),
+      SLetMut(_, _, body) => ehp_collect_expr(e = body, performed = performed, handled = handled),
+      SLetPat(_, body) => ehp_collect_expr(e = body, performed = performed, handled = handled),
+      STest(_, body) => ehp_collect_expr(e = body, performed = performed, handled = handled),
+      SBench(_, body) => ehp_collect_expr(e = body, performed = performed, handled = handled),
+      SExample(_, body) => ehp_collect_expr(e = body, performed = performed, handled = handled),
+      SExpr(body) => ehp_collect_expr(e = body, performed = performed, handled = handled),
+      SFnDecl(_, _, body, _, _) => ehp_collect_expr(e = body, performed = performed, handled = handled),
+      SModule(_, _, body) => ehp_collect_stmts(stmts = body, performed = performed, handled = handled),
       _ => ()
     }
     i = i + 1
@@ -109,19 +109,19 @@ export fn ehp_collect_stmts(stmts: Array[Stmt], performed: Array[(String, Int)],
 /// exactly the CamelCase operations of `Fs` / `Env` / `Profiler`; a user
 /// effect that happens to share a provider's name declares operations the
 /// mapping does not know, and is left alone.
-fn ehp_is_host_operation(name: String) -> Bool {
-  String::index_of(name, "::") > 0 && has_standard_host_provider(name) && canonical_builtin_name(name) != name
+fn ehp_is_host_operation(_ name: String) -> Bool {
+  String::index_of(name, needle = "::") > 0 && has_standard_host_provider(name) && canonical_builtin_name(name) != name
 }
 
-export fn ehp_effect_of(op: String) -> String {
-  String::substring(op, 0, String::index_of(op, "::"))
+export fn ehp_effect_of(_ op: String) -> String {
+  String::substring(op, start = 0, end = String::index_of(op, needle = "::"))
 }
 
 fn ehp_note(out: Array[(String, Int)], op: String, arity: Int) -> Unit {
   let mut i = 0
   let mut seen = false
   while i < Array::length(out) {
-    if Array::get(out, i).0 == op {
+    if Array::get(out, at = i).0 == op {
       seen = true
     } else {
       ()
@@ -131,7 +131,7 @@ fn ehp_note(out: Array[(String, Int)], op: String, arity: Int) -> Unit {
   if seen {
     ()
   } else {
-    Array::push(out, (op, arity))
+    Array::push(out, value = (op, arity))
   }
 }
 
@@ -139,16 +139,16 @@ fn ehp_collect_expr(e: Expr, performed: Array[(String, Int)], handled: Array[(St
   match e {
     ECall(EIdent(head, _), args, _, _) => {
       if head == "perform" && Array::length(args) == 1 {
-        match Array::get(args, 0) {
+        match Array::get(args, at = 0) {
           ECall(EIdent(op, _), op_args, _, _) => if ehp_is_host_operation(op) {
-            ehp_note(performed, op, Array::length(op_args))
+            ehp_note(out = performed, op = op, arity = Array::length(op_args))
           } else {
             ()
           },
           // The bare spelling of a zero-argument operation:
           // `perform Env::ArgsLen`, `perform Profiler::NowUs`.
           EIdent(op, _) => if ehp_is_host_operation(op) {
-            ehp_note(performed, op, 0)
+            ehp_note(out = performed, op = op, arity = 0)
           } else {
             ()
           },
@@ -157,7 +157,7 @@ fn ehp_collect_expr(e: Expr, performed: Array[(String, Int)], handled: Array[(St
       } else {
         ()
       }
-      ehp_collect_children(e, performed, handled)
+      ehp_collect_children(e = e, performed = performed, handled = handled)
     },
     // The generic child walk does not descend into ARM bodies (see
     // `dhhc_expr_has_host_handler`), and an arm can perform too.
@@ -165,9 +165,9 @@ fn ehp_collect_expr(e: Expr, performed: Array[(String, Int)], handled: Array[(St
       let mut i = 0
       while i < Array::length(arms) {
         // Arm patterns carry a source-span wrapper (`source_pat`).
-        match source_pat(Array::get(arms, i).0) {
+        match source_pat(Array::get(arms, at = i).0) {
           PCtor(op, binders) => if ehp_is_host_operation(op) {
-            ehp_note(handled, op, Array::length(binders))
+            ehp_note(out = handled, op = op, arity = Array::length(binders))
           } else {
             ()
           },
@@ -175,21 +175,21 @@ fn ehp_collect_expr(e: Expr, performed: Array[(String, Int)], handled: Array[(St
         }
         i = i + 1
       }
-      ehp_collect_expr(body, performed, handled)
-      ehp_collect_arms(arms, performed, handled)
+      ehp_collect_expr(e = body, performed = performed, handled = handled)
+      ehp_collect_arms(arms = arms, performed = performed, handled = handled)
     },
     EMatch(scrut, arms) => {
-      ehp_collect_expr(scrut, performed, handled)
-      ehp_collect_arms(arms, performed, handled)
+      ehp_collect_expr(e = scrut, performed = performed, handled = handled)
+      ehp_collect_arms(arms = arms, performed = performed, handled = handled)
     },
-    _ => ehp_collect_children(e, performed, handled)
+    _ => ehp_collect_children(e = e, performed = performed, handled = handled)
   }
 }
 
 fn ehp_collect_arms(arms: Array[(Pat, Expr)], performed: Array[(String, Int)], handled: Array[(String, Int)]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    ehp_collect_expr(Array::get(arms, i).1, performed, handled)
+    ehp_collect_expr(e = Array::get(arms, at = i).1, performed = performed, handled = handled)
     i = i + 1
   }
 }
@@ -199,7 +199,7 @@ fn ehp_collect_children(e: Expr, performed: Array[(String, Int)], handled: Array
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    ehp_collect_expr(expr_child_at(i), performed, handled)
+    ehp_collect_expr(e = expr_child_at(i), performed = performed, handled = handled)
     i = i + 1
   }
   expr_children_pop(mark)
@@ -213,11 +213,11 @@ fn ehp_collect_children(e: Expr, performed: Array[(String, Int)], handled: Array
 export fn ehp_row_grants(row: String, op: String) -> Bool {
   let effect = ehp_effect_of(op)
   let capability = canonical_builtin_name(op)
-  let parts = String::split(row, ",")
+  let parts = String::split(row, sep = ",")
   let mut i = 0
   let mut found = false
   while i < Array::length(parts) {
-    let label = String::trim(Array::get(parts, i))
+    let label = String::trim(Array::get(parts, at = i))
     if label == effect || label == op || label == capability {
       found = true
     } else {
@@ -228,8 +228,8 @@ export fn ehp_row_grants(row: String, op: String) -> Bool {
   found
 }
 
-export fn ehp_test_grants(op: String) -> Bool {
-  str_array_contains(test_bench_default_effects(), ehp_effect_of(op))
+export fn ehp_test_grants(_ op: String) -> Bool {
+  str_array_contains(arr = test_bench_default_effects(), val = ehp_effect_of(op))
 }
 
 /// The provider around `body`, or `body` itself when no performed operation
@@ -244,9 +244,9 @@ export fn ehp_wrap(body: Expr, performed: Array[(String, Int)], granted: (String
   let order: Array[String] = []
   let mut i = 0
   while i < Array::length(performed) {
-    let (op, _) = Array::get(performed, i)
-    if granted(op) && !str_array_contains(order, ehp_effect_of(op)) {
-      Array::push(order, ehp_effect_of(op))
+    let (op, _) = Array::get(performed, at = i)
+    if granted(op) && !str_array_contains(arr = order, val = ehp_effect_of(op)) {
+      Array::push(order, value = ehp_effect_of(op))
     } else {
       ()
     }
@@ -255,26 +255,26 @@ export fn ehp_wrap(body: Expr, performed: Array[(String, Int)], granted: (String
   let mut out = body
   let mut ei = 0
   while ei < Array::length(order) {
-    let effect = Array::get(order, ei)
+    let effect = Array::get(order, at = ei)
     let arms: Array[(Pat, Expr)] = []
     let mut j = 0
     while j < Array::length(performed) {
-      let (op, arity) = Array::get(performed, j)
+      let (op, arity) = Array::get(performed, at = j)
       if ehp_effect_of(op) == effect && granted(op) {
         let binders: Array[Pat] = []
         let actuals: Array[Expr] = []
         let mut a = 0
         while a < arity {
-          let pname = dinsp_fresh_name(String::concat("__host_arg", __to_string(a)), body, body)
-          Array::push(binders, PBind(pname))
-          Array::push(actuals, EIdent(pname, -1))
+          let pname = dinsp_fresh_name(base = String::concat("__host_arg", __to_string(a)), value = body, content = body)
+          Array::push(binders, value = PBind(pname))
+          Array::push(actuals, value = EIdent(pname, -1))
           a = a + 1
         }
         // #3185: the host builtin itself, whatever the program defines under its
         // spelling (a pure program `Fs::exists` must not answer a real perform).
         let direct = ECall(builtin_ref(canonical_builtin_name(op)), actuals, -1, [
         ])
-        Array::push(arms, (PCtor(op, binders), ECall(EIdent("resume", -1), [
+        Array::push(arms, value = (PCtor(op, binders), ECall(EIdent("resume", -1), [
           direct
         ], -1, [])))
       } else {
@@ -283,8 +283,8 @@ export fn ehp_wrap(body: Expr, performed: Array[(String, Int)], granted: (String
       j = j + 1
     }
     out = EHandle(out, arms)
-    if !str_array_contains(provided, effect) {
-      Array::push(provided, effect)
+    if !str_array_contains(arr = provided, val = effect) {
+      Array::push(provided, value = effect)
     } else {
       ()
     }
@@ -295,7 +295,7 @@ export fn ehp_wrap(body: Expr, performed: Array[(String, Int)], granted: (String
 
 /// The source spelling of a registry type, for the handful of types host
 /// operations traffic in; `None` for anything else.
-fn ehp_type_expr(t: Type) -> Option[TypeExpr] {
+fn ehp_type_expr(_ t: Type) -> Option[TypeExpr] {
   match t {
     CtInt => Some(TyName("Int")),
     CtDouble => Some(TyName("Double")),
@@ -318,7 +318,7 @@ fn ehp_type_expr(t: Type) -> Option[TypeExpr] {
 
 /// `(short op name, params, result)` read off the builtin registry row the
 /// operation lowers to.
-fn ehp_op_signature(op: String) -> Option[(String, Array[TypeExpr], TypeExpr)] {
+fn ehp_op_signature(_ op: String) -> Option[(String, Array[TypeExpr], TypeExpr)] {
   // `Fs::readdir` is typed by the checker and lowered by codegen as a special
   // case (a `String::split` over the raw host import), so the registry has no
   // row for it -- the only registered host operation without one, measured
@@ -336,8 +336,8 @@ fn ehp_op_signature(op: String) -> Option[(String, Array[TypeExpr], TypeExpr)] {
       let mut ok = true
       let mut i = 0
       while i < Array::length(params) {
-        match ehp_type_expr(Array::get(params, i)) {
-          Some(te) => Array::push(ptes, te),
+        match ehp_type_expr(Array::get(params, at = i)) {
+          Some(te) => Array::push(ptes, value = te),
           None => {
             ok = false
           }
@@ -346,7 +346,7 @@ fn ehp_op_signature(op: String) -> Option[(String, Array[TypeExpr], TypeExpr)] {
       }
       match ehp_type_expr(ret) {
         Some(rte) => if ok {
-          Some((String::substring(op, String::index_of(op, "::") + 2, String::length(op)), ptes, rte))
+          Some((String::substring(op, start = String::index_of(op, needle = "::") + 2, end = String::length(op)), ptes, rte))
         } else {
           None
         },
@@ -366,7 +366,7 @@ fn ehp_op_signature(op: String) -> Option[(String, Array[TypeExpr], TypeExpr)] {
 export fn ehp_declare_missing_effects(stmts: Array[Stmt], effects: Array[String], performed: Array[(String, Int)], handled: Array[(String, Int)]) -> Unit {
   let mut ei = 0
   while ei < Array::length(effects) {
-    let effect = Array::get(effects, ei)
+    let effect = Array::get(effects, at = ei)
     // The operations this program performs or handles, each once.
     let wanted: Array[(String, Array[TypeExpr], TypeExpr)] = []
     let names: Array[String] = []
@@ -379,12 +379,12 @@ export fn ehp_declare_missing_effects(stmts: Array[Stmt], effects: Array[String]
       }
       let mut i = 0
       while i < Array::length(src) {
-        let (op, _) = Array::get(src, i)
-        if ehp_effect_of(op) == effect && !str_array_contains(names, op) {
+        let (op, _) = Array::get(src, at = i)
+        if ehp_effect_of(op) == effect && !str_array_contains(arr = names, val = op) {
           match ehp_op_signature(op) {
             Some(sig) => {
-              Array::push(names, op)
-              Array::push(wanted, sig)
+              Array::push(names, value = op)
+              Array::push(wanted, value = sig)
             },
             None => ()
           }
@@ -395,11 +395,11 @@ export fn ehp_declare_missing_effects(stmts: Array[Stmt], effects: Array[String]
       }
       pass = pass + 1
     }
-    let slots = ehp_effect_decl_indices(stmts, effect)
+    let slots = ehp_effect_decl_indices(stmts = stmts, effect = effect)
     if Array::length(slots) == 0 {
       if Array::length(wanted) > 0 {
         let no_params: Array[String] = []
-        Array::push(stmts, SEffectDef(false, effect, no_params, wanted))
+        Array::push(stmts, value = SEffectDef(false, effect, no_params, wanted))
       } else {
         ()
       }
@@ -413,22 +413,22 @@ export fn ehp_declare_missing_effects(stmts: Array[Stmt], effects: Array[String]
       // their order.
       let mut si = 0
       while si < Array::length(slots) {
-        let slot = Array::get(slots, si)
-        match Array::get(stmts, slot) {
+        let slot = Array::get(slots, at = si)
+        match Array::get(stmts, at = slot) {
           SEffectDef(exported, name, tparams, ops) => {
             let merged: Array[(String, Array[TypeExpr], TypeExpr)] = []
             let mut k = 0
             while k < Array::length(ops) {
-              Array::push(merged, Array::get(ops, k))
+              Array::push(merged, value = Array::get(ops, at = k))
               k = k + 1
             }
             let mut w = 0
             while w < Array::length(wanted) {
-              let (short, _, _) = Array::get(wanted, w)
+              let (short, _, _) = Array::get(wanted, at = w)
               let mut present = false
               let mut j = 0
               while j < Array::length(ops) {
-                let (have, _, _) = Array::get(ops, j)
+                let (have, _, _) = Array::get(ops, at = j)
                 if have == short {
                   present = true
                 } else {
@@ -437,13 +437,13 @@ export fn ehp_declare_missing_effects(stmts: Array[Stmt], effects: Array[String]
                 j = j + 1
               }
               if !present {
-                Array::push(merged, Array::get(wanted, w))
-                let (_, added_params, _) = Array::get(wanted, w)
+                Array::push(merged, value = Array::get(wanted, at = w))
+                let (_, added_params, _) = Array::get(wanted, at = w)
                 let qualified = String::concat(String::concat(effect, "::"), short)
                 let mut known = false
                 let mut q = 0
                 while q < Array::length(dhhc_forward_ops) {
-                  if Array::get(dhhc_forward_ops, q).0 == qualified {
+                  if Array::get(dhhc_forward_ops, at = q).0 == qualified {
                     known = true
                   } else {
                     ()
@@ -451,7 +451,7 @@ export fn ehp_declare_missing_effects(stmts: Array[Stmt], effects: Array[String]
                   q = q + 1
                 }
                 if !known {
-                  Array::push(dhhc_forward_ops, (qualified, Array::length(added_params)))
+                  Array::push(dhhc_forward_ops, value = (qualified, Array::length(added_params)))
                 } else {
                   ()
                 }
@@ -460,7 +460,7 @@ export fn ehp_declare_missing_effects(stmts: Array[Stmt], effects: Array[String]
               }
               w = w + 1
             }
-            Array::set(stmts, slot, SEffectDef(exported, name, tparams, merged))
+            Array::set(stmts, at = slot, value = SEffectDef(exported, name, tparams, merged))
           },
           _ => ()
         }
@@ -480,24 +480,24 @@ export fn ehp_declare_missing_effects(stmts: Array[Stmt], effects: Array[String]
 /// checked (Codex on #3059).
 export fn ehp_declared_incompatibly(stmts: Array[Stmt], op: String) -> Bool {
   let effect = ehp_effect_of(op)
-  let short = String::substring(op, String::index_of(op, "::") + 2, String::length(op))
+  let short = String::substring(op, start = String::index_of(op, needle = "::") + 2, end = String::length(op))
   let host = ehp_op_signature(op)
   let mut bad = false
-  let slots = ehp_effect_decl_indices(stmts, effect)
+  let slots = ehp_effect_decl_indices(stmts = stmts, effect = effect)
   let mut si = 0
   while si < Array::length(slots) {
-    match Array::get(stmts, Array::get(slots, si)) {
+    match Array::get(stmts, at = Array::get(slots, at = si)) {
       SEffectDef(_, _, _, ops) => {
         let mut k = 0
         while k < Array::length(ops) {
-          let (name, params, ret) = Array::get(ops, k)
+          let (name, params, ret) = Array::get(ops, at = k)
           if name == short {
             let same = match host {
-              Some((_, hparams, hret)) => Array::length(hparams) == Array::length(params) && ehp_type_key(stmts, hret) == ehp_type_key(stmts, ret) && {
+              Some((_, hparams, hret)) => Array::length(hparams) == Array::length(params) && ehp_type_key(stmts = stmts, ty = hret) == ehp_type_key(stmts = stmts, ty = ret) && {
                 let mut eq = true
                 let mut j = 0
                 while j < Array::length(params) {
-                  if ehp_type_key(stmts, Array::get(params, j)) != ehp_type_key(stmts, Array::get(hparams, j)) {
+                  if ehp_type_key(stmts = stmts, ty = Array::get(params, at = j)) != ehp_type_key(stmts = stmts, ty = Array::get(hparams, at = j)) {
                     eq = false
                   } else {
                     ()
@@ -530,7 +530,7 @@ export fn ehp_declared_incompatibly(stmts: Array[Stmt], op: String) -> Bool {
 /// transparent `type Path = String` in a host operation's declaration still
 /// matches the host's `String` (Codex on #3059).
 fn ehp_type_key(stmts: Array[Stmt], ty: TypeExpr) -> String {
-  impl_target_key(ehp_expand_aliases(stmts, ty, 32))
+  impl_target_key(ehp_expand_aliases(stmts = stmts, ty = ty, fuel = 32))
 }
 
 fn ehp_expand_aliases(stmts: Array[Stmt], ty: TypeExpr, fuel: Int) -> TypeExpr {
@@ -541,8 +541,8 @@ fn ehp_expand_aliases(stmts: Array[Stmt], ty: TypeExpr, fuel: Int) -> TypeExpr {
       // A builtin has several spellings the checker resolves to one type
       // (`()` / `Unit`, `i32` / `Int`, `Float` / `Double`), so each is
       // compared under the registry's spelling (Codex on #3059).
-      TyName(name) => match ehp_find_alias(stmts, name, 0) {
-        Some((_, target)) => ehp_expand_aliases(stmts, target, fuel - 1),
+      TyName(name) => match ehp_find_alias(stmts = stmts, name = name, arity = 0) {
+        Some((_, target)) => ehp_expand_aliases(stmts = stmts, ty = target, fuel = fuel - 1),
         None => match resolve_builtin(name) {
           Some(t) => match ehp_type_expr(t) {
             Some(canonical) => canonical,
@@ -553,18 +553,18 @@ fn ehp_expand_aliases(stmts: Array[Stmt], ty: TypeExpr, fuel: Int) -> TypeExpr {
       },
       TyApp(head, args) => {
         let expanded = for arg in args {
-          ehp_expand_aliases(stmts, arg, fuel - 1)
+          ehp_expand_aliases(stmts = stmts, ty = arg, fuel = fuel - 1)
         }
-        match ehp_find_alias(stmts, head, Array::length(args)) {
-          Some((formals, target)) => ehp_expand_aliases(stmts, eq_subst_ty(target, formals, expanded), fuel - 1),
+        match ehp_find_alias(stmts = stmts, name = head, arity = Array::length(args)) {
+          Some((formals, target)) => ehp_expand_aliases(stmts = stmts, ty = eq_subst_ty(ty = target, params = formals, args = expanded), fuel = fuel - 1),
           None => TyApp(head, expanded)
         }
       },
       TyFn(params, result, row) => TyFn(for param in params {
-        ehp_expand_aliases(stmts, param, fuel - 1)
-      }, ehp_expand_aliases(stmts, result, fuel - 1), row),
+        ehp_expand_aliases(stmts = stmts, ty = param, fuel = fuel - 1)
+      }, ehp_expand_aliases(stmts = stmts, ty = result, fuel = fuel - 1), row),
       TyTuple(items) => TyTuple(for item in items {
-        ehp_expand_aliases(stmts, item, fuel - 1)
+        ehp_expand_aliases(stmts = stmts, ty = item, fuel = fuel - 1)
       }),
       TyUnit => TyName("Unit")
     }
@@ -575,7 +575,7 @@ fn ehp_find_alias(stmts: Array[Stmt], name: String, arity: Int) -> Option[(Array
   let mut found: Option[(Array[String], TypeExpr)] = None
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       STypeAlias(_, n, formals, target) => if n == name && Array::length(formals) == arity {
         found = Some((formals, target))
       } else {
@@ -592,9 +592,9 @@ fn ehp_effect_decl_indices(stmts: Array[Stmt], effect: String) -> Array[Int] {
   let out: Array[Int] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SEffectDef(_, name, _, _) => if name == effect {
-        Array::push(out, i)
+        Array::push(out, value = i)
       } else {
         ()
       },
@@ -610,10 +610,10 @@ fn ehp_effect_decl_indices(stmts: Array[Stmt], effect: String) -> Array[Int] {
 /// before partitioning: the provider needs the WHOLE program's performs (an
 /// entry's partition sees an imported helper only through its interface), so
 /// such a program takes the whole-program prelude instead.
-export fn program_performs_host_operation(stmts: Array[Stmt]) -> Bool {
+export fn program_performs_host_operation(_ stmts: Array[Stmt]) -> Bool {
   let performed: Array[(String, Int)] = []
   let handled: Array[(String, Int)] = []
-  ehp_collect_stmts(stmts, performed, handled)
+  ehp_collect_stmts(stmts = stmts, performed = performed, handled = handled)
   // A handle naming a host operation counts too: the callee interception
   // (`intercept_handled_host_calls_everywhere`) rewrites direct calls in
   // OTHER modules into performs, so it must see the whole program.
@@ -661,10 +661,10 @@ export fn program_performs_host_operation(stmts: Array[Stmt]) -> Bool {
 export fn ihc_arm_ops_stmts(stmts: Array[Stmt], out: Array[String]) -> Unit {
   let performed: Array[(String, Int)] = []
   let handled: Array[(String, Int)] = []
-  ehp_collect_stmts(stmts, performed, handled)
+  ehp_collect_stmts(stmts = stmts, performed = performed, handled = handled)
   let mut i = 0
   while i < Array::length(handled) {
-    Array::push(out, Array::get(handled, i).0)
+    Array::push(out, value = Array::get(handled, at = i).0)
     i = i + 1
   }
 }
@@ -686,7 +686,7 @@ export fn ihc_granted_everywhere(stmts: Array[Stmt], entry_name: String, op: Str
   let mut has_export = false
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(exported, _, name, binding_ty, value) => {
         if exported {
           has_export = true
@@ -696,8 +696,8 @@ export fn ihc_granted_everywhere(stmts: Array[Stmt], entry_name: String, op: Str
         match value {
           EFn(_, _, _, _, eff, _) => if name == entry_name {
             has_entry_fn = true
-            let row = ehp_entry_row(stmts, binding_ty, eff)
-            if !ehp_row_grants(row, op) {
+            let row = ehp_entry_row(stmts = stmts, ty = binding_ty, eff = eff)
+            if !ehp_row_grants(row = row, op = op) {
               ok = false
             } else {
               ()
@@ -739,21 +739,21 @@ export fn ihc_granted_everywhere(stmts: Array[Stmt], entry_name: String, op: Str
 /// `row` with `effect` appended when one of its labels names an operation in
 /// `ops` (either spelling) and the effect itself is absent.
 export fn ihc_widen_row(row: String, ops: Array[String]) -> String {
-  let parts = String::split(row, ",")
+  let parts = String::split(row, sep = ",")
   let labels: Array[String] = []
   let mut i = 0
   while i < Array::length(parts) {
-    Array::push(labels, String::trim(Array::get(parts, i)))
+    Array::push(labels, value = String::trim(Array::get(parts, at = i)))
     i = i + 1
   }
   let mut out = row
   let mut j = 0
   while j < Array::length(ops) {
-    let op = Array::get(ops, j)
+    let op = Array::get(ops, at = j)
     let effect = ehp_effect_of(op)
-    let names_op = str_array_contains(labels, op) || str_array_contains(labels, canonical_builtin_name(op))
-    if names_op && !str_array_contains(labels, effect) {
-      Array::push(labels, effect)
+    let names_op = str_array_contains(arr = labels, val = op) || str_array_contains(arr = labels, val = canonical_builtin_name(op))
+    if names_op && !str_array_contains(arr = labels, val = effect) {
+      Array::push(labels, value = effect)
       out = if String::length(String::trim(out)) == 0 {
         effect
       } else {
@@ -788,7 +788,7 @@ export fn ehp_entry_row(stmts: Array[Stmt], ty: Option[TypeExpr], eff: Option[St
   } else {
     String::concat(own, String::concat(", ", annotated))
   }
-  ehp_expand_effectsets(stmts, row)
+  ehp_expand_effectsets(stmts = stmts, row = row)
 }
 
 /// `row` with every label that names an `effectset` replaced by its members,
@@ -797,12 +797,12 @@ export fn ehp_entry_row(stmts: Array[Stmt], ty: Option[TypeExpr], eff: Option[St
 /// `Fs` directly gets (Codex on #3059).
 fn ehp_expand_effectsets(stmts: Array[Stmt], row: String) -> String {
   let pending: Array[String] = []
-  let parts = String::split(row, ",")
+  let parts = String::split(row, sep = ",")
   let mut i = 0
   while i < Array::length(parts) {
-    let label = String::trim(Array::get(parts, i))
+    let label = String::trim(Array::get(parts, at = i))
     if String::length(label) > 0 {
-      Array::push(pending, label)
+      Array::push(pending, value = label)
     } else {
       ()
     }
@@ -812,35 +812,35 @@ fn ehp_expand_effectsets(stmts: Array[Stmt], row: String) -> String {
   let out: Array[String] = []
   let mut k = 0
   while k < Array::length(pending) {
-    let label = Array::get(pending, k)
-    let members = ehp_effectset_members(stmts, label)
+    let label = Array::get(pending, at = k)
+    let members = ehp_effectset_members(stmts = stmts, name = label)
     match members {
-      Some(ms) => if !str_array_contains(seen_sets, label) {
-        Array::push(seen_sets, label)
+      Some(ms) => if !str_array_contains(arr = seen_sets, val = label) {
+        Array::push(seen_sets, value = label)
         let mut m = 0
         while m < Array::length(ms) {
-          Array::push(pending, String::trim(Array::get(ms, m)))
+          Array::push(pending, value = String::trim(Array::get(ms, at = m)))
           m = m + 1
         }
       } else {
         ()
       },
-      None => if !str_array_contains(out, label) {
-        Array::push(out, label)
+      None => if !str_array_contains(arr = out, val = label) {
+        Array::push(out, value = label)
       } else {
         ()
       }
     }
     k = k + 1
   }
-  String::join(out, ", ")
+  String::join(out, sep = ", ")
 }
 
 fn ehp_effectset_members(stmts: Array[Stmt], name: String) -> Option[Array[String]] {
   let mut found: Option[Array[String]] = None
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SEffectSet(_, n, members) => if n == name {
         found = Some(members)
       } else {
@@ -856,11 +856,11 @@ fn ehp_effectset_members(stmts: Array[Stmt], name: String) -> Option[Array[Strin
 /// True when no top-level function occupies `op`'s builtin name; notes the
 /// operation as provided.
 export fn ehp_unshadowed(fn_bound: Array[String], op: String, provided_ops: Array[String]) -> Bool {
-  if str_array_contains(fn_bound, canonical_builtin_name(op)) {
+  if str_array_contains(arr = fn_bound, val = canonical_builtin_name(op)) {
     false
   } else {
-    if !str_array_contains(provided_ops, op) {
-      Array::push(provided_ops, op)
+    if !str_array_contains(arr = provided_ops, val = op) {
+      Array::push(provided_ops, value = op)
     } else {
       ()
     }
@@ -874,7 +874,7 @@ export fn ehp_unshadowed(fn_bound: Array[String], op: String, provided_ops: Arra
 export fn ehp_bound_builtin_names(stmts: Array[Stmt], performed: Array[(String, Int)], aliases: Bool, out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    let (bound, is_alias) = match Array::get(stmts, i) {
+    let (bound, is_alias) = match Array::get(stmts, at = i) {
       SLet(_, _, name, _, EIdent(_, _)) => (name, true),
       SLet(_, _, name, _, _) => (name, false),
       SFnDecl(_, name, _, _, _) => (name, false),
@@ -883,8 +883,8 @@ export fn ehp_bound_builtin_names(stmts: Array[Stmt], performed: Array[(String, 
     if String::length(bound) > 0 && is_alias == aliases {
       let mut j = 0
       while j < Array::length(performed) {
-        if canonical_builtin_name(Array::get(performed, j).0) == bound && !str_array_contains(out, bound) {
-          Array::push(out, bound)
+        if canonical_builtin_name(Array::get(performed, at = j).0) == bound && !str_array_contains(arr = out, val = bound) {
+          Array::push(out, value = bound)
         } else {
           ()
         }
@@ -912,19 +912,19 @@ export fn ehp_move_aside_aliases(stmts: Array[Stmt], provided_ops: Array[String]
   let as_pairs: Array[(String, Int)] = []
   let mut k = 0
   while k < Array::length(provided_ops) {
-    Array::push(as_pairs, (Array::get(provided_ops, k), 0))
+    Array::push(as_pairs, value = (Array::get(provided_ops, at = k), 0))
     k = k + 1
   }
   let aliased: Array[String] = []
-  ehp_bound_builtin_names(stmts, as_pairs, true, aliased)
+  ehp_bound_builtin_names(stmts = stmts, performed = as_pairs, aliases = true, out = aliased)
   if Array::length(aliased) == 0 {
     ()
   } else {
     let mut i = 0
     while i < Array::length(stmts) {
-      match Array::get(stmts, i) {
-        SLet(e, r, name, t, EIdent(target, off)) => if str_array_contains(aliased, name) {
-          Array::set(stmts, i, SLet(e, r, String::concat("__host_provider_moved_alias$", name), t, EIdent(target, off)))
+      match Array::get(stmts, at = i) {
+        SLet(e, r, name, t, EIdent(target, off)) => if str_array_contains(arr = aliased, val = name) {
+          Array::set(stmts, at = i, value = SLet(e, r, String::concat("__host_provider_moved_alias$", name), t, EIdent(target, off)))
         } else {
           ()
         },

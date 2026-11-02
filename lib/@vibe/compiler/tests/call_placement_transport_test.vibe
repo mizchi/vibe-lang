@@ -31,8 +31,8 @@ test "unlocated label snapshots use independent cells and expire by epoch" {
   call_placement_capture_begin()
   let first: Array[Int] = []
   let second: Array[Int] = []
-  call_placement_capture_source(EIdent("first", -1), [EInt(1)], -1, first, false)
-  call_placement_capture_source(EIdent("second", -1), [EInt(2), EInt(3)], -1, second, false)
+  call_placement_capture_source(callee = EIdent("first", -1), args = [EInt(1)], offset = -1, cell = first, macro_call = false)
+  call_placement_capture_source(callee = EIdent("second", -1), args = [EInt(2), EInt(3)], offset = -1, cell = second, macro_call = false)
   call_placement_capture_end()
   match call_placement_raw(first) {
     Some((EIdent(name, _), args, slots, _)) => {
@@ -60,21 +60,21 @@ test "callee resolution preserves label metadata for ordinary and migrated calls
   call_placement_capture_begin()
   let cell: Array[Int] = []
   let callee = EIdent("Array::get", 7)
-  call_placement_capture_source(callee, [EArray([EInt(9)]), EInt(0)], 7, cell, false)
+  call_placement_capture_source(callee = callee, args = [EArray([EInt(9)]), EInt(0)], offset = 7, cell = cell, macro_call = false)
   call_placement_capture_end()
-  assert(resolve_builtin_callee(EnvEmpty, "Array::get", 7, cell) == 0)
+  assert(resolve_builtin_callee(env = EnvEmpty, name = "Array::get", ident_off = 7, resolution = cell) == 0)
   assert(call_placement_raw(cell) != None)
   let errors: Array[String] = []
-  call_placement_publish(callee, 7, cell, 2, 0, [2, 4], errors)
+  call_placement_publish(callee = callee, offset = 7, cell = cell, written = 2, mode = 0, slots = [2, 4], errors = errors)
   assert(errors == [])
   assert(call_placement_get(cell) == Some((2, 0, [2, 4])))
   assert(resolved_callee_operation(cell) == 0)
-  assert(resolve_builtin_callee(EnvEmpty, "MutBytes::push", 7, cell) == 2)
+  assert(resolve_builtin_callee(env = EnvEmpty, name = "MutBytes::push", ident_off = 7, resolution = cell) == 2)
   assert(call_placement_get(cell) == Some((2, 0, [2, 4])))
   assert(resolved_callee_operation(cell) == 2)
-  assert(resolved_callee_operation(return_call_resolve(cell, 17)) == 2)
-  let own = env_bind(EnvEmpty, "MutBytes::push", CtFn([CtInt, CtInt], CtInt, None))
-  assert(resolve_builtin_callee(own, "MutBytes::push", 7, cell) == -1)
+  assert(resolved_callee_operation(return_call_resolve(resolution = cell, site = 17)) == 2)
+  let own = env_bind(env = EnvEmpty, name = "MutBytes::push", ty = CtFn([CtInt, CtInt], CtInt, None))
+  assert(resolve_builtin_callee(env = own, name = "MutBytes::push", ident_off = 7, resolution = cell) == -1)
   assert(resolved_callee_operation(cell) == -1)
   assert(call_placement_get(cell) == Some((2, 0, [2, 4])))
 }
@@ -84,9 +84,9 @@ test "checker placements retain source indices for equal values" {
   call_placement_capture_begin()
   let cell: Array[Int] = []
   let callee = EIdent("subtract", 9)
-  call_placement_capture_source(callee, [EInt(1), EInt(1)], 9, cell, false)
+  call_placement_capture_source(callee = callee, args = [EInt(1), EInt(1)], offset = 9, cell = cell, macro_call = false)
   let errors: Array[String] = []
-  call_placement_publish(callee, 9, cell, 2, 0, [4, 2], errors)
+  call_placement_publish(callee = callee, offset = 9, cell = cell, written = 2, mode = 0, slots = [4, 2], errors = errors)
   call_placement_capture_end()
   assert(errors == [])
   assert(call_placement_get(cell) == Some((2, 0, [4, 2])))
@@ -97,9 +97,9 @@ test "a fixed layout macro refuses a reordered checker placement" {
   call_placement_capture_begin()
   let cell: Array[Int] = []
   let callee = EIdent("inspect", 9)
-  call_placement_capture_source(callee, [EInt(1), EInt(1)], 9, cell, true)
+  call_placement_capture_source(callee = callee, args = [EInt(1), EInt(1)], offset = 9, cell = cell, macro_call = true)
   let errors: Array[String] = []
-  call_placement_publish(callee, 9, cell, 2, 0, [4, 2], errors)
+  call_placement_publish(callee = callee, offset = 9, cell = cell, written = 2, mode = 0, slots = [4, 2], errors = errors)
   call_placement_capture_end()
   assert(Array::length(errors) == 1)
   assert(call_placement_is_refused(cell))
@@ -111,18 +111,18 @@ test "checked placement emits a variable length tagged packet" {
   call_placement_capture_end()
   let errors: Array[String] = []
   let cell: Array[Int] = []
-  call_placement_publish(EIdent("f", 7), 7, cell, 2, 0, [5, 2, 0], errors)
+  call_placement_publish(callee = EIdent("f", 7), offset = 7, cell = cell, written = 2, mode = 0, slots = [5, 2, 0], errors = errors)
   assert(call_placement_checked_rows() == [13, 120, 41, 10, 91, 43, 11, 124])
 }
 
-fn restore_packet(rows: Array[Int]) -> Array[Int] {
+fn restore_packet(_ rows: Array[Int]) -> Array[Int] {
   let cell: Array[Int] = []
-  restore_call_placements([
+  restore_call_placements(stmts = [
     SExpr(ECall(EIdent("f", 7), [
       ELabeledArg("y", "~", EInt(1)),
       ELabeledArg("x", "~", EInt(1))
     ], 7, cell))
-  ], rows)
+  ], rows = rows)
   cell
 }
 
@@ -131,14 +131,14 @@ test "restoration accepts equal duplicate packets and refuses conflicting ones" 
   let packet = [120, 41, 10, 75, 43, 124]
   let rows = [13]
   for row in packet {
-    Array::push(rows, row)
+    Array::push(rows, value = row)
   }
   for row in packet {
-    Array::push(rows, row)
+    Array::push(rows, value = row)
   }
   assert(call_placement_get(restore_packet(rows)) == Some((2, 0, [4, 2])))
-  Array::set(rows, 10, 43)
-  Array::set(rows, 11, 75)
+  Array::set(rows, at = 10, value = 43)
+  Array::set(rows, at = 11, value = 75)
   assert(call_placement_is_refused(restore_packet(rows)))
 }
 
@@ -163,30 +163,30 @@ test "malformed placement packets fail closed at the labeled call" {
 
 /// Indices are variable-length rows; arities above a byte are not truncated.
 test "placement transport retains more than 255 written arguments" {
-  let rows = [13, 120, lowering_row_encode(300, 9), 10]
+  let rows = [13, 120, lowering_row_encode(payload = 300, tag = 9), 10]
   let args: Array[Expr] = []
   let mut i = 0
   while i < 300 {
-    Array::push(rows, lowering_row_encode((300 - i) * 2, 11))
-    Array::push(args, ELabeledArg("x", "~", EInt(i)))
+    Array::push(rows, value = lowering_row_encode(payload = (300 - i) * 2, tag = 11))
+    Array::push(args, value = ELabeledArg("x", "~", EInt(i)))
     i = i + 1
   }
-  Array::push(rows, 124)
+  Array::push(rows, value = 124)
   let cell: Array[Int] = []
-  restore_call_placements([SExpr(ECall(EIdent("f", 7), args, 7, cell))], rows)
+  restore_call_placements(stmts = [SExpr(ECall(EIdent("f", 7), args, 7, cell))], rows = rows)
   match call_placement_get(cell) {
     Some((written, mode, slots)) => {
       assert(written == 300 && mode == 0)
       assert(Array::length(slots) == 300)
-      assert(Array::get(slots, 0) == 600 && Array::get(slots, 299) == 2)
+      assert(Array::get(slots, at = 0) == 600 && Array::get(slots, at = 299) == 2)
     },
     None => assert(false)
   }
 }
 
-fn binary_cell(cell: Array[Int]) -> Option[Array[Int]] {
+fn binary_cell(_ cell: Array[Int]) -> Option[Array[Int]] {
   let bytes = Bytes::new()
-  ast_binary_write_expr(bytes, ECall(EIdent("f", 7), [EInt(3), EInt(10)], 7, cell))
+  ast_binary_write_expr(buf = bytes, e = ECall(EIdent("f", 7), [EInt(3), EInt(10)], 7, cell))
   handle {
     match ast_binary_read_expr(ast_binary_reader_new(bytes)) {
       ECall(_, _, _, restored) => Some(restored),
@@ -208,7 +208,7 @@ test "binary AST transport retains validated placement cells" {
     [0, -3660, 3, -1, 1, 102]
   ] {
     assert(binary_cell(cell) == Some(cell))
-    let wrapped = return_call_resolve(cell, 17)
+    let wrapped = return_call_resolve(resolution = cell, site = 17)
     assert(binary_cell(wrapped) == Some(wrapped))
   }
 }
@@ -230,6 +230,6 @@ test "binary AST transport refuses transient and malformed placement cells" {
     [0, -3660, 3, 7, 0, 256]
   ] {
     assert(binary_cell(cell) == None)
-    assert(binary_cell(return_call_resolve(cell, 17)) == None)
+    assert(binary_cell(return_call_resolve(resolution = cell, site = 17)) == None)
   }
 }

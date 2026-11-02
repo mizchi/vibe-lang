@@ -247,7 +247,7 @@ import ./checker_stmt_push_source_scope_names.vibe {
 /// variable id.
 export fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Int, Int) {
   if stmts_shadow_prelude_ordering(stmts) {
-    report_prelude_ordering_conflict(stmts, errors)
+    report_prelude_ordering_conflict(stmts = stmts, errors = errors)
     (env, local_defs_start, c)
   } else if !module_uses_prelude_ordering(stmts) {
     (env, local_defs_start, c)
@@ -255,7 +255,7 @@ export fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[Ty
     // An import bound a VALUE named `Ordering` (a function, a constant, an
     // alias): `module_uses_prelude_ordering` counted the reference to it, but
     // it is not the type, and seeding the prelude would overwrite it.
-    report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+    report_ordering_conflict_with(stmts = stmts, errors = errors, why = "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
     (env, local_defs_start, c)
   } else if env_binds_any_prelude_ordering_ctor(env) {
     // An import bound at least one of the constructor names. Only the
@@ -265,10 +265,10 @@ export fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[Ty
     if env_binds_prelude_ordering_ctors(env) && defs_ordering_is_prelude_shaped(defs) {
       (bind_prelude_ordering_values(env), local_defs_start, c)
     } else {
-      report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+      report_ordering_conflict_with(stmts = stmts, errors = errors, why = "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
       (env, local_defs_start, c)
     }
-  } else match find_typedef(defs, "Ordering") {
+  } else match find_typedef(defs = defs, name = "Ordering") {
     // An import carried the declaration in only to make a signature
     // intelligible (`import @vibe/builtin { int_compare }`): the type is
     // known, its constructors and derived operations are not bound yet. That
@@ -277,13 +277,13 @@ export fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[Ty
     Some(_) => if defs_ordering_is_prelude_shaped(defs) {
       (bind_prelude_ordering_values(env), local_defs_start, c)
     } else {
-      report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+      report_ordering_conflict_with(stmts = stmts, errors = errors, why = "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
       (env, local_defs_start, c)
     },
     None => {
       let prelude = array_empty()
-      Array::push(prelude, prelude_ordering_stmt())
-      let (seeded, _, next_c) = check_stmts_with_binders(prelude, 0, env, defs, type_def_binders, local_defs_start, SubstEmpty, c, errors, tytab, None, None, None, false, false)
+      Array::push(prelude, value = prelude_ordering_stmt())
+      let (seeded, _, next_c) = check_stmts_with_binders(raw_stmts = prelude, i = 0, env = env, defs = defs, type_def_binders = type_def_binders, local_defs_start = local_defs_start, s = SubstEmpty, c = c, errors = errors, tytab = tytab, statement_parent_path = None, capture = None, role_lane_capture = None, imports_already_projected = false, validate_completed_decls = false)
       (seeded, Array::length(defs), next_c)
     }
   }
@@ -291,18 +291,18 @@ export fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[Ty
 
 /// #3042: does `env` bind the name `Ordering` to something other than the
 /// type itself -- an imported function or value spelled like it?
-fn env_binds_foreign_ordering_value(env: TypeEnv) -> Bool {
-  match env_lookup(env, "Ordering") {
+fn env_binds_foreign_ordering_value(_ env: TypeEnv) -> Bool {
+  match env_lookup(env = env, name = "Ordering") {
     Some(ty) => !type_is_ordering(ty),
     None => false
   }
 }
 
 /// #3042: is any of `Less` / `Equal` / `Greater` already bound in `env`?
-fn env_binds_any_prelude_ordering_ctor(env: TypeEnv) -> Bool {
+fn env_binds_any_prelude_ordering_ctor(_ env: TypeEnv) -> Bool {
   let mut any = false
   for name in ["Less", "Equal", "Greater"] {
-    match env_lookup(env, name) {
+    match env_lookup(env = env, name = name) {
       Some(_) => any = true,
       None => ()
     }
@@ -313,15 +313,15 @@ fn env_binds_any_prelude_ordering_ctor(env: TypeEnv) -> Bool {
 /// #3042: is the `Ordering` in `defs` exactly the prelude's
 /// `enum Ordering { Less; Equal; Greater }` -- no parameters, three payloadless
 /// variants in that order?
-fn defs_ordering_is_prelude_shaped(defs: Array[TypeDef]) -> Bool {
-  match find_typedef(defs, "Ordering") {
-    Some(TDEnum(_, params, variants)) => Array::length(params) == 0 && Array::length(variants) == 3 && typedef_variant_is(variants, 0, "Less") && typedef_variant_is(variants, 1, "Equal") && typedef_variant_is(variants, 2, "Greater"),
+fn defs_ordering_is_prelude_shaped(_ defs: Array[TypeDef]) -> Bool {
+  match find_typedef(defs = defs, name = "Ordering") {
+    Some(TDEnum(_, params, variants)) => Array::length(params) == 0 && Array::length(variants) == 3 && typedef_variant_is(variants = variants, i = 0, expected = "Less") && typedef_variant_is(variants = variants, i = 1, expected = "Equal") && typedef_variant_is(variants = variants, i = 2, expected = "Greater"),
     _ => false
   }
 }
 
 fn typedef_variant_is(variants: Array[(String, Array[Type])], i: Int, expected: String) -> Bool {
-  let (name, fields) = Array::get(variants, i)
+  let (name, fields) = Array::get(variants, at = i)
   name == expected && Array::length(fields) == 0
 }
 
@@ -331,17 +331,17 @@ fn typedef_variant_is(variants: Array[(String, Array[Type])], i: Int, expected: 
 /// exactly as before the prelude existed, so its outputs (`type_defs`, the
 /// environment it publishes) carry no `Ordering` it never asked for. A value
 /// of the type can still flow through it untouched, as any enum's can.
-fn module_uses_prelude_ordering(stmts: Array[Stmt]) -> Bool {
+fn module_uses_prelude_ordering(_ stmts: Array[Stmt]) -> Bool {
   if stmts_use_prelude_ordering(stmts) {
     true
   } else {
     let used = array_empty()
-    collect_referenced_names_stmts(stmts, used)
+    collect_referenced_names_stmts(stmts = stmts, out = used)
     let mut found = false
     let mut i = 0
     while !found && i < Array::length(used) {
-      let name = Array::get(used, i)
-      found = name == "Ordering" || String::starts_with(name, "Ordering::")
+      let name = Array::get(used, at = i)
+      found = name == "Ordering" || String::starts_with(name, prefix = "Ordering::")
       i = i + 1
     }
     found
@@ -352,19 +352,19 @@ fn module_uses_prelude_ordering(stmts: Array[Stmt]) -> Bool {
 fn env_has_ordering_impl(env: TypeEnv, trait_name: String) -> Bool {
   match env {
     EnvEmpty => false,
-    EnvBind(_, _, rest) => env_has_ordering_impl(rest, trait_name),
-    EnvTraitDef(_, _, _, _, rest, _, _) => env_has_ordering_impl(rest, trait_name),
-    EnvTraitImpl(tn, target, rest) => (tn == trait_name && type_is_ordering(target)) || env_has_ordering_impl(rest, trait_name),
-    EnvTraitImplGen(tn, _, _, target, rest) => (tn == trait_name && type_is_ordering(target)) || env_has_ordering_impl(rest, trait_name),
-    EnvShowWrappers(_, _, rest) => env_has_ordering_impl(rest, trait_name),
-    EnvMutCell(_, _, rest) => env_has_ordering_impl(rest, trait_name),
-    EnvTypeDefs(_, _, rest) => env_has_ordering_impl(rest, trait_name),
-    EnvCached(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvBind(_, _, rest) => env_has_ordering_impl(env = rest, trait_name = trait_name),
+    EnvTraitDef(_, _, _, _, rest, _, _) => env_has_ordering_impl(env = rest, trait_name = trait_name),
+    EnvTraitImpl(tn, target, rest) => (tn == trait_name && type_is_ordering(target)) || env_has_ordering_impl(env = rest, trait_name = trait_name),
+    EnvTraitImplGen(tn, _, _, target, rest) => (tn == trait_name && type_is_ordering(target)) || env_has_ordering_impl(env = rest, trait_name = trait_name),
+    EnvShowWrappers(_, _, rest) => env_has_ordering_impl(env = rest, trait_name = trait_name),
+    EnvMutCell(_, _, rest) => env_has_ordering_impl(env = rest, trait_name = trait_name),
+    EnvTypeDefs(_, _, rest) => env_has_ordering_impl(env = rest, trait_name = trait_name),
+    EnvCached(_, _, rest) => env_has_ordering_impl(env = rest, trait_name = trait_name),
     EnvFlat(_) => false
   }
 }
 
-fn type_is_ordering(ty: Type) -> Bool {
+fn type_is_ordering(_ ty: Type) -> Bool {
   match ty {
     CtEnum(name) => name == "Ordering",
     CtNamed(name, _) => name == "Ordering",
@@ -373,7 +373,7 @@ fn type_is_ordering(ty: Type) -> Bool {
   }
 }
 
-fn bind_prelude_ordering_values(env: TypeEnv) -> TypeEnv {
+fn bind_prelude_ordering_values(_ env: TypeEnv) -> TypeEnv {
   let ordering = CtEnum("Ordering")
   let mut out = env
   // Only what the import left unbound: an operation the dependency exported
@@ -389,17 +389,17 @@ fn bind_prelude_ordering_values(env: TypeEnv) -> TypeEnv {
     ("Ordering::to_string", CtFn([ordering], CtString, None))
   ] {
     let (name, ty) = pair
-    match env_lookup(out, name) {
+    match env_lookup(env = out, name = name) {
       Some(_) => (),
-      None => out = env_bind(out, name, ty)
+      None => out = env_bind(env = out, name = name, ty = ty)
     }
   }
   // The prelude derives `Eq` and `Show`, so the type satisfies those bounds
   // here exactly as the seeded declaration would.
-  if !env_has_ordering_impl(out, "Eq") {
+  if !env_has_ordering_impl(env = out, trait_name = "Eq") {
     out = EnvTraitImpl("Eq", ordering, out)
   }
-  if !env_has_ordering_impl(out, "Show") {
+  if !env_has_ordering_impl(env = out, trait_name = "Show") {
     out = EnvTraitImpl("Show", ordering, out)
   }
   out
@@ -414,16 +414,16 @@ fn report_prelude_ordering_conflict(stmts: Array[Stmt], errors: Array[String]) -
   if stmts_declare_prelude_ordering_shape(stmts) {
     ()
   } else {
-    report_ordering_conflict_with(stmts, errors, "but this module declares its own `Ordering` or one of those constructors; rename that declaration")
+    report_ordering_conflict_with(stmts = stmts, errors = errors, why = "but this module declares its own `Ordering` or one of those constructors; rename that declaration")
   }
 }
 
 /// #3042: do `Less` / `Equal` / `Greater` all name the prelude-shaped
 /// `Ordering` in `env`? False when any of them resolves to another type.
-fn env_binds_prelude_ordering_ctors(env: TypeEnv) -> Bool {
+fn env_binds_prelude_ordering_ctors(_ env: TypeEnv) -> Bool {
   let mut ok = true
   for name in ["Less", "Equal", "Greater"] {
-    match env_lookup(env, name) {
+    match env_lookup(env = env, name = name) {
       Some(CtEnum(owner)) => if owner != "Ordering" {
         ok = false
       },
@@ -439,18 +439,18 @@ fn report_ordering_conflict_with(stmts: Array[Stmt], errors: Array[String], why:
   let mut i = 0
   let mut reported = false
   while !reported && i < Array::length(stmts) {
-    let derived_ord = match Array::get(stmts, i) {
-      SStruct(_, name, _, derives, _, _) => if struct_derives_has(derives, "Ord") {
+    let derived_ord = match Array::get(stmts, at = i) {
+      SStruct(_, name, _, derives, _, _) => if struct_derives_has(derives = derives, name = "Ord") {
         Some(name)
       } else None,
-      SEnum(_, name, _, _, derives) => if struct_derives_has(derives, "Ord") {
+      SEnum(_, name, _, _, derives) => if struct_derives_has(derives = derives, name = "Ord") {
         Some(name)
       } else None,
       _ => None
     }
     match derived_ord {
       Some(name) => {
-        Array::push(errors, String::concat("`derive (Ord)` on `", String::concat(name, String::concat("` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), ", why))))
+        Array::push(errors, value = String::concat("`derive (Ord)` on `", String::concat(name, String::concat("` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), ", why))))
         reported = true
       },
       None => ()
@@ -466,7 +466,7 @@ fn hoist_has_hkt_formal(tparams: Array[String], params: Array[(String, Option[Ty
   let mut i = 0
   let mut found = false
   while i < Array::length(tparams) && !found {
-    if type_param_arity(Array::get(tparams, i)) > 0 {
+    if type_param_arity(Array::get(tparams, at = i)) > 0 {
       found = true
     } else {
       ()
@@ -475,8 +475,8 @@ fn hoist_has_hkt_formal(tparams: Array[String], params: Array[(String, Option[Ty
   }
   let mut pi = 0
   while pi < Array::length(params) && !found {
-    match Array::get(params, pi) {
-      (_, Some(te)) => if hoist_te_applies_formal(te, tparams) {
+    match Array::get(params, at = pi) {
+      (_, Some(te)) => if hoist_te_applies_formal(te = te, tparams = tparams) {
         found = true
       } else {
         ()
@@ -489,7 +489,7 @@ fn hoist_has_hkt_formal(tparams: Array[String], params: Array[(String, Option[Ty
     ()
   } else {
     match ret {
-      Some(te) => if hoist_te_applies_formal(te, tparams) {
+      Some(te) => if hoist_te_applies_formal(te = te, tparams = tparams) {
         found = true
       } else {
         ()
@@ -507,9 +507,9 @@ fn hoist_has_hkt_formal(tparams: Array[String], params: Array[(String, Option[Ty
 fn hoisted_scheme_slot(annotation: Option[TypeExpr], tparams: Array[String], vars: Array[Type], defs: Array[TypeDef]) -> Type {
   match annotation {
     Some(type_expr) => {
-      let resolved = resolve_type_expr_shadowed(type_expr, defs, tparams)
+      let resolved = resolve_type_expr_shadowed(te = type_expr, defs = defs, shadow = tparams)
       // #3589: as the declaration's own check leaves it (`resolve_tparams_in`).
-      repin_row_formal_args(resolved, subst_type_params(resolved, tparams, vars), defs)
+      repin_row_formal_args(before = resolved, after = subst_type_params(ty = resolved, params = tparams, args = vars), defs = defs)
     },
     _ => CtUnknown
   }
@@ -529,15 +529,15 @@ fn hoisted_scheme_bounds(tparams: Array[String], tbounds: Array[(String, Array[S
   let out = array_empty()
   let mut i = 0
   while i < Array::length(tbounds) {
-    let (bname, blist) = Array::get(tbounds, i)
+    let (bname, blist) = Array::get(tbounds, at = i)
     let mut j = 0
     while j < Array::length(tparams) {
-      if Array::get(tparams, j) == bname {
+      if Array::get(tparams, at = j) == bname {
         let tpname = type_param_name(bname)
         let owned = for bound in blist {
-          bind_trait_bound_tparams(bind_trait_bound_self_reference(bound, tpname), tparams, ids)
+          bind_trait_bound_tparams(key = bind_trait_bound_self_reference(key = bound, binder = tpname), tparams = tparams, ids = ids)
         }
-        Array::push(out, (Array::get(ids, j), owned))
+        Array::push(out, value = (Array::get(ids, at = j), owned))
       } else {
         ()
       }
@@ -576,34 +576,34 @@ fn hoisted_fn_scheme(value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
   match value {
     EFn(tparams, tbounds, params, ret, eff, _body) => {
       let tplen = Array::length(tparams)
-      if tplen == 0 || hoist_has_hkt_formal(tparams, params, ret) {
+      if tplen == 0 || hoist_has_hkt_formal(tparams = tparams, params = params, ret = ret) {
         // #3557: a caller above the declaration gets its own row per call
         // too.
-        (quantify_own_rows(hoisted_fn_signature(value, defs)), c)
+        (quantify_own_rows(hoisted_fn_signature(value = value, defs = defs)), c)
       } else {
         let ids = array_empty()
         let vars = array_empty()
         let mut vi = 0
         while vi < tplen {
           let vid = c + vi
-          Array::push(ids, vid)
-          Array::push(vars, CtVar(vid))
+          Array::push(ids, value = vid)
+          Array::push(vars, value = CtVar(vid))
           vi = vi + 1
         }
         let ptys = array_empty()
         let mut usable = true
         let mut i = 0
         while i < Array::length(params) {
-          let (pname, pann) = Array::get(params, i)
+          let (pname, pann) = Array::get(params, at = i)
           if labeled_param_base_name(pname) != pname {
             usable = false
           } else {
-            Array::push(ptys, hoisted_scheme_slot(pann, tparams, vars, defs))
+            Array::push(ptys, value = hoisted_scheme_slot(annotation = pann, tparams = tparams, vars = vars, defs = defs))
           }
           i = i + 1
         }
         if usable {
-          (CtForAll(ids, hoisted_scheme_bounds(tparams, tbounds, ids), CtFn(ptys, hoisted_scheme_slot(ret, tparams, vars, defs), eff)), c + tplen)
+          (CtForAll(ids, hoisted_scheme_bounds(tparams = tparams, tbounds = tbounds, ids = ids), CtFn(ptys, hoisted_scheme_slot(annotation = ret, tparams = tparams, vars = vars, defs = defs), eff)), c + tplen)
         } else {
           (CtUnknown, c)
         }
@@ -633,7 +633,7 @@ fn string_array_has(items: Array[String], wanted: String) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(items) && !hit {
-    hit = Array::get(items, i) == wanted
+    hit = Array::get(items, at = i) == wanted
     i = i + 1
   }
   hit
@@ -650,20 +650,20 @@ fn forward_generic_narrowing_errors(name: String, val: Expr, hoisted: Type, publ
   match (hoisted, val) {
     (CtForAll(hids, _, hbody), EFn(tparams, _, _, _, _, body)) => {
       let at = off_marker(tail_expr_off(body))
-      let (inst, _, _) = instantiate(published, c)
-      let fixed = match unify(inst, hbody, s) {
+      let (inst, _, _) = instantiate(ty = published, c = c)
+      let fixed = match unify(a = inst, b = hbody, s = s) {
         Some(su) => {
           let seen = array_empty()
           let mut found = -1
           let mut fixed_to = CtUnknown
           let mut hi = 0
           while hi < Array::length(hids) && found < 0 {
-            match subst_apply(su, CtVar(Array::get(hids, hi))) {
-              CtVar(v) => if int_array_contains(seen, v) {
+            match subst_apply(s = su, ty = CtVar(Array::get(hids, at = hi))) {
+              CtVar(v) => if int_array_contains(items = seen, wanted = v) {
                 found = hi
                 fixed_to = CtVar(v)
               } else {
-                Array::push(seen, v)
+                Array::push(seen, value = v)
               },
               CtUnknown => (),
               other => {
@@ -674,7 +674,7 @@ fn forward_generic_narrowing_errors(name: String, val: Expr, hoisted: Type, publ
             hi = hi + 1
           }
           if found >= 0 && found < Array::length(tparams) {
-            Some((type_param_name(Array::get(tparams, found)), fixed_to))
+            Some((type_param_name(Array::get(tparams, at = found)), fixed_to))
           } else {
             None
           }
@@ -682,10 +682,10 @@ fn forward_generic_narrowing_errors(name: String, val: Expr, hoisted: Type, publ
         None => None
       }
       match fixed {
-        Some((formal, CtVar(_))) => Array::push(errors, "`\{name}` is called above its declaration, but its body makes type parameter `\{formal}` the same type as another of its type parameters -- write one type parameter for both, or declare `\{name}` before its first caller\{at}"),
+        Some((formal, CtVar(_))) => Array::push(errors, value = "`\{name}` is called above its declaration, but its body makes type parameter `\{formal}` the same type as another of its type parameters -- write one type parameter for both, or declare `\{name}` before its first caller\{at}"),
         Some((formal, ty)) => {
           let written = wildcard_type_text(ty)
-          Array::push(errors, "`\{name}` is called above its declaration, but its body uses type parameter `\{formal}` as `\{written}` -- write `\{written}` in place of `\{formal}` in the signature, or add a bound that provides what the body uses\{at}")
+          Array::push(errors, value = "`\{name}` is called above its declaration, but its body uses type parameter `\{formal}` as `\{written}` -- write `\{written}` in place of `\{formal}` in the signature, or add a bound that provides what the body uses\{at}")
         },
         None => ()
       }
@@ -696,20 +696,20 @@ fn forward_generic_narrowing_errors(name: String, val: Expr, hoisted: Type, publ
 
 /// A type as the edit spells it: an inference variable the body left open
 /// (`?t9`) is written `_`.
-fn wildcard_type_text(t: Type) -> String {
+fn wildcard_type_text(_ t: Type) -> String {
   let text = type_to_string(t)
   let out = StringBuilder::new()
   let n = String::length(text)
   let mut i = 0
   while i < n {
-    if i + 1 < n && String::byte_at(text, i) == 63 && String::byte_at(text, i + 1) == 116 {
-      StringBuilder::push(out, "_")
+    if i + 1 < n && String::byte_at(text, at = i) == 63 && String::byte_at(text, at = i + 1) == 116 {
+      StringBuilder::push(out, value = "_")
       i = i + 2
-      while i < n && String::byte_at(text, i) >= 48 && String::byte_at(text, i) <= 57 {
+      while i < n && String::byte_at(text, at = i) >= 48 && String::byte_at(text, at = i) <= 57 {
         i = i + 1
       }
     } else {
-      StringBuilder::push(out, String::substring(text, i, i + 1))
+      StringBuilder::push(out, value = String::substring(text, start = i, end = i + 1))
       i = i + 1
     }
   }
@@ -720,7 +720,7 @@ fn int_array_contains(items: Array[Int], wanted: Int) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(items) && !hit {
-    hit = Array::get(items, i) == wanted
+    hit = Array::get(items, at = i) == wanted
     i = i + 1
   }
   hit
@@ -730,9 +730,9 @@ fn generic_forward_referenced_names(stmts: Array[Stmt], idx: Int) -> Array[Strin
   let generic_names = array_empty()
   let mut gi = idx
   while gi < Array::length(stmts) {
-    match Array::get(stmts, gi) {
+    match Array::get(stmts, at = gi) {
       SLet(_, _, gname, _, EFn(gtps, _, _, _, _, _)) => if Array::length(gtps) > 0 {
-        Array::push(generic_names, gname)
+        Array::push(generic_names, value = gname)
       } else {
         ()
       },
@@ -747,10 +747,10 @@ fn generic_forward_referenced_names(stmts: Array[Stmt], idx: Int) -> Array[Strin
     let seen = MutMap::new_string()
     let mut si = idx
     while si < Array::length(stmts) {
-      let stmt = Array::get(stmts, si)
+      let stmt = Array::get(stmts, at = si)
       match stmt {
-        SLet(_, _, sname, _, _) => if string_array_has(generic_names, sname) && MutMap::has(seen, sname) {
-          Array::push(out, sname)
+        SLet(_, _, sname, _, _) => if string_array_has(items = generic_names, wanted = sname) && MutMap::has(seen, k = sname) {
+          Array::push(out, value = sname)
         } else {
           ()
         },
@@ -767,11 +767,11 @@ fn generic_forward_referenced_names(stmts: Array[Stmt], idx: Int) -> Array[Strin
       }
       match body {
         Some(b) => {
-          for n in closure_free_names(b, array_empty()) {
-            MutMap::set(seen, n, 1)
+          for n in closure_free_names(body = b, params = array_empty()) {
+            MutMap::set(seen, k = n, v = 1)
           }
           for n in closure_bare_callee_names(b) {
-            MutMap::set(seen, n, 1)
+            MutMap::set(seen, k = n, v = 1)
           }
         },
         None => ()
@@ -792,14 +792,14 @@ fn hoist_row_defs(stmts: Array[Stmt], start: Int, defs: Array[TypeDef]) -> Array
   let out: Array[TypeDef] = []
   let mut i = start
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SStruct(_, name, field_defs, _, mut_fields, tparams) => if has_row_spelled_formal(tparams) {
         let fields: Array[(String, Type)] = []
         for fd in field_defs {
           let (fname, fte) = fd
-          Array::push(fields, (fname, resolve_type_expr_shadowed(fte, defs, tparams)))
+          Array::push(fields, value = (fname, resolve_type_expr_shadowed(te = fte, defs = defs, shadow = tparams)))
         }
-        Array::push(out, TDStruct(name, fields, mut_fields, tparams))
+        Array::push(out, value = TDStruct(name, fields, mut_fields, tparams))
       },
       _ => ()
     }
@@ -809,17 +809,17 @@ fn hoist_row_defs(stmts: Array[Stmt], start: Int, defs: Array[TypeDef]) -> Array
     defs
   } else {
     for d in defs {
-      Array::push(out, d)
+      Array::push(out, value = d)
     }
     out
   }
 }
 
-fn has_row_spelled_formal(tparams: Array[String]) -> Bool {
+fn has_row_spelled_formal(_ tparams: Array[String]) -> Bool {
   let mut found = false
   for tp in tparams {
     let n = type_param_name(tp)
-    if String::length(n) == 1 && String::char_code_at(n, 0) >= 97 && String::char_code_at(n, 0) <= 122 {
+    if String::length(n) == 1 && String::char_code_at(n, at = 0) >= 97 && String::char_code_at(n, at = 0) <= 122 {
       found = true
     }
   }
@@ -828,12 +828,12 @@ fn has_row_spelled_formal(tparams: Array[String]) -> Bool {
 
 fn hoisted_value_type(annotation: Option[TypeExpr], value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
   match annotation {
-    Some(type_expr) => (resolve_type_expr(type_expr, defs), c),
+    Some(type_expr) => (resolve_type_expr(te = type_expr, defs = defs), c),
     None => match value {
       EArray(_) => (CtArray(CtUnknown), c),
       // The parser builds `Map::new()` and `Map::from_pairs([..])` as `EMap`.
       EMap(_) => (CtNamed("Map", [CtString, CtUnknown]), c),
-      _ => hoisted_fn_scheme(value, defs, c)
+      _ => hoisted_fn_scheme(value = value, defs = defs, c = c)
     }
   }
 }
@@ -841,14 +841,14 @@ fn hoisted_value_type(annotation: Option[TypeExpr], value: Expr, defs: Array[Typ
 fn hoist_merged_source_values(stmts: Array[Stmt], start: Int, env: TypeEnv, defs: Array[TypeDef], c: Int) -> (TypeEnv, Int) {
   let mut out = env
   let mut next_c = c
-  let hdefs = hoist_row_defs(stmts, start, defs)
+  let hdefs = hoist_row_defs(stmts = stmts, start = start, defs = defs)
   let mut i = start
-  while i < Array::length(stmts) && !(Array::get(stmts, i) is SReExportSourceBoundary(_, _)) {
-    match Array::get(stmts, i) {
+  while i < Array::length(stmts) && !(Array::get(stmts, at = i) is SReExportSourceBoundary(_, _)) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, annotation, value) => {
-        let (ty, nc) = hoisted_value_type(annotation, value, hdefs, next_c)
+        let (ty, nc) = hoisted_value_type(annotation = annotation, value = value, defs = hdefs, c = next_c)
         next_c = nc
-        out = checker_bind_declaration_call_header(out, name, ty, value)
+        out = checker_bind_declaration_call_header(env = out, name = name, ty = ty, value = value)
       },
       _ => ()
     }
@@ -864,12 +864,12 @@ fn reordered_type_decl_positions(stmts: Array[Stmt], start: Int) -> Array[Int] {
   let out = array_empty()
   let mut i = 0
   while i < start {
-    Array::push(out, i)
+    Array::push(out, value = i)
     i = i + 1
   }
   while i < Array::length(stmts) {
-    if stmt_is_type_decl(Array::get(stmts, i)) {
-      Array::push(out, i)
+    if stmt_is_type_decl(Array::get(stmts, at = i)) {
+      Array::push(out, value = i)
     } else {
       ()
     }
@@ -877,8 +877,8 @@ fn reordered_type_decl_positions(stmts: Array[Stmt], start: Int) -> Array[Int] {
   }
   let mut j = start
   while j < Array::length(stmts) {
-    if !stmt_is_type_decl(Array::get(stmts, j)) {
-      Array::push(out, j)
+    if !stmt_is_type_decl(Array::get(stmts, at = j)) {
+      Array::push(out, value = j)
     } else {
       ()
     }
@@ -891,10 +891,10 @@ fn next_type_def_binder_id(type_def_binders: Array[Array[Int]], floor: Int) -> I
   let mut next = floor
   let mut i = 0
   while i < Array::length(type_def_binders) {
-    let binders = Array::get(type_def_binders, i)
+    let binders = Array::get(type_def_binders, at = i)
     let mut j = 0
     while j < Array::length(binders) {
-      let candidate = Array::get(binders, j) + 1
+      let candidate = Array::get(binders, at = j) + 1
       if candidate > next {
         next = candidate
       } else {
@@ -911,7 +911,7 @@ fn next_type_def_binder_id(type_def_binders: Array[Array[Int]], floor: Int) -> I
 // must never be checked against a wildcard that a later binding merely shadows.
 // Schedule value inference by lexical dependencies, retaining source coordinates
 // separately. This changes neither the retained AST nor evaluation order.
-fn forward_type_needs_inference(ty: Type) -> Bool {
+fn forward_type_needs_inference(_ ty: Type) -> Bool {
   match ty {
     CtUnknown => true,
     CtTuple(items) => {
@@ -965,16 +965,16 @@ fn forward_header_needs_inference(ty: Type, defs: Array[TypeDef]) -> Bool {
     true
   } else {
     match ty {
-      CtStruct(name) => match find_typedef(defs, name) {
+      CtStruct(name) => match find_typedef(defs = defs, name = name) {
         Some(TDStruct(_, _, _, params)) => Array::length(params) > 0,
         _ => false
       },
-      CtEnum(name) => match find_typedef(defs, name) {
+      CtEnum(name) => match find_typedef(defs = defs, name = name) {
         Some(TDEnum(_, params, _)) => Array::length(params) > 0,
         _ => false
       },
       CtNamed(name, args) => if Array::length(args) == 0 {
-        match find_typedef(defs, name) {
+        match find_typedef(defs = defs, name = name) {
           Some(TDStruct(_, _, _, params)) => Array::length(params) > 0,
           Some(TDEnum(_, params, _)) => Array::length(params) > 0,
           Some(TDAlias(_, params, _)) => Array::length(params) > 0,
@@ -990,26 +990,26 @@ fn forward_header_needs_inference(ty: Type, defs: Array[TypeDef]) -> Bool {
 
 fn forward_pattern_names(pat: Pat, names: Array[String]) -> Unit {
   match pat {
-    PBind(name) => Array::push(names, name),
+    PBind(name) => Array::push(names, value = name),
     PTuple(items) => for item in items {
-      forward_pattern_names(item, names)
+      forward_pattern_names(pat = item, names = names)
     },
     PCtor(_, items) => for item in items {
-      forward_pattern_names(item, names)
+      forward_pattern_names(pat = item, names = names)
     },
     PStruct(_, fields) => for field in fields {
       let (_, item) = field
-      forward_pattern_names(item, names)
+      forward_pattern_names(pat = item, names = names)
     },
     POr(a, b) => {
-      forward_pattern_names(a, names)
-      forward_pattern_names(b, names)
+      forward_pattern_names(pat = a, names = names)
+      forward_pattern_names(pat = b, names = names)
     },
     _ => ()
   }
 }
 
-fn forward_statement_body(stmt: Stmt) -> Option[Expr] {
+fn forward_statement_body(_ stmt: Stmt) -> Option[Expr] {
   match stmt {
     SLet(_, _, _, _, body) => Some(body),
     SLetPat(_, body) => Some(body),
@@ -1023,39 +1023,39 @@ fn forward_statement_body(stmt: Stmt) -> Option[Expr] {
 // Tarjan components: infer mutually dependent values together, before any
 // member is generalized. Distinct components retain ordinary let polymorphism.
 fn schedule_forward_component(stmts: Array[Stmt], at: Int, pending: MutMap[String, Int], limit: Int, errors: Array[String], discovery: Array[Int], low: Array[Int], active: Array[Bool], stack: Array[Int], clock: Array[Int], groups: Array[Array[Int]], recursive: Array[Bool]) -> Unit {
-  if Array::get(discovery, at) < 0 {
-    let stamp = Array::get(clock, 0)
-    Array::set(clock, 0, stamp + 1)
-    Array::set(discovery, at, stamp)
-    Array::set(low, at, stamp)
-    Array::set(active, at, true)
-    Array::push(stack, at)
+  if Array::get(discovery, at = at) < 0 {
+    let stamp = Array::get(clock, at = 0)
+    Array::set(clock, at = 0, value = stamp + 1)
+    Array::set(discovery, at = at, value = stamp)
+    Array::set(low, at = at, value = stamp)
+    Array::set(active, at = at, value = true)
+    Array::push(stack, value = at)
     let mut self_used = false
-    match forward_statement_body(Array::get(stmts, at)) {
+    match forward_statement_body(Array::get(stmts, at = at)) {
       Some(body) => {
-        let names = closure_free_names(body, array_empty())
+        let names = closure_free_names(body = body, params = array_empty())
         for name in closure_bare_callee_names(body) {
-          Array::push(names, name)
+          Array::push(names, value = name)
         }
         for name in names {
-          match MutMap::get(pending, name) {
+          match MutMap::get(pending, k = name) {
             Some(dep) => if dep >= limit {
-              Array::push(errors, String::concat("move `", String::concat(name, String::concat("` above its first use or add a type annotation to the binding; its type is not available across this declaration boundary", off_marker(top_stmt_expr_off(body))))))
+              Array::push(errors, value = String::concat("move `", String::concat(name, String::concat("` above its first use or add a type annotation to the binding; its type is not available across this declaration boundary", off_marker(top_stmt_expr_off(body))))))
             } else {
               if dep == at {
                 self_used = true
               } else {
                 ()
               }
-              if Array::get(discovery, dep) < 0 {
-                schedule_forward_component(stmts, dep, pending, limit, errors, discovery, low, active, stack, clock, groups, recursive)
-                if Array::get(low, dep) < Array::get(low, at) {
-                  Array::set(low, at, Array::get(low, dep))
+              if Array::get(discovery, at = dep) < 0 {
+                schedule_forward_component(stmts = stmts, at = dep, pending = pending, limit = limit, errors = errors, discovery = discovery, low = low, active = active, stack = stack, clock = clock, groups = groups, recursive = recursive)
+                if Array::get(low, at = dep) < Array::get(low, at = at) {
+                  Array::set(low, at = at, value = Array::get(low, at = dep))
                 } else {
                   ()
                 }
-              } else if Array::get(active, dep) && Array::get(discovery, dep) < Array::get(low, at) {
-                Array::set(low, at, Array::get(discovery, dep))
+              } else if Array::get(active, at = dep) && Array::get(discovery, at = dep) < Array::get(low, at = at) {
+                Array::set(low, at = at, value = Array::get(discovery, at = dep))
               } else {
                 ()
               }
@@ -1066,18 +1066,18 @@ fn schedule_forward_component(stmts: Array[Stmt], at: Int, pending: MutMap[Strin
       },
       None => ()
     }
-    if Array::get(low, at) == stamp {
+    if Array::get(low, at = at) == stamp {
       let members = array_empty()
       let mut done = false
       while !done && Array::length(stack) > 0 {
-        let member = Array::get(stack, Array::length(stack) - 1)
-        Array::truncate(stack, Array::length(stack) - 1)
-        Array::set(active, member, false)
-        Array::push(members, member)
+        let member = Array::get(stack, at = Array::length(stack) - 1)
+        Array::truncate(stack, length = Array::length(stack) - 1)
+        Array::set(active, at = member, value = false)
+        Array::push(members, value = member)
         done = member == at
       }
-      Array::push(groups, members)
-      Array::push(recursive, self_used || Array::length(members) > 1)
+      Array::push(groups, value = members)
+      Array::push(recursive, value = self_used || Array::length(members) > 1)
     } else {
       ()
     }
@@ -1104,12 +1104,12 @@ fn forward_statement_groups(stmts: Array[Stmt], start: Int, headers: Array[Optio
   let clock = [0]
   let mut si = 0
   while si < Array::length(stmts) {
-    Array::push(discovery, 0 - 1)
-    Array::push(low, 0 - 1)
-    Array::push(active, false)
+    Array::push(discovery, value = 0 - 1)
+    Array::push(low, value = 0 - 1)
+    Array::push(active, value = false)
     if si < start {
-      Array::push(groups, [si])
-      Array::push(recursive, false)
+      Array::push(groups, value = [si])
+      Array::push(recursive, value = false)
     } else {
       ()
     }
@@ -1125,11 +1125,11 @@ fn forward_statement_groups(stmts: Array[Stmt], start: Int, headers: Array[Optio
       pending = MutMap::new_string()
       last_pending = 0 - 1
       chunk_end = begin
-      while chunk_end < Array::length(stmts) && !(Array::get(stmts, chunk_end) is SReExportSourceBoundary(_, _)) {
-        match Array::get(stmts, chunk_end) {
-          SLet(_, _, name, _, _) => match Array::get(headers, chunk_end) {
-            Some(ty) => if forward_header_needs_inference(ty, defs) {
-              MutMap::set(pending, name, chunk_end)
+      while chunk_end < Array::length(stmts) && !(Array::get(stmts, at = chunk_end) is SReExportSourceBoundary(_, _)) {
+        match Array::get(stmts, at = chunk_end) {
+          SLet(_, _, name, _, _) => match Array::get(headers, at = chunk_end) {
+            Some(ty) => if forward_header_needs_inference(ty = ty, defs = defs) {
+              MutMap::set(pending, k = name, v = chunk_end)
               last_pending = chunk_end
             } else {
               ()
@@ -1138,9 +1138,9 @@ fn forward_statement_groups(stmts: Array[Stmt], start: Int, headers: Array[Optio
           },
           SLetPat(pat, _) => {
             let names = array_empty()
-            forward_pattern_names(pat, names)
+            forward_pattern_names(pat = pat, names = names)
             for name in names {
-              MutMap::set(pending, name, chunk_end)
+              MutMap::set(pending, k = name, v = chunk_end)
             }
             if Array::length(names) > 0 {
               last_pending = chunk_end
@@ -1156,25 +1156,25 @@ fn forward_statement_groups(stmts: Array[Stmt], start: Int, headers: Array[Optio
       ()
     }
     let mut end = begin
-    while end < chunk_end && forward_statement_schedulable(Array::get(stmts, end), imports_projected) {
+    while end < chunk_end && forward_statement_schedulable(stmt = Array::get(stmts, at = end), imports_projected = imports_projected) {
       end = end + 1
     }
     if end == begin {
-      Array::push(groups, [begin])
-      Array::push(recursive, false)
+      Array::push(groups, value = [begin])
+      Array::push(recursive, value = false)
       begin = begin + 1
     } else {
       let mut at = begin
       while at < end {
-        if Array::get(discovery, at) < 0 {
+        if Array::get(discovery, at = at) < 0 {
           if at > last_pending {
             // All incomplete headers have already been inferred. In
             // particular, do not rescan every later compiler function body.
-            Array::set(discovery, at, Array::get(clock, 0))
-            Array::push(groups, [at])
-            Array::push(recursive, false)
+            Array::set(discovery, at = at, value = Array::get(clock, at = 0))
+            Array::push(groups, value = [at])
+            Array::push(recursive, value = false)
           } else {
-            schedule_forward_component(stmts, at, pending, end, errors, discovery, low, active, stack, clock, groups, recursive)
+            schedule_forward_component(stmts = stmts, at = at, pending = pending, limit = end, errors = errors, discovery = discovery, low = low, active = active, stack = stack, clock = clock, groups = groups, recursive = recursive)
           }
         } else {
           ()
@@ -1192,7 +1192,7 @@ fn forward_statement_groups(stmts: Array[Stmt], start: Int, headers: Array[Optio
 // slots are linked to the values that actually initialize them. Discard the
 // provisional diagnostics; the authoritative check below runs with those types.
 fn prepare_recursive_values(stmts: Array[Stmt], start: Int, end: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String]) -> (TypeEnv, Subst, Int) {
-  with_provisional_value_inference(() -> infer_recursive_values(stmts, start, end, env, defs, s, c, errors))
+  with_provisional_value_inference(() -> infer_recursive_values(stmts = stmts, start = start, end = end, env = env, defs = defs, s = s, c = c, errors = errors))
 }
 
 fn infer_recursive_values(stmts: Array[Stmt], start: Int, end: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String]) -> (TypeEnv, Subst, Int) {
@@ -1201,9 +1201,9 @@ fn infer_recursive_values(stmts: Array[Stmt], start: Int, end: Int, env: TypeEnv
   let mut next = c
   let mut at = start
   while at < end {
-    match Array::get(stmts, at) {
+    match Array::get(stmts, at = at) {
       SLet(_, _, name, _, value) => {
-        out = checker_bind_declaration_call_header(out, name, CtVar(next), value)
+        out = checker_bind_declaration_call_header(env = out, name = name, ty = CtVar(next), value = value)
         next = next + 1
       },
       _ => ()
@@ -1217,34 +1217,34 @@ fn infer_recursive_values(stmts: Array[Stmt], start: Int, end: Int, env: TypeEnv
     let scratch_types = array_empty()
     at = start
     while at < end {
-      match Array::get(stmts, at) {
+      match Array::get(stmts, at = at) {
         SLet(_, _, name, ann, value) => {
-          let (vt, ns, nc) = check_expr_capture(value, out, defs, cur_s, next, scratch_errors, scratch_types, None, "Primary")
+          let (vt, ns, nc) = check_expr_capture(expr = value, env = out, defs = defs, s = cur_s, c = next, errors = scratch_errors, tytab = scratch_types, capture = None, lane = "Primary")
           next = nc
-          cur_s = match env_lookup(out, name) {
-            Some(slot) => match unify(slot, vt, ns) {
+          cur_s = match env_lookup(env = out, name = name) {
+            Some(slot) => match unify(a = slot, b = vt, s = ns) {
               Some(linked) => linked,
               None => ns
             },
             None => ns
           }
           let ty = match ann {
-            Some(te) => preserve_generic_instantiation(resolve_type_expr(te, defs), subst_apply(cur_s, vt)),
+            Some(te) => preserve_generic_instantiation(resolved = resolve_type_expr(te = te, defs = defs), actual = subst_apply(s = cur_s, ty = vt)),
             None => vt
           }
-          out = checker_bind_declaration_call_header(out, name, ty, value)
+          out = checker_bind_declaration_call_header(env = out, name = name, ty = ty, value = value)
         },
         _ => ()
       }
       at = at + 1
     }
-    cur_s = resolve_deferred_field_reads(cur_s, defs, scratch_errors, true)
+    cur_s = resolve_deferred_field_reads(s = cur_s, defs = defs, errors = scratch_errors, open_only = true)
     incomplete = false
     at = start
     while at < end {
-      match Array::get(stmts, at) {
-        SLet(_, _, name, _, _) => match env_lookup(out, name) {
-          Some(ty) => incomplete = incomplete || forward_type_needs_inference(subst_apply(cur_s, ty)),
+      match Array::get(stmts, at = at) {
+        SLet(_, _, name, _, _) => match env_lookup(env = out, name = name) {
+          Some(ty) => incomplete = incomplete || forward_type_needs_inference(subst_apply(s = cur_s, ty = ty)),
           None => ()
         },
         _ => ()
@@ -1254,7 +1254,7 @@ fn infer_recursive_values(stmts: Array[Stmt], start: Int, end: Int, env: TypeEnv
     rounds = rounds + 1
   }
   if incomplete {
-    Array::push(errors, "annotate the function parameters and return types in this recursive value group; its initializers do not determine the types of their forward references")
+    Array::push(errors, value = "annotate the function parameters and return types in this recursive value group; its initializers do not determine the types of their forward references")
   } else {
     ()
   }
@@ -1266,8 +1266,8 @@ fn forward_path_before(left: Array[Int], right: Array[Int]) -> Bool {
   let mut decided = false
   let mut before = false
   while at < Array::length(left) && at < Array::length(right) && !decided {
-    let l = Array::get(left, at)
-    let r = Array::get(right, at)
+    let l = Array::get(left, at = at)
+    let r = Array::get(right, at = at)
     if l != r {
       decided = true
       before = l < r
@@ -1290,21 +1290,21 @@ fn forward_restore_root_order(capture: Option[CheckerStatementCapture], start: I
     Some(StatementRootTypes(entries)) => {
       let mut at = start + 1
       while at < Array::length(entries) {
-        let row = Array::get(entries, at)
+        let row = Array::get(entries, at = at)
         let (path, _, _) = row
         let mut slot = at
         let mut moving = true
         while slot > start && moving {
-          let previous = Array::get(entries, slot - 1)
+          let previous = Array::get(entries, at = slot - 1)
           let (previous_path, _, _) = previous
-          if forward_path_before(path, previous_path) {
-            Array::set(entries, slot, previous)
+          if forward_path_before(left = path, right = previous_path) {
+            Array::set(entries, at = slot, value = previous)
             slot = slot - 1
           } else {
             moving = false
           }
         }
-        Array::set(entries, slot, row)
+        Array::set(entries, at = slot, value = row)
         at = at + 1
       }
     },
@@ -1320,15 +1320,15 @@ fn forward_restore_root_order(capture: Option[CheckerStatementCapture], start: I
 let hash_renderer_withheld: Array[String] = []
 
 export fn hash_renderer_withheld_reset() -> Unit {
-  Array::truncate(hash_renderer_withheld, 0)
+  Array::truncate(hash_renderer_withheld, length = 0)
 }
 
-export fn hash_renderer_withheld_add(name: String) -> Unit {
-  Array::push(hash_renderer_withheld, name)
+export fn hash_renderer_withheld_add(_ name: String) -> Unit {
+  Array::push(hash_renderer_withheld, value = name)
 }
 
 /// Is `T::to_string` withheld from the `derive (Hash)` type `name`?
-export fn derived_hash_renderer_withheld(name: String) -> Bool {
+export fn derived_hash_renderer_withheld(_ name: String) -> Bool {
   let mut found = false
   for n in hash_renderer_withheld {
     found = found || n == name
@@ -1337,7 +1337,7 @@ export fn derived_hash_renderer_withheld(name: String) -> Bool {
 }
 
 export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool, validate_completed_decls: Bool) -> (TypeEnv, Subst, Int) {
-  let mut stmts = reorder_type_decls_first(raw_stmts, i)
+  let mut stmts = reorder_type_decls_first(stmts = raw_stmts, start = i)
   // ADR-0120 D3 (#3681): the root list publishes its `_` slots for the
   // headers its declarations bind; a nested module or a recheck of the same
   // list reads the root's. Restored below, so one program's rows never reach
@@ -1349,7 +1349,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   }
   // #3538: impl methods are paired with their `SImpl` in PARSE order, which
   // the scheduling below does not keep.
-  let impl_origins = collect_impl_method_origins(raw_stmts, i, env)
+  let impl_origins = collect_impl_method_origins(stmts = raw_stmts, from = i, env = env)
   // #3343: the root list's declarations, so a call inside a region can find
   // the body of the function it names wherever that function is declared.
   let retention_saved = if validate_completed_decls {
@@ -1361,7 +1361,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   // body was checked are asked again at the end of the module.
   let hce_mark = hce_deferred_mark()
   let completed_decl_error_insert_at = Array::length(errors)
-  let observation_checkpoint = checker_observation_checkpoint(capture, role_lane_capture, tytab)
+  let observation_checkpoint = checker_observation_checkpoint(capture = capture, role_capture = role_lane_capture, tytab = tytab)
   let root_capture_start = match capture {
     Some(StatementRootTypes(entries)) => Array::length(entries),
     _ => 0
@@ -1369,19 +1369,19 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   // Retained coordinates exist solely for the opt-in observation. Keep the
   // ordinary checker path free of its position-map allocation.
   let mut retained_positions = match capture {
-    Some(_) => Some(reordered_type_decl_positions(raw_stmts, i)),
+    Some(_) => Some(reordered_type_decl_positions(stmts = raw_stmts, start = i)),
     None => match role_lane_capture {
-      Some(_) => Some(reordered_type_decl_positions(raw_stmts, i)),
+      Some(_) => Some(reordered_type_decl_positions(stmts = raw_stmts, start = i)),
       None => None
     }
   }
   let mut idx = i
   // #3297: a hand-written `::equals` anywhere in this list, before any body
   // that compares the type is generalized (see note_source_comparator_heads).
-  note_source_comparator_heads(stmts, idx)
+  note_source_comparator_heads(stmts = stmts, from = idx)
   // #2125: see preclaim_local_type_defs.
   let preclaim_from = Array::length(defs)
-  preclaim_local_type_defs(stmts, idx, defs, type_def_binders)
+  preclaim_local_type_defs(stmts = stmts, from = idx, defs = defs, type_def_binders = type_def_binders)
   let mut local_defs_end = preclaim_from
   // #2125 (field enforcement): see collect_trait_dict_erasures. Computed from
   // the statement LIST because reorder_type_decls_first hoists a synthesized
@@ -1412,19 +1412,19 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   let original_headers = array_empty()
   let mut header_prefix = 0
   while header_prefix < idx {
-    Array::push(original_headers, None)
+    Array::push(original_headers, value = None)
     header_prefix = header_prefix + 1
   }
   let mut hoist_i = idx
-  let hdefs = hoist_row_defs(stmts, idx, defs)
+  let hdefs = hoist_row_defs(stmts = stmts, start = idx, defs = defs)
   while hoist_i < Array::length(stmts) {
-    match Array::get(stmts, hoist_i) {
+    match Array::get(stmts, at = hoist_i) {
       SLet(_, _, hname, hann, hval) => {
-        let (ht, hnc) = hoisted_value_type(hann, hval, hdefs, cur_c)
-        Array::push(original_headers, Some(ht))
+        let (ht, hnc) = hoisted_value_type(annotation = hann, value = hval, defs = hdefs, c = cur_c)
+        Array::push(original_headers, value = Some(ht))
         cur_c = hnc
-        cur_env = checker_bind_declaration_call_header(cur_env, hname, ht, hval)
-        note_toplevel_generic_binding(hname, hval, Some(ht), cur_env)
+        cur_env = checker_bind_declaration_call_header(env = cur_env, name = hname, ty = ht, value = hval)
+        note_toplevel_generic_binding(name = hname, val = hval, bound = Some(ht), env = cur_env)
         // #2773: mark a top-level rendering shim's NAME, by the same predicate
         // that grants its body the `check_interp_formal` exemption. The body
         // stands down because the shim is expanded at each call site, where the
@@ -1433,15 +1433,15 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // the declaration is reached, because a shim may be declared below the
         // call that uses it and the exemption must not depend on which.
         match hval {
-          EFn(_, _, hparams, _, _, hbody) => if interp_is_shim_body(hparams, hbody) {
-            cur_env = env_bind(cur_env, interp_shim_marker(hname), CtBool)
+          EFn(_, _, hparams, _, _, hbody) => if interp_is_shim_body(params = hparams, body = hbody) {
+            cur_env = env_bind(env = cur_env, name = interp_shim_marker(hname), ty = CtBool)
           } else {
             ()
           },
           _ => ()
         }
       },
-      _ => Array::push(original_headers, None)
+      _ => Array::push(original_headers, value = None)
     }
     hoist_i = hoist_i + 1
   }
@@ -1454,19 +1454,19 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   // case this hoist mirrors). Shared with collect_async_effect_errors below
   // (step 3's row-expansion pass) via es_collect_tables so both walks stay
   // in sync from one implementation.
-  let (es_names, es_members_list, ed_names, ed_ops_list) = es_collect_tables(stmts, idx)
-  es_append_imported_tables(defs, es_names, es_members_list, ed_names, ed_ops_list)
+  let (es_names, es_members_list, ed_names, ed_ops_list) = es_collect_tables(stmts = stmts, from_idx = idx)
+  es_append_imported_tables(defs = defs, es_names = es_names, es_members_list = es_members_list, ed_names = ed_names, ed_ops_list = ed_ops_list)
   // ADR-0075 Phase 2 (#1343): resource identity rules need the WHOLE list
   // (duplicate detection), so they run here rather than in the SResource arm
   // below -- which is why that arm has nothing left to do.
-  resource_decl_errors(stmts, idx, errors)
+  resource_decl_errors(stmts = stmts, from_idx = idx, errors = errors)
   // #1464: same shape -- duplicate value declarations need the WHOLE list.
-  duplicate_value_decl_errors(stmts, idx, errors)
+  duplicate_value_decl_errors(stmts = stmts, from_idx = idx, errors = errors)
   // #3149: the generic declarations some EARLIER statement of this list
   // already references. Such a caller was checked against the hoisted
   // signature, which knows nothing the body adds, so those declarations'
   // formals never count as constrained (see `scheme_constrained_formals`).
-  let generic_forward_used = generic_forward_referenced_names(stmts, idx)
+  let generic_forward_used = generic_forward_referenced_names(stmts = stmts, idx = idx)
   // #942 (Codex P2 on #969): if any top-level declaration in this statement
   // list binds the name `resume` (fn/let — fn decls are lowered to SLet
   // before the checker — let-pattern, extern let, or an import), codegen's
@@ -1476,7 +1476,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   let mut resume_shadowed_top = false
   let mut rst_i = idx
   while rst_i < Array::length(stmts) {
-    match Array::get(stmts, rst_i) {
+    match Array::get(stmts, at = rst_i) {
       SLet(_, _, rstname, _, _) => if rstname == "resume" {
         resume_shadowed_top = true
       } else {
@@ -1500,7 +1500,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       SImport(_, rstnames) => {
         let mut rn_i = 0
         while rn_i < Array::length(rstnames) {
-          let item = Array::get(rstnames, rn_i)
+          let item = Array::get(rstnames, at = rn_i)
           let rn_name = item.name
           let rn_alias = item.alias
           let rn_bound = match rn_alias {
@@ -1518,7 +1518,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       SReExport(_, rstnames) => {
         let mut rn_i = 0
         while rn_i < Array::length(rstnames) {
-          let item = Array::get(rstnames, rn_i)
+          let item = Array::get(rstnames, at = rn_i)
           let rn_name = item.name
           let rn_alias = item.alias
           // A plain re-export can resolve to the dependency's merged
@@ -1536,25 +1536,25 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     }
     rst_i = rst_i + 1
   }
-  let (inference_groups, recursive_groups) = forward_statement_groups(stmts, i, original_headers, defs, imports_already_projected, errors)
+  let (inference_groups, recursive_groups) = forward_statement_groups(stmts = stmts, start = i, headers = original_headers, defs = defs, imports_projected = imports_already_projected, errors = errors)
   let scheduled_stmts = array_empty()
   let scheduled_positions = array_empty()
   let scheduled_headers = array_empty()
   let recursive_ends = array_empty()
   let mut group_i = 0
   while group_i < Array::length(inference_groups) {
-    let group = Array::get(inference_groups, group_i)
+    let group = Array::get(inference_groups, at = group_i)
     let group_end = Array::length(scheduled_stmts) + Array::length(group)
     for at in group {
-      Array::push(scheduled_stmts, Array::get(stmts, at))
-      Array::push(scheduled_headers, Array::get(original_headers, at))
-      Array::push(recursive_ends, if Array::get(recursive_groups, group_i) {
+      Array::push(scheduled_stmts, value = Array::get(stmts, at = at))
+      Array::push(scheduled_headers, value = Array::get(original_headers, at = at))
+      Array::push(recursive_ends, value = if Array::get(recursive_groups, at = group_i) {
         group_end
       } else {
         0
       })
       match retained_positions {
-        Some(positions) => Array::push(scheduled_positions, Array::get(positions, at)),
+        Some(positions) => Array::push(scheduled_positions, value = Array::get(positions, at = at)),
         None => ()
       }
     }
@@ -1572,11 +1572,11 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   // ordinary small module lists keep the existing head-cache layout.
   let index_large_env = Array::length(stmts) - i >= 256
   while idx < Array::length(stmts) {
-    let recursive_end = Array::get(recursive_ends, idx)
+    let recursive_end = Array::get(recursive_ends, at = idx)
     if recursive_end > 0 && recursive_env == None {
       recursive_env = Some(cur_env)
       recursive_start = idx
-      let (prepared_env, prepared_s, prepared_c) = prepare_recursive_values(stmts, idx, recursive_end, cur_env, defs, cur_s, cur_c, errors)
+      let (prepared_env, prepared_s, prepared_c) = prepare_recursive_values(stmts = stmts, start = idx, end = recursive_end, env = cur_env, defs = defs, s = cur_s, c = cur_c, errors = errors)
       cur_env = prepared_env
       cur_s = prepared_s
       cur_c = prepared_c
@@ -1589,7 +1589,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     let env = cur_env
     let s = cur_s
     let c = cur_c
-    let stmt = Array::get(stmts, idx)
+    let stmt = Array::get(stmts, at = idx)
     retention_note_module_env(env)
     let defs_before_stmt = Array::length(defs)
     // Do not construct paths or read the legacy append boundary on the normal
@@ -1599,7 +1599,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         Some(positions) => match statement_parent_path {
           Some(parent_path) => {
             let path = copy_ints(parent_path)
-            Array::push(path, Array::get(positions, idx))
+            Array::push(path, value = Array::get(positions, at = idx))
             Some(path)
           },
           None => None
@@ -1611,7 +1611,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           Some(positions) => match statement_parent_path {
             Some(parent_path) => {
               let path = copy_ints(parent_path)
-              Array::push(path, Array::get(positions, idx))
+              Array::push(path, value = Array::get(positions, at = idx))
               Some(path)
             },
             None => None
@@ -1622,7 +1622,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       }
     }
     match statement_path {
-      Some(path) => typed_occurrence_capture_begin_statement(role_lane_capture, path),
+      Some(path) => typed_occurrence_capture_begin_statement(capture = role_lane_capture, statement_path = path),
       None => ()
     }
     let capture_start = match capture {
@@ -1638,12 +1638,12 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     // codegen's prefer_bound_call routes every `resume(x)` to the bound
     // function, so the misuse walk stands down (Codex P2 on #969).
     match stmt {
-      SLet(_, _, _, _, rv) => reject_resume_outside_handler(rv, resume_shadowed_top, errors),
-      SLetMut(_, _, rv) => reject_resume_outside_handler(rv, resume_shadowed_top, errors),
-      SLetPat(_, rv) => reject_resume_outside_handler(rv, resume_shadowed_top, errors),
-      STest(_, rb) => reject_resume_outside_handler(rb, resume_shadowed_top, errors),
-      SBench(_, rb) => reject_resume_outside_handler(rb, resume_shadowed_top, errors),
-      SExpr(re) => reject_resume_outside_handler(re, resume_shadowed_top, errors),
+      SLet(_, _, _, _, rv) => reject_resume_outside_handler(e = rv, sh = resume_shadowed_top, errors = errors),
+      SLetMut(_, _, rv) => reject_resume_outside_handler(e = rv, sh = resume_shadowed_top, errors = errors),
+      SLetPat(_, rv) => reject_resume_outside_handler(e = rv, sh = resume_shadowed_top, errors = errors),
+      STest(_, rb) => reject_resume_outside_handler(e = rb, sh = resume_shadowed_top, errors = errors),
+      SBench(_, rb) => reject_resume_outside_handler(e = rb, sh = resume_shadowed_top, errors = errors),
+      SExpr(re) => reject_resume_outside_handler(e = re, sh = resume_shadowed_top, errors = errors),
       _ => ()
     }
     let (new_env, s1, c1) = match stmt {
@@ -1655,25 +1655,25 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // those names -- and only the ones an actual impl licenses -- into the
         // environment the VALUE is checked in, never `env1` below, so they
         // cannot reach a published or cached environment.
-        let val_env = env_bind(bind_impl_self_type(trait_erased_type_param_env(env, name), name, defs), "#interp.top.fn", match val {
+        let val_env = env_bind(env = bind_impl_self_type(env = trait_erased_type_param_env(env = env, binding_name = name), binding_name = name, defs = defs), name = "#interp.top.fn", ty = match val {
           EFn(_, _, _, _, _, _) => CtBool,
           _ => CtUnit
         })
         // An impl method naming its own target bare is typed at the target
         // applied to its erased formals (#3551 review).
-        let val = expand_impl_owner_bare_heads(val, defs, val_env)
+        let val = expand_impl_owner_bare_heads(val = val, defs = defs, env = val_env)
         let head_bound_mark = efn_head_bound_mark()
         let (vt, checked_s, nc) = if is_rec && recursive_end == 0 {
-          check_expr_capture(val, checker_bind_declaration_call_header(val_env, name, CtUnknown, val), defs, s, c, errors, tytab, role_lane_capture, "Primary")
+          check_expr_capture(expr = val, env = checker_bind_declaration_call_header(env = val_env, name = name, ty = CtUnknown, value = val), defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = role_lane_capture, lane = "Primary")
         } else {
-          check_expr_capture(val, val_env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+          check_expr_capture(expr = val, env = val_env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = role_lane_capture, lane = "Primary")
         }
         let ns0 = if recursive_end > 0 {
-          match env_lookup(env, name) {
-            Some(slot) => match unify(slot, vt, checked_s) {
-              Some(linked) => resolve_deferred_field_reads(linked, defs, errors, true),
+          match env_lookup(env = env, name = name) {
+            Some(slot) => match unify(a = slot, b = vt, s = checked_s) {
+              Some(linked) => resolve_deferred_field_reads(s = linked, defs = defs, errors = errors, open_only = true),
               None => {
-                Array::push(errors, String::concat("recursive binding type mismatch for `", String::concat(name, "`; annotate the value's function parameters and return type")))
+                Array::push(errors, value = String::concat("recursive binding type mismatch for `", String::concat(name, "`; annotate the value's function parameters and return type")))
                 checked_s
               }
             },
@@ -1686,14 +1686,14 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // and a forward-referenced one was called against its hoisted
         // signature; only the rest has every caller checked against the
         // scheme its body produced.
-        efn_head_bound_commit(head_bound_mark, !exported && !string_array_has(generic_forward_used, name))
+        efn_head_bound_commit(mark = head_bound_mark, callers_checked = !exported && !string_array_has(items = generic_forward_used, wanted = name))
         // #3378: such a caller was checked against the hoisted scheme. When the
         // body fixed one of the formals, that call was never checked against
         // what the body assumes -- `add_one("abc")` above `fn add_one[T](x:
         // T) -> Int { x + 1 }` compiled and added 1 to a pointer.
-        if Array::length(errors) == err_before && string_array_has(generic_forward_used, name) {
-          match Array::get(scheduled_headers, idx) {
-            Some(hoisted) => forward_generic_narrowing_errors(name, val, hoisted, subst_apply(ns0, vt), ns0, nc, errors),
+        if Array::length(errors) == err_before && string_array_has(items = generic_forward_used, wanted = name) {
+          match Array::get(scheduled_headers, at = idx) {
+            Some(hoisted) => forward_generic_narrowing_errors(name = name, val = val, hoisted = hoisted, published = subst_apply(s = ns0, ty = vt), s = ns0, c = nc, errors = errors),
             None => ()
           }
         } else {
@@ -1703,16 +1703,16 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // must have that signature.
         // A plain `P::m` is also the method of every impl of `P` whose block
         // has no body for `m`, wherever it is declared.
-        for origin in impl_method_origins_of(impl_origins, name) {
-          check_impl_method_signature(origin, val, vt, ns0, env, defs, errors)
+        for origin in impl_method_origins_of(origins = impl_origins, binding_name = name) {
+          check_impl_method_signature(origin = origin, val = val, vt = vt, s = ns0, env = env, defs = defs, errors = errors)
         }
-        attach_unlocated_decl_name_marker(errors, err_before, name)
+        attach_unlocated_decl_name_marker(errors = errors, from = err_before, name = name)
         // The value must be assignable to a declared annotation (previously
         // unchecked — `let x: Int = "s"` was accepted).
         let (ns, t) = match ann {
           Some(te) => {
-            let resolved_te = resolve_type_expr(te, defs)
-            let actual_v = subst_apply(ns0, vt)
+            let resolved_te = resolve_type_expr(te = te, defs = defs)
+            let actual_v = subst_apply(s = ns0, ty = vt)
             // #844/#981: `check_assignable` itself now reports the same-name
             // concrete generic instantiation mismatch (its tolerate branch
             // calls `detect_narrowed_generic_mismatch` — see checker.vibe),
@@ -1729,7 +1729,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
             // locally declared alias and effect name is still absent from
             // `defs` and would be reported as unknown. Inside the
             // `ann_err_before` window so the binder name anchors it.
-            report_unknown_type_names(te, defs, array_empty(), env, array_empty(), String::concat(String::concat("the annotation of `", name), "`"), errors)
+            report_unknown_type_names(te = te, defs = defs, shadow = array_empty(), env = env, row_binders = array_empty(), where_label = String::concat(String::concat("the annotation of `", name), "`"), errors = errors)
             // Give the binding mismatch an END so the range covers the whole
             // literal, not just its first byte: `locate_type_error` emits the
             // `C-E` form only when both ends are known.
@@ -1748,21 +1748,21 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
               },
               _ => ()
             }
-            let ns_assign = check_assignable_for(resolved_te, actual_v, ns0, errors, "binding type mismatch for ", name, top_stmt_expr_off(val))
+            let ns_assign = check_assignable_for(expected = resolved_te, actual = actual_v, s = ns0, errors = errors, what_head = "binding type mismatch for ", what_tail = name, off = top_stmt_expr_off(val))
             // The annotation replaces the inferred type at publication, so
             // check its nested callback payloads before losing that evidence.
-            let ns_b = effect_inst_annotation_check(env, val, actual_v, resolved_te, ns_assign, "the function bound here", "the annotation's row", defs, errors)
+            let ns_b = effect_inst_annotation_check(env = env, value = val, value_ty = actual_v, want_ty = resolved_te, s = ns_assign, subject = "the function bound here", slot = "the annotation's row", defs = defs, errors = errors)
             // #1941: a literal value carries no offset, so anchor the binder
             // name instead of emitting the one unlocated diagnostic left in
             // this lane.
-            attach_unlocated_decl_name_marker(errors, ann_err_before, name)
+            attach_unlocated_decl_name_marker(errors = errors, from = ann_err_before, name = name)
             // Prefer the RHS's real instantiated type over the erasing bare
             // annotation when `resolved_te` is a bare generic-struct
             // reference that `actual_v` already concretely instantiates, so a
             // LATER statement's lookup of this binding sees real type args
             // instead of an erased placeholder (see
             // `preserve_generic_instantiation`'s doc comment in checker.vibe).
-            (ns_b, preserve_generic_instantiation(resolved_te, subst_apply(ns_b, vt)))
+            (ns_b, preserve_generic_instantiation(resolved = resolved_te, actual = subst_apply(s = ns_b, ty = vt)))
           },
           None => {
             // #2459: the SAME decision as the `ELet` / `ELetRec` arms in
@@ -1773,16 +1773,16 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
             // #2848: an impl method's `self` is unannotated here and would be
             // quantified below; resolve its field reads against the impl's
             // recorded target first (provenance from the env, not the name).
-            let ns_self = resolve_impl_self_field_reads(name, val, vt, ns0, env, defs, errors)
+            let ns_self = resolve_impl_self_field_reads(binding_name = name, val = val, vt = vt, s = ns0, env = env, defs = defs, errors = errors)
             let gen = if recursive_end > 0 {
-              subst_apply(ns_self, vt)
+              subst_apply(s = ns_self, ty = vt)
             } else {
-              let_generalize(val, vt, env, defs, ns_self, None)
+              let_generalize(val = val, vt = vt, env = env, defs = defs, s = ns_self, self_name = None)
             }
             // #2848: see the ELet arm in checker.vibe.
-            refuse_generalized_field_reads(gen, ns_self, errors)
+            refuse_generalized_field_reads(gen = gen, s = ns_self, errors = errors)
             // #3297: see the ELet arm in checker.vibe.
-            refuse_generalized_eq_sites(val, vt, gen, ns_self, defs, errors)
+            refuse_generalized_eq_sites(val = val, vt = vt, gen = gen, s = ns_self, defs = defs, errors = errors)
             (ns_self, gen)
           }
         }
@@ -1791,7 +1791,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // an alias it cannot see. An exported row whose kind no row can spell
         // is refused instead.
         if exported {
-          refuse_unpublishable_exception_row(t, name, name, defs, errors)
+          refuse_unpublishable_exception_row(t = t, owner = name, anchor = name, defs = defs, errors = errors)
         } else {
           ()
         }
@@ -1806,56 +1806,56 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           _ => false
         }
         // #3341: a lambda's instantiation labels name this check's variables.
-        let t_published = strip_effect_inst_labels(t, ns, defs)
+        let t_published = strip_effect_inst_labels(t = t, s = ns, defs = defs)
         let published = if exported || is_alias {
-          publish_row_nominals(publish_row_formals(type_exception_rows_resolved(t_published), val, env, defs, ns), defs)
+          publish_row_nominals(t = publish_row_formals(t = type_exception_rows_resolved(t_published), val = val, env = env, defs = defs, s = ns), defs = defs)
         } else {
           type_exception_rows_resolved(t_published)
         }
         // #3557: a declaration's own `with e` is quantified per call, type
         // parameters or not.
         let bound = match val {
-          EFn(_, _, _, _, _, _) => quantify_own_rows_of(published, val, env, ns, name),
+          EFn(_, _, _, _, _, _) => quantify_own_rows_of(t = published, val = val, env = env, s = ns, self_name = name),
           _ => published
         }
-        let env1 = bind_function_dependency_contracts(checker_bind_declaration_call_header(env, name, bound, val), name, val)
-        capture_statement_root_type(capture, statement_path, "SLet", vt)
-        (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
+        let env1 = bind_function_dependency_contracts(env = checker_bind_declaration_call_header(env = env, name = name, ty = bound, value = val), name = name, value = val)
+        capture_statement_root_type(capture = capture, statement_path = statement_path, kind = "SLet", ty = vt)
+        (bind_value_or_annotation_return(env = env1, name = name, val = val, ann = ann, defs = defs), ns, nc)
       },
       SLetMut(name, ann, val) => {
         // ADR-0069 Phase 1: top level is declarations only. A top-level
         // `let mut` was never soundly implemented (the linear backend
         // miscompiles cross-function references); reject it, but keep
         // checking/binding below for error recovery.
-        Array::push(errors, top_level_reject_msg("top-level `let mut` bindings are not allowed; move it into fn main", val))
+        Array::push(errors, value = top_level_reject_msg(what = "top-level `let mut` bindings are not allowed; move it into fn main", e = val))
         let err_before = Array::length(errors)
-        let (vt, ns0, nc) = check_expr_capture(val, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
-        attach_unlocated_decl_name_marker(errors, err_before, name)
+        let (vt, ns0, nc) = check_expr_capture(expr = val, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = role_lane_capture, lane = "Primary")
+        attach_unlocated_decl_name_marker(errors = errors, from = err_before, name = name)
         let ns = match ann {
-          Some(te) => check_assignable_for(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, "binding type mismatch for ", name, 0 - 1),
+          Some(te) => check_assignable_for(expected = resolve_type_expr(te = te, defs = defs), actual = subst_apply(s = ns0, ty = vt), s = ns0, errors = errors, what_head = "binding type mismatch for ", what_tail = name, off = 0 - 1),
           None => ns0
         }
         let t = match ann {
-          Some(te) => resolve_type_expr(te, defs),
+          Some(te) => resolve_type_expr(te = te, defs = defs),
           None => vt
         }
-        let env1 = env_bind(env, name, t)
-        capture_statement_root_type(capture, statement_path, "SLetMut", vt)
-        (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
+        let env1 = env_bind(env = env, name = name, ty = t)
+        capture_statement_root_type(capture = capture, statement_path = statement_path, kind = "SLetMut", ty = vt)
+        (bind_value_or_annotation_return(env = env1, name = name, val = val, ann = ann, defs = defs), ns, nc)
       },
       SLetPat(pat, val) => {
-        let (vt, ns, nc) = check_expr_capture(val, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        let (vt, ns, nc) = check_expr_capture(expr = val, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = role_lane_capture, lane = "Primary")
         let new_env = match pat {
           PTuple(pats) => match vt {
             CtTuple(types) => {
               let mut e = env
               let mut pi = 0
               while pi < Array::length(pats) {
-                match Array::get(pats, pi) {
+                match Array::get(pats, at = pi) {
                   PBind(name) => if pi < Array::length(types) {
-                    e = env_bind(e, name, Array::get(types, pi))
+                    e = env_bind(env = e, name = name, ty = Array::get(types, at = pi))
                   } else {
-                    e = env_bind(e, name, CtUnknown)
+                    e = env_bind(env = e, name = name, ty = CtUnknown)
                   },
                   _ => ()
                 }
@@ -1869,7 +1869,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
               // resolves to a concrete NON-tuple type (a scalar, array, option,
               // fn, struct, enum), this is a real error. Type vars / unknown /
               // named (generic) values stay tolerated.
-              let concrete_non_tuple = match subst_apply(ns, vt) {
+              let concrete_non_tuple = match subst_apply(s = ns, ty = vt) {
                 CtInt => true,
                 CtDouble => true,
                 CtFloat => true,
@@ -1886,16 +1886,16 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
                 _ => false
               }
               if concrete_non_tuple {
-                Array::push(errors, "tuple pattern cannot destructure a non-tuple value")
+                Array::push(errors, value = "tuple pattern cannot destructure a non-tuple value")
               } else {
                 ()
               }
               let mut e = env
               let mut pi = 0
               while pi < Array::length(pats) {
-                match Array::get(pats, pi) {
+                match Array::get(pats, at = pi) {
                   PBind(name) => {
-                    e = env_bind(e, name, CtUnknown)
+                    e = env_bind(env = e, name = name, ty = CtUnknown)
                   },
                   _ => ()
                 }
@@ -1904,15 +1904,15 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
               e
             }
           },
-          PBind(name) => env_bind(env, name, vt),
+          PBind(name) => env_bind(env = env, name = name, ty = vt),
           PStruct(_, fields) => {
             let mut e = env
             let mut fi = 0
             while fi < Array::length(fields) {
-              let (_, fpat) = Array::get(fields, fi)
+              let (_, fpat) = Array::get(fields, at = fi)
               match fpat {
                 PBind(name) => {
-                  e = env_bind(e, name, CtUnknown)
+                  e = env_bind(env = e, name = name, ty = CtUnknown)
                 },
                 _ => ()
               }
@@ -1922,21 +1922,21 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           },
           _ => env
         }
-        capture_statement_root_type(capture, statement_path, "SLetPat", vt)
+        capture_statement_root_type(capture = capture, statement_path = statement_path, kind = "SLetPat", ty = vt)
         (new_env, ns, nc)
       },
       SEnum(exported, name, params, variants, enum_derives) => {
-        validate_derives(enum_derives, errors)
-        builtin_spelling_decl_error("enum", name, Array::length(params), errors)
-        duplicate_ctor_errors("enum", name, variants, errors)
+        validate_derives(derives = enum_derives, errors = errors)
+        builtin_spelling_decl_error(kind = "enum", name = name, arity = Array::length(params), errors = errors)
+        duplicate_ctor_errors(kind = "enum", name = name, variants = variants, errors = errors)
         let param_len = Array::length(params)
         let param_var_ids = array_empty()
         let param_var_types = array_empty()
         let mut pi = 0
         while pi < param_len {
           let vid = c + pi
-          Array::push(param_var_ids, vid)
-          Array::push(param_var_types, CtVar(vid))
+          Array::push(param_var_ids, value = vid)
+          Array::push(param_var_types, value = CtVar(vid))
           pi = pi + 1
         }
         let ctor_result_type = if param_len == 0 {
@@ -1952,54 +1952,54 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         let enum_payload_tes = array_empty()
         let mut fvi = 0
         while fvi < Array::length(variants) {
-          let (_, payloads) = Array::get(variants, fvi)
+          let (_, payloads) = Array::get(variants, at = fvi)
           let mut fpi = 0
           while fpi < Array::length(payloads) {
-            Array::push(enum_payload_tes, Array::get(payloads, fpi))
+            Array::push(enum_payload_tes, value = Array::get(payloads, at = fpi))
             fpi = fpi + 1
           }
           fvi = fvi + 1
         }
-        report_formal_applications_across(enum_payload_tes, params, String::concat(String::concat("enum `", name), "`"), errors)
+        report_formal_applications_across(tes = enum_payload_tes, formals = params, where_label = String::concat(String::concat("enum `", name), "`"), errors = errors)
         // #2125: this enum's slot in `defs` is already claimed (see
         // preclaim_local_type_defs), so a recursive occurrence of `name` in
         // its own payloads resolves to `CtEnum(name)` instead of falling
         // through to `CtNamed(name, [])`. The ctor-signature loop below
         // resolves the same payload text AFTER the registration and therefore
         // already saw the resolved form; the two disagreed.
-        let self_def_index = own_typedef_slot(defs, type_def_binders, taken_type_def_slots, name, preclaim_from, TDEnum(name, params, array_empty()))
-        Array::set(type_def_binders, self_def_index, param_var_ids)
+        let self_def_index = own_typedef_slot(defs = defs, type_def_binders = type_def_binders, taken = taken_type_def_slots, name = name, preclaim_from = preclaim_from, placeholder = TDEnum(name, params, array_empty()))
+        Array::set(type_def_binders, at = self_def_index, value = param_var_ids)
         // #3028: the payload rows' exception kinds resolve before the
         // payloads and the constructor signatures below are built from them.
-        record_decl_exception_kinds([stmt], defs, env, errors, false)
+        record_decl_exception_kinds(stmts = [stmt], defs = defs, env = env, errors = errors, complete = false)
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (vname, vtypes) = Array::get(variants, vi)
+          let (vname, vtypes) = Array::get(variants, at = vi)
           let resolved_vtypes = array_empty()
           let named_vtypes = array_empty()
           let mut ti = 0
           while ti < Array::length(vtypes) {
             // #2125: an unknown name in a payload otherwise becomes a wildcard
             // `CtNamed` -- same hole as the annotation sites.
-            report_unknown_type_names_deferred_validation(Array::get(vtypes, ti), defs, decl_report_shadow(params, array_empty(), deferred_names_for_decl(deferred_type_names, name)), env, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
+            report_unknown_type_names_deferred_validation(te = Array::get(vtypes, at = ti), defs = defs, shadow = decl_report_shadow(tparams = params, dict_erased = array_empty(), deferred = deferred_names_for_decl(rows = deferred_type_names, decl_name = name)), env = env, row_binders = array_empty(), where_label = String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors = errors)
             // #1512: `params` shadow `defs`, so the substitution below still
             // finds `CtNamed(<param>, [])` when an import bound that name.
             // #3028: a function row in a payload is published with its
             // exception kinds resolved, as a binding's is.
-            let named_vt = type_exception_rows_resolved(resolve_type_expr_shadowed(Array::get(vtypes, ti), defs, params))
-            Array::push(named_vtypes, named_vt)
-            Array::push(resolved_vtypes, subst_type_params(named_vt, params, param_var_types))
+            let named_vt = type_exception_rows_resolved(resolve_type_expr_shadowed(te = Array::get(vtypes, at = ti), defs = defs, shadow = params))
+            Array::push(named_vtypes, value = named_vt)
+            Array::push(resolved_vtypes, value = subst_type_params(ty = named_vt, params = params, args = param_var_types))
             ti = ti + 1
           }
-          Array::push(resolved_variants, (vname, resolved_vtypes))
-          Array::push(published_variants, (vname, named_vtypes))
+          Array::push(resolved_variants, value = (vname, resolved_vtypes))
+          Array::push(published_variants, value = (vname, named_vtypes))
           vi = vi + 1
         }
-        Array::set(defs, self_def_index, TDEnum(name, params, resolved_variants))
-        let mut env1 = env_bind(env, name, CtEnum(name))
+        Array::set(defs, at = self_def_index, value = TDEnum(name, params, resolved_variants))
+        let mut env1 = env_bind(env = env, name = name, ty = CtEnum(name))
         let mut ci2 = 0
         while ci2 < Array::length(variants) {
-          let (vname, vtypes) = Array::get(variants, ci2)
+          let (vname, vtypes) = Array::get(variants, at = ci2)
           // #1078: a variant name already declared by a DIFFERENT enum in
           // this (possibly whole-program-merged) unit is a hard error.
           // The checker env is flat and name-keyed with last-registered-
@@ -2011,8 +2011,8 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           // miscompile). Two unrelated packages only meet in one unit via
           // the merge/flatten lane, which is exactly how #1078 was hit
           // (@vibe/json's RpcMessage vs another merged package).
-          match find_other_enum_declaring_variant(defs, local_defs_start, name, vname) {
-            Some(other) => Array::push(errors, String::concat(String::concat(String::concat(String::concat("constructor name collision: ", vname), " is declared by both "), other), String::concat(" and ", String::concat(name, " in the same compiled unit; bare constructor references are ambiguous (qualified construction is not supported) -- rename one variant")))),
+          match find_other_enum_declaring_variant(defs = defs, local_defs_start = local_defs_start, enum_name = name, vname = vname) {
+            Some(other) => Array::push(errors, value = String::concat(String::concat(String::concat(String::concat("constructor name collision: ", vname), " is declared by both "), other), String::concat(" and ", String::concat(name, " in the same compiled unit; bare constructor references are ambiguous (qualified construction is not supported) -- rename one variant")))),
             None => ()
           }
           let ctor_ty = if Array::length(vtypes) == 0 {
@@ -2026,8 +2026,8 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
               // `subst_type_params` right here needs the rigid formal to survive.
               // #3028: the constructor's signature carries the payload's
               // resolved exception kinds, the ones the TDEnum above holds.
-              let arg_ty = subst_type_params(type_exception_rows_resolved(resolve_type_expr_shadowed(Array::get(vtypes, ai), defs, params)), params, param_var_types)
-              Array::push(resolved_args, arg_ty)
+              let arg_ty = subst_type_params(ty = type_exception_rows_resolved(resolve_type_expr_shadowed(te = Array::get(vtypes, at = ai), defs = defs, shadow = params)), params = params, args = param_var_types)
+              Array::push(resolved_args, value = arg_ty)
               ai = ai + 1
             }
             CtFn(resolved_args, ctor_result_type, constructor_dependency_row(Array::length(resolved_args)))
@@ -2037,7 +2037,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           } else {
             CtForAll(param_var_ids, ctor_bounds, ctor_ty)
           }
-          env1 = env_bind(env1, vname, exported_ctor_ty)
+          env1 = env_bind(env = env1, name = vname, ty = exported_ctor_ty)
           match ctor_ty {
             CtFn(_, ret, _) => {
               let exported_ret_ty = if param_len == 0 {
@@ -2045,7 +2045,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
               } else {
                 CtForAll(param_var_ids, ctor_bounds, ret)
               }
-              env1 = bind_fn_return(env1, vname, exported_ret_ty)
+              env1 = bind_fn_return(env = env1, name = vname, ret_ty = exported_ret_ty)
             },
             _ => ()
           }
@@ -2053,13 +2053,13 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         }
         // #672: pre-bind the generated structural `E::equals` (every enum gets
         // one) so `==` dispatch call sites resolve at check time.
-        let env_eq = env_bind(env1, String::concat(name, "::equals"), CtFn([
+        let env_eq = env_bind(env = env1, name = String::concat(name, "::equals"), ty = CtFn([
           ctor_result_type,
           ctor_result_type
         ], CtBool, None))
         // #2523: the enum half of the `derive (Eq)` registration below the
         // struct one -- same reason, same shape.
-        let env_eq_impl = if struct_derives_has(enum_derives, "Eq") {
+        let env_eq_impl = if struct_derives_has(derives = enum_derives, name = "Eq") {
           EnvTraitImpl("Eq", ctor_result_type, env_eq)
         } else {
           env_eq
@@ -2067,8 +2067,8 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // #638: pre-bind the signatures the enum-derive desugar will generate, so
         // `E::compare` / `E::to_string` / `E::default` resolve at check time (the
         // FS-compile path checks before the codegen-time desugar runs).
-        let env_ord = if struct_derives_has(enum_derives, "Ord") {
-          env_bind(env_eq_impl, String::concat(name, "::compare"), CtFn([
+        let env_ord = if struct_derives_has(derives = enum_derives, name = "Ord") {
+          env_bind(env = env_eq_impl, name = String::concat(name, "::compare"), ty = CtFn([
             ctor_result_type,
             ctor_result_type
           ], CtEnum("Ordering"), None))
@@ -2076,13 +2076,13 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           env_eq_impl
         }
         // #3567: not for a `derive (Hash)` enum whose renderer is withheld.
-        let env_show = if struct_derives_has(enum_derives, "Show") || (struct_derives_has(enum_derives, "Hash") && !derived_hash_renderer_withheld(name)) {
-          let env_show_base = if struct_derives_has(enum_derives, "Show") {
+        let env_show = if struct_derives_has(derives = enum_derives, name = "Show") || (struct_derives_has(derives = enum_derives, name = "Hash") && !derived_hash_renderer_withheld(name)) {
+          let env_show_base = if struct_derives_has(derives = enum_derives, name = "Show") {
             EnvTraitImpl("Show", ctor_result_type, env_ord)
           } else {
             env_ord
           }
-          env_bind(env_show_base, String::concat(name, "::to_string"), CtFn([
+          env_bind(env = env_show_base, name = String::concat(name, "::to_string"), ty = CtFn([
             ctor_result_type
           ], CtString, None))
         } else {
@@ -2092,9 +2092,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // structural Map key), so pre-bind its signature at check time too, AND
         // register `impl Hash for E` so a `[K: Hash]` bound is satisfied by the
         // derived enum.
-        let env_hash = if struct_derives_has(enum_derives, "Hash") {
+        let env_hash = if struct_derives_has(derives = enum_derives, name = "Hash") {
           let env_h = EnvTraitImpl("Hash", ctor_result_type, env_show)
-          env_bind(env_h, String::concat(name, "::hash_key"), CtFn([
+          env_bind(env = env_h, name = String::concat(name, "::hash_key"), ty = CtFn([
             ctor_result_type
           ], CtString, None))
         } else {
@@ -2104,9 +2104,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // `[T: Default]` bound is satisfied by the derived enum (previously
         // only the `E::default` signature was bound, so the bound check
         // reported `no impl Default for E`).
-        let env_default = if struct_derives_has(enum_derives, "Default") {
+        let env_default = if struct_derives_has(derives = enum_derives, name = "Default") {
           let env_d = EnvTraitImpl("Default", ctor_result_type, env_hash)
-          env_bind(env_d, String::concat(name, "::default"), CtFn(array_empty(), ctor_result_type, None))
+          env_bind(env = env_d, name = String::concat(name, "::default"), ty = CtFn(array_empty(), ctor_result_type, None))
         } else {
           env_hash
         }
@@ -2128,51 +2128,51 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // constructors exactly as an enum does, so `suberror Int(String)`
         // recreates the same unnameable nominal type. It carries no type
         // parameters, hence arity 0.
-        builtin_spelling_decl_error("suberror", name, 0, errors)
-        duplicate_ctor_errors("suberror", name, variants, errors)
+        builtin_spelling_decl_error(kind = "suberror", name = name, arity = 0, errors = errors)
+        duplicate_ctor_errors(kind = "suberror", name = name, variants = variants, errors = errors)
         let ctor_result_type = CtEnum(name)
         let resolved_variants = array_empty()
         let mut vi = 0
         // #2125: see the SEnum arm.
-        let self_suberr_index = own_typedef_slot(defs, type_def_binders, taken_type_def_slots, name, preclaim_from, TDEnum(name, array_empty(), array_empty()))
+        let self_suberr_index = own_typedef_slot(defs = defs, type_def_binders = type_def_binders, taken = taken_type_def_slots, name = name, preclaim_from = preclaim_from, placeholder = TDEnum(name, array_empty(), array_empty()))
         while vi < Array::length(variants) {
-          let (vname, vtypes) = Array::get(variants, vi)
+          let (vname, vtypes) = Array::get(variants, at = vi)
           let resolved_vtypes = array_empty()
           let mut ti = 0
           while ti < Array::length(vtypes) {
-            let payload_type = Array::get(vtypes, ti)
-            Array::push(resolved_vtypes, resolve_type_expr(payload_type, defs))
+            let payload_type = Array::get(vtypes, at = ti)
+            Array::push(resolved_vtypes, value = resolve_type_expr(te = payload_type, defs = defs))
             ti = ti + 1
           }
-          Array::push(resolved_variants, (vname, resolved_vtypes))
+          Array::push(resolved_variants, value = (vname, resolved_vtypes))
           vi = vi + 1
         }
-        Array::set(defs, self_suberr_index, TDEnum(name, array_empty(), resolved_variants))
-        let mut env1 = env_bind(env, name, CtEnum(name))
+        Array::set(defs, at = self_suberr_index, value = TDEnum(name, array_empty(), resolved_variants))
+        let mut env1 = env_bind(env = env, name = name, ty = CtEnum(name))
         let mut ci2 = 0
         while ci2 < Array::length(variants) {
-          let (vname, vtypes) = Array::get(variants, ci2)
+          let (vname, vtypes) = Array::get(variants, at = ci2)
           let ctor_ty = if Array::length(vtypes) == 0 {
             ctor_result_type
           } else {
             let resolved_args = array_empty()
             let mut ai = 0
             while ai < Array::length(vtypes) {
-              Array::push(resolved_args, resolve_type_expr(Array::get(vtypes, ai), defs))
+              Array::push(resolved_args, value = resolve_type_expr(te = Array::get(vtypes, at = ai), defs = defs))
               ai = ai + 1
             }
             CtFn(resolved_args, ctor_result_type, constructor_dependency_row(Array::length(resolved_args)))
           }
-          env1 = env_bind(env1, vname, ctor_ty)
+          env1 = env_bind(env = env1, name = vname, ty = ctor_ty)
           match ctor_ty {
             CtFn(_, ret, _) => {
-              env1 = bind_fn_return(env1, vname, ret)
+              env1 = bind_fn_return(env = env1, name = vname, ret_ty = ret)
             },
             _ => ()
           }
           ci2 = ci2 + 1
         }
-        let env_eq = env_bind(env1, String::concat(name, "::equals"), CtFn([
+        let env_eq = env_bind(env = env1, name = String::concat(name, "::equals"), ty = CtFn([
           ctor_result_type,
           ctor_result_type
         ], CtBool, None))
@@ -2189,60 +2189,60 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         }, env_eq), s, c)
       },
       SStruct(exported, name, field_defs, derives, mut_fields, tparams) => {
-        validate_derives(derives, errors)
-        builtin_spelling_decl_error("struct", name, Array::length(tparams), errors)
-        owned_head_shape_decl_error(name, tparams, declaring_module_path(), declaring_module_ships_owned_heads(), errors)
+        validate_derives(derives = derives, errors = errors)
+        builtin_spelling_decl_error(kind = "struct", name = name, arity = Array::length(tparams), errors = errors)
+        owned_head_shape_decl_error(name = name, formals = tparams, module_path = declaring_module_path(), ships_owned_heads = declaring_module_ships_owned_heads(), errors = errors)
         let resolved_fields = array_empty()
         let field_tes = array_empty()
         // #2125: this struct's slot is already claimed before its own field
         // types are resolved, so a recursive occurrence resolves to
         // `CtStruct(name)`.
-        let self_struct_index = own_typedef_slot(defs, type_def_binders, taken_type_def_slots, name, preclaim_from, TDStruct(name, array_empty(), mut_fields, tparams))
+        let self_struct_index = own_typedef_slot(defs = defs, type_def_binders = type_def_binders, taken = taken_type_def_slots, name = name, preclaim_from = preclaim_from, placeholder = TDStruct(name, array_empty(), mut_fields, tparams))
         // #3033: the field rows' exception kinds resolve before the fields are.
-        record_decl_exception_kinds([stmt], defs, env, errors, false)
+        record_decl_exception_kinds(stmts = [stmt], defs = defs, env = env, errors = errors, complete = false)
         let mut fi = 0
         while fi < Array::length(field_defs) {
-          let (fname, ftype_expr) = Array::get(field_defs, fi)
+          let (fname, ftype_expr) = Array::get(field_defs, at = fi)
           // #2125: an unknown name in a field type otherwise becomes a
           // wildcard `CtNamed` -- same hole as the annotation sites. A
           // synthesized `<Trait>Dict` witness struct spells `Self` and the
           // trait's erased params verbatim (whole-program lanes re-check the
           // desugar's output); those are shadowed under the provenance
           // `collect_trait_dict_erasures` establishes.
-          let dict_erased = trait_dict_erasure_for(trait_dict_erasures, name, fname)
-          let report_shadow = decl_report_shadow(tparams, dict_erased, deferred_names_for_decl(deferred_type_names, name))
-          report_unknown_type_names_deferred_validation(ftype_expr, defs, report_shadow, env, array_empty(), struct_field_decl_label(name, fname), errors)
-          Array::push(field_tes, ftype_expr)
+          let dict_erased = trait_dict_erasure_for(erasures = trait_dict_erasures, struct_name = name, field_name = fname)
+          let report_shadow = decl_report_shadow(tparams = tparams, dict_erased = dict_erased, deferred = deferred_names_for_decl(rows = deferred_type_names, decl_name = name))
+          report_unknown_type_names_deferred_validation(te = ftype_expr, defs = defs, shadow = report_shadow, env = env, row_binders = array_empty(), where_label = struct_field_decl_label(struct_name = name, field_name = fname), errors = errors)
+          Array::push(field_tes, value = ftype_expr)
           // #1512: `tparams` shadow `defs` -- the #829 comment below assumes a
           // param name resolves to a rigid `CtNamed(param, [])` because no
           // typedef/builtin claims it, which an import alias otherwise breaks.
           // #3033: a function row in a field is published with its exception
           // kinds resolved, as a binding's is.
-          let ftype = type_exception_rows_resolved(resolve_type_expr_shadowed(ftype_expr, defs, tparams))
-          Array::push(resolved_fields, (fname, ftype))
+          let ftype = type_exception_rows_resolved(resolve_type_expr_shadowed(te = ftype_expr, defs = defs, shadow = tparams))
+          Array::push(resolved_fields, value = (fname, ftype))
           fi = fi + 1
         }
         // Mixed-kind is a property of the whole struct (`raw: F` next to
         // `inner: F[Int]`), not of one field TypeExpr.
-        report_formal_applications_across(field_tes, tparams, String::concat(String::concat("struct `", name), "`"), errors)
+        report_formal_applications_across(tes = field_tes, formals = tparams, where_label = String::concat(String::concat("struct `", name), "`"), errors = errors)
         // #829: record the declared type params — a param name resolves above
         // to a rigid `CtNamed(param, [])` (no such typedef/builtin), which is
         // exactly what the checker's literal instantiation substitutes.
-        Array::set(defs, self_struct_index, TDStruct(name, resolved_fields, mut_fields, tparams))
+        Array::set(defs, at = self_struct_index, value = TDStruct(name, resolved_fields, mut_fields, tparams))
         let field_types = array_empty()
         let mut fj = 0
         while fj < Array::length(resolved_fields) {
-          let (_, fty) = Array::get(resolved_fields, fj)
-          Array::push(field_types, fty)
+          let (_, fty) = Array::get(resolved_fields, at = fj)
+          Array::push(field_types, value = fty)
           fj = fj + 1
         }
-        let env1 = env_bind(env, name, CtFn(field_types, CtStruct(name), None))
+        let env1 = env_bind(env = env, name = name, ty = CtFn(field_types, CtStruct(name), None))
         // #638: pre-bind the signatures of the structural functions that the
         // derive desugar will generate, so `Type::compare` / `Type::to_string`
         // resolve at check time (the FS-compile path checks before the
         // codegen-time desugar runs).
-        let env2 = if struct_derives_has(derives, "Ord") {
-          env_bind(env1, String::concat(name, "::compare"), CtFn([
+        let env2 = if struct_derives_has(derives = derives, name = "Ord") {
+          env_bind(env = env1, name = String::concat(name, "::compare"), ty = CtFn([
             CtStruct(name),
             CtStruct(name)
           ], CtEnum("Ordering"), None))
@@ -2250,13 +2250,13 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           env1
         }
         // #3567: not for a `derive (Hash)` struct whose renderer is withheld.
-        let env3 = if struct_derives_has(derives, "Show") || (struct_derives_has(derives, "Hash") && !derived_hash_renderer_withheld(name)) {
-          let env_show_base = if struct_derives_has(derives, "Show") {
+        let env3 = if struct_derives_has(derives = derives, name = "Show") || (struct_derives_has(derives = derives, name = "Hash") && !derived_hash_renderer_withheld(name)) {
+          let env_show_base = if struct_derives_has(derives = derives, name = "Show") {
             EnvTraitImpl("Show", CtStruct(name), env2)
           } else {
             env2
           }
-          env_bind(env_show_base, String::concat(name, "::to_string"), CtFn([
+          env_bind(env = env_show_base, name = String::concat(name, "::to_string"), ty = CtFn([
             CtStruct(name)
           ], CtString, None))
         } else {
@@ -2264,7 +2264,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         }
         // #672: every struct gets a generated structural `T::equals` (the `==`
         // dispatch relies on it), so pre-bind its signature unconditionally.
-        let env4_base = env_bind(env3, String::concat(name, "::equals"), CtFn([
+        let env4_base = env_bind(env = env3, name = String::concat(name, "::equals"), ty = CtFn([
           CtStruct(name),
           CtStruct(name)
         ], CtBool, None))
@@ -2278,7 +2278,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // Only with the derive, not for every struct: `T::equals` exists
         // unconditionally (#672), so registering it unconditionally would
         // make EVERY struct satisfy `[T: Eq]` without anyone asking.
-        let env4 = if struct_derives_has(derives, "Eq") {
+        let env4 = if struct_derives_has(derives = derives, name = "Eq") {
           EnvTraitImpl("Eq", CtStruct(name), env4_base)
         } else {
           env4_base
@@ -2287,9 +2287,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // structural Map key), so pre-bind its signature at check time too, AND
         // register `impl Hash for T` so a `[K: Hash]` bound (e.g. `get_by`) is
         // satisfied by the derived type.
-        let env_hash = if struct_derives_has(derives, "Hash") {
+        let env_hash = if struct_derives_has(derives = derives, name = "Hash") {
           let env_h = EnvTraitImpl("Hash", CtStruct(name), env4)
-          env_bind(env_h, String::concat(name, "::hash_key"), CtFn([
+          env_bind(env = env_h, name = String::concat(name, "::hash_key"), ty = CtFn([
             CtStruct(name)
           ], CtString, None))
         } else {
@@ -2299,9 +2299,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // so the CtFn parameter list is empty). #1847: like Hash above, ALSO
         // register `impl Default for T` so a `[T: Default]` bound is satisfied
         // by the derived type.
-        let env5 = if struct_derives_has(derives, "Default") {
+        let env5 = if struct_derives_has(derives = derives, name = "Default") {
           let env_d = EnvTraitImpl("Default", CtStruct(name), env_hash)
-          env_bind(env_d, String::concat(name, "::default"), CtFn(array_empty(), CtStruct(name), None))
+          env_bind(env = env_d, name = String::concat(name, "::default"), ty = CtFn(array_empty(), CtStruct(name), None))
         } else {
           env_hash
         }
@@ -2309,15 +2309,15 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           [name]
         } else {
           array_empty()
-        }, bind_fn_return(env5, name, CtStruct(name))), s, c)
+        }, bind_fn_return(env = env5, name = name, ret_ty = CtStruct(name))), s, c)
       },
       STypeAlias(exported, name, params, te) => {
-        builtin_spelling_decl_error("type alias", name, Array::length(params), errors)
+        builtin_spelling_decl_error(kind = "type alias", name = name, arity = Array::length(params), errors = errors)
         // #3536: an alias is expanded in place, so one that reaches itself
         // (`type A = B` / `type B = A`) names no type at all. It resolved to
         // a wildcard and accepted every value.
-        if alias_decl_is_recursive(stmts, name, params, te) {
-          Array::push(errors, "type alias `\{name}` refers to itself, and an alias is expanded in place, so it names no type -- declare a `struct` or `enum` to hold the recursive part, or point the alias at an existing type")
+        if alias_decl_is_recursive(stmts = stmts, name = name, params = params, body = te) {
+          Array::push(errors, value = "type alias `\{name}` refers to itself, and an alias is expanded in place, so it names no type -- declare a `struct` or `enum` to hold the recursive part, or point the alias at an existing type")
         } else {
           ()
         }
@@ -2327,46 +2327,46 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // declaration order. Preflight before resolving too: dependency-first
         // alias declarations can already carry a completed exponential DAG at
         // this initial registration point, before the completion refresh runs.
-        let t = if type_expr_expansion_node_count(te, defs, params, array_empty(), alias_expansion_node_limit()) > alias_expansion_node_limit() {
-          report_alias_expansion_limit(name, errors)
+        let t = if type_expr_expansion_node_count(te = te, defs = defs, shadow = params, capped_aliases = array_empty(), limit = alias_expansion_node_limit()) > alias_expansion_node_limit() {
+          report_alias_expansion_limit(name = name, errors = errors)
           CtNamed(name, array_empty())
         } else {
           // #3028: the body's function rows are published with their
           // exception kinds resolved, as a binding's are. The kinds are
           // checked and recorded once the declarations are complete
           // (`record_decl_exception_kinds`), and the body is re-resolved then.
-          record_decl_exception_kinds([stmt], defs, env, errors, false)
-          type_exception_rows_resolved(resolve_type_expr_shadowed(te, defs, params))
+          record_decl_exception_kinds(stmts = [stmt], defs = defs, env = env, errors = errors, complete = false)
+          type_exception_rows_resolved(resolve_type_expr_shadowed(te = te, defs = defs, shadow = params))
         }
         // Record the alias (with its formal params) so an applied use
         // `Name[Arg]` expands via subst in resolve_type_expr's TyApp case.
-        Array::push(defs, TDAlias(name, params, t))
-        Array::push(type_def_binders, array_empty())
+        Array::push(defs, value = TDAlias(name, params, t))
+        Array::push(type_def_binders, value = array_empty())
         (EnvTypeDefs([TDAlias(name, params, t)], if exported {
           [name]
         } else {
           array_empty()
-        }, env_bind(env, name, t)), s, c)
+        }, env_bind(env = env, name = name, ty = t)), s, c)
       },
       SExternLet(name, te) => {
         let where_label = String::concat(String::concat("extern declaration `", name), "`")
-        report_map_key_types(te, defs, array_empty(), where_label, errors)
-        report_decl_bare_generic_heads(te, defs, array_empty(), where_label, errors)
-        let t = resolve_type_expr(te, defs)
-        let env1 = env_bind(env, name, t)
-        (bind_annotation_return(env1, name, Some(te), defs), s, c)
+        report_map_key_types(te = te, defs = defs, shadow = array_empty(), where_label = where_label, errors = errors)
+        report_decl_bare_generic_heads(te = te, defs = defs, shadow = array_empty(), where_label = where_label, errors = errors)
+        let t = resolve_type_expr(te = te, defs = defs)
+        let env1 = env_bind(env = env, name = name, ty = t)
+        (bind_annotation_return(env = env1, name = name, ann = Some(te), defs = defs), s, c)
       },
       // #3343: `#interp.top.fn` marks the body's own bindings as local, as
       // it does for a declaration's value (`val_env` above); it reads as
       // "not a top-level function", which a test body is not.
       STest(_, body) => {
-        let (vt, ns, nc) = check_expr_capture(body, env_bind(env, "#interp.top.fn", CtUnit), defs, s, c, errors, tytab, role_lane_capture, "Primary")
-        capture_statement_root_type(capture, statement_path, "STest", vt)
+        let (vt, ns, nc) = check_expr_capture(expr = body, env = env_bind(env = env, name = "#interp.top.fn", ty = CtUnit), defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = role_lane_capture, lane = "Primary")
+        capture_statement_root_type(capture = capture, statement_path = statement_path, kind = "STest", ty = vt)
         (env, ns, nc)
       },
       SBench(_, body) => {
-        let (vt, ns, nc) = check_expr_capture(body, env_bind(env, "#interp.top.fn", CtUnit), defs, s, c, errors, tytab, role_lane_capture, "Primary")
-        capture_statement_root_type(capture, statement_path, "SBench", vt)
+        let (vt, ns, nc) = check_expr_capture(expr = body, env = env_bind(env = env, name = "#interp.top.fn", ty = CtUnit), defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = role_lane_capture, lane = "Primary")
+        capture_statement_root_type(capture = capture, statement_path = statement_path, kind = "SBench", ty = vt)
         (env, ns, nc)
       },
       SExpr(expr) => {
@@ -2377,7 +2377,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // zero_alloc_check) -- skip both the ADR-0069 reject below and name
         // resolution (the `@`-spelled ident resolves nowhere).
         let is_zero_alloc_marker = match expr {
-          EIdent(id_name, _) => String::starts_with(id_name, "@zero_alloc"),
+          EIdent(id_name, _) => String::starts_with(id_name, prefix = "@zero_alloc"),
           _ => false
         }
         if is_zero_alloc_marker {
@@ -2386,16 +2386,16 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           // ADR-0069 Phase 1: top level is declarations only. A top-level
           // expression statement was silently DROPPED by the linear backend;
           // reject it (still type-check the expression for error recovery).
-          Array::push(errors, top_level_reject_msg("top-level expressions are not allowed; move it into fn main", expr))
-          let (vt, ns, nc) = check_expr_capture(expr, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
-          capture_statement_root_type(capture, statement_path, "SExpr", vt)
+          Array::push(errors, value = top_level_reject_msg(what = "top-level expressions are not allowed; move it into fn main", e = expr))
+          let (vt, ns, nc) = check_expr_capture(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = role_lane_capture, lane = "Primary")
+          capture_statement_root_type(capture = capture, statement_path = statement_path, kind = "SExpr", ty = vt)
           (env, ns, nc)
         }
       },
       SModule(_, _, body) => {
         // `statement_path` is None in ordinary checking, so nested modules
         // recurse without allocating retained path state.
-        let (_, nested_s, nested_c) = check_stmts_with_binders(body, 0, env, defs, type_def_binders, local_defs_start, s, c, errors, tytab, statement_path, capture, role_lane_capture, false, false)
+        let (_, nested_s, nested_c) = check_stmts_with_binders(raw_stmts = body, i = 0, env = env, defs = defs, type_def_binders = type_def_binders, local_defs_start = local_defs_start, s = s, c = c, errors = errors, tytab = tytab, statement_parent_path = statement_path, capture = capture, role_lane_capture = role_lane_capture, imports_already_projected = false, validate_completed_decls = false)
         // Preserve the historical checker flow when this opt-in observation is
         // absent. The root observation alone needs nested substitutions to
         // canonicalize its nested raw types; module bindings remain lexical.
@@ -2408,16 +2408,16 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       SImport(_, names) => if imports_already_projected {
         (env, s, c)
       } else {
-        (bind_stmt_imports(env, names), s, c)
+        (bind_stmt_imports(env = env, names = names), s, c)
       },
       SReExport(_, names) => if imports_already_projected {
         (env, s, c)
       } else {
-        (bind_stmt_imports(env, names), s, c)
+        (bind_stmt_imports(env = env, names = names), s, c)
       },
       SReExportSourceBoundary(_, surface_only_names) => {
-        let blocked = env_with_reexport_surface_blockers(env, surface_only_names)
-        match hoist_merged_source_values(stmts, idx + 1, blocked, defs, c) {
+        let blocked = env_with_reexport_surface_blockers(env = env, names = surface_only_names)
+        match hoist_merged_source_values(stmts = stmts, start = idx + 1, env = blocked, defs = defs, c = c) {
           (hoisted_env, hoisted_c) => (hoisted_env, s, hoisted_c)
         }
       },
@@ -2426,20 +2426,20 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       STrait(_, name, supers, methods, method_gens, tparams) => {
         let mut mi = 0
         while mi < Array::length(methods) {
-          let (mname, mparams, mret) = Array::get(methods, mi)
-          let shadow = Array::slice(["Self"], 0, 1)
+          let (mname, mparams, mret) = Array::get(methods, at = mi)
+          let shadow = Array::slice(["Self"], start = 0, end = 1)
           let mut ti = 0
           while ti < Array::length(tparams) {
-            Array::push(shadow, Array::get(tparams, ti))
+            Array::push(shadow, value = Array::get(tparams, at = ti))
             ti = ti + 1
           }
           let mut gi = 0
           while gi < Array::length(method_gens) {
-            let (gname, gtparams, _) = Array::get(method_gens, gi)
+            let (gname, gtparams, _) = Array::get(method_gens, at = gi)
             if gname == mname {
               let mut gj = 0
               while gj < Array::length(gtparams) {
-                Array::push(shadow, Array::get(gtparams, gj))
+                Array::push(shadow, value = Array::get(gtparams, at = gj))
                 gj = gj + 1
               }
             } else {
@@ -2447,20 +2447,20 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
             }
             gi = gi + 1
           }
-          let where_label = fapp_decl_label(name, mname)
+          let where_label = fapp_decl_label(owner = name, member = mname)
           let mut pi = 0
           while pi < Array::length(mparams) {
-            report_map_key_types(Array::get(mparams, pi), defs, shadow, where_label, errors)
+            report_map_key_types(te = Array::get(mparams, at = pi), defs = defs, shadow = shadow, where_label = where_label, errors = errors)
             pi = pi + 1
           }
-          report_map_key_types(mret, defs, shadow, where_label, errors)
+          report_map_key_types(te = mret, defs = defs, shadow = shadow, where_label = where_label, errors = errors)
           mi = mi + 1
         }
         let is_open = false
         (EnvTraitDef(name, supers, is_open, methods, env, tparams, method_gens), s, c)
       },
       SImpl(tparams, tbounds, trait_name, target_expr) => {
-        validate_trait_reference(env, trait_name, "impl head", errors)
+        validate_trait_reference(env = env, key = trait_name, context = "impl head", errors = errors)
         let type_name = match target_expr {
           TyName(name) => name,
           TyApp(name, _) => name,
@@ -2469,12 +2469,12 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // ADR-0068: `Send` is compiler-judged (structural); user impls
         // would let a non-sendable type cross task/channel boundaries.
         if trait_ref_name(trait_name) == "Send" {
-          Array::push(errors, "`Send` is a compiler-judged structural marker and cannot be implemented; remove `impl Send`")
+          Array::push(errors, value = "`Send` is a compiler-judged structural marker and cannot be implemented; remove `impl Send`")
         } else {
           ()
         }
         let implicit_target_params = match target_expr {
-          TyName(name) => match impl_target_declared_arity(defs, name) {
+          TyName(name) => match impl_target_declared_arity(defs = defs, name = name) {
             Some(arity) => arity > 0 && arity == Array::length(tparams),
             None => false
           },
@@ -2482,9 +2482,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         }
         let mut tpi = 0
         while tpi < Array::length(tparams) {
-          let tparam = Array::get(tparams, tpi)
-          if !implicit_target_params && !impl_target_mentions(target_expr, tparam) {
-            Array::push(errors, String::concat("impl type parameter `", String::concat(tparam, "` is not used in its target; remove it, or use it in the target type")))
+          let tparam = Array::get(tparams, at = tpi)
+          if !implicit_target_params && !impl_target_mentions(target = target_expr, wanted = tparam) {
+            Array::push(errors, value = String::concat("impl type parameter `", String::concat(tparam, "` is not used in its target; remove it, or use it in the target type")))
           } else {
             ()
           }
@@ -2495,9 +2495,9 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           _ => Array::length(tparams)
         }
         if target_arity > 0 {
-          match impl_target_declared_arity(defs, type_name) {
+          match impl_target_declared_arity(defs = defs, name = type_name) {
             Some(want) => if want != target_arity {
-              Array::push(errors, String::concat("type `", String::concat(type_name, String::concat("` expects ", String::concat(__to_string(want), String::concat(" type argument(s), got ", String::concat(__to_string(target_arity), " in impl target")))))))
+              Array::push(errors, value = String::concat("type `", String::concat(type_name, String::concat("` expects ", String::concat(__to_string(want), String::concat(" type argument(s), got ", String::concat(__to_string(target_arity), " in impl target")))))))
             } else {
               ()
             },
@@ -2506,16 +2506,16 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         } else {
           ()
         }
-        let target = resolve_type_expr_shadowed(target_expr, defs, tparams)
+        let target = resolve_type_expr_shadowed(te = target_expr, defs = defs, shadow = tparams)
         // #3548: which `impl` this is, so an overlap names its line.
-        let head_marker = note_impl_head(trait_ref_name(trait_name), type_name)
-        match overlapping_impl_target_for(env, trait_name, tparams, target) {
-          Some(existing_target) => Array::push(errors, String::concat("remove this impl, or give it a target the other does not cover: overlapping impls for `", String::concat(trait_reference_display(trait_name), String::concat("`: existing target `", String::concat(type_to_string(existing_target), String::concat("` overlaps new target `", String::concat(type_to_string(target), String::concat("`", head_marker)))))))),
+        let head_marker = note_impl_head(trait_head = trait_ref_name(trait_name), owner = type_name)
+        match overlapping_impl_target_for(env = env, trait_name = trait_name, new_params = tparams, new_target = target) {
+          Some(existing_target) => Array::push(errors, value = String::concat("remove this impl, or give it a target the other does not cover: overlapping impls for `", String::concat(trait_reference_display(trait_name), String::concat("`: existing target `", String::concat(type_to_string(existing_target), String::concat("` overlaps new target `", String::concat(type_to_string(target), String::concat("`", head_marker)))))))),
           None => ()
         }
         // #3562: the same overlap, for a supertrait's method written in a
         // subtrait impl.
-        check_impl_supertrait_method_overlap(impl_origins, tparams, trait_name, target_expr, target, env, defs, errors)
+        check_impl_supertrait_method_overlap(origins = impl_origins, tparams = tparams, trait_key = trait_name, target_expr = target_expr, target = target, env = env, defs = defs, errors = errors)
         // A generic impl `impl [T] Trait for C[T]` (type parameters present) is
         // registered as `EnvTraitImplGen` so trait resolution can match the
         // family `C[..]` against a concrete `C[K]`. A plain impl stays a
@@ -2540,22 +2540,22 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         let resolved_ops = array_empty()
         let mut oi = 0
         while oi < Array::length(ops) {
-          let (opname, opparams, opret) = Array::get(ops, oi)
+          let (opname, opparams, opret) = Array::get(ops, at = oi)
           let rp = array_empty()
           let mut pi = 0
           while pi < Array::length(opparams) {
             // #1512: `eparams` shadow `defs` -- the rigid-`CtNamed` convention
             // the comment above relies on is only true while no import alias
             // has claimed the formal's name.
-            let op_param = Array::get(opparams, pi)
-            Array::push(rp, resolve_type_expr_shadowed(op_param, defs, eparams))
+            let op_param = Array::get(opparams, at = pi)
+            Array::push(rp, value = resolve_type_expr_shadowed(te = op_param, defs = defs, shadow = eparams))
             pi = pi + 1
           }
-          Array::push(resolved_ops, (opname, rp, resolve_type_expr_shadowed(opret, defs, eparams)))
+          Array::push(resolved_ops, value = (opname, rp, resolve_type_expr_shadowed(te = opret, defs = defs, shadow = eparams)))
           oi = oi + 1
         }
-        Array::push(defs, TDEffect(ename, resolved_ops, eparams))
-        Array::push(type_def_binders, array_empty())
+        Array::push(defs, value = TDEffect(ename, resolved_ops, eparams))
+        Array::push(type_def_binders, value = array_empty())
         (EnvTypeDefs([TDEffect(ename, resolved_ops, eparams)], if exported {
           [ename]
         } else {
@@ -2581,11 +2581,11 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // PARAMETER's own type (the #885 callback-overlay case) -- those
         // remain unimplemented, not silently wrong, since nothing consumes
         // an effectset there yet.
-        if es_qualified_collision(ed_names, ed_ops_list, esname) {
-          Array::push(errors, String::concat("effectset '", String::concat(esname, "' collides with an operation of the same name declared on its effect (operations and effectsets share the effect-row member namespace) -- rename the effectset or the operation")))
+        if es_qualified_collision(ed_names = ed_names, ed_ops_list = ed_ops_list, qualified_name = esname) {
+          Array::push(errors, value = String::concat("effectset '", String::concat(esname, "' collides with an operation of the same name declared on its effect (operations and effectsets share the effect-row member namespace) -- rename the effectset or the operation")))
         } else {
-          match es_detect_cycle(es_names, es_members_list, esname, array_empty()) {
-            Some(msg) => Array::push(errors, msg),
+          match es_detect_cycle(es_names = es_names, es_members_list = es_members_list, name = esname, path = array_empty()) {
+            Some(msg) => Array::push(errors, value = msg),
             None => ()
           }
         }
@@ -2601,14 +2601,14 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     // through the scheme a top-level declaration bound (see
     // note_toplevel_generic_binding).
     match stmt {
-      SLet(_, _, noted_name, _, noted_val) => note_toplevel_generic_binding(noted_name, noted_val, env_lookup(new_env, noted_name), env),
+      SLet(_, _, noted_name, _, noted_val) => note_toplevel_generic_binding(name = noted_name, val = noted_val, bound = env_lookup(env = new_env, name = noted_name), env = env),
       _ => ()
     }
     match capture {
       Some(StatementTypedOccurrences(entries)) => match stmt {
         SModule(_, _, _) => (),
         _ => match (capture_start, statement_path) {
-          (Some(start), Some(path)) => capture_statement_rows(entries, tytab, start, path),
+          (Some(start), Some(path)) => capture_statement_rows(entries = entries, tytab = tytab, start = start, path = path),
           _ => ()
         }
       },
@@ -2621,7 +2621,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     if recursive_end == idx + 1 {
       // Every member has constrained the shared slots. Only now may callers
       // instantiate independent schemes for the completed recursive group.
-      cur_s = resolve_deferred_field_reads(cur_s, defs, errors, true)
+      cur_s = resolve_deferred_field_reads(s = cur_s, defs = defs, errors = errors, open_only = true)
       match recursive_env {
         Some(outer_env) => {
           // A shared array/cell keeps its variables monomorphic throughout the
@@ -2630,17 +2630,17 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           let weak_vars = array_empty()
           let mut weak_at = recursive_start
           while weak_at < recursive_end {
-            match Array::get(stmts, weak_at) {
-              SLet(_, _, name, ann, value) => match env_lookup(cur_env, name) {
+            match Array::get(stmts, at = weak_at) {
+              SLet(_, _, name, ann, value) => match env_lookup(env = cur_env, name = name) {
                 Some(ty) => {
                   let provisional = match ann {
-                    None => let_generalize(value, ty, outer_env, defs, cur_s, None),
+                    None => let_generalize(val = value, vt = ty, env = outer_env, defs = defs, s = cur_s, self_name = None),
                     Some(_) => ty
                   }
                   let free = array_empty()
-                  escape_tvars_into(provisional, free)
+                  escape_tvars_into(ty = provisional, out = free)
                   for id in free {
-                    escape_tvars_into(subst_apply(cur_s, CtVar(id)), weak_vars)
+                    escape_tvars_into(ty = subst_apply(s = cur_s, ty = CtVar(id)), out = weak_vars)
                   }
                 },
                 None => ()
@@ -2651,35 +2651,35 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           }
           let mut member = recursive_start
           while member < recursive_end {
-            match Array::get(stmts, member) {
-              SLet(exported, _, name, None, value) => match env_lookup(cur_env, name) {
+            match Array::get(stmts, at = member) {
+              SLet(exported, _, name, None, value) => match env_lookup(env = cur_env, name = name) {
                 Some(ty) => {
-                  let gen = generalize_except(cur_s, ty, weak_vars)
-                  refuse_generalized_field_reads(gen, cur_s, errors)
-                  refuse_generalized_eq_sites(value, ty, gen, cur_s, defs, errors)
-                  let clean = strip_effect_inst_labels(gen, cur_s, defs)
+                  let gen = generalize_except(s = cur_s, ty = ty, exclude = weak_vars)
+                  refuse_generalized_field_reads(gen = gen, s = cur_s, errors = errors)
+                  refuse_generalized_eq_sites(val = value, vt = ty, gen = gen, s = cur_s, defs = defs, errors = errors)
+                  let clean = strip_effect_inst_labels(t = gen, s = cur_s, defs = defs)
                   let alias = match value {
                     EIdent(_, _) => true,
                     _ => false
                   }
                   let published = if exported || alias {
-                    publish_row_nominals(publish_row_formals(type_exception_rows_resolved(clean), value, outer_env, defs, cur_s), defs)
+                    publish_row_nominals(t = publish_row_formals(t = type_exception_rows_resolved(clean), val = value, env = outer_env, defs = defs, s = cur_s), defs = defs)
                   } else {
                     type_exception_rows_resolved(clean)
                   }
                   if exported {
-                    refuse_unpublishable_exception_row(gen, name, name, defs, errors)
+                    refuse_unpublishable_exception_row(t = gen, owner = name, anchor = name, defs = defs, errors = errors)
                   } else {
                     ()
                   }
                   // #3557: see the non-recursive arm.
                   let bound = match value {
-                    EFn(_, _, _, _, _, _) => quantify_own_rows_of(published, value, cur_env, cur_s, name),
+                    EFn(_, _, _, _, _, _) => quantify_own_rows_of(t = published, val = value, env = cur_env, s = cur_s, self_name = name),
                     _ => published
                   }
-                  cur_env = bind_function_dependency_contracts(checker_bind_declaration_call_header(cur_env, name, bound, value), name, value)
-                  cur_env = bind_value_or_annotation_return(cur_env, name, value, None, defs)
-                  note_toplevel_generic_binding(name, value, Some(bound), outer_env)
+                  cur_env = bind_function_dependency_contracts(env = checker_bind_declaration_call_header(env = cur_env, name = name, ty = bound, value = value), name = name, value = value)
+                  cur_env = bind_value_or_annotation_return(env = cur_env, name = name, val = value, ann = None, defs = defs)
+                  note_toplevel_generic_binding(name = name, val = value, bound = Some(bound), env = outer_env)
                 },
                 None => ()
               },
@@ -2698,15 +2698,15 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     // alias bodies at that phase boundary: `defs` is now complete for this
     // statement list, while no value/signature use-site diagnostic has run
     // yet. A type-only list validates after its final declaration.
-    if stmt_is_type_decl(stmt) && (idx + 1 >= Array::length(stmts) || !stmt_is_type_decl(Array::get(stmts, idx + 1))) {
+    if stmt_is_type_decl(stmt) && (idx + 1 >= Array::length(stmts) || !stmt_is_type_decl(Array::get(stmts, at = idx + 1))) {
       local_defs_end = Array::length(defs)
       // #3028 / #3033: the exception kinds in declaration rows resolve now,
       // so the refreshes below publish them resolved.
-      record_decl_exception_kinds(stmts, defs, cur_env, errors, true)
-      refresh_completed_alias_defs(stmts, defs, preclaim_from, local_defs_end, errors)
-      refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
-      cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
-      cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
+      record_decl_exception_kinds(stmts = stmts, defs = defs, env = cur_env, errors = errors, complete = true)
+      refresh_completed_alias_defs(stmts = stmts, defs = defs, from = preclaim_from, to = local_defs_end, errors = errors)
+      refresh_completed_payload_defs(stmts = stmts, defs = defs, type_def_binders = type_def_binders, from = preclaim_from, to = local_defs_end)
+      cur_env = refresh_completed_suberror_env(stmts = stmts, env = cur_env, defs = defs, from = preclaim_from, to = local_defs_end)
+      cur_env = refresh_completed_type_env(env = cur_env, defs = defs, from = preclaim_from, to = local_defs_end, taken = array_empty(), local_count = local_defs_end - preclaim_from)
     } else {
       match stmt {
         // A nested module shares `defs` with this statement list. Its type
@@ -2714,15 +2714,15 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // sibling scope, so refresh and validate the combined visible range.
         SModule(_, _, _) => {
           let visible_types = array_empty()
-          collect_visible_type_stmts(stmts, idx + 1, visible_types)
+          collect_visible_type_stmts(stmts = stmts, to = idx + 1, out = visible_types)
           let visible_defs_end = Array::length(defs)
           if visible_defs_end > defs_before_stmt {
             nested_defs_extended = true
-            record_decl_exception_kinds(visible_types, defs, cur_env, array_empty(), false)
-            refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end, errors)
-            refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
-            cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
-            cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
+            record_decl_exception_kinds(stmts = visible_types, defs = defs, env = cur_env, errors = array_empty(), complete = false)
+            refresh_completed_alias_defs(stmts = visible_types, defs = defs, from = preclaim_from, to = visible_defs_end, errors = errors)
+            refresh_completed_payload_defs(stmts = visible_types, defs = defs, type_def_binders = type_def_binders, from = preclaim_from, to = visible_defs_end)
+            cur_env = refresh_completed_suberror_env(stmts = stmts, env = cur_env, defs = defs, from = preclaim_from, to = local_defs_end)
+            cur_env = refresh_completed_type_env(env = cur_env, defs = defs, from = preclaim_from, to = local_defs_end, taken = array_empty(), local_count = local_defs_end - preclaim_from)
           } else {
             ()
           }
@@ -2734,13 +2734,13 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   }
   if validate_completed_decls {
     let visible_types = array_empty()
-    collect_visible_type_stmts(stmts, Array::length(stmts), visible_types)
+    collect_visible_type_stmts(stmts = stmts, to = Array::length(stmts), out = visible_types)
     let visible_defs_end = Array::length(defs)
     let completed_decl_errors = array_empty()
-    refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end, completed_decl_errors)
-    refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
-    cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
-    cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
+    refresh_completed_alias_defs(stmts = visible_types, defs = defs, from = preclaim_from, to = visible_defs_end, errors = completed_decl_errors)
+    refresh_completed_payload_defs(stmts = visible_types, defs = defs, type_def_binders = type_def_binders, from = preclaim_from, to = visible_defs_end)
+    cur_env = refresh_completed_suberror_env(stmts = stmts, env = cur_env, defs = defs, from = preclaim_from, to = local_defs_end)
+    cur_env = refresh_completed_type_env(env = cur_env, defs = defs, from = preclaim_from, to = local_defs_end, taken = array_empty(), local_count = local_defs_end - preclaim_from)
     // Map-key validation eagerly resolves alias arguments. Once alias
     // expansion has already been rejected, replaying those same expressions
     // here can perform the forbidden allocation while only collecting a
@@ -2749,7 +2749,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     if errors_contain_alias_expansion_limit(completed_decl_errors) {
       ()
     } else {
-      check_completed_decl_map_keys(visible_types, defs, completed_decl_errors)
+      check_completed_decl_map_keys(stmts = visible_types, defs = defs, errors = completed_decl_errors)
     }
     if nested_defs_extended {
       // The first pass is required to discover the complete shared definition
@@ -2758,26 +2758,26 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
       // lookup, and so later bindings inherit rebuilt rather than wildcard
       // types. The copied tables keep this verification pass from appending
       // duplicate declarations to the authoritative result.
-      let recheck_defs = Array::slice(defs, 0, Array::length(defs))
-      let recheck_binders = Array::slice(type_def_binders, 0, Array::length(type_def_binders))
+      let recheck_defs = Array::slice(defs, start = 0, end = Array::length(defs))
+      let recheck_binders = Array::slice(type_def_binders, start = 0, end = Array::length(type_def_binders))
       let recheck_errors = array_empty()
-      let recheck_c = next_type_def_binder_id(recheck_binders, c)
-      restore_checker_observation(observation_checkpoint, capture, role_lane_capture, tytab)
+      let recheck_c = next_type_def_binder_id(type_def_binders = recheck_binders, floor = c)
+      restore_checker_observation(checkpoint = observation_checkpoint, capture = capture, role_capture = role_lane_capture, tytab = tytab)
       hce_drop_deferred(hce_mark)
-      let (rechecked_env, rechecked_s, rechecked_c) = check_stmts_with_binders(raw_stmts, i, env, recheck_defs, recheck_binders, local_defs_start, SubstEmpty, recheck_c, recheck_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected, false)
+      let (rechecked_env, rechecked_s, rechecked_c) = check_stmts_with_binders(raw_stmts = raw_stmts, i = i, env = env, defs = recheck_defs, type_def_binders = recheck_binders, local_defs_start = local_defs_start, s = SubstEmpty, c = recheck_c, errors = recheck_errors, tytab = tytab, statement_parent_path = statement_parent_path, capture = capture, role_lane_capture = role_lane_capture, imports_already_projected = imports_already_projected, validate_completed_decls = false)
       // First-pass statement diagnostics may have judged a compiler-owned
       // spelling before a nested declaration claimed it. Replace that whole
       // lane with the completed declaration diagnostics plus the completed
       // second-pass statement diagnostics; incoming caller diagnostics stay
       // ahead of this check's insertion boundary.
-      Array::truncate(errors, completed_decl_error_insert_at)
-      push_unique_error_strings(completed_decl_errors, errors)
-      push_unique_error_strings(recheck_errors, errors)
+      Array::truncate(errors, length = completed_decl_error_insert_at)
+      push_unique_error_strings(found = completed_decl_errors, errors = errors)
+      push_unique_error_strings(found = recheck_errors, errors = errors)
       cur_env = rechecked_env
       cur_s = rechecked_s
       cur_c = rechecked_c
     } else {
-      insert_unique_error_strings(completed_decl_errors, errors, completed_decl_error_insert_at)
+      insert_unique_error_strings(found = completed_decl_errors, errors = errors, at = completed_decl_error_insert_at)
     }
   } else {
     ()
@@ -2786,17 +2786,17 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
   // modules that import it, found while this module's tables are in place.
   let final_env = match retention_saved {
     Some(saved) => {
-      hce_run_deferred(hce_mark, cur_s, errors)
-      let retained = retention_bind_module_summaries(stmts, cur_env, defs, cur_s, cur_c, check_expr_capture)
+      hce_run_deferred(mark = hce_mark, final_s = cur_s, errors = errors)
+      let retained = retention_bind_module_summaries(stmts = stmts, env = cur_env, defs = defs, s = cur_s, c = cur_c, check_child = check_expr_capture)
       // #3593: and which of them return a throwing closure in a field.
-      let summarized = hce_bind_module_summaries(stmts, retained, defs, cur_s)
+      let summarized = hce_bind_module_summaries(stmts = stmts, env = retained, defs0 = defs, final_s = cur_s)
       hce_drop_deferred(hce_mark)
       retention_end_module(saved)
       summarized
     },
     None => cur_env
   }
-  forward_restore_root_order(capture, root_capture_start)
+  forward_restore_root_order(capture = capture, start = root_capture_start)
   match positional_saved {
     Some(rows) => {
       let _ = checker_swap_positional_rows(rows)

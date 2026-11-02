@@ -65,16 +65,16 @@ import ./utilities.vibe {
 /// refusal rather than a missed one.
 export fn dtd_interp_bind_lamret(var_types: Array[(String, String)], name: String, value: Expr) -> Array[(String, String)] {
   let key = dtd_interp_lamret_key(name)
-  let lr = dtd_interp_lamret_of_value(value, var_types)
+  let lr = dtd_interp_lamret_of_value(value = value, var_types = var_types)
   if String::length(lr) > 0 {
     let out = clone_var_types(var_types)
-    Array::push(out, (key, lr))
+    Array::push(out, value = (key, lr))
     out
   } else {
-    match lookup_var_type(var_types, key) {
+    match lookup_var_type(var_types = var_types, name = key) {
       Some(_) => {
         let out = clone_var_types(var_types)
-        Array::push(out, (key, ""))
+        Array::push(out, value = (key, ""))
         out
       },
       None => var_types
@@ -91,23 +91,23 @@ export fn dtd_interp_bind_lamret(var_types: Array[(String, String)], name: Strin
 /// and every place that needs it should read it rather than restate it.
 fn dtd_interp_lamret_of_value(value: Expr, var_types: Array[(String, String)]) -> String {
   match value {
-    EFn(tps, _, params, ret, _, fbody) => dtd_interp_lamret_of(tps, params, ret, fbody),
+    EFn(tps, _, params, ret, _, fbody) => dtd_interp_lamret_of(tps = tps, params = params, ret = ret, body = fbody),
     // #2745 (Codex, P1 round 18 on #2761): `let g = idf` fell to the mask, so
     // `g(a)` could not relate its result to `a`. I had claimed on the round-15
     // thread that an alias inherits this record "with no arm of its own" --
     // true only of an alias written INSIDE an interpolation, which the shape
     // recorder handles; a `let` at statement level comes through here, and
     // here there was no arm. The claim was wrong as stated and this is the arm.
-    EIdent(src, _) => match lookup_var_type(var_types, dtd_interp_lamret_key(src)) {
+    EIdent(src, _) => match lookup_var_type(var_types = var_types, name = dtd_interp_lamret_key(src)) {
       Some(t) => t,
       None => ""
     },
     EIf(_, conseq, alt) => {
-      let ft = dtd_interp_lamret_of_value(conseq, var_types)
+      let ft = dtd_interp_lamret_of_value(value = conseq, var_types = var_types)
       if String::length(ft) > 0 {
         ft
       } else {
-        dtd_interp_lamret_of_value(alt, var_types)
+        dtd_interp_lamret_of_value(value = alt, var_types = var_types)
       }
     },
     // Round 24 (Codex, P1 on #2761): `let g = match true { true => f, false => f }`
@@ -121,9 +121,9 @@ fn dtd_interp_lamret_of_value(value: Expr, var_types: Array[(String, String)]) -
       let mut ai = 0
       let mut found = ""
       while ai < Array::length(arms) {
-        let (_, abody) = Array::get(arms, ai)
+        let (_, abody) = Array::get(arms, at = ai)
         if String::length(found) == 0 {
-          found = dtd_interp_lamret_of_value(abody, var_types)
+          found = dtd_interp_lamret_of_value(value = abody, var_types = var_types)
         } else {
           ()
         }
@@ -131,7 +131,7 @@ fn dtd_interp_lamret_of_value(value: Expr, var_types: Array[(String, String)]) -
       }
       found
     },
-    ESeq(_, last) => dtd_interp_lamret_of_value(last, var_types),
+    ESeq(_, last) => dtd_interp_lamret_of_value(value = last, var_types = var_types),
     // Round 25 (Codex, P2 on #2761): a wrapper that SHADOWS a function whose
     // record lives outside it. With an outer `f: (T) -> T`,
     // `let g = { let f = (x: Int) -> Int { x }; f }` read the body in the outer
@@ -142,11 +142,11 @@ fn dtd_interp_lamret_of_value(value: Expr, var_types: Array[(String, String)]) -
     // known, must SHADOW rather than be inherited. The binder is bound to its
     // own value's record before the body is read, and "" when it has none,
     // because `lookup_var_type` scans backward and appending is what shadows.
-    ELet(n, v, b, _) => dtd_interp_lamret_of_value(b, dtd_interp_lamret_scope(var_types, n, v)),
-    ELetMut(n, v, b, _) => dtd_interp_lamret_of_value(b, dtd_interp_lamret_scope(var_types, n, v)),
+    ELet(n, v, b, _) => dtd_interp_lamret_of_value(value = b, var_types = dtd_interp_lamret_scope(var_types = var_types, n = n, v = v)),
+    ELetMut(n, v, b, _) => dtd_interp_lamret_of_value(value = b, var_types = dtd_interp_lamret_scope(var_types = var_types, n = n, v = v)),
     // A `let rec` binder is in scope for its own value, so the body reads the
     // same binding the value does.
-    ELetRec(n, v, b) => dtd_interp_lamret_of_value(b, dtd_interp_lamret_scope(var_types, n, v)),
+    ELetRec(n, v, b) => dtd_interp_lamret_of_value(value = b, var_types = dtd_interp_lamret_scope(var_types = var_types, n = n, v = v)),
     _ => ""
   }
 }
@@ -157,17 +157,17 @@ fn dtd_interp_lamret_scope(var_types: Array[(String, String)], n: String, v: Exp
   let out = array_empty()
   let mut i = 0
   while i < Array::length(var_types) {
-    Array::push(out, Array::get(var_types, i))
+    Array::push(out, value = Array::get(var_types, at = i))
     i = i + 1
   }
-  Array::push(out, (dtd_interp_lamret_key(n), dtd_interp_lamret_of_value(v, var_types)))
+  Array::push(out, value = (dtd_interp_lamret_key(n), dtd_interp_lamret_of_value(value = v, var_types = var_types)))
   out
 }
 
 export fn dtd_check_unthreaded_interp(resolved: Option[String], head: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_returns: Array[(String, String)]) -> Unit with Exception {
   match resolved {
     Some(_) => (),
-    None => if !in_show_shim_body() && formal_in_scope(head) && dtd_formal_innermost_is_nested(head) && !fn_exists(fn_returns, String::concat(head, "::to_string")) {
+    None => if !in_show_shim_body() && formal_in_scope(head) && dtd_formal_innermost_is_nested(head) && !fn_exists(fn_returns = fn_returns, fname = String::concat(head, "::to_string")) {
       throw(dtd_unthreaded_interp_msg(head))
     } else {
       ()
@@ -179,9 +179,9 @@ export fn dtd_check_unthreaded_interp(resolved: Option[String], head: String, tr
 // rendering shim can defer to its direct call sites; taking it as a value is
 // refused separately, since that would retain the erased implementation.
 export fn dtd_check_top_interp(arg: Expr, dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit with Exception {
-  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-    Some(head) => if formal_in_scope(head) && !dtd_formal_innermost_is_nested(head) && !str_array_contains(dtd_show_shims, Array::get(dtd_show_self_fn, 0)) {
-      match dtd_show_witness_dict(dict_binds, traits, head) {
+  match infer_arg_type_name(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+    Some(head) => if formal_in_scope(head) && !dtd_formal_innermost_is_nested(head) && !str_array_contains(arr = dtd_show_shims, val = Array::get(dtd_show_self_fn, at = 0)) {
+      match dtd_show_witness_dict(dict_binds = dict_binds, traits = traits, head = head) {
         Some(_) => (),
         None => throw(dtd_erased_interp_msg(head))
       }
@@ -215,8 +215,8 @@ export fn dtd_eq_witness_dict(dict_binds: Array[(String, String, String, Array[S
     let mut i = 0
     let mut result = None
     while i < Array::length(dict_binds) {
-      let (tp, trait_name, dict_pname, methods) = Array::get(dict_binds, i)
-      if tp == t && dtd_bound_entails_eq(trait_name) && str_array_contains(methods, dtd_eq_witness_method()) && dtd_trait_has_self_eq_method(traits, trait_name, dtd_eq_witness_method()) {
+      let (tp, trait_name, dict_pname, methods) = Array::get(dict_binds, at = i)
+      if tp == t && dtd_bound_entails_eq(trait_name) && str_array_contains(arr = methods, val = dtd_eq_witness_method()) && dtd_trait_has_self_eq_method(traits = traits, trait_name = trait_name, method = dtd_eq_witness_method()) {
         result = Some(dict_pname)
         i = Array::length(dict_binds)
       } else {

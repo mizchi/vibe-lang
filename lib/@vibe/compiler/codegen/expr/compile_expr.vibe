@@ -265,8 +265,8 @@ import ./compile_match.vibe {
 /// the same set (`fn_names_list` in linked_compile), because a disagreement
 /// between the two is a thrown `lambda plan over-count`, not a wrong answer.
 fn user_fn_owns_name(ctx: CompileCtx, name: String) -> Bool {
-  let i = func_table_index_of(ctx.func_table, name)
-  i >= 0 && Array::get(ctx.func_table.indices, i) - ctx.func_offset >= 0
+  let i = func_table_index_of(ft = ctx.func_table, name = name)
+  i >= 0 && Array::get(ctx.func_table.indices, at = i) - ctx.func_offset >= 0
 }
 
 fn builtin_value_closure(name: String, arity: Int) -> Expr {
@@ -275,8 +275,8 @@ fn builtin_value_closure(name: String, arity: Int) -> Expr {
   let mut i = 0
   while i < arity {
     let param = String::concat("__builtin_value_arg", Int::to_string(i))
-    Array::push(params, (param, None))
-    Array::push(args, EIdent(param, -1))
+    Array::push(params, value = (param, None))
+    Array::push(args, value = EIdent(param, -1))
     i = i + 1
   }
   EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), args, -1, builtin_callee_resolution(name)))
@@ -290,9 +290,9 @@ fn builtin_value_closure(name: String, arity: Int) -> Expr {
 /// the main expression compiler, threaded to avoid a forward reference.
 fn emit_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr_fn: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
-  Array::push(local_names, "__eqa")
+  Array::push(local_names, value = "__eqa")
   let bptr = next_local + 1
-  Array::push(local_names, "__eqb")
+  Array::push(local_names, value = "__eqb")
   let nl1 = compile_expr_fn(buf, lhs, local_names, next_local + 2, ctx, ld)
   // RC tuples are tagged (`value = (block_start+8)|1`) and carry an 8-byte
   // header (type_id/length) before the fields, unlike the bare `i*8`-packed
@@ -302,36 +302,36 @@ fn emit_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_names:
   // compare unequal; this is also why the RC path was disabled entirely
   // before this fix).
   if ctx.enable_rc {
-    emit_i64_const(buf, -2)
+    emit_i64_const(buf = buf, value = -2)
     emit_i64_and(buf)
   } else {
     ()
   }
-  emit_local_set(buf, aptr)
+  emit_local_set(buf = buf, idx = aptr)
   let nl2 = compile_expr_fn(buf, rhs, local_names, nl1, ctx, ld)
   if ctx.enable_rc {
-    emit_i64_const(buf, -2)
+    emit_i64_const(buf = buf, value = -2)
     emit_i64_and(buf)
   } else {
     ()
   }
-  emit_local_set(buf, bptr)
+  emit_local_set(buf = buf, idx = bptr)
   let field_off = if ctx.enable_rc {
     8
   } else {
     0
   }
-  let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-  emit_i64_const(buf, 1)
+  let (eq_fidx, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
+  emit_i64_const(buf = buf, value = 1)
   let mut i = 0
   while i < num {
-    emit_local_get(buf, aptr)
+    emit_local_get(buf = buf, idx = aptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, field_off + i * 8)
-    emit_local_get(buf, bptr)
+    emit_i64_load(buf = buf, align = 3, offset = field_off + i * 8)
+    emit_local_get(buf = buf, idx = bptr)
     emit_i32_wrap_i64(buf)
-    emit_i64_load(buf, 3, field_off + i * 8)
-    emit_call(buf, eq_fidx)
+    emit_i64_load(buf = buf, align = 3, offset = field_off + i * 8)
+    emit_call(buf = buf, func_idx = eq_fidx)
     emit_i64_and(buf)
     i = i + 1
   }
@@ -347,26 +347,26 @@ fn emit_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_names:
 /// to `eq` (so recursive types stay non-structural — tracked in #672).
 fn emit_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr_fn: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
-  Array::push(local_names, "__ceqa")
+  Array::push(local_names, value = "__ceqa")
   let bptr = next_local + 1
-  Array::push(local_names, "__ceqb")
+  Array::push(local_names, value = "__ceqb")
   let nl1 = compile_expr_fn(buf, lhs, local_names, next_local + 2, ctx, ld)
-  emit_i64_const(buf, -2)
+  emit_i64_const(buf = buf, value = -2)
   emit_i64_and(buf)
-  emit_local_set(buf, aptr)
+  emit_local_set(buf = buf, idx = aptr)
   let nl2 = compile_expr_fn(buf, rhs, local_names, nl1, ctx, ld)
-  emit_i64_const(buf, -2)
+  emit_i64_const(buf = buf, value = -2)
   emit_i64_and(buf)
-  emit_local_set(buf, bptr)
-  emit_local_get(buf, aptr)
+  emit_local_set(buf = buf, idx = bptr)
+  emit_local_get(buf = buf, idx = aptr)
   emit_i32_wrap_i64(buf)
-  emit_i32_load(buf, 2, 0)
-  emit_local_get(buf, bptr)
+  emit_i32_load(buf = buf, align = 2, offset = 0)
+  emit_local_get(buf = buf, idx = bptr)
   emit_i32_wrap_i64(buf)
-  emit_i32_load(buf, 2, 0)
+  emit_i32_load(buf = buf, align = 2, offset = 0)
   emit_i32_eq(buf)
   emit_if_i64(buf)
-  let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+  let (eq_fidx, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
   if fc == 63 {
     // #724 round 2: DYNAMIC field count — fc 63 marks an enum-typed value
     // whose variant (hence argc) is only known at runtime. Equal tags imply
@@ -374,72 +374,72 @@ fn emit_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names: A
     let res_l = nl2
     let cnt_l = nl2 + 1
     let ii_l = nl2 + 2
-    Array::push(local_names, "__ceq_res")
-    Array::push(local_names, "__ceq_cnt")
-    Array::push(local_names, "__ceq_i")
-    emit_i64_const(buf, 1)
-    emit_local_set(buf, res_l)
-    emit_local_get(buf, aptr)
+    Array::push(local_names, value = "__ceq_res")
+    Array::push(local_names, value = "__ceq_cnt")
+    Array::push(local_names, value = "__ceq_i")
+    emit_i64_const(buf = buf, value = 1)
+    emit_local_set(buf = buf, idx = res_l)
+    emit_local_get(buf = buf, idx = aptr)
     emit_i32_wrap_i64(buf)
-    emit_i32_load(buf, 2, 4)
+    emit_i32_load(buf = buf, align = 2, offset = 4)
     emit_i64_extend_i32_u(buf)
-    emit_local_set(buf, cnt_l)
-    emit_i64_const(buf, 0)
-    emit_local_set(buf, ii_l)
+    emit_local_set(buf = buf, idx = cnt_l)
+    emit_i64_const(buf = buf, value = 0)
+    emit_local_set(buf = buf, idx = ii_l)
     emit_block_void(buf)
     emit_loop_void(buf)
-    emit_local_get(buf, ii_l)
-    emit_local_get(buf, cnt_l)
+    emit_local_get(buf = buf, idx = ii_l)
+    emit_local_get(buf = buf, idx = cnt_l)
     emit_i64_ge_s(buf)
-    emit_br_if(buf, 1)
-    emit_local_get(buf, res_l)
-    emit_local_get(buf, aptr)
+    emit_br_if(buf = buf, label = 1)
+    emit_local_get(buf = buf, idx = res_l)
+    emit_local_get(buf = buf, idx = aptr)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, ii_l)
+    emit_local_get(buf = buf, idx = ii_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 8)
+    emit_i32_const(buf = buf, value = 8)
     emit_i32_mul(buf)
     emit_i32_add(buf)
-    emit_i64_load(buf, 3, 8)
-    emit_local_get(buf, bptr)
+    emit_i64_load(buf = buf, align = 3, offset = 8)
+    emit_local_get(buf = buf, idx = bptr)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, ii_l)
+    emit_local_get(buf = buf, idx = ii_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 8)
+    emit_i32_const(buf = buf, value = 8)
     emit_i32_mul(buf)
     emit_i32_add(buf)
-    emit_i64_load(buf, 3, 8)
-    emit_call(buf, eq_fidx)
+    emit_i64_load(buf = buf, align = 3, offset = 8)
+    emit_call(buf = buf, func_idx = eq_fidx)
     emit_i64_and(buf)
-    emit_local_set(buf, res_l)
-    emit_local_get(buf, ii_l)
-    emit_i64_const(buf, 1)
+    emit_local_set(buf = buf, idx = res_l)
+    emit_local_get(buf = buf, idx = ii_l)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_add(buf)
-    emit_local_set(buf, ii_l)
-    emit_br(buf, 0)
+    emit_local_set(buf = buf, idx = ii_l)
+    emit_br(buf = buf, label = 0)
     emit_end(buf)
     emit_end(buf)
-    emit_local_get(buf, res_l)
+    emit_local_get(buf = buf, idx = res_l)
     emit_else(buf)
-    emit_i64_const(buf, 0)
+    emit_i64_const(buf = buf, value = 0)
     emit_end(buf)
     nl2 + 3
   } else {
-    emit_i64_const(buf, 1)
+    emit_i64_const(buf = buf, value = 1)
     let mut i = 0
     while i < fc {
-      emit_local_get(buf, aptr)
+      emit_local_get(buf = buf, idx = aptr)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 8 + i * 8)
-      emit_local_get(buf, bptr)
+      emit_i64_load(buf = buf, align = 3, offset = 8 + i * 8)
+      emit_local_get(buf = buf, idx = bptr)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 8 + i * 8)
-      emit_call(buf, eq_fidx)
+      emit_i64_load(buf = buf, align = 3, offset = 8 + i * 8)
+      emit_call(buf = buf, func_idx = eq_fidx)
       emit_i64_and(buf)
       i = i + 1
     }
     emit_else(buf)
-    emit_i64_const(buf, 0)
+    emit_i64_const(buf = buf, value = 0)
     emit_end(buf)
     nl2
   }
@@ -450,7 +450,7 @@ fn emit_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names: A
 /// payload-ctor call, a nullary-ctor ident, or a record literal (records and
 /// ctors share the runtime [tag@0][argc@4][fields@8+] layout since #722).
 fn is_agg_shape(e: Expr, ct: CtorTable) -> Bool {
-  is_etuple(e) || is_ctor_call(e, ct) || is_nullary_ctor_ident(e, ct) || is_erecord(e)
+  is_etuple(e) || is_ctor_call(value = e, ct = ct) || is_nullary_ctor_ident(value = e, ct = ct) || is_erecord(e)
 }
 
 /// #672 (post-#724): the shape literal for a FIELD sub-expression `el` inside
@@ -463,11 +463,11 @@ fn is_agg_shape(e: Expr, ct: CtorTable) -> Bool {
 /// site) otherwise. This is what lets `(a, 3) == (b, 3)` recurse into `a`/`b`'s
 /// OWN tracked nested shape instead of only comparing the outer pair.
 fn resolved_element_shape(el: Expr, ctx: CompileCtx, local_names: Array[String]) -> Expr {
-  if is_agg_shape(el, ctx.ctor_table) {
+  if is_agg_shape(e = el, ct = ctx.ctor_table) {
     el
   } else if is_eident(el) {
-    let s = agg_expr_of_ident(ctx.agg_local_slots, ctx.agg_local_exprs, el, local_names)
-    if is_agg_shape(s, ctx.ctor_table) {
+    let s = agg_expr_of_ident(arr = ctx.agg_local_slots, exprs = ctx.agg_local_exprs, e = el, local_names = local_names)
+    if is_agg_shape(e = s, ct = ctx.ctor_table) {
       s
     } else {
       EInt(0)
@@ -484,16 +484,16 @@ fn resolved_element_shape(el: Expr, ctx: CompileCtx, local_names: Array[String])
 /// (single ERecord arg) reports its RECORD's field count/exprs, not the
 /// call's own 1-arg arity.
 fn ctor_shape_field_exprs(shape: Expr, ct: CtorTable) -> Array[Expr] with Exception {
-  if is_ctor_call(shape, ct) {
+  if is_ctor_call(value = shape, ct = ct) {
     let cargs = get_ecall_args(shape)
     if Array::length(cargs) == 1 {
-      match Array::get(cargs, 0) {
+      match Array::get(cargs, at = 0) {
         ERecord(_, rfields, _) => {
           let out = array_empty()
           let mut i = 0
           while i < Array::length(rfields) {
-            let (_, fv) = Array::get(rfields, i)
-            Array::push(out, fv)
+            let (_, fv) = Array::get(rfields, at = i)
+            Array::push(out, value = fv)
             i = i + 1
           }
           out
@@ -509,8 +509,8 @@ fn ctor_shape_field_exprs(shape: Expr, ct: CtorTable) -> Array[Expr] with Except
         let out = array_empty()
         let mut i = 0
         while i < Array::length(rfields) {
-          let (_, fv) = Array::get(rfields, i)
-          Array::push(out, fv)
+          let (_, fv) = Array::get(rfields, at = i)
+          Array::push(out, value = fv)
           i = i + 1
         }
         out
@@ -546,57 +546,57 @@ fn ctor_shape_field_exprs(shape: Expr, ct: CtorTable) -> Array[Expr] with Except
 /// that names nothing (a literal, an operator tree over literals); a live
 /// shape may consult the scope, which is the scope its names were written in.
 fn emit_eq_shape_slots(buf: Bytes, shape: Expr, live: Bool, asl: Int, bsl: Int, local_names: Array[String], nl0: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
-  let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
+  let (eq_fidx, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
   if is_etuple(shape) {
     let elems = get_etuple_elems(shape)
     let num = Array::length(elems)
     let ap = nl0
-    Array::push(local_names, "__seqta")
+    Array::push(local_names, value = "__seqta")
     let bp = nl0 + 1
-    Array::push(local_names, "__seqtb")
-    emit_local_get(buf, asl)
+    Array::push(local_names, value = "__seqtb")
+    emit_local_get(buf = buf, idx = asl)
     if ctx.enable_rc {
-      emit_i64_const(buf, -2)
+      emit_i64_const(buf = buf, value = -2)
       emit_i64_and(buf)
     } else {
       ()
     }
-    emit_local_set(buf, ap)
-    emit_local_get(buf, bsl)
+    emit_local_set(buf = buf, idx = ap)
+    emit_local_get(buf = buf, idx = bsl)
     if ctx.enable_rc {
-      emit_i64_const(buf, -2)
+      emit_i64_const(buf = buf, value = -2)
       emit_i64_and(buf)
     } else {
       ()
     }
-    emit_local_set(buf, bp)
+    emit_local_set(buf = buf, idx = bp)
     let field_off = if ctx.enable_rc {
       8
     } else {
       0
     }
-    emit_i64_const(buf, 1)
+    emit_i64_const(buf = buf, value = 1)
     let mut nl = nl0 + 2
     let mut i = 0
     while i < num {
-      let el = Array::get(elems, i)
-      let el_shape = resolved_element_shape(el, ctx, local_names)
-      if is_agg_shape(el_shape, ctx.ctor_table) {
+      let el = Array::get(elems, at = i)
+      let el_shape = resolved_element_shape(el = el, ctx = ctx, local_names = local_names)
+      if is_agg_shape(e = el_shape, ct = ctx.ctor_table) {
         let na = nl
-        Array::push(local_names, "__seqea")
+        Array::push(local_names, value = "__seqea")
         let nb = nl + 1
-        Array::push(local_names, "__seqeb")
-        emit_local_get(buf, ap)
+        Array::push(local_names, value = "__seqeb")
+        emit_local_get(buf = buf, idx = ap)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, field_off + i * 8)
-        emit_local_set(buf, na)
-        emit_local_get(buf, bp)
+        emit_i64_load(buf = buf, align = 3, offset = field_off + i * 8)
+        emit_local_set(buf = buf, idx = na)
+        emit_local_get(buf = buf, idx = bp)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, field_off + i * 8)
-        emit_local_set(buf, nb)
-        nl = emit_eq_shape_slots(buf, el_shape, live && !is_eident(el), na, nb, local_names, nl + 2, ctx, ld, ce)
+        emit_i64_load(buf = buf, align = 3, offset = field_off + i * 8)
+        emit_local_set(buf = buf, idx = nb)
+        nl = emit_eq_shape_slots(buf = buf, shape = el_shape, live = live && !is_eident(el), asl = na, bsl = nb, local_names = local_names, nl0 = nl + 2, ctx = ctx, ld = ld, ce = ce)
         emit_i64_and(buf)
-      } else if eq_leaf_is_intish(el, live, local_names, ctx) {
+      } else if eq_leaf_is_intish(el = el, live = live, local_names = local_names, ctx = ctx) {
         // #2457: a leaf whose literal payload EXPRESSION is provably an
         // Int / Bool word (`64 << 32`, a `let`-bound int slot) compares with a
         // plain `i64.eq`. The generic `eq` builtin's string fall-back reads a
@@ -605,73 +605,73 @@ fn emit_eq_shape_slots(buf: Bytes, shape: Expr, live: Bool, asl: Int, bsl: Int, 
         // and `(big, 1) == (other, 1)` answered `true`. Same test the
         // top-level `==` arm applies (expr_is_intish); a leaf it cannot
         // classify keeps the generic compare below.
-        emit_local_get(buf, ap)
+        emit_local_get(buf = buf, idx = ap)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, field_off + i * 8)
-        emit_local_get(buf, bp)
+        emit_i64_load(buf = buf, align = 3, offset = field_off + i * 8)
+        emit_local_get(buf = buf, idx = bp)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, field_off + i * 8)
+        emit_i64_load(buf = buf, align = 3, offset = field_off + i * 8)
         emit_i64_eq(buf)
         emit_i64_extend_i32_s(buf)
         emit_i64_and(buf)
       } else {
-        emit_local_get(buf, ap)
+        emit_local_get(buf = buf, idx = ap)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, field_off + i * 8)
-        emit_local_get(buf, bp)
+        emit_i64_load(buf = buf, align = 3, offset = field_off + i * 8)
+        emit_local_get(buf = buf, idx = bp)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, field_off + i * 8)
-        emit_call(buf, eq_fidx)
+        emit_i64_load(buf = buf, align = 3, offset = field_off + i * 8)
+        emit_call(buf = buf, func_idx = eq_fidx)
         emit_i64_and(buf)
       }
       i = i + 1
     }
     nl
-  } else if is_ctor_call(shape, ctx.ctor_table) || is_nullary_ctor_ident(shape, ctx.ctor_table) || is_erecord(shape) {
-    let field_exprs = ctor_shape_field_exprs(shape, ctx.ctor_table)
+  } else if is_ctor_call(value = shape, ct = ctx.ctor_table) || is_nullary_ctor_ident(value = shape, ct = ctx.ctor_table) || is_erecord(shape) {
+    let field_exprs = ctor_shape_field_exprs(shape = shape, ct = ctx.ctor_table)
     let fc = Array::length(field_exprs)
     let ap = nl0
-    Array::push(local_names, "__seqca")
+    Array::push(local_names, value = "__seqca")
     let bp = nl0 + 1
-    Array::push(local_names, "__seqcb")
-    emit_local_get(buf, asl)
-    emit_i64_const(buf, -2)
+    Array::push(local_names, value = "__seqcb")
+    emit_local_get(buf = buf, idx = asl)
+    emit_i64_const(buf = buf, value = -2)
     emit_i64_and(buf)
-    emit_local_set(buf, ap)
-    emit_local_get(buf, bsl)
-    emit_i64_const(buf, -2)
+    emit_local_set(buf = buf, idx = ap)
+    emit_local_get(buf = buf, idx = bsl)
+    emit_i64_const(buf = buf, value = -2)
     emit_i64_and(buf)
-    emit_local_set(buf, bp)
-    emit_local_get(buf, ap)
+    emit_local_set(buf = buf, idx = bp)
+    emit_local_get(buf = buf, idx = ap)
     emit_i32_wrap_i64(buf)
-    emit_i32_load(buf, 2, 0)
-    emit_local_get(buf, bp)
+    emit_i32_load(buf = buf, align = 2, offset = 0)
+    emit_local_get(buf = buf, idx = bp)
     emit_i32_wrap_i64(buf)
-    emit_i32_load(buf, 2, 0)
+    emit_i32_load(buf = buf, align = 2, offset = 0)
     emit_i32_eq(buf)
     emit_if_i64(buf)
-    emit_i64_const(buf, 1)
+    emit_i64_const(buf = buf, value = 1)
     let mut nl = nl0 + 2
     let mut i = 0
     while i < fc {
-      let el = Array::get(field_exprs, i)
-      let el_shape = resolved_element_shape(el, ctx, local_names)
-      if is_agg_shape(el_shape, ctx.ctor_table) {
+      let el = Array::get(field_exprs, at = i)
+      let el_shape = resolved_element_shape(el = el, ctx = ctx, local_names = local_names)
+      if is_agg_shape(e = el_shape, ct = ctx.ctor_table) {
         let na = nl
-        Array::push(local_names, "__seqfa")
+        Array::push(local_names, value = "__seqfa")
         let nb = nl + 1
-        Array::push(local_names, "__seqfb")
-        emit_local_get(buf, ap)
+        Array::push(local_names, value = "__seqfb")
+        emit_local_get(buf = buf, idx = ap)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 8 + i * 8)
-        emit_local_set(buf, na)
-        emit_local_get(buf, bp)
+        emit_i64_load(buf = buf, align = 3, offset = 8 + i * 8)
+        emit_local_set(buf = buf, idx = na)
+        emit_local_get(buf = buf, idx = bp)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 8 + i * 8)
-        emit_local_set(buf, nb)
-        nl = emit_eq_shape_slots(buf, el_shape, live && !is_eident(el), na, nb, local_names, nl + 2, ctx, ld, ce)
+        emit_i64_load(buf = buf, align = 3, offset = 8 + i * 8)
+        emit_local_set(buf = buf, idx = nb)
+        nl = emit_eq_shape_slots(buf = buf, shape = el_shape, live = live && !is_eident(el), asl = na, bsl = nb, local_names = local_names, nl0 = nl + 2, ctx = ctx, ld = ld, ce = ce)
         emit_i64_and(buf)
-      } else if eq_leaf_is_intish(el, live, local_names, ctx) {
+      } else if eq_leaf_is_intish(el = el, live = live, local_names = local_names, ctx = ctx) {
         // #2457: a leaf whose literal payload EXPRESSION is provably an
         // Int / Bool word (`64 << 32`, a `let`-bound int slot) compares with a
         // plain `i64.eq`. The generic `eq` builtin's string fall-back reads a
@@ -680,38 +680,38 @@ fn emit_eq_shape_slots(buf: Bytes, shape: Expr, live: Bool, asl: Int, bsl: Int, 
         // and `(big, 1) == (other, 1)` answered `true`. Same test the
         // top-level `==` arm applies (expr_is_intish); a leaf it cannot
         // classify keeps the generic compare below.
-        emit_local_get(buf, ap)
+        emit_local_get(buf = buf, idx = ap)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 8 + i * 8)
-        emit_local_get(buf, bp)
+        emit_i64_load(buf = buf, align = 3, offset = 8 + i * 8)
+        emit_local_get(buf = buf, idx = bp)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 8 + i * 8)
+        emit_i64_load(buf = buf, align = 3, offset = 8 + i * 8)
         emit_i64_eq(buf)
         emit_i64_extend_i32_s(buf)
         emit_i64_and(buf)
       } else {
-        emit_local_get(buf, ap)
+        emit_local_get(buf = buf, idx = ap)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 8 + i * 8)
-        emit_local_get(buf, bp)
+        emit_i64_load(buf = buf, align = 3, offset = 8 + i * 8)
+        emit_local_get(buf = buf, idx = bp)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 8 + i * 8)
-        emit_call(buf, eq_fidx)
+        emit_i64_load(buf = buf, align = 3, offset = 8 + i * 8)
+        emit_call(buf = buf, func_idx = eq_fidx)
         emit_i64_and(buf)
       }
       i = i + 1
     }
     emit_else(buf)
-    emit_i64_const(buf, 0)
+    emit_i64_const(buf = buf, value = 0)
     emit_end(buf)
     nl
   } else {
     // Not a statically-known aggregate shape (scalar leaf, or an opaque
     // sub-value whose shape this pass cannot see) — the pre-#672-nested
     // generic-eq comparison, unchanged.
-    emit_local_get(buf, asl)
-    emit_local_get(buf, bsl)
-    emit_call(buf, eq_fidx)
+    emit_local_get(buf = buf, idx = asl)
+    emit_local_get(buf = buf, idx = bsl)
+    emit_call(buf = buf, func_idx = eq_fidx)
     nl0
   }
 }
@@ -728,21 +728,21 @@ fn emit_eq_shape_slots(buf: Bytes, shape: Expr, live: Bool, asl: Int, bsl: Int, 
 /// dynamic-argc tracked binding), which is unchanged from before this change.
 fn emit_eq_shape_top(buf: Bytes, shape: Expr, live: Bool, lhs: Expr, rhs: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
-  Array::push(local_names, "__seqa")
+  Array::push(local_names, value = "__seqa")
   let bptr = next_local + 1
-  Array::push(local_names, "__seqb")
+  Array::push(local_names, value = "__seqb")
   let nl1 = ce(buf, lhs, local_names, next_local + 2, ctx, ld)
-  emit_local_set(buf, aptr)
+  emit_local_set(buf = buf, idx = aptr)
   let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
-  emit_local_set(buf, bptr)
-  emit_eq_shape_slots(buf, shape, live, aptr, bptr, local_names, nl2, ctx, ld, ce)
+  emit_local_set(buf = buf, idx = bptr)
+  emit_eq_shape_slots(buf = buf, shape = shape, live = live, asl = aptr, bsl = bptr, local_names = local_names, nl0 = nl2, ctx = ctx, ld = ld, ce = ce)
 }
 
 /// #2457: may this leaf of a shape compare with a plain `i64.eq`? See
 /// emit_eq_shape_slots's `live`: a saved shape's leaf must name nothing.
 fn eq_leaf_is_intish(el: Expr, live: Bool, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   if live || expr_names_nothing(el) {
-    expr_is_intish(el, local_names, ctx)
+    expr_is_intish(raw_e = el, local_names = local_names, ctx = ctx)
   } else {
     false
   }
@@ -750,7 +750,7 @@ fn eq_leaf_is_intish(el: Expr, live: Bool, local_names: Array[String], ctx: Comp
 
 /// A literal, or an operator tree over literals: no identifier, no call, no
 /// projection -- nothing whose meaning depends on a scope.
-fn expr_names_nothing(e: Expr) -> Bool {
+fn expr_names_nothing(_ e: Expr) -> Bool {
   match e {
     EInt(_) => true,
     EBool(_) => true,
@@ -762,7 +762,7 @@ fn expr_names_nothing(e: Expr) -> Bool {
   }
 }
 
-fn is_estring(e: Expr) -> Bool {
+fn is_estring(_ e: Expr) -> Bool {
   match e {
     EString(_, _) => true,
     _ => false
@@ -780,8 +780,8 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
   // #724: aggregate shape of a bare-ident operand whose `let` value was a
   // tuple/ctor/record literal (kind*64+n, or -1) — extends the structural
   // comparators below to both-sides-bound comparisons.
-  let lhs_agg = agg_info_of_ident(ctx.agg_local_slots, lhs, local_names)
-  let rhs_agg = agg_info_of_ident(ctx.agg_local_slots, rhs, local_names)
+  let lhs_agg = agg_info_of_ident(arr = ctx.agg_local_slots, e = lhs, local_names = local_names)
+  let rhs_agg = agg_info_of_ident(arr = ctx.agg_local_slots, e = rhs, local_names = local_names)
   if is_etuple(lhs) || is_etuple(rhs) {
     // #672: a tuple LITERAL operand always carries its own shape — always
     // safe (and correct for nesting) to drive the recursive comparator.
@@ -790,7 +790,7 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
     } else {
       rhs
     }
-    emit_eq_shape_top(buf, lit, true, lhs, rhs, local_names, next_local, ctx, ld, ce)
+    emit_eq_shape_top(buf = buf, shape = lit, live = true, lhs = lhs, rhs = rhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
   } else if lhs_agg / 64 == 1 || rhs_agg / 64 == 1 {
     // Tracked tuple binding on at least one side; the checker guarantees the
     // other side is the same tuple type, so its arity matches. #672: when the
@@ -800,29 +800,29 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
     // scope, e.g. a round-2 declared-return-type tuple) fall back to the flat,
     // depth-1 comparator exactly as before this change.
     let tshape = if lhs_agg / 64 == 1 {
-      agg_expr_of_ident(ctx.agg_local_slots, ctx.agg_local_exprs, lhs, local_names)
+      agg_expr_of_ident(arr = ctx.agg_local_slots, exprs = ctx.agg_local_exprs, e = lhs, local_names = local_names)
     } else {
-      agg_expr_of_ident(ctx.agg_local_slots, ctx.agg_local_exprs, rhs, local_names)
+      agg_expr_of_ident(arr = ctx.agg_local_slots, exprs = ctx.agg_local_exprs, e = rhs, local_names = local_names)
     }
     if is_etuple(tshape) {
-      emit_eq_shape_top(buf, tshape, false, lhs, rhs, local_names, next_local, ctx, ld, ce)
+      emit_eq_shape_top(buf = buf, shape = tshape, live = false, lhs = lhs, rhs = rhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
     } else {
       let tn = if lhs_agg / 64 == 1 {
         lhs_agg % 64
       } else {
         rhs_agg % 64
       }
-      emit_tuple_struct_eq(buf, lhs, rhs, tn, local_names, next_local, ctx, ld, ce)
+      emit_tuple_struct_eq(buf = buf, lhs = lhs, rhs = rhs, num = tn, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, compile_expr_fn = ce)
     }
-  } else if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) || is_ctor_call(rhs, ctx.ctor_table) || is_nullary_ctor_ident(rhs, ctx.ctor_table) {
+  } else if is_ctor_call(value = lhs, ct = ctx.ctor_table) || is_nullary_ctor_ident(value = lhs, ct = ctx.ctor_table) || is_ctor_call(value = rhs, ct = ctx.ctor_table) || is_nullary_ctor_ident(value = rhs, ct = ctx.ctor_table) {
     // #672: a payload/nullary ctor LITERAL operand always carries its own
     // shape — always safe to drive the recursive comparator.
-    let clit = if is_ctor_call(lhs, ctx.ctor_table) || is_nullary_ctor_ident(lhs, ctx.ctor_table) {
+    let clit = if is_ctor_call(value = lhs, ct = ctx.ctor_table) || is_nullary_ctor_ident(value = lhs, ct = ctx.ctor_table) {
       lhs
     } else {
       rhs
     }
-    emit_eq_shape_top(buf, clit, true, lhs, rhs, local_names, next_local, ctx, ld, ce)
+    emit_eq_shape_top(buf = buf, shape = clit, live = true, lhs = lhs, rhs = rhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
   } else if lhs_agg / 64 == 2 || rhs_agg / 64 == 2 {
     // Tracked ctor/record binding: values carry [tag@0][argc@4][fields@8+],
     // so the tag-comparing structural walk applies. #672: recurse through the
@@ -834,12 +834,12 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
     // differ, so that fallback walks the larger count (the tag comparison
     // short-circuits unequal variants before any field read).
     let cshape = if lhs_agg / 64 == 2 {
-      agg_expr_of_ident(ctx.agg_local_slots, ctx.agg_local_exprs, lhs, local_names)
+      agg_expr_of_ident(arr = ctx.agg_local_slots, exprs = ctx.agg_local_exprs, e = lhs, local_names = local_names)
     } else {
-      agg_expr_of_ident(ctx.agg_local_slots, ctx.agg_local_exprs, rhs, local_names)
+      agg_expr_of_ident(arr = ctx.agg_local_slots, exprs = ctx.agg_local_exprs, e = rhs, local_names = local_names)
     }
-    if is_agg_shape(cshape, ctx.ctor_table) {
-      emit_eq_shape_top(buf, cshape, false, lhs, rhs, local_names, next_local, ctx, ld, ce)
+    if is_agg_shape(e = cshape, ct = ctx.ctor_table) {
+      emit_eq_shape_top(buf = buf, shape = cshape, live = false, lhs = lhs, rhs = rhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
     } else {
       let lfc = if lhs_agg / 64 == 2 {
         lhs_agg % 64
@@ -856,9 +856,9 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
       } else {
         rfc
       }
-      emit_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, ce)
+      emit_ctor_struct_eq(buf = buf, lhs = lhs, rhs = rhs, fc = cfc, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, compile_expr_fn = ce)
     }
-  } else if expr_is_intish(lhs, local_names, ctx) || expr_is_intish(rhs, local_names, ctx) || ts_offset_says_int(lhs, ctx) || ts_offset_says_int(rhs, ctx) {
+  } else if expr_is_intish(raw_e = lhs, local_names = local_names, ctx = ctx) || expr_is_intish(raw_e = rhs, local_names = local_names, ctx = ctx) || ts_offset_says_int(e = lhs, ctx = ctx) || ts_offset_says_int(e = rhs, ctx = ctx) {
     // #3513: or the checker typed an operand `Int` (a call result has no
     // shape the syntactic classifier can read).
     // A definitely-integer comparison: a direct i64.eq is both faster and
@@ -870,7 +870,7 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
     emit_i64_eq(buf)
     emit_i64_extend_i32_s(buf)
     nl2
-  } else if ((is_estring(lhs) && cc_expr_is_stringish(rhs, local_names, ctx)) || (is_estring(rhs) && cc_expr_is_stringish(lhs, local_names, ctx))) && func_table_builtin_index_of(ctx.func_table, "String::equals", ctx.num_user_funcs) >= 0 {
+  } else if ((is_estring(lhs) && cc_expr_is_stringish(raw_e = rhs, local_names = local_names, ctx = ctx)) || (is_estring(rhs) && cc_expr_is_stringish(raw_e = lhs, local_names = local_names, ctx = ctx))) && func_table_builtin_index_of(ft = ctx.func_table, name = "String::equals", num_user_funcs = ctx.num_user_funcs) >= 0 {
     // #2483: a string-LITERAL operand against a VERIFIED String operand is
     // the string twin of the intish case: both are genuine fat pointers, so
     // `eq`'s answer is exactly `str_eq`'s -- `eq` only reaches `str_eq`
@@ -899,13 +899,13 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
     // failed to validate. `==` never meant the program's function.
     let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
     let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
-    emit_call(buf, func_table_builtin_index_of(ctx.func_table, "String::equals", ctx.num_user_funcs))
+    emit_call(buf = buf, func_idx = func_table_builtin_index_of(ft = ctx.func_table, name = "String::equals", num_user_funcs = ctx.num_user_funcs))
     nl2
   } else {
     let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
     let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
-    let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
-    emit_call(buf, eq_fidx)
+    let (eq_fidx, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
+    emit_call(buf = buf, func_idx = eq_fidx)
     nl2
   }
 }
@@ -931,13 +931,13 @@ fn is_untagged_wrap_arith(e: Expr, local_names: Array[String], ctx: CompileCtx) 
   if t == 5 {
     let op = get_ebinop_op(e)
     if op == "+" || op == "-" || op == "*" || op == "/" || op == "<<" {
-      !expr_is_floatish(get_ebinop_lhs(e), local_names, ctx) && !expr_is_floatish(get_ebinop_rhs(e), local_names, ctx)
+      !expr_is_floatish(raw_e = get_ebinop_lhs(e), local_names = local_names, ctx = ctx) && !expr_is_floatish(raw_e = get_ebinop_rhs(e), local_names = local_names, ctx = ctx)
     } else {
       false
     }
   } else if t == 6 {
     if get_eunaryop_op(e) == "-" {
-      !expr_is_floatish(get_eunaryop_expr(e), local_names, ctx)
+      !expr_is_floatish(raw_e = get_eunaryop_expr(e), local_names = local_names, ctx = ctx)
     } else {
       false
     }
@@ -948,7 +948,7 @@ fn is_untagged_wrap_arith(e: Expr, local_names: Array[String], ctx: CompileCtx) 
 
 /// #3126: the operator's source offset an `EBinOp` carries (-1 for one a
 /// desugaring synthesized), which a division-by-zero trap reports.
-fn ebinop_site_off(e: Expr) -> Int {
+fn ebinop_site_off(_ e: Expr) -> Int {
   match e {
     EBinOp(_, _, _, off) => off,
     _ => 0 - 1
@@ -963,10 +963,10 @@ fn ebinop_site_off(e: Expr) -> Int {
 /// from its shift amount (observed as-is).
 fn compile_int_operand(buf: Bytes, op: String, is_lhs: Bool, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int) -> Int with Exception {
   let tolerant = op == "+" || op == "-" || op == "*" || (op == "<<" && is_lhs)
-  if tolerant && !ctx.enable_rc && is_untagged_wrap_arith(e, local_names, ctx) {
-    compile_wrap_arith_loose(buf, e, local_names, next_local, ctx, ld)
+  if tolerant && !ctx.enable_rc && is_untagged_wrap_arith(e = e, local_names = local_names, ctx = ctx) {
+    compile_wrap_arith_loose(buf = buf, e = e, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
   } else {
-    compile_expr(buf, e, local_names, next_local, ctx, ld)
+    compile_expr(buf = buf, expr = e, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
   }
 }
 
@@ -980,20 +980,20 @@ fn compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], nex
   let t = expr_tag(e)
   if t == 5 {
     let op = get_ebinop_op(e)
-    let nl1 = compile_int_operand(buf, op, true, get_ebinop_lhs(e), local_names, next_local, ctx, ld)
-    let nl2 = compile_int_operand(buf, op, false, get_ebinop_rhs(e), local_names, nl1, ctx, ld)
+    let nl1 = compile_int_operand(buf = buf, op = op, is_lhs = true, e = get_ebinop_lhs(e), local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
+    let nl2 = compile_int_operand(buf = buf, op = op, is_lhs = false, e = get_ebinop_rhs(e), local_names = local_names, next_local = nl1, ctx = ctx, ld = ld)
     let nl3 = if op == "<<" || op == ">>" {
-      Array::push(local_names, "__shift_n")
-      emit_shift_count_clamp(buf, nl2)
+      Array::push(local_names, value = "__shift_n")
+      emit_shift_count_clamp(buf = buf, tmp = nl2)
       nl2 + 1
     } else {
-      emit_int_div_zero_guard(buf, op, get_ebinop_rhs(e), ebinop_site_off(e), ctx, local_names, nl2)
+      emit_int_div_zero_guard(buf = buf, op = op, divisor = get_ebinop_rhs(e), site_off = ebinop_site_off(e), ctx = ctx, local_names = local_names, slot = nl2)
     }
-    emit_binop_op(buf, op)
+    emit_binop_op(buf = buf, op = op)
     nl3
   } else {
-    emit_i64_const(buf, 0)
-    let nl = compile_int_operand(buf, "-", false, get_eunaryop_expr(e), local_names, next_local, ctx, ld)
+    emit_i64_const(buf = buf, value = 0)
+    let nl = compile_int_operand(buf = buf, op = "-", is_lhs = false, e = get_eunaryop_expr(e), local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
     emit_i64_sub(buf)
     nl
   }
@@ -1014,7 +1014,7 @@ fn ce_mark_path_consume(buf: Bytes, expr: Expr, name: String, ctx: CompileCtx) -
       let mut i = 0
       let mut marked = false
       while i < Array::length(ctx.rc_consume_mark_names) {
-        if Array::get(ctx.rc_consume_mark_offs, i) == off && Array::get(ctx.rc_consume_mark_names, i) == name {
+        if Array::get(ctx.rc_consume_mark_offs, at = i) == off && Array::get(ctx.rc_consume_mark_names, at = i) == name {
           marked = true
         } else {
           ()
@@ -1025,16 +1025,16 @@ fn ce_mark_path_consume(buf: Bytes, expr: Expr, name: String, ctx: CompileCtx) -
         let mut j = Array::length(ctx.rc_path_flag_names) - 1
         let mut slot = 0 - 1
         while j >= 0 {
-          if Array::get(ctx.rc_path_flag_names, j) == name {
-            slot = Array::get(ctx.rc_path_flag_locals, j)
+          if Array::get(ctx.rc_path_flag_names, at = j) == name {
+            slot = Array::get(ctx.rc_path_flag_locals, at = j)
             j = 0 - 1
           } else {
             j = j - 1
           }
         }
         if slot >= 0 {
-          emit_i64_const(buf, 1)
-          emit_local_set(buf, slot)
+          emit_i64_const(buf = buf, value = 1)
+          emit_local_set(buf = buf, idx = slot)
         } else {
           ()
         }
@@ -1053,15 +1053,15 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
   let __tag = expr_tag(expr)
   if __tag == 0 {
     let n = get_eint_value(expr)
-    emit_i64_const(buf, n)
+    emit_i64_const(buf = buf, value = n)
     if ctx.enable_rc {
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_shl(buf)
     }
     next_local
   } else if __tag == 1 {
     let b_val = get_ebool_value(expr)
-    emit_i64_const(buf, if b_val {
+    emit_i64_const(buf = buf, value = if b_val {
       if ctx.enable_rc {
         2
       } else {
@@ -1075,20 +1075,20 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
     let v = get_efloat_value(expr)
     let lo = Double::to_i64_bits_lo(v)
     let hi = Double::to_i64_bits_hi(v)
-    emit_f64_const_lohi(buf, lo, hi)
+    emit_f64_const_lohi(buf = buf, lo = lo, hi = hi)
     emit_i64_reinterpret_f64(buf)
     if ctx.enable_rc {
-      Array::push(local_names, "__fbits")
-      Array::push(local_names, "__fbox")
-      emit_box_float(buf, ctx, next_local, next_local + 1)
+      Array::push(local_names, value = "__fbits")
+      Array::push(local_names, value = "__fbox")
+      emit_box_float(buf = buf, ctx = ctx, bits_local = next_local, box_local = next_local + 1)
       next_local + 2
     } else {
       next_local
     }
   } else if __tag == 3 {
     let s = get_estring_value(expr)
-    let idx = str_table_index_of(ctx.str_table, s)
-    emit_str_ref(buf, Array::get(ctx.str_table.offsets, idx), Array::get(ctx.str_table.lengths, idx))
+    let idx = str_table_index_of(st = ctx.str_table, s = s)
+    emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = idx), length = Array::get(ctx.str_table.lengths, at = idx))
     next_local
   } else if __tag == 4 {
     let raw_name = get_eident_name(expr)
@@ -1103,7 +1103,7 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
     let mut __tl_i = len - 1
     let mut __tl_result = -1
     while __tl_i >= 0 {
-      if Array::get(local_names, __tl_i) == name {
+      if Array::get(local_names, at = __tl_i) == name {
         __tl_result = __tl_i
         __tl_i = -1
       } else {
@@ -1112,21 +1112,21 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
     }
     let local_idx = __tl_result
     if local_idx >= 0 {
-      if array_contains_str(ctx.ref_cell_names, name) {
-        emit_local_get(buf, local_idx)
+      if array_contains_str(arr = ctx.ref_cell_names, s = name) {
+        emit_local_get(buf = buf, idx = local_idx)
         emit_i32_wrap_i64(buf)
-        emit_i64_load(buf, 3, 0)
+        emit_i64_load(buf = buf, align = 3, offset = 0)
       } else {
-        emit_local_get(buf, local_idx)
+        emit_local_get(buf = buf, idx = local_idx)
       }
       // Mutable slots have path-dependent values. Apply each planned retain
       // where its owning use runs, after reading the current value.
-      if ctx.enable_rc && array_contains_str(ctx.rc_mut_use_names, name) {
+      if ctx.enable_rc && array_contains_str(arr = ctx.rc_mut_use_names, s = name) {
         let off = get_eident_off(expr)
         let mut mdi = 0
         while mdi < Array::length(ctx.rc_dup_names) {
-          if Array::get(ctx.rc_dup_names, mdi) == name && Array::get(ctx.rc_dup_offsets, mdi) == off {
-            emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+          if Array::get(ctx.rc_dup_names, at = mdi) == name && Array::get(ctx.rc_dup_offsets, at = mdi) == off {
+            emit_rc_dup_guarded(buf = buf, local_idx = local_idx, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
           } else {
             ()
           }
@@ -1135,14 +1135,14 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       } else {
         ()
       }
-      ce_mark_path_consume(buf, expr, name, ctx)
+      ce_mark_path_consume(buf = buf, expr = expr, name = name, ctx = ctx)
       next_local
     } else {
       let mut __ci_idx = -1
       let __ci_len = Array::length(ctx.const_int_names)
       let mut __ci_j = 0
       while __ci_j < __ci_len {
-        if Array::get(ctx.const_int_names, __ci_j) == name {
+        if Array::get(ctx.const_int_names, at = __ci_j) == name {
           __ci_idx = __ci_j
           __ci_j = __ci_len
         } else {
@@ -1150,71 +1150,71 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         }
       }
       if __ci_idx >= 0 {
-        emit_i64_const(buf, Array::get(ctx.const_int_values, __ci_idx))
+        emit_i64_const(buf = buf, value = Array::get(ctx.const_int_values, at = __ci_idx))
         if ctx.enable_rc {
-          emit_i64_const(buf, 1)
+          emit_i64_const(buf = buf, value = 1)
           emit_i64_shl(buf)
         }
         next_local
       } else {
-        let ctor_idx = ctor_table_index_of(ctx.ctor_table, name)
+        let ctor_idx = ctor_table_index_of(ct = ctx.ctor_table, name = name)
         if ctor_idx >= 0 {
-          let tag_c = Array::get(ctx.ctor_table.tags, ctor_idx)
+          let tag_c = Array::get(ctx.ctor_table.tags, at = ctor_idx)
           let ptr_l = next_local
-          Array::push(local_names, "__ctor_ptr")
+          Array::push(local_names, value = "__ctor_ptr")
           if ctx.enable_rc {
-            emit_i64_const(buf, 16)
-            emit_call(buf, ctx.rc_alloc_func_idx)
-            emit_local_set(buf, ptr_l)
-            emit_local_get(buf, ptr_l)
+            emit_i64_const(buf = buf, value = 16)
+            emit_call(buf = buf, func_idx = ctx.rc_alloc_func_idx)
+            emit_local_set(buf = buf, idx = ptr_l)
+            emit_local_get(buf = buf, idx = ptr_l)
             emit_i32_wrap_i64(buf)
-            emit_i32_const(buf, 16)
-            emit_i32_store(buf, 2, 0)
-            emit_local_get(buf, ptr_l)
+            emit_i32_const(buf = buf, value = 16)
+            emit_i32_store(buf = buf, align = 2, offset = 0)
+            emit_local_get(buf = buf, idx = ptr_l)
             emit_i32_wrap_i64(buf)
-            emit_i32_const(buf, 1)
-            emit_i32_store(buf, 2, 4)
-            emit_local_get(buf, ptr_l)
+            emit_i32_const(buf = buf, value = 1)
+            emit_i32_store(buf = buf, align = 2, offset = 4)
+            emit_local_get(buf = buf, idx = ptr_l)
             emit_i32_wrap_i64(buf)
-            emit_i32_const(buf, 1)
-            emit_i32_store8(buf, 0, 7)
-            emit_local_get(buf, ptr_l)
+            emit_i32_const(buf = buf, value = 1)
+            emit_i32_store8(buf = buf, align = 0, offset = 7)
+            emit_local_get(buf = buf, idx = ptr_l)
             emit_i32_wrap_i64(buf)
-            emit_i32_const(buf, tag_c)
-            emit_i32_store(buf, 2, 8)
-            emit_local_get(buf, ptr_l)
+            emit_i32_const(buf = buf, value = tag_c)
+            emit_i32_store(buf = buf, align = 2, offset = 8)
+            emit_local_get(buf = buf, idx = ptr_l)
             emit_i32_wrap_i64(buf)
-            emit_i32_const(buf, 0)
-            emit_i32_store(buf, 2, 12)
-            emit_local_get(buf, ptr_l)
-            emit_i64_const(buf, 8)
+            emit_i32_const(buf = buf, value = 0)
+            emit_i32_store(buf = buf, align = 2, offset = 12)
+            emit_local_get(buf = buf, idx = ptr_l)
+            emit_i64_const(buf = buf, value = 8)
             emit_i64_add(buf)
-            emit_i64_const(buf, 1)
+            emit_i64_const(buf = buf, value = 1)
             emit_i64_or(buf)
             next_local + 1
           } else {
-            emit_global_get(buf, 0)
+            emit_global_get(buf = buf, idx = 0)
             emit_i64_extend_i32_u(buf)
-            emit_local_set(buf, ptr_l)
-            emit_global_get(buf, 0)
-            emit_i32_const(buf, 8)
+            emit_local_set(buf = buf, idx = ptr_l)
+            emit_global_get(buf = buf, idx = 0)
+            emit_i32_const(buf = buf, value = 8)
             emit_i32_add(buf)
-            emit_global_set(buf, 0)
-            emit_heap_grow_after_heap_set(buf, ctx)
-            emit_local_get(buf, ptr_l)
+            emit_global_set(buf = buf, idx = 0)
+            emit_heap_grow_after_heap_set(buf = buf, ctx = ctx)
+            emit_local_get(buf = buf, idx = ptr_l)
             emit_i32_wrap_i64(buf)
-            emit_i32_const(buf, tag_c)
-            emit_i32_store(buf, 2, 0)
-            emit_local_get(buf, ptr_l)
+            emit_i32_const(buf = buf, value = tag_c)
+            emit_i32_store(buf = buf, align = 2, offset = 0)
+            emit_local_get(buf = buf, idx = ptr_l)
             emit_i32_wrap_i64(buf)
-            emit_i32_const(buf, 0)
-            emit_i32_store(buf, 2, 4)
-            emit_local_get(buf, ptr_l)
-            emit_i64_const(buf, 1)
+            emit_i32_const(buf = buf, value = 0)
+            emit_i32_store(buf = buf, align = 2, offset = 4)
+            emit_local_get(buf = buf, idx = ptr_l)
+            emit_i64_const(buf = buf, value = 1)
             emit_i64_or(buf)
             next_local + 1
           }
-        } else if builtin_value_form_arity(name) >= 0 && !user_fn_owns_name(ctx, name) {
+        } else if builtin_value_form_arity(name) >= 0 && !user_fn_owns_name(ctx = ctx, name = name) {
           // #2442: a pure builtin in value position, eta-expanded.
           //
           // ABOVE the func table, and that placement is load-bearing:
@@ -1250,9 +1250,9 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
           // emitted an arity-2 eta-expansion against the checker's arity-1 type
           // and the runtime refused to compile the module. The plan walk is
           // given the same name set so the two agree.
-          compile_expr(buf, builtin_value_closure(name, builtin_value_form_arity(name)), local_names, next_local, ctx, ld)
+          compile_expr(buf = buf, expr = builtin_value_closure(name = name, arity = builtin_value_form_arity(name)), local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
         } else {
-          let __tf_result = func_table_index_of(ctx.func_table, name)
+          let __tf_result = func_table_index_of(ft = ctx.func_table, name = name)
           if __tf_result < 0 {
             // See `resolve_local` in common_base: reaching here means the
             // checker let an unresolved name through. Lead with whose bug it
@@ -1265,23 +1265,23 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
               if di > 0 {
                 diag = String::concat(diag, ",")
               }
-              diag = String::concat(diag, Array::get(local_names, di))
+              diag = String::concat(diag, Array::get(local_names, at = di))
               di = di + 1
             }
             diag = String::concat(diag, "]")
             throw(diag)
           }
           let fni = __tf_result
-          let fidx = Array::get(ctx.func_table.indices, fni)
-          if bsearch_leftmost(ctx.thunk_names, name) >= 0 {
-            emit_i64_const(buf, 0)
-            emit_call(buf, fidx)
+          let fidx = Array::get(ctx.func_table.indices, at = fni)
+          if bsearch_leftmost(sorted = ctx.thunk_names, name = name) >= 0 {
+            emit_i64_const(buf = buf, value = 0)
+            emit_call(buf = buf, func_idx = fidx)
             next_local
           } else {
             let table_slot = fidx - ctx.func_offset
-            Array::push(ctx.table_slots_used, table_slot)
-            blind_reloc_record(ctx, buf, blind_kind_fn_value, table_slot)
-            emit_i64_const(buf, (table_slot<<2)|2)
+            Array::push(ctx.table_slots_used, value = table_slot)
+            blind_reloc_record(ctx = ctx, buf = buf, kind = blind_kind_fn_value, sym = table_slot)
+            emit_i64_const(buf = buf, value = (table_slot<<2)|2)
             next_local
           }
         }
@@ -1296,20 +1296,20 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       // emit_binop_op does) evaluated BOTH operands, so `false && inc()` ran
       // inc()'s side effects. Bool reprs: false = 0 in both lanes, true = 2
       // (tagged) under RC / 1 otherwise; eqz treats any non-zero as true.
-      let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+      let nl1 = compile_expr(buf = buf, expr = lhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
       emit_i64_eqz(buf)
       if op == "&&" {
         emit_if_i64(buf)
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
         emit_else(buf)
-        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+        let nl2 = compile_expr(buf = buf, expr = rhs, local_names = local_names, next_local = nl1, ctx = ctx, ld = ld)
         emit_end(buf)
         nl2
       } else {
         emit_if_i64(buf)
-        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
+        let nl2 = compile_expr(buf = buf, expr = rhs, local_names = local_names, next_local = nl1, ctx = ctx, ld = ld)
         emit_else(buf)
-        emit_i64_const(buf, if ctx.enable_rc {
+        emit_i64_const(buf = buf, value = if ctx.enable_rc {
           2
         } else {
           1
@@ -1317,7 +1317,7 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         emit_end(buf)
         nl2
       }
-    } else if op == "==" && !(expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx)) {
+    } else if op == "==" && !(expr_is_floatish(raw_e = lhs, local_names = local_names, ctx = ctx) || expr_is_floatish(raw_e = rhs, local_names = local_names, ctx = ctx)) {
       // #704: float `==`/`!=` must NOT go through emit_eq_value. Under RC a
       // float is a BOXED heap value, so the generic eq compares box pointers
       // (always unequal for two distinct boxes), making `0.0 == 0.0` false.
@@ -1333,27 +1333,27 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       // `0.0 == -0.0` false, `nan == nan` true. The float branch below has
       // been non-RC-aware since #704 (every unbox is already guarded), so the
       // diversion is all that was missing.
-      let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
+      let nle = emit_eq_value(buf = buf, lhs = lhs, rhs = rhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
       if ctx.enable_rc {
-        emit_i64_const(buf, 1)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_shl(buf)
       }
       nle
-    } else if op == "!=" && !(expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx)) {
-      let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
+    } else if op == "!=" && !(expr_is_floatish(raw_e = lhs, local_names = local_names, ctx = ctx) || expr_is_floatish(raw_e = rhs, local_names = local_names, ctx = ctx)) {
+      let nle = emit_eq_value(buf = buf, lhs = lhs, rhs = rhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
       if ctx.enable_rc {
-        emit_i64_const(buf, 1)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_shl(buf)
       }
       nle
-    } else if expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx) {
+    } else if expr_is_floatish(raw_e = lhs, local_names = local_names, ctx = ctx) || expr_is_floatish(raw_e = rhs, local_names = local_names, ctx = ctx) {
       // #3135: each operand arrives as its bits, and a box made only to be
       // read here is released (or never made): see emit_float_operand_bits.
-      let nl1 = emit_float_operand_bits(buf, lhs, local_names, next_local, ctx, ld, compile_expr)
+      let nl1 = emit_float_operand_bits(buf = buf, e_in = lhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
       emit_f64_reinterpret_i64(buf)
-      let nl2 = emit_float_operand_bits(buf, rhs, local_names, nl1, ctx, ld, compile_expr)
+      let nl2 = emit_float_operand_bits(buf = buf, e_in = rhs, local_names = local_names, next_local = nl1, ctx = ctx, ld = ld, ce = compile_expr)
       emit_f64_reinterpret_i64(buf)
       if op == "+" || op == "-" || op == "*" || op == "/" {
         if op == "+" {
@@ -1367,9 +1367,9 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         }
         emit_i64_reinterpret_f64(buf)
         if ctx.enable_rc {
-          Array::push(local_names, "__fbits")
-          Array::push(local_names, "__fbox")
-          emit_box_float(buf, ctx, nl2, nl2 + 1)
+          Array::push(local_names, value = "__fbits")
+          Array::push(local_names, value = "__fbox")
+          emit_box_float(buf = buf, ctx = ctx, bits_local = nl2, box_local = nl2 + 1)
           nl2 + 2
         } else {
           nl2
@@ -1392,53 +1392,53 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         }
         emit_i64_extend_i32_s(buf)
         if ctx.enable_rc {
-          emit_i64_const(buf, 1)
+          emit_i64_const(buf = buf, value = 1)
           emit_i64_shl(buf)
         }
         nl2
       }
     } else if ctx.enable_rc {
       if op == "<<" {
-        let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
-        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
-        emit_i64_const(buf, 1)
+        let nl1 = compile_expr(buf = buf, expr = lhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
+        let nl2 = compile_expr(buf = buf, expr = rhs, local_names = local_names, next_local = nl1, ctx = ctx, ld = ld)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_shr_s(buf)
-        Array::push(local_names, "__shift_n")
-        emit_shift_count_clamp(buf, nl2)
+        Array::push(local_names, value = "__shift_n")
+        emit_shift_count_clamp(buf = buf, tmp = nl2)
         emit_i64_shl(buf)
         nl2 + 1
       } else if op == ">>" {
-        let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
-        emit_i64_const(buf, 1)
+        let nl1 = compile_expr(buf = buf, expr = lhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_shr_s(buf)
-        let nl2 = compile_expr(buf, rhs, local_names, nl1, ctx, ld)
-        emit_i64_const(buf, 1)
+        let nl2 = compile_expr(buf = buf, expr = rhs, local_names = local_names, next_local = nl1, ctx = ctx, ld = ld)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_shr_s(buf)
-        Array::push(local_names, "__shift_n")
-        emit_shift_count_clamp(buf, nl2)
+        Array::push(local_names, value = "__shift_n")
+        emit_shift_count_clamp(buf = buf, tmp = nl2)
         emit_i64_shr_s(buf)
-        emit_i64_const(buf, 1)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_shl(buf)
         nl2 + 1
       } else {
-        let nl1 = compile_expr(buf, lhs, local_names, next_local, ctx, ld)
+        let nl1 = compile_expr(buf = buf, expr = lhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
         // #1877: untag the LHS BEFORE the multiply — (t>>1)*u = tagged(a*b),
         // which overflows i64 exactly at the payload's 63-bit boundary. The
         // old post-multiply untag ((t*u)>>1) pre-wrapped the 4ab intermediate
         // one bit early, making RC `*` the lone 62-bit op.
         if op == "*" {
-          emit_i64_const(buf, 1)
+          emit_i64_const(buf = buf, value = 1)
           emit_i64_shr_s(buf)
         } else {
           ()
         }
-        let nl2 = emit_int_div_zero_guard(buf, op, rhs, ebinop_site_off(expr), ctx, local_names, compile_expr(buf, rhs, local_names, nl1, ctx, ld))
-        emit_binop_op(buf, op)
+        let nl2 = emit_int_div_zero_guard(buf = buf, op = op, divisor = rhs, site_off = ebinop_site_off(expr), ctx = ctx, local_names = local_names, slot = compile_expr(buf = buf, expr = rhs, local_names = local_names, next_local = nl1, ctx = ctx, ld = ld))
+        emit_binop_op(buf = buf, op = op)
         if op == "/" {
-          emit_i64_const(buf, 1)
+          emit_i64_const(buf = buf, value = 1)
           emit_i64_shl(buf)
         } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
-          emit_i64_const(buf, 1)
+          emit_i64_const(buf = buf, value = 1)
           emit_i64_shl(buf)
         } else {
           ()
@@ -1448,58 +1448,58 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
     } else {
       // Wrapping consumers elide the operand's own trailing renorm (see
       // compile_int_operand above); this op's renorm re-derives bit 63.
-      let nl1 = compile_int_operand(buf, op, true, lhs, local_names, next_local, ctx, ld)
-      let nl2 = compile_int_operand(buf, op, false, rhs, local_names, nl1, ctx, ld)
+      let nl1 = compile_int_operand(buf = buf, op = op, is_lhs = true, e = lhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
+      let nl2 = compile_int_operand(buf = buf, op = op, is_lhs = false, e = rhs, local_names = local_names, next_local = nl1, ctx = ctx, ld = ld)
       let nl3 = if op == "<<" || op == ">>" {
-        Array::push(local_names, "__shift_n")
-        emit_shift_count_clamp(buf, nl2)
+        Array::push(local_names, value = "__shift_n")
+        emit_shift_count_clamp(buf = buf, tmp = nl2)
         nl2 + 1
       } else {
-        emit_int_div_zero_guard(buf, op, rhs, ebinop_site_off(expr), ctx, local_names, nl2)
+        emit_int_div_zero_guard(buf = buf, op = op, divisor = rhs, site_off = ebinop_site_off(expr), ctx = ctx, local_names = local_names, slot = nl2)
       }
-      emit_binop_op(buf, op)
-      emit_arith_wrap_int(buf, false, op)
+      emit_binop_op(buf = buf, op = op)
+      emit_arith_wrap_int(buf = buf, enable_rc = false, op = op)
       nl3
     }
   } else if __tag == 6 {
     let op = get_eunaryop_op(expr)
     let operand = get_eunaryop_expr(expr)
     if op == "-" {
-      if expr_is_floatish(operand, local_names, ctx) {
+      if expr_is_floatish(raw_e = operand, local_names = local_names, ctx = ctx) {
         // #745: under RC the operand is a BOXED float — unbox before the
         // f64.neg and rebox the result, exactly like the float binop path.
         // Without this, `-1.0` negated the box POINTER and the "float" that
         // escaped was garbage bits. #3135: the operand's own box is released
         // when it is a temporary (emit_float_operand_bits).
-        let nl = emit_float_operand_bits(buf, operand, local_names, next_local, ctx, ld, compile_expr)
+        let nl = emit_float_operand_bits(buf = buf, e_in = operand, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
         emit_f64_reinterpret_i64(buf)
         emit_f64_neg(buf)
         emit_i64_reinterpret_f64(buf)
         if ctx.enable_rc {
-          Array::push(local_names, "__fbits")
-          Array::push(local_names, "__fbox")
-          emit_box_float(buf, ctx, nl, nl + 1)
+          Array::push(local_names, value = "__fbits")
+          Array::push(local_names, value = "__fbox")
+          emit_box_float(buf = buf, ctx = ctx, bits_local = nl, box_local = nl + 1)
           nl + 2
         } else {
           nl
         }
       } else {
-        emit_i64_const(buf, 0)
-        let nl = compile_int_operand(buf, "-", false, operand, local_names, next_local, ctx, ld)
+        emit_i64_const(buf = buf, value = 0)
+        let nl = compile_int_operand(buf = buf, op = "-", is_lhs = false, e = operand, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
         emit_i64_sub(buf)
         // #1877: -MIN (2^62) is the one in-range operand whose negation
         // leaves the 63-bit range — untagged lanes renormalize like binop
         // `-` (RC wraps naturally: 0 - tagged(MIN) overflows i64 back to
         // tagged(MIN)).
-        emit_arith_wrap_int(buf, ctx.enable_rc, "-")
+        emit_arith_wrap_int(buf = buf, enable_rc = ctx.enable_rc, op = "-")
         nl
       }
     } else if op == "!" {
-      let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
+      let nl = compile_expr(buf = buf, expr = operand, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
       if ctx.enable_rc {
-        emit_i64_const(buf, 1)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_shl(buf)
       }
       nl
@@ -1511,8 +1511,8 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       // would set the tag bit and hand every consumer a malformed Int.
       // Untagged lanes use -1 directly. No renorm: `~` cannot leave the
       // 63-bit range (it maps [-2^62, 2^62-1] onto itself).
-      let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
-      emit_i64_const(buf, if ctx.enable_rc {
+      let nl = compile_expr(buf = buf, expr = operand, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
+      emit_i64_const(buf = buf, value = if ctx.enable_rc {
         0 - 2
       } else {
         0 - 1
@@ -1532,22 +1532,22 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       if cop == "==" || cop == "!=" || cop == "<" || cop == ">" || cop == "<=" || cop == ">=" {
         let clhs = get_ebinop_lhs(cond)
         let crhs = get_ebinop_rhs(cond)
-        if cop == "==" && !(expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx)) {
-          let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
+        if cop == "==" && !(expr_is_floatish(raw_e = clhs, local_names = local_names, ctx = ctx) || expr_is_floatish(raw_e = crhs, local_names = local_names, ctx = ctx)) {
+          let cnl2 = emit_eq_value(buf = buf, lhs = clhs, rhs = crhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
           emit_i32_wrap_i64(buf)
           cnl2
-        } else if cop == "!=" && !(expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx)) {
-          let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
+        } else if cop == "!=" && !(expr_is_floatish(raw_e = clhs, local_names = local_names, ctx = ctx) || expr_is_floatish(raw_e = crhs, local_names = local_names, ctx = ctx)) {
+          let cnl2 = emit_eq_value(buf = buf, lhs = clhs, rhs = crhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
           emit_i32_wrap_i64(buf)
           emit_i32_eqz(buf)
           cnl2
-        } else if expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx) {
+        } else if expr_is_floatish(raw_e = clhs, local_names = local_names, ctx = ctx) || expr_is_floatish(raw_e = crhs, local_names = local_names, ctx = ctx) {
           // #704: unbox boxed floats under RC before reinterpreting as f64, and
           // handle ==/!= here (f64_eq/f64_ne) so float equality in an if/while
           // condition compares values, not box pointers.
-          let cnl1 = emit_float_operand_bits(buf, clhs, local_names, next_local, ctx, ld, compile_expr)
+          let cnl1 = emit_float_operand_bits(buf = buf, e_in = clhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
           emit_f64_reinterpret_i64(buf)
-          let cnl2 = emit_float_operand_bits(buf, crhs, local_names, cnl1, ctx, ld, compile_expr)
+          let cnl2 = emit_float_operand_bits(buf = buf, e_in = crhs, local_names = local_names, next_local = cnl1, ctx = ctx, ld = ld, ce = compile_expr)
           emit_f64_reinterpret_i64(buf)
           if cop == "==" {
             emit_f64_eq(buf)
@@ -1569,8 +1569,8 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
           }
           cnl2
         } else {
-          let cnl1 = compile_expr(buf, clhs, local_names, next_local, ctx, ld)
-          let cnl2 = compile_expr(buf, crhs, local_names, cnl1, ctx, ld)
+          let cnl1 = compile_expr(buf = buf, expr = clhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
+          let cnl2 = compile_expr(buf = buf, expr = crhs, local_names = local_names, next_local = cnl1, ctx = ctx, ld = ld)
           if cop == "<" {
             emit_i64_lt_s(buf)
           }
@@ -1586,13 +1586,13 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
           cnl2
         }
       } else {
-        let cnl = compile_expr(buf, cond, local_names, next_local, ctx, ld)
+        let cnl = compile_expr(buf = buf, expr = cond, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
         emit_i32_wrap_i64(buf)
         cnl
       }
     } else if cond_tag == 1 {
       let b_val = get_ebool_value(cond)
-      emit_i32_const(buf, if b_val {
+      emit_i32_const(buf = buf, value = if b_val {
         1
       } else {
         0
@@ -1608,23 +1608,23 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
           if iop == "==" || iop == "!=" || iop == "<" || iop == ">" || iop == "<=" || iop == ">=" {
             let ilhs = get_ebinop_lhs(uoperand)
             let irhs = get_ebinop_rhs(uoperand)
-            if iop == "==" && !(expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx)) {
-              let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
+            if iop == "==" && !(expr_is_floatish(raw_e = ilhs, local_names = local_names, ctx = ctx) || expr_is_floatish(raw_e = irhs, local_names = local_names, ctx = ctx)) {
+              let inl2 = emit_eq_value(buf = buf, lhs = ilhs, rhs = irhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
               inl2
-            } else if iop == "!=" && !(expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx)) {
-              let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
+            } else if iop == "!=" && !(expr_is_floatish(raw_e = ilhs, local_names = local_names, ctx = ctx) || expr_is_floatish(raw_e = irhs, local_names = local_names, ctx = ctx)) {
+              let inl2 = emit_eq_value(buf = buf, lhs = ilhs, rhs = irhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
               emit_i32_eqz(buf)
               inl2
-            } else if expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx) {
+            } else if expr_is_floatish(raw_e = ilhs, local_names = local_names, ctx = ctx) || expr_is_floatish(raw_e = irhs, local_names = local_names, ctx = ctx) {
               // #704: unbox boxed floats under RC; handle ==/!= via f64_eq/f64_ne.
               // This arm is `!(ilhs iop irhs)`, so the trailing eqz negates.
-              let inl1 = emit_float_operand_bits(buf, ilhs, local_names, next_local, ctx, ld, compile_expr)
+              let inl1 = emit_float_operand_bits(buf = buf, e_in = ilhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
               emit_f64_reinterpret_i64(buf)
-              let inl2 = emit_float_operand_bits(buf, irhs, local_names, inl1, ctx, ld, compile_expr)
+              let inl2 = emit_float_operand_bits(buf = buf, e_in = irhs, local_names = local_names, next_local = inl1, ctx = ctx, ld = ld, ce = compile_expr)
               emit_f64_reinterpret_i64(buf)
               if iop == "==" {
                 emit_f64_eq(buf)
@@ -1647,8 +1647,8 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
               emit_i32_eqz(buf)
               inl2
             } else {
-              let inl1 = compile_expr(buf, ilhs, local_names, next_local, ctx, ld)
-              let inl2 = compile_expr(buf, irhs, local_names, inl1, ctx, ld)
+              let inl1 = compile_expr(buf = buf, expr = ilhs, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
+              let inl2 = compile_expr(buf = buf, expr = irhs, local_names = local_names, next_local = inl1, ctx = ctx, ld = ld)
               if iop == "<" {
                 emit_i64_lt_s(buf)
               }
@@ -1665,22 +1665,22 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
               inl2
             }
           } else {
-            let cnl = compile_expr(buf, cond, local_names, next_local, ctx, ld)
+            let cnl = compile_expr(buf = buf, expr = cond, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
             emit_i32_wrap_i64(buf)
             cnl
           }
         } else {
-          let cnl = compile_expr(buf, cond, local_names, next_local, ctx, ld)
+          let cnl = compile_expr(buf = buf, expr = cond, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
           emit_i32_wrap_i64(buf)
           cnl
         }
       } else {
-        let cnl = compile_expr(buf, cond, local_names, next_local, ctx, ld)
+        let cnl = compile_expr(buf = buf, expr = cond, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
         emit_i32_wrap_i64(buf)
         cnl
       }
     } else {
-      let cnl = compile_expr(buf, cond, local_names, next_local, ctx, ld)
+      let cnl = compile_expr(buf = buf, expr = cond, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld)
       emit_i32_wrap_i64(buf)
       cnl
     }
@@ -1692,23 +1692,23 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
     }
     let names_len_before = Array::length(local_names)
     // #cov branch: the then-branch was taken.
-    cov_emit_branch(buf, ctx.cov)
-    let nl2 = compile_expr(buf, then_e, local_names, nl1, ctx, ld_inner)
+    cov_emit_branch(buf = buf, cov = ctx.cov)
+    let nl2 = compile_expr(buf = buf, expr = then_e, local_names = local_names, next_local = nl1, ctx = ctx, ld = ld_inner)
     emit_else(buf)
-    Array::truncate(local_names, names_len_before)
+    Array::truncate(local_names, length = names_len_before)
     // #678: the then-branch may have logged integral slots >= names_len_before
     // that the else-branch is about to reuse; drop them so a non-`let` rebind
     // there is not misread as int.
-    int_log_reset_above(ctx, names_len_before)
-    agg_log_reset_above2(ctx.agg_local_slots, ctx.agg_local_exprs, names_len_before)
+    int_log_reset_above(ctx = ctx, floor = names_len_before)
+    agg_log_reset_above2(arr = ctx.agg_local_slots, exprs = ctx.agg_local_exprs, floor = names_len_before)
     // #1062 follow-up: same prune for the float log -- the then-branch may
     // contain a nested match whose ctor-field bind (bind_match_pat) logged a
     // slot >= names_len_before as floatish; the else-branch reusing that slot
     // for a non-float value must not inherit the stale mark.
-    float_log_reset_above(ctx, names_len_before)
+    float_log_reset_above(ctx = ctx, floor = names_len_before)
     // #cov branch: the else-branch was taken.
-    cov_emit_branch(buf, ctx.cov)
-    let nl3 = compile_expr(buf, else_e, local_names, nl1, ctx, ld_inner)
+    cov_emit_branch(buf = buf, cov = ctx.cov)
+    let nl3 = compile_expr(buf = buf, expr = else_e, local_names = local_names, next_local = nl1, ctx = ctx, ld = ld_inner)
     emit_end(buf)
     let max_nl_if = if nl2 > nl3 {
       nl2
@@ -1716,7 +1716,7 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       nl3
     }
     while Array::length(local_names) < max_nl_if {
-      Array::push(local_names, "")
+      Array::push(local_names, value = "")
     }
     max_nl_if
   } else if __tag == 8 {
@@ -1729,11 +1729,11 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
     // call inside one of them records the last row before this call's own
     // instruction. Leaving the site restores this line at that point, so the
     // access is not reported at its argument's line.
-    let lm_site = linemap_enter_call_site(buf, expr, ctx)
-    let call_res = compile_call(buf, get_ecall_callee(expr), get_ecall_args(expr), get_ecall_resolution(expr), local_names, next_local, ctx, ld, compile_expr)
-    linemap_leave_call_site(buf, ctx, lm_site)
+    let lm_site = linemap_enter_call_site(buf = buf, expr = expr, ctx = ctx)
+    let call_res = compile_call(buf = buf, callee = get_ecall_callee(expr), args = get_ecall_args(expr), resolution = get_ecall_resolution(expr), local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
+    linemap_leave_call_site(buf = buf, ctx = ctx, prev = lm_site)
     call_res
   } else {
-    compile_expr_tail(buf, expr, local_names, next_local, ctx, ld, compile_expr)
+    compile_expr_tail(buf = buf, expr = expr, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, compile_expr = compile_expr)
   }
 }

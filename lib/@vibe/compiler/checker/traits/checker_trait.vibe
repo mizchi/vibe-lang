@@ -32,7 +32,7 @@ import @vibe/compiler/checker/resolution {
 
 //# Functions
 
-fn one_super(name: String) -> Array[String] {
+fn one_super(_ name: String) -> Array[String] {
   [name]
 }
 
@@ -53,7 +53,7 @@ fn empty_strings() -> Array[String] {
 }
 
 export fn satisfies_bound(env: TypeEnv, s: Subst, ty: Type, bound: String) -> Bool {
-  type_implements_trait(env, s, ty, bound)
+  type_implements_trait(env = env, s = s, ty = ty, trait_name = bound)
 }
 
 /// ADR-0068: `Send` is a compiler-judged structural marker, not a user
@@ -69,7 +69,7 @@ export fn satisfies_bound(env: TypeEnv, s: Subst, ty: Type, bound: String) -> Bo
 /// Recursive types are handled coinductively: a recursive occurrence of a
 /// type already being checked does not fail the check on its own.
 export fn type_send_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type) -> Bool {
-  send_ok_rec(env, s, defs, ty, empty_strings())
+  send_ok_rec(env = env, s = s, defs = defs, ty = ty, seen = empty_strings())
 }
 
 /// Does `bound` entail `Send` -- by name, or through its declared supertraits
@@ -78,7 +78,7 @@ export fn type_send_ok(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type) -
 /// instantiation of such a bound is checked Send at its call site
 /// (`check_program_bounds`), which is what lets the body count it.
 export fn bound_entails_send(env: TypeEnv, bound: String) -> Bool {
-  bound_entails_trait(env, bound, "Send")
+  bound_entails_trait(env = env, bound = bound, wanted = "Send")
 }
 
 /// Cycle-safe reachability for lexical bounds, including inherited operators.
@@ -87,18 +87,18 @@ export fn bound_entails_trait(env: TypeEnv, bound: String, wanted: String) -> Bo
   let seen: Array[String] = []
   let mut found = false
   while !found && Array::length(pending) > 0 {
-    let cur = Array::get(pending, Array::length(pending) - 1)
-    Array::truncate(pending, Array::length(pending) - 1)
+    let cur = Array::get(pending, at = Array::length(pending) - 1)
+    Array::truncate(pending, length = Array::length(pending) - 1)
     if cur == wanted {
       found = true
-    } else if send_seen_has(seen, cur) {
+    } else if send_seen_has(seen = seen, name = cur) {
       ()
     } else {
-      Array::push(seen, cur)
-      let supers = trait_supers(env, cur)
+      Array::push(seen, value = cur)
+      let supers = trait_supers(env = env, name = cur)
       let mut i = 0
       while i < Array::length(supers) {
-        Array::push(pending, trait_ref_name(Array::get(supers, i)))
+        Array::push(pending, value = trait_ref_name(Array::get(supers, at = i)))
         i = i + 1
       }
     }
@@ -110,7 +110,7 @@ fn send_bounds_have_send(env: TypeEnv, bounds: Array[String]) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(bounds) && !found {
-    if bound_entails_send(env, Array::get(bounds, i)) {
+    if bound_entails_send(env = env, bound = Array::get(bounds, at = i)) {
       found = true
     }
     i = i + 1
@@ -122,7 +122,7 @@ fn send_seen_has(seen: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(seen) {
-    if Array::get(seen, i) == name {
+    if Array::get(seen, at = i) == name {
       found = true
     }
     i = i + 1
@@ -134,10 +134,10 @@ fn send_seen_with(seen: Array[String], name: String) -> Array[String] {
   let b = ArrayBuilder::new()
   let mut i = 0
   while i < Array::length(seen) {
-    ArrayBuilder::push(b, Array::get(seen, i))
+    ArrayBuilder::push(b, value = Array::get(seen, at = i))
     i = i + 1
   }
-  ArrayBuilder::push(b, name)
+  ArrayBuilder::push(b, value = name)
   ArrayBuilder::freeze(b)
 }
 
@@ -145,7 +145,7 @@ fn send_ok_all(env: TypeEnv, s: Subst, defs: Array[TypeDef], tys: Array[Type], s
   let mut i = 0
   let mut ok = true
   while i < Array::length(tys) {
-    if not(send_ok_rec(env, s, defs, Array::get(tys, i), seen)) {
+    if not(send_ok_rec(env = env, s = s, defs = defs, ty = Array::get(tys, at = i), seen = seen)) {
       ok = false
     }
     i = i + 1
@@ -162,15 +162,15 @@ fn send_seen_key(s: Subst, name: String, targs: Array[Type]) -> String {
   let mut key = name
   let mut i = 0
   while i < Array::length(targs) {
-    key = String::concat(key, String::concat("|", type_to_string(subst_apply(s, Array::get(targs, i)))))
+    key = String::concat(key, String::concat("|", type_to_string(subst_apply(s = s, ty = Array::get(targs, at = i)))))
     i = i + 1
   }
   key
 }
 
 fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, targs: Array[Type], seen: Array[String]) -> Bool {
-  let key = send_seen_key(s, name, targs)
-  if send_seen_has(seen, key) {
+  let key = send_seen_key(s = s, name = name, targs = targs)
+  if send_seen_has(seen = seen, name = key) {
     true
   } else if Array::length(seen) >= 32 {
     // Non-regular recursion (each level instantiating a NEW key, e.g.
@@ -178,7 +178,7 @@ fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, tar
     // and reject conservatively instead of diverging.
     false
   } else {
-    match find_typedef(defs, name) {
+    match find_typedef(defs = defs, name = name) {
       Some(td) => match td {
         TDStruct(_, fields, mut_fields, tparams) => {
           if Array::length(mut_fields) > 0 {
@@ -186,13 +186,13 @@ fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, tar
           } else if Array::length(tparams) != Array::length(targs) {
             false
           } else {
-            let inner = send_seen_with(seen, key)
+            let inner = send_seen_with(seen = seen, name = key)
             let mut i = 0
             let mut ok = true
             while i < Array::length(fields) {
-              let (_, ft) = Array::get(fields, i)
-              let inst = subst_type_params(ft, tparams, targs)
-              if not(send_ok_rec(env, s, defs, inst, inner)) {
+              let (_, ft) = Array::get(fields, at = i)
+              let inst = subst_type_params(ty = ft, params = tparams, args = targs)
+              if not(send_ok_rec(env = env, s = s, defs = defs, ty = inst, seen = inner)) {
                 ok = false
               }
               i = i + 1
@@ -206,14 +206,14 @@ fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, tar
           } else if Array::length(tparams) == 0 {
             // Monomorphic enum: TDEnum payloads are stored as resolved
             // concrete/named types — recurse directly.
-            let inner = send_seen_with(seen, key)
+            let inner = send_seen_with(seen = seen, name = key)
             let mut vi = 0
             let mut ok = true
             while vi < Array::length(variants) {
-              let (_, payloads) = Array::get(variants, vi)
+              let (_, payloads) = Array::get(variants, at = vi)
               let mut pi = 0
               while pi < Array::length(payloads) {
-                if not(send_ok_rec(env, s, defs, Array::get(payloads, pi), inner)) {
+                if not(send_ok_rec(env = env, s = s, defs = defs, ty = Array::get(payloads, at = pi), seen = inner)) {
                   ok = false
                 }
                 pi = pi + 1
@@ -228,20 +228,20 @@ fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, tar
             // var ids from the constructor's env binding —
             // `CtForAll(param_var_ids, _, CtFn(payloads, _))` — and
             // substitute those ids with targs.
-            let inner = send_seen_with(seen, key)
+            let inner = send_seen_with(seen = seen, name = key)
             let mut vi = 0
             let mut ok = true
             while vi < Array::length(variants) {
-              let (vname, payloads) = Array::get(variants, vi)
+              let (vname, payloads) = Array::get(variants, at = vi)
               if Array::length(payloads) > 0 {
-                match env_lookup(env, vname) {
+                match env_lookup(env = env, name = vname) {
                   Some(cty) => match cty {
                     CtForAll(vids, _, inner_ty) => match inner_ty {
                       CtFn(args, _, _) => {
                         let mut pi = 0
                         while pi < Array::length(args) {
-                          let inst = send_subst_vars(Array::get(args, pi), vids, targs)
-                          if not(send_ok_rec(env, s, defs, inst, inner)) {
+                          let inst = send_subst_vars(ty = Array::get(args, at = pi), vids = vids, args = targs)
+                          if not(send_ok_rec(env = env, s = s, defs = defs, ty = inst, seen = inner)) {
                             ok = false
                           }
                           pi = pi + 1
@@ -271,7 +271,7 @@ fn send_ok_named(env: TypeEnv, s: Subst, defs: Array[TypeDef], name: String, tar
           if Array::length(params) != Array::length(targs) {
             false
           } else {
-            send_ok_rec(env, s, defs, subst_type_params(body, params, targs), send_seen_with(seen, key))
+            send_ok_rec(env = env, s = s, defs = defs, ty = subst_type_params(ty = body, params = params, args = targs), seen = send_seen_with(seen = seen, name = key))
           }
         },
         TDEffect(_, _, _) => false,
@@ -294,40 +294,40 @@ export fn send_subst_vars(ty: Type, vids: Array[Int], args: Array[Type]) -> Type
       let mut idx = 0 - 1
       let mut i = 0
       while i < Array::length(vids) {
-        if Array::get(vids, i) == v {
+        if Array::get(vids, at = i) == v {
           idx = i
         }
         i = i + 1
       }
       if idx >= 0 && idx < Array::length(args) {
-        Array::get(args, idx)
+        Array::get(args, at = idx)
       } else {
         ty
       }
     },
-    CtArray(e) => CtArray(send_subst_vars(e, vids, args)),
-    CtOption(e) => CtOption(send_subst_vars(e, vids, args)),
+    CtArray(e) => CtArray(send_subst_vars(ty = e, vids = vids, args = args)),
+    CtOption(e) => CtOption(send_subst_vars(ty = e, vids = vids, args = args)),
     CtTuple(es) => CtTuple(for e in es {
-      send_subst_vars(e, vids, args)
+      send_subst_vars(ty = e, vids = vids, args = args)
     }),
     CtNamed(nm, targs) => CtNamed(nm, for a in targs {
-      send_subst_vars(a, vids, args)
+      send_subst_vars(ty = a, vids = vids, args = args)
     }),
-    CtApplied(head, targs) => apply_type_constructor(send_subst_vars(head, vids, args), for arg in targs {
-      send_subst_vars(arg, vids, args)
+    CtApplied(head, targs) => apply_type_constructor(head = send_subst_vars(ty = head, vids = vids, args = args), args = for arg in targs {
+      send_subst_vars(ty = arg, vids = vids, args = args)
     }),
     CtFn(ps, ret, eff) => {
       let rp = for p in ps {
-        send_subst_vars(p, vids, args)
+        send_subst_vars(ty = p, vids = vids, args = args)
       }
-      CtFn(rp, send_subst_vars(ret, vids, args), eff)
+      CtFn(rp, send_subst_vars(ty = ret, vids = vids, args = args), eff)
     },
     _ => ty
   }
 }
 
 fn send_ok_rec(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, seen: Array[String]) -> Bool {
-  match subst_apply(s, ty) {
+  match subst_apply(s = s, ty = ty) {
     CtInt => true,
     CtDouble => true,
     CtFloat => true,
@@ -335,19 +335,19 @@ fn send_ok_rec(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, seen: Arr
     CtString => true,
     CtChar => true,
     CtUnit => true,
-    CtTuple(ts) => send_ok_all(env, s, defs, ts, seen),
+    CtTuple(ts) => send_ok_all(env = env, s = s, defs = defs, tys = ts, seen = seen),
     // #1839: an anonymous record is an immutable aggregate (no mut fields),
     // so like a tuple it is Send exactly when every field type is.
-    CtRecord(rfs) => send_ok_all(env, s, defs, for rf in rfs {
+    CtRecord(rfs) => send_ok_all(env = env, s = s, defs = defs, tys = for rf in rfs {
       let (_, rft) = rf
       rft
-    }, seen),
-    CtOption(e) => send_ok_rec(env, s, defs, e, seen),
+    }, seen = seen),
+    CtOption(e) => send_ok_rec(env = env, s = s, defs = defs, ty = e, seen = seen),
     CtArray(_) => false,
     CtBytes => false,
     CtFn(_, _, _) => false,
-    CtEnum(name) => send_ok_named(env, s, defs, name, no_type_args(), seen),
-    CtStruct(name) => send_ok_named(env, s, defs, name, no_type_args(), seen),
+    CtEnum(name) => send_ok_named(env = env, s = s, defs = defs, name = name, targs = no_type_args(), seen = seen),
+    CtStruct(name) => send_ok_named(env = env, s = s, defs = defs, name = name, targs = no_type_args(), seen = seen),
     // #906: FrozenArray[T] is a checker-only phantom-type wrapper over
     // Array[T]'s exact same (mutable-looking, but never mutated through this
     // type) runtime layout -- see checker.vibe's FrozenArray::* ECall
@@ -359,16 +359,16 @@ fn send_ok_rec(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, seen: Arr
     // user-defined struct/enum typedefs and would reject FrozenArray as an
     // unknown name.
     CtNamed(name, targs) => if name == "FrozenArray" && Array::length(targs) == 1 {
-      send_ok_rec(env, s, defs, Array::get(targs, 0), seen)
+      send_ok_rec(env = env, s = s, defs = defs, ty = Array::get(targs, at = 0), seen = seen)
     } else {
-      send_ok_named(env, s, defs, name, targs, seen)
+      send_ok_named(env = env, s = s, defs = defs, name = name, targs = targs, seen = seen)
     },
     // #3152: a formal declared `[T: Send]` is Send inside its own body --
     // every instantiation was checked against the bound at its call site.
     // `Parallel::map`'s spawned thunk captures its `x: T` this way. So is a
     // formal whose bound EXTENDS `Send` (`[T: Work]` with `trait Work:
     // Send`), whose instantiations are checked Send the same way.
-    CtVar(v) => send_bounds_have_send(env, subst_bounds_for(s, v)),
+    CtVar(v) => send_bounds_have_send(env = env, bounds = subst_bounds_for(s = s, id = v)),
     CtConstructor(_, _) => false,
     CtApplied(_, _) => false,
     CtForAll(_, _, _) => false,
@@ -383,9 +383,9 @@ export fn check_bounds_satisfied(env: TypeEnv, s: Subst, ty: Type, bounds: Array
     if i >= len {
       0
     } else {
-      let bound = Array::get(bounds, i)
-      if not(satisfies_bound(env, s, ty, bound)) {
-        Array::push(result, bound)
+      let bound = Array::get(bounds, at = i)
+      if not(satisfies_bound(env = env, s = s, ty = ty, bound = bound)) {
+        Array::push(result, value = bound)
       }
       go(i + 1)
     }
@@ -394,15 +394,15 @@ export fn check_bounds_satisfied(env: TypeEnv, s: Subst, ty: Type, bounds: Array
   result
 }
 
-export fn register_builtin_traits(env: TypeEnv) -> TypeEnv {
-  register_builtin_traits_for(env, empty_strings())
+export fn register_builtin_traits(_ env: TypeEnv) -> TypeEnv {
+  register_builtin_traits_for(env = env, withheld = empty_strings())
 }
 
 fn seed_withheld(withheld: Array[String], trait_name: String) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(withheld) {
-    if Array::get(withheld, i) == trait_name {
+    if Array::get(withheld, at = i) == trait_name {
       found = true
     }
     i = i + 1
@@ -456,7 +456,7 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   // Add have value witnesses; marker Ord remains refused at boxed scalars,
   // and the other arithmetic bodies retain their concrete Int restriction.
   // The prelude declares the same impls (builtin_trait_seed_parity_test).
-  let env_show = if !seed_withheld(withheld, "Show") {
+  let env_show = if !seed_withheld(withheld = withheld, trait_name = "Show") {
     EnvTraitImpl("Show", CtFloat, EnvTraitImpl("Show", CtString, EnvTraitImpl("Show", CtChar, EnvTraitImpl("Show", CtBool, EnvTraitImpl("Show", CtDouble, EnvTraitImpl("Show", CtInt, env))))))
   } else {
     env
@@ -552,12 +552,12 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   // bound needs only the impl. `T::default()` needs `@vibe/core`'s
   // declaration, and the checker names that import when it is missing
   // (`marker_default_dispatch_error` in checker.vibe).
-  let env_signed = if !seed_withheld(withheld, "Signed") {
+  let env_signed = if !seed_withheld(withheld = withheld, trait_name = "Signed") {
     EnvTraitImpl("Signed", CtFloat, EnvTraitImpl("Signed", CtDouble, EnvTraitImpl("Signed", CtInt, e64)))
   } else {
     e64
   }
-  if !seed_withheld(withheld, "Default") {
+  if !seed_withheld(withheld = withheld, trait_name = "Default") {
     EnvTraitImpl("Default", CtFloat, EnvTraitImpl("Default", CtString, EnvTraitImpl("Default", CtBool, EnvTraitImpl("Default", CtDouble, EnvTraitImpl("Default", CtInt, env_signed)))))
   } else {
     env_signed
@@ -571,9 +571,9 @@ export fn validate_supers_defined(env: TypeEnv, supers: Array[String]) -> Array[
     if i >= len {
       0
     } else {
-      let name = Array::get(supers, i)
-      if not(trait_defined(env, name)) {
-        Array::push(result, name)
+      let name = Array::get(supers, at = i)
+      if not(trait_defined(env = env, name = name)) {
+        Array::push(result, value = name)
       }
       go(i + 1)
     }
@@ -583,5 +583,5 @@ export fn validate_supers_defined(env: TypeEnv, supers: Array[String]) -> Array[
 }
 
 export fn validate_impl_no_overlap(env: TypeEnv, trait_name: String, target: Type) -> Bool {
-  not(impls_overlap_for(env, trait_name, target))
+  not(impls_overlap_for(env = env, trait_name = trait_name, new_target = target))
 }

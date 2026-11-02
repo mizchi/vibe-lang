@@ -5,7 +5,7 @@ import ./checker_parity_test_support.vibe {
 // #3450: a declared result spelled through an alias declares the row of the
 // function type it names, as the written arrow does. The returned closure's
 // call to `mk` was charged to `mid_alias` itself: "missing { Box[Int] }".
-fn src(decl: String) -> String {
+fn src(_ decl: String) -> String {
   String::concat("effect Box[T] {\n  Put(T) -> Int\n}\nfn mk() -> Int with Box[Int] {\n  perform Box::Put(12345)\n}\ntype Thunk = () -> Int with Box[Int]\ntype Gen[T] = () -> Int with Box[Int]\n", decl)
 }
 
@@ -16,7 +16,7 @@ test "a closure returned at an aliased row is the result's, not the function's" 
 }
 
 test "an alias does not excuse a perform the function makes itself" {
-  inspect(String::contains(check_source_error_message(src("fn mid_alias() -> Thunk {\n  let _ = mk()\n  () -> mk()\n}\n")), "missing { Box[Int] }"), "true")
+  inspect(String::contains(check_source_error_message(src("fn mid_alias() -> Thunk {\n  let _ = mk()\n  () -> mk()\n}\n")), needle = "missing { Box[Int] }"), "true")
 }
 
 // A local lambda whose declared result is a function type with a row hands
@@ -26,8 +26,8 @@ test "an alias does not excuse a perform the function makes itself" {
 test "a local lambda's declared result row is its returned closure's" {
   assert(check_source_ok(src("fn drive(f: () -> Int with Box[Int]) -> Int {\n  handle {\n    f()\n  } with { Box::Put(n) => resume(n + 1) }\n}\nfn local_mid() -> Int {\n  let lmid = () -> (() -> Int with Box[Int]) {\n    () -> mk()\n  }\n  drive(lmid())\n}\n")))
   assert(check_source_ok(src("fn local_alias() -> Int {\n  let lmid = () -> Thunk {\n    () -> mk()\n  }\n  0\n}\n")))
-  inspect(String::contains(check_source_error_message(src("fn local_direct() -> Int {\n  let lmid = () -> (() -> Int with Box[Int]) {\n    let _ = mk()\n    () -> 0\n  }\n  0\n}\n")), "missing { Box[Int] }"), "true")
-  inspect(String::contains(check_source_error_message(src("fn local_after() -> Int {\n  let lmid = () -> (() -> Int with Box[Int]) {\n    () -> mk()\n  }\n  let g = () -> mk()\n  0\n}\n")), "missing { Box[Int] }"), "true")
+  inspect(String::contains(check_source_error_message(src("fn local_direct() -> Int {\n  let lmid = () -> (() -> Int with Box[Int]) {\n    let _ = mk()\n    () -> 0\n  }\n  0\n}\n")), needle = "missing { Box[Int] }"), "true")
+  inspect(String::contains(check_source_error_message(src("fn local_after() -> Int {\n  let lmid = () -> (() -> Int with Box[Int]) {\n    () -> mk()\n  }\n  let g = () -> mk()\n  0\n}\n")), needle = "missing { Box[Int] }"), "true")
 }
 
 test "an applied alias of an alias declares the row it reaches" {

@@ -35,19 +35,19 @@ import @vibe/compiler/entry/source_compile/gc_only {
 
 //# Functions
 
-fn string_to_bytes(s: String) -> Bytes {
+fn string_to_bytes(_ s: String) -> Bytes {
   let out = array_empty()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Array::push(out, String::byte_at(s, i))
+    Array::push(out, value = String::byte_at(s, at = i))
     i = i + 1
   }
   Bytes::from_array(out)
 }
 
-fn is_wasm(bytes: Bytes) -> Bool {
-  Bytes::length(bytes) > 4 && Bytes::get(bytes, 0) == 0 && Bytes::get(bytes, 1) == 97 && Bytes::get(bytes, 2) == 115 && Bytes::get(bytes, 3) == 109
+fn is_wasm(_ bytes: Bytes) -> Bool {
+  Bytes::length(bytes) > 4 && Bytes::get(bytes, at = 0) == 0 && Bytes::get(bytes, at = 1) == 97 && Bytes::get(bytes, at = 2) == 115 && Bytes::get(bytes, at = 3) == 109
 }
 
 /// The leak: a program `TaskGroup[rg, e]` written bare in a signature.
@@ -64,19 +64,19 @@ fn raw_compile(lane: Int, source: String) -> String {
     let bytes = if lane == 0 {
       compile_source(source)
     } else if lane == 1 {
-      compile_source_wasi(source, "main")
+      compile_source_wasi(source = source, entry_name = "main")
     } else if lane == 2 {
-      compile_source_wasi_mode(source, "main", "mvp")
+      compile_source_wasi_mode(source = source, entry_name = "main", mode = "mvp")
     } else if lane == 3 {
-      compile_source_wasi_only(source, "main")
+      compile_source_wasi_only(source = source, entry_name = "main")
     } else if lane == 4 {
-      compile_source_wasi_only_coverage(source, "main")
+      compile_source_wasi_only_coverage(source = source, entry_name = "main")
     } else if lane == 5 {
-      compile_source_wasi_only_rc(source, "main")
+      compile_source_wasi_only_rc(source = source, entry_name = "main")
     } else if lane == 6 {
-      compile_source_wasi_only_rc_shadow(source, "main")
+      compile_source_wasi_only_rc_shadow(source = source, entry_name = "main")
     } else {
-      compile_source_gc_only(source, "main")
+      compile_source_gc_only(source = source, entry_name = "main")
     }
     if is_wasm(bytes) {
       "wasm"
@@ -87,13 +87,13 @@ fn raw_compile(lane: Int, source: String) -> String {
 }
 
 fn write_file(path: String, source: String) -> Unit with Fs {
-  Fs::write_bytes(path, string_to_bytes(source))
+  Fs::write_bytes(path, bytes = string_to_bytes(source))
 }
 
 //# Misc
 
 test "a raw source declaring a shipped region-first head's spelling is refused with the edit" {
-  inspect(raw_compile(5, leaking_source()), refusal())
+  inspect(raw_compile(lane = 5, source = leaking_source()), refusal())
 }
 
 /// Each raw-source lane, by the answer it gives the same program.
@@ -101,30 +101,30 @@ test "every raw-source lane refuses it" {
   let answers = array_empty()
   let mut lane = 0
   while lane < 8 {
-    let got = raw_compile(lane, leaking_source())
+    let got = raw_compile(lane = lane, source = leaking_source())
     let verdict = if got == refusal() {
       "refused"
     } else {
       got
     }
-    Array::push(answers, "\{lane}: \{verdict}")
+    Array::push(answers, value = "\{lane}: \{verdict}")
     lane = lane + 1
   }
-  inspect(String::join(answers, "\n"), "0: refused\n1: refused\n2: refused\n3: refused\n4: refused\n5: refused\n6: refused\n7: refused")
+  inspect(String::join(answers, sep = "\n"), "0: refused\n1: refused\n2: refused\n3: refused\n4: refused\n5: refused\n6: refused\n7: refused")
 }
 
 test "a raw source declares the name with other formals and is held to them" {
   let source = "struct TaskGroup[A, B] {\n  first: A;\n  second: B\n}\n\nfn first_of(g: TaskGroup[Int, String]) -> Int {\n  g.first\n}\n\nfn main() -> Int {\n  first_of(TaskGroup::{ first: 7, second: \"x\" })\n}\n"
-  inspect(raw_compile(5, source), "wasm")
+  inspect(raw_compile(lane = 5, source = source), "wasm")
 }
 
 test "the merged entry lane refuses the spelling in an imported program module" {
   let dir = "/tmp/vibe_owned_head_shape_merged"
   Fs::mkdir_p(dir)
-  write_file(String::concat(dir, "/dep.vibe"), "export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn as_str(g: TaskGroup) -> String {\n  g.first\n}\n")
-  write_file(String::concat(dir, "/main.vibe"), "import ./dep.vibe { TaskGroup, as_str }\nexport fn answer() -> Int {\n  String::length(as_str(TaskGroup::{ first: 7, second: 8 }))\n}\n")
+  write_file(path = String::concat(dir, "/dep.vibe"), source = "export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn as_str(g: TaskGroup) -> String {\n  g.first\n}\n")
+  write_file(path = String::concat(dir, "/main.vibe"), source = "import ./dep.vibe { TaskGroup, as_str }\nexport fn answer() -> Int {\n  String::length(as_str(TaskGroup::{ first: 7, second: 8 }))\n}\n")
   let got = handle {
-    let _ = compile_file_wasi_only(String::concat(dir, "/main.vibe"), "answer")
+    let _ = compile_file_wasi_only(entry_path = String::concat(dir, "/main.vibe"), entry_name = "answer")
     "accepted"
   } with { Exception::Throw(m) => m }
   inspect(got, String::concat(refusal(), String::concat(" (in ", String::concat(dir, "/dep.vibe)"))))
@@ -138,10 +138,10 @@ test "the merged entry lane refuses the spelling under a path that only ends lik
   let dep_dir = String::concat(dir, "/@vibe/concurrent/experimental")
   Fs::mkdir_p(dep_dir)
   let dep = String::concat(dep_dir, "/concurrent.vibe")
-  write_file(dep, "export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn as_str(g: TaskGroup) -> String {\n  g.first\n}\n")
-  write_file(String::concat(dir, "/main.vibe"), "import ./@vibe/concurrent/experimental/concurrent.vibe { TaskGroup, as_str }\nexport fn answer() -> Int {\n  String::length(as_str(TaskGroup::{ first: 7, second: 8 }))\n}\n")
+  write_file(path = dep, source = "export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn as_str(g: TaskGroup) -> String {\n  g.first\n}\n")
+  write_file(path = String::concat(dir, "/main.vibe"), source = "import ./@vibe/concurrent/experimental/concurrent.vibe { TaskGroup, as_str }\nexport fn answer() -> Int {\n  String::length(as_str(TaskGroup::{ first: 7, second: 8 }))\n}\n")
   let got = handle {
-    let _ = compile_file_wasi_only(String::concat(dir, "/main.vibe"), "answer")
+    let _ = compile_file_wasi_only(entry_path = String::concat(dir, "/main.vibe"), entry_name = "answer")
     "accepted"
   } with { Exception::Throw(m) => m }
   inspect(got, String::concat(refusal(), String::concat(" (in ", String::concat(dep, ")"))))
@@ -151,7 +151,7 @@ test "the library lane refuses the spelling" {
   let dir = "/tmp/vibe_owned_head_shape_library"
   Fs::mkdir_p(dir)
   let path = String::concat(dir, "/dep.vibe")
-  write_file(path, "export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn as_str(g: TaskGroup) -> String {\n  g.first\n}\n")
+  write_file(path = path, source = "export struct TaskGroup[rg, e] {\n  first: rg;\n  second: e\n}\n\nexport fn as_str(g: TaskGroup) -> String {\n  g.first\n}\n")
   let got = handle {
     let _ = compile_file_wasi_library(path)
     "accepted"

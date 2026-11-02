@@ -31,14 +31,14 @@ fn placement_restore_expr(expr: Expr, packets: MutMap[Int, Array[Int]], bad: Boo
       // A raw parser/checked-module snapshot can share this cell with the
       // rewritten checked tree. Its canonical flag says nothing about these
       // raw arguments: always reinstall the source-bound expected placement.
-      match MutMap::get(packets, offset) {
+      match MutMap::get(packets, k = offset) {
         Some(payload) => if bad || Array::length(payload) < 2 {
-          call_placement_refuse(cell, true)
+          call_placement_refuse(cell = cell, invalid = true)
         } else {
-          call_placement_install(cell, Array::get(payload, 0), Array::get(payload, 1), Array::slice(payload, 2, Array::length(payload)))
+          call_placement_install(cell = cell, written = Array::get(payload, at = 0), mode = Array::get(payload, at = 1), slots = Array::slice(payload, start = 2, end = Array::length(payload)))
         },
         None => if labeled {
-          call_placement_refuse(cell, bad)
+          call_placement_refuse(cell = cell, invalid = bad)
         } else {
           ()
         }
@@ -50,7 +50,7 @@ fn placement_restore_expr(expr: Expr, packets: MutMap[Int, Array[Int]], bad: Boo
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    placement_restore_expr(expr_child_at(i), packets, bad)
+    placement_restore_expr(expr = expr_child_at(i), packets = packets, bad = bad)
     i = i + 1
   }
   expr_children_pop(mark)
@@ -59,14 +59,14 @@ fn placement_restore_expr(expr: Expr, packets: MutMap[Int, Array[Int]], bad: Boo
 fn placement_restore_stmts(stmts: Array[Stmt], packets: MutMap[Int, Array[Int]], bad: Bool) -> Unit {
   for stmt in stmts {
     match stmt {
-      SLet(_, _, _, _, body) => placement_restore_expr(body, packets, bad),
-      SLetMut(_, _, body) => placement_restore_expr(body, packets, bad),
-      SLetPat(_, body) => placement_restore_expr(body, packets, bad),
-      SExpr(body) => placement_restore_expr(body, packets, bad),
-      STest(_, body) => placement_restore_expr(body, packets, bad),
-      SBench(_, body) => placement_restore_expr(body, packets, bad),
-      SFnDecl(_, _, body, _, _) => placement_restore_expr(body, packets, bad),
-      SModule(_, _, children) => placement_restore_stmts(children, packets, bad),
+      SLet(_, _, _, _, body) => placement_restore_expr(expr = body, packets = packets, bad = bad),
+      SLetMut(_, _, body) => placement_restore_expr(expr = body, packets = packets, bad = bad),
+      SLetPat(_, body) => placement_restore_expr(expr = body, packets = packets, bad = bad),
+      SExpr(body) => placement_restore_expr(expr = body, packets = packets, bad = bad),
+      STest(_, body) => placement_restore_expr(expr = body, packets = packets, bad = bad),
+      SBench(_, body) => placement_restore_expr(expr = body, packets = packets, bad = bad),
+      SFnDecl(_, _, body, _, _) => placement_restore_expr(expr = body, packets = packets, bad = bad),
+      SModule(_, _, children) => placement_restore_stmts(stmts = children, packets = packets, bad = bad),
       _ => ()
     }
   }
@@ -84,7 +84,7 @@ export fn restore_call_placements(stmts: Array[Stmt], rows: Array[Int]) -> Unit 
   let mut packet_count = 0
   let mut i = 0
   while i < Array::length(rows) && !bad {
-    let row = Array::get(rows, i)
+    let row = Array::get(rows, at = i)
     let tag = lowering_row_tag(row)
     if row == 13 {
       available = true
@@ -96,35 +96,35 @@ export fn restore_call_placements(stmts: Array[Stmt], rows: Array[Int]) -> Unit 
       i = i + 1
     } else if tag == 8 && i + 2 < Array::length(rows) {
       let offset = lowering_row_payload(row)
-      let count_row = Array::get(rows, i + 1)
-      let mode_row = Array::get(rows, i + 2)
+      let count_row = Array::get(rows, at = i + 1)
+      let mode_row = Array::get(rows, at = i + 2)
       bad = offset < 0 || lowering_row_tag(count_row) != 9 || lowering_row_tag(mode_row) != 10
       let written = lowering_row_payload(count_row)
       let mode = lowering_row_payload(mode_row)
       let slots: Array[Int] = []
       i = i + 3
-      while i < Array::length(rows) && lowering_row_tag(Array::get(rows, i)) == 11 {
-        Array::push(slots, lowering_row_payload(Array::get(rows, i)))
+      while i < Array::length(rows) && lowering_row_tag(Array::get(rows, at = i)) == 11 {
+        Array::push(slots, value = lowering_row_payload(Array::get(rows, at = i)))
         i = i + 1
       }
       if i >= Array::length(rows) {
         bad = true
-      } else if lowering_row_tag(Array::get(rows, i)) != 12 || lowering_row_payload(Array::get(rows, i)) != offset {
+      } else if lowering_row_tag(Array::get(rows, at = i)) != 12 || lowering_row_payload(Array::get(rows, at = i)) != offset {
         bad = true
-      } else if !call_placement_payload_valid(written, mode, slots) {
+      } else if !call_placement_payload_valid(written = written, mode = mode, slots = slots) {
         bad = true
       } else {
         let payload = [written, mode]
         for slot in slots {
-          Array::push(payload, slot)
+          Array::push(payload, value = slot)
         }
-        match MutMap::get(packets, offset) {
+        match MutMap::get(packets, k = offset) {
           Some(old) => if old != payload {
             bad = true
           } else {
             ()
           },
-          None => MutMap::set(packets, offset, payload)
+          None => MutMap::set(packets, k = offset, v = payload)
         }
         packet_count = packet_count + 1
       }
@@ -137,6 +137,6 @@ export fn restore_call_placements(stmts: Array[Stmt], rows: Array[Int]) -> Unit 
   if declined && !bad {
     ()
   } else {
-    placement_restore_stmts(stmts, packets, bad)
+    placement_restore_stmts(stmts = stmts, packets = packets, bad = bad)
   }
 }

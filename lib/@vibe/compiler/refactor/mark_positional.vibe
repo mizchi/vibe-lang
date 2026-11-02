@@ -30,8 +30,8 @@ import @vibe/parser {
 /// One parameter of a declaration: its first token (where `_ ` goes), whether
 /// it already carries `_`, its name and its type's head identifier.
 fn mp_param(tokens: Array[Token], t: Int, end: Int) -> (Int, Bool, String, String) {
-  let marked = match Array::get(tokens, t) {
-    TIdent(u) => u == "_" && t + 1 < end && match Array::get(tokens, t + 1) {
+  let marked = match Array::get(tokens, at = t) {
+    TIdent(u) => u == "_" && t + 1 < end && match Array::get(tokens, at = t + 1) {
       TIdent(_) => true,
       _ => false
     },
@@ -42,7 +42,7 @@ fn mp_param(tokens: Array[Token], t: Int, end: Int) -> (Int, Bool, String, Strin
   } else {
     t
   }
-  let name = match Array::get(tokens, name_at) {
+  let name = match Array::get(tokens, at = name_at) {
     TIdent(n) => n,
     _ => ""
   }
@@ -50,9 +50,9 @@ fn mp_param(tokens: Array[Token], t: Int, end: Int) -> (Int, Bool, String, Strin
   // then the end of the parameter (or its `= default`). A tuple `(P, Int)`,
   // a function `P -> P` or `() -> P`, and an optional `P?` mention the owner
   // without being it, so they have no head and are not receivers.
-  let head = if name_at + 2 < end && (Array::get(tokens, name_at + 1) is TColon) {
-    match Array::get(tokens, name_at + 2) {
-      TIdent(h) => if mp_type_ends(tokens, mp_skip_brackets(tokens, name_at + 3), end) {
+  let head = if name_at + 2 < end && (Array::get(tokens, at = name_at + 1) is TColon) {
+    match Array::get(tokens, at = name_at + 2) {
+      TIdent(h) => if mp_type_ends(tokens = tokens, t = mp_skip_brackets(tokens = tokens, t = name_at + 3), end = end) {
         h
       } else {
         ""
@@ -65,7 +65,7 @@ fn mp_param(tokens: Array[Token], t: Int, end: Int) -> (Int, Bool, String, Strin
   (t, marked, name, head)
 }
 
-fn mp_opens(t: Token) -> Bool {
+fn mp_opens(_ t: Token) -> Bool {
   match t {
     TLParen => true,
     TLBracket => true,
@@ -74,7 +74,7 @@ fn mp_opens(t: Token) -> Bool {
   }
 }
 
-fn mp_closes(t: Token) -> Bool {
+fn mp_closes(_ t: Token) -> Bool {
   match t {
     TRParen => true,
     TRBracket => true,
@@ -91,13 +91,13 @@ fn mp_params(tokens: Array[Token], paren: Int) -> (Array[(Int, Bool, String, Str
   let mut start = -1
   let mut done = false
   while j < Array::length(tokens) && !done {
-    let t = Array::get(tokens, j)
+    let t = Array::get(tokens, at = j)
     match t {
       TSemicolon => (),
       TEof => done = true,
       TComma => if depth == 0 {
         if start >= 0 {
-          Array::push(out, mp_param(tokens, start, j))
+          Array::push(out, value = mp_param(tokens = tokens, t = start, end = j))
         } else {
           ()
         }
@@ -107,7 +107,7 @@ fn mp_params(tokens: Array[Token], paren: Int) -> (Array[(Int, Bool, String, Str
       },
       _ => if mp_closes(t) && depth == 0 {
         if start >= 0 {
-          Array::push(out, mp_param(tokens, start, j))
+          Array::push(out, value = mp_param(tokens = tokens, t = start, end = j))
         } else {
           ()
         }
@@ -135,17 +135,17 @@ fn mp_params(tokens: Array[Token], paren: Int) -> (Array[(Int, Bool, String, Str
 /// Whether the parameter's type ends at `t`: the parameter itself ends there,
 /// or its default value starts there.
 fn mp_type_ends(tokens: Array[Token], t: Int, end: Int) -> Bool {
-  t >= end || (Array::get(tokens, t) is TEq)
+  t >= end || (Array::get(tokens, at = t) is TEq)
 }
 
 /// Past a balanced `[ .. ]` starting at `t`, or `t` itself.
 fn mp_skip_brackets(tokens: Array[Token], t: Int) -> Int {
-  match Array::get(tokens, t) {
+  match Array::get(tokens, at = t) {
     TLBracket => {
       let mut j = t + 1
       let mut depth = 1
       while j < Array::length(tokens) && depth > 0 {
-        match Array::get(tokens, j) {
+        match Array::get(tokens, at = j) {
           TLBracket => depth = depth + 1,
           TRBracket => depth = depth - 1,
           TEof => depth = 0,
@@ -171,18 +171,18 @@ export fn mark_positional(path: String, source: String) -> MarkPositionalResult 
   let lines: Array[String] = []
   let mut i = 0
   while i < Array::length(tokens) {
-    match Array::get(tokens, i) {
+    match Array::get(tokens, at = i) {
       TFn => {
         // The name: identifiers joined by `::`.
         let mut j = i + 1
         let segments: Array[String] = []
         let mut more = true
         while more && j < Array::length(tokens) {
-          match Array::get(tokens, j) {
+          match Array::get(tokens, at = j) {
             TIdent(s) => {
-              Array::push(segments, s)
+              Array::push(segments, value = s)
               j = j + 1
-              match Array::get(tokens, j) {
+              match Array::get(tokens, at = j) {
                 TDoubleColon => j = j + 1,
                 _ => more = false
               }
@@ -190,26 +190,26 @@ export fn mark_positional(path: String, source: String) -> MarkPositionalResult 
             _ => more = false
           }
         }
-        let at_paren = mp_skip_brackets(tokens, j)
-        let opens = at_paren < Array::length(tokens) && match Array::get(tokens, at_paren) {
+        let at_paren = mp_skip_brackets(tokens = tokens, t = j)
+        let opens = at_paren < Array::length(tokens) && match Array::get(tokens, at = at_paren) {
           TLParen => true,
           _ => false
         }
         if opens && Array::length(segments) > 0 {
-          let (params, after) = mp_params(tokens, at_paren)
+          let (params, after) = mp_params(tokens = tokens, paren = at_paren)
           let n = Array::length(params)
           let owner = if Array::length(segments) >= 2 {
-            Array::get(segments, Array::length(segments) - 2)
+            Array::get(segments, at = Array::length(segments) - 2)
           } else {
             ""
           }
           if n >= 1 {
-            let (first_at, marked, pname, head) = Array::get(params, 0)
+            let (first_at, marked, pname, head) = Array::get(params, at = 0)
             let receiver = String::length(owner) > 0 && head == owner
             if !marked && pname != "_" && String::length(pname) > 0 && (receiver || n == 1) {
-              Array::push(inserts, Array::get(starts, first_at))
-              let (line, col) = offset_to_line_col(source, Array::get(starts, first_at))
-              Array::push(lines, path + ":" + __to_string(line) + ":" + __to_string(col) + ": " + String::join(segments, "::") + " " + pname + (if receiver {
+              Array::push(inserts, value = Array::get(starts, at = first_at))
+              let (line, col) = offset_to_line_col(source = source, offset = Array::get(starts, at = first_at))
+              Array::push(lines, value = path + ":" + __to_string(line) + ":" + __to_string(col) + ": " + String::join(segments, sep = "::") + " " + pname + (if receiver {
                 " (receiver)"
               } else {
                 " (single parameter)"
@@ -232,11 +232,11 @@ export fn mark_positional(path: String, source: String) -> MarkPositionalResult 
   let out = StringBuilder::new()
   let mut prev = 0
   for at in inserts {
-    StringBuilder::push(out, source[prev: at])
-    StringBuilder::push(out, "_ ")
+    StringBuilder::push(out, value = source[prev: at])
+    StringBuilder::push(out, value = "_ ")
     prev = at
   }
-  StringBuilder::push(out, source[prev: String::length(source)])
+  StringBuilder::push(out, value = source[prev: String::length(source)])
   MarkPositionalResult::{
     source: StringBuilder::freeze(out),
     marked: Array::length(inserts),

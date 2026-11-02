@@ -178,7 +178,7 @@ import ./checker_stmt_unknown_effect_label_errors.vibe {
 export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
   call_placement_capture_begin()
   handle {
-    let checked = check_program_source_impl(stmts, capture, role_lane_capture)
+    let checked = check_program_source_impl(stmts = stmts, capture = capture, role_lane_capture = role_lane_capture)
     call_placement_capture_end()
     checked
   } with { Exception::Throw(message) => {
@@ -189,7 +189,7 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
 fn check_program_source_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
   let errors = ArrayBuilder::new()
   let frozen_errors = ArrayBuilder::freeze(errors)
-  push_error_strings(collect_trait_namespace_conflict_errors(stmts, EnvEmpty), frozen_errors)
+  push_error_strings(msgs = collect_trait_namespace_conflict_errors(stmts = stmts, env = EnvEmpty), errors = frozen_errors)
   derive_trait_namespace_operations(stmts)
   // Rank-1 method generics (#684): re-attach trait-method `[X: Bound]` binders
   // to impl free functions before checking, so `X::method` in an impl body
@@ -202,20 +202,20 @@ fn check_program_source_impl(stmts: Array[Stmt], capture: Option[CheckerStatemen
   // type-checks first). In-place, idempotent, inert without `let*`/`?`.
   desugar_railway_binds(stmts)
   canonicalize_stdin_provider_type_import_heads(stmts)
-  collect_stdin_provider_direct_call_errors(stmts, frozen_errors)
+  collect_stdin_provider_direct_call_errors(stmts = stmts, errors = frozen_errors)
   // #3086: a value binder spelled like a constructor, before the check reads
   // the program under two meanings of that name.
-  collect_constructor_binder_errors(stmts, EnvEmpty, frozen_errors)
+  collect_constructor_binder_errors(stmts = stmts, env = EnvEmpty, errors = frozen_errors)
   // #3073: a derive whose generated code would call an operation that a
   // field's declared type does not provide.
-  collect_derive_field_errors(stmts, EnvEmpty, frozen_errors)
+  collect_derive_field_errors(stmts = stmts, env = EnvEmpty, errors = frozen_errors)
   // #1455 step 3: the `Enum::Variant` pattern qualifiers the parser folded into
   // a trailing `SQualifiedPatternRefs` marker (see attach_qualified_pattern_refs).
   // Collected up front; validating them needs the enum table, which only exists
   // once check_stmts_with_binders below has run.
   let qualified_pattern_refs = collect_qualified_pattern_refs(stmts)
   checker_call_header_flow_begin()
-  checker_check_default_declarations(stmts, frozen_errors)
+  checker_check_default_declarations(stmts = stmts, errors = frozen_errors)
   // #1571: expand `inspect(..)` here, before the checker and before every
   // pre-codegen scan, so the snapshot assertion is import-free (see
   // desugar_inspect_calls).
@@ -226,20 +226,20 @@ fn check_program_source_impl(stmts: Array[Stmt], capture: Option[CheckerStatemen
   // lowers it. An alternative that binds a name stays whole, to be refused.
   // The arms it took are kept, by the group id it stamps on their copies,
   // for the check after typing.
-  split_handler_or_arms(stmts, false)
-  let handler_or_arms = Array::slice(handler_or_arm_groups(), 0, Array::length(handler_or_arm_groups()))
+  split_handler_or_arms(stmts = stmts, with_binders = false)
+  let handler_or_arms = Array::slice(handler_or_arm_groups(), start = 0, end = Array::length(handler_or_arm_groups()))
   // #1962 (Option 1): a direct host-builtin call inside a `handle` whose arms
   // name the same operation becomes `perform <Op>(..)`. BEFORE checking, so
   // the effect row the checker computes is the one the program actually has.
   desugar_handled_host_calls(stmts)
   // #2141: loud guard at the binder, before checking -- see the pass doc.
-  collect_type_param_shadowing_errors(stmts, frozen_errors)
+  collect_type_param_shadowing_errors(stmts = stmts, errors = frozen_errors)
   let empty_defs = array_empty()
   let type_def_binders = array_empty()
-  let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
+  let seeded_raw_env = if trait_defined(env = EnvEmpty, name = "Eq") {
     EnvEmpty
   } else {
-    register_builtin_traits_for(EnvEmpty, builtin_seed_withheld(stmts, EnvEmpty))
+    register_builtin_traits_for(env = EnvEmpty, withheld = builtin_seed_withheld(stmts = stmts, env = EnvEmpty))
   }
   let seeded_env = env_cache(seeded_raw_env)
   let tytab = array_empty()
@@ -261,7 +261,7 @@ fn check_program_source_impl(stmts: Array[Stmt], capture: Option[CheckerStatemen
   // effectset actually covers it. A non-mutating copy (stmts itself, and
   // whatever the caller does with it after check_program returns, are
   // unaffected) is enough: codegen never reads the row's text content.
-  let expanded_stmts = es_expand_top_level_effectset_rows(stmts, EnvEmpty)
+  let expanded_stmts = es_expand_top_level_effectset_rows(stmts = stmts, initial_env = EnvEmpty)
   let statement_parent_path = match capture {
     Some(_) => Some(array_empty()),
     None => match role_lane_capture {
@@ -271,46 +271,46 @@ fn check_program_source_impl(stmts: Array[Stmt], capture: Option[CheckerStatemen
   }
   // #3042: the prelude `Ordering`, checked ahead of the module's own
   // declarations (see seed_prelude_ordering).
-  let (prelude_env, prelude_defs_start, prelude_next_c) = seed_prelude_ordering(expanded_stmts, seeded_env, empty_defs, type_def_binders, 0, 0, frozen_errors, tytab)
+  let (prelude_env, prelude_defs_start, prelude_next_c) = seed_prelude_ordering(stmts = expanded_stmts, env = seeded_env, defs = empty_defs, type_def_binders = type_def_binders, local_defs_start = 0, c = 0, errors = frozen_errors, tytab = tytab)
   // #3520: bound sites are recorded per program; see bound_var_sites.
   reset_bound_var_sites()
   // #3548: so are impl heads; see impl_heads_seen.
   reset_impl_heads_seen()
-  let (env, final_s0, _) = check_stmts_with_binders(expanded_stmts, 0, prelude_env, empty_defs, type_def_binders, prelude_defs_start, SubstEmpty, prelude_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false, true)
+  let (env, final_s0, _) = check_stmts_with_binders(raw_stmts = expanded_stmts, i = 0, env = prelude_env, defs = empty_defs, type_def_binders = type_def_binders, local_defs_start = prelude_defs_start, s = SubstEmpty, c = prelude_next_c, errors = frozen_errors, tytab = tytab, statement_parent_path = statement_parent_path, capture = capture, role_lane_capture = role_lane_capture, imports_already_projected = false, validate_completed_decls = true)
   // #2848: field reads whose receiver was still unsolved at every function
   // end are judged once more under the final substitution, which comes back
   // extended by the resolved reads' result variables -- BEFORE the bound
   // check, so a bound attached to a read's result is validated against the
   // field's real type rather than skipped as an unresolved variable (Codex on
   // #2864, round 3).
-  let final_s = resolve_deferred_field_reads(final_s0, empty_defs, frozen_errors, false)
-  check_program_bounds(env, final_s, empty_defs, frozen_errors)
+  let final_s = resolve_deferred_field_reads(s = final_s0, defs = empty_defs, errors = frozen_errors, open_only = false)
+  check_program_bounds(env = env, s = final_s, defs = empty_defs, errors = frozen_errors)
   // #3549: `derive (Eq)` over a field that holds a function.
-  collect_derive_eq_function_errors(stmts, empty_defs, frozen_errors)
+  collect_derive_eq_function_errors(stmts = stmts, defs = empty_defs, errors = frozen_errors)
   // #1858: a bounded generic whose body calls `T::m` but whose signature has
   // no witness-carrying parameter would sail through checking and ICE in
   // codegen (`T::m reached code generation unresolved`) — reject it here with
   // an actionable message instead. The capability predicate lives next to
   // build_gens in desugar_trait_dict.vibe.
-  push_error_strings(collect_undispatchable_trait_method_errors(stmts, env), frozen_errors)
+  push_error_strings(msgs = collect_undispatchable_trait_method_errors(stmts = stmts, env = env), errors = frozen_errors)
   publish_throw_site_kinds(final_s)
   // These publication walks share one completed substitution. Index its
   // read view once; the observation still publishes the original final_s.
   let formal_s = callee_formal_query_subst(final_s)
-  set_call_formal_bindings(callee_formal_bindings(empty_defs, formal_s))
-  set_call_formal_marked_bindings(callee_formal_marked_bindings(empty_defs, formal_s))
+  set_call_formal_bindings(callee_formal_bindings(defs = empty_defs, s = formal_s))
+  set_call_formal_marked_bindings(callee_formal_marked_bindings(defs = empty_defs, s = formal_s))
   set_shadowed_builtin_type_names(builtin_named_type_params(stmts))
-  set_row_nominal_types(row_nominal_type_names(stmts, env, empty_defs))
-  collect_async_effect_errors(expanded_stmts, env, empty_defs, frozen_errors)
+  set_row_nominal_types(row_nominal_type_names(stmts = stmts, env = env, defs = empty_defs))
+  collect_async_effect_errors(stmts = expanded_stmts, env = env, defs = empty_defs, frozen_errors = frozen_errors)
   // #3601: the kinds each function's erased row lets out beyond the message,
   // published for the modules that import it (`erased_kinds_marker`).
-  let env = env_bind_erased_kinds(env, expanded_stmts)
+  let env = env_bind_erased_kinds(env = env, stmts = expanded_stmts)
   // #1455 step 3: `empty_defs` is the finished enum table by now, so the
   // qualifiers drained above can finally be checked against it.
-  check_qualified_pattern_refs(qualified_pattern_refs, empty_defs, frozen_errors)
+  check_qualified_pattern_refs(refs = qualified_pattern_refs, defs = empty_defs, errors = frozen_errors)
   // #3301: and every effect's operations, so an or-pattern arm whose
   // `resume` the split typed at two types can be refused.
-  check_handler_or_arm_resume_types(handler_or_arms, empty_defs, final_s, frozen_errors)
+  check_handler_or_arm_resume_types(groups = handler_or_arms, defs = empty_defs, final_s = final_s, errors = frozen_errors)
   // The split's group stamps are the checker's alone.
   erase_handler_or_arm_stamps(stmts)
   if Array::length(frozen_errors) > 0 {
@@ -323,7 +323,7 @@ fn check_program_source_impl(stmts: Array[Stmt], capture: Option[CheckerStatemen
     // The parse lane has joined its diagnostics with `\n` since #1567 for
     // exactly this reason, and every locate/prefix site downstream maps over
     // the lines.
-    throw(String::join(dedupe_error_lines(frozen_errors), "\n"))
+    throw(String::join(dedupe_error_lines(frozen_errors), sep = "\n"))
   }
   // #1947: `__try_none` is a checker-only origin marker. Codegen resolves
   // constructors by name and would ICE on it (`reached code generation
@@ -348,7 +348,7 @@ fn direct_paths_equal(left: Array[Int], right: Array[Int]) -> Bool {
     let mut i = 0
     let mut same = true
     while i < Array::length(left) {
-      if Array::get(left, i) != Array::get(right, i) {
+      if Array::get(left, at = i) != Array::get(right, at = i) {
         same = false
       } else {
         ()
@@ -363,12 +363,12 @@ fn direct_paths_equal(left: Array[Int], right: Array[Int]) -> Bool {
 /// delimiters make `[1, 23]`, `[12, 3]`, and signed coordinates distinct.
 /// This is a complete coordinate value, never a hash used as an identity.
 fn direct_coordinate_key_push_path(out: StringBuilder, path: Array[Int]) -> Unit {
-  StringBuilder::push(out, __to_string(Array::length(path)))
-  StringBuilder::push(out, ":")
+  StringBuilder::push(out, value = __to_string(Array::length(path)))
+  StringBuilder::push(out, value = ":")
   let mut i = 0
   while i < Array::length(path) {
-    StringBuilder::push(out, __to_string(Array::get(path, i)))
-    StringBuilder::push(out, ":")
+    StringBuilder::push(out, value = __to_string(Array::get(path, at = i)))
+    StringBuilder::push(out, value = ":")
     i = i + 1
   }
 }
@@ -377,10 +377,10 @@ fn direct_coordinate_key_push_path(out: StringBuilder, path: Array[Int]) -> Unit
 /// The tags prevent the two independently length-prefixed paths from merging.
 fn direct_coordinate_key(statement_path: Array[Int], expression_path: Array[Int]) -> String {
   let out = StringBuilder::new()
-  StringBuilder::push(out, "S")
-  direct_coordinate_key_push_path(out, statement_path)
-  StringBuilder::push(out, "E")
-  direct_coordinate_key_push_path(out, expression_path)
+  StringBuilder::push(out, value = "S")
+  direct_coordinate_key_push_path(out = out, path = statement_path)
+  StringBuilder::push(out, value = "E")
+  direct_coordinate_key_push_path(out = out, path = expression_path)
   StringBuilder::freeze(out)
 }
 
@@ -403,10 +403,10 @@ export fn direct_expression_return_observation_from_capture(checked: CheckedProg
         let direct_keys = array_empty()
         let mut i = 0
         while i < Array::length(skeleton) {
-          let (statement_path, expression_path, _) = Array::get(skeleton, i)
-          let (direct_statement_path, direct_expression_path, _) = Array::get(capture.direct_entries, i)
-          Array::push(skeleton_keys, direct_coordinate_key(statement_path, expression_path))
-          Array::push(direct_keys, direct_coordinate_key(direct_statement_path, direct_expression_path))
+          let (statement_path, expression_path, _) = Array::get(skeleton, at = i)
+          let (direct_statement_path, direct_expression_path, _) = Array::get(capture.direct_entries, at = i)
+          Array::push(skeleton_keys, value = direct_coordinate_key(statement_path = statement_path, expression_path = expression_path))
+          Array::push(direct_keys, value = direct_coordinate_key(statement_path = direct_statement_path, expression_path = direct_expression_path))
           i = i + 1
         }
         let skeleton_perm = sort_perm_by_names(skeleton_keys)
@@ -414,24 +414,24 @@ export fn direct_expression_return_observation_from_capture(checked: CheckedProg
         let direct_index_for_skeleton = array_empty()
         let mut fill = 0
         while fill < Array::length(skeleton) {
-          Array::push(direct_index_for_skeleton, -1)
+          Array::push(direct_index_for_skeleton, value = -1)
           fill = fill + 1
         }
         let mut sorted = 0
         let mut valid = true
         while sorted < Array::length(skeleton) && valid {
-          let skeleton_index = Array::get(skeleton_perm, sorted)
-          let direct_index = Array::get(direct_perm, sorted)
-          let skeleton_key = Array::get(skeleton_keys, skeleton_index)
-          let direct_key = Array::get(direct_keys, direct_index)
-          let duplicate_skeleton = sorted > 0 && skeleton_key == Array::get(skeleton_keys, Array::get(skeleton_perm, sorted - 1))
-          let duplicate_direct = sorted > 0 && direct_key == Array::get(direct_keys, Array::get(direct_perm, sorted - 1))
-          let (statement_path, expression_path, _) = Array::get(skeleton, skeleton_index)
-          let (actual_statement_path, actual_expression_path, _) = Array::get(capture.direct_entries, direct_index)
-          if duplicate_skeleton || duplicate_direct || skeleton_key != direct_key || !direct_paths_equal(statement_path, actual_statement_path) || !direct_paths_equal(expression_path, actual_expression_path) {
+          let skeleton_index = Array::get(skeleton_perm, at = sorted)
+          let direct_index = Array::get(direct_perm, at = sorted)
+          let skeleton_key = Array::get(skeleton_keys, at = skeleton_index)
+          let direct_key = Array::get(direct_keys, at = direct_index)
+          let duplicate_skeleton = sorted > 0 && skeleton_key == Array::get(skeleton_keys, at = Array::get(skeleton_perm, at = sorted - 1))
+          let duplicate_direct = sorted > 0 && direct_key == Array::get(direct_keys, at = Array::get(direct_perm, at = sorted - 1))
+          let (statement_path, expression_path, _) = Array::get(skeleton, at = skeleton_index)
+          let (actual_statement_path, actual_expression_path, _) = Array::get(capture.direct_entries, at = direct_index)
+          if duplicate_skeleton || duplicate_direct || skeleton_key != direct_key || !direct_paths_equal(left = statement_path, right = actual_statement_path) || !direct_paths_equal(left = expression_path, right = actual_expression_path) {
             valid = false
           } else {
-            Array::set(direct_index_for_skeleton, skeleton_index, direct_index)
+            Array::set(direct_index_for_skeleton, at = skeleton_index, value = direct_index)
           }
           sorted = sorted + 1
         }
@@ -439,9 +439,9 @@ export fn direct_expression_return_observation_from_capture(checked: CheckedProg
           let entries = array_empty()
           let mut row = 0
           while row < Array::length(skeleton) {
-            let (statement_path, expression_path, _) = Array::get(skeleton, row)
-            let (_, _, ty) = Array::get(capture.direct_entries, Array::get(direct_index_for_skeleton, row))
-            Array::push(entries, (copy_ints(statement_path), copy_ints(expression_path), ty))
+            let (statement_path, expression_path, _) = Array::get(skeleton, at = row)
+            let (_, _, ty) = Array::get(capture.direct_entries, at = Array::get(direct_index_for_skeleton, at = row))
+            Array::push(entries, value = (copy_ints(statement_path), copy_ints(expression_path), ty))
             row = row + 1
           }
           Some(CheckedDirectExpressionReturnObservation::{
@@ -479,31 +479,31 @@ export fn direct_expression_return_capture() -> TypedOccurrenceRoleLaneCapture {
 
 /// Run the production checker once and expose retained type-definition binder
 /// provenance for canonical observation.
-export fn check_program_type_defs_observation(stmts: Array[Stmt]) -> CheckedProgramTypeDefsObservation with Exception {
-  check_program_type_defs_observation_impl(stmts, None, None)
+export fn check_program_type_defs_observation(_ stmts: Array[Stmt]) -> CheckedProgramTypeDefsObservation with Exception {
+  check_program_type_defs_observation_impl(stmts = stmts, capture = None, role_lane_capture = None)
 }
 
 /// Observe every legacy typed-occurrence row at checker time by its owning
 /// retained statement. Paths are relative only to this post-desugar
 /// CheckedProgram; they are not original-source or edit-stable coordinates.
-export fn check_program_typed_occurrence_statement_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceStatementObservation] with Exception {
+export fn check_program_typed_occurrence_statement_observation(_ stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceStatementObservation] with Exception {
   let entries = array_empty()
-  let checked = check_program_type_defs_observation_impl(stmts, Some(StatementTypedOccurrences(entries)), None).checked_program
-  typed_occurrence_statement_observation_from_capture(checked, entries)
+  let checked = check_program_type_defs_observation_impl(stmts = stmts, capture = Some(StatementTypedOccurrences(entries)), role_lane_capture = None).checked_program
+  typed_occurrence_statement_observation_from_capture(checked = checked, entries = entries)
 }
 
 /// Capture the direct checker-returned root type for every retained
 /// expression-bearing statement. Marker or alignment failures are hidden as
 /// None so no partial observation escapes.
-export fn check_program_statement_root_type_observation(stmts: Array[Stmt]) -> Option[CheckedStatementRootTypeObservation] with Exception {
+export fn check_program_statement_root_type_observation(_ stmts: Array[Stmt]) -> Option[CheckedStatementRootTypeObservation] with Exception {
   let entries = array_empty()
-  let checked = check_program_type_defs_observation_impl(stmts, Some(StatementRootTypes(entries)), None).checked_program
-  statement_root_type_observation_from_capture(checked, entries)
+  let checked = check_program_type_defs_observation_impl(stmts = stmts, capture = Some(StatementRootTypes(entries)), role_lane_capture = None).checked_program
+  statement_root_type_observation_from_capture(checked = checked, entries = entries)
 }
 
 /// Append-time role/lane capture. Failure or an alignment mismatch is hidden as
 /// None, so no partial observation can escape.
-export fn check_program_typed_occurrence_role_lane_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with Exception {
+export fn check_program_typed_occurrence_role_lane_observation(_ stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with Exception {
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
     entries_flags: array_empty(),
@@ -522,13 +522,13 @@ export fn check_program_typed_occurrence_role_lane_observation(stmts: Array[Stmt
     frame_depth: 0,
     complete: true
   }
-  let checked = check_program_type_defs_observation_impl(stmts, None, Some(entries)).checked_program
-  typed_occurrence_role_lane_observation_from_capture(checked, entries)
+  let checked = check_program_type_defs_observation_impl(stmts = stmts, capture = None, role_lane_capture = Some(entries)).checked_program
+  typed_occurrence_role_lane_observation_from_capture(checked = checked, entries = entries)
 }
 
 /// Complete-or-none structural expression-path provenance. Synthetic rewrites
 /// and auxiliary resume-value rechecks deliberately make this return None.
-export fn check_program_typed_occurrence_expression_path_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceExpressionPathObservation] with Exception {
+export fn check_program_typed_occurrence_expression_path_observation(_ stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceExpressionPathObservation] with Exception {
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
     entries_flags: array_empty(),
@@ -547,27 +547,27 @@ export fn check_program_typed_occurrence_expression_path_observation(stmts: Arra
     frame_depth: 0,
     complete: true
   }
-  let checked = check_program_type_defs_observation_impl(stmts, None, Some(entries)).checked_program
-  typed_occurrence_expression_path_observation_from_capture(checked, entries)
+  let checked = check_program_type_defs_observation_impl(stmts = stmts, capture = None, role_lane_capture = Some(entries)).checked_program
+  typed_occurrence_expression_path_observation_from_capture(checked = checked, entries = entries)
 }
 
 /// Opt-in complete direct-primary return observation. The bounded retained
 /// skeleton is preflighted before checking; unsupported routes return None only
 /// after a successful ordinary checker run.
-export fn check_program_direct_expression_return_observation(stmts: Array[Stmt]) -> Option[CheckedDirectExpressionReturnObservation] with Exception {
+export fn check_program_direct_expression_return_observation(_ stmts: Array[Stmt]) -> Option[CheckedDirectExpressionReturnObservation] with Exception {
   match checked_expression_structure_rows(stmts) {
     None => None,
     Some(_) => {
       let capture = direct_expression_return_capture()
-      let checked = check_program_type_defs_observation_impl(stmts, Some(StatementDirectExpressionReturns), Some(capture)).checked_program
-      direct_expression_return_observation_from_capture(checked, capture)
+      let checked = check_program_type_defs_observation_impl(stmts = stmts, capture = Some(StatementDirectExpressionReturns), role_lane_capture = Some(capture)).checked_program
+      direct_expression_return_observation_from_capture(checked = checked, capture = capture)
     }
   }
 }
 
 /// Successful production-check result, preserving the original public shape.
-export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with Exception {
-  check_program_type_defs_observation_impl(stmts, None, None).checked_program
+export fn check_program_result(_ stmts: Array[Stmt]) -> CheckedProgram with Exception {
+  check_program_type_defs_observation_impl(stmts = stmts, capture = None, role_lane_capture = None).checked_program
 }
 
 /// ONE process-wide entries-only capture for the Double observations, reset
@@ -581,18 +581,18 @@ let shared_double_call_capture: TypedOccurrenceRoleLaneCapture = double_call_res
 
 export fn reset_double_call_capture() -> TypedOccurrenceRoleLaneCapture {
   let capture = shared_double_call_capture
-  Array::truncate(capture.entries, 0)
-  Array::truncate(capture.entries_flags, 0)
-  Array::truncate(capture.binop_offsets, 0)
-  Array::truncate(capture.binop_kinds, 0)
-  Array::truncate(capture.binop_types, 0)
-  Array::truncate(capture.provenance_entries, 0)
-  Array::truncate(capture.statement_path, 0)
-  Array::truncate(capture.frame_paths, 0)
-  Array::truncate(capture.frame_next_children, 0)
-  Array::truncate(capture.frame_expected_children, 0)
-  Array::truncate(capture.frame_direct_recorded, 0)
-  Array::truncate(capture.direct_entries, 0)
+  Array::truncate(capture.entries, length = 0)
+  Array::truncate(capture.entries_flags, length = 0)
+  Array::truncate(capture.binop_offsets, length = 0)
+  Array::truncate(capture.binop_kinds, length = 0)
+  Array::truncate(capture.binop_types, length = 0)
+  Array::truncate(capture.provenance_entries, length = 0)
+  Array::truncate(capture.statement_path, length = 0)
+  Array::truncate(capture.frame_paths, length = 0)
+  Array::truncate(capture.frame_next_children, length = 0)
+  Array::truncate(capture.frame_expected_children, length = 0)
+  Array::truncate(capture.frame_direct_recorded, length = 0)
+  Array::truncate(capture.direct_entries, length = 0)
   capture.frame_depth = 0
   capture.complete = true
   capture
@@ -640,7 +640,7 @@ export fn double_call_result_offsets_from_capture(checked: CheckedProgram, captu
     let mut located_primary_calls = 0
     let mut i = 0
     while i < Array::length(checked.typed_occurrences) {
-      let (off, raw_ty) = Array::get(checked.typed_occurrences, i)
+      let (off, raw_ty) = Array::get(checked.typed_occurrences, at = i)
       // The primary-call-result test comes FIRST, and the type query is the
       // cheap head form. Both are about cost, and the cost is not
       // incidental: this loop used to resolve EVERY typed occurrence through
@@ -651,15 +651,15 @@ export fn double_call_result_offsets_from_capture(checked: CheckedProgram, captu
       // `lib/@vibe/compiler/tests/compiler_fs_test.vibe` (import closure:
       // the whole compiler), compiling it went 6.1s -> 77.5s with the old
       // shape and back to a small delta with this one.
-      if Array::get(capture.entries_flags, i) == 1 {
+      if Array::get(capture.entries_flags, at = i) == 1 {
         primary_calls = primary_calls + 1
         if off >= 0 {
           located_primary_calls = located_primary_calls + 1
-          if subst_resolves_to_double(checked.final_subst, raw_ty) {
+          if subst_resolves_to_double(s = checked.final_subst, ty = raw_ty) {
             let mut seen = false
             let mut j = 0
             while j < Array::length(out) {
-              if Array::get(out, j) == off {
+              if Array::get(out, at = j) == off {
                 seen = true
                 j = Array::length(out)
               } else {
@@ -667,7 +667,7 @@ export fn double_call_result_offsets_from_capture(checked: CheckedProgram, captu
               }
             }
             if !seen {
-              Array::push(out, off)
+              Array::push(out, value = off)
             }
           } else {
             ()
@@ -712,16 +712,16 @@ export fn double_call_result_offsets_from_capture(checked: CheckedProgram, captu
       let poisoned: Array[Bool] = []
       let mut d = 0
       while d < Array::length(sorted_doubles) {
-        Array::push(poisoned, false)
+        Array::push(poisoned, value = false)
         d = d + 1
       }
       let mut p = 0
       while p < Array::length(checked.typed_occurrences) {
-        let (poff, praw) = Array::get(checked.typed_occurrences, p)
-        if Array::get(capture.entries_flags, p) == 1 && poff >= 0 {
-          let idx = irc_index_of(sorted_doubles, poff)
-          if idx >= 0 && !subst_resolves_to_double(checked.final_subst, praw) {
-            Array::set(poisoned, idx, true)
+        let (poff, praw) = Array::get(checked.typed_occurrences, at = p)
+        if Array::get(capture.entries_flags, at = p) == 1 && poff >= 0 {
+          let idx = irc_index_of(sorted = sorted_doubles, v = poff)
+          if idx >= 0 && !subst_resolves_to_double(s = checked.final_subst, ty = praw) {
+            Array::set(poisoned, at = idx, value = true)
           } else {
             ()
           }
@@ -736,9 +736,9 @@ export fn double_call_result_offsets_from_capture(checked: CheckedProgram, captu
       let keep: Array[Int] = []
       let mut k = 0
       while k < Array::length(out) {
-        let off = Array::get(out, k)
-        if !Array::get(poisoned, irc_index_of(sorted_doubles, off)) {
-          Array::push(keep, off)
+        let off = Array::get(out, at = k)
+        if !Array::get(poisoned, at = irc_index_of(sorted = sorted_doubles, v = off)) {
+          Array::push(keep, value = off)
         } else {
           ()
         }
@@ -774,13 +774,13 @@ export fn string_binop_offsets_from_capture(checked: CheckedProgram, capture: Ty
   let n = Array::length(capture.binop_offsets)
   let mut i = 0
   while i + 1 < n {
-    let off = Array::get(capture.binop_offsets, i)
-    let kind = Array::get(capture.binop_kinds, i)
+    let off = Array::get(capture.binop_offsets, at = i)
+    let kind = Array::get(capture.binop_kinds, at = i)
     // Kind 3 (`==` / `!=`, #2441) shares the capture arrays but has its own
     // extraction (eq_binop_type_keys_from_capture below); the String tables
     // read only the relational/`+` kinds.
     if kind == 1 || kind == 2 {
-      let is_string = subst_resolves_to_string(checked.final_subst, Array::get(capture.binop_types, i)) || subst_resolves_to_string(checked.final_subst, Array::get(capture.binop_types, i + 1))
+      let is_string = subst_resolves_to_string(s = checked.final_subst, ty = Array::get(capture.binop_types, at = i)) || subst_resolves_to_string(s = checked.final_subst, ty = Array::get(capture.binop_types, at = i + 1))
       let key = off * 4 + kind
       let verdict = if is_string {
         1
@@ -790,7 +790,7 @@ export fn string_binop_offsets_from_capture(checked: CheckedProgram, capture: Ty
       let mut idx = 0 - 1
       let mut k = 0
       while k < Array::length(keys) {
-        if Array::get(keys, k) == key {
+        if Array::get(keys, at = k) == key {
           idx = k
           k = Array::length(keys)
         } else {
@@ -798,11 +798,11 @@ export fn string_binop_offsets_from_capture(checked: CheckedProgram, capture: Ty
         }
       }
       if idx < 0 {
-        Array::push(keys, key)
-        Array::push(verdicts, verdict)
-        Array::push(poisoned, false)
-      } else if Array::get(verdicts, idx) != verdict {
-        Array::set(poisoned, idx, true)
+        Array::push(keys, value = key)
+        Array::push(verdicts, value = verdict)
+        Array::push(poisoned, value = false)
+      } else if Array::get(verdicts, at = idx) != verdict {
+        Array::set(poisoned, at = idx, value = true)
       } else {
         ()
       }
@@ -813,13 +813,13 @@ export fn string_binop_offsets_from_capture(checked: CheckedProgram, capture: Ty
   }
   let mut out_i = 0
   while out_i < Array::length(keys) {
-    if Array::get(verdicts, out_i) == 1 && !Array::get(poisoned, out_i) {
-      let key = Array::get(keys, out_i)
+    if Array::get(verdicts, at = out_i) == 1 && !Array::get(poisoned, at = out_i) {
+      let key = Array::get(keys, at = out_i)
       let off = key / 4
       if key - off * 4 == 1 {
-        Array::push(rels, off)
+        Array::push(rels, value = off)
       } else {
-        Array::push(pluses, off)
+        Array::push(pluses, value = off)
       }
     } else {
       ()
@@ -835,8 +835,8 @@ export fn string_binop_offsets_from_capture(checked: CheckedProgram, capture: Ty
 /// forall, a record, a compiler-internal `#hkt`/`#ctor.` spelling -- and the
 /// row is simply absent (the syntactic classifiers stay in charge, which is
 /// today's behavior; absent, never wrong).
-export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
-  eq_channel_type_expr_impl(ty, None)
+export fn eq_channel_type_expr(_ ty: Type) -> Option[TypeExpr] {
+  eq_channel_type_expr_impl(ty = ty, fill_defs = None)
 }
 
 /// #3283: the `==` row extraction's lowering. It differs from
@@ -905,13 +905,13 @@ export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
 /// `fixtures/structural_eq_kinded_ctor_arg_test.vibe` pins that generation
 /// succeeds for all three routes.
 fn eq_channel_row_type_expr(ty: Type, defs: Array[TypeDef]) -> Option[TypeExpr] {
-  eq_channel_type_expr_impl(ty, Some(defs))
+  eq_channel_type_expr_impl(ty = ty, fill_defs = Some(defs))
 }
 
 /// `fill_defs`: `None` lowers every variable to an absent row; `Some(defs)`
 /// fills a free type argument as `eq_channel_row_type_expr` describes.
 fn eq_channel_type_expr_impl(ty: Type, fill_defs: Option[Array[TypeDef]]) -> Option[TypeExpr] {
-  eq_channel_type_expr_at(ty, fill_defs, false)
+  eq_channel_type_expr_at(ty = ty, fill_defs = fill_defs, in_arg = false)
 }
 
 /// `in_arg`: `ty` sits somewhere inside a type argument of a named head. With
@@ -928,15 +928,15 @@ fn eq_channel_type_expr_at(ty: Type, fill_defs: Option[Array[TypeDef]], in_arg: 
     CtChar => Some(TyName("Char")),
     CtBytes => Some(TyName("Bytes")),
     CtUnit => Some(TyUnit),
-    CtTuple(items) => match eq_channel_type_exprs(items, fill_defs, in_arg) {
+    CtTuple(items) => match eq_channel_type_exprs(items = items, fill_defs = fill_defs, in_arg = in_arg) {
       Some(out) => Some(TyTuple(out)),
       None => None
     },
-    CtArray(t) => match eq_channel_type_expr_at(t, fill_defs, in_arg) {
+    CtArray(t) => match eq_channel_type_expr_at(ty = t, fill_defs = fill_defs, in_arg = in_arg) {
       Some(inner) => Some(TyApp("Array", [inner])),
       None => None
     },
-    CtOption(t) => match eq_channel_type_expr_at(t, fill_defs, in_arg) {
+    CtOption(t) => match eq_channel_type_expr_at(ty = t, fill_defs = fill_defs, in_arg = in_arg) {
       Some(inner) => Some(TyApp("Option", [inner])),
       None => None
     },
@@ -948,22 +948,22 @@ fn eq_channel_type_expr_at(ty: Type, fill_defs: Option[Array[TypeDef]], in_arg: 
       },
       None => None
     },
-    CtEnum(n) => if String::starts_with(n, "#") {
+    CtEnum(n) => if String::starts_with(n, prefix = "#") {
       None
     } else {
       Some(TyName(n))
     },
-    CtStruct(n) => if String::starts_with(n, "#") {
+    CtStruct(n) => if String::starts_with(n, prefix = "#") {
       None
     } else {
       Some(TyName(n))
     },
-    CtNamed(n, args) => if String::starts_with(n, "#") {
+    CtNamed(n, args) => if String::starts_with(n, prefix = "#") {
       None
     } else if Array::length(args) == 0 {
       Some(TyName(n))
     } else {
-      match eq_channel_type_args(n, args, fill_defs) {
+      match eq_channel_type_args(head = n, args = args, fill_defs = fill_defs) {
         Some(out) => Some(TyApp(n, out)),
         None => None
       }
@@ -979,10 +979,10 @@ fn eq_channel_type_expr_at(ty: Type, fill_defs: Option[Array[TypeDef]], in_arg: 
         },
         _ => ""
       }
-      if String::length(head_name) == 0 || String::starts_with(head_name, "#") {
+      if String::length(head_name) == 0 || String::starts_with(head_name, prefix = "#") {
         None
       } else {
-        match eq_channel_type_args(head_name, args, fill_defs) {
+        match eq_channel_type_args(head = head_name, args = args, fill_defs = fill_defs) {
           Some(out) => Some(TyApp(head_name, out)),
           None => None
         }
@@ -1006,25 +1006,25 @@ fn eq_channel_type_args(head: String, args: Array[Type], fill_defs: Option[Array
   let mut i = 0
   let mut ok = true
   while i < Array::length(args) {
-    let arg = Array::get(args, i)
+    let arg = Array::get(args, at = i)
     let lowered = match arg {
       CtVar(vid) => match fill_defs {
-        Some(defs) => if eq_formal_row_of(vid) < 0 && eq_declared_param_arity(defs, head, i) >= 0 {
+        Some(defs) => if eq_formal_row_of(vid) < 0 && eq_declared_param_arity(defs = defs, head = head, index = i) >= 0 {
           Some(TyUnit)
         } else {
           None
         },
         None => None
       },
-      CtConstructor(n, _) => if String::starts_with(n, "#") {
+      CtConstructor(n, _) => if String::starts_with(n, prefix = "#") {
         None
       } else {
         Some(TyName(n))
       },
-      _ => eq_channel_type_expr_at(arg, fill_defs, true)
+      _ => eq_channel_type_expr_at(ty = arg, fill_defs = fill_defs, in_arg = true)
     }
     match lowered {
-      Some(te) => Array::push(out, te),
+      Some(te) => Array::push(out, value = te),
       None => {
         ok = false
         i = Array::length(args)
@@ -1045,7 +1045,7 @@ fn eq_declared_param_arity(defs: Array[TypeDef], head: String, index: Int) -> In
   let mut out = 0 - 1
   let mut i = 0
   while i < Array::length(defs) {
-    let params = match Array::get(defs, i) {
+    let params = match Array::get(defs, at = i) {
       TDEnum(n, ps, _) => if n == head {
         Some(ps)
       } else {
@@ -1061,7 +1061,7 @@ fn eq_declared_param_arity(defs: Array[TypeDef], head: String, index: Int) -> In
     match params {
       Some(ps) => {
         if index < Array::length(ps) {
-          out = type_param_arity(Array::get(ps, index))
+          out = type_param_arity(Array::get(ps, at = index))
         } else {
           ()
         }
@@ -1080,8 +1080,8 @@ fn eq_channel_type_exprs(items: Array[Type], fill_defs: Option[Array[TypeDef]], 
   let mut i = 0
   let mut ok = true
   while i < Array::length(items) {
-    match eq_channel_type_expr_at(Array::get(items, i), fill_defs, in_arg) {
-      Some(te) => Array::push(out, te),
+    match eq_channel_type_expr_at(ty = Array::get(items, at = i), fill_defs = fill_defs, in_arg = in_arg) {
+      Some(te) => Array::push(out, value = te),
       None => {
         ok = false
         i = Array::length(items)
@@ -1101,7 +1101,7 @@ fn eq_channel_type_exprs(items: Array[Type], fill_defs: Option[Array[TypeDef]], 
 /// path). Scalars answer correctly on the raw lowering already -- `Int`/
 /// `Bool`/`Char` compare by value, `String` content-compares in the runtime
 /// `eq` -- and a function type never compares.
-fn eq_channel_type_expr_is_scalar(te: TypeExpr) -> Bool {
+fn eq_channel_type_expr_is_scalar(_ te: TypeExpr) -> Bool {
   match te {
     TyUnit => true,
     TyFn(_, _, _) => true,
@@ -1126,13 +1126,13 @@ export fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: Type
   let n = Array::length(capture.binop_offsets)
   let mut i = 0
   while i + 1 < n {
-    let off = Array::get(capture.binop_offsets, i)
-    let kind = Array::get(capture.binop_kinds, i)
+    let off = Array::get(capture.binop_offsets, at = i)
+    let kind = Array::get(capture.binop_kinds, at = i)
     if kind == 3 || kind == 13 {
-      let lte = eq_channel_row_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i)), checked.type_defs)
-      let rte = eq_channel_row_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i + 1)), checked.type_defs)
+      let lte = eq_channel_row_type_expr(ty = subst_apply(s = checked.final_subst, ty = Array::get(capture.binop_types, at = i)), defs = checked.type_defs)
+      let rte = eq_channel_row_type_expr(ty = subst_apply(s = checked.final_subst, ty = Array::get(capture.binop_types, at = i + 1)), defs = checked.type_defs)
       let row_key = if kind == 13 {
-        match Array::get(capture.binop_types, i) {
+        match Array::get(capture.binop_types, at = i) {
           CtNamed(name, _) => impl_target_key(TyApp(typed_add_row_head(), [
             TyName(name)
           ])),
@@ -1159,7 +1159,7 @@ export fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: Type
       let mut idx = 0 - 1
       let mut k = 0
       while k < Array::length(offs) {
-        if Array::get(offs, k) == off {
+        if Array::get(offs, at = k) == off {
           idx = k
           k = Array::length(offs)
         } else {
@@ -1167,13 +1167,13 @@ export fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: Type
         }
       }
       if idx < 0 {
-        Array::push(offs, off)
-        Array::push(keys, row_key)
-        Array::push(poisoned, false)
-      } else if Array::get(keys, idx) == row_key {
+        Array::push(offs, value = off)
+        Array::push(keys, value = row_key)
+        Array::push(poisoned, value = false)
+      } else if Array::get(keys, at = idx) == row_key {
         ()
       } else {
-        Array::set(poisoned, idx, true)
+        Array::set(poisoned, at = idx, value = true)
       }
     } else {
       ()
@@ -1184,9 +1184,9 @@ export fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: Type
   let out_keys: Array[String] = []
   let mut out_i = 0
   while out_i < Array::length(offs) {
-    if !Array::get(poisoned, out_i) && String::length(Array::get(keys, out_i)) > 0 {
-      Array::push(out_offs, Array::get(offs, out_i))
-      Array::push(out_keys, Array::get(keys, out_i))
+    if !Array::get(poisoned, at = out_i) && String::length(Array::get(keys, at = out_i)) > 0 {
+      Array::push(out_offs, value = Array::get(offs, at = out_i))
+      Array::push(out_keys, value = Array::get(keys, at = out_i))
     } else {
       ()
     }
@@ -1212,11 +1212,11 @@ fn index_receiver_verdict(checked: CheckedProgram, ty: Type, unknown_is_open: Bo
   let mut alias_depth = 0
   while !done {
     match cur {
-      CtVar(vid) => if index_receiver_seen(seen, vid) {
+      CtVar(vid) => if index_receiver_seen(seen = seen, vid = vid) {
         done = true
       } else {
-        Array::push(seen, vid)
-        match subst_lookup(checked.final_subst, vid) {
+        Array::push(seen, value = vid)
+        match subst_lookup(s = checked.final_subst, id = vid) {
           Some(next) => {
             cur = next
           },
@@ -1251,12 +1251,12 @@ fn index_receiver_verdict(checked: CheckedProgram, ty: Type, unknown_is_open: Bo
       CtNamed(n, _) => if n == "Map" || n == "StringMap" {
         verdict = typed_index_map_verdict()
         done = true
-      } else if String::starts_with(n, "#hktformal.") {
+      } else if String::starts_with(n, prefix = "#hktformal.") {
         done = true
       } else {
         // A type alias names its body; anything else is a declared nominal,
         // which is not a Map.
-        match index_receiver_alias_body(checked.type_defs, n) {
+        match index_receiver_alias_body(defs = checked.type_defs, name = n) {
           Some(body) => if alias_depth < 16 {
             alias_depth = alias_depth + 1
             cur = body
@@ -1282,7 +1282,7 @@ fn index_receiver_seen(seen: Array[Int], vid: Int) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(seen) && !hit {
-    hit = Array::get(seen, i) == vid
+    hit = Array::get(seen, at = i) == vid
     i = i + 1
   }
   hit
@@ -1292,7 +1292,7 @@ fn index_receiver_names_have(names: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(names) && !hit {
-    hit = Array::get(names, i) == name
+    hit = Array::get(names, at = i) == name
     i = i + 1
   }
   hit
@@ -1302,12 +1302,12 @@ fn index_receiver_alias_body(defs: Array[TypeDef], name: String) -> Option[Type]
   let mut i = 0
   let mut found = None
   while i < Array::length(defs) {
-    match Array::get(defs, i) {
+    match Array::get(defs, at = i) {
       TDAlias(an, params, body) => if an == name {
         // An alias whose body is one of its own parameters says nothing
         // about the head: stay open.
         found = match body {
-          CtNamed(bn, bargs) => if Array::length(bargs) == 0 && index_receiver_names_have(params, bn) {
+          CtNamed(bn, bargs) => if Array::length(bargs) == 0 && index_receiver_names_have(names = params, name = bn) {
             Some(CtUnknown)
           } else {
             Some(body)
@@ -1335,14 +1335,14 @@ fn index_receiver_alias_body(defs: Array[TypeDef], name: String) -> Option[Type]
 /// Rows are kept sorted by offset; the capture visits sites in source order,
 /// so the insertion is an append in the common case.
 export fn index_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
-  receiver_rows_from_capture(checked, capture, false)
+  receiver_rows_from_capture(checked = checked, capture = capture, forin = false)
 }
 
 /// #3148: the same extraction for the `for` iterand rows (kind 7), under
 /// `typed_forin_row_head()`. A bare `CtUnknown` iterand is not open, as for
 /// an Array reader (#3145).
 export fn forin_receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
-  receiver_rows_from_capture(checked, capture, true)
+  receiver_rows_from_capture(checked = checked, capture = capture, forin = true)
 }
 
 /// #3543: the Float rows for the typed-`==` channel -- one
@@ -1358,15 +1358,15 @@ export fn forin_receiver_rows_from_capture(checked: CheckedProgram, capture: Typ
 /// `#fop[Neg]`, a `Double` / `Float` negation (kind 14), keyed by
 /// `typed_negation_operand_key` of its operand, plus `#f32[Neg]` for a
 /// `Float` one (kind 15), whose result the rewrite keeps a `Float`.
-export fn float_arith_rows_from_capture(capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
+export fn float_arith_rows_from_capture(_ capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
   let offs: Array[Int] = []
   let keys: Array[String] = []
   let n = Array::length(capture.binop_offsets)
   let mut i = 0
   while i + 1 < n {
-    let kind = Array::get(capture.binop_kinds, i)
+    let kind = Array::get(capture.binop_kinds, at = i)
     if kind == 9 || kind == 10 || kind == 11 || kind == 12 || kind == 14 || kind == 15 {
-      let off = Array::get(capture.binop_offsets, i)
+      let off = Array::get(capture.binop_offsets, at = i)
       let verdict = if kind == 9 || kind == 11 {
         typed_f32_binop_verdict()
       } else if kind == 14 || kind == 15 {
@@ -1383,15 +1383,15 @@ export fn float_arith_rows_from_capture(capture: TypedOccurrenceRoleLaneCapture)
       let mut seen = false
       let mut j = 0
       while j < Array::length(offs) && !seen {
-        if Array::get(offs, j) == off && Array::get(keys, j) == key {
+        if Array::get(offs, at = j) == off && Array::get(keys, at = j) == key {
           seen = true
         } else {
           j = j + 1
         }
       }
       if !seen {
-        Array::push(offs, off)
-        Array::push(keys, key)
+        Array::push(offs, value = off)
+        Array::push(keys, value = key)
       } else {
         ()
       }
@@ -1409,14 +1409,14 @@ fn receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceR
   let n = Array::length(capture.binop_offsets)
   let mut i = 0
   while i + 1 < n {
-    let kind = Array::get(capture.binop_kinds, i)
+    let kind = Array::get(capture.binop_kinds, at = i)
     let wanted = if forin {
       kind == 7 || kind == 8
     } else {
       kind == 4 || kind == 5 || kind == 6
     }
     if wanted {
-      let off = Array::get(capture.binop_offsets, i)
+      let off = Array::get(capture.binop_offsets, at = i)
       // #3145: a builtin Array reader (kind 5) is refused only for a type
       // VARIABLE -- an erased formal, or a generalised lambda's parameter.
       // A bare `CtUnknown` there is the checker declining to type an
@@ -1427,7 +1427,7 @@ fn receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceR
       // kind 8 is a declared formal used as a `for` iterand (#3148).
       // #3149: unless the formal's scheme already constrains every caller.
       let v = if kind == 6 || kind == 8 {
-        match Array::get(capture.binop_types, i) {
+        match Array::get(capture.binop_types, at = i) {
           CtVar(fv) => if scheme_formal_constrained(fv) {
             ""
           } else {
@@ -1436,35 +1436,35 @@ fn receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceR
           _ => typed_index_open_verdict()
         }
       } else {
-        index_receiver_verdict(checked, Array::get(capture.binop_types, i), kind == 4)
+        index_receiver_verdict(checked = checked, ty = Array::get(capture.binop_types, at = i), unknown_is_open = kind == 4)
       }
       let mut lo = 0
       let mut hi = Array::length(offs)
       while lo < hi {
         let mid = (lo + hi) / 2
-        if Array::get(offs, mid) < off {
+        if Array::get(offs, at = mid) < off {
           lo = mid + 1
         } else {
           hi = mid
         }
       }
-      if lo < Array::length(offs) && Array::get(offs, lo) == off {
-        if Array::get(verdicts, lo) != v {
-          Array::set(verdicts, lo, typed_index_open_verdict())
+      if lo < Array::length(offs) && Array::get(offs, at = lo) == off {
+        if Array::get(verdicts, at = lo) != v {
+          Array::set(verdicts, at = lo, value = typed_index_open_verdict())
         } else {
           ()
         }
       } else {
-        Array::push(offs, off)
-        Array::push(verdicts, v)
+        Array::push(offs, value = off)
+        Array::push(verdicts, value = v)
         let mut j = Array::length(offs) - 1
         while j > lo {
-          Array::set(offs, j, Array::get(offs, j - 1))
-          Array::set(verdicts, j, Array::get(verdicts, j - 1))
+          Array::set(offs, at = j, value = Array::get(offs, at = j - 1))
+          Array::set(verdicts, at = j, value = Array::get(verdicts, at = j - 1))
           j = j - 1
         }
-        Array::set(offs, lo, off)
-        Array::set(verdicts, lo, v)
+        Array::set(offs, at = lo, value = off)
+        Array::set(verdicts, at = lo, value = v)
       }
     } else {
       ()
@@ -1475,10 +1475,10 @@ fn receiver_rows_from_capture(checked: CheckedProgram, capture: TypedOccurrenceR
   let out_keys: Array[String] = []
   let mut k = 0
   while k < Array::length(offs) {
-    let v = Array::get(verdicts, k)
+    let v = Array::get(verdicts, at = k)
     if String::length(v) > 0 {
-      Array::push(out_offs, Array::get(offs, k))
-      Array::push(out_keys, impl_target_key(TyApp(if forin {
+      Array::push(out_offs, value = Array::get(offs, at = k))
+      Array::push(out_keys, value = impl_target_key(TyApp(if forin {
         typed_forin_row_head()
       } else {
         typed_index_row_head()
@@ -1532,7 +1532,7 @@ export fn irc_resolves_to_scalar(s: Subst, ty: Type, want_bool: Bool) -> Bool {
         let mut sj = 0
         let mut already = false
         while sj < Array::length(seen) {
-          if Array::get(seen, sj) == vid {
+          if Array::get(seen, at = sj) == vid {
             already = true
           } else {
             ()
@@ -1542,8 +1542,8 @@ export fn irc_resolves_to_scalar(s: Subst, ty: Type, want_bool: Bool) -> Bool {
         if already {
           done = true
         } else {
-          Array::push(seen, vid)
-          match subst_lookup(s, vid) {
+          Array::push(seen, value = vid)
+          match subst_lookup(s = s, id = vid) {
             Some(next) => {
               cur = next
             },
@@ -1575,7 +1575,7 @@ export fn irc_resolves_to_scalar(s: Subst, ty: Type, want_bool: Bool) -> Bool {
 /// left out because a call key is its callee's offset, where the callee's own
 /// `CtFn` occurrence also sits.
 export fn irc_resolves_to_unrenderable(s: Subst, ty: Type) -> Bool {
-  match subst_apply(s, ty) {
+  match subst_apply(s = s, ty = ty) {
     CtOption(_) => true,
     CtArray(_) => true,
     CtTuple(_) => true,
@@ -1601,7 +1601,7 @@ export fn irc_resolves_to_unrenderable(s: Subst, ty: Type) -> Bool {
 ///
 ///   __to_string(l())  ->  "true"      to_string(l())  ->  "1"
 fn irc_is_render_callee(n: String, shims: Int) -> Bool {
-  n == "__to_string" || n == "Int::to_string" || n == "eq" || irc_shim_stamped(n, shims)
+  n == "__to_string" || n == "Int::to_string" || n == "eq" || irc_shim_stamped(n = n, gen = shims)
 }
 
 /// #2386: the shim names of a walk, as stamps in one process-wide map.
@@ -1621,25 +1621,25 @@ let irc_shim_stamp: Array[MutMap[String, Int]] = [MutMap::new_string()]
 let irc_shim_gen: Array[Int] = [0]
 
 /// Stamp `names` for a new walk; the walk's generation is the answer.
-export fn irc_shim_set(names: Array[String]) -> Int {
-  if MutMap::size(Array::get(irc_shim_stamp, 0)) > 65536 {
-    Array::set(irc_shim_stamp, 0, MutMap::new_string())
+export fn irc_shim_set(_ names: Array[String]) -> Int {
+  if MutMap::size(Array::get(irc_shim_stamp, at = 0)) > 65536 {
+    Array::set(irc_shim_stamp, at = 0, value = MutMap::new_string())
   } else {
     ()
   }
-  let gen = Array::get(irc_shim_gen, 0) + 1
-  Array::set(irc_shim_gen, 0, gen)
-  let stamp = Array::get(irc_shim_stamp, 0)
+  let gen = Array::get(irc_shim_gen, at = 0) + 1
+  Array::set(irc_shim_gen, at = 0, value = gen)
+  let stamp = Array::get(irc_shim_stamp, at = 0)
   let mut i = 0
   while i < Array::length(names) {
-    MutMap::set(stamp, Array::get(names, i), gen)
+    MutMap::set(stamp, k = Array::get(names, at = i), v = gen)
     i = i + 1
   }
   gen
 }
 
 fn irc_shim_stamped(n: String, gen: Int) -> Bool {
-  match MutMap::get(Array::get(irc_shim_stamp, 0), n) {
+  match MutMap::get(Array::get(irc_shim_stamp, at = 0), k = n) {
     Some(g) => g == gen,
     None => false
   }
@@ -1657,7 +1657,7 @@ fn irc_is_bare_to_string_of(body: Expr, pname: String) -> Bool {
     ECall(bc, ba, _, _) => if Array::length(ba) == 1 {
       match bc {
         EIdent(cn, _) => if cn == "__to_string" {
-          match Array::get(ba, 0) {
+          match Array::get(ba, at = 0) {
             EIdent(an, _) => an == pname,
             _ => false
           }
@@ -1680,11 +1680,11 @@ fn irc_is_bare_to_string_of(body: Expr, pname: String) -> Bool {
 /// not the render that runs. Tag 6 stands down there, the way
 /// `check_interp_formal` does inside a shim body; the call site's own argument
 /// is still filed.
-export fn irc_shim_body_arg_offsets(stmts: Array[Stmt]) -> Array[Int] {
+export fn irc_shim_body_arg_offsets(_ stmts: Array[Stmt]) -> Array[Int] {
   let out: Array[Int] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    let value = match Array::get(stmts, i) {
+    let value = match Array::get(stmts, at = i) {
       SLet(_, _, _, _, v) => Some(v),
       SFnDecl(_, _, v, _, _) => Some(v),
       _ => None
@@ -1692,7 +1692,7 @@ export fn irc_shim_body_arg_offsets(stmts: Array[Stmt]) -> Array[Int] {
     match value {
       Some(v) => if irc_is_show_shim_value(v) {
         match v {
-          EFn(_, _, _, _, _, ECall(_, ba, _, _)) => Array::push(out, typed_lowering_arg_offset(Array::get(ba, 0))),
+          EFn(_, _, _, _, _, ECall(_, ba, _, _)) => Array::push(out, value = typed_lowering_arg_offset(Array::get(ba, at = 0))),
           _ => ()
         }
       } else {
@@ -1709,18 +1709,18 @@ export fn irc_int_array_has(xs: Array[Int], v: Int) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(xs) && !found {
-    found = Array::get(xs, i) == v
+    found = Array::get(xs, at = i) == v
     i = i + 1
   }
   found
 }
 
 /// A one-parameter function whose body is just `__to_string` of that parameter.
-fn irc_is_show_shim_value(v: Expr) -> Bool {
+fn irc_is_show_shim_value(_ v: Expr) -> Bool {
   match v {
     EFn(_, _, ps, _, _, body) => if Array::length(ps) == 1 {
-      let (pn, _) = Array::get(ps, 0)
-      irc_is_bare_to_string_of(body, pn)
+      let (pn, _) = Array::get(ps, at = 0)
+      irc_is_bare_to_string_of(body = body, pname = pn)
     } else {
       false
     },
@@ -1737,12 +1737,12 @@ export fn irc_show_wrapper_facts(stmts: Array[Stmt], env: TypeEnv) -> (Array[Str
   match env_show_wrapper_facts(env) {
     Some((wrappers, unknown)) => {
       for name in wrappers {
-        MutMap::set(status, name, 1)
-        Array::push(candidates, name)
+        MutMap::set(status, k = name, v = 1)
+        Array::push(candidates, value = name)
       }
       for name in unknown {
-        MutMap::set(status, name, 2)
-        Array::push(candidates, name)
+        MutMap::set(status, k = name, v = 2)
+        Array::push(candidates, value = name)
       }
       ()
     },
@@ -1751,18 +1751,18 @@ export fn irc_show_wrapper_facts(stmts: Array[Stmt], env: TypeEnv) -> (Array[Str
         match statement {
           SImport(_, items) => {
             let names: Array[String] = []
-            irc_push_bound_import_names(items, names)
+            irc_push_bound_import_names(items = items, out = names)
             for name in names {
-              MutMap::set(status, name, 2)
-              Array::push(candidates, name)
+              MutMap::set(status, k = name, v = 2)
+              Array::push(candidates, value = name)
             }
           },
           SReExport(_, items) => {
             let names: Array[String] = []
-            irc_push_bound_import_names(items, names)
+            irc_push_bound_import_names(items = items, out = names)
             for name in names {
-              MutMap::set(status, name, 2)
-              Array::push(candidates, name)
+              MutMap::set(status, k = name, v = 2)
+              Array::push(candidates, value = name)
             }
           },
           _ => ()
@@ -1775,8 +1775,8 @@ export fn irc_show_wrapper_facts(stmts: Array[Stmt], env: TypeEnv) -> (Array[Str
     match statement {
       SLet(_, _, name, _, value) => {
         let wrapper = irc_is_show_shim_value(value)
-        if wrapper || MutMap::get(status, name) != None {
-          MutMap::set(status, name, if wrapper {
+        if wrapper || MutMap::get(status, k = name) != None {
+          MutMap::set(status, k = name, v = if wrapper {
             1
           } else {
             0
@@ -1785,15 +1785,15 @@ export fn irc_show_wrapper_facts(stmts: Array[Stmt], env: TypeEnv) -> (Array[Str
           ()
         }
         if wrapper {
-          Array::push(candidates, name)
+          Array::push(candidates, value = name)
         } else {
           ()
         }
       },
       SFnDecl(_, name, value, _, _) => {
         let wrapper = irc_is_show_shim_value(value)
-        if wrapper || MutMap::get(status, name) != None {
-          MutMap::set(status, name, if wrapper {
+        if wrapper || MutMap::get(status, k = name) != None {
+          MutMap::set(status, k = name, v = if wrapper {
             1
           } else {
             0
@@ -1802,7 +1802,7 @@ export fn irc_show_wrapper_facts(stmts: Array[Stmt], env: TypeEnv) -> (Array[Str
           ()
         }
         if wrapper {
-          Array::push(candidates, name)
+          Array::push(candidates, value = name)
         } else {
           ()
         }
@@ -1815,12 +1815,12 @@ export fn irc_show_wrapper_facts(stmts: Array[Stmt], env: TypeEnv) -> (Array[Str
   // Taking a candidate clears its status, so repeated imports/declarations do
   // not duplicate publication rows. The map belongs only to this query.
   for name in candidates {
-    match MutMap::get(status, name) {
-      Some(1) => Array::push(wrappers, name),
-      Some(2) => Array::push(unknown, name),
+    match MutMap::get(status, k = name) {
+      Some(1) => Array::push(wrappers, value = name),
+      Some(2) => Array::push(unknown, value = name),
       _ => ()
     }
-    MutMap::set(status, name, 0)
+    MutMap::set(status, k = name, v = 0)
   }
   (wrappers, unknown)
 }
@@ -1829,9 +1829,9 @@ export fn irc_show_shim_names_with_env(stmts: Array[Stmt], env: TypeEnv) -> Arra
   match env_show_wrapper_facts(env) {
     None => irc_show_shim_names(stmts),
     Some(_) => {
-      let (wrappers, unknown) = irc_show_wrapper_facts(stmts, env)
+      let (wrappers, unknown) = irc_show_wrapper_facts(stmts = stmts, env = env)
       for name in unknown {
-        Array::push(wrappers, name)
+        Array::push(wrappers, value = name)
       }
       wrappers
     }
@@ -1843,10 +1843,10 @@ export fn irc_show_shim_names_with_env(stmts: Array[Stmt], env: TypeEnv) -> Arra
 fn irc_push_bound_import_names(items: Array[ImportItem], out: Array[String]) -> Unit {
   let mut j = 0
   while j < Array::length(items) {
-    let item = Array::get(items, j)
+    let item = Array::get(items, at = j)
     match item.alias {
-      Some(alias) => Array::push(out, alias),
-      None => Array::push(out, item.name)
+      Some(alias) => Array::push(out, value = alias),
+      None => Array::push(out, value = item.name)
     }
     j = j + 1
   }
@@ -1872,18 +1872,18 @@ fn irc_push_bound_import_names(items: Array[ImportItem], out: Array[String]) -> 
 /// so a row filed for an argument of some unrelated call is still a true
 /// statement about that expression's type -- it can be inert, never wrong. The
 /// rewrite pass has no such margin, because it REPLACES the call.
-export fn irc_show_shim_names(stmts: Array[Stmt]) -> Array[String] {
+export fn irc_show_shim_names(_ stmts: Array[Stmt]) -> Array[String] {
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, _, value) => if irc_is_show_shim_value(value) {
-        Array::push(out, name)
+        Array::push(out, value = name)
       } else {
         ()
       },
       SFnDecl(_, fname, body, _, _) => if irc_is_show_shim_value(body) {
-        Array::push(out, fname)
+        Array::push(out, value = fname)
       } else {
         ()
       },
@@ -1913,7 +1913,7 @@ export fn irc_show_shim_names(stmts: Array[Stmt]) -> Array[String] {
       // differently warm and cold, which is worse than an inert row. The
       // measured price of not having that metadata is +0.28% selfcompile
       // heap; the design is #2472.
-      SImport(_, items) => irc_push_bound_import_names(items, out),
+      SImport(_, items) => irc_push_bound_import_names(items = items, out = out),
       // A re-export binds its items LOCALLY too, so the module can call them
       // (`collect_import_value_renames`, core/import_alias_rewrite.vibe,
       // handles `SReExport` alongside `SImport` for exactly that reason).
@@ -1927,7 +1927,7 @@ export fn irc_show_shim_names(stmts: Array[Stmt]) -> Array[String] {
       // so the consumer looks the argument's offset up and finds nothing --
       // the same silent "1" the `SImport` arm above exists to prevent, one
       // statement keyword away.
-      SReExport(_, items) => irc_push_bound_import_names(items, out),
+      SReExport(_, items) => irc_push_bound_import_names(items = items, out = out),
       _ => ()
     }
     i = i + 1
@@ -2003,15 +2003,15 @@ fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
     typed_render_row_offset(arg)
   }
   if aoff >= 0 {
-    Array::push(out, aoff)
-    if want != 4 && Array::get(irc_literal_depth, 0) > 0 {
-      Array::push(irc_literal_item_keys, aoff)
+    Array::push(out, value = aoff)
+    if want != 4 && Array::get(irc_literal_depth, at = 0) > 0 {
+      Array::push(irc_literal_item_keys, value = aoff)
     } else {
       ()
     }
     match arg {
       EIdent(_, _) => if want != 4 {
-        Array::push(irc_ident_arg_keys, aoff)
+        Array::push(irc_ident_arg_keys, value = aoff)
       } else {
         ()
       },
@@ -2020,10 +2020,10 @@ fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
   } else {
     match arg {
       EIf(_, t, f) => {
-        irc_push_arg_key(t, out, want)
-        irc_push_arg_key(f, out, want)
+        irc_push_arg_key(arg = t, out = out, want = want)
+        irc_push_arg_key(arg = f, out = out, want = want)
       },
-      ESeq(_, second) => irc_push_arg_key(second, out, want),
+      ESeq(_, second) => irc_push_arg_key(arg = second, out = out, want = want),
       // #2585: the ARITHMETIC operands, for the same reason and by the same
       // rule as #2422's arm in `ts_known_int`: `+ - * /` resolve from their
       // operands, so a sum is an Int exactly when both sides are. That arm
@@ -2036,23 +2036,23 @@ fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
       // checker's own rule whatever the operands are, so that arm never
       // reaches for a key and none is recorded for them.
       EBinOp(op, lhs, rhs, _) => if op == "+" || op == "-" || op == "*" || op == "/" {
-        irc_push_arg_key(lhs, out, want)
-        irc_push_arg_key(rhs, out, want)
+        irc_push_arg_key(arg = lhs, out = out, want = want)
+        irc_push_arg_key(arg = rhs, out = out, want = want)
       } else {
         ()
       },
-      EMatch(_, arms) => irc_push_arm_keys(arms, out, want),
+      EMatch(_, arms) => irc_push_arm_keys(arms = arms, out = out, want = want),
       // #3081: an array / tuple LITERAL has no key of its own, and the
       // interpolation pass renders it element by element from its SHAPE. An
       // element it cannot type (`[Some(k())]`, `(k(), 1)`) went through the
       // pointer heuristic -- `[Some(0)]` for `[Some(false)]` -- although the
       // checker had typed it. So its elements are candidates too, recursively
       // through nested literals.
-      EArray(items) => irc_push_literal_item_keys(items, out, want),
-      ETuple(items) => irc_push_literal_item_keys(items, out, want),
-      ELet(nm, val, body, _) => irc_push_binder_key(nm, val, body, out, want),
-      ELetRec(nm, val, body) => irc_push_binder_key(nm, val, body, out, want),
-      ELetMut(nm, val, body, _) => irc_push_binder_key(nm, val, body, out, want),
+      EArray(items) => irc_push_literal_item_keys(items = items, out = out, want = want),
+      ETuple(items) => irc_push_literal_item_keys(items = items, out = out, want = want),
+      ELet(nm, val, body, _) => irc_push_binder_key(name = nm, value = val, body = body, out = out, want = want),
+      ELetRec(nm, val, body) => irc_push_binder_key(name = nm, value = val, body = body, out = out, want = want),
+      ELetMut(nm, val, body, _) => irc_push_binder_key(name = nm, value = val, body = body, out = out, want = want),
       _ => ()
     }
   }
@@ -2060,13 +2060,13 @@ fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
 
 /// #3081: every element of a composite literal in render-argument position.
 fn irc_push_literal_item_keys(items: Array[Expr], out: Array[Int], want: Int) -> Unit {
-  Array::set(irc_literal_depth, 0, Array::get(irc_literal_depth, 0) + 1)
+  Array::set(irc_literal_depth, at = 0, value = Array::get(irc_literal_depth, at = 0) + 1)
   let mut i = 0
   while i < Array::length(items) {
-    irc_push_arg_key(Array::get(items, i), out, want)
+    irc_push_arg_key(arg = Array::get(items, at = i), out = out, want = want)
     i = i + 1
   }
-  Array::set(irc_literal_depth, 0, Array::get(irc_literal_depth, 0) - 1)
+  Array::set(irc_literal_depth, at = 0, value = Array::get(irc_literal_depth, at = 0) - 1)
 }
 
 /// #2585: every arm body of a `match` in render-argument position.
@@ -2079,8 +2079,8 @@ fn irc_push_literal_item_keys(items: Array[Expr], out: Array[Int], want: Int) ->
 fn irc_push_arm_keys(arms: Array[(Pat, Expr)], out: Array[Int], want: Int) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    let (_, body) = Array::get(arms, i)
-    irc_push_arg_key(body, out, want)
+    let (_, body) = Array::get(arms, at = i)
+    irc_push_arg_key(arg = body, out = out, want = want)
     i = i + 1
   }
 }
@@ -2093,7 +2093,7 @@ fn irc_push_arm_keys(arms: Array[(Pat, Expr)], out: Array[Int], want: Int) -> Un
 fn irc_push_binder_key(name: String, value: Expr, body: Expr, out: Array[Int], want: Int) -> Unit {
   match body {
     EIdent(bn, _) => if bn == name {
-      irc_push_arg_key(value, out, want)
+      irc_push_arg_key(arg = value, out = out, want = want)
     } else {
       ()
     },
@@ -2110,7 +2110,7 @@ fn irc_collect_expr(e: Expr, out: Array[Int], want: Int, shims: Int) -> Unit {
       EDot(_, _, _, _) => {
         let off = typed_lowering_float_key(e)
         if off >= 0 {
-          Array::push(out, off)
+          Array::push(out, value = off)
         } else {
           ()
         }
@@ -2129,8 +2129,8 @@ fn irc_collect_expr(e: Expr, out: Array[Int], want: Int, shims: Int) -> Unit {
   // consumer differ.
   match e {
     EBinOp(op, l, r, _) => if want != 4 && (op == "==" || op == "!=") {
-      irc_push_arg_key(l, out, want)
-      irc_push_arg_key(r, out, want)
+      irc_push_arg_key(arg = l, out = out, want = want)
+      irc_push_arg_key(arg = r, out = out, want = want)
     } else {
       ()
     },
@@ -2138,10 +2138,10 @@ fn irc_collect_expr(e: Expr, out: Array[Int], want: Int, shims: Int) -> Unit {
   }
   match e {
     ECall(callee, args, _, _) => match callee {
-      EIdent(cn, _) => if irc_is_render_callee(cn, shims) {
+      EIdent(cn, _) => if irc_is_render_callee(n = cn, shims = shims) {
         let mut ai = 0
         while ai < Array::length(args) {
-          irc_push_arg_key(Array::get(args, ai), out, want)
+          irc_push_arg_key(arg = Array::get(args, at = ai), out = out, want = want)
           ai = ai + 1
         }
       } else {
@@ -2155,7 +2155,7 @@ fn irc_collect_expr(e: Expr, out: Array[Int], want: Int, shims: Int) -> Unit {
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    irc_collect_expr(expr_child_at(i), out, want, shims)
+    irc_collect_expr(e = expr_child_at(i), out = out, want = want, shims = shims)
     i = i + 1
   }
   expr_children_pop(mark)
@@ -2164,25 +2164,25 @@ fn irc_collect_expr(e: Expr, out: Array[Int], want: Int, shims: Int) -> Unit {
 export fn irc_collect_stmts(stmts: Array[Stmt], out: Array[Int], want: Int, shims: Int) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, e) => irc_collect_expr(e, out, want, shims),
-      SLetMut(_, _, e) => irc_collect_expr(e, out, want, shims),
-      SLetPat(_, e) => irc_collect_expr(e, out, want, shims),
-      SExpr(e) => irc_collect_expr(e, out, want, shims),
-      STest(_, e) => irc_collect_expr(e, out, want, shims),
-      SBench(_, e) => irc_collect_expr(e, out, want, shims),
+    match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, e) => irc_collect_expr(e = e, out = out, want = want, shims = shims),
+      SLetMut(_, _, e) => irc_collect_expr(e = e, out = out, want = want, shims = shims),
+      SLetPat(_, e) => irc_collect_expr(e = e, out = out, want = want, shims = shims),
+      SExpr(e) => irc_collect_expr(e = e, out = out, want = want, shims = shims),
+      STest(_, e) => irc_collect_expr(e = e, out = out, want = want, shims = shims),
+      SBench(_, e) => irc_collect_expr(e = e, out = out, want = want, shims = shims),
       // `parse_program` lowers `SExample` to `STest` before anything checks
       // the program, so this arm is inert on every compile path today
       // (measured: a render of an `Array::get` result inside an `example`
       // block already answers correctly). It is here so the walk does not
       // depend on that ordering -- `parse_program_preserving` keeps the
       // variant, and an executable block form must not be silently skipped.
-      SExample(_, e) => irc_collect_expr(e, out, want, shims),
+      SExample(_, e) => irc_collect_expr(e = e, out = out, want = want, shims = shims),
       // A render inside a nested module is checked with the rest of the
       // program and its occurrences are in the same table, so skipping the
       // body would leave that code with no classification at all (Codex
       // review on #2434). `count_typed_lowering_offsets_stmts` recurses the same way.
-      SModule(_, _, inner) => irc_collect_stmts(inner, out, want, shims),
+      SModule(_, _, inner) => irc_collect_stmts(stmts = inner, out = out, want = want, shims = shims),
       _ => ()
     }
     i = i + 1
@@ -2193,32 +2193,32 @@ export fn irc_collect_stmts(stmts: Array[Stmt], out: Array[Int], want: Int, shim
 /// arguments and, for the Double channel, field projections. Sorting keeps
 /// the scan below off a quadratic path: one binary search per typed occurrence
 /// instead of one linear membership test.
-export fn irc_sorted_unique(xs: Array[Int]) -> Array[Int] {
+export fn irc_sorted_unique(_ xs: Array[Int]) -> Array[Int] {
   let out: Array[Int] = []
   let mut i = 0
   while i < Array::length(xs) {
-    let v = Array::get(xs, i)
+    let v = Array::get(xs, at = i)
     let mut lo = 0
     let mut hi = Array::length(out)
     while lo < hi {
       let mid = (lo + hi) / 2
-      if Array::get(out, mid) < v {
+      if Array::get(out, at = mid) < v {
         lo = mid + 1
       } else {
         hi = mid
       }
     }
-    let dup = lo < Array::length(out) && Array::get(out, lo) == v
+    let dup = lo < Array::length(out) && Array::get(out, at = lo) == v
     if dup {
       ()
     } else {
-      Array::push(out, v)
+      Array::push(out, value = v)
       let mut j = Array::length(out) - 1
       while j > lo {
-        Array::set(out, j, Array::get(out, j - 1))
+        Array::set(out, at = j, value = Array::get(out, at = j - 1))
         j = j - 1
       }
-      Array::set(out, lo, v)
+      Array::set(out, at = lo, value = v)
     }
     i = i + 1
   }
@@ -2230,13 +2230,13 @@ export fn irc_index_of(sorted: Array[Int], v: Int) -> Int {
   let mut hi = Array::length(sorted)
   while lo < hi {
     let mid = (lo + hi) / 2
-    if Array::get(sorted, mid) < v {
+    if Array::get(sorted, at = mid) < v {
       lo = mid + 1
     } else {
       hi = mid
     }
   }
-  if lo < Array::length(sorted) && Array::get(sorted, lo) == v {
+  if lo < Array::length(sorted) && Array::get(sorted, at = lo) == v {
     lo
   } else {
     0 - 1

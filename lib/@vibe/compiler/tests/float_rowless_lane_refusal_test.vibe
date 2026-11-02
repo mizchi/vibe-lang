@@ -24,30 +24,30 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 
 //# Functions
 
-fn string_to_bytes(s: String) -> Bytes {
+fn string_to_bytes(_ s: String) -> Bytes {
   let out = array_empty()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Array::push(out, String::byte_at(s, i))
+    Array::push(out, value = String::byte_at(s, at = i))
     i = i + 1
   }
   Bytes::from_array(out)
 }
 
-fn is_wasm(bytes: Bytes) -> Bool {
-  Bytes::length(bytes) > 4 && Bytes::get(bytes, 0) == 0 && Bytes::get(bytes, 1) == 97 && Bytes::get(bytes, 2) == 115 && Bytes::get(bytes, 3) == 109
+fn is_wasm(_ bytes: Bytes) -> Bool {
+  Bytes::length(bytes) > 4 && Bytes::get(bytes, at = 0) == 0 && Bytes::get(bytes, at = 1) == 97 && Bytes::get(bytes, at = 2) == 115 && Bytes::get(bytes, at = 3) == 109
 }
 
 fn write_source(dir: String, name: String, source: String) -> String with Fs {
   let path = String::concat(dir, String::concat("/", name))
   Fs::mkdir_p(dir)
-  Fs::write_bytes(path, string_to_bytes(source))
+  Fs::write_bytes(path, bytes = string_to_bytes(source))
   path
 }
 
 fn library_lane(dir: String, source: String) -> String with Env + Fs {
-  let path = write_source(dir, "dep.vibe", source)
+  let path = write_source(dir = dir, name = "dep.vibe", source = source)
   handle {
     if is_wasm(compile_file_wasi_library(path)) {
       "wasm"
@@ -58,9 +58,9 @@ fn library_lane(dir: String, source: String) -> String with Env + Fs {
 }
 
 fn entry_lane(dir: String, source: String) -> String with Env + Fs {
-  let path = write_source(dir, "main.vibe", source)
+  let path = write_source(dir = dir, name = "main.vibe", source = source)
   handle {
-    if is_wasm(compile_file_wasi_only(path, "answer")) {
+    if is_wasm(compile_file_wasi_only(entry_path = path, entry_name = "answer")) {
       "wasm"
     } else {
       "not wasm"
@@ -69,9 +69,9 @@ fn entry_lane(dir: String, source: String) -> String with Env + Fs {
 }
 
 fn linked_lane(dir: String, source: String) -> String with Env + Fs {
-  let path = write_source(dir, "main.vibe", source)
+  let path = write_source(dir = dir, name = "main.vibe", source = source)
   handle {
-    let (bytes, _, _) = compile_file_wasi_linked_artifacts(path, "answer")
+    let (bytes, _, _) = compile_file_wasi_linked_artifacts(entry_path = path, entry_name = "answer")
     if is_wasm(bytes) {
       "wasm"
     } else {
@@ -91,21 +91,21 @@ fn float_dep() -> String {
 //# Misc
 
 test "the library lane compiles the Float arithmetic it now rounds" {
-  inspect(library_lane("/tmp/vibe_float_located_lib", float_dep()), content = "wasm")
+  inspect(library_lane(dir = "/tmp/vibe_float_located_lib", source = float_dep()), content = "wasm")
 }
 
 test "the merged entry lane compiles Float arithmetic across an import" {
   let dir = "/tmp/vibe_float_located_entry"
-  let _ = write_source(dir, "dep.vibe", float_dep())
-  inspect(entry_lane(dir, "import ./dep.vibe { third, bump }\n\nexport fn answer() -> Int {\n  if bump(16777216.0f) == 16777216.0f && third() + third() > 0.5f {\n    1\n  } else {\n    0\n  }\n}\n"), content = "wasm")
+  let _ = write_source(dir = dir, name = "dep.vibe", source = float_dep())
+  inspect(entry_lane(dir = dir, source = "import ./dep.vibe { third, bump }\n\nexport fn answer() -> Int {\n  if bump(16777216.0f) == 16777216.0f && third() + third() > 0.5f {\n    1\n  } else {\n    0\n  }\n}\n"), content = "wasm")
 }
 
 test "a linked entry with no checked rows still refuses a Float" {
-  inspect(linked_lane("/tmp/vibe_float_rowless_linked", "fn scale(x: Float) -> Float {\n  x * 2.0f\n}\n\nexport fn answer() -> Int {\n  1\n}\n") == refusal(), content = "true")
+  inspect(linked_lane(dir = "/tmp/vibe_float_rowless_linked", source = "fn scale(x: Float) -> Float {\n  x * 2.0f\n}\n\nexport fn answer() -> Int {\n  1\n}\n") == refusal(), content = "true")
 }
 
 test "a program without a Float still compiles on every lane" {
-  inspect(library_lane("/tmp/vibe_float_rowless_lib_ok", "export fn half(x: Double) -> Double {\n  x / 2.0\n}\n"), content = "wasm")
-  inspect(entry_lane("/tmp/vibe_float_rowless_entry_ok", "export fn answer() -> Int {\n  1 + 2\n}\n"), content = "wasm")
-  inspect(linked_lane("/tmp/vibe_float_rowless_linked_ok", "export fn answer() -> Int {\n  1 + 2\n}\n"), content = "wasm")
+  inspect(library_lane(dir = "/tmp/vibe_float_rowless_lib_ok", source = "export fn half(x: Double) -> Double {\n  x / 2.0\n}\n"), content = "wasm")
+  inspect(entry_lane(dir = "/tmp/vibe_float_rowless_entry_ok", source = "export fn answer() -> Int {\n  1 + 2\n}\n"), content = "wasm")
+  inspect(linked_lane(dir = "/tmp/vibe_float_rowless_linked_ok", source = "export fn answer() -> Int {\n  1 + 2\n}\n"), content = "wasm")
 }

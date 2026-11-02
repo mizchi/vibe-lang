@@ -23,12 +23,12 @@ import @vibe/compiler/codegen/common_extractors {
 //# Functions
 
 fn expr_uses_builtin(expr: Expr, fn_names: Array[String], target: String) -> Bool {
-  let free_vars = collect_free_vars(expr, array_empty(), fn_names)
+  let free_vars = collect_free_vars(body = expr, param_names = array_empty(), fn_names = fn_names)
   let normalized_target = canonical_builtin_name(target)
   let mut i = 0
   let mut found = false
   while i < Array::length(free_vars) && !found {
-    found = canonical_builtin_name(Array::get(free_vars, i)) == normalized_target
+    found = canonical_builtin_name(Array::get(free_vars, at = i)) == normalized_target
     i = i + 1
   }
   found
@@ -38,13 +38,13 @@ export fn stmts_use_builtin(stmts: Array[Stmt], fn_names: Array[String], target:
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) && !found {
-    found = match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => expr_uses_builtin(expr, fn_names, target),
-      SLetMut(_, _, expr) => expr_uses_builtin(expr, fn_names, target),
-      STest(_, expr) => expr_uses_builtin(expr, fn_names, target),
-      SBench(_, expr) => expr_uses_builtin(expr, fn_names, target),
-      SExpr(expr) => expr_uses_builtin(expr, fn_names, target),
-      SModule(_, _, inner) => stmts_use_builtin(inner, fn_names, target),
+    found = match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, expr) => expr_uses_builtin(expr = expr, fn_names = fn_names, target = target),
+      SLetMut(_, _, expr) => expr_uses_builtin(expr = expr, fn_names = fn_names, target = target),
+      STest(_, expr) => expr_uses_builtin(expr = expr, fn_names = fn_names, target = target),
+      SBench(_, expr) => expr_uses_builtin(expr = expr, fn_names = fn_names, target = target),
+      SExpr(expr) => expr_uses_builtin(expr = expr, fn_names = fn_names, target = target),
+      SModule(_, _, inner) => stmts_use_builtin(stmts = inner, fn_names = fn_names, target = target),
       _ => false
     }
     i = i + 1
@@ -70,15 +70,15 @@ fn push_free_canonical(expr: Expr, fn_name_index: Array[String], sink: Array[(St
   // used to push every free name it saw, so `canonical_builtin_name` (a
   // 40-arm string match) and the final map insert ran once per OCCURRENCE
   // across the whole program; `seen_raw` cuts that to once per distinct name.
-  let fvs = collect_free_vars_used_builtins(expr, array_empty(), fn_name_index)
+  let fvs = collect_free_vars_used_builtins(body = expr, param_names = array_empty(), fn_name_index = fn_name_index)
   let mut j = 0
   while j < Array::length(fvs) {
-    let raw = Array::get(fvs, j)
-    if MutSet::has(seen_raw, raw) {
+    let raw = Array::get(fvs, at = j)
+    if MutSet::has(seen_raw, x = raw) {
       ()
     } else {
-      MutSet::add(seen_raw, raw)
-      Array::push(sink, (canonical_builtin_name(raw), true))
+      MutSet::add(seen_raw, x = raw)
+      Array::push(sink, value = (canonical_builtin_name(raw), true))
     }
     j = j + 1
   }
@@ -86,19 +86,19 @@ fn push_free_canonical(expr: Expr, fn_name_index: Array[String], sink: Array[(St
 
 export fn collect_used_builtin_names_into(stmts: Array[Stmt], fn_names: Array[String], fn_name_index: Array[String], sink: Array[(String, Bool)]) -> Unit {
   let seen_raw: MutSet[String] = MutSet::new_string()
-  collect_used_builtin_names_into_seen(stmts, fn_names, fn_name_index, sink, seen_raw)
+  collect_used_builtin_names_into_seen(stmts = stmts, fn_names = fn_names, fn_name_index = fn_name_index, sink = sink, seen_raw = seen_raw)
 }
 
 fn collect_used_builtin_names_into_seen(stmts: Array[Stmt], fn_names: Array[String], fn_name_index: Array[String], sink: Array[(String, Bool)], seen_raw: MutSet[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => push_free_canonical(expr, fn_name_index, sink, seen_raw),
-      SLetMut(_, _, expr) => push_free_canonical(expr, fn_name_index, sink, seen_raw),
-      STest(_, expr) => push_free_canonical(expr, fn_name_index, sink, seen_raw),
-      SBench(_, expr) => push_free_canonical(expr, fn_name_index, sink, seen_raw),
-      SExpr(expr) => push_free_canonical(expr, fn_name_index, sink, seen_raw),
-      SModule(_, _, inner) => collect_used_builtin_names_into_seen(inner, fn_names, fn_name_index, sink, seen_raw),
+    match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, expr) => push_free_canonical(expr = expr, fn_name_index = fn_name_index, sink = sink, seen_raw = seen_raw),
+      SLetMut(_, _, expr) => push_free_canonical(expr = expr, fn_name_index = fn_name_index, sink = sink, seen_raw = seen_raw),
+      STest(_, expr) => push_free_canonical(expr = expr, fn_name_index = fn_name_index, sink = sink, seen_raw = seen_raw),
+      SBench(_, expr) => push_free_canonical(expr = expr, fn_name_index = fn_name_index, sink = sink, seen_raw = seen_raw),
+      SExpr(expr) => push_free_canonical(expr = expr, fn_name_index = fn_name_index, sink = sink, seen_raw = seen_raw),
+      SModule(_, _, inner) => collect_used_builtin_names_into_seen(stmts = inner, fn_names = fn_names, fn_name_index = fn_name_index, sink = sink, seen_raw = seen_raw),
       _ => ()
     }
     i = i + 1
@@ -110,32 +110,32 @@ export fn collect_used_builtin_names(stmts: Array[Stmt], fn_names: Array[String]
   // version was O(N^2) to build and O(N) per lookup.
   let fn_name_index = sorted_names_of(fn_names)
   let sink = array_empty()
-  collect_used_builtin_names_into(stmts, fn_names, fn_name_index, sink)
+  collect_used_builtin_names_into(stmts = stmts, fn_names = fn_names, fn_name_index = fn_name_index, sink = sink)
   let set_b = MapBuilder::new()
   let mut k = 0
   while k < Array::length(sink) {
-    let (nm, _) = Array::get(sink, k)
-    MapBuilder::set(set_b, nm, true)
+    let (nm, _) = Array::get(sink, at = k)
+    MapBuilder::set(set_b, key = nm, value = true)
     k = k + 1
   }
   MapBuilder::freeze(set_b)
 }
 
-fn expr_is_map_literal(e: Expr) -> Bool {
+fn expr_is_map_literal(_ e: Expr) -> Bool {
   match e {
     EMap(_) => true,
     _ => false
   }
 }
 
-fn expr_is_array_literal(e: Expr) -> Bool {
+fn expr_is_array_literal(_ e: Expr) -> Bool {
   match e {
     EArray(_) => true,
     _ => false
   }
 }
 
-fn expr_is_lambda(e: Expr) -> Bool {
+fn expr_is_lambda(_ e: Expr) -> Bool {
   match e {
     EFn(_, _, _, _, _, _) => true,
     _ => false
@@ -145,11 +145,11 @@ fn expr_is_lambda(e: Expr) -> Bool {
 fn top_value_any_node(expr: Expr, pred: (Expr) -> Bool, skip_top_fn: Bool) -> Bool {
   match expr {
     EFn(_, _, _, _, _, body) => if skip_top_fn {
-      expr_any_node(body, pred)
+      expr_any_node(expr = body, pred = pred)
     } else {
-      expr_any_node(expr, pred)
+      expr_any_node(expr = expr, pred = pred)
     },
-    _ => expr_any_node(expr, pred)
+    _ => expr_any_node(expr = expr, pred = pred)
   }
 }
 
@@ -157,7 +157,7 @@ fn exprs_any_node(exprs: Array[Expr], pred: (Expr) -> Bool) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(exprs) && !found {
-    found = expr_any_node(Array::get(exprs, i), pred)
+    found = expr_any_node(expr = Array::get(exprs, at = i), pred = pred)
     i = i + 1
   }
   found
@@ -174,16 +174,16 @@ fn stmts_any_node(stmts: Array[Stmt], pred: (Expr) -> Bool, skip_top_fn: Bool) -
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) && !found {
-    found = match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => top_value_any_node(expr, pred, skip_top_fn),
-      SFnDecl(_, _, expr, attrs, extra) => top_value_any_node(expr, pred, skip_top_fn) || exprs_any_node(attrs, pred) || exprs_any_node(extra, pred),
-      SLetMut(_, _, expr) => expr_any_node(expr, pred),
-      SLetPat(_, expr) => expr_any_node(expr, pred),
-      STest(_, expr) => expr_any_node(expr, pred),
-      SBench(_, expr) => expr_any_node(expr, pred),
-      SExample(_, expr) => expr_any_node(expr, pred),
-      SExpr(expr) => expr_any_node(expr, pred),
-      SModule(_, _, inner) => stmts_any_node(inner, pred, skip_top_fn),
+    found = match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, expr) => top_value_any_node(expr = expr, pred = pred, skip_top_fn = skip_top_fn),
+      SFnDecl(_, _, expr, attrs, extra) => top_value_any_node(expr = expr, pred = pred, skip_top_fn = skip_top_fn) || exprs_any_node(exprs = attrs, pred = pred) || exprs_any_node(exprs = extra, pred = pred),
+      SLetMut(_, _, expr) => expr_any_node(expr = expr, pred = pred),
+      SLetPat(_, expr) => expr_any_node(expr = expr, pred = pred),
+      STest(_, expr) => expr_any_node(expr = expr, pred = pred),
+      SBench(_, expr) => expr_any_node(expr = expr, pred = pred),
+      SExample(_, expr) => expr_any_node(expr = expr, pred = pred),
+      SExpr(expr) => expr_any_node(expr = expr, pred = pred),
+      SModule(_, _, inner) => stmts_any_node(stmts = inner, pred = pred, skip_top_fn = skip_top_fn),
       SEnum(_, _, _, _, _) => false,
       SSuberror(_, _, _) => false,
       SStruct(_, _, _, _, _, _) => false,
@@ -213,16 +213,16 @@ fn stmts_any_node(stmts: Array[Stmt], pred: (Expr) -> Bool, skip_top_fn: Bool) -
 /// captures something, and a ref cell only boxes a `let mut` such a lambda
 /// captures. Both need a lambda nested in an expression; a top-level
 /// function definition is not one.
-export fn program_makes_closure_blocks(stmts: Array[Stmt]) -> Bool {
-  stmts_any_node(stmts, expr_is_lambda, true)
+export fn program_makes_closure_blocks(_ stmts: Array[Stmt]) -> Bool {
+  stmts_any_node(stmts = stmts, pred = expr_is_lambda, skip_top_fn = true)
 }
 
 /// Does the program write an array literal? On the RC lane a literal
 /// allocates its array block (rc class 5) inline; every other array is made
 /// by the `arr_new` / `Array::slice` / `Array::with_capacity` helpers, whose
 /// reachability lc_emit_module_sections reads off the final bodies.
-export fn program_has_array_literal(stmts: Array[Stmt]) -> Bool {
-  stmts_any_node(stmts, expr_is_array_literal, false)
+export fn program_has_array_literal(_ stmts: Array[Stmt]) -> Bool {
+  stmts_any_node(stmts = stmts, pred = expr_is_array_literal, skip_top_fn = false)
 }
 
 /// Can this program make a map block (rc class 6, or the class-9
@@ -238,9 +238,9 @@ export fn program_makes_map_blocks(stmts: Array[Stmt], used: Map[String, Bool]) 
   let mut i = 0
   let mut found = false
   while i < Array::length(names) && !found {
-    let n = Array::get(names, i)
-    found = String::starts_with(n, "Map::") || String::starts_with(n, "MapBuilder::")
+    let n = Array::get(names, at = i)
+    found = String::starts_with(n, prefix = "Map::") || String::starts_with(n, prefix = "MapBuilder::")
     i = i + 1
   }
-  found || stmts_any_node(stmts, expr_is_map_literal, false)
+  found || stmts_any_node(stmts = stmts, pred = expr_is_map_literal, skip_top_fn = false)
 }

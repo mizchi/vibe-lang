@@ -62,13 +62,13 @@ let inline_projection_source: String = "fn main() -> Unit allows Console {\n  le
 /// carry, so the located parse and the per-file rebase must not move a byte.
 let inline_plain_source: String = "fn main() -> Unit allows Console {\n  let a = 7\n  let b = 4\n  let _ = a - b\n  println(\"x\")\n}\n"
 
-fn compile_checked(source: String) -> Bytes with Env + Exception {
-  let (bytes, _) = compile_checked_with(db_new(), source)
+fn compile_checked(_ source: String) -> Bytes with Env + Exception {
+  let (bytes, _) = compile_checked_with(db = db_new(), source = source)
   bytes
 }
 
-fn compile_unchecked(source: String) -> Bytes with Env + Exception {
-  let (bytes, _) = compile_unchecked_with(db_new(), source)
+fn compile_unchecked(_ source: String) -> Bytes with Env + Exception {
+  let (bytes, _) = compile_unchecked_with(db = db_new(), source = source)
   bytes
 }
 
@@ -94,9 +94,9 @@ test "#2449 the checked entry's bytes do not depend on a shared TypeDb" {
   // on one db with the unchecked entry first: the checked call returned the
   // UNCHECKED bytes, and they differed from what it produces on a fresh db --
   // the caller asked for the typed lowering and silently got the other one.
-  let (unchecked, shared_db) = compile_unchecked_with(db_new(), inline_projection_source)
-  let (checked_after, _) = compile_checked_with(shared_db, inline_projection_source)
-  let (checked_alone, _) = compile_checked_with(db_new(), inline_projection_source)
+  let (unchecked, shared_db) = compile_unchecked_with(db = db_new(), source = inline_projection_source)
+  let (checked_after, _) = compile_checked_with(db = shared_db, source = inline_projection_source)
+  let (checked_alone, _) = compile_checked_with(db = db_new(), source = inline_projection_source)
   assert(!(unchecked == checked_after))
   assert(checked_after == checked_alone)
 }
@@ -108,18 +108,18 @@ test "#2449 a warm TypeDb still leaves this module's rows bound" {
   // path's memo row, the rows went 1 -> 0 across a warm re-prepare, and the
   // merge downstream then read an empty (or another source's) table.
   let warm_path = "warm_rebind_probe.vibe"
-  let db1 = prepare_modules_cached(db_new(), warm_path, inline_projection_source, no_extra_sources())
+  let db1 = prepare_modules_cached(db = db_new(), main_path = warm_path, main_source = inline_projection_source, sources = no_extra_sources())
   assert(row_count(warm_path) > 0)
   // Stand in for that other compile: rebind the path to an unrelated
   // fingerprint with no rows.
   let emptied: Array[Int] = []
   let no_keys: Array[String] = []
-  publish_module_typed_lowering_offsets(warm_path, "#2453-unrelated-fingerprint", Some(emptied), emptied, no_keys)
-  let _ = prepare_modules_cached(db1, warm_path, inline_projection_source, no_extra_sources())
+  publish_module_typed_lowering_offsets(path = warm_path, fingerprint = "#2453-unrelated-fingerprint", offsets = Some(emptied), eq_offs = emptied, eq_keys = no_keys)
+  let _ = prepare_modules_cached(db = db1, main_path = warm_path, main_source = inline_projection_source, sources = no_extra_sources())
   assert(row_count(warm_path) > 0)
 }
 
-fn row_count(path: String) -> Int {
+fn row_count(_ path: String) -> Int {
   match module_typed_lowering_offsets_for_path(path) {
     Some(rows) => Array::length(rows),
     None => 0 - 1
@@ -127,9 +127,9 @@ fn row_count(path: String) -> Int {
 }
 
 fn compile_checked_with(db: TypeDb, source: String) -> (Bytes, TypeDb) with Env + Exception {
-  compile_with_closure_sources_wasi_cached(db, source, "main.vibe", no_extra_sources(), "main")
+  compile_with_closure_sources_wasi_cached(db = db, main_source = source, main_path = "main.vibe", sources = no_extra_sources(), entry_name = "main")
 }
 
 fn compile_unchecked_with(db: TypeDb, source: String) -> (Bytes, TypeDb) with Env + Exception {
-  compile_with_closure_sources_wasi_unchecked_cached(db, source, "main.vibe", no_extra_sources(), "main")
+  compile_with_closure_sources_wasi_unchecked_cached(db = db, main_source = source, main_path = "main.vibe", sources = no_extra_sources(), entry_name = "main")
 }

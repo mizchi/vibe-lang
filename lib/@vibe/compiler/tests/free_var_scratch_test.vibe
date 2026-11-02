@@ -10,12 +10,12 @@ test "warmed free-variable scope storage adds no allocation" {
   let empty: Array[String] = []
   let leaf_expr = EUnit
   let body = ELet("local", EIdent("a", -1), ELet("inner", EIdent("b", -1), EIdent("local", -1), -1), -1)
-  let _ = collect_free_vars_indexed(body, params, empty)
+  let _ = collect_free_vars_indexed(body = body, param_names = params, fn_name_index = empty)
   let start = Profiler::heap_bytes()
-  let leaf = collect_free_vars_indexed(leaf_expr, empty, empty)
+  let leaf = collect_free_vars_indexed(body = leaf_expr, param_names = empty, fn_name_index = empty)
   let leaf_bytes = Profiler::heap_bytes() - start
   let before = Profiler::heap_bytes()
-  let scoped = collect_free_vars_indexed(body, params, empty)
+  let scoped = collect_free_vars_indexed(body = body, param_names = params, fn_name_index = empty)
   let scope_bytes = Profiler::heap_bytes() - before
   inspect(scoped, content = "[]")
   inspect(leaf, content = "[]")
@@ -25,16 +25,16 @@ test "warmed free-variable scope storage adds no allocation" {
 test "scope reset preserves input names and independently owned results" {
   let params = ["bound"]
   let globals = ["global"]
-  let first = collect_free_vars_indexed(ETuple([
+  let first = collect_free_vars_indexed(body = ETuple([
     EIdent("bound", -1),
     EIdent("free", -1),
     EIdent("global", -1)
-  ]), params, globals)
-  let second = collect_free_vars_indexed(ETuple([
+  ]), param_names = params, fn_name_index = globals)
+  let second = collect_free_vars_indexed(body = ETuple([
     EIdent("bound", -1),
     EIdent("free", -1)
-  ]), ["free"], globals)
-  let third = collect_free_vars_used_builtins(EIdent("free", -1), [], globals)
+  ]), param_names = ["free"], fn_name_index = globals)
+  let third = collect_free_vars_used_builtins(body = EIdent("free", -1), param_names = [], fn_name_index = globals)
   inspect(first, content = "[free]")
   inspect(second, content = "[bound]")
   inspect(third, content = "[free]")
@@ -52,8 +52,8 @@ test "nested scopes unwind before siblings and later queries" {
     EIdent("item", -1),
     EAssign("idx", EInt(1), EUnit, -1)
   ])
-  let result = collect_free_vars_indexed(body, [], [])
-  let next = collect_free_vars_indexed(EIdent("source", -1), [], [])
+  let result = collect_free_vars_indexed(body = body, param_names = [], fn_name_index = [])
+  let next = collect_free_vars_indexed(body = EIdent("source", -1), param_names = [], fn_name_index = [])
   inspect(result, content = "[source, item, idx]")
   inspect(next, content = "[source]")
 }
@@ -65,10 +65,10 @@ test "self-collision fallback and enclosing shadows can share scope storage" {
     EIdent("self", -1),
     EIdent("captured", -1)
   ])
-  let forced = collect_free_vars_indexed_self(body, [], globals, "self", [])
-  let shadowed = collect_free_vars_indexed_self(body, ["self"], globals, "self", [
+  let forced = collect_free_vars_indexed_self(body = body, param_names = [], fn_name_index = globals, self_name = "self", encl = [])
+  let shadowed = collect_free_vars_indexed_self(body = body, param_names = ["self"], fn_name_index = globals, self_name = "self", encl = [
   ])
-  let enclosing = collect_free_vars_indexed_self(EIdent("global", -1), [], globals, "", [
+  let enclosing = collect_free_vars_indexed_self(body = EIdent("global", -1), param_names = [], fn_name_index = globals, self_name = "", encl = [
     "global"
   ])
   inspect(forced, content = "[captured, self]")

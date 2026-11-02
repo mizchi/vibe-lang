@@ -11,7 +11,7 @@ import @vibex/wasm_runtime {
 // Inspect the requested export's decoded instructions. Searching raw bytes or
 // every function would let an immediate or an unrelated helper satisfy a claim.
 fn struct_instructions(source: String, entry: String) -> String with Exception {
-  let wasm = compile_wasi_gc(source, entry)
+  let wasm = compile_wasi_gc(source = source, entry = entry)
   let mut imported_functions = 0
   for imp in module_imports(wasm) {
     let (_, _, kind, _) = imp
@@ -27,31 +27,31 @@ fn struct_instructions(source: String, entry: String) -> String with Exception {
     }
   }
   assert_true(function_index >= imported_functions)
-  let (offset, size, _) = Array::get(module_code(wasm), function_index - imported_functions)
-  let (start, end_pos) = get_code_body_range(wasm, offset, size)
+  let (offset, size, _) = Array::get(module_code(wasm), at = function_index - imported_functions)
+  let (start, end_pos) = get_code_body_range(bytes = wasm, body_offset = offset, body_size = size)
   assert_true(start >= 0)
   let instructions: Array[String] = []
-  for instruction in disassemble(wasm, start, end_pos) {
-    assert_true(!String::starts_with(instruction, "??"))
-    if String::starts_with(instruction, "struct.") {
-      Array::push(instructions, instruction)
+  for instruction in disassemble(code = wasm, start = start, end_pos = end_pos) {
+    assert_true(!String::starts_with(instruction, prefix = "??"))
+    if String::starts_with(instruction, prefix = "struct.") {
+      Array::push(instructions, value = instruction)
     }
   }
-  String::join(instructions, "\n")
+  String::join(instructions, sep = "\n")
 }
 
 test "gc struct construction" {
-  inspect(struct_instructions("struct Pair { a: Int; b: Int }\nexport fn main() -> Int { let pair = Pair::{ a: 1, b: 2 }; pair.a + pair.b }", "main"), "struct.new\nstruct.get\nstruct.get")
+  inspect(struct_instructions(source = "struct Pair { a: Int; b: Int }\nexport fn main() -> Int { let pair = Pair::{ a: 1, b: 2 }; pair.a + pair.b }", entry = "main"), "struct.new\nstruct.get\nstruct.get")
 }
 
 test "gc struct field projection" {
-  inspect(struct_instructions("struct Pair { a: Int; b: Int }\nexport fn main() -> Int { let pair = Pair::{ a: 1, b: 2 }; pair.a }", "main"), "struct.new\nstruct.get")
+  inspect(struct_instructions(source = "struct Pair { a: Int; b: Int }\nexport fn main() -> Int { let pair = Pair::{ a: 1, b: 2 }; pair.a }", entry = "main"), "struct.new\nstruct.get")
 }
 
 test "gc struct field mutation" {
-  inspect(struct_instructions("struct Counter { mut a: Int }\nexport fn main() -> Int { let counter = Counter::{ a: 1 }; counter.a = 3; counter.a }", "main"), "struct.new\nstruct.set\nstruct.get")
+  inspect(struct_instructions(source = "struct Counter { mut a: Int }\nexport fn main() -> Int { let counter = Counter::{ a: 1 }; counter.a = 3; counter.a }", entry = "main"), "struct.new\nstruct.set\nstruct.get")
 }
 
 test "scalar code does not acquire struct instructions from runtime helpers" {
-  inspect(struct_instructions("export fn main() -> Int { 42 }", "main"), "")
+  inspect(struct_instructions(source = "export fn main() -> Int { 42 }", entry = "main"), "")
 }

@@ -113,8 +113,8 @@ export fn engine_dependency_interface_set_new() -> DependencyInterfaceSet {
   DependencyInterfaceSet::{ rows: [] }
 }
 fn engine_dependency_interface_view(_ env: TypeEnv) -> DependencyInterfaceView {
-  let bindings = env_flat_bindings(env = env)
-  let defs = env_type_defs(env = env)
+  let bindings = env_flat_bindings(env)
+  let defs = env_type_defs(env)
   let traits: Array[String] = []
   let upper_slots: Array[Int] = []
   let declared_names: Array[String] = []
@@ -132,12 +132,12 @@ fn engine_dependency_interface_view(_ env: TypeEnv) -> DependencyInterfaceView {
     env,
     bindings,
     defs,
-    selectable: env_selectable_type_defs(env = env),
+    selectable: env_selectable_type_defs(env),
     traits,
     upper_slots,
     declared_names,
     markers: engine_type_reference_markers(env),
-    show_facts: env_show_wrapper_facts(env = env)
+    show_facts: env_show_wrapper_facts(env)
   }
 }
 export fn engine_dependency_interface_slot(interfaces: DependencyInterfaceSet, path: String) -> Int {
@@ -253,7 +253,7 @@ fn engine_dependency_typedef_projection(view: DependencyInterfaceView, names: Ar
       // the exception exact: user/generic typedef projection is unchanged.
       match alias {
         Some(local_name) => if local_name != name {
-          match resolve_builtin(name = name) {
+          match resolve_builtin(name) {
             Some(target) => Array::push(selected, value = TDAlias(local_name, array_empty(), target)),
             None => ()
           }
@@ -412,7 +412,7 @@ fn engine_row_bracketed_type_names_into(row: String, out: Array[String], named_o
       depth = depth + 1
       // #1963: the exception owner, not a name compare (`last_ident` holds
       // no bracket, so this is exactly the two erased spellings).
-      if exception_depth == 0 && is_exception_effect_name(name = last_ident) {
+      if exception_depth == 0 && is_exception_effect_name(last_ident) {
         exception_depth = depth
       }
       last_ident = ""
@@ -483,7 +483,7 @@ fn engine_nominal_type_names_into(ty: Type, out: Array[String], named_out: Array
         None => ()
       }
     },
-    CtApplied(head, args) => if is_alias_constructor(ty = ty) {
+    CtApplied(head, args) => if is_alias_constructor(ty) {
       // `CtApplied(CtNamed("#alias_ctor", []), [body, <binder>...])`: the
       // trailing entries are the alias declaration's own parameter names, and
       // the body mentions them as rigid `CtNamed`s. Neither is a reference.
@@ -629,7 +629,7 @@ fn engine_typedef_payload_types(_ def: TypeDef) -> (Array[String], Array[Type]) 
 /// local declaration would then answer.
 fn engine_foreign_type_declaration_collisions(item: ImportItem, raw_path: String, resolved: String, dep_env: TypeEnv, dep_types: Array[String], local_types: Array[String], unresolved: Array[String], reported: Array[String]) -> Unit {
   if Array::length(local_types) > 0 && !engine_is_vpkg_types_stub_path(resolved) {
-    let dep_defs = env_type_defs(env = dep_env)
+    let dep_defs = env_type_defs(dep_env)
     let queue: Array[TypeDef] = []
     let visited: Array[String] = []
     for def in dep_defs {
@@ -939,7 +939,7 @@ fn engine_identity_rename_formals(ty: Type, params: Array[String]) -> Type {
       Some(row) => Some(engine_identity_rename_row(row = row, params = params)),
       None => None
     }),
-    CtApplied(head, args) => if is_alias_constructor(ty = ty) {
+    CtApplied(head, args) => if is_alias_constructor(ty) {
       // A bare parameterized alias in a constructor slot carries its body
       // and its OWN binder names, a scope apart from `params`: normalize
       // that scope by position on its own (`Inner[X]` = `Inner[Y]`).
@@ -1550,7 +1550,7 @@ export fn engine_bind_type_reference_definitions(value_surface: Array[String], p
     }
     i = i + 1
   }
-  let published_defs = env_type_defs(env = published)
+  let published_defs = env_type_defs(published)
   let markers = engine_type_reference_markers(publication_env)
   // Every kept declaration is scanned, markers or not: the projection keeps
   // a declaration's closure by its members' literal spellings, so a type
@@ -1620,7 +1620,7 @@ export fn engine_bind_type_reference_definitions(value_surface: Array[String], p
   if Array::length(roots) == 0 {
     published
   } else {
-    let reached = engine_identity_closure(roots = roots, defs = env_type_defs(env = publication_env), markers = markers, walked = array_empty())
+    let reached = engine_identity_closure(roots = roots, defs = env_type_defs(publication_env), markers = markers, walked = array_empty())
     let mut out = published
     let mut k = 0
     while k < Array::length(reached) {
@@ -1628,7 +1628,7 @@ export fn engine_bind_type_reference_definitions(value_surface: Array[String], p
       match find_typedef(defs = published_defs, name = n) {
         Some(_) => (),
         None => {
-          out = EnvBind(engine_type_reference_definition_marker(n), env_value_binding(ty = engine_identity_definition_type(def = def, ty = ty)), out)
+          out = EnvBind(engine_type_reference_definition_marker(n), env_value_binding(engine_identity_definition_type(def = def, ty = ty)), out)
         }
       }
       k = k + 1
@@ -1747,11 +1747,11 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   // once. The standard library's are never read: its retaining operations
   // are checked by name.
   let dep_retention_rows: Array[(String, Type)] = []
-  if !retention_summary_skips_path(path = resolved) && !retention_summary_skips_path(path = raw_path) {
+  if !retention_summary_skips_path(resolved) && !retention_summary_skips_path(raw_path) {
     for entry in dep_bindings {
       let (bname, bty) = entry
-      if is_retention_summary_marker(name = bname) {
-        Array::push(dep_retention_rows, value = (retention_summary_marker_target(name = bname), bty))
+      if is_retention_summary_marker(bname) {
+        Array::push(dep_retention_rows, value = (retention_summary_marker_target(bname), bty))
       } else {
         ()
       }
@@ -1764,8 +1764,8 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   let dep_erased_kind_rows: Array[(String, Type)] = []
   for entry in dep_bindings {
     let (bname, bty) = entry
-    if is_erased_kinds_marker(name = bname) {
-      Array::push(dep_erased_kind_rows, value = (erased_kinds_marker_target(name = bname), bty))
+    if is_erased_kinds_marker(bname) {
+      Array::push(dep_erased_kind_rows, value = (erased_kinds_marker_target(bname), bty))
     }
   }
   engine_builtin_shadow_diagnostics_into(dep_bindings = dep_bindings, resolved = resolved, unresolved = unresolved)
@@ -1884,7 +1884,7 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
       let aliased_builtin = if alias == None || surface_only_item {
         None
       } else {
-        aliased_builtin_import_type(name = name)
+        aliased_builtin_import_type(name)
       }
       let with_name = match imported_ty {
         // #3542: a builtin operation the dependency publishes without a body
@@ -1895,7 +1895,7 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
         // clean and its Double result interpolated as a box address. Importing
         // the builtin under its own name means the builtin, so leave its
         // lookup to the builtin table, exactly as when it is not imported.
-        Some(CtUnknown) => if alias == None && import_keeps_builtin_signature(name = name) {
+        Some(CtUnknown) => if alias == None && import_keeps_builtin_signature(name) {
           nacc
         } else match aliased_builtin {
           Some(sig) => env_bind_with_origin(env = nacc, name = bound_name, ty = sig, origin = binding_origin),
@@ -1905,7 +1905,7 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
         // The same when this lane holds no interface for the dependency (a
         // program whose only import is `@vibe/builtin`): the `CtUnknown`
         // below would shadow the builtin just the same.
-        None => if alias == None && import_keeps_builtin_signature(name = name) {
+        None => if alias == None && import_keeps_builtin_signature(name) {
           nacc
         } else if aliased_builtin is Some {
           match aliased_builtin {
@@ -1941,9 +1941,9 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
         BindingOriginModuleFunctionHeader(_, _, _) => with_companions,
         BindingOriginReExportFunctionHeader(_, _, _) => with_companions,
         _ => match env_lookup_flat(bindings = dep_param_rows, name = name) {
-          Some(t) => env_bind(env = with_companions, name = param_names_marker(name = bound_name), ty = t),
-          None => if env_lookup(env = acc, name = param_names_marker(name = bound_name)) is Some(CtRecord(_)) {
-            env_bind(env = with_companions, name = param_names_marker(name = bound_name), ty = CtUnit)
+          Some(t) => env_bind(env = with_companions, name = param_names_marker(bound_name), ty = t),
+          None => if env_lookup(env = acc, name = param_names_marker(bound_name)) is Some(CtRecord(_)) {
+            env_bind(env = with_companions, name = param_names_marker(bound_name), ty = CtUnit)
           } else {
             with_companions
           }
@@ -1956,7 +1956,7 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
         with_params
       } else {
         match env_lookup_flat(bindings = dep_retention_rows, name = name) {
-          Some(t) => env_bind(env = with_params, name = retention_summary_marker(name = bound_name), ty = t),
+          Some(t) => env_bind(env = with_params, name = retention_summary_marker(bound_name), ty = t),
           None => with_params
         }
       }
@@ -1965,7 +1965,7 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
         with_retention
       } else {
         match env_lookup_flat(bindings = dep_erased_kind_rows, name = name) {
-          Some(t) => env_bind(env = with_retention, name = erased_kinds_marker(name = bound_name), ty = t),
+          Some(t) => env_bind(env = with_retention, name = erased_kinds_marker(bound_name), ty = t),
           None => with_retention
         }
       }
@@ -1986,7 +1986,7 @@ fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String
   let mut ci = 0
   while ci < Array::length(carried_references) {
     let (tn, def) = Array::get(carried_references, at = ci)
-    with_references = EnvBind(engine_type_reference_definition_marker(tn), env_value_binding(ty = def), with_references)
+    with_references = EnvBind(engine_type_reference_definition_marker(tn), env_value_binding(def), with_references)
     ci = ci + 1
   }
   with_references
@@ -2061,7 +2061,7 @@ fn engine_prepend_reexport_alias_declarations(acc: TypeEnv, resolved: String, na
   let mut ci = 0
   while ci < Array::length(carried) {
     let (tn, def) = Array::get(carried, at = ci)
-    out = EnvBind(engine_type_reference_definition_marker(tn), env_value_binding(ty = def), out)
+    out = EnvBind(engine_type_reference_definition_marker(tn), env_value_binding(def), out)
     ci = ci + 1
   }
   out
@@ -2155,7 +2155,7 @@ export fn engine_build_import_envs_using_interfaces(stmts: Array[Stmt], base_dir
       (local_acc, surface_acc)
     } else {
       let (next_local, next_surface) = match Array::get(stmts, at = i) {
-        SImport(raw_path, names) => if is_builtin_iterator_serialized_boundary_path(path = raw_path) {
+        SImport(raw_path, names) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
           // This serialized boundary supplies no dependency publication. Keep
           // its candidates unknown even when another import has precise facts.
           for item in names {
@@ -2323,7 +2323,7 @@ export fn engine_type_diagnostic_display(path: String, source: String, located_m
   } else {
     ()
   }
-  let owner_raw = vpkg_types_contract_of_source(source = source)
+  let owner_raw = vpkg_types_contract_of_source(source)
   if owner_raw == "" {
     return (path, located_msg)
   } else {
@@ -2333,7 +2333,7 @@ export fn engine_type_diagnostic_display(path: String, source: String, located_m
   // included, and this string goes straight into a diagnostic -- rendered
   // verbatim it would split one record across lines, and crafted path
   // components could resemble further diagnostics (Codex review on #2324).
-  let owner = vpkg_path_escape_one_line(path = owner_raw)
+  let owner = vpkg_path_escape_one_line(owner_raw)
   let (lno, body) = engine_located_line_and_body(located_msg)
   if lno < 0 {
     // Unlocated: nothing to remap, and nothing to get wrong.

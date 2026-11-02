@@ -36,10 +36,10 @@ import @vibe/compiler/normalize {
   desugar_inspect_calls, desugar_trait_dicts_with_typed_eq
 }
 
-fn checked_placement_rows(source: String) -> Array[Int] with Exception {
+fn checked_placement_rows(_ source: String) -> Array[Int] with Exception {
   let (tokens, starts, _) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
-  let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts, EnvEmpty)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
+  let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = EnvEmpty)
   match rows {
     Some(found) => found,
     None => call_placement_checked_rows()
@@ -47,37 +47,37 @@ fn checked_placement_rows(source: String) -> Array[Int] with Exception {
 }
 
 fn placement_packet(offset: Int, slots: Array[Int]) -> Array[Int] {
-  let rows = [13, lowering_row_encode(offset, 8), 41, 10]
+  let rows = [13, lowering_row_encode(payload = offset, tag = 8), 41, 10]
   for slot in slots {
-    Array::push(rows, lowering_row_encode(slot, 11))
+    Array::push(rows, value = lowering_row_encode(payload = slot, tag = 11))
   }
-  Array::push(rows, lowering_row_encode(offset, 12))
+  Array::push(rows, value = lowering_row_encode(payload = offset, tag = 12))
   rows
 }
 
 fn lowering_message(source: String, rows: Array[Int], expand_inspect: Bool) -> String with Exception {
   let (tokens, starts, _) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
-  restore_call_placements(stmts, rows)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
+  restore_call_placements(stmts = stmts, rows = rows)
   if expand_inspect {
     desugar_inspect_calls(stmts)
   } else {
     ()
   }
   handle {
-    desugar_trait_dicts_with_typed_eq(stmts, [], [])
+    desugar_trait_dicts_with_typed_eq(stmts = stmts, typed_eq_offsets = [], typed_eq_keys = [])
     ""
   } with { Exception::Throw(message) => message }
 }
 
-fn poison_placement(rows: Array[Int]) -> Unit {
+fn poison_placement(_ rows: Array[Int]) -> Unit {
   let mut poisoned = false
   let mut i = 0
   while i + 1 < Array::length(rows) && !poisoned {
-    if lowering_row_tag(Array::get(rows, i)) == 11 && lowering_row_tag(Array::get(rows, i + 1)) == 11 {
-      let first = Array::get(rows, i)
-      Array::set(rows, i, Array::get(rows, i + 1))
-      Array::set(rows, i + 1, first)
+    if lowering_row_tag(Array::get(rows, at = i)) == 11 && lowering_row_tag(Array::get(rows, at = i + 1)) == 11 {
+      let first = Array::get(rows, at = i)
+      Array::set(rows, at = i, value = Array::get(rows, at = i + 1))
+      Array::set(rows, at = i + 1, value = first)
       poisoned = true
     } else {
       ()
@@ -91,33 +91,33 @@ fn poison_placement(rows: Array[Int]) -> Unit {
 test "lowering consumes valid argument placement instead of recomputing it" {
   let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
   let rows = checked_placement_rows(source)
-  assert(lowering_message(source, rows, false) == "")
+  assert(lowering_message(source = source, rows = rows, expand_inspect = false) == "")
   poison_placement(rows)
-  let message = lowering_message(source, rows, false)
+  let message = lowering_message(source = source, rows = rows, expand_inspect = false)
   assert(message == "")
 }
 
 /// A complete checked channel cannot silently treat a lost call row as rowless.
 test "lowering refuses labeled calls with missing and rowless placement channels" {
   let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
-  assert(String::contains(lowering_message(source, [13], false), "missing or invalid checker argument placement for `f`"))
-  assert(String::contains(lowering_message(source, [14], false), "missing or invalid checker argument placement for `f`"))
+  assert(String::contains(lowering_message(source = source, rows = [13], expand_inspect = false), needle = "missing or invalid checker argument placement for `f`"))
+  assert(String::contains(lowering_message(source = source, rows = [14], expand_inspect = false), needle = "missing or invalid checker argument placement for `f`"))
 }
 
 /// Inspect erases its call before dictionary lowering; its original diagnostic
 /// must survive on the synthetic expression that takes the value's type.
 test "a macro cannot erase a poisoned source call placement" {
   let source = "fn main() -> Unit allows Console { inspect(1, content = \"1\") }"
-  let offset = String::index_of(source, "inspect(")
-  let message = lowering_message(source, placement_packet(offset, [4, 2]), true)
-  assert(String::contains(message, "placement disagrees with the checker for `inspect`"))
+  let offset = String::index_of(source, needle = "inspect(")
+  let message = lowering_message(source = source, rows = placement_packet(offset = offset, slots = [4, 2]), expand_inspect = true)
+  assert(String::contains(message, needle = "placement disagrees with the checker for `inspect`"))
 }
 
 /// Mutable lambda declarations follow the binding typing resolves, across a
 /// sequential assignment, with no independent syntax/name table lookup.
 test "checker placements survive sequential mutable lambda assignments" {
   let source = "fn main() -> Int { let mut g = (x~: Int, y~: Int) -> Int { x - y }; let a = g(y = 3, x = 10); g = (y~: Int, x~: Int) -> Int { x - y }; a + g(y = 3, x = 10) }"
-  let message = lowering_message(source, checked_placement_rows(source), false)
+  let message = lowering_message(source = source, rows = checked_placement_rows(source), expand_inspect = false)
   if message != "" {
     throw(message)
   } else {
@@ -137,7 +137,7 @@ test "checker placement agrees on optional omission wrapping and option values" 
     "pick(y = Some(3), x = 10)"
   ] {
     let source = head + call + " }"
-    assert(lowering_message(source, checked_placement_rows(source), false) == "")
+    assert(lowering_message(source = source, rows = checked_placement_rows(source), expand_inspect = false) == "")
   }
 }
 
@@ -148,7 +148,7 @@ test "recursive group generalization retains call placement headers" {
     "let rec f = (x~: Int, y~: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(y = 3, x = 0) }",
     "let rec f = (x~: Int, y~: Int) -> { if x == 0 { y } else { g(x = 0, y = y) } }\nlet rec g = (x~: Int, y~: Int) -> { if x == 0 { y } else { f(x = 0, y = y) } }\nfn main() -> Int { f(y = 3, x = 0) }"
   ] {
-    assert(lowering_message(source, checked_placement_rows(source), false) == "")
+    assert(lowering_message(source = source, rows = checked_placement_rows(source), expand_inspect = false) == "")
   }
 }
 
@@ -164,11 +164,11 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
     dep_envs: [],
     ships_owned_heads: false
   }
-  let _ = engine_check_module_impl(job, false, None, Some((Bytes::from_array([7]), artifacts)), None)
+  let _ = engine_check_module_impl(job = job, observe_typing_artifact = false, program_transport = None, artifact_output = Some((Bytes::from_array([7]), artifacts)), interfaces = None)
   assert(Array::length(artifacts) == 1)
-  let original = Array::get(artifacts, 0)
+  let original = Array::get(artifacts, at = 0)
   let artifact = if roundtrip {
-    match decode_checked_module_artifact(encode_checked_module_artifact(original), original.input_identity) {
+    match decode_checked_module_artifact(bytes = encode_checked_module_artifact(original), input_identity = original.input_identity) {
       Some(decoded) => decoded,
       None => {
         assert(false); original
@@ -181,19 +181,19 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
   if mutation == 1 {
     poison_placement(rows)
   } else if mutation == 2 {
-    Array::truncate(rows, 0)
-    Array::push(rows, 13)
+    Array::truncate(rows, length = 0)
+    Array::push(rows, value = 13)
   } else {
     ()
   }
-  commit_checked_module_artifact(path, source, artifact, false)
+  commit_checked_module_artifact(path = path, source = source, artifact = artifact, fresh = false)
   module_typed_lowering_memo_reset()
-  module_typed_lowering_memo_put(path, "placement-cache-guard", rows, artifact.eq_offsets, artifact.eq_keys)
-  module_typed_lowering_bind_source(path, "placement-cache-guard", source)
-  let parsed = parse_program_with_path(path, source)
+  module_typed_lowering_memo_put(path = path, fingerprint = "placement-cache-guard", offsets = rows, eq_offs = artifact.eq_offsets, eq_keys = artifact.eq_keys)
+  module_typed_lowering_bind_source(path = path, fingerprint = "placement-cache-guard", source = source)
+  let parsed = parse_program_with_path(path = path, source = source)
   assert(checked_module_cache_stats().2 > 0)
   let message = handle {
-    desugar_trait_dicts_with_typed_eq(parsed, [], [])
+    desugar_trait_dicts_with_typed_eq(stmts = parsed, typed_eq_offsets = [], typed_eq_keys = [])
     let expected = if mutation == 1 {
       [EInt(3), EInt(10)]
     } else {
@@ -202,7 +202,7 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
     let mut found = false
     for stmt in parsed {
       match stmt {
-        SLet(_, _, "main", _, body) => found = expr_any_node(body, (expr) -> match expr {
+        SLet(_, _, "main", _, body) => found = expr_any_node(expr = body, pred = (expr) -> match expr {
           ECall(EIdent("f", _), args, _, _) => args == expected,
           _ => false
         }),
@@ -221,19 +221,19 @@ fn cached_lowering_message(source: String, mutation: Int, roundtrip: Bool) -> St
 test "raw cached source is rechecked before consuming its placements" {
   let source = "fn f(x: Int, y: Int) -> Int { x - y }\nfn main() -> Int { f(y = 3, x = 10) }"
   for roundtrip in [false, true] {
-    assert(cached_lowering_message(source, 0, roundtrip) == "")
-    assert(cached_lowering_message(source, 1, roundtrip) == "")
-    assert(String::contains(cached_lowering_message(source, 2, roundtrip), "missing or invalid checker argument placement for `f`"))
+    assert(cached_lowering_message(source = source, mutation = 0, roundtrip = roundtrip) == "")
+    assert(cached_lowering_message(source = source, mutation = 1, roundtrip = roundtrip) == "")
+    assert(String::contains(cached_lowering_message(source = source, mutation = 2, roundtrip = roundtrip), needle = "missing or invalid checker argument placement for `f`"))
   }
 }
 
 /// Namespace qualification introduces no receiver, even when optional filling
 /// has added one argument before the qualified call is typed.
 test "qualified optional placement does not infer a receiver from arity" {
-  let env = env_bind(env_bind(EnvEmpty, "helper.pick", CtFn([
+  let env = env_bind(env = env_bind(env = EnvEmpty, name = "helper.pick", ty = CtFn([
     CtInt,
     CtOption(CtInt)
-  ], CtInt, None)), "#params:helper.pick", CtRecord([
+  ], CtInt, None)), name = "#params:helper.pick", ty = CtRecord([
     ("x", CtUnknown),
     ("y?", CtUnknown)
   ]))
@@ -245,8 +245,8 @@ test "qualified optional placement does not infer a receiver from arity" {
   ] {
     let source = "fn main() -> Int { " + call + " }"
     let (tokens, starts, _) = lex_with_offsets(source)
-    let stmts = parse_program_located(tokens, starts, source)
-    let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts, env)
+    let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
+    let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = env)
     match rows {
       Some(_) => (),
       None => assert(false)
@@ -257,16 +257,16 @@ test "qualified optional placement does not infer a receiver from arity" {
 /// A build consuming checked rows must not resolve the declaration a second
 /// time from a syntax-only name table that the checked import did not publish.
 test "lowering consumes an imported placement without a syntactic header" {
-  let env = env_bind(env_bind(EnvEmpty, "f", CtFn([CtInt, CtInt], CtInt, None)), "#params:f", CtRecord([
+  let env = env_bind(env = env_bind(env = EnvEmpty, name = "f", ty = CtFn([CtInt, CtInt], CtInt, None)), name = "#params:f", ty = CtRecord([
     ("y", CtUnknown),
     ("x", CtUnknown)
   ]))
   let source = "fn main() -> Int { f(x = 10, y = 3) }"
   let (tokens, starts, _) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
-  let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts, env)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
+  let (_, rows, _, _) = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = env)
   match rows {
-    Some(found) => assert(lowering_message(source, found, false) == ""),
+    Some(found) => assert(lowering_message(source = source, rows = found, expand_inspect = false) == ""),
     None => assert(false)
   }
 }

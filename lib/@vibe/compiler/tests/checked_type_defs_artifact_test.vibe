@@ -33,13 +33,13 @@ fn typedef_observation(defs: Array[TypeDef], binders: Array[Array[Int]], subst: 
 }
 
 fn encode_from(defs: Array[TypeDef], binders: Array[Array[Int]], subst: Subst) -> Option[String] {
-  match checked_type_defs_artifact_from_observation(typedef_observation(defs, binders, subst)) {
+  match checked_type_defs_artifact_from_observation(typedef_observation(defs = defs, binders = binders, subst = subst)) {
     Some(artifact) => encode_checked_type_defs_artifact_v2(artifact),
     None => None
   }
 }
 
-fn assert_round_trip(observation: CheckedProgramTypeDefsObservation) -> Unit {
+fn assert_round_trip(_ observation: CheckedProgramTypeDefsObservation) -> Unit {
   match checked_type_defs_artifact_from_observation(observation) {
     Some(artifact) => match encode_checked_type_defs_artifact_v2(artifact) {
       Some(text) => match decode_checked_type_defs_artifact_v2(text) {
@@ -119,7 +119,7 @@ test "checked typedef artifact v2 preserves every retained variant and order" {
     array_empty()
   ]
   let subst = SubstEffBind("e", "", SubstBound(min_int, ["Ord", "Ord"], SubstBind(max_int, CtFn(array_empty(), CtUnit, Some("")), SubstEmpty)))
-  assert_round_trip(typedef_observation(defs, binders, subst))
+  assert_round_trip(typedef_observation(defs = defs, binders = binders, subst = subst))
 }
 
 test "checked typedef artifact v2 distinguishes function effect None from Some empty" {
@@ -129,9 +129,9 @@ test "checked typedef artifact v2 distinguishes function effect None from Some e
   let some_defs = [
     TDAlias("Effect", array_empty(), CtFn(array_empty(), CtUnit, Some("")))
   ]
-  match (encode_from(none_defs, [array_empty()], SubstEmpty), encode_from(some_defs, [
+  match (encode_from(defs = none_defs, binders = [array_empty()], subst = SubstEmpty), encode_from(defs = some_defs, binders = [
     array_empty()
-  ], SubstEmpty)) {
+  ], subst = SubstEmpty)) {
     (Some(none_text), Some(some_text)) => {
       assert(none_text != some_text)
       match decode_checked_type_defs_artifact_v2(some_text) {
@@ -149,23 +149,23 @@ test "checked typedef artifact v2 distinguishes function effect None from Some e
 test "checked typedef artifact v2 preserves final-substitution-sensitive canonical parity" {
   let defs = [TDAlias("Resolved", array_empty(), CtVar(9))]
   let binders = [array_empty()]
-  let resolved = typedef_observation(defs, binders, SubstBind(9, CtInt, SubstEmpty))
-  let unresolved = typedef_observation(defs, binders, SubstEmpty)
+  let resolved = typedef_observation(defs = defs, binders = binders, subst = SubstBind(9, CtInt, SubstEmpty))
+  let unresolved = typedef_observation(defs = defs, binders = binders, subst = SubstEmpty)
   assert(canonical_checked_type_defs_snapshot(resolved) != canonical_checked_type_defs_snapshot(unresolved))
   assert_round_trip(resolved)
 }
 
 test "checked typedef artifact v2 rejects binder collisions and cached substitutions" {
-  let duplicate_in_row = typedef_observation([
+  let duplicate_in_row = typedef_observation(defs = [
     TDEnum("Bad", ["A", "B"], array_empty())
-  ], [[7, 7]], SubstEmpty)
-  let duplicate_across_rows = typedef_observation([
+  ], binders = [[7, 7]], subst = SubstEmpty)
+  let duplicate_across_rows = typedef_observation(defs = [
     TDEnum("First", ["A"], array_empty()),
     TDEnum("Second", ["B"], array_empty())
-  ], [[7], [7]], SubstEmpty)
+  ], binders = [[7], [7]], subst = SubstEmpty)
   let type_cache: Map[String, Type] = Map::new()
   let bounds_cache: Map[String, Array[String]] = Map::new()
-  let cached = typedef_observation(array_empty(), array_empty(), SubstCached(type_cache, bounds_cache, SubstEmpty))
+  let cached = typedef_observation(defs = array_empty(), binders = array_empty(), subst = SubstCached(type_cache, bounds_cache, SubstEmpty))
   match checked_type_defs_artifact_from_observation(duplicate_in_row) {
     Some(_) => assert(false),
     None => assert(true)
@@ -222,14 +222,14 @@ test "checked typedef artifact v2 rejects strict malformed payloads" {
 test "checked typedef artifact v2 erases range metadata without dropping bindings" {
   let defs = [TDAlias("A", [], CtVar(9))]
   let rest = SubstBound(9, ["Eq"], SubstEffBind("e", "Log", SubstEmpty))
-  let indexed = subst_bind_value(9, CtString, rest)
+  let indexed = subst_bind_value(id = 9, ty = CtString, s = rest)
   let raw = SubstBind(9, CtString, rest)
-  match encode_from(defs, [[]], indexed) {
-    Some(indexed_text) => match encode_from(defs, [[]], raw) {
+  match encode_from(defs = defs, binders = [[]], subst = indexed) {
+    Some(indexed_text) => match encode_from(defs = defs, binders = [[]], subst = raw) {
       Some(raw_text) => assert(indexed_text == raw_text),
       None => assert(false)
     },
     None => assert(false)
   }
-  assert_round_trip(typedef_observation(defs, [[]], indexed))
+  assert_round_trip(typedef_observation(defs = defs, binders = [[]], subst = indexed))
 }

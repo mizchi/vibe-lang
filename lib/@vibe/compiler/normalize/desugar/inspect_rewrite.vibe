@@ -39,7 +39,7 @@ import ./state.vibe {
 /// Enumerated (no `_ =>` catch-all for the recursive shapes) so a new `Expr`
 /// variant is a compile error here instead of a silently unscanned subtree.
 /// Mode 0's predicate: this node is an `inspect(value, content)` call.
-fn dinsp_here_uses(expr: Expr) -> Bool {
+fn dinsp_here_uses(_ expr: Expr) -> Bool {
   match expr {
     ECall(callee, args, _, _) => match callee {
       EIdent(n, _) => n == "inspect" && Array::length(args) == 2,
@@ -50,15 +50,15 @@ fn dinsp_here_uses(expr: Expr) -> Bool {
 }
 
 /// Mode 1's predicate: this node binds the name `inspect`.
-fn dinsp_here_binds(expr: Expr) -> Bool {
+fn dinsp_here_binds(_ expr: Expr) -> Bool {
   match expr {
     ELet(n, _, _, _) => n == "inspect",
     ELetRec(n, _, _) => n == "inspect",
     ELetMut(n, _, _, _) => n == "inspect",
     EForIn(v, _, _, _) => v == "inspect",
-    EFn(_, _, params, _, _, _) => dinsp_params_bind(params, "inspect"),
-    EMatch(_, arms) => dinsp_arms_bind(arms, "inspect"),
-    EHandle(_, arms) => dinsp_arms_bind(arms, "inspect"),
+    EFn(_, _, params, _, _, _) => dinsp_params_bind(params = params, name = "inspect"),
+    EMatch(_, arms) => dinsp_arms_bind(arms = arms, name = "inspect"),
+    EHandle(_, arms) => dinsp_arms_bind(arms = arms, name = "inspect"),
     _ => false
   }
 }
@@ -70,16 +70,16 @@ export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
     dinsp_here_binds(expr)
   } else if mode == 7 {
     if dinsp_here_uses(expr) {
-      Array::set(dinsp_census_cell, 0, 1)
+      Array::set(dinsp_census_cell, at = 0, value = 1)
     } else {
       ()
     }
     if dinsp_here_binds(expr) {
-      Array::set(dinsp_census_cell, 1, 1)
+      Array::set(dinsp_census_cell, at = 1, value = 1)
     } else {
       ()
     }
-    Array::get(dinsp_census_cell, 0) != 0 && Array::get(dinsp_census_cell, 1) != 0
+    Array::get(dinsp_census_cell, at = 0) != 0 && Array::get(dinsp_census_cell, at = 1) != 0
   } else if mode == 2 {
     match expr {
       EIdent(n, _) => n == name,
@@ -89,9 +89,9 @@ export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       EAssign(n, _, _, _) => n == name,
       EAssignOp(n, _, _, _, _) => n == name,
       EForIn(v, _, _, _) => v == name,
-      EFn(_, _, params, _, _, _) => dinsp_params_bind(params, name),
-      EMatch(_, arms) => dinsp_arms_bind(arms, name),
-      EHandle(_, arms) => dinsp_arms_bind(arms, name),
+      EFn(_, _, params, _, _, _) => dinsp_params_bind(params = params, name = name),
+      EMatch(_, arms) => dinsp_arms_bind(arms = arms, name = name),
+      EHandle(_, arms) => dinsp_arms_bind(arms = arms, name = name),
       _ => false
     }
   } else if mode == 8 {
@@ -105,11 +105,11 @@ export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       ELet(n, _, _, _) => n == name,
       ELetRec(n, _, _) => n == name,
       ELetMut(n, _, _, _) => n == name,
-      EForIn(v, idx, _, _) => v == name || dinsp_opt_is(idx, name),
-      EFn(_, _, params, _, _, _) => dinsp_params_bind_spelled(params, name),
-      EMatch(_, arms) => dinsp_arms_bind(arms, name),
-      EHandle(_, arms) => name == "resume" || dinsp_arms_bind(arms, name),
-      ELoop(params, _) => dinsp_loop_params_bind(params, name),
+      EForIn(v, idx, _, _) => v == name || dinsp_opt_is(opt = idx, name = name),
+      EFn(_, _, params, _, _, _) => dinsp_params_bind_spelled(params = params, name = name),
+      EMatch(_, arms) => dinsp_arms_bind(arms = arms, name = name),
+      EHandle(_, arms) => name == "resume" || dinsp_arms_bind(arms = arms, name = name),
+      ELoop(params, _) => dinsp_loop_params_bind(params = params, name = name),
       _ => false
     }
   } else if mode == 4 {
@@ -137,46 +137,46 @@ export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       EUnit => false,
       EIdent(_, _) => false,
       EStringInterp(_) => false,
-      ETuple(items) => dinsp_scan_list(items, mode, name),
-      EArray(items) => dinsp_scan_list(items, mode, name),
-      ERecord(_, fields, _) => dinsp_scan_fields(fields, mode, name),
-      EMap(fields) => dinsp_scan_fields(fields, mode, name),
-      EIf(c, t, f) => dinsp_scan(c, mode, name) || dinsp_scan(t, mode, name) || dinsp_scan(f, mode, name),
-      ELet(_, v, b, _) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
-      ELetRec(_, v, b) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
-      ELetMut(_, v, b, _) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
-      EAssign(_, v, b, _) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
-      EAssignOp(_, _, v, b, _) => dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name),
-      ESeq(a, b) => dinsp_scan(a, mode, name) || dinsp_scan(b, mode, name),
-      EMatch(sc, arms) => dinsp_scan(sc, mode, name) || dinsp_scan_arms(arms, mode, name),
-      EHandle(sc, arms) => dinsp_scan(sc, mode, name) || dinsp_scan_arms(arms, mode, name),
-      EWhile(c, b) => dinsp_scan(c, mode, name) || dinsp_scan(b, mode, name),
-      ELoop(params, b) => dinsp_scan_fields(params, mode, name) || dinsp_scan(b, mode, name),
-      EForIn(_, _, it, b) => dinsp_scan(it, mode, name) || dinsp_scan(b, mode, name),
+      ETuple(items) => dinsp_scan_list(items = items, mode = mode, name = name),
+      EArray(items) => dinsp_scan_list(items = items, mode = mode, name = name),
+      ERecord(_, fields, _) => dinsp_scan_fields(fields = fields, mode = mode, name = name),
+      EMap(fields) => dinsp_scan_fields(fields = fields, mode = mode, name = name),
+      EIf(c, t, f) => dinsp_scan(expr = c, mode = mode, name = name) || dinsp_scan(expr = t, mode = mode, name = name) || dinsp_scan(expr = f, mode = mode, name = name),
+      ELet(_, v, b, _) => dinsp_scan(expr = v, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
+      ELetRec(_, v, b) => dinsp_scan(expr = v, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
+      ELetMut(_, v, b, _) => dinsp_scan(expr = v, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
+      EAssign(_, v, b, _) => dinsp_scan(expr = v, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
+      EAssignOp(_, _, v, b, _) => dinsp_scan(expr = v, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
+      ESeq(a, b) => dinsp_scan(expr = a, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
+      EMatch(sc, arms) => dinsp_scan(expr = sc, mode = mode, name = name) || dinsp_scan_arms(arms = arms, mode = mode, name = name),
+      EHandle(sc, arms) => dinsp_scan(expr = sc, mode = mode, name = name) || dinsp_scan_arms(arms = arms, mode = mode, name = name),
+      EWhile(c, b) => dinsp_scan(expr = c, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
+      ELoop(params, b) => dinsp_scan_fields(fields = params, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
+      EForIn(_, _, it, b) => dinsp_scan(expr = it, mode = mode, name = name) || dinsp_scan(expr = b, mode = mode, name = name),
       ECall(callee, args, _, _) => if mode == 4 {
         match callee {
           EIdent(n, _) => if n == name {
-            dinsp_scan_list(args, mode, name)
+            dinsp_scan_list(items = args, mode = mode, name = name)
           } else {
-            dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name)
+            dinsp_scan(expr = callee, mode = mode, name = name) || dinsp_scan_list(items = args, mode = mode, name = name)
           },
-          _ => dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name)
+          _ => dinsp_scan(expr = callee, mode = mode, name = name) || dinsp_scan_list(items = args, mode = mode, name = name)
         }
       } else {
-        dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name)
+        dinsp_scan(expr = callee, mode = mode, name = name) || dinsp_scan_list(items = args, mode = mode, name = name)
       },
-      EBinOp(_, l, r, _) => dinsp_scan(l, mode, name) || dinsp_scan(r, mode, name),
-      EUnaryOp(_, v) => dinsp_scan(v, mode, name),
-      EFn(_, _, _, _, _, body) => dinsp_scan(body, mode, name),
-      EDot(inner, _, _, _) => dinsp_scan(inner, mode, name),
-      ELabeledArg(_, _, v) => dinsp_scan(v, mode, name),
-      EReturn(v) => dinsp_scan(v, mode, name),
+      EBinOp(_, l, r, _) => dinsp_scan(expr = l, mode = mode, name = name) || dinsp_scan(expr = r, mode = mode, name = name),
+      EUnaryOp(_, v) => dinsp_scan(expr = v, mode = mode, name = name),
+      EFn(_, _, _, _, _, body) => dinsp_scan(expr = body, mode = mode, name = name),
+      EDot(inner, _, _, _) => dinsp_scan(expr = inner, mode = mode, name = name),
+      ELabeledArg(_, _, v) => dinsp_scan(expr = v, mode = mode, name = name),
+      EReturn(v) => dinsp_scan(expr = v, mode = mode, name = name),
       EBreak(opt) => match opt {
-        Some(v) => dinsp_scan(v, mode, name),
+        Some(v) => dinsp_scan(expr = v, mode = mode, name = name),
         None => false
       },
-      EContinue(args) => dinsp_scan_list(args, mode, name),
-      ESpread(v) => dinsp_scan(v, mode, name)
+      EContinue(args) => dinsp_scan_list(items = args, mode = mode, name = name),
+      ESpread(v) => dinsp_scan(expr = v, mode = mode, name = name)
     }
   }
 }
@@ -185,7 +185,7 @@ fn dinsp_scan_list(items: Array[Expr], mode: Int, name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(items) {
-    found = dinsp_scan(Array::get(items, i), mode, name)
+    found = dinsp_scan(expr = Array::get(items, at = i), mode = mode, name = name)
     i = i + 1
   }
   found
@@ -195,8 +195,8 @@ fn dinsp_scan_fields(fields: Array[(String, Expr)], mode: Int, name: String) -> 
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(fields) {
-    let (_, v) = Array::get(fields, i)
-    found = dinsp_scan(v, mode, name)
+    let (_, v) = Array::get(fields, at = i)
+    found = dinsp_scan(expr = v, mode = mode, name = name)
     i = i + 1
   }
   found
@@ -218,10 +218,10 @@ fn dinsp_pat_binds(pat: Pat, name: String) -> Bool {
     PFloat(_) => false,
     PString(_) => false,
     PBool(_) => false,
-    PCtor(_, args) => dinsp_pat_list_binds(args, name),
-    PTuple(items) => dinsp_pat_list_binds(items, name),
-    POr(a, b) => dinsp_pat_binds(a, name) || dinsp_pat_binds(b, name),
-    PStruct(_, fields) => dinsp_pat_fields_bind(fields, name)
+    PCtor(_, args) => dinsp_pat_list_binds(pats = args, name = name),
+    PTuple(items) => dinsp_pat_list_binds(pats = items, name = name),
+    POr(a, b) => dinsp_pat_binds(pat = a, name = name) || dinsp_pat_binds(pat = b, name = name),
+    PStruct(_, fields) => dinsp_pat_fields_bind(fields = fields, name = name)
   }
 }
 
@@ -229,7 +229,7 @@ fn dinsp_pat_list_binds(pats: Array[Pat], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(pats) {
-    found = dinsp_pat_binds(Array::get(pats, i), name)
+    found = dinsp_pat_binds(pat = Array::get(pats, at = i), name = name)
     i = i + 1
   }
   found
@@ -239,8 +239,8 @@ fn dinsp_pat_fields_bind(fields: Array[(String, Pat)], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(fields) {
-    let (_, p) = Array::get(fields, i)
-    found = dinsp_pat_binds(p, name)
+    let (_, p) = Array::get(fields, at = i)
+    found = dinsp_pat_binds(pat = p, name = name)
     i = i + 1
   }
   found
@@ -250,8 +250,8 @@ fn dinsp_arms_bind(arms: Array[(Pat, Expr)], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(arms) {
-    let (p, _) = Array::get(arms, i)
-    found = dinsp_pat_binds(p, name)
+    let (p, _) = Array::get(arms, at = i)
+    found = dinsp_pat_binds(pat = p, name = name)
     i = i + 1
   }
   found
@@ -261,8 +261,8 @@ fn dinsp_scan_arms(arms: Array[(Pat, Expr)], mode: Int, name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(arms) {
-    let (_, v) = Array::get(arms, i)
-    found = dinsp_scan(v, mode, name)
+    let (_, v) = Array::get(arms, at = i)
+    found = dinsp_scan(expr = v, mode = mode, name = name)
     i = i + 1
   }
   found
@@ -273,14 +273,14 @@ fn dinsp_scan_arms(arms: Array[(Pat, Expr)], mode: Int, name: String) -> Bool {
 /// Over-approximates (a shadowed inner binder counts too), which only ever
 /// costs a suffix.
 fn dinsp_mentions(expr: Expr, name: String) -> Bool {
-  dinsp_scan(expr, 2, name)
+  dinsp_scan(expr = expr, mode = 2, name = name)
 }
 
 fn dinsp_params_bind(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(params) {
-    let (pn, _) = Array::get(params, i)
+    let (pn, _) = Array::get(params, at = i)
     found = pn == name
     i = i + 1
   }
@@ -293,7 +293,7 @@ fn dinsp_params_bind_spelled(params: Array[(String, Option[TypeExpr])], name: St
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(params) {
-    let (pn, _) = Array::get(params, i)
+    let (pn, _) = Array::get(params, at = i)
     found = pn == name || pn == String::concat(name, "~") || pn == String::concat(name, "?")
     i = i + 1
   }
@@ -304,7 +304,7 @@ fn dinsp_loop_params_bind(params: Array[(String, Expr)], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(params) {
-    let (pn, _) = Array::get(params, i)
+    let (pn, _) = Array::get(params, at = i)
     found = pn == name
     i = i + 1
   }
@@ -325,7 +325,7 @@ fn dinsp_opt_is(opt: Option[String], name: String) -> Bool {
 export fn dinsp_fresh_name(base: String, value: Expr, content: Expr) -> String {
   let mut candidate = base
   let mut n = 0
-  while dinsp_mentions(value, candidate) || dinsp_mentions(content, candidate) {
+  while dinsp_mentions(expr = value, name = candidate) || dinsp_mentions(expr = content, name = candidate) {
     n = n + 1
     candidate = String::concat(base, String::concat("_", __to_string(n)))
   }
@@ -368,8 +368,8 @@ export fn dinsp_fresh_name(base: String, value: Expr, content: Expr) -> String {
 /// assertion that silently passes, which is the worst way this could break
 /// (Codex review on #1621).
 fn inspect_lowering_expr(value: Expr, content: Expr, cell: Array[Int]) -> Expr {
-  let actual_name = dinsp_fresh_name("__vibe_inspect_actual", value, content)
-  let expected_name = dinsp_fresh_name("__vibe_inspect_expected", value, content)
+  let actual_name = dinsp_fresh_name(base = "__vibe_inspect_actual", value = value, content = content)
+  let expected_name = dinsp_fresh_name(base = "__vibe_inspect_expected", value = value, content = content)
   let actual = EIdent(actual_name, 0 - 1)
   let expected = EIdent(expected_name, 0 - 1)
   // Nested String::concat rather than one variadic call: `concat` is binary.
@@ -398,7 +398,7 @@ fn inspect_lowering_expr(value: Expr, content: Expr, cell: Array[Int]) -> Expr {
 /// named `inspect` keeps calling that one, exactly as it did before this pass
 /// existed -- rewriting there would silently swap a user function's body for
 /// snapshot-assertion behaviour (Codex review on #1621).
-fn dinsp_expr(expr: Expr) -> Expr {
+fn dinsp_expr(_ expr: Expr) -> Expr {
   match expr {
     ECall(callee, args, off, callee_resolution) => {
       let rewritten = for a in args {
@@ -406,8 +406,8 @@ fn dinsp_expr(expr: Expr) -> Expr {
       }
       match callee {
         EIdent(name, _) => if name == "inspect" && Array::length(rewritten) == 2 {
-          call_placement_note_positional(callee, args, off, callee_resolution)
-          inspect_lowering_expr(Array::get(rewritten, 0), Array::get(rewritten, 1), callee_resolution)
+          call_placement_note_positional(callee = callee, args = args, offset = off, cell = callee_resolution)
+          inspect_lowering_expr(value = Array::get(rewritten, at = 0), content = Array::get(rewritten, at = 1), cell = callee_resolution)
         } else {
           ECall(dinsp_expr(callee), rewritten, off, callee_resolution)
         },
@@ -418,25 +418,25 @@ fn dinsp_expr(expr: Expr) -> Expr {
   }
 }
 
-fn dinsp_exprs(items: Array[Expr]) -> Array[Expr] {
+fn dinsp_exprs(_ items: Array[Expr]) -> Array[Expr] {
   for item in items {
     dinsp_expr(item)
   }
 }
 
-fn dinsp_fields(fields: Array[(String, Expr)]) -> Array[(String, Expr)] {
+fn dinsp_fields(_ fields: Array[(String, Expr)]) -> Array[(String, Expr)] {
   for f in fields {
     (f.0, dinsp_expr(f.1))
   }
 }
 
-fn dinsp_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+fn dinsp_arms(_ arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
   for arm in arms {
     (arm.0, dinsp_expr(arm.1))
   }
 }
 
-fn dinsp_opt(opt: Option[Expr]) -> Option[Expr] {
+fn dinsp_opt(_ opt: Option[Expr]) -> Option[Expr] {
   match opt {
     Some(v) => Some(dinsp_expr(v)),
     None => None
@@ -446,7 +446,7 @@ fn dinsp_opt(opt: Option[Expr]) -> Option[Expr] {
 /// Structural recursion for every non-ECall node. Enumerated rather than
 /// `_ => expr` so a new `Expr` variant is a compile error here instead of a
 /// silently un-rewritten subtree.
-fn dinsp_children(expr: Expr) -> Expr {
+fn dinsp_children(_ expr: Expr) -> Expr {
   match expr {
     EInt(_) => expr,
     EFloat(_) => expr,
@@ -484,7 +484,7 @@ fn dinsp_children(expr: Expr) -> Expr {
   }
 }
 
-fn dinsp_stmt(stmt: Stmt) -> Stmt {
+fn dinsp_stmt(_ stmt: Stmt) -> Stmt {
   match stmt {
     SLet(e, r, n, t, body) => SLet(e, r, n, t, dinsp_expr(body)),
     SLetMut(n, t, body) => SLetMut(n, t, dinsp_expr(body)),
@@ -499,7 +499,7 @@ fn dinsp_stmt(stmt: Stmt) -> Stmt {
   }
 }
 
-fn dinsp_stmts_copy(stmts: Array[Stmt]) -> Array[Stmt] {
+fn dinsp_stmts_copy(_ stmts: Array[Stmt]) -> Array[Stmt] {
   for s in stmts {
     dinsp_stmt(s)
   }
@@ -507,16 +507,16 @@ fn dinsp_stmts_copy(stmts: Array[Stmt]) -> Array[Stmt] {
 
 /// Bit 1: the expression contains an `inspect(..)` call (mode 0); bit 2: it
 /// binds the name `inspect` somewhere (mode 1). One walk answers both.
-fn dinsp_expr_census(expr: Expr) -> Int {
-  Array::set(dinsp_census_cell, 0, 0)
-  Array::set(dinsp_census_cell, 1, 0)
-  let _ = dinsp_scan(expr, 7, "")
-  let uses = if Array::get(dinsp_census_cell, 0) != 0 {
+fn dinsp_expr_census(_ expr: Expr) -> Int {
+  Array::set(dinsp_census_cell, at = 0, value = 0)
+  Array::set(dinsp_census_cell, at = 1, value = 0)
+  let _ = dinsp_scan(expr = expr, mode = 7, name = "")
+  let uses = if Array::get(dinsp_census_cell, at = 0) != 0 {
     1
   } else {
     0
   }
-  let binds = if Array::get(dinsp_census_cell, 1) != 0 {
+  let binds = if Array::get(dinsp_census_cell, at = 1) != 0 {
     2
   } else {
     0
@@ -526,7 +526,7 @@ fn dinsp_expr_census(expr: Expr) -> Int {
 
 /// The same bits for a statement: exactly dinsp_stmt_uses (bit 1) and
 /// dinsp_stmt_binds (bit 2), computed together.
-fn dinsp_stmt_census(stmt: Stmt) -> Int {
+fn dinsp_stmt_census(_ stmt: Stmt) -> Int {
   match stmt {
     SImport(_, items) => if dinsp_import_binds(items) {
       2
@@ -540,7 +540,7 @@ fn dinsp_stmt_census(stmt: Stmt) -> Int {
     },
     SLet(_, _, name, _, body) => dinsp_expr_census(body)|dinsp_name_binds_bit(name),
     SLetMut(name, _, body) => dinsp_expr_census(body)|dinsp_name_binds_bit(name),
-    SLetPat(pat, body) => dinsp_expr_census(body)|(if dinsp_pat_binds(pat, "inspect") {
+    SLetPat(pat, body) => dinsp_expr_census(body)|(if dinsp_pat_binds(pat = pat, name = "inspect") {
       2
     } else {
       0
@@ -555,7 +555,7 @@ fn dinsp_stmt_census(stmt: Stmt) -> Int {
   }
 }
 
-fn dinsp_name_binds_bit(name: String) -> Int {
+fn dinsp_name_binds_bit(_ name: String) -> Int {
   if name == "inspect" {
     2
   } else {
@@ -563,11 +563,11 @@ fn dinsp_name_binds_bit(name: String) -> Int {
   }
 }
 
-fn dinsp_stmts_census(stmts: Array[Stmt]) -> Int {
+fn dinsp_stmts_census(_ stmts: Array[Stmt]) -> Int {
   let mut bits = 0
   let mut i = 0
   while bits != 3 && i < Array::length(stmts) {
-    bits = bits|dinsp_stmt_census(Array::get(stmts, i))
+    bits = bits|dinsp_stmt_census(Array::get(stmts, at = i))
     i = i + 1
   }
   bits
@@ -577,7 +577,7 @@ export fn import_items_bind_name(items: Array[ImportItem], name: String) -> Bool
   let mut i = 0
   let mut found = false
   while i < Array::length(items) && !found {
-    let item = Array::get(items, i)
+    let item = Array::get(items, at = i)
     let local = match item.alias {
       Some(alias) => alias,
       None => item.name
@@ -592,7 +592,7 @@ export fn expr_list_has_free_name(items: Array[Expr], name: String) -> Bool with
   let mut i = 0
   let mut found = false
   while i < Array::length(items) && !found {
-    found = expr_has_free_name(Array::get(items, i), name)
+    found = expr_has_free_name(expr = Array::get(items, at = i), name = name)
     i = i + 1
   }
   found
@@ -602,9 +602,9 @@ fn arm_list_has_free_name(arms: Array[(Pat, Expr)], name: String) -> Bool with E
   let mut i = 0
   let mut found = false
   while i < Array::length(arms) && !found {
-    let (pat, body) = Array::get(arms, i)
-    if !pat_binds_name(pat, name) {
-      found = expr_has_free_name(body, name)
+    let (pat, body) = Array::get(arms, at = i)
+    if !pat_binds_name(p = pat, name = name) {
+      found = expr_has_free_name(expr = body, name = name)
     } else {
       ()
     }
@@ -619,45 +619,45 @@ fn arm_list_has_free_name(arms: Array[(Pat, Expr)], name: String) -> Bool with E
 export fn expr_has_free_name(expr: Expr, name: String) -> Bool with Exception {
   match expr {
     EIdent(local, _) => local == name,
-    EStringInterp(_) => expr_has_free_name(resolve_interp_expr(expr), name),
-    ELet(local, value, body, _) => expr_has_free_name(value, name) || if local == name {
+    EStringInterp(_) => expr_has_free_name(expr = resolve_interp_expr(expr), name = name),
+    ELet(local, value, body, _) => expr_has_free_name(expr = value, name = name) || if local == name {
       false
     } else {
-      expr_has_free_name(body, name)
+      expr_has_free_name(expr = body, name = name)
     },
     ELetRec(local, value, body) => if local == name {
       false
     } else {
-      expr_has_free_name(value, name) || expr_has_free_name(body, name)
+      expr_has_free_name(expr = value, name = name) || expr_has_free_name(expr = body, name = name)
     },
-    ELetMut(local, value, body, _) => expr_has_free_name(value, name) || if local == name {
+    ELetMut(local, value, body, _) => expr_has_free_name(expr = value, name = name) || if local == name {
       false
     } else {
-      expr_has_free_name(body, name)
+      expr_has_free_name(expr = body, name = name)
     },
-    EAssign(local, value, body, _) => local == name || expr_has_free_name(value, name) || expr_has_free_name(body, name),
-    EAssignOp(local, _, value, body, _) => local == name || expr_has_free_name(value, name) || expr_has_free_name(body, name),
-    EForIn(value_name, key_name, iter, body) => expr_has_free_name(iter, name) || if value_name == name || match key_name {
+    EAssign(local, value, body, _) => local == name || expr_has_free_name(expr = value, name = name) || expr_has_free_name(expr = body, name = name),
+    EAssignOp(local, _, value, body, _) => local == name || expr_has_free_name(expr = value, name = name) || expr_has_free_name(expr = body, name = name),
+    EForIn(value_name, key_name, iter, body) => expr_has_free_name(expr = iter, name = name) || if value_name == name || match key_name {
       Some(key) => key == name,
       None => false
     } {
       false
     } else {
-      expr_has_free_name(body, name)
+      expr_has_free_name(expr = body, name = name)
     },
-    EFn(_, _, params, _, _, body) => if params_bind_name(params, name) {
+    EFn(_, _, params, _, _, body) => if params_bind_name(params = params, name = name) {
       false
     } else {
-      expr_has_free_name(body, name)
+      expr_has_free_name(expr = body, name = name)
     },
     ELoop(params, body) => {
       let mut i = 0
       let mut found = false
       let mut shadowed = false
       while i < Array::length(params) {
-        let (local, initial) = Array::get(params, i)
+        let (local, initial) = Array::get(params, at = i)
         if !found {
-          found = expr_has_free_name(initial, name)
+          found = expr_has_free_name(expr = initial, name = name)
         } else {
           ()
         }
@@ -671,32 +671,32 @@ export fn expr_has_free_name(expr: Expr, name: String) -> Bool with Exception {
       found || if shadowed {
         false
       } else {
-        expr_has_free_name(body, name)
+        expr_has_free_name(expr = body, name = name)
       }
     },
-    EMatch(scrutinee, arms) => expr_has_free_name(scrutinee, name) || arm_list_has_free_name(arms, name),
-    EHandle(body, arms) => expr_has_free_name(body, name) || arm_list_has_free_name(arms, name),
-    _ => expr_list_has_free_name(expr_children(expr), name)
+    EMatch(scrutinee, arms) => expr_has_free_name(expr = scrutinee, name = name) || arm_list_has_free_name(arms = arms, name = name),
+    EHandle(body, arms) => expr_has_free_name(expr = body, name = name) || arm_list_has_free_name(arms = arms, name = name),
+    _ => expr_list_has_free_name(items = expr_children(expr), name = name)
   }
 }
 
-export fn dinsp_blocker_names_inspect(names: Array[String]) -> Bool {
+export fn dinsp_blocker_names_inspect(_ names: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(names) {
-    found = Array::get(names, i) == "inspect"
+    found = Array::get(names, at = i) == "inspect"
     i = i + 1
   }
   found
 }
 
 export fn dinsp_rewrite_range(stmts: Array[Stmt], start: Int, end: Int) -> Bool {
-  Array::truncate(dinsp_census_row, 0)
+  Array::truncate(dinsp_census_row, length = 0)
   let mut binds = false
   let mut i = start
   while i < end {
-    let bits = dinsp_stmt_census(Array::get(stmts, i))
-    Array::push(dinsp_census_row, bits)
+    let bits = dinsp_stmt_census(Array::get(stmts, at = i))
+    Array::push(dinsp_census_row, value = bits)
     if (bits&2) != 0 {
       binds = true
     } else {
@@ -710,8 +710,8 @@ export fn dinsp_rewrite_range(stmts: Array[Stmt], start: Int, end: Int) -> Bool 
   } else {
     i = start
     while i < end {
-      if (Array::get(dinsp_census_row, i - start)&1) != 0 {
-        Array::set(stmts, i, dinsp_stmt(Array::get(stmts, i)))
+      if (Array::get(dinsp_census_row, at = i - start)&1) != 0 {
+        Array::set(stmts, at = i, value = dinsp_stmt(Array::get(stmts, at = i)))
         changed = true
       } else {
         ()
@@ -722,11 +722,11 @@ export fn dinsp_rewrite_range(stmts: Array[Stmt], start: Int, end: Int) -> Bool 
   changed
 }
 
-fn dinsp_import_binds(items: Array[ImportItem]) -> Bool {
+fn dinsp_import_binds(_ items: Array[ImportItem]) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(items) {
-    let item = Array::get(items, i)
+    let item = Array::get(items, at = i)
     let original = item.name
     let alias = item.alias
     found = match alias {

@@ -20,8 +20,8 @@ fn mask_for(names: Array[String], masks: Array[Int], name: String) -> Int {
   let mut i = 0
   let mut found = 0
   while i < Array::length(names) {
-    if Array::get(names, i) == name {
-      found = Array::get(masks, i)
+    if Array::get(names, at = i) == name {
+      found = Array::get(masks, at = i)
     } else {
       ()
     }
@@ -31,26 +31,26 @@ fn mask_for(names: Array[String], masks: Array[Int], name: String) -> Int {
 }
 
 test "one transitive wrapper layer inherits a borrowed parameter" {
-  let leaf = one_param_fn("leaf", "xs", ECall(EIdent("Array::length", -1), [
+  let leaf = one_param_fn(name = "leaf", param = "xs", body = ECall(EIdent("Array::length", -1), [
     EIdent("xs", -1)
   ], -1, []))
-  let wrapper = one_param_fn("wrapper", "xs", ECall(EIdent("leaf", -1), [
+  let wrapper = one_param_fn(name = "wrapper", param = "xs", body = ECall(EIdent("leaf", -1), [
     EIdent("xs", -1)
   ], -1, []))
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns([leaf, wrapper], [], masks)
-  assert_eq(mask_for(names, masks, "leaf"), 1)
-  assert_eq(mask_for(names, masks, "wrapper"), 1)
+  let names = compute_borrow_param_user_fns(stmts = [leaf, wrapper], exclude = [], out_masks = masks)
+  assert_eq(mask_for(names = names, masks = masks, name = "leaf"), 1)
+  assert_eq(mask_for(names = names, masks = masks, name = "wrapper"), 1)
 }
 
 test "direct recursion borrows a shared read-only argument" {
   let xs = EIdent("xs", -1)
-  let walk = one_param_fn("walk", "xs", EIf(EBool(true), ECall(EIdent("Array::length", -1), [
+  let walk = one_param_fn(name = "walk", param = "xs", body = EIf(EBool(true), ECall(EIdent("Array::length", -1), [
     xs
   ], -1, []), ECall(EIdent("walk", -1), [xs], -1, [])))
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns([walk], [], masks)
-  inspect(mask_for(names, masks, "walk"), content = "1")
+  let names = compute_borrow_param_user_fns(stmts = [walk], exclude = [], out_masks = masks)
+  inspect(mask_for(names = names, masks = masks, name = "walk"), content = "1")
 }
 
 test "an owned argument propagates through recursive parameter permutations" {
@@ -65,31 +65,31 @@ test "an owned argument propagates through recursive parameter permutations" {
     ("c", None)
   ], None, None, body))
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns([rotate], [], masks)
-  inspect(mask_for(names, masks, "rotate"), content = "0")
+  let names = compute_borrow_param_user_fns(stmts = [rotate], exclude = [], out_masks = masks)
+  inspect(mask_for(names = names, masks = masks, name = "rotate"), content = "0")
 }
 
 test "a local binding named like the recursive function keeps its owned ABI" {
   let local = EFn([], [], [("x", None)], None, None, EIdent("x", -1))
-  let walk = one_param_fn("walk", "xs", ELet("walk", local, ECall(EIdent("walk", -1), [
+  let walk = one_param_fn(name = "walk", param = "xs", body = ELet("walk", local, ECall(EIdent("walk", -1), [
     EIdent("xs", -1)
   ], -1, []), -1))
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns([walk], [], masks)
-  inspect(mask_for(names, masks, "walk"), content = "0")
+  let names = compute_borrow_param_user_fns(stmts = [walk], exclude = [], out_masks = masks)
+  inspect(mask_for(names = names, masks = masks, name = "walk"), content = "0")
 }
 
 test "recursive borrowing keeps indirect calls and host entries owned" {
-  let walk = one_param_fn("walk", "xs", ECall(EIdent("walk", -1), [
+  let walk = one_param_fn(name = "walk", param = "xs", body = ECall(EIdent("walk", -1), [
     EIdent("xs", -1)
   ], -1, []))
   let valued = SLet(false, false, "alias", None, EIdent("walk", -1))
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns([walk, valued], [], masks)
-  inspect(mask_for(names, masks, "walk"), content = "0")
+  let names = compute_borrow_param_user_fns(stmts = [walk, valued], exclude = [], out_masks = masks)
+  inspect(mask_for(names = names, masks = masks, name = "walk"), content = "0")
   let host_masks: Array[Int] = []
-  let host_names = compute_borrow_param_user_fns([walk], ["walk"], host_masks)
-  inspect(mask_for(host_names, host_masks, "walk"), content = "0")
+  let host_names = compute_borrow_param_user_fns(stmts = [walk], exclude = ["walk"], out_masks = host_masks)
+  inspect(mask_for(names = host_names, masks = host_masks, name = "walk"), content = "0")
 }
 
 fn linked_masks(parts: Array[Array[Stmt]], masks: Array[Int]) -> Array[String] {
@@ -98,25 +98,25 @@ fn linked_masks(parts: Array[Array[Stmt]], masks: Array[Int]) -> Array[String] {
   let nonident_pos: Array[Int] = []
   let mut i = 0
   while i < Array::length(parts) {
-    compute_borrow_disqualifiers(Array::get(parts, i), valued, nonident_fns, nonident_pos)
+    compute_borrow_disqualifiers(stmts = Array::get(parts, at = i), out_valued = valued, out_nonident_fns = nonident_fns, out_nonident_pos = nonident_pos)
     i = i + 1
   }
-  borrow_fixpoint_link_parts(parts, valued, nonident_fns, nonident_pos, [], masks)
+  borrow_fixpoint_link_parts(parts = parts, valued = valued, nonident_fns = nonident_fns, nonident_pos = nonident_pos, exclude = [], out_masks = masks)
 }
 
 test "recursive borrowing sees linked callees and global disqualifiers" {
-  let leaf = one_param_fn("leaf", "xs", ECall(EIdent("Array::length", -1), [
+  let leaf = one_param_fn(name = "leaf", param = "xs", body = ECall(EIdent("Array::length", -1), [
     EIdent("xs", -1)
   ], -1, []))
-  let walk = one_param_fn("walk", "xs", EIf(EBool(true), ECall(EIdent("leaf", -1), [
+  let walk = one_param_fn(name = "walk", param = "xs", body = EIf(EBool(true), ECall(EIdent("leaf", -1), [
     EIdent("xs", -1)
   ], -1, []), ECall(EIdent("walk", -1), [EIdent("xs", -1)], -1, [])))
   let whole_masks: Array[Int] = []
-  let whole_names = compute_borrow_param_user_fns([leaf, walk], [], whole_masks)
+  let whole_names = compute_borrow_param_user_fns(stmts = [leaf, walk], exclude = [], out_masks = whole_masks)
   let part_masks: Array[Int] = []
-  let part_names = linked_masks([[walk], [leaf]], part_masks)
-  inspect(mask_for(whole_names, whole_masks, "walk"), content = "1")
-  inspect(mask_for(part_names, part_masks, "walk"), content = "1")
+  let part_names = linked_masks(parts = [[walk], [leaf]], masks = part_masks)
+  inspect(mask_for(names = whole_names, masks = whole_masks, name = "walk"), content = "1")
+  inspect(mask_for(names = part_names, masks = part_masks, name = "walk"), content = "1")
   let swap = SLet(false, false, "swap", None, EFn([], [], [
     ("a", None),
     ("b", None)
@@ -124,43 +124,43 @@ test "recursive borrowing sees linked callees and global disqualifiers" {
     EIdent("b", -1),
     EIdent("a", -1)
   ], -1, []))))
-  let caller = one_param_fn("caller", "xs", ECall(EIdent("swap", -1), [
+  let caller = one_param_fn(name = "caller", param = "xs", body = ECall(EIdent("swap", -1), [
     EArray([]),
     EIdent("xs", -1)
   ], -1, []))
   let wm: Array[Int] = []
-  let wn = compute_borrow_param_user_fns([swap, caller], [], wm)
+  let wn = compute_borrow_param_user_fns(stmts = [swap, caller], exclude = [], out_masks = wm)
   let lm: Array[Int] = []
-  let ln = linked_masks([[swap], [caller]], lm)
-  inspect(mask_for(wn, wm, "swap"), content = "0")
-  inspect(mask_for(ln, lm, "swap"), content = "0")
+  let ln = linked_masks(parts = [[swap], [caller]], masks = lm)
+  inspect(mask_for(names = wn, masks = wm, name = "swap"), content = "0")
+  inspect(mask_for(names = ln, masks = lm, name = "swap"), content = "0")
 }
 
 test "recursive borrowing keeps captured parameters owned" {
   let capture = EFn([], [], [], None, None, ECall(EIdent("Array::length", -1), [
     EIdent("xs", -1)
   ], -1, []))
-  let walk = one_param_fn("walk", "xs", ESeq(capture, ECall(EIdent("walk", -1), [
+  let walk = one_param_fn(name = "walk", param = "xs", body = ESeq(capture, ECall(EIdent("walk", -1), [
     EIdent("xs", -1)
   ], -1, [])))
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns([walk], [], masks)
-  inspect(mask_for(names, masks, "walk"), content = "0")
+  let names = compute_borrow_param_user_fns(stmts = [walk], exclude = [], out_masks = masks)
+  inspect(mask_for(names = names, masks = masks, name = "walk"), content = "0")
 }
 
 test "recursive inference respects a global alias shadowing a builtin accessor" {
-  let identity = one_param_fn("identity", "value", EIdent("value", -1))
+  let identity = one_param_fn(name = "identity", param = "value", body = EIdent("value", -1))
   let alias = SLet(false, false, "Map::iter_get", None, EIdent("identity", -1))
   let xs = EIdent("xs", -1)
-  let walk = one_param_fn("walk", "xs", EIf(EBool(true), ECall(EIdent("Map::iter_get", -1), [
+  let walk = one_param_fn(name = "walk", param = "xs", body = EIf(EBool(true), ECall(EIdent("Map::iter_get", -1), [
     xs
   ], -1, []), ECall(EIdent("walk", -1), [xs], -1, [])))
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns([identity, alias, walk], [], masks)
-  inspect(mask_for(names, masks, "walk"), content = "0")
+  let names = compute_borrow_param_user_fns(stmts = [identity, alias, walk], exclude = [], out_masks = masks)
+  inspect(mask_for(names = names, masks = masks, name = "walk"), content = "0")
   let lm: Array[Int] = []
-  let ln = linked_masks([[walk], [identity, alias]], lm)
-  inspect(mask_for(ln, lm, "walk"), content = "0")
+  let ln = linked_masks(parts = [[walk], [identity, alias]], masks = lm)
+  inspect(mask_for(names = ln, masks = lm, name = "walk"), content = "0")
 }
 
 test "a function parameter may shadow the recursive callee" {
@@ -170,45 +170,45 @@ test "a function parameter may shadow the recursive callee" {
   while i < Array::length(spellings) {
     let walk = SLet(false, false, "walk", None, EFn([], [], [
       ("xs", None),
-      (Array::get(spellings, i), None)
+      (Array::get(spellings, at = i), None)
     ], None, None, ECall(EIdent("walk", -1), [EIdent("xs", -1)], -1, [])))
     let masks: Array[Int] = []
-    let names = compute_borrow_param_user_fns([walk], [], masks)
-    Array::push(results, mask_for(names, masks, "walk")&1)
+    let names = compute_borrow_param_user_fns(stmts = [walk], exclude = [], out_masks = masks)
+    Array::push(results, value = mask_for(names = names, masks = masks, name = "walk")&1)
     i = i + 1
   }
   inspect(results, content = "[0, 0, 0]")
 }
 
 test "a local callee shadow does not inherit the top-level borrow ABI" {
-  let reader = one_param_fn("reader", "xs", ECall(EIdent("Array::length", -1), [
+  let reader = one_param_fn(name = "reader", param = "xs", body = ECall(EIdent("Array::length", -1), [
     EIdent("xs", -1)
   ], -1, []))
   let local_reader = EFn([], [], [("value", None)], None, None, EIdent("value", -1))
-  let shadowed = one_param_fn("shadowed", "xs", ELet("reader", local_reader, ECall(EIdent("reader", -1), [
+  let shadowed = one_param_fn(name = "shadowed", param = "xs", body = ELet("reader", local_reader, ECall(EIdent("reader", -1), [
     EIdent("xs", -1)
   ], -1, []), -1))
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns([reader, shadowed], [], masks)
-  assert_eq(mask_for(names, masks, "reader"), 1)
-  assert_eq(mask_for(names, masks, "shadowed"), 0)
+  let names = compute_borrow_param_user_fns(stmts = [reader, shadowed], exclude = [], out_masks = masks)
+  assert_eq(mask_for(names = names, masks = masks, name = "reader"), 1)
+  assert_eq(mask_for(names = names, masks = masks, name = "shadowed"), 0)
 }
 
 test "#2379 review: a source-owned Map accessor overrides the builtin borrow seed" {
-  let checked = one_param_fn("Map::iter_get", "m", EIdent("m", -1))
-  let unchecked = one_param_fn("Map::__iter_get_unchecked", "m", EIdent("m", -1))
+  let checked = one_param_fn(name = "Map::iter_get", param = "m", body = EIdent("m", -1))
+  let unchecked = one_param_fn(name = "Map::__iter_get_unchecked", param = "m", body = EIdent("m", -1))
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns([checked, unchecked], [], masks)
-  assert_eq(mask_for(names, masks, "Map::iter_get"), 0)
-  assert_eq(mask_for(names, masks, "Map::__iter_get_unchecked"), 0)
+  let names = compute_borrow_param_user_fns(stmts = [checked, unchecked], exclude = [], out_masks = masks)
+  assert_eq(mask_for(names = names, masks = masks, name = "Map::iter_get"), 0)
+  assert_eq(mask_for(names = names, masks = masks, name = "Map::__iter_get_unchecked"), 0)
   assert_eq(Array::length(names), 2)
   let checked_call = ECall(EIdent("Map::iter_get", -1), [EIdent("m", -1)], -1, [
   ])
   let unchecked_call = ECall(EIdent("Map::__iter_get_unchecked", -1), [
     EIdent("m", -1)
   ], -1, [])
-  assert_eq(md_consume_count_pre(checked_call, "m", names, masks), 1)
-  assert_eq(md_consume_count_pre(unchecked_call, "m", names, masks), 1)
+  assert_eq(md_consume_count_pre(e = checked_call, name = "m", bfns = names, bmasks_zeroed = masks), 1)
+  assert_eq(md_consume_count_pre(e = unchecked_call, name = "m", bfns = names, bmasks_zeroed = masks), 1)
 }
 
 test "#3128: a source definition of any borrowing builtin keeps a zero-mask row" {
@@ -216,65 +216,65 @@ test "#3128: a source definition of any borrowing builtin keeps a zero-mask row"
   // `Bytes::compare` borrows both operands as builtins. A source definition
   // that consumes them must be recorded, or md_borrow_mask_of falls back to
   // the builtin mask and every call site hands over a borrow the body drops.
-  let truncate = one_param_fn("Array::truncate", "xs", EIdent("xs", -1))
-  let length = one_param_fn("Array::length", "xs", EIdent("xs", -1))
-  let join = one_param_fn("String::join", "xs", EIdent("xs", -1))
+  let truncate = one_param_fn(name = "Array::truncate", param = "xs", body = EIdent("xs", -1))
+  let length = one_param_fn(name = "Array::length", param = "xs", body = EIdent("xs", -1))
+  let join = one_param_fn(name = "String::join", param = "xs", body = EIdent("xs", -1))
   let compare = SLet(false, false, "Bytes::compare", None, EFn([], [], [
     ("a", None),
     ("b", None)
   ], None, None, ETuple([EIdent("a", -1), EIdent("b", -1)])))
-  let plain = one_param_fn("plain", "xs", EIdent("xs", -1))
+  let plain = one_param_fn(name = "plain", param = "xs", body = EIdent("xs", -1))
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns([
+  let names = compute_borrow_param_user_fns(stmts = [
     truncate,
     length,
     join,
     compare,
     plain
-  ], [], masks)
+  ], exclude = [], out_masks = masks)
   assert_eq(Array::length(names), 4)
-  assert_eq(mask_for(names, masks, "Array::truncate"), 0)
-  assert_eq(mask_for(names, masks, "Bytes::compare"), 0)
+  assert_eq(mask_for(names = names, masks = masks, name = "Array::truncate"), 0)
+  assert_eq(mask_for(names = names, masks = masks, name = "Bytes::compare"), 0)
   let call = ECall(EIdent("Array::truncate", -1), [EIdent("xs", -1), EInt(2)], -1, [
   ])
-  assert_eq(md_consume_count_pre(call, "xs", names, masks), 1)
+  assert_eq(md_consume_count_pre(e = call, name = "xs", bfns = names, bmasks_zeroed = masks), 1)
   let cmp_call = ECall(EIdent("Bytes::compare", -1), [
     EIdent("a", -1),
     EIdent("b", -1)
   ], -1, [])
-  assert_eq(md_consume_count_pre(cmp_call, "b", names, masks), 1)
+  assert_eq(md_consume_count_pre(e = cmp_call, name = "b", bfns = names, bmasks_zeroed = masks), 1)
   // Not shadowed: the builtin keeps borrowing.
   let plain_masks: Array[Int] = []
-  let unshadowed = compute_borrow_param_user_fns([plain], [], plain_masks)
+  let unshadowed = compute_borrow_param_user_fns(stmts = [plain], exclude = [], out_masks = plain_masks)
   assert_eq(Array::length(unshadowed), 0)
-  assert_eq(md_consume_count_pre(call, "xs", unshadowed, plain_masks), 0)
+  assert_eq(md_consume_count_pre(e = call, name = "xs", bfns = unshadowed, bmasks_zeroed = plain_masks), 0)
 }
 
 test "#2379 review: a source-owned Map accessor may still infer a borrowed receiver" {
-  let borrowed = one_param_fn("Map::iter_get", "m", ECall(EIdent("Array::length", -1), [
+  let borrowed = one_param_fn(name = "Map::iter_get", param = "m", body = ECall(EIdent("Array::length", -1), [
     EIdent("m", -1)
   ], -1, []))
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns([borrowed], [], masks)
-  assert_eq(mask_for(names, masks, "Map::iter_get"), 1)
+  let names = compute_borrow_param_user_fns(stmts = [borrowed], exclude = [], out_masks = masks)
+  assert_eq(mask_for(names = names, masks = masks, name = "Map::iter_get"), 1)
   let call = ECall(EIdent("Map::iter_get", -1), [EIdent("m", -1)], -1, [])
-  assert_eq(md_consume_count_pre(call, "m", names, masks), 0)
+  assert_eq(md_consume_count_pre(e = call, name = "m", bfns = names, bmasks_zeroed = masks), 0)
 }
 
 test "#3191: a store retain replaces a match binder's entry retain at that occurrence" {
   let body = EIf(EBool(true), ESeq(EIdent("p", 12), EIdent("p", 13)), EIdent("p", 14))
   let empty_names: Array[String] = []
   let empty_masks: Array[Int] = []
-  assert_eq(md_consume_count_pre(body, "p", empty_names, empty_masks), 2)
-  assert_eq(md_consume_count_pre_store(body, "p", empty_names, empty_masks, [
+  assert_eq(md_consume_count_pre(e = body, name = "p", bfns = empty_names, bmasks_zeroed = empty_masks), 2)
+  assert_eq(md_consume_count_pre_store(e = body, name = "p", bfns = empty_names, bmasks_zeroed = empty_masks, store_names = [
     "p"
-  ], [12]), 1)
-  assert_eq(md_consume_count_pre_store(body, "p", empty_names, empty_masks, [
+  ], store_offs = [12]), 1)
+  assert_eq(md_consume_count_pre_store(e = body, name = "p", bfns = empty_names, bmasks_zeroed = empty_masks, store_names = [
     "q"
-  ], [12]), 2)
-  assert_eq(md_consume_count_pre_store(body, "p", empty_names, empty_masks, [
+  ], store_offs = [12]), 2)
+  assert_eq(md_consume_count_pre_store(e = body, name = "p", bfns = empty_names, bmasks_zeroed = empty_masks, store_names = [
     "p"
-  ], [99]), 2)
+  ], store_offs = [99]), 2)
 }
 
 test "a projection off a view is a read, a projection off anything else still walks" {
@@ -283,17 +283,17 @@ test "a projection off a view is a read, a projection off anything else still wa
   let proj = EBinOp("+", EIdent("d", -1), EDot(EIdent("p", 3), "y", 3, -1), -1)
   let empty_names: Array[String] = []
   let empty_masks: Array[Int] = []
-  assert_eq(md_view_consume_count_pre(proj, "p", empty_names, empty_masks), 0)
-  assert_eq(md_consume_count_pre(proj, "p", empty_names, empty_masks), 1)
+  assert_eq(md_view_consume_count_pre(e = proj, name = "p", bfns = empty_names, bmasks_zeroed = empty_masks), 0)
+  assert_eq(md_consume_count_pre(e = proj, name = "p", bfns = empty_names, bmasks_zeroed = empty_masks), 1)
   // A projection off a CALL still walks the call: `f(p).y` consumes `p`.
   let call_proj = EDot(ECall(EIdent("f", -1), [EIdent("p", 5)], -1, []), "y", 5, -1)
-  assert_eq(md_view_consume_count_pre(call_proj, "p", empty_names, empty_masks), 1)
+  assert_eq(md_view_consume_count_pre(e = call_proj, name = "p", bfns = empty_names, bmasks_zeroed = empty_masks), 1)
   // A real consume next to a projection counts once.
   let both = ESeq(EDot(EIdent("p", 7), "x", 7, -1), ECall(EIdent("f", -1), [
     EIdent("p", 9)
   ], -1, []))
-  assert_eq(md_view_consume_count_pre(both, "p", empty_names, empty_masks), 1)
-  assert_eq(md_view_consume_count_pre_store(both, "p", empty_names, empty_masks, [
+  assert_eq(md_view_consume_count_pre(e = both, name = "p", bfns = empty_names, bmasks_zeroed = empty_masks), 1)
+  assert_eq(md_view_consume_count_pre_store(e = both, name = "p", bfns = empty_names, bmasks_zeroed = empty_masks, store_names = [
     "p"
-  ], [9]), 0)
+  ], store_offs = [9]), 0)
 }

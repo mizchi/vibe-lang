@@ -244,7 +244,7 @@ import @vibe/compiler/codegen/wasm_emit {
 //# CompileCtx.reuse_scrutinee_names). Local mirrors of compile_call's
 //# cc_is_* arg classifiers (same-file rule for the bundle flatten tool).
 
-fn mr_is_projection(e: Expr) -> Bool {
+fn mr_is_projection(_ e: Expr) -> Bool {
   match e {
     EDot(_, _, _, _) => true,
     _ => false
@@ -255,7 +255,7 @@ fn mr_is_borrow_ret_call(e: Expr, ctx: CompileCtx) -> Bool {
   match e {
     ECall(callee, _, _, _) =>
     match callee {
-      EIdent(f, _) => is_borrow_ret_builtin(f) || bsearch_leftmost(ctx.borrow_ret_names, f) >= 0,
+      EIdent(f, _) => is_borrow_ret_builtin(f) || bsearch_leftmost(sorted = ctx.borrow_ret_names, name = f) >= 0,
       _ => false
     },
     _ => false
@@ -264,12 +264,12 @@ fn mr_is_borrow_ret_call(e: Expr, ctx: CompileCtx) -> Bool {
 
 fn mr_is_loop_borrowed_ident(e: Expr, ctx: CompileCtx) -> Bool {
   match e {
-    EIdent(name, _) => array_contains_str(ctx.loop_borrowed_names, name) && !array_contains_str(ctx.ref_cell_names, name),
+    EIdent(name, _) => array_contains_str(arr = ctx.loop_borrowed_names, s = name) && !array_contains_str(arr = ctx.ref_cell_names, s = name),
     _ => false
   }
 }
 
-fn mr_spine_tail(e: Expr) -> Expr with Exception {
+fn mr_spine_tail(_ e: Expr) -> Expr with Exception {
   if expr_tag(e) == 9 {
     mr_spine_tail(get_elet_body(e))
   } else {
@@ -291,10 +291,10 @@ fn mr_spine_lets_ok(e: Expr, ctx: CompileCtx) -> Bool with Exception {
     // the retain the `let` lowering gives it; the plain value compile of the
     // fused spine gives none, so the binding would hand the ctor a reference
     // its source still releases. Declining sends the arm down that lowering.
-    if array_contains_str(ctx.rc_drop_names, n) || array_contains_str(ctx.rc_dup_names, n) || array_contains_str(ctx.rc_alias_dup_names, n) || store_dup_tail_present(get_elet_val(e), ctx) {
+    if array_contains_str(arr = ctx.rc_drop_names, s = n) || array_contains_str(arr = ctx.rc_dup_names, s = n) || array_contains_str(arr = ctx.rc_alias_dup_names, s = n) || store_dup_tail_present(e = get_elet_val(e), ctx = ctx) {
       false
     } else {
-      mr_spine_lets_ok(get_elet_body(e), ctx)
+      mr_spine_lets_ok(e = get_elet_body(e), ctx = ctx)
     }
   } else {
     true
@@ -317,20 +317,20 @@ export fn store_dup_tail_present(e: Expr, ctx: CompileCtx) -> Bool {
         let mut found = false
         let mut i = 0
         while !found && off >= 0 && i < Array::length(ctx.rc_store_dup_offs) {
-          found = Array::get(ctx.rc_store_dup_offs, i) == off && Array::get(ctx.rc_store_dup_names, i) == x
+          found = Array::get(ctx.rc_store_dup_offs, at = i) == off && Array::get(ctx.rc_store_dup_names, at = i) == x
           i = i + 1
         }
         found
       },
-      EIf(_, t, el) => store_dup_tail_present(t, ctx) || store_dup_tail_present(el, ctx),
-      EMatch(_, arms) => store_dup_arm_tail_present(arms, ctx),
-      EHandle(hb, arms) => store_dup_tail_present(hb, ctx) || store_dup_arm_tail_present(arms, ctx),
-      ELet(_, _, b, _) => store_dup_tail_present(b, ctx),
-      ELetMut(_, _, b, _) => store_dup_tail_present(b, ctx),
-      ELetRec(_, _, b) => store_dup_tail_present(b, ctx),
-      ESeq(_, b) => store_dup_tail_present(b, ctx),
-      EAssign(_, _, b, _) => store_dup_tail_present(b, ctx),
-      EAssignOp(_, _, _, b, _) => store_dup_tail_present(b, ctx),
+      EIf(_, t, el) => store_dup_tail_present(e = t, ctx = ctx) || store_dup_tail_present(e = el, ctx = ctx),
+      EMatch(_, arms) => store_dup_arm_tail_present(arms = arms, ctx = ctx),
+      EHandle(hb, arms) => store_dup_tail_present(e = hb, ctx = ctx) || store_dup_arm_tail_present(arms = arms, ctx = ctx),
+      ELet(_, _, b, _) => store_dup_tail_present(e = b, ctx = ctx),
+      ELetMut(_, _, b, _) => store_dup_tail_present(e = b, ctx = ctx),
+      ELetRec(_, _, b) => store_dup_tail_present(e = b, ctx = ctx),
+      ESeq(_, b) => store_dup_tail_present(e = b, ctx = ctx),
+      EAssign(_, _, b, _) => store_dup_tail_present(e = b, ctx = ctx),
+      EAssignOp(_, _, _, b, _) => store_dup_tail_present(e = b, ctx = ctx),
       _ => false
     }
   }
@@ -340,8 +340,8 @@ fn store_dup_arm_tail_present(arms: Array[(Pat, Expr)], ctx: CompileCtx) -> Bool
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(arms) {
-    let (_, ab) = Array::get(arms, i)
-    found = store_dup_tail_present(ab, ctx)
+    let (_, ab) = Array::get(arms, at = i)
+    found = store_dup_tail_present(e = ab, ctx = ctx)
     i = i + 1
   }
   found
@@ -364,27 +364,27 @@ fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> In
   // #2389 review: a `return` inside a spine-let VALUE could skip the
   // consuming tail after the block is claimed; the planner's blocker
   // predicate covers that shape for both fusion tiers.
-  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) && expr_tag(mr_tail) == 8 && mr_spine_lets_ok(body, ctx) && !reuse_arm_has_blocker(body) {
-    let sname = Array::get(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) && expr_tag(mr_tail) == 8 && mr_spine_lets_ok(e = body, ctx = ctx) && !reuse_arm_has_blocker(body) {
+    let sname = Array::get(ctx.reuse_scrutinee_names, at = Array::length(ctx.reuse_scrutinee_names) - 1)
     if get_eident_name(scrutinee) == sname {
       let pargs = get_pctor_args(p)
       let arity = Array::length(pargs)
       let callee = get_ecall_callee(mr_tail)
       if arity >= 1 && is_eident(callee) {
-        let ci = ctor_table_index_of(ctx.ctor_table, get_eident_name(callee))
-        let src_ci = ctor_table_index_of(ctx.ctor_table, get_pctor_name(p))
-        if ci >= 0 && src_ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(mr_tail)) == arity {
+        let ci = ctor_table_index_of(ct = ctx.ctor_table, name = get_eident_name(callee))
+        let src_ci = ctor_table_index_of(ct = ctx.ctor_table, name = get_pctor_name(p))
+        if ci >= 0 && src_ci >= 0 && Array::get(ctx.ctor_table.field_counts, at = ci) == arity && Array::length(get_ecall_args(mr_tail)) == arity {
           let mut shape_ok = true
-          let mr_bmasks = md_shadow_zeroed_bmasks(body, ctx.borrow_param_user, ctx.borrow_param_mask)
+          let mr_bmasks = md_shadow_zeroed_bmasks(e = body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
           let mut fj = 0
           while fj < arity {
-            let pa = Array::get(pargs, fj)
+            let pa = Array::get(pargs, at = fj)
             // Neither side may have a boxed-float field: the target's store
             // path differs, and a SOURCE float payload would bypass
             // bind_match_pat's float_local_slots registration (the raw-load
             // bind below doesn't know field types), so e.g. `-x` on the
             // binding would negate the box pointer (Codex review P1).
-            if ctor_field_is_float(ctx, ci, fj) || ctor_field_is_float(ctx, src_ci, fj) {
+            if ctor_field_is_float(ctx = ctx, ctor_idx = ci, field_idx = fj) || ctor_field_is_float(ctx = ctx, ctor_idx = src_ci, field_idx = fj) {
               shape_ok = false
             } else if is_pbind(pa) {
               // Mode 1 only for the narrow tier (a raw transfer whose
@@ -392,7 +392,7 @@ fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> In
               // consume-plus-borrow bind could be read after the consume
               // freed the transferred child (PR #2416 review); the wide
               // tier additionally admits mode 0.
-              if reuse_bind_mode(body, get_pbind_name(pa), ctx.borrow_param_user, mr_bmasks) != 1 {
+              if reuse_bind_mode(arm_body = body, bn = get_pbind_name(pa), borrow_param_fns = ctx.borrow_param_user, bmasks = mr_bmasks) != 1 {
                 shape_ok = false
               } else {
                 ()
@@ -406,7 +406,7 @@ fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> In
           }
           let __no_params: Array[String] = []
           let __no_fns: Array[String] = []
-          if shape_ok && !array_contains_str(collect_free_vars(body, __no_params, __no_fns), sname) {
+          if shape_ok && !array_contains_str(arr = collect_free_vars(body = body, param_names = __no_params, fn_names = __no_fns), s = sname) {
             ci
           } else {
             0 - 1
@@ -447,20 +447,20 @@ fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> In
 fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag_local: Int, arity: Int, ctor_idx: Int, local_names: Array[String], ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let args = get_ecall_args(mr_spine_tail(body))
   let pargs = get_pctor_args(pat)
-  let tag = Array::get(ctx.ctor_table.tags, ctor_idx)
+  let tag = Array::get(ctx.ctor_table.tags, at = ctor_idx)
   // 1. raw payload binds: field j lives at (scrut & ~1) + 8 + 8j.
   let mut bi = 0
   while bi < arity {
-    let pa = Array::get(pargs, bi)
+    let pa = Array::get(pargs, at = bi)
     if is_pbind(pa) {
       let bl = Array::length(local_names)
-      emit_local_get(buf, scrut_local)
-      emit_i64_const(buf, 0 - 2)
+      emit_local_get(buf = buf, idx = scrut_local)
+      emit_i64_const(buf = buf, value = 0 - 2)
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 8 + bi * 8)
-      emit_local_set(buf, bl)
-      Array::push(local_names, get_pbind_name(pa))
+      emit_i64_load(buf = buf, align = 3, offset = 8 + bi * 8)
+      emit_local_set(buf = buf, idx = bl)
+      Array::push(local_names, value = get_pbind_name(pa))
     } else {
       ()
     }
@@ -472,34 +472,34 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
   // shadow ledger already considers freed traps deterministically here
   // instead of corrupting the free list downstream.
   if ctx.rc_shadow {
-    emit_rc_dup_guarded(buf, scrut_local, true, ctx.rc_dup_func_idx)
-    emit_local_get(buf, scrut_local)
-    emit_call(buf, ctx.rc_drop_func_idx)
+    emit_rc_dup_guarded(buf = buf, local_idx = scrut_local, rc_shadow = true, dup_fn_idx = ctx.rc_dup_func_idx)
+    emit_local_get(buf = buf, idx = scrut_local)
+    emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
   } else {
     ()
   }
   // 2. consume the reference; tk = block base or 0.
   let tk = Array::length(local_names)
-  Array::push(local_names, "__reuse_tk")
-  emit_local_get(buf, scrut_local)
-  emit_i64_const(buf, 0 - 2)
+  Array::push(local_names, value = "__reuse_tk")
+  emit_local_get(buf = buf, idx = scrut_local)
+  emit_i64_const(buf = buf, value = 0 - 2)
   emit_i64_and(buf)
-  emit_i64_const(buf, 8)
+  emit_i64_const(buf = buf, value = 8)
   emit_i64_sub(buf)
-  emit_local_set(buf, tk)
-  emit_local_get(buf, tk)
+  emit_local_set(buf = buf, idx = tk)
+  emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
-  emit_i32_load(buf, 2, 4)
-  emit_i32_const(buf, 16777217)
+  emit_i32_load(buf = buf, align = 2, offset = 4)
+  emit_i32_const(buf = buf, value = 16777217)
   emit_i32_eq(buf)
   emit_if_void(buf)
   let mut wj = 0
   while wj < arity {
-    if is_pwild(Array::get(pargs, wj)) {
-      emit_local_get(buf, tk)
+    if is_pwild(Array::get(pargs, at = wj)) {
+      emit_local_get(buf = buf, idx = tk)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 16 + wj * 8)
-      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_i64_load(buf = buf, align = 3, offset = 16 + wj * 8)
+      emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
     } else {
       ()
     }
@@ -509,23 +509,23 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
   let mut dj = 0
   let mut bl2 = 0
   while dj < arity {
-    if is_pbind(Array::get(pargs, dj)) {
+    if is_pbind(Array::get(pargs, at = dj)) {
       // payload locals sit just below tk, in pattern order
-      let nbinds_before = mr_binds_before(pargs, dj)
-      emit_rc_dup_guarded(buf, tk - mr_bind_count(pargs) + nbinds_before, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      let nbinds_before = mr_binds_before(pargs = pargs, idx = dj)
+      emit_rc_dup_guarded(buf = buf, local_idx = tk - mr_bind_count(pargs) + nbinds_before, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
       bl2 = bl2 + 1
     } else {
       ()
     }
     dj = dj + 1
   }
-  emit_local_get(buf, scrut_local)
-  emit_call(buf, ctx.rc_drop_func_idx)
-  emit_i64_const(buf, 0)
-  emit_local_set(buf, tk)
+  emit_local_get(buf = buf, idx = scrut_local)
+  emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+  emit_i64_const(buf = buf, value = 0)
+  emit_local_set(buf = buf, idx = tk)
   emit_end(buf)
-  emit_i64_const(buf, 1)
-  emit_local_set(buf, flag_local)
+  emit_i64_const(buf = buf, value = 1)
+  emit_local_set(buf = buf, idx = flag_local)
   // 3b. admissible let-spine prefix: plain value + local_set per binding
   // (mr_spine_lets_ok proved the plan owes them no dup/drop), evaluated
   // AFTER the reference is consumed -- payloads are owned by their
@@ -535,8 +535,8 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
     let spv = get_elet_val(mr_sp)
     let spn = get_elet_name(mr_sp)
     let spnl = ce(buf, spv, local_names, Array::length(local_names), ctx, ld)
-    emit_local_set(buf, spnl)
-    Array::push(local_names, spn)
+    emit_local_set(buf = buf, idx = spnl)
+    Array::push(local_names, value = spn)
     mr_sp = get_elet_body(mr_sp)
   }
   // 4. field values.
@@ -544,92 +544,92 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
   let mut nl = Array::length(local_names)
   let mut i = 0
   while i < arity {
-    let a = Array::get(args, i)
+    let a = Array::get(args, at = i)
     nl = ce(buf, a, local_names, nl, ctx, ld)
     let vl = nl
-    Array::push(local_names, "__reuse_val")
-    emit_local_set(buf, vl)
-    if mr_is_loop_borrowed_ident(a, ctx) {
-      Array::push(ctx.loop_consumed_names, get_eident_name(a))
-      emit_rc_dup_guarded(buf, vl, ctx.rc_shadow, ctx.rc_dup_func_idx)
-    } else if mr_is_projection(a) || mr_is_borrow_ret_call(a, ctx) {
-      emit_rc_dup_guarded(buf, vl, ctx.rc_shadow, ctx.rc_dup_func_idx)
+    Array::push(local_names, value = "__reuse_val")
+    emit_local_set(buf = buf, idx = vl)
+    if mr_is_loop_borrowed_ident(e = a, ctx = ctx) {
+      Array::push(ctx.loop_consumed_names, value = get_eident_name(a))
+      emit_rc_dup_guarded(buf = buf, local_idx = vl, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+    } else if mr_is_projection(a) || mr_is_borrow_ret_call(e = a, ctx = ctx) {
+      emit_rc_dup_guarded(buf = buf, local_idx = vl, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
     } else {
       ()
     }
-    Array::push(vals, vl)
+    Array::push(vals, value = vl)
     nl = nl + 1
     i = i + 1
   }
   // 5. reuse or fresh-alloc; both branches yield the tagged value.
-  emit_local_get(buf, tk)
+  emit_local_get(buf = buf, idx = tk)
   emit_i64_eqz(buf)
   emit_i32_eqz(buf)
   emit_if_i64(buf)
-  emit_local_get(buf, tk)
+  emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, tag)
-  emit_i32_store(buf, 2, 8)
+  emit_i32_const(buf = buf, value = tag)
+  emit_i32_store(buf = buf, align = 2, offset = 8)
   let mut sj = 0
   while sj < arity {
-    emit_local_get(buf, tk)
+    emit_local_get(buf = buf, idx = tk)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, Array::get(vals, sj))
-    emit_i64_store(buf, 3, 16 + sj * 8)
+    emit_local_get(buf = buf, idx = Array::get(vals, at = sj))
+    emit_i64_store(buf = buf, align = 3, offset = 16 + sj * 8)
     sj = sj + 1
   }
-  emit_local_get(buf, tk)
-  emit_i64_const(buf, 8)
+  emit_local_get(buf = buf, idx = tk)
+  emit_i64_const(buf = buf, value = 8)
   emit_i64_add(buf)
-  emit_i64_const(buf, 1)
+  emit_i64_const(buf = buf, value = 1)
   emit_i64_or(buf)
   emit_else(buf)
   let total = 16 + arity * 8
-  emit_i64_const(buf, total)
-  emit_call(buf, ctx.rc_alloc_func_idx)
-  emit_local_set(buf, tk)
-  emit_local_get(buf, tk)
+  emit_i64_const(buf = buf, value = total)
+  emit_call(buf = buf, func_idx = ctx.rc_alloc_func_idx)
+  emit_local_set(buf = buf, idx = tk)
+  emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, total)
-  emit_i32_store(buf, 2, 0)
-  emit_local_get(buf, tk)
+  emit_i32_const(buf = buf, value = total)
+  emit_i32_store(buf = buf, align = 2, offset = 0)
+  emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 1)
-  emit_i32_store(buf, 2, 4)
-  emit_local_get(buf, tk)
+  emit_i32_const(buf = buf, value = 1)
+  emit_i32_store(buf = buf, align = 2, offset = 4)
+  emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 1)
-  emit_i32_store8(buf, 0, 7)
-  emit_local_get(buf, tk)
+  emit_i32_const(buf = buf, value = 1)
+  emit_i32_store8(buf = buf, align = 0, offset = 7)
+  emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, tag)
-  emit_i32_store(buf, 2, 8)
-  emit_local_get(buf, tk)
+  emit_i32_const(buf = buf, value = tag)
+  emit_i32_store(buf = buf, align = 2, offset = 8)
+  emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, arity)
-  emit_i32_store(buf, 2, 12)
+  emit_i32_const(buf = buf, value = arity)
+  emit_i32_store(buf = buf, align = 2, offset = 12)
   let mut fj2 = 0
   while fj2 < arity {
-    emit_local_get(buf, tk)
+    emit_local_get(buf = buf, idx = tk)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, Array::get(vals, fj2))
-    emit_i64_store(buf, 3, 16 + fj2 * 8)
+    emit_local_get(buf = buf, idx = Array::get(vals, at = fj2))
+    emit_i64_store(buf = buf, align = 3, offset = 16 + fj2 * 8)
     fj2 = fj2 + 1
   }
-  emit_local_get(buf, tk)
-  emit_i64_const(buf, 8)
+  emit_local_get(buf = buf, idx = tk)
+  emit_i64_const(buf = buf, value = 8)
   emit_i64_add(buf)
-  emit_i64_const(buf, 1)
+  emit_i64_const(buf = buf, value = 1)
   emit_i64_or(buf)
   emit_end(buf)
   nl
 }
 
-fn mr_bind_count(pargs: Array[Pat]) -> Int {
+fn mr_bind_count(_ pargs: Array[Pat]) -> Int {
   let mut n = 0
   let mut i = 0
   while i < Array::length(pargs) {
-    if is_pbind(Array::get(pargs, i)) {
+    if is_pbind(Array::get(pargs, at = i)) {
       n = n + 1
     } else {
       ()
@@ -643,7 +643,7 @@ fn mr_binds_before(pargs: Array[Pat], idx: Int) -> Int {
   let mut n = 0
   let mut i = 0
   while i < idx {
-    if is_pbind(Array::get(pargs, i)) {
+    if is_pbind(Array::get(pargs, at = i)) {
       n = n + 1
     } else {
       ()
@@ -674,7 +674,7 @@ fn mr_reuse_plan_has(ctx: CompileCtx, name: String, arity: Int) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(ctx.rc_reuse_token_names) {
-    if Array::get(ctx.rc_reuse_token_names, i) == name && Array::get(ctx.rc_reuse_token_arities, i) == arity {
+    if Array::get(ctx.rc_reuse_token_names, at = i) == name && Array::get(ctx.rc_reuse_token_arities, at = i) == arity {
       found = true
     } else {
       ()
@@ -697,8 +697,8 @@ fn mr_has_ctor_site(e: Expr, arity: Int, ctx: CompileCtx) -> Bool with Exception
     let here = if expr_tag(e) == 8 {
       let callee = get_ecall_callee(e)
       if is_eident(callee) {
-        let ci = ctor_table_index_of(ctx.ctor_table, get_eident_name(callee))
-        ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(e)) == arity
+        let ci = ctor_table_index_of(ct = ctx.ctor_table, name = get_eident_name(callee))
+        ci >= 0 && Array::get(ctx.ctor_table.field_counts, at = ci) == arity && Array::length(get_ecall_args(e)) == arity
       } else {
         false
       }
@@ -713,7 +713,7 @@ fn mr_has_ctor_site(e: Expr, arity: Int, ctx: CompileCtx) -> Bool with Exception
       let mut i = mark
       let mut found = false
       while !found && i < end {
-        if mr_has_ctor_site(expr_child_at(i), arity, ctx) {
+        if mr_has_ctor_site(e = expr_child_at(i), arity = arity, ctx = ctx) {
           found = true
         } else {
           ()
@@ -734,8 +734,8 @@ fn mr_tail_is_ctor_site(body: Expr, arity: Int, ctx: CompileCtx) -> Bool with Ex
   if expr_tag(mr_tail) == 8 {
     let callee = get_ecall_callee(mr_tail)
     if is_eident(callee) {
-      let ci = ctor_table_index_of(ctx.ctor_table, get_eident_name(callee))
-      ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(mr_tail)) == arity
+      let ci = ctor_table_index_of(ct = ctx.ctor_table, name = get_eident_name(callee))
+      ci >= 0 && Array::get(ctx.ctor_table.field_counts, at = ci) == arity && Array::length(get_ecall_args(mr_tail)) == arity
     } else {
       false
     }
@@ -763,22 +763,22 @@ fn mr_tail_is_ctor_site(body: Expr, arity: Int, ctx: CompileCtx) -> Bool with Ex
 /// child alive). Returns the pattern arity, or -1.
 fn mr_reuse_wide_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> Int with Exception {
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) {
-    let sname = Array::get(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
+    let sname = Array::get(ctx.reuse_scrutinee_names, at = Array::length(ctx.reuse_scrutinee_names) - 1)
     let pargs = get_pctor_args(p)
     let arity = Array::length(pargs)
-    if arity >= 1 && get_eident_name(scrutinee) == sname && mr_reuse_plan_has(ctx, sname, arity) && !reuse_arm_has_blocker(body) && mr_has_ctor_site(body, arity, ctx) {
-      let src_ci = ctor_table_index_of(ctx.ctor_table, get_pctor_name(p))
+    if arity >= 1 && get_eident_name(scrutinee) == sname && mr_reuse_plan_has(ctx = ctx, name = sname, arity = arity) && !reuse_arm_has_blocker(body) && mr_has_ctor_site(e = body, arity = arity, ctx = ctx) {
+      let src_ci = ctor_table_index_of(ct = ctx.ctor_table, name = get_pctor_name(p))
       if src_ci >= 0 {
         let mut shape_ok = true
         let mut fj = 0
         while fj < arity {
-          let pa = Array::get(pargs, fj)
-          if ctor_field_is_float(ctx, src_ci, fj) {
+          let pa = Array::get(pargs, at = fj)
+          if ctor_field_is_float(ctx = ctx, ctor_idx = src_ci, field_idx = fj) {
             shape_ok = false
           } else if is_pbind(pa) {
             // An alias-bound name declines: aliasing can hide an owner the
             // consume count doesn't see.
-            if array_contains_str(ctx.rc_alias_dup_names, get_pbind_name(pa)) {
+            if array_contains_str(arr = ctx.rc_alias_dup_names, s = get_pbind_name(pa)) {
               shape_ok = false
             } else {
               ()
@@ -792,7 +792,7 @@ fn mr_reuse_wide_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) 
         }
         let __no_params: Array[String] = []
         let __no_fns: Array[String] = []
-        if shape_ok && !array_contains_str(collect_free_vars(body, __no_params, __no_fns), sname) {
+        if shape_ok && !array_contains_str(arr = collect_free_vars(body = body, param_names = __no_params, fn_names = __no_fns), s = sname) {
           arity
         } else {
           0 - 1
@@ -840,70 +840,70 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
   // (no arm-end release), k >= 0 = the bind's consume count, with a base
   // reference released at arm end. PWild positions carry -1 (their
   // children are dropped at staging on the unique path, and never bound).
-  let __wcc_bmasks = md_shadow_zeroed_bmasks(body, ctx.borrow_param_user, ctx.borrow_param_mask)
+  let __wcc_bmasks = md_shadow_zeroed_bmasks(e = body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
   let held: Array[Int] = []
   let mut any_held = false
   let mut ci = 0
   while ci < arity {
-    let cpa = Array::get(pargs, ci)
+    let cpa = Array::get(pargs, at = ci)
     if is_pbind(cpa) {
       let __bn = get_pbind_name(cpa)
-      if reuse_bind_mode(body, __bn, ctx.borrow_param_user, __wcc_bmasks) == 1 {
-        Array::push(held, 0 - 1)
+      if reuse_bind_mode(arm_body = body, bn = __bn, borrow_param_fns = ctx.borrow_param_user, bmasks = __wcc_bmasks) == 1 {
+        Array::push(held, value = 0 - 1)
       } else {
-        Array::push(held, md_view_consume_count_pre(body, __bn, ctx.borrow_param_user, __wcc_bmasks))
+        Array::push(held, value = md_view_consume_count_pre(e = body, name = __bn, bfns = ctx.borrow_param_user, bmasks_zeroed = __wcc_bmasks))
         any_held = true
       }
     } else {
-      Array::push(held, 0 - 1)
+      Array::push(held, value = 0 - 1)
     }
     ci = ci + 1
   }
   let mut bi = 0
   while bi < arity {
-    let pa = Array::get(pargs, bi)
+    let pa = Array::get(pargs, at = bi)
     if is_pbind(pa) {
       let bl = Array::length(local_names)
-      emit_local_get(buf, scrut_local)
-      emit_i64_const(buf, 0 - 2)
+      emit_local_get(buf = buf, idx = scrut_local)
+      emit_i64_const(buf = buf, value = 0 - 2)
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 8 + bi * 8)
-      emit_local_set(buf, bl)
-      Array::push(local_names, get_pbind_name(pa))
+      emit_i64_load(buf = buf, align = 3, offset = 8 + bi * 8)
+      emit_local_set(buf = buf, idx = bl)
+      Array::push(local_names, value = get_pbind_name(pa))
     } else {
       ()
     }
     bi = bi + 1
   }
   if ctx.rc_shadow {
-    emit_rc_dup_guarded(buf, scrut_local, true, ctx.rc_dup_func_idx)
-    emit_local_get(buf, scrut_local)
-    emit_call(buf, ctx.rc_drop_func_idx)
+    emit_rc_dup_guarded(buf = buf, local_idx = scrut_local, rc_shadow = true, dup_fn_idx = ctx.rc_dup_func_idx)
+    emit_local_get(buf = buf, idx = scrut_local)
+    emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
   } else {
     ()
   }
   let tk = Array::length(local_names)
-  Array::push(local_names, "__reuse_tk")
-  emit_local_get(buf, scrut_local)
-  emit_i64_const(buf, 0 - 2)
+  Array::push(local_names, value = "__reuse_tk")
+  emit_local_get(buf = buf, idx = scrut_local)
+  emit_i64_const(buf = buf, value = 0 - 2)
   emit_i64_and(buf)
-  emit_i64_const(buf, 8)
+  emit_i64_const(buf = buf, value = 8)
   emit_i64_sub(buf)
-  emit_local_set(buf, tk)
-  emit_local_get(buf, tk)
+  emit_local_set(buf = buf, idx = tk)
+  emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
-  emit_i32_load(buf, 2, 4)
-  emit_i32_const(buf, 16777217)
+  emit_i32_load(buf = buf, align = 2, offset = 4)
+  emit_i32_const(buf = buf, value = 16777217)
   emit_i32_eq(buf)
   emit_if_void(buf)
   let mut wj = 0
   while wj < arity {
-    if is_pwild(Array::get(pargs, wj)) {
-      emit_local_get(buf, tk)
+    if is_pwild(Array::get(pargs, at = wj)) {
+      emit_local_get(buf = buf, idx = tk)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 16 + wj * 8)
-      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_i64_load(buf = buf, align = 3, offset = 16 + wj * 8)
+      emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
     } else {
       ()
     }
@@ -913,8 +913,8 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
   // one more per consume.
   let mut hj = 0
   while hj < arity {
-    if is_pbind(Array::get(pargs, hj)) && Array::get(held, hj) > 0 {
-      emit_rc_dup_guarded_n(buf, tk - mr_bind_count(pargs) + mr_binds_before(pargs, hj), Array::get(held, hj), ctx.rc_shadow, ctx.rc_dup_func_idx)
+    if is_pbind(Array::get(pargs, at = hj)) && Array::get(held, at = hj) > 0 {
+      emit_rc_dup_guarded_n(buf = buf, local_idx = tk - mr_bind_count(pargs) + mr_binds_before(pargs = pargs, idx = hj), n = Array::get(held, at = hj), rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
     } else {
       ()
     }
@@ -923,36 +923,36 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
   emit_else(buf)
   let mut dj = 0
   while dj < arity {
-    if is_pbind(Array::get(pargs, dj)) {
+    if is_pbind(Array::get(pargs, at = dj)) {
       // Shared path: EVERY bind is dup'd into ownership -- one reference
       // for a raw-transfer bind (its consume releases it), and for a held
       // or borrow-only bind the base reference plus one per consume. The
       // scrutinee's reference is dropped right below, so nothing may stay
       // a borrowed view of the block.
-      let nbinds_before = mr_binds_before(pargs, dj)
-      let __hk = Array::get(held, dj)
+      let nbinds_before = mr_binds_before(pargs = pargs, idx = dj)
+      let __hk = Array::get(held, at = dj)
       let __ndups = if __hk >= 0 {
         __hk + 1
       } else {
         1
       }
-      emit_rc_dup_guarded_n(buf, tk - mr_bind_count(pargs) + nbinds_before, __ndups, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      emit_rc_dup_guarded_n(buf = buf, local_idx = tk - mr_bind_count(pargs) + nbinds_before, n = __ndups, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
     } else {
       ()
     }
     dj = dj + 1
   }
-  emit_local_get(buf, scrut_local)
-  emit_call(buf, ctx.rc_drop_func_idx)
-  emit_i64_const(buf, 0)
-  emit_local_set(buf, tk)
+  emit_local_get(buf = buf, idx = scrut_local)
+  emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+  emit_i64_const(buf = buf, value = 0)
+  emit_local_set(buf = buf, idx = tk)
   emit_end(buf)
-  emit_i64_const(buf, 1)
-  emit_local_set(buf, flag_local)
-  let tail_consumes = mr_tail_is_ctor_site(body, arity, ctx)
-  Array::push(ctx.reuse_tok_locals, tk)
-  Array::push(ctx.reuse_tok_arities, arity)
-  Array::push(ctx.reuse_tok_emitted, 0)
+  emit_i64_const(buf = buf, value = 1)
+  emit_local_set(buf = buf, idx = flag_local)
+  let tail_consumes = mr_tail_is_ctor_site(body = body, arity = arity, ctx = ctx)
+  Array::push(ctx.reuse_tok_locals, value = tk)
+  Array::push(ctx.reuse_tok_arities, value = arity)
+  Array::push(ctx.reuse_tok_emitted, value = 0)
   let nl2 = ce(buf, body, local_names, Array::length(local_names), ctx, ld)
   // Arm-end release of every held / borrow-only bind's base reference
   // (raw-transferred on the unique path, dup'd on the shared path -- both
@@ -962,9 +962,9 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
   if any_held {
     let mut fj = 0
     while fj < arity {
-      if is_pbind(Array::get(pargs, fj)) && Array::get(held, fj) >= 0 {
-        emit_local_get(buf, tk - mr_bind_count(pargs) + mr_binds_before(pargs, fj))
-        emit_call(buf, ctx.rc_drop_func_idx)
+      if is_pbind(Array::get(pargs, at = fj)) && Array::get(held, at = fj) >= 0 {
+        emit_local_get(buf = buf, idx = tk - mr_bind_count(pargs) + mr_binds_before(pargs = pargs, idx = fj))
+        emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
       } else {
         ()
       }
@@ -974,10 +974,10 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
     ()
   }
   let __rt_at = Array::length(ctx.reuse_tok_emitted) - 1
-  let __rt_emitted = Array::get(ctx.reuse_tok_emitted, __rt_at)
-  Array::truncate(ctx.reuse_tok_locals, __rt_at)
-  Array::truncate(ctx.reuse_tok_arities, __rt_at)
-  Array::truncate(ctx.reuse_tok_emitted, __rt_at)
+  let __rt_emitted = Array::get(ctx.reuse_tok_emitted, at = __rt_at)
+  Array::truncate(ctx.reuse_tok_locals, length = __rt_at)
+  Array::truncate(ctx.reuse_tok_arities, length = __rt_at)
+  Array::truncate(ctx.reuse_tok_emitted, length = __rt_at)
   if tail_consumes {
     // The spine-tail constructor runs on every non-unwinding path and is
     // compiled by compile_call with this token on top of the stack, so a
@@ -993,7 +993,7 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
     // a nested arm that may have built its constructor inline (the narrow
     // fusion allocates on its own), so some path can reach the arm end
     // with the token still armed. Release it there.
-    mr_emit_token_release(buf, tk, ctx)
+    mr_emit_token_release(buf = buf, tk = tk, ctx = ctx)
   }
   nl2
 }
@@ -1008,20 +1008,20 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
 /// is a no-op. Emitted after the arm's value, which stays on the wasm
 /// stack.
 fn mr_emit_token_release(buf: Bytes, tk: Int, ctx: CompileCtx) -> Unit {
-  emit_local_get(buf, tk)
+  emit_local_get(buf = buf, idx = tk)
   emit_i64_eqz(buf)
   emit_i32_eqz(buf)
   emit_if_void(buf)
-  emit_local_get(buf, tk)
+  emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 0)
-  emit_i32_store(buf, 2, 12)
-  emit_local_get(buf, tk)
-  emit_i64_const(buf, 8)
+  emit_i32_const(buf = buf, value = 0)
+  emit_i32_store(buf = buf, align = 2, offset = 12)
+  emit_local_get(buf = buf, idx = tk)
+  emit_i64_const(buf = buf, value = 8)
   emit_i64_add(buf)
-  emit_i64_const(buf, 1)
+  emit_i64_const(buf = buf, value = 1)
   emit_i64_or(buf)
-  emit_call(buf, ctx.rc_drop_func_idx)
+  emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
   emit_end(buf)
 }
 
@@ -1030,7 +1030,7 @@ fn mr_emit_token_release(buf: Bytes, tk: Int, ctx: CompileCtx) -> Unit {
 fn emit_rc_dup_guarded_n(buf: Bytes, local_idx: Int, n: Int, rc_shadow: Bool, dup_fn_idx: Int) -> Unit {
   let mut k = 0
   while k < n {
-    emit_rc_dup_guarded(buf, local_idx, rc_shadow, dup_fn_idx)
+    emit_rc_dup_guarded(buf = buf, local_idx = local_idx, rc_shadow = rc_shadow, dup_fn_idx = dup_fn_idx)
     k = k + 1
   }
 }
@@ -1042,7 +1042,7 @@ fn match_tuple_probe_needed(p: Pat, nested: Bool) -> Bool {
     PTuple(parts) => {
       let mut needed = nested && !is_catchall_pat(p)
       for part in parts {
-        if match_tuple_probe_needed(part, true) {
+        if match_tuple_probe_needed(p = part, nested = true) {
           needed = true
         }
       }
@@ -1051,13 +1051,13 @@ fn match_tuple_probe_needed(p: Pat, nested: Bool) -> Bool {
     PCtor(_, parts) => {
       let mut needed = false
       for part in parts {
-        if match_tuple_probe_needed(part, true) {
+        if match_tuple_probe_needed(p = part, nested = true) {
           needed = true
         }
       }
       needed
     },
-    POr(left, right) => match_tuple_probe_needed(left, nested) || match_tuple_probe_needed(right, nested),
+    POr(left, right) => match_tuple_probe_needed(p = left, nested = nested) || match_tuple_probe_needed(p = right, nested = nested),
     _ => false
   }
 }
@@ -1068,15 +1068,15 @@ fn match_tuple_probe_needed(p: Pat, nested: Bool) -> Bool {
 /// before untagging, so nested probes evaluate their parent load only once.
 fn emit_match_fields_base(buf: Bytes, scratch: Int, constant_header: Bool) -> Unit {
   if !constant_header {
-    emit_local_tee(buf, scratch)
+    emit_local_tee(buf = buf, idx = scratch)
   }
-  emit_i64_const(buf, -2)
+  emit_i64_const(buf = buf, value = -2)
   emit_i64_and(buf)
   if !constant_header {
-    emit_local_get(buf, scratch)
-    emit_i64_const(buf, 1)
+    emit_local_get(buf = buf, idx = scratch)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_and(buf)
-    emit_i64_const(buf, 3)
+    emit_i64_const(buf = buf, value = 3)
     emit_i64_shl(buf)
     emit_i64_add(buf)
   }
@@ -1094,13 +1094,13 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
   // below can ask ctor_field_is_float per positional field. -1 (not a ctor
   // layout) makes ctor_field_is_float trivially return false.
   let __bmp_ctor_idx = if is_ctor_layout {
-    ctor_table_index_of(ctx.ctor_table, get_pctor_name(container_pat))
+    ctor_table_index_of(ct = ctx.ctor_table, name = get_pctor_name(container_pat))
   } else {
     -1
   }
   let mut i = 0
   while i < Array::length(elems) {
-    let ep = Array::get(elems, i)
+    let ep = Array::get(elems, at = i)
     let off = if is_ctor_layout {
       8 + i * 8
     } else if ctx.enable_rc {
@@ -1111,11 +1111,11 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
     if is_pbind(ep) {
       let nm = get_pbind_name(ep)
       let fl = Array::length(local_names)
-      emit_local_get(buf, base_local)
-      emit_match_fields_base(buf, base_local, is_ctor_layout || ctx.enable_rc)
+      emit_local_get(buf = buf, idx = base_local)
+      emit_match_fields_base(buf = buf, scratch = base_local, constant_header = is_ctor_layout || ctx.enable_rc)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, off)
-      emit_local_set(buf, fl)
+      emit_i64_load(buf = buf, align = 3, offset = off)
+      emit_local_set(buf = buf, idx = fl)
       // #1062: a Double/Float-typed constructor field bound by a pattern
       // (`Circle(r) => r * r`) must be registered into float_local_slots
       // exactly like a `let`-bound float, else it falls through to the
@@ -1124,8 +1124,8 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
       // access out of bounds") when later dereferenced. __bmp_ctor_idx is
       // -1 for a bare tuple pattern, and ctor_field_is_float trivially
       // returns false for a -1 ctor_idx, so this is a no-op there.
-      if ctor_field_is_float(ctx, __bmp_ctor_idx, i) {
-        Array::push(ctx.float_local_slots, fl * 2 + 1)
+      if ctor_field_is_float(ctx = ctx, ctor_idx = __bmp_ctor_idx, field_idx = i) {
+        Array::push(ctx.float_local_slots, value = fl * 2 + 1)
       } else {
         ()
       }
@@ -1141,29 +1141,29 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
       // Vertical A) moved that +1 into compile_lambda's creation-site dup,
       // so only the owning-consume compensation remains here.
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_view_consume_count_pre_store(body, nm, ctx.borrow_param_user, md_bmasks, ctx.rc_store_dup_names, ctx.rc_store_dup_offs), ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_rc_dup_guarded_n(buf = buf, local_idx = fl, n = md_view_consume_count_pre_store(e = body, name = nm, bfns = ctx.borrow_param_user, bmasks_zeroed = md_bmasks, store_names = ctx.rc_store_dup_names, store_offs = ctx.rc_store_dup_offs), rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
       } else {
         ()
       }
-      Array::push(local_names, nm)
+      Array::push(local_names, value = nm)
     } else if is_ptuple(ep) {
       let sl = Array::length(local_names)
-      emit_local_get(buf, base_local)
-      emit_match_fields_base(buf, base_local, is_ctor_layout || ctx.enable_rc)
+      emit_local_get(buf = buf, idx = base_local)
+      emit_match_fields_base(buf = buf, scratch = base_local, constant_header = is_ctor_layout || ctx.enable_rc)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, off)
-      emit_local_set(buf, sl)
-      Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, ep, false, local_names, ctx, body, md_bmasks)
+      emit_i64_load(buf = buf, align = 3, offset = off)
+      emit_local_set(buf = buf, idx = sl)
+      Array::push(local_names, value = "__bind_sub")
+      bind_match_pat(buf = buf, base_local = sl, container_pat = ep, is_ctor_layout = false, local_names = local_names, ctx = ctx, body = body, md_bmasks = md_bmasks)
     } else if is_pctor(ep) {
       let sl = Array::length(local_names)
-      emit_local_get(buf, base_local)
-      emit_match_fields_base(buf, base_local, is_ctor_layout || ctx.enable_rc)
+      emit_local_get(buf = buf, idx = base_local)
+      emit_match_fields_base(buf = buf, scratch = base_local, constant_header = is_ctor_layout || ctx.enable_rc)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, off)
-      emit_local_set(buf, sl)
-      Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, ep, true, local_names, ctx, body, md_bmasks)
+      emit_i64_load(buf = buf, align = 3, offset = off)
+      emit_local_set(buf = buf, idx = sl)
+      Array::push(local_names, value = "__bind_sub")
+      bind_match_pat(buf = buf, base_local = sl, container_pat = ep, is_ctor_layout = true, local_names = local_names, ctx = ctx, body = body, md_bmasks = md_bmasks)
     } else {
       ()
     }
@@ -1183,7 +1183,7 @@ fn find_struct_index(ctx: CompileCtx, sname: String) -> Int {
   let mut si = 0
   let mut sidx = -1
   while si < Array::length(names) {
-    if Array::get(names, si) == sname {
+    if Array::get(names, at = si) == sname {
       sidx = si
       si = Array::length(names)
     } else {
@@ -1197,7 +1197,7 @@ fn field_index_in(fnames: Array[String], field: String) -> Int {
   let mut fi = 0
   let mut found = -1
   while fi < Array::length(fnames) {
-    if Array::get(fnames, fi) == field {
+    if Array::get(fnames, at = fi) == field {
       found = fi
       fi = Array::length(fnames)
     } else {
@@ -1208,9 +1208,9 @@ fn field_index_in(fnames: Array[String], field: String) -> Int {
 }
 
 fn struct_field_index(ctx: CompileCtx, sname: String, field: String) -> Int with Exception {
-  let sidx = find_struct_index(ctx, sname)
+  let sidx = find_struct_index(ctx = ctx, sname = sname)
   if sidx >= 0 {
-    let found = field_index_in(Array::get(ctx.ctor_table.struct_field_names, sidx), field)
+    let found = field_index_in(fnames = Array::get(ctx.ctor_table.struct_field_names, at = sidx), field = field)
     if found < 0 {
       throw(String::concat(String::concat(String::concat("unknown field `", field), "` in struct "), sname))
     } else {
@@ -1223,7 +1223,7 @@ fn struct_field_index(ctx: CompileCtx, sname: String, field: String) -> Int with
     let mut gsi = 0
     let mut gfound = -1
     while gsi < Array::length(names) {
-      let f = field_index_in(Array::get(ctx.ctor_table.struct_field_names, gsi), field)
+      let f = field_index_in(fnames = Array::get(ctx.ctor_table.struct_field_names, at = gsi), field = field)
       if f >= 0 {
         gfound = f
         gsi = Array::length(names)
@@ -1249,58 +1249,58 @@ fn struct_field_index(ctx: CompileCtx, sname: String, field: String) -> Int with
 fn bind_struct_pat(buf: Bytes, base_local: Int, sname: String, fields: Array[(String, Pat)], local_names: Array[String], ctx: CompileCtx, body: Expr, md_bmasks: Array[Int]) -> Unit with Exception {
   let mut i = 0
   while i < Array::length(fields) {
-    let (fname, subpat) = Array::get(fields, i)
-    let off = 8 + struct_field_index(ctx, sname, fname) * 8
+    let (fname, subpat) = Array::get(fields, at = i)
+    let off = 8 + struct_field_index(ctx = ctx, sname = sname, field = fname) * 8
     if is_pbind(subpat) {
       let nm = get_pbind_name(subpat)
       let fl = Array::length(local_names)
-      emit_local_get(buf, base_local)
-      emit_i64_const(buf, -2)
+      emit_local_get(buf = buf, idx = base_local)
+      emit_i64_const(buf = buf, value = -2)
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, off)
-      emit_local_set(buf, fl)
+      emit_i64_load(buf = buf, align = 3, offset = off)
+      emit_local_set(buf = buf, idx = fl)
       // #715 follow-up: same missing-dup gap as `bind_match_pat` above, for an
       // irrefutable struct-pattern field. The former #1097 capturing-literal
       // term moved to compile_lambda's creation-site dup (owned-captures).
       if ctx.enable_rc {
-        emit_rc_dup_guarded_n(buf, fl, md_view_consume_count_pre_store(body, nm, ctx.borrow_param_user, md_bmasks, ctx.rc_store_dup_names, ctx.rc_store_dup_offs), ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_rc_dup_guarded_n(buf = buf, local_idx = fl, n = md_view_consume_count_pre_store(e = body, name = nm, bfns = ctx.borrow_param_user, bmasks_zeroed = md_bmasks, store_names = ctx.rc_store_dup_names, store_offs = ctx.rc_store_dup_offs), rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
       } else {
         ()
       }
-      Array::push(local_names, nm)
+      Array::push(local_names, value = nm)
     } else if is_ptuple(subpat) {
       let sl = Array::length(local_names)
-      emit_local_get(buf, base_local)
-      emit_i64_const(buf, -2)
+      emit_local_get(buf = buf, idx = base_local)
+      emit_i64_const(buf = buf, value = -2)
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, off)
-      emit_local_set(buf, sl)
-      Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, subpat, false, local_names, ctx, body, md_bmasks)
+      emit_i64_load(buf = buf, align = 3, offset = off)
+      emit_local_set(buf = buf, idx = sl)
+      Array::push(local_names, value = "__bind_sub")
+      bind_match_pat(buf = buf, base_local = sl, container_pat = subpat, is_ctor_layout = false, local_names = local_names, ctx = ctx, body = body, md_bmasks = md_bmasks)
     } else if is_pctor(subpat) {
       let sl = Array::length(local_names)
-      emit_local_get(buf, base_local)
-      emit_i64_const(buf, -2)
+      emit_local_get(buf = buf, idx = base_local)
+      emit_i64_const(buf = buf, value = -2)
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, off)
-      emit_local_set(buf, sl)
-      Array::push(local_names, "__bind_sub")
-      bind_match_pat(buf, sl, subpat, true, local_names, ctx, body, md_bmasks)
+      emit_i64_load(buf = buf, align = 3, offset = off)
+      emit_local_set(buf = buf, idx = sl)
+      Array::push(local_names, value = "__bind_sub")
+      bind_match_pat(buf = buf, base_local = sl, container_pat = subpat, is_ctor_layout = true, local_names = local_names, ctx = ctx, body = body, md_bmasks = md_bmasks)
     } else {
       match subpat {
         PStruct(__sname, sfields) => {
           let sl = Array::length(local_names)
-          emit_local_get(buf, base_local)
-          emit_i64_const(buf, -2)
+          emit_local_get(buf = buf, idx = base_local)
+          emit_i64_const(buf = buf, value = -2)
           emit_i64_and(buf)
           emit_i32_wrap_i64(buf)
-          emit_i64_load(buf, 3, off)
-          emit_local_set(buf, sl)
-          Array::push(local_names, "__bind_sub")
-          bind_struct_pat(buf, sl, __sname, sfields, local_names, ctx, body, md_bmasks)
+          emit_i64_load(buf = buf, align = 3, offset = off)
+          emit_local_set(buf = buf, idx = sl)
+          Array::push(local_names, value = "__bind_sub")
+          bind_struct_pat(buf = buf, base_local = sl, sname = __sname, fields = sfields, local_names = local_names, ctx = ctx, body = body, md_bmasks = md_bmasks)
         },
         _ => ()
       }
@@ -1313,15 +1313,15 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
   let __match_scrutinee = get_match_scrutinee(expr)
   let __match_arms = get_match_arms(expr)
   let scrut_local = next_local
-  Array::push(local_names, "__match_scrut")
+  Array::push(local_names, value = "__match_scrut")
   let nl1 = ce(buf, __match_scrutinee, local_names, next_local + 1, ctx, ld)
-  emit_local_set(buf, scrut_local)
+  emit_local_set(buf = buf, idx = scrut_local)
   // One scratch word suffices for nested tuple/record field probes. A
   // parent load completes before its child writes this word again.
   let mut needs_tuple_probe = false
   if !ctx.enable_rc {
     for arm in __match_arms {
-      if match_tuple_probe_needed(arm.0, false) {
+      if match_tuple_probe_needed(p = arm.0, nested = false) {
         needs_tuple_probe = true
       }
     }
@@ -1330,7 +1330,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
     -1
   } else {
     let slot = Array::length(local_names)
-    Array::push(local_names, "")
+    Array::push(local_names, value = "")
     slot
   }
   let num_arms = Array::length(__match_arms)
@@ -1363,7 +1363,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
         // (left matches) OR (right matches) at this same position.
         emit_pat_test(__l, load_field)
         emit_pat_test(__r, load_field)
-        bytebuf_push(buf, 114)
+        bytebuf_push(buf = buf, byte = 114)
       },
       _ => {
         if is_pfloat(sp) {
@@ -1377,56 +1377,56 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
           }
           emit_f64_reinterpret_i64(buf)
           let __pfv = get_pfloat_value(sp)
-          emit_f64_const_lohi(buf, Double::to_i64_bits_lo(__pfv), Double::to_i64_bits_hi(__pfv))
+          emit_f64_const_lohi(buf = buf, lo = Double::to_i64_bits_lo(__pfv), hi = Double::to_i64_bits_hi(__pfv))
           emit_f64_eq(buf)
         } else if is_pint(sp) {
           load_field()
-          emit_i64_const(buf, get_pint_value(sp))
+          emit_i64_const(buf = buf, value = get_pint_value(sp))
           if ctx.enable_rc {
-            emit_i64_const(buf, 1)
+            emit_i64_const(buf = buf, value = 1)
             emit_i64_shl(buf)
           }
           emit_i64_eq(buf)
         } else if is_pbool(sp) {
           load_field()
-          emit_i64_const(buf, if get_pbool_value(sp) {
+          emit_i64_const(buf = buf, value = if get_pbool_value(sp) {
             1
           } else {
             0
           })
           if ctx.enable_rc {
-            emit_i64_const(buf, 1)
+            emit_i64_const(buf = buf, value = 1)
             emit_i64_shl(buf)
           }
           emit_i64_eq(buf)
         } else if is_pstring(sp) {
           let __sv = get_pstring_value(sp)
-          let __si = str_table_index_of(ctx.str_table, __sv)
+          let __si = str_table_index_of(st = ctx.str_table, s = __sv)
           if __si >= 0 {
-            let (__seq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+            let (__seq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
             load_field()
-            emit_str_ref(buf, Array::get(ctx.str_table.offsets, __si), Array::get(ctx.str_table.lengths, __si))
-            emit_call(buf, __seq_fi)
+            emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = __si), length = Array::get(ctx.str_table.lengths, at = __si))
+            emit_call(buf = buf, func_idx = __seq_fi)
             emit_i32_wrap_i64(buf)
           } else {
             // String literal absent from the table: conservatively match (the
             // prior behavior emitted no test at all).
-            emit_i32_const(buf, 1)
+            emit_i32_const(buf = buf, value = 1)
           }
         } else if is_pctor(sp) {
           let __ncname = get_pctor_name(sp)
-          let __nci = ctor_table_index_of(ctx.ctor_table, __ncname)
+          let __nci = ctor_table_index_of(ct = ctx.ctor_table, name = __ncname)
           let __ntag = if __nci >= 0 {
-            Array::get(ctx.ctor_table.tags, __nci)
+            Array::get(ctx.ctor_table.tags, at = __nci)
           } else {
             -1
           }
           load_field()
-          emit_i64_const(buf, -2)
+          emit_i64_const(buf = buf, value = -2)
           emit_i64_and(buf)
           emit_i32_wrap_i64(buf)
-          emit_i32_load(buf, 2, 0)
-          emit_i32_const(buf, __ntag)
+          emit_i32_load(buf = buf, align = 2, offset = 0)
+          emit_i32_const(buf = buf, value = __ntag)
           emit_i32_eq(buf)
           let __nargs = get_pctor_args(sp)
           // #705: payload sub-tests must NOT run when the tag test above
@@ -1440,7 +1440,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
           let mut __nany = false
           let mut __nj = 0
           while __nj < Array::length(__nargs) {
-            let __np = Array::get(__nargs, __nj)
+            let __np = Array::get(__nargs, at = __nj)
             if is_pbind(__np) || is_pwild(__np) {
               ()
             } else {
@@ -1449,57 +1449,57 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
             __nj = __nj + 1
           }
           if __nany {
-            bytebuf_push(buf, 4)
-            bytebuf_push(buf, 127)
-            emit_i32_const(buf, 1)
+            bytebuf_push(buf = buf, byte = 4)
+            bytebuf_push(buf = buf, byte = 127)
+            emit_i32_const(buf = buf, value = 1)
             let mut __nk = 0
             while __nk < Array::length(__nargs) {
               let __nkk = __nk
-              let __np2 = Array::get(__nargs, __nkk)
+              let __np2 = Array::get(__nargs, at = __nkk)
               if is_pbind(__np2) || is_pwild(__np2) {
                 ()
               } else {
                 let __nload: () -> Unit = () -> {
                   load_field()
-                  emit_i64_const(buf, -2)
+                  emit_i64_const(buf = buf, value = -2)
                   emit_i64_and(buf)
                   emit_i32_wrap_i64(buf)
-                  emit_i64_load(buf, 3, 8 + __nkk * 8)
+                  emit_i64_load(buf = buf, align = 3, offset = 8 + __nkk * 8)
                 }
                 emit_pat_test(__np2, __nload)
-                bytebuf_push(buf, 113)
+                bytebuf_push(buf = buf, byte = 113)
               }
               __nk = __nk + 1
             }
             emit_else(buf)
-            emit_i32_const(buf, 0)
+            emit_i32_const(buf = buf, value = 0)
             emit_end(buf)
           } else {
             ()
           }
         } else if is_ptuple(sp) {
-          emit_i32_const(buf, 1)
+          emit_i32_const(buf = buf, value = 1)
           let __tpats = get_ptuple_pats(sp)
           let mut __tk = 0
           while __tk < Array::length(__tpats) {
             let __tkk = __tk
             let __tload: () -> Unit = () -> {
               load_field()
-              emit_match_fields_base(buf, tuple_probe_local, ctx.enable_rc)
+              emit_match_fields_base(buf = buf, scratch = tuple_probe_local, constant_header = ctx.enable_rc)
               emit_i32_wrap_i64(buf)
-              emit_i64_load(buf, 3, if ctx.enable_rc {
+              emit_i64_load(buf = buf, align = 3, offset = if ctx.enable_rc {
                 8 + __tkk * 8
               } else {
                 __tkk * 8
               })
             }
-            emit_pat_test(Array::get(__tpats, __tkk), __tload)
-            bytebuf_push(buf, 113)
+            emit_pat_test(Array::get(__tpats, at = __tkk), __tload)
+            bytebuf_push(buf = buf, byte = 113)
             __tk = __tk + 1
           }
         } else {
           // PBind / PWild: always matches.
-          emit_i32_const(buf, 1)
+          emit_i32_const(buf = buf, value = 1)
         }
       }
     }
@@ -1512,29 +1512,29 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       ()
     } else {
       emit_pat_test(sp, load_field)
-      bytebuf_push(buf, 113)
+      bytebuf_push(buf = buf, byte = 113)
     }
   }
   while ai < num_cond_arms {
-    Array::truncate(local_names, names_len_at_match)
-    Array::truncate(ctx.ref_cell_names, ref_cells_at_match)
+    Array::truncate(local_names, length = names_len_at_match)
+    Array::truncate(ctx.ref_cell_names, length = ref_cells_at_match)
     // #678: a previous arm may have logged integral slots >= names_len_at_match
     // that this arm's pattern binders (non-`let`, so they log nothing) reuse;
     // drop them so a string bound there is not misread as int by `==`.
-    int_log_reset_above(ctx, names_len_at_match)
-    agg_log_reset_above2(ctx.agg_local_slots, ctx.agg_local_exprs, names_len_at_match)
+    int_log_reset_above(ctx = ctx, floor = names_len_at_match)
+    agg_log_reset_above2(arr = ctx.agg_local_slots, exprs = ctx.agg_local_exprs, floor = names_len_at_match)
     // #1062 follow-up: same prune for the float log -- a previous arm's
     // Double-typed ctor-field bind (bind_match_pat, see ctor_field_is_float)
     // may have logged a slot >= names_len_at_match that THIS arm's pattern
     // binder reuses for a non-float field; without dropping it here the
     // stale float=1 entry survives and misroutes the new field's arithmetic
     // through the f64 path.
-    float_log_reset_above(ctx, names_len_at_match)
-    let (__cond_p, __arm_body) = Array::get(__match_arms, ai)
+    float_log_reset_above(ctx = ctx, floor = names_len_at_match)
+    let (__cond_p, __arm_body) = Array::get(__match_arms, at = ai)
     let __cond_done = if is_pfloat(__cond_p) {
       // Top-level float literal arm (`match d { 0.0 => .. }`): same f64
       // compare as emit_pat_test's PFloat branch.
-      emit_local_get(buf, scrut_local)
+      emit_local_get(buf = buf, idx = scrut_local)
       if ctx.enable_rc {
         emit_unbox_float(buf)
       } else {
@@ -1542,16 +1542,16 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       }
       emit_f64_reinterpret_i64(buf)
       let __apfv = get_pfloat_value(__cond_p)
-      emit_f64_const_lohi(buf, Double::to_i64_bits_lo(__apfv), Double::to_i64_bits_hi(__apfv))
+      emit_f64_const_lohi(buf = buf, lo = Double::to_i64_bits_lo(__apfv), hi = Double::to_i64_bits_hi(__apfv))
       emit_f64_eq(buf)
       emit_if_i64(buf)
       0
     } else if is_pint(__cond_p) {
-      emit_local_get(buf, scrut_local)
-      emit_i64_const(buf, get_pint_value(__cond_p))
+      emit_local_get(buf = buf, idx = scrut_local)
+      emit_i64_const(buf = buf, value = get_pint_value(__cond_p))
       // ADR-0055 Stage 1: scrutinee is a tagged int; tag the literal to match.
       if ctx.enable_rc {
-        emit_i64_const(buf, 1)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_shl(buf)
       }
       emit_i64_eq(buf)
@@ -1559,8 +1559,8 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       0
     } else {
       if is_pbool(__cond_p) {
-        emit_local_get(buf, scrut_local)
-        emit_i64_const(buf, if get_pbool_value(__cond_p) {
+        emit_local_get(buf = buf, idx = scrut_local)
+        emit_i64_const(buf = buf, value = if get_pbool_value(__cond_p) {
           if ctx.enable_rc {
             2
           } else {
@@ -1575,18 +1575,18 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       } else {
         if is_pctor(__cond_p) {
           let cname_cond = get_pctor_name(__cond_p)
-          let ctor_ci = ctor_table_index_of(ctx.ctor_table, cname_cond)
+          let ctor_ci = ctor_table_index_of(ct = ctx.ctor_table, name = cname_cond)
           let expected_tag = if ctor_ci >= 0 {
-            Array::get(ctx.ctor_table.tags, ctor_ci)
+            Array::get(ctx.ctor_table.tags, at = ctor_ci)
           } else {
             -1
           }
-          emit_local_get(buf, scrut_local)
-          emit_i64_const(buf, -2)
+          emit_local_get(buf = buf, idx = scrut_local)
+          emit_i64_const(buf = buf, value = -2)
           emit_i64_and(buf)
           emit_i32_wrap_i64(buf)
-          emit_i32_load(buf, 2, 0)
-          emit_i32_const(buf, expected_tag)
+          emit_i32_load(buf = buf, align = 2, offset = 0)
+          emit_i32_const(buf = buf, value = expected_tag)
           emit_i32_eq(buf)
           // #603/#608/#613: the tag test alone is not enough — literal
           // sub-patterns must be checked at EVERY nesting level, else
@@ -1603,7 +1603,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
           let mut __cany = false
           let mut __cj = 0
           while __cj < Array::length(__cargs_cond) {
-            let __cp = Array::get(__cargs_cond, __cj)
+            let __cp = Array::get(__cargs_cond, at = __cj)
             if is_pbind(__cp) || is_pwild(__cp) {
               ()
             } else {
@@ -1612,24 +1612,24 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
             __cj = __cj + 1
           }
           if __cany {
-            bytebuf_push(buf, 4)
-            bytebuf_push(buf, 127)
-            emit_i32_const(buf, 1)
+            bytebuf_push(buf = buf, byte = 4)
+            bytebuf_push(buf = buf, byte = 127)
+            emit_i32_const(buf = buf, value = 1)
             let mut __ck = 0
             while __ck < Array::length(__cargs_cond) {
               let __ckk = __ck
               let __cload: () -> Unit = () -> {
-                emit_local_get(buf, scrut_local)
-                emit_i64_const(buf, -2)
+                emit_local_get(buf = buf, idx = scrut_local)
+                emit_i64_const(buf = buf, value = -2)
                 emit_i64_and(buf)
                 emit_i32_wrap_i64(buf)
-                emit_i64_load(buf, 3, 8 + __ckk * 8)
+                emit_i64_load(buf = buf, align = 3, offset = 8 + __ckk * 8)
               }
-              emit_sub_tests(Array::get(__cargs_cond, __ckk), __cload)
+              emit_sub_tests(Array::get(__cargs_cond, at = __ckk), __cload)
               __ck = __ck + 1
             }
             emit_else(buf)
-            emit_i32_const(buf, 0)
+            emit_i32_const(buf = buf, value = 0)
             emit_end(buf)
           } else {
             ()
@@ -1639,12 +1639,12 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
         } else {
           if is_pstring(__cond_p) {
             let sval = get_pstring_value(__cond_p)
-            let str_idx = str_table_index_of(ctx.str_table, sval)
+            let str_idx = str_table_index_of(st = ctx.str_table, s = sval)
             if str_idx >= 0 {
-              let (str_eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
-              emit_local_get(buf, scrut_local)
-              emit_str_ref(buf, Array::get(ctx.str_table.offsets, str_idx), Array::get(ctx.str_table.lengths, str_idx))
-              emit_call(buf, str_eq_fi)
+              let (str_eq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
+              emit_local_get(buf = buf, idx = scrut_local)
+              emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = str_idx), length = Array::get(ctx.str_table.lengths, at = str_idx))
+              emit_call(buf = buf, func_idx = str_eq_fi)
               emit_i32_wrap_i64(buf)
               emit_if_i64(buf)
             }
@@ -1657,22 +1657,22 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
             // tuples). Start from a `true` accumulator and AND-in a recursive
             // field-vs-literal test for every literal element (binds/wildcards
             // add no test, so an all-bind tuple stays always-true).
-            emit_i32_const(buf, 1)
+            emit_i32_const(buf = buf, value = 1)
             let __tpats_cond = get_ptuple_pats(__cond_p)
             let mut __tck = 0
             while __tck < Array::length(__tpats_cond) {
               let __tckk = __tck
               let __tcload: () -> Unit = () -> {
-                emit_local_get(buf, scrut_local)
-                emit_match_fields_base(buf, scrut_local, ctx.enable_rc)
+                emit_local_get(buf = buf, idx = scrut_local)
+                emit_match_fields_base(buf = buf, scratch = scrut_local, constant_header = ctx.enable_rc)
                 emit_i32_wrap_i64(buf)
-                emit_i64_load(buf, 3, if ctx.enable_rc {
+                emit_i64_load(buf = buf, align = 3, offset = if ctx.enable_rc {
                   8 + __tckk * 8
                 } else {
                   __tckk * 8
                 })
               }
-              emit_sub_tests(Array::get(__tpats_cond, __tckk), __tcload)
+              emit_sub_tests(Array::get(__tpats_cond, at = __tckk), __tcload)
               __tck = __tck + 1
             }
             emit_if_i64(buf)
@@ -1683,13 +1683,13 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
                 POr(left, right) => {
                   emit_or_check(left)
                   emit_or_check(right)
-                  bytebuf_push(buf, 114)
+                  bytebuf_push(buf = buf, byte = 114)
                 },
                 PInt(n) => {
-                  emit_local_get(buf, scrut_local)
-                  emit_i64_const(buf, n)
+                  emit_local_get(buf = buf, idx = scrut_local)
+                  emit_i64_const(buf = buf, value = n)
                   if ctx.enable_rc {
-                    emit_i64_const(buf, 1)
+                    emit_i64_const(buf = buf, value = 1)
                     emit_i64_shl(buf)
                   }
                   emit_i64_eq(buf)
@@ -1698,45 +1698,45 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
                   // A float or-branch (`0.0|180.0`) previously fell through to
                   // `_ => const 1` (always-true). Same f64 compare as
                   // emit_pat_test's PFloat branch.
-                  emit_local_get(buf, scrut_local)
+                  emit_local_get(buf = buf, idx = scrut_local)
                   if ctx.enable_rc {
                     emit_unbox_float(buf)
                   } else {
                     ()
                   }
                   emit_f64_reinterpret_i64(buf)
-                  emit_f64_const_lohi(buf, Double::to_i64_bits_lo(fv), Double::to_i64_bits_hi(fv))
+                  emit_f64_const_lohi(buf = buf, lo = Double::to_i64_bits_lo(fv), hi = Double::to_i64_bits_hi(fv))
                   emit_f64_eq(buf)
                 },
                 PCtor(cname, cargs) => {
-                  let ci = ctor_table_index_of(ctx.ctor_table, pattern_ctor_base_name(cname))
+                  let ci = ctor_table_index_of(ct = ctx.ctor_table, name = pattern_ctor_base_name(cname))
                   let ctag = if ci >= 0 {
-                    Array::get(ctx.ctor_table.tags, ci)
+                    Array::get(ctx.ctor_table.tags, at = ci)
                   } else {
                     -1
                   }
-                  emit_local_get(buf, scrut_local)
-                  emit_i64_const(buf, -2)
+                  emit_local_get(buf = buf, idx = scrut_local)
+                  emit_i64_const(buf = buf, value = -2)
                   emit_i64_and(buf)
                   emit_i32_wrap_i64(buf)
-                  emit_i32_load(buf, 2, 0)
-                  emit_i32_const(buf, ctag)
+                  emit_i32_load(buf = buf, align = 2, offset = 0)
+                  emit_i32_const(buf = buf, value = ctag)
                   emit_i32_eq(buf)
                   if Array::length(cargs) == 1 {
-                    match Array::get(cargs, 0) {
+                    match Array::get(cargs, at = 0) {
                       PInt(n) => {
-                        emit_local_get(buf, scrut_local)
-                        emit_i64_const(buf, -2)
+                        emit_local_get(buf = buf, idx = scrut_local)
+                        emit_i64_const(buf = buf, value = -2)
                         emit_i64_and(buf)
                         emit_i32_wrap_i64(buf)
-                        emit_i64_load(buf, 3, 8)
-                        emit_i64_const(buf, n)
+                        emit_i64_load(buf = buf, align = 3, offset = 8)
+                        emit_i64_const(buf = buf, value = n)
                         if ctx.enable_rc {
-                          emit_i64_const(buf, 1)
+                          emit_i64_const(buf = buf, value = 1)
                           emit_i64_shl(buf)
                         }
                         emit_i64_eq(buf)
-                        bytebuf_push(buf, 113)
+                        bytebuf_push(buf = buf, byte = 113)
                       },
                       _ => ()
                     }
@@ -1746,8 +1746,8 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
                   // An or-branch boolean literal (`true | ..`) previously fell
                   // through to `_ => const 1` (always-true), so `"a"|"b"` /
                   // `(1,_)|(2,_)` / bool ors silently matched everything.
-                  emit_local_get(buf, scrut_local)
-                  emit_i64_const(buf, if b {
+                  emit_local_get(buf = buf, idx = scrut_local)
+                  emit_i64_const(buf = buf, value = if b {
                     if ctx.enable_rc {
                       2
                     } else {
@@ -1759,40 +1759,40 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
                   emit_i64_eq(buf)
                 },
                 PString(sv) => {
-                  let __si = str_table_index_of(ctx.str_table, sv)
+                  let __si = str_table_index_of(st = ctx.str_table, s = sv)
                   if __si >= 0 {
-                    let (__eqfi, _, _) = resolve_func(ctx.func_table, "eq")
-                    emit_local_get(buf, scrut_local)
-                    emit_str_ref(buf, Array::get(ctx.str_table.offsets, __si), Array::get(ctx.str_table.lengths, __si))
-                    emit_call(buf, __eqfi)
+                    let (__eqfi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
+                    emit_local_get(buf = buf, idx = scrut_local)
+                    emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = __si), length = Array::get(ctx.str_table.lengths, at = __si))
+                    emit_call(buf = buf, func_idx = __eqfi)
                     emit_i32_wrap_i64(buf)
                   } else {
-                    emit_i32_const(buf, 1)
+                    emit_i32_const(buf = buf, value = 1)
                   }
                 },
                 PTuple(tpats) => {
                   // A tuple or-branch (`(1, _) | (2, _)`): no tag to test, so
                   // start from `true` and AND-in a field-vs-literal test for
                   // every literal element (binds/wildcards add none).
-                  emit_i32_const(buf, 1)
+                  emit_i32_const(buf = buf, value = 1)
                   let mut __ok = 0
                   while __ok < Array::length(tpats) {
                     let __okk = __ok
                     let __oload: () -> Unit = () -> {
-                      emit_local_get(buf, scrut_local)
-                      emit_match_fields_base(buf, scrut_local, ctx.enable_rc)
+                      emit_local_get(buf = buf, idx = scrut_local)
+                      emit_match_fields_base(buf = buf, scratch = scrut_local, constant_header = ctx.enable_rc)
                       emit_i32_wrap_i64(buf)
-                      emit_i64_load(buf, 3, if ctx.enable_rc {
+                      emit_i64_load(buf = buf, align = 3, offset = if ctx.enable_rc {
                         8 + __okk * 8
                       } else {
                         __okk * 8
                       })
                     }
-                    emit_sub_tests(Array::get(tpats, __okk), __oload)
+                    emit_sub_tests(Array::get(tpats, at = __okk), __oload)
                     __ok = __ok + 1
                   }
                 },
-                _ => emit_i32_const(buf, 1)
+                _ => emit_i32_const(buf = buf, value = 1)
               }
             }
             emit_or_check(__cond_p)
@@ -1803,7 +1803,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       }
     }
     // #cov branch: this conditional arm was taken (start of the if-then block).
-    cov_emit_branch(buf, ctx.cov)
+    cov_emit_branch(buf = buf, cov = ctx.cov)
     let ld_arm = if ld >= 0 {
       ld + ai + 1
     } else {
@@ -1822,21 +1822,21 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       // shared -> dup payloads + guarded release) and skips the normal
       // borrow-bind path entirely. Every other arm compiles exactly as
       // before, including its bind-time payload dups.
-      let __mr_ci = mr_reuse_eligible(__cond_p, __arm_body, __match_scrutinee, ctx)
+      let __mr_ci = mr_reuse_eligible(p = __cond_p, body = __arm_body, scrutinee = __match_scrutinee, ctx = ctx)
       if __mr_ci >= 0 {
-        let __mr_flag = Array::get(ctx.reuse_flag_locals, Array::length(ctx.reuse_flag_locals) - 1)
-        mr_compile_reuse_arm(buf, __arm_body, __cond_p, scrut_local, __mr_flag, Array::length(get_pctor_args(__cond_p)), __mr_ci, local_names, ctx, ld_arm, ce)
+        let __mr_flag = Array::get(ctx.reuse_flag_locals, at = Array::length(ctx.reuse_flag_locals) - 1)
+        mr_compile_reuse_arm(buf = buf, body = __arm_body, pat = __cond_p, scrut_local = scrut_local, flag_local = __mr_flag, arity = Array::length(get_pctor_args(__cond_p)), ctor_idx = __mr_ci, local_names = local_names, ctx = ctx, ld = ld_arm, ce = ce)
       } else {
         // ADR-0092 / #2389: the wide fusion covers arms the narrow path
         // declines because their let spine carries planned RC actions --
         // the compiler's own rebuild hot path. Narrow keeps precedence so
         // previously fused arms stay byte-identical.
-        let __mr_wci = mr_reuse_wide_eligible(__cond_p, __arm_body, __match_scrutinee, ctx)
+        let __mr_wci = mr_reuse_wide_eligible(p = __cond_p, body = __arm_body, scrutinee = __match_scrutinee, ctx = ctx)
         if __mr_wci >= 0 {
-          let __mr_wflag = Array::get(ctx.reuse_flag_locals, Array::length(ctx.reuse_flag_locals) - 1)
-          mr_compile_reuse_arm_wide(buf, __arm_body, __cond_p, scrut_local, __mr_wflag, __mr_wci, local_names, ctx, ld_arm, ce)
+          let __mr_wflag = Array::get(ctx.reuse_flag_locals, at = Array::length(ctx.reuse_flag_locals) - 1)
+          mr_compile_reuse_arm_wide(buf = buf, body = __arm_body, pat = __cond_p, scrut_local = scrut_local, flag_local = __mr_wflag, arity = __mr_wci, local_names = local_names, ctx = ctx, ld = ld_arm, ce = ce)
         } else {
-          bind_match_pat(buf, scrut_local, __cond_p, true, local_names, ctx, __arm_body, md_shadow_zeroed_bmasks(__arm_body, ctx.borrow_param_user, ctx.borrow_param_mask))
+          bind_match_pat(buf = buf, base_local = scrut_local, container_pat = __cond_p, is_ctor_layout = true, local_names = local_names, ctx = ctx, body = __arm_body, md_bmasks = md_shadow_zeroed_bmasks(e = __arm_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask))
           ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
         }
       }
@@ -1846,10 +1846,10 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       // emitted nothing here, so `n` was undefined. Load the scrutinee tuple
       // pointer and bind every reachable PBind (skipping literals/wildcards).
       let tup_ptr = Array::length(local_names)
-      emit_local_get(buf, scrut_local)
-      emit_local_set(buf, tup_ptr)
-      Array::push(local_names, "__cond_tup")
-      bind_match_pat(buf, tup_ptr, __cond_p, false, local_names, ctx, __arm_body, md_shadow_zeroed_bmasks(__arm_body, ctx.borrow_param_user, ctx.borrow_param_mask))
+      emit_local_get(buf = buf, idx = scrut_local)
+      emit_local_set(buf = buf, idx = tup_ptr)
+      Array::push(local_names, value = "__cond_tup")
+      bind_match_pat(buf = buf, base_local = tup_ptr, container_pat = __cond_p, is_ctor_layout = false, local_names = local_names, ctx = ctx, body = __arm_body, md_bmasks = md_shadow_zeroed_bmasks(e = __arm_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask))
       ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
     } else {
       ce(buf, __arm_body, local_names, nl1, ctx, ld_arm)
@@ -1860,35 +1860,35 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
     emit_else(buf)
     ai = ai + 1
   }
-  Array::truncate(local_names, names_len_at_match)
-  Array::truncate(ctx.ref_cell_names, ref_cells_at_match)
+  Array::truncate(local_names, length = names_len_at_match)
+  Array::truncate(ctx.ref_cell_names, length = ref_cells_at_match)
   // #678: same prune before the catch-all arm's pattern binders reuse the slots.
-  int_log_reset_above(ctx, names_len_at_match)
-  agg_log_reset_above2(ctx.agg_local_slots, ctx.agg_local_exprs, names_len_at_match)
+  int_log_reset_above(ctx = ctx, floor = names_len_at_match)
+  agg_log_reset_above2(arr = ctx.agg_local_slots, exprs = ctx.agg_local_exprs, floor = names_len_at_match)
   // #1062 follow-up: same prune for the float log -- see the analogous call
   // above.
-  float_log_reset_above(ctx, names_len_at_match)
+  float_log_reset_above(ctx = ctx, floor = names_len_at_match)
   let ld_catch = if ld >= 0 {
     ld + num_cond_arms
   } else {
     -1
   }
   let catch_nl = if catchall_idx < num_arms {
-    let __catch_arm = Array::get(__match_arms, catchall_idx)
+    let __catch_arm = Array::get(__match_arms, at = catchall_idx)
     let (__catch_p, __catch_body) = __catch_arm
     0
     // #cov branch: the catch-all (none of the conditional arms matched). Only a
     // real decision point when there is at least one conditional arm.
     if num_cond_arms > 0 {
-      cov_emit_branch(buf, ctx.cov)
+      cov_emit_branch(buf = buf, cov = ctx.cov)
     } else {
       ()
     }
     if is_pbind(__catch_p) {
       let bname = get_pbind_name(__catch_p)
       let bind_local = Array::length(local_names)
-      emit_local_get(buf, scrut_local)
-      emit_local_set(buf, bind_local)
+      emit_local_get(buf = buf, idx = scrut_local)
+      emit_local_set(buf = buf, idx = bind_local)
       // #2126: a catch-all binder ALIASES the scrutinee. Every other binding
       // path dups (bind_match_pat dups each PBind payload, see its doc); this
       // one did not, so the binding carried no reference of its own. Handing
@@ -1904,27 +1904,27 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       // The Perceus plan cannot cover this: it has no rows for the enclosing
       // function at all, so no PaDup was ever planned to insert here.
       if ctx.enable_rc && ctx.rc_dup_func_idx >= 0 {
-        emit_rc_dup_guarded(buf, bind_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_rc_dup_guarded(buf = buf, local_idx = bind_local, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
       } else {
         ()
       }
-      Array::push(local_names, bname)
+      Array::push(local_names, value = bname)
       ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
     } else {
       if is_pctor(__catch_p) {
         // #705 dup note as above; recursive bind_match_pat replaces the
         // depth-1 inline loop (same depth-3 gap as the cond arms).
-        bind_match_pat(buf, scrut_local, __catch_p, true, local_names, ctx, __catch_body, md_shadow_zeroed_bmasks(__catch_body, ctx.borrow_param_user, ctx.borrow_param_mask))
+        bind_match_pat(buf = buf, base_local = scrut_local, container_pat = __catch_p, is_ctor_layout = true, local_names = local_names, ctx = ctx, body = __catch_body, md_bmasks = md_shadow_zeroed_bmasks(e = __catch_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask))
         ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
       } else {
         if is_ptuple(__catch_p) {
           let ptr_local2 = Array::length(local_names)
-          emit_local_get(buf, scrut_local)
-          emit_local_set(buf, ptr_local2)
-          Array::push(local_names, "__tup_ptr2")
+          emit_local_get(buf = buf, idx = scrut_local)
+          emit_local_set(buf = buf, idx = ptr_local2)
+          Array::push(local_names, value = "__tup_ptr2")
           // Recursive bind (was a depth-2 inline loop; nested ctor elements
           // inside the tuple were never bound).
-          bind_match_pat(buf, ptr_local2, __catch_p, false, local_names, ctx, __catch_body, md_shadow_zeroed_bmasks(__catch_body, ctx.borrow_param_user, ctx.borrow_param_mask))
+          bind_match_pat(buf = buf, base_local = ptr_local2, container_pat = __catch_p, is_ctor_layout = false, local_names = local_names, ctx = ctx, body = __catch_body, md_bmasks = md_shadow_zeroed_bmasks(e = __catch_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask))
           ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
         } else {
           match __catch_p {
@@ -1932,10 +1932,10 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
               // An irrefutable struct pattern `S::{ x, y }` as the catch-all arm:
               // bind every field by name from the scrutinee struct pointer.
               let __sp_ptr = Array::length(local_names)
-              emit_local_get(buf, scrut_local)
-              emit_local_set(buf, __sp_ptr)
-              Array::push(local_names, "__struct_ptr")
-              bind_struct_pat(buf, __sp_ptr, __sname, __sfields, local_names, ctx, __catch_body, md_shadow_zeroed_bmasks(__catch_body, ctx.borrow_param_user, ctx.borrow_param_mask))
+              emit_local_get(buf = buf, idx = scrut_local)
+              emit_local_set(buf = buf, idx = __sp_ptr)
+              Array::push(local_names, value = "__struct_ptr")
+              bind_struct_pat(buf = buf, base_local = __sp_ptr, sname = __sname, fields = __sfields, local_names = local_names, ctx = ctx, body = __catch_body, md_bmasks = md_shadow_zeroed_bmasks(e = __catch_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask))
               ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
             },
             _ => ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
@@ -1944,7 +1944,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       }
     }
   } else {
-    bytebuf_push(buf, 0)
+    bytebuf_push(buf = buf, byte = 0)
     0
   }
   if catch_nl > max_nl {
@@ -1956,7 +1956,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
     ci2 = ci2 + 1
   }
   while Array::length(local_names) < max_nl {
-    Array::push(local_names, "")
+    Array::push(local_names, value = "")
   }
   max_nl
 }

@@ -36,7 +36,7 @@ import @vibe/compiler/syntax {
 // pure COST and byte-inert. The guard is therefore not pinned here and cannot
 // be -- where it shows up is the perf report's selfcompile allocation row.
 
-fn program_stmts(src: String) -> Array[Stmt] with Exception {
+fn program_stmts(_ src: String) -> Array[Stmt] with Exception {
   parse_program(lex(src))
 }
 
@@ -51,12 +51,12 @@ fn no_keys() -> Array[String] {
   []
 }
 
-fn rc_plain(stmts: Array[Stmt]) -> Bytes with Exception {
-  compile_wasi_module_rc_cached_impl_with_typed_offsets(stmts, "main", codegen_body_cache_new(), codegen_body_cache_new(), no_ints(), no_ints(), no_ints(), no_ints(), no_keys())
+fn rc_plain(_ stmts: Array[Stmt]) -> Bytes with Exception {
+  compile_wasi_module_rc_cached_impl_with_typed_offsets(stmts_in = stmts, entry_name = "main", body_cache_in = codegen_body_cache_new(), body_cache_out = codegen_body_cache_new(), checker_float_call_offsets = no_ints(), checker_int_render_offsets = no_ints(), checker_bool_render_offsets = no_ints(), checker_eq_offsets = no_ints(), checker_eq_type_keys = no_keys())
 }
 
 fn rc_with_prov(stmts: Array[Stmt], prov: DbgProv) -> Bytes with Exception {
-  compile_wasi_module_rc_cached_impl_with_prov(stmts, "main", codegen_body_cache_new(), codegen_body_cache_new(), prov, no_ints(), no_ints(), no_ints(), no_ints(), no_keys())
+  compile_wasi_module_rc_cached_impl_with_prov(stmts_in = stmts, entry_name = "main", body_cache_in = codegen_body_cache_new(), body_cache_out = codegen_body_cache_new(), prov = prov, checker_float_call_offsets = no_ints(), checker_int_render_offsets = no_ints(), checker_bool_render_offsets = no_ints(), checker_eq_offsets = no_ints(), checker_eq_type_keys = no_keys())
 }
 
 fn src_two_modules() -> String {
@@ -65,11 +65,11 @@ fn src_two_modules() -> String {
 
 /// A map shaped like the one `ordinary_lane_dbg_prov` builds: every statement
 /// attributed to one of two modules, split down the middle.
-fn two_module_prov(n: Int) -> DbgProv {
+fn two_module_prov(_ n: Int) -> DbgProv {
   let ids: Array[Int] = []
   let mut i = 0
   while i < n {
-    Array::push(ids, if i < n / 2 {
+    Array::push(ids, value = if i < n / 2 {
       0
     } else {
       1
@@ -82,7 +82,7 @@ fn two_module_prov(n: Int) -> DbgProv {
 test "carrying the statement-to-module map does not change a byte of the output" {
   let stmts = program_stmts(src_two_modules())
   let without = rc_plain(stmts)
-  let with_map = rc_with_prov(program_stmts(src_two_modules()), two_module_prov(Array::length(stmts)))
+  let with_map = rc_with_prov(stmts = program_stmts(src_two_modules()), prov = two_module_prov(Array::length(stmts)))
   // Same length AND same bytes. Length alone would pass on a module that
   // differed only in a function's contents, which is exactly what a wrongly
   // enabled owner scan or a misread file id would produce.
@@ -90,7 +90,7 @@ test "carrying the statement-to-module map does not change a byte of the output"
   let mut i = 0
   let mut first_diff = 0 - 1
   while i < Bytes::length(without) && i < Bytes::length(with_map) {
-    if Bytes::get(with_map, i) != Bytes::get(without, i) && first_diff < 0 {
+    if Bytes::get(with_map, at = i) != Bytes::get(without, at = i) && first_diff < 0 {
       first_diff = i
     } else {
       ()
@@ -109,6 +109,6 @@ test "an empty map and a full one are the same compile" {
   // parameter changed the compile by existing rather than by its contents.
   let stmts = program_stmts(src_two_modules())
   let via_wrapper = rc_plain(stmts)
-  let via_empty = rc_with_prov(program_stmts(src_two_modules()), empty_dbg_prov())
+  let via_empty = rc_with_prov(stmts = program_stmts(src_two_modules()), prov = empty_dbg_prov())
   inspect(Bytes::length(via_empty) == Bytes::length(via_wrapper), content = "true")
 }

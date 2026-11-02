@@ -149,15 +149,15 @@ export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], r
   // no payload kinds are resolvable and none must be carried over.
   set_throw_kind_table(EnvEmpty)
   clear_checker_published_tables()
-  set_callee_sigs(array_empty(), EnvEmpty)
-  check_perform_effects_expr_tx(root, root_declared, root_in_handle, no_str_labels(), no_ov_effs(), no_str_labels(), no_ov_effs())
+  set_callee_sigs(stmts = array_empty(), env = EnvEmpty)
+  check_perform_effects_expr_tx(root = root, root_declared = root_declared, root_in_handle = root_in_handle, fn_names = no_str_labels(), fn_effs = no_ov_effs(), root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs())
 }
 
 /// #3450: a declared result spelled through an alias (`fn mid() -> Thunk`,
 /// `type Thunk = () -> Int with Box[Int]`) declares the rows of the function
 /// type it names, as the written arrow does. Without the expansion the
 /// returned closure's performs were charged to `mid` itself.
-fn expand_ret_alias(ret: Option[TypeExpr]) -> Option[TypeExpr] {
+fn expand_ret_alias(_ ret: Option[TypeExpr]) -> Option[TypeExpr] {
   match ret {
     Some(r) => match dh_expand_type_alias(r) {
       Some(x) => Some(x),
@@ -168,7 +168,7 @@ fn expand_ret_alias(ret: Option[TypeExpr]) -> Option[TypeExpr] {
 }
 
 /// The same for the return slot of a binding's signature.
-fn expand_sig_ret_alias(ty: Option[TypeExpr]) -> Option[TypeExpr] {
+fn expand_sig_ret_alias(_ ty: Option[TypeExpr]) -> Option[TypeExpr] {
   match ty {
     Some(TyFn(ps, r, e)) => match dh_expand_type_alias(r) {
       Some(x) => Some(TyFn(ps, x, e)),
@@ -186,7 +186,7 @@ fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr
   // requirement. Anything else carrying the grade -- a user effect, the
   // runtime's `Async`, the boundary's `Exception` -- has no host that could
   // withhold it, so the grade would be a claim about nothing.
-  let grade_errors = optional_grade_errors(fn_name, labels_union(labels_union(fn_binding_effects(ty, body), lowered_test_ambient_effects(fn_name)), nested_type_rows(ty, body)))
+  let grade_errors = optional_grade_errors(fn_name = fn_name, labels = labels_union(a = labels_union(a = fn_binding_effects(ty = ty, body = body), b = lowered_test_ambient_effects(fn_name)), b = nested_type_rows(ty = ty, body = body)))
   let walk_errors = match body {
     // #885: build the callback-parameter overlay for THIS binding's own
     // function value from its (possibly untyped, see merge_param_types_with_sig)
@@ -198,37 +198,37 @@ fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr
       // function VALUES it produces. Publish them for nested closure literals
       // (see ret_fn_row_labels' doc comment); the body's own declared set below
       // is deliberately NOT widened by them.
-      set_ret_fn_rows(labels_union(ret_fn_rows_from_sig(expand_sig_ret_alias(ty)), ret_fn_row_labels(expand_ret_alias(fret))))
+      set_ret_fn_rows(labels_union(a = ret_fn_rows_from_sig(expand_sig_ret_alias(ty)), b = ret_fn_row_labels(expand_ret_alias(fret))))
       // #1344 follow-up: the same merged parameter list seeds the payload-kind
       // scope, so `fn f(e: IoError) { throw(e) }` resolves from the very first
       // frame -- the walk never re-descends through this EFn to pick the
       // parameters up on its own.
-      let merged_params = merge_param_types_with_sig(ty, params)
-      let (ov_names, ov_effs) = build_param_overlay(merged_params, fn_names, fn_index)
+      let merged_params = merge_param_types_with_sig(ty = ty, params = params)
+      let (ov_names, ov_effs) = build_param_overlay(params = merged_params, fn_names = fn_names, fn_index = fn_index)
       // #3095: the declaration's own `[S]` scopes over its header and body.
-      Array::truncate(row_formal_scope, 0)
-      Array::push(row_formal_scope, tparam_names(tparams))
+      Array::truncate(row_formal_scope, length = 0)
+      Array::push(row_formal_scope, value = tparam_names(tparams))
       // #3541: the function's own body, where an erased row's leak is its own.
       // A test / bench block the gc lane lowered to a binding is an entry, so
       // its body is walked without that marker, as the unlowered block is
       // (`check_perform_effects_block_tx`): recording its leak charged the
       // synthesized `_start` with it, and `shield(() -> throw(7))` in a test
       // was refused on gc alone (`missing { Exception[Int] }` for `_start`).
-      let own = labels_union(lowered_test_ambient_effects(fn_name), labels_union(sig_labels, effect_row_labels(effect_row_parse(eff))))
+      let own = labels_union(a = lowered_test_ambient_effects(fn_name), b = labels_union(a = sig_labels, b = effect_row_labels(effect_row_parse(eff))))
       let declared = if is_lowered_test_block(fn_name) {
         own
       } else {
-        labels_union(own, [erased_root_marker(fn_name)])
+        labels_union(a = own, b = [erased_root_marker(fn_name)])
       }
-      let errs = check_perform_effects_expr_tx_in(fn_name, fbody, declared, false, fn_names, fn_effs, fn_index, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
-      Array::truncate(row_formal_scope, 0)
+      let errs = check_perform_effects_expr_tx_in(fn_name = fn_name, root = fbody, root_declared = declared, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = ov_names, root_ov_effs = ov_effs, root_kinds = throw_kind_bind_params(binds = no_kind_binds(), params = merged_params))
+      Array::truncate(row_formal_scope, length = 0)
       errs
     },
     _ => {
       // #1451: a non-EFn binding declares no arrow of its own; clear the cell so
       // the PREVIOUS binding's return-type rows cannot leak into this walk.
       set_ret_fn_rows(ret_fn_rows_from_sig(expand_sig_ret_alias(ty)))
-      check_perform_effects_expr_tx_in(fn_name, body, sig_labels, false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
+      check_perform_effects_expr_tx_in(fn_name = fn_name, root = body, root_declared = sig_labels, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), root_kinds = no_kind_binds())
     }
   }
   if Array::length(grade_errors) == 0 {
@@ -236,7 +236,7 @@ fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr
   } else {
     let mut wi = 0
     while wi < Array::length(walk_errors) {
-      Array::push(grade_errors, Array::get(walk_errors, wi))
+      Array::push(grade_errors, value = Array::get(walk_errors, at = wi))
       wi = wi + 1
     }
     grade_errors
@@ -250,39 +250,39 @@ fn check_perform_effects_binding_tx(fn_name: String, written_ty: Option[TypeExpr
 /// binding's declared row.
 fn check_perform_effects_block_tx(block_name: String, source_name: String, body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
   let declared = test_ambient_effects(source_name)
-  let errors = entry_grant_errors(block_name, test_declared_row_labels(source_name), first_expr_offset(body))
-  append_eff_errs(errors, optional_grade_errors(block_name, declared))
-  append_eff_errs(errors, check_perform_effects_expr_tx_in(block_name, body, declared, false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds()))
+  let errors = entry_grant_errors(entry_name = block_name, labels = test_declared_row_labels(source_name), off = first_expr_offset(body))
+  append_eff_errs(dst = errors, src = optional_grade_errors(fn_name = block_name, labels = declared))
+  append_eff_errs(dst = errors, src = check_perform_effects_expr_tx_in(fn_name = block_name, root = body, root_declared = declared, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), root_kinds = no_kind_binds()))
   errors
 }
 
 fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
   match stmt {
-    SLet(_, _, name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs, fn_index, fn_param_effs),
-    SLetMut(name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs, fn_index, fn_param_effs),
+    SLet(_, _, name, ty, body) => check_perform_effects_binding_tx(fn_name = name, written_ty = ty, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs),
+    SLetMut(name, ty, body) => check_perform_effects_binding_tx(fn_name = name, written_ty = ty, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs),
     // The block's row is checked under the synthesized name the gc lane also
     // uses (`__test_x`), so a diagnostic can name the block the reader wrote
     // (`entry_block_display_name`) and its hint can say `allows`.
-    STest(tname, body) => check_perform_effects_block_tx(String::concat("__test_", tname), tname, body, fn_names, fn_effs, fn_index, fn_param_effs),
-    SBench(bname, body) => check_perform_effects_block_tx(String::concat("__bench_", bname), bname, body, fn_names, fn_effs, fn_index, fn_param_effs),
-    SExpr(e) => check_perform_effects_expr_tx_in("", e, effect_row_labels(effect_row_parse(None)), false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
+    STest(tname, body) => check_perform_effects_block_tx(block_name = String::concat("__test_", tname), source_name = tname, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs),
+    SBench(bname, body) => check_perform_effects_block_tx(block_name = String::concat("__bench_", bname), source_name = bname, body = body, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs),
+    SExpr(e) => check_perform_effects_expr_tx_in(fn_name = "", root = e, root_declared = effect_row_labels(effect_row_parse(None)), root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs(), root_kinds = no_kind_binds())
     _ => array_empty()
   }
 }
 
 /// Public 1-arg entry: direct-only (empty map). Kept for unit tests.
-export fn check_perform_effects_stmt(stmt: Stmt) -> Array[EffectError] {
+export fn check_perform_effects_stmt(_ stmt: Stmt) -> Array[EffectError] {
   // No env to resolve payload kinds from: clear the table rather than let a
   // previous module's bindings decide this one's throw kinds (#1344).
   set_throw_kind_table(EnvEmpty)
   clear_checker_published_tables()
-  set_callee_sigs(Array::slice([stmt], 0, 1), EnvEmpty)
-  set_entry_user_effect_operations(Array::slice([stmt], 0, 1))
-  check_perform_effects_stmt_tx(stmt, no_str_labels(), no_ov_effs(), program_fn_index(no_str_labels()), no_param_effs())
+  set_callee_sigs(stmts = Array::slice([stmt], start = 0, end = 1), env = EnvEmpty)
+  set_entry_user_effect_operations(Array::slice([stmt], start = 0, end = 1))
+  check_perform_effects_stmt_tx(stmt = stmt, fn_names = no_str_labels(), fn_effs = no_ov_effs(), fn_index = program_fn_index(no_str_labels()), fn_param_effs = no_param_effs())
 }
 
-export fn check_perform_effects_stmts(stmts: Array[Stmt]) -> Array[EffectError] {
-  check_perform_effects_stmts_env(stmts, EnvEmpty)
+export fn check_perform_effects_stmts(_ stmts: Array[Stmt]) -> Array[EffectError] {
+  check_perform_effects_stmts_env(stmts = stmts, env = EnvEmpty)
 }
 
 /// The standalone entry: no checker pass published call bindings or shadow
@@ -292,11 +292,11 @@ export fn check_perform_effects_stmts(stmts: Array[Stmt]) -> Array[EffectError] 
 /// publishing them.
 export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
   clear_checker_published_tables()
-  check_perform_effects_stmts_env_published(stmts, env)
+  check_perform_effects_stmts_env_published(stmts = stmts, env = env)
 }
 
 export fn check_perform_effects_stmts_env_published(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
-  check_perform_effects_stmts_env_published_sigs(stmts, env, env_fn_sigs(env))
+  check_perform_effects_stmts_env_published_sigs(stmts = stmts, env = env, written_env_sigs = env_fn_sigs(env))
 }
 
 /// `check_perform_effects_stmts_env_published` with `env_sigs` =
@@ -305,8 +305,8 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
   // #3601: an imported function whose erased row lets out another kind than
   // the message carries it, as its module published it
   // (`erased_kinds_marker`); a call charges it like a label of that row.
-  let imported_kinds = imported_erased_kinds(env, stmts)
-  let env_sigs = env_sigs_with_erased_kinds(written_env_sigs, imported_kinds)
+  let imported_kinds = imported_erased_kinds(env = env, stmts = stmts)
+  let env_sigs = env_sigs_with_erased_kinds(sigs = written_env_sigs, kinds = imported_kinds)
   // Build the call-graph effect map (parallel arrays) from every top-level
   // binding's declared row — locals first, then the env's (imported)
   // bindings (#812) — then run the per-stmt check WITH transitive
@@ -323,21 +323,21 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
   // #3347: the program's type aliases, so a binding or closure literal
   // annotated through one is read with the alias's row.
   set_dh_type_aliases(stmts)
-  build_perform_fn_effs(stmts, env, fn_names, fn_effs, fn_param_effs)
+  build_perform_fn_effs(stmts = stmts, env = env, fn_names = fn_names, fn_effs = fn_effs, fn_param_effs = fn_param_effs)
   let local_count = Array::length(fn_names)
   // The callee-signature table is the same local rows plus EVERY env
   // function; build it before the program table appends its env half.
-  set_callee_sigs_from(fn_names, fn_effs, fn_param_effs, env_sigs)
+  set_callee_sigs_from(loc_names = fn_names, loc_effs = fn_effs, loc_peffs = fn_param_effs, env_sigs = env_sigs)
   // The program table's env half is `seed_env_fn_effs` without `every_fn`:
   // the env functions whose own row is non-empty (push_env_fn_eff).
   let (env_names, env_effs, env_peffs) = env_sigs
   let mut ei = 0
   while ei < Array::length(env_names) {
-    let labels = Array::get(env_effs, ei)
+    let labels = Array::get(env_effs, at = ei)
     if Array::length(labels) > 0 {
-      Array::push(fn_names, Array::get(env_names, ei))
-      Array::push(fn_effs, labels)
-      Array::push(fn_param_effs, Array::get(env_peffs, ei))
+      Array::push(fn_names, value = Array::get(env_names, at = ei))
+      Array::push(fn_effs, value = labels)
+      Array::push(fn_param_effs, value = Array::get(env_peffs, at = ei))
     }
     ei = ei + 1
   }
@@ -366,26 +366,26 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
   // is judged by it (`erased_value_flow_errors`).
   // A let-bound closure literal's leaks (`erased_local_leaks`) are charged
   // to calls through its binding on the next walk.
-  Array::truncate(erased_row_leaks, 0)
-  Array::truncate(erased_row_charged, 0)
-  Array::truncate(erased_local_leaks, 0)
-  Array::set(erased_local_leaks_grew, 0, false)
+  Array::truncate(erased_row_leaks, length = 0)
+  Array::truncate(erased_row_charged, length = 0)
+  Array::truncate(erased_local_leaks, length = 0)
+  Array::set(erased_local_leaks_grew, at = 0, value = false)
   let aliases = toplevel_alias_pairs(stmts)
-  let mut errors = check_perform_effects_module_walk(stmts, fn_names, fn_effs, fn_index, fn_param_effs)
-  while charge_erased_row_leaks(fn_effs, fn_index, local_count, aliases, imported_kinds) || Array::get(erased_local_leaks_grew, 0) {
-    Array::truncate(erased_row_leaks, 0)
-    Array::set(erased_local_leaks_grew, 0, false)
-    errors = check_perform_effects_module_walk(stmts, fn_names, fn_effs, fn_index, fn_param_effs)
+  let mut errors = check_perform_effects_module_walk(stmts = stmts, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs)
+  while charge_erased_row_leaks(fn_effs = fn_effs, fn_index = fn_index, local_count = local_count, aliases = aliases, imported = imported_kinds) || Array::get(erased_local_leaks_grew, at = 0) {
+    Array::truncate(erased_row_leaks, length = 0)
+    Array::set(erased_local_leaks_grew, at = 0, value = false)
+    errors = check_perform_effects_module_walk(stmts = stmts, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs)
   }
-  Array::truncate(erased_row_leaks, 0)
+  Array::truncate(erased_row_leaks, length = 0)
   if Array::length(errors) == 0 {
-    append_eff_errs(errors, erased_value_flow_errors(stmts, imported_kinds))
+    append_eff_errs(dst = errors, src = erased_value_flow_errors(stmts = stmts, imported = imported_kinds))
   }
   // #1347: only once the rows themselves check out — on a program with real
   // row errors every reachability answer is suspect, and a second diagnostic
   // per handle would bury the first.
   if Array::length(errors) == 0 {
-    append_eff_errs(errors, check_dead_handles_stmts(stmts, fn_names, fn_effs, fn_index))
+    append_eff_errs(dst = errors, src = check_dead_handles_stmts(stmts = stmts, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index))
   } else {
     ()
   }
@@ -401,7 +401,7 @@ fn charge_erased_row_leaks(fn_effs: Array[Array[String]], fn_index: MutMap[Strin
   let mut grew = false
   for leak in erased_row_leaks {
     let (owner, label) = leak
-    if charge_erased_row_leak(fn_effs, fn_index, local_count, owner, label) {
+    if charge_erased_row_leak(fn_effs = fn_effs, fn_index = fn_index, local_count = local_count, owner = owner, label = label) {
       grew = true
     }
   }
@@ -410,8 +410,8 @@ fn charge_erased_row_leaks(fn_effs: Array[Array[String]], fn_index: MutMap[Strin
     alias_grew = false
     for pair in aliases {
       let (name, src) = pair
-      for label in erased_kinds_of(src, imported) {
-        if charge_erased_row_leak(fn_effs, fn_index, local_count, name, label) {
+      for label in erased_kinds_of(name = src, imported = imported) {
+        if charge_erased_row_leak(fn_effs = fn_effs, fn_index = fn_index, local_count = local_count, owner = name, label = label) {
           grew = true
           alias_grew = true
         }
@@ -424,7 +424,7 @@ fn charge_erased_row_leaks(fn_effs: Array[Array[String]], fn_index: MutMap[Strin
 /// Charge `label` to the local function `owner`, recording it in
 /// `erased_row_charged`. Answers whether its row grew.
 fn charge_erased_row_leak(fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], local_count: Int, owner: String, label: String) -> Bool {
-  match MutMap::get(fn_index, owner) {
+  match MutMap::get(fn_index, k = owner) {
     Some(at) => if at < local_count {
       let mut known = false
       for row in erased_row_charged {
@@ -434,11 +434,11 @@ fn charge_erased_row_leak(fn_effs: Array[Array[String]], fn_index: MutMap[String
         }
       }
       if !known {
-        Array::push(erased_row_charged, (owner, label))
+        Array::push(erased_row_charged, value = (owner, label))
       }
-      let row = Array::get(fn_effs, at)
-      if !effect_row_has_label(Some(row), label) {
-        Array::set(fn_effs, at, labels_union(row, [label]))
+      let row = Array::get(fn_effs, at = at)
+      if !effect_row_has_label(row = Some(row), wanted = label) {
+        Array::set(fn_effs, at = at, value = labels_union(a = row, b = [label]))
         true
       } else {
         false
@@ -459,7 +459,7 @@ fn erased_kinds_of(name: String, imported: Array[(String, Array[String])]) -> Ar
       let (n, labels) = row
       if n == name {
         for l in labels {
-          Array::push(out, l)
+          Array::push(out, value = l)
         }
       }
     }
@@ -469,12 +469,12 @@ fn erased_kinds_of(name: String, imported: Array[(String, Array[String])]) -> Ar
 
 /// The unannotated top-level aliases of `stmts` (`let h = f`), as (alias,
 /// source).
-fn toplevel_alias_pairs(stmts: Array[Stmt]) -> Array[(String, String)] {
+fn toplevel_alias_pairs(_ stmts: Array[Stmt]) -> Array[(String, String)] {
   let out: Array[(String, String)] = []
   for stmt in stmts {
     match stmt {
       SLet(_, _, name, None, EIdent(src, _)) => if name != src {
-        Array::push(out, (name, src))
+        Array::push(out, value = (name, src))
       },
       _ => ()
     }
@@ -494,14 +494,14 @@ fn imported_erased_kinds(env: TypeEnv, stmts: Array[Stmt]) -> Array[(String, Arr
     for stmt in stmts {
       let n = erased_kinds_toplevel_name(stmt)
       if String::length(n) > 0 {
-        Array::push(locals, n)
+        Array::push(locals, value = n)
       }
     }
     for row in rows {
       let (name, ty) = row
       let labels = erased_kinds_labels(ty)
-      if Array::length(labels) > 0 && !str_list_has(locals, name) {
-        Array::push(out, (name, labels))
+      if Array::length(labels) > 0 && !str_list_has(xs = locals, name = name) {
+        Array::push(out, value = (name, labels))
       }
     }
   }
@@ -517,20 +517,20 @@ fn env_sigs_with_erased_kinds(sigs: (Array[String], Array[Array[String]], Array[
     let index = MutMap::with_capacity_string(Array::length(kinds) * 2 + 4)
     let mut ki = 0
     while ki < Array::length(kinds) {
-      let (name, _) = Array::get(kinds, ki)
-      MutMap::set(index, name, ki)
+      let (name, _) = Array::get(kinds, at = ki)
+      MutMap::set(index, k = name, v = ki)
       ki = ki + 1
     }
     let out_effs: Array[Array[String]] = []
     let mut i = 0
     while i < Array::length(names) {
-      let row = Array::get(effs, i)
-      match MutMap::get(index, Array::get(names, i)) {
+      let row = Array::get(effs, at = i)
+      match MutMap::get(index, k = Array::get(names, at = i)) {
         Some(at) => {
-          let (_, labels) = Array::get(kinds, at)
-          Array::push(out_effs, labels_union(row, labels))
+          let (_, labels) = Array::get(kinds, at = at)
+          Array::push(out_effs, value = labels_union(a = row, b = labels))
         },
-        None => Array::push(out_effs, row)
+        None => Array::push(out_effs, value = row)
       }
       i = i + 1
     }
@@ -543,21 +543,21 @@ fn env_sigs_with_erased_kinds(sigs: (Array[String], Array[Array[String]], Array[
 /// The function values whose erased `with Exception` row lets out a kind
 /// other than the message: the module's own (`erased_row_charged`) and the
 /// imported ones (`imported`), as (name, labels).
-fn erased_leaky_functions(imported: Array[(String, Array[String])]) -> Array[(String, Array[String])] {
+fn erased_leaky_functions(_ imported: Array[(String, Array[String])]) -> Array[(String, Array[String])] {
   let out: Array[(String, Array[String])] = []
   let seen = no_str_labels()
   for row in erased_row_charged {
     let (name, _) = row
-    if !str_list_has(seen, name) {
-      Array::push(seen, name)
-      Array::push(out, (name, erased_row_charged_for(name)))
+    if !str_list_has(xs = seen, name = name) {
+      Array::push(seen, value = name)
+      Array::push(out, value = (name, erased_row_charged_for(name)))
     }
   }
   for row in imported {
     let (name, _) = row
-    if !str_list_has(seen, name) {
-      Array::push(seen, name)
-      Array::push(out, row)
+    if !str_list_has(xs = seen, name = name) {
+      Array::push(seen, value = name)
+      Array::push(out, value = row)
     }
   }
   out
@@ -588,7 +588,7 @@ fn row_carries_erased_kinds(row: Array[String], labels: Array[String]) -> Bool {
       let kind = exception_label_kind(want)
       let mut found = false
       for l in row {
-        if is_exception_label(l) && String::length(exception_label_kind(l)) > 0 && exception_kinds_same(exception_label_kind(l), kind) {
+        if is_exception_label(l) && String::length(exception_label_kind(l)) > 0 && exception_kinds_same(a = exception_label_kind(l), b = kind) {
           found = true
         }
       }
@@ -601,7 +601,7 @@ fn row_carries_erased_kinds(row: Array[String], labels: Array[String]) -> Bool {
 }
 
 /// The row of a function type, or None for any other type.
-fn type_expr_fn_row(te: TypeExpr) -> Option[Array[String]] {
+fn type_expr_fn_row(_ te: TypeExpr) -> Option[Array[String]] {
   let expanded = match dh_expand_type_alias(te) {
     Some(x) => x,
     None => te
@@ -631,16 +631,16 @@ fn erased_flow_scope_ret(scope: ErasedFlowScope, ret: Option[TypeExpr]) -> Erase
 /// for. Rebuilt by `erased_value_flow_errors` for every program.
 let erased_flow_ctor_tbl: Array[(String, String, Array[String], Array[TypeExpr])] = array_empty()
 
-fn erased_flow_set_ctors(stmts: Array[Stmt]) -> Unit {
-  Array::truncate(erased_flow_ctor_tbl, 0)
+fn erased_flow_set_ctors(_ stmts: Array[Stmt]) -> Unit {
+  Array::truncate(erased_flow_ctor_tbl, length = 0)
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SEnum(_, ename, params, variants, _) => {
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (cname, payloads) = Array::get(variants, vi)
-          Array::push(erased_flow_ctor_tbl, (cname, ename, params, payloads))
+          let (cname, payloads) = Array::get(variants, at = vi)
+          Array::push(erased_flow_ctor_tbl, value = (cname, ename, params, payloads))
           vi = vi + 1
         }
       },
@@ -657,8 +657,8 @@ fn erased_flow_set_ctors(stmts: Array[Stmt]) -> Unit {
 /// is then typed by the argument itself, so a function value there is typed
 /// with its own declared row. None for an unknown or ambiguous constructor.
 fn erased_flow_ctor_payloads(cname: String, te: Option[TypeExpr]) -> Option[Array[TypeExpr]] {
-  let parts = String::split(cname, "::")
-  let bare = Array::get(parts, Array::length(parts) - 1)
+  let parts = String::split(cname, sep = "::")
+  let bare = Array::get(parts, at = Array::length(parts) - 1)
   let (head, targs) = match te {
     Some(TyApp(h, xs)) => (h, xs),
     Some(TyName(h)) => (h, array_empty()),
@@ -675,7 +675,7 @@ fn erased_flow_ctor_payloads(cname: String, te: Option[TypeExpr]) -> Option[Arra
       } else if ename == head && Array::length(params) == Array::length(targs) {
         let subst = array_empty()
         for pt in payloads {
-          Array::push(subst, dh_alias_subst(pt, params, targs))
+          Array::push(subst, value = dh_alias_subst(t = pt, params = params, args = targs))
         }
         Some(subst)
       } else {
@@ -692,7 +692,7 @@ fn erased_flow_ctor_payloads(cname: String, te: Option[TypeExpr]) -> Option[Arra
 
 /// Whether `cname` is a program constructor that takes `arity` arguments.
 fn erased_flow_ctor_fits(cname: String, arity: Int) -> Bool {
-  match erased_flow_ctor_payloads(cname, None) {
+  match erased_flow_ctor_payloads(cname = cname, te = None) {
     Some(payloads) => Array::length(payloads) == arity,
     None => false
   }
@@ -702,14 +702,14 @@ fn erased_flow_ctor_fits(cname: String, arity: Int) -> Bool {
 fn erased_flow_ctor_args(fn_name: String, args: Array[Expr], payloads: Array[TypeExpr], scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
   let mut i = 0
   while i < Array::length(args) {
-    erased_flow_typed(fn_name, Array::get(args, i), Array::get(payloads, i), scope, leaky, errors)
+    erased_flow_typed(fn_name = fn_name, v = Array::get(args, at = i), te0 = Array::get(payloads, at = i), scope = scope, leaky = leaky, errors = errors)
     i = i + 1
   }
 }
 
 /// A form whose value is one of its subexpressions' (a `let` body, a
 /// sequence's tail, a branch, an arm), so a slot type reaches through it.
-fn erased_flow_is_spine(e: Expr) -> Bool {
+fn erased_flow_is_spine(_ e: Expr) -> Bool {
   match e {
     ELet(_, _, _, _) => true,
     ELetMut(_, _, _, _) => true,
@@ -726,15 +726,15 @@ fn erased_flow_scope_hide(scope: ErasedFlowScope, names: Array[String]) -> Erase
   if Array::length(names) == 0 {
     scope
   } else {
-    let hidden = Array::slice(scope.hidden, 0, Array::length(scope.hidden))
+    let hidden = Array::slice(scope.hidden, start = 0, end = Array::length(scope.hidden))
     for n in names {
-      Array::push(hidden, n)
+      Array::push(hidden, value = n)
     }
     let aliases: Array[(String, Array[String])] = []
     for a in scope.aliases {
       let (an, _) = a
-      if !str_list_has(names, an) {
-        Array::push(aliases, a)
+      if !str_list_has(xs = names, name = an) {
+        Array::push(aliases, value = a)
       }
     }
     ErasedFlowScope::{ hidden: hidden, aliases: aliases, ret: scope.ret }
@@ -745,14 +745,14 @@ fn erased_flow_scope_alias(scope: ErasedFlowScope, name: String, labels: Array[S
   let hidden: Array[String] = []
   for n in scope.hidden {
     if n != name {
-      Array::push(hidden, n)
+      Array::push(hidden, value = n)
     }
   }
-  let aliases: Array[(String, Array[String])] = Array::slice([(name, labels)], 0, 1)
+  let aliases: Array[(String, Array[String])] = Array::slice([(name, labels)], start = 0, end = 1)
   for a in scope.aliases {
     let (an, _) = a
     if an != name {
-      Array::push(aliases, a)
+      Array::push(aliases, value = a)
     }
   }
   ErasedFlowScope::{ hidden: hidden, aliases: aliases, ret: scope.ret }
@@ -769,7 +769,7 @@ fn erased_flow_kinds(scope: ErasedFlowScope, leaky: Array[(String, Array[String]
       decided = true
     }
   }
-  if !decided && !str_list_has(scope.hidden, name) {
+  if !decided && !str_list_has(xs = scope.hidden, name = name) {
     for row in leaky {
       let (n, labels) = row
       if !decided && n == name {
@@ -809,24 +809,24 @@ fn erased_value_flow_errors(stmts: Array[Stmt], imported: Array[(String, Array[S
             let names = no_str_labels()
             for p in params {
               let (pn, _) = p
-              Array::push(names, effect_param_base_name(pn))
+              Array::push(names, value = effect_param_base_name(pn))
             }
-            erased_flow_walk_expect(name, fbody, ret, erased_flow_scope_ret(erased_flow_scope_hide(empty, names), ret), leaky, errors)
+            erased_flow_walk_expect(fn_name = name, root = fbody, root_expect = ret, root_scope = erased_flow_scope_ret(scope = erased_flow_scope_hide(scope = empty, names = names), ret = ret), leaky = leaky, errors = errors)
           },
           // An unannotated alias (`let g = fail`) keeps the kinds.
           EIdent(_, _) => match ty {
             None => (),
-            Some(te) => erased_flow_typed(name, body, te, empty, leaky, errors)
+            Some(te) => erased_flow_typed(fn_name = name, v = body, te0 = te, scope = empty, leaky = leaky, errors = errors)
           },
           _ => match ty {
-            None => erased_flow_walk(name, body, empty, leaky, errors),
-            Some(te) => erased_flow_typed(name, body, te, empty, leaky, errors)
+            None => erased_flow_walk(fn_name = name, root = body, root_scope = empty, leaky = leaky, errors = errors),
+            Some(te) => erased_flow_typed(fn_name = name, v = body, te0 = te, scope = empty, leaky = leaky, errors = errors)
           }
         },
-        SLetMut(name, _, body) => erased_flow_walk(name, body, empty, leaky, errors),
-        STest(tname, body) => erased_flow_walk(String::concat("__test_", tname), body, empty, leaky, errors),
-        SBench(bname, body) => erased_flow_walk(String::concat("__bench_", bname), body, empty, leaky, errors),
-        SExpr(e) => erased_flow_walk("", e, empty, leaky, errors),
+        SLetMut(name, _, body) => erased_flow_walk(fn_name = name, root = body, root_scope = empty, leaky = leaky, errors = errors),
+        STest(tname, body) => erased_flow_walk(fn_name = String::concat("__test_", tname), root = body, root_scope = empty, leaky = leaky, errors = errors),
+        SBench(bname, body) => erased_flow_walk(fn_name = String::concat("__bench_", bname), root = body, root_scope = empty, leaky = leaky, errors = errors),
+        SExpr(e) => erased_flow_walk(fn_name = "", root = e, root_scope = empty, leaky = leaky, errors = errors),
         _ => ()
       }
     }
@@ -837,24 +837,24 @@ fn erased_value_flow_errors(stmts: Array[Stmt], imported: Array[(String, Array[S
 /// `src` (at `off`) handed to a slot whose function row is `row` (None: not
 /// known here).
 fn erased_flow_slot(fn_name: String, src: String, off: Int, row: Option[Array[String]], scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
-  let kinds = erased_flow_kinds(scope, leaky, src)
+  let kinds = erased_flow_kinds(scope = scope, leaky = leaky, name = src)
   if Array::length(kinds) > 0 {
     let carried = match row {
-      Some(r) => row_carries_erased_kinds(r, kinds),
+      Some(r) => row_carries_erased_kinds(row = r, labels = kinds),
       None => false
     }
     if !carried {
-      Array::push(errors, EEErasedValueOtherKind(fn_name, src, join_labels(sort_labels(kinds)), off))
+      Array::push(errors, value = EEErasedValueOtherKind(fn_name, src, join_labels(sort_labels(kinds)), off))
     }
   }
 }
 
 /// The value and the annotation of an ascription (`let x: T = v` in a body).
-fn erased_flow_ascription(e: Expr) -> Option[(Expr, TypeExpr)] {
+fn erased_flow_ascription(_ e: Expr) -> Option[(Expr, TypeExpr)] {
   match e {
     ECall(EFn(_, _, params, _, _, EIdent(body_name, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 && body_name == "__asc" {
-      match Array::get(params, 0) {
-        ("__asc", Some(ann)) => Some((Array::get(args, 0), ann)),
+      match Array::get(params, at = 0) {
+        ("__asc", Some(ann)) => Some((Array::get(args, at = 0), ann)),
         _ => None
       }
     } else {
@@ -875,48 +875,48 @@ fn erased_flow_typed(fn_name: String, v: Expr, te0: TypeExpr, scope: ErasedFlowS
     None => te0
   }
   match (v, te) {
-    (EIdent(src, off), _) => erased_flow_slot(fn_name, src, off, type_expr_fn_row(te), scope, leaky, errors),
+    (EIdent(src, off), _) => erased_flow_slot(fn_name = fn_name, src = src, off = off, row = type_expr_fn_row(te), scope = scope, leaky = leaky, errors = errors),
     (EArray(elems), TyApp("Array", targs)) => if Array::length(targs) == 1 {
       for el in elems {
-        erased_flow_typed(fn_name, el, Array::get(targs, 0), scope, leaky, errors)
+        erased_flow_typed(fn_name = fn_name, v = el, te0 = Array::get(targs, at = 0), scope = scope, leaky = leaky, errors = errors)
       }
     } else {
-      erased_flow_walk(fn_name, v, scope, leaky, errors)
+      erased_flow_walk(fn_name = fn_name, root = v, root_scope = scope, leaky = leaky, errors = errors)
     },
     (ETuple(elems), TyTuple(ts)) => if Array::length(elems) == Array::length(ts) {
       let mut i = 0
       while i < Array::length(elems) {
-        erased_flow_typed(fn_name, Array::get(elems, i), Array::get(ts, i), scope, leaky, errors)
+        erased_flow_typed(fn_name = fn_name, v = Array::get(elems, at = i), te0 = Array::get(ts, at = i), scope = scope, leaky = leaky, errors = errors)
         i = i + 1
       }
     } else {
-      erased_flow_walk(fn_name, v, scope, leaky, errors)
+      erased_flow_walk(fn_name = fn_name, root = v, root_scope = scope, leaky = leaky, errors = errors)
     },
     (ECall(EIdent("Some", _), args, _, _), TyApp("Option", targs)) => if Array::length(args) == 1 && Array::length(targs) == 1 {
-      erased_flow_typed(fn_name, Array::get(args, 0), Array::get(targs, 0), scope, leaky, errors)
+      erased_flow_typed(fn_name = fn_name, v = Array::get(args, at = 0), te0 = Array::get(targs, at = 0), scope = scope, leaky = leaky, errors = errors)
     } else {
-      erased_flow_walk(fn_name, v, scope, leaky, errors)
+      erased_flow_walk(fn_name = fn_name, root = v, root_scope = scope, leaky = leaky, errors = errors)
     },
     // A constructor's payload takes the matching type argument (#3609).
-    (ECall(EIdent(cname, _), args, _, _), _) => match erased_flow_ctor_payloads(cname, Some(te)) {
+    (ECall(EIdent(cname, _), args, _, _), _) => match erased_flow_ctor_payloads(cname = cname, te = Some(te)) {
       Some(payloads) => if Array::length(payloads) == Array::length(args) {
-        erased_flow_ctor_args(fn_name, args, payloads, scope, leaky, errors)
+        erased_flow_ctor_args(fn_name = fn_name, args = args, payloads = payloads, scope = scope, leaky = leaky, errors = errors)
       } else {
-        erased_flow_walk(fn_name, v, scope, leaky, errors)
+        erased_flow_walk(fn_name = fn_name, root = v, root_scope = scope, leaky = leaky, errors = errors)
       },
-      None => erased_flow_walk(fn_name, v, scope, leaky, errors)
+      None => erased_flow_walk(fn_name = fn_name, root = v, root_scope = scope, leaky = leaky, errors = errors)
     },
     // A `let` body, a branch or an arm hands its value to the slot (#3609).
     _ => if erased_flow_is_spine(v) {
-      erased_flow_walk_expect(fn_name, v, Some(te), scope, leaky, errors)
+      erased_flow_walk_expect(fn_name = fn_name, root = v, root_expect = Some(te), root_scope = scope, leaky = leaky, errors = errors)
     } else {
-      erased_flow_walk(fn_name, v, scope, leaky, errors)
+      erased_flow_walk(fn_name = fn_name, root = v, root_scope = scope, leaky = leaky, errors = errors)
     }
   }
 }
 
 fn erased_flow_walk(fn_name: String, root: Expr, root_scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
-  erased_flow_walk_expect(fn_name, root, None, root_scope, leaky, errors)
+  erased_flow_walk_expect(fn_name = fn_name, root = root, root_expect = None, root_scope = root_scope, leaky = leaky, errors = errors)
 }
 
 /// The walk, with `root`'s value handed to a slot typed `root_expect` (None:
@@ -924,37 +924,37 @@ fn erased_flow_walk(fn_name: String, root: Expr, root_scope: ErasedFlowScope, le
 /// value through `let` bodies, sequence tails, branches and arms, and a
 /// `return` hands its value to the enclosing function's declared result.
 fn erased_flow_walk_expect(fn_name: String, root: Expr, root_expect: Option[TypeExpr], root_scope: ErasedFlowScope, leaky: Array[(String, Array[String])], errors: Array[EffectError]) -> Unit {
-  let stack: Array[Expr] = Array::slice([root], 0, 1)
-  let scopes: Array[ErasedFlowScope] = Array::slice([root_scope], 0, 1)
-  let expects: Array[Option[TypeExpr]] = Array::slice([root_expect], 0, 1)
+  let stack: Array[Expr] = Array::slice([root], start = 0, end = 1)
+  let scopes: Array[ErasedFlowScope] = Array::slice([root_scope], start = 0, end = 1)
+  let expects: Array[Option[TypeExpr]] = Array::slice([root_expect], start = 0, end = 1)
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
-    let e = Array::get(stack, n - 1)
-    let scope = Array::get(scopes, n - 1)
-    let expect = Array::get(expects, n - 1)
-    Array::truncate(stack, n - 1)
-    Array::truncate(scopes, n - 1)
-    Array::truncate(expects, n - 1)
+    let e = Array::get(stack, at = n - 1)
+    let scope = Array::get(scopes, at = n - 1)
+    let expect = Array::get(expects, at = n - 1)
+    Array::truncate(stack, length = n - 1)
+    Array::truncate(scopes, length = n - 1)
+    Array::truncate(expects, length = n - 1)
     let push_expect = (x: Expr, s: ErasedFlowScope, t: Option[TypeExpr]) -> {
-      Array::push(stack, x)
-      Array::push(scopes, s)
-      Array::push(expects, t)
+      Array::push(stack, value = x)
+      Array::push(scopes, value = s)
+      Array::push(expects, value = t)
     }
     let push = (x: Expr, s: ErasedFlowScope) -> push_expect(x, s, None)
     let typed_leaf = match expect {
       Some(te) => if erased_flow_is_spine(e) {
         false
       } else {
-        erased_flow_typed(fn_name, e, te, scope, leaky, errors)
+        erased_flow_typed(fn_name = fn_name, v = e, te0 = te, scope = scope, leaky = leaky, errors = errors)
         true
       },
       None => false
     }
     if !typed_leaf {
       match e {
-        EIdent(name, off) => erased_flow_slot(fn_name, name, off, Some(no_str_labels()), scope, leaky, errors),
+        EIdent(name, off) => erased_flow_slot(fn_name = fn_name, src = name, off = off, row = Some(no_str_labels()), scope = scope, leaky = leaky, errors = errors),
         EReturn(v) => match scope.ret {
-          Some(rt) => erased_flow_typed(fn_name, v, rt, scope, leaky, errors),
+          Some(rt) => erased_flow_typed(fn_name = fn_name, v = v, te0 = rt, scope = scope, leaky = leaky, errors = errors),
           None => push(v, scope)
         },
         ESeq(a, b) => {
@@ -967,18 +967,18 @@ fn erased_flow_walk_expect(fn_name: String, root: Expr, root_expect: Option[Type
           push_expect(f, scope, expect)
         },
         ECall(callee, args, _, _) => match erased_flow_ascription(e) {
-          Some((v, te)) => erased_flow_typed(fn_name, v, te, scope, leaky, errors),
+          Some((v, te)) => erased_flow_typed(fn_name = fn_name, v = v, te0 = te, scope = scope, leaky = leaky, errors = errors),
           None => match callee {
             // A constructor's payloads are its declared types (#3609).
-            EIdent(cname, _) => if erased_flow_ctor_fits(cname, Array::length(args)) {
-              match erased_flow_ctor_payloads(cname, None) {
-                Some(payloads) => erased_flow_ctor_args(fn_name, args, payloads, scope, leaky, errors),
+            EIdent(cname, _) => if erased_flow_ctor_fits(cname = cname, arity = Array::length(args)) {
+              match erased_flow_ctor_payloads(cname = cname, te = None) {
+                Some(payloads) => erased_flow_ctor_args(fn_name = fn_name, args = args, payloads = payloads, scope = scope, leaky = leaky, errors = errors),
                 None => ()
               }
             } else {
               // A local binding of the callee's spelling hides the program's
               // parameter rows.
-              let mut known = !str_list_has(scope.hidden, cname)
+              let mut known = !str_list_has(xs = scope.hidden, name = cname)
               for a in scope.aliases {
                 let (an, _) = a
                 if an == cname {
@@ -987,23 +987,23 @@ fn erased_flow_walk_expect(fn_name: String, root: Expr, root_expect: Option[Type
               }
               let mut ai = 0
               while ai < Array::length(args) {
-                match Array::get(args, ai) {
+                match Array::get(args, at = ai) {
                   EIdent(a, aoff) => {
                     // A callee whose own row lets no exception out handles
                     // what the value raises (`callee_lets_erased_out`).
                     let row = if known {
-                      match callee_param_row(cname, ai) {
+                      match callee_param_row(callee = cname, index = ai) {
                         Some(r) => if callee_lets_erased_out(cname) {
                           Some(r)
                         } else {
-                          Some(Array::slice(["e"], 0, 1))
+                          Some(Array::slice(["e"], start = 0, end = 1))
                         },
                         None => None
                       }
                     } else {
                       None
                     }
-                    erased_flow_slot(fn_name, a, aoff, row, scope, leaky, errors)
+                    erased_flow_slot(fn_name = fn_name, src = a, off = aoff, row = row, scope = scope, leaky = leaky, errors = errors)
                   },
                   arg => push(arg, scope)
                 }
@@ -1021,56 +1021,56 @@ fn erased_flow_walk_expect(fn_name: String, root: Expr, root_expect: Option[Type
         ELet(name, val, body, _) => {
           match val {
             EIdent(src, _) => {
-              let kinds = erased_flow_kinds(scope, leaky, src)
+              let kinds = erased_flow_kinds(scope = scope, leaky = leaky, name = src)
               if Array::length(kinds) > 0 {
-                push_expect(body, erased_flow_scope_alias(scope, name, kinds), expect)
+                push_expect(body, erased_flow_scope_alias(scope = scope, name = name, labels = kinds), expect)
               } else {
-                push_expect(body, erased_flow_scope_hide(scope, [name]), expect)
+                push_expect(body, erased_flow_scope_hide(scope = scope, names = [name]), expect)
               }
             },
             // A closure literal whose erased row lets kinds out
             // (`erased_local_leaks`) is such a value too.
             EFn(_, _, _, _, _, _) => {
               push(val, scope)
-              let kinds = erased_local_leaks_for(erased_local_key(fn_name, name))
+              let kinds = erased_local_leaks_for(erased_local_key(fn_name = fn_name, name = name))
               if Array::length(kinds) > 0 {
-                push_expect(body, erased_flow_scope_alias(scope, name, kinds), expect)
+                push_expect(body, erased_flow_scope_alias(scope = scope, name = name, labels = kinds), expect)
               } else {
-                push_expect(body, erased_flow_scope_hide(scope, [name]), expect)
+                push_expect(body, erased_flow_scope_hide(scope = scope, names = [name]), expect)
               }
             },
             _ => {
               push(val, scope)
-              push_expect(body, erased_flow_scope_hide(scope, [name]), expect)
+              push_expect(body, erased_flow_scope_hide(scope = scope, names = [name]), expect)
             }
           }
         },
         ELetMut(name, val, body, _) => {
           match val {
             EIdent(src, _) => {
-              let kinds = erased_flow_kinds(scope, leaky, src)
+              let kinds = erased_flow_kinds(scope = scope, leaky = leaky, name = src)
               if Array::length(kinds) > 0 {
-                push_expect(body, erased_flow_scope_alias(scope, name, kinds), expect)
+                push_expect(body, erased_flow_scope_alias(scope = scope, name = name, labels = kinds), expect)
               } else {
-                push_expect(body, erased_flow_scope_hide(scope, [name]), expect)
+                push_expect(body, erased_flow_scope_hide(scope = scope, names = [name]), expect)
               }
             },
             _ => {
               push(val, scope)
-              push_expect(body, erased_flow_scope_hide(scope, [name]), expect)
+              push_expect(body, erased_flow_scope_hide(scope = scope, names = [name]), expect)
             }
           }
         },
         // A recursive closure literal is such a value on both sides.
         ELetRec(name, val, body) => {
           let kinds = match val {
-            EFn(_, _, _, _, _, _) => erased_local_leaks_for(erased_local_key(fn_name, name)),
+            EFn(_, _, _, _, _, _) => erased_local_leaks_for(erased_local_key(fn_name = fn_name, name = name)),
             _ => no_str_labels()
           }
           let inner = if Array::length(kinds) > 0 {
-            erased_flow_scope_alias(scope, name, kinds)
+            erased_flow_scope_alias(scope = scope, name = name, labels = kinds)
           } else {
-            erased_flow_scope_hide(scope, [name])
+            erased_flow_scope_hide(scope = scope, names = [name])
           }
           push(val, inner)
           push_expect(body, inner, expect)
@@ -1079,17 +1079,17 @@ fn erased_flow_walk_expect(fn_name: String, root: Expr, root_expect: Option[Type
           let names = no_str_labels()
           for p in params {
             let (pn, _) = p
-            Array::push(names, effect_param_base_name(pn))
+            Array::push(names, value = effect_param_base_name(pn))
           }
-          push_expect(body, erased_flow_scope_ret(erased_flow_scope_hide(scope, names), ret), ret)
+          push_expect(body, erased_flow_scope_ret(scope = erased_flow_scope_hide(scope = scope, names = names), ret = ret), ret)
         },
         EMatch(scrut, arms) => {
           push(scrut, scope)
           for arm in arms {
             let (pat, body) = arm
             let bound = no_str_labels()
-            collect_pat_binds_into(pat, bound)
-            push_expect(body, erased_flow_scope_hide(scope, bound), expect)
+            collect_pat_binds_into(pat = pat, acc = bound)
+            push_expect(body, erased_flow_scope_hide(scope = scope, names = bound), expect)
           }
         },
         EHandle(body, arms) => {
@@ -1097,32 +1097,32 @@ fn erased_flow_walk_expect(fn_name: String, root: Expr, root_expect: Option[Type
           for arm in arms {
             let (pat, abody) = arm
             let bound = no_str_labels()
-            collect_pat_binds_into(pat, bound)
-            push_expect(abody, erased_flow_scope_hide(scope, bound), expect)
+            collect_pat_binds_into(pat = pat, acc = bound)
+            push_expect(abody, erased_flow_scope_hide(scope = scope, names = bound), expect)
           }
         },
         EForIn(name, index_name, iter, body) => {
           push(iter, scope)
-          let names = Array::slice([name], 0, 1)
+          let names = Array::slice([name], start = 0, end = 1)
           match index_name {
-            Some(i) => Array::push(names, i),
+            Some(i) => Array::push(names, value = i),
             None => ()
           }
-          push(body, erased_flow_scope_hide(scope, names))
+          push(body, erased_flow_scope_hide(scope = scope, names = names))
         },
         ELoop(states, body) => {
           let names = no_str_labels()
           for st in states {
             let (sn, sv) = st
-            Array::push(names, sn)
+            Array::push(names, value = sn)
             push(sv, scope)
           }
-          push(body, erased_flow_scope_hide(scope, names))
+          push(body, erased_flow_scope_hide(scope = scope, names = names))
         },
         ERecord(sname, fields, _) => for f in fields {
           let (fname, fe) = f
           match fe {
-            EIdent(src, off) => erased_flow_slot(fn_name, src, off, Some(struct_field_rows_for(sname, fname)), scope, leaky, errors),
+            EIdent(src, off) => erased_flow_slot(fn_name = fn_name, src = src, off = off, row = Some(struct_field_rows_for(sname = sname, fname = fname)), scope = scope, leaky = leaky, errors = errors),
             _ => push(fe, scope)
           }
         },
@@ -1140,27 +1140,27 @@ fn check_perform_effects_module_walk(stmts: Array[Stmt], fn_names: Array[String]
   let errors = user_provider_collision_errors(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     match stmt {
-      SLet(_, _, name, ty, body) => append_eff_errs(errors, check_entry_declared_effects(name, ty, body)),
-      SLetMut(name, ty, body) => append_eff_errs(errors, check_entry_declared_effects(name, ty, body)),
+      SLet(_, _, name, ty, body) => append_eff_errs(dst = errors, src = check_entry_declared_effects(fn_name = name, ty = ty, body = body)),
+      SLetMut(name, ty, body) => append_eff_errs(dst = errors, src = check_entry_declared_effects(fn_name = name, ty = ty, body = body)),
       _ => {
         // ADR-0088: the grade check for the rows a non-binding declaration
         // writes (a type alias, struct fields, ..); a binding's rows are
         // covered by check_perform_effects_binding_tx below.
         let (owner, rows) = stmt_type_rows(stmt)
         if String::length(owner) > 0 {
-          append_eff_errs(errors, optional_grade_errors(owner, rows))
+          append_eff_errs(dst = errors, src = optional_grade_errors(fn_name = owner, labels = rows))
         } else {
           ()
         }
       }
     }
     select_shadowed_builtin_type_names(stmt)
-    append_eff_errs(errors, check_perform_effects_stmt_tx(stmt, fn_names, fn_effs, fn_index, fn_param_effs))
+    append_eff_errs(dst = errors, src = check_perform_effects_stmt_tx(stmt = stmt, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, fn_param_effs = fn_param_effs))
     i = i + 1
   }
-  Array::set(shadowed_builtin_type_names_cell, 0, Array::get(shadowed_builtin_type_names_cell, 1))
+  Array::set(shadowed_builtin_type_names_cell, at = 0, value = Array::get(shadowed_builtin_type_names_cell, at = 1))
   errors
 }
 
@@ -1169,58 +1169,58 @@ fn check_perform_effects_module_walk(stmts: Array[Stmt], fn_names: Array[String]
 fn dh_mutable_alias_call(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Option[(String, Int)] {
   match expr {
     ELetMut(name, value, body, _) => {
-      let (an, ae) = dh_overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
-      let carries = match lookup_fn_effs(an, ae, name) {
-        Some(effs) => dh_labels_may_be(effs, ename),
+      let (an, ae) = dh_overlay_bind_local(names = ov_names, effs = ov_effs, name = name, val = value, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index)
+      let carries = match lookup_fn_effs(names = an, effs = ae, name = name) {
+        Some(effs) => dh_labels_may_be(labels = effs, ename = ename),
         None => false
       }
       let hit = if carries {
-        dh_call_to_binding(body, name)
+        dh_call_to_binding(expr = body, name = name)
       } else {
         None
       }
       match hit {
         Some(off) => Some((name, off)),
         None => {
-          let (bn, be) = overlay_bind_empty(ov_names, ov_effs, name, fn_names, fn_index)
-          match dh_mutable_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+          let (bn, be) = overlay_bind_empty(names = ov_names, effs = ov_effs, name = name, fn_names = fn_names, fn_index = fn_index)
+          match dh_mutable_alias_call(expr = value, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) {
             Some(found) => Some(found),
-            None => dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+            None => dh_mutable_alias_call(expr = body, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
           }
         }
       }
     },
     ELet(name, value, body, _) => {
-      let (bn, be) = dh_overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
-      match dh_mutable_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+      let (bn, be) = dh_overlay_bind_local(names = ov_names, effs = ov_effs, name = name, val = value, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index)
+      match dh_mutable_alias_call(expr = value, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) {
         Some(found) => Some(found),
-        None => dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+        None => dh_mutable_alias_call(expr = body, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
       }
     },
     ELetRec(name, value, body) => {
-      let (bn, be) = dh_overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
-      match dh_mutable_alias_call(value, ename, fn_names, fn_effs, fn_index, bn, be) {
+      let (bn, be) = dh_overlay_bind_local(names = ov_names, effs = ov_effs, name = name, val = value, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index)
+      match dh_mutable_alias_call(expr = value, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be) {
         Some(found) => Some(found),
-        None => dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+        None => dh_mutable_alias_call(expr = body, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
       }
     },
     EFn(_, _, params, _, _, body) => {
-      let (bn, be) = dh_overlay_with_params(ov_names, ov_effs, params, fn_names, fn_index)
-      dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+      let (bn, be) = dh_overlay_with_params(ov_names = ov_names, ov_effs = ov_effs, params = params, fn_names = fn_names, fn_index = fn_index)
+      dh_mutable_alias_call(expr = body, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
     },
-    EMatch(scrutinee, arms) => match dh_mutable_alias_call(scrutinee, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+    EMatch(scrutinee, arms) => match dh_mutable_alias_call(expr = scrutinee, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) {
       Some(found) => Some(found),
-      None => dh_mutable_alias_call_arms(arms, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+      None => dh_mutable_alias_call_arms(arms = arms, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
     },
-    EHandle(body, arms) => match dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+    EHandle(body, arms) => match dh_mutable_alias_call(expr = body, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) {
       Some(found) => Some(found),
-      None => dh_mutable_alias_call_arms(arms, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+      None => dh_mutable_alias_call_arms(arms = arms, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
     },
-    EForIn(name, index_name, iter, body) => match dh_mutable_alias_call(iter, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+    EForIn(name, index_name, iter, body) => match dh_mutable_alias_call(expr = iter, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) {
       Some(found) => Some(found),
       None => {
-        let (bn, be) = overlay_bind_empty_names(ov_names, ov_effs, dh_for_names(name, index_name), fn_names, fn_index)
-        dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+        let (bn, be) = overlay_bind_empty_names(names = ov_names, effs = ov_effs, bound = dh_for_names(name = name, index_name = index_name), fn_names = fn_names, fn_index = fn_index)
+        dh_mutable_alias_call(expr = body, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
       }
     },
     ELoop(pairs, body) => {
@@ -1231,20 +1231,20 @@ fn dh_mutable_alias_call(expr: Expr, ename: String, fn_names: Array[String], fn_
         match hit {
           Some(_) => (),
           None => {
-            hit = dh_mutable_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+            hit = dh_mutable_alias_call(expr = value, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
           }
         }
-        Array::push(names, name)
+        Array::push(names, value = name)
       }
       match hit {
         Some(_) => hit,
         None => {
-          let (bn, be) = overlay_bind_empty_names(ov_names, ov_effs, names, fn_names, fn_index)
-          dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+          let (bn, be) = overlay_bind_empty_names(names = ov_names, effs = ov_effs, bound = names, fn_names = fn_names, fn_index = fn_index)
+          dh_mutable_alias_call(expr = body, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
         }
       }
     },
-    _ => dh_mutable_alias_call_in(expr_children(expr), ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+    _ => dh_mutable_alias_call_in(exprs = expr_children(expr), ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
   }
 }
 
@@ -1255,8 +1255,8 @@ fn dh_mutable_alias_call_arms(arms: Array[(Pat, Expr)], ename: String, fn_names:
     match hit {
       Some(_) => (),
       None => {
-        let (bn, be) = overlay_bind_empty_pat(ov_names, ov_effs, pat, fn_names, fn_index)
-        hit = dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+        let (bn, be) = overlay_bind_empty_pat(names = ov_names, effs = ov_effs, pat = pat, fn_names = fn_names, fn_index = fn_index)
+        hit = dh_mutable_alias_call(expr = body, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
       }
     }
   }
@@ -1270,7 +1270,7 @@ fn dh_mutable_alias_call_in(exprs: Array[Expr], ename: String, fn_names: Array[S
     match hit {
       Some(_) => (),
       None => {
-        hit = dh_mutable_alias_call(Array::get(exprs, i), ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+        hit = dh_mutable_alias_call(expr = Array::get(exprs, at = i), ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
       }
     }
     i = i + 1
@@ -1284,13 +1284,13 @@ fn dh_mutable_alias_call_in(exprs: Array[Expr], ename: String, fn_names: Array[S
 fn dh_mutable_alias_with_source(aliases: Array[(String, Array[String], String)], name: String, labels: Array[String], source: String) -> Array[(String, Array[String], String)] {
   let out: Array[(String, Array[String], String)] = [(name, labels, source)]
   for entry in aliases {
-    Array::push(out, entry)
+    Array::push(out, value = entry)
   }
   out
 }
 
 fn dh_mutable_alias_with(aliases: Array[(String, Array[String], String)], name: String, labels: Array[String]) -> Array[(String, Array[String], String)] {
-  dh_mutable_alias_with_source(aliases, name, labels, name)
+  dh_mutable_alias_with_source(aliases = aliases, name = name, labels = labels, source = name)
 }
 
 fn dh_mutable_alias_bind(aliases: Array[(String, Array[String], String)], name: String, value: Expr, recursive: Bool) -> Array[(String, Array[String], String)] {
@@ -1299,7 +1299,7 @@ fn dh_mutable_alias_bind(aliases: Array[(String, Array[String], String)], name: 
       for entry in aliases {
         let (bound, labels, source) = entry
         if bound == target {
-          return dh_mutable_alias_with_source(aliases, name, labels, source)
+          return dh_mutable_alias_with_source(aliases = aliases, name = name, labels = labels, source = source)
         } else {
           ()
         }
@@ -1309,13 +1309,13 @@ fn dh_mutable_alias_bind(aliases: Array[(String, Array[String], String)], name: 
     },
     None => ()
   }
-  dh_mutable_alias_with(aliases, name, [])
+  dh_mutable_alias_with(aliases = aliases, name = name, labels = [])
 }
 
 fn dh_mutable_alias_shadow_names(aliases: Array[(String, Array[String], String)], names: Array[String]) -> Array[(String, Array[String], String)] {
   let mut out = aliases
   for name in names {
-    out = dh_mutable_alias_with(out, name, [])
+    out = dh_mutable_alias_with(aliases = out, name = name, labels = [])
   }
   out
 }
@@ -1325,10 +1325,10 @@ fn dh_mutable_alias_outer_call(body: Expr, ename: String, aliases: Array[(String
   let mut hit: Option[(String, Int)] = None
   for entry in aliases {
     let (name, labels, source) = entry
-    if hit == None && !str_list_has(seen, name) {
-      Array::push(seen, name)
-      if dh_labels_may_be(labels, ename) {
-        match dh_call_to_binding(body, name) {
+    if hit == None && !str_list_has(xs = seen, name = name) {
+      Array::push(seen, value = name)
+      if dh_labels_may_be(labels = labels, ename = ename) {
+        match dh_call_to_binding(expr = body, name = name) {
           Some(off) => hit = Some((source, off)),
           None => ()
         }
@@ -1347,7 +1347,7 @@ fn dh_mutable_alias_outer_call(body: Expr, ename: String, aliases: Array[(String
 /// evaluating the binding.
 fn dh_named_alias_ascription(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Bool {
   match afe_ascribed_name_type(val) {
-    Some(TyFn(_, _, _)) => match local_alias_target(val, ov_names, ov_effs, fn_index) {
+    Some(TyFn(_, _, _)) => match local_alias_target(val = val, ov_names = ov_names, ov_effs = ov_effs, fn_index = fn_index) {
       Some(_) => true,
       None => false
     },
@@ -1358,13 +1358,13 @@ fn dh_named_alias_ascription(val: Expr, ov_names: Array[String], ov_effs: Array[
 /// A widened annotation remains the call's type, but only the target's row
 /// can establish that this handler may actually receive the effect.
 fn dh_overlay_call_may_reach(name: String, ename: String, ov_names: Array[String], ov_effs: Array[Array[String]], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Bool {
-  match lookup_fn_effs(ov_names, ov_effs, name) {
-    Some(declared) => match overlay_alias_target(ov_names, ov_effs, name) {
-      Some(target) => match lookup_program_fn_effs(fn_index, fn_effs, target) {
-        Some(actual) => dh_labels_may_be(actual, ename),
-        None => dh_labels_may_be(declared, ename)
+  match lookup_fn_effs(names = ov_names, effs = ov_effs, name = name) {
+    Some(declared) => match overlay_alias_target(ov_names = ov_names, ov_effs = ov_effs, name = name) {
+      Some(target) => match lookup_program_fn_effs(fn_index = fn_index, effs = fn_effs, name = target) {
+        Some(actual) => dh_labels_may_be(labels = actual, ename = ename),
+        None => dh_labels_may_be(labels = declared, ename = ename)
       },
-      None => dh_labels_may_be(declared, ename)
+      None => dh_labels_may_be(labels = declared, ename = ename)
     },
     None => false
   }
@@ -1373,57 +1373,57 @@ fn dh_overlay_call_may_reach(name: String, ename: String, ov_names: Array[String
 fn dh_widened_only_alias_call(body: Expr, ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Bool {
   match body {
     ECall(EIdent(name, _), args, _, _) => {
-      let widened = match overlay_alias_target(ov_names, ov_effs, name) {
-        Some(target) => match (lookup_program_fn_effs(fn_index, fn_effs, target), lookup_fn_effs(ov_names, ov_effs, name)) {
-          (Some(actual), Some(declared)) => dh_labels_may_be(declared, ename) && !dh_labels_may_be(actual, ename),
+      let widened = match overlay_alias_target(ov_names = ov_names, ov_effs = ov_effs, name = name) {
+        Some(target) => match (lookup_program_fn_effs(fn_index = fn_index, effs = fn_effs, name = target), lookup_fn_effs(names = ov_names, effs = ov_effs, name = name)) {
+          (Some(actual), Some(declared)) => dh_labels_may_be(labels = declared, ename = ename) && !dh_labels_may_be(labels = actual, ename = ename),
           _ => false
         },
         None => false
       }
-      widened || dh_widened_only_alias_in(args, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+      widened || dh_widened_only_alias_in(exprs = args, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
     },
     ELet(name, value, continuation, _) => {
-      let (bn, be) = dh_overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
-      (!dh_named_alias_ascription(value, ov_names, ov_effs, fn_index) && dh_widened_only_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn, be)
+      let (bn, be) = dh_overlay_bind_local(names = ov_names, effs = ov_effs, name = name, val = value, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index)
+      (!dh_named_alias_ascription(val = value, ov_names = ov_names, ov_effs = ov_effs, fn_index = fn_index) && dh_widened_only_alias_call(body = value, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)) || dh_widened_only_alias_call(body = continuation, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
     },
     ELetMut(name, value, continuation, _) => {
-      let (bn, be) = overlay_bind_empty(ov_names, ov_effs, name, fn_names, fn_index)
-      dh_widened_only_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn, be)
+      let (bn, be) = overlay_bind_empty(names = ov_names, effs = ov_effs, name = name, fn_names = fn_names, fn_index = fn_index)
+      dh_widened_only_alias_call(body = value, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) || dh_widened_only_alias_call(body = continuation, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
     },
     ELetRec(name, value, continuation) => {
-      let (bn, be) = dh_overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
-      (!dh_named_alias_ascription(value, bn, be, fn_index) && dh_widened_only_alias_call(value, ename, fn_names, fn_effs, fn_index, bn, be)) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn, be)
+      let (bn, be) = dh_overlay_bind_local(names = ov_names, effs = ov_effs, name = name, val = value, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index)
+      (!dh_named_alias_ascription(val = value, ov_names = bn, ov_effs = be, fn_index = fn_index) && dh_widened_only_alias_call(body = value, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)) || dh_widened_only_alias_call(body = continuation, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
     },
     EFn(_, _, _, _, _, _) => false,
-    EMatch(scrutinee, arms) => dh_widened_only_alias_call(scrutinee, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_widened_only_alias_arms(arms, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs),
-    EHandle(inner, arms) => dh_widened_only_alias_call(inner, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_widened_only_alias_arms(arms, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs),
+    EMatch(scrutinee, arms) => dh_widened_only_alias_call(body = scrutinee, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) || dh_widened_only_alias_arms(arms = arms, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs),
+    EHandle(inner, arms) => dh_widened_only_alias_call(body = inner, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) || dh_widened_only_alias_arms(arms = arms, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs),
     EForIn(name, index_name, iter, continuation) => {
-      let (bn, be) = overlay_bind_empty_names(ov_names, ov_effs, [name], fn_names, fn_index)
+      let (bn, be) = overlay_bind_empty_names(names = ov_names, effs = ov_effs, bound = [name], fn_names = fn_names, fn_index = fn_index)
       let (bn2, be2) = match index_name {
-        Some(index) => overlay_bind_empty_names(bn, be, [index], fn_names, fn_index),
+        Some(index) => overlay_bind_empty_names(names = bn, effs = be, bound = [index], fn_names = fn_names, fn_index = fn_index),
         None => (bn, be)
       }
-      dh_widened_only_alias_call(iter, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn2, be2)
+      dh_widened_only_alias_call(body = iter, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) || dh_widened_only_alias_call(body = continuation, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn2, ov_effs = be2)
     },
     ELoop(pairs, continuation) => {
       let bound: Array[String] = []
       let values: Array[Expr] = []
       for pair in pairs {
         let (name, value) = pair
-        Array::push(bound, name)
-        Array::push(values, value)
+        Array::push(bound, value = name)
+        Array::push(values, value = value)
       }
-      let (bn, be) = overlay_bind_empty_names(ov_names, ov_effs, bound, fn_names, fn_index)
-      dh_widened_only_alias_in(values, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn, be)
+      let (bn, be) = overlay_bind_empty_names(names = ov_names, effs = ov_effs, bound = bound, fn_names = fn_names, fn_index = fn_index)
+      dh_widened_only_alias_in(exprs = values, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) || dh_widened_only_alias_call(body = continuation, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
     },
-    _ => dh_widened_only_alias_in(expr_children(body), ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+    _ => dh_widened_only_alias_in(exprs = expr_children(body), ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
   }
 }
 
 fn dh_widened_only_alias_in(exprs: Array[Expr], ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Bool {
   let mut found = false
   for expr in exprs {
-    found = found || dh_widened_only_alias_call(expr, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
+    found = found || dh_widened_only_alias_call(body = expr, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
   }
   found
 }
@@ -1433,9 +1433,9 @@ fn dh_widened_only_alias_arms(arms: Array[(Pat, Expr)], ename: String, fn_names:
   for arm in arms {
     let (pat, body) = arm
     let bound: Array[String] = []
-    collect_pat_binds_into(pat, bound)
-    let (bn, be) = overlay_bind_empty_names(ov_names, ov_effs, bound, fn_names, fn_index)
-    found = found || dh_widened_only_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
+    collect_pat_binds_into(pat = pat, acc = bound)
+    let (bn, be) = overlay_bind_empty_names(names = ov_names, effs = ov_effs, bound = bound, fn_names = fn_names, fn_index = fn_index)
+    found = found || dh_widened_only_alias_call(body = body, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
   }
   found
 }
@@ -1454,16 +1454,16 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       // PARAMETERS and row-declaring local closures in scope. The overlay is
       // what spares `TaskGroup::spawn_suspend`, whose handled body's only
       // callee is its own `f: () -> T with Async + Exception` parameter.
-      ECall(EIdent(nm, _), _, _, _) => match lookup_program_fn_effs(fn_index, fn_effs, nm) {
-        Some(effs) => dh_labels_may_be(effs, ename),
-        None => dh_overlay_call_may_reach(nm, ename, ov_names, ov_effs, fn_effs, fn_index)
+      ECall(EIdent(nm, _), _, _, _) => match lookup_program_fn_effs(fn_index = fn_index, effs = fn_effs, name = nm) {
+        Some(effs) => dh_labels_may_be(labels = effs, ename = ename),
+        None => dh_overlay_call_may_reach(name = nm, ename = ename, ov_names = ov_names, ov_effs = ov_effs, fn_effs = fn_effs, fn_index = fn_index)
       },
       // A closure LITERAL whose row carries the effect: it may be invoked
       // from anywhere inside this body, including through a value this walk
       // cannot follow. Its PARAMETER annotations count too -- that is where
       // an ascription-wrapped annotated local keeps its row.
-      EFn(_, _, params, ret, eff, _) => dh_labels_may_be(effect_row_labels(effect_row_parse(eff)), ename) || dh_params_may_be(params, ename) || (match ret {
-        Some(rt) => dh_texpr_may_be(rt, ename),
+      EFn(_, _, params, ret, eff, _) => dh_labels_may_be(labels = effect_row_labels(effect_row_parse(eff)), ename = ename) || dh_params_may_be(params = params, ename = ename) || (match ret {
+        Some(rt) => dh_texpr_may_be(t = rt, ename = ename),
         None => false
       }),
       // A nested handle is not analysed for discharge here -- treating it as
@@ -1481,18 +1481,18 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       // was answering with a false "can never fire" (measured on the committed
       // seed too, so the false positive predates the row fix -- it was just
       // unreachable while the row was never required).
-      ELet(lname, lval, lbody, _) => match dh_overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
-        (bn, be) => (!dh_named_alias_ascription(lval, ov_names, ov_effs, fn_index) && dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, bn, be)
+      ELet(lname, lval, lbody, _) => match dh_overlay_bind_local(names = ov_names, effs = ov_effs, name = lname, val = lval, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index) {
+        (bn, be) => (!dh_named_alias_ascription(val = lval, ov_names = ov_names, ov_effs = ov_effs, fn_index = fn_index) && dh_may_reach(expr = lval, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)) || dh_may_reach(expr = lbody, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
       },
       // Assignment can change this callee after initialization. Only the
       // immutable form can supply handler evidence through its row.
-      ELetMut(lname, lval, lbody, _) => match overlay_bind_empty(ov_names, ov_effs, lname, fn_names, fn_index) {
-        (bn, be) => dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, bn, be)
+      ELetMut(lname, lval, lbody, _) => match overlay_bind_empty(names = ov_names, effs = ov_effs, name = lname, fn_names = fn_names, fn_index = fn_index) {
+        (bn, be) => dh_may_reach(expr = lval, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) || dh_may_reach(expr = lbody, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be)
       },
       // `let rec` may reference itself, so both sides see the rebound overlay
       // (same asymmetry the transitive walk's ELetRec arm keeps).
-      ELetRec(lname, lval, lbody) => match dh_overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
-        (rn, re) => dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, rn, re) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, rn, re)
+      ELetRec(lname, lval, lbody) => match dh_overlay_bind_local(names = ov_names, effs = ov_effs, name = lname, val = lval, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index) {
+        (rn, re) => dh_may_reach(expr = lval, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = rn, ov_effs = re) || dh_may_reach(expr = lbody, ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = rn, ov_effs = re)
       },
       _ => false
     }
@@ -1510,7 +1510,7 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       let mut i = 0
       let mut found = false
       while i < Array::length(children) {
-        if !found && dh_may_reach(Array::get(children, i), ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+        if !found && dh_may_reach(expr = Array::get(children, at = i), ename = ename, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) {
           found = true
         } else {
           ()
@@ -1531,13 +1531,13 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
 fn dh_callee_is_opaque(nm: String, fn_names: Array[String], fn_index: MutMap[String, Int]) -> Bool {
   if String::length(nm) == 0 || nm == "perform" || nm == "resume" {
     false
-  } else if String::index_of(nm, "::") >= 0 {
+  } else if String::index_of(nm, needle = "::") >= 0 {
     false
   } else {
-    let c = String::char_code_at(nm, 0)
+    let c = String::char_code_at(nm, at = 0)
     if c >= 65 && c <= 90 {
       false
-    } else if program_fn_exists(fn_index, nm) {
+    } else if program_fn_exists(fn_index = fn_index, name = nm) {
       false
     } else {
       match lookup_builtin(canonical_builtin_name(nm)) {
@@ -1550,7 +1550,7 @@ fn dh_callee_is_opaque(nm: String, fn_names: Array[String], fn_index: MutMap[Str
 
 fn dh_has_opaque_call(expr: Expr, fn_names: Array[String], fn_index: MutMap[String, Int]) -> Bool {
   let direct = match expr {
-    ECall(EIdent(nm, _), _, _, _) => dh_callee_is_opaque(nm, fn_names, fn_index),
+    ECall(EIdent(nm, _), _, _, _) => dh_callee_is_opaque(nm = nm, fn_names = fn_names, fn_index = fn_index),
     _ => false
   }
   if direct {
@@ -1560,7 +1560,7 @@ fn dh_has_opaque_call(expr: Expr, fn_names: Array[String], fn_index: MutMap[Stri
     let mut i = 0
     let mut found = false
     while i < Array::length(children) {
-      if !found && dh_has_opaque_call(Array::get(children, i), fn_names, fn_index) {
+      if !found && dh_has_opaque_call(expr = Array::get(children, at = i), fn_names = fn_names, fn_index = fn_index) {
         found = true
       } else {
         ()
@@ -1598,7 +1598,7 @@ fn no_lc() -> Array[(String, Option[Expr], Int)] {
 fn dh_lc_with_id(lc: Array[(String, Option[Expr], Int)], name: String, closure: Option[Expr], cell_id: Int) -> Array[(String, Option[Expr], Int)] {
   let hides = match closure {
     Some(_) => true,
-    None => dh_lc_index(lc, name) >= 0
+    None => dh_lc_index(lc = lc, name = name) >= 0
   }
   if !hides {
     lc
@@ -1606,7 +1606,7 @@ fn dh_lc_with_id(lc: Array[(String, Option[Expr], Int)], name: String, closure: 
     let out: Array[(String, Option[Expr], Int)] = [(name, closure, cell_id)]
     let mut i = 0
     while i < Array::length(lc) {
-      Array::push(out, Array::get(lc, i))
+      Array::push(out, value = Array::get(lc, at = i))
       i = i + 1
     }
     out
@@ -1614,10 +1614,10 @@ fn dh_lc_with_id(lc: Array[(String, Option[Expr], Int)], name: String, closure: 
 }
 
 fn dh_lc_with(lc: Array[(String, Option[Expr], Int)], name: String, closure: Option[Expr]) -> Array[(String, Option[Expr], Int)] {
-  dh_lc_with_id(lc, name, closure, 0)
+  dh_lc_with_id(lc = lc, name = name, closure = closure, cell_id = 0)
 }
 
-fn dh_lc_next_cell_id(lc: Array[(String, Option[Expr], Int)]) -> Int {
+fn dh_lc_next_cell_id(_ lc: Array[(String, Option[Expr], Int)]) -> Int {
   let mut next = 1
   for entry in lc {
     let (_, _, id) = entry
@@ -1634,7 +1634,7 @@ fn dh_lc_shadow_names(lc: Array[(String, Option[Expr], Int)], names: Array[Strin
   let mut out = lc
   let mut i = 0
   while i < Array::length(names) {
-    out = dh_lc_with(out, Array::get(names, i), None)
+    out = dh_lc_with(lc = out, name = Array::get(names, at = i), closure = None)
     i = i + 1
   }
   out
@@ -1645,30 +1645,30 @@ fn dh_lc_shadow_pat(lc: Array[(String, Option[Expr], Int)], pat: Pat) -> Array[(
     lc
   } else {
     let names: Array[String] = []
-    collect_pat_binds_into(pat, names)
-    dh_lc_shadow_names(lc, names)
+    collect_pat_binds_into(pat = pat, acc = names)
+    dh_lc_shadow_names(lc = lc, names = names)
   }
 }
 
 /// A handler arm binds its pattern's names and `resume`.
 fn dh_lc_shadow_arm(lc: Array[(String, Option[Expr], Int)], pat: Pat) -> Array[(String, Option[Expr], Int)] {
-  dh_lc_with(dh_lc_shadow_pat(lc, pat), "resume", None)
+  dh_lc_with(lc = dh_lc_shadow_pat(lc = lc, pat = pat), name = "resume", closure = None)
 }
 
 fn dh_lc_shadow_params(lc: Array[(String, Option[Expr], Int)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, Option[Expr], Int)] {
   let mut out = lc
   let mut i = 0
   while Array::length(out) > 0 && i < Array::length(params) {
-    let (pname, _) = Array::get(params, i)
-    out = dh_lc_with(out, effect_param_base_name(pname), None)
+    let (pname, _) = Array::get(params, at = i)
+    out = dh_lc_with(lc = out, name = effect_param_base_name(pname), closure = None)
     i = i + 1
   }
   out
 }
 
 fn dh_shadow_add(shadowed: Array[String], name: String) -> Array[String] {
-  let out = Array::slice(shadowed, 0, Array::length(shadowed))
-  Array::push(out, name)
+  let out = Array::slice(shadowed, start = 0, end = Array::length(shadowed))
+  Array::push(out, value = name)
   out
 }
 
@@ -1676,7 +1676,7 @@ fn dh_shadow_has(shadowed: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(shadowed) {
-    found = Array::get(shadowed, i) == name
+    found = Array::get(shadowed, at = i) == name
     i = i + 1
   }
   found
@@ -1689,110 +1689,110 @@ fn dh_lc_after_assigns_scoped(expr: Expr, lc: Array[(String, Option[Expr], Int)]
   match expr {
     EFn(_, _, _, _, _, _) => lc,
     ECall(EFn(_, _, params, _, _, body), args, _, _) => {
-      let before_body = dh_lc_after_assigns_in_scoped(args, lc, shadowed, certain)
+      let before_body = dh_lc_after_assigns_in_scoped(children = args, lc = lc, shadowed = shadowed, certain = certain)
       if dh_direct_abortive_transfer_in(args) {
         before_body
       } else {
         let mut inner = shadowed
         for param in params {
           let (name, _) = param
-          inner = dh_shadow_add(inner, effect_param_base_name(name))
+          inner = dh_shadow_add(shadowed = inner, name = effect_param_base_name(name))
         }
-        dh_lc_after_assigns_scoped(body, before_body, inner, certain)
+        dh_lc_after_assigns_scoped(expr = body, lc = before_body, shadowed = inner, certain = certain)
       }
     },
     EAssign(name, value, body, _) => {
-      let before = dh_lc_after_assigns_scoped(value, lc, shadowed, certain)
-      let after = if dh_shadow_has(shadowed, name) {
+      let before = dh_lc_after_assigns_scoped(expr = value, lc = lc, shadowed = shadowed, certain = certain)
+      let after = if dh_shadow_has(shadowed = shadowed, name = name) {
         before
       } else if certain {
-        dh_lc_assign(before, name, value)
+        dh_lc_assign(lc = before, name = name, val = value)
       } else {
-        dh_lc_with(before, name, None)
+        dh_lc_with(lc = before, name = name, closure = None)
       }
-      dh_lc_after_assigns_scoped(body, after, shadowed, certain)
+      dh_lc_after_assigns_scoped(expr = body, lc = after, shadowed = shadowed, certain = certain)
     },
     EAssignOp(name, _, value, body, _) => {
-      let before = dh_lc_after_assigns_scoped(value, lc, shadowed, certain)
-      let after = if dh_shadow_has(shadowed, name) {
+      let before = dh_lc_after_assigns_scoped(expr = value, lc = lc, shadowed = shadowed, certain = certain)
+      let after = if dh_shadow_has(shadowed = shadowed, name = name) {
         before
       } else {
-        dh_lc_with(before, name, None)
+        dh_lc_with(lc = before, name = name, closure = None)
       }
-      dh_lc_after_assigns_scoped(body, after, shadowed, certain)
+      dh_lc_after_assigns_scoped(expr = body, lc = after, shadowed = shadowed, certain = certain)
     },
-    ELet(name, value, body, _) => dh_lc_after_assigns_scoped(body, dh_lc_after_assigns_scoped(value, lc, shadowed, certain), dh_shadow_add(shadowed, name), certain),
-    ELetMut(name, value, body, _) => dh_lc_after_assigns_scoped(body, dh_lc_after_assigns_scoped(value, lc, shadowed, certain), dh_shadow_add(shadowed, name), certain),
+    ELet(name, value, body, _) => dh_lc_after_assigns_scoped(expr = body, lc = dh_lc_after_assigns_scoped(expr = value, lc = lc, shadowed = shadowed, certain = certain), shadowed = dh_shadow_add(shadowed = shadowed, name = name), certain = certain),
+    ELetMut(name, value, body, _) => dh_lc_after_assigns_scoped(expr = body, lc = dh_lc_after_assigns_scoped(expr = value, lc = lc, shadowed = shadowed, certain = certain), shadowed = dh_shadow_add(shadowed = shadowed, name = name), certain = certain),
     ELetRec(name, value, body) => {
-      let inner = dh_shadow_add(shadowed, name)
-      dh_lc_after_assigns_scoped(body, dh_lc_after_assigns_scoped(value, lc, inner, certain), inner, certain)
+      let inner = dh_shadow_add(shadowed = shadowed, name = name)
+      dh_lc_after_assigns_scoped(expr = body, lc = dh_lc_after_assigns_scoped(expr = value, lc = lc, shadowed = inner, certain = certain), shadowed = inner, certain = certain)
     },
     ESeq(first, rest) => {
-      let after_first = dh_lc_after_assigns_scoped(first, lc, shadowed, certain)
+      let after_first = dh_lc_after_assigns_scoped(expr = first, lc = lc, shadowed = shadowed, certain = certain)
       if dh_direct_abortive_transfer(first) {
         after_first
       } else {
-        dh_lc_after_assigns_scoped(rest, after_first, shadowed, certain)
+        dh_lc_after_assigns_scoped(expr = rest, lc = after_first, shadowed = shadowed, certain = certain)
       }
     },
     EIf(cond, then_body, else_body) => {
-      let after_cond = dh_lc_after_assigns_scoped(cond, lc, shadowed, certain)
-      let after_then = dh_lc_after_assigns_scoped(then_body, after_cond, shadowed, false)
-      dh_lc_after_assigns_scoped(else_body, after_then, shadowed, false)
+      let after_cond = dh_lc_after_assigns_scoped(expr = cond, lc = lc, shadowed = shadowed, certain = certain)
+      let after_then = dh_lc_after_assigns_scoped(expr = then_body, lc = after_cond, shadowed = shadowed, certain = false)
+      dh_lc_after_assigns_scoped(expr = else_body, lc = after_then, shadowed = shadowed, certain = false)
     },
     EMatch(scrutinee, arms) => {
-      let mut out = dh_lc_after_assigns_scoped(scrutinee, lc, shadowed, certain)
+      let mut out = dh_lc_after_assigns_scoped(expr = scrutinee, lc = lc, shadowed = shadowed, certain = certain)
       for arm in arms {
         let (pat, body) = arm
         let names: Array[String] = []
-        collect_pat_binds_into(pat, names)
+        collect_pat_binds_into(pat = pat, acc = names)
         let mut arm_shadow = shadowed
         for name in names {
-          arm_shadow = dh_shadow_add(arm_shadow, name)
+          arm_shadow = dh_shadow_add(shadowed = arm_shadow, name = name)
         }
-        out = dh_lc_after_assigns_scoped(body, out, arm_shadow, false)
+        out = dh_lc_after_assigns_scoped(expr = body, lc = out, shadowed = arm_shadow, certain = false)
       }
       out
     },
     EHandle(body, arms) => {
-      let mut out = dh_lc_after_assigns_scoped(body, lc, shadowed, certain)
+      let mut out = dh_lc_after_assigns_scoped(expr = body, lc = lc, shadowed = shadowed, certain = certain)
       for arm in arms {
         let (pat, arm_body) = arm
         let names: Array[String] = []
-        collect_pat_binds_into(pat, names)
-        let mut arm_shadow = dh_shadow_add(shadowed, "resume")
+        collect_pat_binds_into(pat = pat, acc = names)
+        let mut arm_shadow = dh_shadow_add(shadowed = shadowed, name = "resume")
         for name in names {
-          arm_shadow = dh_shadow_add(arm_shadow, name)
+          arm_shadow = dh_shadow_add(shadowed = arm_shadow, name = name)
         }
-        out = dh_lc_after_assigns_scoped(arm_body, out, arm_shadow, false)
+        out = dh_lc_after_assigns_scoped(expr = arm_body, lc = out, shadowed = arm_shadow, certain = false)
       }
       out
     },
-    EWhile(cond, body) => dh_lc_after_assigns_scoped(body, dh_lc_after_assigns_scoped(cond, lc, shadowed, certain), shadowed, false),
+    EWhile(cond, body) => dh_lc_after_assigns_scoped(expr = body, lc = dh_lc_after_assigns_scoped(expr = cond, lc = lc, shadowed = shadowed, certain = certain), shadowed = shadowed, certain = false),
     EForIn(name, index_name, iter, body) => {
-      let after_iter = dh_lc_after_assigns_scoped(iter, lc, shadowed, certain)
-      let inner = dh_shadow_add(shadowed, name)
+      let after_iter = dh_lc_after_assigns_scoped(expr = iter, lc = lc, shadowed = shadowed, certain = certain)
+      let inner = dh_shadow_add(shadowed = shadowed, name = name)
       let inner2 = match index_name {
-        Some(idx) => dh_shadow_add(inner, idx),
+        Some(idx) => dh_shadow_add(shadowed = inner, name = idx),
         None => inner
       }
-      dh_lc_after_assigns_scoped(body, after_iter, inner2, false)
+      dh_lc_after_assigns_scoped(expr = body, lc = after_iter, shadowed = inner2, certain = false)
     },
     ELoop(pairs, body) => {
       let mut out = lc
       let mut inner = shadowed
       for pair in pairs {
         let (name, value) = pair
-        out = dh_lc_after_assigns_scoped(value, out, shadowed, certain)
-        inner = dh_shadow_add(inner, name)
+        out = dh_lc_after_assigns_scoped(expr = value, lc = out, shadowed = shadowed, certain = certain)
+        inner = dh_shadow_add(shadowed = inner, name = name)
       }
-      dh_lc_after_assigns_scoped(body, out, inner, false)
+      dh_lc_after_assigns_scoped(expr = body, lc = out, shadowed = inner, certain = false)
     },
     EBinOp(op, left, right, _) => {
-      let after_left = dh_lc_after_assigns_scoped(left, lc, shadowed, certain)
-      dh_lc_after_assigns_scoped(right, after_left, shadowed, certain && op != "&&" && op != "||")
+      let after_left = dh_lc_after_assigns_scoped(expr = left, lc = lc, shadowed = shadowed, certain = certain)
+      dh_lc_after_assigns_scoped(expr = right, lc = after_left, shadowed = shadowed, certain = certain && op != "&&" && op != "||")
     },
-    _ => dh_lc_after_assigns_in_scoped(expr_children(expr), lc, shadowed, certain)
+    _ => dh_lc_after_assigns_in_scoped(children = expr_children(expr), lc = lc, shadowed = shadowed, certain = certain)
   }
 }
 
@@ -1801,8 +1801,8 @@ fn dh_lc_after_assigns_in_scoped(children: Array[Expr], lc: Array[(String, Optio
   let mut i = 0
   let mut aborted = false
   while i < Array::length(children) && !aborted {
-    let child = Array::get(children, i)
-    out = dh_lc_after_assigns_scoped(child, out, shadowed, certain)
+    let child = Array::get(children, at = i)
+    out = dh_lc_after_assigns_scoped(expr = child, lc = out, shadowed = shadowed, certain = certain)
     aborted = dh_direct_abortive_transfer(child)
     i = i + 1
   }
@@ -1810,17 +1810,17 @@ fn dh_lc_after_assigns_in_scoped(children: Array[Expr], lc: Array[(String, Optio
 }
 
 fn dh_lc_after_assigns(expr: Expr, lc: Array[(String, Option[Expr], Int)]) -> Array[(String, Option[Expr], Int)] {
-  dh_lc_after_assigns_scoped(expr, lc, [], true)
+  dh_lc_after_assigns_scoped(expr = expr, lc = lc, shadowed = [], certain = true)
 }
 
 /// A direct throw cannot reach the next statement. A surrounding handle is
 /// processed separately because its arm may return normally.
-fn dh_direct_abortive_transfer(expr: Expr) -> Bool {
+fn dh_direct_abortive_transfer(_ expr: Expr) -> Bool {
   match expr {
     ECall(EIdent(name, _), args, _, _) => if name == "throw" {
       true
     } else if name == "perform" && Array::length(args) == 1 {
-      match Array::get(args, 0) {
+      match Array::get(args, at = 0) {
         ECall(EIdent(op, _), _, _, _) => is_exception_throw_operation(op),
         EIdent(op, _) => is_exception_throw_operation(op),
         _ => false
@@ -1834,7 +1834,7 @@ fn dh_direct_abortive_transfer(expr: Expr) -> Bool {
   }
 }
 
-fn dh_direct_abortive_transfer_in(exprs: Array[Expr]) -> Bool {
+fn dh_direct_abortive_transfer_in(_ exprs: Array[Expr]) -> Bool {
   let mut found = false
   for expr in exprs {
     found = found || dh_direct_abortive_transfer(expr)
@@ -1845,7 +1845,7 @@ fn dh_direct_abortive_transfer_in(exprs: Array[Expr]) -> Bool {
 fn dh_for_names(name: String, index_name: Option[String]) -> Array[String] {
   let names: Array[String] = [name]
   match index_name {
-    Some(idx) => Array::push(names, idx),
+    Some(idx) => Array::push(names, value = idx),
     None => ()
   }
   names
@@ -1867,7 +1867,7 @@ fn dh_for_names(name: String, index_name: Option[String]) -> Array[String] {
 /// rowless. An annotation that does not expand to a function type here (an
 /// alias from another module, a generic alias named without its arguments)
 /// is left unclassified, so no edit is suggested on a guess.
-fn dh_lc_closure(val: Expr) -> Option[Expr] {
+fn dh_lc_closure(_ val: Expr) -> Option[Expr] {
   match val {
     EFn(_, _, _, _, eff, _) => if Array::length(effect_row_labels(effect_row_parse(eff))) == 0 {
       Some(val)
@@ -1875,10 +1875,10 @@ fn dh_lc_closure(val: Expr) -> Option[Expr] {
       None
     },
     ECall(EFn(_, _, params, _, _, EIdent(body_name, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 && body_name == "__asc" {
-      match Array::get(params, 0) {
+      match Array::get(params, at = 0) {
         ("__asc", Some(ann)) => match dh_expand_type_alias(ann) {
           Some(TyFn(_, _, ann_eff)) => if Array::length(effect_row_labels(effect_row_parse(ann_eff))) == 0 {
-            dh_lc_closure(Array::get(args, 0))
+            dh_lc_closure(Array::get(args, at = 0))
           } else {
             None
           },
@@ -1901,10 +1901,10 @@ fn dh_lc_closure(val: Expr) -> Option[Expr] {
 /// through it must reach the same handlers. Empty when the value is not an
 /// ascribed closure literal or the annotation does not expand to a function
 /// type here.
-fn dh_ascribed_closure_row(val: Expr) -> Array[String] {
+fn dh_ascribed_closure_row(_ val: Expr) -> Array[String] {
   match val {
-    ECall(EFn(_, _, params, _, _, EIdent(body_name, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 && body_name == "__asc" && dh_lc_is_fn_literal(Array::get(args, 0)) {
-      match Array::get(params, 0) {
+    ECall(EFn(_, _, params, _, _, EIdent(body_name, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 && body_name == "__asc" && dh_lc_is_fn_literal(Array::get(args, at = 0)) {
+      match Array::get(params, at = 0) {
         ("__asc", Some(ann)) => match dh_expand_type_alias(ann) {
           Some(TyFn(_, _, ann_eff)) => effect_row_labels(effect_row_parse(ann_eff)),
           _ => no_str_labels()
@@ -1918,7 +1918,7 @@ fn dh_ascribed_closure_row(val: Expr) -> Array[String] {
   }
 }
 
-fn dh_lc_is_fn_literal(val: Expr) -> Bool {
+fn dh_lc_is_fn_literal(_ val: Expr) -> Bool {
   match val {
     EFn(_, _, _, _, _, _) => true,
     _ => false
@@ -1929,7 +1929,7 @@ fn dh_lc_is_fn_literal(val: Expr) -> Bool {
 /// its alias annotation (`dh_ascribed_closure_row`) is registered with that
 /// row, first, so `lookup_fn_effs` finds it before anything it shadows.
 fn dh_overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: String, val: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
-  let (bn, be) = overlay_bind_local(names, effs, name, val, fn_names, fn_effs, fn_index)
+  let (bn, be) = overlay_bind_local(names = names, effs = effs, name = name, val = val, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index)
   let row = dh_ascribed_closure_row(val)
   if Array::length(row) == 0 {
     (bn, be)
@@ -1938,8 +1938,8 @@ fn dh_overlay_bind_local(names: Array[String], effs: Array[Array[String]], name:
     let out_effs = [row]
     let mut i = 0
     while i < Array::length(bn) {
-      Array::push(out_names, Array::get(bn, i))
-      Array::push(out_effs, Array::get(be, i))
+      Array::push(out_names, value = Array::get(bn, at = i))
+      Array::push(out_effs, value = Array::get(be, at = i))
       i = i + 1
     }
     (out_names, out_effs)
@@ -1947,18 +1947,18 @@ fn dh_overlay_bind_local(names: Array[String], effs: Array[Array[String]], name:
 }
 
 fn dh_lc_bind(lc: Array[(String, Option[Expr], Int)], name: String, val: Expr) -> Array[(String, Option[Expr], Int)] {
-  dh_lc_with(lc, name, dh_lc_closure(val))
+  dh_lc_with(lc = lc, name = name, closure = dh_lc_closure(val))
 }
 
 fn dh_lc_bind_mut(lc: Array[(String, Option[Expr], Int)], name: String, val: Expr) -> Array[(String, Option[Expr], Int)] {
-  dh_lc_with_id(lc, name, dh_lc_closure(val), dh_lc_next_cell_id(lc))
+  dh_lc_with_id(lc = lc, name = name, closure = dh_lc_closure(val), cell_id = dh_lc_next_cell_id(lc))
 }
 
 /// Assignment replaces the current mutable cell. A previous closure of the
 /// same spelling must not become the replacement's recursive callee.
 fn dh_lc_assign(lc: Array[(String, Option[Expr], Int)], name: String, val: Expr) -> Array[(String, Option[Expr], Int)] {
   let closure = dh_lc_closure(val)
-  let old_index = dh_lc_index(lc, name)
+  let old_index = dh_lc_index(lc = lc, name = name)
   let needed = match closure {
     Some(_) => true,
     None => old_index >= 0
@@ -1968,7 +1968,7 @@ fn dh_lc_assign(lc: Array[(String, Option[Expr], Int)], name: String, val: Expr)
   } else {
     let out: Array[(String, Option[Expr], Int)] = []
     let cell_id = if old_index >= 0 {
-      let (_, _, id) = Array::get(lc, old_index)
+      let (_, _, id) = Array::get(lc, at = old_index)
       if id > 0 {
         id
       } else {
@@ -1978,20 +1978,20 @@ fn dh_lc_assign(lc: Array[(String, Option[Expr], Int)], name: String, val: Expr)
       dh_lc_next_cell_id(lc)
     }
     if old_index < 0 {
-      dh_lc_append_assignment(out, lc, name, closure, Array::length(lc), cell_id)
+      dh_lc_append_assignment(out = out, lc = lc, name = name, closure = closure, capture_end = Array::length(lc), cell_id = cell_id)
     } else {
       ()
     }
     let mut i = 0
     for entry in lc {
       if i == old_index {
-        dh_lc_append_assignment(out, lc, name, closure, old_index, cell_id)
+        dh_lc_append_assignment(out = out, lc = lc, name = name, closure = closure, capture_end = old_index, cell_id = cell_id)
       } else {
         let (entry_name, _, entry_id) = entry
         if cell_id > 0 && entry_id == cell_id {
-          Array::push(out, (entry_name, closure, entry_id))
+          Array::push(out, value = (entry_name, closure, entry_id))
         } else {
-          Array::push(out, entry)
+          Array::push(out, value = entry)
         }
       }
       i = i + 1
@@ -2000,26 +2000,26 @@ fn dh_lc_assign(lc: Array[(String, Option[Expr], Int)], name: String, val: Expr)
   }
 }
 
-fn dh_lc_assignment_start(name: String) -> String {
+fn dh_lc_assignment_start(_ name: String) -> String {
   String::concat("##dh_capture_start##", name)
 }
 
-fn dh_lc_assignment_end(name: String) -> String {
+fn dh_lc_assignment_end(_ name: String) -> String {
   String::concat("##dh_capture_end##", name)
 }
 
 fn dh_lc_append_assignment(out: Array[(String, Option[Expr], Int)], lc: Array[(String, Option[Expr], Int)], name: String, closure: Option[Expr], capture_end: Int, cell_id: Int) -> Unit {
-  Array::push(out, (name, closure, cell_id))
-  Array::push(out, (name, None, 0))
+  Array::push(out, value = (name, closure, cell_id))
+  Array::push(out, value = (name, None, 0))
   match closure {
     Some(_) => {
-      Array::push(out, (dh_lc_assignment_start(name), None, 0))
+      Array::push(out, value = (dh_lc_assignment_start(name), None, 0))
       let mut i = 0
       while i < capture_end {
-        Array::push(out, Array::get(lc, i))
+        Array::push(out, value = Array::get(lc, at = i))
         i = i + 1
       }
-      Array::push(out, (dh_lc_assignment_end(name), None, 0))
+      Array::push(out, value = (dh_lc_assignment_end(name), None, 0))
     },
     None => ()
   }
@@ -2030,17 +2030,17 @@ fn dh_lc_cell_chunk_end(lc: Array[(String, Option[Expr], Int)], index: Int, name
   if index + 2 >= Array::length(lc) {
     index + 1
   } else {
-    let (marker, _, _) = Array::get(lc, index + 2)
+    let (marker, _, _) = Array::get(lc, at = index + 2)
     if marker != dh_lc_assignment_start(name) {
       index + 1
     } else {
       let mut i = index + 3
       let mut depth = 1
       while i < Array::length(lc) && depth > 0 {
-        let (entry_name, _, _) = Array::get(lc, i)
-        if String::starts_with(entry_name, "##dh_capture_start##") {
+        let (entry_name, _, _) = Array::get(lc, at = i)
+        if String::starts_with(entry_name, prefix = "##dh_capture_start##") {
           depth = depth + 1
-        } else if String::starts_with(entry_name, "##dh_capture_end##") {
+        } else if String::starts_with(entry_name, prefix = "##dh_capture_end##") {
           depth = depth - 1
         } else {
           ()
@@ -2059,10 +2059,10 @@ fn dh_lc_live_cell_index(lc: Array[(String, Option[Expr], Int)], cell_id: Int) -
   let mut found = 0 - 1
   let mut i = 0
   while i < Array::length(lc) && found < 0 {
-    let (name, _, id) = Array::get(lc, i)
-    if String::starts_with(name, "##dh_capture_start##") {
+    let (name, _, id) = Array::get(lc, at = i)
+    if String::starts_with(name, prefix = "##dh_capture_start##") {
       depth = depth + 1
-    } else if String::starts_with(name, "##dh_capture_end##") {
+    } else if String::starts_with(name, prefix = "##dh_capture_end##") {
       depth = depth - 1
     } else if depth == 0 && id == cell_id {
       found = i
@@ -2079,53 +2079,53 @@ fn dh_lc_live_cell_index(lc: Array[(String, Option[Expr], Int)], cell_id: Int) -
 /// closures still see only their own lexical suffix.
 fn dh_lc_capture_scope(lc: Array[(String, Option[Expr], Int)], index: Int, name: String) -> Array[(String, Option[Expr], Int)] {
   let assigned = if index + 2 < Array::length(lc) {
-    let (marker, _, _) = Array::get(lc, index + 2)
+    let (marker, _, _) = Array::get(lc, at = index + 2)
     marker == dh_lc_assignment_start(name)
   } else {
     false
   }
   if !assigned {
-    Array::slice(lc, index + 1, Array::length(lc))
+    Array::slice(lc, start = index + 1, end = Array::length(lc))
   } else {
     let scope: Array[(String, Option[Expr], Int)] = [(name, None, 0)]
     let mut i = index + 3
     let mut depth = 1
     while i < Array::length(lc) && depth > 0 {
-      let entry = Array::get(lc, i)
+      let entry = Array::get(lc, at = i)
       let (entry_name, _, entry_id) = entry
       let live_index = if entry_id > 0 {
-        dh_lc_live_cell_index(lc, entry_id)
+        dh_lc_live_cell_index(lc = lc, cell_id = entry_id)
       } else {
         0 - 1
       }
       if live_index >= 0 {
-        let (live_name, _, _) = Array::get(lc, live_index)
-        let live_end = dh_lc_cell_chunk_end(lc, live_index, live_name)
+        let (live_name, _, _) = Array::get(lc, at = live_index)
+        let live_end = dh_lc_cell_chunk_end(lc = lc, index = live_index, name = live_name)
         let mut j = live_index
         while j < live_end {
-          Array::push(scope, Array::get(lc, j))
+          Array::push(scope, value = Array::get(lc, at = j))
           j = j + 1
         }
-        i = dh_lc_cell_chunk_end(lc, i, entry_name)
-      } else if String::starts_with(entry_name, "##dh_capture_start##") {
+        i = dh_lc_cell_chunk_end(lc = lc, index = i, name = entry_name)
+      } else if String::starts_with(entry_name, prefix = "##dh_capture_start##") {
         depth = depth + 1
-        Array::push(scope, entry)
+        Array::push(scope, value = entry)
         i = i + 1
-      } else if String::starts_with(entry_name, "##dh_capture_end##") {
+      } else if String::starts_with(entry_name, prefix = "##dh_capture_end##") {
         depth = depth - 1
         if depth > 0 {
-          Array::push(scope, entry)
+          Array::push(scope, value = entry)
         } else {
           ()
         }
         i = i + 1
       } else {
-        Array::push(scope, entry)
+        Array::push(scope, value = entry)
         i = i + 1
       }
     }
     while i < Array::length(lc) {
-      Array::push(scope, Array::get(lc, i))
+      Array::push(scope, value = Array::get(lc, at = i))
       i = i + 1
     }
     scope
@@ -2137,7 +2137,7 @@ fn dh_lc_index(lc: Array[(String, Option[Expr], Int)], name: String) -> Int {
   let mut found = 0 - 1
   let mut i = 0
   while found < 0 && i < Array::length(lc) {
-    let (n, _, _) = Array::get(lc, i)
+    let (n, _, _) = Array::get(lc, at = i)
     if n == name {
       found = i
     } else {
@@ -2154,7 +2154,7 @@ fn dh_labels_name(labels: Array[String], ename: String) -> Bool {
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(labels) {
-    let l = Array::get(labels, i)
+    let l = Array::get(labels, at = i)
     found = !label_is_effect_var(l) && row_label_base(effect_name_of_op(l)) == ename
     i = i + 1
   }
@@ -2172,22 +2172,22 @@ fn dh_expr_performs(expr: Expr, ename: String, fn_effs: Array[Array[String]], fn
       // A handle of `ename` inside the closure discharges what its body
       // performs; only its arms can still reach a handler outside.
       EHandle(body, arms) => {
-        let own = effect_row_has_label(Some(collect_handle_effects(arms)), ename)
-        let mut found = !own && dh_expr_performs(body, ename, fn_effs, fn_index, ov_names, ov_effs)
+        let own = effect_row_has_label(row = Some(collect_handle_effects(arms)), wanted = ename)
+        let mut found = !own && dh_expr_performs(expr = body, ename = ename, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
         let mut ai = 0
         while !found && ai < Array::length(arms) {
-          let (_, arm_body) = Array::get(arms, ai)
-          found = dh_expr_performs(arm_body, ename, fn_effs, fn_index, ov_names, ov_effs)
+          let (_, arm_body) = Array::get(arms, at = ai)
+          found = dh_expr_performs(expr = arm_body, ename = ename, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
           ai = ai + 1
         }
         found
       },
       _ => {
         let direct = match expr {
-          ECall(EIdent(nm, _), _, _, _) => match lookup_fn_effs(ov_names, ov_effs, nm) {
-            Some(effs) => dh_labels_name(effs, ename),
-            None => match lookup_program_fn_effs(fn_index, fn_effs, nm) {
-              Some(effs) => dh_labels_name(effs, ename),
+          ECall(EIdent(nm, _), _, _, _) => match lookup_fn_effs(names = ov_names, effs = ov_effs, name = nm) {
+            Some(effs) => dh_labels_name(labels = effs, ename = ename),
+            None => match lookup_program_fn_effs(fn_index = fn_index, effs = fn_effs, name = nm) {
+              Some(effs) => dh_labels_name(labels = effs, ename = ename),
               None => false
             }
           },
@@ -2200,7 +2200,7 @@ fn dh_expr_performs(expr: Expr, ename: String, fn_effs: Array[Array[String]], fn
           let mut found = false
           let mut i = 0
           while !found && i < Array::length(children) {
-            found = dh_expr_performs(Array::get(children, i), ename, fn_effs, fn_index, ov_names, ov_effs)
+            found = dh_expr_performs(expr = Array::get(children, at = i), ename = ename, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
             i = i + 1
           }
           found
@@ -2216,11 +2216,11 @@ fn dh_expr_performs(expr: Expr, ename: String, fn_effs: Array[Array[String]], fn
 fn dh_closure_performs(closure: Expr, ename: String, scope: Array[(String, Option[Expr], Int)], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Bool {
   match closure {
     EFn(_, _, params, _, _, body) => {
-      let (pn, pe) = dh_overlay_with_params(no_str_labels(), no_ov_effs(), params, fn_names, fn_index)
-      if dh_expr_performs(body, ename, fn_effs, fn_index, pn, pe) {
+      let (pn, pe) = dh_overlay_with_params(ov_names = no_str_labels(), ov_effs = no_ov_effs(), params = params, fn_names = fn_names, fn_index = fn_index)
+      if dh_expr_performs(expr = body, ename = ename, fn_effs = fn_effs, fn_index = fn_index, ov_names = pn, ov_effs = pe) {
         true
       } else if depth > 0 {
-        match dh_rowless_closure_call(body, ename, dh_lc_shadow_params(scope, params), fn_names, fn_effs, fn_index, depth - 1) {
+        match dh_rowless_closure_call(expr = body, ename = ename, lc = dh_lc_shadow_params(lc = scope, params = params), fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth - 1) {
           Some(_) => true,
           None => false
         }
@@ -2240,9 +2240,9 @@ fn dh_rowless_closure_call_in(exprs: Array[Expr], ename: String, lc: Array[(Stri
   while i < Array::length(exprs) && !aborted {
     match found {
       None => {
-        let child = Array::get(exprs, i)
-        found = dh_rowless_closure_call(child, ename, current, fn_names, fn_effs, fn_index, depth)
-        current = dh_lc_after_assigns(child, current)
+        let child = Array::get(exprs, at = i)
+        found = dh_rowless_closure_call(expr = child, ename = ename, lc = current, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
+        current = dh_lc_after_assigns(expr = child, lc = current)
         aborted = dh_direct_abortive_transfer(child)
       },
       Some(_) => ()
@@ -2258,13 +2258,13 @@ fn dh_rowless_closure_call_arms(arms: Array[(Pat, Expr)], ename: String, lc: Arr
   while i < Array::length(arms) {
     match found {
       None => {
-        let (pat, arm_body) = Array::get(arms, i)
+        let (pat, arm_body) = Array::get(arms, at = i)
         let arm_lc = if handler {
-          dh_lc_shadow_arm(lc, pat)
+          dh_lc_shadow_arm(lc = lc, pat = pat)
         } else {
-          dh_lc_shadow_pat(lc, pat)
+          dh_lc_shadow_pat(lc = lc, pat = pat)
         }
-        found = dh_rowless_closure_call(arm_body, ename, arm_lc, fn_names, fn_effs, fn_index, depth)
+        found = dh_rowless_closure_call(expr = arm_body, ename = ename, lc = arm_lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
       },
       Some(_) => ()
     }
@@ -2281,11 +2281,11 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
     ECall(callee, args, _, _) => {
       let direct = match callee {
         EIdent(nm, off) => {
-          let idx = dh_lc_index(lc, nm)
-          if idx >= 0 && dh_callee_is_opaque(nm, fn_names, fn_index) {
-            let (_, closure, _) = Array::get(lc, idx)
+          let idx = dh_lc_index(lc = lc, name = nm)
+          if idx >= 0 && dh_callee_is_opaque(nm = nm, fn_names = fn_names, fn_index = fn_index) {
+            let (_, closure, _) = Array::get(lc, at = idx)
             match closure {
-              Some(lit) => if dh_closure_performs(lit, ename, dh_lc_capture_scope(lc, idx, nm), fn_names, fn_effs, fn_index, depth) {
+              Some(lit) => if dh_closure_performs(closure = lit, ename = ename, scope = dh_lc_capture_scope(lc = lc, index = idx, name = nm), fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
                 Some((nm, off))
               } else {
                 None
@@ -2300,73 +2300,73 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
       }
       match direct {
         Some(hit) => Some(hit),
-        None => dh_rowless_closure_call_in(expr_children(expr), ename, lc, fn_names, fn_effs, fn_index, depth)
+        None => dh_rowless_closure_call_in(exprs = expr_children(expr), ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
       }
     },
-    ELet(name, val, body, _) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
+    ELet(name, val, body, _) => match dh_rowless_closure_call(expr = val, ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call(body, ename, dh_lc_bind(lc, name, val), fn_names, fn_effs, fn_index, depth)
+      None => dh_rowless_closure_call(expr = body, ename = ename, lc = dh_lc_bind(lc = lc, name = name, val = val), fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
     },
-    ELetMut(name, val, body, _) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
+    ELetMut(name, val, body, _) => match dh_rowless_closure_call(expr = val, ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call(body, ename, dh_lc_bind_mut(lc, name, val), fn_names, fn_effs, fn_index, depth)
+      None => dh_rowless_closure_call(expr = body, ename = ename, lc = dh_lc_bind_mut(lc = lc, name = name, val = val), fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
     },
     EAssign(name, val, body, _) => {
-      let assigned = dh_lc_assign(lc, name, val)
+      let assigned = dh_lc_assign(lc = lc, name = name, val = val)
       let rhs_lc = match val {
         EFn(_, _, _, _, _, _) => assigned,
         _ => lc
       }
-      match dh_rowless_closure_call(val, ename, rhs_lc, fn_names, fn_effs, fn_index, depth) {
+      match dh_rowless_closure_call(expr = val, ename = ename, lc = rhs_lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
         Some(hit) => Some(hit),
-        None => dh_rowless_closure_call(body, ename, assigned, fn_names, fn_effs, fn_index, depth)
+        None => dh_rowless_closure_call(expr = body, ename = ename, lc = assigned, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
       }
     },
-    EAssignOp(name, _, val, body, _) => match dh_rowless_closure_call(val, ename, lc, fn_names, fn_effs, fn_index, depth) {
+    EAssignOp(name, _, val, body, _) => match dh_rowless_closure_call(expr = val, ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call(body, ename, dh_lc_with(lc, name, None), fn_names, fn_effs, fn_index, depth)
+      None => dh_rowless_closure_call(expr = body, ename = ename, lc = dh_lc_with(lc = lc, name = name, closure = None), fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
     },
-    ESeq(first, rest) => match dh_rowless_closure_call(first, ename, lc, fn_names, fn_effs, fn_index, depth) {
+    ESeq(first, rest) => match dh_rowless_closure_call(expr = first, ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call(rest, ename, dh_lc_after_assigns(first, lc), fn_names, fn_effs, fn_index, depth)
+      None => dh_rowless_closure_call(expr = rest, ename = ename, lc = dh_lc_after_assigns(expr = first, lc = lc), fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
     },
     ELetRec(name, val, body) => {
-      let rlc = dh_lc_bind(lc, name, val)
-      match dh_rowless_closure_call(val, ename, rlc, fn_names, fn_effs, fn_index, depth) {
+      let rlc = dh_lc_bind(lc = lc, name = name, val = val)
+      match dh_rowless_closure_call(expr = val, ename = ename, lc = rlc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
         Some(hit) => Some(hit),
-        None => dh_rowless_closure_call(body, ename, rlc, fn_names, fn_effs, fn_index, depth)
+        None => dh_rowless_closure_call(expr = body, ename = ename, lc = rlc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
       }
     },
-    EFn(_, _, params, _, _, body) => dh_rowless_closure_call(body, ename, dh_lc_shadow_params(lc, params), fn_names, fn_effs, fn_index, depth),
-    EIf(cond, then_body, else_body) => match dh_rowless_closure_call(cond, ename, lc, fn_names, fn_effs, fn_index, depth) {
+    EFn(_, _, params, _, _, body) => dh_rowless_closure_call(expr = body, ename = ename, lc = dh_lc_shadow_params(lc = lc, params = params), fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth),
+    EIf(cond, then_body, else_body) => match dh_rowless_closure_call(expr = cond, ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
       Some(hit) => Some(hit),
       None => {
-        let after_cond = dh_lc_after_assigns(cond, lc)
-        match dh_rowless_closure_call(then_body, ename, after_cond, fn_names, fn_effs, fn_index, depth) {
+        let after_cond = dh_lc_after_assigns(expr = cond, lc = lc)
+        match dh_rowless_closure_call(expr = then_body, ename = ename, lc = after_cond, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
           Some(hit) => Some(hit),
-          None => dh_rowless_closure_call(else_body, ename, after_cond, fn_names, fn_effs, fn_index, depth)
+          None => dh_rowless_closure_call(expr = else_body, ename = ename, lc = after_cond, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
         }
       }
     },
-    EWhile(cond, body) => match dh_rowless_closure_call(cond, ename, lc, fn_names, fn_effs, fn_index, depth) {
+    EWhile(cond, body) => match dh_rowless_closure_call(expr = cond, ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call(body, ename, dh_lc_after_assigns(cond, lc), fn_names, fn_effs, fn_index, depth)
+      None => dh_rowless_closure_call(expr = body, ename = ename, lc = dh_lc_after_assigns(expr = cond, lc = lc), fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
     },
-    EMatch(scrutinee, arms) => match dh_rowless_closure_call(scrutinee, ename, lc, fn_names, fn_effs, fn_index, depth) {
+    EMatch(scrutinee, arms) => match dh_rowless_closure_call(expr = scrutinee, ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call_arms(arms, ename, dh_lc_after_assigns(scrutinee, lc), fn_names, fn_effs, fn_index, depth, false)
+      None => dh_rowless_closure_call_arms(arms = arms, ename = ename, lc = dh_lc_after_assigns(expr = scrutinee, lc = lc), fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth, handler = false)
     },
     // A nested handle of the effect answers for its own body.
     EHandle(body, arms) => {
-      let own = effect_row_has_label(Some(collect_handle_effects(arms)), ename)
+      let own = effect_row_has_label(row = Some(collect_handle_effects(arms)), wanted = ename)
       let in_body = if own {
         None
       } else {
-        dh_rowless_closure_call(body, ename, lc, fn_names, fn_effs, fn_index, depth)
+        dh_rowless_closure_call(expr = body, ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
       }
       match in_body {
         Some(hit) => Some(hit),
-        None => dh_rowless_closure_call_arms(arms, ename, lc, fn_names, fn_effs, fn_index, depth, true)
+        None => dh_rowless_closure_call_arms(arms = arms, ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth, handler = true)
       }
     },
     ELoop(params, body) => {
@@ -2374,22 +2374,22 @@ fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[
       let inits: Array[Expr] = []
       let mut pi = 0
       while pi < Array::length(params) {
-        let (pname, init) = Array::get(params, pi)
-        Array::push(names, pname)
-        Array::push(inits, init)
+        let (pname, init) = Array::get(params, at = pi)
+        Array::push(names, value = pname)
+        Array::push(inits, value = init)
         pi = pi + 1
       }
-      match dh_rowless_closure_call_in(inits, ename, lc, fn_names, fn_effs, fn_index, depth) {
+      match dh_rowless_closure_call_in(exprs = inits, ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
         Some(hit) => Some(hit),
-        None => dh_rowless_closure_call(body, ename, dh_lc_shadow_names(dh_lc_after_assigns_in_scoped(inits, lc, [
-        ], true), names), fn_names, fn_effs, fn_index, depth)
+        None => dh_rowless_closure_call(expr = body, ename = ename, lc = dh_lc_shadow_names(lc = dh_lc_after_assigns_in_scoped(children = inits, lc = lc, shadowed = [
+        ], certain = true), names = names), fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
       }
     },
-    EForIn(name, index_name, iter, body) => match dh_rowless_closure_call(iter, ename, lc, fn_names, fn_effs, fn_index, depth) {
+    EForIn(name, index_name, iter, body) => match dh_rowless_closure_call(expr = iter, ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth) {
       Some(hit) => Some(hit),
-      None => dh_rowless_closure_call(body, ename, dh_lc_shadow_names(dh_lc_after_assigns(iter, lc), dh_for_names(name, index_name)), fn_names, fn_effs, fn_index, depth)
+      None => dh_rowless_closure_call(expr = body, ename = ename, lc = dh_lc_shadow_names(lc = dh_lc_after_assigns(expr = iter, lc = lc), names = dh_for_names(name = name, index_name = index_name)), fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
     },
-    _ => dh_rowless_closure_call_in(expr_children(expr), ename, lc, fn_names, fn_effs, fn_index, depth)
+    _ => dh_rowless_closure_call_in(exprs = expr_children(expr), ename = ename, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = depth)
   }
 }
 
@@ -2405,112 +2405,112 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
       let handled = collect_handle_effects(arms)
       let mut i = 0
       while i < Array::length(handled) {
-        let eff = Array::get(handled, i)
-        let mutable_call = match dh_mutable_alias_call(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+        let eff = Array::get(handled, at = i)
+        let mutable_call = match dh_mutable_alias_call(expr = body, ename = eff, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) {
           Some(hit) => Some(hit),
-          None => dh_mutable_alias_outer_call(body, eff, mutable_aliases)
+          None => dh_mutable_alias_outer_call(body = body, ename = eff, aliases = mutable_aliases)
         }
         match mutable_call {
-          Some((cname, coff)) => Array::push(errors, EEHandleMutableAlias(eff, cname, coff)),
+          Some((cname, coff)) => Array::push(errors, value = EEHandleMutableAlias(eff, cname, coff)),
           None => ()
         }
-        let known_dead_alias = dh_widened_only_alias_call(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs)
-        if mutable_call == None && ((effect_row_has_label(Some(declared), eff) && effect_row_has_label(Some(performed), eff)) || known_dead_alias) && !dh_may_reach(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs) && dh_has_opaque_call(body, fn_names, fn_index) {
+        let known_dead_alias = dh_widened_only_alias_call(body = body, ename = eff, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs)
+        if mutable_call == None && ((effect_row_has_label(row = Some(declared), wanted = eff) && effect_row_has_label(row = Some(performed), wanted = eff)) || known_dead_alias) && !dh_may_reach(expr = body, ename = eff, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs) && dh_has_opaque_call(expr = body, fn_names = fn_names, fn_index = fn_index) {
           // #3180: the handle is refused either way, but when the opaque call
           // is a local closure with no effect row that DOES perform `eff`,
           // "reaches no perform" is false -- it reaches one this handle
           // cannot see. Say which call, and the edit.
-          match dh_rowless_closure_call(body, eff, lc, fn_names, fn_effs, fn_index, 4) {
-            Some((cname, coff)) => Array::push(errors, EEHandleRowlessClosure(eff, cname, coff)),
-            None => Array::push(errors, EEHandleNeverFires(eff))
+          match dh_rowless_closure_call(expr = body, ename = eff, lc = lc, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, depth = 4) {
+            Some((cname, coff)) => Array::push(errors, value = EEHandleRowlessClosure(eff, cname, coff)),
+            None => Array::push(errors, value = EEHandleNeverFires(eff))
           }
         } else {
           ()
         }
         i = i + 1
       }
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
+      dh_check_expr(expr = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = lc, errors = errors)
       let mut ai = 0
       while ai < Array::length(arms) {
-        let (pat, arm_body) = Array::get(arms, ai)
+        let (pat, arm_body) = Array::get(arms, at = ai)
         let names: Array[String] = []
-        collect_pat_binds_into(pat, names)
-        Array::push(names, "resume")
-        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_mutable_alias_shadow_names(mutable_aliases, names), dh_lc_shadow_arm(lc, pat), errors)
+        collect_pat_binds_into(pat = pat, acc = names)
+        Array::push(names, value = "resume")
+        dh_check_expr(expr = arm_body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = dh_mutable_alias_shadow_names(aliases = mutable_aliases, names = names), lc = dh_lc_shadow_arm(lc = lc, pat = pat), errors = errors)
         ai = ai + 1
       }
     },
     EFn(_, _, params, _, _, body) => {
-      let (bn, be) = dh_overlay_with_params(ov_names, ov_effs, params, fn_names, fn_index)
+      let (bn, be) = dh_overlay_with_params(ov_names = ov_names, ov_effs = ov_effs, params = params, fn_names = fn_names, fn_index = fn_index)
       let names = for param in params {
         let (name, _) = param
         effect_param_base_name(name)
       }
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_mutable_alias_shadow_names(mutable_aliases, names), dh_lc_shadow_params(lc, params), errors)
+      dh_check_expr(expr = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be, mutable_aliases = dh_mutable_alias_shadow_names(aliases = mutable_aliases, names = names), lc = dh_lc_shadow_params(lc = lc, params = params), errors = errors)
     },
     ELet(name, val, body, _) => {
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
-      let (bn, be) = dh_overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_mutable_alias_bind(mutable_aliases, name, val, false), dh_lc_bind(lc, name, val), errors)
+      dh_check_expr(expr = val, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = lc, errors = errors)
+      let (bn, be) = dh_overlay_bind_local(names = ov_names, effs = ov_effs, name = name, val = val, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index)
+      dh_check_expr(expr = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be, mutable_aliases = dh_mutable_alias_bind(aliases = mutable_aliases, name = name, value = val, recursive = false), lc = dh_lc_bind(lc = lc, name = name, val = val), errors = errors)
     },
     ELetMut(name, val, body, _) => {
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
-      let (an, ae) = dh_overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
-      let labels = match lookup_fn_effs(an, ae, name) {
+      dh_check_expr(expr = val, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = lc, errors = errors)
+      let (an, ae) = dh_overlay_bind_local(names = ov_names, effs = ov_effs, name = name, val = val, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index)
+      let labels = match lookup_fn_effs(names = an, effs = ae, name = name) {
         Some(effs) => effs,
         None => []
       }
-      let (bn, be) = overlay_bind_empty(ov_names, ov_effs, name, fn_names, fn_index)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_mutable_alias_with(mutable_aliases, name, labels), dh_lc_bind_mut(lc, name, val), errors)
+      let (bn, be) = overlay_bind_empty(names = ov_names, effs = ov_effs, name = name, fn_names = fn_names, fn_index = fn_index)
+      dh_check_expr(expr = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = bn, ov_effs = be, mutable_aliases = dh_mutable_alias_with(aliases = mutable_aliases, name = name, labels = labels), lc = dh_lc_bind_mut(lc = lc, name = name, val = val), errors = errors)
     },
     EAssign(name, val, body, _) => {
-      let assigned_lc = dh_lc_assign(lc, name, val)
+      let assigned_lc = dh_lc_assign(lc = lc, name = name, val = val)
       // A closure captures the mutable cell and runs after assignment. Its
       // recursive calls resolve to the replacement, not the old initializer.
       let value_lc = match dh_lc_closure(val) {
         Some(_) => assigned_lc,
         None => lc
       }
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, value_lc, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, assigned_lc, errors)
+      dh_check_expr(expr = val, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = value_lc, errors = errors)
+      dh_check_expr(expr = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = assigned_lc, errors = errors)
     },
     EAssignOp(name, _, val, body, _) => {
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, dh_lc_with(lc, name, None), errors)
+      dh_check_expr(expr = val, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = lc, errors = errors)
+      dh_check_expr(expr = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = dh_lc_with(lc = lc, name = name, closure = None), errors = errors)
     },
     ESeq(first, rest) => {
-      dh_check_expr(first, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
-      dh_check_expr(rest, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, dh_lc_after_assigns(first, lc), errors)
+      dh_check_expr(expr = first, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = lc, errors = errors)
+      dh_check_expr(expr = rest, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = dh_lc_after_assigns(expr = first, lc = lc), errors = errors)
     },
     EIf(cond, then_body, else_body) => {
-      dh_check_expr(cond, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
-      let after_cond = dh_lc_after_assigns(cond, lc)
-      dh_check_expr(then_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, after_cond, errors)
-      dh_check_expr(else_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, after_cond, errors)
+      dh_check_expr(expr = cond, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = lc, errors = errors)
+      let after_cond = dh_lc_after_assigns(expr = cond, lc = lc)
+      dh_check_expr(expr = then_body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = after_cond, errors = errors)
+      dh_check_expr(expr = else_body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = after_cond, errors = errors)
     },
     EWhile(cond, body) => {
-      dh_check_expr(cond, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, dh_lc_after_assigns(cond, lc), errors)
+      dh_check_expr(expr = cond, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = lc, errors = errors)
+      dh_check_expr(expr = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = dh_lc_after_assigns(expr = cond, lc = lc), errors = errors)
     },
     ELetRec(name, val, body) => {
-      let (rn, re) = dh_overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
-      let rlc = dh_lc_bind(lc, name, val)
-      let ras = dh_mutable_alias_bind(mutable_aliases, name, val, true)
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, rn, re, ras, rlc, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, rn, re, ras, rlc, errors)
+      let (rn, re) = dh_overlay_bind_local(names = ov_names, effs = ov_effs, name = name, val = val, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index)
+      let rlc = dh_lc_bind(lc = lc, name = name, val = val)
+      let ras = dh_mutable_alias_bind(aliases = mutable_aliases, name = name, value = val, recursive = true)
+      dh_check_expr(expr = val, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = rn, ov_effs = re, mutable_aliases = ras, lc = rlc, errors = errors)
+      dh_check_expr(expr = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = rn, ov_effs = re, mutable_aliases = ras, lc = rlc, errors = errors)
     },
     // The three binders the generic walk below cannot see: a pattern, a loop
     // variable and a `for` variable each hide an outer closure of the same
     // spelling. Same children, in the same order, as `expr_children`.
     EMatch(scrutinee, arms) => {
-      dh_check_expr(scrutinee, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
-      let after_scrutinee = dh_lc_after_assigns(scrutinee, lc)
+      dh_check_expr(expr = scrutinee, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = lc, errors = errors)
+      let after_scrutinee = dh_lc_after_assigns(expr = scrutinee, lc = lc)
       let mut ai = 0
       while ai < Array::length(arms) {
-        let (pat, arm_body) = Array::get(arms, ai)
+        let (pat, arm_body) = Array::get(arms, at = ai)
         let names: Array[String] = []
-        collect_pat_binds_into(pat, names)
-        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_mutable_alias_shadow_names(mutable_aliases, names), dh_lc_shadow_pat(after_scrutinee, pat), errors)
+        collect_pat_binds_into(pat = pat, acc = names)
+        dh_check_expr(expr = arm_body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = dh_mutable_alias_shadow_names(aliases = mutable_aliases, names = names), lc = dh_lc_shadow_pat(lc = after_scrutinee, pat = pat), errors = errors)
         ai = ai + 1
       }
     },
@@ -2519,18 +2519,18 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
       let mut current = lc
       let mut pi = 0
       while pi < Array::length(params) {
-        let (pname, init) = Array::get(params, pi)
-        dh_check_expr(init, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, current, errors)
-        current = dh_lc_after_assigns(init, current)
-        Array::push(names, pname)
+        let (pname, init) = Array::get(params, at = pi)
+        dh_check_expr(expr = init, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = current, errors = errors)
+        current = dh_lc_after_assigns(expr = init, lc = current)
+        Array::push(names, value = pname)
         pi = pi + 1
       }
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_mutable_alias_shadow_names(mutable_aliases, names), dh_lc_shadow_names(current, names), errors)
+      dh_check_expr(expr = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = dh_mutable_alias_shadow_names(aliases = mutable_aliases, names = names), lc = dh_lc_shadow_names(lc = current, names = names), errors = errors)
     },
     EForIn(name, index_name, iter, body) => {
-      dh_check_expr(iter, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
-      let names = dh_for_names(name, index_name)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, dh_mutable_alias_shadow_names(mutable_aliases, names), dh_lc_shadow_names(dh_lc_after_assigns(iter, lc), names), errors)
+      dh_check_expr(expr = iter, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = lc, errors = errors)
+      let names = dh_for_names(name = name, index_name = index_name)
+      dh_check_expr(expr = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = dh_mutable_alias_shadow_names(aliases = mutable_aliases, names = names), lc = dh_lc_shadow_names(lc = dh_lc_after_assigns(expr = iter, lc = lc), names = names), errors = errors)
     },
     _ => {
       let children = expr_children(expr)
@@ -2538,9 +2538,9 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
       let mut aborted = false
       let mut c = 0
       while c < Array::length(children) && !aborted {
-        let child = Array::get(children, c)
-        dh_check_expr(child, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, current, errors)
-        current = dh_lc_after_assigns(child, current)
+        let child = Array::get(children, at = c)
+        dh_check_expr(expr = child, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = ov_names, ov_effs = ov_effs, mutable_aliases = mutable_aliases, lc = current, errors = errors)
+        current = dh_lc_after_assigns(expr = child, lc = current)
         aborted = dh_direct_abortive_transfer(child)
         c = c + 1
       }
@@ -2549,20 +2549,20 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
 }
 
 fn dh_overlay_with_params(ov_names: Array[String], ov_effs: Array[Array[String]], params: Array[(String, Option[TypeExpr])], fn_names: Array[String], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
-  let (sn, se) = shadow_overlay_names(ov_names, ov_effs, params)
-  let (raw_ln, le) = build_param_overlay(params, fn_names, fn_index)
+  let (sn, se) = shadow_overlay_names(names = ov_names, effs = ov_effs, params = params)
+  let (raw_ln, le) = build_param_overlay(params = params, fn_names = fn_names, fn_index = fn_index)
   let ln = for n in raw_ln {
     effect_param_base_name(n)
   }
   if Array::length(ln) == 0 {
     (sn, se)
   } else {
-    let names = Array::slice(ln, 0, Array::length(ln))
-    let effs = Array::slice(le, 0, Array::length(le))
+    let names = Array::slice(ln, start = 0, end = Array::length(ln))
+    let effs = Array::slice(le, start = 0, end = Array::length(le))
     let mut i = 0
     while i < Array::length(sn) {
-      Array::push(names, Array::get(sn, i))
-      Array::push(effs, Array::get(se, i))
+      Array::push(names, value = Array::get(sn, at = i))
+      Array::push(effs, value = Array::get(se, at = i))
       i = i + 1
     }
     (names, effs)
@@ -2576,12 +2576,12 @@ fn dh_check_binding(ty: Option[TypeExpr], body: Expr, declared: Array[String], p
     // `fbody` would otherwise lose them (the top-level annotation, not the
     // EFn node, is where a separately-typed signature keeps its rows).
     EFn(_, _, params, _, _, fbody) => {
-      let (n, e) = dh_overlay_with_params(no_str_labels(), no_ov_effs(), merge_param_types_with_sig(ty, params), fn_names, fn_index)
-      dh_check_expr(fbody, declared, performed, fn_names, fn_effs, fn_index, n, e, [
-      ], dh_lc_shadow_params(no_lc(), params), errors)
+      let (n, e) = dh_overlay_with_params(ov_names = no_str_labels(), ov_effs = no_ov_effs(), params = merge_param_types_with_sig(ty = ty, params = params), fn_names = fn_names, fn_index = fn_index)
+      dh_check_expr(expr = fbody, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = n, ov_effs = e, mutable_aliases = [
+      ], lc = dh_lc_shadow_params(lc = no_lc(), params = params), errors = errors)
     },
-    _ => dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, no_str_labels(), no_ov_effs(), [
-    ], no_lc(), errors)
+    _ => dh_check_expr(expr = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, ov_names = no_str_labels(), ov_effs = no_ov_effs(), mutable_aliases = [
+    ], lc = no_lc(), errors = errors)
   }
 }
 
@@ -2595,12 +2595,12 @@ fn check_dead_handles_stmts(stmts: Array[Stmt], fn_names: Array[String], fn_effs
     let performed = dh_collect_performed_effects(stmts)
     let mut i = 0
     while i < Array::length(stmts) {
-      match Array::get(stmts, i) {
-        SLet(_, _, _, ty, body) => dh_check_binding(ty, body, declared, performed, fn_names, fn_effs, fn_index, errors),
-        SLetMut(_, ty, body) => dh_check_binding(ty, body, declared, performed, fn_names, fn_effs, fn_index, errors),
-        SExpr(e) => dh_check_binding(None, e, declared, performed, fn_names, fn_effs, fn_index, errors),
-        STest(_, body) => dh_check_binding(None, body, declared, performed, fn_names, fn_effs, fn_index, errors),
-        SBench(_, body) => dh_check_binding(None, body, declared, performed, fn_names, fn_effs, fn_index, errors),
+      match Array::get(stmts, at = i) {
+        SLet(_, _, _, ty, body) => dh_check_binding(ty = ty, body = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, errors = errors),
+        SLetMut(_, ty, body) => dh_check_binding(ty = ty, body = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, errors = errors),
+        SExpr(e) => dh_check_binding(ty = None, body = e, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, errors = errors),
+        STest(_, body) => dh_check_binding(ty = None, body = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, errors = errors),
+        SBench(_, body) => dh_check_binding(ty = None, body = body, declared = declared, performed = performed, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, errors = errors),
         _ => ()
       }
       i = i + 1
@@ -2629,19 +2629,19 @@ fn check_dead_handles_stmts(stmts: Array[Stmt], fn_names: Array[String], fn_effs
 /// same as `sh` reached through a user function declaring `with Process`.
 /// Conservative otherwise: an effect the type system does not surface here stays
 /// invisible, but it never marks a genuinely-impure test cacheable.
-export fn file_tests_cacheable(stmts: Array[Stmt]) -> Bool {
+export fn file_tests_cacheable(_ stmts: Array[Stmt]) -> Bool {
   let fn_names = array_empty()
   let fn_effs = array_empty()
   let mut m = 0
   while m < Array::length(stmts) {
-    match Array::get(stmts, m) {
+    match Array::get(stmts, at = m) {
       SLet(_, _, name, ty, body) => {
-        Array::push(fn_names, name)
-        Array::push(fn_effs, fn_binding_effects(ty, body))
+        Array::push(fn_names, value = name)
+        Array::push(fn_effs, value = fn_binding_effects(ty = ty, body = body))
       },
       SLetMut(name, ty, body) => {
-        Array::push(fn_names, name)
-        Array::push(fn_effs, fn_binding_effects(ty, body))
+        Array::push(fn_names, value = name)
+        Array::push(fn_effs, value = fn_binding_effects(ty = ty, body = body))
       },
       _ => ()
     }
@@ -2649,15 +2649,15 @@ export fn file_tests_cacheable(stmts: Array[Stmt]) -> Bool {
   }
   let empty_decl = array_empty()
   let fn_index = program_fn_index(fn_names)
-  set_callee_sigs(stmts, EnvEmpty)
+  set_callee_sigs(stmts = stmts, env = EnvEmpty)
   let mut any_test = false
   let mut all_ok = true
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       STest(_, body) => {
         any_test = true
-        let errs = check_perform_effects_expr_tx_indexed(body, empty_decl, false, fn_names, fn_effs, fn_index, no_str_labels(), no_ov_effs())
+        let errs = check_perform_effects_expr_tx_indexed(root = body, root_declared = empty_decl, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = fn_index, root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs())
         if Array::length(errs) != 0 {
           all_ok = false
         } else {
@@ -2693,11 +2693,11 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
   let mut entry_declared = None
   let mut m = 0
   while m < Array::length(stmts) {
-    match Array::get(stmts, m) {
+    match Array::get(stmts, at = m) {
       SLet(_, _, name, ty, body) => {
-        let effs = fn_binding_effects(ty, body)
-        Array::push(fn_names, name)
-        Array::push(fn_effs, effs)
+        let effs = fn_binding_effects(ty = ty, body = body)
+        Array::push(fn_names, value = name)
+        Array::push(fn_effs, value = effs)
         if name == entry_name {
           entry_body = Some(body)
           entry_declared = Some(effs)
@@ -2706,9 +2706,9 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
         }
       },
       SLetMut(name, ty, body) => {
-        let effs = fn_binding_effects(ty, body)
-        Array::push(fn_names, name)
-        Array::push(fn_effs, effs)
+        let effs = fn_binding_effects(ty = ty, body = body)
+        Array::push(fn_names, value = name)
+        Array::push(fn_effs, value = effs)
         if name == entry_name {
           entry_body = Some(body)
           entry_declared = Some(effs)
@@ -2771,12 +2771,12 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
       }
       if !declared_ok {
         match entry_declared {
-          Some(row) => !params_hide && console_entry_is_output_only(row, exec_body, fn_names),
+          Some(row) => !params_hide && console_entry_is_output_only(row = row, body = exec_body, fn_names = fn_names),
           None => false
         }
       } else {
-        set_callee_sigs(stmts, EnvEmpty)
-        let errs = check_perform_effects_expr_tx_indexed(exec_body, cache_safe_row, false, fn_names, fn_effs, program_fn_index(fn_names), no_str_labels(), no_ov_effs())
+        set_callee_sigs(stmts = stmts, env = EnvEmpty)
+        let errs = check_perform_effects_expr_tx_indexed(root = exec_body, root_declared = cache_safe_row, root_in_handle = false, fn_names = fn_names, fn_effs = fn_effs, fn_index = program_fn_index(fn_names), root_ov_names = no_str_labels(), root_ov_effs = no_ov_effs())
         Array::length(errs) == 0
       }
     }

@@ -25,23 +25,23 @@ let raw_calls: Array[(Expr, Array[Expr], Bool, Int)] = []
 let checked_cells: Array[(Int, Array[Int])] = []
 
 export fn call_placement_capture_begin() -> Unit {
-  Array::truncate(raw_calls, 0)
-  Array::truncate(checked_cells, 0)
-  Array::set(capture_epoch, 0, Array::get(capture_epoch, 0) + 1)
-  Array::set(capture_active, 0, true)
+  Array::truncate(raw_calls, length = 0)
+  Array::truncate(checked_cells, length = 0)
+  Array::set(capture_epoch, at = 0, value = Array::get(capture_epoch, at = 0) + 1)
+  Array::set(capture_active, at = 0, value = true)
 }
 
 export fn call_placement_capture_end() -> Unit {
-  Array::set(capture_active, 0, false)
+  Array::set(capture_active, at = 0, value = false)
 }
 
 export fn call_placement_cell_prefix(cell: Array[Int], start: Int) -> Bool {
-  Array::length(cell) >= start + 3 && Array::get(cell, start + 1) == placement_marker && Array::get(cell, start + 2) >= 0 && Array::get(cell, start + 2) <= 4
+  Array::length(cell) >= start + 3 && Array::get(cell, at = start + 1) == placement_marker && Array::get(cell, at = start + 2) >= 0 && Array::get(cell, at = start + 2) <= 4
 }
 
-fn placement_role(cell: Array[Int]) -> Int {
-  if call_placement_cell_prefix(cell, 0) {
-    Array::get(cell, 2)
+fn placement_role(_ cell: Array[Int]) -> Int {
+  if call_placement_cell_prefix(cell = cell, start = 0) {
+    Array::get(cell, at = 2)
   } else {
     -1
   }
@@ -49,21 +49,21 @@ fn placement_role(cell: Array[Int]) -> Int {
 
 fn placement_begin(cell: Array[Int], role: Int) -> Unit {
   if Array::length(cell) == 0 {
-    Array::push(cell, 0)
+    Array::push(cell, value = 0)
   } else {
-    Array::truncate(cell, 1)
+    Array::truncate(cell, length = 1)
   }
-  Array::push(cell, placement_marker)
-  Array::push(cell, role)
+  Array::push(cell, value = placement_marker)
+  Array::push(cell, value = role)
 }
 
 /// Unlocated calls have distinct cells too. An epoch and pool ID avoid
 /// conflating all of their -1 offsets, or reading a previous check's pool.
-export fn call_placement_raw(cell: Array[Int]) -> Option[(Expr, Array[Expr], Bool, Int)] {
-  if placement_role(cell) == 0 && Array::length(cell) == 5 && Array::get(cell, 3) == Array::get(capture_epoch, 0) {
-    let id = Array::get(cell, 4)
+export fn call_placement_raw(_ cell: Array[Int]) -> Option[(Expr, Array[Expr], Bool, Int)] {
+  if placement_role(cell) == 0 && Array::length(cell) == 5 && Array::get(cell, at = 3) == Array::get(capture_epoch, at = 0) {
+    let id = Array::get(cell, at = 4)
     if id >= 0 && id < Array::length(raw_calls) {
-      Some(Array::get(raw_calls, id))
+      Some(Array::get(raw_calls, at = id))
     } else {
       None
     }
@@ -72,15 +72,15 @@ export fn call_placement_raw(cell: Array[Int]) -> Option[(Expr, Array[Expr], Boo
   }
 }
 
-export fn call_placement_get(cell: Array[Int]) -> Option[(Int, Int, Array[Int])] {
+export fn call_placement_get(_ cell: Array[Int]) -> Option[(Int, Int, Array[Int])] {
   if (placement_role(cell) == 1 || placement_role(cell) == 4) && Array::length(cell) >= 5 {
-    Some((Array::get(cell, 3), Array::get(cell, 4), Array::slice(cell, 5, Array::length(cell))))
+    Some((Array::get(cell, at = 3), Array::get(cell, at = 4), Array::slice(cell, start = 5, end = Array::length(cell))))
   } else {
     None
   }
 }
 
-fn placement_call_name(callee: Expr) -> String {
+fn placement_call_name(_ callee: Expr) -> String {
   match callee {
     EIdent(name, _) => name,
     EDot(_, name, _, _) => name,
@@ -100,13 +100,13 @@ fn placement_refuse_named(cell: Array[Int], callee: Expr, offset: Int, disagreem
   } else {
     placement_role(cell)
   }
-  placement_begin(cell, if role == 2 {
+  placement_begin(cell = cell, role = if role == 2 {
     2
   } else {
     3
   })
-  Array::push(cell, offset)
-  Array::push(cell, if disagreement {
+  Array::push(cell, value = offset)
+  Array::push(cell, value = if disagreement {
     1
   } else {
     0
@@ -114,7 +114,7 @@ fn placement_refuse_named(cell: Array[Int], callee: Expr, offset: Int, disagreem
   let name = placement_call_name(callee)
   let mut i = 0
   while i < String::length(name) {
-    Array::push(cell, String::char_code_at(name, i))
+    Array::push(cell, value = String::char_code_at(name, at = i))
     i = i + 1
   }
 }
@@ -124,17 +124,17 @@ fn placement_refusal_message(cell: Array[Int], callee: Expr, offset: Int) -> Str
   let mut at = offset
   let mut disagreement = false
   if Array::length(cell) >= 5 {
-    at = Array::get(cell, 3)
-    disagreement = Array::get(cell, 4) == 1
+    at = Array::get(cell, at = 3)
+    disagreement = Array::get(cell, at = 4) == 1
     let text = StringBuilder::new()
     let mut i = 5
     while i < Array::length(cell) {
-      StringBuilder::push(text, String::from_char_code(Array::get(cell, i)))
+      StringBuilder::push(text, value = String::from_char_code(Array::get(cell, at = i)))
       i = i + 1
     }
     name = StringBuilder::freeze(text)
   } else {
-    placement_refuse_named(cell, callee, offset, false)
+    placement_refuse_named(cell = cell, callee = callee, offset = offset, disagreement = false)
   }
   if disagreement {
     "labeled argument placement disagrees with the checker for `" + name + "` at byte " + __to_string(at) + "; rebuild from checked source instead of using a different argument order"
@@ -146,12 +146,12 @@ fn placement_refusal_message(cell: Array[Int], callee: Expr, offset: Int) -> Str
 /// Capture source structure only. Callee resolution and slot selection belong
 /// to call typing, after the actual value binding has been selected.
 export fn call_placement_capture_source(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int], macro_call: Bool) -> Unit {
-  if Array::get(capture_active, 0) && (call_placement_raw(cell) is None) {
+  if Array::get(capture_active, at = 0) && (call_placement_raw(cell) is None) {
     let id = Array::length(raw_calls)
-    Array::push(raw_calls, (callee, args, macro_call, offset))
-    placement_begin(cell, 0)
-    Array::push(cell, Array::get(capture_epoch, 0))
-    Array::push(cell, id)
+    Array::push(raw_calls, value = (callee, args, macro_call, offset))
+    placement_begin(cell = cell, role = 0)
+    Array::push(cell, value = Array::get(capture_epoch, at = 0))
+    Array::push(cell, value = id)
   } else {
     ()
   }
@@ -169,33 +169,33 @@ export fn call_placement_publish(callee: Expr, offset: Int, cell: Array[Int], wr
     valid = Array::length(slots) == written
     let mut i = 0
     while i < Array::length(slots) {
-      valid = valid && Array::get(slots, i) == (i + 1) * 2; i = i + 1
+      valid = valid && Array::get(slots, at = i) == (i + 1) * 2; i = i + 1
     }
   } else {
     ()
   }
-  call_placement_install(cell, written, mode, slots)
+  call_placement_install(cell = cell, written = written, mode = mode, slots = slots)
   if !valid {
-    Array::push(errors, placement_disagreement(callee, offset))
-    placement_refuse_named(cell, callee, offset, true)
+    Array::push(errors, value = placement_disagreement(callee = callee, offset = offset))
+    placement_refuse_named(cell = cell, callee = callee, offset = offset, disagreement = true)
   } else if applied {
-    Array::set(cell, 2, 4)
+    Array::set(cell, at = 2, value = 4)
   } else {
     ()
   }
   if offset >= 0 {
-    Array::push(checked_cells, (offset, cell))
+    Array::push(checked_cells, value = (offset, cell))
   } else {
     ()
   }
 }
 
 export fn call_placement_install(cell: Array[Int], written: Int, mode: Int, slots: Array[Int]) -> Unit {
-  placement_begin(cell, 1)
-  Array::push(cell, written)
-  Array::push(cell, mode)
+  placement_begin(cell = cell, role = 1)
+  Array::push(cell, value = written)
+  Array::push(cell, value = mode)
   for slot in slots {
-    Array::push(cell, slot)
+    Array::push(cell, value = slot)
   }
   ()
 }
@@ -206,13 +206,13 @@ export fn call_placement_append_rows(rows: Array[Int], offset: Int, cell: Array[
   if offset >= 0 {
     match call_placement_get(cell) {
       Some((written, mode, slots)) => {
-        Array::push(rows, lowering_row_encode(offset, 8))
-        Array::push(rows, lowering_row_encode(written, 9))
-        Array::push(rows, lowering_row_encode(mode, 10))
+        Array::push(rows, value = lowering_row_encode(payload = offset, tag = 8))
+        Array::push(rows, value = lowering_row_encode(payload = written, tag = 9))
+        Array::push(rows, value = lowering_row_encode(payload = mode, tag = 10))
         for slot in slots {
-          Array::push(rows, lowering_row_encode(slot, 11))
+          Array::push(rows, value = lowering_row_encode(payload = slot, tag = 11))
         }
-        Array::push(rows, lowering_row_encode(offset, 12))
+        Array::push(rows, value = lowering_row_encode(payload = offset, tag = 12))
       },
       None => ()
     }
@@ -222,7 +222,7 @@ export fn call_placement_append_rows(rows: Array[Int], offset: Int, cell: Array[
 }
 
 export fn call_placement_refuse(cell: Array[Int], invalid: Bool) -> Unit {
-  placement_begin(cell, if invalid {
+  placement_begin(cell = cell, role = if invalid {
     3
   } else {
     2
@@ -233,7 +233,7 @@ export fn call_placement_checked_rows() -> Array[Int] {
   let rows = [13]
   for entry in checked_cells {
     let (offset, cell) = entry
-    call_placement_append_rows(rows, offset, cell)
+    call_placement_append_rows(rows = rows, offset = offset, cell = cell)
   }
   rows
 }
@@ -242,8 +242,8 @@ export fn call_placement_checked_rows() -> Array[Int] {
 /// the original call; carry a refused cell so the enclosing lowering reports
 /// it even if a later pass clears its own error buffer.
 export fn call_placement_note_positional(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> Unit {
-  if Array::get(capture_active, 0) {
-    call_placement_capture_source(callee, args, offset, cell, true)
+  if Array::get(capture_active, at = 0) {
+    call_placement_capture_source(callee = callee, args = args, offset = offset, cell = cell, macro_call = true)
   } else if placement_role(cell) == 4 || placement_role(cell) == 2 || placement_role(cell) == 3 {
     ()
   } else {
@@ -252,12 +252,12 @@ export fn call_placement_note_positional(callee: Expr, args: Array[Expr], offset
         let mut valid = written == Array::length(args) && Array::length(slots) == written
         let mut i = 0
         while i < Array::length(slots) {
-          valid = valid && Array::get(slots, i) == (i + 1) * 2; i = i + 1
+          valid = valid && Array::get(slots, at = i) == (i + 1) * 2; i = i + 1
         }
         if valid {
-          Array::set(cell, 2, 4)
+          Array::set(cell, at = 2, value = 4)
         } else {
-          placement_refuse_named(cell, callee, offset, true)
+          placement_refuse_named(cell = cell, callee = callee, offset = offset, disagreement = true)
         }
       },
       None => {
@@ -269,7 +269,7 @@ export fn call_placement_note_positional(callee: Expr, args: Array[Expr], offset
           }
         }
         if labeled {
-          placement_refuse_named(cell, callee, offset, false)
+          placement_refuse_named(cell = cell, callee = callee, offset = offset, disagreement = false)
         } else {
           ()
         }
@@ -278,11 +278,11 @@ export fn call_placement_note_positional(callee: Expr, args: Array[Expr], offset
   }
 }
 
-export fn call_placement_is_refused(cell: Array[Int]) -> Bool {
+export fn call_placement_is_refused(_ cell: Array[Int]) -> Bool {
   placement_role(cell) == 2 || placement_role(cell) == 3
 }
 
-export fn call_placement_is_canonical(cell: Array[Int]) -> Bool {
+export fn call_placement_is_canonical(_ cell: Array[Int]) -> Bool {
   placement_role(cell) == 4
 }
 
@@ -292,17 +292,17 @@ fn placement_slots_valid(written: Int, mode: Int, slots: Array[Int], start: Int)
   let mut count = 0
   let mut i = start
   while i < Array::length(slots) && valid {
-    let slot = Array::get(slots, i)
+    let slot = Array::get(slots, at = i)
     if slot == 0 {
       ()
     } else if slot < 2 {
       valid = false
     } else {
       let source = slot / 2 - 1
-      if source >= written || MutMap::has(used, source) {
+      if source >= written || MutMap::has(used, k = source) {
         valid = false
       } else {
-        MutMap::set(used, source, true)
+        MutMap::set(used, k = source, v = true)
         count = count + 1
       }
     }
@@ -318,18 +318,18 @@ fn placement_slots_valid(written: Int, mode: Int, slots: Array[Int], start: Int)
 
 /// One payload grammar serves source-row restoration and binary AST transport.
 export fn call_placement_payload_valid(written: Int, mode: Int, slots: Array[Int]) -> Bool {
-  placement_slots_valid(written, mode, slots, 0)
+  placement_slots_valid(written = written, mode = mode, slots = slots, start = 0)
 }
 
 /// Raw snapshot pool IDs cannot cross a process boundary. Checked/expected
 /// placements and explicit refusals retain their validated payload instead.
 export fn call_placement_wire_valid(cell: Array[Int], start: Int) -> Bool {
-  if start < 0 || !call_placement_cell_prefix(cell, start) {
+  if start < 0 || !call_placement_cell_prefix(cell = cell, start = start) {
     false
   } else {
-    let role = Array::get(cell, start + 2)
+    let role = Array::get(cell, at = start + 2)
     if role == 1 || role == 4 {
-      Array::length(cell) >= start + 5 && placement_slots_valid(Array::get(cell, start + 3), Array::get(cell, start + 4), cell, start + 5)
+      Array::length(cell) >= start + 5 && placement_slots_valid(written = Array::get(cell, at = start + 3), mode = Array::get(cell, at = start + 4), slots = cell, start = start + 5)
     } else if role == 2 || role == 3 {
       if Array::length(cell) == start + 3 {
         true
@@ -338,10 +338,10 @@ export fn call_placement_wire_valid(cell: Array[Int], start: Int) -> Bool {
         false
       }
       else {
-        let mut valid = Array::get(cell, start + 3) >= 0 - 1 && (Array::get(cell, start + 4) == 0 || Array::get(cell, start + 4) == 1)
+        let mut valid = Array::get(cell, at = start + 3) >= 0 - 1 && (Array::get(cell, at = start + 4) == 0 || Array::get(cell, at = start + 4) == 1)
         let mut i = start + 5
         while i < Array::length(cell) && valid {
-          let byte = Array::get(cell, i)
+          let byte = Array::get(cell, at = i)
           valid = byte >= 0 && byte <= 255
           i = i + 1
         }
@@ -354,14 +354,14 @@ export fn call_placement_wire_valid(cell: Array[Int], start: Int) -> Bool {
 }
 
 /// A source-bound placement still needs its argument list constructed.
-export fn call_placement_is_pending(cell: Array[Int]) -> Bool {
+export fn call_placement_is_pending(_ cell: Array[Int]) -> Bool {
   placement_role(cell) == 1 || placement_role(cell) == 2 || placement_role(cell) == 3
 }
 
 /// Only the lowering that constructs arguments marks a placement applied.
-export fn call_placement_mark_applied(cell: Array[Int]) -> Unit {
+export fn call_placement_mark_applied(_ cell: Array[Int]) -> Unit {
   if placement_role(cell) == 1 {
-    Array::set(cell, 2, 4)
+    Array::set(cell, at = 2, value = 4)
   } else {
     ()
   }
@@ -369,14 +369,14 @@ export fn call_placement_mark_applied(cell: Array[Int]) -> Unit {
 
 /// Retain a macro's original source name when reporting an absent placement.
 export fn call_placement_error(cell: Array[Int], callee: Expr, offset: Int) -> String {
-  placement_refusal_message(cell, callee, offset)
+  placement_refusal_message(cell = cell, callee = callee, offset = offset)
 }
 
 /// Read the call's placement kind without copying its source-index payload.
-export fn call_placement_mode(cell: Array[Int]) -> Int {
+export fn call_placement_mode(_ cell: Array[Int]) -> Int {
   let role = placement_role(cell)
   if (role == 1 || role == 4) && Array::length(cell) >= 5 {
-    Array::get(cell, 4)
+    Array::get(cell, at = 4)
   } else {
     -1
   }
@@ -387,11 +387,11 @@ export fn call_placement_mode(cell: Array[Int]) -> Int {
 /// in formal order and return the positional identity instead.
 export fn call_placement_source_slot(cell: Array[Int], source: Int, written: Int) -> Int {
   let mut result = (source + 1) * 2
-  if placement_role(cell) == 1 && Array::length(cell) >= 5 && Array::get(cell, 3) == written && Array::get(cell, 4) == 0 {
+  if placement_role(cell) == 1 && Array::length(cell) >= 5 && Array::get(cell, at = 3) == written && Array::get(cell, at = 4) == 0 {
     let mut i = 5
     let mut found = false
     while i < Array::length(cell) && !found {
-      let code = Array::get(cell, i)
+      let code = Array::get(cell, at = i)
       if code >= 2 && code / 2 - 1 == source {
         result = (i - 4) * 2 + code % 2
         found = true
@@ -412,12 +412,12 @@ export fn call_placement_source_slot(cell: Array[Int], source: Int, written: Int
 export fn call_placement_argument_view(args: Array[Expr], cell: Array[Int]) -> Option[Array[Expr]] {
   if call_placement_is_pending(cell) && call_placement_mode(cell) == 0 {
     match call_placement_get(cell) {
-      Some((written, mode, slots)) => if written == Array::length(args) && call_placement_payload_valid(written, mode, slots) {
+      Some((written, mode, slots)) => if written == Array::length(args) && call_placement_payload_valid(written = written, mode = mode, slots = slots) {
         Some(for code in slots {
           if code == 0 {
             EIdent("None", -1)
           } else {
-            let value = match Array::get(args, code / 2 - 1) {
+            let value = match Array::get(args, at = code / 2 - 1) {
               ELabeledArg(_, _, value) => value,
               value => value
             }
@@ -450,13 +450,13 @@ export fn call_placement_prepend_receiver(cell: Array[Int], explicit: Int) -> Un
       Some((written, mode, slots)) => if written == explicit {
         let full = [2]
         for code in slots {
-          Array::push(full, if code == 0 {
+          Array::push(full, value = if code == 0 {
             0
           } else {
             code + 2
           })
         }
-        call_placement_install(cell, written + 1, mode, full)
+        call_placement_install(cell = cell, written = written + 1, mode = mode, slots = full)
       } else {
         ()
       },

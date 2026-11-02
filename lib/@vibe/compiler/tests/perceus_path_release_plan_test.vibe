@@ -13,8 +13,8 @@ import @vibe/compiler/query {
 
 //# Functions
 
-fn plan_of(source: String) -> String with Exception {
-  rc_plan_source(source, "")
+fn plan_of(_ source: String) -> String with Exception {
+  rc_plan_source(source = source, fn_filter = "")
 }
 
 let prelude = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet own: (Node) -> Node = (m) -> Pair(m, Leaf(0))\n"
@@ -24,15 +24,15 @@ let epilogue = "\nlet main: () -> Int = () -> {\n  match run(true) {\n    _ => 0
 test "a let consumed in one if-branch only gets a guarded drop and a mark" {
   let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  if c {\n    t\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
   let plan = plan_of(src)
-  assert(String::contains(plan, "run t path_drop 1"))
-  assert(String::contains(plan, "run t consume_mark:"))
+  assert(String::contains(plan, needle = "run t path_drop 1"))
+  assert(String::contains(plan, needle = "run t consume_mark:"))
 }
 
 test "a let consumed in one match arm only gets the same pair" {
   let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  match c {\n    true => t,\n    false => Leaf(0)\n  }\n}", epilogue))
   let plan = plan_of(src)
-  assert(String::contains(plan, "run t path_drop 1"))
-  assert(String::contains(plan, "run t consume_mark:"))
+  assert(String::contains(plan, needle = "run t path_drop 1"))
+  assert(String::contains(plan, needle = "run t consume_mark:"))
 }
 
 test "every branch consuming it is not a split" {
@@ -40,8 +40,8 @@ test "every branch consuming it is not a split" {
   // count from either side and there is nothing to give back.
   let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  if c {\n    t\n  } else {\n    own(t)\n  }\n}", epilogue))
   let plan = plan_of(src)
-  assert(!String::contains(plan, "run t path_drop"))
-  assert(!String::contains(plan, "run t consume_mark:"))
+  assert(!String::contains(plan, needle = "run t path_drop"))
+  assert(!String::contains(plan, needle = "run t consume_mark:"))
 }
 
 test "no branch consuming it is not a split either" {
@@ -49,8 +49,8 @@ test "no branch consuming it is not a split either" {
   // scope-end drop is planned and fires -- the pre-existing behavior.
   let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  if c {\n    Leaf(1)\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
   let plan = plan_of(src)
-  assert(String::contains(plan, "run t drop 1"))
-  assert(!String::contains(plan, "run t path_drop"))
+  assert(String::contains(plan, needle = "run t drop 1"))
+  assert(!String::contains(plan, needle = "run t path_drop"))
 }
 
 test "a let mut is declined" {
@@ -58,8 +58,8 @@ test "a let mut is declined" {
   // necessarily the one an occurrence moved out.
   let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let mut t = Pair(Leaf(1), Leaf(2))\n  if c {\n    t\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
   let plan = plan_of(src)
-  assert(!String::contains(plan, "run t path_drop"))
-  assert(!String::contains(plan, "run t consume_mark:"))
+  assert(!String::contains(plan, needle = "run t path_drop"))
+  assert(!String::contains(plan, needle = "run t consume_mark:"))
 }
 
 test "an alias transfer is recorded too" {
@@ -70,8 +70,8 @@ test "an alias transfer is recorded too" {
   // alias arm was recorded.
   let src = String::concat(prelude, String::concat("let run: (Int) -> Node = (k) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  match k {\n    0 => {\n      let u = t\n      u\n    },\n    _ => Leaf(9)\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(0) {\n    _ => 0\n  }\n}"))
   let plan = plan_of(src)
-  assert(String::contains(plan, "run t path_drop 1"))
-  assert(String::contains(plan, "run t consume_mark:"))
+  assert(String::contains(plan, needle = "run t path_drop 1"))
+  assert(String::contains(plan, needle = "run t consume_mark:"))
 }
 
 test "a branch that reads through the binding is not a split" {
@@ -84,8 +84,8 @@ test "a branch that reads through the binding is not a split" {
   // This pins that, since it is the premise the safety rests on.
   let src = String::concat(prelude, String::concat("let hold: (Array[Node]) -> Int = (xs) -> Array::length([\n  xs\n])\nlet run: (Bool) -> Node = (c) -> {\n  let t = [\n    Pair(Leaf(3), Leaf(4))\n  ]\n  if c {\n    Leaf(hold(t))\n  } else {\n    Array::get(t, 0)\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(true) {\n    _ => 0\n  }\n}"))
   let plan = plan_of(src)
-  assert(!String::contains(plan, "run t path_drop"))
-  assert(String::contains(plan, "run t drop 1"))
+  assert(!String::contains(plan, needle = "run t path_drop"))
+  assert(String::contains(plan, needle = "run t drop 1"))
 }
 
 test "the codegen's name-keying is safe because normalization uniquifies" {
@@ -98,9 +98,9 @@ test "the codegen's name-keying is safe because normalization uniquifies" {
   // the planner also declines a shared name outright, as a backstop.
   let src = String::concat(prelude, String::concat("let run: (Bool, Bool) -> Node = (c, d) -> {\n  if c {\n    let t = Pair(Leaf(1), Leaf(2))\n    if d {\n      t\n    } else {\n      Leaf(0)\n    }\n  } else {\n    let t = Pair(Leaf(3), Leaf(4))\n    Leaf(7)\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(true, true) {\n    _ => 0\n  }\n}"))
   let plan = plan_of(src)
-  assert(String::contains(plan, "run __shadow_0_t drop 1"))
-  assert(String::contains(plan, "run t path_drop 1"))
-  assert(!String::contains(plan, "run t drop 1"))
+  assert(String::contains(plan, needle = "run __shadow_0_t drop 1"))
+  assert(String::contains(plan, needle = "run t path_drop 1"))
+  assert(!String::contains(plan, needle = "run t drop 1"))
 }
 
 test "an occurrence with no source offset declines the whole binding" {
@@ -110,8 +110,8 @@ test "an occurrence with no source offset declines the whole binding" {
   // would suppress.
   let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  if c {\n    let f: () -> Node = () -> t\n    f()\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
   let plan = plan_of(src)
-  assert(!String::contains(plan, "run t path_drop"))
-  assert(!String::contains(plan, "run t consume_mark:"))
+  assert(!String::contains(plan, needle = "run t path_drop"))
+  assert(!String::contains(plan, needle = "run t consume_mark:"))
 }
 
 // #1980: a consume on ONE branch of a binding that is still used afterwards.
@@ -121,17 +121,17 @@ test "an occurrence with no source offset declines the whole binding" {
 test "a dup planned on one branch gets a mark and a path drop" {
   let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}", epilogue))
   let plan = plan_of(src)
-  assert(String::contains(plan, "run t dup 1"))
-  assert(String::contains(plan, "run t consume_mark:"))
-  assert(String::contains(plan, "run t path_drop 1"))
+  assert(String::contains(plan, needle = "run t dup 1"))
+  assert(String::contains(plan, needle = "run t consume_mark:"))
+  assert(String::contains(plan, needle = "run t path_drop 1"))
 }
 
 test "dups planned on both branches are budgeted once" {
   let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else {\n    Pair(own(t), Leaf(5))\n  }\n  match t {\n    _ => u\n  }\n}", epilogue))
   let plan = plan_of(src)
-  assert(String::contains(plan, "run t dup 1"))
-  assert(!String::contains(plan, "run t dup 2"))
-  assert(!String::contains(plan, "run t path_drop"))
+  assert(String::contains(plan, needle = "run t dup 1"))
+  assert(!String::contains(plan, needle = "run t dup 2"))
+  assert(!String::contains(plan, needle = "run t path_drop"))
 }
 
 test "an inner merge's mark makes the outer maximal arm mark too" {
@@ -140,27 +140,27 @@ test "an inner merge's mark makes the outer maximal arm mark too" {
   // with a mark of its own (two marks), or the drop releases what `own` kept.
   let src = String::concat(prelude, String::concat("let run: (Bool, Bool) -> Node = (c, d) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  let u = if c {\n    own(t)\n  } else if d {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(true, false) {\n    _ => 0\n  }\n}"))
   let plan = plan_of(src)
-  assert(String::contains(plan, "run t dup 1"))
-  assert(String::contains(plan, "run t path_drop 1"))
-  let first = String::index_of(plan, "run t consume_mark:")
+  assert(String::contains(plan, needle = "run t dup 1"))
+  assert(String::contains(plan, needle = "run t path_drop 1"))
+  let first = String::index_of(plan, needle = "run t consume_mark:")
   assert(first >= 0)
-  let rest = String::substring(plan, first + 1, String::length(plan))
-  assert(String::contains(rest, "run t consume_mark:"))
+  let rest = String::substring(plan, start = first + 1, end = String::length(plan))
+  assert(String::contains(rest, needle = "run t consume_mark:"))
 }
 
 test "a parameter consumed on one branch gets a mark and a path drop" {
   // Its dups are taken at function entry, like a let's at its declaration.
   let src = String::concat(prelude, String::concat("let keep: (Node, Bool) -> Node = (t, c) -> {\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}\nlet run: (Bool) -> Node = (c) -> keep(Pair(Leaf(1), Leaf(2)), c)", epilogue))
   let plan = plan_of(src)
-  assert(String::contains(plan, "keep t dup 1"))
-  assert(String::contains(plan, "keep t consume_mark:"))
-  assert(String::contains(plan, "keep t path_drop 1"))
+  assert(String::contains(plan, needle = "keep t dup 1"))
+  assert(String::contains(plan, needle = "keep t consume_mark:"))
+  assert(String::contains(plan, needle = "keep t path_drop 1"))
 }
 
 test "a parameter of a body with an exit gets no path drop" {
   // Codegen releases parameters at an exit from a table of its own.
   let src = String::concat(prelude, String::concat("let keep: (Node, Bool) -> Node = (t, c) -> {\n  if !c {\n    return Leaf(9)\n  } else {\n    ()\n  }\n  let u = if c {\n    own(t)\n  } else {\n    Leaf(0)\n  }\n  match t {\n    _ => u\n  }\n}\nlet run: (Bool) -> Node = (c) -> keep(Pair(Leaf(1), Leaf(2)), c)", epilogue))
   let plan = plan_of(src)
-  assert(!String::contains(plan, "keep t path_drop"))
-  assert(!String::contains(plan, "keep t consume_mark:"))
+  assert(!String::contains(plan, needle = "keep t path_drop"))
+  assert(!String::contains(plan, needle = "keep t consume_mark:"))
 }

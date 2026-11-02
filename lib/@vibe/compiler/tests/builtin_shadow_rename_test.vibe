@@ -16,14 +16,14 @@ fn one_param_fn(name: String, param: String, body: Expr) -> Stmt {
   SLet(false, false, name, None, EFn([], [], [(param, None)], None, None, body))
 }
 
-fn let_name(s: Stmt) -> String {
+fn let_name(_ s: Stmt) -> String {
   match s {
     SLet(_, _, n, _, _) => n,
     _ => ""
   }
 }
 
-fn callee_of_body(s: Stmt) -> String {
+fn callee_of_body(_ s: Stmt) -> String {
   match s {
     SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(EIdent(n, _), _, _, _))) => n,
     _ => ""
@@ -31,75 +31,75 @@ fn callee_of_body(s: Stmt) -> String {
 }
 
 test "#3132: the definition and the program's own calls are renamed" {
-  let def = one_param_fn("Array::length", "xs", EInt(77))
-  let user_call = one_param_fn("caller", "xs", ECall(EIdent("Array::length", 40), [
+  let def = one_param_fn(name = "Array::length", param = "xs", body = EInt(77))
+  let user_call = one_param_fn(name = "caller", param = "xs", body = ECall(EIdent("Array::length", 40), [
     EIdent("xs", 55)
   ], 40, []))
   // What an interpolation's re-parse or an unlocated lane hands the pass: the
   // program's own call with no source offset.
-  let unlocated_user_call = one_param_fn("interp", "xs", ECall(EIdent("Array::length", -1), [
+  let unlocated_user_call = one_param_fn(name = "interp", param = "xs", body = ECall(EIdent("Array::length", -1), [
     EIdent("xs", -1)
   ], -1, []))
-  let synthesized = one_param_fn("lowered", "xs", ECall(builtin_ref("Array::length"), [
+  let synthesized = one_param_fn(name = "lowered", param = "xs", body = ECall(builtin_ref("Array::length"), [
     EIdent("xs", -1)
   ], -1, []))
   let stmts = [def, user_call, unlocated_user_call, synthesized]
   rename_builtin_shadow_defs(stmts)
-  assert_eq(let_name(Array::get(stmts, 0)), builtin_shadow_rename_of("Array::length"))
-  assert_eq(callee_of_body(Array::get(stmts, 1)), "Array::length$user")
-  assert_eq(callee_of_body(Array::get(stmts, 2)), "Array::length$user")
-  assert_eq(callee_of_body(Array::get(stmts, 3)), "Array::length")
+  assert_eq(let_name(Array::get(stmts, at = 0)), builtin_shadow_rename_of("Array::length"))
+  assert_eq(callee_of_body(Array::get(stmts, at = 1)), "Array::length$user")
+  assert_eq(callee_of_body(Array::get(stmts, at = 2)), "Array::length$user")
+  assert_eq(callee_of_body(Array::get(stmts, at = 3)), "Array::length")
 }
 
 test "#3132: nothing is renamed without a definition, or for an unlisted name" {
-  let user_call = one_param_fn("caller", "xs", ECall(EIdent("Array::length", 40), [
+  let user_call = one_param_fn(name = "caller", param = "xs", body = ECall(EIdent("Array::length", 40), [
     EIdent("xs", 55)
   ], 40, []))
-  let own = one_param_fn("Array::iter_get_helper", "xs", EInt(1))
+  let own = one_param_fn(name = "Array::iter_get_helper", param = "xs", body = EInt(1))
   let stmts = [user_call, own]
   rename_builtin_shadow_defs(stmts)
-  assert_eq(callee_of_body(Array::get(stmts, 0)), "Array::length")
-  assert_eq(let_name(Array::get(stmts, 1)), "Array::iter_get_helper")
+  assert_eq(callee_of_body(Array::get(stmts, at = 0)), "Array::length")
+  assert_eq(let_name(Array::get(stmts, at = 1)), "Array::iter_get_helper")
 }
 
 test "#3132: Map::iter_get keeps its source definition's name (#2379)" {
-  let def = one_param_fn("Map::iter_get", "m", EIdent("m", 20))
+  let def = one_param_fn(name = "Map::iter_get", param = "m", body = EIdent("m", 20))
   let stmts = [def]
   rename_builtin_shadow_defs(stmts)
-  assert_eq(let_name(Array::get(stmts, 0)), "Map::iter_get")
+  assert_eq(let_name(Array::get(stmts, at = 0)), "Map::iter_get")
 }
 
-fn export_items(s: Stmt) -> String {
+fn export_items(_ s: Stmt) -> String {
   match s {
-    SExport(items) => String::join(items, ","),
+    SExport(items) => String::join(items, sep = ","),
     _ => ""
   }
 }
 
 test "#3144: an export block names the renamed definition" {
-  let def = one_param_fn("Array::length", "xs", EInt(77))
-  let other = one_param_fn("helper", "xs", EInt(1))
+  let def = one_param_fn(name = "Array::length", param = "xs", body = EInt(77))
+  let other = one_param_fn(name = "helper", param = "xs", body = EInt(1))
   let stmts = [def, other, SExport(["Array::length", "helper"])]
   rename_builtin_shadow_defs(stmts)
-  assert_eq(export_items(Array::get(stmts, 2)), "Array::length$user,helper")
+  assert_eq(export_items(Array::get(stmts, at = 2)), "Array::length$user,helper")
 }
 
 test "#3144: a second run renames a reference written after the first" {
-  let def = one_param_fn("String::length", "s", EInt(42))
+  let def = one_param_fn(name = "String::length", param = "s", body = EInt(42))
   let stmts = [def]
   rename_builtin_shadow_defs(stmts)
   // What a later pass writes by COMPUTING the name (a trait witness field),
   // beside one it spells as the builtin.
-  Array::push(stmts, one_param_fn("witness", "s", ECall(EIdent("String::length", -1), [
+  Array::push(stmts, value = one_param_fn(name = "witness", param = "s", body = ECall(EIdent("String::length", -1), [
     EIdent("s", -1)
   ], -1, [])))
-  Array::push(stmts, one_param_fn("lowered", "s", ECall(builtin_ref("String::length"), [
+  Array::push(stmts, value = one_param_fn(name = "lowered", param = "s", body = ECall(builtin_ref("String::length"), [
     EIdent("s", -1)
   ], -1, [])))
   rename_builtin_shadow_defs(stmts)
-  assert_eq(let_name(Array::get(stmts, 0)), "String::length$user")
-  assert_eq(callee_of_body(Array::get(stmts, 1)), "String::length$user")
-  assert_eq(callee_of_body(Array::get(stmts, 2)), "String::length")
+  assert_eq(let_name(Array::get(stmts, at = 0)), "String::length$user")
+  assert_eq(callee_of_body(Array::get(stmts, at = 1)), "String::length$user")
+  assert_eq(callee_of_body(Array::get(stmts, at = 2)), "String::length")
 }
 
 test "#3185: the list is sorted, which its binary search relies on" {
@@ -129,15 +129,15 @@ test "#3185: a builtin spelling a lowering intercepts is renamed" {
   ]
   let mut i = 0
   while i < Array::length(names) {
-    let name = Array::get(names, i)
-    let stmts = [one_param_fn(name, "x", EInt(1))]
+    let name = Array::get(names, at = i)
+    let stmts = [one_param_fn(name = name, param = "x", body = EInt(1))]
     rename_builtin_shadow_defs(stmts)
-    assert_eq(let_name(Array::get(stmts, 0)), builtin_shadow_rename_of(name))
+    assert_eq(let_name(Array::get(stmts, at = 0)), builtin_shadow_rename_of(name))
     i = i + 1
   }
 }
 
-fn callee_off_of_body(s: Stmt) -> Int {
+fn callee_off_of_body(_ s: Stmt) -> Int {
   match s {
     SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(EIdent(_, off), _, _, _))) => off,
     _ => 0
@@ -150,47 +150,47 @@ fn source_boundary() -> Stmt {
 
 test "#3185: a private definition renames its own file's references only" {
   // A dependency file, then the entry file that defines its own Array::get.
-  let dep_call = one_param_fn("first", "xs", ECall(EIdent("Array::get", 40), [
+  let dep_call = one_param_fn(name = "first", param = "xs", body = ECall(EIdent("Array::get", 40), [
     EIdent("xs", 51),
     EInt(0)
   ], 40, []))
-  let def = one_param_fn("Array::get", "xs", EInt(77))
-  let entry_call = one_param_fn("mine", "xs", ECall(EIdent("Array::get", 90), [
+  let def = one_param_fn(name = "Array::get", param = "xs", body = EInt(77))
+  let entry_call = one_param_fn(name = "mine", param = "xs", body = ECall(EIdent("Array::get", 90), [
     EIdent("xs", 101),
     EInt(0)
   ], 90, []))
   let stmts = [source_boundary(), dep_call, source_boundary(), def, entry_call]
   rename_builtin_shadow_defs(stmts)
-  assert_eq(let_name(Array::get(stmts, 3)), "Array::get$user")
-  assert_eq(callee_of_body(Array::get(stmts, 4)), "Array::get$user")
+  assert_eq(let_name(Array::get(stmts, at = 3)), "Array::get$user")
+  assert_eq(callee_of_body(Array::get(stmts, at = 4)), "Array::get$user")
   // The dependency's call keeps the builtin's name and is MARKED as the
   // builtin's, keyed with its own offset, so no later run can take it.
-  assert_eq(callee_of_body(Array::get(stmts, 1)), "Array::get")
-  assert(is_builtin_ref_offset(callee_off_of_body(Array::get(stmts, 1))))
-  assert_eq(index_site_offset(callee_off_of_body(Array::get(stmts, 1))), 40)
+  assert_eq(callee_of_body(Array::get(stmts, at = 1)), "Array::get")
+  assert(is_builtin_ref_offset(callee_off_of_body(Array::get(stmts, at = 1))))
+  assert_eq(index_site_offset(callee_off_of_body(Array::get(stmts, at = 1))), 40)
   rename_builtin_shadow_defs(stmts)
-  assert_eq(callee_of_body(Array::get(stmts, 1)), "Array::get")
-  assert_eq(callee_of_body(Array::get(stmts, 4)), "Array::get$user")
+  assert_eq(callee_of_body(Array::get(stmts, at = 1)), "Array::get")
+  assert_eq(callee_of_body(Array::get(stmts, at = 4)), "Array::get$user")
 }
 
 test "#3185: a published definition still renames every file's references" {
-  let dep_call = one_param_fn("first", "xs", ECall(EIdent("Array::get", 40), [
+  let dep_call = one_param_fn(name = "first", param = "xs", body = ECall(EIdent("Array::get", 40), [
     EIdent("xs", 51),
     EInt(0)
   ], 40, []))
   let def = SLet(true, false, "Array::get", None, EFn([], [], [("xs", None)], None, None, EInt(77)))
   let stmts = [source_boundary(), dep_call, source_boundary(), def]
   rename_builtin_shadow_defs(stmts)
-  assert_eq(callee_of_body(Array::get(stmts, 1)), "Array::get$user")
+  assert_eq(callee_of_body(Array::get(stmts, at = 1)), "Array::get$user")
 }
 
 test "#3211: an export list cannot publish another source unit's private builtin shadow" {
-  let dep_call = one_param_fn("doubled", "xs", ECall(EIdent("Array::map", 40), [
+  let dep_call = one_param_fn(name = "doubled", param = "xs", body = ECall(EIdent("Array::map", 40), [
     EIdent("xs", 51),
     EIdent("id", 55)
   ], 40, []))
-  let def = one_param_fn("Array::map", "xs", EInt(77))
-  let entry_call = one_param_fn("mine", "xs", ECall(EIdent("Array::map", 90), [
+  let def = one_param_fn(name = "Array::map", param = "xs", body = EInt(77))
+  let entry_call = one_param_fn(name = "mine", param = "xs", body = ECall(EIdent("Array::map", 90), [
     EIdent("xs", 101),
     EIdent("id", 105)
   ], 90, []))
@@ -204,83 +204,83 @@ test "#3211: an export list cannot publish another source unit's private builtin
     entry_call
   ]
   rename_builtin_shadow_defs(stmts)
-  assert_eq(let_name(Array::get(stmts, 5)), "Array::map$user")
-  assert_eq(callee_of_body(Array::get(stmts, 6)), "Array::map$user")
-  assert_eq(callee_of_body(Array::get(stmts, 3)), "Array::map")
-  assert(is_builtin_ref_offset(callee_off_of_body(Array::get(stmts, 3))))
+  assert_eq(let_name(Array::get(stmts, at = 5)), "Array::map$user")
+  assert_eq(callee_of_body(Array::get(stmts, at = 6)), "Array::map$user")
+  assert_eq(callee_of_body(Array::get(stmts, at = 3)), "Array::map")
+  assert(is_builtin_ref_offset(callee_off_of_body(Array::get(stmts, at = 3))))
 }
 
 test "#3185: a program with no source boundaries is one file" {
-  let def = one_param_fn("Array::get", "xs", EInt(77))
-  let call = one_param_fn("mine", "xs", ECall(EIdent("Array::get", 90), [
+  let def = one_param_fn(name = "Array::get", param = "xs", body = EInt(77))
+  let call = one_param_fn(name = "mine", param = "xs", body = ECall(EIdent("Array::get", 90), [
     EIdent("xs", 101),
     EInt(0)
   ], 90, []))
   let stmts = [call, def]
   rename_builtin_shadow_defs(stmts)
-  assert_eq(callee_of_body(Array::get(stmts, 0)), "Array::get$user")
+  assert_eq(callee_of_body(Array::get(stmts, at = 0)), "Array::get$user")
 }
 
 test "#3185: the parser's field-write sugar keeps the builtin under the program's __set_field" {
-  let def = one_param_fn("__set_field", "x", EInt(1))
-  let sugar = one_param_fn("write", "o", ECall(builtin_ref("__set_field"), [
+  let def = one_param_fn(name = "__set_field", param = "x", body = EInt(1))
+  let sugar = one_param_fn(name = "write", param = "o", body = ECall(builtin_ref("__set_field"), [
     EIdent("o", -1),
     EString("v", -1),
     EInt(5)
   ], -1, []))
-  let direct = one_param_fn("direct", "o", ECall(EIdent("__set_field", 30), [
+  let direct = one_param_fn(name = "direct", param = "o", body = ECall(EIdent("__set_field", 30), [
     EIdent("o", 42),
     EString("v", -1),
     EInt(5)
   ], 30, []))
   let stmts = [def, sugar, direct]
   rename_builtin_shadow_defs(stmts)
-  assert_eq(callee_of_body(Array::get(stmts, 1)), "__set_field")
-  assert_eq(callee_of_body(Array::get(stmts, 2)), "__set_field$user")
+  assert_eq(callee_of_body(Array::get(stmts, at = 1)), "__set_field")
+  assert_eq(callee_of_body(Array::get(stmts, at = 2)), "__set_field$user")
 }
 
 test "merged precheck marks foreign private builtin references without renaming source bindings" {
   for name in ["MutList::push", "String::length"] {
-    let dep = one_param_fn("dep", "xs", ECall(EIdent(name, 40), [
+    let dep = one_param_fn(name = "dep", param = "xs", body = ECall(EIdent(name, 40), [
       EIdent("xs", 51)
     ], 40, []))
-    let def = one_param_fn(name, "xs", EInt(77))
-    let own = one_param_fn("own", "xs", ECall(EIdent(name, 90), [
+    let def = one_param_fn(name = name, param = "xs", body = EInt(77))
+    let own = one_param_fn(name = "own", param = "xs", body = ECall(EIdent(name, 90), [
       EIdent("xs", 101)
     ], 90, []))
     let stmts = [source_boundary(), dep, source_boundary(), def, own]
     mark_private_builtin_references(stmts)
-    assert_eq(let_name(Array::get(stmts, 3)), name)
-    assert_eq(callee_of_body(Array::get(stmts, 4)), name)
-    assert_eq(callee_off_of_body(Array::get(stmts, 4)), 90)
-    assert_eq(callee_of_body(Array::get(stmts, 1)), name)
-    assert(is_builtin_ref_offset(callee_off_of_body(Array::get(stmts, 1))))
-    assert_eq(index_site_offset(callee_off_of_body(Array::get(stmts, 1))), 40)
+    assert_eq(let_name(Array::get(stmts, at = 3)), name)
+    assert_eq(callee_of_body(Array::get(stmts, at = 4)), name)
+    assert_eq(callee_off_of_body(Array::get(stmts, at = 4)), 90)
+    assert_eq(callee_of_body(Array::get(stmts, at = 1)), name)
+    assert(is_builtin_ref_offset(callee_off_of_body(Array::get(stmts, at = 1))))
+    assert_eq(index_site_offset(callee_off_of_body(Array::get(stmts, at = 1))), 40)
     mark_private_builtin_references(stmts)
-    assert_eq(let_name(Array::get(stmts, 3)), name)
+    assert_eq(let_name(Array::get(stmts, at = 3)), name)
     rename_builtin_shadow_defs(stmts)
-    assert_eq(let_name(Array::get(stmts, 3)), builtin_shadow_rename_of(name))
-    assert_eq(callee_of_body(Array::get(stmts, 4)), builtin_shadow_rename_of(name))
-    assert_eq(callee_of_body(Array::get(stmts, 1)), name)
+    assert_eq(let_name(Array::get(stmts, at = 3)), builtin_shadow_rename_of(name))
+    assert_eq(callee_of_body(Array::get(stmts, at = 4)), builtin_shadow_rename_of(name))
+    assert_eq(callee_of_body(Array::get(stmts, at = 1)), name)
   }
 }
 
 test "merged precheck leaves published builtin shadows and lexical bindings unmarked" {
   let name = "String::length"
-  let dep = one_param_fn("dep", "xs", ECall(EIdent(name, 40), [EIdent("xs", 51)], 40, [
+  let dep = one_param_fn(name = "dep", param = "xs", body = ECall(EIdent(name, 40), [EIdent("xs", 51)], 40, [
   ]))
-  let def = one_param_fn(name, "xs", EInt(77))
+  let def = one_param_fn(name = name, param = "xs", body = EInt(77))
   let stmts = [source_boundary(), dep, source_boundary(), def, SExport([name])]
   mark_private_builtin_references(stmts)
-  assert_eq(let_name(Array::get(stmts, 3)), name)
-  assert_eq(callee_off_of_body(Array::get(stmts, 1)), 40)
-  match Array::get(stmts, 4) {
-    SExport(items) => assert_eq(Array::get(items, 0), name),
+  assert_eq(let_name(Array::get(stmts, at = 3)), name)
+  assert_eq(callee_off_of_body(Array::get(stmts, at = 1)), 40)
+  match Array::get(stmts, at = 4) {
+    SExport(items) => assert_eq(Array::get(items, at = 0), name),
     _ => assert(false)
   }
-  let bound = one_param_fn("bound", name, ECall(EIdent(name, 40), [EInt(1)], 40, [
+  let bound = one_param_fn(name = "bound", param = name, body = ECall(EIdent(name, 40), [EInt(1)], 40, [
   ]))
   let private_stmts = [source_boundary(), bound, source_boundary(), def]
   mark_private_builtin_references(private_stmts)
-  assert_eq(callee_off_of_body(Array::get(private_stmts, 1)), 40)
+  assert_eq(callee_off_of_body(Array::get(private_stmts, at = 1)), 40)
 }

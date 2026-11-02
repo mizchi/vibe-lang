@@ -58,17 +58,17 @@ import @vibe/core {
 /// backends' convergence points (mirrors desugar_trait_dicts /
 /// rewrite_top_level_fn_alias_refs — see their call sites in
 /// codegen/wasi/linked_compile.vibe and codegen/gc/backend_body.vibe).
-export fn rewrite_self_tail_calls(stmts: Array[Stmt]) -> Unit {
+export fn rewrite_self_tail_calls(_ stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(exported, is_rec, name, ty, expr) => match expr {
         EFn(tps, tbs, params, ret, eff, body) => {
           let param_names = stc_param_names(params)
           let arity = Array::length(param_names)
-          if stc_eligible(name, params, param_names, arity, body) {
-            let new_body = stc_build_loop_body(name, param_names, arity, body)
-            Array::set(stmts, i, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, new_body)))
+          if stc_eligible(name = name, params = params, param_names = param_names, arity = arity, body = body) {
+            let new_body = stc_build_loop_body(name = name, param_names = param_names, arity = arity, body = body)
+            Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, new_body)))
           } else {
             ()
           }
@@ -81,7 +81,7 @@ export fn rewrite_self_tail_calls(stmts: Array[Stmt]) -> Unit {
   }
 }
 
-fn stc_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+fn stc_param_names(_ params: Array[(String, Option[TypeExpr])]) -> Array[String] {
   for p in params {
     let (pn, _) = p
     pn
@@ -101,11 +101,11 @@ fn stc_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
 fn stc_eligible(name: String, params: Array[(String, Option[TypeExpr])], param_names: Array[String], arity: Int, body: Expr) -> Bool {
   if !stc_params_all_scalar(params) {
     false
-  } else if !stc_tail_has_self_call(body, name, arity) {
+  } else if !stc_tail_has_self_call(expr = body, name = name, arity = arity) {
     false
-  } else if stc_params_bind_name(params, name) {
+  } else if stc_params_bind_name(params = params, target = name) {
     false
-  } else if stc_expr_binds_name(body, name) {
+  } else if stc_expr_binds_name(expr = body, target = name) {
     false
   } else {
     !stc_expr_has_handle_or_return(body)
@@ -124,11 +124,11 @@ fn stc_eligible(name: String, params: Array[(String, Option[TypeExpr])], param_n
 /// replan that -- restricting to declared-scalar parameters sidesteps the
 /// whole question. An unannotated parameter (`None`) is treated as NOT
 /// scalar (conservative default: we cannot tell).
-fn stc_params_all_scalar(params: Array[(String, Option[TypeExpr])]) -> Bool {
+fn stc_params_all_scalar(_ params: Array[(String, Option[TypeExpr])]) -> Bool {
   let mut i = 0
   let mut all_scalar = true
   while i < Array::length(params) {
-    let (_, oty) = Array::get(params, i)
+    let (_, oty) = Array::get(params, at = i)
     if !stc_type_is_scalar(oty) {
       all_scalar = false
     } else {
@@ -139,7 +139,7 @@ fn stc_params_all_scalar(params: Array[(String, Option[TypeExpr])]) -> Bool {
   all_scalar
 }
 
-fn stc_type_is_scalar(oty: Option[TypeExpr]) -> Bool {
+fn stc_type_is_scalar(_ oty: Option[TypeExpr]) -> Bool {
   match oty {
     Some(TyName(n)) => n == "Int" || n == "Bool" || n == "Float" || n == "Double" || n == "StdinStream",
     Some(TyUnit) => true,
@@ -154,8 +154,8 @@ fn stc_type_is_scalar(oty: Option[TypeExpr]) -> Bool {
 // `stc_name_unsafe` below) as the "is this the function's own name"
 // shadow-check keeps this a single pass instead of two.
 
-fn stc_is_reserved_name(n: String) -> Bool {
-  String::starts_with(n, "__stc")
+fn stc_is_reserved_name(_ n: String) -> Bool {
+  String::starts_with(n, prefix = "__stc")
 }
 
 fn stc_name_unsafe(n: String, target: String) -> Bool {
@@ -164,42 +164,42 @@ fn stc_name_unsafe(n: String, target: String) -> Bool {
 
 fn stc_expr_binds_name(expr: Expr, target: String) -> Bool {
   match expr {
-    ELet(n, v, b, _) => stc_name_unsafe(n, target) || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
-    ELetMut(n, v, b, _) => stc_name_unsafe(n, target) || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
-    ELetRec(n, v, b) => stc_name_unsafe(n, target) || stc_expr_binds_name(v, target) || stc_expr_binds_name(b, target),
-    EFn(_, _, params, _, _, b) => stc_params_bind_name(params, target) || stc_expr_binds_name(b, target),
-    EForIn(n, idx, it, b) => stc_name_unsafe(n, target) || stc_opt_name_is(idx, target) || stc_expr_binds_name(it, target) || stc_expr_binds_name(b, target),
-    EMatch(s, arms) => stc_expr_binds_name(s, target) || stc_arms_bind_name(arms, target),
-    EHandle(s, arms) => stc_expr_binds_name(s, target) || stc_arms_bind_name(arms, target),
-    EIf(c, t, e) => stc_expr_binds_name(c, target) || stc_expr_binds_name(t, target) || stc_expr_binds_name(e, target),
-    ESeq(a, b) => stc_expr_binds_name(a, target) || stc_expr_binds_name(b, target),
-    EWhile(c, b) => stc_expr_binds_name(c, target) || stc_expr_binds_name(b, target),
-    ELoop(pairs, b) => stc_loop_pairs_bind_name(pairs, target) || stc_expr_binds_name(b, target),
-    ECall(callee, args, _, _) => stc_expr_binds_name(callee, target) || stc_exprs_bind_name(args, target),
-    EBinOp(_, l, r, _) => stc_expr_binds_name(l, target) || stc_expr_binds_name(r, target),
-    EUnaryOp(_, e2) => stc_expr_binds_name(e2, target),
-    EAssign(_, v, c, _) => stc_expr_binds_name(v, target) || stc_expr_binds_name(c, target),
-    EAssignOp(_, _, v, c, _) => stc_expr_binds_name(v, target) || stc_expr_binds_name(c, target),
-    EDot(o, _, _, _) => stc_expr_binds_name(o, target),
-    ELabeledArg(_, _, v) => stc_expr_binds_name(v, target),
-    EReturn(e2) => stc_expr_binds_name(e2, target),
+    ELet(n, v, b, _) => stc_name_unsafe(n = n, target = target) || stc_expr_binds_name(expr = v, target = target) || stc_expr_binds_name(expr = b, target = target),
+    ELetMut(n, v, b, _) => stc_name_unsafe(n = n, target = target) || stc_expr_binds_name(expr = v, target = target) || stc_expr_binds_name(expr = b, target = target),
+    ELetRec(n, v, b) => stc_name_unsafe(n = n, target = target) || stc_expr_binds_name(expr = v, target = target) || stc_expr_binds_name(expr = b, target = target),
+    EFn(_, _, params, _, _, b) => stc_params_bind_name(params = params, target = target) || stc_expr_binds_name(expr = b, target = target),
+    EForIn(n, idx, it, b) => stc_name_unsafe(n = n, target = target) || stc_opt_name_is(opt = idx, target = target) || stc_expr_binds_name(expr = it, target = target) || stc_expr_binds_name(expr = b, target = target),
+    EMatch(s, arms) => stc_expr_binds_name(expr = s, target = target) || stc_arms_bind_name(arms = arms, target = target),
+    EHandle(s, arms) => stc_expr_binds_name(expr = s, target = target) || stc_arms_bind_name(arms = arms, target = target),
+    EIf(c, t, e) => stc_expr_binds_name(expr = c, target = target) || stc_expr_binds_name(expr = t, target = target) || stc_expr_binds_name(expr = e, target = target),
+    ESeq(a, b) => stc_expr_binds_name(expr = a, target = target) || stc_expr_binds_name(expr = b, target = target),
+    EWhile(c, b) => stc_expr_binds_name(expr = c, target = target) || stc_expr_binds_name(expr = b, target = target),
+    ELoop(pairs, b) => stc_loop_pairs_bind_name(pairs = pairs, target = target) || stc_expr_binds_name(expr = b, target = target),
+    ECall(callee, args, _, _) => stc_expr_binds_name(expr = callee, target = target) || stc_exprs_bind_name(exprs = args, target = target),
+    EBinOp(_, l, r, _) => stc_expr_binds_name(expr = l, target = target) || stc_expr_binds_name(expr = r, target = target),
+    EUnaryOp(_, e2) => stc_expr_binds_name(expr = e2, target = target),
+    EAssign(_, v, c, _) => stc_expr_binds_name(expr = v, target = target) || stc_expr_binds_name(expr = c, target = target),
+    EAssignOp(_, _, v, c, _) => stc_expr_binds_name(expr = v, target = target) || stc_expr_binds_name(expr = c, target = target),
+    EDot(o, _, _, _) => stc_expr_binds_name(expr = o, target = target),
+    ELabeledArg(_, _, v) => stc_expr_binds_name(expr = v, target = target),
+    EReturn(e2) => stc_expr_binds_name(expr = e2, target = target),
     EBreak(opt) => match opt {
-      Some(e2) => stc_expr_binds_name(e2, target),
+      Some(e2) => stc_expr_binds_name(expr = e2, target = target),
       None => false
     },
-    EContinue(args) => stc_exprs_bind_name(args, target),
-    ETuple(elems) => stc_exprs_bind_name(elems, target),
-    EArray(elems) => stc_exprs_bind_name(elems, target),
-    ERecord(_, fields, _) => stc_fields_bind_name(fields, target),
-    EMap(fields) => stc_fields_bind_name(fields, target),
-    ESpread(e2) => stc_expr_binds_name(e2, target),
+    EContinue(args) => stc_exprs_bind_name(exprs = args, target = target),
+    ETuple(elems) => stc_exprs_bind_name(exprs = elems, target = target),
+    EArray(elems) => stc_exprs_bind_name(exprs = elems, target = target),
+    ERecord(_, fields, _) => stc_fields_bind_name(fields = fields, target = target),
+    EMap(fields) => stc_fields_bind_name(fields = fields, target = target),
+    ESpread(e2) => stc_expr_binds_name(expr = e2, target = target),
     _ => false
   }
 }
 
 fn stc_opt_name_is(opt: Option[String], target: String) -> Bool {
   match opt {
-    Some(n) => stc_name_unsafe(n, target),
+    Some(n) => stc_name_unsafe(n = n, target = target),
     None => false
   }
 }
@@ -208,7 +208,7 @@ fn stc_exprs_bind_name(exprs: Array[Expr], target: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(exprs) {
-    if stc_expr_binds_name(Array::get(exprs, i), target) {
+    if stc_expr_binds_name(expr = Array::get(exprs, at = i), target = target) {
       found = true
     } else {
       ()
@@ -222,8 +222,8 @@ fn stc_fields_bind_name(fields: Array[(String, Expr)], target: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(fields) {
-    let (_, v) = Array::get(fields, i)
-    if stc_expr_binds_name(v, target) {
+    let (_, v) = Array::get(fields, at = i)
+    if stc_expr_binds_name(expr = v, target = target) {
       found = true
     } else {
       ()
@@ -237,8 +237,8 @@ fn stc_params_bind_name(params: Array[(String, Option[TypeExpr])], target: Strin
   let mut i = 0
   let mut found = false
   while i < Array::length(params) {
-    let (pn, _) = Array::get(params, i)
-    if stc_name_unsafe(pn, target) {
+    let (pn, _) = Array::get(params, at = i)
+    if stc_name_unsafe(n = pn, target = target) {
       found = true
     } else {
       ()
@@ -252,8 +252,8 @@ fn stc_loop_pairs_bind_name(pairs: Array[(String, Expr)], target: String) -> Boo
   let mut i = 0
   let mut found = false
   while i < Array::length(pairs) {
-    let (pn, init) = Array::get(pairs, i)
-    if stc_name_unsafe(pn, target) || stc_expr_binds_name(init, target) {
+    let (pn, init) = Array::get(pairs, at = i)
+    if stc_name_unsafe(n = pn, target = target) || stc_expr_binds_name(expr = init, target = target) {
       found = true
     } else {
       ()
@@ -265,16 +265,16 @@ fn stc_loop_pairs_bind_name(pairs: Array[(String, Expr)], target: String) -> Boo
 
 fn stc_pat_binds_name(pat: Pat, target: String) -> Bool {
   match pat {
-    PBind(n) => stc_name_unsafe(n, target),
-    PCtor(_, ps) => stc_pats_bind_name(ps, target),
-    PTuple(ps) => stc_pats_bind_name(ps, target),
-    POr(a, b) => stc_pat_binds_name(a, target) || stc_pat_binds_name(b, target),
+    PBind(n) => stc_name_unsafe(n = n, target = target),
+    PCtor(_, ps) => stc_pats_bind_name(pats = ps, target = target),
+    PTuple(ps) => stc_pats_bind_name(pats = ps, target = target),
+    POr(a, b) => stc_pat_binds_name(pat = a, target = target) || stc_pat_binds_name(pat = b, target = target),
     PStruct(_, fields) => {
       let mut i = 0
       let mut found = false
       while i < Array::length(fields) {
-        let (_, p) = Array::get(fields, i)
-        if stc_pat_binds_name(p, target) {
+        let (_, p) = Array::get(fields, at = i)
+        if stc_pat_binds_name(pat = p, target = target) {
           found = true
         } else {
           ()
@@ -291,7 +291,7 @@ fn stc_pats_bind_name(pats: Array[Pat], target: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(pats) {
-    if stc_pat_binds_name(Array::get(pats, i), target) {
+    if stc_pat_binds_name(pat = Array::get(pats, at = i), target = target) {
       found = true
     } else {
       ()
@@ -305,8 +305,8 @@ fn stc_arms_bind_name(arms: Array[(Pat, Expr)], target: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(arms) {
-    let (p, ex) = Array::get(arms, i)
-    if stc_pat_binds_name(p, target) || stc_expr_binds_name(ex, target) {
+    let (p, ex) = Array::get(arms, at = i)
+    if stc_pat_binds_name(pat = p, target = target) || stc_expr_binds_name(expr = ex, target = target) {
       found = true
     } else {
       ()
@@ -324,7 +324,7 @@ fn stc_arms_bind_name(arms: Array[(Pat, Expr)], target: String) -> Bool {
 // looking inside it, and merging this into the same traversal as the
 // EHandle/EReturn check avoids a second whole-body walk.
 
-fn stc_expr_has_handle_or_return(expr: Expr) -> Bool {
+fn stc_expr_has_handle_or_return(_ expr: Expr) -> Bool {
   match expr {
     EHandle(_, _) => true,
     EReturn(_) => true,
@@ -359,11 +359,11 @@ fn stc_expr_has_handle_or_return(expr: Expr) -> Bool {
   }
 }
 
-fn stc_exprs_have_handle_or_return(exprs: Array[Expr]) -> Bool {
+fn stc_exprs_have_handle_or_return(_ exprs: Array[Expr]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(exprs) {
-    if stc_expr_has_handle_or_return(Array::get(exprs, i)) {
+    if stc_expr_has_handle_or_return(Array::get(exprs, at = i)) {
       found = true
     } else {
       ()
@@ -373,11 +373,11 @@ fn stc_exprs_have_handle_or_return(exprs: Array[Expr]) -> Bool {
   found
 }
 
-fn stc_fields_have_handle_or_return(fields: Array[(String, Expr)]) -> Bool {
+fn stc_fields_have_handle_or_return(_ fields: Array[(String, Expr)]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(fields) {
-    let (_, v) = Array::get(fields, i)
+    let (_, v) = Array::get(fields, at = i)
     if stc_expr_has_handle_or_return(v) {
       found = true
     } else {
@@ -388,11 +388,11 @@ fn stc_fields_have_handle_or_return(fields: Array[(String, Expr)]) -> Bool {
   found
 }
 
-fn stc_loop_pairs_have_handle_or_return(pairs: Array[(String, Expr)]) -> Bool {
+fn stc_loop_pairs_have_handle_or_return(_ pairs: Array[(String, Expr)]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(pairs) {
-    let (_, init) = Array::get(pairs, i)
+    let (_, init) = Array::get(pairs, at = i)
     if stc_expr_has_handle_or_return(init) {
       found = true
     } else {
@@ -403,11 +403,11 @@ fn stc_loop_pairs_have_handle_or_return(pairs: Array[(String, Expr)]) -> Bool {
   found
 }
 
-fn stc_arms_have_handle_or_return(arms: Array[(Pat, Expr)]) -> Bool {
+fn stc_arms_have_handle_or_return(_ arms: Array[(Pat, Expr)]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(arms) {
-    let (_, ex) = Array::get(arms, i)
+    let (_, ex) = Array::get(arms, at = i)
     if stc_expr_has_handle_or_return(ex) {
       found = true
     } else {
@@ -433,15 +433,15 @@ fn stc_is_self_call(expr: Expr, name: String, arity: Int) -> Bool {
 
 fn stc_tail_has_self_call(expr: Expr, name: String, arity: Int) -> Bool {
   match expr {
-    EIf(_, t, e) => stc_tail_has_self_call(t, name, arity) || stc_tail_has_self_call(e, name, arity),
-    EMatch(_, arms) => stc_tail_arms_have_self_call(arms, name, arity),
-    ELet(_, _, b, _) => stc_tail_has_self_call(b, name, arity),
-    ELetMut(_, _, b, _) => stc_tail_has_self_call(b, name, arity),
-    ELetRec(_, _, b) => stc_tail_has_self_call(b, name, arity),
-    ESeq(_, b) => stc_tail_has_self_call(b, name, arity),
-    EAssign(_, _, c, _) => stc_tail_has_self_call(c, name, arity),
-    EAssignOp(_, _, _, c, _) => stc_tail_has_self_call(c, name, arity),
-    _ => stc_is_self_call(expr, name, arity)
+    EIf(_, t, e) => stc_tail_has_self_call(expr = t, name = name, arity = arity) || stc_tail_has_self_call(expr = e, name = name, arity = arity),
+    EMatch(_, arms) => stc_tail_arms_have_self_call(arms = arms, name = name, arity = arity),
+    ELet(_, _, b, _) => stc_tail_has_self_call(expr = b, name = name, arity = arity),
+    ELetMut(_, _, b, _) => stc_tail_has_self_call(expr = b, name = name, arity = arity),
+    ELetRec(_, _, b) => stc_tail_has_self_call(expr = b, name = name, arity = arity),
+    ESeq(_, b) => stc_tail_has_self_call(expr = b, name = name, arity = arity),
+    EAssign(_, _, c, _) => stc_tail_has_self_call(expr = c, name = name, arity = arity),
+    EAssignOp(_, _, _, c, _) => stc_tail_has_self_call(expr = c, name = name, arity = arity),
+    _ => stc_is_self_call(expr = expr, name = name, arity = arity)
   }
 }
 
@@ -449,8 +449,8 @@ fn stc_tail_arms_have_self_call(arms: Array[(Pat, Expr)], name: String, arity: I
   let mut i = 0
   let mut found = false
   while i < Array::length(arms) {
-    let (_, ex) = Array::get(arms, i)
-    if stc_tail_has_self_call(ex, name, arity) {
+    let (_, ex) = Array::get(arms, at = i)
+    if stc_tail_has_self_call(expr = ex, name = name, arity = arity) {
       found = true
     } else {
       ()
@@ -463,13 +463,13 @@ fn stc_tail_arms_have_self_call(arms: Array[(Pat, Expr)], name: String, arity: I
 // --- the rewrite itself.
 
 fn stc_build_loop_body(name: String, param_names: Array[String], arity: Int, body: Expr) -> Expr {
-  let transformed = stc_rewrite_tail(body, name, param_names, arity, 0)
+  let transformed = stc_rewrite_tail(expr = body, name = name, param_names = param_names, arity = arity, seq = 0)
   let while_expr = EWhile(EBool(true), transformed)
   let looped = ELetMut("__stc_result", EInt(0), ESeq(while_expr, EIdent("__stc_result", -1)), -1)
   let mut wrapped = looped
   let mut wi = arity - 1
   while wi >= 0 {
-    let pn = Array::get(param_names, wi)
+    let pn = Array::get(param_names, at = wi)
     wrapped = ELetMut(pn, EIdent(pn, -1), wrapped, -1)
     wi = wi - 1
   }
@@ -483,16 +483,16 @@ fn stc_build_loop_body(name: String, param_names: Array[String], arity: Int, bod
 /// branches of the same function never collide with each other's temporaries.
 fn stc_rewrite_tail(expr: Expr, name: String, param_names: Array[String], arity: Int, seq: Int) -> Expr {
   match expr {
-    EIf(c, t, e) => EIf(c, stc_rewrite_tail(t, name, param_names, arity, seq * 2 + 1), stc_rewrite_tail(e, name, param_names, arity, seq * 2 + 2)),
-    EMatch(s, arms) => EMatch(s, stc_rewrite_tail_arms(arms, name, param_names, arity, seq)),
-    ELet(n, v, b, off) => ELet(n, v, stc_rewrite_tail(b, name, param_names, arity, seq), off),
-    ELetMut(n, v, b, off) => ELetMut(n, v, stc_rewrite_tail(b, name, param_names, arity, seq), off),
-    ELetRec(n, v, b) => ELetRec(n, v, stc_rewrite_tail(b, name, param_names, arity, seq)),
-    ESeq(a, b) => ESeq(a, stc_rewrite_tail(b, name, param_names, arity, seq)),
-    EAssign(n, v, c, target_off) => EAssign(n, v, stc_rewrite_tail(c, name, param_names, arity, seq), target_off),
-    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, v, stc_rewrite_tail(c, name, param_names, arity, seq), target_off),
-    _ => if stc_is_self_call(expr, name, arity) {
-      stc_build_continue(expr, param_names, arity, seq)
+    EIf(c, t, e) => EIf(c, stc_rewrite_tail(expr = t, name = name, param_names = param_names, arity = arity, seq = seq * 2 + 1), stc_rewrite_tail(expr = e, name = name, param_names = param_names, arity = arity, seq = seq * 2 + 2)),
+    EMatch(s, arms) => EMatch(s, stc_rewrite_tail_arms(arms = arms, name = name, param_names = param_names, arity = arity, seq = seq)),
+    ELet(n, v, b, off) => ELet(n, v, stc_rewrite_tail(expr = b, name = name, param_names = param_names, arity = arity, seq = seq), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, stc_rewrite_tail(expr = b, name = name, param_names = param_names, arity = arity, seq = seq), off),
+    ELetRec(n, v, b) => ELetRec(n, v, stc_rewrite_tail(expr = b, name = name, param_names = param_names, arity = arity, seq = seq)),
+    ESeq(a, b) => ESeq(a, stc_rewrite_tail(expr = b, name = name, param_names = param_names, arity = arity, seq = seq)),
+    EAssign(n, v, c, target_off) => EAssign(n, v, stc_rewrite_tail(expr = c, name = name, param_names = param_names, arity = arity, seq = seq), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, v, stc_rewrite_tail(expr = c, name = name, param_names = param_names, arity = arity, seq = seq), target_off),
+    _ => if stc_is_self_call(expr = expr, name = name, arity = arity) {
+      stc_build_continue(call_expr = expr, param_names = param_names, arity = arity, seq = seq)
     } else {
       EAssign("__stc_result", expr, EBreak(None), -1)
     }
@@ -503,8 +503,8 @@ fn stc_rewrite_tail_arms(arms: Array[(Pat, Expr)], name: String, param_names: Ar
   let mut i = 0
   let mut out = array_empty()
   while i < Array::length(arms) {
-    let (p, ex) = Array::get(arms, i)
-    Array::push(out, (p, stc_rewrite_tail(ex, name, param_names, arity, seq * 101 + i)))
+    let (p, ex) = Array::get(arms, at = i)
+    Array::push(out, value = (p, stc_rewrite_tail(expr = ex, name = name, param_names = param_names, arity = arity, seq = seq * 101 + i)))
     i = i + 1
   }
   out
@@ -522,14 +522,14 @@ fn stc_build_continue(call_expr: Expr, param_names: Array[String], arity: Int, s
       let mut result = EContinue(array_empty())
       let mut ai = arity - 1
       while ai >= 0 {
-        let tmp = stc_temp_name(seq, ai)
-        result = EAssign(Array::get(param_names, ai), EIdent(tmp, -1), result, -1)
+        let tmp = stc_temp_name(seq = seq, idx = ai)
+        result = EAssign(Array::get(param_names, at = ai), EIdent(tmp, -1), result, -1)
         ai = ai - 1
       }
       let mut aj = arity - 1
       while aj >= 0 {
-        let tmp = stc_temp_name(seq, aj)
-        result = ELet(tmp, Array::get(args, aj), result, -1)
+        let tmp = stc_temp_name(seq = seq, idx = aj)
+        result = ELet(tmp, Array::get(args, at = aj), result, -1)
         aj = aj - 1
       }
       result

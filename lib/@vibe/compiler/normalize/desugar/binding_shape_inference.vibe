@@ -81,22 +81,22 @@ fn array_elem_bind_into(out: Array[(String, String)], name: String, val: Expr, s
   // for rendering -- but this one is read by call-site dict synthesis (#1199),
   // so an annotated binding has to reach it too.
   match dtd_array_elem_of_ann_opt(dtd_ascribed_type(val)) {
-    Some(elem) => Array::push(out, (array_elem_key(name), elem)),
-    None => array_elem_bind_by_shape_into(out, name, val, struct_sets, fn_returns)
+    Some(elem) => Array::push(out, value = (array_elem_key(name), elem)),
+    None => array_elem_bind_by_shape_into(out = out, name = name, val = val, struct_sets = struct_sets, fn_returns = fn_returns)
   }
 }
 
 fn array_elem_bind_by_shape_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   match val {
     EArray(elems) => if Array::length(elems) > 0 {
-      match infer_arg_type_name(Array::get(elems, 0), struct_sets, out, fn_returns) {
-        Some(elemty) => Array::push(out, (array_elem_key(name), elemty)),
-        None => mask_stale_array_elem_into(out, name)
+      match infer_arg_type_name(arg = Array::get(elems, at = 0), struct_sets = struct_sets, var_types = out, fn_returns = fn_returns) {
+        Some(elemty) => Array::push(out, value = (array_elem_key(name), elemty)),
+        None => mask_stale_array_elem_into(out = out, name = name)
       }
     } else {
-      mask_stale_array_elem_into(out, name)
+      mask_stale_array_elem_into(out = out, name = name)
     },
-    _ => mask_stale_array_elem_into(out, name)
+    _ => mask_stale_array_elem_into(out = out, name = name)
   }
 }
 
@@ -111,22 +111,22 @@ fn tuple_shape_bind_into(out: Array[(String, String)], name: String, val: Expr, 
   // `ETuple` from the match below, so before this an annotated tuple recorded
   // NOTHING and `t.0 < t.1` stayed an address comparison.
   match dtd_tuple_elem_names_of_ann(dtd_ascribed_type(val)) {
-    Some(sentinel) => Array::push(out, (tuple_shape_key(name), sentinel)),
+    Some(sentinel) => Array::push(out, value = (tuple_shape_key(name), sentinel)),
     None => {
       // #2128: `let p = Array::get(ps, i)` where `ps` is an array OF tuples.
       // `infer_shape` does not project an array element, so `shape_bind_into`
       // records a non-composite shape for `p` and `p.0` had nothing to read.
       // The element types are in the ARRAY's own `__shape$` record.
-      let from_elem = dtd_tuple_elem_names_of_array_get(val, out)
+      let from_elem = dtd_tuple_elem_names_of_array_get(val = val, var_types = out)
       if String::length(from_elem) > 0 {
-        Array::push(out, (tuple_shape_key(name), from_elem))
+        Array::push(out, value = (tuple_shape_key(name), from_elem))
       } else {
         match val {
           ETuple(items) => if Array::length(items) > 0 {
             let mut acc = ""
             let mut i = 0
             while i < Array::length(items) {
-              let tn = match infer_arg_type_name(Array::get(items, i), struct_sets, out, fn_returns) {
+              let tn = match infer_arg_type_name(arg = Array::get(items, at = i), struct_sets = struct_sets, var_types = out, fn_returns = fn_returns) {
                 Some(t) => t,
                 None => ""
               }
@@ -137,7 +137,7 @@ fn tuple_shape_bind_into(out: Array[(String, String)], name: String, val: Expr, 
               }
               i = i + 1
             }
-            Array::push(out, (tuple_shape_key(name), acc))
+            Array::push(out, value = (tuple_shape_key(name), acc))
           } else {
             ()
           },
@@ -162,12 +162,12 @@ fn ctor_payload_bind_into(out: Array[(String, String)], name: String, val: Expr,
         let shapes = empty_str_array()
         let mut i = 0
         while i < Array::length(cargs) {
-          Array::push(shapes, infer_shape(Array::get(cargs, i), struct_sets, out, fn_returns))
+          Array::push(shapes, value = infer_shape(e = Array::get(cargs, at = i), struct_sets = struct_sets, var_types = out, fn_returns = fn_returns))
           i = i + 1
         }
         i = 0
         while i < Array::length(cargs) {
-          let sh = Array::get(shapes, i)
+          let sh = Array::get(shapes, at = i)
           if String::length(sh) == 0 {
             ()
           } else {
@@ -175,11 +175,11 @@ fn ctor_payload_bind_into(out: Array[(String, String)], name: String, val: Expr,
             // seed_var_types writes from a real TypeExpr stay interchangeable
             // with these.
             let key = if Array::length(cargs) == 1 {
-              ctor_payload_key(name, cn)
+              ctor_payload_key(pname = name, ctor = cn)
             } else {
-              ctor_payload_idx_key(name, cn, i)
+              ctor_payload_idx_key(pname = name, ctor = cn, idx = i)
             }
-            Array::push(out, (key, sh))
+            Array::push(out, value = (key, sh))
           }
           i = i + 1
         }
@@ -239,10 +239,10 @@ export fn infer_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_
       if String::length(sh) > 0 {
         sh
       } else {
-        infer_shape_by_syntax(e, struct_sets, var_types, fn_returns)
+        infer_shape_by_syntax(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
       }
     },
-    None => infer_shape_by_syntax(e, struct_sets, var_types, fn_returns)
+    None => infer_shape_by_syntax(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
   }
 }
 
@@ -274,8 +274,8 @@ export fn dtd_elem_preserving_shape(fname: String, cargs: Array[Expr], struct_se
   // strings, so an unresolved one is not known to be an array.
   let preserves = fname == "Array::filter" || fname == "Array::slice" || fname == "__slice" || fname == "Array::reverse" || fname == "Array::concat"
   if preserves && Array::length(cargs) >= 1 {
-    let sh = infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns)
-    if String::starts_with(sh, "[") {
+    let sh = infer_shape(e = Array::get(cargs, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+    if String::starts_with(sh, prefix = "[") {
       sh
     } else {
       ""
@@ -300,8 +300,8 @@ export fn dtd_elem_preserving_shape(fname: String, cargs: Array[Expr], struct_se
 fn dtd_elem_projecting_shape(fname: String, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   let projects = fname == "Array::get" || fname == "__index"
   if projects && Array::length(cargs) == 2 {
-    let sh = infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns)
-    if String::starts_with(sh, "[") {
+    let sh = infer_shape(e = Array::get(cargs, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+    if String::starts_with(sh, prefix = "[") {
       shape_inner(sh)
     } else {
       ""
@@ -319,7 +319,7 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
       let mut acc = "("
       let mut i = 0
       while i < Array::length(items) {
-        let sub = infer_item_shape(Array::get(items, i), struct_sets, var_types, fn_returns)
+        let sub = infer_item_shape(e = Array::get(items, at = i), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
         acc = if i == 0 {
           String::concat(acc, sub)
         } else {
@@ -340,9 +340,9 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
         let mut ti = 0
         while ti < Array::length(formals) {
           let arg_sh = if Array::length(rtargs) == Array::length(formals) {
-            ty_to_eq_shape(Array::get(rtargs, ti))
+            ty_to_eq_shape(Array::get(rtargs, at = ti))
           } else {
-            record_formal_shape(Array::get(formals, ti), dfields, rfields, struct_sets, var_types, fn_returns)
+            record_formal_shape(f = Array::get(formals, at = ti), dfields = dfields, rfields = rfields, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
           }
           if String::length(arg_sh) == 0 {
             ok = false
@@ -358,7 +358,7 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
           rname
         }
       },
-      None => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+      None => match infer_arg_type_name(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
         Some(t) => t,
         None => ""
       }
@@ -376,12 +376,12 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
     EArray(items) => if Array::length(items) == 0 {
       ""
     } else {
-      let first = infer_item_shape(Array::get(items, 0), struct_sets, var_types, fn_returns)
+      let first = infer_item_shape(e = Array::get(items, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
       let mut best = first
       if String::length(first) == 0 || first == "Option" {
         let mut i = 1
         while i < Array::length(items) && !shape_is_composite(best) {
-          let later = infer_item_shape(Array::get(items, i), struct_sets, var_types, fn_returns)
+          let later = infer_item_shape(e = Array::get(items, at = i), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
           if shape_is_composite(later) {
             best = later
           } else {
@@ -405,21 +405,21 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
     // source whose shape is unknown, or a body this pass cannot type, yields
     // "" and nothing is claimed.
     EForIn(vname, kname, iter, body) => {
-      let src = infer_shape(iter, struct_sets, var_types, fn_returns)
-      if String::starts_with(src, "[") {
+      let src = infer_shape(e = iter, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+      if String::starts_with(src, prefix = "[") {
         let elem = shape_inner(src)
-        let with_v = extend_var_types(var_types, vname, Some(elem))
+        let with_v = extend_var_types(var_types = var_types, name = vname, inferred = Some(elem))
         // `for x, i in xs` binds the index too, and a body that uses it is
         // exactly the `fixtures/for_in_index_test.vibe` shape.
         let inner_vars = match kname {
-          Some(k) => extend_var_types(with_v, k, Some("Int")),
+          Some(k) => extend_var_types(var_types = with_v, name = k, inferred = Some("Int")),
           None => with_v
         }
-        let bsh = infer_shape(body, struct_sets, inner_vars, fn_returns)
+        let bsh = infer_shape(e = body, struct_sets = struct_sets, var_types = inner_vars, fn_returns = fn_returns)
         let resolved = if String::length(bsh) > 0 {
           bsh
         } else {
-          dtd_scalar_shape(body, inner_vars)
+          dtd_scalar_shape(e = body, var_types = inner_vars)
         }
         if String::length(resolved) > 0 {
           String::concat("[", String::concat(resolved, "]"))
@@ -430,21 +430,21 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
         ""
       }
     },
-    EIdent(n, _) => match lookup_var_type(var_types, shape_key(n)) {
+    EIdent(n, _) => match lookup_var_type(var_types = var_types, name = shape_key(n)) {
       // Same rule as interp_expand's: a recorded empty is an answer ("not
       // composite"), so fall through to the head name rather than to the
       // older sentinels.
       Some(sh) => if String::length(sh) == 0 {
-        match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+        match infer_arg_type_name(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
           Some(t) => t,
           None => ""
         }
       } else {
         sh
       },
-      None => match lookup_var_type(var_types, tuple_shape_key(n)) {
+      None => match lookup_var_type(var_types = var_types, name = tuple_shape_key(n)) {
         Some(sentinel) => String::concat("(", String::concat(sentinel, ")")),
-        None => match array_elem_type_of(var_types, n) {
+        None => match array_elem_type_of(var_types = var_types, name = n) {
           Some(elem) => String::concat("[", String::concat(elem, "]")),
           // #3074: a PARAMETER annotated with a `derive (Show)` generic type
           // (`k: G[Bool]`) records its instantiation only as its equality
@@ -452,16 +452,16 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
           // #3083: a tuple parameter (`t: (Int, String)`) likewise: its
           // annotation is recorded only there, so the render reached codegen
           // unexpanded, where #2987 refuses it.
-          None => match lookup_var_type(var_types, eq_shape_key(n)) {
-            Some(esh) => if (String::starts_with(esh, "{g:") || String::starts_with(esh, "(")) && String::length(interp_shape(esh)) > 0 {
+          None => match lookup_var_type(var_types = var_types, name = eq_shape_key(n)) {
+            Some(esh) => if (String::starts_with(esh, prefix = "{g:") || String::starts_with(esh, prefix = "(")) && String::length(interp_shape(esh)) > 0 {
               esh
             } else {
-              match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+              match infer_arg_type_name(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
                 Some(t) => t,
                 None => ""
               }
             },
-            None => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+            None => match infer_arg_type_name(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
               Some(t) => t,
               None => ""
             }
@@ -479,22 +479,22 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
     // #3074: a `derive (Show)` generic enum constructor describes its own
     // instantiation the same way, `GA(true)` -> `{g:G,Bool}`.
     ECall(callee, cargs, _, _) => match callee {
-      EIdent(fname, _) => if (fname == "Some" || fname == "Option::Some") && Array::length(cargs) == 1 && String::length(infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns)) > 0 {
-        String::concat("{o:", String::concat(infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns), "}"))
-      } else if String::length(show_generic_enum_ctor_shape(fname, cargs, struct_sets, var_types, fn_returns)) > 0 {
-        show_generic_enum_ctor_shape(fname, cargs, struct_sets, var_types, fn_returns)
-      } else match lookup_var_type(var_types, eq_shape_key(fname)) {
+      EIdent(fname, _) => if (fname == "Some" || fname == "Option::Some") && Array::length(cargs) == 1 && String::length(infer_shape(e = Array::get(cargs, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)) > 0 {
+        String::concat("{o:", String::concat(infer_shape(e = Array::get(cargs, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns), "}"))
+      } else if String::length(show_generic_enum_ctor_shape(fname = fname, cargs = cargs, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)) > 0 {
+        show_generic_enum_ctor_shape(fname = fname, cargs = cargs, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+      } else match lookup_var_type(var_types = var_types, name = eq_shape_key(fname)) {
         Some(sh) => interp_shape(sh),
-        None => match fn_return_type(fn_returns, fn_eq_shape_key(fname)) {
+        None => match fn_return_type(fn_returns = fn_returns, fname = fn_eq_shape_key(fname)) {
           Some(sh) => interp_shape(sh),
           None => {
             // #1880: checked AFTER the two lookups above, so a user binding
             // with one of these names still wins.
-            let preserved = dtd_elem_preserving_shape(fname, cargs, struct_sets, var_types, fn_returns)
+            let preserved = dtd_elem_preserving_shape(fname = fname, cargs = cargs, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
             let projected = if String::length(preserved) > 0 {
               ""
             } else {
-              dtd_elem_projecting_shape(fname, cargs, struct_sets, var_types, fn_returns)
+              dtd_elem_projecting_shape(fname = fname, cargs = cargs, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
             }
             // #2912: the third source, after the two that read an argument's
             // shape. `Array::map` is deliberately absent from both -- its
@@ -504,7 +504,7 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
             let mapped = if String::length(preserved) > 0 || String::length(projected) > 0 {
               ""
             } else {
-              dtd_map_callback_shape(fname, cargs)
+              dtd_map_callback_shape(fname = fname, cargs = cargs)
             }
             if String::length(preserved) > 0 {
               preserved
@@ -513,7 +513,7 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
             } else if String::length(mapped) > 0 {
               mapped
             } else {
-              match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+              match infer_arg_type_name(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
                 Some(t) => t,
                 None => ""
               }
@@ -521,7 +521,7 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
           }
         }
       },
-      _ => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+      _ => match infer_arg_type_name(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
         Some(t) => t,
         None => ""
       }
@@ -529,17 +529,17 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
     // #3088: a field declared as a `derive (Show)` generic at concrete
     // arguments (`o.b` with `b: Box[Bool]`) describes its instantiation.
     EDot(dobj, dfield, _, _) => {
-      let fsh = dtd_field_generic_shape(dobj, dfield, struct_sets, var_types, fn_returns)
+      let fsh = dtd_field_generic_shape(obj = dobj, field = dfield, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
       if String::length(fsh) > 0 {
         fsh
       } else {
-        match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+        match infer_arg_type_name(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
           Some(t) => t,
           None => ""
         }
       }
     },
-    _ => match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+    _ => match infer_arg_type_name(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
       Some(t) => t,
       None => ""
     }
@@ -553,17 +553,17 @@ export fn generic_record_inferred_args(name: String, rfields: Array[(String, Exp
   let mut out: Option[Array[TypeExpr]] = None
   let mut i = 0
   while i < Array::length(dtd_eq_generic_structs) {
-    let decl = Array::get(dtd_eq_generic_structs, i)
+    let decl = Array::get(dtd_eq_generic_structs, at = i)
     if decl.0 == name {
       let args = empty_type_exprs()
       let mut ok = true
       let mut fi = 0
       while fi < Array::length(decl.1) {
-        let sh = record_formal_shape(Array::get(decl.1, fi), decl.2, rfields, struct_sets, var_types, fn_returns)
+        let sh = record_formal_shape(f = Array::get(decl.1, at = fi), dfields = decl.2, rfields = rfields, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
         if String::length(sh) == 0 {
           ok = false
         } else {
-          Array::push(args, shape_to_eq_ty(sh))
+          Array::push(args, value = shape_to_eq_ty(sh))
         }
         fi = fi + 1
       }
@@ -586,14 +586,14 @@ fn record_formal_shape(f: String, dfields: Array[(String, TypeExpr)], rfields: A
   let mut out = ""
   let mut i = 0
   while i < Array::length(dfields) && String::length(out) == 0 {
-    let (dname, dty) = Array::get(dfields, i)
+    let (dname, dty) = Array::get(dfields, at = i)
     match dty {
       TyName(tn) => if tn == f {
         let mut j = 0
         while j < Array::length(rfields) {
-          let (rn, rv) = Array::get(rfields, j)
+          let (rn, rv) = Array::get(rfields, at = j)
           if rn == dname {
-            out = infer_shape(rv, struct_sets, var_types, fn_returns)
+            out = infer_shape(e = rv, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
           } else {
             ()
           }
@@ -613,7 +613,7 @@ fn record_formal_shape(f: String, dfields: Array[(String, TypeExpr)], rfields: A
 /// plain name adds nothing the existing entries do not already carry, so only
 /// composites are stored.
 fn shape_bind_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
-  let sh = infer_shape(val, struct_sets, out, fn_returns)
+  let sh = infer_shape(e = val, struct_sets = struct_sets, var_types = out, fn_returns = fn_returns)
   // ALWAYS record, even for a non-composite binding (recording ""). Skipping
   // those would leave a SHADOWED name's old shape as the live answer:
   // `extend_var_types` appends and `lookup_var_type` returns the LAST match
@@ -628,14 +628,14 @@ fn shape_bind_into(out: Array[(String, String)], name: String, val: Expr, struct
   // same staleness and which this pass does not rewrite (they are read by
   // call-site dict synthesis too, so appending empties there would change
   // #1199's behaviour).
-  Array::push(out, (shape_key(name), sh))
+  Array::push(out, value = (shape_key(name), sh))
 }
 
 /// #1445: every binding-site shape record, applied in one place so `ELet` and
 /// `ELetMut` cannot drift apart.
 export fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   let out = clone_var_types(var_types)
-  bind_shapes_into(out, name, val, struct_sets, fn_returns)
+  bind_shapes_into(out = out, name = name, val = val, struct_sets = struct_sets, fn_returns = fn_returns)
   out
 }
 
@@ -645,12 +645,12 @@ export fn bind_shapes(var_types: Array[(String, String)], name: String, val: Exp
 /// cloned for itself (#2386: those copies were up to six per `let`, all but
 /// the first redundant).
 export fn bind_shapes_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
-  array_elem_bind_into(out, name, val, struct_sets, fn_returns)
-  tuple_shape_bind_into(out, name, val, struct_sets, fn_returns)
-  ctor_payload_bind_into(out, name, val, struct_sets, fn_returns)
+  array_elem_bind_into(out = out, name = name, val = val, struct_sets = struct_sets, fn_returns = fn_returns)
+  tuple_shape_bind_into(out = out, name = name, val = val, struct_sets = struct_sets, fn_returns = fn_returns)
+  ctor_payload_bind_into(out = out, name = name, val = val, struct_sets = struct_sets, fn_returns = fn_returns)
   // LAST: infer_shape reads the sentinels the three above just wrote, so a
   // binding whose elements are themselves named bindings resolves in one pass.
-  shape_bind_into(out, name, val, struct_sets, fn_returns)
+  shape_bind_into(out = out, name = name, val = val, struct_sets = struct_sets, fn_returns = fn_returns)
 }
 
 /// #3088: the `{g:G,..}` shape of `obj.field` when the field's declared type is
@@ -671,16 +671,16 @@ fn dtd_field_generic_shape(obj: Expr, field: String, struct_sets: Array[(String,
   if Array::length(dtd_show_generic_structs) == 0 && Array::length(dtd_show_generic_enums) == 0 {
     ""
   } else {
-    dtd_field_generic_shape_scan(obj, field, struct_sets, var_types, fn_returns)
+    dtd_field_generic_shape_scan(obj = obj, field = field, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
   }
 }
 
 fn dtd_field_generic_shape_scan(obj: Expr, field: String, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
-  let recv_sh = interp_shape(infer_shape(obj, struct_sets, var_types, fn_returns))
-  let recv_head = if String::starts_with(recv_sh, "{g:") {
+  let recv_sh = interp_shape(infer_shape(e = obj, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns))
+  let recv_head = if String::starts_with(recv_sh, prefix = "{g:") {
     generic_shape_head(recv_sh)
   } else {
-    match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+    match infer_arg_type_name(arg = obj, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
       Some(h) => h,
       None => ""
     }
@@ -688,14 +688,14 @@ fn dtd_field_generic_shape_scan(obj: Expr, field: String, struct_sets: Array[(St
   let mut out = ""
   let mut i = 0
   while i < Array::length(dtd_struct_field_decls) {
-    let (sname, formals, fields) = Array::get(dtd_struct_field_decls, i)
+    let (sname, formals, fields) = Array::get(dtd_struct_field_decls, at = i)
     if sname == recv_head && !formal_in_scope(sname) {
       let targs = empty_type_exprs()
-      if String::starts_with(recv_sh, "{g:") {
-        let gparts = shape_split(String::substring(recv_sh, 3, String::length(recv_sh) - 1))
+      if String::starts_with(recv_sh, prefix = "{g:") {
+        let gparts = shape_split(String::substring(recv_sh, start = 3, end = String::length(recv_sh) - 1))
         let mut ai = 1
         while ai < Array::length(gparts) {
-          Array::push(targs, shape_to_eq_ty(Array::get(gparts, ai)))
+          Array::push(targs, value = shape_to_eq_ty(Array::get(gparts, at = ai)))
           ai = ai + 1
         }
       } else {
@@ -704,10 +704,10 @@ fn dtd_field_generic_shape_scan(obj: Expr, field: String, struct_sets: Array[(St
       if Array::length(targs) == Array::length(formals) {
         let mut fi = 0
         while fi < Array::length(fields) {
-          let (fname, fty) = Array::get(fields, fi)
+          let (fname, fty) = Array::get(fields, at = fi)
           if fname == field {
-            let sh = ty_to_eq_shape(eq_subst_ty(fty, formals, targs))
-            out = if String::starts_with(sh, "{g:") && show_generic_known(generic_shape_head(sh)) {
+            let sh = ty_to_eq_shape(eq_subst_ty(ty = fty, params = formals, args = targs))
+            out = if String::starts_with(sh, prefix = "{g:") && show_generic_known(generic_shape_head(sh)) {
               sh
             } else {
               ""
@@ -740,13 +740,13 @@ fn show_generic_enum_ctor_shape(fname: String, cargs: Array[Expr], struct_sets: 
       let mut ok = true
       let mut fi = 0
       while fi < Array::length(formals) && ok {
-        let f = Array::get(formals, fi)
+        let f = Array::get(formals, at = fi)
         let mut sh = ""
         let mut pi = 0
         while pi < Array::length(ptys) && String::length(sh) == 0 {
-          match Array::get(ptys, pi) {
+          match Array::get(ptys, at = pi) {
             TyName(tn) => if tn == f {
-              sh = infer_shape(Array::get(cargs, pi), struct_sets, var_types, fn_returns)
+              sh = infer_shape(e = Array::get(cargs, at = pi), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
             } else {
               ()
             },
@@ -776,6 +776,6 @@ export fn infer_item_shape(e: Expr, struct_sets: Array[(String, Array[String])],
   if String::length(typed) > 0 {
     typed
   } else {
-    infer_shape(e, struct_sets, var_types, fn_returns)
+    infer_shape(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
   }
 }

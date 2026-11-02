@@ -184,7 +184,7 @@ fn field_index_in_gc(fnames: Array[String], field: String) -> Int {
   let mut fi = 0
   let mut found = -1
   while fi < Array::length(fnames) {
-    if Array::get(fnames, fi) == field {
+    if Array::get(fnames, at = fi) == field {
       found = fi
       fi = Array::length(fnames)
     } else {
@@ -204,7 +204,7 @@ fn struct_field_index_gc(ctx: CompileCtxGc, sname: String, field: String) -> Int
   let mut si = 0
   let mut sidx = -1
   while si < Array::length(names) {
-    if Array::get(names, si) == sname {
+    if Array::get(names, at = si) == sname {
       sidx = si
       si = Array::length(names)
     } else {
@@ -212,7 +212,7 @@ fn struct_field_index_gc(ctx: CompileCtxGc, sname: String, field: String) -> Int
     }
   }
   if sidx >= 0 {
-    let found = field_index_in_gc(Array::get(ctx.gc_ctor_table.struct_field_names, sidx), field)
+    let found = field_index_in_gc(fnames = Array::get(ctx.gc_ctor_table.struct_field_names, at = sidx), field = field)
     if found < 0 {
       throw(String::concat(String::concat(String::concat("unknown field `", field), "` in struct "), sname))
     } else {
@@ -222,7 +222,7 @@ fn struct_field_index_gc(ctx: CompileCtxGc, sname: String, field: String) -> Int
     let mut gsi = 0
     let mut gfound = -1
     while gsi < Array::length(names) {
-      let f = field_index_in_gc(Array::get(ctx.gc_ctor_table.struct_field_names, gsi), field)
+      let f = field_index_in_gc(fnames = Array::get(ctx.gc_ctor_table.struct_field_names, at = gsi), field = field)
       if f >= 0 {
         gfound = f
         gsi = Array::length(names)
@@ -247,7 +247,7 @@ fn struct_field_index_gc(ctx: CompileCtxGc, sname: String, field: String) -> Int
 // by the parent tag test, and binds recurse through fresh temp locals.
 
 /// Does `pat` constrain the value at all (vs matching anything)?
-fn gc_pat_needs_test(p: Pat) -> Bool {
+fn gc_pat_needs_test(_ p: Pat) -> Bool {
   match p {
     PBind(_) => false,
     PWild => false,
@@ -255,7 +255,7 @@ fn gc_pat_needs_test(p: Pat) -> Bool {
       let mut any = false
       let mut i = 0
       while i < Array::length(ps) {
-        if gc_pat_needs_test(Array::get(ps, i)) {
+        if gc_pat_needs_test(Array::get(ps, at = i)) {
           any = true
         }
         i = i + 1
@@ -266,7 +266,7 @@ fn gc_pat_needs_test(p: Pat) -> Bool {
       let mut any = false
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, sub) = Array::get(fields, i)
+        let (_, sub) = Array::get(fields, at = i)
         if gc_pat_needs_test(sub) {
           any = true
         }
@@ -279,14 +279,14 @@ fn gc_pat_needs_test(p: Pat) -> Bool {
 }
 
 /// Does `pat` bind any variables?
-fn gc_pat_has_binds(p: Pat) -> Bool {
+fn gc_pat_has_binds(_ p: Pat) -> Bool {
   match p {
     PBind(_) => true,
     PCtor(_, args) => {
       let mut any = false
       let mut i = 0
       while i < Array::length(args) {
-        if gc_pat_has_binds(Array::get(args, i)) {
+        if gc_pat_has_binds(Array::get(args, at = i)) {
           any = true
         }
         i = i + 1
@@ -297,7 +297,7 @@ fn gc_pat_has_binds(p: Pat) -> Bool {
       let mut any = false
       let mut i = 0
       while i < Array::length(ps) {
-        if gc_pat_has_binds(Array::get(ps, i)) {
+        if gc_pat_has_binds(Array::get(ps, at = i)) {
           any = true
         }
         i = i + 1
@@ -308,7 +308,7 @@ fn gc_pat_has_binds(p: Pat) -> Bool {
       let mut any = false
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, sub) = Array::get(fields, i)
+        let (_, sub) = Array::get(fields, at = i)
         if gc_pat_has_binds(sub) {
           any = true
         }
@@ -325,13 +325,13 @@ fn gc_pat_has_binds(p: Pat) -> Bool {
 /// local (ctor layout: value|1 -> [tag@0][argc@4][payload@8+i*8]).
 fn gc_extract_ctor_payload(buf: Bytes, local_names: Array[String], vloc: Int, idx: Int) -> Int {
   let tl = Array::length(local_names)
-  emit_local_get(buf, vloc)
-  emit_i64_const(buf, -2)
+  emit_local_get(buf = buf, idx = vloc)
+  emit_i64_const(buf = buf, value = -2)
   emit_i64_and(buf)
   emit_i32_wrap_i64(buf)
-  emit_i64_load(buf, 3, 8 + idx * 8)
-  emit_local_set(buf, tl)
-  Array::push(local_names, "[gc-temp]__pat_tmp")
+  emit_i64_load(buf = buf, align = 3, offset = 8 + idx * 8)
+  emit_local_set(buf = buf, idx = tl)
+  Array::push(local_names, value = "[gc-temp]__pat_tmp")
   tl
 }
 
@@ -340,20 +340,20 @@ fn gc_extract_ctor_payload(buf: Bytes, local_names: Array[String], vloc: Int, id
 /// eight-byte header. The parser represents both patterns as PTuple (#3389).
 fn gc_extract_positional_field(buf: Bytes, local_names: Array[String], vloc: Int, idx: Int) -> Int {
   let tl = Array::length(local_names)
-  emit_local_get(buf, vloc)
-  emit_i64_const(buf, -2)
+  emit_local_get(buf = buf, idx = vloc)
+  emit_i64_const(buf = buf, value = -2)
   emit_i64_and(buf)
   emit_i32_wrap_i64(buf)
-  emit_local_get(buf, vloc)
-  emit_i64_const(buf, 1)
+  emit_local_get(buf = buf, idx = vloc)
+  emit_i64_const(buf = buf, value = 1)
   emit_i64_and(buf)
   emit_i32_wrap_i64(buf)
-  emit_i32_const(buf, 8)
+  emit_i32_const(buf = buf, value = 8)
   emit_i32_mul(buf)
   emit_i32_add(buf)
-  emit_i64_load(buf, 3, idx * 8)
-  emit_local_set(buf, tl)
-  Array::push(local_names, "[gc-temp]__pat_tmp")
+  emit_i64_load(buf = buf, align = 3, offset = idx * 8)
+  emit_local_set(buf = buf, idx = tl)
+  Array::push(local_names, value = "[gc-temp]__pat_tmp")
   tl
 }
 
@@ -364,20 +364,20 @@ fn gc_extract_positional_field(buf: Bytes, local_names: Array[String], vloc: Int
 fn emit_gc_pat_test(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat, ctx: CompileCtxGc) -> Unit with Exception {
   match pat {
     PInt(n) => {
-      emit_local_get(buf, vloc)
-      emit_i64_const(buf, n)
+      emit_local_get(buf = buf, idx = vloc)
+      emit_i64_const(buf = buf, value = n)
       emit_i64_eq(buf)
     },
     PFloat(fv) => {
       // gc lane holds raw f64 bits in i64 locals; f64.eq gives `==` semantics.
-      emit_local_get(buf, vloc)
+      emit_local_get(buf = buf, idx = vloc)
       emit_f64_reinterpret_i64(buf)
-      emit_f64_const_lohi(buf, Double::to_i64_bits_lo(fv), Double::to_i64_bits_hi(fv))
+      emit_f64_const_lohi(buf = buf, lo = Double::to_i64_bits_lo(fv), hi = Double::to_i64_bits_hi(fv))
       emit_f64_eq(buf)
     },
     PBool(bv) => {
-      emit_local_get(buf, vloc)
-      emit_i64_const(buf, if bv {
+      emit_local_get(buf = buf, idx = vloc)
+      emit_i64_const(buf = buf, value = if bv {
         1
       } else {
         0
@@ -385,72 +385,72 @@ fn emit_gc_pat_test(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat,
       emit_i64_eq(buf)
     },
     PString(sval) => {
-      let str_idx = str_table_index_of(ctx.str_table, sval)
+      let str_idx = str_table_index_of(st = ctx.str_table, s = sval)
       if str_idx >= 0 {
-        let (streq_idx, _, _) = resolve_func(ctx.func_table, "String::equals")
-        emit_local_get(buf, vloc)
-        emit_str_ref(buf, Array::get(ctx.str_table.offsets, str_idx), Array::get(ctx.str_table.lengths, str_idx))
+        let (streq_idx, _, _) = resolve_func(ft = ctx.func_table, name = "String::equals")
+        emit_local_get(buf = buf, idx = vloc)
+        emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = str_idx), length = Array::get(ctx.str_table.lengths, at = str_idx))
         // A user-shadowed String::equals would need a trailing env; the
         // builtin does not (idx < func_offset).
         if ctx.func_offset > 0 && streq_idx >= ctx.func_offset {
-          emit_i64_const(buf, 0)
+          emit_i64_const(buf = buf, value = 0)
         } else {
           ()
         }
-        emit_call(buf, streq_idx)
-        emit_i64_const(buf, 1)
+        emit_call(buf = buf, func_idx = streq_idx)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_eq(buf)
       } else {
-        emit_i32_const(buf, 0)
+        emit_i32_const(buf = buf, value = 0)
       }
     },
-    PBind(_) => emit_i32_const(buf, 1),
-    PWild => emit_i32_const(buf, 1),
+    PBind(_) => emit_i32_const(buf = buf, value = 1),
+    PWild => emit_i32_const(buf = buf, value = 1),
     POr(l, r) => {
-      emit_gc_pat_test(buf, local_names, vloc, l, ctx)
-      bytebuf_push(buf, 4)
-      bytebuf_push(buf, 127)
-      emit_i32_const(buf, 1)
+      emit_gc_pat_test(buf = buf, local_names = local_names, vloc = vloc, pat = l, ctx = ctx)
+      bytebuf_push(buf = buf, byte = 4)
+      bytebuf_push(buf = buf, byte = 127)
+      emit_i32_const(buf = buf, value = 1)
       emit_else(buf)
-      emit_gc_pat_test(buf, local_names, vloc, r, ctx)
+      emit_gc_pat_test(buf = buf, local_names = local_names, vloc = vloc, pat = r, ctx = ctx)
       emit_end(buf)
     },
     PCtor(cname, cargs) => {
-      let ctor_ci = ctor_table_index_of(ctx.gc_ctor_table, pattern_ctor_base_name(cname))
+      let ctor_ci = ctor_table_index_of(ct = ctx.gc_ctor_table, name = pattern_ctor_base_name(cname))
       let expected_tag = if ctor_ci >= 0 {
-        Array::get(ctx.gc_ctor_table.tags, ctor_ci)
+        Array::get(ctx.gc_ctor_table.tags, at = ctor_ci)
       } else {
         -1
       }
-      emit_local_get(buf, vloc)
-      emit_i64_const(buf, -2)
+      emit_local_get(buf = buf, idx = vloc)
+      emit_i64_const(buf = buf, value = -2)
       emit_i64_and(buf)
       emit_i32_wrap_i64(buf)
-      emit_i32_load(buf, 2, 0)
-      emit_i32_const(buf, expected_tag)
+      emit_i32_load(buf = buf, align = 2, offset = 0)
+      emit_i32_const(buf = buf, value = expected_tag)
       emit_i32_eq(buf)
       let mut any_sub = false
       let mut ci = 0
       while ci < Array::length(cargs) {
-        if gc_pat_needs_test(Array::get(cargs, ci)) {
+        if gc_pat_needs_test(Array::get(cargs, at = ci)) {
           any_sub = true
         }
         ci = ci + 1
       }
       if any_sub {
-        bytebuf_push(buf, 4)
-        bytebuf_push(buf, 127)
-        emit_i32_const(buf, 1)
+        bytebuf_push(buf = buf, byte = 4)
+        bytebuf_push(buf = buf, byte = 127)
+        emit_i32_const(buf = buf, value = 1)
         let mut si = 0
         while si < Array::length(cargs) {
-          let sub = Array::get(cargs, si)
+          let sub = Array::get(cargs, at = si)
           if gc_pat_needs_test(sub) {
-            bytebuf_push(buf, 4)
-            bytebuf_push(buf, 127)
-            let tl = gc_extract_ctor_payload(buf, local_names, vloc, si)
-            emit_gc_pat_test(buf, local_names, tl, sub, ctx)
+            bytebuf_push(buf = buf, byte = 4)
+            bytebuf_push(buf = buf, byte = 127)
+            let tl = gc_extract_ctor_payload(buf = buf, local_names = local_names, vloc = vloc, idx = si)
+            emit_gc_pat_test(buf = buf, local_names = local_names, vloc = tl, pat = sub, ctx = ctx)
             emit_else(buf)
-            emit_i32_const(buf, 0)
+            emit_i32_const(buf = buf, value = 0)
             emit_end(buf)
           } else {
             ()
@@ -458,24 +458,24 @@ fn emit_gc_pat_test(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat,
           si = si + 1
         }
         emit_else(buf)
-        emit_i32_const(buf, 0)
+        emit_i32_const(buf = buf, value = 0)
         emit_end(buf)
       } else {
         ()
       }
     },
     PTuple(ps) => {
-      emit_i32_const(buf, 1)
+      emit_i32_const(buf = buf, value = 1)
       let mut ti = 0
       while ti < Array::length(ps) {
-        let sub = Array::get(ps, ti)
+        let sub = Array::get(ps, at = ti)
         if gc_pat_needs_test(sub) {
-          bytebuf_push(buf, 4)
-          bytebuf_push(buf, 127)
-          let tl = gc_extract_positional_field(buf, local_names, vloc, ti)
-          emit_gc_pat_test(buf, local_names, tl, sub, ctx)
+          bytebuf_push(buf = buf, byte = 4)
+          bytebuf_push(buf = buf, byte = 127)
+          let tl = gc_extract_positional_field(buf = buf, local_names = local_names, vloc = vloc, idx = ti)
+          emit_gc_pat_test(buf = buf, local_names = local_names, vloc = tl, pat = sub, ctx = ctx)
           emit_else(buf)
-          emit_i32_const(buf, 0)
+          emit_i32_const(buf = buf, value = 0)
           emit_end(buf)
         } else {
           ()
@@ -484,18 +484,18 @@ fn emit_gc_pat_test(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat,
       }
     },
     PStruct(sname, fields) => {
-      emit_i32_const(buf, 1)
+      emit_i32_const(buf = buf, value = 1)
       let mut fi = 0
       while fi < Array::length(fields) {
-        let (fname, sub) = Array::get(fields, fi)
+        let (fname, sub) = Array::get(fields, at = fi)
         if gc_pat_needs_test(sub) {
-          bytebuf_push(buf, 4)
-          bytebuf_push(buf, 127)
-          let off_idx = struct_field_index_gc(ctx, sname, fname)
-          let tl = gc_extract_ctor_payload(buf, local_names, vloc, off_idx)
-          emit_gc_pat_test(buf, local_names, tl, sub, ctx)
+          bytebuf_push(buf = buf, byte = 4)
+          bytebuf_push(buf = buf, byte = 127)
+          let off_idx = struct_field_index_gc(ctx = ctx, sname = sname, field = fname)
+          let tl = gc_extract_ctor_payload(buf = buf, local_names = local_names, vloc = vloc, idx = off_idx)
+          emit_gc_pat_test(buf = buf, local_names = local_names, vloc = tl, pat = sub, ctx = ctx)
           emit_else(buf)
-          emit_i32_const(buf, 0)
+          emit_i32_const(buf = buf, value = 0)
           emit_end(buf)
         } else {
           ()
@@ -513,17 +513,17 @@ fn emit_gc_pat_binds(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat
   match pat {
     PBind(name) => {
       let bl = Array::length(local_names)
-      emit_local_get(buf, vloc)
-      emit_local_set(buf, bl)
-      Array::push(local_names, name)
+      emit_local_get(buf = buf, idx = vloc)
+      emit_local_set(buf = buf, idx = bl)
+      Array::push(local_names, value = name)
     },
     PCtor(_, cargs) => {
       let mut i = 0
       while i < Array::length(cargs) {
-        let sub = Array::get(cargs, i)
+        let sub = Array::get(cargs, at = i)
         if gc_pat_has_binds(sub) {
-          let tl = gc_extract_ctor_payload(buf, local_names, vloc, i)
-          emit_gc_pat_binds(buf, local_names, tl, sub, ctx)
+          let tl = gc_extract_ctor_payload(buf = buf, local_names = local_names, vloc = vloc, idx = i)
+          emit_gc_pat_binds(buf = buf, local_names = local_names, vloc = tl, pat = sub, ctx = ctx)
         } else {
           ()
         }
@@ -533,10 +533,10 @@ fn emit_gc_pat_binds(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat
     PTuple(ps) => {
       let mut i = 0
       while i < Array::length(ps) {
-        let sub = Array::get(ps, i)
+        let sub = Array::get(ps, at = i)
         if gc_pat_has_binds(sub) {
-          let tl = gc_extract_positional_field(buf, local_names, vloc, i)
-          emit_gc_pat_binds(buf, local_names, tl, sub, ctx)
+          let tl = gc_extract_positional_field(buf = buf, local_names = local_names, vloc = vloc, idx = i)
+          emit_gc_pat_binds(buf = buf, local_names = local_names, vloc = tl, pat = sub, ctx = ctx)
         } else {
           ()
         }
@@ -546,11 +546,11 @@ fn emit_gc_pat_binds(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat
     PStruct(sname, fields) => {
       let mut i = 0
       while i < Array::length(fields) {
-        let (fname, sub) = Array::get(fields, i)
+        let (fname, sub) = Array::get(fields, at = i)
         if gc_pat_has_binds(sub) {
-          let off_idx = struct_field_index_gc(ctx, sname, fname)
-          let tl = gc_extract_ctor_payload(buf, local_names, vloc, off_idx)
-          emit_gc_pat_binds(buf, local_names, tl, sub, ctx)
+          let off_idx = struct_field_index_gc(ctx = ctx, sname = sname, field = fname)
+          let tl = gc_extract_ctor_payload(buf = buf, local_names = local_names, vloc = vloc, idx = off_idx)
+          emit_gc_pat_binds(buf = buf, local_names = local_names, vloc = tl, pat = sub, ctx = ctx)
         } else {
           ()
         }
@@ -570,9 +570,9 @@ fn emit_gc_pat_binds(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat
 
 fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   let scrut_local = next_local
-  Array::push(local_names, "[gc-temp]__match_scrut")
+  Array::push(local_names, value = "[gc-temp]__match_scrut")
   let nl1 = ce(buf, scrutinee, local_names, next_local + 1, ld)
-  emit_local_set(buf, scrut_local)
+  emit_local_set(buf = buf, idx = scrut_local)
   let num_arms = Array::length(arms)
   let catchall_idx = find_catchall_idx(arms)
   let num_cond_arms = catchall_idx
@@ -586,24 +586,24 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
   let arm_base_local = Array::length(local_names)
   let mut ai = 0
   while ai < num_cond_arms {
-    let (p, arm_body) = Array::get(arms, ai)
-    let next_arm_local = gc_sibling_scope_start(ctx, local_names, arm_body, arm_base_local, max_nl)
+    let (p, arm_body) = Array::get(arms, at = ai)
+    let next_arm_local = gc_sibling_scope_start(ctx = ctx, local_names = local_names, scope = arm_body, base = arm_base_local, stacked = max_nl)
     // Grow-only padding leaves a conservatively-typed arm's max_nl pad in
     // place after that arm falls back to i64. Truncate that stale pad when
     // this start is lower so the next untyped arm can reuse the slots -- but
     // never below the computed start, which is already the typed-slot ceiling.
     if Array::length(local_names) > next_arm_local {
-      Array::truncate(local_names, next_arm_local)
-      agg_log_reset_above(ctx.gc_agg_local_slots, next_arm_local)
-      gc_slot_log_reset_above(ctx.gc_bool_locals, next_arm_local)
-      gc_slot_log_reset_above(ctx.gc_int_locals, next_arm_local)
-      gc_slot_log_reset_above(ctx.ref_local_indices, next_arm_local)
-      gc_slot_log_reset_above(ctx.gc_float_locals, next_arm_local)
-      gc_slot_log_reset_above(ctx.gc_native_array_locals, next_arm_local)
-      gc_slot_map_reset_above(ctx.gc_native_struct_scope, next_arm_local)
+      Array::truncate(local_names, length = next_arm_local)
+      agg_log_reset_above(arr = ctx.gc_agg_local_slots, floor = next_arm_local)
+      gc_slot_log_reset_above(arr = ctx.gc_bool_locals, floor = next_arm_local)
+      gc_slot_log_reset_above(arr = ctx.gc_int_locals, floor = next_arm_local)
+      gc_slot_log_reset_above(arr = ctx.ref_local_indices, floor = next_arm_local)
+      gc_slot_log_reset_above(arr = ctx.gc_float_locals, floor = next_arm_local)
+      gc_slot_log_reset_above(arr = ctx.gc_native_array_locals, floor = next_arm_local)
+      gc_slot_map_reset_above(map = ctx.gc_native_struct_scope, floor = next_arm_local)
     } else {
       while Array::length(local_names) < next_arm_local {
-        Array::push(local_names, "")
+        Array::push(local_names, value = "")
       }
     }
     let names_len_at_arm = Array::length(local_names)
@@ -613,10 +613,10 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
       -1
     }
     // Recursive test (nested payload sub-tests narrow the arm correctly)...
-    emit_gc_pat_test(buf, local_names, scrut_local, p, ctx)
+    emit_gc_pat_test(buf = buf, local_names = local_names, vloc = scrut_local, pat = p, ctx = ctx)
     emit_if_i64(buf)
     // ...then recursive binds (nested PBinds included).
-    emit_gc_pat_binds(buf, local_names, scrut_local, p, ctx)
+    emit_gc_pat_binds(buf = buf, local_names = local_names, vloc = scrut_local, pat = p, ctx = ctx)
     let arm_nl = ce(buf, arm_body, local_names, Array::length(local_names), ld_arm)
     if arm_nl > max_nl {
       max_nl = arm_nl
@@ -625,14 +625,14 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
       max_nl = Array::length(local_names)
     }
     emit_else(buf)
-    Array::truncate(local_names, names_len_at_arm)
-    agg_log_reset_above(ctx.gc_agg_local_slots, names_len_at_arm)
-    gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_at_arm)
-    gc_slot_log_reset_above(ctx.gc_int_locals, names_len_at_arm)
-    gc_slot_log_reset_above(ctx.ref_local_indices, names_len_at_arm)
-    gc_slot_log_reset_above(ctx.gc_float_locals, names_len_at_arm)
-    gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_at_arm)
-    gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_at_arm)
+    Array::truncate(local_names, length = names_len_at_arm)
+    agg_log_reset_above(arr = ctx.gc_agg_local_slots, floor = names_len_at_arm)
+    gc_slot_log_reset_above(arr = ctx.gc_bool_locals, floor = names_len_at_arm)
+    gc_slot_log_reset_above(arr = ctx.gc_int_locals, floor = names_len_at_arm)
+    gc_slot_log_reset_above(arr = ctx.ref_local_indices, floor = names_len_at_arm)
+    gc_slot_log_reset_above(arr = ctx.gc_float_locals, floor = names_len_at_arm)
+    gc_slot_log_reset_above(arr = ctx.gc_native_array_locals, floor = names_len_at_arm)
+    gc_slot_map_reset_above(map = ctx.gc_native_struct_scope, floor = names_len_at_arm)
     ai = ai + 1
   }
   let ld_catch = if ld >= 0 {
@@ -641,33 +641,33 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
     -1
   }
   if catchall_idx < num_arms {
-    let (cp, cbody) = Array::get(arms, catchall_idx)
-    let catch_start = gc_sibling_scope_start(ctx, local_names, cbody, arm_base_local, max_nl)
+    let (cp, cbody) = Array::get(arms, at = catchall_idx)
+    let catch_start = gc_sibling_scope_start(ctx = ctx, local_names = local_names, scope = cbody, base = arm_base_local, stacked = max_nl)
     if Array::length(local_names) > catch_start {
-      Array::truncate(local_names, catch_start)
-      agg_log_reset_above(ctx.gc_agg_local_slots, catch_start)
-      gc_slot_log_reset_above(ctx.gc_bool_locals, catch_start)
-      gc_slot_log_reset_above(ctx.gc_int_locals, catch_start)
-      gc_slot_log_reset_above(ctx.ref_local_indices, catch_start)
-      gc_slot_log_reset_above(ctx.gc_float_locals, catch_start)
-      gc_slot_log_reset_above(ctx.gc_native_array_locals, catch_start)
-      gc_slot_map_reset_above(ctx.gc_native_struct_scope, catch_start)
+      Array::truncate(local_names, length = catch_start)
+      agg_log_reset_above(arr = ctx.gc_agg_local_slots, floor = catch_start)
+      gc_slot_log_reset_above(arr = ctx.gc_bool_locals, floor = catch_start)
+      gc_slot_log_reset_above(arr = ctx.gc_int_locals, floor = catch_start)
+      gc_slot_log_reset_above(arr = ctx.ref_local_indices, floor = catch_start)
+      gc_slot_log_reset_above(arr = ctx.gc_float_locals, floor = catch_start)
+      gc_slot_log_reset_above(arr = ctx.gc_native_array_locals, floor = catch_start)
+      gc_slot_map_reset_above(map = ctx.gc_native_struct_scope, floor = catch_start)
     } else {
       while Array::length(local_names) < catch_start {
-        Array::push(local_names, "")
+        Array::push(local_names, value = "")
       }
     }
     // Catch-all arm: recursive binds handle PBind / PCtor / PTuple / PStruct
     // uniformly, including nested payload binds (and fix the old tuple-bind
     // offset bug: tuples have no header, elements sit at i*8).
-    emit_gc_pat_binds(buf, local_names, scrut_local, cp, ctx)
+    emit_gc_pat_binds(buf = buf, local_names = local_names, vloc = scrut_local, pat = cp, ctx = ctx)
     let catch_nl = ce(buf, cbody, local_names, Array::length(local_names), ld_catch)
     if catch_nl > max_nl {
       max_nl = catch_nl
     }
     0
   } else {
-    bytebuf_push(buf, 0)
+    bytebuf_push(buf = buf, byte = 0)
     0
   }
   let mut ci2 = 0
@@ -676,7 +676,7 @@ fn compile_match_gc(buf: Bytes, scrutinee: Expr, arms: Array[(Pat, Expr)], local
     ci2 = ci2 + 1
   }
   while Array::length(local_names) < max_nl {
-    Array::push(local_names, "")
+    Array::push(local_names, value = "")
   }
   max_nl
 }

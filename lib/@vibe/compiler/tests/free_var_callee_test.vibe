@@ -10,18 +10,18 @@ fn call_scan_extra_bytes(name: String, bound: Array[String], globals: Array[Stri
   let call = ECall(ident, [], -1, [])
   let out: Array[String] = []
   let start = Profiler::heap_bytes()
-  let _ = collect_free_vars_expr(ident, bound, globals, out)
+  let _ = collect_free_vars_expr(expr = ident, bound = bound, fn_names = globals, out = out)
   let ident_bytes = Profiler::heap_bytes() - start
   let before = Profiler::heap_bytes()
-  let _ = collect_free_vars_expr(call, bound, globals, out)
+  let _ = collect_free_vars_expr(expr = call, bound = bound, fn_names = globals, out = out)
   let call_bytes = Profiler::heap_bytes() - before
   call_bytes - ident_bytes
 }
 
 test "direct callees need no temporary identifier node" {
   let bytes = [
-    call_scan_extra_bytes("local", ["local"], []),
-    call_scan_extra_bytes("global", [], ["global"])
+    call_scan_extra_bytes(name = "local", bound = ["local"], globals = []),
+    call_scan_extra_bytes(name = "global", bound = [], globals = ["global"])
   ]
   inspect(bytes, content = "[0, 0]")
 }
@@ -33,7 +33,7 @@ test "reads, callees and writes keep first-occurrence order and deduplicate" {
     EAssign("callee", EIdent("value", -1), EUnit, -1),
     EAssignOp("slot", "+", EIdent("delta", -1), EIdent("first", -1), -1)
   ])
-  inspect(collect_free_vars_indexed(body, [], []), content = "[first, callee, arg, value, slot, delta]")
+  inspect(collect_free_vars_indexed(body = body, param_names = [], fn_name_index = []), content = "[first, callee, arg, value, slot, delta]")
 }
 
 test "local and enclosing bindings keep precedence for each name occurrence" {
@@ -46,10 +46,10 @@ test "local and enclosing bindings keep precedence for each name occurrence" {
   let globals = ["name"]
   let mut i = 0
   while i < Array::length(uses) {
-    let use = Array::get(uses, i)
-    inspect(collect_free_vars_indexed_self(use, [], globals, "", ["name"]), content = "[name]")
-    inspect(collect_free_vars_indexed_self(use, ["name"], globals, "", ["name"]), content = "[]")
-    inspect(collect_free_vars_indexed(use, [], globals), content = "[]")
+    let use = Array::get(uses, at = i)
+    inspect(collect_free_vars_indexed_self(body = use, param_names = [], fn_name_index = globals, self_name = "", encl = ["name"]), content = "[name]")
+    inspect(collect_free_vars_indexed_self(body = use, param_names = ["name"], fn_name_index = globals, self_name = "", encl = ["name"]), content = "[]")
+    inspect(collect_free_vars_indexed(body = use, param_names = [], fn_name_index = globals), content = "[]")
     i = i + 1
   }
 }
@@ -57,10 +57,10 @@ test "local and enclosing bindings keep precedence for each name occurrence" {
 test "inline builtin skipping applies only to unshadowed capture callees" {
   let ident = EIdent("not", -1)
   let call = ECall(ident, [EBool(true)], -1, [])
-  inspect(collect_free_vars_indexed(ident, [], []), content = "[not]")
-  inspect(collect_free_vars_indexed(call, [], []), content = "[]")
-  inspect(collect_free_vars_used_builtins(call, [], []), content = "[not]")
-  inspect(collect_free_vars_indexed_self(call, [], [], "", ["not"]), content = "[not]")
+  inspect(collect_free_vars_indexed(body = ident, param_names = [], fn_name_index = []), content = "[not]")
+  inspect(collect_free_vars_indexed(body = call, param_names = [], fn_name_index = []), content = "[]")
+  inspect(collect_free_vars_used_builtins(body = call, param_names = [], fn_name_index = []), content = "[not]")
+  inspect(collect_free_vars_indexed_self(body = call, param_names = [], fn_name_index = [], self_name = "", encl = ["not"]), content = "[not]")
 }
 
 test "throw skips magic names while other performs keep their callees" {
@@ -71,21 +71,21 @@ test "throw skips magic names while other performs keep their callees" {
   let other_call = ECall(EIdent("perform", -1), [
     ECall(EIdent("Log::Emit", -1), [payload], -1, [])
   ], -1, [])
-  inspect(collect_free_vars_indexed(throw_call, [], []), content = "[payload]")
-  inspect(collect_free_vars_used_builtins(throw_call, [], []), content = "[payload]")
-  inspect(collect_free_vars_indexed(other_call, [], []), content = "[perform, Log::Emit, payload]")
-  inspect(collect_free_vars_indexed(ECall(EIdent("perform", -1), [], -1, []), [
+  inspect(collect_free_vars_indexed(body = throw_call, param_names = [], fn_name_index = []), content = "[payload]")
+  inspect(collect_free_vars_used_builtins(body = throw_call, param_names = [], fn_name_index = []), content = "[payload]")
+  inspect(collect_free_vars_indexed(body = other_call, param_names = [], fn_name_index = []), content = "[perform, Log::Emit, payload]")
+  inspect(collect_free_vars_indexed(body = ECall(EIdent("perform", -1), [], -1, []), param_names = [
     "perform"
-  ], []), content = "[]")
+  ], fn_name_index = []), content = "[]")
 }
 
 test "inline callee names obey local then enclosing then global precedence" {
   let call = ECall(EIdent("not", -1), [EIdent("argument", -1)], -1, [])
   let globals = ["not"]
-  inspect(collect_free_vars_indexed_self(call, [], globals, "", ["not"]), content = "[not, argument]")
-  inspect(collect_free_vars_indexed_self(call, ["not"], globals, "", ["not"]), content = "[argument]")
-  inspect(collect_free_vars_indexed(call, [], globals), content = "[argument]")
-  inspect(collect_free_vars_used_builtins(call, [], globals), content = "[argument]")
+  inspect(collect_free_vars_indexed_self(body = call, param_names = [], fn_name_index = globals, self_name = "", encl = ["not"]), content = "[not, argument]")
+  inspect(collect_free_vars_indexed_self(body = call, param_names = ["not"], fn_name_index = globals, self_name = "", encl = ["not"]), content = "[argument]")
+  inspect(collect_free_vars_indexed(body = call, param_names = [], fn_name_index = globals), content = "[argument]")
+  inspect(collect_free_vars_used_builtins(body = call, param_names = [], fn_name_index = globals), content = "[argument]")
 }
 
 test "skipped callees still scan arguments and preserve prior value references" {
@@ -96,6 +96,6 @@ test "skipped callees still scan arguments and preserve prior value references" 
     ECall(EIdent("Path::resolve", -1), [EIdent("third", -1)], -1, []),
     ECall(EIdent("global", -1), [EIdent("first", -1)], -1, [])
   ])
-  inspect(collect_free_vars_indexed(body, [], ["global"]), content = "[not, first, second, third]")
-  inspect(collect_free_vars_used_builtins(body, [], ["global"]), content = "[not, first, second, Path::resolve, third]")
+  inspect(collect_free_vars_indexed(body = body, param_names = [], fn_name_index = ["global"]), content = "[not, first, second, third]")
+  inspect(collect_free_vars_used_builtins(body = body, param_names = [], fn_name_index = ["global"]), content = "[not, first, second, Path::resolve, third]")
 }

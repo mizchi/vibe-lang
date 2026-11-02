@@ -17,18 +17,18 @@ fn sleeping_task() -> Expr {
 
 fn effect_errors(expr: Expr, env: TypeEnv) -> Int {
   let errors: Array[String] = []
-  let _ = check_expr(expr, env, [], SubstEmpty, 0, errors, [])
-  Array::length(check_async_effects_expr(expr, env, false))
+  let _ = check_expr(expr = expr, env = env, defs = [], s = SubstEmpty, c = 0, errors = errors, tytab = [])
+  Array::length(check_async_effects_expr(expr = expr, env = env, in_async = false))
 }
 
 /// Optional wrapping is a checker fact, not a reason to require a syntactic
 /// Some before the async pass can recognize the callback's expected row.
 test "optional async tasks use source placements before and after lowering" {
   let group = CtNamed("TaskGroup", [CtNamed("#outer", []), CtUnit])
-  let env = env_bind(env_bind_with_origin(EnvEmpty, "start", CtFn([
+  let env = env_bind(env = env_bind_with_origin(env = EnvEmpty, name = "start", ty = CtFn([
     group,
     CtOption(CtFn([], CtInt, Some("Async")))
-  ], CtInt, None), BindingOriginFunctionHeader(["g", "task?"])), "g", group)
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["g", "task?"])), name = "g", ty = group)
   for args in [
     [
       ELabeledArg("g", "", EIdent("g", 10)),
@@ -40,11 +40,11 @@ test "optional async tasks use source placements before and after lowering" {
     ]
   ] {
     let expr = ECall(EIdent("start", 7), args, 7, [])
-    assert(effect_errors(expr, env) == 0)
+    assert(effect_errors(expr = expr, env = env) == 0)
     let stmts = [SExpr(expr)]
-    lower_checked_call_placements(stmts, true)
-    match Array::get(stmts, 0) {
-      SExpr(placed) => assert(Array::length(check_async_effects_expr(placed, env, false)) == 0),
+    lower_checked_call_placements(stmts = stmts, require_checked = true)
+    match Array::get(stmts, at = 0) {
+      SExpr(placed) => assert(Array::length(check_async_effects_expr(expr = placed, env = env, in_async = false)) == 0),
       _ => assert(false)
     }
   }
@@ -53,20 +53,20 @@ test "optional async tasks use source placements before and after lowering" {
 /// Parameter order comes from the placement while effects are still visited
 /// in written order; a callback written first does not inherit slot zero.
 test "reordered async callbacks read the expected formal slot" {
-  let env = env_bind_with_origin(EnvEmpty, "f", CtFn([
+  let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([
     CtInt,
     CtFn([], CtInt, Some("Async"))
-  ], CtInt, None), BindingOriginFunctionHeader(["n", "task"]))
-  assert(effect_errors(ECall(EIdent("f", 7), [
+  ], CtInt, None), origin = BindingOriginFunctionHeader(["n", "task"]))
+  assert(effect_errors(expr = ECall(EIdent("f", 7), [
     ELabeledArg("task", "", sleeping_task()),
     ELabeledArg("n", "", EInt(1))
-  ], 7, []), env) == 0)
+  ], 7, []), env = env) == 0)
 }
 
 /// An unchecked value-call label must not borrow a declaration-only context.
 test "opaque task labels keep their legacy rowless refusal" {
-  let env = env_bind(EnvEmpty, "f", CtFn([CtFn([], CtInt, Some("Async"))], CtInt, None))
-  assert(effect_errors(ECall(EIdent("f", 7), [
+  let env = env_bind(env = EnvEmpty, name = "f", ty = CtFn([CtFn([], CtInt, Some("Async"))], CtInt, None))
+  assert(effect_errors(expr = ECall(EIdent("f", 7), [
     ELabeledArg("task", "", sleeping_task())
-  ], 7, []), env) > 0)
+  ], 7, []), env = env) > 0)
 }

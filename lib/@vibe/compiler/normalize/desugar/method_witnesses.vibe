@@ -52,14 +52,14 @@ import ./utilities.vibe {
 /// give a method a binder are kept in the binder table. Raw signatures also
 /// serve scalar witness defaults, which run before dict structs are emitted.
 export fn dtd_trait_method_binders_set(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
-  Array::truncate(dtd_trait_method_binders, 0)
-  Array::truncate(dtd_trait_method_sigs_raw, 0)
-  Array::truncate(dtd_trait_method_owners, 0)
+  Array::truncate(dtd_trait_method_binders, length = 0)
+  Array::truncate(dtd_trait_method_sigs_raw, length = 0)
+  Array::truncate(dtd_trait_method_owners, length = 0)
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      STrait(_, tname, _, _, method_gens, _) => if Array::any(method_gens, (g) -> Array::length(g.1) > 0) {
-        Array::push(dtd_trait_method_binders, (tname, method_gens))
+    match Array::get(stmts, at = i) {
+      STrait(_, tname, _, _, method_gens, _) => if Array::any(method_gens, f = (g) -> Array::length(g.1) > 0) {
+        Array::push(dtd_trait_method_binders, value = (tname, method_gens))
       } else {
         ()
       },
@@ -68,7 +68,7 @@ export fn dtd_trait_method_binders_set(stmts: Array[Stmt], traits_raw: Array[(St
     i = i + 1
   }
   for row in traits_raw {
-    Array::push(dtd_trait_method_sigs_raw, row)
+    Array::push(dtd_trait_method_sigs_raw, value = row)
   }
   ()
 }
@@ -77,11 +77,11 @@ fn declared_method_binder(trait_name: String, method: String) -> Option[(Array[S
   let mut out = None
   let mut i = 0
   while (out is None) && i < Array::length(dtd_trait_method_binders) {
-    let (tname, gens) = Array::get(dtd_trait_method_binders, i)
+    let (tname, gens) = Array::get(dtd_trait_method_binders, at = i)
     if tname == trait_name {
       let mut j = 0
       while (out is None) && j < Array::length(gens) {
-        let (mname, tps, bounds) = Array::get(gens, j)
+        let (mname, tps, bounds) = Array::get(gens, at = j)
         if mname == method && Array::length(tps) > 0 {
           out = Some((tps, bounds))
         } else {
@@ -109,11 +109,11 @@ export fn trait_method_binder(trait_name: String, method: String) -> Option[(Arr
   if Array::length(dtd_trait_method_binders) == 0 {
     None
   } else {
-    let owner = trait_method_declaring_owner(trait_name, method)
+    let owner = trait_method_declaring_owner(trait_name = trait_name, method = method)
     if owner == "" {
       None
     } else {
-      declared_method_binder(owner, method)
+      declared_method_binder(trait_name = owner, method = method)
     }
   }
 }
@@ -124,17 +124,17 @@ export fn trait_method_binder(trait_name: String, method: String) -> Option[(Arr
 /// dictionary and takes no slot, as in `build_gens`.
 export fn trait_method_witness_slots(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, method: String) -> Array[(String, String)] {
   let out: Array[(String, String)] = []
-  match trait_method_binder(trait_name, method) {
+  match trait_method_binder(trait_name = trait_name, method = method) {
     Some(binder) => {
       let (_, bounds) = binder
       let mut bi = 0
       while bi < Array::length(bounds) {
-        let (tp, trs) = Array::get(bounds, bi)
+        let (tp, trs) = Array::get(bounds, at = bi)
         let mut ti = 0
         while ti < Array::length(trs) {
-          let tr = Array::get(trs, ti)
-          if lookup_trait_sigs(traits, tr) is Some {
-            Array::push(out, (type_param_name(tp), tr))
+          let tr = Array::get(trs, at = ti)
+          if lookup_trait_sigs(traits = traits, name = tr) is Some {
+            Array::push(out, value = (type_param_name(tp), tr))
           } else {
             ()
           }
@@ -149,7 +149,7 @@ export fn trait_method_witness_slots(traits: Array[(String, Array[(String, Array
 }
 
 /// The hidden parameter a dictionary slot receives slot `i`'s witness in.
-export fn method_witness_param(i: Int) -> String {
+export fn method_witness_param(_ i: Int) -> String {
   "__mw" + __to_string(i)
 }
 
@@ -159,7 +159,7 @@ export fn method_witness_param(i: Int) -> String {
 export fn method_witness_dict_sigs(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, sigs: Array[(String, Array[TypeExpr], TypeExpr)]) -> Array[(String, Array[TypeExpr], TypeExpr)] {
   for sig in sigs {
     let (m, params, ret) = sig
-    (m, method_witness_field_params(trait_method_witness_slots(traits, trait_name, m), params), ret)
+    (m, method_witness_field_params(slots = trait_method_witness_slots(traits = traits, trait_name = trait_name, method = m), params = params), ret)
   }
 }
 
@@ -182,14 +182,14 @@ export fn method_witness_binds(traits: Array[(String, Array[(String, Array[TypeE
   let out: Array[(String, String, String, Array[String])] = []
   let mut i = 0
   while i < Array::length(slots) {
-    let (formal, tr) = Array::get(slots, i)
-    let methods = match lookup_trait_sigs(traits, tr) {
+    let (formal, tr) = Array::get(slots, at = i)
+    let methods = match lookup_trait_sigs(traits = traits, name = tr) {
       Some(sigs) => for s in sigs {
         s.0
       },
       None => empty_str_array()
     }
-    Array::push(out, (formal, tr, method_witness_param(i), methods))
+    Array::push(out, value = (formal, tr, method_witness_param(i), methods))
     i = i + 1
   }
   out
@@ -198,7 +198,7 @@ export fn method_witness_binds(traits: Array[(String, Array[(String, Array[TypeE
 /// Whether `type_param` is a binder the impl METHOD `gen` declares itself,
 /// rather than one of its impl's formals.
 export fn impl_method_declares_formal(gen: DictGen, type_param: String) -> Bool {
-  (gen.impl_target is Some) && !Array::any(gen.impl_params, (tp) -> type_param_name(tp) == type_param) && Array::any(gen.type_params, (tp) -> type_param_name(tp) == type_param)
+  (gen.impl_target is Some) && !Array::any(gen.impl_params, f = (tp) -> type_param_name(tp) == type_param) && Array::any(gen.type_params, f = (tp) -> type_param_name(tp) == type_param)
 }
 
 /// Which of the trait method's own formals the impl method `gen`'s formal
@@ -216,12 +216,12 @@ export fn impl_formal_method_formal(gen: DictGen, type_param: String, sig_params
   let mut out = None
   let mut i = 0
   while (out is None) && i < Array::length(sig_params) && i < Array::length(gen.param_types) {
-    match Array::get(gen.param_types, i) {
+    match Array::get(gen.param_types, at = i) {
       Some(ann) => {
         let bindings = array_empty()
-        if impl_target_pattern_matches(ann, Array::get(sig_params, i), formals, bindings) {
-          match impl_pattern_binding(bindings, type_param) {
-            Some(TyName(name)) => if str_array_contains(method_formals, name) {
+        if impl_target_pattern_matches(pattern = ann, actual = Array::get(sig_params, at = i), params = formals, bindings = bindings) {
+          match impl_pattern_binding(bindings = bindings, name = type_param) {
+            Some(TyName(name)) => if str_array_contains(arr = method_formals, val = name) {
               out = Some(name)
             } else {
               ()
@@ -252,8 +252,8 @@ export fn trait_method_declaring_owner(trait_name: String, method: String) -> St
   let owners = match rows {
     Some(found) => found,
     None => {
-      let found = flatten_trait_owners(name, dtd_trait_method_sigs_raw, dtd_trait_supers)
-      Array::push(dtd_trait_method_owners, (name, found))
+      let found = flatten_trait_owners(tname = name, traits_raw = dtd_trait_method_sigs_raw, supers_map = dtd_trait_supers)
+      Array::push(dtd_trait_method_owners, value = (name, found))
       found
     }
   }

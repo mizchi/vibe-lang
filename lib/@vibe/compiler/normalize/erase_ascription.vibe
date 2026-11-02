@@ -6,8 +6,8 @@ import @vibe/compiler/core {
   Expr, Pat, Stmt
 }
 
-fn asc_is_wrapper_name(name: String) -> Bool {
-  name == "__asc" || String::starts_with(name, "__shadow_") && String::ends_with(name, "___asc")
+fn asc_is_wrapper_name(_ name: String) -> Bool {
+  name == "__asc" || String::starts_with(name, prefix = "__shadow_") && String::ends_with(name, suffix = "___asc")
 }
 
 fn asc_wrapper_inner(callee: Expr, args: Array[Expr]) -> Option[Expr] {
@@ -21,11 +21,11 @@ fn asc_wrapper_inner(callee: Expr, args: Array[Expr]) -> Option[Expr] {
           None => match effect {
             Some(_) => None,
             None => {
-              let (pname, _) = Array::get(params, 0)
+              let (pname, _) = Array::get(params, at = 0)
               if asc_is_wrapper_name(pname) {
                 match body {
                   EIdent(bname, _) => if bname == pname {
-                    Some(Array::get(args, 0))
+                    Some(Array::get(args, at = 0))
                   } else {
                     None
                   },
@@ -45,14 +45,14 @@ fn asc_wrapper_inner(callee: Expr, args: Array[Expr]) -> Option[Expr] {
   }
 }
 
-fn erase_asc_expr(e: Expr) -> Expr {
+fn erase_asc_expr(_ e: Expr) -> Expr {
   match e {
     ECall(callee, args, off, callee_resolution) => {
       let callee2 = erase_asc_expr(callee)
       let args2 = for a in args {
         erase_asc_expr(a)
       }
-      match asc_wrapper_inner(callee2, args2) {
+      match asc_wrapper_inner(callee = callee2, args = args2) {
         Some(inner) => inner,
         None => ECall(callee2, args2, off, callee_resolution)
       }
@@ -114,9 +114,9 @@ fn erase_asc_expr(e: Expr) -> Expr {
   }
 }
 
-fn erase_asc_has_expr(e: Expr) -> Bool {
+fn erase_asc_has_expr(_ e: Expr) -> Bool {
   match e {
-    ECall(callee, args, _, _) => match asc_wrapper_inner(callee, args) {
+    ECall(callee, args, _, _) => match asc_wrapper_inner(callee = callee, args = args) {
       Some(_) => true,
       None => erase_asc_has_expr(callee) || erase_asc_has_args(args)
     },
@@ -150,11 +150,11 @@ fn erase_asc_has_expr(e: Expr) -> Bool {
   }
 }
 
-fn erase_asc_has_args(args: Array[Expr]) -> Bool {
+fn erase_asc_has_args(_ args: Array[Expr]) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(args) && !hit {
-    if erase_asc_has_expr(Array::get(args, i)) {
+    if erase_asc_has_expr(Array::get(args, at = i)) {
       hit = true
     } else {
       ()
@@ -164,11 +164,11 @@ fn erase_asc_has_args(args: Array[Expr]) -> Bool {
   hit
 }
 
-fn erase_asc_has_arms(arms: Array[(Pat, Expr)]) -> Bool {
+fn erase_asc_has_arms(_ arms: Array[(Pat, Expr)]) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(arms) && !hit {
-    let (_, b) = Array::get(arms, i)
+    let (_, b) = Array::get(arms, at = i)
     if erase_asc_has_expr(b) {
       hit = true
     } else {
@@ -179,11 +179,11 @@ fn erase_asc_has_arms(arms: Array[(Pat, Expr)]) -> Bool {
   hit
 }
 
-fn erase_asc_has_params(params: Array[(String, Expr)]) -> Bool {
+fn erase_asc_has_params(_ params: Array[(String, Expr)]) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(params) && !hit {
-    let (_, init) = Array::get(params, i)
+    let (_, init) = Array::get(params, at = i)
     if erase_asc_has_expr(init) {
       hit = true
     } else {
@@ -194,15 +194,15 @@ fn erase_asc_has_params(params: Array[(String, Expr)]) -> Bool {
   hit
 }
 
-fn erase_asc_has_fields(fields: Array[(String, Expr)]) -> Bool {
+fn erase_asc_has_fields(_ fields: Array[(String, Expr)]) -> Bool {
   erase_asc_has_params(fields)
 }
 
-export fn has_ascription_wrapper(stmts: Array[Stmt]) -> Bool {
+export fn has_ascription_wrapper(_ stmts: Array[Stmt]) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(stmts) && !hit {
-    let st = Array::get(stmts, i)
+    let st = Array::get(stmts, at = i)
     let here = match st {
       SLet(_, _, _, _, body) => erase_asc_has_expr(body),
       SLetMut(_, _, body) => erase_asc_has_expr(body),
@@ -223,20 +223,20 @@ export fn has_ascription_wrapper(stmts: Array[Stmt]) -> Bool {
   hit
 }
 
-export fn erase_ascription_wrappers(stmts: Array[Stmt]) -> Unit {
+export fn erase_ascription_wrappers(_ stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    let st = Array::get(stmts, i)
+    let st = Array::get(stmts, at = i)
     match st {
-      SLet(a, b, name, ty, body) => Array::set(stmts, i, SLet(a, b, name, ty, erase_asc_expr(body))),
-      SLetMut(name, ty, body) => Array::set(stmts, i, SLetMut(name, ty, erase_asc_expr(body))),
-      SExpr(e) => Array::set(stmts, i, SExpr(erase_asc_expr(e))),
-      STest(name, body) => Array::set(stmts, i, STest(name, erase_asc_expr(body))),
-      SBench(name, body) => Array::set(stmts, i, SBench(name, erase_asc_expr(body))),
-      SLetPat(p, body) => Array::set(stmts, i, SLetPat(p, erase_asc_expr(body))),
+      SLet(a, b, name, ty, body) => Array::set(stmts, at = i, value = SLet(a, b, name, ty, erase_asc_expr(body))),
+      SLetMut(name, ty, body) => Array::set(stmts, at = i, value = SLetMut(name, ty, erase_asc_expr(body))),
+      SExpr(e) => Array::set(stmts, at = i, value = SExpr(erase_asc_expr(e))),
+      STest(name, body) => Array::set(stmts, at = i, value = STest(name, erase_asc_expr(body))),
+      SBench(name, body) => Array::set(stmts, at = i, value = SBench(name, erase_asc_expr(body))),
+      SLetPat(p, body) => Array::set(stmts, at = i, value = SLetPat(p, erase_asc_expr(body))),
       SModule(exp, name, inner) => {
         erase_ascription_wrappers(inner)
-        Array::set(stmts, i, SModule(exp, name, inner))
+        Array::set(stmts, at = i, value = SModule(exp, name, inner))
       },
       _ => ()
     }

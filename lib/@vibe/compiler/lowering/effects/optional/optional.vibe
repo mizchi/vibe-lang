@@ -10,12 +10,12 @@ import @vibe/core {
 /// resolution table. Missing entries use the non-interactive default,
 /// `NotGranted`. A denied call is erased before its arguments are visited, so
 /// preparing an operation that will not run cannot itself trigger effects.
-fn opq_provider_name(operation: String) -> String {
-  let sep = String::index_of(operation, "::")
+fn opq_provider_name(_ operation: String) -> String {
+  let sep = String::index_of(operation, needle = "::")
   if sep < 0 {
     operation
   } else {
-    String::substring(operation, 0, sep)
+    String::substring(operation, start = 0, end = sep)
   }
 }
 
@@ -34,10 +34,10 @@ fn opq_attempt_granted_name() -> String {
 fn opq_collect_source_value_names(stmts: Array[Stmt], names: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, name, _, _) => Array::push(names, name),
-      SLetMut(name, _, _) => Array::push(names, name),
-      SModule(_, _, body) => opq_collect_source_value_names(body, names),
+    match Array::get(stmts, at = i) {
+      SLet(_, _, name, _, _) => Array::push(names, value = name),
+      SLetMut(name, _, _) => Array::push(names, value = name),
+      SModule(_, _, body) => opq_collect_source_value_names(stmts = body, names = names),
       _ => ()
     }
     i = i + 1
@@ -48,7 +48,7 @@ fn opq_source_value_exists(names: Array[String], name: String) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(names) && !found {
-    found = Array::get(names, i) == name
+    found = Array::get(names, at = i) == name
     i = i + 1
   }
   found
@@ -64,7 +64,7 @@ fn opq_require_registry_operation(source_names: Array[String], operation: String
     None => false
   }
   if registered {
-    if opq_source_value_exists(source_names, operation) {
+    if opq_source_value_exists(names = source_names, name = operation) {
       throw(String::concat("`perform? ", String::concat(operation, "(..)` resolves to a source function, not a capability operation; rename the source function or call the capability under an unshadowed name")))
     } else {
       ()
@@ -81,7 +81,7 @@ fn opq_resolution(resolution: Array[(String, String)], operation: String) -> Str
   let mut exact_status = ""
   let mut i = 0
   while i < Array::length(resolution) {
-    let (name, status) = Array::get(resolution, i)
+    let (name, status) = Array::get(resolution, at = i)
     if status != "Granted" && status != "NotGranted" {
       throw(String::concat("optional capability resolution for `", String::concat(name, String::concat("` must be `Granted` or `NotGranted`, got `", String::concat(status, "`")))))
     } else if name == "*" {
@@ -104,11 +104,11 @@ fn opq_resolution(resolution: Array[(String, String)], operation: String) -> Str
   }
 }
 
-fn opq_contains_source_test_like(stmts: Array[Stmt]) -> Bool {
+fn opq_contains_source_test_like(_ stmts: Array[Stmt]) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(stmts) && !found {
-    found = match Array::get(stmts, i) {
+    found = match Array::get(stmts, at = i) {
       STest(_, _) => true,
       SBench(_, _) => true,
       SExample(_, _) => true,
@@ -138,33 +138,33 @@ export fn optional_perform_artifact_resolution(stmts: Array[Stmt], entry_name: S
 
 fn opq_expr_array(items: Array[Expr], resolution: Array[(String, String)], source_names: Array[String]) -> Array[Expr] with Exception {
   for item in items {
-    opq_expr(item, resolution, source_names)
+    opq_expr(e = item, resolution = resolution, source_names = source_names)
   }
 }
 
 fn opq_pairs(items: Array[(String, Expr)], resolution: Array[(String, String)], source_names: Array[String]) -> Array[(String, Expr)] with Exception {
   for item in items {
     let (name, value) = item
-    (name, opq_expr(value, resolution, source_names))
+    (name, opq_expr(e = value, resolution = resolution, source_names = source_names))
   }
 }
 
 fn opq_arms(items: Array[(Pat, Expr)], resolution: Array[(String, String)], source_names: Array[String]) -> Array[(Pat, Expr)] with Exception {
   for item in items {
     let (pat, body) = item
-    (pat, opq_expr(body, resolution, source_names))
+    (pat, opq_expr(e = body, resolution = resolution, source_names = source_names))
   }
 }
 
 fn opq_expr(e: Expr, resolution: Array[(String, String)], source_names: Array[String]) -> Expr with Exception {
   match e {
     ECall(EIdent("perform?", _), args, off, callee_resolution) => if Array::length(args) == 1 {
-      match Array::get(args, 0) {
+      match Array::get(args, at = 0) {
         ECall(EIdent(operation, op_ident_off), op_args, op_call_off, callee_resolution) => {
-          opq_require_registry_operation(source_names, operation)
-          if opq_resolution(resolution, operation) == "Granted" {
+          opq_require_registry_operation(source_names = source_names, operation = operation)
+          if opq_resolution(resolution = resolution, operation = operation) == "Granted" {
             let error_name = "$vibe_optional_error"
-            let call = ECall(EIdent(operation, op_ident_off), opq_expr_array(op_args, resolution, source_names), op_call_off, callee_resolution)
+            let call = ECall(EIdent(operation, op_ident_off), opq_expr_array(items = op_args, resolution = resolution, source_names = source_names), op_call_off, callee_resolution)
             EHandle(ECall(EIdent(opq_attempt_granted_name(), off), [call], off, callee_resolution), [
               (PCtor("Exception::Throw", [PBind(error_name)]), ECall(EIdent(opq_attempt_errored_name(), off), [
                 EIdent(error_name, off)
@@ -179,43 +179,43 @@ fn opq_expr(e: Expr, resolution: Array[(String, String)], source_names: Array[St
     } else {
       throw("`perform?` takes exactly one capability-operation call")
     },
-    ECall(callee, args, off, callee_resolution) => ECall(opq_expr(callee, resolution, source_names), opq_expr_array(args, resolution, source_names), off, callee_resolution),
-    ETuple(items) => ETuple(opq_expr_array(items, resolution, source_names)),
-    EArray(items) => EArray(opq_expr_array(items, resolution, source_names)),
-    ERecord(name, fields, targs) => ERecord(name, opq_pairs(fields, resolution, source_names), targs),
-    EIf(cond, then_expr, else_expr) => EIf(opq_expr(cond, resolution, source_names), opq_expr(then_expr, resolution, source_names), opq_expr(else_expr, resolution, source_names)),
-    ELet(name, value, body, off) => ELet(name, opq_expr(value, resolution, source_names), opq_expr(body, resolution, source_names), off),
-    ELetRec(name, value, body) => ELetRec(name, opq_expr(value, resolution, source_names), opq_expr(body, resolution, source_names)),
-    ELetMut(name, value, body, off) => ELetMut(name, opq_expr(value, resolution, source_names), opq_expr(body, resolution, source_names), off),
-    EAssign(name, value, body, target_off) => EAssign(name, opq_expr(value, resolution, source_names), opq_expr(body, resolution, source_names), target_off),
-    EAssignOp(name, op, value, body, target_off) => EAssignOp(name, op, opq_expr(value, resolution, source_names), opq_expr(body, resolution, source_names), target_off),
-    ESeq(first, second) => ESeq(opq_expr(first, resolution, source_names), opq_expr(second, resolution, source_names)),
-    EMatch(scrutinee, arms) => EMatch(opq_expr(scrutinee, resolution, source_names), opq_arms(arms, resolution, source_names)),
-    EHandle(body, arms) => EHandle(opq_expr(body, resolution, source_names), opq_arms(arms, resolution, source_names)),
-    EWhile(cond, body) => EWhile(opq_expr(cond, resolution, source_names), opq_expr(body, resolution, source_names)),
-    ELoop(pairs, body) => ELoop(opq_pairs(pairs, resolution, source_names), opq_expr(body, resolution, source_names)),
-    EForIn(name, index, iterable, body) => EForIn(name, index, opq_expr(iterable, resolution, source_names), opq_expr(body, resolution, source_names)),
-    EBinOp(op, left, right, boff) => EBinOp(op, opq_expr(left, resolution, source_names), opq_expr(right, resolution, source_names), boff),
-    EUnaryOp(op, value) => EUnaryOp(op, opq_expr(value, resolution, source_names)),
-    EFn(tparams, bounds, params, ret, eff, body) => EFn(tparams, bounds, params, ret, eff, opq_expr(body, resolution, source_names)),
-    EDot(object, field, start, end) => EDot(opq_expr(object, resolution, source_names), field, start, end),
-    ELabeledArg(kind, name, value) => ELabeledArg(kind, name, opq_expr(value, resolution, source_names)),
-    EReturn(value) => EReturn(opq_expr(value, resolution, source_names)),
+    ECall(callee, args, off, callee_resolution) => ECall(opq_expr(e = callee, resolution = resolution, source_names = source_names), opq_expr_array(items = args, resolution = resolution, source_names = source_names), off, callee_resolution),
+    ETuple(items) => ETuple(opq_expr_array(items = items, resolution = resolution, source_names = source_names)),
+    EArray(items) => EArray(opq_expr_array(items = items, resolution = resolution, source_names = source_names)),
+    ERecord(name, fields, targs) => ERecord(name, opq_pairs(items = fields, resolution = resolution, source_names = source_names), targs),
+    EIf(cond, then_expr, else_expr) => EIf(opq_expr(e = cond, resolution = resolution, source_names = source_names), opq_expr(e = then_expr, resolution = resolution, source_names = source_names), opq_expr(e = else_expr, resolution = resolution, source_names = source_names)),
+    ELet(name, value, body, off) => ELet(name, opq_expr(e = value, resolution = resolution, source_names = source_names), opq_expr(e = body, resolution = resolution, source_names = source_names), off),
+    ELetRec(name, value, body) => ELetRec(name, opq_expr(e = value, resolution = resolution, source_names = source_names), opq_expr(e = body, resolution = resolution, source_names = source_names)),
+    ELetMut(name, value, body, off) => ELetMut(name, opq_expr(e = value, resolution = resolution, source_names = source_names), opq_expr(e = body, resolution = resolution, source_names = source_names), off),
+    EAssign(name, value, body, target_off) => EAssign(name, opq_expr(e = value, resolution = resolution, source_names = source_names), opq_expr(e = body, resolution = resolution, source_names = source_names), target_off),
+    EAssignOp(name, op, value, body, target_off) => EAssignOp(name, op, opq_expr(e = value, resolution = resolution, source_names = source_names), opq_expr(e = body, resolution = resolution, source_names = source_names), target_off),
+    ESeq(first, second) => ESeq(opq_expr(e = first, resolution = resolution, source_names = source_names), opq_expr(e = second, resolution = resolution, source_names = source_names)),
+    EMatch(scrutinee, arms) => EMatch(opq_expr(e = scrutinee, resolution = resolution, source_names = source_names), opq_arms(items = arms, resolution = resolution, source_names = source_names)),
+    EHandle(body, arms) => EHandle(opq_expr(e = body, resolution = resolution, source_names = source_names), opq_arms(items = arms, resolution = resolution, source_names = source_names)),
+    EWhile(cond, body) => EWhile(opq_expr(e = cond, resolution = resolution, source_names = source_names), opq_expr(e = body, resolution = resolution, source_names = source_names)),
+    ELoop(pairs, body) => ELoop(opq_pairs(items = pairs, resolution = resolution, source_names = source_names), opq_expr(e = body, resolution = resolution, source_names = source_names)),
+    EForIn(name, index, iterable, body) => EForIn(name, index, opq_expr(e = iterable, resolution = resolution, source_names = source_names), opq_expr(e = body, resolution = resolution, source_names = source_names)),
+    EBinOp(op, left, right, boff) => EBinOp(op, opq_expr(e = left, resolution = resolution, source_names = source_names), opq_expr(e = right, resolution = resolution, source_names = source_names), boff),
+    EUnaryOp(op, value) => EUnaryOp(op, opq_expr(e = value, resolution = resolution, source_names = source_names)),
+    EFn(tparams, bounds, params, ret, eff, body) => EFn(tparams, bounds, params, ret, eff, opq_expr(e = body, resolution = resolution, source_names = source_names)),
+    EDot(object, field, start, end) => EDot(opq_expr(e = object, resolution = resolution, source_names = source_names), field, start, end),
+    ELabeledArg(kind, name, value) => ELabeledArg(kind, name, opq_expr(e = value, resolution = resolution, source_names = source_names)),
+    EReturn(value) => EReturn(opq_expr(e = value, resolution = resolution, source_names = source_names)),
     EBreak(value) => match value {
-      Some(inner) => EBreak(Some(opq_expr(inner, resolution, source_names))),
+      Some(inner) => EBreak(Some(opq_expr(e = inner, resolution = resolution, source_names = source_names))),
       None => e
     },
-    EContinue(args) => EContinue(opq_expr_array(args, resolution, source_names)),
-    EMap(fields) => EMap(opq_pairs(fields, resolution, source_names)),
-    ESpread(value) => ESpread(opq_expr(value, resolution, source_names)),
+    EContinue(args) => EContinue(opq_expr_array(items = args, resolution = resolution, source_names = source_names)),
+    EMap(fields) => EMap(opq_pairs(items = fields, resolution = resolution, source_names = source_names)),
+    ESpread(value) => ESpread(opq_expr(e = value, resolution = resolution, source_names = source_names)),
     _ => e
   }
 }
 
 export fn lower_optional_performs(stmts: Array[Stmt], resolution: Array[(String, String)]) -> Unit with Exception {
   let source_names = array_empty()
-  opq_collect_source_value_names(stmts, source_names)
-  lower_optional_performs_with_source_names(stmts, resolution, source_names)
+  opq_collect_source_value_names(stmts = stmts, names = source_names)
+  lower_optional_performs_with_source_names(stmts = stmts, resolution = resolution, source_names = source_names)
 }
 
 /// The source-shadow name set `lower_optional_performs` derives, WITHOUT
@@ -226,13 +226,13 @@ export fn lower_optional_performs(stmts: Array[Stmt], resolution: Array[(String,
 /// treats the spelling as a capability -- silently lowering to Granted or
 /// NotGranted where the whole program rejects. So the set is collected once on
 /// the merged program and handed down, exactly like the resolution itself.
-export fn collect_optional_perform_source_names(stmts: Array[Stmt]) -> Array[String] {
+export fn collect_optional_perform_source_names(_ stmts: Array[Stmt]) -> Array[String] {
   let source_names = array_empty()
-  opq_collect_source_value_names(stmts, source_names)
+  opq_collect_source_value_names(stmts = stmts, names = source_names)
   source_names
 }
 
-fn opq_is_optional_call(e: Expr) -> Bool {
+fn opq_is_optional_call(_ e: Expr) -> Bool {
   match e {
     ECall(EIdent("perform?", _), _, _, _) => true,
     _ => false
@@ -240,8 +240,8 @@ fn opq_is_optional_call(e: Expr) -> Bool {
 }
 
 fn opq_entry(e: Expr, resolution: Array[(String, String)], source_names: Array[String]) -> Expr with Exception {
-  if expr_any_node(e, opq_is_optional_call) {
-    opq_expr(e, resolution, source_names)
+  if expr_any_node(expr = e, pred = opq_is_optional_call) {
+    opq_expr(e = e, resolution = resolution, source_names = source_names)
   } else {
     e
   }
@@ -250,17 +250,17 @@ fn opq_entry(e: Expr, resolution: Array[(String, String)], source_names: Array[S
 export fn lower_optional_performs_with_source_names(stmts: Array[Stmt], resolution: Array[(String, String)], source_names: Array[String]) -> Unit with Exception {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(exported, recursive, name, ty, value) => Array::set(stmts, i, SLet(exported, recursive, name, ty, opq_entry(value, resolution, source_names))),
-      SLetMut(name, ty, value) => Array::set(stmts, i, SLetMut(name, ty, opq_entry(value, resolution, source_names))),
-      STest(name, body) => Array::set(stmts, i, STest(name, opq_entry(body, resolution, source_names))),
-      SBench(name, body) => Array::set(stmts, i, SBench(name, opq_entry(body, resolution, source_names))),
-      SExample(name, body) => Array::set(stmts, i, SExample(name, opq_entry(body, resolution, source_names))),
-      SExpr(value) => Array::set(stmts, i, SExpr(opq_entry(value, resolution, source_names))),
-      SLetPat(pat, value) => Array::set(stmts, i, SLetPat(pat, opq_entry(value, resolution, source_names))),
+    match Array::get(stmts, at = i) {
+      SLet(exported, recursive, name, ty, value) => Array::set(stmts, at = i, value = SLet(exported, recursive, name, ty, opq_entry(e = value, resolution = resolution, source_names = source_names))),
+      SLetMut(name, ty, value) => Array::set(stmts, at = i, value = SLetMut(name, ty, opq_entry(e = value, resolution = resolution, source_names = source_names))),
+      STest(name, body) => Array::set(stmts, at = i, value = STest(name, opq_entry(e = body, resolution = resolution, source_names = source_names))),
+      SBench(name, body) => Array::set(stmts, at = i, value = SBench(name, opq_entry(e = body, resolution = resolution, source_names = source_names))),
+      SExample(name, body) => Array::set(stmts, at = i, value = SExample(name, opq_entry(e = body, resolution = resolution, source_names = source_names))),
+      SExpr(value) => Array::set(stmts, at = i, value = SExpr(opq_entry(e = value, resolution = resolution, source_names = source_names))),
+      SLetPat(pat, value) => Array::set(stmts, at = i, value = SLetPat(pat, opq_entry(e = value, resolution = resolution, source_names = source_names))),
       SModule(exported, name, body) => {
-        lower_optional_performs_with_source_names(body, resolution, source_names)
-        Array::set(stmts, i, SModule(exported, name, body))
+        lower_optional_performs_with_source_names(stmts = body, resolution = resolution, source_names = source_names)
+        Array::set(stmts, at = i, value = SModule(exported, name, body))
       },
       _ => ()
     }

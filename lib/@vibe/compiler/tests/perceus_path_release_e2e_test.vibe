@@ -17,18 +17,18 @@ import ./codegen_test_support.vibe {
 
 fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
   let path = String::concat("/tmp/_path_release_e2e_", String::concat(label, ".wasm"))
-  Fs::write_bytes(path, bytes)
+  Fs::write_bytes(path, bytes = bytes)
   let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
   if Array::length(out) > 0 {
-    Array::get(out, 0)
+    Array::get(out, at = 0)
   } else {
     "<no output>"
   }
 }
 
 fn assert_bump_rc_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Console {
-  let bump = run_value(compile_wasi(src, "main"), String::concat(label, "_bump"))
-  let rc = run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc"))
+  let bump = run_value(bytes = compile_wasi(source = src, entry = "main"), label = String::concat(label, "_bump"))
+  let rc = run_value(bytes = compile_wasi_rc(source = src, entry = "main"), label = String::concat(label, "_rc"))
   inspect(bump, content = expected)
   inspect(rc, content = expected)
   0
@@ -43,19 +43,19 @@ test "the non-consuming path answers the same as before" {
   // so a release the consuming path should not have made would free a value
   // still in use, and one the other path should have made would leak.
   let src = String::concat(prelude, "let pick: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
-  let _ = assert_bump_rc_agree(src, "if_branch", "709")
+  let _ = assert_bump_rc_agree(src = src, label = "if_branch", expected = "709")
   ()
 }
 
 test "the same split through a match arm" {
   let src = String::concat(prelude, "let pick: (Int) -> Node = (k) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  match k {\n    0 => t,\n    _ => Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(0)) * 100 + total(pick(1))\n}")
-  let _ = assert_bump_rc_agree(src, "match_arm", "709")
+  let _ = assert_bump_rc_agree(src = src, label = "match_arm", expected = "709")
   ()
 }
 
 test "three arms, one of them consuming" {
   let src = String::concat(prelude, "let pick: (Int) -> Node = (k) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  match k {\n    0 => Leaf(1),\n    1 => t,\n    _ => Leaf(2)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(0)) * 10000 + total(pick(1)) * 100 + total(pick(2))\n}")
-  let _ = assert_bump_rc_agree(src, "three_arms", "10702")
+  let _ = assert_bump_rc_agree(src = src, label = "three_arms", expected = "10702")
   ()
 }
 
@@ -64,7 +64,7 @@ test "a nested split inside the consuming branch" {
   // path reaches an occurrence that spends the initial reference stands the
   // scope-end drop down and no other path does.
   let src = String::concat(prelude, "let pick: (Bool, Bool) -> Node = (c, d) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  if c {\n    if d {\n      t\n    } else {\n      Leaf(5)\n    }\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true, true)) * 10000 + total(pick(true, false)) * 100 + total(pick(false, false))\n}")
-  let _ = assert_bump_rc_agree(src, "nested", "70509")
+  let _ = assert_bump_rc_agree(src = src, label = "nested", expected = "70509")
   ()
 }
 
@@ -73,7 +73,7 @@ test "a shared source stays intact on the path that keeps it" {
   // count and the binding keeps its ordinary scope-end drop -- the value
   // read afterwards must still be the one built.
   let src = String::concat(prelude, "let keep: (Bool) -> Int = (c) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  let k = if c {\n    total(t)\n  } else {\n    0\n  }\n  k * 100 + total(t)\n}\nlet main: () -> Int = () -> {\n  keep(true) * 10000 + keep(false)\n}")
-  let _ = assert_bump_rc_agree(src, "shared", "7070007")
+  let _ = assert_bump_rc_agree(src = src, label = "shared", expected = "7070007")
   ()
 }
 
@@ -85,13 +85,13 @@ test "an arm that transfers through an alias keeps its value" {
   // silent wrong answer, no trap. `filler` and `g` allocate after the value
   // is held, so a released block is reused under it.
   let src = String::concat(prelude, "let run: (Int) -> Node = (k) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  match k {\n    0 => t,\n    1 => {\n      let u = t\n      u\n    },\n    _ => Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  let mut i = 0\n  let mut acc = 0\n  while i < 50 {\n    let a = run(1)\n    let filler = run(2)\n    let g = Pair(Leaf(1), Leaf(1))\n    acc = acc + total(a) * 10000 + total(filler) * 100 + total(g)\n    i = i + 1\n  }\n  acc\n}")
-  let _ = assert_bump_rc_agree(src, "alias_transfer", "3545100")
+  let _ = assert_bump_rc_agree(src = src, label = "alias_transfer", expected = "3545100")
   ()
 }
 
 test "a let mut split is declined and still answers" {
   let src = String::concat(prelude, "let pick: (Bool) -> Node = (c) -> {\n  let mut t = Pair(Leaf(3), Leaf(4))\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
-  let _ = assert_bump_rc_agree(src, "let_mut", "709")
+  let _ = assert_bump_rc_agree(src = src, label = "let_mut", expected = "709")
   ()
 }
 
@@ -100,7 +100,7 @@ test "a consuming occurrence inside a lambda is declined and still answers" {
   // offset -- codegen would have no site to set the flag at, so the binding
   // keeps today's behavior rather than getting a drop nothing suppresses.
   let src = String::concat(prelude, "let pick: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  if c {\n    let f: () -> Node = () -> t\n    f()\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
-  let _ = assert_bump_rc_agree(src, "capture", "709")
+  let _ = assert_bump_rc_agree(src = src, label = "capture", expected = "709")
   ()
 }
 
@@ -112,7 +112,7 @@ test "a call result whose callee declares a heap return is admitted" {
   // 1,600,024 B at N=20000 before the rule read that contract); this case is
   // the answer oracle for the same shape.
   let src = String::concat(prelude, "let mk: (Int) -> Node = (i) -> Pair(Leaf(i), Leaf(i + 1))\nlet pick: (Bool) -> Node = (c) -> {\n  let t = mk(3)\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
-  let _ = assert_bump_rc_agree(src, "call_heap_ret", "709")
+  let _ = assert_bump_rc_agree(src = src, label = "call_heap_ret", expected = "709")
   ()
 }
 
@@ -126,7 +126,7 @@ test "a call that may return a view is declined and still answers" {
   // A regression guard, not a red test: with the check removed this shape
   // still answers, so what it buys is that the rule does not depend on that.
   let src = String::concat(prelude, "let maybe: (Array[Node], Bool) -> Node = (xs, b) -> {\n  if b {\n    Array::get(xs, 0)\n  } else {\n    Pair(Leaf(1), Leaf(1))\n  }\n}\nlet pick: (Bool, Bool) -> Int = (c, d) -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let t = if d {\n      maybe(xs, true)\n    } else {\n      Pair(Leaf(0), Leaf(0))\n    }\n    if c {\n      t\n    } else {\n      Leaf(9)\n    }\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> {\n  pick(false, true)\n}")
-  let _ = assert_bump_rc_agree(src, "view_ret_leaf", "90715")
+  let _ = assert_bump_rc_agree(src = src, label = "view_ret_leaf", expected = "90715")
   ()
 }
 
@@ -134,13 +134,13 @@ test "a block whose tail allocates is admitted through the result spine" {
   // The value node is an `ELet`, not an allocation, so only reading the
   // result spine reaches it.
   let src = String::concat(prelude, "let pick: (Bool) -> Node = (c) -> {\n  let t = {\n    let k = 4\n    Pair(Leaf(3), Leaf(k))\n  }\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
-  let _ = assert_bump_rc_agree(src, "spine_block", "709")
+  let _ = assert_bump_rc_agree(src = src, label = "spine_block", expected = "709")
   ()
 }
 
 test "a conditional value is admitted when every branch allocates" {
   let src = String::concat(prelude, "let pick: (Bool, Bool) -> Node = (c, d) -> {\n  let t = if d {\n    Pair(Leaf(3), Leaf(4))\n  } else {\n    Pair(Leaf(1), Leaf(1))\n  }\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true, true)) * 10000 + total(pick(true, false)) * 100 + total(pick(false, true))\n}")
-  let _ = assert_bump_rc_agree(src, "spine_if", "70209")
+  let _ = assert_bump_rc_agree(src = src, label = "spine_if", expected = "70209")
   ()
 }
 
@@ -149,7 +149,7 @@ test "one branch of a conditional value declining declines the binding" {
   // name is not a top-level signature the heap-return scan can read, so the
   // binding fails closed even though the `then` leaf allocates at the site.
   let src = String::concat(prelude, "let pick: (Bool, Bool) -> Node = (c, d) -> {\n  let f: (Int) -> Node = (i) -> Pair(Leaf(i), Leaf(i))\n  let t = if d {\n    Pair(Leaf(1), Leaf(1))\n  } else {\n    f(2)\n  }\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true, true)) * 10000 + total(pick(true, false)) * 100 + total(pick(false, false))\n}")
-  let _ = assert_bump_rc_agree(src, "spine_mixed", "20409")
+  let _ = assert_bump_rc_agree(src = src, label = "spine_mixed", expected = "20409")
   ()
 }
 
@@ -159,7 +159,7 @@ test "a callee with no top-level signature is declined and still answers" {
   // read. The binding fails closed rather than being admitted on the "any
   // call is heap" default.
   let src = String::concat(prelude, "let pick: (Bool) -> Node = (c) -> {\n  let f: (Int) -> Node = (i) -> Pair(Leaf(i), Leaf(i + 1))\n  let t = f(3)\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
-  let _ = assert_bump_rc_agree(src, "indirect", "709")
+  let _ = assert_bump_rc_agree(src = src, label = "indirect", expected = "709")
   ()
 }
 
@@ -171,7 +171,7 @@ test "a local binding shadowing a heap-returning global is declined" {
   // scope runs past the reads -- so this pins the decline, and the code
   // difference is what the check actually buys.
   let src = String::concat(prelude, "let mk: (Array[Node]) -> Node = (zs) -> Pair(Leaf(1), Leaf(1))\nlet pick: (Bool) -> Node = (c) -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let mk: (Array[Node]) -> Node = (ys) -> Array::get(ys, 0)\n  let t = mk(xs)\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
-  let _ = assert_bump_rc_agree(src, "local_shadow", "709")
+  let _ = assert_bump_rc_agree(src = src, label = "local_shadow", expected = "709")
   ()
 }
 
@@ -183,6 +183,6 @@ test "a binding named after the global it calls is still admitted" {
   // way the value compile masks it. Measured: without the mask this shape
   // compiles 18 B smaller -- the guarded drop declined, and the leak kept.
   let src = String::concat(prelude, "let mk: (Int) -> Node = (i) -> Pair(Leaf(i), Leaf(i + 1))\nlet pick: (Bool) -> Node = (c) -> {\n  let mk = mk(3)\n  if c {\n    mk\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
-  let _ = assert_bump_rc_agree(src, "self_named_shadow", "709")
+  let _ = assert_bump_rc_agree(src = src, label = "self_named_shadow", expected = "709")
   ()
 }

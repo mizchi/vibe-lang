@@ -60,7 +60,7 @@ import ./utilities.vibe {
   str_array_contains
 }
 
-fn ty_mentions_scope_formal(t: TypeExpr) -> Bool {
+fn ty_mentions_scope_formal(_ t: TypeExpr) -> Bool {
   match t {
     TyName(n) => formal_in_scope(n),
     TyApp(h, args) => formal_in_scope(h) || tys_mention_scope_formal(args),
@@ -70,7 +70,7 @@ fn ty_mentions_scope_formal(t: TypeExpr) -> Bool {
   }
 }
 
-fn tys_mention_scope_formal(ts: Array[TypeExpr]) -> Bool {
+fn tys_mention_scope_formal(_ ts: Array[TypeExpr]) -> Bool {
   let mut hit = false
   for t in ts {
     if ty_mentions_scope_formal(t) {
@@ -85,11 +85,11 @@ fn tys_mention_scope_formal(ts: Array[TypeExpr]) -> Bool {
 /// #3455: is `key` a constructor-payload key (`__ctorpay$<Ctor>$<name>` or
 /// `__ctorpayi$<Ctor>$<idx>$<name>`) for one of `params`' names?
 fn names_ctor_payload_of(key: String, params: Array[(String, Option[TypeExpr])]) -> Bool {
-  if String::starts_with(key, "__ctorpay") {
+  if String::starts_with(key, prefix = "__ctorpay") {
     let mut found = false
     for param in params {
       let (raw_pname, _) = param
-      if String::ends_with(key, String::concat("$", strip_label_tilde(raw_pname))) {
+      if String::ends_with(key, suffix = String::concat("$", strip_label_tilde(raw_pname))) {
         found = true
       } else {
         ()
@@ -119,27 +119,27 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
     for param in params {
       let (raw_pname, _) = param
       let pname = strip_label_tilde(raw_pname)
-      Array::push(shadowed, pname)
-      Array::push(shadowed, shape_key(pname))
-      Array::push(shadowed, eq_shape_key(pname))
-      Array::push(shadowed, eq_formal_shape_key(pname))
-      Array::push(shadowed, eq_fn_result_key(pname))
-      Array::push(shadowed, constructor_head_key(pname))
-      Array::push(shadowed, dtd_interp_lamret_key(pname))
+      Array::push(shadowed, value = pname)
+      Array::push(shadowed, value = shape_key(pname))
+      Array::push(shadowed, value = eq_shape_key(pname))
+      Array::push(shadowed, value = eq_formal_shape_key(pname))
+      Array::push(shadowed, value = eq_fn_result_key(pname))
+      Array::push(shadowed, value = constructor_head_key(pname))
+      Array::push(shadowed, value = dtd_interp_lamret_key(pname))
       // #3455 (Codex on #3460): every other key derived from the name. A
       // tuple-bound outer `v` left its `__tupshape$v`, and an inner `v` seeded
       // with a formal `T` (whose row gives no shape) rendered as that tuple.
-      Array::push(shadowed, tuple_shape_key(pname))
-      Array::push(shadowed, array_elem_key(pname))
-      Array::push(shadowed, impl_target_var_key(pname))
+      Array::push(shadowed, value = tuple_shape_key(pname))
+      Array::push(shadowed, value = array_elem_key(pname))
+      Array::push(shadowed, value = impl_target_var_key(pname))
     }
   } else ()
   let out = array_empty()
   let mut b = 0
   while b < Array::length(base) {
-    let (bn, _) = Array::get(base, b)
-    if !str_array_contains(shadowed, bn) && !names_ctor_payload_of(bn, params) {
-      Array::push(out, Array::get(base, b))
+    let (bn, _) = Array::get(base, at = b)
+    if !str_array_contains(arr = shadowed, val = bn) && !names_ctor_payload_of(key = bn, params = params) {
+      Array::push(out, value = Array::get(base, at = b))
     } else {
       ()
     }
@@ -147,7 +147,7 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
   }
   let mut i = 0
   while i < Array::length(params) {
-    let (raw_pname, ann) = Array::get(params, i)
+    let (raw_pname, ann) = Array::get(params, at = i)
     // #2991: a labeled (`x~`) or optional (`x?`) parameter keeps its marker on
     // the NAME at this stage, while the body refers to it as `x`. Seeding under
     // the marked spelling recorded a type nobody looks up, so `\{b}` on a
@@ -157,17 +157,17 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
     // Generic array/tuple parameters must expand here so their elements can
     // use witness dictionaries. The later erased codegen path cannot do so.
     match ann {
-      Some(te) => if ty_mentions_name_in(te, tparams) {
+      Some(te) => if ty_mentions_name_in(t = te, names = tparams) {
         let sh = texpr_shape(te)
         if shape_is_composite(sh) {
-          Array::push(out, (shape_key(pname), sh))
+          Array::push(out, value = (shape_key(pname), sh))
         }
         // #3287: the full equality shape, formals included, for the witnessed
         // `==` rung (`a: Option[T]` is `{o:T}`, which `texpr_shape` above
         // does not spell).
         let fsh = ty_to_eq_shape(te)
         if shape_is_composite(fsh) {
-          Array::push(out, (eq_formal_shape_key(pname), fsh))
+          Array::push(out, value = (eq_formal_shape_key(pname), fsh))
         } else {
           ()
         }
@@ -179,8 +179,8 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
     // which the `==` ladder and the call-site witness reading cannot otherwise
     // see: `make() == make()` compared by identity even with `T` threaded.
     match ann {
-      Some(TyFn(_, fret, _)) => if ty_mentions_name_in(fret, tparams) || ty_mentions_scope_formal(fret) {
-        Array::push(out, (eq_fn_result_key(pname), impl_target_key(fret)))
+      Some(TyFn(_, fret, _)) => if ty_mentions_name_in(t = fret, names = tparams) || ty_mentions_scope_formal(fret) {
+        Array::push(out, value = (eq_fn_result_key(pname), impl_target_key(fret)))
       } else {
         ()
       },
@@ -201,10 +201,10 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
     // their own.
     match ann {
       Some(TyFn(_, fret, _)) => match fret {
-        TyName(rh) => Array::push(out, (dtd_interp_lamret_key(pname), dtd_interp_lamret_type(rh))),
+        TyName(rh) => Array::push(out, value = (dtd_interp_lamret_key(pname), dtd_interp_lamret_type(rh))),
         TyApp(rc, rargs) => if rc == "Array" && Array::length(rargs) == 1 {
-          match Array::get(rargs, 0) {
-            TyName(eh) => Array::push(out, (dtd_interp_lamret_key(pname), dtd_interp_lamret_elem(dtd_interp_lamret_type(eh)))),
+          match Array::get(rargs, at = 0) {
+            TyName(eh) => Array::push(out, value = (dtd_interp_lamret_key(pname), dtd_interp_lamret_elem(dtd_interp_lamret_type(eh)))),
             _ => ()
           }
         } else {
@@ -214,12 +214,12 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
           let mut ri = 0
           let mut pairs = ""
           while ri < Array::length(rts) {
-            match Array::get(rts, ri) {
+            match Array::get(rts, at = ri) {
               // Every position is recorded, concrete ones included: what makes
               // a name erased is the guard in `dtd_interp_lamret_src_formal`,
               // and answering that here would be a second copy of it.
               TyName(eh) => {
-                let entry = dtd_interp_lamret_pair(ri, dtd_interp_lamret_type(eh))
+                let entry = dtd_interp_lamret_pair(pos = ri, src = dtd_interp_lamret_type(eh))
                 pairs = if String::length(pairs) == 0 {
                   entry
                 } else {
@@ -231,7 +231,7 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
             ri = ri + 1
           }
           if String::length(pairs) > 0 {
-            Array::push(out, (dtd_interp_lamret_key(pname), dtd_interp_lamret_tuple(Array::length(rts), pairs)))
+            Array::push(out, value = (dtd_interp_lamret_key(pname), dtd_interp_lamret_tuple(arity = Array::length(rts), pairs = pairs)))
           } else {
             ()
           }
@@ -252,14 +252,14 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
       Some(TyName(tn)) => if tn == "__rc_heap" {
         ()
       } else {
-        Array::push(out, (pname, tn))
+        Array::push(out, value = (pname, tn))
         // A nullary alias can hide a structural parameter type just as a
         // TyApp annotation can. Preserve a same-spelled in-scope formal before
         // expanding through the global alias table.
-        if !ty_mentions_name_in(TyName(tn), tparams) {
+        if !ty_mentions_name_in(t = TyName(tn), names = tparams) {
           let esh = ty_to_eq_shape(TyName(tn))
           if shape_is_composite(esh) {
-            Array::push(out, (eq_shape_key(pname), esh))
+            Array::push(out, value = (eq_shape_key(pname), esh))
           } else {
             ()
           }
@@ -281,31 +281,31 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
       // left untracked, same conservative scope as the rest of
       // infer_arg_type_name.
       Some(TyApp(tn, targs)) => {
-        let constructor_head = match expand_seed_constructor_alias(TyApp(tn, targs), tparams, Array::length(dtd_eq_type_aliases) + 1) {
+        let constructor_head = match expand_seed_constructor_alias(ty = TyApp(tn, targs), tparams = tparams, fuel = Array::length(dtd_eq_type_aliases) + 1) {
           TyApp(head, _) => head,
           TyName(head) => head,
           _ => tn
         }
         // Keep the exact annotation head for equality, rendering, and operator
         // lowering. Constructor dispatch gets a dedicated canonical alias head.
-        Array::push(out, (pname, tn))
+        Array::push(out, value = (pname, tn))
         if constructor_head != tn {
-          Array::push(out, (constructor_head_key(pname), constructor_head))
+          Array::push(out, value = (constructor_head_key(pname), constructor_head))
         } else {
           ()
         }
-        if !ty_mentions_name_in(TyApp(tn, targs), tparams) {
-          Array::push(out, (impl_target_var_key(pname), impl_target_key(TyApp(tn, targs))))
+        if !ty_mentions_name_in(t = TyApp(tn, targs), names = tparams) {
+          Array::push(out, value = (impl_target_var_key(pname), impl_target_key(TyApp(tn, targs))))
         } else {
           ()
         }
         // Equality needs the complete annotation, not only its head. Keep the
         // recursive shape for every monomorphic aggregate parameter so nested
         // Array/Option/Result paths do not fall back to word identity.
-        if !ty_mentions_name_in(TyApp(tn, targs), tparams) {
+        if !ty_mentions_name_in(t = TyApp(tn, targs), names = tparams) {
           let esh = ty_to_eq_shape(TyApp(tn, targs))
           if shape_is_composite(esh) {
-            Array::push(out, (eq_shape_key(pname), esh))
+            Array::push(out, value = (eq_shape_key(pname), esh))
           } else {
             ()
           }
@@ -313,8 +313,8 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
           ()
         }
         if tn == "Array" && Array::length(targs) == 1 {
-          match Array::get(targs, 0) {
-            TyName(elem) => Array::push(out, (array_elem_key(pname), elem)),
+          match Array::get(targs, at = 0) {
+            TyName(elem) => Array::push(out, value = (array_elem_key(pname), elem)),
             _ => ()
           }
         } else if tn == "Option" && Array::length(targs) == 1 {
@@ -330,10 +330,10 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
           // the recursive renderer. Measured before this: that binder printed a
           // pointer decimal while `Option[P]` rendered fine -- the `TyName`-only
           // match silently recorded nothing for the nested case.
-          seed_ctor_payload(out, pname, "Some", Array::get(targs, 0))
+          seed_ctor_payload(out = out, pname = pname, ctor = "Some", payload = Array::get(targs, at = 0))
         } else if tn == "Result" && Array::length(targs) == 2 {
-          seed_ctor_payload(out, pname, "Ok", Array::get(targs, 0))
-          seed_ctor_payload(out, pname, "Err", Array::get(targs, 1))
+          seed_ctor_payload(out = out, pname = pname, ctor = "Ok", payload = Array::get(targs, at = 0))
+          seed_ctor_payload(out = out, pname = pname, ctor = "Err", payload = Array::get(targs, at = 1))
         } else {
           ()
         }
@@ -356,12 +356,12 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
       // would key a monomorphic `__arr_equals__<tyvar>` helper on the
       // parameter's NAME (the Codex P1 class on the bare-`==` path), and the
       // erased comparison it would compile to is the status quo anyway.
-      Some(TyTuple(tts)) => if ty_mentions_name_in(TyTuple(tts), tparams) {
+      Some(TyTuple(tts)) => if ty_mentions_name_in(t = TyTuple(tts), names = tparams) {
         ()
       } else {
         let esh = ty_to_eq_shape(TyTuple(tts))
         if String::length(esh) > 0 {
-          Array::push(out, (eq_shape_key(pname), esh))
+          Array::push(out, value = (eq_shape_key(pname), esh))
         } else {
           ()
         }

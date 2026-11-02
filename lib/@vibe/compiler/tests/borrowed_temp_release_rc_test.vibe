@@ -18,19 +18,19 @@ import ./codegen_test_support.vibe {
 
 fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
   let path = String::concat("/tmp/_borrowed_temp_rc_", String::concat(label, ".wasm"))
-  Fs::write_bytes(path, bytes)
+  Fs::write_bytes(path, bytes = bytes)
   let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
   if Array::length(out) > 0 {
-    Array::get(out, 0)
+    Array::get(out, at = 0)
   } else {
     "<no output>"
   }
 }
 
 fn assert_lanes_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Console {
-  let bump = run_value(compile_wasi(src, "main"), String::concat(label, "_bump"))
-  let rc = run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc"))
-  let shadow = run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow"))
+  let bump = run_value(bytes = compile_wasi(source = src, entry = "main"), label = String::concat(label, "_bump"))
+  let rc = run_value(bytes = compile_wasi_rc(source = src, entry = "main"), label = String::concat(label, "_rc"))
+  let shadow = run_value(bytes = compile_wasi_rc_shadow(source = src, entry = "main"), label = String::concat(label, "_shadow"))
   inspect(bump, content = expected)
   inspect(rc, content = expected)
   inspect(shadow, content = expected)
@@ -43,25 +43,25 @@ fn prelude() -> String {
 
 test "a fresh array handed to Array::length (#2682)" {
   let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    total = total + Array::length(build_arr(3))\n    i = i + 1\n  }\n  total\n}\n")
-  assert_lanes_agree(src, "length_of_temp", "6000")
+  assert_lanes_agree(src = src, label = "length_of_temp", expected = "6000")
 }
 
 test "a map result handed to Array::length while the source stays live (#2682)" {
   let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let ta: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1))]\n    total = total + Array::length(Array::map(ta, incr)) + sumt(Array::get(ta, 1))\n    i = i + 1\n  }\n  total\n}\n")
-  assert_lanes_agree(src, "length_of_map_temp", "4004000")
+  assert_lanes_agree(src = src, label = "length_of_map_temp", expected = "4004000")
 }
 
 test "a view of a temporary is not released under it (#2682)" {
   let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    total = total + Array::get(build_arr(3), 2) + first(build_arr(3))\n    i = i + 1\n  }\n  total\n}\n")
-  assert_lanes_agree(src, "view_of_temp_not_released", "4000")
+  assert_lanes_agree(src = src, label = "view_of_temp_not_released", expected = "4000")
 }
 
 test "a view-returning user fn over a map result (#2682)" {
   let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let ta: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1))]\n    total = (total + sumt(head_tree(Array::map(ta, incr)))) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
-  assert_lanes_agree(src, "view_fn_of_map_temp", "2001000")
+  assert_lanes_agree(src = src, label = "view_fn_of_map_temp", expected = "2001000")
 }
 
 test "an array literal handed to String::join (#2682)" {
   let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    total = total + String::length(String::join([\"a\", \"bc\"], \",\"))\n    i = i + 1\n  }\n  total\n}\n")
-  assert_lanes_agree(src, "joined_temp_array", "8000")
+  assert_lanes_agree(src = src, label = "joined_temp_array", expected = "8000")
 }

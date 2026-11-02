@@ -14,39 +14,39 @@ import @vibe/compiler/query {
 
 //# Functions
 
-fn plan_of(source: String) -> String with Exception {
-  rc_plan_source(source, "")
+fn plan_of(_ source: String) -> String with Exception {
+  rc_plan_source(source = source, fn_filter = "")
 }
 
 let prologue = "enum D {\n  A(Array[Int])\n}\n"
 
 let epilogue = "\nlet main: () -> Int = () -> {\n  run([1, 2])\n}"
 
-fn program(body: String) -> String {
+fn program(_ body: String) -> String {
   String::concat(prologue, String::concat(body, epilogue))
 }
 
 test "a heap binding as a discarded for body keeps its drop" {
   let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  for x in ns {\n    d\n  }\n  Array::length(ns)\n}")
-  assert(String::contains(plan_of(src), "run d drop 1"))
+  assert(String::contains(plan_of(src), needle = "run d drop 1"))
 }
 
 test "branch tails of a discarded for body keep their drops" {
   let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  let e = A([2])\n  for x in ns {\n    if x == 1 {\n      d\n    } else {\n      e\n    }\n  }\n  Array::length(ns)\n}")
   let plan = plan_of(src)
-  assert(String::contains(plan, "run d drop 1"))
-  assert(String::contains(plan, "run e drop 1"))
+  assert(String::contains(plan, needle = "run d drop 1"))
+  assert(String::contains(plan, needle = "run e drop 1"))
 }
 
 test "a bare name at the head of a sequence keeps its drop" {
   let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  d\n  Array::length(ns)\n}")
-  assert(String::contains(plan_of(src), "run d drop 1"))
+  assert(String::contains(plan_of(src), needle = "run d drop 1"))
 }
 
 test "a collecting for still moves its body value into the result" {
   // Only the discarded form changed: the collected array owns its items.
   let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  let r = for x in ns {\n    d\n  }\n  Array::length(r)\n}")
-  assert(!String::contains(plan_of(src), "run d drop"))
+  assert(!String::contains(plan_of(src), needle = "run d drop"))
 }
 
 // #3162: a `handle` at the head of a sequence is discarded the same way --
@@ -56,26 +56,26 @@ test "a collecting for still moves its body value into the result" {
 test "a heap binding as a discarded handled body keeps its drop" {
   let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  handle {\n    d\n  } with {\n    Exception::Throw(_) => A([2])\n  }\n  Array::length(ns)\n}")
   let plan = plan_of(src)
-  assert(String::contains(plan, "run d drop 1"))
-  assert(!String::contains(plan, "run d dup"))
+  assert(String::contains(plan, needle = "run d drop 1"))
+  assert(!String::contains(plan, needle = "run d dup"))
 }
 
 test "a heap binding as a discarded handler arm keeps its drop" {
   let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  handle {\n    A([2])\n  } with {\n    Exception::Throw(_) => d\n  }\n  Array::length(ns)\n}")
   let plan = plan_of(src)
-  assert(String::contains(plan, "run d drop 1"))
-  assert(!String::contains(plan, "run d dup"))
+  assert(String::contains(plan, needle = "run d drop 1"))
+  assert(!String::contains(plan, needle = "run d dup"))
 }
 
 test "a heap binding as a while body keeps its drop" {
   let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 2 {\n    k = k + 1\n    d\n  }\n  Array::length(ns)\n}")
   let plan = plan_of(src)
-  assert(String::contains(plan, "run d drop 1"))
-  assert(!String::contains(plan, "run d dup"))
+  assert(String::contains(plan, needle = "run d drop 1"))
+  assert(!String::contains(plan, needle = "run d dup"))
 }
 
 test "a handle whose value is bound still moves its body value" {
   // Only the discarded position changed: `r` owns what the handle returns.
   let src = program("let run: (Array[Int]) -> Int = (ns) -> {\n  let d = A([1])\n  let r = handle {\n    d\n  } with {\n    Exception::Throw(_) => A([2])\n  }\n  Array::length(ns)\n}")
-  assert(!String::contains(plan_of(src), "run d drop"))
+  assert(!String::contains(plan_of(src), needle = "run d drop"))
 }

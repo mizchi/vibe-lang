@@ -19,7 +19,7 @@ fn leb_at(b: Bytes, p: Int) -> (Int, Int) {
   let mut q = p
   let mut done = false
   while !done {
-    let x = Bytes::get(b, q)
+    let x = Bytes::get(b, at = q)
     q = q + 1
     r = r|((x&127)<<shift)
     shift = shift + 7
@@ -37,10 +37,10 @@ fn section_count(m: Bytes, sid: Int) -> Int {
   let mut p = 8
   let mut found = 0 - 1
   while found < 0 && p < Bytes::length(m) {
-    let id = Bytes::get(m, p)
-    let (n, body) = leb_at(m, p + 1)
+    let id = Bytes::get(m, at = p)
+    let (n, body) = leb_at(b = m, p = p + 1)
     if id == sid {
-      let (c, _) = leb_at(m, body)
+      let (c, _) = leb_at(b = m, p = body)
       found = c
     } else {
       ()
@@ -108,29 +108,29 @@ fn two_exports() -> Bytes {
 
 test "without the strip announced every function export is a root: nothing to prune" {
   let wasm = two_exports()
-  inspect(section_count(wasm, 3), content = "2")
-  let pruned = late_dce_prune_module_for(wasm, "main", false)
-  inspect(section_count(pruned, 3), content = "2")
-  inspect(section_count(pruned, 7), content = "2")
+  inspect(section_count(m = wasm, sid = 3), content = "2")
+  let pruned = late_dce_prune_module_for(mod_bytes = wasm, entry_name = "main", exports_stripped = false)
+  inspect(section_count(m = pruned, sid = 3), content = "2")
+  inspect(section_count(m = pruned, sid = 7), content = "2")
   inspect(late_dce_prune_refusal(), content = "-1")
   // The plain test entry is the same call.
-  inspect(section_count(late_dce_prune_module(wasm), 3), content = "2")
+  inspect(section_count(m = late_dce_prune_module(wasm), sid = 3), content = "2")
 }
 
 test "with the strip announced, only the kept exports are roots and the other export is dropped" {
   let wasm = two_exports()
-  let pruned = late_dce_prune_module_for(wasm, "main", true)
+  let pruned = late_dce_prune_module_for(mod_bytes = wasm, entry_name = "main", exports_stripped = true)
   inspect(late_dce_prune_refusal(), content = "0")
-  inspect(section_count(pruned, 3), content = "1")
-  inspect(section_count(pruned, 7), content = "1")
+  inspect(section_count(m = pruned, sid = 3), content = "1")
+  inspect(section_count(m = pruned, sid = 7), content = "1")
 }
 
 test "the entry decides which export is kept" {
   let wasm = two_exports()
-  let pruned = late_dce_prune_module_for(wasm, "helper", true)
+  let pruned = late_dce_prune_module_for(mod_bytes = wasm, entry_name = "helper", exports_stripped = true)
   inspect(late_dce_prune_refusal(), content = "0")
-  inspect(section_count(pruned, 3), content = "1")
-  inspect(section_count(pruned, 7), content = "1")
+  inspect(section_count(m = pruned, sid = 3), content = "1")
+  inspect(section_count(m = pruned, sid = 7), content = "1")
 }
 
 test "`cli_main` and the per-block exports are kept without being the entry" {
@@ -187,27 +187,27 @@ test "`cli_main` and the per-block exports are kept without being the entry" {
     0,
     11
   ])
-  let pruned = late_dce_prune_module_for(wasm, "main", true)
+  let pruned = late_dce_prune_module_for(mod_bytes = wasm, entry_name = "main", exports_stripped = true)
   inspect(late_dce_prune_refusal(), content = "-1")
-  inspect(section_count(pruned, 3), content = "2")
+  inspect(section_count(m = pruned, sid = 3), content = "2")
 }
 
 // The output is dominated by an opaque custom section, so scanning/remapping
 // metadata is bounded and the budget detects a second output-sized block.
 test "#2554: the pruner reserves its full output before writing" {
   let wasm = two_exports()
-  Bytes::push(wasm, 0)
+  Bytes::push(wasm, value = 0)
   // Content length 65538: a one-byte name length, 'x', and 65536 bytes.
-  Bytes::push(wasm, 130)
-  Bytes::push(wasm, 128)
-  Bytes::push(wasm, 4)
-  Bytes::push(wasm, 1)
-  Bytes::push(wasm, 120)
-  Bytes::fill(wasm, 42, 65536)
+  Bytes::push(wasm, value = 130)
+  Bytes::push(wasm, value = 128)
+  Bytes::push(wasm, value = 4)
+  Bytes::push(wasm, value = 1)
+  Bytes::push(wasm, value = 120)
+  Bytes::fill(wasm, value = 42, count = 65536)
   let before = Profiler::heap_bytes()
-  let pruned = late_dce_prune_module_for(wasm, "main", true)
+  let pruned = late_dce_prune_module_for(mod_bytes = wasm, entry_name = "main", exports_stripped = true)
   let allocated = Profiler::heap_bytes() - before
-  inspect(section_count(pruned, 3), content = "1")
-  inspect(Bytes::get(pruned, Bytes::length(pruned) - 1), content = "42")
+  inspect(section_count(m = pruned, sid = 3), content = "1")
+  inspect(Bytes::get(pruned, at = Bytes::length(pruned) - 1), content = "42")
   assert(allocated < Bytes::length(pruned) + 8192)
 }

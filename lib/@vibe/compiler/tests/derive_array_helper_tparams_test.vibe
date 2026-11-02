@@ -43,7 +43,7 @@ import @vibe/compiler/syntax {
 
 //# Functions
 
-fn type_expr_str(t: TypeExpr) -> String {
+fn type_expr_str(_ t: TypeExpr) -> String {
   match t {
     TyName(n) => n,
     TyUnit => "Unit",
@@ -56,7 +56,7 @@ fn type_expr_str(t: TypeExpr) -> String {
         } else {
           ()
         }
-        s = String::concat(s, type_expr_str(Array::get(args, i)))
+        s = String::concat(s, type_expr_str(Array::get(args, at = i)))
         i = i + 1
       }
       String::concat(s, "]")
@@ -70,7 +70,7 @@ fn type_expr_str(t: TypeExpr) -> String {
         } else {
           ()
         }
-        s = String::concat(s, type_expr_str(Array::get(ts, i)))
+        s = String::concat(s, type_expr_str(Array::get(ts, at = i)))
         i = i + 1
       }
       String::concat(s, ")")
@@ -79,14 +79,14 @@ fn type_expr_str(t: TypeExpr) -> String {
   }
 }
 
-fn param_type_str(t: Option[TypeExpr]) -> String {
+fn param_type_str(_ t: Option[TypeExpr]) -> String {
   match t {
     Some(x) => type_expr_str(x),
     None => "_"
   }
 }
 
-fn comma_join(xs: Array[String]) -> String {
+fn comma_join(_ xs: Array[String]) -> String {
   let mut s = ""
   let mut i = 0
   while i < Array::length(xs) {
@@ -95,7 +95,7 @@ fn comma_join(xs: Array[String]) -> String {
     } else {
       ()
     }
-    s = String::concat(s, Array::get(xs, i))
+    s = String::concat(s, Array::get(xs, at = i))
     i = i + 1
   }
   s
@@ -106,7 +106,7 @@ fn comma_join(xs: Array[String]) -> String {
 /// generated none.
 fn generated_helper_sigs(src: String, prefix: String) -> String {
   handle {
-    generated_helper_sigs_impl(src, prefix)
+    generated_helper_sigs_impl(src = src, prefix = prefix)
   } with { Exception::Throw(msg) => String::concat("throw: ", msg) }
 }
 
@@ -121,16 +121,16 @@ fn generated_helper_sigs_impl(src: String, prefix: String) -> String with Except
   let out = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, name, _, EFn(tparams, _, params, _, _, _)) => if String::starts_with(name, prefix) {
+    match Array::get(stmts, at = i) {
+      SLet(_, _, name, _, EFn(tparams, _, params, _, _, _)) => if String::starts_with(name, prefix = prefix) {
         let ptys = []
         let mut j = 0
         while j < Array::length(params) {
-          let (_, pty) = Array::get(params, j)
-          Array::push(ptys, param_type_str(pty))
+          let (_, pty) = Array::get(params, at = j)
+          Array::push(ptys, value = param_type_str(pty))
           j = j + 1
         }
-        Array::push(out, String::concat(name, String::concat("[", String::concat(comma_join(tparams), String::concat("](", String::concat(comma_join(ptys), ")"))))))
+        Array::push(out, value = String::concat(name, String::concat("[", String::concat(comma_join(tparams), String::concat("](", String::concat(comma_join(ptys), ")"))))))
       } else {
         ()
       },
@@ -146,7 +146,7 @@ fn generated_helper_sigs_impl(src: String, prefix: String) -> String with Except
     } else {
       ()
     }
-    s = String::concat(s, Array::get(out, k))
+    s = String::concat(s, Array::get(out, at = k))
     k = k + 1
   }
   s
@@ -162,7 +162,7 @@ fn generated_helper_sigs_impl(src: String, prefix: String) -> String with Except
 /// longer do: there it resolved to a wildcard. They are generated after the
 /// checker has run and are never re-checked on a build lane, so they are left
 /// out here; every generated helper is still checked.
-fn desugared_check_message(src: String) -> String {
+fn desugared_check_message(_ src: String) -> String {
   handle {
     let stmts = parse_program(lex(src))
     desugar_trait_dicts(stmts)
@@ -171,17 +171,17 @@ fn desugared_check_message(src: String) -> String {
   } with { Exception::Throw(msg) => msg }
 }
 
-fn without_bare_generic_derived_methods(stmts: Array[Stmt]) -> Array[Stmt] {
+fn without_bare_generic_derived_methods(_ stmts: Array[Stmt]) -> Array[Stmt] {
   let generic_heads: Array[String] = []
   for stmt in stmts {
     match stmt {
       SStruct(_, name, _, _, _, params) => if Array::length(params) > 0 {
-        Array::push(generic_heads, name)
+        Array::push(generic_heads, value = name)
       } else {
         ()
       },
       SEnum(_, name, params, _, _) => if Array::length(params) > 0 {
-        Array::push(generic_heads, name)
+        Array::push(generic_heads, value = name)
       } else {
         ()
       },
@@ -198,7 +198,7 @@ fn without_bare_generic_derived_methods(stmts: Array[Stmt]) -> Array[Stmt] {
         for head in generic_heads {
           for param in params {
             match param {
-              (_, Some(TyName(written))) => if Array::length(tparams) == 0 && written == head && String::starts_with(name, String::concat(head, "::")) {
+              (_, Some(TyName(written))) => if Array::length(tparams) == 0 && written == head && String::starts_with(name, prefix = String::concat(head, "::")) {
                 hit = true
               } else {
                 ()
@@ -214,7 +214,7 @@ fn without_bare_generic_derived_methods(stmts: Array[Stmt]) -> Array[Stmt] {
     if derived {
       ()
     } else {
-      Array::push(kept, stmt)
+      Array::push(kept, value = stmt)
     }
   }
   kept
@@ -223,41 +223,41 @@ fn without_bare_generic_derived_methods(stmts: Array[Stmt]) -> Array[Stmt] {
 //# Misc
 
 test "2136: a generic struct's array-equality helper binds its element variable" {
-  inspect(generated_helper_sigs("struct Box[T] { xs: Array[T] } derive(Eq)\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__N7___Vfp_T[__Vfp_T](Array[__Vfp_T],Array[__Vfp_T])")
+  inspect(generated_helper_sigs(src = "struct Box[T] { xs: Array[T] } derive(Eq)\nlet main = () -> Unit { () }", prefix = "__arr_equals__"), content = "__arr_equals__N7___Vfp_T[__Vfp_T](Array[__Vfp_T],Array[__Vfp_T])")
 }
 
 // #3547: `derive (Show)` over an `Array[T]` of the type's own parameter is
 // refused at the derive (the elements have no renderer in the one derived
 // `to_string`), so no generic array-show helper is generated to bind anything.
 test "3547: a generic struct's array-show helper is not generated" {
-  inspect(generated_helper_sigs("struct Box[T] { xs: Array[T] } derive(Show)\nlet main = () -> Unit { () }", "__arr_to_string__"), content = "")
+  inspect(generated_helper_sigs(src = "struct Box[T] { xs: Array[T] } derive(Show)\nlet main = () -> Unit { () }", prefix = "__arr_to_string__"), content = "")
 }
 
 test "2136: a concrete element type keeps the helper monomorphic" {
-  inspect(generated_helper_sigs("struct Box { xs: Array[Int] } derive(Eq, Show)\nlet main = () -> Unit { () }", "__arr_"), content = "__arr_equals__N3_Int[](Array[Int],Array[Int]); __arr_to_string__Int[](Array[Int])")
+  inspect(generated_helper_sigs(src = "struct Box { xs: Array[Int] } derive(Eq, Show)\nlet main = () -> Unit { () }", prefix = "__arr_"), content = "__arr_equals__N3_Int[](Array[Int],Array[Int]); __arr_to_string__Int[](Array[Int])")
 }
 
 test "2136: a tuple element type binds every variable it mentions" {
-  inspect(generated_helper_sigs("struct Pair[A, B] { xs: Array[(A, B)] } derive(Eq)\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__T2_N7___Vfp_AN7___Vfp_B[__Vfp_A,__Vfp_B](Array[(__Vfp_A,__Vfp_B)],Array[(__Vfp_A,__Vfp_B)])")
+  inspect(generated_helper_sigs(src = "struct Pair[A, B] { xs: Array[(A, B)] } derive(Eq)\nlet main = () -> Unit { () }", prefix = "__arr_equals__"), content = "__arr_equals__T2_N7___Vfp_AN7___Vfp_B[__Vfp_A,__Vfp_B](Array[(__Vfp_A,__Vfp_B)],Array[(__Vfp_A,__Vfp_B)])")
 }
 
 test "2136: a nested array element type binds through every layer" {
-  inspect(generated_helper_sigs("struct Nest[T] { xs: Array[Array[T]] } derive(Eq)\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__A1_N5_ArrayN7___Vfp_T[__Vfp_T](Array[Array[__Vfp_T]],Array[Array[__Vfp_T]]); __arr_equals__N7___Vfp_T[__Vfp_T](Array[__Vfp_T],Array[__Vfp_T])")
+  inspect(generated_helper_sigs(src = "struct Nest[T] { xs: Array[Array[T]] } derive(Eq)\nlet main = () -> Unit { () }", prefix = "__arr_equals__"), content = "__arr_equals__A1_N5_ArrayN7___Vfp_T[__Vfp_T](Array[Array[__Vfp_T]],Array[Array[__Vfp_T]]); __arr_equals__N7___Vfp_T[__Vfp_T](Array[__Vfp_T],Array[__Vfp_T])")
 }
 
 test "2136: a generic enum payload binds its element variable" {
-  inspect(generated_helper_sigs("enum Tree[T] { Leaf(Array[T]); Node(T) } derive(Eq)\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__N7___Vfp_T[__Vfp_T](Array[__Vfp_T],Array[__Vfp_T])")
+  inspect(generated_helper_sigs(src = "enum Tree[T] { Leaf(Array[T]); Node(T) } derive(Eq)\nlet main = () -> Unit { () }", prefix = "__arr_equals__"), content = "__arr_equals__N7___Vfp_T[__Vfp_T](Array[__Vfp_T],Array[__Vfp_T])")
 }
 
 test "2136: a generic function's bare-array `==` binds its element variable" {
-  inspect(generated_helper_sigs("fn same[T](a: Array[T], b: Array[T]) -> Bool { a == b }\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__N7___Vfp_T[__Vfp_T](Array[__Vfp_T],Array[__Vfp_T])")
+  inspect(generated_helper_sigs(src = "fn same[T](a: Array[T], b: Array[T]) -> Bool { a == b }\nlet main = () -> Unit { () }", prefix = "__arr_equals__"), content = "__arr_equals__N7___Vfp_T[__Vfp_T](Array[__Vfp_T],Array[__Vfp_T])")
 }
 
 /// A declared type whose name happens to be spelled like a type parameter is
 /// NOT a variable: leaving it alone is what keeps the helper resolving to that
 /// type's own `equals`.
 test "2136: a declared type name is never bound as a type parameter" {
-  inspect(generated_helper_sigs("struct T { v: Int }\nstruct Holder { xs: Array[T] } derive(Eq)\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__N1_T[](Array[T],Array[T])")
+  inspect(generated_helper_sigs(src = "struct T { v: Int }\nstruct Holder { xs: Array[T] } derive(Eq)\nlet main = () -> Unit { () }", prefix = "__arr_equals__"), content = "__arr_equals__N1_T[](Array[T],Array[T])")
 }
 
 /// The generated program still type-checks — a bound `[T]` must not cost the
@@ -282,17 +282,17 @@ test "2840: no generated show helper renders an erased element" {
   // #3547: the array of the formal is rendered in place, so no helper generic
   // over `T` is generated and the derived renderer checks clean.
   let src = "struct Box[T] { xs: Array[T] } derive(Show)\nlet main = () -> Unit { () }"
-  inspect(generated_helper_sigs(src, "__arr_to_string__"), content = "")
+  inspect(generated_helper_sigs(src = src, prefix = "__arr_to_string__"), content = "")
   inspect(desugared_check_message(src), content = "")
 }
 
 test "kinded constructor Eq specializes Array fields" {
   let src = "struct KBox[F[_], A] { value: F[A] } derive (Eq)\nfn eq_it() -> Bool {\n  let a = KBox[Array, Int]::{ value: [1, 2] }\n  let b = KBox[Array, Int]::{ value: [1, 2] }\n  a == b\n}"
-  let equals = generated_helper_sigs(src, "KBox::equals")
-  assert(String::contains(equals, "KBox::equals"))
-  assert(!String::contains(equals, "?EqUnknown"))
-  let arrays = generated_helper_sigs(src, "__arr_equals__")
-  assert(String::contains(arrays, "__arr_equals__"))
+  let equals = generated_helper_sigs(src = src, prefix = "KBox::equals")
+  assert(String::contains(equals, needle = "KBox::equals"))
+  assert(!String::contains(equals, needle = "?EqUnknown"))
+  let arrays = generated_helper_sigs(src = src, prefix = "__arr_equals__")
+  assert(String::contains(arrays, needle = "__arr_equals__"))
   inspect(desugared_check_message(src), content = "")
 }
 
@@ -304,13 +304,13 @@ test "kinded constructor Eq specializes Array fields" {
 // aggregate by identity. The parameter's declared kind decides now.
 test "3288: a bare constructor argument specializes a kinded enum" {
   let src = "enum Kinded[T, F[_]] {\n  KOk(T);\n  KErr(F[Int])\n}\nfn eq_it() -> Bool {\n  let a: Kinded[Array[Int], Option] = KOk([1, 2])\n  let b: Kinded[Array[Int], Option] = KOk([1, 2])\n  a == b\n}"
-  inspect(generated_helper_sigs(src, "Kinded::equals__"), content = "Kinded::equals__A5_ArrayC1N3_Int__N6_Option[](Kinded[Array[Int],Option],Kinded[Array[Int],Option])")
+  inspect(generated_helper_sigs(src = src, prefix = "Kinded::equals__"), content = "Kinded::equals__A5_ArrayC1N3_Int__N6_Option[](Kinded[Array[Int],Option],Kinded[Array[Int],Option])")
   inspect(desugared_check_message(src), content = "")
 }
 
 test "3288: a bare constructor argument specializes a kinded struct" {
   let src = "struct KSt[F[_], A] {\n  value: F[A]\n} derive (Eq)\nfn eq_it() -> Bool {\n  let a: KSt[Option, Array[Int]] = KSt::{ value: Some([1, 2]) }\n  let b: KSt[Option, Array[Int]] = KSt::{ value: Some([1, 2]) }\n  a == b\n}"
-  inspect(generated_helper_sigs(src, "KSt::equals__"), content = "KSt::equals__N6_Option__A5_ArrayC1N3_Int[](KSt[Option,Array[Int]],KSt[Option,Array[Int]])")
+  inspect(generated_helper_sigs(src = src, prefix = "KSt::equals__"), content = "KSt::equals__N6_Option__A5_ArrayC1N3_Int[](KSt[Option,Array[Int]],KSt[Option,Array[Int]])")
   inspect(desugared_check_message(src), content = "")
 }
 
@@ -319,5 +319,5 @@ test "3288: a bare constructor argument specializes a kinded struct" {
 // `Box[Option]` instantiation may be minted from it.
 test "3288: a bare Option at a value parameter is not read as a constructor" {
   let src = "struct Box[T] {\n  v: T\n} derive (Eq, Show)\nfn eq_it() -> Bool {\n  let a = Box::{ v: None }\n  let b = Box::{ v: None }\n  a == b\n}"
-  inspect(String::contains(generated_helper_sigs(src, "Box::equals__"), "N6_Option"), content = "false")
+  inspect(String::contains(generated_helper_sigs(src = src, prefix = "Box::equals__"), needle = "N6_Option"), content = "false")
 }

@@ -42,7 +42,7 @@ import ./utilities.vibe {
 
 fn collect_fn_eq_return_shape(out: Array[(String, String)], fname: String, tparams: Array[String], ret: Option[TypeExpr], fbody: Expr) -> Unit {
   let sh = match ret {
-    Some(rt) => if ty_mentions_name_in(rt, tparams) {
+    Some(rt) => if ty_mentions_name_in(t = rt, names = tparams) {
       ""
     } else {
       ty_to_eq_shape(rt)
@@ -50,37 +50,37 @@ fn collect_fn_eq_return_shape(out: Array[(String, String)], fname: String, tpara
     None => if Array::length(tparams) > 0 {
       ""
     } else {
-      infer_shape(fn_body_tail_expr(fbody), array_empty(), array_empty(), out)
+      infer_shape(e = fn_body_tail_expr(fbody), struct_sets = array_empty(), var_types = array_empty(), fn_returns = out)
     }
   }
   if shape_is_composite(sh) {
-    Array::push(out, (fn_eq_shape_key(fname), sh))
+    Array::push(out, value = (fn_eq_shape_key(fname), sh))
   } else {
     ()
   }
 }
 
-export fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
+export fn collect_fn_returns(_ stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, fname, _, body) => match body {
         EFn(tparams, _, fparams, ret, _, fbody) => {
           // #2141: a return head naming the fn's OWN formal is an erased
           // value at every call site -- record it re-spelled so a same-spelled
           // (merged-in) declared type can never claim the call's result for
           // struct dispatch or a struct renderer (see subst_formals_ty).
-          let head = fn_return_head_of(ret, fbody)
-          let head2 = if str_array_contains(tparams, head) {
+          let head = fn_return_head_of(ret = ret, body = fbody)
+          let head2 = if str_array_contains(arr = tparams, val = head) {
             mark_formal_name(head)
           } else {
             head
           }
-          Array::push(out, (fname, head2))
-          collect_fn_return_marker(out, fname, tparams, fparams, ret, fbody)
-          collect_fn_impl_return_key(out, fname, tparams, ret)
-          collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
+          Array::push(out, value = (fname, head2))
+          collect_fn_return_marker(out = out, fname = fname, tparams = tparams, fparams = fparams, ret = ret, fbody = fbody)
+          collect_fn_impl_return_key(out = out, fname = fname, tparams = tparams, ret = ret)
+          collect_fn_eq_return_shape(out = out, fname = fname, tparams = tparams, ret = ret, fbody = fbody)
         },
         _ => ()
       },
@@ -92,16 +92,16 @@ export fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       SFnDecl(_, fname, body, _, _) => match body {
         EFn(tparams, _, fparams, ret, _, fbody) => {
           // #2141: same re-spelling as the SLet arm above.
-          let head = fn_return_head_of(ret, fbody)
-          let head2 = if str_array_contains(tparams, head) {
+          let head = fn_return_head_of(ret = ret, body = fbody)
+          let head2 = if str_array_contains(arr = tparams, val = head) {
             mark_formal_name(head)
           } else {
             head
           }
-          Array::push(out, (fname, head2))
-          collect_fn_return_marker(out, fname, tparams, fparams, ret, fbody)
-          collect_fn_impl_return_key(out, fname, tparams, ret)
-          collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
+          Array::push(out, value = (fname, head2))
+          collect_fn_return_marker(out = out, fname = fname, tparams = tparams, fparams = fparams, ret = ret, fbody = fbody)
+          collect_fn_impl_return_key(out = out, fname = fname, tparams = tparams, ret = ret)
+          collect_fn_eq_return_shape(out = out, fname = fname, tparams = tparams, ret = ret, fbody = fbody)
         },
         _ => ()
       },
@@ -111,8 +111,8 @@ export fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       SEnum(_, ename, _, variants, _) => {
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (vname, _) = Array::get(variants, vi)
-          Array::push(out, (vname, ename))
+          let (vname, _) = Array::get(variants, at = vi)
+          Array::push(out, value = (vname, ename))
           vi = vi + 1
         }
       },
@@ -122,10 +122,10 @@ export fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       // never name an enum.
       STypeAlias(_, aname, _, te) => match te {
         TyName(n) => {
-          Array::push(out, (type_alias_key(aname), n))
+          Array::push(out, value = (type_alias_key(aname), n))
         },
         TyApp(n, _) => {
-          Array::push(out, (type_alias_key(aname), n))
+          Array::push(out, value = (type_alias_key(aname), n))
         },
         _ => ()
       },
@@ -138,12 +138,12 @@ export fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       SImport(_, items) => {
         let mut ii = 0
         while ii < Array::length(items) {
-          let item = Array::get(items, ii)
+          let item = Array::get(items, at = ii)
           let orig = item.name
           let alias_opt = item.alias
           match alias_opt {
             Some(alias) => {
-              Array::push(out, (type_alias_key(alias), orig))
+              Array::push(out, value = (type_alias_key(alias), orig))
             },
             None => ()
           }
@@ -160,7 +160,7 @@ export fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
   // entry appended afterwards would be invisible. (That is exactly how the
   // first cut of this failed: the seeding call landed in a different
   // collector whose result is not what infer_arg_type_name reads.)
-  collect_struct_field_types(stmts, out)
+  collect_struct_field_types(stmts = stmts, out = out)
   // Perf: this table holds every top-level fn + enum variant of the merged
   // compile (thousands of entries) and fn_exists/fn_return_type consulted it
   // LINEARLY per expression during the rewrite. Sort once (STABLE, so the
@@ -170,15 +170,15 @@ export fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
   let names = array_empty()
   let mut ni = 0
   while ni < Array::length(out) {
-    let (n, _) = Array::get(out, ni)
-    Array::push(names, n)
+    let (n, _) = Array::get(out, at = ni)
+    Array::push(names, value = n)
     ni = ni + 1
   }
   let perm = sort_perm_by_names(names)
   let sorted = array_empty()
   let mut pi = 0
   while pi < Array::length(perm) {
-    Array::push(sorted, Array::get(out, Array::get(perm, pi)))
+    Array::push(sorted, value = Array::get(out, at = Array::get(perm, at = pi)))
     pi = pi + 1
   }
   sorted

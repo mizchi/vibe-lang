@@ -44,9 +44,9 @@ import @vibe/compiler/query/project_context {
 /// its filters. A failed dependency walk is an error, not a well-typed file.
 fn grep_fs_typed_context(path: String, raw_source: String, state: QueryProjectState) -> (GrepTyped, QueryProjectState) with Env + Fs {
   handle {
-    let context = query_project_context_fs(path, raw_source, None, state)
-    (grep_typed_context(raw_source, context.entry_source, context.import_env), context.state)
-  } with { Exception::Throw(msg) => (grep_typed_context_error(raw_source, msg), state) }
+    let context = query_project_context_fs(path = path, source = raw_source, replacement = None, state = state)
+    (grep_typed_context(source = raw_source, typed_source = context.entry_source, import_env = context.import_env), context.state)
+  } with { Exception::Throw(msg) => (grep_typed_context_error(source = raw_source, message = msg), state) }
 }
 
 /// The linear-memory ceiling this sweep must stay under, in bytes.
@@ -76,7 +76,7 @@ fn grep_memory_ceiling_bytes() -> Int with Env + Exception {
 /// `text` as a positive Int, or 0 when it is not all ASCII digits. Rejecting
 /// rather than saturating: a budget read as a wrong number is a budget that
 /// silently does not hold.
-fn grep_parse_positive_int(text: String) -> Int {
+fn grep_parse_positive_int(_ text: String) -> Int {
   let n = String::length(text)
   if n == 0 {
     return 0
@@ -84,7 +84,7 @@ fn grep_parse_positive_int(text: String) -> Int {
   let mut acc = 0
   let mut i = 0
   while i < n {
-    let c = String::byte_at(text, i)
+    let c = String::byte_at(text, at = i)
     if c < 48 || c > 57 {
       return 0
     }
@@ -131,7 +131,7 @@ fn grep_memory_refusal(path: String, done: Int, total: Int, headroom: Int, need:
 /// structural match: typing a file the pattern never hits would be pure cost.
 export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Env + Exception + Fs + Profiler {
   let files = grep_empty_strings()
-  source_walk_collect_files(root, files)
+  source_walk_collect_files(root = root, out = files)
   // Naming a directory names no FILE, so nothing in it is fatal-if-unparseable
   // (#1943). Naming a file names exactly that one.
   let named_files = if Fs::is_dir(root) {
@@ -139,7 +139,7 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
   } else {
     grep_one_string(root)
   }
-  grep_scan_files_report(files, pattern, wheres, where_rows, only, json, named_files, "")
+  grep_scan_files_report(files = files, pattern = pattern, wheres = wheres, where_rows = where_rows, only = only, json = json, named_files = named_files, resume_out = "")
 }
 
 /// The files a sweep of `root` would visit, one per line, in sweep order.
@@ -159,25 +159,25 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
 /// `grep_read_file_list`). The serialisation was never wanted; this is the
 /// list without it, and the text form is left to the CLI boundary that
 /// actually needs one.
-export fn grep_collect_files(root: String) -> Array[String] with Fs {
+export fn grep_collect_files(_ root: String) -> Array[String] with Fs {
   let files = grep_empty_strings()
-  source_walk_collect_files(root, files)
+  source_walk_collect_files(root = root, out = files)
   files
 }
 
-export fn grep_list_files(root: String) -> String with Fs {
+export fn grep_list_files(_ root: String) -> String with Fs {
   let files = grep_empty_strings()
-  source_walk_collect_files(root, files)
+  source_walk_collect_files(root = root, out = files)
   // Escaped so one path is always one LINE (see grep_escape_list_path). The
   // in-process caller splits this straight back, so writer and reader stay a
   // pair whichever way the listing travels.
   let escaped = grep_empty_strings()
   let mut i = 0
   while i < Array::length(files) {
-    Array::push(escaped, grep_escape_list_path(Array::get(files, i)))
+    Array::push(escaped, value = grep_escape_list_path(Array::get(files, at = i)))
     i = i + 1
   }
-  grep_join_lines(escaped, false)
+  grep_join_lines(lines = escaped, json = false)
 }
 
 /// The first line of a `VIBE_GREP_LIST_FILES` listing, so a driver can tell a
@@ -223,20 +223,20 @@ export fn grep_file_list_banner() -> String {
 /// can never meet a v2 reader inside one sweep; the only way to mix them is to
 /// save a listing and feed it to a different compiler later, where the failure
 /// is a `file-list entry not found` naming the path -- loud, not silent.
-fn grep_escape_list_path(path: String) -> String {
+fn grep_escape_list_path(_ path: String) -> String {
   let n = String::length(path)
   let acc = StringBuilder::new()
   let mut i = 0
   while i < n {
-    let c = String::byte_at(path, i)
+    let c = String::byte_at(path, at = i)
     if c == 92 {
-      StringBuilder::push(acc, "\\\\")
+      StringBuilder::push(acc, value = "\\\\")
     } else if c == 10 {
-      StringBuilder::push(acc, "\\n")
+      StringBuilder::push(acc, value = "\\n")
     } else if c == 13 {
-      StringBuilder::push(acc, "\\r")
+      StringBuilder::push(acc, value = "\\r")
     } else {
-      StringBuilder::push(acc, String::from_byte(c))
+      StringBuilder::push(acc, value = String::from_byte(c))
     }
     i = i + 1
   }
@@ -246,29 +246,29 @@ fn grep_escape_list_path(path: String) -> String {
 /// The inverse of `grep_escape_list_path`. An unknown escape keeps both bytes,
 /// so a hand-written list holding a literal backslash still names a real file
 /// rather than silently becoming a different one.
-fn grep_unescape_list_path(line: String) -> String {
+fn grep_unescape_list_path(_ line: String) -> String {
   let n = String::length(line)
   let acc = StringBuilder::new()
   let mut i = 0
   while i < n {
-    let c = String::byte_at(line, i)
+    let c = String::byte_at(line, at = i)
     if c == 92 && i + 1 < n {
-      let d = String::byte_at(line, i + 1)
+      let d = String::byte_at(line, at = i + 1)
       if d == 92 {
-        StringBuilder::push(acc, "\\")
+        StringBuilder::push(acc, value = "\\")
         i = i + 2
       } else if d == 110 {
-        StringBuilder::push(acc, "\n")
+        StringBuilder::push(acc, value = "\n")
         i = i + 2
       } else if d == 114 {
-        StringBuilder::push(acc, "\r")
+        StringBuilder::push(acc, value = "\r")
         i = i + 2
       } else {
-        StringBuilder::push(acc, String::from_byte(c))
+        StringBuilder::push(acc, value = String::from_byte(c))
         i = i + 1
       }
     } else {
-      StringBuilder::push(acc, String::from_byte(c))
+      StringBuilder::push(acc, value = String::from_byte(c))
       i = i + 1
     }
   }
@@ -282,12 +282,12 @@ fn grep_unescape_list_path(line: String) -> String {
 /// (`scripts/vibe_grep_bin.sh` and `runtime/vibe`) and the two CLI entry
 /// paths (env-mode `cli_adapter`, argv-mode `user_dispatch`) all go through
 /// these, rather than each carrying its own splitter.
-export fn grep_split_file_list(text: String) -> Array[String] {
+export fn grep_split_file_list(_ text: String) -> Array[String] {
   let out = grep_empty_strings()
   let mut start = 0
   let mut i = 0
   while i <= String::length(text) {
-    if i == String::length(text) || String::byte_at(text, i) == 10 {
+    if i == String::length(text) || String::byte_at(text, at = i) == 10 {
       // A trailing CR only -- NOT a trim. Splitting on `\n` alone is not
       // reading lines: a list written by an editor that ends lines with CRLF
       // leaves `\r` on every path, the existence check looks for `foo.vibe\r`
@@ -299,14 +299,14 @@ export fn grep_split_file_list(text: String) -> Array[String] {
       // file an ordinary directory sweep used to search. One regression
       // traded for another (Codex on #2956, P2, twice). `\r` is the only
       // character here that is line FRAMING rather than part of the path.
-      let raw = String::substring(text, start, i)
-      let line = if String::length(raw) > 0 && String::byte_at(raw, String::length(raw) - 1) == 13 {
-        String::substring(raw, 0, String::length(raw) - 1)
+      let raw = String::substring(text, start = start, end = i)
+      let line = if String::length(raw) > 0 && String::byte_at(raw, at = String::length(raw) - 1) == 13 {
+        String::substring(raw, start = 0, end = String::length(raw) - 1)
       } else {
         raw
       }
       if String::length(line) > 0 {
-        Array::push(out, line)
+        Array::push(out, value = line)
       } else {
         ()
       }
@@ -334,7 +334,7 @@ export fn grep_split_file_list(text: String) -> Array[String] {
 /// splitter also reads `grep_list_files` output directly, in-process, where
 /// there is no banner to confuse with a path. A driver that already stripped
 /// it stays correct, since there is then no banner line to find.
-export fn grep_read_file_list(path: String) -> Array[String] with Exception + Fs {
+export fn grep_read_file_list(_ path: String) -> Array[String] with Exception + Fs {
   // THE LIST FILE ITSELF IS AN ENTRY TOO. The guard on the entries below was
   // added because `Fs::read_file` on a bad path leaves a bare wasm backtrace,
   // and it was written one level too deep: `--file-list` is a path the user
@@ -360,11 +360,11 @@ export fn grep_read_file_list(path: String) -> Array[String] with Exception + Fs
   // reader before the escaping read it fine (Codex on #2956, P2). The banner
   // is what establishes which format this file is in, so it has to be read
   // BEFORE anything is decoded.
-  if Array::length(lines) > 0 && Array::get(lines, 0) == grep_file_list_banner() {
+  if Array::length(lines) > 0 && Array::get(lines, at = 0) == grep_file_list_banner() {
     let out = grep_empty_strings()
     let mut i = 1
     while i < Array::length(lines) {
-      Array::push(out, grep_unescape_list_path(Array::get(lines, i)))
+      Array::push(out, value = grep_unescape_list_path(Array::get(lines, at = i)))
       i = i + 1
     }
     out
@@ -373,16 +373,16 @@ export fn grep_read_file_list(path: String) -> Array[String] with Exception + Fs
   }
 }
 
-fn grep_one_string(v: String) -> Array[String] {
+fn grep_one_string(_ v: String) -> Array[String] {
   let out = grep_empty_strings()
-  Array::push(out, v)
+  Array::push(out, value = v)
   out
 }
 
 /// #2940's refusal, in one place: two sites throw it now (the end of the
 /// sweep, and the budget hand-off that would otherwise return before reaching
 /// it), and two spellings of the same diagnostic is how they come to differ.
-fn grep_named_unparseable_message(path: String) -> String {
+fn grep_named_unparseable_message(_ path: String) -> String {
   String::concat("grep: `", String::concat(path, "` could not be parsed, so it was not searched; run `vibe check` on it, or sweep its directory to skip unparseable files"))
 }
 
@@ -405,7 +405,7 @@ fn grep_path_is_named(path: String, named: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(named) {
-    if Array::get(named, i) == path {
+    if Array::get(named, at = i) == path {
       found = true
     } else {
       i = i + 1
@@ -453,8 +453,8 @@ fn grep_path_is_named(path: String, named: Array[String]) -> Bool {
 /// print results forever, which is worse than the trap this replaces.
 export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, named_files: Array[String], resume_out: String) -> (String, String) with Env + Exception + Fs + Profiler {
   let pat = grep_compile_pattern(pattern)
-  grep_check_filters(pat, wheres, where_rows)
-  let typed = grep_needs_typing(wheres, where_rows, only)
+  grep_check_filters(pat = pat, wheres = wheres, where_rows = where_rows)
+  let typed = grep_needs_typing(wheres = wheres, where_rows = where_rows, only = only)
   let has_typed_filter = Array::length(wheres) > 0 || Array::length(where_rows) > 0
   let out = grep_empty_strings()
   let warnings = grep_empty_strings()
@@ -496,7 +496,7 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
   let mut typed_state = query_project_state_new()
   let mut i = 0
   while i < Array::length(files) {
-    let path = Array::get(files, i)
+    let path = Array::get(files, at = i)
     // A file-list entry that does not exist is a MISTAKE IN THE LIST, and it
     // has to say so. Unguarded, `Fs::read_file` on a missing path leaves the
     // guest with an unhandled wasm trap -- `viberun: error while executing at
@@ -524,10 +524,10 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
     // skip on the warning sidecar so empty stdout still means no matches,
     // not silently skipped input (#1943).
     let hits = handle {
-      grep_file_hits(path, source, pat)
+      grep_file_hits(path = path, source = source, pat = pat)
     } with { Exception::Throw(_) => {
-      Array::push(warnings, String::concat("warning: grep: skipped `", String::concat(path, "` because it could not be parsed")))
-      if grep_path_is_named(path, named_files) {
+      Array::push(warnings, value = String::concat("warning: grep: skipped `", String::concat(path, "` because it could not be parsed")))
+      if grep_path_is_named(path = path, named = named_files) {
         named_unparseable = path
       } else {
         ()
@@ -563,15 +563,15 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
             } else {
               ()
             }
-            Fs::write_file(resume_out, __to_string(i))
-            return (grep_join_lines(out, json), grep_join_lines(warnings, false))
+            Fs::write_file(resume_out, contents = __to_string(i))
+            return (grep_join_lines(lines = out, json = json), grep_join_lines(lines = warnings, json = false))
           } else {
-            throw(grep_memory_refusal(path, i, Array::length(files), headroom, max_typed_cost))
+            throw(grep_memory_refusal(path = path, done = i, total = Array::length(files), headroom = headroom, need = max_typed_cost))
           }
         } else {
           ()
         }
-        let (typed_ctx, next_state) = grep_fs_typed_context(path, source, typed_state)
+        let (typed_ctx, next_state) = grep_fs_typed_context(path = path, raw_source = source, state = typed_state)
         typed_state = next_state
         let cost = Profiler::heap_bytes() - heap_before
         if cost > max_typed_cost {
@@ -586,9 +586,9 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
       if has_typed_filter && ctx.type_error != "" {
         // The typed answer for this file is untrustworthy, but the remaining
         // files are independent. Fail closed for this file and keep sweeping.
-        Array::push(warnings, String::concat("warning: grep: skipped `", String::concat(path, String::concat("` because it could not be typed: ", ctx.type_error))))
+        Array::push(warnings, value = String::concat("warning: grep: skipped `", String::concat(path, String::concat("` because it could not be typed: ", ctx.type_error))))
       } else {
-        grep_emit_hits(source, hits, ctx, typed, wheres, where_rows, only, json, out)
+        grep_emit_hits(source = source, hits = hits, ctx = ctx, typed = typed, wheres = wheres, where_rows = where_rows, only = only, json = json, out = out)
       }
     } else {
       ()
@@ -603,12 +603,12 @@ export fn grep_scan_files_report(files: Array[String], pattern: String, wheres: 
   } else {
     ()
   }
-  (grep_join_lines(out, json), grep_join_lines(warnings, false))
+  (grep_join_lines(lines = out, json = json), grep_join_lines(lines = warnings, json = false))
 }
 
 /// Library-compatible result-only wrapper. The public CLI uses
 /// `grep_scan_fs_report` so it can route per-file skips to stderr.
 export fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Env + Exception + Fs + Profiler {
-  let (result, _) = grep_scan_fs_report(root, pattern, wheres, where_rows, only, json)
+  let (result, _) = grep_scan_fs_report(root = root, pattern = pattern, wheres = wheres, where_rows = where_rows, only = only, json = json)
   result
 }

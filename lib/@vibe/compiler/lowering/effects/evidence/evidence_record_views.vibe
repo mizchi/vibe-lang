@@ -35,20 +35,20 @@ import @vibe/compiler/lowering/effects/queries {
 let edp_record_views: Array[(Int, TypeExpr, Bool)] = []
 
 export fn edp_record_views_reset() -> Unit {
-  Array::truncate(edp_record_views, 0)
-  Array::truncate(edp_factory_results, 0)
-  Array::truncate(edp_record_results, 0)
+  Array::truncate(edp_record_views, length = 0)
+  Array::truncate(edp_factory_results, length = 0)
+  Array::truncate(edp_record_results, length = 0)
 }
 
-export fn edp_drop_record_views(mark: Int) -> Unit {
-  Array::truncate(edp_record_views, mark)
+export fn edp_drop_record_views(_ mark: Int) -> Unit {
+  Array::truncate(edp_record_views, length = mark)
 }
 
 export fn edp_bind_record_view(slot: Int, value: Expr, scope: Array[String], stmts: Array[Stmt]) -> Int {
   let mark = Array::length(edp_record_views)
   if edp_has_row_fields() {
-    match edp_record_value_view(value, scope, stmts, 32) {
-      Some((ty, factory)) => Array::push(edp_record_views, (slot, ty, factory)),
+    match edp_record_value_view(value = value, scope = scope, stmts = stmts, fuel = 32) {
+      Some((ty, factory)) => Array::push(edp_record_views, value = (slot, ty, factory)),
       None => ()
     }
   }
@@ -62,7 +62,7 @@ fn edp_record_type_view(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Option[(
     return None
   }
   match ty {
-    TyFn(_, result, _) => match edp_record_type_view(result, stmts, fuel - 1) {
+    TyFn(_, result, _) => match edp_record_type_view(ty = result, stmts = stmts, fuel = fuel - 1) {
       Some((record, false)) => Some((record, true)),
       _ => None
     },
@@ -82,7 +82,7 @@ fn edp_record_type_view(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Option[(
             out = Some((ty, false))
           },
           STypeAlias(_, n, names, body) => if n == head && Array::length(names) == Array::length(args) {
-            out = edp_record_type_view(edp_record_type_subst(body, edp_unkeyed_tparams(names), args), stmts, fuel - 1)
+            out = edp_record_type_view(ty = edp_record_type_subst(ty = body, names = edp_unkeyed_tparams(names), args = args), stmts = stmts, fuel = fuel - 1)
           },
           _ => ()
         }
@@ -104,7 +104,7 @@ fn edp_record_field_type(ty: TypeExpr, field: String, stmts: Array[Stmt]) -> Opt
       SStruct(_, n, fields, _, _, names) => if n == head {
         for item in fields {
           if item.0 == field && Array::length(names) == Array::length(args) {
-            out = Some(edp_record_type_subst(item.1, edp_unkeyed_tparams(names), args))
+            out = Some(edp_record_type_subst(ty = item.1, names = edp_unkeyed_tparams(names), args = args))
           }
         }
       },
@@ -116,12 +116,12 @@ fn edp_record_field_type(ty: TypeExpr, field: String, stmts: Array[Stmt]) -> Opt
 
 fn edp_record_annotated_view(ann: Option[TypeExpr], value: Expr, scope: Array[String], stmts: Array[Stmt], fuel: Int) -> Option[(TypeExpr, Bool)] {
   let declared = match ann {
-    Some(ty) => edp_record_type_view(ty, stmts, fuel),
+    Some(ty) => edp_record_type_view(ty = ty, stmts = stmts, fuel = fuel),
     None => None
   }
   match declared {
     Some(_) => declared,
-    None => edp_record_value_view(value, scope, stmts, fuel)
+    None => edp_record_value_view(value = value, scope = scope, stmts = stmts, fuel = fuel)
   }
 }
 
@@ -130,9 +130,9 @@ fn edp_record_value_view(value: Expr, scope: Array[String], stmts: Array[Stmt], 
     return None
   }
   match value {
-    ERecord(n, _, args) => edp_record_type_view(TyApp(n, args), stmts, fuel - 1),
+    ERecord(n, _, args) => edp_record_type_view(ty = TyApp(n, args), stmts = stmts, fuel = fuel - 1),
     EIdent(n, _) => {
-      let slot = edp_scope_last_index(scope, n)
+      let slot = edp_scope_last_index(scope = scope, name = n)
       let mut out: Option[(TypeExpr, Bool)] = None
       if slot >= 0 {
         for item in edp_record_views {
@@ -143,7 +143,7 @@ fn edp_record_value_view(value: Expr, scope: Array[String], stmts: Array[Stmt], 
         match out {
           Some(_) => out,
           None => match edp_parameter_type(slot) {
-            Some(ty) => edp_record_type_view(ty, stmts, fuel - 1),
+            Some(ty) => edp_record_type_view(ty = ty, stmts = stmts, fuel = fuel - 1),
             None => None
           }
         }
@@ -152,10 +152,10 @@ fn edp_record_value_view(value: Expr, scope: Array[String], stmts: Array[Stmt], 
         for st in stmts {
           match st {
             SLet(_, _, name, ann, expr) => if name == n {
-              out = edp_record_annotated_view(ann, expr, [], stmts, fuel - 1)
+              out = edp_record_annotated_view(ann = ann, value = expr, scope = [], stmts = stmts, fuel = fuel - 1)
             },
             SLetMut(name, ann, expr) => if name == n {
-              out = edp_record_annotated_view(ann, expr, [], stmts, fuel - 1)
+              out = edp_record_annotated_view(ann = ann, value = expr, scope = [], stmts = stmts, fuel = fuel - 1)
             },
             _ => ()
           }
@@ -163,30 +163,30 @@ fn edp_record_value_view(value: Expr, scope: Array[String], stmts: Array[Stmt], 
         out
       }
     },
-    EFn(_, _, _, Some(result), _, _) => match edp_record_type_view(result, stmts, fuel - 1) {
+    EFn(_, _, _, Some(result), _, _) => match edp_record_type_view(ty = result, stmts = stmts, fuel = fuel - 1) {
       Some((ty, false)) => Some((ty, true)),
       _ => None
     },
     ECall(callee, args, _, _) => {
       let ann = match callee {
-        EFn(_, _, params, _, _, body) => if Array::length(args) == 1 && edp_is_identity_ascription(params, body) {
-          Array::get(params, 0).1
+        EFn(_, _, params, _, _, body) => if Array::length(args) == 1 && edp_is_identity_ascription(params = params, body = body) {
+          Array::get(params, at = 0).1
         } else {
           None
         },
         _ => None
       }
       match ann {
-        Some(_) => edp_record_annotated_view(ann, Array::get(args, 0), scope, stmts, fuel - 1),
-        None => match edp_record_value_view(callee, scope, stmts, fuel - 1) {
+        Some(_) => edp_record_annotated_view(ann = ann, value = Array::get(args, at = 0), scope = scope, stmts = stmts, fuel = fuel - 1),
+        None => match edp_record_value_view(value = callee, scope = scope, stmts = stmts, fuel = fuel - 1) {
           Some((ty, true)) => Some((ty, false)),
           _ => None
         }
       }
     },
-    EDot(object, field, _, _) => match edp_record_value_view(object, scope, stmts, fuel - 1) {
-      Some((ty, false)) => match edp_record_field_type(ty, field, stmts) {
-        Some(field_ty) => edp_record_type_view(field_ty, stmts, fuel - 1),
+    EDot(object, field, _, _) => match edp_record_value_view(value = object, scope = scope, stmts = stmts, fuel = fuel - 1) {
+      Some((ty, false)) => match edp_record_field_type(ty = ty, field = field, stmts = stmts) {
+        Some(field_ty) => edp_record_type_view(ty = field_ty, stmts = stmts, fuel = fuel - 1),
         None => None
       },
       _ => None
@@ -197,19 +197,19 @@ fn edp_record_value_view(value: Expr, scope: Array[String], stmts: Array[Stmt], 
 
 // 1: declared row, 0: declared row-free callback, -1: no usable record view.
 export fn edp_projection_row_kind(object: Expr, field: String, scope: Array[String], stmts: Array[Stmt]) -> Int {
-  match edp_record_value_view(object, scope, stmts, 32) {
+  match edp_record_value_view(value = object, scope = scope, stmts = stmts, fuel = 32) {
     Some((ty, false)) => {
       let head = match ty {
         TyName(n) => n,
         TyApp(n, _) => n,
         _ => ""
       }
-      match edp_field_slot_declared(head, field) {
+      match edp_field_slot_declared(sname = head, fname = field) {
         Some(_) => 1,
-        None => match edp_record_field_type(ty, field, stmts) {
-          Some(field_ty) => match edp_result_slot(stmts, field_ty) {
+        None => match edp_record_field_type(ty = ty, field = field, stmts = stmts) {
+          Some(field_ty) => match edp_result_slot(stmts = stmts, rty = field_ty) {
             Some(_) => 1,
-            None => if edp_record_row_free_type(field_ty, stmts, 32) {
+            None => if edp_record_row_free_type(ty = field_ty, stmts = stmts, fuel = 32) {
               0
             } else {
               -1
@@ -242,7 +242,7 @@ fn edp_record_row_free_type(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Bool
         for st in stmts {
           match st {
             STypeAlias(_, n, names, body) => if n == head && Array::length(names) == Array::length(args) {
-              found = edp_record_row_free_type(edp_type_expr_subst(body, edp_unkeyed_tparams(names), args), stmts, fuel - 1)
+              found = edp_record_row_free_type(ty = edp_type_expr_subst(te = body, names = edp_unkeyed_tparams(names), args = args), stmts = stmts, fuel = fuel - 1)
             },
             _ => ()
           }
@@ -257,7 +257,7 @@ fn edp_record_row_free_type(ty: TypeExpr, stmts: Array[Stmt], fuel: Int) -> Bool
 // initializer or closure body is copied, and mutable initializers prove nothing.
 let edp_factory_results: Array[(Int, Int)] = []
 
-export fn edp_bound_factory_result(slot: Int) -> Int {
+export fn edp_bound_factory_result(_ slot: Int) -> Int {
   let mut kind = -1
   for item in edp_factory_results {
     if item.0 == slot {
@@ -270,7 +270,7 @@ export fn edp_bound_factory_result(slot: Int) -> Int {
 export fn edp_factory_result_kind(value0: Expr, scope: Array[String], stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]]) -> Int {
   let value = edp_identity_value(value0)
   let slot = match value {
-    EIdent(n, _) => edp_scope_last_index(scope, n),
+    EIdent(n, _) => edp_scope_last_index(scope = scope, name = n),
     _ => -1
   }
   let kind = if slot >= 0 {
@@ -281,21 +281,21 @@ export fn edp_factory_result_kind(value0: Expr, scope: Array[String], stmts: Arr
   if kind >= 0 {
     kind
   } else {
-    edp_declared_factory_kind(value, slot, stmts, fn_index)
+    edp_declared_factory_kind(value = value, slot = slot, stmts = stmts, fn_index = fn_index)
   }
 }
 
 export fn edp_bind_factory_result(slot: Int, value: Expr, scope: Array[String], stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]]) -> Int {
   let mark = Array::length(edp_factory_results)
-  let kind = edp_factory_result_kind(value, scope, stmts, fn_index)
+  let kind = edp_factory_result_kind(value0 = value, scope = scope, stmts = stmts, fn_index = fn_index)
   if kind >= 0 {
-    Array::push(edp_factory_results, (slot, kind))
+    Array::push(edp_factory_results, value = (slot, kind))
   }
   mark
 }
 
-export fn edp_drop_factory_results(mark: Int) -> Unit {
-  Array::truncate(edp_factory_results, mark)
+export fn edp_drop_factory_results(_ mark: Int) -> Unit {
+  Array::truncate(edp_factory_results, length = mark)
 }
 
 // Writers and readers use the same instantiated field type. A generic field
@@ -304,8 +304,8 @@ export fn edp_instantiated_field_slot(name: String, field: String, args: Array[T
   if Array::length(args) == 0 {
     return None
   }
-  match edp_record_field_type(TyApp(name, args), field, stmts) {
-    Some(ty) => edp_result_slot(stmts, ty),
+  match edp_record_field_type(ty = TyApp(name, args), field = field, stmts = stmts) {
+    Some(ty) => edp_result_slot(stmts = stmts, rty = ty),
     None => None
   }
 }
@@ -316,21 +316,21 @@ export fn edp_local_factory_result(slot: Int, stmts: Array[Stmt]) -> Int {
     kind
   } else {
     match edp_parameter_type(slot) {
-      Some(TyFn(_, result, _)) => edp_callback_kind(result, stmts, 32),
+      Some(TyFn(_, result, _)) => edp_callback_kind(ty = result, stmts = stmts, fuel = 32),
       _ => -1
     }
   }
 }
 
 export fn edp_nested_record_args(name: String, field: String, args: Array[TypeExpr], value: Expr, stmts: Array[Stmt]) -> Array[TypeExpr] {
-  edp_record_targs_under(stmts, edp_record_field_type(TyApp(name, args), field, stmts), value)
+  edp_record_targs_under(stmts = stmts, ty = edp_record_field_type(ty = TyApp(name, args), field = field, stmts = stmts), e = value)
 }
 
 // Read a callee's declared nominal parameter before its record argument is
 // visited. A lexical callee never falls back to a same-named global function.
 export fn edp_record_argument_type(arg: Expr, named: String, pos: Int, positional: Bool, local: Option[Expr], slot: Int, stmts: Array[Stmt], fn_index: MutMap[String, Array[Int]]) -> Option[TypeExpr] {
   let params = if named != "" {
-    edp_indexed_params_of_fn(stmts, fn_index, named)
+    edp_indexed_params_of_fn(stmts = stmts, index = fn_index, nm = named)
   } else {
     match local {
       Some(EFn(_, _, ps, _, _, _)) => Some(ps),
@@ -358,20 +358,20 @@ export fn edp_record_argument_type(arg: Expr, named: String, pos: Int, positiona
         _ => ()
       }
       if at >= 0 && at < Array::length(ps) {
-        out = Array::get(ps, at).1
+        out = Array::get(ps, at = at).1
       }
     },
     None => if named == "" && slot >= 0 && positional {
       match edp_parameter_type(slot) {
         Some(TyFn(ts, _, _)) => if pos >= 0 && pos < Array::length(ts) {
-          out = Some(Array::get(ts, pos))
+          out = Some(Array::get(ts, at = pos))
         },
         _ => ()
       }
     }
   }
   match out {
-    Some(ty) => if edp_record_context_type(ty, stmts) {
+    Some(ty) => if edp_record_context_type(ty = ty, stmts = stmts) {
       out
     } else {
       None
@@ -383,7 +383,7 @@ export fn edp_record_argument_type(arg: Expr, named: String, pos: Int, positiona
 export fn edp_literal_slot_fn_type(local: Option[Expr], pos: Int) -> Option[(Int, String)] {
   match local {
     Some(EFn(_, _, params, _, _, _)) => if pos >= 0 && pos < Array::length(params) {
-      let (_, pty) = Array::get(params, pos)
+      let (_, pty) = Array::get(params, at = pos)
       match pty {
         Some(TyFn(ptys, _, Some(row))) => if edp_slot_row_stampable(row) {
           Some((Array::length(ptys), row))
@@ -405,19 +405,19 @@ let edp_record_results: Array[Int] = []
 
 export fn edp_record_result_enter(slot: Int, enabled: Bool) -> Int {
   if enabled {
-    let mark = Array::length(edp_record_results); Array::push(edp_record_results, slot); mark
+    let mark = Array::length(edp_record_results); Array::push(edp_record_results, value = slot); mark
   } else {
     -1
   }
 }
 
-export fn edp_record_result_leave(mark: Int) -> Unit {
+export fn edp_record_result_leave(_ mark: Int) -> Unit {
   if mark >= 0 {
-    Array::truncate(edp_record_results, mark)
+    Array::truncate(edp_record_results, length = mark)
   }
 }
 
-export fn edp_record_result_target(slot: Int) -> Bool {
+export fn edp_record_result_target(_ slot: Int) -> Bool {
   let mut found = false
   for value in edp_record_results {
     found = found || value == slot

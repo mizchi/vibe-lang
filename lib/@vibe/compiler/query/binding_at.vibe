@@ -67,7 +67,7 @@ fn bind_line_col_to_offset(source: String, line: Int, col: Int) -> Int {
     let mut i = 0
     let mut cur_line = 1
     while cur_line < line && i < len {
-      if String::char_code_at(source, i) == 10 {
+      if String::char_code_at(source, at = i) == 10 {
         cur_line = cur_line + 1
       } else {
         ()
@@ -78,10 +78,10 @@ fn bind_line_col_to_offset(source: String, line: Int, col: Int) -> Int {
       -1
     } else {
       let mut line_end = i
-      while line_end < len && String::char_code_at(source, line_end) != 10 {
+      while line_end < len && String::char_code_at(source, at = line_end) != 10 {
         line_end = line_end + 1
       }
-      let content_end = if line_end > i && String::char_code_at(source, line_end - 1) == 13 {
+      let content_end = if line_end > i && String::char_code_at(source, at = line_end - 1) == 13 {
         line_end - 1
       } else {
         line_end
@@ -117,9 +117,9 @@ fn bind_find_ident_token(tokens: Array[Token], starts: Array[Int], name: String,
   let mut i = 0
   let mut found = -1
   while found < 0 && i < Array::length(tokens) {
-    let off = Array::get(starts, i)
+    let off = Array::get(starts, at = i)
     if off >= from {
-      match Array::get(tokens, i) {
+      match Array::get(tokens, at = i) {
         TIdent(token_name) => if token_name == name {
           found = off
         } else {
@@ -161,9 +161,9 @@ struct BindState {
 /// A fresh single-cell mutable Int array holding `v` (a poor-man's mutable box).
 /// Built via the slice+push idiom so the cell is a heap array supporting
 /// Array::set, not a static read-only literal.
-fn bind_box_int(v: Int) -> Array[Int] {
+fn bind_box_int(_ v: Int) -> Array[Int] {
   let arr = array_empty()
-  Array::push(arr, v)
+  Array::push(arr, value = v)
   arr
 }
 
@@ -187,8 +187,8 @@ fn bind_resolve(st: BindState, name: String) -> Int {
   let mut i = n - 1
   let mut found = 0
   while i >= 0 && found == 0 {
-    if Array::get(st.scope_names, i) == name {
-      found = Array::get(st.scope_ids, i)
+    if Array::get(st.scope_names, at = i) == name {
+      found = Array::get(st.scope_ids, at = i)
     } else {
       ()
     }
@@ -199,8 +199,8 @@ fn bind_resolve(st: BindState, name: String) -> Int {
 
 /// Pop the scope stack back down to `mark` entries.
 fn bind_pop_scope(st: BindState, mark: Int) -> Unit {
-  Array::truncate(st.scope_names, mark)
-  Array::truncate(st.scope_ids, mark)
+  Array::truncate(st.scope_names, length = mark)
+  Array::truncate(st.scope_ids, length = mark)
 }
 
 /// Recover a binder's source offset (from the scan floor forward), record it as an
@@ -210,16 +210,16 @@ fn bind_pop_scope(st: BindState, mark: Int) -> Unit {
 /// scope (e.g. a non-recursive `let x = v` must recover x's offset textually
 /// before v, yet not have x in scope while walking v).
 fn bind_recover_binder(st: BindState, name: String) -> Int {
-  let from = Array::get(st.floor, 0)
-  let off = bind_find_ident_token(st.tokens, st.starts, name, from)
+  let from = Array::get(st.floor, at = 0)
+  let off = bind_find_ident_token(tokens = st.tokens, starts = st.starts, name = name, from = from)
   let id = if off >= 0 {
     off + 1
   } else {
     0
   }
   if off >= 0 {
-    Array::push(st.hits, BindHit(name, off, id))
-    Array::set(st.floor, 0, off + String::length(name))
+    Array::push(st.hits, value = BindHit(name, off, id))
+    Array::set(st.floor, at = 0, value = off + String::length(name))
   } else {
     ()
   }
@@ -228,16 +228,16 @@ fn bind_recover_binder(st: BindState, name: String) -> Int {
 
 /// Push a binder (name, id) onto the current scope.
 fn bind_push_binder(st: BindState, name: String, id: Int) -> Unit {
-  Array::push(st.scope_names, name)
-  Array::push(st.scope_ids, id)
+  Array::push(st.scope_names, value = name)
+  Array::push(st.scope_ids, value = id)
 }
 
 /// Introduce a binder: recover its offset/id then immediately push it into scope.
 /// Used where the binder's scope begins right at the binder site (params, for /
 /// loop binders, match-pattern binders).
 fn bind_introduce(st: BindState, name: String) -> Unit {
-  let id = bind_recover_binder(st, name)
-  bind_push_binder(st, name, id)
+  let id = bind_recover_binder(st = st, name = name)
+  bind_push_binder(st = st, name = name, id = id)
 }
 
 /// Record a reference `EIdent(name, off)`: resolve it to the nearest enclosing
@@ -245,10 +245,10 @@ fn bind_introduce(st: BindState, name: String) -> Unit {
 /// floor past it so later binder recovery does not re-find an earlier position.
 fn bind_record_ref(st: BindState, name: String, off: Int) -> Unit {
   if off >= 0 {
-    let key = bind_resolve(st, name)
-    Array::push(st.hits, BindHit(name, off, key))
-    if off >= Array::get(st.floor, 0) {
-      Array::set(st.floor, 0, off + String::length(name))
+    let key = bind_resolve(st = st, name = name)
+    Array::push(st.hits, value = BindHit(name, off, key))
+    if off >= Array::get(st.floor, at = 0) {
+      Array::set(st.floor, at = 0, value = off + String::length(name))
     } else {
       ()
     }
@@ -261,12 +261,12 @@ fn bind_record_ref(st: BindState, name: String, off: Int) -> Unit {
 /// enclosing binding and recover the name's source offset from the floor (the
 /// target name has no stored offset).
 fn bind_record_assign_target(st: BindState, name: String) -> Unit {
-  let key = bind_resolve(st, name)
-  let from = Array::get(st.floor, 0)
-  let off = bind_find_ident_token(st.tokens, st.starts, name, from)
+  let key = bind_resolve(st = st, name = name)
+  let from = Array::get(st.floor, at = 0)
+  let off = bind_find_ident_token(tokens = st.tokens, starts = st.starts, name = name, from = from)
   if off >= 0 {
-    Array::push(st.hits, BindHit(name, off, key))
-    Array::set(st.floor, 0, off + String::length(name))
+    Array::push(st.hits, value = BindHit(name, off, key))
+    Array::set(st.floor, at = 0, value = off + String::length(name))
   } else {
     ()
   }
@@ -278,22 +278,22 @@ fn bind_record_assign_target(st: BindState, name: String) -> Unit {
 fn bind_introduce_pat(st: BindState, pat: Pat) -> Unit {
   match pat {
     PWild => (),
-    PBind(name) => bind_introduce(st, name),
+    PBind(name) => bind_introduce(st = st, name = name),
     PInt(_) => (),
     PFloat(_) => (),
     PString(_) => (),
     PBool(_) => (),
-    PCtor(_, sub) => bind_introduce_pats(st, sub),
-    PTuple(sub) => bind_introduce_pats(st, sub),
+    PCtor(_, sub) => bind_introduce_pats(st = st, sub = sub),
+    PTuple(sub) => bind_introduce_pats(st = st, sub = sub),
     POr(a, b) => {
-      bind_introduce_pat(st, a)
-      bind_introduce_pat(st, b)
+      bind_introduce_pat(st = st, pat = a)
+      bind_introduce_pat(st = st, pat = b)
     },
     PStruct(_, fields) => {
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
-        bind_introduce_pat(st, fp)
+        let (_, fp) = Array::get(fields, at = i)
+        bind_introduce_pat(st = st, pat = fp)
         i = i + 1
       }
     }
@@ -303,7 +303,7 @@ fn bind_introduce_pat(st: BindState, pat: Pat) -> Unit {
 fn bind_introduce_pats(st: BindState, sub: Array[Pat]) -> Unit {
   let mut i = 0
   while i < Array::length(sub) {
-    bind_introduce_pat(st, Array::get(sub, i))
+    bind_introduce_pat(st = st, pat = Array::get(sub, at = i))
     i = i + 1
   }
 }
@@ -313,22 +313,22 @@ fn bind_introduce_pats(st: BindState, sub: Array[Pat]) -> Unit {
 fn bind_pat_names(pat: Pat, out: Array[String]) -> Unit {
   match pat {
     PWild => (),
-    PBind(name) => Array::push(out, name),
+    PBind(name) => Array::push(out, value = name),
     PInt(_) => (),
     PFloat(_) => (),
     PString(_) => (),
     PBool(_) => (),
-    PCtor(_, sub) => bind_pats_names(sub, out),
-    PTuple(sub) => bind_pats_names(sub, out),
+    PCtor(_, sub) => bind_pats_names(sub = sub, out = out),
+    PTuple(sub) => bind_pats_names(sub = sub, out = out),
     POr(a, b) => {
-      bind_pat_names(a, out)
-      bind_pat_names(b, out)
+      bind_pat_names(pat = a, out = out)
+      bind_pat_names(pat = b, out = out)
     },
     PStruct(_, fields) => {
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
-        bind_pat_names(fp, out)
+        let (_, fp) = Array::get(fields, at = i)
+        bind_pat_names(pat = fp, out = out)
         i = i + 1
       }
     }
@@ -338,7 +338,7 @@ fn bind_pat_names(pat: Pat, out: Array[String]) -> Unit {
 fn bind_pats_names(sub: Array[Pat], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(sub) {
-    bind_pat_names(Array::get(sub, i), out)
+    bind_pat_names(pat = Array::get(sub, at = i), out = out)
     i = i + 1
   }
 }
@@ -349,13 +349,13 @@ fn bind_pats_names(sub: Array[Pat], out: Array[String]) -> Unit {
 fn bind_expr_first_off(st: BindState, e: Expr) -> Int {
   let hit_mark = Array::length(st.hits)
   let let_rec_mark = Array::length(st.let_recs)
-  let floor0 = Array::get(st.floor, 0)
-  bind_walk_expr(st, e)
-  Array::truncate(st.let_recs, let_rec_mark)
+  let floor0 = Array::get(st.floor, at = 0)
+  bind_walk_expr(st = st, expr = e)
+  Array::truncate(st.let_recs, length = let_rec_mark)
   let mut best = -1
   let mut i = hit_mark
   while i < Array::length(st.hits) {
-    match Array::get(st.hits, i) {
+    match Array::get(st.hits, at = i) {
       BindHit(_, off, _) => if off >= 0 && (best < 0 || off < best) {
         best = off
       } else {
@@ -364,8 +364,8 @@ fn bind_expr_first_off(st: BindState, e: Expr) -> Int {
     }
     i = i + 1
   }
-  Array::truncate(st.hits, hit_mark)
-  Array::set(st.floor, 0, floor0)
+  Array::truncate(st.hits, length = hit_mark)
+  Array::set(st.floor, at = 0, value = floor0)
   best
 }
 
@@ -376,13 +376,13 @@ fn bind_expr_first_off(st: BindState, e: Expr) -> Int {
 /// that `let` -- a record literal's field labels, a field access `.v` -- can
 /// spell the same name as a binder.
 fn bind_pattern_let_start(st: BindState, before: Int) -> Int {
-  let from = Array::get(st.floor, 0)
+  let from = Array::get(st.floor, at = 0)
   let mut found = -1
   let mut i = 0
   while i < Array::length(st.tokens) {
-    let off = Array::get(st.starts, i)
+    let off = Array::get(st.starts, at = i)
     if off >= from && off < before {
-      match Array::get(st.tokens, i) {
+      match Array::get(st.tokens, at = i) {
         TLet => {
           found = off
         },
@@ -412,22 +412,22 @@ fn bind_match_is_pattern_first(st: BindState, s: Expr, arms: Array[(Pat, Expr)])
   if Array::length(arms) == 0 {
     false
   } else {
-    let (pat, _) = Array::get(arms, 0)
+    let (pat, _) = Array::get(arms, at = 0)
     let names = array_empty()
-    bind_pat_names(pat, names)
+    bind_pat_names(pat = pat, out = names)
     if Array::length(names) == 0 {
       false
     } else {
-      let scrut_off = bind_expr_first_off(st, s)
+      let scrut_off = bind_expr_first_off(st = st, e = s)
       let let_off = if scrut_off >= 0 {
-        bind_pattern_let_start(st, scrut_off)
+        bind_pattern_let_start(st = st, before = scrut_off)
       } else {
         -1
       }
       if let_off < 0 {
         false
       } else {
-        let binder_off = bind_find_ident_token(st.tokens, st.starts, Array::get(names, 0), let_off)
+        let binder_off = bind_find_ident_token(tokens = st.tokens, starts = st.starts, name = Array::get(names, at = 0), from = let_off)
         binder_off >= 0 && binder_off < scrut_off
       }
     }
@@ -437,11 +437,11 @@ fn bind_match_is_pattern_first(st: BindState, s: Expr, arms: Array[(Pat, Expr)])
 /// Move the floor to the `let` introducing a pattern-first binding whose value
 /// is `v`, when that can be told (see bind_pattern_let_start).
 fn bind_floor_to_pattern_let(st: BindState, v: Expr) -> Unit {
-  let v_off = bind_expr_first_off(st, v)
+  let v_off = bind_expr_first_off(st = st, e = v)
   if v_off >= 0 {
-    let let_off = bind_pattern_let_start(st, v_off)
+    let let_off = bind_pattern_let_start(st = st, before = v_off)
     if let_off >= 0 {
-      Array::set(st.floor, 0, let_off)
+      Array::set(st.floor, at = 0, value = let_off)
     } else {
       ()
     }
@@ -452,7 +452,7 @@ fn bind_floor_to_pattern_let(st: BindState, v: Expr) -> Unit {
 
 /// True for a value the parser synthesised to project one destructured field:
 /// `__struct_destr.f`, `__rec_sub_i.j` or `__rec_field(__rec_destr, i)`.
-fn bind_is_destr_projection(v: Expr) -> Bool {
+fn bind_is_destr_projection(_ v: Expr) -> Bool {
   match v {
     EDot(EIdent(_, off), _, _, _) => off < 0,
     ECall(EIdent(callee, _), _, _, _) => callee == "__rec_field",
@@ -465,12 +465,12 @@ fn bind_is_destr_projection(v: Expr) -> Bool {
 fn bind_destr_names(e: Expr, out: Array[String]) -> Unit {
   match e {
     ELet(n, v, b, _) => if bind_is_destr_projection(v) {
-      if String::starts_with(n, "__") {
+      if String::starts_with(n, prefix = "__") {
         ()
       } else {
-        Array::push(out, n)
+        Array::push(out, value = n)
       }
-      bind_destr_names(b, out)
+      bind_destr_names(e = b, out = out)
     } else {
       ()
     },
@@ -486,35 +486,35 @@ fn bind_destr_names(e: Expr, out: Array[String]) -> Unit {
 /// over the rest.
 fn bind_walk_destr(st: BindState, v: Expr, chain: Expr) -> Unit {
   let names = array_empty()
-  bind_destr_names(chain, names)
-  bind_floor_to_pattern_let(st, v)
+  bind_destr_names(e = chain, out = names)
+  bind_floor_to_pattern_let(st = st, v = v)
   let ids = array_empty()
   let mut i = 0
   while i < Array::length(names) {
-    Array::push(ids, bind_recover_binder(st, Array::get(names, i)))
+    Array::push(ids, value = bind_recover_binder(st = st, name = Array::get(names, at = i)))
     i = i + 1
   }
-  bind_walk_expr(st, v)
+  bind_walk_expr(st = st, expr = v)
   let mark = Array::length(st.scope_names)
-  bind_walk_destr_chain(st, chain, names, ids, 0)
-  bind_pop_scope(st, mark)
+  bind_walk_destr_chain(st = st, e = chain, names = names, ids = ids, next = 0)
+  bind_pop_scope(st = st, mark = mark)
 }
 
 fn bind_walk_destr_chain(st: BindState, e: Expr, names: Array[String], ids: Array[Int], next: Int) -> Unit {
   match e {
     ELet(n, v, b, _) => if bind_is_destr_projection(v) {
-      bind_walk_expr(st, v)
-      if String::starts_with(n, "__") {
-        bind_push_binder(st, n, 0)
-        bind_walk_destr_chain(st, b, names, ids, next)
+      bind_walk_expr(st = st, expr = v)
+      if String::starts_with(n, prefix = "__") {
+        bind_push_binder(st = st, name = n, id = 0)
+        bind_walk_destr_chain(st = st, e = b, names = names, ids = ids, next = next)
       } else {
-        bind_push_binder(st, n, Array::get(ids, next))
-        bind_walk_destr_chain(st, b, names, ids, next + 1)
+        bind_push_binder(st = st, name = n, id = Array::get(ids, at = next))
+        bind_walk_destr_chain(st = st, e = b, names = names, ids = ids, next = next + 1)
       }
     } else {
-      bind_walk_expr(st, e)
+      bind_walk_expr(st = st, expr = e)
     },
-    _ => bind_walk_expr(st, e)
+    _ => bind_walk_expr(st = st, expr = e)
   }
 }
 
@@ -524,32 +524,32 @@ fn bind_walk_destr_chain(st: BindState, e: Expr, names: Array[String], ids: Arra
 /// the first arm's body. Any further arm (the `else` of a let-else / if-let)
 /// is an ordinary arm.
 fn bind_walk_pattern_first_match(st: BindState, s: Expr, arms: Array[(Pat, Expr)]) -> Unit {
-  let (pat, body) = Array::get(arms, 0)
+  let (pat, body) = Array::get(arms, at = 0)
   let names = array_empty()
-  bind_pat_names(pat, names)
-  bind_floor_to_pattern_let(st, s)
+  bind_pat_names(pat = pat, out = names)
+  bind_floor_to_pattern_let(st = st, v = s)
   let ids = array_empty()
   let mut i = 0
   while i < Array::length(names) {
-    Array::push(ids, bind_recover_binder(st, Array::get(names, i)))
+    Array::push(ids, value = bind_recover_binder(st = st, name = Array::get(names, at = i)))
     i = i + 1
   }
-  bind_walk_expr(st, s)
+  bind_walk_expr(st = st, expr = s)
   let mark = Array::length(st.scope_names)
   let mut j = 0
   while j < Array::length(names) {
-    bind_push_binder(st, Array::get(names, j), Array::get(ids, j))
+    bind_push_binder(st = st, name = Array::get(names, at = j), id = Array::get(ids, at = j))
     j = j + 1
   }
-  bind_walk_expr(st, body)
-  bind_pop_scope(st, mark)
+  bind_walk_expr(st = st, expr = body)
+  bind_pop_scope(st = st, mark = mark)
   let rest = array_empty()
   let mut k = 1
   while k < Array::length(arms) {
-    Array::push(rest, Array::get(arms, k))
+    Array::push(rest, value = Array::get(arms, at = k))
     k = k + 1
   }
-  bind_walk_arms(st, rest)
+  bind_walk_arms(st = st, arms = rest)
 }
 
 /// Scope-aware walker. `st.hits` accumulates references (resolved to a binding id)
@@ -561,94 +561,94 @@ fn bind_walk_expr(st: BindState, expr: Expr) -> Unit {
     EFloat(_) => (),
     EString(_, _) => (),
     EBool(_) => (),
-    EIdent(name, off) => bind_record_ref(st, name, off),
+    EIdent(name, off) => bind_record_ref(st = st, name = name, off = off),
     EUnit => (),
     EStringInterp(_) => (),
-    ETuple(items) => bind_walk_exprs(st, items),
-    EArray(items) => bind_walk_exprs(st, items),
-    ERecord(_, fields, _) => bind_walk_field_exprs(st, fields),
+    ETuple(items) => bind_walk_exprs(st = st, items = items),
+    EArray(items) => bind_walk_exprs(st = st, items = items),
+    ERecord(_, fields, _) => bind_walk_field_exprs(st = st, fields = fields),
     EIf(c, t, e) => {
-      bind_walk_expr(st, c)
-      bind_walk_expr(st, t)
-      bind_walk_expr(st, e)
+      bind_walk_expr(st = st, expr = c)
+      bind_walk_expr(st = st, expr = t)
+      bind_walk_expr(st = st, expr = e)
     },
     ELet(name, v, b, _) => if name == "__struct_destr" || name == "__rec_destr" {
-      bind_walk_destr(st, v, b)
+      bind_walk_destr(st = st, v = v, chain = b)
     } else {
       // `let name = v; b`: the binder is textually BEFORE v, so recover its
       // offset first (advancing the floor past it), but keep it OUT of scope while
       // walking v — a non-recursive `let x = x + 1` references the OUTER x. Then
       // push it into scope for b only.
-      let id = bind_recover_binder(st, name)
-      bind_walk_expr(st, v)
+      let id = bind_recover_binder(st = st, name = name)
+      bind_walk_expr(st = st, expr = v)
       let mark = Array::length(st.scope_names)
-      bind_push_binder(st, name, id)
-      bind_walk_expr(st, b)
-      bind_pop_scope(st, mark)
+      bind_push_binder(st = st, name = name, id = id)
+      bind_walk_expr(st = st, expr = b)
+      bind_pop_scope(st = st, mark = mark)
     },
     ELetRec(name, v, b) => {
       // recursive let: name is in scope for both v and b.
       let mark = Array::length(st.scope_names)
-      let id = bind_recover_binder(st, name)
+      let id = bind_recover_binder(st = st, name = name)
       // #3106: which value this binder introduces, by the key the checker
       // files a `let rec`'s type under. Kept for an unrecovered binder too
       // (id 0 -> -1), so a key two bindings share is seen as shared.
-      Array::push(st.let_recs, (id - 1, let_rec_binding_anchor(v, b)))
-      bind_push_binder(st, name, id)
-      bind_walk_expr(st, v)
-      bind_walk_expr(st, b)
-      bind_pop_scope(st, mark)
+      Array::push(st.let_recs, value = (id - 1, let_rec_binding_anchor(value = v, body = b)))
+      bind_push_binder(st = st, name = name, id = id)
+      bind_walk_expr(st = st, expr = v)
+      bind_walk_expr(st = st, expr = b)
+      bind_pop_scope(st = st, mark = mark)
     },
     ELetMut(name, v, b, _) => {
       // same binder-before-value ordering as ELet.
-      let id = bind_recover_binder(st, name)
-      bind_walk_expr(st, v)
+      let id = bind_recover_binder(st = st, name = name)
+      bind_walk_expr(st = st, expr = v)
       let mark = Array::length(st.scope_names)
-      bind_push_binder(st, name, id)
-      bind_walk_expr(st, b)
-      bind_pop_scope(st, mark)
+      bind_push_binder(st = st, name = name, id = id)
+      bind_walk_expr(st = st, expr = b)
+      bind_pop_scope(st = st, mark = mark)
     },
     EAssign(name, v, b, _) => {
       // assignment target is a reference to an in-scope binding.
-      bind_record_assign_target(st, name)
-      bind_walk_expr(st, v)
-      bind_walk_expr(st, b)
+      bind_record_assign_target(st = st, name = name)
+      bind_walk_expr(st = st, expr = v)
+      bind_walk_expr(st = st, expr = b)
     },
     EAssignOp(name, _, v, b, _) => {
-      bind_record_assign_target(st, name)
-      bind_walk_expr(st, v)
-      bind_walk_expr(st, b)
+      bind_record_assign_target(st = st, name = name)
+      bind_walk_expr(st = st, expr = v)
+      bind_walk_expr(st = st, expr = b)
     },
     ESeq(a, b) => {
-      bind_walk_expr(st, a)
-      bind_walk_expr(st, b)
+      bind_walk_expr(st = st, expr = a)
+      bind_walk_expr(st = st, expr = b)
     },
-    EMatch(s, arms) => if bind_match_is_pattern_first(st, s, arms) {
-      bind_walk_pattern_first_match(st, s, arms)
+    EMatch(s, arms) => if bind_match_is_pattern_first(st = st, s = s, arms = arms) {
+      bind_walk_pattern_first_match(st = st, s = s, arms = arms)
     } else {
-      bind_walk_expr(st, s)
-      bind_walk_arms(st, arms)
+      bind_walk_expr(st = st, expr = s)
+      bind_walk_arms(st = st, arms = arms)
     },
     EHandle(s, arms) => {
-      bind_walk_expr(st, s)
-      bind_walk_arms(st, arms)
+      bind_walk_expr(st = st, expr = s)
+      bind_walk_arms(st = st, arms = arms)
     },
     EWhile(c, b) => {
-      bind_walk_expr(st, c)
-      bind_walk_expr(st, b)
+      bind_walk_expr(st = st, expr = c)
+      bind_walk_expr(st = st, expr = b)
     },
     ELoop(params, b) => {
       // loop params introduce names scoped to b; init exprs are outside scope.
       let mark = Array::length(st.scope_names)
       let mut i = 0
       while i < Array::length(params) {
-        let (pname, init) = Array::get(params, i)
-        bind_walk_expr(st, init)
-        bind_introduce(st, pname)
+        let (pname, init) = Array::get(params, at = i)
+        bind_walk_expr(st = st, expr = init)
+        bind_introduce(st = st, name = pname)
         i = i + 1
       }
-      bind_walk_expr(st, b)
-      bind_pop_scope(st, mark)
+      bind_walk_expr(st = st, expr = b)
+      bind_pop_scope(st = st, mark = mark)
     },
     EForIn(name, idx_opt, it, b) => {
       // `for x in it` / `for i, x in it`: the binders are written BEFORE the
@@ -656,19 +656,19 @@ fn bind_walk_expr(st: BindState, expr: Expr) -> Unit {
       // first moved the floor past them and took a later use of the same
       // name for the declaration (#3000). They stay out of scope for `it`.
       let idx_id = match idx_opt {
-        Some(idx) => bind_recover_binder(st, idx),
+        Some(idx) => bind_recover_binder(st = st, name = idx),
         None => 0
       }
-      let name_id = bind_recover_binder(st, name)
-      bind_walk_expr(st, it)
+      let name_id = bind_recover_binder(st = st, name = name)
+      bind_walk_expr(st = st, expr = it)
       let mark = Array::length(st.scope_names)
       match idx_opt {
-        Some(idx) => bind_push_binder(st, idx, idx_id),
+        Some(idx) => bind_push_binder(st = st, name = idx, id = idx_id),
         None => ()
       }
-      bind_push_binder(st, name, name_id)
-      bind_walk_expr(st, b)
-      bind_pop_scope(st, mark)
+      bind_push_binder(st = st, name = name, id = name_id)
+      bind_walk_expr(st = st, expr = b)
+      bind_pop_scope(st = st, mark = mark)
     },
     ECall(callee, args, _, _) => {
       // `let* x = e` lowers to `__try_bind(e, (x) -> rest)`. Source order is
@@ -676,68 +676,68 @@ fn bind_walk_expr(st: BindState, expr: Expr) -> Unit {
       // recover `x` after `e` and miss the written name.
       match callee {
         EIdent(cname, _) => if cname == "__try_bind" && Array::length(args) == 2 {
-          match Array::get(args, 1) {
+          match Array::get(args, at = 1) {
             EFn(_, _, params, _, _, body) => if Array::length(params) == 1 {
-              let (pname, _) = Array::get(params, 0)
-              let id = bind_recover_binder(st, pname)
-              bind_walk_expr(st, Array::get(args, 0))
+              let (pname, _) = Array::get(params, at = 0)
+              let id = bind_recover_binder(st = st, name = pname)
+              bind_walk_expr(st = st, expr = Array::get(args, at = 0))
               let mark = Array::length(st.scope_names)
-              bind_push_binder(st, pname, id)
-              bind_walk_expr(st, body)
-              bind_pop_scope(st, mark)
+              bind_push_binder(st = st, name = pname, id = id)
+              bind_walk_expr(st = st, expr = body)
+              bind_pop_scope(st = st, mark = mark)
             } else {
-              bind_walk_expr(st, callee)
-              bind_walk_exprs(st, args)
+              bind_walk_expr(st = st, expr = callee)
+              bind_walk_exprs(st = st, items = args)
             },
             _ => {
-              bind_walk_expr(st, callee)
-              bind_walk_exprs(st, args)
+              bind_walk_expr(st = st, expr = callee)
+              bind_walk_exprs(st = st, items = args)
             }
           }
         } else {
-          bind_walk_expr(st, callee)
-          bind_walk_exprs(st, args)
+          bind_walk_expr(st = st, expr = callee)
+          bind_walk_exprs(st = st, items = args)
         },
         _ => {
-          bind_walk_expr(st, callee)
-          bind_walk_exprs(st, args)
+          bind_walk_expr(st = st, expr = callee)
+          bind_walk_exprs(st = st, items = args)
         }
       }
     },
     EBinOp(_, l, r, _) => {
-      bind_walk_expr(st, l)
-      bind_walk_expr(st, r)
+      bind_walk_expr(st = st, expr = l)
+      bind_walk_expr(st = st, expr = r)
     },
-    EUnaryOp(_, e) => bind_walk_expr(st, e),
+    EUnaryOp(_, e) => bind_walk_expr(st = st, expr = e),
     EFn(_, _, params, _, _, body) => {
       // function / lambda parameters are scoped to body.
       let mark = Array::length(st.scope_names)
       let mut i = 0
       while i < Array::length(params) {
-        let (pname, _) = Array::get(params, i)
-        bind_introduce(st, pname)
+        let (pname, _) = Array::get(params, at = i)
+        bind_introduce(st = st, name = pname)
         i = i + 1
       }
-      bind_walk_expr(st, body)
-      bind_pop_scope(st, mark)
+      bind_walk_expr(st = st, expr = body)
+      bind_pop_scope(st = st, mark = mark)
     },
-    EDot(e, _, _, _) => bind_walk_expr(st, e),
-    ELabeledArg(_, _, v) => bind_walk_expr(st, v),
-    EReturn(e) => bind_walk_expr(st, e),
+    EDot(e, _, _, _) => bind_walk_expr(st = st, expr = e),
+    ELabeledArg(_, _, v) => bind_walk_expr(st = st, expr = v),
+    EReturn(e) => bind_walk_expr(st = st, expr = e),
     EBreak(opt) => match opt {
-      Some(v) => bind_walk_expr(st, v),
+      Some(v) => bind_walk_expr(st = st, expr = v),
       None => ()
     },
-    EContinue(args) => bind_walk_exprs(st, args),
-    EMap(fields) => bind_walk_field_exprs(st, fields),
-    ESpread(e) => bind_walk_expr(st, e)
+    EContinue(args) => bind_walk_exprs(st = st, items = args),
+    EMap(fields) => bind_walk_field_exprs(st = st, fields = fields),
+    ESpread(e) => bind_walk_expr(st = st, expr = e)
   }
 }
 
 fn bind_walk_exprs(st: BindState, items: Array[Expr]) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
-    bind_walk_expr(st, Array::get(items, i))
+    bind_walk_expr(st = st, expr = Array::get(items, at = i))
     i = i + 1
   }
 }
@@ -745,8 +745,8 @@ fn bind_walk_exprs(st: BindState, items: Array[Expr]) -> Unit {
 fn bind_walk_field_exprs(st: BindState, fields: Array[(String, Expr)]) -> Unit {
   let mut i = 0
   while i < Array::length(fields) {
-    let (_, v) = Array::get(fields, i)
-    bind_walk_expr(st, v)
+    let (_, v) = Array::get(fields, at = i)
+    bind_walk_expr(st = st, expr = v)
     i = i + 1
   }
 }
@@ -755,11 +755,11 @@ fn bind_walk_field_exprs(st: BindState, fields: Array[(String, Expr)]) -> Unit {
 fn bind_walk_arms(st: BindState, arms: Array[(Pat, Expr)]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    let (pat, e) = Array::get(arms, i)
+    let (pat, e) = Array::get(arms, at = i)
     let mark = Array::length(st.scope_names)
-    bind_introduce_pat(st, pat)
-    bind_walk_expr(st, e)
-    bind_pop_scope(st, mark)
+    bind_introduce_pat(st = st, pat = pat)
+    bind_walk_expr(st = st, expr = e)
+    bind_pop_scope(st = st, mark = mark)
     i = i + 1
   }
 }
@@ -768,11 +768,11 @@ fn bind_walk_arms(st: BindState, arms: Array[(Pat, Expr)]) -> Unit {
 /// so all references to the same module name resolve together. We recover the
 /// binder's offset from the floor.
 fn bind_record_module_binder(st: BindState, name: String) -> Unit {
-  let from = Array::get(st.floor, 0)
-  let off = bind_find_ident_token(st.tokens, st.starts, name, from)
+  let from = Array::get(st.floor, at = 0)
+  let off = bind_find_ident_token(tokens = st.tokens, starts = st.starts, name = name, from = from)
   if off >= 0 {
-    Array::push(st.hits, BindHit(name, off, 0))
-    Array::set(st.floor, 0, off + String::length(name))
+    Array::push(st.hits, value = BindHit(name, off, 0))
+    Array::set(st.floor, at = 0, value = off + String::length(name))
   } else {
     ()
   }
@@ -785,42 +785,42 @@ fn bind_record_module_binder(st: BindState, name: String) -> Unit {
 fn bind_walk_stmt(st: BindState, stmt: Stmt) -> Unit {
   match stmt {
     SLet(_, _, name, _, body) => {
-      bind_record_module_binder(st, name)
-      bind_walk_expr(st, body)
+      bind_record_module_binder(st = st, name = name)
+      bind_walk_expr(st = st, expr = body)
     },
     SLetMut(name, _, body) => {
-      bind_record_module_binder(st, name)
-      bind_walk_expr(st, body)
+      bind_record_module_binder(st = st, name = name)
+      bind_walk_expr(st = st, expr = body)
     },
-    SStruct(_, name, _, _, _, _) => bind_record_module_binder(st, name),
-    SEnum(_, name, _, _, _) => bind_record_module_binder(st, name),
-    STypeAlias(_, name, _, _) => bind_record_module_binder(st, name),
+    SStruct(_, name, _, _, _, _) => bind_record_module_binder(st = st, name = name),
+    SEnum(_, name, _, _, _) => bind_record_module_binder(st = st, name = name),
+    STypeAlias(_, name, _, _) => bind_record_module_binder(st = st, name = name),
     // Default parse_program_located lowers SFnDecl to SLet; keep the arm so
     // a preserving parse still records the name and walks contracts.
     SFnDecl(_, name, fn_value, reqs, enss) => {
-      bind_record_module_binder(st, name)
-      bind_walk_expr(st, fn_value)
-      bind_walk_exprs(st, reqs)
-      bind_walk_exprs(st, enss)
+      bind_record_module_binder(st = st, name = name)
+      bind_walk_expr(st = st, expr = fn_value)
+      bind_walk_exprs(st = st, items = reqs)
+      bind_walk_exprs(st = st, items = enss)
     },
-    STrait(_, name, _, _, _, _) => bind_record_module_binder(st, name),
-    SEffectDef(_, name, _, _) => bind_record_module_binder(st, name),
-    STest(_, body) => bind_walk_expr(st, body),
-    SBench(_, body) => bind_walk_expr(st, body),
-    SExpr(e) => bind_walk_expr(st, e),
+    STrait(_, name, _, _, _, _) => bind_record_module_binder(st = st, name = name),
+    SEffectDef(_, name, _, _) => bind_record_module_binder(st = st, name = name),
+    STest(_, body) => bind_walk_expr(st = st, expr = body),
+    SBench(_, body) => bind_walk_expr(st = st, expr = body),
+    SExpr(e) => bind_walk_expr(st = st, expr = e),
     SLetPat(pat, body) => {
       // A top-level `let (a, b) = e`: each binder is a module-level name,
       // written before `e` (#3000).
       let names = array_empty()
-      bind_pat_names(pat, names)
+      bind_pat_names(pat = pat, out = names)
       let mut i = 0
       while i < Array::length(names) {
-        bind_record_module_binder(st, Array::get(names, i))
+        bind_record_module_binder(st = st, name = Array::get(names, at = i))
         i = i + 1
       }
-      bind_walk_expr(st, body)
+      bind_walk_expr(st = st, expr = body)
     },
-    SModule(_, _, body) => bind_walk_stmts(st, body),
+    SModule(_, _, body) => bind_walk_stmts(st = st, stmts = body),
     _ => ()
   }
 }
@@ -828,7 +828,7 @@ fn bind_walk_stmt(st: BindState, stmt: Stmt) -> Unit {
 fn bind_walk_stmts(st: BindState, stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    bind_walk_stmt(st, Array::get(stmts, i))
+    bind_walk_stmt(st = st, stmt = Array::get(stmts, at = i))
     i = i + 1
   }
 }
@@ -842,7 +842,7 @@ fn bind_pick_at(hits: Array[BindHit], tgt: Int) -> (String, Int) {
   let mut best_off = -1
   let mut i = 0
   while i < Array::length(hits) {
-    match Array::get(hits, i) {
+    match Array::get(hits, at = i) {
       BindHit(name, off, key) => {
         let span_end = off + String::length(name)
         if off >= 0 && off <= tgt && tgt < span_end && off > best_off {
@@ -868,7 +868,7 @@ fn bind_insert_sorted_unique(out: Array[(Int, Int)], start: Int, end: Int) -> Un
   let mut idx = n
   let mut j = 0
   while j < n {
-    let (s, _) = Array::get(out, j)
+    let (s, _) = Array::get(out, at = j)
     if s == start {
       dup = true
     } else {
@@ -884,15 +884,15 @@ fn bind_insert_sorted_unique(out: Array[(Int, Int)], start: Int, end: Int) -> Un
   if dup {
     ()
   } else if idx == n {
-    Array::push(out, (start, end))
+    Array::push(out, value = (start, end))
   } else {
-    Array::push(out, Array::get(out, n - 1))
+    Array::push(out, value = Array::get(out, at = n - 1))
     let mut k = n - 1
     while k > idx {
-      Array::set(out, k, Array::get(out, k - 1))
+      Array::set(out, at = k, value = Array::get(out, at = k - 1))
       k = k - 1
     }
-    Array::set(out, idx, (start, end))
+    Array::set(out, at = idx, value = (start, end))
   }
 }
 
@@ -907,7 +907,7 @@ fn bind_insert_sorted_unique(out: Array[(Int, Int)], start: Int, end: Int) -> Un
 /// yields an empty list.
 fn binding_occurrences_impl(source: String, line: Int, col: Int) -> Array[(Int, Int)] with Exception {
   {
-    let tgt = bind_line_col_to_offset(source, line, col)
+    let tgt = bind_line_col_to_offset(source = source, line = line, col = col)
     let empty_out = array_empty()
     if tgt < 0 {
       // Out-of-range (line, col) — see bind_line_col_to_offset (#947): no
@@ -915,21 +915,21 @@ fn binding_occurrences_impl(source: String, line: Int, col: Int) -> Array[(Int, 
       empty_out
     } else {
       let (tokens, starts, _ends) = lex_with_offsets(source)
-      let stmts = parse_program_located(tokens, starts, source)
-      let st = bind_new_state(tokens, starts)
-      bind_walk_stmts(st, stmts)
+      let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
+      let st = bind_new_state(tokens = tokens, starts = starts)
+      bind_walk_stmts(st = st, stmts = stmts)
       let hits = st.hits
-      let (name, key) = bind_pick_at(hits, tgt)
+      let (name, key) = bind_pick_at(hits = hits, tgt = tgt)
       let out = array_empty()
       if name == "" {
         out
       } else {
         let mut i = 0
         while i < Array::length(hits) {
-          match Array::get(hits, i) {
+          match Array::get(hits, at = i) {
             BindHit(hname, hoff, hkey) => {
               if hname == name && hkey == key && hoff >= 0 {
-                bind_insert_sorted_unique(out, hoff, hoff + String::length(hname))
+                bind_insert_sorted_unique(out = out, start = hoff, end = hoff + String::length(hname))
               } else {
                 ()
               }
@@ -945,7 +945,7 @@ fn binding_occurrences_impl(source: String, line: Int, col: Int) -> Array[(Int, 
 
 export fn binding_occurrences(source: String, line: Int, col: Int) -> Array[(Int, Int)] {
   handle {
-    binding_occurrences_impl(source, line, col)
+    binding_occurrences_impl(source = source, line = line, col = col)
   } with { Exception::Throw(_) => array_empty() }
 }
 
@@ -960,18 +960,18 @@ export fn binding_occurrences(source: String, line: Int, col: Int) -> Array[(Int
 /// `vibe type-at` (#3000) needs these because none of them is an `EIdent`: the
 /// AST stores the binder as a bare String, so the hover walk never saw the
 /// place a name is introduced and answered nothing there.
-export fn local_binder_sites(source: String) -> Array[(String, Int)] {
+export fn local_binder_sites(_ source: String) -> Array[(String, Int)] {
   handle {
     let (tokens, starts, _ends) = lex_with_offsets(source)
-    let stmts = parse_program_located(tokens, starts, source)
-    let st = bind_new_state(tokens, starts)
-    bind_walk_stmts(st, stmts)
+    let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
+    let st = bind_new_state(tokens = tokens, starts = starts)
+    bind_walk_stmts(st = st, stmts = stmts)
     let out = array_empty()
     let mut i = 0
     while i < Array::length(st.hits) {
-      match Array::get(st.hits, i) {
+      match Array::get(st.hits, at = i) {
         BindHit(name, off, key) => if off >= 0 && key == off + 1 {
-          Array::push(out, (name, off))
+          Array::push(out, value = (name, off))
         } else {
           ()
         }
@@ -991,13 +991,13 @@ export fn local_binder_sites(source: String) -> Array[(String, Int)] {
 export fn let_rec_anchor_at(source: String, boff: Int) -> Int {
   handle {
     let (tokens, starts, _ends) = lex_with_offsets(source)
-    let stmts = parse_program_located(tokens, starts, source)
-    let st = bind_new_state(tokens, starts)
-    bind_walk_stmts(st, stmts)
+    let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
+    let st = bind_new_state(tokens = tokens, starts = starts)
+    bind_walk_stmts(st = st, stmts = stmts)
     let mut anchor = -1
     let mut i = 0
     while i < Array::length(st.let_recs) {
-      let (b, a) = Array::get(st.let_recs, i)
+      let (b, a) = Array::get(st.let_recs, at = i)
       if boff >= 0 && b == boff {
         anchor = a
       } else {
@@ -1008,7 +1008,7 @@ export fn let_rec_anchor_at(source: String, boff: Int) -> Int {
     let mut shared = false
     let mut j = 0
     while anchor >= 0 && j < Array::length(st.let_recs) {
-      let (b, a) = Array::get(st.let_recs, j)
+      let (b, a) = Array::get(st.let_recs, at = j)
       if a == anchor && b != boff {
         shared = true
       } else {

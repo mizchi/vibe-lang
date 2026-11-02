@@ -23,30 +23,30 @@ import @vibe/parser {
   lex_with_offsets, parse_program_located, print_program, print_stmt
 }
 
-fn parsed(source: String) -> Array[Stmt] with Exception {
+fn parsed(_ source: String) -> Array[Stmt] with Exception {
   let (tokens, starts, _) = lex_with_offsets(source)
-  parse_program_located(tokens, starts, source)
+  parse_program_located(tokens = tokens, starts = starts, source = source)
 }
 
 /// The `SPositionalParams` rows of `source`, as `name:slot,slot` lines.
-fn slots(source: String) -> String with Exception {
+fn slots(_ source: String) -> String with Exception {
   let rows: Array[String] = []
   for stmt in parsed(source) {
     match stmt {
       SPositionalParams(found) => for row in found {
         let (name, at) = row
-        Array::push(rows, name + ":" + String::join(for i in at {
+        Array::push(rows, value = name + ":" + String::join(for i in at {
           __to_string(i)
-        }, ","))
+        }, sep = ","))
       },
       _ => ()
     }
   }
-  String::join(rows, "\n")
+  String::join(rows, sep = "\n")
 }
 
 /// The checker's first error, "" when the program checks.
-fn first_error(source: String) -> String with Exception {
+fn first_error(_ source: String) -> String with Exception {
   handle {
     let _ = check_program(parsed(source))
     ""
@@ -54,7 +54,7 @@ fn first_error(source: String) -> String with Exception {
 }
 
 /// The parse error, "" when the source parses.
-fn parse_error(source: String) -> String {
+fn parse_error(_ source: String) -> String {
   handle {
     let _ = parsed(source)
     ""
@@ -80,8 +80,8 @@ test "the parameter keeps its plain name" {
 }
 
 test "`_` on a lambda that is not a declaration is refused" {
-  inspect(String::contains(parse_error("fn main() -> Int {\n  let f = (_ x: Int) -> Int { x }\n  f(1)\n}\n"), "remove `_ `"), content = "true")
-  inspect(String::contains(parse_error("let g = apply((_ x: Int) -> Int { x })\n"), "remove `_ `"), content = "true")
+  inspect(String::contains(parse_error("fn main() -> Int {\n  let f = (_ x: Int) -> Int { x }\n  f(1)\n}\n"), needle = "remove `_ `"), content = "true")
+  inspect(String::contains(parse_error("let g = apply((_ x: Int) -> Int { x })\n"), needle = "remove `_ `"), content = "true")
 }
 
 test "a `_` slot is filled by position, beside labels" {
@@ -91,18 +91,18 @@ test "a `_` slot is filled by position, beside labels" {
 
 test "a label on a `_` slot names the edit" {
   let bad = get_decl() + "fn main() -> Int {\n  get(xs = [1, 2], at = 1)\n}\n"
-  inspect(String::contains(first_error(bad), "argument 1 of get is positional (the declaration writes `_` before it): remove `xs = `"), content = "true")
+  inspect(String::contains(first_error(bad), needle = "argument 1 of get is positional (the declaration writes `_` before it): remove `xs = `"), content = "true")
 }
 
 test "a call that mixes forms off the `_` slots is still refused" {
   let source = "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\nfn main() -> Int {\n  sub(10, y = 3)\n}\n"
-  inspect(String::contains(first_error(source), "mixes positional and labeled arguments"), content = "true")
+  inspect(String::contains(first_error(source), needle = "mixes positional and labeled arguments"), content = "true")
 }
 
 test "the printer writes `_` back" {
   let printed = print_program(parsed(get_decl() + "let twice = (_ x: Int) -> Int { x * 2 }\n"))
-  inspect(String::contains(printed, "(_ xs: Array[Int], at: Int)"), content = "true")
-  inspect(String::contains(printed, "(_ x: Int)"), content = "true")
+  inspect(String::contains(printed, needle = "(_ xs: Array[Int], at: Int)"), content = "true")
+  inspect(String::contains(printed, needle = "(_ x: Int)"), content = "true")
   inspect(slots(printed), content = "get:0\ntwice:0")
 }
 
@@ -111,8 +111,8 @@ test "the codemod leaves a declared `_` positional under every policy" {
   label_sites_begin()
   let _ = check_program(parsed(source))
   let sites = label_sites_end()
-  let result = add_labels("t.vibe", source, 0, sites, add_labels_positional_none)
-  inspect(String::contains(result.source, "get([1, 2], at = 1)"), content = "true")
+  let result = add_labels(path = "t.vibe", source = source, offset_delta = 0, sites = sites, policy = add_labels_positional_none)
+  inspect(String::contains(result.source, needle = "get([1, 2], at = 1)"), content = "true")
   inspect(result.deferred_calls, content = "0")
 }
 
@@ -125,11 +125,11 @@ test "an inactive `#cfg` declaration leaves no `_` slots behind" {
   inspect(first_error(source), content = "")
 }
 
-fn contract_sig(source: String) -> (String, String) with Exception {
+fn contract_sig(_ source: String) -> (String, String) with Exception {
   let (tokens, _, _) = lex_with_offsets(source)
   let (decls, opaque, stmts) = parse_contract_program(tokens)
-  let (_, sig) = Array::get(decls, 0)
-  (sig, contract_hash(decls, opaque, stmts))
+  let (_, sig) = Array::get(decls, at = 0)
+  (sig, contract_hash(fn_decls = decls, opaque_names = opaque, type_defs = stmts))
 }
 
 test "a `_` slot is part of a contract's signature and hash" {
@@ -144,13 +144,13 @@ test "a `_` slot is part of a contract's signature and hash" {
 
 /// The conformance signatures of the units concatenated the way the package
 /// loader concatenates them: each unit followed by an empty marker.
-fn union_sigs(units: Array[String]) -> String with Exception {
+fn union_sigs(_ units: Array[String]) -> String with Exception {
   let union: Array[Stmt] = []
   for unit in units {
     for stmt in parsed(unit) {
-      Array::push(union, stmt)
+      Array::push(union, value = stmt)
     }
-    Array::push(union, SPositionalParams([]))
+    Array::push(union, value = SPositionalParams([]))
   }
   let out: Array[String] = []
   for def in collect_impl_fn_defs(union) {
@@ -159,13 +159,13 @@ fn union_sigs(units: Array[String]) -> String with Exception {
       Some(text) => text,
       None => "?"
     }
-    Array::push(out, name + (if exported {
+    Array::push(out, value = name + (if exported {
       " export "
     } else {
       " private "
     }) + shown)
   }
-  String::join(out, "\n")
+  String::join(out, sep = "\n")
 }
 
 test "a unit's `_` slots never mark another unit's same-named function" {
@@ -192,6 +192,6 @@ test "a printed program's `_` slots do not outlive it" {
   // `print_stmt` of another program's same-named `f` must not print them.
   let _ = print_program(parsed("fn f(_ x: Int) -> Int {\n  x\n}\n"))
   let other = parsed("fn f(x: Int) -> Int {\n  x\n}\n")
-  let shown = print_stmt(Array::get(other, 0))
-  inspect(String::contains(shown, "_ x"), content = "false")
+  let shown = print_stmt(Array::get(other, at = 0))
+  inspect(String::contains(shown, needle = "_ x"), content = "false")
 }

@@ -129,7 +129,7 @@ import ./suspend_scps_rename_ident.vibe {
 /// suspendable tasks used to refuse EVERY nested handle, so a program could
 /// not catch an exception anywhere in the entry body.
 fn scps_nested_handle_inert(hb: Expr, harms: Array[(Pat, Expr)], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Bool {
-  !scps_inert_taint(hb, eff, needing, array_empty_str(), ctx) && !scps_inert_taint_arms(harms, eff, needing, array_empty_str(), ctx)
+  !scps_inert_taint(e = hb, eff = eff, needing = needing, locals = array_empty_str(), ctx = ctx) && !scps_inert_taint_arms(arms = harms, eff = eff, needing = needing, locals = array_empty_str(), ctx = ctx)
 }
 
 /// #1537: a nested handle whose BODY reaches the split effect is still
@@ -142,27 +142,27 @@ fn scps_nested_handle_inert(hb: Expr, harms: Array[(Pat, Expr)], eff: String, ne
 fn scps_abortive_handle_ok(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> Bool {
   let (eff, _, needing, _, _) = sctx
   let (_, _, _, _, _, _, groups) = ctx
-  let own_members = scps_group_members(groups, eff)
+  let own_members = scps_group_members(groups = groups, target = eff)
   let mut ok = Array::length(harms) > 0
   let mut i = 0
   while i < Array::length(harms) {
-    let (p, ex) = Array::get(harms, i)
+    let (p, ex) = Array::get(harms, at = i)
     match p {
-      PCtor(q, _) => if !String::contains(q, "::") || edp_str_array_contains(own_members, q[0: String::index_of(q, "::")]) {
+      PCtor(q, _) => if !String::contains(q, needle = "::") || edp_str_array_contains(arr = own_members, v = q[0: String::index_of(q, needle = "::")]) {
         ok = false
       } else {
         ()
       },
       _ => ok = false
     }
-    if scps_mentions_name(ex, "resume") || scps_pat_binds_resume(p) {
+    if scps_mentions_name(e = ex, x = "resume") || scps_pat_binds_resume(p) {
       ok = false
     } else {
       ()
     }
     i = i + 1
   }
-  ok && !scps_inert_taint_arms(scps_arms_unwrap_done(harms, eff), eff, needing, scps_safe_captures(scope), ctx) && scps_calls_ok(hb, sctx, ctx, scope)
+  ok && !scps_inert_taint_arms(arms = scps_arms_unwrap_done(harms = harms, eff = eff), eff = eff, needing = needing, locals = scps_safe_captures(scope), ctx = ctx) && scps_calls_ok(e = hb, sctx = sctx, ctx = ctx, scope = scope)
 }
 
 /// The arms of an abortive handle this pass already split carry their value
@@ -173,16 +173,16 @@ fn scps_arms_unwrap_done(harms: Array[(Pat, Expr)], eff: String) -> Array[(Pat, 
   let out = scps_empty_arms()
   let mut i = 0
   while i < Array::length(harms) {
-    let (p, ex) = Array::get(harms, i)
+    let (p, ex) = Array::get(harms, at = i)
     let inner = match ex {
       ECall(EIdent(nm, _), vargs, _, _) => if nm == dn && Array::length(vargs) == 1 {
-        Array::get(vargs, 0)
+        Array::get(vargs, at = 0)
       } else {
         ex
       },
       _ => ex
     }
-    Array::push(out, (p, inner))
+    Array::push(out, value = (p, inner))
     i = i + 1
   }
   out
@@ -202,7 +202,7 @@ fn scps_arms_unwrap_done(harms: Array[(Pat, Expr)], eff: String) -> Array[(Pat, 
 /// the yield is caught by the same arms.
 fn scps_split_handle(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
   let (eff, _, _, _, _) = sctx
-  let (bok, bstep) = scps_split_tail(hb, sctx, ctx, st)
+  let (bok, bstep) = scps_split_tail(e = hb, sctx = sctx, ctx = ctx, st = st)
   if !bok {
     (false, EHandle(hb, harms))
   } else {
@@ -210,41 +210,41 @@ fn scps_split_handle(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, Array[S
     let darms = scps_empty_arms()
     let mut ai = 0
     while ai < Array::length(harms) {
-      let (p, ex) = Array::get(harms, ai)
-      Array::push(darms, (p, scps_mk_done(eff, ex)))
+      let (p, ex) = Array::get(harms, at = ai)
+      Array::push(darms, value = (p, scps_mk_done(eff = eff, v = ex)))
       ai = ai + 1
     }
-    let wname = scps_local("__scps_hw", hsite)
-    let stn = scps_local("__scps_hst", hsite)
-    let vname = scps_local("__scps_hv", hsite)
-    let kname = scps_local("__scps_hk", hsite)
-    let rv = scps_local("__scps_hrv", hsite)
+    let wname = scps_local(prefix = "__scps_hw", site = hsite)
+    let stn = scps_local(prefix = "__scps_hst", site = hsite)
+    let vname = scps_local(prefix = "__scps_hv", site = hsite)
+    let kname = scps_local(prefix = "__scps_hk", site = hsite)
+    let rv = scps_local(prefix = "__scps_hrv", site = hsite)
     let marms = scps_empty_arms()
     let done_pats = scps_empty_pats()
-    Array::push(done_pats, PBind(vname))
-    Array::push(marms, (PCtor(scps_done_name(eff), done_pats), scps_mk_done(eff, EIdent(vname, -1))))
-    let (_, decl_ops) = scps_effect_decl_ops(ctx, eff)
+    Array::push(done_pats, value = PBind(vname))
+    Array::push(marms, value = (PCtor(scps_done_name(eff), done_pats), scps_mk_done(eff = eff, v = EIdent(vname, -1))))
+    let (_, decl_ops) = scps_effect_decl_ops(ctx = ctx, eff = eff)
     let mut oi = 0
     while oi < Array::length(decl_ops) {
-      let (opname, arity) = Array::get(decl_ops, oi)
+      let (opname, arity) = Array::get(decl_ops, at = oi)
       let ypats = scps_empty_pats()
       let yargs = array_empty_expr()
       let mut pi = 0
       while pi < arity {
-        let pname = String::concat(scps_local("__scps_hp", hsite), String::concat("_", Int::to_string(pi)))
-        Array::push(ypats, PBind(pname))
-        Array::push(yargs, EIdent(pname, -1))
+        let pname = String::concat(scps_local(prefix = "__scps_hp", site = hsite), String::concat("_", Int::to_string(pi)))
+        Array::push(ypats, value = PBind(pname))
+        Array::push(yargs, value = EIdent(pname, -1))
         pi = pi + 1
       }
-      Array::push(ypats, PBind(kname))
+      Array::push(ypats, value = PBind(kname))
       let resumed = EHandle(ECall(EIdent(kname, -1), [EIdent(rv, -1)], -1, []), darms)
-      Array::push(yargs, scps_mk_fn1(rv, ECall(EIdent(wname, -1), [resumed], -1, [
+      Array::push(yargs, value = scps_mk_fn1(param = rv, body = ECall(EIdent(wname, -1), [resumed], -1, [
       ])))
-      Array::push(marms, (PCtor(scps_y_name(eff, opname), ypats), ECall(EIdent(scps_y_name(eff, opname), -1), yargs, -1, [
+      Array::push(marms, value = (PCtor(scps_y_name(eff = eff, opname = opname), ypats), ECall(EIdent(scps_y_name(eff = eff, opname = opname), -1), yargs, -1, [
       ])))
       oi = oi + 1
     }
-    let wfn = scps_mk_fn1(stn, EMatch(EIdent(stn, -1), marms))
+    let wfn = scps_mk_fn1(param = stn, body = EMatch(EIdent(stn, -1), marms))
     (true, ELetRec(wname, wfn, ECall(EIdent(wname, -1), [EHandle(bstep, darms)], -1, [
     ])))
   }
@@ -255,11 +255,11 @@ fn scps_split_handle_bind(v: Expr, x: String, b: Expr, sctx: (String, Array[Stri
   let (eff, _, _, _, _) = sctx
   match v {
     EHandle(hb, harms) => {
-      let (hok, hstep) = scps_split_handle(hb, harms, sctx, ctx, st)
-      let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+      let (hok, hstep) = scps_split_handle(hb = hb, harms = harms, sctx = sctx, ctx = ctx, st = st)
+      let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
       (hok && bok, ECall(EIdent(scps_bubble_name(eff), -1), [
         hstep,
-        scps_mk_fn1(x, bexpr)
+        scps_mk_fn1(param = x, body = bexpr)
       ], -1, []))
     },
     _ => (false, v)
@@ -270,7 +270,7 @@ fn scps_split_handle_bind(v: Expr, x: String, b: Expr, sctx: (String, Array[Stri
 /// the split turns into a step (scps_split_handle).
 fn scps_as_split_handle(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
   match e {
-    EHandle(_, _) => scps_contains_susp(e, sctx),
+    EHandle(_, _) => scps_contains_susp(e = e, sctx = sctx),
     _ => false
   }
 }
@@ -279,20 +279,20 @@ export fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], In
   let (eff, _, needing, _, _) = sctx
   match e {
     ECall(callee, args, _, resolution) => if resolved_callee_operation(resolution) == builtin_frame_jump {
-      scps_exprs_calls_ok(args, sctx, ctx, scope)
+      scps_exprs_calls_ok(es = args, sctx = sctx, ctx = ctx, scope = scope)
     } else {
       match callee {
         EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
-          match Array::get(args, 0) {
+          match Array::get(args, at = 0) {
             EIdent(_, _) => true,
             ECall(opc, op_args, _, _) => match opc {
-              EIdent(_, _) => scps_exprs_calls_ok(op_args, sctx, ctx, scope),
+              EIdent(_, _) => scps_exprs_calls_ok(es = op_args, sctx = sctx, ctx = ctx, scope = scope),
               _ => false
             },
             _ => false
           }
-        } else if scps_named_call_with_args_ok(nm, args, sctx, ctx, scope) {
-          scps_exprs_calls_ok(args, sctx, ctx, scope)
+        } else if scps_named_call_with_args_ok(name = nm, args = args, sctx = sctx, ctx = ctx, scope = scope) {
+          scps_exprs_calls_ok(es = args, sctx = sctx, ctx = ctx, scope = scope)
         } else {
           false
         },
@@ -301,27 +301,27 @@ export fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], In
         // argument, so only the argument is judged. It was refused as a call
         // through a closure, so no annotated `let` could sit in a suspending
         // body.
-        EFn(_, _, aparams, _, _, abody) => Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) && scps_calls_ok(Array::get(args, 0), sctx, ctx, scope),
+        EFn(_, _, aparams, _, _, abody) => Array::length(args) == 1 && edp_is_identity_ascription(params = aparams, body = abody) && scps_calls_ok(e = Array::get(args, at = 0), sctx = sctx, ctx = ctx, scope = scope),
         _ => false
       }
     },
     ELet(nm, v, b, _) => {
-      let vok = scps_calls_ok(v, sctx, ctx, scope)
-      vok && scps_calls_ok(b, sctx, ctx, scps_scope_bind(scope, nm, scps_let_kind(v, eff, needing, ctx, scope)))
+      let vok = scps_calls_ok(e = v, sctx = sctx, ctx = ctx, scope = scope)
+      vok && scps_calls_ok(e = b, sctx = sctx, ctx = ctx, scope = scps_scope_bind(scope = scope, name = nm, kind = scps_let_kind(v = v, eff = eff, needing = needing, ctx = ctx, scope = scope)))
     },
-    ELetMut(nm, v, b, _) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(b, sctx, ctx, scps_scope_bind(scope, nm, 0)),
+    ELetMut(nm, v, b, _) => scps_calls_ok(e = v, sctx = sctx, ctx = ctx, scope = scope) && scps_calls_ok(e = b, sctx = sctx, ctx = ctx, scope = scps_scope_bind(scope = scope, name = nm, kind = 0)),
     ELetRec(nm, v, b) => {
-      let ext = scps_scope_bind(scope, nm, scps_letrec_kind(v, eff))
-      scps_calls_ok(v, sctx, ctx, ext) && scps_calls_ok(b, sctx, ctx, ext)
+      let ext = scps_scope_bind(scope = scope, name = nm, kind = scps_letrec_kind(v = v, eff = eff))
+      scps_calls_ok(e = v, sctx = sctx, ctx = ctx, scope = ext) && scps_calls_ok(e = b, sctx = sctx, ctx = ctx, scope = ext)
     },
-    ESeq(a, b) => scps_calls_ok(a, sctx, ctx, scope) && scps_calls_ok(b, sctx, ctx, scope),
-    EIf(c, t, el) => scps_calls_ok(c, sctx, ctx, scope) && scps_calls_ok(t, sctx, ctx, scope) && scps_calls_ok(el, sctx, ctx, scope),
+    ESeq(a, b) => scps_calls_ok(e = a, sctx = sctx, ctx = ctx, scope = scope) && scps_calls_ok(e = b, sctx = sctx, ctx = ctx, scope = scope),
+    EIf(c, t, el) => scps_calls_ok(e = c, sctx = sctx, ctx = ctx, scope = scope) && scps_calls_ok(e = t, sctx = sctx, ctx = ctx, scope = scope) && scps_calls_ok(e = el, sctx = sctx, ctx = ctx, scope = scope),
     EMatch(s, arms) => {
-      let mut ok = scps_calls_ok(s, sctx, ctx, scope)
+      let mut ok = scps_calls_ok(e = s, sctx = sctx, ctx = ctx, scope = scope)
       let mut i = 0
       while i < Array::length(arms) {
-        let (p, ex) = Array::get(arms, i)
-        if !scps_calls_ok(ex, sctx, ctx, scps_scope_bind_pat(scope, p)) {
+        let (p, ex) = Array::get(arms, at = i)
+        if !scps_calls_ok(e = ex, sctx = sctx, ctx = ctx, scope = scps_scope_bind_pat(scope = scope, p = p)) {
           ok = false
         } else {
           ()
@@ -330,46 +330,46 @@ export fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], In
       }
       ok
     },
-    EHandle(hb, harms) => scps_nested_handle_inert(hb, harms, eff, needing, ctx) || scps_abortive_handle_ok(hb, harms, sctx, ctx, scope),
-    EFn(_, _, params, _, _, b) => scps_calls_ok(b, sctx, ctx, scps_scope_bind_params(scope, params, eff, ctx)),
-    EWhile(c, b) => scps_calls_ok(c, sctx, ctx, scope) && scps_calls_ok(b, sctx, ctx, scope),
+    EHandle(hb, harms) => scps_nested_handle_inert(hb = hb, harms = harms, eff = eff, needing = needing, ctx = ctx) || scps_abortive_handle_ok(hb = hb, harms = harms, sctx = sctx, ctx = ctx, scope = scope),
+    EFn(_, _, params, _, _, b) => scps_calls_ok(e = b, sctx = sctx, ctx = ctx, scope = scps_scope_bind_params(scope = scope, params = params, eff = eff, ctx = ctx)),
+    EWhile(c, b) => scps_calls_ok(e = c, sctx = sctx, ctx = ctx, scope = scope) && scps_calls_ok(e = b, sctx = sctx, ctx = ctx, scope = scope),
     EForIn(nm, idx, it, b) => {
-      let body_scope = scps_scope_bind_opt(scps_scope_bind(scope, nm, 0), idx, 0)
-      scps_calls_ok(it, sctx, ctx, scope) && scps_calls_ok(b, sctx, ctx, body_scope)
+      let body_scope = scps_scope_bind_opt(scope = scps_scope_bind(scope = scope, name = nm, kind = 0), name = idx, kind = 0)
+      scps_calls_ok(e = it, sctx = sctx, ctx = ctx, scope = scope) && scps_calls_ok(e = b, sctx = sctx, ctx = ctx, scope = body_scope)
     },
     ELoop(pairs, b) => {
       let names = array_empty_str()
       let mut i = 0
       let mut ok = true
       while i < Array::length(pairs) {
-        let (nm, v) = Array::get(pairs, i)
-        Array::push(names, nm)
-        if !scps_calls_ok(v, sctx, ctx, scope) {
+        let (nm, v) = Array::get(pairs, at = i)
+        Array::push(names, value = nm)
+        if !scps_calls_ok(e = v, sctx = sctx, ctx = ctx, scope = scope) {
           ok = false
         } else {
           ()
         }
         i = i + 1
       }
-      ok && scps_calls_ok(b, sctx, ctx, scps_scope_bind_names(scope, names, 0))
+      ok && scps_calls_ok(e = b, sctx = sctx, ctx = ctx, scope = scps_scope_bind_names(scope = scope, names = names, kind = 0))
     },
-    EBinOp(_, l, r, _) => scps_calls_ok(l, sctx, ctx, scope) && scps_calls_ok(r, sctx, ctx, scope),
-    EUnaryOp(_, e2) => scps_calls_ok(e2, sctx, ctx, scope),
-    EAssign(_, v, c, _) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(c, sctx, ctx, scope),
-    EAssignOp(_, _, v, c, _) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(c, sctx, ctx, scope),
-    EReturn(e2) => scps_calls_ok(e2, sctx, ctx, scope),
-    EDot(o, _, _, _) => scps_calls_ok(o, sctx, ctx, scope),
-    ELabeledArg(_, _, v) => scps_calls_ok(v, sctx, ctx, scope),
+    EBinOp(_, l, r, _) => scps_calls_ok(e = l, sctx = sctx, ctx = ctx, scope = scope) && scps_calls_ok(e = r, sctx = sctx, ctx = ctx, scope = scope),
+    EUnaryOp(_, e2) => scps_calls_ok(e = e2, sctx = sctx, ctx = ctx, scope = scope),
+    EAssign(_, v, c, _) => scps_calls_ok(e = v, sctx = sctx, ctx = ctx, scope = scope) && scps_calls_ok(e = c, sctx = sctx, ctx = ctx, scope = scope),
+    EAssignOp(_, _, v, c, _) => scps_calls_ok(e = v, sctx = sctx, ctx = ctx, scope = scope) && scps_calls_ok(e = c, sctx = sctx, ctx = ctx, scope = scope),
+    EReturn(e2) => scps_calls_ok(e = e2, sctx = sctx, ctx = ctx, scope = scope),
+    EDot(o, _, _, _) => scps_calls_ok(e = o, sctx = sctx, ctx = ctx, scope = scope),
+    ELabeledArg(_, _, v) => scps_calls_ok(e = v, sctx = sctx, ctx = ctx, scope = scope),
     EBreak(opt) => match opt {
-      Some(e2) => scps_calls_ok(e2, sctx, ctx, scope),
+      Some(e2) => scps_calls_ok(e = e2, sctx = sctx, ctx = ctx, scope = scope),
       None => true
     },
-    EContinue(args) => scps_exprs_calls_ok(args, sctx, ctx, scope),
-    ETuple(elems) => scps_exprs_calls_ok(elems, sctx, ctx, scope),
-    EArray(elems) => scps_exprs_calls_ok(elems, sctx, ctx, scope),
-    ERecord(_, fields, _) => scps_fields_calls_ok(fields, sctx, ctx, scope),
-    EMap(fields) => scps_fields_calls_ok(fields, sctx, ctx, scope),
-    ESpread(e2) => scps_calls_ok(e2, sctx, ctx, scope),
+    EContinue(args) => scps_exprs_calls_ok(es = args, sctx = sctx, ctx = ctx, scope = scope),
+    ETuple(elems) => scps_exprs_calls_ok(es = elems, sctx = sctx, ctx = ctx, scope = scope),
+    EArray(elems) => scps_exprs_calls_ok(es = elems, sctx = sctx, ctx = ctx, scope = scope),
+    ERecord(_, fields, _) => scps_fields_calls_ok(fields = fields, sctx = sctx, ctx = ctx, scope = scope),
+    EMap(fields) => scps_fields_calls_ok(fields = fields, sctx = sctx, ctx = ctx, scope = scope),
+    ESpread(e2) => scps_calls_ok(e = e2, sctx = sctx, ctx = ctx, scope = scope),
     _ => true
   }
 }
@@ -378,7 +378,7 @@ fn scps_exprs_calls_ok(es: Array[Expr], sctx: (String, Array[String], Array[Stri
   let mut i = 0
   let mut ok = true
   while i < Array::length(es) {
-    if !scps_calls_ok(Array::get(es, i), sctx, ctx, scope) {
+    if !scps_calls_ok(e = Array::get(es, at = i), sctx = sctx, ctx = ctx, scope = scope) {
       ok = false
     } else {
       ()
@@ -392,8 +392,8 @@ fn scps_fields_calls_ok(fields: Array[(String, Expr)], sctx: (String, Array[Stri
   let mut i = 0
   let mut ok = true
   while i < Array::length(fields) {
-    let (_, v) = Array::get(fields, i)
-    if !scps_calls_ok(v, sctx, ctx, scope) {
+    let (_, v) = Array::get(fields, at = i)
+    if !scps_calls_ok(e = v, sctx = sctx, ctx = ctx, scope = scope) {
       ok = false
     } else {
       ()
@@ -412,63 +412,63 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
   match e {
     ECall(callee, args, off, _) => match callee {
       EIdent(nm, ioff) => if nm == "perform" && Array::length(args) == 1 {
-        match Array::get(args, 0) {
+        match Array::get(args, at = 0) {
           EIdent(_, _) => (false, "", -1),
           ECall(opc, op_args, _, _) => match opc {
-            EIdent(_, _) => scps_first_bad_call_info_exprs(op_args, sctx, ctx, scope),
-            _ => (true, nm, scps_pick_off(ioff, off))
+            EIdent(_, _) => scps_first_bad_call_info_exprs(es = op_args, sctx = sctx, ctx = ctx, scope = scope),
+            _ => (true, nm, scps_pick_off(ident_off = ioff, call_off = off))
           },
-          _ => (true, nm, scps_pick_off(ioff, off))
+          _ => (true, nm, scps_pick_off(ident_off = ioff, call_off = off))
         }
-      } else if scps_named_call_with_args_ok(nm, args, sctx, ctx, scope) {
-        scps_first_bad_call_info_exprs(args, sctx, ctx, scope)
+      } else if scps_named_call_with_args_ok(name = nm, args = args, sctx = sctx, ctx = ctx, scope = scope) {
+        scps_first_bad_call_info_exprs(es = args, sctx = sctx, ctx = ctx, scope = scope)
       } else {
-        Array::set(scps_culprit_capture, 0, scps_args_opaque_capture(nm, args, eff, needing, ctx, scope))
-        Array::set(scps_culprit_step_call, 0, scps_args_step_call(nm, args, eff, ctx, scope))
-        (true, nm, scps_pick_off(ioff, off))
+        Array::set(scps_culprit_capture, at = 0, value = scps_args_opaque_capture(name = nm, args = args, eff = eff, needing = needing, ctx = ctx, scope = scope))
+        Array::set(scps_culprit_step_call, at = 0, value = scps_args_step_call(name = nm, args = args, eff = eff, ctx = ctx, scope = scope))
+        (true, nm, scps_pick_off(ident_off = ioff, call_off = off))
       },
       EDot(_, field, _, fdoff) => (true, field, fdoff),
-      EFn(_, _, aparams, _, _, abody) => if Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) {
-        scps_first_bad_call_info(Array::get(args, 0), sctx, ctx, scope)
+      EFn(_, _, aparams, _, _, abody) => if Array::length(args) == 1 && edp_is_identity_ascription(params = aparams, body = abody) {
+        scps_first_bad_call_info(e = Array::get(args, at = 0), sctx = sctx, ctx = ctx, scope = scope)
       } else {
         (true, "", off)
       },
       _ => (true, "", off)
     },
     ELet(nm, v, b, _) => {
-      let first = scps_first_bad_call_info(v, sctx, ctx, scope)
+      let first = scps_first_bad_call_info(e = v, sctx = sctx, ctx = ctx, scope = scope)
       let (found, _, _) = first
       if found {
         first
       } else {
-        scps_first_bad_call_info(b, sctx, ctx, scps_scope_bind(scope, nm, scps_let_kind(v, eff, needing, ctx, scope)))
+        scps_first_bad_call_info(e = b, sctx = sctx, ctx = ctx, scope = scps_scope_bind(scope = scope, name = nm, kind = scps_let_kind(v = v, eff = eff, needing = needing, ctx = ctx, scope = scope)))
       }
     },
     ELetMut(nm, v, b, _) => {
-      let first = scps_first_bad_call_info(v, sctx, ctx, scope)
+      let first = scps_first_bad_call_info(e = v, sctx = sctx, ctx = ctx, scope = scope)
       let (found, _, _) = first
       if found {
         first
       } else {
-        scps_first_bad_call_info(b, sctx, ctx, scps_scope_bind(scope, nm, 0))
+        scps_first_bad_call_info(e = b, sctx = sctx, ctx = ctx, scope = scps_scope_bind(scope = scope, name = nm, kind = 0))
       }
     },
     ELetRec(nm, v, b) => {
-      let ext = scps_scope_bind(scope, nm, scps_letrec_kind(v, eff))
-      scps_first_bad_call_info_pair(v, b, sctx, ctx, ext)
+      let ext = scps_scope_bind(scope = scope, name = nm, kind = scps_letrec_kind(v = v, eff = eff))
+      scps_first_bad_call_info_pair(a = v, b = b, sctx = sctx, ctx = ctx, scope = ext)
     },
-    ESeq(a, b) => scps_first_bad_call_info_pair(a, b, sctx, ctx, scope),
+    ESeq(a, b) => scps_first_bad_call_info_pair(a = a, b = b, sctx = sctx, ctx = ctx, scope = scope),
     EIf(c, t, el) => {
-      let first = scps_first_bad_call_info_pair(c, t, sctx, ctx, scope)
+      let first = scps_first_bad_call_info_pair(a = c, b = t, sctx = sctx, ctx = ctx, scope = scope)
       let (found, _, _) = first
       if found {
         first
       } else {
-        scps_first_bad_call_info(el, sctx, ctx, scope)
+        scps_first_bad_call_info(e = el, sctx = sctx, ctx = ctx, scope = scope)
       }
     },
     EMatch(s, arms) => {
-      let first = scps_first_bad_call_info(s, sctx, ctx, scope)
+      let first = scps_first_bad_call_info(e = s, sctx = sctx, ctx = ctx, scope = scope)
       let (first_found, _, _) = first
       if first_found {
         first
@@ -478,8 +478,8 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
         let mut off = -1
         let mut i = 0
         while i < Array::length(arms) && !found {
-          let (p, ex) = Array::get(arms, i)
-          let (f, n, o) = scps_first_bad_call_info(ex, sctx, ctx, scps_scope_bind_pat(scope, p))
+          let (p, ex) = Array::get(arms, at = i)
+          let (f, n, o) = scps_first_bad_call_info(e = ex, sctx = sctx, ctx = ctx, scope = scps_scope_bind_pat(scope = scope, p = p))
           found = f
           nm = n
           off = o
@@ -488,21 +488,21 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
         (found, nm, off)
       }
     },
-    EHandle(hb, harms) => if scps_nested_handle_inert(hb, harms, eff, needing, ctx) || scps_abortive_handle_ok(hb, harms, sctx, ctx, scope) {
+    EHandle(hb, harms) => if scps_nested_handle_inert(hb = hb, harms = harms, eff = eff, needing = needing, ctx = ctx) || scps_abortive_handle_ok(hb = hb, harms = harms, sctx = sctx, ctx = ctx, scope = scope) {
       (false, "", -1)
     } else {
       (true, "", -1)
     },
-    EFn(_, _, params, _, _, b) => scps_first_bad_call_info(b, sctx, ctx, scps_scope_bind_params(scope, params, eff, ctx)),
-    EWhile(c, b) => scps_first_bad_call_info_pair(c, b, sctx, ctx, scope),
+    EFn(_, _, params, _, _, b) => scps_first_bad_call_info(e = b, sctx = sctx, ctx = ctx, scope = scps_scope_bind_params(scope = scope, params = params, eff = eff, ctx = ctx)),
+    EWhile(c, b) => scps_first_bad_call_info_pair(a = c, b = b, sctx = sctx, ctx = ctx, scope = scope),
     EForIn(nm, idx, it, b) => {
-      let first = scps_first_bad_call_info(it, sctx, ctx, scope)
+      let first = scps_first_bad_call_info(e = it, sctx = sctx, ctx = ctx, scope = scope)
       let (found, _, _) = first
       if found {
         first
       } else {
-        let body_scope = scps_scope_bind_opt(scps_scope_bind(scope, nm, 0), idx, 0)
-        scps_first_bad_call_info(b, sctx, ctx, body_scope)
+        let body_scope = scps_scope_bind_opt(scope = scps_scope_bind(scope = scope, name = nm, kind = 0), name = idx, kind = 0)
+        scps_first_bad_call_info(e = b, sctx = sctx, ctx = ctx, scope = body_scope)
       }
     },
     ELoop(pairs, b) => {
@@ -512,9 +512,9 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
       let mut off = -1
       let mut i = 0
       while i < Array::length(pairs) && !found {
-        let (ln, v) = Array::get(pairs, i)
-        Array::push(names, ln)
-        let (f, n, o) = scps_first_bad_call_info(v, sctx, ctx, scope)
+        let (ln, v) = Array::get(pairs, at = i)
+        Array::push(names, value = ln)
+        let (f, n, o) = scps_first_bad_call_info(e = v, sctx = sctx, ctx = ctx, scope = scope)
         found = f
         nm = n
         off = o
@@ -523,26 +523,26 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
       if found {
         (found, nm, off)
       } else {
-        scps_first_bad_call_info(b, sctx, ctx, scps_scope_bind_names(scope, names, 0))
+        scps_first_bad_call_info(e = b, sctx = sctx, ctx = ctx, scope = scps_scope_bind_names(scope = scope, names = names, kind = 0))
       }
     },
-    EBinOp(_, l, r, _) => scps_first_bad_call_info_pair(l, r, sctx, ctx, scope),
-    EUnaryOp(_, e2) => scps_first_bad_call_info(e2, sctx, ctx, scope),
-    EAssign(_, v, c, _) => scps_first_bad_call_info_pair(v, c, sctx, ctx, scope),
-    EAssignOp(_, _, v, c, _) => scps_first_bad_call_info_pair(v, c, sctx, ctx, scope),
-    EReturn(e2) => scps_first_bad_call_info(e2, sctx, ctx, scope),
-    EDot(o, _, _, _) => scps_first_bad_call_info(o, sctx, ctx, scope),
-    ELabeledArg(_, _, v) => scps_first_bad_call_info(v, sctx, ctx, scope),
+    EBinOp(_, l, r, _) => scps_first_bad_call_info_pair(a = l, b = r, sctx = sctx, ctx = ctx, scope = scope),
+    EUnaryOp(_, e2) => scps_first_bad_call_info(e = e2, sctx = sctx, ctx = ctx, scope = scope),
+    EAssign(_, v, c, _) => scps_first_bad_call_info_pair(a = v, b = c, sctx = sctx, ctx = ctx, scope = scope),
+    EAssignOp(_, _, v, c, _) => scps_first_bad_call_info_pair(a = v, b = c, sctx = sctx, ctx = ctx, scope = scope),
+    EReturn(e2) => scps_first_bad_call_info(e = e2, sctx = sctx, ctx = ctx, scope = scope),
+    EDot(o, _, _, _) => scps_first_bad_call_info(e = o, sctx = sctx, ctx = ctx, scope = scope),
+    ELabeledArg(_, _, v) => scps_first_bad_call_info(e = v, sctx = sctx, ctx = ctx, scope = scope),
     EBreak(opt) => match opt {
-      Some(e2) => scps_first_bad_call_info(e2, sctx, ctx, scope),
+      Some(e2) => scps_first_bad_call_info(e = e2, sctx = sctx, ctx = ctx, scope = scope),
       None => (false, "", -1)
     },
-    EContinue(args) => scps_first_bad_call_info_exprs(args, sctx, ctx, scope),
-    ETuple(elems) => scps_first_bad_call_info_exprs(elems, sctx, ctx, scope),
-    EArray(elems) => scps_first_bad_call_info_exprs(elems, sctx, ctx, scope),
-    ERecord(_, fields, _) => scps_first_bad_call_info_fields(fields, sctx, ctx, scope),
-    EMap(fields) => scps_first_bad_call_info_fields(fields, sctx, ctx, scope),
-    ESpread(e2) => scps_first_bad_call_info(e2, sctx, ctx, scope),
+    EContinue(args) => scps_first_bad_call_info_exprs(es = args, sctx = sctx, ctx = ctx, scope = scope),
+    ETuple(elems) => scps_first_bad_call_info_exprs(es = elems, sctx = sctx, ctx = ctx, scope = scope),
+    EArray(elems) => scps_first_bad_call_info_exprs(es = elems, sctx = sctx, ctx = ctx, scope = scope),
+    ERecord(_, fields, _) => scps_first_bad_call_info_fields(fields = fields, sctx = sctx, ctx = ctx, scope = scope),
+    EMap(fields) => scps_first_bad_call_info_fields(fields = fields, sctx = sctx, ctx = ctx, scope = scope),
+    ESpread(e2) => scps_first_bad_call_info(e = e2, sctx = sctx, ctx = ctx, scope = scope),
     _ => (false, "", -1)
   }
 }
@@ -556,12 +556,12 @@ fn scps_pick_off(ident_off: Int, call_off: Int) -> Int {
 }
 
 fn scps_first_bad_call_info_pair(a: Expr, b: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> (Bool, String, Int) {
-  let first = scps_first_bad_call_info(a, sctx, ctx, scope)
+  let first = scps_first_bad_call_info(e = a, sctx = sctx, ctx = ctx, scope = scope)
   let (found, _, _) = first
   if found {
     first
   } else {
-    scps_first_bad_call_info(b, sctx, ctx, scope)
+    scps_first_bad_call_info(e = b, sctx = sctx, ctx = ctx, scope = scope)
   }
 }
 
@@ -571,7 +571,7 @@ fn scps_first_bad_call_info_exprs(es: Array[Expr], sctx: (String, Array[String],
   let mut nm = ""
   let mut off = -1
   while i < Array::length(es) && !found {
-    let (f, n, o) = scps_first_bad_call_info(Array::get(es, i), sctx, ctx, scope)
+    let (f, n, o) = scps_first_bad_call_info(e = Array::get(es, at = i), sctx = sctx, ctx = ctx, scope = scope)
     found = f
     nm = n
     off = o
@@ -586,8 +586,8 @@ fn scps_first_bad_call_info_fields(fields: Array[(String, Expr)], sctx: (String,
   let mut nm = ""
   let mut off = -1
   while i < Array::length(fields) && !found {
-    let (_, v) = Array::get(fields, i)
-    let (f, n, o) = scps_first_bad_call_info(v, sctx, ctx, scope)
+    let (_, v) = Array::get(fields, at = i)
+    let (f, n, o) = scps_first_bad_call_info(e = v, sctx = sctx, ctx = ctx, scope = scope)
     found = f
     nm = n
     off = o
@@ -609,17 +609,17 @@ let scps_culprit_step_call: Array[String] = [""]
 /// the leading edit (#3161: a captured name to give a plain-data type, or ""),
 /// the `(here: ..)` clause, and the location marker.
 export fn scps_culprit_parts(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> (String, String, String) {
-  Array::set(scps_culprit_capture, 0, "")
-  Array::set(scps_culprit_step_call, 0, "")
-  let (found, raw_nm, off) = scps_first_bad_call_info(e, sctx, ctx, scope)
+  Array::set(scps_culprit_capture, at = 0, value = "")
+  Array::set(scps_culprit_step_call, at = 0, value = "")
+  let (found, raw_nm, off) = scps_first_bad_call_info(e = e, sctx = sctx, ctx = ctx, scope = scope)
   // #3185: name what the program wrote, not the internal `NAME$user` its own
   // definition of a builtin-called name runs under; the span marker below
   // is verified against that source spelling.
   let nm = builtin_shadow_source_name(raw_nm)
-  let cap = Array::get(scps_culprit_capture, 0)
-  let step_call = Array::get(scps_culprit_step_call, 0)
-  Array::set(scps_culprit_capture, 0, "")
-  Array::set(scps_culprit_step_call, 0, "")
+  let cap = Array::get(scps_culprit_capture, at = 0)
+  let step_call = Array::get(scps_culprit_step_call, at = 0)
+  Array::set(scps_culprit_capture, at = 0, value = "")
+  Array::set(scps_culprit_step_call, at = 0, value = "")
   let (eff, _, _, _, _) = sctx
   let lead = if found && String::length(nm) > 0 && String::length(step_call) > 0 {
     // #3192: the closure calls a step-compiled closure, and `nm` would run it
@@ -631,7 +631,7 @@ export fn scps_culprit_parts(e: Expr, sctx: (String, Array[String], Array[String
       ""
     }
     String::concat(String::concat(head, String::concat(step_call, String::concat("` before or after `", String::concat(nm, "` instead")))), String::concat(async_edit, " -- "))
-  } else if found && String::length(nm) > 0 && String::length(cap) > 0 && scps_local_class(scope, cap) < 0 && scps_fn_def_index(ctx, cap) >= 0 {
+  } else if found && String::length(nm) > 0 && String::length(cap) > 0 && scps_local_class(scope = scope, name = cap) < 0 && scps_fn_def_index(ctx = ctx, name = cap) >= 0 {
     // #3182: `cap` is a top-level function taken as a value, not a binding
     // the program could annotate, so the edit above would not apply. A
     // closure literal that calls it by name is judged like any other call.
@@ -670,19 +670,19 @@ export fn scps_culprit_parts(e: Expr, sctx: (String, Array[String], Array[String
 /// first such name). "" for every other refusal, so the diagnostic does not
 /// suggest an edit that would not fix it.
 fn scps_args_opaque_capture(name: String, args: Array[Expr], eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> String {
-  let (is_fn, row) = scps_fn_row_of(ctx, name)
-  if scps_local_class(scope, name) >= 0 || !is_fn || scps_row_contains(ctx, row, eff) || !scps_row_has_var(row) {
+  let (is_fn, row) = scps_fn_row_of(ctx = ctx, name = name)
+  if scps_local_class(scope = scope, name = name) >= 0 || !is_fn || scps_row_contains(ctx = ctx, row = row, eff = eff) || !scps_row_has_var(row) {
     ""
   } else {
     let mut out = ""
     let mut i = 0
     while out == "" && i < Array::length(args) {
-      let a = Array::get(args, i)
+      let a = Array::get(args, at = i)
       match a {
-        EFn(_, _, ps, _, _, b) => if scps_is_inert_literal_in(a, eff, needing, ctx, scope) {
+        EFn(_, _, ps, _, _, b) => if scps_is_inert_literal_in(v = a, eff = eff, needing = needing, ctx = ctx, scope = scope) {
           ()
         } else {
-          out = scps_first_opaque_capture(b, scps_locals_with_params(scps_safe_captures(scope), ps), ctx)
+          out = scps_first_opaque_capture(e = b, locals = scps_locals_with_params(locals = scps_safe_captures(scope), params = ps), ctx = ctx)
         },
         _ => ()
       }
@@ -698,44 +698,44 @@ fn scps_args_opaque_capture(name: String, args: Array[Expr], eff: String, needin
 /// their own.
 fn scps_first_opaque_capture(e: Expr, locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> String {
   match e {
-    EIdent(nm, _) => if edp_str_array_contains(locals, nm) || scps_is_ctor_name(ctx, nm) {
+    EIdent(nm, _) => if edp_str_array_contains(arr = locals, v = nm) || scps_is_ctor_name(ctx = ctx, nm = nm) {
       ""
     } else {
       nm
     },
-    ECall(EIdent(_, _), args, _, _) => scps_first_opaque_capture_all(args, locals, ctx),
-    ELet(nm, v, b, _) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, scps_locals_with(locals, nm), ctx)),
-    ELetMut(nm, v, b, _) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, scps_locals_with(locals, nm), ctx)),
+    ECall(EIdent(_, _), args, _, _) => scps_first_opaque_capture_all(es = args, locals = locals, ctx = ctx),
+    ELet(nm, v, b, _) => scps_first_nonempty(a = scps_first_opaque_capture(e = v, locals = locals, ctx = ctx), b = scps_first_opaque_capture(e = b, locals = scps_locals_with(locals = locals, nm = nm), ctx = ctx)),
+    ELetMut(nm, v, b, _) => scps_first_nonempty(a = scps_first_opaque_capture(e = v, locals = locals, ctx = ctx), b = scps_first_opaque_capture(e = b, locals = scps_locals_with(locals = locals, nm = nm), ctx = ctx)),
     ELetRec(nm, v, b) => {
-      let ext = scps_locals_with(locals, nm)
-      scps_first_nonempty(scps_first_opaque_capture(v, ext, ctx), scps_first_opaque_capture(b, ext, ctx))
+      let ext = scps_locals_with(locals = locals, nm = nm)
+      scps_first_nonempty(a = scps_first_opaque_capture(e = v, locals = ext, ctx = ctx), b = scps_first_opaque_capture(e = b, locals = ext, ctx = ctx))
     },
-    EFn(_, _, ps, _, _, b) => scps_first_opaque_capture(b, scps_locals_with_params(locals, ps), ctx),
+    EFn(_, _, ps, _, _, b) => scps_first_opaque_capture(e = b, locals = scps_locals_with_params(locals = locals, params = ps), ctx = ctx),
     EForIn(nm, idx, it, b) => {
-      let ext = scps_locals_with(locals, nm)
+      let ext = scps_locals_with(locals = locals, nm = nm)
       let ext2 = match idx {
-        Some(inm) => scps_locals_with(ext, inm),
+        Some(inm) => scps_locals_with(locals = ext, nm = inm),
         None => ext
       }
-      scps_first_nonempty(scps_first_opaque_capture(it, locals, ctx), scps_first_opaque_capture(b, ext2, ctx))
+      scps_first_nonempty(a = scps_first_opaque_capture(e = it, locals = locals, ctx = ctx), b = scps_first_opaque_capture(e = b, locals = ext2, ctx = ctx))
     },
     ELoop(pairs, b) => {
       let mut out = ""
       let mut ext = locals
       let mut i = 0
       while i < Array::length(pairs) {
-        let (nm, v) = Array::get(pairs, i)
-        out = scps_first_nonempty(out, scps_first_opaque_capture(v, locals, ctx))
-        ext = scps_locals_with(ext, nm)
+        let (nm, v) = Array::get(pairs, at = i)
+        out = scps_first_nonempty(a = out, b = scps_first_opaque_capture(e = v, locals = locals, ctx = ctx))
+        ext = scps_locals_with(locals = ext, nm = nm)
         i = i + 1
       }
-      scps_first_nonempty(out, scps_first_opaque_capture(b, ext, ctx))
+      scps_first_nonempty(a = out, b = scps_first_opaque_capture(e = b, locals = ext, ctx = ctx))
     },
-    EMatch(s, arms) => scps_first_nonempty(scps_first_opaque_capture(s, locals, ctx), scps_first_opaque_capture_arms(arms, locals, ctx)),
-    EHandle(b, arms) => scps_first_nonempty(scps_first_opaque_capture(b, locals, ctx), scps_first_opaque_capture_arms(arms, locals, ctx)),
-    EAssign(_, v, b, _) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, locals, ctx)),
-    EAssignOp(_, _, v, b, _) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, locals, ctx)),
-    _ => scps_first_opaque_capture_all(expr_children(e), locals, ctx)
+    EMatch(s, arms) => scps_first_nonempty(a = scps_first_opaque_capture(e = s, locals = locals, ctx = ctx), b = scps_first_opaque_capture_arms(arms = arms, locals = locals, ctx = ctx)),
+    EHandle(b, arms) => scps_first_nonempty(a = scps_first_opaque_capture(e = b, locals = locals, ctx = ctx), b = scps_first_opaque_capture_arms(arms = arms, locals = locals, ctx = ctx)),
+    EAssign(_, v, b, _) => scps_first_nonempty(a = scps_first_opaque_capture(e = v, locals = locals, ctx = ctx), b = scps_first_opaque_capture(e = b, locals = locals, ctx = ctx)),
+    EAssignOp(_, _, v, b, _) => scps_first_nonempty(a = scps_first_opaque_capture(e = v, locals = locals, ctx = ctx), b = scps_first_opaque_capture(e = b, locals = locals, ctx = ctx)),
+    _ => scps_first_opaque_capture_all(es = expr_children(e), locals = locals, ctx = ctx)
   }
 }
 
@@ -743,7 +743,7 @@ fn scps_first_opaque_capture_all(es: Array[Expr], locals: Array[String], ctx: (A
   let mut out = ""
   let mut i = 0
   while out == "" && i < Array::length(es) {
-    out = scps_first_opaque_capture(Array::get(es, i), locals, ctx)
+    out = scps_first_opaque_capture(e = Array::get(es, at = i), locals = locals, ctx = ctx)
     i = i + 1
   }
   out
@@ -753,10 +753,10 @@ fn scps_first_opaque_capture_arms(arms: Array[(Pat, Expr)], locals: Array[String
   let mut out = ""
   let mut i = 0
   while out == "" && i < Array::length(arms) {
-    let (p, ex) = Array::get(arms, i)
-    let bound = Array::slice(locals, 0, Array::length(locals))
-    scps_pat_collect_binds(p, bound)
-    out = scps_first_opaque_capture(ex, bound, ctx)
+    let (p, ex) = Array::get(arms, at = i)
+    let bound = Array::slice(locals, start = 0, end = Array::length(locals))
+    scps_pat_collect_binds(p = p, acc = bound)
+    out = scps_first_opaque_capture(e = ex, locals = bound, ctx = ctx)
     i = i + 1
   }
   out
@@ -770,17 +770,17 @@ fn scps_first_opaque_capture_arms(arms: Array[(Pat, Expr)], locals: Array[String
 /// `let` inside the literal binds. `name` would run that literal under the
 /// plain convention, so the call cannot be split. "" for every other refusal.
 fn scps_args_step_call(name: String, args: Array[Expr], eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), scope: Array[(String, Int)]) -> String {
-  let (is_fn, row) = scps_fn_row_of(ctx, name)
-  if scps_local_class(scope, name) >= 0 || !is_fn || scps_row_contains(ctx, row, eff) || !scps_row_has_var(row) {
+  let (is_fn, row) = scps_fn_row_of(ctx = ctx, name = name)
+  if scps_local_class(scope = scope, name = name) >= 0 || !is_fn || scps_row_contains(ctx = ctx, row = row, eff = eff) || !scps_row_has_var(row) {
     ""
   } else {
     let steps = scps_scope_step_names(scope)
     let mut out = ""
     let mut i = 0
     while out == "" && i < Array::length(args) {
-      match Array::get(args, i) {
+      match Array::get(args, at = i) {
         EFn(_, _, ps, _, _, b) => {
-          out = scps_first_step_call(b, eff, scps_step_names_mask_params(steps, ps), true)
+          out = scps_first_step_call(e = b, eff = eff, names = scps_step_names_mask_params(names = steps, params = ps), add = true)
         },
         _ => ()
       }
@@ -791,18 +791,18 @@ fn scps_args_step_call(name: String, args: Array[Expr], eff: String, ctx: (Array
 }
 
 /// The names whose visible binder in `scope` is step-typed (class 2).
-fn scps_scope_step_names(scope: Array[(String, Int)]) -> Array[String] {
+fn scps_scope_step_names(_ scope: Array[(String, Int)]) -> Array[String] {
   let seen = array_empty_str()
   let out = array_empty_str()
   let mut i = Array::length(scope) - 1
   while i >= 0 {
-    let (nm, kind) = Array::get(scope, i)
-    if edp_str_array_contains(seen, nm) {
+    let (nm, kind) = Array::get(scope, at = i)
+    if edp_str_array_contains(arr = seen, v = nm) {
       ()
     } else {
-      Array::push(seen, nm)
+      Array::push(seen, value = nm)
       if kind == 2 {
-        Array::push(out, nm)
+        Array::push(out, value = nm)
       } else {
         ()
       }
@@ -816,40 +816,40 @@ fn scps_scope_step_names(scope: Array[(String, Int)]) -> Array[String] {
 /// diagnostic to name. "" when there is none.
 fn scps_first_step_call(e: Expr, eff: String, names: Array[String], add: Bool) -> String {
   match e {
-    ECall(EIdent(nm, _), args, _, _) => if edp_str_array_contains(names, nm) {
+    ECall(EIdent(nm, _), args, _, _) => if edp_str_array_contains(arr = names, v = nm) {
       nm
     } else {
-      scps_first_step_call_all(args, eff, names, add)
+      scps_first_step_call_all(es = args, eff = eff, names = names, add = add)
     },
-    ELet(x, v, b, _) => scps_first_nonempty(scps_first_step_call(v, eff, names, add), scps_first_step_call(b, eff, scps_step_names_bind(names, x, add && scps_literal_returns_step(v, eff)), add)),
+    ELet(x, v, b, _) => scps_first_nonempty(a = scps_first_step_call(e = v, eff = eff, names = names, add = add), b = scps_first_step_call(e = b, eff = eff, names = scps_step_names_bind(names = names, x = x, is_step = add && scps_literal_returns_step(v = v, eff = eff)), add = add)),
     ELetRec(x, v, b) => {
-      let inner = scps_step_names_bind(names, x, add && scps_literal_returns_step(v, eff))
-      scps_first_nonempty(scps_first_step_call(v, eff, inner, add), scps_first_step_call(b, eff, inner, add))
+      let inner = scps_step_names_bind(names = names, x = x, is_step = add && scps_literal_returns_step(v = v, eff = eff))
+      scps_first_nonempty(a = scps_first_step_call(e = v, eff = eff, names = inner, add = add), b = scps_first_step_call(e = b, eff = eff, names = inner, add = add))
     },
-    ELetMut(x, v, b, _) => scps_first_nonempty(scps_first_step_call(v, eff, names, add), scps_first_step_call(b, eff, scps_step_names_bind(names, x, false), add)),
-    EFn(_, _, ps, _, _, b) => scps_first_step_call(b, eff, scps_step_names_mask_params(names, ps), false),
-    EMatch(s, arms) => scps_first_nonempty(scps_first_step_call(s, eff, names, add), scps_first_step_call_arms(arms, eff, names, add)),
-    EHandle(b, arms) => scps_first_nonempty(scps_first_step_call(b, eff, names, add), scps_first_step_call_arms(arms, eff, names, add)),
+    ELetMut(x, v, b, _) => scps_first_nonempty(a = scps_first_step_call(e = v, eff = eff, names = names, add = add), b = scps_first_step_call(e = b, eff = eff, names = scps_step_names_bind(names = names, x = x, is_step = false), add = add)),
+    EFn(_, _, ps, _, _, b) => scps_first_step_call(e = b, eff = eff, names = scps_step_names_mask_params(names = names, params = ps), add = false),
+    EMatch(s, arms) => scps_first_nonempty(a = scps_first_step_call(e = s, eff = eff, names = names, add = add), b = scps_first_step_call_arms(arms = arms, eff = eff, names = names, add = add)),
+    EHandle(b, arms) => scps_first_nonempty(a = scps_first_step_call(e = b, eff = eff, names = names, add = add), b = scps_first_step_call_arms(arms = arms, eff = eff, names = names, add = add)),
     EForIn(nm, idx, it, b) => {
       let inner = match idx {
-        Some(inm) => scps_step_names_bind(scps_step_names_bind(names, nm, false), inm, false),
-        None => scps_step_names_bind(names, nm, false)
+        Some(inm) => scps_step_names_bind(names = scps_step_names_bind(names = names, x = nm, is_step = false), x = inm, is_step = false),
+        None => scps_step_names_bind(names = names, x = nm, is_step = false)
       }
-      scps_first_nonempty(scps_first_step_call(it, eff, names, add), scps_first_step_call(b, eff, inner, add))
+      scps_first_nonempty(a = scps_first_step_call(e = it, eff = eff, names = names, add = add), b = scps_first_step_call(e = b, eff = eff, names = inner, add = add))
     },
     ELoop(pairs, b) => {
       let mut out = ""
       let mut inner = names
       let mut i = 0
       while i < Array::length(pairs) {
-        let (nm, v) = Array::get(pairs, i)
-        out = scps_first_nonempty(out, scps_first_step_call(v, eff, names, add))
-        inner = scps_step_names_bind(inner, nm, false)
+        let (nm, v) = Array::get(pairs, at = i)
+        out = scps_first_nonempty(a = out, b = scps_first_step_call(e = v, eff = eff, names = names, add = add))
+        inner = scps_step_names_bind(names = inner, x = nm, is_step = false)
         i = i + 1
       }
-      scps_first_nonempty(out, scps_first_step_call(b, eff, inner, add))
+      scps_first_nonempty(a = out, b = scps_first_step_call(e = b, eff = eff, names = inner, add = add))
     },
-    _ => scps_first_step_call_all(expr_children(e), eff, names, add)
+    _ => scps_first_step_call_all(es = expr_children(e), eff = eff, names = names, add = add)
   }
 }
 
@@ -857,7 +857,7 @@ fn scps_first_step_call_all(es: Array[Expr], eff: String, names: Array[String], 
   let mut out = ""
   let mut i = 0
   while out == "" && i < Array::length(es) {
-    out = scps_first_step_call(Array::get(es, i), eff, names, add)
+    out = scps_first_step_call(e = Array::get(es, at = i), eff = eff, names = names, add = add)
     i = i + 1
   }
   out
@@ -867,10 +867,10 @@ fn scps_first_step_call_arms(arms: Array[(Pat, Expr)], eff: String, names: Array
   let mut out = ""
   let mut i = 0
   while out == "" && i < Array::length(arms) {
-    let (p, ex) = Array::get(arms, i)
+    let (p, ex) = Array::get(arms, at = i)
     let bound = array_empty_str()
-    scps_pat_collect_binds(p, bound)
-    out = scps_first_step_call(ex, eff, scps_step_names_mask(names, bound), add)
+    scps_pat_collect_binds(p = p, acc = bound)
+    out = scps_first_step_call(e = ex, eff = eff, names = scps_step_names_mask(names = names, bound = bound), add = add)
     i = i + 1
   }
   out
@@ -878,36 +878,36 @@ fn scps_first_step_call_arms(arms: Array[(Pat, Expr)], eff: String, names: Array
 
 export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> (Bool, Expr) {
   let (eff, ops, _, site, cps_locals) = sctx
-  if !scps_contains_susp(e, sctx) {
-    (true, scps_mk_done(eff, e))
+  if !scps_contains_susp(e = e, sctx = sctx) {
+    (true, scps_mk_done(eff = eff, v = e))
   } else {
-    let tail_idx = scps_as_target_perform(e, ops)
-    let tail_needing = scps_as_needing_call(e, sctx)
-    let tail_cps = scps_as_cps_local_call(e, sctx)
+    let tail_idx = scps_as_target_perform(e = e, ops = ops)
+    let tail_needing = scps_as_needing_call(e = e, sctx = sctx)
+    let tail_cps = scps_as_cps_local_call(e = e, sctx = sctx)
     if tail_idx >= 0 {
       // tail `perform Op(a..)` -- the op's value IS the computation's value.
       let targs = scps_perform_args(e)
-      if scps_exprs_contain_susp(targs, sctx) {
+      if scps_exprs_contain_susp(es = targs, sctx = sctx) {
         (false, e)
       } else {
-        let tv = scps_local("__scps_tv", site)
-        (true, scps_mk_yield(eff, scps_target_op_name(ctx, eff, Array::get(ops, tail_idx)), targs, tv, scps_mk_done(eff, EIdent(tv, -1))))
+        let tv = scps_local(prefix = "__scps_tv", site = site)
+        (true, scps_mk_yield(eff = eff, opname = scps_target_op_name(ctx = ctx, eff = eff, qname = Array::get(ops, at = tail_idx)), args = targs, bind_name = tv, cont_body = scps_mk_done(eff = eff, v = EIdent(tv, -1))))
       }
     } else if tail_needing != "" {
       // tail call to a needing fn -- its clone already returns a step.
       let cargs = scps_call_args(e)
-      if scps_exprs_contain_susp(cargs, sctx) {
+      if scps_exprs_contain_susp(es = cargs, sctx = sctx) {
         (false, e)
       } else {
-        scps_need_clone(eff, tail_needing, st)
-        (true, ECall(EIdent(scps_clone_name(eff, tail_needing), -1), cargs, -1, [
+        scps_need_clone(eff = eff, fname = tail_needing, st = st)
+        (true, ECall(EIdent(scps_clone_name(eff = eff, fname = tail_needing), -1), cargs, -1, [
         ]))
       }
     } else if tail_cps != "" {
       // closure-CPS (追記31 Vertical B): tail call through a step-typed
       // closure binding -- the call already returns a step. Passthrough.
       let cargs = scps_call_args(e)
-      if scps_exprs_contain_susp(cargs, sctx) {
+      if scps_exprs_contain_susp(es = cargs, sctx = sctx) {
         (false, e)
       } else {
         (true, e)
@@ -915,7 +915,7 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
     } else {
       match e {
         // #1537: a suspending abortive handle in tail position is its step.
-        EHandle(hb, harms) => scps_split_handle(hb, harms, sctx, ctx, st),
+        EHandle(hb, harms) => scps_split_handle(hb = hb, harms = harms, sctx = sctx, ctx = ctx, st = st),
         // #1536 tail short-circuit: preserve conditional RHS evaluation by
         // expressing the whole tail boolean as the equivalent conditional.
         // Re-entering this function reuses the established EIf condition and
@@ -923,13 +923,13 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
         // deliberately tail-only; generic compound ANF still refuses to walk
         // the RHS of && / || in assignments, calls, selections and seq heads.
         EBinOp(op, l, r, _) => if op == "&&" {
-          scps_split_tail(EIf(l, r, EBool(false)), sctx, ctx, st)
+          scps_split_tail(e = EIf(l, r, EBool(false)), sctx = sctx, ctx = ctx, st = st)
         } else if op == "||" {
-          scps_split_tail(EIf(l, EBool(true), r), sctx, ctx, st)
+          scps_split_tail(e = EIf(l, EBool(true), r), sctx = sctx, ctx = ctx, st = st)
         } else {
-          let (aok, abn, abv, e2) = scps_anf_compound(e, sctx, e, site)
+          let (aok, abn, abv, e2) = scps_anf_compound(sub = e, sctx = sctx, probe = e, site = site)
           if aok {
-            scps_split_tail(scps_anf_wrap(abn, abv, e2), sctx, ctx, st)
+            scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = e2), sctx = sctx, ctx = ctx, st = st)
           } else {
             (false, e)
           }
@@ -940,8 +940,8 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
           // continuation into the conditionally evaluated branches. Generic
           // compound ANF remains fail-closed for short-circuit RHS positions.
           let shortcircuit = match v {
-            EBinOp(op, l, r, _) => if !scps_contains_susp(l, sctx) && scps_contains_susp(r, sctx) {
-              match scps_let_shortcircuit_bind(x, r, b, off, site, sctx, false) {
+            EBinOp(op, l, r, _) => if !scps_contains_susp(e = l, sctx = sctx) && scps_contains_susp(e = r, sctx = sctx) {
+              match scps_let_shortcircuit_bind(result = x, rhs = r, continuation = b, result_off = off, site = site, sctx = sctx, carried = false) {
                 Some(selected) => if op == "&&" {
                   Some(EIf(l, selected, ELet(x, EBool(false), b, off)))
                 } else if op == "||" {
@@ -957,57 +957,57 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
             _ => None
           }
           match shortcircuit {
-            Some(lowered) => scps_split_tail(lowered, sctx, ctx, st),
+            Some(lowered) => scps_split_tail(e = lowered, sctx = sctx, ctx = ctx, st = st),
             None => {
-              let vp = scps_as_target_perform(v, ops)
-              let vn = scps_as_needing_call(v, sctx)
-              let vc = scps_as_cps_local_call(v, sctx)
-              if scps_as_split_handle(v, sctx) {
-                scps_split_handle_bind(v, x, b, sctx, ctx, st)
+              let vp = scps_as_target_perform(e = v, ops = ops)
+              let vn = scps_as_needing_call(e = v, sctx = sctx)
+              let vc = scps_as_cps_local_call(e = v, sctx = sctx)
+              if scps_as_split_handle(e = v, sctx = sctx) {
+                scps_split_handle_bind(v = v, x = x, b = b, sctx = sctx, ctx = ctx, st = st)
               } else if vp >= 0 {
                 let vargs = scps_perform_args(v)
-                if scps_exprs_contain_susp(vargs, sctx) {
+                if scps_exprs_contain_susp(es = vargs, sctx = sctx) {
                   (false, e)
                 } else {
-                  let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
-                  (bok, scps_mk_yield(eff, scps_target_op_name(ctx, eff, Array::get(ops, vp)), vargs, x, bexpr))
+                  let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
+                  (bok, scps_mk_yield(eff = eff, opname = scps_target_op_name(ctx = ctx, eff = eff, qname = Array::get(ops, at = vp)), args = vargs, bind_name = x, cont_body = bexpr))
                 }
               } else if vn != "" {
                 let vargs = scps_call_args(v)
-                if scps_exprs_contain_susp(vargs, sctx) {
+                if scps_exprs_contain_susp(es = vargs, sctx = sctx) {
                   (false, e)
                 } else {
-                  scps_need_clone(eff, vn, st)
-                  let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+                  scps_need_clone(eff = eff, fname = vn, st = st)
+                  let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
                   (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
-                    ECall(EIdent(scps_clone_name(eff, vn), -1), vargs, -1, []),
-                    scps_mk_fn1_typed(x, scps_call_ret_ty(v, ctx, e), bexpr)
+                    ECall(EIdent(scps_clone_name(eff = eff, fname = vn), -1), vargs, -1, []),
+                    scps_mk_fn1_typed(param = x, ty = scps_call_ret_ty(v = v, ctx = ctx, root = e), body = bexpr)
                   ], -1, []))
                 }
               } else if vc != "" {
                 // closure-CPS: `let x = f(a) REST` where `f` is a step-typed
                 // closure binding -- bubble the step it returns, no clone.
                 let vargs = scps_call_args(v)
-                if scps_exprs_contain_susp(vargs, sctx) {
+                if scps_exprs_contain_susp(es = vargs, sctx = sctx) {
                   (false, e)
                 } else {
-                  let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+                  let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
                   (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
                     v,
-                    scps_mk_fn1(x, bexpr)
+                    scps_mk_fn1(param = x, body = bexpr)
                   ], -1, []))
                 }
-              } else if scps_contains_susp(v, sctx) {
+              } else if scps_contains_susp(e = v, sctx = sctx) {
                 // #1536: a block or a selection that IS the whole bound value
                 // moves the binding inward instead of asking the compound ANF
                 // to walk a position it cannot.
-                match scps_bind_value_float(false, x, v, b, off, site) {
-                  Some(lowered) => scps_split_tail(lowered, sctx, ctx, st),
+                match scps_bind_value_float(is_mut = false, x = x, v = v, b = b, off = off, site = site) {
+                  Some(lowered) => scps_split_tail(e = lowered, sctx = sctx, ctx = ctx, st = st),
                   None => {
                     // #1536 (a) v8: the value is a compound around the suspension.
-                    let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
+                    let (aok, abn, abv, av) = scps_anf_compound(sub = v, sctx = sctx, probe = e, site = site)
                     if aok {
-                      scps_split_tail(scps_anf_wrap(abn, abv, ELet(x, av, b, off)), sctx, ctx, st)
+                      scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = ELet(x, av, b, off)), sctx = sctx, ctx = ctx, st = st)
                     } else {
                       (false, e)
                     }
@@ -1017,21 +1017,21 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
                 // closure-CPS: a let-bound literal the prepass step-split makes
                 // `x` a step-typed binding for the rest of this spine; a
                 // non-step rebind of an existing cps-local name masks it.
-                let is_step_lit = scps_literal_returns_step(v, eff)
+                let is_step_lit = scps_literal_returns_step(v = v, eff = eff)
                 let (_, s_ops, s_needing, s_site, s_cps) = sctx
                 let sctx2 = if is_step_lit {
-                  let ext = Array::slice(s_cps, 0, Array::length(s_cps))
-                  Array::push(ext, x)
+                  let ext = Array::slice(s_cps, start = 0, end = Array::length(s_cps))
+                  Array::push(ext, value = x)
                   (eff, s_ops, s_needing, s_site, ext)
-                } else if edp_str_array_contains(s_cps, x) {
+                } else if edp_str_array_contains(arr = s_cps, v = x) {
                   let masked = array_empty_str()
                   let mut mi = 0
                   while mi < Array::length(s_cps) {
-                    let mnm = Array::get(s_cps, mi)
+                    let mnm = Array::get(s_cps, at = mi)
                     if mnm == x {
                       ()
                     } else {
-                      Array::push(masked, mnm)
+                      Array::push(masked, value = mnm)
                     }
                     mi = mi + 1
                   }
@@ -1039,7 +1039,7 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
                 } else {
                   sctx
                 }
-                let (bok, bexpr) = scps_split_tail(b, sctx2, ctx, st)
+                let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx2, ctx = ctx, st = st)
                 (bok, ELet(x, v, bexpr, off))
               }
             }
@@ -1054,10 +1054,10 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
           // recursion the tail-call rewrite can no longer flatten (it runs
           // before this pass), so a long ordinary loop would exhaust the
           // wasm call stack on its way to a suspension further down.
-          EWhile(wc, wb) => if scps_contains_susp(a, sctx) {
-            scps_split_while(wc, wb, b, sctx, ctx, st)
+          EWhile(wc, wb) => if scps_contains_susp(e = a, sctx = sctx) {
+            scps_split_while(c = wc, body = wb, rest = b, sctx = sctx, ctx = ctx, st = st)
           } else {
-            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
             (bok, ESeq(a, bexpr))
           },
           // #1536 (a) v3, let-floating: a suspending let-chain compound in
@@ -1076,18 +1076,18 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
           // shadows every use the rename could reach. Non-suspending heads
           // keep the ordinary statement path below (same reasoning as the
           // `while` arm above: no gratuitous restructuring).
-          ELet(x, v, k, off) => if scps_contains_susp(a, sctx) {
-            let nx = scps_seq_float_fresh(x, k, b, site)
-            scps_split_tail(ELet(nx, v, ESeq(scps_rename_ident(k, x, nx), b), off), sctx, ctx, st)
+          ELet(x, v, k, off) => if scps_contains_susp(e = a, sctx = sctx) {
+            let nx = scps_seq_float_fresh(x = x, k = k, b = b, site = site)
+            scps_split_tail(e = ELet(nx, v, ESeq(scps_rename_ident(e = k, x = x, nx = nx), b), off), sctx = sctx, ctx = ctx, st = st)
           } else {
-            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
             (bok, ESeq(a, bexpr))
           },
-          ELetMut(x, v, k, off) => if scps_contains_susp(a, sctx) {
-            let nx = scps_seq_float_fresh(x, k, b, site)
-            scps_split_tail(ELetMut(nx, v, ESeq(scps_rename_ident(k, x, nx), b), off), sctx, ctx, st)
+          ELetMut(x, v, k, off) => if scps_contains_susp(e = a, sctx = sctx) {
+            let nx = scps_seq_float_fresh(x = x, k = k, b = b, site = site)
+            scps_split_tail(e = ELetMut(nx, v, ESeq(scps_rename_ident(e = k, x = x, nx = nx), b), off), sctx = sctx, ctx = ctx, st = st)
           } else {
-            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
             (bok, ESeq(a, bexpr))
           },
           // #1536 (a) v4: distribute the sequence continuation through a
@@ -1095,141 +1095,141 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
           // branches, so it is evaluated exactly once before exactly one
           // branch and its continuation. Branch-local lets remain lexical
           // to their branch because `b` is an ESeq sibling, not their body.
-          EIf(c, t, el) => if scps_contains_susp(a, sctx) {
-            if scps_direct_spine_input(c, sctx) {
-              let sx = scps_selection_fresh(e, site)
-              scps_split_tail(ELet(sx, c, EIf(EIdent(sx, -1), ESeq(t, b), ESeq(el, b)), -1), sctx, ctx, st)
-            } else if scps_contains_susp(c, sctx) {
-              let (aok, abn, abv, ac) = scps_anf_compound(c, sctx, e, site)
+          EIf(c, t, el) => if scps_contains_susp(e = a, sctx = sctx) {
+            if scps_direct_spine_input(e = c, sctx = sctx) {
+              let sx = scps_selection_fresh(e = e, site = site)
+              scps_split_tail(e = ELet(sx, c, EIf(EIdent(sx, -1), ESeq(t, b), ESeq(el, b)), -1), sctx = sctx, ctx = ctx, st = st)
+            } else if scps_contains_susp(e = c, sctx = sctx) {
+              let (aok, abn, abv, ac) = scps_anf_compound(sub = c, sctx = sctx, probe = e, site = site)
               if aok {
-                scps_split_tail(scps_anf_wrap(abn, abv, ESeq(EIf(ac, t, el), b)), sctx, ctx, st)
+                scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = ESeq(EIf(ac, t, el), b)), sctx = sctx, ctx = ctx, st = st)
               } else {
                 (false, e)
               }
             } else {
-              scps_split_tail(EIf(c, ESeq(t, b), ESeq(el, b)), sctx, ctx, st)
+              scps_split_tail(e = EIf(c, ESeq(t, b), ESeq(el, b)), sctx = sctx, ctx = ctx, st = st)
             }
           } else {
-            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
             (bok, ESeq(a, bexpr))
           },
           // #1536 (a) v4: likewise distribute through match after first
           // alpha-renaming every pattern binder. The tail was outside the
           // match originally; without the rename, a pattern binding could
           // capture an outer reference in the duplicated tail.
-          EMatch(s, arms) => if scps_contains_susp(a, sctx) {
-            if scps_direct_spine_input(s, sctx) {
-              let sx = scps_selection_fresh(e, site)
-              scps_split_tail(ELet(sx, s, EMatch(EIdent(sx, -1), scps_seq_float_match_arms(arms, b, site)), -1), sctx, ctx, st)
-            } else if scps_contains_susp(s, sctx) {
-              let (aok, abn, abv, as2) = scps_anf_compound(s, sctx, e, site)
+          EMatch(s, arms) => if scps_contains_susp(e = a, sctx = sctx) {
+            if scps_direct_spine_input(e = s, sctx = sctx) {
+              let sx = scps_selection_fresh(e = e, site = site)
+              scps_split_tail(e = ELet(sx, s, EMatch(EIdent(sx, -1), scps_seq_float_match_arms(arms = arms, b = b, site = site)), -1), sctx = sctx, ctx = ctx, st = st)
+            } else if scps_contains_susp(e = s, sctx = sctx) {
+              let (aok, abn, abv, as2) = scps_anf_compound(sub = s, sctx = sctx, probe = e, site = site)
               if aok {
-                scps_split_tail(scps_anf_wrap(abn, abv, ESeq(EMatch(as2, arms), b)), sctx, ctx, st)
+                scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = ESeq(EMatch(as2, arms), b)), sctx = sctx, ctx = ctx, st = st)
               } else {
                 (false, e)
               }
             } else {
-              scps_split_tail(EMatch(s, scps_seq_float_match_arms(arms, b, site)), sctx, ctx, st)
+              scps_split_tail(e = EMatch(s, scps_seq_float_match_arms(arms = arms, b = b, site = site)), sctx = sctx, ctx = ctx, st = st)
             }
           } else {
-            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
             (bok, ESeq(a, bexpr))
           },
           // #1537: a suspending abortive handle as a statement.
-          EHandle(_, _) => if scps_contains_susp(a, sctx) {
-            scps_split_handle_bind(a, scps_local("__scps_w", site), b, sctx, ctx, st)
+          EHandle(_, _) => if scps_contains_susp(e = a, sctx = sctx) {
+            scps_split_handle_bind(v = a, x = scps_local(prefix = "__scps_w", site = site), b = b, sctx = sctx, ctx = ctx, st = st)
           } else {
-            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
             (bok, ESeq(a, bexpr))
           },
           // Reassociate a suspending nested sequence head so its own head
           // surfaces for the arms above: ESeq(ESeq(a1, a2), b) ==>
           // ESeq(a1, ESeq(a2, b)). Strictly decreases head size, so the
           // rewrite loop terminates.
-          ESeq(a1, a2) => if scps_contains_susp(a, sctx) {
-            scps_split_tail(ESeq(a1, ESeq(a2, b)), sctx, ctx, st)
+          ESeq(a1, a2) => if scps_contains_susp(e = a, sctx = sctx) {
+            scps_split_tail(e = ESeq(a1, ESeq(a2, b)), sctx = sctx, ctx = ctx, st = st)
           } else {
-            let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+            let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
             (bok, ESeq(a, bexpr))
           },
           _ => {
-            let ap = scps_as_target_perform(a, ops)
-            let an = scps_as_needing_call(a, sctx)
+            let ap = scps_as_target_perform(e = a, ops = ops)
+            let an = scps_as_needing_call(e = a, sctx = sctx)
             if ap >= 0 {
               let aargs = scps_perform_args(a)
-              if scps_exprs_contain_susp(aargs, sctx) {
+              if scps_exprs_contain_susp(es = aargs, sctx = sctx) {
                 (false, e)
               } else {
-                let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
-                (bok, scps_mk_yield(eff, scps_target_op_name(ctx, eff, Array::get(ops, ap)), aargs, scps_local("__scps_w", site), bexpr))
+                let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
+                (bok, scps_mk_yield(eff = eff, opname = scps_target_op_name(ctx = ctx, eff = eff, qname = Array::get(ops, at = ap)), args = aargs, bind_name = scps_local(prefix = "__scps_w", site = site), cont_body = bexpr))
               }
             } else if an != "" {
               let aargs = scps_call_args(a)
-              if scps_exprs_contain_susp(aargs, sctx) {
+              if scps_exprs_contain_susp(es = aargs, sctx = sctx) {
                 (false, e)
               } else {
-                scps_need_clone(eff, an, st)
-                let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+                scps_need_clone(eff = eff, fname = an, st = st)
+                let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
                 (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
-                  ECall(EIdent(scps_clone_name(eff, an), -1), aargs, -1, []),
-                  scps_mk_fn1(scps_local("__scps_w", site), bexpr)
+                  ECall(EIdent(scps_clone_name(eff = eff, fname = an), -1), aargs, -1, []),
+                  scps_mk_fn1(param = scps_local(prefix = "__scps_w", site = site), body = bexpr)
                 ], -1, []))
               }
-            } else if scps_as_cps_local_call(a, sctx) != "" {
+            } else if scps_as_cps_local_call(e = a, sctx = sctx) != "" {
               // closure-CPS: statement-position call through a step-typed
               // closure binding -- bubble, discard the resumed value.
               let aargs = scps_call_args(a)
-              if scps_exprs_contain_susp(aargs, sctx) {
+              if scps_exprs_contain_susp(es = aargs, sctx = sctx) {
                 (false, e)
               } else {
-                let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+                let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
                 (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
                   a,
-                  scps_mk_fn1(scps_local("__scps_w", site), bexpr)
+                  scps_mk_fn1(param = scps_local(prefix = "__scps_w", site = site), body = bexpr)
                 ], -1, []))
               }
-            } else if scps_contains_susp(a, sctx) {
+            } else if scps_contains_susp(e = a, sctx = sctx) {
               // #1536 (a) v8: a compound STATEMENT around the suspension --
               // `Array::push(out, perform Op(i))`, or the `Array::set` that a
               // boxed `acc += perform ..` became.
-              let (aok, abn, abv, a2) = scps_anf_compound(a, sctx, e, site)
+              let (aok, abn, abv, a2) = scps_anf_compound(sub = a, sctx = sctx, probe = e, site = site)
               if aok {
-                scps_split_tail(scps_anf_wrap(abn, abv, ESeq(a2, b)), sctx, ctx, st)
+                scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = ESeq(a2, b)), sctx = sctx, ctx = ctx, st = st)
               } else {
                 (false, e)
               }
             } else {
-              let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+              let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
               (bok, ESeq(a, bexpr))
             }
           }
         },
-        EIf(c, t, el) => if scps_direct_spine_input(c, sctx) {
-          let sx = scps_selection_fresh(e, site)
-          scps_split_tail(ELet(sx, c, EIf(EIdent(sx, -1), t, el), -1), sctx, ctx, st)
-        } else if scps_contains_susp(c, sctx) {
-          let (aok, abn, abv, ac) = scps_anf_compound(c, sctx, e, site)
+        EIf(c, t, el) => if scps_direct_spine_input(e = c, sctx = sctx) {
+          let sx = scps_selection_fresh(e = e, site = site)
+          scps_split_tail(e = ELet(sx, c, EIf(EIdent(sx, -1), t, el), -1), sctx = sctx, ctx = ctx, st = st)
+        } else if scps_contains_susp(e = c, sctx = sctx) {
+          let (aok, abn, abv, ac) = scps_anf_compound(sub = c, sctx = sctx, probe = e, site = site)
           if aok {
-            scps_split_tail(scps_anf_wrap(abn, abv, EIf(ac, t, el)), sctx, ctx, st)
+            scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = EIf(ac, t, el)), sctx = sctx, ctx = ctx, st = st)
           } else {
             (false, e)
           }
         } else {
-          let (tok, te) = scps_split_tail(t, sctx, ctx, st)
-          let (eok, ee) = scps_split_tail(el, sctx, ctx, st)
+          let (tok, te) = scps_split_tail(e = t, sctx = sctx, ctx = ctx, st = st)
+          let (eok, ee) = scps_split_tail(e = el, sctx = sctx, ctx = ctx, st = st)
           if tok && eok {
             (true, EIf(c, te, ee))
           } else {
             (false, e)
           }
         },
-        EMatch(s, arms) => if scps_direct_spine_input(s, sctx) {
-          let sx = scps_selection_fresh(e, site)
-          scps_split_tail(ELet(sx, s, EMatch(EIdent(sx, -1), arms), -1), sctx, ctx, st)
-        } else if scps_contains_susp(s, sctx) {
-          let (aok, abn, abv, as2) = scps_anf_compound(s, sctx, e, site)
+        EMatch(s, arms) => if scps_direct_spine_input(e = s, sctx = sctx) {
+          let sx = scps_selection_fresh(e = e, site = site)
+          scps_split_tail(e = ELet(sx, s, EMatch(EIdent(sx, -1), arms), -1), sctx = sctx, ctx = ctx, st = st)
+        } else if scps_contains_susp(e = s, sctx = sctx) {
+          let (aok, abn, abv, as2) = scps_anf_compound(sub = s, sctx = sctx, probe = e, site = site)
           if aok {
-            scps_split_tail(scps_anf_wrap(abn, abv, EMatch(as2, arms)), sctx, ctx, st)
+            scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = EMatch(as2, arms)), sctx = sctx, ctx = ctx, st = st)
           } else {
             (false, e)
           }
@@ -1238,14 +1238,14 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
           let mut ok = true
           let mut i = 0
           while i < Array::length(arms) {
-            let (mp, mb) = Array::get(arms, i)
-            let (aok, ae) = scps_split_tail(mb, sctx, ctx, st)
+            let (mp, mb) = Array::get(arms, at = i)
+            let (aok, ae) = scps_split_tail(e = mb, sctx = sctx, ctx = ctx, st = st)
             if !aok {
               ok = false
             } else {
               ()
             }
-            Array::push(out, (mp, ae))
+            Array::push(out, value = (mp, ae))
             i = i + 1
           }
           if ok {
@@ -1259,23 +1259,23 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
         // whole assignment when minting the binder so assignment targets and
         // continuation names cannot collide with it. Compound RHS and
         // EAssignOp deliberately keep the generic fail-closed path.
-        EAssign(x, v, b, target_off) => if scps_direct_spine_input(v, sctx) {
-          let ax = scps_seq_float_fresh("assign", e, EUnit, site)
-          scps_split_tail(ELet(ax, v, EAssign(x, EIdent(ax, -1), b, target_off), -1), sctx, ctx, st)
-        } else if scps_contains_susp(v, sctx) {
+        EAssign(x, v, b, target_off) => if scps_direct_spine_input(e = v, sctx = sctx) {
+          let ax = scps_seq_float_fresh(x = "assign", k = e, b = EUnit, site = site)
+          scps_split_tail(e = ELet(ax, v, EAssign(x, EIdent(ax, -1), b, target_off), -1), sctx = sctx, ctx = ctx, st = st)
+        } else if scps_contains_susp(e = v, sctx = sctx) {
           // #1536: a block or a selection as the whole RHS moves the assignment
           // inward, exactly as a binding does. A target boxed by cellification
           // was already reshaped before that rewrite (scps_float_direct_assign);
           // this arm covers targets bound outside this spine.
-          match scps_assign_value_float(x, v, b, site) {
-            Some(lowered) => scps_split_tail(lowered, sctx, ctx, st),
+          match scps_assign_value_float(x = x, v = v, b = b, site = site) {
+            Some(lowered) => scps_split_tail(e = lowered, sctx = sctx, ctx = ctx, st = st),
             None => {
               // #1536 (a) v8: compound RHS (`x = f(perform Op())`). An `x op=`
               // RHS arrives here too, as the `Array::set` head scps_cellify
               // makes of it.
-              let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
+              let (aok, abn, abv, av) = scps_anf_compound(sub = v, sctx = sctx, probe = e, site = site)
               if aok {
-                scps_split_tail(scps_anf_wrap(abn, abv, EAssign(x, av, b, target_off)), sctx, ctx, st)
+                scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = EAssign(x, av, b, target_off)), sctx = sctx, ctx = ctx, st = st)
               } else {
                 (false, e)
               }
@@ -1290,34 +1290,34 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
           // refused while `ask() + i` compiled. A target captured by the
           // continuation closures is boxed by codegen like any other
           // captured `let mut`, so later writes and arm reads share it.
-          let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+          let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
           (bok, EAssign(x, v, bexpr, target_off))
         },
         // #3547: likewise a compound assignment whose right side does not
         // suspend. A suspending right side keeps the generic compound path.
-        EAssignOp(x, op, v, b, target_off) => if !scps_contains_susp(v, sctx) {
-          let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
+        EAssignOp(x, op, v, b, target_off) => if !scps_contains_susp(e = v, sctx = sctx) {
+          let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx, ctx = ctx, st = st)
           (bok, EAssignOp(x, op, v, bexpr, target_off))
         } else {
-          let (aok, abn, abv, e2) = scps_anf_compound(e, sctx, e, site)
+          let (aok, abn, abv, e2) = scps_anf_compound(sub = e, sctx = sctx, probe = e, site = site)
           if aok {
-            scps_split_tail(scps_anf_wrap(abn, abv, e2), sctx, ctx, st)
+            scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = e2), sctx = sctx, ctx = ctx, st = st)
           } else {
             (false, e)
           }
         },
-        ELetMut(x, v, b, off) => if scps_contains_susp(v, sctx) {
+        ELetMut(x, v, b, off) => if scps_contains_susp(e = v, sctx = sctx) {
           // #1536: block- or selection-valued initializer -- move the
           // `let mut` inward. A distributed branch then boxes its own copy of
           // the continuation, which is what the cell is for.
-          match scps_bind_value_float(true, x, v, b, off, site) {
-            Some(lowered) => scps_split_tail(lowered, sctx, ctx, st),
+          match scps_bind_value_float(is_mut = true, x = x, v = v, b = b, off = off, site = site) {
+            Some(lowered) => scps_split_tail(e = lowered, sctx = sctx, ctx = ctx, st = st),
             None => {
               // #1536 (a) v8: compound initializer. The binders wrap outside
               // the `let mut`, so the cell is still created after they run.
-              let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
+              let (aok, abn, abv, av) = scps_anf_compound(sub = v, sctx = sctx, probe = e, site = site)
               if aok {
-                scps_split_tail(scps_anf_wrap(abn, abv, ELetMut(x, av, b, off)), sctx, ctx, st)
+                scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = ELetMut(x, av, b, off)), sctx = sctx, ctx = ctx, st = st)
               } else {
                 (false, e)
               }
@@ -1330,11 +1330,11 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
           let masked = array_empty_str()
           let mut mi = 0
           while mi < Array::length(s_cps) {
-            let mnm = Array::get(s_cps, mi)
+            let mnm = Array::get(s_cps, at = mi)
             if mnm == x {
               ()
             } else {
-              Array::push(masked, mnm)
+              Array::push(masked, value = mnm)
             }
             mi = mi + 1
           }
@@ -1342,10 +1342,10 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
           // Float a direct assignment suspension before cellification turns a
           // write to `x` into Array::set(...). After that rewrite the perform
           // would be nested in a builtin argument and no longer recognizable.
-          let b2 = scps_float_direct_assign(b, sctx2, site)
-          let (bok, bexpr) = scps_split_tail(scps_cellify(b2, x), sctx2, ctx, st)
+          let b2 = scps_float_direct_assign(e = b, sctx = sctx2, site = site)
+          let (bok, bexpr) = scps_split_tail(e = scps_cellify(e = b2, x = x), sctx = sctx2, ctx = ctx, st = st)
           let cell = array_empty_expr()
-          Array::push(cell, v)
+          Array::push(cell, value = v)
           (bok, ELet(x, EArray(cell), bexpr, off))
         },
         // #3192: a `let rec` bound to a step-compiled literal is a step local
@@ -1353,30 +1353,30 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
         // a suspending spine keeps the compound path below, which refuses it.
         ELetRec(x, v, b) => {
           let (_, s_ops, s_needing, s_site, s_cps) = sctx
-          let ext = scps_step_names_bind(s_cps, x, true)
+          let ext = scps_step_names_bind(names = s_cps, x = x, is_step = true)
           let sctx2 = (eff, s_ops, s_needing, s_site, ext)
-          if scps_literal_returns_step(v, eff) && !scps_contains_susp(v, sctx2) {
-            let (bok, bexpr) = scps_split_tail(b, sctx2, ctx, st)
+          if scps_literal_returns_step(v = v, eff = eff) && !scps_contains_susp(e = v, sctx = sctx2) {
+            let (bok, bexpr) = scps_split_tail(e = b, sctx = sctx2, ctx = ctx, st = st)
             (bok, ELetRec(x, v, bexpr))
           } else {
-            let (aok, abn, abv, e2) = scps_anf_compound(e, sctx, e, site)
+            let (aok, abn, abv, e2) = scps_anf_compound(sub = e, sctx = sctx, probe = e, site = site)
             if aok {
-              scps_split_tail(scps_anf_wrap(abn, abv, e2), sctx, ctx, st)
+              scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = e2), sctx = sctx, ctx = ctx, st = st)
             } else {
               (false, e)
             }
           }
         },
-        EWhile(c, b) => scps_split_while(c, b, EUnit, sctx, ctx, st),
+        EWhile(c, b) => scps_split_while(c = c, body = b, rest = EUnit, sctx = sctx, ctx = ctx, st = st),
         // #1536 (a) v8: a compound in TAIL position (`1 + perform Op()`,
         // `Some(perform Op())`). Tail && / || was handled above without asking
         // generic ANF to traverse its conditional RHS. Everything else not
         // linearizable -- a for form, nested closure/handle, or transfer --
         // still lands on (false, e).
         _ => {
-          let (aok, abn, abv, e2) = scps_anf_compound(e, sctx, e, site)
+          let (aok, abn, abv, e2) = scps_anf_compound(sub = e, sctx = sctx, probe = e, site = site)
           if aok {
-            scps_split_tail(scps_anf_wrap(abn, abv, e2), sctx, ctx, st)
+            scps_split_tail(e = scps_anf_wrap(bn = abn, bv = abv, body = e2), sctx = sctx, ctx = ctx, st = st)
           } else {
             (false, e)
           }
@@ -1398,36 +1398,36 @@ fn scps_split_while(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String
   if scps_body_has_return(body) {
     (false, orig)
   } else if scps_loop_ctl_remains(body) {
-    scps_split_while_ctl(c, body, rest, sctx, ctx, st)
+    scps_split_while_ctl(c = c, body = body, rest = rest, sctx = sctx, ctx = ctx, st = st)
   } else {
-    let lp = scps_local("__scps_lp", scps_next_site(st))
-    let ext = Array::slice(s_cps, 0, Array::length(s_cps))
-    Array::push(ext, lp)
+    let lp = scps_local(prefix = "__scps_lp", site = scps_next_site(st))
+    let ext = Array::slice(s_cps, start = 0, end = Array::length(s_cps))
+    Array::push(ext, value = lp)
     let sctx2 = (eff, s_ops, s_needing, s_site, ext)
-    let step = scps_seq_append(body, ECall(EIdent(lp, -1), array_empty_expr(), -1, [
+    let step = scps_seq_append(e = body, k = ECall(EIdent(lp, -1), array_empty_expr(), -1, [
     ]))
-    if scps_direct_spine_input(c, sctx) {
+    if scps_direct_spine_input(e = c, sctx = sctx) {
       // #1536 (a) v8: evaluate one directly recognized suspending condition
       // once per loop check, then resume into the existing recursive loop
       // selection. Probe the whole loop + continuation so the fresh binder
       // cannot capture a user spelling in the condition, body, or rest.
-      let cx = scps_seq_float_fresh("while", orig, EUnit, s_site)
+      let cx = scps_seq_float_fresh(x = "while", k = orig, b = EUnit, site = s_site)
       let loop_body = ELet(cx, c, EIf(EIdent(cx, -1), step, rest), -1)
-      let (lok, lowered) = scps_split_tail(loop_body, sctx2, ctx, st)
+      let (lok, lowered) = scps_split_tail(e = loop_body, sctx = sctx2, ctx = ctx, st = st)
       if lok {
         let lam = EFn(array_empty_str(), scps_empty_tbs(), scps_empty_params(), None, None, lowered)
         (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1, [])))
       } else {
         (false, orig)
       }
-    } else if scps_contains_susp(c, sctx) {
+    } else if scps_contains_susp(e = c, sctx = sctx) {
       // #1536 (a) v8: a compound condition (`perform Next() > 0`). The whole
       // let chain goes INSIDE the loop closure, so the condition -- named
       // parts included -- is re-evaluated on every check, as `while` requires.
-      let (aok, abn, abv, ac) = scps_anf_compound(c, sctx, orig, s_site)
+      let (aok, abn, abv, ac) = scps_anf_compound(sub = c, sctx = sctx, probe = orig, site = s_site)
       if aok {
-        let loop_body = scps_anf_wrap(abn, abv, EIf(ac, step, rest))
-        let (lok, lowered) = scps_split_tail(loop_body, sctx2, ctx, st)
+        let loop_body = scps_anf_wrap(bn = abn, bv = abv, body = EIf(ac, step, rest))
+        let (lok, lowered) = scps_split_tail(e = loop_body, sctx = sctx2, ctx = ctx, st = st)
         if lok {
           let lam = EFn(array_empty_str(), scps_empty_tbs(), scps_empty_params(), None, None, lowered)
           (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1, [
@@ -1439,8 +1439,8 @@ fn scps_split_while(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String
         (false, orig)
       }
     } else {
-      let (iok, ibody) = scps_split_tail(step, sctx2, ctx, st)
-      let (rok, rbody) = scps_split_tail(rest, sctx2, ctx, st)
+      let (iok, ibody) = scps_split_tail(e = step, sctx = sctx2, ctx = ctx, st = st)
+      let (rok, rbody) = scps_split_tail(e = rest, sctx = sctx2, ctx = ctx, st = st)
       if iok && rok {
         let lam = EFn(array_empty_str(), scps_empty_tbs(), scps_empty_params(), None, None, EIf(c, ibody, rbody))
         (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1, [])))
@@ -1478,47 +1478,47 @@ fn scps_split_while_ctl(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[St
   // loop and its continuation. A user may legally spell the same reserved-
   // looking names, so mint each one with a scope-blind collision probe over
   // the complete original expression before moving either piece beneath it.
-  let lp = scps_loop_ctl_fresh("__scps_lp", orig, lsite)
-  let kname = scps_loop_ctl_fresh("__scps_lpk", orig, lsite)
-  let bv = scps_loop_ctl_fresh("__scps_lpv", orig, lsite)
+  let lp = scps_loop_ctl_fresh(prefix = "__scps_lp", orig = orig, site = lsite)
+  let kname = scps_loop_ctl_fresh(prefix = "__scps_lpk", orig = orig, site = lsite)
+  let bv = scps_loop_ctl_fresh(prefix = "__scps_lpv", orig = orig, site = lsite)
   let repeat = ECall(EIdent(lp, -1), array_empty_expr(), -1, [])
-  let normalized = scps_loop_normalize_ctl(body, lsite)
-  let rewritten = scps_loop_rewrite_ctl(scps_loop_append_repeat(normalized, repeat), lp, kname)
+  let normalized = scps_loop_normalize_ctl(e = body, site = lsite)
+  let rewritten = scps_loop_rewrite_ctl(e = scps_loop_append_repeat(e = normalized, k = repeat), lp = lp, kname = kname)
   // Anything the rewrite could not place on the spine (a transfer inside a
   // value, a call argument, an operand) stays fail-closed.
   if scps_loop_ctl_remains(rewritten) {
     (false, orig)
   } else {
-    let ext = Array::slice(s_cps, 0, Array::length(s_cps))
-    Array::push(ext, lp)
-    Array::push(ext, kname)
+    let ext = Array::slice(s_cps, start = 0, end = Array::length(s_cps))
+    Array::push(ext, value = lp)
+    Array::push(ext, value = kname)
     let sctx2 = (eff, s_ops, s_needing, s_site, ext)
     let exit_args = array_empty_expr()
-    Array::push(exit_args, EUnit)
+    Array::push(exit_args, value = EUnit)
     let exit_call = ECall(EIdent(kname, -1), exit_args, -1, [])
     // #1536 (a) v8: a compound suspending condition is linearized INSIDE the
     // loop closure, so it is re-evaluated on every check like the direct one.
-    let (cok, cbn, cbv, ac) = if scps_direct_spine_input(c, sctx) || !scps_contains_susp(c, sctx) {
+    let (cok, cbn, cbv, ac) = if scps_direct_spine_input(e = c, sctx = sctx) || !scps_contains_susp(e = c, sctx = sctx) {
       (false, array_empty_str(), array_empty_expr(), c)
     } else {
-      scps_anf_compound(c, sctx, orig, s_site)
+      scps_anf_compound(sub = c, sctx = sctx, probe = orig, site = s_site)
     }
-    let loop_body = if scps_direct_spine_input(c, sctx) {
-      let cx = scps_seq_float_fresh("while", orig, EUnit, s_site)
+    let loop_body = if scps_direct_spine_input(e = c, sctx = sctx) {
+      let cx = scps_seq_float_fresh(x = "while", k = orig, b = EUnit, site = s_site)
       ELet(cx, c, EIf(EIdent(cx, -1), rewritten, exit_call), -1)
     } else if cok {
-      scps_anf_wrap(cbn, cbv, EIf(ac, rewritten, exit_call))
+      scps_anf_wrap(bn = cbn, bv = cbv, body = EIf(ac, rewritten, exit_call))
     } else {
       EIf(c, rewritten, exit_call)
     }
-    if !scps_direct_spine_input(c, sctx) && !cok && scps_contains_susp(c, sctx) {
+    if !scps_direct_spine_input(e = c, sctx = sctx) && !cok && scps_contains_susp(e = c, sctx = sctx) {
       (false, orig)
     } else {
-      let (lok, lowered) = scps_split_tail(loop_body, sctx2, ctx, st)
-      let (kok, kbody) = scps_split_tail(rest, sctx2, ctx, st)
+      let (lok, lowered) = scps_split_tail(e = loop_body, sctx = sctx2, ctx = ctx, st = st)
+      let (kok, kbody) = scps_split_tail(e = rest, sctx = sctx2, ctx = ctx, st = st)
       if lok && kok {
         let lam = EFn(array_empty_str(), scps_empty_tbs(), scps_empty_params(), None, None, lowered)
-        (true, ELet(kname, scps_mk_fn1(bv, kbody), ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1, [
+        (true, ELet(kname, scps_mk_fn1(param = bv, body = kbody), ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1, [
         ])), -1))
       } else {
         (false, orig)
@@ -1527,7 +1527,7 @@ fn scps_split_while_ctl(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[St
   }
 }
 
-export fn scps_stmt_expr_of(s: Stmt) -> Option[Expr] {
+export fn scps_stmt_expr_of(_ s: Stmt) -> Option[Expr] {
   match s {
     SLet(_, _, _, _, expr) => Some(expr),
     SLetMut(_, _, expr) => Some(expr),
@@ -1542,8 +1542,8 @@ export fn scps_collect_cps_effs(stmts: Array[Stmt], groups: Array[(String, Array
   let out = array_empty_str()
   let mut i = 0
   while i < Array::length(stmts) {
-    match scps_stmt_expr_of(Array::get(stmts, i)) {
-      Some(expr) => scps_collect_cps_effs_expr(expr, out, groups),
+    match scps_stmt_expr_of(Array::get(stmts, at = i)) {
+      Some(expr) => scps_collect_cps_effs_expr(e = expr, out = out, groups = groups),
       None => ()
     }
     i = i + 1
@@ -1558,7 +1558,7 @@ export fn scps_collect_cps_effs(stmts: Array[Stmt], groups: Array[(String, Array
 // self-contained and must NOT be step-split.)
 
 export fn scps_lit_needs(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
-  edp_rq_fold(RQLiteralNeeds(sctx), e) > 0
+  edp_rq_fold(q = RQLiteralNeeds(sctx), e = e) > 0
 }
 
 // Phase 2 (prepass): step-split every EFn literal that needs a CPS-mode
@@ -1569,9 +1569,9 @@ export fn scps_lit_needs(e: Expr, sctx: (String, Array[String], Array[String], I
 // in user code carries no handle of its own.
 
 export fn scps_ecfg_for(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), eff: String) -> (String, Array[String], Array[String]) {
-  let (_, decl_ops) = scps_effect_decl_ops(ctx, eff)
-  let ops_qnames = scps_target_qnames(ctx, eff)
-  (eff, ops_qnames, scps_needing_for(ctx, eff))
+  let (_, decl_ops) = scps_effect_decl_ops(ctx = ctx, eff = eff)
+  let ops_qnames = scps_target_qnames(ctx = ctx, eff = eff)
+  (eff, ops_qnames, scps_needing_for(ctx = ctx, eff = eff))
 }
 
 fn scps_fn_def_index(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), name: String) -> Int {
@@ -1579,7 +1579,7 @@ fn scps_fn_def_index(ctx: (Array[Stmt], Array[(String, Array[(String, Array[Type
   let mut def_idx = -1
   let mut fi = 0
   while fi < Array::length(fn_defs) {
-    let (idx, _, _, fnm, _, _) = Array::get(fn_defs, fi)
+    let (idx, _, _, fnm, _, _) = Array::get(fn_defs, at = fi)
     if fnm == name {
       def_idx = idx
     } else {
@@ -1595,7 +1595,7 @@ export fn scps_fn_def_params_at(ctx: (Array[Stmt], Array[(String, Array[(String,
   if def_idx < 0 || def_idx >= Array::length(stmts) {
     None
   } else {
-    match Array::get(stmts, def_idx) {
+    match Array::get(stmts, at = def_idx) {
       SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => Some(params),
       _ => None
     }
@@ -1603,20 +1603,20 @@ export fn scps_fn_def_params_at(ctx: (Array[Stmt], Array[(String, Array[(String,
 }
 
 export fn scps_fn_def_params(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])]), name: String) -> Option[Array[(String, Option[TypeExpr])]] {
-  scps_fn_def_params_at(ctx, scps_fn_def_index(ctx, name))
+  scps_fn_def_params_at(ctx = ctx, def_idx = scps_fn_def_index(ctx = ctx, name = name))
 }
 
 // Prepass-only scope provenance. 0/1/2 retain the eligibility classes above;
 // 3 + statement index means this local is an immutable alias of that known
 // top-level function, so its parameter convention must survive the rename.
 export fn scps_prepass_alias_class(scope: Array[(String, Int)], target: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String], Array[(String, Array[String])])) -> Int {
-  let local = scps_local_class(scope, target)
+  let local = scps_local_class(scope = scope, name = target)
   if local >= 3 {
     local
   } else if local >= 0 {
     0
   } else {
-    let def_idx = scps_fn_def_index(ctx, target)
+    let def_idx = scps_fn_def_index(ctx = ctx, name = target)
     if def_idx >= 0 {
       def_idx + 3
     } else {

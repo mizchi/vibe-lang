@@ -63,21 +63,21 @@ import ./typed_row_queries.vibe {
   dtd_typed_eq_key_for
 }
 
-fn unmark_formal(n: String) -> String {
+fn unmark_formal(_ n: String) -> String {
   if is_marked_formal_name(n) {
-    String::substring(n, String::length(scope_formal_mark_prefix), String::length(n))
+    String::substring(n, start = String::length(scope_formal_mark_prefix), end = String::length(n))
   } else {
     n
   }
 }
 
 fn operand_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
-  let sh = infer_eq_shape(e, struct_sets, var_types, fn_returns)
+  let sh = infer_eq_shape(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
   if shape_is_composite(sh) {
     sh
   } else {
     match e {
-      EIdent(n, _) => eq_formal_shape_of_name(var_types, n),
+      EIdent(n, _) => eq_formal_shape_of_name(var_types = var_types, n = n),
       _ => ""
     }
   }
@@ -96,7 +96,7 @@ fn collect_formals(t: TypeExpr, out: Array[String]) -> Unit {
         }
       }
       if !seen {
-        Array::push(out, source)
+        Array::push(out, value = source)
       } else {
         ()
       }
@@ -104,10 +104,10 @@ fn collect_formals(t: TypeExpr, out: Array[String]) -> Unit {
       ()
     },
     TyApp(_, args) => for a in args {
-      collect_formals(a, out)
+      collect_formals(t = a, out = out)
     },
     TyTuple(items) => for x in items {
-      collect_formals(x, out)
+      collect_formals(t = x, out = out)
     },
     _ => ()
   }
@@ -117,16 +117,16 @@ fn collect_formals(t: TypeExpr, out: Array[String]) -> Unit {
 /// call through a function-typed parameter whose declared result mentions
 /// one (`make()` for `make: () -> T`, Codex on #3302).
 fn operand_type(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
-  let sh = operand_shape(e, struct_sets, var_types, fn_returns)
+  let sh = operand_shape(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
   if shape_is_composite(sh) {
     Some(shape_to_eq_ty(sh))
   } else {
     match e {
-      ECall(EIdent(f, _), _, _, _) => eq_fn_result_of_name(var_types, f),
+      ECall(EIdent(f, _), _, _, _) => eq_fn_result_of_name(var_types = var_types, n = f),
       // #3613: a field projection has the field's declared type with the
       // receiver's type arguments substituted, so `p.a` on `p: Pair[U]` is a
       // `U` and compares through `U`'s witness.
-      EDot(obj, field, _, _) => match dtd_field_projection(obj, field, struct_sets, var_types, fn_returns) {
+      EDot(obj, field, _, _) => match dtd_field_projection(obj = obj, field = field, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
         FieldTyped(t) => Some(t),
         _ => None
       },
@@ -146,13 +146,13 @@ fn operand_type(e: Expr, struct_sets: Array[(String, Array[String])], var_types:
 /// or recorded aggregate with such a formal is refused: its spelling does not
 /// identify which binder's dictionary to use.
 fn witnessed_operand(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Option[(TypeExpr, Array[(String, String)])] with Exception {
-  match operand_type(e, struct_sets, var_types, fn_returns) {
+  match operand_type(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
     None => None,
     Some(t) => if ty_contains_eq_unknown(t) {
       None
     } else {
       let formals = array_empty()
-      collect_formals(t, formals)
+      collect_formals(t = t, out = formals)
       if Array::length(formals) == 0 {
         None
       } else {
@@ -163,16 +163,16 @@ fn witnessed_operand(e: Expr, struct_sets: Array[(String, Array[String])], var_t
           // A shadowed spelling cannot identify the field's dictionary.
           let projection = match e {
             EDot(_, _, _, _) => true,
-            EIdent(n, _) => String::length(eq_formal_shape_of_name(var_types, n)) > 0,
+            EIdent(n, _) => String::length(eq_formal_shape_of_name(var_types = var_types, n = n)) > 0,
             _ => false
           }
           if projection && dtd_formal_is_shadowed(f) {
             throw("rename the nested type parameter `" + f + "`, or pass the comparison in as a parameter: this field's `Eq` witness cannot be identified across binders with the same name, so `==` cannot compare by content")
           }
-          match dtd_eq_witness_dict(dict_binds, traits, f) {
-            Some(dict) => Array::push(table, (f, dict)),
+          match dtd_eq_witness_dict(dict_binds = dict_binds, traits = traits, t = f) {
+            Some(dict) => Array::push(table, value = (f, dict)),
             None => {
-              if !dtd_formal_is_shadowed(f) && dtd_formal_bound_promises(traits, f, dtd_eq_witness_method()) {
+              if !dtd_formal_is_shadowed(f) && dtd_formal_bound_promises(traits = traits, n = f, member = dtd_eq_witness_method()) {
                 throw("compare at a concrete type, or pass the comparison in as a parameter (`eq: (" + f + ", " + f + ") -> Bool`) and call it: the `Eq` witness for `" + f + "` does not reach this comparison, so `==` cannot compare by content")
               } else {
                 ()
@@ -200,19 +200,19 @@ export fn dtd_eq_witnessed_compare(l: Expr, r: Expr, rl: Expr, rr: Expr, struct_
   if Array::length(dtd_scope_formals) == 0 {
     None
   } else {
-    let found = match witnessed_operand(l, struct_sets, var_types, fn_returns, dict_binds, traits) {
+    let found = match witnessed_operand(e = l, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns, dict_binds = dict_binds, traits = traits) {
       Some(w) => Some(w),
-      None => witnessed_operand(r, struct_sets, var_types, fn_returns, dict_binds, traits)
+      None => witnessed_operand(e = r, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns, dict_binds = dict_binds, traits = traits)
     }
     match found {
       Some(w) => {
         let (t, table) = w
         let saved = Array::length(dtd_eq_formal_witnesses)
         for entry in table {
-          Array::push(dtd_eq_formal_witnesses, entry)
+          Array::push(dtd_eq_formal_witnesses, value = entry)
         }
-        let call = eq_for_typed(t, rl, rr, dtd_eq_known_types)
-        Array::truncate(dtd_eq_formal_witnesses, saved)
+        let call = eq_for_typed(fty0 = t, lhs = rl, rhs = rr, known_types = dtd_eq_known_types)
+        Array::truncate(dtd_eq_formal_witnesses, length = saved)
         Some(call)
       },
       None => None
@@ -229,9 +229,9 @@ export fn dtd_eq_witnessed_compare(l: Expr, r: Expr, rl: Expr, rr: Expr, struct_
 export fn dtd_eq_operand_formals(l: Expr, r: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[String] {
   let out = array_empty()
   for e in [l, r] {
-    let sh = operand_shape(e, struct_sets, var_types, fn_returns)
+    let sh = operand_shape(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
     if shape_is_composite(sh) {
-      collect_formals(shape_to_eq_ty(sh), out)
+      collect_formals(t = shape_to_eq_ty(sh), out = out)
     } else {
       ()
     }
@@ -254,13 +254,13 @@ export fn dtd_eq_operand_formals(l: Expr, r: Expr, struct_sets: Array[(String, A
 /// that would call them with a formal-typed field.
 export fn dtd_eq_projection_residual(op: String, l: Expr, r: Expr, rl: Expr, rr: Expr, boff: Int, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr {
   if Array::length(dtd_scope_formals) == 0 || String::length(dtd_typed_eq_key_for(boff)) > 0 {
-    dtd_typed_eq_residual(op, rl, rr, boff)
+    dtd_typed_eq_residual(op = op, rl = rl, rr = rr, boff = boff)
   } else {
-    match unreadable_projection_field(l, struct_sets, var_types, fn_returns) {
-      Some(field) => eq_projection_unreadable_refused(op, field, boff),
-      None => match unreadable_projection_field(r, struct_sets, var_types, fn_returns) {
-        Some(field) => eq_projection_unreadable_refused(op, field, boff),
-        None => dtd_typed_eq_residual(op, rl, rr, boff)
+    match unreadable_projection_field(e = l, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+      Some(field) => eq_projection_unreadable_refused(op = op, projection = field, off = boff),
+      None => match unreadable_projection_field(e = r, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+        Some(field) => eq_projection_unreadable_refused(op = op, projection = field, off = boff),
+        None => dtd_typed_eq_residual(op = op, rl = rl, rr = rr, boff = boff)
       }
     }
   }
@@ -268,7 +268,7 @@ export fn dtd_eq_projection_residual(op: String, l: Expr, r: Expr, rl: Expr, rr:
 
 fn unreadable_projection_field(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match e {
-    EDot(obj, field, _, _) => if dtd_projection_is_unreadable(e, struct_sets, var_types, fn_returns) {
+    EDot(obj, field, _, _) => if dtd_projection_is_unreadable(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
       let receiver = match obj {
         EIdent(n, _) => n,
         _ => "<value>"
@@ -281,14 +281,14 @@ fn unreadable_projection_field(e: Expr, struct_sets: Array[(String, Array[String
   }
 }
 
-export fn opt_expr_is_some(e: Option[Expr]) -> Bool {
+export fn opt_expr_is_some(_ e: Option[Expr]) -> Bool {
   match e {
     Some(_) => true,
     None => false
   }
 }
 
-export fn opt_expr_or_unit(e: Option[Expr]) -> Expr {
+export fn opt_expr_or_unit(_ e: Option[Expr]) -> Expr {
   match e {
     Some(x) => x,
     None => EUnit

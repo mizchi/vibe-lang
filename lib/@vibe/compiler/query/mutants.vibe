@@ -50,14 +50,14 @@ fn mut_empty_sites() -> Array[(Int, Int, String, String, String)] {
 /// True when `source[start, start + len(text))` is exactly `text`.
 fn mut_text_at(source: String, start: Int, text: String) -> Bool {
   let n = String::length(text)
-  start >= 0 && start + n <= String::length(source) && String::equals(String::substring(source, start, start + n), text)
+  start >= 0 && start + n <= String::length(source) && String::equals(String::substring(source, start = start, end = start + n), text)
 }
 
 /// The replacements an operator spelling admits, each as `(kind, replacement)`.
 /// A relational operator gets its boundary shift (`<` -> `<=`) and its negation
 /// (`<` -> `>=`); the two catch different gaps -- a missing edge-case test and a
 /// missing test of the condition at all.
-fn mut_binop_replacements(op: String) -> Array[(String, String)] {
+fn mut_binop_replacements(_ op: String) -> Array[(String, String)] {
   match op {
     "<" => [("boundary", "<="), ("negate", ">=")],
     "<=" => [("boundary", "<"), ("negate", ">")],
@@ -82,16 +82,16 @@ fn mut_binop_replacements(op: String) -> Array[(String, String)] {
 }
 
 fn mut_push(out: Array[(Int, Int, String, String, String)], start: Int, end: Int, kind: String, original: String, replacement: String) -> Unit {
-  Array::push(out, (start, end, kind, original, replacement))
+  Array::push(out, value = (start, end, kind, original, replacement))
 }
 
 /// `text` as one whitespace-free field, the way `vibe symbols` escapes a
 /// test label: a site row is split on spaces and the kill matrix on tabs.
-fn mut_one_field(text: String) -> String {
+fn mut_one_field(_ text: String) -> String {
   let mut out = ""
   let mut i = 0
   while i < String::length(text) {
-    let c = String::byte_at(text, i)
+    let c = String::byte_at(text, at = i)
     let piece = if c == 92 {
       "\\\\"
     } else if c == 32 {
@@ -103,7 +103,7 @@ fn mut_one_field(text: String) -> String {
     } else if c == 13 {
       "\\r"
     } else {
-      String::substring(text, i, i + 1)
+      String::substring(text, start = i, end = i + 1)
     }
     out = String::concat(out, piece)
     i = i + 1
@@ -112,10 +112,10 @@ fn mut_one_field(text: String) -> String {
 }
 
 /// Whether `pat` introduces a name.
-fn mut_pat_binds(pat: Pat) -> Bool {
+fn mut_pat_binds(_ pat: Pat) -> Bool {
   match pat {
     PBind(_) => true,
-    PCtor("$source_span", args) => mut_pat_binds(Array::get(args, 0)),
+    PCtor("$source_span", args) => mut_pat_binds(Array::get(args, at = 0)),
     PCtor(_, args) => mut_pats_bind(args),
     PTuple(items) => mut_pats_bind(items),
     POr(a, b) => mut_pat_binds(a) || mut_pat_binds(b),
@@ -123,7 +123,7 @@ fn mut_pat_binds(pat: Pat) -> Bool {
       let mut any = false
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, p) = Array::get(fields, i)
+        let (_, p) = Array::get(fields, at = i)
         if mut_pat_binds(p) {
           any = true
         } else {
@@ -137,11 +137,11 @@ fn mut_pat_binds(pat: Pat) -> Bool {
   }
 }
 
-fn mut_pats_bind(pats: Array[Pat]) -> Bool {
+fn mut_pats_bind(_ pats: Array[Pat]) -> Bool {
   let mut any = false
   let mut i = 0
   while i < Array::length(pats) {
-    if mut_pat_binds(Array::get(pats, i)) {
+    if mut_pat_binds(Array::get(pats, at = i)) {
       any = true
     } else {
       ()
@@ -161,10 +161,10 @@ fn mut_cond_sites(out: Array[(Int, Int, String, String, String)], source: String
     _ => false
   }
   if cs >= 0 && ce > cs && !literal {
-    let original = mut_one_field(String::substring(source, cs, ce))
+    let original = mut_one_field(String::substring(source, start = cs, end = ce))
     let mut i = 0
     while i < Array::length(forced) {
-      mut_push(out, cs, ce, "cond", original, Array::get(forced, i))
+      mut_push(out = out, start = cs, end = ce, kind = "cond", original = original, replacement = Array::get(forced, at = i))
       i = i + 1
     }
   } else {
@@ -176,12 +176,12 @@ fn mut_cond_sites(out: Array[(Int, Int, String, String, String)], source: String
 /// node carries no wrapper, i.e. it was synthesized).
 fn mut_node_sites(out: Array[(Int, Int, String, String, String)], source: String, node: Expr, start: Int, end: Int) -> Unit {
   match node {
-    EBinOp(op, _, _, off) => if off >= 0 && mut_text_at(source, off, op) {
+    EBinOp(op, _, _, off) => if off >= 0 && mut_text_at(source = source, start = off, text = op) {
       let reps = mut_binop_replacements(op)
       let mut i = 0
       while i < Array::length(reps) {
-        let (kind, rep) = Array::get(reps, i)
-        mut_push(out, off, off + String::length(op), kind, op, rep)
+        let (kind, rep) = Array::get(reps, at = i)
+        mut_push(out = out, start = off, end = off + String::length(op), kind = kind, original = op, replacement = rep)
         i = i + 1
       }
     } else {
@@ -198,8 +198,8 @@ fn mut_node_sites(out: Array[(Int, Int, String, String, String)], source: String
       } else {
         "true"
       }
-      if start >= 0 && end == start + String::length(text) && mut_text_at(source, start, text) {
-        mut_push(out, start, end, "bool", text, flipped)
+      if start >= 0 && end == start + String::length(text) && mut_text_at(source = source, start = start, text = text) {
+        mut_push(out = out, start = start, end = end, kind = "bool", original = text, replacement = flipped)
       } else {
         ()
       }
@@ -216,8 +216,8 @@ fn mut_node_sites(out: Array[(Int, Int, String, String, String)], source: String
       } else {
         Int::to_string(n + 1)
       }
-      if start >= 0 && end == start + String::length(text) && mut_text_at(source, start, text) {
-        mut_push(out, start, end, "const", text, rep)
+      if start >= 0 && end == start + String::length(text) && mut_text_at(source = source, start = start, text = text) {
+        mut_push(out = out, start = start, end = end, kind = "const", original = text, replacement = rep)
       } else {
         ()
       }
@@ -225,12 +225,12 @@ fn mut_node_sites(out: Array[(Int, Int, String, String, String)], source: String
     // An interpolation's holes are parsed later, from the literal's text, so
     // the node has no child expressions: find the holes in the source.
     EStringInterp(_) => if start >= 0 && end > start {
-      mut_interp_sites(out, source, start, end)
+      mut_interp_sites(out = out, source = source, start = start, end = end)
     } else {
       ()
     },
-    EUnaryOp("!", _) => if start >= 0 && mut_text_at(source, start, "!") {
-      mut_push(out, start, start + 1, "not", "!", "")
+    EUnaryOp("!", _) => if start >= 0 && mut_text_at(source = source, start = start, text = "!") {
+      mut_push(out = out, start = start, end = start + 1, kind = "not", original = "!", replacement = "")
     } else {
       ()
     },
@@ -240,22 +240,22 @@ fn mut_node_sites(out: Array[(Int, Int, String, String, String)], source: String
     // spin until its deadline. The keyword check skips a loop or branch the
     // parser synthesized (`for`, `guard`), whose condition is not written as
     // such.
-    EIf(cond, _, _) => if start >= 0 && mut_text_at(source, start, "if") {
-      mut_cond_sites(out, source, cond, ["true", "false"])
+    EIf(cond, _, _) => if start >= 0 && mut_text_at(source = source, start = start, text = "if") {
+      mut_cond_sites(out = out, source = source, cond = cond, forced = ["true", "false"])
     } else {
       ()
     },
-    EWhile(cond, _) => if start >= 0 && mut_text_at(source, start, "while") {
-      mut_cond_sites(out, source, cond, ["false"])
+    EWhile(cond, _) => if start >= 0 && mut_text_at(source = source, start = start, text = "while") {
+      mut_cond_sites(out = out, source = source, cond = cond, forced = ["false"])
     } else {
       ()
     },
     // `if x is P { .. } else { .. }` parses to a two-arm match. The decision
     // `x is P` is forced only when `P` binds nothing: a branch that reads a
     // binder of `P` would not compile without the match.
-    EMatch(scrutinee, arms) => if start >= 0 && mut_text_at(source, start, "if") && Array::length(arms) == 2 {
-      let (pat, _) = Array::get(arms, 0)
-      let (rest, _) = Array::get(arms, 1)
+    EMatch(scrutinee, arms) => if start >= 0 && mut_text_at(source = source, start = start, text = "if") && Array::length(arms) == 2 {
+      let (pat, _) = Array::get(arms, at = 0)
+      let (rest, _) = Array::get(arms, at = 1)
       let wild_else = match rest {
         PWild => true,
         _ => false
@@ -265,9 +265,9 @@ fn mut_node_sites(out: Array[(Int, Int, String, String, String)], source: String
       let (ss, _) = source_expr_syntax_range(scrutinee)
       let (_, pe) = source_pat_range(pat)
       if wild_else && !mut_pat_binds(pat) && ss > start && pe > ss {
-        let original = mut_one_field(String::substring(source, ss, pe))
-        mut_push(out, ss, pe, "cond", original, "true")
-        mut_push(out, ss, pe, "cond", original, "false")
+        let original = mut_one_field(String::substring(source, start = ss, end = pe))
+        mut_push(out = out, start = ss, end = pe, kind = "cond", original = original, replacement = "true")
+        mut_push(out = out, start = ss, end = pe, kind = "cond", original = original, replacement = "false")
       } else {
         ()
       }
@@ -284,16 +284,16 @@ fn mut_node_sites(out: Array[(Int, Int, String, String, String)], source: String
 /// offers no sites rather than failing the whole file.
 fn mut_hole_sites(out: Array[(Int, Int, String, String, String)], source: String, hs: Int, he: Int) -> Unit {
   let prefix = "let _h = "
-  let mini = String::concat(prefix, String::substring(source, hs, he))
+  let mini = String::concat(prefix, String::substring(source, start = hs, end = he))
   let found = mut_empty_sites()
   handle {
-    mut_walk_stmts(found, mini, parse_source_with_ranges(mini))
+    mut_walk_stmts(out = found, source = mini, stmts = parse_source_with_ranges(mini))
   } with { Exception::Throw(_) => () }
   let shift = hs - String::length(prefix)
   let mut i = 0
   while i < Array::length(found) {
-    let (fs, fe, kind, original, replacement) = Array::get(found, i)
-    mut_push(out, fs + shift, fe + shift, kind, original, replacement)
+    let (fs, fe, kind, original, replacement) = Array::get(found, at = i)
+    mut_push(out = out, start = fs + shift, end = fe + shift, kind = kind, original = original, replacement = replacement)
     i = i + 1
   }
 }
@@ -306,15 +306,15 @@ fn mut_hole_sites(out: Array[(Int, Int, String, String, String)], source: String
 fn mut_interp_sites(out: Array[(Int, Int, String, String, String)], source: String, start: Int, end: Int) -> Unit {
   let mut i = start
   while i < end {
-    let c = String::byte_at(source, i)
+    let c = String::byte_at(source, at = i)
     if c == 92 && i + 1 < end {
-      if String::byte_at(source, i + 1) == 123 {
+      if String::byte_at(source, at = i + 1) == 123 {
         let hs = i + 2
         let he = handle {
-          interp_hole_end(source, end, hs)
+          interp_hole_end(s = source, len = end, idx = hs)
         } with { Exception::Throw(_) => 0 - 1 }
         if he >= hs {
-          mut_hole_sites(out, source, hs, he)
+          mut_hole_sites(out = out, source = source, hs = hs, he = he)
           i = he + 1
         } else {
           i = end
@@ -334,13 +334,13 @@ fn mut_walk_expr(out: Array[(Int, Int, String, String, String)], source: String,
     // metadata (`EInt` end offsets among it) that must not be read as source.
     ECall(EIdent("$source_span", _), args, _, _) => {
       let (start, end) = source_expr_range(expr)
-      let node = Array::get(args, 0)
-      mut_node_sites(out, source, node, start, end)
-      mut_walk_children(out, source, node)
+      let node = Array::get(args, at = 0)
+      mut_node_sites(out = out, source = source, node = node, start = start, end = end)
+      mut_walk_children(out = out, source = source, expr = node)
     },
     _ => {
-      mut_node_sites(out, source, expr, 0 - 1, 0 - 1)
-      mut_walk_children(out, source, expr)
+      mut_node_sites(out = out, source = source, node = expr, start = 0 - 1, end = 0 - 1)
+      mut_walk_children(out = out, source = source, expr = expr)
     }
   }
 }
@@ -349,7 +349,7 @@ fn mut_walk_children(out: Array[(Int, Int, String, String, String)], source: Str
   let children = expr_children(expr)
   let mut i = 0
   while i < Array::length(children) {
-    mut_walk_expr(out, source, Array::get(children, i))
+    mut_walk_expr(out = out, source = source, expr = Array::get(children, at = i))
     i = i + 1
   }
 }
@@ -357,7 +357,7 @@ fn mut_walk_children(out: Array[(Int, Int, String, String, String)], source: Str
 fn mut_walk_list(out: Array[(Int, Int, String, String, String)], source: String, items: Array[Expr]) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
-    mut_walk_expr(out, source, Array::get(items, i))
+    mut_walk_expr(out = out, source = source, expr = Array::get(items, at = i))
     i = i + 1
   }
 }
@@ -365,19 +365,19 @@ fn mut_walk_list(out: Array[(Int, Int, String, String, String)], source: String,
 fn mut_walk_stmts(out: Array[(Int, Int, String, String, String)], source: String, stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, body) => mut_walk_expr(out, source, body),
-      SLetMut(_, _, body) => mut_walk_expr(out, source, body),
-      SLetPat(_, body) => mut_walk_expr(out, source, body),
-      SExpr(body) => mut_walk_expr(out, source, body),
+    match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, body) => mut_walk_expr(out = out, source = source, expr = body),
+      SLetMut(_, _, body) => mut_walk_expr(out = out, source = source, expr = body),
+      SLetPat(_, body) => mut_walk_expr(out = out, source = source, expr = body),
+      SExpr(body) => mut_walk_expr(out = out, source = source, expr = body),
       // A `where { requires: .., ensures: .. }` contract runs as always-on
       // asserts, so its conditions are code under test too.
       SFnDecl(_, _, body, requires, ensures) => {
-        mut_walk_expr(out, source, body)
-        mut_walk_list(out, source, requires)
-        mut_walk_list(out, source, ensures)
+        mut_walk_expr(out = out, source = source, expr = body)
+        mut_walk_list(out = out, source = source, items = requires)
+        mut_walk_list(out = out, source = source, items = ensures)
       },
-      SModule(_, _, body) => mut_walk_stmts(out, source, body),
+      SModule(_, _, body) => mut_walk_stmts(out = out, source = source, stmts = body),
       // The oracle is never mutated.
       STest(_, _) => (),
       SBench(_, _) => (),
@@ -391,23 +391,23 @@ fn mut_walk_stmts(out: Array[(Int, Int, String, String, String)], source: String
 /// Order sites by start offset; equal starts keep their emission order, so a
 /// relational operator's boundary site precedes its negation site. Insertion
 /// sort: a file has hundreds of sites, not millions.
-fn mut_sort_sites(sites: Array[(Int, Int, String, String, String)]) -> Unit {
+fn mut_sort_sites(_ sites: Array[(Int, Int, String, String, String)]) -> Unit {
   let mut i = 1
   while i < Array::length(sites) {
-    let cur = Array::get(sites, i)
+    let cur = Array::get(sites, at = i)
     let (cur_start, _, _, _, _) = cur
     let mut j = i - 1
     let mut moving = true
     while j >= 0 && moving {
-      let (prev_start, _, _, _, _) = Array::get(sites, j)
+      let (prev_start, _, _, _, _) = Array::get(sites, at = j)
       if prev_start > cur_start {
-        Array::set(sites, j + 1, Array::get(sites, j))
+        Array::set(sites, at = j + 1, value = Array::get(sites, at = j))
         j = j - 1
       } else {
         moving = false
       }
     }
-    Array::set(sites, j + 1, cur)
+    Array::set(sites, at = j + 1, value = cur)
     i = i + 1
   }
 }
@@ -423,14 +423,14 @@ fn mut_same_site(a: (Int, Int, String, String, String), b: (Int, Int, String, St
 /// `source[start, end)` (which reads `original`) with `replacement` yields the
 /// mutant. Ordered by start offset, without duplicates. A file that does not
 /// parse throws the parser's diagnostic.
-export fn mutation_sites(source: String) -> Array[(Int, Int, String, String, String)] with Exception {
+export fn mutation_sites(_ source: String) -> Array[(Int, Int, String, String, String)] with Exception {
   let raw = mut_empty_sites()
-  mut_walk_stmts(raw, source, parse_source_with_ranges(source))
+  mut_walk_stmts(out = raw, source = source, stmts = parse_source_with_ranges(source))
   mut_sort_sites(raw)
   let out = mut_empty_sites()
   let mut i = 0
   while i < Array::length(raw) {
-    let site = Array::get(raw, i)
+    let site = Array::get(raw, at = i)
     let mut dup = false
     let mut j = Array::length(out) - 1
     // Sorted by start, so a duplicate can only sit among the trailing sites
@@ -438,11 +438,11 @@ export fn mutation_sites(source: String) -> Array[(Int, Int, String, String, Str
     let (start, _, _, _, _) = site
     let mut scanning = true
     while j >= 0 && scanning {
-      let prev = Array::get(out, j)
+      let prev = Array::get(out, at = j)
       let (prev_start, _, _, _, _) = prev
       if prev_start != start {
         scanning = false
-      } else if mut_same_site(prev, site) {
+      } else if mut_same_site(a = prev, b = site) {
         dup = true
         scanning = false
       } else {
@@ -450,7 +450,7 @@ export fn mutation_sites(source: String) -> Array[(Int, Int, String, String, Str
       }
     }
     if !dup {
-      Array::push(out, site)
+      Array::push(out, value = site)
     } else {
       ()
     }
@@ -461,5 +461,5 @@ export fn mutation_sites(source: String) -> Array[(Int, Int, String, String, Str
 
 /// `source` with site `(start, end, _, _, replacement)` applied.
 export fn mutation_apply(source: String, start: Int, end: Int, replacement: String) -> String {
-  String::concat(String::substring(source, 0, start), String::concat(replacement, String::substring(source, end, String::length(source))))
+  String::concat(String::substring(source, start = 0, end = start), String::concat(replacement, String::substring(source, start = end, end = String::length(source))))
 }

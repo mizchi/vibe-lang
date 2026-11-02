@@ -25,7 +25,7 @@ import ./common_analysis_free_vars_expr_sc.vibe {
 /// Builtins allowed inside a `#zero_alloc` fn. Allocation classification is
 /// owned by the builtin registry so fused primitives and zero-allocation
 /// checking cannot drift apart. Unknown builtins still fail closed.
-fn za_safe_builtin(f: String) -> Bool {
+fn za_safe_builtin(_ f: String) -> Bool {
   !builtin_allocates(f)
 }
 
@@ -39,14 +39,14 @@ fn za_first(a: String, b: String) -> String {
 
 /// Extract plain binder names from an EFn parameter list, stripping the
 /// `~`/`?` label-sugar suffix (the call-site spelling binds the bare name).
-fn za_param_facts(ps: Array[(String, Option[TypeExpr])]) -> Array[String] {
+fn za_param_facts(_ ps: Array[(String, Option[TypeExpr])]) -> Array[String] {
   let out = array_empty()
   let mut pi = 0
   while pi < Array::length(ps) {
-    let (raw, annotation) = Array::get(ps, pi)
+    let (raw, annotation) = Array::get(ps, at = pi)
     let rl = String::length(raw)
     let stripped = if rl > 0 {
-      let lc = String::char_code_at(raw, rl - 1)
+      let lc = String::char_code_at(raw, at = rl - 1)
       if lc == '~' || lc == '?' {
         raw[0: rl - 1]
       } else {
@@ -55,25 +55,25 @@ fn za_param_facts(ps: Array[(String, Option[TypeExpr])]) -> Array[String] {
     } else {
       raw
     }
-    Array::push(out, String::concat(stripped, String::concat("\n", typed_alloc_annotation_kind(annotation))))
+    Array::push(out, value = String::concat(stripped, String::concat("\n", typed_alloc_annotation_kind(annotation))))
     pi = pi + 1
   }
   out
 }
 
-fn za_param_fact_name(fact: String) -> String {
-  let sep = String::index_of(fact, "\n")
+fn za_param_fact_name(_ fact: String) -> String {
+  let sep = String::index_of(fact, needle = "\n")
   if sep >= 0 {
-    String::substring(fact, 0, sep)
+    String::substring(fact, start = 0, end = sep)
   } else {
     fact
   }
 }
 
-fn za_param_fact_kind(fact: String) -> String {
-  let sep = String::index_of(fact, "\n")
+fn za_param_fact_kind(_ fact: String) -> String {
+  let sep = String::index_of(fact, needle = "\n")
   if sep >= 0 {
-    String::substring(fact, sep + 1, String::length(fact))
+    String::substring(fact, start = sep + 1, end = String::length(fact))
   } else {
     ""
   }
@@ -84,9 +84,9 @@ fn typed_alloc_name_kind(names: Array[String], kinds: Array[String], name: Strin
   let mut matched = false
   let mut found = ""
   while i >= 0 && !matched {
-    if Array::get(names, i) == name && i < Array::length(kinds) {
+    if Array::get(names, at = i) == name && i < Array::length(kinds) {
       matched = true
-      found = Array::get(kinds, i)
+      found = Array::get(kinds, at = i)
     } else {
       ()
     }
@@ -105,22 +105,22 @@ fn typed_alloc_expr_kind(expr: Expr, names: Array[String], kinds: Array[String])
     EFloat(_) => "Double",
     EString(_, _) => "String",
     EBool(_) => "Bool",
-    EIdent(name, _) => typed_alloc_name_kind(names, kinds, name),
+    EIdent(name, _) => typed_alloc_name_kind(names = names, kinds = kinds, name = name),
     EBinOp(op, lhs, _, _) => if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" || op == "&&" || op == "||" {
       "Bool"
     } else {
-      typed_alloc_expr_kind(lhs, names, kinds)
+      typed_alloc_expr_kind(expr = lhs, names = names, kinds = kinds)
     },
     EUnaryOp(op, operand) => if op == "!" {
       "Bool"
     } else {
-      typed_alloc_expr_kind(operand, names, kinds)
+      typed_alloc_expr_kind(expr = operand, names = names, kinds = kinds)
     },
     _ => ""
   }
 }
 
-fn typed_alloc_annotation_kind(annotation: Option[TypeExpr]) -> String {
+fn typed_alloc_annotation_kind(_ annotation: Option[TypeExpr]) -> String {
   match annotation {
     Some(TyName(name)) => if name == "Int" || name == "Double" || name == "String" || name == "Bool" {
       name
@@ -131,22 +131,22 @@ fn typed_alloc_annotation_kind(annotation: Option[TypeExpr]) -> String {
   }
 }
 
-fn typed_alloc_copy_strings(items: Array[String]) -> Array[String] {
-  Array::slice(items, 0, Array::length(items))
+fn typed_alloc_copy_strings(_ items: Array[String]) -> Array[String] {
+  Array::slice(items, start = 0, end = Array::length(items))
 }
 
 fn za_lambda_global_index(fn_names: Array[String], ctors: Array[String]) -> Array[String] {
   let names = typed_alloc_copy_strings(fn_names)
   let mut ci = 0
   while ci < Array::length(ctors) {
-    Array::push(names, Array::get(ctors, ci))
+    Array::push(names, value = Array::get(ctors, at = ci))
     ci = ci + 1
   }
   let registry = builtin_registry()
   let mut bi = 0
   while bi < Array::length(registry) {
-    let (name, _, _, _, _) = Array::get(registry, bi)
-    Array::push(names, name)
+    let (name, _, _, _, _) = Array::get(registry, at = bi)
+    Array::push(names, value = name)
     bi = bi + 1
   }
   sorted_names_of(names)
@@ -159,9 +159,9 @@ fn za_lambda_global_index(fn_names: Array[String], ctors: Array[String]) -> Arra
 export fn typed_operator_alloc_kind(expr: Expr, names: Array[String], kinds: Array[String]) -> String {
   match expr {
     EBinOp(op, lhs, rhs, _) => if op == "+" || op == "-" || op == "*" || op == "/" {
-      let left_kind = typed_alloc_expr_kind(lhs, names, kinds)
+      let left_kind = typed_alloc_expr_kind(expr = lhs, names = names, kinds = kinds)
       let kind = if left_kind == "" || left_kind == "<unknown>" {
-        typed_alloc_expr_kind(rhs, names, kinds)
+        typed_alloc_expr_kind(expr = rhs, names = names, kinds = kinds)
       } else {
         left_kind
       }
@@ -178,7 +178,7 @@ export fn typed_operator_alloc_kind(expr: Expr, names: Array[String], kinds: Arr
       ""
     },
     EUnaryOp(op, operand) => if op == "-" {
-      let kind = typed_alloc_expr_kind(operand, names, kinds)
+      let kind = typed_alloc_expr_kind(expr = operand, names = names, kinds = kinds)
       if kind == "Double" {
         "operator:Double:-"
       } else if kind == "Int" {
@@ -201,19 +201,19 @@ export fn typed_operator_alloc_kind(expr: Expr, names: Array[String], kinds: Arr
 /// proven-clean top-level fn are all rejected. Operators are classified from
 /// package-stable lexical type facts so String concatenation and boxed Double
 /// arithmetic cannot pass merely because their operands are variables.
-fn za_is_region_alloc_callee(name: String) -> Bool {
+fn za_is_region_alloc_callee(_ name: String) -> Bool {
   name == "__region_run" || name == "MutList::empty" || name == "MutList::push" || name == "MutList::truncate" || name == "MutBytes::empty" || name == "MutBytes::push"
 }
 
-fn za_is_region_read_callee(name: String) -> Bool {
+fn za_is_region_read_callee(_ name: String) -> Bool {
   name == "MutList::length" || name == "MutList::get" || name == "MutBytes::length"
 }
 
-fn za_mode_of(visited: Array[String]) -> String {
+fn za_mode_of(_ visited: Array[String]) -> String {
   if Array::length(visited) == 0 {
     ""
   } else {
-    let head = Array::get(visited, 0)
+    let head = Array::get(visited, at = 0)
     if head == "@za:strict" {
       "strict"
     } else if head == "@za:assume" {
@@ -230,9 +230,9 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
     EFloat(_) => "float literal (heap-boxed on the linear backend)",
     EString(_, _) => "",
     EBool(_) => "",
-    EIdent(id, _) => if array_contains_str(bound, id) {
+    EIdent(id, _) => if array_contains_str(arr = bound, s = id) {
       ""
-    } else if array_contains_str(ctors, id) {
+    } else if array_contains_str(arr = ctors, s = id) {
       String::concat("constructor '", String::concat(id, "'"))
     } else {
       ""
@@ -245,52 +245,52 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
     ERecord(_, _, _) => "record/struct literal",
     EMap(_) => "map literal",
     EStringInterp(_) => "string interpolation",
-    EFn(_, _, params, _, _, body) => if lambda_has_captures(body, params, za_lambda_global_index(fn_names, ctors), "", bound) {
+    EFn(_, _, params, _, _, body) => if lambda_has_captures(body = body, params = params, fn_name_index = za_lambda_global_index(fn_names = fn_names, ctors = ctors), self_name = "", encl = bound) {
       "closure literal (allocates its environment)"
     } else {
       ""
     },
-    EIf(zc, zt, zf) => za_first(za_walk(zc, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_first(za_walk(zt, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zf, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst))),
+    EIf(zc, zt, zf) => za_first(a = za_walk(e = zc, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst), b = za_first(a = za_walk(e = zt, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst), b = za_walk(e = zf, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst))),
     ELet(zl_name, zv, zb, _) => {
-      let value_result = za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
+      let value_result = za_walk(e = zv, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)
       let body_bound = typed_alloc_copy_strings(bound)
       let body_names = typed_alloc_copy_strings(typed_table)
       let body_kinds = typed_alloc_copy_strings(typed_subst)
-      Array::push(body_bound, zl_name)
-      Array::push(body_names, zl_name)
-      Array::push(body_kinds, typed_alloc_expr_kind(zv, typed_table, typed_subst))
-      za_first(value_result, za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds))
+      Array::push(body_bound, value = zl_name)
+      Array::push(body_names, value = zl_name)
+      Array::push(body_kinds, value = typed_alloc_expr_kind(expr = zv, names = typed_table, kinds = typed_subst))
+      za_first(a = value_result, b = za_walk(e = zb, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = body_bound, typed_table = body_names, typed_subst = body_kinds))
     },
     ELetRec(zlr_name, zv, zb) => {
       let body_bound = typed_alloc_copy_strings(bound)
       let body_names = typed_alloc_copy_strings(typed_table)
       let body_kinds = typed_alloc_copy_strings(typed_subst)
-      Array::push(body_bound, zlr_name)
-      Array::push(body_names, zlr_name)
-      Array::push(body_kinds, typed_alloc_expr_kind(zv, typed_table, typed_subst))
-      za_first(za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds))
+      Array::push(body_bound, value = zlr_name)
+      Array::push(body_names, value = zlr_name)
+      Array::push(body_kinds, value = typed_alloc_expr_kind(expr = zv, names = typed_table, kinds = typed_subst))
+      za_first(a = za_walk(e = zv, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = body_bound, typed_table = body_names, typed_subst = body_kinds), b = za_walk(e = zb, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = body_bound, typed_table = body_names, typed_subst = body_kinds))
     },
     ELetMut(zlm_name, zv, zb, _) => {
-      let value_result = za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
+      let value_result = za_walk(e = zv, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)
       let body_bound = typed_alloc_copy_strings(bound)
       let body_names = typed_alloc_copy_strings(typed_table)
       let body_kinds = typed_alloc_copy_strings(typed_subst)
-      Array::push(body_bound, zlm_name)
-      Array::push(body_names, zlm_name)
-      Array::push(body_kinds, typed_alloc_expr_kind(zv, typed_table, typed_subst))
-      za_first(value_result, za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds))
+      Array::push(body_bound, value = zlm_name)
+      Array::push(body_names, value = zlm_name)
+      Array::push(body_kinds, value = typed_alloc_expr_kind(expr = zv, names = typed_table, kinds = typed_subst))
+      za_first(a = value_result, b = za_walk(e = zb, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = body_bound, typed_table = body_names, typed_subst = body_kinds))
     },
-    EAssign(_, zv, zb, _) => za_first(za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)),
-    EAssignOp(_, _, zv, zb, _) => za_first(za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)),
-    ESeq(za, zb) => za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)),
+    EAssign(_, zv, zb, _) => za_first(a = za_walk(e = zv, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst), b = za_walk(e = zb, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)),
+    EAssignOp(_, _, zv, zb, _) => za_first(a = za_walk(e = zv, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst), b = za_walk(e = zb, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)),
+    ESeq(za, zb) => za_first(a = za_walk(e = za, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst), b = za_walk(e = zb, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)),
     EMatch(scr, arms) => {
-      let mut r = za_walk(scr, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
+      let mut r = za_walk(e = scr, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)
       let mut ai = 0
       while ai < Array::length(arms) {
-        let (arm_pat, arm_body) = Array::get(arms, ai)
-        let _ = collect_pattern_bindings(arm_pat, bound)
+        let (arm_pat, arm_body) = Array::get(arms, at = ai)
+        let _ = collect_pattern_bindings(pat = arm_pat, bindings = bound)
         if r == "" {
-          r = za_walk(arm_body, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
+          r = za_walk(e = arm_body, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)
         } else {
           ()
         }
@@ -299,7 +299,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
       r
     },
     EHandle(_, _) => "effect handler (allocates evidence)",
-    EWhile(zc, zb) => za_first(za_walk(zc, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)),
+    EWhile(zc, zb) => za_first(a = za_walk(e = zc, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst), b = za_walk(e = zb, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)),
     ELoop(inits, zb) => {
       let mut r = ""
       let loop_bound = typed_alloc_copy_strings(bound)
@@ -307,27 +307,27 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
       let loop_kinds = typed_alloc_copy_strings(typed_subst)
       let mut li = 0
       while li < Array::length(inits) {
-        let (zloop_name, init_e) = Array::get(inits, li)
+        let (zloop_name, init_e) = Array::get(inits, at = li)
         if r == "" {
-          r = za_walk(init_e, ctors, fn_names, fn_bodies, fn_params, visited, loop_bound, loop_names, loop_kinds)
+          r = za_walk(e = init_e, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = loop_bound, typed_table = loop_names, typed_subst = loop_kinds)
         } else {
           ()
         }
-        let init_kind = typed_alloc_expr_kind(init_e, loop_names, loop_kinds)
-        Array::push(loop_bound, zloop_name)
-        Array::push(loop_names, zloop_name)
-        Array::push(loop_kinds, init_kind)
+        let init_kind = typed_alloc_expr_kind(expr = init_e, names = loop_names, kinds = loop_kinds)
+        Array::push(loop_bound, value = zloop_name)
+        Array::push(loop_names, value = zloop_name)
+        Array::push(loop_kinds, value = init_kind)
         li = li + 1
       }
-      za_first(r, za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, loop_bound, loop_names, loop_kinds))
+      za_first(a = r, b = za_walk(e = zb, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = loop_bound, typed_table = loop_names, typed_subst = loop_kinds))
     },
     EForIn(zfi_name, zfi_snd, zsrc, zb) => {
-      Array::push(bound, zfi_name)
+      Array::push(bound, value = zfi_name)
       match zfi_snd {
-        Some(zfi_n2) => Array::push(bound, zfi_n2),
+        Some(zfi_n2) => Array::push(bound, value = zfi_n2),
         None => ()
       }
-      za_first(za_walk(zsrc, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst))
+      za_first(a = za_walk(e = zsrc, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst), b = za_walk(e = zb, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst))
     },
     ECall(callee, cargs, _, _) => {
       let region_run = match callee {
@@ -338,22 +338,22 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
         if za_mode_of(visited) == "strict" {
           "region/arena allocation"
         } else if Array::length(cargs) == 1 {
-          match Array::get(cargs, 0) {
+          match Array::get(cargs, at = 0) {
             EFn(_, _, rparams, _, _, rbody) => {
               let region_bound = typed_alloc_copy_strings(bound)
               let region_names = typed_alloc_copy_strings(typed_table)
               let region_kinds = typed_alloc_copy_strings(typed_subst)
               let mut rpi = 0
               while rpi < Array::length(rparams) {
-                let (rp_name, _) = Array::get(rparams, rpi)
-                Array::push(region_bound, rp_name)
-                Array::push(region_names, rp_name)
-                Array::push(region_kinds, "")
+                let (rp_name, _) = Array::get(rparams, at = rpi)
+                Array::push(region_bound, value = rp_name)
+                Array::push(region_names, value = rp_name)
+                Array::push(region_kinds, value = "")
                 rpi = rpi + 1
               }
-              za_walk(rbody, ctors, fn_names, fn_bodies, fn_params, visited, region_bound, region_names, region_kinds)
+              za_walk(e = rbody, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = region_bound, typed_table = region_names, typed_subst = region_kinds)
             },
-            other => za_walk(other, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
+            other => za_walk(e = other, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)
           }
         } else {
           ""
@@ -363,7 +363,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
         let mut ci = 0
         while ci < Array::length(cargs) {
           if r == "" {
-            r = za_walk(Array::get(cargs, ci), ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
+            r = za_walk(e = Array::get(cargs, at = ci), ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)
           } else {
             ()
           }
@@ -376,9 +376,9 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
             // #1274 Codex P1: a param or local shadowing a top-level fn is an
             // INDIRECT callee -- the supplied implementation may allocate, so
             // name-only fn_names resolution must not see it.
-            EIdent(cname, _) => if array_contains_str(bound, cname) {
+            EIdent(cname, _) => if array_contains_str(arr = bound, s = cname) {
               String::concat("call through local binding '", String::concat(cname, "' (not proven allocation-free)"))
-            } else if array_contains_str(ctors, cname) {
+            } else if array_contains_str(arr = ctors, s = cname) {
               String::concat("constructor '", String::concat(cname, "'"))
             } else if za_is_region_read_callee(cname) {
               ""
@@ -392,7 +392,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
               let mut fi = 0
               let mut fidx = 0 - 1
               while fi < Array::length(fn_names) {
-                if Array::get(fn_names, fi) == cname {
+                if Array::get(fn_names, at = fi) == cname {
                   fidx = fi
                   fi = Array::length(fn_names)
                 } else {
@@ -403,26 +403,26 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
               // is also registered as a builtin. Resolve the body first so a
               // shadow cannot inherit a name-only zero-allocation certificate.
               if fidx >= 0 {
-                if array_contains_str(visited, cname) {
+                if array_contains_str(arr = visited, s = cname) {
                   ""
                 } else {
-                  Array::push(visited, cname)
+                  Array::push(visited, value = cname)
                   // Fresh scope for the callee: its own params are its only
                   // lexical bindings (the caller's do not leak in).
                   let callee_bound = array_empty()
                   let callee_typed_names = array_empty()
                   let callee_typed_kinds = array_empty()
-                  let callee_ps = Array::get(fn_params, fidx)
+                  let callee_ps = Array::get(fn_params, at = fidx)
                   let mut cbi = 0
                   while cbi < Array::length(callee_ps) {
-                    let callee_fact = Array::get(callee_ps, cbi)
+                    let callee_fact = Array::get(callee_ps, at = cbi)
                     let callee_name = za_param_fact_name(callee_fact)
-                    Array::push(callee_bound, callee_name)
-                    Array::push(callee_typed_names, callee_name)
-                    Array::push(callee_typed_kinds, za_param_fact_kind(callee_fact))
+                    Array::push(callee_bound, value = callee_name)
+                    Array::push(callee_typed_names, value = callee_name)
+                    Array::push(callee_typed_kinds, value = za_param_fact_kind(callee_fact))
                     cbi = cbi + 1
                   }
-                  let inner = za_walk(Array::get(fn_bodies, fidx), ctors, fn_names, fn_bodies, fn_params, visited, callee_bound, callee_typed_names, callee_typed_kinds)
+                  let inner = za_walk(e = Array::get(fn_bodies, at = fidx), ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = callee_bound, typed_table = callee_typed_names, typed_subst = callee_typed_kinds)
                   if inner == "" {
                     ""
                   } else {
@@ -442,13 +442,13 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
         }
       }
     },
-    EBinOp(_, za, zb, _) => za_first(za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)), typed_operator_alloc_kind(e, typed_table, typed_subst)),
-    EUnaryOp(_, za) => za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), typed_operator_alloc_kind(e, typed_table, typed_subst)),
-    EDot(zobj, _, _, _) => za_walk(zobj, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
-    ELabeledArg(_, _, zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
-    EReturn(zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
+    EBinOp(_, za, zb, _) => za_first(a = za_first(a = za_walk(e = za, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst), b = za_walk(e = zb, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)), b = typed_operator_alloc_kind(expr = e, names = typed_table, kinds = typed_subst)),
+    EUnaryOp(_, za) => za_first(a = za_walk(e = za, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst), b = typed_operator_alloc_kind(expr = e, names = typed_table, kinds = typed_subst)),
+    EDot(zobj, _, _, _) => za_walk(e = zobj, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst),
+    ELabeledArg(_, _, zv) => za_walk(e = zv, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst),
+    EReturn(zv) => za_walk(e = zv, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst),
     EBreak(zo) => match zo {
-      Some(zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
+      Some(zv) => za_walk(e = zv, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst),
       None => ""
     },
     EContinue(zvs) => {
@@ -456,7 +456,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
       let mut vi = 0
       while vi < Array::length(zvs) {
         if r == "" {
-          r = za_walk(Array::get(zvs, vi), ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
+          r = za_walk(e = Array::get(zvs, at = vi), ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst)
         } else {
           ()
         }
@@ -464,19 +464,19 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
       }
       r
     },
-    ESpread(zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
+    ESpread(zv) => za_walk(e = zv, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = bound, typed_table = typed_table, typed_subst = typed_subst),
     EUnit => ""
   }
 }
 
-fn za_stmt_marker_mode(stmt: Stmt) -> String {
+fn za_stmt_marker_mode(_ stmt: Stmt) -> String {
   match stmt {
     SExpr(me) => match me {
       EIdent(mname, _) => if mname == "@zero_alloc_strict" {
         "strict"
       } else if mname == "@zero_alloc_assume" {
         "assume"
-      } else if String::starts_with(mname, "@zero_alloc") {
+      } else if String::starts_with(mname, prefix = "@zero_alloc") {
         "bare"
       } else {
         ""
@@ -491,7 +491,7 @@ fn za_eval_named_fn(name: String, mode: String, assume_names: Array[String], cto
   let mut fidx = 0 - 1
   let mut fi = 0
   while fi < Array::length(fn_names) {
-    if Array::get(fn_names, fi) == name {
+    if Array::get(fn_names, at = fi) == name {
       fidx = fi
       fi = Array::length(fn_names)
     } else {
@@ -503,32 +503,32 @@ fn za_eval_named_fn(name: String, mode: String, assume_names: Array[String], cto
   } else {
     let visited = array_empty()
     if mode == "strict" {
-      Array::push(visited, "@za:strict")
+      Array::push(visited, value = "@za:strict")
     } else if mode == "assume" {
-      Array::push(visited, "@za:assume")
+      Array::push(visited, value = "@za:assume")
     } else {
-      Array::push(visited, "@za:")
+      Array::push(visited, value = "@za:")
     }
     let mut aj = 0
     while aj < Array::length(assume_names) {
-      Array::push(visited, Array::get(assume_names, aj))
+      Array::push(visited, value = Array::get(assume_names, at = aj))
       aj = aj + 1
     }
-    Array::push(visited, name)
+    Array::push(visited, value = name)
     let seed_bound = array_empty()
     let seed_typed_names = array_empty()
     let seed_typed_kinds = array_empty()
-    let seed_ps = Array::get(fn_params, fidx)
+    let seed_ps = Array::get(fn_params, at = fidx)
     let mut sbi = 0
     while sbi < Array::length(seed_ps) {
-      let seed_fact = Array::get(seed_ps, sbi)
+      let seed_fact = Array::get(seed_ps, at = sbi)
       let seed_name = za_param_fact_name(seed_fact)
-      Array::push(seed_bound, seed_name)
-      Array::push(seed_typed_names, seed_name)
-      Array::push(seed_typed_kinds, za_param_fact_kind(seed_fact))
+      Array::push(seed_bound, value = seed_name)
+      Array::push(seed_typed_names, value = seed_name)
+      Array::push(seed_typed_kinds, value = za_param_fact_kind(seed_fact))
       sbi = sbi + 1
     }
-    za_walk(Array::get(fn_bodies, fidx), ctors, fn_names, fn_bodies, fn_params, visited, seed_bound, seed_typed_names, seed_typed_kinds)
+    za_walk(e = Array::get(fn_bodies, at = fidx), ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params, visited = visited, bound = seed_bound, typed_table = seed_typed_names, typed_subst = seed_typed_kinds)
   }
 }
 
@@ -539,39 +539,39 @@ fn za_eval_named_fn(name: String, mode: String, assume_names: Array[String], cto
 /// EFn(..))`). Returns "" when every marked fn is proven allocation-free,
 /// else a `zero_alloc:`-prefixed diagnostic. Top-level fns only (module
 /// bodies are out of scope for this slice); linear backend only.
-export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
+export fn zero_alloc_check(_ stmts: Array[Stmt]) -> String {
   let fn_names = array_empty()
   let fn_bodies = array_empty()
   let fn_params = array_empty()
   let ctors = array_empty()
   let mut si = 0
   while si < Array::length(stmts) {
-    match Array::get(stmts, si) {
+    match Array::get(stmts, at = si) {
       SLet(_, _, lname, _, lval) => match lval {
         EFn(_, _, efn_params, _, _, fb) => {
-          Array::push(fn_names, lname)
-          Array::push(fn_bodies, fb)
-          Array::push(fn_params, za_param_facts(efn_params))
+          Array::push(fn_names, value = lname)
+          Array::push(fn_bodies, value = fb)
+          Array::push(fn_params, value = za_param_facts(efn_params))
         },
         _ => ()
       },
       SEnum(_, _, _, variants, _) => {
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (vname, _) = Array::get(variants, vi)
-          Array::push(ctors, vname)
+          let (vname, _) = Array::get(variants, at = vi)
+          Array::push(ctors, value = vname)
           vi = vi + 1
         }
       },
       SSuberror(_, _, sub_variants) => {
         let mut vi2 = 0
         while vi2 < Array::length(sub_variants) {
-          let (vname2, _) = Array::get(sub_variants, vi2)
-          Array::push(ctors, vname2)
+          let (vname2, _) = Array::get(sub_variants, at = vi2)
+          Array::push(ctors, value = vname2)
           vi2 = vi2 + 1
         }
       },
-      SStruct(_, sname, _, _, _, _) => Array::push(ctors, sname),
+      SStruct(_, sname, _, _, _, _) => Array::push(ctors, value = sname),
       _ => ()
     }
     si = si + 1
@@ -579,12 +579,12 @@ export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
   let assume_names = array_empty()
   let mut ai = 0
   while ai < Array::length(stmts) {
-    match Array::get(stmts, ai) {
+    match Array::get(stmts, at = ai) {
       SExpr(me) => match me {
         EIdent(mname, _) => if mname == "@zero_alloc_assume" && ai + 1 < Array::length(stmts) {
-          match Array::get(stmts, ai + 1) {
+          match Array::get(stmts, at = ai + 1) {
             SLet(_, _, tname, _, tval) => match tval {
-              EFn(_, _, _, _, _, _) => Array::push(assume_names, tname),
+              EFn(_, _, _, _, _, _) => Array::push(assume_names, value = tname),
               _ => ()
             },
             _ => ()
@@ -601,9 +601,9 @@ export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
   let mut msg = ""
   let mut mi = 0
   while mi < Array::length(stmts) {
-    let marker_name = match Array::get(stmts, mi) {
+    let marker_name = match Array::get(stmts, at = mi) {
       SExpr(me) => match me {
-        EIdent(mname, _) => if String::starts_with(mname, "@zero_alloc") {
+        EIdent(mname, _) => if String::starts_with(mname, prefix = "@zero_alloc") {
           mname
         } else {
           ""
@@ -622,7 +622,7 @@ export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
         ""
       }
       let target_name = if mi + 1 < Array::length(stmts) {
-        match Array::get(stmts, mi + 1) {
+        match Array::get(stmts, at = mi + 1) {
           SLet(_, _, tname, _, tval) => match tval {
             EFn(_, _, _, _, _, _) => tname,
             _ => ""
@@ -635,7 +635,7 @@ export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
       if target_name == "" {
         msg = "zero_alloc: '#zero_alloc' must immediately precede a fn declaration"
       } else {
-        let r = za_eval_named_fn(target_name, za_mode, assume_names, ctors, fn_names, fn_bodies, fn_params)
+        let r = za_eval_named_fn(name = target_name, mode = za_mode, assume_names = assume_names, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params)
         if r != "" {
           msg = String::concat("zero_alloc: fn '", String::concat(target_name, String::concat("' may allocate: ", r)))
         } else {
@@ -654,7 +654,7 @@ export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
 /// mode is "" / "bare" / "strict" / "assume". site is empty when that fn is
 /// proven allocation-free under its own mode. Not called from the compile
 /// hot path — only walk every fn when a caller asks for the summary table.
-export fn zero_alloc_fn_summaries(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+export fn zero_alloc_fn_summaries(_ stmts: Array[Stmt]) -> Array[(String, String, String)] {
   let fn_names = array_empty()
   let fn_bodies = array_empty()
   let fn_params = array_empty()
@@ -664,7 +664,7 @@ export fn zero_alloc_fn_summaries(stmts: Array[Stmt]) -> Array[(String, String, 
   let mut si = 0
   let mut prev_mode = ""
   while si < Array::length(stmts) {
-    let stmt = Array::get(stmts, si)
+    let stmt = Array::get(stmts, at = si)
     let marker = za_stmt_marker_mode(stmt)
     if marker != "" {
       prev_mode = marker
@@ -672,12 +672,12 @@ export fn zero_alloc_fn_summaries(stmts: Array[Stmt]) -> Array[(String, String, 
       match stmt {
         SLet(_, _, lname, _, lval) => match lval {
           EFn(_, _, efn_params, _, _, fb) => {
-            Array::push(fn_names, lname)
-            Array::push(fn_bodies, fb)
-            Array::push(fn_params, za_param_facts(efn_params))
-            Array::push(fn_modes, prev_mode)
+            Array::push(fn_names, value = lname)
+            Array::push(fn_bodies, value = fb)
+            Array::push(fn_params, value = za_param_facts(efn_params))
+            Array::push(fn_modes, value = prev_mode)
             if prev_mode == "assume" {
-              Array::push(assume_names, lname)
+              Array::push(assume_names, value = lname)
             } else {
               ()
             }
@@ -691,8 +691,8 @@ export fn zero_alloc_fn_summaries(stmts: Array[Stmt]) -> Array[(String, String, 
           prev_mode = ""
           let mut vi = 0
           while vi < Array::length(variants) {
-            let (vname, _) = Array::get(variants, vi)
-            Array::push(ctors, vname)
+            let (vname, _) = Array::get(variants, at = vi)
+            Array::push(ctors, value = vname)
             vi = vi + 1
           }
         },
@@ -700,14 +700,14 @@ export fn zero_alloc_fn_summaries(stmts: Array[Stmt]) -> Array[(String, String, 
           prev_mode = ""
           let mut vi2 = 0
           while vi2 < Array::length(sub_variants) {
-            let (vname2, _) = Array::get(sub_variants, vi2)
-            Array::push(ctors, vname2)
+            let (vname2, _) = Array::get(sub_variants, at = vi2)
+            Array::push(ctors, value = vname2)
             vi2 = vi2 + 1
           }
         },
         SStruct(_, sname, _, _, _, _) => {
           prev_mode = ""
-          Array::push(ctors, sname)
+          Array::push(ctors, value = sname)
         },
         _ => {
           prev_mode = ""
@@ -719,10 +719,10 @@ export fn zero_alloc_fn_summaries(stmts: Array[Stmt]) -> Array[(String, String, 
   let rows = array_empty()
   let mut ri = 0
   while ri < Array::length(fn_names) {
-    let name = Array::get(fn_names, ri)
-    let mode = Array::get(fn_modes, ri)
-    let site = za_eval_named_fn(name, mode, assume_names, ctors, fn_names, fn_bodies, fn_params)
-    Array::push(rows, (name, mode, site))
+    let name = Array::get(fn_names, at = ri)
+    let mode = Array::get(fn_modes, at = ri)
+    let site = za_eval_named_fn(name = name, mode = mode, assume_names = assume_names, ctors = ctors, fn_names = fn_names, fn_bodies = fn_bodies, fn_params = fn_params)
+    Array::push(rows, value = (name, mode, site))
     ri = ri + 1
   }
   rows
@@ -744,30 +744,30 @@ fn ca_collect_valued_idents(e: Expr, out: Array[String], seen: MutSet[String]) -
     EUnit => 0,
     EStringInterp(_) => 0,
     EIdent(vn, _) => {
-      if MutSet::insert(seen, vn) {
-        Array::push(out, vn)
+      if MutSet::insert(seen, x = vn) {
+        Array::push(out, value = vn)
       }
       0
     },
     ECall(callee, cargs, _, _) => {
       match callee {
         EIdent(_, _) => 0,
-        _ => ca_collect_valued_idents(callee, out, seen)
+        _ => ca_collect_valued_idents(e = callee, out = out, seen = seen)
       }
       let mut ci = 0
       while ci < Array::length(cargs) {
-        let _ = ca_collect_valued_idents(Array::get(cargs, ci), out, seen)
+        let _ = ca_collect_valued_idents(e = Array::get(cargs, at = ci), out = out, seen = seen)
         ci = ci + 1
       }
       0
     },
-    ETuple(items) => ca_collect_valued_list(items, out, seen),
-    EArray(items) => ca_collect_valued_list(items, out, seen),
+    ETuple(items) => ca_collect_valued_list(items = items, out = out, seen = seen),
+    EArray(items) => ca_collect_valued_list(items = items, out = out, seen = seen),
     ERecord(_, rfields, _) => {
       let mut ri = 0
       while ri < Array::length(rfields) {
-        let (_, rv) = Array::get(rfields, ri)
-        let _ = ca_collect_valued_idents(rv, out, seen)
+        let (_, rv) = Array::get(rfields, at = ri)
+        let _ = ca_collect_valued_idents(e = rv, out = out, seen = seen)
         ri = ri + 1
       }
       0
@@ -775,107 +775,107 @@ fn ca_collect_valued_idents(e: Expr, out: Array[String], seen: MutSet[String]) -
     EMap(mfields) => {
       let mut mi = 0
       while mi < Array::length(mfields) {
-        let (_, mv) = Array::get(mfields, mi)
-        let _ = ca_collect_valued_idents(mv, out, seen)
+        let (_, mv) = Array::get(mfields, at = mi)
+        let _ = ca_collect_valued_idents(e = mv, out = out, seen = seen)
         mi = mi + 1
       }
       0
     },
     EIf(c0, t0, f0) => {
-      let _ = ca_collect_valued_idents(c0, out, seen)
-      let _ = ca_collect_valued_idents(t0, out, seen)
-      ca_collect_valued_idents(f0, out, seen)
+      let _ = ca_collect_valued_idents(e = c0, out = out, seen = seen)
+      let _ = ca_collect_valued_idents(e = t0, out = out, seen = seen)
+      ca_collect_valued_idents(e = f0, out = out, seen = seen)
     },
     ELet(_, v0, b0, _) => {
-      let _ = ca_collect_valued_idents(v0, out, seen)
-      ca_collect_valued_idents(b0, out, seen)
+      let _ = ca_collect_valued_idents(e = v0, out = out, seen = seen)
+      ca_collect_valued_idents(e = b0, out = out, seen = seen)
     },
     ELetRec(_, v0, b0) => {
-      let _ = ca_collect_valued_idents(v0, out, seen)
-      ca_collect_valued_idents(b0, out, seen)
+      let _ = ca_collect_valued_idents(e = v0, out = out, seen = seen)
+      ca_collect_valued_idents(e = b0, out = out, seen = seen)
     },
     ELetMut(_, v0, b0, _) => {
-      let _ = ca_collect_valued_idents(v0, out, seen)
-      ca_collect_valued_idents(b0, out, seen)
+      let _ = ca_collect_valued_idents(e = v0, out = out, seen = seen)
+      ca_collect_valued_idents(e = b0, out = out, seen = seen)
     },
     EAssign(_, v0, b0, _) => {
-      let _ = ca_collect_valued_idents(v0, out, seen)
-      ca_collect_valued_idents(b0, out, seen)
+      let _ = ca_collect_valued_idents(e = v0, out = out, seen = seen)
+      ca_collect_valued_idents(e = b0, out = out, seen = seen)
     },
     EAssignOp(_, _, v0, b0, _) => {
-      let _ = ca_collect_valued_idents(v0, out, seen)
-      ca_collect_valued_idents(b0, out, seen)
+      let _ = ca_collect_valued_idents(e = v0, out = out, seen = seen)
+      ca_collect_valued_idents(e = b0, out = out, seen = seen)
     },
     ESeq(a0, b0) => {
-      let _ = ca_collect_valued_idents(a0, out, seen)
-      ca_collect_valued_idents(b0, out, seen)
+      let _ = ca_collect_valued_idents(e = a0, out = out, seen = seen)
+      ca_collect_valued_idents(e = b0, out = out, seen = seen)
     },
     EMatch(scr, arms) => {
-      let _ = ca_collect_valued_idents(scr, out, seen)
+      let _ = ca_collect_valued_idents(e = scr, out = out, seen = seen)
       let mut ai = 0
       while ai < Array::length(arms) {
-        let (_, ab) = Array::get(arms, ai)
-        let _ = ca_collect_valued_idents(ab, out, seen)
+        let (_, ab) = Array::get(arms, at = ai)
+        let _ = ca_collect_valued_idents(e = ab, out = out, seen = seen)
         ai = ai + 1
       }
       0
     },
     EHandle(hb, harms) => {
-      let _ = ca_collect_valued_idents(hb, out, seen)
+      let _ = ca_collect_valued_idents(e = hb, out = out, seen = seen)
       let mut hi = 0
       while hi < Array::length(harms) {
-        let (_, hab) = Array::get(harms, hi)
-        let _ = ca_collect_valued_idents(hab, out, seen)
+        let (_, hab) = Array::get(harms, at = hi)
+        let _ = ca_collect_valued_idents(e = hab, out = out, seen = seen)
         hi = hi + 1
       }
       0
     },
     EWhile(c0, b0) => {
-      let _ = ca_collect_valued_idents(c0, out, seen)
-      ca_collect_valued_idents(b0, out, seen)
+      let _ = ca_collect_valued_idents(e = c0, out = out, seen = seen)
+      ca_collect_valued_idents(e = b0, out = out, seen = seen)
     },
     ELoop(inits, b0) => {
       let mut li = 0
       while li < Array::length(inits) {
-        let (_, iv) = Array::get(inits, li)
-        let _ = ca_collect_valued_idents(iv, out, seen)
+        let (_, iv) = Array::get(inits, at = li)
+        let _ = ca_collect_valued_idents(e = iv, out = out, seen = seen)
         li = li + 1
       }
-      ca_collect_valued_idents(b0, out, seen)
+      ca_collect_valued_idents(e = b0, out = out, seen = seen)
     },
     EForIn(_, _, s0, b0) => {
-      let _ = ca_collect_valued_idents(s0, out, seen)
-      ca_collect_valued_idents(b0, out, seen)
+      let _ = ca_collect_valued_idents(e = s0, out = out, seen = seen)
+      ca_collect_valued_idents(e = b0, out = out, seen = seen)
     },
     EBinOp(_, a0, b0, _) => {
-      let _ = ca_collect_valued_idents(a0, out, seen)
-      ca_collect_valued_idents(b0, out, seen)
+      let _ = ca_collect_valued_idents(e = a0, out = out, seen = seen)
+      ca_collect_valued_idents(e = b0, out = out, seen = seen)
     },
-    EUnaryOp(_, a0) => ca_collect_valued_idents(a0, out, seen),
-    EFn(_, _, _, _, _, fb) => ca_collect_valued_idents(fb, out, seen),
-    EDot(o0, _, _, _) => ca_collect_valued_idents(o0, out, seen),
-    ELabeledArg(_, _, v0) => ca_collect_valued_idents(v0, out, seen),
-    EReturn(v0) => ca_collect_valued_idents(v0, out, seen),
+    EUnaryOp(_, a0) => ca_collect_valued_idents(e = a0, out = out, seen = seen),
+    EFn(_, _, _, _, _, fb) => ca_collect_valued_idents(e = fb, out = out, seen = seen),
+    EDot(o0, _, _, _) => ca_collect_valued_idents(e = o0, out = out, seen = seen),
+    ELabeledArg(_, _, v0) => ca_collect_valued_idents(e = v0, out = out, seen = seen),
+    EReturn(v0) => ca_collect_valued_idents(e = v0, out = out, seen = seen),
     EBreak(bo) => match bo {
-      Some(bv) => ca_collect_valued_idents(bv, out, seen),
+      Some(bv) => ca_collect_valued_idents(e = bv, out = out, seen = seen),
       None => 0
     },
-    EContinue(cvs) => ca_collect_valued_list(cvs, out, seen),
-    ESpread(sv) => ca_collect_valued_idents(sv, out, seen)
+    EContinue(cvs) => ca_collect_valued_list(items = cvs, out = out, seen = seen),
+    ESpread(sv) => ca_collect_valued_idents(e = sv, out = out, seen = seen)
   }
 }
 
 fn ca_collect_valued_list(items: Array[Expr], out: Array[String], seen: MutSet[String]) -> Int {
   let mut i = 0
   while i < Array::length(items) {
-    let _ = ca_collect_valued_idents(Array::get(items, i), out, seen)
+    let _ = ca_collect_valued_idents(e = Array::get(items, at = i), out = out, seen = seen)
     i = i + 1
   }
   0
 }
 
 export fn ca_walk_stmts_valued(stmts: Array[Stmt], out: Array[String]) -> Int {
-  ca_walk_stmts_valued_seen(stmts, out, MutSet::new_string())
+  ca_walk_stmts_valued_seen(stmts = stmts, out = out, seen = MutSet::new_string())
 }
 
 /// Each name is pushed once per walk: every caller asks only whether a name
@@ -884,32 +884,32 @@ export fn ca_walk_stmts_valued(stmts: Array[Stmt], out: Array[String]) -> Int {
 fn ca_walk_stmts_valued_seen(stmts: Array[Stmt], out: Array[String], seen: MutSet[String]) -> Int {
   let mut si = 0
   while si < Array::length(stmts) {
-    match Array::get(stmts, si) {
+    match Array::get(stmts, at = si) {
       SLet(_, _, _, _, lv) => {
-        let _ = ca_collect_valued_idents(lv, out, seen)
+        let _ = ca_collect_valued_idents(e = lv, out = out, seen = seen)
         0
       },
       SLetMut(_, _, lv) => {
-        let _ = ca_collect_valued_idents(lv, out, seen)
+        let _ = ca_collect_valued_idents(e = lv, out = out, seen = seen)
         0
       },
       SLetPat(_, lv) => {
-        let _ = ca_collect_valued_idents(lv, out, seen)
+        let _ = ca_collect_valued_idents(e = lv, out = out, seen = seen)
         0
       },
       SExpr(se) => {
-        let _ = ca_collect_valued_idents(se, out, seen)
+        let _ = ca_collect_valued_idents(e = se, out = out, seen = seen)
         0
       },
       STest(_, tb) => {
-        let _ = ca_collect_valued_idents(tb, out, seen)
+        let _ = ca_collect_valued_idents(e = tb, out = out, seen = seen)
         0
       },
       SBench(_, bb) => {
-        let _ = ca_collect_valued_idents(bb, out, seen)
+        let _ = ca_collect_valued_idents(e = bb, out = out, seen = seen)
         0
       },
-      SModule(_, _, mb) => ca_walk_stmts_valued_seen(mb, out, seen),
+      SModule(_, _, mb) => ca_walk_stmts_valued_seen(stmts = mb, out = out, seen = seen),
       _ => 0
     }
     si = si + 1
@@ -952,11 +952,11 @@ fn ca_collect_nonident_args(e: Expr, out: Array[String], out_pos: Array[Int]) ->
         EIdent(cf, _) => {
           let mut ni = 0
           while ni < Array::length(cargs) {
-            match Array::get(cargs, ni) {
+            match Array::get(cargs, at = ni) {
               EIdent(_, _) => (),
               _ => {
-                Array::push(out, cf)
-                Array::push(out_pos, ni)
+                Array::push(out, value = cf)
+                Array::push(out_pos, value = ni)
               }
             }
             ni = ni + 1
@@ -964,24 +964,24 @@ fn ca_collect_nonident_args(e: Expr, out: Array[String], out_pos: Array[Int]) ->
           ()
         },
         _ => {
-          let _ = ca_collect_nonident_args(callee, out, out_pos)
+          let _ = ca_collect_nonident_args(e = callee, out = out, out_pos = out_pos)
           ()
         }
       }
       let mut ci = 0
       while ci < Array::length(cargs) {
-        let _ = ca_collect_nonident_args(Array::get(cargs, ci), out, out_pos)
+        let _ = ca_collect_nonident_args(e = Array::get(cargs, at = ci), out = out, out_pos = out_pos)
         ci = ci + 1
       }
       0
     },
-    ETuple(items) => ca_collect_nonident_args_list(items, out, out_pos),
-    EArray(items) => ca_collect_nonident_args_list(items, out, out_pos),
+    ETuple(items) => ca_collect_nonident_args_list(items = items, out = out, out_pos = out_pos),
+    EArray(items) => ca_collect_nonident_args_list(items = items, out = out, out_pos = out_pos),
     ERecord(_, rfields, _) => {
       let mut ri = 0
       while ri < Array::length(rfields) {
-        let (_, rv) = Array::get(rfields, ri)
-        let _ = ca_collect_nonident_args(rv, out, out_pos)
+        let (_, rv) = Array::get(rfields, at = ri)
+        let _ = ca_collect_nonident_args(e = rv, out = out, out_pos = out_pos)
         ri = ri + 1
       }
       0
@@ -989,100 +989,100 @@ fn ca_collect_nonident_args(e: Expr, out: Array[String], out_pos: Array[Int]) ->
     EMap(mfields) => {
       let mut mi = 0
       while mi < Array::length(mfields) {
-        let (_, mv) = Array::get(mfields, mi)
-        let _ = ca_collect_nonident_args(mv, out, out_pos)
+        let (_, mv) = Array::get(mfields, at = mi)
+        let _ = ca_collect_nonident_args(e = mv, out = out, out_pos = out_pos)
         mi = mi + 1
       }
       0
     },
     EIf(c0, t0, f0) => {
-      let _ = ca_collect_nonident_args(c0, out, out_pos)
-      let _ = ca_collect_nonident_args(t0, out, out_pos)
-      ca_collect_nonident_args(f0, out, out_pos)
+      let _ = ca_collect_nonident_args(e = c0, out = out, out_pos = out_pos)
+      let _ = ca_collect_nonident_args(e = t0, out = out, out_pos = out_pos)
+      ca_collect_nonident_args(e = f0, out = out, out_pos = out_pos)
     },
     ELet(_, v0, b0, _) => {
-      let _ = ca_collect_nonident_args(v0, out, out_pos)
-      ca_collect_nonident_args(b0, out, out_pos)
+      let _ = ca_collect_nonident_args(e = v0, out = out, out_pos = out_pos)
+      ca_collect_nonident_args(e = b0, out = out, out_pos = out_pos)
     },
     ELetRec(_, v0, b0) => {
-      let _ = ca_collect_nonident_args(v0, out, out_pos)
-      ca_collect_nonident_args(b0, out, out_pos)
+      let _ = ca_collect_nonident_args(e = v0, out = out, out_pos = out_pos)
+      ca_collect_nonident_args(e = b0, out = out, out_pos = out_pos)
     },
     ELetMut(_, v0, b0, _) => {
-      let _ = ca_collect_nonident_args(v0, out, out_pos)
-      ca_collect_nonident_args(b0, out, out_pos)
+      let _ = ca_collect_nonident_args(e = v0, out = out, out_pos = out_pos)
+      ca_collect_nonident_args(e = b0, out = out, out_pos = out_pos)
     },
     EAssign(_, v0, b0, _) => {
-      let _ = ca_collect_nonident_args(v0, out, out_pos)
-      ca_collect_nonident_args(b0, out, out_pos)
+      let _ = ca_collect_nonident_args(e = v0, out = out, out_pos = out_pos)
+      ca_collect_nonident_args(e = b0, out = out, out_pos = out_pos)
     },
     EAssignOp(_, _, v0, b0, _) => {
-      let _ = ca_collect_nonident_args(v0, out, out_pos)
-      ca_collect_nonident_args(b0, out, out_pos)
+      let _ = ca_collect_nonident_args(e = v0, out = out, out_pos = out_pos)
+      ca_collect_nonident_args(e = b0, out = out, out_pos = out_pos)
     },
     ESeq(a0, b0) => {
-      let _ = ca_collect_nonident_args(a0, out, out_pos)
-      ca_collect_nonident_args(b0, out, out_pos)
+      let _ = ca_collect_nonident_args(e = a0, out = out, out_pos = out_pos)
+      ca_collect_nonident_args(e = b0, out = out, out_pos = out_pos)
     },
     EMatch(scr, arms) => {
-      let _ = ca_collect_nonident_args(scr, out, out_pos)
+      let _ = ca_collect_nonident_args(e = scr, out = out, out_pos = out_pos)
       let mut ai = 0
       while ai < Array::length(arms) {
-        let (_, ab) = Array::get(arms, ai)
-        let _ = ca_collect_nonident_args(ab, out, out_pos)
+        let (_, ab) = Array::get(arms, at = ai)
+        let _ = ca_collect_nonident_args(e = ab, out = out, out_pos = out_pos)
         ai = ai + 1
       }
       0
     },
     EHandle(hb, harms) => {
-      let _ = ca_collect_nonident_args(hb, out, out_pos)
+      let _ = ca_collect_nonident_args(e = hb, out = out, out_pos = out_pos)
       let mut hi = 0
       while hi < Array::length(harms) {
-        let (_, hab) = Array::get(harms, hi)
-        let _ = ca_collect_nonident_args(hab, out, out_pos)
+        let (_, hab) = Array::get(harms, at = hi)
+        let _ = ca_collect_nonident_args(e = hab, out = out, out_pos = out_pos)
         hi = hi + 1
       }
       0
     },
     EWhile(c0, b0) => {
-      let _ = ca_collect_nonident_args(c0, out, out_pos)
-      ca_collect_nonident_args(b0, out, out_pos)
+      let _ = ca_collect_nonident_args(e = c0, out = out, out_pos = out_pos)
+      ca_collect_nonident_args(e = b0, out = out, out_pos = out_pos)
     },
     ELoop(inits, b0) => {
       let mut li = 0
       while li < Array::length(inits) {
-        let (_, iv) = Array::get(inits, li)
-        let _ = ca_collect_nonident_args(iv, out, out_pos)
+        let (_, iv) = Array::get(inits, at = li)
+        let _ = ca_collect_nonident_args(e = iv, out = out, out_pos = out_pos)
         li = li + 1
       }
-      ca_collect_nonident_args(b0, out, out_pos)
+      ca_collect_nonident_args(e = b0, out = out, out_pos = out_pos)
     },
     EForIn(_, _, s0, b0) => {
-      let _ = ca_collect_nonident_args(s0, out, out_pos)
-      ca_collect_nonident_args(b0, out, out_pos)
+      let _ = ca_collect_nonident_args(e = s0, out = out, out_pos = out_pos)
+      ca_collect_nonident_args(e = b0, out = out, out_pos = out_pos)
     },
     EBinOp(_, a0, b0, _) => {
-      let _ = ca_collect_nonident_args(a0, out, out_pos)
-      ca_collect_nonident_args(b0, out, out_pos)
+      let _ = ca_collect_nonident_args(e = a0, out = out, out_pos = out_pos)
+      ca_collect_nonident_args(e = b0, out = out, out_pos = out_pos)
     },
-    EUnaryOp(_, a0) => ca_collect_nonident_args(a0, out, out_pos),
-    EFn(_, _, _, _, _, fb) => ca_collect_nonident_args(fb, out, out_pos),
-    EDot(o0, _, _, _) => ca_collect_nonident_args(o0, out, out_pos),
-    ELabeledArg(_, _, v0) => ca_collect_nonident_args(v0, out, out_pos),
-    EReturn(v0) => ca_collect_nonident_args(v0, out, out_pos),
+    EUnaryOp(_, a0) => ca_collect_nonident_args(e = a0, out = out, out_pos = out_pos),
+    EFn(_, _, _, _, _, fb) => ca_collect_nonident_args(e = fb, out = out, out_pos = out_pos),
+    EDot(o0, _, _, _) => ca_collect_nonident_args(e = o0, out = out, out_pos = out_pos),
+    ELabeledArg(_, _, v0) => ca_collect_nonident_args(e = v0, out = out, out_pos = out_pos),
+    EReturn(v0) => ca_collect_nonident_args(e = v0, out = out, out_pos = out_pos),
     EBreak(bo) => match bo {
-      Some(bv) => ca_collect_nonident_args(bv, out, out_pos),
+      Some(bv) => ca_collect_nonident_args(e = bv, out = out, out_pos = out_pos),
       None => 0
     },
-    EContinue(cvs) => ca_collect_nonident_args_list(cvs, out, out_pos),
-    ESpread(sv) => ca_collect_nonident_args(sv, out, out_pos)
+    EContinue(cvs) => ca_collect_nonident_args_list(items = cvs, out = out, out_pos = out_pos),
+    ESpread(sv) => ca_collect_nonident_args(e = sv, out = out, out_pos = out_pos)
   }
 }
 
 fn ca_collect_nonident_args_list(items: Array[Expr], out: Array[String], out_pos: Array[Int]) -> Int {
   let mut i = 0
   while i < Array::length(items) {
-    let _ = ca_collect_nonident_args(Array::get(items, i), out, out_pos)
+    let _ = ca_collect_nonident_args(e = Array::get(items, at = i), out = out, out_pos = out_pos)
     i = i + 1
   }
   0
@@ -1091,32 +1091,32 @@ fn ca_collect_nonident_args_list(items: Array[Expr], out: Array[String], out_pos
 export fn ca_walk_stmts_nonident_args(stmts: Array[Stmt], out: Array[String], out_pos: Array[Int]) -> Int {
   let mut si = 0
   while si < Array::length(stmts) {
-    match Array::get(stmts, si) {
+    match Array::get(stmts, at = si) {
       SLet(_, _, _, _, lv) => {
-        let _ = ca_collect_nonident_args(lv, out, out_pos)
+        let _ = ca_collect_nonident_args(e = lv, out = out, out_pos = out_pos)
         0
       },
       SLetMut(_, _, lv) => {
-        let _ = ca_collect_nonident_args(lv, out, out_pos)
+        let _ = ca_collect_nonident_args(e = lv, out = out, out_pos = out_pos)
         0
       },
       SLetPat(_, lv) => {
-        let _ = ca_collect_nonident_args(lv, out, out_pos)
+        let _ = ca_collect_nonident_args(e = lv, out = out, out_pos = out_pos)
         0
       },
       SExpr(se) => {
-        let _ = ca_collect_nonident_args(se, out, out_pos)
+        let _ = ca_collect_nonident_args(e = se, out = out, out_pos = out_pos)
         0
       },
       STest(_, tb) => {
-        let _ = ca_collect_nonident_args(tb, out, out_pos)
+        let _ = ca_collect_nonident_args(e = tb, out = out, out_pos = out_pos)
         0
       },
       SBench(_, bb) => {
-        let _ = ca_collect_nonident_args(bb, out, out_pos)
+        let _ = ca_collect_nonident_args(e = bb, out = out, out_pos = out_pos)
         0
       },
-      SModule(_, _, mb) => ca_walk_stmts_nonident_args(mb, out, out_pos),
+      SModule(_, _, mb) => ca_walk_stmts_nonident_args(stmts = mb, out = out, out_pos = out_pos),
       _ => 0
     }
     si = si + 1
@@ -1140,10 +1140,10 @@ export fn bmask_has(mask: Int, i: Int) -> Bool {
 }
 
 /// Strip a labeled/optional parameter's trailing `~`/`?` marker.
-export fn bp_param_base_name(raw: String) -> String {
+export fn bp_param_base_name(_ raw: String) -> String {
   let l = String::length(raw)
   if l > 0 {
-    let c = String::char_code_at(raw, l - 1)
+    let c = String::char_code_at(raw, at = l - 1)
     if c == '~' || c == '?' {
       raw[0: l - 1]
     } else {
@@ -1161,14 +1161,14 @@ export fn bp_fold_nonident(nonident_fns: Array[String], nonident_pos: Array[Int]
   let nonident: MutMap[String, Int] = MutMap::new_string()
   let mut ni = 0
   while ni < Array::length(nonident_fns) {
-    let nf = Array::get(nonident_fns, ni)
-    let np = Array::get(nonident_pos, ni)
-    let prev = match MutMap::get(nonident, nf) {
+    let nf = Array::get(nonident_fns, at = ni)
+    let np = Array::get(nonident_pos, at = ni)
+    let prev = match MutMap::get(nonident, k = nf) {
       Some(m) => m,
       None => 0
     }
     if np >= 0 && np < bmask_max_param() {
-      MutMap::set(nonident, nf, prev|(1<<np))
+      MutMap::set(nonident, k = nf, v = prev|(1<<np))
     } else {
       ()
     }
@@ -1179,11 +1179,11 @@ export fn bp_fold_nonident(nonident_fns: Array[String], nonident_pos: Array[Int]
 
 /// #2638: membership over a name list. #2386's rationale applies -- the
 /// analysis never reads the order.
-export fn bp_name_set(names: Array[String]) -> MutSet[String] {
+export fn bp_name_set(_ names: Array[String]) -> MutSet[String] {
   let s: MutSet[String] = MutSet::new_string()
   let mut i = 0
   while i < Array::length(names) {
-    MutSet::add(s, Array::get(names, i))
+    MutSet::add(s, x = Array::get(names, at = i))
     i = i + 1
   }
   s
@@ -1197,7 +1197,7 @@ export fn bp_sorted_with_masks(names: Array[String], masks: MutMap[String, Int],
   let names_srt = sorted_names_of(names)
   let mut oi = 0
   while oi < Array::length(names_srt) {
-    Array::push(out_masks, match MutMap::get(masks, Array::get(names_srt, oi)) {
+    Array::push(out_masks, value = match MutMap::get(masks, k = Array::get(names_srt, at = oi)) {
       Some(m) => m,
       None => 0
     })

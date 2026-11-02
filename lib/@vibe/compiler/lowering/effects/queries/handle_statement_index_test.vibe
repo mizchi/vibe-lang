@@ -11,7 +11,7 @@ import @vibe/compiler/lowering/effects/evidence {
   edp_erase_effect_handles_with_index
 }
 
-fn indexed_handle(name: String) -> Expr {
+fn indexed_handle(_ name: String) -> Expr {
   EHandle(EInt(0), [(PCtor(name + "::Get", []), EInt(1))])
 }
 
@@ -19,16 +19,16 @@ fn oracle_statement_indices(stmts: Array[Stmt], effect: String) -> Array[Int] {
   let out: Array[Int] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    let found = match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => edp_rq_fold(RQHandlesEffect(effect), expr),
-      SLetMut(_, _, expr) => edp_rq_fold(RQHandlesEffect(effect), expr),
-      SExpr(expr) => edp_rq_fold(RQHandlesEffect(effect), expr),
-      STest(_, expr) => edp_rq_fold(RQHandlesEffect(effect), expr),
-      SBench(_, expr) => edp_rq_fold(RQHandlesEffect(effect), expr),
+    let found = match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, expr) => edp_rq_fold(q = RQHandlesEffect(effect), e = expr),
+      SLetMut(_, _, expr) => edp_rq_fold(q = RQHandlesEffect(effect), e = expr),
+      SExpr(expr) => edp_rq_fold(q = RQHandlesEffect(effect), e = expr),
+      STest(_, expr) => edp_rq_fold(q = RQHandlesEffect(effect), e = expr),
+      SBench(_, expr) => edp_rq_fold(q = RQHandlesEffect(effect), e = expr),
       _ => 0
     }
     if found > 0 {
-      Array::push(out, i)
+      Array::push(out, value = i)
     } else ()
     i = i + 1
   }
@@ -45,9 +45,9 @@ test "handle statement index preserves owner order and deduplicates nested sites
     SModule(false, "ignored", [SExpr(indexed_handle("Ask"))])
   ]
   let index = edp_handle_statement_index(stmts)
-  inspect(edp_handle_statement_indices(index, "Ask"), content = "[0, 2, 3, 4]")
-  inspect(edp_handle_statement_indices(index, "Other"), content = "[1]")
-  inspect(edp_handle_statement_indices(index, "Missing"), content = "[]")
+  inspect(edp_handle_statement_indices(index = index, effect = "Ask"), content = "[0, 2, 3, 4]")
+  inspect(edp_handle_statement_indices(index = index, effect = "Other"), content = "[1]")
+  inspect(edp_handle_statement_indices(index = index, effect = "Missing"), content = "[]")
 }
 
 test "handle index agrees with the independent containment query across containers" {
@@ -87,11 +87,11 @@ test "handle index agrees with the independent containment query across containe
   ]
   let stmts: Array[Stmt] = []
   for expr in containers {
-    Array::push(stmts, SExpr(expr))
+    Array::push(stmts, value = SExpr(expr))
   }
   let index = edp_handle_statement_index(stmts)
   for effect in ["Ask", "Other", "Missing"] {
-    inspect(edp_handle_statement_indices(index, effect) == oracle_statement_indices(stmts, effect), content = "true")
+    inspect(edp_handle_statement_indices(index = index, effect = effect) == oracle_statement_indices(stmts = stmts, effect = effect), content = "true")
   }
 }
 
@@ -101,11 +101,11 @@ test "removed nested handler arms leave safe candidate supersets" {
   ]
   let index = edp_handle_statement_index(stmts)
   let names: MutSet[String] = MutSet::new_string()
-  edp_erase_effect_handles_with_index(stmts, "Ask", false, [], names, names, Some(edp_handle_statement_indices(index, "Ask")))
-  inspect(edp_handle_statement_indices(index, "Other"), content = "[0]")
-  inspect(edp_handle_statement_indices(edp_handle_statement_index(stmts), "Other"), content = "[]")
-  edp_erase_effect_handles_with_index(stmts, "Other", false, [], names, names, Some(edp_handle_statement_indices(index, "Other")))
-  inspect(match Array::get(stmts, 0) {
+  edp_erase_effect_handles_with_index(stmts = stmts, ename = "Ask", analyze = false, perf_fns = [], inert = names, fn_names = names, statement_indices = Some(edp_handle_statement_indices(index = index, effect = "Ask")))
+  inspect(edp_handle_statement_indices(index = index, effect = "Other"), content = "[0]")
+  inspect(edp_handle_statement_indices(index = edp_handle_statement_index(stmts), effect = "Other"), content = "[]")
+  edp_erase_effect_handles_with_index(stmts = stmts, ename = "Other", analyze = false, perf_fns = [], inert = names, fn_names = names, statement_indices = Some(edp_handle_statement_indices(index = index, effect = "Other")))
+  inspect(match Array::get(stmts, at = 0) {
     SExpr(EInt(7)) => true,
     _ => false
   }, content = "true")
@@ -123,9 +123,9 @@ test "every qualified arm contributes a candidate effect including exception lab
     SExpr(EHandle(EInt(0), [(PCtor("::Get", []), EInt(0))]))
   ]
   let index = edp_handle_statement_index(stmts)
-  inspect(edp_handle_statement_indices(index, "Error"), content = "[0]")
-  inspect(edp_handle_statement_indices(index, "Ask"), content = "[0]")
-  inspect(edp_handle_statement_indices(index, "Other"), content = "[]")
+  inspect(edp_handle_statement_indices(index = index, effect = "Error"), content = "[0]")
+  inspect(edp_handle_statement_indices(index = index, effect = "Ask"), content = "[0]")
+  inspect(edp_handle_statement_indices(index = index, effect = "Other"), content = "[]")
 }
 
 test "a grouped handler indexes each effect once and the query sees later arms" {
@@ -135,11 +135,11 @@ test "a grouped handler indexes each effect once and the query sees later arms" 
     (PCtor("Ask::Next", []), EInt(3))
   ])
   let index = edp_handle_statement_index([SExpr(expr)])
-  inspect(edp_handle_statement_indices(index, "Ask"), content = "[0]")
-  inspect(edp_handle_statement_indices(index, "Other"), content = "[0]")
-  inspect(edp_rq_fold(RQHandlesEffect("Ask"), expr), content = "1")
-  inspect(edp_rq_fold(RQHandlesEffect("Other"), expr), content = "1")
-  inspect(edp_rq_fold(RQHandlesEffect("Missing"), expr), content = "0")
+  inspect(edp_handle_statement_indices(index = index, effect = "Ask"), content = "[0]")
+  inspect(edp_handle_statement_indices(index = index, effect = "Other"), content = "[0]")
+  inspect(edp_rq_fold(q = RQHandlesEffect("Ask"), e = expr), content = "1")
+  inspect(edp_rq_fold(q = RQHandlesEffect("Other"), e = expr), content = "1")
+  inspect(edp_rq_fold(q = RQHandlesEffect("Missing"), e = expr), content = "0")
 }
 
 test "vacuous discharge removes only its own arms from a grouped handler" {
@@ -152,16 +152,16 @@ test "vacuous discharge removes only its own arms from a grouped handler" {
   ]
   let index = edp_handle_statement_index(stmts)
   let names: MutSet[String] = MutSet::new_string()
-  edp_erase_effect_handles_with_index(stmts, "Ask", false, [], names, names, Some(edp_handle_statement_indices(index, "Ask")))
-  inspect(match Array::get(stmts, 0) {
-    SExpr(EHandle(EInt(7), arms)) => Array::length(arms) == 1 && match Array::get(arms, 0) {
+  edp_erase_effect_handles_with_index(stmts = stmts, ename = "Ask", analyze = false, perf_fns = [], inert = names, fn_names = names, statement_indices = Some(edp_handle_statement_indices(index = index, effect = "Ask")))
+  inspect(match Array::get(stmts, at = 0) {
+    SExpr(EHandle(EInt(7), arms)) => Array::length(arms) == 1 && match Array::get(arms, at = 0) {
       (PCtor("Other::Get", binds), EInt(2)) => Array::length(binds) == 0,
       _ => false
     },
     _ => false
   }, content = "true")
-  edp_erase_effect_handles_with_index(stmts, "Other", false, [], names, names, Some(edp_handle_statement_indices(index, "Other")))
-  inspect(match Array::get(stmts, 0) {
+  edp_erase_effect_handles_with_index(stmts = stmts, ename = "Other", analyze = false, perf_fns = [], inert = names, fn_names = names, statement_indices = Some(edp_handle_statement_indices(index = index, effect = "Other")))
+  inspect(match Array::get(stmts, at = 0) {
     SExpr(EInt(7)) => true,
     _ => false
   }, content = "true")

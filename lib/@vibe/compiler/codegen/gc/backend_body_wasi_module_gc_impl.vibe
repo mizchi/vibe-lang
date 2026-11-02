@@ -220,7 +220,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // #3132 review: `--entry StringBuilder::new` can name the program's own
   // function, now spelled `StringBuilder::new$user`. Lookups use that
   // spelling; the export keeps the source one.
-  let entry_name = builtin_shadow_entry_name(stmts, entry_name_in)
+  let entry_name = builtin_shadow_entry_name(stmts = stmts, entry_name = entry_name_in)
   // #805: inline-wasm fns are linear-backend only — reject before any work.
   gc_reject_inline_wasm(stmts)
   // #2652: the Double runtime prelude (codegen/common_base/double_runtime.vibe),
@@ -231,8 +231,8 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // ADR-0088 / #2236: the gc lane has its own lowering convergence point and
   // uses the same artifact-wide test authority or fail-closed default as the
   // linear lane.
-  let optional_resolution = optional_perform_artifact_resolution(stmts, entry_name, generated_test_artifact, array_empty())
-  lower_optional_performs(stmts, optional_resolution)
+  let optional_resolution = optional_perform_artifact_resolution(stmts = stmts, entry_name = entry_name, generated_test_artifact = generated_test_artifact, resolution = array_empty())
+  lower_optional_performs(stmts = stmts, resolution = optional_resolution)
   gc_add_ref_twins(stmts)
   // #1015: `gc_to_string_is_wrapper` is a PARAMETER, not computed here --
   // see the doc comment on gc_to_string_resolves_to_show_wrapper (which
@@ -243,7 +243,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // EFn def so calls do not route through a 0-param thunk registration
   // (invalid wasm for any call arity). See import_alias_rewrite.vibe.
   rewrite_top_level_fn_alias_refs(stmts)
-  wrap_entry_exception_boundary(stmts, entry_name)
+  wrap_entry_exception_boundary(stmts = stmts, entry_name = entry_name)
   // #tco: see codegen/common_base/self_tail_call.vibe's doc comment (same
   // rewrite as the linear backend's call site in codegen/wasi/linked_compile.vibe).
   rewrite_self_tail_calls(stmts)
@@ -267,10 +267,10 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // #3301: both effect lowerings read one operation per handler arm, so an
   // or-pattern arm `A | B => body` becomes `A => body` and `B => body` first,
   // as the linear lane splits it.
-  split_handler_or_arms(stmts, true)
+  split_handler_or_arms(stmts = stmts, with_binders = true)
   let scps_errs = suspend_cps_pass(stmts)
   if Array::length(scps_errs) > 0 {
-    throw(Array::get(scps_errs, 0))
+    throw(Array::get(scps_errs, at = 0))
   } else {
     ()
   }
@@ -278,9 +278,9 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // reachability prune, so an original the suspend lowering replaced by its
   // clone everywhere would reach codegen with its raw `perform`.
   scps_drop_orphaned_originals(stmts)
-  let edp_errs = evidence_dict_pass(stmts, entry_name)
+  let edp_errs = evidence_dict_pass(stmts = stmts, entry_name = entry_name)
   if Array::length(edp_errs) > 0 {
-    throw(Array::get(edp_errs, 0))
+    throw(Array::get(edp_errs, at = 0))
   } else {
     ()
   }
@@ -290,14 +290,14 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let user_func_stmts = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     match stmt {
       SLet(_, _, name, _, expr) => match expr {
         EFn(_, _, params, _, _, _) => {
-          Array::push(fn_names_list, name)
-          Array::push(fn_param_counts, Array::length(params))
-          Array::push(fn_needs_env_list, true)
-          Array::push(user_func_stmts, stmt)
+          Array::push(fn_names_list, value = name)
+          Array::push(fn_param_counts, value = Array::length(params))
+          Array::push(fn_needs_env_list, value = true)
+          Array::push(user_func_stmts, value = stmt)
           0
         },
         _ => 0
@@ -317,7 +317,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let mut gc_direct_abi_ok = true
   let mut dai = 0
   while dai < Array::length(user_func_stmts) {
-    match Array::get(user_func_stmts, dai) {
+    match Array::get(user_func_stmts, at = dai) {
       SLet(_, _, dai_name, dai_ann, dai_value) => match dai_value {
         EFn(dai_tparams, _, dai_params, dai_ret_ann, _, _) => {
           let param_refs = array_empty()
@@ -333,9 +333,9 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
           let mut pi = 0
           while pi < Array::length(dai_params) {
             let pty = match sig_params {
-              Some(ps) => Some(Array::get(ps, pi)),
+              Some(ps) => Some(Array::get(ps, at = pi)),
               None => {
-                let (_, own_ann) = Array::get(dai_params, pi)
+                let (_, own_ann) = Array::get(dai_params, at = pi)
                 own_ann
               }
             }
@@ -351,7 +351,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
               },
               None => ()
             }
-            Array::push(param_refs, is_ref)
+            Array::push(param_refs, value = is_ref)
             if is_ref {
               has_ref = true
             } else {
@@ -390,7 +390,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
           // Concrete Array[Int] is additionally required above; a surviving
           // type parameter in the element position has already made
           // gc_direct_abi_ok false.
-          let dai_is_generic = Array::length(dai_tparams) > 0 || gc_direct_abi_name_in(direct_abi_generic_names, dai_name)
+          let dai_is_generic = Array::length(dai_tparams) > 0 || gc_direct_abi_name_in(names = direct_abi_generic_names, name = dai_name)
           if dai_is_generic && has_ref {
             gc_direct_abi_ok = false
           } else {
@@ -421,12 +421,12 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
           // local. The export fallback fixture pins exactly that: it pipes a
           // private reference through the exported declaration and still emits
           // no native literal.
-          if (dai_name == entry_name || gc_direct_abi_name_is_exported(stmts, dai_name)) && has_ref {
+          if (dai_name == entry_name || gc_direct_abi_name_is_exported(stmts = stmts, name = dai_name)) && has_ref {
             ()
           } else if has_ref {
-            Array::push(gc_direct_abi_names_l, dai_name)
-            Array::push(gc_direct_abi_param_refs_l, param_refs)
-            Array::push(gc_direct_abi_return_refs_l, return_ref)
+            Array::push(gc_direct_abi_names_l, value = dai_name)
+            Array::push(gc_direct_abi_param_refs_l, value = param_refs)
+            Array::push(gc_direct_abi_return_refs_l, value = return_ref)
           } else {
             ()
           }
@@ -440,17 +440,17 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   if gc_direct_abi_ok && Array::length(gc_direct_abi_names_l) > 0 {
     let mut si = 0
     while si < Array::length(user_func_stmts) {
-      match Array::get(user_func_stmts, si) {
+      match Array::get(user_func_stmts, at = si) {
         SLet(_, _, si_name, _, EFn(_, _, si_params, _, _, si_body)) => {
           let native_params = array_empty()
-          let sig_idx = gc_direct_abi_name_index_exact(gc_direct_abi_names_l, si_name)
+          let sig_idx = gc_direct_abi_name_index_exact(names = gc_direct_abi_names_l, name = si_name)
           if sig_idx >= 0 {
-            let refs = Array::get(gc_direct_abi_param_refs_l, sig_idx)
+            let refs = Array::get(gc_direct_abi_param_refs_l, at = sig_idx)
             let mut spi = 0
             while spi < Array::length(refs) {
-              if Array::get(refs, spi) {
-                let (pname, _) = Array::get(si_params, spi)
-                Array::push(native_params, pname)
+              if Array::get(refs, at = spi) {
+                let (pname, _) = Array::get(si_params, at = spi)
+                Array::push(native_params, value = pname)
               } else {
                 ()
               }
@@ -459,8 +459,8 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
           } else {
             ()
           }
-          let si_return_ref = sig_idx >= 0 && Array::get(gc_direct_abi_return_refs_l, sig_idx)
-          let body_kind = gc_direct_abi_expr_kind(si_body, native_params, gc_direct_abi_names_l, gc_direct_abi_param_refs_l, gc_direct_abi_return_refs_l, si_return_ref)
+          let si_return_ref = sig_idx >= 0 && Array::get(gc_direct_abi_return_refs_l, at = sig_idx)
+          let body_kind = gc_direct_abi_expr_kind(expr = si_body, native_names = native_params, abi_names = gc_direct_abi_names_l, abi_param_refs = gc_direct_abi_param_refs_l, abi_return_refs = gc_direct_abi_return_refs_l, return_ref = si_return_ref)
           let expected_kind = if si_return_ref {
             1
           } else {
@@ -490,10 +490,10 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     // observe a typed function, even if the reference is consumed immediately.
     let mut gi = 0
     while gi < Array::length(stmts) {
-      match Array::get(stmts, gi) {
+      match Array::get(stmts, at = gi) {
         SLet(_, _, _, _, value) => match value {
           EFn(_, _, _, _, _, _) => (),
-          _ => if gc_direct_abi_expr_mentions_name(value, gc_direct_abi_names_l) {
+          _ => if gc_direct_abi_expr_mentions_name(expr = value, names = gc_direct_abi_names_l) {
             gc_direct_abi_ok = false
           } else {
             ()
@@ -507,9 +507,9 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     ()
   }
   if !gc_direct_abi_ok {
-    Array::truncate(gc_direct_abi_names_l, 0)
-    Array::truncate(gc_direct_abi_param_refs_l, 0)
-    Array::truncate(gc_direct_abi_return_refs_l, 0)
+    Array::truncate(gc_direct_abi_names_l, length = 0)
+    Array::truncate(gc_direct_abi_param_refs_l, length = 0)
+    Array::truncate(gc_direct_abi_return_refs_l, length = 0)
   } else {
     ()
   }
@@ -526,12 +526,12 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let builtin_ctor_types = ["Option", "Option", "Attempt", "Attempt", "Attempt"]
   let mut builtin_ctor_i = 0
   while builtin_ctor_i < Array::length(builtin_ctor_names) {
-    let builtin_ctor_name = Array::get(builtin_ctor_names, builtin_ctor_i)
-    if !source_declares_constructor(stmts, builtin_ctor_name) {
-      Array::push(ctor_names_list, builtin_ctor_name)
-      Array::push(ctor_tags_list, Array::get(builtin_ctor_tags, builtin_ctor_i))
-      Array::push(ctor_field_counts_list, Array::get(builtin_ctor_fields, builtin_ctor_i))
-      Array::push(ctor_type_names_list, Array::get(builtin_ctor_types, builtin_ctor_i))
+    let builtin_ctor_name = Array::get(builtin_ctor_names, at = builtin_ctor_i)
+    if !source_declares_constructor(stmts = stmts, name = builtin_ctor_name) {
+      Array::push(ctor_names_list, value = builtin_ctor_name)
+      Array::push(ctor_tags_list, value = Array::get(builtin_ctor_tags, at = builtin_ctor_i))
+      Array::push(ctor_field_counts_list, value = Array::get(builtin_ctor_fields, at = builtin_ctor_i))
+      Array::push(ctor_type_names_list, value = Array::get(builtin_ctor_types, at = builtin_ctor_i))
     } else {
       ()
     }
@@ -540,26 +540,26 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let mut type_index = 1
   let mut ei2 = 0
   while ei2 < Array::length(stmts) {
-    match Array::get(stmts, ei2) {
+    match Array::get(stmts, at = ei2) {
       SEnum(_, ename, _, variants, _) => {
         type_index = type_index + 1
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (vname, vfields) = Array::get(variants, vi)
-          Array::push(ctor_names_list, vname)
-          Array::push(ctor_tags_list, (type_index<<16)|vi)
-          Array::push(ctor_field_counts_list, Array::length(vfields))
-          Array::push(ctor_type_names_list, ename)
+          let (vname, vfields) = Array::get(variants, at = vi)
+          Array::push(ctor_names_list, value = vname)
+          Array::push(ctor_tags_list, value = (type_index<<16)|vi)
+          Array::push(ctor_field_counts_list, value = Array::length(vfields))
+          Array::push(ctor_type_names_list, value = ename)
           vi = vi + 1
         }
         0
       },
       SStruct(_, sname, sfields, _, _, _) => {
         type_index = type_index + 1
-        Array::push(ctor_names_list, sname)
-        Array::push(ctor_tags_list, type_index<<16)
-        Array::push(ctor_field_counts_list, Array::length(sfields))
-        Array::push(ctor_type_names_list, sname)
+        Array::push(ctor_names_list, value = sname)
+        Array::push(ctor_tags_list, value = type_index<<16)
+        Array::push(ctor_field_counts_list, value = Array::length(sfields))
+        Array::push(ctor_type_names_list, value = sname)
         0
       },
       // #817 gc-backend follow-up (2026-07-23): mirrors linked_compile.vibe's
@@ -574,11 +574,11 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
         type_index = type_index + 1
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (vname, vfields) = Array::get(variants, vi)
-          Array::push(ctor_names_list, vname)
-          Array::push(ctor_tags_list, (type_index<<16)|vi)
-          Array::push(ctor_field_counts_list, Array::length(vfields))
-          Array::push(ctor_type_names_list, ename)
+          let (vname, vfields) = Array::get(variants, at = vi)
+          Array::push(ctor_names_list, value = vname)
+          Array::push(ctor_tags_list, value = (type_index<<16)|vi)
+          Array::push(ctor_field_counts_list, value = Array::length(vfields))
+          Array::push(ctor_type_names_list, value = ename)
           vi = vi + 1
         }
         0
@@ -587,7 +587,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     }
     ei2 = ei2 + 1
   }
-  append_hidden_attempt_constructors(ctor_names_list, ctor_tags_list, ctor_field_counts_list, ctor_type_names_list)
+  append_hidden_attempt_constructors(names = ctor_names_list, tags = ctor_tags_list, field_counts = ctor_field_counts_list, type_names = ctor_type_names_list)
   // Sorted ctor-name index (see CtorTable.names_sorted): built once here,
   // shared by every CtorTable literal below.
   let (gc_ctor_names_sorted, gc_ctor_names_sorted_pos) = ctor_sorted_index(ctor_names_list)
@@ -602,36 +602,36 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let gc_global_exprs_l = array_empty()
   let mut gci = 0
   while gci < Array::length(stmts) {
-    match Array::get(stmts, gci) {
+    match Array::get(stmts, at = gci) {
       SLet(_, _, cname, _, cval) => match cval {
         EInt(iv) => {
-          Array::push(gc_const_names_l, cname)
-          Array::push(gc_const_kinds_l, 0)
-          Array::push(gc_const_ivals_l, iv)
-          Array::push(gc_const_svals_l, "")
+          Array::push(gc_const_names_l, value = cname)
+          Array::push(gc_const_kinds_l, value = 0)
+          Array::push(gc_const_ivals_l, value = iv)
+          Array::push(gc_const_svals_l, value = "")
         },
         EBool(bv) => {
-          Array::push(gc_const_names_l, cname)
-          Array::push(gc_const_kinds_l, 0)
-          Array::push(gc_const_ivals_l, if bv {
+          Array::push(gc_const_names_l, value = cname)
+          Array::push(gc_const_kinds_l, value = 0)
+          Array::push(gc_const_ivals_l, value = if bv {
             1
           } else {
             0
           })
-          Array::push(gc_const_svals_l, "")
+          Array::push(gc_const_svals_l, value = "")
         },
         EString(sv, _) => {
-          Array::push(gc_const_names_l, cname)
-          Array::push(gc_const_kinds_l, 1)
-          Array::push(gc_const_ivals_l, 0)
-          Array::push(gc_const_svals_l, sv)
+          Array::push(gc_const_names_l, value = cname)
+          Array::push(gc_const_kinds_l, value = 1)
+          Array::push(gc_const_ivals_l, value = 0)
+          Array::push(gc_const_svals_l, value = sv)
         },
         EFn(_, _, _, _, _, _) => (),
         _ => {
           // Computed module-level value: a mutable i64 global initialized at
           // the top of _start (B12 port).
-          Array::push(gc_global_names_l, cname)
-          Array::push(gc_global_exprs_l, cval)
+          Array::push(gc_global_names_l, value = cname)
+          Array::push(gc_global_exprs_l, value = cval)
         }
       },
       _ => ()
@@ -643,17 +643,17 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let struct_field_is_ref = array_empty()
   let mut si = 0
   while si < Array::length(stmts) {
-    match Array::get(stmts, si) {
+    match Array::get(stmts, at = si) {
       SStruct(_, sname, sfields, _, _, _) => {
-        Array::push(struct_names, sname)
+        Array::push(struct_names, value = sname)
         let fnames = array_empty()
         let mut sfi = 0
         while sfi < Array::length(sfields) {
-          let (fname, _) = Array::get(sfields, sfi)
-          Array::push(fnames, fname)
+          let (fname, _) = Array::get(sfields, at = sfi)
+          Array::push(fnames, value = fname)
           sfi = sfi + 1
         }
-        Array::push(struct_field_names, fnames)
+        Array::push(struct_field_names, value = fnames)
         // #1542: which of this struct's fields are declared as a reference-lane
         // array. The field's wasm type follows from its DECLARED type, so this
         // has to be collected here beside the names rather than inferred from a
@@ -661,11 +661,11 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
         let frefs = array_empty()
         let mut sfr = 0
         while sfr < Array::length(sfields) {
-          let (_, fty) = Array::get(sfields, sfr)
-          Array::push(frefs, gc_direct_abi_is_native_array_type(fty))
+          let (_, fty) = Array::get(sfields, at = sfr)
+          Array::push(frefs, value = gc_direct_abi_is_native_array_type(fty))
           sfr = sfr + 1
         }
-        Array::push(struct_field_is_ref, frefs)
+        Array::push(struct_field_is_ref, value = frefs)
         ()
       },
       _ => ()
@@ -683,7 +683,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let mut entry_user_idx = -1
   let mut ei = 0
   while ei < num_user_funcs {
-    if Array::get(fn_names_list, ei) == entry_name {
+    if Array::get(fn_names_list, at = ei) == entry_name {
       entry_user_idx = ei
     }
     ei = ei + 1
@@ -692,17 +692,17 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     throw(String::concat("entry function not found: ", entry_name_in))
   }
   // Share one scope-aware scan across conditional bodies and host imports.
-  let used_builtins = collect_used_builtin_names(stmts, fn_names_list)
-  let need_array_capacity = Map::has_key(used_builtins, "Array::with_capacity")
-  let need_bytes_capacity = Map::has_key(used_builtins, "Bytes::with_capacity")
+  let used_builtins = collect_used_builtin_names(stmts = stmts, fn_names = fn_names_list)
+  let need_array_capacity = Map::has_key(used_builtins, key = "Array::with_capacity")
+  let need_bytes_capacity = Map::has_key(used_builtins, key = "Bytes::with_capacity")
   let str_strs = collect_strings_stmts(stmts)
   // #538: StringBuilder::freeze joins with "" and println appends "\n"; both
   // must exist in the string table even when the program has no such literal.
-  if !array_contains_str(str_strs, "") {
-    Array::push(str_strs, "")
+  if !array_contains_str(arr = str_strs, s = "") {
+    Array::push(str_strs, value = "")
   }
-  if !array_contains_str(str_strs, "\n") {
-    Array::push(str_strs, "\n")
+  if !array_contains_str(arr = str_strs, s = "\n") {
+    Array::push(str_strs, value = "\n")
   }
   // Keep the optional allocators' diagnostics out of unrelated modules too.
   // `Bytes::with_capacity`'s body is pushed unconditionally (its index is
@@ -711,16 +711,16 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // lane gates the same message the same way.
   let array_capacity_error_slot = Array::length(str_strs)
   if need_array_capacity {
-    Array::push(str_strs, array_capacity_error_message())
+    Array::push(str_strs, value = array_capacity_error_message())
   }
   let capacity_error_slot = Array::length(str_strs)
   if need_bytes_capacity {
-    Array::push(str_strs, bytes_capacity_error_message())
+    Array::push(str_strs, value = bytes_capacity_error_message())
   }
   // #3547: the message `Map::get` / `m[k]` prints before its miss trap, only
   // for a program that reads a map, as on the linear lane.
-  if Map::has_key(used_builtins, "Map::get") && !array_contains_str(str_strs, map_get_miss_message()) {
-    Array::push(str_strs, map_get_miss_message())
+  if Map::has_key(used_builtins, key = "Map::get") && !array_contains_str(arr = str_strs, s = map_get_miss_message()) {
+    Array::push(str_strs, value = map_get_miss_message())
   } else {
     ()
   }
@@ -729,7 +729,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // when the program has a guarded `/` or `%`. `collect_strings_stmts`
   // dedupes its own output; these are checked against it.
   let div_sites: Array[String] = []
-  let need_div_zero_abort = collect_int_div_sites(stmts, div_sites, MutSet::new_string(), true)
+  let need_div_zero_abort = collect_int_div_sites(stmts = stmts, out = div_sites, seen = MutSet::new_string(), whole = true)
   if need_div_zero_abort {
     let div_strs = [
       div_zero_div_message(),
@@ -738,13 +738,13 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     ]
     let mut __dsi = 0
     while __dsi < Array::length(div_sites) {
-      Array::push(div_strs, Array::get(div_sites, __dsi))
+      Array::push(div_strs, value = Array::get(div_sites, at = __dsi))
       __dsi = __dsi + 1
     }
     let mut __dpi = 0
     while __dpi < Array::length(div_strs) {
-      if !array_contains_str(str_strs, Array::get(div_strs, __dpi)) {
-        Array::push(str_strs, Array::get(div_strs, __dpi))
+      if !array_contains_str(arr = str_strs, s = Array::get(div_strs, at = __dpi)) {
+        Array::push(str_strs, value = Array::get(div_strs, at = __dpi))
       } else {
         ()
       }
@@ -760,10 +760,10 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let mut str_pos = data_base
   let mut si = 0
   while si < num_strings {
-    let s = Array::get(str_strs, si)
+    let s = Array::get(str_strs, at = si)
     let slen = String::length(s)
-    Array::push(str_offsets, str_pos)
-    Array::push(str_lengths, slen)
+    Array::push(str_offsets, value = str_pos)
+    Array::push(str_lengths, value = slen)
     str_pos = str_pos + slen
     si = si + 1
   }
@@ -788,7 +788,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // Unconditional when the module has a region: linear gates on `!enable_rc`
   // because an RC block would reach a free list that the bulk release
   // invalidates, and this lane has no RC lane to guard against.
-  let need_region_arena = Map::has_key(used_builtins, "__region_run")
+  let need_region_arena = Map::has_key(used_builtins, key = "__region_run")
   let region_exn_tag = if stmts_contain_exceptions(stmts) {
     region_exn_tag_gc()
   } else {
@@ -818,7 +818,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // is the point -- the save/restore needs no locals at the call site), so the
   // memory must already cover them. emit_heap_memory_grow_check only guards
   // the bump allocations above.
-  let mem_min_pages = gc_initial_memory_pages(gc_heap_start, need_region_arena)
+  let mem_min_pages = gc_initial_memory_pages(heap_start = gc_heap_start, with_region = need_region_arena)
   // The two arena allocators are appended only when the module has a region
   // (see the push site near the end of the builtin table). They go LAST so
   // every `hbo + N` ordinal above keeps its meaning in both shapes.
@@ -857,7 +857,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // only when desugar_trait_dicts emitted a call to either (the gc lane runs
   // that pass too). Conditional for the same size reason as the renderer.
   // Pushed after the #3126 abort body, so its indices add `div_zero_extra`.
-  let need_generic_dispatch = Map::has_key(used_builtins, "__generic_add") || Map::has_key(used_builtins, "__generic_rel_diff")
+  let need_generic_dispatch = Map::has_key(used_builtins, key = "__generic_add") || Map::has_key(used_builtins, key = "__generic_rel_diff")
   let generic_extra = if need_generic_dispatch {
     2
   } else {
@@ -887,7 +887,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // wrong: the first build that appended imports but left hbo behind produced
   // modules that validated nowhere ("not enough arguments on the stack for
   // call"), because every generated-body index still pointed low.
-  let use_host = Map::has_key(used_builtins, "Env::get") || Map::has_key(used_builtins, "Env::args_len") || Map::has_key(used_builtins, "Env::args_get") || Map::has_key(used_builtins, "Fs::read_file") || Map::has_key(used_builtins, "Fs::exists") || Map::has_key(used_builtins, "Fs::stat_token") || Map::has_key(used_builtins, "Fs::write_file") || Map::has_key(used_builtins, "Fs::publish_immutable_text") || Map::has_key(used_builtins, "Fs::write_bytes") || Map::has_key(used_builtins, "Fs::read_bytes") || Map::has_key(used_builtins, "Profiler::now_us") || Map::has_key(used_builtins, "Fs::remove") || Map::has_key(used_builtins, "Fs::remove_file") || Map::has_key(used_builtins, "Fs::remove_tree") || Map::has_key(used_builtins, "Fs::rename") || Map::has_key(used_builtins, "Fs::is_dir") || Map::has_key(used_builtins, "Fs::is_file") || Map::has_key(used_builtins, "Stdout::write_stream") || Map::has_key(used_builtins, "Stdout::write_char") || Map::has_key(used_builtins, "Console::write_stream") || Map::has_key(used_builtins, "Console::write_char") || Map::has_key(used_builtins, "Fs::readdir") || Map::has_key(used_builtins, "Stdin::read_char") || Map::has_key(used_builtins, "Stdin::read_stream") || Map::has_key(used_builtins, "vibe_process_exit_raw") || Map::has_key(used_builtins, "Stderr::write_stream")
+  let use_host = Map::has_key(used_builtins, key = "Env::get") || Map::has_key(used_builtins, key = "Env::args_len") || Map::has_key(used_builtins, key = "Env::args_get") || Map::has_key(used_builtins, key = "Fs::read_file") || Map::has_key(used_builtins, key = "Fs::exists") || Map::has_key(used_builtins, key = "Fs::stat_token") || Map::has_key(used_builtins, key = "Fs::write_file") || Map::has_key(used_builtins, key = "Fs::publish_immutable_text") || Map::has_key(used_builtins, key = "Fs::write_bytes") || Map::has_key(used_builtins, key = "Fs::read_bytes") || Map::has_key(used_builtins, key = "Profiler::now_us") || Map::has_key(used_builtins, key = "Fs::remove") || Map::has_key(used_builtins, key = "Fs::remove_file") || Map::has_key(used_builtins, key = "Fs::remove_tree") || Map::has_key(used_builtins, key = "Fs::rename") || Map::has_key(used_builtins, key = "Fs::is_dir") || Map::has_key(used_builtins, key = "Fs::is_file") || Map::has_key(used_builtins, key = "Stdout::write_stream") || Map::has_key(used_builtins, key = "Stdout::write_char") || Map::has_key(used_builtins, key = "Console::write_stream") || Map::has_key(used_builtins, key = "Console::write_char") || Map::has_key(used_builtins, key = "Fs::readdir") || Map::has_key(used_builtins, key = "Stdin::read_char") || Map::has_key(used_builtins, key = "Stdin::read_stream") || Map::has_key(used_builtins, key = "vibe_process_exit_raw") || Map::has_key(used_builtins, key = "Stderr::write_stream")
   let hbo = if use_host {
     24
   } else {
@@ -936,7 +936,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let gc_registry_rows = builtin_registry()
   let mut gc_reg_i = 0
   while gc_reg_i < Array::length(gc_registry_rows) {
-    let (gc_name, gc_params, gc_returns, _, gc_in_gc) = Array::get(gc_registry_rows, gc_reg_i)
+    let (gc_name, gc_params, gc_returns, _, gc_in_gc) = Array::get(gc_registry_rows, at = gc_reg_i)
     if gc_in_gc {
       let gc_body_idx = match gc_name {
         "print_int" => 1,
@@ -1057,7 +1057,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
       } else {
         ()
       }
-      Array::push(builtin_defs, (gc_name, gc_params, gc_body_idx, gc_returns))
+      Array::push(builtin_defs, value = (gc_name, gc_params, gc_body_idx, gc_returns))
     } else {
       ()
     }
@@ -1072,34 +1072,34 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let __reg_returns = array_empty()
   let mut __ri = 0
   while __ri < Array::length(builtin_defs) {
-    let (rbname, rbparams, _, rbreturns) = Array::get(builtin_defs, __ri)
-    Array::push(__reg_names, rbname)
-    Array::push(__reg_params, rbparams)
-    Array::push(__reg_returns, rbreturns)
+    let (rbname, rbparams, _, rbreturns) = Array::get(builtin_defs, at = __ri)
+    Array::push(__reg_names, value = rbname)
+    Array::push(__reg_params, value = rbparams)
+    Array::push(__reg_returns, value = rbreturns)
     __ri = __ri + 1
   }
-  verify_lane_builtins("gc", __reg_names, __reg_params, __reg_returns)
+  verify_lane_builtins(lane = "gc", names = __reg_names, param_counts = __reg_params, returns = __reg_returns)
   let mut __bi = 0
   while __bi < Array::length(builtin_defs) {
-    let (bname, bparams, _, _) = Array::get(builtin_defs, __bi)
-    Array::push(fn_names_list, bname)
-    Array::push(fn_param_counts, bparams)
-    Array::push(fn_needs_env_list, false)
+    let (bname, bparams, _, _) = Array::get(builtin_defs, at = __bi)
+    Array::push(fn_names_list, value = bname)
+    Array::push(fn_param_counts, value = bparams)
+    Array::push(fn_needs_env_list, value = false)
     __bi = __bi + 1
   }
   let fn_indices_list = array_empty()
   let fn_returns_list = array_empty()
   let mut fi = 0
   while fi < num_user_funcs {
-    Array::push(fn_indices_list, fi + func_offset)
-    Array::push(fn_returns_list, 1)
+    Array::push(fn_indices_list, value = fi + func_offset)
+    Array::push(fn_returns_list, value = 1)
     fi = fi + 1
   }
   let mut __bi2 = 0
   while __bi2 < Array::length(builtin_defs) {
-    let (_, _, bwasm_idx, breturns) = Array::get(builtin_defs, __bi2)
-    Array::push(fn_indices_list, bwasm_idx + hbo)
-    Array::push(fn_returns_list, breturns)
+    let (_, _, bwasm_idx, breturns) = Array::get(builtin_defs, at = __bi2)
+    Array::push(fn_indices_list, value = bwasm_idx + hbo)
+    Array::push(fn_returns_list, value = breturns)
     __bi2 = __bi2 + 1
   }
   // #538: host-import builtins at absolute import indices 1..9.
@@ -1170,12 +1170,12 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     ]
     let mut __hd = 0
     while __hd < Array::length(host_defs) {
-      let (hname, hparams, hidx, hret) = Array::get(host_defs, __hd)
-      Array::push(fn_names_list, hname)
-      Array::push(fn_param_counts, hparams)
-      Array::push(fn_needs_env_list, false)
-      Array::push(fn_indices_list, hidx)
-      Array::push(fn_returns_list, hret)
+      let (hname, hparams, hidx, hret) = Array::get(host_defs, at = __hd)
+      Array::push(fn_names_list, value = hname)
+      Array::push(fn_param_counts, value = hparams)
+      Array::push(fn_needs_env_list, value = false)
+      Array::push(fn_indices_list, value = hidx)
+      Array::push(fn_returns_list, value = hret)
       __hd = __hd + 1
     }
   } else {
@@ -1187,7 +1187,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // `let a = f(..)` structural `==` (see compute_agg_returning).
   let gc_agg_ret_names_l = array_empty()
   let gc_agg_ret_infos_l = array_empty()
-  compute_agg_returning(stmts, CtorTable::{
+  compute_agg_returning(stmts = stmts, ct = CtorTable::{
     names: ctor_names_list,
     tags: ctor_tags_list,
     field_counts: ctor_field_counts_list,
@@ -1200,18 +1200,18 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     struct_names_sorted: gc_struct_names_sorted,
     struct_names_sorted_pos: gc_struct_names_sorted_pos,
     type_names_sorted: gc_type_names_sorted
-  }, gc_agg_ret_names_l, gc_agg_ret_infos_l)
+  }, out_names = gc_agg_ret_names_l, out_infos = gc_agg_ret_infos_l)
   let (gc_agg_ret_names_sorted_l, gc_agg_ret_names_sorted_pos_l) = ctor_sorted_index(gc_agg_ret_names_l)
   let ft_params = array_empty()
   let ft_returns = array_empty()
   let ft_needs_env = array_empty()
   let mut ft_copy_i = 0
   while ft_copy_i < Array::length(fn_names_list) {
-    Array::push(ft_names, Array::get(fn_names_list, ft_copy_i))
-    Array::push(ft_indices, Array::get(fn_indices_list, ft_copy_i))
-    Array::push(ft_params, Array::get(fn_param_counts, ft_copy_i))
-    Array::push(ft_returns, Array::get(fn_returns_list, ft_copy_i))
-    Array::push(ft_needs_env, Array::get(fn_needs_env_list, ft_copy_i))
+    Array::push(ft_names, value = Array::get(fn_names_list, at = ft_copy_i))
+    Array::push(ft_indices, value = Array::get(fn_indices_list, at = ft_copy_i))
+    Array::push(ft_params, value = Array::get(fn_param_counts, at = ft_copy_i))
+    Array::push(ft_returns, value = Array::get(fn_returns_list, at = ft_copy_i))
+    Array::push(ft_needs_env, value = Array::get(fn_needs_env_list, at = ft_copy_i))
     ft_copy_i = ft_copy_i + 1
   }
   let refcell_type_idx = 10
@@ -1288,14 +1288,14 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // still applies.
   let gc_builtin_type_idxs = array_empty()
   let push_gc_builtin: (Bytes, Int, Int, Int) -> Unit = (body, m32, m64, type_idx) -> {
-    Array::push(bodies, body)
-    Array::push(meta_i32, m32)
-    Array::push(meta_i64, m64)
-    Array::push(user_ref_local_indices_all, array_empty())
-    Array::push(user_native_array_local_indices_all, array_empty())
-    Array::push(user_native_struct_decl_all, array_empty())
-    Array::push(body_param_counts, -1)
-    Array::push(gc_builtin_type_idxs, type_idx)
+    Array::push(bodies, value = body)
+    Array::push(meta_i32, value = m32)
+    Array::push(meta_i64, value = m64)
+    Array::push(user_ref_local_indices_all, value = array_empty())
+    Array::push(user_native_array_local_indices_all, value = array_empty())
+    Array::push(user_native_struct_decl_all, value = array_empty())
+    Array::push(body_param_counts, value = -1)
+    Array::push(gc_builtin_type_idxs, value = type_idx)
   }
   push_gc_builtin(gc_gen_print_i64_body(), 3, 1, 1)
   push_gc_builtin(gc_gen_print_str_body(), 2, 0, 1)
@@ -1323,7 +1323,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // enable_rc=false: this lane has no RC (same reason every other shared
   // generator here is called with false). The arena form needs one extra
   // i32 local for the arena bump pointer, exactly as on linear.
-  push_gc_builtin(gen_arr_push_body(false, -1, false, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+  push_gc_builtin(gen_arr_push_body(enable_rc = false, rc_alloc_idx = -1, rc_shadow = false, arena_ptr_addr = region_ptr_addr, arena_data_base = region_data_base, arena_limit = region_limit), if need_region_arena {
     7
   } else {
     6
@@ -1343,8 +1343,8 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // #2199: oob_abort_idx < 0 keeps the historical bare-trap form -- the gc
   // lane has no __rt_oob_abort helper (its own Array OOB is the engine's
   // native `out of bounds array access` trap, which already names the shape).
-  push_gc_builtin(gen_bytes_get_body(false, 0 - 1, 0 - 1), 1, 0, 4)
-  push_gc_builtin(gen_bytes_set_body(false, 0 - 1, 0 - 1), 1, 0, 7)
+  push_gc_builtin(gen_bytes_get_body(enable_rc = false, oob_prefix_fat = 0 - 1, oob_abort_idx = 0 - 1), 1, 0, 4)
+  push_gc_builtin(gen_bytes_set_body(enable_rc = false, oob_prefix_fat = 0 - 1, oob_abort_idx = 0 - 1), 1, 0, 7)
   // ADR-0090 (#1262) tier 2: the Bytes half of the regrow lane. Same shape
   // and same reason as arr_push above -- the replacement buffer must follow
   // the BUFFER'S OWN block, so MutBytes and ordinary Bytes share one body
@@ -1356,24 +1356,24 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // heap and survived the watermark restore. Measured on
   // fixtures/region_bytes_arena_bounded.vibe: 182,408 B with -1 against
   // linear's 8,008 B. The arena form needs one extra i32 local, as on linear.
-  push_gc_builtin(gen_bytes_push_body(false, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+  push_gc_builtin(gen_bytes_push_body(enable_rc = false, arena_ptr_addr = region_ptr_addr, arena_data_base = region_data_base, arena_limit = region_limit), if need_region_arena {
     7
   } else {
     6
   }, 0, 6)
-  push_gc_builtin(gen_bytes_append_body(region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+  push_gc_builtin(gen_bytes_append_body(arena_ptr_addr = region_ptr_addr, arena_data_base = region_data_base, arena_limit = region_limit), if need_region_arena {
     9
   } else {
     8
   }, 0, 6)
-  push_gc_builtin(gen_bytes_concat_body(hbo + 18, hbo + 22), 0, 1, 4)
+  push_gc_builtin(gen_bytes_concat_body(bytes_new_idx = hbo + 18, bytes_append_idx = hbo + 22), 0, 1, 4)
   // #3543: slice / blit / fill loop on their i64 params (no i32 counters).
   // #3549: slice's second i64 local is the length its clamp reads.
-  push_gc_builtin(gen_bytes_slice_body(false, hbo + 18, hbo + 19, hbo + 21), 0, 2, 8)
-  push_gc_builtin(gen_bytes_from_array_body(false, hbo + 7, hbo + 8, hbo + 18, hbo + 21), 2, 1, 3)
-  push_gc_builtin(gen_bytes_to_array_body(false, hbo + 6, hbo + 9, hbo + 7, hbo + 19), 2, 1, 3)
-  push_gc_builtin(gen_bytes_blit_body(false, hbo + 19, hbo + 21), 0, 0, 9)
-  push_gc_builtin(gen_bytes_fill_body(false, hbo + 21), 0, 0, 7)
+  push_gc_builtin(gen_bytes_slice_body(enable_rc = false, bytes_new_idx = hbo + 18, bytes_get_idx = hbo + 19, bytes_push_idx = hbo + 21), 0, 2, 8)
+  push_gc_builtin(gen_bytes_from_array_body(enable_rc = false, arr_len_idx = hbo + 7, arr_get_idx = hbo + 8, bytes_new_idx = hbo + 18, bytes_push_idx = hbo + 21), 2, 1, 3)
+  push_gc_builtin(gen_bytes_to_array_body(enable_rc = false, arr_new_idx = hbo + 6, arr_push_idx = hbo + 9, bytes_len_idx = hbo + 7, bytes_get_idx = hbo + 19), 2, 1, 3)
+  push_gc_builtin(gen_bytes_blit_body(enable_rc = false, bytes_get_idx = hbo + 19, bytes_push_idx = hbo + 21), 0, 0, 9)
+  push_gc_builtin(gen_bytes_fill_body(enable_rc = false, bytes_push_idx = hbo + 21), 0, 0, 7)
   // #538: generic eq (i64 fast path + looks-like-string guarded content eq)
   // -- Map::get/has_key/MapBuilder::set resolve "eq" from the func table, and
   // before this existed the placeholder index called array_new, which returns
@@ -1381,19 +1381,19 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // results). The gc string repr is the same packed (offset<<32)|len as the
   // linear backend, so the linear bodies are reused verbatim below.
   push_gc_builtin(gen_eq_body(hbo + 4), 0, 0, 4)
-  push_gc_builtin(gen_string_index_of_body(false, hbo + 3, hbo + 15, hbo + 4), 8, 0, 4)
-  push_gc_builtin(gen_string_contains_body(false, hbo + 30), 0, 0, 4)
-  push_gc_builtin(gen_string_starts_with_body(false, hbo + 3, hbo + 15, hbo + 4), 2, 1, 4)
-  push_gc_builtin(gen_string_ends_with_body(false, hbo + 3, hbo + 15, hbo + 4), 2, 1, 4)
-  push_gc_builtin(gen_string_last_index_of_body(false, hbo + 3, hbo + 15, hbo + 4), 3, 1, 4)
-  push_gc_builtin(gen_string_join_body(false, hbo + 7, hbo + 8, hbo + 5), 9, 1, 4)
-  push_gc_builtin(gen_string_split_body(false, hbo + 6, hbo + 9, hbo + 3, hbo + 15, hbo + 30), 4, 1, 4)
-  push_gc_builtin(gen_string_trim_body(false, hbo + 3, hbo + 13, hbo + 15), 4, 0, 3)
+  push_gc_builtin(gen_string_index_of_body(enable_rc = false, str_len_idx = hbo + 3, str_substring_idx = hbo + 15, str_eq_idx = hbo + 4), 8, 0, 4)
+  push_gc_builtin(gen_string_contains_body(enable_rc = false, string_index_of_idx = hbo + 30), 0, 0, 4)
+  push_gc_builtin(gen_string_starts_with_body(enable_rc = false, str_len_idx = hbo + 3, str_substring_idx = hbo + 15, str_eq_idx = hbo + 4), 2, 1, 4)
+  push_gc_builtin(gen_string_ends_with_body(enable_rc = false, str_len_idx = hbo + 3, str_substring_idx = hbo + 15, str_eq_idx = hbo + 4), 2, 1, 4)
+  push_gc_builtin(gen_string_last_index_of_body(enable_rc = false, str_len_idx = hbo + 3, str_substring_idx = hbo + 15, str_eq_idx = hbo + 4), 3, 1, 4)
+  push_gc_builtin(gen_string_join_body(enable_rc = false, arr_len_idx = hbo + 7, arr_get_idx = hbo + 8, str_concat_idx = hbo + 5), 9, 1, 4)
+  push_gc_builtin(gen_string_split_body(enable_rc = false, arr_new_idx = hbo + 6, arr_push_idx = hbo + 9, str_len_idx = hbo + 3, str_substring_idx = hbo + 15, string_index_of_idx = hbo + 30), 4, 1, 4)
+  push_gc_builtin(gen_string_trim_body(enable_rc = false, str_len_idx = hbo + 3, str_char_code_at_idx = hbo + 13, str_substring_idx = hbo + 15), 4, 0, 3)
   // #3078: one more i64 local (the length the shared clamp reads).
-  push_gc_builtin(gc_gen_arr_slice_body(hbo + 6, hbo + 7, hbo + 8, hbo + 9), 0, 3, 8)
-  push_gc_builtin(gc_gen_arr_concat_body(hbo + 6, hbo + 7, hbo + 8, hbo + 9), 0, 3, 4)
+  push_gc_builtin(gc_gen_arr_slice_body(arr_new_idx = hbo + 6, arr_len_idx = hbo + 7, arr_get_idx = hbo + 8, arr_push_idx = hbo + 9), 0, 3, 8)
+  push_gc_builtin(gc_gen_arr_concat_body(arr_new_idx = hbo + 6, arr_len_idx = hbo + 7, arr_get_idx = hbo + 8, arr_push_idx = hbo + 9), 0, 3, 4)
   push_gc_builtin(gc_gen_arr_truncate_body(), 0, 0, 6)
-  push_gc_builtin(gc_gen_arr_push_all_body(hbo + 7, hbo + 8, hbo + 9), 0, 2, 6)
+  push_gc_builtin(gc_gen_arr_push_all_body(arr_len_idx = hbo + 7, arr_get_idx = hbo + 8, arr_push_idx = hbo + 9), 0, 2, 6)
   // #746: same packed-string layout as the linear lane, generator shared
   // verbatim (untagged ints in the gc lane -> enable_rc=false).
   push_gc_builtin(gen_str_lex_diff_body(false), 7, 0, 4)
@@ -1403,11 +1403,11 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // 追加は必ず末尾に置くこと -- 上の `hbo + N` は push 順の序数なので、
   // 途中に挿入すると既存の参照が全てずれる。
   push_gc_builtin(gen_simd_skip_ws_body(false), 2, 2, 8)
-  push_gc_builtin(gen_simd_scan_alnum_body(false, false), 1, 3, 8)
-  push_gc_builtin(gen_simd_scan_alnum_body(false, true), 1, 3, 8)
+  push_gc_builtin(gen_simd_scan_alnum_body(enable_rc = false, is_string = false), 1, 3, 8)
+  push_gc_builtin(gen_simd_scan_alnum_body(enable_rc = false, is_string = true), 1, 3, 8)
   // #1733: append only -- all hbo + N references above depend on the existing
   // ordinals. Array::length is body 7 and Array::slice is body 38.
-  push_gc_builtin(gen_array_value_copy_body(hbo + 7, hbo + 38), 0, 0, 3)
+  push_gc_builtin(gen_array_value_copy_body(arr_len_idx = hbo + 7, arr_slice_idx = hbo + 38), 0, 0, 3)
   push_gc_builtin(gen_simd_scan_string_special_body(false), 1, 3, 8)
   push_gc_builtin(gen_simd_scan_line_end_body(false), 1, 3, 8)
   // #2344: the scalar bit primitives, appended per the #1733 append-only rule
@@ -1423,13 +1423,13 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   push_gc_builtin(gen_bytes_count_byte_body(false), 1, 4, 4)
   push_gc_builtin(gen_bytes_last_index_of_byte_body(false), 1, 3, 4)
   push_gc_builtin(gen_bytes_compare_body(false), 2, 4, 4)
-  push_gc_builtin(gen_bytes_with_capacity_body(false, hbo + 2, if need_bytes_capacity {
-    (Array::get(str_offsets, capacity_error_slot)<<32)|Array::get(str_lengths, capacity_error_slot)
+  push_gc_builtin(gen_bytes_with_capacity_body(enable_rc = false, print_str_idx = hbo + 2, error_fat = if need_bytes_capacity {
+    (Array::get(str_offsets, at = capacity_error_slot)<<32)|Array::get(str_lengths, at = capacity_error_slot)
   } else {
     0
   }), 2, 0, 3)
   if need_array_capacity {
-    push_gc_builtin(gen_arr_with_capacity_body(false, -1, hbo + 2, (Array::get(str_offsets, array_capacity_error_slot)<<32)|Array::get(str_lengths, array_capacity_error_slot)), 3, 0, 3)
+    push_gc_builtin(gen_arr_with_capacity_body(enable_rc = false, rc_alloc_idx = -1, print_str_idx = hbo + 2, error_fat = (Array::get(str_offsets, at = array_capacity_error_slot)<<32)|Array::get(str_lengths, at = array_capacity_error_slot)), 3, 0, 3)
   }
   // #2405 follow-up: immediately after the unconditional bodies and
   // before the arena pair -- `to_string_int_idx` above encodes exactly that.
@@ -1443,7 +1443,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // #3126: `div_zero_abort_idx` above encodes this position. `print_str` is
   // body 2 (`hbo + 2`, as the capacity allocator above passes it).
   if need_div_zero_abort {
-    push_gc_builtin(gen_div_zero_abort_body(hbo + 2, 0 - 1, gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_div_message()), gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_rem_message()), gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_at_fragment()), 0, gc_str_fat(str_strs, str_offsets, str_lengths, "\n")), 0, 0, 7)
+    push_gc_builtin(gen_div_zero_abort_body(print_str_idx = hbo + 2, print_i64_raw_idx = 0 - 1, div_fat = gc_str_fat(strs = str_strs, offsets = str_offsets, lengths = str_lengths, s = div_zero_div_message()), rem_fat = gc_str_fat(strs = str_strs, offsets = str_offsets, lengths = str_lengths, s = div_zero_rem_message()), at_fat = gc_str_fat(strs = str_strs, offsets = str_offsets, lengths = str_lengths, s = div_zero_at_fragment()), colon_fat = 0, nl_fat = gc_str_fat(strs = str_strs, offsets = str_offsets, lengths = str_lengths, s = "\n")), 0, 0, 7)
   } else {
     ()
   }
@@ -1455,8 +1455,8 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // Pushed after the #3126 abort body; the match arms above add
   // `div_zero_extra` for exactly that reason.
   if need_generic_dispatch {
-    push_gc_builtin(gen_generic_rel_diff_body(false, hbo + 42), 0, 0, 4)
-    push_gc_builtin(gen_generic_add_body(false, hbo + 5), 0, 0, 4)
+    push_gc_builtin(gen_generic_rel_diff_body(enable_rc = false, str_lex_diff_idx = hbo + 42), 0, 0, 4)
+    push_gc_builtin(gen_generic_add_body(enable_rc = false, str_concat_idx = hbo + 5), 0, 0, 4)
   } else {
     ()
   }
@@ -1467,8 +1467,8 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // they take the layout as parameters, so the two lanes cannot drift on the
   // segment's shape.
   if need_region_arena {
-    push_gc_builtin(gen_region_arr_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
-    push_gc_builtin(gen_region_bytes_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
+    push_gc_builtin(gen_region_arr_new_body(region_ptr_addr = region_ptr_addr, region_data_base = region_data_base, region_limit = region_limit), 2, 0, 5)
+    push_gc_builtin(gen_region_bytes_new_body(region_ptr_addr = region_ptr_addr, region_data_base = region_data_base, region_limit = region_limit), 2, 0, 5)
   } else {
     ()
   }
@@ -1482,7 +1482,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let table_slots_used = array_empty()
   let mut bi = 0
   while bi < num_user_funcs {
-    let stmt = Array::get(user_func_stmts, bi)
+    let stmt = Array::get(user_func_stmts, at = bi)
     match stmt {
       SLet(_, _, gc_fn_name, gc_fn_ann, expr) => match expr {
         EFn(gc_fn_tparams, _, params, _, _, body) => {
@@ -1491,11 +1491,11 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
           let gc_agg_slots_f = array_empty()
           let mut ppi = 0
           while ppi < Array::length(params) {
-            let (pname, _) = Array::get(params, ppi)
-            Array::push(local_names, gb_strip_param_label_marker(pname))
+            let (pname, _) = Array::get(params, at = ppi)
+            Array::push(local_names, value = gb_strip_param_label_marker(pname))
             ppi = ppi + 1
           }
-          Array::push(local_names, "[gc-temp]__env")
+          Array::push(local_names, value = "[gc-temp]__env")
           let param_count = Array::length(params) + 1
           // #724 round 2: seed the aggregate-shape log from annotated params.
           // #744 gc mirror: seed float tracking from annotated Float/Double
@@ -1518,13 +1518,13 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
           while psi < Array::length(params) {
             let pann = match gc_sig_ptypes {
               Some(pts) => if Array::length(pts) == Array::length(params) {
-                Some(Array::get(pts, psi))
+                Some(Array::get(pts, at = psi))
               } else {
-                let (_, pa) = Array::get(params, psi)
+                let (_, pa) = Array::get(params, at = psi)
                 pa
               },
               None => {
-                let (_, pa) = Array::get(params, psi)
+                let (_, pa) = Array::get(params, at = psi)
                 pa
               }
             }
@@ -1532,10 +1532,10 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
               Some(pte) => {
                 // #2141: a param annotated with the fn's own formal is erased
                 // -- see ty_head_names_formal (the linear lane's twin gate).
-                let pinfo = if ty_head_names_formal(pte, gc_fn_tparams) {
+                let pinfo = if ty_head_names_formal(te = pte, tparams = gc_fn_tparams) {
                   0
                 } else {
-                  agg_info_of_type_expr(CtorTable::{
+                  agg_info_of_type_expr(ct = CtorTable::{
                     names: ctor_names_list,
                     tags: ctor_tags_list,
                     field_counts: ctor_field_counts_list,
@@ -1548,10 +1548,10 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
                     struct_names_sorted: gc_struct_names_sorted,
                     struct_names_sorted_pos: gc_struct_names_sorted_pos,
                     type_names_sorted: gc_type_names_sorted
-                  }, pte)
+                  }, te = pte)
                 }
                 if pinfo > 0 {
-                  Array::push(gc_agg_slots_f, psi * 256 + pinfo)
+                  Array::push(gc_agg_slots_f, value = psi * 256 + pinfo)
                 } else {
                   ()
                 }
@@ -1561,11 +1561,11 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
                 // Int param reached `__to_string` and `eq` unclassified.
                 match pte {
                   TyName(ptn) => if ptn == "Float" || ptn == "Double" {
-                    Array::push(gc_float_slots_f, psi)
+                    Array::push(gc_float_slots_f, value = psi)
                   } else if ptn == "Bool" {
-                    Array::push(gc_bool_slots_f, psi)
+                    Array::push(gc_bool_slots_f, value = psi)
                   } else if ptn == "Int" {
-                    Array::push(gc_int_slots_f, psi)
+                    Array::push(gc_int_slots_f, value = psi)
                   } else {
                     ()
                   },
@@ -1578,15 +1578,15 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
           }
           let ref_cell_names_f = array_empty()
           let ref_local_indices_f = array_empty()
-          let direct_sig_idx = gc_direct_abi_name_index_exact(gc_direct_abi_names_l, gc_fn_name)
+          let direct_sig_idx = gc_direct_abi_name_index_exact(names = gc_direct_abi_names_l, name = gc_fn_name)
           let direct_param_slots_f = array_empty()
-          let direct_return_ref_f = direct_sig_idx >= 0 && Array::get(gc_direct_abi_return_refs_l, direct_sig_idx)
+          let direct_return_ref_f = direct_sig_idx >= 0 && Array::get(gc_direct_abi_return_refs_l, at = direct_sig_idx)
           if direct_sig_idx >= 0 {
-            let direct_refs = Array::get(gc_direct_abi_param_refs_l, direct_sig_idx)
+            let direct_refs = Array::get(gc_direct_abi_param_refs_l, at = direct_sig_idx)
             let mut dri = 0
             while dri < Array::length(direct_refs) {
-              if Array::get(direct_refs, dri) {
-                Array::push(direct_param_slots_f, dri)
+              if Array::get(direct_refs, at = dri) {
+                Array::push(direct_param_slots_f, value = dri)
               } else {
                 ()
               }
@@ -1608,7 +1608,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
             names_sorted: array_empty(),
             names_sorted_pos: array_empty()
           }
-          let st = str_table_lite(str_strs, str_offsets, str_lengths)
+          let st = str_table_lite(strs = str_strs, offsets = str_offsets, lengths = str_lengths)
           let ct = CtorTable::{
             names: ctor_names_list,
             tags: ctor_tags_list,
@@ -1673,19 +1673,19 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
             gc_region_bytes_new_func_idx: region_bytes_new_idx,
             gc_region_exn_tag: region_exn_tag
           }
-          let final_nl = compile_expr_gc(body_buf, body, local_names, param_count, func_ctx, -1)
-          Array::push(bodies, body_buf)
+          let final_nl = compile_expr_gc(buf = body_buf, expr = body, local_names = local_names, next_local = param_count, ctx = func_ctx, ld = -1)
+          Array::push(bodies, value = body_buf)
           let extra = if final_nl > param_count {
             final_nl - param_count
           } else {
             0
           }
-          Array::push(meta_i32, 0)
-          Array::push(meta_i64, extra)
-          Array::push(user_ref_local_indices_all, ref_local_indices_f)
-          Array::push(user_native_array_local_indices_all, func_ctx.gc_native_array_local_types)
-          Array::push(user_native_struct_decl_all, func_ctx.gc_native_struct_decl)
-          Array::push(body_param_counts, param_count)
+          Array::push(meta_i32, value = 0)
+          Array::push(meta_i64, value = extra)
+          Array::push(user_ref_local_indices_all, value = ref_local_indices_f)
+          Array::push(user_native_array_local_indices_all, value = func_ctx.gc_native_array_local_types)
+          Array::push(user_native_struct_decl_all, value = func_ctx.gc_native_struct_decl)
+          Array::push(body_param_counts, value = param_count)
         },
         _ => throw("expected function")
       }
@@ -1696,7 +1696,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   }
   let start_body = bytebuf_new()
   let entry_func_idx = entry_user_idx + func_offset
-  let entry_params = Array::get(ft_params, entry_user_idx)
+  let entry_params = Array::get(ft_params, at = entry_user_idx)
   if entry_params != 0 {
     throw("WASI entry function must take 0 parameters")
   }
@@ -1719,11 +1719,11 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let init_body = bytebuf_new()
   let mut start_extra_locals = 0
   if has_global_init {
-    emit_global_get(init_body, init_flag_global_idx)
+    emit_global_get(buf = init_body, idx = init_flag_global_idx)
     emit_i32_eqz(init_body)
     emit_if_void(init_body)
-    emit_i32_const(init_body, 1)
-    emit_global_set(init_body, init_flag_global_idx)
+    emit_i32_const(buf = init_body, value = 1)
+    emit_global_set(buf = init_body, idx = init_flag_global_idx)
   } else {
     ()
   }
@@ -1740,7 +1740,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
         names_sorted: array_empty(),
         names_sorted_pos: array_empty()
       },
-      str_table: str_table_lite(str_strs, str_offsets, str_lengths),
+      str_table: str_table_lite(strs = str_strs, offsets = str_offsets, lengths = str_lengths),
       lambda_table: lt_w,
       num_user_funcs: num_user_funcs,
       func_offset: func_offset,
@@ -1829,9 +1829,9 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     let init_locals = array_empty()
     let mut ginit = 0
     while ginit < Array::length(gc_global_names_l) {
-      let gexpr = Array::get(gc_global_exprs_l, ginit)
-      let g_nl = compile_expr_gc(init_body, gexpr, init_locals, Array::length(init_locals), init_ctx, -1)
-      emit_global_set(init_body, 1 + ginit)
+      let gexpr = Array::get(gc_global_exprs_l, at = ginit)
+      let g_nl = compile_expr_gc(buf = init_body, expr = gexpr, local_names = init_locals, next_local = Array::length(init_locals), ctx = init_ctx, ld = -1)
+      emit_global_set(buf = init_body, idx = 1 + ginit)
       if g_nl > start_extra_locals {
         start_extra_locals = g_nl
       }
@@ -1849,7 +1849,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let mut entry_returns_unit = false
   let mut eri = 0
   while eri < Array::length(stmts) {
-    match Array::get(stmts, eri) {
+    match Array::get(stmts, at = eri) {
       SLet(_, _, name, annotation, value) => if name == entry_name {
         let annotation_is_unit = match annotation {
           Some(TyFn(_, ret, _)) => gc_type_expr_is_unit(ret),
@@ -1870,12 +1870,12 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // First vertical slice toward native GC allocation: exercise a private
   // struct and array at startup, then drop both references. All user values,
   // function signatures, captures, and escaped values remain i64/linear.
-  emit_i64_const(start_body, 0)
-  emit_struct_new(start_body, refcell_type_idx)
+  emit_i64_const(buf = start_body, value = 0)
+  emit_struct_new(buf = start_body, type_idx = refcell_type_idx)
   emit_drop(start_body)
-  emit_i64_const(start_body, 0)
-  emit_i32_const(start_body, 1)
-  emit_array_new(start_body, gc_native_alloc_probe_array_type_idx)
+  emit_i64_const(buf = start_body, value = 0)
+  emit_i32_const(buf = start_body, value = 1)
+  emit_array_new(buf = start_body, type_idx = gc_native_alloc_probe_array_type_idx)
   emit_drop(start_body)
   // Lambdas are all created by now (the global initializers above were the
   // last compile), so the init function's index -- placed after them -- is
@@ -1883,18 +1883,18 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let num_lambdas = Array::length(lt_w.bodies)
   let init_func_idx = func_offset + num_user_funcs + 1 + num_lambdas
   if has_global_init {
-    emit_call(start_body, init_func_idx)
+    emit_call(buf = start_body, func_idx = init_func_idx)
     // #3023: every function a host can invoke without `_start` runs the
     // guarded init first. User body `j` sits after the generated builtins.
     let num_builtin_bodies = Array::length(gc_builtin_type_idxs)
     let mut xi = 0
     while xi < num_user_funcs {
-      let xname = Array::get(fn_names_list, xi)
-      if xi == entry_user_idx || String::starts_with(xname, "__bench_") || String::starts_with(xname, "__test_") {
+      let xname = Array::get(fn_names_list, at = xi)
+      if xi == entry_user_idx || String::starts_with(xname, prefix = "__bench_") || String::starts_with(xname, prefix = "__test_") {
         let guarded = bytebuf_new()
-        emit_call(guarded, init_func_idx)
-        bytebuf_push_buf(guarded, Array::get(bodies, num_builtin_bodies + xi))
-        Array::set(bodies, num_builtin_bodies + xi, guarded)
+        emit_call(buf = guarded, func_idx = init_func_idx)
+        bytebuf_push_buf(dst = guarded, src = Array::get(bodies, at = num_builtin_bodies + xi))
+        Array::set(bodies, at = num_builtin_bodies + xi, value = guarded)
       } else {
         ()
       }
@@ -1903,53 +1903,53 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   } else {
     ()
   }
-  emit_i64_const(start_body, 0)
-  emit_call(start_body, entry_func_idx)
+  emit_i64_const(buf = start_body, value = 0)
+  emit_call(buf = start_body, func_idx = entry_func_idx)
   if entry_returns_unit {
     emit_drop(start_body)
   } else {
-    emit_call(start_body, 1 + hbo)
+    emit_call(buf = start_body, func_idx = 1 + hbo)
   }
-  Array::push(bodies, start_body)
-  Array::push(meta_i32, 0)
-  Array::push(meta_i64, 0)
-  Array::push(user_ref_local_indices_all, array_empty())
-  Array::push(user_native_array_local_indices_all, array_empty())
-  Array::push(user_native_struct_decl_all, array_empty())
+  Array::push(bodies, value = start_body)
+  Array::push(meta_i32, value = 0)
+  Array::push(meta_i64, value = 0)
+  Array::push(user_ref_local_indices_all, value = array_empty())
+  Array::push(user_native_array_local_indices_all, value = array_empty())
+  Array::push(user_native_struct_decl_all, value = array_empty())
   // `_start` takes no parameters (enforced above), so its extra locals begin
   // at slot 0.
-  Array::push(body_param_counts, 0)
+  Array::push(body_param_counts, value = 0)
   let mut li = 0
   while li < num_lambdas {
-    Array::push(bodies, Array::get(lt_w.bodies, li))
-    Array::push(meta_i32, Array::get(lt_w.meta_i32, li))
-    Array::push(meta_i64, Array::get(lt_w.meta_i64, li))
-    Array::push(user_ref_local_indices_all, array_empty())
+    Array::push(bodies, value = Array::get(lt_w.bodies, at = li))
+    Array::push(meta_i32, value = Array::get(lt_w.meta_i32, at = li))
+    Array::push(meta_i64, value = Array::get(lt_w.meta_i64, at = li))
+    Array::push(user_ref_local_indices_all, value = array_empty())
     // #1332: the lambda's own typed-local row, recorded parallel to
     // lt_w.bodies by record_lambda_meta_gc.
-    Array::push(user_native_array_local_indices_all, Array::get(gc_lambda_native_array_locals_l, li))
-    Array::push(user_native_struct_decl_all, array_empty())
+    Array::push(user_native_array_local_indices_all, value = Array::get(gc_lambda_native_array_locals_l, at = li))
+    Array::push(user_native_struct_decl_all, value = array_empty())
     // lt_w.param_counts already counts the trailing `__env` parameter.
-    Array::push(body_param_counts, Array::get(lt_w.param_counts, li))
+    Array::push(body_param_counts, value = Array::get(lt_w.param_counts, at = li))
     li = li + 1
   }
   if has_global_init {
     // #3023: the guarded module init, at `init_func_idx` (after the lambdas).
     // No parameters, so its extra locals begin at slot 0, as `_start`'s did.
-    Array::push(bodies, init_body)
-    Array::push(meta_i32, 0)
-    Array::push(meta_i64, start_extra_locals)
-    Array::push(user_ref_local_indices_all, array_empty())
-    Array::push(user_native_array_local_indices_all, array_empty())
-    Array::push(user_native_struct_decl_all, array_empty())
-    Array::push(body_param_counts, 0)
+    Array::push(bodies, value = init_body)
+    Array::push(meta_i32, value = 0)
+    Array::push(meta_i64, value = start_extra_locals)
+    Array::push(user_ref_local_indices_all, value = array_empty())
+    Array::push(user_native_array_local_indices_all, value = array_empty())
+    Array::push(user_native_struct_decl_all, value = array_empty())
+    Array::push(body_param_counts, value = 0)
   } else {
     ()
   }
   let mut max_closure_arity = -1
   let mut lai = 0
   while lai < num_lambdas {
-    let lpc = Array::get(lt_w.param_counts, lai) - 1
+    let lpc = Array::get(lt_w.param_counts, at = lai) - 1
     if lpc > max_closure_arity {
       max_closure_arity = lpc
     }
@@ -1957,7 +1957,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   }
   let mut uai2 = 0
   while uai2 < num_user_funcs {
-    let upc = Array::get(ft_params, uai2)
+    let upc = Array::get(ft_params, at = uai2)
     if upc > max_closure_arity {
       max_closure_arity = upc
     }
@@ -1977,52 +1977,52 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     // it must not answer for the function's ref twin -- doing so gave the
     // exported original a `(ref null $array)` type while its body was compiled
     // on the tagged-i64 lane, which is a module that fails validation.
-    let sig_idx = gc_direct_abi_name_index_exact(gc_direct_abi_names_l, Array::get(fn_names_list, dti))
+    let sig_idx = gc_direct_abi_name_index_exact(names = gc_direct_abi_names_l, name = Array::get(fn_names_list, at = dti))
     if sig_idx >= 0 {
-      Array::push(gc_direct_type_indices, num_base_types + num_closure_types + gc_direct_type_count)
+      Array::push(gc_direct_type_indices, value = num_base_types + num_closure_types + gc_direct_type_count)
       gc_direct_type_count = gc_direct_type_count + 1
     } else {
-      Array::push(gc_direct_type_indices, -1)
+      Array::push(gc_direct_type_indices, value = -1)
     }
     dti = dti + 1
   }
   let type_content = bytebuf_new()
-  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types + gc_direct_type_count)
-  emit_func_type_raw(type_content, [127, 127, 127, 127], [127])
-  emit_func_type_raw(type_content, [126], array_empty())
-  emit_func_type_raw(type_content, array_empty(), array_empty())
-  emit_func_type_raw(type_content, [126], [126])
-  emit_func_type_raw(type_content, [126, 126], [126])
-  emit_func_type_raw(type_content, array_empty(), [126])
-  emit_func_type_raw(type_content, [126, 126], array_empty())
-  emit_func_type_raw(type_content, [126, 126, 126], array_empty())
-  emit_func_type_raw(type_content, [126, 126, 126], [126])
-  emit_func_type_raw(type_content, [126, 126, 126, 126], array_empty())
-  emit_struct_type_raw(type_content, [126], [1])
-  emit_array_type_raw(type_content, 126, 0)
-  emit_array_type_raw(type_content, 126, 1)
-  emit_func_type_ref_result(type_content, gc_native_array_type_idx)
+  bytebuf_push_vec_header(buf = type_content, count = num_base_types + num_closure_types + gc_direct_type_count)
+  emit_func_type_raw(buf = type_content, param_types = [127, 127, 127, 127], result_types = [127])
+  emit_func_type_raw(buf = type_content, param_types = [126], result_types = array_empty())
+  emit_func_type_raw(buf = type_content, param_types = array_empty(), result_types = array_empty())
+  emit_func_type_raw(buf = type_content, param_types = [126], result_types = [126])
+  emit_func_type_raw(buf = type_content, param_types = [126, 126], result_types = [126])
+  emit_func_type_raw(buf = type_content, param_types = array_empty(), result_types = [126])
+  emit_func_type_raw(buf = type_content, param_types = [126, 126], result_types = array_empty())
+  emit_func_type_raw(buf = type_content, param_types = [126, 126, 126], result_types = array_empty())
+  emit_func_type_raw(buf = type_content, param_types = [126, 126, 126], result_types = [126])
+  emit_func_type_raw(buf = type_content, param_types = [126, 126, 126, 126], result_types = array_empty())
+  emit_struct_type_raw(buf = type_content, field_types = [126], field_muts = [1])
+  emit_array_type_raw(buf = type_content, elem_type = 126, is_mut = 0)
+  emit_array_type_raw(buf = type_content, elem_type = 126, is_mut = 1)
+  emit_func_type_ref_result(buf = type_content, ref_type_idx = gc_native_array_type_idx)
   // #1702: `(struct (mut i64) x N)` for N = 1..max, so an N-field record uses
   // gc_native_struct_type_base + <ctor-table struct index>.
   let mut nst = 0
   while nst < gc_native_struct_count {
-    let nst_decl = Array::get(struct_field_names, nst)
-    let nst_refs = Array::get(struct_field_is_ref, nst)
+    let nst_decl = Array::get(struct_field_names, at = nst)
+    let nst_refs = Array::get(struct_field_is_ref, at = nst)
     let nst_fields = array_empty()
     let nst_muts = array_empty()
     let mut nstf = 0
     while nstf < Array::length(nst_decl) {
-      if Array::get(nst_refs, nstf) {
+      if Array::get(nst_refs, at = nstf) {
         // -1 marks a typed reference field; emit_struct_type_raw_refs spells it
         // as `(ref null $native_i64_array)` instead of a value type byte.
-        Array::push(nst_fields, 0 - 1)
+        Array::push(nst_fields, value = 0 - 1)
       } else {
-        Array::push(nst_fields, 126)
+        Array::push(nst_fields, value = 126)
       }
-      Array::push(nst_muts, 1)
+      Array::push(nst_muts, value = 1)
       nstf = nstf + 1
     }
-    emit_struct_type_raw_refs(type_content, nst_fields, nst_muts, gc_native_array_type_idx)
+    emit_struct_type_raw_refs(buf = type_content, field_types = nst_fields, field_muts = nst_muts, ref_type_idx = gc_native_array_type_idx)
     nst = nst + 1
   }
   let mut cti = 0
@@ -2031,18 +2031,18 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     let ct_params = array_empty()
     let mut cpti = 0
     while cpti < num_params {
-      Array::push(ct_params, 126)
+      Array::push(ct_params, value = 126)
       cpti = cpti + 1
     }
-    emit_func_type_raw(type_content, ct_params, [126])
+    emit_func_type_raw(buf = type_content, param_types = ct_params, result_types = [126])
     cti = cti + 1
   }
   let mut dte = 0
   while dte < num_user_funcs {
-    if Array::get(gc_direct_type_indices, dte) >= 0 {
+    if Array::get(gc_direct_type_indices, at = dte) >= 0 {
       // #1722: EXACT, same reason -- this emits THIS function's type.
-      let sig_idx = gc_direct_abi_name_index_exact(gc_direct_abi_names_l, Array::get(fn_names_list, dte))
-      emit_gc_direct_func_type(type_content, Array::get(gc_direct_abi_param_refs_l, sig_idx), Array::get(gc_direct_abi_return_refs_l, sig_idx), gc_native_array_type_idx)
+      let sig_idx = gc_direct_abi_name_index_exact(names = gc_direct_abi_names_l, name = Array::get(fn_names_list, at = dte))
+      emit_gc_direct_func_type(buf = type_content, param_refs = Array::get(gc_direct_abi_param_refs_l, at = sig_idx), return_ref = Array::get(gc_direct_abi_return_refs_l, at = sig_idx), native_array_type_idx = gc_native_array_type_idx)
     } else {
       ()
     }
@@ -2059,8 +2059,8 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // `String::length(Fs::read_file(f))` returned 65537 for a 6-byte file. Both
   // agree with linear the moment this section exists (or `VIBE_IMPORT_ABI=raw`
   // is forced), which is what identified the cause.
-  emit_vibe_abi_custom_section(out, "raw")
-  bytebuf_push_section(out, 1, type_content)
+  emit_vibe_abi_custom_section(out = out, host_import_abi = "raw")
+  bytebuf_push_section(out = out, section_id = 1, content = type_content)
   if use_host {
     // fd_write + the ten "vibe" host imports (types: 3=(i64)->i64,
     // 4=(i64,i64)->i64, 5=()->i64, 6=(i64,i64)->()) -- the linear backend's
@@ -2071,11 +2071,11 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     // under-counts and the module dies at instantiation with "section was
     // shorter than expected size" -- measured, exactly that, when #2758 added
     // fs_remove_tree and left this at 23.
-    bytebuf_push_vec_header(imp_content, 25)
-    emit_name(imp_content, "wasi_snapshot_preview1")
-    emit_name(imp_content, "fd_write")
-    bytebuf_push(imp_content, 0)
-    leb128_encode_u32(imp_content, 0)
+    bytebuf_push_vec_header(buf = imp_content, count = 25)
+    emit_name(buf = imp_content, name = "wasi_snapshot_preview1")
+    emit_name(buf = imp_content, name = "fd_write")
+    bytebuf_push(buf = imp_content, byte = 0)
+    leb128_encode_u32(buf = imp_content, value = 0)
     let host_imports = [
       ("env-get", 3),
       ("args-len", 5),
@@ -2106,46 +2106,46 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     ]
     let mut __hi = 0
     while __hi < Array::length(host_imports) {
-      let (hin, hit) = Array::get(host_imports, __hi)
-      emit_name(imp_content, "vibe")
-      emit_name(imp_content, hin)
-      bytebuf_push(imp_content, 0)
-      leb128_encode_u32(imp_content, hit)
+      let (hin, hit) = Array::get(host_imports, at = __hi)
+      emit_name(buf = imp_content, name = "vibe")
+      emit_name(buf = imp_content, name = hin)
+      bytebuf_push(buf = imp_content, byte = 0)
+      leb128_encode_u32(buf = imp_content, value = hit)
       __hi = __hi + 1
     }
-    bytebuf_push_section(out, 2, imp_content)
+    bytebuf_push_section(out = out, section_id = 2, content = imp_content)
   } else {
-    emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
+    emit_import_section_func(out = out, module_name = "wasi_snapshot_preview1", field_name = "fd_write", type_idx = 0)
   }
   let func_type_indices = array_empty()
   // #415 B-1: builtin type indices are declared next to each body push
   // (push_gc_builtin above) — splice them here in the same order.
   let mut gbti = 0
   while gbti < Array::length(gc_builtin_type_idxs) {
-    Array::push(func_type_indices, Array::get(gc_builtin_type_idxs, gbti))
+    Array::push(func_type_indices, value = Array::get(gc_builtin_type_idxs, at = gbti))
     gbti = gbti + 1
   }
   let mut fti = 0
   while fti < num_user_funcs {
-    let direct_type_idx = Array::get(gc_direct_type_indices, fti)
+    let direct_type_idx = Array::get(gc_direct_type_indices, at = fti)
     if direct_type_idx >= 0 {
-      Array::push(func_type_indices, direct_type_idx)
+      Array::push(func_type_indices, value = direct_type_idx)
     } else {
-      let upc = Array::get(ft_params, fti)
-      Array::push(func_type_indices, closure_type_base + upc)
+      let upc = Array::get(ft_params, at = fti)
+      Array::push(func_type_indices, value = closure_type_base + upc)
     }
     fti = fti + 1
   }
-  Array::push(func_type_indices, 2)
+  Array::push(func_type_indices, value = 2)
   let mut lfi = 0
   while lfi < num_lambdas {
-    let lam_user_params = Array::get(lt_w.param_counts, lfi) - 1
-    Array::push(func_type_indices, closure_type_base + lam_user_params)
+    let lam_user_params = Array::get(lt_w.param_counts, at = lfi) - 1
+    Array::push(func_type_indices, value = closure_type_base + lam_user_params)
     lfi = lfi + 1
   }
   if has_global_init {
     // The guarded module init: () -> ().
-    Array::push(func_type_indices, 2)
+    Array::push(func_type_indices, value = 2)
   } else {
     ()
   }
@@ -2154,51 +2154,51 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   } else {
     ()
   }
-  emit_function_section(out, func_type_indices)
+  emit_function_section(out = out, type_indices = func_type_indices)
   let total_table_entries = num_user_funcs + num_lambdas
   if total_table_entries > 0 {
-    emit_table_section_funcref(out, total_table_entries)
+    emit_table_section_funcref(out = out, num_entries = total_table_entries)
   }
-  emit_memory_section(out, mem_min_pages)
+  emit_memory_section(out = out, min_pages = mem_min_pages)
   // #538: exception tag (id 13 section sits between memory and global).
   // #721-style gating: throw-free modules stay tag-free and run on engines
   // without the exceptions proposal.
   let gc_uses_exceptions = stmts_contain_exceptions(stmts)
   if gc_uses_exceptions {
     let tag_content = bytebuf_new()
-    leb128_encode_u32(tag_content, 2)
-    bytebuf_push(tag_content, 0)
-    leb128_encode_u32(tag_content, 1)
-    bytebuf_push(tag_content, 0)
-    leb128_encode_u32(tag_content, 1)
-    bytebuf_push_section(out, 13, tag_content)
+    leb128_encode_u32(buf = tag_content, value = 2)
+    bytebuf_push(buf = tag_content, byte = 0)
+    leb128_encode_u32(buf = tag_content, value = 1)
+    bytebuf_push(buf = tag_content, byte = 0)
+    leb128_encode_u32(buf = tag_content, value = 1)
+    bytebuf_push_section(out = out, section_id = 13, content = tag_content)
   } else {
     ()
   }
   if Array::length(gc_global_names_l) == 0 {
-    emit_global_section_i32_mut(out, gc_heap_start)
+    emit_global_section_i32_mut(out = out, init_value = gc_heap_start)
   } else {
     // global 0: i32 mut heap pointer; globals 1..N: i64 mut computed values;
     // global N+1: i32 mut "module init ran" flag (#3023, init_flag_global_idx).
     let g_content = bytebuf_new()
-    bytebuf_push_vec_header(g_content, 2 + Array::length(gc_global_names_l))
-    bytebuf_push(g_content, 127)
-    bytebuf_push(g_content, 1)
-    emit_i32_const(g_content, gc_heap_start)
+    bytebuf_push_vec_header(buf = g_content, count = 2 + Array::length(gc_global_names_l))
+    bytebuf_push(buf = g_content, byte = 127)
+    bytebuf_push(buf = g_content, byte = 1)
+    emit_i32_const(buf = g_content, value = gc_heap_start)
     emit_end(g_content)
     let mut ggi = 0
     while ggi < Array::length(gc_global_names_l) {
-      bytebuf_push(g_content, 126)
-      bytebuf_push(g_content, 1)
-      emit_i64_const(g_content, 0)
+      bytebuf_push(buf = g_content, byte = 126)
+      bytebuf_push(buf = g_content, byte = 1)
+      emit_i64_const(buf = g_content, value = 0)
       emit_end(g_content)
       ggi = ggi + 1
     }
-    bytebuf_push(g_content, 127)
-    bytebuf_push(g_content, 1)
-    emit_i32_const(g_content, 0)
+    bytebuf_push(buf = g_content, byte = 127)
+    bytebuf_push(buf = g_content, byte = 1)
+    emit_i32_const(buf = g_content, value = 0)
     emit_end(g_content)
-    bytebuf_push_section(out, 6, g_content)
+    bytebuf_push_section(out = out, section_id = 6, content = g_content)
   }
   let start_func_idx = func_offset + num_user_funcs
   // #538 P4.5: export the entry function and __heap_ptr alongside _start.
@@ -2223,10 +2223,10 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   let block_export_indices = array_empty()
   let mut bxi = 0
   while bxi < num_user_funcs {
-    let bname = Array::get(fn_names_list, bxi)
-    if String::starts_with(bname, "__bench_") || String::starts_with(bname, "__test_") {
-      Array::push(block_export_names, bname)
-      Array::push(block_export_indices, bxi + func_offset)
+    let bname = Array::get(fn_names_list, at = bxi)
+    if String::starts_with(bname, prefix = "__bench_") || String::starts_with(bname, prefix = "__test_") {
+      Array::push(block_export_names, value = bname)
+      Array::push(block_export_indices, value = bxi + func_offset)
     } else {
       ()
     }
@@ -2234,7 +2234,7 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   }
   let export_content = bytebuf_new()
   let export_entry_too = entry_name != "_start"
-  bytebuf_push_vec_header(export_content, Array::length(block_export_names) + (if export_entry_too {
+  bytebuf_push_vec_header(buf = export_content, count = Array::length(block_export_names) + (if export_entry_too {
     4
   } else {
     3
@@ -2243,40 +2243,40 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   } else {
     0
   }))
-  emit_name(export_content, "_start")
-  bytebuf_push(export_content, 0)
-  leb128_encode_u32(export_content, start_func_idx)
+  emit_name(buf = export_content, name = "_start")
+  bytebuf_push(buf = export_content, byte = 0)
+  leb128_encode_u32(buf = export_content, value = start_func_idx)
   if export_entry_too {
-    emit_name(export_content, entry_name_in)
-    bytebuf_push(export_content, 0)
-    leb128_encode_u32(export_content, entry_func_idx)
+    emit_name(buf = export_content, name = entry_name_in)
+    bytebuf_push(buf = export_content, byte = 0)
+    leb128_encode_u32(buf = export_content, value = entry_func_idx)
   } else {
     ()
   }
-  emit_name(export_content, "memory")
-  bytebuf_push(export_content, 2)
-  leb128_encode_u32(export_content, 0)
-  emit_name(export_content, "__heap_ptr")
-  bytebuf_push(export_content, 3)
-  leb128_encode_u32(export_content, 0)
+  emit_name(buf = export_content, name = "memory")
+  bytebuf_push(buf = export_content, byte = 2)
+  leb128_encode_u32(buf = export_content, value = 0)
+  emit_name(buf = export_content, name = "__heap_ptr")
+  bytebuf_push(buf = export_content, byte = 3)
+  leb128_encode_u32(buf = export_content, value = 0)
   if gc_uses_exceptions {
-    emit_name(export_content, "error")
-    bytebuf_push(export_content, 4)
-    leb128_encode_u32(export_content, 0)
-    emit_name(export_content, "__exception_throw_tag")
-    bytebuf_push(export_content, 4)
-    leb128_encode_u32(export_content, 0)
+    emit_name(buf = export_content, name = "error")
+    bytebuf_push(buf = export_content, byte = 4)
+    leb128_encode_u32(buf = export_content, value = 0)
+    emit_name(buf = export_content, name = "__exception_throw_tag")
+    bytebuf_push(buf = export_content, byte = 4)
+    leb128_encode_u32(buf = export_content, value = 0)
   } else {
     ()
   }
   let mut bxe = 0
   while bxe < Array::length(block_export_names) {
-    emit_name(export_content, Array::get(block_export_names, bxe))
-    bytebuf_push(export_content, 0)
-    leb128_encode_u32(export_content, Array::get(block_export_indices, bxe))
+    emit_name(buf = export_content, name = Array::get(block_export_names, at = bxe))
+    bytebuf_push(buf = export_content, byte = 0)
+    leb128_encode_u32(buf = export_content, value = Array::get(block_export_indices, at = bxe))
     bxe = bxe + 1
   }
-  bytebuf_push_section(out, 7, export_content)
+  bytebuf_push_section(out = out, section_id = 7, content = export_content)
   if total_table_entries > 0 {
     // #1109 gc parity (linear twin: linked_compile.vibe's element-section
     // rebuild, ~3841-3886): register ONLY the slots codegen recorded a
@@ -2287,14 +2287,14 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     let slot_used_flags = array_empty()
     let mut sfi = 0
     while sfi < total_table_entries {
-      Array::push(slot_used_flags, false)
+      Array::push(slot_used_flags, value = false)
       sfi = sfi + 1
     }
     let mut tsu = 0
     while tsu < Array::length(table_slots_used) {
-      let ts = Array::get(table_slots_used, tsu)
+      let ts = Array::get(table_slots_used, at = tsu)
       if ts >= 0 && ts < total_table_entries {
-        Array::set(slot_used_flags, ts, true)
+        Array::set(slot_used_flags, at = ts, value = true)
       } else {
         ()
       }
@@ -2304,9 +2304,9 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     let table_func_indices = array_empty()
     let mut tei = 0
     while tei < total_table_entries {
-      if Array::get(slot_used_flags, tei) {
-        Array::push(table_slots, tei)
-        Array::push(table_func_indices, if tei < num_user_funcs {
+      if Array::get(slot_used_flags, at = tei) {
+        Array::push(table_slots, value = tei)
+        Array::push(table_func_indices, value = if tei < num_user_funcs {
           func_offset + tei
         } else {
           start_func_idx + 1 + (tei - num_user_funcs)
@@ -2317,26 +2317,26 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
       tei = tei + 1
     }
     if Array::length(table_slots) > 0 {
-      emit_element_section_active_runs(out, table_slots, table_func_indices)
+      emit_element_section_active_runs(out = out, slots = table_slots, func_indices = table_func_indices)
     } else {
       ()
     }
   }
   let code_content = bytebuf_new()
-  bytebuf_push_vec_header(code_content, Array::length(bodies))
+  bytebuf_push_vec_header(buf = code_content, count = Array::length(bodies))
   let mut ci = 0
   while ci < Array::length(bodies) {
-    let body = Array::get(bodies, ci)
+    let body = Array::get(bodies, at = ci)
     let func_buf = bytebuf_new()
-    let ni32 = Array::get(meta_i32, ci)
-    let ni64 = Array::get(meta_i64, ci)
-    let ref_indices = Array::get(user_ref_local_indices_all, ci)
-    let native_indices = Array::get(user_native_array_local_indices_all, ci)
-    let native_struct_decl = Array::get(user_native_struct_decl_all, ci)
+    let ni32 = Array::get(meta_i32, at = ci)
+    let ni64 = Array::get(meta_i64, at = ci)
+    let ref_indices = Array::get(user_ref_local_indices_all, at = ci)
+    let native_indices = Array::get(user_native_array_local_indices_all, at = ci)
+    let native_struct_decl = Array::get(user_native_struct_decl_all, at = ci)
     let mut num_native_struct_locals = 0
     let mut nsdi = 0
     while nsdi < Array::length(native_struct_decl) {
-      if Array::get(native_struct_decl, nsdi) >= 0 {
+      if Array::get(native_struct_decl, at = nsdi) >= 0 {
         num_native_struct_locals = num_native_struct_locals + 1
       } else {
         ()
@@ -2353,27 +2353,27 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     if num_ref_locals == 0 && num_native_locals == 0 {
       if ni32 == 0 {
         if ni64 == 0 {
-          leb128_encode_u32(func_buf, 0)
+          leb128_encode_u32(buf = func_buf, value = 0)
         } else {
-          leb128_encode_u32(func_buf, 1)
-          leb128_encode_u32(func_buf, ni64)
-          bytebuf_push(func_buf, 126)
+          leb128_encode_u32(buf = func_buf, value = 1)
+          leb128_encode_u32(buf = func_buf, value = ni64)
+          bytebuf_push(buf = func_buf, byte = 126)
         }
       } else {
         if ni64 == 0 {
-          leb128_encode_u32(func_buf, 1)
-          leb128_encode_u32(func_buf, ni32)
-          bytebuf_push(func_buf, 127)
+          leb128_encode_u32(buf = func_buf, value = 1)
+          leb128_encode_u32(buf = func_buf, value = ni32)
+          bytebuf_push(buf = func_buf, byte = 127)
         } else {
-          leb128_encode_u32(func_buf, 2)
-          leb128_encode_u32(func_buf, ni32)
-          bytebuf_push(func_buf, 127)
-          leb128_encode_u32(func_buf, ni64)
-          bytebuf_push(func_buf, 126)
+          leb128_encode_u32(buf = func_buf, value = 2)
+          leb128_encode_u32(buf = func_buf, value = ni32)
+          bytebuf_push(buf = func_buf, byte = 127)
+          leb128_encode_u32(buf = func_buf, value = ni64)
+          bytebuf_push(buf = func_buf, byte = 126)
         }
       }
     } else {
-      let param_count_for_body = Array::get(body_param_counts, ci)
+      let param_count_for_body = Array::get(body_param_counts, at = ci)
       if param_count_for_body < 0 {
         // A generated builtin body grew a typed-local row. Its extra locals
         // are declared from a fixed shape here, so there is no honest slot
@@ -2384,14 +2384,14 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
         ()
       }
       let num_extra = ni64
-      leb128_encode_u32(func_buf, num_extra)
+      leb128_encode_u32(buf = func_buf, value = num_extra)
       let mut rli = 0
       while rli < num_extra {
         let actual_local_idx = param_count_for_body + rli
         let mut is_ref = false
         let mut ri = 0
         while ri < num_ref_locals {
-          if Array::get(ref_indices, ri) == actual_local_idx {
+          if Array::get(ref_indices, at = ri) == actual_local_idx {
             is_ref = true
           }
           ri = ri + 1
@@ -2399,37 +2399,37 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
         let mut is_native_array = false
         let mut nai = 0
         while nai < num_native_array_locals {
-          if Array::get(native_indices, nai) == actual_local_idx {
+          if Array::get(native_indices, at = nai) == actual_local_idx {
             is_native_array = true
           }
           nai = nai + 1
         }
         // #1702: a struct local's wasm type depends on its FIELD COUNT, so the
         // slot is looked up in the map rather than tested for membership.
-        let ns_decl_struct_idx = gc_slot_map_get(native_struct_decl, actual_local_idx)
-        leb128_encode_u32(func_buf, 1)
+        let ns_decl_struct_idx = gc_slot_map_get(map = native_struct_decl, slot = actual_local_idx)
+        leb128_encode_u32(buf = func_buf, value = 1)
         // #538 ref cells remain linear-memory i64 cells. Only proven local
         // literals use a nullable typed GC reference.
         let _ = is_ref
         if is_native_array {
-          bytebuf_push(func_buf, 99)
-          leb128_encode_u32(func_buf, gc_native_array_type_idx)
+          bytebuf_push(buf = func_buf, byte = 99)
+          leb128_encode_u32(buf = func_buf, value = gc_native_array_type_idx)
         } else if ns_decl_struct_idx >= 0 {
-          bytebuf_push(func_buf, 99)
-          leb128_encode_u32(func_buf, gc_native_struct_type_base + ns_decl_struct_idx)
+          bytebuf_push(buf = func_buf, byte = 99)
+          leb128_encode_u32(buf = func_buf, value = gc_native_struct_type_base + ns_decl_struct_idx)
         } else {
-          bytebuf_push(func_buf, 126)
+          bytebuf_push(buf = func_buf, byte = 126)
         }
         rli = rli + 1
       }
     }
-    bytebuf_push_buf(func_buf, body)
-    bytebuf_push(func_buf, 11)
-    leb128_encode_u32(code_content, bytebuf_length(func_buf))
-    bytebuf_push_buf(code_content, func_buf)
+    bytebuf_push_buf(dst = func_buf, src = body)
+    bytebuf_push(buf = func_buf, byte = 11)
+    leb128_encode_u32(buf = code_content, value = bytebuf_length(func_buf))
+    bytebuf_push_buf(dst = code_content, src = func_buf)
     ci = ci + 1
   }
-  bytebuf_push_section(out, 10, code_content)
+  bytebuf_push_section(out = out, section_id = 10, content = code_content)
   if num_strings > 0 {
     let data_offsets = array_empty()
     let data_bufs = fresh_bytes_array()
@@ -2437,17 +2437,17 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
     while di < num_strings {
       // An empty string writes no bytes, so it gets no segment; its address
       // is still reserved like every other string's.
-      let ds = Array::get(str_strs, di)
+      let ds = Array::get(str_strs, at = di)
       if String::length(ds) > 0 {
-        Array::push(data_offsets, Array::get(str_offsets, di))
-        Array::push(data_bufs, string_to_data(ds))
+        Array::push(data_offsets, value = Array::get(str_offsets, at = di))
+        Array::push(data_bufs, value = string_to_data(ds))
       } else {
         ()
       }
       di = di + 1
     }
     if Array::length(data_offsets) > 0 {
-      emit_data_section_multi(out, data_offsets, data_bufs)
+      emit_data_section_multi(out = out, offsets = data_offsets, datas = data_bufs)
     } else {
       ()
     }

@@ -17,7 +17,7 @@ fn fn_decl(name: String, params: Array[String], body: Expr) -> Stmt {
   let ps: Array[(String, Option[TypeExpr])] = []
   let mut i = 0
   while i < Array::length(params) {
-    Array::push(ps, (Array::get(params, i), None))
+    Array::push(ps, value = (Array::get(params, at = i), None))
     i = i + 1
   }
   SLet(false, false, name, None, EFn([], [], ps, None, None, body))
@@ -25,12 +25,12 @@ fn fn_decl(name: String, params: Array[String], body: Expr) -> Stmt {
 
 fn mask_of(stmts: Array[Stmt], name: String) -> Int {
   let masks: Array[Int] = []
-  let names = compute_borrow_param_user_fns(stmts, [], masks)
+  let names = compute_borrow_param_user_fns(stmts = stmts, exclude = [], out_masks = masks)
   let mut i = 0
   let mut found = 0
   while i < Array::length(names) {
-    if Array::get(names, i) == name {
-      found = Array::get(masks, i)
+    if Array::get(names, at = i) == name {
+      found = Array::get(masks, at = i)
     } else {
       ()
     }
@@ -39,7 +39,7 @@ fn mask_of(stmts: Array[Stmt], name: String) -> Int {
   found
 }
 
-fn ident_of(n: String) -> Expr {
+fn ident_of(_ n: String) -> Expr {
   EIdent(n, -1)
 }
 
@@ -48,37 +48,37 @@ fn call_of(f: String, args: Array[Expr]) -> Expr {
 }
 
 test "a borrowed, a consumed and a borrowed position answer 5 from one walk" {
-  let body = ESeq(call_of("Array::length", [ident_of("xs")]), ESeq(ident_of("n"), call_of("Array::get", [
+  let body = ESeq(call_of(f = "Array::length", args = [ident_of("xs")]), ESeq(ident_of("n"), call_of(f = "Array::get", args = [
     ident_of("ys"),
     EInt(0)
   ])))
-  inspect(mask_of([fn_decl("f", ["xs", "n", "ys"], body)], "f"), content = "5")
+  inspect(mask_of(stmts = [fn_decl(name = "f", params = ["xs", "n", "ys"], body = body)], name = "f"), content = "5")
 }
 
 test "a bare callee is invoked, not consumed; its argument is consumed" {
-  let body = call_of("f", [ident_of("x")])
-  inspect(mask_of([fn_decl("g", ["f", "x"], body)], "g"), content = "1")
+  let body = call_of(f = "f", args = [ident_of("x")])
+  inspect(mask_of(stmts = [fn_decl(name = "g", params = ["f", "x"], body = body)], name = "g"), content = "1")
 }
 
 test "a bare match scrutinee is read; the arm value is consumed" {
   let body = EMatch(ident_of("v"), [(PWild, ident_of("w"))])
-  inspect(mask_of([fn_decl("h", ["v", "w"], body)], "h"), content = "1")
+  inspect(mask_of(stmts = [fn_decl(name = "h", params = ["v", "w"], body = body)], name = "h"), content = "1")
 }
 
 test "a consume anywhere disqualifies the position, before or after a borrow" {
-  let after = ESeq(call_of("Array::length", [ident_of("a")]), ident_of("a"))
-  inspect(mask_of([fn_decl("k", ["a"], after)], "k"), content = "0")
+  let after = ESeq(call_of(f = "Array::length", args = [ident_of("a")]), ident_of("a"))
+  inspect(mask_of(stmts = [fn_decl(name = "k", params = ["a"], body = after)], name = "k"), content = "0")
   // Both positions answer before the walk reaches the borrow: the early
   // exit skips the rest of the body and the answer is unchanged.
-  let before = ESeq(ident_of("a"), ESeq(ident_of("b"), call_of("Array::length", [
+  let before = ESeq(ident_of("a"), ESeq(ident_of("b"), call_of(f = "Array::length", args = [
     ident_of("a")
   ])))
-  inspect(mask_of([fn_decl("k2", ["a", "b"], before)], "k2"), content = "0")
+  inspect(mask_of(stmts = [fn_decl(name = "k2", params = ["a", "b"], body = before)], name = "k2"), content = "0")
 }
 
 test "md_consumed_any marks only the pending positions it finds" {
   let hits = [1, 0, 0]
-  md_consumed_any(EBinOp("+", ident_of("a"), ident_of("b"), -1), ["a", "b", "c"], [
-  ], [], hits)
+  md_consumed_any(e = EBinOp("+", ident_of("a"), ident_of("b"), -1), names = ["a", "b", "c"], bfns = [
+  ], bmasks = [], hits = hits)
   inspect(hits, content = "[1, 1, 0]")
 }

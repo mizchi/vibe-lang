@@ -29,29 +29,29 @@ import @vibe/compiler/runtime {
 
 //# Helpers
 
-fn string_to_bytes(s: String) -> Bytes {
+fn string_to_bytes(_ s: String) -> Bytes {
   let buf: Array[Int] = []
   let n = String::length(s)
   let mut i = 0
   while i < n {
-    Array::push(buf, String::char_code_at(s, i))
+    Array::push(buf, value = String::char_code_at(s, at = i))
     i = i + 1
   }
   Bytes::from_array(buf)
 }
 
-fn ints_str(xs: Array[Int]) -> String {
+fn ints_str(_ xs: Array[Int]) -> String {
   let parts: Array[String] = []
   let mut i = 0
   while i < Array::length(xs) {
-    Array::push(parts, "\{Array::get(xs, i)}")
+    Array::push(parts, value = "\{Array::get(xs, i)}")
     i = i + 1
   }
-  String::join(parts, ",")
+  String::join(parts, sep = ",")
 }
 
 /// Both of a module's typed-lowering tables, as one comparable string.
-fn tl_rows(path: String) -> String {
+fn tl_rows(_ path: String) -> String {
   let offs = match module_typed_lowering_offsets_for_path(path) {
     Some(o) => ints_str(o),
     None => "-"
@@ -78,7 +78,7 @@ fn tli_b_source() -> String {
     "export let t_render: () -> String = () -> { \"f=\\{t_flag()}\" }",
     "export let t_cmp: () -> Int = () -> { if t_flag() == t_flag() { 1 } else { 0 } }"
   ]
-  String::join(parts, "\n")
+  String::join(parts, sep = "\n")
 }
 
 fn tli_main_source() -> String {
@@ -86,7 +86,7 @@ fn tli_main_source() -> String {
     "import ./vibe_tl_iface_b.vibe { t_cmp, t_render }",
     "let run: () -> Int = () -> { String::length(t_render()) + t_cmp() }"
   ]
-  String::join(parts, "\n")
+  String::join(parts, sep = "\n")
 }
 
 let tli_base_a: String = "export let t_flag: () -> Int = () -> { 1 }"
@@ -103,17 +103,17 @@ fn tli_row(label: String, got: String, base: String) -> String {
 
 /// Write `a`, compile the chain, and report the CONSUMER's rows afterwards.
 /// The memo `tl_rows` reads is populated by the check this compile runs.
-fn tli_after(a_source: String) -> String with Env + Exception + Fs {
-  Fs::write_bytes(tli_a_path, string_to_bytes(a_source))
-  let _built = compile_file_fs_mode_rc(tli_main_path, "run")
+fn tli_after(_ a_source: String) -> String with Env + Exception + Fs {
+  Fs::write_bytes(tli_a_path, bytes = string_to_bytes(a_source))
+  let _built = compile_file_fs_mode_rc(entry_path = tli_main_path, entry_name = "run")
   tl_rows(tli_b_path)
 }
 
 //# Tests
 
 test "#2720: a consumer's typed-lowering rows follow its imports' interfaces, not their text" {
-  Fs::write_bytes(tli_b_path, string_to_bytes(tli_b_source()))
-  Fs::write_bytes(tli_main_path, string_to_bytes(tli_main_source()))
+  Fs::write_bytes(tli_b_path, bytes = string_to_bytes(tli_b_source()))
+  Fs::write_bytes(tli_main_path, bytes = string_to_bytes(tli_main_source()))
   let base = tli_after(tli_base_a)
   // Non-vacuity: `b` must actually HAVE rows, or every "same" below is the
   // trivial equality of two absent tables and the file measures nothing.
@@ -124,16 +124,16 @@ test "#2720: a consumer's typed-lowering rows follow its imports' interfaces, no
   }
   let report: Array[String] = []
   // A comment: `a`'s text grows, its interface does not.
-  Array::push(report, tli_row("comment", tli_after(String::concat(tli_base_a, "\n// touched")), base))
+  Array::push(report, value = tli_row(label = "comment", got = tli_after(String::concat(tli_base_a, "\n// touched")), base = base))
   // A body edit of the same length.
-  Array::push(report, tli_row("same-len-body", tli_after("export let t_flag: () -> Int = () -> { 2 }"), base))
+  Array::push(report, value = tli_row(label = "same-len-body", got = tli_after("export let t_flag: () -> Int = () -> { 2 }"), base = base))
   // A body edit that LENGTHENS `a`. This is the one that would fail if the
   // rows were positions in the merged text.
-  Array::push(report, tli_row("longer-body", tli_after("export let t_flag: () -> Int = () -> { 1 + 0 }"), base))
+  Array::push(report, value = tli_row(label = "longer-body", got = tli_after("export let t_flag: () -> Int = () -> { 1 + 0 }"), base = base))
   // The interface: same name, same arity, same scalar-return class, different
   // render and eq tags. This is the one the guard has to see.
-  Array::push(report, tli_row("return-type", tli_after("export let t_flag: () -> Bool = () -> { true }"), base))
+  Array::push(report, value = tli_row(label = "return-type", got = tli_after("export let t_flag: () -> Bool = () -> { true }"), base = base))
   // And back, so a "moved" above is the edit and not an accumulating memo.
-  Array::push(report, tli_row("restored", tli_after(tli_base_a), base))
-  inspect(String::join(report, " "), content = "comment=same same-len-body=same longer-body=same return-type=moved restored=same")
+  Array::push(report, value = tli_row(label = "restored", got = tli_after(tli_base_a), base = base))
+  inspect(String::join(report, sep = " "), content = "comment=same same-len-body=same longer-body=same return-type=moved restored=same")
 }

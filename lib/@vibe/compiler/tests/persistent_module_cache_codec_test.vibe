@@ -6,13 +6,13 @@ import @vibe/compiler/runtime {
 }
 
 fn sample() -> String {
-  persistent_module_cache_text(env_bind(EnvEmpty, "answer", CtInt), Some(([
+  persistent_module_cache_text(env = env_bind(env = EnvEmpty, name = "answer", ty = CtInt), lowering = Some(([
     8,
     24
   ], [40], ["I"])))
 }
 
-fn rejected(text: String) -> Bool {
+fn rejected(_ text: String) -> Bool {
   match parse_persistent_module_cache(text) {
     None => true,
     Some(_) => false
@@ -20,7 +20,7 @@ fn rejected(text: String) -> Bool {
 }
 
 fn replace_once(text: String, before: String, after: String) -> String {
-  let at = String::index_of(text, before)
+  let at = String::index_of(text, needle = before)
   assert(at >= 0)
   String::concat(text[0: at], String::concat(after, text[at + String::length(before): String::length(text)]))
 }
@@ -29,14 +29,14 @@ test "long environment segments keep canonical bytes without temporary payload c
   let buf = StringBuilder::new()
   let mut i = 0
   while i < 128 {
-    StringBuilder::push(buf, "abcdefgh")
+    StringBuilder::push(buf, value = "abcdefgh")
     i = i + 1
   }
   let name = StringBuilder::freeze(buf)
-  let env = env_bind(EnvEmpty, name, CtString)
+  let env = env_bind(env = EnvEmpty, name = name, ty = CtString)
   let expected = String::concat("version\t11\nenv\t1033:B1024:", String::concat(name, "GU0\nlowering\tmissing\n"))
   let before = Profiler::heap_bytes()
-  let text = persistent_module_cache_text(env, None)
+  let text = persistent_module_cache_text(env = env, lowering = None)
   let allocated = Profiler::heap_bytes() - before
   assert(text == expected)
   // The payload and final record each need one copy. A third copy's worth
@@ -48,16 +48,16 @@ test "the combined record round-trips both outputs canonically" {
   let text = sample()
   match parse_persistent_module_cache(text) {
     Some(record) => {
-      assert(persistent_module_cache_text(record.env, record.lowering) == text)
-      match env_lookup(record.env, "answer") {
+      assert(persistent_module_cache_text(env = record.env, lowering = record.lowering) == text)
+      match env_lookup(env = record.env, name = "answer") {
         Some(CtInt) => (),
         _ => assert(false)
       }
       match record.lowering {
         Some((offs, eq_offs, eq_keys)) => {
-          assert(Array::length(offs) == 2 && Array::get(offs, 0) == 8 && Array::get(offs, 1) == 24)
-          assert(Array::length(eq_offs) == 1 && Array::get(eq_offs, 0) == 40)
-          assert(Array::length(eq_keys) == 1 && Array::get(eq_keys, 0) == "I")
+          assert(Array::length(offs) == 2 && Array::get(offs, at = 0) == 8 && Array::get(offs, at = 1) == 24)
+          assert(Array::length(eq_offs) == 1 && Array::get(eq_offs, at = 0) == 40)
+          assert(Array::length(eq_keys) == 1 && Array::get(eq_keys, at = 0) == "I")
         },
         None => assert(false)
       }
@@ -67,8 +67,8 @@ test "the combined record round-trips both outputs canonically" {
 }
 
 test "a checked empty table remains distinct from an unavailable worker table" {
-  let empty = persistent_module_cache_text(EnvEmpty, Some(([], [], [])))
-  let missing = persistent_module_cache_text(EnvEmpty, None)
+  let empty = persistent_module_cache_text(env = EnvEmpty, lowering = Some(([], [], [])))
+  let missing = persistent_module_cache_text(env = EnvEmpty, lowering = None)
   assert(empty != missing)
   match parse_persistent_module_cache(empty) {
     Some(record) => match record.lowering {
@@ -87,9 +87,9 @@ test "a checked empty table remains distinct from an unavailable worker table" {
 }
 
 test "worker and dependency TypeEnv transport stays v10 and cannot stand in for a disk record" {
-  let env = env_bind(EnvEmpty, "answer", CtInt)
+  let env = env_bind(env = EnvEmpty, name = "answer", ty = CtInt)
   let wire = persistent_type_env_cache_text(env)
-  assert(String::starts_with(wire, "version\t10\nenv\t"))
+  assert(String::starts_with(wire, prefix = "version\t10\nenv\t"))
   assert(rejected(wire))
   match parse_persistent_type_env(wire) {
     Some(_) => (),
@@ -103,22 +103,22 @@ test "worker and dependency TypeEnv transport stays v10 and cannot stand in for 
 
 test "missing lowering bytes and trailing content invalidate the whole entry" {
   let text = sample()
-  let start = String::index_of(text, "module_typed_lowering_offsets\tv8")
+  let start = String::index_of(text, needle = "module_typed_lowering_offsets\tv8")
   assert(start > 0)
   assert(rejected(text[0: start]))
-  assert(rejected(replace_once(text, "module_typed_lowering_offsets\tend\n", "")))
+  assert(rejected(replace_once(text = text, before = "module_typed_lowering_offsets\tend\n", after = "")))
   assert(rejected(String::concat(text, "trailing")))
-  assert(rejected(String::concat(persistent_module_cache_text(EnvEmpty, None), "trailing")))
+  assert(rejected(String::concat(persistent_module_cache_text(env = EnvEmpty, lowering = None), "trailing")))
 }
 
 test "row deletion digit mutation and equality-key mutation retain their rejection contract" {
-  assert(rejected(replace_once(sample(), "\n24\n", "\n")))
-  assert(rejected(replace_once(sample(), "\n24\n", "\n25\n")))
-  assert(rejected(replace_once(sample(), "eqrow\t40\tI", "eqrow\t40\tS")))
+  assert(rejected(replace_once(text = sample(), before = "\n24\n", after = "\n")))
+  assert(rejected(replace_once(text = sample(), before = "\n24\n", after = "\n25\n")))
+  assert(rejected(replace_once(text = sample(), before = "eqrow\t40\tI", after = "eqrow\t40\tS")))
 }
 
 test "foreign versions and malformed environment payloads fail closed" {
-  assert(rejected(replace_once(sample(), "version\t11", "version\t10")))
+  assert(rejected(replace_once(text = sample(), before = "version\t11", after = "version\t10")))
   assert(rejected("version\t11\nenv\t999999999999999999999999999999:0\nlowering\tmissing\n"))
   assert(rejected("version\t11\nenv\t1:Z\nlowering\tmissing\n"))
   assert(rejected("version\t11\nenv\t1:0lowering\tmissing\n"))

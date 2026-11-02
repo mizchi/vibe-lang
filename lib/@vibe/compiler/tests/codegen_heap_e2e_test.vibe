@@ -24,7 +24,7 @@ import @vibe/compiler/codegen {
 
 fn run_one(bytes: Bytes, entry: String, label: String, expected: String) -> Int with Fs + Process {
   let path = "/tmp/_heap_e2e_" + label + ".wasm"
-  Fs::write_bytes(path, bytes)
+  Fs::write_bytes(path, bytes = bytes)
   // #770: every compiled entry here is a 0-arity vibe closure, but the
   // codegen entry ABI always takes one hidden env-pointer parameter (used by
   // the wasm_vibe_host_runner.js custom runner's own invoke logic, which
@@ -46,7 +46,7 @@ fn run_one(bytes: Bytes, entry: String, label: String, expected: String) -> Int 
   let mut found = false
   let mut i = 0
   while i < Array::length(out) {
-    if Array::get(out, i) == expected {
+    if Array::get(out, at = i) == expected {
       found = true
     }
     i = i + 1
@@ -56,8 +56,8 @@ fn run_one(bytes: Bytes, entry: String, label: String, expected: String) -> Int 
 }
 
 fn assert_result(src: String, entry: String, label: String, expected: String) -> Int with Exception + Fs + Process {
-  run_one(compile_wasi(src, entry), entry, label, expected)
-  run_one(compile_wasi_rc(src, entry), entry, label + "_rc", expected)
+  run_one(bytes = compile_wasi(source = src, entry = entry), entry = entry, label = label, expected = expected)
+  run_one(bytes = compile_wasi_rc(source = src, entry = entry), entry = entry, label = label + "_rc", expected = expected)
   0
 }
 
@@ -65,24 +65,24 @@ fn assert_result(src: String, entry: String, label: String, expected: String) ->
 /// IS backend agreement (#1285), so a divergence fails here instead of
 /// surviving as prose in the cheatsheet.
 fn assert_result_all_backends(src: String, entry: String, label: String, expected: String) -> Int with Exception + Fs + Process {
-  assert_result(src, entry, label, expected)
-  run_one(compile_wasi_gc(src, entry), entry, label + "_gc", expected)
+  assert_result(src = src, entry = entry, label = label, expected = expected)
+  run_one(bytes = compile_wasi_gc(source = src, entry = entry), entry = entry, label = label + "_gc", expected = expected)
   0
 }
 
 fn run_one_traps(bytes: Bytes, entry: String, label: String) -> Int with Fs + Process {
   let path = "/tmp/_heap_e2e_" + label + ".wasm"
-  Fs::write_bytes(path, bytes)
+  Fs::write_bytes(path, bytes = bytes)
   let out = sh_lines("wasmtime run -W exceptions=y,gc=y --invoke " + entry + " " + path + " 0 >/dev/null 2>&1 && echo unexpected || echo trapped")
   assert(Array::length(out) == 1)
-  assert(Array::get(out, 0) == "trapped")
+  assert(Array::get(out, at = 0) == "trapped")
   0
 }
 
 fn assert_traps_all_backends(src: String, entry: String, label: String) -> Int with Exception + Fs + Process {
-  run_one_traps(compile_wasi(src, entry), entry, label)
-  run_one_traps(compile_wasi_rc(src, entry), entry, label + "_rc")
-  run_one_traps(compile_wasi_gc(src, entry), entry, label + "_gc")
+  run_one_traps(bytes = compile_wasi(source = src, entry = entry), entry = entry, label = label)
+  run_one_traps(bytes = compile_wasi_rc(source = src, entry = entry), entry = entry, label = label + "_rc")
+  run_one_traps(bytes = compile_wasi_gc(source = src, entry = entry), entry = entry, label = label + "_gc")
   0
 }
 
@@ -90,106 +90,106 @@ fn assert_traps_all_backends(src: String, entry: String, label: String) -> Int w
 
 test "heap e2e: compact fingerprint bridge does not capture user prefix names" {
   let src = "let __compact_fingerprint_hash_custom: (String) -> Int = (_source) -> { 777 }\nlet main: () -> Int = () -> { __compact_fingerprint_hash_custom(\"abc\") }"
-  assert_result(src, "main", "fingerprint_bridge_user_prefix", "777")
+  assert_result(src = src, entry = "main", label = "fingerprint_bridge_user_prefix", expected = "777")
 }
 
 test "heap e2e: captured let mut lambda reassignment then call" {
   let src = "let main: () -> Int = () -> {\n  let mut g = (x: Int, y: Int) -> Int { x - y }\n  let bump = () -> Unit { g = (x: Int, y: Int) -> Int { x - y - 1 } }\n  bump()\n  g(10, 3)\n}"
-  assert_result(src, "main", "captured_mut_lambda", "6")
+  assert_result(src = src, entry = "main", label = "captured_mut_lambda", expected = "6")
 }
 
 test "#2236 review: local constructors shadow compiler-owned Attempt names" {
   let src = "enum Local { NotGranted(Int) }\nfn main() -> Int {\n  let candidate = NotGranted(7)\n  let overwrite = [41, 42]\n  let _keep = Array::length(overwrite)\n  match candidate {\n    NotGranted(value) => value\n  }\n}\n"
-  assert_result_all_backends(src, "main", "local_not_granted_constructor", "7")
+  assert_result_all_backends(src = src, entry = "main", label = "local_not_granted_constructor", expected = "7")
 }
 
 test "#2383 review: source-owned print functions are not GC intrinsics" {
   let src = "fn print(value: Int) -> Int { value + 1 }\nfn println(value: Int) -> Int { value + 2 }\nfn main() -> Int { print(40) + println(40) }\n"
-  assert_result_all_backends(src, "main", "source_owned_print_functions", "83")
+  assert_result_all_backends(src = src, entry = "main", label = "source_owned_print_functions", expected = "83")
 }
 
 test "#2379 review: Map iterator bounds ignore a source Map::size" {
   let src = "fn Map::size[K, V](_m: Map[K, V]) -> Int { 100 }\nfn main() -> String {\n  let m = Map::from_pairs([(\"a\", 1)])\n  Map::iter_get(m, 50)\n}\n"
-  assert_traps_all_backends(src, "main", "map_iter_get_size_shadow")
+  assert_traps_all_backends(src = src, entry = "main", label = "map_iter_get_size_shadow")
 }
 
 test "#2379 review: Map iterator bounds ignore a source Array::get" {
   let src = "fn Array::get(_xs: Array[String], _index: Int) -> String { \"shadow\" }\nfn main() -> String {\n  let m = Map::from_pairs([(\"a\", 1)])\n  Map::iter_get(m, 50)\n}\n"
-  assert_traps_all_backends(src, "main", "map_iter_get_array_get_shadow")
+  assert_traps_all_backends(src = src, entry = "main", label = "map_iter_get_array_get_shadow")
 }
 
 test "#2379 review: a bound unchecked Map helper is not an intrinsic" {
   let src = "fn Map::__iter_get_unchecked(_map: Int, _index: Int) -> Int { 42 }\nfn main() -> Int { Map::__iter_get_unchecked(1, 0) }\n"
-  assert_result_all_backends(src, "main", "bound_map_iter_get_unchecked", "42")
+  assert_result_all_backends(src = src, entry = "main", label = "bound_map_iter_get_unchecked", expected = "42")
 }
 
 test "#2379 review: a source-owned Map accessor may consume its receiver" {
   let src = "fn Map::iter_get(m: Map[String, Int], _index: Int) -> Map[String, Int] { m }\nfn main() -> Int {\n  let m = Map::from_pairs([(\"a\", 1)])\n  let moved = Map::iter_get(m, 0)\n  Map::size(m) + Map::size(moved)\n}\n"
-  assert_result_all_backends(src, "main", "owned_map_iter_get_receiver", "2")
+  assert_result_all_backends(src = src, entry = "main", label = "owned_map_iter_get_receiver", expected = "2")
 }
 
 test "#2379 review: a bound eager Array iterator is not an intrinsic" {
   let src = "fn Array::iter_eager(_xs: Array[Int], _f: (Int) -> Unit) -> Int { 42 }\nfn main() -> Int { Array::iter_eager([1], (_x: Int) -> Unit { () }) }\n"
-  assert_result_all_backends(src, "main", "bound_array_iter_eager", "42")
+  assert_result_all_backends(src = src, entry = "main", label = "bound_array_iter_eager", expected = "42")
 }
 
 test "#2379 review: an eager Array helper cannot capture Iterator::iter" {
   let entry = "import ./provider.vibe { trait Iterator }\nfn Array::iter_eager(_xs: Array[Int], _f: (Int) -> Unit) -> Int { 77 }\nfn main() -> Int { Iterator::iter([1, 2, 3], (_x: Int) -> Unit { () }) }"
   let provider = "export trait Iterator[T]\nexport fn Iterator::iter(xs: Array[Int], _f: (Int) -> Unit) -> Int { Array::length(xs) }"
-  let merged = closure_merged_stmts(entry, "main.vibe", [
+  let merged = closure_merged_stmts(main_source = entry, main_path = "main.vibe", sources = [
     ("provider.vibe", provider)
   ])
-  assert_result_all_backends(print_program(merged), "main", "bound_array_iter_eager_does_not_capture_iterator", "3")
+  assert_result_all_backends(src = print_program(merged), entry = "main", label = "bound_array_iter_eager_does_not_capture_iterator", expected = "3")
 }
 
 test "#2379 review: an entry Iterator export wins over its aliased provider" {
   let entry = "import ./provider.vibe { trait Iterator as Iter }\nexport fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nfn main() -> Int { Array::get(Iterator::map([1], (x: Int) -> Int { x }), 0) + Array::length(Iter::map([1], (x: Int) -> Int { x })) }"
   let provider = "export trait Iterator[T]\nexport fn Iterator::map(xs: Array[Int], f: (Int) -> Int) -> Array[Int] { Array::map(xs, f) }"
-  let merged = closure_merged_stmts(entry, "main.vibe", [
+  let merged = closure_merged_stmts(main_source = entry, main_path = "main.vibe", sources = [
     ("provider.vibe", provider)
   ])
-  assert_result_all_backends(print_program(merged), "main", "entry_iterator_export", "78")
+  assert_result_all_backends(src = print_program(merged), entry = "main", label = "entry_iterator_export", expected = "78")
 }
 
 test "#2379 review: trait companion operations cross a facade" {
   let entry = "import ./facade.vibe { trait Reducible as R }\nfn main() -> Int { R::reduce([1]) }"
   let facade = "export ./provider.vibe { trait Reducible }"
   let provider = "export trait Reducible[T]\nexport fn Reducible::reduce(_xs: Array[Int]) -> Int { 41 }"
-  let merged = closure_merged_stmts(entry, "main.vibe", [
+  let merged = closure_merged_stmts(main_source = entry, main_path = "main.vibe", sources = [
     ("provider.vibe", provider),
     ("facade.vibe", facade)
   ])
-  assert_result_all_backends(print_program(merged), "main", "trait_companion_facade", "41")
+  assert_result_all_backends(src = print_program(merged), entry = "main", label = "trait_companion_facade", expected = "41")
 }
 
 test "#2379 review: a later custom Iterator trait import wins provenance" {
   let entry = "import @vibe/builtin { trait Iterator }\nimport ./custom.vibe { trait Iterator }\nfn main() -> Int { Array::get(Iterator::map([1], (x: Int) -> Int { x + 1 }), 0) }"
   let custom = "export trait Iterator[T]\nexport fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }"
-  let merged = closure_merged_stmts(entry, "main.vibe", [
+  let merged = closure_merged_stmts(main_source = entry, main_path = "main.vibe", sources = [
     ("@vibe/builtin.vibe", "export trait Iterator[T]"),
     ("custom.vibe", custom)
   ])
-  assert_result_all_backends(print_program(merged), "main", "custom_iterator_wins", "77")
+  assert_result_all_backends(src = print_program(merged), entry = "main", label = "custom_iterator_wins", expected = "77")
 }
 
 test "#2379 review: Iterator iter over Array stays direct on every backend" {
   let entry = "import @vibe/builtin { trait Iterator }\nfn main() -> Int {\n  let mut total = 0\n  let count = Iterator::iter([1, 2, 3], (x: Int) -> Unit { total = total + x; () })\n  count * 10 + total\n}"
   let builtin = "export trait Iterator[T]\nexport fn Iterator::iter(xs: Array[Int], f: (Int) -> Unit) -> Int {\n  let len = Array::length(xs)\n  let mut i = 0\n  while i < len { f(Array::get(xs, i)); i = i + 1 }\n  i\n}"
-  let merged = closure_merged_stmts(entry, "main.vibe", [
+  let merged = closure_merged_stmts(main_source = entry, main_path = "main.vibe", sources = [
     ("@vibe/builtin.vibe", builtin)
   ])
   desugar_trait_dicts(merged)
-  assert_result_all_backends(print_program(merged), "main", "iterator_iter_direct", "36")
+  assert_result_all_backends(src = print_program(merged), entry = "main", label = "iterator_iter_direct", expected = "36")
 }
 
 test "#2379 review: direct Iterator iter remains direct inside a closure" {
   let entry = "import @vibe/builtin { trait Iterator }\nfn main() -> Int {\n  let run = () -> Int { Iterator::iter([1, 2, 3], (_x: Int) -> Unit { () }) }\n  run()\n}"
   let builtin = "export trait Iterator[T]\nexport fn Iterator::iter(xs: Array[Int], f: (Int) -> Unit) -> Int {\n  let len = Array::length(xs)\n  let mut i = 0\n  while i < len { f(Array::get(xs, i)); i = i + 1 }\n  i\n}"
-  let merged = closure_merged_stmts(entry, "main.vibe", [
+  let merged = closure_merged_stmts(main_source = entry, main_path = "main.vibe", sources = [
     ("@vibe/builtin.vibe", builtin)
   ])
   desugar_trait_dicts(merged)
-  assert_result_all_backends(print_program(merged), "main", "iterator_iter_direct_in_closure", "3")
+  assert_result_all_backends(src = print_program(merged), entry = "main", label = "iterator_iter_direct_in_closure", expected = "3")
 }
 
 // #1967: `continue` in a collecting `for-in` used to `br` to the loop
@@ -199,39 +199,39 @@ test "#2379 review: direct Iterator iter remains direct inside a closure" {
 // accidentally match.
 test "heap e2e: for-in continue skips even collected values" {
   let src = "let main: () -> Int = () -> {\n  let xs = for x in [1, 2, 3, 4, 5] {\n    if x % 2 == 0 { continue } else { }\n    x\n  }\n  Array::get(xs, 0) + Array::get(xs, 1) * 10 + Array::get(xs, 2) * 100\n}"
-  assert_result_all_backends(src, "main", "forin_continue_collect", "531")
+  assert_result_all_backends(src = src, entry = "main", label = "forin_continue_collect", expected = "531")
 }
 
 test "heap e2e: for-in continue as a statement still advances" {
   let src = "let main: () -> Int = () -> {\n  let mut n = 0\n  for x in [1, 2, 3, 4, 5] {\n    if x % 2 == 0 { continue } else { }\n    n = n + x\n  }\n  n\n}"
-  assert_result_all_backends(src, "main", "forin_continue_stmt", "9")
+  assert_result_all_backends(src = src, entry = "main", label = "forin_continue_stmt", expected = "9")
 }
 
 test "heap e2e: tuple field access" {
   let src = "let main: () -> Int = () -> {\n  let t = (3, 4)\n  t.0 + t.1\n}"
-  assert_result(src, "main", "tuple", "7")
+  assert_result(src = src, entry = "main", label = "tuple", expected = "7")
 }
 
 test "heap e2e: nested tuple field access" {
   let src = "let main: () -> Int = () -> {\n  let t = ((1, 2), (3, 4))\n  t.0.1 + t.1.0\n}"
-  assert_result(src, "main", "nested_tuple", "5")
+  assert_result(src = src, entry = "main", label = "nested_tuple", expected = "5")
 }
 
 test "heap e2e: array get" {
   let src = "let main: () -> Int = () -> {\n  let a = [10, 20, 30]\n  Array::get(a, 1)\n}"
-  assert_result(src, "main", "array_get", "20")
+  assert_result(src = src, entry = "main", label = "array_get", expected = "20")
 }
 
 /// #835: Int64Array::make/set/get/length round-trips a full 32-bit word
 /// (0xffffffff) with no truncation, exactly as docs/user/reference/cheatsheet.md documents.
 test "heap e2e: Int64Array make/set/get/length round-trip" {
   let src = "let main: () -> Int = () -> {\n  let w = Int64Array::make(4, 0)\n  Int64Array::set(w, 0, 4294967295)\n  if Int64Array::length(w) == 4 { Int64Array::get(w, 0) } else { 0 - 1 }\n}"
-  assert_result(src, "main", "int64array_roundtrip", "4294967295")
+  assert_result(src = src, entry = "main", label = "int64array_roundtrip", expected = "4294967295")
 }
 
 test "heap e2e: parenthesized call after a binding (no newline glue)" {
   let src = "let main: () -> Int = () -> {\n  let a = [(7, 8)]\n  (Array::get(a, 0)).0\n}"
-  assert_result(src, "main", "paren_call_after_binding", "7")
+  assert_result(src = src, entry = "main", label = "paren_call_after_binding", expected = "7")
 }
 
 /// #1318/#1319: the binding must stay visible to the parenthesized statement
@@ -240,213 +240,213 @@ test "heap e2e: parenthesized call after a binding (no newline glue)" {
 /// the block then inferred as `()` (#1319) or lost the binding (#1318).
 test "heap e2e: parenthesized statement after an interpolated-string binding" {
   let src = "let main: () -> Int = () -> {\n  let s = \"p\\{1}q\"\n  (String::length(s) + 39)\n}"
-  assert_result(src, "main", "paren_after_interp_binding", "42")
+  assert_result(src = src, entry = "main", label = "paren_after_interp_binding", expected = "42")
 }
 
 test "heap e2e: parenthesized call after a loop" {
   let src = "let main: () -> Int = () -> {\n  let a = [(7, 8)]\n  let mut i = 0\n  while i < 3 {\n    i = i + 1\n  }\n  (Array::get(a, 0)).0\n}"
-  assert_result(src, "main", "paren_call_after_loop", "7")
+  assert_result(src = src, entry = "main", label = "paren_call_after_loop", expected = "7")
 }
 
 test "heap e2e: array builder push/freeze" {
   let src = "let main: () -> Int = () -> {\n  let b = ArrayBuilder::new()\n  ArrayBuilder::push(b, 10)\n  ArrayBuilder::push(b, 20)\n  ArrayBuilder::push(b, 30)\n  let arr = ArrayBuilder::freeze(b)\n  Array::get(arr, 2)\n}"
-  assert_result(src, "main", "array_builder", "30")
+  assert_result(src = src, entry = "main", label = "array_builder", expected = "30")
 }
 
 test "heap e2e: struct field access" {
   let src = "struct P { x: Int; y: Int }\nlet main: () -> Int = () -> {\n  let p = P::{ x: 3, y: 4 }\n  p.x + p.y\n}"
-  assert_result(src, "main", "struct", "7")
+  assert_result(src = src, entry = "main", label = "struct", expected = "7")
 }
 
 test "heap e2e: enum ctor + match payload" {
   let src = "enum E { A(Int); B }\nlet main: () -> Int = () -> {\n  let e = A(5)\n  match e {\n    A(n) => n + 1,\n    B => 0\n  }\n}"
-  assert_result(src, "main", "enum_match", "6")
+  assert_result(src = src, entry = "main", label = "enum_match", expected = "6")
 }
 
 test "heap e2e: string concat preserves heap alignment before enum match" {
   let src = "enum E { A(Int); B }\nlet main: () -> Int = () -> {\n  let s = String::concat(\"a\", \"bc\")\n  let e = A(5)\n  if String::length(s) == 3 {\n    match e {\n      A(n) => n + 1,\n      B => 0\n    }\n  } else {\n    0\n  }\n}"
-  assert_result(src, "main", "string_concat_enum_align", "6")
+  assert_result(src = src, entry = "main", label = "string_concat_enum_align", expected = "6")
 }
 
 test "heap e2e: closure capture" {
   let src = "let main: () -> Int = () -> {\n  let n = 5\n  let f = (x: Int) -> Int { x + n }\n  f(3)\n}"
-  assert_result(src, "main", "closure", "8")
+  assert_result(src = src, entry = "main", label = "closure", expected = "8")
 }
 
 test "heap e2e: closure body loop over tuples" {
   let src = "let main: () -> Int = () -> {\n  let run = (m: Int) -> Int {\n    let mut sum = 0\n    let mut i = 0\n    while i < m {\n      let t = (i, i + 1)\n      sum = sum + t.0\n      i = i + 1\n    }\n    sum\n  }\n  run(5)\n}"
-  assert_result(src, "main", "closure_loop", "10")
+  assert_result(src = src, entry = "main", label = "closure_loop", expected = "10")
 }
 
 test "heap e2e: unannotated owned closure param" {
   let src = "let main: () -> Int = () -> {\n  let apply = (p) -> { p.0 + p.1 }\n  let t = (3, 4)\n  apply(t)\n}"
-  assert_result(src, "main", "unannot_param", "7")
+  assert_result(src = src, entry = "main", label = "unannot_param", expected = "7")
 }
 
 test "heap e2e: assign projection to outer mut" {
   let src = "let main: () -> Int = () -> {\n  let mut keep = (0, 0)\n  let mut i = 0\n  while i < 5 {\n    let t = (i, i + 1)\n    let box = (t, i)\n    keep = box.0\n    i = i + 1\n  }\n  keep.0 + keep.1\n}"
-  assert_result(src, "main", "assign_proj_escape", "9")
+  assert_result(src = src, entry = "main", label = "assign_proj_escape", expected = "9")
 }
 
 test "heap e2e: unused closure param dropped via call-site inference" {
   let src = "let main: () -> Int = () -> {\n  let f = (p) -> { 42 }\n  let t = (3, 4)\n  f(t)\n}"
-  assert_result(src, "main", "unused_param_callsite", "42")
+  assert_result(src = src, entry = "main", label = "unused_param_callsite", expected = "42")
 }
 
 test "heap e2e: string arg param not mis-inferred as heap" {
   let src = "let main: () -> Int = () -> {\n  let f = (p) -> { 7 }\n  let s = \"hi\"\n  f(s)\n}"
-  assert_result(src, "main", "string_arg_not_heap", "7")
+  assert_result(src = src, entry = "main", label = "string_arg_not_heap", expected = "7")
 }
 
 test "heap e2e: unused param dropped from ctor-call arg" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let f = (p) -> { 42 }\n  f(Wrap((3, 4)))\n}"
-  assert_result(src, "main", "opaque_ctor_arg", "42")
+  assert_result(src = src, entry = "main", label = "opaque_ctor_arg", expected = "42")
 }
 
 test "heap e2e: unused param dropped from heap-returning call arg" {
   let src = "let mk: (Int) -> (Int, Int) = (x) -> { (x, x + 1) }\nlet main: () -> Int = () -> {\n  let f = (p) -> { 42 }\n  let r = mk(5)\n  f(r)\n}"
-  assert_result(src, "main", "opaque_fncall_arg", "42")
+  assert_result(src = src, entry = "main", label = "opaque_fncall_arg", expected = "42")
 }
 
 test "heap e2e: nullary ctor arg not mis-inferred as heap" {
   let src = "enum Opt { Som(Int); Non }\nlet main: () -> Int = () -> {\n  let f = (p) -> { 9 }\n  f(Non)\n}"
-  assert_result(src, "main", "nullary_ctor_arg", "9")
+  assert_result(src = src, entry = "main", label = "nullary_ctor_arg", expected = "9")
 }
 
 test "heap e2e: nullary ctor reclaimed, Option-in-if correct" {
   let src = "enum Opt { Som((Int, Int)); Non }\nlet main: () -> Int = () -> {\n  let mut acc = 0\n  let mut i = 0\n  while i < 6 {\n    let o = if i % 2 == 0 { Som((i, i + 1)) } else { Non }\n    acc = acc + match o { Som(p) => p.0 + p.1, Non => 100 }\n    i = i + 1\n  }\n  acc\n}"
-  assert_result(src, "main", "nullary_ctor_optif", "315")
+  assert_result(src = src, entry = "main", label = "nullary_ctor_optif", expected = "315")
 }
 
 test "heap e2e: shadowed heap-fn name not mis-inferred as heap" {
   let src = "let mk: (Int) -> (Int, Int) = (x) -> { (x, x + 1) }\nlet main: () -> Int = () -> {\n  let mk = (x) -> { \"s\" }\n  let f = (p) -> { 7 }\n  let r = mk(1)\n  f(r)\n}"
-  assert_result(src, "main", "shadowed_heapfn_arg", "7")
+  assert_result(src = src, entry = "main", label = "shadowed_heapfn_arg", expected = "7")
 }
 
 test "heap e2e: aliased tuple bindings" {
   let src = "let main: () -> Int = () -> {\n  let t = (3, 4)\n  let a = t\n  let b = t\n  a.0 + b.1\n}"
-  assert_result(src, "main", "aliased_tuple", "7")
+  assert_result(src = src, entry = "main", label = "aliased_tuple", expected = "7")
 }
 
 test "heap e2e: aliased tuple in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let t = (i, i + 1)\n    let a = t\n    let b = t\n    sum = sum + a.0 + b.1\n    i = i + 1\n  }\n  sum\n}"
-  assert_result(src, "main", "aliased_loop", "25")
+  assert_result(src = src, entry = "main", label = "aliased_loop", expected = "25")
 }
 
 test "heap e2e: returned closure" {
   let src = "let mk: (Int) -> (Int) -> Int = (n) -> {\n  (x: Int) -> Int { x + n }\n}\nlet main: () -> Int = () -> {\n  let add5 = mk(5)\n  add5(3)\n}"
-  assert_result(src, "main", "returned_closure", "8")
+  assert_result(src = src, entry = "main", label = "returned_closure", expected = "8")
 }
 
 test "heap e2e: loop accumulating tuples" {
   let src = "let main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let t = (i, i + 1)\n    sum = sum + t.0 + t.1\n    i = i + 1\n  }\n  sum\n}"
-  assert_result(src, "main", "loop_tuples", "25")
+  assert_result(src = src, entry = "main", label = "loop_tuples", expected = "25")
 }
 
 test "heap e2e: tuple let-destructuring" {
   let src = "let main: () -> Int = () -> {\n  let t = (3, 4)\n  let (a, b) = t;\n  a * 10 + b\n}"
-  assert_result(src, "main", "tuple_destructure", "34")
+  assert_result(src = src, entry = "main", label = "tuple_destructure", expected = "34")
 }
 
 test "heap e2e: tuple pattern match" {
   let src = "let main: () -> Int = () -> {\n  let t = (1, 2)\n  match t {\n    (a, b) => a * 10 + b\n  }\n}"
-  assert_result(src, "main", "tuple_match", "12")
+  assert_result(src = src, entry = "main", label = "tuple_match", expected = "12")
 }
 
 /// #1553: a single-arm match runs through both bump and RC codegen; the RC
 /// planner skips branch snapshots but retains the payload bindings correctly.
 test "heap e2e: single-arm enum match" {
   let src = "enum E { A((Int, Int)) }\nlet main: () -> Int = () -> {\n  let e = A((20, 22))\n  match e {\n    A((a, b)) => a + b\n  }\n}"
-  assert_result(src, "main", "single_arm_enum_match", "42")
+  assert_result(src = src, entry = "main", label = "single_arm_enum_match", expected = "42")
 }
 
 test "heap e2e: nested tuple pattern match" {
   let src = "let main: () -> Int = () -> {\n  let t = ((1, 2), 3)\n  match t {\n    ((a, b), c) => a * 100 + b * 10 + c\n  }\n}"
-  assert_result(src, "main", "nested_tuple_match", "123")
+  assert_result(src = src, entry = "main", label = "nested_tuple_match", expected = "123")
 }
 
 test "heap e2e: tuple equality (equal)" {
   let src = "let main: () -> Int = () -> {\n  let a = (1, 2)\n  let b = (1, 2)\n  if a == b { 1 } else { 0 }\n}"
-  assert_result(src, "main", "tuple_eq", "1")
+  assert_result(src = src, entry = "main", label = "tuple_eq", expected = "1")
 }
 
 test "heap e2e: tuple inequality" {
   let src = "let main: () -> Int = () -> {\n  let a = (1, 2)\n  let b = (1, 3)\n  if a == b { 1 } else { 0 }\n}"
-  assert_result(src, "main", "tuple_neq", "0")
+  assert_result(src = src, entry = "main", label = "tuple_neq", expected = "0")
 }
 
 test "heap e2e: array literal in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let a = [i, i + 1, i + 2]\n    sum = sum + Array::get(a, 0) + Array::get(a, 2)\n    i = i + 1\n  }\n  sum\n}"
-  assert_result(src, "main", "array_loop", "30")
+  assert_result(src = src, entry = "main", label = "array_loop", expected = "30")
 }
 
 test "heap e2e: RC array literal grown by push" {
   let src = "let main: () -> Int = () -> {\n  let a = [0]\n  let mut i = 0\n  while i < 12 {\n    Array::push(a, i + 1)\n    i = i + 1\n  }\n  Array::length(a) + Array::get(a, 12)\n}"
-  assert_result(src, "main", "array_grow", "25")
+  assert_result(src = src, entry = "main", label = "array_grow", expected = "25")
 }
 
 test "heap e2e: array length" {
   let src = "let main: () -> Int = () -> {\n  let a = [5, 6, 7, 8]\n  Array::length(a)\n}"
-  assert_result(src, "main", "array_length", "4")
+  assert_result(src = src, entry = "main", label = "array_length", expected = "4")
 }
 
 test "heap e2e: loop accumulating records" {
   let src = "struct P { x: Int; y: Int }\nlet main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let p = P::{ x: i, y: i + 1 }\n    sum = sum + p.x + p.y\n    i = i + 1\n  }\n  sum\n}"
-  assert_result(src, "main", "loop_records", "25")
+  assert_result(src = src, entry = "main", label = "loop_records", expected = "25")
 }
 
 test "heap e2e: nested struct field access" {
   let src = "struct P { x: Int; y: Int }\nstruct Q { a: P; b: Int }\nlet main: () -> Int = () -> {\n  let p = P::{ x: 3, y: 4 }\n  let q = Q::{ a: p, b: 5 }\n  q.a.x + q.a.y + q.b\n}"
-  assert_result(src, "main", "nested_struct", "12")
+  assert_result(src = src, entry = "main", label = "nested_struct", expected = "12")
 }
 
 test "heap e2e: loop allocating + matching enums" {
   let src = "enum E { A(Int); B }\nlet main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 5 {\n    let e = A(i)\n    sum = sum + match e {\n      A(n) => n,\n      B => 0\n    }\n    i = i + 1\n  }\n  sum\n}"
-  assert_result(src, "main", "loop_enums", "10")
+  assert_result(src = src, entry = "main", label = "loop_enums", expected = "10")
 }
 
 test "heap e2e: enum without payload" {
   let src = "enum Color { Red; Green; Blue }\nlet main: () -> Int = () -> {\n  let c = Green\n  match c {\n    Red => 0,\n    Green => 1,\n    Blue => 2\n  }\n}"
-  assert_result(src, "main", "enum_nopayload", "1")
+  assert_result(src = src, entry = "main", label = "enum_nopayload", expected = "1")
 }
 
 test "heap e2e: arithmetic add/sub" {
   // (no tag correction expected: a<<1 +/- b<<1 stays tagged)
   let src = "let main: () -> Int = () -> {\n  100 + 23 - 5\n}"
-  assert_result(src, "main", "arith_addsub", "118")
+  assert_result(src = src, entry = "main", label = "arith_addsub", expected = "118")
 }
 
 test "heap e2e: arithmetic mul/div/mod" {
   // mul/div need a tag correction; mod needs none (2x mod 2y = 2(x mod y))
   let src = "let main: () -> Int = () -> {\n  7 * 6 / 3 + 17 % 5\n}"
-  assert_result(src, "main", "arith_muldivmod", "16")
+  assert_result(src = src, entry = "main", label = "arith_muldivmod", expected = "16")
 }
 
 test "heap e2e: negative numbers and unary minus" {
   let src = "let main: () -> Int = () -> {\n  let x = 0 - 42\n  let y = -x\n  y - 100\n}"
-  assert_result(src, "main", "arith_neg", "-58")
+  assert_result(src = src, entry = "main", label = "arith_neg", expected = "-58")
 }
 
 test "heap e2e: negative division and modulo (truncating)" {
   let src = "let main: () -> Int = () -> {\n  let a = (0 - 17) / 5\n  let b = (0 - 17) % 5\n  a * 100 + b\n}"
-  assert_result(src, "main", "arith_negdivmod", "-302")
+  assert_result(src = src, entry = "main", label = "arith_negdivmod", expected = "-302")
 }
 
 test "heap e2e: comparison results used arithmetically" {
   // bool results must be tagged (0/2) so they don't masquerade as pointers;
   // here each comparison feeds `if`, exercising the tagged-bool truthiness path
   let src = "let main: () -> Int = () -> {\n  let a = if 3 < 5 { 1 } else { 0 }\n  let b = if 5 <= 5 { 10 } else { 0 }\n  let c = if 9 > 2 { 100 } else { 0 }\n  let d = if 2 >= 9 { 0 } else { 1000 }\n  a + b + c + d\n}"
-  assert_result(src, "main", "cmp_arith", "1111")
+  assert_result(src = src, entry = "main", label = "cmp_arith", expected = "1111")
 }
 
 test "heap e2e: equality and inequality on ints" {
   let src = "let main: () -> Int = () -> {\n  let a = if 7 == 7 { 1 } else { 0 }\n  let b = if 7 != 8 { 10 } else { 0 }\n  let c = if 7 == 8 { 0 } else { 100 }\n  a + b + c\n}"
-  assert_result(src, "main", "eq_ne", "111")
+  assert_result(src = src, entry = "main", label = "eq_ne", expected = "111")
 }
 
 test "heap e2e: logical not and and/or" {
   let src = "let main: () -> Int = () -> {\n  let a = if !(1 == 2) { 1 } else { 0 }\n  let b = if (3 < 4) && (5 < 6) { 10 } else { 0 }\n  let c = if (3 > 4) || (5 < 6) { 100 } else { 0 }\n  a + b + c\n}"
-  assert_result(src, "main", "logic_ops", "111")
+  assert_result(src = src, entry = "main", label = "logic_ops", expected = "111")
 }
 
 test "heap e2e: bitwise and/or/xor" {
@@ -455,240 +455,240 @@ test "heap e2e: bitwise and/or/xor" {
   // #770: 12 & 10 = 8, 12 | 10 = 14, 12 ^ 10 = 6 -> 8*100 + 14*10 + 6 = 946
   // (the previous expected value "956" was simply a wrong hand-computed
   // constant; wasmtime confirms the compiled program's actual output is 946).
-  assert_result(src, "main", "bitand_or_xor", "946")
+  assert_result(src = src, entry = "main", label = "bitand_or_xor", expected = "946")
 }
 
 test "heap e2e: shift left and right" {
   // << needs the shift amount untagged; >> needs both operands untagged then
   // the result re-tagged (the subtle one — low bits matter)
   let src = "let main: () -> Int = () -> {\n  let a = 3 << 4\n  let b = 7 >> 1\n  let c = 13 >> 2\n  a + b * 100 + c * 10\n}"
-  assert_result(src, "main", "shifts", "378")
+  assert_result(src = src, entry = "main", label = "shifts", expected = "378")
 }
 
 test "heap e2e: arithmetic right shift of negative" {
   let src = "let main: () -> Int = () -> {\n  (0 - 8) >> 1\n}"
-  assert_result(src, "main", "shift_neg", "-4")
+  assert_result(src = src, entry = "main", label = "shift_neg", expected = "-4")
 }
 
 test "heap e2e: int stored in heap field round-trips" {
   // an int crosses into a heap (tuple) field and back out — must keep its tag
   let src = "let main: () -> Int = () -> {\n  let t = (40 + 2, 7 << 3)\n  t.0 + t.1\n}"
-  assert_result(src, "main", "int_in_heap", "98")
+  assert_result(src = src, entry = "main", label = "int_in_heap", expected = "98")
 }
 
 test "heap e2e: bool stored in heap field used as condition" {
   // a tagged bool stored in a tuple field, read back, used to drive a branch
   let src = "let main: () -> Int = () -> {\n  let t = (1 < 2, 9)\n  if t.0 { t.1 } else { 0 }\n}"
-  assert_result(src, "main", "bool_in_heap", "9")
+  assert_result(src = src, entry = "main", label = "bool_in_heap", expected = "9")
 }
 
 test "heap e2e: int used as array index" {
   // the array-index boundary: a tagged int must be untagged before indexing
   let src = "let main: () -> Int = () -> {\n  let xs = [10, 20, 30, 40]\n  let i = 1 + 2\n  Array::get(xs, i) + Array::get(xs, 0)\n}"
-  assert_result(src, "main", "int_array_index", "50")
+  assert_result(src = src, entry = "main", label = "int_array_index", expected = "50")
 }
 
 test "heap e2e: loop counter comparison and accumulation" {
   // while-condition comparison + arithmetic accumulation across iterations
   let src = "let main: () -> Int = () -> {\n  let mut sum = 0\n  let mut i = 0\n  while i < 10 {\n    sum = sum + i * 2\n    i = i + 1\n  }\n  sum\n}"
-  assert_result(src, "main", "loop_counter", "90")
+  assert_result(src = src, entry = "main", label = "loop_counter", expected = "90")
 }
 
 test "heap e2e: recursion passing ints" {
   let src = "let rec fib: (Int) -> Int = (n) -> {\n  if n < 2 { n } else { fib(n - 1) + fib(n - 2) }\n}\nlet main: () -> Int = () -> {\n  fib(10)\n}"
-  assert_result(src, "main", "recursion_int", "55")
+  assert_result(src = src, entry = "main", label = "recursion_int", expected = "55")
 }
 
 test "heap e2e: match on int literal" {
   // PInt comparison: the scrutinee (tagged) vs the tagged literal
   let src = "let main: () -> Int = () -> {\n  let x = 1 + 1\n  match x {\n    0 => 100,\n    2 => 200,\n    _ => 300\n  }\n}"
-  assert_result(src, "main", "match_pint", "200")
+  assert_result(src = src, entry = "main", label = "match_pint", expected = "200")
 }
 
 test "heap e2e: large int near literal cap" {
   // n<<1 must not lose range below the 2^61-1 literal cap; (2^61-1)<<1 fits i64
   let src = "let main: () -> Int = () -> {\n  let big = 2305843009213693950\n  let a = big + 1\n  a - 2305843009213693900\n}"
-  assert_result(src, "main", "large_int", "51")
+  assert_result(src = src, entry = "main", label = "large_int", expected = "51")
 }
 
 test "heap e2e: nested tuple drop in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 50 {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    s = s + t.0.0 + t.1.1\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "nested_drop_loop", "2600")
+  assert_result(src = src, entry = "main", label = "nested_drop_loop", expected = "2600")
 }
 
 test "heap e2e: three-level nested tuple drop in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 30 {\n    let t = (((i, 1), 2), 3)\n    s = s + t.0.0.0\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "deep_nested_loop", "435")
+  assert_result(src = src, entry = "main", label = "deep_nested_loop", expected = "435")
 }
 
 test "heap e2e: record holding tuples drop in loop" {
   let src = "struct Pair { a: (Int, Int); b: (Int, Int) }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let p = Pair::{ a: (i, i + 1), b: (i + 2, i + 3) }\n    s = s + p.a.0 + p.b.1\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "record_of_tuples_loop", "1680")
+  assert_result(src = src, entry = "main", label = "record_of_tuples_loop", expected = "1680")
 }
 
 test "heap e2e: escaping tuple projection from dropped container" {
   let src = "let pick: (Int) -> (Int, Int) = (i) -> {\n  let t = ((i, i + 1), (i + 2, i + 3))\n  t.0\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let p = pick(i)\n    s = s + p.0 + p.1\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "escaping_projection", "10000")
+  assert_result(src = src, entry = "main", label = "escaping_projection", expected = "10000")
 }
 
 test "heap e2e: multiple escaped projections with reuse" {
   let src = "let pick: (Int) -> (Int, Int) = (i) -> {\n  let t = ((i, i + 1), (i + 100, i + 200))\n  t.0\n}\nlet main: () -> Int = () -> {\n  let a = pick(1)\n  let b = pick(2)\n  let c = pick(3)\n  a.0 + a.1 + b.0 + b.1 + c.0 + c.1\n}"
-  assert_result(src, "main", "multi_escaped_projection", "15")
+  assert_result(src = src, entry = "main", label = "multi_escaped_projection", expected = "15")
 }
 
 test "heap e2e: array-of-tuples Array::get borrow not double-freed" {
   let src = "let main: () -> Int = () -> {\n  let arr = [(1, 2), (3, 4), (5, 6)]\n  let mut s = 0\n  let mut i = 0\n  while i < 3 {\n    let x = Array::get(arr, i)\n    s = s + x.0 + x.1\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "array_get_borrow", "21")
+  assert_result(src = src, entry = "main", label = "array_get_borrow", expected = "21")
 }
 
 test "heap e2e: owned call result reclaimed" {
   let src = "let mk: (Int) -> (Int, Int) = (n) -> {\n  (n, n + 1)\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 10 {\n    let p = mk(i)\n    s = s + p.0 + p.1\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "owned_call_result", "100")
+  assert_result(src = src, entry = "main", label = "owned_call_result", expected = "100")
 }
 
 test "heap e2e: string-returning call result not corrupted" {
   let src = "let label: (Int) -> String = (k) -> {\n  String::concat(\"v\", \"x\")\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 20 {\n    let name = label(i)\n    s = s + String::length(name)\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "string_call_result", "40")
+  assert_result(src = src, entry = "main", label = "string_call_result", expected = "40")
 }
 
 test "heap e2e: let-bound escaping projection" {
   let src = "let pick2: (Int) -> (Int, Int) = (i) -> {\n  let t = ((i, i + 1), (i + 100, i + 200))\n  let a = t.0\n  a\n}\nlet main: () -> Int = () -> {\n  let a = pick2(1)\n  let b = pick2(2)\n  let c = pick2(3)\n  a.0 + a.1 + b.0 + b.1 + c.0 + c.1\n}"
-  assert_result(src, "main", "let_bound_escaping_projection", "15")
+  assert_result(src = src, entry = "main", label = "let_bound_escaping_projection", expected = "15")
 }
 
 test "heap e2e: projection stored into escaping container" {
   let src = "let mk: (Int) -> ((Int, Int), (Int, Int)) = (i) -> {\n  let t = ((i, i + 1), (i + 2, i + 3))\n  (t.1, t.0)\n}\nlet main: () -> Int = () -> {\n  let a = mk(1)\n  let b = mk(2)\n  let c = mk(3)\n  a.0.0 + a.1.1 + b.0.0 + b.1.1 + c.0.0 + c.1.1\n}"
-  assert_result(src, "main", "projection_in_container", "21")
+  assert_result(src = src, entry = "main", label = "projection_in_container", expected = "21")
 }
 
 test "heap e2e: shared binding in tuple (PaDup)" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    let u = (t, t)\n    s = s + u.0.0 + u.1.1\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "shared_tuple_padup", "10000")
+  assert_result(src = src, entry = "main", label = "shared_tuple_padup", expected = "10000")
 }
 
 test "heap e2e: shared binding escaping in container (PaDup)" {
   let src = "let pair: (Int) -> ((Int, Int), (Int, Int)) = (k) -> {\n  let t = (k, k + 1)\n  (t, t)\n}\nlet main: () -> Int = () -> {\n  let a = pair(1)\n  let b = pair(2)\n  let c = pair(3)\n  a.0.0 + a.1.1 + b.0.0 + b.1.1 + c.0.0 + c.1.1\n}"
-  assert_result(src, "main", "shared_escape_padup", "15")
+  assert_result(src = src, entry = "main", label = "shared_escape_padup", expected = "15")
 }
 
 test "heap e2e: owned binding moved into array element (loop)" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    let a = [t]\n    s = s + (Array::get(a, 0)).0\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "owned_in_array_elem", "4950")
+  assert_result(src = src, entry = "main", label = "owned_in_array_elem", expected = "4950")
 }
 
 test "heap e2e: owned binding moved into enum payload (loop)" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    let e = Wrap(t)\n    s = s + match e { Wrap(p) => p.0, Empty => 0 }\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "owned_in_enum_payload", "4950")
+  assert_result(src = src, entry = "main", label = "owned_in_enum_payload", expected = "4950")
 }
 
 test "heap e2e: owned binding moved into record field (loop)" {
   let src = "struct H { v: (Int, Int) }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    let h = H::{ v: t }\n    s = s + h.v.0\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "owned_in_record_field", "4950")
+  assert_result(src = src, entry = "main", label = "owned_in_record_field", expected = "4950")
 }
 
 test "heap e2e: heap mut reassign drops old value (loop)" {
   let src = "let main: () -> Int = () -> {\n  let mut b = (0, 0)\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    b = t\n    i = i + 1\n  }\n  b.0\n}"
-  assert_result(src, "main", "mut_reassign_drop_old", "99")
+  assert_result(src = src, entry = "main", label = "mut_reassign_drop_old", expected = "99")
 }
 
 test "heap e2e: heap mut reassign reading old value is correct" {
   let src = "let main: () -> Int = () -> {\n  let mut b = (1, 2)\n  let mut i = 0\n  while i < 5 {\n    b = (b.0 + i, b.1)\n    i = i + 1\n  }\n  b.0 + b.1\n}"
-  assert_result(src, "main", "mut_reassign_reads_old", "13")
+  assert_result(src = src, entry = "main", label = "mut_reassign_reads_old", expected = "13")
 }
 
 test "heap e2e: chained tuple projection t.0.0" {
   let src = "let main: () -> Int = () -> {\n  let t = ((1, 2), (3, 4))\n  t.0.0 + t.0.1 * 10 + t.1.0 * 100 + t.1.1 * 1000\n}"
-  assert_result(src, "main", "chained_projection", "4321")
+  assert_result(src = src, entry = "main", label = "chained_projection", expected = "4321")
 }
 
 test "heap e2e: chained projection in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 5 {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    s = s + t.0.0 + t.1.1\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "chained_projection_loop", "35")
+  assert_result(src = src, entry = "main", label = "chained_projection_loop", expected = "35")
 }
 
 test "heap e2e: owned tuple param dropped by callee (loop)" {
   let src = "let consume: ((Int, Int)) -> Int = (p) -> {\n  p.0 + p.1\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    s = s + consume(t)\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "owned_param_drop", "10000")
+  assert_result(src = src, entry = "main", label = "owned_param_drop", expected = "10000")
 }
 
 test "heap e2e: owned param returned by projection (loop)" {
   let src = "let fst: (((Int, Int), (Int, Int))) -> (Int, Int) = (p) -> {\n  p.0\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = ((i, i + 1), (i + 2, i + 3))\n    let r = fst(t)\n    s = s + r.0\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "owned_param_proj", "4950")
+  assert_result(src = src, entry = "main", label = "owned_param_proj", expected = "4950")
 }
 
 test "heap e2e: heap mut final value dropped (loop)" {
   let src = "let main: () -> Int = () -> {\n  let mut acc = 0\n  let mut i = 0\n  while i < 100 {\n    let mut b = (i, i + 1)\n    b = (i + 2, i + 3)\n    acc = acc + b.0\n    i = i + 1\n  }\n  acc\n}"
-  assert_result(src, "main", "mut_final_drop", "5150")
+  assert_result(src = src, entry = "main", label = "mut_final_drop", expected = "5150")
 }
 
 test "heap e2e: closure capturing heap value in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let t = (i, i + 1)\n    let g = () -> { t.0 + t.1 }\n    s = s + g()\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "closure_capture_heap", "10000")
+  assert_result(src = src, entry = "main", label = "closure_capture_heap", expected = "10000")
 }
 
 test "heap e2e: closure capturing two heap values called twice" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 100 {\n    let a = (i, i + 1)\n    let b = (i + 2, i + 3)\n    let g = () -> { a.0 + b.1 }\n    s = s + g() + g()\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "closure_two_heap", "20400")
+  assert_result(src = src, entry = "main", label = "closure_two_heap", expected = "20400")
 }
 
 test "heap e2e: array literal as function return on its own line" {
   let src = "let mk: (Int) -> Array[(Int, Int)] = (i) -> {\n  let t = (i, i + 1)\n  [t]\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 50 {\n    let r = mk(i)\n    s = s + (Array::get(r, 0)).0\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "array_return_own_line", "1225")
+  assert_result(src = src, entry = "main", label = "array_return_own_line", expected = "1225")
 }
 
 test "heap e2e: reassign-self scalar tuple in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut b = (0, 0)\n  let mut i = 0\n  while i < 1000 {\n    b = (b.0 + i, b.1)\n    i = i + 1\n  }\n  b.0\n}"
-  assert_result(src, "main", "reassign_self_scalar", "499500")
+  assert_result(src = src, entry = "main", label = "reassign_self_scalar", expected = "499500")
 }
 
 test "heap e2e: reassign-self field swap in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut b = (3, 7)\n  let mut i = 0\n  while i < 1001 {\n    b = (b.1, b.0)\n    i = i + 1\n  }\n  b.0 * 10 + b.1\n}"
-  assert_result(src, "main", "reassign_self_swap", "73")
+  assert_result(src = src, entry = "main", label = "reassign_self_swap", expected = "73")
 }
 
 test "heap e2e: reassign-self heap field carried in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut b = ((10, 20), 0)\n  let mut i = 0\n  while i < 1000 {\n    b = (b.0, b.1 + i)\n    i = i + 1\n  }\n  (b.0).0 + b.1\n}"
-  assert_result(src, "main", "reassign_self_heap_carry", "499510")
+  assert_result(src = src, entry = "main", label = "reassign_self_heap_carry", expected = "499510")
 }
 
 test "heap e2e: reassign-self both heap fields swapped in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut d = ((1, 2), (3, 4))\n  let mut j = 0\n  while j < 1000 {\n    d = (d.1, d.0)\n    j = j + 1\n  }\n  (d.0).0 * 1000 + (d.1).0\n}"
-  assert_result(src, "main", "reassign_self_both_heap", "1003")
+  assert_result(src = src, entry = "main", label = "reassign_self_both_heap", expected = "1003")
 }
 
 test "heap e2e: reassign-self nested-carry falls back safely" {
   let src = "let main: () -> Int = () -> {\n  let mut b = (5, 6)\n  let mut i = 0\n  while i < 100 {\n    b = ((b.0 + 1, b.1), 0).0\n    i = i + 1\n  }\n  b.0 + b.1\n}"
-  assert_result(src, "main", "reassign_self_nested_fallback", "111")
+  assert_result(src = src, entry = "main", label = "reassign_self_nested_fallback", expected = "111")
 }
 
 test "heap e2e: array push growth then read" {
   let src = "let main: () -> Int = () -> {\n  let a = [0]\n  let mut i = 1\n  while i < 50 {\n    Array::push(a, i)\n    i = i + 1\n  }\n  Array::get(a, 49) + Array::length(a)\n}"
-  assert_result(src, "main", "array_push_growth", "99")
+  assert_result(src = src, entry = "main", label = "array_push_growth", expected = "99")
 }
 
 test "heap e2e: array push growth past forwarding threshold" {
   let src = "let main: () -> Int = () -> {\n  let a = [0]\n  let mut i = 1\n  while i < 300 {\n    Array::push(a, i)\n    i = i + 1\n  }\n  Array::get(a, 299) + Array::length(a)\n}"
-  assert_result(src, "main", "array_push_growth_forwarding", "599")
+  assert_result(src = src, entry = "main", label = "array_push_growth_forwarding", expected = "599")
 }
 
 test "heap e2e: array build-and-discard in loop" {
   let src = "let main: () -> Int = () -> {\n  let mut s = 0\n  let mut j = 0\n  while j < 100 {\n    let a = [0]\n    let mut i = 1\n    while i < 20 {\n      Array::push(a, i)\n      i = i + 1\n    }\n    s = s + Array::get(a, 19)\n    j = j + 1\n  }\n  s\n}"
-  assert_result(src, "main", "array_build_discard", "1900")
+  assert_result(src = src, entry = "main", label = "array_build_discard", expected = "1900")
 }
 
 test "heap e2e: arraybuilder build-and-freeze discard in loop" {
   let src = "let build: (Int) -> Int = (k) -> {\n  let b = ArrayBuilder::new()\n  let mut i = 0\n  while i < k {\n    ArrayBuilder::push(b, i)\n    i = i + 1\n  }\n  let frozen = ArrayBuilder::freeze(b)\n  Array::length(frozen)\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut j = 0\n  while j < 100 {\n    s = s + build(20)\n    j = j + 1\n  }\n  s\n}"
-  assert_result(src, "main", "arraybuilder_freeze_discard", "2000")
+  assert_result(src = src, entry = "main", label = "arraybuilder_freeze_discard", expected = "2000")
 }
 
 test "heap e2e: arraybuilder frozen result escapes" {
   let src = "let build: (Int) -> Array[Int] = (k) -> {\n  let b = ArrayBuilder::new()\n  let mut i = 0\n  while i < k {\n    ArrayBuilder::push(b, i)\n    i = i + 1\n  }\n  ArrayBuilder::freeze(b)\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut j = 0\n  while j < 100 {\n    let a = build(20)\n    s = s + Array::get(a, 19)\n    j = j + 1\n  }\n  s\n}"
-  assert_result(src, "main", "arraybuilder_escape", "1900")
+  assert_result(src = src, entry = "main", label = "arraybuilder_escape", expected = "1900")
 }
 
 test "heap e2e: mapbuilder build-and-discard in loop" {
   let src = "let build: (Int) -> Int = (k) -> {\n  let b = MapBuilder::new()\n  MapBuilder::set(b, k, k * 10)\n  MapBuilder::set(b, k + 1, k + 11)\n  let m = MapBuilder::freeze(b)\n  Map::get(m, k)\n}\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut j = 0\n  while j < 100 {\n    s = s + build(j)\n    j = j + 1\n  }\n  s\n}"
-  assert_result(src, "main", "mapbuilder_discard", "49500")
+  assert_result(src = src, entry = "main", label = "mapbuilder_discard", expected = "49500")
 }
 
 test "heap e2e: mapbuilder with heap (tuple) values" {
@@ -697,154 +697,154 @@ test "heap e2e: mapbuilder with heap (tuple) values" {
   // holds a different key and never overwrites it), so p.0+p.1 = 2k+1.
   // sum_{k=0}^{99} (2k+1) = 2*4950 + 100 = 10000 (wasmtime confirms this is
   // what the compiled program actually returns; "9900" was a wrong constant).
-  assert_result(src, "main", "mapbuilder_heap_vals", "10000")
+  assert_result(src = src, entry = "main", label = "mapbuilder_heap_vals", expected = "10000")
 }
 
 test "heap e2e: enum payload tuple drop in loop" {
   let src = "enum Box { Wrap((Int, Int)); Empty }\nlet main: () -> Int = () -> {\n  let mut s = 0\n  let mut i = 0\n  while i < 40 {\n    let e = Wrap((i, i + 1))\n    s = s + match e {\n      Wrap(p) => p.0 + p.1,\n      Empty => 0\n    }\n    i = i + 1\n  }\n  s\n}"
-  assert_result(src, "main", "enum_tuple_loop", "1600")
+  assert_result(src = src, entry = "main", label = "enum_tuple_loop", expected = "1600")
 }
 
 test "heap e2e: last_index_of returns last match" {
   let src = "let main: () -> Int = () -> { String::last_index_of(\"abcabc\", \"bc\") }"
-  assert_result(src, "main", "last_index_of_hit", "4")
+  assert_result(src = src, entry = "main", label = "last_index_of_hit", expected = "4")
 }
 
 test "heap e2e: last_index_of no match returns -1" {
   let src = "let main: () -> Int = () -> { String::last_index_of(\"abcabc\", \"zz\") }"
-  assert_result(src, "main", "last_index_of_miss", "-1")
+  assert_result(src = src, entry = "main", label = "last_index_of_miss", expected = "-1")
 }
 
 test "heap e2e: last_index_of repeated needle" {
   let src = "let main: () -> Int = () -> { String::last_index_of(\"aaaa\", \"a\") }"
-  assert_result(src, "main", "last_index_of_rep", "3")
+  assert_result(src = src, entry = "main", label = "last_index_of_rep", expected = "3")
 }
 
 test "heap e2e: ends_with true" {
   let src = "let main: () -> Int = () -> { if String::ends_with(\"abcab\", \"ab\") { 1 } else { 0 } }"
-  assert_result(src, "main", "ends_with_true", "1")
+  assert_result(src = src, entry = "main", label = "ends_with_true", expected = "1")
 }
 
 test "heap e2e: ends_with false" {
   let src = "let main: () -> Int = () -> { if String::ends_with(\"xabab\", \"yz\") { 1 } else { 0 } }"
-  assert_result(src, "main", "ends_with_false", "0")
+  assert_result(src = src, entry = "main", label = "ends_with_false", expected = "0")
 }
 
 test "conv: Double::to_int(Int::to_double(n)) round-trips" {
   let src = "let main: () -> Int = () -> { Double::to_int(Int::to_double(7)) }"
-  assert_result(src, "main", "conv_roundtrip", "7")
+  assert_result(src = src, entry = "main", label = "conv_roundtrip", expected = "7")
 }
 
 test "conv: float add of converted ints" {
   let src = "let main: () -> Int = () -> { Double::to_int(Int::to_double(42) + Int::to_double(8)) }"
-  assert_result(src, "main", "conv_add", "50")
+  assert_result(src = src, entry = "main", label = "conv_add", expected = "50")
 }
 
 test "conv: float div of converted ints" {
   let src = "let main: () -> Int = () -> { Double::to_int(Int::to_double(20) / Int::to_double(4)) }"
-  assert_result(src, "main", "conv_div", "5")
+  assert_result(src = src, entry = "main", label = "conv_div", expected = "5")
 }
 
 test "conv: Float alias binop takes the float path" {
   let src = "let main: () -> Int = () -> { Float::to_int(Int::to_float(42) + Int::to_float(8)) }"
-  assert_result(src, "main", "conv_float_alias_add", "50")
+  assert_result(src = src, entry = "main", label = "conv_float_alias_add", expected = "50")
 }
 
 test "conv: Float alias div" {
   let src = "let main: () -> Int = () -> { Float::to_int(Int::to_float(20) / Int::to_float(4)) }"
-  assert_result(src, "main", "conv_float_alias_div", "5")
+  assert_result(src = src, entry = "main", label = "conv_float_alias_div", expected = "5")
 }
 
 test "float literal: Double::to_int(4.0)" {
-  assert_result("let main: () -> Int = () -> { Double::to_int(4.0) }", "main", "flit_40", "4")
+  assert_result(src = "let main: () -> Int = () -> { Double::to_int(4.0) }", entry = "main", label = "flit_40", expected = "4")
 }
 
 test "float literal: truncation 7.9 -> 7" {
-  assert_result("let main: () -> Int = () -> { Double::to_int(7.9) }", "main", "flit_79", "7")
+  assert_result(src = "let main: () -> Int = () -> { Double::to_int(7.9) }", entry = "main", label = "flit_79", expected = "7")
 }
 
 test "float literal: addition 1.5 + 2.5" {
-  assert_result("let main: () -> Int = () -> { Double::to_int(1.5 + 2.5) }", "main", "flit_add", "4")
+  assert_result(src = "let main: () -> Int = () -> { Double::to_int(1.5 + 2.5) }", entry = "main", label = "flit_add", expected = "4")
 }
 
 test "float literal: division 10.0 / 4.0" {
-  assert_result("let main: () -> Int = () -> { Double::to_int(10.0 / 4.0) }", "main", "flit_div", "2")
+  assert_result(src = "let main: () -> Int = () -> { Double::to_int(10.0 / 4.0) }", entry = "main", label = "flit_div", expected = "2")
 }
 
 test "float literal: mixed literal + conversion" {
-  assert_result("let main: () -> Int = () -> { Double::to_int(Int::to_double(5) + 0.5 * 4.0) }", "main", "flit_mix", "7")
+  assert_result(src = "let main: () -> Int = () -> { Double::to_int(Int::to_double(5) + 0.5 * 4.0) }", entry = "main", label = "flit_mix", expected = "7")
 }
 
 test "float var: let x = 1.5; x + 2.5" {
-  assert_result("let main: () -> Int = () -> { let x = 1.5; Double::to_int(x + 2.5) }", "main", "fvar_one", "4")
+  assert_result(src = "let main: () -> Int = () -> { let x = 1.5; Double::to_int(x + 2.5) }", entry = "main", label = "fvar_one", expected = "4")
 }
 
 test "float var: two vars x + y" {
-  assert_result("let main: () -> Int = () -> { let x = 1.5; let y = 2.5; Double::to_int(x + y) }", "main", "fvar_two", "4")
+  assert_result(src = "let main: () -> Int = () -> { let x = 1.5; let y = 2.5; Double::to_int(x + y) }", entry = "main", label = "fvar_two", expected = "4")
 }
 
 test "float var: let mut" {
-  assert_result("let main: () -> Int = () -> { let mut x = 1.5; Double::to_int(x + 0.5) }", "main", "fvar_mut", "2")
+  assert_result(src = "let main: () -> Int = () -> { let mut x = 1.5; Double::to_int(x + 0.5) }", entry = "main", label = "fvar_mut", expected = "2")
 }
 
 test "float var: bound to conversion result" {
-  assert_result("let main: () -> Int = () -> { let x = Int::to_double(10); let y = Int::to_double(4); Double::to_int(x / y) }", "main", "fvar_conv", "2")
+  assert_result(src = "let main: () -> Int = () -> { let x = Int::to_double(10); let y = Int::to_double(4); Double::to_int(x / y) }", entry = "main", label = "fvar_conv", expected = "2")
 }
 
 test "float var: chained through bindings" {
-  assert_result("let main: () -> Int = () -> { let a = 2.5; let b = a + 1.5; let c = b * 2.0; Double::to_int(c) }", "main", "fvar_chain", "8")
+  assert_result(src = "let main: () -> Int = () -> { let a = 2.5; let b = a + 1.5; let c = b * 2.0; Double::to_int(c) }", entry = "main", label = "fvar_chain", expected = "8")
 }
 
 test "float var: inner int shadow of outer float (no leak)" {
   // outer x is float; inner block rebinds x to an int — inner x + 2 must be
   // integer arithmetic (=> 3), not f64 over tagged ints.
-  assert_result("let main: () -> Int = () -> { let x = 1.5; let y = { let x = 1; x + 2 }; y }", "main", "fvar_shadow", "3")
+  assert_result(src = "let main: () -> Int = () -> { let x = 1.5; let y = { let x = 1; x + 2 }; y }", entry = "main", label = "fvar_shadow", expected = "3")
 }
 
 test "float var: int binding reusing a float slot across if branches" {
   // then-branch binds a float at some slot; else-branch reuses that slot for an
   // int. The else result must be integer (5 + 1 = 6).
-  assert_result("let main: () -> Int = () -> { if false { let a = 1.5; Double::to_int(a + 1.0) } else { let a = 5; a + 1 } }", "main", "fvar_ifreuse", "6")
+  assert_result(src = "let main: () -> Int = () -> { if false { let a = 1.5; Double::to_int(a + 1.0) } else { let a = 5; a + 1 } }", entry = "main", label = "fvar_ifreuse", expected = "6")
 }
 
 test "float box: float in a tuple, dropped" {
-  assert_result("let main: () -> Int = () -> { let t = (1.5, 2.5); Double::to_int(t.0 + t.1) }", "main", "fbox_tuple", "4")
+  assert_result(src = "let main: () -> Int = () -> { let t = (1.5, 2.5); Double::to_int(t.0 + t.1) }", entry = "main", label = "fbox_tuple", expected = "4")
 }
 
 test "float box: multiply-used float in a tuple (dup)" {
-  assert_result("let main: () -> Int = () -> { let x = 1.5; let t = (x, x); Double::to_int(t.0 + t.1) }", "main", "fbox_dup", "3")
+  assert_result(src = "let main: () -> Int = () -> { let x = 1.5; let t = (x, x); Double::to_int(t.0 + t.1) }", entry = "main", label = "fbox_dup", expected = "3")
 }
 
 test "float box: float bound, used once" {
-  assert_result("let main: () -> Int = () -> { let x = 2.5; let y = x + 1.5; Double::to_int(y) }", "main", "fbox_chain", "4")
+  assert_result(src = "let main: () -> Int = () -> { let x = 2.5; let y = x + 1.5; Double::to_int(y) }", entry = "main", label = "fbox_chain", expected = "4")
 }
 
 test "float box: many floats in a loop (alloc/free churn)" {
-  assert_result("let main: () -> Int = () -> { let mut s = 0; let mut i = 0; while i < 5 { let f = Int::to_double(i) + 0.5; s = s + Double::to_int(f); i = i + 1 }; s }", "main", "fbox_loop", "10")
+  assert_result(src = "let main: () -> Int = () -> { let mut s = 0; let mut i = 0; while i < 5 { let f = Int::to_double(i) + 0.5; s = s + Double::to_int(f); i = i + 1 }; s }", entry = "main", label = "fbox_loop", expected = "10")
 }
 
 test "float box: comparison in if-condition" {
-  assert_result("let main: () -> Int = () -> { if 1.5 < 2.5 { 10 } else { 20 } }", "main", "fbox_cmp", "10")
+  assert_result(src = "let main: () -> Int = () -> { if 1.5 < 2.5 { 10 } else { 20 } }", entry = "main", label = "fbox_cmp", expected = "10")
 }
 
 test "float box: float through a user function" {
-  assert_result("let dbl: (Double) -> Double = (d) -> { d * 2.0 }\nlet main: () -> Int = () -> { Double::to_int(dbl(2.5)) }", "main", "fbox_fn", "5")
+  assert_result(src = "let dbl: (Double) -> Double = (d) -> { d * 2.0 }\nlet main: () -> Int = () -> { Double::to_int(dbl(2.5)) }", entry = "main", label = "fbox_fn", expected = "5")
 }
 
 test "effect multi-value: 2-arg payload destructured + dropped" {
-  assert_result("effect E { Op(Int, Int) -> Int }\nlet main: () -> Int = () -> { handle { perform E::Op(3, 4) } with { E::Op(x, y) => resume(x * 10 + y) } }", "main", "eff_mv2", "34")
+  assert_result(src = "effect E { Op(Int, Int) -> Int }\nlet main: () -> Int = () -> { handle { perform E::Op(3, 4) } with { E::Op(x, y) => resume(x * 10 + y) } }", entry = "main", label = "eff_mv2", expected = "34")
 }
 
 test "effect multi-value: 3-arg payload destructured + dropped" {
-  assert_result("effect E { Op(Int, Int, Int) -> Int }\nlet main: () -> Int = () -> { handle { perform E::Op(1, 2, 3) } with { E::Op(a, b, c) => resume(a * 100 + b * 10 + c) } }", "main", "eff_mv3", "123")
+  assert_result(src = "effect E { Op(Int, Int, Int) -> Int }\nlet main: () -> Int = () -> { handle { perform E::Op(1, 2, 3) } with { E::Op(a, b, c) => resume(a * 100 + b * 10 + c) } }", entry = "main", label = "eff_mv3", expected = "123")
 }
 
 test "effect multi-value: 2-arg payload with `_` skip (unused field reclaimed)" {
-  assert_result("effect E { Op(Int, Int) -> Int }\nlet main: () -> Int = () -> { handle { perform E::Op(5, 9) } with { E::Op(_, y) => resume(y) } }", "main", "eff_mv_skip", "9")
+  assert_result(src = "effect E { Op(Int, Int) -> Int }\nlet main: () -> Int = () -> { handle { perform E::Op(5, 9) } with { E::Op(_, y) => resume(y) } }", entry = "main", label = "eff_mv_skip", expected = "9")
 }
 
 test "effect multi-value: payload allocated + dropped each loop iteration" {
-  assert_result("effect E { Op(Int, Int) -> Int }\nlet main: () -> Int = () -> { handle { let mut s = 0\n    let mut i = 0\n    while i < 5 { s = s + perform E::Op(i, i + 1)\n      i = i + 1 }\n    s } with { E::Op(x, y) => resume(x + y) } }", "main", "eff_mv_loop", "25")
+  assert_result(src = "effect E { Op(Int, Int) -> Int }\nlet main: () -> Int = () -> { handle { let mut s = 0\n    let mut i = 0\n    while i < 5 { s = s + perform E::Op(i, i + 1)\n      i = i + 1 }\n    s } with { E::Op(x, y) => resume(x + y) } }", entry = "main", label = "eff_mv_loop", expected = "25")
 }
 
 /// #832: a bare (no `Type::` prefix) raw-identifier top-level function named
@@ -862,13 +862,13 @@ test "effect multi-value: payload allocated + dropped each loop iteration" {
 /// non-entry-file exported bindings are renamed by the #716 cross-file
 /// export-visibility pass before codegen ever sees them.
 test "wasi: bare raw-ident top-level fn named map, called locally (#832)" {
-  assert_result("let r#map: (Int) -> Int = (x) -> { x + 1 }\nlet main: () -> Int = () -> { r#map(41) }", "main", "bare_raw_ident_map", "42")
+  assert_result(src = "let r#map: (Int) -> Int = (x) -> { x + 1 }\nlet main: () -> Int = () -> { r#map(41) }", entry = "main", label = "bare_raw_ident_map", expected = "42")
 }
 
 /// Same bug, without the `r#` sugar (`r#map` and `map` lex identically) --
 /// covers the underlying name-collision independent of raw-ident syntax.
 test "wasi: bare top-level fn named map (no r# prefix), called locally (#832)" {
-  assert_result("let map: (Int) -> Int = (x) -> { x + 1 }\nlet main: () -> Int = () -> { map(41) }", "main", "bare_map_no_rawident", "42")
+  assert_result(src = "let map: (Int) -> Int = (x) -> { x + 1 }\nlet main: () -> Int = () -> { map(41) }", entry = "main", label = "bare_map_no_rawident", expected = "42")
 }
 
 /// #997: `Double::to_int` used to lower straight to wasm's `i64.trunc_f64_s`,
@@ -882,17 +882,17 @@ test "wasi: bare top-level fn named map (no r# prefix), called locally (#832)" {
 /// out-of-range value saturates to Int::max_value / Int::min_value.
 test "heap e2e: Double::to_int(NaN) does not trap, saturates to 0 (#997)" {
   let src = "let main: () -> Int = () -> {\n  let nan = 0.0 / 0.0\n  Double::to_int(nan)\n}"
-  assert_result(src, "main", "double_to_int_nan", "0")
+  assert_result(src = src, entry = "main", label = "double_to_int_nan", expected = "0")
 }
 
 test "heap e2e: Double::to_int(+Infinity) does not trap, saturates to Int::max_value (#997, #2978)" {
   let src = "let main: () -> Int = () -> {\n  let inf = 1.0 / 0.0\n  Double::to_int(inf)\n}"
-  assert_result(src, "main", "double_to_int_pos_inf", "4611686018427387903")
+  assert_result(src = src, entry = "main", label = "double_to_int_pos_inf", expected = "4611686018427387903")
 }
 
 test "heap e2e: Double::to_int(-Infinity) does not trap, saturates to Int::min_value (#997, #2978)" {
   let src = "let main: () -> Int = () -> {\n  let ninf = (0.0 - 1.0) / 0.0\n  Double::to_int(ninf)\n}"
-  assert_result(src, "main", "double_to_int_neg_inf", "-4611686018427387904")
+  assert_result(src = src, entry = "main", label = "double_to_int_neg_inf", expected = "-4611686018427387904")
 }
 
 /// The guard added for the above must not disturb ordinary in-range
@@ -900,7 +900,7 @@ test "heap e2e: Double::to_int(-Infinity) does not trap, saturates to Int::min_v
 /// semantics): 3.7 -> 3, -2.9 -> -2.
 test "heap e2e: Double::to_int ordinary values still truncate toward zero (#997)" {
   let src = "let main: () -> Int = () -> {\n  Double::to_int(3.7) * 100 + (0 - Double::to_int(0.0 - 2.9))\n}"
-  assert_result(src, "main", "double_to_int_ordinary", "302")
+  assert_result(src = src, entry = "main", label = "double_to_int_ordinary", expected = "302")
 }
 
 //# #1272 — a borrow that escapes its local owner
@@ -913,14 +913,14 @@ test "heap e2e: Double::to_int ordinary values still truncate toward zero (#997)
 /// pinned here on both the plain and RC lanes so it stays fixed.
 test "heap e2e: element of a local array survives the owner, called twice (#1272)" {
   let src = "fn mk(v: Int) -> Array[Int] {\n  let f = [[7], [v]]\n  Array::get(f, 1)\n}\nlet main: () -> Int = () -> {\n  let a = mk(40)\n  let b = mk(5)\n  Array::get(a, 0) + Array::get(b, 0)\n}"
-  assert_result(src, "main", "local_elem_escape_twice", "45")
+  assert_result(src = src, entry = "main", label = "local_elem_escape_twice", expected = "45")
 }
 
 /// Same shape with an `Option` payload (the second form on #1272): the
 /// enum value returned from the local table must stay live in the caller.
 test "heap e2e: Option element of a local array survives the owner (#1272)" {
   let src = "fn mk(v: Int) -> Option[Int] {\n  let f = [None, Some(v)]\n  Array::get(f, 1)\n}\nlet main: () -> Int = () -> {\n  let a = mk(40)\n  let b = mk(5)\n  match a {\n    Some(x) => match b {\n      Some(y) => x + y,\n      None => 0 - 1\n    },\n    None => 0 - 2\n  }\n}"
-  assert_result(src, "main", "local_elem_escape_option", "45")
+  assert_result(src = src, entry = "main", label = "local_elem_escape_option", expected = "45")
 }
 
 /// The bare-identifier-tail spelling from the #1272 investigation comment:
@@ -929,7 +929,7 @@ test "heap e2e: Option element of a local array survives the owner (#1272)" {
 /// retain-elision it disables.
 test "heap e2e: local-array element escape through a bare-identifier tail (#1272)" {
   let src = "fn mk(v: Int) -> Array[Int] {\n  let f = [[7], [v]]\n  let r = Array::get(f, 1)\n  r\n}\nlet main: () -> Int = () -> {\n  let a = mk(40)\n  let b = mk(5)\n  Array::get(a, 0) + Array::get(b, 0)\n}"
-  assert_result(src, "main", "local_elem_escape_bare_tail", "45")
+  assert_result(src = src, entry = "main", label = "local_elem_escape_bare_tail", expected = "45")
 }
 
 //# #1285 — `Array::push` on a plain `Array`: the contract
@@ -943,27 +943,27 @@ test "heap e2e: local-array element escape through a bare-identifier tail (#1272
 /// that it freezes to an `Array` once, not because `push` is unsafe.)
 test "heap e2e: Array::push grows through the same binding, across a realloc (#1285)" {
   let src = "let main: () -> Int = () -> {\n  let a = []\n  let mut i = 0\n  while i < 40 {\n    Array::push(a, i)\n    i = i + 1\n  }\n  Array::length(a) * 100 + Array::get(a, 39)\n}"
-  assert_result_all_backends(src, "main", "push_grow_realloc", "4039")
+  assert_result_all_backends(src = src, entry = "main", label = "push_grow_realloc", expected = "4039")
 }
 
 test "heap e2e: Array::push growth is visible through an alias binding (#1285)" {
   let src = "let main: () -> Int = () -> {\n  let a = [1]\n  let b = a\n  Array::push(a, 2)\n  Array::length(b) * 10 + Array::length(a)\n}"
-  assert_result_all_backends(src, "main", "push_alias_visible", "22")
+  assert_result_all_backends(src = src, entry = "main", label = "push_alias_visible", expected = "22")
 }
 
 test "heap e2e: Array::push inside a callee is visible to the caller (#1285)" {
   let src = "fn grow(xs: Array[Int]) -> Int {\n  Array::push(xs, 9)\n  Array::length(xs)\n}\nlet main: () -> Int = () -> {\n  let a = [1]\n  let inner = grow(a)\n  inner * 10 + Array::length(a)\n}"
-  assert_result_all_backends(src, "main", "push_param_visible", "22")
+  assert_result_all_backends(src = src, entry = "main", label = "push_param_visible", expected = "22")
 }
 
 test "heap e2e: Array::push on a struct field array (#1285)" {
   let src = "struct Box { xs: Array[Int] }\nlet main: () -> Int = () -> {\n  let b = Box::{ xs: [1] }\n  Array::push(b.xs, 2)\n  Array::length(b.xs)\n}"
-  assert_result_all_backends(src, "main", "push_struct_field", "2")
+  assert_result_all_backends(src = src, entry = "main", label = "push_struct_field", expected = "2")
 }
 
 test "heap e2e: Array::push through a closure capture (#1285)" {
   let src = "let main: () -> Int = () -> {\n  let a = [1]\n  let f = () -> { Array::push(a, 2) }\n  f()\n  Array::length(a)\n}"
-  assert_result_all_backends(src, "main", "push_closure_capture", "2")
+  assert_result_all_backends(src = src, entry = "main", label = "push_closure_capture", expected = "2")
 }
 
 //# #1281 — top-level irrefutable pattern `let`
@@ -974,7 +974,7 @@ test "heap e2e: Array::push through a closure capture (#1285)" {
 /// result of that expansion rather than just its acceptance.
 test "heap e2e: top-level tuple destructure binds both names (#1281)" {
   let src = "let (a, b) = (1, 2)\nlet main: () -> Int = () -> { a * 10 + b }"
-  assert_result(src, "main", "toplevel_destr_tuple", "12")
+  assert_result(src = src, entry = "main", label = "toplevel_destr_tuple", expected = "12")
 }
 
 /// The value must be evaluated exactly once no matter how many names the
@@ -982,25 +982,25 @@ test "heap e2e: top-level tuple destructure binds both names (#1281)" {
 /// second entry (207 instead of 107).
 test "heap e2e: top-level tuple destructure evaluates its value once (#1281)" {
   let src = "let log = []\nfn mk() -> (Int, Int) {\n  Array::push(log, 1)\n  (3, 4)\n}\nlet (a, b) = mk()\nlet main: () -> Int = () -> { a + b + Array::length(log) * 100 }"
-  assert_result(src, "main", "toplevel_destr_once", "107")
+  assert_result(src = src, entry = "main", label = "toplevel_destr_once", expected = "107")
 }
 
 test "heap e2e: top-level nested tuple destructure (#1281)" {
   let src = "let (a, (b, c)) = (1, (2, 3))\nlet main: () -> Int = () -> { a * 100 + b * 10 + c }"
-  assert_result(src, "main", "toplevel_destr_nested", "123")
+  assert_result(src = src, entry = "main", label = "toplevel_destr_nested", expected = "123")
 }
 
 test "heap e2e: top-level struct destructure (#1281)" {
   let src = "struct P { x: Int; y: Int }\nlet P::{ x, y } = P::{ x: 3, y: 4 }\nlet main: () -> Int = () -> { x * 10 + y }"
-  assert_result(src, "main", "toplevel_destr_struct", "34")
+  assert_result(src = src, entry = "main", label = "toplevel_destr_struct", expected = "34")
 }
 
 test "heap e2e: top-level anonymous-record destructure (#1281)" {
   let src = "let record { a, b } = record { a: 5, b: 6 }\nlet main: () -> Int = () -> { a * 10 + b }"
-  assert_result(src, "main", "toplevel_destr_record", "56")
+  assert_result(src = src, entry = "main", label = "toplevel_destr_record", expected = "56")
 }
 
 test "heap e2e: top-level destructure skips a wildcard element (#1281)" {
   let src = "let (a, _) = (7, 8)\nlet main: () -> Int = () -> { a }"
-  assert_result(src, "main", "toplevel_destr_wildcard", "7")
+  assert_result(src = src, entry = "main", label = "toplevel_destr_wildcard", expected = "7")
 }

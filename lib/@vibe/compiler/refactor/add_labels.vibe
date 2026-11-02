@@ -54,7 +54,7 @@ export let add_labels_positional_receiver: Int = 1
 export let add_labels_positional_receiver_single: Int = 2
 
 /// `none` / `receiver` / `receiver+single`, the spellings the CLI accepts.
-export fn add_labels_policy_named(name: String) -> Option[Int] {
+export fn add_labels_policy_named(_ name: String) -> Option[Int] {
   if name == "none" {
     Some(add_labels_positional_none)
   } else if name == "receiver" {
@@ -66,10 +66,10 @@ export fn add_labels_policy_named(name: String) -> Option[Int] {
   }
 }
 
-fn add_labels_base_name(raw: String) -> String {
+fn add_labels_base_name(_ raw: String) -> String {
   let named = add_labels_unmarked(raw)
   let size = String::length(named)
-  if size > 0 && (String::ends_with(named, "~") || String::ends_with(named, "?")) {
+  if size > 0 && (String::ends_with(named, suffix = "~") || String::ends_with(named, suffix = "?")) {
     named[0: size - 1]
   } else {
     named
@@ -78,7 +78,7 @@ fn add_labels_base_name(raw: String) -> String {
 
 /// A header name without the `_ ` a declared positional slot carries
 /// (ADR-0120 D3, #3681); the parameter itself is named without it.
-fn add_labels_unmarked(raw: String) -> String {
+fn add_labels_unmarked(_ raw: String) -> String {
   if checker_header_name_is_positional(raw) {
     raw[2: String::length(raw)]
   } else {
@@ -88,7 +88,7 @@ fn add_labels_unmarked(raw: String) -> String {
 
 /// Is written argument `i` of `site` left positional?
 fn add_labels_positional(site: LabelSite, i: Int, policy: Int) -> Bool {
-  let raw = Array::get(site.names, i)
+  let raw = Array::get(site.names, at = i)
   if site.kind == label_site_builtin {
     raw == "_"
   } else if checker_header_name_is_positional(raw) {
@@ -105,7 +105,7 @@ fn add_labels_positional(site: LabelSite, i: Int, policy: Int) -> Bool {
     } else {
       0
     }
-    let receiver = receiver_slot == 0 && String::contains(site.callee, "::")
+    let receiver = receiver_slot == 0 && String::contains(site.callee, needle = "::")
     if policy == add_labels_positional_none {
       false
     } else if policy == add_labels_positional_receiver {
@@ -119,7 +119,7 @@ fn add_labels_positional(site: LabelSite, i: Int, policy: Int) -> Bool {
 //# Declarations
 
 /// The raw parameter names of each top-level function declaration.
-fn add_labels_declared(source: String) -> MutMap[String, Array[String]] with Exception {
+fn add_labels_declared(_ source: String) -> MutMap[String, Array[String]] with Exception {
   let out: MutMap[String, Array[String]] = MutMap::new_string()
   let (tokens, _, _) = lex_with_offsets(source)
   for stmt in parse_program(tokens) {
@@ -129,7 +129,7 @@ fn add_labels_declared(source: String) -> MutMap[String, Array[String]] with Exc
       _ => None
     }
     match found {
-      Some((name, params)) => MutMap::set(out, name, for param in params {
+      Some((name, params)) => MutMap::set(out, k = name, v = for param in params {
         let (raw, _) = param
         raw
       }),
@@ -146,7 +146,7 @@ fn add_labels_is_declaration(site: LabelSite, declared: MutMap[String, Array[Str
   if site.kind != label_site_declared {
     true
   } else {
-    match MutMap::get(declared, site.callee) {
+    match MutMap::get(declared, k = site.callee) {
       Some(params) => {
         let skip = if site.method_call {
           1
@@ -156,7 +156,7 @@ fn add_labels_is_declaration(site: LabelSite, declared: MutMap[String, Array[Str
         let mut same = Array::length(params) == Array::length(site.names) + skip
         let mut i = 0
         while i < Array::length(site.names) && same {
-          same = Array::get(params, i + skip) == add_labels_unmarked(Array::get(site.names, i))
+          same = Array::get(params, at = i + skip) == add_labels_unmarked(Array::get(site.names, at = i))
           i = i + 1
         }
         same
@@ -173,20 +173,20 @@ fn add_labels_token_at(starts: Array[Int], offset: Int) -> Int {
   let mut hi = Array::length(starts)
   while lo < hi {
     let mid = (lo + hi) / 2
-    if Array::get(starts, mid) < offset {
+    if Array::get(starts, at = mid) < offset {
       lo = mid + 1
     } else {
       hi = mid
     }
   }
-  if lo < Array::length(starts) && Array::get(starts, lo) == offset {
+  if lo < Array::length(starts) && Array::get(starts, at = lo) == offset {
     lo
   } else {
     -1
   }
 }
 
-fn add_labels_opens(t: Token) -> Bool {
+fn add_labels_opens(_ t: Token) -> Bool {
   match t {
     TLParen => true,
     TLBracket => true,
@@ -195,7 +195,7 @@ fn add_labels_opens(t: Token) -> Bool {
   }
 }
 
-fn add_labels_closes(t: Token) -> Bool {
+fn add_labels_closes(_ t: Token) -> Bool {
   match t {
     TRParen => true,
     TRBracket => true,
@@ -208,7 +208,7 @@ fn add_labels_closes(t: Token) -> Bool {
 /// token itself for a method call, else the first `(` after the callee, past
 /// an explicit type-argument list. -1 when the callee is not followed by one.
 fn add_labels_open_paren(tokens: Array[Token], k: Int) -> Int {
-  match Array::get(tokens, k) {
+  match Array::get(tokens, at = k) {
     TLParen => k,
     _ => {
       let mut j = k + 1
@@ -216,7 +216,7 @@ fn add_labels_open_paren(tokens: Array[Token], k: Int) -> Int {
       let mut found = -1
       let mut done = false
       while j < Array::length(tokens) && !done {
-        let t = Array::get(tokens, j)
+        let t = Array::get(tokens, at = j)
         match t {
           TLParen => if depth == 0 {
             found = j
@@ -252,9 +252,9 @@ fn add_labels_open_paren(tokens: Array[Token], k: Int) -> Int {
 /// name the lexer does not read back as that identifier is a keyword and is
 /// written `r#match`. Asking the lexer keeps this from drifting from its
 /// keyword table.
-fn add_labels_spelling(name: String) -> String with Exception {
+fn add_labels_spelling(_ name: String) -> String with Exception {
   let (tokens, _, _) = lex_with_offsets(name)
-  let plain = Array::length(tokens) >= 1 && match Array::get(tokens, 0) {
+  let plain = Array::length(tokens) >= 1 && match Array::get(tokens, at = 0) {
     TIdent(n) => n == name,
     _ => false
   }
@@ -267,7 +267,7 @@ fn add_labels_spelling(name: String) -> String with Exception {
 
 /// Does the argument starting at token `t` read `x -> ..`?
 fn add_labels_shorthand_lambda(tokens: Array[Token], t: Int) -> Bool {
-  t + 1 < Array::length(tokens) && match (Array::get(tokens, t), Array::get(tokens, t + 1)) {
+  t + 1 < Array::length(tokens) && match (Array::get(tokens, at = t), Array::get(tokens, at = t + 1)) {
     (TIdent(_), TThinArrow) => true,
     _ => false
   }
@@ -285,7 +285,7 @@ fn add_labels_has_placeholder(tokens: Array[Token], t: Int) -> Bool {
   let mut found = false
   let mut done = false
   while j < Array::length(tokens) && !done {
-    let tok = Array::get(tokens, j)
+    let tok = Array::get(tokens, at = j)
     match tok {
       TEof => done = true,
       TComma => if depth == 0 {
@@ -333,7 +333,7 @@ fn add_labels_argument_last(tokens: Array[Token], t: Int) -> Int {
   let mut depth = 0
   let mut done = false
   while j < Array::length(tokens) && !done {
-    let tok = Array::get(tokens, j)
+    let tok = Array::get(tokens, at = j)
     match tok {
       TEof => done = true,
       TSemicolon => (),
@@ -368,7 +368,7 @@ fn add_labels_argument_starts(tokens: Array[Token], paren: Int) -> Array[Int] {
   let mut expecting = true
   let mut done = false
   while j < Array::length(tokens) && !done {
-    let t = Array::get(tokens, j)
+    let t = Array::get(tokens, at = j)
     match t {
       TSemicolon => (),
       TEof => done = true,
@@ -381,7 +381,7 @@ fn add_labels_argument_starts(tokens: Array[Token], paren: Int) -> Array[Int] {
         done = true
       } else {
         if expecting {
-          Array::push(out, j)
+          Array::push(out, value = j)
           expecting = false
         } else {
           ()
@@ -443,16 +443,16 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
       done = done + 1
     } else if labeled > 0 {
       partial = partial + 1
-    } else if !add_labels_is_declaration(site, declared) {
+    } else if !add_labels_is_declaration(site = site, declared = declared) {
       local = local + 1
     } else {
       let wanted: Array[String] = []
       let mut i = 0
       while i < n {
-        if add_labels_positional(site, i, policy) {
-          Array::push(wanted, "")
+        if add_labels_positional(site = site, i = i, policy = policy) {
+          Array::push(wanted, value = "")
         } else {
-          Array::push(wanted, add_labels_base_name(Array::get(site.names, i)))
+          Array::push(wanted, value = add_labels_base_name(Array::get(site.names, at = i)))
         }
         i = i + 1
       }
@@ -460,11 +460,11 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
       let mut kept = false
       let mut wi = 0
       while wi < Array::length(wanted) {
-        let w = Array::get(wanted, wi)
+        let w = Array::get(wanted, at = wi)
         any = any || String::length(w) > 0
         // A slot the declaration marks `_` may stand beside labels; one the
         // policy keeps positional may not, yet.
-        kept = kept || (String::length(w) == 0 && !(wi < Array::length(site.names) && checker_header_name_is_positional(Array::get(site.names, wi))))
+        kept = kept || (String::length(w) == 0 && !(wi < Array::length(site.names) && checker_header_name_is_positional(Array::get(site.names, at = wi))))
         wi = wi + 1
       }
       // A declared function's call may mix positional and labeled arguments
@@ -483,23 +483,23 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
         }
         deferred = deferred + 1
         deferred_labels = deferred_labels + wanted_labels
-        let (line, col) = offset_to_line_col(source, site.offset - offset_delta)
-        Array::push(lines, path + ":" + __to_string(line) + ":" + __to_string(col) + ": " + site.callee + " +" + __to_string(wanted_labels) + " after `_` (#3681)")
+        let (line, col) = offset_to_line_col(source = source, offset = site.offset - offset_delta)
+        Array::push(lines, value = path + ":" + __to_string(line) + ":" + __to_string(col) + ": " + site.callee + " +" + __to_string(wanted_labels) + " after `_` (#3681)")
       } else if any {
-        let k = add_labels_token_at(starts, site.offset - offset_delta)
+        let k = add_labels_token_at(starts = starts, offset = site.offset - offset_delta)
         let paren = if k >= 0 {
-          add_labels_open_paren(tokens, k)
+          add_labels_open_paren(tokens = tokens, k = k)
         } else {
           -1
         }
         let arg_tokens = if paren >= 0 {
-          add_labels_argument_starts(tokens, paren)
+          add_labels_argument_starts(tokens = tokens, paren = paren)
         } else {
           []
         }
         let mut placeholder = false
         for t in arg_tokens {
-          placeholder = placeholder || add_labels_has_placeholder(tokens, t)
+          placeholder = placeholder || add_labels_has_placeholder(tokens = tokens, t = t)
         }
         if Array::length(arg_tokens) != n || placeholder {
           shape = shape + 1
@@ -508,22 +508,22 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
           let mut inserted = 0
           let mut ai = 0
           while ai < n {
-            let w = Array::get(wanted, ai)
+            let w = Array::get(wanted, at = ai)
             if String::length(w) > 0 {
-              let t = Array::get(arg_tokens, ai)
+              let t = Array::get(arg_tokens, at = ai)
               // `f = x -> e` does not parse (on the seed either): the
               // shorthand lambda is a bare argument only. `f = (x) -> e`
               // does, and means the same.
               let label = add_labels_spelling(w)
-              let arg_start = Array::get(starts, t)
-              let arg_end = Array::get(ends, add_labels_argument_last(tokens, t))
-              if add_labels_shorthand_lambda(tokens, t) {
-                MutMap::set(edits, arg_start, label + " = (")
-                MutMap::set(closes, Array::get(ends, t), ")")
-                Array::push(missing, (arg_start, arg_end, label, label + " = (" + source[arg_start: Array::get(ends, t)] + ")" + source[Array::get(ends, t): arg_end]))
+              let arg_start = Array::get(starts, at = t)
+              let arg_end = Array::get(ends, at = add_labels_argument_last(tokens = tokens, t = t))
+              if add_labels_shorthand_lambda(tokens = tokens, t = t) {
+                MutMap::set(edits, k = arg_start, v = label + " = (")
+                MutMap::set(closes, k = Array::get(ends, at = t), v = ")")
+                Array::push(missing, value = (arg_start, arg_end, label, label + " = (" + source[arg_start: Array::get(ends, at = t)] + ")" + source[Array::get(ends, at = t): arg_end]))
               } else {
-                MutMap::set(edits, arg_start, label + " = ")
-                Array::push(missing, (arg_start, arg_end, label, label + " = " + source[arg_start: arg_end]))
+                MutMap::set(edits, k = arg_start, v = label + " = ")
+                Array::push(missing, value = (arg_start, arg_end, label, label + " = " + source[arg_start: arg_end]))
               }
               inserted = inserted + 1
             } else {
@@ -532,8 +532,8 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
             ai = ai + 1
           }
           labels = labels + inserted
-          let (line, col) = offset_to_line_col(source, site.offset - offset_delta)
-          Array::push(lines, path + ":" + __to_string(line) + ":" + __to_string(col) + ": " + site.callee + " +" + __to_string(inserted))
+          let (line, col) = offset_to_line_col(source = source, offset = site.offset - offset_delta)
+          Array::push(lines, value = path + ":" + __to_string(line) + ":" + __to_string(col) + ": " + site.callee + " +" + __to_string(inserted))
         }
       } else {
         ()
@@ -548,29 +548,29 @@ export fn add_labels(path: String, source: String, offset_delta: Int, sites: Arr
   let mut prev = 0
   let mut k = 0
   while k < Array::length(starts) {
-    let at = Array::get(starts, k)
-    match MutMap::get(edits, at) {
+    let at = Array::get(starts, at = k)
+    match MutMap::get(edits, k = at) {
       Some(insert) => {
-        StringBuilder::push(out, source[prev: at])
-        StringBuilder::push(out, insert)
-        let _ = MutMap::delete(edits, at)
+        StringBuilder::push(out, value = source[prev: at])
+        StringBuilder::push(out, value = insert)
+        let _ = MutMap::delete(edits, k = at)
         prev = at
       },
       None => ()
     }
-    let end = Array::get(ends, k)
-    match MutMap::get(closes, end) {
+    let end = Array::get(ends, at = k)
+    match MutMap::get(closes, k = end) {
       Some(insert) => {
-        StringBuilder::push(out, source[prev: end])
-        StringBuilder::push(out, insert)
-        let _ = MutMap::delete(closes, end)
+        StringBuilder::push(out, value = source[prev: end])
+        StringBuilder::push(out, value = insert)
+        let _ = MutMap::delete(closes, k = end)
         prev = end
       },
       None => ()
     }
     k = k + 1
   }
-  StringBuilder::push(out, source[prev: String::length(source)])
+  StringBuilder::push(out, value = source[prev: String::length(source)])
   let text = StringBuilder::freeze(out)
   AddLabelsResult::{
     source: text,

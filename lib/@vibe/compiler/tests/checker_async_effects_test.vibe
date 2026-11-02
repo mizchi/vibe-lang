@@ -24,7 +24,7 @@ import @vibe/compiler/checker {
 
 //# Functions
 
-fn is_call_err(e: EffectError) -> Bool {
+fn is_call_err(_ e: EffectError) -> Bool {
   match e {
     EEEffectfulCallOutsideEffect(_, _, _) => true,
     _ => false
@@ -35,7 +35,7 @@ fn async_fn(effect: Option[String], body: Expr) -> Expr {
   EFn(array_empty(), array_empty(), array_empty(), None, effect, body)
 }
 
-fn await_call(arg: Expr) -> Expr {
+fn await_call(_ arg: Expr) -> Expr {
   ECall(EIdent("await", -1), [arg], -1, [])
 }
 
@@ -46,38 +46,38 @@ fn await_call(arg: Expr) -> Expr {
 // helpers does not.
 
 test "await outside Async context reports error" {
-  let errors = check_async_effects_expr(await_call(EIdent("f", -1)), EnvEmpty, false)
+  let errors = check_async_effects_expr(expr = await_call(EIdent("f", -1)), env = EnvEmpty, in_async = false)
   assert(Array::length(errors) > 0)
-  assert(is_call_err(Array::get(errors, 0)))
+  assert(is_call_err(Array::get(errors, at = 0)))
 }
 
 test "await inside Async context is OK" {
-  let errors = check_async_effects_expr(await_call(EIdent("f", -1)), EnvEmpty, true)
+  let errors = check_async_effects_expr(expr = await_call(EIdent("f", -1)), env = EnvEmpty, in_async = true)
   assert(eq(Array::length(errors), 0))
 }
 
 test "sleep outside Async context reports error" {
   let call = ECall(EIdent("sleep", -1), [EInt(10)], -1, [])
-  let errors = check_async_effects_expr(call, EnvEmpty, false)
+  let errors = check_async_effects_expr(expr = call, env = EnvEmpty, in_async = false)
   assert(Array::length(errors) > 0)
 }
 
 test "await inside EFn with Async annotation is OK" {
-  let fn_expr = async_fn(Some("Async"), await_call(EIdent("f", -1)))
-  let errors = check_async_effects_expr(fn_expr, EnvEmpty, false)
+  let fn_expr = async_fn(effect = Some("Async"), body = await_call(EIdent("f", -1)))
+  let errors = check_async_effects_expr(expr = fn_expr, env = EnvEmpty, in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "Async-like effect labels do not authorize await" {
-  let not_async = async_fn(Some("NotAsync"), await_call(EIdent("f", -1)))
-  let async_like = async_fn(Some("AsyncLike"), await_call(EIdent("f", -1)))
-  assert(Array::length(check_async_effects_expr(not_async, EnvEmpty, false)) > 0)
-  assert(Array::length(check_async_effects_expr(async_like, EnvEmpty, false)) > 0)
+  let not_async = async_fn(effect = Some("NotAsync"), body = await_call(EIdent("f", -1)))
+  let async_like = async_fn(effect = Some("AsyncLike"), body = await_call(EIdent("f", -1)))
+  assert(Array::length(check_async_effects_expr(expr = not_async, env = EnvEmpty, in_async = false)) > 0)
+  assert(Array::length(check_async_effects_expr(expr = async_like, env = EnvEmpty, in_async = false)) > 0)
 }
 
 test "Async row labels trim and dedupe before exact membership" {
-  let fn_expr = async_fn(Some(" Async, Async "), await_call(EIdent("f", -1)))
-  let errors = check_async_effects_expr(fn_expr, EnvEmpty, false)
+  let fn_expr = async_fn(effect = Some(" Async, Async "), body = await_call(EIdent("f", -1)))
+  let errors = check_async_effects_expr(expr = fn_expr, env = EnvEmpty, in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -87,22 +87,22 @@ test "Async checking visits map, labeled, spread, break, and continue children" 
   let spread_expr = ESpread(await_call(EIdent("f", -1)))
   let break_expr = EBreak(Some(await_call(EIdent("f", -1))))
   let continue_expr = EContinue([await_call(EIdent("f", -1))])
-  assert(Array::length(check_async_effects_expr(map_expr, EnvEmpty, false)) > 0)
-  assert(Array::length(check_async_effects_expr(labeled_expr, EnvEmpty, false)) > 0)
-  assert(Array::length(check_async_effects_expr(spread_expr, EnvEmpty, false)) > 0)
-  assert(Array::length(check_async_effects_expr(break_expr, EnvEmpty, false)) > 0)
-  assert(Array::length(check_async_effects_expr(continue_expr, EnvEmpty, false)) > 0)
+  assert(Array::length(check_async_effects_expr(expr = map_expr, env = EnvEmpty, in_async = false)) > 0)
+  assert(Array::length(check_async_effects_expr(expr = labeled_expr, env = EnvEmpty, in_async = false)) > 0)
+  assert(Array::length(check_async_effects_expr(expr = spread_expr, env = EnvEmpty, in_async = false)) > 0)
+  assert(Array::length(check_async_effects_expr(expr = break_expr, env = EnvEmpty, in_async = false)) > 0)
+  assert(Array::length(check_async_effects_expr(expr = continue_expr, env = EnvEmpty, in_async = false)) > 0)
 }
 
 test "await inside EFn without Async annotation reports error" {
-  let fn_expr = async_fn(None, await_call(EIdent("f", -1)))
-  let errors = check_async_effects_expr(fn_expr, EnvEmpty, false)
+  let fn_expr = async_fn(effect = None, body = await_call(EIdent("f", -1)))
+  let errors = check_async_effects_expr(expr = fn_expr, env = EnvEmpty, in_async = false)
   assert(Array::length(errors) > 0)
 }
 
 test "await inside EFn with non-Async effect still reports error" {
-  let fn_expr = async_fn(Some("Error"), await_call(EIdent("f", -1)))
-  let errors = check_async_effects_expr(fn_expr, EnvEmpty, false)
+  let fn_expr = async_fn(effect = Some("Error"), body = await_call(EIdent("f", -1)))
+  let errors = check_async_effects_expr(expr = fn_expr, env = EnvEmpty, in_async = false)
   assert(Array::length(errors) > 0)
 }
 
@@ -110,32 +110,32 @@ test "calling an Async user function from sync context is allowed" {
   // Composition: a `with Async` helper bound in env is NOT a primitive, so
   // calling it outside an Async context is fine (its own await is checked in
   // its body). Only builtin async primitives require an Async context.
-  let env = env_bind(EnvEmpty, "my_async", CtFn([CtInt], CtInt, Some("Async")))
+  let env = env_bind(env = EnvEmpty, name = "my_async", ty = CtFn([CtInt], CtInt, Some("Async")))
   let call = ECall(EIdent("my_async", -1), [EInt(1)], -1, [])
-  let errors = check_async_effects_expr(call, env, false)
+  let errors = check_async_effects_expr(expr = call, env = env, in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "SLet with Async signature makes body an Async context" {
   // `let f: (Int) -> Int with Async = (x) -> { await(x) }`
-  let fn_body = async_fn(None, await_call(EIdent("x", -1)))
+  let fn_body = async_fn(effect = None, body = await_call(EIdent("x", -1)))
   let sig = TyFn([TyName("Int")], TyName("Int"), Some("Async"))
   let stmt = SLet(false, false, "f", Some(sig), fn_body)
-  let errors = check_async_effects_stmt(stmt, EnvEmpty)
+  let errors = check_async_effects_stmt(stmt = stmt, env = EnvEmpty)
   assert(eq(Array::length(errors), 0))
 }
 
 test "SLet without Async signature flags await in body" {
-  let fn_body = async_fn(None, await_call(EIdent("x", -1)))
+  let fn_body = async_fn(effect = None, body = await_call(EIdent("x", -1)))
   let sig = TyFn([TyName("Int")], TyName("Int"), None)
   let stmt = SLet(false, false, "f", Some(sig), fn_body)
-  let errors = check_async_effects_stmt(stmt, EnvEmpty)
+  let errors = check_async_effects_stmt(stmt = stmt, env = EnvEmpty)
   assert(Array::length(errors) > 0)
 }
 
 test "pure non-async call outside Async context is OK" {
   let call = ECall(EIdent("println", -1), [EString("hi", -1)], -1, [])
-  let errors = check_async_effects_expr(call, EnvEmpty, false)
+  let errors = check_async_effects_expr(expr = call, env = EnvEmpty, in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -152,7 +152,7 @@ test "handle with Async provides the async context for its body" {
       EInt(0)
     ], -1, []))
   ])
-  let errors = check_async_effects_expr(handled, EnvEmpty, false)
+  let errors = check_async_effects_expr(expr = handled, env = EnvEmpty, in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -162,7 +162,7 @@ test "handle of a different effect does NOT provide the async context" {
     (PCtor("Log::Emit", [PBind("m")]), ECall(EIdent("resume", -1), [EInt(0)], -1, [
     ]))
   ])
-  let errors = check_async_effects_expr(handled, EnvEmpty, false)
+  let errors = check_async_effects_expr(expr = handled, env = EnvEmpty, in_async = false)
   assert(Array::length(errors) > 0)
 }
 
@@ -174,7 +174,7 @@ test "an Async handler arm's own body is NOT an async context" {
       EInt(5)
     ], -1, []))
   ])
-  let errors = check_async_effects_expr(handled, EnvEmpty, false)
+  let errors = check_async_effects_expr(expr = handled, env = EnvEmpty, in_async = false)
   assert(Array::length(errors) > 0)
 }
 
@@ -191,40 +191,40 @@ fn iter_env(next_ret: TypeExpr, target: String) -> TypeEnv {
 }
 
 fn async_iter_env() -> TypeEnv {
-  iter_env(TyApp("Future", [TyApp("Option", [TyName("Int")])]), "Chan")
+  iter_env(next_ret = TyApp("Future", [TyApp("Option", [TyName("Int")])]), target = "Chan")
 }
 
 fn sync_iter_env() -> TypeEnv {
-  iter_env(TyApp("Option", [TyName("Int")]), "Chan")
+  iter_env(next_ret = TyApp("Option", [TyName("Int")]), target = "Chan")
 }
 
 fn chan_literal() -> Expr {
   ERecord("Chan", array_empty(), array_empty())
 }
 
-fn for_over(iterand: Expr) -> Expr {
+fn for_over(_ iterand: Expr) -> Expr {
   EForIn("x", None, iterand, EIdent("x", -1))
 }
 
 test "for over an async iterator outside an Async context reports error" {
-  let errors = check_async_effects_expr(for_over(chan_literal()), async_iter_env(), false)
+  let errors = check_async_effects_expr(expr = for_over(chan_literal()), env = async_iter_env(), in_async = false)
   assert(Array::length(errors) > 0)
-  assert(is_call_err(Array::get(errors, 0)))
+  assert(is_call_err(Array::get(errors, at = 0)))
 }
 
 test "for over an async iterator inside an Async context is OK" {
-  let errors = check_async_effects_expr(for_over(chan_literal()), async_iter_env(), true)
+  let errors = check_async_effects_expr(expr = for_over(chan_literal()), env = async_iter_env(), in_async = true)
   assert(eq(Array::length(errors), 0))
 }
 
 test "for over a SYNC iterator requires nothing" {
-  let errors = check_async_effects_expr(for_over(chan_literal()), sync_iter_env(), false)
+  let errors = check_async_effects_expr(expr = for_over(chan_literal()), env = sync_iter_env(), in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "an Async-annotated lambda authorizes its async for loop" {
-  let fn_expr = async_fn(Some("Async"), for_over(chan_literal()))
-  let errors = check_async_effects_expr(fn_expr, async_iter_env(), false)
+  let fn_expr = async_fn(effect = Some("Async"), body = for_over(chan_literal()))
+  let errors = check_async_effects_expr(expr = fn_expr, env = async_iter_env(), in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -234,7 +234,7 @@ test "handle with Async discharges an async for loop" {
       EInt(0)
     ], -1, []))
   ])
-  let errors = check_async_effects_expr(handled, async_iter_env(), false)
+  let errors = check_async_effects_expr(expr = handled, env = async_iter_env(), in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -242,14 +242,14 @@ test "an async iterand reached through a local let is recognised" {
   // `let it = Chan::{}; for x in it { .. }` -- the binding is local, so it is
   // absent from the type env and only the walk's own locals table resolves it.
   let body = ELet("it", chan_literal(), for_over(EIdent("it", -1)), -1)
-  let errors = check_async_effects_expr(body, async_iter_env(), false)
+  let errors = check_async_effects_expr(expr = body, env = async_iter_env(), in_async = false)
   assert(Array::length(errors) > 0)
 }
 
 test "an async iterand reached through a call's return type is recognised" {
-  let mk = env_bind(async_iter_env(), "open_chan", CtFn(array_empty(), CtStruct("Chan"), None))
+  let mk = env_bind(env = async_iter_env(), name = "open_chan", ty = CtFn(array_empty(), CtStruct("Chan"), None))
   let call = ECall(EIdent("open_chan", -1), array_empty(), -1, [])
-  let errors = check_async_effects_expr(for_over(call), mk, false)
+  let errors = check_async_effects_expr(expr = for_over(call), env = mk, in_async = false)
   assert(Array::length(errors) > 0)
 }
 
@@ -258,17 +258,17 @@ test "an async iterand returned by a constructor-polymorphic map requires Async"
     CtApplied(CtVar(0), [CtVar(1)]),
     CtFn([CtVar(1)], CtVar(2), None)
   ], CtApplied(CtVar(0), [CtVar(2)]), None))
-  let env = env_bind(async_iter_env(), "map", map_type)
+  let env = env_bind(env = async_iter_env(), name = "map", ty = map_type)
   let mapper = EFn(array_empty(), array_empty(), [("x", None)], None, None, EIdent("x", -1))
   let mapped = ECall(EIdent("map", -1), [chan_literal(), mapper], -1, [])
-  let errors = check_async_effects_expr(for_over(mapped), env, false)
+  let errors = check_async_effects_expr(expr = for_over(mapped), env = env, in_async = false)
   assert(Array::length(errors) > 0)
 }
 
 test "an async iterand reached through a typed parameter is recognised" {
   let params = [("s", Some(TyName("Chan")))]
   let fn_expr = EFn(array_empty(), array_empty(), params, None, None, for_over(EIdent("s", -1)))
-  let errors = check_async_effects_expr(fn_expr, async_iter_env(), false)
+  let errors = check_async_effects_expr(expr = fn_expr, env = async_iter_env(), in_async = false)
   assert(Array::length(errors) > 0)
 }
 
@@ -277,12 +277,12 @@ test "a local binding shadows an outer async iterator" {
   // `it` is an Int, so requiring Async here would reject a valid program.
   let inner = ELet("it", EInt(0), for_over(EIdent("it", -1)), -1)
   let outer = ELet("it", chan_literal(), inner, -1)
-  let errors = check_async_effects_expr(outer, async_iter_env(), false)
+  let errors = check_async_effects_expr(expr = outer, env = async_iter_env(), in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "an unresolvable iterand requires nothing" {
-  let errors = check_async_effects_expr(for_over(EIdent("mystery", -1)), async_iter_env(), false)
+  let errors = check_async_effects_expr(expr = for_over(EIdent("mystery", -1)), env = async_iter_env(), in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -302,49 +302,49 @@ fn generic_async_iter_env() -> TypeEnv {
 
 test "for over a GENERICALLY implemented async iterator requires Async" {
   let iterand = ERecord("Iter", array_empty(), array_empty())
-  let errors = check_async_effects_expr(for_over(iterand), generic_async_iter_env(), false)
+  let errors = check_async_effects_expr(expr = for_over(iterand), env = generic_async_iter_env(), in_async = false)
   assert(Array::length(errors) > 0)
 }
 
 test "a generic async iterator inside an Async context is OK" {
   let iterand = ERecord("Iter", array_empty(), array_empty())
-  let errors = check_async_effects_expr(for_over(iterand), generic_async_iter_env(), true)
+  let errors = check_async_effects_expr(expr = for_over(iterand), env = generic_async_iter_env(), in_async = true)
   assert(eq(Array::length(errors), 0))
 }
 
 test "an ENUM async iterand keeps its head name" {
   // `enum Chan { Chan(Int) }` + `for x in Chan(3)`: the constructor's return
   // type is CtEnum, which the head-name helper used to discard.
-  let env = env_bind(iter_env(TyApp("Future", [TyApp("Option", [TyName("Int")])]), "Chan"), "Chan", CtFn([
+  let env = env_bind(env = iter_env(next_ret = TyApp("Future", [TyApp("Option", [TyName("Int")])]), target = "Chan"), name = "Chan", ty = CtFn([
     CtInt
   ], CtEnum("Chan"), None))
   let call = ECall(EIdent("Chan", -1), [EInt(3)], -1, [])
-  let errors = check_async_effects_expr(for_over(call), env, false)
+  let errors = check_async_effects_expr(expr = for_over(call), env = env, in_async = false)
   assert(Array::length(errors) > 0)
 }
 
 test "a SYNC enum iterator still requires nothing" {
-  let env = env_bind(iter_env(TyApp("Option", [TyName("Int")]), "Chan"), "Chan", CtFn([
+  let env = env_bind(env = iter_env(next_ret = TyApp("Option", [TyName("Int")]), target = "Chan"), name = "Chan", ty = CtFn([
     CtInt
   ], CtEnum("Chan"), None))
   let call = ECall(EIdent("Chan", -1), [EInt(3)], -1, [])
-  let errors = check_async_effects_expr(for_over(call), env, false)
+  let errors = check_async_effects_expr(expr = for_over(call), env = env, in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "a projected builtin AsyncIter struct field requires Async" {
   let origin = BindingOriginModuleExport("/workspace/lib/@vibe/builtin/index.vpkg", "AsyncIter")
-  let source = EnvBind("AsyncIter", env_value_binding_with_origin(CtUnknown, origin), EnvEmpty)
-  let env = env_preserve_type_definition_origins(EnvTypeDefs([
+  let source = EnvBind("AsyncIter", env_value_binding_with_origin(ty = CtUnknown, origin = origin), EnvEmpty)
+  let env = env_preserve_type_definition_origins(env = EnvTypeDefs([
     TDStruct("Holder", [("stream", CtNamed("AsyncIter", [CtInt]))], [], []),
     TDStruct("AsyncIter", [], [], ["T"])
-  ], ["Holder"], EnvEmpty), source)
+  ], ["Holder"], EnvEmpty), source = source)
   let body = EFn(array_empty(), array_empty(), [
     ("holder", Some(TyName("Holder")))
   ], None, None, for_over(EDot(EIdent("holder", -1), "stream", -1, -1)))
-  let errors = check_async_effects_stmts([
+  let errors = check_async_effects_stmts(stmts = [
     STest("projected builtin field", body)
-  ], env)
+  ], env = env)
   assert(Array::length(errors) > 0)
 }
 
@@ -356,7 +356,7 @@ test "a projected user AsyncIter struct field stays synchronous" {
   let body = EFn(array_empty(), array_empty(), [
     ("holder", Some(TyName("Holder")))
   ], None, None, for_over(EDot(EIdent("holder", -1), "stream", -1, -1)))
-  let errors = check_async_effects_stmts([STest("projected user field", body)], env)
+  let errors = check_async_effects_stmts(stmts = [STest("projected user field", body)], env = env)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -371,21 +371,21 @@ fn poly_map_type() -> Type {
 }
 
 fn poly_map_env() -> TypeEnv {
-  env_bind(async_iter_env(), "map", poly_map_type())
+  env_bind(env = async_iter_env(), name = "map", ty = poly_map_type())
 }
 
 fn identity_mapper() -> Expr {
   EFn(array_empty(), array_empty(), [("x", None)], None, None, EIdent("x", -1))
 }
 
-fn mapped_over(arg: Expr) -> Expr {
+fn mapped_over(_ arg: Expr) -> Expr {
   ECall(EIdent("map", -1), [arg, identity_mapper()], -1, [])
 }
 
-fn assert_mapped_requires_async(arg: Expr) -> Unit {
-  let errors = check_async_effects_expr(for_over(mapped_over(arg)), poly_map_env(), false)
+fn assert_mapped_requires_async(_ arg: Expr) -> Unit {
+  let errors = check_async_effects_expr(expr = for_over(mapped_over(arg)), env = poly_map_env(), in_async = false)
   assert(Array::length(errors) > 0)
-  let ok = check_async_effects_expr(for_over(mapped_over(arg)), poly_map_env(), true)
+  let ok = check_async_effects_expr(expr = for_over(mapped_over(arg)), env = poly_map_env(), in_async = true)
   assert(eq(Array::length(ok), 0))
 }
 
@@ -407,22 +407,22 @@ test "mapped constructor-alias results require Async" {
     CtApplied(CtVar(0), [CtVar(1)]),
     CtFn([CtVar(1)], CtVar(2), None)
   ], CtNamed("Apply", [CtVar(0), CtVar(2)]), None))
-  let env = env_bind(alias_env, "mapped", mapped_type)
+  let env = env_bind(env = alias_env, name = "mapped", ty = mapped_type)
   let call = ECall(EIdent("mapped", -1), [chan_literal(), identity_mapper()], -1, [
   ])
-  let errors = check_async_effects_expr(for_over(call), env, false)
+  let errors = check_async_effects_expr(expr = for_over(call), env = env, in_async = false)
   assert(Array::length(errors) > 0)
-  let ok = check_async_effects_expr(for_over(call), env, true)
+  let ok = check_async_effects_expr(expr = for_over(call), env = env, in_async = true)
   assert(eq(Array::length(ok), 0))
 }
 
 test "method-style AsyncIter map results require Async" {
-  let env = env_bind(async_iter_env(), "Chan::map", poly_map_type())
+  let env = env_bind(env = async_iter_env(), name = "Chan::map", ty = poly_map_type())
   let call = ECall(EDot(chan_literal(), "map", -1, -1), [identity_mapper()], -1, [
   ])
-  let errors = check_async_effects_expr(for_over(call), env, false)
+  let errors = check_async_effects_expr(expr = for_over(call), env = env, in_async = false)
   assert(Array::length(errors) > 0)
-  let ok = check_async_effects_expr(for_over(call), env, true)
+  let ok = check_async_effects_expr(expr = for_over(call), env = env, in_async = true)
   assert(eq(Array::length(ok), 0))
 }
 
@@ -452,17 +452,17 @@ test "mapped constructor-pattern AsyncIter payloads require Async" {
 }
 
 test "a local AsyncIter::map is not treated as builtin" {
-  let env = env_bind(EnvEmpty, "AsyncIter::map", CtFn([CtInt], CtInt, None))
+  let env = env_bind(env = EnvEmpty, name = "AsyncIter::map", ty = CtFn([CtInt], CtInt, None))
   let call = ECall(EIdent("AsyncIter::map", -1), [EInt(1)], -1, [])
-  let errors = check_async_effects_expr(for_over(call), env, false)
+  let errors = check_async_effects_expr(expr = for_over(call), env = env, in_async = false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "mapped tuple-projection AsyncIter receivers require Async" {
   let projected = ELet("p", ETuple([chan_literal(), EInt(0)]), mapped_over(EDot(EIdent("p", -1), "0", -1, -1)), -1)
-  let errors = check_async_effects_expr(for_over(projected), poly_map_env(), false)
+  let errors = check_async_effects_expr(expr = for_over(projected), env = poly_map_env(), in_async = false)
   assert(Array::length(errors) > 0)
-  let ok = check_async_effects_expr(for_over(projected), poly_map_env(), true)
+  let ok = check_async_effects_expr(expr = for_over(projected), env = poly_map_env(), in_async = true)
   assert(eq(Array::length(ok), 0))
 }
 
@@ -471,9 +471,9 @@ test "mapped array-element AsyncIter values require Async" {
     EIdent("streams", -1),
     EInt(0)
   ], -1, [])), -1)
-  let errors = check_async_effects_expr(for_over(extracted), poly_map_env(), false)
+  let errors = check_async_effects_expr(expr = for_over(extracted), env = poly_map_env(), in_async = false)
   assert(Array::length(errors) > 0)
-  let ok = check_async_effects_expr(for_over(extracted), poly_map_env(), true)
+  let ok = check_async_effects_expr(expr = for_over(extracted), env = poly_map_env(), in_async = true)
   assert(eq(Array::length(ok), 0))
 }
 
@@ -482,9 +482,9 @@ test "mapped __index AsyncIter values require Async" {
     EIdent("streams", -1),
     EInt(0)
   ], -1, [])), -1)
-  let errors = check_async_effects_expr(for_over(extracted), poly_map_env(), false)
+  let errors = check_async_effects_expr(expr = for_over(extracted), env = poly_map_env(), in_async = false)
   assert(Array::length(errors) > 0)
-  let ok = check_async_effects_expr(for_over(extracted), poly_map_env(), true)
+  let ok = check_async_effects_expr(expr = for_over(extracted), env = poly_map_env(), in_async = true)
   assert(eq(Array::length(ok), 0))
 }
 
@@ -543,10 +543,10 @@ test "mapped named-helper handler payloads require Async" {
   let handled = EHandle(ESeq(ECall(EIdent("emit", -1), [chan_literal()], -1, []), chan_literal()), [
     (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
   ])
-  let errors = check_async_effects_stmts([
+  let errors = check_async_effects_stmts(stmts = [
     helper,
     SExpr(for_over(mapped_over(handled)))
-  ], poly_map_env())
+  ], env = poly_map_env())
   assert(Array::length(errors) > 0)
 }
 
@@ -563,10 +563,10 @@ test "mapped recursive-helper handler payloads require Async without looping" {
   ]), chan_literal()), [
     (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
   ])
-  let errors = check_async_effects_stmts([
+  let errors = check_async_effects_stmts(stmts = [
     helper,
     SExpr(for_over(mapped_over(handled)))
-  ], poly_map_env())
+  ], env = poly_map_env())
   assert(Array::length(errors) > 0)
 }
 
@@ -587,12 +587,12 @@ test "mutually recursive helper reachability does not cache a false result" {
   ]), chan_literal()), [
     (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
   ])
-  let errors = check_async_effects_stmts([
+  let errors = check_async_effects_stmts(stmts = [
     helper_a,
     helper_b,
     SExpr(for_over(mapped_over(handled_a))),
     SExpr(for_over(mapped_over(handled_b)))
-  ], poly_map_env())
+  ], env = poly_map_env())
   assert(Array::length(errors) >= 2)
 }
 
@@ -627,8 +627,8 @@ test "mapped handler-arm payloads require Async inside the arm" {
   let handled = EHandle(ESeq(performed, EUnit), [
     (PCtor("Carry::Yield", [PBind("it")]), for_over(mapped_over(EIdent("it", -1))))
   ])
-  let errors = check_async_effects_expr(handled, poly_map_env(), false)
+  let errors = check_async_effects_expr(expr = handled, env = poly_map_env(), in_async = false)
   assert(Array::length(errors) > 0)
-  let ok = check_async_effects_expr(handled, poly_map_env(), true)
+  let ok = check_async_effects_expr(expr = handled, env = poly_map_env(), in_async = true)
   assert(eq(Array::length(ok), 0))
 }

@@ -190,8 +190,8 @@ import ./compile_expr_tail_expr_is_floatish_syntactic.vibe {
 /// loop the rewrite's ident arm wraps only borrow-bound names, so a value
 /// with neither kind of tail is returned unchanged.
 fn retain_wrap_let_value(value: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
-  if ctx.enable_rc && is_branching_value(value) && array_contains_str(ctx.rc_drop_names, name) {
-    retain_wrap_branch_tails(value, local_names, array_empty(), ctx)
+  if ctx.enable_rc && is_branching_value(value) && array_contains_str(arr = ctx.rc_drop_names, s = name) {
+    retain_wrap_branch_tails(e = value, local_names = local_names, inner = array_empty(), ctx = ctx)
   } else {
     value
   }
@@ -204,7 +204,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let value = get_elet_val(expr)
     let body = get_elet_body(expr)
     let local_idx = next_local
-    emit_dbg_line_stmt(buf, value, get_elet_off(expr), ctx)
+    emit_dbg_line_stmt(buf = buf, value = value, stmt_off = get_elet_off(expr), ctx = ctx)
     // #1120 Codex review (P1): the slot is pushed BEFORE the value compiles
     // (its index must be reserved), but a NON-RECURSIVE `let` binder is not
     // in scope inside its own initializer -- `let add = (x, y) -> Int {
@@ -214,8 +214,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // INDEX stays allocated, only the name is hidden, and it is restored
     // before the body compiles. `let rec` keeps its name visible -- that is
     // what makes self-reference work (see ctx.pending_letrec_self_name).
-    cet_record_local_slot(local_names, local_idx)
-    Array::set(local_names, local_idx, "")
+    cet_record_local_slot(local_names = local_names, slot = local_idx)
+    Array::set(local_names, at = local_idx, value = "")
     // #3190: the tails the plan's `PaStoreDup` rows name retain in place
     // (`let_retain_store_dup_tails`). The rewritten value is also what the
     // ownership classifiers below read, so a retained tail is an owned one;
@@ -225,39 +225,39 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // again: on the retained branch that leaks one reference, where not
     // retaining it would let a store of the binder (`cur = c`, which takes a
     // heap binding as owned) release the reference the plan left with `p`.
-    let value_sd = let_retain_store_dup_tails(value, local_names, ctx)
-    let value_rw = retain_wrap_let_value(value_sd, name, local_names, ctx)
+    let value_sd = let_retain_store_dup_tails(value = value, local_names = local_names, ctx = ctx)
+    let value_rw = retain_wrap_let_value(value = value_sd, name = name, local_names = local_names, ctx = ctx)
     let nl = compile_expr(buf, value_rw, local_names, next_local + 1, ctx, ld)
-    let seq_owned_return = seq_lambda_returns_owned(value, local_names, ctx)
-    Array::set(local_names, local_idx, name)
-    emit_local_set(buf, local_idx)
+    let seq_owned_return = seq_lambda_returns_owned(value = value, local_names = local_names, ctx = ctx)
+    Array::set(local_names, at = local_idx, value = name)
+    emit_local_set(buf = buf, idx = local_idx)
     if seq_owned_return {
-      Array::push(ctx.seq_owned_return_slots, local_idx * 2 + 1)
-    } else if seq_local_call_owns_result(ctx, local_idx) {
-      Array::push(ctx.seq_owned_return_slots, local_idx * 2)
+      Array::push(ctx.seq_owned_return_slots, value = local_idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx = ctx, slot = local_idx) {
+      Array::push(ctx.seq_owned_return_slots, value = local_idx * 2)
     }
     // #3113: a read of a captured cell arrives behind an owning-store marker
     // (cl_own_cell_stmts); classify the slot from the value it wraps.
     let class_value = cet_strip_owned_markers(value)
-    let val_is_float = expr_is_floatish(class_value, local_names, ctx)
+    let val_is_float = expr_is_floatish(raw_e = class_value, local_names = local_names, ctx = ctx)
     if val_is_float {
-      Array::push(ctx.float_local_slots, local_idx * 2 + 1)
-    } else if slot_is_floatish(ctx, local_idx) {
-      Array::push(ctx.float_local_slots, local_idx * 2)
+      Array::push(ctx.float_local_slots, value = local_idx * 2 + 1)
+    } else if slot_is_floatish(ctx = ctx, slot = local_idx) {
+      Array::push(ctx.float_local_slots, value = local_idx * 2)
     }
     // #678: log whether this binding holds a definitely-integral value, so a
     // later bare-ident `==` on it bypasses the string-pointer-misreading `eq`.
     // Always (re)log when the slot was previously classified, so a rebind of a
     // reused slot overrides the earlier entry. #769/#950 encoding: slot*4 +
     // kind (0 clear / 1 int / 2 string / 3 bool) -- see slot_is_intish.
-    if expr_is_boolish(class_value, local_names, ctx) {
-      Array::push(ctx.int_local_slots, local_idx * 4 + 3)
-    } else if expr_is_intish(class_value, local_names, ctx) {
-      Array::push(ctx.int_local_slots, local_idx * 4 + 1)
-    } else if cc_expr_is_stringish(class_value, local_names, ctx) {
-      Array::push(ctx.int_local_slots, local_idx * 4 + 2)
-    } else if slot_is_intish(ctx, local_idx) || slot_is_stringish(ctx, local_idx) {
-      Array::push(ctx.int_local_slots, local_idx * 4)
+    if expr_is_boolish(raw_e = class_value, local_names = local_names, ctx = ctx) {
+      Array::push(ctx.int_local_slots, value = local_idx * 4 + 3)
+    } else if expr_is_intish(raw_e = class_value, local_names = local_names, ctx = ctx) {
+      Array::push(ctx.int_local_slots, value = local_idx * 4 + 1)
+    } else if cc_expr_is_stringish(raw_e = class_value, local_names = local_names, ctx = ctx) {
+      Array::push(ctx.int_local_slots, value = local_idx * 4 + 2)
+    } else if slot_is_intish(ctx = ctx, slot = local_idx) || slot_is_stringish(ctx = ctx, slot = local_idx) {
+      Array::push(ctx.int_local_slots, value = local_idx * 4)
     }
     // #724: log this binding's AGGREGATE shape (tuple arity / ctor-record
     // field count) so `a == b` with both sides bound takes the structural
@@ -265,12 +265,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // CompileCtx.agg_local_slots.
     let agg_entry = if is_etuple(value) {
       64 + Array::length(get_etuple_elems(value))
-    } else if is_ctor_call(value, ctx.ctor_table) {
+    } else if is_ctor_call(value = value, ct = ctx.ctor_table) {
       let cargs = get_ecall_args(value)
       // `S::{ ... }` sugar arrives as ECall(S, [ERecord]) — the runtime
       // field count is the record's, not the call arity.
       let fcnt = if Array::length(cargs) == 1 {
-        match Array::get(cargs, 0) {
+        match Array::get(cargs, at = 0) {
           ERecord(_, rfields, _) => Array::length(rfields),
           _ => Array::length(cargs)
         }
@@ -278,7 +278,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         Array::length(cargs)
       }
       128 + fcnt
-    } else if is_nullary_ctor_ident(value, ctx.ctor_table) {
+    } else if is_nullary_ctor_ident(value = value, ct = ctx.ctor_table) {
       128
     } else if is_erecord(value) {
       // Records are [tag@0][len@4][fields@8+] since #722, walkable like ctors.
@@ -291,8 +291,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // (agg_ret table). Only for a global fn name (a local shadowing `f`
       // makes this a closure call of unknown type).
       match get_ecall_callee(value) {
-        EIdent(cfn, _) => if find_local_slot(local_names, cfn) < 0 {
-          let rinfo = agg_ret_lookup_indexed(ctx.agg_ret_names_sorted, ctx.agg_ret_names_sorted_pos, ctx.agg_ret_infos, cfn)
+        EIdent(cfn, _) => if find_local_slot(names = local_names, name = cfn) < 0 {
+          let rinfo = agg_ret_lookup_indexed(sorted = ctx.agg_ret_names_sorted, pos = ctx.agg_ret_names_sorted_pos, infos = ctx.agg_ret_infos, fname = cfn)
           if rinfo > 0 {
             rinfo
           } else {
@@ -305,9 +305,9 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       }
     } else if is_eident(value) {
       // Alias of a tracked binding: propagate its shape.
-      let src_slot = find_local_slot(local_names, get_eident_name(value))
+      let src_slot = find_local_slot(names = local_names, name = get_eident_name(value))
       if src_slot >= 0 {
-        let src_info = agg_slot_lookup(ctx.agg_local_slots, src_slot)
+        let src_info = agg_slot_lookup(arr = ctx.agg_local_slots, slot = src_slot)
         if src_info > 0 {
           src_info
         } else {
@@ -332,25 +332,25 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // pre-existing generic-eq fallback.
     let agg_shape_expr = if is_etuple(value) {
       value
-    } else if is_ctor_call(value, ctx.ctor_table) {
+    } else if is_ctor_call(value = value, ct = ctx.ctor_table) {
       value
-    } else if is_nullary_ctor_ident(value, ctx.ctor_table) {
+    } else if is_nullary_ctor_ident(value = value, ct = ctx.ctor_table) {
       value
     } else if is_erecord(value) {
       value
     } else if is_eident(value) {
-      let src_slot = find_local_slot(local_names, get_eident_name(value))
+      let src_slot = find_local_slot(names = local_names, name = get_eident_name(value))
       if src_slot >= 0 {
-        agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, src_slot)
+        agg_expr_lookup(arr = ctx.agg_local_slots, exprs = ctx.agg_local_exprs, slot = src_slot)
       } else {
         EInt(0)
       }
     } else {
       EInt(0)
     }
-    Array::push(ctx.agg_local_slots, local_idx * 256 + agg_entry)
-    Array::push(ctx.agg_local_exprs, agg_shape_expr)
-    let (rc_kind, is_borrow_ret_ext) = classify_let_value_heap(buf, value_sd, name, local_idx, local_names, ctx)
+    Array::push(ctx.agg_local_slots, value = local_idx * 256 + agg_entry)
+    Array::push(ctx.agg_local_exprs, value = agg_shape_expr)
+    let (rc_kind, is_borrow_ret_ext) = classify_let_value_heap(buf = buf, value = value_sd, name = name, local_idx = local_idx, local_names = local_names, ctx = ctx)
     // #3114: `let w = v` over a borrow-bound `v` that left `w` owning nothing
     // (rc_kind 0: the Perceus plan inherits `v`'s no-reference class, so `w`
     // has no scope-end drop) is the same borrowed view under another name.
@@ -358,12 +358,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // push, or a return retains it exactly as it would retain `v`. Read here,
     // before the #712 mask below removes `name` -- `let v = v` must still see
     // the outer `v`.
-    let alias_borrow_like = ctx.enable_rc && rc_kind == 0 && is_eident(value) && array_contains_str(ctx.loop_borrowed_names, get_eident_name(value)) && !array_contains_str(ctx.ref_cell_names, get_eident_name(value))
+    let alias_borrow_like = ctx.enable_rc && rc_kind == 0 && is_eident(value) && array_contains_str(arr = ctx.loop_borrowed_names, s = get_eident_name(value)) && !array_contains_str(arr = ctx.ref_cell_names, s = get_eident_name(value))
     if ctx.enable_rc && rc_kind > 0 {
       let mut dbi = 0
       while dbi < Array::length(ctx.rc_dup_names) {
-        if Array::get(ctx.rc_dup_names, dbi) == name {
-          emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        if Array::get(ctx.rc_dup_names, at = dbi) == name {
+          emit_rc_dup_guarded(buf = buf, local_idx = local_idx, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
         } else {
           ()
         }
@@ -379,11 +379,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // the binding does. Balanced on every path that reaches the scope end; a
     // path that leaves early (return, break) keeps it, which leaks. The name
     // goes on the live stack the truncate lowering checks before releasing.
-    let view_pin = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_trunc_pin_names, name)
+    let view_pin = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(arr = ctx.rc_trunc_pin_names, s = name)
     let pins_mark = Array::length(ctx.rc_pins_live)
     if view_pin {
-      emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
-      Array::push(ctx.rc_pins_live, name)
+      emit_rc_dup_guarded(buf = buf, local_idx = local_idx, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+      Array::push(ctx.rc_pins_live, value = name)
     } else {
       ()
     }
@@ -404,16 +404,16 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       let mut lb_w = 0
       let mut lb_i = 0
       while lb_i < lb_n {
-        let e = Array::get(lb_arr, lb_i)
+        let e = Array::get(lb_arr, at = lb_i)
         if e == name {
           lb_shadow_removed = lb_shadow_removed + 1
         } else {
-          Array::set(lb_arr, lb_w, e)
+          Array::set(lb_arr, at = lb_w, value = e)
           lb_w = lb_w + 1
         }
         lb_i = lb_i + 1
       }
-      Array::truncate(lb_arr, lb_w)
+      Array::truncate(lb_arr, length = lb_w)
     } else {
       ()
     }
@@ -433,9 +433,9 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // `value_rw`. When every view tail was retained, every path hands the
     // binding a reference of its own and it is an owned binding: marking it
     // borrow-bound made each owning use retain once more, which leaked.
-    let value_borrow_like = ctx.enable_rc && is_branching_value(value) && value_has_borrowed_branch_tail(value_rw, local_names, array_empty(), ctx)
+    let value_borrow_like = ctx.enable_rc && is_branching_value(value) && value_has_borrowed_branch_tail(e = value_rw, local_names = local_names, inner = array_empty(), ctx = ctx)
     if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like || alias_borrow_like) {
-      Array::push(ctx.loop_borrowed_names, name)
+      Array::push(ctx.loop_borrowed_names, value = name)
     } else {
       ()
     }
@@ -447,13 +447,13 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // discipline). An arm that consumes the unique block in place sets the
     // flag; the scope-end drop below is then guarded on it, so every path
     // still consumes exactly one reference.
-    let reuse_fusion = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_drop_names, name) && expr_tag(body) == 16 && is_eident(get_match_scrutinee(body)) && get_eident_name(get_match_scrutinee(body)) == name
+    let reuse_fusion = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && array_contains_str(arr = ctx.rc_drop_names, s = name) && expr_tag(body) == 16 && is_eident(get_match_scrutinee(body)) && get_eident_name(get_match_scrutinee(body)) == name
     let reuse_flag_l = if reuse_fusion {
-      Array::push(local_names, "__reuse_flag")
-      emit_i64_const(buf, 0)
-      emit_local_set(buf, nl)
-      Array::push(ctx.reuse_scrutinee_names, name)
-      Array::push(ctx.reuse_flag_locals, nl)
+      Array::push(local_names, value = "__reuse_flag")
+      emit_i64_const(buf = buf, value = 0)
+      emit_local_set(buf = buf, idx = nl)
+      Array::push(ctx.reuse_scrutinee_names, value = name)
+      Array::push(ctx.reuse_flag_locals, value = nl)
       nl
     } else {
       0 - 1
@@ -515,17 +515,17 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // direction, but it keeps the leak this pass exists to remove. Measured:
     // with the mask removed, `let mk = mk(3)` under a heap-returning global
     // `mk` compiles 18 B smaller, which is the guarded drop not being emitted.
-    let pd_candidate = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && array_contains_str(ctx.rc_path_drop_names, name)
+    let pd_candidate = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && array_contains_str(arr = ctx.rc_path_drop_names, s = name)
     let path_value_ok = if pd_candidate {
-      let pd_self = Array::get(local_names, local_idx)
-      Array::set(local_names, local_idx, "")
-      let r = path_value_owned(value_rw, local_names, array_empty(), ctx)
-      Array::set(local_names, local_idx, pd_self)
+      let pd_self = Array::get(local_names, at = local_idx)
+      Array::set(local_names, at = local_idx, value = "")
+      let r = path_value_owned(e = value_rw, local_names = local_names, bound = array_empty(), ctx = ctx)
+      Array::set(local_names, at = local_idx, value = pd_self)
       r
     } else {
       false
     }
-    let path_drop = pd_candidate && path_value_ok && !expr_is_intish(value, local_names, ctx) && Array::length(local_names) <= nl_after_reuse
+    let path_drop = pd_candidate && path_value_ok && !expr_is_intish(raw_e = value, local_names = local_names, ctx = ctx) && Array::length(local_names) <= nl_after_reuse
     let path_flag_l = if path_drop {
       // The flag takes a wasm local of its own, so `local_names` gains its
       // entry here -- through the same helper the scope-end promotion below
@@ -533,11 +533,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // drifting apart again (#2792 was one of them forgetting). `path_drop`
       // above already established that the array does not run PAST this index,
       // the one direction padding cannot repair.
-      cet_record_local_slot(local_names, nl_after_reuse)
-      emit_i64_const(buf, 0)
-      emit_local_set(buf, nl_after_reuse)
-      Array::push(ctx.rc_path_flag_names, name)
-      Array::push(ctx.rc_path_flag_locals, nl_after_reuse)
+      cet_record_local_slot(local_names = local_names, slot = nl_after_reuse)
+      emit_i64_const(buf = buf, value = 0)
+      emit_local_set(buf = buf, idx = nl_after_reuse)
+      Array::push(ctx.rc_path_flag_names, value = name)
+      Array::push(ctx.rc_path_flag_locals, value = nl_after_reuse)
       nl_after_reuse
     } else {
       0 - 1
@@ -554,9 +554,9 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // its scope-end drop is guarded on; a view pin is a reference of its own.
     let xmark = Array::length(ctx.rc_exit_stack_names)
     if ctx.enable_rc {
-      Array::push(ctx.rc_exit_lets, name)
+      Array::push(ctx.rc_exit_lets, value = name)
       if ctx.rc_drop_func_idx >= 0 && rc_kind > 0 && !is_borrow_ret_ext && !value_borrow_like && !alias_borrow_like {
-        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 0, local_idx, if path_drop {
+        rc_exit_push(names = ctx.rc_exit_stack_names, info = ctx.rc_exit_stack_info, name = name, kind = 0, local = local_idx, flag = if path_drop {
           path_flag_l
         } else if reuse_fusion {
           reuse_flag_l
@@ -567,7 +567,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         ()
       }
       if view_pin {
-        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 5, local_idx, 0 - 1)
+        rc_exit_push(names = ctx.rc_exit_stack_names, info = ctx.rc_exit_stack_info, name = name, kind = 5, local = local_idx, flag = 0 - 1)
       } else {
         ()
       }
@@ -576,41 +576,41 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     }
     let source_mark = Array::length(ctx.rc_exit_result_stores)
     if ctx.enable_rc {
-      Array::push(ctx.rc_exit_result_stores, (name, value))
+      Array::push(ctx.rc_exit_result_stores, value = (name, value))
     }
     let nl2 = compile_expr(buf, body, local_names, nl_body, ctx, ld)
-    Array::truncate(ctx.rc_exit_result_stores, source_mark)
+    Array::truncate(ctx.rc_exit_result_stores, length = source_mark)
     if ctx.enable_rc {
-      rc_exit_truncate(ctx, xmark)
-      Array::truncate(ctx.rc_exit_lets, Array::length(ctx.rc_exit_lets) - 1)
+      rc_exit_truncate(ctx = ctx, mark = xmark)
+      Array::truncate(ctx.rc_exit_lets, length = Array::length(ctx.rc_exit_lets) - 1)
     } else {
       ()
     }
     if view_pin {
-      Array::truncate(ctx.rc_pins_live, pins_mark)
+      Array::truncate(ctx.rc_pins_live, length = pins_mark)
     } else {
       ()
     }
     if path_drop {
-      Array::truncate(ctx.rc_path_flag_names, Array::length(ctx.rc_path_flag_names) - 1)
-      Array::truncate(ctx.rc_path_flag_locals, Array::length(ctx.rc_path_flag_locals) - 1)
-      emit_local_get(buf, path_flag_l)
+      Array::truncate(ctx.rc_path_flag_names, length = Array::length(ctx.rc_path_flag_names) - 1)
+      Array::truncate(ctx.rc_path_flag_locals, length = Array::length(ctx.rc_path_flag_locals) - 1)
+      emit_local_get(buf = buf, idx = path_flag_l)
       emit_i64_eqz(buf)
       emit_if_void(buf)
-      emit_local_get(buf, local_idx)
-      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_local_get(buf = buf, idx = local_idx)
+      emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
       emit_end(buf)
     } else {
       ()
     }
     if reuse_fusion {
-      Array::truncate(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
-      Array::truncate(ctx.reuse_flag_locals, Array::length(ctx.reuse_flag_locals) - 1)
+      Array::truncate(ctx.reuse_scrutinee_names, length = Array::length(ctx.reuse_scrutinee_names) - 1)
+      Array::truncate(ctx.reuse_flag_locals, length = Array::length(ctx.reuse_flag_locals) - 1)
     } else {
       ()
     }
     if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like || alias_borrow_like) {
-      Array::truncate(ctx.loop_borrowed_names, lb_mark)
+      Array::truncate(ctx.loop_borrowed_names, length = lb_mark)
     } else {
       ()
     }
@@ -618,26 +618,26 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // scope where `name` shadows the outer loop-borrowed binding) is compiled.
     let mut lb_restore_i = 0
     while lb_restore_i < lb_shadow_removed {
-      Array::push(ctx.loop_borrowed_names, name)
+      Array::push(ctx.loop_borrowed_names, value = name)
       lb_restore_i = lb_restore_i + 1
     }
-    let nl_let = if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
+    let nl_let = if ctx.enable_rc && rc_kind > 0 && array_contains_str(arr = ctx.rc_drop_names, s = name) {
       if reuse_fusion {
         // ADR-0092: drop only when no arm consumed the block via reuse.
-        emit_local_get(buf, reuse_flag_l)
+        emit_local_get(buf = buf, idx = reuse_flag_l)
         emit_i64_eqz(buf)
         emit_if_void(buf)
-        emit_local_get(buf, local_idx)
-        emit_call(buf, ctx.rc_drop_func_idx)
+        emit_local_get(buf = buf, idx = local_idx)
+        emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
         emit_end(buf)
         nl2
       } else if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
-        emit_local_set(buf, nl2)
-        emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow, ctx.rc_dup_func_idx)
-        emit_local_get(buf, local_idx)
-        emit_call(buf, ctx.rc_drop_func_idx)
-        emit_local_get(buf, nl2)
-        cet_record_local_slot(local_names, nl2)
+        emit_local_set(buf = buf, idx = nl2)
+        emit_rc_dup_guarded(buf = buf, local_idx = nl2, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+        emit_local_get(buf = buf, idx = local_idx)
+        emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+        emit_local_get(buf = buf, idx = nl2)
+        cet_record_local_slot(local_names = local_names, slot = nl2)
         nl2 + 1
       } else {
         if ctx.rc_drop_func_idx >= 0 {
@@ -648,12 +648,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
           // which failed the output-size ratchet (+14% closure_indirect).
           // Reverted to the plain runtime call; the allocator-side wins
           // (bounded walk + size bins) carry the measured improvement.
-          emit_local_get(buf, local_idx)
-          emit_call(buf, ctx.rc_drop_func_idx)
+          emit_local_get(buf = buf, idx = local_idx)
+          emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
         } else if rc_kind == 1 {
-          emit_rc_drop_local(buf, local_idx, false)
+          emit_rc_drop_local(buf = buf, local_idx = local_idx, tagged = false)
         } else {
-          emit_rc_drop_local(buf, local_idx, true)
+          emit_rc_drop_local(buf = buf, local_idx = local_idx, tagged = true)
         }
         nl2
       }
@@ -663,8 +663,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // #2837: release the pin taken at the bind site. The body's value stays
     // on the stack underneath, as it does for the scope-end drop above.
     if view_pin {
-      emit_local_get(buf, local_idx)
-      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_local_get(buf = buf, idx = local_idx)
+      emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
     } else {
       ()
     }
@@ -674,8 +674,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let value = get_eletrec_val(expr)
     let body = get_eletrec_body(expr)
     let local_idx = next_local
-    cet_record_local_slot(local_names, local_idx)
-    Array::set(local_names, local_idx, name)
+    cet_record_local_slot(local_names = local_names, slot = local_idx)
+    Array::set(local_names, at = local_idx, value = name)
     // #875 fix 2: hint compile_lambda (the immediate, sole callee that
     // compiling an EFn value dispatches to) that NAME is this closure's own
     // let-rec binding, so its capture computation force-includes NAME even if
@@ -685,17 +685,17 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // consumes and clears this immediately, so it cannot leak to any other
     // lambda compiled afterward. See CompileCtx.pending_letrec_self_name.
     if is_efn(value) {
-      Array::truncate(ctx.pending_letrec_self_name, 0)
-      Array::push(ctx.pending_letrec_self_name, name)
+      Array::truncate(ctx.pending_letrec_self_name, length = 0)
+      Array::push(ctx.pending_letrec_self_name, value = name)
     } else {
       ()
     }
     let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
-    emit_local_set(buf, local_idx)
-    if seq_lambda_returns_owned(value, local_names, ctx) {
-      Array::push(ctx.seq_owned_return_slots, local_idx * 2 + 1)
-    } else if seq_local_call_owns_result(ctx, local_idx) {
-      Array::push(ctx.seq_owned_return_slots, local_idx * 2)
+    emit_local_set(buf = buf, idx = local_idx)
+    if seq_lambda_returns_owned(value = value, local_names = local_names, ctx = ctx) {
+      Array::push(ctx.seq_owned_return_slots, value = local_idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx = ctx, slot = local_idx) {
+      Array::push(ctx.seq_owned_return_slots, value = local_idx * 2)
     }
     if is_efn(value) {
       let params = get_efn_params(value)
@@ -707,8 +707,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       let param_names_bp = array_empty()
       let mut bpi = 0
       while bpi < Array::length(params) {
-        let (pn, _) = Array::get(params, bpi)
-        Array::push(param_names_bp, cet_strip_param_label_marker(pn))
+        let (pn, _) = Array::get(params, at = bpi)
+        Array::push(param_names_bp, value = cet_strip_param_label_marker(pn))
         bpi = bpi + 1
       }
       // #875 fix 2: same force-include as compile_lambda's own capture
@@ -720,22 +720,22 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // #1114: `local_names` (the enclosing scope) must be passed here too --
       // this recomputation has to match compile_lambda's `captures` EXACTLY
       // or self_cap_idx points at the wrong slot.
-      let caps = collect_free_vars_indexed_self(fn_body, param_names_bp, ctx.capture_name_index, name, local_names)
+      let caps = collect_free_vars_indexed_self(body = fn_body, param_names = param_names_bp, fn_name_index = ctx.capture_name_index, self_name = name, encl = local_names)
       let mut self_cap_idx = -1
       let mut bci = 0
       while bci < Array::length(caps) {
-        if Array::get(caps, bci) == name {
+        if Array::get(caps, at = bci) == name {
           self_cap_idx = bci
         }
         bci = bci + 1
       }
       if self_cap_idx >= 0 {
-        emit_local_get(buf, local_idx)
-        emit_i64_const(buf, -4)
+        emit_local_get(buf = buf, idx = local_idx)
+        emit_i64_const(buf = buf, value = -4)
         emit_i64_and(buf)
         emit_i32_wrap_i64(buf)
-        emit_local_get(buf, local_idx)
-        emit_i64_store(buf, 3, 8 + self_cap_idx * 8)
+        emit_local_get(buf = buf, idx = local_idx)
+        emit_i64_store(buf = buf, align = 3, offset = 8 + self_cap_idx * 8)
       }
       0
     } else {
@@ -747,41 +747,41 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let exit_mark = Array::length(ctx.rc_exit_stack_names)
     let owns_closure = ctx.enable_rc && is_efn(value)
     if owns_closure {
-      Array::push(ctx.rc_exit_lets, name)
+      Array::push(ctx.rc_exit_lets, value = name)
     } else {
       ()
     }
-    if owns_closure && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_drop_names, name) {
-      rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 6, local_idx, 0 - 1)
+    if owns_closure && ctx.rc_drop_func_idx >= 0 && array_contains_str(arr = ctx.rc_drop_names, s = name) {
+      rc_exit_push(names = ctx.rc_exit_stack_names, info = ctx.rc_exit_stack_info, name = name, kind = 6, local = local_idx, flag = 0 - 1)
     } else {
       ()
     }
     let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
     if owns_closure {
-      rc_exit_truncate(ctx, exit_mark)
-      Array::truncate(ctx.rc_exit_lets, Array::length(ctx.rc_exit_lets) - 1)
+      rc_exit_truncate(ctx = ctx, mark = exit_mark)
+      Array::truncate(ctx.rc_exit_lets, length = Array::length(ctx.rc_exit_lets) - 1)
     } else {
       ()
     }
-    if owns_closure && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_drop_names, name) {
-      if scope_tail_ident(body) == name || rc_scope_tail_borrows_name(body, name, local_names, ctx) {
-        emit_local_set(buf, nl2)
+    if owns_closure && ctx.rc_drop_func_idx >= 0 && array_contains_str(arr = ctx.rc_drop_names, s = name) {
+      if scope_tail_ident(body) == name || rc_scope_tail_borrows_name(e = body, owner = name, local_names = local_names, ctx = ctx) {
+        emit_local_set(buf = buf, idx = nl2)
         // A branch can return this closure on only one path. Retain the
         // result only when it is the binder about to be released.
-        emit_local_get(buf, nl2)
-        emit_local_get(buf, local_idx)
+        emit_local_get(buf = buf, idx = nl2)
+        emit_local_get(buf = buf, idx = local_idx)
         emit_i64_eq(buf)
         emit_if_void(buf)
-        emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_rc_dup_guarded(buf = buf, local_idx = nl2, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
         emit_end(buf)
-        emit_local_get(buf, local_idx)
-        emit_call(buf, ctx.rc_drop_func_idx)
-        emit_local_get(buf, nl2)
-        cet_record_local_slot(local_names, nl2)
+        emit_local_get(buf = buf, idx = local_idx)
+        emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+        emit_local_get(buf = buf, idx = nl2)
+        cet_record_local_slot(local_names = local_names, slot = nl2)
         nl2 + 1
       } else {
-        emit_local_get(buf, local_idx)
-        emit_call(buf, ctx.rc_drop_func_idx)
+        emit_local_get(buf = buf, idx = local_idx)
+        emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
         nl2
       }
     } else {
@@ -792,43 +792,43 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let value = get_eletmut_val(expr)
     let body = get_eletmut_body(expr)
     let local_idx = next_local
-    emit_dbg_line_stmt(buf, value, get_eletmut_off(expr), ctx)
-    cet_record_local_slot(local_names, local_idx)
+    emit_dbg_line_stmt(buf = buf, value = value, stmt_off = get_eletmut_off(expr), ctx = ctx)
+    cet_record_local_slot(local_names = local_names, slot = local_idx)
     // #1120 Codex review (P1): same non-recursive-binder masking as ELet
     // above -- `let mut add = (x, y) -> Int { add(x, y) }` means the BUILTIN
     // add. Keep it masked through initializer ownership classification too;
     // restore it before compiling the body, where the binder IS in scope.
-    Array::set(local_names, local_idx, "")
+    Array::set(local_names, at = local_idx, value = "")
     // #3113: a captured cell's initializer arrives wrapped in owning-store
     // markers (cl_own_cell_stmts). They change who owns the value, never its
     // representation, so the slot is classified from the unwrapped value.
     let class_value = cet_strip_owned_markers(value)
-    if seq_lambda_returns_owned(class_value, local_names, ctx) {
-      Array::push(ctx.seq_owned_return_slots, local_idx * 2 + 1)
-    } else if seq_local_call_owns_result(ctx, local_idx) {
-      Array::push(ctx.seq_owned_return_slots, local_idx * 2)
+    if seq_lambda_returns_owned(value = class_value, local_names = local_names, ctx = ctx) {
+      Array::push(ctx.seq_owned_return_slots, value = local_idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx = ctx, slot = local_idx) {
+      Array::push(ctx.seq_owned_return_slots, value = local_idx * 2)
     }
-    if expr_is_floatish(class_value, local_names, ctx) {
-      Array::push(ctx.float_local_slots, local_idx * 2 + 1)
-    } else if slot_is_floatish(ctx, local_idx) {
-      Array::push(ctx.float_local_slots, local_idx * 2)
+    if expr_is_floatish(raw_e = class_value, local_names = local_names, ctx = ctx) {
+      Array::push(ctx.float_local_slots, value = local_idx * 2 + 1)
+    } else if slot_is_floatish(ctx = ctx, slot = local_idx) {
+      Array::push(ctx.float_local_slots, value = local_idx * 2)
     }
     // #678: track integral mutable bindings too (an Int local stays Int across
     // reassignments — the checker forbids changing its type), so a bare-ident
     // `==` on it uses the direct i64 path. #769/#950: slot*4 + kind encoding,
     // bool tracked as kind 3, string as kind 2 (a mut Bool/String stays that
     // type across reassignments too).
-    if expr_is_boolish(class_value, local_names, ctx) {
-      Array::push(ctx.int_local_slots, local_idx * 4 + 3)
-    } else if expr_is_intish(class_value, local_names, ctx) {
-      Array::push(ctx.int_local_slots, local_idx * 4 + 1)
-    } else if cc_expr_is_stringish(class_value, local_names, ctx) {
-      Array::push(ctx.int_local_slots, local_idx * 4 + 2)
-    } else if slot_is_intish(ctx, local_idx) || slot_is_stringish(ctx, local_idx) {
-      Array::push(ctx.int_local_slots, local_idx * 4)
+    if expr_is_boolish(raw_e = class_value, local_names = local_names, ctx = ctx) {
+      Array::push(ctx.int_local_slots, value = local_idx * 4 + 3)
+    } else if expr_is_intish(raw_e = class_value, local_names = local_names, ctx = ctx) {
+      Array::push(ctx.int_local_slots, value = local_idx * 4 + 1)
+    } else if cc_expr_is_stringish(raw_e = class_value, local_names = local_names, ctx = ctx) {
+      Array::push(ctx.int_local_slots, value = local_idx * 4 + 2)
+    } else if slot_is_intish(ctx = ctx, slot = local_idx) || slot_is_stringish(ctx = ctx, slot = local_idx) {
+      Array::push(ctx.int_local_slots, value = local_idx * 4)
     }
-    if mut_needs_ref_cell(body, name) {
-      Array::push(ctx.ref_cell_names, name)
+    if mut_needs_ref_cell(body = body, name = name) {
+      Array::push(ctx.ref_cell_names, value = name)
       if ctx.enable_rc && ctx.rc_alloc_func_idx >= 0 && ctx.rc_drop_func_idx >= 0 {
         // #699 RC-managed ref cell: a captured `let mut` is heap-boxed for
         // by-reference sharing; under RC make that box an RC object so it is
@@ -858,63 +858,63 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // followed a wild link and trapped far away (the long-standing
         // "all-RC bootstrap" OOB). Every captured `let mut` under RC now gets a
         // real header, so no headerless box can ever be treated as RC-owned.
-        emit_i64_const(buf, 16)
-        emit_call(buf, ctx.rc_alloc_func_idx)
-        emit_local_set(buf, local_idx)
-        emit_local_get(buf, local_idx)
+        emit_i64_const(buf = buf, value = 16)
+        emit_call(buf = buf, func_idx = ctx.rc_alloc_func_idx)
+        emit_local_set(buf = buf, idx = local_idx)
+        emit_local_get(buf = buf, idx = local_idx)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 16)
-        emit_i32_store(buf, 2, 0)
-        emit_local_get(buf, local_idx)
+        emit_i32_const(buf = buf, value = 16)
+        emit_i32_store(buf = buf, align = 2, offset = 0)
+        emit_local_get(buf = buf, idx = local_idx)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 1)
-        emit_i32_store(buf, 2, 4)
-        emit_local_get(buf, local_idx)
+        emit_i32_const(buf = buf, value = 1)
+        emit_i32_store(buf = buf, align = 2, offset = 4)
+        emit_local_get(buf = buf, idx = local_idx)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 8)
-        emit_i32_store8(buf, 0, 7)
-        emit_local_get(buf, local_idx)
-        emit_i64_const(buf, 8)
+        emit_i32_const(buf = buf, value = 8)
+        emit_i32_store8(buf = buf, align = 0, offset = 7)
+        emit_local_get(buf = buf, idx = local_idx)
+        emit_i64_const(buf = buf, value = 8)
         emit_i64_add(buf)
-        emit_local_set(buf, local_idx)
-        emit_local_get(buf, local_idx)
+        emit_local_set(buf = buf, idx = local_idx)
+        emit_local_get(buf = buf, idx = local_idx)
         emit_i32_wrap_i64(buf)
         let nl = compile_expr(buf, if ctx.enable_rc {
-          rc_mut_rec_transfer_value(value, local_names, ctx, [])
+          rc_mut_rec_transfer_value(e = value, local_names = local_names, ctx = ctx, shadowed = [])
         } else {
           value
         }, local_names, next_local + 1, ctx, ld)
-        Array::set(local_names, local_idx, name)
-        emit_i64_store(buf, 3, 0)
+        Array::set(local_names, at = local_idx, value = name)
+        emit_i64_store(buf = buf, align = 3, offset = 0)
         // #3141: the scope end below drops the cell on every path, so an
         // early exit out of the body drops it too.
         let xmark = Array::length(ctx.rc_exit_stack_names)
-        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 4, local_idx, 0 - 1)
+        rc_exit_push(names = ctx.rc_exit_stack_names, info = ctx.rc_exit_stack_info, name = name, kind = 4, local = local_idx, flag = 0 - 1)
         let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
-        rc_exit_truncate(ctx, xmark)
-        emit_local_get(buf, local_idx)
-        emit_i64_const(buf, 1)
+        rc_exit_truncate(ctx = ctx, mark = xmark)
+        emit_local_get(buf = buf, idx = local_idx)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_or(buf)
-        emit_call(buf, ctx.rc_drop_func_idx)
+        emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
         nl2
       } else {
-        emit_global_get(buf, 0)
+        emit_global_get(buf = buf, idx = 0)
         emit_i64_extend_i32_u(buf)
-        emit_local_tee(buf, local_idx)
+        emit_local_tee(buf = buf, idx = local_idx)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 8)
+        emit_i32_const(buf = buf, value = 8)
         emit_i32_add(buf)
-        emit_global_set(buf, 0)
-        emit_heap_grow_after_heap_set(buf, ctx)
-        emit_local_get(buf, local_idx)
+        emit_global_set(buf = buf, idx = 0)
+        emit_heap_grow_after_heap_set(buf = buf, ctx = ctx)
+        emit_local_get(buf = buf, idx = local_idx)
         emit_i32_wrap_i64(buf)
         let nl = compile_expr(buf, if ctx.enable_rc {
-          rc_mut_rec_transfer_value(value, local_names, ctx, [])
+          rc_mut_rec_transfer_value(e = value, local_names = local_names, ctx = ctx, shadowed = [])
         } else {
           value
         }, local_names, next_local + 1, ctx, ld)
-        Array::set(local_names, local_idx, name)
-        emit_i64_store(buf, 3, 0)
+        Array::set(local_names, at = local_idx, value = name)
+        emit_i64_store(buf = buf, align = 3, offset = 0)
         let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
         nl2
       }
@@ -923,14 +923,14 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // #3190: and the same retain of the tails the plan's store rows name
       // (`let_retain_store_dup_tails`), read by the ownership classifiers
       // below as the ELet arm reads it.
-      let value_sd = let_retain_store_dup_tails(value, local_names, ctx)
-      let value_for_compile = retain_wrap_let_value(value_sd, name, local_names, ctx)
+      let value_sd = let_retain_store_dup_tails(value = value, local_names = local_names, ctx = ctx)
+      let value_for_compile = retain_wrap_let_value(value = value_sd, name = name, local_names = local_names, ctx = ctx)
       let nl = compile_expr(buf, if ctx.enable_rc {
-        rc_mut_rec_transfer_value(value_for_compile, local_names, ctx, [])
+        rc_mut_rec_transfer_value(e = value_for_compile, local_names = local_names, ctx = ctx, shadowed = [])
       } else {
         value_for_compile
       }, local_names, next_local + 1, ctx, ld)
-      emit_local_set(buf, local_idx)
+      emit_local_set(buf = buf, idx = local_idx)
       // #791: classify AFTER the value is compiled + stored (local_idx now
       // holds it), matching ELet's ordering -- classify_let_value_heap's
       // is_edot/is_eident-alias branches emit an immediate guarded dup
@@ -940,7 +940,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // uses -- this used to be a narrower, hand-duplicated condition list
       // that repeatedly drifted out of sync with ELet's (the #715/#791 bug
       // family); sharing one function makes that drift impossible.
-      let (_mut_rc_kind, _mut_is_borrow_ret_ext) = classify_let_value_heap(buf, value_sd, name, local_idx, local_names, ctx)
+      let (_mut_rc_kind, _mut_is_borrow_ret_ext) = classify_let_value_heap(buf = buf, value = value_sd, name = name, local_idx = local_idx, local_names = local_names, ctx = ctx)
       // #3168: a parameterized loop's result slot starts as a `0`
       // placeholder, which classifies it scalar, while each `break v` stores
       // a value of the loop's type. Classified from the placeholder, a store
@@ -951,14 +951,14 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // the EAssign lowering retains an unowned store, and the scope end
       // drops what it holds when the plan says the result is not handed out
       // (`perceus_loop_result_slot`, which classifies the slot the same way).
-      let loop_slot = ctx.enable_rc && perceus_loop_result_slot(name, value, body)
-      if loop_slot && !array_contains_str(ctx.heap_binding_names, name) {
-        Array::push(ctx.heap_binding_names, name)
+      let loop_slot = ctx.enable_rc && perceus_loop_result_slot(name = name, value = value, body = body)
+      if loop_slot && !array_contains_str(arr = ctx.heap_binding_names, s = name) {
+        Array::push(ctx.heap_binding_names, value = name)
       } else {
         ()
       }
       if loop_slot {
-        Array::push(ctx.rc_loop_result_slots, name)
+        Array::push(ctx.rc_loop_result_slots, value = name)
       } else {
         ()
       }
@@ -973,10 +973,10 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // straight-line spine leaf rather than `_mut_is_borrow_ret_ext`, whose
       // wrapper answer is broader (branches, projections, aliases) than the
       // plan's.
-      let spine_retained = ctx.enable_rc && spine_leaf_unowned(value, local_names, ctx)
+      let spine_retained = ctx.enable_rc && spine_leaf_unowned(value = value, local_names = local_names, ctx = ctx)
       if spine_retained {
-        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
-        Array::push(ctx.heap_binding_names, name)
+        emit_rc_dup_guarded(buf = buf, local_idx = local_idx, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+        Array::push(ctx.heap_binding_names, value = name)
       } else {
         ()
       }
@@ -988,13 +988,13 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // treats the slot as owning; without the retain its scope end, or the
       // owning use its value was handed to, released the view's owner's
       // reference.
-      let init_retained = ctx.enable_rc && !spine_retained && (assign_ident_is_view(value, local_names, ctx) || assign_ident_store_dup(value, local_names, ctx))
+      let init_retained = ctx.enable_rc && !spine_retained && (assign_ident_is_view(value = value, local_names = local_names, ctx = ctx) || assign_ident_store_dup(value = value, local_names = local_names, ctx = ctx))
       if init_retained {
-        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
-        if array_contains_str(ctx.heap_binding_names, name) {
+        emit_rc_dup_guarded(buf = buf, local_idx = local_idx, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+        if array_contains_str(arr = ctx.heap_binding_names, s = name) {
           ()
         } else {
-          Array::push(ctx.heap_binding_names, name)
+          Array::push(ctx.heap_binding_names, value = name)
         }
       } else {
         ()
@@ -1005,19 +1005,19 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // binder is still masked) -- so that every store after this one keeps
       // the slot owning (compile_expr_tail's EAssign arm, and the plan's
       // `pe_emit_exit_rows` for what it then holds).
-      let exit_owned = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && (spine_retained || init_retained || (_mut_rc_kind > 0 && rc_exit_value_owned(ctx, local_names, value_sd)))
+      let exit_owned = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && (spine_retained || init_retained || (_mut_rc_kind > 0 && rc_exit_value_owned(ctx = ctx, local_names = local_names, value = value_sd)))
       // `let mut peek = peek(xs, 0)` calls the outer `peek`. Both ownership
       // classifiers above must see that same scope, even though the value
       // has already been stored so their retains can target local_idx.
-      Array::set(local_names, local_idx, name)
+      Array::set(local_names, at = local_idx, value = name)
       // A mutable binding may hold a different value on every path through
       // its body. Move its planned dups to the owning use sites only when
       // every row has an identifiable source occurrence.
       let mut_use_mark = Array::length(ctx.rc_mut_use_names)
-      let mut mut_use_sites = ctx.enable_rc && !array_contains_str(ctx.ref_cell_names, name)
+      let mut mut_use_sites = ctx.enable_rc && !array_contains_str(arr = ctx.ref_cell_names, s = name)
       let mut mdi = 0
       while mdi < Array::length(ctx.rc_dup_names) {
-        if Array::get(ctx.rc_dup_names, mdi) == name && Array::get(ctx.rc_dup_offsets, mdi) < 0 {
+        if Array::get(ctx.rc_dup_names, at = mdi) == name && Array::get(ctx.rc_dup_offsets, at = mdi) < 0 {
           mut_use_sites = false
         } else {
           ()
@@ -1029,7 +1029,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // drop row; no use-site dup has run yet on an exit before those uses.
       let mut mei = 0
       while mei < Array::length(ctx.rc_exit_plan_names) {
-        if Array::get(ctx.rc_exit_plan_names, mei) == name && Array::get(ctx.rc_exit_plan_info, mei * 4) == 1 {
+        if Array::get(ctx.rc_exit_plan_names, at = mei) == name && Array::get(ctx.rc_exit_plan_info, at = mei * 4) == 1 {
           mut_use_sites = false
         } else {
           ()
@@ -1037,7 +1037,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         mei = mei + 1
       }
       if mut_use_sites {
-        Array::push(ctx.rc_mut_use_names, name)
+        Array::push(ctx.rc_mut_use_names, value = name)
       } else {
         ()
       }
@@ -1058,8 +1058,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       if ctx.enable_rc && !mut_use_sites {
         let mut mdbi = 0
         while mdbi < Array::length(ctx.rc_dup_names) {
-          if Array::get(ctx.rc_dup_names, mdbi) == name {
-            emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+          if Array::get(ctx.rc_dup_names, at = mdbi) == name {
+            emit_rc_dup_guarded(buf = buf, local_idx = local_idx, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
           } else {
             ()
           }
@@ -1072,39 +1072,39 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // that point, as many times as the plan's row says.
       let xmark = Array::length(ctx.rc_exit_stack_names)
       if exit_owned {
-        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 0, local_idx, 0 - 1)
+        rc_exit_push(names = ctx.rc_exit_stack_names, info = ctx.rc_exit_stack_info, name = name, kind = 0, local = local_idx, flag = 0 - 1)
       } else {
         ()
       }
       let source_mark = Array::length(ctx.rc_exit_result_stores)
       if ctx.enable_rc {
-        Array::push(ctx.rc_exit_result_stores, (name, value_sd))
+        Array::push(ctx.rc_exit_result_stores, value = (name, value_sd))
       }
       let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
-      Array::truncate(ctx.rc_exit_result_stores, source_mark)
-      Array::truncate(ctx.rc_mut_use_names, mut_use_mark)
+      Array::truncate(ctx.rc_exit_result_stores, length = source_mark)
+      Array::truncate(ctx.rc_mut_use_names, length = mut_use_mark)
       if exit_owned {
-        rc_exit_truncate(ctx, xmark)
+        rc_exit_truncate(ctx = ctx, mark = xmark)
       } else {
         ()
       }
       if loop_slot {
-        Array::truncate(ctx.rc_loop_result_slots, Array::length(ctx.rc_loop_result_slots) - 1)
+        Array::truncate(ctx.rc_loop_result_slots, length = Array::length(ctx.rc_loop_result_slots) - 1)
       } else {
         ()
       }
-      if ctx.enable_rc && array_contains_str(ctx.heap_binding_names, name) && array_contains_str(ctx.rc_drop_names, name) && ctx.rc_drop_func_idx >= 0 {
+      if ctx.enable_rc && array_contains_str(arr = ctx.heap_binding_names, s = name) && array_contains_str(arr = ctx.rc_drop_names, s = name) && ctx.rc_drop_func_idx >= 0 {
         if scope_tail_proj_root(body) == name {
-          emit_local_set(buf, nl2)
-          emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow, ctx.rc_dup_func_idx)
-          emit_local_get(buf, local_idx)
-          emit_call(buf, ctx.rc_drop_func_idx)
-          emit_local_get(buf, nl2)
-          cet_record_local_slot(local_names, nl2)
+          emit_local_set(buf = buf, idx = nl2)
+          emit_rc_dup_guarded(buf = buf, local_idx = nl2, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+          emit_local_get(buf = buf, idx = local_idx)
+          emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+          emit_local_get(buf = buf, idx = nl2)
+          cet_record_local_slot(local_names = local_names, slot = nl2)
           nl2 + 1
         } else {
-          emit_local_get(buf, local_idx)
-          emit_call(buf, ctx.rc_drop_func_idx)
+          emit_local_get(buf = buf, idx = local_idx)
+          emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
           nl2
         }
       } else {
@@ -1115,79 +1115,79 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let name = get_eassign_name(expr)
     let value = get_eassign_val(expr)
     let body = get_eassign_body(expr)
-    let idx = resolve_local(local_names, name, "assign")
-    if seq_lambda_returns_owned(cet_strip_owned_markers(value), local_names, ctx) {
-      Array::push(ctx.seq_owned_return_slots, idx * 2 + 1)
-    } else if seq_local_call_owns_result(ctx, idx) {
-      Array::push(ctx.seq_owned_return_slots, idx * 2)
+    let idx = resolve_local(names = local_names, name = name, tag = "assign")
+    if seq_lambda_returns_owned(value = cet_strip_owned_markers(value), local_names = local_names, ctx = ctx) {
+      Array::push(ctx.seq_owned_return_slots, value = idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx = ctx, slot = idx) {
+      Array::push(ctx.seq_owned_return_slots, value = idx * 2)
     }
-    if array_contains_str(ctx.ref_cell_names, name) && ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    if array_contains_str(arr = ctx.ref_cell_names, s = name) && ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
       // #3113: the RC cell owns its payload (its drop releases it), and
       // cl_own_cell_stmts has already made the stored value an owned one. So
       // the assignment replaces one owned reference with another: compute the
       // new value first -- it may read the cell -- then store it and release
       // the old payload, which no longer has an owner.
-      let vnl = compile_expr(buf, rc_mut_rec_transfer_value(value, local_names, ctx, [
+      let vnl = compile_expr(buf, rc_mut_rec_transfer_value(e = value, local_names = local_names, ctx = ctx, shadowed = [
       ]), local_names, next_local, ctx, ld)
       // Expression compilation can reserve unnamed scratch slots; claim two
       // past them, the way the lambda-return marker does.
       let new_l = vnl
       let old_l = vnl + 1
-      cet_record_local_slot(local_names, old_l)
+      cet_record_local_slot(local_names = local_names, slot = old_l)
       let nl = vnl + 2
-      emit_local_set(buf, new_l)
-      emit_local_get(buf, idx)
+      emit_local_set(buf = buf, idx = new_l)
+      emit_local_get(buf = buf, idx = idx)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 0)
-      emit_local_set(buf, old_l)
-      emit_local_get(buf, idx)
+      emit_i64_load(buf = buf, align = 3, offset = 0)
+      emit_local_set(buf = buf, idx = old_l)
+      emit_local_get(buf = buf, idx = idx)
       emit_i32_wrap_i64(buf)
-      emit_local_get(buf, new_l)
-      emit_i64_store(buf, 3, 0)
-      emit_local_get(buf, old_l)
-      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_local_get(buf = buf, idx = new_l)
+      emit_i64_store(buf = buf, align = 3, offset = 0)
+      emit_local_get(buf = buf, idx = old_l)
+      emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
       compile_expr(buf, body, local_names, nl, ctx, ld)
-    } else if array_contains_str(ctx.ref_cell_names, name) {
-      emit_local_get(buf, idx)
+    } else if array_contains_str(arr = ctx.ref_cell_names, s = name) {
+      emit_local_get(buf = buf, idx = idx)
       emit_i32_wrap_i64(buf)
       let nl = compile_expr(buf, if ctx.enable_rc {
-        rc_mut_rec_transfer_value(value, local_names, ctx, [])
+        rc_mut_rec_transfer_value(e = value, local_names = local_names, ctx = ctx, shadowed = [])
       } else {
         value
       }, local_names, next_local, ctx, ld)
-      emit_i64_store(buf, 3, 0)
+      emit_i64_store(buf = buf, align = 3, offset = 0)
       compile_expr(buf, body, local_names, nl, ctx, ld)
     } else {
-      let is_heap_mut = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.heap_binding_names, name)
-      let is_self = assign_value_mentions(value, name)
-      if is_heap_mut && is_self && reassign_self_reusable(value, name) {
+      let is_heap_mut = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(arr = ctx.heap_binding_names, s = name)
+      let is_self = assign_value_mentions(value = value, name = name)
+      if is_heap_mut && is_self && reassign_self_reusable(value = value, name = name) {
         let old_temp = next_local
         let scratch = next_local + 1
         let base = next_local + 2
-        emit_local_get(buf, idx)
-        emit_local_set(buf, old_temp)
+        emit_local_get(buf = buf, idx = idx)
+        emit_local_set(buf = buf, idx = old_temp)
         let elems = get_etuple_elems(value)
         let mut ei = 0
         while ei < Array::length(elems) {
-          let elem = Array::get(elems, ei)
+          let elem = Array::get(elems, at = ei)
           if (is_eident(elem) && get_eident_name(elem) == name) || (is_edot(elem) && proj_root_ident(elem) == name) {
             let _ = compile_expr(buf, elem, local_names, base, ctx, ld)
-            emit_local_set(buf, scratch)
-            emit_rc_dup_guarded(buf, scratch, ctx.rc_shadow, ctx.rc_dup_func_idx)
+            emit_local_set(buf = buf, idx = scratch)
+            emit_rc_dup_guarded(buf = buf, local_idx = scratch, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
           } else {
             ()
           }
           ei = ei + 1
         }
         let nl = compile_expr(buf, value, local_names, base, ctx, ld)
-        emit_local_set(buf, idx)
-        emit_local_get(buf, old_temp)
-        emit_call(buf, ctx.rc_drop_func_idx)
+        emit_local_set(buf = buf, idx = idx)
+        emit_local_get(buf = buf, idx = old_temp)
+        emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
         // #3141: an early exit in the continuation must not release what
         // the stored value may still read (see rc_exit_note_store).
-        let xtok = rc_exit_note_store(ctx, local_names, value)
+        let xtok = rc_exit_note_store(ctx = ctx, local_names = local_names, value = value)
         let rnl = compile_expr(buf, body, local_names, nl, ctx, ld)
-        rc_exit_end_store(ctx, xtok)
+        rc_exit_end_store(ctx = ctx, token = xtok)
         rnl
       } else {
         // #3184: a slot that owns what it holds must take a reference of its
@@ -1202,7 +1202,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // through the name's own local BEFORE the old value is released, so a
         // name viewing into the slot's old value survives that release.
         let slot_owning = is_heap_mut || (ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && is_loop_result_slot(name))
-        let store_retain = !is_self && ((slot_owning && assign_ident_is_view(value, local_names, ctx)) || assign_ident_store_dup(value, local_names, ctx))
+        let store_retain = !is_self && ((slot_owning && assign_ident_is_view(value = value, local_names = local_names, ctx = ctx)) || assign_ident_store_dup(value = value, local_names = local_names, ctx = ctx))
         // #3184: a branch or block tail of the value is a store of its own:
         // one naming an owned binding from outside the loop retains where the
         // plan's `PaStoreDup` row says (`assign_retain_store_dup_tails`,
@@ -1210,12 +1210,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // a conditional stored into an owning slot retains the branches that
         // hand back a view, and only those (`assign_retain_view_tails`).
         let value = if ctx.enable_rc && !is_eident(value) && Array::length(ctx.rc_store_dup_names) > 0 {
-          assign_retain_store_dup_tails(value, local_names, array_empty(), ctx)
+          assign_retain_store_dup_tails(e = value, local_names = local_names, inner = array_empty(), ctx = ctx)
         } else {
           value
         }
-        let value = if slot_owning && !is_self && is_branching_value(mib_spine_leaf(value, array_empty())) {
-          assign_retain_view_tails(value, local_names, array_empty(), array_empty(), ctx)
+        let value = if slot_owning && !is_self && is_branching_value(mib_spine_leaf(e = value, binders = array_empty())) {
+          assign_retain_view_tails(e = value, local_names = local_names, inner = array_empty(), inner_owned = array_empty(), ctx = ctx)
         } else {
           value
         }
@@ -1225,13 +1225,13 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // before.
         let tails_retained = assign_tails_retained(value)
         if store_retain {
-          emit_rc_dup_guarded(buf, find_local_slot(local_names, get_eident_name(value)), ctx.rc_shadow, ctx.rc_dup_func_idx)
+          emit_rc_dup_guarded(buf = buf, local_idx = find_local_slot(names = local_names, name = get_eident_name(value)), rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
         } else {
           ()
         }
         if is_heap_mut && !is_self && !tails_retained {
-          emit_local_get(buf, idx)
-          emit_call(buf, ctx.rc_drop_func_idx)
+          emit_local_get(buf = buf, idx = idx)
+          emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
         } else {
           ()
         }
@@ -1242,7 +1242,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // loop_borrowed_names, restored after, the #712 mechanism): the
         // old value is consumed and the binding takes the result, so
         // nothing carries across the back-edge but the new value.
-        let self_moves = is_heap_mut && is_self && md_self_reassign_move_arg(value, name, ctx.borrow_param_user, ctx.borrow_param_mask)
+        let self_moves = is_heap_mut && is_self && md_self_reassign_move_arg(value = value, name = name, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
         let mut sm_removed = 0
         if self_moves {
           let lb_arr = ctx.loop_borrowed_names
@@ -1250,32 +1250,32 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
           let mut lb_w = 0
           let mut lb_i = 0
           while lb_i < lb_n {
-            let e = Array::get(lb_arr, lb_i)
+            let e = Array::get(lb_arr, at = lb_i)
             if e == name {
               sm_removed = sm_removed + 1
             } else {
-              Array::set(lb_arr, lb_w, e)
+              Array::set(lb_arr, at = lb_w, value = e)
               lb_w = lb_w + 1
             }
             lb_i = lb_i + 1
           }
-          Array::truncate(lb_arr, lb_w)
+          Array::truncate(lb_arr, length = lb_w)
         } else {
           ()
         }
         let value_for_compile = if ctx.enable_rc && slot_owning {
-          rc_mut_rec_transfer_value(value, local_names, ctx, [])
+          rc_mut_rec_transfer_value(e = value, local_names = local_names, ctx = ctx, shadowed = [])
         } else {
           value
         }
         let nl = compile_expr(buf, value_for_compile, local_names, next_local, ctx, ld)
         while sm_removed > 0 {
-          Array::push(ctx.loop_borrowed_names, name)
+          Array::push(ctx.loop_borrowed_names, value = name)
           sm_removed = sm_removed - 1
         }
         if is_heap_mut && !is_self && tails_retained {
-          emit_local_get(buf, idx)
-          emit_call(buf, ctx.rc_drop_func_idx)
+          emit_local_get(buf = buf, idx = idx)
+          emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
         } else {
           ()
         }
@@ -1326,9 +1326,9 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         let replacement_unowned = if !slot_owning {
           false
         } else if is_self {
-          is_heap_mut && (call_returns_borrow(value, local_names, ctx) || (spine_leaf_unowned(value, local_names, ctx) && assign_slot_short_after_store(name, body, ctx)))
+          is_heap_mut && (call_returns_borrow(value = value, local_names = local_names, ctx = ctx) || (spine_leaf_unowned(value = value, local_names = local_names, ctx = ctx) && assign_slot_short_after_store(name = name, body = body, ctx = ctx)))
         } else {
-          cc_is_borrowed_projection(value, ctx) || call_returns_borrow(value, local_names, ctx) || spine_leaf_unowned(value, local_names, ctx) || spine_leaf_ident_view(value, local_names, ctx)
+          cc_is_borrowed_projection(e = value, ctx = ctx) || call_returns_borrow(value = value, local_names = local_names, ctx = ctx) || spine_leaf_unowned(value = value, local_names = local_names, ctx = ctx) || spine_leaf_ident_view(value = value, local_names = local_names, ctx = ctx)
         }
         // #2786, the release half. A slot that ACQUIRES its replacement has to
         // let go of what it held, or the retain trades a use-after-free for a
@@ -1365,38 +1365,38 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // operator's result is never derived from its operands' blocks (an
         // Int, a Bool or a fresh box), so the second guard does not apply to
         // it; the consume count still does.
-        let leaf = mib_spine_leaf(value, array_empty())
+        let leaf = mib_spine_leaf(e = value, binders = array_empty())
         let fresh_operator_leaf = match leaf {
           EBinOp(_, _, _, _) => true,
           EUnaryOp(_, _) => true,
           _ => false
         }
-        let fresh_scalar_array_leaf = reassign_fresh_scalar_array(leaf, local_names, ctx)
-        let release_old = is_self && (replacement_unowned || fresh_operator_leaf || fresh_scalar_array_leaf) && is_heap_mut && ctx.rc_drop_func_idx >= 0 && md_consume_count_b(value, name, ctx.borrow_param_user, ctx.borrow_param_mask) == 0 && (fresh_operator_leaf || fresh_scalar_array_leaf || !assign_value_mentions(leaf, name))
+        let fresh_scalar_array_leaf = reassign_fresh_scalar_array(value = leaf, local_names = local_names, ctx = ctx)
+        let release_old = is_self && (replacement_unowned || fresh_operator_leaf || fresh_scalar_array_leaf) && is_heap_mut && ctx.rc_drop_func_idx >= 0 && md_consume_count_b(e = value, name = name, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask) == 0 && (fresh_operator_leaf || fresh_scalar_array_leaf || !assign_value_mentions(value = leaf, name = name))
         let nl_after = if release_old {
-          emit_local_get(buf, idx)
-          emit_local_set(buf, nl)
-          cet_record_local_slot(local_names, nl)
+          emit_local_get(buf = buf, idx = idx)
+          emit_local_set(buf = buf, idx = nl)
+          cet_record_local_slot(local_names = local_names, slot = nl)
           nl + 1
         } else {
           nl
         }
-        emit_local_set(buf, idx)
+        emit_local_set(buf = buf, idx = idx)
         // #3168: a parameterized loop's result slot owns what its `break v`
         // stores, and the loop hands that on (or its scope end releases it).
         // A value the exit operand's test cannot vouch for as owned -- a
         // borrowed `let` alias, a pattern binder, a `for` element -- is
         // retained, the direction that can only leak.
-        let conditional_break_rec = is_loop_result_slot(name) && rc_exit_break_result_owns_rec(get_eassign_val(expr), local_names, ctx)
-        let slot_retain = is_heap_mut && !replacement_unowned && !store_retain && !tails_retained && array_contains_str(ctx.rc_loop_result_slots, name) && !conditional_break_rec && !rc_exit_value_owned(ctx, local_names, value)
+        let conditional_break_rec = is_loop_result_slot(name) && rc_exit_break_result_owns_rec(value = get_eassign_val(expr), local_names = local_names, ctx = ctx)
+        let slot_retain = is_heap_mut && !replacement_unowned && !store_retain && !tails_retained && array_contains_str(arr = ctx.rc_loop_result_slots, s = name) && !conditional_break_rec && !rc_exit_value_owned(ctx = ctx, local_names = local_names, value = value)
         if replacement_unowned || slot_retain {
-          emit_rc_dup_guarded(buf, idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+          emit_rc_dup_guarded(buf = buf, local_idx = idx, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
         } else {
           ()
         }
         if release_old {
-          emit_local_get(buf, nl)
-          emit_call(buf, ctx.rc_drop_func_idx)
+          emit_local_get(buf = buf, idx = nl)
+          emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
         } else {
           ()
         }
@@ -1440,11 +1440,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // (mirroring the `!is_self` path) fixes it: at worst an extra dup on
         // an already-dead reference (a leak, per the trade-off above), never
         // a missing one.
-        if ctx.enable_rc && is_heap_mut && !array_contains_str(ctx.rc_mut_use_names, name) {
+        if ctx.enable_rc && is_heap_mut && !array_contains_str(arr = ctx.rc_mut_use_names, s = name) {
           let mut adbi = 0
           while adbi < Array::length(ctx.rc_dup_names) {
-            if Array::get(ctx.rc_dup_names, adbi) == name {
-              emit_rc_dup_guarded(buf, idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+            if Array::get(ctx.rc_dup_names, at = adbi) == name {
+              emit_rc_dup_guarded(buf = buf, local_idx = idx, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
             } else {
               ()
             }
@@ -1459,15 +1459,15 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         let xtok = if replacement_unowned || store_retain || slot_retain {
           0 - 1
         } else {
-          rc_exit_note_store(ctx, local_names, value)
+          rc_exit_note_store(ctx = ctx, local_names = local_names, value = value)
         }
         let result_store_mark = Array::length(ctx.rc_exit_result_stores)
         if ctx.enable_rc && is_loop_result_slot(name) {
-          Array::push(ctx.rc_exit_result_stores, (name, get_eassign_val(expr)))
+          Array::push(ctx.rc_exit_result_stores, value = (name, get_eassign_val(expr)))
         }
         let rnl = compile_expr(buf, body, local_names, nl_after, ctx, ld)
-        Array::truncate(ctx.rc_exit_result_stores, result_store_mark)
-        rc_exit_end_store(ctx, xtok)
+        Array::truncate(ctx.rc_exit_result_stores, length = result_store_mark)
+        rc_exit_end_store(ctx = ctx, token = xtok)
         rnl
       }
     }
@@ -1476,38 +1476,38 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     let op = get_eassignop_op(expr)
     let value = get_eassignop_val(expr)
     let body = get_eassignop_body(expr)
-    let idx = resolve_local(local_names, name, "assignop")
-    if (op == "+" || op == "-" || op == "*" || op == "/") && (slot_is_floatish(ctx, idx) || expr_is_floatish(value, local_names, ctx)) {
+    let idx = resolve_local(names = local_names, name = name, tag = "assignop")
+    if (op == "+" || op == "-" || op == "*" || op == "/") && (slot_is_floatish(ctx = ctx, slot = idx) || expr_is_floatish(raw_e = value, local_names = local_names, ctx = ctx)) {
       // Reuse the ordinary Double binop and assignment paths. They unbox the
       // operands, rebox the result under RC, and release the old owned slot.
       compile_expr(buf, EAssign(name, EBinOp(op, EIdent(name, -1), value, -1), body, -1), local_names, next_local, ctx, ld)
-    } else if array_contains_str(ctx.ref_cell_names, name) {
-      emit_local_get(buf, idx)
+    } else if array_contains_str(arr = ctx.ref_cell_names, s = name) {
+      emit_local_get(buf = buf, idx = idx)
       emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx)
+      emit_local_get(buf = buf, idx = idx)
       emit_i32_wrap_i64(buf)
-      emit_i64_load(buf, 3, 0)
-      emit_assignop_rc_mul_pre(buf, ctx.enable_rc, op)
-      let nl = emit_int_div_zero_guard(buf, op, value, first_offset(value), ctx, local_names, compile_expr(buf, value, local_names, next_local, ctx, ld))
-      emit_assignop_op(buf, op)
-      emit_assignop_rc_tag_fix(buf, ctx.enable_rc, op)
-      emit_arith_wrap_int(buf, ctx.enable_rc, op)
-      emit_i64_store(buf, 3, 0)
+      emit_i64_load(buf = buf, align = 3, offset = 0)
+      emit_assignop_rc_mul_pre(buf = buf, enable_rc = ctx.enable_rc, op = op)
+      let nl = emit_int_div_zero_guard(buf = buf, op = op, divisor = value, site_off = first_offset(value), ctx = ctx, local_names = local_names, slot = compile_expr(buf, value, local_names, next_local, ctx, ld))
+      emit_assignop_op(buf = buf, op = op)
+      emit_assignop_rc_tag_fix(buf = buf, enable_rc = ctx.enable_rc, op = op)
+      emit_arith_wrap_int(buf = buf, enable_rc = ctx.enable_rc, op = op)
+      emit_i64_store(buf = buf, align = 3, offset = 0)
       compile_expr(buf, body, local_names, nl, ctx, ld)
     } else {
-      emit_local_get(buf, idx)
-      emit_assignop_rc_mul_pre(buf, ctx.enable_rc, op)
-      let nl = emit_int_div_zero_guard(buf, op, value, first_offset(value), ctx, local_names, compile_expr(buf, value, local_names, next_local, ctx, ld))
-      emit_assignop_op(buf, op)
-      emit_assignop_rc_tag_fix(buf, ctx.enable_rc, op)
-      emit_arith_wrap_int(buf, ctx.enable_rc, op)
-      emit_local_set(buf, idx)
+      emit_local_get(buf = buf, idx = idx)
+      emit_assignop_rc_mul_pre(buf = buf, enable_rc = ctx.enable_rc, op = op)
+      let nl = emit_int_div_zero_guard(buf = buf, op = op, divisor = value, site_off = first_offset(value), ctx = ctx, local_names = local_names, slot = compile_expr(buf, value, local_names, next_local, ctx, ld))
+      emit_assignop_op(buf = buf, op = op)
+      emit_assignop_rc_tag_fix(buf = buf, enable_rc = ctx.enable_rc, op = op)
+      emit_arith_wrap_int(buf = buf, enable_rc = ctx.enable_rc, op = op)
+      emit_local_set(buf = buf, idx = idx)
       compile_expr(buf, body, local_names, nl, ctx, ld)
     }
   } else if __tag == 14 {
     let first = get_eseq_first(expr)
     let second = get_eseq_second(expr)
-    emit_dbg_line_for(buf, first, ctx)
+    emit_dbg_line_for(buf = buf, value = first, ctx = ctx)
     // #1916: a `for` at the head of a sequence is statement-shaped (same
     // classification the checker uses, #1679) -- its comprehension result is
     // discarded right here by the emit_drop below, so compile it in the
@@ -1515,17 +1515,17 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // `forin_is_discarded_seq_head` is shared with the captured-cell marker
     // (cl_own_cells), which must not retain a body value this form drops.
     let nl = if forin_is_discarded_seq_head(first) {
-      compile_forin_loop(buf, first, local_names, next_local, ctx, ld, compile_expr, false)
+      compile_forin_loop(buf = buf, expr = first, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, compile_expr = compile_expr, collect = false)
     } else {
       compile_expr(buf, first, local_names, next_local, ctx, ld)
     }
-    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && seq_discard_owns_result(first, local_names, ctx) {
-      emit_call(buf, ctx.rc_drop_func_idx)
+    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && seq_discard_owns_result(e = first, local_names = local_names, ctx = ctx) {
+      emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
     } else {
       emit_drop(buf)
     }
     compile_expr(buf, second, local_names, nl, ctx, ld)
   } else {
-    compile_expr_tail2(buf, expr, local_names, next_local, ctx, ld, compile_expr)
+    compile_expr_tail2(buf = buf, expr = expr, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, compile_expr = compile_expr)
   }
 }

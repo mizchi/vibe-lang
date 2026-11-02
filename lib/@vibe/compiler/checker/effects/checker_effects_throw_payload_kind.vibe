@@ -71,15 +71,15 @@ import ./checker_effects_mutability_expr_into.vibe {
 
 export fn row_scope_pop() -> Unit {
   if Array::length(row_formal_scope) > 0 {
-    Array::truncate(row_formal_scope, Array::length(row_formal_scope) - 1)
+    Array::truncate(row_formal_scope, length = Array::length(row_formal_scope) - 1)
   }
 }
 
-export fn tparam_names(tparams: Array[String]) -> Array[String] {
+export fn tparam_names(_ tparams: Array[String]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(tparams) {
-    Array::push(out, type_param_name(Array::get(tparams, i)))
+    Array::push(out, value = type_param_name(Array::get(tparams, at = i)))
     i = i + 1
   }
   out
@@ -91,8 +91,8 @@ export fn tparam_names(tparams: Array[String]) -> Array[String] {
 /// other requirement has none and is never judged by `row_label_args_differ`.
 export let requirement_marked_cell: Array[(String, String)] = [("", "")]
 
-export fn requirement_marked_for(eff_name: String) -> String {
-  let (printed, marked) = Array::get(requirement_marked_cell, 0)
+export fn requirement_marked_for(_ eff_name: String) -> String {
+  let (printed, marked) = Array::get(requirement_marked_cell, at = 0)
   if String::length(printed) > 0 && printed == eff_name {
     marked
   } else {
@@ -100,7 +100,7 @@ export fn requirement_marked_for(eff_name: String) -> String {
   }
 }
 
-fn builtin_row_type_name(w: String) -> Bool {
+fn builtin_row_type_name(_ w: String) -> Bool {
   w == "Int" || w == "String" || w == "Bool" || w == "Double" || w == "Char" || w == "Bytes" || w == "Unit" || w == "Array" || w == "Option"
 }
 
@@ -118,7 +118,7 @@ enum RowTy {
 
 /// Split a row argument text (spaces removed) into words and `[ ] , ( )`;
 /// a word keeps a leading `'`, `^` or `^^` mark. None for any other character.
-fn row_ty_tokens(t: String) -> Option[Array[String]] {
+fn row_ty_tokens(_ t: String) -> Option[Array[String]] {
   let out = array_empty()
   let n = String::length(t)
   let mut ok = true
@@ -126,14 +126,14 @@ fn row_ty_tokens(t: String) -> Option[Array[String]] {
   let mut i = 0
   while i <= n && ok {
     let c = if i < n {
-      String::char_code_at(t, i)
+      String::char_code_at(t, at = i)
     } else {
       0
     }
     let word = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36 || c == 126
     let mark = c == 39 || c == 94
     if word || mark {
-      let enum_mark = c == 94 && start >= 0 && i == start + 1 && String::char_code_at(t, start) == 94
+      let enum_mark = c == 94 && start >= 0 && i == start + 1 && String::char_code_at(t, at = start) == 94
       if mark && start >= 0 && !enum_mark {
         ok = false
       } else if start < 0 {
@@ -143,14 +143,14 @@ fn row_ty_tokens(t: String) -> Option[Array[String]] {
       }
     } else {
       if start >= 0 {
-        Array::push(out, String::substring(t, start, i))
+        Array::push(out, value = String::substring(t, start = start, end = i))
         start = 0 - 1
       } else {
         ()
       }
       if i < n {
         if c == 91 || c == 93 || c == 44 || c == 40 || c == 41 {
-          Array::push(out, String::substring(t, i, i + 1))
+          Array::push(out, value = String::substring(t, start = i, end = i + 1))
         } else {
           ok = false
         }
@@ -174,45 +174,45 @@ fn row_ty_tokens(t: String) -> Option[Array[String]] {
 /// row as written, which may have been written OUTSIDE a nested binder that
 /// now stands between -- so a word any nested binder rebinds is not read.
 fn row_word_class(w: String, mode: Int, nargs: Int) -> RowTy {
-  let nominals = Array::get(row_nominal_types_cell, 0)
+  let nominals = Array::get(row_nominal_types_cell, at = 0)
   if w == "_" {
     RtWild
   } else if mode == 2 {
     if row_scope_nested_binds(w) {
       RtIndet
     } else {
-      row_word_class(w, 0, nargs)
+      row_word_class(w = w, mode = 0, nargs = nargs)
     }
   } else if mode == 0 {
-    if String::starts_with(w, "^") {
+    if String::starts_with(w, prefix = "^") {
       // #3351: an imported callback row's struct, marked by its exporter
       // (`publish_row_nominals`); an enum's `^^Name` has the same authority.
-      row_word_class(w, 1, nargs)
+      row_word_class(w = w, mode = 1, nargs = nargs)
     } else if row_scope_has(w) {
       if nargs == 0 {
         RtFormal(row_declared_formal(w))
       } else {
         RtIndet
       }
-    } else if builtin_row_type_name(w) || str_labels_contain(nominals, w) {
+    } else if builtin_row_type_name(w) || str_labels_contain(xs = nominals, x = w) {
       RtHead(w, [])
     } else {
       RtIndet
     }
-  } else if String::starts_with(w, "'") {
-    let f = row_required_formal(String::substring(w, 1, String::length(w)))
+  } else if String::starts_with(w, prefix = "'") {
+    let f = row_required_formal(String::substring(w, start = 1, end = String::length(w)))
     if nargs == 0 && String::length(f) > 0 {
       RtFormal(f)
     } else {
       RtIndet
     }
-  } else if String::starts_with(w, "^") {
-    let start = if String::starts_with(w, "^^") {
+  } else if String::starts_with(w, prefix = "^") {
+    let start = if String::starts_with(w, prefix = "^^") {
       2
     } else {
       1
     }
-    let h = String::substring(w, start, String::length(w))
+    let h = String::substring(w, start = start, end = String::length(w))
     // The exporter already resolved this name. Neither a missing local import
     // nor a same-named local formal can change that declaration's identity.
     if String::length(h) > 0 {
@@ -220,7 +220,7 @@ fn row_word_class(w: String, mode: Int, nargs: Int) -> RowTy {
     } else {
       RtIndet
     }
-  } else if builtin_row_type_name(w) && !row_scope_has(w) && !str_labels_contain(Array::get(shadowed_builtin_type_names_cell, 0), w) {
+  } else if builtin_row_type_name(w) && !row_scope_has(w) && !str_labels_contain(xs = Array::get(shadowed_builtin_type_names_cell, at = 0), x = w) {
     // A word the callee's own row spells: only a builtin name is certain.
     RtHead(w, [])
   } else {
@@ -234,31 +234,31 @@ fn row_ty_parse(toks: Array[String], i: Int, mode: Int) -> (RowTy, Int) {
   if i >= Array::length(toks) {
     (RtIndet, 0 - 1)
   } else {
-    let tok = Array::get(toks, i)
+    let tok = Array::get(toks, at = i)
     if tok == "(" {
-      let (items, next) = row_ty_parse_list(toks, i + 1, ")", mode)
+      let (items, next) = row_ty_parse_list(toks = toks, start = i + 1, close = ")", mode = mode)
       if next < 0 {
         (RtIndet, 0 - 1)
       } else if Array::length(items) == 0 {
         (RtHead("Unit", []), next)
       } else if Array::length(items) == 1 {
-        (Array::get(items, 0), next)
+        (Array::get(items, at = 0), next)
       } else {
         (RtTuple(items), next)
       }
     } else if tok == "[" || tok == "]" || tok == "," || tok == ")" {
       (RtIndet, 0 - 1)
     } else {
-      let has_args = i + 1 < Array::length(toks) && Array::get(toks, i + 1) == "["
+      let has_args = i + 1 < Array::length(toks) && Array::get(toks, at = i + 1) == "["
       let (args, next) = if has_args {
-        row_ty_parse_list(toks, i + 2, "]", mode)
+        row_ty_parse_list(toks = toks, start = i + 2, close = "]", mode = mode)
       } else {
         (array_empty(), i + 1)
       }
       if next < 0 {
         (RtIndet, 0 - 1)
       } else {
-        match row_word_class(tok, mode, Array::length(args)) {
+        match row_word_class(w = tok, mode = mode, nargs = Array::length(args)) {
           RtHead(h, _) => (RtHead(h, args), next),
           other => (other, next)
         }
@@ -271,19 +271,19 @@ fn row_ty_parse(toks: Array[String], i: Int, mode: Int) -> (RowTy, Int) {
 /// and the index after `close`, or -1.
 fn row_ty_parse_list(toks: Array[String], start: Int, close: String, mode: Int) -> (Array[RowTy], Int) {
   let items = array_empty()
-  if start < Array::length(toks) && Array::get(toks, start) == close {
+  if start < Array::length(toks) && Array::get(toks, at = start) == close {
     (items, start + 1)
   } else {
     let mut i = start
     let mut done = false
     while !done {
-      let (t, next) = row_ty_parse(toks, i, mode)
+      let (t, next) = row_ty_parse(toks = toks, i = i, mode = mode)
       if next < 0 || next >= Array::length(toks) {
         i = 0 - 1
         done = true
       } else {
-        Array::push(items, t)
-        let sep = Array::get(toks, next)
+        Array::push(items, value = t)
+        let sep = Array::get(toks, at = next)
         if sep == close {
           i = next + 1
           done = true
@@ -309,8 +309,8 @@ fn row_label_arg_tys(label: String, mode: Int) -> Option[Array[RowTy]] {
     match row_ty_tokens(args) {
       Some(toks) => {
         // Read the list as if closed by a `]`, which must be the last token.
-        Array::push(toks, "]")
-        let (items, next) = row_ty_parse_list(toks, 0, "]", mode)
+        Array::push(toks, value = "]")
+        let (items, next) = row_ty_parse_list(toks = toks, start = 0, close = "]", mode = mode)
         if next == Array::length(toks) {
           Some(items)
         } else {
@@ -338,12 +338,12 @@ fn row_tys_differ(a: RowTy, b: RowTy) -> Bool {
     } else if Array::length(xs) != Array::length(ys) {
       false
     } else {
-      row_ty_lists_differ(xs, ys)
+      row_ty_lists_differ(xs = xs, ys = ys)
     },
     (RtTuple(xs), RtTuple(ys)) => if Array::length(xs) != Array::length(ys) {
       true
     } else {
-      row_ty_lists_differ(xs, ys)
+      row_ty_lists_differ(xs = xs, ys = ys)
     },
     (RtHead(_, _), RtTuple(_)) => true,
     (RtTuple(_), RtHead(_, _)) => true
@@ -354,7 +354,7 @@ fn row_ty_lists_differ(xs: Array[RowTy], ys: Array[RowTy]) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(xs) && i < Array::length(ys) && !found {
-    if row_tys_differ(Array::get(xs, i), Array::get(ys, i)) {
+    if row_tys_differ(a = Array::get(xs, at = i), b = Array::get(ys, at = i)) {
       found = true
     }
     i = i + 1
@@ -377,14 +377,14 @@ fn row_ty_lists_differ(xs: Array[RowTy], ys: Array[RowTy]) -> Bool {
 export fn row_label_args_differ(declared: String, marked: String) -> Bool {
   if row_scope_has(row_scope_unknown()) || String::length(marked) == 0 {
     false
-  } else if String::starts_with(marked, "=") {
-    match (row_label_arg_tys(declared, 0), row_label_arg_tys(String::substring(marked, 1, String::length(marked)), 2)) {
-      (Some(ds), Some(ms)) => Array::length(ds) == Array::length(ms) && row_ty_lists_differ(ds, ms),
+  } else if String::starts_with(marked, prefix = "=") {
+    match (row_label_arg_tys(label = declared, mode = 0), row_label_arg_tys(label = String::substring(marked, start = 1, end = String::length(marked)), mode = 2)) {
+      (Some(ds), Some(ms)) => Array::length(ds) == Array::length(ms) && row_ty_lists_differ(xs = ds, ys = ms),
       _ => false
     }
   } else {
-    match (row_label_arg_tys(declared, 0), row_label_arg_tys(marked, 1)) {
-      (Some(ds), Some(ms)) => Array::length(ds) == Array::length(ms) && row_ty_lists_differ(ds, ms),
+    match (row_label_arg_tys(label = declared, mode = 0), row_label_arg_tys(label = marked, mode = 1)) {
+      (Some(ds), Some(ms)) => Array::length(ds) == Array::length(ms) && row_ty_lists_differ(xs = ds, ys = ms),
       _ => false
     }
   }
@@ -412,10 +412,10 @@ export fn row_base_membership(labels: Array[String], eff_name: String) -> Bool {
     let mut i = 0
     let mut found = false
     while i < Array::length(labels) {
-      let l = Array::get(labels, i)
+      let l = Array::get(labels, at = i)
       let lb = row_label_base(l)
       let lhas = String::length(lb) < String::length(l)
-      if (ehas || lhas) && lb == eb && !is_exception_label(l) && !row_label_args_closed_and_differ(l, eff_name) && !row_label_args_differ(l, requirement_marked_for(eff_name)) && !row_label_args_ambiguous(eff_name) {
+      if (ehas || lhas) && lb == eb && !is_exception_label(l) && !row_label_args_closed_and_differ(a = l, b = eff_name) && !row_label_args_differ(declared = l, marked = requirement_marked_for(eff_name)) && !row_label_args_ambiguous(eff_name) {
         found = true
       } else {
         ()
@@ -449,7 +449,7 @@ export fn row_base_membership(labels: Array[String], eff_name: String) -> Bool {
 /// table (`is_legacy_console_provider`, #1963); the containment direction is
 /// the checker's.
 export fn console_authorizes_legacy(labels: Array[String], eff_name: String) -> Bool {
-  is_legacy_console_provider(eff_name) && effect_row_has_label(Some(labels), "Console")
+  is_legacy_console_provider(eff_name) && effect_row_has_label(row = Some(labels), wanted = "Console")
 }
 
 /// #2985 review (Codex P0): the pseudo-label a handle with a KINDED exception
@@ -463,8 +463,8 @@ export fn kinded_handle_marker() -> String {
 /// Is this declared row the BODY of a handle with a kinded exception arm?
 /// (Carries the marker; see kinded_handle_marker.) There the erased
 /// exception exemption of the direct and transitive disciplines is off.
-export fn under_kinded_handle(labels: Array[String]) -> Bool {
-  effect_row_has_label(Some(labels), kinded_handle_marker())
+export fn under_kinded_handle(_ labels: Array[String]) -> Bool {
+  effect_row_has_label(row = Some(labels), wanted = kinded_handle_marker())
 }
 
 /// #3540: the pseudo-label that admits row variable `v` in the body of a
@@ -475,7 +475,7 @@ export fn under_kinded_handle(labels: Array[String]) -> Bool {
 /// closure row in scope that carries it also names an exception label
 /// (`with Exception[K] + e`): the exception family is then matched by that
 /// label, so the variable holds no exception (#3033).
-export fn kinded_pinned_row_var_marker(v: String) -> String {
+export fn kinded_pinned_row_var_marker(_ v: String) -> String {
   String::concat("#kinded-pinned:", v)
 }
 
@@ -483,7 +483,7 @@ export fn kinded_pinned_row_var_marker(v: String) -> String {
 /// handle (its `let` name, or "" for an unnamed one), so a diagnostic points
 /// at the lambda rather than at the function around it. A handle in a
 /// top-level function's own body carries none.
-export fn kinded_handle_owner_marker(name: String) -> String {
+export fn kinded_handle_owner_marker(_ name: String) -> String {
   String::concat(kinded_handle_owner_prefix(), name)
 }
 
@@ -494,8 +494,8 @@ export fn kinded_handle_owner_prefix() -> String {
 /// A pseudo-label of a handle's body (the kinded marker, a pinned row
 /// variable, the owning lambda, the erased-arm markers below); none is a row
 /// item a reader can write.
-export fn is_kinded_handle_pseudo_label(l: String) -> Bool {
-  String::starts_with(l, "#kinded-") || String::starts_with(l, erased_handle_marker_prefix())
+export fn is_kinded_handle_pseudo_label(_ l: String) -> Bool {
+  String::starts_with(l, prefix = "#kinded-") || String::starts_with(l, prefix = erased_handle_marker_prefix())
 }
 
 fn erased_handle_marker_prefix() -> String {
@@ -507,7 +507,7 @@ fn erased_handle_marker_prefix() -> String {
 /// than the message that its erased `with Exception` row lets out is recorded
 /// against the function (`erased_row_leaks`), and a caller charges it like a
 /// label of that row: the erased row carries the kinds its body throws.
-export fn erased_root_marker(fn_name: String) -> String {
+export fn erased_root_marker(_ fn_name: String) -> String {
   String::concat(erased_handle_marker_prefix(), String::concat("root:", fn_name))
 }
 
@@ -523,8 +523,8 @@ export fn record_erased_row_leak(labels: Array[String], kind: String) -> Unit {
   let prefix = String::concat(erased_handle_marker_prefix(), "root:")
   let local_prefix = String::concat(erased_handle_marker_prefix(), "local:")
   for l in labels {
-    if String::starts_with(l, local_prefix) {
-      let key = String::substring(l, String::length(local_prefix), String::length(l))
+    if String::starts_with(l, prefix = local_prefix) {
+      let key = String::substring(l, start = String::length(local_prefix), end = String::length(l))
       let label = String::concat("Exception[", String::concat(kind, "]"))
       let mut seen = false
       for leak in erased_local_leaks {
@@ -534,12 +534,12 @@ export fn record_erased_row_leak(labels: Array[String], kind: String) -> Unit {
         }
       }
       if !seen {
-        Array::push(erased_local_leaks, (key, label))
-        Array::set(erased_local_leaks_grew, 0, true)
+        Array::push(erased_local_leaks, value = (key, label))
+        Array::set(erased_local_leaks_grew, at = 0, value = true)
       }
     }
-    if String::starts_with(l, prefix) {
-      let owner = String::substring(l, String::length(prefix), String::length(l))
+    if String::starts_with(l, prefix = prefix) {
+      let owner = String::substring(l, start = String::length(prefix), end = String::length(l))
       let label = String::concat("Exception[", String::concat(kind, "]"))
       let mut seen = false
       for leak in erased_row_leaks {
@@ -549,7 +549,7 @@ export fn record_erased_row_leak(labels: Array[String], kind: String) -> Unit {
         }
       }
       if !seen {
-        Array::push(erased_row_leaks, (owner, label))
+        Array::push(erased_row_leaks, value = (owner, label))
       }
     }
   }
@@ -562,7 +562,7 @@ export fn record_erased_row_leak(labels: Array[String], kind: String) -> Unit {
 /// binding (`erased_local_leaks`), and a call through the binding is charged
 /// it, as a named function's caller is (`erased_root_marker`).
 export fn erased_local_marker(fn_name: String, name: String) -> String {
-  String::concat(erased_handle_marker_prefix(), String::concat("local:", erased_local_key(fn_name, name)))
+  String::concat(erased_handle_marker_prefix(), String::concat("local:", erased_local_key(fn_name = fn_name, name = name)))
 }
 
 export fn erased_local_key(fn_name: String, name: String) -> String {
@@ -579,12 +579,12 @@ export let erased_local_leaks: Array[(String, String)] = []
 export let erased_local_leaks_grew: Array[Bool] = [false]
 
 /// The labels `erased_local_leaks` records for `key`.
-export fn erased_local_leaks_for(key: String) -> Array[String] {
+export fn erased_local_leaks_for(_ key: String) -> Array[String] {
   let out = no_str_labels()
   for row in erased_local_leaks {
     let (o, l) = row
-    if o == key && !str_labels_contain(out, l) {
-      Array::push(out, l)
+    if o == key && !str_labels_contain(xs = out, x = l) {
+      Array::push(out, value = l)
     }
   }
   out
@@ -597,34 +597,34 @@ export fn erased_local_leaks_for(key: String) -> Array[String] {
 export let erased_row_charged: Array[(String, String)] = []
 
 /// The labels `erased_row_charged` records for `name`.
-export fn erased_row_charged_for(name: String) -> Array[String] {
+export fn erased_row_charged_for(_ name: String) -> Array[String] {
   let out = no_str_labels()
   for row in erased_row_charged {
     let (o, l) = row
-    if o == name && !str_labels_contain(out, l) {
-      Array::push(out, l)
+    if o == name && !str_labels_contain(xs = out, x = l) {
+      Array::push(out, value = l)
     }
   }
   out
 }
 
 /// The `erased_kinds_marker` payload for `labels`: one `CtNamed` per label.
-export fn erased_kinds_type(labels: Array[String]) -> Type {
+export fn erased_kinds_type(_ labels: Array[String]) -> Type {
   let items: Array[Type] = []
   for l in labels {
-    Array::push(items, CtNamed(l, []))
+    Array::push(items, value = CtNamed(l, []))
   }
   CtNamed("", items)
 }
 
 /// The labels an `erased_kinds_marker` payload carries.
-export fn erased_kinds_labels(ty: Type) -> Array[String] {
+export fn erased_kinds_labels(_ ty: Type) -> Array[String] {
   let out = no_str_labels()
   match ty {
     CtNamed(_, items) => for item in items {
       match item {
         CtNamed(l, _) => if String::length(l) > 0 {
-          Array::push(out, l)
+          Array::push(out, value = l)
         },
         _ => ()
       }
@@ -650,25 +650,25 @@ export fn env_bind_erased_kinds(env: TypeEnv, stmts: Array[Stmt]) -> TypeEnv {
     let done = no_str_labels()
     for stmt in stmts {
       let name = erased_kinds_toplevel_name(stmt)
-      if String::length(name) > 0 && !str_labels_contain(done, name) {
-        Array::push(done, name)
+      if String::length(name) > 0 && !str_labels_contain(xs = done, x = name) {
+        Array::push(done, value = name)
         let labels = erased_row_charged_for(name)
         if Array::length(labels) > 0 {
-          out = env_bind(out, erased_kinds_marker(name), erased_kinds_type(labels))
-        } else if erased_kinds_rows_name(imported, name) {
-          out = env_bind(out, erased_kinds_marker(name), erased_kinds_type(no_str_labels()))
+          out = env_bind(env = out, name = erased_kinds_marker(name), ty = erased_kinds_type(labels))
+        } else if erased_kinds_rows_name(rows = imported, name = name) {
+          out = env_bind(env = out, name = erased_kinds_marker(name), ty = erased_kinds_type(no_str_labels()))
         }
       }
     }
   }
-  Array::truncate(erased_row_charged, 0)
+  Array::truncate(erased_row_charged, length = 0)
   out
 }
 
 /// The name a top-level statement binds in the module's value namespace, or
 /// "" when it binds none: a local binding of that name hides an imported
 /// function's `erased_kinds_marker`.
-export fn erased_kinds_toplevel_name(stmt: Stmt) -> String {
+export fn erased_kinds_toplevel_name(_ stmt: Stmt) -> String {
   match stmt {
     SLet(_, _, n, _, _) => n,
     SLetMut(n, _, _) => n,
@@ -689,16 +689,16 @@ fn erased_kinds_rows_name(rows: Array[(String, Type)], name: String) -> Bool {
 
 /// Every `erased_kinds_marker` bound in `env`, as (function name, payload),
 /// nearest binding first and each name once.
-export fn env_erased_kinds_rows(env: TypeEnv) -> Array[(String, Type)] {
+export fn env_erased_kinds_rows(_ env: TypeEnv) -> Array[(String, Type)] {
   let rows: Array[(String, Type)] = []
   let names = no_str_labels()
   let mut current = env
   let mut done = false
   let push = (name: String, ty: Type) -> if is_erased_kinds_marker(name) {
     let fname = erased_kinds_marker_target(name)
-    if !str_labels_contain(names, fname) {
-      Array::push(names, fname)
-      Array::push(rows, (fname, ty))
+    if !str_labels_contain(xs = names, x = fname) {
+      Array::push(names, value = fname)
+      Array::push(rows, value = (fname, ty))
     }
   }
   while !done {
@@ -730,18 +730,18 @@ export fn env_erased_kinds_rows(env: TypeEnv) -> Array[(String, Type)] {
 /// #3541: the pseudo-label of the body of an erased handle whose arm
 /// `Exception::Throw(m)` reads `m`, the thrown message. It names the binder so
 /// a refusal can name the kinded arm to write.
-export fn erased_reads_marker(binder: String) -> String {
+export fn erased_reads_marker(_ binder: String) -> String {
   String::concat(erased_handle_marker_prefix(), String::concat("reads:", binder))
 }
 
 /// The binder `erased_reads_marker` names in `labels`, or "" when the row is
 /// not such a body.
-export fn erased_reads_binder(labels: Array[String]) -> String {
+export fn erased_reads_binder(_ labels: Array[String]) -> String {
   let prefix = String::concat(erased_handle_marker_prefix(), "reads:")
   let mut found = ""
   for l in labels {
-    if String::starts_with(l, prefix) {
-      found = String::substring(l, String::length(prefix), String::length(l))
+    if String::starts_with(l, prefix = prefix) {
+      found = String::substring(l, start = String::length(prefix), end = String::length(l))
     }
   }
   found
@@ -751,7 +751,7 @@ export fn erased_reads_binder(labels: Array[String]) -> String {
 /// In the body of an erased arm that reads its binder, and in the body of a
 /// closure literal whose own row is the erased one (`erased_slot_marker`);
 /// everywhere else it covers every kind.
-export fn erased_covers_only_messages(labels: Array[String]) -> Bool {
+export fn erased_covers_only_messages(_ labels: Array[String]) -> Bool {
   String::length(erased_reads_binder(labels)) > 0 || under_erased_slot(labels)
 }
 
@@ -781,30 +781,30 @@ export fn erased_iife_marker() -> String {
 
 /// The exception labels and the pseudo-labels of `labels`: what a closure
 /// literal applied where it is written takes from the enclosing body.
-export fn exception_family_of(labels: Array[String]) -> Array[String] {
+export fn exception_family_of(_ labels: Array[String]) -> Array[String] {
   let out = no_str_labels()
   for l in labels {
     if (is_exception_label(l) || is_kinded_handle_pseudo_label(l)) && l != erased_iife_marker() && l != erased_arg_kept_marker() {
-      Array::push(out, l)
+      Array::push(out, value = l)
     }
   }
   out
 }
 
-export fn under_erased_slot(labels: Array[String]) -> Bool {
-  effect_row_has_label(Some(labels), erased_slot_marker())
+export fn under_erased_slot(_ labels: Array[String]) -> Bool {
+  effect_row_has_label(row = Some(labels), wanted = erased_slot_marker())
 }
 
 /// Is `row` a function-type row that carries no kind but the message to its
 /// callers beyond the ones it names: an erased exception label and no row
 /// variable?
-export fn row_is_erased_slot(row: Array[String]) -> Bool {
+export fn row_is_erased_slot(_ row: Array[String]) -> Bool {
   let mut erased = false
   let mut has_var = false
   for l in row {
     if label_is_effect_var(l) {
       has_var = true
-    } else if is_exception_label(l) && String::length(exception_label_kind(l)) == 0 && String::index_of(l, "::") < 0 {
+    } else if is_exception_label(l) && String::length(exception_label_kind(l)) == 0 && String::index_of(l, needle = "::") < 0 {
       erased = true
     }
   }
@@ -819,15 +819,15 @@ export fn erased_slot_declared(declared: Array[String], row: Array[String]) -> A
   let out = no_str_labels()
   for l in declared {
     if !is_exception_label(l) && !is_kinded_handle_pseudo_label(l) {
-      Array::push(out, l)
+      Array::push(out, value = l)
     }
   }
   for l in row {
-    if is_exception_label(l) && !str_labels_contain(out, l) {
-      Array::push(out, l)
+    if is_exception_label(l) && !str_labels_contain(xs = out, x = l) {
+      Array::push(out, value = l)
     }
   }
-  Array::push(out, erased_slot_marker())
+  Array::push(out, value = erased_slot_marker())
   out
 }
 
@@ -837,17 +837,17 @@ export fn erased_slot_declared(declared: Array[String], row: Array[String]) -> A
 /// other than a name counts as read. The mention is judged by spelling, so a
 /// shadowing binding of the same name counts as a read: that only refuses
 /// more.
-export fn erased_arm_read_binder(arms: Array[(Pat, Expr)]) -> String {
+export fn erased_arm_read_binder(_ arms: Array[(Pat, Expr)]) -> String {
   let mut found = ""
   for arm in arms {
     let (pat, body) = arm
     match pat {
       PCtor(name, binds) => {
-        let idx = String::index_of(name, "::")
+        let idx = String::index_of(name, needle = "::")
         if idx > 0 && is_exception_label(name) && String::length(exception_label_kind(name)) == 0 && Array::length(binds) == 1 {
-          match Array::get(binds, 0) {
+          match Array::get(binds, at = 0) {
             PWild => (),
-            PBind(b) => if expr_mentions_name(body, b) {
+            PBind(b) => if expr_mentions_name(root = body, name = b) {
               found = b
             },
             _ => {
@@ -863,19 +863,19 @@ export fn erased_arm_read_binder(arms: Array[(Pat, Expr)]) -> String {
 }
 
 fn expr_mentions_name(root: Expr, name: String) -> Bool {
-  let stack = Array::slice([root], 0, 1)
+  let stack = Array::slice([root], start = 0, end = 1)
   let mut found = false
   while Array::length(stack) > 0 && !found {
     let n = Array::length(stack)
-    let e = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
+    let e = Array::get(stack, at = n - 1)
+    Array::truncate(stack, length = n - 1)
     match e {
       EIdent(x, _) => if x == name {
         found = true
       },
       EStringInterp(parts) => {
         for part in parts {
-          if String::contains(part, name) {
+          if String::contains(part, needle = name) {
             found = true
           }
         }
@@ -883,25 +883,25 @@ fn expr_mentions_name(root: Expr, name: String) -> Bool {
       },
       _ => ()
     }
-    expr_children_into(e, stack)
+    expr_children_into(expr = e, out = stack)
   }
   found
 }
 
 /// #3540: is `v` a row variable this kinded handle's body may not run?
 export fn kinded_handle_open_row_var(labels: Array[String], v: String) -> Bool {
-  label_is_effect_var(v) && under_kinded_handle(labels) && !effect_row_has_label(Some(labels), kinded_pinned_row_var_marker(v))
+  label_is_effect_var(v) && under_kinded_handle(labels) && !effect_row_has_label(row = Some(labels), wanted = kinded_pinned_row_var_marker(v))
 }
 
 /// The exception EFFECT labels (`Exception`, `Exception[K]`; not the `::Throw`
 /// operation spellings) among a handle's discharged effect names.
-export fn exception_effect_labels(labels: Array[String]) -> Array[String] {
+export fn exception_effect_labels(_ labels: Array[String]) -> Array[String] {
   let out = no_str_labels()
   let mut i = 0
   while i < Array::length(labels) {
-    let l = Array::get(labels, i)
-    if is_exception_label(l) && String::index_of(l, "::") < 0 {
-      Array::push(out, l)
+    let l = Array::get(labels, at = i)
+    if is_exception_label(l) && String::index_of(l, needle = "::") < 0 {
+      Array::push(out, value = l)
     } else {
       ()
     }
@@ -912,8 +912,8 @@ export fn exception_effect_labels(labels: Array[String]) -> Array[String] {
 
 /// `perform EffName::Op` — the op identifier is `EffName::Op`; the effect is the
 /// segment before `::`.
-export fn effect_name_of_op(op_name: String) -> String {
-  let idx = String::index_of(op_name, "::")
+export fn effect_name_of_op(_ op_name: String) -> String {
+  let idx = String::index_of(op_name, needle = "::")
   if idx > 0 {
     canonical_exception_effect_name(op_name[0: idx])
   } else {
@@ -972,7 +972,7 @@ export fn effect_name_of_op(op_name: String) -> String {
 /// and "" for anything structural or still-unresolved (a type variable, a
 /// function, a tuple). Kinds are compared by NAME because the row label is a
 /// string; a structural payload therefore has no kind and stays gradual.
-fn type_kind_name(t: Type) -> String {
+fn type_kind_name(_ t: Type) -> String {
   match t {
     CtString => "String",
     CtInt => "Int",
@@ -1011,13 +1011,13 @@ fn throw_kind_push(name: String, ty: Type) -> Unit {
     _ => ""
   }
   if String::length(value_kind) > 0 || String::length(result_kind) > 0 {
-    let index = Array::get(throw_kind_index, 0)
-    if MutMap::has(index, name) {
+    let index = Array::get(throw_kind_index, at = 0)
+    if MutMap::has(index, k = name) {
       ()
     } else {
-      MutMap::set(index, name, Array::length(throw_kind_cell))
+      MutMap::set(index, k = name, v = Array::length(throw_kind_cell))
     }
-    Array::push(throw_kind_cell, (name, value_kind, result_kind))
+    Array::push(throw_kind_cell, value = (name, value_kind, result_kind))
   } else {
     ()
   }
@@ -1027,15 +1027,15 @@ fn throw_kind_push(name: String, ty: Type) -> Unit {
 /// every public entry of this pass -- including the ones with no env, which
 /// therefore CLEAR it -- so a table can never survive into the next module and
 /// misclassify a same-named binding there.
-export fn set_throw_kind_table(env: TypeEnv) -> Unit {
-  Array::truncate(throw_kind_cell, 0)
-  Array::set(throw_kind_index, 0, MutMap::new_string())
+export fn set_throw_kind_table(_ env: TypeEnv) -> Unit {
+  Array::truncate(throw_kind_cell, length = 0)
+  Array::set(throw_kind_index, at = 0, value = MutMap::new_string())
   let mut cur = env
   let mut looping = true
   while looping {
     match cur {
       EnvBind(name, binding, rest) => {
-        throw_kind_push(name, binding.ty)
+        throw_kind_push(name = name, ty = binding.ty)
         cur = rest
       },
       EnvTraitDef(_, _, _, _, rest, _, _) => {
@@ -1063,7 +1063,7 @@ export fn set_throw_kind_table(env: TypeEnv) -> Unit {
         // on which entry point asked.
         let mut ci = 0
         while ci < env_name_index_length(cnames) && ci < Array::length(ctypes) {
-          throw_kind_push(env_name_index_at(cnames, ci), Array::get(ctypes, ci).ty)
+          throw_kind_push(name = env_name_index_at(index = cnames, row = ci), ty = Array::get(ctypes, at = ci).ty)
           ci = ci + 1
         }
         cur = rest
@@ -1074,8 +1074,8 @@ export fn set_throw_kind_table(env: TypeEnv) -> Unit {
       EnvFlat(entries) => {
         let mut ei = 0
         while ei < Array::length(entries) {
-          let (ename, binding) = Array::get(entries, ei)
-          throw_kind_push(ename, binding.ty)
+          let (ename, binding) = Array::get(entries, at = ei)
+          throw_kind_push(name = ename, ty = binding.ty)
           ei = ei + 1
         }
         looping = false
@@ -1091,9 +1091,9 @@ export fn set_throw_kind_table(env: TypeEnv) -> Unit {
 /// rather than its own. First match wins, matching the env's own innermost-
 /// first order.
 fn throw_kind_lookup(name: String, want_result: Bool) -> String {
-  match MutMap::get(Array::get(throw_kind_index, 0), name) {
+  match MutMap::get(Array::get(throw_kind_index, at = 0), k = name) {
     Some(i) => {
-      let (_, value_kind, result_kind) = Array::get(throw_kind_cell, i)
+      let (_, value_kind, result_kind) = Array::get(throw_kind_cell, at = i)
       if want_result {
         result_kind
       } else {
@@ -1149,11 +1149,11 @@ export fn throw_kind_bind(binds: TkEnv, name: String, kind: String) -> TkEnv {
 /// so it cannot tell what `Err(e)` destructures `e` to.
 export fn throw_kind_bind_pat(binds: TkEnv, pat: Pat) -> TkEnv {
   let names = no_str_labels()
-  collect_pat_binds_into(pat, names)
+  collect_pat_binds_into(pat = pat, acc = names)
   let mut cur = binds
   let mut i = 0
   while i < Array::length(names) {
-    cur = throw_kind_bind(cur, Array::get(names, i), "")
+    cur = throw_kind_bind(binds = cur, name = Array::get(names, at = i), kind = "")
     i = i + 1
   }
   cur
@@ -1166,12 +1166,12 @@ export fn throw_kind_bind_params(binds: TkEnv, params: Array[(String, Option[Typ
   let mut cur = binds
   let mut i = 0
   while i < Array::length(params) {
-    let (pname, ptype) = Array::get(params, i)
+    let (pname, ptype) = Array::get(params, at = i)
     let kind = match ptype {
       Some(te) => throw_kind_of_texpr(te),
       None => ""
     }
-    cur = throw_kind_bind(cur, pname, kind)
+    cur = throw_kind_bind(binds = cur, name = pname, kind = kind)
     i = i + 1
   }
   cur
@@ -1181,7 +1181,7 @@ export fn throw_kind_bind_params(binds: TkEnv, params: Array[(String, Option[Typ
 /// `Array[Int]`, not the head `Array` -- a row `Exception[Array[Int]]` is not
 /// satisfied by `Exception[Array]` (#3022 review). A function, tuple or unit
 /// type has no row spelling here and stays unresolved ("").
-fn throw_kind_of_texpr(te: TypeExpr) -> String {
+fn throw_kind_of_texpr(_ te: TypeExpr) -> String {
   match te {
     TyName(n) => n,
     TyApp(n, args) => {
@@ -1189,15 +1189,15 @@ fn throw_kind_of_texpr(te: TypeExpr) -> String {
       let mut ok = true
       let mut i = 0
       while i < Array::length(args) {
-        let a = throw_kind_of_texpr(Array::get(args, i))
+        let a = throw_kind_of_texpr(Array::get(args, at = i))
         if String::length(a) == 0 {
           ok = false
         }
-        Array::push(parts, a)
+        Array::push(parts, value = a)
         i = i + 1
       }
       if ok {
-        String::concat(n, String::concat("[", String::concat(String::join(parts, ", "), "]")))
+        String::concat(n, String::concat("[", String::concat(String::join(parts, sep = ", "), "]")))
       } else {
         ""
       }
@@ -1210,15 +1210,15 @@ fn throw_kind_of_texpr(te: TypeExpr) -> String {
 /// String builtin (an interpolation lowers to `String::concat`), or a QUALIFIED
 /// constructor `Type::Variant`, whose kind is the type it names. A qualified
 /// name whose last segment is lower-case is a function and stays unresolved.
-fn throw_kind_of_unlisted_callee(f: String) -> String {
+fn throw_kind_of_unlisted_callee(_ f: String) -> String {
   if f == "String::concat" || f == "__to_string" || f == "Int::to_string" || f == "Double::to_string" || f == "String::substring" || f == "String::join" || f == "String::trim" || f == "String::from_char_code" {
     "String"
   } else {
-    let sep = String::last_index_of(f, "::")
+    let sep = String::last_index_of(f, needle = "::")
     if sep > 0 && sep + 2 < String::length(f) {
-      let first = String::char_code_at(f, sep + 2)
+      let first = String::char_code_at(f, at = sep + 2)
       if first >= 65 && first <= 90 {
-        String::substring(f, 0, sep)
+        String::substring(f, start = 0, end = sep)
       } else {
         ""
       }
@@ -1240,14 +1240,14 @@ export fn throw_payload_kind(payload: Expr, binds: TkEnv) -> String {
     // A struct literal names its own type. Anonymous records carry "" here and
     // stay gradual.
     ERecord(sname, _, _) => sname,
-    EIdent(n, _) => match tk_lookup(binds, n) {
+    EIdent(n, _) => match tk_lookup(binds = binds, name = n) {
       Some(k) => k,
-      None => throw_kind_lookup(n, false)
+      None => throw_kind_lookup(name = n, want_result = false)
     },
     // #2964: an array literal's kind is `Array[<its first element's kind>]`,
     // the spelling a kinded row writes (`Exception[Array[Int]]`).
     EArray(items) => if Array::length(items) > 0 {
-      let ek = throw_payload_kind(Array::get(items, 0), binds)
+      let ek = throw_payload_kind(payload = Array::get(items, at = 0), binds = binds)
       if String::length(ek) > 0 {
         String::concat("Array[", String::concat(ek, "]"))
       } else {
@@ -1259,7 +1259,7 @@ export fn throw_payload_kind(payload: Expr, binds: TkEnv) -> String {
     // #2964: `Some(v)` is `Option[<v's kind>]`, the spelling a kinded row
     // writes (`Exception[Option[T]]`).
     ECall(EIdent("Some", _), sargs, _, _) => if Array::length(sargs) == 1 {
-      let sk = throw_payload_kind(Array::get(sargs, 0), binds)
+      let sk = throw_payload_kind(payload = Array::get(sargs, at = 0), binds = binds)
       if String::length(sk) > 0 {
         String::concat("Option[", String::concat(sk, "]"))
       } else {
@@ -1273,10 +1273,10 @@ export fn throw_payload_kind(payload: Expr, binds: TkEnv) -> String {
       // kind, never the kind of its RESULT, so the call is unresolvable -- and
       // it must not fall through to the module table, whose same-named
       // top-level function this local shadows.
-      EIdent(f, _) => match tk_lookup(binds, f) {
+      EIdent(f, _) => match tk_lookup(binds = binds, name = f) {
         Some(_) => "",
         None => {
-          let from_table = throw_kind_lookup(f, true)
+          let from_table = throw_kind_lookup(name = f, want_result = true)
           if String::length(from_table) > 0 {
             from_table
           } else {
@@ -1293,7 +1293,7 @@ export fn throw_payload_kind(payload: Expr, binds: TkEnv) -> String {
       // annotates its ARGUMENT, not its result, and is left to the checker's
       // inferred type (#3022 review).
       EFn(_, _, aps, _, _, abody) => if Array::length(aps) == 1 {
-        match Array::get(aps, 0) {
+        match Array::get(aps, at = 0) {
           (pname, Some(te)) => match abody {
             EIdent(bname, _) => if pname == "__asc" && bname == "__asc" {
               throw_kind_of_texpr(te)
@@ -1343,24 +1343,24 @@ let throw_site_kind_cell: Array[MutMap[String, String]] = [MutMap::new_string()]
 /// keeps this one.
 export let erased_rethrow_site_kind: String = "#erased-rethrow"
 
-export fn set_throw_site_kinds(sites: Array[(String, String)]) -> Unit {
+export fn set_throw_site_kinds(_ sites: Array[(String, String)]) -> Unit {
   let m = MutMap::new_string()
   let mut i = 0
   while i < Array::length(sites) {
-    let (k, kind) = Array::get(sites, i)
-    match MutMap::get(m, k) {
+    let (k, kind) = Array::get(sites, at = i)
+    match MutMap::get(m, k = k) {
       Some(prev) => if prev != kind {
         if prev == erased_rethrow_site_kind || kind == erased_rethrow_site_kind {
-          MutMap::set(m, k, erased_rethrow_site_kind)
+          MutMap::set(m, k = k, v = erased_rethrow_site_kind)
         } else {
-          MutMap::set(m, k, "")
+          MutMap::set(m, k = k, v = "")
         }
       },
-      None => MutMap::set(m, k, kind)
+      None => MutMap::set(m, k = k, v = kind)
     }
     i = i + 1
   }
-  Array::set(throw_site_kind_cell, 0, m)
+  Array::set(throw_site_kind_cell, at = 0, value = m)
 }
 
 /// #3539: the type the checker inferred for the CALLEE of each call, keyed
@@ -1382,29 +1382,29 @@ export fn set_call_callee_types(rows: Array[(Int, String, Type)], s: Subst) -> U
   let index: MutMap[Int, Array[Int]] = MutMap::new_int()
   let mut i = 0
   while i < Array::length(rows) {
-    let (off, _, _) = Array::get(rows, i)
-    match MutMap::get(index, off) {
-      Some(at) => Array::push(at, i),
-      None => MutMap::set(index, off, [i])
+    let (off, _, _) = Array::get(rows, at = i)
+    match MutMap::get(index, k = off) {
+      Some(at) => Array::push(at, value = i),
+      None => MutMap::set(index, k = off, v = [i])
     }
     i = i + 1
   }
-  Array::set(call_callee_types_cell, 0, (index, rows, s))
+  Array::set(call_callee_types_cell, at = 0, value = (index, rows, s))
 }
 
 export fn clear_call_callee_types() -> Unit {
-  Array::set(call_callee_types_cell, 0, (MutMap::new_int(), array_empty(), SubstEmpty))
+  Array::set(call_callee_types_cell, at = 0, value = (MutMap::new_int(), array_empty(), SubstEmpty))
 }
 
 /// The spelling a call's callee is recorded under: the name of a named
 /// callee, the field or method of a dotted one, and "" for anything else.
 /// A `$source_span` wrapper (a parenthesized callee) is looked through.
-export fn call_callee_spelling(callee: Expr) -> String {
+export fn call_callee_spelling(_ callee: Expr) -> String {
   match callee {
     EIdent(n, _) => n,
     EDot(_, m, _, _) => m,
     ECall(EIdent(w, _), wargs, _, _) => if w == "$source_span" && Array::length(wargs) > 0 {
-      call_callee_spelling(Array::get(wargs, 0))
+      call_callee_spelling(Array::get(wargs, at = 0))
     } else {
       ""
     },
@@ -1420,21 +1420,21 @@ export fn call_callee_spelling(callee: Expr) -> String {
 export fn call_callee_row_labels(off: Int, spelling: String) -> Array[String] {
   let out = no_str_labels()
   if off >= 0 {
-    let (index, rows, s) = Array::get(call_callee_types_cell, 0)
-    match MutMap::get(index, off) {
+    let (index, rows, s) = Array::get(call_callee_types_cell, at = 0)
+    match MutMap::get(index, k = off) {
       Some(at) => {
         let mut i = 0
         while i < Array::length(at) {
-          let (_, sp, ty) = Array::get(rows, Array::get(at, i))
+          let (_, sp, ty) = Array::get(rows, at = Array::get(at, at = i))
           if sp == spelling {
-            match subst_apply(s, ty) {
+            match subst_apply(s = s, ty = ty) {
               CtFn(_, _, row) => {
                 let labels = effect_row_labels(effect_row_parse(row))
                 let mut li = 0
                 while li < Array::length(labels) {
-                  let l = Array::get(labels, li)
-                  if !String::starts_with(l, "#") && !str_labels_contain(out, l) {
-                    Array::push(out, l)
+                  let l = Array::get(labels, at = li)
+                  if !String::starts_with(l, prefix = "#") && !str_labels_contain(xs = out, x = l) {
+                    Array::push(out, value = l)
                   }
                   li = li + 1
                 }
@@ -1464,13 +1464,13 @@ export fn call_callee_row_labels(off: Int, spelling: String) -> Array[String] {
 export fn call_callee_recorded_row_vars(off: Int, spelling: String) -> Array[String] {
   let out = no_str_labels()
   if off >= 0 {
-    let (index, rows, s) = Array::get(call_callee_types_cell, 0)
-    match MutMap::get(index, off) {
+    let (index, rows, s) = Array::get(call_callee_types_cell, at = 0)
+    match MutMap::get(index, k = off) {
       Some(at) => for k in at {
-        let (_, sp, ty) = Array::get(rows, k)
+        let (_, sp, ty) = Array::get(rows, at = k)
         if sp == spelling {
           match ty {
-            CtFn(_, _, Some(row)) => recorded_row_vars_into(effect_row_labels(effect_row_parse(Some(row))), s, out),
+            CtFn(_, _, Some(row)) => recorded_row_vars_into(labels = effect_row_labels(effect_row_parse(Some(row))), s = s, out = out),
             _ => ()
           }
         }
@@ -1485,21 +1485,21 @@ export fn call_callee_recorded_row_vars(off: Int, spelling: String) -> Array[Str
 /// fresh `$N` followed through its own bindings (bounded, so a cyclic chain
 /// cannot spin). A concrete label is not a variable and is left out.
 fn recorded_row_vars_into(labels: Array[String], s: Subst, out: Array[String]) -> Unit {
-  let work = Array::slice(labels, 0, Array::length(labels))
+  let work = Array::slice(labels, start = 0, end = Array::length(labels))
   let mut steps = 0
   while Array::length(work) > 0 && steps < 256 {
     let n = Array::length(work)
-    let l = String::trim(Array::get(work, n - 1))
-    Array::truncate(work, n - 1)
+    let l = String::trim(Array::get(work, at = n - 1))
+    Array::truncate(work, length = n - 1)
     steps = steps + 1
     if label_is_effect_var(l) {
-      if !str_labels_contain(out, l) {
-        Array::push(out, l)
+      if !str_labels_contain(xs = out, x = l) {
+        Array::push(out, value = l)
       }
-    } else if String::length(l) >= 2 && String::char_code_at(l, 0) == 36 {
-      match subst_eff_binding(s, l) {
-        Some(bound) => for part in String::split(bound, ",") {
-          Array::push(work, part)
+    } else if String::length(l) >= 2 && String::char_code_at(l, at = 0) == 36 {
+      match subst_eff_binding(s = s, name = l) {
+        Some(bound) => for part in String::split(bound, sep = ",") {
+          Array::push(work, value = part)
         },
         None => ()
       }
@@ -1516,20 +1516,20 @@ let call_formal_bindings_cell: Array[MutMap[String, Array[(String, String)]]] = 
   MutMap::new_string()
 ]
 
-export fn set_call_formal_bindings(rows: Array[(String, Array[(String, String)])]) -> Unit {
+export fn set_call_formal_bindings(_ rows: Array[(String, Array[(String, String)])]) -> Unit {
   let m = MutMap::new_string()
   let mut i = 0
   while i < Array::length(rows) {
-    let (k, binds) = Array::get(rows, i)
-    match MutMap::get(m, k) {
-      Some(prev) => if !formal_bindings_same(prev, binds) {
-        MutMap::set(m, k, ambiguous_formal_bindings(prev, binds))
+    let (k, binds) = Array::get(rows, at = i)
+    match MutMap::get(m, k = k) {
+      Some(prev) => if !formal_bindings_same(a = prev, b = binds) {
+        MutMap::set(m, k = k, v = ambiguous_formal_bindings(a = prev, b = binds))
       },
-      None => MutMap::set(m, k, binds)
+      None => MutMap::set(m, k = k, v = binds)
     }
     i = i + 1
   }
-  Array::set(call_formal_bindings_cell, 0, m)
+  Array::set(call_formal_bindings_cell, at = 0, value = m)
 }
 
 /// #3095: the same bindings in the marked spelling (`callee_formal_marked_bindings`).
@@ -1540,35 +1540,35 @@ let call_formal_marked_bindings_cell: Array[MutMap[String, Array[(String, String
   MutMap::new_string()
 ]
 
-export fn set_call_formal_marked_bindings(rows: Array[(String, Array[(String, String)])]) -> Unit {
+export fn set_call_formal_marked_bindings(_ rows: Array[(String, Array[(String, String)])]) -> Unit {
   let m = MutMap::new_string()
   let mut i = 0
   while i < Array::length(rows) {
-    let (k, binds) = Array::get(rows, i)
-    match MutMap::get(m, k) {
-      Some(prev) => if !formal_bindings_same(prev, binds) {
+    let (k, binds) = Array::get(rows, at = i)
+    match MutMap::get(m, k = k) {
+      Some(prev) => if !formal_bindings_same(a = prev, b = binds) {
         let names = array_empty()
         let out = array_empty()
         let mut j = 0
         while j < Array::length(prev) + Array::length(binds) {
           let (n, _) = if j < Array::length(prev) {
-            Array::get(prev, j)
+            Array::get(prev, at = j)
           } else {
-            Array::get(binds, j - Array::length(prev))
+            Array::get(binds, at = j - Array::length(prev))
           }
-          if !str_labels_contain(names, n) {
-            Array::push(names, n)
-            Array::push(out, (n, "~"))
+          if !str_labels_contain(xs = names, x = n) {
+            Array::push(names, value = n)
+            Array::push(out, value = (n, "~"))
           }
           j = j + 1
         }
-        MutMap::set(m, k, out)
+        MutMap::set(m, k = k, v = out)
       },
-      None => MutMap::set(m, k, binds)
+      None => MutMap::set(m, k = k, v = binds)
     }
     i = i + 1
   }
-  Array::set(call_formal_marked_bindings_cell, 0, m)
+  Array::set(call_formal_marked_bindings_cell, at = 0, value = m)
 }
 
 /// Two calls under one key that instantiate differently (sources merged
@@ -1582,13 +1582,13 @@ fn ambiguous_formal_bindings(a: Array[(String, String)], b: Array[(String, Strin
   let mut i = 0
   while i < Array::length(a) + Array::length(b) {
     let (n, _) = if i < Array::length(a) {
-      Array::get(a, i)
+      Array::get(a, at = i)
     } else {
-      Array::get(b, i - Array::length(a))
+      Array::get(b, at = i - Array::length(a))
     }
-    if !str_labels_contain(names, n) {
-      Array::push(names, n)
-      Array::push(out, (n, String::concat("?", n)))
+    if !str_labels_contain(xs = names, x = n) {
+      Array::push(names, value = n)
+      Array::push(out, value = (n, String::concat("?", n)))
     }
     i = i + 1
   }
@@ -1599,16 +1599,16 @@ fn ambiguous_formal_bindings(a: Array[(String, String)], b: Array[(String, Strin
 /// entries that run without a checker pass: a previous program's tables must
 /// not answer for this one (Codex on #3055).
 export fn clear_checker_published_tables() -> Unit {
-  Array::set(call_formal_bindings_cell, 0, MutMap::new_string())
+  Array::set(call_formal_bindings_cell, at = 0, value = MutMap::new_string())
   set_shadowed_builtin_type_names([])
   set_row_nominal_types([])
-  Array::set(call_formal_marked_bindings_cell, 0, MutMap::new_string())
+  Array::set(call_formal_marked_bindings_cell, at = 0, value = MutMap::new_string())
   clear_call_callee_types()
 }
 
 /// Test hook: a label as the call at `key` instantiates it.
 export fn instantiate_callee_label_at(label: String, key: String) -> String {
-  instantiate_callee_label_key(label, key)
+  instantiate_callee_label_key(label = label, key = key)
 }
 
 fn formal_bindings_same(a: Array[(String, String)], b: Array[(String, String)]) -> Bool {
@@ -1618,8 +1618,8 @@ fn formal_bindings_same(a: Array[(String, String)], b: Array[(String, String)]) 
     let mut same = true
     let mut i = 0
     while i < Array::length(a) {
-      let (an, at) = Array::get(a, i)
-      let (bn, bt) = Array::get(b, i)
+      let (an, at) = Array::get(a, at = i)
+      let (bn, bt) = Array::get(b, at = i)
       if an != bn || at != bt {
         same = false
       }
@@ -1638,12 +1638,12 @@ export fn instantiate_callee_label(label: String, callee_off: Int, callee: Strin
   if callee_off < 0 {
     label
   } else {
-    instantiate_callee_label_key(label, String::concat(__to_string(callee_off), String::concat(":", callee)))
+    instantiate_callee_label_key(label = label, key = String::concat(__to_string(callee_off), String::concat(":", callee)))
   }
 }
 
 fn instantiate_callee_label_key(label: String, key: String) -> String {
-  instantiate_callee_label_in(label, match MutMap::get(Array::get(call_formal_bindings_cell, 0), key) {
+  instantiate_callee_label_in(label = label, binds = match MutMap::get(Array::get(call_formal_bindings_cell, at = 0), k = key) {
     Some(b) => b,
     None => []
   })
@@ -1657,7 +1657,7 @@ export fn instantiate_callee_label_marked(label: String, callee_off: Int, callee
     label
   } else {
     let key = String::concat(__to_string(callee_off), String::concat(":", callee))
-    instantiate_callee_label_in(label, match MutMap::get(Array::get(call_formal_marked_bindings_cell, 0), key) {
+    instantiate_callee_label_in(label = label, binds = match MutMap::get(Array::get(call_formal_marked_bindings_cell, at = 0), k = key) {
       Some(b) => b,
       None => []
     })
@@ -1666,14 +1666,14 @@ export fn instantiate_callee_label_marked(label: String, callee_off: Int, callee
 
 export fn callee_has_marked_bindings(callee_off: Int, callee: String) -> Bool {
   let key = String::concat(__to_string(callee_off), String::concat(":", callee))
-  callee_off >= 0 && (match MutMap::get(Array::get(call_formal_marked_bindings_cell, 0), key) {
+  callee_off >= 0 && (match MutMap::get(Array::get(call_formal_marked_bindings_cell, at = 0), k = key) {
     Some(_) => true,
     None => false
   })
 }
 
 fn instantiate_callee_label_in(label: String, binds: Array[(String, String)]) -> String {
-  let bi = String::index_of(label, "[")
+  let bi = String::index_of(label, needle = "[")
   if bi < 0 {
     label
   } else {
@@ -1682,12 +1682,12 @@ fn instantiate_callee_label_in(label: String, binds: Array[(String, String)]) ->
     } else {
       let n = String::length(label)
       let sb = StringBuilder::new()
-      StringBuilder::push(sb, String::substring(label, 0, bi))
+      StringBuilder::push(sb, value = String::substring(label, start = 0, end = bi))
       let mut start = 0 - 1
       let mut i = bi
       while i <= n {
         let c = if i < n {
-          String::char_code_at(label, i)
+          String::char_code_at(label, at = i)
         } else {
           0
         }
@@ -1700,12 +1700,12 @@ fn instantiate_callee_label_in(label: String, binds: Array[(String, String)]) ->
           }
         } else {
           if start >= 0 {
-            let w = String::substring(label, start, i)
+            let w = String::substring(label, start = start, end = i)
             let mut rep = w
             let mut exact = false
             let mut k = 0
             while k < Array::length(binds) {
-              let (fname, text) = Array::get(binds, k)
+              let (fname, text) = Array::get(binds, at = k)
               if fname == w {
                 rep = text
                 exact = true
@@ -1713,15 +1713,15 @@ fn instantiate_callee_label_in(label: String, binds: Array[(String, String)]) ->
               k = k + 1
             }
             if !exact {
-              rep = marker_base_binding(w, binds)
+              rep = marker_base_binding(w = w, binds = binds)
             }
-            StringBuilder::push(sb, rep)
+            StringBuilder::push(sb, value = rep)
             start = 0 - 1
           } else {
             ()
           }
           if i < n {
-            StringBuilder::push(sb, String::substring(label, i, i + 1))
+            StringBuilder::push(sb, value = String::substring(label, start = i, end = i + 1))
           } else {
             ()
           }
@@ -1751,7 +1751,7 @@ fn marker_base_binding(w: String, binds: Array[(String, String)]) -> String {
     let mut agree = true
     let mut k = 0
     while k < Array::length(binds) {
-      let (fname, text) = Array::get(binds, k)
+      let (fname, text) = Array::get(binds, at = k)
       if marker_base_name(fname) == base {
         match found {
           Some(prev) => if prev != text {
@@ -1775,8 +1775,8 @@ fn marker_base_binding(w: String, binds: Array[(String, String)]) -> String {
 
 /// `NAME` for a word spelled `NAME$K` (NAME non-empty, K all digits); any
 /// other word unchanged.
-fn marker_base_name(w: String) -> String {
-  let at = String::last_index_of(w, "$")
+fn marker_base_name(_ w: String) -> String {
+  let at = String::last_index_of(w, needle = "$")
   let n = String::length(w)
   if at <= 0 || at + 1 >= n {
     w
@@ -1784,14 +1784,14 @@ fn marker_base_name(w: String) -> String {
     let mut digits = true
     let mut i = at + 1
     while i < n {
-      let c = String::byte_at(w, i)
+      let c = String::byte_at(w, at = i)
       if c < 48 || c > 57 {
         digits = false
       }
       i = i + 1
     }
     if digits {
-      String::substring(w, 0, at)
+      String::substring(w, start = 0, end = at)
     } else {
       w
     }
@@ -1799,8 +1799,8 @@ fn marker_base_name(w: String) -> String {
 }
 
 fn throw_site_kind(off: Int, payload: Expr) -> String {
-  let m = Array::get(throw_site_kind_cell, 0)
-  match MutMap::get(m, throw_payload_site_key(off, payload)) {
+  let m = Array::get(throw_site_kind_cell, at = 0)
+  match MutMap::get(m, k = throw_payload_site_key(off = off, payload = payload)) {
     Some(kind) => kind,
     None => ""
   }
@@ -1811,7 +1811,7 @@ fn throw_site_kind(off: Int, payload: Expr) -> String {
 /// otherwise. Non-exception operations pass through untouched.
 export fn throw_required_label(op_name: String, opargs: Array[Expr], binds: TkEnv, call_off: Int) -> String {
   if is_exception_throw_operation(op_name) && Array::length(opargs) == 1 {
-    let payload = Array::get(opargs, 0)
+    let payload = Array::get(opargs, at = 0)
     // The checker's kind is the answer whenever it has one. #3029: a struct
     // literal's syntax names only its struct, so for a generic one
     // (`Box[Int]::{ .. }`, or with its argument inferred) the checker's kind
@@ -1820,13 +1820,13 @@ export fn throw_required_label(op_name: String, opargs: Array[Expr], binds: TkEn
     // syntax as WRITTEN, while the checker's kind is the type it names -- the
     // spelling kinds are compared in. The syntax answers only what the
     // checker left unresolved (another lane, or a site whose key collided).
-    let typed = throw_site_kind(call_off, payload)
+    let typed = throw_site_kind(off = call_off, payload = payload)
     let kind = if typed == erased_rethrow_site_kind {
       ""
     } else if String::length(typed) > 0 {
       typed
     } else {
-      throw_payload_kind(payload, binds)
+      throw_payload_kind(payload = payload, binds = binds)
     }
     exception_throw_label_for_kind(kind)
   } else {
@@ -1864,7 +1864,7 @@ export fn throw_report_label(op_name: String, required: String, declared: Array[
 /// request + request-field reads in one grant).
 export fn builtin_call_op_label(name: String, eff: String) -> String {
   let normalized = canonical_builtin_name(name)
-  if String::index_of(normalized, "::") > 0 {
+  if String::index_of(normalized, needle = "::") > 0 {
     normalized
   } else {
     eff
@@ -1878,7 +1878,7 @@ export fn builtin_call_op_label(name: String, eff: String) -> String {
 export fn source_definition_shadows_builtin(name: String, lexical_callee: Option[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Bool {
   match lexical_callee {
     Some(_) => true,
-    None => match lookup_program_fn_effs(fn_index, fn_effs, name) {
+    None => match lookup_program_fn_effs(fn_index = fn_index, effs = fn_effs, name = name) {
       Some(_) => true,
       None => false
     }
@@ -1906,7 +1906,7 @@ export fn source_definition_shadows_builtin(name: String, lexical_callee: Option
 /// `builtin_registry_unqualified_row_test.vibe` derives this set from the
 /// registry and fails if a new row appears that this list does not name, so it
 /// cannot silently fall behind again.
-fn unqualified_builtin_effect(name: String) -> Option[String] {
+fn unqualified_builtin_effect(_ name: String) -> Option[String] {
   // vibe_sh_lines_raw is checker_visible=false (only synthesized internally,
   // never typed by user source), so it needs no entry.
   if name == "sh" || name == "sh_lines"
@@ -1941,7 +1941,7 @@ fn unqualified_builtin_effect(name: String) -> Option[String] {
 /// effect, or None for pure builtins / non-builtins. `Error` (the 441-site throw
 /// discipline) and `Async` (composition-allowed; handled by the async pass) are
 /// deliberately excluded from this slice.
-export fn builtin_call_effect(name: String) -> Option[String] {
+export fn builtin_call_effect(_ name: String) -> Option[String] {
   let unqualified = unqualified_builtin_effect(name)
   if unqualified != None {
     match unqualified {
@@ -1952,7 +1952,7 @@ export fn builtin_call_effect(name: String) -> Option[String] {
       },
       None => None
     }
-  } else if String::index_of(name, "::") < 0 {
+  } else if String::index_of(name, needle = "::") < 0 {
     // Fast path: every OTHER effectful builtin in this slice is a QUALIFIED name
     // (`Fs::read_file`, `Env::args_len`, `Stdin::...`, `Stdout::...`, ...), so a
     // callee with no `::` can never be one -- `unqualified_builtin_effect` above
@@ -1985,22 +1985,22 @@ export fn labels_union(a: Array[String], b: Array[String]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(a) {
-    Array::push(out, Array::get(a, i))
+    Array::push(out, value = Array::get(a, at = i))
     i = i + 1
   }
   let mut j = 0
   while j < Array::length(b) {
-    let l = Array::get(b, j)
+    let l = Array::get(b, at = j)
     let mut seen = false
     let mut k = 0
     while k < Array::length(out) {
-      if Array::get(out, k) == l {
+      if Array::get(out, at = k) == l {
         seen = true
       }
       k = k + 1
     }
     if !seen {
-      Array::push(out, l)
+      Array::push(out, value = l)
     }
     j = j + 1
   }
@@ -2015,30 +2015,30 @@ fn label_lt(a: String, b: String) -> Bool {
 }
 
 /// Copying insertion sort (rows are tiny — a handful of labels at most).
-export fn sort_labels(xs: Array[String]) -> Array[String] {
-  let out = Array::slice(xs, 0, Array::length(xs))
+export fn sort_labels(_ xs: Array[String]) -> Array[String] {
+  let out = Array::slice(xs, start = 0, end = Array::length(xs))
   let mut i = 1
   while i < Array::length(out) {
-    let key = Array::get(out, i)
+    let key = Array::get(out, at = i)
     let mut j = i
-    while j > 0 && label_lt(key, Array::get(out, j - 1)) {
-      Array::set(out, j, Array::get(out, j - 1))
+    while j > 0 && label_lt(a = key, b = Array::get(out, at = j - 1)) {
+      Array::set(out, at = j, value = Array::get(out, at = j - 1))
       j = j - 1
     }
-    Array::set(out, j, key)
+    Array::set(out, at = j, value = key)
     i = i + 1
   }
   out
 }
 
-export fn join_labels(xs: Array[String]) -> String {
+export fn join_labels(_ xs: Array[String]) -> String {
   let mut out = ""
   let mut i = 0
   while i < Array::length(xs) {
     if i == 0 {
-      out = Array::get(xs, i)
+      out = Array::get(xs, at = i)
     } else {
-      out = String::concat(out, String::concat(", ", Array::get(xs, i)))
+      out = String::concat(out, String::concat(", ", Array::get(xs, at = i)))
     }
     i = i + 1
   }
@@ -2058,15 +2058,15 @@ export fn join_labels(xs: Array[String]) -> String {
 export let row_mismatch_roots: Array[Array[String]] = []
 
 /// Only row items the grammar accepts in a `with` row: `Eff[T]::Op` is not one.
-fn row_labels_pasteable(labels: Array[String]) -> Array[String] {
+fn row_labels_pasteable(_ labels: Array[String]) -> Array[String] {
   let out = no_str_labels()
   let mut i = 0
   while i < Array::length(labels) {
-    let l = Array::get(labels, i)
-    if String::contains(l, "]::") || is_kinded_handle_pseudo_label(l) {
+    let l = Array::get(labels, at = i)
+    if String::contains(l, needle = "]::") || is_kinded_handle_pseudo_label(l) {
       ()
     } else {
-      Array::push(out, l)
+      Array::push(out, value = l)
     }
     i = i + 1
   }
@@ -2074,20 +2074,20 @@ fn row_labels_pasteable(labels: Array[String]) -> Array[String] {
 }
 
 export fn make_row_mismatch(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
-  let missing_sorted = sort_labels(labels_union(no_str_labels(), missing))
+  let missing_sorted = sort_labels(labels_union(a = no_str_labels(), b = missing))
   let own = if Array::length(row_mismatch_roots) > 0 {
-    row_labels_pasteable(Array::get(row_mismatch_roots, Array::length(row_mismatch_roots) - 1))
+    row_labels_pasteable(Array::get(row_mismatch_roots, at = Array::length(row_mismatch_roots) - 1))
   } else {
     row_labels_pasteable(declared)
   }
-  let required = sort_labels(labels_union(own, row_labels_pasteable(missing)))
-  if Array::length(missing_sorted) > 0 && labels_subset(missing_sorted, own) {
+  let required = sort_labels(labels_union(a = own, b = row_labels_pasteable(missing)))
+  if Array::length(missing_sorted) > 0 && labels_subset(xs = missing_sorted, ys = own) {
     // #3520: the function already declares every missing label, so the row
     // that lacks them is an explicitly annotated closure literal's
     // (`() -> T with Async + Exception { println(..) }`). Blaming the
     // function told the reader to add what it already had.
     let closure_row = row_labels_pasteable(declared)
-    EEEffectRowMismatch(closure_row_mismatch_marker(), join_labels(missing_sorted), join_labels(closure_row), join_labels(sort_labels(labels_union(closure_row, row_labels_pasteable(missing)))), off)
+    EEEffectRowMismatch(closure_row_mismatch_marker(), join_labels(missing_sorted), join_labels(closure_row), join_labels(sort_labels(labels_union(a = closure_row, b = row_labels_pasteable(missing)))), off)
   } else {
     EEEffectRowMismatch(fn_name, join_labels(missing_sorted), join_labels(own), join_labels(required), off)
   }
@@ -2103,11 +2103,11 @@ fn labels_subset(xs: Array[String], ys: Array[String]) -> Bool {
   let mut ok = true
   let mut i = 0
   while i < Array::length(xs) && ok {
-    let x = Array::get(xs, i)
+    let x = Array::get(xs, at = i)
     let mut found = false
     let mut j = 0
     while j < Array::length(ys) && !found {
-      let y = Array::get(ys, j)
+      let y = Array::get(ys, at = j)
       // An erased `Exception` covers every kinded one, as the row check reads
       // it (`fn main allows Exception` covers `Exception[TaskError]`). The
       // converse does not hold: a kinded row never covers an erased
@@ -2121,7 +2121,7 @@ fn labels_subset(xs: Array[String], ys: Array[String]) -> Bool {
   ok
 }
 
-export fn is_program_entry_name(name: String) -> Bool {
+export fn is_program_entry_name(_ name: String) -> Bool {
   name == "main" || name == "_start"
 }
 
@@ -2129,12 +2129,12 @@ export fn is_program_entry_name(name: String) -> Bool {
 /// the synthesized `__test_x` -- so a hint about its row names the block the
 /// reader wrote rather than the compiler's internal function. Empty for any
 /// other name.
-export fn entry_block_display_name(fn_name: String) -> String {
+export fn entry_block_display_name(_ fn_name: String) -> String {
   let n = String::length(fn_name)
-  if String::starts_with(fn_name, "__test_") {
-    String::concat("test \"", String::concat(String::substring(fn_name, 7, n), "\""))
-  } else if String::starts_with(fn_name, "__bench_") {
-    String::concat("bench \"", String::concat(String::substring(fn_name, 8, n), "\""))
+  if String::starts_with(fn_name, prefix = "__test_") {
+    String::concat("test \"", String::concat(String::substring(fn_name, start = 7, end = n), "\""))
+  } else if String::starts_with(fn_name, prefix = "__bench_") {
+    String::concat("bench \"", String::concat(String::substring(fn_name, start = 8, end = n), "\""))
   } else {
     ""
   }
@@ -2143,13 +2143,13 @@ export fn entry_block_display_name(fn_name: String) -> String {
 /// An entry point by name: `main` / `_start`, or a lowered `test` / `bench` /
 /// `example` block. ADR-0088: every one of them GRANTS its row, so the row
 /// admission and the `allows`-spelled hints apply to all of them alike.
-export fn is_entry_point_name(fn_name: String) -> Bool {
+export fn is_entry_point_name(_ fn_name: String) -> Bool {
   is_program_entry_name(fn_name) || String::length(entry_block_display_name(fn_name)) > 0
 }
 
 /// How an entry-boundary diagnostic names its entry: `'main'`, or the block
 /// as the reader wrote it (`test "x"`) for a lowered block.
-export fn entry_display_name(fn_name: String) -> String {
+export fn entry_display_name(_ fn_name: String) -> String {
   let block = entry_block_display_name(fn_name)
   if String::length(block) > 0 {
     block
@@ -2160,7 +2160,7 @@ export fn entry_display_name(fn_name: String) -> String {
 
 /// How a row diagnostic names the row's owner: `` `ask` `` for a binding or a
 /// declaration, the block as written for a lowered block.
-export fn row_owner_display_name(fn_name: String) -> String {
+export fn row_owner_display_name(_ fn_name: String) -> String {
   let block = entry_block_display_name(fn_name)
   if String::length(block) > 0 {
     block
@@ -2178,21 +2178,21 @@ export let entry_user_effect_operations: Array[String] = array_empty()
 export fn collect_entry_user_effect_operations(stmts: Array[Stmt], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SEffectDef(_, name, _, ops) => {
         let mut oi = 0
         while oi < Array::length(ops) {
-          let (op_name, _, _) = Array::get(ops, oi)
+          let (op_name, _, _) = Array::get(ops, at = oi)
           let label = String::concat(name, String::concat("::", op_name))
-          if effect_row_has_label(Some(out), label) {
+          if effect_row_has_label(row = Some(out), wanted = label) {
             ()
           } else {
-            Array::push(out, label)
+            Array::push(out, value = label)
           }
           oi = oi + 1
         }
       },
-      SModule(_, _, body) => collect_entry_user_effect_operations(body, out),
+      SModule(_, _, body) => collect_entry_user_effect_operations(stmts = body, out = out),
       _ => ()
     }
     i = i + 1
@@ -2222,37 +2222,37 @@ export fn collect_entry_user_effect_operations(stmts: Array[Stmt], out: Array[St
 /// bare-effect-name discharge and its blanket effect_name_of_op-based
 /// authorization inside the body are both untouched), so it only fixes this
 /// gap without changing any other observable behavior.
-export fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
+export fn collect_handle_effects(_ arms: Array[(Pat, Expr)]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(arms) {
-    let (pat, _) = Array::get(arms, i)
+    let (pat, _) = Array::get(arms, at = i)
     match pat {
       PCtor(name, _) => {
-        let idx = String::index_of(name, "::")
+        let idx = String::index_of(name, needle = "::")
         if idx > 0 {
           let eff = canonical_exception_effect_name(name[0: idx])
           let mut seen = false
           let mut j = 0
           while j < Array::length(out) {
-            if Array::get(out, j) == eff {
+            if Array::get(out, at = j) == eff {
               seen = true
             }
             j = j + 1
           }
           if !seen {
-            Array::push(out, eff)
+            Array::push(out, value = eff)
           }
           let mut qseen = false
           let mut k = 0
           while k < Array::length(out) {
-            if Array::get(out, k) == name {
+            if Array::get(out, at = k) == name {
               qseen = true
             }
             k = k + 1
           }
           if !qseen {
-            Array::push(out, name)
+            Array::push(out, value = name)
           }
         }
       },
@@ -2277,14 +2277,14 @@ export fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
 export fn fn_binding_effects(ty: Option[TypeExpr], body: Expr) -> Array[String] {
   let sig = sig_type_effect_labels(ty)
   match body {
-    EFn(_, _, _, _, eff, _) => labels_union(sig, effect_row_labels(effect_row_parse(eff))),
+    EFn(_, _, _, _, eff, _) => labels_union(a = sig, b = effect_row_labels(effect_row_parse(eff))),
     _ => sig
   }
 }
 
 /// #1485: the effect labels a PARAMETER's own type declares. `(T) -> T with e`
 /// yields `["e"]`; a non-function parameter yields nothing.
-fn param_type_effect_labels(pty: TypeExpr) -> Array[String] {
+fn param_type_effect_labels(_ pty: TypeExpr) -> Array[String] {
   match pty {
     TyFn(_, _, peff) => effect_row_labels(effect_row_parse(peff)),
     _ => no_str_labels()
@@ -2311,7 +2311,7 @@ export fn fn_binding_param_effects(ty: Option[TypeExpr], body: Expr) -> Array[Ar
     Some(TyFn(sig_params, _, _)) => {
       let mut i = 0
       while i < Array::length(sig_params) {
-        Array::push(out, param_type_effect_labels(Array::get(sig_params, i)))
+        Array::push(out, value = param_type_effect_labels(Array::get(sig_params, at = i)))
         i = i + 1
       }
     },
@@ -2319,10 +2319,10 @@ export fn fn_binding_param_effects(ty: Option[TypeExpr], body: Expr) -> Array[Ar
       EFn(_, _, params, _, _, _) => {
         let mut i = 0
         while i < Array::length(params) {
-          let (_, pty) = Array::get(params, i)
+          let (_, pty) = Array::get(params, at = i)
           match pty {
-            Some(t) => Array::push(out, param_type_effect_labels(t)),
-            None => Array::push(out, no_str_labels())
+            Some(t) => Array::push(out, value = param_type_effect_labels(t)),
+            None => Array::push(out, value = no_str_labels())
           }
           i = i + 1
         }
@@ -2349,15 +2349,15 @@ export fn no_param_effs() -> Array[Array[Array[String]]] {
 /// same slot: the first occurrence wins, exactly as the scan did. Built once
 /// per entry, after the table is final; the small per-scope overlays keep the
 /// scan.
-export fn program_fn_index(fn_names: Array[String]) -> MutMap[String, Int] {
+export fn program_fn_index(_ fn_names: Array[String]) -> MutMap[String, Int] {
   let index = MutMap::with_capacity_string(Array::length(fn_names) * 2 + 16)
   let mut i = 0
   while i < Array::length(fn_names) {
-    let name = Array::get(fn_names, i)
-    if MutMap::has(index, name) {
+    let name = Array::get(fn_names, at = i)
+    if MutMap::has(index, k = name) {
       ()
     } else {
-      MutMap::set(index, name, i)
+      MutMap::set(index, k = name, v = i)
     }
     i = i + 1
   }
@@ -2366,15 +2366,15 @@ export fn program_fn_index(fn_names: Array[String]) -> MutMap[String, Int] {
 
 /// `lookup_fn_effs` over the program table, through its index.
 export fn lookup_program_fn_effs(fn_index: MutMap[String, Int], effs: Array[Array[String]], name: String) -> Option[Array[String]] {
-  match MutMap::get(fn_index, name) {
-    Some(i) => Some(Array::get(effs, i)),
+  match MutMap::get(fn_index, k = name) {
+    Some(i) => Some(Array::get(effs, at = i)),
     None => None
   }
 }
 
 /// `effect_name_exists` over the program table, through its index.
 export fn program_fn_exists(fn_index: MutMap[String, Int], name: String) -> Bool {
-  MutMap::has(fn_index, name)
+  MutMap::has(fn_index, k = name)
 }
 
 /// Whether a local binding of `name` must leave an entry in the lexical
@@ -2392,16 +2392,16 @@ export fn program_fn_exists(fn_index: MutMap[String, Int], name: String) -> Bool
 /// straight to the host import, so a local of that spelling stays refused
 /// rather than checking clean and calling the host (Codex on #3612).
 export fn local_binding_needs_overlay_entry(fn_index: MutMap[String, Int], name: String) -> Bool {
-  program_fn_exists(fn_index, name) || name == "print" || name == "println" || name == "sh" || name == "sh_lines"
+  program_fn_exists(fn_index = fn_index, name = name) || name == "print" || name == "println" || name == "sh" || name == "sh_lines"
 }
 
 /// `lookup_fn_param_effs` over the program table, through its index. The
 /// scan stopped at the shorter of the two aligned arrays; the index slot is
 /// checked against `param_effs` the same way.
 export fn lookup_program_fn_param_effs(fn_index: MutMap[String, Int], param_effs: Array[Array[Array[String]]], name: String) -> Option[Array[Array[String]]] {
-  match MutMap::get(fn_index, name) {
+  match MutMap::get(fn_index, k = name) {
     Some(i) => if i < Array::length(param_effs) {
-      Some(Array::get(param_effs, i))
+      Some(Array::get(param_effs, at = i))
     } else {
       None
     },
@@ -2414,8 +2414,8 @@ export fn lookup_fn_effs(names: Array[String], effs: Array[Array[String]], name:
   let mut found = None
   while i < Array::length(names) {
     match found {
-      None => if Array::get(names, i) == name {
-        found = Some(Array::get(effs, i))
+      None => if Array::get(names, at = i) == name {
+        found = Some(Array::get(effs, at = i))
       } else {
         ()
       },

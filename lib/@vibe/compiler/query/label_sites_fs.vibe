@@ -64,13 +64,13 @@ fn label_sites_file(path: String, source: String, replacement: Option[String], s
         mismatch_message: "add-labels: the edited file cannot stand in for the ingested one; leaving it alone"
       })
     }
-    let context = query_project_context_fs(path, source, edit, state)
+    let context = query_project_context_fs(path = path, source = source, replacement = edit, state = state)
     let written = match replacement {
       Some(r) => r,
       None => source
     }
-    (label_sites_typed(path, written, context.entry_source, context.import_env), context.state)
-  } with { Exception::Throw(message) => (label_sites_failed(path, source, message), state) }
+    (label_sites_typed(path = path, source = written, entry_source = context.entry_source, import_env = context.import_env), context.state)
+  } with { Exception::Throw(message) => (label_sites_failed(path = path, source = source, message = message), state) }
 }
 
 /// Check the ingested `entry_source` against `import_env` with the site
@@ -78,19 +78,19 @@ fn label_sites_file(path: String, source: String, replacement: Option[String], s
 fn label_sites_typed(path: String, source: String, entry_source: String, import_env: TypeEnv) -> LabelSiteFile {
   let delta = String::length(entry_source) - String::length(source)
   if delta < 0 {
-    label_sites_failed(path, source, "add-labels: refusing to edit this file -- its ingested source is not the file plus a prefix")
+    label_sites_failed(path = path, source = source, message = "add-labels: refusing to edit this file -- its ingested source is not the file plus a prefix")
   } else {
     label_sites_begin()
     let checked = handle {
       // A fresh parse: the checker mutates the statements it is handed.
       let (tokens, starts, _) = lex_with_offsets(entry_source)
-      let stmts = parse_program_located(tokens, starts, entry_source)
-      let _ = check_program_with_projected_import_env_result(stmts, import_env)
+      let stmts = parse_program_located(tokens = tokens, starts = starts, source = entry_source)
+      let _ = check_program_with_projected_import_env_result(stmts = stmts, initial_env = import_env)
       ""
     } with { Exception::Throw(message) => message }
     let sites = label_sites_end()
     if String::length(checked) > 0 {
-      label_sites_failed(path, source, checked)
+      label_sites_failed(path = path, source = source, message = checked)
     } else {
       LabelSiteFile::{
         path: path,
@@ -105,15 +105,15 @@ fn label_sites_typed(path: String, source: String, entry_source: String, import_
 
 /// Type every file in `files` (paths to `.vibe` sources) and record its
 /// resolved call sites.
-export fn query_label_sites_fs(files: Array[String]) -> Array[LabelSiteFile] with Env + Exception + Fs {
+export fn query_label_sites_fs(_ files: Array[String]) -> Array[LabelSiteFile] with Env + Exception + Fs {
   let out: Array[LabelSiteFile] = []
   let mut state = query_project_state_new()
   let mut i = 0
   while i < Array::length(files) {
-    let path = Array::get(files, i)
-    let (answer, next_state) = label_sites_file(path, Fs::read_file(path), None, state)
+    let path = Array::get(files, at = i)
+    let (answer, next_state) = label_sites_file(path = path, source = Fs::read_file(path), replacement = None, state = state)
     state = next_state
-    Array::push(out, answer)
+    Array::push(out, value = answer)
     i = i + 1
   }
   out
@@ -123,6 +123,6 @@ export fn query_label_sites_fs(files: Array[String]) -> Array[LabelSiteFile] wit
 /// still check? "" when it does, else the checker's message. The codemod asks
 /// this of every edit before it reports or writes it.
 export fn query_label_sites_recheck_fs(path: String, source: String, edited: String) -> String with Env + Fs {
-  let (answer, _) = label_sites_file(path, source, Some(edited), query_project_state_new())
+  let (answer, _) = label_sites_file(path = path, source = source, replacement = Some(edited), state = query_project_state_new())
   answer.error
 }

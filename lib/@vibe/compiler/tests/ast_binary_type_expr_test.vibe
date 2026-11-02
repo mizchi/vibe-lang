@@ -18,9 +18,9 @@ import @vibe/ast {
 
 //# Functions
 
-fn enc(t: TypeExpr) -> Bytes {
+fn enc(_ t: TypeExpr) -> Bytes {
   let b = Bytes::new()
-  ast_binary_write_type_expr(b, t)
+  ast_binary_write_type_expr(buf = b, t = t)
   b
 }
 
@@ -31,7 +31,7 @@ fn bytes_eq(a: Bytes, b: Bytes) -> Bool {
     let mut ok = true
     let mut i = 0
     while ok && i < Bytes::length(a) {
-      ok = Bytes::get(a, i) == Bytes::get(b, i)
+      ok = Bytes::get(a, at = i) == Bytes::get(b, at = i)
       i = i + 1
     }
     ok
@@ -42,19 +42,19 @@ fn bytes_eq(a: Bytes, b: Bytes) -> Bool {
 /// weight: it proves the decoder rebuilt a tree the WRITER agrees with,
 /// field for field, without this test having to spell out every nested
 /// shape by hand.
-fn roundtrips(t: TypeExpr) -> Bool {
+fn roundtrips(_ t: TypeExpr) -> Bool {
   let written = enc(t)
   handle {
     let r = ast_binary_reader_new(written)
     let back = ast_binary_read_type_expr(r)
-    bytes_eq(written, enc(back)) && ast_binary_reader_remaining(r) == 0
+    bytes_eq(a = written, b = enc(back)) && ast_binary_reader_remaining(r) == 0
   } with { Exception::Throw(_) => false }
 }
 
 /// "ok" when the bytes decode, otherwise the rejection message. Tests
 /// assert the MESSAGE, not merely that something was refused: a decoder
 /// that threw for the wrong reason would pass a bare "it refused" check.
-fn decode_outcome(raw: Array[Int]) -> String {
+fn decode_outcome(_ raw: Array[Int]) -> String {
   handle {
     let r = ast_binary_reader_new(Bytes::from_array(raw))
     let t = ast_binary_read_type_expr(r)
@@ -77,13 +77,13 @@ test "ast_binary TypeExpr: tags are the enum's declaration order" {
 
 test "ast_binary TypeExpr: canonical bytes" {
   // TyUnit -> [0x05]
-  assert(bytes_eq(enc(TyUnit), Bytes::from_array([5])))
+  assert(bytes_eq(a = enc(TyUnit), b = Bytes::from_array([5])))
   // TyName("Int") -> tag, len, 'I' 'n' 't'
-  assert(bytes_eq(enc(TyName("Int")), Bytes::from_array([1, 3, 73, 110, 116])))
+  assert(bytes_eq(a = enc(TyName("Int")), b = Bytes::from_array([1, 3, 73, 110, 116])))
   // TyTuple([]) -> tag, count 0
-  assert(bytes_eq(enc(TyTuple([])), Bytes::from_array([4, 0])))
+  assert(bytes_eq(a = enc(TyTuple([])), b = Bytes::from_array([4, 0])))
   // TyApp("Array", [TyName("Int")]) -> tag, "Array", count 1, TyName("Int")
-  assert(bytes_eq(enc(TyApp("Array", [TyName("Int")])), Bytes::from_array([
+  assert(bytes_eq(a = enc(TyApp("Array", [TyName("Int")])), b = Bytes::from_array([
     2,
     5,
     65,
@@ -99,7 +99,7 @@ test "ast_binary TypeExpr: canonical bytes" {
     116
   ])))
   // TyFn([TyName("Int")], TyUnit, None) -> tag, params, ret, optstr None
-  assert(bytes_eq(enc(TyFn([TyName("Int")], TyUnit, None)), Bytes::from_array([
+  assert(bytes_eq(a = enc(TyFn([TyName("Int")], TyUnit, None)), b = Bytes::from_array([
     3,
     1,
     1,
@@ -111,7 +111,7 @@ test "ast_binary TypeExpr: canonical bytes" {
     0
   ])))
   // TyFn([], TyUnit, Some("Fs")) -> tag, count 0, ret, optstr Some "Fs"
-  assert(bytes_eq(enc(TyFn([], TyUnit, Some("Fs"))), Bytes::from_array([
+  assert(bytes_eq(a = enc(TyFn([], TyUnit, Some("Fs"))), b = Bytes::from_array([
     3,
     0,
     5,
@@ -135,11 +135,11 @@ test "ast_binary TypeExpr: a non-ASCII name goes out as its OWN bytes" {
   //
   // Only a CANONICAL-BYTE assertion can see that: a transformation undone by
   // its own inverse is invisible to a round trip.
-  assert(bytes_eq(enc(TyName("é")), Bytes::from_array([1, 2, 195, 169])))
+  assert(bytes_eq(a = enc(TyName("é")), b = Bytes::from_array([1, 2, 195, 169])))
   // Three- and four-byte sequences likewise: declared length is the BYTE
   // count, and the payload is the source's own bytes.
-  assert(bytes_eq(enc(TyName("日")), Bytes::from_array([1, 3, 230, 151, 165])))
-  assert(bytes_eq(enc(TyName("😀")), Bytes::from_array([
+  assert(bytes_eq(a = enc(TyName("日")), b = Bytes::from_array([1, 3, 230, 151, 165])))
+  assert(bytes_eq(a = enc(TyName("😀")), b = Bytes::from_array([
     1,
     4,
     240,
@@ -148,8 +148,8 @@ test "ast_binary TypeExpr: a non-ASCII name goes out as its OWN bytes" {
     128
   ])))
   // And the length prefix really is bytes, not characters.
-  assert(Bytes::get(enc(TyName("é")), 1) == 2)
-  assert(Bytes::get(enc(TyName("😀")), 1) == 4)
+  assert(Bytes::get(enc(TyName("é")), at = 1) == 2)
+  assert(Bytes::get(enc(TyName("😀")), at = 1) == 4)
 }
 
 test "ast_binary TypeExpr: every variant roundtrips" {

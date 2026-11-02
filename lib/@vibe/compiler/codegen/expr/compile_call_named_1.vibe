@@ -188,16 +188,16 @@ import ./compile_call_named_3.vibe {
 fn rc_exit_result_is_name(e: Expr, name: String) -> Bool {
   match e {
     EIdent(result, _) => result == name,
-    ELet(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(tail, bound) {
-      rc_exit_result_is_name(value, name)
+    ELet(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(e = tail, name = bound) {
+      rc_exit_result_is_name(e = value, name = name)
     } else {
-      !rc_exit_mentions_name(value, name) && rc_exit_result_is_name(tail, name)
+      !rc_exit_mentions_name(e = value, name = name) && rc_exit_result_is_name(e = tail, name = name)
     }),
-    ELetMut(bound, value, tail, _) => bound != name && !rc_exit_mentions_name(value, name) && rc_exit_result_is_name(tail, name),
-    ELetRec(bound, value, tail) => bound != name && !rc_exit_mentions_name(value, name) && rc_exit_result_is_name(tail, name),
-    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_result_is_name(tail, name),
-    EAssign(target, value, tail, _) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_result_is_name(tail, name),
-    EAssignOp(target, _, value, tail, _) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_result_is_name(tail, name),
+    ELetMut(bound, value, tail, _) => bound != name && !rc_exit_mentions_name(e = value, name = name) && rc_exit_result_is_name(e = tail, name = name),
+    ELetRec(bound, value, tail) => bound != name && !rc_exit_mentions_name(e = value, name = name) && rc_exit_result_is_name(e = tail, name = name),
+    ESeq(head, tail) => !rc_exit_mentions_name(e = head, name = name) && rc_exit_result_is_name(e = tail, name = name),
+    EAssign(target, value, tail, _) => target != name && !rc_exit_mentions_name(e = value, name = name) && rc_exit_result_is_name(e = tail, name = name),
+    EAssignOp(target, _, value, tail, _) => target != name && !rc_exit_mentions_name(e = value, name = name) && rc_exit_result_is_name(e = tail, name = name),
     _ => false
   }
 }
@@ -205,16 +205,16 @@ fn rc_exit_result_is_name(e: Expr, name: String) -> Bool {
 export fn rc_exit_follow_value_source(e: Expr, sources: Array[(String, Expr)], limit: Int) -> Expr {
   match e {
     ECall(EIdent("__lambda_return_owned", off), args, _, _) => if off < 0 && Array::length(args) == 1 {
-      rc_exit_follow_value_source(Array::get(args, 0), sources, limit)
+      rc_exit_follow_value_source(e = Array::get(args, at = 0), sources = sources, limit = limit)
     } else {
       e
     },
     EIdent(name, _) => {
       let mut i = limit - 1
       while i >= 0 {
-        let row = Array::get(sources, i)
+        let row = Array::get(sources, at = i)
         if row.0 == name {
-          return rc_exit_follow_value_source(row.1, sources, i)
+          return rc_exit_follow_value_source(e = row.1, sources = sources, limit = i)
         }
         i = i - 1
       }
@@ -230,7 +230,7 @@ export fn rc_exit_follow_value_source(e: Expr, sources: Array[(String, Expr)], l
 /// passthrough of it. Result wrappers are followed only while their earlier
 /// expressions cannot consume the binder.
 export fn rc_exit_passthrough_rec_result(e: Expr, name: String, local_names: Array[String], shadowed: Array[String], ctx: CompileCtx) -> Bool {
-  if array_contains_str(shadowed, name) {
+  if array_contains_str(arr = shadowed, s = name) {
     return false
   }
   match e {
@@ -238,17 +238,17 @@ export fn rc_exit_passthrough_rec_result(e: Expr, name: String, local_names: Arr
     // Named owning-return normalization can wrap the branch's call before
     // this exit sees it. The marker preserves pointer identity.
     ECall(EIdent("__lambda_return_owned", off), args, _, _) => if off < 0 && Array::length(args) == 1 {
-      rc_exit_passthrough_rec_result(Array::get(args, 0), name, local_names, shadowed, ctx)
+      rc_exit_passthrough_rec_result(e = Array::get(args, at = 0), name = name, local_names = local_names, shadowed = shadowed, ctx = ctx)
     } else {
       false
     },
     ECall(EIdent(callee, _), args, _, _) => {
-      if find_local_slot(local_names, callee) >= 0 {
+      if find_local_slot(names = local_names, name = callee) >= 0 {
         return false
       }
       for row in ctx.passthrough_ret_params {
         if row.0 == callee && row.1 < Array::length(args) {
-          if rc_exit_passthrough_rec_result(Array::get(args, row.1), name, local_names, shadowed, ctx) {
+          if rc_exit_passthrough_rec_result(e = Array::get(args, at = row.1), name = name, local_names = local_names, shadowed = shadowed, ctx = ctx) {
             return true
           }
         }
@@ -257,33 +257,33 @@ export fn rc_exit_passthrough_rec_result(e: Expr, name: String, local_names: Arr
     },
     ELet(bound, value, tail, _) => if bound == name {
       false
-    } else if rc_exit_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, shadowed, ctx) {
-      rc_exit_passthrough_rec_result(value, name, local_names, shadowed, ctx)
-    } else if rc_exit_mentions_name(value, name) {
+    } else if rc_exit_result_is_name(e = tail, name = bound) || rc_exit_passthrough_rec_result(e = tail, name = bound, local_names = local_names, shadowed = shadowed, ctx = ctx) {
+      rc_exit_passthrough_rec_result(e = value, name = name, local_names = local_names, shadowed = shadowed, ctx = ctx)
+    } else if rc_exit_mentions_name(e = value, name = name) {
       false
     } else {
-      rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx)
+      rc_exit_passthrough_rec_result(e = tail, name = name, local_names = local_names, shadowed = shadowed, ctx = ctx)
     },
-    ELetMut(bound, value, tail, _) => if bound == name || rc_exit_mentions_name(value, name) {
+    ELetMut(bound, value, tail, _) => if bound == name || rc_exit_mentions_name(e = value, name = name) {
       false
     } else {
-      rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx)
+      rc_exit_passthrough_rec_result(e = tail, name = name, local_names = local_names, shadowed = shadowed, ctx = ctx)
     },
-    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
-    EAssign(target, value, tail, _) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
-    EAssignOp(target, _, value, tail, _) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_passthrough_rec_result(tail, name, local_names, shadowed, ctx),
-    EIf(cond, yes, no) => !rc_exit_mentions_name(cond, name) && rc_exit_passthrough_rec_result(yes, name, local_names, shadowed, ctx) && rc_exit_passthrough_rec_result(no, name, local_names, shadowed, ctx),
+    ESeq(head, tail) => !rc_exit_mentions_name(e = head, name = name) && rc_exit_passthrough_rec_result(e = tail, name = name, local_names = local_names, shadowed = shadowed, ctx = ctx),
+    EAssign(target, value, tail, _) => target != name && !rc_exit_mentions_name(e = value, name = name) && rc_exit_passthrough_rec_result(e = tail, name = name, local_names = local_names, shadowed = shadowed, ctx = ctx),
+    EAssignOp(target, _, value, tail, _) => target != name && !rc_exit_mentions_name(e = value, name = name) && rc_exit_passthrough_rec_result(e = tail, name = name, local_names = local_names, shadowed = shadowed, ctx = ctx),
+    EIf(cond, yes, no) => !rc_exit_mentions_name(e = cond, name = name) && rc_exit_passthrough_rec_result(e = yes, name = name, local_names = local_names, shadowed = shadowed, ctx = ctx) && rc_exit_passthrough_rec_result(e = no, name = name, local_names = local_names, shadowed = shadowed, ctx = ctx),
     EMatch(scrutinee, arms) => {
-      if rc_exit_mentions_name(scrutinee, name) || Array::length(arms) == 0 {
+      if rc_exit_mentions_name(e = scrutinee, name = name) || Array::length(arms) == 0 {
         return false
       }
       for arm in arms {
         let arm_shadowed: Array[String] = []
         for bound in shadowed {
-          Array::push(arm_shadowed, bound)
+          Array::push(arm_shadowed, value = bound)
         }
-        let _ = collect_pattern_bindings(arm.0, arm_shadowed)
-        if !rc_exit_passthrough_rec_result(arm.1, name, local_names, arm_shadowed, ctx) {
+        let _ = collect_pattern_bindings(pat = arm.0, bindings = arm_shadowed)
+        if !rc_exit_passthrough_rec_result(e = arm.1, name = name, local_names = local_names, shadowed = arm_shadowed, ctx = ctx) {
           return false
         }
       }
@@ -296,62 +296,62 @@ export fn rc_exit_passthrough_rec_result(e: Expr, name: String, local_names: Arr
 fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   match e {
     ECall(EIdent("__lambda_return_owned", off), args, _, _) => if off < 0 && Array::length(args) == 1 {
-      rc_exit_conditional_rec_transfer(Array::get(args, 0), name, local_names, ctx)
+      rc_exit_conditional_rec_transfer(e = Array::get(args, at = 0), name = name, local_names = local_names, ctx = ctx)
     } else {
       false
     },
     ECall(EIdent(callee, _), args, _, _) => {
-      if find_local_slot(local_names, callee) >= 0 {
+      if find_local_slot(names = local_names, name = callee) >= 0 {
         return false
       }
       for row in ctx.passthrough_ret_params {
         if row.0 == callee && row.1 < Array::length(args) {
-          return rc_exit_conditional_rec_transfer(Array::get(args, row.1), name, local_names, ctx)
+          return rc_exit_conditional_rec_transfer(e = Array::get(args, at = row.1), name = name, local_names = local_names, ctx = ctx)
         }
       }
       // A helper with more than one parameter-returning exit has no single
       // passthrough source. Compare its actual result with the recursive
       // owner before deciding whether the exit may release that owner.
       for arg in args {
-        if rc_exit_mentions_name(arg, name) {
+        if rc_exit_mentions_name(e = arg, name = name) {
           return true
         }
       }
       false
     },
-    ELet(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, [
-    ], ctx) {
-      rc_exit_conditional_rec_transfer(value, name, local_names, ctx)
+    ELet(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(e = tail, name = bound) || rc_exit_passthrough_rec_result(e = tail, name = bound, local_names = local_names, shadowed = [
+    ], ctx = ctx) {
+      rc_exit_conditional_rec_transfer(e = value, name = name, local_names = local_names, ctx = ctx)
     } else {
-      !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx)
+      !rc_exit_mentions_name(e = value, name = name) && rc_exit_conditional_rec_transfer(e = tail, name = name, local_names = local_names, ctx = ctx)
     }),
-    ELetMut(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, [
-    ], ctx) {
-      rc_exit_conditional_rec_transfer(value, name, local_names, ctx)
+    ELetMut(bound, value, tail, _) => bound != name && (if rc_exit_result_is_name(e = tail, name = bound) || rc_exit_passthrough_rec_result(e = tail, name = bound, local_names = local_names, shadowed = [
+    ], ctx = ctx) {
+      rc_exit_conditional_rec_transfer(e = value, name = name, local_names = local_names, ctx = ctx)
     } else {
-      !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx)
+      !rc_exit_mentions_name(e = value, name = name) && rc_exit_conditional_rec_transfer(e = tail, name = name, local_names = local_names, ctx = ctx)
     }),
-    ELetRec(bound, value, tail) => bound != name && (if rc_exit_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, [
-    ], ctx) {
-      rc_exit_conditional_rec_transfer(value, name, local_names, ctx)
+    ELetRec(bound, value, tail) => bound != name && (if rc_exit_result_is_name(e = tail, name = bound) || rc_exit_passthrough_rec_result(e = tail, name = bound, local_names = local_names, shadowed = [
+    ], ctx = ctx) {
+      rc_exit_conditional_rec_transfer(e = value, name = name, local_names = local_names, ctx = ctx)
     } else {
-      !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx)
+      !rc_exit_mentions_name(e = value, name = name) && rc_exit_conditional_rec_transfer(e = tail, name = name, local_names = local_names, ctx = ctx)
     }),
-    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx),
-    EAssign(target, value, tail, _) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx),
-    EAssignOp(target, _, value, tail, _) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_conditional_rec_transfer(tail, name, local_names, ctx),
-    EIf(_, yes, no) => rc_exit_passthrough_rec_result(yes, name, local_names, [], ctx) && rc_exit_fresh_independent_closure(no, name, local_names, ctx, [
-    ]) || rc_exit_passthrough_rec_result(no, name, local_names, [], ctx) && rc_exit_fresh_independent_closure(yes, name, local_names, ctx, [
+    ESeq(head, tail) => !rc_exit_mentions_name(e = head, name = name) && rc_exit_conditional_rec_transfer(e = tail, name = name, local_names = local_names, ctx = ctx),
+    EAssign(target, value, tail, _) => target != name && !rc_exit_mentions_name(e = value, name = name) && rc_exit_conditional_rec_transfer(e = tail, name = name, local_names = local_names, ctx = ctx),
+    EAssignOp(target, _, value, tail, _) => target != name && !rc_exit_mentions_name(e = value, name = name) && rc_exit_conditional_rec_transfer(e = tail, name = name, local_names = local_names, ctx = ctx),
+    EIf(_, yes, no) => rc_exit_passthrough_rec_result(e = yes, name = name, local_names = local_names, shadowed = [], ctx = ctx) && rc_exit_fresh_independent_closure(e = no, name = name, local_names = local_names, ctx = ctx, shadowed = [
+    ]) || rc_exit_passthrough_rec_result(e = no, name = name, local_names = local_names, shadowed = [], ctx = ctx) && rc_exit_fresh_independent_closure(e = yes, name = name, local_names = local_names, ctx = ctx, shadowed = [
     ]),
     EMatch(scrutinee, arms) => {
       let mut seen_rec = false
       let mut safe = Array::length(arms) > 0
       for arm in arms {
         let binds: Array[String] = []
-        let _ = collect_pattern_bindings(arm.0, binds)
-        if rc_exit_passthrough_rec_result(arm.1, name, local_names, binds, ctx) {
+        let _ = collect_pattern_bindings(pat = arm.0, bindings = binds)
+        if rc_exit_passthrough_rec_result(e = arm.1, name = name, local_names = local_names, shadowed = binds, ctx = ctx) {
           seen_rec = true
-        } else if !rc_exit_fresh_independent_closure(arm.1, name, local_names, ctx, if rc_exit_independent_pattern_source(scrutinee, name, local_names, ctx) {
+        } else if !rc_exit_fresh_independent_closure(e = arm.1, name = name, local_names = local_names, ctx = ctx, shadowed = if rc_exit_independent_pattern_source(e = scrutinee, name = name, local_names = local_names, ctx = ctx) {
           binds
         } else {
           []
@@ -368,12 +368,12 @@ fn rc_exit_conditional_rec_transfer(e: Expr, name: String, local_names: Array[St
 /// Does another binding in `[lo, len)` -- another local -- share entry `i`'s
 /// name? (A `let` and its view pin are one binding, one local.)
 fn rc_exit_name_shared(names: Array[String], info: Array[Int], lo: Int, i: Int) -> Bool {
-  let n = Array::get(names, i)
-  let local = Array::get(info, i * 3 + 1)
+  let n = Array::get(names, at = i)
+  let local = Array::get(info, at = i * 3 + 1)
   let mut shared = false
   let mut k = lo
   while !shared && k < Array::length(names) {
-    if k != i && Array::get(names, k) == n && Array::get(info, k * 3 + 1) != local {
+    if k != i && Array::get(names, at = k) == n && Array::get(info, at = k * 3 + 1) != local {
       shared = true
     } else {
       ()
@@ -387,16 +387,16 @@ fn rc_exit_name_shared(names: Array[String], info: Array[Int], lo: Int, i: Int) 
 /// has one owned reference on each path. The exit compares the stored pointer
 /// with the recursive owner and releases only the unselected owner.
 export fn rc_exit_break_result_owns_rec(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
-  if Array::length(ctx.rc_exit_state) < 3 || Array::get(ctx.rc_exit_state, 1) != 0 || Array::get(ctx.rc_exit_state, 2) != 0 {
+  if Array::length(ctx.rc_exit_state) < 3 || Array::get(ctx.rc_exit_state, at = 1) != 0 || Array::get(ctx.rc_exit_state, at = 2) != 0 {
     return false
   }
   let nlets = Array::length(ctx.rc_exit_lets)
   let inner = if nlets > 0 {
-    Array::get(ctx.rc_exit_lets, nlets - 1)
+    Array::get(ctx.rc_exit_lets, at = nlets - 1)
   } else {
     ""
   }
-  if !rc_exit_site_matches(ctx, Array::get(ctx.rc_exit_state, 0), 1, perceus_exit_fingerprint(EUnit), inner) {
+  if !rc_exit_site_matches(ctx = ctx, ord = Array::get(ctx.rc_exit_state, at = 0), kind = 1, fingerprint = perceus_exit_fingerprint(EUnit), inner = inner) {
     return false
   }
   let names = ctx.rc_exit_stack_names
@@ -404,7 +404,7 @@ export fn rc_exit_break_result_owns_rec(value: Expr, local_names: Array[String],
   let mut lo = 0
   let mut j = Array::length(names) - 1
   while j >= 0 {
-    if Array::get(info, j * 3) == 100 {
+    if Array::get(info, at = j * 3) == 100 {
       lo = j + 1
       j = 0 - 1
     } else {
@@ -413,8 +413,8 @@ export fn rc_exit_break_result_owns_rec(value: Expr, local_names: Array[String],
   }
   let mut i = lo
   while i < Array::length(names) {
-    let name = Array::get(names, i)
-    if Array::get(info, i * 3) == 6 && !rc_exit_name_shared(names, info, lo, i) && find_local_slot(local_names, name) == Array::get(info, i * 3 + 1) && rc_exit_conditional_rec_transfer(value, name, local_names, ctx) {
+    let name = Array::get(names, at = i)
+    if Array::get(info, at = i * 3) == 6 && !rc_exit_name_shared(names = names, info = info, lo = lo, i = i) && find_local_slot(names = local_names, name = name) == Array::get(info, at = i * 3 + 1) && rc_exit_conditional_rec_transfer(e = value, name = name, local_names = local_names, ctx = ctx) {
       return true
     }
     i = i + 1
@@ -450,41 +450,41 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
     if kind == 1 {
       let mut ri = Array::length(ctx.rc_exit_result_stores) - 1
       while ri >= 0 {
-        let row = Array::get(ctx.rc_exit_result_stores, ri)
-        if row.0 == "__loop_result" || (String::starts_with(row.0, "__shadow_") && String::ends_with(row.0, "___loop_result")) {
-          exit_result = (find_local_slot(local_names, row.0), row.1)
+        let row = Array::get(ctx.rc_exit_result_stores, at = ri)
+        if row.0 == "__loop_result" || (String::starts_with(row.0, prefix = "__shadow_") && String::ends_with(row.0, suffix = "___loop_result")) {
+          exit_result = (find_local_slot(names = local_names, name = row.0), row.1)
           ri = 0 - 1
         } else {
           ri = ri - 1
         }
       }
     } else if kind == 0 || kind == 3 {
-      exit_result = (result_local, rc_exit_follow_value_source(operand, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores)))
+      exit_result = (result_local, rc_exit_follow_value_source(e = operand, sources = ctx.rc_exit_result_stores, limit = Array::length(ctx.rc_exit_result_stores)))
     }
-    let ord = Array::get(ctx.rc_exit_state, 0)
-    Array::set(ctx.rc_exit_state, 0, ord + 1)
+    let ord = Array::get(ctx.rc_exit_state, at = 0)
+    Array::set(ctx.rc_exit_state, at = 0, value = ord + 1)
     let nlets = Array::length(ctx.rc_exit_lets)
     let inner = if nlets > 0 {
-      Array::get(ctx.rc_exit_lets, nlets - 1)
+      Array::get(ctx.rc_exit_lets, at = nlets - 1)
     } else {
       ""
     }
-    if Array::get(ctx.rc_exit_state, 1) != 0 {
+    if Array::get(ctx.rc_exit_state, at = 1) != 0 {
       ()
-    } else if !rc_exit_site_matches(ctx, ord, kind, perceus_exit_fingerprint(operand), inner) {
-      Array::set(ctx.rc_exit_state, 1, 1)
+    } else if !rc_exit_site_matches(ctx = ctx, ord = ord, kind = kind, fingerprint = perceus_exit_fingerprint(operand), inner = inner) {
+      Array::set(ctx.rc_exit_state, at = 1, value = 1)
     } else {
       let keep: Array[String] = []
       let mut ki = 0
       while ki < Array::length(ctx.rc_exit_keep) {
-        Array::push(keep, Array::get(ctx.rc_exit_keep, ki))
+        Array::push(keep, value = Array::get(ctx.rc_exit_keep, at = ki))
         ki = ki + 1
       }
       // A branch-local fresh closure can make the general operand walk fail.
       // Keep that conservative result for other owners; the direct recursive
       // closure comparison below is safe independently of those owners.
-      let operand_ok = rc_exit_operand_ok(operand, local_names, ctx, keep)
-      if Array::get(ctx.rc_exit_state, 2) == 0 {
+      let operand_ok = rc_exit_operand_ok(e = operand, local_names = local_names, ctx = ctx, keep = keep)
+      if Array::get(ctx.rc_exit_state, at = 2) == 0 {
         let names = ctx.rc_exit_stack_names
         let info = ctx.rc_exit_stack_info
         // The range the exit leaves: down to the boundary it stops at. A
@@ -493,7 +493,7 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
         let mut bounded = kind == 0 || kind == 3 || kind == 4 || kind == 5
         let mut j = Array::length(names) - 1
         while j >= 0 {
-          let ek = Array::get(info, j * 3)
+          let ek = Array::get(info, at = j * 3)
           if (kind == 1 || kind == 2) && ek == 100 {
             lo = j + 1
             bounded = true
@@ -511,25 +511,25 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
         if bounded {
           let mut i = Array::length(names) - 1
           while i >= lo {
-            let n = Array::get(names, i)
-            let ek = Array::get(info, i * 3)
-            let local = Array::get(info, i * 3 + 1)
-            let flag = Array::get(info, i * 3 + 2)
-            let conditional_rec = exit_result.0 >= 0 && ek == 6 && !rc_exit_name_shared(names, info, lo, i) && find_local_slot(local_names, n) == local && rc_exit_conditional_rec_transfer(exit_result.1, n, local_names, ctx)
+            let n = Array::get(names, at = i)
+            let ek = Array::get(info, at = i * 3)
+            let local = Array::get(info, at = i * 3 + 1)
+            let flag = Array::get(info, at = i * 3 + 2)
+            let conditional_rec = exit_result.0 >= 0 && ek == 6 && !rc_exit_name_shared(names = names, info = info, lo = lo, i = i) && find_local_slot(names = local_names, name = n) == local && rc_exit_conditional_rec_transfer(e = exit_result.1, name = n, local_names = local_names, ctx = ctx)
             let count = if conditional_rec {
               1
-            } else if !operand_ok || ek >= 100 || array_contains_str(keep, n) || rc_exit_name_shared(names, info, lo, i) || find_local_slot(local_names, n) != local {
+            } else if !operand_ok || ek >= 100 || array_contains_str(arr = keep, s = n) || rc_exit_name_shared(names = names, info = info, lo = lo, i = i) || find_local_slot(names = local_names, name = n) != local {
               0
             } else if ek == 4 || ek == 5 {
               1
             } else {
-              let planned = rc_exit_plan_count(ctx, ord, n)
+              let planned = rc_exit_plan_count(ctx = ctx, ord = ord, n = n)
               if planned < 0 {
                 // #3175: a split binding's row -- release once, and only
                 // under the path flag its scope-end drop is guarded on. With
                 // no such flag the path that consumed it would release it
                 // again, so the exit releases nothing.
-                if ek == 0 && flag >= 0 && rc_exit_is_path_flag(ctx, flag) {
+                if ek == 0 && flag >= 0 && rc_exit_is_path_flag(ctx = ctx, flag = flag) {
                   1
                 } else {
                   0
@@ -546,12 +546,12 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
             }
             if count > 0 {
               if conditional_rec {
-                emit_local_get(buf, exit_result.0)
-                emit_local_get(buf, local)
+                emit_local_get(buf = buf, idx = exit_result.0)
+                emit_local_get(buf = buf, idx = local)
                 emit_i64_ne(buf)
                 emit_if_void(buf)
               } else if flag >= 0 {
-                emit_local_get(buf, flag)
+                emit_local_get(buf = buf, idx = flag)
                 emit_i64_eqz(buf)
                 emit_if_void(buf)
               } else {
@@ -559,17 +559,17 @@ export fn rc_exit_release(buf: Bytes, ctx: CompileCtx, local_names: Array[String
               }
               let mut c = 0
               while c < count {
-                emit_local_get(buf, local)
+                emit_local_get(buf = buf, idx = local)
                 if ek == 4 {
                   // A cell's local holds the even payload address; the
                   // block's references are the odd-tagged pointer (see the
                   // ELetMut scope end).
-                  emit_i64_const(buf, 1)
+                  emit_i64_const(buf = buf, value = 1)
                   emit_i64_or(buf)
                 } else {
                   ()
                 }
-                emit_call(buf, ctx.rc_drop_func_idx)
+                emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
                 c = c + 1
               }
               if conditional_rec || flag >= 0 {
@@ -609,16 +609,16 @@ export fn rc_exit_note_store(ctx: CompileCtx, local_names: Array[String], value:
   if ctx.enable_rc && Array::length(ctx.rc_exit_state) >= 3 {
     let mark = Array::length(ctx.rc_exit_keep)
     let keep: Array[String] = []
-    let ok = rc_exit_operand_ok(value, local_names, ctx, keep)
+    let ok = rc_exit_operand_ok(e = value, local_names = local_names, ctx = ctx, keep = keep)
     let mut i = 0
     while i < Array::length(keep) {
-      Array::push(ctx.rc_exit_keep, Array::get(keep, i))
+      Array::push(ctx.rc_exit_keep, value = Array::get(keep, at = i))
       i = i + 1
     }
     if ok {
       mark * 2
     } else {
-      Array::set(ctx.rc_exit_state, 2, Array::get(ctx.rc_exit_state, 2) + 1)
+      Array::set(ctx.rc_exit_state, at = 2, value = Array::get(ctx.rc_exit_state, at = 2) + 1)
       mark * 2 + 1
     }
   } else {
@@ -630,9 +630,9 @@ export fn rc_exit_note_store(ctx: CompileCtx, local_names: Array[String], value:
 /// value no longer constrains the exits that follow.
 export fn rc_exit_end_store(ctx: CompileCtx, token: Int) -> Unit {
   if token >= 0 {
-    Array::truncate(ctx.rc_exit_keep, token / 2)
+    Array::truncate(ctx.rc_exit_keep, length = token / 2)
     if token % 2 == 1 {
-      Array::set(ctx.rc_exit_state, 2, Array::get(ctx.rc_exit_state, 2) - 1)
+      Array::set(ctx.rc_exit_state, at = 2, value = Array::get(ctx.rc_exit_state, at = 2) - 1)
     } else {
       ()
     }
@@ -645,23 +645,23 @@ export fn rc_exit_end_store(ctx: CompileCtx, token: Int) -> Unit {
 /// own, by the exit operand's test? Only then may an exit release the slot.
 export fn rc_exit_value_owned(ctx: CompileCtx, local_names: Array[String], value: Expr) -> Bool with Exception {
   let keep: Array[String] = []
-  rc_exit_operand_ok(value, local_names, ctx, keep) && Array::length(keep) == 0
+  rc_exit_operand_ok(e = value, local_names = local_names, ctx = ctx, keep = keep) && Array::length(keep) == 0
 }
 
 // Ordered named-call dispatch group.
 export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, fname: String, fn_idx_in_list: Int, resolved_name: String, local_idx_hint: Int, prefer_bound_call: Bool, ctor_lookup_idx: Int, compile_call_core_fn: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception) -> Int with Exception {
   if ctor_lookup_idx >= 0 {
-    let tag = Array::get(ctx.ctor_table.tags, ctor_lookup_idx)
-    let fc = Array::get(ctx.ctor_table.field_counts, ctor_lookup_idx)
+    let tag = Array::get(ctx.ctor_table.tags, at = ctor_lookup_idx)
+    let fc = Array::get(ctx.ctor_table.field_counts, at = ctor_lookup_idx)
     let ptr_local = next_local
-    Array::push(local_names, "__ctor_ptr")
+    Array::push(local_names, value = "__ctor_ptr")
     let actual_args = if Array::length(args) == 1 {
-      match Array::get(args, 0) {
+      match Array::get(args, at = 0) {
         ERecord(_, rec_fields, _) => {
           let mut si2 = 0
           let mut sn_idx = -1
           while si2 < Array::length(ctx.ctor_table.struct_names) {
-            if Array::get(ctx.ctor_table.struct_names, si2) == fname {
+            if Array::get(ctx.ctor_table.struct_names, at = si2) == fname {
               sn_idx = si2
               si2 = Array::length(ctx.ctor_table.struct_names)
             } else {
@@ -669,15 +669,15 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
             }
           }
           if sn_idx >= 0 {
-            let def_fnames = Array::get(ctx.ctor_table.struct_field_names, sn_idx)
+            let def_fnames = Array::get(ctx.ctor_table.struct_field_names, at = sn_idx)
             let ordered = array_empty()
             let mut oi = 0
             while oi < Array::length(def_fnames) {
-              let target_name = Array::get(def_fnames, oi)
+              let target_name = Array::get(def_fnames, at = oi)
               let mut ri = 0
               let mut found_rfv = EUnit
               while ri < Array::length(rec_fields) {
-                let (rfn, rfv) = Array::get(rec_fields, ri)
+                let (rfn, rfv) = Array::get(rec_fields, at = ri)
                 if rfn == target_name {
                   found_rfv = rfv
                   ri = Array::length(rec_fields)
@@ -685,7 +685,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
                   ri = ri + 1
                 }
               }
-              Array::push(ordered, found_rfv)
+              Array::push(ordered, value = found_rfv)
               oi = oi + 1
             }
             ordered
@@ -712,70 +712,70 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
       // block only needs the tag/arity rewrite -- its size, rc word, and
       // class byte are already exactly a fresh same-size block's.
       let mut __rt_top = Array::length(ctx.reuse_tok_locals) - 1
-      while __rt_top >= 0 && Array::get(ctx.reuse_tok_arities, __rt_top) != fc {
+      while __rt_top >= 0 && Array::get(ctx.reuse_tok_arities, at = __rt_top) != fc {
         __rt_top = __rt_top - 1
       }
       let __rt_use = __rt_top >= 0
       if __rt_use {
-        Array::set(ctx.reuse_tok_emitted, __rt_top, Array::get(ctx.reuse_tok_emitted, __rt_top) + 1)
-        let __rt_tok = Array::get(ctx.reuse_tok_locals, __rt_top)
-        emit_local_get(buf, __rt_tok)
+        Array::set(ctx.reuse_tok_emitted, at = __rt_top, value = Array::get(ctx.reuse_tok_emitted, at = __rt_top) + 1)
+        let __rt_tok = Array::get(ctx.reuse_tok_locals, at = __rt_top)
+        emit_local_get(buf = buf, idx = __rt_tok)
         emit_i64_eqz(buf)
         emit_if_void(buf)
-        emit_i64_const(buf, total)
-        emit_call(buf, ctx.rc_alloc_func_idx)
-        emit_local_set(buf, ptr_local)
-        emit_local_get(buf, ptr_local)
+        emit_i64_const(buf = buf, value = total)
+        emit_call(buf = buf, func_idx = ctx.rc_alloc_func_idx)
+        emit_local_set(buf = buf, idx = ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, total)
-        emit_i32_store(buf, 2, 0)
-        emit_local_get(buf, ptr_local)
+        emit_i32_const(buf = buf, value = total)
+        emit_i32_store(buf = buf, align = 2, offset = 0)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 1)
-        emit_i32_store(buf, 2, 4)
-        emit_local_get(buf, ptr_local)
+        emit_i32_const(buf = buf, value = 1)
+        emit_i32_store(buf = buf, align = 2, offset = 4)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 1)
-        emit_i32_store8(buf, 0, 7)
+        emit_i32_const(buf = buf, value = 1)
+        emit_i32_store8(buf = buf, align = 0, offset = 7)
         emit_else(buf)
-        emit_local_get(buf, __rt_tok)
-        emit_local_set(buf, ptr_local)
-        emit_i64_const(buf, 0)
-        emit_local_set(buf, __rt_tok)
+        emit_local_get(buf = buf, idx = __rt_tok)
+        emit_local_set(buf = buf, idx = ptr_local)
+        emit_i64_const(buf = buf, value = 0)
+        emit_local_set(buf = buf, idx = __rt_tok)
         emit_end(buf)
       } else {
-        emit_i64_const(buf, total)
-        emit_call(buf, ctx.rc_alloc_func_idx)
-        emit_local_set(buf, ptr_local)
-        emit_local_get(buf, ptr_local)
+        emit_i64_const(buf = buf, value = total)
+        emit_call(buf = buf, func_idx = ctx.rc_alloc_func_idx)
+        emit_local_set(buf = buf, idx = ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, total)
-        emit_i32_store(buf, 2, 0)
-        emit_local_get(buf, ptr_local)
+        emit_i32_const(buf = buf, value = total)
+        emit_i32_store(buf = buf, align = 2, offset = 0)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 1)
-        emit_i32_store(buf, 2, 4)
-        emit_local_get(buf, ptr_local)
+        emit_i32_const(buf = buf, value = 1)
+        emit_i32_store(buf = buf, align = 2, offset = 4)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 1)
-        emit_i32_store8(buf, 0, 7)
+        emit_i32_const(buf = buf, value = 1)
+        emit_i32_store8(buf = buf, align = 0, offset = 7)
       }
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, tag)
-      emit_i32_store(buf, 2, 8)
-      emit_local_get(buf, ptr_local)
+      emit_i32_const(buf = buf, value = tag)
+      emit_i32_store(buf = buf, align = 2, offset = 8)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, fc)
-      emit_i32_store(buf, 2, 12)
+      emit_i32_const(buf = buf, value = fc)
+      emit_i32_store(buf = buf, align = 2, offset = 12)
       let mut nl_c = next_local + 1
       let mut fi_c = 0
       while fi_c < Array::length(actual_args) {
-        let carg_c = Array::get(actual_args, fi_c)
+        let carg_c = Array::get(actual_args, at = fi_c)
         nl_c = ce(buf, carg_c, local_names, nl_c, ctx, ld)
         let val_local = nl_c
-        Array::push(local_names, "__ctor_val")
-        emit_local_set(buf, val_local)
+        Array::push(local_names, value = "__ctor_val")
+        emit_local_set(buf = buf, idx = val_local)
         nl_c = nl_c + 1
         // A heap field projection `a.f` stored into a constructor is a borrow;
         // the constructed value OWNS its fields (drop class 1 recurses), so
@@ -785,62 +785,62 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
         // #715: also retain a bare-ident arg whose binding is borrow-bound or
         // loop-borrowed (cc_is_loop_borrowed_ident) -- same gap as the ETuple
         // case in compile_expr_tail2.vibe (see the comment there).
-        if ctx.enable_rc && (cc_is_borrowed_projection(carg_c, ctx) || cc_is_ref_cell_read(carg_c, ctx) || cc_is_borrow_ret_call(carg_c, ctx) || cc_is_loop_borrowed_ident(carg_c, ctx)) {
-          emit_rc_dup_guarded(buf, val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        if ctx.enable_rc && (cc_is_borrowed_projection(e = carg_c, ctx = ctx) || cc_is_ref_cell_read(e = carg_c, ctx = ctx) || cc_is_borrow_ret_call(e = carg_c, ctx = ctx) || cc_is_loop_borrowed_ident(e = carg_c, ctx = ctx)) {
+          emit_rc_dup_guarded(buf = buf, local_idx = val_local, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
         } else {
           ()
         }
-        emit_local_get(buf, ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_local_get(buf, val_local)
-        emit_i64_store(buf, 3, 16 + fi_c * 8)
+        emit_local_get(buf = buf, idx = val_local)
+        emit_i64_store(buf = buf, align = 3, offset = 16 + fi_c * 8)
         fi_c = fi_c + 1
       }
-      emit_local_get(buf, ptr_local)
-      emit_i64_const(buf, 8)
+      emit_local_get(buf = buf, idx = ptr_local)
+      emit_i64_const(buf = buf, value = 8)
       emit_i64_add(buf)
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_or(buf)
       nl_c
     } else {
       let obj_size = 8 + fc * 8
-      emit_global_get(buf, 0)
+      emit_global_get(buf = buf, idx = 0)
       emit_i64_extend_i32_u(buf)
-      emit_local_set(buf, ptr_local)
-      emit_global_get(buf, 0)
-      emit_i32_const(buf, obj_size)
+      emit_local_set(buf = buf, idx = ptr_local)
+      emit_global_get(buf = buf, idx = 0)
+      emit_i32_const(buf = buf, value = obj_size)
       emit_i32_add(buf)
-      emit_global_set(buf, 0)
-      emit_heap_grow_after_heap_set(buf, ctx)
-      emit_local_get(buf, ptr_local)
+      emit_global_set(buf = buf, idx = 0)
+      emit_heap_grow_after_heap_set(buf = buf, ctx = ctx)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, tag)
-      emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, ptr_local)
+      emit_i32_const(buf = buf, value = tag)
+      emit_i32_store(buf = buf, align = 2, offset = 0)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, fc)
-      emit_i32_store(buf, 2, 4)
+      emit_i32_const(buf = buf, value = fc)
+      emit_i32_store(buf = buf, align = 2, offset = 4)
       let mut nl_c = next_local + 1
       let mut fi_c = 0
       while fi_c < Array::length(actual_args) {
-        nl_c = ce(buf, Array::get(actual_args, fi_c), local_names, nl_c, ctx, ld)
+        nl_c = ce(buf, Array::get(actual_args, at = fi_c), local_names, nl_c, ctx, ld)
         let val_local = nl_c
-        Array::push(local_names, "__ctor_val")
-        emit_local_set(buf, val_local)
+        Array::push(local_names, value = "__ctor_val")
+        emit_local_set(buf = buf, idx = val_local)
         nl_c = nl_c + 1
-        emit_local_get(buf, ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_local_get(buf, val_local)
-        emit_i64_store(buf, 3, 8 + fi_c * 8)
+        emit_local_get(buf = buf, idx = val_local)
+        emit_i64_store(buf = buf, align = 3, offset = 8 + fi_c * 8)
         fi_c = fi_c + 1
       }
-      emit_local_get(buf, ptr_local)
-      emit_i64_const(buf, 1)
+      emit_local_get(buf = buf, idx = ptr_local)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_or(buf)
       nl_c
     }
   }
-  else if !cc_ladder_tests_name(fname) || cc_source_defines_borrow_builtin(ctx, fname, fn_idx_in_list) {
+  else if !cc_ladder_tests_name(fname) || cc_source_defines_borrow_builtin(ctx = ctx, fname = fname, fn_idx_in_list = fn_idx_in_list) {
     // #2386: no arm below tests this callee (cc_ladder_names holds every
     // name they compare against), so only the resolved-call fallback can
     // apply; take it without the ~150 compares.
@@ -850,9 +850,9 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // inlined `Map::size` / `Map::get` / `StringBuilder::push` ... would
     // both ignore the program's function and leak the reference the call
     // site now hands over.
-    cc_compile_resolved_call(buf, resolved_name, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
+    cc_compile_resolved_call(buf = buf, fname = resolved_name, args = args, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce, fn_idx_in_list = fn_idx_in_list, local_idx_hint = local_idx_hint)
   }
-  else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_floatish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {
+  else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (cc_expr_is_floatish(raw_e = Array::get(args, at = 0), local_names = local_names, ctx = ctx) || cc_expr_is_floatish(raw_e = Array::get(args, at = 1), local_names = local_names, ctx = ctx)) && func_table_user_index_of(ft = ctx.func_table, name = fname, num_user_funcs = ctx.num_user_funcs) < 0 {
     // #745: under RC floats are BOXED — the scalar i64.eq below would
     // compare box pointers, so `eq(0.0125, 0.0125)` returned false. Take
     // the same unbox + f64.eq path the `==` binop uses.
@@ -871,21 +871,21 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // below -- and this arm had NO guard at all, so it was the sharper of
     // the two: `let eq = (a: Double, b: Double) -> Double { a + b }` then
     // `eq(1.5, 2.5)` printed `0` under RC, which is the production lane.
-    let mut nl = emit_float_operand_bits(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
+    let mut nl = emit_float_operand_bits(buf = buf, e_in = Array::get(args, at = 0), local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
     emit_f64_reinterpret_i64(buf)
-    nl = emit_float_operand_bits(buf, Array::get(args, 1), local_names, nl, ctx, ld, ce)
+    nl = emit_float_operand_bits(buf = buf, e_in = Array::get(args, at = 1), local_names = local_names, next_local = nl, ctx = ctx, ld = ld, ce = ce)
     emit_f64_reinterpret_i64(buf)
     emit_f64_eq(buf)
     emit_i64_extend_i32_s(buf)
     // Tag the Bool like the scalar branch below (ADR-0055). Untagged lanes
     // hold a Bool as a raw 0/1, so the shift is RC-only.
     if ctx.enable_rc {
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_shl(buf)
     }
     nl
   }
-  else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0), local_names, ctx) || cc_arg_is_scalarish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {
+  else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(e = Array::get(args, at = 0), local_names = local_names, ctx = ctx) || cc_arg_is_scalarish(e = Array::get(args, at = 1), local_names = local_names, ctx = ctx)) && func_table_user_index_of(ft = ctx.func_table, name = fname, num_user_funcs = ctx.num_user_funcs) < 0 {
     // Direct i64.eq for `eq(a, b)` when it is the builtin and at least one
     // operand is provably scalar. This sidesteps the bound `eq`'s string
     // fallback, which reads OOB on Int values resembling fat-pointers (#705):
@@ -930,8 +930,8 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // (core/builtin_registry.vibe), so `collect_free_vars_expr_sc`'s
     // `fn_names` guard skips it and no lambda records a phantom capture for
     // it. That is why it needs no `is_inlined_scalar_builtin` registration.
-    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
+    nl = ce(buf, Array::get(args, at = 1), local_names, nl, ctx, ld)
     emit_i64_eq(buf)
     emit_i64_extend_i32_s(buf)
     // ADR-0055: under RC a Bool is a TAGGED scalar (true = 1<<1). The raw
@@ -940,14 +940,14 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // this, `eq(a,b) == true` compared untagged 1 against tagged 2 and failed).
     // The bump backend leaves bools untagged, so only shift under RC.
     if ctx.enable_rc {
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_shl(buf)
     } else {
       ()
     }
     nl
   }
-  else if Array::length(args) == 1 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_boolish(Array::get(args, 0), local_names, ctx) || cc_expr_is_stringish(Array::get(args, 0), local_names, ctx)) && fname == namespace_exported_name("lib/@vibe/builtin/builtin_traits.vibe", "to_string") {
+  else if Array::length(args) == 1 && (cc_expr_is_floatish(raw_e = Array::get(args, at = 0), local_names = local_names, ctx = ctx) || cc_expr_is_boolish(raw_e = Array::get(args, at = 0), local_names = local_names, ctx = ctx) || cc_expr_is_stringish(raw_e = Array::get(args, at = 0), local_names = local_names, ctx = ctx)) && fname == namespace_exported_name(path = "lib/@vibe/builtin/builtin_traits.vibe", name = "to_string") {
     // #1015: the prelude generic wrapper `to_string[T: Show](x: T) -> String
     // { __to_string(x) }` (lib/@vibe/builtin/builtin_traits.vibe) compiles
     // to exactly ONE shared wasm function body -- there is no
@@ -1031,14 +1031,14 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // allocating name comparison only runs for the rare 1-arg calls whose
     // argument is already known-classifiable -- functionally identical
     // result, far fewer StringBuilder allocations across a whole compile.
-    ce(buf, ECall(EIdent("__to_string", -1), [Array::get(args, 0)], -1, []), local_names, next_local, ctx, ld)
+    ce(buf, ECall(EIdent("__to_string", -1), [Array::get(args, at = 0)], -1, []), local_names, next_local, ctx, ld)
   }
   else if !prefer_bound_call && fname == "not" {
-    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    let nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
     emit_i64_eqz(buf)
     emit_i64_extend_i32_s(buf)
     if ctx.enable_rc {
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_shl(buf)
     } else {
       ()
@@ -1051,13 +1051,13 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // conversion, not a function-table call. Keeping it inline also means a
     // closure body cannot accidentally capture and call a nonexistent
     // first-class builtin slot (#1805).
-    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    let nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
     if ctx.enable_rc {
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_shr_s(buf)
-      Array::push(local_names, "__from_bits_raw")
-      Array::push(local_names, "__from_bits_box")
-      emit_box_float(buf, ctx, nl, nl + 1)
+      Array::push(local_names, value = "__from_bits_raw")
+      Array::push(local_names, value = "__from_bits_box")
+      emit_box_float(buf = buf, ctx = ctx, bits_local = nl, box_local = nl + 1)
       nl + 2
     } else {
       nl
@@ -1070,13 +1070,13 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // (a suspending source: host async import, spawned subtask) can be told
     // apart here without changing the representation again -- lowering that
     // arm to a suspend is M1b-3c.
-    ce(buf, ECall(EIdent("Array::get", -1), [Array::get(args, 0), EInt(1)], -1, [
+    ce(buf, ECall(EIdent("Array::get", -1), [Array::get(args, at = 0), EInt(1)], -1, [
     ]), local_names, next_local, ctx, ld)
   }
   else if !prefer_bound_call && fname == "Future::ready" {
     // Future::ready(x) is the already-resolved future carrying x. See the
     // `await` branch above for the representation.
-    ce(buf, future_ready_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    ce(buf, future_ready_expr(Array::get(args, at = 0)), local_names, next_local, ctx, ld)
   }
   else if !prefer_bound_call && fname == "Future::pending" {
     // #1230: an UNRESOLVED future -- state 1, payload slot reserved. The
@@ -1095,7 +1095,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // handle. Awaiting this cell parks with the reserved waitable payload
     // (handle + 2, __aw_poll's waitable arm) until the entry boundary
     // settles it via waitable-set.wait.
-    let no_args = Array::slice([EInt(0)], 0, 0)
+    let no_args = Array::slice([EInt(0)], start = 0, end = 0)
     ce(buf, EArray([
       EInt(2),
       ECall(EIdent("vibe_hf_get_raw", -1), no_args, -1, [])
@@ -1113,7 +1113,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // The name must be a STRING LITERAL: it is an import name, decided at
     // compile time, not a value. Anything else is a hard error here rather
     // than a mysterious missing import later.
-    let name_arg = Array::get(args, 0)
+    let name_arg = Array::get(args, at = 0)
     let hf_name = match name_arg {
       EString(s, _) => s,
       _ => throw("host_future_named: the import name must be a string literal (it becomes a component import name, so it is fixed at compile time)")
@@ -1123,7 +1123,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     } else {
       ()
     }
-    let named_no_args = Array::slice([EInt(0)], 0, 0)
+    let named_no_args = Array::slice([EInt(0)], start = 0, end = 0)
     ce(buf, EArray([
       EInt(2),
       ECall(EIdent(String::concat(cc_host_future_named_raw_prefix(), hf_name), -1), named_no_args, -1, [
@@ -1135,7 +1135,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // is the named-future one with a `!` in front of the address, which
     // linked_compile reads back as "this is a response" and imports as
     // `vibe.wit_response_get$<address>`; the wait half is shared.
-    let hr_name_arg = Array::get(args, 0)
+    let hr_name_arg = Array::get(args, at = 0)
     let hr_name = match hr_name_arg {
       EString(s, _) => s,
       _ => throw("host_response_named: the WIT function address must be a string literal (it becomes a component import, so it is fixed at compile time)")
@@ -1145,7 +1145,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     } else {
       ()
     }
-    let hr_no_args = Array::slice([EInt(0)], 0, 0)
+    let hr_no_args = Array::slice([EInt(0)], start = 0, end = 0)
     ce(buf, EArray([
       EInt(2),
       ECall(EIdent(String::concat(cc_host_future_named_raw_prefix(), String::concat("!", hr_name)), -1), hr_no_args, -1, [
@@ -1160,14 +1160,14 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // the getter lowers that buffer as the string parameter. The `!?`
     // marker tells linked_compile to import the getter as
     // `vibe.wit_response_arg_get$<address>`.
-    let hra_name = match Array::get(args, 0) {
+    let hra_name = match Array::get(args, at = 0) {
       EString(s, _) => s,
       _ => throw("host_response_named_with: the WIT function address must be a string literal (it becomes a component import, so it is fixed at compile time)")
     }
     // `<address>?<label>`: the parameter's WIT label rides the address so
     // the composer declares the function exactly as the WIT does.
-    let hra_q = String::index_of(hra_name, "?")
-    let hra_ok = hra_q > 0 && cc_is_wit_future_address(String::substring(hra_name, 0, hra_q)) && cc_is_valid_host_future_name(String::substring(hra_name, hra_q + 1, String::length(hra_name)))
+    let hra_q = String::index_of(hra_name, needle = "?")
+    let hra_ok = hra_q > 0 && cc_is_wit_future_address(String::substring(hra_name, start = 0, end = hra_q)) && cc_is_valid_host_future_name(String::substring(hra_name, start = hra_q + 1, end = String::length(hra_name)))
     if !hra_ok {
       throw("host_response_named_with: invalid address '\{hra_name}' -- must be a WIT function address and its parameter label, like 'example:http/client@1.0.0#fetch?url'")
     } else {
@@ -1182,7 +1182,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
       EIdent("__hra_i", -1),
       EInt(1)
     ], -1, []), EUnit, -1))
-    let hra_no_args = Array::slice([EInt(0)], 0, 0)
+    let hra_no_args = Array::slice([EInt(0)], start = 0, end = 0)
     let hra_get = EArray([
       EInt(2),
       ECall(EIdent(String::concat(cc_host_future_named_raw_prefix(), String::concat("!?", hra_name)), -1), hra_no_args, -1, [
@@ -1194,14 +1194,14 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     ], -1, [])
     let hra_loop = ELetMut("__hra_i", EInt(0), ESeq(EWhile(hra_cond, hra_push), hra_get), -1)
     // review-lint: allow-fixed-synthetic-name
-    let hra_synth = ELet("__hra_s", Array::get(args, 1), hra_loop, -1)
+    let hra_synth = ELet("__hra_s", Array::get(args, at = 1), hra_loop, -1)
     // review-lint: allow-fixed-synthetic-name
     ce(buf, hra_synth, local_names, next_local, ctx, ld)
   }
   else if !prefer_bound_call && fname == "HostResponse::status" {
     // #2066: a response is `(status << 32) | body` -- the record's flat
     // lowering in one scalar (the component adapter packs it).
-    ce(buf, EBinOp(">>", Array::get(args, 0), EInt(32), -1), local_names, next_local, ctx, ld)
+    ce(buf, EBinOp(">>", Array::get(args, at = 0), EInt(32), -1), local_names, next_local, ctx, ld)
   }
   else if !prefer_bound_call && fname == "HostResponse::body" {
     // The body's readable end as a host-stream cell (state 3). The low half
@@ -1211,7 +1211,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     ce(buf, EArray([
       EInt(3),
       ECall(EIdent("vibe_hs_claim_raw", -1), [
-        EBinOp("&", Array::get(args, 0), EInt(4294967295), -1)
+        EBinOp("&", Array::get(args, at = 0), EInt(4294967295), -1)
       ], -1, [])
     ]), local_names, next_local, ctx, ld)
   }
@@ -1225,7 +1225,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // stream<u8>` import (spec §3.18). Same literal/label rules as
     // host_future_named: the name is an import name, fixed at compile
     // time.
-    let hs_name_arg = Array::get(args, 0)
+    let hs_name_arg = Array::get(args, at = 0)
     let hs_name = match hs_name_arg {
       EString(s, _) => s,
       _ => throw("host_stream_named: the import name must be a string literal (it becomes a component import name, so it is fixed at compile time)")
@@ -1237,7 +1237,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     } else {
       ()
     }
-    let hs_no_args = Array::slice([EInt(0)], 0, 0)
+    let hs_no_args = Array::slice([EInt(0)], start = 0, end = 0)
     ce(buf, EArray([
       EInt(3),
       ECall(EIdent(String::concat(cc_host_stream_named_raw_prefix(), hs_name), -1), hs_no_args, -1, [
@@ -1279,14 +1279,14 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // two-set lowering is emitted byte-identically, and a missed notify
     // (hook absent in THIS unit but awaiters registered in another) is
     // rescued by the scheduler's fallback valve.
-    let fut = Array::get(args, 0)
+    let fut = Array::get(args, at = 0)
     let set_payload = ECall(EIdent("Array::set", -1), [
       fut,
       EInt(1),
-      Array::get(args, 1)
+      Array::get(args, at = 1)
     ], -1, builtin_callee_resolution("Array::set"))
     let set_state = ECall(EIdent("Array::set", -1), [fut, EInt(0), EInt(0)], -1, builtin_callee_resolution("Array::set"))
-    let resolved = if func_table_index_of(ctx.func_table, "__aw_notify_resolve") >= 0 {
+    let resolved = if func_table_index_of(ft = ctx.func_table, name = "__aw_notify_resolve") >= 0 {
       ESeq(set_payload, ESeq(set_state, ECall(EIdent("__aw_notify_resolve", -1), [
         fut
       ], -1, [])))
@@ -1304,7 +1304,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // via `ce`, so String::length/char_code_at + the loop counter follow the
     // same (RC) tagging conventions as ordinary source. char_code_at reads one
     // byte (i32.load8_u), so this is byte-accurate.
-    let s_expr = Array::get(args, 0)
+    let s_expr = Array::get(args, at = 0)
     let loop_body = ESeq(ECall(EIdent("Array::push", -1), [
       EIdent("__tb_arr", -1),
       ECall(EIdent("String::char_code_at", -1), [
@@ -1333,7 +1333,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // dominant cost in the streaming bench (4 KB to_string: 1.77s -> see
     // scripts/bench_streaming.sh). linked_compile always seeds "" into the
     // string table, so the join separator literal resolves.
-    let bs_expr = Array::get(args, 0)
+    let bs_expr = Array::get(args, at = 0)
     let ts_body = ESeq(ECall(EIdent("Array::push", -1), [
       EIdent("__ts_parts", -1),
       ECall(EIdent("String::from_char_code", -1), [
@@ -1357,45 +1357,45 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     ce(buf, synth, local_names, next_local, ctx, ld)
   }
   else if !prefer_bound_call && fname == "add" {
-    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
+    nl = ce(buf, Array::get(args, at = 1), local_names, nl, ctx, ld)
     emit_i64_add(buf)
-    emit_arith_wrap_int(buf, ctx.enable_rc, "+")
+    emit_arith_wrap_int(buf = buf, enable_rc = ctx.enable_rc, op = "+")
     nl
   }
   else if !prefer_bound_call && fname == "sub" {
-    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
+    nl = ce(buf, Array::get(args, at = 1), local_names, nl, ctx, ld)
     emit_i64_sub(buf)
-    emit_arith_wrap_int(buf, ctx.enable_rc, "-")
+    emit_arith_wrap_int(buf = buf, enable_rc = ctx.enable_rc, op = "-")
     nl
   }
   else if !prefer_bound_call && fname == "mul" {
-    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
     // Under RC, untag the first tagged operand BEFORE the multiply so the
     // product is tagged(a*b) and wraps at the payload's 63-bit boundary,
     // exactly like the `*` EBinOp path (#1877).
     if ctx.enable_rc {
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_shr_s(buf)
     } else {
       ()
     }
-    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    nl = ce(buf, Array::get(args, at = 1), local_names, nl, ctx, ld)
     emit_i64_mul(buf)
-    emit_arith_wrap_int(buf, ctx.enable_rc, "*")
+    emit_arith_wrap_int(buf = buf, enable_rc = ctx.enable_rc, op = "*")
     nl
   }
   else if !prefer_bound_call && fname == "lt" {
-    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
+    nl = ce(buf, Array::get(args, at = 1), local_names, nl, ctx, ld)
     emit_i64_lt_s(buf)
     emit_i64_extend_i32_s(buf)
     // Under RC, Bool values are also tagged `(0|1) << 1` (mirrors the `<`
     // EBinOp path's retag) -- untagged here means callers see 0 (== false
     // tagged) but a true result reads as 1 instead of the expected 2.
     if ctx.enable_rc {
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_shl(buf)
     } else {
       ()
@@ -1416,9 +1416,9 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // exactly that -- 16 unreclaimable bytes per operation, 22x slower than
     // the same algorithm written as one kernel. Any fused scanner added here
     // keeps this shape.
-    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-    nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+    let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
+    nl = ce(buf, Array::get(args, at = 1), local_names, nl, ctx, ld)
+    nl = ce(buf, Array::get(args, at = 2), local_names, nl, ctx, ld)
     let base_l = nl
     let pos_l = nl + 1
     let len_l = nl + 2
@@ -1426,99 +1426,99 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     let mask_l = nl + 4
     let addr_l = nl + 5
     let b_l = nl + 6
-    Array::push(local_names, "__sw_base")
-    Array::push(local_names, "__sw_pos")
-    Array::push(local_names, "__sw_len")
-    Array::push(local_names, "__sw_res")
-    Array::push(local_names, "__sw_mask")
-    Array::push(local_names, "__sw_addr")
-    Array::push(local_names, "__sw_b")
+    Array::push(local_names, value = "__sw_base")
+    Array::push(local_names, value = "__sw_pos")
+    Array::push(local_names, value = "__sw_len")
+    Array::push(local_names, value = "__sw_res")
+    Array::push(local_names, value = "__sw_mask")
+    Array::push(local_names, value = "__sw_addr")
+    Array::push(local_names, value = "__sw_b")
     // stack: srcval, posval, lenval
-    emit_local_set(buf, len_l)
-    emit_local_set(buf, pos_l)
+    emit_local_set(buf = buf, idx = len_l)
+    emit_local_set(buf = buf, idx = pos_l)
     // top = srcval; base = payload_ptr (i32 @ +8) extended to i64
     emit_i32_wrap_i64(buf)
-    emit_i32_load(buf, 2, 8)
+    emit_i32_load(buf = buf, align = 2, offset = 8)
     emit_i64_extend_i32_u(buf)
-    emit_local_set(buf, base_l)
+    emit_local_set(buf = buf, idx = base_l)
     // res defaults to len (every path overwrites it; keep it defined)
-    emit_local_get(buf, len_l)
-    emit_local_set(buf, res_l)
+    emit_local_get(buf = buf, idx = len_l)
+    emit_local_set(buf = buf, idx = res_l)
     emit_block_void(buf)
     // $ret
     emit_block_void(buf)
     // $tail
     emit_loop_void(buf)
     // $scan: if (pos + 16 > len) br $tail
-    emit_local_get(buf, pos_l)
+    emit_local_get(buf = buf, idx = pos_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 16)
+    emit_i32_const(buf = buf, value = 16)
     emit_i32_add(buf)
-    emit_local_get(buf, len_l)
+    emit_local_get(buf = buf, idx = len_l)
     emit_i32_wrap_i64(buf)
     emit_i32_gt_u(buf)
     emit_if_void(buf)
-    emit_br(buf, 2)
+    emit_br(buf = buf, label = 2)
     emit_end(buf)
     // addr = base + pos
-    emit_local_get(buf, base_l)
+    emit_local_get(buf = buf, idx = base_l)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, pos_l)
+    emit_local_get(buf = buf, idx = pos_l)
     emit_i32_wrap_i64(buf)
     emit_i32_add(buf)
     emit_i64_extend_i32_u(buf)
-    emit_local_set(buf, addr_l)
+    emit_local_set(buf = buf, idx = addr_l)
     // is_ws = (c==0x20) | (c==0x09) | (c==0x0A) | (c==0x0D), v128 on stack
-    emit_local_get(buf, addr_l)
+    emit_local_get(buf = buf, idx = addr_l)
     emit_i32_wrap_i64(buf)
-    emit_v128_load(buf, 0, 0)
-    emit_v128_const_splat_byte(buf, 32)
+    emit_v128_load(buf = buf, align = 0, offset = 0)
+    emit_v128_const_splat_byte(buf = buf, byte_val = 32)
     emit_i8x16_eq(buf)
-    emit_local_get(buf, addr_l)
+    emit_local_get(buf = buf, idx = addr_l)
     emit_i32_wrap_i64(buf)
-    emit_v128_load(buf, 0, 0)
-    emit_v128_const_splat_byte(buf, 9)
-    emit_i8x16_eq(buf)
-    emit_v128_or(buf)
-    emit_local_get(buf, addr_l)
-    emit_i32_wrap_i64(buf)
-    emit_v128_load(buf, 0, 0)
-    emit_v128_const_splat_byte(buf, 10)
+    emit_v128_load(buf = buf, align = 0, offset = 0)
+    emit_v128_const_splat_byte(buf = buf, byte_val = 9)
     emit_i8x16_eq(buf)
     emit_v128_or(buf)
-    emit_local_get(buf, addr_l)
+    emit_local_get(buf = buf, idx = addr_l)
     emit_i32_wrap_i64(buf)
-    emit_v128_load(buf, 0, 0)
-    emit_v128_const_splat_byte(buf, 13)
+    emit_v128_load(buf = buf, align = 0, offset = 0)
+    emit_v128_const_splat_byte(buf = buf, byte_val = 10)
+    emit_i8x16_eq(buf)
+    emit_v128_or(buf)
+    emit_local_get(buf = buf, idx = addr_l)
+    emit_i32_wrap_i64(buf)
+    emit_v128_load(buf = buf, align = 0, offset = 0)
+    emit_v128_const_splat_byte(buf = buf, byte_val = 13)
     emit_i8x16_eq(buf)
     emit_v128_or(buf)
     // mask = bitmask(not(is_ws)): bit i set => lane i is NON-whitespace
     emit_v128_not(buf)
     emit_i8x16_bitmask(buf)
     emit_i64_extend_i32_u(buf)
-    emit_local_set(buf, mask_l)
+    emit_local_set(buf = buf, idx = mask_l)
     // if (mask == 0) { pos += 16; br $scan }
-    emit_local_get(buf, mask_l)
+    emit_local_get(buf = buf, idx = mask_l)
     emit_i32_wrap_i64(buf)
     emit_i32_eqz(buf)
     emit_if_void(buf)
-    emit_local_get(buf, pos_l)
-    emit_i64_const(buf, 16)
+    emit_local_get(buf = buf, idx = pos_l)
+    emit_i64_const(buf = buf, value = 16)
     emit_i64_add(buf)
-    emit_local_set(buf, pos_l)
-    emit_br(buf, 1)
+    emit_local_set(buf = buf, idx = pos_l)
+    emit_br(buf = buf, label = 1)
     emit_end(buf)
     // found: res = pos + ctz(mask); br $ret
-    emit_local_get(buf, pos_l)
+    emit_local_get(buf = buf, idx = pos_l)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, mask_l)
+    emit_local_get(buf = buf, idx = mask_l)
     emit_i32_wrap_i64(buf)
-    bytebuf_push(buf, 104)
+    bytebuf_push(buf = buf, byte = 104)
     // i32.ctz
     emit_i32_add(buf)
     emit_i64_extend_i32_u(buf)
-    emit_local_set(buf, res_l)
-    emit_br(buf, 2)
+    emit_local_set(buf = buf, idx = res_l)
+    emit_br(buf = buf, label = 2)
     emit_end(buf)
     // loop $scan
     emit_end(buf)
@@ -1526,67 +1526,67 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // scalar tail: loop $tscan
     emit_loop_void(buf)
     // if (pos >= len) { res = pos; br $ret }
-    emit_local_get(buf, pos_l)
+    emit_local_get(buf = buf, idx = pos_l)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, len_l)
+    emit_local_get(buf = buf, idx = len_l)
     emit_i32_wrap_i64(buf)
     emit_i32_ge_u(buf)
     emit_if_void(buf)
-    emit_local_get(buf, pos_l)
-    emit_local_set(buf, res_l)
-    emit_br(buf, 2)
+    emit_local_get(buf = buf, idx = pos_l)
+    emit_local_set(buf = buf, idx = res_l)
+    emit_br(buf = buf, label = 2)
     emit_end(buf)
     // b = load8_u(base + pos)
-    emit_local_get(buf, base_l)
+    emit_local_get(buf = buf, idx = base_l)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, pos_l)
+    emit_local_get(buf = buf, idx = pos_l)
     emit_i32_wrap_i64(buf)
     emit_i32_add(buf)
-    emit_i32_load8_u(buf, 0, 0)
+    emit_i32_load8_u(buf = buf, align = 0, offset = 0)
     emit_i64_extend_i32_u(buf)
-    emit_local_set(buf, b_l)
+    emit_local_set(buf = buf, idx = b_l)
     // non_ws = (b!=32) & (b!=9) & (b!=10) & (b!=13)
-    emit_local_get(buf, b_l)
+    emit_local_get(buf = buf, idx = b_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 32)
+    emit_i32_const(buf = buf, value = 32)
     emit_i32_ne(buf)
-    emit_local_get(buf, b_l)
+    emit_local_get(buf = buf, idx = b_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 9)
+    emit_i32_const(buf = buf, value = 9)
     emit_i32_ne(buf)
-    bytebuf_push(buf, 113)
+    bytebuf_push(buf = buf, byte = 113)
     // i32.and
-    emit_local_get(buf, b_l)
+    emit_local_get(buf = buf, idx = b_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 10)
+    emit_i32_const(buf = buf, value = 10)
     emit_i32_ne(buf)
-    bytebuf_push(buf, 113)
-    emit_local_get(buf, b_l)
+    bytebuf_push(buf = buf, byte = 113)
+    emit_local_get(buf = buf, idx = b_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 13)
+    emit_i32_const(buf = buf, value = 13)
     emit_i32_ne(buf)
-    bytebuf_push(buf, 113)
+    bytebuf_push(buf = buf, byte = 113)
     // if (non_ws) { res = pos; br $ret }
     emit_if_void(buf)
-    emit_local_get(buf, pos_l)
-    emit_local_set(buf, res_l)
-    emit_br(buf, 2)
+    emit_local_get(buf = buf, idx = pos_l)
+    emit_local_set(buf = buf, idx = res_l)
+    emit_br(buf = buf, label = 2)
     emit_end(buf)
     // pos += 1; br $tscan
-    emit_local_get(buf, pos_l)
-    emit_i64_const(buf, 1)
+    emit_local_get(buf = buf, idx = pos_l)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_add(buf)
-    emit_local_set(buf, pos_l)
-    emit_br(buf, 0)
+    emit_local_set(buf = buf, idx = pos_l)
+    emit_br(buf = buf, label = 0)
     emit_end(buf)
     // loop $tscan
     emit_end(buf)
     // block $ret
-    emit_local_get(buf, res_l)
+    emit_local_get(buf = buf, idx = res_l)
     nl + 7
   }
   else if !prefer_bound_call && fname == "perform" {
-    let op_expr = Array::get(args, 0)
+    let op_expr = Array::get(args, at = 0)
     let op_head = if is_eident(op_expr) {
       get_eident_name(op_expr)
     } else if expr_tag(op_expr) == 8 {
@@ -1609,25 +1609,25 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     if is_exception_throw_operation(op_head) {
       let mut enl = next_local
       let thrown = if expr_tag(op_expr) == 8 && Array::length(get_ecall_args(op_expr)) > 0 {
-        Array::get(get_ecall_args(op_expr), 0)
+        Array::get(get_ecall_args(op_expr), at = 0)
       } else {
         EUnit
       }
       if expr_tag(op_expr) == 8 && Array::length(get_ecall_args(op_expr)) > 0 {
         enl = ce(buf, thrown, local_names, enl, ctx, ld)
       } else {
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
       }
       let thrown_local = if ctx.enable_rc {
-        emit_local_tee(buf, enl)
+        emit_local_tee(buf = buf, idx = enl)
         enl
       } else {
         0 - 1
       }
       // #3141: the throw leaves every scope up to the innermost `handle`.
-      rc_exit_release(buf, ctx, local_names, 3, thrown, thrown_local)
-      bytebuf_push(buf, 8)
-      bytebuf_push(buf, 2)
+      rc_exit_release(buf = buf, ctx = ctx, local_names = local_names, kind = 3, operand = thrown, result_local = thrown_local)
+      bytebuf_push(buf = buf, byte = 8)
+      bytebuf_push(buf = buf, byte = 2)
       if thrown_local >= 0 {
         enl + 1
       } else {
@@ -1655,9 +1655,9 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
       // the throw, an invalid module without it (found live when V2's
       // first cut dropped the throw for host-mapped ops).
       let mut nl = next_local
-      let eff_tag = effect_name_to_tag(ctx.effect_names, op_head)
+      let eff_tag = effect_name_to_tag(effect_names = ctx.effect_names, full = op_head)
       let op_canon = canonical_builtin_name(op_head)
-      let op_is_builtin = func_table_index_of(ctx.func_table, op_canon) >= 0
+      let op_is_builtin = func_table_index_of(ft = ctx.func_table, name = op_canon) >= 0
       if op_is_builtin {
         nl = ce(buf, op_expr, local_names, nl, ctx, ld)
       } else if expr_tag(op_expr) == 8 {
@@ -1667,40 +1667,40 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
           // heap ref threaded as the single thrown value).
           nl = ce(buf, ETuple(op_args), local_names, nl, ctx, ld)
         } else if Array::length(op_args) > 0 {
-          nl = ce(buf, Array::get(op_args, 0), local_names, nl, ctx, ld)
+          nl = ce(buf, Array::get(op_args, at = 0), local_names, nl, ctx, ld)
         } else {
-          emit_i64_const(buf, 0)
+          emit_i64_const(buf = buf, value = 0)
         }
       } else {
-        emit_i64_const(buf, 0)
+        emit_i64_const(buf = buf, value = 0)
       }
-      bytebuf_push(buf, 8)
-      bytebuf_push(buf, eff_tag)
+      bytebuf_push(buf = buf, byte = 8)
+      bytebuf_push(buf = buf, byte = eff_tag)
       nl
     }
   }
   else if !prefer_bound_call && fname == "path" {
-    ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
   }
   else if fname == "__lambda_return_owned" && get_eident_off(callee) < 0 {
     // #2754: lambda return ABI. Resolve at the return site while the lexical
     // scope is live; a global contract cannot describe a local callback.
-    let value = Array::get(args, 0)
+    let value = Array::get(args, at = 0)
     let borrowed = match value {
-      EDot(_, _, _, _) => cc_is_borrowed_projection(value, ctx),
-      ECall(EIdent(cn, _), _, _, _) => find_local_slot(local_names, cn) < 0 && (is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0),
-      EIdent(n, _) => array_contains_str(ctx.loop_borrowed_names, n) || array_contains_str(ctx.ref_cell_names, n),
+      EDot(_, _, _, _) => cc_is_borrowed_projection(e = value, ctx = ctx),
+      ECall(EIdent(cn, _), _, _, _) => find_local_slot(names = local_names, name = cn) < 0 && (is_borrow_ret_builtin(cn) || bsearch_leftmost(sorted = ctx.borrow_ret_names, name = cn) >= 0),
+      EIdent(n, _) => array_contains_str(arr = ctx.loop_borrowed_names, s = n) || array_contains_str(arr = ctx.ref_cell_names, s = n),
       _ => false
     }
     let nl = ce(buf, value, local_names, next_local, ctx, ld)
     if borrowed {
       // Expression compilation can reserve unnamed scratch slots.
       while Array::length(local_names) <= nl {
-        Array::push(local_names, "")
+        Array::push(local_names, value = "")
       }
-      emit_local_set(buf, nl)
-      emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
-      emit_local_get(buf, nl)
+      emit_local_set(buf = buf, idx = nl)
+      emit_rc_dup_guarded(buf = buf, local_idx = nl, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+      emit_local_get(buf = buf, idx = nl)
       nl + 1
     } else {
       nl
@@ -1713,12 +1713,12 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // scope-end-dropped `let`. Compile the read, then guarded rc_dup so the
     // per-iteration drop consumes the dup, not the loop-carried reference.
     // Never present in user AST (synthesized during codegen only).
-    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    let nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
     let v_l = nl
-    Array::push(local_names, "__ltr_v")
-    emit_local_set(buf, v_l)
-    emit_rc_dup_guarded(buf, v_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
-    emit_local_get(buf, v_l)
+    Array::push(local_names, value = "__ltr_v")
+    emit_local_set(buf = buf, idx = v_l)
+    emit_rc_dup_guarded(buf = buf, local_idx = v_l, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+    emit_local_get(buf = buf, idx = v_l)
     nl + 1
   }
   else if !prefer_bound_call && (fname == "Path::ref" || fname == "Path::resolve") && Array::length(args) == 1 {
@@ -1726,30 +1726,30 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // process CWD via the `resolve_path` host import. The runtime op is
     // identical; the effect distinction (Path::ref pure, Path::resolve
     // `with Env`) lives in the checker's builtin signatures.
-    ce(buf, ECall(EIdent("resolve_path", -1), [Array::get(args, 0)], -1, []), local_names, next_local, ctx, ld)
+    ce(buf, ECall(EIdent("resolve_path", -1), [Array::get(args, at = 0)], -1, []), local_names, next_local, ctx, ld)
   }
   else if !prefer_bound_call && fname == "Path::to_string" && Array::length(args) == 1 {
     // #762: PathRef / DynamicPath wrap a raw String; to_string is identity.
-    ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
   }
   else if !prefer_bound_call && fname == "Path::is_absolute" && Array::length(args) == 1 {
     // #762: absolute iff the path begins with '/'. eq(char_code_at(x, 0), 47)
     // avoids synthesizing a "/" string (which would not be in the string
     // table).
     ce(buf, ECall(EIdent("eq", -1), [
-      ECall(EIdent("String::char_code_at", -1), [Array::get(args, 0), EInt(0)], -1, [
+      ECall(EIdent("String::char_code_at", -1), [Array::get(args, at = 0), EInt(0)], -1, [
       ]),
       EInt(47)
     ], -1, []), local_names, next_local, ctx, ld)
   }
   else if !prefer_bound_call && fname == "__float_bits" {
-    ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
   }
   else if fname == "Int::to_string" && Array::length(args) == 1 {
     // Cheatsheet-documented alias of the integer `__to_string` path (the
     // argument is Int by signature, so the string-pointer heuristic's int
     // route applies).
-    ce(buf, ECall(EIdent("__to_string", -1), [Array::get(args, 0)], -1, []), local_names, next_local, ctx, ld)
+    ce(buf, ECall(EIdent("__to_string", -1), [Array::get(args, at = 0)], -1, []), local_names, next_local, ctx, ld)
   }
   else if fname == "Fs::readdir" && Array::length(args) == 1 {
     // #729/#730: readdir's surface is Array[String], but the host import
@@ -1766,9 +1766,9 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // lanes take it from packed_dir_entries_to_array_expr rather than each
     // spelling it out (see that function for the empty-dir and string-table
     // constraints).
-    ce(buf, packed_dir_entries_to_array_expr(ECall(EIdent("vibe_fs_read_dir_raw", -1), [
-      Array::get(args, 0)
-    ], -1, []), "__rd_names"), local_names, next_local, ctx, ld)
+    ce(buf, packed_dir_entries_to_array_expr(raw_call = ECall(EIdent("vibe_fs_read_dir_raw", -1), [
+      Array::get(args, at = 0)
+    ], -1, []), tmp_name = "__rd_names"), local_names, next_local, ctx, ld)
   }
   else if fname == "sh_lines" && Array::length(args) >= 1 && local_idx_hint < 0 {
     // #3565: a local `sh_lines` is the program's value (the resolved call
@@ -1780,7 +1780,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // #777: any args beyond the first are labeled boolean flags folded
     // into the command string by `sh_lines_flag_cmd` (single-arg calls are
     // the common case and pass straight through unchanged).
-    let sh_cmd = sh_lines_flag_cmd(Array::get(args, 0), args, 1)
+    let sh_cmd = sh_lines_flag_cmd(acc = Array::get(args, at = 0), args = args, i = 1)
     ce(buf, ELet("__sh_out", ECall(EIdent("vibe_sh_lines_raw", -1), [sh_cmd], -1, [
     ]), EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
       // review-lint: allow-fixed-synthetic-name -- existing conversion temporaries preserved by the module split
@@ -1794,21 +1794,21 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
       ECall(EIdent("String::from_char_code", -1), [EInt(10)], -1, [])
     ], -1, [])), -1), local_names, next_local, ctx, ld)
   }
-  else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
+  else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_floatish(raw_e = Array::get(args, at = 0), local_names = local_names, ctx = ctx) {
     // #744: a statically-floatish argument takes the Double formatter of
     // the runtime prelude (#2652) — the generic handler below would
     // stringify the raw f64 bits (or the box pointer under RC) as an
     // integer.
-    double_runtime_require(ctx.func_table, double_runtime_to_string_name())
-    ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    double_runtime_require(ft = ctx.func_table, name = double_runtime_to_string_name())
+    ce(buf, double_to_string_expr(Array::get(args, at = 0)), local_names, next_local, ctx, ld)
   }
-  else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_boolish(Array::get(args, 0), local_names, ctx) {
+  else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_boolish(raw_e = Array::get(args, at = 0), local_names = local_names, ctx = ctx) {
     // #784: a statically-boolean argument formats as "true"/"false", not the
     // integer 1/0 the generic path below would emit. Reuse the existing
     // if/EString codegen: `if b { "true" } else { "false" }`.
-    ce(buf, EIf(Array::get(args, 0), EString("true", -1), EString("false", -1)), local_names, next_local, ctx, ld)
+    ce(buf, EIf(Array::get(args, at = 0), EString("true", -1), EString("false", -1)), local_names, next_local, ctx, ld)
   }
-  else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_stringish(Array::get(args, 0), local_names, ctx) {
+  else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_stringish(raw_e = Array::get(args, at = 0), local_names = local_names, ctx = ctx) {
     // #950: a statically-String argument IS the result — the generic
     // handler below already returns a string value unchanged at runtime,
     // but only after a string-pointer heuristic that requires ptr >= 64,
@@ -1819,14 +1819,14 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // the misfiring heuristic. Appending the 0-encoded empty string via
     // String::concat copies 0 bytes, so `"[\{String::join([], "-")}]"`
     // now renders "[]".
-    ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
   }
   else if fname == "__to_string" {
-    let ts_arg0 = Array::get(args, 0)
-    if ts_offset_refuses_render(ts_arg0, ctx) {
+    let ts_arg0 = Array::get(args, at = 0)
+    if ts_offset_refuses_render(e = ts_arg0, ctx = ctx) {
       throw(unrenderable_render_message(ts_arg0))
     }
-    let ts_arg_is_int = ts_known_int(ts_arg0, local_names, ctx)
+    let ts_arg_is_int = ts_known_int(e = ts_arg0, local_names = local_names, ctx = ctx)
     let mut nl = ce(buf, ts_arg0, local_names, next_local, ctx, ld)
     let val_l = nl
     let neg_l = nl + 1
@@ -1834,13 +1834,13 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     let abs_l = nl + 3
     let hp_l = nl + 4
     let len_l = nl + 5
-    Array::push(local_names, "__ts_val")
-    Array::push(local_names, "__ts_neg")
-    Array::push(local_names, "__ts_cur")
-    Array::push(local_names, "__ts_abs")
-    Array::push(local_names, "__ts_hp")
-    Array::push(local_names, "__ts_len")
-    emit_local_set(buf, val_l)
+    Array::push(local_names, value = "__ts_val")
+    Array::push(local_names, value = "__ts_neg")
+    Array::push(local_names, value = "__ts_cur")
+    Array::push(local_names, value = "__ts_abs")
+    Array::push(local_names, value = "__ts_hp")
+    Array::push(local_names, value = "__ts_len")
+    emit_local_set(buf = buf, idx = val_l)
     emit_block_i64(buf)
     if ts_arg_is_int {
       // #678: the argument is statically a known Int (literal or int-bound
@@ -1848,15 +1848,15 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
       // int like `1 << 40` has a zero low word and an in-bounds high word, so
       // it would be misread as an empty string). Force the integer path with
       // a false (i32) condition — the heuristic below also yields an i32 bool.
-      emit_i32_const(buf, 0)
+      emit_i32_const(buf = buf, value = 0)
     } else {
-      emit_local_get(buf, val_l)
-      emit_i64_const(buf, 32)
-      bytebuf_push(buf, 136)
-      emit_local_tee(buf, abs_l)
-      emit_i64_const(buf, 64)
+      emit_local_get(buf = buf, idx = val_l)
+      emit_i64_const(buf = buf, value = 32)
+      bytebuf_push(buf = buf, byte = 136)
+      emit_local_tee(buf = buf, idx = abs_l)
+      emit_i64_const(buf = buf, value = 64)
       emit_i64_ge_s(buf)
-      emit_local_get(buf, abs_l)
+      emit_local_get(buf = buf, idx = abs_l)
       // #606: a string is represented as (ptr << 32) | len, and `__to_string`
       // returns the value unchanged when it looks like a string pointer. A
       // string can live anywhere in linear memory — including the static data
@@ -1868,13 +1868,13 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
       // pages * 65536) as the upper bound so any in-bounds pointer is
       // recognized; a small int still has a zero high word and takes the int
       // path below.
-      bytebuf_push(buf, 63)
-      bytebuf_push(buf, 0)
+      bytebuf_push(buf = buf, byte = 63)
+      bytebuf_push(buf = buf, byte = 0)
       emit_i64_extend_i32_u(buf)
-      emit_i64_const(buf, 65536)
+      emit_i64_const(buf = buf, value = 65536)
       emit_i64_mul(buf)
       emit_i64_lt_s(buf)
-      bytebuf_push(buf, 113)
+      bytebuf_push(buf = buf, byte = 113)
       // #664: ALSO require the candidate string to FIT in linear memory:
       // ptr + len <= memory_size. The `ptr < memory_size` bound above is not
       // enough — a large integer (e.g. a 61-bit `Fs::stat_token`) whose HIGH
@@ -1886,22 +1886,22 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
       // real string always satisfies ptr + len <= memory_size, so adding this
       // bound keeps genuine strings on the identity path while routing such
       // large integers back to the integer-stringify path below.
-      emit_local_get(buf, abs_l)
-      emit_local_get(buf, val_l)
-      emit_i64_const(buf, 4294967295)
+      emit_local_get(buf = buf, idx = abs_l)
+      emit_local_get(buf = buf, idx = val_l)
+      emit_i64_const(buf = buf, value = 4294967295)
       emit_i64_and(buf)
       emit_i64_add(buf)
-      bytebuf_push(buf, 63)
-      bytebuf_push(buf, 0)
+      bytebuf_push(buf = buf, byte = 63)
+      bytebuf_push(buf = buf, byte = 0)
       emit_i64_extend_i32_u(buf)
-      emit_i64_const(buf, 65536)
+      emit_i64_const(buf = buf, value = 65536)
       emit_i64_mul(buf)
       emit_i64_le_s(buf)
-      bytebuf_push(buf, 113)
+      bytebuf_push(buf = buf, byte = 113)
     }
     emit_if_void(buf)
-    emit_local_get(buf, val_l)
-    emit_br(buf, 1)
+    emit_local_get(buf = buf, idx = val_l)
+    emit_br(buf = buf, label = 1)
     emit_end(buf)
     // Under RC a scalar Int is tagged `n << 1` (low bit 0 marks a non-heap
     // value; see `Int::to_double` / `Double::to_int` which shift to/from this
@@ -1911,85 +1911,85 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // (sign-preserving) shift right by 1. Strings already returned above via
     // the `br`, so this only touches the integer path.
     if ctx.enable_rc {
-      emit_local_get(buf, val_l)
-      emit_i64_const(buf, 1)
+      emit_local_get(buf = buf, idx = val_l)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_shr_s(buf)
-      emit_local_set(buf, val_l)
+      emit_local_set(buf = buf, idx = val_l)
     }
-    emit_i64_const(buf, 46)
-    emit_local_set(buf, cur_l)
-    emit_local_get(buf, val_l)
-    emit_i64_const(buf, 0)
+    emit_i64_const(buf = buf, value = 46)
+    emit_local_set(buf = buf, idx = cur_l)
+    emit_local_get(buf = buf, idx = val_l)
+    emit_i64_const(buf = buf, value = 0)
     emit_i64_lt_s(buf)
     emit_i64_extend_i32_s(buf)
-    emit_local_set(buf, neg_l)
-    emit_local_get(buf, val_l)
-    emit_i64_const(buf, 0)
+    emit_local_set(buf = buf, idx = neg_l)
+    emit_local_get(buf = buf, idx = val_l)
+    emit_i64_const(buf = buf, value = 0)
     emit_i64_lt_s(buf)
     emit_if_i64(buf)
-    emit_i64_const(buf, 0)
-    emit_local_get(buf, val_l)
+    emit_i64_const(buf = buf, value = 0)
+    emit_local_get(buf = buf, idx = val_l)
     emit_i64_sub(buf)
     emit_else(buf)
-    emit_local_get(buf, val_l)
+    emit_local_get(buf = buf, idx = val_l)
     emit_end(buf)
-    emit_local_set(buf, abs_l)
-    emit_local_get(buf, abs_l)
+    emit_local_set(buf = buf, idx = abs_l)
+    emit_local_get(buf = buf, idx = abs_l)
     emit_i64_eqz(buf)
     emit_if_void(buf)
-    emit_local_get(buf, cur_l)
+    emit_local_get(buf = buf, idx = cur_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 48)
-    emit_i32_store8(buf, 0, 0)
-    emit_local_get(buf, cur_l)
-    emit_i64_const(buf, 1)
+    emit_i32_const(buf = buf, value = 48)
+    emit_i32_store8(buf = buf, align = 0, offset = 0)
+    emit_local_get(buf = buf, idx = cur_l)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_sub(buf)
-    emit_local_set(buf, cur_l)
+    emit_local_set(buf = buf, idx = cur_l)
     emit_end(buf)
     emit_block_void(buf)
     emit_loop_void(buf)
-    emit_local_get(buf, abs_l)
+    emit_local_get(buf = buf, idx = abs_l)
     emit_i64_eqz(buf)
-    emit_br_if(buf, 1)
-    emit_local_get(buf, cur_l)
+    emit_br_if(buf = buf, label = 1)
+    emit_local_get(buf = buf, idx = cur_l)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, abs_l)
-    emit_i64_const(buf, 10)
+    emit_local_get(buf = buf, idx = abs_l)
+    emit_i64_const(buf = buf, value = 10)
     emit_i64_rem_s(buf)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 48)
+    emit_i32_const(buf = buf, value = 48)
     emit_i32_add(buf)
-    emit_i32_store8(buf, 0, 0)
-    emit_local_get(buf, cur_l)
-    emit_i64_const(buf, 1)
+    emit_i32_store8(buf = buf, align = 0, offset = 0)
+    emit_local_get(buf = buf, idx = cur_l)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_sub(buf)
-    emit_local_set(buf, cur_l)
-    emit_local_get(buf, abs_l)
-    emit_i64_const(buf, 10)
+    emit_local_set(buf = buf, idx = cur_l)
+    emit_local_get(buf = buf, idx = abs_l)
+    emit_i64_const(buf = buf, value = 10)
     emit_i64_div_s(buf)
-    emit_local_set(buf, abs_l)
-    emit_br(buf, 0)
+    emit_local_set(buf = buf, idx = abs_l)
+    emit_br(buf = buf, label = 0)
     emit_end(buf)
     emit_end(buf)
-    emit_local_get(buf, neg_l)
+    emit_local_get(buf = buf, idx = neg_l)
     emit_i32_wrap_i64(buf)
     emit_if_void(buf)
-    emit_local_get(buf, cur_l)
+    emit_local_get(buf = buf, idx = cur_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 45)
-    emit_i32_store8(buf, 0, 0)
-    emit_local_get(buf, cur_l)
-    emit_i64_const(buf, 1)
+    emit_i32_const(buf = buf, value = 45)
+    emit_i32_store8(buf = buf, align = 0, offset = 0)
+    emit_local_get(buf = buf, idx = cur_l)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_sub(buf)
-    emit_local_set(buf, cur_l)
+    emit_local_set(buf = buf, idx = cur_l)
     emit_end(buf)
-    emit_global_get(buf, 0)
+    emit_global_get(buf = buf, idx = 0)
     emit_i64_extend_i32_u(buf)
-    emit_local_set(buf, hp_l)
-    emit_i64_const(buf, 46)
-    emit_local_get(buf, cur_l)
+    emit_local_set(buf = buf, idx = hp_l)
+    emit_i64_const(buf = buf, value = 46)
+    emit_local_get(buf = buf, idx = cur_l)
     emit_i64_sub(buf)
-    emit_local_set(buf, len_l)
+    emit_local_set(buf = buf, idx = len_l)
     // Bump the heap pointer and run the grow check BEFORE the memory.copy
     // into the fresh allocation. The copy used to come first, which traps
     // with "memory access out of bounds" whenever the previous allocation
@@ -1997,30 +1997,30 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // check only guarantees the heap pointer itself is addressable, not a
     // full page of headroom). Hit in practice by large multi-module FS
     // compiles (#533 measurement: ~200-file cold-cache walk).
-    emit_local_get(buf, hp_l)
+    emit_local_get(buf = buf, idx = hp_l)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, len_l)
+    emit_local_get(buf = buf, idx = len_l)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 7)
+    emit_i32_const(buf = buf, value = 7)
     emit_i32_add(buf)
-    emit_i32_const(buf, -8)
-    bytebuf_push(buf, 113)
+    emit_i32_const(buf = buf, value = -8)
+    bytebuf_push(buf = buf, byte = 113)
     emit_i32_add(buf)
-    emit_global_set(buf, 0)
-    emit_heap_grow_after_heap_set(buf, ctx)
-    emit_local_get(buf, hp_l)
+    emit_global_set(buf = buf, idx = 0)
+    emit_heap_grow_after_heap_set(buf = buf, ctx = ctx)
+    emit_local_get(buf = buf, idx = hp_l)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, cur_l)
-    emit_i64_const(buf, 1)
+    emit_local_get(buf = buf, idx = cur_l)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_add(buf)
     emit_i32_wrap_i64(buf)
-    emit_local_get(buf, len_l)
+    emit_local_get(buf = buf, idx = len_l)
     emit_i32_wrap_i64(buf)
     emit_memory_copy(buf)
-    emit_local_get(buf, hp_l)
-    emit_i64_const(buf, 32)
+    emit_local_get(buf = buf, idx = hp_l)
+    emit_i64_const(buf = buf, value = 32)
     emit_i64_shl(buf)
-    emit_local_get(buf, len_l)
+    emit_local_get(buf = buf, idx = len_l)
     emit_i64_or(buf)
     emit_end(buf)
     nl + 6
@@ -2038,10 +2038,10 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // values saturate to 0 by hand instead of trunc'ing at all.
     // #3135: the argument's box is borrowed (md_is_double_reader) or, when
     // it is a temporary, released here (emit_float_operand_bits).
-    let nl = emit_float_operand_bits(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
+    let nl = emit_float_operand_bits(buf = buf, e_in = Array::get(args, at = 0), local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
     let val_l = nl
-    Array::push(local_names, "__d2i_val")
-    emit_local_set(buf, val_l)
+    Array::push(local_names, value = "__d2i_val")
+    emit_local_set(buf = buf, idx = val_l)
     // #1050: under RC the truncated i64 gets tagged via `n << 1` below, and
     // that shift itself overflows (silently flipping sign) once |n| reaches
     // 2^62 -- even though trunc_f64_s is happily defined for any magnitude
@@ -2056,46 +2056,46 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     let bound_hi = 1137704960
     let neg_bound_hi = 3285188608
     // NaN: x != x is only true for NaN.
-    emit_local_get(buf, val_l)
+    emit_local_get(buf = buf, idx = val_l)
     emit_f64_reinterpret_i64(buf)
-    emit_local_get(buf, val_l)
+    emit_local_get(buf = buf, idx = val_l)
     emit_f64_reinterpret_i64(buf)
     emit_f64_ne(buf)
     emit_if_i64(buf)
-    emit_i64_const(buf, 0)
+    emit_i64_const(buf = buf, value = 0)
     emit_else(buf)
     // Upper bound: x < 2^63 (or the narrower +-2^61 taggable bound under RC).
-    emit_local_get(buf, val_l)
+    emit_local_get(buf = buf, idx = val_l)
     emit_f64_reinterpret_i64(buf)
-    emit_f64_const_lohi(buf, 0, bound_hi)
+    emit_f64_const_lohi(buf = buf, lo = 0, hi = bound_hi)
     emit_f64_lt(buf)
     emit_if_i64(buf)
     // Lower bound: x >= -2^63 (or the narrower +-2^61 taggable bound under RC).
-    emit_local_get(buf, val_l)
+    emit_local_get(buf = buf, idx = val_l)
     emit_f64_reinterpret_i64(buf)
-    emit_f64_const_lohi(buf, 0, neg_bound_hi)
+    emit_f64_const_lohi(buf = buf, lo = 0, hi = neg_bound_hi)
     emit_f64_ge(buf)
     emit_if_i64(buf)
-    emit_local_get(buf, val_l)
+    emit_local_get(buf = buf, idx = val_l)
     emit_f64_reinterpret_i64(buf)
     emit_i64_trunc_f64_s(buf)
     emit_else(buf)
-    emit_i64_const(buf, 0 - 4611686018427387903 - 1)
+    emit_i64_const(buf = buf, value = 0 - 4611686018427387903 - 1)
     emit_end(buf)
     emit_else(buf)
-    emit_i64_const(buf, 4611686018427387903)
+    emit_i64_const(buf = buf, value = 4611686018427387903)
     emit_end(buf)
     emit_end(buf)
     if ctx.enable_rc {
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_shl(buf)
     }
     nl + 1
   }
   else if fname == "Int::to_double" || fname == "Int::to_float" {
-    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    let nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
     if ctx.enable_rc {
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_shr_s(buf)
     }
     if fname == "Int::to_float" {
@@ -2109,9 +2109,9 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     }
     emit_i64_reinterpret_f64(buf)
     if ctx.enable_rc {
-      Array::push(local_names, "__fbits")
-      Array::push(local_names, "__fbox")
-      emit_box_float(buf, ctx, nl, nl + 1)
+      Array::push(local_names, value = "__fbits")
+      Array::push(local_names, value = "__fbox")
+      emit_box_float(buf = buf, ctx = ctx, bits_local = nl, box_local = nl + 1)
       nl + 2
     } else {
       nl
@@ -2119,67 +2119,67 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
   }
   else if fname == "Float::to_double" {
     // A Float is held as the f64 of its f32 value, so widening it is exact.
-    ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
   }
   else if fname == "Double::to_float" {
     // #3543: round to the nearest f32 (ties to even; overflow is
     // +/-Infinity, NaN stays NaN) and hold the result as an f64 again.
     // `emit_float_operand_bits` hands over the operand's bits without
     // keeping a box made only to be read here.
-    let nl = emit_float_operand_bits(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
+    let nl = emit_float_operand_bits(buf = buf, e_in = Array::get(args, at = 0), local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
     emit_f64_reinterpret_i64(buf)
     emit_f32_demote_f64(buf)
     emit_f64_promote_f32(buf)
     emit_i64_reinterpret_f64(buf)
     if ctx.enable_rc {
-      Array::push(local_names, "__fbits")
-      Array::push(local_names, "__fbox")
-      emit_box_float(buf, ctx, nl, nl + 1)
+      Array::push(local_names, value = "__fbits")
+      Array::push(local_names, value = "__fbox")
+      emit_box_float(buf = buf, ctx = ctx, bits_local = nl, box_local = nl + 1)
       nl + 2
     } else {
       nl
     }
   }
-  else if fname == "Float::to_string" && !cc_single_name_shadowed(fname, local_names, ctx) {
+  else if fname == "Float::to_string" && !cc_single_name_shadowed(n = fname, local_names = local_names, ctx = ctx) {
     // #3543: the shortest decimal that reads back as the same f32.
-    double_runtime_require(ctx.func_table, double_runtime_to_string_name())
-    ce(buf, float_to_string_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    double_runtime_require(ft = ctx.func_table, name = double_runtime_to_string_name())
+    ce(buf, float_to_string_expr(Array::get(args, at = 0)), local_names, next_local, ctx, ld)
   }
-  else if fname == "Double::to_string" && !cc_single_name_shadowed(fname, local_names, ctx) {
+  else if fname == "Double::to_string" && !cc_single_name_shadowed(n = fname, local_names = local_names, ctx = ctx) {
     // #767: the same lowering `__to_string` takes for a statically-floatish
     // argument (see the __to_string branch above) — one call into the
     // runtime prelude (#2652) — just exposed under its documented qualified
     // name too.
-    double_runtime_require(ctx.func_table, double_runtime_to_string_name())
-    ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    double_runtime_require(ft = ctx.func_table, name = double_runtime_to_string_name())
+    ce(buf, double_to_string_expr(Array::get(args, at = 0)), local_names, next_local, ctx, ld)
   }
-  else if fname == "String::unicode_length" && Array::length(args) == 1 && !cc_single_name_shadowed(fname, local_names, ctx) {
+  else if fname == "String::unicode_length" && Array::length(args) == 1 && !cc_single_name_shadowed(n = fname, local_names = local_names, ctx = ctx) {
     // #2630: the code-point view of a byte string -- one call into the
     // String length-view runtime prelude (string_views_runtime.vibe), the
     // lowering both lanes share (string_length_exprs.vibe). Guarded like
     // the other builtin arms: a program's own `fn String::unicode_length`
     // is that program's function, not this one (Codex review on #2708).
-    string_views_runtime_require(ctx.func_table, string_views_runtime_unicode_name())
-    ce(buf, string_unicode_length_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    string_views_runtime_require(ft = ctx.func_table, name = string_views_runtime_unicode_name())
+    ce(buf, string_unicode_length_expr(Array::get(args, at = 0)), local_names, next_local, ctx, ld)
   }
-  else if fname == "String::utf16_length" && Array::length(args) == 1 && !cc_single_name_shadowed(fname, local_names, ctx) {
-    string_views_runtime_require(ctx.func_table, string_views_runtime_utf16_name())
-    ce(buf, string_utf16_length_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+  else if fname == "String::utf16_length" && Array::length(args) == 1 && !cc_single_name_shadowed(n = fname, local_names = local_names, ctx = ctx) {
+    string_views_runtime_require(ft = ctx.func_table, name = string_views_runtime_utf16_name())
+    ce(buf, string_utf16_length_expr(Array::get(args, at = 0)), local_names, next_local, ctx, ld)
   }
-  else if fname == "String::utf8_length" && Array::length(args) == 1 && !cc_single_name_shadowed(fname, local_names, ctx) {
+  else if fname == "String::utf8_length" && Array::length(args) == 1 && !cc_single_name_shadowed(n = fname, local_names = local_names, ctx = ctx) {
     // #2630: a String IS its UTF-8 bytes (ADR-0098), so the UTF-8 length is
     // the byte length.
-    ce(buf, ECall(EIdent("String::length", -1), [Array::get(args, 0)], -1, []), local_names, next_local, ctx, ld)
+    ce(buf, ECall(EIdent("String::length", -1), [Array::get(args, at = 0)], -1, []), local_names, next_local, ctx, ld)
   }
   else if fname == "Int::parse" {
-    ce(buf, int_parse_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    ce(buf, int_parse_expr(Array::get(args, at = 0)), local_names, next_local, ctx, ld)
   }
-  else if fname == "Double::parse" && !cc_single_name_shadowed(fname, local_names, ctx) {
-    double_runtime_require(ctx.func_table, double_runtime_parse_name())
-    ce(buf, double_parse_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+  else if fname == "Double::parse" && !cc_single_name_shadowed(n = fname, local_names = local_names, ctx = ctx) {
+    double_runtime_require(ft = ctx.func_table, name = double_runtime_parse_name())
+    ce(buf, double_parse_expr(Array::get(args, at = 0)), local_names, next_local, ctx, ld)
   }
   else if fname == "Double::abs" || fname == "Double::floor" || fname == "Double::ceil" {
-    let nl = emit_float_operand_bits(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
+    let nl = emit_float_operand_bits(buf = buf, e_in = Array::get(args, at = 0), local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
     emit_f64_reinterpret_i64(buf)
     if fname == "Double::abs" {
       emit_f64_abs(buf)
@@ -2190,18 +2190,18 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     }
     emit_i64_reinterpret_f64(buf)
     if ctx.enable_rc {
-      Array::push(local_names, "__fop_bits")
-      Array::push(local_names, "__fop_box")
-      emit_box_float(buf, ctx, nl, nl + 1)
+      Array::push(local_names, value = "__fop_bits")
+      Array::push(local_names, value = "__fop_box")
+      emit_box_float(buf = buf, ctx = ctx, bits_local = nl, box_local = nl + 1)
       nl + 2
     } else {
       nl
     }
   }
   else if fname == "Double::max" || fname == "Double::min" {
-    let mut nl = emit_float_operand_bits(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
+    let mut nl = emit_float_operand_bits(buf = buf, e_in = Array::get(args, at = 0), local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce)
     emit_f64_reinterpret_i64(buf)
-    nl = emit_float_operand_bits(buf, Array::get(args, 1), local_names, nl, ctx, ld, ce)
+    nl = emit_float_operand_bits(buf = buf, e_in = Array::get(args, at = 1), local_names = local_names, next_local = nl, ctx = ctx, ld = ld, ce = ce)
     emit_f64_reinterpret_i64(buf)
     if fname == "Double::max" {
       emit_f64_max(buf)
@@ -2210,9 +2210,9 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     }
     emit_i64_reinterpret_f64(buf)
     if ctx.enable_rc {
-      Array::push(local_names, "__fminmax_bits")
-      Array::push(local_names, "__fminmax_box")
-      emit_box_float(buf, ctx, nl, nl + 1)
+      Array::push(local_names, value = "__fminmax_bits")
+      Array::push(local_names, value = "__fminmax_box")
+      emit_box_float(buf = buf, ctx = ctx, bits_local = nl, box_local = nl + 1)
       nl + 2
     } else {
       nl
@@ -2224,7 +2224,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // fallback path while Char::to_int died with "undefined variable
     // (local): Char::to_int @call" (bench/bench_char_conversion.vibe,
     // @vibe/builtin/char.vibe's lower/upper).
-    ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
   }
   else if !prefer_bound_call && fname == "resume" {
     // ADR-0076 追記34 V2: the replay engine (memo region + tag-1 rethrow
@@ -2237,6 +2237,6 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // write into a region that no longer exists.
     throw("internal compiler error: a `resume` reached code generation outside any handler shape the compiler lowers -- please report this program; moving the `handle` into the function that performs the effect usually avoids it")
   } else {
-    cc_compile_named_2(buf, callee, args, local_names, next_local, ctx, ld, ce, fname, fn_idx_in_list, resolved_name, local_idx_hint, prefer_bound_call, ctor_lookup_idx, compile_call_core_fn)
+    cc_compile_named_2(buf = buf, callee = callee, args = args, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce, fname = fname, fn_idx_in_list = fn_idx_in_list, resolved_name = resolved_name, local_idx_hint = local_idx_hint, prefer_bound_call = prefer_bound_call, ctor_lookup_idx = ctor_lookup_idx, compile_call_core_fn = compile_call_core_fn)
   }
 }

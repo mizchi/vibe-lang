@@ -11,33 +11,33 @@ import @vibe/compiler/core {
 test "project context shares caches without sharing the entry's import aliases" {
   let dir = "_build/query_project_context_aliases"
   Fs::mkdir_p(dir)
-  Fs::write_file(dir + "/dep.vibe", "export fn sub(x: Int, y: Int) -> Int { x - y }\n")
+  Fs::write_file(dir + "/dep.vibe", contents = "export fn sub(x: Int, y: Int) -> Int { x - y }\n")
   let source_a = "import ./dep.vibe { sub as first }\nfn main() -> Int { first(10, 3) }\n"
   let source_b = "import ./dep.vibe { sub as second }\nfn main() -> Int { second(9, 2) }\n"
   let a = dir + "/a.vibe"
   let b = dir + "/b.vibe"
-  Fs::write_file(a, source_a)
-  Fs::write_file(b, source_b)
-  let first = query_project_context_fs(a, source_a, None, query_project_state_new())
-  let second = query_project_context_fs(b, source_b, None, first.state)
+  Fs::write_file(a, contents = source_a)
+  Fs::write_file(b, contents = source_b)
+  let first = query_project_context_fs(path = a, source = source_a, replacement = None, state = query_project_state_new())
+  let second = query_project_context_fs(path = b, source = source_b, replacement = None, state = first.state)
   inspect(first.entry_source, content = source_a)
   inspect(second.entry_source, content = source_b)
-  inspect(match env_lookup(first.import_env, "first") {
+  inspect(match env_lookup(env = first.import_env, name = "first") {
     Some(_) => true,
     None => false
   }, content = "true")
-  inspect(match env_lookup(second.import_env, "second") {
+  inspect(match env_lookup(env = second.import_env, name = "second") {
     Some(_) => true,
     None => false
   }, content = "true")
-  inspect(match env_lookup(second.import_env, "first") {
+  inspect(match env_lookup(env = second.import_env, name = "first") {
     Some(_) => true,
     None => false
   }, content = "false")
   // A fresh state exercises the persistent-hit path once the dependency has
   // been published. It must hydrate the same projected binding as the walk.
-  let warm = query_project_context_fs(b, source_b, None, query_project_state_new())
-  inspect(match env_lookup(warm.import_env, "second") {
+  let warm = query_project_context_fs(path = b, source = source_b, replacement = None, state = query_project_state_new())
+  inspect(match env_lookup(env = warm.import_env, name = "second") {
     Some(_) => true,
     None => false
   }, content = "true")
@@ -48,13 +48,13 @@ test "project context refuses a replacement that does not match the ingested sou
   Fs::mkdir_p(dir)
   let path = dir + "/main.vibe"
   let source = "fn main() -> Int { 7 }\n"
-  Fs::write_file(path, source)
+  Fs::write_file(path, contents = source)
   let message = handle {
     let edit = QueryProjectEdit::{
       replacement: "fn main() -> Int { 99 }\n",
       mismatch_message: "the source changed before this edit"
     }
-    let _ = query_project_context_fs(path, "a different original", Some(edit), query_project_state_new())
+    let _ = query_project_context_fs(path = path, source = "a different original", replacement = Some(edit), state = query_project_state_new())
     ""
   } with { Exception::Throw(error) => error }
   inspect(message, content = "the source changed before this edit")
@@ -65,21 +65,21 @@ test "project context propagates a broken import and the next entry still checks
   let dir = "_build/query_project_context_failed_walk"
   Fs::mkdir_p(dir)
   let dep = dir + "/dep.vibe"
-  Fs::write_file(dep, "export fn sub(x: Int, y: Int) -> Int { x - y }\n")
+  Fs::write_file(dep, contents = "export fn sub(x: Int, y: Int) -> Int { x - y }\n")
   let valid_source = "import ./dep.vibe { sub }\nfn main() -> Int { sub(10, 3) }\n"
   let valid = dir + "/valid.vibe"
-  Fs::write_file(valid, valid_source)
-  let first = query_project_context_fs(valid, valid_source, None, query_project_state_new())
+  Fs::write_file(valid, contents = valid_source)
+  let first = query_project_context_fs(path = valid, source = valid_source, replacement = None, state = query_project_state_new())
   let broken = dir + "/broken.vibe"
   let broken_source = "import ./missing.vibe { nope }\nfn main() -> Int { nope() }\n"
-  Fs::write_file(broken, broken_source)
+  Fs::write_file(broken, contents = broken_source)
   let message = handle {
-    let _ = query_project_context_fs(broken, broken_source, None, first.state)
+    let _ = query_project_context_fs(path = broken, source = broken_source, replacement = None, state = first.state)
     ""
   } with { Exception::Throw(error) => error }
   inspect(String::length(message) > 0, content = "true")
-  let next = query_project_context_fs(valid, valid_source, None, first.state)
-  inspect(match env_lookup(next.import_env, "sub") {
+  let next = query_project_context_fs(path = valid, source = valid_source, replacement = None, state = first.state)
+  inspect(match env_lookup(env = next.import_env, name = "sub") {
     Some(_) => true,
     None => false
   }, content = "true")

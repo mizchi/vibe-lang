@@ -11,13 +11,13 @@ import @vibex/wasm_parser {
   module_data, module_globals, module_memories
 }
 
-fn gc_memory_payload(n0: Int) -> String {
+fn gc_memory_payload(_ n0: Int) -> String {
   let builder = StringBuilder::new()
   let mut n = n0
   let mut chunk = "x"
   while n > 0 {
     if n % 2 == 1 {
-      StringBuilder::push(builder, chunk)
+      StringBuilder::push(builder, value = chunk)
     }
     n = n / 2
     if n > 0 {
@@ -35,10 +35,10 @@ fn gc_memory_probe(n: Int, with_region: Bool) -> Unit with Exception + Fs + Proc
     ""
   }
   let source = "fn main() -> Unit allows Console { " + region_body + "println(\"" + payload + "\"); println(\"ok\") }"
-  let wasm = compile_source_gc_only(source, "main")
+  let wasm = compile_source_gc_only(source = source, entry_name = "main")
   let memories = module_memories(wasm)
   assert(Array::length(memories) == 1)
-  let (pages, _) = Array::get(memories, 0)
+  let (pages, _) = Array::get(memories, at = 0)
   let segments = module_data(wasm)
   assert(Array::length(segments) > 0)
   let mut max_end = 0
@@ -52,7 +52,7 @@ fn gc_memory_probe(n: Int, with_region: Bool) -> Unit with Exception + Fs + Proc
     }
   }
   let globals = module_globals(wasm)
-  let (value_type, mutability, opcode, heap_start) = Array::get(globals, 0)
+  let (value_type, mutability, opcode, heap_start) = Array::get(globals, at = 0)
   assert(value_type == 127 && mutability == 1 && opcode == 65)
   let aligned_end = ((max_end + 7) / 8) * 8
   if with_region {
@@ -72,7 +72,7 @@ fn gc_memory_probe(n: Int, with_region: Bool) -> Unit with Exception + Fs + Proc
     "plain_"
   }
   let path = "_build/vibe_test/gc_initial_memory_" + label + Int::to_string(n) + ".wasm"
-  Fs::write_bytes(path, wasm)
+  Fs::write_bytes(path, bytes = wasm)
   let result = process_sh_capture("bash scripts/run_wasm_vibe_host_runner.sh " + path)
   inspect(result.exit_code, content = "0")
   assert(result.stdout == payload + "\nok\n")
@@ -81,21 +81,21 @@ fn gc_memory_probe(n: Int, with_region: Bool) -> Unit with Exception + Fs + Proc
 test "GC static data covers both sides of the first and second page boundaries" {
   // Actual data ends: 67, 65535, 65536, 65537, 131072, 131073.
   for n in [0, 65468, 65469, 65470, 131005, 131006] {
-    gc_memory_probe(n, false)
+    gc_memory_probe(n = n, with_region = false)
   }
 }
 
 test "GC static data retains the region control and arena reservation" {
-  gc_memory_probe(0, true)
-  gc_memory_probe(131006, true)
+  gc_memory_probe(n = 0, with_region = true)
+  gc_memory_probe(n = 131006, with_region = true)
 }
 
 test "GC initial memory rounds page ends and preserves the region spare page" {
   let plain: Array[Int] = []
   let region_pages: Array[Int] = []
   for end in [0, 64, 65535, 65536, 65537, 131072, 131073, 2147483640] {
-    Array::push(plain, gc_initial_memory_pages(end, false))
-    Array::push(region_pages, gc_initial_memory_pages(end, true))
+    Array::push(plain, value = gc_initial_memory_pages(heap_start = end, with_region = false))
+    Array::push(region_pages, value = gc_initial_memory_pages(heap_start = end, with_region = true))
   }
   inspect(plain, content = "[1, 1, 1, 1, 2, 2, 3, 32768]")
   inspect(region_pages, content = "[2, 2, 2, 2, 3, 3, 4, 32769]")
@@ -105,7 +105,7 @@ test "GC initial memory refuses static addresses the i32 encoder cannot emit" {
   for end in [-1, 2147483648, 4294967295, 4294967296] {
     for with_region in [false, true] {
       let message = handle {
-        let _ = gc_initial_memory_pages(end, with_region)
+        let _ = gc_initial_memory_pages(heap_start = end, with_region = with_region)
         "accepted"
       } with { Exception::Throw(message) => message }
       inspect(message, content = "reduce static string data: the wasm-gc static layout exceeds the supported signed i32 address range")

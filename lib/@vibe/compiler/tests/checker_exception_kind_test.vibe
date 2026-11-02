@@ -32,7 +32,7 @@ import @vibe/compiler/core {
 /// `cli_main` turns on (#944, ADR-0073 stage B). This harness calls the
 /// checker directly, so without flipping it here every `throw` site is exempt
 /// from the row check and each assertion below would pass vacuously.
-fn checked_diags(src: String) -> Array[String] with Exception {
+fn checked_diags(_ src: String) -> Array[String] with Exception {
   set_error_row_checked(true)
   collect_all_diagnostics(src)
 }
@@ -94,12 +94,12 @@ test "exception_label_kind works on both the effect and operation forms" {
 }
 
 test "erased kinds are compatible in both directions, distinct kinds are not" {
-  assert(exception_kinds_compatible("", "IoError"))
-  assert(exception_kinds_compatible("IoError", ""))
-  assert(exception_kinds_compatible("IoError", "IoError"))
-  assert(!exception_kinds_compatible("IoError", "ParseError"))
-  assert(exception_effect_labels_equal("Error", "Exception[IoError]"))
-  assert(!exception_effect_labels_equal("Exception[IoError]", "Exception[ParseError]"))
+  assert(exception_kinds_compatible(declared_kind = "", required_kind = "IoError"))
+  assert(exception_kinds_compatible(declared_kind = "IoError", required_kind = ""))
+  assert(exception_kinds_compatible(declared_kind = "IoError", required_kind = "IoError"))
+  assert(!exception_kinds_compatible(declared_kind = "IoError", required_kind = "ParseError"))
+  assert(exception_effect_labels_equal(left = "Error", right = "Exception[IoError]"))
+  assert(!exception_effect_labels_equal(left = "Exception[IoError]", right = "Exception[ParseError]"))
 }
 
 test "the throw label for a kind is the bare, writable row spelling" {
@@ -120,7 +120,7 @@ test "a DIFFERENT Exception[E] row rejects the throw" {
   let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = () -> Int with Exception[ParseError] {\n  throw(NotFound(\"x\"))\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "missing { Exception[IoError] }"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[IoError] }"))
 }
 
 test "the payload kind of a string literal is String" {
@@ -129,7 +129,7 @@ test "the payload kind of a string literal is String" {
   let bad = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(\"plain\")\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(bad)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "missing { Exception[String] }"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[String] }"))
 }
 
 test "the erased Error row still authorizes a suberror throw (#786 unchanged)" {
@@ -149,8 +149,8 @@ test "a row naming no exception label reports the RESOLVED kind (#2982)" {
   let src = "let boom = () -> Int with Console {\n  throw(\"x\")\n}\n\nlet main = () -> Int with Console {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "missing { Exception[String] }"))
-  assert(String::contains(Array::get(diags, 0), "with Console + Exception[String]"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[String] }"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "with Console + Exception[String]"))
 }
 
 test "an effectset union of exception kinds authorizes both" {
@@ -168,8 +168,8 @@ test "handle with Exception[E] discharges that kind only" {
   // refusal names that rule and the kind the body raises instead of the
   // outer row ("missing { Exception[IoError] }" suggested adding the kind to
   // the ROW, which would not stop the handler from catching it).
-  assert(String::contains(Array::get(diags, 0), "catches EVERY exception its body raises at run time"))
-  assert(String::contains(Array::get(diags, 0), "it also raises { Exception[IoError] }"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "catches EVERY exception its body raises at run time"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "it also raises { Exception[IoError] }"))
 }
 
 test "a kinded arm may not run an open row variable (#3540)" {
@@ -178,8 +178,8 @@ test "a kinded arm may not run an open row variable (#3540)" {
   let bad = "fn guarded(f: () -> Int with e) -> Int with e {\n  handle {\n    f() + 1\n  } with {\n    Exception[Int]::Throw(code) => code * 2\n  }\n}\n"
   let diags = checked_diags(bad)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), ": move this `Exception[Int]::Throw` handle out of 'guarded' to its caller, where { e } is filled in"))
-  assert(String::contains(Array::get(diags, 0), "so it would read that payload as `Int`"))
+  assert(String::contains(Array::get(diags, at = 0), needle = ": move this `Exception[Int]::Throw` handle out of 'guarded' to its caller, where { e } is filled in"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "so it would read that payload as `Int`"))
   // A kind label beside the variable pins it: the variable holds no
   // exception (#3033). The erased arm catches everything by design.
   let pinned = "fn guarded(f: () -> Int with Exception[Int] + e) -> Int with e {\n  handle {\n    f() + 1\n  } with {\n    Exception[Int]::Throw(code) => code * 2\n  }\n}\n"
@@ -192,7 +192,7 @@ test "a kinded exception row cannot be laundered through a mismatched fn slot" {
   let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception[ParseError]) -> Int with Exception[ParseError] {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "effect would be dropped"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "effect would be dropped"))
 }
 
 test "an erased slot refuses a kinded value, and a kinded slot refuses an erased one" {
@@ -201,7 +201,7 @@ test "an erased slot refuses a kinded value, and a kinded slot refuses an erased
   // so `boom`'s `IoError` would reach an erased arm typed as a `String`.
   let erased_diags = checked_diags(into_erased)
   assert(eq(Array::length(erased_diags), 1))
-  assert(String::contains(Array::get(erased_diags, 0), "write `with Exception[IoError]` in the expected type () -> Int with Exception"))
+  assert(String::contains(Array::get(erased_diags, at = 0), needle = "write `with Exception[IoError]` in the expected type () -> Int with Exception"))
   // Naming the kind beside the erased label is the edit, and it checks.
   let into_both = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception + Exception[IoError]) -> Int with Exception + Exception[IoError] {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   assert(eq(Array::length(checked_diags(into_both)), 0))
@@ -210,7 +210,7 @@ test "an erased slot refuses a kinded value, and a kinded slot refuses an erased
   // its callers trust -- promises only `IoError`, so the narrowing is refused.
   let diags = checked_diags(into_kinded)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "a value of type () -> Int with Exception cannot be used where () -> Int with Exception[IoError] is expected"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "a value of type () -> Int with Exception cannot be used where () -> Int with Exception[IoError] is expected"))
 }
 
 test "a pattern binder's payload kind is its inferred type under a kinded row (#2964, #3017)" {
@@ -222,7 +222,7 @@ test "a pattern binder's payload kind is its inferred type under a kinded row (#
   let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = (r: IoError) -> Int with Exception[ParseError] {\n  match r {\n    NotFound(m) => throw(m)\n  }\n}\n\nlet main = () -> Int {\n  handle {\n    boom(NotFound(\"x\"))\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "missing { Exception[String] }"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[String] }"))
 }
 
 test "an unresolved payload kind stays gradual under the erased row" {
@@ -244,7 +244,7 @@ test "a local binder's payload kind comes from its initializer" {
   let bad = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = () -> Int with Exception[ParseError] {\n  let e = NotFound(\"x\")\n  throw(e)\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(bad)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "missing { Exception[IoError] }"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[IoError] }"))
 }
 
 test "a local binder resolves through the module table too" {
@@ -253,25 +253,25 @@ test "a local binder resolves through the module table too" {
   let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet make_err = (m: String) -> IoError {\n  NotFound(m)\n}\n\nlet boom = () -> Int with Exception[ParseError] {\n  let e = make_err(\"x\")\n  throw(e)\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "missing { Exception[IoError] }"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[IoError] }"))
 }
 
 test "an annotated parameter's payload kind comes from its annotation" {
   let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = (e: IoError) -> Int with Exception[ParseError] {\n  throw(e)\n}\n\nlet main = () -> Int {\n  handle {\n    boom(NotFound(\"x\"))\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "missing { Exception[IoError] }"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[IoError] }"))
 }
 
 test "a mut local and a lambda parameter carry kinds the same way" {
   let mut_local = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = () -> Int with Exception[ParseError] {\n  let mut e = NotFound(\"x\")\n  throw(e)\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(mut_local)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "missing { Exception[IoError] }"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[IoError] }"))
   let lam = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = () -> Int with Exception[ParseError] {\n  let f = (e: IoError) -> Int {\n    throw(e)\n  }\n  f(NotFound(\"x\"))\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let lam_diags = checked_diags(lam)
   assert(eq(Array::length(lam_diags), 1))
-  assert(String::contains(Array::get(lam_diags, 0), "missing { Exception[IoError] }"))
+  assert(String::contains(Array::get(lam_diags, at = 0), needle = "missing { Exception[IoError] }"))
 }
 
 test "a local binding shadows a same-named top-level one" {
@@ -304,18 +304,18 @@ test "a for-loop binder shadows a same-named top-level binding" {
   let src = "enum IoError {\n  NotFound(String)\n}\n\nlet x = NotFound(\"top\")\n\nlet boom = (xs: Array[String]) -> Int with Exception[ParseError] {\n  for x in xs {\n    throw(x)\n  }\n  0\n}\n\nenum ParseError {\n  Eof\n}\n\nlet main = () -> Int {\n  handle {\n    boom([\n      \"a\"\n    ])\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
-  assert(!String::contains(Array::get(diags, 0), "IoError"))
+  assert(!String::contains(Array::get(diags, at = 0), needle = "IoError"))
 }
 
 test "struct-literal and float payloads carry their own kinds" {
   let rec_bad = "struct Wrapped {\n  msg: String\n}\n\nlet boom = () -> Int with Exception[String] {\n  throw(Wrapped::{ msg: \"x\" })\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let rec_diags = checked_diags(rec_bad)
   assert(eq(Array::length(rec_diags), 1))
-  assert(String::contains(Array::get(rec_diags, 0), "missing { Exception[Wrapped] }"))
+  assert(String::contains(Array::get(rec_diags, at = 0), needle = "missing { Exception[Wrapped] }"))
   let float_bad = "let boom = () -> Int with Exception[Int] {\n  throw(1.5)\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let float_diags = checked_diags(float_bad)
   assert(eq(Array::length(float_diags), 1))
-  assert(String::contains(Array::get(float_diags, 0), "missing { Exception[Double] }"))
+  assert(String::contains(Array::get(float_diags, at = 0), needle = "missing { Exception[Double] }"))
 }
 
 // --- function-type kinds (Codex on #3052)
@@ -327,7 +327,7 @@ test "a tuple parameter keeps a function kind, so two aliases of it meet" {
   let bad = "type A = ((Int, Int)) -> Int\n\ntype B = ((Int, String)) -> Int\n\nstruct Holder {\n  cb: A\n}\n\nfn boom(h: Holder) -> Int with Exception[B] {\n  throw(h.cb)\n}\n"
   let diags = checked_diags(bad)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "missing { Exception[((Int, Int)) -> Int] }"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[((Int, Int)) -> Int] }"))
 }
 
 test "a function kind's effect row is a set, so its order does not matter" {
@@ -337,5 +337,5 @@ test "a function kind's effect row is a set, so its order does not matter" {
   let bad = "type A = () -> Int with Fs + Env\n\ntype B = () -> Int with Env\n\nstruct Holder {\n  cb: A\n}\n\nfn boom(h: Holder) -> Int with Exception[B] {\n  throw(h.cb)\n}\n"
   let diags = checked_diags(bad)
   assert(eq(Array::length(diags), 1))
-  assert(String::contains(Array::get(diags, 0), "missing { Exception[() -> Int with Env + Fs] }"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[() -> Int with Env + Fs] }"))
 }

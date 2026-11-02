@@ -50,18 +50,18 @@ fn multibyte_source() -> String {
 
 /// `String::to_int` does not exist and the diagnostic prefix is the only
 /// place this file needs a number out of text.
-fn parse_int(text: String) -> Int {
+fn parse_int(_ text: String) -> Int {
   let mut acc = 0
   let mut i = 0
   while i < String::length(text) {
-    acc = acc * 10 + (String::char_code_at(text, i) - 48)
+    acc = acc * 10 + (String::char_code_at(text, at = i) - 48)
     i = i + 1
   }
   acc
 }
 
 fn byte_offset_of(source: String, needle: String) -> Int {
-  String::index_of(source, needle)
+  String::index_of(source, needle = needle)
 }
 
 /// Byte offset where 1-based `line` starts.
@@ -70,7 +70,7 @@ fn line_start_offset(source: String, line: Int) -> Int {
   let mut seen = 1
   let n = String::length(source)
   while seen < line && off < n {
-    if String::char_code_at(source, off) == 10 {
+    if String::char_code_at(source, at = off) == 10 {
       seen = seen + 1
     } else {
       ()
@@ -82,20 +82,20 @@ fn line_start_offset(source: String, line: Int) -> Int {
 
 /// The `L`, `C` and `E` of a `line L:C-E:` diagnostic prefix, or `(-1, -1, -1)`
 /// when the diagnostic carries no position at all (#2050's synthetic case).
-fn diag_range(message: String) -> (Int, Int, Int) {
-  let at = String::index_of(message, "line ")
+fn diag_range(_ message: String) -> (Int, Int, Int) {
+  let at = String::index_of(message, needle = "line ")
   if at < 0 {
     (0 - 1, 0 - 1, 0 - 1)
   } else {
-    let rest = String::substring(message, at + 5, String::length(message))
-    let colon = String::index_of(rest, ":")
-    let line = parse_int(String::substring(rest, 0, colon))
-    let after = String::substring(rest, colon + 1, String::length(rest))
-    let dash = String::index_of(after, "-")
-    let start_col = parse_int(String::substring(after, 0, dash))
-    let tail = String::substring(after, dash + 1, String::length(after))
-    let end_colon = String::index_of(tail, ":")
-    let end_col = parse_int(String::substring(tail, 0, end_colon))
+    let rest = String::substring(message, start = at + 5, end = String::length(message))
+    let colon = String::index_of(rest, needle = ":")
+    let line = parse_int(String::substring(rest, start = 0, end = colon))
+    let after = String::substring(rest, start = colon + 1, end = String::length(rest))
+    let dash = String::index_of(after, needle = "-")
+    let start_col = parse_int(String::substring(after, start = 0, end = dash))
+    let tail = String::substring(after, start = dash + 1, end = String::length(after))
+    let end_colon = String::index_of(tail, needle = ":")
+    let end_col = parse_int(String::substring(tail, start = 0, end = end_colon))
     (line, start_col, end_col)
   }
 }
@@ -103,8 +103,8 @@ fn diag_range(message: String) -> (Int, Int, Int) {
 /// The source text a `line L:C-E:` diagnostic's range names.
 fn diag_slice(src: String, message: String) -> String {
   let (line, start_col, end_col) = diag_range(message)
-  let base = line_start_offset(src, line)
-  String::substring(src, base + start_col - 1, base + end_col - 1)
+  let base = line_start_offset(source = src, line = line)
+  String::substring(src, start = base + start_col - 1, end = base + end_col - 1)
 }
 
 //# Tests
@@ -115,14 +115,14 @@ test "symbols offsets are byte offsets, and slicing one returns the name" {
   let mut found = false
   let mut i = 0
   while i < Array::length(spans) {
-    let (name, _kind, start, end) = Array::get(spans, i)
+    let (name, _kind, start, end) = Array::get(spans, at = i)
     // The point of the whole file: the reported range has to slice back to
     // the reported name. A codepoint offset would slice three bytes of the
     // comment's UTF-8 tail instead.
-    assert_eq(String::substring(src, start, end), name)
+    assert_eq(String::substring(src, start = start, end = end), name)
     if name == "add" {
       found = true
-      assert_eq(start, byte_offset_of(src, "add"))
+      assert_eq(start, byte_offset_of(source = src, needle = "add"))
     } else {
       ()
     }
@@ -134,12 +134,12 @@ test "symbols offsets are byte offsets, and slicing one returns the name" {
 test "binding-at takes a 1-based byte column and answers in byte offsets" {
   let src = "// 日本語\nfn main allows Console {\n  let total = 1\n  println(\"\\{total}\")\n}\n"
   // `total` on line 3, byte column 7 (1-based): `  let total`.
-  let hits = binding_occurrences(src, 3, 7)
+  let hits = binding_occurrences(source = src, line = 3, col = 7)
   assert(Array::length(hits) == 2)
   let mut i = 0
   while i < Array::length(hits) {
-    let (start, end) = Array::get(hits, i)
-    assert_eq(String::substring(src, start, end), "total")
+    let (start, end) = Array::get(hits, at = i)
+    assert_eq(String::substring(src, start = start, end = end), "total")
     i = i + 1
   }
 }
@@ -156,17 +156,17 @@ test "a codepoint column addresses a different position, silently" {
   let src = "fn main allows Console {\n  let s = \"こん\"; let v = 1\n  println(\"\\{s}\\{v}\")\n}\n"
   let byte_col = 25
   let codepoint_col = 21
-  let by_bytes = binding_occurrences(src, 2, byte_col)
+  let by_bytes = binding_occurrences(source = src, line = 2, col = byte_col)
   assert(Array::length(by_bytes) == 2)
-  let (start, end) = Array::get(by_bytes, 0)
-  assert_eq(String::substring(src, start, end), "v")
+  let (start, end) = Array::get(by_bytes, at = 0)
+  assert_eq(String::substring(src, start = start, end = end), "v")
   // Not "it errors" and not "it returns the same answer" -- it answers about
   // byte 20, which is inside `let`. Whatever that resolves to, it is not the
   // `v` binding the caller asked about.
-  let by_codepoints = binding_occurrences(src, 2, codepoint_col)
+  let by_codepoints = binding_occurrences(source = src, line = 2, col = codepoint_col)
   if Array::length(by_codepoints) > 0 {
-    let (o_start, o_end) = Array::get(by_codepoints, 0)
-    assert(String::substring(src, o_start, o_end) != "v")
+    let (o_start, o_end) = Array::get(by_codepoints, at = 0)
+    assert(String::substring(src, start = o_start, end = o_end) != "v")
   } else {
     ()
   }
@@ -177,47 +177,47 @@ test "a literal binding mismatch slices the string token, not 0:0 (#2831)" {
   let src = "let a: Int = \"not an int\"\n"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) > 0)
-  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  let (line, start_col, end_col) = diag_range(Array::get(diags, at = 0))
   assert_eq(line, 1)
-  let base = line_start_offset(src, line)
-  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "\"not an int\"")
+  let base = line_start_offset(source = src, line = line)
+  assert_eq(String::substring(src, start = base + start_col - 1, end = base + end_col - 1), "\"not an int\"")
 }
 
 test "a parenthesized literal mismatch still slices the string (#2831)" {
   let src = "fn main() -> Int {\n  let a: Int = (\"not an int\")\n  0\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) > 0)
-  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  let (line, start_col, end_col) = diag_range(Array::get(diags, at = 0))
   assert_eq(line, 2)
-  let base = line_start_offset(src, line)
-  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "\"not an int\"")
+  let base = line_start_offset(source = src, line = line)
+  assert_eq(String::substring(src, start = base + start_col - 1, end = base + end_col - 1), "\"not an int\"")
 }
 
 test "a local literal mismatch slices the string, including a multibyte prefix (#2831)" {
   let src = "// 日本語\nfn main() -> Int {\n  let a: Int = \"not an int\"\n  0\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) > 0)
-  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  let (line, start_col, end_col) = diag_range(Array::get(diags, at = 0))
   assert_eq(line, 3)
-  let base = line_start_offset(src, line)
-  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "\"not an int\"")
+  let base = line_start_offset(source = src, line = line)
+  assert_eq(String::substring(src, start = base + start_col - 1, end = base + end_col - 1), "\"not an int\"")
 }
 
 test "an if-branch string mismatch slices the string, not 0:0 (#2831)" {
   let src = "// 日本語\nfn main() -> Int {\n  if true { 1 } else { \"x\" }\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) > 0)
-  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  let (line, start_col, end_col) = diag_range(Array::get(diags, at = 0))
   assert_eq(line, 3)
-  let base = line_start_offset(src, line)
-  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "\"x\"")
+  let base = line_start_offset(source = src, line = line)
+  assert_eq(String::substring(src, start = base + start_col - 1, end = base + end_col - 1), "\"x\"")
 }
 
 test "a bool/int mismatch still locates and does not hang (#2831)" {
   let src = "let a: Int = true\n"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) > 0)
-  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  let (line, start_col, end_col) = diag_range(Array::get(diags, at = 0))
   assert(line >= 1)
   assert(start_col >= 1)
   assert(end_col > start_col)
@@ -227,20 +227,20 @@ test "a text diagnostic's line and columns are 1-based bytes, half-open" {
   let src = "fn main allows Console {\n  let s = \"こん\"; let bad = quux\n  println(\"\\{s}\")\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) == 1)
-  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  let (line, start_col, end_col) = diag_range(Array::get(diags, at = 0))
   assert_eq(line, 2)
-  let base = line_start_offset(src, line)
-  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "quux")
+  let base = line_start_offset(source = src, line = line)
+  assert_eq(String::substring(src, start = base + start_col - 1, end = base + end_col - 1), "quux")
 }
 
 test "CRLF does not shift a column, because \\r is line content" {
   let src = "fn main allows Console {\r\n  let bad = quux\r\n}\r\n"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) == 1)
-  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  let (line, start_col, end_col) = diag_range(Array::get(diags, at = 0))
   assert_eq(line, 2)
-  let base = line_start_offset(src, line)
-  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "quux")
+  let base = line_start_offset(source = src, line = line)
+  assert_eq(String::substring(src, start = base + start_col - 1, end = base + end_col - 1), "quux")
 }
 
 test "a binder inside an interpolation still slices to the binder" {
@@ -248,12 +248,12 @@ test "a binder inside an interpolation still slices to the binder" {
   // is the case most likely to be recorded against the enclosing literal
   // rather than the name.
   let src = "fn main allows Console {\n  let value = 2\n  println(\"n=\\{value}\")\n}\n"
-  let hits = binding_occurrences(src, 2, 7)
+  let hits = binding_occurrences(source = src, line = 2, col = 7)
   assert(Array::length(hits) == 2)
-  let (_s0, _e0) = Array::get(hits, 0)
-  let (s1, e1) = Array::get(hits, 1)
-  assert_eq(String::substring(src, s1, e1), "value")
-  assert(s1 > String::index_of(src, "println"))
+  let (_s0, _e0) = Array::get(hits, at = 0)
+  let (s1, e1) = Array::get(hits, at = 1)
+  assert_eq(String::substring(src, start = s1, end = e1), "value")
+  assert(s1 > String::index_of(src, needle = "println"))
 }
 
 test "escapes offsets slice the captured binding's name" {
@@ -262,8 +262,8 @@ test "escapes offsets slice the captured binding's name" {
   assert(Array::length(spans) > 0)
   let mut i = 0
   while i < Array::length(spans) {
-    let (name, start, end) = Array::get(spans, i)
-    assert_eq(String::substring(src, start, end), name)
+    let (name, start, end) = Array::get(spans, at = i)
+    assert_eq(String::substring(src, start = start, end = end), name)
     i = i + 1
   }
 }
@@ -271,7 +271,7 @@ test "escapes offsets slice the captured binding's name" {
 test "type-at reads the same 1-based byte column the other queries do" {
   let src = "// 日本語\nfn add(a: Int, b: Int) -> Int {\n  a + b\n}\n"
   // `add` on line 2, byte column 4.
-  assert_eq(type_at_source(src, 2, 4), "(Int, Int) -> Int")
+  assert_eq(type_at_source(source = src, line = 2, col = 4), "(Int, Int) -> Int")
 }
 
 test "a tuple or array binding initializer slices the literal, not the binder (#3305)" {
@@ -279,12 +279,12 @@ test "a tuple or array binding initializer slices the literal, not the binder (#
   // `t` / `xs` as a point (`line 2:7`). The locator reads the literal's
   // brackets back from the source tokens.
   let tuple = "fn main() -> Int {\n  let t: (Int, Int) = (\"a\", 1)\n  0\n}\n"
-  assert_eq(diag_slice(tuple, Array::get(collect_all_diagnostics(tuple), 0)), "(\"a\", 1)")
+  assert_eq(diag_slice(src = tuple, message = Array::get(collect_all_diagnostics(tuple), at = 0)), "(\"a\", 1)")
   let array = "fn main() -> Int {\n  let xs: Array[Int] = [\"a\", \"b\"]\n  0\n}\n"
-  assert_eq(diag_slice(array, Array::get(collect_all_diagnostics(array), 0)), "[\"a\", \"b\"]")
+  assert_eq(diag_slice(src = array, message = Array::get(collect_all_diagnostics(array), at = 0)), "[\"a\", \"b\"]")
   // No element has an offset at all here; the range is still the literal.
   let ints = "fn main() -> Int {\n  let xs: Array[String] = [1, 2]\n  0\n}\n"
-  assert_eq(diag_slice(ints, Array::get(collect_all_diagnostics(ints), 0)), "[1, 2]")
+  assert_eq(diag_slice(src = ints, message = Array::get(collect_all_diagnostics(ints), at = 0)), "[1, 2]")
 }
 
 test "a literal that is only an operand keeps the binder anchor (#3305)" {
@@ -293,7 +293,7 @@ test "a literal that is only an operand keeps the binder anchor (#3305)" {
   let src = "fn main() -> Int {\n  let t: Int = (1, 2) == (1, 2)\n  0\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) > 0)
-  assert(String::contains(Array::get(diags, 0), "line 2:7: "))
+  assert(String::contains(Array::get(diags, at = 0), needle = "line 2:7: "))
 }
 
 test "a name initializer is not read on into the next statement (#3305)" {
@@ -302,18 +302,18 @@ test "a name initializer is not read on into the next statement (#3305)" {
   let src = "fn main() -> Int {\n  let x = \"s\"\n  let a: Int = x\n  let b = 2\n  b\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) > 0)
-  assert(String::contains(Array::get(diags, 0), "line 3:16"))
+  assert(String::contains(Array::get(diags, at = 0), needle = "line 3:16"))
 }
 
 test "a tuple or array argument slices the argument, not the callee (#3305)" {
   // These anchored the callee `f` (`line 3:3`). A located element inside the
   // literal is widened to the literal's own brackets.
   let array = "fn f(xs: Array[Int]) -> Int { 0 }\nfn main() -> Int {\n  f([\"a\"])\n}\n"
-  assert_eq(diag_slice(array, Array::get(collect_all_diagnostics(array), 0)), "[\"a\"]")
+  assert_eq(diag_slice(src = array, message = Array::get(collect_all_diagnostics(array), at = 0)), "[\"a\"]")
   let tuple = "fn f(t: (Int, Int)) -> Int { 0 }\nfn main() -> Int {\n  f((\"a\", 1))\n}\n"
-  assert_eq(diag_slice(tuple, Array::get(collect_all_diagnostics(tuple), 0)), "(\"a\", 1)")
+  assert_eq(diag_slice(src = tuple, message = Array::get(collect_all_diagnostics(tuple), at = 0)), "(\"a\", 1)")
   let nested = "fn f(ps: Array[(Int, Int)]) -> Int { 0 }\nfn main() -> Int {\n  f([(1, \"a\")])\n}\n"
-  assert_eq(diag_slice(nested, Array::get(collect_all_diagnostics(nested), 0)), "[(1, \"a\")]")
+  assert_eq(diag_slice(src = nested, message = Array::get(collect_all_diagnostics(nested), at = 0)), "[(1, \"a\")]")
 }
 
 test "each repeated unknown assignment target is located at its own token (#3248)" {
@@ -324,20 +324,20 @@ test "each repeated unknown assignment target is located at its own token (#3248
   let src = "fn first() -> Int {\n  missing = 1\n  0\n}\nfn second() -> Int {\n  r#missing += 2\n  0\n}\n"
   let diags = collect_all_diagnostics(src)
   assert_eq(Array::length(diags), 2)
-  let (first_line, _, _) = diag_range(Array::get(diags, 0))
-  let (second_line, _, _) = diag_range(Array::get(diags, 1))
+  let (first_line, _, _) = diag_range(Array::get(diags, at = 0))
+  let (second_line, _, _) = diag_range(Array::get(diags, at = 1))
   assert_eq(first_line, 2)
   assert_eq(second_line, 6)
-  assert_eq(diag_slice(src, Array::get(diags, 0)), "missing")
-  assert_eq(diag_slice(src, Array::get(diags, 1)), "r#missing")
+  assert_eq(diag_slice(src = src, message = Array::get(diags, at = 0)), "missing")
+  assert_eq(diag_slice(src = src, message = Array::get(diags, at = 1)), "r#missing")
 }
 
 test "an assignment target with no recorded token stays unlocated (#3248)" {
   // A synthesized assignment carries the bare marker. Even with exactly one
   // matching assignment in the text, nothing is inferred from it.
   let src = "fn first() -> Int {\n  missing = 1\n  0\n}\n"
-  assert_eq(locate_type_error(src, "unknown name: missing [@assign-target]"), "unknown name: missing")
+  assert_eq(locate_type_error(source = src, msg = "unknown name: missing [@assign-target]"), "unknown name: missing")
   // A recorded offset that does not start the named token is not trusted.
-  assert_eq(locate_type_error(src, "unknown name: missing [@assign-target=3]"), "unknown name: missing")
-  assert(String::starts_with(locate_type_error(src, "unknown name: missing [@assign-target=22]"), "line 2:3-10: "))
+  assert_eq(locate_type_error(source = src, msg = "unknown name: missing [@assign-target=3]"), "unknown name: missing")
+  assert(String::starts_with(locate_type_error(source = src, msg = "unknown name: missing [@assign-target=22]"), prefix = "line 2:3-10: "))
 }

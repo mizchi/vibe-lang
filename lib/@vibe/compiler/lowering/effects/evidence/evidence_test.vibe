@@ -7,11 +7,11 @@ import @vibe/compiler/lowering/effects/evidence {
 
 test "the evidence census distinguishes a binding from a reference" {
   let stmts = [SExpr(ELet("bound", EInt(1), EIdent("used", 8), 0))]
-  inspect(edp_bind_census(stmts, ["bound", "used", "bound"]), content = "[true, false, true]")
-  inspect(evidence_dict_pass(stmts, ""), content = "[]")
+  inspect(edp_bind_census(stmts = stmts, names = ["bound", "used", "bound"]), content = "[true, false, true]")
+  inspect(evidence_dict_pass(stmts = stmts, entry_name = ""), content = "[]")
 }
 
-fn inert_row_program(side_row: String) -> Array[Stmt] {
+fn inert_row_program(_ side_row: String) -> Array[Stmt] {
   let ask = ECall(EIdent("ask", 0), [], 0, [])
   let side_body = if side_row == "Ask" {
     ask
@@ -36,8 +36,8 @@ fn inert_row_program(side_row: String) -> Array[Stmt] {
 /// `edp_callee_first_order` keys on (#2065). Under a row VARIABLE that
 /// parameter can carry the handled effect into the callee, so the row stays
 /// opaque here where the first-order shape above is now admitted.
-fn ho_row_program(side_row: String) -> Array[Stmt] {
-  ho_row_program_with(side_row, EFn([], [], [("y", Some(TyName("Int")))], Some(TyName("Int")), None, EIdent("y", 0)))
+fn ho_row_program(_ side_row: String) -> Array[Stmt] {
+  ho_row_program_with(side_row = side_row, g_arg = EFn([], [], [("y", Some(TyName("Int")))], Some(TyName("Int")), None, EIdent("y", 0)))
 }
 
 /// `ho_row_program` with `g_arg` in the function-typed position.
@@ -68,14 +68,14 @@ fn ho_row_program_with(side_row: String, g_arg: Expr) -> Array[Stmt] {
   ]
 }
 
-fn lowered_side_arity(side_row: String) -> Int {
+fn lowered_side_arity(_ side_row: String) -> Int {
   let stmts = inert_row_program(side_row)
-  let errors = evidence_dict_pass(stmts, "main")
+  let errors = evidence_dict_pass(stmts = stmts, entry_name = "main")
   assert(Array::length(errors) == 0)
   let mut arity = -1
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, "side", _, EFn(_, _, params, _, _, _)) => arity = Array::length(params),
       _ => ()
     }
@@ -104,13 +104,13 @@ test "inert row membership does not suppress a later program's required dictiona
 /// for a port that admitted everything; only the higher-order half, for one
 /// that admitted nothing.
 test "a first-order row-variable callee is admitted" {
-  inspect(Array::length(evidence_dict_pass(inert_row_program("e"), "main")) == 0, content = "true")
+  inspect(Array::length(evidence_dict_pass(stmts = inert_row_program("e"), entry_name = "main")) == 0, content = "true")
 }
 
 // #2065 wall 1: a HIGHER-ORDER row-variable callee is admitted exactly when
 // every function-typed argument is a literal that cannot perform the effect.
 test "a higher-order row-variable callee is admitted with an inert literal argument" {
-  inspect(Array::length(evidence_dict_pass(ho_row_program("e"), "main")) == 0, content = "true")
+  inspect(Array::length(evidence_dict_pass(stmts = ho_row_program("e"), entry_name = "main")) == 0, content = "true")
 }
 
 /// Codex on #3059: a literal that calls a function it CAPTURES -- here the
@@ -122,7 +122,7 @@ fn captured_call_program() -> Array[Stmt] {
 }
 
 /// `captured_call_program` with the captured parameter spelled `h`.
-fn captured_call_program_named(h: String) -> Array[Stmt] {
+fn captured_call_program_named(_ h: String) -> Array[Stmt] {
   [
     SEffectDef(false, "Ask", [], [("Get", [], TyName("Int"))]),
     SLet(false, false, "ask_plus", None, EFn([], [], [
@@ -152,38 +152,38 @@ fn captured_call_program_named(h: String) -> Array[Stmt] {
 }
 
 test "a literal calling a captured function stays opaque" {
-  inspect(Array::length(evidence_dict_pass(captured_call_program(), "main")) > 0, content = "true")
+  inspect(Array::length(evidence_dict_pass(stmts = captured_call_program(), entry_name = "main")) > 0, content = "true")
 }
 
 test "a captured function spelled like a pure builtin stays opaque" {
   // The spelling names the builtin only when no binder has it (Codex on
   // #3059).
-  inspect(Array::length(evidence_dict_pass(captured_call_program_named("string_char_at"), "main")) > 0, content = "true")
+  inspect(Array::length(evidence_dict_pass(stmts = captured_call_program_named("string_char_at"), entry_name = "main")) > 0, content = "true")
 }
 
 test "a higher-order row-variable callee stays opaque when the argument could perform" {
   // A NAME in the function-typed position: its row is not readable here.
-  let named = ho_row_program_with("e", EIdent("ask_plus", 0))
+  let named = ho_row_program_with(side_row = "e", g_arg = EIdent("ask_plus", 0))
   // A literal whose body performs the handled effect.
-  let performing = ho_row_program_with("e", EFn([], [], [
+  let performing = ho_row_program_with(side_row = "e", g_arg = EFn([], [], [
     ("y", Some(TyName("Int")))
   ], Some(TyName("Int")), None, ECall(EIdent("perform", 0), [
     ECall(EIdent("Ask::Get", 0), [], 0, [])
   ], 0, [])))
   // A literal that calls a function needing the handled effect.
-  let calling = ho_row_program_with("e", EFn([], [], [
+  let calling = ho_row_program_with(side_row = "e", g_arg = EFn([], [], [
     ("y", Some(TyName("Int")))
   ], Some(TyName("Int")), None, ECall(EIdent("ask_plus", 0), [EIdent("y", 0)], 0, [
   ])))
   // A literal whose declared row names the handled effect.
-  let declared = ho_row_program_with("e", EFn([], [], [
+  let declared = ho_row_program_with(side_row = "e", g_arg = EFn([], [], [
     ("y", Some(TyName("Int")))
   ], Some(TyName("Int")), Some("Ask"), EIdent("y", 0)))
   inspect([
-    Array::length(evidence_dict_pass(named, "main")) > 0,
-    Array::length(evidence_dict_pass(performing, "main")) > 0,
-    Array::length(evidence_dict_pass(calling, "main")) > 0,
-    Array::length(evidence_dict_pass(declared, "main")) > 0
+    Array::length(evidence_dict_pass(stmts = named, entry_name = "main")) > 0,
+    Array::length(evidence_dict_pass(stmts = performing, entry_name = "main")) > 0,
+    Array::length(evidence_dict_pass(stmts = calling, entry_name = "main")) > 0,
+    Array::length(evidence_dict_pass(stmts = declared, entry_name = "main")) > 0
   ], content = "[true, true, true, true]")
 }
 
@@ -204,13 +204,13 @@ test "a higher-order row-variable callee stays opaque when the argument could pe
 /// Before #2500 only a body that WAS the handle qualified, which is why
 /// `let r = handle {..}; r` behaved differently from the same code written as
 /// a named `fn`.
-fn sd_drops(body: Expr) -> Bool {
+fn sd_drops(_ body: Expr) -> Bool {
   let stmts = [
     SEffectDef(false, "Emit", [], [("Emit", [TyName("Int")], TyName("Unit"))]),
     SLet(false, false, "selfd", None, EFn([], [], [], Some(TyName("Int")), Some("Emit"), body))
   ]
   let fn_defs = edp_collect_fn_defs(stmts)
-  Array::length(edp_drop_self_discharging_needing(["selfd"], stmts, fn_defs, "Emit", [
+  Array::length(edp_drop_self_discharging_needing(needing = ["selfd"], stmts = stmts, fn_defs = fn_defs, ename = "Emit", base_inert = [
   ])) == 0
 }
 
@@ -219,7 +219,7 @@ fn sd_perform(op: String, arg: Expr) -> Expr {
 }
 
 fn sd_emit_handle() -> Expr {
-  EHandle(sd_perform("Emit::Emit", EInt(10)), [
+  EHandle(sd_perform(op = "Emit::Emit", arg = EInt(10)), [
     (PCtor("Emit::Emit", [PBind("_v")]), ECall(EIdent("resume", 0), [EInt(0)], 0, [
     ]))
   ])
@@ -251,10 +251,10 @@ test "#2500: a handle for another effect is transparent to this one" {
 /// arm of a foreign handle runs outside its own handle's coverage, so a
 /// perform there escapes the same way. Both keep the function in `needing`.
 test "#2500: a perform outside the handle keeps the function needing" {
-  inspect(sd_drops(ELet("x", sd_perform("Emit::Emit", EInt(1)), sd_emit_handle(), 0)), content = "false")
-  inspect(sd_drops(ESeq(sd_perform("Emit::Emit", EInt(1)), sd_emit_handle())), content = "false")
+  inspect(sd_drops(ELet("x", sd_perform(op = "Emit::Emit", arg = EInt(1)), sd_emit_handle(), 0)), content = "false")
+  inspect(sd_drops(ESeq(sd_perform(op = "Emit::Emit", arg = EInt(1)), sd_emit_handle())), content = "false")
   let leaky = EHandle(sd_emit_handle(), [
-    (PCtor("Other::Op", []), sd_perform("Emit::Emit", EInt(2)))
+    (PCtor("Other::Op", []), sd_perform(op = "Emit::Emit", arg = EInt(2)))
   ])
   inspect(sd_drops(leaky), content = "false")
 }
@@ -276,13 +276,13 @@ fn captured_shadowing_pure_program() -> Array[Stmt] {
     SLet(false, false, "h", None, EFn([], [], [("x", Some(TyName("Int")))], Some(TyName("Int")), None, EIdent("x", 0)))
   ]
   for stmt in captured_call_program() {
-    Array::push(out, stmt)
+    Array::push(out, value = stmt)
   }
   out
 }
 
 test "a captured function spelled like a pure top-level one stays opaque" {
-  inspect(Array::length(evidence_dict_pass(captured_shadowing_pure_program(), "main")) > 0, content = "true")
+  inspect(Array::length(evidence_dict_pass(stmts = captured_shadowing_pure_program(), entry_name = "main")) > 0, content = "true")
 }
 
 /// Codex on #3059: the same shadow through a LOOP-STATE binder,
@@ -321,10 +321,10 @@ fn loop_shadowing_pure_program() -> Array[Stmt] {
 }
 
 test "a loop-state binder spelled like a pure top-level function stays opaque" {
-  inspect(Array::length(evidence_dict_pass(loop_shadowing_pure_program(), "main")) > 0, content = "true")
+  inspect(Array::length(evidence_dict_pass(stmts = loop_shadowing_pure_program(), entry_name = "main")) > 0, content = "true")
 }
 
-fn opaque_grouped_handler(exception_first: Bool) -> Array[Stmt] {
+fn opaque_grouped_handler(_ exception_first: Bool) -> Array[Stmt] {
   let own = (PCtor("Ask::Get", []), ECall(EIdent("resume", -1), [EInt(7)], -1, [
   ]))
   let caught = (PCtor("Exception[String]::Throw", [PBind("message")]), EInt(-1))
@@ -345,15 +345,15 @@ fn opaque_grouped_handler(exception_first: Bool) -> Array[Stmt] {
 }
 
 test "survivor detection sees a user effect after Exception arms" {
-  let errors = evidence_dict_pass(opaque_grouped_handler(true), "main")
+  let errors = evidence_dict_pass(stmts = opaque_grouped_handler(true), entry_name = "main")
   assert(Array::length(errors) > 0)
-  assert(String::contains(Array::get(errors, 0), "Ask"))
-  assert(String::contains(Array::get(errors, 0), "local"))
+  assert(String::contains(Array::get(errors, at = 0), needle = "Ask"))
+  assert(String::contains(Array::get(errors, at = 0), needle = "local"))
 }
 
 test "surviving grouped handler refusals do not depend on Exception arm order" {
-  let first = evidence_dict_pass(opaque_grouped_handler(true), "main")
-  let last = evidence_dict_pass(opaque_grouped_handler(false), "main")
+  let first = evidence_dict_pass(stmts = opaque_grouped_handler(true), entry_name = "main")
+  let last = evidence_dict_pass(stmts = opaque_grouped_handler(false), entry_name = "main")
   assert(Array::length(first) > 0)
   assert(Array::length(last) > 0)
   inspect(first, content = __to_string(last))
@@ -365,9 +365,9 @@ test "handle census visits independent handlers in every arm" {
   let b = (PCtor("B::Op", []), inner)
   for arms in [[a, b], [b, a], [(PCtor("A::Op", []), inner)]] {
     let stmts = [SExpr(EHandle(EInt(0), arms))]
-    assert(Array::length(edp_collect_handle_sites(stmts, "A")) == 2)
+    assert(Array::length(edp_collect_handle_sites(stmts = stmts, ename = "A")) == 2)
   }
-  assert(Array::length(edp_collect_handle_sites([SExpr(EHandle(EInt(0), [b]))], "A")) == 1)
+  assert(Array::length(edp_collect_handle_sites(stmts = [SExpr(EHandle(EInt(0), [b]))], ename = "A")) == 1)
 }
 
 test "ineligible nested sibling handler prevents partial evidence arity changes" {
@@ -393,9 +393,9 @@ test "ineligible nested sibling handler prevents partial evidence arity changes"
       (PCtor("A::Op", []), ECall(EIdent("resume", -1), [EInt(100)], -1, []))
     ])))
   ]
-  let errors = evidence_dict_pass(stmts, "main")
+  let errors = evidence_dict_pass(stmts = stmts, entry_name = "main")
   assert(Array::length(errors) > 0)
-  match Array::get(stmts, 2) {
+  match Array::get(stmts, at = 2) {
     SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => assert(Array::length(params) == 0),
     _ => assert(false)
   }

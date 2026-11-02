@@ -68,7 +68,7 @@ struct AllocWalkContext {
   kinds: Array[String]
 }
 
-fn alloc_annotation_kind(annotation: Option[TypeExpr]) -> String {
+fn alloc_annotation_kind(_ annotation: Option[TypeExpr]) -> String {
   match annotation {
     Some(TyName(name)) => if name == "Int" || name == "Double" || name == "String" || name == "Bool" {
       name
@@ -82,15 +82,15 @@ fn alloc_annotation_kind(annotation: Option[TypeExpr]) -> String {
 fn alloc_add_params(names: Array[String], kinds: Array[String], params: Array[(String, Option[TypeExpr])]) -> Unit {
   let mut i = 0
   while i < Array::length(params) {
-    let (raw_name, annotation) = Array::get(params, i)
+    let (raw_name, annotation) = Array::get(params, at = i)
     let len = String::length(raw_name)
-    let name = if len > 0 && (String::char_code_at(raw_name, len - 1) == 126 || String::char_code_at(raw_name, len - 1) == 63) {
-      String::substring(raw_name, 0, len - 1)
+    let name = if len > 0 && (String::char_code_at(raw_name, at = len - 1) == 126 || String::char_code_at(raw_name, at = len - 1) == 63) {
+      String::substring(raw_name, start = 0, end = len - 1)
     } else {
       raw_name
     }
-    Array::push(names, name)
-    Array::push(kinds, alloc_annotation_kind(annotation))
+    Array::push(names, value = name)
+    Array::push(kinds, value = alloc_annotation_kind(annotation))
     i = i + 1
   }
 }
@@ -98,7 +98,7 @@ fn alloc_add_params(names: Array[String], kinds: Array[String], params: Array[(S
 fn alloc_context(ctors: Array[String], global_index: Array[String], params: Array[(String, Option[TypeExpr])]) -> AllocWalkContext {
   let names = alloc_empty_strings()
   let kinds = alloc_empty_strings()
-  alloc_add_params(names, kinds, params)
+  alloc_add_params(names = names, kinds = kinds, params = params)
   AllocWalkContext::{
     ctors: ctors,
     global_index: global_index,
@@ -109,9 +109,9 @@ fn alloc_context(ctors: Array[String], global_index: Array[String], params: Arra
 }
 
 fn alloc_context_for_lambda(ctx: AllocWalkContext, params: Array[(String, Option[TypeExpr])]) -> AllocWalkContext {
-  let names = Array::slice(ctx.names, 0, Array::length(ctx.names))
-  let kinds = Array::slice(ctx.kinds, 0, Array::length(ctx.kinds))
-  alloc_add_params(names, kinds, params)
+  let names = Array::slice(ctx.names, start = 0, end = Array::length(ctx.names))
+  let kinds = Array::slice(ctx.kinds, start = 0, end = Array::length(ctx.kinds))
+  alloc_add_params(names = names, kinds = kinds, params = params)
   AllocWalkContext::{
     ctors: ctx.ctors,
     global_index: ctx.global_index,
@@ -125,8 +125,8 @@ fn alloc_name_kind(ctx: AllocWalkContext, name: String) -> String {
   let mut i = Array::length(ctx.names) - 1
   let mut found = ""
   while i >= 0 && found == "" {
-    if Array::get(ctx.names, i) == name {
-      found = Array::get(ctx.kinds, i)
+    if Array::get(ctx.names, at = i) == name {
+      found = Array::get(ctx.kinds, at = i)
     } else {
       ()
     }
@@ -141,26 +141,26 @@ fn alloc_expr_kind(expr: Expr, ctx: AllocWalkContext) -> String {
     EFloat(_) => "Double",
     EString(_, _) => "String",
     EBool(_) => "Bool",
-    EIdent(name, _) => alloc_name_kind(ctx, name),
+    EIdent(name, _) => alloc_name_kind(ctx = ctx, name = name),
     EBinOp(op, lhs, _, _) => if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" || op == "&&" || op == "||" {
       "Bool"
     } else {
-      alloc_expr_kind(lhs, ctx)
+      alloc_expr_kind(expr = lhs, ctx = ctx)
     },
     EUnaryOp(op, operand) => if op == "!" {
       "Bool"
     } else {
-      alloc_expr_kind(operand, ctx)
+      alloc_expr_kind(expr = operand, ctx = ctx)
     },
     _ => ""
   }
 }
 
 fn alloc_context_with_binding(ctx: AllocWalkContext, name: String, value: Expr) -> AllocWalkContext {
-  let names = Array::slice(ctx.names, 0, Array::length(ctx.names))
-  let kinds = Array::slice(ctx.kinds, 0, Array::length(ctx.kinds))
-  Array::push(names, name)
-  Array::push(kinds, alloc_expr_kind(value, ctx))
+  let names = Array::slice(ctx.names, start = 0, end = Array::length(ctx.names))
+  let kinds = Array::slice(ctx.kinds, start = 0, end = Array::length(ctx.kinds))
+  Array::push(names, value = name)
+  Array::push(kinds, value = alloc_expr_kind(expr = value, ctx = ctx))
   AllocWalkContext::{
     ctors: ctx.ctors,
     global_index: ctx.global_index,
@@ -171,17 +171,17 @@ fn alloc_context_with_binding(ctx: AllocWalkContext, name: String, value: Expr) 
 }
 
 fn alloc_context_with_name(ctx: AllocWalkContext, name: String) -> AllocWalkContext {
-  alloc_context_with_binding(ctx, name, EUnit)
+  alloc_context_with_binding(ctx = ctx, name = name, value = EUnit)
 }
 
 fn alloc_context_with_pattern(ctx: AllocWalkContext, pat: Pat) -> AllocWalkContext {
   match pat {
-    PBind(name) => alloc_context_with_name(ctx, name),
+    PBind(name) => alloc_context_with_name(ctx = ctx, name = name),
     PCtor(_, args) => {
       let mut out = ctx
       let mut i = 0
       while i < Array::length(args) {
-        out = alloc_context_with_pattern(out, Array::get(args, i))
+        out = alloc_context_with_pattern(ctx = out, pat = Array::get(args, at = i))
         i = i + 1
       }
       out
@@ -190,18 +190,18 @@ fn alloc_context_with_pattern(ctx: AllocWalkContext, pat: Pat) -> AllocWalkConte
       let mut out = ctx
       let mut i = 0
       while i < Array::length(items) {
-        out = alloc_context_with_pattern(out, Array::get(items, i))
+        out = alloc_context_with_pattern(ctx = out, pat = Array::get(items, at = i))
         i = i + 1
       }
       out
     },
-    POr(left, _) => alloc_context_with_pattern(ctx, left),
+    POr(left, _) => alloc_context_with_pattern(ctx = ctx, pat = left),
     PStruct(_, fields) => {
       let mut out = ctx
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, field_pat) = Array::get(fields, i)
-        out = alloc_context_with_pattern(out, field_pat)
+        let (_, field_pat) = Array::get(fields, at = i)
+        out = alloc_context_with_pattern(ctx = out, pat = field_pat)
         i = i + 1
       }
       out
@@ -214,7 +214,7 @@ fn alloc_contains_name(names: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(names) {
-    if Array::get(names, i) == name {
+    if Array::get(names, at = i) == name {
       found = true
     } else {
       i = i + 1
@@ -223,25 +223,25 @@ fn alloc_contains_name(names: Array[String], name: String) -> Bool {
   found
 }
 
-fn alloc_hex_nibble(n: Int) -> String {
-  String::substring("0123456789ABCDEF", n, n + 1)
+fn alloc_hex_nibble(_ n: Int) -> String {
+  String::substring("0123456789ABCDEF", start = n, end = n + 1)
 }
 
 /// Encode an owner as one whitespace-free output field. Test and bench names
 /// are arbitrary string literals, so they may contain spaces, newlines, tabs,
 /// or `%` itself. Percent-encoding those bytes keeps `FN KIND OFFSET` exactly
 /// three fields and remains reversible.
-fn alloc_encode_owner(name: String) -> String {
+fn alloc_encode_owner(_ name: String) -> String {
   let out = StringBuilder::new()
   let mut i = 0
   while i < String::length(name) {
-    let c = String::char_code_at(name, i)
+    let c = String::char_code_at(name, at = i)
     if c <= 32 || c == 37 || c == 127 {
-      StringBuilder::push(out, "%")
-      StringBuilder::push(out, alloc_hex_nibble((c / 16) % 16))
-      StringBuilder::push(out, alloc_hex_nibble(c % 16))
+      StringBuilder::push(out, value = "%")
+      StringBuilder::push(out, value = alloc_hex_nibble((c / 16) % 16))
+      StringBuilder::push(out, value = alloc_hex_nibble(c % 16))
     } else {
-      StringBuilder::push(out, String::substring(name, i, i + 1))
+      StringBuilder::push(out, value = String::substring(name, start = i, end = i + 1))
     }
     i = i + 1
   }
@@ -268,7 +268,7 @@ fn alloc_call_kind(expr: Expr, ctors: Array[String]) -> String {
       // The callee EIdent is visited as a child and owns the constructor
       // record. Do not also mislabel the same source site as an unknown
       // builtin merely because constructors are absent from that registry.
-      EIdent(name, _) => if alloc_contains_name(ctors, name) {
+      EIdent(name, _) => if alloc_contains_name(names = ctors, name = name) {
         ""
       } else if builtin_allocates(name) {
         String::concat("builtin:", name)
@@ -284,13 +284,13 @@ fn alloc_call_kind(expr: Expr, ctors: Array[String]) -> String {
 /// The site kind for `expr` itself (not its children), or "" when this node
 /// allocates nothing on its own.
 fn alloc_site_kind(expr: Expr, ctx: AllocWalkContext) -> String {
-  let typed_operator = typed_operator_alloc_kind(expr, ctx.names, ctx.kinds)
+  let typed_operator = typed_operator_alloc_kind(expr = expr, names = ctx.names, kinds = ctx.kinds)
   if typed_operator != "" {
     typed_operator
   } else {
     match expr {
       EFloat(_) => "float",
-      EIdent(name, _) => if alloc_contains_name(ctx.ctors, name) {
+      EIdent(name, _) => if alloc_contains_name(names = ctx.ctors, name = name) {
         String::concat("constructor:", name)
       } else {
         ""
@@ -301,14 +301,14 @@ fn alloc_site_kind(expr: Expr, ctx: AllocWalkContext) -> String {
       EMap(_) => "map",
       EStringInterp(_) => "interp",
       EHandle(_, _) => "handler",
-      _ => alloc_call_kind(expr, ctx.ctors)
+      _ => alloc_call_kind(expr = expr, ctors = ctx.ctors)
     }
   }
 }
 
 fn alloc_lambda_has_captures(expr: Expr, ctx: AllocWalkContext, self_name: String) -> Bool {
   match expr {
-    EFn(_, _, params, _, _, body) => lambda_has_captures(body, params, ctx.global_index, self_name, ctx.names),
+    EFn(_, _, params, _, _, body) => lambda_has_captures(body = body, params = params, fn_name_index = ctx.global_index, self_name = self_name, encl = ctx.names),
     _ => false
   }
 }
@@ -322,16 +322,16 @@ fn alloc_lambda_owner(fname: String, hint: String, ordinal: Int) -> String {
 }
 
 fn alloc_walk_lambda(out: Array[(String, String, Int)], fname: String, expr: Expr, fn_off: Int, ctx: AllocWalkContext, self_name: String, owner_hint: String) -> Unit {
-  let here = alloc_site_offset(expr, fn_off)
-  let ordinal = Array::get(ctx.lambda_counter, 0)
-  Array::set(ctx.lambda_counter, 0, ordinal + 1)
-  if alloc_lambda_has_captures(expr, ctx, self_name) {
-    Array::push(out, (fname, "closure", here))
+  let here = alloc_site_offset(expr = expr, fallback = fn_off)
+  let ordinal = Array::get(ctx.lambda_counter, at = 0)
+  Array::set(ctx.lambda_counter, at = 0, value = ordinal + 1)
+  if alloc_lambda_has_captures(expr = expr, ctx = ctx, self_name = self_name) {
+    Array::push(out, value = (fname, "closure", here))
   } else {
     ()
   }
   match expr {
-    EFn(_, _, params, _, _, body) => alloc_walk_expr(out, alloc_lambda_owner(fname, owner_hint, ordinal), body, here, alloc_context_for_lambda(ctx, params)),
+    EFn(_, _, params, _, _, body) => alloc_walk_expr(out = out, fname = alloc_lambda_owner(fname = fname, hint = owner_hint, ordinal = ordinal), expr = body, fn_off = here, ctx = alloc_context_for_lambda(ctx = ctx, params = params)),
     _ => ()
   }
 }
@@ -359,15 +359,15 @@ fn alloc_site_offset(expr: Expr, fallback: Int) -> Int {
 
 fn alloc_walk_expr(out: Array[(String, String, Int)], fname: String, expr: Expr, fn_off: Int, ctx: AllocWalkContext) -> Unit {
   match expr {
-    EFn(_, _, _, _, _, _) => alloc_walk_lambda(out, fname, expr, fn_off, ctx, "", ""),
-    _ => alloc_walk_non_lambda(out, fname, expr, fn_off, ctx)
+    EFn(_, _, _, _, _, _) => alloc_walk_lambda(out = out, fname = fname, expr = expr, fn_off = fn_off, ctx = ctx, self_name = "", owner_hint = ""),
+    _ => alloc_walk_non_lambda(out = out, fname = fname, expr = expr, fn_off = fn_off, ctx = ctx)
   }
 }
 
 fn alloc_walk_non_lambda(out: Array[(String, String, Int)], fname: String, expr: Expr, fn_off: Int, ctx: AllocWalkContext) -> Unit {
-  let kind = alloc_site_kind(expr, ctx)
+  let kind = alloc_site_kind(expr = expr, ctx = ctx)
   if String::length(kind) > 0 {
-    Array::push(out, (fname, kind, alloc_site_offset(expr, fn_off)))
+    Array::push(out, value = (fname, kind, alloc_site_offset(expr = expr, fallback = fn_off)))
   } else {
     ()
   }
@@ -382,52 +382,52 @@ fn alloc_walk_non_lambda(out: Array[(String, String, Int)], fname: String, expr:
   // `vibe escapes` asks it the same way, which is what keeps the two queries
   // from disagreeing about which bindings get boxed.
   match expr {
-    ELetMut(n, _, rest, off) => if is_mut_captured_in(rest, n) {
-      Array::push(out, (fname, "mut-cell", off))
+    ELetMut(n, _, rest, off) => if is_mut_captured_in(expr = rest, name = n) {
+      Array::push(out, value = (fname, "mut-cell", off))
     } else {
       ()
     },
     _ => ()
   }
-  let here = alloc_site_offset(expr, fn_off)
+  let here = alloc_site_offset(expr = expr, fallback = fn_off)
   match expr {
     ELet(name, value, rest, _) => {
       match value {
-        EFn(_, _, _, _, _, _) => alloc_walk_lambda(out, fname, value, here, ctx, "", name),
-        _ => alloc_walk_expr(out, fname, value, here, ctx)
+        EFn(_, _, _, _, _, _) => alloc_walk_lambda(out = out, fname = fname, expr = value, fn_off = here, ctx = ctx, self_name = "", owner_hint = name),
+        _ => alloc_walk_expr(out = out, fname = fname, expr = value, fn_off = here, ctx = ctx)
       }
-      alloc_walk_expr(out, fname, rest, here, alloc_context_with_binding(ctx, name, value))
+      alloc_walk_expr(out = out, fname = fname, expr = rest, fn_off = here, ctx = alloc_context_with_binding(ctx = ctx, name = name, value = value))
     },
     ELetRec(name, value, rest) => {
-      let body_ctx = alloc_context_with_binding(ctx, name, value)
+      let body_ctx = alloc_context_with_binding(ctx = ctx, name = name, value = value)
       match value {
-        EFn(_, _, _, _, _, _) => alloc_walk_lambda(out, fname, value, here, body_ctx, name, name),
-        _ => alloc_walk_expr(out, fname, value, here, body_ctx)
+        EFn(_, _, _, _, _, _) => alloc_walk_lambda(out = out, fname = fname, expr = value, fn_off = here, ctx = body_ctx, self_name = name, owner_hint = name),
+        _ => alloc_walk_expr(out = out, fname = fname, expr = value, fn_off = here, ctx = body_ctx)
       }
-      alloc_walk_expr(out, fname, rest, here, body_ctx)
+      alloc_walk_expr(out = out, fname = fname, expr = rest, fn_off = here, ctx = body_ctx)
     },
     ELetMut(name, value, rest, _) => {
       match value {
-        EFn(_, _, _, _, _, _) => alloc_walk_lambda(out, fname, value, here, ctx, "", name),
-        _ => alloc_walk_expr(out, fname, value, here, ctx)
+        EFn(_, _, _, _, _, _) => alloc_walk_lambda(out = out, fname = fname, expr = value, fn_off = here, ctx = ctx, self_name = "", owner_hint = name),
+        _ => alloc_walk_expr(out = out, fname = fname, expr = value, fn_off = here, ctx = ctx)
       }
-      alloc_walk_expr(out, fname, rest, here, alloc_context_with_binding(ctx, name, value))
+      alloc_walk_expr(out = out, fname = fname, expr = rest, fn_off = here, ctx = alloc_context_with_binding(ctx = ctx, name = name, value = value))
     },
     EMatch(scrutinee, arms) => {
-      alloc_walk_expr(out, fname, scrutinee, here, ctx)
+      alloc_walk_expr(out = out, fname = fname, expr = scrutinee, fn_off = here, ctx = ctx)
       let mut i = 0
       while i < Array::length(arms) {
-        let (pat, body) = Array::get(arms, i)
-        alloc_walk_expr(out, fname, body, here, alloc_context_with_pattern(ctx, pat))
+        let (pat, body) = Array::get(arms, at = i)
+        alloc_walk_expr(out = out, fname = fname, expr = body, fn_off = here, ctx = alloc_context_with_pattern(ctx = ctx, pat = pat))
         i = i + 1
       }
     },
     EHandle(scrutinee, arms) => {
-      alloc_walk_expr(out, fname, scrutinee, here, ctx)
+      alloc_walk_expr(out = out, fname = fname, expr = scrutinee, fn_off = here, ctx = ctx)
       let mut i = 0
       while i < Array::length(arms) {
-        let (pat, body) = Array::get(arms, i)
-        alloc_walk_expr(out, fname, body, here, alloc_context_with_pattern(ctx, pat))
+        let (pat, body) = Array::get(arms, at = i)
+        alloc_walk_expr(out = out, fname = fname, expr = body, fn_off = here, ctx = alloc_context_with_pattern(ctx = ctx, pat = pat))
         i = i + 1
       }
     },
@@ -435,27 +435,27 @@ fn alloc_walk_non_lambda(out: Array[(String, String, Int)], fname: String, expr:
       let mut body_ctx = ctx
       let mut i = 0
       while i < Array::length(params) {
-        let (name, init) = Array::get(params, i)
-        alloc_walk_expr(out, fname, init, here, ctx)
-        body_ctx = alloc_context_with_name(body_ctx, name)
+        let (name, init) = Array::get(params, at = i)
+        alloc_walk_expr(out = out, fname = fname, expr = init, fn_off = here, ctx = ctx)
+        body_ctx = alloc_context_with_name(ctx = body_ctx, name = name)
         i = i + 1
       }
-      alloc_walk_expr(out, fname, body, here, body_ctx)
+      alloc_walk_expr(out = out, fname = fname, expr = body, fn_off = here, ctx = body_ctx)
     },
     EForIn(name, index, iterable, body) => {
-      alloc_walk_expr(out, fname, iterable, here, ctx)
-      let item_ctx = alloc_context_with_name(ctx, name)
+      alloc_walk_expr(out = out, fname = fname, expr = iterable, fn_off = here, ctx = ctx)
+      let item_ctx = alloc_context_with_name(ctx = ctx, name = name)
       let body_ctx = match index {
-        Some(index_name) => alloc_context_with_name(item_ctx, index_name),
+        Some(index_name) => alloc_context_with_name(ctx = item_ctx, name = index_name),
         None => item_ctx
       }
-      alloc_walk_expr(out, fname, body, here, body_ctx)
+      alloc_walk_expr(out = out, fname = fname, expr = body, fn_off = here, ctx = body_ctx)
     },
     _ => {
       let kids = expr_children(expr)
       let mut i = 0
       while i < Array::length(kids) {
-        alloc_walk_expr(out, fname, Array::get(kids, i), here, ctx)
+        alloc_walk_expr(out = out, fname = fname, expr = Array::get(kids, at = i), fn_off = here, ctx = ctx)
         i = i + 1
       }
     }
@@ -469,29 +469,29 @@ fn alloc_walk_non_lambda(out: Array[(String, String, Int)], fname: String, expr:
 /// count both active and inactive guarded declarations. Blanking recognized
 /// directive lines byte-for-byte keeps every declaration in the parse and
 /// every offset in the ORIGINAL source.
-fn alloc_blank_directives(source: String) -> String {
+fn alloc_blank_directives(_ source: String) -> String {
   let out = StringBuilder::new()
   let len = String::length(source)
   let mut pos = 0
   while pos < len {
     let mut nl = pos
-    while nl < len && String::char_code_at(source, nl) != 10 {
+    while nl < len && String::char_code_at(source, at = nl) != 10 {
       nl = nl + 1
     }
-    let line = String::substring(source, pos, nl)
+    let line = String::substring(source, start = pos, end = nl)
     let trimmed = String::trim(line)
-    let recognized = trimmed == "#deprecated" || trimmed == "#zero_alloc" || String::starts_with(trimmed, "#deprecated(") || String::starts_with(trimmed, "#zero_alloc(") || String::starts_with(trimmed, "#cfg(") || String::starts_with(trimmed, "#cfg_enable(")
+    let recognized = trimmed == "#deprecated" || trimmed == "#zero_alloc" || String::starts_with(trimmed, prefix = "#deprecated(") || String::starts_with(trimmed, prefix = "#zero_alloc(") || String::starts_with(trimmed, prefix = "#cfg(") || String::starts_with(trimmed, prefix = "#cfg_enable(")
     if recognized {
       let mut i = 0
       while i < String::length(line) {
-        StringBuilder::push(out, " ")
+        StringBuilder::push(out, value = " ")
         i = i + 1
       }
     } else {
-      StringBuilder::push(out, line)
+      StringBuilder::push(out, value = line)
     }
     if nl < len {
-      StringBuilder::push(out, "\n")
+      StringBuilder::push(out, value = "\n")
     } else {
       ()
     }
@@ -507,46 +507,46 @@ fn alloc_blank_directives(source: String) -> String {
 /// distinguishable from "this file allocates nothing" (the `symbol_spans`
 /// convention, #946 — and here the two would otherwise be the same output for
 /// opposite facts).
-export fn alloc_spans(source: String) -> Array[(String, String, Int)] with Exception {
+export fn alloc_spans(_ source: String) -> Array[(String, String, Int)] with Exception {
   let parse_source = alloc_blank_directives(source)
   let (tokens, starts, ends) = lex_with_offsets(parse_source)
-  let (stmts, span_start, _span_end) = parse_program_spans(tokens, starts, ends)
+  let (stmts, span_start, _span_end) = parse_program_spans(tokens = tokens, starts = starts, ends = ends)
   let out = alloc_empty_items()
   let ctors = alloc_empty_strings()
   let globals = alloc_empty_strings()
   let registry = builtin_registry()
   let mut bi = 0
   while bi < Array::length(registry) {
-    let (name, _, _, _, _) = Array::get(registry, bi)
-    Array::push(globals, name)
+    let (name, _, _, _, _) = Array::get(registry, at = bi)
+    Array::push(globals, value = name)
     bi = bi + 1
   }
   let mut ci = 0
   while ci < Array::length(stmts) {
-    match Array::get(stmts, ci) {
+    match Array::get(stmts, at = ci) {
       SEnum(_, _, _, variants, _) => {
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (vname, _) = Array::get(variants, vi)
-          Array::push(ctors, vname)
-          Array::push(globals, vname)
+          let (vname, _) = Array::get(variants, at = vi)
+          Array::push(ctors, value = vname)
+          Array::push(globals, value = vname)
           vi = vi + 1
         }
       },
       SSuberror(_, _, variants) => {
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (vname, _) = Array::get(variants, vi)
-          Array::push(ctors, vname)
-          Array::push(globals, vname)
+          let (vname, _) = Array::get(variants, at = vi)
+          Array::push(ctors, value = vname)
+          Array::push(globals, value = vname)
           vi = vi + 1
         }
       },
       SStruct(_, name, _, _, _, _) => {
-        Array::push(ctors, name)
-        Array::push(globals, name)
+        Array::push(ctors, value = name)
+        Array::push(globals, value = name)
       },
-      SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => Array::push(globals, name),
+      SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => Array::push(globals, value = name),
       _ => ()
     }
     ci = ci + 1
@@ -555,13 +555,13 @@ export fn alloc_spans(source: String) -> Array[(String, String, Int)] with Excep
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt_off = if i < Array::length(span_start) {
-      Array::get(span_start, i)
+      Array::get(span_start, at = i)
     } else {
       0
     }
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, _, value) => match value {
-        EFn(_, _, params, _, _, fbody) => alloc_walk_expr(out, name, fbody, stmt_off, alloc_context(ctors, global_index, params)),
+        EFn(_, _, params, _, _, fbody) => alloc_walk_expr(out = out, fname = name, expr = fbody, fn_off = stmt_off, ctx = alloc_context(ctors = ctors, global_index = global_index, params = params)),
         _ => ()
       },
       // Tests and benches lower to real executable functions. In particular,
@@ -569,8 +569,8 @@ export fn alloc_spans(source: String) -> Array[(String, String, Int)] with Excep
       // skipping SBench would turn an allocating benchmark into false-clean
       // output. Owner is the source name (empty → keyword, same as symbols
       // #2038), still percent-encoded so FN stays one field (#1944).
-      STest(test_name, test_body) => alloc_walk_expr(out, alloc_block_owner(test_name, "test"), test_body, stmt_off, alloc_context(ctors, global_index, array_empty())),
-      SBench(bench_name, bench_body) => alloc_walk_expr(out, alloc_block_owner(bench_name, "bench"), bench_body, stmt_off, alloc_context(ctors, global_index, array_empty())),
+      STest(test_name, test_body) => alloc_walk_expr(out = out, fname = alloc_block_owner(name = test_name, keyword = "test"), expr = test_body, fn_off = stmt_off, ctx = alloc_context(ctors = ctors, global_index = global_index, params = array_empty())),
+      SBench(bench_name, bench_body) => alloc_walk_expr(out = out, fname = alloc_block_owner(name = bench_name, keyword = "bench"), expr = bench_body, fn_off = stmt_off, ctx = alloc_context(ctors = ctors, global_index = global_index, params = array_empty())),
       _ => ()
     }
     i = i + 1

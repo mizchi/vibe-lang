@@ -17,7 +17,7 @@ import @vibe/process {
 fn gc_reachability_compile(source: String, entry: String, strip: Bool) -> Bytes with Exception {
   set_executable_exports_stripped(strip)
   let wasm = handle {
-    compile_source_gc_only(source, entry)
+    compile_source_gc_only(source = source, entry_name = entry)
   } with { Exception::Throw(msg) => {
     set_executable_exports_stripped(false); throw(msg)
   } }
@@ -26,14 +26,14 @@ fn gc_reachability_compile(source: String, entry: String, strip: Bool) -> Bytes 
 }
 
 fn gc_reachability_run(label: String, source: String, entry: String, strip: Bool, expected: String) -> Unit with Exception + Fs + Process + Console {
-  let wasm = gc_reachability_compile(source, entry, strip)
-  gc_reachability_run_wasm(label, wasm, expected)
+  let wasm = gc_reachability_compile(source = source, entry = entry, strip = strip)
+  gc_reachability_run_wasm(label = label, wasm = wasm, expected = expected)
 }
 
 fn gc_reachability_run_wasm(label: String, wasm: Bytes, expected: String) -> Unit with Exception + Fs + Process + Console {
   Fs::mkdir_p("_build/vibe_test/gc_source_reachability")
   let path = "_build/vibe_test/gc_source_reachability/" + label + ".wasm"
-  Fs::write_bytes(path, wasm)
+  Fs::write_bytes(path, bytes = wasm)
   let result = process_sh_capture("bash scripts/run_wasm_vibe_host_runner.sh " + path)
   inspect(result.exit_code, content = "0")
   assert(result.stdout == expected)
@@ -41,187 +41,187 @@ fn gc_reachability_run_wasm(label: String, wasm: Bytes, expected: String) -> Uni
 
 fn gc_reachability_future_refused(source: String, strip: Bool) -> Unit with Exception {
   let msg = handle {
-    let _ = gc_reachability_compile(source, "main", strip); ""
+    let _ = gc_reachability_compile(source = source, entry = "main", strip = strip); ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+  assert(String::contains(msg, needle = "does not support the builtin `Future::ready`"))
 }
 
 test "GC diagnoses unsupported operations in unused entry source bodies" {
-  gc_reachability_future_refused("fn dormant() -> Future[Int] { Future::ready(7) } fn main() -> Int { 0 }", false)
+  gc_reachability_future_refused(source = "fn dormant() -> Future[Int] { Future::ready(7) } fn main() -> Int { 0 }", strip = false)
 }
 
 test "GC still refuses reachable Future operations" {
-  gc_reachability_future_refused("fn main() -> Future[Int] { Future::ready(7) }", true)
+  gc_reachability_future_refused(source = "fn main() -> Future[Int] { Future::ready(7) }", strip = true)
 }
 
 test "GC keeps ordinary published functions" {
-  gc_reachability_future_refused("export fn published() -> Future[Int] { Future::ready(7) } fn main() -> Int { 0 }", false)
+  gc_reachability_future_refused(source = "export fn published() -> Future[Int] { Future::ready(7) } fn main() -> Int { 0 }", strip = false)
 }
 
 test "GC keeps manually written published associated functions" {
-  gc_reachability_future_refused("struct Packet { value: Int } export fn Packet::to_string(self: Packet) -> Future[Int] { Future::ready(7) } fn main() -> Int { 0 }", false)
+  gc_reachability_future_refused(source = "struct Packet { value: Int } export fn Packet::to_string(self: Packet) -> Future[Int] { Future::ready(7) } fn main() -> Int { 0 }", strip = false)
 }
 
 test "GC test artifacts keep their own published associated functions" {
   let source = "struct Packet { value: Int } export fn Packet::to_string(self: Packet) -> Future[Int] { Future::ready(7) } test \"only\" { () }"
   let msg = handle {
-    let _ = gc_reachability_compile(source, "__no_entry__", false)
+    let _ = gc_reachability_compile(source = source, entry = "__no_entry__", strip = false)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+  assert(String::contains(msg, needle = "does not support the builtin `Future::ready`"))
 }
 
 test "GC follows top-level function aliases" {
-  gc_reachability_run("alias", "fn original() -> String { \"ok:alias\" } let alias = original; fn main() -> Unit allows Console { println(alias()) }", "main", true, "ok:alias\n")
+  gc_reachability_run(label = "alias", source = "fn original() -> String { \"ok:alias\" } let alias = original; fn main() -> Unit allows Console { println(alias()) }", entry = "main", strip = true, expected = "ok:alias\n")
 }
 
 test "GC runs all synthesized test and bench roots in order" {
-  gc_reachability_run("tests", "fn message() -> String { \"first\" } test \"a\" { println(message()) } test \"b\" { println(\"second\") } bench \"c\" { println(\"third\") }", "__no_entry__", true, "first\nsecond\nthird\n0\n")
+  gc_reachability_run(label = "tests", source = "fn message() -> String { \"first\" } test \"a\" { println(message()) } test \"b\" { println(\"second\") } bench \"c\" { println(\"third\") }", entry = "__no_entry__", strip = true, expected = "first\nsecond\nthird\n0\n")
 }
 
 test "GC retains trait witness implementations reached by a bound" {
-  gc_reachability_run("witness", "struct Pt { v: Int } derive (Eq) fn same[T: Eq](a: T, b: T) -> Bool { a == b } fn main() -> Unit allows Console { if same(Pt::{ v: 7 }, Pt::{ v: 7 }) { println(\"ok:witness\") } else { println(\"bad:witness\") } }", "main", true, "ok:witness\n")
+  gc_reachability_run(label = "witness", source = "struct Pt { v: Int } derive (Eq) fn same[T: Eq](a: T, b: T) -> Bool { a == b } fn main() -> Unit allows Console { if same(Pt::{ v: 7 }, Pt::{ v: 7 }) { println(\"ok:witness\") } else { println(\"bad:witness\") } }", entry = "main", strip = true, expected = "ok:witness\n")
 }
 
 test "GC keeps source value initializers and their callees" {
-  gc_reachability_run("initializer", "let state: Array[Int] = [0]; fn initialize() -> Int { Array::set(state, 0, 7); 0 } let once = initialize(); fn main() -> Unit allows Console { if Array::get(state, 0) == 7 { println(\"ok:initializer\") } else { println(\"bad:initializer\") } }", "main", true, "ok:initializer\n")
+  gc_reachability_run(label = "initializer", source = "let state: Array[Int] = [0]; fn initialize() -> Int { Array::set(state, 0, 7); 0 } let once = initialize(); fn main() -> Unit allows Console { if Array::get(state, 0) == 7 { println(\"ok:initializer\") } else { println(\"bad:initializer\") } }", entry = "main", strip = true, expected = "ok:initializer\n")
 }
 
 test "GC normalizes a builtin-shadow entry before reachability" {
-  gc_reachability_run("shadow-entry", "fn StringBuilder::new() -> Unit with Console { println(\"ok:shadow-entry\") }", "StringBuilder::new", true, "ok:shadow-entry\n")
+  gc_reachability_run(label = "shadow-entry", source = "fn StringBuilder::new() -> Unit with Console { println(\"ok:shadow-entry\") }", entry = "StringBuilder::new", strip = true, expected = "ok:shadow-entry\n")
 }
 
 test "GC preserves no-entry compilation behavior" {
   let msg = handle {
-    let _ = gc_reachability_compile("fn dormant() -> Future[Int] { Future::ready(7) }", "__no_entry__", false); ""
+    let _ = gc_reachability_compile(source = "fn dormant() -> Future[Int] { Future::ready(7) }", entry = "__no_entry__", strip = false); ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "entry function not found: __no_entry__"))
+  assert(String::contains(msg, needle = "entry function not found: __no_entry__"))
 }
 
 test "GC still refuses unused inline wasm before pruning" {
   let msg = handle {
-    let _ = gc_reachability_compile("fn unused(x: Int) -> Int = wasm \"(local.get 0)\"; fn main() -> Int { 0 }", "main", true); ""
+    let _ = gc_reachability_compile(source = "fn unused(x: Int) -> Int = wasm \"(local.get 0)\"; fn main() -> Int { 0 }", entry = "main", strip = true); ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "inline wasm"))
+  assert(String::contains(msg, needle = "inline wasm"))
 }
 
 test "GC retains an unreferenced ordinary initializer requiring Future" {
-  gc_reachability_future_refused("fn initialize() -> Future[Int] { Future::ready(7) } let once = initialize(); fn main() -> Int { 0 }", true)
+  gc_reachability_future_refused(source = "fn initialize() -> Future[Int] { Future::ready(7) } let once = initialize(); fn main() -> Int { 0 }", strip = true)
 }
 
 test "GC keeps test bodies even with a separate main entry" {
-  gc_reachability_future_refused("fn main() -> Int { 0 } test \"separate\" { let _ = Future::ready(7); () }", true)
+  gc_reachability_future_refused(source = "fn main() -> Int { 0 } test \"separate\" { let _ = Future::ready(7); () }", strip = true)
 }
 
 test "GC keeps bench bodies even with a separate main entry" {
-  gc_reachability_future_refused("fn main() -> Int { 0 } bench \"separate\" { let _ = Future::ready(7); () }", true)
+  gc_reachability_future_refused(source = "fn main() -> Int { 0 } bench \"separate\" { let _ = Future::ready(7); () }", strip = true)
 }
 
 fn gc_reachability_add_segment(stmts: Array[Stmt], source: String) -> Unit with Exception {
-  Array::push(stmts, SReExportSourceBoundary([], []))
+  Array::push(stmts, value = SReExportSourceBoundary([], []))
   let (tokens, starts, _) = lex_with_offsets(source)
-  for stmt in parse_program_located(tokens, starts, source) {
-    Array::push(stmts, stmt)
+  for stmt in parse_program_located(tokens = tokens, starts = starts, source = source) {
+    Array::push(stmts, value = stmt)
   }
   ()
 }
 
 test "GC generated graphs can place their entry before a dependency segment" {
   let stmts: Array[Stmt] = []
-  gc_reachability_add_segment(stmts, "fn main() -> Unit allows Console { println(\"ok:entry-first\") }")
-  gc_reachability_add_segment(stmts, "export fn unused() -> Future[Int] { Future::ready(7) }")
+  gc_reachability_add_segment(stmts = stmts, source = "fn main() -> Unit allows Console { println(\"ok:entry-first\") }")
+  gc_reachability_add_segment(stmts = stmts, source = "export fn unused() -> Future[Int] { Future::ready(7) }")
   set_executable_exports_stripped(false)
-  let wasm = compile_generated_stmts_gc_only(stmts, "main")
-  gc_reachability_run_wasm("entry-first", wasm, "ok:entry-first\n")
+  let wasm = compile_generated_stmts_gc_only(stmts = stmts, entry_name = "main")
+  gc_reachability_run_wasm(label = "entry-first", wasm = wasm, expected = "ok:entry-first\n")
 }
 
 test "GC generated graphs retain publications of an entry before the last segment" {
   let stmts: Array[Stmt] = []
-  gc_reachability_add_segment(stmts, "export fn published() -> Future[Int] { Future::ready(7) } fn main() -> Int { 0 }")
-  gc_reachability_add_segment(stmts, "export fn harmless() -> Int { 1 }")
+  gc_reachability_add_segment(stmts = stmts, source = "export fn published() -> Future[Int] { Future::ready(7) } fn main() -> Int { 0 }")
+  gc_reachability_add_segment(stmts = stmts, source = "export fn harmless() -> Int { 1 }")
   set_executable_exports_stripped(false)
   let msg = handle {
-    let _ = compile_generated_stmts_gc_only(stmts, "main")
+    let _ = compile_generated_stmts_gc_only(stmts = stmts, entry_name = "main")
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+  assert(String::contains(msg, needle = "does not support the builtin `Future::ready`"))
 }
 
 test "GC keeps dependency test bodies even with a separate main entry" {
   let stmts: Array[Stmt] = []
-  gc_reachability_add_segment(stmts, "test \"dependency\" { let _ = Future::ready(7); () }")
-  gc_reachability_add_segment(stmts, "fn main() -> Int { 0 }")
+  gc_reachability_add_segment(stmts = stmts, source = "test \"dependency\" { let _ = Future::ready(7); () }")
+  gc_reachability_add_segment(stmts = stmts, source = "fn main() -> Int { 0 }")
   set_executable_exports_stripped(false)
   let msg = handle {
-    let _ = compile_generated_stmts_gc_only(stmts, "main")
+    let _ = compile_generated_stmts_gc_only(stmts = stmts, entry_name = "main")
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+  assert(String::contains(msg, needle = "does not support the builtin `Future::ready`"))
 }
 
 test "GC keeps dependency bench bodies even with a separate main entry" {
   let stmts: Array[Stmt] = []
-  gc_reachability_add_segment(stmts, "bench \"dependency\" { let _ = Future::ready(7); () }")
-  gc_reachability_add_segment(stmts, "fn main() -> Int { 0 }")
+  gc_reachability_add_segment(stmts = stmts, source = "bench \"dependency\" { let _ = Future::ready(7); () }")
+  gc_reachability_add_segment(stmts = stmts, source = "fn main() -> Int { 0 }")
   set_executable_exports_stripped(false)
   let msg = handle {
-    let _ = compile_generated_stmts_gc_only(stmts, "main")
+    let _ = compile_generated_stmts_gc_only(stmts = stmts, entry_name = "main")
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+  assert(String::contains(msg, needle = "does not support the builtin `Future::ready`"))
 }
 
 test "GC keeps dependency initializers and their callees" {
   let stmts: Array[Stmt] = []
-  gc_reachability_add_segment(stmts, "let state: Array[Int] = [0]; fn initialize() -> Int { Array::set(state, 0, 7); 0 } let once = initialize();")
-  gc_reachability_add_segment(stmts, "fn main() -> Unit allows Console { if Array::get(state, 0) == 7 { println(\"ok:dependency-init\") } else { println(\"bad:dependency-init\") } }")
+  gc_reachability_add_segment(stmts = stmts, source = "let state: Array[Int] = [0]; fn initialize() -> Int { Array::set(state, 0, 7); 0 } let once = initialize();")
+  gc_reachability_add_segment(stmts = stmts, source = "fn main() -> Unit allows Console { if Array::get(state, 0) == 7 { println(\"ok:dependency-init\") } else { println(\"bad:dependency-init\") } }")
   set_executable_exports_stripped(false)
-  let wasm = compile_generated_stmts_gc_only(stmts, "main")
-  gc_reachability_run_wasm("dependency-init", wasm, "ok:dependency-init\n")
+  let wasm = compile_generated_stmts_gc_only(stmts = stmts, entry_name = "main")
+  gc_reachability_run_wasm(label = "dependency-init", wasm = wasm, expected = "ok:dependency-init\n")
 }
 
 test "GC generated test runners keep their original source validation" {
   let stmts: Array[Stmt] = []
-  gc_reachability_add_segment(stmts, "export fn published() -> Future[Int] { Future::ready(7) } test \"entry\" { () }")
-  gc_reachability_add_segment(stmts, "export fn harmless() -> Int { 1 }")
+  gc_reachability_add_segment(stmts = stmts, source = "export fn published() -> Future[Int] { Future::ready(7) } test \"entry\" { () }")
+  gc_reachability_add_segment(stmts = stmts, source = "export fn harmless() -> Int { 1 }")
   set_executable_exports_stripped(false)
   let msg = handle {
-    let _ = compile_generated_stmts_gc_only(stmts, "__no_entry__")
+    let _ = compile_generated_stmts_gc_only(stmts = stmts, entry_name = "__no_entry__")
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+  assert(String::contains(msg, needle = "does not support the builtin `Future::ready`"))
 }
 
 test "GC generated bench runners keep their original source validation" {
   let stmts: Array[Stmt] = []
-  gc_reachability_add_segment(stmts, "fn dormant() -> Future[Int] { Future::ready(7) } bench \"entry\" { () }")
-  gc_reachability_add_segment(stmts, "export fn harmless() -> Int { 1 }")
+  gc_reachability_add_segment(stmts = stmts, source = "fn dormant() -> Future[Int] { Future::ready(7) } bench \"entry\" { () }")
+  gc_reachability_add_segment(stmts = stmts, source = "export fn harmless() -> Int { 1 }")
   set_executable_exports_stripped(false)
   let msg = handle {
-    let _ = compile_generated_stmts_gc_only(stmts, "__no_entry__")
+    let _ = compile_generated_stmts_gc_only(stmts = stmts, entry_name = "__no_entry__")
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+  assert(String::contains(msg, needle = "does not support the builtin `Future::ready`"))
 }
 
 test "GC generated test runners prune the trailing dependency source" {
   let stmts: Array[Stmt] = []
-  gc_reachability_add_segment(stmts, "test \"entry\" { () }")
-  gc_reachability_add_segment(stmts, "export fn unused() -> Future[Int] { Future::ready(7) }")
+  gc_reachability_add_segment(stmts = stmts, source = "test \"entry\" { () }")
+  gc_reachability_add_segment(stmts = stmts, source = "export fn unused() -> Future[Int] { Future::ready(7) }")
   set_executable_exports_stripped(false)
-  let wasm = compile_generated_stmts_gc_only(stmts, "__no_entry__")
-  gc_reachability_run_wasm("test-entry-first", wasm, "0\n")
+  let wasm = compile_generated_stmts_gc_only(stmts = stmts, entry_name = "__no_entry__")
+  gc_reachability_run_wasm(label = "test-entry-first", wasm = wasm, expected = "0\n")
 }
 
 test "GC generated test runners retain each test source" {
   let stmts: Array[Stmt] = []
-  gc_reachability_add_segment(stmts, "test \"first\" { () }")
-  gc_reachability_add_segment(stmts, "fn dormant() -> Future[Int] { Future::ready(7) } test \"second\" { () }")
-  gc_reachability_add_segment(stmts, "export fn harmless() -> Int { 1 }")
+  gc_reachability_add_segment(stmts = stmts, source = "test \"first\" { () }")
+  gc_reachability_add_segment(stmts = stmts, source = "fn dormant() -> Future[Int] { Future::ready(7) } test \"second\" { () }")
+  gc_reachability_add_segment(stmts = stmts, source = "export fn harmless() -> Int { 1 }")
   set_executable_exports_stripped(false)
   let msg = handle {
-    let _ = compile_generated_stmts_gc_only(stmts, "__no_entry__")
+    let _ = compile_generated_stmts_gc_only(stmts = stmts, entry_name = "__no_entry__")
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "does not support the builtin `Future::ready`"))
+  assert(String::contains(msg, needle = "does not support the builtin `Future::ready`"))
 }

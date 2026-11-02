@@ -44,13 +44,13 @@ import ./utilities.vibe {
 fn dhhc_arm_ops(arms: Array[(Pat, Expr)], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    let arm = Array::get(arms, i)
+    let arm = Array::get(arms, at = i)
     // The parser wraps a handler arm's pattern for source locations
     // (parse_qualified_handle_arm), so a bare `PCtor` match here never fires --
     // measured: the first build of this pass was completely inert.
     match source_pat(arm.0) {
-      PCtor(name, _) => if canonical_builtin_name(name) != name && !str_array_contains(out, name) {
-        Array::push(out, name)
+      PCtor(name, _) => if canonical_builtin_name(name) != name && !str_array_contains(arr = out, val = name) {
+        Array::push(out, value = name)
       } else {
         ()
       },
@@ -75,31 +75,31 @@ fn dhhc_with_forward_arms(arms: Array[(Pat, Expr)], own: Array[String]) -> Array
     let out: Array[(Pat, Expr)] = []
     let mut i = 0
     while i < Array::length(arms) {
-      Array::push(out, Array::get(arms, i))
+      Array::push(out, value = Array::get(arms, at = i))
       i = i + 1
     }
     let mut f = 0
     while f < Array::length(dhhc_forward_ops) {
-      let (op, arity) = Array::get(dhhc_forward_ops, f)
+      let (op, arity) = Array::get(dhhc_forward_ops, at = f)
       let effect = ehp_effect_of(op)
       let mut handles_effect = false
       let mut o = 0
       while o < Array::length(own) {
-        if ehp_effect_of(Array::get(own, o)) == effect {
+        if ehp_effect_of(Array::get(own, at = o)) == effect {
           handles_effect = true
         } else {
           ()
         }
         o = o + 1
       }
-      if handles_effect && !str_array_contains(own, op) {
+      if handles_effect && !str_array_contains(arr = own, val = op) {
         let pats: Array[Pat] = []
         let args: Array[Expr] = []
         let mut a = 0
         while a < arity {
           let bind = String::concat("__ehp_fwd_", idx_str(a))
-          Array::push(pats, PBind(bind))
-          Array::push(args, EIdent(bind, -1))
+          Array::push(pats, value = PBind(bind))
+          Array::push(args, value = EIdent(bind, -1))
           a = a + 1
         }
         let operand = if arity == 0 {
@@ -107,7 +107,7 @@ fn dhhc_with_forward_arms(arms: Array[(Pat, Expr)], own: Array[String]) -> Array
         } else {
           ECall(EIdent(op, -1), args, -1, [])
         }
-        Array::push(out, (PCtor(op, pats), ECall(EIdent("resume", -1), [
+        Array::push(out, value = (PCtor(op, pats), ECall(EIdent("resume", -1), [
           ECall(EIdent("perform", -1), [operand], -1, [])
         ], -1, [])))
       } else {
@@ -121,13 +121,13 @@ fn dhhc_with_forward_arms(arms: Array[(Pat, Expr)], own: Array[String]) -> Array
 
 /// The arm-named operation whose builtin spelling is `name`, if any.
 fn dhhc_op_for_call(ops: Array[String], name: String) -> Option[String] {
-  if Array::get(dhhc_forward_only, 0) || str_array_contains(dhhc_shadowed_names, name) {
+  if Array::get(dhhc_forward_only, at = 0) || str_array_contains(arr = dhhc_shadowed_names, val = name) {
     return None
   }
   let mut i = 0
   let mut found = None
   while i < Array::length(ops) {
-    let op = Array::get(ops, i)
+    let op = Array::get(ops, at = i)
     if canonical_builtin_name(op) == name {
       found = Some(op)
       i = Array::length(ops)
@@ -142,14 +142,14 @@ fn dhhc_union(outer: Array[String], inner: Array[String]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(outer) {
-    Array::push(out, Array::get(outer, i))
+    Array::push(out, value = Array::get(outer, at = i))
     i = i + 1
   }
   let mut j = 0
   while j < Array::length(inner) {
-    let name = Array::get(inner, j)
-    if !str_array_contains(out, name) {
-      Array::push(out, name)
+    let name = Array::get(inner, at = j)
+    if !str_array_contains(arr = out, val = name) {
+      Array::push(out, value = name)
     } else {
       ()
     }
@@ -160,25 +160,25 @@ fn dhhc_union(outer: Array[String], inner: Array[String]) -> Array[String] {
 
 fn dhhc_exprs(items: Array[Expr], ops: Array[String]) -> Array[Expr] {
   for item in items {
-    dhhc_expr(item, ops)
+    dhhc_expr(expr = item, ops = ops)
   }
 }
 
 fn dhhc_fields(fields: Array[(String, Expr)], ops: Array[String]) -> Array[(String, Expr)] {
   for f in fields {
-    (f.0, dhhc_expr(f.1, ops))
+    (f.0, dhhc_expr(expr = f.1, ops = ops))
   }
 }
 
 fn dhhc_arms(arms: Array[(Pat, Expr)], ops: Array[String]) -> Array[(Pat, Expr)] {
   for arm in arms {
-    (arm.0, dhhc_expr(arm.1, ops))
+    (arm.0, dhhc_expr(expr = arm.1, ops = ops))
   }
 }
 
 fn dhhc_opt(opt: Option[Expr], ops: Array[String]) -> Option[Expr] {
   match opt {
-    Some(v) => Some(dhhc_expr(v, ops)),
+    Some(v) => Some(dhhc_expr(expr = v, ops = ops)),
     None => None
   }
 }
@@ -194,28 +194,28 @@ fn dhhc_opt(opt: Option[Expr], ops: Array[String]) -> Option[Expr] {
 export fn dhhc_expr(expr: Expr, ops: Array[String]) -> Expr {
   match expr {
     ECall(callee, args, off, callee_resolution) => {
-      let rewritten = dhhc_exprs(args, ops)
+      let rewritten = dhhc_exprs(items = args, ops = ops)
       match callee {
-        EIdent(name, ident_off) => match dhhc_op_for_call(ops, name) {
+        EIdent(name, ident_off) => match dhhc_op_for_call(ops = ops, name = name) {
           Some(op) => {
             // `perform <Op>(args)` is what the parser produces for the explicit
             // spelling (parser_expr_primary.vibe): ECall(EIdent("perform"),
             // [ECall(EIdent("<Op>"), args)]).
-            Array::set(dhhc_changed_cell, 0, 1)
-            call_placement_note_positional(callee, args, off, callee_resolution)
+            Array::set(dhhc_changed_cell, at = 0, value = 1)
+            call_placement_note_positional(callee = callee, args = args, offset = off, cell = callee_resolution)
             ECall(EIdent("perform", ident_off), [
               ECall(EIdent(op, ident_off), rewritten, off, callee_resolution)
             ], off, callee_resolution)
           },
-          None => ECall(dhhc_expr(callee, ops), rewritten, off, callee_resolution)
+          None => ECall(dhhc_expr(expr = callee, ops = ops), rewritten, off, callee_resolution)
         },
-        _ => ECall(dhhc_expr(callee, ops), rewritten, off, callee_resolution)
+        _ => ECall(dhhc_expr(expr = callee, ops = ops), rewritten, off, callee_resolution)
       }
     },
     EHandle(body, arms) => {
       let own = empty_str_array()
-      dhhc_arm_ops(arms, own)
-      EHandle(dhhc_expr(body, dhhc_union(ops, own)), dhhc_with_forward_arms(dhhc_arms(arms, ops), own))
+      dhhc_arm_ops(arms = arms, out = own)
+      EHandle(dhhc_expr(expr = body, ops = dhhc_union(outer = ops, inner = own)), dhhc_with_forward_arms(arms = dhhc_arms(arms = arms, ops = ops), own = own))
     },
     EInt(_) => expr,
     EFloat(_) => expr,
@@ -224,30 +224,30 @@ export fn dhhc_expr(expr: Expr, ops: Array[String]) -> Expr {
     EUnit => expr,
     EIdent(_, _) => expr,
     EStringInterp(_) => expr,
-    ETuple(items) => ETuple(dhhc_exprs(items, ops)),
-    EArray(items) => EArray(dhhc_exprs(items, ops)),
-    EMap(entries) => EMap(dhhc_fields(entries, ops)),
-    ERecord(name, fields, targs) => ERecord(name, dhhc_fields(fields, ops), targs),
-    EIf(c, t, e) => EIf(dhhc_expr(c, ops), dhhc_expr(t, ops), dhhc_expr(e, ops)),
-    ELet(n, v, b, off) => ELet(n, dhhc_expr(v, ops), dhhc_expr(b, ops), off),
-    ELetRec(n, v, b) => ELetRec(n, dhhc_expr(v, ops), dhhc_expr(b, ops)),
-    ELetMut(n, v, b, off) => ELetMut(n, dhhc_expr(v, ops), dhhc_expr(b, ops), off),
-    EAssign(n, v, b, target_off) => EAssign(n, dhhc_expr(v, ops), dhhc_expr(b, ops), target_off),
-    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, dhhc_expr(v, ops), dhhc_expr(b, ops), target_off),
-    ESeq(a, b) => ESeq(dhhc_expr(a, ops), dhhc_expr(b, ops)),
-    EMatch(scrut, arms) => EMatch(dhhc_expr(scrut, ops), dhhc_arms(arms, ops)),
-    EWhile(c, b) => EWhile(dhhc_expr(c, ops), dhhc_expr(b, ops)),
-    ELoop(binds, b) => ELoop(dhhc_fields(binds, ops), dhhc_expr(b, ops)),
-    EForIn(n, idx, src, b) => EForIn(n, idx, dhhc_expr(src, ops), dhhc_expr(b, ops)),
-    EBinOp(op, l, r, off) => EBinOp(op, dhhc_expr(l, ops), dhhc_expr(r, ops), off),
-    EUnaryOp(op, v) => EUnaryOp(op, dhhc_expr(v, ops)),
-    EFn(gens, bounds, params, ret, eff, body) => EFn(gens, bounds, params, ret, eff, dhhc_expr(body, ops)),
-    EDot(v, f, a, b) => EDot(dhhc_expr(v, ops), f, a, b),
-    ELabeledArg(l, s, v) => ELabeledArg(l, s, dhhc_expr(v, ops)),
-    EReturn(v) => EReturn(dhhc_expr(v, ops)),
-    EBreak(v) => EBreak(dhhc_opt(v, ops)),
-    ESpread(v) => ESpread(dhhc_expr(v, ops)),
-    EContinue(items) => EContinue(dhhc_exprs(items, ops))
+    ETuple(items) => ETuple(dhhc_exprs(items = items, ops = ops)),
+    EArray(items) => EArray(dhhc_exprs(items = items, ops = ops)),
+    EMap(entries) => EMap(dhhc_fields(fields = entries, ops = ops)),
+    ERecord(name, fields, targs) => ERecord(name, dhhc_fields(fields = fields, ops = ops), targs),
+    EIf(c, t, e) => EIf(dhhc_expr(expr = c, ops = ops), dhhc_expr(expr = t, ops = ops), dhhc_expr(expr = e, ops = ops)),
+    ELet(n, v, b, off) => ELet(n, dhhc_expr(expr = v, ops = ops), dhhc_expr(expr = b, ops = ops), off),
+    ELetRec(n, v, b) => ELetRec(n, dhhc_expr(expr = v, ops = ops), dhhc_expr(expr = b, ops = ops)),
+    ELetMut(n, v, b, off) => ELetMut(n, dhhc_expr(expr = v, ops = ops), dhhc_expr(expr = b, ops = ops), off),
+    EAssign(n, v, b, target_off) => EAssign(n, dhhc_expr(expr = v, ops = ops), dhhc_expr(expr = b, ops = ops), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, dhhc_expr(expr = v, ops = ops), dhhc_expr(expr = b, ops = ops), target_off),
+    ESeq(a, b) => ESeq(dhhc_expr(expr = a, ops = ops), dhhc_expr(expr = b, ops = ops)),
+    EMatch(scrut, arms) => EMatch(dhhc_expr(expr = scrut, ops = ops), dhhc_arms(arms = arms, ops = ops)),
+    EWhile(c, b) => EWhile(dhhc_expr(expr = c, ops = ops), dhhc_expr(expr = b, ops = ops)),
+    ELoop(binds, b) => ELoop(dhhc_fields(fields = binds, ops = ops), dhhc_expr(expr = b, ops = ops)),
+    EForIn(n, idx, src, b) => EForIn(n, idx, dhhc_expr(expr = src, ops = ops), dhhc_expr(expr = b, ops = ops)),
+    EBinOp(op, l, r, off) => EBinOp(op, dhhc_expr(expr = l, ops = ops), dhhc_expr(expr = r, ops = ops), off),
+    EUnaryOp(op, v) => EUnaryOp(op, dhhc_expr(expr = v, ops = ops)),
+    EFn(gens, bounds, params, ret, eff, body) => EFn(gens, bounds, params, ret, eff, dhhc_expr(expr = body, ops = ops)),
+    EDot(v, f, a, b) => EDot(dhhc_expr(expr = v, ops = ops), f, a, b),
+    ELabeledArg(l, s, v) => ELabeledArg(l, s, dhhc_expr(expr = v, ops = ops)),
+    EReturn(v) => EReturn(dhhc_expr(expr = v, ops = ops)),
+    EBreak(v) => EBreak(dhhc_opt(opt = v, ops = ops)),
+    ESpread(v) => ESpread(dhhc_expr(expr = v, ops = ops)),
+    EContinue(items) => EContinue(dhhc_exprs(items = items, ops = ops))
   }
 }
 
@@ -264,11 +264,11 @@ export fn dhhc_expr(expr: Expr, ops: Array[String]) -> Expr {
 /// `EHandle` and `EMatch` are matched explicitly rather than left to the
 /// generic child walk, because that walk does not descend into ARM bodies --
 /// the reason `collect_push_elem_shapes` above spells them out too.
-fn dhhc_expr_has_host_handler(e: Expr) -> Bool {
+fn dhhc_expr_has_host_handler(_ e: Expr) -> Bool {
   match e {
     EHandle(hbody, arms) => {
       let ops = empty_str_array()
-      dhhc_arm_ops(arms, ops)
+      dhhc_arm_ops(arms = arms, out = ops)
       Array::length(ops) > 0 || dhhc_expr_has_host_handler(hbody) || dhhc_arms_have_host_handler(arms)
     },
     EMatch(scrut, arms) => dhhc_expr_has_host_handler(scrut) || dhhc_arms_have_host_handler(arms),
@@ -276,11 +276,11 @@ fn dhhc_expr_has_host_handler(e: Expr) -> Bool {
   }
 }
 
-fn dhhc_arms_have_host_handler(arms: Array[(Pat, Expr)]) -> Bool {
+fn dhhc_arms_have_host_handler(_ arms: Array[(Pat, Expr)]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(arms) {
-    if !found && dhhc_expr_has_host_handler(Array::get(arms, i).1) {
+    if !found && dhhc_expr_has_host_handler(Array::get(arms, at = i).1) {
       found = true
     } else {
       ()
@@ -290,7 +290,7 @@ fn dhhc_arms_have_host_handler(arms: Array[(Pat, Expr)]) -> Bool {
   found
 }
 
-fn dhhc_children_have_host_handler(e: Expr) -> Bool {
+fn dhhc_children_have_host_handler(_ e: Expr) -> Bool {
   let mark = expr_children_push(e)
   let end = expr_children_top()
   let mut i = mark
@@ -307,7 +307,7 @@ fn dhhc_children_have_host_handler(e: Expr) -> Bool {
   found
 }
 
-fn dhhc_stmt_has_host_handler(stmt: Stmt) -> Bool {
+fn dhhc_stmt_has_host_handler(_ stmt: Stmt) -> Bool {
   match stmt {
     SLet(_, _, _, _, body) => dhhc_expr_has_host_handler(body),
     SLetMut(_, _, body) => dhhc_expr_has_host_handler(body),
@@ -321,7 +321,7 @@ fn dhhc_stmt_has_host_handler(stmt: Stmt) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(body) {
-        if !found && dhhc_stmt_has_host_handler(Array::get(body, i)) {
+        if !found && dhhc_stmt_has_host_handler(Array::get(body, at = i)) {
           found = true
         } else {
           ()
@@ -335,12 +335,12 @@ fn dhhc_stmt_has_host_handler(stmt: Stmt) -> Bool {
 }
 
 /// In place, and only over the statements the scan above says can change.
-export fn dhhc_rewrite_stmts(stmts: Array[Stmt]) -> Unit {
+export fn dhhc_rewrite_stmts(_ stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     if dhhc_stmt_has_host_handler(stmt) {
-      Array::set(stmts, i, dhhc_stmt(stmt))
+      Array::set(stmts, at = i, value = dhhc_stmt(stmt))
     } else {
       ()
     }
@@ -348,17 +348,17 @@ export fn dhhc_rewrite_stmts(stmts: Array[Stmt]) -> Unit {
   }
 }
 
-fn dhhc_stmt(stmt: Stmt) -> Stmt {
+fn dhhc_stmt(_ stmt: Stmt) -> Stmt {
   let none = empty_str_array()
   match stmt {
-    SLet(e, r, n, t, body) => SLet(e, r, n, t, dhhc_expr(body, none)),
-    SLetMut(n, t, body) => SLetMut(n, t, dhhc_expr(body, none)),
-    SLetPat(p, body) => SLetPat(p, dhhc_expr(body, none)),
-    STest(n, body) => STest(n, dhhc_expr(body, none)),
-    SBench(n, body) => SBench(n, dhhc_expr(body, none)),
-    SExample(n, body) => SExample(n, dhhc_expr(body, none)),
-    SExpr(body) => SExpr(dhhc_expr(body, none)),
-    SFnDecl(e, n, body, req, ens) => SFnDecl(e, n, dhhc_expr(body, none), req, ens),
+    SLet(e, r, n, t, body) => SLet(e, r, n, t, dhhc_expr(expr = body, ops = none)),
+    SLetMut(n, t, body) => SLetMut(n, t, dhhc_expr(expr = body, ops = none)),
+    SLetPat(p, body) => SLetPat(p, dhhc_expr(expr = body, ops = none)),
+    STest(n, body) => STest(n, dhhc_expr(expr = body, ops = none)),
+    SBench(n, body) => SBench(n, dhhc_expr(expr = body, ops = none)),
+    SExample(n, body) => SExample(n, dhhc_expr(expr = body, ops = none)),
+    SExpr(body) => SExpr(dhhc_expr(expr = body, ops = none)),
+    SFnDecl(e, n, body, req, ens) => SFnDecl(e, n, dhhc_expr(expr = body, ops = none), req, ens),
     SModule(e, n, body) => {
       dhhc_rewrite_stmts(body)
       SModule(e, n, body)
@@ -382,12 +382,12 @@ fn dhhc_stmt(stmt: Stmt) -> Stmt {
 /// anyway. Any other alias (`let Fs::exists = fake`) is a shadow: rewriting
 /// its call into the perform would replace `fake`'s answer with the
 /// handler's (Codex on #3059).
-export fn dhhc_note_shadowed_names(stmts: Array[Stmt]) -> Unit {
-  Array::truncate(dhhc_shadowed_names, 0)
+export fn dhhc_note_shadowed_names(_ stmts: Array[Stmt]) -> Unit {
+  Array::truncate(dhhc_shadowed_names, length = 0)
   let mut i = 0
   while i < Array::length(stmts) {
-    let name = match Array::get(stmts, i) {
-      SLet(_, _, n, _, EIdent(target, _)) => if dhhc_is_perform_wrapper(stmts, target, n) {
+    let name = match Array::get(stmts, at = i) {
+      SLet(_, _, n, _, EIdent(target, _)) => if dhhc_is_perform_wrapper(stmts = stmts, target = target, alias = n) {
         ""
       } else {
         n
@@ -396,8 +396,8 @@ export fn dhhc_note_shadowed_names(stmts: Array[Stmt]) -> Unit {
       SFnDecl(_, n, _, _, _) => n,
       _ => ""
     }
-    if String::index_of(name, "::") > 0 && !str_array_contains(dhhc_shadowed_names, name) {
-      Array::push(dhhc_shadowed_names, name)
+    if String::index_of(name, needle = "::") > 0 && !str_array_contains(arr = dhhc_shadowed_names, val = name) {
+      Array::push(dhhc_shadowed_names, value = name)
     } else {
       ()
     }
@@ -412,7 +412,7 @@ fn dhhc_is_perform_wrapper(stmts: Array[Stmt], target: String, alias: String) ->
   let mut found = false
   let mut i = 0
   while i < Array::length(stmts) {
-    let fn_value = match Array::get(stmts, i) {
+    let fn_value = match Array::get(stmts, at = i) {
       SLet(_, _, n, _, value) => if n == target {
         Some(value)
       } else {
@@ -429,7 +429,7 @@ fn dhhc_is_perform_wrapper(stmts: Array[Stmt], target: String, alias: String) ->
       Some(EFn(_, _, params, _, _, body)) => {
         let (op, args) = match body {
           ECall(EIdent("perform", _), perform_args, _, _) => if Array::length(perform_args) == 1 {
-            match Array::get(perform_args, 0) {
+            match Array::get(perform_args, at = 0) {
               ECall(EIdent(o, _), a, _, _) => (o, a),
               EIdent(o, _) => (o, empty_expr_array()),
               _ => ("", empty_expr_array())
@@ -443,8 +443,8 @@ fn dhhc_is_perform_wrapper(stmts: Array[Stmt], target: String, alias: String) ->
           let mut same = true
           let mut a = 0
           while a < Array::length(args) {
-            match Array::get(args, a) {
-              EIdent(arg, _) => if arg != Array::get(params, a).0 {
+            match Array::get(args, at = a) {
+              EIdent(arg, _) => if arg != Array::get(params, at = a).0 {
                 same = false
               } else {
                 ()
@@ -469,14 +469,14 @@ fn dhhc_is_perform_wrapper(stmts: Array[Stmt], target: String, alias: String) ->
   found
 }
 
-export fn desugar_handled_host_calls_reporting_change(stmts: Array[Stmt]) -> Bool {
-  Array::set(dhhc_changed_cell, 0, 0)
+export fn desugar_handled_host_calls_reporting_change(_ stmts: Array[Stmt]) -> Bool {
+  Array::set(dhhc_changed_cell, at = 0, value = 0)
   dhhc_note_shadowed_names(stmts)
   dhhc_rewrite_stmts(stmts)
-  Array::get(dhhc_changed_cell, 0) != 0
+  Array::get(dhhc_changed_cell, at = 0) != 0
 }
 
-export fn desugar_handled_host_calls(stmts: Array[Stmt]) -> Unit {
+export fn desugar_handled_host_calls(_ stmts: Array[Stmt]) -> Unit {
   let _changed = desugar_handled_host_calls_reporting_change(stmts)
   ()
 }

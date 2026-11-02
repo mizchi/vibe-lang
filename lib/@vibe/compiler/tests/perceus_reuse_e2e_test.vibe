@@ -20,18 +20,18 @@ import ./codegen_test_support.vibe {
 
 fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
   let path = String::concat("/tmp/_reuse_e2e_", String::concat(label, ".wasm"))
-  Fs::write_bytes(path, bytes)
+  Fs::write_bytes(path, bytes = bytes)
   let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
   if Array::length(out) > 0 {
-    Array::get(out, 0)
+    Array::get(out, at = 0)
   } else {
     "<no output>"
   }
 }
 
 fn assert_bump_rc_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Console {
-  let bump = run_value(compile_wasi(src, "main"), String::concat(label, "_bump"))
-  let rc = run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc"))
+  let bump = run_value(bytes = compile_wasi(source = src, entry = "main"), label = String::concat(label, "_bump"))
+  let rc = run_value(bytes = compile_wasi_rc(source = src, entry = "main"), label = String::concat(label, "_rc"))
   inspect(bump, content = expected)
   inspect(rc, content = expected)
   0
@@ -39,12 +39,12 @@ fn assert_bump_rc_agree(src: String, label: String, expected: String) -> Int wit
 
 /// `i32.const 16777217` (opcode 0x41 + sLEB 0x81 0x80 0x80 0x08): the
 /// rc-word uniqueness test's immediate.
-fn contains_token_test(b: Bytes) -> Bool {
+fn contains_token_test(_ b: Bytes) -> Bool {
   let n = Bytes::length(b)
   let mut i = 0
   let mut found = false
   while !found && i + 4 < n {
-    if Bytes::get(b, i) == 65 && Bytes::get(b, i + 1) == 129 && Bytes::get(b, i + 2) == 128 && Bytes::get(b, i + 3) == 128 && Bytes::get(b, i + 4) == 8 {
+    if Bytes::get(b, at = i) == 65 && Bytes::get(b, at = i + 1) == 129 && Bytes::get(b, at = i + 2) == 128 && Bytes::get(b, at = i + 3) == 128 && Bytes::get(b, at = i + 4) == 8 {
       found = true
     } else {
       ()
@@ -56,12 +56,12 @@ fn contains_token_test(b: Bytes) -> Bool {
 
 /// Count occurrences of the rc-word uniqueness test's immediate: each fused
 /// arm (narrow or wide) emits exactly one.
-fn count_token_tests(b: Bytes) -> Int {
+fn count_token_tests(_ b: Bytes) -> Int {
   let n = Bytes::length(b)
   let mut i = 0
   let mut cnt = 0
   while i + 4 < n {
-    if Bytes::get(b, i) == 65 && Bytes::get(b, i + 1) == 129 && Bytes::get(b, i + 2) == 128 && Bytes::get(b, i + 3) == 128 && Bytes::get(b, i + 4) == 8 {
+    if Bytes::get(b, at = i) == 65 && Bytes::get(b, at = i + 1) == 129 && Bytes::get(b, at = i + 2) == 128 && Bytes::get(b, at = i + 3) == 128 && Bytes::get(b, at = i + 4) == 8 {
       cnt = cnt + 1
     } else {
       ()
@@ -77,12 +77,12 @@ fn tree_prelude() -> String {
 
 test "unique rebuild chain: in-place reuse answers like the bump lane" {
   let src = String::concat(tree_prelude(), "let rec incr: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = incr(a)\n      let b2 = incr(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  total(incr(incr(build(6))))\n}")
-  assert_bump_rc_agree(src, "unique_chain", "192")
+  assert_bump_rc_agree(src = src, label = "unique_chain", expected = "192")
 }
 
 test "shared source survives a rebuild untouched" {
   let src = String::concat(tree_prelude(), "let rec incr: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = incr(a)\n      let b2 = incr(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(4)\n  let r = incr(t)\n  total(t) * 1000 + total(r)\n}")
-  assert_bump_rc_agree(src, "shared_src", "16032")
+  assert_bump_rc_agree(src = src, label = "shared_src", expected = "16032")
 }
 
 test "tracked-spine arm: interior consumer plus dropped intermediate stays correct" {
@@ -97,17 +97,17 @@ test "tracked-spine arm: interior consumer plus dropped intermediate stays corre
   // transfer requires (a borrow-classified callee leaves the binds plan-side
   // drops and both the planner and the codegen decline).
   let src = String::concat(tree_prelude(), "let rec incr: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = incr(a)\n      let l = Pair(a2, a2)\n      let b2 = incr(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(5)\n  let r = incr(t)\n  let z = incr(Leaf(0))\n  total(t) * 1000 + total(r) + total(z)\n}")
-  assert_bump_rc_agree(src, "tracked_spine", "32065")
+  assert_bump_rc_agree(src = src, label = "tracked_spine", expected = "32065")
   // Non-vacuity, counted: the Pair arm's rebuild spine carries a planned
   // drop, so the narrow fusion declines it and only the WIDE path can fuse
   // it; the Leaf arm (`Leaf(v) => Leaf(v + 1)`, scalar payload consumed
   // once) fuses narrowly. Exactly two rc-word uniqueness tests
   // (`i32.const 16777217`) therefore prove the wide staging fired -- one
   // alone would mean the Pair arm quietly took the normal path.
-  let rc_wasm = compile_wasi_rc(src, "main")
+  let rc_wasm = compile_wasi_rc(source = src, entry = "main")
   inspect(count_token_tests(rc_wasm), content = "2")
   // ...and the bump lane must NOT contain it (tokens are an RC-only device).
-  let bump_wasm = compile_wasi(src, "main")
+  let bump_wasm = compile_wasi(source = src, entry = "main")
   assert(!contains_token_test(bump_wasm))
 }
 
@@ -121,10 +121,10 @@ test "a pure-borrow bind fuses: raw-transferred child released at arm end" {
   // same arm-end drop releases it. `reshape(Leaf(0))` keeps reshape
   // owning; b stays a plain consume-1 transfer in the same arm.
   let src = String::concat(tree_prelude(), "let rec reshape: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let w = total(a)\n      let b2 = reshape(b)\n      Pair(Leaf(w), b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(4)\n  let r = reshape(t)\n  let z = reshape(Leaf(0))\n  total(r) * 10 + total(z)\n}")
-  assert_bump_rc_agree(src, "borrow_bind_unique", "171")
+  assert_bump_rc_agree(src = src, label = "borrow_bind_unique", expected = "171")
   // Two fused arms: the Pair arm through the WIDE path (a's consume count
   // is 0, so the narrow tier declines), the Leaf arm narrowly.
-  let rc_wasm = compile_wasi_rc(src, "main")
+  let rc_wasm = compile_wasi_rc(source = src, entry = "main")
   inspect(count_token_tests(rc_wasm), content = "2")
 }
 
@@ -133,7 +133,7 @@ test "a shared source survives a pure-borrow-bind rebuild untouched" {
   // shared path must leave t's structure intact while the consume-0 bind
   // (dup'd at staging, dropped at arm end) reads through it.
   let src = String::concat(tree_prelude(), "let rec reshape: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let w = total(a)\n      let b2 = reshape(b)\n      Pair(Leaf(w), b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(3)\n  let r = reshape(t)\n  let z = reshape(Leaf(0))\n  total(t) * 1000 + total(r) + total(z)\n}")
-  assert_bump_rc_agree(src, "borrow_bind_shared", "8010")
+  assert_bump_rc_agree(src = src, label = "borrow_bind_shared", expected = "8010")
 }
 
 test "a held bind (borrowed and consumed) fuses and keeps its child alive" {
@@ -145,8 +145,8 @@ test "a held bind (borrowed and consumed) fuses and keeps its child alive" {
   // so the child outlives every read. Both arms fuse -- TWO uniqueness
   // tests.
   let src = String::concat(tree_prelude(), "let rec incr2: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let w = total(a)\n      let a2 = incr2(a)\n      let b2 = incr2(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(3)\n  let r = incr2(t)\n  let z = incr2(Leaf(9))\n  total(r) * 100 + total(z)\n}")
-  assert_bump_rc_agree(src, "borrow_and_consume", "1610")
-  let rc_wasm = compile_wasi_rc(src, "main")
+  assert_bump_rc_agree(src = src, label = "borrow_and_consume", expected = "1610")
+  let rc_wasm = compile_wasi_rc(source = src, entry = "main")
   inspect(count_token_tests(rc_wasm), content = "2")
 }
 
@@ -164,8 +164,8 @@ test "a borrow read AFTER the consume fuses in held mode and still reads the liv
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec lv: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, _) => lv(a),\n    Leaf(v) => v\n  }\n}\nlet rec total: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\nlet swap: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => Pair(b, a),\n    Leaf(v) => Leaf(v)\n  }\n}\nlet use_after: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let x = swap(a)\n      let w = lv(a)\n      Pair(x, Leaf(w))\n    },\n    Leaf(v) => Leaf(v)\n  }\n}\nfn main() -> Int {\n  let r = use_after(Pair(Pair(Leaf(3), Leaf(7)), Leaf(1)))\n  let s = swap(Leaf(0))\n  total(r) + total(s)\n}"
   // r = Pair(swap(Pair(3,7)), Leaf(lv(original a))) = Pair(Pair(7,3), Leaf(3));
   // total(r) = 13, total(s) = 0 -> 13. A raw transfer would read w = 7 -> 17.
-  assert_bump_rc_agree(src, "borrow_after_consume", "13")
-  let rc_wasm = compile_wasi_rc(src, "main")
+  assert_bump_rc_agree(src = src, label = "borrow_after_consume", expected = "13")
+  let rc_wasm = compile_wasi_rc(source = src, entry = "main")
   inspect(count_token_tests(rc_wasm), content = "4")
 }
 
@@ -178,10 +178,10 @@ test "a doubly-consumed bind fuses in held mode: both consumers get a live child
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec total: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\nlet own: (Node) -> Node = (m) -> Pair(m, Leaf(0))\nlet dbl: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, _) => Pair(own(a), own(a)),\n    Leaf(v) => Leaf(v)\n  }\n}\nfn main() -> Int {\n  let t = Pair(Leaf(3), Leaf(4))\n  let r = dbl(t)\n  let u = dbl(Pair(Leaf(1), Leaf(2)))\n  total(t) * 1000 + total(r) * 10 + total(u)\n}"
   // total(t) = 7; r = Pair(Pair(Leaf(3), Leaf(0)), Pair(Leaf(3), Leaf(0)))
   // -> 6; u -> 2. 7000 + 60 + 2.
-  assert_bump_rc_agree(src, "double_consume", "7062")
+  assert_bump_rc_agree(src = src, label = "double_consume", expected = "7062")
   // dbl's Pair arm fuses through the wide path (held bind), its Leaf arm
   // narrowly; own and total have no rebuild arm.
-  let rc_wasm = compile_wasi_rc(src, "main")
+  let rc_wasm = compile_wasi_rc(source = src, entry = "main")
   inspect(count_token_tests(rc_wasm), content = "2")
 }
 
@@ -194,10 +194,10 @@ test "a constructor in one branch consumes the token; the other branch releases 
   let src = String::concat(tree_prelude(), "let rec prune: (Node, Int) -> Node = (n, d) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = prune(a, d - 1)\n      let b2 = prune(b, d - 1)\n      if d > 0 {\n        Pair(a2, b2)\n      } else {\n        Leaf(total(a2) + total(b2))\n      }\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let r = prune(build(5), 3)\n  let s = build(3)\n  let r2 = prune(s, 1)\n  total(r) * 1000 + total(s) * 10 + total(r2)\n}")
   // Every leaf becomes Leaf(2) or is summed into a Leaf, so total(prune(build(k), d))
   // is 2^(k+1) for any d: 64 * 1000 + 8 * 10 + 16.
-  assert_bump_rc_agree(src, "branch_consumer", "64096")
+  assert_bump_rc_agree(src = src, label = "branch_consumer", expected = "64096")
   // The Pair arm's consumer is a branch (wide path), the Leaf arm fuses
   // narrowly: exactly two uniqueness tests.
-  let rc_wasm = compile_wasi_rc(src, "main")
+  let rc_wasm = compile_wasi_rc(source = src, entry = "main")
   inspect(count_token_tests(rc_wasm), content = "2")
 }
 
@@ -207,8 +207,8 @@ test "a rebuild behind a statement prefix fuses" {
   // the arm, and the token is consumed by that tail.
   let src = String::concat(tree_prelude(), "let stamp: (Node, Array[Int]) -> Node = (n, log) -> {\n  match n {\n    Pair(a, b) => {\n      Array::push(log, total(a))\n      Pair(b, a)\n    },\n    Leaf(v) => Leaf(v)\n  }\n}\nfn main() -> Int {\n  let log: Array[Int] = []\n  let r = stamp(Pair(Leaf(1), Pair(Leaf(2), Leaf(3))), log)\n  let t = Pair(Leaf(5), Leaf(6))\n  let r2 = stamp(t, log)\n  let z = stamp(Leaf(9), log)\n  Array::get(log, 0) * 1000 + Array::get(log, 1) * 100 + total(r) + total(r2) + total(t) + total(z)\n}")
   // log = [1, 5]; total(r) = 6, total(r2) = 11, total(t) = 11, total(z) = 9.
-  assert_bump_rc_agree(src, "stmt_prefix", "1537")
-  let rc_wasm = compile_wasi_rc(src, "main")
+  assert_bump_rc_agree(src = src, label = "stmt_prefix", expected = "1537")
+  let rc_wasm = compile_wasi_rc(source = src, entry = "main")
   inspect(count_token_tests(rc_wasm), content = "2")
 }
 
@@ -224,7 +224,7 @@ test "a sibling arm with a conditional return is never authorized by the eligibl
   // tests may appear in the RC wasm: the B arm's and the L arm's; a
   // third means the A arm was fused by a sibling's authorization.
   let src = "enum Node {\n  A(Node);\n  B(Node);\n  L(Int)\n}\nlet rec step: (Node, Int) -> Node = (n, d) -> {\n  match n {\n    A(x) => {\n      let g = {\n        if d > 100 {\n          return L(9)\n        } else {\n          ()\n        }\n        0\n      }\n      A(step(x, d + g))\n    },\n    B(y) => B(step(y, d)),\n    L(v) => L(v + d)\n  }\n}\nlet rec val2: (Node) -> Int = (n) -> {\n  match n {\n    A(x) => 2 * val2(x) + 1,\n    B(y) => 3 * val2(y) + 2,\n    L(v) => v\n  }\n}\nfn main() -> Int {\n  let t = A(B(L(5)))\n  let r = step(t, 1)\n  let z = step(L(0), 3)\n  val2(r) * 10 + val2(z)\n}"
-  assert_bump_rc_agree(src, "sibling_return", "413")
-  let rc_wasm = compile_wasi_rc(src, "main")
+  assert_bump_rc_agree(src = src, label = "sibling_return", expected = "413")
+  let rc_wasm = compile_wasi_rc(source = src, entry = "main")
   inspect(count_token_tests(rc_wasm), content = "2")
 }

@@ -12,13 +12,13 @@ import ./alloc_spans.vibe {
 
 //# Helpers
 
-fn kinds_of(source: String) -> Array[String] with Exception {
+fn kinds_of(_ source: String) -> Array[String] with Exception {
   let spans = alloc_spans(source)
   let out = []
   let mut i = 0
   while i < Array::length(spans) {
-    let (_fn, kind, _off) = Array::get(spans, i)
-    Array::push(out, kind)
+    let (_fn, kind, _off) = Array::get(spans, at = i)
+    Array::push(out, value = kind)
     i = i + 1
   }
   out
@@ -29,7 +29,7 @@ fn has_kind(source: String, want: String) -> Bool with Exception {
   let mut i = 0
   let mut found = false
   while i < Array::length(ks) {
-    if Array::get(ks, i) == want {
+    if Array::get(ks, at = i) == want {
       found = true
     } else {
       ()
@@ -44,7 +44,7 @@ fn count_kind(source: String, want: String) -> Int with Exception {
   let mut i = 0
   let mut count = 0
   while i < Array::length(ks) {
-    if Array::get(ks, i) == want {
+    if Array::get(ks, at = i) == want {
       count = count + 1
     } else {
       ()
@@ -59,7 +59,7 @@ fn has_owner_kind(source: String, owner: String, want: String) -> Bool with Exce
   let mut i = 0
   let mut found = false
   while i < Array::length(spans) {
-    let (actual_owner, kind, _off) = Array::get(spans, i)
+    let (actual_owner, kind, _off) = Array::get(spans, at = i)
     if actual_owner == owner && kind == want {
       found = true
     } else {
@@ -70,25 +70,25 @@ fn has_owner_kind(source: String, owner: String, want: String) -> Bool with Exce
   found
 }
 
-fn fn_names_of(source: String) -> Array[String] with Exception {
+fn fn_names_of(_ source: String) -> Array[String] with Exception {
   let spans = alloc_spans(source)
   let out = []
   let mut i = 0
   while i < Array::length(spans) {
-    let (f, _kind, _off) = Array::get(spans, i)
-    Array::push(out, f)
+    let (f, _kind, _off) = Array::get(spans, at = i)
+    Array::push(out, value = f)
     i = i + 1
   }
   out
 }
 
-fn offsets_of(source: String) -> Array[Int] with Exception {
+fn offsets_of(_ source: String) -> Array[Int] with Exception {
   let spans = alloc_spans(source)
   let out = []
   let mut i = 0
   while i < Array::length(spans) {
-    let (_f, _kind, off) = Array::get(spans, i)
-    Array::push(out, off)
+    let (_f, _kind, off) = Array::get(spans, at = i)
+    Array::push(out, value = off)
     i = i + 1
   }
   out
@@ -105,58 +105,58 @@ test "a function that only reads reports nothing" {
 
 test "an allocating builtin call is reported, named" {
   let src = "fn j(a: String, b: String) -> String {\n  String::concat(a, b)\n}\n"
-  assert(has_kind(src, "builtin:String::concat"))
+  assert(has_kind(source = src, want = "builtin:String::concat"))
 }
 
 test "push is reported at every call -- it may regrow" {
   // A query that only counted constructors would call this loop zero-alloc.
   let src = "fn build(n: Int) -> Array[Int] {\n  let b = ArrayBuilder::new()\n  let mut i = 0\n  while i < n {\n    ArrayBuilder::push(b, i)\n    i = i + 1\n  }\n  ArrayBuilder::freeze(b)\n}\n"
-  assert(has_kind(src, "builtin:ArrayBuilder::push"))
-  assert(has_kind(src, "builtin:ArrayBuilder::new"))
+  assert(has_kind(source = src, want = "builtin:ArrayBuilder::push"))
+  assert(has_kind(source = src, want = "builtin:ArrayBuilder::new"))
 }
 
 test "a closure literal allocates its environment" {
   // Nothing in the source spells this out; it is one of the implicit
   // allocations ADR-0091 exists to surface.
   let src = "fn mk(n: Int) -> () -> Int {\n  () -> Int {\n    n\n  }\n}\n"
-  assert(has_kind(src, "closure"))
+  assert(has_kind(source = src, want = "closure"))
 }
 
 test "a capture-free lambda is an immediate function value, not a closure allocation" {
   let src = "fn mk() -> () -> Int {\n  () -> Int {\n    1\n  }\n}\n"
-  assert(!has_kind(src, "closure"))
+  assert(!has_kind(source = src, want = "closure"))
 }
 
 test "a top-level function reference does not make a lambda capture" {
   let src = "fn helper(n: Int) -> Int { n + 1 }\nfn mk() -> (Int) -> Int {\n  (n: Int) -> Int {\n    helper(n)\n  }\n}\n"
-  assert(!has_kind(src, "closure"))
+  assert(!has_kind(source = src, want = "closure"))
 }
 
 test "a shadowed builtin function value still makes a lambda capture" {
   let src = "fn mk(not: (Int) -> Int) -> () -> Int {\n  () -> Int {\n    not(1)\n  }\n}\n"
-  assert(has_kind(src, "closure"))
+  assert(has_kind(source = src, want = "closure"))
 }
 
 test "allocations inside a named local lambda belong to that lambda" {
   let src = "fn mk() -> () -> Array[Int] {\n  let build = () -> Array[Int] {\n    [1, 2]\n  }\n  build\n}\n"
-  assert(!has_owner_kind(src, "mk", "array"))
-  assert(has_owner_kind(src, "mk::build@0", "array"))
+  assert(!has_owner_kind(source = src, owner = "mk", want = "array"))
+  assert(has_owner_kind(source = src, owner = "mk::build@0", want = "array"))
 }
 
 test "a pattern binder shadows a same-named global for capture classification" {
   let src = "enum Box { Box(Int) }\nfn helper(n: Int) -> Int { n + 1 }\nfn mk(x: Box) -> () -> Int {\n  match x {\n    Box(helper) => () -> Int { helper }\n  }\n}\n"
-  assert(has_kind(src, "closure"))
+  assert(has_kind(source = src, want = "closure"))
 }
 
 test "same-named lambdas in sibling scopes have distinct owners" {
   let src = "fn mk(c: Bool) -> () -> Array[Int] {\n  if c {\n    let build = () -> Array[Int] { [1] }\n    build\n  } else {\n    let build = () -> Array[Int] { [2] }\n    build\n  }\n}\n"
-  assert(has_owner_kind(src, "mk::build@0", "array"))
-  assert(has_owner_kind(src, "mk::build@1", "array"))
+  assert(has_owner_kind(source = src, owner = "mk::build@0", want = "array"))
+  assert(has_owner_kind(source = src, owner = "mk::build@1", want = "array"))
 }
 
 test "a captured let mut is a heap ref cell, so the BINDING is a site" {
   let src = "fn counter() -> () -> Int {\n  let mut c = 0\n  () -> Int {\n    c = c + 1\n    c\n  }\n}\n"
-  assert(has_kind(src, "mut-cell"))
+  assert(has_kind(source = src, want = "mut-cell"))
 }
 
 test "an uncaptured let mut is a wasm local, so it is NOT a site" {
@@ -164,37 +164,37 @@ test "an uncaptured let mut is a wasm local, so it is NOT a site" {
   // `vibe escapes` reports, so the two queries cannot disagree about which
   // bindings get boxed.
   let src = "fn add(n: Int) -> Int {\n  let mut acc = 0\n  acc = acc + n\n  acc\n}\n"
-  assert(!has_kind(src, "mut-cell"))
+  assert(!has_kind(source = src, want = "mut-cell"))
 }
 
 test "literals that build a value are sites" {
   let src = "fn pair(a: Int, b: Int) -> (Int, Int) {\n  (a, b)\n}\n"
-  assert(has_kind(src, "tuple"))
+  assert(has_kind(source = src, want = "tuple"))
   let src2 = "fn three() -> Array[Int] {\n  [\n    1,\n    2,\n    3\n  ]\n}\n"
-  assert(has_kind(src2, "array"))
+  assert(has_kind(source = src2, want = "array"))
 }
 
 test "a float literal is a heap-box allocation site" {
   let src = "fn pi() -> Double {\n  3.14\n}\n"
-  assert(has_kind(src, "float"))
+  assert(has_kind(source = src, want = "float"))
 }
 
 test "map literals and handlers are allocation sites" {
   let map_src = "fn one() -> Map[String, Int] {\n  Map::from_pairs([(\"one\", 1)])\n}\n"
-  assert(has_kind(map_src, "map"))
+  assert(has_kind(source = map_src, want = "map"))
   let handle_src = "effect Ask { Ask() -> Int }\nfn answer() -> Int {\n  handle { perform Ask::Ask() } with {\n    Ask::Ask() => resume(42)\n  }\n}\n"
-  assert(has_kind(handle_src, "handler"))
+  assert(has_kind(source = handle_src, want = "handler"))
 }
 
 test "a bare enum constructor is conservatively an allocation site" {
   let src = "enum Maybe { None; Some(Int) }\nfn empty() -> Maybe {\n  None\n}\n"
-  assert(has_kind(src, "constructor:None"))
+  assert(has_kind(source = src, want = "constructor:None"))
 }
 
 test "a payload constructor is one constructor site, not an unknown builtin too" {
   let src = "enum Maybe { None; Some(Int) }\nfn one() -> Maybe {\n  Some(1)\n}\n"
-  assert_eq(count_kind(src, "constructor:Some"), 1)
-  assert(!has_kind(src, "builtin:Some"))
+  assert_eq(count_kind(source = src, want = "constructor:Some"), 1)
+  assert(!has_kind(source = src, want = "builtin:Some"))
 }
 
 test "valid cfg, deprecated, and zero_alloc directives do not make the query fail" {
@@ -202,14 +202,14 @@ test "valid cfg, deprecated, and zero_alloc directives do not make the query fai
   // coordinates in the original file. Counting inactive cfg sites is the
   // deliberate over-reporting side of this static query.
   let src = "#deprecated(\"use exact_pi\")\n#cfg(experimental)\n#zero_alloc\nfn pi() -> Double {\n  3.14\n}\n"
-  assert(has_kind(src, "float"))
+  assert(has_kind(source = src, want = "float"))
 }
 
 test "spanless literal sites inherit their statement offset, not byte zero" {
   let src = "fn pure() -> Int { 1 }\n\nfn later() -> Array[Int] {\n  [1, 2]\n}\n"
   let offsets = offsets_of(src)
   assert_eq(Array::length(offsets), 1)
-  assert_eq(Array::get(offsets, 0), String::index_of(src, "fn later"))
+  assert_eq(Array::get(offsets, at = 0), String::index_of(src, needle = "fn later"))
 }
 
 test "synthetic nodes never replace a real source fallback with offset minus one" {
@@ -217,7 +217,7 @@ test "synthetic nodes never replace a real source fallback with offset minus one
   let offsets = offsets_of(src)
   let mut i = 0
   while i < Array::length(offsets) {
-    assert(Array::get(offsets, i) >= 0)
+    assert(Array::get(offsets, at = i) >= 0)
     i = i + 1
   }
 }
@@ -226,8 +226,8 @@ test "sites are attributed to the enclosing top-level function" {
   let src = "fn a(s: String) -> String {\n  String::concat(s, s)\n}\n\nfn b(s: String) -> String {\n  String::concat(s, s)\n}\n"
   let names = fn_names_of(src)
   assert_eq(Array::length(names), 2)
-  assert_eq(Array::get(names, 0), "a")
-  assert_eq(Array::get(names, 1), "b")
+  assert_eq(Array::get(names, at = 0), "a")
+  assert_eq(Array::get(names, at = 1), "b")
 }
 
 test "test and bench bodies use whitespace-free allocation owners" {
@@ -237,8 +237,8 @@ test "test and bench bodies use whitespace-free allocation owners" {
   let src = "test \"makes array\" {\n  let xs = [1, 2]\n  assert_eq(Array::length(xs), 2)\n}\nbench \"line\\nbreak 100%\" {\n  [3, 4]\n}\n"
   let names = fn_names_of(src)
   assert_eq(Array::length(names), 2)
-  assert_eq(Array::get(names, 0), "makes%20array")
-  assert_eq(Array::get(names, 1), "line%0Abreak%20100%25")
+  assert_eq(Array::get(names, at = 0), "makes%20array")
+  assert_eq(Array::get(names, at = 1), "line%0Abreak%20100%25")
 }
 
 test "empty test and bench names use the keyword as owner (#1944)" {
@@ -247,13 +247,13 @@ test "empty test and bench names use the keyword as owner (#1944)" {
   let src = "test \"\" {\n  [1]\n}\nbench \"\" {\n  [2]\n}\n"
   let names = fn_names_of(src)
   assert_eq(Array::length(names), 2)
-  assert_eq(Array::get(names, 0), "test")
-  assert_eq(Array::get(names, 1), "bench")
+  assert_eq(Array::get(names, at = 0), "test")
+  assert_eq(Array::get(names, at = 1), "bench")
 }
 
 test "an unclassified callee is reported, not skipped" {
   // Same polarity as builtin_allocates: a name nobody classified counts as
   // allocating. Under-reporting here would be the silent-wrong direction.
   let src = "fn f(x: Int) -> Int {\n  Totally::MadeUp(x)\n}\n"
-  assert(has_kind(src, "builtin:Totally::MadeUp"))
+  assert(has_kind(source = src, want = "builtin:Totally::MadeUp"))
 }

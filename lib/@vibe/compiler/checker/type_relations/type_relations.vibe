@@ -40,11 +40,11 @@ let assignable_span_end: Array[Int] = array_empty()
 
 let assignable_enclosing: Array[String] = array_empty()
 
-export fn check_assignable_set_end(end: Int) -> Unit {
-  Array::truncate(assignable_span_end, 0)
-  Array::truncate(assignable_enclosing, 0)
+export fn check_assignable_set_end(_ end: Int) -> Unit {
+  Array::truncate(assignable_span_end, length = 0)
+  Array::truncate(assignable_enclosing, length = 0)
   if end > 0 {
-    Array::push(assignable_span_end, end)
+    Array::push(assignable_span_end, value = end)
   } else {
     ()
   }
@@ -56,26 +56,26 @@ export fn check_assignable_set_end(end: Int) -> Unit {
 /// `check_assignable_set_end`. The next reported mismatch consumes it; a
 /// caller whose check reports nothing clears it, so it cannot reach an
 /// unrelated diagnostic.
-export fn check_assignable_set_enclosing(path: String) -> Unit {
-  Array::truncate(assignable_enclosing, 0)
+export fn check_assignable_set_enclosing(_ path: String) -> Unit {
+  Array::truncate(assignable_enclosing, length = 0)
   if String::length(path) > 0 {
-    Array::push(assignable_enclosing, path)
+    Array::push(assignable_enclosing, value = path)
   } else {
     ()
   }
 }
 
-fn assignable_marker(off: Int) -> String {
+fn assignable_marker(_ off: Int) -> String {
   if Array::length(assignable_enclosing) > 0 {
-    let path = Array::get(assignable_enclosing, 0)
-    Array::truncate(assignable_enclosing, 0)
-    Array::truncate(assignable_span_end, 0)
-    off_marker_enclosing(off, path)
+    let path = Array::get(assignable_enclosing, at = 0)
+    Array::truncate(assignable_enclosing, length = 0)
+    Array::truncate(assignable_span_end, length = 0)
+    off_marker_enclosing(off = off, path = path)
   } else if Array::length(assignable_span_end) > 0 {
-    let end = Array::get(assignable_span_end, 0)
-    Array::truncate(assignable_span_end, 0)
+    let end = Array::get(assignable_span_end, at = 0)
+    Array::truncate(assignable_span_end, length = 0)
     if end > off {
-      off_marker_len(off, end - off)
+      off_marker_len(off = off, len = end - off)
     } else {
       off_marker(off)
     }
@@ -89,13 +89,13 @@ fn assignable_marker(off: Int) -> String {
 /// function VALUES are inferred imprecisely (a `with Exception` callback often
 /// arrives typed with no effect), so an effect-only difference must not be
 /// reported as a type error — only the structural shape is enforced here.
-fn strip_effects(ty: Type) -> Type {
+fn strip_effects(_ ty: Type) -> Type {
   match ty {
     CtFn(params, ret, _) => {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(params) {
-        Array::push(out, strip_effects(Array::get(params, i)))
+        Array::push(out, value = strip_effects(Array::get(params, at = i)))
         i = i + 1
       }
       CtFn(out, strip_effects(ret), None)
@@ -106,7 +106,7 @@ fn strip_effects(ty: Type) -> Type {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(elems) {
-        Array::push(out, strip_effects(Array::get(elems, i)))
+        Array::push(out, value = strip_effects(Array::get(elems, at = i)))
         i = i + 1
       }
       CtTuple(out)
@@ -115,7 +115,7 @@ fn strip_effects(ty: Type) -> Type {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(out, strip_effects(Array::get(args, i)))
+        Array::push(out, value = strip_effects(Array::get(args, at = i)))
         i = i + 1
       }
       CtNamed(name, out)
@@ -146,19 +146,19 @@ fn strip_effects(ty: Type) -> Type {
 /// be skipped. One that holds a function is refused too.
 fn retry_bind_unstripped(expected: Type, actual: Type, s: Subst, su: Subst) -> Option[Subst] {
   let occ: Array[(Int, Type)] = array_empty()
-  retry_collect_occurrences(expected, actual, s, su, occ)
+  retry_collect_occurrences(expected = expected, actual = actual, s = s, su = su, occ = occ)
   let mut out = s
   let mut ok = true
   let mut i = 0
   while i < Array::length(occ) && ok {
-    let (id, _) = Array::get(occ, i)
-    match subst_lookup(out, id) {
+    let (id, _) = Array::get(occ, at = i)
+    match subst_lookup(s = out, id = id) {
       Some(_) => (),
-      None => match retry_merge_occurrences(occ, id) {
-        Some(t) => if occurs_in(id, t) {
+      None => match retry_merge_occurrences(occ = occ, id = id) {
+        Some(t) => if occurs_in(id = id, ty = t) {
           ()
         } else {
-          out = retry_unify_occurrences(occ, id, t, subst_bind_value(id, t, out))
+          out = retry_unify_occurrences(occ = occ, id = id, chosen = t, s = subst_bind_value(id = id, ty = t, s = out))
         },
         None => ok = false
       }
@@ -171,9 +171,9 @@ fn retry_bind_unstripped(expected: Type, actual: Type, s: Subst, su: Subst) -> O
   // final binding of its variable.
   let mut ci = 0
   while ci < Array::length(occ) && ok {
-    let (id, t) = Array::get(occ, ci)
-    match subst_lookup(out, id) {
-      Some(_) => match retry_merge(subst_apply(out, CtVar(id)), subst_apply(out, t)) {
+    let (id, t) = Array::get(occ, at = ci)
+    match subst_lookup(s = out, id = id) {
+      Some(_) => match retry_merge(a = subst_apply(s = out, ty = CtVar(id)), b = subst_apply(s = out, ty = t)) {
         Some(_) => (),
         None => ok = false
       },
@@ -182,22 +182,22 @@ fn retry_bind_unstripped(expected: Type, actual: Type, s: Subst, su: Subst) -> O
     ci = ci + 1
   }
   let vars: Array[Int] = array_empty()
-  retry_collect_vars(subst_apply(s, expected), vars)
-  retry_collect_vars(subst_apply(s, actual), vars)
+  retry_collect_vars(t = subst_apply(s = s, ty = expected), out = vars)
+  retry_collect_vars(t = subst_apply(s = s, ty = actual), out = vars)
   let mut vi = 0
   while vi < Array::length(vars) && ok {
-    let id = Array::get(vars, vi)
-    match subst_lookup(out, id) {
+    let id = Array::get(vars, at = vi)
+    match subst_lookup(s = out, id = id) {
       Some(_) => (),
-      None => match subst_lookup(su, id) {
+      None => match subst_lookup(s = su, id = id) {
         Some(t) => {
-          let bound = subst_apply(su, t)
+          let bound = subst_apply(s = su, ty = t)
           if retry_type_has_fn(bound) {
             ok = false
-          } else if occurs_in(id, bound) {
+          } else if occurs_in(id = id, ty = bound) {
             ()
           } else {
-            out = subst_bind_value(id, bound, out)
+            out = subst_bind_value(id = id, ty = bound, s = out)
           }
         },
         None => ()
@@ -221,10 +221,10 @@ fn retry_unify_occurrences(occ: Array[(Int, Type)], id: Int, chosen: Type, s: Su
   let mut out = s
   let mut i = 0
   while i < Array::length(occ) {
-    let (oid, other) = Array::get(occ, i)
+    let (oid, other) = Array::get(occ, at = i)
     if oid == id {
-      out = retry_bind_from(other, chosen, out)
-      match unify(strip_effects(subst_apply(out, chosen)), strip_effects(subst_apply(out, other)), out) {
+      out = retry_bind_from(pattern = other, source = chosen, s = out)
+      match unify(a = strip_effects(subst_apply(s = out, ty = chosen)), b = strip_effects(subst_apply(s = out, ty = other)), s = out) {
         Some(u) => out = u,
         None => ()
       }
@@ -239,40 +239,40 @@ fn retry_unify_occurrences(occ: Array[(Int, Type)], id: Int, chosen: Type, s: Su
 /// Bind each open variable of `pattern` to the subtree of `source` at the
 /// same position, unstripped.
 fn retry_bind_from(pattern: Type, source: Type, s: Subst) -> Subst {
-  let p = subst_apply(s, pattern)
+  let p = subst_apply(s = s, ty = pattern)
   match p {
-    CtVar(id) => if occurs_in(id, source) {
+    CtVar(id) => if occurs_in(id = id, ty = source) {
       s
     } else {
-      subst_bind_value(id, source, s)
+      subst_bind_value(id = id, ty = source, s = s)
     },
     CtFn(pps, pr, _) => match source {
-      CtFn(sps, sr, _) => retry_bind_from(pr, sr, retry_bind_from_all(pps, sps, s)),
+      CtFn(sps, sr, _) => retry_bind_from(pattern = pr, source = sr, s = retry_bind_from_all(ps = pps, ss = sps, s = s)),
       _ => s
     },
     CtArray(pe) => match source {
-      CtArray(se) => retry_bind_from(pe, se, s),
+      CtArray(se) => retry_bind_from(pattern = pe, source = se, s = s),
       _ => s
     },
     CtOption(pe) => match source {
-      CtOption(se) => retry_bind_from(pe, se, s),
+      CtOption(se) => retry_bind_from(pattern = pe, source = se, s = s),
       _ => s
     },
     CtTuple(pes) => match source {
-      CtTuple(ses) => retry_bind_from_all(pes, ses, s),
+      CtTuple(ses) => retry_bind_from_all(ps = pes, ss = ses, s = s),
       _ => s
     },
     CtNamed(pn, pas) => match source {
       CtNamed(sn, sas) => if pn == sn {
-        retry_bind_from_all(pas, sas, s)
+        retry_bind_from_all(ps = pas, ss = sas, s = s)
       } else {
         s
       },
       _ => s
     },
     CtRecord(pfs) => match source {
-      CtRecord(sfs) => match retry_record_pairs(pfs, sfs) {
-        Some((pts, sts)) => retry_bind_from_all(pts, sts, s),
+      CtRecord(sfs) => match retry_record_pairs(a = pfs, b = sfs) {
+        Some((pts, sts)) => retry_bind_from_all(ps = pts, ss = sts, s = s),
         None => s
       },
       _ => s
@@ -286,7 +286,7 @@ fn retry_bind_from_all(ps: Array[Type], ss: Array[Type], s: Subst) -> Subst {
     let mut out = s
     let mut i = 0
     while i < Array::length(ps) {
-      out = retry_bind_from(Array::get(ps, i), Array::get(ss, i), out)
+      out = retry_bind_from(pattern = Array::get(ps, at = i), source = Array::get(ss, at = i), s = out)
       i = i + 1
     }
     out
@@ -302,11 +302,11 @@ fn retry_merge_occurrences(occ: Array[(Int, Type)], id: Int) -> Option[Type] {
   let mut ok = true
   let mut i = 0
   while i < Array::length(occ) && ok {
-    let (oid, t) = Array::get(occ, i)
+    let (oid, t) = Array::get(occ, at = i)
     if oid == id {
       acc = match acc {
         None => Some(t),
-        Some(a) => match retry_merge(a, t) {
+        Some(a) => match retry_merge(a = a, b = t) {
           Some(m) => Some(m),
           None => {
             ok = false
@@ -336,9 +336,9 @@ fn retry_merge(a: Type, b: Type) -> Option[Type] {
     _ => match a {
       CtVar(_) => Some(b),
       CtFn(aps, ar, arow) => match b {
-        CtFn(bps, br, brow) => if retry_same_row(arow, brow) {
-          match retry_merge_all(aps, bps) {
-            Some(ps) => match retry_merge(ar, br) {
+        CtFn(bps, br, brow) => if retry_same_row(a = arow, b = brow) {
+          match retry_merge_all(as_ = aps, bs = bps) {
+            Some(ps) => match retry_merge(a = ar, b = br) {
               Some(r) => Some(CtFn(ps, r, arow)),
               None => None
             },
@@ -350,21 +350,21 @@ fn retry_merge(a: Type, b: Type) -> Option[Type] {
         _ => Some(a)
       },
       CtArray(ae) => match b {
-        CtArray(be) => match retry_merge(ae, be) {
+        CtArray(be) => match retry_merge(a = ae, b = be) {
           Some(e) => Some(CtArray(e)),
           None => None
         },
         _ => Some(a)
       },
       CtOption(ae) => match b {
-        CtOption(be) => match retry_merge(ae, be) {
+        CtOption(be) => match retry_merge(a = ae, b = be) {
           Some(e) => Some(CtOption(e)),
           None => None
         },
         _ => Some(a)
       },
       CtTuple(aes) => match b {
-        CtTuple(bes) => match retry_merge_all(aes, bes) {
+        CtTuple(bes) => match retry_merge_all(as_ = aes, bs = bes) {
           Some(es) => Some(CtTuple(es)),
           None => None
         },
@@ -374,7 +374,7 @@ fn retry_merge(a: Type, b: Type) -> Option[Type] {
         CtNamed(bn, bargs) => if an != bn {
           Some(a)
         } else {
-          match retry_merge_all(aargs, bargs) {
+          match retry_merge_all(as_ = aargs, bs = bargs) {
             Some(args) => Some(CtNamed(an, args)),
             None => None
           }
@@ -382,14 +382,14 @@ fn retry_merge(a: Type, b: Type) -> Option[Type] {
         _ => Some(a)
       },
       CtRecord(afs) => match b {
-        CtRecord(bfs) => match retry_record_pairs(afs, bfs) {
-          Some((ats, bts)) => match retry_merge_all(ats, bts) {
+        CtRecord(bfs) => match retry_record_pairs(a = afs, b = bfs) {
+          Some((ats, bts)) => match retry_merge_all(as_ = ats, bs = bts) {
             Some(ts) => {
               let fields: Array[(String, Type)] = array_empty()
               let mut i = 0
               while i < Array::length(afs) {
-                let (n, _) = Array::get(afs, i)
-                Array::push(fields, (n, Array::get(ts, i)))
+                let (n, _) = Array::get(afs, at = i)
+                Array::push(fields, value = (n, Array::get(ts, at = i)))
                 i = i + 1
               }
               Some(CtRecord(fields))
@@ -411,8 +411,8 @@ fn retry_merge_all(as_: Array[Type], bs: Array[Type]) -> Option[Array[Type]] {
     let mut ok = true
     let mut i = 0
     while i < Array::length(as_) && ok {
-      match retry_merge(Array::get(as_, i), Array::get(bs, i)) {
-        Some(t) => Array::push(out, t),
+      match retry_merge(a = Array::get(as_, at = i), b = Array::get(bs, at = i)) {
+        Some(t) => Array::push(out, value = t),
         None => ok = false
       }
       i = i + 1
@@ -433,18 +433,18 @@ fn retry_merge_all(as_: Array[Type], bs: Array[Type]) -> Option[Array[Type]] {
 fn retry_same_row(a: Option[String], b: Option[String]) -> Bool {
   let al = row_labels(a)
   let bl = row_labels(b)
-  retry_labels_within(al, bl) && retry_labels_within(bl, al)
+  retry_labels_within(xs = al, ys = bl) && retry_labels_within(xs = bl, ys = al)
 }
 
 fn retry_labels_within(xs: Array[String], ys: Array[String]) -> Bool {
   let mut ok = true
   let mut i = 0
   while i < Array::length(xs) && ok {
-    let x = Array::get(xs, i)
+    let x = Array::get(xs, at = i)
     let mut seen = false
     let mut k = 0
     while k < Array::length(ys) && !seen {
-      seen = Array::get(ys, k) == x
+      seen = Array::get(ys, at = k) == x
       k = k + 1
     }
     ok = seen
@@ -455,7 +455,7 @@ fn retry_labels_within(xs: Array[String], ys: Array[String]) -> Bool {
 
 /// Does `t` hold a function type anywhere? Only there can stripping a
 /// binding lose a row.
-fn retry_type_has_fn(t: Type) -> Bool {
+fn retry_type_has_fn(_ t: Type) -> Bool {
   match t {
     CtFn(_, _, _) => true,
     CtArray(e) => retry_type_has_fn(e),
@@ -467,7 +467,7 @@ fn retry_type_has_fn(t: Type) -> Bool {
       let mut found = false
       let mut i = 0
       while i < Array::length(fields) && !found {
-        let (_, ft) = Array::get(fields, i)
+        let (_, ft) = Array::get(fields, at = i)
         found = retry_type_has_fn(ft)
         i = i + 1
       }
@@ -477,11 +477,11 @@ fn retry_type_has_fn(t: Type) -> Bool {
   }
 }
 
-fn retry_any_has_fn(ts: Array[Type]) -> Bool {
+fn retry_any_has_fn(_ ts: Array[Type]) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(ts) && !found {
-    found = retry_type_has_fn(Array::get(ts, i))
+    found = retry_type_has_fn(Array::get(ts, at = i))
     i = i + 1
   }
   found
@@ -489,44 +489,44 @@ fn retry_any_has_fn(ts: Array[Type]) -> Bool {
 
 fn retry_collect_vars(t: Type, out: Array[Int]) -> Unit {
   match t {
-    CtVar(id) => Array::push(out, id),
+    CtVar(id) => Array::push(out, value = id),
     CtFn(ps, r, _) => {
       let mut i = 0
       while i < Array::length(ps) {
-        retry_collect_vars(Array::get(ps, i), out)
+        retry_collect_vars(t = Array::get(ps, at = i), out = out)
         i = i + 1
       }
-      retry_collect_vars(r, out)
+      retry_collect_vars(t = r, out = out)
     },
-    CtArray(e) => retry_collect_vars(e, out),
-    CtOption(e) => retry_collect_vars(e, out),
+    CtArray(e) => retry_collect_vars(t = e, out = out),
+    CtOption(e) => retry_collect_vars(t = e, out = out),
     CtTuple(es) => {
       let mut i = 0
       while i < Array::length(es) {
-        retry_collect_vars(Array::get(es, i), out)
+        retry_collect_vars(t = Array::get(es, at = i), out = out)
         i = i + 1
       }
     },
     CtNamed(_, args) => {
       let mut i = 0
       while i < Array::length(args) {
-        retry_collect_vars(Array::get(args, i), out)
+        retry_collect_vars(t = Array::get(args, at = i), out = out)
         i = i + 1
       }
     },
     CtApplied(head, args) => {
-      retry_collect_vars(head, out)
+      retry_collect_vars(t = head, out = out)
       let mut i = 0
       while i < Array::length(args) {
-        retry_collect_vars(Array::get(args, i), out)
+        retry_collect_vars(t = Array::get(args, at = i), out = out)
         i = i + 1
       }
     },
     CtRecord(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, ft) = Array::get(fields, i)
-        retry_collect_vars(ft, out)
+        let (_, ft) = Array::get(fields, at = i)
+        retry_collect_vars(t = ft, out = out)
         i = i + 1
       }
     },
@@ -541,38 +541,38 @@ fn retry_collect_vars(t: Type, out: Array[Int]) -> Unit {
 /// constructor it unified with, the way `unify_hkt_ctors` and
 /// `unify_type_applications` decompose it.
 fn retry_collect_occurrences(expected: Type, actual: Type, s: Subst, su: Subst, occ: Array[(Int, Type)]) -> Unit {
-  let e = subst_apply(s, expected)
-  let a = subst_apply(s, actual)
+  let e = subst_apply(s = s, ty = expected)
+  let a = subst_apply(s = s, ty = actual)
   let e_var = match e {
-    CtVar(id) => match subst_lookup(su, id) {
+    CtVar(id) => match subst_lookup(s = su, id = id) {
       Some(_) => id,
       None => 0 - 1
     },
     _ => 0 - 1
   }
   let a_var = match a {
-    CtVar(id) => match subst_lookup(su, id) {
+    CtVar(id) => match subst_lookup(s = su, id = id) {
       Some(_) => id,
       None => 0 - 1
     },
     _ => 0 - 1
   }
   if e_var >= 0 {
-    Array::push(occ, (e_var, a))
+    Array::push(occ, value = (e_var, a))
   } else if a_var >= 0 {
-    Array::push(occ, (a_var, e))
+    Array::push(occ, value = (a_var, e))
   } else if is_hkt_app(e) && !is_hkt_app(a) {
-    retry_collect_hkt(e, a, true, s, su, occ)
+    retry_collect_hkt(app = e, other = a, app_is_expected = true, s = s, su = su, occ = occ)
   } else if is_hkt_app(a) && !is_hkt_app(e) {
-    retry_collect_hkt(a, e, false, s, su, occ)
+    retry_collect_hkt(app = a, other = e, app_is_expected = false, s = s, su = su, occ = occ)
   } else if retry_is_applied(e) || retry_is_applied(a) {
     // `F[T]` instantiated as `CtApplied`, met against `Option[..]` or another
     // application: `unify` pairs them through `type_application_view`.
     match type_application_view(e) {
       Some((eh, eargs)) => match type_application_view(a) {
         Some((ah, aargs)) => {
-          retry_collect_occurrences(eh, ah, s, su, occ)
-          retry_collect_all(eargs, aargs, s, su, occ)
+          retry_collect_occurrences(expected = eh, actual = ah, s = s, su = su, occ = occ)
+          retry_collect_all(es = eargs, as_ = aargs, s = s, su = su, occ = occ)
         },
         None => ()
       },
@@ -582,36 +582,36 @@ fn retry_collect_occurrences(expected: Type, actual: Type, s: Subst, su: Subst, 
     match e {
       CtFn(eps, er, _) => match a {
         CtFn(aps, ar, _) => if Array::length(eps) == Array::length(aps) {
-          retry_collect_all(eps, aps, s, su, occ)
-          retry_collect_occurrences(er, ar, s, su, occ)
+          retry_collect_all(es = eps, as_ = aps, s = s, su = su, occ = occ)
+          retry_collect_occurrences(expected = er, actual = ar, s = s, su = su, occ = occ)
         } else {
           ()
         },
         _ => ()
       },
       CtArray(ee) => match a {
-        CtArray(ae) => retry_collect_occurrences(ee, ae, s, su, occ),
+        CtArray(ae) => retry_collect_occurrences(expected = ee, actual = ae, s = s, su = su, occ = occ),
         _ => ()
       },
       CtOption(ee) => match a {
-        CtOption(ae) => retry_collect_occurrences(ee, ae, s, su, occ),
+        CtOption(ae) => retry_collect_occurrences(expected = ee, actual = ae, s = s, su = su, occ = occ),
         _ => ()
       },
       CtTuple(ees) => match a {
-        CtTuple(aes) => retry_collect_all(ees, aes, s, su, occ),
+        CtTuple(aes) => retry_collect_all(es = ees, as_ = aes, s = s, su = su, occ = occ),
         _ => ()
       },
       CtNamed(en, eas) => match a {
         CtNamed(an, aas) => if en == an {
-          retry_collect_all(eas, aas, s, su, occ)
+          retry_collect_all(es = eas, as_ = aas, s = s, su = su, occ = occ)
         } else {
           ()
         },
         _ => ()
       },
       CtRecord(efs) => match a {
-        CtRecord(afs) => match retry_record_pairs(efs, afs) {
-          Some((ets, ats)) => retry_collect_all(ets, ats, s, su, occ),
+        CtRecord(afs) => match retry_record_pairs(a = efs, b = afs) {
+          Some((ets, ats)) => retry_collect_all(es = ets, as_ = ats, s = s, su = su, occ = occ),
           None => ()
         },
         _ => ()
@@ -632,14 +632,14 @@ fn retry_record_pairs(a: Array[(String, Type)], b: Array[(String, Type)]) -> Opt
     let mut ok = true
     let mut i = 0
     while i < Array::length(a) && ok {
-      let (n, t) = Array::get(a, i)
+      let (n, t) = Array::get(a, at = i)
       let mut found = false
       let mut k = 0
       while k < Array::length(b) && !found {
-        let (bn, bt) = Array::get(b, k)
+        let (bn, bt) = Array::get(b, at = k)
         if bn == n {
-          Array::push(ats, t)
-          Array::push(bts, bt)
+          Array::push(ats, value = t)
+          Array::push(bts, value = bt)
           found = true
         } else {
           ()
@@ -657,7 +657,7 @@ fn retry_record_pairs(a: Array[(String, Type)], b: Array[(String, Type)]) -> Opt
   }
 }
 
-fn retry_is_applied(t: Type) -> Bool {
+fn retry_is_applied(_ t: Type) -> Bool {
   match t {
     CtApplied(_, _) => true,
     _ => false
@@ -672,7 +672,7 @@ fn retry_collect_hkt(app: Type, other: Type, app_is_expected: Bool, s: Subst, su
       let rest = array_empty()
       let mut i = 1
       while i < Array::length(aa) {
-        Array::push(rest, Array::get(aa, i))
+        Array::push(rest, value = Array::get(aa, at = i))
         i = i + 1
       }
       let others = match other {
@@ -682,9 +682,9 @@ fn retry_collect_hkt(app: Type, other: Type, app_is_expected: Bool, s: Subst, su
         _ => array_empty()
       }
       if app_is_expected {
-        retry_collect_all(rest, others, s, su, occ)
+        retry_collect_all(es = rest, as_ = others, s = s, su = su, occ = occ)
       } else {
-        retry_collect_all(others, rest, s, su, occ)
+        retry_collect_all(es = others, as_ = rest, s = s, su = su, occ = occ)
       }
     },
     _ => ()
@@ -695,7 +695,7 @@ fn retry_collect_all(es: Array[Type], as_: Array[Type], s: Subst, su: Subst, occ
   if Array::length(es) == Array::length(as_) {
     let mut i = 0
     while i < Array::length(es) {
-      retry_collect_occurrences(Array::get(es, i), Array::get(as_, i), s, su, occ)
+      retry_collect_occurrences(expected = Array::get(es, at = i), actual = Array::get(as_, at = i), s = s, su = su, occ = occ)
       i = i + 1
     }
   } else {
@@ -703,7 +703,7 @@ fn retry_collect_all(es: Array[Type], as_: Array[Type], s: Subst, su: Subst, occ
   }
 }
 
-export fn type_is_ground(t: Type) -> Bool {
+export fn type_is_ground(_ t: Type) -> Bool {
   match t {
     CtNamed(_, _) => false,
     CtVar(_) => false,
@@ -712,7 +712,7 @@ export fn type_is_ground(t: Type) -> Bool {
       let mut ok = true
       let mut i = 0
       while i < Array::length(items) {
-        if !type_is_ground(Array::get(items, i)) {
+        if !type_is_ground(Array::get(items, at = i)) {
           ok = false
         }
         i = i + 1
@@ -725,7 +725,7 @@ export fn type_is_ground(t: Type) -> Bool {
       let mut ok = type_is_ground(r)
       let mut i = 0
       while i < Array::length(ps) {
-        if !type_is_ground(Array::get(ps, i)) {
+        if !type_is_ground(Array::get(ps, at = i)) {
           ok = false
         }
         i = i + 1
@@ -742,7 +742,7 @@ export fn type_is_ground(t: Type) -> Bool {
 /// against a fully GROUND expected type, no instantiation of its variables can
 /// make it match, so the mismatch is real (unlike an un-instantiated generic
 /// param `CtNamed(T)`, which the checker simply has not substituted yet).
-fn type_no_named(t: Type) -> Bool {
+fn type_no_named(_ t: Type) -> Bool {
   match t {
     CtNamed(_, _) => false,
     CtForAll(_, _, _) => false,
@@ -750,7 +750,7 @@ fn type_no_named(t: Type) -> Bool {
       let mut ok = true
       let mut i = 0
       while i < Array::length(items) {
-        if !type_no_named(Array::get(items, i)) {
+        if !type_no_named(Array::get(items, at = i)) {
           ok = false
         }
         i = i + 1
@@ -763,7 +763,7 @@ fn type_no_named(t: Type) -> Bool {
       let mut ok = type_no_named(r)
       let mut i = 0
       while i < Array::length(ps) {
-        if !type_no_named(Array::get(ps, i)) {
+        if !type_no_named(Array::get(ps, at = i)) {
           ok = false
         }
         i = i + 1
@@ -780,7 +780,7 @@ fn type_no_named(t: Type) -> Bool {
 /// instantiation of their inner type parameters (an `Int` is never an `Array[T]`
 /// for any `T`), so such a unify failure is a real mismatch even when the inner
 /// parts are generic — which the whole-type groundness gate misses.
-export fn head_kind(t: Type) -> Int {
+export fn head_kind(_ t: Type) -> Int {
   match t {
     CtInt => 1,
     CtDouble => 2,
@@ -885,7 +885,7 @@ export fn head_kind(t: Type) -> Int {
   }
 }
 
-fn is_stdin_stream_internal(t: Type) -> Bool {
+fn is_stdin_stream_internal(_ t: Type) -> Bool {
   match t {
     CtStruct(n) => n == "#vibe_stdin_stream",
     _ => false
@@ -904,11 +904,11 @@ fn stdin_stream_nominal_conflict(expected: Type, actual: Type) -> Bool {
   } else {
     match expected {
       CtArray(e) => match actual {
-        CtArray(a) => stdin_stream_nominal_conflict(e, a),
+        CtArray(a) => stdin_stream_nominal_conflict(expected = e, actual = a),
         _ => false
       },
       CtOption(e) => match actual {
-        CtOption(a) => stdin_stream_nominal_conflict(e, a),
+        CtOption(a) => stdin_stream_nominal_conflict(expected = e, actual = a),
         _ => false
       },
       CtNamed(_, es) => match actual {
@@ -916,7 +916,7 @@ fn stdin_stream_nominal_conflict(expected: Type, actual: Type) -> Bool {
           let mut i = 0
           let mut conflict = false
           while i < Array::length(es) && !conflict {
-            conflict = stdin_stream_nominal_conflict(Array::get(es, i), Array::get(actuals, i))
+            conflict = stdin_stream_nominal_conflict(expected = Array::get(es, at = i), actual = Array::get(actuals, at = i))
             i = i + 1
           }
           conflict
@@ -930,7 +930,7 @@ fn stdin_stream_nominal_conflict(expected: Type, actual: Type) -> Bool {
           let mut i = 0
           let mut conflict = false
           while i < Array::length(es) && !conflict {
-            conflict = stdin_stream_nominal_conflict(Array::get(es, i), Array::get(actuals, i))
+            conflict = stdin_stream_nominal_conflict(expected = Array::get(es, at = i), actual = Array::get(actuals, at = i))
             i = i + 1
           }
           conflict
@@ -942,9 +942,9 @@ fn stdin_stream_nominal_conflict(expected: Type, actual: Type) -> Bool {
       CtFn(eps, er, _) => match actual {
         CtFn(aps, ar, _) => if Array::length(eps) == Array::length(aps) {
           let mut i = 0
-          let mut conflict = stdin_stream_nominal_conflict(er, ar)
+          let mut conflict = stdin_stream_nominal_conflict(expected = er, actual = ar)
           while i < Array::length(eps) && !conflict {
-            conflict = stdin_stream_nominal_conflict(Array::get(eps, i), Array::get(aps, i))
+            conflict = stdin_stream_nominal_conflict(expected = Array::get(eps, at = i), actual = Array::get(aps, at = i))
             i = i + 1
           }
           conflict
@@ -968,7 +968,7 @@ fn stdin_stream_nominal_conflict(expected: Type, actual: Type) -> Bool {
 /// `Error` (pervasive un-annotated throw sites, #640), `Async`
 /// (composition-allowed), and effect VARIABLES (single lowercase letter /
 /// `$N` fresh vars — not decidable without call-site row unification, #885).
-fn effect_label_is_exempt(lbl: String) -> Bool {
+fn effect_label_is_exempt(_ lbl: String) -> Bool {
   let len = String::length(lbl)
   // #3539: the ERASED exception label is no longer exempt. The #640
   // exemption assumed an un-annotated, pervasive throw row, but a row on a
@@ -978,7 +978,7 @@ fn effect_label_is_exempt(lbl: String) -> Bool {
   // refused there (ADR-0085); the erased spelling now is too. Erased and
   // kinded labels still match each other (`row_contains_label`), so a
   // `with Exception` slot accepts a `with Exception[K]` value.
-  if String::starts_with(lbl, "#region_") || String::starts_with(lbl, "#capture[") || String::starts_with(lbl, "#param[") || String::starts_with(lbl, "#aliasparam[") || String::starts_with(lbl, "#fieldparam[") || is_effect_inst_label(lbl) {
+  if String::starts_with(lbl, prefix = "#region_") || String::starts_with(lbl, prefix = "#capture[") || String::starts_with(lbl, prefix = "#param[") || String::starts_with(lbl, prefix = "#aliasparam[") || String::starts_with(lbl, prefix = "#fieldparam[") || is_effect_inst_label(lbl) {
     true
     // #1963: `is_runtime_scheduled_effect`, not `lbl == "Async"`. Row labels
     // can arrive operation-qualified (`Async::Suspend`), and the literal
@@ -987,24 +987,24 @@ fn effect_label_is_exempt(lbl: String) -> Bool {
   } else if is_runtime_scheduled_effect(lbl) {
     true
   } else if len == 1 {
-    String::char_code_at(lbl, 0) >= 97 && String::char_code_at(lbl, 0) <= 122
+    String::char_code_at(lbl, at = 0) >= 97 && String::char_code_at(lbl, at = 0) <= 122
   } else if len >= 2 {
-    String::char_code_at(lbl, 0) == 36
+    String::char_code_at(lbl, at = 0) == 36
   } else {
     true
   }
 }
 
-export fn row_labels(row: Option[String]) -> Array[String] {
+export fn row_labels(_ row: Option[String]) -> Array[String] {
   match row {
     Some(r) => {
-      let parts = String::split(r, ",")
+      let parts = String::split(r, sep = ",")
       let out = array_empty()
       let mut i = 0
       while i < Array::length(parts) {
-        let t = String::trim(Array::get(parts, i))
+        let t = String::trim(Array::get(parts, at = i))
         if String::length(t) > 0 {
-          Array::push(out, t)
+          Array::push(out, value = t)
         } else {
           ()
         }
@@ -1019,8 +1019,8 @@ export fn row_labels(row: Option[String]) -> Array[String] {
 /// #1340 (ADR-0071): base effect name of a row label — `State[Int]` strips
 /// to `State`, a bracketless label is its own base. (Local copy: the
 /// same-named helpers in checker_effects.vibe / core stay file-private.)
-fn ck_row_label_base(label: String) -> String {
-  let bi = String::index_of(label, "[")
+fn ck_row_label_base(_ label: String) -> String {
+  let bi = String::index_of(label, needle = "[")
   if bi > 0 {
     label[0: bi]
   } else {
@@ -1031,20 +1031,20 @@ fn ck_row_label_base(label: String) -> String {
 /// Does `row` name exception KINDS only -- at least one kinded exception
 /// label, no erased one, and no effect variable that could stand for the
 /// erased exception?
-fn row_is_kinded_exception_only(row: Option[String]) -> Bool {
+fn row_is_kinded_exception_only(_ row: Option[String]) -> Bool {
   let labels = row_labels(row)
   let mut kinded = false
   let mut open_row = false
   let mut i = 0
   while i < Array::length(labels) {
-    let l = Array::get(labels, i)
+    let l = Array::get(labels, at = i)
     if is_exception_label(l) {
       if String::length(exception_label_kind(l)) > 0 {
         kinded = true
       } else {
         open_row = true
       }
-    } else if (String::length(l) == 1 && String::char_code_at(l, 0) >= 97 && String::char_code_at(l, 0) <= 122) || (String::length(l) >= 2 && String::char_code_at(l, 0) == 36) {
+    } else if (String::length(l) == 1 && String::char_code_at(l, at = 0) >= 97 && String::char_code_at(l, at = 0) <= 122) || (String::length(l) >= 2 && String::char_code_at(l, at = 0) == 36) {
       open_row = true
     }
     i = i + 1
@@ -1054,7 +1054,7 @@ fn row_is_kinded_exception_only(row: Option[String]) -> Bool {
 
 /// #3540: does `row` name an exception kind and no erased exception label,
 /// beside a row variable (`with Exception[Int] + e`)?
-fn row_names_kind_beside_variable(row: Option[String]) -> Bool {
+fn row_names_kind_beside_variable(_ row: Option[String]) -> Bool {
   let mut kinded = false
   let mut erased = false
   let mut variable = false
@@ -1065,7 +1065,7 @@ fn row_names_kind_beside_variable(row: Option[String]) -> Bool {
       } else {
         erased = true
       }
-    } else if (String::length(l) == 1 && String::char_code_at(l, 0) >= 97 && String::char_code_at(l, 0) <= 122) || (String::length(l) >= 2 && String::char_code_at(l, 0) == 36) {
+    } else if (String::length(l) == 1 && String::char_code_at(l, at = 0) >= 97 && String::char_code_at(l, at = 0) <= 122) || (String::length(l) >= 2 && String::char_code_at(l, at = 0) == 36) {
       variable = true
     }
   }
@@ -1088,9 +1088,9 @@ fn row_contains_label(row: Option[String], lbl: String) -> Bool {
   let wanted = ck_row_label_base(lbl)
   let exc_wanted = is_exception_label(lbl)
   while i < Array::length(labels) && !found {
-    let have = Array::get(labels, i)
+    let have = Array::get(labels, at = i)
     let hit = if exc_wanted || is_exception_label(have) {
-      exception_effect_labels_equal(have, lbl)
+      exception_effect_labels_equal(left = have, right = lbl)
     } else {
       ck_row_label_base(have) == wanted
     }
@@ -1123,7 +1123,7 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
         let mut dropped = None
         let mut done = false
         while i < Array::length(alabels) && !done {
-          let lbl = Array::get(alabels, i)
+          let lbl = Array::get(alabels, at = i)
           // An ERASED exception label narrowed into a row that names only
           // kinds (the mirror of #3015): the value may raise any kind, the
           // slot promises only its own, and a kinded handler trusting the
@@ -1135,7 +1135,7 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
           // is not filled with the erased label, and a kinded handle around
           // the call trusts that it holds no exception.
           let narrowed = is_exception_label(lbl) && String::length(exception_label_kind(lbl)) == 0 && (row_is_kinded_exception_only(eeff) || row_names_kind_beside_variable(eeff))
-          if narrowed || (!effect_label_is_exempt(lbl) && !row_contains_label(eeff, lbl)) {
+          if narrowed || (!effect_label_is_exempt(lbl) && !row_contains_label(row = eeff, lbl = lbl)) {
             dropped = Some(lbl)
             done = true
           } else {
@@ -1146,7 +1146,7 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
         if !done && Array::length(eparams) == Array::length(aparams) {
           let mut pi = 0
           while pi < Array::length(eparams) && !done {
-            match effect_row_dropped(Array::get(aparams, pi), Array::get(eparams, pi)) {
+            match effect_row_dropped(expected = Array::get(aparams, at = pi), actual = Array::get(eparams, at = pi)) {
               Some(pl) => {
                 dropped = Some(pl)
                 done = true
@@ -1160,17 +1160,17 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
         }
         match dropped {
           Some(l) => Some(l),
-          None => effect_row_dropped(eret, aret)
+          None => effect_row_dropped(expected = eret, actual = aret)
         }
       },
       _ => None
     },
     CtArray(ee) => match actual {
-      CtArray(ae) => effect_row_dropped(ee, ae),
+      CtArray(ae) => effect_row_dropped(expected = ee, actual = ae),
       _ => None
     },
     CtOption(ee) => match actual {
-      CtOption(ae) => effect_row_dropped(ee, ae),
+      CtOption(ae) => effect_row_dropped(expected = ee, actual = ae),
       _ => None
     },
     CtTuple(ees) => match actual {
@@ -1179,7 +1179,7 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
         let mut dropped = None
         let mut done = false
         while i < Array::length(ees) && !done {
-          match effect_row_dropped(Array::get(ees, i), Array::get(aes, i)) {
+          match effect_row_dropped(expected = Array::get(ees, at = i), actual = Array::get(aes, at = i)) {
             Some(d) => {
               dropped = Some(d)
               done = true
@@ -1200,7 +1200,7 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
         let mut dropped = None
         let mut done = false
         while i < Array::length(eargs) && !done {
-          match effect_row_dropped(Array::get(eargs, i), Array::get(aargs, i)) {
+          match effect_row_dropped(expected = Array::get(eargs, at = i), actual = Array::get(aargs, at = i)) {
             Some(d) => {
               dropped = Some(d)
               done = true
@@ -1235,7 +1235,7 @@ fn row_loses_exception_kind(row: Option[String], kind: String) -> Bool {
       let k = exception_label_kind(l)
       if String::length(k) == 0 {
         erased = true
-      } else if exception_kinds_same(k, kind) {
+      } else if exception_kinds_same(a = k, b = kind) {
         keeps = true
       }
     }
@@ -1255,9 +1255,9 @@ fn erased_kind_lost(expected: Type, actual: Type) -> Option[String] {
       CtFn(aparams, aret, aeff) => {
         let mut lost = None
         for l in row_labels(aeff) {
-          if lost == None && is_exception_label(l) && String::index_of(l, "::") < 0 {
+          if lost == None && is_exception_label(l) && String::index_of(l, needle = "::") < 0 {
             let k = exception_label_kind(l)
-            if String::length(k) > 0 && !exception_kinds_same(k, "String") && row_loses_exception_kind(eeff, k) {
+            if String::length(k) > 0 && !exception_kinds_same(a = k, b = "String") && row_loses_exception_kind(row = eeff, kind = k) {
               lost = Some(l)
             }
           }
@@ -1265,12 +1265,12 @@ fn erased_kind_lost(expected: Type, actual: Type) -> Option[String] {
         if lost == None && Array::length(eparams) == Array::length(aparams) {
           let mut pi = 0
           while pi < Array::length(eparams) && lost == None {
-            lost = erased_kind_lost(Array::get(aparams, pi), Array::get(eparams, pi))
+            lost = erased_kind_lost(expected = Array::get(aparams, at = pi), actual = Array::get(eparams, at = pi))
             pi = pi + 1
           }
         }
         if lost == None {
-          erased_kind_lost(eret, aret)
+          erased_kind_lost(expected = eret, actual = aret)
         } else {
           lost
         }
@@ -1278,11 +1278,11 @@ fn erased_kind_lost(expected: Type, actual: Type) -> Option[String] {
       _ => None
     },
     CtArray(ee) => match actual {
-      CtArray(ae) => erased_kind_lost(ee, ae),
+      CtArray(ae) => erased_kind_lost(expected = ee, actual = ae),
       _ => None
     },
     CtOption(ee) => match actual {
-      CtOption(ae) => erased_kind_lost(ee, ae),
+      CtOption(ae) => erased_kind_lost(expected = ee, actual = ae),
       _ => None
     },
     CtTuple(ees) => match actual {
@@ -1290,7 +1290,7 @@ fn erased_kind_lost(expected: Type, actual: Type) -> Option[String] {
         let mut lost = None
         let mut i = 0
         while i < Array::length(ees) && lost == None {
-          lost = erased_kind_lost(Array::get(ees, i), Array::get(aes, i))
+          lost = erased_kind_lost(expected = Array::get(ees, at = i), actual = Array::get(aes, at = i))
           i = i + 1
         }
         lost
@@ -1304,7 +1304,7 @@ fn erased_kind_lost(expected: Type, actual: Type) -> Option[String] {
         let mut lost = None
         let mut i = 0
         while i < Array::length(eargs) && lost == None {
-          lost = erased_kind_lost(Array::get(eargs, i), Array::get(aargs, i))
+          lost = erased_kind_lost(expected = Array::get(eargs, at = i), actual = Array::get(aargs, at = i))
           i = i + 1
         }
         lost
@@ -1319,12 +1319,12 @@ fn erased_kind_lost(expected: Type, actual: Type) -> Option[String] {
     // plain mismatch before this runs; the branch keeps the answer when
     // either of those changes.
     CtRecord(efs) => match actual {
-      CtRecord(afs) => match retry_record_pairs(efs, afs) {
+      CtRecord(afs) => match retry_record_pairs(a = efs, b = afs) {
         Some((ets, ats)) => {
           let mut lost = None
           let mut i = 0
           while i < Array::length(ets) && lost == None {
-            lost = erased_kind_lost(Array::get(ets, i), Array::get(ats, i))
+            lost = erased_kind_lost(expected = Array::get(ets, at = i), actual = Array::get(ats, at = i))
             i = i + 1
           }
           lost
@@ -1340,11 +1340,11 @@ fn erased_kind_lost(expected: Type, actual: Type) -> Option[String] {
 /// Whether `t` mentions a function type whose row names the exception effect
 /// at all: the cheap test that lets `check_assignable_for` skip
 /// `erased_kind_lost` for nearly every assignment.
-fn type_mentions_exception_fn_row(t: Type) -> Bool {
+fn type_mentions_exception_fn_row(_ t: Type) -> Bool {
   match t {
     CtFn(ps, r, eff) => {
       let mut found = match eff {
-        Some(row) => String::contains(row, "Exception") || String::contains(row, "Error"),
+        Some(row) => String::contains(row, needle = "Exception") || String::contains(row, needle = "Error"),
         None => false
       }
       for p in ps {
@@ -1402,9 +1402,9 @@ fn erased_kind_lost_error(what: String, expected: Type, actual: Type, lbl: Strin
 /// be reported here (EXCEPT a concrete covariant row drop — see
 /// `effect_row_dropped` above, #939). Returns the (possibly extended)
 /// substitution.
-fn is_hkt_skolem(ty: Type) -> Bool {
+fn is_hkt_skolem(_ ty: Type) -> Bool {
   match ty {
-    CtNamed(n, args) => String::starts_with(n, "#hktformal.") && Array::length(args) == 0,
+    CtNamed(n, args) => String::starts_with(n, prefix = "#hktformal.") && Array::length(args) == 0,
     _ => false
   }
 }
@@ -1423,7 +1423,7 @@ fn hkt_skolem_differ(a: Type, b: Type) -> Bool {
   }
 }
 
-fn is_unresolved_head(ty: Type) -> Bool {
+fn is_unresolved_head(_ ty: Type) -> Bool {
   match ty {
     CtVar(_) => true,
     CtUnknown => true,
@@ -1441,7 +1441,7 @@ fn skolem_vs_concrete(a: Type, b: Type) -> Bool {
   } else if is_hkt_skolem(b) && !is_hkt_skolem(a) && !is_unresolved_head(a) {
     true
   } else {
-    hkt_skolem_differ(a, b)
+    hkt_skolem_differ(a = a, b = b)
   }
 }
 
@@ -1452,9 +1452,9 @@ fn named_args_skolem_differ(ea: Array[Type], aa: Array[Type]) -> Bool {
     let mut i = 0
     let mut differ = false
     while i < Array::length(ea) {
-      let e = Array::get(ea, i)
-      let a = Array::get(aa, i)
-      if rigid_applied_mismatch(e, a) {
+      let e = Array::get(ea, at = i)
+      let a = Array::get(aa, at = i)
+      if rigid_applied_mismatch(expected = e, actual = a) {
         differ = true
       } else {
         ()
@@ -1470,12 +1470,12 @@ fn named_args_skolem_differ(ea: Array[Type], aa: Array[Type]) -> Bool {
 /// `CtNamed` `#hkt` args so nested identity-as-map is not tolerated.
 /// Call-site `F` is a unification var so this does not run there.
 fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
-  if skolem_vs_concrete(expected, actual) {
+  if skolem_vs_concrete(a = expected, b = actual) {
     true
   } else if is_hkt_app(expected) && is_hkt_app(actual) {
     match expected {
       CtNamed(en, ea) => match actual {
-        CtNamed(an, aa) => en == an && named_args_skolem_differ(ea, aa),
+        CtNamed(an, aa) => en == an && named_args_skolem_differ(ea = ea, aa = aa),
         _ => false
       },
       _ => false
@@ -1487,11 +1487,11 @@ fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
   } else {
     match expected {
       CtArray(e) => match actual {
-        CtArray(a) => rigid_applied_mismatch(e, a),
+        CtArray(a) => rigid_applied_mismatch(expected = e, actual = a),
         _ => false
       },
       CtOption(e) => match actual {
-        CtOption(a) => rigid_applied_mismatch(e, a),
+        CtOption(a) => rigid_applied_mismatch(expected = e, actual = a),
         _ => false
       },
       CtTuple(ees) => match actual {
@@ -1501,7 +1501,7 @@ fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
           let mut i = 0
           let mut differ = false
           while i < Array::length(ees) {
-            if rigid_applied_mismatch(Array::get(ees, i), Array::get(aes, i)) {
+            if rigid_applied_mismatch(expected = Array::get(ees, at = i), actual = Array::get(aes, at = i)) {
               differ = true
             } else {
               ()
@@ -1517,9 +1517,9 @@ fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
           false
         } else {
           let mut i = 0
-          let mut differ = rigid_applied_mismatch(eret, aret)
+          let mut differ = rigid_applied_mismatch(expected = eret, actual = aret)
           while i < Array::length(eps) {
-            if rigid_applied_mismatch(Array::get(eps, i), Array::get(aps, i)) {
+            if rigid_applied_mismatch(expected = Array::get(eps, at = i), actual = Array::get(aps, at = i)) {
               differ = true
             } else {
               ()
@@ -1541,9 +1541,9 @@ fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
           let mut i = 0
           let mut differ = false
           while i < Array::length(ea) {
-            let e = Array::get(ea, i)
-            let a = Array::get(aa, i)
-            if (is_hkt_app(e) || is_hkt_app(a)) && rigid_applied_mismatch(e, a) {
+            let e = Array::get(ea, at = i)
+            let a = Array::get(aa, at = i)
+            if (is_hkt_app(e) || is_hkt_app(a)) && rigid_applied_mismatch(expected = e, actual = a) {
               differ = true
             } else {
               ()
@@ -1559,13 +1559,13 @@ fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
   }
 }
 
-fn reader_ident_byte(b: Int) -> Bool {
+fn reader_ident_byte(_ b: Int) -> Bool {
   (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_'
 }
 
 fn reader_region_skolem_at(raw: String, i: Int) -> Bool {
   let n = String::length(raw)
-  i + 8 < n && String::byte_at(raw, i) == '#' && String::substring(raw, i, i + 8) == "#region_" && String::byte_at(raw, i + 8) >= '0' && String::byte_at(raw, i + 8) <= '9'
+  i + 8 < n && String::byte_at(raw, at = i) == '#' && String::substring(raw, start = i, end = i + 8) == "#region_" && String::byte_at(raw, at = i + 8) >= '0' && String::byte_at(raw, at = i + 8) <= '9'
 }
 
 /// A type's spelling for a message. An effect variable a call instantiated
@@ -1579,38 +1579,38 @@ fn type_spelled_for_message(t: Type, blank_vars: Bool) -> String {
   let out = StringBuilder::new()
   let mut i = 0
   while i < n {
-    let var_start = blank_vars && i + 2 < n && String::byte_at(raw, i) == '?' && String::byte_at(raw, i + 1) == 't' && String::byte_at(raw, i + 2) >= '0' && String::byte_at(raw, i + 2) <= '9'
-    let eff_var_start = i + 1 < n && String::byte_at(raw, i) == '$' && String::byte_at(raw, i + 1) >= '0' && String::byte_at(raw, i + 1) <= '9' && (i == 0 || !reader_ident_byte(String::byte_at(raw, i - 1)))
+    let var_start = blank_vars && i + 2 < n && String::byte_at(raw, at = i) == '?' && String::byte_at(raw, at = i + 1) == 't' && String::byte_at(raw, at = i + 2) >= '0' && String::byte_at(raw, at = i + 2) <= '9'
+    let eff_var_start = i + 1 < n && String::byte_at(raw, at = i) == '$' && String::byte_at(raw, at = i + 1) >= '0' && String::byte_at(raw, at = i + 1) <= '9' && (i == 0 || !reader_ident_byte(String::byte_at(raw, at = i - 1)))
     if eff_var_start {
       let mut j = i + 1
-      while j < n && String::byte_at(raw, j) >= '0' && String::byte_at(raw, j) <= '9' {
+      while j < n && String::byte_at(raw, at = j) >= '0' && String::byte_at(raw, at = j) <= '9' {
         j = j + 1
       }
-      StringBuilder::push(out, effect_var_spelling(String::substring(raw, i, j)))
+      StringBuilder::push(out, value = effect_var_spelling(String::substring(raw, start = i, end = j)))
       i = j
-    } else if i > 0 && i + 1 < n && String::byte_at(raw, i) == '/' && reader_ident_byte(String::byte_at(raw, i - 1)) && String::byte_at(raw, i + 1) >= '0' && String::byte_at(raw, i + 1) <= '9' {
+    } else if i > 0 && i + 1 < n && String::byte_at(raw, at = i) == '/' && reader_ident_byte(String::byte_at(raw, at = i - 1)) && String::byte_at(raw, at = i + 1) >= '0' && String::byte_at(raw, at = i + 1) <= '9' {
       // #3548: a type constructor is keyed `Option/1`; the reader wrote
       // `Option`.
       i = i + 1
-      while i < n && String::byte_at(raw, i) >= '0' && String::byte_at(raw, i) <= '9' {
+      while i < n && String::byte_at(raw, at = i) >= '0' && String::byte_at(raw, at = i) <= '9' {
         i = i + 1
       }
     } else if var_start {
-      StringBuilder::push(out, "_")
+      StringBuilder::push(out, value = "_")
       i = i + 2
-      while i < n && String::byte_at(raw, i) >= '0' && String::byte_at(raw, i) <= '9' {
+      while i < n && String::byte_at(raw, at = i) >= '0' && String::byte_at(raw, at = i) <= '9' {
         i = i + 1
       }
-    } else if blank_vars && reader_region_skolem_at(raw, i) {
+    } else if blank_vars && reader_region_skolem_at(raw = raw, i = i) {
       // #3549: a `TaskGroup` region the checker made up (`#region_240`) is
       // not a name the reader wrote or can write: `Sender[_, _, Int]`.
-      StringBuilder::push(out, "_")
+      StringBuilder::push(out, value = "_")
       i = i + 8
-      while i < n && String::byte_at(raw, i) >= '0' && String::byte_at(raw, i) <= '9' {
+      while i < n && String::byte_at(raw, at = i) >= '0' && String::byte_at(raw, at = i) <= '9' {
         i = i + 1
       }
     } else {
-      StringBuilder::push(out, String::substring(raw, i, i + 1))
+      StringBuilder::push(out, value = String::substring(raw, start = i, end = i + 1))
       i = i + 1
     }
   }
@@ -1621,19 +1621,19 @@ fn type_spelled_for_message(t: Type, blank_vars: Bool) -> String {
 /// `_`, not the internal `?t429` the reader cannot act on, and an instantiated
 /// effect variable is the source's spelling. Display only: `type_to_string`
 /// stays the spelling keys are built from.
-export fn type_for_reader(t: Type) -> String {
-  type_spelled_for_message(t, true)
+export fn type_for_reader(_ t: Type) -> String {
+  type_spelled_for_message(t = t, blank_vars = true)
 }
 
 /// The `expected X, got Y` spelling: effect variables as the source wrote
 /// them, and an unresolved inference variable as `_` (#3520: `() -> ?t429
 /// with Async` named a variable the reader never wrote and cannot act on).
-fn type_for_mismatch(t: Type) -> String {
-  type_spelled_for_message(t, true)
+fn type_for_mismatch(_ t: Type) -> String {
+  type_spelled_for_message(t = t, blank_vars = true)
 }
 
 export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
-  check_assignable_for(expected, actual, s, errors, what, "", off)
+  check_assignable_for(expected = expected, actual = actual, s0 = s, errors = errors, what_head = what, what_tail = "", off = off)
 }
 
 /// #3598: where two alternatives of one value -- the branches of an `if`, the
@@ -1651,31 +1651,31 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
 /// written: a branch whose row the context does not allow is still refused
 /// at that context (the annotation, the result type, the parameter).
 export fn branch_join_widens(anchor: Type, later: Type, s: Subst) -> Option[Subst] {
-  match unify(anchor, later, s) {
+  match unify(a = anchor, b = later, s = s) {
     Some(_) => None,
-    None => match unify(strip_effects(anchor), strip_effects(later), s) {
+    None => match unify(a = strip_effects(anchor), b = strip_effects(later), s = s) {
       None => None,
       Some(_) => {
         // The probes report into scratch arrays; a pending span end or
         // enclosing path belongs to the caller's real report, so it is
         // restored rather than consumed here.
         let saved_end = if Array::length(assignable_span_end) > 0 {
-          Array::get(assignable_span_end, 0)
+          Array::get(assignable_span_end, at = 0)
         } else {
           0
         }
         let saved_enclosing = if Array::length(assignable_enclosing) > 0 {
-          Array::get(assignable_enclosing, 0)
+          Array::get(assignable_enclosing, at = 0)
         } else {
           ""
         }
         let fwd: Array[String] = array_empty()
-        let _ = check_assignable_for(anchor, later, s, fwd, "", "", 0 - 1)
+        let _ = check_assignable_for(expected = anchor, actual = later, s0 = s, errors = fwd, what_head = "", what_tail = "", off = 0 - 1)
         let out = if Array::length(fwd) == 0 {
           None
         } else {
           let rev: Array[String] = array_empty()
-          let rev_s = check_assignable_for(later, anchor, s, rev, "", "", 0 - 1)
+          let rev_s = check_assignable_for(expected = later, actual = anchor, s0 = s, errors = rev, what_head = "", what_tail = "", off = 0 - 1)
           if Array::length(rev) == 0 {
             Some(rev_s)
           } else {
@@ -1700,7 +1700,7 @@ export fn branch_join_widens(anchor: Type, later: Type, s: Subst) -> Option[Subs
 fn widen_open_fn_row(expected: Type, actual: Type, s: Subst) -> Subst {
   match expected {
     CtFn(_, _, eeff) => match actual {
-      CtFn(_, _, aeff) => match open_row_widening(eeff, aeff, s) {
+      CtFn(_, _, aeff) => match open_row_widening(expected = eeff, actual = aeff, s = s) {
         Some(widened) => widened,
         None => s
       },
@@ -1716,16 +1716,16 @@ fn widen_open_fn_row(expected: Type, actual: Type, s: Subst) -> Subst {
 /// the string first: ~25 ms of `__rt_str_concat` under `unify_call_args` in a
 /// cold self-compile, for calls that almost always agree.
 export fn check_assignable_for(expected: Type, actual: Type, s0: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
-  let s = widen_open_fn_row(expected, actual, s0)
-  let result = match unify(expected, actual, s) {
+  let s = widen_open_fn_row(expected = expected, actual = actual, s = s0)
+  let result = match unify(a = expected, b = actual, s = s) {
     Some(su) => {
       // #3601: a function value whose row names an exception kind, given to
       // a slot whose erased row would carry it only as a message.
       if type_mentions_exception_fn_row(expected) {
-        let ez = subst_apply(su, expected)
-        let az = subst_apply(su, actual)
-        match erased_kind_lost(ez, az) {
-          Some(lbl) => Array::push(errors, erased_kind_lost_error(String::concat(what_head, what_tail), ez, az, lbl, off)),
+        let ez = subst_apply(s = su, ty = expected)
+        let az = subst_apply(s = su, ty = actual)
+        match erased_kind_lost(expected = ez, actual = az) {
+          Some(lbl) => Array::push(errors, value = erased_kind_lost_error(what = String::concat(what_head, what_tail), expected = ez, actual = az, lbl = lbl, off = off)),
           None => ()
         }
       }
@@ -1739,7 +1739,7 @@ export fn check_assignable_for(expected: Type, actual: Type, s0: Subst, errors: 
       // skipped as an open variable (a closure crossed `TaskGroup::spawn`),
       // and `let n: Int = give(() -> "hello")` checked clean and printed a
       // pointer.
-      let structural_s = unify(strip_effects(expected), strip_effects(actual), s)
+      let structural_s = unify(a = strip_effects(expected), b = strip_effects(actual), s = s)
       let structural = match structural_s {
         Some(_) => true,
         None => false
@@ -1760,14 +1760,14 @@ export fn check_assignable_for(expected: Type, actual: Type, s0: Subst, errors: 
       // what catches `let g: (Int) -> String = (n) -> { n }`). A non-ground
       // expected, or an actual carrying an un-instantiated generic `CtNamed`,
       // is still tolerated to avoid over-rejecting polymorphic code.
-      let reportable = type_is_ground(subst_apply(s, expected)) && type_no_named(subst_apply(s, actual))
+      let reportable = type_is_ground(subst_apply(s = s, ty = expected)) && type_no_named(subst_apply(s = s, ty = actual))
       // Also report when the two types have DIFFERENT concrete top-level
       // constructors (e.g. `Array[T]` vs `Int` from `Array::length(5)`): no
       // instantiation of inner type parameters can reconcile them, so it is a
       // real mismatch even though the expected type is non-ground. A
       // var/named/unknown head (kind 0) on either side stays tolerated.
-      let eh = head_kind(subst_apply(s, expected))
-      let ah = head_kind(subst_apply(s, actual))
+      let eh = head_kind(subst_apply(s = s, ty = expected))
+      let ah = head_kind(subst_apply(s = s, ty = actual))
       let head_differ = eh != 0 && ah != 0 && eh != ah
       // #1001: a `CtNamed` head is kind 0 in `head_kind` (may be a rigid type
       // parameter), so `Result[Int,String]` vs `Option[Int]` — or the same
@@ -1777,12 +1777,12 @@ export fn check_assignable_for(expected: Type, actual: Type, s0: Subst, errors: 
       // head was never reported at all. Check that ahead of the existing
       // gates; internally gated on `type_fully_concrete` so a still-rigid
       // type parameter never triggers it.
-      let expected_zonked = subst_apply(s, expected)
-      let actual_zonked = subst_apply(s, actual)
-      let stdin_stream_conflict = stdin_stream_nominal_conflict(expected_zonked, actual_zonked)
-      let nominal_conflict = nominal_head_conflict(expected_zonked, actual_zonked)
-      let rigid_applied_conflict = rigid_applied_mismatch(expected_zonked, actual_zonked)
-      let argument_conflict = applied_argument_conflict(expected, actual_zonked, s)
+      let expected_zonked = subst_apply(s = s, ty = expected)
+      let actual_zonked = subst_apply(s = s, ty = actual)
+      let stdin_stream_conflict = stdin_stream_nominal_conflict(expected = expected_zonked, actual = actual_zonked)
+      let nominal_conflict = nominal_head_conflict(expected = expected_zonked, actual = actual_zonked)
+      let rigid_applied_conflict = rigid_applied_mismatch(expected = expected_zonked, actual = actual_zonked)
+      let argument_conflict = applied_argument_conflict(expected = expected, actual = actual_zonked, s = s)
       // A body that instantiated `T := Box[Int]` publishes that named type,
       // and `f(1)` is then Box vs Int. `type_is_ground` is false for every
       // `CtNamed` and `head_kind` of a named type is 0, so the existing
@@ -1795,9 +1795,9 @@ export fn check_assignable_for(expected: Type, actual: Type, s0: Subst, errors: 
       // given `(x: Int) -> Int` checked clean (the expected type mentions
       // `T`, so it is not ground) and trapped at the call with "indirect call
       // type mismatch".
-      let arity_conflict = fn_arity_conflict(expected_zonked, actual_zonked)
+      let arity_conflict = fn_arity_conflict(expected = expected_zonked, actual = actual_zonked)
       if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || argument_conflict || arity_conflict || (named_vs_scalar && !structural) {
-        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(expected_zonked), String::concat(", got ", String::concat(type_for_mismatch(actual_zonked), assignable_marker(off)))))))
+        Array::push(errors, value = String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(expected_zonked), String::concat(", got ", String::concat(type_for_mismatch(actual_zonked), assignable_marker(off)))))))
         s
       } else if structural {
         // #939: the structural retry tolerated EVERY effect-only difference,
@@ -1807,20 +1807,20 @@ export fn check_assignable_for(expected: Type, actual: Type, s0: Subst, errors: 
         // unhandled wasm exception at runtime. Report exactly that shape;
         // pure→effectful subsumption and Error/Async/effect-var differences
         // stay tolerated (see effect_row_dropped).
-        match erased_kind_lost(subst_apply(s, expected), subst_apply(s, actual)) {
-          Some(lbl) => Array::push(errors, erased_kind_lost_error(String::concat(what_head, what_tail), subst_apply(s, expected), subst_apply(s, actual), lbl, off)),
+        match erased_kind_lost(expected = subst_apply(s = s, ty = expected), actual = subst_apply(s = s, ty = actual)) {
+          Some(lbl) => Array::push(errors, value = erased_kind_lost_error(what = String::concat(what_head, what_tail), expected = subst_apply(s = s, ty = expected), actual = subst_apply(s = s, ty = actual), lbl = lbl, off = off)),
           None => ()
         }
-        match effect_row_dropped(subst_apply(s, expected), subst_apply(s, actual)) {
+        match effect_row_dropped(expected = subst_apply(s = s, ty = expected), actual = subst_apply(s = s, ty = actual)) {
           Some(lbl) => {
-            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_for_reader(subst_apply(s, actual)), String::concat(" cannot be used where ", String::concat(type_for_reader(subst_apply(s, expected)), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", assignable_marker(off))))))))))
+            Array::push(errors, value = String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_for_reader(subst_apply(s = s, ty = actual)), String::concat(" cannot be used where ", String::concat(type_for_reader(subst_apply(s = s, ty = expected)), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", assignable_marker(off))))))))))
             s
           },
           None => match structural_s {
-            Some(su) => match retry_bind_unstripped(expected, actual, s, su) {
+            Some(su) => match retry_bind_unstripped(expected = expected, actual = actual, s = s, su = su) {
               Some(out) => out,
               None => {
-                Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": annotate this value with the function type it should have: the function values in it carry effect rows that no single type covers (expected ", String::concat(type_for_mismatch(subst_apply(s, expected)), String::concat(", got ", String::concat(type_for_mismatch(subst_apply(s, actual)), String::concat(")", assignable_marker(off))))))))
+                Array::push(errors, value = String::concat(String::concat(what_head, what_tail), String::concat(": annotate this value with the function type it should have: the function values in it carry effect rows that no single type covers (expected ", String::concat(type_for_mismatch(subst_apply(s = s, ty = expected)), String::concat(", got ", String::concat(type_for_mismatch(subst_apply(s = s, ty = actual)), String::concat(")", assignable_marker(off))))))))
                 s
               }
             },
@@ -1850,28 +1850,28 @@ export fn check_assignable_for(expected: Type, actual: Type, s0: Subst, errors: 
         // slot), and reporting that shape would reject valid polymorphic
         // calls. A monomorphic signature (the #981 hole) is concrete without
         // any substitution, so the genuine cases all keep reporting.
-        match struct_row_arg_dropped(assignable_defs(), expected_zonked, actual_zonked) {
+        match struct_row_arg_dropped(defs = assignable_defs(), expected = expected_zonked, actual = actual_zonked) {
           // #3589: a struct's row argument holds a label the slot drops.
           Some(lbl) => if String::length(lbl) > 0 {
-            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_for_reader(actual_zonked), String::concat(" cannot be used where ", String::concat(type_for_reader(expected_zonked), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", assignable_marker(off))))))))))
+            Array::push(errors, value = String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_for_reader(actual_zonked), String::concat(" cannot be used where ", String::concat(type_for_reader(expected_zonked), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", assignable_marker(off))))))))))
             s
           } else {
-            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_reader(expected_zonked), String::concat(", got ", String::concat(type_for_reader(actual_zonked), String::concat(" -- give both the same effect row: a `mut` field, an array or a function parameter reaches it, so a value with fewer effects cannot stand for one with more", assignable_marker(off))))))))
+            Array::push(errors, value = String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_reader(expected_zonked), String::concat(", got ", String::concat(type_for_reader(actual_zonked), String::concat(" -- give both the same effect row: a `mut` field, an array or a function parameter reaches it, so a value with fewer effects cannot stand for one with more", assignable_marker(off))))))))
             s
           },
           None => if type_fully_concrete(expected) {
-            detect_narrowed_generic_mismatch_for(expected, actual, s, errors, what_head, what_tail, off)
+            detect_narrowed_generic_mismatch_for(expected = expected, actual = actual, s = s, errors = errors, what_head = what_head, what_tail = what_tail, off = off)
           } else {
             s
           }
         }
       } else {
-        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(subst_apply(s, expected)), String::concat(", got ", String::concat(type_for_mismatch(subst_apply(s, actual)), String::concat(float_double_assign_hint(subst_apply(s, expected), subst_apply(s, actual)), assignable_marker(off))))))))
+        Array::push(errors, value = String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(subst_apply(s = s, ty = expected)), String::concat(", got ", String::concat(type_for_mismatch(subst_apply(s = s, ty = actual)), String::concat(float_double_assign_hint(expected = subst_apply(s = s, ty = expected), actual = subst_apply(s = s, ty = actual)), assignable_marker(off))))))))
         s
       }
     }
   }
-  Array::truncate(assignable_span_end, 0)
+  Array::truncate(assignable_span_end, length = 0)
   result
 }
 
@@ -1924,23 +1924,23 @@ fn fn_arity_conflict(expected: Type, actual: Type) -> Bool {
     (CtFn(eps, er, _), CtFn(aps, ar, _)) => if Array::length(eps) != Array::length(aps) {
       true
     } else {
-      let mut hit = fn_arity_conflict(er, ar)
+      let mut hit = fn_arity_conflict(expected = er, actual = ar)
       let mut i = 0
       while !hit && i < Array::length(eps) {
-        hit = fn_arity_conflict(Array::get(eps, i), Array::get(aps, i))
+        hit = fn_arity_conflict(expected = Array::get(eps, at = i), actual = Array::get(aps, at = i))
         i = i + 1
       }
       hit
     },
-    (CtArray(e), CtArray(a)) => fn_arity_conflict(e, a),
-    (CtOption(e), CtOption(a)) => fn_arity_conflict(e, a),
+    (CtArray(e), CtArray(a)) => fn_arity_conflict(expected = e, actual = a),
+    (CtOption(e), CtOption(a)) => fn_arity_conflict(expected = e, actual = a),
     (CtTuple(es), CtTuple(acts)) => if Array::length(es) != Array::length(acts) {
       false
     } else {
       let mut hit = false
       let mut i = 0
       while !hit && i < Array::length(es) {
-        hit = fn_arity_conflict(Array::get(es, i), Array::get(acts, i))
+        hit = fn_arity_conflict(expected = Array::get(es, at = i), actual = Array::get(acts, at = i))
         i = i + 1
       }
       hit
@@ -1952,35 +1952,35 @@ fn fn_arity_conflict(expected: Type, actual: Type) -> Bool {
 fn applied_argument_conflict(expected: Type, actual: Type, s: Subst) -> Bool {
   match expected {
     CtNamed(en, eargs) => match actual {
-      CtNamed(an, aargs) => if en != an || String::starts_with(en, "#") {
+      CtNamed(an, aargs) => if en != an || String::starts_with(en, prefix = "#") {
         false
-      } else match owned_head_payload_span(en, Array::length(eargs)) {
-        Some((estart, count)) => match owned_head_payload_span(an, Array::length(aargs)) {
+      } else match owned_head_payload_span(name = en, argc = Array::length(eargs)) {
+        Some((estart, count)) => match owned_head_payload_span(name = an, argc = Array::length(aargs)) {
           Some((astart, acount)) => if count != acount {
             false
           } else {
-            applied_argument_conflict_pairwise(Array::slice(eargs, estart, estart + count), Array::slice(aargs, astart, astart + count), s)
+            applied_argument_conflict_pairwise(es = Array::slice(eargs, start = estart, end = estart + count), acts = Array::slice(aargs, start = astart, end = astart + count), s = s)
           },
           None => false
         },
-        None => applied_argument_conflict_pairwise(eargs, aargs, s)
+        None => applied_argument_conflict_pairwise(es = eargs, acts = aargs, s = s)
       },
       _ => false
     },
     CtArray(e) => match actual {
-      CtArray(a) => applied_argument_conflict(e, a, s),
+      CtArray(a) => applied_argument_conflict(expected = e, actual = a, s = s),
       _ => false
     },
     CtOption(e) => match actual {
-      CtOption(a) => applied_argument_conflict(e, a, s),
+      CtOption(a) => applied_argument_conflict(expected = e, actual = a, s = s),
       _ => false
     },
     CtTuple(es) => match actual {
-      CtTuple(acts) => nested_argument_conflict_pairwise(es, acts, s),
+      CtTuple(acts) => nested_argument_conflict_pairwise(es = es, acts = acts, s = s),
       _ => false
     },
     CtFn(eps, er, _) => match actual {
-      CtFn(aps, ar, _) => applied_argument_conflict(er, ar, s) || nested_argument_conflict_pairwise(eps, aps, s),
+      CtFn(aps, ar, _) => applied_argument_conflict(expected = er, actual = ar, s = s) || nested_argument_conflict_pairwise(es = eps, acts = aps, s = s),
       _ => false
     },
     _ => false
@@ -1997,12 +1997,12 @@ fn applied_argument_conflict_pairwise(es: Array[Type], acts: Array[Type], s: Sub
     let mut i = 0
     let mut conflict = false
     while i < Array::length(es) && !conflict {
-      let e = Array::get(es, i)
-      let a = Array::get(acts, i)
+      let e = Array::get(es, at = i)
+      let a = Array::get(acts, at = i)
       conflict = if argument_comparable(e) && argument_comparable(a) {
-        unify(strip_effects(e), strip_effects(a), s) is None
+        unify(a = strip_effects(e), b = strip_effects(a), s = s) is None
       } else {
-        applied_argument_conflict(e, a, s)
+        applied_argument_conflict(expected = e, actual = a, s = s)
       }
       i = i + 1
     }
@@ -2019,7 +2019,7 @@ fn nested_argument_conflict_pairwise(es: Array[Type], acts: Array[Type], s: Subs
     let mut i = 0
     let mut conflict = false
     while i < Array::length(es) && !conflict {
-      conflict = applied_argument_conflict(Array::get(es, i), Array::get(acts, i), s)
+      conflict = applied_argument_conflict(expected = Array::get(es, at = i), actual = Array::get(acts, at = i), s = s)
       i = i + 1
     }
     conflict
@@ -2029,15 +2029,15 @@ fn nested_argument_conflict_pairwise(es: Array[Type], acts: Array[Type], s: Subs
 /// Whether an argument position can be judged on its own: fully concrete
 /// (`type_fully_concrete`: no variable, formal, zero-argument name or
 /// unknown anywhere) and free of constructor-kinded parts.
-fn argument_comparable(t: Type) -> Bool {
+fn argument_comparable(_ t: Type) -> Bool {
   type_fully_concrete(t) && !mentions_constructor_kind(t)
 }
 
-fn mentions_constructor_kind(t: Type) -> Bool {
+fn mentions_constructor_kind(_ t: Type) -> Bool {
   match t {
     CtConstructor(_, _) => true,
     CtApplied(_, _) => true,
-    CtNamed(n, args) => String::starts_with(n, "#") || types_mention_constructor_kind(args),
+    CtNamed(n, args) => String::starts_with(n, prefix = "#") || types_mention_constructor_kind(args),
     CtArray(e) => mentions_constructor_kind(e),
     CtOption(e) => mentions_constructor_kind(e),
     CtTuple(items) => types_mention_constructor_kind(items),
@@ -2058,7 +2058,7 @@ fn mentions_constructor_kind(t: Type) -> Bool {
   }
 }
 
-fn types_mention_constructor_kind(ts: Array[Type]) -> Bool {
+fn types_mention_constructor_kind(_ ts: Array[Type]) -> Bool {
   let mut found = false
   for t in ts {
     if mentions_constructor_kind(t) {
@@ -2081,7 +2081,7 @@ fn types_mention_constructor_kind(ts: Array[Type]) -> Bool {
 /// `type_fully_concrete` confirms this occurrence is not that sentinel shape.
 /// `None` means "nothing nominal to compare" (a type variable, a builtin
 /// scalar, a container whose own head isn't itself nominal, etc).
-fn nominal_name_of(t: Type) -> Option[String] {
+fn nominal_name_of(_ t: Type) -> Option[String] {
   match t {
     CtOption(_) => Some("Option"),
     CtEnum(n) => Some(n),
@@ -2113,16 +2113,16 @@ fn nominal_name_of(t: Type) -> Option[String] {
 /// sees the declarations known at the point of the check.
 let assignable_type_defs: Array[Array[TypeDef]] = [[]]
 
-export fn check_assignable_set_type_defs(defs: Array[TypeDef]) -> Unit {
-  Array::set(assignable_type_defs, 0, defs)
+export fn check_assignable_set_type_defs(_ defs: Array[TypeDef]) -> Unit {
+  Array::set(assignable_type_defs, at = 0, value = defs)
 }
 
 fn assignable_defs() -> Array[TypeDef] {
-  Array::get(assignable_type_defs, 0)
+  Array::get(assignable_type_defs, at = 0)
 }
 
-fn source_declares_type(name: String) -> Bool {
-  match find_typedef(Array::get(assignable_type_defs, 0), name) {
+fn source_declares_type(_ name: String) -> Bool {
+  match find_typedef(defs = Array::get(assignable_type_defs, at = 0), name = name) {
     Some(td) => match td {
       TDStruct(_, _, _, _) => true,
       TDEnum(_, _, _) => true,
@@ -2153,9 +2153,9 @@ fn source_declares_type(name: String) -> Bool {
 /// source declaration (it is refused), so this never takes the crossing away
 /// from the builtin's own values. `#`-prefixed internal encodings (`#hkt`
 /// applications) are excluded too; `rigid_applied_mismatch` owns them.
-fn is_applied_declared_nominal(t: Type) -> Bool {
+fn is_applied_declared_nominal(_ t: Type) -> Bool {
   match t {
-    CtNamed(n, args) => if Array::length(args) == 0 || String::starts_with(n, "#") || is_unknown_arg_sentinel(args) {
+    CtNamed(n, args) => if Array::length(args) == 0 || String::starts_with(n, prefix = "#") || is_unknown_arg_sentinel(args) {
       false
     } else {
       match compiler_owned_type_arity(n) {
@@ -2179,11 +2179,11 @@ fn is_applied_declared_nominal(t: Type) -> Bool {
 /// structural nodes.
 fn compiler_owned_head_conflict(owned: Type, other: Type) -> Bool {
   match owned {
-    CtNamed(n, args) => if String::starts_with(n, "#") || is_unknown_arg_sentinel(args) || n == "Array" || n == "Option" {
+    CtNamed(n, args) => if String::starts_with(n, prefix = "#") || is_unknown_arg_sentinel(args) || n == "Array" || n == "Option" {
       false
     } else {
       match compiler_owned_type_arity(n) {
-        Some(_) => !source_declares_type(n) && has_builtin_value_head(other) && !compiler_owned_crossing(n, other),
+        Some(_) => !source_declares_type(n) && has_builtin_value_head(other) && !compiler_owned_crossing(head = n, other = other),
         None => false
       }
     },
@@ -2208,8 +2208,8 @@ fn compiler_owned_crossing(head: String, other: Type) -> Bool {
   }
 }
 
-fn is_unknown_arg_sentinel(args: Array[Type]) -> Bool {
-  Array::length(args) == 1 && match Array::get(args, 0) {
+fn is_unknown_arg_sentinel(_ args: Array[Type]) -> Bool {
+  Array::length(args) == 1 && match Array::get(args, at = 0) {
     CtUnknown => true,
     _ => false
   }
@@ -2220,7 +2220,7 @@ fn is_unknown_arg_sentinel(args: Array[Type]) -> Bool {
 /// a declared struct or enum, so against `is_applied_declared_nominal` no
 /// instantiation can reconcile the two. `Option` is absent because
 /// `nominal_name_of` already names it.
-fn has_builtin_value_head(t: Type) -> Bool {
+fn has_builtin_value_head(_ t: Type) -> Bool {
   match t {
     CtArray(_) => true,
     CtTuple(_) => true,
@@ -2258,7 +2258,7 @@ fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
     None => false
   }
   let declared_vs_builtin = (is_applied_declared_nominal(expected) && has_builtin_value_head(actual)) || (has_builtin_value_head(expected) && is_applied_declared_nominal(actual))
-  let owned_vs_builtin = compiler_owned_head_conflict(expected, actual) || compiler_owned_head_conflict(actual, expected)
+  let owned_vs_builtin = compiler_owned_head_conflict(owned = expected, other = actual) || compiler_owned_head_conflict(owned = actual, other = expected)
   if direct_conflict || declared_vs_builtin || owned_vs_builtin {
     true
   } else {
@@ -2268,7 +2268,7 @@ fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
           let mut i = 0
           let mut conflict = false
           while i < Array::length(eargs) && !conflict {
-            if nominal_head_conflict(Array::get(eargs, i), Array::get(aargs, i)) {
+            if nominal_head_conflict(expected = Array::get(eargs, at = i), actual = Array::get(aargs, at = i)) {
               conflict = true
             } else {
               ()
@@ -2282,11 +2282,11 @@ fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
         _ => false
       },
       CtArray(ee) => match actual {
-        CtArray(ae) => nominal_head_conflict(ee, ae),
+        CtArray(ae) => nominal_head_conflict(expected = ee, actual = ae),
         _ => false
       },
       CtOption(ee) => match actual {
-        CtOption(ae) => nominal_head_conflict(ee, ae),
+        CtOption(ae) => nominal_head_conflict(expected = ee, actual = ae),
         _ => false
       },
       CtTuple(ees) => match actual {
@@ -2294,7 +2294,7 @@ fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
           let mut i = 0
           let mut conflict = false
           while i < Array::length(ees) && !conflict {
-            if nominal_head_conflict(Array::get(ees, i), Array::get(aes, i)) {
+            if nominal_head_conflict(expected = Array::get(ees, at = i), actual = Array::get(aes, at = i)) {
               conflict = true
             } else {
               ()
@@ -2310,9 +2310,9 @@ fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
       CtFn(eps, er, _) => match actual {
         CtFn(aps, ar, _) => if Array::length(eps) == Array::length(aps) {
           let mut i = 0
-          let mut conflict = nominal_head_conflict(er, ar)
+          let mut conflict = nominal_head_conflict(expected = er, actual = ar)
           while i < Array::length(eps) && !conflict {
-            if nominal_head_conflict(Array::get(eps, i), Array::get(aps, i)) {
+            if nominal_head_conflict(expected = Array::get(eps, at = i), actual = Array::get(aps, at = i)) {
               conflict = true
             } else {
               ()
@@ -2348,7 +2348,7 @@ fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
 /// that shape as non-concrete. A REAL instantiated generic type (e.g. #829's
 /// `Box::{v:1}` -> `CtNamed("Box", [CtInt])`) never carries the bare
 /// `CtUnknown` sentinel as its own argument.
-export fn type_fully_concrete(t: Type) -> Bool {
+export fn type_fully_concrete(_ t: Type) -> Bool {
   match t {
     CtVar(_) => false,
     CtForAll(_, _, _) => false,
@@ -2370,7 +2370,7 @@ export fn type_fully_concrete(t: Type) -> Bool {
     // too so this narrowly-scoped check only ever fires when it is SURE both
     // sides are fully resolved.
     CtNamed(_, args) => {
-      let is_sentinel = Array::length(args) == 0 || (Array::length(args) == 1 && match Array::get(args, 0) {
+      let is_sentinel = Array::length(args) == 0 || (Array::length(args) == 1 && match Array::get(args, at = 0) {
         CtUnknown => true,
         _ => false
       })
@@ -2380,7 +2380,7 @@ export fn type_fully_concrete(t: Type) -> Bool {
         let mut ok = true
         let mut i = 0
         while i < Array::length(args) {
-          if !type_fully_concrete(Array::get(args, i)) {
+          if !type_fully_concrete(Array::get(args, at = i)) {
             ok = false
           }
           i = i + 1
@@ -2392,7 +2392,7 @@ export fn type_fully_concrete(t: Type) -> Bool {
       let mut ok = true
       let mut i = 0
       while i < Array::length(items) {
-        if !type_fully_concrete(Array::get(items, i)) {
+        if !type_fully_concrete(Array::get(items, at = i)) {
           ok = false
         }
         i = i + 1
@@ -2405,7 +2405,7 @@ export fn type_fully_concrete(t: Type) -> Bool {
       let mut ok = type_fully_concrete(r)
       let mut i = 0
       while i < Array::length(ps) {
-        if !type_fully_concrete(Array::get(ps, i)) {
+        if !type_fully_concrete(Array::get(ps, at = i)) {
           ok = false
         }
         i = i + 1
@@ -2416,7 +2416,7 @@ export fn type_fully_concrete(t: Type) -> Bool {
   }
 }
 
-fn is_builtin_scalar(t: Type) -> Bool {
+fn is_builtin_scalar(_ t: Type) -> Bool {
   match t {
     CtInt => true,
     CtDouble => true,
@@ -2430,7 +2430,7 @@ fn is_builtin_scalar(t: Type) -> Bool {
   }
 }
 
-fn is_fully_concrete_named(t: Type) -> Bool {
+fn is_fully_concrete_named(_ t: Type) -> Bool {
   match t {
     CtNamed(_, _) => type_fully_concrete(t),
     _ => false
@@ -2438,15 +2438,15 @@ fn is_fully_concrete_named(t: Type) -> Bool {
 }
 
 export fn detect_narrowed_generic_mismatch_for(expected: Type, actual: Type, s: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
-  let e2 = subst_apply(s, expected)
-  let a2 = subst_apply(s, actual)
+  let e2 = subst_apply(s = s, ty = expected)
+  let a2 = subst_apply(s = s, ty = actual)
   match e2 {
     CtNamed(ename, eargs) => match a2 {
       CtNamed(aname, aargs) => if ename == aname && Array::length(eargs) == Array::length(aargs) && Array::length(eargs) > 0 && type_fully_concrete(e2) && type_fully_concrete(a2) {
-        match unify(e2, a2, s) {
+        match unify(a = e2, b = a2, s = s) {
           Some(_) => s,
           None => {
-            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(e2), String::concat(", got ", String::concat(type_for_mismatch(a2), assignable_marker(off)))))))
+            Array::push(errors, value = String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_for_mismatch(e2), String::concat(", got ", String::concat(type_for_mismatch(a2), assignable_marker(off)))))))
             s
           }
         }
@@ -2463,7 +2463,7 @@ export fn field_rows_name(fields: Array[(String, Type)], formal: String) -> Bool
   if is_row_var_spelling(formal) {
     for f in fields {
       let (_, ft) = f
-      if !found && type_rows_name(ft, formal) {
+      if !found && type_rows_name(t = ft, label = formal) {
         found = true
       }
     }
@@ -2475,22 +2475,22 @@ fn type_rows_name(t: Type, label: String) -> Bool {
   match t {
     CtFn(ps, r, row) => {
       let mut found = match row {
-        Some(text) => row_name_has(plain_row_labels(text), label),
+        Some(text) => row_name_has(items = plain_row_labels(text), wanted = label),
         None => false
       }
       for p in ps {
-        if !found && type_rows_name(p, label) {
+        if !found && type_rows_name(t = p, label = label) {
           found = true
         }
       }
-      found || type_rows_name(r, label)
+      found || type_rows_name(t = r, label = label)
     },
-    CtArray(e) => type_rows_name(e, label),
-    CtOption(e) => type_rows_name(e, label),
+    CtArray(e) => type_rows_name(t = e, label = label),
+    CtOption(e) => type_rows_name(t = e, label = label),
     CtTuple(items) => {
       let mut found = false
       for x in items {
-        if !found && type_rows_name(x, label) {
+        if !found && type_rows_name(t = x, label = label) {
           found = true
         }
       }
@@ -2499,7 +2499,7 @@ fn type_rows_name(t: Type, label: String) -> Bool {
     CtNamed(_, xs) => {
       let mut found = false
       for x in xs {
-        if !found && type_rows_name(x, label) {
+        if !found && type_rows_name(t = x, label = label) {
           found = true
         }
       }
@@ -2521,17 +2521,17 @@ fn type_rows_name(t: Type, label: String) -> Bool {
 /// { x: t }`) stays an ordinary one: the question is answered by the
 /// declarations, not by the spelling.
 export fn struct_param_is_row(defs: Array[TypeDef], fields: Array[(String, Type)], formal: String) -> Bool {
-  struct_param_is_row_seen(defs, fields, formal, array_empty())
+  struct_param_is_row_seen(defs = defs, fields = fields, formal = formal, seen = array_empty())
 }
 
 fn struct_param_is_row_seen(defs: Array[TypeDef], fields: Array[(String, Type)], formal: String, seen: Array[String]) -> Bool {
-  if field_rows_name(fields, formal) {
+  if field_rows_name(fields = fields, formal = formal) {
     true
   } else if is_row_var_spelling(formal) {
     let mut found = false
     for f in fields {
       let (_, ft) = f
-      if !found && type_passes_row(defs, ft, formal, seen) {
+      if !found && type_passes_row(defs = defs, t = ft, formal = formal, seen = seen) {
         found = true
       }
     }
@@ -2548,31 +2548,31 @@ fn type_passes_row(defs: Array[TypeDef], t: Type, formal: String, seen: Array[St
       let mut found = false
       let mut k = 0
       while k < Array::length(xs) && !found {
-        let x = Array::get(xs, k)
-        found = if is_bare_type_name(x, formal) {
-          struct_row_param_at(defs, m, k, seen)
+        let x = Array::get(xs, at = k)
+        found = if is_bare_type_name(t = x, name = formal) {
+          struct_row_param_at(defs = defs, m = m, k = k, seen = seen)
         } else {
-          type_passes_row(defs, x, formal, seen)
+          type_passes_row(defs = defs, t = x, formal = formal, seen = seen)
         }
         k = k + 1
       }
       found
     },
     CtFn(ps, r, _) => {
-      let mut found = type_passes_row(defs, r, formal, seen)
+      let mut found = type_passes_row(defs = defs, t = r, formal = formal, seen = seen)
       for p in ps {
-        if !found && type_passes_row(defs, p, formal, seen) {
+        if !found && type_passes_row(defs = defs, t = p, formal = formal, seen = seen) {
           found = true
         }
       }
       found
     },
-    CtArray(e) => type_passes_row(defs, e, formal, seen),
-    CtOption(e) => type_passes_row(defs, e, formal, seen),
+    CtArray(e) => type_passes_row(defs = defs, t = e, formal = formal, seen = seen),
+    CtOption(e) => type_passes_row(defs = defs, t = e, formal = formal, seen = seen),
     CtTuple(items) => {
       let mut found = false
       for x in items {
-        if !found && type_passes_row(defs, x, formal, seen) {
+        if !found && type_passes_row(defs = defs, t = x, formal = formal, seen = seen) {
           found = true
         }
       }
@@ -2592,9 +2592,9 @@ fn is_bare_type_name(t: Type, name: String) -> Bool {
 fn seen_with(seen: Array[String], key: String) -> Array[String] {
   let out: Array[String] = []
   for x in seen {
-    Array::push(out, x)
+    Array::push(out, value = x)
   }
-  Array::push(out, key)
+  Array::push(out, value = key)
   out
 }
 
@@ -2603,12 +2603,12 @@ fn seen_with(seen: Array[String], key: String) -> Array[String] {
 /// cycle alone never makes a parameter a row.
 fn struct_row_param_at(defs: Array[TypeDef], m: String, k: Int, seen: Array[String]) -> Bool {
   let key = "\{m}.\{k}"
-  if row_name_has(seen, key) {
+  if row_name_has(items = seen, wanted = key) {
     false
   } else {
-    match find_typedef(defs, m) {
+    match find_typedef(defs = defs, name = m) {
       Some(TDStruct(_, fields, _, params)) => if k < Array::length(params) {
-        struct_param_is_row_seen(defs, fields, type_param_name(Array::get(params, k)), seen_with(seen, key))
+        struct_param_is_row_seen(defs = defs, fields = fields, formal = type_param_name(Array::get(params, at = k)), seen = seen_with(seen = seen, key = key))
       } else {
         false
       },
@@ -2626,18 +2626,18 @@ fn struct_row_param_at(defs: Array[TypeDef], m: String, k: Int, seen: Array[Stri
 /// a row parameter of its own that is covariant the same way.
 fn struct_row_param_covariant(defs: Array[TypeDef], m: String, k: Int, seen: Array[String]) -> Bool {
   let key = "\{m}.\{k}"
-  if row_name_has(seen, key) {
+  if row_name_has(items = seen, wanted = key) {
     true
   } else {
-    match find_typedef(defs, m) {
+    match find_typedef(defs = defs, name = m) {
       Some(TDStruct(_, fields, muts, params)) => if k < Array::length(params) {
-        let formal = type_param_name(Array::get(params, k))
-        let next = seen_with(seen, key)
+        let formal = type_param_name(Array::get(params, at = k))
+        let next = seen_with(seen = seen, key = key)
         let mut ok = true
         for f in fields {
           let (fname, ft) = f
-          if ok && type_mentions_name(ft, formal) {
-            ok = !row_name_has(muts, fname) && row_covariant_in(defs, ft, formal, next)
+          if ok && type_mentions_name(t = ft, name = formal) {
+            ok = !row_name_has(items = muts, wanted = fname) && row_covariant_in(defs = defs, t = ft, formal = formal, seen = next)
           }
         }
         ok
@@ -2652,20 +2652,20 @@ fn struct_row_param_covariant(defs: Array[TypeDef], m: String, k: Int, seen: Arr
 fn row_covariant_in(defs: Array[TypeDef], t: Type, formal: String, seen: Array[String]) -> Bool {
   match t {
     CtFn(ps, r, _) => {
-      let mut ok = row_covariant_in(defs, r, formal, seen)
+      let mut ok = row_covariant_in(defs = defs, t = r, formal = formal, seen = seen)
       for p in ps {
-        if ok && type_mentions_name(p, formal) {
+        if ok && type_mentions_name(t = p, name = formal) {
           ok = false
         }
       }
       ok
     },
-    CtOption(e) => row_covariant_in(defs, e, formal, seen),
+    CtOption(e) => row_covariant_in(defs = defs, t = e, formal = formal, seen = seen),
     CtTuple(items) => {
       let mut ok = true
       for x in items {
         if ok {
-          ok = row_covariant_in(defs, x, formal, seen)
+          ok = row_covariant_in(defs = defs, t = x, formal = formal, seen = seen)
         }
       }
       ok
@@ -2674,15 +2674,15 @@ fn row_covariant_in(defs: Array[TypeDef], t: Type, formal: String, seen: Array[S
       let mut ok = true
       let mut k = 0
       while k < Array::length(xs) && ok {
-        let x = Array::get(xs, k)
-        if type_mentions_name(x, formal) {
-          ok = is_bare_type_name(x, formal) && struct_row_param_at(defs, m, k, array_empty()) && struct_row_param_covariant(defs, m, k, seen)
+        let x = Array::get(xs, at = k)
+        if type_mentions_name(t = x, name = formal) {
+          ok = is_bare_type_name(t = x, name = formal) && struct_row_param_at(defs = defs, m = m, k = k, seen = array_empty()) && struct_row_param_covariant(defs = defs, m = m, k = k, seen = seen)
         }
         k = k + 1
       }
       ok
     },
-    _ => !type_mentions_name(t, formal)
+    _ => !type_mentions_name(t = t, name = formal)
   }
 }
 
@@ -2693,7 +2693,7 @@ fn type_mentions_name(t: Type, name: String) -> Bool {
     CtNamed(n, xs) => {
       let mut found = n == name
       for x in xs {
-        if !found && type_mentions_name(x, name) {
+        if !found && type_mentions_name(t = x, name = name) {
           found = true
         }
       }
@@ -2701,22 +2701,22 @@ fn type_mentions_name(t: Type, name: String) -> Bool {
     },
     CtFn(ps, r, row) => {
       let mut found = match row {
-        Some(text) => row_name_has(plain_row_labels(text), name),
+        Some(text) => row_name_has(items = plain_row_labels(text), wanted = name),
         None => false
-      } || type_mentions_name(r, name)
+      } || type_mentions_name(t = r, name = name)
       for p in ps {
-        if !found && type_mentions_name(p, name) {
+        if !found && type_mentions_name(t = p, name = name) {
           found = true
         }
       }
       found
     },
-    CtArray(e) => type_mentions_name(e, name),
-    CtOption(e) => type_mentions_name(e, name),
+    CtArray(e) => type_mentions_name(t = e, name = name),
+    CtOption(e) => type_mentions_name(t = e, name = name),
     CtTuple(items) => {
       let mut found = false
       for x in items {
-        if !found && type_mentions_name(x, name) {
+        if !found && type_mentions_name(t = x, name = name) {
           found = true
         }
       }
@@ -2726,7 +2726,7 @@ fn type_mentions_name(t: Type, name: String) -> Bool {
       let mut found = false
       for rf in rfields {
         let (_, rt) = rf
-        if !found && type_mentions_name(rt, name) {
+        if !found && type_mentions_name(t = rt, name = name) {
           found = true
         }
       }
@@ -2751,16 +2751,16 @@ export fn widen_struct_row_args(defs: Array[TypeDef], expected: Type, actual: Ty
       let out: Array[Type] = []
       let mut k = 0
       while k < Array::length(aargs) {
-        let ea = Array::get(eargs, k)
-        let aa = Array::get(aargs, k)
+        let ea = Array::get(eargs, at = k)
+        let aa = Array::get(aargs, at = k)
         let widens = match (ea, aa) {
-          (CtNamed(er, ers), CtNamed(ar, ars)) => Array::length(ers) == 0 && Array::length(ars) == 0 && er != ar && row_labels_within(ar, er) && struct_row_param_at(defs, en, k, array_empty()) && struct_row_param_covariant(defs, en, k, array_empty()),
+          (CtNamed(er, ers), CtNamed(ar, ars)) => Array::length(ers) == 0 && Array::length(ars) == 0 && er != ar && row_labels_within(inner = ar, outer = er) && struct_row_param_at(defs = defs, m = en, k = k, seen = array_empty()) && struct_row_param_covariant(defs = defs, m = en, k = k, seen = array_empty()),
           _ => false
         }
         if widens {
-          Array::push(out, ea)
+          Array::push(out, value = ea)
         } else {
-          Array::push(out, widen_struct_row_args(defs, ea, aa))
+          Array::push(out, value = widen_struct_row_args(defs = defs, expected = ea, actual = aa))
         }
         k = k + 1
       }
@@ -2768,12 +2768,12 @@ export fn widen_struct_row_args(defs: Array[TypeDef], expected: Type, actual: Ty
     } else {
       actual
     },
-    (CtOption(e), CtOption(a)) => CtOption(widen_struct_row_args(defs, e, a)),
+    (CtOption(e), CtOption(a)) => CtOption(widen_struct_row_args(defs = defs, expected = e, actual = a)),
     (CtTuple(es), CtTuple(xs)) => if Array::length(es) == Array::length(xs) {
       let out: Array[Type] = []
       let mut i = 0
       while i < Array::length(xs) {
-        Array::push(out, widen_struct_row_args(defs, Array::get(es, i), Array::get(xs, i)))
+        Array::push(out, value = widen_struct_row_args(defs = defs, expected = Array::get(es, at = i), actual = Array::get(xs, at = i)))
         i = i + 1
       }
       CtTuple(out)
@@ -2791,7 +2791,7 @@ fn row_labels_within(inner: String, outer: String) -> Bool {
   let have = plain_row_labels(outer)
   let mut ok = true
   for l in plain_row_labels(inner) {
-    if !row_name_has(have, l) {
+    if !row_name_has(items = have, wanted = l) {
       ok = false
     }
   }
@@ -2799,20 +2799,20 @@ fn row_labels_within(inner: String, outer: String) -> Bool {
 }
 
 /// The labels of a row as written, without the compiler's own `#` marks.
-export fn plain_row_labels(row: String) -> Array[String] {
+export fn plain_row_labels(_ row: String) -> Array[String] {
   let out: Array[String] = []
-  for seg in String::split(row, ",") {
+  for seg in String::split(row, sep = ",") {
     let l = String::trim(seg)
-    if String::length(l) > 0 && !String::starts_with(l, "#") {
-      Array::push(out, l)
+    if String::length(l) > 0 && !String::starts_with(l, prefix = "#") {
+      Array::push(out, value = l)
     }
   }
   out
 }
 
 /// A row variable's spelling: one lowercase letter.
-export fn is_row_var_spelling(l: String) -> Bool {
-  String::length(l) == 1 && String::char_code_at(l, 0) >= 97 && String::char_code_at(l, 0) <= 122
+export fn is_row_var_spelling(_ l: String) -> Bool {
+  String::length(l) == 1 && String::char_code_at(l, at = 0) >= 97 && String::char_code_at(l, at = 0) <= 122
 }
 
 fn row_name_has(items: Array[String], wanted: String) -> Bool {
@@ -2827,13 +2827,13 @@ fn row_name_has(items: Array[String], wanted: String) -> Bool {
 
 /// Is parameter `k` of the declared struct `m` a row parameter?
 export fn struct_row_param(defs: Array[TypeDef], m: String, k: Int) -> Bool {
-  struct_row_param_at(defs, m, k, array_empty())
+  struct_row_param_at(defs = defs, m = m, k = k, seen = array_empty())
 }
 
 /// A row variable among a row's labels: a source one (`e`) or one a call
 /// minted (`$4`).
-fn row_var_label(l: String) -> Bool {
-  is_row_var_spelling(l) || String::starts_with(l, "$")
+fn row_var_label(_ l: String) -> Bool {
+  is_row_var_spelling(l) || String::starts_with(l, prefix = "$")
 }
 
 /// #3589 (Codex review on #3594): where a value whose type passes a row to a
@@ -2853,15 +2853,15 @@ fn struct_row_arg_dropped(defs: Array[TypeDef], expected: Type, actual: Type) ->
       let mut out = None
       let mut k = 0
       while k < Array::length(eargs) && out is None {
-        let ea = Array::get(eargs, k)
-        let aa = Array::get(aargs, k)
+        let ea = Array::get(eargs, at = k)
+        let aa = Array::get(aargs, at = k)
         out = match (ea, aa) {
-          (CtNamed(er, ers), CtNamed(ar, ars)) => if Array::length(ers) == 0 && Array::length(ars) == 0 && er != ar && struct_row_param_at(defs, en, k, array_empty()) {
-            struct_row_label_dropped(defs, en, k, er, ar)
+          (CtNamed(er, ers), CtNamed(ar, ars)) => if Array::length(ers) == 0 && Array::length(ars) == 0 && er != ar && struct_row_param_at(defs = defs, m = en, k = k, seen = array_empty()) {
+            struct_row_label_dropped(defs = defs, m = en, k = k, expected_row = er, actual_row = ar)
           } else {
-            struct_row_arg_dropped(defs, ea, aa)
+            struct_row_arg_dropped(defs = defs, expected = ea, actual = aa)
           },
-          _ => struct_row_arg_dropped(defs, ea, aa)
+          _ => struct_row_arg_dropped(defs = defs, expected = ea, actual = aa)
         }
         k = k + 1
       }
@@ -2869,13 +2869,13 @@ fn struct_row_arg_dropped(defs: Array[TypeDef], expected: Type, actual: Type) ->
     } else {
       None
     },
-    (CtArray(e), CtArray(a)) => struct_row_arg_dropped(defs, e, a),
-    (CtOption(e), CtOption(a)) => struct_row_arg_dropped(defs, e, a),
+    (CtArray(e), CtArray(a)) => struct_row_arg_dropped(defs = defs, expected = e, actual = a),
+    (CtOption(e), CtOption(a)) => struct_row_arg_dropped(defs = defs, expected = e, actual = a),
     (CtTuple(es), CtTuple(xs)) => if Array::length(es) == Array::length(xs) {
       let mut out = None
       let mut i = 0
       while i < Array::length(es) && out is None {
-        out = struct_row_arg_dropped(defs, Array::get(es, i), Array::get(xs, i))
+        out = struct_row_arg_dropped(defs = defs, expected = Array::get(es, at = i), actual = Array::get(xs, at = i))
         i = i + 1
       }
       out
@@ -2883,13 +2883,13 @@ fn struct_row_arg_dropped(defs: Array[TypeDef], expected: Type, actual: Type) ->
       None
     },
     (CtFn(eps, er, _), CtFn(aps, ar, _)) => {
-      let mut out = struct_row_arg_dropped(defs, er, ar)
+      let mut out = struct_row_arg_dropped(defs = defs, expected = er, actual = ar)
       if Array::length(eps) == Array::length(aps) {
         let mut i = 0
         while i < Array::length(eps) && out is None {
           // A parameter is contravariant: the slot's parameter is what the
           // value's function will be handed.
-          out = struct_row_arg_dropped(defs, Array::get(aps, i), Array::get(eps, i))
+          out = struct_row_arg_dropped(defs = defs, expected = Array::get(aps, at = i), actual = Array::get(eps, at = i))
           i = i + 1
         }
       }
@@ -2919,14 +2919,14 @@ fn struct_row_label_dropped(defs: Array[TypeDef], m: String, k: Int, expected_ro
     let mut dropped = None
     let mut found = false
     for l in have {
-      if !found && !row_name_has(want, l) {
+      if !found && !row_name_has(items = want, wanted = l) {
         dropped = Some(l)
         found = true
       }
     }
     match dropped {
       Some(l) => Some(l),
-      None => if Array::length(have) == Array::length(want) || struct_row_param_covariant(defs, m, k, array_empty()) {
+      None => if Array::length(have) == Array::length(want) || struct_row_param_covariant(defs = defs, m = m, k = k, seen = array_empty()) {
         None
       } else {
         Some("")
@@ -2940,8 +2940,8 @@ fn struct_row_label_dropped(defs: Array[TypeDef], m: String, k: Int, expected_ro
 /// (after `type mismatch in '<op>`) leads with the edit -- an `f` suffix on a
 /// Double literal, or an explicit conversion -- instead of `base`.
 export fn float_mix_hint(left_ty: Type, right_ty: Type, s: Subst, base: String) -> String {
-  let l = subst_apply(s, left_ty)
-  let r = subst_apply(s, right_ty)
+  let l = subst_apply(s = s, ty = left_ty)
+  let r = subst_apply(s = s, ty = right_ty)
   let lf = match l {
     CtFloat => true,
     _ => false

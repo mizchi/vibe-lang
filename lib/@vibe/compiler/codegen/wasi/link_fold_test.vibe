@@ -21,35 +21,35 @@ fn add(out: Array[Stmt], src: String) -> Unit with Exception {
   let parsed = parse_program(lex(src))
   let mut i = 0
   while i < Array::length(parsed) {
-    Array::push(out, Array::get(parsed, i))
+    Array::push(out, value = Array::get(parsed, at = i))
     i = i + 1
   }
 }
 
 /// The names the fold left, in order.
-fn names(stmts: Array[Stmt]) -> String {
+fn names(_ stmts: Array[Stmt]) -> String {
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, n, _, _) => Array::push(out, n),
-      SEffectDef(_, n, _, _) => Array::push(out, String::concat("effect ", n)),
-      _ => Array::push(out, "?")
+    match Array::get(stmts, at = i) {
+      SLet(_, _, n, _, _) => Array::push(out, value = n),
+      SEffectDef(_, n, _, _) => Array::push(out, value = String::concat("effect ", n)),
+      _ => Array::push(out, value = "?")
     }
     i = i + 1
   }
-  String::join(out, ", ")
+  String::join(out, sep = ", ")
 }
 
 test "two modules that synthesized the same helper leave one" {
   let stmts: Array[Stmt] = []
-  add(stmts, "let keep = 1\n")
-  add(stmts, "let __arr_equals__A1_N3_Int = 2\n")
-  add(stmts, "let __arr_equals__A1_N3_Int = 2\n")
-  add(stmts, "let tail = 3\n")
-  let folded = link_fold_duplicate_definitions(stmts, [
+  add(out = stmts, src = "let keep = 1\n")
+  add(out = stmts, src = "let __arr_equals__A1_N3_Int = 2\n")
+  add(out = stmts, src = "let __arr_equals__A1_N3_Int = 2\n")
+  add(out = stmts, src = "let tail = 3\n")
+  let folded = link_fold_duplicate_definitions(stmts = stmts, foldable_keys = [
     "let:__arr_equals__A1_N3_Int"
-  ], print_stmt)
+  ], render = print_stmt)
   inspect(names(folded), content = "keep, __arr_equals__A1_N3_Int, tail")
 }
 
@@ -61,21 +61,21 @@ test "two modules that synthesized the same helper leave one" {
 // guarded -- the caller never offers a source declaration.
 test "a definition the program legitimately carries twice is not offered, so it survives" {
   let stmts: Array[Stmt] = []
-  add(stmts, "effect Source {\n  Read(String) -> String\n}\n")
-  add(stmts, "effect Source {\n  Read(String) -> String\n}\n")
+  add(out = stmts, src = "effect Source {\n  Read(String) -> String\n}\n")
+  add(out = stmts, src = "effect Source {\n  Read(String) -> String\n}\n")
   // The link is told only about a synthesized helper, which is not here.
-  let folded = link_fold_duplicate_definitions(stmts, [
+  let folded = link_fold_duplicate_definitions(stmts = stmts, foldable_keys = [
     "let:__arr_equals__A1_N3_Int"
-  ], print_stmt)
+  ], render = print_stmt)
   inspect(names(folded), content = "effect Source, effect Source")
   // And with no foldable key at all, nothing folds.
-  inspect(names(link_fold_duplicate_definitions(stmts, [], print_stmt)), content = "effect Source, effect Source")
+  inspect(names(link_fold_duplicate_definitions(stmts = stmts, foldable_keys = [], render = print_stmt)), content = "effect Source, effect Source")
 }
 
 /// The message, or `no throw`.
 fn fold_throws(stmts: Array[Stmt], keys: Array[String]) -> String {
   handle {
-    let out = link_fold_duplicate_definitions(stmts, keys, print_stmt)
+    let out = link_fold_duplicate_definitions(stmts = stmts, foldable_keys = keys, render = print_stmt)
     String::concat("no throw: ", names(out))
   } with { Exception::Throw(m) => m }
 }
@@ -86,16 +86,16 @@ fn fold_throws(stmts: Array[Stmt], keys: Array[String]) -> String {
 // so this refuses.
 test "two different definitions under one synthesized name are refused, not folded" {
   let stmts: Array[Stmt] = []
-  add(stmts, "let __arr_equals__A1_N3_Int = 2\n")
-  add(stmts, "let __arr_equals__A1_N3_Int = 99\n")
-  let msg = fold_throws(stmts, ["let:__arr_equals__A1_N3_Int"])
-  inspect(String::contains(msg, "two different definitions of let:__arr_equals__A1_N3_Int"), content = "true")
+  add(out = stmts, src = "let __arr_equals__A1_N3_Int = 2\n")
+  add(out = stmts, src = "let __arr_equals__A1_N3_Int = 99\n")
+  let msg = fold_throws(stmts = stmts, keys = ["let:__arr_equals__A1_N3_Int"])
+  inspect(String::contains(msg, needle = "two different definitions of let:__arr_equals__A1_N3_Int"), content = "true")
   // The control: identical bodies under the same key fold instead of throwing,
   // so the refusal is the content check and not the fold refusing everything.
   let same: Array[Stmt] = []
-  add(same, "let __arr_equals__A1_N3_Int = 2\n")
-  add(same, "let __arr_equals__A1_N3_Int = 2\n")
-  inspect(fold_throws(same, ["let:__arr_equals__A1_N3_Int"]), content = "no throw: __arr_equals__A1_N3_Int")
+  add(out = same, src = "let __arr_equals__A1_N3_Int = 2\n")
+  add(out = same, src = "let __arr_equals__A1_N3_Int = 2\n")
+  inspect(fold_throws(stmts = same, keys = ["let:__arr_equals__A1_N3_Int"]), content = "no throw: __arr_equals__A1_N3_Int")
 }
 
 // #2388: the REPORTING half. Measured on the compiler's own CLI closure, the
@@ -107,15 +107,15 @@ test "two different definitions under one synthesized name are refused, not fold
 // granularity.
 test "the reporting fold names every colliding key, not just the first" {
   let stmts: Array[Stmt] = []
-  add(stmts, "let __arr_equals__A1_N3_Int = 2\n")
-  add(stmts, "let __arr_equals__A1_N3_Int = 99\n")
-  add(stmts, "let __arr_equals__A1_N6_String = 3\n")
-  add(stmts, "let __arr_equals__A1_N6_String = 77\n")
-  let (out, collisions) = link_fold_duplicate_definitions_report(stmts, [
+  add(out = stmts, src = "let __arr_equals__A1_N3_Int = 2\n")
+  add(out = stmts, src = "let __arr_equals__A1_N3_Int = 99\n")
+  add(out = stmts, src = "let __arr_equals__A1_N6_String = 3\n")
+  add(out = stmts, src = "let __arr_equals__A1_N6_String = 77\n")
+  let (out, collisions) = link_fold_duplicate_definitions_report(stmts = stmts, foldable_keys = [
     "let:__arr_equals__A1_N3_Int",
     "let:__arr_equals__A1_N6_String"
-  ], print_stmt)
-  inspect(String::join(collisions, ", "), content = "let:__arr_equals__A1_N3_Int, let:__arr_equals__A1_N6_String")
+  ], render = print_stmt)
+  inspect(String::join(collisions, sep = ", "), content = "let:__arr_equals__A1_N3_Int, let:__arr_equals__A1_N6_String")
   // A colliding key still folds to ONE statement -- the report is out of band,
   // so the caller decides whether to refuse. Keeping both would make the
   // reported count and the returned program disagree about what happened.
@@ -128,19 +128,19 @@ test "the reporting fold names every colliding key, not just the first" {
 // to keep them agreeing.
 test "the throwing fold refuses exactly when the reporting fold has something to report" {
   let differ: Array[Stmt] = []
-  add(differ, "let __arr_equals__A1_N3_Int = 2\n")
-  add(differ, "let __arr_equals__A1_N3_Int = 99\n")
-  let (_, dc) = link_fold_duplicate_definitions_report(differ, [
+  add(out = differ, src = "let __arr_equals__A1_N3_Int = 2\n")
+  add(out = differ, src = "let __arr_equals__A1_N3_Int = 99\n")
+  let (_, dc) = link_fold_duplicate_definitions_report(stmts = differ, foldable_keys = [
     "let:__arr_equals__A1_N3_Int"
-  ], print_stmt)
+  ], render = print_stmt)
   inspect(Array::length(dc) > 0, content = "true")
-  inspect(String::contains(fold_throws(differ, ["let:__arr_equals__A1_N3_Int"]), "two different definitions of let:__arr_equals__A1_N3_Int"), content = "true")
+  inspect(String::contains(fold_throws(stmts = differ, keys = ["let:__arr_equals__A1_N3_Int"]), needle = "two different definitions of let:__arr_equals__A1_N3_Int"), content = "true")
   let same: Array[Stmt] = []
-  add(same, "let __arr_equals__A1_N3_Int = 2\n")
-  add(same, "let __arr_equals__A1_N3_Int = 2\n")
-  let (_, sc) = link_fold_duplicate_definitions_report(same, [
+  add(out = same, src = "let __arr_equals__A1_N3_Int = 2\n")
+  add(out = same, src = "let __arr_equals__A1_N3_Int = 2\n")
+  let (_, sc) = link_fold_duplicate_definitions_report(stmts = same, foldable_keys = [
     "let:__arr_equals__A1_N3_Int"
-  ], print_stmt)
+  ], render = print_stmt)
   inspect(Array::length(sc), content = "0")
-  inspect(fold_throws(same, ["let:__arr_equals__A1_N3_Int"]), content = "no throw: __arr_equals__A1_N3_Int")
+  inspect(fold_throws(stmts = same, keys = ["let:__arr_equals__A1_N3_Int"]), content = "no throw: __arr_equals__A1_N3_Int")
 }
