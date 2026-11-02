@@ -18,7 +18,7 @@ codegen fingerprint, the resolution seed and the active `#cfg` set are already
 part of the key ([build-cache.md](../operations/build-cache.md)). An entry that
 fails to decode, or decodes with trailing bytes, is a cache miss.
 
-There is one implementation and one AST. `scripts/check_ast_binary_tags.sh`
+There is one implementation and one AST. `scripts/check_ast_binary_tags.vibex`
 holds every tag table below to `lib/@vibe/ast/index.vpkg`, so a variant cannot
 be added, removed or renamed without this document following it.
 

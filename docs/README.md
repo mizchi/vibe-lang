@@ -19,7 +19,7 @@ same change as the document.
 
 `book/` stays at the top level and `docs/user/` links to it rather than
 containing it: it has its own gates (`scripts/check_book_links.sh`,
-`scripts/vibe_md.sh check`, `scripts/check_tutorial_translation_parity.sh`) and
+`scripts/vibe_md.sh check`, `scripts/check_tutorial_translation_parity.vibex`) and
 external links to The Vibe Book (decided in #2565).
 
 **Users:** [user/getting-started/install.md](user/getting-started/install.md) · [The Vibe Book](../book/README.md) ·
