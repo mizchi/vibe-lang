@@ -11,7 +11,7 @@ import @vibex/wasm_wat_encoder {
 //# Functions
 
 fn call0(wasm: Bytes, name: String) -> Int {
-  let (ec, result) = exec_module(wasm, name)
+  let (ec, result) = exec_module(wasm_bytes = wasm, export_name = name)
   if ec != 0 {
     -99999
   } else {
@@ -20,9 +20,9 @@ fn call0(wasm: Bytes, name: String) -> Int {
 }
 
 fn call1(wasm: Bytes, name: String, a: Int) -> Int {
-  let args = Array::slice([0], 0, 0)
-  Array::push(args, a)
-  let (ec, result) = exec_module_with_args(wasm, name, args)
+  let args = Array::slice([0], start = 0, end = 0)
+  Array::push(args, value = a)
+  let (ec, result) = exec_module_with_args(wasm_bytes = wasm, export_name = name, args = args)
   if ec != 0 {
     -99999
   } else {
@@ -31,10 +31,10 @@ fn call1(wasm: Bytes, name: String, a: Int) -> Int {
 }
 
 fn call2(wasm: Bytes, name: String, a: Int, b: Int) -> Int {
-  let args = Array::slice([0], 0, 0)
-  Array::push(args, a)
-  Array::push(args, b)
-  let (ec, result) = exec_module_with_args(wasm, name, args)
+  let args = Array::slice([0], start = 0, end = 0)
+  Array::push(args, value = a)
+  Array::push(args, value = b)
+  let (ec, result) = exec_module_with_args(wasm_bytes = wasm, export_name = name, args = args)
   if ec != 0 {
     -99999
   } else {
@@ -45,104 +45,104 @@ fn call2(wasm: Bytes, name: String, a: Int, b: Int) -> Int {
 //# Misc
 
 test "spec block: singular" {
-  assert(call0(compile("(module (func (export \"f\") (result i32) (block (result i32) i32.const 7)))"), "f") == 7)
+  assert(call0(wasm = compile("(module (func (export \"f\") (result i32) (block (result i32) i32.const 7)))"), name = "f") == 7)
 }
 
 test "spec block: br" {
-  assert(call0(compile("(module (func (export \"f\") (result i32) (block (result i32) i32.const 42 br 0)))"), "f") == 42)
+  assert(call0(wasm = compile("(module (func (export \"f\") (result i32) (block (result i32) i32.const 42 br 0)))"), name = "f") == 42)
 }
 
 test "spec if: then else" {
   let m = compile("(module (func (export \"f\") (param i32) (result i32)\n    local.get 0 if (result i32) i32.const 1 else i32.const 2 end))")
-  assert(call1(m, "f", 1) == 1)
-  assert(call1(m, "f", 0) == 2)
+  assert(call1(wasm = m, name = "f", a = 1) == 1)
+  assert(call1(wasm = m, name = "f", a = 0) == 2)
 }
 
 test "spec if: nested" {
   let m = compile("(module (func (export \"f\") (param i32 i32) (result i32)\n    local.get 0\n    if (result i32)\n      local.get 1 if (result i32) i32.const 1 else i32.const 2 end\n    else\n      local.get 1 if (result i32) i32.const 3 else i32.const 4 end\n    end))")
-  assert(call2(m, "f", 1, 1) == 1)
-  assert(call2(m, "f", 1, 0) == 2)
-  assert(call2(m, "f", 0, 1) == 3)
-  assert(call2(m, "f", 0, 0) == 4)
+  assert(call2(wasm = m, name = "f", a = 1, b = 1) == 1)
+  assert(call2(wasm = m, name = "f", a = 1, b = 0) == 2)
+  assert(call2(wasm = m, name = "f", a = 0, b = 1) == 3)
+  assert(call2(wasm = m, name = "f", a = 0, b = 0) == 4)
 }
 
 test "spec br_if: taken" {
   let m = compile("(module (func (export \"f\") (param i32) (result i32)\n    (block (result i32) i32.const 1 local.get 0 br_if 0 drop i32.const 0)))")
-  assert(call1(m, "f", 1) == 1)
-  assert(call1(m, "f", 0) == 0)
+  assert(call1(wasm = m, name = "f", a = 1) == 1)
+  assert(call1(wasm = m, name = "f", a = 0) == 0)
 }
 
 test "spec call: basic" {
   let m = compile("(module\n    (func (export \"f\") (result i32) call 1)\n    (func (result i32) i32.const 42))")
-  assert(call0(m, "f") == 42)
+  assert(call0(wasm = m, name = "f") == 42)
 }
 
 test "spec call: params" {
   let m = compile("(module\n    (func (export \"f\") (param i32 i32) (result i32) local.get 0 local.get 1 call 1)\n    (func (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))")
-  assert(call2(m, "f", 3, 5) == 8)
+  assert(call2(wasm = m, name = "f", a = 3, b = 5) == 8)
 }
 
 test "spec return: value" {
-  assert(call0(compile("(module (func (export \"f\") (result i32) i32.const 42 return i32.const 0))"), "f") == 42)
+  assert(call0(wasm = compile("(module (func (export \"f\") (result i32) i32.const 42 return i32.const 0))"), name = "f") == 42)
 }
 
 test "spec nop" {
-  assert(call0(compile("(module (func (export \"f\") (result i32) nop nop i32.const 42))"), "f") == 42)
+  assert(call0(wasm = compile("(module (func (export \"f\") (result i32) nop nop i32.const 42))"), name = "f") == 42)
 }
 
 test "spec select: true" {
-  assert(call0(compile("(module (func (export \"f\") (result i32) i32.const 10 i32.const 20 i32.const 1 select))"), "f") == 10)
+  assert(call0(wasm = compile("(module (func (export \"f\") (result i32) i32.const 10 i32.const 20 i32.const 1 select))"), name = "f") == 10)
 }
 
 test "spec select: false" {
-  assert(call0(compile("(module (func (export \"f\") (result i32) i32.const 10 i32.const 20 i32.const 0 select))"), "f") == 20)
+  assert(call0(wasm = compile("(module (func (export \"f\") (result i32) i32.const 10 i32.const 20 i32.const 0 select))"), name = "f") == 20)
 }
 
 test "spec local: set get" {
-  assert(call1(compile("(module (func (export \"f\") (param i32) (result i32) local.get 0 i32.const 10 i32.add local.set 0 local.get 0))"), "f", 32) == 42)
+  assert(call1(wasm = compile("(module (func (export \"f\") (param i32) (result i32) local.get 0 i32.const 10 i32.add local.set 0 local.get 0))"), name = "f", a = 32) == 42)
 }
 
 test "spec local: tee" {
-  assert(call1(compile("(module (func (export \"f\") (param i32) (result i32) i32.const 42 local.tee 0))"), "f", 0) == 42)
+  assert(call1(wasm = compile("(module (func (export \"f\") (param i32) (result i32) i32.const 42 local.tee 0))"), name = "f", a = 0) == 42)
 }
 
 test "spec global: get" {
-  assert(call0(compile("(module (global i32 (i32.const 42)) (func (export \"f\") (result i32) global.get 0))"), "f") == 42)
+  assert(call0(wasm = compile("(module (global i32 (i32.const 42)) (func (export \"f\") (result i32) global.get 0))"), name = "f") == 42)
 }
 
 test "spec global: set" {
-  assert(call0(compile("(module (global (mut i32) (i32.const 0)) (func (export \"f\") (result i32) i32.const 42 global.set 0 global.get 0))"), "f") == 42)
+  assert(call0(wasm = compile("(module (global (mut i32) (i32.const 0)) (func (export \"f\") (result i32) i32.const 42 global.set 0 global.get 0))"), name = "f") == 42)
 }
 
 test "spec memory: store load" {
-  assert(call0(compile("(module (memory 1) (func (export \"f\") (result i32) i32.const 0 i32.const 42 i32.store i32.const 0 i32.load))"), "f") == 42)
+  assert(call0(wasm = compile("(module (memory 1) (func (export \"f\") (result i32) i32.const 0 i32.const 42 i32.store i32.const 0 i32.load))"), name = "f") == 42)
 }
 
 test "spec memory: size" {
-  assert(call0(compile("(module (memory 1) (func (export \"f\") (result i32) memory.size))"), "f") == 1)
+  assert(call0(wasm = compile("(module (memory 1) (func (export \"f\") (result i32) memory.size))"), name = "f") == 1)
 }
 
 test "spec loop: singular" {
-  assert(call0(compile("(module (func (export \"f\") (result i32) (loop (result i32) i32.const 7)))"), "f") == 7)
+  assert(call0(wasm = compile("(module (func (export \"f\") (result i32) (loop (result i32) i32.const 7)))"), name = "f") == 7)
 }
 
 test "spec loop: counter" {
   let m = compile("(module (func (export \"f\") (param i32) (result i32)\n    (local i32)\n    local.get 0 local.set 1\n    block\n      loop\n        local.get 1 i32.const 1 i32.sub local.set 1\n        local.get 1 i32.eqz br_if 1\n        br 0\n      end\n    end\n    local.get 1))")
-  assert(call1(m, "f", 10) == 0)
+  assert(call1(wasm = m, name = "f", a = 10) == 0)
 }
 
 test "spec fac: iterative" {
   let m = compile("(module (func (export \"fac\") (param i32) (result i32)\n    (local i32)\n    i32.const 1 local.set 1\n    block\n      loop\n        local.get 0 i32.eqz br_if 1\n        local.get 1 local.get 0 i32.mul local.set 1\n        local.get 0 i32.const 1 i32.sub local.set 0\n        br 0\n      end\n    end\n    local.get 1))")
-  assert(call1(m, "fac", 1) == 1)
-  assert(call1(m, "fac", 5) == 120)
-  assert(call1(m, "fac", 10) == 3628800)
+  assert(call1(wasm = m, name = "fac", a = 1) == 1)
+  assert(call1(wasm = m, name = "fac", a = 5) == 120)
+  assert(call1(wasm = m, name = "fac", a = 10) == 3628800)
 }
 
 test "spec drop" {
-  assert(call0(compile("(module (func (export \"f\") (result i32) i32.const 42 i32.const 99 drop))"), "f") == 42)
+  assert(call0(wasm = compile("(module (func (export \"f\") (result i32) i32.const 42 i32.const 99 drop))"), name = "f") == 42)
 }
 
 test "spec unreachable" {
-  let (ec, _) = exec_module(compile("(module (func (export \"f\") unreachable))"), "f")
+  let (ec, _) = exec_module(wasm_bytes = compile("(module (func (export \"f\") unreachable))"), export_name = "f")
   assert(ec == 1)
 }
