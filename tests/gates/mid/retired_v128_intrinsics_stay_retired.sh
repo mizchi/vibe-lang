@@ -2231,11 +2231,12 @@ echo "[compiler-gate] wasm-gc host ABI declaration ok (linear + gc, =160)"
 #         change that emits a new import as validated; measured afterwards, that
 #         check catches both of the review findings that followed, in sequence,
 #         from the first commit. It runs here, next to the runtime probe it is
-#         the static half of, and costs well under a second (it reads five
-#         files and never touches a stage2).
+#         the static half of, and costs about two seconds (it reads five
+#         source groups on the committed seed and never touches a stage2).
+#         Its mutation suite, check_host_runtime_contract_test.sh, runs in the
+#         selftests lane.
 echo "[compiler-gate] 40h-4b/40 host-runtime ABI contract (#2759)"
-python3 scripts/check_host_runtime_contract.py
-python3 tests/gates/tooling-accounting/host-runtime/host_runtime_contract_test.py
+bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/check_host_runtime_contract.vibex
 echo "[compiler-gate] host-runtime ABI contract ok"
 
 # 40h-4c. #2832: the async slot and request BANDS, the static half the

@@ -50,7 +50,7 @@ is what that row admits, lowered to raw `vibe.*` core imports:
 
 **The inventory is the import section of the built compiler.** Every name in it
 is a `portableCore` field of `docs/generated/host-runtime-contract.json`, and
-`scripts/check_host_runtime_contract.py` checks fail-closed that the emitter
+`scripts/check_host_runtime_contract.vibex` checks fail-closed that the emitter
 and both runners agree on that band, so a conformant runner is one that
 implements the band. Measured on the committed seed
 (`seed/array-capacity-2026-09-20`, `bootstrap/seed/compiler.wasm`), with
@@ -93,7 +93,7 @@ imports, treating the input / output path as a directory.
 
 There is no `.wit` for this boundary. The contract is the import section of the
 built compiler and the manifest's `portableCore` band, which
-`scripts/check_host_runtime_contract.py` keeps the emitter and both runners in
+`scripts/check_host_runtime_contract.vibex` keeps the emitter and both runners in
 agreement with. A WIT rendering is only worth having if it is generated from
 the table the emitter uses, so it cannot drift; that is ADR-0112's design
 ([host-contract-artifact-lazy-cli.md](host-contract-artifact-lazy-cli.md)

@@ -3,8 +3,8 @@
 This document fixes the first machine-checked slice of the host ABI requested by
 #1346. The source of truth for the covered names and their core signatures is
 [`host-runtime-contract.json`](../../generated/host-runtime-contract.json); run
-`python3 scripts/check_host_runtime_contract.py` after changing an emitter or
-runner.
+`bash scripts/vibe_run.sh scripts/check_host_runtime_contract.vibex` after
+changing an emitter or runner.
 
 ## Three boundaries, not one
 
@@ -104,7 +104,7 @@ Not covered yet (what was left when #1346 closed; no open issue tracks it):
 - executable signature comparison against the NODE provider (the viberun half
   has landed: 51 `func_wrap` closures are compared against the emitter's core
   signatures, with mutation tests in
-  `tests/gates/tooling-accounting/host-runtime/host_runtime_contract_test.py`);
+  `scripts/check_host_runtime_contract_test.sh`);
 - semantic conformance fixtures for failures, path rules, handle lifecycle,
   byte sorting, and packed-value edge cases;
 - a complete WIT/raw projection inventory for async, socket, HTTP, and generated
