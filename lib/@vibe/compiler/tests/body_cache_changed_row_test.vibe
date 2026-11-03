@@ -1,0 +1,136 @@
+//# The body cache across a build where a source function's ROW changed
+//# (#3771). A row is what other bodies are lowered against -- arity, return
+//# and borrow classes, thunk, folded constant -- so a caller compiled
+//# against the old row is stale. A changed row no longer declines the whole
+//# edit lane: the function's name joins the mention check, so every body
+//# that spells it recompiles, and so does the function's own body.
+//#
+//# Measured: neither row here needs the marking. A folded constant's callers
+//# are already withheld by the per-entry fold signature, and a changed return
+//# class moves the used-builtin set, which declines first. The marking is the
+//# rule that makes a changed row SAFE to tolerate at all -- a caller consumes
+//# a row only through the name it spells -- not one a row here proves.
+//#
+//# Each row: a cold compile on the base, the edit to the middle file, then a
+//# warm body-cached compile against a fresh one. `saved` is how many bodies
+//# the warm compile did not rebuild; `equal` is byte equality with the fresh
+//# compile.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+}
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_artifact_cache_path
+}
+
+fn bcr_bytes(s: String) -> Bytes {
+  let out = Bytes::new()
+  let mut i = 0
+  while i < String::length(s) {
+    Bytes::push(out, String::byte_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+fn bcr_bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  let n = Bytes::length(a)
+  if n != Bytes::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Bytes::get(a, i) != Bytes::get(b, i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+let bcr_b_path: String = "/tmp/vibe_body_cache_bcr_b.vibe"
+
+let bcr_main_path: String = "/tmp/vibe_body_cache_bcr_main.vibe"
+
+/// The middle file. `bcr_k` folds to the constant `k`, which every caller
+/// inlines.
+fn bcr_b(k: Int) -> String {
+  String::join([
+    "export let bcr_k: () -> Int = () -> { \{k} }",
+    "export let bcr_eq: () -> Bool = () -> { [1, 2] == [1, 2] }"
+  ], "\n")
+}
+
+/// The downstream file: `bcr_use` calls `bcr_k`, `bcr_plain` never does.
+fn bcr_main() -> String {
+  String::join([
+    "import ./vibe_body_cache_bcr_b.vibe { bcr_eq, bcr_k }",
+    "let bcr_plain: (Int) -> Int = (n) -> { n * 3 + 1 }",
+    "let bcr_use: (Int) -> Int = (n) -> { n + bcr_k() }",
+    "let run: () -> Int = () -> { bcr_use(2) + bcr_plain(3) + (if bcr_eq() { 1 } else { 0 }) }"
+  ], "\n")
+}
+
+test "a folded constant changed recompiles exactly its callers" {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bcr_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bcr_b_path, bcr_bytes(bcr_b(5)))
+  Fs::write_bytes(bcr_main_path, bcr_bytes(bcr_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bcr_main_path, "run", "on", cold_counts)
+  Fs::write_bytes(bcr_b_path, bcr_bytes(bcr_b(6)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bcr_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bcr_main_path, "run")
+  inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bcr_bytes_eq(warm, fresh)}", content = "saved=3 equal=true")
+}
+
+/// The middle file for the return-class row: `bcr_s` returns `ret`, built by
+/// `body`.
+fn bcr_b_ret(ret: String, body: String) -> String {
+  String::join([
+    "export let bcr_s: (Int) -> \{ret} = (n) -> { \{body} }",
+    "export let bcr_eq: () -> Bool = () -> { [1, 2] == [1, 2] }"
+  ], "\n")
+}
+
+/// `bcr_pass` hands `bcr_s`'s result to a generic, so it type-checks whatever
+/// `bcr_s` returns -- and how it owns that result depends on the return class.
+fn bcr_main_ret() -> String {
+  String::join([
+    "import ./vibe_body_cache_bcr_b.vibe { bcr_eq, bcr_s }",
+    "fn bcr_gen[T](v: T) -> Int { 1 }",
+    "let bcr_plain: (Int) -> Int = (n) -> { n * 3 + 1 }",
+    "let bcr_pass: (Int) -> Int = (n) -> { bcr_gen(bcr_s(n)) + bcr_gen(bcr_s(n + 1)) }",
+    "let run: () -> Int = () -> { bcr_pass(2) + bcr_plain(3) + (if bcr_eq() { 1 } else { 0 }) + String::length(\"\\{bcr_plain(1)}\") }"
+  ], "\n")
+}
+
+// A return class that changes also changes the set of builtins the program
+// uses (here the string runtime), and that guard declines the lane first:
+// the row is recorded, not reached. Kept so the case stays byte-exact.
+test "a return class changed declines and compiles byte-exact" {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bcr_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bcr_b_path, bcr_bytes(bcr_b_ret("Int", "n")))
+  Fs::write_bytes(bcr_main_path, bcr_bytes(bcr_main_ret()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bcr_main_path, "run", "on", cold_counts)
+  Fs::write_bytes(bcr_b_path, bcr_bytes(bcr_b_ret("String", "String::concat(\"s\", \"\\{n}\")")))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bcr_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bcr_main_path, "run")
+  inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bcr_bytes_eq(warm, fresh)}", content = "saved=0 equal=true")
+}
