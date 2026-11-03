@@ -20,6 +20,7 @@ import @vibe/compiler/codegen/common_base {
   LineMapState,
   StrTable,
   emit_rc_dup_guarded,
+  emit_str_fat_slot,
   expr_tag,
   find_local_slot,
   func_table_index_of,
@@ -38,7 +39,7 @@ import @vibe/compiler/codegen/common_base {
   is_pstring,
   is_ptuple,
   is_pwild,
-  str_table_fat_or_zero
+  str_table_slot_or_neg
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -420,7 +421,13 @@ export fn emit_int_div_zero_guard(buf: Bytes, op: String, divisor: Expr, site_of
     slot
   } else {
     let (path, line, col) = int_div_site(site_off)
-    let loc_fat = str_table_fat_or_zero(st = ctx.str_table, s = path)
+    // The path's pool slot, or -1 when the pool was not seeded with it (or
+    // it is empty), which emits 0 and drops the location from the message.
+    let loc_slot = if String::length(path) == 0 {
+      -1
+    } else {
+      str_table_slot_or_neg(st = ctx.str_table, s = path)
+    }
     Array::push(local_names, value = "__div_d")
     emit_local_tee(buf = buf, idx = slot)
     emit_i64_eqz(buf)
@@ -430,8 +437,8 @@ export fn emit_int_div_zero_guard(buf: Bytes, op: String, divisor: Expr, site_of
     } else {
       1
     })
-    emit_i64_const(buf = buf, value = loc_fat)
-    emit_i64_const(buf = buf, value = if loc_fat == 0 {
+    emit_str_fat_slot(buf = buf, ctx = ctx, slot = loc_slot)
+    emit_i64_const(buf = buf, value = if loc_slot < 0 {
       0
     } else {
       (line<<32)|col

@@ -36,7 +36,7 @@ import @vibe/compiler/codegen/common_base {
   emit_index_one,
   emit_rc_dup_guarded,
   emit_rc_word_inc_saturating,
-  emit_str_ref,
+  emit_str_ref_slot,
   func_table_index_of,
   map_get_miss_message,
   resolve_func,
@@ -120,18 +120,18 @@ import ./compile_call_named_3.vibe {
   cc_compile_named_3
 }
 
-/// #3547: the `print_str` index and the pooled message for `Map::get`'s miss
-/// trap, or `(-1, 0, 0)` when either is missing on this lane. The lookup must
+/// #3547: the `print_str` index and the pool slot of the message for `Map::get`'s miss
+/// trap, or `(-1, -1)` when either is missing on this lane. The lookup must
 /// not throw: a lane whose pool was not seeded with the message (the module
 /// lane's string table is empty) keeps the bare trap instead of failing the
 /// build (#3551 review).
-fn cc_map_get_miss_parts(_ ctx: CompileCtx) -> (Int, Int, Int) with Exception {
+fn cc_map_get_miss_parts(_ ctx: CompileCtx) -> (Int, Int) with Exception {
   let mi = str_table_slot_or_neg(st = ctx.str_table, s = map_get_miss_message())
   if mi >= 0 && func_table_index_of(ft = ctx.func_table, name = "print_str") >= 0 {
     let (ps_idx, _, _) = resolve_func(ft = ctx.func_table, name = "print_str")
-    (ps_idx, Array::get(ctx.str_table.offsets, at = mi), Array::get(ctx.str_table.lengths, at = mi))
+    (ps_idx, mi)
   } else {
-    (-1, 0, 0)
+    (-1, -1)
   }
 }
 
@@ -147,9 +147,9 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     let nl_i = str_table_slot_or_neg(st = ctx.str_table, s = "\n")
     if mi >= 0 && nl_i >= 0 && func_table_index_of(ft = ctx.func_table, name = "print_str") >= 0 {
       let (ps_idx, _, _) = resolve_func(ft = ctx.func_table, name = "print_str")
-      emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = mi), length = Array::get(ctx.str_table.lengths, at = mi))
+      emit_str_ref_slot(buf = buf, ctx = ctx, slot = mi)
       emit_call(buf = buf, func_idx = ps_idx)
-      emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = nl_i), length = Array::get(ctx.str_table.lengths, at = nl_i))
+      emit_str_ref_slot(buf = buf, ctx = ctx, slot = nl_i)
       emit_call(buf = buf, func_idx = ps_idx)
     } else {
       ()
@@ -166,7 +166,7 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     let nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
     emit_call(buf = buf, func_idx = ps_idx)
     let nl_idx = str_table_index_of(st = ctx.str_table, s = "\n")
-    emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = nl_idx), length = Array::get(ctx.str_table.lengths, at = nl_idx))
+    emit_str_ref_slot(buf = buf, ctx = ctx, slot = nl_idx)
     emit_call(buf = buf, func_idx = ps_idx)
     bytebuf_push(buf = buf, byte = 0)
     emit_i64_const(buf = buf, value = 0)
@@ -312,7 +312,7 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
   else if fname == "StringBuilder::freeze" {
     let nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
     let empty_idx = str_table_index_of(st = ctx.str_table, s = "")
-    emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = empty_idx), length = Array::get(ctx.str_table.lengths, at = empty_idx))
+    emit_str_ref_slot(buf = buf, ctx = ctx, slot = empty_idx)
     let (join_idx, _, _) = resolve_func(ft = ctx.func_table, name = "String::join")
     emit_call(buf = buf, func_idx = join_idx)
     nl
@@ -1244,7 +1244,7 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     } else {
       map_get_eq_fn
     }
-    let (miss_print_idx, miss_msg_off, miss_msg_len) = cc_map_get_miss_parts(ctx)
+    let (miss_print_idx, miss_msg_slot) = cc_map_get_miss_parts(ctx)
     let map_local = nl
     let key_local = nl + 1
     let count_local = nl + 2
@@ -1280,7 +1280,7 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
       emit_local_get(buf = buf, idx = idxptr_local)
       emit_i64_eqz(buf)
       emit_if_i64(buf)
-      cc_map_get_linear_scan(buf = buf, map_local = map_local, key_local = key_local, count_local = count_local, idx_local = idx_local, eq_idx = map_get_eq_idx, miss_print_idx = miss_print_idx, miss_msg_off = miss_msg_off, miss_msg_len = miss_msg_len)
+      cc_map_get_linear_scan(buf = buf, map_local = map_local, key_local = key_local, count_local = count_local, idx_local = idx_local, eq_idx = map_get_eq_idx, miss_print_idx = miss_print_idx, ctx = ctx, miss_msg_slot = miss_msg_slot)
       emit_else(buf)
       emit_local_get(buf = buf, idx = map_local)
       emit_local_get(buf = buf, idx = count_local)
@@ -1292,7 +1292,7 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
       emit_i64_lt_s(buf)
       emit_if_i64(buf)
       // #2990: see `cc_map_get_linear_scan`.
-      cc_map_get_miss_trap(buf = buf, miss_print_idx = miss_print_idx, miss_msg_off = miss_msg_off, miss_msg_len = miss_msg_len)
+      cc_map_get_miss_trap(buf = buf, miss_print_idx = miss_print_idx, ctx = ctx, miss_msg_slot = miss_msg_slot)
       emit_else(buf)
       emit_local_get(buf = buf, idx = map_local)
       emit_i32_wrap_i64(buf)
@@ -1306,7 +1306,7 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
       emit_end(buf)
       nl + 5
     } else {
-      cc_map_get_linear_scan(buf = buf, map_local = map_local, key_local = key_local, count_local = count_local, idx_local = idx_local, eq_idx = map_get_eq_idx, miss_print_idx = miss_print_idx, miss_msg_off = miss_msg_off, miss_msg_len = miss_msg_len)
+      cc_map_get_linear_scan(buf = buf, map_local = map_local, key_local = key_local, count_local = count_local, idx_local = idx_local, eq_idx = map_get_eq_idx, miss_print_idx = miss_print_idx, ctx = ctx, miss_msg_slot = miss_msg_slot)
       nl + 4
     }
   }

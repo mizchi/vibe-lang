@@ -2,7 +2,7 @@
 # #1346: the two host runners must agree about what a capability call MEANS,
 # not merely that both provide a function by that name.
 #
-# `check_host_runtime_contract.py` compares NAMES and, since the viberun
+# `check_host_runtime_contract.vibex` compares NAMES and, since the viberun
 # signature check, TYPES. Neither says anything about behaviour: two providers
 # can share a name and a signature and still disagree about what happens when
 # the file is missing, or how many bytes a multibyte string is. That class of

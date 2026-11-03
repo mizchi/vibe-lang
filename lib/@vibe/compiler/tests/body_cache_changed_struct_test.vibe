@@ -1,0 +1,117 @@
+//# The body cache across a build that CHANGED a struct (#3771).
+//#
+//# A struct's layout reaches a body that spells neither the struct nor its
+//# constructor: a field access `p.y` on a value whose type was inferred. These
+//# rows edit a struct in the middle file and check that the warm build answers
+//# what a fresh compile answers.
+//#
+//# Each row: a cold compile on the base, the edit to the middle file, then a
+//# warm body-cached compile against a fresh one. `saved` is how many bodies
+//# the warm compile did not rebuild; `equal` is byte equality with the fresh
+//# compile.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+}
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_artifact_cache_path
+}
+
+fn bcs_bytes(_ s: String) -> Bytes {
+  let out = Bytes::new()
+  let mut i = 0
+  while i < String::length(s) {
+    Bytes::push(out, value = String::byte_at(s, at = i))
+    i = i + 1
+  }
+  out
+}
+
+fn bcs_bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  let n = Bytes::length(a)
+  if n != Bytes::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Bytes::get(a, at = i) != Bytes::get(b, at = i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+let bcs_b_path: String = "/tmp/vibe_body_cache_bcs_b.vibe"
+
+let bcs_main_path: String = "/tmp/vibe_body_cache_bcs_main.vibe"
+
+/// The middle file: the struct, and the function that builds one. `decl` is
+/// the struct's declaration and `build` the literal `bcs_mk` returns.
+fn bcs_b(decl: String, build: String) -> String {
+  String::join([
+    decl,
+    "export let bcs_mk: (Int) -> BcsPt = (n) -> { \{build} }",
+    "export let bcs_half: (Double) -> Double = (x) -> { x * 0.5 }"
+  ], sep = "\n")
+}
+
+let bcs_base_decl: String = "export struct BcsPt { x: Int; y: Int }"
+
+let bcs_base_build: String = "BcsPt::{ x: n, y: n + 1 }"
+
+/// The downstream file. `bcs_plain` never sees the struct; `bcs_y` and
+/// `bcs_wrap` read a field of a value whose type they never spell, and
+/// `bcs_same` compares two such values.
+fn bcs_main() -> String {
+  String::join([
+    "import ./vibe_body_cache_bcs_b.vibe { bcs_half, bcs_mk }",
+    "fn bcs_gen[T](v: T) -> Int { 1 }",
+    "let bcs_plain: (Int) -> Int = (n) -> { n * 3 + 1 }",
+    "let bcs_y: (Int) -> Int = (n) -> { bcs_gen(bcs_mk(n).y) + bcs_plain(n) }",
+    "let bcs_same: (Int, Int) -> Bool = (a, b) -> { bcs_mk(a) == bcs_mk(b) }",
+    "let bcs_wrap: (Int) -> Int = (n) -> { let v = bcs_mk(n).y\n bcs_gen([bcs_mk(n).y]) + bcs_gen(Some(v)) + bcs_gen((v, 1)) }",
+    "let run: () -> Int = () -> {",
+    "  bcs_y(2) + bcs_wrap(3) + (if bcs_same(1, 1) { 1 } else { 0 }) + String::length(\"\\{bcs_half(3.0)}\") + (if bcs_half(1.0) == 0.5 { 1 } else { 0 })",
+    "}"
+  ], sep = "\n")
+}
+
+fn bcs_probe(decl: String, build: String) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bcs_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bcs_b_path, bytes = bcs_bytes(bcs_b(decl = bcs_base_decl, build = bcs_base_build)))
+  Fs::write_bytes(bcs_main_path, bytes = bcs_bytes(bcs_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bcs_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  Fs::write_bytes(bcs_b_path, bytes = bcs_bytes(bcs_b(decl = decl, build = build)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bcs_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bcs_main_path, entry_name = "run")
+  "saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bcs_bytes_eq(warm, fresh)}"
+}
+
+test "a struct field made Double recompiles the body that reads it" {
+  inspect(bcs_probe(decl = "export struct BcsPt { x: Int; y: Double }", build = "BcsPt::{ x: n, y: 1.5 }"), content = "saved=4 equal=true")
+}
+
+test "swapped struct fields recompile the body that reads one" {
+  inspect(bcs_probe(decl = "export struct BcsPt { y: Int; x: Int }", build = bcs_base_build), content = "saved=4 equal=true")
+}
+
+test "a field added recompiles the bodies that read the struct" {
+  inspect(bcs_probe(decl = "export struct BcsPt { x: Int; y: Int; z: Int }", build = "BcsPt::{ x: n, y: n + 1, z: 0 }"), content = "saved=3 equal=true")
+}
+
+test "an added struct sharing a field recompiles the bodies that read the field" {
+  // `p.y` now dispatches over two structs holding `y`.
+  inspect(bcs_probe(decl = String::concat(bcs_base_decl, "\nexport struct BcsQ { w: Int; y: Int }\nexport let bcs_q: (Int) -> Int = (n) -> { BcsQ::{ w: 1, y: n }.y }"), build = bcs_base_build), content = "saved=4 equal=true")
+}

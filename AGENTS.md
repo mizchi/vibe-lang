@@ -1033,7 +1033,7 @@ shape #1701 fixed. The bench cache keys on the backend, so switching
 
 Builtin-level divergences between the two lanes have one row each in
 `scripts/builtin_parity_classification.tsv`, enforced at the gate by
-`check_builtin_parity.sh`. **Only a small fraction of the rows saying "absent on
+`check_builtin_parity.vibex`. **Only a small fraction of the rows saying "absent on
 gc" are real gaps** — the rest are host imports, deliberate non-ports, and
 classification artifacts. Read that file if you want to count them (#1861).
 

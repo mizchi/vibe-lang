@@ -1,17 +1,19 @@
 // #2912: rendering an array whose element type does not resolve is REFUSED at
 // build time, rather than lowered into `__to_string`'s runtime string-pointer
 // heuristic -- which takes the integer branch for an array pointer and prints
-// a heap address. Measured before the refusal: this program compiled clean,
-// `vibe check` said nothing, and it printed `296`, a number that moved with
-// whatever allocated before it.
+// a heap address. Measured before the refusal: an unannotated
+// `Array::map(xs, (v) -> v * 2)` compiled clean, `vibe check` said nothing,
+// and it printed `296`, a number that moved with whatever allocated before it.
 //
-// The callback has NO declared return type, so `dtd_map_callback_shape` cannot
-// read the element type from it and `dtd_elem_preserving_shape` excludes
-// `Array::map` on purpose (its element type is the callback's return, not the
-// argument's). Nothing else knows it. Annotating either the callback or the
-// binding makes this render, and the message says so.
+// That program now RENDERS (#3032): the checker types the callback's result
+// and files the array's element type as a render row, so it prints
+// `[2, 4, 6]`. What is still refused is an element no row can spell -- here a
+// `record`, which the render channel does not encode -- so nothing knows the
+// element type and the refusal names the edit.
 export let _start: () -> Int = () -> {
   let xs = [1, 2, 3]
-  let s = __to_string(Array::map(xs, (v) -> v * 2))
+  let s = __to_string(Array::map(xs, (v) -> {
+    record { a: v }
+  }))
   String::length(s)
 }

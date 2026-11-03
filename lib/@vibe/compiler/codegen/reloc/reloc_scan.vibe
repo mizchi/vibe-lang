@@ -92,12 +92,60 @@ export let blind_kind_fn_value: Int = 101
 
 /// `i32.const slot` -- the funcref-table slot stored into a closure header by
 /// the capturing lambda form. Same symbol, different encoding and width.
-///
-/// The other class named above -- a DATA POINTER, which rides an `i64.const`
-/// the same way -- has no kind here yet. Numbering it before anything emits
-/// it would be a promise, and the numbers are append-only, so it gets one
-/// when the emitter records it.
 export let blind_kind_table_slot_i32: Int = 102
+
+/// A pooled STRING as `i64.const offset; i64.const 32; i64.shl; i64.const
+/// length; i64.or` (`emit_str_ref`). `sym` is the string's slot in the
+/// compile's `StrTable`; the record sits on the first `i64.const`. The pool
+/// puts every plain literal before the interpolation parts, map keys and the
+/// runtime's messages, so a literal added in ANY file moves the address a
+/// body embeds here.
+export let blind_kind_str_ref: Int = 103
+
+/// A pooled string as ONE `i64.const ((offset << 32) | length)`, the form a
+/// runtime helper takes it in (`emit_int_div_zero_guard`'s source path).
+/// `sym` is the slot, as for `blind_kind_str_ref`.
+export let blind_kind_str_fat: Int = 104
+
+/// A constructor TAG as `i32.const tag` -- the header word a constructed
+/// value is stamped with and the value a match or a field dispatch compares
+/// it against. Tags are `(type_index << 16) | variant`, and `type_index`
+/// counts type declarations in merge order, so a type declared anywhere
+/// moves the tag of every type after it. `sym` is the tag VALUE: the
+/// relocation maps it through the constructor names that held it.
+export let blind_kind_ctor_tag: Int = 105
+
+/// #3771: a struct or constructor-table name the body's codegen READ. No
+/// instruction carries it -- `offset` is 0 and the record is never rebuilt --
+/// it exists so a replay can tell which layouts a body was compiled against.
+/// `sym` is `layout_read_sym(name)`; `sym == 0` is the sentinel every body
+/// compiled with the log on carries, so a body WITHOUT it (a worker's, or one
+/// harvested before the log existed) reads as "unknown", never as "read
+/// nothing".
+export let blind_kind_layout_read: Int = 106
+
+/// Does a record of this kind pair one-for-one with a `table_slots_used`
+/// entry? The two function-value kinds do -- both logs are appended at the
+/// same emission sites, which is what proves the function-value records
+/// complete. A string reference has no slot.
+export fn blind_kind_pairs_slot(_ kind: Int) -> Bool {
+  kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32
+}
+
+/// How many of `kinds[lo..]` pair with a funcref slot.
+export fn blind_slot_paired_count(kinds: Array[Int], lo: Int) -> Int {
+  let mut n = 0
+  let mut i = lo
+  while i < Array::length(kinds) {
+    if blind_kind_pairs_slot(Array::get(kinds, at = i)) {
+      n = n + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  n
+}
 
 /// The owner of a recorded reference is the body it sits in: a user function
 /// by index, or a lambda. A lambda's index is not known until AFTER its body

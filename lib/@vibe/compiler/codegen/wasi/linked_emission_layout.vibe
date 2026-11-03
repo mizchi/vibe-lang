@@ -1,11 +1,11 @@
 // Owned emission-layout summaries shared by ordinary emission and preparation.
 
 import @vibe/compiler/core {
-  sorted_names_of
+  bsearch_leftmost, sort_perm_by_names, sorted_names_of
 }
 
 import @vibe/compiler/codegen/common_base {
-  bcc_layout_fp_bools, bcc_layout_fp_ints, bcc_layout_fp_string_matrix, bcc_layout_fp_strings, bcc_layout_fp_strings_upto
+  bcc_layout_fp_bools, bcc_layout_fp_ints, bcc_layout_fp_string_matrix, bcc_layout_fp_strings
 }
 
 import ./linked_compile_lc_rename_sleep_calls.vibe {
@@ -16,79 +16,81 @@ import ./linked_compile_linkedhostplan.vibe {
   LinkedBodyInputs
 }
 
+import ./linked_body_cache_edit.vibe {
+  lc_lambda_counts, lc_without, lc_without_ints
+}
+
 /// These owned arrays contain no syntax or function bodies. Preparation can
 /// keep the guard while discarding its temporary capture/thunk indices.
 export struct LinkedEmissionLayout {
   capture_names: Array[String];
   thunk_names: Array[String];
-  guard_layout: Array[Int]
+  guard_layout: Array[Int];
+  /// #2669: the two halves a source edit is compared on
+  /// (`linked_body_cache_edit.vibe`): `guard_layout` without anything keyed
+  /// by a source function's name, one `[h1, h2]` row per source function of
+  /// what those tables say about it, and each source function's lambda
+  /// count by value. Empty when the pin reorder did not run.
+  guard_layout_global: Array[Int];
+  src_rows: Array[Int];
+  src_lambdas: Array[Int];
+  /// #2669: the constructor table per TYPE, when the global half leaves it
+  /// out (every constructor and struct name unique): the type names in
+  /// table order, one `[h1, h2]` row each over its constructors' names,
+  /// variants, field counts and Double fields, and its constructor names joined
+  /// by newlines (for the mention check of an added type). Empty when the
+  /// table is pinned whole.
+  type_names: Array[String];
+  type_rows: Array[Int];
+  type_ctors: Array[String];
+  /// #2669: the declared effects by name, in tag order, under the same
+  /// condition: one `[h1, h2]` row each over its ops and their arities, and
+  /// its op keys joined by newlines (for the mention check).
+  effect_names: Array[String];
+  effect_rows: Array[Int];
+  effect_ops: Array[String];
+  /// #2669: the struct table by value under the same condition: the names
+  /// in table order, and each struct's field names joined by newlines.
+  struct_names: Array[String];
+  struct_fields: Array[String]
 }
 
-export fn lc_build_emission_layout(input: LinkedBodyInputs, lambda_bases: Array[Int], coverage: Bool, enable_rc: Bool, rc_shadow: Bool) -> LinkedEmissionLayout {
-  let all_fn_indices_list = input.all_fn_indices_list
-  let all_fn_names_list = input.all_fn_names_list
-  let all_fn_needs_env_list = input.all_fn_needs_env_list
-  let all_fn_param_counts = input.all_fn_param_counts
-  let all_fn_returns_list = input.all_fn_returns_list
-  let const_int_names_list = input.const_int_names_list
-  let const_int_values_list = input.const_int_values_list
-  let ctor_field_counts_list = input.ctor_field_counts_list
-  let ctor_float_fields_list = input.ctor_float_fields_list
-  let ctor_names_list = input.ctor_names_list
-  let ctor_tags_list = input.ctor_tags_list
-  let ctor_type_names_list = input.ctor_type_names_list
-  let dbg_line_on = input.dbg_line_on
-  let effect_names_list = input.effect_names_list
-  let effect_op_arities_list = input.effect_op_arities_list
-  let effect_op_keys_list = input.effect_op_keys_list
-  let entry_name = input.entry_name
-  let float_ret_fn_names = input.float_ret_fn_names
-  let func_offset = input.func_offset
-  let has_exceptions = input.has_exceptions
-  let heap_grow_check_idx = input.heap_grow_check_idx
-  let lambda_slot_base = input.lambda_slot_base
-  let lc_agg_ret_infos = input.lc_agg_ret_infos
-  let lc_agg_ret_names = input.lc_agg_ret_names
-  let lc_borrow_param_mask = input.lc_borrow_param_mask
-  let lc_borrow_param_user_srt = input.lc_borrow_param_user_srt
-  let lc_borrow_ret_names = input.lc_borrow_ret_names
-  let lc_borrow_view_ret = input.lc_borrow_view_ret
-  let lc_heap_ret_names = input.lc_heap_ret_names
-  let lc_scalar_ret_names = input.lc_scalar_ret_names
-  let library_mode = input.library_mode
-  let map_build_index_idx = input.map_build_index_idx
-  let map_cap_idx = input.map_cap_idx
-  let map_hash_idx = input.map_hash_idx
-  let map_index_insert_idx = input.map_index_insert_idx
-  let map_probe_index_idx = input.map_probe_index_idx
-  let num_user_funcs = input.num_user_funcs
-  let pin_region_capacity = input.pin_region_capacity
-  let rc_alloc_idx = input.rc_alloc_idx
-  let rc_drop_idx = input.rc_drop_idx
-  let rc_dup_idx = input.rc_dup_idx
-  let region_arr_new_idx = input.region_arr_new_idx
-  let region_bytes_new_idx = input.region_bytes_new_idx
-  let region_ptr_addr = input.region_ptr_addr
-  let src_str_base = input.src_str_base
-  let str_strs = input.str_strs
-  let struct_field_names = input.struct_field_names
-  let struct_names = input.struct_names
-  let thunk_names_list = input.thunk_names_list
-  // #799 perf: ONE membership index over the flat fn + ctor name tables,
-  // shared by every per-function CompileCtx below. collect_free_vars_indexed
-  // consults it per ident instead of linearly scanning ~thousands of names
-  // (which dominated compiler-closure compile profiles).
-  // Round 2: a SORTED array + binary search -- the previous MapBuilder index
-  // was O(N^2) to build (set scans for duplicates) and O(N) per has_key.
+/// The program-wide tables `guard_layout` fingerprints that an added
+/// function can move. Everything else it folds is read from the inputs.
+struct LcLayoutTables {
+  fn_names: Array[String];
+  fn_indices: Array[Int];
+  fn_params: Array[Int];
+  fn_returns: Array[Int];
+  fn_envs: Array[Bool];
+  lambda_bases: Array[Int];
+  capture_names: Array[String];
+  thunk_names: Array[String];
+  float_ret: Array[String];
+  const_names: Array[String];
+  const_values: Array[Int];
+  agg_names: Array[String];
+  agg_infos: Array[Int];
+  heap_ret: Array[String];
+  scalar_ret: Array[String];
+  borrow_ret: Array[String];
+  borrow_view: Array[String];
+  borrow_param: Array[String];
+  borrow_mask: Array[Int]
+}
+
+/// The sorted name index a lambda resolves a capture through: every function
+/// and constructor name, and every folded Int constant.
+fn lc_capture_index(fn_names: Array[String], ctor_names: Array[String], const_names: Array[String]) -> Array[String] {
   let capture_index_names = lc_fresh_string_array()
   let mut cib_i = 0
-  while cib_i < Array::length(all_fn_names_list) {
-    Array::push(capture_index_names, value = Array::get(all_fn_names_list, at = cib_i))
+  while cib_i < Array::length(fn_names) {
+    Array::push(capture_index_names, value = Array::get(fn_names, at = cib_i))
     cib_i = cib_i + 1
   }
   let mut cib_j = 0
-  while cib_j < Array::length(ctor_names_list) {
-    Array::push(capture_index_names, value = Array::get(ctor_names_list, at = cib_j))
+  while cib_j < Array::length(ctor_names) {
+    Array::push(capture_index_names, value = Array::get(ctor_names, at = cib_j))
     cib_j = cib_j + 1
   }
   // #3356: a module-level Int literal (`let base = 10`) is folded into
@@ -99,11 +101,41 @@ export fn lc_build_emission_layout(input: LinkedBodyInputs, lambda_bases: Array[
   // reading it counted down to 0. The lambda plan's walk already counts it as
   // global (`shadow_names_only` below).
   let mut cib_k = 0
-  while cib_k < Array::length(const_int_names_list) {
-    Array::push(capture_index_names, value = Array::get(const_int_names_list, at = cib_k))
+  while cib_k < Array::length(const_names) {
+    Array::push(capture_index_names, value = Array::get(const_names, at = cib_k))
     cib_k = cib_k + 1
   }
-  let capture_name_index_shared = sorted_names_of(capture_index_names)
+  sorted_names_of(capture_index_names)
+}
+
+export fn lc_build_emission_layout(input: LinkedBodyInputs, lambda_bases: Array[Int], lambda_count: Int, coverage: Bool, enable_rc: Bool, rc_shadow: Bool) -> LinkedEmissionLayout {
+  let all_fn_indices_list = input.all_fn_indices_list
+  let all_fn_names_list = input.all_fn_names_list
+  let all_fn_needs_env_list = input.all_fn_needs_env_list
+  let all_fn_param_counts = input.all_fn_param_counts
+  let all_fn_returns_list = input.all_fn_returns_list
+  let const_int_names_list = input.const_int_names_list
+  let const_int_values_list = input.const_int_values_list
+  let ctor_names_list = input.ctor_names_list
+  let float_ret_fn_names = input.float_ret_fn_names
+  let func_offset = input.func_offset
+  let lc_agg_ret_infos = input.lc_agg_ret_infos
+  let lc_agg_ret_names = input.lc_agg_ret_names
+  let lc_borrow_param_mask = input.lc_borrow_param_mask
+  let lc_borrow_param_user_srt = input.lc_borrow_param_user_srt
+  let lc_borrow_ret_names = input.lc_borrow_ret_names
+  let lc_borrow_view_ret = input.lc_borrow_view_ret
+  let lc_heap_ret_names = input.lc_heap_ret_names
+  let lc_scalar_ret_names = input.lc_scalar_ret_names
+  let pin_region_capacity = input.pin_region_capacity
+  let thunk_names_list = input.thunk_names_list
+  // #799 perf: ONE membership index over the flat fn + ctor name tables,
+  // shared by every per-function CompileCtx below. collect_free_vars_indexed
+  // consults it per ident instead of linearly scanning ~thousands of names
+  // (which dominated compiler-closure compile profiles).
+  // Round 2: a SORTED array + binary search -- the previous MapBuilder index
+  // was O(N^2) to build (set scans for duplicates) and O(N) per has_key.
+  let capture_name_index_shared = lc_capture_index(fn_names = all_fn_names_list, ctor_names = ctor_names_list, const_names = const_int_names_list)
   // Codex review on #1186: this was computed inside the `bi < num_user_funcs`
   // loop below, re-sorting the same thunk_names_list once per function
   // instead of once per compile -- hoist it out, same fix shape as
@@ -129,116 +161,610 @@ export fn lc_build_emission_layout(input: LinkedBodyInputs, lambda_bases: Array[
   // that moves each of them for real and requires the compile to answer what a
   // fresh one answers -- so a slot left out fails as a byte mismatch in a test
   // rather than as a wrong module in someone's build.
-  let guard_layout_now = lc_fresh_int_array()
-  if pin_region_capacity >= 0 {
-    // func_table -- every `call` immediate.
-    bcc_layout_fp_strings(out = guard_layout_now, xs = all_fn_names_list)
-    bcc_layout_fp_ints(out = guard_layout_now, xs = all_fn_indices_list)
-    bcc_layout_fp_ints(out = guard_layout_now, xs = all_fn_param_counts)
-    bcc_layout_fp_ints(out = guard_layout_now, xs = all_fn_returns_list)
-    bcc_layout_fp_bools(out = guard_layout_now, xs = all_fn_needs_env_list)
-    //
-    // `all_fn_names_list` is the whole vector, so it pins ORDER as well as
-    // membership -- the case `guard_unmangled_names` (a sorted set) cannot
-    // see. A `__test_` name riding along in it is not over-strict in the way
-    // it looks: a renamed test is an edit to the ENTRY file, which is last in
-    // merge order, so the prefix the lane narrows to is everything before it
-    // -- exactly what it would have replayed anyway.
-    // str_table -- every `(offset << 32) | length`.
-    bcc_layout_fp_strings_upto(out = guard_layout_now, xs = str_strs, upto = src_str_base)
-    // The scalars the table indices are built on. `lc_perceus_pin` is NOT one
-    // of them: it is a process-local monotonic token (`pctx_pin_counter`)
-    // memoizing the borrow tables, so it differs between two compiles of the
-    // SAME program in one process -- measured, it was the only slot that moved
-    // under a leading comment. The tables it stands for are folded below.
-    bcc_layout_fp_ints(out = guard_layout_now, xs = [
-      num_user_funcs,
-      lambda_slot_base,
-      func_offset
-    ])
-    // The lambda plan -- every `lambda_slot_base + lambda_idx`.
-    bcc_layout_fp_ints(out = guard_layout_now, xs = lambda_bases)
-    // ctor_table -- every constructor tag is `(type_index << 16) | variant`,
-    // and `type_index` counts type declarations in merge order.
-    bcc_layout_fp_strings(out = guard_layout_now, xs = ctor_names_list)
-    bcc_layout_fp_ints(out = guard_layout_now, xs = ctor_tags_list)
-    bcc_layout_fp_ints(out = guard_layout_now, xs = ctor_field_counts_list)
-    bcc_layout_fp_strings(out = guard_layout_now, xs = ctor_type_names_list)
-    bcc_layout_fp_strings(out = guard_layout_now, xs = struct_names)
-    bcc_layout_fp_string_matrix(out = guard_layout_now, xs = struct_field_names)
-    bcc_layout_fp_ints(out = guard_layout_now, xs = ctor_float_fields_list)
-    // Which functions return a Double. The three typed-lowering OFFSET arrays
-    // beside it are deliberately NOT folded in: they are source positions in
-    // the MERGED text, so appending a comment to any file shifts every offset
-    // after it, and the guard would decline on an edit that moves no body's
-    // bytes at all. Measured on the compiler's own closure (5242 functions),
-    // comment-edited: with them folded in, `offered=4394 recompiled=5155` --
-    // the wide lane declined and the build was a cold one in all but name;
-    // without them, `recompiled=848`. Same tree, same leaf, one difference.
-    // They also do not need to be folded: a replayed body never consults them,
-    // and a recompiled one consults them against ITS OWN current offsets,
-    // which shift with the same text.
-    // What could change an unchanged file's lowering is a cross-file
-    // classification change, and those are name-keyed and pinned -- a callee
-    // that starts returning Double enters `float_ret_fn_names`, a const that
-    // stops being an Int leaves `const_int_names`, a struct field that becomes
-    // Double enters `ctor_float_fields`. `body_cache_edit_classes_test.vibe`
-    // probes that residue directly rather than leaving it argued.
-    bcc_layout_fp_strings(out = guard_layout_now, xs = float_ret_fn_names)
-    // Thunks decide call-vs-value at a reference; a folded const decides the
-    // literal a body embeds.
-    bcc_layout_fp_strings(out = guard_layout_now, xs = thunk_names_sorted_shared)
-    bcc_layout_fp_strings(out = guard_layout_now, xs = const_int_names_list)
-    bcc_layout_fp_ints(out = guard_layout_now, xs = const_int_values_list)
-    // Generated-builtin indices and the region arena's address. `num_generated`
-    // pins their COUNT; these are the assignment.
-    bcc_layout_fp_ints(out = guard_layout_now, xs = [
-      rc_drop_idx,
-      rc_dup_idx,
-      rc_alloc_idx,
-      region_ptr_addr,
-      region_arr_new_idx,
-      region_bytes_new_idx,
-      heap_grow_check_idx,
-      map_hash_idx,
-      map_cap_idx,
-      map_build_index_idx,
-      map_probe_index_idx,
-      map_index_insert_idx
-    ])
-    // Exception tags: effect `effect_names[i]` routes through tag `3 + i`, so
-    // a declared effect added anywhere moves every later `perform`'s tag.
-    bcc_layout_fp_strings(out = guard_layout_now, xs = effect_names_list)
-    bcc_layout_fp_strings(out = guard_layout_now, xs = effect_op_keys_list)
-    bcc_layout_fp_ints(out = guard_layout_now, xs = effect_op_arities_list)
-    bcc_layout_fp_bools(out = guard_layout_now, xs = [has_exceptions])
-    // Whole-program return classifications: they decide a call site's shape.
-    bcc_layout_fp_strings(out = guard_layout_now, xs = lc_agg_ret_names)
-    bcc_layout_fp_ints(out = guard_layout_now, xs = lc_agg_ret_infos)
-    bcc_layout_fp_strings(out = guard_layout_now, xs = lc_heap_ret_names)
-    bcc_layout_fp_strings(out = guard_layout_now, xs = lc_scalar_ret_names)
-    bcc_layout_fp_strings(out = guard_layout_now, xs = lc_borrow_ret_names)
-    bcc_layout_fp_strings(out = guard_layout_now, xs = lc_borrow_view_ret)
-    bcc_layout_fp_strings(out = guard_layout_now, xs = lc_borrow_param_user_srt)
-    bcc_layout_fp_ints(out = guard_layout_now, xs = lc_borrow_param_mask)
-    // The shared capture-name index a lambda resolves a capture through.
-    bcc_layout_fp_strings(out = guard_layout_now, xs = capture_name_index_shared)
-    // Compile modes that change emitted code, and the entry name, which
-    // `rc_entry_untag_return` compares each function's own name against.
-    bcc_layout_fp_bools(out = guard_layout_now, xs = [
-      enable_rc,
-      rc_shadow,
-      dbg_line_on,
-      coverage,
-      library_mode
-    ])
-    bcc_layout_fp_strings(out = guard_layout_now, xs = [entry_name])
+  let guard_layout_now = if pin_region_capacity >= 0 {
+    lc_layout_fingerprint(input = input, t = LcLayoutTables::{
+      fn_names: all_fn_names_list,
+      fn_indices: all_fn_indices_list,
+      fn_params: all_fn_param_counts,
+      fn_returns: all_fn_returns_list,
+      fn_envs: all_fn_needs_env_list,
+      lambda_bases: lambda_bases,
+      capture_names: capture_name_index_shared,
+      thunk_names: thunk_names_sorted_shared,
+      float_ret: float_ret_fn_names,
+      const_names: const_int_names_list,
+      const_values: const_int_values_list,
+      agg_names: lc_agg_ret_names,
+      agg_infos: lc_agg_ret_infos,
+      heap_ret: lc_heap_ret_names,
+      scalar_ret: lc_scalar_ret_names,
+      borrow_ret: lc_borrow_ret_names,
+      borrow_view: lc_borrow_view_ret,
+      borrow_param: lc_borrow_param_user_srt,
+      borrow_mask: lc_borrow_param_mask
+    }, ctor_whole = true, coverage = coverage, enable_rc = enable_rc, rc_shadow = rc_shadow)
+  } else {
+    lc_fresh_int_array()
+  }
+  // #2669: the same fingerprint with every entry keyed by a source function
+  // taken out, and those entries as one row per function instead. A build
+  // whose source functions changed is compared on these: the global half
+  // whole, the rows of the names both builds hold.
+  let src_n = input.pin_region_src_n
+  // Only for a compile whose harvest someone reads, or that consumes one: an
+  // ordinary build hands a discarding out-cache (`collect == [0]`) and an
+  // empty in-cache, and the split would be allocated for nothing -- measured
+  // as +2% of the selfcompile KPI's warm allocation volume, with the body
+  // cache off.
+  let out_collects = Array::length(input.body_cache_out.collect) == 0 || Array::get(input.body_cache_out.collect, at = 0) != 0
+  let split_wanted = out_collects || Array::length(input.body_cache_in.fn_indices) > 0
+  let split_on = split_wanted && pin_region_capacity >= 0 && src_n >= 0 && src_n <= Array::length(all_fn_names_list)
+  let src_names = lc_fresh_string_array()
+  if split_on {
+    let mut si = 0
+    while si < src_n {
+      Array::push(src_names, value = Array::get(all_fn_names_list, at = si))
+      si = si + 1
+    }
+    // The pads are part of the source region's shape, not of anything a
+    // body reads by name.
+    let mut pi = src_n
+    while pi < pin_region_capacity && pi < Array::length(all_fn_names_list) {
+      Array::push(src_names, value = Array::get(all_fn_names_list, at = pi))
+      pi = pi + 1
+    }
   } else {
     ()
+  }
+  let drop = sorted_names_of(src_names)
+  // A duplicated constructor or struct name resolves first-match, so the
+  // tables' ORDER matters and they stay pinned whole.
+  let ctor_whole = lc_names_have_duplicate(input.ctor_names_list) || lc_names_have_duplicate(input.struct_names) || lc_names_have_duplicate(input.effect_names_list)
+  let guard_layout_global = if split_on {
+    let g_names = lc_fresh_string_array()
+    let g_indices = lc_fresh_int_array()
+    let g_params = lc_fresh_int_array()
+    let g_returns = lc_fresh_int_array()
+    let g_envs: Array[Bool] = []
+    let mut gi = pin_region_capacity
+    while gi < Array::length(all_fn_names_list) {
+      Array::push(g_names, value = Array::get(all_fn_names_list, at = gi))
+      // The synthesized region's indices move with the pin capacity, which
+      // the relocation follows: fold them relative to the capacity.
+      let gidx = Array::get(all_fn_indices_list, at = gi)
+      Array::push(g_indices, value = if gi < input.num_user_funcs && gidx == func_offset + gi {
+        0 - 2 - (gi - pin_region_capacity)
+      } else {
+        gidx
+      })
+      Array::push(g_params, value = Array::get(all_fn_param_counts, at = gi))
+      Array::push(g_returns, value = Array::get(all_fn_returns_list, at = gi))
+      Array::push(g_envs, value = Array::get(all_fn_needs_env_list, at = gi))
+      gi = gi + 1
+    }
+    let const_names_g = lc_without(drop = drop, xs = const_int_names_list)
+    // Constructor names leave the capture index with the tables they key,
+    // unless those stay pinned whole.
+    let capture_ctors = if ctor_whole {
+      ctor_names_list
+    } else {
+      lc_fresh_string_array()
+    }
+    lc_layout_fingerprint_at(input = input, t = LcLayoutTables::{
+      fn_names: g_names,
+      fn_indices: g_indices,
+      fn_params: g_params,
+      fn_returns: g_returns,
+      fn_envs: g_envs,
+      // The synthesized region's lambda COUNTS: its bases move with the
+      // source region's lambdas, which the relocation follows.
+      lambda_bases: lc_lambda_counts(bases = lambda_bases, count = lambda_count, lo = pin_region_capacity, hi = input.num_user_funcs),
+      capture_names: lc_capture_index(fn_names = g_names, ctor_names = capture_ctors, const_names = const_names_g),
+      thunk_names: lc_without(drop = drop, xs = thunk_names_sorted_shared),
+      float_ret: lc_without(drop = drop, xs = float_ret_fn_names),
+      const_names: const_names_g,
+      const_values: lc_without_ints(drop = drop, names = const_int_names_list, vals = const_int_values_list),
+      agg_names: lc_without(drop = drop, xs = lc_agg_ret_names),
+      agg_infos: lc_without_ints(drop = drop, names = lc_agg_ret_names, vals = lc_agg_ret_infos),
+      heap_ret: lc_without(drop = drop, xs = lc_heap_ret_names),
+      scalar_ret: lc_without(drop = drop, xs = lc_scalar_ret_names),
+      borrow_ret: lc_without(drop = drop, xs = lc_borrow_ret_names),
+      borrow_view: lc_without(drop = drop, xs = lc_borrow_view_ret),
+      borrow_param: lc_without(drop = drop, xs = lc_borrow_param_user_srt),
+      borrow_mask: lc_without_ints(drop = drop, names = lc_borrow_param_user_srt, vals = lc_borrow_param_mask)
+    }, ctor_whole = ctor_whole, relative = true, coverage = coverage, enable_rc = enable_rc, rc_shadow = rc_shadow)
+  } else {
+    lc_fresh_int_array()
+  }
+  let src_rows = if split_on {
+    lc_src_rows(names = all_fn_names_list, indices = all_fn_indices_list, params = all_fn_param_counts, returns = all_fn_returns_list, envs = all_fn_needs_env_list, src_n = src_n, func_offset = func_offset, thunk = thunk_names_sorted_shared, float_ret = float_ret_fn_names, const_names = const_int_names_list, const_values = const_int_values_list, agg_names = lc_agg_ret_names, agg_infos = lc_agg_ret_infos, heap = lc_heap_ret_names, scalar = lc_scalar_ret_names, borrow_ret = lc_borrow_ret_names, borrow_view = lc_borrow_view_ret, borrow_param = lc_borrow_param_user_srt, borrow_mask = lc_borrow_param_mask)
+  } else {
+    lc_fresh_int_array()
+  }
+  let types = if split_on && !ctor_whole {
+    lc_type_rows(names = input.ctor_names_list, tags = input.ctor_tags_list, counts = input.ctor_field_counts_list, types = input.ctor_type_names_list, floats = input.ctor_float_fields_list)
+  } else {
+    LcTypeRows::{
+      names: lc_fresh_string_array(),
+      rows: lc_fresh_int_array(),
+      ctors: lc_fresh_string_array()
+    }
+  }
+  let effects = if split_on && !ctor_whole {
+    lc_effect_rows(effect_names = input.effect_names_list, keys = input.effect_op_keys_list, arities = input.effect_op_arities_list)
+  } else {
+    LcTypeRows::{
+      names: lc_fresh_string_array(),
+      rows: lc_fresh_int_array(),
+      ctors: lc_fresh_string_array()
+    }
+  }
+  let src_lambdas = if split_on {
+    lc_lambda_counts(bases = lambda_bases, count = lambda_count, lo = 0, hi = src_n)
+  } else {
+    lc_fresh_int_array()
   }
   LinkedEmissionLayout::{
     capture_names: capture_name_index_shared,
     thunk_names: thunk_names_sorted_shared,
-    guard_layout: guard_layout_now
+    guard_layout: guard_layout_now,
+    guard_layout_global: guard_layout_global,
+    src_rows: src_rows,
+    src_lambdas: src_lambdas,
+    type_names: types.names,
+    type_rows: types.rows,
+    type_ctors: types.ctors,
+    effect_names: effects.names,
+    effect_rows: effects.rows,
+    effect_ops: effects.ctors,
+    struct_names: if split_on && !ctor_whole {
+      input.struct_names
+    } else {
+      lc_fresh_string_array()
+    },
+    struct_fields: if split_on && !ctor_whole {
+      lc_joined_fields(input.struct_field_names)
+    } else {
+      lc_fresh_string_array()
+    }
   }
+}
+
+fn lc_names_have_duplicate(_ names: Array[String]) -> Bool {
+  let sorted = sorted_names_of(names)
+  let mut dup = false
+  let mut i = 1
+  while !dup && i < Array::length(sorted) {
+    if Array::get(sorted, at = i) == Array::get(sorted, at = i - 1) {
+      dup = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  dup
+}
+
+fn lc_joined_fields(_ fields: Array[Array[String]]) -> Array[String] {
+  let out = lc_fresh_string_array()
+  for fs in fields {
+    Array::push(out, value = String::join(fs, sep = "\n"))
+  }
+  out
+}
+
+/// The declared effect an op key (`Effect::op`) belongs to, -1 for none.
+fn lc_effect_of_op(effect_names: Array[String], key: String) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while found < 0 && i < Array::length(effect_names) {
+    let e = Array::get(effect_names, at = i)
+    let el = String::length(e)
+    if String::length(key) > el + 2 && String::substring(key, start = 0, end = el + 2) == String::concat(e, "::") {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The declared effects in tag order, one row each over its ops' keys and
+/// arities. Reuses `LcTypeRows`: `ctors` holds the op keys.
+fn lc_effect_rows(effect_names: Array[String], keys: Array[String], arities: Array[Int]) -> LcTypeRows {
+  let out = LcTypeRows::{
+    names: lc_fresh_string_array(),
+    rows: lc_fresh_int_array(),
+    ctors: lc_fresh_string_array()
+  }
+  let mut e = 0
+  while e < Array::length(effect_names) {
+    let row: Array[String] = []
+    let ops: Array[String] = []
+    let mut k = 0
+    while k < Array::length(keys) {
+      if lc_effect_of_op(effect_names = effect_names, key = Array::get(keys, at = k)) == e {
+        Array::push(row, value = Array::get(keys, at = k))
+        Array::push(row, value = __to_string(Array::get(arities, at = k)))
+        Array::push(ops, value = Array::get(keys, at = k))
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    Array::push(out.names, value = Array::get(effect_names, at = e))
+    bcc_layout_fp_strings(out = out.rows, xs = row)
+    Array::push(out.ctors, value = String::join(ops, sep = "\n"))
+    e = e + 1
+  }
+  out
+}
+
+/// The constructor table grouped by type, in order of each type's first
+/// constructor.
+struct LcTypeRows {
+  names: Array[String];
+  rows: Array[Int];
+  ctors: Array[String]
+}
+
+fn lc_type_rows(names: Array[String], tags: Array[Int], counts: Array[Int], types: Array[String], floats: Array[Int]) -> LcTypeRows {
+  let out = LcTypeRows::{
+    names: lc_fresh_string_array(),
+    rows: lc_fresh_int_array(),
+    ctors: lc_fresh_string_array()
+  }
+  // Each constructor's Double fields, as text, by constructor index.
+  let float_text = lc_fresh_string_array()
+  let mut z = 0
+  while z < Array::length(names) {
+    Array::push(float_text, value = "")
+    z = z + 1
+  }
+  for f in floats {
+    let c = f / 64
+    if c >= 0 && c < Array::length(float_text) {
+      Array::set(float_text, at = c, value = String::concat(Array::get(float_text, at = c), String::concat(__to_string(f % 64), ",")))
+    } else {
+      ()
+    }
+  }
+  // Grouped by type name; within a type, by table index, which is the
+  // order its variants were declared in.
+  let perm = sort_perm_by_names(types)
+  let mut i = 0
+  while i < Array::length(perm) {
+    let ty = Array::get(types, at = Array::get(perm, at = i))
+    let members = lc_fresh_int_array()
+    let mut j = i
+    while j < Array::length(perm) && Array::get(types, at = Array::get(perm, at = j)) == ty {
+      Array::push(members, value = Array::get(perm, at = j))
+      j = j + 1
+    }
+    let ordered = sorted_ints(members)
+    let row: Array[String] = []
+    let ctor_names: Array[String] = []
+    for k in ordered {
+      Array::push(ctor_names, value = Array::get(names, at = k))
+      Array::push(row, value = Array::get(names, at = k))
+      // The tag's `type_index` half moves when a type is declared ahead,
+      // and the relocation follows it (kind 105); the variant half and a
+      // built-in tag do not.
+      let tag = Array::get(tags, at = k)
+      Array::push(row, value = __to_string(if tag >= 2<<16 {
+        tag % 65536
+      } else {
+        tag
+      }))
+      Array::push(row, value = __to_string(Array::get(counts, at = k)))
+      Array::push(row, value = Array::get(float_text, at = k))
+    }
+    Array::push(out.names, value = ty)
+    bcc_layout_fp_strings(out = out.rows, xs = row)
+    Array::push(out.ctors, value = String::join(ctor_names, sep = "\n"))
+    i = j
+  }
+  out
+}
+
+/// `xs` in ascending order (insertion sort: a type has a handful of
+/// constructors).
+fn sorted_ints(_ xs: Array[Int]) -> Array[Int] {
+  let out = lc_fresh_int_array()
+  for x in xs {
+    let mut at = Array::length(out)
+    Array::push(out, value = x)
+    let mut moving = true
+    while moving && at > 0 {
+      let prev = Array::get(out, at = at - 1)
+      if prev > x {
+        Array::set(out, at = at, value = prev)
+        at = at - 1
+      } else {
+        moving = false
+      }
+    }
+    Array::set(out, at = at, value = x)
+  }
+  out
+}
+
+/// Membership in a name list, and the value aligned with it: `(sorted,
+/// values-in-sorted-order)`, looked up by bisection.
+struct LcKeyed {
+  names: Array[String];
+  vals: Array[Int]
+}
+
+fn lc_keyed(names: Array[String], vals: Array[Int]) -> LcKeyed {
+  let perm = sort_perm_by_names(names)
+  let out = LcKeyed::{
+    names: lc_fresh_string_array(),
+    vals: lc_fresh_int_array()
+  }
+  for p in perm {
+    Array::push(out.names, value = Array::get(names, at = p))
+    Array::push(out.vals, value = if p < Array::length(vals) {
+      Array::get(vals, at = p)
+    } else {
+      1
+    })
+  }
+  out
+}
+
+/// `[present, value]` for `name`: `[0, 0]` when absent.
+fn lc_keyed_push(row: Array[Int], k: LcKeyed, name: String) -> Unit {
+  let at = bsearch_leftmost(sorted = k.names, name = name)
+  if at >= 0 {
+    Array::push(row, value = 1)
+    Array::push(row, value = Array::get(k.vals, at = at))
+  } else {
+    Array::push(row, value = 0)
+    Array::push(row, value = 0)
+  }
+}
+
+/// One `[h1, h2]` row per source function: everything the name-keyed
+/// tables `guard_layout` folds say about it. Its index is NOT in the row
+/// (relocation follows it) except where it is not the function's own
+/// position -- a bridged builtin -- and neither is its lambda count.
+fn lc_src_rows(names: Array[String], indices: Array[Int], params: Array[Int], returns: Array[Int], envs: Array[Bool], src_n: Int, func_offset: Int, thunk: Array[String], float_ret: Array[String], const_names: Array[String], const_values: Array[Int], agg_names: Array[String], agg_infos: Array[Int], heap: Array[String], scalar: Array[String], borrow_ret: Array[String], borrow_view: Array[String], borrow_param: Array[String], borrow_mask: Array[Int]) -> Array[Int] {
+  let none: Array[Int] = []
+  let k_thunk = lc_keyed(names = thunk, vals = none)
+  let k_float = lc_keyed(names = float_ret, vals = none)
+  let k_const = lc_keyed(names = const_names, vals = const_values)
+  let k_agg = lc_keyed(names = agg_names, vals = agg_infos)
+  let k_heap = lc_keyed(names = heap, vals = none)
+  let k_scalar = lc_keyed(names = scalar, vals = none)
+  let k_bret = lc_keyed(names = borrow_ret, vals = none)
+  let k_bview = lc_keyed(names = borrow_view, vals = none)
+  let k_bparam = lc_keyed(names = borrow_param, vals = borrow_mask)
+  let out = lc_fresh_int_array()
+  let mut i = 0
+  while i < src_n {
+    let name = Array::get(names, at = i)
+    let idx = Array::get(indices, at = i)
+    let row = lc_fresh_int_array()
+    Array::push(row, value = Array::get(params, at = i))
+    Array::push(row, value = if Array::get(envs, at = i) {
+      1
+    } else {
+      0
+    })
+    Array::push(row, value = Array::get(returns, at = i))
+    Array::push(row, value = if idx == func_offset + i {
+      0 - 1
+    } else {
+      idx
+    })
+    lc_keyed_push(row = row, k = k_thunk, name = name)
+    lc_keyed_push(row = row, k = k_float, name = name)
+    lc_keyed_push(row = row, k = k_const, name = name)
+    lc_keyed_push(row = row, k = k_agg, name = name)
+    lc_keyed_push(row = row, k = k_heap, name = name)
+    lc_keyed_push(row = row, k = k_scalar, name = name)
+    lc_keyed_push(row = row, k = k_bret, name = name)
+    lc_keyed_push(row = row, k = k_bview, name = name)
+    lc_keyed_push(row = row, k = k_bparam, name = name)
+    bcc_layout_fp_ints(out = out, xs = row)
+    i = i + 1
+  }
+  out
+}
+
+fn lc_layout_fingerprint(input: LinkedBodyInputs, t: LcLayoutTables, ctor_whole: Bool, coverage: Bool, enable_rc: Bool, rc_shadow: Bool) -> Array[Int] {
+  lc_layout_fingerprint_at(input = input, t = t, ctor_whole = ctor_whole, relative = false, coverage = coverage, enable_rc = enable_rc, rc_shadow = rc_shadow)
+}
+
+/// `relative`: the global half folds the user-function count and the lambda
+/// slot base relative to the pin capacity, which a source region crossing a
+/// capacity boundary moves and the relocation follows.
+fn lc_layout_fingerprint_at(input: LinkedBodyInputs, t: LcLayoutTables, ctor_whole: Bool, relative: Bool, coverage: Bool, enable_rc: Bool, rc_shadow: Bool) -> Array[Int] {
+  let out = lc_fresh_int_array()
+  let num_user_funcs = input.num_user_funcs
+  let lambda_slot_base = input.lambda_slot_base
+  let func_offset = input.func_offset
+  let ctor_names_list = input.ctor_names_list
+  let ctor_tags_list = input.ctor_tags_list
+  let ctor_field_counts_list = input.ctor_field_counts_list
+  let ctor_type_names_list = input.ctor_type_names_list
+  let struct_names = input.struct_names
+  let struct_field_names = input.struct_field_names
+  let ctor_float_fields_list = input.ctor_float_fields_list
+  let rc_drop_idx = input.rc_drop_idx
+  let rc_dup_idx = input.rc_dup_idx
+  let rc_alloc_idx = input.rc_alloc_idx
+  let region_ptr_addr = input.region_ptr_addr
+  let region_arr_new_idx = input.region_arr_new_idx
+  let region_bytes_new_idx = input.region_bytes_new_idx
+  let heap_grow_check_idx = input.heap_grow_check_idx
+  let map_hash_idx = input.map_hash_idx
+  let map_cap_idx = input.map_cap_idx
+  let map_build_index_idx = input.map_build_index_idx
+  let map_probe_index_idx = input.map_probe_index_idx
+  let map_index_insert_idx = input.map_index_insert_idx
+  let effect_names_list = input.effect_names_list
+  let effect_op_keys_list = input.effect_op_keys_list
+  let effect_op_arities_list = input.effect_op_arities_list
+  let has_exceptions = input.has_exceptions
+  let dbg_line_on = input.dbg_line_on
+  let library_mode = input.library_mode
+  let entry_name = input.entry_name
+  // func_table -- every `call` immediate.
+  bcc_layout_fp_strings(out = out, xs = t.fn_names)
+  bcc_layout_fp_ints(out = out, xs = t.fn_indices)
+  bcc_layout_fp_ints(out = out, xs = t.fn_params)
+  bcc_layout_fp_ints(out = out, xs = t.fn_returns)
+  bcc_layout_fp_bools(out = out, xs = t.fn_envs)
+  //
+  // The function vector is the whole vector, so it pins ORDER as well as
+  // membership -- the case `guard_unmangled_names` (a sorted set) cannot
+  // see. A `__test_` name riding along in it is not over-strict in the way
+  // it looks: a renamed test is an edit to the ENTRY file, which is last in
+  // merge order, so the prefix the lane narrows to is everything before it
+  // -- exactly what it would have replayed anyway.
+  // The string pool is NOT pinned here (#2669): every address a body takes
+  // from it is a recorded reference, the harvest carries the pool itself
+  // (`guard_str_pool`), and a replay relocates those references onto this
+  // compile's pool instead of declining (linked_body_cache_strings.vibe).
+  // The scalars the table indices are built on. `lc_perceus_pin` is NOT one
+  // of them: it is a process-local monotonic token (`pctx_pin_counter`)
+  // memoizing the borrow tables, so it differs between two compiles of the
+  // SAME program in one process -- measured, it was the only slot that moved
+  // under a leading comment. The tables it stands for are folded below.
+  if relative {
+    bcc_layout_fp_ints(out = out, xs = [
+      num_user_funcs - input.pin_region_capacity,
+      lambda_slot_base - input.pin_region_capacity,
+      func_offset
+    ])
+  } else {
+    bcc_layout_fp_ints(out = out, xs = [
+      num_user_funcs,
+      lambda_slot_base,
+      func_offset
+    ])
+  }
+  // The lambda plan -- every `lambda_slot_base + lambda_idx`.
+  bcc_layout_fp_ints(out = out, xs = t.lambda_bases)
+  // ctor_table -- every constructor tag is `(type_index << 16) | variant`,
+  // and `type_index` counts type declarations in merge order. The global
+  // half leaves it out when every name identifies one constructor and one
+  // struct: it is compared per type then (`lc_type_rows`), tag values
+  // included, so a type added where it moves no existing tag is tolerated.
+  // The one-slot marker keeps the two shapes from ever comparing equal.
+  // Compared per TYPE, not per constructor: a variant added to an existing
+  // enum moves that type's row, and the bodies that spell or embed its
+  // constructors recompile (`lc_types_agree`).
+  if ctor_whole {
+    bcc_layout_fp_ints(out = out, xs = [1])
+    bcc_layout_fp_strings(out = out, xs = ctor_names_list)
+    bcc_layout_fp_ints(out = out, xs = ctor_tags_list)
+    bcc_layout_fp_ints(out = out, xs = ctor_field_counts_list)
+    bcc_layout_fp_strings(out = out, xs = ctor_type_names_list)
+    bcc_layout_fp_ints(out = out, xs = ctor_float_fields_list)
+  } else {
+    bcc_layout_fp_ints(out = out, xs = [0])
+  }
+  // The struct tables likewise, compared by name instead
+  // (`lc_structs_agree`) under a stricter rule: a field access dispatches
+  // over every struct that has the field, in table order, and a bare record
+  // literal is matched against every struct's field set, so an added struct
+  // is tolerated only when its fields are disjoint from every existing one's.
+  if ctor_whole {
+    bcc_layout_fp_strings(out = out, xs = struct_names)
+    bcc_layout_fp_string_matrix(out = out, xs = struct_field_names)
+  } else {
+    ()
+  }
+  // Which functions return a Double. The three typed-lowering OFFSET arrays
+  // beside it are deliberately NOT folded in: they are source positions in
+  // the MERGED text, so appending a comment to any file shifts every offset
+  // after it, and the guard would decline on an edit that moves no body's
+  // bytes at all. Measured on the compiler's own closure (5242 functions),
+  // comment-edited: with them folded in, `offered=4394 recompiled=5155` --
+  // the wide lane declined and the build was a cold one in all but name;
+  // without them, `recompiled=848`. Same tree, same leaf, one difference.
+  // They also do not need to be folded: a replayed body never consults them,
+  // and a recompiled one consults them against ITS OWN current offsets,
+  // which shift with the same text.
+  // What could change an unchanged file's lowering is a cross-file
+  // classification change, and those are name-keyed and pinned -- a callee
+  // that starts returning Double enters `t.float_ret`, a const that
+  // stops being an Int leaves `const_int_names`, a struct field that becomes
+  // Double enters `ctor_float_fields`. `body_cache_edit_classes_test.vibe`
+  // probes that residue directly rather than leaving it argued.
+  bcc_layout_fp_strings(out = out, xs = t.float_ret)
+  // Thunks decide call-vs-value at a reference; a folded const decides the
+  // literal a body embeds.
+  bcc_layout_fp_strings(out = out, xs = t.thunk_names)
+  bcc_layout_fp_strings(out = out, xs = t.const_names)
+  bcc_layout_fp_ints(out = out, xs = t.const_values)
+  // Generated-builtin indices and the region arena's address. `num_generated`
+  // pins their COUNT; these are the assignment.
+  bcc_layout_fp_ints(out = out, xs = [
+    rc_drop_idx,
+    rc_dup_idx,
+    rc_alloc_idx,
+    region_ptr_addr,
+    region_arr_new_idx,
+    region_bytes_new_idx,
+    heap_grow_check_idx,
+    map_hash_idx,
+    map_cap_idx,
+    map_build_index_idx,
+    map_probe_index_idx,
+    map_index_insert_idx
+  ])
+  // Exception tags: effect `effect_names[i]` routes through tag `3 + i`, so
+  // a declared effect added anywhere moves every later `perform`'s tag.
+  // The global half leaves the declared effects out: their tags are
+  // `throw` / `catch` immediates, which the relocation maps, and their ops
+  // are compared per effect (`lc_effect_rows`). Ops whose effect is not a
+  // declared one (an exception effect's) stay here.
+  if ctor_whole {
+    bcc_layout_fp_strings(out = out, xs = effect_names_list)
+    bcc_layout_fp_strings(out = out, xs = effect_op_keys_list)
+    bcc_layout_fp_ints(out = out, xs = effect_op_arities_list)
+  } else {
+    let other_keys = lc_fresh_string_array()
+    let other_arities = lc_fresh_int_array()
+    let mut k = 0
+    while k < Array::length(effect_op_keys_list) {
+      if lc_effect_of_op(effect_names = effect_names_list, key = Array::get(effect_op_keys_list, at = k)) < 0 {
+        Array::push(other_keys, value = Array::get(effect_op_keys_list, at = k))
+        Array::push(other_arities, value = Array::get(effect_op_arities_list, at = k))
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    bcc_layout_fp_strings(out = out, xs = other_keys)
+    bcc_layout_fp_ints(out = out, xs = other_arities)
+  }
+  bcc_layout_fp_bools(out = out, xs = [has_exceptions])
+  // Whole-program return classifications: they decide a call site's shape.
+  bcc_layout_fp_strings(out = out, xs = t.agg_names)
+  bcc_layout_fp_ints(out = out, xs = t.agg_infos)
+  bcc_layout_fp_strings(out = out, xs = t.heap_ret)
+  bcc_layout_fp_strings(out = out, xs = t.scalar_ret)
+  bcc_layout_fp_strings(out = out, xs = t.borrow_ret)
+  bcc_layout_fp_strings(out = out, xs = t.borrow_view)
+  bcc_layout_fp_strings(out = out, xs = t.borrow_param)
+  bcc_layout_fp_ints(out = out, xs = t.borrow_mask)
+  // The shared capture-name index a lambda resolves a capture through.
+  bcc_layout_fp_strings(out = out, xs = t.capture_names)
+  // Compile modes that change emitted code, and the entry name, which
+  // `rc_entry_untag_return` compares each function's own name against.
+  bcc_layout_fp_bools(out = out, xs = [
+    enable_rc,
+    rc_shadow,
+    dbg_line_on,
+    coverage,
+    library_mode
+  ])
+  bcc_layout_fp_strings(out = out, xs = [entry_name])
+  out
 }

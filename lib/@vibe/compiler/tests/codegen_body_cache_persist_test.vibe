@@ -1060,17 +1060,17 @@ test "#2669: an edit to the FIRST file replays the files after it" {
   let verified = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "verify", counts_out = verify_counts)
   assert(Array::get(verify_counts, at = 0) > 0)
   assert(Bytes::length(verified) > 0)
-  // The conservative half, stated rather than left implied. LENGTHENING an
-  // existing literal in `a` keeps the statement count, the function vector and
-  // the lambda plan identical -- so the file table still offers the later
-  // files -- while every pooled offset after it moves. The layout guard's
-  // string-pool slot is what turns that into a narrow to the prefix, which for
-  // a first-file edit is empty: the build is cold again.
+  // LENGTHENING an existing literal in `a` keeps the statement count, the
+  // function vector and the lambda plan identical -- so the file table still
+  // offers the later files -- while every pooled offset after it moves. That
+  // used to be the guard's string-pool slot declining to a cold build; the
+  // pool is relocated now (#2669), so the later files' bodies are REPLAYED
+  // with their string references moved onto the new pool.
   //
-  // The byte comparison is the load-bearing one. Measured with that slot
-  // dropped: `offered=3 recompiled=1022` and the module is NOT what a fresh
-  // compile emits -- `b_two`'s cached body still points at where "beta" used
-  // to sit. A count is a cost; this is correctness.
+  // The byte comparison is the load-bearing one. Measured before the pool was
+  // pinned at all: `offered=3 recompiled=1022` and the module was NOT what a
+  // fresh compile emits -- `b_two`'s cached body still pointed at where
+  // "beta" used to sit. A count is a cost; this is correctness.
   //
   // Adding a DECLARATION instead would prove nothing about the pool: the file's
   // statement count changes and the table refuses the layout before any guard
@@ -1079,30 +1079,35 @@ test "#2669: an edit to the FIRST file replays the files after it" {
   Fs::write_bytes(a_path, bytes = string_to_bytes(a_moved))
   let moved_counts: Array[Int] = []
   let moved = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = moved_counts)
-  // Still offered by the file table -- the layout is intact -- and still not
-  // replayed, because the guard says the offsets moved.
+  // Offered by the file table, and replayed: fewer bodies rebuilt than cold.
   assert(Array::get(moved_counts, at = 0) > 0)
-  inspect(Array::get(moved_counts, at = 1) == cold_n, content = "true")
+  inspect(Array::get(moved_counts, at = 1) < cold_n, content = "true")
   assert(bytes_eq(a = moved, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run")))
 }
 
 test "#2669: a layout-drifting edit recompiles fully, then the next build replays it all" {
   // Three files, and the edit lands on the MIDDLE one so there is an
-  // unchanged prefix: `p_a` stays put, `p_b` lengthens a string literal,
-  // `p_main` is downstream. A literal moves the pooled offsets, which live ONLY
-  // in `guard_layout`, so this is the drift the body loop declines on.
+  // unchanged prefix: `p_a` stays put, `p_b` swaps the order of its two
+  // structs, `p_main` is downstream. A field access dispatches over the
+  // structs holding the field in table order, so structs both builds hold
+  // must keep their relative order, and this is a drift the body loop
+  // declines on. A string literal, an added function, an added type and a
+  // struct sharing a field used to be the example; each is relocated or
+  // tolerated now (#2669, #3771 -- `body_cache_insert_function_test.vibe`,
+  // `body_cache_changed_struct_test.vibe`).
   //
   // This used to be the test for carrying a REPLAYED prefix back into the
   // artifact. A drifted layout no longer replays a prefix (its bodies embed
-  // pool addresses the edit moved), so there is no hole to carry: the build
+  // indices the edit moved), so there is no hole to carry: the build
   // recompiles every body and its harvest is the whole program, which the
   // next unchanged build replays in full.
   let a_path = "/tmp/vibe_body_cache_pfx_a.vibe"
   let b_path = "/tmp/vibe_body_cache_pfx_b.vibe"
   let main_path = "/tmp/vibe_body_cache_pfx_main.vibe"
-  let a_source = "export let p_eq: () -> Bool = () -> { [1, 2] == [1, 2] }\nexport let p_one: () -> String = () -> { \"one\" }\nexport let p_two: () -> Int = () -> { 22 }"
-  let b_base = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() }"
-  let b_longer = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b is a good deal longer now\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() }"
+  let a_source = "export struct PaPt { v: Int }\nexport let p_eq: () -> Bool = () -> { [1, 2] == [1, 2] }\nexport let p_one: () -> String = () -> { \"one\" }\nexport let p_two: () -> Int = () -> { 22 + PaPt::{ v: 0 }.v }"
+  let b_body = "export let p_b_one: () -> String = () -> { String::concat(p_one(), \"b\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() + PbA::{ pa: 3 }.pa + PbB::{ pb: 4 }.pb }"
+  let b_base = String::concat("import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nstruct PbA { pa: Int }\nstruct PbB { pb: Int }\n", b_body)
+  let b_longer = String::concat("import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nstruct PbB { pb: Int }\nstruct PbA { pa: Int }\n", b_body)
   let main_source = "import ./vibe_body_cache_pfx_b.vibe { p_b_one, p_b_two }\nlet run: () -> Int = () -> { String::length(p_b_one()) + p_b_two() }"
   let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(main_path)))
   remove_file_if_exists(artifact_path)
@@ -1119,7 +1124,8 @@ test "#2669: a layout-drifting edit recompiles fully, then the next build replay
   // Non-vacuity: the file table DID offer the prefix's entries, so it is the
   // body loop that declined them, not the decoder.
   inspect(Array::get(edited_counts, at = 0) > 0, content = "true")
-  inspect(Array::get(edited_counts, at = 1) == cold_n, content = "true")
+  // Everything recompiled.
+  inspect(Array::get(edited_counts, at = 1) >= cold_n, content = "true")
   // Nothing changed since: the artifact is the edited build's whole harvest,
   // so the next build replays it all.
   let warm_counts: Array[Int] = []

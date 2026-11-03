@@ -2,6 +2,9 @@
 import ./product.vibe {
   FunctionProductPlan, validate_function_product_plan
 }
+import @vibe/compiler/codegen/reloc {
+  blind_slot_paired_count
+}
 import @vibe/compiler/codegen/wasi {
   LinkedBodyInputs,
   LinkedBodyPlan,
@@ -63,7 +66,7 @@ export fn function_replay_state_new(plan: FunctionProductPlan, input: LinkedBody
     }
   } else ()
   let builtins = lc_build_builtin_bodies(input = input, enable_rc = enable_rc, rc_shadow = rc_shadow)
-  let layout = lc_build_emission_layout(input = input, lambda_bases = plan.lambda_bases, coverage = false, enable_rc = enable_rc, rc_shadow = rc_shadow)
+  let layout = lc_build_emission_layout(input = input, lambda_bases = plan.lambda_bases, lambda_count = plan.lambda_count, coverage = false, enable_rc = enable_rc, rc_shadow = rc_shadow)
   FunctionReplayState::{
     validation: plan,
     builtins: builtins,
@@ -118,7 +121,8 @@ fn fw_replay_validated(state: FunctionReplayState, products: CodegenBodyCache) -
     let blind_lo = Array::length(state.blind_owners)
     codegen_body_cache_replay_indexed(index = rows, at = at, bodies = state.builtins.bodies, meta_i32 = state.builtins.meta_i32, meta_i64 = state.builtins.meta_i64, meta_v128 = state.builtins.meta_v128, lt = state.lambdas, slots = state.slots, blind_bodies = state.blind_owners, blind_offsets = state.blind_offsets, blind_kinds = state.blind_kinds, blind_syms = state.blind_syms, lm = lm, replay_bi = i)
     let slot_grew = Array::length(state.slots) - slot_lo
-    let blind_grew = Array::length(state.blind_owners) - blind_lo
+    // Only the function-value records pair with a slot (#2669).
+    let blind_grew = blind_slot_paired_count(kinds = state.blind_kinds, lo = blind_lo)
     if slot_grew != blind_grew {
       throw("blind reloc: replayed function " + Int::to_string(i) + " restored " + Int::to_string(slot_grew) + " funcref slots but " + Int::to_string(blind_grew) + " blind references -- the cache entry is not a complete pair")
     } else ()

@@ -16,14 +16,15 @@
 //# left out of the fingerprint shows up here as `equal=false`.
 //#
 //# MEASURED COVERAGE, so the file does not read as stronger than it is. Drop
-//# one slot from `guard_layout` and re-run: three of the thirteen flip a row
-//# to `equal=false`, which is this corpus proving them NECESSARY --
+//# one slot from `guard_layout` and re-run: two of the twelve flip a row to
+//# `equal=false`, which is this corpus proving them NECESSARY --
 //#
 //#   all_fn_names_list       -> swap-order         equal=false
-//#   str_strs (string pool)  -> string-literal     equal=false
 //#   struct_field_names      -> swap-struct-fields equal=false
 //#
-//# -- and the other ten stay green, because another slot declines first or
+//# (The string pool was a third. It is no longer pinned: its references are
+//# recorded and relocated on replay (#2669), and the `string-literal` row
+//# reads `reuse=partial equal=true`.) -- and the other ten stay green, because another slot declines first or
 //# because the file table refuses the layout before any guard is consulted.
 //# They are carried on the `CompileCtx` enumeration argument, not on a case
 //# that exercises them. What the whole table DOES establish is sufficiency:
@@ -234,9 +235,11 @@ fn ec_subs(olds: Array[String], news: Array[String]) -> String with Exception {
 /// dominated by the pin region's 1024 pads, which say nothing about this.
 ///
 /// The field says REUSE, so the values describe reuse and not the rebuild:
-/// `unoffered` is the file table refusing before any guard is consulted (the
-/// edit moved a statement count, so the stored indices are not this build's),
+/// `unoffered` is the file table refusing before any guard is consulted,
 /// `none` is the lane being offered entries and replaying nothing of them.
+/// Since #2669 an edit that moves only the edited file's statement count is
+/// offered (the later files' recorded positions are rebased), so `unoffered`
+/// no longer occurs in this table: what declines now is a guard.
 /// The third case was spelled `full` first, which read as its own opposite --
 /// `reuse=full` on a build that reused nothing -- and the surrounding prose
 /// had to translate it every time.
@@ -286,13 +289,17 @@ test "#2669: every edit class stays byte-exact under the widened body cache" {
   // A body-interior edit that changes no declaration and no literal pool.
   Array::push(report, value = ec_probe(label = "int-literal", edited = ec_sub(old = "export let ec_bump: (Int) -> Int = (n) -> { n + ec_k }", new = "export let ec_bump: (Int) -> Int = (n) -> { n + ec_k + 0 }")))
   // The string pool: every pooled offset after "alpha" moves, including the
-  // one `ec_b_text` embeds for "beta".
+  // one `ec_b_text` embeds for "beta". Reused since #2669: the later files'
+  // bodies are replayed with their string references relocated.
   Array::push(report, value = ec_probe(label = "string-literal", edited = ec_sub(old = "export let ec_name: () -> String = () -> { \"alpha\" }", new = "export let ec_name: () -> String = () -> { \"alpha is a good deal longer now\" }")))
   // The function vector, by membership: an added declaration shifts every
-  // later index.
+  // later index. Reused since #2669: the later files' bodies are moved into
+  // the new index space (`lc_src_edit_reindex`).
   Array::push(report, value = ec_probe(label = "add-function", edited = String::concat(ec_base_a(), "\nexport let ec_extra: () -> Int = () -> { 5 }")))
   // The function vector, by ORDER. Membership is untouched, so the sorted
   // name set `guard_unmangled_names` sees nothing; two indices exchange.
+  // Reused since #2669: the per-function rows match by name and the moved
+  // indices are relocated.
   let ec_scale_line = "export let ec_scale: () -> Double = () -> { 1.5 }"
   let ec_name_line = "export let ec_name: () -> String = () -> { \"alpha\" }"
   Array::push(report, value = ec_probe(label = "swap-order", edited = ec_subs(olds = [
@@ -300,10 +307,13 @@ test "#2669: every edit class stays byte-exact under the widened body cache" {
     ec_name_line
   ], news = [ec_name_line, ec_scale_line])))
   // The lambda plan: a closure added ahead shifts every later funcref slot,
-  // including the one `ec_b_closure` stores in its closure header.
+  // including the one `ec_b_closure` stores in its closure header. Reused
+  // since #2669: lambda counts are carried by value and the slots relocated.
   Array::push(report, value = ec_probe(label = "add-closure", edited = ec_sub(old = ec_scale_line, new = "export let ec_scale: () -> Double = () -> { let g = (d) -> { d }\n  g(1.5) }")))
   // Constructor tags: `(type_index << 16) | variant`, and `type_index` counts
   // type declarations in merge order, so a type added ahead moves EcShade's.
+  // Reused since #2669: every embedded tag is recorded (kind 105) and
+  // relocated through the constructor names.
   Array::push(report, value = ec_probe(label = "add-type-ahead", edited = ec_sub(old = "export enum EcShade {", new = "export enum EcAhead {\n  EcFirst\n}\nexport enum EcShade {")))
   // Struct layout: exchanging two fields swaps their offsets without changing
   // any construction site, so `ec_b_field`'s `.x` and `.y` move under it.
@@ -313,6 +323,10 @@ test "#2669: every edit class stays byte-exact under the widened body cache" {
   ], news = ["  y: Int;", "  x: Int"])))
   // Exception tags: effect `effect_names[i]` routes through tag `3 + i`, so an
   // effect declared ahead moves the tag `ec_b_effect` unwinds through.
+  // Reused since #2669 (the effects are compared by name and tags remapped),
+  // but measured: with the tag remap made the identity this row still
+  // answers `equal=true`, so it does not pin the remap -- no replayed body
+  // here names the moved tag.
   Array::push(report, value = ec_probe(label = "add-effect-ahead", edited = ec_sub(old = "effect EcLog {", new = "effect EcAhead {\n  Ping(Int) -> Int\n}\neffect EcLog {")))
   // A typed RENDER/eq classification: `ec_flag` goes from Int to Bool while
   // keeping its name, its arity, its statement count and its scalar-return
@@ -356,5 +370,5 @@ test "#2669: every edit class stays byte-exact under the widened body cache" {
   Array::push(report, value = ec_probe(label = "const-value", edited = ec_sub(old = "export let ec_k: Int = 7", new = "export let ec_k: Int = 11")))
   // One line, fixed field order -- the CLI contract, and it keeps the whole
   // table visible in a failure rather than only its first row.
-  inspect(String::join(report, sep = " | "), content = "comment reuse=partial equal=true | int-literal reuse=partial equal=true | string-literal reuse=none equal=true | add-function reuse=unoffered equal=true | swap-order reuse=none equal=true | add-closure reuse=none equal=true | add-type-ahead reuse=unoffered equal=true | swap-struct-fields reuse=none equal=true | add-effect-ahead reuse=unoffered equal=true | render-type reuse=partial equal=true | const-value reuse=partial equal=true")
+  inspect(String::join(report, sep = " | "), content = "comment reuse=partial equal=true | int-literal reuse=partial equal=true | string-literal reuse=partial equal=true | add-function reuse=partial equal=true | swap-order reuse=partial equal=true | add-closure reuse=partial equal=true | add-type-ahead reuse=partial equal=true | swap-struct-fields reuse=partial equal=true | add-effect-ahead reuse=partial equal=true | render-type reuse=partial equal=true | const-value reuse=partial equal=true")
 }

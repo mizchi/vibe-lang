@@ -1,0 +1,248 @@
+// lib/@vibe/compiler/codegen/wasi/linked_body_cache_strings.vibe -- moving a
+// replayed body's string references onto this compile's pool (#2669).
+
+import @vibe/compiler/codegen/common_base {
+  LambdaTable, LineMapState, StrTable, str_table_slot_or_neg
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_kind_str_fat, blind_kind_str_ref, blind_owner_is_lambda, blind_owner_lambda_index, blind_owner_of_lambda
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_i64_const
+}
+
+//# Why a replayed body needs this
+//
+// A function body embeds a pooled string as its ADDRESS, and the pool is laid
+// out over the whole program: every plain literal first, then the
+// interpolation parts, the map keys and the runtime's own messages, each
+// string right after the one before it. So a literal added, removed or
+// lengthened in ANY file moves the address of strings an untouched function
+// uses, and the cached body of that function names the old one.
+//
+// The emitter records every such reference (`emit_str_ref_slot` /
+// `emit_str_fat_slot`, kinds 103 / 104), the cache carries the records and
+// the harvest's pool, and the module assembly checks each record against its
+// bytes on every compile. Relocation reads a record's slot in the HARVEST's
+// pool, looks that string up in THIS compile's pool, and re-emits the
+// constant. A constant whose minimal LEB128 width changes changes the body's
+// length, so the body is rebuilt rather than patched, and every other offset
+// into it -- the other references, the `vibe.linemap` rows -- moves with it.
+
+/// Is `a` exactly `b[0..n)`? The harvest stored its pool below its own
+/// `src_str_base`; this compile's pool is compared over the same prefix.
+fn lc_pool_prefix_equal(a: Array[String], b: Array[String], n: Int) -> Bool {
+  if Array::length(a) != n || Array::length(b) < n {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Array::get(a, at = i) != Array::get(b, at = i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+/// How a replay must treat string references: `Some([])` when the harvest's
+/// pool is this compile's pool (nothing moved), `Some(remap)` mapping every
+/// harvest slot to this compile's slot of the same string, and `None` when
+/// some reference names a string this compile's pool does not hold -- which
+/// makes the whole cache unusable, because a body that cannot be relocated
+/// cannot be replayed (fail closed, never guessed).
+export fn lc_string_remap(old_pool: Array[String], table: StrTable, src_str_base: Int, kinds: Array[Int], syms: Array[Int]) -> Option[Array[Int]] {
+  if lc_pool_prefix_equal(a = old_pool, b = table.strs, n = src_str_base) {
+    Some([])
+  } else {
+    let remap: Array[Int] = []
+    let mut s = 0
+    while s < Array::length(old_pool) {
+      let now = str_table_slot_or_neg(st = table, s = Array::get(old_pool, at = s))
+      // A slot at or past `src_str_base` is not in the region the harvest
+      // pinned, so it cannot be a target either.
+      Array::push(remap, value = if now >= src_str_base {
+        0 - 1
+      } else {
+        now
+      })
+      s = s + 1
+    }
+    let mut ok = true
+    let mut k = 0
+    while ok && k < Array::length(kinds) {
+      let kind = Array::get(kinds, at = k)
+      if kind == blind_kind_str_ref || kind == blind_kind_str_fat {
+        let sym = Array::get(syms, at = k)
+        if sym < 0 || sym >= Array::length(remap) || Array::get(remap, at = sym) < 0 {
+          ok = false
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    if ok {
+      Some(remap)
+    } else {
+      None
+    }
+  }
+}
+
+fn lc_sleb_end_at(body: Bytes, p: Int) -> Int {
+  let mut i = p
+  let mut done = false
+  while !done && i < Bytes::length(body) {
+    if (Bytes::get(body, at = i)&128) == 0 {
+      done = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  i
+}
+
+/// The shift a position `p` of the old body takes: the summed width change
+/// of every rewritten constant whose opcode sits before it.
+fn lc_shifted(p: Int, site_offs: Array[Int], site_deltas: Array[Int]) -> Int {
+  let mut d = 0
+  let mut i = 0
+  while i < Array::length(site_offs) {
+    if Array::get(site_offs, at = i) < p {
+      d = d + Array::get(site_deltas, at = i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  p + d
+}
+
+/// Rewrite one body's string constants. `owner` is the body's record owner
+/// (a function index, or a lambda as `blind_owner_of_lambda`); the records
+/// in `[lo, len)` are this function's, as the replay just appended them.
+/// Answers the rebuilt body, or the same Bytes when it holds no string
+/// reference. Rewrites the records' offsets and slots, and `lm`'s rows from
+/// `lm_lo` when `is_fn` (line rows belong to the function body only).
+fn lc_relocate_body(body: Bytes, owner: Int, is_fn: Bool, remap: Array[Int], table: StrTable, owners: Array[Int], offsets: Array[Int], kinds: Array[Int], syms: Array[Int], lo: Int, lm: LineMapState, lm_lo: Int) -> Bytes with Exception {
+  // The string sites of this body, in body order.
+  let sites: Array[Int] = []
+  let mut k = lo
+  while k < Array::length(owners) {
+    let kind = Array::get(kinds, at = k)
+    if Array::get(owners, at = k) == owner && (kind == blind_kind_str_ref || kind == blind_kind_str_fat) {
+      // Insertion by offset: the records are appended in emission order, so
+      // this is almost always an append.
+      let mut at = Array::length(sites)
+      Array::push(sites, value = k)
+      while at > 0 && Array::get(offsets, at = Array::get(sites, at = at - 1)) > Array::get(offsets, at = k) {
+        Array::set(sites, at = at, value = Array::get(sites, at = at - 1))
+        at = at - 1
+      }
+      Array::set(sites, at = at, value = k)
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  if Array::length(sites) == 0 {
+    body
+  } else {
+    let out = Bytes::new()
+    let site_offs: Array[Int] = []
+    let site_deltas: Array[Int] = []
+    let mut cursor = 0
+    let mut j = 0
+    while j < Array::length(sites) {
+      let ri = Array::get(sites, at = j)
+      let off = Array::get(offsets, at = ri)
+      if off < cursor || off >= Bytes::length(body) || Bytes::get(body, at = off) != 66 {
+        throw("body cache: a string reference does not sit on an i64.const in the replayed body")
+      } else {
+        ()
+      }
+      while cursor < off {
+        Bytes::push(out, value = Bytes::get(body, at = cursor))
+        cursor = cursor + 1
+      }
+      let old_end = lc_sleb_end_at(body = body, p = off + 1)
+      let slot = Array::get(remap, at = Array::get(syms, at = ri))
+      let addr = Array::get(table.offsets, at = slot)
+      let value = if Array::get(kinds, at = ri) == blind_kind_str_ref {
+        addr
+      } else {
+        (addr<<32)|Array::get(table.lengths, at = slot)
+      }
+      let before = Bytes::length(out)
+      emit_i64_const(buf = out, value = value)
+      Array::push(site_offs, value = off)
+      Array::push(site_deltas, value = (Bytes::length(out) - before) - (old_end - off))
+      Array::set(syms, at = ri, value = slot)
+      cursor = old_end
+      j = j + 1
+    }
+    while cursor < Bytes::length(body) {
+      Bytes::push(out, value = Bytes::get(body, at = cursor))
+      cursor = cursor + 1
+    }
+    // Every offset into this body moves by the width changes before it.
+    let mut r = lo
+    while r < Array::length(owners) {
+      if Array::get(owners, at = r) == owner {
+        Array::set(offsets, at = r, value = lc_shifted(p = Array::get(offsets, at = r), site_offs = site_offs, site_deltas = site_deltas))
+      } else {
+        ()
+      }
+      r = r + 1
+    }
+    if is_fn {
+      let mut m = lm_lo
+      while m < Array::length(lm.offsets) {
+        Array::set(lm.offsets, at = m, value = lc_shifted(p = Array::get(lm.offsets, at = m), site_offs = site_offs, site_deltas = site_deltas))
+        m = m + 1
+      }
+    } else {
+      ()
+    }
+    out
+  }
+}
+
+/// Relocate the function the replay just appended -- its body is the last of
+/// `bodies`, its lambdas are `lt.bodies[lam_lo..lam_hi)` by planned index, and
+/// its records are `[rec_lo, len)` -- onto `table` through `remap`.
+export fn lc_relocate_replayed_strings(remap: Array[Int], table: StrTable, fn_index: Int, bodies: Array[Bytes], lt: LambdaTable, lam_lo: Int, lam_hi: Int, owners: Array[Int], offsets: Array[Int], kinds: Array[Int], syms: Array[Int], rec_lo: Int, lm: LineMapState, lm_lo: Int) -> Unit with Exception {
+  let last = Array::length(bodies) - 1
+  Array::set(bodies, at = last, value = lc_relocate_body(body = Array::get(bodies, at = last), owner = fn_index, is_fn = true, remap = remap, table = table, owners = owners, offsets = offsets, kinds = kinds, syms = syms, lo = rec_lo, lm = lm, lm_lo = lm_lo))
+  let mut k = rec_lo
+  while k < Array::length(owners) {
+    let owner = Array::get(owners, at = k)
+    if blind_owner_is_lambda(owner) {
+      let li = blind_owner_lambda_index(owner)
+      if li < lam_lo || li >= lam_hi {
+        throw("body cache: a replayed string reference names a lambda outside its function")
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  let mut li = lam_lo
+  while li < lam_hi {
+    // Once per lambda: a rebuilt body's records hold this compile's slots
+    // already, so a second pass over the same owner would remap them again.
+    Array::set(lt.bodies, at = li, value = lc_relocate_body(body = Array::get(lt.bodies, at = li), owner = blind_owner_of_lambda(li), is_fn = false, remap = remap, table = table, owners = owners, offsets = offsets, kinds = kinds, syms = syms, lo = rec_lo, lm = lm, lm_lo = lm_lo))
+    li = li + 1
+  }
+}

@@ -11,7 +11,7 @@ they can disagree.
 
 Names and core types are already machine-checked by
 `docs/generated/host-runtime-contract.json` +
-`scripts/check_host_runtime_contract.py`. **This file holds what that manifest
+`scripts/check_host_runtime_contract.vibex`. **This file holds what that manifest
 cannot: the meaning of the bits.** Where a claim here is mechanically
 checkable, it has a gate and this file names it; where it is not, it says so.
 
@@ -127,7 +127,7 @@ Five import families are minted per program rather than listed:
 (#2066), and `vibe.host_stream_get$<name>`.
 Each has its own emission loop in `lc_emit_module_sections` and its own
 `componentAdapterPatterns` row in `docs/generated/host-runtime-contract.json`.
-`check_host_runtime_contract.py`'s `validate_emitter_contract` compares the two
+`check_host_runtime_contract.vibex`'s `validate_emitter_contract` compares the two
 by **exact dict equality**, so a loop added without its row (or a row without
 its loop) turns the required gate red in the same change. The composer reads
 the prefixes back in the composer (`comp_is_wit_future_get_import`,

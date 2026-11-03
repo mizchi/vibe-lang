@@ -46,6 +46,7 @@ import @vibe/compiler/codegen/common_base {
   effect_name_to_tag,
   emit_arith_wrap_int,
   emit_box_float,
+  emit_ctor_tag,
   emit_heap_grow_after_heap_set,
   emit_i32_eqz,
   emit_i32_ge_u,
@@ -60,11 +61,14 @@ import @vibe/compiler/codegen/common_base {
   func_table_user_index_of,
   int_parse_expr,
   is_eident,
+  layout_read,
   string_unicode_length_expr,
   string_utf16_length_expr,
   string_views_runtime_require,
   string_views_runtime_unicode_name,
-  string_views_runtime_utf16_name
+  string_views_runtime_utf16_name,
+  struct_field_names_at,
+  struct_index_named
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -653,6 +657,7 @@ export fn rc_exit_value_owned(ctx: CompileCtx, local_names: Array[String], value
 // Ordered named-call dispatch group.
 export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, fname: String, fn_idx_in_list: Int, resolved_name: String, local_idx_hint: Int, prefer_bound_call: Bool, ctor_lookup_idx: Int, compile_call_core_fn: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception) -> Int with Exception {
   if ctor_lookup_idx >= 0 {
+    layout_read(fname)
     let tag = Array::get(ctx.ctor_table.tags, at = ctor_lookup_idx)
     let fc = Array::get(ctx.ctor_table.field_counts, at = ctor_lookup_idx)
     let ptr_local = next_local
@@ -660,18 +665,9 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
     let actual_args = if Array::length(args) == 1 {
       match Array::get(args, at = 0) {
         ERecord(_, rec_fields, _) => {
-          let mut si2 = 0
-          let mut sn_idx = -1
-          while si2 < Array::length(ctx.ctor_table.struct_names) {
-            if Array::get(ctx.ctor_table.struct_names, at = si2) == fname {
-              sn_idx = si2
-              si2 = Array::length(ctx.ctor_table.struct_names)
-            } else {
-              si2 = si2 + 1
-            }
-          }
+          let sn_idx = struct_index_named(ct = ctx.ctor_table, name = fname)
           if sn_idx >= 0 {
-            let def_fnames = Array::get(ctx.ctor_table.struct_field_names, at = sn_idx)
+            let def_fnames = struct_field_names_at(ct = ctx.ctor_table, si = sn_idx)
             let ordered = array_empty()
             let mut oi = 0
             while oi < Array::length(def_fnames) {
@@ -764,7 +760,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
       }
       emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf = buf, value = tag)
+      emit_ctor_tag(buf = buf, ctx = ctx, tag = tag)
       emit_i32_store(buf = buf, align = 2, offset = 8)
       emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
@@ -816,7 +812,7 @@ export fn cc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_
       emit_heap_grow_after_heap_set(buf = buf, ctx = ctx)
       emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf = buf, value = tag)
+      emit_ctor_tag(buf = buf, ctx = ctx, tag = tag)
       emit_i32_store(buf = buf, align = 2, offset = 0)
       emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)

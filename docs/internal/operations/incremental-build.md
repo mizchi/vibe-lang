@@ -1053,7 +1053,328 @@ by reading:
   `verify` passed it because it replays only when every guard holds.
   `tests/body_cache_downstream_edit_test.vibe` pins that shape on a two-file
   program. The cost is reuse on exactly the edits the guard rejects (a new
-  literal, closure or declaration), which now recompile in full.
+  closure or declaration), which recompile in full. A string edit is no
+  longer one of them; the next section says why.
+
+##### String references are relocated, not pinned (#2669)
+
+The string pool used to be a `guard_layout` slot, so any literal edit
+anywhere declined the whole cache. It is a relocation class now:
+
+- **Recorded at emission.** The linear lane's body code emits a pooled string
+  only through `emit_str_ref_slot` (`i64.const off; i64.const 32; i64.shl;
+  i64.const len; i64.or`, kind 103) and `emit_str_fat_slot` (one `i64.const
+  (off << 32) | len`, kind 104), which record the pool slot in the same
+  blind-reference log the function values use. `scripts/review_lint.vibex`
+  refuses a raw pool read in `codegen/expr/`, and `lc_verify_blind_relocs`
+  checks every record against its bytes, including the whole five-instruction
+  shape, on every compile. Only the function-value kinds pair with a funcref
+  slot; the pairing checks count those alone.
+- **Carried with the pool.** The harvest stores its pool below
+  `src_str_base` (`guard_str_pool`, added in VBC8).
+- **Relocated at replay.** When the pools differ, every recorded slot is
+  mapped through its STRING to this compile's slot (`lc_string_remap`); a
+  string the new pool lacks declines the whole cache. Each replayed body is
+  rebuilt with the new constants (a different LEB width changes its length),
+  every other offset into it moves with it, and the relocated function is
+  re-recorded so the refreshed artifact holds the new addresses. The merge of
+  the consumed cache is skipped when the pools differ, because its entries
+  hold the old ones.
+
+`tests/body_cache_downstream_edit_test.vibe` is the acceptance row: a longer
+or shorter literal downstream replays the unchanged file's bodies and answers
+what a fresh compile answers.
+
+##### A changed set of source functions is relocated, not pinned (#2669)
+
+Adding, removing, renaming or reordering a function, or giving one a new
+closure, moves most of what `guard_layout` pins: the function vector, the
+lambda plan, and every name-keyed table (the return classes, the capture
+index, the borrow table). Pinned whole, one helper added to the file being
+edited recompiled every body in the program.
+
+A body that never spells a changed name sees that change only through
+indices, and indices are relocated. So the harvest records the layout split
+in two, next to the full fingerprint (`linked_emission_layout.vibe`, VBC10):
+
+- **`guard_layout_global`**: the same fingerprint without anything keyed by a
+  source function's name. It covers the constructor and effect tables, the
+  synthesized region (its lambda counts, not its bases), the builtins and the
+  modes.
+- **`guard_src_rows`**: one fingerprint per source function, in index order,
+  of what the name-keyed tables say about it: arity, env, return class,
+  borrow mask, whether it is a thunk or a folded constant. Its index and its
+  lambda count are left out, because the relocation follows both.
+- **`guard_src_names`** and **`guard_src_lambdas`**: the names and lambda
+  counts by value.
+
+A build whose full fingerprint differs is then compared as an edit
+(`linked_body_cache_edit.vibe`):
+
+- **Matched by name.** `lc_src_edit_of` maps each harvest function to this
+  build's position. A name that occurs twice on either side identifies
+  nothing, and the cache is declined.
+- **Compared in halves.** The global half must match whole, and the rows of
+  every name both builds hold must match one by one. The meta guards are
+  asked without the names only one side holds: the borrow and unmangled-name
+  tables, and the synthesized region by name, because the changed statements
+  shift its statement positions and no body reads one.
+- **Replayed when it spells no changed name** (`lc_src_edit_replayable`). This
+  rule is load-bearing: a new global spelled like a local an upstream lambda
+  captures changes what that lambda captures. With the rule switched off, the
+  `captured-name` row compiles to different bytes from a fresh build.
+- **Moved when it sits above the first change** (`lc_src_edit_reindex`,
+  `linked_body_cache_reindex.vibe`). The file table keeps every unchanged
+  file when only the edited files' statement counts moved, rebasing each kept
+  entry's statement position. Each entry above the first moved index is then
+  moved into this build's index space:
+  - `call` immediates, found by `scan_body_relocs`;
+  - function values (kinds 101 and 102) and the funcref slot log;
+  - lambda indices, through the harvest's lambda plan
+    (`lc_old_lambda_plan`);
+  - record owners, and the record and linemap offsets that a different LEB
+    width moves.
+
+  An entry that cannot be moved is dropped and recompiles. That covers a
+  removed function, an opcode the scanner does not know, a reference to a
+  pad, a record that does not sit on its instruction, and a direct call into
+  the lambda region while lambdas moved. Each of the three remaps is
+  load-bearing: with any one of them made the identity, a middle-file row
+  compiles to different bytes.
+- **Re-recorded.** The harvest's guards describe the old layout, so the
+  consumed cache is not merged back. Each replayed body is re-recorded
+  instead, as a relocated one is.
+
+**The pin capacity.** Source functions sit in `[0, src_n)`, padded to a
+multiple of 1024. After them comes the synthesized region, and after that the
+lambda slots and every function past the user ones (`_start`, `run`, the
+lambdas). An edit that takes the source region across a multiple of 1024
+moves all three by a known delta. So under an edit:
+
+- `guard_meta` compares only the lambda slot base relative to the capacity;
+- the global half folds the user-function count, the lambda slot base and the
+  synthesized indices relative to the capacity;
+- the relocation maps the old index space, sized by the old capacity,
+  onto the new one.
+
+`a source region that crosses a pin-capacity boundary is relocated` goes from
+1010 to 1030 source functions. It reuses the unchanged files' bodies
+byte-equal, and with the lambda-slot base shift dropped it compiles to
+different bytes.
+
+**Files that moved.** Importing a new module inserts a file into the merge
+order, and an import-order change reorders it. Either way every file after the
+change sits at another index. The file table then matches files by path
+(`body_cache_file_moves`), and for each unchanged file it carries the entries
+to the file's new position (`body_cache_move_files`):
+
+- the file index is rewritten;
+- each recorded statement position is shifted by how far its file's first
+  statement moved;
+- the linemap rows' file ids are rewritten;
+- the per-file typed-lowering slots are put in this build's order, so each
+  file is compared with its own.
+
+A path that occurs twice on either side declines. The linemap step is
+load-bearing: without it, the `new-module-first` row compiled to different
+bytes from a fresh build, because a moved file's rows named another file. The
+body-cached lane never runs `--break`, which is the one mode that embeds a file
+id in body bytes, and `dbg_line_on` is part of the global half besides.
+
+**Types.** Constructor tags are `(type_index << 16) | variant`, and
+`type_index` counts type declarations in merge order, so a type declared
+anywhere moves the tag of every later type. Every tag a body embeds is
+recorded at emission: kind 105, `emit_ctor_tag`, `sym` being the tag value.
+That covers construction, every match form, `is`, the struct field-dispatch
+cases and the record-literal stamp. `lc_verify_blind_relocs` checks each
+record against its `i32.const` on every compile. The harvest carries the
+constructor table by value (`guard_ctor_names` / `guard_ctor_tags`, VBC15).
+A replay maps each old tag through the names that held it
+(`lc_ctor_tag_map`); tags below `2 << 16` are built-in and never move. While
+every constructor and struct name is unique, the table is compared per TYPE
+(`guard_type_rows`). A type's row covers its constructors' names, variants,
+field counts and Double fields, but not the moving half of the tag.
+
+- An added or a removed type is tolerated. Its name and constructors join the
+  mention check, the removed ones taken from the harvest's constructor table.
+  A removed constructor's tag maps to nothing, so a body still naming it
+  fails closed.
+- A changed type is tolerated too: a variant added, removed, reordered or
+  reshaped. Its name and constructors join the mention check, which also
+  walks match and handler patterns and record literals. Its constructors are
+  also WITHHELD from the tag map (`lc_ctor_tag_map`), so their old tags map
+  to nothing and a body embedding one fails closed in the relocation. Every
+  constructor arm and construction embeds its tag (a constructor pattern is
+  never a catch-all), so each net refuses such a body on its own.
+- `body_cache_changed_type_test` adds a variant at the end, adds one in the
+  middle, removes an unused one, and makes a payload Double. Each time, the
+  downstream file's bodies that only pass the value along are reused,
+  byte-equal. The one that matches the type recompiles (`saved=5`).
+- Each net alone keeps `saved=5`. With both off, the matching body replays
+  (`saved=6`) and is still byte-equal: its tag relocates by name, and a
+  payload slot is one word whatever it holds. So no row shows such a replay
+  going wrong, and the nets are a conservative refusal.
+- A payload made Double declines the whole downstream file when the payload
+  reaches a typed site there (an interpolation, a `==`): the per-file
+  typed-lowering guard sees the operand type change. The test passes it to a
+  generic to keep the lane open.
+- `a type removed from a middle file relocates the tags it moved` holds every
+  downstream form while their tags move DOWN. It is reused byte-equal, and
+  with the tag remap made the identity it compiles to different bytes.
+- Load-bearing: with the tag remap made the identity, the `later-type-moves`
+  row and the edit-classes `add-type-ahead` row compile to different bytes.
+- `every tag-bearing form is relocated across a type inserted ahead` puts each
+  form in one downstream file: construction with and without payload, nested
+  and guarded matches, `is`, a destructuring `let`, two-candidate field
+  dispatch, a record literal and `Option`. Every body is reused,
+  byte-equal.
+- At scale: a type inserted into `core/hex.vibe` (file 14 of the CLI closure's
+  680) moves nearly every tag in the compiler. The warm build with the cache
+  on is byte-identical to the cache-off one (16.7 s against 17.5 s), and
+  every record check passed.
+- The used-builtin set collects constructor names too, so under an edit it is
+  compared with this build's constructor names taken out of both sides.
+- Not enforced: no lint makes a NEW tag site use `emit_ctor_tag`. At the
+  emission point a tag is an ordinary integer, so no pattern separates it
+  from one. A missed site would replay a stale tag, and only the corpus row's
+  byte comparison catches it, for a form the row covers. Add a form to that
+  row when you add a tag site.
+
+- Structs are compared by value (`guard_struct_names` /
+  `guard_struct_fields`, VBC13). Structs added, removed or changed (fields
+  added, removed, renamed or reordered) are tolerated. The structs both
+  builds hold must keep their relative order, because a field access
+  dispatches over the structs holding the field in table order. Every
+  struct that changed, came or went joins the mention check with its fields
+  (`.field`: an access, a record literal's field, a struct pattern's field),
+  old and new both.
+- The mention check is not enough for a struct. Unlike an enum's, a
+  struct's layout reaches a body that spells neither the struct nor its
+  fields: `p.y` on a value whose type was inferred reads `y`'s slot out of
+  the struct table, and spelling `y` is all it does. So what decides is a
+  record of what the body's codegen READ. While a function body whose
+  harvest is collected is compiled, every struct and constructor-table
+  accessor (`ctor_table_index_of`, `struct_field_candidates`,
+  `struct_index_by_field_set`, `agg_info_of_type_name`,
+  `ctor_field_is_float`, ...) appends the name it was asked about to
+  `layout_read_log`, a field as `.field`. The body loop turns the distinct
+  names into records of kind 106 (`blind_kind_layout_read`, `sym` a hash of
+  the name) plus a sentinel `sym == 0`. The records ride the blind-reference
+  log, so they survive the codec, the file moves and the relocation
+  unchanged.
+- Under an edit, `lc_layout_refuse` withholds every entry that read a name
+  of a struct that changed, came or went, or a changed enum's constructor.
+  It also withholds every entry WITHOUT the sentinel: a body compiled
+  without the log (a function worker's, or one harvested before it existed)
+  says nothing about what it read, and that is not the same answer as "read
+  nothing". A hash collision only withholds more.
+- `body_cache_changed_struct_test` swaps two fields, makes one Double, adds
+  one, and adds a struct that shares a field. The bodies that never read the
+  struct (and `==` on two values of it) are reused byte-equal; the ones
+  that read a field recompile, and so does the builder.
+- A source function whose ROW changed (an added field moves the builder's
+  aggregate-return row) no longer declines the lane either
+  (`lc_src_rows_mark`). Its name joins the mention check, since a caller
+  consumes a row only through a call, a function value or a thunk
+  reference that spells it. Its own index is withheld as well, because
+  whole-program inference can move the row of a function whose file did
+  not change, and its body was lowered against the old one.
+  `body_cache_changed_row_test` holds two rows, and neither needs the
+  marking: a folded constant's callers are already withheld by the
+  per-entry fold signature, and a changed return class moves the
+  used-builtin set, which declines first.
+- Measured: with the layout check and the field mention both off, the swap
+  row replays a stale field offset and is NOT byte-equal. With either one
+  alone it is. `body_cache_layout_refuse_test` pins the sentinel rule
+  directly.
+- `scripts/review_lint.vibex` refuses a raw read of `struct_names`,
+  `struct_field_names` or `struct_field_is_ref` in `codegen/expr`: a read
+  there that bypasses the accessors logs nothing, and the body would replay
+  across a changed struct. The accessors that log it are
+  `struct_index_named`, `struct_field_names_at` and
+  `struct_first_field_slot`, beside the ones above.
+- At scale: swapping `MutMap`'s `size` and `tombs` fields in
+  `core/hashmap.vibe` builds the CLI closure warm in 16.6 s with the cache
+  on, against 18.6 s on a stage2 that declined the edit and 17.4 s with the
+  cache off. The output is byte-identical with the cache on and off. Single
+  runs.
+- The used-builtin set collects constructor names too, so under an edit it is
+  compared with this build's constructor names taken out of both sides.
+
+**Effects.** A declared effect routes through exception tag `3 + its index`,
+and the tags past the effects (the unknown-op fallback and the control tag)
+move with their count. A body names a tag only as a `throw` or `try_table`
+catch immediate, and the scanner reports both (`reloc_kind_tag`). So the
+global half leaves the declared effects out. They are compared per effect,
+over each effect's ops and arities (`guard_effect_names` /
+`guard_effect_rows`, VBC12). A changed effect list is relocated through the
+names (`lc_tag_map`), and every entry moves while the map is not the identity.
+Added and removed effects are tolerated, with their names and ops in the
+mention check.
+
+No row exercises a moved tag. The edit-classes corpus's `add-effect-ahead`
+row is reused now, but with the remap made the identity it still answers
+byte-equal. An effect declared in the middle file keeps
+the existing effects' tags, and none of the corpus's handlers names the tags
+past them. An effect declared AHEAD of an existing one also brings a
+synthesized type that moves later constructor tags, and that declines on the
+type rows. The tag remap uses the same scanned-immediate rebuild as the call
+remap, which is tested, and a tag the map does not cover fails closed.
+
+**Thunks.** A module-level non-function `let` is memoized in two globals,
+`base + 2k` and `base + 2k + 1` (base 6, or 7 under RC), where `k` is its
+position in the UNSORTED thunk list. These are the module's last globals. A
+thunk added or removed ahead of a cached one moves those globals, and replayed
+unchanged, the cached thunk would read another thunk's memo cell. The rows
+record only whether a function is a thunk, so the harvest carries the thunk
+list in memo order (`guard_thunk_names`, VBC14). Every `global.get` /
+`global.set` immediate (`reloc_kind_global`) is then relocated through the
+names (`lc_thunk_map`), and every entry moves while the map is not the
+identity. Load-bearing: with the global remap made the identity, the thunk row
+compiles to different bytes from a fresh build. Codex found this as a P1 on
+#3765.
+
+The rows are defence in depth for one class: a changed borrow ABI moves the
+row and the borrow table both, and in the probe built for it the borrow guard
+declined first. No row of the corpus is caught by the rows alone.
+
+`tests/body_cache_insert_function_test.vibe` holds the rows, every one compared
+byte for byte against a fresh build:
+
+- **Reused:** a helper appended, prepended, or with its own closure, in the
+  last file.
+- **Reused, with `bif_cap` recompiled:** a new global spelled like a captured
+  local.
+- **Reused:** a function added together with a type in the last file, which
+  moves no existing tag.
+- **Types in a middle file:** reused whether or not a later file declares a
+  type; a later type's moved tags are relocated.
+- **A newly imported module**, listed after the existing imports and before
+  them: the unchanged files are reused either way, byte-equal.
+- **Effects:** one added in the middle file is reused, and one declared ahead
+  of an existing effect is partly reused (its synthesized type's moved tags
+  are relocated).
+- **Structs:** one added in the middle file with new fields is reused. One
+  that shares a field with an existing struct declines.
+- **Thunks:** one added in the middle file ahead of a downstream file's own
+  thunk is reused, with the downstream thunk's memo globals relocated.
+- **A stable refreshed artifact:** a second warm build recompiles exactly what
+  a third does.
+- **Middle-file edits**, with the downstream file calling the moved
+  functions, taking one as a value and building closures. Both the upstream
+  and the downstream bodies are reused for each of:
+  - an added helper, with and without a closure;
+  - a removed helper;
+  - a renamed helper;
+  - a reorder;
+  - a closure added inside an existing function.
+- **Width bands:** 200 functions moved by two, so call targets cross the
+  one-byte uleb boundary and function-value constants the one-byte sleb one.
+  With every width-changing edit skipped, this row and no other fails, so the
+  crossing really happens.
+
+An added function must be called. One that nothing reaches is removed before
+code generation, and the edit never reaches the body cache at all.
 
 Measured on the compiler's own closure (`codegen_lexer_test.vibe`, 196 files,
 5263 functions), `scripts/body_cache_reuse.sh`, one temperature per process

@@ -4,7 +4,7 @@ Status: proposed, and not implemented. It was filed under #1346 (the
 synchronous host contract) and #2828. Both closed without these artifacts:
 #1346 was met by the generated import manifest and its gates
 ([../../user/reference/host-runtime-contract.md](../../user/reference/host-runtime-contract.md),
-`scripts/check_host_runtime_contract.py`) and by
+`scripts/check_host_runtime_contract.vibex`) and by
 [capability-host-contract.md](capability-host-contract.md), not by the
 generator, sections and manifest column below. There is no `vibe:host`
 package, no `vibe.entry` section, no `vibe.capabilities` emitter and no
@@ -67,7 +67,7 @@ what proves it.
 
 | piece | state | where |
 |---|---|---|
-| raw `vibe.*` import inventory: 68 static fields in four bands, plus five dynamic name patterns, with core type indices | generated, gated fail-closed on emitter + both runners | `docs/generated/host-runtime-contract.json`, `scripts/check_host_runtime_contract.py` |
+| raw `vibe.*` import inventory: 68 static fields in four bands, plus five dynamic name patterns, with core type indices | generated, gated fail-closed on emitter + both runners | `docs/generated/host-runtime-contract.json`, `scripts/check_host_runtime_contract.vibex` |
 | value layout of the raw lane: packed `(ptr << 32) \| byte_len` strings, `Bytes` header struct, untagged `i64` results, opaque `i64` handles | documented | [../../user/reference/host-runtime-contract.md](../../user/reference/host-runtime-contract.md), [../../user/reference/host-abi.md](../../user/reference/host-abi.md) |
 | `vibe.abi` custom section (`version=1`, `host_import_abi=raw`) on both lanes | emitted, read by the node runner | `lib/@vibe/compiler/codegen/wasm_emit/metadata.vibe` |
 | `vibe.tagmode` custom section for adapters | emitted where an adapter is selected, required by ADR-0106 | the composer, `lib/@vibe/compiler/codegen/component/component_codegen*.vibe` |
@@ -208,7 +208,7 @@ type-`3` field.
 
 Two consequences:
 
-- The three-way check `scripts/check_host_runtime_contract.py` performs today
+- The three-way check `scripts/check_host_runtime_contract.vibex` performs today
   (emitter names, runner names, type indices) gains a fourth side: the WIT
   text. A raw signature that does not match its WIT function's mapping fails
   the gate, so the two lowerings cannot drift. Resource methods use the

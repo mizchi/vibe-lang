@@ -49,6 +49,7 @@ import @vibe/compiler/codegen/common_base {
   ctor_field_is_float,
   ctor_table_index_of,
   emit_binop_op,
+  emit_ctor_tag,
   emit_i32_eq,
   emit_i32_eqz,
   emit_i32_ge_u,
@@ -58,7 +59,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i64_load,
   emit_i64_store,
   emit_rc_dup_guarded,
-  emit_str_ref,
+  emit_str_ref_slot,
   emit_unbox_float,
   expr_tag,
   float_log_reset_above,
@@ -85,9 +86,13 @@ import @vibe/compiler/codegen/common_base {
   is_ptuple,
   is_pwild,
   is_slet,
+  layout_read,
   resolve_func,
   resolve_local,
-  str_table_index_of
+  str_table_index_of,
+  struct_field_names_at,
+  struct_first_field_slot,
+  struct_index_named
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -568,7 +573,7 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
   emit_if_i64(buf)
   emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
-  emit_i32_const(buf = buf, value = tag)
+  emit_ctor_tag(buf = buf, ctx = ctx, tag = tag)
   emit_i32_store(buf = buf, align = 2, offset = 8)
   let mut sj = 0
   while sj < arity {
@@ -602,7 +607,7 @@ fn mr_compile_reuse_arm(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag
   emit_i32_store8(buf = buf, align = 0, offset = 7)
   emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
-  emit_i32_const(buf = buf, value = tag)
+  emit_ctor_tag(buf = buf, ctx = ctx, tag = tag)
   emit_i32_store(buf = buf, align = 2, offset = 8)
   emit_local_get(buf = buf, idx = tk)
   emit_i32_wrap_i64(buf)
@@ -1179,18 +1184,7 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
 /// so a name-agnostic "first struct that declares the field" scan binds the wrong
 /// offset. Only when `sname` is not in the table do we fall back to that scan.
 fn find_struct_index(ctx: CompileCtx, sname: String) -> Int {
-  let names = ctx.ctor_table.struct_names
-  let mut si = 0
-  let mut sidx = -1
-  while si < Array::length(names) {
-    if Array::get(names, at = si) == sname {
-      sidx = si
-      si = Array::length(names)
-    } else {
-      si = si + 1
-    }
-  }
-  sidx
+  struct_index_named(ct = ctx.ctor_table, name = sname)
 }
 
 fn field_index_in(fnames: Array[String], field: String) -> Int {
@@ -1208,9 +1202,10 @@ fn field_index_in(fnames: Array[String], field: String) -> Int {
 }
 
 fn struct_field_index(ctx: CompileCtx, sname: String, field: String) -> Int with Exception {
+  layout_read(String::concat(".", field))
   let sidx = find_struct_index(ctx = ctx, sname = sname)
   if sidx >= 0 {
-    let found = field_index_in(fnames = Array::get(ctx.ctor_table.struct_field_names, at = sidx), field = field)
+    let found = field_index_in(fnames = struct_field_names_at(ct = ctx.ctor_table, si = sidx), field = field)
     if found < 0 {
       throw(String::concat(String::concat(String::concat("unknown field `", field), "` in struct "), sname))
     } else {
@@ -1219,18 +1214,7 @@ fn struct_field_index(ctx: CompileCtx, sname: String, field: String) -> Int with
   } else {
     // `sname` not found in the struct table: fall back to the legacy global
     // first-match scan so unqualified / synthetic names still resolve.
-    let names = ctx.ctor_table.struct_names
-    let mut gsi = 0
-    let mut gfound = -1
-    while gsi < Array::length(names) {
-      let f = field_index_in(fnames = Array::get(ctx.ctor_table.struct_field_names, at = gsi), field = field)
-      if f >= 0 {
-        gfound = f
-        gsi = Array::length(names)
-      } else {
-        gsi = gsi + 1
-      }
-    }
+    let gfound = struct_first_field_slot(ct = ctx.ctor_table, field = field)
     if gfound < 0 {
       throw(String::concat("unknown struct field in pattern: ", field))
     } else {
@@ -1405,7 +1389,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
           if __si >= 0 {
             let (__seq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
             load_field()
-            emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = __si), length = Array::get(ctx.str_table.lengths, at = __si))
+            emit_str_ref_slot(buf = buf, ctx = ctx, slot = __si)
             emit_call(buf = buf, func_idx = __seq_fi)
             emit_i32_wrap_i64(buf)
           } else {
@@ -1426,7 +1410,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
           emit_i64_and(buf)
           emit_i32_wrap_i64(buf)
           emit_i32_load(buf = buf, align = 2, offset = 0)
-          emit_i32_const(buf = buf, value = __ntag)
+          emit_ctor_tag(buf = buf, ctx = ctx, tag = __ntag)
           emit_i32_eq(buf)
           let __nargs = get_pctor_args(sp)
           // #705: payload sub-tests must NOT run when the tag test above
@@ -1586,7 +1570,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
           emit_i64_and(buf)
           emit_i32_wrap_i64(buf)
           emit_i32_load(buf = buf, align = 2, offset = 0)
-          emit_i32_const(buf = buf, value = expected_tag)
+          emit_ctor_tag(buf = buf, ctx = ctx, tag = expected_tag)
           emit_i32_eq(buf)
           // #603/#608/#613: the tag test alone is not enough — literal
           // sub-patterns must be checked at EVERY nesting level, else
@@ -1643,7 +1627,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
             if str_idx >= 0 {
               let (str_eq_fi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
               emit_local_get(buf = buf, idx = scrut_local)
-              emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = str_idx), length = Array::get(ctx.str_table.lengths, at = str_idx))
+              emit_str_ref_slot(buf = buf, ctx = ctx, slot = str_idx)
               emit_call(buf = buf, func_idx = str_eq_fi)
               emit_i32_wrap_i64(buf)
               emit_if_i64(buf)
@@ -1720,7 +1704,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
                   emit_i64_and(buf)
                   emit_i32_wrap_i64(buf)
                   emit_i32_load(buf = buf, align = 2, offset = 0)
-                  emit_i32_const(buf = buf, value = ctag)
+                  emit_ctor_tag(buf = buf, ctx = ctx, tag = ctag)
                   emit_i32_eq(buf)
                   if Array::length(cargs) == 1 {
                     match Array::get(cargs, at = 0) {
@@ -1763,7 +1747,7 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
                   if __si >= 0 {
                     let (__eqfi, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
                     emit_local_get(buf = buf, idx = scrut_local)
-                    emit_str_ref(buf = buf, offset = Array::get(ctx.str_table.offsets, at = __si), length = Array::get(ctx.str_table.lengths, at = __si))
+                    emit_str_ref_slot(buf = buf, ctx = ctx, slot = __si)
                     emit_call(buf = buf, func_idx = __eqfi)
                     emit_i32_wrap_i64(buf)
                   } else {

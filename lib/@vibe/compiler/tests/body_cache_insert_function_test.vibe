@@ -1,0 +1,815 @@
+//# The body cache across a build that ADDED functions (#2669).
+//#
+//# Adding a function moves most of the program-wide tables the layout guard
+//# pins -- the function vector, the lambda plan, the name-keyed return and
+//# capture sets -- so it used to decline every cached body. A body below the
+//# new function that never spells its name cannot see any of that, and these
+//# rows check that it replays, that the build still answers what a fresh
+//# compile answers, and that the cases where something else moved still
+//# recompile.
+//#
+//# Each row: cold compile on the base, the edit, then a warm body-cached
+//# compile against a fresh one. `replayed` is whether the warm compile rebuilt
+//# fewer bodies than the cold one; `equal` is byte equality with the fresh
+//# compile.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+}
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_artifact_cache_path
+}
+
+fn bif_bytes(_ s: String) -> Bytes {
+  let out = Bytes::new()
+  let mut i = 0
+  while i < String::length(s) {
+    Bytes::push(out, value = String::byte_at(s, at = i))
+    i = i + 1
+  }
+  out
+}
+
+fn bif_bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  let n = Bytes::length(a)
+  if n != Bytes::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Bytes::get(a, at = i) != Bytes::get(b, at = i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+let bif_a_path: String = "/tmp/vibe_body_cache_bif_a.vibe"
+
+let bif_main_path: String = "/tmp/vibe_body_cache_bif_main.vibe"
+
+/// The upstream file. `bif_cap` closes over a local named `base`, so a new
+/// global of that spelling would change what its lambda captures; `bif_peek`
+/// is an ordinary leaf; the array comparison forces a derived comparator, which is what makes the
+/// compile record guards at all.
+fn bif_a() -> String {
+  String::join([
+    "export let bif_n: () -> Int = () -> { 4 }",
+    "export let bif_render: () -> String = () -> { \"render=\\{bif_n()}\" }",
+    "export let bif_eq: () -> Bool = () -> { [1, 2] == [1, 2] }",
+    "export let bif_cap: (Int) -> Int = (k) -> {",
+    "  let base = k + 1",
+    "  let f = (x) -> x + base",
+    "  f(2)",
+    "}",
+    "export let bif_peek: (Array[Int]) -> Int = (xs) -> { Array::length(xs) }"
+  ], sep = "\n")
+}
+
+/// The downstream file: `before` and `after` are extra declarations placed
+/// before and after its one function, and `use` is a term added to that
+/// function's result. An added function has to be CALLED: one nothing
+/// reaches is removed before code generation, and the edit never gets there.
+fn bif_main(before: String, after: String, use: String) -> String {
+  String::join([
+    "import ./vibe_body_cache_bif_a.vibe { bif_cap, bif_eq, bif_peek, bif_render }",
+    before,
+    "let run: () -> Int = () -> {",
+    "  let xs = [1, 2, 3]",
+    "  String::length(bif_render()) + bif_cap(3) + bif_peek(xs) + (if bif_eq() { 1 } else { 0 })\{use}",
+    "}",
+    after
+  ], sep = "\n")
+}
+
+fn bif_probe(label: String, before: String, after: String, use: String) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bif_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bif_a_path, bytes = bif_bytes(bif_a()))
+  Fs::write_bytes(bif_main_path, bytes = bif_bytes(bif_main(before = "", after = "", use = "")))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bif_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  if Array::get(cold_counts, at = 0) != 0 || Array::get(cold_counts, at = 1) <= 0 {
+    throw("insert-function fixture: the cold run for \{label} offered \{Array::get(cold_counts, 0)} and compiled \{Array::get(cold_counts, 1)}")
+  } else {
+    ()
+  }
+  Fs::write_bytes(bif_main_path, bytes = bif_bytes(bif_main(before = before, after = after, use = use)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bif_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bif_main_path, entry_name = "run")
+  let replayed = Array::get(warm_counts, at = 1) < Array::get(cold_counts, at = 1)
+  "\{label} replayed=\{replayed} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+/// Two more warm builds on top of the first. If the artifact the insertion
+/// lane refreshed had lost a body it replayed, the second build would
+/// recompile it and re-record it, and the third would recompile less --
+/// so `stable` is the two counts agreeing. (Neither count is zero: the pin
+/// region's pads and the synthesized region always recompile.)
+fn bif_probe_twice(label: String, after: String, use: String) -> String with Env + Exception + Fs {
+  let first = bif_probe(label = label, before = "", after = after, use = use)
+  let second_counts: Array[Int] = []
+  let second = compile_file_fs_mode_rc_body_cached_counted(entry_path = bif_main_path, entry_name = "run", cache_mode = "on", counts_out = second_counts)
+  let third_counts: Array[Int] = []
+  let _third = compile_file_fs_mode_rc_body_cached_counted(entry_path = bif_main_path, entry_name = "run", cache_mode = "on", counts_out = third_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bif_main_path, entry_name = "run")
+  "\{first} stable=\{Array::get(second_counts, 1) == Array::get(third_counts, 1)} again_equal=\{bif_bytes_eq(second, fresh)}"
+}
+
+test "a function added downstream keeps the upstream bodies" {
+  // A helper appended to the edited file: every upstream body sits below it
+  // and none spells its name.
+  inspect(bif_probe(label = "append", before = "", after = "let helper: (Int) -> Int = (n) -> { n * 2 }", use = " + helper(1)"), content = "append replayed=true equal=true")
+  // The same helper placed BEFORE the file's existing function: the added
+  // index is lower, but still above every upstream body.
+  inspect(bif_probe(label = "prepend", before = "let helper: (Int) -> Int = (n) -> { n * 2 }", after = "", use = " + helper(1)"), content = "prepend replayed=true equal=true")
+  // An added function with a closure of its own shifts the lambda plan of
+  // everything after it; nothing upstream is after it.
+  inspect(bif_probe(label = "with-lambda", before = "", after = "let helper: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(1) }", use = " + helper(1)"), content = "with-lambda replayed=true equal=true")
+}
+
+test "an added function recompiles exactly what it changes" {
+  // A new global spelled like the local `bif_cap` captures. The upstream body
+  // spells `base`, so it is recompiled rather than replayed; the rest replay.
+  inspect(bif_probe(label = "captured-name", before = "", after = "let base: () -> Int = () -> { 7 }", use = " + base()"), content = "captured-name replayed=true equal=true")
+  // A function added together with a TYPE. The constructor table is
+  // compared per type with tag values, and a type declared last moves no
+  // existing tag, so the upstream bodies replay. Where an added type DOES
+  // move a tag, nothing replays: `later-type-moves` below.
+  inspect(bif_probe(label = "with-type", before = "", after = "enum BifTag { BifA; BifB }\nlet helper: () -> Int = () -> { match BifA { BifA => 1, BifB => 2 } }", use = " + helper()"), content = "with-type replayed=true equal=true")
+}
+
+test "the refreshed artifact keeps what the insertion lane replayed" {
+  inspect(bif_probe_twice(label = "append-twice", after = "let helper: (Int) -> Int = (n) -> { n * 2 }", use = " + helper(1)"), content = "append-twice replayed=true equal=true stable=true again_equal=true")
+}
+
+//# The edit in a MIDDLE file: the unchanged file after it calls into the
+//# shifted functions, takes one as a value, and builds closures, so every
+//# class of index it holds moves.
+
+let bim_a_path: String = "/tmp/vibe_body_cache_bim_a.vibe"
+
+let bim_b_path: String = "/tmp/vibe_body_cache_bim_b.vibe"
+
+let bim_main_path: String = "/tmp/vibe_body_cache_bim_main.vibe"
+
+fn bim_a() -> String {
+  String::join([
+    "export let bim_eq: () -> Bool = () -> { [1, 2] == [1, 2] }",
+    "export let bim_one: () -> Int = () -> { 1 }"
+  ], sep = "\n")
+}
+
+/// The middle file. `top` goes before its functions, `extra` is a term in
+/// `bim_two`'s result.
+fn bim_b(top: String, extra: String) -> String {
+  String::join([
+    "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }",
+    top,
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one()\{extra} }",
+    "export let bim_three: (Int) -> Int = (n) -> { bim_two(n) * 3 + (if bim_eq() { 1 } else { 0 }) }"
+  ], sep = "\n")
+}
+
+fn bim_main() -> String {
+  String::join([
+    "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }",
+    "let apply: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }",
+    "let run: () -> Int = () -> {",
+    "  let k = 5",
+    "  let add_k = (x) -> x + k",
+    "  let twice = (x) -> x * 2",
+    "  apply(bim_two, 1) + apply(add_k, 2) + apply(twice, 3) + bim_three(4)",
+    "}"
+  ], sep = "\n")
+}
+
+/// `label replayed=<the downstream file's bodies replayed> equal=<bytes>`.
+/// `downstream` compares against the same edit with nothing past the edited
+/// file kept: fewer recompiled than that means the unchanged file after the
+/// edit was reused.
+fn bim_probe(label: String, top: String, extra: String) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bim_a_path, bytes = bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(bim_b(top = "", extra = "")))
+  Fs::write_bytes(bim_main_path, bytes = bif_bytes(bim_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(bim_b(top = top, extra = extra)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
+  "\{label} offered=\{Array::get(warm_counts, 0)} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+test "a function added in a middle file keeps the files after it" {
+  // `saved` is how many fewer bodies the warm build compiled than the cold
+  // one. The upstream file holds 2 functions and the downstream one 2
+  // (`apply`, `run`); the added helper takes a pad's slot, so it costs
+  // nothing in the count. Reusing only the upstream file saves 2; reusing
+  // both saves 4. The helper sits at the TOP of the edited file, so every
+  // function the downstream body calls or takes as a value moved.
+  inspect(bim_probe(label = "helper-at-top", top = "let bim_helper: (Int) -> Int = (n) -> { n + 7 }", extra = " + bim_helper(0)"), content = "helper-at-top offered=4 saved=4 equal=true")
+  // A helper with a closure moves every lambda after it too, so the
+  // downstream closures' table slots are rewritten as well.
+  inspect(bim_probe(label = "helper-with-lambda", top = "let bim_helper: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(1) }", extra = " + bim_helper(0)"), content = "helper-with-lambda offered=4 saved=4 equal=true")
+}
+
+//# Width bands. A cached body is rebuilt, not patched, because a moved index
+//# can need a different number of LEB bytes. Here the middle file holds 200
+//# functions and the downstream file calls every one and takes 40 of them as
+//# values, so an insertion at the top of the middle file moves call targets
+//# across the 127 / 128 boundary of a one-byte uleb and function-value
+//# constants `(slot << 2) | 2` across the 63 / 64 boundary of a one-byte
+//# sleb, whatever the import count puts in front of them.
+
+let biw_b_path: String = "/tmp/vibe_body_cache_biw_b.vibe"
+
+let biw_main_path: String = "/tmp/vibe_body_cache_biw_main.vibe"
+
+fn biw_b(_ top: String) -> String {
+  let lines: Array[String] = [
+    "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }",
+    top
+  ]
+  let mut k = 0
+  while k < 200 {
+    let tail = if k == 0 && top != "" {
+      " + biw_h2(0)"
+    } else {
+      ""
+    }
+    Array::push(lines, value = "export let biw_\{k}: (Int) -> Int = (n) -> { n + \{k} + bim_one()\{tail} }")
+    k = k + 1
+  }
+  Array::push(lines, value = "export let biw_eq: () -> Bool = () -> { bim_eq() }")
+  String::join(lines, sep = "\n")
+}
+
+fn biw_main() -> String {
+  let names: Array[String] = ["biw_eq"]
+  let terms: Array[String] = []
+  let mut k = 0
+  while k < 200 {
+    Array::push(names, value = "biw_\{k}")
+    Array::push(terms, value = "biw_\{k}(1)")
+    if k < 40 {
+      Array::push(terms, value = "apply(biw_\{k}, 2)")
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  String::join([
+    "import ./vibe_body_cache_biw_b.vibe { \{String::join(names, ", ")} }",
+    "let apply: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }",
+    "let run: () -> Int = () -> { \{String::join(terms, " + ")} + (if biw_eq() { 1 } else { 0 }) }"
+  ], sep = "\n")
+}
+
+fn biw_probe(label: String, top: String) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(biw_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bim_a_path, bytes = bif_bytes(bim_a()))
+  Fs::write_bytes(biw_b_path, bytes = bif_bytes(biw_b("")))
+  Fs::write_bytes(biw_main_path, bytes = bif_bytes(biw_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = biw_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  Fs::write_bytes(biw_b_path, bytes = bif_bytes(biw_b(top)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = biw_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = biw_main_path, entry_name = "run")
+  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+test "moved indices that cross a LEB width band are rebuilt" {
+  // Two helpers at the top, one of them called, so every one of the 200
+  // functions moves by two. `saved=4`: the upstream file's 2 and the
+  // downstream file's 2 (`apply`, `run`). Non-vacuity, measured: with every
+  // edit whose encoding changes width skipped instead of applied, this row
+  // -- and no other in this file -- fails, the build refusing a function-value
+  // record that no longer sits on its constant.
+  inspect(biw_probe(label = "width-band", top = "let biw_h1: (Int) -> Int = (n) -> { n }\nlet biw_h2: (Int) -> Int = (n) -> { biw_h1(n) }"), content = "width-band saved=4 equal=true")
+}
+
+//# Removals, renames, reorders and closures in the middle file. Each is a
+//# change the per-function rows absorb: the names both builds hold are
+//# compared row by row, and every moved index is relocated.
+
+/// The middle file with `bim_two` replaced: `defs` are its declarations,
+/// which must still export `bim_two` and `bim_three` for the downstream file.
+fn bim_probe_defs(label: String, base_defs: String, defs: String) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  Fs::write_bytes(bim_a_path, bytes = bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, base_defs)))
+  Fs::write_bytes(bim_main_path, bytes = bif_bytes(bim_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, defs)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
+  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+let bim_two_line: String = "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() }"
+
+let bim_three_line: String = "export let bim_three: (Int) -> Int = (n) -> { bim_two(n) * 3 + (if bim_eq() { 1 } else { 0 }) }"
+
+test "a function removed, renamed or moved in a middle file keeps the files after it" {
+  let helper = "let bim_helper: (Int) -> Int = (n) -> { n + 7 }"
+  let with_helper = String::join([
+    helper,
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_helper(0) }",
+    bim_three_line
+  ], sep = "\n")
+  let plain = String::join([bim_two_line, bim_three_line], sep = "\n")
+  // `saved=4`: the upstream file's 2 bodies and the downstream file's 2.
+  inspect(bim_probe_defs(label = "remove", base_defs = with_helper, defs = plain), content = "remove saved=4 equal=true")
+  let renamed = String::join([
+    "let bim_aid: (Int) -> Int = (n) -> { n + 7 }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_aid(0) }",
+    bim_three_line
+  ], sep = "\n")
+  let r1 = bim_probe_defs(label = "rename", base_defs = with_helper, defs = renamed)
+  // The same functions in another order: every index in the file moves.
+  let two_calls = "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_helper(0) }"
+  let r2 = bim_probe_defs(label = "reorder", base_defs = String::join([
+    helper,
+    two_calls,
+    bim_three_line
+  ], sep = "\n"), defs = String::join([two_calls, helper, bim_three_line], sep = "\n"))
+  // A closure added inside an existing function: no name changes, but every
+  // later lambda moves.
+  let r3 = bim_probe_defs(label = "add-closure", base_defs = plain, defs = String::join([
+    "export let bim_two: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(bim_one()) }",
+    bim_three_line
+  ], sep = "\n"))
+  inspect(String::join([r1, r2, r3], sep = " | "), content = "rename saved=4 equal=true | reorder saved=4 equal=true | add-closure saved=4 equal=true")
+}
+
+//# Types. Constructor tags are `(type_index << 16) | variant`, and
+//# `type_index` counts type declarations in merge order, so a type added in
+//# a middle file moves the tag of every type declared after it. Every tag a
+//# body embeds is recorded at emission (kind 105, `emit_ctor_tag`) and
+//# relocated through the constructor names that held it.
+
+fn bim_main_typed(_ with_type: Bool) -> String {
+  let decl = if with_type {
+    "enum BimShade { BimLight; BimDark }\n"
+  } else {
+    ""
+  }
+  let use = if with_type {
+    " + (match BimDark { BimLight => 1, BimDark => 2 })"
+  } else {
+    ""
+  }
+  String::join([
+    "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }",
+    decl,
+    "let apply: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }",
+    "let run: () -> Int = () -> { apply(bim_two, 1) + bim_three(4)\{use} }"
+  ], sep = "\n")
+}
+
+fn bim_probe_type(label: String, downstream_type: Bool) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  Fs::write_bytes(bim_a_path, bytes = bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, String::join([
+    bim_two_line,
+    bim_three_line
+  ], sep = "\n"))))
+  Fs::write_bytes(bim_main_path, bytes = bif_bytes(bim_main_typed(downstream_type)))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  // A type in the middle file, used there.
+  let typed_b = String::join([
+    "enum BimMark { BimOn; BimOff }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + (match BimOn { BimOn => 0, BimOff => 1 }) }",
+    bim_three_line
+  ], sep = "\n")
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, typed_b)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
+  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+test "a type added in a middle file relocates the tags it moves" {
+  // No type after the middle file: every existing tag is where it was, and
+  // both the upstream and downstream bodies are reused.
+  let tolerated = bim_probe_type(label = "no-later-type", downstream_type = false)
+  // The downstream file declares a type, whose tag the new one moves. The
+  // downstream body embeds that tag (construction and match), recorded as
+  // kind 105, and it is relocated through the constructor's name.
+  let moved = bim_probe_type(label = "later-type-moves", downstream_type = true)
+  inspect(String::join([tolerated, moved], sep = " | "), content = "no-later-type saved=4 equal=true | later-type-moves saved=4 equal=true")
+}
+
+//# A new module. Importing one inserts a file into the merge order, so every
+//# file after it moves to another position: the file table matches files by
+//# path, and the function indices that moved with them are relocated.
+
+let bim_c_path: String = "/tmp/vibe_body_cache_bim_c.vibe"
+
+fn bim_probe_new_module(label: String, import_first: Bool) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  Fs::write_bytes(bim_a_path, bytes = bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, String::join([
+    bim_two_line,
+    bim_three_line
+  ], sep = "\n"))))
+  Fs::write_bytes(bim_main_path, bytes = bif_bytes(bim_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  Fs::write_bytes(bim_c_path, bytes = bif_bytes("export let bim_four: (Int) -> Int = (n) -> { n * 4 }"))
+  let imports = if import_first {
+    "import ./vibe_body_cache_bim_c.vibe { bim_four }\nimport ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }"
+  } else {
+    "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }\nimport ./vibe_body_cache_bim_c.vibe { bim_four }"
+  }
+  Fs::write_bytes(bim_main_path, bytes = bif_bytes(String::join([
+    imports,
+    "let apply: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }",
+    "let run: () -> Int = () -> {",
+    "  let k = 5",
+    "  let add_k = (x) -> x + k",
+    "  apply(bim_two, 1) + apply(add_k, 2) + bim_three(4) + bim_four(1)",
+    "}"
+  ], sep = "\n")))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
+  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+test "a newly imported module keeps the unchanged files' bodies" {
+  let after = bim_probe_new_module(label = "new-module-last", import_first = false)
+  let before = bim_probe_new_module(label = "new-module-first", import_first = true)
+  // Listed first, the new module enters the merge order AHEAD of the
+  // unchanged files, so they move. Non-vacuity, measured: before the
+  // linemap rows' file ids were remapped with the files, this row compiled
+  // to different bytes from a fresh build -- a moved file's rows named
+  // another file.
+  inspect(String::join([after, before], sep = " | "), content = "new-module-last saved=4 equal=true | new-module-first saved=4 equal=true")
+}
+
+//# Effects. A declared effect routes through exception tag `3 + its index`,
+//# and the tags past the effects move with their count. A body names a tag
+//# only as a `throw` / `catch` immediate, so a changed effect list is
+//# relocated through the effects' names.
+
+fn bie_a(_ ahead: Bool) -> String {
+  let first = if ahead {
+    "effect BieFirst {\n  Ping(Int) -> Int\n}\nexport let bie_ping: () -> Int with BieFirst = () -> { perform BieFirst::Ping(2) }\nexport let bie_ping_handled: () -> Int = () -> { handle { bie_ping() } with { BieFirst::Ping(x) => resume(x * 3) } }\n"
+  } else {
+    ""
+  }
+  String::join([
+    first,
+    "export effect BieLog {",
+    "  Note(Int) -> Int",
+    "}",
+    "export let bie_eq: () -> Bool = () -> { [1, 2] == [1, 2] }",
+    "export let bie_noted: () -> Int with BieLog = () -> { perform BieLog::Note(1) }"
+  ], sep = "\n")
+}
+
+fn bie_b(_ extra: Bool) -> String {
+  let decl = if extra {
+    "effect BieTrace {\n  Mark(Int) -> Int\n}\nlet bie_marked: () -> Int = () -> { handle { perform BieTrace::Mark(5) } with { BieTrace::Mark(x) => resume(x) } }\n"
+  } else {
+    ""
+  }
+  let use = if extra {
+    " + bie_marked()"
+  } else {
+    ""
+  }
+  String::join([
+    "import ./vibe_body_cache_bie_a.vibe { BieLog, bie_eq, bie_noted }",
+    decl,
+    "export let bie_two: (Int) -> Int = (n) -> { n + (if bie_eq() { 1 } else { 0 })\{use} }"
+  ], sep = "\n")
+}
+
+fn bie_main(_ ahead: Bool) -> String {
+  let imports = if ahead {
+    "import ./vibe_body_cache_bie_a.vibe { BieLog, bie_noted, bie_ping_handled }"
+  } else {
+    "import ./vibe_body_cache_bie_a.vibe { BieLog, bie_noted }"
+  }
+  let use = if ahead {
+    " + bie_ping_handled()"
+  } else {
+    ""
+  }
+  String::join([
+    imports,
+    "import ./vibe_body_cache_bie_b.vibe { bie_two }",
+    "let logged: () -> Int = () -> { handle { bie_noted() } with { BieLog::Note(x) => resume(x + 10) } }",
+    "let run: () -> Int = () -> { logged() + bie_two(1)\{use} }"
+  ], sep = "\n")
+}
+
+let bie_a_path: String = "/tmp/vibe_body_cache_bie_a.vibe"
+
+let bie_b_path: String = "/tmp/vibe_body_cache_bie_b.vibe"
+
+let bie_main_path: String = "/tmp/vibe_body_cache_bie_main.vibe"
+
+/// Cold on the base, then the edit: `ahead` declares an effect before
+/// `BieLog` in the first file (moving its tag, which the downstream handler
+/// names); otherwise the middle file gains an effect after it.
+fn bie_probe(label: String, ahead: Bool) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bie_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bie_a_path, bytes = bif_bytes(bie_a(false)))
+  Fs::write_bytes(bie_b_path, bytes = bif_bytes(bie_b(false)))
+  Fs::write_bytes(bie_main_path, bytes = bif_bytes(bie_main(false)))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bie_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  if ahead {
+    Fs::write_bytes(bie_a_path, bytes = bif_bytes(bie_a(true)))
+    Fs::write_bytes(bie_main_path, bytes = bif_bytes(bie_main(true)))
+  } else {
+    Fs::write_bytes(bie_b_path, bytes = bif_bytes(bie_b(true)))
+  }
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bie_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bie_main_path, entry_name = "run")
+  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+test "an added effect relocates the tags it moves" {
+  let r1 = handle {
+    bie_probe(label = "effect-in-middle", ahead = false)
+  } with { Exception::Throw(m) => String::concat("THROW ", m) }
+  let r2 = handle {
+    bie_probe(label = "effect-ahead", ahead = true)
+  } with { Exception::Throw(m) => String::concat("THROW ", m) }
+  // In the middle file: `BieLog` keeps tag 3, the new effect takes 4, and
+  // the tags past them move by one. Declared AHEAD of `BieLog` in the first
+  // file, the new effect also brings a synthesized type that moves later
+  // constructor tags; those are relocated too.
+  inspect(String::join([r1, r2], sep = " | "), content = "effect-in-middle saved=4 equal=true | effect-ahead saved=1 equal=true")
+}
+
+//# Structs. A field access dispatches over every struct holding the field,
+//# and a bare record literal is matched against every struct's fields, so a
+//# struct added in a middle file reaches the bodies that read one of its
+//# fields. Those recompile -- they spell the field, and their codegen logged
+//# reading it (#3771) -- and every other body is reused.
+
+test "an added struct is tolerated whether or not its fields are new" {
+  let pt = "struct BimPt { x: Int }"
+  let base = String::join([
+    pt,
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + BimPt::{ x: 1 }.x }",
+    bim_three_line
+  ], sep = "\n")
+  let fresh_fields = String::join([
+    pt,
+    "struct BimBox { bim_box_v: Int }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + BimPt::{ x: 1 }.x + BimBox::{ bim_box_v: 2 }.bim_box_v }",
+    bim_three_line
+  ], sep = "\n")
+  let shared_field = String::join([
+    pt,
+    "struct BimQ { x: Int }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + BimPt::{ x: 1 }.x + BimQ::{ x: 2 }.x }",
+    bim_three_line
+  ], sep = "\n")
+  let r1 = bim_probe_defs(label = "disjoint-fields", base_defs = base, defs = fresh_fields)
+  let r2 = bim_probe_defs(label = "shared-field", base_defs = base, defs = shared_field)
+  inspect(String::join([r1, r2], sep = " | "), content = "disjoint-fields saved=4 equal=true | shared-field saved=4 equal=true")
+}
+
+//# Thunks. A module-level non-function `let` is memoized in two globals,
+//# `base + 2k` and `base + 2k + 1`, where `k` is its position in the thunk
+//# list. A thunk added ahead of a cached one moves its globals; replayed as
+//# it was, the cached thunk would read the new thunk's memo cell. (Codex P1
+//# on #3765.)
+
+test "a thunk added ahead of a cached one moves its memo globals with it" {
+  let base = String::join([bim_two_line, bim_three_line], sep = "\n")
+  let with_thunk = String::join([
+    "let bim_pre: Array[Int] = [9, 9, 9]",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + Array::length(bim_pre) }",
+    bim_three_line
+  ], sep = "\n")
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  // The downstream file holds a thunk of its own, after the middle file's.
+  let main = String::join([
+    "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }",
+    "let bim_m_tbl: Array[Int] = [5, 6]",
+    "let run: () -> Int = () -> { bim_two(1) + bim_three(4) + Array::length(bim_m_tbl) }"
+  ], sep = "\n")
+  Fs::write_bytes(bim_a_path, bytes = bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, base)))
+  Fs::write_bytes(bim_main_path, bytes = bif_bytes(main))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, with_thunk)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
+  inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=4 equal=true")
+}
+
+//# Every tag-bearing form, downstream of a type inserted ahead: every tag
+//# the downstream body embeds moves, and a form whose tag were emitted
+//# without a record would replay the old value and differ from a fresh
+//# build.
+
+fn bit_main() -> String {
+  String::join([
+    "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }",
+    "enum BitShape { BitDot; BitLine(Int); BitBox(Int, Int) }",
+    "enum BitWrap { BitIn(BitShape); BitOut }",
+    "struct BitP { x: Int; y: Int }",
+    "struct BitQ { y: Int; z: Int }",
+    "let bit_area: (BitShape) -> Int = (s) -> { match s { BitDot => 0, BitLine(n) => n, BitBox(w, h) => w * h } }",
+    "let bit_nested: (BitWrap) -> Int = (w) -> { match w { BitIn(BitBox(a, _)) => a, BitIn(BitLine(n)) if n > 2 => n, BitIn(_) => 1, BitOut => 0 } }",
+    "let bit_is: (BitShape) -> Int = (s) -> { if s is BitDot { 7 } else { 8 } }",
+    "let bit_y: (BitP, BitQ) -> Int = (p, q) -> { p.y + q.y }",
+    "let bit_record: () -> Int = () -> { let r = record { x: 1, y: 2 }\n r.x }",
+    "let bit_opt: (Option[Int]) -> Int = (o) -> { match o { Some(v) => v, None => 0 } }",
+    "let run: () -> Int = () -> {",
+    "  let BitIn(inner) = BitIn(BitLine(3))",
+    "  bit_area(BitBox(2, 3)) + bit_area(inner) + bit_nested(BitIn(BitBox(4, 1))) + bit_is(BitDot) + bit_y(BitP::{ x: 1, y: 2 }, BitQ::{ y: 3, z: 4 }) + bit_record() + bit_opt(Some(5)) + bim_two(1) + bim_three(2)",
+    "}"
+  ], sep = "\n")
+}
+
+test "every tag-bearing form is relocated across a type inserted ahead" {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  Fs::write_bytes(bim_a_path, bytes = bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, String::join([
+    bim_two_line,
+    bim_three_line
+  ], sep = "\n"))))
+  Fs::write_bytes(bim_main_path, bytes = bif_bytes(bit_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  let typed_b = String::join([
+    "enum BimMark { BimOn; BimOff }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + (match BimOn { BimOn => 0, BimOff => 1 }) }",
+    bim_three_line
+  ], sep = "\n")
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, typed_b)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
+  inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=9 equal=true")
+}
+
+test "a type removed from a middle file relocates the tags it moved" {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  let typed_b = String::join([
+    "enum BimMark { BimOn; BimOff }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + (match BimOn { BimOn => 0, BimOff => 1 }) }",
+    bim_three_line
+  ], sep = "\n")
+  Fs::write_bytes(bim_a_path, bytes = bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, typed_b)))
+  Fs::write_bytes(bim_main_path, bytes = bif_bytes(bit_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  // `BimMark` goes: every downstream type's tag moves DOWN by one type.
+  Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, String::join([
+    bim_two_line,
+    bim_three_line
+  ], sep = "\n"))))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
+  inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=9 equal=true")
+}
+
+//# The pin capacity. Source functions sit in `[0, src_n)` padded to a
+//# multiple of 1024, the synthesized region after that, and the lambda slots
+//# and every function past the user ones after THAT. An edit that takes the
+//# source region across a multiple of 1024 moves all three by a known delta,
+//# which the relocation follows.
+
+let bic_b_path: String = "/tmp/vibe_body_cache_bic_b.vibe"
+
+let bic_main_path: String = "/tmp/vibe_body_cache_bic_main.vibe"
+
+/// `n` chained functions, every one reachable from the last.
+fn bic_b(_ n: Int) -> String {
+  let lines: Array[String] = [
+    "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }",
+    "export let bic_0: (Int) -> Int = (x) -> { x + bim_one() }"
+  ]
+  let mut k = 1
+  while k < n {
+    Array::push(lines, value = "let bic_\{k}: (Int) -> Int = (x) -> { bic_\{k - 1}(x) + 1 }")
+    k = k + 1
+  }
+  Array::push(lines, value = "export let bic_top: (Int) -> Int = (x) -> { bic_\{n - 1}(x) + (if bim_eq() { 1 } else { 0 }) }")
+  String::join(lines, sep = "\n")
+}
+
+fn bic_main() -> String {
+  String::join([
+    "import ./vibe_body_cache_bic_b.vibe { bic_top }",
+    "enum BicShape { BicDot; BicLine(Int) }",
+    "let apply: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }",
+    "let run: () -> Int = () -> {",
+    "  let k = 2",
+    "  let add_k = (x) -> x + k",
+    "  apply(bic_top, 1) + apply(add_k, 3) + (match BicLine(4) { BicDot => 0, BicLine(n) => n }) + (if [1, 2] == [1, 2] { 1 } else { 0 })",
+    "}"
+  ], sep = "\n")
+}
+
+fn bic_probe(before: Int, after: Int) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bic_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bim_a_path, bytes = bif_bytes(bim_a()))
+  Fs::write_bytes(bic_b_path, bytes = bif_bytes(bic_b(before)))
+  Fs::write_bytes(bic_main_path, bytes = bif_bytes(bic_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bic_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  Fs::write_bytes(bic_b_path, bytes = bif_bytes(bic_b(after)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bic_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bic_main_path, entry_name = "run")
+  "cold=\{Array::get(cold_counts, 1)} warm=\{Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+test "a source region that crosses a pin-capacity boundary is relocated" {
+  // 1010 source functions pad to a capacity of 1024; 1030 pad to 2048. The
+  // cold build compiles the 1024-slot region plus the synthesized one (1025);
+  // after the edit a full recompile would be 2049, and the two unchanged
+  // files' four bodies (`bim_eq`, `bim_one`, `apply`, `run`) are relocated
+  // instead -- `run` builds a closure, so its lambda slot moved with the
+  // base.
+  inspect(bic_probe(before = 1010, after = 1030), content = "cold=1025 warm=2045 equal=true")
+}

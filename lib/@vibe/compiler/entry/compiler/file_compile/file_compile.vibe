@@ -51,7 +51,8 @@ import @vibe/compiler/core {
   mark_private_builtin_references,
   merged_offset_space_reset,
   namespace_private_value_stmts,
-  resolution_env_seed
+  resolution_env_seed,
+  sorted_names_of
 }
 
 import @vibe/compiler/codegen {
@@ -737,6 +738,186 @@ fn decode_body_cache_artifact_for(b: Bytes, paths: Array[String], fps: Array[Str
   }
 }
 
+/// #2669: move each kept entry's recorded merged-statement position from the
+/// harvest's file layout to this build's. A position is the statements of
+/// every earlier file plus its own, so an entry of file `f` moves by how much
+/// the files before `f` grew or shrank. Only unchanged files' entries are
+/// kept, so an entry never sits inside a file whose own count moved. An
+/// unknown position (`-1`) stays unknown. `cache` is the filter's fresh copy,
+/// so rewriting it in place touches nothing the caller still holds.
+fn body_cache_rebase_src_stmts(cache: CodegenBodyCache, old_counts: Array[Int], new_counts: Array[Int]) -> CodegenBodyCache {
+  let shift: Array[Int] = []
+  let mut old_at = 0
+  let mut new_at = 0
+  let mut f = 0
+  while f < Array::length(old_counts) && f < Array::length(new_counts) {
+    Array::push(shift, value = new_at - old_at)
+    old_at = old_at + Array::get(old_counts, at = f)
+    new_at = new_at + Array::get(new_counts, at = f)
+    f = f + 1
+  }
+  let mut e = 0
+  while e < Array::length(cache.fn_src_stmts) {
+    let at = Array::get(cache.fn_src_stmts, at = e)
+    let file = Array::get(cache.fn_files, at = e)
+    if at >= 0 && file >= 0 && file < Array::length(shift) {
+      Array::set(cache.fn_src_stmts, at = e, value = at + Array::get(shift, at = file))
+    } else {
+      ()
+    }
+    e = e + 1
+  }
+  cache
+}
+
+/// #2669: harvest file index -> this build's, matching by path, -1 for a file
+/// this build does not have OR whose content changed (its entries are not
+/// carried). None when a path occurs twice on either side, which would make
+/// the match a guess.
+fn body_cache_file_moves(old_paths: Array[String], old_fps: Array[String], paths: Array[String], fps: Array[String]) -> Option[Array[Int]] {
+  let new_sorted = sorted_names_of(paths)
+  let old_sorted = sorted_names_of(old_paths)
+  let mut dup = false
+  let mut d = 1
+  while d < Array::length(new_sorted) {
+    if Array::get(new_sorted, at = d) == Array::get(new_sorted, at = d - 1) {
+      dup = true
+    } else {
+      ()
+    }
+    d = d + 1
+  }
+  let mut d2 = 1
+  while d2 < Array::length(old_sorted) {
+    if Array::get(old_sorted, at = d2) == Array::get(old_sorted, at = d2 - 1) {
+      dup = true
+    } else {
+      ()
+    }
+    d2 = d2 + 1
+  }
+  if dup {
+    None
+  } else {
+    let o2n: Array[Int] = []
+    let mut o = 0
+    while o < Array::length(old_paths) {
+      let mut found = 0 - 1
+      let mut n = 0
+      while found < 0 && n < Array::length(paths) {
+        if Array::get(paths, at = n) == Array::get(old_paths, at = o) {
+          found = n
+        } else {
+          n = n + 1
+        }
+      }
+      Array::push(o2n, value = if found >= 0 && Array::get(fps, at = found) == Array::get(old_fps, at = o) {
+        found
+      } else {
+        0 - 1
+      })
+      o = o + 1
+    }
+    Some(o2n)
+  }
+}
+
+/// #2669: carry the entries of every unchanged file to that file's position
+/// in this build (`o2n`, from `body_cache_file_moves`): keep them, give them
+/// this build's file index, and move each recorded statement position by how
+/// far its file's first statement moved. The per-file typed-lowering slots
+/// are put in this build's file order too, so the per-file comparison after
+/// the decode pairs each file with its own; a file the harvest did not have
+/// gets slots that match nothing.
+fn body_cache_move_files(cache: CodegenBodyCache, o2n: Array[Int], old_counts: Array[Int], new_counts: Array[Int]) -> CodegenBodyCache {
+  let keep: Array[Int] = []
+  for n in o2n {
+    Array::push(keep, value = if n >= 0 {
+      1
+    } else {
+      0
+    })
+  }
+  let kept = codegen_body_cache_filter_src_keep(cache = cache, keep_file = keep)
+  let old_start: Array[Int] = []
+  let mut acc = 0
+  for c in old_counts {
+    Array::push(old_start, value = acc)
+    acc = acc + c
+  }
+  let new_start: Array[Int] = []
+  let mut acc2 = 0
+  for c in new_counts {
+    Array::push(new_start, value = acc2)
+    acc2 = acc2 + c
+  }
+  let mut e = 0
+  while e < Array::length(kept.fn_files) {
+    let f = Array::get(kept.fn_files, at = e)
+    if f >= 0 && f < Array::length(o2n) && Array::get(o2n, at = f) >= 0 {
+      let n = Array::get(o2n, at = f)
+      Array::set(kept.fn_files, at = e, value = n)
+      let at = Array::get(kept.fn_src_stmts, at = e)
+      if at >= 0 {
+        Array::set(kept.fn_src_stmts, at = e, value = at + Array::get(new_start, at = n) - Array::get(old_start, at = f))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    e = e + 1
+  }
+  // A `vibe.linemap` row names its file by the same index: a moved file's
+  // rows would otherwise print another file's `path:line` at a trap.
+  let mut r = 0
+  while r < Array::length(kept.lm_file_ids) {
+    let f = Array::get(kept.lm_file_ids, at = r)
+    if f >= 0 && f < Array::length(o2n) && Array::get(o2n, at = f) >= 0 {
+      Array::set(kept.lm_file_ids, at = r, value = Array::get(o2n, at = f))
+    } else {
+      ()
+    }
+    r = r + 1
+  }
+  let per = 6
+  if Array::length(kept.guard_typed_lowering) == per * Array::length(o2n) {
+    let old_tl: Array[Int] = []
+    for v in kept.guard_typed_lowering {
+      Array::push(old_tl, value = v)
+    }
+    Array::truncate(kept.guard_typed_lowering, length = 0)
+    let mut nf = 0
+    while nf < Array::length(new_counts) {
+      let mut from = 0 - 1
+      let mut o = 0
+      while o < Array::length(o2n) {
+        if Array::get(o2n, at = o) == nf {
+          from = o
+        } else {
+          ()
+        }
+        o = o + 1
+      }
+      let mut k = 0
+      while k < per {
+        Array::push(kept.guard_typed_lowering, value = if from >= 0 {
+          Array::get(old_tl, at = from * per + k)
+        } else {
+          0 - 1
+        })
+        k = k + 1
+      }
+      nf = nf + 1
+    }
+    kept
+  } else {
+    // An EMPTY typed-lowering guard means "in-process, nothing to check",
+    // so a shape that cannot be put in this build's order is not carried.
+    codegen_body_cache_new()
+  }
+}
+
 fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[String], fps: Array[String], counts: Array[Int]) -> CodegenBodyCache {
   let (file_n, p0) = bcw_read_int(b = b, pos = payload_start)
   if p0 < 0 {
@@ -756,6 +937,16 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
     // changed count moves the pin region and the synthesized statements with
     // it, which the codegen guards would reject anyway.
     let mut layout_same = file_n == Array::length(paths)
+    // #2669: the same files in the same order, whatever their statement
+    // counts. A changed file's count may move (a function was added to it);
+    // the unchanged files after it are then still the harvest's, one
+    // statement offset further on, and stay replayable once their recorded
+    // positions are rebased (`body_cache_rebase_src_stmts`). Whether their
+    // BODIES are still valid is the body loop's question, not this one.
+    let mut paths_same = file_n == Array::length(paths)
+    let old_counts: Array[Int] = []
+    let old_paths: Array[String] = []
+    let old_fps: Array[String] = []
     let keep_file = array_empty()
     while !malformed && i < file_n {
       let (spath, p1) = bcw_read_string(b = b, pos = p)
@@ -773,6 +964,14 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
         malformed = true
       } else {
         p = p3
+        Array::push(old_counts, value = scount)
+        Array::push(old_paths, value = spath)
+        Array::push(old_fps, value = sfp)
+        if i >= Array::length(paths) || spath != Array::get(paths, at = i) {
+          paths_same = false
+        } else {
+          ()
+        }
         let positioned = i < Array::length(paths) && spath == Array::get(paths, at = i) && scount == Array::get(counts, at = i)
         let unchanged = positioned && sfp == Array::get(fps, at = i)
         if !positioned {
@@ -793,13 +992,32 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
       }
       i = i + 1
     }
-    if malformed || (!layout_same && limit == 0) {
+    // #2669: a different FILE LIST -- a module imported or dropped, or an
+    // import order that changed the merge order. Files are then matched by
+    // path, and an unchanged file's entries are carried to its new position.
+    let moved = if malformed || layout_same || paths_same {
+      None
+    } else {
+      body_cache_file_moves(old_paths = old_paths, old_fps = old_fps, paths = paths, fps = fps)
+    }
+    let moved_any = match moved {
+      Some(_) => true,
+      None => false
+    }
+    if malformed || (!layout_same && !paths_same && !moved_any && limit == 0) {
       codegen_body_cache_new()
     } else {
       match codegen_body_cache_from_bytes_at(b = b, start = p) {
         Some(cache) => {
           let kept = if layout_same {
             codegen_body_cache_filter_src_keep(cache = cache, keep_file = keep_file)
+          } else if paths_same {
+            body_cache_rebase_src_stmts(cache = codegen_body_cache_filter_src_keep(cache = cache, keep_file = keep_file), old_counts = old_counts, new_counts = counts)
+          } else if moved_any {
+            match moved {
+              Some(o2n) => body_cache_move_files(cache = cache, o2n = o2n, old_counts = old_counts, new_counts = counts),
+              None => codegen_body_cache_new()
+            }
           } else {
             codegen_body_cache_filter_src_below(cache = cache, limit = limit)
           }
@@ -850,8 +1068,14 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
 /// its own slot on every edit -- comparing it elementwise would refuse every
 /// merge there is. That comparison happens where the file list is, at the
 /// decode, and drops exactly the files whose classification moved.
+///
+/// #2669: the string pool is compared too. A body replayed across a pool
+/// drift is RELOCATED and re-recorded into the fresh harvest, so after such a
+/// build the harvest is complete on its own; merging the consumed cache back
+/// would carry its entries' old addresses into an artifact stamped with the
+/// new pool.
 fn body_cache_guards_equal(a: CodegenBodyCache, b: CodegenBodyCache) -> Bool {
-  body_cache_guards_equal_except_layout(a = a, b = b) && bcc_int_lists_equal(a = a.guard_layout, b = b.guard_layout)
+  body_cache_guards_equal_except_layout(a = a, b = b) && bcc_int_lists_equal(a = a.guard_layout, b = b.guard_layout) && bcc_string_lists_equal(a = a.guard_str_pool, b = b.guard_str_pool)
 }
 
 /// #2669 step 2b: the guard set MINUS `guard_layout`, which is exactly the
@@ -1314,7 +1538,9 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
     } else {
       ()
     }
-    Array::push(counts_out, value = Array::length(cache_out.fn_indices))
+    // #2669: a relocated replay is re-recorded, so it is in the harvest
+    // without having been compiled.
+    Array::push(counts_out, value = Array::length(cache_out.fn_indices) - Array::length(cache_out.relocated))
     bytes
   }
 }
