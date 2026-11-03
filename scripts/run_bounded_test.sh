@@ -77,6 +77,11 @@ contract() { # <lib> <impl>
   #    timeout(1): `VAR=x timeout 60 cmd <in` was the commonest call shape.
   r="$(printf 'piped\n' | VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; PROBE_VAR=seen run_bounded 10 sh -c "read -r l; echo \"\$PROBE_VAR/\$l\""' _ "$lib" 2>/dev/null | tail -1)"
   [ "$r" = "seen/piped" ] || echo "env+stdin: $r"
+  #    ...and inside a subshell too, where job control is off: a command
+  #    substitution is where callers read a bounded command's output, and the
+  #    watchdog handed its command /dev/null there (#3753).
+  r="$(printf 'piped\n' | VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; out="$(run_bounded 10 cat)"; echo "got=$out"' _ "$lib" 2>/dev/null | tail -1)"
+  [ "$r" = "got=piped" ] || echo "stdin-in-subshell: $r"
   # 5. A caller under `set -e` survives a failing command it checks.
   r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c 'set -euo pipefail; . "$1"; run_bounded 10 false || echo "checked=$?"; echo after' _ "$lib" 2>/dev/null | tr '\n' ' ')"
   [ "$r" = "checked=1 after " ] || echo "set-e: $r"
@@ -212,6 +217,13 @@ if command -v timeout >/dev/null 2>&1 && is_gnu timeout; then
   [ "$r" = rc=42 ] || fail "a missing monotonic clock did not select the watchdog: $r"
   ok "Node clock classifies escalation; an unavailable clock selects the marker watchdog"
 fi
+
+# The watchdog's launch without an explicit stdin: inside a subshell the
+# command reads /dev/null.
+m="$(mutant no_stdin 's/^  "\$@" 0<&0 &$/  "$@" \&/' '  "$@" &')"
+broken="$(contract "$m" watchdog)"
+case "$broken" in *stdin-in-subshell*) ok "red: a watchdog launch with no explicit stdin reads /dev/null in a subshell" ;;
+  *) fail "the no-stdin mutant was not caught: ${broken:-<no rung failed>}" ;; esac
 
 # Defined but not exported.
 m="$(mutant no_export 's/^export -f run_bounded run_bounded_watchdog$/: not exported/' ': not exported')"

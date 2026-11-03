@@ -179,7 +179,12 @@ run_bounded_watchdog() { # <seconds> <cmd...>
   local had_monitor=0
   case "$-" in *m*) had_monitor=1 ;; esac
   set -m
-  "$@" &
+  # `0<&0`: an asynchronous command whose shell has no job control reads
+  # /dev/null, and job control is off in every subshell -- a command
+  # substitution, a pipeline stage -- whatever `set -m` says. Callers bound
+  # commands in exactly those places (`out="$(run_bounded 60 cmd <in)"`), and
+  # without the explicit redirection the command read an empty stdin (#3753).
+  "$@" 0<&0 &
   local cmd_pid=$!
   [ "$had_monitor" -eq 1 ] || set +m
   (
