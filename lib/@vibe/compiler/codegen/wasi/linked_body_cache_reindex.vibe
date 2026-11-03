@@ -1,0 +1,671 @@
+// lib/@vibe/compiler/codegen/wasi/linked_body_cache_reindex.vibe -- moving
+// cached bodies into this build's function index space after source
+// functions were added, removed or reordered (#2669).
+
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache, codegen_body_cache_guards_only
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_kind_ctor_tag,
+  blind_kind_fn_value,
+  blind_kind_table_slot_i32,
+  blind_owner_is_lambda,
+  blind_owner_lambda_index,
+  blind_owner_of_lambda,
+  reloc_kind_func,
+  reloc_kind_global,
+  reloc_kind_tag,
+  scan_body_relocs
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_i32_const, emit_i64_const
+}
+
+import ./linked_body_cache_edit.vibe {
+  LcCtorTagMap, LcSrcEdit, lc_first_user_tag
+}
+
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  lc_fresh_int_array, lc_fresh_int_array_of_len
+}
+
+//# What moves, and what does not
+//
+// Functions added, removed or reordered move every user function after the
+// change, and a changed lambda count moves every later lambda. A cached body names those indices in four places:
+//
+// - `call` immediates, which the instruction encoding makes certain
+//   (`scan_body_relocs`, `reloc_kind_func`);
+// - function values, `i64.const ((slot << 2) | 2)` and `i32.const slot`,
+//   which the emitter recorded (kinds 101 / 102);
+// - the funcref slot log the element section is built from;
+// - the owner of every record and linemap row, and each lambda's index;
+// - exception tags, `throw` / `catch` immediates the encoding makes certain
+//   (`reloc_kind_tag`), when the declared effects changed;
+// - a thunk's memo globals (`reloc_kind_global`), which follow the thunk's
+//   position in the unsorted thunk list;
+// - constructor tags (kind 105, `emit_ctor_tag`), which follow the names
+//   that held them when a type declared ahead moved them.
+//
+// Imports and generated builtins sit below the user functions and do not
+// move; the synthesized region sits past the pin region's capacity and does
+// not move either. A lambda's WASM function index sits past the user
+// functions and moves with the lambda plan, so a body that calls one directly
+// is relocated only when no lambda index moved. Anything this
+// cannot place -- an unknown opcode, a reference to a removed slot, a record
+// that does not sit on its instruction -- drops that one entry, which then
+// recompiles.
+
+/// How the harvest's indices map onto this build's.
+struct LcIndexMap {
+  /// Harvest user index -> this build's, -1 for a pad (nothing references
+  /// one, and its entry is never replayed).
+  fns: Array[Int];
+  old_bases: Array[Int];
+  old_lambda_count: Int;
+  new_bases: Array[Int];
+  lambdas_moved: Bool;
+  /// The harvest's user-function count and lambda slot base, and this
+  /// build's: they differ when the source region crossed a pin-capacity
+  /// boundary, which moves the synthesized region, the lambda slots and every
+  /// function past the user ones (`_start`, `run`, the lambdas) by a known
+  /// delta.
+  num_user_funcs: Int;
+  new_num_user_funcs: Int;
+  func_offset: Int;
+  lambda_slot_base: Int;
+  new_lambda_slot_base: Int;
+  /// Harvest exception tag -> this build's (`lc_tag_map`); -1 for a tag
+  /// whose effect was removed.
+  tags: Array[Int];
+  /// Harvest thunk position -> this build's (`lc_thunk_map`), and the first
+  /// memo global: thunk `k` owns globals `thunk_base + 2k` and `+ 1`, the
+  /// last globals of the module.
+  thunks: Array[Int];
+  thunk_base: Int;
+  /// Harvest constructor tag -> this build's (`lc_ctor_tag_map`).
+  ctor_tags: LcCtorTagMap
+}
+
+fn lc_map_fn(m: LcIndexMap, o: Int) -> Int {
+  if o < 0 || o >= Array::length(m.fns) {
+    0 - 1
+  } else {
+    Array::get(m.fns, o)
+  }
+}
+
+/// The function that owns harvest lambda `l`: the last one whose base is at
+/// most `l` (a function with no lambdas shares its successor's base).
+fn lc_lambda_owner(m: LcIndexMap, l: Int) -> Int {
+  let mut lo = 0
+  let mut hi = Array::length(m.old_bases)
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    if Array::get(m.old_bases, mid) <= l {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  lo - 1
+}
+
+fn lc_map_lambda(m: LcIndexMap, l: Int) -> Int {
+  if l < 0 || l >= m.old_lambda_count {
+    0 - 1
+  } else {
+    let o = lc_lambda_owner(m, l)
+    let n = lc_map_fn(m, o)
+    if o < 0 || n < 0 || n >= Array::length(m.new_bases) {
+      0 - 1
+    } else {
+      Array::get(m.new_bases, n) + (l - Array::get(m.old_bases, o))
+    }
+  }
+}
+
+/// A funcref table slot: a user function below `lambda_slot_base`, a lambda
+/// from it.
+fn lc_map_slot(m: LcIndexMap, s: Int) -> Int {
+  if s < 0 {
+    0 - 1
+  } else if s < m.lambda_slot_base {
+    lc_map_fn(m, s)
+  } else {
+    let l = lc_map_lambda(m, s - m.lambda_slot_base)
+    if l < 0 {
+      0 - 1
+    } else {
+      m.new_lambda_slot_base + l
+    }
+  }
+}
+
+/// A `call` target, as a wasm function index.
+fn lc_map_call(m: LcIndexMap, v: Int) -> Int {
+  let u = v - m.func_offset
+  if u < 0 {
+    v
+  } else if u < m.num_user_funcs {
+    let n = lc_map_fn(m, u)
+    if n < 0 {
+      0 - 1
+    } else {
+      m.func_offset + n
+    }
+  } else if m.lambdas_moved {
+    0 - 1
+  } else {
+    v + (m.new_num_user_funcs - m.num_user_funcs)
+  }
+}
+
+fn lc_map_tag(m: LcIndexMap, t: Int) -> Int {
+  if t < 0 {
+    0 - 1
+  } else if t >= Array::length(m.tags) {
+    // Past the map: only the identity extends past it (effects pinned whole
+    // by the global half record no names, and their tags cannot move).
+    if lc_tags_identity(m.tags) {
+      t
+    } else {
+      0 - 1
+    }
+  } else {
+    Array::get(m.tags, t)
+  }
+}
+
+/// A global index: below the thunks' memo globals nothing moves; a memo
+/// global follows its thunk; past them there are no globals to name.
+fn lc_map_global(m: LcIndexMap, g: Int) -> Int {
+  if g < m.thunk_base {
+    g
+  } else {
+    let k = (g - m.thunk_base) / 2
+    if k >= Array::length(m.thunks) || Array::get(m.thunks, k) < 0 {
+      0 - 1
+    } else {
+      m.thunk_base + 2 * Array::get(m.thunks, k) + (g - m.thunk_base) % 2
+    }
+  }
+}
+
+/// A constructor tag: a built-in one never moves; a user type's follows the
+/// names that held it, and one the map cannot place is -1.
+fn lc_map_ctor_tag(m: LcIndexMap, t: Int) -> Int {
+  if t < lc_first_user_tag {
+    t
+  } else {
+    let mut n = 0 - 1
+    let mut k = 0
+    while n < 0 && k < Array::length(m.ctor_tags.old_tags) {
+      if Array::get(m.ctor_tags.old_tags, k) == t {
+        n = Array::get(m.ctor_tags.new_tags, k)
+        k = Array::length(m.ctor_tags.old_tags)
+      } else {
+        k = k + 1
+      }
+    }
+    n
+  }
+}
+
+fn lc_push_uleb(out: Bytes, value: Int) -> Unit {
+  let mut v = value
+  let mut more = true
+  while more {
+    let b = v&127
+    v = v>>7
+    if v == 0 {
+      Bytes::push(out, b)
+      more = false
+    } else {
+      Bytes::push(out, b|128)
+    }
+  }
+}
+
+fn lc_sleb_end(body: Bytes, p: Int) -> Int {
+  let mut i = p
+  let mut done = false
+  while !done && i < Bytes::length(body) {
+    if (Bytes::get(body, i)&128) == 0 {
+      done = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  i
+}
+
+/// One rewritten span of a body: `[off, off + width)` becomes `bytes`.
+struct LcEdit {
+  off: Int;
+  width: Int;
+  bytes: Bytes
+}
+
+fn lc_edit_insert(edits: Array[LcEdit], e: LcEdit) -> Unit {
+  let mut at = Array::length(edits)
+  Array::push(edits, e)
+  let mut moving = true
+  while moving && at > 0 {
+    let prev = Array::get(edits, at - 1)
+    if prev.off > e.off {
+      Array::set(edits, at, prev)
+      at = at - 1
+    } else {
+      moving = false
+    }
+  }
+  Array::set(edits, at, e)
+}
+
+/// The shift a position `p` of the old body takes.
+fn lc_edit_shift(edits: Array[LcEdit], p: Int) -> Int {
+  let mut d = 0
+  for e in edits {
+    if e.off < p {
+      d = d + Bytes::length(e.bytes) - e.width
+    } else {
+      ()
+    }
+  }
+  p + d
+}
+
+/// A body moved into this build's index space, with `edits` saying where it
+/// changed; `ok` is false when it could not be.
+struct LcMovedBody {
+  ok: Bool;
+  body: Bytes;
+  edits: Array[LcEdit]
+}
+
+fn lc_unmovable(body: Bytes) -> LcMovedBody {
+  LcMovedBody::{ ok: false, body: body, edits: [] }
+}
+
+/// Rewrite one body. `owner` is its record owner as the harvest stored it;
+/// the function-value records among `cache.blind_*[rows]` are this body's.
+fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache, rows: Array[Int]) -> LcMovedBody {
+  let edits: Array[LcEdit] = []
+  let mut ok = true
+  let scanned = handle {
+    Some(scan_body_relocs(body, 0, Bytes::length(body)))
+  } with { Exception::Throw(_) => None }
+  match scanned {
+    None => ok = false,
+    Some(r) => {
+      let mut i = 0
+      while ok && i < Array::length(r.offsets) {
+        let rk = Array::get(r.kinds, i)
+        if rk == reloc_kind_func || rk == reloc_kind_tag || rk == reloc_kind_global {
+          let v = Array::get(r.values, i)
+          let n = if rk == reloc_kind_func {
+            lc_map_call(m, v)
+          } else if rk == reloc_kind_tag {
+            lc_map_tag(m, v)
+          } else {
+            lc_map_global(m, v)
+          }
+          if n < 0 {
+            ok = false
+          } else if n != v {
+            let b = Bytes::new()
+            lc_push_uleb(b, n)
+            lc_edit_insert(edits, LcEdit::{
+              off: Array::get(r.offsets, i),
+              width: Array::get(r.widths, i),
+              bytes: b
+            })
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    }
+  }
+  for k in rows {
+    let kind = Array::get(cache.blind_kinds, k)
+    if ok && Array::get(cache.blind_body, k) == owner && (kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32 || kind == blind_kind_ctor_tag) {
+      let off = Array::get(cache.blind_offsets, k)
+      let op = if kind == blind_kind_fn_value {
+        66
+      } else {
+        65
+      }
+      let s = Array::get(cache.blind_syms, k)
+      let n = if kind == blind_kind_ctor_tag {
+        lc_map_ctor_tag(m, s)
+      } else {
+        lc_map_slot(m, s)
+      }
+      if off < 0 || off >= Bytes::length(body) || Bytes::get(body, off) != op || n < 0 {
+        ok = false
+      } else if n != s {
+        let b = Bytes::new()
+        if kind == blind_kind_fn_value {
+          emit_i64_const(b, (n<<2)|2)
+        } else {
+          emit_i32_const(b, n)
+        }
+        lc_edit_insert(edits, LcEdit::{
+          off: off,
+          width: lc_sleb_end(body, off + 1) - off,
+          bytes: b
+        })
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  if !ok {
+    lc_unmovable(body)
+  } else if Array::length(edits) == 0 {
+    LcMovedBody::{ ok: true, body: body, edits: edits }
+  } else {
+    let out = Bytes::new()
+    let mut cursor = 0
+    for e in edits {
+      if e.off < cursor {
+        ok = false
+      } else {
+        ()
+      }
+      while cursor < e.off && cursor < Bytes::length(body) {
+        Bytes::push(out, Bytes::get(body, cursor))
+        cursor = cursor + 1
+      }
+      Bytes::append(out, e.bytes)
+      cursor = e.off + e.width
+    }
+    while cursor < Bytes::length(body) {
+      Bytes::push(out, Bytes::get(body, cursor))
+      cursor = cursor + 1
+    }
+    if ok {
+      LcMovedBody::{ ok: true, body: out, edits: edits }
+    } else {
+      lc_unmovable(body)
+    }
+  }
+}
+
+/// Row indices of `owners` grouped by key: `heads[key]` lists the rows whose
+/// owner is `key`, for keys in `[0, n)`.
+fn lc_group_rows(owners: Array[Int], n: Int) -> Array[Array[Int]] {
+  let groups: Array[Array[Int]] = []
+  let mut i = 0
+  while i < n {
+    Array::push(groups, lc_fresh_int_array())
+    i = i + 1
+  }
+  let mut r = 0
+  while r < Array::length(owners) {
+    let o = Array::get(owners, r)
+    if o >= 0 && o < n {
+      Array::push(Array::get(groups, o), r)
+    } else {
+      ()
+    }
+    r = r + 1
+  }
+  groups
+}
+
+fn lc_tags_identity(map: Array[Int]) -> Bool {
+  let mut same = true
+  let mut i = 0
+  while same && i < Array::length(map) {
+    if Array::get(map, i) != i {
+      same = false
+    } else {
+      i = i + 1
+    }
+  }
+  same
+}
+
+/// The lowest harvest source index at or above which something moved: its
+/// position, or its lambdas' (`old_plan` against `new_bases`). Every entry
+/// below it is carried as it is -- nothing it can reference moved, because
+/// merge order is topological and a body creates only its own closures.
+fn lc_first_change(e: LcSrcEdit, old_plan: Array[Int], new_bases: Array[Int]) -> Int {
+  let mut first = e.old_src_n
+  let mut o = 0
+  while first == e.old_src_n && o < e.old_src_n {
+    let n = Array::get(e.o2n, o)
+    if n != o || n < 0 || n >= Array::length(new_bases) || Array::get(old_plan, o) != Array::get(new_bases, n) {
+      first = o
+    } else {
+      ()
+    }
+    o = o + 1
+  }
+  first
+}
+
+/// `cache` in this build's index space under `e`. Entries below the first
+/// change are carried unchanged. Each entry above it is moved: its index,
+/// its lambdas, every body it holds, its slots, records and linemap rows;
+/// one that cannot be moved, or whose function was removed, is dropped.
+/// `old_plan` is the harvest's lambda plan with its total last
+/// (`lc_old_lambda_plan`). Answers `cache` itself when nothing moved.
+export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, old_capacity: Int, old_lambda_slot_base: Int, capacity: Int, num_user_funcs: Int, func_offset: Int, lambda_slot_base: Int, old_plan: Array[Int], new_bases: Array[Int], new_lambda_count: Int, tag_map: Array[Int], thunk_map: Array[Int], thunk_base: Int, ctor_tags: LcCtorTagMap) -> CodegenBodyCache {
+  // The synthesized region is the same by name on both sides, so the
+  // harvest's user-function count is its capacity plus that region.
+  let old_num_user = old_capacity + (num_user_funcs - capacity)
+  // A moved exception tag can sit in ANY body, and so can a moved thunk's
+  // memo global, a moved constructor tag, or a call into a synthesized
+  // function the capacity moved, so every entry moves then.
+  let first = if lc_tags_identity(tag_map) && lc_tags_identity(thunk_map) && ctor_tags.identity && old_capacity == capacity && old_lambda_slot_base == lambda_slot_base {
+    lc_first_change(e, old_plan, new_bases)
+  } else {
+    0
+  }
+  if first >= e.old_src_n || old_num_user < 0 {
+    cache
+  } else {
+    let fns = lc_fresh_int_array_of_len(old_num_user, 0 - 1)
+    let mut o = 0
+    while o < e.old_src_n && o < old_num_user {
+      Array::set(fns, o, Array::get(e.o2n, o))
+      o = o + 1
+    }
+    let mut y = old_capacity
+    while y < old_num_user {
+      Array::set(fns, y, capacity + (y - old_capacity))
+      y = y + 1
+    }
+    let old_bases = lc_fresh_int_array()
+    let mut q = 0
+    while q < old_num_user {
+      Array::push(old_bases, Array::get(old_plan, q))
+      q = q + 1
+    }
+    let old_lambda_count = Array::get(old_plan, Array::length(old_plan) - 1)
+    let mut lambdas_moved = old_lambda_count != new_lambda_count
+    let mut l = 0
+    while !lambdas_moved && l < old_num_user {
+      let n = Array::get(fns, l)
+      if n >= 0 && Array::get(old_bases, l) != Array::get(new_bases, n) {
+        lambdas_moved = true
+      } else {
+        ()
+      }
+      l = l + 1
+    }
+    let m = LcIndexMap::{
+      fns: fns,
+      old_bases: old_bases,
+      old_lambda_count: old_lambda_count,
+      new_bases: new_bases,
+      lambdas_moved: lambdas_moved,
+      num_user_funcs: old_num_user,
+      new_num_user_funcs: num_user_funcs,
+      func_offset: func_offset,
+      lambda_slot_base: old_lambda_slot_base,
+      new_lambda_slot_base: lambda_slot_base,
+      tags: tag_map,
+      thunks: thunk_map,
+      thunk_base: thunk_base,
+      ctor_tags: ctor_tags
+    }
+    let out = codegen_body_cache_guards_only(cache)
+    let lam_rows = lc_group_rows(cache.lam_owner, old_num_user)
+    let slot_rows = lc_group_rows(cache.slot_owner, old_num_user)
+    let blind_rows = lc_group_rows(cache.blind_fn, old_num_user)
+    let lm_rows = lc_group_rows(cache.lm_owner, old_num_user)
+    let mut x = 0
+    while x < Array::length(cache.fn_indices) {
+      let fo = Array::get(cache.fn_indices, x)
+      let n = lc_map_fn(m, fo)
+      if fo >= 0 && fo < old_num_user && n >= 0 {
+        lc_reindex_entry(m, cache, out, x, fo, n, fo >= first, Array::get(lam_rows, fo), Array::get(slot_rows, fo), Array::get(blind_rows, fo), Array::get(lm_rows, fo))
+      } else {
+        ()
+      }
+      x = x + 1
+    }
+    out
+  }
+}
+
+/// Move entry `e` (harvest index `o`, this build's `n`) into `out`, or leave
+/// it out when one of its bodies cannot be moved. `moving` is false below the
+/// insertion, where the entry is carried as it is.
+fn lc_reindex_entry(m: LcIndexMap, cache: CodegenBodyCache, out: CodegenBodyCache, e: Int, o: Int, n: Int, moving: Bool, lams: Array[Int], slots: Array[Int], blinds: Array[Int], lms: Array[Int]) -> Unit {
+  let fn_moved = if moving {
+    lc_move_body(m, Array::get(cache.fn_bodies, e), o, cache, blinds)
+  } else {
+    LcMovedBody::{ ok: true, body: Array::get(cache.fn_bodies, e), edits: [] }
+  }
+  let lam_moved: Array[LcMovedBody] = []
+  let lam_new: Array[Int] = []
+  let mut ok = fn_moved.ok
+  for r in lams {
+    let l = Array::get(cache.lam_indices, r)
+    let nl = if moving {
+      lc_map_lambda(m, l)
+    } else {
+      l
+    }
+    let moved = if moving {
+      lc_move_body(m, Array::get(cache.lam_bodies, r), blind_owner_of_lambda(l), cache, blinds)
+    } else {
+      LcMovedBody::{ ok: true, body: Array::get(cache.lam_bodies, r), edits: [] }
+    }
+    if nl < 0 || !moved.ok {
+      ok = false
+    } else {
+      ()
+    }
+    Array::push(lam_moved, moved)
+    Array::push(lam_new, nl)
+  }
+  let slot_new: Array[Int] = []
+  for r in slots {
+    let s = Array::get(cache.slot_values, r)
+    let ns = if moving {
+      lc_map_slot(m, s)
+    } else {
+      s
+    }
+    if ns < 0 {
+      ok = false
+    } else {
+      ()
+    }
+    Array::push(slot_new, ns)
+  }
+  if ok {
+    Array::push(out.fn_indices, n)
+    Array::push(out.fn_names, Array::get(cache.fn_names, e))
+    Array::push(out.fn_files, Array::get(cache.fn_files, e))
+    Array::push(out.fn_src_stmts, Array::get(cache.fn_src_stmts, e))
+    Array::push(out.fn_bodies, fn_moved.body)
+    Array::push(out.fn_meta_i32, Array::get(cache.fn_meta_i32, e))
+    Array::push(out.fn_meta_i64, Array::get(cache.fn_meta_i64, e))
+    Array::push(out.fn_meta_v128, Array::get(cache.fn_meta_v128, e))
+    Array::push(out.fn_fold_sigs, Array::get(cache.fn_fold_sigs, e))
+    let mut li = 0
+    while li < Array::length(lams) {
+      let r = Array::get(lams, li)
+      Array::push(out.lam_owner, n)
+      Array::push(out.lam_indices, Array::get(lam_new, li))
+      Array::push(out.lam_bodies, Array::get(lam_moved, li).body)
+      Array::push(out.lam_param_counts, Array::get(cache.lam_param_counts, r))
+      Array::push(out.lam_captures, Array::get(cache.lam_captures, r))
+      Array::push(out.lam_meta_i32, Array::get(cache.lam_meta_i32, r))
+      Array::push(out.lam_meta_i64, Array::get(cache.lam_meta_i64, r))
+      li = li + 1
+    }
+    let mut si = 0
+    while si < Array::length(slots) {
+      Array::push(out.slot_owner, n)
+      Array::push(out.slot_values, Array::get(slot_new, si))
+      si = si + 1
+    }
+    for r in blinds {
+      let owner = Array::get(cache.blind_body, r)
+      let kind = Array::get(cache.blind_kinds, r)
+      let sym = Array::get(cache.blind_syms, r)
+      // Which body the record sits in, so its offset moves with that body's
+      // edits, and what its owner is called now.
+      let (edits, new_owner) = if blind_owner_is_lambda(owner) {
+        let l = blind_owner_lambda_index(owner)
+        let mut found = 0 - 1
+        let mut q = 0
+        while q < Array::length(lams) {
+          if Array::get(cache.lam_indices, Array::get(lams, q)) == l {
+            found = q
+          } else {
+            ()
+          }
+          q = q + 1
+        }
+        if found < 0 {
+          (fn_moved.edits, owner)
+        } else {
+          (Array::get(lam_moved, found).edits, blind_owner_of_lambda(Array::get(lam_new, found)))
+        }
+      } else {
+        (fn_moved.edits, if owner == o {
+          n
+        } else {
+          owner
+        })
+      }
+      Array::push(out.blind_fn, n)
+      Array::push(out.blind_body, new_owner)
+      Array::push(out.blind_offsets, lc_edit_shift(edits, Array::get(cache.blind_offsets, r)))
+      Array::push(out.blind_kinds, kind)
+      Array::push(out.blind_syms, if moving && (kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32) {
+        lc_map_slot(m, sym)
+      } else if moving && kind == blind_kind_ctor_tag {
+        lc_map_ctor_tag(m, sym)
+      } else {
+        sym
+      })
+    }
+    for r in lms {
+      Array::push(out.lm_owner, n)
+      Array::push(out.lm_offsets, lc_edit_shift(fn_moved.edits, Array::get(cache.lm_offsets, r)))
+      Array::push(out.lm_file_ids, Array::get(cache.lm_file_ids, r))
+      Array::push(out.lm_lines, Array::get(cache.lm_lines, r))
+    }
+  } else {
+    ()
+  }
+}

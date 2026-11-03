@@ -142,6 +142,10 @@ import ./linked_compile_lc_retarget_call.vibe {
   lc_host_hooks_install, lc_program_defines_top_level, lc_program_keeps_stream_read, lc_settle_drop_stream_band, lc_stmts_call_host_future
 }
 
+import ./linked_body_cache_edit.vibe {
+  lc_names_range_equal, lc_src_edit_none, lc_src_edit_of, lc_src_edit_ok, lc_without, lc_without_ints
+}
+
 import ./linked_compile_linkedhostplan.vibe {
   LinkedBodyInputs, LinkedSectionPlan
 }
@@ -1496,6 +1500,13 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
       Array::push(body_cache_out.guard_unmangled_names, Array::get(guard_unmangled_now, __gum))
       __gum = __gum + 1
     }
+    // #2669: the source region by name, in index order, so a later build
+    // that only ADDED functions can restrict its tables to these.
+    let mut __gsn = 0
+    while __gsn < pin_region_src_n {
+      Array::push(body_cache_out.guard_src_names, Array::get(fn_names_list, __gsn))
+      __gsn = __gsn + 1
+    }
     // #2669 step 2b's `guard_layout` is recorded further down, once the
     // lambda plan exists -- it is the last of the program-wide inputs to be
     // computed.
@@ -1522,6 +1533,47 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
   } else {
     body_cache_in
   }
+  // #2669: how this build's source functions differ from the harvest's, by
+  // name (linked_body_cache_edit.vibe). Two lanes accept the cache:
+  //
+  // - STRICT: every guard below is the harvest's exactly, as it has always
+  //   been required to be;
+  // - EDIT: source functions were added, removed, renamed or reordered, or a
+  //   lambda count moved. The guards here are then asked without the names
+  //   only one side holds, the synthesized region is compared by NAME (the
+  //   changed statements shift its statement positions, and no body reads
+  //   one), and the body loop compares the layout name by name and relocates
+  //   every moved index. The pin capacity may move too (a source region that
+  //   crossed a 1024 boundary): the synthesized region and the lambda slots
+  //   move with it, so only the lambda slot base RELATIVE to it is compared.
+  let body_cache_edit_raw = if pin_region_capacity >= 0 && Array::length(body_cache_in_fold.fn_indices) > 0 && Array::length(body_cache_in_fold.guard_meta) == 5 {
+    lc_src_edit_of(body_cache_in_fold.guard_src_names, fn_names_list, pin_region_src_n)
+  } else {
+    lc_src_edit_none()
+  }
+  let body_cache_strict = if Array::length(body_cache_in_fold.fn_indices) == 0 || pin_region_capacity < 0 || Array::length(body_cache_in_fold.guard_meta) == 0 {
+    true
+  } else {
+    Array::length(body_cache_in_fold.guard_meta) == 5 && Array::get(body_cache_in_fold.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in_fold.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in_fold.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in_fold.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in_fold.guard_meta, 4) == num_generated && Array::length(body_cache_in_fold.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in_fold, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in_fold.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(body_cache_in_fold.guard_borrow_names, lc_borrow_param_user_srt) && bcc_int_lists_equal(body_cache_in_fold.guard_borrow_masks, lc_borrow_param_mask) && bcc_string_lists_equal(body_cache_in_fold.guard_unmangled_names, guard_unmangled_now)
+  }
+  // The used-builtin set also collects every constructor a body names, so a
+  // type added or removed anywhere moves it without moving a single import.
+  // Under an edit it is compared with both builds' constructor names taken
+  // out of both sides (the type tables are compared by `lc_types_agree`).
+  let edit_ctor_all = lc_fresh_string_array()
+  for c in ctor_names_list {
+    Array::push(edit_ctor_all, c)
+  }
+  for c in body_cache_in_fold.guard_ctor_names {
+    Array::push(edit_ctor_all, c)
+  }
+  let edit_ctor_names = sorted_names_of(edit_ctor_all)
+  let body_cache_edit_ok = lc_src_edit_ok(body_cache_edit_raw) && Array::length(body_cache_in_fold.guard_meta) == 5 && Array::get(body_cache_in_fold.guard_meta, 0) == body_cache_edit_raw.old_src_n && Array::get(body_cache_in_fold.guard_meta, 2) - Array::get(body_cache_in_fold.guard_meta, 1) == lambda_slot_base - pin_region_capacity && Array::get(body_cache_in_fold.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in_fold.guard_meta, 4) == num_generated && lc_names_range_equal(body_cache_in_fold.guard_synth_names, fn_names_list, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(lc_without(edit_ctor_names, body_cache_in_fold.guard_import_names), lc_without(edit_ctor_names, guard_import_names_now)) && bcc_string_lists_equal(lc_without(body_cache_edit_raw.removed, body_cache_in_fold.guard_borrow_names), lc_without(body_cache_edit_raw.added, lc_borrow_param_user_srt)) && bcc_int_lists_equal(lc_without_ints(body_cache_edit_raw.removed, body_cache_in_fold.guard_borrow_names, body_cache_in_fold.guard_borrow_masks), lc_without_ints(body_cache_edit_raw.added, lc_borrow_param_user_srt, lc_borrow_param_mask)) && bcc_string_lists_equal(lc_without(body_cache_edit_raw.removed, body_cache_in_fold.guard_unmangled_names), lc_without(body_cache_edit_raw.added, guard_unmangled_now))
+  let body_cache_edit = if body_cache_edit_ok {
+    body_cache_edit_raw
+  } else {
+    lc_src_edit_none()
+  }
   let body_cache_in_ok = if Array::length(body_cache_in_fold.fn_indices) == 0 {
     true
   } else if pin_region_capacity < 0 {
@@ -1542,7 +1594,7 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
     // guard-less cache before it can cross compiles). Accept unchanged.
     true
   } else {
-    Array::length(body_cache_in_fold.guard_meta) == 5 && Array::get(body_cache_in_fold.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in_fold.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in_fold.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in_fold.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in_fold.guard_meta, 4) == num_generated && Array::length(body_cache_in_fold.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in_fold, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in_fold.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(body_cache_in_fold.guard_borrow_names, lc_borrow_param_user_srt) && bcc_int_lists_equal(body_cache_in_fold.guard_borrow_masks, lc_borrow_param_mask) && bcc_string_lists_equal(body_cache_in_fold.guard_unmangled_names, guard_unmangled_now)
+    body_cache_strict || body_cache_edit_ok
   }
   let fn_indices_list = lc_fresh_int_array()
   let fn_returns_list = lc_fresh_int_array()
@@ -1928,6 +1980,8 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
     blind_syms: blind_syms,
     body_cache_in: body_cache_in_fold,
     body_cache_in_ok: body_cache_in_ok,
+    body_cache_edit: body_cache_edit,
+    body_cache_strict: body_cache_strict,
     body_cache_out: body_cache_out,
     bool_render_offsets: bool_render_offsets,
     bytes_append_idx: bytes_append_idx,
@@ -2010,6 +2064,7 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
     oob_abort_idx: oob_abort_idx,
     pi: pi,
     pin_region_capacity: pin_region_capacity,
+    pin_region_src_n: pin_region_src_n,
     print_i64_raw_idx: print_i64_raw_idx,
     print_str_idx: print_str_idx,
     prov: prov,

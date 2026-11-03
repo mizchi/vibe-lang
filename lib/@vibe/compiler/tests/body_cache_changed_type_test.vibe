@@ -1,0 +1,135 @@
+//# The body cache across a build that CHANGED a type (#2669).
+//#
+//# A variant added, removed, reordered or reshaped changes the layout of
+//# every value of that type, so a body that constructs or matches one must
+//# recompile. A body that never does -- one that only passes such a value
+//# along, or never sees one -- is unchanged, and these rows check that it
+//# replays while the build still answers what a fresh compile answers.
+//#
+//# Two independent nets keep a body that does depend on the type out of the
+//# replay: the mention check (it spells one of the type's constructors, in an
+//# expression or a pattern), and the relocation (it embeds one of the type's
+//# tags, whose old value maps to nothing). `bct_text` below spells
+//# `BctLine` only in a pattern, so it is caught by the pattern walk and by
+//# the tag its match embeds. Measured, each net alone refuses it: every row
+//# still reads `saved=5`. With both off it replays (`saved=6`) and still
+//# compiles byte-equal: its tag relocates by name, and a payload slot is one
+//# word whatever it holds. So the nets refuse conservatively; no row here
+//# shows a replay of such a body going wrong.
+//#
+//# Each row: a cold compile on the base, the edit to the middle file, then a
+//# warm body-cached compile against a fresh one. `saved` is how many bodies
+//# the warm compile did not rebuild; `equal` is byte equality with the fresh
+//# compile.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+}
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_artifact_cache_path
+}
+
+fn bct_bytes(s: String) -> Bytes {
+  let out = Bytes::new()
+  let mut i = 0
+  while i < String::length(s) {
+    Bytes::push(out, String::byte_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+fn bct_bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  let n = Bytes::length(a)
+  if n != Bytes::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Bytes::get(a, i) != Bytes::get(b, i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+let bct_b_path: String = "/tmp/vibe_body_cache_bct_b.vibe"
+
+let bct_main_path: String = "/tmp/vibe_body_cache_bct_main.vibe"
+
+/// The middle file: the type, and the functions that build and read it.
+/// `decl` is the type's declaration and `line` the expression `bct_mk`
+/// builds a line from.
+fn bct_b(decl: String, line: String) -> String {
+  String::join([
+    decl,
+    "export let bct_mk: (Int) -> BctShape = (n) -> { if n > 0 { \{line} } else { BctDot } }",
+    "export let bct_count: (BctShape) -> Int = (s) -> { match s { BctDot => 0, _ => 1 } }",
+    "export let bct_half: (Double) -> Double = (x) -> { x * 0.5 }",
+    "export enum BctBoxed { BctBoxedD(Double) } derive(Eq)",
+    "export let bct_boxed: (Double) -> Bool = (x) -> { BctBoxedD(x) == BctBoxedD(x) }"
+  ], "\n")
+}
+
+let bct_base_decl: String = "export enum BctShape { BctDot; BctLine(Int); BctNone } derive(Eq)"
+
+/// The downstream file. `bct_plain` never sees the type and `bct_pass`
+/// only hands a value along, so both replay; `bct_text` matches it, and
+/// `bct_same` compares two values of it through the derived comparator.
+/// The base already renders and compares a Double, so a payload made Double needs no
+/// runtime the base did not have.
+fn bct_main() -> String {
+  String::join([
+    "import ./vibe_body_cache_bct_b.vibe { BctShape, BctDot, BctLine, bct_boxed, bct_count, bct_half, bct_mk }",
+    "let bct_plain: (Int) -> Int = (n) -> { n * 3 + 1 }",
+    "let bct_pass: (Int) -> Int = (n) -> { bct_count(bct_mk(n)) + bct_plain(n) }",
+    "fn bct_gen[T](x: T) -> Int { 1 }",
+    "let bct_text: (Int) -> Int = (n) -> { match bct_mk(n) { BctLine(k) => bct_gen(k) + 1, _ => 0 } }",
+    "let bct_same: (Int, Int) -> Bool = (a, b) -> { bct_mk(a) == bct_mk(b) }",
+    "let run: () -> Int = () -> {",
+    "  bct_pass(2) + bct_text(3) + String::length(\"\\{bct_half(3.0)}\") + (if bct_half(1.0) == 0.5 && bct_boxed(2.0) { 1 } else { 0 }) + (if bct_same(1, 1) { 1 } else { 0 })",
+    "}"
+  ], "\n")
+}
+
+fn bct_probe(decl: String, line: String) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bct_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bct_b_path, bct_bytes(bct_b(bct_base_decl, "BctLine(n)")))
+  Fs::write_bytes(bct_main_path, bct_bytes(bct_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bct_main_path, "run", "on", cold_counts)
+  Fs::write_bytes(bct_b_path, bct_bytes(bct_b(decl, line)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bct_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bct_main_path, "run")
+  "saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bct_bytes_eq(warm, fresh)}"
+}
+
+test "a variant added at the end keeps the bodies that never build or match the type" {
+  inspect(bct_probe("export enum BctShape { BctDot; BctLine(Int); BctNone; BctBox(Int, Int) } derive(Eq)", "BctLine(n)"), content = "saved=5 equal=true")
+}
+
+test "a variant added in the middle moves the later tags, and their bodies recompile" {
+  inspect(bct_probe("export enum BctShape { BctDot; BctBox(Int, Int); BctLine(Int); BctNone } derive(Eq)", "BctLine(n)"), content = "saved=5 equal=true")
+}
+
+test "an unused variant removed keeps the bodies that never build or match the type" {
+  inspect(bct_probe("export enum BctShape { BctDot; BctLine(Int) } derive(Eq)", "BctLine(n)"), content = "saved=5 equal=true")
+}
+
+test "a payload made Double recompiles the body that matches it" {
+  // `bct_text` binds the now-Double payload only through a pattern, and it
+  // passes the binding to a generic, so no typed-lowering site of its file
+  // changes and the edit lane stays open.
+  inspect(bct_probe("export enum BctShape { BctDot; BctLine(Double); BctNone } derive(Eq)", "BctLine(1.5)"), content = "saved=5 equal=true")
+}

@@ -15,7 +15,8 @@ fn add_ref(out: LinkedFunctionEffects, owner: Int, slot: Int) -> Unit {
   Array::push(out.slots, slot)
   Array::push(out.blind_owners, owner)
   Array::push(out.blind_offsets, 7)
-  Array::push(out.blind_kinds, 1)
+  // A function-value record: the kind that pairs with a funcref slot.
+  Array::push(out.blind_kinds, 101)
   Array::push(out.blind_syms, slot)
 }
 
@@ -102,6 +103,29 @@ test "missing blind references cannot publish even the valid lambda prefix" {
   let dst = lc_function_effects_new(0)
   inspect(publication_error(src, dst, 1), "function effects: funcref slots and blind references are not aligned")
   assert_empty(dst)
+}
+
+test "a string reference publishes without a funcref slot" {
+  let src = lc_function_effects_new(0)
+  add_ref(src, 4, 9)
+  // A string reference (#2669, kind 103) has no slot of its own.
+  Array::push(src.blind_owners, 4)
+  Array::push(src.blind_offsets, 11)
+  Array::push(src.blind_kinds, 103)
+  Array::push(src.blind_syms, 2)
+  let dst = lc_function_effects_new(0)
+  publish(src, dst, 0)
+  inspect(Array::length(dst.slots), "1")
+  inspect(Array::length(dst.blind_kinds), "2")
+  inspect(Array::get(dst.blind_kinds, 1), "103")
+  // ...but a slot with no function-value record is still unpaired.
+  let bad = lc_function_effects_new(0)
+  Array::push(bad.slots, 9)
+  Array::push(bad.blind_owners, 4)
+  Array::push(bad.blind_offsets, 11)
+  Array::push(bad.blind_kinds, 103)
+  Array::push(bad.blind_syms, 2)
+  inspect(publication_error(bad, lc_function_effects_new(0), 0), "function effects: funcref slots and blind references are not aligned")
 }
 
 test "functions without lambdas still publish their function references" {

@@ -13,10 +13,11 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/reloc {
-  blind_owner_pending
+  blind_kind_ctor_tag, blind_kind_str_fat, blind_kind_str_ref, blind_owner_pending
 }
 
 import @vibe/compiler/codegen/wasm_emit {
+  emit_i32_const,
   emit_i64_add,
   emit_i64_and,
   emit_i64_const,
@@ -1253,6 +1254,41 @@ export fn emit_str_ref(buf: Bytes, offset: Int, length: Int) -> Unit {
   emit_i64_shl(buf)
   emit_i64_const(buf, length)
   emit_i64_or(buf)
+}
+
+/// #2669: the pooled string at `slot` as `emit_str_ref` writes it, RECORDED.
+///
+/// A function body that embeds a string address must say so, because the
+/// address moves whenever a literal is added anywhere in the program (the
+/// pool is laid out over the whole program) and nothing in the encoding
+/// tells an ordinary `i64.const` from an address. The linear lane's body
+/// code emits a pooled string ONLY through this and `emit_str_fat_slot`;
+/// `scripts/review_lint.vibex` refuses a direct read of the pool's offsets
+/// there, and the module assembly checks every record against its bytes.
+export fn emit_str_ref_slot(buf: Bytes, ctx: CompileCtx, slot: Int) -> Unit {
+  blind_reloc_record(ctx, buf, blind_kind_str_ref, slot)
+  emit_str_ref(buf, Array::get(ctx.str_table.offsets, slot), Array::get(ctx.str_table.lengths, slot))
+}
+
+/// #2669: the pooled string at `slot` as ONE `i64.const ((offset << 32) |
+/// length)`, recorded. A negative slot -- a string the pool was not seeded
+/// with -- is the constant 0 and no reference.
+export fn emit_str_fat_slot(buf: Bytes, ctx: CompileCtx, slot: Int) -> Unit {
+  if slot < 0 {
+    emit_i64_const(buf, 0)
+  } else {
+    blind_reloc_record(ctx, buf, blind_kind_str_fat, slot)
+    emit_i64_const(buf, (Array::get(ctx.str_table.offsets, slot)<<32)|Array::get(ctx.str_table.lengths, slot))
+  }
+}
+
+/// #2669: a constructor tag as `i32.const tag`, recorded (kind 105). Every
+/// tag a body embeds goes through here: a tag is an ordinary constant in the
+/// bytes, so one emitted any other way could not be relocated, and a replay
+/// across a type inserted ahead of it would compare against the old value.
+export fn emit_ctor_tag(buf: Bytes, ctx: CompileCtx, tag: Int) -> Unit {
+  blind_reloc_record(ctx, buf, blind_kind_ctor_tag, tag)
+  emit_i32_const(buf, tag)
 }
 
 export fn get_arm_body(arm: (Pat, Expr)) -> Expr {

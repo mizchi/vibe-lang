@@ -48,7 +48,7 @@ import @vibe/compiler/codegen/common_base {
   emit_i64_load,
   emit_i64_store,
   emit_rc_dup_guarded,
-  emit_str_ref,
+  emit_str_ref_slot,
   emit_unbox_float,
   expr_tag,
   find_local_slot,
@@ -192,7 +192,7 @@ export fn cc_map_has_linear_scan(buf: Bytes, map_local: Int, key_local: Int, cou
 /// single i64 result -- callers needing this as a sub-expression (e.g. inside
 /// another `if_i64`'s branch) can emit it directly; callers needing it as
 /// their own function's tail value can emit it as the last instruction.
-export fn cc_map_get_linear_scan(buf: Bytes, map_local: Int, key_local: Int, count_local: Int, idx_local: Int, eq_idx: Int, miss_print_idx: Int, miss_msg_off: Int, miss_msg_len: Int) -> Unit {
+export fn cc_map_get_linear_scan(buf: Bytes, map_local: Int, key_local: Int, count_local: Int, idx_local: Int, eq_idx: Int, miss_print_idx: Int, ctx: CompileCtx, miss_msg_slot: Int) -> Unit {
   emit_i64_const(buf, 0)
   emit_local_set(buf, idx_local)
   emit_block_i64(buf)
@@ -233,16 +233,16 @@ export fn cc_map_get_linear_scan(buf: Bytes, map_local: Int, key_local: Int, cou
   emit_end(buf)
   // #2990: a miss traps instead of answering the zero bit pattern typed as the
   // value type (`0`, `""`, an Array at address 0). `Map::has_key` is the guard.
-  cc_map_get_miss_trap(buf, miss_print_idx, miss_msg_off, miss_msg_len)
+  cc_map_get_miss_trap(buf, miss_print_idx, ctx, miss_msg_slot)
   emit_end(buf)
 }
 
 /// #3547: the miss trap of `Map::get`, printing its message first the way
 /// `abort(msg)` does. `miss_print_idx < 0` (no `print_str`, or a pool without
 /// the message) leaves the bare trap.
-export fn cc_map_get_miss_trap(buf: Bytes, miss_print_idx: Int, miss_msg_off: Int, miss_msg_len: Int) -> Unit {
+export fn cc_map_get_miss_trap(buf: Bytes, miss_print_idx: Int, ctx: CompileCtx, miss_msg_slot: Int) -> Unit {
   if miss_print_idx >= 0 {
-    emit_str_ref(buf, miss_msg_off, miss_msg_len)
+    emit_str_ref_slot(buf, ctx, miss_msg_slot)
     emit_call(buf, miss_print_idx)
   } else {
     ()

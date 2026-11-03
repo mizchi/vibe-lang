@@ -1,0 +1,733 @@
+// lib/@vibe/compiler/codegen/wasi/linked_body_cache_edit.vibe -- replaying
+// cached bodies across a build whose source functions were added, removed,
+// renamed or reordered (#2669).
+
+import @vibe/compiler/core {
+  Expr, Pat, bsearch_leftmost, expr_children, sort_perm_by_names, sorted_names_of
+}
+
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  lc_fresh_int_array, lc_fresh_int_array_of_len, lc_fresh_string_array
+}
+
+//# Why the layout guard has two halves
+//
+// `guard_layout` fingerprints every program-wide table a body is compiled
+// against, and any change to the set of source functions moves most of it:
+// the function vector, the lambda plan, every name-keyed set. Fingerprinting
+// the whole of it means one added, removed or renamed helper recompiles every
+// body in the program.
+//
+// A body that never spells a changed name cannot see that change except
+// through INDICES, and indices are relocated (`linked_body_cache_reindex.vibe`).
+// So the harvest also records the tables split in two:
+//
+// - `guard_layout_global`: the same fingerprint with every entry keyed by a
+//   source function's name taken out -- the constructor and effect tables,
+//   the synthesized region, the builtins, the modes;
+// - `guard_src_rows`: one fingerprint per source function, of everything a
+//   name-keyed table says about it (its arity, env, return and borrow
+//   classes, whether it is a thunk or a folded constant).
+//
+// A later build is then compared on the global half and on the rows of the
+// names both builds hold. A name only one side holds is a change, and a body
+// that spells one is not replayed. Each function's LAMBDA COUNT is carried by
+// value instead (`guard_src_lambdas`): it only moves indices, which the
+// relocation follows.
+
+/// How this build's source region differs from the harvest's. `added` /
+/// `removed` / `touched` (their union) are sorted. `o2n` maps each harvest
+/// source index to this build's, -1 for a removed function. `first_old` is
+/// the lowest harvest index whose position moved (`old_src_n` when none did).
+/// `ok` is false when a name occurs twice on either side, which makes it
+/// identify nothing.
+export struct LcSrcEdit {
+  ok: Bool;
+  added: Array[String];
+  removed: Array[String];
+  touched: Array[String];
+  o2n: Array[Int];
+  first_old: Int;
+  old_src_n: Int
+}
+
+export fn lc_src_edit_none() -> LcSrcEdit {
+  LcSrcEdit::{
+    ok: false,
+    added: lc_fresh_string_array(),
+    removed: lc_fresh_string_array(),
+    touched: lc_fresh_string_array(),
+    o2n: lc_fresh_int_array(),
+    first_old: 0 - 1,
+    old_src_n: 0 - 1
+  }
+}
+
+/// Does `e` describe a comparable source region?
+export fn lc_src_edit_ok(e: LcSrcEdit) -> Bool {
+  e.ok
+}
+
+/// Did any source function's name, presence or position change?
+export fn lc_src_edit_moves(e: LcSrcEdit) -> Bool {
+  e.ok && (Array::length(e.touched) > 0 || e.first_old < e.old_src_n)
+}
+
+fn lc_has_duplicate(sorted: Array[String]) -> Bool {
+  let mut dup = false
+  let mut i = 1
+  while !dup && i < Array::length(sorted) {
+    if Array::get(sorted, i) == Array::get(sorted, i - 1) {
+      dup = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  dup
+}
+
+/// Compare the harvest's source region with this build's `[0, new_src_n)`.
+export fn lc_src_edit_of(old_src: Array[String], new_names: Array[String], new_src_n: Int) -> LcSrcEdit {
+  let old_n = Array::length(old_src)
+  if old_n == 0 || new_src_n < 0 || new_src_n > Array::length(new_names) {
+    lc_src_edit_none()
+  } else {
+    let new_src = lc_fresh_string_array()
+    let mut i = 0
+    while i < new_src_n {
+      Array::push(new_src, Array::get(new_names, i))
+      i = i + 1
+    }
+    let perm = sort_perm_by_names(new_src)
+    let new_sorted = lc_fresh_string_array()
+    let new_pos = lc_fresh_int_array()
+    for p in perm {
+      Array::push(new_sorted, Array::get(new_src, p))
+      Array::push(new_pos, p)
+    }
+    let old_sorted = sorted_names_of(old_src)
+    if lc_has_duplicate(new_sorted) || lc_has_duplicate(old_sorted) {
+      lc_src_edit_none()
+    } else {
+      let o2n = lc_fresh_int_array()
+      let removed = lc_fresh_string_array()
+      let mut first_old = old_n
+      let mut o = 0
+      while o < old_n {
+        let name = Array::get(old_src, o)
+        let at = bsearch_leftmost(new_sorted, name)
+        let n = if at >= 0 {
+          Array::get(new_pos, at)
+        } else {
+          0 - 1
+        }
+        Array::push(o2n, n)
+        if n < 0 {
+          Array::push(removed, name)
+        } else {
+          ()
+        }
+        if n != o && first_old == old_n {
+          first_old = o
+        } else {
+          ()
+        }
+        o = o + 1
+      }
+      let added = lc_fresh_string_array()
+      for name in new_sorted {
+        if bsearch_leftmost(old_sorted, name) < 0 {
+          Array::push(added, name)
+        } else {
+          ()
+        }
+      }
+      let touched = lc_fresh_string_array()
+      for name in added {
+        Array::push(touched, name)
+      }
+      for name in removed {
+        Array::push(touched, name)
+      }
+      LcSrcEdit::{
+        ok: true,
+        added: added,
+        removed: sorted_names_of(removed),
+        touched: sorted_names_of(touched),
+        o2n: o2n,
+        first_old: first_old,
+        old_src_n: old_n
+      }
+    }
+  }
+}
+
+/// `xs` without the names in the sorted `drop`, order kept.
+export fn lc_without(drop: Array[String], xs: Array[String]) -> Array[String] {
+  let out = lc_fresh_string_array()
+  for x in xs {
+    if bsearch_leftmost(drop, x) < 0 {
+      Array::push(out, x)
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// The values aligned with `names`, without the entries of names in `drop`.
+export fn lc_without_ints(drop: Array[String], names: Array[String], vals: Array[Int]) -> Array[Int] {
+  let out = lc_fresh_int_array()
+  let mut i = 0
+  while i < Array::length(names) && i < Array::length(vals) {
+    if bsearch_leftmost(drop, Array::get(names, i)) < 0 {
+      Array::push(out, Array::get(vals, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Is `expected` exactly `xs[lo..hi)`?
+export fn lc_names_range_equal(expected: Array[String], xs: Array[String], lo: Int, hi: Int) -> Bool {
+  if lo < 0 || hi > Array::length(xs) || hi - lo != Array::length(expected) {
+    false
+  } else {
+    let mut same = true
+    let mut i = lo
+    while same && i < hi {
+      if Array::get(xs, i) != Array::get(expected, i - lo) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+/// Are the rows of every function both builds hold the same? Rows are two
+/// ints each, in each build's own index order.
+export fn lc_src_rows_agree(e: LcSrcEdit, old_rows: Array[Int], new_rows: Array[Int]) -> Bool {
+  if Array::length(old_rows) != 2 * e.old_src_n {
+    false
+  } else {
+    let mut same = true
+    let mut o = 0
+    while same && o < e.old_src_n {
+      let n = Array::get(e.o2n, o)
+      if n >= 0 {
+        if 2 * n + 1 >= Array::length(new_rows) || Array::get(old_rows, 2 * o) != Array::get(new_rows, 2 * n) || Array::get(old_rows, 2 * o + 1) != Array::get(new_rows, 2 * n + 1) {
+          same = false
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      o = o + 1
+    }
+    same
+  }
+}
+
+/// Does this build's constructor table, by type, agree with the harvest's
+/// well enough to replay the bodies that never spell a changed type? Types
+/// added, removed or CHANGED are tolerated, and what each one touches goes
+/// into `touched` for the mention check:
+/// - an added or changed type's name and constructors (`new_ctors[i]`,
+///   newline-joined);
+/// - a removed type's name;
+/// - every constructor the harvest had that this build does not
+///   (`old_ctor_names` against `new_ctor_names`).
+///
+/// A changed type is one whose row differs: a variant added, removed,
+/// reordered or reshaped. Its constructors also go into `withheld`, and
+/// `lc_ctor_tag_map` maps their old tags to nothing, so a body that embeds
+/// one fails closed in the relocation whether or not it spells it. Every
+/// constructor arm and construction embeds its tag (a constructor pattern is
+/// never a catch-all, `is_catchall_pat`), so this net and the mention check
+/// each refuse such a body on their own. Both are conservative: with both
+/// off, the one such body the tests hold replays byte-equal, because its tag
+/// relocates by name and a payload slot is a word whatever it holds. A
+/// removed constructor's tag maps to nothing too. False when a type name
+/// occurs twice on either side.
+export fn lc_types_agree(old_names: Array[String], old_rows: Array[Int], new_names: Array[String], new_rows: Array[Int], new_ctors: Array[String], old_ctor_names: Array[String], new_ctor_names: Array[String], touched: Array[String], withheld: Array[String]) -> Bool {
+  if Array::length(old_names) == 0 {
+    Array::length(new_names) == 0 && Array::length(old_rows) == 0
+  } else {
+    let e = lc_src_edit_of(old_names, new_names, Array::length(new_names))
+    if !e.ok || Array::length(old_rows) != 2 * e.old_src_n {
+      false
+    } else {
+      // Which of the types both builds hold changed their row.
+      let changed = lc_fresh_int_array_of_len(Array::length(new_names), 0)
+      let mut o = 0
+      while o < e.old_src_n {
+        let n = Array::get(e.o2n, o)
+        if n >= 0 && (2 * n + 1 >= Array::length(new_rows) || Array::get(old_rows, 2 * o) != Array::get(new_rows, 2 * n) || Array::get(old_rows, 2 * o + 1) != Array::get(new_rows, 2 * n + 1)) {
+          Array::set(changed, n, 1)
+        } else {
+          ()
+        }
+        o = o + 1
+      }
+      let mut i = 0
+      while i < Array::length(new_names) {
+        let is_changed = i < Array::length(changed) && Array::get(changed, i) == 1
+        if is_changed || bsearch_leftmost(e.added, Array::get(new_names, i)) >= 0 {
+          for c in String::split(Array::get(new_ctors, i), "\n") {
+            Array::push(touched, c)
+            if is_changed {
+              Array::push(withheld, c)
+            } else {
+              ()
+            }
+          }
+          Array::push(touched, Array::get(new_names, i))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      for name in e.removed {
+        Array::push(touched, name)
+      }
+      let now = sorted_names_of(new_ctor_names)
+      for c in old_ctor_names {
+        if bsearch_leftmost(now, c) < 0 {
+          Array::push(touched, c)
+        } else {
+          ()
+        }
+      }
+      true
+    }
+  }
+}
+
+/// Do the declared effects both builds hold have the same ops? Effects added
+/// or removed are tolerated -- their tags move, and the relocation maps every
+/// tag (`lc_tag_map`) -- and their names, with an added one's op keys, go
+/// into `touched`. False when a name occurs twice on either side.
+export fn lc_effects_agree(old_names: Array[String], old_rows: Array[Int], new_names: Array[String], new_rows: Array[Int], new_ops: Array[String], touched: Array[String]) -> Bool {
+  if Array::length(old_names) == 0 {
+    let mut i = 0
+    while i < Array::length(new_names) {
+      Array::push(touched, Array::get(new_names, i))
+      for op in String::split(Array::get(new_ops, i), "\n") {
+        Array::push(touched, op)
+      }
+      i = i + 1
+    }
+    Array::length(old_rows) == 0
+  } else {
+    let e = lc_src_edit_of(old_names, new_names, Array::length(new_names))
+    if !e.ok || !lc_src_rows_agree(e, old_rows, new_rows) {
+      false
+    } else {
+      for name in e.touched {
+        Array::push(touched, name)
+      }
+      let mut i = 0
+      while i < Array::length(new_names) {
+        if bsearch_leftmost(e.added, Array::get(new_names, i)) >= 0 {
+          for op in String::split(Array::get(new_ops, i), "\n") {
+            Array::push(touched, op)
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      true
+    }
+  }
+}
+
+/// Does this build's struct table keep the harvest's? Every struct the
+/// harvest had must be there with the same fields, in the same relative
+/// order (a field access tries the structs holding the field in table
+/// order). A struct this build added is tolerated only when none of its
+/// fields is a field of a harvest struct: a field access or a bare record
+/// literal in an unchanged body names only fields those structs have, so it
+/// cannot reach the new one. An added struct's name goes into `touched`.
+export fn lc_structs_agree(old_names: Array[String], old_fields: Array[String], new_names: Array[String], new_fields: Array[String], touched: Array[String]) -> Bool {
+  let e = lc_src_edit_of(old_names, new_names, Array::length(new_names))
+  if Array::length(old_names) == 0 {
+    for name in new_names {
+      Array::push(touched, name)
+    }
+    Array::length(old_fields) == 0
+  } else if !e.ok || Array::length(e.removed) > 0 {
+    false
+  } else {
+    let mut ok = true
+    let mut last = 0 - 1
+    let old_field_names: Array[String] = []
+    let mut o = 0
+    while ok && o < Array::length(old_names) {
+      let n = Array::get(e.o2n, o)
+      if n <= last || Array::get(old_fields, o) != Array::get(new_fields, n) {
+        ok = false
+      } else {
+        last = n
+        for f in String::split(Array::get(old_fields, o), "\n") {
+          Array::push(old_field_names, f)
+        }
+      }
+      o = o + 1
+    }
+    let known = sorted_names_of(old_field_names)
+    let mut i = 0
+    while ok && i < Array::length(new_names) {
+      if bsearch_leftmost(e.added, Array::get(new_names, i)) >= 0 {
+        for f in String::split(Array::get(new_fields, i), "\n") {
+          if f != "" && bsearch_leftmost(known, f) >= 0 {
+            ok = false
+          } else {
+            ()
+          }
+        }
+        Array::push(touched, Array::get(new_names, i))
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+/// Harvest exception tag -> this build's, for tags `[0, 4 + old effects]`:
+/// the three fixed tags stay, a declared effect's `3 + i` follows its name
+/// (-1 for a removed one), and the tags past the effects (the unknown-op
+/// fallback and the control tag) move by how much the effect count moved.
+export fn lc_tag_map(old_names: Array[String], new_names: Array[String]) -> Array[Int] {
+  let old_n = Array::length(old_names)
+  let new_n = Array::length(new_names)
+  let out = lc_fresh_int_array()
+  let mut t = 0
+  while t < 3 {
+    Array::push(out, t)
+    t = t + 1
+  }
+  for name in old_names {
+    let mut at = 0 - 1
+    let mut j = 0
+    while at < 0 && j < new_n {
+      if Array::get(new_names, j) == name {
+        at = j
+      } else {
+        j = j + 1
+      }
+    }
+    Array::push(out, if at >= 0 {
+      3 + at
+    } else {
+      0 - 1
+    })
+  }
+  let mut x = 0
+  while x < 2 {
+    Array::push(out, 3 + new_n + x)
+    x = x + 1
+  }
+  if old_n + 5 != Array::length(out) {
+    lc_fresh_int_array()
+  } else {
+    out
+  }
+}
+
+/// Harvest thunk position -> this build's, by name; -1 for a removed thunk.
+/// Thunk `k`'s memo globals are `base + 2k` and `base + 2k + 1`.
+export fn lc_thunk_map(old_names: Array[String], new_names: Array[String]) -> Array[Int] {
+  let out = lc_fresh_int_array()
+  for name in old_names {
+    let mut at = 0 - 1
+    let mut j = 0
+    while at < 0 && j < Array::length(new_names) {
+      if Array::get(new_names, j) == name {
+        at = j
+      } else {
+        j = j + 1
+      }
+    }
+    Array::push(out, at)
+  }
+  out
+}
+
+/// The first constructor tag that can move: user types start at
+/// `type_index` 2, and the tags below are the built-in fallbacks.
+export let lc_first_user_tag: Int = 2<<16
+
+/// Harvest constructor tag -> this build's, through the constructor names
+/// that held it: `(old tags sorted, new tags aligned)`. A tag whose names
+/// now disagree, one of whose names is gone, or one a `withheld` name held
+/// (a changed type's, `lc_types_agree`), maps to -1. A tag below
+/// `lc_first_user_tag` is not in the map; it never moves.
+export struct LcCtorTagMap {
+  old_tags: Array[Int];
+  new_tags: Array[Int];
+  identity: Bool
+}
+
+export fn lc_ctor_tag_map(old_names: Array[String], old_tags: Array[Int], new_names: Array[String], new_tags: Array[Int], withheld: Array[String]) -> LcCtorTagMap {
+  let held = sorted_names_of(withheld)
+  let new_sorted = sort_perm_by_names(new_names)
+  let ns: Array[String] = []
+  let nt: Array[Int] = []
+  for p in new_sorted {
+    Array::push(ns, Array::get(new_names, p))
+    Array::push(nt, Array::get(new_tags, p))
+  }
+  let olds = lc_fresh_int_array()
+  let news = lc_fresh_int_array()
+  let mut identity = true
+  let mut i = 0
+  while i < Array::length(old_names) && i < Array::length(old_tags) {
+    let t = Array::get(old_tags, i)
+    if t >= lc_first_user_tag {
+      let at = if bsearch_leftmost(held, Array::get(old_names, i)) >= 0 {
+        0 - 1
+      } else {
+        bsearch_leftmost(ns, Array::get(old_names, i))
+      }
+      let n = if at >= 0 {
+        Array::get(nt, at)
+      } else {
+        0 - 1
+      }
+      if n != t {
+        identity = false
+      } else {
+        ()
+      }
+      // Insert by old tag; a second name holding the same tag must agree.
+      let mut k = 0
+      let mut found = 0 - 1
+      while found < 0 && k < Array::length(olds) {
+        if Array::get(olds, k) == t {
+          found = k
+        } else {
+          k = k + 1
+        }
+      }
+      if found >= 0 {
+        if Array::get(news, found) != n {
+          Array::set(news, found, 0 - 1)
+        } else {
+          ()
+        }
+      } else {
+        Array::push(olds, t)
+        Array::push(news, n)
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  LcCtorTagMap::{ old_tags: olds, new_tags: news, identity: identity }
+}
+
+/// Is `map` the identity?
+export fn lc_map_is_identity(map: Array[Int]) -> Bool {
+  let mut same = true
+  let mut i = 0
+  while same && i < Array::length(map) {
+    if Array::get(map, i) != i {
+      same = false
+    } else {
+      i = i + 1
+    }
+  }
+  same
+}
+
+/// The harvest's lambda plan, in the harvest's index space: its source
+/// functions' lambda counts by value, no lambdas in the pads up to its own
+/// capacity, and this build's synthesized region (which the global guard
+/// has shown is the harvest's). The last element is the total.
+export fn lc_old_lambda_plan(old_counts: Array[Int], old_capacity: Int, capacity: Int, num_user_funcs: Int, new_bases: Array[Int], new_count: Int) -> Array[Int] {
+  let out = lc_fresh_int_array()
+  let mut acc = 0
+  for c in old_counts {
+    Array::push(out, acc)
+    acc = acc + c
+  }
+  let mut p = Array::length(old_counts)
+  while p < old_capacity {
+    Array::push(out, acc)
+    p = p + 1
+  }
+  // The synthesized region, at the harvest's capacity.
+  let mut y = capacity
+  while y < num_user_funcs {
+    Array::push(out, acc)
+    let hi = if y + 1 < num_user_funcs {
+      Array::get(new_bases, y + 1)
+    } else {
+      new_count
+    }
+    acc = acc + (hi - Array::get(new_bases, y))
+    y = y + 1
+  }
+  Array::push(out, acc)
+  out
+}
+
+/// Each function's lambda count, from its plan.
+export fn lc_lambda_counts(bases: Array[Int], count: Int, lo: Int, hi: Int) -> Array[Int] {
+  let out = lc_fresh_int_array()
+  let mut i = lo
+  while i < hi && i < Array::length(bases) {
+    let next = if i + 1 < Array::length(bases) {
+      Array::get(bases, i + 1)
+    } else {
+      count
+    }
+    Array::push(out, next - Array::get(bases, i))
+    i = i + 1
+  }
+  out
+}
+
+/// The part of a name after its last `::` -- `T::A` is `A` -- or the name.
+fn lc_name_tail(name: String) -> String {
+  let parts = String::split(name, "::")
+  Array::get(parts, Array::length(parts) - 1)
+}
+
+/// The names a mention check matches: exact spellings, and for the
+/// constructor-like ones (`extra`) their tails too, because a pattern or a
+/// construction may spell `A` where the table holds `T::A`, or the reverse.
+/// Over-matching only recompiles a body.
+struct LcMentionSet {
+  exact: Array[String];
+  tails: Array[String]
+}
+
+fn lc_mentioned(m: LcMentionSet, name: String) -> Bool {
+  bsearch_leftmost(m.exact, name) >= 0 || bsearch_leftmost(m.tails, lc_name_tail(name)) >= 0
+}
+
+fn lc_pat_mentions(p: Pat, m: LcMentionSet) -> Bool {
+  match p {
+    PCtor(name, args) => {
+      let mut hit = lc_mentioned(m, name)
+      let mut i = 0
+      while !hit && i < Array::length(args) {
+        hit = lc_pat_mentions(Array::get(args, i), m)
+        i = i + 1
+      }
+      hit
+    }
+    PStruct(name, fields) => {
+      let mut hit = lc_mentioned(m, name)
+      let mut i = 0
+      while !hit && i < Array::length(fields) {
+        let (_, sub) = Array::get(fields, i)
+        hit = lc_pat_mentions(sub, m)
+        i = i + 1
+      }
+      hit
+    }
+    PTuple(items) => {
+      let mut hit = false
+      let mut i = 0
+      while !hit && i < Array::length(items) {
+        hit = lc_pat_mentions(Array::get(items, i), m)
+        i = i + 1
+      }
+      hit
+    }
+    POr(l, r) => lc_pat_mentions(l, m) || lc_pat_mentions(r, m),
+    _ => false
+  }
+}
+
+fn lc_arms_mention(arms: Array[(Pat, Expr)], m: LcMentionSet) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while !hit && i < Array::length(arms) {
+    let (p, _) = Array::get(arms, i)
+    hit = lc_pat_mentions(p, m)
+    i = i + 1
+  }
+  hit
+}
+
+/// Does `e` spell a name in `m` -- as an identifier, a pattern's
+/// constructor or struct, or a record literal's struct? A pattern is where
+/// a match spells the constructors it lowers.
+fn lc_mentions_any(e: Expr, m: LcMentionSet) -> Bool {
+  let here = match e {
+    EIdent(n, _) => lc_mentioned(m, n),
+    EMatch(_, arms) => lc_arms_mention(arms, m),
+    EHandle(_, arms) => lc_arms_mention(arms, m),
+    ERecord(name, _, _) => lc_mentioned(m, name),
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    match e {
+      EIdent(_, _) => false,
+      _ => {
+        let kids = expr_children(e)
+        let mut hit = false
+        let mut i = 0
+        while !hit && i < Array::length(kids) {
+          hit = lc_mentions_any(Array::get(kids, i), m)
+          i = i + 1
+        }
+        hit
+      }
+    }
+  }
+}
+
+/// Per user function, 1 when its cached body may still be replayed under
+/// `e`: it never spells a changed name -- a function's, or one of
+/// `extra_touched` (an added, changed or removed type, its constructors, an
+/// effect's ops, a struct) -- not as a call or a pattern, not as a captured
+/// local that a new global of the same spelling would stop the capture of,
+/// or that a removed one would start it. That an entry above the change was
+/// moved into this build's index space is `lc_src_edit_reindex`'s part; one
+/// it could not move is not in the cache to find.
+export fn lc_src_edit_replayable(e: LcSrcEdit, extra_touched: Array[String], bodies: Array[Expr], num_user_funcs: Int) -> Array[Int] {
+  let out = lc_fresh_int_array_of_len(num_user_funcs, 1)
+  let all: Array[String] = []
+  for name in e.touched {
+    Array::push(all, name)
+  }
+  for name in extra_touched {
+    Array::push(all, name)
+  }
+  let touched = sorted_names_of(all)
+  let tails: Array[String] = []
+  for name in extra_touched {
+    Array::push(tails, lc_name_tail(name))
+  }
+  let m = LcMentionSet::{ exact: touched, tails: sorted_names_of(tails) }
+  if Array::length(touched) > 0 {
+    let mut bi = 0
+    while bi < num_user_funcs {
+      if lc_mentions_any(Array::get(bodies, bi), m) {
+        Array::set(out, bi, 0)
+      } else {
+        ()
+      }
+      bi = bi + 1
+    }
+  } else {
+    ()
+  }
+  out
+}

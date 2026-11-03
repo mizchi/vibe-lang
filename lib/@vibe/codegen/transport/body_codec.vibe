@@ -49,6 +49,21 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     fn_fold_sigs: array_empty(),
     guard_fold_names: array_empty(),
     guard_fold_sigs: array_empty(),
+    guard_str_pool: array_empty(),
+    guard_src_names: array_empty(),
+    guard_src_rows: array_empty(),
+    guard_src_lambdas: array_empty(),
+    guard_layout_global: array_empty(),
+    guard_type_names: array_empty(),
+    guard_type_rows: array_empty(),
+    guard_effect_names: array_empty(),
+    guard_effect_rows: array_empty(),
+    guard_struct_names: array_empty(),
+    guard_struct_fields: array_empty(),
+    guard_thunk_names: array_empty(),
+    guard_ctor_names: array_empty(),
+    guard_ctor_tags: array_empty(),
+    relocated: array_empty(),
     collect: [1]
   }
 }
@@ -65,7 +80,7 @@ export fn codegen_body_cache_discard() -> CodegenBodyCache {
 
 //# CodegenBodyCache codec (#2388 step 3)
 
-// Length-prefixed binary layout, "VBC7" magic. Every integer is LEB128 of
+// Length-prefixed binary layout, "VBC15" magic. Every integer is LEB128 of
 // (value + 1), so -1 (a recording site with no statement) round-trips and
 // any other negative -- which no field legitimately holds -- fails loudly at
 // encode time instead of corrupting the stream. Deserialize is fail-safe:
@@ -172,7 +187,7 @@ export fn codegen_body_cache_to_bytes(_ cache: CodegenBodyCache) -> Bytes with E
   buf
 }
 
-/// Append the VBC7 stream for `cache` to `buf`, which may already hold a
+/// Append the VBC15 stream for `cache` to `buf`, which may already hold a
 /// header. The persisted artifact writes its file table first and the stream
 /// after it; encoding into a separate buffer and appending cost one more copy
 /// of the whole cache on every store (#2818).
@@ -194,7 +209,18 @@ export fn codegen_body_cache_write_to(buf: Bytes, cache: CodegenBodyCache) -> Un
   // '6' -> '7': per-entry constant-Bool fold signatures and the compile's
   // fold table (#2818). A '6' artifact has no signatures, so reading it as
   // "nothing was folded" would replay folded bodies unchecked.
-  Bytes::push(buf, value = '7')
+  // '7' -> '8': the harvest's string pool (#2669), which a string reference
+  // is relocated through. A '7' artifact's string addresses could not be
+  // checked against anything.
+  // '8' -> '9': the harvest's source-region function names (#2669).
+  // '9' -> 'A': per-function rows, lambda counts and the global layout guard
+  // a source edit is compared on (#2669).
+  // 'A' -> 'B': the constructor table by type (#2669).
+  // 'B' -> 'C': the declared effects by name (#2669).
+  // 'C' -> 'D': the struct table by value (#2669).
+  // 'D' -> 'E': the thunks in memo-global order (#2669).
+  // 'E' -> 'F': the constructor table by value, for tag relocation (#2669).
+  Bytes::push(buf, value = 'F')
   bcc_push_int_array(buf = buf, xs = cache.fn_indices)
   bcc_push_string_array(buf = buf, xs = cache.fn_names)
   bcc_push_int_array(buf = buf, xs = cache.fn_files)
@@ -233,9 +259,23 @@ export fn codegen_body_cache_write_to(buf: Bytes, cache: CodegenBodyCache) -> Un
   bcc_push_string_array(buf = buf, xs = cache.fn_fold_sigs)
   bcc_push_string_array(buf = buf, xs = cache.guard_fold_names)
   bcc_push_string_array(buf = buf, xs = cache.guard_fold_sigs)
+  bcc_push_string_array(buf = buf, xs = cache.guard_str_pool)
+  bcc_push_string_array(buf = buf, xs = cache.guard_src_names)
+  bcc_push_zigzag_int_array(buf = buf, xs = cache.guard_src_rows)
+  bcc_push_int_array(buf = buf, xs = cache.guard_src_lambdas)
+  bcc_push_zigzag_int_array(buf = buf, xs = cache.guard_layout_global)
+  bcc_push_string_array(buf = buf, xs = cache.guard_type_names)
+  bcc_push_zigzag_int_array(buf = buf, xs = cache.guard_type_rows)
+  bcc_push_string_array(buf = buf, xs = cache.guard_effect_names)
+  bcc_push_zigzag_int_array(buf = buf, xs = cache.guard_effect_rows)
+  bcc_push_string_array(buf = buf, xs = cache.guard_struct_names)
+  bcc_push_string_array(buf = buf, xs = cache.guard_struct_fields)
+  bcc_push_string_array(buf = buf, xs = cache.guard_thunk_names)
+  bcc_push_string_array(buf = buf, xs = cache.guard_ctor_names)
+  bcc_push_int_array(buf = buf, xs = cache.guard_ctor_tags)
 }
 
-/// Encode the cache with the same VBC7 wire format as the compatibility function.
+/// Encode the cache with the same VBC15 wire format as the compatibility function.
 export fn CodegenBodyCache::codegen_body_cache_to_bytes(_ cache: CodegenBodyCache) -> Bytes with Exception {
   codegen_body_cache_to_bytes(cache)
 }
@@ -431,14 +471,14 @@ export fn codegen_body_cache_from_bytes(_ b: Bytes) -> Option[CodegenBodyCache] 
   codegen_body_cache_from_bytes_with_string_copy(b = b, copy = bcc_copy_string)
 }
 
-/// Decode VBC7 with an owned raw-byte string copier. Each callback receives
+/// Decode VBC15 with an owned raw-byte string copier. Each callback receives
 /// a checked span; it must copy every byte, including NUL and invalid UTF-8,
 /// without retaining a view of the mutable input. Wire validation stays here.
 export fn codegen_body_cache_from_bytes_with_string_copy(b: Bytes, copy: (Bytes, Int, Int) -> String) -> Option[CodegenBodyCache] {
   bcc_decode_from(b = b, start = 0, copy = copy)
 }
 
-/// Decode a VBC7 stream that starts at `start` inside `b` and runs to its end,
+/// Decode a VBC15 stream that starts at `start` inside `b` and runs to its end,
 /// without first copying it out. The persisted artifact wraps the stream in a
 /// header and a file table; slicing the stream out cost a second copy of the
 /// whole cache on every warm build (#2818).
@@ -447,7 +487,7 @@ export fn codegen_body_cache_from_bytes_at(b: Bytes, start: Int) -> Option[Codeg
 }
 
 fn bcc_decode_from(b: Bytes, start: Int, copy: (Bytes, Int, Int) -> String) -> Option[CodegenBodyCache] {
-  if start < 0 || Bytes::length(b) < start + 4 || Bytes::get(b, at = start) != 'V' || Bytes::get(b, at = start + 1) != 'B' || Bytes::get(b, at = start + 2) != 'C' || Bytes::get(b, at = start + 3) != '7' {
+  if start < 0 || Bytes::length(b) < start + 4 || Bytes::get(b, at = start) != 'V' || Bytes::get(b, at = start + 1) != 'B' || Bytes::get(b, at = start + 2) != 'C' || Bytes::get(b, at = start + 3) != 'F' {
     None
   } else {
     let out = codegen_body_cache_new()
@@ -635,6 +675,76 @@ fn bcc_decode_from(b: Bytes, start: Int, copy: (Bytes, Int, Int) -> String) -> O
     }
     if p >= 0 {
       p = bcc_read_string_array(b = b, pos = p, out = out.guard_fold_sigs, copy = copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_str_pool, copy = copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_src_names, copy = copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_zigzag_int_array(b = b, pos = p, out = out.guard_src_rows)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b = b, pos = p, out = out.guard_src_lambdas)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_zigzag_int_array(b = b, pos = p, out = out.guard_layout_global)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_type_names, copy = copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_zigzag_int_array(b = b, pos = p, out = out.guard_type_rows)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_effect_names, copy = copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_zigzag_int_array(b = b, pos = p, out = out.guard_effect_rows)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_struct_names, copy = copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_struct_fields, copy = copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_thunk_names, copy = copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_ctor_names, copy = copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b = b, pos = p, out = out.guard_ctor_tags)
     } else {
       ()
     }

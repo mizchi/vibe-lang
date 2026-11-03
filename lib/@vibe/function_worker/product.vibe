@@ -5,7 +5,15 @@ import @vibe/compiler/codegen/common_base {
   CodegenBodyCache
 }
 import @vibe/compiler/codegen/reloc {
-  blind_kind_fn_value, blind_kind_table_slot_i32, blind_owner_is_lambda, blind_owner_lambda_index
+  blind_kind_ctor_tag,
+  blind_kind_fn_value,
+  blind_kind_pairs_slot,
+  blind_kind_str_fat,
+  blind_kind_str_ref,
+  blind_kind_table_slot_i32,
+  blind_owner_is_lambda,
+  blind_owner_lambda_index,
+  blind_slot_paired_count
 }
 import @vibe/core {
   struct MutMap
@@ -138,24 +146,36 @@ export fn validate_function_product_plan(plan: FunctionProductPlan, c: CodegenBo
     fw_require(ok = fw_body_ok(Array::get(c.lam_bodies, at = i)) && Array::get(c.lam_param_counts, at = i) >= 0 && Array::get(c.lam_meta_i32, at = i) >= 0 && Array::get(c.lam_meta_i64, at = i) >= 0, message = "invalid lambda body or locals")
     i = i + 1
   }
+  // Function-value records pair one-for-one, in order, with the funcref
+  // slots; a string reference (#2669) has no slot, so the two columns are
+  // walked with separate cursors.
   let ns = Array::length(c.slot_owner)
-  fw_require(ok = Array::length(c.slot_values) == ns && Array::length(c.blind_fn) == ns && Array::length(c.blind_body) == ns && Array::length(c.blind_offsets) == ns && Array::length(c.blind_kinds) == ns && Array::length(c.blind_syms) == ns, message = "slot and blind-reference columns differ")
+  let nb = Array::length(c.blind_fn)
+  fw_require(ok = Array::length(c.slot_values) == ns && Array::length(c.blind_body) == nb && Array::length(c.blind_offsets) == nb && Array::length(c.blind_kinds) == nb && Array::length(c.blind_syms) == nb && blind_slot_paired_count(kinds = c.blind_kinds, lo = 0) == ns, message = "slot and blind-reference columns differ")
   let allowed: MutMap[String, Int] = MutMap::new_string()
   for slot in plan.allowed_slots {
     MutMap::set(allowed, k = Int::to_string(slot), v = 1)
   }
+  let mut si = 0
   i = 0
-  while i < ns {
-    let owner = Array::get(c.slot_owner, at = i)
-    let slot = Array::get(c.slot_values, at = i)
-    fw_require(ok = owner >= lo && owner < hi && Array::get(c.blind_fn, at = i) == owner && Array::get(c.blind_syms, at = i) == slot, message = "slot and blind-reference ownership differ")
-    let known = slot >= plan.lambda_slot_base && slot - plan.lambda_slot_base < plan.lambda_count
-    fw_require(ok = slot >= 0 && (known || (match MutMap::get(allowed, k = Int::to_string(slot)) {
-      Some(_) => true,
-      None => false
-    })), message = "unknown function-table slot")
+  while i < nb {
+    let owner = Array::get(c.blind_fn, at = i)
     let kind = Array::get(c.blind_kinds, at = i)
-    fw_require(ok = kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32, message = "unknown blind-reference kind")
+    fw_require(ok = owner >= lo && owner < hi, message = "slot and blind-reference ownership differ")
+    if blind_kind_pairs_slot(kind = kind) {
+      let slot = Array::get(c.slot_values, at = si)
+      fw_require(ok = Array::get(c.slot_owner, at = si) == owner && Array::get(c.blind_syms, at = i) == slot, message = "slot and blind-reference ownership differ")
+      let known = slot >= plan.lambda_slot_base && slot - plan.lambda_slot_base < plan.lambda_count
+      fw_require(ok = slot >= 0 && (known || (match MutMap::get(allowed, k = Int::to_string(slot)) {
+        Some(_) => true,
+        None => false
+      })), message = "unknown function-table slot")
+      si = si + 1
+    } else {
+      // Strings (103 / 104) name a pool slot; a constructor tag (105) is
+      // the tag value itself. Neither pairs with a funcref slot.
+      fw_require(ok = (kind == blind_kind_str_ref || kind == blind_kind_str_fat || kind == blind_kind_ctor_tag) && Array::get(c.blind_syms, at = i) >= 0, message = "unknown blind-reference kind")
+    }
     let body_owner = Array::get(c.blind_body, at = i)
     let body = if blind_owner_is_lambda(owner = body_owner) {
       let li = blind_owner_lambda_index(owner = body_owner)
@@ -168,6 +188,7 @@ export fn validate_function_product_plan(plan: FunctionProductPlan, c: CodegenBo
     }
     let at = Array::get(c.blind_offsets, at = i)
     fw_require(ok = at >= 0 && at < Bytes::length(body), message = "blind-reference offset outside body")
+    fw_require(ok = kind != blind_kind_ctor_tag || Bytes::get(body, at = at) == 65, message = "constructor-tag reference is not on an i32.const")
     i = i + 1
   }
   let nm = Array::length(c.lm_owner)
