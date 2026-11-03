@@ -1158,6 +1158,10 @@ them:
   functions, taking one as a value and building closures: both the upstream
   and the downstream bodies reused, byte-equal. Also with a closure in the
   added helper, which moves every later lambda.
+- **Width bands:** 200 functions moved by two, so call targets cross the
+  one-byte uleb boundary and function-value constants the one-byte sleb one.
+  The row is byte-equal. With every width-changing edit skipped, this row and
+  no other fails, so the crossing really happens.
 
 The added function must be called. One that nothing reaches is removed before
 code generation, and the edit never reaches the body cache at all.
