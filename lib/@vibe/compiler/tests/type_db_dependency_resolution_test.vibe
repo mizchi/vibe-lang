@@ -1,0 +1,55 @@
+import ../type_db.vibe {
+  TypeDb, db_new, db_set_source, db_typecheck
+}
+
+// #1872 boundary 3: the in-memory type db resolves a module's dependencies
+// by the same rules as the filesystem lane -- the production header core
+// (`module_header_source`), probing the db's own sources through
+// `memory_module_header` (#3702) -- instead of taking an import's plain-file
+// spelling on trust.
+
+fn with_sources(files: Array[(String, String)]) -> TypeDb {
+  let mut db = db_new()
+  for entry in files {
+    let (path, source) = entry
+    db = db_set_source(db, path, source)
+  }
+  db
+}
+
+fn typecheck_error(db: TypeDb, path: String) -> String with Env {
+  handle {
+    let _ = db_typecheck(db, path)
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+test "a directory import resolves to the package the db holds" {
+  // `./pkg` spells `pkg.vibe` first; the db holds the package at
+  // `pkg/index.vibe`, which is what the filesystem lane probes to. The type
+  // error below is only visible once `greet` comes from that package: a
+  // module checked against a dependency the db does not hold has no `greet`
+  // type to disagree with.
+  let db = with_sources([
+    ("main.vibe", "import ./pkg { greet }\nexport fn run() -> String { greet() }\n"),
+    ("pkg/impl.vibe", "export fn greet() -> Int { 1 }\n"),
+    ("pkg/index.vibe", "export ./impl.vibe { greet }\n")
+  ])
+  inspect(typecheck_error(db, "main.vibe"), "return type mismatch: expected String, got Int [@off=51]")
+}
+
+test "a directory import that resolves typechecks" {
+  let db = with_sources([
+    ("main.vibe", "import ./pkg { greet }\nexport fn run() -> Int { greet() }\n"),
+    ("pkg/impl.vibe", "export fn greet() -> Int { 1 }\n"),
+    ("pkg/index.vibe", "export ./impl.vibe { greet }\n")
+  ])
+  assert_eq(typecheck_error(db, "main.vibe"), "")
+}
+
+test "a missing import is reported at its import site" {
+  let db = with_sources([
+    ("main.vibe", "import ./gone.vibe { g }\nexport fn run() -> Int { g() }\n")
+  ])
+  inspect(typecheck_error(db, "main.vibe"), "line 1:8: cannot resolve import './gone.vibe' (resolved to gone.vibe)")
+}
