@@ -1,0 +1,55 @@
+# Reserved-page KPI baseline (#3647, part of #2509) -- read by
+# scripts/reserved_pages_kpi.mjs (`pkf run kpi-reserved-pages`, and CI's
+# "Reserved-page KPI gate" step).
+#
+# What the numbers are. `pages` is reserved linear memory at the end of one
+# cold compile of the probe (memory.buffer.byteLength / 64 KiB, the runner's
+# `[wasm-memory] pages=`): the quantity an isolate limit counts, and the GATED
+# number. `heap_ptr_bytes` is the bump arena's high-water, recorded as a
+# diagnostic of how much of that memory the arena reached; it is NOT gated.
+# Neither is reachable RC bytes, nor the host's peak RSS -- live-block and
+# fragmentation accounting is #2509's remaining scope.
+#
+# Each probe is a package test file. The KPI reads its closure from the
+# loader (`vibe deps`), reports the file count, line count and a content
+# hash, and compiles it through scripts/selfcompile_kpi.sh (isolated cold
+# VIBE_BUILD_CACHE_DIR) --trials times; the gate reads the largest page count.
+#
+# Two thresholds, deliberately separate:
+#   tolerance_percent  REGRESSION gate: a probe fails when its pages exceed
+#                      its row by more than this. Same +10% as the heap gate
+#                      (bench/perf/heap_baseline.txt).
+#   target_pages       the DESIGN target of #2494, 128 MiB = 2048 pages for
+#                      one package. Reported as target=over|under and never
+#                      gated: today the parser closure is over it, and the
+#                      KPI's job is to show that number move. How much host
+#                      headroom the target must leave (the JavaScript heap
+#                      has to fit beside the guest memory) is still an open
+#                      acceptance question.
+#
+# Rebaseline (either direction -- ratchet DOWN after a memory win so the gate
+# protects it), on a stage2 built from the same commit as the change:
+#   pkf run kpi-reserved-pages -- --report-only --print-baseline
+#   # copy the printed `case` rows over the rows below
+# and note old -> new, and why, in a dated entry here and in the PR.
+#
+# 2026-11-03 first baseline. Stage2 of main bcb306a
+# (sha256 97f7007ba605a6b0aeb0a9976641070a52548b9466f4c3252b791e57716c4a44),
+# clean source tree. Two sessions, 5 + 3 cold trials per probe: pages and
+# heap_ptr were byte-identical in all eight. Closures as `vibe deps` resolves
+# them on that tree:
+#   json       8 files,  1,220 lines  324 pages  (21.2 MB)  heap_ptr  15.6 MB
+#   optimizer  6 files,  8,145 lines  729 pages  (47.8 MB)  heap_ptr  34.4 MB
+#   parser    18 files, 18,020 lines 2458 pages (161.1 MB)  heap_ptr 115.5 MB
+# The parser closure is 410 pages (26.9 MB) over target_pages. The #2509
+# table (2026-09-04: 21 / 72 / 161 MB) is historical; the optimizer closure
+# has changed shape since (2 files / 9.6k lines then). No probe lies between
+# the optimizer and parser closures yet; one is added only when a stable
+# corpus of that size exists. Raw trials:
+# bench/perf/analysis/reserved-pages-kpi-2026-11-03.json.
+
+tolerance_percent 10
+target_pages 2048
+case lib/@vibe/json/json_test.vibe 324 15579592
+case lib/@vibe/optimizer/wasm_opt_test.vibe 729 34388872
+case lib/@vibe/parser/parser_smoke_test.vibe 2458 115460544
