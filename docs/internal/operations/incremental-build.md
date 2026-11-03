@@ -1249,6 +1249,12 @@ field counts and Double fields, but not the moving half of the tag.
   body names only fields the harvest's structs have, so it cannot reach the
   new one. A declared effect brings such a struct, which is how this rule
   was found.
+- A changed struct declines, swapped fields included. Unlike an enum, a
+  struct's layout reaches a body that spells neither the struct nor its
+  fields. `let p = mk(); p == q` compares fields positionally by the
+  inferred aggregate shape and by each field's Double-ness, and neither the
+  mention check nor the tag map sees that. Tolerating it needs a per-body
+  record, written at emission, of which struct layouts codegen consulted.
 - The used-builtin set collects constructor names too, so under an edit it is
   compared with this build's constructor names taken out of both sides.
 
