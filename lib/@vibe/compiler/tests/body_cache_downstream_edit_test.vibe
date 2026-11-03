@@ -110,12 +110,17 @@ fn dse_probe(label: String, literal: String) -> String with Env + Exception + Fs
 
 test "a downstream literal edit stays byte-exact under the body cache" {
   // CONTROL: the same literal. Nothing moved, so the cache must replay --
-  // without this row, the other could pass by replaying nothing ever.
+  // without this row, the others could pass by replaying nothing ever.
   inspect(dse_probe("same-literal", "m"), content = "same-literal offered=5 replayed=true equal=true")
   // A longer plain literal downstream moves the runtime's divide-by-zero
-  // message, whose address `dse_mod` in the unchanged first file embeds. The
-  // layout guard drifts, so nothing is replayed and the build is fresh. Before
-  // the fix this row read `offered=4 equal=false`: the prefix was replayed
-  // with the old address.
-  inspect(dse_probe("new-literal", "a longer downstream literal"), content = "new-literal offered=4 replayed=false equal=true")
+  // message, whose address `dse_mod` in the unchanged first file embeds, and
+  // the interpolation part `dse_render` embeds. The unchanged bodies are
+  // replayed and their recorded string references relocated onto the new
+  // pool (#2669), so the build reuses them AND answers what a fresh compile
+  // answers. Before relocation, a drifted pool replayed nothing; before that,
+  // this row read `offered=4 equal=false`, the prefix replayed with the old
+  // addresses.
+  inspect(dse_probe("new-literal", "a longer downstream literal"), content = "new-literal offered=4 replayed=true equal=true")
+  // A literal that SHRINKS the pool moves the same addresses the other way.
+  inspect(dse_probe("shorter-literal", ""), content = "shorter-literal offered=4 replayed=true equal=true")
 }

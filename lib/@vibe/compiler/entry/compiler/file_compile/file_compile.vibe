@@ -846,8 +846,14 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
 /// its own slot on every edit -- comparing it elementwise would refuse every
 /// merge there is. That comparison happens where the file list is, at the
 /// decode, and drops exactly the files whose classification moved.
+///
+/// #2669: the string pool is compared too. A body replayed across a pool
+/// drift is RELOCATED and re-recorded into the fresh harvest, so after such a
+/// build the harvest is complete on its own; merging the consumed cache back
+/// would carry its entries' old addresses into an artifact stamped with the
+/// new pool.
 fn body_cache_guards_equal(a: CodegenBodyCache, b: CodegenBodyCache) -> Bool {
-  body_cache_guards_equal_except_layout(a, b) && bcc_int_lists_equal(a.guard_layout, b.guard_layout)
+  body_cache_guards_equal_except_layout(a, b) && bcc_int_lists_equal(a.guard_layout, b.guard_layout) && bcc_string_lists_equal(a.guard_str_pool, b.guard_str_pool)
 }
 
 /// #2669 step 2b: the guard set MINUS `guard_layout`, which is exactly the
@@ -1310,7 +1316,9 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
     } else {
       ()
     }
-    Array::push(counts_out, Array::length(cache_out.fn_indices))
+    // #2669: a relocated replay is re-recorded, so it is in the harvest
+    // without having been compiled.
+    Array::push(counts_out, Array::length(cache_out.fn_indices) - Array::length(cache_out.relocated))
     bytes
   }
 }

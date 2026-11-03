@@ -39,7 +39,7 @@ import @vibe/compiler/codegen/builtin_bodies {
 }
 
 import @vibe/compiler/codegen/reloc {
-  blind_kind_fn_value, blind_kind_table_slot_i32, blind_owner_lambda_index, blind_owner_pending
+  blind_kind_fn_value, blind_kind_str_fat, blind_kind_str_ref, blind_kind_table_slot_i32, blind_owner_lambda_index, blind_owner_pending
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -401,6 +401,21 @@ fn lc_fresh_type_expr_array() -> Array[TypeExpr] {
 /// `i32.const` immediates are both signed; reading one unsigned would agree
 /// exactly where small slot numbers live and disagree everywhere a check
 /// would matter, so the decode has to sign-extend.
+/// The position just past the LEB128 starting at `p`.
+fn lc_sleb_end(body: Bytes, p: Int) -> Int {
+  let mut i = p
+  let mut done = false
+  while !done && i < Bytes::length(body) {
+    if (Bytes::get(body, i)&128) == 0 {
+      done = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  i
+}
+
 fn lc_read_sleb(body: Bytes, p: Int) -> Int with Exception {
   let n = Bytes::length(body)
   let mut acc = 0
@@ -439,7 +454,7 @@ fn lc_read_sleb(body: Bytes, p: Int) -> Int with Exception {
 /// offsets are relative to that body's instruction stream, which is what
 /// `bodies` holds (the locals header is prepended later, at code-section
 /// assembly).
-export fn lc_verify_blind_relocs(bodies: Array[Bytes], num_generated: Int, lambda_ci_base: Int, owners: Array[Int], offsets: Array[Int], kinds: Array[Int], syms: Array[Int]) -> Unit with Exception {
+export fn lc_verify_blind_relocs(bodies: Array[Bytes], num_generated: Int, lambda_ci_base: Int, owners: Array[Int], offsets: Array[Int], kinds: Array[Int], syms: Array[Int], str_strs: Array[String], str_offsets: Array[Int]) -> Unit with Exception {
   let n = Array::length(owners)
   let mut k = 0
   while k < n {
@@ -477,7 +492,13 @@ export fn lc_verify_blind_relocs(bodies: Array[Bytes], num_generated: Int, lambd
     let kind = Array::get(kinds, k)
     let sym = Array::get(syms, k)
     let opcode = Bytes::get(body, off)
-    let want_op = if kind == blind_kind_fn_value {
+    let is_str = kind == blind_kind_str_ref || kind == blind_kind_str_fat
+    if is_str && (sym < 0 || sym >= Array::length(str_offsets) || sym >= Array::length(str_strs)) {
+      throw(String::concat("blind reloc: a string reference names no pool slot: ", __to_string(sym)))
+    } else {
+      ()
+    }
+    let want_op = if kind == blind_kind_fn_value || is_str {
       66
     } else if kind == blind_kind_table_slot_i32 {
       65
@@ -486,6 +507,10 @@ export fn lc_verify_blind_relocs(bodies: Array[Bytes], num_generated: Int, lambd
     }
     let want_val = if kind == blind_kind_fn_value {
       (sym<<2)|2
+    } else if kind == blind_kind_str_ref {
+      Array::get(str_offsets, sym)
+    } else if kind == blind_kind_str_fat {
+      (Array::get(str_offsets, sym)<<32)|String::length(Array::get(str_strs, sym))
     } else {
       sym
     }
@@ -497,6 +522,21 @@ export fn lc_verify_blind_relocs(bodies: Array[Bytes], num_generated: Int, lambd
     let got = lc_read_sleb(body, off + 1)
     if got != want_val {
       throw(String::concat("blind reloc: constant at code index ", String::concat(__to_string(ci), String::concat(" offset ", String::concat(__to_string(off), String::concat(" decodes to ", String::concat(__to_string(got), String::concat(", recorded ", __to_string(want_val)))))))))
+    } else {
+      ()
+    }
+    // The str_ref form is five instructions, and the length rides the fourth:
+    // check the whole shape, so a relocation that rewrites the offset cannot
+    // be pointed at an `i64.const` that merely happens to hold it.
+    if kind == blind_kind_str_ref {
+      let len = String::length(Array::get(str_strs, sym))
+      let p32 = lc_sleb_end(body, off + 1)
+      let ok = p32 + 3 < Bytes::length(body) && Bytes::get(body, p32) == 66 && Bytes::get(body, p32 + 1) == 32 && Bytes::get(body, p32 + 2) == 134 && Bytes::get(body, p32 + 3) == 66 && lc_read_sleb(body, p32 + 4) == len && lc_sleb_end(body, p32 + 4) < Bytes::length(body) && Bytes::get(body, lc_sleb_end(body, p32 + 4)) == 132
+      if !ok {
+        throw(String::concat("blind reloc: the string reference at code index ", String::concat(__to_string(ci), String::concat(" offset ", String::concat(__to_string(off), " is not `i64.const off; i64.const 32; i64.shl; i64.const len; i64.or`")))))
+      } else {
+        ()
+      }
     } else {
       ()
     }

@@ -125,7 +125,7 @@ import @vibe/compiler/codegen/builtin_bodies {
 }
 
 import @vibe/compiler/codegen/reloc {
-  blind_kind_fn_value
+  blind_kind_fn_value, blind_slot_paired_count
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -242,6 +242,10 @@ import ./linked_compile_linkedhostplan.vibe {
 
 import ./linked_builtin_bodies.vibe {
   lc_build_builtin_bodies
+}
+
+import ./linked_body_cache_strings.vibe {
+  lc_relocate_replayed_strings, lc_string_remap
 }
 
 import ./linked_emission_layout.vibe {
@@ -461,6 +465,14 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
       Array::push(body_cache_out.guard_layout, Array::get(guard_layout_now, __glc2))
       __glc2 = __glc2 + 1
     }
+    // #2669: the pool the string references in this harvest name, by slot.
+    // Not part of `guard_layout`: a replaying compile relocates them through
+    // it instead of declining (linked_body_cache_strings.vibe).
+    let mut __gsp = 0
+    while __gsp < src_str_base {
+      Array::push(body_cache_out.guard_str_pool, Array::get(str_strs, __gsp))
+      __gsp = __gsp + 1
+    }
   } else {
     ()
   }
@@ -499,11 +511,30 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   // there. Measured on the compiler's own CLI closure: one string edited in
   // `cli/commands/pkg.vibe` gave a warm build 15 stale addresses, and
   // `tests/body_cache_downstream_edit_test.vibe` pins the same shape small.
-  let body_cache_use = if lc_wide_ok {
+  let body_cache_wide = if lc_wide_ok {
     body_cache_in
   } else {
     codegen_body_cache_new()
   }
+  // #2669: string references. A harvest from the same pool replays as it is;
+  // one from another pool replays through `str_remap` when every string it
+  // names is in this compile's pool, and not at all otherwise. The re-fed
+  // compile (`pin_region_capacity < 0`) lowers the array an earlier compile
+  // in this process already laid out, so its pool IS the harvest's.
+  let str_remap_opt = if pin_region_capacity < 0 || Array::length(body_cache_wide.fn_indices) == 0 {
+    Some(lc_fresh_int_array())
+  } else {
+    lc_string_remap(body_cache_wide.guard_str_pool, str_table_shared, src_str_base, body_cache_wide.blind_kinds, body_cache_wide.blind_syms)
+  }
+  let body_cache_use = match str_remap_opt {
+    Some(_) => body_cache_wide,
+    None => codegen_body_cache_new()
+  }
+  let str_remap = match str_remap_opt {
+    Some(remap) => remap,
+    None => lc_fresh_int_array()
+  }
+  let str_relocating = Array::length(str_remap) > 0
   // #2388 step 3 follow-up: function index -> cache slot, built once. The
   // lookup below runs per function, and scanning the whole cache each time is
   // quadratic in the function count -- ~8.9 million comparisons to answer the
@@ -626,6 +657,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
       if __cache_hit >= 0 {
         let __r_slot_lo = Array::length(table_slots_used)
         let __r_blind_lo = Array::length(blind_owners)
+        let __r_lm_lo = Array::length(fn_linemap.offsets)
         match body_cache_rows {
           Some(index) => codegen_body_cache_replay_indexed(index, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, fn_linemap, bi),
           None => codegen_body_cache_replay(body_cache_use, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, fn_linemap, bi)
@@ -636,10 +668,29 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
         // pair -- which is the whole claim of carrying them at all. Before
         // the cache held these, a replayed function contributed slots and no
         // references and this check could not exist.
-        let __r_blind_grew = Array::length(blind_owners) - __r_blind_lo
+        // Only the function-value records pair with a slot; a string
+        // reference (#2669) has none.
+        let __r_blind_grew = blind_slot_paired_count(blind_kinds, __r_blind_lo)
         let __r_slots_grew = Array::length(table_slots_used) - __r_slot_lo
         if __r_blind_grew != __r_slots_grew {
           throw(String::concat("blind reloc: replayed function ", String::concat(__to_string(bi), String::concat(" restored ", String::concat(__to_string(__r_slots_grew), String::concat(" funcref slots but ", String::concat(__to_string(__r_blind_grew), " blind references -- the cache entry is not a complete pair")))))))
+        } else {
+          ()
+        }
+        // #2669: the cached body names the harvest's string addresses; move
+        // them onto this compile's pool, then record the relocated function
+        // as this compile's own harvest -- the refreshed artifact must hold
+        // the NEW addresses, and a replayed function is otherwise never
+        // re-recorded.
+        if str_relocating {
+          let __r_lam_hi = if bi + 1 < num_user_funcs {
+            Array::get(lambda_bases, bi + 1)
+          } else {
+            lambda_base_acc
+          }
+          lc_relocate_replayed_strings(str_remap, str_table_shared, bi, bodies, lt_w, Array::get(lambda_bases, bi), __r_lam_hi, blind_owners, blind_offsets, blind_kinds, blind_syms, __r_blind_lo, fn_linemap, __r_lm_lo)
+          Array::push(body_cache_out.relocated, bi)
+          codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), lc_fn_origin_lookup(lc_fn_file_of, Array::get(fn_names_list, bi)), lc_fn_origin_lookup(lc_fn_stmt_of, Array::get(fn_names_list, bi)), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), __r_lam_hi, table_slots_used, __r_slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __r_blind_lo, Array::length(blind_owners), fn_linemap, __r_lm_lo)
         } else {
           ()
         }

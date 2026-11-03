@@ -1,6 +1,9 @@
 import @vibe/compiler/codegen/common_base {
   LambdaTable
 }
+import @vibe/compiler/codegen/reloc {
+  blind_slot_paired_count
+}
 import ./linked_compile_lc_rename_sleep_calls.vibe {
   lc_fresh_bytes_array, lc_fresh_int_array, lc_fresh_string_matrix
 }
@@ -47,13 +50,18 @@ export fn lc_commit_function_effects(src: LinkedFunctionEffects, dst: LambdaTabl
   let at = Array::length(dst.bodies)
   let m = Array::length(src.slots)
   let previous = Array::length(slots)
+  let k = Array::length(src.blind_owners)
+  let previous_blind = Array::length(blind_owners)
   if dst.base != 0 || src.lambdas.base < 0 || src.lambdas.base != at || planned_end - src.lambdas.base != n || Array::length(src.lambda_next) != 1 {
     throw("function effects: lambda range does not match canonical publication order")
   } else if Array::get(src.lambda_next, 0) != planned_end {
     throw("function effects: lambda cursor did not reach the planned end")
   } else if Array::length(src.lambdas.param_counts) != n || Array::length(src.lambdas.captures) != n || Array::length(src.lambdas.meta_i32) != n || Array::length(src.lambdas.meta_i64) != n || Array::length(dst.param_counts) != at || Array::length(dst.captures) != at || Array::length(dst.meta_i32) != at || Array::length(dst.meta_i64) != at {
     throw("function effects: lambda metadata arrays are not aligned")
-  } else if Array::length(src.blind_owners) != m || Array::length(src.blind_offsets) != m || Array::length(src.blind_kinds) != m || Array::length(src.blind_syms) != m || Array::length(blind_owners) != previous || Array::length(blind_offsets) != previous || Array::length(blind_kinds) != previous || Array::length(blind_syms) != previous {
+  } else if Array::length(src.blind_offsets) != k || Array::length(src.blind_kinds) != k || Array::length(src.blind_syms) != k || Array::length(blind_offsets) != previous_blind || Array::length(blind_kinds) != previous_blind || Array::length(blind_syms) != previous_blind || blind_slot_paired_count(src.blind_kinds, 0) != m || blind_slot_paired_count(blind_kinds, 0) != previous {
+    // Every function-value record pairs with one funcref slot; a string
+    // reference (#2669) pairs with none, so the two logs no longer share an
+    // index and are published separately.
     throw("function effects: funcref slots and blind references are not aligned")
   } else {
     ()
@@ -70,10 +78,14 @@ export fn lc_commit_function_effects(src: LinkedFunctionEffects, dst: LambdaTabl
   let mut j = 0
   while j < m {
     Array::push(slots, Array::get(src.slots, j))
-    Array::push(blind_owners, Array::get(src.blind_owners, j))
-    Array::push(blind_offsets, Array::get(src.blind_offsets, j))
-    Array::push(blind_kinds, Array::get(src.blind_kinds, j))
-    Array::push(blind_syms, Array::get(src.blind_syms, j))
     j = j + 1
+  }
+  let mut b = 0
+  while b < k {
+    Array::push(blind_owners, Array::get(src.blind_owners, b))
+    Array::push(blind_offsets, Array::get(src.blind_offsets, b))
+    Array::push(blind_kinds, Array::get(src.blind_kinds, b))
+    Array::push(blind_syms, Array::get(src.blind_syms, b))
+    b = b + 1
   }
 }

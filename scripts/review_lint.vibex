@@ -699,6 +699,61 @@ fn migration_write_self_test(vibe: String) -> Int with Fs + Process + Stderr {
   }
 }
 
+// #2669: a function body's string ADDRESS moves whenever a literal is added
+// anywhere in the program, because the pool is laid out over the whole
+// program. The body cache relocates the addresses the emitter RECORDED
+// (`emit_str_ref_slot` / `emit_str_fat_slot`), so one emitted from a raw pool
+// read in the linear lane's body code would replay pointing at another
+// string, with nothing to notice it.
+fn string_address_patterns() -> Array[String] {
+  ["$(t:exp).str_table.offsets", "str_table_fat_or_zero($(t:exp), $(s:exp))"]
+}
+
+fn is_linear_body_codegen(path: String) -> Bool {
+  String::contains(path, "/compiler/codegen/expr/") && is_production_compiler_path(path)
+}
+
+fn report_string_address_hits(raw: String, emit: Bool) -> Int with Stderr {
+  let hits = Json::parse(raw)
+  let mut count = 0
+  let mut i = 0
+  while i < Json::length(hits) {
+    let hit = Json::index(hits, i)
+    let path = Json::string(Json::field(hit, "path"))
+    if is_linear_body_codegen(path) {
+      count = count + 1
+      if emit {
+        report_finding(path, Double::to_int(Json::number(Json::field(hit, "line"))), Json::string(Json::field(hit, "text")), "emit a pooled string through emit_str_ref_slot(buf, ctx, slot) or emit_str_fat_slot(buf, ctx, slot): the body cache relocates only the string addresses those record")
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+fn string_address_self_test(vibe: String) -> Int with Fs + Process + Stderr {
+  let path = "_build/_review_lint_strings/compiler/codegen/expr/emit.vibe"
+  Fs::write_file(path, "fn emit(buf: Bytes, ctx: C, i: Int) -> Unit { emit_str_ref(buf, Array::get(ctx.str_table.offsets, i), 3) }")
+  let (bad_code, bad) = run_grep(vibe, path, Array::get(string_address_patterns(), 0))
+  if bad_code != 0 || report_string_address_hits(bad, false) != 1 {
+    Stderr::write_stream("review-lint self-test: a raw pool address in body code was not reported\n")
+    1
+  } else {
+    Fs::write_file(path, "// ctx.str_table.offsets\nfn emit(buf: Bytes, ctx: C, i: Int) -> Unit { emit_str_ref_slot(buf, ctx, i) }")
+    let (good_code, good) = run_grep(vibe, path, Array::get(string_address_patterns(), 0))
+    if good_code != 0 || report_string_address_hits(good, false) != 0 {
+      Stderr::write_stream("review-lint self-test: a recorded string emission or a comment was reported\n")
+      1
+    } else {
+      0
+    }
+  }
+}
+
 // Exercise the real AST matcher: a future broken pattern cannot be certified
 // by a hand-written JSON result that happens to look like a match.
 fn function_header_bind_self_test(vibe: String) -> Int with Fs + Process + Stderr {
@@ -742,6 +797,12 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
   Array::push(patterns, "match module_typed_lowering_offsets_for_path($(path:exp)) { Some($(rows:id)) => restore_resolved_callees($(stmts:exp), $(rows:id)), _ => () }")
   Array::push(patterns, function_header_bind_pattern())
   Array::push(patterns, migration_write_pattern())
+  let string_patterns = string_address_patterns()
+  let mut sp = 0
+  while sp < Array::length(string_patterns) {
+    Array::push(patterns, Array::get(string_patterns, sp))
+    sp = sp + 1
+  }
   let mut i = 0
   let mut violations = 0
   let mut failed = false
@@ -788,8 +849,10 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
         violations = violations + report_path_only_callee_restore_hits(output, true)
       } else if i < 10 + Array::length(effect_patterns) {
         violations = violations + report_function_header_bind_hits(output, true)
-      } else {
+      } else if i < 11 + Array::length(effect_patterns) {
         violations = violations + report_migration_write_hits(output, true)
+      } else {
+        violations = violations + report_string_address_hits(output, true)
       }
     }
     i = i + 1
@@ -865,6 +928,7 @@ fn gc_write_bare_probe(path: String, with_marker: Bool) -> Unit with Fs {
 fn self_test(vibe: String) -> Int with Fs + Process + Stderr {
   let header_code = function_header_bind_self_test(vibe)
   let migration_code = migration_write_self_test(vibe)
+  let string_code = string_address_self_test(vibe)
   let stale_restore = "[{\"path\":\"/repo/lib/@vibe/compiler/runtime/parse.vibe\",\"line\":1,\"text\":\"match path_only { Some(rows) => restore_resolved_callees(stmts, rows), None => () }\"}]"
   let restore_test = "[{\"path\":\"/repo/lib/@vibe/compiler/tests/restore_test.vibe\",\"line\":1,\"text\":\"stale restore regression\"}]"
   let raw = "[{\"path\":\"/repo/lib/@vibe/compiler/normalize/pass.vibe\",\"line\":1,\"text\":\"ELet(\\\"__tmp\\\", e, e, -1)\",\"captures\":{\"name\":{\"text\":\"\\\"__tmp\\\"\"}}}]"
@@ -887,6 +951,8 @@ fn self_test(vibe: String) -> Int with Fs + Process + Stderr {
     header_code
   } else if migration_code != 0 {
     migration_code
+  } else if string_code != 0 {
+    string_code
   } else if report_path_only_callee_restore_hits(stale_restore, false) != 1 || report_path_only_callee_restore_hits("[]", false) != 0 || report_path_only_callee_restore_hits(restore_test, false) != 0 {
     Stderr::write_stream("review-lint self-test: a path-only callee restore was missed or a regression fixture was flagged\n")
     1

@@ -1053,7 +1053,37 @@ by reading:
   `verify` passed it because it replays only when every guard holds.
   `tests/body_cache_downstream_edit_test.vibe` pins that shape on a two-file
   program. The cost is reuse on exactly the edits the guard rejects (a new
-  literal, closure or declaration), which now recompile in full.
+  closure or declaration), which recompile in full. A string edit is no
+  longer one of them; the next section says why.
+
+##### String references are relocated, not pinned (#2669)
+
+The string pool used to be a `guard_layout` slot, so any literal edit
+anywhere declined the whole cache. It is a relocation class now:
+
+- **Recorded at emission.** The linear lane's body code emits a pooled string
+  only through `emit_str_ref_slot` (`i64.const off; i64.const 32; i64.shl;
+  i64.const len; i64.or`, kind 103) and `emit_str_fat_slot` (one `i64.const
+  (off << 32) | len`, kind 104), which record the pool slot in the same
+  blind-reference log the function values use. `scripts/review_lint.vibex`
+  refuses a raw pool read in `codegen/expr/`, and `lc_verify_blind_relocs`
+  checks every record against its bytes, including the whole five-instruction
+  shape, on every compile. Only the function-value kinds pair with a funcref
+  slot; the pairing checks count those alone.
+- **Carried with the pool.** The harvest stores its pool below
+  `src_str_base` (`guard_str_pool`, VBC8).
+- **Relocated at replay.** When the pools differ, every recorded slot is
+  mapped through its STRING to this compile's slot (`lc_string_remap`); a
+  string the new pool lacks declines the whole cache. Each replayed body is
+  rebuilt with the new constants (a different LEB width changes its length),
+  every other offset into it moves with it, and the relocated function is
+  re-recorded so the refreshed artifact holds the new addresses. The merge of
+  the consumed cache is skipped when the pools differ, because its entries
+  hold the old ones.
+
+`tests/body_cache_downstream_edit_test.vibe` is the acceptance row: a longer
+or shorter literal downstream replays the unchanged file's bodies and answers
+what a fresh compile answers.
 
 Measured on the compiler's own closure (`codegen_lexer_test.vibe`, 196 files,
 5263 functions), `scripts/body_cache_reuse.sh`, one temperature per process
