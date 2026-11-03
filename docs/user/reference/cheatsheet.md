@@ -1495,10 +1495,10 @@ let nv = {                            // destructure also works in fn/block body
 }
 
 // Map (#960: the `map { ... }` literal was removed; use the Map:: API).
-// The builtin map is STRING-KEYED; its type is spelled `StringMap[V]`
-// (no import needed). `Map[K, V]` with a concrete non-String key is
-// rejected where it is written -- generic keys are #2334. For another
-// key type today, use `MutMap[K, V]` from `@vibe/core` (below).
+// The builtin map takes a `String`, `Int`, `Char` or `Bool` key (#2334);
+// `StringMap[V]` is `Map[String, V]` (no import needed). Any other key is
+// rejected -- written or inferred. For another key type, use `MutMap[K, V]`
+// from `@vibe/core` (below).
 let m = Map::from_pairs([("key", 42)])
 let e = Map::new()                    // empty map
 let mv = m["key"]
@@ -2976,7 +2976,11 @@ lookup (no hash index yet). Three places do not take one yet, and each says so
 at build time: the wasm-gc backend; a linked build with no type check of its
 text; and a generic function whose type parameter is a map's key, called at
 that key (its one lowered body compares keys as Strings) -- write the function
-for `Map[Int, V]`, or key the map by `String`. `MapBuilder` is String-keyed.
+for `Map[Int, V]`, or key the map by `String`. Such a function is also refused
+when it is exported or passed as a value, where its calls cannot be checked;
+call it directly, inside its own module. A key the checker only inferred
+(`Map::set(Map::new(), 1.5, v)`) is refused like a written one.
+`MapBuilder` is String-keyed.
 
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,

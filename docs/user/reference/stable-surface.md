@@ -418,9 +418,10 @@ The stable symbols listed under "Key Builtins" in the
   `Int`, `Char` and `Bool` keys compile and run on the default backend since
   #2334, but the wasm-gc backend and a generic function keyed by its type
   parameter still refuse them, so the surface may still grow. Any other
-  concrete key is rejected where it is written. A key that is a type parameter
-  is unaffected for `String` instantiations — generic code over `Map[K, V]`
-  keeps compiling.
+  concrete key is rejected, whether written or inferred. A function keyed by
+  its type parameter compiles for `String` instantiations when it is called
+  directly inside its own module; exporting it, or passing it as a value, is
+  refused.
   **Another key type is already available today**: `MutMap[K, V]` from
   `@vibe/core` is the generic open-addressing map, and it is what the
   rejection points at (`MutMap::new_int()` / `new_string()`, or

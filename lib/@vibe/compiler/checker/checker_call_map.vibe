@@ -12,7 +12,20 @@
 // resolves to a scalar. The desugar rewrites exactly those calls.
 
 import @vibe/compiler/core {
-  Expr, Subst, Type, TypeDef, TypeEnv, TypeExpr, env_lookup, fresh_var, subst_apply, typed_map_key_row_head, typed_map_scalar_key_verdict
+  Expr,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_lookup,
+  expr_children,
+  fresh_var,
+  subst_apply,
+  type_to_string,
+  typed_map_key_row_head,
+  typed_map_scalar_key_verdict
 }
 
 import @vibe/ast {
@@ -36,7 +49,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 }
 
 import @vibe/compiler/checker/diagnostics {
-  off_marker_len
+  off_marker, off_marker_len
 }
 
 // One (call offset, key type) per keyed map call the current program check
@@ -324,7 +337,8 @@ fn map_scalar_key_name(s: Subst, ty: Type) -> String {
 /// signature, whose variables are not the ones the body was checked with, so
 /// each call is also read through the callee's checked scheme in `env`: that
 /// scheme's variables are the body's, and its shape is the instantiation's.
-export fn check_map_key_formal_instantiations(env: TypeEnv, s: Subst, errors: Array[String]) -> Unit {
+export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, s: Subst, errors: Array[String]) -> Unit {
+  check_map_key_site_kinds(s, errors)
   let keyed: MutMap[Int, Int] = MutMap::new_int()
   let mut any = false
   for key in map_key_site_types {
@@ -403,6 +417,152 @@ export fn check_map_key_formal_instantiations(env: TypeEnv, s: Subst, errors: Ar
         }
       }
     }
+    check_map_key_formal_escapes(stmts, env, keyed, errors)
+  } else {
+    ()
+  }
+}
+
+/// #2334: a keyed call whose key the checker only INFERRED to a type the
+/// builtin map has no implementation for (`Map::set(Map::new(), 1.5, v)`) --
+/// the refusal an annotation gets. A key still a variable is a type
+/// parameter, which `check_map_key_formal_instantiations` answers.
+fn check_map_key_site_kinds(s: Subst, errors: Array[String]) -> Unit {
+  let reported: MutMap[Int, Int] = MutMap::new_int()
+  let mut i = 0
+  while i < Array::length(map_key_site_offsets) {
+    let off = Array::get(map_key_site_offsets, i)
+    let key = subst_apply(s, Array::get(map_key_site_types, i))
+    let supported = match key {
+      CtString => true,
+      CtInt => true,
+      CtChar => true,
+      CtBool => true,
+      CtVar(_) => true,
+      CtUnknown => true,
+      _ => false
+    }
+    if !supported && !MutMap::has(reported, off) {
+      MutMap::set(reported, off, 1)
+      let parts = [
+        "the builtin map takes `String`, `Int`, `Char` or `Bool` keys, so a `",
+        type_to_string(key),
+        "` key has no implementation -- key the map by one of those, or use `MutMap[K, V]` from `@vibe/core` for other keys",
+        off_marker(off)
+      ]
+      Array::push(errors, String::join(parts, ""))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// The top-level functions whose checked scheme quantifies a variable that
+/// keys a map, with whether each is exported.
+fn map_key_formal_fns(stmts: Array[Stmt], env: TypeEnv, keyed: MutMap[Int, Int], out: MutMap[String, Int], order: Array[String]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SLet(exported, _, name, _, EFn(_, _, _, _, _, _)) => match env_lookup(env, name) {
+        Some(CtForAll(vars, _, _)) => {
+          let mut hit = false
+          for id in vars {
+            if MutMap::has(keyed, id) {
+              hit = true
+            } else {
+              ()
+            }
+          }
+          if hit {
+            Array::push(order, name)
+            MutMap::set(out, name, if exported {
+              1
+            } else {
+              0
+            })
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      SModule(_, _, children) => map_key_formal_fns(children, env, keyed, out, order),
+      _ => ()
+    }
+  }
+  ()
+}
+
+fn map_key_formal_value_refs(e: Expr, fns: MutMap[String, Int], reported: MutMap[Int, Int], errors: Array[String]) -> Unit {
+  match e {
+    // A direct call: its instantiation is read in this module.
+    ECall(EIdent(_, _), args, _, _) => for a in args {
+      map_key_formal_value_refs(a, fns, reported, errors)
+    },
+    EIdent(name, off) => if MutMap::has(fns, name) && !MutMap::has(reported, off) {
+      MutMap::set(reported, off, 1)
+      let parts = [
+        "`",
+        name,
+        "` uses a type parameter as a `Map` key, so only a direct call can be checked for a scalar key -- call it inside a lambda, `(m, k) -> ",
+        name,
+        "(m, k)`, instead of passing it as a value (#2334)",
+        off_marker_len(off, String::length(name))
+      ]
+      Array::push(errors, String::join(parts, ""))
+    } else {
+      ()
+    },
+    _ => for c in expr_children(e) {
+      map_key_formal_value_refs(c, fns, reported, errors)
+    }
+  }
+  ()
+}
+
+fn map_key_formal_value_refs_stmts(stmts: Array[Stmt], fns: MutMap[String, Int], reported: MutMap[Int, Int], errors: Array[String]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, body) => map_key_formal_value_refs(body, fns, reported, errors),
+      SLetMut(_, _, body) => map_key_formal_value_refs(body, fns, reported, errors),
+      SLetPat(_, body) => map_key_formal_value_refs(body, fns, reported, errors),
+      STest(_, body) => map_key_formal_value_refs(body, fns, reported, errors),
+      SBench(_, body) => map_key_formal_value_refs(body, fns, reported, errors),
+      SExample(_, body) => map_key_formal_value_refs(body, fns, reported, errors),
+      SExpr(body) => map_key_formal_value_refs(body, fns, reported, errors),
+      SModule(_, _, children) => map_key_formal_value_refs_stmts(children, fns, reported, errors),
+      _ => ()
+    }
+  }
+  ()
+}
+
+/// #2334: the two ways a call of a function that keys a map by its type
+/// parameter escapes the instantiation check above. Another module's call is
+/// checked against the exported signature alone, which does not say that the
+/// parameter keys a map; and a function passed as a value is instantiated
+/// where nothing records it. Both are refused, at the export and at the value.
+fn check_map_key_formal_escapes(stmts: Array[Stmt], env: TypeEnv, keyed: MutMap[Int, Int], errors: Array[String]) -> Unit {
+  let fns: MutMap[String, Int] = MutMap::new_string()
+  let order: Array[String] = []
+  map_key_formal_fns(stmts, env, keyed, fns, order)
+  if Array::length(order) > 0 {
+    for name in order {
+      if MutMap::get(fns, name) is Some(1) {
+        let parts = [
+          "`",
+          name,
+          "` is exported and uses a type parameter as a `Map` key; a call from another module cannot be checked for a scalar key, which this body would compare as a `String` -- give the parameter a concrete key type, or keep `",
+          name,
+          "` private to this module (#2334)"
+        ]
+        Array::push(errors, String::join(parts, ""))
+      } else {
+        ()
+      }
+    }
+    let reported: MutMap[Int, Int] = MutMap::new_int()
+    map_key_formal_value_refs_stmts(stmts, fns, reported, errors)
   } else {
     ()
   }
