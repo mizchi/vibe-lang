@@ -141,8 +141,15 @@ gc_cs -= throw_only_found
 gc_future_throw_expected = {
     "await", "Future::ready", "Future::pending", "Future::resolve"
 }
+# Argument labels preserve the guard's meaning. Keep each parameter name and
+# value explicit, so a different context or callee still invalidates it.
+gc_user_defined_guard = (
+    r'gc_name_is_user_defined\(\s*(?:ctx\s*=\s*)?ctx\s*,\s*'
+    r'(?:local_names\s*=\s*)?local_names\s*,\s*(?:name\s*=\s*)?fname\s*\)'
+)
 future_throw_match = re.search(
-    r'if\s+\(((?:fname == "(?:await|Future::ready|Future::pending|Future::resolve)"(?:\s*\|\|\s*)?)+)\)\s*&&\s*!gc_name_is_user_defined\(ctx, local_names, fname\)\s*\{\s*throw\("compile with the linear or RC backend:',
+    r'if\s+\(((?:fname == "(?:await|Future::ready|Future::pending|Future::resolve)"(?:\s*\|\|\s*)?)+)\)\s*&&\s*!'
+    + gc_user_defined_guard + r'\s*\{\s*throw\("compile with the linear or RC backend:',
     gc_text)
 future_throw_found = (set(re.findall(r'fname == "([^"]+)"', future_throw_match.group(1)))
                       if future_throw_match else set())

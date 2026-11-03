@@ -11,10 +11,18 @@
 //
 //   bash scripts/vibe_run.sh scripts/check_import_reservation.vibex
 
-import @vibe/builtin { String::index_of_from }
-import @vibe/console { eprintln }
-import @vibe/process { exit }
-import @vibex/shell { env_or, sort_str }
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/console {
+  eprintln
+}
+import @vibe/process {
+  exit
+}
+import @vibex/shell {
+  env_or, sort_str
+}
 
 fn byte_at(s: String, i: Int) -> Int {
   String::char_code_at(s, i)
@@ -237,36 +245,6 @@ fn conditional_indices(text: String) -> Array[String] with Stderr + Process {
   out
 }
 
-/// Past `label = ` at `p` when the argument is written labeled, else `p`.
-fn skip_argument_label(text: String, p: Int) -> Int {
-  let n = String::length(text)
-  let mut q = p
-  while q < n && (is_ident_byte(byte_at(text, q))) {
-    q = q + 1
-  }
-  if q == p {
-    p
-  } else {
-    let mut r = q
-    while r < n && is_ws(byte_at(text, r)) {
-      r = r + 1
-    }
-    if r + 1 < n && byte_at(text, r) == 61 && byte_at(text, r + 1) != 61 {
-      let mut t = r + 1
-      while t < n && is_ws(byte_at(text, t)) {
-        t = t + 1
-      }
-      t
-    } else {
-      p
-    }
-  }
-}
-
-fn is_ident_byte(b: Int) -> Bool {
-  (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57) || b == 95
-}
-
 fn reserved_names(text: String) -> Array[String] with Stderr + Process {
   let out: Array[String] = []
   let marker = "Map::has_key(used_builtin_names,"
@@ -281,8 +259,25 @@ fn reserved_names(text: String) -> Array[String] with Stderr + Process {
       while p < n && is_ws(byte_at(text, p)) {
         p = p + 1
       }
-      // ADR-0120: the name may carry its label (`key = "Env::get"`).
-      p = skip_argument_label(text, p)
+      // The first Map argument is positional; the second is either a bare
+      // string or `key =` followed by that string. Other labels stay unread
+      // so a misspelled reservation cannot certify the mapped capability.
+      if p + 3 <= n && String::substring(text, p, p + 3) == "key" {
+        let mut eq = p + 3
+        while eq < n && is_ws(byte_at(text, eq)) {
+          eq = eq + 1
+        }
+        if eq < n && byte_at(text, eq) == 61 {
+          p = eq + 1
+          while p < n && is_ws(byte_at(text, p)) {
+            p = p + 1
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
       if p < n && byte_at(text, p) == 34 {
         let close = String::index_of_from(text, "\"", p + 1)
         if close > p {

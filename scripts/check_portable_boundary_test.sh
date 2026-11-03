@@ -113,13 +113,25 @@ else
 fi
 restore
 
+# A positional marker changes calling syntax, not the portable effect row.
+sed 's/^fn compile_source(_ source:/fn compile_source(source:/' "$contract" > "$contract.probe"
+mv "$contract.probe" "$contract"
+if cmp -s "$contract" "$scratch/pristine/$contract"; then
+  fail "positional-marker control did not change the contract"
+elif bash "$gate" >/dev/null 2>&1; then
+  pass "case: the portable signature is accepted with or without its positional marker"
+else
+  fail "removing the positional marker changed the portable-boundary verdict"
+fi
+restore
+
 # --- case 3: a boundary that gains an effect is rejected ---------------------
 #
 # The require_line half. `with Exception` becoming `with Fs` is the change this
 # gate exists to catch, and it is the half that had rotted: it was matching a
 # spelling no file in the tree had used for two ADRs.
 
-sed 's/^fn compile_source(_ source: String) -> Bytes with Exception$/fn compile_source(_ source: String) -> Bytes with Fs/' \
+sed -E 's/^(fn compile_source\((_ )?source: String\) -> Bytes with )Exception$/\1Fs/' \
   "$contract" > "$contract.probe"
 mv "$contract.probe" "$contract"
 if cmp -s "$contract" "$scratch/pristine/$contract"; then

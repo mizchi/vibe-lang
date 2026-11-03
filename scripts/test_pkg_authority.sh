@@ -48,6 +48,23 @@ authority_row() { # <sub> <row>
 }
 has() { case ",$1," in *",$2,"*) return 0 ;; *) return 1 ;; esac; }
 
+emitted_import_names() {
+  grep -Eho 'emit_name\((buf[[:space:]]*=[[:space:]]*)?import_content,[[:space:]]*(name[[:space:]]*=[[:space:]]*)?"[^"]*"\)' "$1" \
+    | sed 's/^[^"]*"//; s/".*$//' | sort -u | grep -vx 'vibe\|wasi_snapshot_preview1\|fd_write'
+}
+
+# Both call spellings name imports. A different buffer or parameter does not.
+cat > "$WORK/emitter-probe.vibe" <<'EOF'
+emit_name(import_content, "positional_probe")
+emit_name(buf = import_content, name = "named_probe")
+emit_name(buf = export_content, name = "wrong_buffer")
+emit_name(buf = import_content, other = "wrong_parameter")
+EOF
+probe_emitted="$(emitted_import_names "$WORK/emitter-probe.vibe")" \
+  || fail "the import-name extractor rejected its valid probes"
+[ "$probe_emitted" = $'named_probe\npositional_probe' ] \
+  || fail "the import-name extractor missed a call spelling or accepted the wrong buffer/parameter"
+
 # --- 1. the table knows every import ----------------------------------------
 known="$(authority_row spec known)"
 [ -n "$known" ] || fail "pkg authority names no known imports"
@@ -85,8 +102,8 @@ if unknown:
     print("  unknown: " + ", ".join(unknown), file=sys.stderr)
     sys.exit(1)
 PY
-emitted="$(grep -hoE 'emit_name\((buf = )?import_content, (name = )?"[^"]*"\)' lib/@vibe/compiler/codegen/wasi/linked_compile_module_sections.vibe \
-  | sed 's/.*"\([^"]*\)")$/\1/' | sort -u | grep -vx 'vibe\|wasi_snapshot_preview1\|fd_write')"
+emitted="$(emitted_import_names lib/@vibe/compiler/codegen/wasi/linked_compile_module_sections.vibe)" \
+  || fail "could not extract emitted import names (the emitter moved?)"
 [ -n "$emitted" ] || fail "found no emitted import names (the emitter moved?)"
 for f in $emitted; do
   has "$known" "$f" || fail "the compiler can emit vibe.$f, which the authority table does not know"

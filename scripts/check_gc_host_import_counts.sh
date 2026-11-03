@@ -54,7 +54,7 @@ else:
     hbo = int(m.group(1))
 
 # --- the vector header literal ---------------------------------------------
-m = re.search(r"bytebuf_push_vec_header\(imp_content,\s*(\d+)\)", src)
+m = re.search(r"bytebuf_push_vec_header\(\s*(?:buf\s*=\s*)?imp_content,\s*(?:count\s*=\s*)?(\d+)\s*\)", src)
 if not m:
     die("could not find `bytebuf_push_vec_header(imp_content, N)`. Update the gate.")
     vec = None

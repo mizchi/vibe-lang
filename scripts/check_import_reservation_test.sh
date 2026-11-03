@@ -47,12 +47,40 @@ checked="$(sed -n 's/^import-reservation: ok (\([0-9][0-9]*\) .*/\1/p' "$WORK/gr
 [ -n "$checked" ] || fail "the green run did not report how many spellings it checked"
 [ "$checked" -ge 10 ] || fail "the green run checked only $checked spellings; the parser has drifted"
 
+# Keep the real labeled source as a positive control. Exercise the older
+# positional spelling too; all mutation cases below use that equivalent copy.
+python3 - "$LINKED" "$WORK/positional_linked.vibe" "$WORK/wrong_label.vibe" <<'PY'
+import re, sys
+src, positional, wrong = sys.argv[1:]
+text = open(src).read()
+plain, count = re.subn(r'(Map::has_key\(used_builtin_names,\s*)key\s*=\s*', r'\1', text)
+assert count > 0, "expected labeled reservation predicates"
+open(positional, 'w').write(plain)
+bad, count = re.subn(
+    r'(Map::has_key\(used_builtin_names,\s*)key(\s*=\s*"Console::read_char")',
+    r'\1wrong_key\2', text, count=1)
+assert count == 1, "wrong-label mutation did not land"
+open(wrong, 'w').write(bad)
+PY
+[ $? -eq 0 ] || fail "could not build spelling controls"
+if ! VIBE_IMPORT_RESERVATION_LINKED="$WORK/positional_linked.vibe" run_gate >"$WORK/positional.log" 2>&1; then
+  cat "$WORK/positional.log" >&2
+  fail "positional reservation predicates were rejected"
+fi
+plain_checked="$(sed -n 's/^import-reservation: ok (\([0-9][0-9]*\) .*/\1/p' "$WORK/positional.log")"
+[ "$plain_checked" = "$checked" ] || fail "labeled and positional spellings checked different counts"
+if VIBE_IMPORT_RESERVATION_LINKED="$WORK/wrong_label.vibe" run_gate >"$WORK/wrong_label.log" 2>&1; then
+  fail "a reservation with the wrong label certified Console::read_char"
+fi
+grep -q 'Console::read_char' "$WORK/wrong_label.log" || fail "wrong-label failure did not name the missing capability"
+LINKED="$WORK/positional_linked.vibe"
+
 # --- mutate: drop the reservation clause, keep the mapping. -----------------
 python3 - "$LINKED" "$WORK/mutated_linked.vibe" <<'PY'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 s = open(src).read()
-clause = ' || Map::has_key(used_builtin_names, key = "Console::read_char")'
+clause = ' || Map::has_key(used_builtin_names, "Console::read_char")'
 if clause not in s:
     sys.stderr.write(
         "import-reservation-selftest: the mutation target is not present -- the "
@@ -70,7 +98,7 @@ if ! cmp -s "$LINKED" "$WORK/mutated_linked.vibe"; then :; else
 fi
 grep -q '"Console::read_char" =>' "$WORK/mutated_linked.vibe" \
   || fail "the mutation removed the MAPPING too; it must remove only the reservation"
-grep -q 'Map::has_key(used_builtin_names, key = "Console::read_char")' "$WORK/mutated_linked.vibe" \
+grep -q 'Map::has_key(used_builtin_names, "Console::read_char")' "$WORK/mutated_linked.vibe" \
   && fail "the reservation clause survived the mutation"
 
 # --- RED: the gate must fail, and must NAME the spelling. -------------------

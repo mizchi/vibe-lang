@@ -44,7 +44,7 @@ if which == "hbo":
     s = re.sub(r"(let hbo = if use_host \{\s*)(\d+)",
                lambda m: m.group(1) + str(int(m.group(2)) - 1), s, count=1)
 elif which == "vec":
-    s = re.sub(r"(bytebuf_push_vec_header\(imp_content,\s*)(\d+)",
+    s = re.sub(r"(bytebuf_push_vec_header\(\s*(?:buf\s*=\s*)?imp_content,\s*(?:count\s*=\s*)?)(\d+)",
                lambda m: m.group(1) + str(int(m.group(2)) - 1), s, count=1)
 elif which == "import":
     # Drop the LAST host_imports entry, as an edit that removes a builtin
@@ -53,6 +53,12 @@ elif which == "import":
 elif which == "dup":
     # Two host_defs entries claiming the same absolute import index.
     s = s.replace('("Fs::remove_tree", 1, 23, 0)', '("Fs::remove_tree", 1, 22, 0)', 1)
+elif which == "label":
+    s = re.sub(r"bytebuf_push_vec_header\(\s*(?:buf\s*=\s*)?imp_content,\s*(?:count\s*=\s*)?(\d+)\s*\)",
+               r"bytebuf_push_vec_header(buf = imp_content, wrong_count = \1)", s, count=1)
+elif which == "buffer":
+    s = re.sub(r"bytebuf_push_vec_header\(\s*(?:buf\s*=\s*)?imp_content,\s*(?:count\s*=\s*)?(\d+)\s*\)",
+               r"bytebuf_push_vec_header(buf = wrong_content, count = \1)", s, count=1)
 if s == before:
     sys.stderr.write(f"gc-host-import-counts-selftest: mutation '{which}' matched nothing\n")
     sys.exit(2)
@@ -76,6 +82,22 @@ run_case hbo    hbo    "hbo is"
 run_case vec    vec    "vector header"
 run_case import import "host_imports has"
 run_case dup    dup    "not 1..N"
+run_case label  label  "could not find"
+run_case buffer buffer "could not find"
+
+# The same import count must be read in both accepted call spellings.
+python3 scripts/source_files.py "$REAL" > "$WORK/positional.vibe"
+python3 - "$WORK/positional.vibe" <<'PY'
+import re, sys
+path = sys.argv[1]
+src = open(path, encoding="utf-8").read()
+src, count = re.subn(
+    r"bytebuf_push_vec_header\(\s*(?:buf\s*=\s*)?imp_content,\s*(?:count\s*=\s*)?(\d+)\s*\)",
+    r"bytebuf_push_vec_header(imp_content, \1)", src)
+assert count == 1, "expected exactly one import vector header"
+open(path, "w", encoding="utf-8").write(src)
+PY
+GC_HOST_IMPORT_COUNTS_SRC="$WORK/positional.vibe" bash "$GATE"
 
 rm -rf "$WORK"
-echo "gc-host-import-counts-selftest: ok (green on the tree; red on 4 mutations, each for its own reason)"
+echo "gc-host-import-counts-selftest: ok (green on labeled and positional calls; red on 6 mutations, each for its own reason)"

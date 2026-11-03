@@ -37,7 +37,7 @@ import ../type_db.vibe {
 /// `vibe check` run, over in-memory sources.
 fn diag_of(main_src: String, sources: Array[(String, String)]) -> String with Env {
   handle {
-    let _ = prepare_modules_cached(db_new(), "main.vibe", main_src, sources)
+    let _ = prepare_modules_cached(db = db_new(), main_path = "main.vibe", main_source = main_src, sources = sources)
     ""
   } with { Exception::Throw(msg) => msg }
 }
@@ -51,51 +51,58 @@ fn helper() -> String {
 }
 
 fn names_of(_ src: String) -> String with Exception {
-  String::join(collect_builtin_shadowing_names(parse_program(lex(src))), ",")
+  String::join(collect_builtin_shadowing_names(parse_program(lex(src))), sep = ",")
 }
 
 //# Tests
 
 test "#2378 a dependency's exported fn at a registry builtin's qualified name refuses the importer, edit first" {
   let dep = String::concat("export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
-  let msg = diag_of(caller(), [("dep.vibe", dep)])
-  inspect(String::contains(msg, "rename `String::index_of` in dep.vibe: it is a builtin"), content = "true")
-  inspect(String::contains(msg, "replaces that builtin for EVERY program that links that file"), content = "true")
+  let msg = diag_of(main_src = caller(), sources = [("dep.vibe", dep)])
+  inspect(String::contains(msg, needle = "rename `String::index_of` in dep.vibe: it is a builtin"), content = "true")
+  inspect(String::contains(msg, needle = "replaces that builtin for EVERY program that links that file"), content = "true")
   // (the FS lane prefixes the importer's path -- `fixtures/err_builtin_fn_shadowing.vibe: rename ...`,
   // pinned by tests/gates/late/run.sh; this in-memory lane throws the line bare)
 }
 
 test "#2378 a private fn and a bound lambda leak the same way and are refused the same way" {
   let private_fn = String::concat("fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
-  inspect(String::contains(diag_of(caller(), [("dep.vibe", private_fn)]), "rename `String::index_of` in dep.vibe"), content = "true")
+  inspect(String::contains(diag_of(main_src = caller(), sources = [
+    ("dep.vibe", private_fn)
+  ]), needle = "rename `String::index_of` in dep.vibe"), content = "true")
   let lambda = String::concat("export let String::index_of = (s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
-  inspect(String::contains(diag_of(caller(), [("dep.vibe", lambda)]), "rename `String::index_of` in dep.vibe"), content = "true")
+  inspect(String::contains(diag_of(main_src = caller(), sources = [
+    ("dep.vibe", lambda)
+  ]), needle = "rename `String::index_of` in dep.vibe"), content = "true")
 }
 
 test "#2378 the importer is refused through a facade that re-exports the dependency" {
   let dep = String::concat("export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
   let facade = "import ./dep.vibe { unrelated_helper }\nexport { unrelated_helper }\n"
   let main = "import ./facade.vibe { unrelated_helper }\n\nfn main() -> Int {\n  unrelated_helper()\n}\n"
-  let msg = diag_of(main, [("dep.vibe", dep), ("facade.vibe", facade)])
+  let msg = diag_of(main_src = main, sources = [
+    ("dep.vibe", dep),
+    ("facade.vibe", facade)
+  ])
   // main never imports dep.vibe itself; the facade's own check consumes
   // dep's environment and is the one refused
-  inspect(String::contains(msg, "rename `String::index_of` in dep.vibe"), content = "true")
+  inspect(String::contains(msg, needle = "rename `String::index_of` in dep.vibe"), content = "true")
 }
 
 test "#2378 what does not leak stays legal: alias, bare name, unowned qualified name, entry-file shadow" {
   // a `let` VALUE ALIAS at the qualified name (the lib/@vibe/fs/fs.vibe shape)
   let alias = String::concat("fn my_index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\nexport let String::index_of = my_index_of\n\n", helper())
-  inspect(diag_of(caller(), [("dep.vibe", alias)]), content = "")
+  inspect(diag_of(main_src = caller(), sources = [("dep.vibe", alias)]), content = "")
   // a bare name is namespaced per file by the export merge
   let bare = String::concat("export fn index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
-  inspect(diag_of(caller(), [("dep.vibe", bare)]), content = "")
+  inspect(diag_of(main_src = caller(), sources = [("dep.vibe", bare)]), content = "")
   // a qualified name the registry does not own
   let unowned = String::concat("export fn Widget::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
-  inspect(diag_of(caller(), [("dep.vibe", unowned)]), content = "")
+  inspect(diag_of(main_src = caller(), sources = [("dep.vibe", unowned)]), content = "")
   // the entry file's own shadow is explicit, and pinned by
   // fixtures/to_string_shadowed_builtin_test.vibe
   let entry = "fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\nfn main() -> Int {\n  String::index_of(\"hello world\", \"world\")\n}\n"
-  inspect(diag_of(entry, []), content = "")
+  inspect(diag_of(main_src = entry, sources = []), content = "")
 }
 
 test "#2378 a dependency's fn at a prelude-dispatched name is refused like a registry name (Codex review on #2708)" {
@@ -104,10 +111,12 @@ test "#2378 a dependency's fn at a prelude-dispatched name is refused like a reg
   // definition in the merged function table -- so a dependency's definition
   // would reach every importer exactly like `String::index_of` does.
   let dep = String::concat("export fn Double::to_string(d: Double) -> String {\n  \"shadow\"\n}\n\n", helper())
-  let msg = diag_of(caller(), [("dep.vibe", dep)])
-  inspect(String::contains(msg, "rename `Float64::to_string` in dep.vibe: it is a builtin"), content = "true")
+  let msg = diag_of(main_src = caller(), sources = [("dep.vibe", dep)])
+  inspect(String::contains(msg, needle = "rename `Float64::to_string` in dep.vibe: it is a builtin"), content = "true")
   let views = String::concat("fn String::unicode_length(s: String) -> Int {\n  42\n}\n\n", helper())
-  inspect(String::contains(diag_of(caller(), [("dep.vibe", views)]), "rename `String::unicode_length` in dep.vibe"), content = "true")
+  inspect(String::contains(diag_of(main_src = caller(), sources = [
+    ("dep.vibe", views)
+  ]), needle = "rename `String::unicode_length` in dep.vibe"), content = "true")
 }
 
 test "#2378 a method on a private local type is renamed with its type and is not a shadow (Codex review on #2708)" {
@@ -115,9 +124,11 @@ test "#2378 a method on a private local type is renamed with its type and is not
   // is replaced; an EXPORTED `Fs`, or a private method of an exported trait,
   // keeps the qualified spelling and IS a shadow.
   let private_type = String::concat("struct Fs {\n  root: String\n}\n\nfn Fs::exists(f: Fs) -> Bool {\n  true\n}\n\n", helper())
-  inspect(diag_of(caller(), [("dep.vibe", private_type)]), content = "")
+  inspect(diag_of(main_src = caller(), sources = [("dep.vibe", private_type)]), content = "")
   let exported_type = String::concat("export struct Fs {\n  root: String\n}\n\nfn Fs::exists(f: Fs) -> Bool {\n  true\n}\n\n", helper())
-  inspect(String::contains(diag_of(caller(), [("dep.vibe", exported_type)]), "rename `Fs::exists` in dep.vibe"), content = "true")
+  inspect(String::contains(diag_of(main_src = caller(), sources = [
+    ("dep.vibe", exported_type)
+  ]), needle = "rename `Fs::exists` in dep.vibe"), content = "true")
 }
 
 test "#2378 the names collector: registry-owned qualified fns and lambdas, nothing else" {

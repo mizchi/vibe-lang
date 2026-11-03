@@ -153,10 +153,10 @@ import ./checker_stmt_stmts_with_binders.vibe {
 /// parameter bound is such a comparison (#3350, `generic_impl_cmp_refusal`).
 /// Returns "" when "no impl" is the whole truth.
 fn unsatisfied_bound_hint(env: TypeEnv, s: Subst, trait_name: String, resolved: Type) -> String {
-  let refused = erased_cmp_bound_refusal(env, trait_name, resolved)
+  let refused = erased_cmp_bound_refusal(env = env, bound = trait_name, resolved = resolved)
   if refused != "" && trait_ref_name(refused) == trait_ref_name(trait_name) {
-    erased_cmp_hint(env, s, trait_name, trait_name, resolved)
-  } else if trait_impl_declared_for_ctor(env, trait_name, resolved) && trait_is_marker(env, trait_name) {
+    erased_cmp_hint(env = env, s = s, trait_name = trait_name, via = trait_name, resolved = resolved)
+  } else if trait_impl_declared_for_ctor(e = env, trait_name = trait_name, resolved = resolved) && trait_is_marker(env = env, trait_name = trait_name) {
     let display = trait_reference_display(trait_name)
     let ctor = type_constructor_name(resolved)
     // String::concat rather than `\{}` interpolation, for the reason recorded
@@ -167,7 +167,7 @@ fn unsatisfied_bound_hint(env: TypeEnv, s: Subst, trait_name: String, resolved: 
     let edit = String::concat(". Give `", String::concat(display, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))
     String::concat(declared, String::concat(why, String::concat(cost, edit)))
   } else {
-    match generic_impl_cmp_refusal(env, s, trait_name, resolved) {
+    match generic_impl_cmp_refusal(env = env, s = s, trait_name = trait_name, resolved = resolved) {
       Some((bound, inner, arg)) => {
         // #3350: `impl [T: Eq] Same for Box[T]` at `Box[Pt]`. The impl is
         // declared; what fails is its parameter bound at `Pt`, so say which.
@@ -177,7 +177,7 @@ fn unsatisfied_bound_hint(env: TypeEnv, s: Subst, trait_name: String, resolved: 
         } else {
           String::concat(", and `", String::concat(trait_reference_display(bound), String::concat("` extends `", String::concat(trait_reference_display(inner), "`)"))))
         }
-        String::concat(needs, String::concat(via, erased_cmp_hint(env, s, inner, bound, arg)))
+        String::concat(needs, String::concat(via, erased_cmp_hint(env = env, s = s, trait_name = inner, via = bound, resolved = arg)))
       },
       None => ""
     }
@@ -208,17 +208,17 @@ fn erased_cmp_hint(env: TypeEnv, s: Subst, trait_name: String, via: String, reso
   let name = trait_ref_name(trait_name)
   let shown = type_to_string(resolved)
   let ctor = type_constructor_name(resolved)
-  let marker = trait_is_marker(env, trait_name)
-  let written = trait_impl_declared_for_ctor(env, trait_name, resolved)
+  let marker = trait_is_marker(env = env, trait_name = trait_name)
+  let written = trait_impl_declared_for_ctor(e = env, trait_name = trait_name, resolved = resolved)
   let eq_owner = if name == "Eq" {
-    bound_flat_equals_owner(env, via)
+    bound_flat_equals_owner(env = env, bound = via)
   } else {
     ""
   }
-  let shadowed = eq_owner != "" && not(bound_flat_self_equals(env, via))
+  let shadowed = eq_owner != "" && not(bound_flat_self_equals(env = env, bound = via))
   let declared = if written {
     String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(ctor, "` IS declared, but "))))
-  } else if type_implements_trait(env, s, resolved, trait_name) {
+  } else if type_implements_trait(env = env, s = s, ty = resolved, trait_name = trait_name) {
     String::concat(": `", String::concat(shown, String::concat("` implements `", String::concat(display, "`, but "))))
   } else {
     String::concat(": declaring `impl ", String::concat(display, String::concat(" for ", String::concat(shown, "` would not help, because "))))
@@ -264,7 +264,7 @@ fn erased_cmp_hint(env: TypeEnv, s: Subst, trait_name: String, via: String, reso
     let edit = if shadowed {
       String::concat(". Declare `", String::concat(eq_owner, String::concat("`'s `equals` as `equals(Self, Self) -> Bool`, or list a supertrait that does before `", String::concat(eq_owner, String::concat("`, so `==` dispatches through the witness dictionary, or compare at the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound"))))))
     } else {
-      marker_cmp_edit(name, display, shown)
+      marker_cmp_edit(name = name, display = display, shown = shown)
     }
     String::concat(declared, String::concat(why, String::concat(tail, String::concat(who, String::concat(cost, edit)))))
   }
@@ -309,11 +309,11 @@ export fn dedupe_error_lines(_ msgs: Array[String]) -> Array[String] {
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(msgs) {
-    let msg = Array::get(msgs, i)
+    let msg = Array::get(msgs, at = i)
     let mut seen = false
     let mut j = 0
     while !seen && j < Array::length(out) {
-      if Array::get(out, j) == msg {
+      if Array::get(out, at = j) == msg {
         seen = true
       } else {
         ()
@@ -323,7 +323,7 @@ export fn dedupe_error_lines(_ msgs: Array[String]) -> Array[String] {
     if seen {
       ()
     } else {
-      Array::push(out, msg)
+      Array::push(out, value = msg)
     }
     i = i + 1
   }
@@ -333,7 +333,7 @@ export fn dedupe_error_lines(_ msgs: Array[String]) -> Array[String] {
 export fn push_error_strings(msgs: Array[String], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(msgs) {
-    Array::push(errors, Array::get(msgs, i))
+    Array::push(errors, value = Array::get(msgs, at = i))
     i = i + 1
   }
 }
@@ -344,24 +344,24 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
   let unsent: Array[(Int, String, String, Int)] = []
   let mut i = 0
   while i < n {
-    let (vid, bounds) = Array::get(pairs, i)
-    let resolved = subst_apply(s, CtVar(vid))
+    let (vid, bounds) = Array::get(pairs, at = i)
+    let resolved = subst_apply(s = s, ty = CtVar(vid))
     match resolved {
-      CtVar(rep) => note_unsent_formals(env, s, vid, rep, bounds, unsent),
+      CtVar(rep) => note_unsent_formals(env = env, s = s, vid = vid, rep = rep, bounds = bounds, unsent = unsent),
       CtUnknown => (),
       _ => {
         let bn = Array::length(bounds)
         let mut bi = 0
         while bi < bn {
-          let b = Array::get(bounds, bi)
-          let resolved_bound = resolve_trait_bound_self_reference(b, resolved, s, defs)
+          let b = Array::get(bounds, at = bi)
+          let resolved_bound = resolve_trait_bound_self_reference(key = b, self_ty = resolved, s = s, defs = defs)
           // #2523 / #3327 / #3350: the trait through which this bound would
           // compare `resolved` with no witness -- the bound itself, or a trait
           // it extends -- or "".
           let refused = if resolved_bound == "" || resolved_bound == "Send" {
             ""
           } else {
-            erased_cmp_bound_refusal(env, resolved_bound, resolved)
+            erased_cmp_bound_refusal(env = env, bound = resolved_bound, resolved = resolved)
           }
           let refused_here = refused != "" && trait_ref_name(refused) == trait_ref_name(resolved_bound)
           let sat = if resolved_bound == "" {
@@ -369,33 +369,33 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
           } else if resolved_bound == "Send" {
             // ADR-0068: `Send` is judged structurally from the type
             // definitions (type_send_ok), not from user impls.
-            type_send_ok(env, s, defs, resolved)
+            type_send_ok(env = env, s = s, defs = defs, ty = resolved)
           } else if refused_here {
             // No witness reaches the bound's own comparison, so no impl may
             // satisfy it here.
             false
           } else {
-            type_implements_trait(env, s, resolved, resolved_bound)
+            type_implements_trait(env = env, s = s, ty = resolved, trait_name = resolved_bound)
           }
           if resolved_bound != "" && not(sat) {
-            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_for_reader(resolved), String::concat("`", String::concat(unsatisfied_bound_hint(env, s, resolved_bound, resolved), bound_var_site_marker(vid))))))))
+            Array::push(errors, value = String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_for_reader(resolved), String::concat("`", String::concat(unsatisfied_bound_hint(env = env, s = s, trait_name = resolved_bound, resolved = resolved), bound_var_site_marker(vid))))))))
           } else if resolved_bound != "" && resolved_bound != "Send" {
             // #3549: an `Eq` witness whose comparison would reach a function
             // (a generic `derive (Eq)` type at a function argument).
-            if bound_entails_trait(env, resolved_bound, "Eq") {
-              match eq_function_bound_refusal(trait_reference_display(resolved_bound), resolved, s, defs) {
-                Some(msg) => Array::push(errors, String::concat(msg, bound_var_site_marker(vid))),
+            if bound_entails_trait(env = env, bound = resolved_bound, wanted = "Eq") {
+              match eq_function_bound_refusal(bound_display = trait_reference_display(resolved_bound), resolved = resolved, s = s, defs = defs) {
+                Some(msg) => Array::push(errors, value = String::concat(msg, bound_var_site_marker(vid))),
                 None => ()
               }
             } else {
               ()
             }
-            if bound_entails_send(env, resolved_bound) && not(type_send_ok(env, s, defs, resolved)) {
+            if bound_entails_send(env = env, bound = resolved_bound) && not(type_send_ok(env = env, s = s, defs = defs, ty = resolved)) {
               // #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`)
               // counts as Send inside the generic body (`type_send_ok`), so
               // its instantiation must be Send too -- an impl of `Work` alone
               // does not make a type Send, since `Send` has no user impls.
-              Array::push(errors, String::concat("no impl `Send` for `", String::concat(type_for_reader(resolved), String::concat("`: `", String::concat(trait_reference_display(resolved_bound), String::concat("` extends `Send`, so a type used at it must be Send -- pass a Send value (no `Array`, `Bytes`, closure or `mut` field)", bound_var_site_marker(vid)))))))
+              Array::push(errors, value = String::concat("no impl `Send` for `", String::concat(type_for_reader(resolved), String::concat("`: `", String::concat(trait_reference_display(resolved_bound), String::concat("` extends `Send`, so a type used at it must be Send -- pass a Send value (no `Array`, `Bytes`, closure or `mut` field)", bound_var_site_marker(vid)))))))
             }
             // #3327: the same for a bound that EXTENDS such a trait
             // (`trait Key: Eq {}` over a program's own marker `Eq`): judged
@@ -403,7 +403,7 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
             if refused != "" {
               let shown_refused = trait_reference_display(refused)
               let via = String::concat(" (`", String::concat(trait_reference_display(resolved_bound), String::concat("` extends `", String::concat(shown_refused, "`)"))))
-              Array::push(errors, String::concat("no impl `", String::concat(shown_refused, String::concat("` for `", String::concat(type_for_reader(resolved), String::concat("`", String::concat(via, String::concat(erased_cmp_hint(env, s, refused, resolved_bound, resolved), bound_var_site_marker(vid)))))))))
+              Array::push(errors, value = String::concat("no impl `", String::concat(shown_refused, String::concat("` for `", String::concat(type_for_reader(resolved), String::concat("`", String::concat(via, String::concat(erased_cmp_hint(env = env, s = s, trait_name = refused, via = resolved_bound, resolved = resolved), bound_var_site_marker(vid)))))))))
             }
           }
           bi = bi + 1
@@ -417,7 +417,7 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
     let shown = trait_reference_display(bound)
     let edit = String::concat("declare the bound on its binder: `[", String::concat(spelled, String::concat(": ", String::concat(shown, "]`"))))
     let why = String::concat("` is a type parameter with no `Send` bound, so its callers are never asked for one and any value -- an `Array`, `Bytes`, a closure, a `mut` field -- would cross here; ", edit)
-    Array::push(errors, String::concat("no impl `", String::concat(shown, String::concat("` for `", String::concat(spelled, String::concat("`: `", String::concat(spelled, String::concat(why, bound_var_site_marker(site_vid)))))))))
+    Array::push(errors, value = String::concat("no impl `", String::concat(shown, String::concat("` for `", String::concat(spelled, String::concat("`: `", String::concat(spelled, String::concat(why, bound_var_site_marker(site_vid)))))))))
   }
   reset_bound_var_sites()
 }
@@ -432,20 +432,20 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
 fn note_unsent_formals(env: TypeEnv, s: Subst, vid: Int, rep: Int, bounds: Array[String], unsent: Array[(Int, String, String, Int)]) -> Unit {
   let mut wanted = ""
   for b in bounds {
-    if wanted == "" && bound_entails_send(env, b) {
+    if wanted == "" && bound_entails_send(env = env, bound = b) {
       wanted = b
     } else {
       ()
     }
   }
   if wanted != "" {
-    for formal in formals_standing_for_var(rep, s) {
+    for formal in formals_standing_for_var(rep = rep, s = s) {
       let (fvid, spelled) = formal
-      if !bounds_entail_send(env, subst_bounds_for(s, fvid)) {
+      if !bounds_entail_send(env = env, bounds = subst_bounds_for(s = s, id = fvid)) {
         let mut at = 0 - 1
         let mut k = 0
         while k < Array::length(unsent) {
-          let (uvid, _, _, _) = Array::get(unsent, k)
+          let (uvid, _, _, _) = Array::get(unsent, at = k)
           if uvid == fvid {
             at = k
           } else {
@@ -454,9 +454,9 @@ fn note_unsent_formals(env: TypeEnv, s: Subst, vid: Int, rep: Int, bounds: Array
           k = k + 1
         }
         if at >= 0 {
-          Array::set(unsent, at, (fvid, spelled, wanted, vid))
+          Array::set(unsent, at = at, value = (fvid, spelled, wanted, vid))
         } else {
-          Array::push(unsent, (fvid, spelled, wanted, vid))
+          Array::push(unsent, value = (fvid, spelled, wanted, vid))
         }
       } else {
         ()
@@ -470,7 +470,7 @@ fn note_unsent_formals(env: TypeEnv, s: Subst, vid: Int, rep: Int, bounds: Array
 fn bounds_entail_send(env: TypeEnv, bounds: Array[String]) -> Bool {
   let mut found = false
   for b in bounds {
-    if bound_entails_send(env, b) {
+    if bound_entails_send(env = env, bound = b) {
       found = true
     } else {
       ()
@@ -494,8 +494,8 @@ fn geff_arg_kind_arity(name: String, ctor_names: Array[String], ctor_arities: Ar
       let mut i = 0
       let mut found = 0 - 1
       while i < Array::length(ctor_names) {
-        if Array::get(ctor_names, i) == name {
-          found = Array::get(ctor_arities, i)
+        if Array::get(ctor_names, at = i) == name {
+          found = Array::get(ctor_arities, at = i)
         } else {
           ()
         }
@@ -507,8 +507,8 @@ fn geff_arg_kind_arity(name: String, ctor_names: Array[String], ctor_arities: Ar
         let mut j = 0
         let mut farity = 0 - 1
         while j < Array::length(formal_keys) {
-          if type_param_name(Array::get(formal_keys, j)) == name {
-            farity = type_param_arity(Array::get(formal_keys, j))
+          if type_param_name(Array::get(formal_keys, at = j)) == name {
+            farity = type_param_arity(Array::get(formal_keys, at = j))
           } else {
             ()
           }
@@ -533,7 +533,7 @@ fn geff_note_higher_ctor(higher_ctors: Array[String], name: String, tparams: Arr
   let mut i = 0
   let mut higher = false
   while i < Array::length(tparams) {
-    if type_param_arity(Array::get(tparams, i)) > 0 {
+    if type_param_arity(Array::get(tparams, at = i)) > 0 {
       higher = true
     } else {
       ()
@@ -541,7 +541,7 @@ fn geff_note_higher_ctor(higher_ctors: Array[String], name: String, tparams: Arr
     i = i + 1
   }
   if higher {
-    Array::push(higher_ctors, name)
+    Array::push(higher_ctors, value = name)
   } else {
     ()
   }
@@ -551,7 +551,7 @@ fn geff_names_has(names: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(names) {
-    if Array::get(names, i) == name {
+    if Array::get(names, at = i) == name {
       found = true
     } else {
       ()
@@ -565,18 +565,18 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
   match row {
     None => (),
     Some(r) => {
-      let raw = String::split(r, ",")
+      let raw = String::split(r, sep = ",")
       let mut i = 0
       while i < Array::length(raw) {
-        let label = String::trim(Array::get(raw, i))
-        let bi = String::index_of(label, "[")
+        let label = String::trim(Array::get(raw, at = i))
+        let bi = String::index_of(label, needle = "[")
         if bi > 0 {
           let base = label[0: bi]
           let inner = String::trim(label[bi + 1: String::length(label) - 1])
           let mut is_es = false
           let mut esi = 0
           while esi < Array::length(es_names) {
-            if Array::get(es_names, esi) == base {
+            if Array::get(es_names, at = esi) == base {
               is_es = true
             } else {
               ()
@@ -584,32 +584,32 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
             esi = esi + 1
           }
           if is_es {
-            Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: `", String::concat(base, "` is an effectset — effectset instantiation in a row is not supported yet (ADR-0071)")))))
+            Array::push(errors, value = String::concat("effect row item `", String::concat(label, String::concat("`: `", String::concat(base, "` is an effectset — effectset instantiation in a row is not supported yet (ADR-0071)")))))
           } else if String::length(inner) == 0 {
-            Array::push(errors, String::concat("effect row item `", String::concat(label, "` needs a type argument between the brackets")))
+            Array::push(errors, value = String::concat("effect row item `", String::concat(label, "` needs a type argument between the brackets")))
           } else {
             let mut edi = 0
             let mut tpc = 0 - 1
             let mut expected_kind = 0
             while edi < Array::length(ed_names) {
-              if Array::get(ed_names, edi) == base {
-                tpc = Array::get(ed_tpcounts, edi)
-                expected_kind = Array::get(ed_tparities, edi)
+              if Array::get(ed_names, at = edi) == base {
+                tpc = Array::get(ed_tpcounts, at = edi)
+                expected_kind = Array::get(ed_tparities, at = edi)
               } else {
                 ()
               }
               edi = edi + 1
             }
             if tpc == 0 {
-              Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, " declares no type parameters")))))
+              Array::push(errors, value = String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, " declares no type parameters")))))
             } else if tpc > 1 {
-              Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" declares ", String::concat(__to_string(tpc), " type parameters; a row item supports exactly one type argument for now")))))))
+              Array::push(errors, value = String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" declares ", String::concat(__to_string(tpc), " type parameters; a row item supports exactly one type argument for now")))))))
             } else if expected_kind > 0 {
-              let actual_kind = geff_arg_kind_arity(inner, ctor_names, ctor_arities, formal_keys)
+              let actual_kind = geff_arg_kind_arity(name = inner, ctor_names = ctor_names, ctor_arities = ctor_arities, formal_keys = formal_keys)
               if actual_kind != expected_kind {
-                Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" expects a constructor with ", String::concat(__to_string(expected_kind), String::concat(" argument(s), but `", String::concat(inner, String::concat("` has ", String::concat(__to_string(actual_kind), " -- pass a bare constructor with the required arity")))))))))))
-              } else if geff_names_has(higher_ctors, inner) {
-                Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" applies its parameter to types, but a parameter of `", String::concat(inner, "` takes a constructor -- pass a constructor whose parameters are all types, such as `Array` or `Option`")))))))
+                Array::push(errors, value = String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" expects a constructor with ", String::concat(__to_string(expected_kind), String::concat(" argument(s), but `", String::concat(inner, String::concat("` has ", String::concat(__to_string(actual_kind), " -- pass a bare constructor with the required arity")))))))))))
+              } else if geff_names_has(names = higher_ctors, name = inner) {
+                Array::push(errors, value = String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" applies its parameter to types, but a parameter of `", String::concat(inner, "` takes a constructor -- pass a constructor whose parameters are all types, such as `Array` or `Option`")))))))
               } else {
                 ()
               }
@@ -634,25 +634,25 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
 fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], formal_keys: Array[String], errors: Array[String]) -> Unit {
   match te {
     TyFn(params, ret, eff) => {
-      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors)
+      geff_row_targ_errors_into(row = eff, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors)
       let mut i = 0
       while i < Array::length(params) {
-        geff_check_texpr_rows(Array::get(params, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors)
+        geff_check_texpr_rows(te = Array::get(params, at = i), ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors)
         i = i + 1
       }
-      geff_check_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors)
+      geff_check_texpr_rows(te = ret, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors)
     },
     TyApp(_, args) => {
       let mut i = 0
       while i < Array::length(args) {
-        geff_check_texpr_rows(Array::get(args, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors)
+        geff_check_texpr_rows(te = Array::get(args, at = i), ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors)
         i = i + 1
       }
     },
     TyTuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        geff_check_texpr_rows(Array::get(elems, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors)
+        geff_check_texpr_rows(te = Array::get(elems, at = i), ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors)
         i = i + 1
       }
     },
@@ -662,7 +662,7 @@ fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Arr
 
 fn geff_check_opt_texpr_rows(te: Option[TypeExpr], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], formal_keys: Array[String], errors: Array[String]) -> Unit {
   match te {
-    Some(t) => geff_check_texpr_rows(t, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors),
+    Some(t) => geff_check_texpr_rows(te = t, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formal_keys, errors = errors),
     None => ()
   }
 }
@@ -677,14 +677,14 @@ fn geff_expr_formals(_ e: Expr) -> Array[String] {
 fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], errors: Array[String]) -> Unit {
   match e {
     EFn(tparams, _, params, ret, eff, _) => {
-      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, tparams, errors)
+      geff_row_targ_errors_into(row = eff, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = tparams, errors = errors)
       let mut i = 0
       while i < Array::length(params) {
-        let (_, pty) = Array::get(params, i)
-        geff_check_opt_texpr_rows(pty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, tparams, errors)
+        let (_, pty) = Array::get(params, at = i)
+        geff_check_opt_texpr_rows(te = pty, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = tparams, errors = errors)
         i = i + 1
       }
-      geff_check_opt_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, tparams, errors)
+      geff_check_opt_texpr_rows(te = ret, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = tparams, errors = errors)
     },
     _ => ()
   }
@@ -700,32 +700,32 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let higher_ctors: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SEffectDef(_, ename, eparams, _) => {
-        Array::push(ed_names, ename)
-        Array::push(ed_tpcounts, Array::length(eparams))
+        Array::push(ed_names, value = ename)
+        Array::push(ed_tpcounts, value = Array::length(eparams))
         let first_arity = if Array::length(eparams) > 0 {
-          type_param_arity(Array::get(eparams, 0))
+          type_param_arity(Array::get(eparams, at = 0))
         } else {
           0
         }
-        Array::push(ed_tparities, first_arity)
+        Array::push(ed_tparities, value = first_arity)
       },
-      SEffectSet(_, esname, _) => Array::push(es_names, esname),
+      SEffectSet(_, esname, _) => Array::push(es_names, value = esname),
       SStruct(_, sname, _, _, _, tparams) => {
-        Array::push(ctor_names, sname)
-        Array::push(ctor_arities, Array::length(tparams))
-        geff_note_higher_ctor(higher_ctors, sname, tparams)
+        Array::push(ctor_names, value = sname)
+        Array::push(ctor_arities, value = Array::length(tparams))
+        geff_note_higher_ctor(higher_ctors = higher_ctors, name = sname, tparams = tparams)
       },
       SEnum(_, ename, tparams, _, _) => {
-        Array::push(ctor_names, ename)
-        Array::push(ctor_arities, Array::length(tparams))
-        geff_note_higher_ctor(higher_ctors, ename, tparams)
+        Array::push(ctor_names, value = ename)
+        Array::push(ctor_arities, value = Array::length(tparams))
+        geff_note_higher_ctor(higher_ctors = higher_ctors, name = ename, tparams = tparams)
       },
       STypeAlias(_, aname, tparams, _) => {
-        Array::push(ctor_names, aname)
-        Array::push(ctor_arities, Array::length(tparams))
-        geff_note_higher_ctor(higher_ctors, aname, tparams)
+        Array::push(ctor_names, value = aname)
+        Array::push(ctor_arities, value = Array::length(tparams))
+        geff_note_higher_ctor(higher_ctors = higher_ctors, name = aname, tparams = tparams)
       },
       _ => ()
     }
@@ -733,16 +733,16 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   }
   let mut j = 0
   while j < Array::length(stmts) {
-    match Array::get(stmts, j) {
+    match Array::get(stmts, at = j) {
       SLet(_, _, _, ty, body) => {
         let formals = geff_expr_formals(body)
-        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formals, errors)
-        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, errors)
+        geff_check_opt_texpr_rows(te = ty, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formals, errors = errors)
+        geff_check_value_rows(e = body, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, errors = errors)
       },
       SLetMut(_, ty, body) => {
         let formals = geff_expr_formals(body)
-        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formals, errors)
-        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, errors)
+        geff_check_opt_texpr_rows(te = ty, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, formal_keys = formals, errors = errors)
+        geff_check_value_rows(e = body, ed_names = ed_names, ed_tpcounts = ed_tpcounts, ed_tparities = ed_tparities, es_names = es_names, ctor_names = ctor_names, ctor_arities = ctor_arities, higher_ctors = higher_ctors, errors = errors)
       },
       _ => ()
     }
@@ -759,16 +759,16 @@ fn canonicalize_stdin_provider_type_import_heads_reporting_change(_ stmts: Array
   let aliases: Array[(String, String)] = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImport(_, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let original = item.name
           let alias_opt = item.alias
           match alias_opt {
             Some(alias) => if original == "StdinStream" {
-              Array::push(aliases, (alias, original))
+              Array::push(aliases, value = (alias, original))
             } else {
               ()
             },
@@ -785,10 +785,10 @@ fn canonicalize_stdin_provider_type_import_heads_reporting_change(_ stmts: Array
   if Array::length(aliases) > 0 {
     let mut k = 0
     while k < Array::length(stmts) {
-      match Array::get(stmts, k) {
+      match Array::get(stmts, at = k) {
         SImport(_, _) => (),
         _ => {
-          Array::set(stmts, k, rewrite_import_alias_stmt(Array::get(stmts, k), aliases))
+          Array::set(stmts, at = k, value = rewrite_import_alias_stmt(stmt = Array::get(stmts, at = k), aliases = aliases))
           changed = true
         }
       }
@@ -832,9 +832,9 @@ export fn collect_constructor_binder_errors(stmts: Array[Stmt], env: TypeEnv, er
   let owners: Array[String] = ["", ""]
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SEnum(_, ename, _, variants, _) => cb_push_variants(names, owners, ename, variants),
-      SSuberror(_, ename, variants) => cb_push_variants(names, owners, ename, variants),
+    match Array::get(stmts, at = i) {
+      SEnum(_, ename, _, variants, _) => cb_push_variants(names = names, owners = owners, ename = ename, variants = variants),
+      SSuberror(_, ename, variants) => cb_push_variants(names = names, owners = owners, ename = ename, variants = variants),
       _ => ()
     }
     i = i + 1
@@ -842,13 +842,13 @@ export fn collect_constructor_binder_errors(stmts: Array[Stmt], env: TypeEnv, er
   let imported = env_type_defs(env)
   let mut d = 0
   while d < Array::length(imported) {
-    match Array::get(imported, d) {
+    match Array::get(imported, at = d) {
       TDEnum(ename, _, variants) => {
         let mut v = 0
         while v < Array::length(variants) {
-          let (vname, _) = Array::get(variants, v)
-          Array::push(names, vname)
-          Array::push(owners, ename)
+          let (vname, _) = Array::get(variants, at = v)
+          Array::push(names, value = vname)
+          Array::push(owners, value = ename)
           v = v + 1
         }
       },
@@ -858,37 +858,37 @@ export fn collect_constructor_binder_errors(stmts: Array[Stmt], env: TypeEnv, er
   }
   let mut s = 0
   while s < Array::length(stmts) {
-    match Array::get(stmts, s) {
+    match Array::get(stmts, at = s) {
       SLet(_, _, name, _, value) => {
-        cb_check(name, "declaration", 0 - 1, name, names, owners, errors)
-        cb_walk(value, name, names, owners, errors)
+        cb_check(name = name, kind = "declaration", off = 0 - 1, owner = name, names = names, owners = owners, errors = errors)
+        cb_walk(e = value, owner = name, names = names, owners = owners, errors = errors)
       },
       SLetMut(name, _, value) => {
-        cb_check(name, "declaration", 0 - 1, name, names, owners, errors)
-        cb_walk(value, name, names, owners, errors)
+        cb_check(name = name, kind = "declaration", off = 0 - 1, owner = name, names = names, owners = owners, errors = errors)
+        cb_walk(e = value, owner = name, names = names, owners = owners, errors = errors)
       },
       SFnDecl(_, name, value, _, _) => {
-        cb_check(name, "declaration", 0 - 1, name, names, owners, errors)
-        cb_walk(value, name, names, owners, errors)
+        cb_check(name = name, kind = "declaration", off = 0 - 1, owner = name, names = names, owners = owners, errors = errors)
+        cb_walk(e = value, owner = name, names = names, owners = owners, errors = errors)
       },
       SImport(_, items) => {
         let mut k = 0
         while k < Array::length(items) {
-          let item = Array::get(items, k)
+          let item = Array::get(items, at = k)
           match item.alias {
             // Anchored at the IMPORTED name: the alias is used throughout
             // the file, so it cannot locate the import, while an aliased
             // name normally appears once -- on this import line.
-            Some(alias) => cb_check(alias, "import alias", 0 - 1, item.name, names, owners, errors),
+            Some(alias) => cb_check(name = alias, kind = "import alias", off = 0 - 1, owner = item.name, names = names, owners = owners, errors = errors),
             None => ()
           }
           k = k + 1
         }
       },
-      STest(tname, body) => cb_walk(body, tname, names, owners, errors),
-      SBench(bname, body) => cb_walk(body, bname, names, owners, errors),
-      SExpr(body) => cb_walk(body, "", names, owners, errors),
-      SStruct(_, sname, _, _, _, _) => cb_struct_check(sname, names, owners, errors),
+      STest(tname, body) => cb_walk(e = body, owner = tname, names = names, owners = owners, errors = errors),
+      SBench(bname, body) => cb_walk(e = body, owner = bname, names = names, owners = owners, errors = errors),
+      SExpr(body) => cb_walk(e = body, owner = "", names = names, owners = owners, errors = errors),
+      SStruct(_, sname, _, _, _, _) => cb_struct_check(sname = sname, names = names, owners = owners, errors = errors),
       _ => ()
     }
     s = s + 1
@@ -905,7 +905,7 @@ fn cb_struct_check(sname: String, names: Array[String], owners: Array[String], e
   let mut idx = 0 - 1
   let mut i = 0
   while i < Array::length(names) && idx < 0 {
-    if Array::get(names, i) == sname {
+    if Array::get(names, at = i) == sname {
       idx = i
     } else {
       ()
@@ -913,7 +913,7 @@ fn cb_struct_check(sname: String, names: Array[String], owners: Array[String], e
     i = i + 1
   }
   if idx >= 0 {
-    let enum_name = Array::get(owners, idx)
+    let enum_name = Array::get(owners, at = idx)
     let what = if String::length(enum_name) == 0 {
       "the built-in `Option` constructor of that name"
     } else {
@@ -924,7 +924,7 @@ fn cb_struct_check(sname: String, names: Array[String], owners: Array[String], e
     } else {
       " (or rename the variant)"
     }
-    Array::push(errors, "rename the struct `\{sname}`\{alt}: it builds by name like \{what}, so a bare `\{sname}(..)` names both and silently builds only one of them [@fn=\{sname}]")
+    Array::push(errors, value = "rename the struct `\{sname}`\{alt}: it builds by name like \{what}, so a bare `\{sname}(..)` names both and silently builds only one of them [@fn=\{sname}]")
   } else {
     ()
   }
@@ -933,9 +933,9 @@ fn cb_struct_check(sname: String, names: Array[String], owners: Array[String], e
 fn cb_push_variants(names: Array[String], owners: Array[String], ename: String, variants: Array[(String, Array[TypeExpr])]) -> Unit {
   let mut v = 0
   while v < Array::length(variants) {
-    let (vname, _) = Array::get(variants, v)
-    Array::push(names, vname)
-    Array::push(owners, ename)
+    let (vname, _) = Array::get(variants, at = v)
+    Array::push(names, value = vname)
+    Array::push(owners, value = ename)
     v = v + 1
   }
 }
@@ -943,21 +943,21 @@ fn cb_push_variants(names: Array[String], owners: Array[String], ename: String, 
 /// The binders an expression introduces, then its children.
 fn cb_walk(e: Expr, owner: String, names: Array[String], owners: Array[String], errors: Array[String]) -> Unit {
   match e {
-    ELet(n, _, _, off) => cb_check(n, "binding", off, owner, names, owners, errors),
-    ELetMut(n, _, _, off) => cb_check(n, "binding", off, owner, names, owners, errors),
-    ELetRec(n, _, _) => cb_check(n, "binding", 0 - 1, owner, names, owners, errors),
+    ELet(n, _, _, off) => cb_check(name = n, kind = "binding", off = off, owner = owner, names = names, owners = owners, errors = errors),
+    ELetMut(n, _, _, off) => cb_check(name = n, kind = "binding", off = off, owner = owner, names = names, owners = owners, errors = errors),
+    ELetRec(n, _, _) => cb_check(name = n, kind = "binding", off = 0 - 1, owner = owner, names = names, owners = owners, errors = errors),
     EForIn(v, k, _, _) => {
-      cb_check(v, "loop variable", 0 - 1, owner, names, owners, errors)
+      cb_check(name = v, kind = "loop variable", off = 0 - 1, owner = owner, names = names, owners = owners, errors = errors)
       match k {
-        Some(kn) => cb_check(kn, "loop variable", 0 - 1, owner, names, owners, errors),
+        Some(kn) => cb_check(name = kn, kind = "loop variable", off = 0 - 1, owner = owner, names = names, owners = owners, errors = errors),
         None => ()
       }
     },
     EFn(_, _, params, _, _, _) => {
       let mut p = 0
       while p < Array::length(params) {
-        let (pname, _) = Array::get(params, p)
-        cb_check(cb_param_base(pname), "parameter", 0 - 1, owner, names, owners, errors)
+        let (pname, _) = Array::get(params, at = p)
+        cb_check(name = cb_param_base(pname), kind = "parameter", off = 0 - 1, owner = owner, names = names, owners = owners, errors = errors)
         p = p + 1
       }
     },
@@ -967,7 +967,7 @@ fn cb_walk(e: Expr, owner: String, names: Array[String], owners: Array[String], 
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    cb_walk(expr_child_at(i), owner, names, owners, errors)
+    cb_walk(e = expr_child_at(i), owner = owner, names = names, owners = owners, errors = errors)
     i = i + 1
   }
   expr_children_pop(mark)
@@ -976,8 +976,8 @@ fn cb_walk(e: Expr, owner: String, names: Array[String], owners: Array[String], 
 /// A labeled (`x~`) or optional (`x?`) parameter keeps its marker on the name.
 fn cb_param_base(_ name: String) -> String {
   let n = String::length(name)
-  if n > 1 && (String::ends_with(name, "~") || String::ends_with(name, "?")) {
-    String::substring(name, 0, n - 1)
+  if n > 1 && (String::ends_with(name, suffix = "~") || String::ends_with(name, suffix = "?")) {
+    String::substring(name, start = 0, end = n - 1)
   } else {
     name
   }
@@ -987,7 +987,7 @@ fn cb_check(name: String, kind: String, off: Int, owner: String, names: Array[St
   let mut idx = 0 - 1
   let mut i = 0
   while i < Array::length(names) && idx < 0 {
-    if Array::get(names, i) == name {
+    if Array::get(names, at = i) == name {
       idx = i
     } else {
       ()
@@ -995,7 +995,7 @@ fn cb_check(name: String, kind: String, off: Int, owner: String, names: Array[St
     i = i + 1
   }
   if idx >= 0 {
-    let enum_name = Array::get(owners, idx)
+    let enum_name = Array::get(owners, at = idx)
     let what = if name == "Some" && String::length(enum_name) == 0 {
       "the built-in `Option` constructor"
     } else if String::length(enum_name) == 0 {
@@ -1009,7 +1009,7 @@ fn cb_check(name: String, kind: String, off: Int, owner: String, names: Array[St
       String::concat(" [@fn=", String::concat(owner, "]"))
     }
     let msg = "rename this \{kind} `\{name}` (a lowercase name, such as one saying what it computes): `\{name}` is \{what}, and every `\{name}` in an expression means the constructor, so the binding would be ignored or would change what `\{name}` evaluates to"
-    Array::push(errors, String::concat(msg, where_))
+    Array::push(errors, value = String::concat(msg, where_))
   } else {
     ()
   }
@@ -1040,44 +1040,44 @@ export fn collect_derive_field_errors(stmts: Array[Stmt], env: TypeEnv, errors: 
   let generics: Array[(String, Array[String], Array[TypeExpr], Array[String])] = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      STypeAlias(_, name, params, target) => Array::push(aliases, (name, params, target)),
+    match Array::get(stmts, at = i) {
+      STypeAlias(_, name, params, target) => Array::push(aliases, value = (name, params, target)),
       SStruct(_, name, fields, derives, _, tparams) => {
-        Array::push(declared, name)
-        Array::push(declared_derives, derives)
+        Array::push(declared, value = name)
+        Array::push(declared_derives, value = derives)
         if Array::length(tparams) > 0 {
           let parts = for field in fields {
             field.1
           }
-          Array::push(generics, (name, tparams, parts, derives))
+          Array::push(generics, value = (name, tparams, parts, derives))
         } else {
           ()
         }
       },
       SEnum(_, name, tparams, variants, derives) => {
-        Array::push(declared, name)
-        Array::push(declared_derives, derives)
+        Array::push(declared, value = name)
+        Array::push(declared_derives, value = derives)
         if Array::length(tparams) > 0 {
           let parts: Array[TypeExpr] = []
           for variant in variants {
             for payload in variant.1 {
-              Array::push(parts, payload)
+              Array::push(parts, value = payload)
             }
           }
-          Array::push(generics, (name, tparams, parts, derives))
+          Array::push(generics, value = (name, tparams, parts, derives))
         } else {
           ()
         }
       },
       SSuberror(_, name, _) => {
-        Array::push(declared, name)
-        Array::push(declared_derives, [])
+        Array::push(declared, value = name)
+        Array::push(declared_derives, value = [])
       },
-      SLet(_, _, name, _, _) => Array::push(defined, name),
-      SFnDecl(_, name, _, _, _) => Array::push(defined, name),
+      SLet(_, _, name, _, _) => Array::push(defined, value = name),
+      SFnDecl(_, name, _, _, _) => Array::push(defined, value = name),
       SImpl(_, _, trait_name, target) => match target {
-        TyName(n) => Array::push(defined, String::concat(n, String::concat("::#impl", trait_name))),
-        TyApp(n, _) => Array::push(defined, String::concat(n, String::concat("::#impl", trait_name))),
+        TyName(n) => Array::push(defined, value = String::concat(n, String::concat("::#impl", trait_name))),
+        TyApp(n, _) => Array::push(defined, value = String::concat(n, String::concat("::#impl", trait_name))),
         _ => ()
       },
       _ => ()
@@ -1087,32 +1087,32 @@ export fn collect_derive_field_errors(stmts: Array[Stmt], env: TypeEnv, errors: 
   let imported = env_type_defs(env)
   let mut d = 0
   while d < Array::length(imported) {
-    match Array::get(imported, d) {
-      TDStruct(n, _, _, _) => dfe_push_imported(declared, declared_derives, n),
-      TDEnum(n, _, _) => dfe_push_imported(declared, declared_derives, n),
+    match Array::get(imported, at = d) {
+      TDStruct(n, _, _, _) => dfe_push_imported(declared = declared, declared_derives = declared_derives, name = n),
+      TDEnum(n, _, _) => dfe_push_imported(declared = declared, declared_derives = declared_derives, name = n),
       _ => ()
     }
     d = d + 1
   }
-  dfe_fill_hash_renderless(stmts, declared, declared_derives, defined, aliases, generics, env)
+  dfe_fill_hash_renderless(stmts = stmts, declared = declared, declared_derives = declared_derives, defined = defined, aliases = aliases, generics = generics, env = env)
   let mut s = 0
   while s < Array::length(stmts) {
-    match Array::get(stmts, s) {
+    match Array::get(stmts, at = s) {
       SStruct(_, name, fields, derives, _, tparams) => {
         let mut f = 0
         while f < Array::length(fields) {
-          let (fname, fty) = Array::get(fields, f)
-          dfe_check(name, derives, tparams, String::concat("field `", String::concat(fname, "`")), fty, declared, declared_derives, defined, aliases, generics, env, errors)
+          let (fname, fty) = Array::get(fields, at = f)
+          dfe_check(owner = name, derives = derives, tparams = tparams, what = String::concat("field `", String::concat(fname, "`")), fty = fty, declared = declared, declared_derives = declared_derives, defined = defined, aliases = aliases, generics = generics, env = env, errors = errors)
           f = f + 1
         }
       },
       SEnum(_, name, tparams, variants, derives) => {
         let mut v = 0
         while v < Array::length(variants) {
-          let (vname, payloads) = Array::get(variants, v)
+          let (vname, payloads) = Array::get(variants, at = v)
           let mut p = 0
           while p < Array::length(payloads) {
-            dfe_check(name, derives, tparams, String::concat("payload of `", String::concat(vname, "`")), Array::get(payloads, p), declared, declared_derives, defined, aliases, generics, env, errors)
+            dfe_check(owner = name, derives = derives, tparams = tparams, what = String::concat("payload of `", String::concat(vname, "`")), fty = Array::get(payloads, at = p), declared = declared, declared_derives = declared_derives, defined = defined, aliases = aliases, generics = generics, env = env, errors = errors)
             p = p + 1
           }
           v = v + 1
@@ -1138,21 +1138,21 @@ fn dfe_fill_hash_renderless(stmts: Array[Stmt], declared: Array[String], declare
   let candidates: Array[(String, Array[String], Array[TypeExpr])] = []
   for st in stmts {
     match st {
-      SStruct(_, name, fields, derives, _, tparams) => if dfe_renderer_is_hash_only(name, derives, defined) {
-        Array::push(candidates, (name, tparams, for field in fields {
+      SStruct(_, name, fields, derives, _, tparams) => if dfe_renderer_is_hash_only(name = name, derives = derives, defined = defined) {
+        Array::push(candidates, value = (name, tparams, for field in fields {
           field.1
         }))
       } else {
         ()
       },
-      SEnum(_, name, tparams, variants, derives) => if dfe_renderer_is_hash_only(name, derives, defined) {
+      SEnum(_, name, tparams, variants, derives) => if dfe_renderer_is_hash_only(name = name, derives = derives, defined = defined) {
         let parts: Array[TypeExpr] = []
         for variant in variants {
           for payload in variant.1 {
-            Array::push(parts, payload)
+            Array::push(parts, value = payload)
           }
         }
-        Array::push(candidates, (name, tparams, parts))
+        Array::push(candidates, value = (name, tparams, parts))
       } else {
         ()
       },
@@ -1167,8 +1167,8 @@ fn dfe_fill_hash_renderless(stmts: Array[Stmt], declared: Array[String], declare
       if !derived_hash_renderer_withheld(name) {
         let scratch: Array[String] = []
         for part in parts {
-          dfe_check_show(name, ["Show"], tparams, "field", part, declared, declared_derives, defined, aliases, generics, env, scratch, [
-          ], 0)
+          dfe_check_show(owner = name, derives = ["Show"], tparams = tparams, what = "field", fty = part, declared = declared, declared_derives = declared_derives, defined = defined, aliases = aliases, generics = generics, env = env, errors = scratch, seen = [
+          ], depth = 0)
         }
         if Array::length(scratch) > 0 {
           hash_renderer_withheld_add(name)
@@ -1184,7 +1184,7 @@ fn dfe_fill_hash_renderless(stmts: Array[Stmt], declared: Array[String], declare
 }
 
 fn dfe_renderer_is_hash_only(name: String, derives: Array[String], defined: Array[String]) -> Bool {
-  struct_derives_has(derives, "Hash") && !struct_derives_has(derives, "Show") && !str_array_has(defined, String::concat(name, "::to_string")) && !str_array_has(defined, String::concat(name, "::#implShow"))
+  struct_derives_has(derives = derives, name = "Hash") && !struct_derives_has(derives = derives, name = "Show") && !str_array_has(xs = defined, v = String::concat(name, "::to_string")) && !str_array_has(xs = defined, v = String::concat(name, "::#implShow"))
 }
 
 /// An imported declaration's derives are not carried by its TypeDef; its
@@ -1193,14 +1193,14 @@ fn dfe_push_imported(declared: Array[String], declared_derives: Array[Array[Stri
   let mut i = 0
   let mut seen = false
   while i < Array::length(declared) && !seen {
-    seen = Array::get(declared, i) == name
+    seen = Array::get(declared, at = i) == name
     i = i + 1
   }
   if seen {
     ()
   } else {
-    Array::push(declared, name)
-    Array::push(declared_derives, [])
+    Array::push(declared, value = name)
+    Array::push(declared_derives, value = [])
   }
 }
 
@@ -1210,23 +1210,23 @@ fn dfe_push_imported(declared: Array[String], declared_derives: Array[Array[Stri
 fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what: String, fty: TypeExpr, declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], aliases: Array[(String, Array[String], TypeExpr)], generics: Array[(String, Array[String], Array[TypeExpr], Array[String])], env: TypeEnv, errors: Array[String]) -> Unit {
   // The generated `compare` expands a local alias before it picks a
   // comparison (`compare_then_typed`), so the field is judged expanded too.
-  let ord_fty = dfe_expand_aliases(fty, aliases, 32)
-  let ord_written = str_array_has(defined, String::concat(owner, "::compare"))
-  if struct_derives_has(derives, "Ord") && !ord_written && !dfe_ord_field_ok(owner, tparams, ord_fty, declared, env) {
-    Array::push(errors, "write `\{owner}::compare` yourself, or give its \{what} a type `derive (Ord)` can order: it orders `Int`, `Char`, `Bool`, `String`, `Float64`, `Float32` and declared structs and enums field by field, and compared a \{dfe_ord_kind(fty, tparams)} by its address, so equal values answered `Less` [@fn=\{owner}]")
+  let ord_fty = dfe_expand_aliases(fty = fty, aliases = aliases, fuel = 32)
+  let ord_written = str_array_has(xs = defined, v = String::concat(owner, "::compare"))
+  if struct_derives_has(derives = derives, name = "Ord") && !ord_written && !dfe_ord_field_ok(owner = owner, tparams = tparams, fty = ord_fty, declared = declared, env = env) {
+    Array::push(errors, value = "write `\{owner}::compare` yourself, or give its \{what} a type `derive (Ord)` can order: it orders `Int`, `Char`, `Bool`, `String`, `Float64`, `Float32` and declared structs and enums field by field, and compared a \{dfe_ord_kind(fty, tparams)} by its address, so equal values answered `Less` [@fn=\{owner}]")
   }
   // The comparator expands an imported alias too, so the `compare` it calls
   // is the one of the alias's target head, not of the alias.
-  let ord_head_fty = match dfe_imported_alias_resolved(env, tparams, ord_fty) {
+  let ord_head_fty = match dfe_imported_alias_resolved(env = env, tparams = tparams, fty = ord_fty) {
     Some(t) => match dfe_resolved_head(t) {
       Some(h) => TyName(h),
       None => ord_fty
     },
     None => ord_fty
   }
-  dfe_check_head(owner, derives, tparams, "Ord", "compare", what, ord_head_fty, declared, declared_derives, defined, env, errors)
-  if struct_derives_has(derives, "Show") && !str_array_has(defined, String::concat(owner, "::to_string")) {
-    dfe_check_show(owner, derives, tparams, what, fty, declared, declared_derives, defined, aliases, generics, env, errors, array_empty(), 0)
+  dfe_check_head(owner = owner, derives = derives, tparams = tparams, trait_name = "Ord", op = "compare", what = what, fty = ord_head_fty, declared = declared, declared_derives = declared_derives, defined = defined, env = env, errors = errors)
+  if struct_derives_has(derives = derives, name = "Show") && !str_array_has(xs = defined, v = String::concat(owner, "::to_string")) {
+    dfe_check_show(owner = owner, derives = derives, tparams = tparams, what = what, fty = fty, declared = declared, declared_derives = declared_derives, defined = defined, aliases = aliases, generics = generics, env = env, errors = errors, seen = array_empty(), depth = 0)
   } else {
     ()
   }
@@ -1243,20 +1243,21 @@ fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what
 /// `Set::to_string` reached code generation unresolved. `seen` guards a
 /// recursive generic and `depth` bounds a non-regular one.
 fn dfe_check_show(owner: String, derives: Array[String], tparams: Array[String], what: String, fty: TypeExpr, declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], aliases: Array[(String, Array[String], TypeExpr)], generics: Array[(String, Array[String], Array[TypeExpr], Array[String])], env: TypeEnv, errors: Array[String], seen: Array[String], depth: Int) -> Unit {
-  let t = dfe_expand_aliases(fty, aliases, 32)
+  let t = dfe_expand_aliases(fty = fty, aliases = aliases, fuel = 32)
   match t {
     TyApp(n, args) => if ((n == "Option" || n == "Array") && Array::length(args) == 1) || (n == "Result" && Array::length(args) == 2) {
       for arg in args {
-        dfe_check_show(owner, derives, tparams, what, arg, declared, declared_derives, defined, aliases, generics, env, errors, seen, depth)
+        dfe_check_show(owner = owner, derives = derives, tparams = tparams, what = what, fty = arg, declared = declared, declared_derives = declared_derives, defined = defined, aliases = aliases, generics = generics, env = env, errors = errors, seen = seen, depth = depth)
       }
       ()
     } else {
-      dfe_check_show_nominal(owner, derives, tparams, what, t, n, args, declared, declared_derives, defined, aliases, generics, env, errors, seen, depth)
+      dfe_check_show_nominal(owner = owner, derives = derives, tparams = tparams, what = what, t = t, n = n, args = args, declared = declared, declared_derives = declared_derives, defined = defined, aliases = aliases, generics = generics, env = env, errors = errors, seen = seen, depth = depth)
     },
-    TyName(n) => dfe_check_show_nominal(owner, derives, tparams, what, t, n, [], declared, declared_derives, defined, aliases, generics, env, errors, seen, depth),
+    TyName(n) => dfe_check_show_nominal(owner = owner, derives = derives, tparams = tparams, what = what, t = t, n = n, args = [
+    ], declared = declared, declared_derives = declared_derives, defined = defined, aliases = aliases, generics = generics, env = env, errors = errors, seen = seen, depth = depth),
     TyTuple(ts) => {
       for item in ts {
-        dfe_check_show(owner, derives, tparams, what, item, declared, declared_derives, defined, aliases, generics, env, errors, seen, depth)
+        dfe_check_show(owner = owner, derives = derives, tparams = tparams, what = what, fty = item, declared = declared, declared_derives = declared_derives, defined = defined, aliases = aliases, generics = generics, env = env, errors = errors, seen = seen, depth = depth)
       }
       ()
     },
@@ -1266,28 +1267,28 @@ fn dfe_check_show(owner: String, derives: Array[String], tparams: Array[String],
 
 /// A nominal (or an alias another module exports) the renderer reaches.
 fn dfe_check_show_nominal(owner: String, derives: Array[String], tparams: Array[String], what: String, t: TypeExpr, n: String, args: Array[TypeExpr], declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], aliases: Array[(String, Array[String], TypeExpr)], generics: Array[(String, Array[String], Array[TypeExpr], Array[String])], env: TypeEnv, errors: Array[String], seen: Array[String], depth: Int) -> Unit {
-  let imported_alias = if str_array_has(declared, n) || depth >= 16 {
+  let imported_alias = if str_array_has(xs = declared, v = n) || depth >= 16 {
     None
   } else {
-    dfe_imported_alias_resolved(env, tparams, t)
+    dfe_imported_alias_resolved(env = env, tparams = tparams, fty = t)
   }
   match imported_alias {
-    Some(resolved) => dfe_check_show(owner, derives, tparams, what, dfe_type_texpr(resolved), declared, declared_derives, defined, aliases, generics, env, errors, seen, depth + 1),
+    Some(resolved) => dfe_check_show(owner = owner, derives = derives, tparams = tparams, what = what, fty = dfe_type_texpr(resolved), declared = declared, declared_derives = declared_derives, defined = defined, aliases = aliases, generics = generics, env = env, errors = errors, seen = seen, depth = depth + 1),
     None => {
-      dfe_check_head(owner, derives, tparams, "Show", "to_string", what, t, declared, declared_derives, defined, env, errors)
+      dfe_check_head(owner = owner, derives = derives, tparams = tparams, trait_name = "Show", op = "to_string", what = what, fty = t, declared = declared, declared_derives = declared_derives, defined = defined, env = env, errors = errors)
       // A `derive (Show)` / `derive (Hash)` generic is rendered inline at its
       // instantiation, each field or payload with the arguments substituted,
       // so what it holds is reached too (a phantom parameter is not read).
       let key = dfe_type_key_text(t)
-      if n != owner && Array::length(args) > 0 && depth < 16 && !str_array_has(seen, key) {
-        match dfe_find_generic(generics, n, Array::length(args), defined, env) {
+      if n != owner && Array::length(args) > 0 && depth < 16 && !str_array_has(xs = seen, v = key) {
+        match dfe_find_generic(generics = generics, n = n, arity = Array::length(args), defined = defined, env = env) {
           Some((params, parts)) => {
             let next = for s in seen {
               s
             }
-            Array::push(next, key)
+            Array::push(next, value = key)
             for part in parts {
-              dfe_check_show(owner, derives, tparams, what, dfe_subst(part, params, args), declared, declared_derives, defined, aliases, generics, env, errors, next, depth + 1)
+              dfe_check_show(owner = owner, derives = derives, tparams = tparams, what = what, fty = dfe_subst(ty = part, params = params, args = args), declared = declared, declared_derives = declared_derives, defined = defined, aliases = aliases, generics = generics, env = env, errors = errors, seen = next, depth = depth + 1)
             }
             ()
           },
@@ -1307,15 +1308,15 @@ fn dfe_check_show_nominal(owner: String, derives: Array[String], tparams: Array[
 /// `to_string`; an imported one when it provides a `to_string` and its
 /// module derived `Show` or `Hash` for it.
 fn dfe_find_generic(generics: Array[(String, Array[String], Array[TypeExpr], Array[String])], n: String, arity: Int, defined: Array[String], env: TypeEnv) -> Option[(Array[String], Array[TypeExpr])] {
-  let written = str_array_has(defined, String::concat(n, "::to_string"))
+  let written = str_array_has(xs = defined, v = String::concat(n, "::to_string"))
   let mut found: Option[(Array[String], Array[TypeExpr])] = None
   let mut local = false
   let mut i = 0
   while i < Array::length(generics) {
-    let (gn, params, parts, gderives) = Array::get(generics, i)
+    let (gn, params, parts, gderives) = Array::get(generics, at = i)
     if gn == n && Array::length(params) == arity {
       local = true
-      if struct_derives_has(gderives, "Show") || (struct_derives_has(gderives, "Hash") && !written && !derived_hash_renderer_withheld(n)) {
+      if struct_derives_has(derives = gderives, name = "Show") || (struct_derives_has(derives = gderives, name = "Hash") && !written && !derived_hash_renderer_withheld(n)) {
         found = Some((params, parts))
       } else {
         ()
@@ -1328,7 +1329,7 @@ fn dfe_find_generic(generics: Array[(String, Array[String], Array[TypeExpr], Arr
   if local {
     found
   } else {
-    dfe_find_imported_generic(n, arity, env)
+    dfe_find_imported_generic(n = n, arity = arity, env = env)
   }
 }
 
@@ -1338,8 +1339,8 @@ fn dfe_find_generic(generics: Array[(String, Array[String], Array[TypeExpr], Arr
 /// module writes spells the arguments (`(Tag[T]) -> String`) and is called,
 /// not inlined.
 fn dfe_find_imported_generic(n: String, arity: Int, env: TypeEnv) -> Option[(Array[String], Array[TypeExpr])] {
-  let derived = match env_lookup(env, String::concat(n, "::to_string")) {
-    Some(t) => dfe_is_derived_renderer_type(t, n),
+  let derived = match env_lookup(env = env, name = String::concat(n, "::to_string")) {
+    Some(t) => dfe_is_derived_renderer_type(t = t, n = n),
     None => false
   }
   if !derived {
@@ -1349,7 +1350,7 @@ fn dfe_find_imported_generic(n: String, arity: Int, env: TypeEnv) -> Option[(Arr
     let mut found: Option[(Array[String], Array[TypeExpr])] = None
     let mut i = 0
     while i < Array::length(defs) {
-      match Array::get(defs, i) {
+      match Array::get(defs, at = i) {
         TDStruct(sn, fields, _, params) => if sn == n && Array::length(params) == arity {
           let parts = for field in fields {
             dfe_type_texpr(field.1)
@@ -1363,7 +1364,7 @@ fn dfe_find_imported_generic(n: String, arity: Int, env: TypeEnv) -> Option[(Arr
           let parts: Array[TypeExpr] = array_empty()
           for variant in variants {
             for payload in variant.1 {
-              Array::push(parts, dfe_type_texpr(payload))
+              Array::push(parts, value = dfe_type_texpr(payload))
             }
           }
           found = Some((params, parts))
@@ -1382,9 +1383,9 @@ fn dfe_find_imported_generic(n: String, arity: Int, env: TypeEnv) -> Option[(Arr
 /// `(n) -> String` with `n` bare: the signature `derive (Show)` generates.
 fn dfe_is_derived_renderer_type(t: Type, n: String) -> Bool {
   match t {
-    CtForAll(_, _, inner) => dfe_is_derived_renderer_type(inner, n),
+    CtForAll(_, _, inner) => dfe_is_derived_renderer_type(t = inner, n = n),
     CtFn(params, _, _) => if Array::length(params) == 1 {
-      match Array::get(params, 0) {
+      match Array::get(params, at = 0) {
         CtStruct(pn) => pn == n,
         CtEnum(pn) => pn == n,
         CtNamed(pn, pargs) => pn == n && Array::length(pargs) == 0,
@@ -1405,13 +1406,13 @@ fn dfe_type_key_text(_ t: TypeExpr) -> String {
       let parts = for a in args {
         dfe_type_key_text(a)
       }
-      String::concat(n, String::concat("[", String::concat(String::join(parts, ","), "]")))
+      String::concat(n, String::concat("[", String::concat(String::join(parts, sep = ","), "]")))
     },
     TyTuple(ts) => {
       let parts = for a in ts {
         dfe_type_key_text(a)
       }
-      String::concat("(", String::concat(String::join(parts, ","), ")"))
+      String::concat("(", String::concat(String::join(parts, sep = ","), ")"))
     },
     TyUnit => "()",
     _ => "fn"
@@ -1457,13 +1458,13 @@ fn dfe_check_head(owner: String, derives: Array[String], tparams: Array[String],
     TyApp(n, _) => n,
     _ => ""
   }
-  if String::length(head) == 0 || head == owner || str_array_has(tparams, head) {
+  if String::length(head) == 0 || head == owner || str_array_has(xs = tparams, v = head) {
     ()
   } else {
     let mut idx = 0 - 1
     let mut i = 0
     while i < Array::length(declared) && idx < 0 {
-      if Array::get(declared, i) == head {
+      if Array::get(declared, at = i) == head {
         idx = i
       } else {
         ()
@@ -1471,7 +1472,7 @@ fn dfe_check_head(owner: String, derives: Array[String], tparams: Array[String],
       i = i + 1
     }
     if idx >= 0 {
-      dfe_check_trait(owner, derives, trait_name, op, what, head, Array::get(declared_derives, idx), defined, env, errors)
+      dfe_check_trait(owner = owner, derives = derives, trait_name = trait_name, op = op, what = what, head = head, head_derives = Array::get(declared_derives, at = idx), defined = defined, env = env, errors = errors)
     } else {
       ()
     }
@@ -1487,12 +1488,12 @@ fn dfe_check_head(owner: String, derives: Array[String], tparams: Array[String],
 /// does not know is refused rather than compared by address.
 fn dfe_ord_field_ok(owner: String, tparams: Array[String], fty: TypeExpr, declared: Array[String], env: TypeEnv) -> Bool {
   let local = match fty {
-    TyName(n) => if str_array_has(tparams, n) {
+    TyName(n) => if str_array_has(xs = tparams, v = n) {
       Some(false)
-    } else if dfe_ord_scalar(n) || n == owner || str_array_has(declared, n) {
+    } else if dfe_ord_scalar(n) || n == owner || str_array_has(xs = declared, v = n) {
       Some(true)
     } else None,
-    TyApp(n, _) => if n == owner || str_array_has(declared, n) {
+    TyApp(n, _) => if n == owner || str_array_has(xs = declared, v = n) {
       Some(true)
     } else None,
     TyUnit => Some(true),
@@ -1500,8 +1501,8 @@ fn dfe_ord_field_ok(owner: String, tparams: Array[String], fty: TypeExpr, declar
   }
   match local {
     Some(ok) => ok,
-    None => match dfe_imported_alias_resolved(env, tparams, fty) {
-      Some(t) => dfe_type_ord_ok(t, declared),
+    None => match dfe_imported_alias_resolved(env = env, tparams = tparams, fty = fty) {
+      Some(t) => dfe_type_ord_ok(t = t, declared = declared),
       None => false
     }
   }
@@ -1528,14 +1529,14 @@ fn dfe_imported_alias_resolved(env: TypeEnv, tparams: Array[String], fty: TypeEx
     TyApp(n, args) => (n, Array::length(args)),
     _ => ("", 0 - 1)
   }
-  if arity < 0 || str_array_has(tparams, n) {
+  if arity < 0 || str_array_has(xs = tparams, v = n) {
     None
   } else {
     let defs = env_type_defs(env)
     let mut found = false
     let mut i = 0
     while i < Array::length(defs) && !found {
-      match Array::get(defs, i) {
+      match Array::get(defs, at = i) {
         TDAlias(an, params, _) => {
           found = an == n && Array::length(params) == arity
         },
@@ -1544,7 +1545,7 @@ fn dfe_imported_alias_resolved(env: TypeEnv, tparams: Array[String], fty: TypeEx
       i = i + 1
     }
     if found {
-      Some(resolve_type_expr_shadowed(fty, defs, tparams))
+      Some(resolve_type_expr_shadowed(te = fty, defs = defs, shadow = tparams))
     } else None
   }
 }
@@ -1569,9 +1570,9 @@ fn dfe_type_ord_ok(t: Type, declared: Array[String]) -> Bool {
     CtString => true,
     CtChar => true,
     CtUnit => true,
-    CtStruct(n) => str_array_has(declared, n),
-    CtEnum(n) => str_array_has(declared, n),
-    CtNamed(n, _) => str_array_has(declared, n),
+    CtStruct(n) => str_array_has(xs = declared, v = n),
+    CtEnum(n) => str_array_has(xs = declared, v = n),
+    CtNamed(n, _) => str_array_has(xs = declared, v = n),
     _ => false
   }
 }
@@ -1584,12 +1585,12 @@ fn dfe_expand_aliases(fty: TypeExpr, aliases: Array[(String, Array[String], Type
     fty
   } else {
     match fty {
-      TyName(n) => match dfe_find_alias(aliases, n, 0) {
-        Some((_, target)) => dfe_expand_aliases(target, aliases, fuel - 1),
+      TyName(n) => match dfe_find_alias(aliases = aliases, n = n, arity = 0) {
+        Some((_, target)) => dfe_expand_aliases(fty = target, aliases = aliases, fuel = fuel - 1),
         None => fty
       },
-      TyApp(n, args) => match dfe_find_alias(aliases, n, Array::length(args)) {
-        Some((params, target)) => dfe_expand_aliases(dfe_subst(target, params, args), aliases, fuel - 1),
+      TyApp(n, args) => match dfe_find_alias(aliases = aliases, n = n, arity = Array::length(args)) {
+        Some((params, target)) => dfe_expand_aliases(fty = dfe_subst(ty = target, params = params, args = args), aliases = aliases, fuel = fuel - 1),
         None => fty
       },
       _ => fty
@@ -1602,7 +1603,7 @@ fn dfe_find_alias(aliases: Array[(String, Array[String], TypeExpr)], n: String, 
   let mut found: Option[(Array[String], TypeExpr)] = None
   let mut i = 0
   while i < Array::length(aliases) {
-    let (an, params, target) = Array::get(aliases, i)
+    let (an, params, target) = Array::get(aliases, at = i)
     if an == n && Array::length(params) == arity {
       found = Some((params, target))
     } else {
@@ -1620,8 +1621,8 @@ fn dfe_subst(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> Type
       let mut out = ty
       let mut i = 0
       while i < Array::length(params) && i < Array::length(args) {
-        if Array::get(params, i) == n {
-          out = Array::get(args, i)
+        if Array::get(params, at = i) == n {
+          out = Array::get(args, at = i)
         } else {
           ()
         }
@@ -1630,10 +1631,10 @@ fn dfe_subst(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> Type
       out
     },
     TyApp(n, xs) => TyApp(n, for x in xs {
-      dfe_subst(x, params, args)
+      dfe_subst(ty = x, params = params, args = args)
     }),
     TyTuple(xs) => TyTuple(for x in xs {
-      dfe_subst(x, params, args)
+      dfe_subst(ty = x, params = params, args = args)
     }),
     _ => ty
   }
@@ -1641,7 +1642,7 @@ fn dfe_subst(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> Type
 
 fn dfe_ord_kind(fty: TypeExpr, tparams: Array[String]) -> String {
   match fty {
-    TyName(n) => if str_array_has(tparams, n) {
+    TyName(n) => if str_array_has(xs = tparams, v = n) {
       "type parameter `\{n}`"
     } else {
       "`\{n}`"
@@ -1655,22 +1656,22 @@ fn dfe_ord_kind(fty: TypeExpr, tparams: Array[String]) -> String {
 fn dfe_check_trait(owner: String, derives: Array[String], trait_name: String, op: String, what: String, head: String, head_derives: Array[String], defined: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
   // The owner writes the operation itself: nothing is generated, so nothing
   // goes through `head` (derive_pass skips the generator the same way).
-  if !struct_derives_has(derives, trait_name) || str_array_has(defined, String::concat(owner, String::concat("::", op))) {
+  if !struct_derives_has(derives = derives, name = trait_name) || str_array_has(xs = defined, v = String::concat(owner, String::concat("::", op))) {
     ()
   } else {
     let qualified = String::concat(head, String::concat("::", op))
     // `derive (Hash)` also generates `to_string` (see the SStruct arm),
     // unless a field it would render has none (#3567).
-    let derived = struct_derives_has(head_derives, trait_name) || (trait_name == "Show" && struct_derives_has(head_derives, "Hash") && !derived_hash_renderer_withheld(head))
-    let written = str_array_has(defined, qualified) || str_array_has(defined, String::concat(head, String::concat("::#impl", trait_name)))
-    let imported = match env_lookup(env, qualified) {
+    let derived = struct_derives_has(derives = head_derives, name = trait_name) || (trait_name == "Show" && struct_derives_has(derives = head_derives, name = "Hash") && !derived_hash_renderer_withheld(head))
+    let written = str_array_has(xs = defined, v = qualified) || str_array_has(xs = defined, v = String::concat(head, String::concat("::#impl", trait_name)))
+    let imported = match env_lookup(env = env, name = qualified) {
       Some(_) => true,
       None => false
     }
     if derived || written || imported {
       ()
     } else {
-      Array::push(errors, "add `derive (\{trait_name})` to `\{head}` (or define `\{qualified}`): `derive (\{trait_name})` on `\{owner}` goes through `\{qualified}` for its \{what}, and `\{head}` provides none [@fn=\{owner}]")
+      Array::push(errors, value = "add `derive (\{trait_name})` to `\{head}` (or define `\{qualified}`): `derive (\{trait_name})` on `\{owner}` goes through `\{qualified}` for its \{what}, and `\{head}` provides none [@fn=\{owner}]")
     }
   }
 }
@@ -1679,7 +1680,7 @@ fn str_array_has(xs: Array[String], v: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(xs) && !found {
-    found = Array::get(xs, i) == v
+    found = Array::get(xs, at = i) == v
     i = i + 1
   }
   found
@@ -1692,7 +1693,7 @@ export fn collect_stdin_provider_direct_call_errors(stmts: Array[Stmt], errors: 
   let direct_errors = check_stdin_provider_direct_calls_stmts(stmts)
   let mut i = 0
   while i < Array::length(direct_errors) {
-    Array::push(errors, effect_error_to_string(Array::get(direct_errors, i)))
+    Array::push(errors, value = effect_error_to_string(Array::get(direct_errors, at = i)))
     i = i + 1
   }
 }
@@ -1702,19 +1703,19 @@ export fn collect_stdin_provider_direct_call_errors(stmts: Array[Stmt], errors: 
 /// #3539: and hand it every recorded callee type, with the substitution its
 /// rows are read under.
 export fn publish_throw_site_kinds(_ final_s: Subst) -> Unit {
-  set_call_callee_types(call_callee_sites, final_s)
+  set_call_callee_types(rows = call_callee_sites, s = final_s)
   let raw = throw_payload_site_types()
   let out = array_empty()
   let mut i = 0
   while i < Array::length(raw) {
-    let (k, t) = Array::get(raw, i)
+    let (k, t) = Array::get(raw, at = i)
     // #3551 review: a payload that may carry an erased arm's binder.
     let kind = if type_is_erased_rethrow(t) {
       erased_rethrow_site_kind
     } else {
-      throw_kind_of_type(subst_apply(final_s, t))
+      throw_kind_of_type(subst_apply(s = final_s, ty = t))
     }
-    Array::push(out, (k, kind))
+    Array::push(out, value = (k, kind))
     i = i + 1
   }
   set_throw_site_kinds(out)
@@ -1737,7 +1738,7 @@ fn row_names_reserved_mut(_ row: String) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(labels) && !found {
-    if uel_head(Array::get(labels, i)) == reserved_mut_label {
+    if uel_head(Array::get(labels, at = i)) == reserved_mut_label {
       found = true
     }
     i = i + 1
@@ -1757,52 +1758,52 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
   let type_names = array_empty()
   let mut ln = 0
   while ln < Array::length(stmts) {
-    match Array::get(stmts, ln) {
-      SLet(_, _, lname, _, _) => Array::push(local_names, lname),
-      SLetMut(lname, _, _) => Array::push(local_names, lname),
-      SSuberror(_, tname, _) => Array::push(type_names, tname),
-      SEnum(_, tname, _, _, _) => Array::push(type_names, tname),
+    match Array::get(stmts, at = ln) {
+      SLet(_, _, lname, _, _) => Array::push(local_names, value = lname),
+      SLetMut(lname, _, _) => Array::push(local_names, value = lname),
+      SSuberror(_, tname, _) => Array::push(type_names, value = tname),
+      SEnum(_, tname, _, _, _) => Array::push(type_names, value = tname),
       SStruct(_, tname, _, _, _, _) => {
-        Array::push(type_names, tname)
+        Array::push(type_names, value = tname)
         // The env binds a struct's constructor under its name, with the
         // field rows in its signature: left in, `with Nope` in a field
         // would vouch for itself.
-        Array::push(local_names, tname)
+        Array::push(local_names, value = tname)
       },
       _ => ()
     }
     ln = ln + 1
   }
-  let env_labels = env_row_labels_from(env_sigs, local_names)
+  let env_labels = env_row_labels_from(sigs = env_sigs, local_names = local_names)
   // A package contract's effect and effectset names reach its sibling
   // implementation files through the loader's in-band carrier
   // (`contract_effect_names_line`); the declarations themselves stay in the
   // facade, which a sibling cannot import.
   let mut pi = 0
   while pi < Array::length(stmts) {
-    match Array::get(stmts, pi) {
-      SLet(_, _, cname, _, EString(names, _)) => if String::starts_with(cname, "__vpkg_contract_effects_") {
+    match Array::get(stmts, at = pi) {
+      SLet(_, _, cname, _, EString(names, _)) => if String::starts_with(cname, prefix = "__vpkg_contract_effects_") {
         // `Name=Op1,Op2` is a declared effect with its operations; a bare
         // name is an effectset.
-        let parts = String::split(names, " ")
+        let parts = String::split(names, sep = " ")
         let mut ni = 0
         while ni < Array::length(parts) {
-          let part = Array::get(parts, ni)
-          let eq = String::index_of(part, "=")
+          let part = Array::get(parts, at = ni)
+          let eq = String::index_of(part, needle = "=")
           if eq > 0 {
             let ops = array_empty()
-            let raw_ops = String::split(String::substring(part, eq + 1, String::length(part)), ",")
+            let raw_ops = String::split(String::substring(part, start = eq + 1, end = String::length(part)), sep = ",")
             let mut ri = 0
             while ri < Array::length(raw_ops) {
-              if String::length(Array::get(raw_ops, ri)) > 0 {
-                Array::push(ops, Array::get(raw_ops, ri))
+              if String::length(Array::get(raw_ops, at = ri)) > 0 {
+                Array::push(ops, value = Array::get(raw_ops, at = ri))
               }
               ri = ri + 1
             }
-            Array::push(ed_names, String::substring(part, 0, eq))
-            Array::push(ed_ops, ops)
+            Array::push(ed_names, value = String::substring(part, start = 0, end = eq))
+            Array::push(ed_ops, value = ops)
           } else if String::length(part) > 0 {
-            Array::push(es_names, part)
+            Array::push(es_names, value = part)
           }
           ni = ni + 1
         }
@@ -1814,24 +1815,24 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
   let mut reported = false
   let mut di = 0
   while di < Array::length(stmts) && !reported {
-    let declared = match Array::get(stmts, di) {
+    let declared = match Array::get(stmts, at = di) {
       SEffectDef(_, dname, _, _) => dname,
       SEffectSet(_, dname, _) => dname,
       _ => ""
     }
     if declared == reserved_mut_label {
       reported = true
-      Array::push(errors, String::concat(reserved_mut_decl_message, String::concat(" [@fn=", String::concat(declared, "]"))))
+      Array::push(errors, value = String::concat(reserved_mut_decl_message, String::concat(" [@fn=", String::concat(declared, "]"))))
     } else {
       // `effectset Writes = { Mut }` would alias the reserved label under
       // another name (Codex on #3061).
-      match Array::get(stmts, di) {
+      match Array::get(stmts, at = di) {
         SEffectSet(_, sname, members) => {
           let mut mi = 0
           while mi < Array::length(members) && !reported {
-            if uel_head(Array::get(members, mi)) == reserved_mut_label {
+            if uel_head(Array::get(members, at = mi)) == reserved_mut_label {
               reported = true
-              Array::push(errors, String::concat(reserved_mut_row_message, String::concat(" (in the members of effectset '", String::concat(sname, String::concat("')", String::concat(" [@fn=", String::concat(sname, "]")))))))
+              Array::push(errors, value = String::concat(reserved_mut_row_message, String::concat(" (in the members of effectset '", String::concat(sname, String::concat("')", String::concat(" [@fn=", String::concat(sname, "]")))))))
             }
             mi = mi + 1
           }
@@ -1850,12 +1851,12 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
   // reported; unknown labels in declarations keep their existing handling.
   let mut ti = 0
   while ti < Array::length(stmts) && !reported {
-    let (decl_name, decl_labels) = stmt_type_rows(Array::get(stmts, ti))
+    let (decl_name, decl_labels) = stmt_type_rows(Array::get(stmts, at = ti))
     let mut dli = 0
     while dli < Array::length(decl_labels) && !reported {
-      if uel_head(Array::get(decl_labels, dli)) == reserved_mut_label {
+      if uel_head(Array::get(decl_labels, at = dli)) == reserved_mut_label {
         reported = true
-        Array::push(errors, String::concat(reserved_mut_row_message, String::concat(" (in the declaration of '", String::concat(decl_name, String::concat("')", String::concat(" [@fn=", String::concat(decl_name, "]")))))))
+        Array::push(errors, value = String::concat(reserved_mut_row_message, String::concat(" (in the declaration of '", String::concat(decl_name, String::concat("')", String::concat(" [@fn=", String::concat(decl_name, "]")))))))
       }
       dli = dli + 1
     }
@@ -1868,22 +1869,22 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
   // `handle` as the suggested edit), far from the cause.
   let mut si = 0
   while si < Array::length(stmts) && !reported {
-    match Array::get(stmts, si) {
+    match Array::get(stmts, at = si) {
       SStruct(_, sname, _, _, _, stparams) => {
-        let (_, slabels) = stmt_type_rows(Array::get(stmts, si))
+        let (_, slabels) = stmt_type_rows(Array::get(stmts, at = si))
         let mut sli = 0
         while sli < Array::length(slabels) && !reported {
-          let label = Array::get(slabels, sli)
-          let msg = unknown_effect_label_message(label, es_names, ed_names, ed_ops, env_labels, type_names)
+          let label = Array::get(slabels, at = sli)
+          let msg = unknown_effect_label_message(label = label, es_names = es_names, ed_names = ed_names, ed_ops = ed_ops, env_labels = env_labels, type_names = type_names)
           if String::length(msg) > 0 {
             reported = true
             let head = uel_head(label)
-            let text = if String::starts_with(msg, "unknown effect `") && uel_formal_named(stparams, head) {
-              struct_formal_row_message(sname, head)
+            let text = if String::starts_with(msg, prefix = "unknown effect `") && uel_formal_named(keys = stparams, name = head) {
+              struct_formal_row_message(sname = sname, formal = head)
             } else {
               msg
             }
-            Array::push(errors, String::concat(text, String::concat(" (in a field of struct '", String::concat(sname, String::concat("')", String::concat(" [@fn=", String::concat(sname, "]")))))))
+            Array::push(errors, value = String::concat(text, String::concat(" (in a field of struct '", String::concat(sname, String::concat("')", String::concat(" [@fn=", String::concat(sname, "]")))))))
           }
           sli = sli + 1
         }
@@ -1896,7 +1897,7 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
   // bind (`struct Holder { run: () -> Int with r }`).
   let mut ri = 0
   while ri < Array::length(stmts) && !reported {
-    let (kind, dname, formals, tes) = match Array::get(stmts, ri) {
+    let (kind, dname, formals, tes) = match Array::get(stmts, at = ri) {
       SStruct(_, sname, sfields, _, _, stparams) => ("struct", sname, stparams, for f in sfields {
         let (_, fte) = f
         fte
@@ -1906,7 +1907,7 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
         for v in variants {
           let (_, vtes) = v
           for t in vtes {
-            Array::push(payloads, t)
+            Array::push(payloads, value = t)
           }
         }
         ("enum", ename, eparams, payloads)
@@ -1915,23 +1916,23 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
     }
     let bound: Array[String] = []
     for f in formals {
-      Array::push(bound, type_param_name(f))
+      Array::push(bound, value = type_param_name(f))
     }
     let unbound: Array[String] = []
     for t in tes {
-      unbound_decl_row_vars(t, bound, unbound)
+      unbound_decl_row_vars(te = t, bound = bound, out = unbound)
     }
     // #3589: an enum's row parameter is not carried by its values (a
     // constructor types as the bare enum), so a call through a function
     // taken out of `Job[e]` was charged nothing. Refused until it is.
     let enum_row = if kind == "enum" {
-      enum_payload_row_formal(tes, bound, unbound)
+      enum_payload_row_formal(tes = tes, bound = bound, unbound = unbound)
     } else {
       ""
     }
     if String::length(enum_row) > 0 {
       reported = true
-      Array::push(errors, enum_row_formal_message(dname, enum_row) + " (in a payload of enum '" + dname + "') [@fn=" + dname + "]")
+      Array::push(errors, value = enum_row_formal_message(dname = dname, v = enum_row) + " (in a payload of enum '" + dname + "') [@fn=" + dname + "]")
     } else if Array::length(unbound) > 0 {
       reported = true
       let where_kind = if kind == "struct" {
@@ -1939,35 +1940,35 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
       } else {
         "a payload of enum"
       }
-      Array::push(errors, unbound_decl_row_var_message(kind, dname, formals, Array::get(unbound, 0)) + " (in " + where_kind + " '" + dname + "') [@fn=" + dname + "]")
+      Array::push(errors, value = unbound_decl_row_var_message(kind = kind, dname = dname, formals = formals, v = Array::get(unbound, at = 0)) + " (in " + where_kind + " '" + dname + "') [@fn=" + dname + "]")
     }
     ri = ri + 1
   }
   let mut i = 0
   while i < Array::length(stmts) && !reported {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, ty, body) => {
         let rows = array_empty()
         match ty {
-          Some(te) => fek_rows_in_texpr(te, rows),
+          Some(te) => fek_rows_in_texpr(te = te, out = rows),
           None => ()
         }
         match body {
           EFn(_, _, params, ret, eff, _) => {
             match eff {
-              Some(row) => Array::push(rows, row),
+              Some(row) => Array::push(rows, value = row),
               None => ()
             }
             let mut pi = 0
             while pi < Array::length(params) {
-              match Array::get(params, pi) {
-                (_, Some(pte)) => fek_rows_in_texpr(pte, rows),
+              match Array::get(params, at = pi) {
+                (_, Some(pte)) => fek_rows_in_texpr(te = pte, out = rows),
                 _ => ()
               }
               pi = pi + 1
             }
             match ret {
-              Some(rte) => fek_rows_in_texpr(rte, rows),
+              Some(rte) => fek_rows_in_texpr(te = rte, out = rows),
               None => ()
             }
           },
@@ -1975,25 +1976,25 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
         }
         let mut ri = 0
         while ri < Array::length(rows) && !reported {
-          let labels = row_text_labels(Array::get(rows, ri))
+          let labels = row_text_labels(Array::get(rows, at = ri))
           let mut li = 0
           while li < Array::length(labels) && !reported {
-            let msg = unknown_effect_label_message(Array::get(labels, li), es_names, ed_names, ed_ops, env_labels, type_names)
+            let msg = unknown_effect_label_message(label = Array::get(labels, at = li), es_names = es_names, ed_names = ed_names, ed_ops = ed_ops, env_labels = env_labels, type_names = type_names)
             // The entry's grant check names a missing provider operation
             // with its own edit (`allows Console`), so it answers for `main`.
-            if String::length(msg) > 0 && !(name == "main" && String::starts_with(msg, "effect `")) {
+            if String::length(msg) > 0 && !(name == "main" && String::starts_with(msg, prefix = "effect `")) {
               reported = true
-              Array::push(errors, String::concat(msg, String::concat(String::concat(" (in the row of '", String::concat(name, "')")), String::concat(" [@fn=", String::concat(name, "]")))))
+              Array::push(errors, value = String::concat(msg, String::concat(String::concat(" (in the row of '", String::concat(name, "')")), String::concat(" [@fn=", String::concat(name, "]")))))
             }
             li = li + 1
           }
           ri = ri + 1
         }
         if !reported {
-          let arm_msg = unknown_effect_arm_in_expr(body, es_names, ed_names, ed_ops, env_labels, type_names)
+          let arm_msg = unknown_effect_arm_in_expr(expr = body, es_names = es_names, ed_names = ed_names, ed_ops = ed_ops, env_labels = env_labels, type_names = type_names)
           if String::length(arm_msg) > 0 {
             reported = true
-            Array::push(errors, String::concat(arm_msg, String::concat(" [@fn=", String::concat(name, "]"))))
+            Array::push(errors, value = String::concat(arm_msg, String::concat(" [@fn=", String::concat(name, "]"))))
           }
         }
       },
@@ -2007,7 +2008,7 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
   // keep their existing handling.
   let mut bi = 0
   while bi < Array::length(stmts) && !reported {
-    let (owner, bbody) = match Array::get(stmts, bi) {
+    let (owner, bbody) = match Array::get(stmts, at = bi) {
       STest(tname, tbody) => (tname, Some(tbody)),
       SBench(bname, bbody0) => (bname, Some(bbody0)),
       SExpr(ebody) => ("", Some(ebody)),
@@ -2015,10 +2016,10 @@ fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[Stri
     }
     match bbody {
       Some(b) => {
-        let bmsg = unknown_effect_arm_in_expr(b, es_names, ed_names, ed_ops, env_labels, type_names)
-        if String::starts_with(bmsg, reserved_mut_row_message) {
+        let bmsg = unknown_effect_arm_in_expr(expr = b, es_names = es_names, ed_names = ed_names, ed_ops = ed_ops, env_labels = env_labels, type_names = type_names)
+        if String::starts_with(bmsg, prefix = reserved_mut_row_message) {
           reported = true
-          Array::push(errors, String::concat(bmsg, String::concat(" [@fn=", String::concat(owner, "]"))))
+          Array::push(errors, value = String::concat(bmsg, String::concat(" [@fn=", String::concat(owner, "]"))))
         }
       },
       None => ()
@@ -2046,7 +2047,7 @@ fn uel_formal_named(keys: Array[String], name: String) -> Bool {
 /// uppercase formal there is read as an effect named after it.
 fn struct_formal_row_message(sname: String, formal: String) -> String {
   // `formal` reached here as an unknown effect, so it starts with A-Z.
-  let row_var = String::from_char_code(String::char_code_at(formal, 0) + 32)
+  let row_var = String::from_char_code(String::char_code_at(formal, at = 0) + 32)
   "write `struct " + sname + "[" + row_var + "]` and `with " + row_var + "` if the row is meant to vary: a row parameter is a single lowercase letter, so `" + formal + "` (a type parameter of `" + sname + "`) is read in a field's row as an effect named `" + formal + "`, and no effect `" + formal + "` is declared"
 }
 
@@ -2063,30 +2064,30 @@ fn unbound_decl_row_vars(te: TypeExpr, bound: Array[String], out: Array[String])
     TyFn(ps, r, eff) => {
       let param_rows: Array[String] = []
       for p in ps {
-        fek_rows_in_texpr(p, param_rows)
+        fek_rows_in_texpr(te = p, out = param_rows)
       }
-      let inner = Array::slice(bound, 0, Array::length(bound))
+      let inner = Array::slice(bound, start = 0, end = Array::length(bound))
       for pr in param_rows {
         for l in row_text_labels(pr) {
-          Array::push(inner, l)
+          Array::push(inner, value = l)
         }
       }
       match eff {
         Some(row) => for l in row_text_labels(row) {
           let v = String::trim(l)
-          if uel_is_row_var(v) && !uel_contains(inner, v) && !uel_contains(out, v) {
-            Array::push(out, v)
+          if uel_is_row_var(v) && !uel_contains(xs = inner, x = v) && !uel_contains(xs = out, x = v) {
+            Array::push(out, value = v)
           }
         },
         None => ()
       }
-      unbound_decl_row_vars(r, inner, out)
+      unbound_decl_row_vars(te = r, bound = inner, out = out)
     },
     TyApp(_, args) => for a in args {
-      unbound_decl_row_vars(a, bound, out)
+      unbound_decl_row_vars(te = a, bound = bound, out = out)
     },
     TyTuple(items) => for a in items {
-      unbound_decl_row_vars(a, bound, out)
+      unbound_decl_row_vars(te = a, bound = bound, out = out)
     },
     _ => ()
   }
@@ -2097,18 +2098,18 @@ fn unbound_decl_row_vars(te: TypeExpr, bound: Array[String], out: Array[String])
 /// when the payload rows name none.
 fn enum_payload_row_formal(tes: Array[TypeExpr], bound: Array[String], unbound: Array[String]) -> String {
   let mut found = if Array::length(unbound) > 0 {
-    Array::get(unbound, 0)
+    Array::get(unbound, at = 0)
   } else {
     ""
   }
   let rows: Array[String] = []
   for t in tes {
-    fek_rows_in_texpr(t, rows)
+    fek_rows_in_texpr(te = t, out = rows)
   }
   for row in rows {
     for l in row_text_labels(row) {
       let v = String::trim(l)
-      if String::length(found) == 0 && uel_is_row_var(v) && uel_contains(bound, v) {
+      if String::length(found) == 0 && uel_is_row_var(v) && uel_contains(xs = bound, x = v) {
         found = v
       }
     }
@@ -2124,7 +2125,7 @@ fn enum_row_formal_message(dname: String, v: String) -> String {
 
 /// A row variable as a declaration spells it: one lowercase letter.
 fn uel_is_row_var(_ l: String) -> Bool {
-  String::length(l) == 1 && String::char_code_at(l, 0) >= 97 && String::char_code_at(l, 0) <= 122
+  String::length(l) == 1 && String::char_code_at(l, at = 0) >= 97 && String::char_code_at(l, at = 0) <= 122
 }
 
 /// The refusal for row variable `v` that `kind` declaration `dname` does not
@@ -2141,7 +2142,7 @@ fn uel_contains(xs: Array[String], x: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(xs) && !found {
-    if Array::get(xs, i) == x {
+    if Array::get(xs, at = i) == x {
       found = true
     }
     i = i + 1
@@ -2152,27 +2153,27 @@ fn uel_contains(xs: Array[String], x: String) -> Bool {
 /// The effect head of a label: `Fs::read_file?` -> `Fs`, `Exception[E]` -> `Exception`.
 fn uel_head(_ raw: String) -> String {
   // An optional grade (`Fs?`, `Fs::read_file?`) names the same effect.
-  let label = if String::ends_with(raw, "?") {
-    String::substring(raw, 0, String::length(raw) - 1)
+  let label = if String::ends_with(raw, suffix = "?") {
+    String::substring(raw, start = 0, end = String::length(raw) - 1)
   } else {
     raw
   }
-  let ci = String::index_of(label, "::")
+  let ci = String::index_of(label, needle = "::")
   let h = if ci > 0 {
-    String::substring(label, 0, ci)
+    String::substring(label, start = 0, end = ci)
   } else {
     label
   }
-  let bi = String::index_of(h, "[")
+  let bi = String::index_of(h, needle = "[")
   if bi > 0 {
-    String::substring(h, 0, bi)
+    String::substring(h, start = 0, end = bi)
   } else {
     h
   }
 }
 
 fn uel_head_known(head: String, es_names: Array[String], ed_names: Array[String], env_labels: Array[String]) -> Bool {
-  if uel_contains(ed_names, head) || uel_contains(es_names, head) {
+  if uel_contains(xs = ed_names, x = head) || uel_contains(xs = es_names, x = head) {
     true
   } else if has_standard_effect_policy(head) || head == "AsyncIter" || head == "Random" {
     // #1963: `Async`, `Exception` and `Error` are standard policy labels, so
@@ -2183,7 +2184,7 @@ fn uel_head_known(head: String, es_names: Array[String], ed_names: Array[String]
     let mut i = 0
     let mut found = false
     while i < Array::length(env_labels) && !found {
-      if uel_head(Array::get(env_labels, i)) == head {
+      if uel_head(Array::get(env_labels, at = i)) == head {
         found = true
       }
       i = i + 1
@@ -2198,29 +2199,29 @@ fn uel_edit_distance(a: String, b: String) -> Int {
   let prev = array_empty()
   let mut j = 0
   while j <= lb {
-    Array::push(prev, j)
+    Array::push(prev, value = j)
     j = j + 1
   }
   let mut i = 1
   while i <= la {
     let cur = array_empty()
-    Array::push(cur, i)
+    Array::push(cur, value = i)
     let mut k = 1
     while k <= lb {
-      let cost = if String::char_code_at(a, i - 1) == String::char_code_at(b, k - 1) {
+      let cost = if String::char_code_at(a, at = i - 1) == String::char_code_at(b, at = k - 1) {
         0
       } else {
         1
       }
-      let del = Array::get(prev, k) + 1
-      let ins = Array::get(cur, k - 1) + 1
-      let sub = Array::get(prev, k - 1) + cost
+      let del = Array::get(prev, at = k) + 1
+      let ins = Array::get(cur, at = k - 1) + 1
+      let sub = Array::get(prev, at = k - 1) + cost
       let m1 = if del < ins {
         del
       } else {
         ins
       }
-      Array::push(cur, if m1 < sub {
+      Array::push(cur, value = if m1 < sub {
         m1
       } else {
         sub
@@ -2229,12 +2230,12 @@ fn uel_edit_distance(a: String, b: String) -> Int {
     }
     let mut c = 0
     while c <= lb {
-      Array::set(prev, c, Array::get(cur, c))
+      Array::set(prev, at = c, value = Array::get(cur, at = c))
       c = c + 1
     }
     i = i + 1
   }
-  Array::get(prev, lb)
+  Array::get(prev, at = lb)
 }
 
 fn uel_suggestion(head: String, es_names: Array[String], ed_names: Array[String]) -> String {
@@ -2255,25 +2256,25 @@ fn uel_suggestion(head: String, es_names: Array[String], ed_names: Array[String]
   ]
   let mut i = 0
   while i < Array::length(builtin) {
-    Array::push(cands, Array::get(builtin, i))
+    Array::push(cands, value = Array::get(builtin, at = i))
     i = i + 1
   }
   i = 0
   while i < Array::length(ed_names) {
-    Array::push(cands, Array::get(ed_names, i))
+    Array::push(cands, value = Array::get(ed_names, at = i))
     i = i + 1
   }
   i = 0
   while i < Array::length(es_names) {
-    Array::push(cands, Array::get(es_names, i))
+    Array::push(cands, value = Array::get(es_names, at = i))
     i = i + 1
   }
   let mut best = ""
   let mut best_d = 3
   i = 0
   while i < Array::length(cands) {
-    let c = Array::get(cands, i)
-    let d = uel_edit_distance(head, c)
+    let c = Array::get(cands, at = i)
+    let d = uel_edit_distance(a = head, b = c)
     if d < best_d {
       best_d = d
       best = c
@@ -2286,7 +2287,7 @@ fn uel_suggestion(head: String, es_names: Array[String], ed_names: Array[String]
 fn unknown_effect_label_message(label: String, es_names: Array[String], ed_names: Array[String], ed_ops: Array[Array[String]], env_labels: Array[String], type_names: Array[String]) -> String {
   let head = uel_head(label)
   let first = if String::length(head) > 0 {
-    String::char_code_at(head, 0)
+    String::char_code_at(head, at = 0)
   } else {
     0
   }
@@ -2297,10 +2298,10 @@ fn unknown_effect_label_message(label: String, es_names: Array[String], ed_names
     // #3045: checked before "known", so a user `effect Mut` (refused on its
     // own by `reserved_mut_decl_message`) cannot make the label legal.
     reserved_mut_row_message
-  } else if !uel_head_known(head, es_names, ed_names, env_labels) && uel_contains(type_names, head) {
+  } else if !uel_head_known(head = head, es_names = es_names, ed_names = ed_names, env_labels = env_labels) && uel_contains(xs = type_names, x = head) {
     String::concat("`", String::concat(head, String::concat("` is a type, not an effect: a function that throws it declares `with Exception[", String::concat(head, "]`"))))
-  } else if !uel_head_known(head, es_names, ed_names, env_labels) {
-    let sug = uel_suggestion(head, es_names, ed_names)
+  } else if !uel_head_known(head = head, es_names = es_names, ed_names = ed_names, env_labels = env_labels) {
+    let sug = uel_suggestion(head = head, es_names = es_names, ed_names = ed_names)
     let fix = if String::length(sug) > 0 {
       String::concat("did you mean `", String::concat(sug, "`? Otherwise declare it"))
     } else {
@@ -2308,18 +2309,18 @@ fn unknown_effect_label_message(label: String, es_names: Array[String], ed_names
     }
     String::concat("unknown effect `", String::concat(head, String::concat("`: ", String::concat(fix, String::concat(" (`effect ", String::concat(head, " { .. }`) or import it"))))))
   } else {
-    let ci = String::index_of(label, "::")
-    if ci > 0 && String::index_of(head, "[") < 0 {
-      let raw_op = String::substring(label, ci + 2, String::length(label))
-      let op = if String::ends_with(raw_op, "?") {
-        String::substring(raw_op, 0, String::length(raw_op) - 1)
+    let ci = String::index_of(label, needle = "::")
+    if ci > 0 && String::index_of(head, needle = "[") < 0 {
+      let raw_op = String::substring(label, start = ci + 2, end = String::length(label))
+      let op = if String::ends_with(raw_op, suffix = "?") {
+        String::substring(raw_op, start = 0, end = String::length(raw_op) - 1)
       } else {
         raw_op
       }
       let mut di = 0
       let mut declared_idx = 0 - 1
       while di < Array::length(ed_names) {
-        if Array::get(ed_names, di) == head && declared_idx < 0 {
+        if Array::get(ed_names, at = di) == head && declared_idx < 0 {
           declared_idx = di
         }
         di = di + 1
@@ -2327,14 +2328,14 @@ fn unknown_effect_label_message(label: String, es_names: Array[String], ed_names
       if declared_idx >= 0 {
         // #1963: the exception owner, not `head == "Exception"`, so the
         // erased `Error` spelling is the same effect here as everywhere else.
-        if uel_contains(Array::get(ed_ops, declared_idx), op) || is_exception_effect_name(head) {
+        if uel_contains(xs = Array::get(ed_ops, at = declared_idx), x = op) || is_exception_effect_name(head) {
           ""
         } else {
           String::concat("effect `", String::concat(head, String::concat("` has no such operation `", String::concat(op, "`"))))
         }
       } else if has_standard_host_provider(head) {
         let qn = String::concat(head, String::concat("::", op))
-        if lookup_builtin(qn) != None || lookup_registry_builtin(qn) != None || uel_contains(env_labels, qn) {
+        if lookup_builtin(qn) != None || lookup_registry_builtin(qn) != None || uel_contains(xs = env_labels, x = qn) {
           ""
         } else {
           String::concat("effect `", String::concat(head, String::concat("` has no such operation `", String::concat(op, "`"))))
@@ -2349,16 +2350,16 @@ fn unknown_effect_label_message(label: String, es_names: Array[String], ed_names
         let seen = array_empty()
         let mut ei = 0
         while ei < Array::length(env_labels) {
-          let el = Array::get(env_labels, ei)
-          if String::starts_with(el, prefix) && !uel_contains(seen, el) {
-            Array::push(seen, el)
+          let el = Array::get(env_labels, at = ei)
+          if String::starts_with(el, prefix = prefix) && !uel_contains(xs = seen, x = el) {
+            Array::push(seen, value = el)
           }
           ei = ei + 1
         }
-        if uel_contains(env_labels, head) || uel_contains(es_names, head) || uel_contains(env_labels, qn) || Array::length(seen) == 0 {
+        if uel_contains(xs = env_labels, x = head) || uel_contains(xs = es_names, x = head) || uel_contains(xs = env_labels, x = qn) || Array::length(seen) == 0 {
           ""
         } else {
-          String::concat("operation `", String::concat(qn, String::concat("` is not known here: import the `", String::concat(head, String::concat("` effect declaration, or use an operation this module sees (`", String::concat(String::join(seen, "`, `"), "`)"))))))
+          String::concat("operation `", String::concat(qn, String::concat("` is not known here: import the `", String::concat(head, String::concat("` effect declaration, or use an operation this module sees (`", String::concat(String::join(seen, sep = "`, `"), "`)"))))))
         }
       }
     } else {
@@ -2372,16 +2373,16 @@ fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Arr
   let stack = [expr]
   let mut out = ""
   while Array::length(stack) > 0 && String::length(out) == 0 {
-    let e = Array::get(stack, Array::length(stack) - 1)
-    Array::truncate(stack, Array::length(stack) - 1)
+    let e = Array::get(stack, at = Array::length(stack) - 1)
+    Array::truncate(stack, length = Array::length(stack) - 1)
     match e {
       EHandle(_, arms) => {
         let mut ai = 0
         while ai < Array::length(arms) && String::length(out) == 0 {
-          let (pat, _) = Array::get(arms, ai)
+          let (pat, _) = Array::get(arms, at = ai)
           match pat {
-            PCtor(pname, _) => if String::index_of(pname, "::") > 0 {
-              let msg = unknown_effect_label_message(pname, es_names, ed_names, ed_ops, env_labels, type_names)
+            PCtor(pname, _) => if String::index_of(pname, needle = "::") > 0 {
+              let msg = unknown_effect_label_message(label = pname, es_names = es_names, ed_names = ed_names, ed_ops = ed_ops, env_labels = env_labels, type_names = type_names)
               if String::length(msg) > 0 {
                 out = String::concat(msg, " (in a handler arm)")
               }
@@ -2397,24 +2398,24 @@ fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Arr
       EFn(_, _, cparams, cret, crow, _) => {
         let crows = array_empty()
         match crow {
-          Some(r) => Array::push(crows, r),
+          Some(r) => Array::push(crows, value = r),
           None => ()
         }
         let mut cpi = 0
         while cpi < Array::length(cparams) {
-          match Array::get(cparams, cpi) {
-            (_, Some(cpte)) => fek_rows_in_texpr(cpte, crows),
+          match Array::get(cparams, at = cpi) {
+            (_, Some(cpte)) => fek_rows_in_texpr(te = cpte, out = crows),
             _ => ()
           }
           cpi = cpi + 1
         }
         match cret {
-          Some(crte) => fek_rows_in_texpr(crte, crows),
+          Some(crte) => fek_rows_in_texpr(te = crte, out = crows),
           None => ()
         }
         let mut cri = 0
         while cri < Array::length(crows) && String::length(out) == 0 {
-          if row_names_reserved_mut(Array::get(crows, cri)) {
+          if row_names_reserved_mut(Array::get(crows, at = cri)) {
             out = String::concat(reserved_mut_row_message, " (in a closure's row)")
           }
           cri = cri + 1
@@ -2424,7 +2425,7 @@ fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Arr
     }
     // Straight onto the work stack, in the order `expr_children` lists them,
     // without a child array per node.
-    expr_children_into(e, stack)
+    expr_children_into(expr = e, out = stack)
   }
   out
 }
@@ -2440,13 +2441,13 @@ fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Arr
 /// `@vibe/core`'s `Default` brings that module's impls with it.
 export fn builtin_seed_withheld(stmts: Array[Stmt], env: TypeEnv) -> Array[String] {
   let out: Array[String] = []
-  if !builtin_show_seed_allowed(stmts, env) {
-    Array::push(out, "Show")
+  if !builtin_show_seed_allowed(stmts = stmts, env = env) {
+    Array::push(out, value = "Show")
   }
   let guarded: Array[String] = ["Signed", "Default"]
   for name in guarded {
-    if trait_defined(env, name) || stmts_declare_trait(stmts, name) {
-      Array::push(out, name)
+    if trait_defined(env = env, name = name) || stmts_declare_trait(stmts = stmts, name = name) {
+      Array::push(out, value = name)
     }
   }
   out
@@ -2456,7 +2457,7 @@ fn stmts_declare_trait(stmts: Array[Stmt], name: String) -> Bool {
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       STrait(_, tname, _, _, _, _) => if tname == name {
         found = true
       },
@@ -2477,7 +2478,7 @@ fn builtin_show_seed_allowed(stmts: Array[Stmt], env: TypeEnv) -> Bool {
   let mut ok = true
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       STrait(_, tname, supers, methods, _, _) => if tname == "Show" && !(Array::length(supers) == 0 && show_methods_have_to_string(methods)) {
         ok = false
       },
@@ -2486,7 +2487,7 @@ fn builtin_show_seed_allowed(stmts: Array[Stmt], env: TypeEnv) -> Bool {
     i = i + 1
   }
   if ok {
-    match trait_definition(env, "Show") {
+    match trait_definition(env = env, name = "Show") {
       Some((supers, methods, _, _)) => Array::length(supers) == 0 && show_methods_have_to_string(methods),
       None => true
     }
@@ -2501,8 +2502,8 @@ fn builtin_show_seed_allowed(stmts: Array[Stmt], env: TypeEnv) -> Bool {
 /// would be served by a function of the wrong signature (#3022 review).
 fn show_methods_have_to_string(_ methods: Array[(String, Array[TypeExpr], TypeExpr)]) -> Bool {
   if Array::length(methods) == 1 {
-    let (mname, params, ret) = Array::get(methods, 0)
-    mname == "to_string" && Array::length(params) == 1 && match (Array::get(params, 0), ret) {
+    let (mname, params, ret) = Array::get(methods, at = 0)
+    mname == "to_string" && Array::length(params) == 1 && match (Array::get(params, at = 0), ret) {
       (TyName("Self"), TyName("String")) => true,
       _ => false
     }
@@ -2516,17 +2517,17 @@ fn show_methods_have_to_string(_ methods: Array[(String, Array[TypeExpr], TypeEx
 /// otherwise clean so we surface the real error first.
 export fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], frozen_errors: Array[String]) -> Unit {
   if Array::length(frozen_errors) == 0 {
-    let eff_errs = check_async_effects_stmts(stmts, env)
+    let eff_errs = check_async_effects_stmts(stmts = stmts, env = env)
     let mut i = 0
     while i < Array::length(eff_errs) {
-      Array::push(frozen_errors, effect_error_to_string(Array::get(eff_errs, i)))
+      Array::push(frozen_errors, value = effect_error_to_string(Array::get(eff_errs, at = i)))
       i = i + 1
     }
     if Array::length(frozen_errors) == 0 {
       // #1340 (ADR-0071): generic-instantiation row items are validated
       // against the effect declarations before the containment pass sees
       // them (which compares instantiation-insensitively by base name).
-      geff_validate_row_targs(stmts, frozen_errors)
+      geff_validate_row_targs(stmts = stmts, errors = frozen_errors)
     }
     if Array::length(frozen_errors) == 0 {
       // ADR-0071 step 3 (#755): expand any effectset-name token in a
@@ -2538,29 +2539,29 @@ export fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, defs: Ar
       // instead of requiring callers to re-declare it verbatim. Pure AST
       // rewrite local to this file (see es_expand_stmts_effect_rows);
       // check_perform_effects_stmts_env itself is untouched.
-      let (perform_es_names, perform_es_members_list, perform_ed_names, perform_ed_ops) = es_collect_tables(stmts, 0)
-      es_append_imported_tables(env_type_defs(env), perform_es_names, perform_es_members_list, perform_ed_names, perform_ed_ops)
+      let (perform_es_names, perform_es_members_list, perform_ed_names, perform_ed_ops) = es_collect_tables(stmts = stmts, from_idx = 0)
+      es_append_imported_tables(defs = env_type_defs(env), es_names = perform_es_names, es_members_list = perform_es_members_list, ed_names = perform_ed_names, ed_ops_list = perform_ed_ops)
       // #2968: a row label must name an effect something declares.
       // The checker's type-definition table can hold effect declarations the
       // env's own type-def list does not; count those as known too.
-      let known_es = Array::slice(perform_es_names, 0, Array::length(perform_es_names))
-      let known_es_members = Array::slice(perform_es_members_list, 0, Array::length(perform_es_members_list))
-      let known_ed = Array::slice(perform_ed_names, 0, Array::length(perform_ed_names))
-      let known_ed_ops = Array::slice(perform_ed_ops, 0, Array::length(perform_ed_ops))
-      es_append_imported_tables(defs, known_es, known_es_members, known_ed, known_ed_ops)
+      let known_es = Array::slice(perform_es_names, start = 0, end = Array::length(perform_es_names))
+      let known_es_members = Array::slice(perform_es_members_list, start = 0, end = Array::length(perform_es_members_list))
+      let known_ed = Array::slice(perform_ed_names, start = 0, end = Array::length(perform_ed_names))
+      let known_ed_ops = Array::slice(perform_ed_ops, start = 0, end = Array::length(perform_ed_ops))
+      es_append_imported_tables(defs = defs, es_names = known_es, es_members_list = known_es_members, ed_names = known_ed, ed_ops_list = known_ed_ops)
       // One walk of the env's function rows serves both the label check and
       // the perform pass's two tables (env_fn_sigs).
       let env_sigs = env_fn_sigs(env)
-      collect_unknown_effect_label_errors(stmts, env_sigs, known_es, known_ed, known_ed_ops, frozen_errors)
-      let expanded_stmts = es_expand_stmts_effect_rows(stmts, perform_es_names, perform_es_members_list)
+      collect_unknown_effect_label_errors(stmts = stmts, env_sigs = env_sigs, es_names = known_es, ed_names = known_ed, ed_ops = known_ed_ops, errors = frozen_errors)
+      let expanded_stmts = es_expand_stmts_effect_rows(stmts = stmts, es_names = perform_es_names, es_members_list = perform_es_members_list)
       let perform_errs = if Array::length(frozen_errors) == 0 {
-        check_perform_effects_stmts_env_published_sigs(expanded_stmts, env, env_sigs)
+        check_perform_effects_stmts_env_published_sigs(stmts = expanded_stmts, env = env, written_env_sigs = env_sigs)
       } else {
         array_empty()
       }
       let mut j = 0
       while j < Array::length(perform_errs) {
-        Array::push(frozen_errors, effect_error_to_string(Array::get(perform_errs, j)))
+        Array::push(frozen_errors, value = effect_error_to_string(Array::get(perform_errs, at = j)))
         j = j + 1
       }
     }
@@ -2568,7 +2569,7 @@ export fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, defs: Ar
       let mut_errs = check_mutability_stmts(stmts)
       let mut k = 0
       while k < Array::length(mut_errs) {
-        Array::push(frozen_errors, effect_error_to_string(Array::get(mut_errs, k)))
+        Array::push(frozen_errors, value = effect_error_to_string(Array::get(mut_errs, at = k)))
         k = k + 1
       }
     }
@@ -2588,5 +2589,5 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
   // #1455: this compatibility entry point is handed a caller-owned `defs`
   // that never contains seeded imported enums, so every declaration in it is
   // local and the #1078 scan starts at 0.
-  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, 0, s, c, errors, tytab, None, None, None, false, true)
+  check_stmts_with_binders(raw_stmts = raw_stmts, i = i, env = env, defs = defs, type_def_binders = ignored_type_def_binders, local_defs_start = 0, s = s, c = c, errors = errors, tytab = tytab, statement_parent_path = None, capture = None, role_lane_capture = None, imports_already_projected = false, validate_completed_decls = true)
 }

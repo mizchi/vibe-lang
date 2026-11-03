@@ -84,22 +84,70 @@ def gc_import_name_for(def_name: str) -> str:
     return def_name.replace("::", "_").lower()
 
 
-# ADR-0120: a call may spell an argument with its label (`f(x = 1)`), so each
-# argument the readers below match may carry one.
-L = r'(?:[a-z_][a-z0-9_]* = )?'
-
 def die(message: str) -> None:
     print(f"host-runtime-contract: {message}", file=sys.stderr)
     raise SystemExit(1)
 
 
+# These helpers have a stable positional ABI. Canonicalize only their known
+# labels at argument boundaries; wrong labels and values remain observable.
+_CALL_LABELS = {
+    "emit_name": ("buf", "name"),
+    "bytebuf_push": ("buf", "byte"),
+    "bytebuf_push_vec_header": ("buf", "count"),
+    "leb128_encode_u32": ("buf", "value"),
+    "Array::get": (None, "at"),
+    "Map::has_key": (None, "key"),
+}
+_VIBE_TOKEN = re.compile(
+    r'//[^\n]*|"(?:\\.|[^"\\])*"|'
+    r"'(?:\\.|[^'\\])*'|"
+    r'[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*|==|=>|[^\s]'
+)
+
+
+def without_argument_labels(text: str) -> str:
+    tokens = [m for m in _VIBE_TOKEN.finditer(text) if not m.group().startswith("//")]
+    # Each frame records delimiter, callee, argument index and argument head.
+    frames = []
+    removals = []
+    for i, token in enumerate(tokens):
+        word = token.group()
+        if word in (")", "]", "}"):
+            if frames and frames[-1][0] == {")": "(", "]": "[", "}": "{"}[word]:
+                frames.pop()
+            continue
+        if frames and word == "," and frames[-1][0] == "(":
+            frames[-1][2] += 1
+            frames[-1][3] = True
+            continue
+        if frames and frames[-1][3]:
+            frame = frames[-1]
+            labels = _CALL_LABELS.get(frame[1], ())
+            if (frame[2] < len(labels) and labels[frame[2]] == word
+                    and i + 2 < len(tokens) and tokens[i + 1].group() == "="):
+                removals.append((token.start(), tokens[i + 2].start()))
+            frame[3] = False
+        if word in ("(", "[", "{"):
+            callee = tokens[i - 1].group() if word == "(" and i > 0 else None
+            frames.append([word, callee, 0, True])
+    parts = []
+    end = 0
+    for start, stop in removals:
+        parts.append(text[end:start])
+        end = stop
+    parts.append(text[end:])
+    return "".join(parts)
+
+
 def emitter_imports(text: str) -> dict[str, str]:
+    text = without_argument_labels(text)
     # Dynamic named component imports are checked separately below.
     pattern = re.compile(
-        rf'emit_name\({L}import_content, {L}"vibe"\)\s*\n\s*'
-        rf'emit_name\({L}import_content, {L}"([^"]+)"\)\s*\n\s*'
-        rf'bytebuf_push\({L}import_content, {L}0\)\s*\n\s*'
-        rf'leb128_encode_u32\({L}import_content, {L}([^)]+)\)'
+        r'emit_name\(import_content, "vibe"\)\s*\n\s*'
+        r'emit_name\(import_content, "([^"]+)"\)\s*\n\s*'
+        r'bytebuf_push\(import_content, 0\)\s*\n\s*'
+        r'leb128_encode_u32\(import_content, ([^)]+)\)'
     )
     found: dict[str, str] = {}
     for name, type_id in pattern.findall(text):
@@ -113,12 +161,13 @@ def emitter_imports(text: str) -> dict[str, str]:
 
 def emitter_dynamic_imports(text: str) -> dict[str, tuple[str, str]]:
     """Extract generated `<prefix><Array::get(names, i)>` import descriptors."""
+    text = without_argument_labels(text)
     pattern = re.compile(
-        rf'emit_name\({L}import_content, {L}"vibe"\)\s*\n\s*'
-        rf'emit_name\({L}import_content, {L}String::concat\({L}"([^"]+)",\s*{L}'
-        rf'Array::get\({L}([A-Za-z_][A-Za-z0-9_]*),\s*{L}[A-Za-z_][A-Za-z0-9_]*\)\)\)\s*\n\s*'
-        rf'bytebuf_push\({L}import_content, {L}0\)\s*\n\s*'
-        rf'leb128_encode_u32\({L}import_content, {L}([^)]+)\)'
+        r'emit_name\(import_content, "vibe"\)\s*\n\s*'
+        r'emit_name\(import_content, String::concat\("([^"]+)",\s*'
+        r'Array::get\(([A-Za-z_][A-Za-z0-9_]*),\s*[A-Za-z_][A-Za-z0-9_]*\)\)\)\s*\n\s*'
+        r'bytebuf_push\(import_content, 0\)\s*\n\s*'
+        r'leb128_encode_u32\(import_content, ([^)]+)\)'
     )
     found: dict[str, tuple[str, str]] = {}
     for prefix, names_array, type_id in pattern.findall(text):
@@ -274,6 +323,7 @@ def gc_lists(text: str) -> tuple[list[str], list[tuple[str, int]], list[str], in
     wrong, and nothing read them until now: this checker's EMITTER is the
     linear lane's `linked_compile.vibe`.
     """
+    text = without_argument_labels(text)
     chain = re.search(r"let use_host = (.+)", text)
     if not chain:
         die("could not find the gc backend's use_host chain")
@@ -519,10 +569,11 @@ def linear_import_name_for(builtin: str) -> str:
 
 def linear_bindings(text: str) -> list[tuple[str, str]]:
     """(builtin, vibe import name) for every registry row bound to a static import."""
+    text = without_argument_labels(text)
     reserved = [name for name, _ in re.findall(r"^\s*let (\w+_import_idx) = if ([^\n{]+)\{", text, re.M)]
     idx_of = dict(re.findall(r"^\s*let (\w+_idx) = if (\w+_import_idx) >= 0 \{", text, re.M))
     emits = re.findall(
-        rf'if (\w+_import_idx) >= 0 \{{\s*\n\s*emit_name\({L}import_content, {L}"vibe"\)\s*\n\s*emit_name\({L}import_content, {L}"([^"]+)"\)',
+        r'if (\w+_import_idx) >= 0 \{\s*\n\s*emit_name\(import_content, "vibe"\)\s*\n\s*emit_name\(import_content, "([^"]+)"\)',
         text,
     )
     if not reserved or not emits:

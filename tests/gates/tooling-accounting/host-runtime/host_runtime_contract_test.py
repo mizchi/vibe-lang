@@ -74,6 +74,37 @@ leb128_encode_u32(import_content, 3)'''
         with self.assertRaises(SystemExit):
             module.emitter_imports('emit_name(import_content, "vibe")')
 
+    def test_named_static_emitter_keeps_signature_checks(self):
+        source = '''emit_name(buf = import_content, name = "vibe")
+emit_name(buf = import_content, name = "env-get")
+bytebuf_push(buf = import_content, byte = 0)
+leb128_encode_u32(buf = import_content, value = 3)'''
+        self.assertEqual(module.emitter_imports(source), {"env-get": "3"})
+        for changed in [source.replace("buf = import_content", "other = import_content"),
+                        source.replace("buf = import_content", "buf = export_content")]:
+            with self.subTest(source=changed), self.assertRaises(SystemExit):
+                module.emitter_imports(changed)
+        with self.assertRaises(SystemExit):
+            module.validate_emitter_contract(
+                {"importTypes": {"env-get": "5"}, "componentAdapterPatterns": []}, source)
+
+    def test_named_nested_emitter_preserves_dynamic_identity(self):
+        source = '''emit_name(buf = import_content, name = "vibe")
+emit_name(buf = import_content, name = String::concat("host_future_get$", Array::get(hf_named_names, at = hf_emit_i)))
+bytebuf_push(buf = import_content, byte = 0)
+leb128_encode_u32(buf = import_content, value = 5)'''
+        self.assertEqual(module.emitter_dynamic_imports(source),
+                         {"host_future_get$": ("hf_named_names", "5")})
+
+    def test_label_normalization_preserves_literals_and_grouped_assignment(self):
+        source = '''// emit_name(buf = import_content, name = "vibe")
+let text = "emit_name(buf = import_content, name = value)"
+emit_name(buf = import_content, name = (name = value))'''
+        expected = source.replace("emit_name(buf = import_content, name = (name = value))",
+                                  "emit_name(import_content, (name = value))")
+        self.assertEqual(module.without_argument_labels(source), expected)
+        self.assertEqual(module.without_argument_labels(expected), expected)
+
     def test_signature_reassignment_fails_contract(self):
         source = '''emit_name(import_content, "vibe")
 emit_name(import_content, "env-get")
@@ -137,7 +168,7 @@ class GcHostListTest(unittest.TestCase):
     GC = ROOT / "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
 
     def setUp(self):
-        self.text = module.read_source_group(self.GC)
+        self.text = module.without_argument_labels(module.read_source_group(self.GC))
         manifest = json.loads((ROOT / "docs/generated/host-runtime-contract.json").read_text())
         self.names = set()
         for band in ("portableCore", "nodeCoreOnly", "viberunDebugOnly", "componentAdapterOnly"):
@@ -452,7 +483,7 @@ class OperationIdentityTest(unittest.TestCase):
     """#1962 criterion 4: operation -> builtin -> linear import, pinned per row."""
 
     def setUp(self):
-        self.linked = module.read_source_group(ROOT / "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe")
+        self.linked = module.without_argument_labels(module.read_source_group(ROOT / "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"))
         self.ladder = (ROOT / "lib/@vibe/compiler/core/builtin_name.vibe").read_text()
 
     def assert_mutation_fails(self, check, mutated):
@@ -479,10 +510,10 @@ class OperationIdentityTest(unittest.TestCase):
         self.assert_mutation_fails(module.validate_linear_bindings, mutated)
 
     def test_emission_order_drift_fails(self):
-        anchor = 'emit_name(buf = import_content, name = "fs_is_dir")'
+        anchor = 'emit_name(import_content, "fs_is_dir")'
         self.assertIn(anchor, self.linked)
-        start = self.linked.index("  if fs_is_dir_import_idx >= 0 {\n    emit_name(buf = import_content, name = \"vibe\")")
-        end = self.linked.index("  if fs_is_file_import_idx >= 0 {\n    emit_name(buf = import_content, name = \"vibe\")")
+        start = self.linked.index("  if fs_is_dir_import_idx >= 0 {\n    emit_name(import_content, \"vibe\")")
+        end = self.linked.index("  if fs_is_file_import_idx >= 0 {\n    emit_name(import_content, \"vibe\")")
         block = self.linked[start:end]
         rest = self.linked[end:]
         close = rest.index("\n  }\n") + len("\n  }\n")

@@ -99,21 +99,21 @@ let hk_derived: Array[String] = []
 /// judged callable (`dtd_facts_explicit_ops`), with the parameter it recorded,
 /// so a definition for `Box[Int]` keys only `Box[Int]` fields here too.
 export fn collect_hash_key_types(_ stmts: Array[Stmt]) -> Array[String] {
-  Array::truncate(hk_written, 0)
-  Array::truncate(hk_unusable, 0)
-  Array::truncate(hk_derived, 0)
+  Array::truncate(hk_written, length = 0)
+  Array::truncate(hk_unusable, length = 0)
+  Array::truncate(hk_derived, length = 0)
   let out: Array[String] = array_empty()
   for stmt in stmts {
     match stmt {
-      SStruct(_, name, _, derives, _, _) => if str_array_contains(derives, "Hash") {
-        hk_push_unique(out, name)
-        hk_push_unique(hk_derived, name)
+      SStruct(_, name, _, derives, _, _) => if str_array_contains(arr = derives, val = "Hash") {
+        hk_push_unique(out = out, name = name)
+        hk_push_unique(out = hk_derived, name = name)
       } else {
         ()
       },
-      SEnum(_, name, _, _, derives) => if str_array_contains(derives, "Hash") {
-        hk_push_unique(out, name)
-        hk_push_unique(hk_derived, name)
+      SEnum(_, name, _, _, derives) => if str_array_contains(arr = derives, val = "Hash") {
+        hk_push_unique(out = out, name = name)
+        hk_push_unique(out = hk_derived, name = name)
       } else {
         ()
       },
@@ -123,11 +123,11 @@ export fn collect_hash_key_types(_ stmts: Array[Stmt]) -> Array[String] {
   let (good, bad) = hash_key_definitions(stmts)
   for row in good {
     let (owner, _, _) = row
-    Array::push(hk_written, row)
-    hk_push_unique(out, impl_method_owner_head(owner))
+    Array::push(hk_written, value = row)
+    hk_push_unique(out = out, name = impl_method_owner_head(owner))
   }
   for row in bad {
-    Array::push(hk_unusable, row)
+    Array::push(hk_unusable, value = row)
   }
   // Another module's definition, which this module sees only through the
   // whole-program scan's rows: the parameter of a callable one, or why one is
@@ -139,7 +139,7 @@ export fn collect_hash_key_types(_ stmts: Array[Stmt]) -> Array[String] {
       Some(row) => {
         let (owner, _) = row
         if !hk_judged_here(owner) {
-          Array::push(marked, row)
+          Array::push(marked, value = row)
         } else {
           ()
         }
@@ -149,8 +149,8 @@ export fn collect_hash_key_types(_ stmts: Array[Stmt]) -> Array[String] {
     match hash_key_fact_pattern_read(name) {
       Some((owner, decoded)) => if !hk_judged_here(owner) {
         match decoded {
-          Some((vars, param)) => Array::push(patterned, (owner, vars, param)),
-          None => Array::push(marked, (owner, "has a signature this module could not read"))
+          Some((vars, param)) => Array::push(patterned, value = (owner, vars, param)),
+          None => Array::push(marked, value = (owner, "has a signature this module could not read"))
         }
       } else {
         ()
@@ -160,22 +160,22 @@ export fn collect_hash_key_types(_ stmts: Array[Stmt]) -> Array[String] {
   }
   for row in patterned {
     let (owner, _, _) = row
-    if !hk_marked(marked, owner) {
-      Array::push(hk_written, row)
-      hk_push_unique(out, impl_method_owner_head(owner))
+    if !hk_marked(rows = marked, owner = owner) {
+      Array::push(hk_written, value = row)
+      hk_push_unique(out = out, name = impl_method_owner_head(owner))
     } else {
       ()
     }
   }
   for row in marked {
-    Array::push(hk_unusable, row)
+    Array::push(hk_unusable, value = row)
   }
   out
 }
 
 fn hk_push_unique(out: Array[String], name: String) -> Unit {
-  if !str_array_contains(out, name) {
-    Array::push(out, name)
+  if !str_array_contains(arr = out, val = name) {
+    Array::push(out, value = name)
   } else {
     ()
   }
@@ -196,7 +196,7 @@ fn hk_marked(rows: Array[(String, String)], owner: String) -> Bool {
 
 /// Was a `T::hash_key` of this program's own statements judged?
 fn hk_judged_here(_ owner: String) -> Bool {
-  let mut found = hk_marked(hk_unusable, owner)
+  let mut found = hk_marked(rows = hk_unusable, owner = owner)
   for row in hk_written {
     let (o, _, _) = row
     if o == owner {
@@ -232,7 +232,7 @@ fn hk_callable(head: String, ty: TypeExpr) -> Bool {
   let mut out = hk_derived_key(head)
   for row in hk_written {
     let (o, vars, param) = row
-    if !out && impl_method_owner_head(o) == head && hash_key_takes(param, vars, ty) {
+    if !out && impl_method_owner_head(o) == head && hash_key_takes(pattern = param, vars = vars, ty = ty) {
       out = true
     } else {
       ()
@@ -262,7 +262,7 @@ fn hk_derived_key(_ head: String) -> Bool {
       ()
     }
   }
-  str_array_contains(hk_derived, head) && !written
+  str_array_contains(arr = hk_derived, val = head) && !written
 }
 
 /// The owner whose `hash_key` a field of type `ty` and head `head` is keyed
@@ -272,7 +272,7 @@ fn hk_key_owner(head: String, ty: TypeExpr) -> String {
   let mut out = ""
   for row in hk_written {
     let (o, vars, param) = row
-    if out == "" && impl_method_owner_head(o) == head && hash_key_takes(param, vars, ty) {
+    if out == "" && impl_method_owner_head(o) == head && hash_key_takes(pattern = param, vars = vars, ty = ty) {
       out = o
     } else {
       ()
@@ -307,19 +307,19 @@ fn hk_written_param(_ head: String) -> String {
   for row in hk_written {
     let (o, _, param) = row
     if impl_method_owner_head(o) == head {
-      Array::push(params, hk_type_text(param))
+      Array::push(params, value = hk_type_text(param))
     } else {
       ()
     }
   }
-  String::join(params, "` or `")
+  String::join(params, sep = "` or `")
 }
 
 /// A fresh binder for the generated body. Each derived function owns one
 /// counter, so nested Option / tuple / Array encodings never shadow each other.
 fn hk_fresh(counter: Array[Int], stem: String) -> String {
-  let n = Array::get(counter, 0)
-  Array::set(counter, 0, n + 1)
+  let n = Array::get(counter, at = 0)
+  Array::set(counter, at = 0, value = n + 1)
   String::concat("__hk_", String::concat(stem, idx_str(n)))
 }
 
@@ -329,16 +329,16 @@ fn hk_str(_ text: String) -> Expr {
 
 /// `<byte length>:<text>`. The text is bound once so it is evaluated once.
 fn hk_length_prefixed(text: Expr, counter: Array[Int]) -> Expr {
-  let name = hk_fresh(counter, "s")
+  let name = hk_fresh(counter = counter, stem = "s")
   let length = ECall(builtin_ref("String::length"), [EIdent(name, -1)], -1, [])
-  let prefix = concat2(ECall(builtin_ref("Int::to_string"), [length], -1, []), hk_str(":"))
-  ELet(name, text, concat2(prefix, EIdent(name, -1)), -1)
+  let prefix = concat2(a = ECall(builtin_ref("Int::to_string"), [length], -1, []), b = hk_str(":"))
+  ELet(name, text, concat2(a = prefix, b = EIdent(name, -1)), -1)
 }
 
 /// The key component for a value `val` of declared type `fty`.
 fn hk_component(fty: TypeExpr, val: Expr, known_types: Array[String], hash_types: Array[String], counter: Array[Int]) -> Expr {
   match fty {
-    TyName("String") => hk_length_prefixed(val, counter),
+    TyName("String") => hk_length_prefixed(text = val, counter = counter),
     TyName(n) => if n == "Float64" || n == "Float32" || n == "f64" || n == "f32" {
       // `-0.0 + 0.0` is `+0.0`, so the zeros `==` equates share one key;
       // every NaN renders `NaN` and shares one too, as `compare` calls them
@@ -347,80 +347,81 @@ fn hk_component(fty: TypeExpr, val: Expr, known_types: Array[String], hash_types
       // as the f64 of its f32 value); `Double::to_float` would round (#3543).
       let folded = EBinOp("+", ECall(builtin_ref("Float32::to_float64"), [val], -1, [
       ]), EFloat(0.0), -1)
-      hk_length_prefixed(ECall(builtin_ref("Float64::to_string"), [folded], -1, [
-      ]), counter)
-    } else if !is_scalar_type_name(n) && str_array_contains(hash_types, n) {
-      hk_length_prefixed(ECall(EIdent(qualified_name(hk_key_owner(n, fty), "hash_key"), -1), [
+      hk_length_prefixed(text = ECall(builtin_ref("Float64::to_string"), [
+        folded
+      ], -1, []), counter = counter)
+    } else if !is_scalar_type_name(n) && str_array_contains(arr = hash_types, val = n) {
+      hk_length_prefixed(text = ECall(EIdent(qualified_name(tname = hk_key_owner(head = n, ty = fty), method = "hash_key"), -1), [
         val
-      ], -1, []), counter)
+      ], -1, []), counter = counter)
     } else {
-      hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+      hk_length_prefixed(text = show_for_typed(fty0 = fty, val = val, known_types = known_types), counter = counter)
     },
     TyApp("Option", args) => if Array::length(args) == 1 {
-      let bind = hk_fresh(counter, "o")
-      let inner = hk_component(Array::get(args, 0), EIdent(bind, -1), known_types, hash_types, counter)
+      let bind = hk_fresh(counter = counter, stem = "o")
+      let inner = hk_component(fty = Array::get(args, at = 0), val = EIdent(bind, -1), known_types = known_types, hash_types = hash_types, counter = counter)
       EMatch(val, [
-        (PCtor("Some", [PBind(bind)]), concat2(hk_str("S"), inner)),
+        (PCtor("Some", [PBind(bind)]), concat2(a = hk_str("S"), b = inner)),
         (PCtor("None", array_empty()), hk_str("N"))
       ])
     } else {
-      hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+      hk_length_prefixed(text = show_for_typed(fty0 = fty, val = val, known_types = known_types), counter = counter)
     },
     TyApp("Result", args) => if Array::length(args) == 2 {
-      let ok_bind = hk_fresh(counter, "r")
-      let err_bind = hk_fresh(counter, "r")
-      let ok_inner = hk_component(Array::get(args, 0), EIdent(ok_bind, -1), known_types, hash_types, counter)
-      let err_inner = hk_component(Array::get(args, 1), EIdent(err_bind, -1), known_types, hash_types, counter)
+      let ok_bind = hk_fresh(counter = counter, stem = "r")
+      let err_bind = hk_fresh(counter = counter, stem = "r")
+      let ok_inner = hk_component(fty = Array::get(args, at = 0), val = EIdent(ok_bind, -1), known_types = known_types, hash_types = hash_types, counter = counter)
+      let err_inner = hk_component(fty = Array::get(args, at = 1), val = EIdent(err_bind, -1), known_types = known_types, hash_types = hash_types, counter = counter)
       EMatch(val, [
-        (PCtor("Ok", [PBind(ok_bind)]), concat2(hk_str("O"), ok_inner)),
-        (PCtor("Err", [PBind(err_bind)]), concat2(hk_str("E"), err_inner))
+        (PCtor("Ok", [PBind(ok_bind)]), concat2(a = hk_str("O"), b = ok_inner)),
+        (PCtor("Err", [PBind(err_bind)]), concat2(a = hk_str("E"), b = err_inner))
       ])
     } else {
-      hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+      hk_length_prefixed(text = show_for_typed(fty0 = fty, val = val, known_types = known_types), counter = counter)
     },
     TyTuple(ts) => {
       let pats: Array[Pat] = array_empty()
       let parts: Array[Expr] = array_empty()
       for t in ts {
-        let bind = hk_fresh(counter, "t")
-        Array::push(pats, PBind(bind))
-        Array::push(parts, hk_component(t, EIdent(bind, -1), known_types, hash_types, counter))
+        let bind = hk_fresh(counter = counter, stem = "t")
+        Array::push(pats, value = PBind(bind))
+        Array::push(parts, value = hk_component(fty = t, val = EIdent(bind, -1), known_types = known_types, hash_types = hash_types, counter = counter))
       }
       EMatch(val, [(PTuple(pats), hk_concat_all(parts))])
     },
     TyApp("Array", args) => if Array::length(args) == 1 {
-      hk_array_component(Array::get(args, 0), val, known_types, hash_types, counter)
+      hk_array_component(elem_ty = Array::get(args, at = 0), val = val, known_types = known_types, hash_types = hash_types, counter = counter)
     } else {
-      hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+      hk_length_prefixed(text = show_for_typed(fty0 = fty, val = val, known_types = known_types), counter = counter)
     },
-    TyApp(n, _) => if str_array_contains(hash_types, n) {
-      hk_length_prefixed(ECall(EIdent(qualified_name(hk_key_owner(n, fty), "hash_key"), -1), [
+    TyApp(n, _) => if str_array_contains(arr = hash_types, val = n) {
+      hk_length_prefixed(text = ECall(EIdent(qualified_name(tname = hk_key_owner(head = n, ty = fty), method = "hash_key"), -1), [
         val
-      ], -1, []), counter)
+      ], -1, []), counter = counter)
     } else {
-      hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+      hk_length_prefixed(text = show_for_typed(fty0 = fty, val = val, known_types = known_types), counter = counter)
     },
-    _ => hk_length_prefixed(show_for_typed(fty, val, known_types), counter)
+    _ => hk_length_prefixed(text = show_for_typed(fty0 = fty, val = val, known_types = known_types), counter = counter)
   }
 }
 
 /// `#<count>:` followed by each element's component.
 fn hk_array_component(elem_ty: TypeExpr, val: Expr, known_types: Array[String], hash_types: Array[String], counter: Array[Int]) -> Expr {
-  let arr = hk_fresh(counter, "a")
-  let idx = hk_fresh(counter, "i")
-  let acc = hk_fresh(counter, "acc")
+  let arr = hk_fresh(counter = counter, stem = "a")
+  let idx = hk_fresh(counter = counter, stem = "i")
+  let acc = hk_fresh(counter = counter, stem = "acc")
   let length = ECall(builtin_ref("Array::length"), [EIdent(arr, -1)], -1, [])
   let elem = ECall(builtin_ref("Array::get"), [
     EIdent(arr, -1),
     EIdent(idx, -1)
   ], -1, [])
-  let elem_key = hk_component(elem_ty, elem, known_types, hash_types, counter)
-  let set_acc = EAssign(acc, concat2(EIdent(acc, -1), elem_key), EUnit, -1)
+  let elem_key = hk_component(fty = elem_ty, val = elem, known_types = known_types, hash_types = hash_types, counter = counter)
+  let set_acc = EAssign(acc, concat2(a = EIdent(acc, -1), b = elem_key), EUnit, -1)
   let incr = EAssign(idx, EBinOp("+", EIdent(idx, -1), EInt(1), -1), EUnit, -1)
   let walk = EWhile(EBinOp("<", EIdent(idx, -1), length, -1), ESeq(set_acc, incr))
-  let header = concat2(hk_str("#"), concat2(ECall(builtin_ref("Int::to_string"), [
+  let header = concat2(a = hk_str("#"), b = concat2(a = ECall(builtin_ref("Int::to_string"), [
     length
-  ], -1, []), hk_str(":")))
+  ], -1, []), b = hk_str(":")))
   ELet(arr, val, ELetMut(idx, EInt(0), ELetMut(acc, header, ESeq(walk, EIdent(acc, -1)), -1), -1), -1)
 }
 
@@ -429,10 +430,10 @@ fn hk_concat_all(_ parts: Array[Expr]) -> Expr {
   if n == 0 {
     hk_str("")
   } else {
-    let mut acc = Array::get(parts, n - 1)
+    let mut acc = Array::get(parts, at = n - 1)
     let mut j = n - 2
     while j >= 0 {
-      acc = concat2(Array::get(parts, j), acc)
+      acc = concat2(a = Array::get(parts, at = j), b = acc)
       j = j - 1
     }
     acc
@@ -441,7 +442,7 @@ fn hk_concat_all(_ parts: Array[Expr]) -> Expr {
 
 fn hk_fn(tname: String, body: Expr) -> Stmt {
   let params = [("self", Some(TyName(tname)))]
-  SLet(false, false, qualified_name(tname, "hash_key"), None, EFn(array_empty(), array_empty(), params, Some(TyName("String")), None, body))
+  SLet(false, false, qualified_name(tname = tname, method = "hash_key"), None, EFn(array_empty(), array_empty(), params, Some(TyName("String")), None, body))
 }
 
 /// `let S::hash_key = (self: S) -> String { <component of each field> }`.
@@ -450,9 +451,9 @@ export fn gen_struct_hash_key_fn(tname: String, fields: Array[(String, TypeExpr)
   let parts: Array[Expr] = array_empty()
   for field in fields {
     let (fname, fty) = field
-    Array::push(parts, hk_component(eq_expand_alias_ty(fty), EDot(EIdent("self", -1), fname, -1, -1), known_types, hash_types, counter))
+    Array::push(parts, value = hk_component(fty = eq_expand_alias_ty(fty), val = EDot(EIdent("self", -1), fname, -1, -1), known_types = known_types, hash_types = hash_types, counter = counter))
   }
-  hk_fn(tname, hk_concat_all(parts))
+  hk_fn(tname = tname, body = hk_concat_all(parts))
 }
 
 /// `let E::hash_key = (self: E) -> String { match self { V(p..) =>
@@ -464,15 +465,15 @@ export fn gen_enum_hash_key_fn(ename: String, variants: Array[(String, Array[Typ
     let (vname, ftypes) = variant
     let binds: Array[Pat] = array_empty()
     let parts: Array[Expr] = array_empty()
-    Array::push(parts, hk_length_prefixed(hk_str(vname), counter))
+    Array::push(parts, value = hk_length_prefixed(text = hk_str(vname), counter = counter))
     for fty in ftypes {
-      let bind = hk_fresh(counter, "p")
-      Array::push(binds, PBind(bind))
-      Array::push(parts, hk_component(eq_expand_alias_ty(fty), EIdent(bind, -1), known_types, hash_types, counter))
+      let bind = hk_fresh(counter = counter, stem = "p")
+      Array::push(binds, value = PBind(bind))
+      Array::push(parts, value = hk_component(fty = eq_expand_alias_ty(fty), val = EIdent(bind, -1), known_types = known_types, hash_types = hash_types, counter = counter))
     }
-    Array::push(arms, (PCtor(vname, binds), hk_concat_all(parts)))
+    Array::push(arms, value = (PCtor(vname, binds), hk_concat_all(parts)))
   }
-  hk_fn(ename, EMatch(EIdent("self", -1), arms))
+  hk_fn(tname = ename, body = EMatch(EIdent("self", -1), arms))
 }
 
 /// The first position in a field of type `fty` (aliases expanded) that a
@@ -498,16 +499,16 @@ fn hash_unkeyed_position(fty: TypeExpr, known_types: Array[String], hash_types: 
     TyName(n) => if hk_is_keyed_scalar(n) {
       None
     } else {
-      hash_unkeyed_head(n, fty, known_types, hash_types)
+      hash_unkeyed_head(n = n, fty = fty, known_types = known_types, hash_types = hash_types)
     },
     TyApp(n, args) => if (n == "Option" || n == "Array") && Array::length(args) == 1 {
-      hash_unkeyed_first(args, known_types, hash_types)
+      hash_unkeyed_first(ts = args, known_types = known_types, hash_types = hash_types)
     } else if n == "Result" && Array::length(args) == 2 {
-      hash_unkeyed_first(args, known_types, hash_types)
+      hash_unkeyed_first(ts = args, known_types = known_types, hash_types = hash_types)
     } else {
-      hash_unkeyed_head(n, fty, known_types, hash_types)
+      hash_unkeyed_head(n = n, fty = fty, known_types = known_types, hash_types = hash_types)
     },
-    TyTuple(ts) => hash_unkeyed_first(ts, known_types, hash_types),
+    TyTuple(ts) => hash_unkeyed_first(ts = ts, known_types = known_types, hash_types = hash_types),
     TyUnit => None,
     TyFn(_, _, _) => Some(("opaque", hk_type_text(fty), ""))
   }
@@ -525,20 +526,20 @@ fn hash_unkeyed_head(n: String, fty: TypeExpr, known_types: Array[String], hash_
   let unusable = hk_unusable_reason(n)
   if is_marked_formal_name(n) {
     Some(("formal", n, ""))
-  } else if hk_callable(n, fty) {
+  } else if hk_callable(head = n, ty = fty) {
     // A definition that takes the field keys it, whatever else is written
     // for `n`: an unusable `fn Box::hash_key(x: Int)` is another binding
     // than `impl Hash for Box[Int]`'s method, which `hk_key_owner` calls.
     None
   } else if unusable != "" {
     Some(("unusable", n, unusable))
-  } else if str_array_contains(hash_types, n) {
+  } else if str_array_contains(arr = hash_types, val = n) {
     if hk_only_applied_impls(n) {
       Some(("applied", hk_type_text(fty), hk_written_param(n)))
     } else {
       Some(("mismatch", n, hk_written_param(n)))
     }
-  } else if str_array_contains(known_types, n) {
+  } else if str_array_contains(arr = known_types, val = n) {
     Some(("declared", n, ""))
   } else {
     Some(("opaque", hk_type_text(fty), ""))
@@ -549,7 +550,7 @@ fn hash_unkeyed_first(ts: Array[TypeExpr], known_types: Array[String], hash_type
   let mut out: Option[(String, String, String)] = None
   for t in ts {
     if out is None {
-      out = hash_unkeyed_position(t, known_types, hash_types)
+      out = hash_unkeyed_position(fty = t, known_types = known_types, hash_types = hash_types)
     } else {
       ()
     }
@@ -559,7 +560,7 @@ fn hash_unkeyed_first(ts: Array[TypeExpr], known_types: Array[String], hash_type
 
 /// The source spelling of a re-spelled declaration formal (`__Vfp_T` -> `T`).
 fn hash_formal_source_name(_ n: String) -> String {
-  if String::starts_with(n, "__Vfp_") {
+  if String::starts_with(n, prefix = "__Vfp_") {
     n[6: String::length(n)]
   } else {
     n
@@ -572,14 +573,14 @@ export fn hk_type_text(_ t: TypeExpr) -> String {
     TyName(n) => namespace_rename_original(hash_formal_source_name(n)),
     TyApp(h, args) => namespace_rename_original(hash_formal_source_name(h)) + "[" + String::join(for a in args {
       hk_type_text(a)
-    }, ", ") + "]",
+    }, sep = ", ") + "]",
     TyTuple(items) => "(" + String::join(for a in items {
       hk_type_text(a)
-    }, ", ") + ")",
+    }, sep = ", ") + ")",
     TyUnit => "Unit",
     TyFn(ps, r, _) => "(" + String::join(for a in ps {
       hk_type_text(a)
-    }, ", ") + ") -> " + hk_type_text(r)
+    }, sep = ", ") + ") -> " + hk_type_text(r)
   }
 }
 
@@ -593,7 +594,7 @@ export fn hk_type_text(_ t: TypeExpr) -> String {
 export fn hash_note_unkeyed_field(tname: String, fname: String, fty: TypeExpr, known_types: Array[String], hash_types: Array[String]) -> Unit {
   let shown = namespace_rename_original(tname)
   let yourself = "write `" + shown + "::hash_key` yourself"
-  let msg = match hash_unkeyed_position(eq_expand_alias_ty(fty), known_types, hash_types) {
+  let msg = match hash_unkeyed_position(fty = eq_expand_alias_ty(fty), known_types = known_types, hash_types = hash_types) {
     Some((kind, n, detail)) => if kind == "formal" {
       let formal = hash_formal_source_name(n)
       yourself + ", or remove `Hash` from the `derive` of `" + shown + "`: its derived key is one function for every instantiation, so field `" + fname + "` holds `" + formal + "` (a type parameter of `" + shown + "`), which has no key there [@fn=" + shown + "]"
@@ -617,8 +618,8 @@ export fn hash_note_unkeyed_field(tname: String, fname: String, fty: TypeExpr, k
     },
     None => ""
   }
-  if msg != "" && !str_array_contains(dtd_show_refusals, msg) {
-    Array::push(dtd_show_refusals, msg)
+  if msg != "" && !str_array_contains(arr = dtd_show_refusals, val = msg) {
+    Array::push(dtd_show_refusals, value = msg)
   } else {
     ()
   }
