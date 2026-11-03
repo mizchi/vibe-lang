@@ -15,7 +15,8 @@ set -euo pipefail
 # functions into this process's environment, and an inherited export would
 # satisfy the xargs-worker rung for a mutant that never exports them.
 unset VIBE_RUN_BOUNDED_IMPL
-unset -f run_bounded run_bounded_watchdog run_bounded_monotonic_seconds run_bounded_gnu_timeout 2>/dev/null || true
+unset -f run_bounded run_bounded_watchdog run_bounded_monotonic_seconds \
+  run_bounded_is_gnu_timeout run_bounded_auto_impl 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$SCRIPT_DIR/run_bounded.sh"
@@ -76,13 +77,11 @@ contract() { # <lib> <impl>
   #    timeout(1): `VAR=x timeout 60 cmd <in` was the commonest call shape.
   r="$(printf 'piped\n' | VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; PROBE_VAR=seen run_bounded 10 sh -c "read -r l; echo \"\$PROBE_VAR/\$l\""' _ "$lib" 2>/dev/null | tail -1)"
   [ "$r" = "seen/piped" ] || echo "env+stdin: $r"
-  # 4b. ...and a redirected stdin reaches it inside a command substitution,
-  #     the commonest shape of all (`out="$(run_bounded 60 cmd <in)"`). There a
-  #     backgrounded command gets /dev/null unless its stdin is redirected
-  #     explicitly; the stdin-provider component gate read 0 bytes (#3749).
-  printf 'abcdef' >"$WORK/stdin.bin"
-  r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; r="$(run_bounded 10 wc -c <"$2")"; echo "n=$r"' _ "$lib" "$WORK/stdin.bin" 2>/dev/null | tail -1 | tr -d ' ')"
-  [ "$r" = "n=6" ] || echo "stdin-in-subst: $r"
+  #    ...and inside a subshell too, where job control is off: a command
+  #    substitution is where callers read a bounded command's output, and the
+  #    watchdog handed its command /dev/null there (#3753).
+  r="$(printf 'piped\n' | VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; out="$(run_bounded 10 cat)"; echo "got=$out"' _ "$lib" 2>/dev/null | tail -1)"
+  [ "$r" = "got=piped" ] || echo "stdin-in-subshell: $r"
   # 5. A caller under `set -e` survives a failing command it checks.
   r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c 'set -euo pipefail; . "$1"; run_bounded 10 false || echo "checked=$?"; echo after' _ "$lib" 2>/dev/null | tr '\n' ' ')"
   [ "$r" = "checked=1 after " ] || echo "set-e: $r"
@@ -97,14 +96,23 @@ contract() { # <lib> <impl>
 }
 
 # --- green: the real helper, under every mechanism this machine can offer.
-# Only a binary the helper would pick: a non-GNU `timeout` (uutils, Ubuntu
-# 26.04) is not trusted with the contract, and auto-selection skips it.
+# A binary is offered only when it is GNU coreutils' timeout, as the helper's
+# own selection requires (#3753): the contract is GNU's, and Ubuntu 26.04's
+# /usr/bin/timeout is the uutils rewrite, under which the term-ignoring rung
+# waited out its command's full 20 s. Say which binaries were skipped, so a
+# runner change names itself in the log.
+is_gnu() { bash -c '. "$1"; run_bounded_is_gnu_timeout "$2"' _ "$LIB" "$1"; }
 impls="watchdog"
 for bin in "timeout" "gtimeout"; do
-  if command -v "$bin" >/dev/null 2>&1 && bash -c '. "$1"; run_bounded_gnu_timeout "$2"' _ "$LIB" "$bin"; then
+  command -v "$bin" >/dev/null 2>&1 || continue
+  if is_gnu "$bin"; then
     impls="$impls $bin"
+  else
+    banner="$("$bin" --version 2>/dev/null || true)"
+    ok "$bin is not GNU coreutils (${banner%%$'\n'*}); the helper uses the watchdog in its place"
   fi
 done
+echo "  --  mechanisms exercised: $impls; auto-selected: $(bash -c '. "$1"; run_bounded_auto_impl' _ "$LIB")"
 for impl in $impls; do
   broken="$(contract "$LIB" "$impl")"
   [ -z "$broken" ] || fail "the real helper breaks the contract under $impl: $broken"
@@ -123,29 +131,6 @@ case "$out" in
 esac
 ok "0 = unbounded, a fractional bound is refused, and a watchdog with no marker refuses (125) rather than guessing"
 
-# --- a `timeout` that is not GNU coreutils' is not trusted (ubuntu-26.04's
-# uutils one let a TERM-ignoring command run 20 s past a 1 s bound). The fake
-# below ignores the bound outright; auto-selection must fall to the watchdog.
-fakebin="$WORK/fakebin"
-mkdir -p "$fakebin"
-cat > "$fakebin/timeout" <<'FAKEEOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "--version" ]; then echo "timeout(1) from uutils coreutils 0.2.2"; exit 0; fi
-while [ "$#" -gt 0 ] && [ "$1" != "--" ] && case "$1" in -*|[0-9]*) true ;; *) false ;; esac; do shift; done
-exec "$@"
-FAKEEOF
-chmod +x "$fakebin/timeout"
-non_gnu_bound() { # <lib> -> "rc=N secs=S"
-  local t0 t1 r
-  t0="$(monotonic_seconds)"
-  r="$(PATH="$fakebin:$PATH" bash -c '. "$1"; run_bounded 1 sleep 6; echo "rc=$?"' _ "$1" 2>/dev/null | tail -1)"
-  t1="$(monotonic_seconds)"
-  printf '%s secs=%s' "$r" "$((t1 - t0))"
-}
-r="$(non_gnu_bound "$LIB")"
-case "$r" in "rc=124 secs="[0-4]) ;; *) fail "a non-GNU timeout(1) on PATH was trusted with the bound: $r" ;; esac
-ok "a non-GNU timeout(1) on PATH is skipped for the watchdog ($r)"
-
 # --- red: each property fails on a mutant carrying the wrong shape. Every
 # mutation is checked to have LANDED before its verdict is believed.
 mutant() { # <name> <sed-expr> <marker-text-that-must-appear>
@@ -154,18 +139,6 @@ mutant() { # <name> <sed-expr> <marker-text-that-must-appear>
   grep -qF -- "$3" "$m" || fail "mutant $1 did not land"
   printf '%s' "$m"
 }
-
-# Backgrounding the command without an explicit stdin redirection.
-m="$(mutant no_stdin_dup 's/^  "\$@" <&0 &$/  "$@" \&/' '  "$@" &')"
-broken="$(contract "$m" watchdog)"
-case "$broken" in *stdin-in-subst*) ok "red: a backgrounded command without <&0 reads /dev/null inside a command substitution" ;;
-  *) fail "the no-stdin-dup mutant was not caught: ${broken:-<no rung failed>}" ;; esac
-
-# Trusting any `timeout` on PATH, GNU or not.
-m="$(mutant trust_any 's/ \&\& run_bounded_gnu_timeout timeout;/;/' 'if command -v timeout >/dev/null 2>&1; then')"
-r="$(non_gnu_bound "$m")"
-case "$r" in "rc=124 secs="[0-4]) fail "the trust-any-timeout mutant was not caught: $r" ;;
-  *) ok "red: trusting a non-GNU timeout(1) lets the command outlive the bound ($r)" ;; esac
 
 # The status-based guess the three local run_with_timeout copies made.
 m="$(mutant status_guess 's/^  if \[ -e "\$marker" \]; then$/  if [ "$rc" -ne 143 ] \&\& [ "$rc" -ne 137 ]; then/' 'if [ "$rc" -ne 143 ]')"
@@ -237,7 +210,7 @@ done
 node_lib="$WORK/node-clock-lib.sh"
 sed 's/if \[ -r \/proc\/uptime \]; then/if false; then/' "$LIB" > "$node_lib"
 grep -qF 'if false; then' "$node_lib" || fail "the Node clock probe did not land"
-if command -v timeout >/dev/null 2>&1; then
+if command -v timeout >/dev/null 2>&1 && is_gnu timeout; then
   r="$(VIBE_RUN_BOUNDED_IMPL="timeout" bash -c '. "$1"; run_bounded 1 sh -c "trap \"\" TERM; sleep 20"; echo "rc=$?"' _ "$node_lib" 2>/dev/null | tail -1)"
   [ "$r" = rc=124 ] || fail "the Node clock misclassified escalation: $r"
   r="$(VIBE_RUN_BOUNDED_IMPL="timeout" bash -c '. "$1"; run_bounded_monotonic_seconds() { return 1; }; run_bounded_watchdog() { return 42; }; run_bounded 1 true; echo "rc=$?"' _ "$LIB" 2>/dev/null | tail -1)"
@@ -245,10 +218,52 @@ if command -v timeout >/dev/null 2>&1; then
   ok "Node clock classifies escalation; an unavailable clock selects the marker watchdog"
 fi
 
+# The watchdog's launch without an explicit stdin: inside a subshell the
+# command reads /dev/null.
+m="$(mutant no_stdin 's/^  "\$@" 0<&0 &$/  "$@" \&/' '  "$@" &')"
+broken="$(contract "$m" watchdog)"
+case "$broken" in *stdin-in-subshell*) ok "red: a watchdog launch with no explicit stdin reads /dev/null in a subshell" ;;
+  *) fail "the no-stdin mutant was not caught: ${broken:-<no rung failed>}" ;; esac
+
 # Defined but not exported.
 m="$(mutant no_export 's/^export -f run_bounded run_bounded_watchdog$/: not exported/' ': not exported')"
 broken="$(contract "$m" watchdog)"
 case "$broken" in *xargs-worker*) ok "red: an unexported helper is command-not-found in an xargs worker" ;;
   *) fail "the no-export mutant was not caught: ${broken:-<no rung failed>}" ;; esac
+
+# --- #3753: the selection trusts a timeout binary only when it is GNU's.
+# Fake binaries on PATH stand in for each banner; the selection is asked, not
+# a bounded run, so the fakes never have to bound anything.
+fake_dir="$WORK/fake-timeout"
+# The tool's name lives in one quoted value, so the lexical bare-call scan
+# (check_gate_portability.sh) reads no call where there is none.
+T="timeout"
+mkdir -p "$fake_dir"
+fake() { # <banner>
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s" "second line"\n' "$1" > "$fake_dir/timeout"
+  chmod +x "$fake_dir/timeout"
+}
+select_with() { # <lib>
+  PATH="$fake_dir:$PATH" bash -c '. "$1"; run_bounded_auto_impl' _ "$1"
+}
+fake "$T (uutils coreutils) 0.2.2"
+[ "$(PATH="$fake_dir:$PATH" command -v "$T")" = "$fake_dir/$T" ] \
+  || fail "the fake $T did not land first on PATH"
+r="$(select_with "$LIB")"
+[ "$r" != "$T" ] || fail "a non-GNU $T was selected: the uutils banner chose '$r'"
+ok "a uutils $T is not selected (chose $r)"
+fake "$T (GNU coreutils) 9.4"
+[ "$(select_with "$LIB")" = "$T" ] || fail "a GNU $T was not selected"
+ok "a GNU $T is selected"
+# The selection that predates #3753 trusted any binary named timeout.
+m="$(mutant any_timeout 's/^  if command -v timeout >\/dev\/null 2>&1 \&\& run_bounded_is_gnu_timeout timeout; then$/  if command -v timeout >\/dev\/null 2>\&1; then/' '  if command -v timeout >/dev/null 2>&1; then')"
+fake "$T (uutils coreutils) 0.2.2"
+[ "$(select_with "$m")" = "$T" ] || fail "the any-binary mutant was not caught: it did not select the uutils binary"
+ok "red: a selection that trusts any $T binary picks the uutils one"
+# The banner is read whole, so a caller's pipefail cannot turn GNU into a refusal.
+fake "$T (GNU coreutils) 9.4"
+r="$(PATH="$fake_dir:$PATH" bash -c 'set -euo pipefail; . "$1"; run_bounded_auto_impl' _ "$LIB")"
+[ "$r" = "$T" ] || fail "under pipefail a GNU $T was not selected: $r"
+ok "a GNU $T is selected under a caller's pipefail"
 
 echo "[run-bounded-test] ok"

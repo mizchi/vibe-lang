@@ -24,8 +24,13 @@
 #   - SECS <= 0 runs the command with no bound, which is what the three
 #     `run_with_timeout` copies this replaced already meant by 0.
 #
-# The command is ALWAYS bounded, whichever mechanism is present:
-# `timeout`, else `gtimeout`, else the shell watchdog below. Running without a
+# The command is ALWAYS bounded, whichever mechanism is present: GNU
+# `timeout`, else GNU `gtimeout`, else the shell watchdog below. A binary is
+# used only when it identifies itself as GNU coreutils (#3753): the contract
+# below is GNU's -- `-k` escalating to SIGKILL, and the signal reaching the
+# child's whole process group -- and Ubuntu 26.04 ships the uutils rewrite as
+# /usr/bin/timeout, under which a TERM-ignoring command's grandchild outlived
+# the KILL and held its caller's pipe for the command's full run. Running without a
 # limit was the other option #2958 weighed, and it is right for a test runner
 # but wrong for an oracle -- several callers here READ 124 (the fuzz oracle's
 # HANG classes, vibe_md's "timed out after" line, the #2362 spin probe in the
@@ -47,7 +52,8 @@
 #
 # VIBE_RUN_BOUNDED_IMPL (timeout | gtimeout | watchdog) forces one mechanism.
 # It exists for scripts/run_bounded_test.sh alone, which has to exercise the
-# watchdog on a machine that has GNU timeout.
+# watchdog on a machine that has GNU timeout. A forced binary is used as is,
+# GNU or not.
 
 # Linux's uptime is independent of realtime steps; read it with shell builtins
 # so every bounded command does not need another runtime process. Other hosts
@@ -65,18 +71,28 @@ run_bounded_monotonic_seconds() {
   fi
 }
 
-# Whether the `timeout` binary named by $1 is GNU coreutils'. Only that one is
-# known to keep the contract: uutils' `timeout` (the default coreutils on
-# Ubuntu 26.04, which `ubuntu-latest` became on 2026-11-03) let a TERM-ignoring
-# command run its full 20 s past a 1 s bound, so it is left to the watchdog.
-# Through a variable, like the call below, so no tool name is in command
-# position for scripts/check_gate_portability.sh.
-run_bounded_gnu_timeout() { # <binary>
-  local bin="$1"
-  case "$("$bin" --version 2>/dev/null)" in
+# Whether <binary> is GNU coreutils' timeout: its `--version` banner names
+# GNU coreutils. The output is captured whole rather than piped into `head`,
+# which would close the pipe early and, under a caller's pipefail, turn a GNU
+# binary into a refusal.
+run_bounded_is_gnu_timeout() { # <binary>
+  local banner
+  banner="$("$1" --version 2>/dev/null)" || return 1
+  case "${banner%%$'\n'*}" in
     *"GNU coreutils"*) return 0 ;;
-    *) return 1 ;;
   esac
+  return 1
+}
+
+# The mechanism run_bounded selects when nothing forces one.
+run_bounded_auto_impl() {
+  if command -v timeout >/dev/null 2>&1 && run_bounded_is_gnu_timeout timeout; then
+    echo "timeout"
+  elif command -v gtimeout >/dev/null 2>&1 && run_bounded_is_gnu_timeout gtimeout; then
+    echo "gtimeout"
+  else
+    echo "watchdog"
+  fi
 }
 
 run_bounded() { # <seconds> <cmd...>
@@ -98,13 +114,7 @@ run_bounded() { # <seconds> <cmd...>
   fi
   local impl="${VIBE_RUN_BOUNDED_IMPL:-}"
   if [ -z "$impl" ]; then
-    if command -v timeout >/dev/null 2>&1 && run_bounded_gnu_timeout timeout; then
-      impl="timeout"
-    elif command -v gtimeout >/dev/null 2>&1 && run_bounded_gnu_timeout gtimeout; then
-      impl="gtimeout"
-    else
-      impl="watchdog"
-    fi
+    impl="$(run_bounded_auto_impl)"
   fi
   case "$impl" in
     "timeout" | "gtimeout")
@@ -169,12 +179,12 @@ run_bounded_watchdog() { # <seconds> <cmd...>
   local had_monitor=0
   case "$-" in *m*) had_monitor=1 ;; esac
   set -m
-  # `<&0`: a backgrounded command gets /dev/null as stdin whenever job
-  # control is not really active, which `set -m` does not achieve inside a
-  # command substitution -- `actual="$(run_bounded 60 wasmtime ... <in)"`
-  # read nothing (#3749, scripts/test_wasi_cli_stdin_provider_source_
-  # component_gate.sh). An explicit redirection keeps the caller's stdin.
-  "$@" <&0 &
+  # `0<&0`: an asynchronous command whose shell has no job control reads
+  # /dev/null, and job control is off in every subshell -- a command
+  # substitution, a pipeline stage -- whatever `set -m` says. Callers bound
+  # commands in exactly those places (`out="$(run_bounded 60 cmd <in)"`), and
+  # without the explicit redirection the command read an empty stdin (#3753).
+  "$@" 0<&0 &
   local cmd_pid=$!
   [ "$had_monitor" -eq 1 ] || set +m
   (
@@ -212,7 +222,7 @@ run_bounded_watchdog() { # <seconds> <cmd...>
 # exported, is `command not found` there -- exit 127 again, the very failure
 # this file exists to remove.
 export -f run_bounded run_bounded_watchdog
-export -f run_bounded_monotonic_seconds run_bounded_gnu_timeout
+export -f run_bounded_monotonic_seconds run_bounded_is_gnu_timeout run_bounded_auto_impl
 
 # Executed rather than sourced: run the command given on the command line.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
