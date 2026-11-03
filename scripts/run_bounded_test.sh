@@ -76,6 +76,13 @@ contract() { # <lib> <impl>
   #    timeout(1): `VAR=x timeout 60 cmd <in` was the commonest call shape.
   r="$(printf 'piped\n' | VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; PROBE_VAR=seen run_bounded 10 sh -c "read -r l; echo \"\$PROBE_VAR/\$l\""' _ "$lib" 2>/dev/null | tail -1)"
   [ "$r" = "seen/piped" ] || echo "env+stdin: $r"
+  # 4b. ...and a redirected stdin reaches it inside a command substitution,
+  #     the commonest shape of all (`out="$(run_bounded 60 cmd <in)"`). There a
+  #     backgrounded command gets /dev/null unless its stdin is redirected
+  #     explicitly; the stdin-provider component gate read 0 bytes (#3749).
+  printf 'abcdef' >"$WORK/stdin.bin"
+  r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; r="$(run_bounded 10 wc -c <"$2")"; echo "n=$r"' _ "$lib" "$WORK/stdin.bin" 2>/dev/null | tail -1 | tr -d ' ')"
+  [ "$r" = "n=6" ] || echo "stdin-in-subst: $r"
   # 5. A caller under `set -e` survives a failing command it checks.
   r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c 'set -euo pipefail; . "$1"; run_bounded 10 false || echo "checked=$?"; echo after' _ "$lib" 2>/dev/null | tr '\n' ' ')"
   [ "$r" = "checked=1 after " ] || echo "set-e: $r"
@@ -147,6 +154,12 @@ mutant() { # <name> <sed-expr> <marker-text-that-must-appear>
   grep -qF -- "$3" "$m" || fail "mutant $1 did not land"
   printf '%s' "$m"
 }
+
+# Backgrounding the command without an explicit stdin redirection.
+m="$(mutant no_stdin_dup 's/^  "\$@" <&0 &$/  "$@" \&/' '  "$@" &')"
+broken="$(contract "$m" watchdog)"
+case "$broken" in *stdin-in-subst*) ok "red: a backgrounded command without <&0 reads /dev/null inside a command substitution" ;;
+  *) fail "the no-stdin-dup mutant was not caught: ${broken:-<no rung failed>}" ;; esac
 
 # Trusting any `timeout` on PATH, GNU or not.
 m="$(mutant trust_any 's/ \&\& run_bounded_gnu_timeout timeout;/;/' 'if command -v timeout >/dev/null 2>&1; then')"

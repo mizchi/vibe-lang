@@ -169,7 +169,12 @@ run_bounded_watchdog() { # <seconds> <cmd...>
   local had_monitor=0
   case "$-" in *m*) had_monitor=1 ;; esac
   set -m
-  "$@" &
+  # `<&0`: a backgrounded command gets /dev/null as stdin whenever job
+  # control is not really active, which `set -m` does not achieve inside a
+  # command substitution -- `actual="$(run_bounded 60 wasmtime ... <in)"`
+  # read nothing (#3749, scripts/test_wasi_cli_stdin_provider_source_
+  # component_gate.sh). An explicit redirection keeps the caller's stdin.
+  "$@" <&0 &
   local cmd_pid=$!
   [ "$had_monitor" -eq 1 ] || set +m
   (
