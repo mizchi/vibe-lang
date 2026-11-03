@@ -41,6 +41,7 @@ import @vibe/compiler/codegen/builtin_bodies {
 import @vibe/compiler/codegen/reloc {
   blind_kind_ctor_tag,
   blind_kind_fn_value,
+  blind_kind_layout_read,
   blind_kind_str_fat,
   blind_kind_str_ref,
   blind_kind_table_slot_i32,
@@ -508,6 +509,9 @@ export fn lc_verify_blind_relocs(bodies: Array[Bytes], num_generated: Int, lambd
       66
     } else if kind == blind_kind_table_slot_i32 || kind == blind_kind_ctor_tag {
       65
+    } else if kind == blind_kind_layout_read {
+      // #3771: names a layout the body read; no instruction to check.
+      0 - 1
     } else {
       throw(String::concat("blind reloc: unknown kind ", __to_string(kind)))
     }
@@ -520,12 +524,16 @@ export fn lc_verify_blind_relocs(bodies: Array[Bytes], num_generated: Int, lambd
     } else {
       sym
     }
-    if opcode != want_op {
+    if want_op >= 0 && opcode != want_op {
       throw(String::concat("blind reloc: expected opcode ", String::concat(__to_string(want_op), String::concat(" at code index ", String::concat(__to_string(ci), String::concat(" offset ", String::concat(__to_string(off), String::concat(", found ", __to_string(opcode)))))))))
     } else {
       ()
     }
-    let got = lc_read_sleb(body, off + 1)
+    let got = if want_op >= 0 {
+      lc_read_sleb(body, off + 1)
+    } else {
+      want_val
+    }
     if got != want_val {
       throw(String::concat("blind reloc: constant at code index ", String::concat(__to_string(ci), String::concat(" offset ", String::concat(__to_string(off), String::concat(" decodes to ", String::concat(__to_string(got), String::concat(", recorded ", __to_string(want_val)))))))))
     } else {

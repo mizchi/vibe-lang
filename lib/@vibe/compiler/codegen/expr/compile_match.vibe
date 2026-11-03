@@ -86,9 +86,13 @@ import @vibe/compiler/codegen/common_base {
   is_ptuple,
   is_pwild,
   is_slet,
+  layout_read,
   resolve_func,
   resolve_local,
-  str_table_index_of
+  str_table_index_of,
+  struct_field_names_at,
+  struct_first_field_slot,
+  struct_index_named
 }
 
 import @vibe/compiler/codegen/common_extractors {
@@ -1180,18 +1184,7 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
 /// so a name-agnostic "first struct that declares the field" scan binds the wrong
 /// offset. Only when `sname` is not in the table do we fall back to that scan.
 fn find_struct_index(ctx: CompileCtx, sname: String) -> Int {
-  let names = ctx.ctor_table.struct_names
-  let mut si = 0
-  let mut sidx = -1
-  while si < Array::length(names) {
-    if Array::get(names, si) == sname {
-      sidx = si
-      si = Array::length(names)
-    } else {
-      si = si + 1
-    }
-  }
-  sidx
+  struct_index_named(ctx.ctor_table, sname)
 }
 
 fn field_index_in(fnames: Array[String], field: String) -> Int {
@@ -1209,9 +1202,10 @@ fn field_index_in(fnames: Array[String], field: String) -> Int {
 }
 
 fn struct_field_index(ctx: CompileCtx, sname: String, field: String) -> Int with Exception {
+  layout_read(String::concat(".", field))
   let sidx = find_struct_index(ctx, sname)
   if sidx >= 0 {
-    let found = field_index_in(Array::get(ctx.ctor_table.struct_field_names, sidx), field)
+    let found = field_index_in(struct_field_names_at(ctx.ctor_table, sidx), field)
     if found < 0 {
       throw(String::concat(String::concat(String::concat("unknown field `", field), "` in struct "), sname))
     } else {
@@ -1220,18 +1214,7 @@ fn struct_field_index(ctx: CompileCtx, sname: String, field: String) -> Int with
   } else {
     // `sname` not found in the struct table: fall back to the legacy global
     // first-match scan so unqualified / synthetic names still resolve.
-    let names = ctx.ctor_table.struct_names
-    let mut gsi = 0
-    let mut gfound = -1
-    while gsi < Array::length(names) {
-      let f = field_index_in(Array::get(ctx.ctor_table.struct_field_names, gsi), field)
-      if f >= 0 {
-        gfound = f
-        gsi = Array::length(names)
-      } else {
-        gsi = gsi + 1
-      }
-    }
+    let gfound = struct_first_field_slot(ctx.ctor_table, field)
     if gfound < 0 {
       throw(String::concat("unknown struct field in pattern: ", field))
     } else {

@@ -1059,12 +1059,14 @@ test "#2669: an edit to the FIRST file replays the files after it" {
 
 test "#2669: a layout-drifting edit recompiles fully, then the next build replays it all" {
   // Three files, and the edit lands on the MIDDLE one so there is an
-  // unchanged prefix: `p_a` stays put, `p_b` gains a struct whose field `v`
-  // an existing struct also has, `p_main` is downstream. A field access
-  // dispatches over every struct that has the field, so that struct is a
-  // drift the body loop declines on (one with new fields is tolerated). A string literal, an added function and an added
-  // type used to be the example; the pool is relocated and the other two
-  // tolerated now, #2669 -- `body_cache_insert_function_test.vibe`.
+  // unchanged prefix: `p_a` stays put, `p_b` swaps the order of its two
+  // structs, `p_main` is downstream. A field access dispatches over the
+  // structs holding the field in table order, so structs both builds hold
+  // must keep their relative order, and this is a drift the body loop
+  // declines on. A string literal, an added function, an added type and a
+  // struct sharing a field used to be the example; each is relocated or
+  // tolerated now (#2669, #3771 -- `body_cache_insert_function_test.vibe`,
+  // `body_cache_changed_struct_test.vibe`).
   //
   // This used to be the test for carrying a REPLAYED prefix back into the
   // artifact. A drifted layout no longer replays a prefix (its bodies embed
@@ -1075,8 +1077,9 @@ test "#2669: a layout-drifting edit recompiles fully, then the next build replay
   let b_path = "/tmp/vibe_body_cache_pfx_b.vibe"
   let main_path = "/tmp/vibe_body_cache_pfx_main.vibe"
   let a_source = "export struct PaPt { v: Int }\nexport let p_eq: () -> Bool = () -> { [1, 2] == [1, 2] }\nexport let p_one: () -> String = () -> { \"one\" }\nexport let p_two: () -> Int = () -> { 22 + PaPt::{ v: 0 }.v }"
-  let b_base = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() }"
-  let b_longer = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nstruct PbBox { v: Int }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() + PbBox::{ v: 3 }.v }"
+  let b_body = "export let p_b_one: () -> String = () -> { String::concat(p_one(), \"b\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() + PbA::{ pa: 3 }.pa + PbB::{ pb: 4 }.pb }"
+  let b_base = String::concat("import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nstruct PbA { pa: Int }\nstruct PbB { pb: Int }\n", b_body)
+  let b_longer = String::concat("import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nstruct PbB { pb: Int }\nstruct PbA { pa: Int }\n", b_body)
   let main_source = "import ./vibe_body_cache_pfx_b.vibe { p_b_one, p_b_two }\nlet run: () -> Int = () -> { String::length(p_b_one()) + p_b_two() }"
   let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(main_path)))
   remove_file_if_exists(artifact_path)

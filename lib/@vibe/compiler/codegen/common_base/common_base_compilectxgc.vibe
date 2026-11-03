@@ -13,7 +13,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/reloc {
-  blind_kind_ctor_tag, blind_kind_str_fat, blind_kind_str_ref, blind_owner_pending
+  blind_kind_ctor_tag, blind_kind_layout_read, blind_kind_str_fat, blind_kind_str_ref, blind_owner_pending
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -88,6 +88,85 @@ export fn blind_reloc_assign_pending(ctx: CompileCtx, lo: Int, owner: Int) -> Un
     }
     i = i + 1
   }
+}
+
+//# Layout reads (#3771)
+//
+// A struct's layout reaches a body that spells neither the struct nor its
+// fields -- `p.y` on a value whose type was inferred reads the field's slot
+// out of the struct table. The body cache cannot see that in the bytes, so
+// every read of the struct and constructor tables appends the NAME it asked
+// about here while a function body is compiled, and the body loop turns the
+// names into `blind_kind_layout_read` records on that body. A field is logged
+// as `.field`, so a field and a type of the same spelling stay apart.
+
+/// On only while a function body whose harvest is collected is compiled.
+export let layout_read_on: Array[Bool] = [false]
+
+/// The names read since `layout_read_begin`.
+export let layout_read_log: Array[String] = []
+
+/// Log one read. Off, it costs the flag test.
+export fn layout_read(name: String) -> Unit {
+  if Array::get(layout_read_on, 0) {
+    Array::push(layout_read_log, name)
+  } else {
+    ()
+  }
+}
+
+/// Start a body's window: the log is emptied and turned on when `on`.
+export fn layout_read_begin(on: Bool) -> Unit {
+  Array::truncate(layout_read_log, 0)
+  Array::set(layout_read_on, 0, on)
+}
+
+/// A read's record `sym`: 1 + a 30-bit FNV-1a hash of `name`. Two names that
+/// collide only make a replay refuse more than it had to; 0 is the sentinel.
+export fn layout_read_sym(name: String) -> Int {
+  let mut h = 2166136261&1073741823
+  let mut i = 0
+  while i < String::length(name) {
+    h = ((h^String::byte_at(name, i)) * 16777619)&1073741823
+    i = i + 1
+  }
+  1 + h
+}
+
+/// End a body's window: when the log was on, append the sentinel and one
+/// record per distinct name read to the four record columns, owned by
+/// `owner`, and turn the log off.
+export fn layout_read_end(owner: Int, owners: Array[Int], offsets: Array[Int], kinds: Array[Int], syms: Array[Int]) -> Unit {
+  if Array::get(layout_read_on, 0) {
+    let seen: Array[Int] = []
+    Array::push(seen, 0)
+    for name in layout_read_log {
+      let v = layout_read_sym(name)
+      let mut dup = false
+      for x in seen {
+        if x == v {
+          dup = true
+        } else {
+          ()
+        }
+      }
+      if dup {
+        ()
+      } else {
+        Array::push(seen, v)
+      }
+    }
+    for v in seen {
+      Array::push(owners, owner)
+      Array::push(offsets, 0)
+      Array::push(kinds, blind_kind_layout_read)
+      Array::push(syms, v)
+    }
+    ()
+  } else {
+    ()
+  }
+  layout_read_begin(false)
 }
 
 export struct CompileCtxGc {
@@ -416,11 +495,22 @@ export fn agg_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
 /// pairs a slot with the wrong struct. Indexing by slot removes the pairing --
 /// reset is positional and there is nothing to keep in step. Absent slots
 /// read as -1.
+/// Log a read of struct `struct_idx`'s field `field`: the struct and the field.
+fn layout_read_struct_field(ct: CtorTable, struct_idx: Int, field: String) -> Unit {
+  if struct_idx >= 0 && struct_idx < Array::length(ct.struct_names) {
+    layout_read(Array::get(ct.struct_names, struct_idx))
+  } else {
+    ()
+  }
+  layout_read(String::concat(".", field))
+}
+
 /// #1542: does struct `struct_idx` declare `field` as a reference-lane array?
 /// Lives here rather than beside either use because the binding site, the read
 /// lowering and the receiver test all have to agree; a private copy per file is
 /// how the #1722 lookups drifted.
 export fn gc_ctor_field_is_ref(ct: CtorTable, struct_idx: Int, field: String) -> Bool {
+  layout_read_struct_field(ct, struct_idx, field)
   if struct_idx < 0 || struct_idx >= Array::length(ct.struct_field_is_ref) {
     false
   } else {
@@ -442,6 +532,7 @@ export fn gc_ctor_field_is_ref(ct: CtorTable, struct_idx: Int, field: String) ->
 
 /// Slot of `field` within struct `struct_idx`, or -1.
 export fn gc_ctor_field_slot(ct: CtorTable, struct_idx: Int, field: String) -> Int {
+  layout_read_struct_field(ct, struct_idx, field)
   if struct_idx < 0 || struct_idx >= Array::length(ct.struct_field_names) {
     0 - 1
   } else {
@@ -584,6 +675,7 @@ export fn agg_expr_lookup(arr: Array[Int], exprs: Array[Expr], slot: Int) -> Exp
 /// The struct index of `tname` in `ct.struct_names`, -1 when absent: through
 /// the sorted view when it is in sync with the array, else the linear scan.
 fn struct_table_index_of(ct: CtorTable, tname: String) -> Int {
+  layout_read(tname)
   if Array::length(ct.struct_names_sorted) != Array::length(ct.struct_names) {
     let mut si = 0
     let mut out = 0 - 1
@@ -609,6 +701,7 @@ fn struct_table_index_of(ct: CtorTable, tname: String) -> Int {
 /// Does some constructor in `ct` declare `tname` as its type? Through the
 /// sorted view when in sync, else the linear scan.
 fn ctor_type_names_contain(ct: CtorTable, tname: String) -> Bool {
+  layout_read(tname)
   if Array::length(ct.type_names_sorted) != Array::length(ct.type_names) {
     let mut ti = 0
     let mut found = false
@@ -1085,6 +1178,7 @@ export fn append_hidden_attempt_constructors(names: Array[String], tags: Array[I
 /// call sites. Falls back to the linear scan when the sorted view is absent
 /// (defensive: a table built without ctor_sorted_index stays correct).
 export fn ctor_table_index_of(ct: CtorTable, name: String) -> Int {
+  layout_read(name)
   if Array::length(ct.names_sorted) != Array::length(ct.names) {
     lookup_ctor(ct.names, name, 0)
   } else {
@@ -1100,6 +1194,11 @@ export fn ctor_table_index_of(ct: CtorTable, name: String) -> Int {
 /// #1062: is constructor `ctor_idx`'s positional field `field_idx` declared
 /// Double/Float? See CompileCtx.ctor_float_fields for the encoding.
 export fn ctor_field_is_float(ctx: CompileCtx, ctor_idx: Int, field_idx: Int) -> Bool {
+  if ctor_idx >= 0 && ctor_idx < Array::length(ctx.ctor_table.names) {
+    layout_read(Array::get(ctx.ctor_table.names, ctor_idx))
+  } else {
+    ()
+  }
   let arr = ctx.ctor_float_fields
   let mut i = 0
   let mut found = false
@@ -1127,6 +1226,7 @@ export fn ctor_field_is_float(ctx: CompileCtx, ctor_idx: Int, field_idx: Int) ->
 /// (struct construction — both the `S::{...}` ctor path and the set-matched
 /// bare-record path — stamps the struct's unique tag at value+0).
 export fn struct_field_candidates(ct: CtorTable, field: String) -> Array[(Int, Int)] {
+  layout_read(String::concat(".", field))
   let out = array_empty()
   let mut si = 0
   while si < Array::length(ct.struct_names) {
@@ -1180,6 +1280,9 @@ export fn struct_field_dispatch_cases(cands: Array[(Int, Int)]) -> Array[(Int, I
 /// ctor tag, making bare records byte-compatible with `S::{...}` ctor-path
 /// construction (which already reorders to declared order).
 export fn struct_index_by_field_set(ct: CtorTable, lit_names: Array[String]) -> Int {
+  for lit in lit_names {
+    layout_read(String::concat(".", lit))
+  }
   let mut si = 0
   let mut found = -1
   while si < Array::length(ct.struct_names) {
@@ -1212,6 +1315,58 @@ export fn struct_index_by_field_set(ct: CtorTable, lit_names: Array[String]) -> 
       } else {
         si = si + 1
       }
+    } else {
+      si = si + 1
+    }
+  }
+  found
+}
+
+/// The FIRST struct named `name` in declaration order, -1 when none: the
+/// linear scan the struct-pattern and record-literal paths used. Logged as a
+/// read of `name` (#3771).
+export fn struct_index_named(ct: CtorTable, name: String) -> Int {
+  layout_read(name)
+  let mut si = 0
+  let mut found = 0 - 1
+  while si < Array::length(ct.struct_names) {
+    if Array::get(ct.struct_names, si) == name {
+      found = si
+      si = Array::length(ct.struct_names)
+    } else {
+      si = si + 1
+    }
+  }
+  found
+}
+
+/// Struct `si`'s field names in declaration order -- its layout. Logged as a
+/// read of the struct (#3771).
+export fn struct_field_names_at(ct: CtorTable, si: Int) -> Array[String] {
+  layout_read(Array::get(ct.struct_names, si))
+  Array::get(ct.struct_field_names, si)
+}
+
+/// The slot of `field` in the FIRST struct that declares it, -1 when none: the
+/// type-blind fallback for a struct pattern whose struct is not in the table.
+/// Logged as a read of `.field` (#3771).
+export fn struct_first_field_slot(ct: CtorTable, field: String) -> Int {
+  layout_read(String::concat(".", field))
+  let mut si = 0
+  let mut found = 0 - 1
+  while si < Array::length(ct.struct_names) {
+    let fnames = Array::get(ct.struct_field_names, si)
+    let mut fi = 0
+    while fi < Array::length(fnames) {
+      if Array::get(fnames, fi) == field {
+        found = fi
+        fi = Array::length(fnames)
+      } else {
+        fi = fi + 1
+      }
+    }
+    if found >= 0 {
+      si = Array::length(ct.struct_names)
     } else {
       si = si + 1
     }
