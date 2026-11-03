@@ -24,8 +24,9 @@
 #   - SECS <= 0 runs the command with no bound, which is what the three
 #     `run_with_timeout` copies this replaced already meant by 0.
 #
-# The command is ALWAYS bounded, whichever mechanism is present:
-# `timeout`, else `gtimeout`, else the shell watchdog below. Running without a
+# The command is ALWAYS bounded, whichever mechanism is present: GNU's
+# `timeout`, else GNU's `gtimeout`, else the shell watchdog below. A
+# `timeout` that is not GNU's is NOT used (see run_bounded_is_gnu). Running without a
 # limit was the other option #2958 weighed, and it is right for a test runner
 # but wrong for an oracle -- several callers here READ 124 (the fuzz oracle's
 # HANG classes, vibe_md's "timed out after" line, the #2362 spin probe in the
@@ -45,9 +46,42 @@
 #     a grandchild keeps running, and "a wrapper that spawns the real workload"
 #     is the shape of nearly every call site here.
 #
-# VIBE_RUN_BOUNDED_IMPL (timeout | gtimeout | watchdog) forces one mechanism.
+# VIBE_RUN_BOUNDED_IMPL (timeout | gtimeout | watchdog) forces one mechanism,
+# bypassing the GNU check; `auto` (or unset) is the default selection.
 # It exists for scripts/run_bounded_test.sh alone, which has to exercise the
 # watchdog on a machine that has GNU timeout.
+
+# Only GNU timeout(1) is trusted to keep the contract. uutils' timeout -- the
+# default /usr/bin/timeout from Ubuntu 25.10 on, and so on the ubuntu-26.04
+# runners `ubuntu-latest` moved to on 2026-11-03 -- delivers the bound's TERM
+# to the process group but never delivers the `-k` KILL: its group send first
+# sets SIGKILL to SIG_IGN, which the kernel refuses (EINVAL), and it returns
+# before calling kill(). It then waits for the child, so a command that
+# ignores TERM runs to completion and is reported as 137 -- the bound is not
+# enforced at all. Any other implementation (uutils, busybox) gets the
+# watchdog, whose group signalling scripts/run_bounded_test.sh pins.
+run_bounded_is_gnu() { # <tool name or path>
+  case "$("$1" --version 2>/dev/null)" in
+    *"(GNU coreutils)"*) return 0 ;;
+  esac
+  return 1
+}
+
+# The mechanism a call with no VIBE_RUN_BOUNDED_IMPL uses, probed once per
+# shell (a `--version` fork) and kept in an unexported variable, so an xargs
+# worker probes for itself instead of trusting an inherited answer.
+run_bounded_auto_impl() {
+  if [ -z "${_run_bounded_auto_impl:-}" ]; then
+    if command -v timeout >/dev/null 2>&1 && run_bounded_is_gnu timeout; then
+      _run_bounded_auto_impl="timeout"
+    elif command -v gtimeout >/dev/null 2>&1 && run_bounded_is_gnu gtimeout; then
+      _run_bounded_auto_impl="gtimeout"
+    else
+      _run_bounded_auto_impl="watchdog"
+    fi
+  fi
+  printf '%s\n' "$_run_bounded_auto_impl"
+}
 
 # Linux's uptime is independent of realtime steps; read it with shell builtins
 # so every bounded command does not need another runtime process. Other hosts
@@ -83,14 +117,9 @@ run_bounded() { # <seconds> <cmd...>
     return $?
   fi
   local impl="${VIBE_RUN_BOUNDED_IMPL:-}"
-  if [ -z "$impl" ]; then
-    if command -v timeout >/dev/null 2>&1; then
-      impl="timeout"
-    elif command -v gtimeout >/dev/null 2>&1; then
-      impl="gtimeout"
-    else
-      impl="watchdog"
-    fi
+  if [ -z "$impl" ] || [ "$impl" = "auto" ]; then
+    run_bounded_auto_impl >/dev/null
+    impl="$_run_bounded_auto_impl"
   fi
   case "$impl" in
     "timeout" | "gtimeout")
@@ -125,7 +154,7 @@ run_bounded() { # <seconds> <cmd...>
       return $?
       ;;
     *)
-      echo "run_bounded: VIBE_RUN_BOUNDED_IMPL must be timeout, gtimeout, or watchdog, got '$impl'" >&2
+      echo "run_bounded: VIBE_RUN_BOUNDED_IMPL must be auto, timeout, gtimeout, or watchdog, got '$impl'" >&2
       return 125
       ;;
   esac
@@ -193,7 +222,7 @@ run_bounded_watchdog() { # <seconds> <cmd...>
 # exported, is `command not found` there -- exit 127 again, the very failure
 # this file exists to remove.
 export -f run_bounded run_bounded_watchdog
-export -f run_bounded_monotonic_seconds
+export -f run_bounded_monotonic_seconds run_bounded_is_gnu run_bounded_auto_impl
 
 # Executed rather than sourced: run the command given on the command line.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

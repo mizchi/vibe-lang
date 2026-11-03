@@ -14,8 +14,9 @@ set -euo pipefail
 # the gate lanes source run_bounded.sh (tests/gates/lib.sh), which exports the
 # functions into this process's environment, and an inherited export would
 # satisfy the xargs-worker rung for a mutant that never exports them.
-unset VIBE_RUN_BOUNDED_IMPL
+unset VIBE_RUN_BOUNDED_IMPL _run_bounded_auto_impl
 unset -f run_bounded run_bounded_watchdog run_bounded_monotonic_seconds 2>/dev/null || true
+unset -f run_bounded_is_gnu run_bounded_auto_impl 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$SCRIPT_DIR/run_bounded.sh"
@@ -89,15 +90,22 @@ contract() { # <lib> <impl>
   [ "$r" = "rc=124" ] || echo "executed: $r"
 }
 
-# --- green: the real helper, under every mechanism this machine can offer.
-impls="watchdog"
-command -v timeout >/dev/null 2>&1 && impls="$impls timeout"
-command -v gtimeout >/dev/null 2>&1 && impls="$impls gtimeout"
+# Is the named tool GNU's, by the helper's own check? Only a GNU binary is
+# one the helper will pick, so only a GNU binary is forced below.
+gnu_impl() { bash -c '. "$1"; run_bounded_is_gnu "$2"' _ "$LIB" "$1"; }
+
+# --- green: the real helper, under every mechanism this machine can offer,
+# and as callers use it (`auto`: no VIBE_RUN_BOUNDED_IMPL at all).
+impls="watchdog auto"
+command -v timeout >/dev/null 2>&1 && gnu_impl "timeout" && impls="$impls timeout"
+command -v gtimeout >/dev/null 2>&1 && gnu_impl "gtimeout" && impls="$impls gtimeout"
 for impl in $impls; do
   broken="$(contract "$LIB" "$impl")"
   [ -z "$broken" ] || fail "the real helper breaks the contract under $impl: $broken"
   ok "the real helper keeps timeout(1)'s contract under $impl"
 done
+auto="$(bash -c '. "$1"; run_bounded_auto_impl' _ "$LIB")"
+ok "auto resolves to $auto on this machine"
 
 # --- the edges the contract rungs do not reach.
 r="$(bash -c '. "$1"; run_bounded 0 sh -c "exit 5"; echo "rc=$?"' _ "$LIB" 2>/dev/null | tail -1)"
@@ -174,7 +182,7 @@ wall_lib="$WORK/wall-clock-lib.sh"
 sed 's/start="$(run_bounded_monotonic_seconds)"/start="$(date +%s)"/; s/end="$(run_bounded_monotonic_seconds)"/end="$(date +%s)"/' "$LIB" > "$wall_lib"
 [ "$(grep -cF '="$(date +%s)"' "$wall_lib")" = 2 ] || fail "the timeout(1) wall-clock mutation did not land"
 for impl in $impls; do
-  [ "$impl" != watchdog ] || continue
+  case "$impl" in watchdog | auto) continue ;; esac
   : > "$clock_state"
   broken="$(VIBE_FAKE_REALTIME_STATE="$clock_state" PATH="$clock_dir:$PATH" contract "$LIB" "$impl")"
   [ -z "$broken" ] || fail "the real $impl helper fails under a realtime backstep: $broken"
@@ -190,13 +198,60 @@ done
 node_lib="$WORK/node-clock-lib.sh"
 sed 's/if \[ -r \/proc\/uptime \]; then/if false; then/' "$LIB" > "$node_lib"
 grep -qF 'if false; then' "$node_lib" || fail "the Node clock probe did not land"
-if command -v timeout >/dev/null 2>&1; then
+if command -v timeout >/dev/null 2>&1 && gnu_impl "timeout"; then
   r="$(VIBE_RUN_BOUNDED_IMPL="timeout" bash -c '. "$1"; run_bounded 1 sh -c "trap \"\" TERM; sleep 20"; echo "rc=$?"' _ "$node_lib" 2>/dev/null | tail -1)"
   [ "$r" = rc=124 ] || fail "the Node clock misclassified escalation: $r"
   r="$(VIBE_RUN_BOUNDED_IMPL="timeout" bash -c '. "$1"; run_bounded_monotonic_seconds() { return 1; }; run_bounded_watchdog() { return 42; }; run_bounded 1 true; echo "rc=$?"' _ "$LIB" 2>/dev/null | tail -1)"
   [ "$r" = rc=42 ] || fail "a missing monotonic clock did not select the watchdog: $r"
   ok "Node clock classifies escalation; an unavailable clock selects the marker watchdog"
 fi
+
+# A timeout(1) that is not GNU's must not be selected. This fake has the
+# signalling of uutils' timeout as ubuntu-26.04 ships it (2026-11-03): the
+# bound's TERM reaches the process group, the `-k` KILL is never sent, and it
+# waits the child out. The helper must route around it to the watchdog; a
+# helper that trusts any `timeout` on PATH lets a TERM-ignoring command run
+# its full 20s -- the exact CI failure that motivated the GNU check.
+uu_dir="$WORK/uutils"
+mkdir -p "$uu_dir"
+cat > "$uu_dir/timeout" <<'FAKEEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then echo "fake (uutils coreutils) 0.0.0"; exit 0; fi
+k=0
+[ "$1" = -k ] && { k="$2"; shift 2; }
+secs="$1"
+shift
+mark="$(mktemp -d "${TMPDIR:-/tmp}/fake_uutils.XXXXXX")"
+set -m
+"$@" &
+pid=$!
+set +m
+# TERM to the group at the bound; the -k KILL is lost, so only mark when the
+# escalation WOULD have fired.
+( sleep "$secs"; kill -TERM -- "-$pid"; : > "$mark/term"; sleep "$k"; : > "$mark/kill" ) >/dev/null 2>&1 &
+w=$!
+wait "$pid" && rc=0 || rc=$?
+kill "$w" 2>/dev/null
+if [ -e "$mark/kill" ]; then rc=137; elif [ -e "$mark/term" ]; then rc=124; fi
+rm -rf "$mark"
+exit "$rc"
+FAKEEOF
+chmod +x "$uu_dir/timeout"
+r="$(PATH="$uu_dir:$PATH" bash -c '. "$1"; run_bounded_auto_impl' _ "$LIB")"
+case "$r" in timeout) fail "a timeout(1) that is not GNU's was selected" ;; esac
+term_ignoring_secs() { # <lib> -> "<elapsed> <rc line>", with the fake on PATH
+  local t0 t1 r
+  t0="$(monotonic_seconds)"
+  r="$(PATH="$uu_dir:$PATH" bash -c '. "$1"; run_bounded 1 sh -c "trap \"\" TERM; sleep 20"; echo "rc=$?"' _ "$1" 2>/dev/null | tail -1)"
+  t1="$(monotonic_seconds)"
+  printf '%s %s\n' "$((t1 - t0))" "$r"
+}
+read -r secs r <<<"$(term_ignoring_secs "$LIB")"
+[ "$secs" -lt 10 ] && [ "$r" = rc=124 ] || fail "the real helper with a non-GNU timeout(1) on PATH: took ${secs}s ($r)"
+m="$(mutant trust_any_timeout 's/ \&\& run_bounded_is_gnu timeout; then$/; then/' 'command -v timeout >/dev/null 2>&1; then')"
+read -r secs r <<<"$(term_ignoring_secs "$m")"
+[ "$secs" -ge 10 ] || fail "the trust-any-timeout mutant was not caught: took ${secs}s ($r)"
+ok "red: a timeout(1) that is not GNU's is routed to the watchdog; trusting it let a TERM-ignoring command run ${secs}s"
 
 # Defined but not exported.
 m="$(mutant no_export 's/^export -f run_bounded run_bounded_watchdog$/: not exported/' ': not exported')"
