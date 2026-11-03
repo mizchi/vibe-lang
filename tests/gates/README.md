@@ -12,7 +12,7 @@ hold live in independently runnable lane scripts:
 | `selftests` | `tests/gates/selftests/run.sh` | every gate companion `*_test.sh`, serially |
 
 `tests/gates/registry.tsv` is the fail-closed inventory (#2001 Phase 0).
-`scripts/check_gate_registry.sh` rejects duplicate ids, missing lane
+`scripts/check_gate_registry.vibex` rejects duplicate ids, missing lane
 scripts, unregistered section banners, and missing fixture paths.
 
 ```sh
@@ -27,7 +27,7 @@ These names are a first cut toward the 11 lanes in #2001. Split a coarse
 lane by adding a directory, a `run.sh`, a registry `lane` column change,
 and a CI matrix entry. Do not add a lane that `ci-required` does not wait
 on, and do not leave a lane out of a caller that ENUMERATES lanes --
-`scripts/check_gate_lane_coverage.sh` rejects that, because an enumeration
+`scripts/check_gate_lane_coverage.vibex` rejects that, because an enumeration
 pins the set at the moment it was written and the omitted lane then runs
 nowhere while the caller still passes (#2650).
 

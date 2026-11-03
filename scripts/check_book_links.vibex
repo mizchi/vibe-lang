@@ -1,0 +1,246 @@
+// Every relative link in The Vibe Book must resolve. #3672 ported this gate
+// from check_book_links.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_book_links.vibex -- [--dir DIR]
+//
+// The book is the onboarding surface: a reader who cannot get from chapter 1 to
+// chapter 2 is finished with the language. When this was written, 28 of the
+// book's 130 relative links were broken, including EVERY navigation link in the
+// Japanese book -- `[02 制御フロー](02_control_flow-ja.vibe.md)` when the file
+// is `book/ja/04_control_flow.vibe.md`. That is rename fallout from
+// `docs/tutorial/NN_x-ja.vibe.md` -> `book/ja/NN_x.vibe.md`, and nothing read
+// the links back, so the Japanese book had been unnavigable end to end.
+//
+// `check_doc_path_citations.sh` does not cover this: it checks BACKTICKED paths
+// under `docs/`, and these are markdown link targets under `book/`.
+//
+// A link is `[text](target)`: text with no `]`, a target with no `)` and no
+// blank. Fenced code blocks (a line whose first non-blank characters are
+// ```, toggling) are skipped: `fn identity[T](x: T) -> T` matches the link
+// grammar and is not a link -- a checker that reports it teaches readers to
+// ignore its output. `http://`, `https://`, `mailto:` and `#` targets are not
+// this checker's business.
+//
+// Anchors are not verified, only the file part: an anchor that drifts is a
+// smaller failure than a file that does not exist, and heading slugs differ
+// between renderers.
+//
+// A link to the file it appears in is also reported. It RESOLVES, so a plain
+// existence check calls it fine -- and every "English version" link in book/ja/
+// was one, `[03_values_functions.vibe.md](03_values_functions.vibe.md)` from
+// inside book/ja/. Seven chapters offered a link to the canonical English text
+// that led back to the translation.
+//
+// --dir DIR scans another directory (the self-test's); the default is book.
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/process {
+  exit
+}
+import @vibex/shell {
+  find, sort_str
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn is_blank(c: Char) -> Bool {
+  let code = Char::to_int(c)
+  c == ' ' || (code >= 9 && code <= 13)
+}
+
+fn trim_left(s: String) -> String {
+  let mut i = 0
+  while i < String::length(s) && is_blank(String::byte_at(s, i)) {
+    i = i + 1
+  }
+  String::substring(s, i, String::length(s))
+}
+
+/// The targets of the `[text](target)` links on a line, leftmost first.
+fn link_targets(line: String) -> Array[String] {
+  let out: Array[String] = []
+  let n = String::length(line)
+  let mut i = 0
+  while i < n {
+    let mut next = i + 1
+    if String::byte_at(line, i) == '[' {
+      let close = String::index_of_from(line, "]", i + 1)
+      if close >= 0 && close + 1 < n && String::byte_at(line, close + 1) == '(' {
+        let start = close + 2
+        let mut k = start
+        while k < n && String::byte_at(line, k) != ')' && !is_blank(String::byte_at(line, k)) {
+          k = k + 1
+        }
+        if k > start && k < n && String::byte_at(line, k) == ')' {
+          Array::push(out, String::substring(line, start, k))
+          next = k + 1
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = next
+  }
+  out
+}
+
+fn is_external(target: String) -> Bool {
+  String::starts_with(target, "http://") || String::starts_with(target, "https://") || String::starts_with(target, "mailto:") || String::starts_with(target, "#")
+}
+
+/// `dir/rel` with `.` and `..` segments resolved, as os.path.normpath does.
+fn normalize(dir: String, rel: String) -> String {
+  let joined = if String::starts_with(rel, "/") {
+    rel
+  } else {
+    "\{dir}/\{rel}"
+  }
+  let absolute = String::starts_with(joined, "/")
+  let parts = String::split(joined, "/")
+  let kept: Array[String] = []
+  let mut i = 0
+  while i < Array::length(parts) {
+    let part = Array::get(parts, i)
+    if part == "" || part == "." {
+      ()
+    } else if part == ".." && Array::length(kept) > 0 && Array::get(kept, Array::length(kept) - 1) != ".." {
+      Array::truncate(kept, Array::length(kept) - 1)
+    } else if part == ".." && absolute {
+      ()
+    } else {
+      Array::push(kept, part)
+    }
+    i = i + 1
+  }
+  let body = String::join(kept, "/")
+  if absolute {
+    "/\{body}"
+  } else if body == "" {
+    "."
+  } else {
+    body
+  }
+}
+
+fn dir_of(path: String) -> String {
+  let mut cut = -1
+  let mut i = 0
+  while i < String::length(path) {
+    if String::byte_at(path, i) == '/' {
+      cut = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if cut < 0 {
+    "."
+  } else {
+    String::substring(path, 0, cut)
+  }
+}
+
+fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process {
+  let root = option("--dir", "book")
+  if !Fs::is_dir(root) {
+    Stderr::write_stream("check-book-links: no such directory: \{root}\n")
+    exit(1)
+  } else {
+    let collected: Array[String] = []
+    let entries = find(root)
+    let mut e = 0
+    while e < Array::length(entries) {
+      let entry = Array::get(entries, e)
+      if !entry.is_dir && String::ends_with(entry.name, ".md") {
+        Array::push(collected, entry.path)
+      } else {
+        ()
+      }
+      e = e + 1
+    }
+    let files = sort_str(collected)
+    let broken: Array[String] = []
+    let mut total = 0
+    let mut f = 0
+    while f < Array::length(files) {
+      let path = Array::get(files, f)
+      let dir = dir_of(path)
+      let self_path = normalize(".", path)
+      let lines = String::split(Fs::read_file(path), "\n")
+      let mut fenced = false
+      let mut n = 0
+      while n < Array::length(lines) {
+        let line = Array::get(lines, n)
+        if String::starts_with(trim_left(line), "```") {
+          fenced = !fenced
+        } else if !fenced {
+          let targets = link_targets(line)
+          let mut t = 0
+          while t < Array::length(targets) {
+            let target = Array::get(targets, t)
+            if !is_external(target) {
+              total = total + 1
+              let hash = String::index_of_from(target, "#", 0)
+              let filepart = if hash >= 0 {
+                String::substring(target, 0, hash)
+              } else {
+                target
+              }
+              if filepart != "" {
+                let resolved = normalize(dir, filepart)
+                if !Fs::exists(resolved) {
+                  Array::push(broken, "\{path}:\{n + 1}: broken link: \{target} -- does not exist")
+                } else if normalize(".", resolved) == self_path {
+                  Array::push(broken, "\{path}:\{n + 1}: broken link: \{target} -- points at this same file")
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
+            } else {
+              ()
+            }
+            t = t + 1
+          }
+        } else {
+          ()
+        }
+        n = n + 1
+      }
+      f = f + 1
+    }
+    if Array::length(broken) > 0 {
+      let mut b = 0
+      while b < Array::length(broken) {
+        Stderr::write_stream("\{Array::get(broken, b)}\n")
+        b = b + 1
+      }
+      Stderr::write_stream("check-book-links: FAIL: \{Array::length(broken)} of \{total} relative link(s) are broken.\n")
+      Stderr::write_stream("  A link target is a path relative to the file it appears in. Chapters live in\n")
+      Stderr::write_stream("  book/en/ and book/ja/; the index is ../README.md; repository docs are ../../docs/;\n")
+      Stderr::write_stream("  the English original of a translation is ../src/.\n")
+      exit(1)
+    } else {
+      Console::write_stream("check-book-links: ok (\{total} relative link(s) across \{Array::length(files)} file(s) resolve)\n")
+    }
+  }
+}

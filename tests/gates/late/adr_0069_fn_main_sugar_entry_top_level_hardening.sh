@@ -985,7 +985,7 @@ send_check_reject "err_type_eq_marker_subtrait_wrong_first_equals.vibe" 'no impl
 send_check_reject "err_type_eq_no_equals_method_bound.vibe" '`Eq` declares no `equals(Self, Self) -> Bool`' "eqnoequals"
 send_check_reject "err_type_eq_witness_wrong_shape_bound.vibe" '`Eq`'"'"'s `equals` is not declared `(Self, Self) -> Bool`' "eqwrongshape"
 send_check_reject "err_type_ord_method_bound_struct.vibe" '`<` on the erased type has no witness to dispatch through' "ordmethod"
-send_check_reject "err_type_add_method_bound_double.vibe" 'no impl `Add` for `Double`' "addmethod"
+send_check_reject "err_type_add_method_bound_double.vibe" 'no impl `Add` for `Float64`' "addmethod"
 send_check_reject "err_type_eq_builtin_subtrait_wrong_first_equals.vibe" 'witness dictionary keeps is `Bad`'"'"'s' "eqbuiltinfirst"
 # A generic impl's parameter bound is judged by the same guard: the impl does
 # not apply at `Box[Pt]`, and the message names the parameter bound.
@@ -1004,7 +1004,7 @@ send_check_reject "err_type_ord_subtrait_bound_struct.vibe" 'giving `Ord` a meth
 # (#2523), so `[T: Eq]` at `Double` dispatches through a real witness and is
 # pinned as an ANSWER in fixtures/eq_bound_derive_test.vibe. `Ord` is still a
 # marker, so this fixture uses the PRELUDE's `Ord`.
-send_check_reject "err_type_ord_marker_bound_double.vibe" 'no impl `Ord` for `Double`' "orddouble"
+send_check_reject "err_type_ord_marker_bound_double.vibe" 'no impl `Ord` for `Float64`' "orddouble"
 send_check_reject "err_type_ord_marker_bound_double.vibe" 'is a marker trait (declared with no methods)' "orddouble2"
 # The edit, which differs from the struct case: nobody can add a method to the
 # prelude's `Ord` from their own program, so "give it a method" is not advice a
@@ -1014,7 +1014,7 @@ send_check_reject "err_type_ord_marker_bound_double.vibe" 'Compare at the concre
 # `__generic_add` -- string join or a raw integer add. At `Double` that answered
 # `add=0` for `1.5 + 2.25` on the linear lane; at a user struct it would add two
 # pointers. Refused at both, with the edit named.
-send_check_reject "err_type_add_marker_bound_double.vibe" 'no impl `Add` for `Double`' "adddouble"
+send_check_reject "err_type_add_marker_bound_double.vibe" 'no impl `Add` for `Float64`' "adddouble"
 send_check_reject "err_type_add_marker_bound_double.vibe" 'adds the raw representation, not the value' "adddouble2"
 send_check_reject "err_type_add_marker_bound_double.vibe" 'Add at the concrete type' "adddouble3"
 send_check_reject "err_type_add_marker_bound_struct.vibe" 'no impl `Add` for `Pt`' "addmarker"
