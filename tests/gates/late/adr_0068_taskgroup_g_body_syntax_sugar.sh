@@ -15,14 +15,8 @@ rm -rf "$taskgroupdir"; mkdir -p "$taskgroupdir"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_ok_taskgroup_sugar.vibe "$taskgroupdir/pos.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$taskgroupdir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: region_ok_taskgroup_sugar.vibe did not compile" >&2
-  cat "$taskgroupdir/pos.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/region_ok_taskgroup_sugar.vibe "$taskgroupdir/pos.wasm" __no_entry__
+gate_require_artifact "$taskgroupdir/pos.wasm" "region_ok_taskgroup_sugar.vibe did not compile"
 if ! taskgroup_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$taskgroupdir/pos.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: region_ok_taskgroup_sugar.vibe got '$taskgroup_pos_out' (want 42)" >&2
   echo "$taskgroup_pos_out" >&2
@@ -31,9 +25,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_taskgroup_sugar_region_escape.vibe "$taskgroupdir/neg.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_taskgroup_sugar_region_escape.vibe "$taskgroupdir/neg.wasm" main
 if [ -s "$taskgroupdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_taskgroup_sugar_region_escape.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -73,14 +65,8 @@ rm -rf "$frozenarrdir"; mkdir -p "$frozenarrdir"
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
 # actual/expected and fails the run.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_ok_frozen_array_basic.vibe "$frozenarrdir/basic.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$frozenarrdir/basic.wasm" ]; then
-  echo "[compiler-gate] FAIL: region_ok_frozen_array_basic.vibe did not compile" >&2
-  cat "$frozenarrdir/basic.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/region_ok_frozen_array_basic.vibe "$frozenarrdir/basic.wasm" __no_entry__
+gate_require_artifact "$frozenarrdir/basic.wasm" "region_ok_frozen_array_basic.vibe did not compile"
 if ! frozenarr_basic_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$frozenarrdir/basic.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: region_ok_frozen_array_basic.vibe got '$frozenarr_basic_out' (want 42)" >&2
   echo "$frozenarr_basic_out" >&2
@@ -90,14 +76,8 @@ fi
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
 # actual/expected and fails the run.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/send_bound_frozen_array.vibe "$frozenarrdir/send.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$frozenarrdir/send.wasm" ]; then
-  echo "[compiler-gate] FAIL: send_bound_frozen_array.vibe did not compile -- FrozenArray[Int] Send acceptance regressed" >&2
-  cat "$frozenarrdir/send.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/send_bound_frozen_array.vibe "$frozenarrdir/send.wasm" __no_entry__
+gate_require_artifact "$frozenarrdir/send.wasm" "send_bound_frozen_array.vibe did not compile -- FrozenArray[Int] Send acceptance regressed"
 if ! frozenarr_send_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$frozenarrdir/send.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: send_bound_frozen_array.vibe got '$frozenarr_send_out' (want 42)" >&2
   echo "$frozenarr_send_out" >&2
@@ -106,9 +86,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_type_send_frozen_array_of_array_bound.vibe "$frozenarrdir/neg.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_type_send_frozen_array_of_array_bound.vibe "$frozenarrdir/neg.wasm" main
 if [ -s "$frozenarrdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_type_send_frozen_array_of_array_bound.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -121,14 +99,8 @@ fi
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_ok_frozen_array_taskgroup_capture.vibe "$frozenarrdir/capture.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$frozenarrdir/capture.wasm" ]; then
-  echo "[compiler-gate] FAIL: region_ok_frozen_array_taskgroup_capture.vibe did not compile -- FrozenArray Spawnable capture regressed" >&2
-  cat "$frozenarrdir/capture.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/region_ok_frozen_array_taskgroup_capture.vibe "$frozenarrdir/capture.wasm" __no_entry__
+gate_require_artifact "$frozenarrdir/capture.wasm" "region_ok_frozen_array_taskgroup_capture.vibe did not compile -- FrozenArray Spawnable capture regressed"
 if ! frozenarr_capture_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$frozenarrdir/capture.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: region_ok_frozen_array_taskgroup_capture.vibe got '$frozenarr_capture_out' (want 40)" >&2
   echo "$frozenarr_capture_out" >&2
@@ -149,9 +121,7 @@ echo "[compiler-gate] 64/67 effect-row mismatch diagnostic snapshots (#639)"
 eff639dir="_build/_gate_eff639"
 rm -rf "$eff639dir"; mkdir -p "$eff639dir"
 cp fixtures/err_effect_missing_annotation.vibe "$eff639dir/no_with.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$eff639dir/no_with.vibe" "$eff639dir/no_with.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile "$eff639dir/no_with.vibe" "$eff639dir/no_with.wasm" __no_entry__
 if [ -s "$eff639dir/no_with.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effect_missing_annotation.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -162,9 +132,7 @@ if ! grep -qF "missing { Ask::Value } (no 'with' clause, requires { Ask::Value }
   exit 1
 fi
 cp fixtures/err_effect_handle_partial_discharge.vibe "$eff639dir/partial.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$eff639dir/partial.vibe" "$eff639dir/partial.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile "$eff639dir/partial.vibe" "$eff639dir/partial.wasm" __no_entry__
 if [ -s "$eff639dir/partial.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effect_handle_partial_discharge.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -185,9 +153,7 @@ echo "[compiler-gate] 65/67 zero-arg perform (no parens) effect-row check (#1157
 eff1157dir="_build/_gate_eff1157"
 rm -rf "$eff1157dir"; mkdir -p "$eff1157dir"
 cp fixtures/err_effect_zero_arg_perform_no_parens.vibe "$eff1157dir/x.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$eff1157dir/x.vibe" "$eff1157dir/x.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile "$eff1157dir/x.vibe" "$eff1157dir/x.wasm" __no_entry__
 if [ -s "$eff1157dir/x.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effect_zero_arg_perform_no_parens.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -211,9 +177,7 @@ echo "[compiler-gate] 66/67 operation-level fix-it precision for partial rows (#
 eff1161dir="_build/_gate_eff1161"
 rm -rf "$eff1161dir"; mkdir -p "$eff1161dir"
 cp fixtures/err_effect_op_level_partial_row_bare_perform.vibe "$eff1161dir/x.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$eff1161dir/x.vibe" "$eff1161dir/x.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile "$eff1161dir/x.vibe" "$eff1161dir/x.wasm" __no_entry__
 if [ -s "$eff1161dir/x.wasm" ]; then
   echo "[compiler-gate] FAIL: err_effect_op_level_partial_row_bare_perform.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -325,15 +289,8 @@ export let main = () -> Int {
   c(3)
 }
 VEOF
-rm -f "$c1203dir/out.wasm" "$c1203dir/out.wasm.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$c1203dir/main.vibe" "$c1203dir/out.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$c1203dir/out.wasm" ]; then
-  echo "[compiler-gate] FAIL: closure-param/top-level-name collision program did not compile (#1203)" >&2
-  cat "$c1203dir/out.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$c1203dir/main.vibe" "$c1203dir/out.wasm" main
+gate_require_artifact "$c1203dir/out.wasm" "closure-param/top-level-name collision program did not compile (#1203)"
 c1203_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$c1203dir/out.wasm" 2>&1 | tail -1)"
 if [ "$c1203_out" != "8" ]; then
   echo "[compiler-gate] FAIL: closure-param/top-level-name collision program got '$c1203_out' (want 8 = double(addone(3))) -- #1203 regressed (compose's own 'f'/'g' params silently dropped from its returned closure's captures)" >&2
@@ -377,15 +334,8 @@ export let main = () -> Int {
   0
 }
 VEOF
-rm -f "$c1203bdir/out.wasm" "$c1203bdir/out.wasm.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$c1203bdir/main.vibe" "$c1203bdir/out.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$c1203bdir/out.wasm" ]; then
-  echo "[compiler-gate] FAIL: write-only closure capture / top-level-name collision program did not compile (#1203 follow-up) -- #1212 review regressed" >&2
-  cat "$c1203bdir/out.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$c1203bdir/main.vibe" "$c1203bdir/out.wasm" main
+gate_require_artifact "$c1203bdir/out.wasm" "write-only closure capture / top-level-name collision program did not compile (#1203 follow-up) -- #1212 review regressed"
 c1203b_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$c1203bdir/out.wasm" 2>&1 | tail -1)"
 if [ "$c1203b_out" != "0" ]; then
   echo "[compiler-gate] FAIL: write-only closure capture / top-level-name collision program got '$c1203b_out' (want 0) -- #1212 review regressed" >&2
@@ -434,10 +384,7 @@ VEOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_INSPECT_UPDATE=1 VIBE_INSPECT_UPDATE_STDOUT="$inspupddir/captured.txt" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$inspupddir/demo.vibe" "$inspupddir/patched.vibe" >/dev/null 2>&1 || true
-if [ ! -s "$inspupddir/patched.vibe" ]; then
-  echo "[compiler-gate] FAIL: VIBE_INSPECT_UPDATE mode produced no output" >&2
-  exit 1
-fi
+gate_require_artifact "$inspupddir/patched.vibe" "VIBE_INSPECT_UPDATE mode produced no output"
 if ! grep -q 'inspect(String::concat("line1", "\\n"), "line1\\n")' "$inspupddir/patched.vibe" || ! grep -q 'let label = "old"' "$inspupddir/patched.vibe"; then
   echo "[compiler-gate] FAIL: VIBE_INSPECT_UPDATE patched to unexpected content (unrelated literal touched, or trailing-newline snapshot mishandled)" >&2
   cat "$inspupddir/patched.vibe" >&2
@@ -616,11 +563,7 @@ for bag_be in gc linear; do
   env $bag_env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/gc_bytes_append_grow.vibe" "$bagdir/$bag_be.wasm" main >/dev/null 2>&1 || true
-  if [ ! -s "$bagdir/$bag_be.wasm" ]; then
-    echo "[compiler-gate] FAIL: gc_bytes_append_grow.vibe did not compile on the $bag_be backend" >&2
-    cat "$bagdir/$bag_be.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_artifact "$bagdir/$bag_be.wasm" "gc_bytes_append_grow.vibe did not compile on the $bag_be backend"
   bag_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$bagdir/$bag_be.wasm" 2>&1 | tail -1)"
   if [ "$bag_out" != "4027170" ]; then
     echo "[compiler-gate] FAIL: Bytes::append on the $bag_be backend got '$bag_out' (want 4027170) -- a grow or an aliased append copied the wrong bytes" >&2
@@ -719,11 +662,7 @@ VIBE_DIAGNOSTICS_ALL=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPOR
   VIBE_BUILD_CACHE_DIR="$ROOT_DIR/$dcolldir/cache_ok" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$dcolldir/src/main.vibe" "$dcolldir/ok.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$dcolldir/ok.wasm" ]; then
-  echo "[compiler-gate] FAIL: a clean project failed to compile with VIBE_DIAGNOSTICS_ALL=1" >&2
-  cat "$dcolldir/ok.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$dcolldir/ok.wasm" "a clean project failed to compile with VIBE_DIAGNOSTICS_ALL=1"
 diag_ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dcolldir/ok.wasm" 2>&1 | tail -1)"
 if [ "$diag_ok_out" != "3" ]; then
   echo "[compiler-gate] FAIL: the clean control got '$diag_ok_out' (want 3) with VIBE_DIAGNOSTICS_ALL=1" >&2
@@ -752,23 +691,15 @@ rm -rf "$r90dir"; mkdir -p "$r90dir"
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
 # actual/expected and fails the run.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_arena_ok.vibe "$r90dir/pos.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$r90dir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: region_arena_ok.vibe did not compile -- ADR-0090 region/MutList slice regressed" >&2
-  cat "$r90dir/pos.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/region_arena_ok.vibe "$r90dir/pos.wasm" __no_entry__
+gate_require_artifact "$r90dir/pos.wasm" "region_arena_ok.vibe did not compile -- ADR-0090 region/MutList slice regressed"
 if ! r90_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/pos.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: region_arena_ok.vibe got '$r90_pos_out' (want 42)" >&2
   echo "$r90_pos_out" >&2
   exit 1
 fi
 cp fixtures/err_region_escape_return_value.vibe "$r90dir/neg.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$r90dir/neg.vibe" "$r90dir/neg.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile "$r90dir/neg.vibe" "$r90dir/neg.wasm" __no_entry__
 if [ -s "$r90dir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_region_escape_return_value.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -781,9 +712,7 @@ fi
 # #1274 Codex P1: the token is unforgeable -- MutList::empty with a
 # non-skolem argument must be rejected.
 cp fixtures/err_region_token_forged.vibe "$r90dir/forged.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$r90dir/forged.vibe" "$r90dir/forged.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile "$r90dir/forged.vibe" "$r90dir/forged.wasm" __no_entry__
 if [ -s "$r90dir/forged.wasm" ]; then
   echo "[compiler-gate] FAIL: err_region_token_forged.vibe compiled successfully -- the region token must be unforgeable" >&2
   exit 1
@@ -798,9 +727,7 @@ fi
 # environment slips past it -- the result type `() -> Array[Int]` mentions no
 # region. These two fixtures pin BOTH directions, which is the whole
 # difficulty: capture is legitimate, only escape is not.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_region_escape_closure_capture.vibe "$r90dir/cap.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_region_escape_closure_capture.vibe "$r90dir/cap.wasm" __no_entry__
 if [ -s "$r90dir/cap.wasm" ]; then
   echo "[compiler-gate] FAIL: err_region_escape_closure_capture.vibe compiled successfully -- a region value must not escape inside a closure (#1725)" >&2
   exit 1
@@ -812,9 +739,7 @@ if ! grep -qF 'region escapes its scope' "$r90dir/cap.wasm.diag" 2>/dev/null; th
 fi
 # The sharper negative: the escaping closure holds the region TOKEN, with no
 # outer binding for a spine walk to find.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_region_escape_token_capture.vibe "$r90dir/tok.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_region_escape_token_capture.vibe "$r90dir/tok.wasm" __no_entry__
 if [ -s "$r90dir/tok.wasm" ]; then
   echo "[compiler-gate] FAIL: err_region_escape_token_capture.vibe compiled successfully -- a closure holding the region token must not escape (#1725)" >&2
   exit 1
@@ -893,9 +818,7 @@ for r90_fixture in \
   fixtures/err_region_escape_sortedset_alias_write.vibe; do
   r90_escape="${r90_fixture#fixtures/err_region_escape_}"
   r90_escape="${r90_escape%.vibe}"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$r90_fixture" "$r90dir/${r90_escape}.wasm" __no_entry__ >/dev/null 2>&1 || true
+  gate_fs_compile "$r90_fixture" "$r90dir/${r90_escape}.wasm" __no_entry__
   if [ -s "$r90dir/${r90_escape}.wasm" ]; then
     echo "[compiler-gate] FAIL: $r90_fixture compiled successfully -- region capture provenance was lost (#1938)" >&2
     exit 1
@@ -911,26 +834,14 @@ done
 # inside the region is valid, and the body still exits via freeze. It also
 # covers shadowing and an initialiser that merely touches the token while
 # evaluating to a scalar -- both shapes an over-eager taint rule rejects.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_ok_closure_local.vibe "$r90dir/caplocal.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$r90dir/caplocal.wasm" ]; then
-  echo "[compiler-gate] FAIL: region_ok_closure_local.vibe did not compile -- the #1725 capture check is over-approximating" >&2
-  cat "$r90dir/caplocal.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/region_ok_closure_local.vibe "$r90dir/caplocal.wasm" __no_entry__
+gate_require_artifact "$r90dir/caplocal.wasm" "region_ok_closure_local.vibe did not compile -- the #1725 capture check is over-approximating"
 if ! r90_cap_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/caplocal.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: region_ok_closure_local.vibe got '$r90_cap_out' (want 55)" >&2
   exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_ok_capture_provenance.vibe "$r90dir/provenance_ok.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$r90dir/provenance_ok.wasm" ]; then
-  echo "[compiler-gate] FAIL: region_ok_capture_provenance.vibe did not compile -- capture provenance over-approximated (#1938)" >&2
-  cat "$r90dir/provenance_ok.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/region_ok_capture_provenance.vibe "$r90dir/provenance_ok.wasm" __no_entry__
+gate_require_artifact "$r90dir/provenance_ok.wasm" "region_ok_capture_provenance.vibe did not compile -- capture provenance over-approximated (#1938)"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/provenance_ok.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: region_ok_capture_provenance.vibe snapshots failed (#1938)" >&2
   exit 1
@@ -941,14 +852,8 @@ fi
 # scope) and hands out a pointer into the segment the arena slice will
 # release by watermark reset. Pushing after the exit must not reach the
 # result -- inspect prints actual/expected itself on a regression.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_ok_freeze_copies_out.vibe "$r90dir/copyout.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$r90dir/copyout.wasm" ]; then
-  echo "[compiler-gate] FAIL: region_ok_freeze_copies_out.vibe did not compile" >&2
-  cat "$r90dir/copyout.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/region_ok_freeze_copies_out.vibe "$r90dir/copyout.wasm" __no_entry__
+gate_require_artifact "$r90dir/copyout.wasm" "region_ok_freeze_copies_out.vibe did not compile"
 if ! r90_copy_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/copyout.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: MutList::freeze/to_array aliased the list instead of copying out (want 250, aliasing gives 330)" >&2
   echo "$r90_copy_out" >&2
@@ -963,11 +868,7 @@ for r90_rc in 1 0; do
   VIBE_RC="$r90_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     fixtures/region_arena_release_ok.vibe "$r90dir/release.wasm" __no_entry__ >/dev/null 2>&1 || true
-  if [ ! -s "$r90dir/release.wasm" ]; then
-    echo "[compiler-gate] FAIL: region_arena_release_ok.vibe did not compile (VIBE_RC=$r90_rc)" >&2
-    cat "$r90dir/release.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_artifact "$r90dir/release.wasm" "region_arena_release_ok.vibe did not compile (VIBE_RC=$r90_rc)"
   if ! r90_rel_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/release.wasm" 2>&1)"; then
     echo "[compiler-gate] FAIL: region arena release reclaimed live memory (VIBE_RC=$r90_rc, want 109965)" >&2
     echo "$r90_rel_out" >&2
@@ -983,14 +884,8 @@ done
 # bound below is deliberately loose (it only has to separate "releases" from
 # "does not"), because the residual is per-call closure environments and
 # grows if that lambda's shape changes.
-VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_arena_bounded.vibe "$r90dir/bounded.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$r90dir/bounded.wasm" ]; then
-  echo "[compiler-gate] FAIL: region_arena_bounded.vibe did not compile" >&2
-  cat "$r90dir/bounded.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+VIBE_RC=0 gate_fs_compile fixtures/region_arena_bounded.vibe "$r90dir/bounded.wasm" __no_entry__
+gate_require_artifact "$r90dir/bounded.wasm" "region_arena_bounded.vibe did not compile"
 if ! r90_bounded_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/bounded.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: region_arena_bounded.vibe got the wrong value" >&2
   echo "$r90_bounded_out" >&2
@@ -1009,14 +904,8 @@ fi
 # exceed the 64-slot save table. The value assertion cannot see a skipped
 # exit; only the heap delta can. Seed without the wrap leaked 574708 B.
 echo "[compiler-gate] ADR-0090 #1937 exception-unwind region restore"
-VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_throw_unwind_test.vibe "$r90dir/unwind.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$r90dir/unwind.wasm" ]; then
-  echo "[compiler-gate] FAIL: region_throw_unwind_test.vibe did not compile" >&2
-  cat "$r90dir/unwind.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+VIBE_RC=0 gate_fs_compile fixtures/region_throw_unwind_test.vibe "$r90dir/unwind.wasm" __no_entry__
+gate_require_artifact "$r90dir/unwind.wasm" "region_throw_unwind_test.vibe did not compile"
 if ! r90_unwind_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/unwind.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: region_throw_unwind_test.vibe got the wrong value" >&2
   echo "$r90_unwind_out" >&2
@@ -1047,11 +936,7 @@ for r90_cyc_n in 200 800; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_RC=0 \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$r90dir/cycles_$r90_cyc_n.vibe" "$r90dir/cycles_$r90_cyc_n.wasm" __no_entry__ >/dev/null 2>&1 || true
-  if [ ! -s "$r90dir/cycles_$r90_cyc_n.wasm" ]; then
-    echo "[compiler-gate] FAIL: region_arena_cycles.vibe ($r90_cyc_n) did not compile" >&2
-    cat "$r90dir/cycles_$r90_cyc_n.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_artifact "$r90dir/cycles_$r90_cyc_n.wasm" "region_arena_cycles.vibe ($r90_cyc_n) did not compile"
   if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/cycles_$r90_cyc_n.wasm" >/dev/null 2>&1; then
     echo "[compiler-gate] FAIL: region_arena_cycles.vibe ($r90_cyc_n) got the wrong value" >&2
     exit 1
@@ -1074,14 +959,8 @@ echo "[compiler-gate] region arena bulk release ok (200 regions, main heap +${r9
 # boundedness of gen_bytes_push_body's arena regrow (which the MutList
 # fixtures never exercise: Array growth and Bytes growth are separate
 # builtin bodies).
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_bytes_ok.vibe "$r90dir/bpos.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$r90dir/bpos.wasm" ]; then
-  echo "[compiler-gate] FAIL: region_bytes_ok.vibe did not compile -- ADR-0090 MutBytes slice regressed" >&2
-  cat "$r90dir/bpos.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/region_bytes_ok.vibe "$r90dir/bpos.wasm" __no_entry__
+gate_require_artifact "$r90dir/bpos.wasm" "region_bytes_ok.vibe did not compile -- ADR-0090 MutBytes slice regressed"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/bpos.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: region_bytes_ok.vibe test blocks failed" >&2
   exit 1
@@ -1089,9 +968,7 @@ fi
 for r90b_neg in err_region_bytes_token_forged:'region token' err_region_bytes_escape_return:'region escapes its scope' err_region_bytes_escape_closure_capture:'region escapes its scope'; do
   r90b_fixture="${r90b_neg%%:*}"
   r90b_needle="${r90b_neg#*:}"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "fixtures/$r90b_fixture.vibe" "$r90dir/bneg.wasm" __no_entry__ >/dev/null 2>&1 || true
+  gate_fs_compile "fixtures/$r90b_fixture.vibe" "$r90dir/bneg.wasm" __no_entry__
   if [ -s "$r90dir/bneg.wasm" ]; then
     echo "[compiler-gate] FAIL: $r90b_fixture.vibe compiled successfully -- must be rejected" >&2
     exit 1
@@ -1103,23 +980,15 @@ for r90b_neg in err_region_bytes_token_forged:'region token' err_region_bytes_es
   fi
   rm -f "$r90dir/bneg.wasm" "$r90dir/bneg.wasm.diag"
 done
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_bytes_ok_copy_out.vibe "$r90dir/bcopy.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile fixtures/region_bytes_ok_copy_out.vibe "$r90dir/bcopy.wasm" __no_entry__
 if [ ! -s "$r90dir/bcopy.wasm" ] \
   || ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/bcopy.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: region_bytes_ok_copy_out.vibe failed -- MutBytes::to_bytes must COPY (an alias sees the post-snapshot push)" >&2
   cat "$r90dir/bcopy.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
-VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_bytes_arena_bounded.vibe "$r90dir/bbounded.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$r90dir/bbounded.wasm" ]; then
-  echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe did not compile" >&2
-  cat "$r90dir/bbounded.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+VIBE_RC=0 gate_fs_compile fixtures/region_bytes_arena_bounded.vibe "$r90dir/bbounded.wasm" __no_entry__
+gate_require_artifact "$r90dir/bbounded.wasm" "region_bytes_arena_bounded.vibe did not compile"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/bbounded.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe got the wrong value" >&2
   exit 1
@@ -1158,9 +1027,7 @@ echo "[compiler-gate] MutList in-region reads ok (get/length, RC both modes)"
 # must survive the inner exit (the replacement must not land in the inner
 # region's span). Pins the saves[depth-1] guard in gen_arr_push_body /
 # gen_bytes_push_body / gen_bytes_append_body for BOTH MutList and MutBytes.
-VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/region_arena_nested_regrow_ok.vibe "$r90dir/nested.wasm" __no_entry__ >/dev/null 2>&1 || true
+VIBE_RC=0 gate_fs_compile fixtures/region_arena_nested_regrow_ok.vibe "$r90dir/nested.wasm" __no_entry__
 if [ ! -s "$r90dir/nested.wasm" ] \
   || ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$r90dir/nested.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: region_arena_nested_regrow_ok.vibe failed -- an outer buffer regrown inside a nested region was rewound/overwritten" >&2
@@ -1189,23 +1056,15 @@ rm -rf "$za91dir"; mkdir -p "$za91dir"
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
 # actual/expected and fails the run.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/zero_alloc_ok.vibe "$za91dir/pos.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$za91dir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: zero_alloc_ok.vibe did not compile -- ADR-0091 #zero_alloc slice regressed" >&2
-  cat "$za91dir/pos.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/zero_alloc_ok.vibe "$za91dir/pos.wasm" __no_entry__
+gate_require_artifact "$za91dir/pos.wasm" "zero_alloc_ok.vibe did not compile -- ADR-0091 #zero_alloc slice regressed"
 if ! za91_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$za91dir/pos.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: zero_alloc_ok.vibe got '$za91_pos_out' (want 42)" >&2
   echo "$za91_pos_out" >&2
   exit 1
 fi
 cp fixtures/err_zero_alloc_ctor.vibe "$za91dir/neg.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$za91dir/neg.vibe" "$za91dir/neg.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile "$za91dir/neg.vibe" "$za91dir/neg.wasm" __no_entry__
 if [ -s "$za91dir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_zero_alloc_ctor.vibe compiled successfully -- must be rejected" >&2
   exit 1
@@ -1218,9 +1077,7 @@ fi
 # #1274 Codex P1: a param shadowing a clean top-level fn is an indirect
 # callee and must be rejected.
 cp fixtures/err_zero_alloc_shadowed_call.vibe "$za91dir/shadowed.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$za91dir/shadowed.vibe" "$za91dir/shadowed.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile "$za91dir/shadowed.vibe" "$za91dir/shadowed.wasm" __no_entry__
 if [ -s "$za91dir/shadowed.wasm" ]; then
   echo "[compiler-gate] FAIL: err_zero_alloc_shadowed_call.vibe compiled successfully -- shadowed callees must be treated as indirect" >&2
   exit 1
@@ -1236,9 +1093,7 @@ fi
 # the positive fixture above.
 for za_typed in double_operator string_operator shadowed_operator; do
   cp "fixtures/err_zero_alloc_${za_typed}.vibe" "$za91dir/${za_typed}.vibe"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$za91dir/${za_typed}.vibe" "$za91dir/${za_typed}.wasm" __no_entry__ >/dev/null 2>&1 || true
+  gate_fs_compile "$za91dir/${za_typed}.vibe" "$za91dir/${za_typed}.wasm" __no_entry__
   if [ -s "$za91dir/${za_typed}.wasm" ]; then
     echo "[compiler-gate] FAIL: err_zero_alloc_${za_typed}.vibe compiled successfully -- typed allocating operator must be rejected" >&2
     exit 1
@@ -1270,11 +1125,7 @@ for za_n in 200 800; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_RC=0 \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$za91mdir/measured_$za_n.vibe" "$za91mdir/measured_$za_n.wasm" __no_entry__ >/dev/null 2>&1 || true
-  if [ ! -s "$za91mdir/measured_$za_n.wasm" ]; then
-    echo "[compiler-gate] FAIL: zero_alloc_measured.vibe ($za_n) did not compile -- the #zero_alloc check rejected a fn the measurement says is clean" >&2
-    cat "$za91mdir/measured_$za_n.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_artifact "$za91mdir/measured_$za_n.wasm" "zero_alloc_measured.vibe ($za_n) did not compile -- the #zero_alloc check rejected a fn the measurement says is clean"
   if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$za91mdir/measured_$za_n.wasm" >/dev/null 2>&1; then
     echo "[compiler-gate] FAIL: zero_alloc_measured.vibe ($za_n) got the wrong value" >&2
     exit 1
@@ -1364,11 +1215,7 @@ fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/spawn_suspend_wrapper_inline.vibe "$ssldir/wrapper_inline.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$ssldir/wrapper_inline.wasm" ]; then
-  echo "[compiler-gate] FAIL: the inline edit for an Async-taking wrapper did not compile (#3194)" >&2
-  cat "$ssldir/wrapper_inline.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$ssldir/wrapper_inline.wasm" "the inline edit for an Async-taking wrapper did not compile (#3194)"
 wrapper_inline_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/wrapper_inline.wasm" 2>/dev/null | tail -1)"
 if [ "$wrapper_inline_result" != "6" ]; then
   echo "[compiler-gate] FAIL: the inline edit for an Async-taking wrapper returned '$wrapper_inline_result' (want 6, #3194)" >&2
@@ -1387,24 +1234,14 @@ VIBE
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ssldir/inline.vibe" "$ssldir/inline.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$ssldir/inline.wasm" ]; then
-  echo "[compiler-gate] FAIL: the inline task closure did not compile (#3194)" >&2
-  cat "$ssldir/inline.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$ssldir/inline.wasm" "the inline task closure did not compile (#3194)"
 ssl_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/inline.wasm" 2>/dev/null | tail -1)"
 if [ "$ssl_result" != "6" ]; then
   echo "[compiler-gate] FAIL: the inline task closure returned '$ssl_result' instead of 6 (#3194)" >&2
   exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/spawn_suspend_user_defined_named.vibe "$ssldir/user_defined.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$ssldir/user_defined.wasm" ]; then
-  echo "[compiler-gate] FAIL: user-defined qualified spawn_suspend was mistaken for the builtin (#3194)" >&2
-  cat "$ssldir/user_defined.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/spawn_suspend_user_defined_named.vibe "$ssldir/user_defined.wasm" main
+gate_require_artifact "$ssldir/user_defined.wasm" "user-defined qualified spawn_suspend was mistaken for the builtin (#3194)"
 ssl_user_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/user_defined.wasm" 2>/dev/null | tail -1)"
 if [ "$ssl_user_result" != "5" ]; then
   echo "[compiler-gate] FAIL: user-defined spawn_suspend returned '$ssl_user_result' instead of 5 (#3194)" >&2
@@ -1428,11 +1265,7 @@ done
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/spawn_task_nested_suspend_group.vibe "$ssldir/nested_group.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$ssldir/nested_group.wasm" ]; then
-  echo "[compiler-gate] FAIL: a plain task holding its own suspendable group was refused (#3517)" >&2
-  cat "$ssldir/nested_group.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$ssldir/nested_group.wasm" "a plain task holding its own suspendable group was refused (#3517)"
 ssl_nested_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/nested_group.wasm" 2>/dev/null | tail -1)"
 if [ "$ssl_nested_result" != "6" ]; then
   echo "[compiler-gate] FAIL: a plain task holding its own suspendable group returned '$ssl_nested_result' instead of 6 (#3517)" >&2
@@ -1450,11 +1283,7 @@ for async_entry_case in "async_entry_calls_async_closure:5" "async_entry_calls_s
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/${async_entry_fixture}.vibe" "$ssldir/${async_entry_fixture}.wasm" main >/dev/null 2>&1 || true
-  if [ ! -s "$ssldir/${async_entry_fixture}.wasm" ]; then
-    echo "[compiler-gate] FAIL: ${async_entry_fixture}.vibe did not compile (#3523)" >&2
-    cat "$ssldir/${async_entry_fixture}.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_artifact "$ssldir/${async_entry_fixture}.wasm" "${async_entry_fixture}.vibe did not compile (#3523)"
   async_entry_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/${async_entry_fixture}.wasm" 2>/dev/null | tail -1)"
   if [ "$async_entry_got" != "$async_entry_want" ]; then
     echo "[compiler-gate] FAIL: ${async_entry_fixture}.vibe returned '$async_entry_got' instead of $async_entry_want (#3523)" >&2
@@ -1466,11 +1295,7 @@ done
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/suspend_task_prints_and_sleeps.vibe "$ssldir/prints_and_sleeps.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$ssldir/prints_and_sleeps.wasm" ]; then
-  echo "[compiler-gate] FAIL: suspend_task_prints_and_sleeps.vibe did not compile (#3523, #3519)" >&2
-  cat "$ssldir/prints_and_sleeps.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$ssldir/prints_and_sleeps.wasm" "suspend_task_prints_and_sleeps.vibe did not compile (#3523, #3519)"
 ssl_interleave="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/prints_and_sleeps.wasm" 2>/dev/null | tr '\n' ' ')"
 if [ "$ssl_interleave" != "a1 b1 a2 b2 3 " ]; then
   echo "[compiler-gate] FAIL: suspend_task_prints_and_sleeps.vibe printed '$ssl_interleave' instead of 'a1 b1 a2 b2 3 ' (#3523, #3519)" >&2
@@ -1532,28 +1357,16 @@ echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"
 asb89dir="_build/_gate_async_sleep89"
 rm -rf "$asb89dir"; mkdir -p "$asb89dir"
 cp fixtures/async_sleep_boundary_test.vibe "$asb89dir/pos.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/pos.vibe" "$asb89dir/pos.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$asb89dir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: async_sleep_boundary_test.vibe did not compile -- ADR-0089 D1 sleep boundary regressed" >&2
-  cat "$asb89dir/pos.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$asb89dir/pos.vibe" "$asb89dir/pos.wasm" main
+gate_require_artifact "$asb89dir/pos.wasm" "async_sleep_boundary_test.vibe did not compile -- ADR-0089 D1 sleep boundary regressed"
 asb89_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/pos.wasm" 2>/dev/null | tail -1)"
 if [ "$asb89_pos_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_sleep_boundary_test.vibe got '$asb89_pos_out' (want 42)" >&2
   exit 1
 fi
 cp fixtures/async_boundary_spawn_suspend_test.vibe "$asb89dir/spawn.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/spawn.vibe" "$asb89dir/spawn.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$asb89dir/spawn.wasm" ]; then
-  echo "[compiler-gate] FAIL: async_boundary_spawn_suspend_test.vibe did not compile -- an Async entry spawning suspend-class tasks is refused again (#2065 wall 2)" >&2
-  cat "$asb89dir/spawn.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$asb89dir/spawn.vibe" "$asb89dir/spawn.wasm" main
+gate_require_artifact "$asb89dir/spawn.wasm" "async_boundary_spawn_suspend_test.vibe did not compile -- an Async entry spawning suspend-class tasks is refused again (#2065 wall 2)"
 asb89_spawn_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/spawn.wasm" 2>/dev/null | tail -1)"
 if [ "$asb89_spawn_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_boundary_spawn_suspend_test.vibe got '$asb89_spawn_out' (want 42)" >&2
@@ -1563,14 +1376,8 @@ fi
 # async_boundary_user_sleep_test.vibe supplies its OWN `sleep`, so no
 # boundary is built -- it must COMPILE and return 42.
 cp fixtures/async_boundary_user_sleep_test.vibe "$asb89dir/usersleep.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/usersleep.vibe" "$asb89dir/usersleep.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$asb89dir/usersleep.wasm" ]; then
-  echo "[compiler-gate] FAIL: async_boundary_user_sleep_test.vibe was rejected -- the guard fired without an injected boundary (#1342)" >&2
-  cat "$asb89dir/usersleep.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$asb89dir/usersleep.vibe" "$asb89dir/usersleep.wasm" main
+gate_require_artifact "$asb89dir/usersleep.wasm" "async_boundary_user_sleep_test.vibe was rejected -- the guard fired without an injected boundary (#1342)"
 asb89_us_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/usersleep.wasm" 2>/dev/null | tail -1)"
 if [ "$asb89_us_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_boundary_user_sleep_test.vibe got '$asb89_us_out' (want 42)" >&2
@@ -1583,14 +1390,8 @@ echo "[compiler-gate] async boundary mixing guard: position-independent + inject
 # Suspend(-20)/Suspend(-15) (debt-payload convention), accumulate to 35,
 # and 7 + 35 = 42 (async_sleep_handler_discharge_test.vibe).
 cp fixtures/async_sleep_handler_discharge_test.vibe "$asb89dir/dis.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/dis.vibe" "$asb89dir/dis.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$asb89dir/dis.wasm" ]; then
-  echo "[compiler-gate] FAIL: async_sleep_handler_discharge_test.vibe did not compile -- handle-with-Async must discharge the builtin row (ADR-0089 D1 increment 2)" >&2
-  cat "$asb89dir/dis.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$asb89dir/dis.vibe" "$asb89dir/dis.wasm" main
+gate_require_artifact "$asb89dir/dis.wasm" "async_sleep_handler_discharge_test.vibe did not compile -- handle-with-Async must discharge the builtin row (ADR-0089 D1 increment 2)"
 asb89_dis_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/dis.wasm" 2>/dev/null | tail -1)"
 if [ "$asb89_dis_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_sleep_handler_discharge_test.vibe got '$asb89_dis_out' (want 42 -- the user handler must intercept the sleeps)" >&2
@@ -1602,14 +1403,8 @@ fi
 # perform was invisible). Arm resolves the future and counts one poll:
 # 40 + 1 + 1 = 42 (async_await_handler_discharge_test.vibe).
 cp fixtures/async_await_handler_discharge_test.vibe "$asb89dir/aw.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/aw.vibe" "$asb89dir/aw.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$asb89dir/aw.wasm" ]; then
-  echo "[compiler-gate] FAIL: async_await_handler_discharge_test.vibe did not compile -- a pending-future await under a user Async handler must be evidence-eligible (ADR-0089 D1 increment 4)" >&2
-  cat "$asb89dir/aw.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$asb89dir/aw.vibe" "$asb89dir/aw.wasm" main
+gate_require_artifact "$asb89dir/aw.wasm" "async_await_handler_discharge_test.vibe did not compile -- a pending-future await under a user Async handler must be evidence-eligible (ADR-0089 D1 increment 4)"
 asb89_aw_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/aw.wasm" 2>/dev/null | tail -1)"
 if [ "$asb89_aw_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_await_handler_discharge_test.vibe got '$asb89_aw_out' (want 42 -- the handler must receive the poll and its resolution must unblock the await)" >&2
@@ -1619,14 +1414,8 @@ fi
 # lexical sleeps while an Async-row top-level fn called from row-free code
 # keeps the blocking builtin (no stranded perform). 40 + 1 + 1 = 42.
 cp fixtures/async_sleep_mixed_scope_test.vibe "$asb89dir/mx.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/mx.vibe" "$asb89dir/mx.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$asb89dir/mx.wasm" ]; then
-  echo "[compiler-gate] FAIL: async_sleep_mixed_scope_test.vibe did not compile -- scoped retargeting must not strand performs (Codex P1 on #1312)" >&2
-  cat "$asb89dir/mx.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$asb89dir/mx.vibe" "$asb89dir/mx.wasm" main
+gate_require_artifact "$asb89dir/mx.wasm" "async_sleep_mixed_scope_test.vibe did not compile -- scoped retargeting must not strand performs (Codex P1 on #1312)"
 asb89_mx_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/mx.wasm" 2>/dev/null | tail -1)"
 if [ "$asb89_mx_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_sleep_mixed_scope_test.vibe got '$asb89_mx_out' (want 42)" >&2
@@ -1640,14 +1429,8 @@ fi
 # allowlist entries the opaque callee names sank the whole boundary-wrapped
 # entry body to ineligible.
 cp fixtures/async_future_boundary_resolved_test.vibe "$asb89dir/fr.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/fr.vibe" "$asb89dir/fr.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$asb89dir/fr.wasm" ]; then
-  echo "[compiler-gate] FAIL: async_future_boundary_resolved_test.vibe did not compile -- Future cell primitives must be evidence-inert (ADR-0089 D2)" >&2
-  cat "$asb89dir/fr.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$asb89dir/fr.vibe" "$asb89dir/fr.wasm" main
+gate_require_artifact "$asb89dir/fr.wasm" "async_future_boundary_resolved_test.vibe did not compile -- Future cell primitives must be evidence-inert (ADR-0089 D2)"
 asb89_fr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/fr.wasm" 2>/dev/null | tail -1)"
 if [ "$asb89_fr_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_future_boundary_resolved_test.vibe got '$asb89_fr_out' (want 42)" >&2
@@ -1659,14 +1442,8 @@ fi
 # compilation succeeds, execution fails fast with the unreachable trap
 # (async_future_boundary_deadlock_test.vibe).
 cp fixtures/async_future_boundary_deadlock_test.vibe "$asb89dir/fd.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asb89dir/fd.vibe" "$asb89dir/fd.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$asb89dir/fd.wasm" ]; then
-  echo "[compiler-gate] FAIL: async_future_boundary_deadlock_test.vibe did not compile (ADR-0089 D2 -- the deadlock case must compile and trap at runtime)" >&2
-  cat "$asb89dir/fd.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$asb89dir/fd.vibe" "$asb89dir/fd.wasm" main
+gate_require_artifact "$asb89dir/fd.wasm" "async_future_boundary_deadlock_test.vibe did not compile (ADR-0089 D2 -- the deadlock case must compile and trap at runtime)"
 asb89_fd_out="$(run_bounded 30 bash -c "VIBE_PREOPEN_DIR='$ROOT_DIR' bash scripts/run_wasm_vibe_host_runner.sh --invoke main '$asb89dir/fd.wasm' 2>&1" || true)"
 if [ "$(printf '%s\n' "$asb89_fd_out" | tail -1)" = "42" ]; then
   echo "[compiler-gate] FAIL: async_future_boundary_deadlock_test.vibe returned 42 -- an unresolvable await under the boundary must trap, not complete" >&2
@@ -1710,14 +1487,8 @@ echo "[compiler-gate] 128/128 evidence pass admits a first-order row-variable ca
 fo65dir="_build/_gate_first_order_rowvar"
 rm -rf "$fo65dir"; mkdir -p "$fo65dir"
 cp fixtures/async_first_order_rowvar_boundary_test.vibe "$fo65dir/pos.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$fo65dir/pos.vibe" "$fo65dir/pos.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$fo65dir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: async_first_order_rowvar_boundary_test.vibe did not compile -- the #2065 first-order row-variable admission regressed" >&2
-  cat "$fo65dir/pos.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$fo65dir/pos.vibe" "$fo65dir/pos.wasm" main
+gate_require_artifact "$fo65dir/pos.wasm" "async_first_order_rowvar_boundary_test.vibe did not compile -- the #2065 first-order row-variable admission regressed"
 fo65_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/pos.wasm" 2>/dev/null | tail -1)"
 if [ "$fo65_pos_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_first_order_rowvar_boundary_test.vibe got '$fo65_pos_out' (want 42)" >&2
@@ -1727,14 +1498,8 @@ fi
 # Async, is admitted by the call-site argument-inertness rule
 # (edp_argcond_admits) and must answer 42 too.
 cp fixtures/async_higher_order_rowvar_literal_boundary_test.vibe "$fo65dir/lit.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$fo65dir/lit.vibe" "$fo65dir/lit.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$fo65dir/lit.wasm" ]; then
-  echo "[compiler-gate] FAIL: async_higher_order_rowvar_literal_boundary_test.vibe did not compile -- the #2065 call-site argument-inertness admission regressed" >&2
-  cat "$fo65dir/lit.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$fo65dir/lit.vibe" "$fo65dir/lit.wasm" main
+gate_require_artifact "$fo65dir/lit.wasm" "async_higher_order_rowvar_literal_boundary_test.vibe did not compile -- the #2065 call-site argument-inertness admission regressed"
 fo65_lit_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/lit.wasm" 2>/dev/null | tail -1)"
 if [ "$fo65_lit_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_higher_order_rowvar_literal_boundary_test.vibe got '$fo65_lit_out' (want 42)" >&2
@@ -1743,14 +1508,8 @@ fi
 # The shape that motivates it: a spawn-free `TaskGroup::run` under the same
 # injected Async boundary, whose body parameter sits under a row variable.
 cp fixtures/async_taskgroup_run_boundary_test.vibe "$fo65dir/tg.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$fo65dir/tg.vibe" "$fo65dir/tg.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$fo65dir/tg.wasm" ]; then
-  echo "[compiler-gate] FAIL: async_taskgroup_run_boundary_test.vibe did not compile -- TaskGroup::run under an Async entry is refused again (#2065)" >&2
-  cat "$fo65dir/tg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$fo65dir/tg.vibe" "$fo65dir/tg.wasm" main
+gate_require_artifact "$fo65dir/tg.wasm" "async_taskgroup_run_boundary_test.vibe did not compile -- TaskGroup::run under an Async entry is refused again (#2065)"
 fo65_tg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/tg.wasm" 2>/dev/null | tail -1)"
 if [ "$fo65_tg_out" != "42" ]; then
   echo "[compiler-gate] FAIL: async_taskgroup_run_boundary_test.vibe got '$fo65_tg_out' (want 42)" >&2
@@ -1759,14 +1518,8 @@ fi
 # #1962 (Codex on #3059): an entry granted through its binding annotation
 # (`let main: () -> Int with Fs = () -> { .. }`) gets the host provider too.
 cp fixtures/host_provider_annotated_entry.vibe "$fo65dir/annot.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$fo65dir/annot.vibe" "$fo65dir/annot.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$fo65dir/annot.wasm" ]; then
-  echo "[compiler-gate] FAIL: host_provider_annotated_entry.vibe did not compile" >&2
-  cat "$fo65dir/annot.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$fo65dir/annot.vibe" "$fo65dir/annot.wasm" main
+gate_require_artifact "$fo65dir/annot.wasm" "host_provider_annotated_entry.vibe did not compile"
 fo65_annot_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/annot.wasm" 2>/dev/null | tail -1)"
 if [ "$fo65_annot_out" != "1" ]; then
   echo "[compiler-gate] FAIL: host_provider_annotated_entry.vibe got '$fo65_annot_out' (want 1) -- an annotation-granted entry lost the host provider" >&2
@@ -1778,9 +1531,7 @@ fi
 # boundary cannot see it.
 cp fixtures/err_async_rowvar_higher_order_refused.vibe "$fo65dir/neg.vibe"
 rm -f "$fo65dir/neg.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$fo65dir/neg.vibe" "$fo65dir/neg.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile "$fo65dir/neg.vibe" "$fo65dir/neg.wasm" main
 if [ -s "$fo65dir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_async_rowvar_higher_order_refused.vibe compiled -- a higher-order row-variable callee must keep the ADR-0076 追記34 V1 rejection" >&2
   exit 1
@@ -1814,11 +1565,7 @@ let run: () -> Int with Async = () -> {
 EOF
 rm -f "$nhf37dir/nested.wasm" "$nhf37dir/nested.wasm.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$nhf37dir/nested.vibe" "$nhf37dir/nested.wasm" run >/dev/null 2>&1 || true
-if [ ! -s "$nhf37dir/nested.wasm" ]; then
-  echo "[compiler-gate] FAIL: host_future_named nested in a record literal did not compile (#1337)" >&2
-  cat "$nhf37dir/nested.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$nhf37dir/nested.wasm" "host_future_named nested in a record literal did not compile (#1337)"
 if ! grep -q "price" "$nhf37dir/nested.wasm"; then
   echo "[compiler-gate] FAIL: record-nested host_future_named compiled without a 'price' import (#1337)" >&2
   exit 1
@@ -1834,11 +1581,7 @@ export let _start: () -> Int = () -> {
 EOF
 rm -f "$nhf37dir/shadowed.wasm" "$nhf37dir/shadowed.wasm.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$nhf37dir/shadowed.vibe" "$nhf37dir/shadowed.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$nhf37dir/shadowed.wasm" ]; then
-  echo "[compiler-gate] FAIL: a shadowed host_future_named did not compile (#1337)" >&2
-  cat "$nhf37dir/shadowed.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$nhf37dir/shadowed.wasm" "a shadowed host_future_named did not compile (#1337)"
 if grep -q 'host_future_get\$price' "$nhf37dir/shadowed.wasm"; then
   echo "[compiler-gate] FAIL: a SHADOWED host_future_named still reserved the 'price' host import (#1337)" >&2
   exit 1
@@ -1869,14 +1612,8 @@ rm -rf "$g1340dir"; mkdir -p "$g1340dir"
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
 # actual/expected and fails the run.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/effect_generic_row_instantiation.vibe "$g1340dir/pos.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$g1340dir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: effect_generic_row_instantiation.vibe did not compile (with State[Int] row grammar or generic registration regressed)" >&2
-  cat "$g1340dir/pos.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/effect_generic_row_instantiation.vibe "$g1340dir/pos.wasm" __no_entry__
+gate_require_artifact "$g1340dir/pos.wasm" "effect_generic_row_instantiation.vibe did not compile (with State[Int] row grammar or generic registration regressed)"
 if ! g1340_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$g1340dir/pos.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: effect_generic_row_instantiation got '$g1340_out' (want 42)" >&2
   echo "$g1340_out" >&2
@@ -1885,9 +1622,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_generic_effect_perform_arity.vibe "$g1340dir/arity.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_generic_effect_perform_arity.vibe "$g1340dir/arity.wasm" main
 if [ -s "$g1340dir/arity.wasm" ]; then
   echo "[compiler-gate] FAIL: err_generic_effect_perform_arity.vibe compiled -- the #1218 generic-effect arity hole is back" >&2
   exit 1
@@ -1900,9 +1635,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_generic_effect_row_targ.vibe "$g1340dir/rowtarg.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_generic_effect_row_targ.vibe "$g1340dir/rowtarg.wasm" main
 if [ -s "$g1340dir/rowtarg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_generic_effect_row_targ.vibe compiled -- a bracketed row item on a non-generic effect must be rejected" >&2
   exit 1
@@ -1934,14 +1667,8 @@ rm -rf "$opb"; mkdir -p "$opb"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/effect_builtin_operation_row.vibe "$opb/pos.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$opb/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: with Fs::read_file no longer authorizes the Fs::read_file builtin (#1343)" >&2
-  cat "$opb/pos.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/effect_builtin_operation_row.vibe "$opb/pos.wasm" __no_entry__
+gate_require_artifact "$opb/pos.wasm" "with Fs::read_file no longer authorizes the Fs::read_file builtin (#1343)"
 if ! op_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$opb/pos.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: effect_builtin_operation_row got '$op_out' (want 42)" >&2
   echo "$op_out" >&2
@@ -1956,9 +1683,7 @@ let main = () -> Int {
   0
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$opb/neg.vibe" "$opb/neg.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile "$opb/neg.vibe" "$opb/neg.wasm" main
 if [ -s "$opb/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: with Fs::read_file authorized Fs::write_file -- operation grants are not minimal (#1343)" >&2
   exit 1
@@ -1977,14 +1702,8 @@ let main = () -> Int {
   0
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$opb/bare.vibe" "$opb/bare.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$opb/bare.wasm" ]; then
-  echo "[compiler-gate] FAIL: the bare effect row stopped granting all of its operations (#1343 must be a pure widening)" >&2
-  cat "$opb/bare.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$opb/bare.vibe" "$opb/bare.wasm" main
+gate_require_artifact "$opb/bare.wasm" "the bare effect row stopped granting all of its operations (#1343 must be a pure widening)"
 rm -rf "$opb"
 echo "[compiler-gate] operation-level builtin rows ok"
 
@@ -2003,14 +1722,8 @@ rm -rf "$afdir"; mkdir -p "$afdir"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/effect_async_for_row.vibe "$afdir/pos.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$afdir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: effect_async_for_row.vibe did not compile -- a declared `with Async` row must still accept the async for loop (#1358)" >&2
-  cat "$afdir/pos.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/effect_async_for_row.vibe "$afdir/pos.wasm" __no_entry__
+gate_require_artifact "$afdir/pos.wasm" "effect_async_for_row.vibe did not compile -- a declared `with Async` row must still accept the async for loop (#1358)"
 if ! af_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$afdir/pos.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: effect_async_for_row got '$af_out' (want 42) -- the await lowering of the async for loop regressed" >&2
   echo "$af_out" >&2
@@ -2019,9 +1732,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_async_for_undeclared.vibe "$afdir/neg.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_async_for_undeclared.vibe "$afdir/neg.wasm" main
 if [ -s "$afdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_async_for_undeclared.vibe compiled -- a for loop over a Future-returning iterator must require { Async } (#1358)" >&2
   exit 1
@@ -2069,9 +1780,7 @@ let main = () -> Int {
   acc
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$afdir/generic.vibe" "$afdir/generic.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile "$afdir/generic.vibe" "$afdir/generic.wasm" main
 if [ -s "$afdir/generic.wasm" ]; then
   echo "[compiler-gate] FAIL: a GENERICALLY implemented async iterator escaped the Async requirement -- EnvTraitImplGen must be matched like EnvTraitImpl (#1358, Codex P1 on #1364)" >&2
   exit 1
@@ -2105,9 +1814,7 @@ let main = () -> Int {
   acc
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$afdir/enum.vibe" "$afdir/enum.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile "$afdir/enum.vibe" "$afdir/enum.wasm" main
 if [ -s "$afdir/enum.wasm" ]; then
   echo "[compiler-gate] FAIL: an ENUM async iterand escaped the Async requirement -- CtEnum must keep its head name (#1358, Codex P1 on #1364)" >&2
   exit 1
@@ -2130,9 +1837,7 @@ rm -rf "$lcdir"; mkdir -p "$lcdir"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_local_closure_effect_leak.vibe "$lcdir/neg.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_local_closure_effect_leak.vibe "$lcdir/neg.wasm" main
 if [ -s "$lcdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_local_closure_effect_leak.vibe compiled -- a local closure's declared row must leak into its caller (#1361)" >&2
   exit 1
@@ -2150,14 +1855,8 @@ let main = () -> Unit with Console + Env {
   println(read_home())
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$lcdir/pos.vibe" "$lcdir/pos.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$lcdir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: declaring the local closure's row must satisfy the leak check (#1361)" >&2
-  cat "$lcdir/pos.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$lcdir/pos.vibe" "$lcdir/pos.wasm" main
+gate_require_artifact "$lcdir/pos.wasm" "declaring the local closure's row must satisfy the leak check (#1361)"
 cat > "$lcdir/pure.vibe" <<'EOF'
 let main = () -> Unit with Console {
   let twice = (n: Int) -> Int {
@@ -2166,14 +1865,8 @@ let main = () -> Unit with Console {
   println(__to_string(twice(21)))
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$lcdir/pure.vibe" "$lcdir/pure.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$lcdir/pure.wasm" ]; then
-  echo "[compiler-gate] FAIL: a PURE local closure must stay free of any row requirement (#1361 must not over-require)" >&2
-  cat "$lcdir/pure.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$lcdir/pure.vibe" "$lcdir/pure.wasm" main
+gate_require_artifact "$lcdir/pure.wasm" "a PURE local closure must stay free of any row requirement (#1361 must not over-require)"
 rm -rf "$lcdir"
 echo "[compiler-gate] local closure row leak ok"
 
@@ -2196,9 +1889,7 @@ rm -rf "$hsdir"; mkdir -p "$hsdir"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_handler_switch_dead_handle.vibe "$hsdir/neg.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_handler_switch_dead_handle.vibe "$hsdir/neg.wasm" main
 if [ -s "$hsdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: err_handler_switch_dead_handle.vibe compiled -- the handler-switch no-op is silent again (#1347)" >&2
   exit 1
@@ -2226,14 +1917,8 @@ let main = () -> Int {
   } + 1
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$hsdir/live.vibe" "$hsdir/live.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$hsdir/live.wasm" ]; then
-  echo "[compiler-gate] FAIL: a handle whose body DOES reach the effect must still compile (#1347 must not over-reject)" >&2
-  cat "$hsdir/live.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$hsdir/live.vibe" "$hsdir/live.wasm" main
+gate_require_artifact "$hsdir/live.wasm" "a handle whose body DOES reach the effect must still compile (#1347 must not over-reject)"
 cat > "$hsdir/param.vibe" <<'EOF'
 effect Yield {
   Yield(Int) -> Unit
@@ -2259,14 +1944,8 @@ let main = () -> Int {
   run(body)
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$hsdir/param.vibe" "$hsdir/param.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$hsdir/param.wasm" ]; then
-  echo "[compiler-gate] FAIL: a handled body whose only callee is a row-carrying PARAMETER (or annotated local) must compile -- #1347 must consult the #885/#1361 overlay, not just top-level bindings" >&2
-  cat "$hsdir/param.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$hsdir/param.vibe" "$hsdir/param.wasm" main
+gate_require_artifact "$hsdir/param.wasm" "a handled body whose only callee is a row-carrying PARAMETER (or annotated local) must compile -- #1347 must consult the #885/#1361 overlay, not just top-level bindings"
 rm -rf "$hsdir"
 echo "[compiler-gate] dead-handle rejection ok"
 
@@ -2282,9 +1961,7 @@ rm -rf "$hodir"; mkdir -p "$hodir"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_higher_order_effectful_block.vibe "$hodir/neg.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_higher_order_effectful_block.vibe "$hodir/neg.wasm" main
 if [ -s "$hodir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: an operation taking an EFFECTFUL block must still be rejected (#1347)" >&2
   exit 1

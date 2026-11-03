@@ -16,14 +16,8 @@ rm -rf "$excdir"; mkdir -p "$excdir"
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
 # actual/expected and fails the run.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/exception_typed_row.vibe "$excdir/pos.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$excdir/pos.wasm" ]; then
-  echo "[compiler-gate] FAIL: exception_typed_row.vibe did not compile (Exception[E] rows / kinded handle / erased alias regressed)" >&2
-  cat "$excdir/pos.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/exception_typed_row.vibe "$excdir/pos.wasm" __no_entry__
+gate_require_artifact "$excdir/pos.wasm" "exception_typed_row.vibe did not compile (Exception[E] rows / kinded handle / erased alias regressed)"
 if ! exc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$excdir/pos.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: exception_typed_row got '$exc_out' (want 42) -- kinded exceptions must share one Wasm tag" >&2
   echo "$exc_out" >&2
@@ -32,9 +26,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_exception_kind_mismatch.vibe "$excdir/neg.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_exception_kind_mismatch.vibe "$excdir/neg.wasm" main
 if [ -s "$excdir/neg.wasm" ]; then
   echo "[compiler-gate] FAIL: with Exception[ParseError] authorized an IoError throw -- exact-kind rows are not enforced (#1344)" >&2
   exit 1
@@ -53,9 +45,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_exception_local_binder_kind.vibe "$excdir/neglocal.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile fixtures/err_exception_local_binder_kind.vibe "$excdir/neglocal.wasm" main
 if [ -s "$excdir/neglocal.wasm" ]; then
   echo "[compiler-gate] FAIL: a LOCAL binder's throw payload was not kind-checked (#1344 follow-up)" >&2
   exit 1
@@ -89,14 +79,8 @@ let main = () -> Int {
   }
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$excdir/fixit.vibe" "$excdir/fixit.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$excdir/fixit.wasm" ]; then
-  echo "[compiler-gate] FAIL: the row the kind-mismatch hint suggests does not itself compile (#1344)" >&2
-  cat "$excdir/fixit.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$excdir/fixit.vibe" "$excdir/fixit.wasm" main
+gate_require_artifact "$excdir/fixit.wasm" "the row the kind-mismatch hint suggests does not itself compile (#1344)"
 cat > "$excdir/handle.vibe" <<'EOF'
 enum IoError {
   NotFound(String)
@@ -118,9 +102,7 @@ let main = () -> Int {
   boom()
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$excdir/handle.vibe" "$excdir/handle.wasm" main >/dev/null 2>&1 || true
+gate_fs_compile "$excdir/handle.vibe" "$excdir/handle.wasm" main
 if [ -s "$excdir/handle.wasm" ]; then
   echo "[compiler-gate] FAIL: handle with Exception[ParseError] discharged an IoError throw (#1344)" >&2
   exit 1
@@ -156,14 +138,8 @@ rm -rf "$showdir"; mkdir -p "$showdir"
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
 # actual/expected and fails the run.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/interp_show_derive.vibe "$showdir/show.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$showdir/show.wasm" ]; then
-  echo "[compiler-gate] FAIL: interp_show_derive.vibe did not compile (#1392)" >&2
-  cat "$showdir/show.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/interp_show_derive.vibe "$showdir/show.wasm" __no_entry__
+gate_require_artifact "$showdir/show.wasm" "interp_show_derive.vibe did not compile (#1392)"
 if ! show_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$showdir/show.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: interpolation rendering got '$show_out' (want 1111111111111111111) (#1392)" >&2
   echo "$show_out" >&2
@@ -182,10 +158,7 @@ rm -rf "$retshowdir"; mkdir -p "$retshowdir"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
   "$stage2_wasm" fixtures/interp_function_return_test.vibe "$retshowdir/show.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$retshowdir/show.wasm" ]; then
-  echo "[compiler-gate] FAIL: structural function-return interpolation fixture did not compile (#1766)" >&2
-  exit 1
-fi
+gate_require_artifact "$retshowdir/show.wasm" "structural function-return interpolation fixture did not compile (#1766)"
 if ! retshow_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$retshowdir/show.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: structural function-return interpolation rendered incorrectly (#1766)" >&2
   printf '%s\n' "$retshow_out" >&2
@@ -242,14 +215,8 @@ let _start = () -> Int with Exception {
 VIBEEOF
 exn_msg_expect() {
   local name="$1" want="$2"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$exnmsgdir/$name.vibe" "$exnmsgdir/$name.wasm" _start >/dev/null 2>&1 || true
-  if [ ! -s "$exnmsgdir/$name.wasm" ]; then
-    echo "[compiler-gate] FAIL: $name.vibe did not compile (#1392 slice 3)" >&2
-    cat "$exnmsgdir/$name.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_fs_compile "$exnmsgdir/$name.vibe" "$exnmsgdir/$name.wasm" _start
+  gate_require_artifact "$exnmsgdir/$name.wasm" "$name.vibe did not compile (#1392 slice 3)"
   local got
   if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$exnmsgdir/$name.wasm" >"$exnmsgdir/$name.stdout" 2>"$exnmsgdir/$name.stderr"; then
     echo "[compiler-gate] FAIL: $name uncaught exception exited 0 (#1945)" >&2
@@ -293,14 +260,8 @@ let _start = () -> Int with Console {
   }
 }
 VIBEEOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$exnmsgdir/handwritten.vibe" "$exnmsgdir/handwritten.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$exnmsgdir/handwritten.wasm" ]; then
-  echo "[compiler-gate] FAIL: handwritten.vibe did not compile (#1398 review P1)" >&2
-  cat "$exnmsgdir/handwritten.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$exnmsgdir/handwritten.vibe" "$exnmsgdir/handwritten.wasm" _start
+gate_require_artifact "$exnmsgdir/handwritten.wasm" "handwritten.vibe did not compile (#1398 review P1)"
 hw_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$exnmsgdir/handwritten.wasm" 2>&1)"
 hw_runs="$(printf '%s\n' "$hw_out" | grep -c "FORMATTER RAN" || true)"
 if [ "$hw_runs" != "1" ]; then
@@ -339,11 +300,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   VIBE_RC=1 VIBE_WASM_NAMES=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/rc_captured_let_mut.vibe "$refcelldir/cell.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$refcelldir/cell.wasm" ]; then
-  echo "[compiler-gate] FAIL: rc_captured_let_mut.vibe did not compile under VIBE_RC=1 (#1262)" >&2
-  cat "$refcelldir/cell.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$refcelldir/cell.wasm" "rc_captured_let_mut.vibe did not compile under VIBE_RC=1 (#1262)"
 if ! VIBE_RC_ASSERT_SIZE0_ONLY=1 python3 scripts/rc_patch_freelist_assert.py \
   "$refcelldir/cell.wasm" "$refcelldir/cell_sz0.wasm" __rt_rc_drop >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: could not splice the alloc_size==0 assert into __rt_rc_drop (#1262)" >&2
@@ -425,22 +382,12 @@ echo "[compiler-gate] 90/90 the @vibe/wit_runtime Result reaches the WIT project
 # ONE `handle` in the export body producing Ok/Err).
 witresdir="_build/_gate_wit_result"
 rm -rf "$witresdir"; mkdir -p "$witresdir"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "fixtures/wit_gen_result.vibe" "$witresdir/fixture.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$witresdir/fixture.wasm" ]; then
-  echo "[compiler-gate] FAIL: fixtures/wit_gen_result.vibe did not FS-compile -- the @vibe/wit_runtime import does not resolve or does not type-check (#1324)" >&2
-  cat "$witresdir/fixture.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "fixtures/wit_gen_result.vibe" "$witresdir/fixture.wasm" __no_entry__
+gate_require_artifact "$witresdir/fixture.wasm" "fixtures/wit_gen_result.vibe did not FS-compile -- the @vibe/wit_runtime import does not resolve or does not type-check (#1324)"
 VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/wit_gen_result.vibe" "$witresdir/out.wit" main >/dev/null 2>&1 || true
-if [ ! -s "$witresdir/out.wit" ]; then
-  echo "[compiler-gate] FAIL: VIBE_EMIT_WIT produced no output for the @vibe/wit_runtime fixture (#1324)" >&2
-  cat "$witresdir/out.wit.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$witresdir/out.wit" "VIBE_EMIT_WIT produced no output for the @vibe/wit_runtime fixture (#1324)"
 if ! diff -u "fixtures/wit_gen_result.golden.wit" "$witresdir/out.wit" >&2; then
   echo "[compiler-gate] FAIL: WIT output differs from fixtures/wit_gen_result.golden.wit. If the boundary contract changed intentionally, update the golden AND docs/internal/design/effect-wit-mapping.md together." >&2
   exit 1
@@ -465,16 +412,9 @@ res_case() {
   # res_case <name> <expect: ok|err> <source> [substring the .diag must contain]
   local rname="$1" expect="$2" rsrc="$3" rneedle="${4:-}"
   printf '%s' "$rsrc" > "$resdir/$rname.vibe"
-  rm -f "$resdir/$rname.wasm" "$resdir/$rname.wasm.diag"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$resdir/$rname.vibe" "$resdir/$rname.wasm" main >/dev/null 2>&1 || true
+  gate_fs_compile "$resdir/$rname.vibe" "$resdir/$rname.wasm" main
   if [ "$expect" = "ok" ]; then
-    if [ ! -s "$resdir/$rname.wasm" ]; then
-      echo "[compiler-gate] FAIL: resource case '$rname' should compile but did not (ADR-0075/#1343)" >&2
-      cat "$resdir/$rname.wasm.diag" >&2 2>/dev/null || true
-      exit 1
-    fi
+    gate_require_artifact "$resdir/$rname.wasm" "resource case '$rname' should compile but did not (ADR-0075/#1343)"
   else
     if [ -s "$resdir/$rname.wasm" ]; then
       echo "[compiler-gate] FAIL: resource case '$rname' should be rejected but compiled (ADR-0075/#1343)" >&2
@@ -575,14 +515,8 @@ test "gamma_ok" {
   println("from gamma")
 }
 PBEOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$pbdir/pb_test.vibe" "$pbdir/pb.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$pbdir/pb.wasm" ]; then
-  echo "[compiler-gate] FAIL: per-block test fixture did not compile (#819)" >&2
-  cat "$pbdir/pb.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$pbdir/pb_test.vibe" "$pbdir/pb.wasm" __no_entry__
+gate_require_artifact "$pbdir/pb.wasm" "per-block test fixture did not compile (#819)"
 pbexports="$(node -e '
   const m = new WebAssembly.Module(require("fs").readFileSync(process.argv[1]));
   for (const e of WebAssembly.Module.exports(m)) {
@@ -694,16 +628,9 @@ en_case() {
   # en_case <name> <expect: ok|err> <source> [substring the .diag must contain]
   local ename="$1" expect="$2" esrc="$3" eneedle="${4:-}"
   printf '%s' "$esrc" > "$endir/$ename.vibe"
-  rm -f "$endir/$ename.wasm" "$endir/$ename.wasm.diag"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$endir/$ename.vibe" "$endir/$ename.wasm" main >/dev/null 2>&1 || true
+  gate_fs_compile "$endir/$ename.vibe" "$endir/$ename.wasm" main
   if [ "$expect" = "ok" ]; then
-    if [ ! -s "$endir/$ename.wasm" ]; then
-      echo "[compiler-gate] FAIL: enum-import case '$ename' should compile but did not (#1455)" >&2
-      cat "$endir/$ename.wasm.diag" >&2 2>/dev/null || true
-      exit 1
-    fi
+    gate_require_artifact "$endir/$ename.wasm" "enum-import case '$ename' should compile but did not (#1455)"
   else
     if [ -s "$endir/$ename.wasm" ]; then
       echo "[compiler-gate] FAIL: enum-import case '$ename' should be rejected but compiled (#1455)" >&2
@@ -925,16 +852,9 @@ ui_case() {
   # shape is an ordinary `err` now and the expectation is gone.)
   local uname="$1" uexpect="$2" usrc="$3"
   printf '%s' "$usrc" > "$uidir/$uname.vibe"
-  rm -f "$uidir/$uname.wasm" "$uidir/$uname.wasm.diag"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$uidir/$uname.vibe" "$uidir/$uname.wasm" _start >/dev/null 2>&1 || true
+  gate_fs_compile "$uidir/$uname.vibe" "$uidir/$uname.wasm" _start
   if [ "$uexpect" = "ok" ]; then
-    if [ ! -s "$uidir/$uname.wasm" ]; then
-      echo "[compiler-gate] FAIL: unresolved-import case '$uname' should compile but did not (#1521)" >&2
-      cat "$uidir/$uname.wasm.diag" >&2 2>/dev/null || true
-      exit 1
-    fi
+    gate_require_artifact "$uidir/$uname.wasm" "unresolved-import case '$uname' should compile but did not (#1521)"
   else
     if [ -s "$uidir/$uname.wasm" ]; then
       echo "[compiler-gate] FAIL: unresolved-import case '$uname' compiled; the bogus import was not caught (#1521)" >&2
@@ -1153,14 +1073,8 @@ fi
 cgdir="_build/_gate_codegen_unresolved"
 rm -rf "$cgdir"; mkdir -p "$cgdir"
 printf 'enum Color {\n  Red;\n  Green\n}\n\nexport let _start = () -> Int {\n  match Color::Red {\n    Red => 1\n    Green => 2\n  }\n}\n' > "$cgdir/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$cgdir/ok.vibe" "$cgdir/ok.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$cgdir/ok.wasm" ]; then
-  echo "[compiler-gate] FAIL: a correct program hit the unresolved-name path" >&2
-  cat "$cgdir/ok.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$cgdir/ok.vibe" "$cgdir/ok.wasm" _start
+gate_require_artifact "$cgdir/ok.wasm" "a correct program hit the unresolved-name path"
 rm -rf "$cgdir"
 echo "[compiler-gate] codegen unresolved-name error is legible ok"
 
@@ -1187,11 +1101,7 @@ for dvsrc in "$dvdir"/*.vibe; do
   VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$dvsrc" "$dvdir/$dvname.wasm" main >/dev/null 2>&1 || true
-  if [ ! -s "$dvdir/$dvname.wasm" ]; then
-    echo "[compiler-gate] FAIL: $dvname did not compile in the non-FS lane (#1590)" >&2
-    cat "$dvdir/$dvname.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_artifact "$dvdir/$dvname.wasm" "$dvname did not compile in the non-FS lane (#1590)"
 done
 rm -rf "$dvdir"
 echo "[compiler-gate] desugar-emitted builtins resolve in both lanes ok"
@@ -1344,11 +1254,7 @@ INSPH
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$inspdir/hygiene.vibe" "$inspdir/hygiene.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$inspdir/hygiene.wasm" ]; then
-  echo "[compiler-gate] FAIL: the inspect hygiene sample did not compile" >&2
-  cat "$inspdir/hygiene.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$inspdir/hygiene.wasm" "the inspect hygiene sample did not compile"
 if insp_hyg="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$inspdir/hygiene.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: inspect(1, __vibe_inspect_actual) PASSED -- the expansion's temporary captured the argument, so it compared a value against itself (#1571 hygiene)" >&2
   echo "$insp_hyg" >&2
@@ -1361,11 +1267,7 @@ fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/inspect_assignop_target_freshness.vibe "$inspdir/assignop.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$inspdir/assignop.wasm" ]; then
-  echo "[compiler-gate] FAIL: inspect EAssignOp target-only freshness fixture did not compile" >&2
-  cat "$inspdir/assignop.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$inspdir/assignop.wasm" "inspect EAssignOp target-only freshness fixture did not compile"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke _start "$inspdir/assignop.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: inspect temporary captured a target-only __vibe_inspect_actual" >&2
@@ -1386,11 +1288,7 @@ INSPF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$inspdir/shadow_fn.vibe" "$inspdir/shadow_fn.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$inspdir/shadow_fn.wasm" ]; then
-  echo "[compiler-gate] FAIL: a user-declared \`inspect\` did not compile -- the rewrite hijacked the call (#1571 shadow)" >&2
-  cat "$inspdir/shadow_fn.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$inspdir/shadow_fn.wasm" "a user-declared \`inspect\` did not compile -- the rewrite hijacked the call (#1571 shadow)"
 insp_fn_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$inspdir/shadow_fn.wasm" 2>/dev/null | tail -1)"
 if [ "$insp_fn_out" != "7" ]; then
   echo "[compiler-gate] FAIL: a user-declared \`inspect\` got '$insp_fn_out' (want 7) -- its body did not run (#1571 shadow)" >&2
@@ -1421,11 +1319,7 @@ INSPP
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$inspdir/shadow_pat.vibe" "$inspdir/shadow_pat.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$inspdir/shadow_pat.wasm" ]; then
-  echo "[compiler-gate] FAIL: a pattern-bound \`inspect\` did not compile (#1571 shadow, pattern binders)" >&2
-  cat "$inspdir/shadow_pat.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$inspdir/shadow_pat.wasm" "a pattern-bound \`inspect\` did not compile (#1571 shadow, pattern binders)"
 insp_pat_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$inspdir/shadow_pat.wasm" 2>&1)"
 case "$insp_pat_out" in
   *"SIDE EFFECT RAN"*) ;;
@@ -1760,14 +1654,8 @@ fn main() -> Int {
 SBB
 sed 's/StringBuilder::build(b)/StringBuilder::freeze(b)/' "$sbdir/build.vibe" > "$sbdir/freeze.vibe"
 for spelling in build freeze; do
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$sbdir/$spelling.vibe" "$sbdir/$spelling.wasm" main >/dev/null 2>&1 || true
-  if [ ! -s "$sbdir/$spelling.wasm" ]; then
-    echo "[compiler-gate] FAIL: StringBuilder::$spelling did not compile (ADR-0101 (3) / #1262)" >&2
-    cat "$sbdir/$spelling.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_fs_compile "$sbdir/$spelling.vibe" "$sbdir/$spelling.wasm" main
+  gate_require_artifact "$sbdir/$spelling.wasm" "StringBuilder::$spelling did not compile (ADR-0101 (3) / #1262)"
   sb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sbdir/$spelling.wasm" 2>&1 | tail -1)"
   if [ "$sb_out" != "11" ]; then
     echo "[compiler-gate] FAIL: StringBuilder::$spelling produced '$sb_out' (want 11 = len(\"hello world\")) -- the two spellings must lower identically (#1262)" >&2
@@ -1904,11 +1792,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/float_call_offset_source_lane.vibe "$fcodir/fco.wasm" __no_entry__ \
   >/dev/null 2>&1 || true
-if [ ! -s "$fcodir/fco.wasm" ]; then
-  echo "[compiler-gate] FAIL: float call-offset fixture did not compile (#2158)" >&2
-  cat "$fcodir/fco.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$fcodir/fco.wasm" "float call-offset fixture did not compile (#2158)"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$fcodir/fco.wasm" >"$fcodir/run.log" 2>&1; then
   echo "[compiler-gate] FAIL: a Double reaching __to_string through a call still renders as raw bits (#2158)" >&2
@@ -2066,11 +1950,7 @@ fn main() -> Int allows Console {
 }
 CDBGEOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$cdbg/oob.vibe" "$cdbg/oob.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$cdbg/oob.wasm" ]; then
-  echo "[compiler-gate] FAIL: crash-debug fixture did not compile (#2199)" >&2
-  cat "$cdbg/oob.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$cdbg/oob.wasm" "crash-debug fixture did not compile (#2199)"
 VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh   --invoke _start "$cdbg/oob.wasm" >"$cdbg/quiet.log" 2>&1 || true
 VIBE_CRASH_DEBUG=1 VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh   --invoke _start "$cdbg/oob.wasm" >"$cdbg/loud.log" 2>&1 || true
 if grep -qF '[crash debug]' "$cdbg/quiet.log"; then

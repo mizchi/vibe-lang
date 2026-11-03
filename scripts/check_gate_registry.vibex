@@ -23,7 +23,8 @@
 //     banner (`ok`, `FAIL: ...`, or one containing ` ok ` / ` ok:` / ` ok (`
 //     or ending in ` ok`)
 //   - a quoted `"fixtures/..."` path a lane source names that does not exist
-//     (paths with `{`, `${` or `*` are patterns, not paths)
+//     (paths with `{`, `${` or `*` are patterns, not paths; the message of a
+//     `gate_require_artifact` line is prose, not a reference)
 //   - a compile whose failure the lane checks (`if [ ! -s .. ]`) but which can
 //     abort the lane before that check (#2107 fallout: three separate gate
 //     steps died at exit 1 with no message at all, because `set -e` killed the
@@ -200,6 +201,27 @@ fn banner(line: String) -> String {
     String::substring(line, String::length(prefix), String::length(line) - 1)
   } else {
     ""
+  }
+}
+
+/// The part of a line whose quoted paths are references. A
+/// `gate_require_artifact <out> "<message>"` line (tests/gates/lib.sh) names
+/// its artifact first and then the lane's words for what failed to compile,
+/// which may start with the path it is about; that message is prose, as it was
+/// when it sat in an `echo "[compiler-gate] FAIL: ..."`.
+fn path_scope(line: String) -> String {
+  let t = String::trim(line)
+  let head = "gate_require_artifact "
+  if String::starts_with(t, head) && String::starts_with(String::substring(t, String::length(head), String::length(t)), "\"") {
+    let start = String::length(head) + 1
+    let close = String::index_of_from(t, "\"", start)
+    if close > 0 {
+      String::substring(t, 0, close + 1)
+    } else {
+      t
+    }
+  } else {
+    line
   }
 }
 
@@ -439,7 +461,7 @@ fn main allows Env + Fs::is_file + Fs::exists + Fs::read_file + Console::write_s
               } else {
                 ()
               }
-              let paths = quoted_paths(line)
+              let paths = quoted_paths(path_scope(line))
               let mut p = 0
               while p < Array::length(paths) {
                 let path = Array::get(paths, p)

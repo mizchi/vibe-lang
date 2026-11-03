@@ -121,6 +121,19 @@ reset_tree
 printf 'probe="fixtures/no_such_fixture_for_the_registry_test.vibe"\n' >> "$tree/tests/gates/early/run.sh"
 red "missing fixture" "names missing fixture fixtures/no_such_fixture_for_the_registry_test.vibe"
 
+# ...the same path passed to gate_fs_compile (tests/gates/lib.sh) is a
+# reference too...
+reset_tree
+printf 'gate_fs_compile "fixtures/no_such_fixture_for_the_registry_test.vibe" "$d/out.wasm" main\n' >> "$tree/tests/gates/early/run.sh"
+red "missing fixture in a compile" "names missing fixture fixtures/no_such_fixture_for_the_registry_test.vibe"
+
+# ...but the MESSAGE of a gate_require_artifact line is prose, the lane's words
+# for what failed, as it was inside an `echo "[compiler-gate] FAIL: ..."`.
+reset_tree
+printf 'gate_require_artifact "$d/out.wasm" "fixtures/no_such_fixture_for_the_registry_test.vibe did not compile"\n' >> "$tree/tests/gates/early/run.sh"
+landed "$tree/tests/gates/early/run.sh" 'did not compile' "require message"
+assert_ok "a gate_require_artifact message is not a fixture reference" gate --root "$WORK_REL/tree"
+
 # #2107 fallout: a compile whose failure the lane checks must not be able to
 # abort the lane before the check. Red case built by REMOVING the guard from a
 # live step, so the test breaks if the rule stops being enforced rather than if

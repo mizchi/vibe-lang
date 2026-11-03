@@ -755,11 +755,7 @@ for pass in cold warm; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/$pass.wasm" __no_entry__ \
     >/dev/null 2>&1 || true
-  if [ ! -s "$ffsdir/$pass.wasm" ]; then
-    echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile ($pass, #2391)" >&2
-    cat "$ffsdir/$pass.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_artifact "$ffsdir/$pass.wasm" "FS-lane float call-offset test did not compile ($pass, #2391)"
 done
 # #2546: each module publishes one v11 record, never a separate offsets file.
 if find "$ffsdir/cache" -type f -name '*selfhost_module_typed_lowering_offsets_v1*' | grep -q .; then
@@ -800,11 +796,7 @@ VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_D
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/torn.wasm" __no_entry__ \
   >/dev/null 2>&1 || true
-if [ ! -s "$ffsdir/torn.wasm" ]; then
-  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over torn records (#2391)" >&2
-  cat "$ffsdir/torn.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$ffsdir/torn.wasm" "FS-lane float call-offset test did not compile over torn records (#2391)"
 if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/torn.wasm"; then
   echo "[compiler-gate] FAIL: a torn float-offsets record changed the emitted bytes (#2391)" >&2
   exit 1
@@ -848,11 +840,7 @@ VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_D
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/flipped.wasm" __no_entry__ \
   >/dev/null 2>&1 || true
-if [ ! -s "$ffsdir/flipped.wasm" ]; then
-  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over digit-flipped records (#2391)" >&2
-  cat "$ffsdir/flipped.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$ffsdir/flipped.wasm" "FS-lane float call-offset test did not compile over digit-flipped records (#2391)"
 if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/flipped.wasm"; then
   echo "[compiler-gate] FAIL: a digit-corrupted float-offsets record changed the emitted bytes (#2391)" >&2
   exit 1
@@ -880,11 +868,7 @@ VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_D
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/rowdel.wasm" __no_entry__ \
   >/dev/null 2>&1 || true
-if [ ! -s "$ffsdir/rowdel.wasm" ]; then
-  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over row-deleted records (#2391)" >&2
-  cat "$ffsdir/rowdel.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$ffsdir/rowdel.wasm" "FS-lane float call-offset test did not compile over row-deleted records (#2391)"
 if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/rowdel.wasm"; then
   echo "[compiler-gate] FAIL: a row-deleted float-offsets record changed the emitted bytes (#2391)" >&2
   exit 1
@@ -910,11 +894,7 @@ for pass in cold warm; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     lib/@vibe/compiler/tests/string_binop_typed_channel_fs_lane_test.vibe "$sbdir/$pass.wasm" __no_entry__ \
     >/dev/null 2>&1 || true
-  if [ ! -s "$sbdir/$pass.wasm" ]; then
-    echo "[compiler-gate] FAIL: FS-lane String binop channel test did not compile ($pass, #2391)" >&2
-    cat "$sbdir/$pass.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_artifact "$sbdir/$pass.wasm" "FS-lane String binop channel test did not compile ($pass, #2391)"
 done
 if ! cmp -s "$sbdir/cold.wasm" "$sbdir/warm.wasm"; then
   echo "[compiler-gate] FAIL: FS-lane String binop output depends on persistent-cache state (#2391)" >&2
