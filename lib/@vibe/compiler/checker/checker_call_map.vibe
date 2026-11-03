@@ -20,7 +20,6 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   env_lookup,
-  expr_children,
   fresh_var,
   subst_apply,
   type_to_string,
@@ -45,7 +44,7 @@ import ./checker_lambda_expr.vibe {
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
-  callee_inst_types_cell, check_assignable, map_key_site_offsets, map_key_site_types, scheme_var_types_from
+  callee_inst_types_cell, check_assignable, map_key_site_offsets, map_key_site_types, scheme_var_types_from, value_inst_types_cell
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -353,10 +352,19 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
     let reported: MutMap[Int, Int] = MutMap::new_int()
     let mut changed = true
     let mut rounds = 0
-    while changed && rounds <= Array::length(callee_inst_types_cell) {
+    // A call and a value reference instantiate the same way; a value bound by
+    // `let f = look` passes the restriction on to `f`'s own variables.
+    let records: Array[(Int, Type, Type, String)] = []
+    for r in callee_inst_types_cell {
+      Array::push(records, r)
+    }
+    for r in value_inst_types_cell {
+      Array::push(records, r)
+    }
+    while changed && rounds <= Array::length(records) {
       changed = false
       rounds = rounds + 1
-      for recorded in callee_inst_types_cell {
+      for recorded in records {
         let (callee_off, scheme, inst, name) = recorded
         let pairs: Array[(Int, Type)] = []
         let vars: Array[Int] = []
@@ -492,55 +500,9 @@ fn map_key_formal_fns(stmts: Array[Stmt], env: TypeEnv, keyed: MutMap[Int, Int],
   ()
 }
 
-fn map_key_formal_value_refs(e: Expr, fns: MutMap[String, Int], reported: MutMap[Int, Int], errors: Array[String]) -> Unit {
-  match e {
-    // A direct call: its instantiation is read in this module.
-    ECall(EIdent(_, _), args, _, _) => for a in args {
-      map_key_formal_value_refs(a, fns, reported, errors)
-    },
-    EIdent(name, off) => if MutMap::has(fns, name) && !MutMap::has(reported, off) {
-      MutMap::set(reported, off, 1)
-      let parts = [
-        "`",
-        name,
-        "` uses a type parameter as a `Map` key, so only a direct call can be checked for a scalar key -- call it inside a lambda, `(m, k) -> ",
-        name,
-        "(m, k)`, instead of passing it as a value (#2334)",
-        off_marker_len(off, String::length(name))
-      ]
-      Array::push(errors, String::join(parts, ""))
-    } else {
-      ()
-    },
-    _ => for c in expr_children(e) {
-      map_key_formal_value_refs(c, fns, reported, errors)
-    }
-  }
-  ()
-}
-
-fn map_key_formal_value_refs_stmts(stmts: Array[Stmt], fns: MutMap[String, Int], reported: MutMap[Int, Int], errors: Array[String]) -> Unit {
-  for stmt in stmts {
-    match stmt {
-      SLet(_, _, _, _, body) => map_key_formal_value_refs(body, fns, reported, errors),
-      SLetMut(_, _, body) => map_key_formal_value_refs(body, fns, reported, errors),
-      SLetPat(_, body) => map_key_formal_value_refs(body, fns, reported, errors),
-      STest(_, body) => map_key_formal_value_refs(body, fns, reported, errors),
-      SBench(_, body) => map_key_formal_value_refs(body, fns, reported, errors),
-      SExample(_, body) => map_key_formal_value_refs(body, fns, reported, errors),
-      SExpr(body) => map_key_formal_value_refs(body, fns, reported, errors),
-      SModule(_, _, children) => map_key_formal_value_refs_stmts(children, fns, reported, errors),
-      _ => ()
-    }
-  }
-  ()
-}
-
-/// #2334: the two ways a call of a function that keys a map by its type
-/// parameter escapes the instantiation check above. Another module's call is
-/// checked against the exported signature alone, which does not say that the
-/// parameter keys a map; and a function passed as a value is instantiated
-/// where nothing records it. Both are refused, at the export and at the value.
+/// #2334: a call from another module escapes the instantiation check above:
+/// it is checked against the exported signature alone, which does not say
+/// that the parameter keys a map. So such a function is refused at the export.
 fn check_map_key_formal_escapes(stmts: Array[Stmt], env: TypeEnv, keyed: MutMap[Int, Int], errors: Array[String]) -> Unit {
   let fns: MutMap[String, Int] = MutMap::new_string()
   let order: Array[String] = []
@@ -560,8 +522,6 @@ fn check_map_key_formal_escapes(stmts: Array[Stmt], env: TypeEnv, keyed: MutMap[
         ()
       }
     }
-    let reported: MutMap[Int, Int] = MutMap::new_int()
-    map_key_formal_value_refs_stmts(stmts, fns, reported, errors)
   } else {
     ()
   }

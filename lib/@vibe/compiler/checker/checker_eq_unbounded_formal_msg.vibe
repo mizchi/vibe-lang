@@ -1332,11 +1332,33 @@ export let callee_inst_types_cell: Array[(Int, Type, Type, String)] = []
 export let map_key_site_offsets: Array[Int] = []
 export let map_key_site_types: Array[Type] = []
 
+/// #2334: (reference offset, scheme, instantiated type, name) for each
+/// generic binding taken as a VALUE, the counterpart of
+/// `callee_inst_types_cell` for a reference that is not a call. Only the map
+/// key check reads it.
+export let value_inst_types_cell: Array[(Int, Type, Type, String)] = []
+
+/// Record a generic binding instantiated at a value reference.
+export fn note_value_instantiation(off: Int, scheme: Type, inst: Type, name: String) -> Unit {
+  match scheme {
+    CtForAll(_, _, _) => if off >= 0 {
+      Array::push(value_inst_types_cell, (off, scheme, inst, name))
+    },
+    _ => ()
+  }
+}
+
 /// Roll the per-call records back to a retention checkpoint: the generic-call
-/// instantiations and the map key sites a speculative check recorded.
-export fn rewind_call_records(callee_mark: Int, map_site_mark: Int) -> Unit {
+/// and generic-value instantiations and the map key sites a speculative check
+/// recorded.
+export fn rewind_call_records(callee_mark: Int, value_mark: Int, map_site_mark: Int) -> Unit {
   if Array::length(callee_inst_types_cell) > callee_mark {
     Array::truncate(callee_inst_types_cell, callee_mark)
+  } else {
+    ()
+  }
+  if Array::length(value_inst_types_cell) > value_mark {
+    Array::truncate(value_inst_types_cell, value_mark)
   } else {
     ()
   }
@@ -1551,6 +1573,7 @@ fn note_generic_alias(val: Expr, bound: Type, env: TypeEnv) -> Unit {
 export fn set_generic_fn_decls(stmts: Array[Stmt]) -> Unit {
   Array::truncate(generic_fn_decls_cell, 0)
   Array::truncate(callee_inst_types_cell, 0)
+  Array::truncate(value_inst_types_cell, 0)
   Array::truncate(generic_callback_instances, 0)
   Array::truncate(generic_scheme_decls_cell, 0)
   let mut i = 0
