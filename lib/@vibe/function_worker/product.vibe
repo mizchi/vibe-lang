@@ -5,6 +5,7 @@ import @vibe/compiler/codegen/common_base {
   CodegenBodyCache
 }
 import @vibe/compiler/codegen/reloc {
+  blind_kind_ctor_tag,
   blind_kind_fn_value,
   blind_kind_pairs_slot,
   blind_kind_str_fat,
@@ -171,7 +172,9 @@ export fn validate_function_product_plan(plan: FunctionProductPlan, c: CodegenBo
       })), message = "unknown function-table slot")
       si = si + 1
     } else {
-      fw_require(ok = (kind == blind_kind_str_ref || kind == blind_kind_str_fat) && Array::get(c.blind_syms, at = i) >= 0, message = "unknown blind-reference kind")
+      // Strings (103 / 104) name a pool slot; a constructor tag (105) is
+      // the tag value itself. Neither pairs with a funcref slot.
+      fw_require(ok = (kind == blind_kind_str_ref || kind == blind_kind_str_fat || kind == blind_kind_ctor_tag) && Array::get(c.blind_syms, at = i) >= 0, message = "unknown blind-reference kind")
     }
     let body_owner = Array::get(c.blind_body, at = i)
     let body = if blind_owner_is_lambda(owner = body_owner) {
@@ -185,6 +188,7 @@ export fn validate_function_product_plan(plan: FunctionProductPlan, c: CodegenBo
     }
     let at = Array::get(c.blind_offsets, at = i)
     fw_require(ok = at >= 0 && at < Bytes::length(body), message = "blind-reference offset outside body")
+    fw_require(ok = kind != blind_kind_ctor_tag || Bytes::get(body, at = at) == 65, message = "constructor-tag reference is not on an i32.const")
     i = i + 1
   }
   let nm = Array::length(c.lm_owner)
