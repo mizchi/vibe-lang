@@ -20,6 +20,10 @@ import ./file_body_preparation.vibe {
   FileBodyPreparation, typed_lowering_guard_for_files
 }
 
+import ./linked_output_memo.vibe {
+  linked_output_memo_identity, linked_output_memo_mode, linked_output_memo_run
+}
+
 //# Imports
 
 import @vibe/compiler/syntax {
@@ -521,9 +525,27 @@ export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Byt
 /// #2828 rung 2: ADR-0088's L1 grants, frozen by the launcher before the
 /// artifact is built, reach the optional-capability lowering through here.
 export fn compile_file_fs_mode_rc_grants(entry_path: String, entry_name: String, grants: Array[(String, String)]) -> Bytes with Env + Exception + Fs {
+  compile_file_fs_mode_rc_grants_memo(entry_path, entry_name, grants, "off")
+}
+
+/// The same lane behind the linked-output memo (#2825, linked_output_memo.vibe):
+/// `vibe run`, `vibe build` and `vibe test` pass `on`, so an exact no-op
+/// replays the module the last identical compile produced. The typing walk
+/// runs first either way, so a no-op still reports a type error, records the
+/// closure for the unstable-surface gate and fills the typing telemetry.
+export fn compile_file_fs_mode_rc_grants_memo(entry_path: String, entry_name: String, grants: Array[(String, String)], memo_mode: String) -> Bytes with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
+  if memo_mode == "off" {
+    compile_rc_grants_back_end(entry_name, grants, source_groups)
+  } else {
+    let identity = linked_output_memo_identity("rc", entry_path, entry_name, grants, source_groups)
+    linked_output_memo_run(memo_mode, "rc", entry_path, entry_name, identity, () -> compile_rc_grants_back_end(entry_name, grants, source_groups))
+  }
+}
+
+fn compile_rc_grants_back_end(entry_name: String, grants: Array[(String, String)], source_groups: Array[(String, Array[(String, String)])]) -> Bytes with Env + Exception + Fs {
   // #2158/#2391: this is the lane `vibe test` and `vibe run` actually take --
   // the adapter routes anything but an explicit `VIBE_RC=0` here, since
   // `VIBE_RC` unset is `"" != "0"`. The checker's Double call-result offsets
@@ -1002,11 +1024,23 @@ export fn ordinary_lane_split_shape(entry_path: String) -> (Int, Int) with Env +
 /// The ordinary RC lane with the per-module prelude selectable (#2575 item 2
 /// step 3b). `use_split` false is byte-for-byte the lane below it.
 export fn compile_file_fs_mode_rc_body_cached_split(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool) -> Bytes with Env + Exception + Fs {
-  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, use_split, array_empty())
+  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, checked_source_groups_fs(entry_path), cache_mode, use_split, array_empty())
 }
 
+/// The launcher's `VIBE_CODEGEN_BODY_CACHE` lane. The linked-output memo is
+/// off here unless `VIBE_LINKED_OUTPUT_MEMO` asks for it: this is the lane the
+/// incremental KPI and the compiler's own measurements compile through, and
+/// their warm rows measure the back end's reuse, which a replayed module would
+/// hide.
 export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: String, cache_mode: String) -> Bytes with Env + Exception + Fs {
-  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, false, array_empty())
+  let source_groups = checked_source_groups_fs(entry_path)
+  let memo_mode = linked_output_memo_mode("off")
+  if memo_mode == "off" {
+    compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, source_groups, cache_mode, false, array_empty())
+  } else {
+    let identity = linked_output_memo_identity("rc-body-cached", entry_path, entry_name, array_empty(), source_groups)
+    linked_output_memo_run(memo_mode, "rc-body-cached", entry_path, entry_name, identity, () -> compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, source_groups, cache_mode, false, array_empty()))
+  }
 }
 
 /// #2669 step 2b: the same lane, plus the two numbers that say what it reused
@@ -1021,7 +1055,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
 /// point exists for; `ordinary_lane_split_shape` above is the same kind of
 /// observation seam for the same reason.
 export fn compile_file_fs_mode_rc_body_cached_counted(entry_path: String, entry_name: String, cache_mode: String, counts_out: Array[Int]) -> Bytes with Env + Exception + Fs {
-  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, false, counts_out)
+  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, checked_source_groups_fs(entry_path), cache_mode, false, counts_out)
 }
 
 /// #2818: may this harvest ever be replayed by a LATER compile?
@@ -1041,10 +1075,16 @@ fn body_cache_harvest_is_replayable(cache: CodegenBodyCache) -> Bool {
   Array::length(cache.guard_meta) == 5
 }
 
-fn prepare_file_body_inputs_fs(entry_path: String, use_split: Bool) -> FileBodyPreparation with Env + Exception + Fs {
+/// The loader's source groups for `entry_path`, after the typing walk has
+/// checked them: what every lane below starts from.
+fn checked_source_groups_fs(entry_path: String) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
+  source_groups
+}
+
+fn prepare_file_body_inputs_fs(source_groups: Array[(String, Array[(String, String)])], use_split: Bool) -> FileBodyPreparation with Env + Exception + Fs {
   let (merged_stmts_raw, file_paths, file_fps, file_counts, file_bases, clone_float_offsets) = build_grouped_merged_stmts_counted(source_groups)
   let (float_offsets, tl_rels, tl_pluses, int_offsets, bool_offsets) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(file_paths, file_bases, clone_float_offsets))
   let (eq_offsets, eq_keys) = union_module_typed_eq_rows(file_paths, file_bases)
@@ -1073,13 +1113,13 @@ fn prepare_file_body_inputs_fs(entry_path: String, use_split: Bool) -> FileBodyP
 /// The cache-off production filesystem prefix, returned before body execution.
 /// Configuration and input-observation ownership stay with the calling phase.
 export fn prepare_file_fs_mode_rc_body(entry_path: String, entry_name: String) -> LinkedModulePreparation with Env + Exception + Fs {
-  let prepared = prepare_file_body_inputs_fs(entry_path, false)
+  let prepared = prepare_file_body_inputs_fs(checked_source_groups_fs(entry_path), false)
   lc_prepare_wasi_module_rc_cached_with_split_grants(prepared.stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_discard(), prepared.prov, prepared.floats, prepared.int_renders, prepared.bool_renders, prepared.eq_offsets, prepared.eq_keys, prepared.split, print_stmt, [
   ])
 }
 
-fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool, counts_out: Array[Int]) -> Bytes with Env + Exception + Fs {
-  let prepared = prepare_file_body_inputs_fs(entry_path, use_split)
+fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, source_groups: Array[(String, Array[(String, String)])], cache_mode: String, use_split: Bool, counts_out: Array[Int]) -> Bytes with Env + Exception + Fs {
+  let prepared = prepare_file_body_inputs_fs(source_groups, use_split)
   let merged_stmts = prepared.stmts
   let file_paths = prepared.paths
   let file_fps = prepared.fingerprints
@@ -1259,15 +1299,6 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
     let cache_in_m = codegen_body_cache_filter_fold_sigs(cache_in, cache_out.guard_fold_names, cache_out.guard_fold_sigs)
     let refreshed = if Array::length(cache_in.fn_indices) > 0 && body_cache_guards_equal(cache_out, cache_in) {
       codegen_body_cache_merge(cache_out, cache_in_m)
-    } else if Array::length(cache_in.fn_indices) > 0 && Array::length(cache_in.consumer_src_limit) == 1 && body_cache_guards_equal_except_layout(cache_out, cache_in) {
-      // A layout guard drifted, so the body loop replayed only the leading
-      // prefix -- and a replayed function is not re-recorded, so `cache_out`
-      // has a hole exactly there. Carry that prefix back in, or the next
-      // completely unchanged build recompiles it for nothing. The subset is
-      // the SAME one the body loop narrowed to, computed from the same
-      // annotation, so the two cannot disagree about which entries were
-      // replayed.
-      codegen_body_cache_merge(cache_out, codegen_body_cache_filter_src_below(cache_in_m, Array::get(cache_in.consumer_src_limit, 0)))
     } else {
       cache_out
     }

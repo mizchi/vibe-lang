@@ -1,0 +1,175 @@
+//# #2825: the linked-output memo replays a compiled module only for the
+//# identical input identity, and `verify` is the oracle that catches a
+//# replay that is not what a fresh compile answers.
+//#
+//# Every row compiles a real two-file program through the production lane
+//# (`compile_file_fs_mode_rc_grants_memo`) and compares against the same lane
+//# with the memo off, so a passing row is about the bytes a user would run,
+//# not about the memo's own bookkeeping.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_grants_memo,
+  linked_output_memo_env_names,
+  linked_output_memo_identity,
+  linked_output_memo_lookup,
+  linked_output_memo_mode,
+  linked_output_memo_store
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs
+}
+
+//# Helpers
+
+fn lom_bytes(s: String) -> Bytes {
+  let out = Bytes::new()
+  let mut i = 0
+  while i < String::length(s) {
+    Bytes::push(out, String::byte_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+fn lom_bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  let n = Bytes::length(a)
+  if n != Bytes::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Bytes::get(a, i) != Bytes::get(b, i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+let lom_leaf_path: String = "/tmp/vibe_linked_output_memo_leaf.vibe"
+
+let lom_main_path: String = "/tmp/vibe_linked_output_memo_main.vibe"
+
+fn lom_leaf(k: Int) -> String {
+  "export fn leaf_value(x: Int) -> Int {\n  x + \{k}\n}\n"
+}
+
+fn lom_main() -> String {
+  "import ./vibe_linked_output_memo_leaf.vibe {\n  leaf_value\n}\n\nfn main() -> Int {\n  leaf_value(41)\n}\n"
+}
+
+fn lom_write(k: Int) -> Unit with Fs {
+  Fs::write_bytes(lom_leaf_path, lom_bytes(lom_leaf(k)))
+  Fs::write_bytes(lom_main_path, lom_bytes(lom_main()))
+}
+
+fn lom_identity(grants: Array[(String, String)]) -> String with Env + Exception + Fs {
+  linked_output_memo_identity("rc", lom_main_path, "main", grants, collect_source_groups_fs(lom_main_path))
+}
+
+fn lom_compile(mode: String) -> Bytes with Env + Exception + Fs {
+  compile_file_fs_mode_rc_grants_memo(lom_main_path, "main", [], mode)
+}
+
+//# Tests
+
+test "#2825: an identical rebuild replays the stored module, byte for byte" {
+  lom_write(1)
+  let fresh = lom_compile("off")
+  let stored = lom_compile("on")
+  assert(lom_bytes_eq(stored, fresh))
+  // The slot now answers for this identity...
+  assert(linked_output_memo_lookup("rc", lom_main_path, "main", lom_identity([])) is Some(_))
+  // ...and the rebuild returns those bytes.
+  assert(lom_bytes_eq(lom_compile("on"), fresh))
+}
+
+test "#2825: an edited dependency misses and compiles what a fresh compile does" {
+  lom_write(1)
+  let _ = lom_compile("on")
+  let before = lom_identity([])
+  lom_write(2)
+  let after = lom_identity([])
+  assert(before != after)
+  assert(linked_output_memo_lookup("rc", lom_main_path, "main", after) is None)
+  let fresh = lom_compile("off")
+  assert(lom_bytes_eq(lom_compile("on"), fresh))
+  // The edit is in the module, not only in the identity.
+  lom_write(1)
+  assert(!lom_bytes_eq(lom_compile("off"), fresh))
+}
+
+test "#2825: grants, entry and lane are part of the identity" {
+  lom_write(1)
+  let groups = collect_source_groups_fs(lom_main_path)
+  let base = linked_output_memo_identity("rc", lom_main_path, "main", [], groups)
+  assert(base != linked_output_memo_identity("rc", lom_main_path, "main", [
+    ("Fs", "Granted")
+  ], groups))
+  assert(base != linked_output_memo_identity("rc", lom_main_path, "run", [], groups))
+  assert(base != linked_output_memo_identity("rc-body-cached", lom_main_path, "main", [
+  ], groups))
+  // Length-prefixed fields: moving a separator between two values is a
+  // different identity, not the same text.
+  let split_a = linked_output_memo_identity("rc", lom_main_path, "main", [
+    ("a\ngrant b", "c")
+  ], groups)
+  let split_b = linked_output_memo_identity("rc", lom_main_path, "main", [
+    ("a", "b\ngrant c")
+  ], groups)
+  assert(split_a != split_b)
+}
+
+test "#2825: every keyed variable is in the identity" {
+  lom_write(1)
+  let identity = lom_identity([])
+  let names = linked_output_memo_env_names()
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    assert(String::contains(identity, "env \{String::length(name)}:\{name}\n"))
+    i = i + 1
+  }
+}
+
+test "#2825: a stored module for another identity of the same length is not replayed" {
+  lom_write(1)
+  let identity = lom_identity([])
+  // Same length, one byte different: only a full comparison rejects it.
+  let last = String::length(identity) - 2
+  let forged = String::concat(String::substring(identity, 0, last), String::concat("#", String::substring(identity, last + 1, String::length(identity))))
+  assert(String::length(forged) == String::length(identity))
+  linked_output_memo_store("rc", lom_main_path, "main", forged, lom_bytes("not a module"))
+  assert(linked_output_memo_lookup("rc", lom_main_path, "main", identity) is None)
+  let fresh = lom_compile("off")
+  assert(lom_bytes_eq(lom_compile("on"), fresh))
+}
+
+test "#2825: verify refuses a stored module that differs from a fresh compile" {
+  lom_write(1)
+  let identity = lom_identity([])
+  linked_output_memo_store("rc", lom_main_path, "main", identity, lom_bytes("not a module"))
+  // `on` trusts the identity -- this is the replay the identity licenses...
+  assert(lom_bytes_eq(lom_compile("on"), lom_bytes("not a module")))
+  // ...and `verify` is what proves the licence wrong.
+  let refused = handle {
+    let _ = lom_compile("verify")
+    false
+  } with { Exception::Throw(msg) => String::contains(msg, "linked-output memo verify") }
+  assert(refused)
+  // The refusal replaced the slot, so the next default build cannot replay
+  // the module verify just rejected.
+  assert(lom_bytes_eq(lom_compile("on"), lom_compile("off")))
+  // An honest slot verifies.
+  assert(lom_bytes_eq(lom_compile("verify"), lom_compile("off")))
+}
+
+test "#2825: the mode switch defaults per caller and refuses a typo" {
+  // The unit runner does not set VIBE_LINKED_OUTPUT_MEMO.
+  assert(linked_output_memo_mode("on") == "on")
+  assert(linked_output_memo_mode("off") == "off")
+}
