@@ -1241,20 +1241,53 @@ field counts and Double fields, but not the moving half of the tag.
   row when you add a tag site.
 
 - Structs are compared by value (`guard_struct_names` /
-  `guard_struct_fields`, VBC13). Every struct the harvest had must survive
-  with the same fields, in the same relative order. An added struct is
-  tolerated only when none of its fields is a field of a harvest struct: a
-  field access dispatches over every struct holding the field, and a bare
-  record literal is matched against every struct's fields. An unchanged
-  body names only fields the harvest's structs have, so it cannot reach the
-  new one. A declared effect brings such a struct, which is how this rule
-  was found.
-- A changed struct declines, swapped fields included. Unlike an enum, a
+  `guard_struct_fields`, VBC13). Structs added, removed or changed (fields
+  added, removed, renamed or reordered) are tolerated. The structs both
+  builds hold must keep their relative order, because a field access
+  dispatches over the structs holding the field in table order. Every
+  struct that changed, came or went joins the mention check with its fields
+  (`.field`: an access, a record literal's field, a struct pattern's field),
+  old and new both.
+- The mention check is not enough for a struct. Unlike an enum's, a
   struct's layout reaches a body that spells neither the struct nor its
-  fields. `let p = mk(); p == q` compares fields positionally by the
-  inferred aggregate shape and by each field's Double-ness, and neither the
-  mention check nor the tag map sees that. Tolerating it needs a per-body
-  record, written at emission, of which struct layouts codegen consulted.
+  fields: `p.y` on a value whose type was inferred reads `y`'s slot out of
+  the struct table, and spelling `y` is all it does. So what decides is a
+  record of what the body's codegen READ. While a function body whose
+  harvest is collected is compiled, every struct and constructor-table
+  accessor (`ctor_table_index_of`, `struct_field_candidates`,
+  `struct_index_by_field_set`, `agg_info_of_type_name`,
+  `ctor_field_is_float`, ...) appends the name it was asked about to
+  `layout_read_log`, a field as `.field`. The body loop turns the distinct
+  names into records of kind 106 (`blind_kind_layout_read`, `sym` a hash of
+  the name) plus a sentinel `sym == 0`. The records ride the blind-reference
+  log, so they survive the codec, the file moves and the relocation
+  unchanged.
+- Under an edit, `lc_layout_refuse` withholds every entry that read a name
+  of a struct that changed, came or went, or a changed enum's constructor.
+  It also withholds every entry WITHOUT the sentinel: a body compiled
+  without the log (a function worker's, or one harvested before it existed)
+  says nothing about what it read, and that is not the same answer as "read
+  nothing". A hash collision only withholds more.
+- `body_cache_changed_struct_test` swaps two fields, makes one Double, adds
+  one, and adds a struct that shares a field. The bodies that never read the
+  struct (and `==` on two values of it, which compares positionally) are
+  reused byte-equal; the ones that read a field recompile. An added field
+  still declines, because the builder's aggregate-return row changes.
+- Measured: with the layout check and the field mention both off, the swap
+  row replays a stale field offset and is NOT byte-equal. With either one
+  alone it is. `body_cache_layout_refuse_test` pins the sentinel rule
+  directly.
+- `scripts/review_lint.vibex` refuses a raw read of `struct_names`,
+  `struct_field_names` or `struct_field_is_ref` in `codegen/expr`: a read
+  there that bypasses the accessors logs nothing, and the body would replay
+  across a changed struct. The accessors that log it are
+  `struct_index_named`, `struct_field_names_at` and
+  `struct_first_field_slot`, beside the ones above.
+- At scale: swapping `MutMap`'s `size` and `tombs` fields in
+  `core/hashmap.vibe` builds the CLI closure warm in 16.6 s with the cache
+  on, against 18.6 s on a stage2 that declined the edit and 17.4 s with the
+  cache off. The output is byte-identical with the cache on and off. Single
+  runs.
 - The used-builtin set collects constructor names too, so under an edit it is
   compared with this build's constructor names taken out of both sides.
 

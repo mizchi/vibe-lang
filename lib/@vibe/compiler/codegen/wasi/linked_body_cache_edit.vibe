@@ -6,6 +6,14 @@ import @vibe/compiler/core {
   Expr, Pat, bsearch_leftmost, expr_children, sort_perm_by_names, sorted_names_of
 }
 
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache, layout_read_sym
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_kind_layout_read
+}
+
 import ./linked_compile_lc_rename_sleep_calls.vibe {
   lc_fresh_int_array, lc_fresh_int_array_of_len, lc_fresh_string_array
 }
@@ -348,57 +356,127 @@ export fn lc_effects_agree(old_names: Array[String], old_rows: Array[Int], new_n
   }
 }
 
-/// Does this build's struct table keep the harvest's? Every struct the
-/// harvest had must be there with the same fields, in the same relative
-/// order (a field access tries the structs holding the field in table
-/// order). A struct this build added is tolerated only when none of its
-/// fields is a field of a harvest struct: a field access or a bare record
-/// literal in an unchanged body names only fields those structs have, so it
-/// cannot reach the new one. An added struct's name goes into `touched`.
-export fn lc_structs_agree(old_names: Array[String], old_fields: Array[String], new_names: Array[String], new_fields: Array[String], touched: Array[String]) -> Bool {
-  let e = lc_src_edit_of(old_names, new_names, Array::length(new_names))
+/// Does this build's struct table agree with the harvest's well enough to
+/// replay the bodies that never read a changed struct? Structs added,
+/// removed or CHANGED (fields added, removed, renamed, reordered) are
+/// tolerated; the structs both builds hold must keep their relative order,
+/// because a field access dispatches over the structs holding the field in
+/// table order. False when a name occurs twice on either side.
+///
+/// Every struct that changed, came or went goes into `touched` for the
+/// mention check and into `layout` for the layout-read check
+/// (`lc_layout_refuse`), each with its fields as `.field` -- old and new
+/// both. A struct's layout reaches a body that spells neither the struct
+/// nor its fields (`p.y` on an inferred value), so the mention check alone
+/// is not enough: what decides is the record of what the body's codegen read.
+export fn lc_structs_agree(old_names: Array[String], old_fields: Array[String], new_names: Array[String], new_fields: Array[String], touched: Array[String], layout: Array[String]) -> Bool {
+  let push_struct = (name: String, fields: String) -> {
+    Array::push(touched, name)
+    Array::push(layout, name)
+    for f in String::split(fields, "\n") {
+      if f != "" {
+        let key = String::concat(".", f)
+        Array::push(touched, key)
+        Array::push(layout, key)
+      } else {
+        ()
+      }
+    }
+    ()
+  }
   if Array::length(old_names) == 0 {
-    for name in new_names {
-      Array::push(touched, name)
+    let mut i = 0
+    while i < Array::length(new_names) {
+      push_struct(Array::get(new_names, i), Array::get(new_fields, i))
+      i = i + 1
     }
     Array::length(old_fields) == 0
-  } else if !e.ok || Array::length(e.removed) > 0 {
-    false
   } else {
-    let mut ok = true
-    let mut last = 0 - 1
-    let old_field_names: Array[String] = []
-    let mut o = 0
-    while ok && o < Array::length(old_names) {
-      let n = Array::get(e.o2n, o)
-      if n <= last || Array::get(old_fields, o) != Array::get(new_fields, n) {
-        ok = false
-      } else {
-        last = n
-        for f in String::split(Array::get(old_fields, o), "\n") {
-          Array::push(old_field_names, f)
-        }
-      }
-      o = o + 1
-    }
-    let known = sorted_names_of(old_field_names)
-    let mut i = 0
-    while ok && i < Array::length(new_names) {
-      if bsearch_leftmost(e.added, Array::get(new_names, i)) >= 0 {
-        for f in String::split(Array::get(new_fields, i), "\n") {
-          if f != "" && bsearch_leftmost(known, f) >= 0 {
-            ok = false
+    let e = lc_src_edit_of(old_names, new_names, Array::length(new_names))
+    if !e.ok {
+      false
+    } else {
+      let mut ok = true
+      let mut last = 0 - 1
+      let mut o = 0
+      while ok && o < Array::length(old_names) {
+        let n = Array::get(e.o2n, o)
+        if n < 0 {
+          push_struct(Array::get(old_names, o), Array::get(old_fields, o))
+        } else if n <= last {
+          ok = false
+        } else {
+          last = n
+          if Array::get(old_fields, o) != Array::get(new_fields, n) {
+            push_struct(Array::get(old_names, o), Array::get(old_fields, o))
+            push_struct(Array::get(new_names, n), Array::get(new_fields, n))
           } else {
             ()
           }
         }
-        Array::push(touched, Array::get(new_names, i))
+        o = o + 1
+      }
+      let mut i = 0
+      while ok && i < Array::length(new_names) {
+        if bsearch_leftmost(e.added, Array::get(new_names, i)) >= 0 {
+          push_struct(Array::get(new_names, i), Array::get(new_fields, i))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok
+    }
+  }
+}
+
+/// Withhold from `replayable` (indexed by this build's function index) every
+/// entry of `cache` that read a name in `layout`, or that carries no layout
+/// record at all -- a body compiled without the log (a function worker's, or
+/// one harvested before the log existed) says nothing about what it read,
+/// and "nothing" is not the same answer as "unknown". A read is matched by
+/// its hash (`layout_read_sym`), so a collision only refuses more.
+export fn lc_layout_refuse(replayable: Array[Int], cache: CodegenBodyCache, layout: Array[String]) -> Unit {
+  if Array::length(layout) == 0 {
+    ()
+  } else {
+    let syms: Array[Int] = []
+    for name in layout {
+      Array::push(syms, layout_read_sym(name))
+    }
+    let n = Array::length(replayable)
+    let recorded = lc_fresh_int_array_of_len(n, 0)
+    let hit = lc_fresh_int_array_of_len(n, 0)
+    let mut r = 0
+    while r < Array::length(cache.blind_kinds) {
+      let f = Array::get(cache.blind_fn, r)
+      if Array::get(cache.blind_kinds, r) == blind_kind_layout_read && f >= 0 && f < n {
+        let v = Array::get(cache.blind_syms, r)
+        if v == 0 {
+          Array::set(recorded, f, 1)
+        } else {
+          for x in syms {
+            if x == v {
+              Array::set(hit, f, 1)
+            } else {
+              ()
+            }
+          }
+          ()
+        }
       } else {
         ()
       }
-      i = i + 1
+      r = r + 1
     }
-    ok
+    for f in cache.fn_indices {
+      if f >= 0 && f < n && (Array::get(recorded, f) == 0 || Array::get(hit, f) == 1) {
+        Array::set(replayable, f, 0)
+      } else {
+        ()
+      }
+    }
+    ()
   }
 }
 
@@ -632,8 +710,8 @@ fn lc_pat_mentions(p: Pat, m: LcMentionSet) -> Bool {
       let mut hit = lc_mentioned(m, name)
       let mut i = 0
       while !hit && i < Array::length(fields) {
-        let (_, sub) = Array::get(fields, i)
-        hit = lc_pat_mentions(sub, m)
+        let (field, sub) = Array::get(fields, i)
+        hit = lc_mentioned(m, String::concat(".", field)) || lc_pat_mentions(sub, m)
         i = i + 1
       }
       hit
@@ -664,14 +742,25 @@ fn lc_arms_mention(arms: Array[(Pat, Expr)], m: LcMentionSet) -> Bool {
 }
 
 /// Does `e` spell a name in `m` -- as an identifier, a pattern's
-/// constructor or struct, or a record literal's struct? A pattern is where
+/// constructor or struct, a record literal's struct, or a field (`.field`:
+/// an access, a record literal's or a struct pattern's)? A pattern is where
 /// a match spells the constructors it lowers.
 fn lc_mentions_any(e: Expr, m: LcMentionSet) -> Bool {
   let here = match e {
     EIdent(n, _) => lc_mentioned(m, n),
     EMatch(_, arms) => lc_arms_mention(arms, m),
     EHandle(_, arms) => lc_arms_mention(arms, m),
-    ERecord(name, _, _) => lc_mentioned(m, name),
+    ERecord(name, fields, _) => {
+      let mut hit = lc_mentioned(m, name)
+      let mut i = 0
+      while !hit && i < Array::length(fields) {
+        let (field, _) = Array::get(fields, i)
+        hit = lc_mentioned(m, String::concat(".", field))
+        i = i + 1
+      }
+      hit
+    },
+    EDot(_, field, _, _) => lc_mentioned(m, String::concat(".", field)),
     _ => false
   }
   if here {
