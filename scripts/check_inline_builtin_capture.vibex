@@ -1,0 +1,467 @@
+// #1348: mechanical detector for the inline-builtin CAPTURE gap. #3672 ported
+// this gate from check_inline_builtin_capture.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_inline_builtin_capture.vibex -- [--root DIR]
+//
+// compile_call.vibe lowers some builtins INLINE (`!prefer_bound_call && fname
+// == "X"`) instead of routing them through the func table. Such a name has no
+// closure value, so the free-variable collector
+// (codegen/common_analysis/common_analysis.vibe) must not record it as a
+// capturable free variable -- otherwise a lambda that calls it captures a slot
+// that holds nothing and the call lowers to a `call_indirect` of a nonexistent
+// closure: an "invalid signature index" module or a "null function or function
+// signature mismatch" trap at runtime.
+//
+// That gap has been reintroduced four separate times by adding an inline
+// dispatch and forgetting the registration (#773 `not`/`add`/..., #1095
+// `assert`, #1230 `Future::pending`/`Future::resolve`, #1218
+// `Path::to_string`/`Path::is_absolute`), each found only when a user program
+// crashed. This gate enumerates the class instead:
+//
+//   inline-dispatched  AND NOT func-table-registered  AND NOT capture-registered
+//
+// Names that are legitimately outside the rule are listed, with a reason, in
+// scripts/inline_builtin_capture_allowlist.txt. A NEW name appearing here is a
+// latent closure miscompile -- add it to is_inlined_async_builtin /
+// is_inlined_scalar_builtin / is_inlined_simd_builtin, or to the allowlist with
+// a measured reason. An allowlisted name that is no longer inline-dispatched is
+// stale bookkeeping, and fails too.
+//
+// Why only the `!prefer_bound_call`-GUARDED dispatches: an UNGUARDED branch is
+// immune to this bug by construction. `prefer_bound_call` is
+// `fn_idx_in_list >= 0 || local_idx_hint >= 0` (compile_call.vibe), so a
+// wrongly-captured name sets it -- and that is precisely what makes a GUARDED
+// branch fall through to the call_indirect. An unguarded branch lowers inline
+// either way, so the bad capture cannot reach a call_indirect. Consequence:
+// adding a `!prefer_bound_call` guard to an existing branch makes that name
+// newly in-scope here, which is the case this scan exists to catch.
+//
+// That is exactly what #2285 did to `assert_true` / `assert_eq`. They were
+// unguarded, and therefore out of scope here, until a LOCAL binding of the
+// name had to be honored -- which means reading `local_idx_hint`, which means
+// the capture artifact must not exist. Both names were registered in
+// is_inlined_scalar_builtin in the same change that added their guards; had
+// only the guard landed, this scan would have failed on the next run.
+//
+// What it reads:
+//   1. compile_call's source group (scripts/source_group.vibe): every
+//      `!prefer_bound_call && fname == "X"`, and every `fname == "X"` inside a
+//      `!prefer_bound_call && (fname == "A" || ...)` up to its first `)`.
+//   2. common_analysis's source group: every `name == "X"` from a line
+//      starting `fn is_inlined_{async,scalar,simd}_builtin` (or `export fn`)
+//      through the next line starting `}`.
+//   3. core/builtin_registry.vibe: the name of every `("X", CtFn...)` row whose
+//      first of seven trailing bools (in_linear) is `true`. A func-table name
+//      is reached by the collector's own fn_names guard, so it can never be
+//      captured by mistake and needs no registration.
+//   4. the allowlist: the first word of every line that is not blank and not
+//      a `#` comment.
+// No inline dispatch, or no registered name, fails: the spelling changed and
+// the scan no longer sees its subject. --root DIR checks another tree (the
+// self-test's).
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/process {
+  exit
+}
+import @vibex/shell {
+  sort_str
+}
+import ./source_group.vibe {
+  read_source_group
+}
+
+fn option(name: String, fallback: String) -> String with Env::args_get + Env::args_len {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn under(root: String, rel: String) -> String {
+  if root == "." {
+    rel
+  } else {
+    "\{root}/\{rel}"
+  }
+}
+
+fn is_space(c: Char) -> Bool {
+  c == ' ' || c == '\t'
+}
+
+fn rest_of(s: String, at: Int) -> String {
+  String::substring(s, at, String::length(s))
+}
+
+/// Sorted, without repeats.
+fn uniq(xs: Array[String]) -> Array[String] {
+  let sorted = sort_str(xs)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(sorted) {
+    let x = Array::get(sorted, i)
+    if Array::length(out) == 0 || Array::get(out, Array::length(out) - 1) != x {
+      Array::push(out, x)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn contains(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == x {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn minus(xs: Array[String], ys: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(xs) {
+    if !contains(ys, Array::get(xs, i)) {
+      Array::push(out, Array::get(xs, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Every `<head>X"` on a line, X holding no quote: the Xs, leftmost first.
+fn quoted_after(line: String, head: String) -> Array[String] {
+  let out: Array[String] = []
+  let mut from = 0
+  let mut going = true
+  while going {
+    let at = String::index_of_from(line, head, from)
+    if at < 0 {
+      going = false
+    } else {
+      let start = at + String::length(head)
+      let close = String::index_of_from(line, "\"", start)
+      if close < 0 {
+        going = false
+      } else {
+        Array::push(out, String::substring(line, start, close))
+        from = close + 1
+      }
+    }
+  }
+  out
+}
+
+/// Step 1: the names compile_call dispatches inline behind the guard.
+fn inline_names(text: String) -> Array[String] {
+  let out: Array[String] = []
+  let lines = String::split(text, "\n")
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    let single = quoted_after(line, "!prefer_bound_call && fname == \"")
+    let mut s = 0
+    while s < Array::length(single) {
+      Array::push(out, Array::get(single, s))
+      s = s + 1
+    }
+    let head = "!prefer_bound_call && (fname == \""
+    let mut from = 0
+    let mut going = true
+    while going {
+      let at = String::index_of_from(line, head, from)
+      if at < 0 {
+        going = false
+      } else {
+        let close = String::index_of_from(line, ")", at + String::length(head))
+        if close < 0 {
+          going = false
+        } else {
+          let names = quoted_after(String::substring(line, at, close + 1), "fname == \"")
+          let mut n = 0
+          while n < Array::length(names) {
+            Array::push(out, Array::get(names, n))
+            n = n + 1
+          }
+          from = close + 1
+        }
+      }
+    }
+    i = i + 1
+  }
+  uniq(out)
+}
+
+fn starts_registration(line: String) -> Bool {
+  let body = if String::starts_with(line, "export ") {
+    rest_of(line, 7)
+  } else {
+    line
+  }
+  String::starts_with(body, "fn is_inlined_async_builtin") || String::starts_with(body, "fn is_inlined_scalar_builtin") || String::starts_with(body, "fn is_inlined_simd_builtin")
+}
+
+/// Step 2: the names the capture analysis already knows to skip.
+fn registered_names(text: String) -> Array[String] {
+  let out: Array[String] = []
+  let lines = String::split(text, "\n")
+  let mut in_range = false
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    let take = if in_range {
+      if String::starts_with(line, "}") {
+        in_range = false
+      } else {
+        ()
+      }
+      true
+    } else if starts_registration(line) {
+      in_range = true
+      true
+    } else {
+      false
+    }
+    if take {
+      let names = quoted_after(line, "name == \"")
+      let mut n = 0
+      while n < Array::length(names) {
+        Array::push(out, Array::get(names, n))
+        n = n + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  uniq(out)
+}
+
+/// `, *WORD` at `at`: the end, or -1.
+fn comma_word(s: String, at: Int, word: String) -> Int {
+  if at >= String::length(s) || String::byte_at(s, at) != ',' {
+    -1
+  } else {
+    let mut k = at + 1
+    while k < String::length(s) && String::byte_at(s, k) == ' ' {
+      k = k + 1
+    }
+    if String::starts_with(rest_of(s, k), word) {
+      k + String::length(word)
+    } else {
+      -1
+    }
+  }
+}
+
+fn comma_bool(s: String, at: Int) -> Int {
+  let t = comma_word(s, at, "true")
+  if t >= 0 {
+    t
+  } else {
+    comma_word(s, at, "false")
+  }
+}
+
+/// `, *true` then six `, *(true|false)` then `)` at `at`: the end, or -1.
+fn linear_tail(s: String, at: Int) -> Int {
+  let mut k = comma_word(s, at, "true")
+  let mut n = 0
+  while k >= 0 && n < 6 {
+    k = comma_bool(s, k)
+    n = n + 1
+  }
+  if k >= 0 && k < String::length(s) && String::byte_at(s, k) == ')' {
+    k + 1
+  } else {
+    -1
+  }
+}
+
+/// Step 3: the names of the LINEAR func-table rows: `("X", *CtFn`, anything,
+/// then the seven trailing bools with in_linear `true` (the longest such match,
+/// as `grep -oE` takes it).
+fn functable_names(text: String) -> Array[String] {
+  let out: Array[String] = []
+  let lines = String::split(text, "\n")
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    let n = String::length(line)
+    let mut from = 0
+    let mut going = true
+    while going {
+      let at = String::index_of_from(line, "(\"", from)
+      if at < 0 {
+        going = false
+      } else {
+        let close = String::index_of_from(line, "\"", at + 2)
+        let mut k = close + 1
+        if close > at + 2 && k < n && String::byte_at(line, k) == ',' {
+          k = k + 1
+          while k < n && String::byte_at(line, k) == ' ' {
+            k = k + 1
+          }
+        } else {
+          k = -1
+        }
+        if k >= 0 && String::starts_with(rest_of(line, k), "CtFn") {
+          let mut end = -1
+          let mut p = k + 4
+          while p < n {
+            let e = linear_tail(line, p)
+            if e > end {
+              end = e
+            } else {
+              ()
+            }
+            p = p + 1
+          }
+          if end > 0 {
+            Array::push(out, String::substring(line, at + 2, close))
+            from = end
+          } else {
+            from = at + 1
+          }
+        } else {
+          from = at + 1
+        }
+      }
+    }
+    i = i + 1
+  }
+  uniq(out)
+}
+
+/// Step 4: the first word of each allowlist line that is not blank or `#`.
+fn allowlisted(text: String) -> Array[String] {
+  let out: Array[String] = []
+  let lines = String::split(text, "\n")
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    let mut k = 0
+    while k < String::length(line) && is_space(String::byte_at(line, k)) {
+      k = k + 1
+    }
+    if k < String::length(line) && String::byte_at(line, k) != '#' {
+      let mut e = k
+      while e < String::length(line) && !is_space(String::byte_at(line, e)) {
+        e = e + 1
+      }
+      Array::push(out, String::substring(line, k, e))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  uniq(out)
+}
+
+fn group_or_exit(root: String, rel: String) -> String with Fs::is_file + Fs::read_file + Stderr::write_stream + Process {
+  let (text, missing) = read_source_group(under(root, rel))
+  if missing != "" {
+    Stderr::write_stream("check-inline-builtin-capture: missing \{missing} (part of the source group of \{rel})\n")
+    exit(1)
+  } else {
+    ()
+  }
+  text
+}
+
+fn list(xs: Array[String]) -> Unit with Stderr::write_stream {
+  let mut i = 0
+  while i < Array::length(xs) {
+    Stderr::write_stream("  - \{Array::get(xs, i)}\n")
+    i = i + 1
+  }
+}
+
+fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Console::write_stream + Stderr::write_stream + Process {
+  let root = option("--root", ".")
+  let call_src = "lib/@vibe/compiler/codegen/expr/compile_call.vibe"
+  let analysis_src = "lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe"
+  let registry_src = "lib/@vibe/compiler/core/builtin_registry.vibe"
+  let allow_src = "scripts/inline_builtin_capture_allowlist.txt"
+  let required = [call_src, analysis_src, registry_src]
+  let mut r = 0
+  while r < Array::length(required) {
+    if !Fs::is_file(under(root, Array::get(required, r))) {
+      Stderr::write_stream("check-inline-builtin-capture: missing \{Array::get(required, r)}\n")
+      exit(1)
+    } else {
+      ()
+    }
+    r = r + 1
+  }
+  let inline = inline_names(group_or_exit(root, call_src))
+  if Array::length(inline) == 0 {
+    Stderr::write_stream("check-inline-builtin-capture: FAIL: found no inline dispatches in \{call_src}\n")
+    Stderr::write_stream("  (the '!prefer_bound_call && fname ==' spelling changed -- update this gate)\n")
+    exit(1)
+  } else {
+    ()
+  }
+  let registered = registered_names(group_or_exit(root, analysis_src))
+  if Array::length(registered) == 0 {
+    Stderr::write_stream("check-inline-builtin-capture: FAIL: found no registered names in \{analysis_src}\n")
+    exit(1)
+  } else {
+    ()
+  }
+  let functable = functable_names(Fs::read_file(under(root, registry_src)))
+  let allow = if Fs::is_file(under(root, allow_src)) {
+    allowlisted(Fs::read_file(under(root, allow_src)))
+  } else {
+    []
+  }
+  let gaps = minus(minus(minus(inline, registered), functable), allow)
+  // A name that left the inline dispatch but is still allowlisted is stale
+  // bookkeeping -- report it so the allowlist cannot rot into a list of names
+  // nobody can explain.
+  let stale = minus(allow, inline)
+  let mut status = 0
+  if Array::length(gaps) > 0 {
+    Stderr::write_stream("check-inline-builtin-capture: FAIL: inline-dispatched builtins that a closure would capture:\n")
+    list(gaps)
+    Stderr::write_stream("\n")
+    Stderr::write_stream("  Each is a latent closure miscompile (invalid signature index / null function).\n")
+    Stderr::write_stream("  Fix: add it to is_inlined_async_builtin or is_inlined_scalar_builtin in\n")
+    Stderr::write_stream("  \{analysis_src}, or record a measured reason in \{allow_src}.\n")
+    status = 1
+  } else {
+    ()
+  }
+  if Array::length(stale) > 0 {
+    Stderr::write_stream("check-inline-builtin-capture: FAIL: allowlisted names that are no longer inline-dispatched:\n")
+    list(stale)
+    Stderr::write_stream("  Remove them from \{allow_src}.\n")
+    status = 1
+  } else {
+    ()
+  }
+  if status != 0 {
+    exit(status)
+  } else {
+    Console::write_stream("check-inline-builtin-capture: ok (\{Array::length(inline)} inline dispatches, \{Array::length(allow)} allowlisted)\n")
+  }
+}
