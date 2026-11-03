@@ -241,14 +241,17 @@ if ! grep -qE 'Annotate the binding|declared return type' "$amr_wasm.diag" 2>/de
   echo "[compiler-gate] FAIL: $amr_src refusal does not name an edit" >&2
   cat "$amr_wasm.diag" >&2 2>/dev/null; exit 1
 fi
-# The three spellings that resolve must still COMPILE and still RENDER. A
+# The spellings that resolve must still COMPILE and still RENDER. The fourth
+# is the program the refusal was written for: since #3032 the checker's render
+# row gives its element type, so it renders instead of being refused. A
 # predicate that refused these would pass the rows above while breaking every
 # correct program, which is the failure a refusal-only assertion cannot see.
 amr_i=0
 for amr_ok in \
   'let xs = [1, 2, 3]; __to_string(Array::map(xs, (v: Int) -> Int { v * 2 }))' \
   'let xs = [1, 2, 3]; __to_string(Array::filter(xs, (v) -> v > 1))' \
-  'let xs: Array[Int] = [1, 2, 3]; let ys: Array[Int] = Array::map(xs, (v) -> v * 2); __to_string(ys)'; do
+  'let xs: Array[Int] = [1, 2, 3]; let ys: Array[Int] = Array::map(xs, (v) -> v * 2); __to_string(ys)' \
+  'let xs = [1, 2, 3]; __to_string(Array::map(xs, (v) -> v * 2))'; do
   amr_i=$((amr_i + 1))
   printf 'export let _start: () -> Int = () -> {\n  %s\n  0\n}\n' "$amr_ok" > "$amrdir/ok$amr_i.vibe"
   rm -f "$amrdir/ok$amr_i.wasm"
@@ -261,7 +264,7 @@ for amr_ok in \
   fi
 done
 rm -rf "$amrdir"
-echo "[compiler-gate] unrenderable array refusal ok (message names the edit; 3 resolvable spellings still compile)"
+echo "[compiler-gate] unrenderable array refusal ok (message names the edit; 4 resolvable spellings still compile)"
 
 # #2987 (and #2986, #2970, #2998): a render argument the CHECKER typed as an
 # Option / Array / tuple / Bytes / record, but whose shape normalize could not
