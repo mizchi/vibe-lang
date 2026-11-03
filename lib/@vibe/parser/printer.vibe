@@ -49,7 +49,10 @@ fn print_import_item(_ item: ImportItem) -> String {
     Some(ImportTrait) => "trait ",
     None => ""
   }
-  let name = String::concat(kind, item.name)
+  // A bare item is printed as written: the parser keeps it, and it may be a
+  // constructor named `Float64` (#3749 review). Only a qualified item was
+  // canonicalized (`Float32::abs`), so only that one gets the seed's spelling.
+  let name = String::concat(kind, legacy_float_qualified(item.name))
   match item.alias {
     Some(alias) => String::concat(name, String::concat(" as ", alias)),
     None => name
@@ -87,10 +90,11 @@ fn print_entry_row(_ e: String) -> String {
 }
 
 fn print_row_with_keyword(e: String, keyword: String) -> String {
-  if String::length(e) == 0 {
+  let row = legacy_float_row(e)
+  if String::length(row) == 0 {
     String::concat(" ", String::concat(keyword, " ()"))
   } else {
-    String::concat(" ", String::concat(keyword, String::concat(" ", join(arr = String::split(e, sep = ", "), sep = " + "))))
+    String::concat(" ", String::concat(keyword, String::concat(" ", join(arr = String::split(row, sep = ", "), sep = " + "))))
   }
 }
 
@@ -263,12 +267,86 @@ fn is_keyword_name(_ name: String) -> Bool {
   name == "declare" || name == "continue" || name == "suberror" || name == "example"
 }
 
+/// ADR-0122 (#3728): the parser reads every float spelling as the canonical
+/// `Float64` / `Float32`, but printed source is compiled again, and the
+/// committed seed predates those names (the flat selfhost bundle is printed by
+/// new code and compiled by the seed). Until a seed that reads them is bumped
+/// in, the printer writes the legacy spelling, which the current parser reads
+/// back as the same canonical name. A type name, or the namespace and the
+/// conversion member of a qualified name.
+fn legacy_float_type(_ name: String) -> String {
+  if name == "Float64" {
+    "Double"
+  } else if name == "Float32" {
+    "Float"
+  } else {
+    name
+  }
+}
+
+/// The legacy spellings of exported names, for the seed that reads printed
+/// source. Only a qualified name was canonicalized (`legacy_float_qualified`);
+/// a bare one is kept as written, like an import item.
+fn legacy_float_names(_ names: Array[String]) -> Array[String] {
+  let out = ArrayBuilder::new()
+  for n in names {
+    ArrayBuilder::push(out, value = legacy_float_qualified(n))
+  }
+  ArrayBuilder::freeze(out)
+}
+
+fn legacy_float_qualified(_ name: String) -> String {
+  if name == "Int::to_float64" {
+    "Int::to_double"
+  } else if name == "Int::to_float32" {
+    "Int::to_float"
+  } else if name == "Float64::to_float32" {
+    "Double::to_float"
+  } else if name == "Float32::to_float64" {
+    "Float::to_double"
+  } else if String::starts_with(name, prefix = "Float64::") {
+    String::concat("Double::", String::substring(name, start = 9, end = String::length(name)))
+  } else if String::starts_with(name, prefix = "Float32::") {
+    String::concat("Float::", String::substring(name, start = 9, end = String::length(name)))
+  } else {
+    name
+  }
+}
+
+/// The legacy spelling of each `Float64` / `Float32` word in a row's text
+/// (`Box[Float64]`), which is kept as text rather than as types.
+fn legacy_float_row(_ row: String) -> String {
+  if !String::contains(row, needle = "Float") {
+    row
+  } else {
+    let out = StringBuilder::new()
+    let n = String::length(row)
+    let mut i = 0
+    while i < n {
+      let at_word = i == 0 || !is_row_ident_byte(String::byte_at(row, i - 1))
+      let rest = n - i
+      if at_word && rest >= 7 && (String::substring(row, start = i, end = i + 7) == "Float64" || String::substring(row, start = i, end = i + 7) == "Float32") && (rest == 7 || !is_row_ident_byte(String::byte_at(row, i + 7))) {
+        StringBuilder::push(out, value = legacy_float_type(String::substring(row, start = i, end = i + 7)))
+        i = i + 7
+      } else {
+        StringBuilder::push(out, value = String::substring(row, start = i, end = i + 1))
+        i = i + 1
+      }
+    }
+    StringBuilder::freeze(out)
+  }
+}
+
+fn is_row_ident_byte(_ c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
 fn print_name(_ name: String) -> String {
   if name == match_scrutinee_temp() && Array::length(printer_match_temp_spelling) > 0 {
     Array::get(printer_match_temp_spelling, at = 0)
   } else if is_keyword_name(name) {
     String::concat("r#", name)
-  } else name
+  } else legacy_float_qualified(name)
 }
 
 /// The spelling the printer writes for the parser's match temporary
@@ -478,13 +556,13 @@ fn map_to_strings(exprs: Array[Expr], f: (Expr) -> String) -> Array[String] {
 
 export fn print_type_expr(_ ty: TypeExpr) -> String {
   match source_type(ty) {
-    TyName(name) => name,
+    TyName(name) => legacy_float_type(name),
     TyUnit => "()",
     TyApp(name, args) => {
       let parts = for arg in args {
         print_type_expr(arg)
       }
-      String::concat(name, String::concat("[", String::concat(join(arr = parts, sep = ", "), "]")))
+      String::concat(legacy_float_type(name), String::concat("[", String::concat(join(arr = parts, sep = ", "), "]")))
     },
     TyFn(params, ret, effect_name) => {
       let parts = for param in params {
@@ -1098,7 +1176,7 @@ fn print_stmt_tree(_ s: Stmt) -> String {
     SExample(name, body) => String::concat("example \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr_tree(body), " }")))))),
     SBench(name, body) => String::concat("bench \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr_tree(body), " }")))))),
     SExpr(e) => print_expr_tree(e),
-    SExport(names) => String::concat("export { ", String::concat(join(arr = names, sep = ", "), " }")),
+    SExport(names) => String::concat("export { ", String::concat(join(arr = legacy_float_names(names), sep = ", "), " }")),
     SReExport(path, items) => {
       let parts = for item in items {
         print_import_item(item)

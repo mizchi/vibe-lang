@@ -427,19 +427,20 @@ if (incr && Array.isArray(incr.corpora) && incr.corpora.length) {
   const baseRow = name => (base?.incremental?.corpora || []).find(r => r.name === name);
   lines.push("#### incremental build (unchanged rebuild vs cold)");
   lines.push("");
-  lines.push("| corpus | modules | modules skipped | heap | wall |");
-  lines.push("|---|---:|---:|---:|---:|");
+  lines.push("| corpus | modules | modules skipped | heap | wall | no-op heap | no-op wall |");
+  lines.push("|---|---:|---:|---:|---:|---:|---:|");
   for (const row of incr.corpora) {
     const was = baseRow(row.name);
     const delta = was && was.modules_skipped_ratio != null && row.modules_skipped_ratio != null
       && Math.abs(was.modules_skipped_ratio - row.modules_skipped_ratio) > 0.005
       ? ` (was ${pct(was.modules_skipped_ratio)})` : "";
     lines.push(`| ${row.name} | ${row.modules} | ${pct(row.modules_skipped_ratio)}${delta} `
-      + `| ${pct(row.heap_ratio)} | ${pct(row.wall_ratio)} |`);
+      + `| ${pct(row.heap_ratio)} | ${pct(row.wall_ratio)} | ${pct(row.noop_heap_ratio)} | ${pct(row.noop_wall_ratio)} |`);
   }
   lines.push("");
   lines.push("<sub>skipped = share of the module walk an unchanged rebuild did not recheck (1 − rechecked/planned); "
-    + "heap and wall are warm ÷ cold. Counters and heap are deterministic; **wall is advisory** on a shared runner. "
+    + "heap and wall are warm ÷ cold with the linked-output memo off (what the back end reuses); the no-op columns are the same "
+    + "rebuild with the memo on, which replays the stored module. Counters and heap are deterministic; **wall is advisory** on a shared runner. "
     + "A warm rebuild that changed the output fails the KPI rather than being reported.</sub>");
   lines.push("");
 } else {

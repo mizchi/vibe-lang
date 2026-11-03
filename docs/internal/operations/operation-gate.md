@@ -67,7 +67,7 @@ That task checks the following together:
   the non-bootstrap sign-off lanes, using the stage produced by
   `generation-gate`. The enumeration must name every lane in `GATE_LANES`
   except `bootstrap`, which `generation-gate` already ran;
-  `scripts/check_gate_lane_coverage.sh` enforces that, after `selftests` was
+  `scripts/check_gate_lane_coverage.vibex` enforces that, after `selftests` was
   added to CI and to `GATE_LANES` but not here, which silently dropped the
   gate self-test ratchet from this path alone (#2650)
 

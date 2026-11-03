@@ -1,0 +1,698 @@
+//# The builtin map's call arms (#2334).
+//
+// `Map[K, V]` takes a `String`, `Int`, `Char` or `Bool` key. Every arm here
+// checks a key against the RECEIVER's key slot, so a map literal, `Map::new()`
+// and an annotation all decide the key type the same way, and a receiver whose
+// type is not known yet keeps the historical `String` expectation.
+//
+// A scalar key (`Int` / `Char` / `Bool`) needs the scalar operations: an
+// exact i64 comparison, never the `String` hash. The checker cannot rewrite
+// the call, so each keyed arm records its call offset and key type here, and
+// `map_scalar_key_rows` files a typed-`==` channel row for every call whose key
+// resolves to a scalar. The desugar rewrites exactly those calls.
+
+import @vibe/compiler/core {
+  Expr,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_lookup,
+  fresh_var,
+  subst_apply,
+  type_to_string,
+  typed_map_key_row_head,
+  typed_map_scalar_key_verdict
+}
+
+import @vibe/ast {
+  impl_target_key
+}
+
+import @vibe/core {
+  struct MutMap
+}
+
+import ./checker_infer_binop_type.vibe {
+  TypedOccurrenceRoleLaneCapture
+}
+
+import ./checker_lambda_expr.vibe {
+  tab_call_ty
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  callee_inst_types_cell, check_assignable, map_key_site_offsets, map_key_site_types, scheme_var_types_from, value_inst_types_cell
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker, off_marker_len
+}
+
+// The (call offset, key type) records live beside the generic-call records
+// (`checker_eq_unbounded_formal_msg.vibe`), so a retention checkpoint rolls
+// both back together. Reset at the start of every program check.
+
+/// Forget the previous program check's map key sites.
+export fn map_key_sites_reset() -> Unit {
+  Array::truncate(map_key_site_offsets, 0)
+  Array::truncate(map_key_site_types, 0)
+}
+
+/// Record one keyed map site: the call (or index bracket) offset and its key type.
+export fn map_key_site_record(call_off: Int, key: Type) -> Unit {
+  if call_off >= 0 {
+    Array::push(map_key_site_offsets, call_off)
+    Array::push(map_key_site_types, key)
+  } else {
+    ()
+  }
+}
+
+fn map_key_resolves_scalar(s: Subst, key: Type) -> Int {
+  match subst_apply(s, key) {
+    CtInt => 1,
+    CtChar => 1,
+    CtBool => 1,
+    _ => 0
+  }
+}
+
+/// #2334: the typed-`==` channel rows for the keyed map calls whose key the
+/// final substitution resolves to `Int`, `Char` or `Bool`, as parallel
+/// (offset, key) arrays. An offset recorded twice with different answers --
+/// one shared body checked under two instantiations -- files no row; the
+/// codegen backstop then traps rather than guess.
+export fn map_scalar_key_rows(s: Subst) -> (Array[Int], Array[String]) {
+  let offs: Array[Int] = []
+  let keys: Array[String] = []
+  let n = Array::length(map_key_site_offsets)
+  if n == 0 {
+    (offs, keys)
+  } else {
+    // 1 = every record of the offset is scalar, 0 = at least one is not.
+    let verdicts: MutMap[Int, Int] = MutMap::new_int()
+    let order: Array[Int] = []
+    let mut i = 0
+    while i < n {
+      let off = Array::get(map_key_site_offsets, i)
+      let scalar = map_key_resolves_scalar(s, Array::get(map_key_site_types, i))
+      match MutMap::get(verdicts, off) {
+        Some(prev) => if prev != scalar {
+          MutMap::set(verdicts, off, 0)
+        } else {
+          ()
+        },
+        None => {
+          MutMap::set(verdicts, off, scalar)
+          Array::push(order, off)
+        }
+      }
+      i = i + 1
+    }
+    let key = impl_target_key(TyApp(typed_map_key_row_head(), [
+      TyName(typed_map_scalar_key_verdict())
+    ]))
+    for off in order {
+      match MutMap::get(verdicts, off) {
+        Some(1) => {
+          Array::push(offs, off)
+          Array::push(keys, key)
+        },
+        _ => ()
+      }
+    }
+    (offs, keys)
+  }
+}
+
+/// The key type a keyed call on `m_ty` must supply: the receiver's key slot,
+/// or `String` while the receiver's type is not known yet. A receiver of some
+/// other concrete type constrains nothing: these arms never checked the
+/// receiver itself, and its key slot is not this arm's question.
+export fn map_receiver_key(s: Subst, m_ty: Type, head: String) -> Type {
+  match subst_apply(s, m_ty) {
+    CtNamed(mn, margs) => if mn == head && Array::length(margs) == 2 {
+      subst_apply(s, Array::get(margs, 0))
+    } else {
+      CtUnknown
+    },
+    CtVar(_) => CtString,
+    CtUnknown => CtString,
+    _ => CtUnknown
+  }
+}
+
+/// Whether `arm` is one of the map arms `checker_map_call_arm` answers.
+export fn checker_map_call_arm_handles(arm: String) -> Bool {
+  arm == "Map::set" || arm == "Map::get" || arm == "Map::has_key" || arm == "Map::has" || arm == "map_has" || arm == "Map::delete" || arm == "Map::keys" || arm == "Map::values" || arm == "MapBuilder::new" || arm == "MapBuilder::get" || arm == "MapBuilder::freeze"
+}
+
+/// The map call arms, selected by `arm` (#3179). `call_off` is the call's own
+/// offset, the key of every row this records.
+export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Type, Subst, Int) {
+  if arm == "Map::set" {
+    // #983: every Map API's VALUE position was `CtUnknown` (the static
+    // builtin table cannot mint per-call vars), so
+    // `Map::set(m, "b", "str")` into a `Map[String, Int]` compiled clean
+    // and trapped at the consumer. Map literals now carry a real value
+    // slot, and set checks the written value against it, ground-gated via
+    // `check_assignable` (same tolerate discipline as Array::push --
+    // untyped/var receivers stay tolerant). #2334: the key is checked
+    // against the receiver's key slot the same way.
+    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (k_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let (v_ty, s3, c3) = check_child(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
+    let s4 = check_assignable(map_receiver_key(s3, m_ty, "Map"), subst_apply(s3, k_ty), s3, errors, "argument type mismatch for Map::set", call_off)
+    map_key_site_record(call_off, k_ty)
+    let s5 = match subst_apply(s4, m_ty) {
+      CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+        check_assignable(subst_apply(s4, Array::get(margs, 1)), subst_apply(s4, v_ty), s4, errors, "Map::set value type mismatch", call_off)
+      } else {
+        s4
+      },
+      _ => s4
+    }
+    let mret = match subst_apply(s5, m_ty) {
+      CtNamed(mn2, margs2) => if mn2 == "Map" && Array::length(margs2) == 2 {
+        subst_apply(s5, m_ty)
+      } else {
+        CtNamed("Map", [CtString, CtUnknown])
+      },
+      _ => CtNamed("Map", [CtString, CtUnknown])
+    }
+    (tab_call_ty(tytab, call_off, mret, capture, lane), s5, c3)
+  } else if arm == "Map::get" {
+    // #983: refine the result from bare CtUnknown to the receiver's value
+    // slot, so a wrongly-typed consume of the looked-up value is caught by
+    // the ordinary unify. NOTE: `Map::get` returns the RAW stored value and
+    // TRAPS on a miss (#2990) -- `declare Map::get(Map[T, U], T) -> U` in
+    // builtins/declarations.vibe and both codegen lanes agree -- NOT an
+    // Option. Untyped receivers keep the conservative CtUnknown.
+    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (k_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let s3 = check_assignable(map_receiver_key(s2, m_ty, "Map"), subst_apply(s2, k_ty), s2, errors, "argument type mismatch for Map::get", call_off)
+    map_key_site_record(call_off, k_ty)
+    let result = match subst_apply(s3, m_ty) {
+      CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+        subst_apply(s3, Array::get(margs, 1))
+      } else {
+        CtUnknown
+      },
+      _ => CtUnknown
+    }
+    (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
+  } else if arm == "Map::has_key" || arm == "Map::has" || arm == "map_has" {
+    // #2334: the membership test checks its key against the receiver's key
+    // slot. The static table typed the key `String` for every receiver.
+    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (k_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let s3 = check_assignable(map_receiver_key(s2, m_ty, "Map"), subst_apply(s2, k_ty), s2, errors, String::concat("argument type mismatch for ", arm), call_off)
+    map_key_site_record(call_off, k_ty)
+    (tab_call_ty(tytab, call_off, CtBool, capture, lane), s3, c2)
+  } else if arm == "Map::delete" {
+    // #983: delete preserves the receiver's map type (value slot included)
+    // instead of collapsing it to `Map[String, CtUnknown]`.
+    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (k_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let s3 = check_assignable(map_receiver_key(s2, m_ty, "Map"), subst_apply(s2, k_ty), s2, errors, "argument type mismatch for Map::delete", call_off)
+    map_key_site_record(call_off, k_ty)
+    let mret = match subst_apply(s3, m_ty) {
+      CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+        subst_apply(s3, m_ty)
+      } else {
+        CtNamed("Map", [CtString, CtUnknown])
+      },
+      _ => CtNamed("Map", [CtString, CtUnknown])
+    }
+    (tab_call_ty(tytab, call_off, mret, capture, lane), s3, c2)
+  } else if arm == "Map::keys" {
+    // #2263: keys() of a key-slotted map is `Array[k]`. The shape table
+    // answers `Array[String]` for every receiver, so a `Map[Int, V]`
+    // annotation handed its keys to `String::length` and compiled clean.
+    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+    let result = match subst_apply(s1, m_ty) {
+      CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+        CtArray(subst_apply(s1, Array::get(margs, 0)))
+      } else {
+        CtArray(CtString)
+      },
+      _ => CtArray(CtString)
+    }
+    (tab_call_ty(tytab, call_off, result, capture, lane), s1, c1)
+  } else if arm == "Map::values" {
+    // #983: values() of a value-slotted map is `Array[v]`, not
+    // `Array[CtUnknown]`.
+    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+    let result = match subst_apply(s1, m_ty) {
+      CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+        CtArray(subst_apply(s1, Array::get(margs, 1)))
+      } else {
+        CtArray(CtUnknown)
+      },
+      _ => CtArray(CtUnknown)
+    }
+    (tab_call_ty(tytab, call_off, result, capture, lane), s1, c1)
+  } else if arm == "MapBuilder::new" {
+    // As `StringBuilder::new`. The value slot stays open (`CtUnknown`), as
+    // `MapBuilder::set`'s row leaves it. A builder is still String-keyed:
+    // its `set` row takes a `String` key.
+    (tab_call_ty(tytab, call_off, CtNamed("MapBuilder", [CtString, CtUnknown]), capture, lane), s, c)
+  } else if arm == "MapBuilder::get" {
+    // #1310: mirror Map::get's #983 refinement -- an annotated/parameter
+    // receiver `MapBuilder[K, V]` refines the direct-call fast path's bare
+    // `Option[CtUnknown]` to `Option[V]`. Untyped receivers keep the
+    // conservative Option[CtUnknown].
+    let (mb_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (mbk_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let s3 = check_assignable(CtString, subst_apply(s2, mbk_ty), s2, errors, "argument type mismatch for MapBuilder::get", call_off)
+    let mbresult = match subst_apply(s3, mb_ty) {
+      CtNamed(mn, margs) => if mn == "MapBuilder" && Array::length(margs) == 2 {
+        CtOption(subst_apply(s3, Array::get(margs, 1)))
+      } else {
+        CtOption(CtUnknown)
+      },
+      _ => CtOption(CtUnknown)
+    }
+    (tab_call_ty(tytab, call_off, mbresult, capture, lane), s3, c2)
+  } else {
+    // MapBuilder::freeze: the frozen map carries the builder's value slot,
+    // in the shape a map literal has (`Map[String, V]`); an untyped builder
+    // gives an open slot.
+    let (fb_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+    let frozen = match subst_apply(s1, fb_ty) {
+      CtNamed(fbn, fbargs) => if fbn == "MapBuilder" && Array::length(fbargs) == 2 {
+        CtNamed("Map", [CtString, subst_apply(s1, Array::get(fbargs, 1))])
+      } else {
+        CtNamed("Map", [CtString, CtUnknown])
+      },
+      _ => CtNamed("Map", [CtString, CtUnknown])
+    }
+    (tab_call_ty(tytab, call_off, frozen, capture, lane), s1, c1)
+  }
+}
+
+/// #2334: the type of an empty map literal (`Map::new()`): both slots open,
+/// so the first keyed call decides the key type the way it decides the value.
+export fn map_empty_literal_type(c: Int) -> (Type, Int) {
+  let (k, c1) = fresh_var(c)
+  let (v, c2) = fresh_var(c1)
+  (CtNamed("Map", [k, v]), c2)
+}
+
+/// The refusal for a call of `name` at a `scalar` key: the edit first.
+fn map_formal_key_refusal(name: String, scalar: String, off: Int) -> String {
+  let parts = [
+    "`",
+    name,
+    "` uses a type parameter as a `Map` key, and a generic body compares that key as a `String`, so it cannot be called with `",
+    scalar,
+    "` keys -- write a version of `",
+    name,
+    "` that takes a `Map[",
+    scalar,
+    ", V]`, or key the map by `String` (#2334)",
+    off_marker_len(off, String::length(name))
+  ]
+  String::join(parts, "")
+}
+
+/// The refusal for a call of `name` at a key the builtin map has no
+/// implementation for at all (`Float64`, a struct, ...): the edit first.
+fn map_formal_key_unsupported_refusal(name: String, key: String, off: Int) -> String {
+  let parts = [
+    "`",
+    name,
+    "` uses a type parameter as a `Map` key, so it cannot be called with `",
+    key,
+    "` keys: the builtin map takes `String`, `Int`, `Char` or `Bool` keys -- use `MutMap[K, V]` from `@vibe/core` for other keys (#2334)",
+    off_marker_len(off, String::length(name))
+  ]
+  String::join(parts, "")
+}
+
+/// The refusal an instantiation of a map-key parameter at `ty` earns, or ""
+/// when `ty` is `String` (the body's own key operations) or still unknown.
+fn map_formal_key_instance_refusal(s: Subst, ty: Type, name: String, off: Int) -> String {
+  match subst_apply(s, ty) {
+    CtInt => map_formal_key_refusal(name, "Int", off),
+    CtChar => map_formal_key_refusal(name, "Char", off),
+    CtBool => map_formal_key_refusal(name, "Bool", off),
+    CtString => "",
+    CtVar(_) => "",
+    CtUnknown => "",
+    other => map_formal_key_unsupported_refusal(name, type_to_string(other), off)
+  }
+}
+
+/// (scheme variable, instance type) for every variable of `st`, read against
+/// the instantiated `it`. Like `scheme_var_types_from`, but it also descends
+/// record fields and applied heads, so a helper carried in a record keeps its
+/// restriction.
+fn map_scheme_pairs(st: Type, it: Type, out: Array[(Int, Type)]) -> Unit {
+  match (st, it) {
+    (CtVar(id), _) => Array::push(out, (id, it)),
+    (CtApplied(CtVar(_), _), _) => scheme_var_types_from(st, it, out),
+    (CtArray(e), CtArray(ie)) => map_scheme_pairs(e, ie, out),
+    (CtOption(e), CtOption(ie)) => map_scheme_pairs(e, ie, out),
+    (CtTuple(xs), CtTuple(ys)) => map_scheme_pair_lists(xs, ys, out),
+    (CtNamed(_, xs), CtNamed(_, ys)) => map_scheme_pair_lists(xs, ys, out),
+    (CtApplied(_, xs), CtApplied(_, ys)) => map_scheme_pair_lists(xs, ys, out),
+    (CtFn(xs, r, _), CtFn(ys, ir, _)) => {
+      map_scheme_pair_lists(xs, ys, out)
+      map_scheme_pairs(r, ir, out)
+    },
+    (CtRecord(fs), CtRecord(gs)) => for f in fs {
+      let (fname, fty) = f
+      for g in gs {
+        let (gname, gty) = g
+        if fname == gname {
+          map_scheme_pairs(fty, gty, out)
+        } else {
+          ()
+        }
+      }
+    },
+    _ => ()
+  }
+  ()
+}
+
+fn map_scheme_pair_lists(xs: Array[Type], ys: Array[Type], out: Array[(Int, Type)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) && i < Array::length(ys) {
+    map_scheme_pairs(Array::get(xs, i), Array::get(ys, i), out)
+    i = i + 1
+  }
+}
+
+/// Whether two schemes are the same up to a renaming of their variables.
+fn map_scheme_same_shape(a: Type, b: Type) -> Bool {
+  match (a, b) {
+    (CtForAll(av, _, ab), CtForAll(bv, _, bb)) => if Array::length(av) == Array::length(bv) {
+      let ren: MutMap[Int, Int] = MutMap::new_int()
+      map_types_same_shape(ab, bb, ren)
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+fn map_types_same_shape(a: Type, b: Type, ren: MutMap[Int, Int]) -> Bool {
+  match (a, b) {
+    (CtVar(x), CtVar(y)) => match MutMap::get(ren, x) {
+      Some(z) => z == y,
+      None => {
+        MutMap::set(ren, x, y)
+        true
+      }
+    },
+    (CtFn(ap, ar, _), CtFn(bp, br, _)) => map_type_lists_same_shape(ap, bp, ren) && map_types_same_shape(ar, br, ren),
+    (CtArray(x), CtArray(y)) => map_types_same_shape(x, y, ren),
+    (CtOption(x), CtOption(y)) => map_types_same_shape(x, y, ren),
+    (CtTuple(xs), CtTuple(ys)) => map_type_lists_same_shape(xs, ys, ren),
+    (CtNamed(xn, xs), CtNamed(yn, ys)) => xn == yn && map_type_lists_same_shape(xs, ys, ren),
+    (CtApplied(xh, xs), CtApplied(yh, ys)) => map_types_same_shape(xh, yh, ren) && map_type_lists_same_shape(xs, ys, ren),
+    (CtVar(_), _) => false,
+    (_, CtVar(_)) => false,
+    _ => type_to_string(a) == type_to_string(b)
+  }
+}
+
+fn map_type_lists_same_shape(xs: Array[Type], ys: Array[Type], ren: MutMap[Int, Int]) -> Bool {
+  if Array::length(xs) != Array::length(ys) {
+    false
+  } else {
+    let mut ok = true
+    let mut i = 0
+    while ok && i < Array::length(xs) {
+      ok = map_types_same_shape(Array::get(xs, i), Array::get(ys, i), ren)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+/// #2334: a generic body is lowered once, so a keyed map call whose key is a
+/// type parameter uses the String key operations for every instantiation --
+/// with an `Int` key it would hash the number as a String pointer. Refuse each
+/// call of a generic function that instantiates such a parameter at `Int`,
+/// `Char` or `Bool`. A parameter instantiated at another parameter (generic
+/// code calling generic code) passes the refusal on to the caller's parameter.
+///
+/// A call that precedes its callee's definition instantiates the HOISTED
+/// signature, whose variables are not the ones the body was checked with, so
+/// each call is also read through the callee's checked scheme in `env`: that
+/// scheme's variables are the body's, and its shape is the instantiation's.
+export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, s: Subst, errors: Array[String]) -> Unit {
+  check_map_key_site_kinds(s, errors)
+  let keyed: MutMap[Int, Int] = MutMap::new_int()
+  let mut any = false
+  for key in map_key_site_types {
+    match subst_apply(s, key) {
+      CtVar(id) => {
+        MutMap::set(keyed, id, 1)
+        any = true
+      },
+      _ => ()
+    }
+  }
+  if any {
+    let reported: MutMap[Int, Int] = MutMap::new_int()
+    let mut changed = true
+    let mut rounds = 0
+    // A call and a value reference instantiate the same way; a value bound by
+    // `let f = look` passes the restriction on to `f`'s own variables.
+    let records: Array[(Int, Type, Type, String)] = []
+    for r in callee_inst_types_cell {
+      Array::push(records, r)
+    }
+    for r in value_inst_types_cell {
+      Array::push(records, r)
+    }
+    while changed && rounds <= Array::length(records) {
+      changed = false
+      rounds = rounds + 1
+      for recorded in records {
+        let (callee_off, scheme, inst, name) = recorded
+        let pairs: Array[(Int, Type)] = []
+        let vars: Array[Int] = []
+        match scheme {
+          CtForAll(own_vars, _, own_body) => {
+            map_scheme_pairs(own_body, inst, pairs)
+            for id in own_vars {
+              Array::push(vars, id)
+            }
+          },
+          _ => ()
+        }
+        match env_lookup(env, name) {
+          // Only the same binding's checked scheme: a hoisted and a checked
+          // signature of one function differ in their variables alone. A
+          // local generic of the same spelling has its own shape, and its
+          // record already carries its own scheme.
+          Some(CtForAll(checked_vars, checked_bounds, checked_body)) => if map_scheme_same_shape(scheme, CtForAll(checked_vars, checked_bounds, checked_body)) {
+            map_scheme_pairs(checked_body, inst, pairs)
+            for id in checked_vars {
+              Array::push(vars, id)
+            }
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        match scheme {
+          CtForAll(_, _, _) => {
+            for id in vars {
+              match MutMap::get(keyed, id) {
+                Some(_) => for pair in pairs {
+                  let (pid, pty) = pair
+                  if pid == id {
+                    let refusal = map_formal_key_instance_refusal(s, pty, name, callee_off)
+                    if refusal != "" {
+                      if MutMap::get(reported, callee_off) is None {
+                        MutMap::set(reported, callee_off, 1)
+                        Array::push(errors, refusal)
+                      } else {
+                        ()
+                      }
+                    } else {
+                      match subst_apply(s, pty) {
+                        CtVar(caller_id) => if MutMap::get(keyed, caller_id) is None {
+                          MutMap::set(keyed, caller_id, 1)
+                          changed = true
+                        } else {
+                          ()
+                        },
+                        _ => ()
+                      }
+                    }
+                  } else {
+                    ()
+                  }
+                },
+                None => ()
+              }
+            }
+          },
+          _ => ()
+        }
+      }
+    }
+    check_map_key_formal_escapes(stmts, env, s, keyed, errors)
+  } else {
+    ()
+  }
+}
+
+/// #2334: a keyed call whose key the checker only INFERRED to a type the
+/// builtin map has no implementation for (`Map::set(Map::new(), 1.5, v)`) --
+/// the refusal an annotation gets. A key still a variable is a type
+/// parameter, which `check_map_key_formal_instantiations` answers.
+fn check_map_key_site_kinds(s: Subst, errors: Array[String]) -> Unit {
+  let reported: MutMap[Int, Int] = MutMap::new_int()
+  let mut i = 0
+  while i < Array::length(map_key_site_offsets) {
+    let off = Array::get(map_key_site_offsets, i)
+    let key = subst_apply(s, Array::get(map_key_site_types, i))
+    let supported = match key {
+      CtString => true,
+      CtInt => true,
+      CtChar => true,
+      CtBool => true,
+      CtVar(_) => true,
+      CtUnknown => true,
+      _ => false
+    }
+    if !supported && !MutMap::has(reported, off) {
+      MutMap::set(reported, off, 1)
+      let parts = [
+        "the builtin map takes `String`, `Int`, `Char` or `Bool` keys, so a `",
+        type_to_string(key),
+        "` key has no implementation -- key the map by one of those, or use `MutMap[K, V]` from `@vibe/core` for other keys",
+        off_marker(off)
+      ]
+      Array::push(errors, String::join(parts, ""))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// The names a module exports: `export fn` / `export let`, and the names an
+/// `export { .. }` list publishes.
+fn map_key_exported_names(stmts: Array[Stmt], out: MutMap[String, Int]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SLet(true, _, name, _, _) => MutMap::set(out, name, 1),
+      SExport(names) => for n in names {
+        MutMap::set(out, n, 1)
+      },
+      SModule(_, _, children) => map_key_exported_names(children, out),
+      _ => ()
+    }
+  }
+  ()
+}
+
+/// Whether `t` mentions a type variable that keys a map.
+fn map_key_type_mentions_keyed(t: Type, keyed: MutMap[Int, Int]) -> Bool {
+  match t {
+    CtVar(id) => MutMap::has(keyed, id),
+    CtForAll(vars, _, body) => {
+      let mut hit = false
+      for id in vars {
+        if MutMap::has(keyed, id) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit || map_key_type_mentions_keyed(body, keyed)
+    },
+    CtFn(params, ret, _) => map_key_types_mention_keyed(params, keyed) || map_key_type_mentions_keyed(ret, keyed),
+    CtArray(e) => map_key_type_mentions_keyed(e, keyed),
+    CtOption(e) => map_key_type_mentions_keyed(e, keyed),
+    CtTuple(items) => map_key_types_mention_keyed(items, keyed),
+    CtNamed(_, args) => map_key_types_mention_keyed(args, keyed),
+    CtApplied(head, args) => map_key_type_mentions_keyed(head, keyed) || map_key_types_mention_keyed(args, keyed),
+    CtRecord(fields) => {
+      let mut hit = false
+      for f in fields {
+        let (_, ft) = f
+        if map_key_type_mentions_keyed(ft, keyed) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+fn map_key_types_mention_keyed(ts: Array[Type], keyed: MutMap[Int, Int]) -> Bool {
+  let mut hit = false
+  for t in ts {
+    if map_key_type_mentions_keyed(t, keyed) {
+      hit = true
+    } else {
+      ()
+    }
+  }
+  hit
+}
+
+/// The exported top-level bindings whose checked type mentions a variable
+/// that keys a map -- a function, or an alias of one (`export let f = look`).
+fn map_key_formal_exports(stmts: Array[Stmt], env: TypeEnv, s: Subst, keyed: MutMap[Int, Int], exported: MutMap[String, Int], order: Array[String]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => if MutMap::has(exported, name) {
+        match env_lookup(env, name) {
+          Some(t) => if map_key_type_mentions_keyed(subst_apply(s, t), keyed) {
+            Array::push(order, name)
+          } else {
+            ()
+          },
+          None => ()
+        }
+      } else {
+        ()
+      },
+      SModule(_, _, children) => map_key_formal_exports(children, env, s, keyed, exported, order),
+      _ => ()
+    }
+  }
+  ()
+}
+
+/// #2334: a call from another module escapes the instantiation check above:
+/// it is checked against the exported signature alone, which does not say
+/// that the parameter keys a map. So an exported binding whose type keys a
+/// map by a type parameter -- the function, or an alias of it -- is refused.
+fn check_map_key_formal_escapes(stmts: Array[Stmt], env: TypeEnv, s: Subst, keyed: MutMap[Int, Int], errors: Array[String]) -> Unit {
+  let exported: MutMap[String, Int] = MutMap::new_string()
+  map_key_exported_names(stmts, exported)
+  if MutMap::size(exported) > 0 {
+    let order: Array[String] = []
+    map_key_formal_exports(stmts, env, s, keyed, exported, order)
+    for name in order {
+      let parts = [
+        "`",
+        name,
+        "` is exported and uses a type parameter as a `Map` key; a call from another module cannot be checked for a scalar key, which this body would compare as a `String` -- give the parameter a concrete key type, or keep `",
+        name,
+        "` private to this module (#2334)"
+      ]
+      Array::push(errors, String::join(parts, ""))
+    }
+  } else {
+    ()
+  }
+}

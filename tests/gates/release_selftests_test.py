@@ -40,6 +40,7 @@ check_builtin_shadowing check_compile_only_lanes check_daemon_memory_diagnostic
 check_export_refusal check_freeze_surface check_host_remove_parity
 check_host_semantic_parity check_import_reservation check_lambda_bound_refusal
 check_telemetry_sidecar_guards reloc_crossbuild lint_review_regressions
+check_linked_output_memo_env
 '''.split())
 KEYS = ['VIBE_RC', 'VIBE_STAGE2_WASM', 'VIBE_TEST_CLI_WASM',
         'COMPILE_ONLY_STAGE2', 'CAPABILITY_PREFLIGHT_STAGE2', 'VIBE_BACKEND',

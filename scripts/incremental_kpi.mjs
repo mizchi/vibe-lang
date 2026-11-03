@@ -42,6 +42,14 @@
 // folded body instead. Whether that turns these zeroes nonzero also depends
 // on the lane running the body cache at all, which these counts do not
 // establish. Hence reported and not asserted.
+//
+// The exact no-op (#2825's linked-output memo) is a THIRD build, after the two
+// above. `warm` keeps measuring what the back end reuses, so it runs with the
+// memo off; `cold` stores the memo and `noop` must replay it. Whether a build
+// replayed is read from the compiler, not inferred from its speed: on a replay
+// it reads the never-set `VIBE_PROFILE_MEMORY_MARK:linked_output_memo_hit`,
+// which the node runner echoes under `VIBE_DEBUG_ENV=1`. A cold build that
+// replayed, or a no-op that did not, fails the run.
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -99,7 +107,9 @@ function heapPtr(stderr) {
   return m ? Number(m[1]) : null;
 }
 
-function compile(corpus, cache, label) {
+const memoHit = "[env-get] VIBE_PROFILE_MEMORY_MARK:linked_output_memo_hit=";
+
+function compile(corpus, cache, label, memo) {
   const output = join(work, `${label}.wasm`);
   const telemetry = join(work, `${label}.json`);
   rmSync(output, { force: true });
@@ -107,7 +117,8 @@ function compile(corpus, cache, label) {
   const start = performance.now();
   const result = spawnSync("bash", [runner, "--invoke", "cli_main", resolve(stage2),
     corpus.input, output, corpus.entry], {
-    cwd: root, env: { ...env, VIBE_BUILD_CACHE_DIR: cache, VIBE_INCREMENTAL_TELEMETRY_OUT: telemetry },
+    cwd: root, env: { ...env, VIBE_BUILD_CACHE_DIR: cache, VIBE_INCREMENTAL_TELEMETRY_OUT: telemetry,
+      VIBE_LINKED_OUTPUT_MEMO: memo, VIBE_DEBUG_ENV: "1" },
     encoding: "utf8", timeout: 900_000, maxBuffer: 64 * 1024 * 1024,
   });
   const wall_ms = performance.now() - start;
@@ -117,6 +128,7 @@ function compile(corpus, cache, label) {
   }
   if (!existsSync(telemetry)) throw new Error(`${corpus.name}: no incremental telemetry sidecar`);
   return { wall_ms, heap_ptr_bytes: heapPtr(result.stderr),
+    linked_output_memo_hit: (result.stderr || "").includes(memoHit),
     telemetry: parseIncrementalTelemetry(readFileSync(telemetry, "utf8"), telemetry),
     cache_artifacts: countArtifacts(cache), // see "Body-cache publication" above
     wasm_sha256: createHash("sha256").update(readFileSync(output)).digest("hex") };
@@ -127,8 +139,9 @@ for (const corpus of corpora) {
   if (!existsSync(join(root, corpus.input))) throw new Error(`missing corpus: ${corpus.input}`);
   const cache = join(work, `cache-${corpus.name}`);
   mkdirSync(cache, { recursive: true });
-  const cold = compile(corpus, cache, `${corpus.name}-cold`);
-  const warm = compile(corpus, cache, `${corpus.name}-warm`);
+  const cold = compile(corpus, cache, `${corpus.name}-cold`, "on");
+  const warm = compile(corpus, cache, `${corpus.name}-warm`, "off");
+  const noop = compile(corpus, cache, `${corpus.name}-noop`, "on");
   // Every ratio below divides warm by cold, so both names have to be earned.
   // The directory was created empty a few lines up: anything the cold run
   // reused came from outside this protocol, and a warm run that reused nothing
@@ -144,6 +157,15 @@ for (const corpus of corpora) {
   if (cold.wasm_sha256 !== warm.wasm_sha256) {
     throw new Error(`${corpus.name}: warm rebuild changed the output — reuse is not observationally identical`);
   }
+  if (cold.linked_output_memo_hit) {
+    throw new Error(`${corpus.name}: the cold build replayed a linked-output memo from a cache directory this run created empty`);
+  }
+  if (!noop.linked_output_memo_hit) {
+    throw new Error(`${corpus.name}: the no-op rebuild did not replay the linked-output memo the cold build stored; there is no no-op row to report`);
+  }
+  if (cold.wasm_sha256 !== noop.wasm_sha256) {
+    throw new Error(`${corpus.name}: the no-op rebuild changed the output — the memo replayed a different module`);
+  }
   const planned = warm.telemetry.modules_planned;
   rows.push({
     name: corpus.name, input: corpus.input, entry: corpus.entry, modules: planned,
@@ -153,12 +175,16 @@ for (const corpus of corpora) {
     cache_artifacts: { cold: cold.cache_artifacts, warm: warm.cache_artifacts },
     heap_ratio: cold.heap_ptr_bytes ? warm.heap_ptr_bytes / cold.heap_ptr_bytes : null,
     wall_ratio: cold.wall_ms ? warm.wall_ms / cold.wall_ms : null,
-    cold, warm,
+    // The exact no-op: the same unchanged rebuild with the memo on.
+    noop_heap_ratio: cold.heap_ptr_bytes ? noop.heap_ptr_bytes / cold.heap_ptr_bytes : null,
+    noop_wall_ratio: cold.wall_ms ? noop.wall_ms / cold.wall_ms : null,
+    cold, warm, noop,
   });
   const r = rows.at(-1);
   console.log(`[incremental-kpi] ${corpus.name.padEnd(9)} modules=${String(planned).padStart(4)} `
     + `skipped=${(r.modules_skipped_ratio * 100).toFixed(0).padStart(3)}% `
     + `heap=${(r.heap_ratio * 100).toFixed(0).padStart(3)}% wall=${(r.wall_ratio * 100).toFixed(0).padStart(3)}% `
+    + `noop_heap=${(r.noop_heap_ratio * 100).toFixed(0).padStart(3)}% noop_wall=${(r.noop_wall_ratio * 100).toFixed(0).padStart(3)}% `
     + `body_cache_artifacts=${r.cache_artifacts.warm.codegen_body_cache}`);
 }
 
@@ -170,7 +196,7 @@ const doc = {
   deterministic: ["modules_planned", "modules_rechecked", "modules_reused", "parse_operations",
     "checker_executions", "heap_ptr_bytes", "cache_artifacts"],
   advisory: ["wall_ms"],
-  asserted: "cold reuses 0 modules; warm reuses more than 0 (the levels are the KPI, not a budget)",
+  asserted: "cold reuses 0 modules and replays no memo; warm reuses more than 0; noop replays the memo with the cold output (the levels are the KPI, not a budget)",
   corpora: rows,
 };
 mkdirSync(dirname(outPath), { recursive: true });

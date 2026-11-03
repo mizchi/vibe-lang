@@ -101,13 +101,16 @@ import ./compile_call_cc_ladder_names.vibe {
   cc_hof_retain_arg,
   cc_hof_unique_test,
   cc_map_alloc_rc,
+  cc_map_emit_key_eq,
   cc_map_emit_unique_test,
   cc_map_get_linear_scan,
   cc_map_get_miss_trap,
   cc_map_has_linear_scan,
+  cc_map_mark_scalar,
   cc_map_release_ptr,
   cc_map_release_temp_arg0,
   cc_map_set_in_place,
+  cc_map_trap_if_scalar,
   cc_map_value_out,
   cc_retain_stored_arg,
   emit_float_operand_bits
@@ -230,7 +233,7 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i64_const(buf, 0)
     nl
   }
-  else if fname == "Double::from_i64_bits_lohi" {
+  else if fname == "Float64::from_i64_bits_lohi" {
     // #2651: the read side of the lo/hi split, inverse of the two arms
     // below. Inline for the same reason `Double::from_i64_bits` is -- this
     // is a representation conversion, not a function-table call.
@@ -265,9 +268,9 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
       nl
     }
   }
-  else if fname == "Double::to_i64_bits_lo" || fname == "Double::to_i64_bits_hi" {
+  else if fname == "Float64::to_i64_bits_lo" || fname == "Float64::to_i64_bits_hi" {
     let nl = emit_float_operand_bits(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
-    if fname == "Double::to_i64_bits_hi" {
+    if fname == "Float64::to_i64_bits_hi" {
       emit_i64_const(buf, 32)
       emit_i64_shr_s(buf)
     }
@@ -1229,10 +1232,18 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_local_get(buf, cnt_l)
     nl + 2
   }
-  else if fname == "Map::get" {
+  else if fname == "Map::get" || fname == "Map::__scalar_get" {
+    // #2334: `Map::__scalar_get` is a `Map::get` whose key the checker typed
+    // `Int` / `Char` / `Bool`: an exact i64 comparison, never the index.
+    let scalar_key = fname == "Map::__scalar_get"
     let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-    let (map_get_eq_idx, _, _) = resolve_func(ctx.func_table, "eq")
+    let (map_get_eq_fn, _, _) = resolve_func(ctx.func_table, "eq")
+    let map_get_eq_idx = if scalar_key {
+      0 - 1
+    } else {
+      map_get_eq_fn
+    }
     let (miss_print_idx, miss_msg_off, miss_msg_len) = cc_map_get_miss_parts(ctx)
     let map_local = nl
     let key_local = nl + 1
@@ -1253,7 +1264,12 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_load(buf, 2, 0)
     emit_i64_extend_i32_u(buf)
     emit_local_set(buf, count_local)
-    if ctx.map_probe_func_idx >= 0 {
+    if !scalar_key {
+      cc_map_trap_if_scalar(buf, map_local)
+    } else {
+      ()
+    }
+    if !scalar_key && ctx.map_probe_func_idx >= 0 {
       let idxptr_local = nl + 4
       Array::push(local_names, "__map_idxptr")
       emit_local_get(buf, map_local)
@@ -1294,13 +1310,20 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
       nl + 4
     }
   }
-  else if fname == "Map::has_key" || fname == "Map::has" || (fname == "map_has" && local_idx_hint < 0) {
+  else if fname == "Map::has_key" || fname == "Map::has" || (fname == "map_has" && local_idx_hint < 0) || fname == "Map::__scalar_has_key" {
     // #3565: a local binding spelled `map_has` is the program's value (the
     // resolved call calls it); `is_inlined_scalar_builtin` keeps the capture
     // scan from inventing one inside a lambda.
     let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-    let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+    // #2334: see `Map::__scalar_get` above.
+    let scalar_key = fname == "Map::__scalar_has_key"
+    let (eq_fn, _, _) = resolve_func(ctx.func_table, "eq")
+    let eq_fi = if scalar_key {
+      0 - 1
+    } else {
+      eq_fn
+    }
     let map_l = nl; let key_l = nl + 1; let cnt_l = nl + 2; let i_l = nl + 3
     // idxptr_l is only READ when ctx.map_probe_func_idx >= 0, but reserved
     // unconditionally so this arm always returns the same local count.
@@ -1312,7 +1335,12 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_local_get(buf, map_l); emit_i64_const(buf, -2); emit_i64_and(buf); emit_local_set(buf, map_l)
     emit_local_get(buf, map_l); emit_i32_wrap_i64(buf)
     emit_i32_load(buf, 2, 0); emit_i64_extend_i32_u(buf); emit_local_set(buf, cnt_l)
-    if ctx.map_probe_func_idx >= 0 {
+    if !scalar_key {
+      cc_map_trap_if_scalar(buf, map_l)
+    } else {
+      ()
+    }
+    if !scalar_key && ctx.map_probe_func_idx >= 0 {
       emit_local_get(buf, map_l)
       emit_i32_wrap_i64(buf)
       emit_i32_load(buf, 2, 4)
@@ -1356,8 +1384,21 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
   else if fname == "Map::remove" {
     ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
   }
-  else if fname == "Map::set" {
-    let (eq_fi_ms, _, _) = resolve_func(ctx.func_table, "eq")
+  else if fname == "Map::set" || fname == "Map::__scalar_set" {
+    // #2334: `Map::__scalar_set` compares keys as exact i64 values, never
+    // builds the String-hash index, and marks its result scalar-keyed.
+    let scalar_key = fname == "Map::__scalar_set"
+    let set_name = if scalar_key {
+      "Map::set"
+    } else {
+      fname
+    }
+    let (eq_fn_ms, _, _) = resolve_func(ctx.func_table, "eq")
+    let eq_fi_ms = if scalar_key {
+      0 - 1
+    } else {
+      eq_fn_ms
+    }
     let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
     // Map::set STORES key and value — retain borrowed args (#745).
@@ -1392,7 +1433,7 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     // planner-borrowed binding -- then take a reference of our own, as
     // MapBuilder::freeze does. The tagged value is retained; the untagged
     // pointer the reads use is derived after.
-    cc_hof_retain_arg(buf, Array::get(args, 0), map_l, fname, 0, ctx)
+    cc_hof_retain_arg(buf, Array::get(args, 0), map_l, set_name, 0, ctx)
     emit_local_get(buf, map_l)
     emit_i64_const(buf, -2)
     emit_i64_and(buf)
@@ -1402,6 +1443,11 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_load(buf, 2, 0)
     emit_i64_extend_i32_u(buf)
     emit_local_set(buf, cnt_l)
+    if !scalar_key {
+      cc_map_trap_if_scalar(buf, map_l)
+    } else {
+      ()
+    }
     // The copy path: a fresh block of count + 1 entries, the source's
     // entries copied (and, on the RC lane, retained), the new entry
     // replacing or appended.
@@ -1476,7 +1522,7 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
       emit_i32_add(buf)
       emit_i64_load(buf, 3, 8)
       emit_local_get(buf, key_l)
-      emit_call(buf, eq_fi_ms)
+      cc_map_emit_key_eq(buf, eq_fi_ms)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
       emit_local_get(buf, new_l)
@@ -1571,7 +1617,7 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
       // O(1)-average side index when it's worth it (count>=8). idx_l/found_l
       // are dead after the copy loop above -- reused here as scratch (final
       // count, then the built index pointer) so this needs no new locals.
-      if ctx.map_build_index_func_idx >= 0 {
+      if !scalar_key && ctx.map_build_index_func_idx >= 0 {
         emit_local_get(buf, new_l)
         emit_i32_wrap_i64(buf)
         emit_i32_load(buf, 2, 0)
@@ -1608,6 +1654,11 @@ export fn cc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
       emit_end(buf)
     } else {
       copy_path()
+    }
+    if scalar_key {
+      cc_map_mark_scalar(buf, new_l)
+    } else {
+      ()
     }
     cc_map_value_out(buf, new_l, ctx)
     nl + 10

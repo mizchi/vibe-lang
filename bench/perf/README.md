@@ -34,6 +34,48 @@ code-section framing. Missing names are recorded as unavailable. No extra named
 compiler is built by the ordinary CI collector. Binaryen validation and a
 compile-only size ratchet remain separate work in #2506.
 
+## Reserved-page KPI for package closures (#3647)
+
+`pkf run kpi-reserved-pages` compiles three fixed package test files cold:
+`lib/@vibe/json/json_test.vibe`, `lib/@vibe/optimizer/wasm_opt_test.vibe`
+and `lib/@vibe/parser/parser_smoke_test.vibe`. It runs three trials each by
+default and reports the reserved linear memory at the end of the run, in
+pages. That is the number an isolate limit counts.
+
+- **Gate.** Each probe fails when its pages exceed its row in
+  `reserved_pages_baseline.tsv` by more than `tolerance_percent` (10%).
+- **Target.** The 128 MiB design target of #2494 (`target_pages`, 2048) is
+  reported as `target=over|under` and not gated. The parser closure is over
+  it today.
+- **Diagnostic.** `heap_ptr_bytes` is the bump arena's high-water. It is
+  printed but not gated.
+- **Not measured here.** Reachable RC bytes, fragmentation and peak RSS stay
+  in #2509.
+- **Provenance.** Each run prints the stage2's SHA-256, the source commit,
+  whether the tree is dirty, and whether the stage2 was built from that
+  commit. For each probe it also prints the loader's closure (`vibe deps`) as
+  a file count, a line count and a content hash.
+- **Failure.** A trial with no page count fails as an instrumentation error.
+  It is never read as zero.
+
+The wrapper measures HEAD's generation or the artifact named in
+`VIBE_STAGE2_WASM`, and refuses anything else. CI runs it on the run's own
+stage2. `scripts/reserved_pages_kpi_test.sh` is the self-test: it runs the
+real gate with a fake runner against the committed baseline and mutated
+copies of it.
+
+The first baseline was measured on 2026-11-03 against main `bcb306a`. Pages
+were identical in all eight trials:
+
+| probe | closure | pages | reserved | heap_ptr |
+|---|---|---:|---:|---:|
+| json | 8 files, 1,220 lines | 324 | 21.2 MB | 15.6 MB |
+| optimizer | 6 files, 8,145 lines | 729 | 47.8 MB | 34.4 MB |
+| parser | 18 files, 18,020 lines | 2458 | 161.1 MB | 115.5 MB |
+
+The raw trials are in
+[analysis/reserved-pages-kpi-2026-11-03.json](analysis/reserved-pages-kpi-2026-11-03.json).
+
 ## Formal representatives per publication (2026-10-27)
 
 Reuse a local representative table across one `callee_formal_bindings` call.
@@ -256,7 +298,7 @@ The `perf-metrics` job in `.github/workflows/ci.yml` runs on every PR and every 
   The corpus is bumped deliberately (`bash scripts/bump_bench_corpus.sh`), which
   RESETS these series: readings on either side of a bump are about different
   inputs. `bench/perf/corpus/README.md` has the rules;
-  `scripts/check_bench_corpus.sh` keeps the snapshots frozen and the benches
+  `scripts/check_bench_corpus.vibex` keeps the snapshots frozen and the benches
   pointed at them.
 
   It used to render every tracked series instead: ~50 rows, of which ~48 read

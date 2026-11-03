@@ -1,7 +1,11 @@
 // Collection equality generation.
 
+import ./map_scalar_keys.vibe {
+  map_key_type_cell
+}
+
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr
+  Expr, Stmt, TypeExpr, builtin_map_scalar_get, builtin_map_scalar_has_key
 }
 
 import @vibe/ast {
@@ -136,21 +140,23 @@ fn gen_map_equals_fn(k_ty: TypeExpr, v_ty: TypeExpr, known_types: Array[String])
   ])
   let size_b = ECall(builtin_ref("Map::size"), Array::slice([EIdent("b", -1)], 0, 1), -1, [
   ])
+  // #2334: a scalar-keyed map's lookups are the scalar operations, chosen
+  // from the key type this helper is generated for.
   let val_a = ECall(builtin_ref("Map::get"), Array::slice([
     EIdent("a", -1),
     EIdent(n_k, -1)
-  ], 0, 2), -1, [])
+  ], 0, 2), -1, map_key_type_cell(k_ty, builtin_map_scalar_get))
   let val_b = ECall(builtin_ref("Map::get"), Array::slice([
     EIdent("b", -1),
     EIdent(n_k, -1)
-  ], 0, 2), -1, [])
+  ], 0, 2), -1, map_key_type_cell(k_ty, builtin_map_scalar_get))
   let val_eq = eq_for_typed(v_ty, val_a, val_b, known_types)
   let val_bad = EIf(ECall(EIdent("not", -1), Array::slice([val_eq], 0, 1), -1, [
   ]), EAssign(n_ok, EBool(false), EUnit, -1), EUnit)
   let has_b = ECall(builtin_ref("Map::has_key"), Array::slice([
     EIdent("b", -1),
     EIdent(n_k, -1)
-  ], 0, 2), -1, [])
+  ], 0, 2), -1, map_key_type_cell(k_ty, builtin_map_scalar_has_key))
   let check_one = EIf(ECall(EIdent("not", -1), Array::slice([has_b], 0, 1), -1, [
   ]), EAssign(n_ok, EBool(false), EUnit, -1), val_bad)
   let incr = EAssign(n_i, EBinOp("+", EIdent(n_i, -1), EInt(1), -1), EUnit, -1)

@@ -1,3 +1,7 @@
+import ./checker_call_map.vibe {
+  check_map_key_formal_instantiations, map_key_sites_reset, map_scalar_key_rows
+}
+
 import ./checker_parameter_defaults.vibe {
   checker_check_default_declarations
 }
@@ -794,7 +798,10 @@ fn typed_eq_render_receiver_rows(checked: CheckedProgram, capture: TypedOccurren
   let (eq_forin_offs, eq_forin_keys) = append_render_rows(eq_index_offs, eq_index_keys, forin_offs, forin_keys)
   // #3543: the Float arithmetic rows, under their own head.
   let (f32_offs, f32_keys) = float_arith_rows_from_capture(capture)
-  append_render_rows(eq_forin_offs, eq_forin_keys, f32_offs, f32_keys)
+  let (eq_f32_offs, eq_f32_keys) = append_render_rows(eq_forin_offs, eq_forin_keys, f32_offs, f32_keys)
+  // #2334: the scalar-keyed map calls, under their own head.
+  let (map_offs, map_keys) = map_scalar_key_rows(checked.final_subst)
+  append_render_rows(eq_f32_offs, eq_f32_keys, map_offs, map_keys)
 }
 
 /// #2424: fold the Double render/`eq` ARGUMENT offsets (tag 4 on the modular
@@ -1322,6 +1329,7 @@ fn stmts_bind_top_level(stmts: Array[Stmt], name: String) -> Bool {
 
 fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> CheckedProgramTypeDefsObservation with Exception {
   call_placement_capture_begin()
+  map_key_sites_reset()
   handle {
     let checked = check_program_with_env_source_impl(stmts, initial_env, capture, role_lane_capture, imports_already_projected)
     call_placement_capture_end()
@@ -1423,6 +1431,9 @@ fn check_program_with_env_source_impl(stmts: Array[Stmt], initial_env: TypeEnv, 
       // #2848: see the standalone path -- resolved before the bound check.
       let final_s = resolve_deferred_field_reads(final_s0, empty_defs, frozen_errors, false)
       check_program_bounds(env, final_s, empty_defs, frozen_errors)
+      // #2334: a generic function that keys a map by a type parameter, called
+      // with a scalar key.
+      check_map_key_formal_instantiations(stmts, env, final_s, frozen_errors)
       // #3549: `derive (Eq)` over a field that holds a function.
       collect_derive_eq_function_errors(stmts, empty_defs, frozen_errors)
       // #1858: same witness-carrier validation as the standalone path — the

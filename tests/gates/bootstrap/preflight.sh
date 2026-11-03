@@ -8,7 +8,7 @@ cd "$ROOT_DIR"
 
 echo "[compiler-gate] 0/3 builtin parity (#415 B-3)"
 bash scripts/check_builtin_parity.sh
-bash scripts/check_gate_registry.sh
+bash scripts/vibe_run.sh scripts/check_gate_registry.vibex
 bash scripts/check_inline_builtin_capture.sh
 bash scripts/check_fixture_snapshots_test.sh
 bash scripts/check_fixture_execution.sh
@@ -17,6 +17,7 @@ bash scripts/vibe_fmt_parse_guard_test.sh
 echo "[compiler-gate] parser binder-context spine"
 node --test scripts/parser_binder_context_spine.test.mjs
 python3 scripts/source_files_test.py
+bash scripts/source_group_test.sh
 node scripts/test_immutable_publish_plumbing.js
 
 echo "[compiler-gate] 1-2/3 generated compiler artifacts"

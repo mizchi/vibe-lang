@@ -560,6 +560,14 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Arra
       }
       // Resolved calls share one operation-to-builtin target table.
       let operation_alias = builtin_operation_alias(operation)
+      // #2334: the scalar-keyed map operations compare keys as exact i64
+      // values. The gc lane's map is a String-keyed scan, so it refuses them
+      // rather than compare an `Int` key the way it compares a `String`.
+      if String::starts_with(operation_alias, "Map::__scalar_") {
+        throw("a `Map` with an `Int`, `Char` or `Bool` key does not run on the wasm-gc backend yet -- build it with the default linear backend, or key the map by `String` (#2334)")
+      } else {
+        ()
+      }
       if operation_alias != "" && builtin_operation_arity(operation) == Array::length(args) {
         return gc_mut_alias_call(buf, operation_alias, args, local_names, next_local, ctx, ld, ce)
       } else {
@@ -974,8 +982,8 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     emit_end(buf)
     nl
   }
-  else if fname == "Float::to_int" && Array::length(args) == 1 {
-    ce(buf, ECall(EIdent("Double::to_int", -1), [Array::get(args, 0)], -1, []), local_names, next_local, ld)
+  else if fname == "Float32::to_int" && Array::length(args) == 1 {
+    ce(buf, ECall(EIdent("Float64::to_int", -1), [Array::get(args, 0)], -1, []), local_names, next_local, ld)
   }
   else if fname == "Map::values" {
     let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
@@ -1084,7 +1092,7 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     nl
   }
   // review-lint: allow-gc-direct-abi-unlisted -- both names have registered GC function-table bodies (16 and 12), so the capture scan already skips them; this arm replaces those bodies' lowering
-  else if (fname == "Double::to_float" || fname == "Int::to_float") && !gc_name_is_user_defined(ctx, local_names, fname) {
+  else if (fname == "Float64::to_float32" || fname == "Int::to_float32") && !gc_name_is_user_defined(ctx, local_names, fname) {
     // #3543 (gc mirror of the linear arm): a `Float` is the f64 of an f32
     // value, so `Double::to_float` rounds to the nearest f32 (ties to even,
     // overflow to +/-Infinity) and `Int::to_float` converts straight to f32
@@ -1092,7 +1100,7 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     // body 12 an f64 conversion, so neither may serve these names.
     let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
     // review-lint: allow-gc-direct-abi-unlisted -- the same arm
-    if fname == "Double::to_float" {
+    if fname == "Float64::to_float32" {
       emit_f64_reinterpret_i64(buf)
       emit_f32_demote_f64(buf)
     } else {
@@ -1102,12 +1110,12 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     emit_i64_reinterpret_f64(buf)
     nl
   }
-  else if fname == "Double::abs" || fname == "Double::floor" || fname == "Double::ceil" {
+  else if fname == "Float64::abs" || fname == "Float64::floor" || fname == "Float64::ceil" {
     let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
     emit_f64_reinterpret_i64(buf)
-    if fname == "Double::abs" {
+    if fname == "Float64::abs" {
       emit_f64_abs(buf)
-    } else if fname == "Double::floor" {
+    } else if fname == "Float64::floor" {
       emit_f64_floor(buf)
     } else {
       emit_f64_ceil(buf)
@@ -1115,12 +1123,12 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     emit_i64_reinterpret_f64(buf)
     nl
   }
-  else if fname == "Double::max" || fname == "Double::min" {
+  else if fname == "Float64::max" || fname == "Float64::min" {
     let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
     emit_f64_reinterpret_i64(buf)
     nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
     emit_f64_reinterpret_i64(buf)
-    if fname == "Double::max" {
+    if fname == "Float64::max" {
       emit_f64_max(buf)
     } else {
       emit_f64_min(buf)
@@ -1128,16 +1136,16 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     emit_i64_reinterpret_f64(buf)
     nl
   }
-  else if fname == "Double::parse" && !gc_name_is_user_defined(ctx, local_names, fname) {
+  else if fname == "Float64::parse" && !gc_name_is_user_defined(ctx, local_names, fname) {
     double_runtime_require(ctx.func_table, double_runtime_parse_name())
     ce(buf, double_parse_expr(Array::get(args, 0)), local_names, next_local, ld)
   }
-  else if fname == "Float::to_string" && !gc_name_is_user_defined(ctx, local_names, fname) {
+  else if fname == "Float32::to_string" && !gc_name_is_user_defined(ctx, local_names, fname) {
     // #3543: the shortest decimal that reads back as the same f32.
     double_runtime_require(ctx.func_table, double_runtime_to_string_name())
     ce(buf, float_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
   }
-  else if fname == "Double::to_string" && !gc_name_is_user_defined(ctx, local_names, fname) {
+  else if fname == "Float64::to_string" && !gc_name_is_user_defined(ctx, local_names, fname) {
     double_runtime_require(ctx.func_table, double_runtime_to_string_name())
     ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
   }
@@ -1949,11 +1957,11 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     emit_i64_extend_i32_u(buf)
     nl
   }
-  else if fname == "Double::from_i64_bits" {
+  else if fname == "Float64::from_i64_bits" {
     let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
     nl
   }
-  else if fname == "Double::from_i64_bits_lohi" {
+  else if fname == "Float64::from_i64_bits_lohi" {
     // #2651. The gc lane carries a Double as raw f64 bits in an untagged
     // i64, so reassembling the halves IS the conversion. Both are masked
     // for the same reasons the linear arm gives.
@@ -1968,13 +1976,13 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     emit_i64_or(buf)
     nl1
   }
-  else if fname == "Double::to_i64_bits_lo" {
+  else if fname == "Float64::to_i64_bits_lo" {
     let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
     emit_i64_const(buf, 4294967295)
     emit_i64_and(buf)
     nl
   }
-  else if fname == "Double::to_i64_bits_hi" {
+  else if fname == "Float64::to_i64_bits_hi" {
     let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
     emit_i64_const(buf, 32)
     emit_i64_shr_s(buf)
@@ -2011,7 +2019,7 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     // the compiled file defines its own local `to_string[T: Show](x: T)
     // -> String { __to_string(x) }`-shaped wrapper). Inside that
     // wrapper's body `x` has the opaque generic type param T, so no
-    // param/let seeding (concrete "Bool"/"Float" annotations only) can
+    // param/let seeding (concrete "Bool"/"Float32" annotations only) can
     // make `gc_expr_is_boolish`/`gc_expr_is_floatish` recognize it --
     // the SAME root cause as the linear bug. Bypass the wrapper call
     // entirely and inline `__to_string(arg)` with the ORIGINAL call-site

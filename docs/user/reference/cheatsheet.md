@@ -100,8 +100,9 @@ does: annotations, `impl ... for Float64`, `fn Float64::m(..)`, and the
 builtins (`Float64::to_string`, `Float64::parse`, `Float32::to_string`). The
 conversions take width names too: `Int::to_float64`, `Int::to_float32`,
 `Float64::to_float32`, `Float32::to_float64`, and `Float64::to_int` /
-`Float32::to_int`. Diagnostics and hover still print `Double` / `Float`, and
-the old spellings keep working; the tree moves to the new names in #3729.
+`Float32::to_int`. `Float64` / `Float32` are the canonical names: diagnostics,
+hover and `vibe type-at` print them. The old spellings still parse as aliases
+of the same types; the tree moves to the new names in #3729.
 Because every `Float64` / `Float32` in a type or a `X::` path names the
 builtin, neither can be the name of a declared type, trait, effect, alias or
 type parameter (a constructor may still be called `Float64`). A type
@@ -1494,10 +1495,10 @@ let nv = {                            // destructure also works in fn/block body
 }
 
 // Map (#960: the `map { ... }` literal was removed; use the Map:: API).
-// The builtin map is STRING-KEYED; its type is spelled `StringMap[V]`
-// (no import needed). `Map[K, V]` with a concrete non-String key is
-// rejected where it is written -- generic keys are #2334. For another
-// key type today, use `MutMap[K, V]` from `@vibe/core` (below).
+// The builtin map takes a `String`, `Int`, `Char` or `Bool` key (#2334);
+// `StringMap[V]` is `Map[String, V]` (no import needed). Any other key is
+// rejected -- written or inferred. For another key type, use `MutMap[K, V]`
+// from `@vibe/core` (below).
 let m = Map::from_pairs([("key", 42)])
 let e = Map::new()                    // empty map
 let mv = m["key"]
@@ -2954,21 +2955,32 @@ codegen. Write `for x in xs { .. }`.
 `push(ArrayBuilder[T], T) -> Unit`, `freeze(ArrayBuilder[T]) -> Array[T]`.
 `MapBuilder::new() -> MapBuilder[String, V]`,
 `set(MapBuilder[String, V], String, V) -> Unit`,
-`freeze(MapBuilder[String, V]) -> Map[String, V]` — String-keyed, like `Map`.
+`freeze(MapBuilder[String, V]) -> Map[String, V]` — a builder is String-keyed.
 A `for-in` comprehension desugars to these builder operations internally.
 
-**Map** — the builtin `Map` is **String-keyed**, not generic in its key, and
-its type is spelled **`StringMap[V]`** (no import needed; the operations keep
-the `Map::` qualifier). `Map::set(m, 7, 1)` is `argument type mismatch for
-Map::set: expected String, got Int`, and an ANNOTATION naming a concrete
-non-String key (`fn f(m: Map[Int, String])`) is rejected where it is written
-rather than at the first op (#2263). For a generic key, use `MutMap[K, V]`
-from `@vibe/core`.
-`get: (Map[String, V], String) -> V` (throws when absent),
-`set: (Map[String, V], String, V) -> Map[String, V]` (returns a new map),
-`has_key: (Map[String, V], String) -> Bool`,
-`keys: (Map[String, V]) -> Array[String]`,
-`values: (Map[String, V]) -> Array[V]`.
+**Map** — the builtin `Map[K, V]` takes a `String`, `Int`, `Char` or `Bool`
+key (#2334); `StringMap[V]` is `Map[String, V]` (no import needed; the
+operations keep the `Map::` qualifier). A map literal and
+`Map::from_pairs([...])` take string-literal keys; a map with another key
+starts from `Map::new()`, and the first keyed call decides its key type:
+`Map::set(Map::new(), 7, "seven")` is a `Map[Int, String]`. An annotation
+naming any other key (`fn f(m: Map[Double, String])`) is rejected where it is
+written, and points at `MutMap[K, V]` from `@vibe/core`.
+`get: (Map[K, V], K) -> V` (throws when absent),
+`set: (Map[K, V], K, V) -> Map[K, V]` (returns a new map),
+`has_key: (Map[K, V], K) -> Bool`, `delete: (Map[K, V], K) -> Map[K, V]`,
+`keys: (Map[K, V]) -> Array[K]`, `values: (Map[K, V]) -> Array[V]`;
+`m[k]`, `for k in m` and `==` work for every key type.
+An `Int` / `Char` / `Bool` key is compared as an exact value, with a linear
+lookup (no hash index yet). Three places do not take one yet, and each says so
+at build time: the wasm-gc backend; a linked build with no type check of its
+text; and a generic function whose type parameter is a map's key, called at
+that key (its one lowered body compares keys as Strings) -- write the function
+for `Map[Int, V]`, or key the map by `String`. Such a function is also refused
+when it is exported or passed as a value, where its calls cannot be checked;
+call it directly, inside its own module. A key the checker only inferred
+(`Map::set(Map::new(), 1.5, v)`) is refused like a written one.
+`MapBuilder` is String-keyed.
 
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,

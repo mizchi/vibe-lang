@@ -145,10 +145,10 @@ import @vibe/compiler/codegen/common_base {
   StrTable,
   agg_info_of_type_expr,
   bcc_int_lists_equal,
-  codegen_body_cache_filter_src_below,
   codegen_body_cache_find_at,
   codegen_body_cache_find_named_at,
   codegen_body_cache_name_index,
+  codegen_body_cache_new,
   codegen_body_cache_record,
   codegen_body_cache_replay,
   codegen_body_cache_replay_index,
@@ -487,15 +487,22 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   } else {
     Array::length(body_cache_in.guard_layout) > 0 && bcc_int_lists_equal(body_cache_in.guard_layout, guard_layout_now)
   }
-  // Narrowing, not dropping. Without this, widening would be a REGRESSION on
-  // exactly the edits the guards reject (a new closure, a new literal, a
-  // renamed function): the prefix those builds replay today would be lost as
-  // well. `consumer_src_limit` is what the decoder measured the unchanged
-  // leading run to be; an in-process cache carries none and keeps everything.
-  let body_cache_use = if !lc_wide_ok && Array::length(body_cache_in.consumer_src_limit) == 1 {
-    codegen_body_cache_filter_src_below(body_cache_in, Array::get(body_cache_in.consumer_src_limit, 0))
-  } else {
+  // Dropping, not narrowing. A drifted layout replays NOTHING, the unchanged
+  // leading files included: their bodies are not layout-independent. They
+  // embed addresses in the program-wide string pool, and the pool places
+  // every plain literal before the interpolation parts, map keys and the
+  // runtime's own messages, so a literal added in ANY file moves addresses a
+  // prefix body holds -- `a % b`'s divide-by-zero message among them. This
+  // used to narrow to the prefix (`consumer_src_limit`) on the reasoning that
+  // its index spaces were unaffected; the edit-class corpus edited only the
+  // FIRST file, where the prefix is empty, so the narrowed lane never ran
+  // there. Measured on the compiler's own CLI closure: one string edited in
+  // `cli/commands/pkg.vibe` gave a warm build 15 stale addresses, and
+  // `tests/body_cache_downstream_edit_test.vibe` pins the same shape small.
+  let body_cache_use = if lc_wide_ok {
     body_cache_in
+  } else {
+    codegen_body_cache_new()
   }
   // #2388 step 3 follow-up: function index -> cache slot, built once. The
   // lookup below runs per function, and scanning the whole cache each time is
@@ -1246,7 +1253,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
                 // and the same param feeding `eq(a, b)` reached the string
                 // fallback, which reads the value as a (ptr, len) pair.
                 match pte {
-                  TyName(ptn) => if ptn == "Float" || ptn == "Double" {
+                  TyName(ptn) => if ptn == "Float32" || ptn == "Float64" {
                     Array::push(compile_ctx.float_local_slots, psi * 2 + 1)
                   } else if ptn == "Bool" {
                     Array::push(compile_ctx.int_local_slots, psi * 4 + 3)

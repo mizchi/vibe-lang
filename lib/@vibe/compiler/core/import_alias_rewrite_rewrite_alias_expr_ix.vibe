@@ -380,6 +380,44 @@ export fn make_import_alias_rewriter(aliases: Array[(String, String)]) -> (Expr)
   }
 }
 
+/// ADR-0122 (#3728): an aliased name in a type position, as the parser would
+/// have spelled it: `{ Float as F }` then `x: F` is `Float32`, which the
+/// passes after the parser compare by that spelling (f32 rounding, the
+/// equality and hash shapes). A type position never names a constructor, so
+/// this cannot capture an enum's own `Float`.
+fn alias_type_canonical(original: String) -> String {
+  if original == "Double" {
+    "Float64"
+  } else if original == "Float" {
+    "Float32"
+  } else {
+    original
+  }
+}
+
+/// ADR-0122 (#3728): `original::member` as the parser would have spelled it.
+/// An import item is kept as written (`{ Double as D }`), but the parser reads
+/// every `Double::` / `Float::` path as `Float64::` / `Float32::` and the
+/// legacy conversions by their width names, and the passes after it recognize
+/// only that spelling: `D::floor` rewritten to `Double::floor` reached code
+/// generation unresolved (#3749 review). Same table as the parser's
+/// `intern_qualified`; every other head is unchanged.
+fn alias_qualified_canonical(original: String, member: String) -> String {
+  let ns = alias_type_canonical(original)
+  let leaf = if ns == "Int" && member == "to_double" {
+    "to_float64"
+  } else if ns == "Int" && member == "to_float" {
+    "to_float32"
+  } else if ns == "Float64" && member == "to_float" {
+    "to_float32"
+  } else if ns == "Float32" && member == "to_double" {
+    "to_float64"
+  } else {
+    member
+  }
+  String::concat(ns, String::concat("::", leaf))
+}
+
 /// #1502: `H::Crimson` -> `Hue::Crimson` when `H` is an import alias. `expr` is
 /// returned unchanged for an unqualified name or a head that is not aliased,
 /// so the caller keeps sharing the original node in the common case.
@@ -397,7 +435,7 @@ fn rewrite_alias_qualified_head(expr: Expr, name: String, am: AliasIdx) -> Expr 
       expr
     } else {
       match aliasidx_get(am, head) {
-        Some(original) => EIdent(String::concat(original, String::substring(name, qi, String::length(name))), -1),
+        Some(original) => EIdent(alias_qualified_canonical(original, String::substring(name, qi + 2, String::length(name))), -1),
         None => expr
       }
     }
@@ -1358,13 +1396,13 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
 fn rewrite_alias_type_expr(te: TypeExpr, am: AliasIdx) -> TypeExpr {
   match te {
     TyName(n) => match aliasidx_get(am, n) {
-      Some(original) => TyName(original),
+      Some(original) => TyName(alias_type_canonical(original)),
       None => te
     },
     TyApp(n, args) => {
       let m = alias_marks()
       let next_name = match aliasidx_get(am, n) {
-        Some(original) => original,
+        Some(original) => alias_type_canonical(original),
         None => n
       }
       let args2 = rewrite_alias_types_ix(args, am)

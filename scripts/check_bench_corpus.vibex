@@ -1,0 +1,326 @@
+// A benchmark's INPUT must not be a file that PRs edit (#2865). #3672 ported
+// this gate from check_bench_corpus.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_bench_corpus.vibex -- [--root DIR]
+//
+// The lex and parse series read the live compiler sources, so a PR that touched
+// the checker moved the input of the benchmark that measures the parser.
+// Measured on one compiler with only the corpus swapped, across a checker PR
+// that grew `checker.vibe` 9.7%: `parse_checker_vibe` went 4,926,112 ->
+// 5,780,608 B/op (+17.3%). The perf report flags that with a warning, and a
+// reviewer acts on it. Every checker PR of any size tripped it, and a real
+// parser regression landing beside a checker edit was indistinguishable from
+// corpus growth.
+//
+// Two properties, because pinning the corpus and leaving it pinned are
+// different things:
+//
+//   1. Every snapshot (`bench/perf/corpus/*.vibe.txt`) has a row in
+//      PROVENANCE.tsv, every row's snapshot exists, and its sha256 and byte
+//      count match the row. A frozen corpus is rewritten by
+//      scripts/bump_bench_corpus.sh, which rewrites the banner and the digest
+//      TOGETHER, and by nothing else. An edit that skips it silently restates
+//      every number in the series.
+//   2. No `*_bench.vibe` or `*_probe.vibe` directly under lib/@vibe/compiler/
+//      names a live source path (a `"lib/....vibe"` string literal) as its
+//      corpus, unless bench/perf/corpus/ALLOWLIST.txt lists it with a reason.
+//
+// The allow-list is the decision surface: a bench whose subject IS the live tree
+// (the loader resolves a real import closure, which a frozen copy cannot stand
+// in for) says so there, and a bench that simply has not been pinned yet says
+// THAT there, with an issue number. Silence is neither. An allow-list row is
+// `<path><TAB><reason>`; a row with no reason, or naming a file that does not
+// exist, fails. A missing allow-list, a PROVENANCE.tsv with no rows, and no
+// bench files at all fail too: each would otherwise pass by seeing nothing.
+//
+// --root DIR checks another tree (the self-test's).
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/core {
+  sha256
+}
+import @vibe/process {
+  exit
+}
+import @vibex/shell {
+  ls, sort_str
+}
+
+struct Prov {
+  corpus: String;
+  sha: String;
+  bytes: String
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn under(root: String, rel: String) -> String {
+  if root == "." {
+    rel
+  } else {
+    "\{root}/\{rel}"
+  }
+}
+
+fn contains(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == x {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The files directly in `dir` whose name ends in one of `suffixes`, as
+/// `rel/name`, sorted.
+fn files_ending(root: String, rel: String, suffixes: Array[String]) -> Array[String] with Fs {
+  let out: Array[String] = []
+  if Fs::is_dir(under(root, rel)) {
+    let entries = ls(under(root, rel))
+    let mut i = 0
+    while i < Array::length(entries) {
+      let entry = Array::get(entries, i)
+      let mut hit = false
+      let mut s = 0
+      while s < Array::length(suffixes) {
+        if String::ends_with(entry.name, Array::get(suffixes, s)) {
+          hit = true
+        } else {
+          ()
+        }
+        s = s + 1
+      }
+      if hit && !entry.is_dir {
+        Array::push(out, "\{rel}/\{entry.name}")
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  sort_str(out)
+}
+
+/// The `"lib/....vibe"` string literals on a line: a quote, `lib/`, no quote,
+/// `.vibe`, a quote.
+fn names_live_path(line: String) -> Bool {
+  let mut found = false
+  let mut from = 0
+  let mut going = true
+  while going && !found {
+    let start = String::index_of_from(line, "\"lib/", from)
+    if start < 0 {
+      going = false
+    } else {
+      let close = String::index_of_from(line, "\"", start + 1)
+      if close < 0 {
+        going = false
+      } else if String::ends_with(String::substring(line, start + 1, close), ".vibe") {
+        found = true
+      } else {
+        from = start + 1
+      }
+    }
+  }
+  found
+}
+
+/// Property 1. Returns the number of problems reported.
+fn check_digests(root: String) -> Int with Fs + Stderr::write_stream {
+  let prov_rel = "bench/perf/corpus/PROVENANCE.tsv"
+  if !Fs::is_file(under(root, prov_rel)) {
+    Stderr::write_stream("[bench-corpus] FAIL: missing \{prov_rel} -- the digests the frozen corpus is checked against\n")
+    1
+  } else {
+    let rows: Array[Prov] = []
+    let mut bad = 0
+    let lines = String::split(Fs::read_file(under(root, prov_rel)), "\n")
+    let mut i = 0
+    while i < Array::length(lines) {
+      let line = Array::get(lines, i)
+      if line == "" || String::starts_with(line, "#") {
+        ()
+      } else {
+        let parts = String::split(line, "\t")
+        if Array::length(parts) != 6 {
+          Stderr::write_stream("[bench-corpus] FAIL: malformed PROVENANCE.tsv row: \{line}\n")
+          bad = bad + 1
+        } else {
+          Array::push(rows, Prov::{
+            corpus: Array::get(parts, 0),
+            sha: Array::get(parts, 3),
+            bytes: Array::get(parts, 4)
+          })
+        }
+      }
+      i = i + 1
+    }
+    let recorded: Array[String] = []
+    let mut r = 0
+    while r < Array::length(rows) {
+      Array::push(recorded, Array::get(rows, r).corpus)
+      r = r + 1
+    }
+    let snapshots = files_ending(root, "bench/perf/corpus", [".vibe.txt"])
+    if Array::length(rows) == 0 && bad == 0 {
+      Stderr::write_stream("[bench-corpus] FAIL: \{prov_rel} records no snapshot. The gate would pass by checking nothing, so it fails instead\n")
+      bad = 1
+    } else {
+      ()
+    }
+    let mut s = 0
+    while s < Array::length(snapshots) {
+      let snap = Array::get(snapshots, s)
+      if !contains(recorded, snap) {
+        Stderr::write_stream("[bench-corpus] FAIL: \{snap} has no PROVENANCE.tsv row\n")
+        Stderr::write_stream("  A snapshot is frozen by scripts/bump_bench_corpus.sh, which records its digest as it writes it.\n")
+        bad = bad + 1
+      } else {
+        ()
+      }
+      s = s + 1
+    }
+    let mut p = 0
+    while p < Array::length(rows) {
+      let row = Array::get(rows, p)
+      let path = under(root, row.corpus)
+      if !Fs::is_file(path) {
+        Stderr::write_stream("[bench-corpus] FAIL: \{row.corpus} is recorded but missing\n")
+        bad = bad + 1
+      } else {
+        let raw = Fs::read_file(path)
+        let got = sha256(raw)
+        if got != row.sha {
+          Stderr::write_stream("[bench-corpus] FAIL: \{row.corpus} does not match its recorded digest\n")
+          Stderr::write_stream("  recorded \{row.sha}\n")
+          Stderr::write_stream("  actual   \{got}\n")
+          Stderr::write_stream("  A frozen corpus is edited by scripts/bump_bench_corpus.sh and by nothing else; an edit here silently restates every number in the series.\n")
+          bad = bad + 1
+        } else if "\{String::length(raw)}" != row.bytes {
+          Stderr::write_stream("[bench-corpus] FAIL: \{row.corpus} byte count \{String::length(raw)} does not match the recorded \{row.bytes}\n")
+          bad = bad + 1
+        } else {
+          ()
+        }
+      }
+      p = p + 1
+    }
+    bad
+  }
+}
+
+fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process {
+  let root = option("--root", ".")
+  let allow_rel = "bench/perf/corpus/ALLOWLIST.txt"
+  let digest_problems = check_digests(root)
+  if !Fs::is_file(under(root, allow_rel)) {
+    Stderr::write_stream("[bench-corpus] FAIL: missing \{allow_rel} (an absent allow-list is not an empty one)\n")
+    exit(1)
+  } else {
+    ()
+  }
+  let allowed: Array[String] = []
+  let mut bad = digest_problems
+  let rows = String::split(Fs::read_file(under(root, allow_rel)), "\n")
+  let mut i = 0
+  while i < Array::length(rows) {
+    let line = Array::get(rows, i)
+    if line == "" || String::starts_with(line, "#") {
+      ()
+    } else {
+      let tab = String::index_of_from(line, "\t", 0)
+      let path = if tab < 0 {
+        line
+      } else {
+        String::substring(line, 0, tab)
+      }
+      let reason = if tab < 0 {
+        ""
+      } else {
+        String::substring(line, tab + 1, String::length(line))
+      }
+      if reason == "" {
+        Stderr::write_stream("[bench-corpus] FAIL: allow-list row with no reason: \{path}\n")
+        Stderr::write_stream("  A row here is a written admission that a bench reads an input PRs edit; say why.\n")
+        bad = bad + 1
+      } else if !Fs::is_file(under(root, path)) {
+        Stderr::write_stream("[bench-corpus] FAIL: allow-list names a file that does not exist: \{path}\n")
+        Stderr::write_stream("  A stale row exempts nothing and hides that the corpus moved.\n")
+        bad = bad + 1
+      } else {
+        Array::push(allowed, path)
+      }
+    }
+    i = i + 1
+  }
+  let benches = files_ending(root, "lib/@vibe/compiler", [
+    "_bench.vibe",
+    "_probe.vibe"
+  ])
+  let mut live = 0
+  let mut b = 0
+  while b < Array::length(benches) {
+    let f = Array::get(benches, b)
+    if !contains(allowed, f) {
+      let lines = String::split(Fs::read_file(under(root, f)), "\n")
+      let mut reported = false
+      let mut n = 0
+      while n < Array::length(lines) {
+        let line = Array::get(lines, n)
+        if names_live_path(line) {
+          if !reported {
+            Stderr::write_stream("[bench-corpus] FAIL: \{f} names a LIVE source path as a bench corpus (#2865)\n")
+            reported = true
+          } else {
+            ()
+          }
+          Stderr::write_stream("    \{n + 1}:\{line}\n")
+        } else {
+          ()
+        }
+        n = n + 1
+      }
+      if reported {
+        live = live + 1
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    b = b + 1
+  }
+  if Array::length(benches) == 0 {
+    // Silence is "unchecked", not "clean".
+    Stderr::write_stream("[bench-corpus] FAIL: no bench files matched lib/@vibe/compiler/*_bench.vibe or *_probe.vibe\n")
+    exit(1)
+  } else if live > 0 {
+    Stderr::write_stream("  Read bench/perf/corpus/ instead, or add a row to \{allow_rel} saying why not.\n")
+    exit(1)
+  } else if bad > 0 {
+    exit(1)
+  } else {
+    Console::write_stream("[bench-corpus] ok (\{Array::length(benches)} bench file(s) scanned, digests verified)\n")
+  }
+}

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# check_doc_classification_test.sh -- red test for check_doc_classification.sh.
+# check_doc_classification_test.sh -- red test for check_doc_classification.vibex
+# (#3672 ported the gate).
 #
 # Per AGENTS.md ("a passing gate means nothing until it is known to be able to
 # fail"): every case below MUTATES a synthetic tree and asserts the gate goes
@@ -12,17 +13,18 @@
 # was established separately: on the commit that introduced it, it reported all
 # five documents that had drifted out of docs/README.md.
 #
-# #2252: the gate's own environment variable is unset at the top and set
-# explicitly per case. Inheriting it from a shell (or from a session hook) is
-# how five self-tests were once quietly turned into no-ops.
+# Every case passes its tree as --root; nothing is read from the environment
+# (#2252: inheriting a gate's input from a shell or a session hook is how five
+# self-tests were once quietly turned into no-ops).
 
 set -euo pipefail
 
-unset VIBE_DOC_CLASSIFICATION_ROOT
-
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-gate="$repo_root/scripts/check_doc_classification.sh"
-work="$(mktemp -d "${TMPDIR:-/tmp}/vibe_doc_classification_test.XXXXXX")"
+cd "$repo_root"
+# The gate reads only inside the repository, so the trees live under _build/.
+work_rel="_build/doc_classification_test.$$"
+work="$repo_root/$work_rel"
+mkdir -p "$work"
 trap 'rm -rf "$work"' EXIT
 
 fails=0
@@ -79,7 +81,9 @@ Router.
 EOF
 }
 
-run_gate() { VIBE_DOC_CLASSIFICATION_ROOT="$1" bash "$gate" >"$2" 2>&1; }
+run_gate() { # <tree under $work> <output file>
+  bash "$repo_root/scripts/vibe_run.sh" scripts/check_doc_classification.vibex -- --root "$work_rel/${1#"$work"/}" >"$2" 2>&1
+}
 
 # --- control: the unmutated tree passes --------------------------------------
 #
@@ -233,8 +237,28 @@ else
   fi
 fi
 
+# --- case 7: --list names each document's class ------------------------------
+
+t="$work/list"
+build_tree "$t"
+want_row=$'docs/report/bench-b.md\t2. Maintainer / internal'
+if bash "$repo_root/scripts/vibe_run.sh" scripts/check_doc_classification.vibex -- --root "$work_rel/list" --list >"$work/list.out" 2>&1 \
+  && grep -qF -- "$want_row" "$work/list.out"; then
+  pass "case 7: --list names the class a directory row gives its child"
+else
+  fail "case 7: --list did not name docs/report/bench-b.md's class: $(cat "$work/list.out")"
+fi
+
+# --- case 8: the real tree passes ---------------------------------------------
+
+if bash "$repo_root/scripts/vibe_run.sh" scripts/check_doc_classification.vibex >"$work/real.out" 2>&1; then
+  pass "case 8: the repository's own docs/ passes"
+else
+  fail "case 8: the repository's own docs/ was rejected: $(cat "$work/real.out")"
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "doc-classification-test: FAILED" >&2
   exit 1
 fi
-echo "doc-classification-test: ok (control + 6 red cases)"
+echo "doc-classification-test: ok (control + 6 red cases + --list + the real tree)"

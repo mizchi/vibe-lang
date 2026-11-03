@@ -388,8 +388,9 @@ capability rides the row, and the expression at the call site stays an
 ordinary function call. Authorization is settled **once, in the earliest
 phase** of build → apply → instantiate, and authority does not change during a
 run (ADR-0075/0084/0088). **Incremental builds** for notebook-driven
-development (the `vibe check` lane has typing reuse on by default; reuse beyond
-typing is tracked in #2825). **Capabilities fixed at build
+development (the `vibe check` lane has typing reuse on by default, and `vibe run` /
+`build` / `test` replay an unchanged build's module through the linked-output
+memo; reuse inside the back end after an edit is tracked in #2825). **Capabilities fixed at build
 time drive progressive code generation for the target platform's wasm runtime**
 — `--allow-*` drops the code for capabilities that were not granted, via
 const-fold plus DCE, and the generated wasm declares the feature level it

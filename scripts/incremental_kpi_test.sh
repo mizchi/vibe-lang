@@ -76,9 +76,16 @@ expect_red cold-vs-cold "the warm rebuild reused nothing" \
 #    what turned a +3.5% regression into a "-31%/-42% win" in #2393, and it
 #    does not announce itself in the timings.
 expect_red warm-labelled-cold "it is not a cold baseline" \
-  'const cold = compile(corpus, cache, `${corpus.name}-cold`);' \
-  'compile(corpus, cache, `${corpus.name}-warmup`);
-  const cold = compile(corpus, cache, `${corpus.name}-cold`);'
+  'const cold = compile(corpus, cache, `${corpus.name}-cold`, "on");' \
+  'compile(corpus, cache, `${corpus.name}-warmup`, "off");
+  const cold = compile(corpus, cache, `${corpus.name}-cold`, "on");'
+
+# 3. The no-op row (#2825): a rebuild that did not replay the linked-output
+#    memo is still a correct, byte-identical build, so only the compiler's own
+#    replay signal can tell that the row measured a back-end rebuild instead.
+expect_red noop-without-memo "did not replay the linked-output memo" \
+  'const noop = compile(corpus, cache, `${corpus.name}-noop`, "on");' \
+  'const noop = compile(corpus, cache, `${corpus.name}-noop`, "off");'
 
 # The green control. Without it a KPI that always refused would pass both cases
 # above while measuring nothing at all.

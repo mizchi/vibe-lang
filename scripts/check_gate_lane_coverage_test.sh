@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Red test for scripts/check_gate_lane_coverage.sh.
+# Red test for scripts/check_gate_lane_coverage.vibex (#3672 ported the gate).
 #
 # Every case MUTATES a copy of the real tree and asserts the gate rejects it,
 # and every mutation is verified to have BOUND before the gate is asked.
 set -euo pipefail
 
-unset VIBE_GATE_LANE_COVERAGE_ROOT
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-GATE="$SCRIPT_DIR/check_gate_lane_coverage.sh"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/vibe_lane_cov.XXXXXX")"
+cd "$ROOT_DIR"
+# The gate reads only inside the repository, so the scratch tree is under _build/.
+TMP_REL="_build/gate_lane_coverage_test.$$"
+TMP="$ROOT_DIR/$TMP_REL"
+mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT
+gate() { bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/check_gate_lane_coverage.vibex -- --root "$TMP_REL/t"; }
 
 fail() { echo "check_gate_lane_coverage_test: FAIL: $*" >&2; exit 1; }
 
@@ -25,7 +27,7 @@ fresh() {
 }
 
 expect_reject() {  # $1 = label, $2 = substring the message must contain
-  if VIBE_GATE_LANE_COVERAGE_ROOT="$TMP/t" bash "$GATE" >"$TMP/out" 2>&1; then
+  if gate >"$TMP/out" 2>&1; then
     cat "$TMP/out" >&2
     fail "$1: the mutated tree was ACCEPTED"
   fi
@@ -35,7 +37,7 @@ expect_reject() {  # $1 = label, $2 = substring the message must contain
 
 # --- control ---------------------------------------------------------------
 fresh
-VIBE_GATE_LANE_COVERAGE_ROOT="$TMP/t" bash "$GATE" >"$TMP/control.out" 2>&1 \
+gate >"$TMP/control.out" 2>&1 \
   || { cat "$TMP/control.out" >&2; fail "control: the repository's own tree is rejected"; }
 echo "check_gate_lane_coverage_test: ok: control: the real tree passes"
 
@@ -114,4 +116,27 @@ assert "compiler_gate.sh early mid late" in p.read_text(), "mutation did not lan
 MUT5
 expect_reject "a workflow enumeration that omits a lane is rejected" "omits: selftests"
 
-echo "check_gate_lane_coverage_test: ok (control + 5 cases)"
+# --- case 6: a commented-out enumeration is not a caller -------------------
+fresh
+printf '# run: bash scripts/compiler_gate.sh early mid\n' >> "$TMP/t/.github/workflows/ci.yml"
+grep -q '^# run: bash scripts/compiler_gate.sh early mid$' "$TMP/t/.github/workflows/ci.yml" || fail "case 6: mutation did not land"
+gate >"$TMP/out" 2>&1 || { cat "$TMP/out" >&2; fail "case 6: a commented-out enumeration was read as a caller"; }
+echo "check_gate_lane_coverage_test: ok: a commented-out enumeration is not a caller"
+
+# --- case 7: a tab between the lanes still separates them -------------------
+fresh
+python3 - "$TMP/t/Taskfile.pkl" <<'MUT7' || fail "mutation did not bind"
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = 'compiler_gate.sh early mid late selftests"'
+assert old in s
+p.write_text(s.replace(old, 'compiler_gate.sh early\tmid late"', 1))
+MUT7
+expect_reject "a tab-separated enumeration that omits a lane is rejected" "omits: selftests"
+
+# --- case 8: no Taskfile is unchecked, not clean ----------------------------
+fresh
+rm "$TMP/t/Taskfile.pkl"
+expect_reject "a caller that cannot be read is rejected" "cannot read Taskfile.pkl"
+
+echo "check_gate_lane_coverage_test: ok (control + 8 cases)"

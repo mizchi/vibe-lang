@@ -1,0 +1,51 @@
+// Print a source group (scripts/source_group.vibe) as one file. #3672 ported
+// this from `python3 scripts/source_files.py <path>`.
+//
+//   bash scripts/vibe_run.sh scripts/source_group.vibex -- <path> [<path> ...]
+//
+// A gate's self-test mutates a COPY of the source a gate reads. When that
+// source is a facade, the copy has to hold the whole group, and it must not
+// read as a facade itself -- its implementation files are not beside it -- so
+// the facade marker is rewritten to say the file is a flattened group.
+//
+// Given several paths, each group is preceded by a `==> PATH <==` line, as
+// `head` does with several files, so one run can print many groups. A module
+// a group names that is not there fails (exit 1) rather than printing a group
+// with a hole in it.
+
+import @vibe/builtin {
+  String::replace_all
+}
+import @vibe/process {
+  exit
+}
+import ./source_group.vibe {
+  read_source_group
+}
+
+fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Console::write_stream + Stderr::write_stream + Process {
+  let n = Env::args_len()
+  if n == 0 {
+    Stderr::write_stream("source-group: usage: source_group.vibex <path> [<path> ...]\n")
+    exit(2)
+  } else {
+    let mut i = 0
+    while i < n {
+      let path = Env::args_get(i)
+      let (text, missing) = read_source_group(path)
+      if missing != "" {
+        Stderr::write_stream("source-group: FAIL: \{missing} is part of the source group of \{path} and does not exist\n")
+        exit(1)
+      } else {
+        ()
+      }
+      if n > 1 {
+        Console::write_stream("==> \{path} <==\n")
+      } else {
+        ()
+      }
+      Console::write_stream(String::replace_all(text, "// Compatibility exports; implementations are grouped by their dependencies.", "// Flattened source group for a gate mutation."))
+      i = i + 1
+    }
+  }
+}
