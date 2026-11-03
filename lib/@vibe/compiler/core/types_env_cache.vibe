@@ -112,9 +112,13 @@ export enum BindingOrigin {
   BindingOriginMutableFunctionHeader(Array[(Int, Array[String], Int)]);
   BindingOriginUncertainFunctionHeader;
   /// Imported declarations retain their header on the selected value binding.
-  BindingOriginModuleFunctionHeader(String, String, Array[String]);
-  /// A published callable surface retains names without introducing a local binder.
-  BindingOriginReExportFunctionHeader(String, String, Array[String])
+  /// The last field is the declaration's parameter-default bits, one per
+  /// parameter, or empty when it declares no default (#3440): an importer
+  /// needs them to refuse a written `None` for a defaulted parameter.
+  BindingOriginModuleFunctionHeader(String, String, Array[String], Array[Bool]);
+  /// A published callable surface retains names without introducing a local
+  /// binder, and the default bits the same way.
+  BindingOriginReExportFunctionHeader(String, String, Array[String], Array[Bool])
 }
 
 /// Persistent contexts contain label facts, never a mutable box or revision.
@@ -443,8 +447,8 @@ export fn env_type_definition_origin(env: TypeEnv, name: String) -> Option[Bindi
       EnvBind(n, binding, rest) => {
         if n == marker || n == name {
           match binding.origin {
-            BindingOriginModuleFunctionHeader(path, source, _) => pending = Some(BindingOriginModuleExport(path, source)),
-            BindingOriginReExportFunctionHeader(path, source, _) => pending = Some(BindingOriginReExportSurface(path, source)),
+            BindingOriginModuleFunctionHeader(path, source, _, _) => pending = Some(BindingOriginModuleExport(path, source)),
+            BindingOriginReExportFunctionHeader(path, source, _, _) => pending = Some(BindingOriginReExportSurface(path, source)),
             BindingOriginUnavailable => (),
             BindingOriginFunctionHeader(_) => (),
             BindingOriginDefaultedFunctionHeader(_, _) => (),
@@ -500,8 +504,8 @@ fn source_type_definition_origin(env: TypeEnv, name: String) -> Option[BindingOr
     Some(origin) => Some(origin),
     None => match env_lookup_binding(env, name) {
       Some(binding) => match binding.origin {
-        BindingOriginModuleFunctionHeader(path, source, _) => Some(BindingOriginModuleExport(path, source)),
-        BindingOriginReExportFunctionHeader(path, source, _) => Some(BindingOriginReExportSurface(path, source)),
+        BindingOriginModuleFunctionHeader(path, source, _, _) => Some(BindingOriginModuleExport(path, source)),
+        BindingOriginReExportFunctionHeader(path, source, _, _) => Some(BindingOriginReExportSurface(path, source)),
         BindingOriginUnavailable => None,
         BindingOriginFunctionHeader(_) => None,
         BindingOriginDefaultedFunctionHeader(_, _) => None,
@@ -621,7 +625,7 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
           done = true
         },
         EnvBind(n, binding, rest) => match binding.origin {
-          BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _) => {
+          BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => {
             // Surface-only entries are lookup barriers, not local values. They
             // still belong in the acceleration index so an older same-named
             // real binding cannot win before the authoritative chain is read.
@@ -1066,7 +1070,7 @@ export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
       EnvBind(n, binding, rest) => {
         if String::equals(n, name) {
           match binding.origin {
-            BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _) => {
+            BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => {
               found = true
               done = true
             },
@@ -1105,7 +1109,7 @@ export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
           let (n, binding) = Array::get(bindings, i)
           if String::equals(n, name) {
             match binding.origin {
-              BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _) => {
+              BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => {
                 found = true
               },
               _ => ()
@@ -1136,7 +1140,7 @@ fn env_without_reexport_surface_bindings(env: TypeEnv) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
     EnvBind(name, binding, rest) => match binding.origin {
-      BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _) => env_without_reexport_surface_bindings(rest),
+      BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => env_without_reexport_surface_bindings(rest),
       _ => EnvBind(name, binding, env_without_reexport_surface_bindings(rest))
     },
     EnvTraitDef(name, supers, marker, methods, rest, params, method_gens) => EnvTraitDef(name, supers, marker, methods, env_without_reexport_surface_bindings(rest), params, method_gens),
@@ -1151,7 +1155,7 @@ fn env_without_reexport_surface_bindings(env: TypeEnv) -> TypeEnv {
       while i < Array::length(bindings) {
         let pair = Array::get(bindings, i)
         match pair.1.origin {
-          BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _) => (),
+          BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => (),
           _ => Array::push(kept, pair)
         }
         i = i + 1
@@ -1165,7 +1169,7 @@ fn env_without_reexport_surface_bindings(env: TypeEnv) -> TypeEnv {
       while i < env_name_index_length(names) {
         let binding = Array::get(bindings, i)
         match binding.origin {
-          BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _) => (),
+          BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => (),
           _ => {
             Array::push(kept_names, env_name_index_at(names, i))
             Array::push(kept_bindings, binding)
@@ -1214,7 +1218,7 @@ fn env_lookup_project[T](env: TypeEnv, name: String, missing: Option[T], project
       },
       EnvBind(n, binding, rest) => if String::equals(n, name) {
         match binding.origin {
-          BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _) => {
+          BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => {
             // A surface-only binding is authoritative at its position in the
             // chain. A later real binding is already nearer the head; when the
             // surface entry itself is reached, do not reveal an older plain
@@ -1253,7 +1257,7 @@ fn env_lookup_project[T](env: TypeEnv, name: String, missing: Option[T], project
           let (n, binding) = Array::get(bindings, j)
           if String::equals(n, name) {
             match binding.origin {
-              BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _) => {
+              BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => {
                 done = true
               },
               _ => {
@@ -1274,7 +1278,7 @@ fn env_lookup_project[T](env: TypeEnv, name: String, missing: Option[T], project
         if slot >= 0 {
           let binding = Array::get(types_sorted, slot)
           match binding.origin {
-            BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _) => {
+            BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => {
               done = true
             },
             _ => {

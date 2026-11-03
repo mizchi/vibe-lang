@@ -218,11 +218,11 @@ test "imported headers retain module identity and surface barriers in caches" {
     BindingOriginModuleFunctionHeader("dep.vibe", "original", [
       "second~",
       "first?"
-    ]),
+    ], []),
     BindingOriginReExportFunctionHeader("dep.vibe", "original", [
       "second~",
       "first?"
-    ])
+    ], [])
   ]
   let mut i = 0
   while i < Array::length(origins) {
@@ -248,6 +248,86 @@ test "imported headers retain module identity and surface barriers in caches" {
   }
 }
 
+/// #3440: an imported declaration's parameter-default bits ride on its
+/// header through both transports, so an importer refuses a written `None`
+/// for a defaulted parameter. A re-export is a surface, not a binder, so its
+/// bits are checked on the binding itself; a header without defaults answers
+/// `None`.
+fn assert_default_bits(env: TypeEnv, origin: BindingOrigin, surface: Bool) -> Unit {
+  match env_lookup_binding_including_surface(env, "f") {
+    Some(binding) => assert(binding.origin == origin),
+    None => assert(false)
+  }
+  if surface {
+    ()
+  } else {
+    assert(checker_call_header_defaults(env, "f") == Some([false, true]))
+  }
+}
+
+test "imported headers retain their parameter-default bits in caches" {
+  let origins = [
+    BindingOriginModuleFunctionHeader("dep.vibe", "original", ["x", "y?"], [
+      false,
+      true
+    ]),
+    BindingOriginReExportFunctionHeader("dep.vibe", "original", ["x", "y?"], [
+      false,
+      true
+    ])
+  ]
+  let mut i = 0
+  while i < Array::length(origins) {
+    let origin = Array::get(origins, i)
+    let env = env_cache(env_bind_with_origin(EnvEmpty, "f", header_type(), origin))
+    assert_default_bits(env, origin, i == 1)
+    match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
+      Some(decoded) => assert_default_bits(decoded, origin, i == 1),
+      None => assert(false)
+    }
+    let checked = CheckedProgram::{
+      checked_stmts: [],
+      final_env: env,
+      type_defs: [],
+      final_subst: SubstEmpty,
+      typed_occurrences: []
+    }
+    match decode_checked_program(encode_checked_program(checked)) {
+      Some(decoded) => assert_default_bits(decoded.final_env, origin, i == 1),
+      None => assert(false)
+    }
+    i = i + 1
+  }
+  let plain = env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginModuleFunctionHeader("dep.vibe", "original", [
+    "x",
+    "y?"
+  ], []))
+  assert(checker_call_header_defaults(plain, "f") == None)
+}
+
+/// A cache cannot invent a default bit for an imported header's absent
+/// parameter, or carry an all-false vector as a second spelling of none.
+test "imported header transports refuse malformed default bits" {
+  for flags in [[true], [false, false]] {
+    let env = env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginModuleFunctionHeader("dep.vibe", "original", [
+      "x",
+      "y?"
+    ], flags))
+    let checked = CheckedProgram::{
+      checked_stmts: [],
+      final_env: env,
+      type_defs: [],
+      final_subst: SubstEmpty,
+      typed_occurrences: []
+    }
+    assert(decode_checked_program(encode_checked_program(checked)) == None)
+    let parsed = handle {
+      parse_persistent_type_env(persistent_type_env_cache_text(env))
+    } with { Exception::Throw(_) => None }
+    assert(parsed == None)
+  }; ()
+}
+
 /// A callable constructor's parameter names are not part of nominal type identity.
 test "imported callable headers preserve the type declaration's module origin" {
   let definitions = EnvTypeDefs([TDStruct("Box", [("value", CtInt)], [], [])], [
@@ -255,7 +335,7 @@ test "imported callable headers preserve the type declaration's module origin" {
   ], EnvEmpty)
   let env = env_bind_with_origin(definitions, "Box", CtFn([CtInt], CtStruct("Box"), None), BindingOriginModuleFunctionHeader("dep.vibe", "Box", [
     "value"
-  ]))
+  ], []))
   assert(env_type_definition_origin(env, "Box") == Some(BindingOriginModuleExport("dep.vibe", "Box")))
 }
 
@@ -264,7 +344,7 @@ test "imported callable surfaces preserve builtin resolution authority" {
   let name = "String::length"
   let origin = BindingOriginReExportFunctionHeader("dep.vibe", "length", [
     "value"
-  ])
+  ], [])
   let binding = EnvValueBinding::{ ty: CtUnknown, origin: origin }
   let actual = env_bind_with_origin(EnvEmpty, name, CtUnknown, origin)
   assert(!builtin_resolves_at(actual, name, 10))
@@ -273,6 +353,6 @@ test "imported callable surfaces preserve builtin resolution authority" {
   assert(builtin_resolves_at(accelerator_only, name, 10))
   let imported = env_bind_with_origin(EnvEmpty, name, header_type(), BindingOriginModuleFunctionHeader("dep.vibe", "length", [
     "value"
-  ]))
+  ], []))
   assert(!builtin_resolves_at(imported, name, 10))
 }
