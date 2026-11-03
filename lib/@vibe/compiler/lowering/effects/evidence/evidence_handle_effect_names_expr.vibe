@@ -2020,13 +2020,15 @@ fn edp_collect_handle_effect_names_expr(expr: Expr, out: Array[String]) -> Unit 
 
 /// (lambda names, lambda literals, binder tally log, host-raw callees, binder
 /// log, row-annotated lambda in the row-literal region, identifiers bound by
-/// `let` / `let rec` there). The two logs keep repeats; replaying them gives
-/// the counts and the census without a map or a set per statement. The last
-/// two decide whether edp_row_lit_scan can collect anything from it.
-type EdpStmtFacts = (Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])
+/// `let` / `let rec` there, identifiers passed there as bare call arguments).
+/// The two logs keep repeats; replaying them gives the counts and the census
+/// without a map or a set per statement. The last three decide whether
+/// edp_row_lit_scan, the eta-wrap gate or the escape check can find anything
+/// in it.
+type EdpStmtFacts = (Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])
 
 /// Facts of each statement, valid for the tree as of the last refresh.
-export fn edp_mf_new() -> Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])] {
+export fn edp_mf_new() -> Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])] {
   edp_mf_dirty_reset()
   []
 }
@@ -2040,11 +2042,12 @@ fn edp_mf_stmt_facts(_ stmt: Stmt) -> EdpStmtFacts {
   edp_host_raw_callees_stmt(stmt = stmt, found = host)
   let row_efn = [false]
   let ident_lets = empty_str_array()
+  let ident_args = empty_str_array()
   match edp_row_lit_region(stmt) {
-    Some(scanned) => edp_row_lit_shape(expr = scanned, row_efn = row_efn, ident_lets = ident_lets),
+    Some(scanned) => edp_row_lit_shape(expr = scanned, row_efn = row_efn, ident_lets = ident_lets, ident_args = ident_args),
     None => ()
   }
-  (names, bodies, tallies.2, host, edp_statement_binder_log(stmt), Array::get(row_efn, at = 0), ident_lets)
+  (names, bodies, tallies.2, host, edp_statement_binder_log(stmt), Array::get(row_efn, at = 0), ident_lets, ident_args)
 }
 
 /// Bring the facts up to the current tree: walk the statements replaced since
@@ -2052,7 +2055,7 @@ fn edp_mf_stmt_facts(_ stmt: Stmt) -> EdpStmtFacts {
 /// once per write (a migration's closure-binding rewrite replaces every
 /// statement once per candidate), so each statement is walked once, as it now
 /// stands.
-export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])], stmts: Array[Stmt]) -> Unit {
+export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt]) -> Unit {
   let known = Array::length(facts)
   let walked = MutSet::new_int()
   for i in edp_mf_dirty_indices() {
@@ -2071,7 +2074,7 @@ export fn edp_mf_refresh(facts: Array[(Array[String], Array[Expr], Array[String]
 
 /// The inert base edp_apply_migration_with_tree_facts computes for `stmts`
 /// when it is given none, from refreshed facts.
-export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Array[String] {
+export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Array[String] {
   let fresh = edp_pure_fn_names(fn_defs)
   let top_names = empty_str_array()
   for stmt in stmts {
@@ -2083,7 +2086,7 @@ export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], A
   }
   let found = empty_str_array()
   for fact in facts {
-    let (_, _, _, host, _, _, _) = fact
+    let (_, _, _, host, _, _, _, _) = fact
     for nm in host {
       if !edp_str_array_contains(arr = found, v = nm) {
         Array::push(found, value = nm)
@@ -2096,7 +2099,7 @@ export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], A
   let bodies: Array[Expr] = []
   let bcount = edp_binder_counts_new()
   for fact in facts {
-    let (fnames, fbodies, tallies, _, _, _, _) = fact
+    let (fnames, fbodies, tallies, _, _, _, _, _) = fact
     for nm in fnames {
       Array::push(names, value = nm)
     }
@@ -2112,10 +2115,10 @@ export fn edp_mf_base(facts: Array[(Array[String], Array[Expr], Array[String], A
 }
 
 /// edp_collect_program_binders of `stmts`, from refreshed facts.
-export fn edp_mf_binders(_ facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])]) -> MutSet[String] {
+export fn edp_mf_binders(_ facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])]) -> MutSet[String] {
   let out = MutSet::new_string()
   for fact in facts {
-    let (_, _, _, _, binders, _, _) = fact
+    let (_, _, _, _, binders, _, _, _) = fact
     for nm in binders {
       MutSet::insert(out, x = nm)
     }
@@ -2126,37 +2129,73 @@ export fn edp_mf_binders(_ facts: Array[(Array[String], Array[Expr], Array[Strin
 /// Every node edp_row_lit_scan_expr collects from: an `EFn` with a row
 /// annotation (a row literal, or the value a binding is collected for), and an
 /// identifier a `let` / `let rec` binds (collected when it names a needing
-/// function). expr_children reaches every node the scan does, so a region
-/// with neither holds nothing the scan collects.
-fn edp_row_lit_shape(expr: Expr, row_efn: Array[Bool], ident_lets: Array[String]) -> Unit {
+/// function). Also every identifier passed as a bare call argument, the other
+/// node the eta-wrap gate (RQNeedingValueArg) and edp_needing_escape stop at.
+/// expr_children reaches every node those walks visit, so a region with none
+/// of these holds nothing they find.
+fn edp_row_lit_shape(expr: Expr, row_efn: Array[Bool], ident_lets: Array[String], ident_args: Array[String]) -> Unit {
   match expr {
     EFn(_, _, _, _, Some(_), _) => Array::set(row_efn, at = 0, value = true),
     ELet(_, EIdent(v, _), _, _) => Array::push(ident_lets, value = v),
     ELetRec(_, EIdent(v, _), _) => Array::push(ident_lets, value = v),
+    ECall(_, args, _, _) => for arg in args {
+      match arg {
+        EIdent(v, _) => Array::push(ident_args, value = v),
+        _ => ()
+      }
+    },
     _ => ()
   }
   let mark = expr_children_push(expr)
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    edp_row_lit_shape(expr = expr_child_at(i), row_efn = row_efn, ident_lets = ident_lets)
+    edp_row_lit_shape(expr = expr_child_at(i), row_efn = row_efn, ident_lets = ident_lets, ident_args = ident_args)
     i = i + 1
   }
   expr_children_pop(mark)
+}
+
+fn edp_names_any(names: Array[String], wanted: Array[String]) -> Bool {
+  let mut hit = false
+  let mut k = 0
+  while !hit && k < Array::length(names) {
+    hit = edp_str_array_contains(arr = wanted, v = Array::get(names, at = k))
+    k = k + 1
+  }
+  hit
+}
+
+/// The statements, ascending, that pass a function in `needing` as a bare
+/// call argument, or (with `lets`) bind one with `let` / `let rec`, after
+/// bringing the facts up to `stmts`. Every other statement is one the eta-wrap
+/// gate refuses (`lets`) or the escape check passes (without).
+export fn edp_mf_statements_naming(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt], needing: Array[String], lets: Bool) -> Array[Int] {
+  edp_mf_refresh(facts = facts, stmts = stmts)
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(facts) {
+    let (_, _, _, _, _, _, ident_lets, ident_args) = Array::get(facts, at = i)
+    if edp_names_any(names = ident_args, wanted = needing) || lets && edp_names_any(names = ident_lets, wanted = needing) {
+      Array::push(out, value = i)
+    } else ()
+    i = i + 1
+  }
+  out
 }
 
 /// edp_row_lit_scan, reading only the statements it can collect from when the
 /// statement facts are at hand: those with a row-annotated lambda in their
 /// region, or a `let` of an identifier in `needing`. The facts are brought up
 /// to `stmts` first, so they describe the tree being scanned.
-export fn edp_mf_row_lit_scan(facts: Option[Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])]], stmts: Array[Stmt], ename: String, needing: Array[String], es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
+export fn edp_mf_row_lit_scan(facts: Option[Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])]], stmts: Array[Stmt], ename: String, needing: Array[String], es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
   match facts {
     Some(known) => {
       edp_mf_refresh(facts = known, stmts = stmts)
       let candidates: Array[Int] = []
       let mut i = 0
       while i < Array::length(known) {
-        let (_, _, _, _, _, row_efn, ident_lets) = Array::get(known, at = i)
+        let (_, _, _, _, _, row_efn, ident_lets, _) = Array::get(known, at = i)
         let mut hit = row_efn
         let mut k = 0
         while !hit && k < Array::length(ident_lets) {

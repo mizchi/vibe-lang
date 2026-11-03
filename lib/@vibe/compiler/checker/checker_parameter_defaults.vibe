@@ -66,35 +66,21 @@ export fn checker_parameter_defaults(_ value: Expr) -> Option[Array[Bool]] {
   }
 }
 
-fn default_export_error(_ name: String) -> String {
-  "`" + name + "` has parameter defaults and is exported, but an importer cannot tell a default from a plain `x?` yet (#3440), so its call could not tell a written `None` from an omitted argument; keep the function private, or declare the parameter `x?: T` and match on the `Option`"
-}
-
-/// Export and method restrictions belong to the declaration that owns the
-/// defaults; they do not require a label-name walk through expression bodies.
+/// Method restrictions belong to the declaration that owns the defaults;
+/// they do not require a label-name walk through expression bodies.
+///
+/// An EXPORTED declaration is not refused (#3440): its default bits travel
+/// with the imported header (`BindingOriginModuleFunctionHeader`), so an
+/// importer refuses a written `None` / `Some(..)` for a defaulted parameter
+/// and refuses the function as a value exactly as this module does.
 export fn checker_check_default_declarations(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   for stmt in stmts {
     match stmt {
-      SLet(exported, _, name, _, value) => match checker_parameter_defaults(value) {
+      SLet(_, _, name, _, value) => match checker_parameter_defaults(value) {
         Some(_) => if String::contains(name, needle = "::") {
           Array::push(errors, value = "`" + name + "` is a namespaced function with parameter defaults, which apply only to a direct call by name and not to a method call (`x.f(..)`); declare the parameter `x?: T` and match on the `Option`, or make it a plain top-level `fn`")
         } else {
-          let mut published = exported
-          for other in stmts {
-            match other {
-              SExport(names) => {
-                for n in names {
-                  published = published || n == name
-                }; ()
-              },
-              _ => ()
-            }
-          }
-          if published {
-            Array::push(errors, value = default_export_error(name))
-          } else {
-            ()
-          }
+          ()
         },
         None => ()
       },

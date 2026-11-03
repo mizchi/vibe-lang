@@ -527,21 +527,28 @@ fn engine_import_origin(path: String, name: String, surface_only: Bool) -> Bindi
     BindingOriginModuleExport(path, name)
   }
 }
-fn engine_import_function_origin(path: String, name: String, params: Array[String], surface_only: Bool) -> BindingOrigin {
+fn engine_import_function_origin(path: String, name: String, params: Array[String], defaults: Array[Bool], surface_only: Bool) -> BindingOrigin {
   if surface_only {
-    BindingOriginReExportFunctionHeader(path, name, params)
+    BindingOriginReExportFunctionHeader(path, name, params, defaults)
   } else {
-    BindingOriginModuleFunctionHeader(path, name, params)
+    BindingOriginModuleFunctionHeader(path, name, params, defaults)
   }
 }
+
+// What a header with no parameter defaults carries. Shared, so projecting
+// one allocates nothing; nothing writes to it.
+let no_param_defaults: Array[Bool] = array_empty()
 /// Project the selected declaration's header with its ultimate module origin.
 /// Reuse its names instead of manufacturing a second parameter-marker binding.
 export fn engine_selected_module_binding_origin(dep_env: TypeEnv, resolved: String, source_name: String, reexport_surface_only: Bool) -> BindingOrigin {
   match engine_selected_authoritative_binding_origin(env = dep_env, name = source_name) {
-    Some(BindingOriginModuleFunctionHeader(path, original, names)) => engine_import_function_origin(path = path, name = original, params = names, surface_only = reexport_surface_only),
-    Some(BindingOriginReExportFunctionHeader(path, original, names)) => engine_import_function_origin(path = path, name = original, params = names, surface_only = reexport_surface_only),
-    Some(BindingOriginFunctionHeader(names)) => engine_import_function_origin(path = resolved, name = source_name, params = names, surface_only = reexport_surface_only),
-    Some(BindingOriginDefaultedFunctionHeader(names, _)) => engine_import_function_origin(path = resolved, name = source_name, params = names, surface_only = reexport_surface_only),
+    Some(BindingOriginModuleFunctionHeader(path, original, names, defaults)) => engine_import_function_origin(path = path, name = original, params = names, defaults = defaults, surface_only = reexport_surface_only),
+    Some(BindingOriginReExportFunctionHeader(path, original, names, defaults)) => engine_import_function_origin(path = path, name = original, params = names, defaults = defaults, surface_only = reexport_surface_only),
+    Some(BindingOriginFunctionHeader(names)) => engine_import_function_origin(path = resolved, name = source_name, params = names, defaults = no_param_defaults, surface_only = reexport_surface_only),
+    // #3440: the default bits travel with the header, so an importer refuses
+    // a written `None` for a defaulted parameter exactly as the declaring
+    // module does. Dropping them here is what made the export unsafe.
+    Some(BindingOriginDefaultedFunctionHeader(names, flags)) => engine_import_function_origin(path = resolved, name = source_name, params = names, defaults = flags, surface_only = reexport_surface_only),
     Some(BindingOriginModuleExport(path, original)) => engine_import_origin(path = path, name = original, surface_only = reexport_surface_only),
     Some(BindingOriginReExportSurface(path, original)) => engine_import_origin(path = path, name = original, surface_only = reexport_surface_only),
     _ => engine_import_origin(path = resolved, name = source_name, surface_only = reexport_surface_only)
@@ -653,8 +660,8 @@ export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv
         // #3432: so do its parameter names, so `Box::make()` can omit an
         // optional argument when only `Box` was imported (Codex on #3441).
         match origin {
-          BindingOriginModuleFunctionHeader(_, _, _) => (),
-          BindingOriginReExportFunctionHeader(_, _, _) => (),
+          BindingOriginModuleFunctionHeader(_, _, _, _) => (),
+          BindingOriginReExportFunctionHeader(_, _, _, _) => (),
           _ => match env_lookup_flat(bindings = param_rows, name = candidate_name) {
             Some(t) => out = env_bind(env = out, name = param_names_marker(local_name), ty = t),
             None => ()
