@@ -1,0 +1,374 @@
+// #2758: the gc backend's host-import list is encoded in FIVE places, and they
+// must agree. #3672 ported this gate from check_gc_host_import_counts.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_gc_host_import_counts.vibex -- [--src PATH]
+//
+//   use_host      the || chain of used-builtin lookups that gates the block
+//   host_defs     (name, params, ABSOLUTE import index, ret) per builtin
+//   host_imports  (import name, type index) in the emitted order
+//   the vector header literal  bytebuf_push_vec_header(imp_content, N)
+//   hbo           the count, which every generated body index is offset by
+//
+// Disagreement is not a compile error -- it is a module that fails to
+// instantiate, and the two failures look nothing alike:
+//
+//   vector header too low  "section was shorter than expected size
+//                           (513 bytes expected, 491 decoded)"
+//   hbo too low            "Compiling function #46 failed: not enough arguments
+//                           on the stack for call (need 1, got 0)"
+//
+// Both were measured while adding ONE import in #2758, and the file's own
+// comment already recorded a third occurrence from an earlier change -- it said
+// FOUR places, having missed the vector header. A comment that has been wrong
+// once is what this replaces.
+//
+// This reads the SOURCE, not a compiler, so it needs no generation. It is
+// lexical on purpose: the question "do these literals agree" is answerable
+// that way, where "is the emitted module well formed" is not. The source is
+// lib/@vibe/compiler/codegen/gc/backend_body.vibe's source group
+// (scripts/source_group.vibe), so the literals are found wherever the facade's
+// implementation files hold them. --src PATH reads another file (the
+// self-test's flattened, mutated copy).
+//
+// What it reads, each the FIRST occurrence in the group:
+//   `let hbo = if use_host {` blanks DIGITS blanks `}`
+//   `bytebuf_push_vec_header(imp_content,` blanks DIGITS `)`
+//   `let host_imports = [` ... up to the next `\n    ]`, and in it every
+//       `("NAME", DIGITS)`
+//   `let host_defs = [` ... up to the next `\n    ]`, and in it every
+//       `("NAME", DIGITS, DIGITS, DIGITS)`
+// A shape it cannot find is a FAIL that says the gate needs updating: a gate
+// that cannot read its source is unchecked, not ok.
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/process {
+  exit
+}
+import @vibex/shell {
+  sort_str
+}
+import ./source_group.vibe {
+  read_source_group
+}
+
+struct Tuple {
+  name: String;
+  ints: Array[Int]
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn is_space(c: Char) -> Bool {
+  let code = Char::to_int(c)
+  c == ' ' || (code >= 9 && code <= 13)
+}
+
+fn is_digit(c: Char) -> Bool {
+  c >= '0' && c <= '9'
+}
+
+fn skip_spaces(s: String, at: Int) -> Int {
+  let mut k = at
+  while k < String::length(s) && is_space(String::byte_at(s, k)) {
+    k = k + 1
+  }
+  k
+}
+
+fn digits_end(s: String, at: Int) -> Int {
+  let mut k = at
+  while k < String::length(s) && is_digit(String::byte_at(s, k)) {
+    k = k + 1
+  }
+  k
+}
+
+fn to_int(digits: String) -> Int {
+  let mut v = 0
+  let mut i = 0
+  while i < String::length(digits) {
+    v = v * 10 + (Char::to_int(String::byte_at(digits, i)) - 48)
+    i = i + 1
+  }
+  v
+}
+
+/// The number in the first `<head>` blanks DIGITS `<tail>` (blanks before the
+/// tail only when `blank_before_tail`), or -1.
+fn number_after(src: String, head: String, tail: String, blank_before_tail: Bool) -> Int {
+  let mut found = -1
+  let mut from = 0
+  let mut going = true
+  while going {
+    let at = String::index_of_from(src, head, from)
+    if at < 0 {
+      going = false
+    } else {
+      let d = skip_spaces(src, at + String::length(head))
+      let e = digits_end(src, d)
+      let t = if blank_before_tail {
+        skip_spaces(src, e)
+      } else {
+        e
+      }
+      if e > d && String::starts_with(String::substring(src, t, String::length(src)), tail) {
+        found = to_int(String::substring(src, d, e))
+        going = false
+      } else {
+        from = at + 1
+      }
+    }
+  }
+  found
+}
+
+/// The text between `<head>` and the next `\n    ]` after it, or -1 when
+/// either is absent (as the second value).
+fn array_body(src: String, head: String) -> (String, Bool) {
+  let at = String::index_of_from(src, head, 0)
+  if at < 0 {
+    ("", false)
+  } else {
+    let start = at + String::length(head)
+    let end = String::index_of_from(src, "\n    ]", start)
+    if end < 0 {
+      ("", false)
+    } else {
+      (String::substring(src, start, end), true)
+    }
+  }
+}
+
+/// Every `("NAME", INT, ...)` with exactly `arity` integers, leftmost first.
+fn tuples(body: String, arity: Int) -> Array[Tuple] {
+  let out: Array[Tuple] = []
+  let n = String::length(body)
+  let mut from = 0
+  let mut going = true
+  while going {
+    let at = String::index_of_from(body, "(\"", from)
+    if at < 0 {
+      going = false
+    } else {
+      let close = String::index_of_from(body, "\"", at + 2)
+      let mut ok = close > at + 2
+      let ints: Array[Int] = []
+      let mut k = close + 1
+      let mut c = 0
+      while ok && c < arity {
+        if k < n && String::byte_at(body, k) == ',' {
+          let d = skip_spaces(body, k + 1)
+          let e = digits_end(body, d)
+          if e > d {
+            Array::push(ints, to_int(String::substring(body, d, e)))
+            k = e
+          } else {
+            ok = false
+          }
+        } else {
+          ok = false
+        }
+        c = c + 1
+      }
+      if ok && k < n && String::byte_at(body, k) == ')' {
+        Array::push(out, Tuple::{
+          name: String::substring(body, at + 2, close),
+          ints: ints
+        })
+        from = k + 1
+      } else {
+        from = at + 1
+      }
+    }
+  }
+  out
+}
+
+fn int_list(xs: Array[Int]) -> String {
+  let parts: Array[String] = []
+  let mut i = 0
+  while i < Array::length(xs) {
+    Array::push(parts, "\{Array::get(xs, i)}")
+    i = i + 1
+  }
+  "[\{String::join(parts, ", ")}]"
+}
+
+fn sort_ints(xs: Array[Int]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(xs) {
+    let v = Array::get(xs, i)
+    let mut j = Array::length(out)
+    Array::push(out, v)
+    while j > 0 && Array::get(out, j - 1) > v {
+      Array::set(out, j, Array::get(out, j - 1))
+      j = j - 1
+    }
+    Array::set(out, j, v)
+    i = i + 1
+  }
+  out
+}
+
+/// `Console::write_*` is a second name for the Stdout import, not a new wasm
+/// function. It repeats that index. Count the imports, not the names.
+fn stdout_alias(name: String) -> String {
+  if name == "Console::write_stream" {
+    "Stdout::write_stream"
+  } else if name == "Console::write_char" {
+    "Stdout::write_char"
+  } else {
+    ""
+  }
+}
+
+fn main allows Env + Fs::is_file + Fs::read_file + Console::write_stream + Stderr::write_stream + Process {
+  let path = option("--src", "lib/@vibe/compiler/codegen/gc/backend_body.vibe")
+  if !Fs::is_file(path) {
+    Stderr::write_stream("gc-host-import-counts: FAIL: no such file: \{path}\n")
+    exit(1)
+  } else {
+    ()
+  }
+  let (src, missing) = read_source_group(path)
+  if missing != "" {
+    Stderr::write_stream("gc-host-import-counts: FAIL: \{missing} is part of the source group of \{path} and does not exist\n")
+    exit(1)
+  } else {
+    ()
+  }
+  let fails: Array[String] = []
+  let hbo = number_after(src, "let hbo = if use_host {", "}", true)
+  if hbo < 0 {
+    Array::push(fails, "could not find `let hbo = if use_host { N }` -- the gate cannot read this file any more, which is UNCHECKED, not ok. Update the gate.")
+  } else {
+    ()
+  }
+  let vec = number_after(src, "bytebuf_push_vec_header(imp_content,", ")", false)
+  if vec < 0 {
+    Array::push(fails, "could not find `bytebuf_push_vec_header(imp_content, N)`. Update the gate.")
+  } else {
+    ()
+  }
+  let (imports_body, has_imports) = array_body(src, "let host_imports = [")
+  if !has_imports {
+    Array::push(fails, "could not find the `host_imports` array. Update the gate.")
+  } else {
+    ()
+  }
+  let imports = tuples(imports_body, 1)
+  let (defs_body, has_defs) = array_body(src, "let host_defs = [")
+  if !has_defs {
+    Array::push(fails, "could not find the `host_defs` array. Update the gate.")
+  } else {
+    ()
+  }
+  let defs = tuples(defs_body, 3)
+  if hbo >= 0 && has_imports && Array::length(imports) != hbo {
+    Array::push(fails, "hbo is \{hbo} but host_imports has \{Array::length(imports)} entries. Every generated body index is offset by hbo, so a low hbo makes the module fail to instantiate with \"not enough arguments on the stack for call\". Set hbo to \{Array::length(imports)}.")
+  } else {
+    ()
+  }
+  if hbo >= 0 && vec >= 0 && vec != hbo + 1 {
+    Array::push(fails, "the import vector header is \{vec} but hbo is \{hbo}; it must be hbo + 1 = \{hbo + 1} (the host imports plus fd_write). A low header makes the module fail to instantiate with \"section was shorter than expected size\".")
+  } else {
+    ()
+  }
+  if has_defs && hbo >= 0 {
+    let names: Array[String] = []
+    let owners: Array[Tuple] = []
+    let real: Array[Int] = []
+    let mut i = 0
+    while i < Array::length(defs) {
+      let d = Array::get(defs, i)
+      let params = Array::get(d.ints, 0)
+      let index = Array::get(d.ints, 1)
+      let ret = Array::get(d.ints, 2)
+      let canonical = stdout_alias(d.name)
+      if canonical != "" {
+        let mut owner_ok = false
+        let mut o = 0
+        while o < Array::length(names) {
+          if Array::get(names, o) == canonical {
+            let w = Array::get(owners, o)
+            owner_ok = Array::get(w.ints, 1) == index && Array::get(w.ints, 0) == params && Array::get(w.ints, 2) == ret
+          } else {
+            ()
+          }
+          o = o + 1
+        }
+        if !owner_ok {
+          Array::push(fails, "host_defs '\{d.name}' must alias \{canonical} (same index, params, and ret); got index \{index}, params=\{params}, ret=\{ret}")
+        } else {
+          ()
+        }
+      } else {
+        Array::push(names, d.name)
+        Array::push(owners, d)
+        Array::push(real, index)
+      }
+      i = i + 1
+    }
+    let idxs = sort_ints(real)
+    let mut gapless = true
+    let mut k = 0
+    while k < Array::length(idxs) {
+      if Array::get(idxs, k) != k + 1 {
+        gapless = false
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    if !gapless {
+      let dupes: Array[Int] = []
+      let mut a = 1
+      while a < Array::length(idxs) {
+        let v = Array::get(idxs, a)
+        if v == Array::get(idxs, a - 1) && (Array::length(dupes) == 0 || Array::get(dupes, Array::length(dupes) - 1) != v) {
+          Array::push(dupes, v)
+        } else {
+          ()
+        }
+        a = a + 1
+      }
+      let repeated = if Array::length(dupes) > 0 {
+        "; repeated: \{int_list(dupes)}"
+      } else {
+        ""
+      }
+      Array::push(fails, "host_defs import indices are not 1..N with no gaps: got \{int_list(idxs)}\{repeated}")
+    } else if Array::length(idxs) > 0 && Array::get(idxs, Array::length(idxs) - 1) != hbo {
+      Array::push(fails, "host_defs' highest import index is \{Array::get(idxs, Array::length(idxs) - 1)} but hbo is \{hbo}. These index the same list, so they must end at the same number.")
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  if Array::length(fails) > 0 {
+    let mut f = 0
+    while f < Array::length(fails) {
+      Stderr::write_stream("gc-host-import-counts: FAIL: \{Array::get(fails, f)}\n")
+      f = f + 1
+    }
+    exit(1)
+  } else {
+    Console::write_stream("gc-host-import-counts: ok (hbo=\{hbo}, host_imports=\{Array::length(imports)}, vector header=\{vec}, host_defs indices 1..\{hbo})\n")
+  }
+}
