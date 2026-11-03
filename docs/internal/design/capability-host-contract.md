@@ -97,7 +97,7 @@ never calls costs nothing.
 ### Which modules reach the fallback
 
 `docs/generated/host-runtime-contract.json` partitions every emitted import
-field into bands, and `scripts/check_host_runtime_contract.py` enforces them
+field into bands, and `scripts/check_host_runtime_contract.vibex` enforces them
 fail-closed (run in the compiler gate's mid lane, with its mutation suite under
 `pkf run test-check-host-runtime-contract`). The manifest today holds 69
 static fields and 5 name patterns:

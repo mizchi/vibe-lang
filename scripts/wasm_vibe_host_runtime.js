@@ -1477,7 +1477,7 @@ function unimplementedAsyncImportStub(name) {
 //
 // The hint names the lane that does serve the import, read from the host
 // contract's bands (docs/generated/host-runtime-contract.json, enforced by
-// scripts/check_host_runtime_contract.py): the component adapter, viberun's
+// scripts/check_host_runtime_contract.vibex): the component adapter, viberun's
 // core runner for the debug band, or none for a name no lane declares.
 let hostRuntimeContractBands = null;
 

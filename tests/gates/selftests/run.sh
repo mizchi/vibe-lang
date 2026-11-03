@@ -107,7 +107,7 @@ if in_shard 2; then bash "$ROOT_DIR/scripts/run_bounded_test.sh"; fi
 # The host half of the capability contract (#2825 step 1,
 # docs/internal/design/capability-host-contract.md). Same glob reason again -- and this one is
 # a case where the gate that already exists could not see the property:
-# `check_host_runtime_contract.py` proves both runners IMPLEMENT every portable
+# `check_host_runtime_contract.vibex` proves both runners IMPLEMENT every portable
 # import, which is a different question from whether either can withhold one.
 # Measured, the node runner could not: any `vibe.*` field it did not implement
 # answered `0`, so removing a method did not withhold a capability, it made the
