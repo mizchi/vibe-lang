@@ -229,7 +229,14 @@ export fn lc_build_emission_layout(input: LinkedBodyInputs, lambda_bases: Array[
     let mut gi = pin_region_capacity
     while gi < Array::length(all_fn_names_list) {
       Array::push(g_names, Array::get(all_fn_names_list, gi))
-      Array::push(g_indices, Array::get(all_fn_indices_list, gi))
+      // The synthesized region's indices move with the pin capacity, which
+      // the relocation follows: fold them relative to the capacity.
+      let gidx = Array::get(all_fn_indices_list, gi)
+      Array::push(g_indices, if gi < input.num_user_funcs && gidx == func_offset + gi {
+        0 - 2 - (gi - pin_region_capacity)
+      } else {
+        gidx
+      })
       Array::push(g_params, Array::get(all_fn_param_counts, gi))
       Array::push(g_returns, Array::get(all_fn_returns_list, gi))
       Array::push(g_envs, Array::get(all_fn_needs_env_list, gi))
@@ -243,7 +250,7 @@ export fn lc_build_emission_layout(input: LinkedBodyInputs, lambda_bases: Array[
     } else {
       lc_fresh_string_array()
     }
-    lc_layout_fingerprint(input, LcLayoutTables::{
+    lc_layout_fingerprint_at(input, LcLayoutTables::{
       fn_names: g_names,
       fn_indices: g_indices,
       fn_params: g_params,
@@ -265,7 +272,7 @@ export fn lc_build_emission_layout(input: LinkedBodyInputs, lambda_bases: Array[
       borrow_view: lc_without(drop, lc_borrow_view_ret),
       borrow_param: lc_without(drop, lc_borrow_param_user_srt),
       borrow_mask: lc_without_ints(drop, lc_borrow_param_user_srt, lc_borrow_param_mask)
-    }, ctor_whole, coverage, enable_rc, rc_shadow)
+    }, ctor_whole, true, coverage, enable_rc, rc_shadow)
   } else {
     lc_fresh_int_array()
   }
@@ -568,6 +575,13 @@ fn lc_src_rows(names: Array[String], indices: Array[Int], params: Array[Int], re
 }
 
 fn lc_layout_fingerprint(input: LinkedBodyInputs, t: LcLayoutTables, ctor_whole: Bool, coverage: Bool, enable_rc: Bool, rc_shadow: Bool) -> Array[Int] {
+  lc_layout_fingerprint_at(input, t, ctor_whole, false, coverage, enable_rc, rc_shadow)
+}
+
+/// `relative`: the global half folds the user-function count and the lambda
+/// slot base relative to the pin capacity, which a source region crossing a
+/// capacity boundary moves and the relocation follows.
+fn lc_layout_fingerprint_at(input: LinkedBodyInputs, t: LcLayoutTables, ctor_whole: Bool, relative: Bool, coverage: Bool, enable_rc: Bool, rc_shadow: Bool) -> Array[Int] {
   let out = lc_fresh_int_array()
   let num_user_funcs = input.num_user_funcs
   let lambda_slot_base = input.lambda_slot_base
@@ -620,7 +634,15 @@ fn lc_layout_fingerprint(input: LinkedBodyInputs, t: LcLayoutTables, ctor_whole:
   // memoizing the borrow tables, so it differs between two compiles of the
   // SAME program in one process -- measured, it was the only slot that moved
   // under a leading comment. The tables it stands for are folded below.
-  bcc_layout_fp_ints(out, [num_user_funcs, lambda_slot_base, func_offset])
+  if relative {
+    bcc_layout_fp_ints(out, [
+      num_user_funcs - input.pin_region_capacity,
+      lambda_slot_base - input.pin_region_capacity,
+      func_offset
+    ])
+  } else {
+    bcc_layout_fp_ints(out, [num_user_funcs, lambda_slot_base, func_offset])
+  }
   // The lambda plan -- every `lambda_slot_base + lambda_idx`.
   bcc_layout_fp_ints(out, t.lambda_bases)
   // ctor_table -- every constructor tag is `(type_index << 16) | variant`,

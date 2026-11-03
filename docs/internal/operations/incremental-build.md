@@ -1145,6 +1145,23 @@ A build whose full fingerprint differs is then compared as an edit
   consumed cache is not merged back. Each replayed body is re-recorded
   instead, as a relocated one is.
 
+**The pin capacity.** Source functions sit in `[0, src_n)`, padded to a
+multiple of 1024. After them comes the synthesized region, and after that the
+lambda slots and every function past the user ones (`_start`, `run`, the
+lambdas). An edit that takes the source region across a multiple of 1024
+moves all three by a known delta. So under an edit:
+
+- `guard_meta` compares only the lambda slot base relative to the capacity;
+- the global half folds the user-function count, the lambda slot base and the
+  synthesized indices relative to the capacity;
+- the relocation maps the old index space, sized by the old capacity,
+  onto the new one.
+
+`a source region that crosses a pin-capacity boundary is relocated` goes from
+1010 to 1030 source functions. It reuses the unchanged files' bodies
+byte-equal, and with the lambda-slot base shift dropped it compiles to
+different bytes.
+
 **Files that moved.** Importing a new module inserts a file into the merge
 order, and an import-order change reorders it. Either way every file after the
 change sits at another index. The file table then matches files by path

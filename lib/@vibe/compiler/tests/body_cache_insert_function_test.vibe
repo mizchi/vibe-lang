@@ -745,3 +745,70 @@ test "a type removed from a middle file relocates the tags it moved" {
   let fresh = compile_file_fs_mode_rc(bim_main_path, "run")
   inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=9 equal=true")
 }
+
+//# The pin capacity. Source functions sit in `[0, src_n)` padded to a
+//# multiple of 1024, the synthesized region after that, and the lambda slots
+//# and every function past the user ones after THAT. An edit that takes the
+//# source region across a multiple of 1024 moves all three by a known delta,
+//# which the relocation follows.
+
+let bic_b_path: String = "/tmp/vibe_body_cache_bic_b.vibe"
+
+let bic_main_path: String = "/tmp/vibe_body_cache_bic_main.vibe"
+
+/// `n` chained functions, every one reachable from the last.
+fn bic_b(n: Int) -> String {
+  let lines: Array[String] = [
+    "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }",
+    "export let bic_0: (Int) -> Int = (x) -> { x + bim_one() }"
+  ]
+  let mut k = 1
+  while k < n {
+    Array::push(lines, "let bic_\{k}: (Int) -> Int = (x) -> { bic_\{k - 1}(x) + 1 }")
+    k = k + 1
+  }
+  Array::push(lines, "export let bic_top: (Int) -> Int = (x) -> { bic_\{n - 1}(x) + (if bim_eq() { 1 } else { 0 }) }")
+  String::join(lines, "\n")
+}
+
+fn bic_main() -> String {
+  String::join([
+    "import ./vibe_body_cache_bic_b.vibe { bic_top }",
+    "enum BicShape { BicDot; BicLine(Int) }",
+    "let apply: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }",
+    "let run: () -> Int = () -> {",
+    "  let k = 2",
+    "  let add_k = (x) -> x + k",
+    "  apply(bic_top, 1) + apply(add_k, 3) + (match BicLine(4) { BicDot => 0, BicLine(n) => n }) + (if [1, 2] == [1, 2] { 1 } else { 0 })",
+    "}"
+  ], "\n")
+}
+
+fn bic_probe(before: Int, after: Int) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bic_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bim_a_path, bif_bytes(bim_a()))
+  Fs::write_bytes(bic_b_path, bif_bytes(bic_b(before)))
+  Fs::write_bytes(bic_main_path, bif_bytes(bic_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bic_main_path, "run", "on", cold_counts)
+  Fs::write_bytes(bic_b_path, bif_bytes(bic_b(after)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bic_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bic_main_path, "run")
+  "cold=\{Array::get(cold_counts, 1)} warm=\{Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+test "a source region that crosses a pin-capacity boundary is relocated" {
+  // 1010 source functions pad to a capacity of 1024; 1030 pad to 2048. The
+  // cold build compiles the 1024-slot region plus the synthesized one (1025);
+  // after the edit a full recompile would be 2049, and the two unchanged
+  // files' four bodies (`bim_eq`, `bim_one`, `apply`, `run`) are relocated
+  // instead -- `run` builds a closure, so its lambda slot moved with the
+  // base.
+  inspect(bic_probe(1010, 1030), content = "cold=1025 warm=2045 equal=true")
+}

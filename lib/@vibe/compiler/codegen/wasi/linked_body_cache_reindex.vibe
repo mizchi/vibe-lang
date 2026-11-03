@@ -67,9 +67,16 @@ struct LcIndexMap {
   old_lambda_count: Int;
   new_bases: Array[Int];
   lambdas_moved: Bool;
+  /// The harvest's user-function count and lambda slot base, and this
+  /// build's: they differ when the source region crossed a pin-capacity
+  /// boundary, which moves the synthesized region, the lambda slots and every
+  /// function past the user ones (`_start`, `run`, the lambdas) by a known
+  /// delta.
   num_user_funcs: Int;
+  new_num_user_funcs: Int;
   func_offset: Int;
   lambda_slot_base: Int;
+  new_lambda_slot_base: Int;
   /// Harvest exception tag -> this build's (`lc_tag_map`); -1 for a tag
   /// whose effect was removed.
   tags: Array[Int];
@@ -132,7 +139,7 @@ fn lc_map_slot(m: LcIndexMap, s: Int) -> Int {
     if l < 0 {
       0 - 1
     } else {
-      m.lambda_slot_base + l
+      m.new_lambda_slot_base + l
     }
   }
 }
@@ -152,7 +159,7 @@ fn lc_map_call(m: LcIndexMap, v: Int) -> Int {
   } else if m.lambdas_moved {
     0 - 1
   } else {
-    v
+    v + (m.new_num_user_funcs - m.num_user_funcs)
   }
 }
 
@@ -455,38 +462,42 @@ fn lc_first_change(e: LcSrcEdit, old_plan: Array[Int], new_bases: Array[Int]) ->
 /// one that cannot be moved, or whose function was removed, is dropped.
 /// `old_plan` is the harvest's lambda plan with its total last
 /// (`lc_old_lambda_plan`). Answers `cache` itself when nothing moved.
-export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: Int, num_user_funcs: Int, func_offset: Int, lambda_slot_base: Int, old_plan: Array[Int], new_bases: Array[Int], new_lambda_count: Int, tag_map: Array[Int], thunk_map: Array[Int], thunk_base: Int, ctor_tags: LcCtorTagMap) -> CodegenBodyCache {
+export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, old_capacity: Int, old_lambda_slot_base: Int, capacity: Int, num_user_funcs: Int, func_offset: Int, lambda_slot_base: Int, old_plan: Array[Int], new_bases: Array[Int], new_lambda_count: Int, tag_map: Array[Int], thunk_map: Array[Int], thunk_base: Int, ctor_tags: LcCtorTagMap) -> CodegenBodyCache {
+  // The synthesized region is the same by name on both sides, so the
+  // harvest's user-function count is its capacity plus that region.
+  let old_num_user = old_capacity + (num_user_funcs - capacity)
   // A moved exception tag can sit in ANY body, and so can a moved thunk's
-  // memo global or a moved constructor tag, so every entry moves then.
-  let first = if lc_tags_identity(tag_map) && lc_tags_identity(thunk_map) && ctor_tags.identity {
+  // memo global, a moved constructor tag, or a call into a synthesized
+  // function the capacity moved, so every entry moves then.
+  let first = if lc_tags_identity(tag_map) && lc_tags_identity(thunk_map) && ctor_tags.identity && old_capacity == capacity && old_lambda_slot_base == lambda_slot_base {
     lc_first_change(e, old_plan, new_bases)
   } else {
     0
   }
-  if first >= e.old_src_n {
+  if first >= e.old_src_n || old_num_user < 0 {
     cache
   } else {
-    let fns = lc_fresh_int_array_of_len(num_user_funcs, 0 - 1)
+    let fns = lc_fresh_int_array_of_len(old_num_user, 0 - 1)
     let mut o = 0
-    while o < e.old_src_n && o < num_user_funcs {
+    while o < e.old_src_n && o < old_num_user {
       Array::set(fns, o, Array::get(e.o2n, o))
       o = o + 1
     }
-    let mut y = capacity
-    while y < num_user_funcs {
-      Array::set(fns, y, y)
+    let mut y = old_capacity
+    while y < old_num_user {
+      Array::set(fns, y, capacity + (y - old_capacity))
       y = y + 1
     }
     let old_bases = lc_fresh_int_array()
     let mut q = 0
-    while q < num_user_funcs {
+    while q < old_num_user {
       Array::push(old_bases, Array::get(old_plan, q))
       q = q + 1
     }
     let old_lambda_count = Array::get(old_plan, Array::length(old_plan) - 1)
     let mut lambdas_moved = old_lambda_count != new_lambda_count
     let mut l = 0
-    while !lambdas_moved && l < num_user_funcs {
+    while !lambdas_moved && l < old_num_user {
       let n = Array::get(fns, l)
       if n >= 0 && Array::get(old_bases, l) != Array::get(new_bases, n) {
         lambdas_moved = true
@@ -501,24 +512,26 @@ export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: I
       old_lambda_count: old_lambda_count,
       new_bases: new_bases,
       lambdas_moved: lambdas_moved,
-      num_user_funcs: num_user_funcs,
+      num_user_funcs: old_num_user,
+      new_num_user_funcs: num_user_funcs,
       func_offset: func_offset,
-      lambda_slot_base: lambda_slot_base,
+      lambda_slot_base: old_lambda_slot_base,
+      new_lambda_slot_base: lambda_slot_base,
       tags: tag_map,
       thunks: thunk_map,
       thunk_base: thunk_base,
       ctor_tags: ctor_tags
     }
     let out = codegen_body_cache_guards_only(cache)
-    let lam_rows = lc_group_rows(cache.lam_owner, num_user_funcs)
-    let slot_rows = lc_group_rows(cache.slot_owner, num_user_funcs)
-    let blind_rows = lc_group_rows(cache.blind_fn, num_user_funcs)
-    let lm_rows = lc_group_rows(cache.lm_owner, num_user_funcs)
+    let lam_rows = lc_group_rows(cache.lam_owner, old_num_user)
+    let slot_rows = lc_group_rows(cache.slot_owner, old_num_user)
+    let blind_rows = lc_group_rows(cache.blind_fn, old_num_user)
+    let lm_rows = lc_group_rows(cache.lm_owner, old_num_user)
     let mut x = 0
     while x < Array::length(cache.fn_indices) {
       let fo = Array::get(cache.fn_indices, x)
       let n = lc_map_fn(m, fo)
-      if fo >= 0 && fo < num_user_funcs && n >= 0 {
+      if fo >= 0 && fo < old_num_user && n >= 0 {
         lc_reindex_entry(m, cache, out, x, fo, n, fo >= first, Array::get(lam_rows, fo), Array::get(slot_rows, fo), Array::get(blind_rows, fo), Array::get(lm_rows, fo))
       } else {
         ()
