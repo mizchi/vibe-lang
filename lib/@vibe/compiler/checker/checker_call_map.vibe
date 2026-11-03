@@ -428,7 +428,7 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
         }
       }
     }
-    check_map_key_formal_escapes(stmts, env, keyed, errors)
+    check_map_key_formal_escapes(stmts, env, s, keyed, errors)
   } else {
     ()
   }
@@ -469,35 +469,89 @@ fn check_map_key_site_kinds(s: Subst, errors: Array[String]) -> Unit {
   }
 }
 
-/// The top-level functions whose checked scheme quantifies a variable that
-/// keys a map, with whether each is exported.
-fn map_key_formal_fns(stmts: Array[Stmt], env: TypeEnv, keyed: MutMap[Int, Int], out: MutMap[String, Int], order: Array[String]) -> Unit {
+/// The names a module exports: `export fn` / `export let`, and the names an
+/// `export { .. }` list publishes.
+fn map_key_exported_names(stmts: Array[Stmt], out: MutMap[String, Int]) -> Unit {
   for stmt in stmts {
     match stmt {
-      SLet(exported, _, name, _, EFn(_, _, _, _, _, _)) => match env_lookup(env, name) {
-        Some(CtForAll(vars, _, _)) => {
-          let mut hit = false
-          for id in vars {
-            if MutMap::has(keyed, id) {
-              hit = true
-            } else {
-              ()
-            }
-          }
-          if hit {
+      SLet(true, _, name, _, _) => MutMap::set(out, name, 1),
+      SExport(names) => for n in names {
+        MutMap::set(out, n, 1)
+      },
+      SModule(_, _, children) => map_key_exported_names(children, out),
+      _ => ()
+    }
+  }
+  ()
+}
+
+/// Whether `t` mentions a type variable that keys a map.
+fn map_key_type_mentions_keyed(t: Type, keyed: MutMap[Int, Int]) -> Bool {
+  match t {
+    CtVar(id) => MutMap::has(keyed, id),
+    CtForAll(vars, _, body) => {
+      let mut hit = false
+      for id in vars {
+        if MutMap::has(keyed, id) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit || map_key_type_mentions_keyed(body, keyed)
+    },
+    CtFn(params, ret, _) => map_key_types_mention_keyed(params, keyed) || map_key_type_mentions_keyed(ret, keyed),
+    CtArray(e) => map_key_type_mentions_keyed(e, keyed),
+    CtOption(e) => map_key_type_mentions_keyed(e, keyed),
+    CtTuple(items) => map_key_types_mention_keyed(items, keyed),
+    CtNamed(_, args) => map_key_types_mention_keyed(args, keyed),
+    CtApplied(head, args) => map_key_type_mentions_keyed(head, keyed) || map_key_types_mention_keyed(args, keyed),
+    CtRecord(fields) => {
+      let mut hit = false
+      for f in fields {
+        let (_, ft) = f
+        if map_key_type_mentions_keyed(ft, keyed) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+fn map_key_types_mention_keyed(ts: Array[Type], keyed: MutMap[Int, Int]) -> Bool {
+  let mut hit = false
+  for t in ts {
+    if map_key_type_mentions_keyed(t, keyed) {
+      hit = true
+    } else {
+      ()
+    }
+  }
+  hit
+}
+
+/// The exported top-level bindings whose checked type mentions a variable
+/// that keys a map -- a function, or an alias of one (`export let f = look`).
+fn map_key_formal_exports(stmts: Array[Stmt], env: TypeEnv, s: Subst, keyed: MutMap[Int, Int], exported: MutMap[String, Int], order: Array[String]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => if MutMap::has(exported, name) {
+        match env_lookup(env, name) {
+          Some(t) => if map_key_type_mentions_keyed(subst_apply(s, t), keyed) {
             Array::push(order, name)
-            MutMap::set(out, name, if exported {
-              1
-            } else {
-              0
-            })
           } else {
             ()
-          }
-        },
-        _ => ()
+          },
+          None => ()
+        }
+      } else {
+        ()
       },
-      SModule(_, _, children) => map_key_formal_fns(children, env, keyed, out, order),
+      SModule(_, _, children) => map_key_formal_exports(children, env, s, keyed, exported, order),
       _ => ()
     }
   }
@@ -506,25 +560,23 @@ fn map_key_formal_fns(stmts: Array[Stmt], env: TypeEnv, keyed: MutMap[Int, Int],
 
 /// #2334: a call from another module escapes the instantiation check above:
 /// it is checked against the exported signature alone, which does not say
-/// that the parameter keys a map. So such a function is refused at the export.
-fn check_map_key_formal_escapes(stmts: Array[Stmt], env: TypeEnv, keyed: MutMap[Int, Int], errors: Array[String]) -> Unit {
-  let fns: MutMap[String, Int] = MutMap::new_string()
-  let order: Array[String] = []
-  map_key_formal_fns(stmts, env, keyed, fns, order)
-  if Array::length(order) > 0 {
+/// that the parameter keys a map. So an exported binding whose type keys a
+/// map by a type parameter -- the function, or an alias of it -- is refused.
+fn check_map_key_formal_escapes(stmts: Array[Stmt], env: TypeEnv, s: Subst, keyed: MutMap[Int, Int], errors: Array[String]) -> Unit {
+  let exported: MutMap[String, Int] = MutMap::new_string()
+  map_key_exported_names(stmts, exported)
+  if MutMap::size(exported) > 0 {
+    let order: Array[String] = []
+    map_key_formal_exports(stmts, env, s, keyed, exported, order)
     for name in order {
-      if MutMap::get(fns, name) is Some(1) {
-        let parts = [
-          "`",
-          name,
-          "` is exported and uses a type parameter as a `Map` key; a call from another module cannot be checked for a scalar key, which this body would compare as a `String` -- give the parameter a concrete key type, or keep `",
-          name,
-          "` private to this module (#2334)"
-        ]
-        Array::push(errors, String::join(parts, ""))
-      } else {
-        ()
-      }
+      let parts = [
+        "`",
+        name,
+        "` is exported and uses a type parameter as a `Map` key; a call from another module cannot be checked for a scalar key, which this body would compare as a `String` -- give the parameter a concrete key type, or keep `",
+        name,
+        "` private to this module (#2334)"
+      ]
+      Array::push(errors, String::join(parts, ""))
     }
   } else {
     ()
