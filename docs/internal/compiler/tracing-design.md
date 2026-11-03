@@ -38,9 +38,9 @@ a perform costs 1.7× a plain function call with zero allocation, and carrying
 `--profile-tsv` の7ステージは、タプルで戻り値に相乗りして3層を遡っている:
 
 ```vibe
-// lib/@vibe/compiler/cli_support.vibe:129
+// lib/@vibe/cli/support/compile_support.vibe
 export fn compile_release_file_mode_uncached_profiled(input_path: String, entry_name: String, mode: String)
-  -> (Bytes, Int, Int, Int, Int, Int, Int) with Exception + Fs + Profiler
+  -> (Bytes, Int, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler
 ```
 
 `Int` が6つ並んでいるのは load/type/bundle/parse/compile/total の µs である。

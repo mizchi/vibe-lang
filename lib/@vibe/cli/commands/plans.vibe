@@ -1,4 +1,4 @@
-// lib/@vibe/compiler/user_dispatch.vibe — selfhost cli test plan args.
+// CLI argument helpers and run/test host-action plans.
 
 import @vibe/compiler/cache {
   ingestion_fingerprint_telemetry_json
@@ -56,21 +56,22 @@ import @vibe/compiler/syntax {
   lex, lex_with_offsets, located_lex_message, parse_program, parse_program_located
 }
 
-import ./cli_support.vibe {
+import @vibe/cli/support {
   check_unstable_surface_warnings_from_closure,
   check_unstable_surface_warnings_from_path,
   command_component_compile_mode,
-  executable_exports_stripped,
-  strip_executable_wasm,
-  strip_executable_wasm_env,
   unstable_closure_reset
 }
 
-import ./inspect_update.vibe {
+import @vibe/compiler/codegen/executable {
+  executable_exports_stripped, strip_executable_wasm, strip_executable_wasm_env
+}
+
+import @vibe/compiler/refactor {
   compute_updated_source
 }
 
-import ./wit_gen.vibe {
+import @vibe/compiler/codegen/wit {
   serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler, wit_from_program
 }
 
@@ -78,7 +79,7 @@ import @vibe/lsp {
   lsp_diagnostics_json_of_messages, lsp_main
 }
 
-import ./user_refactor.vibe {
+import ./refactor.vibe {
   selfhost_cli_user_refactor_args, user_check_missing_label_rows_single
 }
 
@@ -1861,7 +1862,10 @@ export fn selfhost_cli_user_serve_args(_ args: Array[String]) -> Int with Except
   }
 }
 
-export fn selfhost_cli_user_profile_args(_ args: Array[String]) -> Int with Exception + Fs + Env {
+/// Plan a host-owned guest-profile action. The selfhost CLI owns the command
+/// grammar, while the launcher executes the resulting action because Wasmtime's
+/// Engine/Store hooks must be installed before the target guest starts.
+export fn selfhost_cli_profile_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs {
   let mut source = ""
   let mut output = "profile.json"
   let mut interval = "1000"
@@ -1918,8 +1922,12 @@ export fn selfhost_cli_user_profile_args(_ args: Array[String]) -> Int with Exce
       plan = String::concat(plan, String::concat(Array::get(guest_args, at = gi), "\n"))
       gi = gi + 1
     }
-    write_host_action(action_path = Env::get("VIBE_HOST_ACTION_OUT"), body = plan)
+    write_host_action(action_path = action_path, body = plan)
   }
+}
+
+export fn selfhost_cli_user_profile_args(_ args: Array[String]) -> Int with Exception + Fs + Env {
+  selfhost_cli_profile_plan_args(args = args, action_path = Env::get("VIBE_HOST_ACTION_OUT"))
 }
 
 /// The embedded server (`vibe lsp --selfhost`). `VIBE_UNSTABLE=1` is the

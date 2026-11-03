@@ -1,0 +1,54 @@
+import @vibe/cli/commands {
+  parse_user_compile_args
+}
+
+test "compile and build share the shipped artifact grammar" {
+  let compile_args = parse_user_compile_args([
+    "compile",
+    "src/a.vibe",
+    "--entry",
+    "run",
+    "--out",
+    "out/a.wasm",
+    "--minify"
+  ])
+  let build_args = parse_user_compile_args([
+    "build",
+    "src/a.vibe",
+    "--entry",
+    "run",
+    "--out",
+    "out/a.wasm",
+    "--minify"
+  ])
+  assert_eq(compile_args, build_args)
+  let (src, out, entry, wit, minify, component) = build_args
+  assert_eq(src, "src/a.vibe")
+  assert_eq(out, "out/a.wasm")
+  assert_eq(entry, "run")
+  assert(!wit)
+  assert(minify)
+  assert(!component)
+}
+
+test "component aliases retain the command surface and reject core-only flags" {
+  let a = parse_user_compile_args(["compile", "src/a.vibe", "--component"])
+  let b = parse_user_compile_args(["build", "src/a.vibe", "--component"])
+  assert_eq(a, b)
+  let (_, out, entry, wit, minify, component) = a
+  assert_eq(out, ".vibe/build/out/a.component.wasm")
+  assert_eq(entry, "vibe_command")
+  assert(!wit)
+  assert(!minify)
+  assert(component)
+  let refusal = handle {
+    let _ = parse_user_compile_args([
+      "build",
+      "a.vibe",
+      "--component",
+      "--minify"
+    ])
+    "OK"
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(refusal, needle = "the minifier takes a core module"))
+}

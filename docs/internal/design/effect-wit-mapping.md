@@ -3,10 +3,10 @@
 `vibe compile --wit <file.vibe>` (and `VIBE_EMIT_WIT=1` on the compiler wasm)
 renders a vibe file's **effect surface** as a WIT world. `vibe serve` writes
 the same WIT next to the handler component it builds. Implementation:
-`lib/@vibe/compiler/wit_gen.vibe` (`wit_from_program`); pinned by
+`lib/@vibe/compiler/codegen/wit/wit_gen.vibe` (`wit_from_program`); pinned by
 `fixtures/wit_gen_http.golden.wit` (gate 40i), `fixtures/wit_gen_effectset.golden.wit`
 (gate 40t) and `fixtures/wit_gen_result.golden.wit` (gate 90), and unit-tested
-by `lib/@vibe/compiler/tests/wit_gen_test.vibe`.
+by `lib/@vibe/compiler/codegen/wit/wit_gen_test.vibe`.
 
 This is the generator for an **export surface**: the world is read off the
 entry file's exported signatures. It is not ADR-0075's executable contract for
@@ -168,7 +168,7 @@ world wit-gen-http {
 ## `vibe serve` and the wasi-http P3 adapter
 
 `vibe serve handler.vibe` builds a component from a fixed handler contract
-(`validate_serve_handler` in `lib/@vibe/compiler/wit_gen.vibe`), writes its
+(`validate_serve_handler` in `lib/@vibe/compiler/codegen/wit/wit_gen.vibe`), writes its
 WIT next to it, and the launcher plugs it into the Rust wasi-http P3 adapter
 (`scripts/build_wasi_http_p3_full_adapter.sh`) with `wac plug` and runs
 `wasmtime serve`. The entry file must export `handler` with three `String`

@@ -1,0 +1,163 @@
+import @vibe/compiler/codegen/executable {
+  executable_exports_stripped, strip_executable_wasm, strip_executable_wasm_env
+}
+
+fn same_bytes(a: Bytes, b: Bytes) -> Unit {
+  assert_eq(Bytes::length(a), Bytes::length(b))
+  let mut i = 0
+  while i < Bytes::length(a) {
+    assert_eq(Bytes::get(a, at = i), Bytes::get(b, at = i))
+    i = i + 1
+  }
+}
+
+test "debug stripping preserves other custom sections and is idempotent" {
+  // Valid empty Wasm with an empty name section and an unrelated keep section.
+  let original = Bytes::from_array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    0,
+    5,
+    4,
+    110,
+    97,
+    109,
+    101,
+    0,
+    5,
+    4,
+    107,
+    101,
+    101,
+    112
+  ])
+  let expected = Bytes::from_array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    0,
+    5,
+    4,
+    107,
+    101,
+    101,
+    112
+  ])
+  same_bytes(a = strip_executable_wasm(wasm = original, entry_name = "main", strip_names = false, filter_exports = false), b = original)
+  same_bytes(a = strip_executable_wasm(wasm = original, entry_name = "main", strip_names = true, filter_exports = false), b = expected)
+  same_bytes(a = strip_executable_wasm(wasm = expected, entry_name = "main", strip_names = true, filter_exports = false), b = expected)
+  same_bytes(a = strip_executable_wasm_env(wasm = original, entry_name = "__no_entry__"), b = original)
+  assert(!executable_exports_stripped("__no_entry__"))
+}
+
+test "export filtering preserves the code and its function indices" {
+  // Two () -> Unit functions. Removing helper's export leaves both bodies and
+  // both function indices untouched; main remains export index zero.
+  let original = Bytes::from_array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    4,
+    1,
+    96,
+    0,
+    0,
+    3,
+    3,
+    2,
+    0,
+    0,
+    7,
+    17,
+    2,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    6,
+    104,
+    101,
+    108,
+    112,
+    101,
+    114,
+    0,
+    1,
+    10,
+    7,
+    2,
+    2,
+    0,
+    11,
+    2,
+    0,
+    11
+  ])
+  let expected = Bytes::from_array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    4,
+    1,
+    96,
+    0,
+    0,
+    3,
+    3,
+    2,
+    0,
+    0,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    7,
+    2,
+    2,
+    0,
+    11,
+    2,
+    0,
+    11
+  ])
+  same_bytes(a = strip_executable_wasm(wasm = original, entry_name = "main", strip_names = false, filter_exports = true), b = expected)
+  same_bytes(a = strip_executable_wasm(wasm = expected, entry_name = "main", strip_names = false, filter_exports = true), b = expected)
+}
+
+test "a truncated section keeps the original module bytes" {
+  let truncated = Bytes::from_array([0, 97, 115, 109, 1, 0, 0, 0, 0, 100, 1])
+  same_bytes(a = strip_executable_wasm(wasm = truncated, entry_name = "main", strip_names = true, filter_exports = true), b = truncated)
+}
