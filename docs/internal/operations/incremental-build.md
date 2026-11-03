@@ -1145,6 +1145,25 @@ A build whose full fingerprint differs is then compared as an edit
   consumed cache is not merged back. Each replayed body is re-recorded
   instead, as a relocated one is.
 
+**Files that moved.** Importing a new module inserts a file into the merge
+order, and an import-order change reorders it. Either way every file after the
+change sits at another index. The file table then matches files by path
+(`body_cache_file_moves`), and for each unchanged file it carries the entries
+to the file's new position (`body_cache_move_files`):
+
+- the file index is rewritten;
+- each recorded statement position is shifted by how far its file's first
+  statement moved;
+- the linemap rows' file ids are rewritten;
+- the per-file typed-lowering slots are put in this build's order, so each
+  file is compared with its own.
+
+A path that occurs twice on either side declines. The linemap step is
+load-bearing: without it, the `new-module-first` row compiled to different
+bytes from a fresh build, because a moved file's rows named another file. The
+body-cached lane never runs `--break`, which is the one mode that embeds a file
+id in body bytes, and `dbg_line_on` is part of the global half besides.
+
 **Types.** Constructor tags are `(type_index << 16) | variant`, and
 `type_index` counts type declarations in merge order, so a type declared
 anywhere moves the tag of every later type. While every constructor and
@@ -1181,6 +1200,8 @@ byte for byte against a fresh build:
   moves no existing tag.
 - **Types in a middle file:** reused when no later file declares a type; not
   reused when one does, because its tag moved.
+- **A newly imported module**, listed after the existing imports and before
+  them: the unchanged files are reused either way, byte-equal.
 - **A stable refreshed artifact:** a second warm build recompiles exactly what
   a third does.
 - **Middle-file edits**, with the downstream file calling the moved

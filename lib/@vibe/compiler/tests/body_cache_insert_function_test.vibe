@@ -436,3 +436,57 @@ test "a type added in a middle file is tolerated where it moves no tag" {
   let moved = bim_probe_type("later-type-moves", true)
   inspect(String::join([tolerated, moved], " | "), content = "no-later-type saved=4 equal=true | later-type-moves saved=0 equal=true")
 }
+
+//# A new module. Importing one inserts a file into the merge order, so every
+//# file after it moves to another position: the file table matches files by
+//# path, and the function indices that moved with them are relocated.
+
+let bim_c_path: String = "/tmp/vibe_body_cache_bim_c.vibe"
+
+fn bim_probe_new_module(label: String, import_first: Bool) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  Fs::write_bytes(bim_a_path, bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bif_bytes(String::concat(head, String::join([
+    bim_two_line,
+    bim_three_line
+  ], "\n"))))
+  Fs::write_bytes(bim_main_path, bif_bytes(bim_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", cold_counts)
+  Fs::write_bytes(bim_c_path, bif_bytes("export let bim_four: (Int) -> Int = (n) -> { n * 4 }"))
+  let imports = if import_first {
+    "import ./vibe_body_cache_bim_c.vibe { bim_four }\nimport ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }"
+  } else {
+    "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }\nimport ./vibe_body_cache_bim_c.vibe { bim_four }"
+  }
+  Fs::write_bytes(bim_main_path, bif_bytes(String::join([
+    imports,
+    "let apply: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }",
+    "let run: () -> Int = () -> {",
+    "  let k = 5",
+    "  let add_k = (x) -> x + k",
+    "  apply(bim_two, 1) + apply(add_k, 2) + bim_three(4) + bim_four(1)",
+    "}"
+  ], "\n")))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bim_main_path, "run")
+  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+test "a newly imported module keeps the unchanged files' bodies" {
+  let after = bim_probe_new_module("new-module-last", false)
+  let before = bim_probe_new_module("new-module-first", true)
+  // Listed first, the new module enters the merge order AHEAD of the
+  // unchanged files, so they move. Non-vacuity, measured: before the
+  // linemap rows' file ids were remapped with the files, this row compiled
+  // to different bytes from a fresh build -- a moved file's rows named
+  // another file.
+  inspect(String::join([after, before], " | "), content = "new-module-last saved=4 equal=true | new-module-first saved=4 equal=true")
+}
