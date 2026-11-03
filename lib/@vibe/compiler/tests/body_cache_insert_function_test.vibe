@@ -716,3 +716,32 @@ test "every tag-bearing form is relocated across a type inserted ahead" {
   let fresh = compile_file_fs_mode_rc(bim_main_path, "run")
   inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=9 equal=true")
 }
+
+test "a type removed from a middle file relocates the tags it moved" {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  let typed_b = String::join([
+    "enum BimMark { BimOn; BimOff }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + (match BimOn { BimOn => 0, BimOff => 1 }) }",
+    bim_three_line
+  ], "\n")
+  Fs::write_bytes(bim_a_path, bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bif_bytes(String::concat(head, typed_b)))
+  Fs::write_bytes(bim_main_path, bif_bytes(bit_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", cold_counts)
+  // `BimMark` goes: every downstream type's tag moves DOWN by one type.
+  Fs::write_bytes(bim_b_path, bif_bytes(String::concat(head, String::join([
+    bim_two_line,
+    bim_three_line
+  ], "\n"))))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bim_main_path, "run")
+  inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=9 equal=true")
+}

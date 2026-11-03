@@ -1178,10 +1178,16 @@ every constructor and struct name is unique, the table is compared per TYPE
 (`guard_type_rows`). A type's row covers its constructors' names, variants,
 field counts and Double fields, but not the moving half of the tag.
 
-- Every type the harvest had must be present with the same row.
-- An added type is tolerated, and its name and constructors join the mention
-  check.
-- A removed type, or a changed one (a new variant moves its row), declines.
+- Every type both builds declare must have the same row.
+- An added or a removed type is tolerated. Its name and constructors join the
+  mention check, the removed ones taken from the harvest's constructor table.
+  A removed constructor's tag maps to nothing, so a body still naming it
+  fails closed.
+- A changed type declines. A new variant moves the type's row, and it can
+  change how a match over the type lowers in a body that never spells it.
+- `a type removed from a middle file relocates the tags it moved` holds every
+  downstream form while their tags move DOWN. It is reused byte-equal, and
+  with the tag remap made the identity it compiles to different bytes.
 - Load-bearing: with the tag remap made the identity, the `later-type-moves`
   row and the edit-classes `add-type-ahead` row compile to different bytes.
 - `every tag-bearing form is relocated across a type inserted ahead` puts each

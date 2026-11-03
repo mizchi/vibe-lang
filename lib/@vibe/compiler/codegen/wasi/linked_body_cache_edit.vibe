@@ -235,16 +235,23 @@ export fn lc_src_rows_agree(e: LcSrcEdit, old_rows: Array[Int], new_rows: Array[
 }
 
 /// Does this build's constructor table, by type, keep every type the
-/// harvest had with the same row? Types this build added are tolerated, and
-/// their constructor names (`new_ctors[i]`, newline-joined) go into
-/// `touched` for the mention check. A removed type, a changed one, or a
-/// duplicated type name declines.
-export fn lc_types_agree(old_names: Array[String], old_rows: Array[Int], new_names: Array[String], new_rows: Array[Int], new_ctors: Array[String], touched: Array[String]) -> Bool {
+/// harvest had that it still declares, with the same row? Types added or
+/// removed are tolerated: no unchanged body constructs or matches a type
+/// that was not there, or one that is gone, so the only way one can reach
+/// it is a name of the same spelling -- and those names go into `touched`
+/// for the mention check: an added type's name and constructors
+/// (`new_ctors[i]`, newline-joined), and a removed one's name and the
+/// constructors the harvest had that this build does not (`old_ctor_names`
+/// against `new_ctor_names`). A removed constructor's tag maps to nothing
+/// (`lc_ctor_tag_map`), so a body still naming it fails closed. A changed
+/// type, or a duplicated type name, declines: a new variant can change how a
+/// match over the type lowers in a body that never spells it.
+export fn lc_types_agree(old_names: Array[String], old_rows: Array[Int], new_names: Array[String], new_rows: Array[Int], new_ctors: Array[String], old_ctor_names: Array[String], new_ctor_names: Array[String], touched: Array[String]) -> Bool {
   if Array::length(old_names) == 0 {
     Array::length(new_names) == 0 && Array::length(old_rows) == 0
   } else {
     let e = lc_src_edit_of(old_names, new_names, Array::length(new_names))
-    if !e.ok || Array::length(e.removed) > 0 || !lc_src_rows_agree(e, old_rows, new_rows) {
+    if !e.ok || !lc_src_rows_agree(e, old_rows, new_rows) {
       false
     } else {
       let mut i = 0
@@ -258,6 +265,21 @@ export fn lc_types_agree(old_names: Array[String], old_rows: Array[Int], new_nam
           ()
         }
         i = i + 1
+      }
+      if Array::length(e.removed) > 0 {
+        for name in e.removed {
+          Array::push(touched, name)
+        }
+        let now = sorted_names_of(new_ctor_names)
+        for c in old_ctor_names {
+          if bsearch_leftmost(now, c) < 0 {
+            Array::push(touched, c)
+          } else {
+            ()
+          }
+        }
+      } else {
+        ()
       }
       true
     }
