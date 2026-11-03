@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# Self-test for check_book_links.sh. Each rule is proved Red on a tree built to
+# Self-test for check_book_links.vibex (#3672 ported the gate). Each rule is proved Red on a tree built to
 # violate it, so the checker cannot quietly stop checking.
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
-CHECK="$ROOT_DIR/scripts/check_book_links.sh"
-
-WORK="$(mktemp -d)"
+# The gate reads only inside the repository, so the trees live under _build/.
+WORK_REL="_build/book_links_test.$$"
+WORK="$ROOT_DIR/$WORK_REL"
+mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
+gate() { bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/check_book_links.vibex -- "$@"; }
 fails=0
 
 # $1 = expected exit, $2 = what it proves, $3 = substring the output must have
 expect() {
   local want="$1" what="$2" needle="${3:-}"
   local out rc
-  out="$(BOOK_DIR="$WORK/b" bash "$CHECK" 2>&1)"; rc=$?
+  out="$(gate --dir "$WORK_REL/b" 2>&1)"; rc=$?
   if [ "$rc" -ne "$want" ]; then
     echo "book-links self-test: FAIL: $what -- exit $rc, wanted $want"; echo "$out" | sed 's/^/    /'
     fails=$((fails + 1)); return
@@ -82,7 +84,7 @@ printf 'English version: [01](../src/01.md) (canonical)\n' > "$WORK/b/ja/01.md"
 expect 0 "a translation linking to its English original passes"
 
 # 10. A missing directory is an error, not a vacuous pass.
-out="$(BOOK_DIR="$WORK/nonexistent" bash "$CHECK" 2>&1)"; rc=$?
+out="$(gate --dir "$WORK_REL/nonexistent" 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ]; then
   echo "book-links self-test: FAIL: a missing book directory passed instead of failing"
   fails=$((fails + 1))
@@ -90,12 +92,25 @@ else
   echo "  ok: a missing book directory is an error, not a skip"
 fi
 
+# 10b. A link that climbs out with `..` and back in resolves: segments are
+#      normalized, not compared as written.
+fresh
+: > "$WORK/b/src/02.md"
+printf '[two](../src/./02.md)\n' > "$WORK/b/src/01.md"
+expect 0 "a link through .. and . segments resolves"
+
+# 10c. Two links on one line are both read; the second is the broken one.
+fresh
+: > "$WORK/b/src/02.md"
+printf '[two](02.md) and [gone](missing.md)\n' > "$WORK/b/src/01.md"
+expect 1 "the second link on a line is read too" "missing.md"
+
 # 11. The real book passes.
-if bash "$CHECK" >/dev/null 2>&1; then
+if gate >/dev/null 2>&1; then
   echo "  ok: the repository's own book resolves"
 else
   echo "book-links self-test: FAIL: the repository's own book does not pass"
-  bash "$CHECK" 2>&1 | sed 's/^/    /'
+  gate 2>&1 | sed 's/^/    /'
   fails=$((fails + 1))
 fi
 
