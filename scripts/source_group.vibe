@@ -1,0 +1,319 @@
+// The source a source-reading gate checks, when the file it names is a
+// facade over implementation files (#3672 ported this from
+// scripts/source_files.py's `read_source_group`, which still serves the
+// Python gates; scripts/source_group_test.sh holds the two to the same bytes).
+//
+// A gate that greps one file stops seeing its subject when that file is split.
+// `read_source_group(path)` returns the file followed by the local modules it
+// owns, each once, depth first, every file followed by a newline:
+//
+//   * a `.vibe` file whose text says "// Compatibility exports;
+//     implementations are grouped" is a facade. Its group follows every
+//     `import ./X {` / `export ./X {` line, from any file in the group, to a
+//     `.vibe` in the facade's own directory whose stem starts with the
+//     facade's stem and `_` (`linked_` for `linked_compile`). Anything else it
+//     imports is not its implementation, so a decoy elsewhere cannot stand in
+//     for a section that was mutated.
+//   * a `.rs` file declaring `mod host_imports;` follows each line-leading
+//     `mod NAME;` to `NAME.rs` beside it.
+//   * a `.js` file follows each `require("./X.js")`.
+//
+// Paths are joined and normalized textually; symlinks are not resolved. A
+// module the group names that is not there is reported as missing rather
+// than skipped -- the gate reading the group fails closed on it.
+
+import @vibe/builtin {
+  String::index_of_from
+}
+
+let facade_marker = "// Compatibility exports; implementations are grouped"
+
+fn dir_of(path: String) -> String {
+  let mut cut = -1
+  let mut i = 0
+  while i < String::length(path) {
+    if String::byte_at(path, i) == '/' {
+      cut = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if cut < 0 {
+    "."
+  } else if cut == 0 {
+    "/"
+  } else {
+    String::substring(path, 0, cut)
+  }
+}
+
+fn base_of(path: String) -> String {
+  let d = dir_of(path)
+  if d == "." && !String::starts_with(path, "./") {
+    path
+  } else {
+    String::substring(path, String::length(d) + 1, String::length(path))
+  }
+}
+
+/// The final `.ext` of a name, or "" (a leading dot is not a suffix).
+fn suffix_of(name: String) -> String {
+  let mut dot = -1
+  let mut i = 1
+  while i < String::length(name) {
+    if String::byte_at(name, i) == '.' {
+      dot = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if dot < 0 {
+    ""
+  } else {
+    String::substring(name, dot, String::length(name))
+  }
+}
+
+fn stem_of(name: String) -> String {
+  String::substring(name, 0, String::length(name) - String::length(suffix_of(name)))
+}
+
+/// `dir/rel` with `.` and `..` segments resolved.
+fn join(dir: String, rel: String) -> String {
+  let joined = if String::starts_with(rel, "/") {
+    rel
+  } else {
+    "\{dir}/\{rel}"
+  }
+  let absolute = String::starts_with(joined, "/")
+  let parts = String::split(joined, "/")
+  let kept: Array[String] = []
+  let mut i = 0
+  while i < Array::length(parts) {
+    let part = Array::get(parts, i)
+    if part == "" || part == "." {
+      ()
+    } else if part == ".." && Array::length(kept) > 0 && Array::get(kept, Array::length(kept) - 1) != ".." {
+      Array::truncate(kept, Array::length(kept) - 1)
+    } else if part == ".." && absolute {
+      ()
+    } else {
+      Array::push(kept, part)
+    }
+    i = i + 1
+  }
+  let body = String::join(kept, "/")
+  if absolute {
+    "/\{body}"
+  } else if body == "" {
+    "."
+  } else {
+    body
+  }
+}
+
+fn is_space(c: Char) -> Bool {
+  let code = Char::to_int(c)
+  c == ' ' || (code >= 9 && code <= 13)
+}
+
+fn is_word(c: Char) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+/// `import ./X {` or `export ./X {` at the start of a line: `./X`, or "".
+fn local_import_target(line: String) -> String {
+  let rest = if String::starts_with(line, "import ") || String::starts_with(line, "export ") {
+    String::substring(line, 7, String::length(line))
+  } else {
+    ""
+  }
+  if !String::starts_with(rest, "./") {
+    ""
+  } else {
+    let mut k = 2
+    while k < String::length(rest) && !is_space(String::byte_at(rest, k)) {
+      k = k + 1
+    }
+    if k > 2 && String::starts_with(String::substring(rest, k, String::length(rest)), " {") {
+      String::substring(rest, 0, k)
+    } else {
+      ""
+    }
+  }
+}
+
+/// `mod NAME;` at the start of a line: NAME, or "".
+fn rust_mod_name(line: String) -> String {
+  if !String::starts_with(line, "mod ") {
+    ""
+  } else {
+    let mut k = 4
+    while k < String::length(line) && is_word(String::byte_at(line, k)) {
+      k = k + 1
+    }
+    if k > 4 && k < String::length(line) && String::byte_at(line, k) == ';' {
+      String::substring(line, 4, k)
+    } else {
+      ""
+    }
+  }
+}
+
+/// Every `require("./X.js")` target in a text, leftmost first.
+fn js_requires(text: String) -> Array[String] {
+  let out: Array[String] = []
+  let head = "require(\"./"
+  let mut from = 0
+  let mut going = true
+  while going {
+    let at = String::index_of_from(text, head, from)
+    if at < 0 {
+      going = false
+    } else {
+      let start = at + 9
+      let mut k = start + 2
+      while k < String::length(text) && String::byte_at(text, k) != '"' && String::byte_at(text, k) != '\n' {
+        k = k + 1
+      }
+      let target = String::substring(text, start, k)
+      if k + 1 < String::length(text) && String::byte_at(text, k) == '"' && String::byte_at(text, k + 1) == ')' && String::length(target) > 5 && String::ends_with(target, ".js") {
+        Array::push(out, target)
+        from = k + 2
+      } else {
+        from = at + 1
+      }
+    }
+  }
+  out
+}
+
+fn contains(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == x {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+struct Group {
+  mode: String;
+  entry_dir: String;
+  prefix: String;
+  seen: Array[String];
+  missing: Array[String]
+}
+
+fn visit(g: Group, file: String) -> String with Fs::is_file + Fs::read_file {
+  if contains(g.seen, file) {
+    ""
+  } else if !Fs::is_file(file) {
+    Array::push(g.seen, file)
+    Array::push(g.missing, file)
+    ""
+  } else {
+    Array::push(g.seen, file)
+    let text = Fs::read_file(file)
+    let dir = dir_of(file)
+    let children: Array[String] = []
+    if g.mode == "vibe" {
+      let lines = String::split(text, "\n")
+      let mut i = 0
+      while i < Array::length(lines) {
+        let target = local_import_target(Array::get(lines, i))
+        if target != "" {
+          let child = join(dir, target)
+          let name = base_of(child)
+          if dir_of(child) == g.entry_dir && suffix_of(name) == ".vibe" && String::starts_with(stem_of(name), g.prefix) {
+            Array::push(children, child)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    } else if g.mode == "rs" {
+      let lines = String::split(text, "\n")
+      let mut i = 0
+      while i < Array::length(lines) {
+        let name = rust_mod_name(Array::get(lines, i))
+        if name != "" {
+          Array::push(children, join(dir, "\{name}.rs"))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    } else if g.mode == "js" {
+      let targets = js_requires(text)
+      let mut i = 0
+      while i < Array::length(targets) {
+        Array::push(children, join(dir, Array::get(targets, i)))
+        i = i + 1
+      }
+    } else {
+      ()
+    }
+    let parts: Array[String] = []
+    let mut c = 0
+    while c < Array::length(children) {
+      Array::push(parts, visit(g, Array::get(children, c)))
+      c = c + 1
+    }
+    let rest = String::join(parts, "\n")
+    "\{text}\n\{rest}"
+  }
+}
+
+/// The source group of `path`: its text, then the local implementation
+/// modules it owns (see the header). The second value names the first module
+/// the group refers to that is not there, or is "" when every one was read.
+export fn read_source_group(path: String) -> (String, String) with Fs::is_file + Fs::read_file {
+  let entry = join(".", path)
+  let name = base_of(entry)
+  let suffix = suffix_of(name)
+  let stem = stem_of(name)
+  let entry_text = if Fs::is_file(entry) {
+    Fs::read_file(entry)
+  } else {
+    ""
+  }
+  let mode = if suffix == ".vibe" && String::index_of_from(entry_text, facade_marker, 0) >= 0 {
+    "vibe"
+  } else if suffix == ".rs" && String::index_of_from(entry_text, "mod host_imports;", 0) >= 0 {
+    "rs"
+  } else if suffix == ".js" {
+    "js"
+  } else {
+    ""
+  }
+  let prefix = if stem == "linked_compile" {
+    "linked_"
+  } else {
+    "\{stem}_"
+  }
+  let g = Group::{
+    mode: mode,
+    entry_dir: dir_of(entry),
+    prefix: prefix,
+    seen: [],
+    missing: []
+  }
+  let text = visit(g, entry)
+  let missing = if Array::length(g.missing) > 0 {
+    Array::get(g.missing, 0)
+  } else {
+    ""
+  }
+  (text, missing)
+}
