@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # run_bounded.sh -- one portable spelling of `timeout SECS CMD...` (#2958).
 #
-# GNU `timeout` is coreutils. A stock macOS has no such binary (Homebrew's
-# coreutils installs it as `gtimeout`), so a bare `timeout 60 cmd` there is
+# GNU `timeout` is coreutils. Ubuntu also provides it as `gnutimeout`; a
+# stock macOS has no such binary (Homebrew installs it as `gtimeout`). A
+# bare `timeout 60 cmd` on a host without it is
 # `command not found` -- exit 127 -- which each caller then read as whatever
 # 127 meant in its own logic: a compile crash, a failed gate, a finding. 96
 # call sites across scripts/ and tests/ called it bare.
@@ -25,7 +26,7 @@
 #     `run_with_timeout` copies this replaced already meant by 0.
 #
 # The command is ALWAYS bounded, whichever mechanism is present:
-# `timeout`, else `gtimeout`, else the shell watchdog below. Running without a
+# a GNU `timeout` / `gnutimeout` / `gtimeout`, else the shell watchdog below. Running without a
 # limit was the other option #2958 weighed, and it is right for a test runner
 # but wrong for an oracle -- several callers here READ 124 (the fuzz oracle's
 # HANG classes, vibe_md's "timed out after" line, the #2362 spin probe in the
@@ -45,7 +46,10 @@
 #     a grandchild keeps running, and "a wrapper that spawns the real workload"
 #     is the shape of nearly every call site here.
 #
-# VIBE_RUN_BOUNDED_IMPL (timeout | gtimeout | watchdog) forces one mechanism.
+# VIBE_RUN_BOUNDED_IMPL (timeout | gnutimeout | gtimeout | watchdog) selects
+# the preferred mechanism; a non-GNU native command uses a GNU alias or the
+# watchdog. Executable presence alone does not establish timeout(1)'s contract:
+# uutils -k leaves TERM-ignoring descendants alive (uutils/coreutils#15768).
 # It exists for scripts/run_bounded_test.sh alone, which has to exercise the
 # watchdog on a machine that has GNU timeout.
 
@@ -65,6 +69,20 @@ run_bounded_monotonic_seconds() {
   fi
 }
 
+# Require GNU's process-group escalation. Ubuntu's unprefixed timeout can be
+# uutils, whose direct-child-only KILL leaves captured output pipes open.
+run_bounded_native_tool() {
+  local preferred="$1" candidate version
+  for candidate in "$preferred" "timeout" "gnutimeout" "gtimeout"; do
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    version="$("$candidate" --version 2>/dev/null)" || continue
+    case "$version" in
+      *'(GNU coreutils)'*) printf '%s\n' "$candidate"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
 run_bounded() { # <seconds> <cmd...>
   if [ "$#" -lt 2 ]; then
     echo "run_bounded: usage: run_bounded <seconds> <cmd...>" >&2
@@ -82,18 +100,9 @@ run_bounded() { # <seconds> <cmd...>
     "$@"
     return $?
   fi
-  local impl="${VIBE_RUN_BOUNDED_IMPL:-}"
-  if [ -z "$impl" ]; then
-    if command -v timeout >/dev/null 2>&1; then
-      impl="timeout"
-    elif command -v gtimeout >/dev/null 2>&1; then
-      impl="gtimeout"
-    else
-      impl="watchdog"
-    fi
-  fi
+  local impl="${VIBE_RUN_BOUNDED_IMPL:-timeout}"
   case "$impl" in
-    "timeout" | "gtimeout")
+    "timeout" | "gnutimeout" | "gtimeout")
       # Through a variable, so the tool name never sits in command position
       # where scripts/check_gate_portability.sh would read it as a bare call.
       # `-k 2`: timeout(1) only sends TERM by default, so a command that
@@ -104,7 +113,11 @@ run_bounded() { # <seconds> <cmd...>
       # crash to callers that classify 124 as a hang (tests/fuzz). A 137 past
       # the bound is the escalation; one before it is a real SIGKILL (the OOM
       # killer), and stays 137.
-      local bin="$impl" start end rc=0
+      local bin start end rc=0
+      if ! bin="$(run_bounded_native_tool "$impl")"; then
+        run_bounded_watchdog "$secs" "$@"
+        return $?
+      fi
       if ! start="$(run_bounded_monotonic_seconds)"; then
         run_bounded_watchdog "$secs" "$@"
         return $?
@@ -125,7 +138,7 @@ run_bounded() { # <seconds> <cmd...>
       return $?
       ;;
     *)
-      echo "run_bounded: VIBE_RUN_BOUNDED_IMPL must be timeout, gtimeout, or watchdog, got '$impl'" >&2
+      echo "run_bounded: VIBE_RUN_BOUNDED_IMPL must be timeout, gnutimeout, gtimeout, or watchdog, got '$impl'" >&2
       return 125
       ;;
   esac
@@ -193,7 +206,7 @@ run_bounded_watchdog() { # <seconds> <cmd...>
 # exported, is `command not found` there -- exit 127 again, the very failure
 # this file exists to remove.
 export -f run_bounded run_bounded_watchdog
-export -f run_bounded_monotonic_seconds
+export -f run_bounded_monotonic_seconds run_bounded_native_tool
 
 # Executed rather than sourced: run the command given on the command line.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

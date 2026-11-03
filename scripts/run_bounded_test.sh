@@ -15,7 +15,7 @@ set -euo pipefail
 # functions into this process's environment, and an inherited export would
 # satisfy the xargs-worker rung for a mutant that never exports them.
 unset VIBE_RUN_BOUNDED_IMPL
-unset -f run_bounded run_bounded_watchdog run_bounded_monotonic_seconds 2>/dev/null || true
+unset -f run_bounded run_bounded_watchdog run_bounded_monotonic_seconds run_bounded_native_tool 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$SCRIPT_DIR/run_bounded.sh"
@@ -92,12 +92,72 @@ contract() { # <lib> <impl>
 # --- green: the real helper, under every mechanism this machine can offer.
 impls="watchdog"
 command -v timeout >/dev/null 2>&1 && impls="$impls timeout"
+command -v gnutimeout >/dev/null 2>&1 && impls="$impls gnutimeout"
 command -v gtimeout >/dev/null 2>&1 && impls="$impls gtimeout"
 for impl in $impls; do
   broken="$(contract "$LIB" "$impl")"
   [ -z "$broken" ] || fail "the real helper breaks the contract under $impl: $broken"
   ok "the real helper keeps timeout(1)'s contract under $impl"
 done
+
+# An executable called timeout is not necessarily GNU coreutils. A foreign
+# implementation must not run the workload when no GNU alias is available.
+foreign_bin="$WORK/foreign-bin"
+foreign_marker="$WORK/foreign-invoked"
+mkdir -p "$foreign_bin"
+for name in "timeout" "gnutimeout" "gtimeout"; do
+  cat > "$foreign_bin/$name" <<'FOREIGNEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s (uutils coreutils) 0.12.0\n' 'timeout'
+  exit 0
+fi
+printf 'invoked\n' > "${VIBE_TEST_FOREIGN_TIMEOUT_MARKER:?}"
+exit 99
+FOREIGNEOF
+  chmod +x "$foreign_bin/$name"
+done
+foreign_probe() {
+  PATH="$foreign_bin:$PATH" VIBE_TEST_FOREIGN_TIMEOUT_MARKER="$foreign_marker" \
+    VIBE_RUN_BOUNDED_IMPL="timeout" bash -c \
+    '. "$1"; run_bounded 5 sh -c "exit 7"; echo "rc=$?"' _ "$1" 2>/dev/null | tail -1
+}
+r="$(foreign_probe "$LIB")"
+[ "$r" = rc=7 ] || fail "foreign native tool did not select the watchdog: $r"
+[ ! -e "$foreign_marker" ] || fail "the foreign native tool ran the workload"
+
+# Red control: trusting the command name again must actually invoke the
+# foreign executable, and the same probe must reject its result.
+unchecked_native="$WORK/unchecked-native.sh"
+sed 's/^  local preferred="\$1" candidate version$/  echo "$1"; return 0 # unchecked-native-mutant/' \
+  "$LIB" > "$unchecked_native"
+grep -qF '# unchecked-native-mutant' "$unchecked_native" || fail "the native selection mutation did not land"
+r="$(foreign_probe "$unchecked_native")"
+[ "$r" = rc=99 ] && [ -e "$foreign_marker" ] || fail "the foreign native tool selection defect was not exposed: $r"
+rm -f "$foreign_marker"
+
+# Selection-only GNU alias fixture: these workloads finish immediately.
+# The real native implementations above separately exercise the time bound.
+cat > "$foreign_bin/gnutimeout" <<'GNUEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s (GNU coreutils) 9.4\n' 'timeout'
+  exit 0
+fi
+[ "${1:-}" = -k ] && [ "${2:-}" = 2 ] && [ "${3:-}" = 5 ] || exit 98
+printf 'gnu-alias\n' > "${VIBE_TEST_FOREIGN_TIMEOUT_MARKER:?}"
+shift 3
+"$@"
+GNUEOF
+chmod +x "$foreign_bin/gnutimeout"
+r="$(foreign_probe "$LIB")"
+[ "$r" = rc=7 ] && [ -e "$foreign_marker" ] || fail "the GNU-prefixed alias was not selected: $r"
+rm -f "$foreign_marker"
+r="$(PATH="$foreign_bin:$PATH" VIBE_TEST_FOREIGN_TIMEOUT_MARKER="$foreign_marker" \
+  VIBE_RUN_BOUNDED_IMPL="timeout" bash -c \
+  '. "$1"; echo x | xargs -I{} bash -c "run_bounded 5 printf worker-{}"' _ "$LIB" 2>/dev/null)"
+[ "$r" = worker-x ] && [ -e "$foreign_marker" ] || fail "an xargs worker lost the native selector: $r"
+ok "foreign native tool selects the watchdog; GNU aliases and the exported selector work; unchecked selection is red"
 
 # --- the edges the contract rungs do not reach.
 r="$(bash -c '. "$1"; run_bounded 0 sh -c "exit 5"; echo "rc=$?"' _ "$LIB" 2>/dev/null | tail -1)"
