@@ -1210,6 +1210,19 @@ synthesized type that moves later constructor tags, and that declines on the
 type rows. The tag remap uses the same scanned-immediate rebuild as the call
 remap, which is tested, and a tag the map does not cover fails closed.
 
+**Thunks.** A module-level non-function `let` is memoized in two globals,
+`base + 2k` and `base + 2k + 1` (base 6, or 7 under RC), where `k` is its
+position in the UNSORTED thunk list. These are the module's last globals. A
+thunk added or removed ahead of a cached one moves those globals, and replayed
+unchanged, the cached thunk would read another thunk's memo cell. The rows
+record only whether a function is a thunk, so the harvest carries the thunk
+list in memo order (`guard_thunk_names`, VBC14). Every `global.get` /
+`global.set` immediate (`reloc_kind_global`) is then relocated through the
+names (`lc_thunk_map`), and every entry moves while the map is not the
+identity. Load-bearing: with the global remap made the identity, the thunk row
+compiles to different bytes from a fresh build. Codex found this as a P1 on
+#3765.
+
 The rows are defence in depth for one class: a changed borrow ABI moves the
 row and the borrow table both, and in the probe built for it the borrow guard
 declined first. No row of the corpus is caught by the rows alone.
@@ -1231,6 +1244,8 @@ byte for byte against a fresh build:
   an existing effect declines, because its synthesized type moves later tags.
 - **Structs:** one added in the middle file with new fields is reused. One
   that shares a field with an existing struct declines.
+- **Thunks:** one added in the middle file ahead of a downstream file's own
+  thunk is reused, with the downstream thunk's memo globals relocated.
 - **A stable refreshed artifact:** a second warm build recompiles exactly what
   a third does.
 - **Middle-file edits**, with the downstream file calling the moved

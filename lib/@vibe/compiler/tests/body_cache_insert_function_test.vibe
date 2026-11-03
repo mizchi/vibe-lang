@@ -625,3 +625,41 @@ test "an added struct is tolerated when its fields are new" {
   let r2 = bim_probe_defs("shared-field", base, shared_field)
   inspect(String::join([r1, r2], " | "), content = "disjoint-fields saved=4 equal=true | shared-field saved=0 equal=true")
 }
+
+//# Thunks. A module-level non-function `let` is memoized in two globals,
+//# `base + 2k` and `base + 2k + 1`, where `k` is its position in the thunk
+//# list. A thunk added ahead of a cached one moves its globals; replayed as
+//# it was, the cached thunk would read the new thunk's memo cell. (Codex P1
+//# on #3765.)
+
+test "a thunk added ahead of a cached one moves its memo globals with it" {
+  let base = String::join([bim_two_line, bim_three_line], "\n")
+  let with_thunk = String::join([
+    "let bim_pre: Array[Int] = [9, 9, 9]",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + Array::length(bim_pre) }",
+    bim_three_line
+  ], "\n")
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  // The downstream file holds a thunk of its own, after the middle file's.
+  let main = String::join([
+    "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }",
+    "let bim_m_tbl: Array[Int] = [5, 6]",
+    "let run: () -> Int = () -> { bim_two(1) + bim_three(4) + Array::length(bim_m_tbl) }"
+  ], "\n")
+  Fs::write_bytes(bim_a_path, bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bif_bytes(String::concat(head, base)))
+  Fs::write_bytes(bim_main_path, bif_bytes(main))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", cold_counts)
+  Fs::write_bytes(bim_b_path, bif_bytes(String::concat(head, with_thunk)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bim_main_path, "run")
+  inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=4 equal=true")
+}

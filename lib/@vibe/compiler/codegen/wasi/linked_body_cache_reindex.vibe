@@ -13,6 +13,7 @@ import @vibe/compiler/codegen/reloc {
   blind_owner_lambda_index,
   blind_owner_of_lambda,
   reloc_kind_func,
+  reloc_kind_global,
   reloc_kind_tag,
   scan_body_relocs
 }
@@ -41,7 +42,9 @@ import ./linked_compile_lc_rename_sleep_calls.vibe {
 // - the funcref slot log the element section is built from;
 // - the owner of every record and linemap row, and each lambda's index;
 // - exception tags, `throw` / `catch` immediates the encoding makes certain
-//   (`reloc_kind_tag`), when the declared effects changed.
+//   (`reloc_kind_tag`), when the declared effects changed;
+// - a thunk's memo globals (`reloc_kind_global`), which follow the thunk's
+//   position in the unsorted thunk list.
 //
 // Imports and generated builtins sit below the user functions and do not
 // move; the synthesized region sits past the pin region's capacity and does
@@ -66,7 +69,12 @@ struct LcIndexMap {
   lambda_slot_base: Int;
   /// Harvest exception tag -> this build's (`lc_tag_map`); -1 for a tag
   /// whose effect was removed.
-  tags: Array[Int]
+  tags: Array[Int];
+  /// Harvest thunk position -> this build's (`lc_thunk_map`), and the first
+  /// memo global: thunk `k` owns globals `thunk_base + 2k` and `+ 1`, the
+  /// last globals of the module.
+  thunks: Array[Int];
+  thunk_base: Int
 }
 
 fn lc_map_fn(m: LcIndexMap, o: Int) -> Int {
@@ -156,6 +164,21 @@ fn lc_map_tag(m: LcIndexMap, t: Int) -> Int {
     }
   } else {
     Array::get(m.tags, t)
+  }
+}
+
+/// A global index: below the thunks' memo globals nothing moves; a memo
+/// global follows its thunk; past them there are no globals to name.
+fn lc_map_global(m: LcIndexMap, g: Int) -> Int {
+  if g < m.thunk_base {
+    g
+  } else {
+    let k = (g - m.thunk_base) / 2
+    if k >= Array::length(m.thunks) || Array::get(m.thunks, k) < 0 {
+      0 - 1
+    } else {
+      m.thunk_base + 2 * Array::get(m.thunks, k) + (g - m.thunk_base) % 2
+    }
   }
 }
 
@@ -250,12 +273,14 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
       let mut i = 0
       while ok && i < Array::length(r.offsets) {
         let rk = Array::get(r.kinds, i)
-        if rk == reloc_kind_func || rk == reloc_kind_tag {
+        if rk == reloc_kind_func || rk == reloc_kind_tag || rk == reloc_kind_global {
           let v = Array::get(r.values, i)
           let n = if rk == reloc_kind_func {
             lc_map_call(m, v)
-          } else {
+          } else if rk == reloc_kind_tag {
             lc_map_tag(m, v)
+          } else {
+            lc_map_global(m, v)
           }
           if n < 0 {
             ok = false
@@ -401,9 +426,10 @@ fn lc_first_change(e: LcSrcEdit, old_plan: Array[Int], new_bases: Array[Int]) ->
 /// one that cannot be moved, or whose function was removed, is dropped.
 /// `old_plan` is the harvest's lambda plan with its total last
 /// (`lc_old_lambda_plan`). Answers `cache` itself when nothing moved.
-export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: Int, num_user_funcs: Int, func_offset: Int, lambda_slot_base: Int, old_plan: Array[Int], new_bases: Array[Int], new_lambda_count: Int, tag_map: Array[Int]) -> CodegenBodyCache {
-  // A moved exception tag can sit in ANY body, so every entry moves then.
-  let first = if lc_tags_identity(tag_map) {
+export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: Int, num_user_funcs: Int, func_offset: Int, lambda_slot_base: Int, old_plan: Array[Int], new_bases: Array[Int], new_lambda_count: Int, tag_map: Array[Int], thunk_map: Array[Int], thunk_base: Int) -> CodegenBodyCache {
+  // A moved exception tag can sit in ANY body, and so can a moved thunk's
+  // memo global, so every entry moves then.
+  let first = if lc_tags_identity(tag_map) && lc_tags_identity(thunk_map) {
     lc_first_change(e, old_plan, new_bases)
   } else {
     0
@@ -449,7 +475,9 @@ export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: I
       num_user_funcs: num_user_funcs,
       func_offset: func_offset,
       lambda_slot_base: lambda_slot_base,
-      tags: tag_map
+      tags: tag_map,
+      thunks: thunk_map,
+      thunk_base: thunk_base
     }
     let out = codegen_body_cache_guards_only(cache)
     let lam_rows = lc_group_rows(cache.lam_owner, num_user_funcs)

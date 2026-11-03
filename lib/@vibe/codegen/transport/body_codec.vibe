@@ -60,6 +60,7 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     guard_effect_rows: array_empty(),
     guard_struct_names: array_empty(),
     guard_struct_fields: array_empty(),
+    guard_thunk_names: array_empty(),
     relocated: array_empty(),
     collect: [1]
   }
@@ -77,7 +78,7 @@ export fn codegen_body_cache_discard() -> CodegenBodyCache {
 
 //# CodegenBodyCache codec (#2388 step 3)
 
-// Length-prefixed binary layout, "VBC13" magic. Every integer is LEB128 of
+// Length-prefixed binary layout, "VBC14" magic. Every integer is LEB128 of
 // (value + 1), so -1 (a recording site with no statement) round-trips and
 // any other negative -- which no field legitimately holds -- fails loudly at
 // encode time instead of corrupting the stream. Deserialize is fail-safe:
@@ -184,7 +185,7 @@ export fn codegen_body_cache_to_bytes(_ cache: CodegenBodyCache) -> Bytes with E
   buf
 }
 
-/// Append the VBC13 stream for `cache` to `buf`, which may already hold a
+/// Append the VBC14 stream for `cache` to `buf`, which may already hold a
 /// header. The persisted artifact writes its file table first and the stream
 /// after it; encoding into a separate buffer and appending cost one more copy
 /// of the whole cache on every store (#2818).
@@ -215,7 +216,8 @@ export fn codegen_body_cache_write_to(buf: Bytes, cache: CodegenBodyCache) -> Un
   // 'A' -> 'B': the constructor table by type (#2669).
   // 'B' -> 'C': the declared effects by name (#2669).
   // 'C' -> 'D': the struct table by value (#2669).
-  Bytes::push(buf, value = 'D')
+  // 'D' -> 'E': the thunks in memo-global order (#2669).
+  Bytes::push(buf, value = 'E')
   bcc_push_int_array(buf = buf, xs = cache.fn_indices)
   bcc_push_string_array(buf = buf, xs = cache.fn_names)
   bcc_push_int_array(buf = buf, xs = cache.fn_files)
@@ -265,9 +267,10 @@ export fn codegen_body_cache_write_to(buf: Bytes, cache: CodegenBodyCache) -> Un
   bcc_push_zigzag_int_array(buf = buf, xs = cache.guard_effect_rows)
   bcc_push_string_array(buf = buf, xs = cache.guard_struct_names)
   bcc_push_string_array(buf = buf, xs = cache.guard_struct_fields)
+  bcc_push_string_array(buf = buf, xs = cache.guard_thunk_names)
 }
 
-/// Encode the cache with the same VBC13 wire format as the compatibility function.
+/// Encode the cache with the same VBC14 wire format as the compatibility function.
 export fn CodegenBodyCache::codegen_body_cache_to_bytes(_ cache: CodegenBodyCache) -> Bytes with Exception {
   codegen_body_cache_to_bytes(cache)
 }
@@ -463,14 +466,14 @@ export fn codegen_body_cache_from_bytes(_ b: Bytes) -> Option[CodegenBodyCache] 
   codegen_body_cache_from_bytes_with_string_copy(b = b, copy = bcc_copy_string)
 }
 
-/// Decode VBC13 with an owned raw-byte string copier. Each callback receives
+/// Decode VBC14 with an owned raw-byte string copier. Each callback receives
 /// a checked span; it must copy every byte, including NUL and invalid UTF-8,
 /// without retaining a view of the mutable input. Wire validation stays here.
 export fn codegen_body_cache_from_bytes_with_string_copy(b: Bytes, copy: (Bytes, Int, Int) -> String) -> Option[CodegenBodyCache] {
   bcc_decode_from(b = b, start = 0, copy = copy)
 }
 
-/// Decode a VBC13 stream that starts at `start` inside `b` and runs to its end,
+/// Decode a VBC14 stream that starts at `start` inside `b` and runs to its end,
 /// without first copying it out. The persisted artifact wraps the stream in a
 /// header and a file table; slicing the stream out cost a second copy of the
 /// whole cache on every warm build (#2818).
@@ -479,7 +482,7 @@ export fn codegen_body_cache_from_bytes_at(b: Bytes, start: Int) -> Option[Codeg
 }
 
 fn bcc_decode_from(b: Bytes, start: Int, copy: (Bytes, Int, Int) -> String) -> Option[CodegenBodyCache] {
-  if start < 0 || Bytes::length(b) < start + 4 || Bytes::get(b, at = start) != 'V' || Bytes::get(b, at = start + 1) != 'B' || Bytes::get(b, at = start + 2) != 'C' || Bytes::get(b, at = start + 3) != 'D' {
+  if start < 0 || Bytes::length(b) < start + 4 || Bytes::get(b, at = start) != 'V' || Bytes::get(b, at = start + 1) != 'B' || Bytes::get(b, at = start + 2) != 'C' || Bytes::get(b, at = start + 3) != 'E' {
     None
   } else {
     let out = codegen_body_cache_new()
@@ -722,6 +725,11 @@ fn bcc_decode_from(b: Bytes, start: Int, copy: (Bytes, Int, Int) -> String) -> O
     }
     if p >= 0 {
       p = bcc_read_string_array(b = b, pos = p, out = out.guard_struct_fields, copy = copy)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b = b, pos = p, out = out.guard_thunk_names, copy = copy)
     } else {
       ()
     }
