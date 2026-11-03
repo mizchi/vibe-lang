@@ -1,0 +1,50 @@
+// #3032: interpolating an `Array` whose type the checker knows renders it,
+// for a struct field and for a call result alike. `vibe check` passed these
+// while `vibe run` refused them in codegen ("cannot interpolate field `tags`",
+// "the result of `String::split`"): the interpolation pass expanded an
+// argument only when its syntax gave the element, and a field or a builtin's
+// result gives none. The checker's render row spells it.
+import @vibe/builtin {
+  Iterator::map
+}
+
+struct Bx {
+  tags: Array[String];
+  ds: Array[Float64];
+  os: Array[Option[Int]];
+  nest: Array[Array[String]];
+  flags: Array[Bool]
+}
+
+fn make_bx() -> Bx {
+  Bx::{ tags: ["a", "b"], ds: [1.5, 2.25], os: [Some(1), None], nest: [["a"], ["b", "c"]], flags: [true, false] }
+}
+
+test "a struct field of Array type interpolates" {
+  let bx = make_bx()
+  inspect("\{bx.tags}", content = "[a, b]")
+  inspect("\{bx.ds}", content = "[1.5, 2.25]")
+  inspect("\{bx.os}", content = "[Some(1), None]")
+  inspect("\{bx.nest}", content = "[[a], [b, c]]")
+  inspect("\{bx.flags}", content = "[true, false]")
+}
+
+test "a field read off a call result interpolates" {
+  inspect("\{make_bx().tags}", content = "[a, b]")
+}
+
+test "a builtin's Array result interpolates" {
+  inspect("\{String::split("a,b", ",")}", content = "[a, b]")
+  inspect("\{Array::filter([1, 2, 3], (x) -> x > 1)}", content = "[2, 3]")
+}
+
+test "an imported library function's Array result interpolates" {
+  inspect("\{Iterator::map([1, 2, 3], (x) -> {
+    x * 2
+  })}", content = "[2, 4, 6]")
+}
+
+test "the same values through a binding agree" {
+  let parts = String::split("a,b", ",")
+  inspect("\{parts}", content = "[a, b]")
+}
