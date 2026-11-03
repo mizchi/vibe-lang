@@ -86,7 +86,7 @@ compile-checks against the current compiler.
   (interpolation `\{expr}`), chars `'A'`, `true`/`false`, `()`. `Float` and
   its `1.5f` literal are not frozen (§6.1).
 - Composite types: tuples `(A, B)`, `Array[T]`, `StringMap[V]` (the builtin
-  map; `Map[K, V]`'s generality is not frozen — see §3), record, struct,
+  map; `Map[K, V]` with other keys is not frozen — see §3), record, struct,
   enum, function types `(A) -> B`, effectful `(A) -> B with E`, generics `[T]`,
   trait bounds `[T: A + B]`, and the `Option[T]` sugar `T?` (ADR-0046).
 - **Equality (`==`) — the fail-closed contract** (ADR-0097 as shipped; measured
@@ -414,12 +414,13 @@ The stable symbols listed under "Key Builtins" in the
   `StringMap[V]`; the operations keep the `Map::` qualifier, so the spelling
   is the type's, not a second operation family. Neither needs an import.
   `Map::get`, `Map::has_key`, `Map::keys`, `Map::values`, `Map::set`, `Map::size`, `Map::new`, and `Map::from_pairs` cannot be frozen as first-class values -- they are call-only builtin operations (`Map::get(m, k)`, not `let g = Map::get`; #2274 / #2275).
-  **`Map[K, V]`'s generality is deliberately NOT frozen** (#2263): the builtin
-  is String-keyed today, and an annotation naming a concrete non-String key is
-  rejected where it is written. The name `Map` is reserved for the generic
-  type; completing it turns a rejection into an answer, which is a compatible
-  change. A key that is a type parameter is unaffected — generic code over
-  `Map[K, V]` keeps compiling.
+  **`Map[K, V]` beyond `String` keys is deliberately NOT frozen** (#2263):
+  `Int`, `Char` and `Bool` keys compile and run on the default backend since
+  #2334, but the wasm-gc backend and a generic function keyed by its type
+  parameter still refuse them, so the surface may still grow. Any other
+  concrete key is rejected where it is written. A key that is a type parameter
+  is unaffected for `String` instantiations — generic code over `Map[K, V]`
+  keeps compiling.
   **Another key type is already available today**: `MutMap[K, V]` from
   `@vibe/core` is the generic open-addressing map, and it is what the
   rejection points at (`MutMap::new_int()` / `new_string()`, or
