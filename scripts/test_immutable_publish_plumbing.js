@@ -17,7 +17,9 @@ if (process.argv[2] === "--publish-child") {
 }
 
 const root = path.resolve(__dirname, "..");
-const read = (file) => execFileSync("python3", [path.join(root, "scripts/source_files.py"), path.join(root, file)], { encoding: "utf8" });
+// A flattened source group can exceed execFileSync's 1 MiB default buffer
+// (linked_compile.vibe is over it once its calls carry argument labels).
+const read = (file) => execFileSync("python3", [path.join(root, "scripts/source_files.py"), path.join(root, file)], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 const includes = (file, text) =>
   assert.ok(read(file).includes(text), `${file} must contain ${text}`);
 
