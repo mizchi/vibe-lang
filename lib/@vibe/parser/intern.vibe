@@ -229,38 +229,38 @@ export fn intern_str(_ s: String) -> String {
   intern_slice(s = s, start = 0, end = String::length(s))
 }
 
-/// ADR-0122 (#3728): `Float64` / `Float32` are the width-named spellings of
-/// `Double` / `Float`. The parser canonicalizes them to the existing names at
-/// the two places a type name is formed -- a type expression and the
-/// namespace of a qualified name -- so every later pass, including the many
-/// that compare type spellings as strings, sees exactly what it sees today.
-/// A bare constructor named `Float64` is neither, and keeps its spelling.
+/// ADR-0122 (#3728): `Float64` / `Float32` are the canonical float type
+/// names. The parser reads every legacy spelling (`Double` / `Float`, and the
+/// lowercase aliases `f64` / `f32`) as them at the places a type name is
+/// formed -- a type expression and the namespace of a qualified name -- so
+/// every later pass, including the many that compare type spellings as
+/// strings, sees one spelling. A bare constructor named `Double` is neither,
+/// and keeps its spelling.
 export fn float_width_alias(name: String) -> String {
-  if String::length(name) != 7 {
-    name
-  } else if name == "Float64" {
-    "Double"
-  } else if name == "Float32" {
-    "Float"
+  if name == "Double" || name == "f64" {
+    "Float64"
+  } else if name == "Float" || name == "f32" {
+    "Float32"
   } else {
     name
   }
 }
 
-/// ADR-0122 (#3728): the width-named float conversions, as members of the
-/// already-canonicalized namespace (`Float64::to_float32` arrives here as
-/// `Double` / `to_float32`). Canonicalized at the same point as the namespace,
-/// so every pass that recognizes a conversion by name (the rowless-lane Float
-/// guard, the f32 rounding rewrite, ...) sees the one spelling it knows.
+/// ADR-0122 (#3728): the legacy float conversions, as members of the
+/// already-canonicalized namespace (`Double::to_float` arrives here as
+/// `Float64` / `to_float`), read as their width-named spellings. Canonicalized
+/// at the same point as the namespace, so every pass that recognizes a
+/// conversion by name (the rowless-lane Float guard, the f32 rounding
+/// rewrite, ...) sees the one spelling it knows.
 fn float_width_conversion(space: String, member: String) -> String {
-  if space == "Int" && member == "to_float64" {
-    "to_double"
-  } else if space == "Int" && member == "to_float32" {
-    "to_float"
-  } else if space == "Double" && member == "to_float32" {
-    "to_float"
-  } else if space == "Float" && member == "to_float64" {
-    "to_double"
+  if space == "Int" && member == "to_double" {
+    "to_float64"
+  } else if space == "Int" && member == "to_float" {
+    "to_float32"
+  } else if space == "Float64" && member == "to_float" {
+    "to_float32"
+  } else if space == "Float32" && member == "to_double" {
+    "to_float64"
   } else {
     member
   }
@@ -270,8 +270,9 @@ fn float_width_conversion(space: String, member: String) -> String {
 /// the concatenation on a hit. This is the parser's qualified-name shape
 /// (`Array::push`, `Iterator::map`, ...): it used to allocate a fresh concat
 /// per OCCURRENCE; now each distinct spelling allocates once, ever.
-/// `Float64::x` / `Float32::x` intern as `Double::x` / `Float::x`
-/// (`float_width_alias`).
+/// `Double::x` / `Float::x` intern as `Float64::x` / `Float32::x`
+/// (`float_width_alias`), and the legacy conversion members as their
+/// width-named spellings (`float_width_conversion`).
 export fn intern_qualified(ns: String, member: String) -> String {
   let space = float_width_alias(name = ns)
   let leaf = float_width_conversion(space = space, member = member)
