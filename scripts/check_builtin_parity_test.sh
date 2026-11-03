@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Red test for scripts/check_builtin_parity.sh (#2248, #2584).
+# Red test for scripts/check_builtin_parity.vibex (#2248, #2584; #3672 ported
+# the gate).
 #
 # The registry row is a 9-tuple since #2584. The gate used to anchor on
 # `bool, bool, bool)`, which consumed the LAST three bools of a 9-tuple as
@@ -12,23 +13,24 @@
 # copy first so a failure is attributable to the mutation (#2252).
 set -euo pipefail
 
-unset VIBE_BUILTIN_PARITY_REGISTRY
-unset VIBE_BUILTIN_PARITY_LIN_CALLSITE
-unset VIBE_BUILTIN_PARITY_GC_CALLSITE
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-GATE="scripts/check_builtin_parity.sh"
+GATE="scripts/check_builtin_parity.vibex"
 REAL="lib/@vibe/compiler/core/builtin_registry.vibe"
-WORK="${TMPDIR:-/tmp}/vibe_builtin_parity_selftest.$$"
+# The gate reads only inside the repository, so the copies live under _build/.
+WORK="_build/builtin_parity_selftest.$$"
 rm -rf "$WORK"; mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 fail() { echo "builtin-parity-selftest: FAIL: $*" >&2; exit 1; }
 
+# The gate, pointed at a copy by one of --registry / --lin-callsite /
+# --gc-callsite.
+gate() { bash scripts/vibe_run.sh "$GATE" -- "$@"; }
+
 # --- GREEN ------------------------------------------------------------------
-if ! VIBE_BUILTIN_PARITY_REGISTRY="$REAL" bash "$GATE" >"$WORK/green.log" 2>&1; then
+if ! gate --registry "$REAL" >"$WORK/green.log" 2>&1; then
   cat "$WORK/green.log" >&2
   fail "the gate does not pass on the tree as committed, so a later failure would prove nothing"
 fi
@@ -72,7 +74,7 @@ PY
   if ! diff -q "$REAL" "$copy" >/dev/null 2>&1; then :; else
     fail "mutation '$name' did not change the copy"
   fi
-  if VIBE_BUILTIN_PARITY_REGISTRY="$copy" bash "$GATE" >"$WORK/$name.log" 2>&1; then
+  if gate --registry "$copy" >"$WORK/$name.log" 2>&1; then
     cat "$WORK/$name.log" >&2
     fail "the gate PASSED with mutation '$name' applied -- it cannot see that defect"
   fi
@@ -100,7 +102,7 @@ run_case neither neither "NEITHER lane"
 # the exemption reads the arms, and this case proves it does: rename the gc
 # arm on a COPY and the gate must name `abort` rather than waving it through.
 GC_CALLSITE_REAL="$WORK/gc_original.vibe"
-python3 scripts/source_files.py lib/@vibe/compiler/codegen/gc/backend_call.vibe > "$GC_CALLSITE_REAL"
+bash scripts/vibe_run.sh scripts/source_group.vibex -- lib/@vibe/compiler/codegen/gc/backend_call.vibe > "$GC_CALLSITE_REAL"
 GC_COPY="$WORK/backend_call.vibe"
 sed 's/fname == "abort"/fname == "abort_MUTATED"/' "$GC_CALLSITE_REAL" > "$GC_COPY"
 grep -qF 'fname == "abort_MUTATED"' "$GC_COPY" \
@@ -108,7 +110,7 @@ grep -qF 'fname == "abort_MUTATED"' "$GC_COPY" \
 if grep -qF 'fname == "abort"' "$GC_COPY"; then
   fail "callsite mutation left an unrenamed gc abort arm; the case would prove nothing"
 fi
-if VIBE_BUILTIN_PARITY_GC_CALLSITE="$GC_COPY" bash "$GATE" >"$WORK/callsite.log" 2>&1; then
+if gate --gc-callsite "$GC_COPY" >"$WORK/callsite.log" 2>&1; then
   cat "$WORK/callsite.log" >&2
   fail "the gate PASSED with the gc abort lowering renamed -- the exemption is a bare name, not a check"
 fi
@@ -124,12 +126,14 @@ echo "builtin-parity-selftest:   red ok: callsite-exemption"
 for lane in LIN GC; do
   if [ "$lane" = LIN ]; then
     source_path="lib/@vibe/compiler/codegen/expr/compile_call.vibe"
+    flag="--lin-callsite"
   else
     source_path="lib/@vibe/compiler/codegen/gc/backend_call.vibe"
+    flag="--gc-callsite"
   fi
   original="$WORK/directory_$lane.original.vibe"
   copy="$WORK/directory_$lane.vibe"
-  python3 scripts/source_files.py "$source_path" > "$original"
+  bash scripts/vibe_run.sh scripts/source_group.vibex -- "$source_path" > "$original"
   python3 - "$original" "$copy" <<'PY'
 import sys
 src, dst = sys.argv[1:]
@@ -140,7 +144,7 @@ mutated = s.replace(needle, 'fname == "Fs::readdir_MUTATED"', 1)
 assert needle not in mutated, "directory dispatch arm was not removed"
 open(dst, "w", encoding="utf-8").write(mutated + "\n// " + needle + "\n")
 PY
-  if env "VIBE_BUILTIN_PARITY_${lane}_CALLSITE=$copy" bash "$GATE" >"$WORK/directory_$lane.log" 2>&1; then
+  if gate "$flag" "$copy" >"$WORK/directory_$lane.log" 2>&1; then
     cat "$WORK/directory_$lane.log" >&2
     fail "the gate PASSED with the $lane directory arm replaced by a comment"
   fi
@@ -163,7 +167,7 @@ needle = 'fname == "Future::resolve") && !gc_name_is_user_defined(ctx, local_nam
 assert s.count(needle) == 1, "GC future refusal guard not found exactly once"
 open(dst, "w", encoding="utf-8").write(s.replace(needle, needle.replace(' && !', ' && '), 1))
 PY
-if VIBE_BUILTIN_PARITY_GC_CALLSITE="$FUTURE_COPY" bash "$GATE" >"$WORK/future.log" 2>&1; then
+if gate --gc-callsite "$FUTURE_COPY" >"$WORK/future.log" 2>&1; then
   cat "$WORK/future.log" >&2
   fail "the gate PASSED after the GC future shadowing guard changed"
 fi

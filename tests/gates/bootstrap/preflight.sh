@@ -7,7 +7,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "[compiler-gate] 0/3 builtin parity (#415 B-3)"
-bash scripts/check_builtin_parity.sh
+bash scripts/vibe_run.sh scripts/check_builtin_parity.vibex
 bash scripts/vibe_run.sh scripts/check_gate_registry.vibex
 bash scripts/vibe_run.sh scripts/check_inline_builtin_capture.vibex
 bash scripts/check_fixture_snapshots_test.sh
