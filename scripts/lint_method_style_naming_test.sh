@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Self-test for scripts/lint_method_style_naming.sh.
+# Self-test for scripts/lint_method_style_naming.vibex (#3672 ported the lint).
 #
-# Runs the lint against a synthetic package tree instead of this repository, so
-# the cases stay fixed while the real allowlist shrinks. The lint reads its
-# scope with `git ls-files`, so the fixture has to be a git repository.
+# Runs the lint against a synthetic package tree under _build/ (the guest reads
+# only inside the repository) instead of this repository, so the cases stay
+# fixed while the real allowlist shrinks.
 #
 # The first case is why this file exists. @vibe/builtin's contract re-declares
 # `type Int` / `type String` / ... so it reads as a self-contained surface, and
@@ -11,27 +11,21 @@
 # `fn f(s: String, ...)` in it became a gap wanting a `String::f` companion,
 # which is not a function anyone can write. That is 39 false positives, it
 # reached main in #1614, and it went unnoticed for roughly 300 commits because
-# this lint has no CI job and no test: the only thing it broke was
-# `pkf run release-check`, which is a local sign-off nobody re-runs on a green
-# tree.
+# this lint had no CI job and no test.
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LINT="$SCRIPT_DIR/lint_method_style_naming.sh"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/vibe_method_naming_test.XXXXXX")"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+TMP_REL="_build/method_naming_test.$$"
+TMP="$ROOT_DIR/$TMP_REL"
 trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP/scripts" "$TMP/lib/@vibe/demo"
-cp "$LINT" "$TMP/scripts/"
 allow="$TMP/scripts/method_style_naming_allowlist.txt"
 : > "$allow"
 
-git -C "$TMP" init -q
-git -C "$TMP" config user.email t@example.com
-git -C "$TMP" config user.name t
-
-run() { (cd "$TMP" && git add -A >/dev/null 2>&1; bash scripts/lint_method_style_naming.sh 2>&1); }
+run() { bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/lint_method_style_naming.vibex -- --root "$TMP_REL" 2>&1; }
 
 expect() { # expect <exit> <label> [needle]
   local want="$1" label="$2" needle="${3:-}" out rc
@@ -50,6 +44,11 @@ expect() { # expect <exit> <label> [needle]
 }
 
 vpkg() { cat > "$TMP/lib/@vibe/demo/index.vpkg"; }
+
+# 0. The real tree passes.
+real_out="$(bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/lint_method_style_naming.vibex 2>&1)" \
+  || { echo "$real_out" >&2; echo "method-naming self-test: FAIL: the real tree must pass" >&2; exit 1; }
+echo "method-naming self-test: ok: the real tree passes"
 
 # 1. A re-declared primitive is not a package-owned type. RED before the fix:
 #    this reported `shout(recv: String, ...)` as a gap.
@@ -127,5 +126,50 @@ export enum Result
 fn unwrap_or(r: Result, fallback: Int) -> Int
 EOF
 expect 1 "an owned type sharing a stdlib name is still scanned" "unwrap_or(recv: Result, ...)"
+
+# 6. A positional receiver (ADR-0120, `_ recv: Type`) is still a receiver. The
+#    shell lint's pattern required `name: Type` and stopped seeing these.
+vpkg <<'EOF'
+name = @vibe/demo
+version = 0.1.0
+
+opaque type Widget
+
+fn frob(_ w: Widget) -> Int
+EOF
+expect 1 "a positional receiver with no companion is a gap" "frob(recv: Widget, ...)"
+
+# 7. A generic receiver with one argument list, and the count of what was
+#    checked: `Widget[T]` counts, `Widget[Map[K, V]]` (a nested list) and a
+#    second parameter of the type do not.
+vpkg <<'EOF'
+name = @vibe/demo
+version = 0.1.0
+
+opaque type Widget
+
+fn spin(w: Widget[Int], n: Int) -> Int
+fn Widget::spin(w: Widget[Int], n: Int) -> Int
+fn nested(w: Widget[Map[Int, Int]]) -> Int
+fn second(n: Int, w: Widget) -> Int
+EOF
+expect 0 "only first-parameter receivers with one argument list are recv-shaped" "checked 1 recv-shaped fn(s)"
+
+# 8. A nested package's contract is in scope too.
+mkdir -p "$TMP/lib/@vibe/demo/inner"
+cat > "$TMP/lib/@vibe/demo/inner/index.vpkg" <<'EOF'
+name = @vibe/demo/inner
+version = 0.1.0
+
+opaque type Gadget
+
+fn tweak(g: Gadget) -> Int
+EOF
+expect 1 "a nested package's contract is scanned" "lib/@vibe/demo/inner/index.vpkg: tweak(recv: Gadget, ...)"
+rm -rf "$TMP/lib/@vibe/demo/inner"
+
+# 9. No contract at all is not a clean tree.
+rm -f "$TMP/lib/@vibe/demo/index.vpkg"
+expect 1 "a tree with no contract fails" "no index.vpkg files found"
 
 echo "method-naming self-test: all cases passed"
