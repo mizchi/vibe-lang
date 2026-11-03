@@ -256,7 +256,7 @@ The `perf-metrics` job in `.github/workflows/ci.yml` runs on every PR and every 
   The corpus is bumped deliberately (`bash scripts/bump_bench_corpus.sh`), which
   RESETS these series: readings on either side of a bump are about different
   inputs. `bench/perf/corpus/README.md` has the rules;
-  `scripts/check_bench_corpus.sh` keeps the snapshots frozen and the benches
+  `scripts/check_bench_corpus.vibex` keeps the snapshots frozen and the benches
   pointed at them.
 
   It used to render every tracked series instead: ~50 rows, of which ~48 read
