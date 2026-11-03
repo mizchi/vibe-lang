@@ -111,9 +111,12 @@ import ./compile_call_cc_ladder_names.vibe {
   cc_is_ref_cell_read,
   cc_map_alloc_rc,
   cc_map_delete_in_place,
+  cc_map_emit_key_eq,
   cc_map_emit_unique_test,
+  cc_map_mark_scalar,
   cc_map_release_ptr,
   cc_map_release_temp_arg0,
+  cc_map_trap_if_scalar,
   cc_map_value_out,
   cc_raw_abi_shim_applies,
   cc_retain_stored_arg
@@ -933,14 +936,27 @@ export fn rc_exit_site_matches(ctx: CompileCtx, ord: Int, kind: Int, fingerprint
 export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, fname: String, fn_idx_in_list: Int, resolved_name: String, local_idx_hint: Int, prefer_bound_call: Bool, ctor_lookup_idx: Int, compile_call_core_fn: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception) -> Int with Exception {
   if fname == "compiler_lowering_run" && local_idx_hint >= 0 {
     cc_compile_resolved_call(buf = buf, fname = fname, args = args, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = ce, fn_idx_in_list = fn_idx_in_list, local_idx_hint = local_idx_hint)
-  } else if fname == "Map::delete" {
+  } else if fname == "Map::delete" || fname == "Map::__scalar_delete" {
     // Copies every entry whose key doesn't match into a fresh block (same
     // raw i64 load/store technique Map::set uses for entries it preserves
     // unmodified — no extra retain needed, matching that precedent). The
     // new block is sized for the old entry count (an upper bound — at most
     // one entry is dropped), and the trailing count field records however
     // many entries were actually copied.
-    let (eq_fi_md, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
+    // #2334: `Map::__scalar_delete` compares keys as exact i64 values, never
+    // builds the String-hash index, and marks its result scalar-keyed.
+    let scalar_key = fname == "Map::__scalar_delete"
+    let delete_name = if scalar_key {
+      "Map::delete"
+    } else {
+      fname
+    }
+    let (eq_fn_md, _, _) = resolve_func(ft = ctx.func_table, name = "eq")
+    let eq_fi_md = if scalar_key {
+      0 - 1
+    } else {
+      eq_fn_md
+    }
     let mut nl = ce(buf, Array::get(args, at = 0), local_names, next_local, ctx, ld)
     nl = ce(buf, Array::get(args, at = 1), local_names, nl, ctx, ld)
     let map_l = nl
@@ -962,7 +978,7 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_local_set(buf = buf, idx = key_l)
     emit_local_set(buf = buf, idx = map_l)
     // ADR-0092 for maps: consumed here, as in Map::set above.
-    cc_hof_retain_arg(buf = buf, carg = Array::get(args, at = 0), local_idx = map_l, fname = fname, pos = 0, ctx = ctx)
+    cc_hof_retain_arg(buf = buf, carg = Array::get(args, at = 0), local_idx = map_l, fname = delete_name, pos = 0, ctx = ctx)
     emit_local_get(buf = buf, idx = map_l)
     emit_i64_const(buf = buf, value = -2)
     emit_i64_and(buf)
@@ -972,6 +988,11 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_load(buf = buf, align = 2, offset = 0)
     emit_i64_extend_i32_u(buf)
     emit_local_set(buf = buf, idx = cnt_l)
+    if !scalar_key {
+      cc_map_trap_if_scalar(buf = buf, map_l = map_l)
+    } else {
+      ()
+    }
     let copy_path = () -> {
       if ctx.enable_rc {
         // #2683: an RC map block (class 6) sized for the old entry count.
@@ -1016,7 +1037,7 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
       emit_i32_add(buf)
       emit_i64_load(buf = buf, align = 3, offset = 8)
       emit_local_get(buf = buf, idx = key_l)
-      emit_call(buf = buf, func_idx = eq_fi_md)
+      cc_map_emit_key_eq(buf = buf, eq_fi = eq_fi_md)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
       emit_else(buf)
@@ -1086,7 +1107,7 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
       // See the matching comment in Map::set above. idx_l is dead after the
       // copy loop; out_l already holds the final count (just stored above),
       // no need to re-load it.
-      if ctx.map_build_index_func_idx >= 0 {
+      if !scalar_key && ctx.map_build_index_func_idx >= 0 {
         emit_local_get(buf = buf, idx = out_l)
         emit_i64_const(buf = buf, value = 8)
         emit_i64_ge_s(buf)
@@ -1115,6 +1136,11 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
       emit_end(buf)
     } else {
       copy_path()
+    }
+    if scalar_key {
+      cc_map_mark_scalar(buf = buf, map_l = new_l)
+    } else {
+      ()
     }
     cc_map_value_out(buf = buf, ptr_l = new_l, ctx = ctx)
     nl + 8

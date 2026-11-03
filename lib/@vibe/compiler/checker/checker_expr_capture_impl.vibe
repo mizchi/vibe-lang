@@ -1,3 +1,7 @@
+import ./checker_call_map.vibe {
+  map_empty_literal_type
+}
+
 import ./checker_call_placement.vibe {
   checker_check_defaulted_value
 }
@@ -181,6 +185,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   mark_return_provenance_written,
   note_generic_callback_instance,
   note_local_generic_binding,
+  note_value_instantiation,
   string_lit_end,
   struct_fields_ground,
   struct_fields_ground_builtin_named
@@ -730,6 +735,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           ()
         }
         let (ti00, c00, new_bounds) = instantiate(ty = t, c = c)
+        note_value_instantiation(off = ident_off, scheme = t, inst = ti00, name = name)
         // #3386: a formal only the rows name gets this instantiation's own
         // variable. A bare `let g = f` alias is left to the effect pass, which
         // respells its rows (see the `own_row` flag below).
@@ -2810,9 +2816,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // (#996 Codex P2: `Map::set` is a functional update, so aliases of the
       // empty binding build independent maps — no value restriction; each
       // use re-instantiates a fresh slot, bound by that use's own flow).
+      // #2334: the empty literal's KEY slot is open too, so `Map::new()`
+      // followed by `Map::set(m, 1, v)` is a `Map[Int, V]`. A literal with
+      // entries is String-keyed: its keys are string literals.
       if Array::length(mpairs) == 0 {
-        let (mv0, mc2) = fresh_var(mc1)
-        (CtNamed("Map", [CtString, mv0]), ms1, mc2)
+        let (mty0, mc2) = map_empty_literal_type(mc1)
+        (mty0, ms1, mc2)
       } else {
         (CtNamed("Map", [CtString, subst_apply(s = ms1, ty = mvty)]), ms1, mc1)
       }

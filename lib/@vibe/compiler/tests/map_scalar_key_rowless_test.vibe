@@ -1,0 +1,42 @@
+//# Imports
+
+// #2334: a build lane with no typed rows -- a linked entry no
+// import-resolving check answered for -- cannot give a scalar-keyed map's
+// calls the scalar operations, so `desugar_trait_dicts_rowless_build` refuses
+// a program that visibly keys a map by `Int` / `Char` / `Bool`, rather than
+// hash and compare those keys as String pointers. A String-keyed program on
+// the same lane is unaffected.
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts_rowless_build
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+fn rowless_build_refusal(_ source: String) -> String {
+  handle {
+    let stmts = parse_program(lex(source))
+    desugar_trait_dicts_rowless_build(stmts)
+    "clean"
+  } with { Exception::Throw(msg) => msg }
+}
+
+//# Tests
+
+test "an annotated Int-keyed map is refused on the lane with no rows" {
+  let msg = rowless_build_refusal("fn f(m: Map[Int, String]) -> Int {\n  Map::size(m)\n}\n")
+  assert(String::contains(msg, needle = "cannot lower a `Map` with an `Int`, `Char` or `Bool` key"))
+}
+
+test "a literal Int key is refused on the lane with no rows" {
+  let msg = rowless_build_refusal("fn f() -> Int {\n  Map::size(Map::set(Map::new(), 1, 2))\n}\n")
+  assert(String::contains(msg, needle = "cannot lower a `Map` with an `Int`, `Char` or `Bool` key"))
+}
+
+test "a String-keyed map is clean on the lane with no rows" {
+  inspect(rowless_build_refusal("fn f() -> Int {\n  Map::size(Map::set(Map::new(), \"a\", 2))\n}\n"), content = "clean")
+}

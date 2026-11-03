@@ -540,11 +540,11 @@ export fn report_kinded_formal_applications(te: TypeExpr, formals: Array[String]
   validate(te, false)
 }
 
-/// #2263: the builtin map is String-keyed -- `Map[K, V]`'s generality is not
-/// implemented, and the name is reserved for it. An annotation spelling a
-/// concrete non-String key resolved fine and then had every op reject its key
-/// argument, so the type promised something no operation delivered. Report it
-/// where the annotation is introduced instead.
+/// #2263 / #2334: the builtin map takes a `String`, `Int`, `Char` or `Bool`
+/// key -- the keys its operations implement. An annotation spelling any other
+/// concrete key resolved fine and then had every op reject its key argument,
+/// so the type promised something no operation delivered. Report it where the
+/// annotation is introduced instead.
 ///
 /// Walks the RESOLVED type, not the `TypeExpr`: an alias body
 /// (`type M = Map[Int, String]`) has to be caught at the USE, and resolution
@@ -607,6 +607,11 @@ fn map_key_unbound_alias_params(params: Array[String], argument_count: Int) -> A
 fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], shadow: Array[String], seen: Array[String]) -> Bool {
   match k {
     CtString => true,
+    // #2334: the scalar keys, compared as raw i64 values by the scalar map
+    // operations.
+    CtInt => true,
+    CtChar => true,
+    CtBool => true,
     CtVar(_) => true,
     CtUnknown => true,
     // A compiler-owned nominal is concrete even without a TypeDef, and none
@@ -1457,7 +1462,7 @@ export fn report_map_key_types(te: TypeExpr, defs: Array[TypeDef], shadow: Array
   report_map_key_types_walk(te = te, defs = defs, shadow = shadow, out = bad, where_label = where_label, errors = errors)
   let mut i = 0
   while i < Array::length(bad) {
-    Array::push(errors, value = String::concat(String::concat(String::concat(String::concat("the builtin map is String-keyed, so a `", type_to_string(Array::get(bad, at = i))), "` key has no implementation in "), where_label), " -- spell the String-keyed map `StringMap[V]`, or use `MutMap[K, V]` from `@vibe/core` for other keys (generic `Map` keys are #2263)"))
+    Array::push(errors, value = String::concat(String::concat(String::concat(String::concat("the builtin map takes `String`, `Int`, `Char` or `Bool` keys, so a `", type_to_string(Array::get(bad, at = i))), "` key has no implementation in "), where_label), " -- key the map by one of those, or use `MutMap[K, V]` from `@vibe/core` for other keys"))
     i = i + 1
   }
 }

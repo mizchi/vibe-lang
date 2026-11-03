@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Red test for scripts/check_gc_host_import_counts.sh (#2248).
+# Red test for scripts/check_gc_host_import_counts.vibex (#2248; #3672 ported
+# the gate).
 #
 # Four mutations, on a COPY of the real source. Each is a defect that actually
 # happened rather than an invented one: the first two were both measured while
@@ -12,12 +13,10 @@
 # mutation and not to the environment (#2252).
 set -euo pipefail
 
-unset GC_HOST_IMPORT_COUNTS_SRC
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-GATE="scripts/check_gc_host_import_counts.sh"
+GATE="scripts/check_gc_host_import_counts.vibex"
 REAL="lib/@vibe/compiler/codegen/gc/backend_body.vibe"
 WORK="_build/_gate_gc_host_import_counts_selftest"
 rm -rf "$WORK"; mkdir -p "$WORK"
@@ -25,7 +24,7 @@ rm -rf "$WORK"; mkdir -p "$WORK"
 fail() { echo "gc-host-import-counts-selftest: FAIL: $*" >&2; exit 1; }
 
 # --- GREEN ------------------------------------------------------------------
-if ! GC_HOST_IMPORT_COUNTS_SRC="$REAL" bash "$GATE" >"$WORK/green.log" 2>&1; then
+if ! bash scripts/vibe_run.sh "$GATE" -- --src "$REAL" >"$WORK/green.log" 2>&1; then
   cat "$WORK/green.log" >&2
   fail "the gate does not pass on the tree as committed, so a later failure would prove nothing"
 fi
@@ -34,7 +33,8 @@ fi
 run_case() {
   local name="$1" mutation="$2" needle="$3"
   local copy="$WORK/$name.vibe"
-  python3 scripts/source_files.py "$REAL" > "$copy"
+  # The flattened group, so the copy holds every literal the gate reads.
+  bash scripts/vibe_run.sh scripts/source_group.vibex -- "$REAL" > "$copy"
   python3 - "$copy" "$mutation" <<'PY'
 import re, sys
 path, which = sys.argv[1], sys.argv[2]
@@ -67,7 +67,7 @@ PY
   if ! diff -q "$REAL" "$copy" >/dev/null 2>&1; then :; else
     fail "mutation '$name' did not change the copy"
   fi
-  if GC_HOST_IMPORT_COUNTS_SRC="$copy" bash "$GATE" >"$WORK/$name.log" 2>&1; then
+  if bash scripts/vibe_run.sh "$GATE" -- --src "$copy" >"$WORK/$name.log" 2>&1; then
     cat "$WORK/$name.log" >&2
     fail "the gate PASSED with mutation '$name' applied -- it cannot see that defect"
   fi
@@ -86,7 +86,7 @@ run_case label  label  "could not find"
 run_case buffer buffer "could not find"
 
 # The same import count must be read in both accepted call spellings.
-python3 scripts/source_files.py "$REAL" > "$WORK/positional.vibe"
+bash scripts/vibe_run.sh scripts/source_group.vibex -- "$REAL" > "$WORK/positional.vibe"
 python3 - "$WORK/positional.vibe" <<'PY'
 import re, sys
 path = sys.argv[1]
@@ -97,7 +97,7 @@ src, count = re.subn(
 assert count == 1, "expected exactly one import vector header"
 open(path, "w", encoding="utf-8").write(src)
 PY
-GC_HOST_IMPORT_COUNTS_SRC="$WORK/positional.vibe" bash "$GATE"
+bash scripts/vibe_run.sh "$GATE" -- --src "$WORK/positional.vibe"
 
 rm -rf "$WORK"
 echo "gc-host-import-counts-selftest: ok (green on labeled and positional calls; red on 6 mutations, each for its own reason)"

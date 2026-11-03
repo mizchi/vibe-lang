@@ -1,0 +1,287 @@
+//# Scalar-keyed map calls (#2334).
+//
+// The checker files a map-key row (`typed_map_key_row_head`) for each
+// `Map::set` / `Map::get` / `Map::has_key` / `Map::delete` whose key it typed
+// `Int`, `Char` or `Bool`. This pass writes the matching scalar operation into
+// exactly those calls' resolution cells, so codegen compares their keys as
+// exact i64 values and never hashes one as a `String`. A call with no row keeps
+// the String operation; one that reaches a scalar map at run time traps there
+// (the map's index slot carries a marker) rather than probe with a String hash.
+
+import @vibe/compiler/core {
+  Expr,
+  Stmt,
+  TypeExpr,
+  builtin_map_scalar_delete,
+  builtin_map_scalar_get,
+  builtin_map_scalar_has_key,
+  builtin_map_scalar_set,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top
+}
+
+import @vibe/core {
+  struct MutMap
+}
+
+/// The scalar operation a keyed map call becomes, or 0 for any other callee.
+fn map_scalar_operation_for(_ name: String) -> Int {
+  if name == "Map::get" {
+    builtin_map_scalar_get
+  } else if name == "Map::set" {
+    builtin_map_scalar_set
+  } else if name == "Map::has_key" || name == "Map::has" || name == "map_has" {
+    builtin_map_scalar_has_key
+  } else if name == "Map::delete" {
+    builtin_map_scalar_delete
+  } else {
+    0
+  }
+}
+
+fn msk_mark(resolution: Array[Int], operation: Int) -> Unit {
+  if Array::length(resolution) == 0 {
+    Array::push(resolution, value = operation)
+  } else {
+    Array::set(resolution, at = 0, value = operation)
+  }
+}
+
+fn msk_expr(expr: Expr, offs: MutMap[Int, Int]) -> Unit {
+  match expr {
+    ECall(EIdent(name, _), _, off, resolution) => match MutMap::get(offs, k = off) {
+      Some(_) => {
+        let operation = map_scalar_operation_for(name)
+        if operation > 0 {
+          msk_mark(resolution = resolution, operation = operation)
+        } else {
+          ()
+        }
+      },
+      None => ()
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let end = expr_children_top()
+  let mut child_index = mark
+  while child_index < end {
+    msk_expr(expr = expr_child_at(child_index), offs = offs)
+    child_index = child_index + 1
+  }
+  expr_children_pop(mark)
+}
+
+fn msk_exprs(items: Array[Expr], offs: MutMap[Int, Int]) -> Unit {
+  for item in items {
+    msk_expr(expr = item, offs = offs)
+  }
+  ()
+}
+
+fn msk_stmts(stmts: Array[Stmt], offs: MutMap[Int, Int]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, body) => msk_expr(expr = body, offs = offs),
+      SLetMut(_, _, body) => msk_expr(expr = body, offs = offs),
+      SLetPat(_, body) => msk_expr(expr = body, offs = offs),
+      STest(_, body) => msk_expr(expr = body, offs = offs),
+      SBench(_, body) => msk_expr(expr = body, offs = offs),
+      SExample(_, body) => msk_expr(expr = body, offs = offs),
+      SExpr(body) => msk_expr(expr = body, offs = offs),
+      SModule(_, _, children) => msk_stmts(stmts = children, offs = offs),
+      SFnDecl(_, _, body, requires, ensures) => {
+        msk_expr(expr = body, offs = offs)
+        msk_exprs(items = requires, offs = offs)
+        msk_exprs(items = ensures, offs = offs)
+      },
+      _ => ()
+    }
+  }
+  ()
+}
+
+// The current program's map-key row offsets, for the index lowering below.
+// Replaced by every `rewrite_map_scalar_key_stmts`, so a later program never
+// reads an earlier one's rows.
+let msk_current_offsets: Array[Int] = []
+
+/// #2334: whether the checker filed a scalar map-key row at `off` for the
+/// program the desugar is running on -- the index lowering asks this of an
+/// `m[k]` bracket offset.
+export fn map_scalar_key_at(_ off: Int) -> Bool {
+  let mut found = false
+  for known in msk_current_offsets {
+    if known == off {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// #2334: the cell a synthesized `Map::get` takes for an index at `off`: the
+/// scalar operation when the checker typed that index's key as a scalar.
+export fn map_index_get_cell(_ off: Int) -> Array[Int] {
+  if off >= 0 && map_scalar_key_at(off) {
+    [builtin_map_scalar_get]
+  } else {
+    []
+  }
+}
+
+/// #2334: the cell of a generated keyed map call over a map whose key type is
+/// `k`: `operation` when `k` is `Int`, `Char` or `Bool`, else none.
+export fn map_key_type_cell(k: TypeExpr, operation: Int) -> Array[Int] {
+  match k {
+    TyName(n) => if n == "Int" || n == "Char" || n == "Bool" {
+      [operation]
+    } else {
+      []
+    },
+    _ => []
+  }
+}
+
+/// #2334: mark the scalar-keyed map calls at `offs` (the map-key rows' call
+/// offsets). A no-op without rows.
+export fn rewrite_map_scalar_key_stmts(stmts: Array[Stmt], offs: Array[Int]) -> Unit {
+  Array::truncate(msk_current_offsets, length = 0)
+  for off in offs {
+    Array::push(msk_current_offsets, value = off)
+  }
+  if Array::length(offs) > 0 {
+    let table: MutMap[Int, Int] = MutMap::new_int()
+    for off in offs {
+      MutMap::set(table, k = off, v = 1)
+    }
+    msk_stmts(stmts = stmts, offs = table)
+  } else {
+    ()
+  }
+}
+
+// ---- the build lane with no rows
+
+fn msk_scalar_key_name(_ k: TypeExpr) -> Bool {
+  match k {
+    TyName(n) => n == "Int" || n == "Char" || n == "Bool",
+    _ => false
+  }
+}
+
+fn msk_ty(_ t: TypeExpr) -> Bool {
+  match t {
+    TyName(_) => false,
+    TyApp(n, args) => (n == "Map" && Array::length(args) == 2 && msk_scalar_key_name(Array::get(args, at = 0))) || msk_tys(args),
+    TyFn(params, ret, _) => msk_tys(params) || msk_ty(ret),
+    TyTuple(items) => msk_tys(items),
+    TyUnit => false
+  }
+}
+
+fn msk_tys(_ tys: Array[TypeExpr]) -> Bool {
+  let mut found = false
+  for t in tys {
+    if msk_ty(t) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn msk_opt_ty(_ t: Option[TypeExpr]) -> Bool {
+  match t {
+    Some(ty) => msk_ty(ty),
+    None => false
+  }
+}
+
+fn msk_scalar_literal(_ e: Expr) -> Bool {
+  match e {
+    EInt(_) => true,
+    EBool(_) => true,
+    _ => false
+  }
+}
+
+fn msk_expr_mentions(_ e: Expr) -> Bool {
+  let here = match e {
+    ECall(EIdent(name, _), args, _, _) => map_scalar_operation_for(name) > 0 && Array::length(args) >= 2 && msk_scalar_literal(Array::get(args, at = 1)),
+    EFn(_, _, params, ret, _, _) => {
+      let mut found = msk_opt_ty(ret)
+      for p in params {
+        let (_, pty) = p
+        if msk_opt_ty(pty) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    let mut found = false
+    for c in expr_children(e) {
+      if !found && msk_expr_mentions(c) {
+        found = true
+      } else {
+        ()
+      }
+    }
+    found
+  }
+}
+
+fn msk_stmt_mentions(_ stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, ty, body) => msk_opt_ty(ty) || msk_expr_mentions(body),
+    SLetMut(_, ty, body) => msk_opt_ty(ty) || msk_expr_mentions(body),
+    SLetPat(_, body) => msk_expr_mentions(body),
+    STest(_, body) => msk_expr_mentions(body),
+    SBench(_, body) => msk_expr_mentions(body),
+    SExample(_, body) => msk_expr_mentions(body),
+    SExpr(body) => msk_expr_mentions(body),
+    SFnDecl(_, _, body, _, _) => msk_expr_mentions(body),
+    STypeAlias(_, _, _, ty) => msk_ty(ty),
+    SExternLet(_, ty) => msk_ty(ty),
+    SModule(_, _, inner) => program_mentions_scalar_map_key(inner),
+    _ => false
+  }
+}
+
+/// #2334: whether `stmts` visibly hold a scalar-keyed map: a `Map[Int | Char
+/// | Bool, V]` in a type, or an `Int` / `Bool` literal as a keyed call's key.
+export fn program_mentions_scalar_map_key(_ stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    found = msk_stmt_mentions(Array::get(stmts, at = i))
+    i = i + 1
+  }
+  found
+}
+
+/// #2334: the refusal a build lane WITHOUT typed rows gives a program that
+/// visibly keys a map by a scalar. With no rows no call gets the scalar
+/// operations, so its keys would be hashed and compared as String pointers.
+/// Like `refuse_rowless_float_program`, it reads the program's spelling: a map
+/// whose scalar key reaches it only through an unannotated variable is not
+/// seen here.
+export fn refuse_rowless_scalar_map_program(_ stmts: Array[Stmt]) -> Unit with Exception {
+  if program_mentions_scalar_map_key(stmts) {
+    throw("build without `--debug`: this linked build has no type check of the exact text it compiles, so it cannot lower a `Map` with an `Int`, `Char` or `Bool` key (#2334); the default build, `vibe run` and `vibe test` can")
+  } else {
+    ()
+  }
+}

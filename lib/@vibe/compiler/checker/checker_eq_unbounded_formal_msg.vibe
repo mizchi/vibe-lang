@@ -261,7 +261,12 @@ fn interp_opaque_head(name: String, args: Array[Type], s: Subst, env: TypeEnv) -
     if interp_declared_type(env = env, name = name) {
       ""
     } else if name == "Map" {
-      "StringMap"
+      // #2334: a map keyed by anything but `String` is named as written.
+      if Array::length(args) == 2 && !(subst_apply(s = s, ty = Array::get(args, at = 0)) is CtString) {
+        "Map"
+      } else {
+        "StringMap"
+      }
     } else {
       name
     }
@@ -1326,6 +1331,49 @@ let generic_fn_decls_cell: Array[(String, Array[String], Array[(String, Option[T
 /// generic binding, recorded where the call position instantiates the scheme.
 export let callee_inst_types_cell: Array[(Int, Type, Type, String)] = []
 
+/// #2334: one (call offset, key type) per keyed builtin-map call a program
+/// check reached, read by `checker_call_map.vibe` after the check.
+export let map_key_site_offsets: Array[Int] = []
+export let map_key_site_types: Array[Type] = []
+
+/// #2334: (reference offset, scheme, instantiated type, name) for each
+/// generic binding taken as a VALUE, the counterpart of
+/// `callee_inst_types_cell` for a reference that is not a call. Only the map
+/// key check reads it.
+export let value_inst_types_cell: Array[(Int, Type, Type, String)] = []
+
+/// Record a generic binding instantiated at a value reference.
+export fn note_value_instantiation(off: Int, scheme: Type, inst: Type, name: String) -> Unit {
+  match scheme {
+    CtForAll(_, _, _) => if off >= 0 {
+      Array::push(value_inst_types_cell, value = (off, scheme, inst, name))
+    },
+    _ => ()
+  }
+}
+
+/// Roll the per-call records back to a retention checkpoint: the generic-call
+/// and generic-value instantiations and the map key sites a speculative check
+/// recorded.
+export fn rewind_call_records(callee_mark: Int, value_mark: Int, map_site_mark: Int) -> Unit {
+  if Array::length(callee_inst_types_cell) > callee_mark {
+    Array::truncate(callee_inst_types_cell, length = callee_mark)
+  } else {
+    ()
+  }
+  if Array::length(value_inst_types_cell) > value_mark {
+    Array::truncate(value_inst_types_cell, length = value_mark)
+  } else {
+    ()
+  }
+  if Array::length(map_key_site_offsets) > map_site_mark {
+    Array::truncate(map_key_site_offsets, length = map_site_mark)
+    Array::truncate(map_key_site_types, length = map_site_mark)
+  } else {
+    ()
+  }
+}
+
 // A published generic used as a VALUE has already been instantiated when a
 // later expression calls it (an array element, for example). Keep the exact
 // scheme/instance pair while checking this module so callback rows still read
@@ -1529,6 +1577,7 @@ fn note_generic_alias(val: Expr, bound: Type, env: TypeEnv) -> Unit {
 export fn set_generic_fn_decls(_ stmts: Array[Stmt]) -> Unit {
   Array::truncate(generic_fn_decls_cell, length = 0)
   Array::truncate(callee_inst_types_cell, length = 0)
+  Array::truncate(value_inst_types_cell, length = 0)
   Array::truncate(generic_callback_instances, length = 0)
   Array::truncate(generic_scheme_decls_cell, length = 0)
   let mut i = 0

@@ -186,6 +186,10 @@ import ./checker_infer_binop_type.vibe {
   typed_occurrence_capture_skip_children
 }
 
+import ./checker_call_map.vibe {
+  checker_map_call_arm, checker_map_call_arm_handles, map_key_site_record, map_receiver_key
+}
+
 import ./checker_lambda_expr.vibe {
   array_reader_second_key,
   bind_array_arg,
@@ -690,8 +694,18 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
             },
             _ => None
           }
+          // #2334: the index is checked against the map's key slot, and a
+          // scalar key files a row at this call, which the index lowering
+          // reads when it turns `m[k]` into `Map::get`.
           let s3 = match map_value {
-            Some(_) => check_assignable(expected = CtString, actual = subst_apply(s = s2, ty = idx_ty), s = s2, errors = errors, what = "a Map index must be a String key", off = bracket_off),
+            Some(_) => {
+              map_key_site_record(call_off = if call_off >= 0 {
+                call_off
+              } else {
+                bracket_off
+              }, key = idx_ty)
+              check_assignable(expected = map_receiver_key(s = s2, m_ty = obj_ty, head = "Map"), actual = subst_apply(s = s2, ty = idx_ty), s = s2, errors = errors, what = "a Map index must be a key of the map's key type", off = bracket_off)
+            },
             None => s2
           }
           let not_indexable = match resolved_obj {
@@ -909,30 +923,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           // sees it.
           (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtNamed("StringBuilder", [
           ]), capture = capture, lane = lane), s, c)
-        } else if arm == "MapBuilder::new" {
-          // As `StringBuilder::new` above. The value slot stays open
-          // (`CtUnknown`), as `MapBuilder::set`'s row leaves it.
-          (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtNamed("MapBuilder", [
-            CtString,
-            CtUnknown
-          ]), capture = capture, lane = lane), s, c)
-        } else if arm == "MapBuilder::freeze" {
-          // The frozen map carries the builder's value slot, in the shape a
-          // map literal has (`Map[String, V]`); an untyped builder gives an
-          // open slot.
-          let (fb_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
-          let frozen = match subst_apply(s = s1, ty = fb_ty) {
-            CtNamed(fbn, fbargs) => if fbn == "MapBuilder" && Array::length(fbargs) == 2 {
-              CtNamed("Map", [
-                CtString,
-                subst_apply(s = s1, ty = Array::get(fbargs, at = 1))
-              ])
-            } else {
-              CtNamed("Map", [CtString, CtUnknown])
-            },
-            _ => CtNamed("Map", [CtString, CtUnknown])
-          }
-          (tab_call_ty(tytab = tytab, call_off = call_off, ty = frozen, capture = capture, lane = lane), s1, c1)
+        } else if checker_map_call_arm_handles(arm) {
+          // #2334: the builtin map family -- see checker_call_map.vibe.
+          checker_map_call_arm(arm = arm, args = args, call_off = call_off, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, check_child = check_child)
         } else if arm == "FrozenArray::from_array" {
           // #906: FrozenArray[T] is a checker-only phantom-type distinction over
           // Array[T]'s exact same runtime layout -- same technique as
@@ -1253,126 +1246,6 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           let (len_ty2, s5, c5) = check_child(Array::get(args, at = 4), env, defs, s4b, c4, errors, tytab, capture, lane)
           let s5b = check_assignable(expected = CtInt, actual = subst_apply(s = s5, ty = len_ty2), s = s5, errors = errors, what = "FixedArray::blit len must be Int", off = call_off)
           (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtUnit, capture = capture, lane = lane), s5b, c5)
-        } else if arm == "Map::set" {
-          // #983: every Map API's VALUE position was `CtUnknown` (the static
-          // builtin table cannot mint per-call vars), so
-          // `Map::set(m, "b", "str")` into a `Map[String, Int]` compiled clean
-          // and trapped at the consumer. Map literals now carry a real value
-          // slot (`CtNamed("Map", [CtString, v])` — the shape a
-          // `Map[String, V]` annotation already resolves to), and set checks
-          // the written value against it, ground-gated via `check_assignable`
-          // (same tolerate discipline as Array::push — untyped/var receivers
-          // stay tolerant). The key check replicates the CtString param the
-          // bypassed table signature enforced.
-          let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
-          let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
-          let (v_ty, s3, c3) = check_child(Array::get(args, at = 2), env, defs, s2, c2, errors, tytab, capture, lane)
-          let s4 = check_assignable(expected = CtString, actual = subst_apply(s = s3, ty = k_ty), s = s3, errors = errors, what = "argument type mismatch for Map::set", off = call_off)
-          let s5 = match subst_apply(s = s4, ty = m_ty) {
-            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
-              check_assignable(expected = subst_apply(s = s4, ty = Array::get(margs, at = 1)), actual = subst_apply(s = s4, ty = v_ty), s = s4, errors = errors, what = "Map::set value type mismatch", off = call_off)
-            } else {
-              s4
-            },
-            _ => s4
-          }
-          let mret = match subst_apply(s = s5, ty = m_ty) {
-            CtNamed(mn2, margs2) => if mn2 == "Map" && Array::length(margs2) == 2 {
-              subst_apply(s = s5, ty = m_ty)
-            } else {
-              CtNamed("Map", [CtString, CtUnknown])
-            },
-            _ => CtNamed("Map", [CtString, CtUnknown])
-          }
-          (tab_call_ty(tytab = tytab, call_off = call_off, ty = mret, capture = capture, lane = lane), s5, c3)
-        } else if arm == "Map::get" {
-          // #983: refine the result from bare CtUnknown to the receiver's value
-          // slot, so a wrongly-typed consume of the looked-up value is caught
-          // by the ordinary unify. NOTE: `Map::get` returns the RAW stored
-          // value and TRAPS on a miss (#2990) — `declare Map::get(Map[T, U],
-          // T) -> U` in builtins/declarations.vibe and both codegen lanes
-          // agree — NOT an Option. Untyped receivers keep the conservative
-          // CtUnknown.
-          let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
-          let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
-          let s3 = check_assignable(expected = CtString, actual = subst_apply(s = s2, ty = k_ty), s = s2, errors = errors, what = "argument type mismatch for Map::get", off = call_off)
-          let result = match subst_apply(s = s3, ty = m_ty) {
-            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
-              subst_apply(s = s3, ty = Array::get(margs, at = 1))
-            } else {
-              CtUnknown
-            },
-            _ => CtUnknown
-          }
-          (tab_call_ty(tytab = tytab, call_off = call_off, ty = result, capture = capture, lane = lane), s3, c2)
-        } else if arm == "MapBuilder::get" {
-          // #1310 (Codex review): mirror Map::get's #983 refinement just
-          // above -- an annotated/parameter receiver `MapBuilder[K, V]`
-          // should refine the direct-call fast path's bare
-          // `Option[CtUnknown]` (direct_builtin_return) to `Option[V]`, so a
-          // wrongly-typed consumer of the looked-up value is caught by the
-          // ordinary unify instead of silently passing (CtUnknown unifies
-          // with anything). Untyped receivers keep the conservative
-          // Option[CtUnknown].
-          let (mb_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
-          let (mbk_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
-          let s3 = check_assignable(expected = CtString, actual = subst_apply(s = s2, ty = mbk_ty), s = s2, errors = errors, what = "argument type mismatch for MapBuilder::get", off = call_off)
-          let mbresult = match subst_apply(s = s3, ty = mb_ty) {
-            CtNamed(mn, margs) => if mn == "MapBuilder" && Array::length(margs) == 2 {
-              CtOption(subst_apply(s = s3, ty = Array::get(margs, at = 1)))
-            } else {
-              CtOption(CtUnknown)
-            },
-            _ => CtOption(CtUnknown)
-          }
-          (tab_call_ty(tytab = tytab, call_off = call_off, ty = mbresult, capture = capture, lane = lane), s3, c2)
-        } else if arm == "Map::keys" {
-          // #2263: keys() of a key-slotted map is `Array[k]`. The shape table
-          // answers `Array[String]` for every receiver, so a `Map[Int, V]`
-          // annotation handed its keys to `String::length` and compiled clean
-          // -- an annotation that disables checking at the slot, the #2125
-          // class. Every map the builtins can BUILD is still String-keyed
-          // (Map::set and from_pairs reject a non-String key), so for real
-          // programs this is the same answer; it stops the type from lying
-          // where the annotation says otherwise.
-          let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
-          let result = match subst_apply(s = s1, ty = m_ty) {
-            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
-              CtArray(subst_apply(s = s1, ty = Array::get(margs, at = 0)))
-            } else {
-              CtArray(CtString)
-            },
-            _ => CtArray(CtString)
-          }
-          (tab_call_ty(tytab = tytab, call_off = call_off, ty = result, capture = capture, lane = lane), s1, c1)
-        } else if arm == "Map::values" {
-          // #983: values() of a value-slotted map is `Array[v]`, not
-          // `Array[CtUnknown]`.
-          let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
-          let result = match subst_apply(s = s1, ty = m_ty) {
-            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
-              CtArray(subst_apply(s = s1, ty = Array::get(margs, at = 1)))
-            } else {
-              CtArray(CtUnknown)
-            },
-            _ => CtArray(CtUnknown)
-          }
-          (tab_call_ty(tytab = tytab, call_off = call_off, ty = result, capture = capture, lane = lane), s1, c1)
-        } else if arm == "Map::delete" {
-          // #983: delete preserves the receiver's map type (value slot
-          // included) instead of collapsing it to `Map[String, CtUnknown]`.
-          let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
-          let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
-          let s3 = check_assignable(expected = CtString, actual = subst_apply(s = s2, ty = k_ty), s = s2, errors = errors, what = "argument type mismatch for Map::delete", off = call_off)
-          let mret = match subst_apply(s = s3, ty = m_ty) {
-            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
-              subst_apply(s = s3, ty = m_ty)
-            } else {
-              CtNamed("Map", [CtString, CtUnknown])
-            },
-            _ => CtNamed("Map", [CtString, CtUnknown])
-          }
-          (tab_call_ty(tytab = tytab, call_off = call_off, ty = mret, capture = capture, lane = lane), s3, c2)
         } else if builtin_operation == builtin_array_push {
           // `Array::push(a, v)` requires `v` to match `a`'s element type — pushing
           // a String into an `Array[Int]` was accepted (direct_call_return only
