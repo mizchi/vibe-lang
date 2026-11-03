@@ -14,7 +14,8 @@
 # PR whose numbers are being read.
 #
 # It rewrites the banner and PROVENANCE.tsv together, which is what keeps
-# check_bench_corpus.sh able to tell a bump from an edit.
+# check_bench_corpus.vibex able to tell a bump from an edit; that gate is the
+# one place the digests are verified.
 #
 # ADDING a corpus entry is not a bump, so the default is ADDITIVE: only
 # snapshots that are MISSING get frozen. Adding the fourth entry re-froze the
@@ -25,18 +26,15 @@
 # Usage:
 #   bash scripts/bump_bench_corpus.sh            # freeze only MISSING snapshots
 #   bash scripts/bump_bench_corpus.sh --all      # re-freeze every snapshot (a BUMP)
-#   bash scripts/bump_bench_corpus.sh --check    # exit 1 if a snapshot does not
-#                                                # match its recorded digest
 set -euo pipefail
 ROOT_DIR="${VIBE_BENCH_CORPUS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$ROOT_DIR"
 
 MODE="add"
 case "${1:-}" in
-  --check) MODE="check" ;;
   --all) MODE="all" ;;
   "") ;;
-  *) echo "unknown argument: $1 (expected --check or --all)" >&2; exit 2 ;;
+  *) echo "unknown argument: $1 (expected --all)" >&2; exit 2 ;;
 esac
 
 python3 - "$MODE" <<'PY'
@@ -91,41 +89,6 @@ def read_prov():
         rows[parts[0]] = parts
     return rows
 
-if mode == "check":
-    rows = read_prov()
-    if len(rows) != len(PAIRS):
-        print("[bench-corpus] FAIL: PROVENANCE.tsv records %d snapshot(s), expected %d"
-              % (len(rows), len(PAIRS)), file=sys.stderr)
-        sys.exit(1)
-    bad = 0
-    for src, dst in PAIRS:
-        row = rows.get(dst)
-        if row is None:
-            print("[bench-corpus] FAIL: %s has no PROVENANCE.tsv row" % dst, file=sys.stderr)
-            bad = 1
-            continue
-        p = pathlib.Path(dst)
-        if not p.exists():
-            print("[bench-corpus] FAIL: %s is recorded but missing" % dst, file=sys.stderr)
-            bad = 1
-            continue
-        raw = p.read_bytes()
-        got = hashlib.sha256(raw).hexdigest()
-        if got != row[3]:
-            print("[bench-corpus] FAIL: %s does not match its recorded digest" % dst, file=sys.stderr)
-            print("  recorded %s" % row[3], file=sys.stderr)
-            print("  actual   %s" % got, file=sys.stderr)
-            print("  A frozen corpus is edited by scripts/bump_bench_corpus.sh and by "
-                  "nothing else; an edit here silently restates every number in the series.",
-                  file=sys.stderr)
-            bad = 1
-            continue
-        if str(len(raw)) != row[4]:
-            print("[bench-corpus] FAIL: %s byte count %d does not match the recorded %s"
-                  % (dst, len(raw), row[4]), file=sys.stderr)
-            bad = 1
-    sys.exit(1 if bad else 0)
-
 # `taken_at` is provenance only -- the sha256 columns are the identity -- so a
 # tree with no git (a scratch root, an export) records `unknown` and says so
 # rather than aborting the freeze.
@@ -138,7 +101,7 @@ except Exception:
           file=sys.stderr)
 existing = read_prov()
 out = ["# Frozen bench corpus (#2865). One row per snapshot.",
-       "# `sha256` is the IDENTITY -- it is what --check verifies and what survives a",
+       "# `sha256` is the IDENTITY -- it is what the gate verifies and what survives a",
        "# squash merge. `taken_at` is provenance only: this repository squash-merges, so",
        "# the commit a snapshot was cut from is rewritten and the recorded SHA becomes",
        "# unreachable. `source_sha256` is the live file digest at freeze time, which is",
@@ -163,7 +126,3 @@ for src, dst in PAIRS:
 PROV.write_text("\n".join(out) + "\n")
 print("[bench-corpus] wrote %s at %s" % (PROV, rev))
 PY
-
-if [ "$MODE" = check ]; then
-  echo "[bench-corpus] ok (every snapshot matches its recorded digest)"
-fi

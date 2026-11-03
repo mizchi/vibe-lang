@@ -948,14 +948,17 @@ test "#2669: index-keyed replay reuses everything while the assignment agrees" {
   assert(bytes_eq(a = cold, b = warm))
 }
 
-test "#2669: a failed layout guard narrows to the prefix instead of dropping the cache" {
+test "#2669: a failed layout guard replays nothing, the prefix included" {
   // The half of step 2b that lives in the body loop. Widening WHICH entries
-  // survive the file table is only safe while the index spaces a body refers
-  // to are unchanged; when they are not, the lane must fall back to what the
-  // prefix rule would have replayed -- not to nothing. Without this, every
-  // edit the new guards reject (a new closure, a new literal, a renamed
-  // function) would lose the prefix it replays today: a REGRESSION dressed as
-  // an improvement.
+  // survive the file table is only safe while the index and address spaces a
+  // body refers to are unchanged. When the layout guard says they moved, the
+  // lane replays NOTHING -- not even the unchanged leading files. Their bodies
+  // embed addresses in the program-wide string pool, which puts every plain
+  // literal before the interpolation parts, map keys and runtime messages, so
+  // a literal added anywhere moves addresses a prefix body holds. This used to
+  // narrow to the prefix (`consumer_src_limit`), and that lane answered a
+  // module 15 stale addresses wrong on the compiler's own CLI closure;
+  // `body_cache_downstream_edit_test.vibe` pins that shape on the FS lane.
   //
   // The array comparison forces a derived comparator, which is what makes the
   // compile run the #2388 pin reorder and record guards at all.
@@ -966,18 +969,18 @@ test "#2669: a failed layout guard narrows to the prefix instead of dropping the
   assert(cold_n > 1)
   // Non-vacuity: the harvest must actually carry the guard this test poisons.
   assert(Array::length(cold_out.guard_layout) > 0)
-  // GREEN: guards intact, no narrowing annotation -- full reuse, as before.
+  // GREEN: guards intact -- full reuse.
   let warm_out = codegen_body_cache_new()
   let warm = compile_wasi_module_rc_body_cached(stmts = parse_program(lex(src)), entry_name = "run", body_cache_in = cold_out, body_cache_out = warm_out)
   inspect(Array::length(warm_out.fn_indices), content = "0")
   assert(bytes_eq(a = cold, b = warm))
   // RED: poison the layout guard and annotate a prefix limit of 2 merged
-  // statements. The wide lane must decline and the prefix must survive.
+  // statements, the shape the FS decoder hands a build whose later file
+  // changed. The annotation no longer buys a replay: everything recompiles.
   //
   // ONE poison is enough because the comparison is over the whole vector at
-  // once -- a per-slot poison would only re-prove `bcc_int_lists_equal`. What
-  // needs covering is that each pinned value REACHES the vector, and that is
-  // an edit-shape question rather than a poison one:
+  // once. What needs covering is that each pinned value REACHES the vector,
+  // and that is an edit-shape question rather than a poison one:
   // `body_cache_edit_classes_test.vibe` moves each of them for real and
   // requires the compile to stay byte-exact.
   match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(cold_out)) {
@@ -986,25 +989,20 @@ test "#2669: a failed layout guard narrows to the prefix instead of dropping the
       Array::push(narrowed_in.consumer_src_limit, value = 2)
       let narrowed_out = codegen_body_cache_new()
       let narrowed = compile_wasi_module_rc_body_cached(stmts = parse_program(lex(src)), entry_name = "run", body_cache_in = narrowed_in, body_cache_out = narrowed_out)
-      let narrowed_n = Array::length(narrowed_out.fn_indices)
-      // Neither zero (the guard would not be doing anything) nor everything
-      // (the prefix would have been thrown away with it).
-      assert(narrowed_n > 0)
-      assert(narrowed_n < cold_n)
+      inspect(Array::length(narrowed_out.fn_indices) == cold_n, content = "true")
       assert(bytes_eq(a = cold, b = narrowed))
     },
     None => assert(false)
   }
-  // Control: the same poisoned guard with NO annotation cannot narrow, which
-  // is the in-process lane's shape -- it replays everything, exactly as the
-  // green case does. This is what says the previous block was the annotation
-  // talking and not the poison alone.
+  // Control: the same poisoned guard with NO annotation is the in-process
+  // lane's shape (`pin_region_capacity < 0` is not this one), and it declines
+  // the same way. This is what says the block above was the guard talking.
   match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(cold_out)) {
     Some(unannotated) => {
       Array::set(unannotated.guard_layout, at = 1, value = Array::get(unannotated.guard_layout, at = 1) + 1)
       let unannotated_out = codegen_body_cache_new()
       let bytes = compile_wasi_module_rc_body_cached(stmts = parse_program(lex(src)), entry_name = "run", body_cache_in = unannotated, body_cache_out = unannotated_out)
-      inspect(Array::length(unannotated_out.fn_indices), content = "0")
+      inspect(Array::length(unannotated_out.fn_indices) == cold_n, content = "true")
       assert(bytes_eq(a = cold, b = bytes))
     },
     None => assert(false)
@@ -1088,27 +1086,23 @@ test "#2669: an edit to the FIRST file replays the files after it" {
   assert(bytes_eq(a = moved, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run")))
 }
 
-test "#2669: a narrowed build keeps its replayed prefix in the artifact" {
-  // Codex P2 on this PR. When a layout guard drifts but the unchanged leading
-  // PREFIX is non-empty, the body loop replays that prefix -- and a replayed
-  // function is not re-recorded, so the fresh harvest has a hole exactly
-  // there. Persisting only the harvest silently drops those entries, and the
-  // next completely unchanged build recompiles them for nothing.
+test "#2669: a layout-drifting edit recompiles fully, then the next build replays it all" {
+  // Three files, and the edit lands on the MIDDLE one so there is an
+  // unchanged prefix: `p_a` stays put, `p_b` lengthens a string literal,
+  // `p_main` is downstream. A literal moves the pooled offsets, which live ONLY
+  // in `guard_layout`, so this is the drift the body loop declines on.
   //
-  // Three files, and the edit lands on the MIDDLE one so the prefix is real:
-  // `p_a` stays put, `p_b` lengthens a string literal, `p_main` is downstream.
-  // A literal is the edit to pick: it moves the pooled offsets, which live
-  // ONLY in `guard_layout`, so the pre-2b guards still match and the narrowed
-  // merge is the branch under test. An edit that also moves `guard_meta` (a
-  // new closure, say) refuses the merge for the older reason and measures
-  // nothing about this one -- measured, that version of this test passed
-  // whether or not the fix was there.
+  // This used to be the test for carrying a REPLAYED prefix back into the
+  // artifact. A drifted layout no longer replays a prefix (its bodies embed
+  // pool addresses the edit moved), so there is no hole to carry: the build
+  // recompiles every body and its harvest is the whole program, which the
+  // next unchanged build replays in full.
   let a_path = "/tmp/vibe_body_cache_pfx_a.vibe"
   let b_path = "/tmp/vibe_body_cache_pfx_b.vibe"
   let main_path = "/tmp/vibe_body_cache_pfx_main.vibe"
   let a_source = "export let p_eq: () -> Bool = () -> { [1, 2] == [1, 2] }\nexport let p_one: () -> String = () -> { \"one\" }\nexport let p_two: () -> Int = () -> { 22 }"
   let b_base = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() }"
-  let b_closure = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b is a good deal longer now\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() }"
+  let b_longer = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b is a good deal longer now\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() }"
   let main_source = "import ./vibe_body_cache_pfx_b.vibe { p_b_one, p_b_two }\nlet run: () -> Int = () -> { String::length(p_b_one()) + p_b_two() }"
   let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(main_path)))
   remove_file_if_exists(artifact_path)
@@ -1118,34 +1112,27 @@ test "#2669: a narrowed build keeps its replayed prefix in the artifact" {
   let cold_counts: Array[Int] = []
   let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
   let cold_n = Array::get(cold_counts, at = 1)
-  // The narrowing build: `b` gains a closure, so a layout slot moves and the
-  // widened lane declines; `a` is the unchanged prefix and replays.
-  Fs::write_bytes(b_path, bytes = string_to_bytes(b_closure))
-  let narrowed_counts: Array[Int] = []
-  let narrowed = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = narrowed_counts)
-  assert(bytes_eq(a = narrowed, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run")))
-  // Non-vacuity: something must actually have been replayed here, or the
-  // third compile below measures nothing.
-  assert(Array::get(narrowed_counts, at = 1) < cold_n)
-  // Nothing changed since: every entry the artifact holds is offered, and the
-  // compile rebuilds only what no entry covers. Without the prefix carried
-  // back into the artifact this recompiles the prefix again.
+  Fs::write_bytes(b_path, bytes = string_to_bytes(b_longer))
+  let edited_counts: Array[Int] = []
+  let edited = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = edited_counts)
+  assert(bytes_eq(a = edited, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run")))
+  // Non-vacuity: the file table DID offer the prefix's entries, so it is the
+  // body loop that declined them, not the decoder.
+  inspect(Array::get(edited_counts, at = 0) > 0, content = "true")
+  inspect(Array::get(edited_counts, at = 1) == cold_n, content = "true")
+  // Nothing changed since: the artifact is the edited build's whole harvest,
+  // so the next build replays it all.
   let warm_counts: Array[Int] = []
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   assert(bytes_eq(a = warm, b = compile_file_fs_mode_rc(entry_path = main_path, entry_name = "run")))
-  // The artifact GREW by the prefix the narrowed build replayed: the third
-  // compile is offered more than the second was. Without the carry-back it is
-  // offered the narrowed build's harvest alone, which is missing exactly those
-  // entries.
-  inspect(Array::get(warm_counts, at = 0) > Array::get(narrowed_counts, at = 0), content = "true")
+  inspect(Array::get(warm_counts, at = 1) < cold_n, content = "true")
 }
 
 //# `codegen_body_cache_find` keys on the FUNCTION INDEX, so an entry is only
 //# meaningful in a build that assigns that index to the same function. The FS
 //# layer supplies exactly that: `decode_body_cache_payload_for` keeps the
-//# unchanged PREFIX of files and `codegen_body_cache_filter_src_below` trims
-//# to it, and over an identical prefix index i names the same function in both
-//# builds. The prefix rule is not timidity -- it IS the precondition.
+//# unchanged files, and the body loop replays them only while the layout
+//# guard says every index and address space is the harvest's.
 //#
 //# Measured (#2669, not asserted here because it describes a misuse rather
 //# than a behaviour worth freezing): hand this entry point a harvest whose

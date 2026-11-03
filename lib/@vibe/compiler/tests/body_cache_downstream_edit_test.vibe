@@ -1,0 +1,121 @@
+//# The body cache after an edit DOWNSTREAM of the bodies it replays.
+//#
+//# `body_cache_edit_classes_test.vibe` edits the FIRST file of its chain, so
+//# when a layout guard drifts there is no unchanged prefix to replay and the
+//# compile is trivially fresh. This file edits the LAST file, so the files
+//# before it are an unchanged prefix whose bodies the cache holds.
+//#
+//# Those bodies are not layout-independent. The string pool is laid out over
+//# the whole program -- every plain literal first, then every interpolation
+//# part and map key -- so a plain literal added anywhere moves the address of
+//# every interpolation part, including the ones a prefix body embeds. Measured
+//# on the compiler's own CLI closure before the fix: one string literal edited
+//# in `cli/commands/pkg.vibe` and a warm `VIBE_CODEGEN_BODY_CACHE=on` build
+//# differed from a fresh compile in 15 bytes, each an address 16 too low --
+//# the runtime's own messages (a `%`'s divide-by-zero check), which the pool
+//# places after every program literal.
+//# `verify` passed that same build, because it replays only when every guard
+//# matches and so never ran the prefix lane.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+}
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_artifact_cache_path
+}
+
+fn dse_bytes(_ s: String) -> Bytes {
+  let out = Bytes::new()
+  let mut i = 0
+  while i < String::length(s) {
+    Bytes::push(out, value = String::byte_at(s, at = i))
+    i = i + 1
+  }
+  out
+}
+
+fn dse_bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  let n = Bytes::length(a)
+  if n != Bytes::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Bytes::get(a, at = i) != Bytes::get(b, at = i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+let dse_a_path: String = "/tmp/vibe_body_cache_dse_a.vibe"
+
+let dse_main_path: String = "/tmp/vibe_body_cache_dse_main.vibe"
+
+/// The upstream file: an interpolating body (the addresses that move) and an
+/// array comparison, which forces a derived comparator and so the pin reorder
+/// that makes the compile record guards at all.
+fn dse_a() -> String {
+  String::join([
+    "export let dse_n: () -> Int = () -> { 4 }",
+    "export let dse_render: () -> String = () -> { \"render=\\{dse_n()}\" }",
+    "export let dse_eq: () -> Bool = () -> { [1, 2] == [1, 2] }",
+    "export let dse_mod: (Int, Int) -> Int = (a, b) -> { a % b }"
+  ], sep = "\n")
+}
+
+fn dse_main(_ literal: String) -> String {
+  String::join([
+    "import ./vibe_body_cache_dse_a.vibe { dse_eq, dse_mod, dse_render }",
+    "let run: () -> Int = () -> {",
+    "  let tail = \"\{literal}\"",
+    "  String::length(dse_render()) + String::length(tail) + (if dse_eq() { 1 } else { 0 }) + dse_mod(7, 3)",
+    "}"
+  ], sep = "\n")
+}
+
+/// Cold on the base, then `literal` in place of the downstream file's string,
+/// then a warm body-cached compile against a fresh one. One line:
+/// `<label> offered=<n> replayed=<bool> equal=<bool>`, where `offered` is what
+/// the file table let through and `replayed` is whether the warm compile
+/// rebuilt fewer bodies than the cold one did.
+fn dse_probe(label: String, literal: String) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(dse_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(dse_a_path, bytes = dse_bytes(dse_a()))
+  Fs::write_bytes(dse_main_path, bytes = dse_bytes(dse_main("m")))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = dse_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  if Array::get(cold_counts, at = 0) != 0 || Array::get(cold_counts, at = 1) <= 0 {
+    throw("downstream-edit fixture: the cold run for \{label} offered \{Array::get(cold_counts, 0)} and compiled \{Array::get(cold_counts, 1)}")
+  } else {
+    ()
+  }
+  Fs::write_bytes(dse_main_path, bytes = dse_bytes(dse_main(literal)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = dse_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = dse_main_path, entry_name = "run")
+  let replayed = Array::get(warm_counts, at = 1) < Array::get(cold_counts, at = 1)
+  "\{label} offered=\{Array::get(warm_counts, 0)} replayed=\{replayed} equal=\{dse_bytes_eq(warm, fresh)}"
+}
+
+test "a downstream literal edit stays byte-exact under the body cache" {
+  // CONTROL: the same literal. Nothing moved, so the cache must replay --
+  // without this row, the other could pass by replaying nothing ever.
+  inspect(dse_probe(label = "same-literal", literal = "m"), content = "same-literal offered=5 replayed=true equal=true")
+  // A longer plain literal downstream moves the runtime's divide-by-zero
+  // message, whose address `dse_mod` in the unchanged first file embeds. The
+  // layout guard drifts, so nothing is replayed and the build is fresh. Before
+  // the fix this row read `offered=4 equal=false`: the prefix was replayed
+  // with the old address.
+  inspect(dse_probe(label = "new-literal", literal = "a longer downstream literal"), content = "new-literal offered=4 replayed=false equal=true")
+}

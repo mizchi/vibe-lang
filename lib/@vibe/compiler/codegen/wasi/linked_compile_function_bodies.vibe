@@ -145,10 +145,10 @@ import @vibe/compiler/codegen/common_base {
   StrTable,
   agg_info_of_type_expr,
   bcc_int_lists_equal,
-  codegen_body_cache_filter_src_below,
   codegen_body_cache_find_at,
   codegen_body_cache_find_named_at,
   codegen_body_cache_name_index,
+  codegen_body_cache_new,
   codegen_body_cache_record,
   codegen_body_cache_replay,
   codegen_body_cache_replay_index,
@@ -258,13 +258,13 @@ export fn function_with_executor(executor: (LinkedFunctionPlan, LinkedBodyInputs
   if Array::length(function_executors) != 0 {
     throw("function workers: an executor is already active")
   } else ()
-  Array::push(function_executors, executor)
+  Array::push(function_executors, value = executor)
   handle {
     let result = action()
-    Array::truncate(function_executors, 0)
+    Array::truncate(function_executors, length = 0)
     result
   } with { Exception::Throw(message) => {
-    Array::truncate(function_executors, 0)
+    Array::truncate(function_executors, length = 0)
     throw(message)
   } }
 }
@@ -272,17 +272,17 @@ export fn function_with_executor(executor: (LinkedFunctionPlan, LinkedBodyInputs
 // Compile generated and user bodies into the existing shared tables.
 // Keep lane flags explicit so constant-parameter folding can remove disabled code.
 export fn lc_build_function_bodies(input: LinkedBodyInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> LinkedBodyPlan with Exception {
-  let plan = lc_prepare_function_plan(input.stmts, input.fn_stmt_indices, input.fn_names_list, input.num_user_funcs, input.const_int_names_list, input.ctor_names_list, enable_rc)
-  lc_execute_function_plan(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+  let plan = lc_prepare_function_plan(stmts = input.stmts, fn_stmt_indices = input.fn_stmt_indices, fn_names_list = input.fn_names_list, num_user_funcs = input.num_user_funcs, const_int_names_list = input.const_int_names_list, ctor_names_list = input.ctor_names_list, enable_rc = enable_rc)
+  lc_execute_function_plan(plan = plan, input = input, coverage = coverage, debug_break = debug_break, debug_trace = debug_trace, enable_rc = enable_rc, rc_shadow = rc_shadow)
 }
 
 /// Execute a previously prepared canonical plan exactly once at the chosen boundary.
 /// Preparation does not invoke an executor or compile a throwaway module.
 export fn lc_execute_function_plan(plan: LinkedFunctionPlan, input: LinkedBodyInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> LinkedBodyPlan with Exception {
   if Array::length(function_executors) == 0 {
-    LinkedFunctionPlan::emit(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+    LinkedFunctionPlan::emit(plan, input = input, coverage = coverage, debug_break = debug_break, debug_trace = debug_trace, enable_rc = enable_rc, rc_shadow = rc_shadow)
   } else {
-    Array::get(function_executors, 0)(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+    Array::get(function_executors, at = 0)(plan, input, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
   }
 }
 
@@ -434,7 +434,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   let trace_counter_addr = input.trace_counter_addr
   let trace_log_base = input.trace_log_base
   let user_shadows_trunc_builtins = input.user_shadows_trunc_builtins
-  let builtins = lc_build_builtin_bodies(input, enable_rc, rc_shadow)
+  let builtins = lc_build_builtin_bodies(input = input, enable_rc = enable_rc, rc_shadow = rc_shadow)
   let bodies = builtins.bodies
   let meta_i32 = builtins.meta_i32
   let meta_i64 = builtins.meta_i64
@@ -443,22 +443,22 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   // Scratch cell lc_compile_iw_body fills per function (see its doc comment
   // for why this is a cell and not a return value).
   let iw_extra_cell = lc_fresh_int_array()
-  Array::push(iw_extra_cell, 0)
-  Array::push(iw_extra_cell, 0)
-  Array::push(iw_extra_cell, 0)
+  Array::push(iw_extra_cell, value = 0)
+  Array::push(iw_extra_cell, value = 0)
+  Array::push(iw_extra_cell, value = 0)
   // Canonical ranges were planned before emission. Each function starts a
   // private table and cursor at its range base, including when emitted alone.
   let planned_bodies = function_plan.bodies
   let lambda_bases = function_plan.lambda_bases
   let lambda_base_acc = function_plan.lambda_count
-  let emission_layout = lc_build_emission_layout(input, lambda_bases, coverage, enable_rc, rc_shadow)
+  let emission_layout = lc_build_emission_layout(input = input, lambda_bases = lambda_bases, coverage = coverage, enable_rc = enable_rc, rc_shadow = rc_shadow)
   let capture_name_index_shared = emission_layout.capture_names
   let thunk_names_sorted_shared = emission_layout.thunk_names
   let guard_layout_now = emission_layout.guard_layout
   if pin_region_capacity >= 0 {
     let mut __glc2 = 0
     while __glc2 < Array::length(guard_layout_now) {
-      Array::push(body_cache_out.guard_layout, Array::get(guard_layout_now, __glc2))
+      Array::push(body_cache_out.guard_layout, value = Array::get(guard_layout_now, at = __glc2))
       __glc2 = __glc2 + 1
     }
   } else {
@@ -485,17 +485,24 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   let lc_wide_ok = if pin_region_capacity < 0 {
     true
   } else {
-    Array::length(body_cache_in.guard_layout) > 0 && bcc_int_lists_equal(body_cache_in.guard_layout, guard_layout_now)
+    Array::length(body_cache_in.guard_layout) > 0 && bcc_int_lists_equal(a = body_cache_in.guard_layout, b = guard_layout_now)
   }
-  // Narrowing, not dropping. Without this, widening would be a REGRESSION on
-  // exactly the edits the guards reject (a new closure, a new literal, a
-  // renamed function): the prefix those builds replay today would be lost as
-  // well. `consumer_src_limit` is what the decoder measured the unchanged
-  // leading run to be; an in-process cache carries none and keeps everything.
-  let body_cache_use = if !lc_wide_ok && Array::length(body_cache_in.consumer_src_limit) == 1 {
-    codegen_body_cache_filter_src_below(body_cache_in, Array::get(body_cache_in.consumer_src_limit, 0))
-  } else {
+  // Dropping, not narrowing. A drifted layout replays NOTHING, the unchanged
+  // leading files included: their bodies are not layout-independent. They
+  // embed addresses in the program-wide string pool, and the pool places
+  // every plain literal before the interpolation parts, map keys and the
+  // runtime's own messages, so a literal added in ANY file moves addresses a
+  // prefix body holds -- `a % b`'s divide-by-zero message among them. This
+  // used to narrow to the prefix (`consumer_src_limit`) on the reasoning that
+  // its index spaces were unaffected; the edit-class corpus edited only the
+  // FIRST file, where the prefix is empty, so the narrowed lane never ran
+  // there. Measured on the compiler's own CLI closure: one string edited in
+  // `cli/commands/pkg.vibe` gave a warm build 15 stale addresses, and
+  // `tests/body_cache_downstream_edit_test.vibe` pins the same shape small.
+  let body_cache_use = if lc_wide_ok {
     body_cache_in
+  } else {
+    codegen_body_cache_new()
   }
   // #2388 step 3 follow-up: function index -> cache slot, built once. The
   // lookup below runs per function, and scanning the whole cache each time is
@@ -503,9 +510,9 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
   // 4,214 questions the compiler's own closure asks (#2388's prefix-stability
   // probe counted the bodies), paid on the lane that exists to make a warm
   // compile cheap.
-  let body_cache_slot_index = codegen_body_cache_slot_index(body_cache_use, num_user_funcs)
+  let body_cache_slot_index = codegen_body_cache_slot_index(cache = body_cache_use, key_count = num_user_funcs)
   let body_cache_rows = if body_cache_in_ok && Array::length(body_cache_use.fn_indices) > 0 {
-    Some(codegen_body_cache_replay_index(body_cache_use, num_user_funcs))
+    Some(codegen_body_cache_replay_index(cache = body_cache_use, key_count = num_user_funcs))
   } else {
     None
   }
@@ -525,22 +532,22 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
     }
     let __in_slice = bi >= slice_lo && bi < __slice_end
     if !__in_slice {
-      Array::push(bodies, bytebuf_to_bytes(bytebuf_new()))
-      Array::push(meta_i32, 0)
-      Array::push(meta_i64, 0)
-      Array::push(meta_v128, 0)
+      Array::push(bodies, value = bytebuf_to_bytes(bytebuf_new()))
+      Array::push(meta_i32, value = 0)
+      Array::push(meta_i64, value = 0)
+      Array::push(meta_v128, value = 0)
       let __pad_hi = if bi + 1 < num_user_funcs {
-        Array::get(lambda_bases, bi + 1)
+        Array::get(lambda_bases, at = bi + 1)
       } else {
         lambda_base_acc
       }
-      let mut __pad = Array::get(lambda_bases, bi)
+      let mut __pad = Array::get(lambda_bases, at = bi)
       while __pad < __pad_hi {
-        Array::push(lt_w.bodies, bytebuf_to_bytes(bytebuf_new()))
-        Array::push(lt_w.param_counts, 0)
-        Array::push(lt_w.captures, lc_fresh_string_array())
-        Array::push(lt_w.meta_i32, 0)
-        Array::push(lt_w.meta_i64, 0)
+        Array::push(lt_w.bodies, value = bytebuf_to_bytes(bytebuf_new()))
+        Array::push(lt_w.param_counts, value = 0)
+        Array::push(lt_w.captures, value = lc_fresh_string_array())
+        Array::push(lt_w.meta_i32, value = 0)
+        Array::push(lt_w.meta_i64, value = 0)
         __pad = __pad + 1
       }
     } else {
@@ -556,7 +563,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
       // pipeline below -- Perceus plan, locals analysis, ctx construction,
       // compile_expr -- is skipped, not merely discarded.
       let __cache_hit = if body_cache_in_ok {
-        codegen_body_cache_find_at(body_cache_slot_index, bi)
+        codegen_body_cache_find_at(slot_index = body_cache_slot_index, fn_index = bi)
       } else {
         0 - 1
       }
@@ -577,8 +584,8 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
       // duplicate makes the name meaningless for this function even if the
       // cache kept a single entry under it -- which the prefix filter can
       // produce, by dropping one of the pair and keeping the other.
-      if body_cache_in_ok && Array::get(lc_name_unique, bi) == 1 {
-        let __named_hit = codegen_body_cache_find_named_at(body_cache_names_sorted, body_cache_names_pos, Array::get(fn_names_list, bi))
+      if body_cache_in_ok && Array::get(lc_name_unique, at = bi) == 1 {
+        let __named_hit = codegen_body_cache_find_named_at(sorted = body_cache_names_sorted, positions = body_cache_names_pos, name = Array::get(fn_names_list, at = bi))
         // -2 is AMBIGUOUS, which the name lookup documents as a miss, so it is
         // not a disagreement to report -- comparing a miss sentinel against a
         // hit would abort every warm compile of a unit that happens to contain
@@ -591,7 +598,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
         // Step 2b turns this into declining replay for that function. A miss
         // costs a recompile; resolving it first-wins would cost correctness.
         if __named_hit != 0 - 2 && __named_hit != __cache_hit {
-          throw(String::concat("body cache: the name and index lookups disagree for function ", String::concat(__to_string(bi), String::concat(" (", String::concat(Array::get(fn_names_list, bi), String::concat("): by index ", String::concat(__to_string(__cache_hit), String::concat(", by name ", __to_string(__named_hit)))))))))
+          throw(String::concat("body cache: the name and index lookups disagree for function ", String::concat(__to_string(bi), String::concat(" (", String::concat(Array::get(fn_names_list, at = bi), String::concat("): by index ", String::concat(__to_string(__cache_hit), String::concat(", by name ", __to_string(__named_hit)))))))))
         } else {
           ()
         }
@@ -606,7 +613,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
       // at a trap, so a placeholder file id there is a fabricated `path:line`
       // (Codex P2 on PR #2867).
       let dbg_fid_placed = if linemap_on {
-        lc_dbg_file_placed(dbg_name_file, dbg_owner_file, Array::get(fn_names_list, bi))
+        lc_dbg_file_placed(dbg_name_file = dbg_name_file, dbg_owner_file = dbg_owner_file, name = Array::get(fn_names_list, at = bi))
       } else {
         0 - 1
       }
@@ -615,13 +622,13 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
       } else {
         linemap_off
       }
-      lc_function_linemap_begin(fn_linemap, bi)
+      lc_function_linemap_begin(lm = fn_linemap, owner = bi)
       if __cache_hit >= 0 {
         let __r_slot_lo = Array::length(table_slots_used)
         let __r_blind_lo = Array::length(blind_owners)
         match body_cache_rows {
-          Some(index) => codegen_body_cache_replay_indexed(index, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, fn_linemap, bi),
-          None => codegen_body_cache_replay(body_cache_use, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, fn_linemap, bi)
+          Some(index) => codegen_body_cache_replay_indexed(index = index, at = __cache_hit, bodies = bodies, meta_i32 = meta_i32, meta_i64 = meta_i64, meta_v128 = meta_v128, lt = lt_w, slots = table_slots_used, blind_bodies = blind_owners, blind_offsets = blind_offsets, blind_kinds = blind_kinds, blind_syms = blind_syms, lm = fn_linemap, replay_bi = bi),
+          None => codegen_body_cache_replay(cache = body_cache_use, at = __cache_hit, bodies = bodies, meta_i32 = meta_i32, meta_i64 = meta_i64, meta_v128 = meta_v128, lt = lt_w, slots = table_slots_used, blind_bodies = blind_owners, blind_offsets = blind_offsets, blind_kinds = blind_kinds, blind_syms = blind_syms, lm = fn_linemap, replay_bi = bi)
         }
         // #2669 slice 3: the SAME pairing the compiled path asserts below.
         // A replayed function re-pushes both logs from the cache instead of
@@ -643,9 +650,9 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
         let __slot_lo = Array::length(table_slots_used)
         // #2669 slice 2: the same suffix, for the blind-reference log.
         let __blind_lo = Array::length(blind_owners)
-        let cov_start = Array::get(cov_state.next, 0)
+        let cov_start = Array::get(cov_state.next, at = 0)
         let function_cov = if coverage {
-          lc_function_cov_new(cov_state.base, cov_state.cap, cov_start, bi)
+          lc_function_cov_new(base = cov_state.base, cap = cov_state.cap, start = cov_start, owner = bi)
         } else {
           function_cov_off
         }
@@ -663,14 +670,14 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
         // #1259 step 7: transformed once, up in the planning loop. Re-running the
         // transform here would draw a second set of fresh names from the shared
         // counters and diverge from what the plan counted.
-        let __bi_expr = Array::get(planned_bodies, bi)
+        let __bi_expr = Array::get(planned_bodies, at = bi)
         let body_buf = bytebuf_new()
         // #cov: mark this user function as executed (store 1 at cov_base + bi).
         // Stack-neutral and local-free, so prepending it to the body is safe.
         if coverage {
-          emit_i32_const(body_buf, cov_base + bi)
-          emit_i32_const(body_buf, 1)
-          emit_i32_store8(body_buf, 0, 0)
+          emit_i32_const(buf = body_buf, value = cov_base + bi)
+          emit_i32_const(buf = body_buf, value = 1)
+          emit_i32_store8(buf = body_buf, align = 0, offset = 0)
         } else {
           ()
         }
@@ -683,28 +690,28 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
         //   }
         // `counter` is reloaded from memory each time (idempotent), avoiding locals.
         if debug_trace {
-          emit_i32_const(body_buf, trace_counter_addr)
-          emit_i32_load(body_buf, 2, 0)
-          emit_i32_const(body_buf, trace_cap)
+          emit_i32_const(buf = body_buf, value = trace_counter_addr)
+          emit_i32_load(buf = body_buf, align = 2, offset = 0)
+          emit_i32_const(buf = body_buf, value = trace_cap)
           emit_i32_ge_u(body_buf)
           emit_i32_eqz(body_buf)
           emit_if_void(body_buf)
           // store[log_base + counter*4] = bi
-          emit_i32_const(body_buf, trace_log_base)
-          emit_i32_const(body_buf, trace_counter_addr)
-          emit_i32_load(body_buf, 2, 0)
-          emit_i32_const(body_buf, 4)
+          emit_i32_const(buf = body_buf, value = trace_log_base)
+          emit_i32_const(buf = body_buf, value = trace_counter_addr)
+          emit_i32_load(buf = body_buf, align = 2, offset = 0)
+          emit_i32_const(buf = body_buf, value = 4)
           emit_i32_mul(body_buf)
           emit_i32_add(body_buf)
-          emit_i32_const(body_buf, bi)
-          emit_i32_store(body_buf, 2, 0)
+          emit_i32_const(buf = body_buf, value = bi)
+          emit_i32_store(buf = body_buf, align = 2, offset = 0)
           // store[counter_addr] = counter + 1
-          emit_i32_const(body_buf, trace_counter_addr)
-          emit_i32_const(body_buf, trace_counter_addr)
-          emit_i32_load(body_buf, 2, 0)
-          emit_i32_const(body_buf, 1)
+          emit_i32_const(buf = body_buf, value = trace_counter_addr)
+          emit_i32_const(buf = body_buf, value = trace_counter_addr)
+          emit_i32_load(buf = body_buf, align = 2, offset = 0)
+          emit_i32_const(buf = body_buf, value = 1)
           emit_i32_add(body_buf)
-          emit_i32_store(body_buf, 2, 0)
+          emit_i32_store(buf = body_buf, align = 2, offset = 0)
           emit_end(body_buf)
         } else {
           ()
@@ -744,7 +751,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
         // -- `pc_emit`'s EIf MIN-merge (#705) otherwise permanently assumes the
         // `then`-branch's higher `__bi_stmt` consumption even on thunk (`else`)
         // iterations, leaking `__bi_stmt` (a heap Stmt node) on each one.
-        let __sf_slet_type = Array::get(function_plan.source_types, bi)
+        let __sf_slet_type = Array::get(function_plan.source_types, at = bi)
         let lc_norm_params = if is_efn(__bi_expr) {
           let ps = get_efn_params(__bi_expr)
           let sig_args_raw = fn_type_param_types(__sf_slet_type)
@@ -752,13 +759,13 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
             Some(a) => Array::length(ps) == 1 && Array::length(a) > 1,
             None => false
           }
-          let np = Array::slice(ps, 0, 0)
+          let np = Array::slice(ps, start = 0, end = 0)
           let mut spi = 0
           while spi < Array::length(ps) {
-            let (sraw, sty) = Array::get(ps, spi)
+            let (sraw, sty) = Array::get(ps, at = spi)
             let slen = String::length(sraw)
             let ssn = if slen > 0 {
-              let slc = String::char_code_at(sraw, slen - 1)
+              let slc = String::char_code_at(sraw, at = slen - 1)
               if slc == '~' || slc == '?' {
                 sraw[0: slen - 1]
               } else {
@@ -775,14 +782,14 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
                 if single_tuple_param {
                   Some(TyTuple(args))
                 } else if Array::length(args) == Array::length(ps) {
-                  Some(Array::get(args, spi))
+                  Some(Array::get(args, at = spi))
                 } else {
                   None
                 },
                 None => None
               }
             }
-            Array::push(np, (ssn, resolved_ty))
+            Array::push(np, value = (ssn, resolved_ty))
             spi = spi + 1
           }
           np
@@ -809,20 +816,20 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           }
           let mut dbg_pi = 0
           while dbg_pi < dbg_n {
-            emit_i32_const(body_buf, dbgargs_base + dbg_pi * 8)
-            emit_local_get(body_buf, dbg_pi)
-            emit_i64_store(body_buf, 3, 0)
+            emit_i32_const(buf = body_buf, value = dbgargs_base + dbg_pi * 8)
+            emit_local_get(buf = body_buf, idx = dbg_pi)
+            emit_i64_store(buf = body_buf, align = 3, offset = 0)
             dbg_pi = dbg_pi + 1
           }
-          emit_i32_const(body_buf, dbgargs_count_addr)
-          emit_i32_const(body_buf, dbg_n)
-          emit_i32_store(body_buf, 2, 0)
-          emit_call(body_buf, dbg_break_import_idx)
+          emit_i32_const(buf = body_buf, value = dbgargs_count_addr)
+          emit_i32_const(buf = body_buf, value = dbg_n)
+          emit_i32_store(buf = body_buf, align = 2, offset = 0)
+          emit_call(buf = body_buf, func_idx = dbg_break_import_idx)
         } else {
           ()
         }
         let local_names = lc_fresh_string_array()
-        let fn_name_dbg = Array::get(fn_names_list, bi)
+        let fn_name_dbg = Array::get(fn_names_list, at = bi)
         let rc_drops = array_empty()
         let rc_alias_dups = array_empty()
         let rc_dups = array_empty()
@@ -863,17 +870,17 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
         }
         if enable_rc {
           let bfn_drop_start_cell = lc_fresh_int_array()
-          let plan = build_perceus_plan_pinned_split(lc_perceus_pin, lc_norm_params, __bi_body, lc_borrow_ret_names, lc_borrow_param_user_srt, lc_borrow_param_mask, lc_borrow_view_ret, bfn_drop_start_cell)
+          let plan = build_perceus_plan_pinned_split(token = lc_perceus_pin, params = lc_norm_params, body = __bi_body, borrow_ret_names = lc_borrow_ret_names, borrow_param_fns = lc_borrow_param_user_srt, borrow_param_masks = lc_borrow_param_mask, view_ret_fns = lc_borrow_view_ret, out_param_drop_start = bfn_drop_start_cell)
           let bfn_drop_start = if Array::length(bfn_drop_start_cell) > 0 {
-            Array::get(bfn_drop_start_cell, 0)
+            Array::get(bfn_drop_start_cell, at = 0)
           } else {
             0
           }
           let mut lhpi = 0
           while lhpi < Array::length(lc_norm_params) {
-            let (lhpn, lhpt) = Array::get(lc_norm_params, lhpi)
-            if param_is_heap_in_body(lhpn, lhpt, __bi_body) {
-              Array::push(lc_heap_params, lhpn)
+            let (lhpn, lhpt) = Array::get(lc_norm_params, at = lhpi)
+            if param_is_heap_in_body(name = lhpn, otype = lhpt, body = __bi_body) {
+              Array::push(lc_heap_params, value = lhpn)
             } else {
               ()
             }
@@ -884,18 +891,18 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           // drop (and any entry dup) for that param must not be emitted here.
           // Slice 1 skipped param0 alone; the mask names every borrowed
           // position.
-          let bfn_bi = bsearch_leftmost(lc_borrow_param_user_srt, fn_name_dbg)
+          let bfn_bi = bsearch_leftmost(sorted = lc_borrow_param_user_srt, name = fn_name_dbg)
           let bfn_mask = if bfn_bi >= 0 && bfn_bi < Array::length(lc_borrow_param_mask) {
-            Array::get(lc_borrow_param_mask, bfn_bi)
+            Array::get(lc_borrow_param_mask, at = bfn_bi)
           } else {
             0
           }
           let bfn_borrowed = lc_fresh_string_array()
           let mut bfp = 0
           while bfp < Array::length(lc_norm_params) {
-            if bmask_has(bfn_mask, bfp) {
-              let (bfpn, _) = Array::get(lc_norm_params, bfp)
-              Array::push(bfn_borrowed, bfpn)
+            if bmask_has(mask = bfn_mask, i = bfp) {
+              let (bfpn, _) = Array::get(lc_norm_params, at = bfp)
+              Array::push(bfn_borrowed, value = bfpn)
             } else {
               ()
             }
@@ -903,7 +910,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           }
           let mut di = 0
           while di < Array::length(plan) {
-            let pa = Array::get(plan, di)
+            let pa = Array::get(plan, at = di)
             if pa_is_drop(pa) {
               // Skip ONLY the drops for the borrowed params. The plan is
               // name-keyed, so matching by name across the WHOLE plan also
@@ -928,30 +935,30 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
               // are its own and removing them under-counts references
               // (use-after-free that only surfaces under allocation churn --
               // codegen_heap_e2e_test caught it after ~90 compiles).
-              if di >= bfn_drop_start && array_contains_str(bfn_borrowed, pa.name) {
+              if di >= bfn_drop_start && array_contains_str(arr = bfn_borrowed, s = pa.name) {
                 ()
               } else {
-                Array::push(rc_drops, pa.name)
+                Array::push(rc_drops, value = pa.name)
               }
             } else if pa_is_alias_dup(pa) {
-              Array::push(rc_alias_dups, pa.name)
+              Array::push(rc_alias_dups, value = pa.name)
             } else if pa_is_dup(pa) {
-              Array::push(rc_dups, pa.name)
-              Array::push(rc_dup_offsets, pa.use_offset)
+              Array::push(rc_dups, value = pa.name)
+              Array::push(rc_dup_offsets, value = pa.use_offset)
             } else if pa_is_reuse_token(pa) {
               // ADR-0092 / #2389: plan-side reuse candidates; the arity
               // rides in `extra`. PaReuseAlloc rows are informational here
               // (the consuming site is found while compiling the arm).
-              Array::push(rc_reuse_names, pa.name)
-              Array::push(rc_reuse_arities, pa.extra)
+              Array::push(rc_reuse_names, value = pa.name)
+              Array::push(rc_reuse_arities, value = pa.extra)
             } else if pa_is_path_drop(pa) {
               // #2389: a `let` binding's, or a parameter's (pe_dup_merge),
               // which the epilogue honours for an owned heap parameter only,
               // so the borrowed-param drop filter above does not apply.
-              Array::push(rc_path_drops, pa.name)
+              Array::push(rc_path_drops, value = pa.name)
             } else if pa_is_consume_mark(pa) {
-              Array::push(rc_mark_names, pa.name)
-              Array::push(rc_mark_offs, pa.use_offset)
+              Array::push(rc_mark_names, value = pa.name)
+              Array::push(rc_mark_offs, value = pa.use_offset)
             } else {
               ()
             }
@@ -959,18 +966,18 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           }
           // #2837: the truncate-release rows. A row that is sound only when
           // this function returns an Int/Bool/Unit is dropped otherwise.
-          perceus_truncate_rows(plan, fn_result_is_immediate(__sf_slet_type, __bi_expr), rc_trunc_release, rc_trunc_pin_arrays, rc_trunc_pin_names)
+          perceus_truncate_rows(plan = plan, accept_root = fn_result_is_immediate(sig = __sf_slet_type, value = __bi_expr), release = rc_trunc_release, pin_arrays = rc_trunc_pin_arrays, pin_names = rc_trunc_pin_names)
           // #3140: the structs whose field assignments release the old value.
-          perceus_field_release_rows(plan, rc_setf_release)
+          perceus_field_release_rows(plan = plan, out = rc_setf_release)
           // #3184: the stores that retain what they store.
-          perceus_store_dup_rows(plan, rc_store_dup_names, rc_store_dup_offs)
-          perceus_exit_rows(plan, rc_exit_names, rc_exit_info)
+          perceus_store_dup_rows(plan = plan, names = rc_store_dup_names, offs = rc_store_dup_offs)
+          perceus_exit_rows(plan = plan, names = rc_exit_names, info = rc_exit_info)
           let mut xpi = 0
           while xpi < Array::length(lc_norm_params) {
-            let (xpn, _) = Array::get(lc_norm_params, xpi)
-            Array::push(rc_exit_param_kinds, if !array_contains_str(lc_heap_params, xpn) {
+            let (xpn, _) = Array::get(lc_norm_params, at = xpi)
+            Array::push(rc_exit_param_kinds, value = if !array_contains_str(arr = lc_heap_params, s = xpn) {
               0
-            } else if bmask_has(bfn_mask, xpi) {
+            } else if bmask_has(mask = bfn_mask, i = xpi) {
               2
             } else {
               1
@@ -991,16 +998,16 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
         // function contributes no rows.
         let dbg_fid = lc_dbg_file_break(dbg_fid_placed)
         let dbg_nls = if linemap_on && dbg_fid < Array::length(prov.file_nls) {
-          Array::get(prov.file_nls, dbg_fid)
+          Array::get(prov.file_nls, at = dbg_fid)
         } else {
           lc_fresh_int_array()
         }
         // #1259 step 7: this function's preassigned range, straight out of the
         // frozen plan -- no counting happens here any more.
-        let function_effects = lc_function_effects_new(Array::get(lambda_bases, bi))
+        let function_effects = lc_function_effects_new(Array::get(lambda_bases, at = bi))
         let lambda_plan_cell = function_effects.lambda_next
         let lambda_planned_end = if bi + 1 < num_user_funcs {
-          Array::get(lambda_bases, bi + 1)
+          Array::get(lambda_bases, at = bi + 1)
         } else {
           lambda_base_acc
         }
@@ -1050,7 +1057,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           const_int_values: const_int_values_list,
           enable_rc: enable_rc,
           rc_entry_untag_return: enable_rc && fn_name_dbg == entry_name,
-          rc_owned_return: bsearch_leftmost(lc_owned_return_names, fn_name_dbg) >= 0,
+          rc_owned_return: bsearch_leftmost(sorted = lc_owned_return_names, name = fn_name_dbg) >= 0,
           rc_shadow: rc_shadow,
           rc_drop_names: rc_drops,
           rc_alias_dup_names: rc_alias_dups,
@@ -1165,8 +1172,8 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           let body = __bi_body
           let mut pi = 0
           while pi < Array::length(lc_norm_params) {
-            let (pname, _) = Array::get(lc_norm_params, pi)
-            Array::push(local_names, pname)
+            let (pname, _) = Array::get(lc_norm_params, at = pi)
+            Array::push(local_names, value = pname)
             pi = pi + 1
           }
           // #724 round 2: seed the aggregate-shape log from ANNOTATED params
@@ -1184,29 +1191,29 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
             // fall back to a per-param annotation (`(p: P2) -> ..`).
             let pann = match sig_ptypes {
               Some(pts) => if Array::length(pts) == Array::length(lc_norm_params) {
-                Some(Array::get(pts, psi))
+                Some(Array::get(pts, at = psi))
               } else {
-                let (_, pa) = Array::get(lc_norm_params, psi)
+                let (_, pa) = Array::get(lc_norm_params, at = psi)
                 pa
               },
               None => {
-                let (_, pa) = Array::get(lc_norm_params, psi)
+                let (_, pa) = Array::get(lc_norm_params, at = psi)
                 pa
               }
             }
             match pann {
               Some(pte) => {
                 match pte {
-                  TyFn(_, _, _) => Array::push(compile_ctx.seq_owned_return_slots, psi * 2 + 1),
+                  TyFn(_, _, _) => Array::push(compile_ctx.seq_owned_return_slots, value = psi * 2 + 1),
                   _ => ()
                 }
-                let pinfo = if ty_head_names_formal(pte, __bi_tparams) {
+                let pinfo = if ty_head_names_formal(te = pte, tparams = __bi_tparams) {
                   0
                 } else {
-                  agg_info_of_type_expr(compile_ctx.ctor_table, pte)
+                  agg_info_of_type_expr(ct = compile_ctx.ctor_table, te = pte)
                 }
                 if pinfo > 0 {
-                  Array::push(compile_ctx.agg_local_slots, psi * 256 + pinfo)
+                  Array::push(compile_ctx.agg_local_slots, value = psi * 256 + pinfo)
                   // #811: agg_local_exprs is the index-aligned PARALLEL of
                   // agg_local_slots (agg_log_reset_above2 prunes both in
                   // lockstep, reading exprs[i] for every slots[i]). This param
@@ -1214,7 +1221,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
                   // every later reset then read exprs out of bounds and
                   // compacted the garbage back in. Push the same "no shape
                   // expr" placeholder the let-binding site uses.
-                  Array::push(compile_ctx.agg_local_exprs, EInt(0))
+                  Array::push(compile_ctx.agg_local_exprs, value = EInt(0))
                 } else {
                   ()
                 }
@@ -1247,11 +1254,11 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
                 // fallback, which reads the value as a (ptr, len) pair.
                 match pte {
                   TyName(ptn) => if ptn == "Float32" || ptn == "Float64" {
-                    Array::push(compile_ctx.float_local_slots, psi * 2 + 1)
+                    Array::push(compile_ctx.float_local_slots, value = psi * 2 + 1)
                   } else if ptn == "Bool" {
-                    Array::push(compile_ctx.int_local_slots, psi * 4 + 3)
+                    Array::push(compile_ctx.int_local_slots, value = psi * 4 + 3)
                   } else if ptn == "Int" {
-                    Array::push(compile_ctx.int_local_slots, psi * 4 + 1)
+                    Array::push(compile_ctx.int_local_slots, value = psi * 4 + 1)
                   } else if ptn == "String" {
                     // #2483: a String-annotated param is a VERIFIED String
                     // (kind 2), the operand the literal-compare fast path in
@@ -1259,7 +1266,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
                     // this entry the compiler's own name ladders
                     // (`f == "Array::get" || ...`, `f: String`) stayed on the
                     // generic `eq` path.
-                    Array::push(compile_ctx.int_local_slots, psi * 4 + 2)
+                    Array::push(compile_ctx.int_local_slots, value = psi * 4 + 2)
                   } else {
                     ()
                   },
@@ -1270,17 +1277,17 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
             }
             psi = psi + 1
           }
-          Array::push(local_names, "__env")
+          Array::push(local_names, value = "__env")
           let param_count = Array::length(lc_norm_params) + 1
           if enable_rc {
             let mut edi = 0
             while edi < Array::length(lc_norm_params) {
-              let (edn, _edt) = Array::get(lc_norm_params, edi)
-              if array_contains_str(lc_heap_params, edn) {
+              let (edn, _edt) = Array::get(lc_norm_params, at = edi)
+              if array_contains_str(arr = lc_heap_params, s = edn) {
                 let mut edc = 0
                 let mut edj = 0
                 while edj < Array::length(rc_dups) {
-                  if Array::get(rc_dups, edj) == edn {
+                  if Array::get(rc_dups, at = edj) == edn {
                     edc = edc + 1
                   } else {
                     ()
@@ -1289,7 +1296,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
                 }
                 let mut ede = 0
                 while ede < edc {
-                  emit_rc_dup_guarded(body_buf, edi, rc_shadow, if enable_rc {
+                  emit_rc_dup_guarded(buf = body_buf, local_idx = edi, rc_shadow = rc_shadow, dup_fn_idx = if enable_rc {
                     rc_dup_idx
                   } else {
                     -1
@@ -1312,7 +1319,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           let mut iw_found = -1
           let mut iw_scan = 0
           while iw_scan < Array::length(iw_names) {
-            if Array::get(iw_names, iw_scan) == fn_name_dbg {
+            if Array::get(iw_names, at = iw_scan) == fn_name_dbg {
               iw_found = iw_scan
               iw_scan = Array::length(iw_names)
             } else {
@@ -1330,13 +1337,13 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           } else {
             ""
           }
-          let pfuse = pfuse_name != "" && array_contains_str(rc_drops, pfuse_name) && array_contains_str(lc_heap_params, pfuse_name)
+          let pfuse = pfuse_name != "" && array_contains_str(arr = rc_drops, s = pfuse_name) && array_contains_str(arr = lc_heap_params, s = pfuse_name)
           let pfuse_flag = if pfuse {
-            Array::push(local_names, "__reuse_flag")
-            emit_i64_const(body_buf, 0)
-            emit_local_set(body_buf, param_count)
-            Array::push(compile_ctx.reuse_scrutinee_names, pfuse_name)
-            Array::push(compile_ctx.reuse_flag_locals, param_count)
+            Array::push(local_names, value = "__reuse_flag")
+            emit_i64_const(buf = body_buf, value = 0)
+            emit_local_set(buf = body_buf, idx = param_count)
+            Array::push(compile_ctx.reuse_scrutinee_names, value = pfuse_name)
+            Array::push(compile_ctx.reuse_flag_locals, value = param_count)
             param_count
           } else {
             0 - 1
@@ -1349,11 +1356,11 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           let iw_array_params = lc_fresh_string_array()
           let mut iw_pi = 0
           while iw_pi < Array::length(lc_norm_params) {
-            let (iw_pn, iw_pt) = Array::get(lc_norm_params, iw_pi)
-            Array::push(iw_param_names, iw_pn)
+            let (iw_pn, iw_pt) = Array::get(lc_norm_params, at = iw_pi)
+            Array::push(iw_param_names, value = iw_pn)
             match iw_pt {
               Some(iw_ptv) => if TypeExpr::is_array_of_int(iw_ptv) {
-                Array::push(iw_array_params, iw_pn)
+                Array::push(iw_array_params, value = iw_pn)
               } else {
                 ()
               },
@@ -1364,16 +1371,16 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           // `(vibe.int.untag x)` / `(vibe.int.tag x)` assemble to this lane's
           // `Int` representation: tagged on RC, raw on the bump lane.
           set_inline_wat_int_tagged(enable_rc)
-          lc_compile_iw_body(body_buf, fn_name_dbg, iw_wats, iw_found, iw_param_names, iw_array_params, param_count, iw_extra_cell, iw_callees)
+          lc_compile_iw_body(body_buf = body_buf, fn_name_dbg = fn_name_dbg, iw_wats = iw_wats, iw_found = iw_found, iw_param_names = iw_param_names, iw_array_params = iw_array_params, param_count = param_count, iw_extra_cell = iw_extra_cell, iw_callees = iw_callees)
           // #3141: an early exit releases the parameters the way the
           // epilogue below does -- a reuse-fused one guarded on its flag.
           if enable_rc && rc_drop_idx >= 0 && iw_found < 0 {
             let mut xpj = 0
             while xpj < Array::length(rc_exit_param_kinds) {
-              let xk = Array::get(rc_exit_param_kinds, xpj)
+              let xk = Array::get(rc_exit_param_kinds, at = xpj)
               if xk > 0 {
-                let (xpn2, _) = Array::get(lc_norm_params, xpj)
-                rc_exit_push(compile_ctx.rc_exit_stack_names, compile_ctx.rc_exit_stack_info, xpn2, xk, xpj, if pfuse && xpn2 == pfuse_name {
+                let (xpn2, _) = Array::get(lc_norm_params, at = xpj)
+                rc_exit_push(names = compile_ctx.rc_exit_stack_names, info = compile_ctx.rc_exit_stack_info, name = xpn2, kind = xk, local = xpj, flag = if pfuse && xpn2 == pfuse_name {
                   pfuse_flag
                 } else {
                   0 - 1
@@ -1404,15 +1411,15 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           if enable_rc && rc_drop_idx >= 0 && iw_found < 0 && Array::length(rc_path_drops) > 0 {
             let mut ppi = 0
             while ppi < Array::length(lc_norm_params) {
-              let (ppn, _) = Array::get(lc_norm_params, ppi)
-              if array_contains_str(rc_path_drops, ppn) && Array::get(rc_exit_param_kinds, ppi) == 1 && !(pfuse && ppn == pfuse_name) && Array::length(local_names) == ppd_next {
-                Array::push(local_names, "__path_flag")
-                emit_i64_const(body_buf, 0)
-                emit_local_set(body_buf, ppd_next)
-                Array::push(compile_ctx.rc_path_flag_names, ppn)
-                Array::push(compile_ctx.rc_path_flag_locals, ppd_next)
-                Array::push(ppd_params, ppi)
-                Array::push(ppd_flags, ppd_next)
+              let (ppn, _) = Array::get(lc_norm_params, at = ppi)
+              if array_contains_str(arr = rc_path_drops, s = ppn) && Array::get(rc_exit_param_kinds, at = ppi) == 1 && !(pfuse && ppn == pfuse_name) && Array::length(local_names) == ppd_next {
+                Array::push(local_names, value = "__path_flag")
+                emit_i64_const(buf = body_buf, value = 0)
+                emit_local_set(buf = body_buf, idx = ppd_next)
+                Array::push(compile_ctx.rc_path_flag_names, value = ppn)
+                Array::push(compile_ctx.rc_path_flag_locals, value = ppd_next)
+                Array::push(ppd_params, value = ppi)
+                Array::push(ppd_flags, value = ppd_next)
                 ppd_next = ppd_next + 1
               } else {
                 ()
@@ -1425,11 +1432,11 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           let final_nl = if iw_found >= 0 {
             param_count
           } else {
-            compile_expr(body_buf, body, local_names, frame_prepare_cookie(body, local_names, ppd_next, compile_ctx.rc_exit_state, enable_rc), compile_ctx, -1)
+            compile_expr(buf = body_buf, expr = body, local_names = local_names, next_local = frame_prepare_cookie(body = body, locals = local_names, next = ppd_next, state = compile_ctx.rc_exit_state, enabled = enable_rc), ctx = compile_ctx, ld = -1)
           }
           if pfuse {
-            Array::truncate(compile_ctx.reuse_scrutinee_names, Array::length(compile_ctx.reuse_scrutinee_names) - 1)
-            Array::truncate(compile_ctx.reuse_flag_locals, Array::length(compile_ctx.reuse_flag_locals) - 1)
+            Array::truncate(compile_ctx.reuse_scrutinee_names, length = Array::length(compile_ctx.reuse_scrutinee_names) - 1)
+            Array::truncate(compile_ctx.reuse_flag_locals, length = Array::length(compile_ctx.reuse_flag_locals) - 1)
           } else {
             ()
           }
@@ -1449,11 +1456,11 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
             let mut need_dup = false
             let mut tci = 0
             while tci < Array::length(lc_norm_params) {
-              let (tcn, _tct) = Array::get(lc_norm_params, tci)
+              let (tcn, _tct) = Array::get(lc_norm_params, at = tci)
               let mut tcn_loop_extra = 0
               let mut tcle = 0
               while tcle < Array::length(compile_ctx.loop_consumed_names) {
-                if Array::get(compile_ctx.loop_consumed_names, tcle) == tcn {
+                if Array::get(compile_ctx.loop_consumed_names, at = tcle) == tcn {
                   tcn_loop_extra = tcn_loop_extra + 1
                 } else {
                   ()
@@ -1462,8 +1469,8 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
               }
               // #1085: the loop-count clause only applies when every consuming
               // occurrence is a loop site (see lc_has_nonloop_consume).
-              let tcn_loop_drop = tcn_loop_extra > 0 && !lc_has_nonloop_consume(body, tcn, lc_borrow_param_user_srt, lc_borrow_param_mask)
-              if array_contains_str(lc_heap_params, tcn) && (array_contains_str(rc_drops, tcn) || tcn_loop_drop) && tcn == tail_root {
+              let tcn_loop_drop = tcn_loop_extra > 0 && !lc_has_nonloop_consume(e = body, name = tcn, bfns = lc_borrow_param_user_srt, bmasks = lc_borrow_param_mask)
+              if array_contains_str(arr = lc_heap_params, s = tcn) && (array_contains_str(arr = rc_drops, s = tcn) || tcn_loop_drop) && tcn == tail_root {
                 need_dup = true
               } else {
                 ()
@@ -1472,8 +1479,8 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
             }
             let rtemp = final_nl
             if need_dup {
-              emit_local_set(body_buf, rtemp)
-              emit_rc_dup_guarded(body_buf, rtemp, rc_shadow, if enable_rc {
+              emit_local_set(buf = body_buf, idx = rtemp)
+              emit_rc_dup_guarded(buf = body_buf, local_idx = rtemp, rc_shadow = rc_shadow, dup_fn_idx = if enable_rc {
                 rc_dup_idx
               } else {
                 -1
@@ -1484,8 +1491,8 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
             }
             let mut tdj = 0
             while tdj < Array::length(lc_norm_params) {
-              let (tdn, _tdt) = Array::get(lc_norm_params, tdj)
-              if array_contains_str(lc_heap_params, tdn) {
+              let (tdn, _tdt) = Array::get(lc_norm_params, at = tdj)
+              if array_contains_str(arr = lc_heap_params, s = tdn) {
                 // #725: a loop-protected consume (per-iteration dup at the call
                 // site, #706 above) is NET-ZERO at runtime — the dup is matched by
                 // the callee's own drop each execution and never touches the
@@ -1501,7 +1508,7 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
                 let mut tdn_loop_count = 0
                 let mut tdle = 0
                 while tdle < Array::length(compile_ctx.loop_consumed_names) {
-                  if Array::get(compile_ctx.loop_consumed_names, tdle) == tdn {
+                  if Array::get(compile_ctx.loop_consumed_names, at = tdle) == tdn {
                     tdn_loop_count = tdn_loop_count + 1
                   } else {
                     ()
@@ -1519,20 +1526,20 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
                 // the loop-only path then leaks one reference per call, which
                 // is the safe direction until path-sensitive accounting lands
                 // (fixtures/rc_branch_loop_mixed_consume_test.vibe).
-                let tdn_loop_drop = tdn_loop_count > 0 && !lc_has_nonloop_consume(body, tdn, lc_borrow_param_user_srt, lc_borrow_param_mask)
-                if array_contains_str(rc_drops, tdn) || tdn_loop_drop {
+                let tdn_loop_drop = tdn_loop_count > 0 && !lc_has_nonloop_consume(e = body, name = tdn, bfns = lc_borrow_param_user_srt, bmasks = lc_borrow_param_mask)
+                if array_contains_str(arr = rc_drops, s = tdn) || tdn_loop_drop {
                   if pfuse_flag >= 0 && tdn == pfuse_name {
                     // ADR-0092: a reuse arm consumed this param's reference —
                     // drop only on the paths that did not (flag still 0).
-                    emit_local_get(body_buf, pfuse_flag)
+                    emit_local_get(buf = body_buf, idx = pfuse_flag)
                     emit_i64_eqz(body_buf)
                     emit_if_void(body_buf)
-                    emit_local_get(body_buf, tdj)
-                    emit_call(body_buf, rc_drop_idx)
+                    emit_local_get(buf = body_buf, idx = tdj)
+                    emit_call(buf = body_buf, func_idx = rc_drop_idx)
                     emit_end(body_buf)
                   } else {
-                    emit_local_get(body_buf, tdj)
-                    emit_call(body_buf, rc_drop_idx)
+                    emit_local_get(buf = body_buf, idx = tdj)
+                    emit_call(buf = body_buf, func_idx = rc_drop_idx)
                   }
                 } else {
                   ()
@@ -1544,16 +1551,16 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
             }
             let mut ppk = 0
             while ppk < Array::length(ppd_params) {
-              emit_local_get(body_buf, Array::get(ppd_flags, ppk))
+              emit_local_get(buf = body_buf, idx = Array::get(ppd_flags, at = ppk))
               emit_i64_eqz(body_buf)
               emit_if_void(body_buf)
-              emit_local_get(body_buf, Array::get(ppd_params, ppk))
-              emit_call(body_buf, rc_drop_idx)
+              emit_local_get(buf = body_buf, idx = Array::get(ppd_params, at = ppk))
+              emit_call(buf = body_buf, func_idx = rc_drop_idx)
               emit_end(body_buf)
               ppk = ppk + 1
             }
             if need_dup {
-              emit_local_get(body_buf, rtemp)
+              emit_local_get(buf = body_buf, idx = rtemp)
             } else {
               ()
             }
@@ -1561,16 +1568,16 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
             ()
           }
           if enable_rc && fn_name_dbg == entry_name {
-            emit_i64_const(body_buf, 1)
+            emit_i64_const(buf = body_buf, value = 1)
             emit_i64_shr_s(body_buf)
           }
-          Array::push(bodies, body_buf)
+          Array::push(bodies, value = body_buf)
           // #1259: the walk allocated exactly as many lambdas as the plan said.
           // The per-allocation check in compile_lambda catches an UNDER-count (the
           // walk runs past the planned range); this catches an OVER-count, where
           // the plan reserved slots for EFn nodes codegen never reached.
-          if Array::get(lambda_plan_cell, 0) != lambda_planned_end {
-            throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_end), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
+          if Array::get(lambda_plan_cell, at = 0) != lambda_planned_end {
+            throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_end), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, at = 0))))))
           } else {
             ()
           }
@@ -1579,9 +1586,9 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           } else {
             0
           }
-          Array::push(meta_i32, Array::get(iw_extra_cell, 0))
-          Array::push(meta_i64, extra + Array::get(iw_extra_cell, 1))
-          Array::push(meta_v128, Array::get(iw_extra_cell, 2))
+          Array::push(meta_i32, value = Array::get(iw_extra_cell, at = 0))
+          Array::push(meta_i64, value = extra + Array::get(iw_extra_cell, at = 1))
+          Array::push(meta_v128, value = Array::get(iw_extra_cell, at = 2))
         } else {
           // Module-level non-function `let` (a THUNK): previously the initializer
           // re-ran on EVERY reference, so a 16-entry lookup table cost an O(size)
@@ -1594,12 +1601,12 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           // Under RC the cache holds one permanent reference and every return
           // (both paths) hands the caller a guarded-dup'd reference, so consumer
           // drops balance exactly like the old fresh-value contract.
-          Array::push(local_names, "__env")
+          Array::push(local_names, value = "__env")
           let param_count = 1
           let mut tg_k = -1
           let mut tg_i = 0
           while tg_i < Array::length(thunk_names_list) {
-            if Array::get(thunk_names_list, tg_i) == fn_name_dbg {
+            if Array::get(thunk_names_list, at = tg_i) == fn_name_dbg {
               tg_k = tg_i
               tg_i = Array::length(thunk_names_list)
             } else {
@@ -1613,13 +1620,13 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           }
           let tg_value_g = tg_base + tg_k * 2
           let tg_flag_g = tg_value_g + 1
-          emit_global_get(body_buf, tg_flag_g)
+          emit_global_get(buf = body_buf, idx = tg_flag_g)
           emit_i32_wrap_i64(body_buf)
           emit_if_i64(body_buf)
-          emit_global_get(body_buf, tg_value_g)
-          emit_local_tee(body_buf, 1)
+          emit_global_get(buf = body_buf, idx = tg_value_g)
+          emit_local_tee(buf = body_buf, idx = 1)
           if enable_rc {
-            emit_rc_dup_guarded(body_buf, 1, rc_shadow, if enable_rc {
+            emit_rc_dup_guarded(buf = body_buf, local_idx = 1, rc_shadow = rc_shadow, dup_fn_idx = if enable_rc {
               rc_dup_idx
             } else {
               -1
@@ -1628,12 +1635,12 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
             ()
           }
           emit_else(body_buf)
-          Array::push(local_names, "__thunk_memo")
-          let final_nl = compile_expr(body_buf, __bi_expr, local_names, frame_prepare_cookie(__bi_expr, local_names, 2, compile_ctx.rc_exit_state, enable_rc), compile_ctx, -1)
-          emit_local_tee(body_buf, 1)
-          emit_global_set(body_buf, tg_value_g)
+          Array::push(local_names, value = "__thunk_memo")
+          let final_nl = compile_expr(buf = body_buf, expr = __bi_expr, local_names = local_names, next_local = frame_prepare_cookie(body = __bi_expr, locals = local_names, next = 2, state = compile_ctx.rc_exit_state, enabled = enable_rc), ctx = compile_ctx, ld = -1)
+          emit_local_tee(buf = body_buf, idx = 1)
+          emit_global_set(buf = body_buf, idx = tg_value_g)
           if enable_rc {
-            emit_rc_dup_guarded(body_buf, 1, rc_shadow, if enable_rc {
+            emit_rc_dup_guarded(buf = body_buf, local_idx = 1, rc_shadow = rc_shadow, dup_fn_idx = if enable_rc {
               rc_dup_idx
             } else {
               -1
@@ -1641,21 +1648,21 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           } else {
             ()
           }
-          emit_i64_const(body_buf, 1)
-          emit_global_set(body_buf, tg_flag_g)
-          emit_local_get(body_buf, 1)
+          emit_i64_const(buf = body_buf, value = 1)
+          emit_global_set(buf = body_buf, idx = tg_flag_g)
+          emit_local_get(buf = body_buf, idx = 1)
           emit_end(body_buf)
           if enable_rc && fn_name_dbg == entry_name {
-            emit_i64_const(body_buf, 1)
+            emit_i64_const(buf = body_buf, value = 1)
             emit_i64_shr_s(body_buf)
           }
-          Array::push(bodies, body_buf)
+          Array::push(bodies, value = body_buf)
           // #1259: the walk allocated exactly as many lambdas as the plan said.
           // The per-allocation check in compile_lambda catches an UNDER-count (the
           // walk runs past the planned range); this catches an OVER-count, where
           // the plan reserved slots for EFn nodes codegen never reached.
-          if Array::get(lambda_plan_cell, 0) != lambda_planned_end {
-            throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_end), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, 0))))))
+          if Array::get(lambda_plan_cell, at = 0) != lambda_planned_end {
+            throw(String::concat("lambda plan over-count: planned through ", String::concat(__to_string(lambda_planned_end), String::concat(", walk stopped at ", __to_string(Array::get(lambda_plan_cell, at = 0))))))
           } else {
             ()
           }
@@ -1664,22 +1671,22 @@ export fn LinkedFunctionPlan::emit(_ function_plan: LinkedFunctionPlan, input: L
           } else {
             0
           }
-          Array::push(meta_i32, 0)
-          Array::push(meta_i64, extra)
-          Array::push(meta_v128, 0)
+          Array::push(meta_i32, value = 0)
+          Array::push(meta_i64, value = extra)
+          Array::push(meta_v128, value = 0)
         }
         // Publish only after the function has completed and its private output
         // agrees with the planned range. Cache harvest still reads the canonical
         // aggregate, so replay and persistent formats remain unchanged.
-        lc_commit_function_effects(function_effects, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms, lambda_planned_end)
+        lc_commit_function_effects(src = function_effects, dst = lt_w, slots = table_slots_used, blind_owners = blind_owners, blind_offsets = blind_offsets, blind_kinds = blind_kinds, blind_syms = blind_syms, planned_end = lambda_planned_end)
         if coverage {
-          lc_commit_function_cov(function_cov, cov_state, cov_start, bi)
+          lc_commit_function_cov(src = function_cov, dst = cov_state, start = cov_start, owner = bi)
         } else ()
-        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), lc_fn_origin_lookup(lc_fn_file_of, Array::get(fn_names_list, bi)), lc_fn_origin_lookup(lc_fn_stmt_of, Array::get(fn_names_list, bi)), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners), fn_linemap, 0)
+        codegen_body_cache_record(cache = body_cache_out, fn_index = bi, fn_name = Array::get(fn_names_list, at = bi), fn_file = lc_fn_origin_lookup(index = lc_fn_file_of, name = Array::get(fn_names_list, at = bi)), src_stmt = lc_fn_origin_lookup(index = lc_fn_stmt_of, name = Array::get(fn_names_list, at = bi)), bodies = bodies, meta_i32 = meta_i32, meta_i64 = meta_i64, meta_v128 = meta_v128, lt = lt_w, lam_lo = Array::get(lambda_bases, at = bi), lam_hi = lambda_planned_end, slots = table_slots_used, slot_lo = __slot_lo, slot_hi = Array::length(table_slots_used), blind_bodies = blind_owners, blind_offsets = blind_offsets, blind_kinds = blind_kinds, blind_syms = blind_syms, blind_lo = __blind_lo, blind_hi = Array::length(blind_owners), lm = fn_linemap, lm_lo = 0)
       }
       // Cache harvest reads private rows before encoding empties the scratch.
       // Replay fills the same scratch and follows the same publication path.
-      linemap_flush_fn_into(fn_linemap, linemap_state)
+      linemap_flush_fn_into(lm = fn_linemap, dst = linemap_state)
     }
     bi = bi + 1
   }

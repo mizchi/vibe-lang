@@ -9,7 +9,7 @@ live under `user/` because they do not track `main`: one file describes one
 released version and stops changing at its tag.
 
 **Every document under `docs/` must appear in exactly one class table below**,
-and `scripts/check_doc_classification.sh` (`pkf run check-doc-classification`)
+and `scripts/check_doc_classification.vibex` (`pkf run check-doc-classification`)
 enforces it: a new document in no table fails, a document in two tables fails,
 and a row pointing at a file that is no longer there fails. Add the row in the
 same change as the document.
@@ -235,7 +235,7 @@ Machine-produced. Do not edit by hand. Generator / freshness is noted where know
 
 ## Inventory coverage
 
-Answered by `scripts/check_doc_classification.sh`, not by a list kept here. A
+Answered by `scripts/check_doc_classification.vibex`, not by a list kept here. A
 list of names copied from `ls docs/` is a **proxy** for "every document is
 classified", and it drifted within three weeks of being written: two documents
 were in no class table, one archived file was missing from the archive table,

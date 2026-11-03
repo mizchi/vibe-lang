@@ -1,0 +1,389 @@
+import @vibe/compiler/core {
+  executable_exports_stripped
+}
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, load_persistent_artifact, store_persistent_artifact
+}
+
+//# Exact no-op rebuild: the linked-output memo (#2825)
+//
+// The user-visible KPI contract's first row is "an exact no-op does no
+// semantic work". Before this, an unchanged rebuild skipped the whole module
+// walk (every module's typing reused) and then ran the entire back end again:
+// effect lowering, trait-dict desugar, borrow / Perceus, codegen, DCE and
+// assembly. Measured on main at bcb306a, warm over cold: 84 % of the wall time
+// for a two-module project and 47 % for the compiler's own 677-module CLI
+// closure (12.5 s).
+//
+// The memo stores the finished module under the compile's complete input
+// identity and replays it when every input matches. The identity is the
+// output's whole domain:
+//
+// - the compiler itself: the persistent store's namespace already carries the
+//   hash of the compiler sources and the cfg flags (`persistent_cache_version_tag`);
+// - the lane, the entry path and entry name, the capability grants, and
+//   whether the executable's exports will be stripped;
+// - every source the loader resolved, by group, path and content
+//   fingerprint, in load order -- a typed wasm import is in here too, as the
+//   binding text the loader synthesized from its bytes;
+// - the value of every environment variable the compiler reads
+//   (`linked_output_memo_env_names`).
+//
+// That last list is where a memo goes silently wrong: a setting that changes
+// the output but is not in the key replays a module built for the other
+// setting. So the list is not curated by judgement. Every variable name the
+// compiler's sources mention is either in it or in
+// `linked_output_memo_env_exempt` with the reason the value cannot reach the
+// output, and `scripts/check_linked_output_memo_env.sh` fails when a name in
+// the tree is in neither. Including a variable that does not matter costs a
+// miss; omitting one that does would cost a wrong program.
+//
+// The lookup runs AFTER the typing walk, not before. A no-op still pays the
+// loader and the (fully reused) checker, which is what records the closure
+// for the unstable-surface gate, reports the typing telemetry and raises a
+// type error -- a program that fails to check never reaches the memo.
+//
+// One slot per (lane, entry path): the store replaces it, so the memo holds
+// one module per root, like the body cache.
+
+/// `VIBE_LINKED_OUTPUT_MEMO`: `on` replays a stored module, `off` neither
+/// reads nor writes, and `verify` compiles anyway and refuses a stored module
+/// that differs from the fresh one. Unset is the caller's `default_mode`:
+/// `on` for `vibe run` / `build` / `test`, `off` for the launcher's internal
+/// FS lane, whose warm compiles are the back end's own measurements.
+export fn linked_output_memo_mode(_ default_mode: String) -> String with Env + Exception {
+  let raw = Env::get("VIBE_LINKED_OUTPUT_MEMO")
+  if raw == "" {
+    default_mode
+  } else if raw == "on" || raw == "off" || raw == "verify" {
+    raw
+  } else {
+    throw(String::concat("VIBE_LINKED_OUTPUT_MEMO must be on, off or verify, got: ", raw))
+  }
+}
+
+/// Every environment variable whose value is part of the memo key. Kept
+/// sorted; the gate compares it, with the exempt list, against every name the
+/// compiler's sources mention.
+export fn linked_output_memo_env_names() -> Array[String] {
+  [
+    "HOME",
+    "VIBE_ALLOCS",
+    "VIBE_BACKEND",
+    "VIBE_BENCH_BACKEND",
+    "VIBE_BINDING_AT",
+    "VIBE_BUILD_COMPONENT",
+    "VIBE_BUILD_DIR",
+    "VIBE_CFG",
+    "VIBE_CHECKED_MODULE_CACHE",
+    "VIBE_CHECKER_BATCH",
+    "VIBE_CHECK_ERROR_ROW",
+    "VIBE_CHECK_ONLY",
+    "VIBE_CODEGEN_BODY_CACHE",
+    "VIBE_COVERAGE",
+    "VIBE_COVERAGE_DRIVER_PATH",
+    "VIBE_DEBUG",
+    "VIBE_DEBUG_BREAK",
+    "VIBE_DEPS",
+    "VIBE_DEPS_DIRECT",
+    "VIBE_DEPS_MISSING_SCAN",
+    "VIBE_DEP_ORDER_SEED",
+    "VIBE_DIAGNOSTICS",
+    "VIBE_DIAGNOSTICS_ALL",
+    "VIBE_DIAGNOSTICS_JSON",
+    "VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE",
+    "VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE",
+    "VIBE_DOC_AT",
+    "VIBE_DUMP_FS_MERGED",
+    "VIBE_EMIT_COVERAGE_DRIVER_SOURCE",
+    "VIBE_EMIT_MERGED_SOURCE",
+    "VIBE_EMIT_MODULE_SOURCE",
+    "VIBE_EMIT_WIT",
+    "VIBE_EXPERIMENTAL_AST_CACHE",
+    "VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP",
+    "VIBE_ENTRY",
+    "VIBE_ESCAPES",
+    "VIBE_ESCAPES_STRICT",
+    "VIBE_FILL_PINS",
+    "VIBE_FMT",
+    "VIBE_FS_COMPILE",
+    "VIBE_FUNCTION_JOBS",
+    "VIBE_GREP",
+    "VIBE_GREP_FILE_LIST",
+    "VIBE_GREP_JSON",
+    "VIBE_GREP_LIST_FILES",
+    "VIBE_GREP_MEMORY_BUDGET_MB",
+    "VIBE_GREP_MEMORY_SAFETY_FACTOR",
+    "VIBE_GREP_ONLY",
+    "VIBE_GREP_PATTERN",
+    "VIBE_GREP_RESUME",
+    "VIBE_GREP_WHERE",
+    "VIBE_GREP_WHERE_ROW",
+    "VIBE_HASH",
+    "VIBE_HASH_ALGO",
+    "VIBE_HASH_WRITE",
+    "VIBE_HOME",
+    "VIBE_HTTP_ECHO_PORT",
+    "VIBE_INPUT",
+    "VIBE_INSPECT_UPDATE",
+    "VIBE_INSPECT_UPDATE_STDOUT",
+    "VIBE_INTERNAL_TRUSTED_SOURCE",
+    "VIBE_INVOKE_DIR",
+    "VIBE_LIB",
+    "VIBE_LIST_DEPS",
+    "VIBE_LOWERING_DIRECTORY",
+    "VIBE_LOWERING_ENTRY",
+    "VIBE_LOWERING_INPUT",
+    "VIBE_LOWERING_MODE",
+    "VIBE_LOWERING_OUTPUT",
+    "VIBE_LOWERING_SHARED_CONTEXT",
+    "VIBE_LOWERING_WORKER_LIST",
+    "VIBE_LSP",
+    "VIBE_MISSING_VPKG_SCAN",
+    "VIBE_MODULE_JOB_DIR",
+    "VIBE_MODULE_PLAN",
+    "VIBE_NORMALIZE",
+    "VIBE_PROFILE_CALLSTACK",
+    "VIBE_PROFILE_MEMORY_MARKS",
+    "VIBE_PROFILE_TSV",
+    "VIBE_PUBLISH_CHECK",
+    "VIBE_PUBLISH_ENV_CACHE",
+    "VIBE_PUBLISH_PREV",
+    "VIBE_PUBLISH_PREV_VERSION",
+    "VIBE_PUBLISH_VERSION",
+    "VIBE_RC",
+    "VIBE_RC_CLASSIFY",
+    "VIBE_RC_PLAN",
+    "VIBE_RC_PLAN_FN",
+    "VIBE_REGISTRY_LOG_DIR",
+    "VIBE_REPIN",
+    "VIBE_REQUIRE_PINS",
+    "VIBE_SERVE_COMPONENT",
+    "VIBE_SERVE_WIT_OUT",
+    "VIBE_SYMBOLS",
+    "VIBE_SYMBOLS_WITH_PATH",
+    "VIBE_TASKGROUP_LOWERING",
+    "VIBE_TEST_BACKEND",
+    "VIBE_TEST_DISPLAY_SRC",
+    "VIBE_TEST_NESTED",
+    "VIBE_TEST_UPDATE_PATCHES",
+    "VIBE_TYPE_AT",
+    "VIBE_TYPE_COL",
+    "VIBE_TYPE_LINE",
+    "VIBE_UNSTABLE",
+    "VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE",
+    "VIBE_WASM_KEEP_EXPORTS",
+    "VIBE_WASM_NAMES"
+  ]
+}
+
+/// Variables the compiler reads whose value cannot reach the compiled module,
+/// each with the reason. The gate refuses a name that is in both lists.
+///
+/// - where the cache and its sidecars live: `VIBE_BUILD_CACHE_DIR` (the memo
+///   itself lives there, so a different directory is a different memo);
+/// - where the module is written: `VIBE_OUTPUT`, which the runner sets from
+///   the output argument. Keying it would make every build into a fresh
+///   temporary path miss;
+/// - per-run output paths and nonces of observation sidecars, which a run
+///   writes beside the module and never into it: the `*_TELEMETRY_OUT`,
+///   `*_TRACE_OUT`, `*_NONCE` and `VIBE_HOST_ACTION_OUT` / `VIBE_TESTMETA_OUT`
+///   / `VIBE_ENTRY_TESTMETA_OUT` paths, `VIBE_SCHEDULER_TRACE`;
+/// - `VIBE_PROFILE_MEMORY_MARK`, the prefix of the host-hook names a profiled
+///   build reads to mark a phase boundary (the answer is ignored);
+/// - this switch itself.
+export fn linked_output_memo_env_exempt() -> Array[String] {
+  [
+    "VIBE_ARTIFACT_INPUT_TRACE_NONCE",
+    "VIBE_ARTIFACT_INPUT_TRACE_OUT",
+    "VIBE_BUILD_CACHE_DIR",
+    "VIBE_ENTRY_TESTMETA_OUT",
+    "VIBE_HOST_ACTION_OUT",
+    "VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE",
+    "VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT",
+    "VIBE_INCREMENTAL_TELEMETRY_OUT",
+    "VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE",
+    "VIBE_INGESTION_PIPELINE_TELEMETRY_OUT",
+    "VIBE_INGESTION_TELEMETRY_NONCE",
+    "VIBE_INGESTION_TELEMETRY_OUT",
+    "VIBE_LINKED_OUTPUT_MEMO",
+    "VIBE_OUTPUT",
+    "VIBE_PROFILE_MEMORY_MARK",
+    "VIBE_SCHEDULER_TRACE",
+    "VIBE_TESTMETA_OUT"
+  ]
+}
+
+fn lom_field(sb: StringBuilder, tag: String, value: String) -> Unit {
+  // Length-prefixed, so no value (a path, an env value with a newline) can
+  // forge the boundary of the next field.
+  StringBuilder::push(sb, value = tag)
+  StringBuilder::push(sb, value = " ")
+  StringBuilder::push(sb, value = __to_string(String::length(value)))
+  StringBuilder::push(sb, value = ":")
+  StringBuilder::push(sb, value = value)
+  StringBuilder::push(sb, value = "\n")
+}
+
+/// The compile's complete input identity, as text. Two compiles with equal
+/// identities produce the same module; see the section comment for why each
+/// part is here.
+export fn linked_output_memo_identity(lane: String, entry_path: String, entry_name: String, grants: Array[(String, String)], source_groups: Array[(String, Array[(String, String)])]) -> String with Env {
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, value = "linked-output-memo-v1\n")
+  lom_field(sb = sb, tag = "lane", value = lane)
+  lom_field(sb = sb, tag = "entry_path", value = entry_path)
+  lom_field(sb = sb, tag = "entry_name", value = entry_name)
+  lom_field(sb = sb, tag = "stripped", value = if executable_exports_stripped() {
+    "1"
+  } else {
+    "0"
+  })
+  let mut g = 0
+  while g < Array::length(grants) {
+    let (op, grant) = Array::get(grants, at = g)
+    lom_field(sb = sb, tag = "grant_op", value = op)
+    lom_field(sb = sb, tag = "grant", value = grant)
+    g = g + 1
+  }
+  let names = linked_output_memo_env_names()
+  let mut e = 0
+  while e < Array::length(names) {
+    let name = Array::get(names, at = e)
+    lom_field(sb = sb, tag = "env", value = name)
+    lom_field(sb = sb, tag = "val", value = Env::get(name))
+    e = e + 1
+  }
+  let mut s = 0
+  while s < Array::length(source_groups) {
+    let (group, files) = Array::get(source_groups, at = s)
+    lom_field(sb = sb, tag = "group", value = group)
+    let mut f = 0
+    while f < Array::length(files) {
+      let (path, text) = Array::get(files, at = f)
+      lom_field(sb = sb, tag = "path", value = path)
+      lom_field(sb = sb, tag = "src", value = compact_string_fingerprint(text))
+      f = f + 1
+    }
+    s = s + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+fn lom_slot(lane: String, entry_path: String) -> String {
+  compact_string_fingerprint(String::concat("linked-output-memo-slot\n", String::concat(lane, String::concat("\n", entry_path))))
+}
+
+/// The stored artifact is `<identity length>\n<identity><module>`. The
+/// identity is compared in full, byte for byte, not by a hash of it.
+fn lom_decode(stored: Bytes, identity: String) -> Option[Bytes] {
+  let n = Bytes::length(stored)
+  let mut at = 0
+  let mut len = 0
+  let mut ok = true
+  let mut done = false
+  while !done && ok {
+    if at >= n || at > 20 {
+      ok = false
+    } else {
+      let c = Bytes::get(stored, at = at)
+      if c == 10 {
+        done = true
+      } else if c >= 48 && c <= 57 {
+        len = len * 10 + (c - 48)
+      } else {
+        ok = false
+      }
+      at = at + 1
+    }
+  }
+  if !ok || at == 1 || len != String::length(identity) || at + len > n {
+    None
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < len {
+      if Bytes::get(stored, at = at + i) != String::byte_at(identity, at = i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    if same {
+      Some(Bytes::slice(stored, start = at + len, end = n))
+    } else {
+      None
+    }
+  }
+}
+
+fn lom_push_text(buf: Bytes, text: String) -> Unit {
+  let mut i = 0
+  while i < String::length(text) {
+    Bytes::push(buf, value = String::byte_at(text, at = i))
+    i = i + 1
+  }
+}
+
+/// The module stored for exactly this identity, if there is one.
+export fn linked_output_memo_lookup(lane: String, entry_path: String, entry_name: String, identity: String) -> Option[Bytes] with Env + Exception + Fs {
+  match load_persistent_artifact(kind = "linked-output-memo", entry_name = entry_name, fingerprint = lom_slot(lane = lane, entry_path = entry_path)) {
+    Some(stored) => lom_decode(stored = stored, identity = identity),
+    None => None
+  }
+}
+
+/// Replace this root's slot with `wasm` under `identity`.
+export fn linked_output_memo_store(lane: String, entry_path: String, entry_name: String, identity: String, wasm: Bytes) -> Unit with Env + Exception + Fs {
+  let buf = Bytes::new()
+  lom_push_text(buf = buf, text = String::concat(__to_string(String::length(identity)), "\n"))
+  lom_push_text(buf = buf, text = identity)
+  Bytes::append(buf, bytes = wasm)
+  store_persistent_artifact(kind = "linked-output-memo", entry_name = entry_name, fingerprint = lom_slot(lane = lane, entry_path = entry_path), bytes = buf)
+}
+
+/// An observation hook, never an input: the node runner prints every
+/// `Env::get` under `VIBE_DEBUG_ENV=1` (and a `[profile-memory]` line under
+/// `VIBE_PROFILE_MEMORY_MARKS=1`), so a caller can tell a replay from a
+/// compile without a new channel. The variable is never set and the answer
+/// is ignored.
+fn lom_mark(_ event: String) -> Unit with Env {
+  let _ = Env::get(String::concat("VIBE_PROFILE_MEMORY_MARK:", event))
+  ()
+}
+
+/// `compile` behind the memo, in the given mode. `verify` always compiles and
+/// throws when a stored module for the same identity differs from the fresh
+/// one -- that would mean the identity is missing an input -- after replacing
+/// the slot with the fresh module, so a later `on` build cannot replay it.
+export fn linked_output_memo_run(mode: String, lane: String, entry_path: String, entry_name: String, identity: String, compile: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
+  if mode == "off" {
+    compile()
+  } else {
+    // `on` replays what the identity licenses; `verify` checks the licence.
+    let replay = mode == "on"
+    let stored = linked_output_memo_lookup(lane = lane, entry_path = entry_path, entry_name = entry_name, identity = identity)
+    match stored {
+      Some(bytes) => if replay {
+        lom_mark("linked_output_memo_hit")
+        bytes
+      } else {
+        let fresh = compile()
+        if fresh == bytes {
+          fresh
+        } else {
+          // Replace the slot before refusing: the next build defaults to
+          // `on`, and must not replay the module this run just proved wrong.
+          linked_output_memo_store(lane = lane, entry_path = entry_path, entry_name = entry_name, identity = identity, wasm = fresh)
+          throw(String::concat("linked-output memo verify: the stored module for ", String::concat(entry_path, " differed from a fresh compile with the same input identity, so the identity is missing an input. The slot now holds the fresh module; set VIBE_LINKED_OUTPUT_MEMO=off to compile without the memo, and report this")))
+        }
+      },
+      None => {
+        let fresh = compile()
+        linked_output_memo_store(lane = lane, entry_path = entry_path, entry_name = entry_name, identity = identity, wasm = fresh)
+        fresh
+      }
+    }
+  }
+}
