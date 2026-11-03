@@ -1145,6 +1145,27 @@ A build whose full fingerprint differs is then compared as an edit
   consumed cache is not merged back. Each replayed body is re-recorded
   instead, as a relocated one is.
 
+**Types.** Constructor tags are `(type_index << 16) | variant`, and
+`type_index` counts type declarations in merge order, so a type declared
+anywhere moves the tag of every later type. While every constructor and
+struct name is unique, the global half leaves the constructor table out, and
+it is compared per TYPE instead (`guard_type_names` / `guard_type_rows`,
+VBC11). A type's row covers its constructors' names, tags, field counts and
+Double fields.
+
+- Every type the harvest had must be present with the same row, tag values
+  included.
+- A type added where it moves no existing tag is tolerated, and its name and
+  constructors join the mention check.
+- A removed type, a changed type (a new variant moves its row) and a moved tag
+  all decline.
+- The struct tables stay in the global half. A field access dispatches over
+  every struct with that field, and a bare record literal is matched against
+  every struct's fields, so a struct added anywhere can change a body that
+  spells neither it nor its constructor.
+- The used-builtin set collects constructor names too, so under an edit it is
+  compared with this build's constructor names taken out of both sides.
+
 The rows are defence in depth for one class: a changed borrow ABI moves the
 row and the borrow table both, and in the probe built for it the borrow guard
 declined first. No row of the corpus is caught by the rows alone.
@@ -1156,8 +1177,10 @@ byte for byte against a fresh build:
   last file.
 - **Reused, with `bif_cap` recompiled:** a new global spelled like a captured
   local.
-- **Not reused:** a function added together with a type, which moves the
-  constructor table.
+- **Reused:** a function added together with a type in the last file, which
+  moves no existing tag.
+- **Types in a middle file:** reused when no later file declares a type; not
+  reused when one does, because its tag moved.
 - **A stable refreshed artifact:** a second warm build recompiles exactly what
   a third does.
 - **Middle-file edits**, with the downstream file calling the moved

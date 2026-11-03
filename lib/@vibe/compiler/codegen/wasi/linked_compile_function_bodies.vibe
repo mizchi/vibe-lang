@@ -249,7 +249,7 @@ import ./linked_body_cache_strings.vibe {
 }
 
 import ./linked_body_cache_edit.vibe {
-  lc_old_lambda_plan, lc_src_edit_ok, lc_src_edit_replayable, lc_src_rows_agree
+  lc_old_lambda_plan, lc_src_edit_ok, lc_src_edit_replayable, lc_src_rows_agree, lc_types_agree
 }
 
 import ./linked_body_cache_reindex.vibe {
@@ -480,6 +480,12 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
     for v in emission_layout.src_lambdas {
       Array::push(body_cache_out.guard_src_lambdas, v)
     }
+    for v in emission_layout.type_names {
+      Array::push(body_cache_out.guard_type_names, v)
+    }
+    for v in emission_layout.type_rows {
+      Array::push(body_cache_out.guard_type_rows, v)
+    }
     let mut __glc2 = 0
     while __glc2 < Array::length(guard_layout_now) {
       Array::push(body_cache_out.guard_layout, Array::get(guard_layout_now, __glc2))
@@ -520,8 +526,10 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   // in two halves instead -- everything not keyed by a source function's name
   // whole, and the rows of the names both builds hold one by one; every
   // moved index is then relocated (`lc_src_edit_reindex`).
+  // An added type and its constructors, for the mention check.
+  let edit_type_touched: Array[String] = []
   let edit_on = !body_cache_strict || !bcc_int_lists_equal(body_cache_in.guard_layout, guard_layout_now)
-  let edit_lane = pin_region_capacity >= 0 && edit_on && lc_src_edit_ok(body_cache_edit) && Array::length(body_cache_in.guard_layout_global) > 0 && bcc_int_lists_equal(body_cache_in.guard_layout_global, emission_layout.guard_layout_global) && Array::length(body_cache_in.guard_src_lambdas) == body_cache_edit.old_src_n && lc_src_rows_agree(body_cache_edit, body_cache_in.guard_src_rows, emission_layout.src_rows)
+  let edit_lane = pin_region_capacity >= 0 && edit_on && lc_src_edit_ok(body_cache_edit) && Array::length(body_cache_in.guard_layout_global) > 0 && bcc_int_lists_equal(body_cache_in.guard_layout_global, emission_layout.guard_layout_global) && Array::length(body_cache_in.guard_src_lambdas) == body_cache_edit.old_src_n && lc_src_rows_agree(body_cache_edit, body_cache_in.guard_src_rows, emission_layout.src_rows) && lc_types_agree(body_cache_in.guard_type_names, body_cache_in.guard_type_rows, emission_layout.type_names, emission_layout.type_rows, emission_layout.type_ctors, edit_type_touched)
   let lc_wide_ok = if pin_region_capacity < 0 {
     true
   } else if edit_on {
@@ -574,7 +582,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   // every replayed body itself.
   let insert_replaying = edit_lane && Array::length(body_cache_use.fn_indices) > 0
   let insert_replayable = if insert_replaying {
-    lc_src_edit_replayable(body_cache_edit, planned_bodies, num_user_funcs)
+    lc_src_edit_replayable(body_cache_edit, edit_type_touched, planned_bodies, num_user_funcs)
   } else {
     lc_fresh_int_array()
   }

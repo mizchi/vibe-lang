@@ -138,14 +138,15 @@ test "a function added downstream keeps the upstream bodies" {
   inspect(bif_probe("with-lambda", "", "let helper: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(1) }", " + helper(1)"), content = "with-lambda replayed=true equal=true")
 }
 
-test "an added function that changes something upstream still recompiles it" {
+test "an added function recompiles exactly what it changes" {
   // A new global spelled like the local `bif_cap` captures. The upstream body
   // spells `base`, so it is recompiled rather than replayed; the rest replay.
   inspect(bif_probe("captured-name", "", "let base: () -> Int = () -> { 7 }", " + base()"), content = "captured-name replayed=true equal=true")
-  // A function added together with a TYPE: the constructor table moves too,
-  // and it is not keyed by the added function's name, so the restricted
-  // guard differs and nothing replays.
-  inspect(bif_probe("with-type", "", "enum BifTag { BifA; BifB }\nlet helper: () -> Int = () -> { match BifA { BifA => 1, BifB => 2 } }", " + helper()"), content = "with-type replayed=false equal=true")
+  // A function added together with a TYPE. The constructor table is
+  // compared per type with tag values, and a type declared last moves no
+  // existing tag, so the upstream bodies replay. Where an added type DOES
+  // move a tag, nothing replays: `later-type-moves` below.
+  inspect(bif_probe("with-type", "", "enum BifTag { BifA; BifB }\nlet helper: () -> Int = () -> { match BifA { BifA => 1, BifB => 2 } }", " + helper()"), content = "with-type replayed=true equal=true")
 }
 
 test "the refreshed artifact keeps what the insertion lane replayed" {
@@ -370,4 +371,68 @@ test "a function removed, renamed or moved in a middle file keeps the files afte
     bim_three_line
   ], "\n"))
   inspect(String::join([r1, r2, r3], " | "), content = "rename saved=4 equal=true | reorder saved=4 equal=true | add-closure saved=4 equal=true")
+}
+
+//# Types. Constructor tags are `(type_index << 16) | variant`, and
+//# `type_index` counts type declarations in merge order, so a type added in
+//# a middle file moves the tag of every type declared after it. The table is
+//# compared per type, tag values included: an added type is tolerated where
+//# it moves no existing tag, and declines where it does.
+
+fn bim_main_typed(with_type: Bool) -> String {
+  let decl = if with_type {
+    "enum BimShade { BimLight; BimDark }\n"
+  } else {
+    ""
+  }
+  let use = if with_type {
+    " + (match BimDark { BimLight => 1, BimDark => 2 })"
+  } else {
+    ""
+  }
+  String::join([
+    "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }",
+    decl,
+    "let apply: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }",
+    "let run: () -> Int = () -> { apply(bim_two, 1) + bim_three(4)\{use} }"
+  ], "\n")
+}
+
+fn bim_probe_type(label: String, downstream_type: Bool) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  Fs::write_bytes(bim_a_path, bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bif_bytes(String::concat(head, String::join([
+    bim_two_line,
+    bim_three_line
+  ], "\n"))))
+  Fs::write_bytes(bim_main_path, bif_bytes(bim_main_typed(downstream_type)))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", cold_counts)
+  // A type in the middle file, used there.
+  let typed_b = String::join([
+    "enum BimMark { BimOn; BimOff }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + (match BimOn { BimOn => 0, BimOff => 1 }) }",
+    bim_three_line
+  ], "\n")
+  Fs::write_bytes(bim_b_path, bif_bytes(String::concat(head, typed_b)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bim_main_path, "run")
+  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+test "a type added in a middle file is tolerated where it moves no tag" {
+  // No type after the middle file: every existing tag is where it was, and
+  // both the upstream and downstream bodies are reused.
+  let tolerated = bim_probe_type("no-later-type", false)
+  // The downstream file declares a type, whose tag the new one moves: that
+  // type's row changes, and nothing is reused.
+  let moved = bim_probe_type("later-type-moves", true)
+  inspect(String::join([tolerated, moved], " | "), content = "no-later-type saved=4 equal=true | later-type-moves saved=0 equal=true")
 }

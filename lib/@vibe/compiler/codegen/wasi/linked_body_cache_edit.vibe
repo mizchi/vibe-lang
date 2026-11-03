@@ -234,6 +234,36 @@ export fn lc_src_rows_agree(e: LcSrcEdit, old_rows: Array[Int], new_rows: Array[
   }
 }
 
+/// Does this build's constructor table, by type, keep every type the
+/// harvest had with the same row? Types this build added are tolerated, and
+/// their constructor names (`new_ctors[i]`, newline-joined) go into
+/// `touched` for the mention check. A removed type, a changed one, or a
+/// duplicated type name declines.
+export fn lc_types_agree(old_names: Array[String], old_rows: Array[Int], new_names: Array[String], new_rows: Array[Int], new_ctors: Array[String], touched: Array[String]) -> Bool {
+  if Array::length(old_names) == 0 {
+    Array::length(new_names) == 0 && Array::length(old_rows) == 0
+  } else {
+    let e = lc_src_edit_of(old_names, new_names, Array::length(new_names))
+    if !e.ok || Array::length(e.removed) > 0 || !lc_src_rows_agree(e, old_rows, new_rows) {
+      false
+    } else {
+      let mut i = 0
+      while i < Array::length(new_names) {
+        if bsearch_leftmost(e.added, Array::get(new_names, i)) >= 0 {
+          for c in String::split(Array::get(new_ctors, i), "\n") {
+            Array::push(touched, c)
+          }
+          Array::push(touched, Array::get(new_names, i))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      true
+    }
+  }
+}
+
 /// The harvest's lambda plan: its source functions' lambda counts by value,
 /// no lambdas in the pads, and this build's synthesized region (which the
 /// global guard has shown is the harvest's). The last element is the total.
@@ -297,17 +327,26 @@ fn lc_mentions_any(e: Expr, sorted: Array[String]) -> Bool {
 }
 
 /// Per user function, 1 when its cached body may still be replayed under
-/// `e`: it never spells a changed name -- not as a call, not as a captured
+/// `e`: it never spells a changed name -- a function's, or one of
+/// `extra_touched` (an added type and its constructors) -- not as a call, not as a captured
 /// local that a new global of the same spelling would stop the capture of,
 /// or that a removed one would start it. That an entry above the change was
 /// moved into this build's index space is `lc_src_edit_reindex`'s part; one
 /// it could not move is not in the cache to find.
-export fn lc_src_edit_replayable(e: LcSrcEdit, bodies: Array[Expr], num_user_funcs: Int) -> Array[Int] {
+export fn lc_src_edit_replayable(e: LcSrcEdit, extra_touched: Array[String], bodies: Array[Expr], num_user_funcs: Int) -> Array[Int] {
   let out = lc_fresh_int_array_of_len(num_user_funcs, 1)
-  if Array::length(e.touched) > 0 {
+  let all: Array[String] = []
+  for name in e.touched {
+    Array::push(all, name)
+  }
+  for name in extra_touched {
+    Array::push(all, name)
+  }
+  let touched = sorted_names_of(all)
+  if Array::length(touched) > 0 {
     let mut bi = 0
     while bi < num_user_funcs {
-      if lc_mentions_any(Array::get(bodies, bi), e.touched) {
+      if lc_mentions_any(Array::get(bodies, bi), touched) {
         Array::set(out, bi, 0)
       } else {
         ()
