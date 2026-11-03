@@ -1248,7 +1248,7 @@ fn edp_tally_other_stmt_binders(stmt: Stmt, bcount: EdpBinderCounts) -> Unit {
   }
 }
 
-fn edp_exprs_visible_pure(es: Array[Expr], pure_fns: Array[String], bound: Array[String]) -> Bool {
+fn edp_exprs_visible_pure(es: Array[Expr], pure_fns: MutSet[String], bound: Array[String]) -> Bool {
   let mut i = 0
   let mut ok = true
   while i < Array::length(es) && ok {
@@ -1270,12 +1270,12 @@ fn edp_exprs_visible_pure(es: Array[Expr], pure_fns: Array[String], bound: Array
 /// side` was read as inert: a callback that performed the handled effect
 /// then compiled and answered wrong (a trap on the gc lane), while the same
 /// program without the top-level fn was refused (#3167 review).
-fn edp_expr_visible_pure(expr: Expr, pure_fns: Array[String], bound: Array[String]) -> Bool {
+fn edp_expr_visible_pure(expr: Expr, pure_fns: MutSet[String], bound: Array[String]) -> Bool {
   match expr {
     ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if nm == "perform" || edp_str_array_contains(arr = bound, v = nm) {
         false
-      } else if edp_is_pure_builtin_call(nm) || edp_str_array_contains(arr = pure_fns, v = nm) {
+      } else if edp_is_pure_builtin_call(nm) || MutSet::has(pure_fns, x = nm) {
         edp_exprs_visible_pure(es = args, pure_fns = pure_fns, bound = bound)
       } else {
         false
@@ -1289,8 +1289,9 @@ fn edp_expr_visible_pure(expr: Expr, pure_fns: Array[String], bound: Array[Strin
 /// A candidate lambda literal is visibly pure when its body is, with every
 /// spelling the literal binds (parameters and inner binders) excluded from
 /// the inert set. Flow-insensitive on purpose: a binder anywhere in the
-/// literal covers the whole literal, which can only refuse more.
-fn edp_lambda_visible_pure(lam: Expr, pure_fns: Array[String]) -> Bool {
+/// literal covers the whole literal, which can only refuse more. `pure_fns`
+/// is the membership index of the inert list, kept equal to it by the caller.
+fn edp_lambda_visible_pure(lam: Expr, pure_fns: MutSet[String]) -> Bool {
   match lam {
     EFn(_, _, _, _, _, body) => {
       let bound = empty_str_array()
@@ -1417,18 +1418,40 @@ fn edp_collect_pats_binders(pats: Array[Pat], out: Array[String]) -> Unit {
   }
 }
 
-fn edp_name_bodies_all_pure(name: String, names: Array[String], bodies: Array[Expr], pure_fns: Array[String]) -> Bool {
-  let mut i = 0
+/// Every literal bound to `name` is visibly pure. `at` lists, per spelling,
+/// the candidate positions that bind it (edp_candidate_positions), so each
+/// spelling reads only its own literals instead of scanning every candidate.
+fn edp_name_bodies_all_pure(name: String, at: MutMap[String, Array[Int]], bodies: Array[Expr], pure_fns: MutSet[String]) -> Bool {
   let mut ok = true
+  match MutMap::get(at, k = name) {
+    Some(positions) => {
+      let mut k = 0
+      while k < Array::length(positions) {
+        if !edp_lambda_visible_pure(lam = Array::get(bodies, at = Array::get(positions, at = k)), pure_fns = pure_fns) {
+          ok = false
+        } else {
+          ()
+        }
+        k = k + 1
+      }
+    },
+    None => ()
+  }
+  ok
+}
+
+fn edp_candidate_positions(_ names: Array[String]) -> MutMap[String, Array[Int]] {
+  let at: MutMap[String, Array[Int]] = MutMap::new_string()
+  let mut i = 0
   while i < Array::length(names) {
-    if Array::get(names, at = i) == name && !edp_lambda_visible_pure(lam = Array::get(bodies, at = i), pure_fns = pure_fns) {
-      ok = false
-    } else {
-      ()
+    let nm = Array::get(names, at = i)
+    match MutMap::get(at, k = nm) {
+      Some(positions) => Array::push(positions, value = i),
+      None => MutMap::set(at, k = nm, v = [i])
     }
     i = i + 1
   }
-  ok
+  at
 }
 
 /// Count every reference to a closed owner and the direct calls whose
@@ -1562,6 +1585,7 @@ fn edp_append_visible_pure_from_candidates(stmts: Array[Stmt], pure_fns: Array[S
   for name in pure_fns {
     MutSet::insert(pure_names, x = name)
   }
+  let at = edp_candidate_positions(names)
   let mut grew = true
   while grew {
     grew = edp_append_renamed_inert_params(stmts = stmts, pure_fns = pure_fns, inert = pure_names, bcount = bcount)
@@ -1570,7 +1594,7 @@ fn edp_append_visible_pure_from_candidates(stmts: Array[Stmt], pure_fns: Array[S
       let nm = Array::get(names, at = j)
       if MutSet::has(pure_names, x = nm) || !MutSet::has(sole, x = nm) {
         ()
-      } else if edp_name_bodies_all_pure(name = nm, names = names, bodies = bodies, pure_fns = pure_fns) {
+      } else if edp_name_bodies_all_pure(name = nm, at = at, bodies = bodies, pure_fns = pure_names) {
         Array::push(pure_fns, value = nm)
         MutSet::insert(pure_names, x = nm)
         grew = true

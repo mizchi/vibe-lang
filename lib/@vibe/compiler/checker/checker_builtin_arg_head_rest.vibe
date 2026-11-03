@@ -112,11 +112,11 @@ export fn resolve_record_struct_name(defs: Array[TypeDef], actual: Array[(String
   let mut ground = false
   let mut di = 0
   while di < Array::length(defs) {
-    match Array::get(defs, at = di) {
-      TDStruct(sname, dfields, _, stps) => if struct_field_names_match(declared = dfields, actual = actual) {
+    match Array::get(defs, di) {
+      TDStruct(sname, dfields, _, stps) => if struct_field_names_match(dfields, actual) {
         matchct = matchct + 1
         out = Some(sname)
-        ground = struct_fields_ground(dfields = dfields, defs = defs, tparams = stps)
+        ground = struct_fields_ground(dfields, defs, stps)
       },
       _ => ()
     }
@@ -141,17 +141,17 @@ export fn resolve_record_struct_name(defs: Array[TypeDef], actual: Array[(String
 /// is refused with the same diagnostic as the direct call.
 export fn check_spawn_shaped_call(env: TypeEnv, s: Subst, defs: Array[TypeDef], param_tys: Array[Type], ret: Type, args: Array[Expr], errors: Array[String], marker: String) -> Unit {
   if Array::length(param_tys) == 2 && Array::length(args) == 2 {
-    let is_handle = match subst_apply(s = s, ty = ret) {
+    let is_handle = match subst_apply(s, ret) {
       CtNamed(hn, _) => hn == "TaskHandle",
       _ => false
     }
     // #3640: a group written `TaskGroup` (region and row left to the call)
     // and an optional closure parameter count too.
-    let takes_fn = spawn_closure_param_type(subst_apply(s = s, ty = Array::get(param_tys, at = 1)))
-    match spawn_group_region(subst_apply(s = s, ty = Array::get(param_tys, at = 0))) {
+    let takes_fn = spawn_closure_param_type(subst_apply(s, Array::get(param_tys, 1)))
+    match spawn_group_region(subst_apply(s, Array::get(param_tys, 0))) {
       Some(r_here) => if is_handle && takes_fn {
-        for violation in check_spawnable_captures(env = env, s = s, defs = defs, f_expr = Array::get(args, at = 1), r_here = r_here, formals = unsent_open_formal_vars(s)) {
-          Array::push(errors, value = String::concat(violation, marker))
+        for violation in check_spawnable_captures(env, s, defs, Array::get(args, 1), r_here, unsent_open_formal_vars(s)) {
+          Array::push(errors, String::concat(violation, marker))
         }
         ()
       } else {
@@ -178,21 +178,21 @@ fn unannotated_double_lambda_hint(pty: Type, aty: Type, arg: Expr, s: Subst, lab
         let mut fires = false
         let mut i = 0
         while i < Array::length(params) && !fires {
-          let (_, ann) = Array::get(params, at = i)
-          if (ann is None) && (subst_apply(s = s, ty = Array::get(eps, at = i)) is CtDouble) && (subst_apply(s = s, ty = Array::get(aps, at = i)) is CtInt) {
+          let (_, ann) = Array::get(params, i)
+          if (ann is None) && (subst_apply(s, Array::get(eps, i)) is CtDouble) && (subst_apply(s, Array::get(aps, i)) is CtInt) {
             fires = true
           } else {
             ()
           }
           i = i + 1
         }
-        if fires && (unify(a = pty, b = aty, s = s) is None) {
+        if fires && (unify(pty, aty, s) is None) {
           let mut spelled = ""
           let mut j = 0
           while j < Array::length(params) {
-            let (pname, ann) = Array::get(params, at = j)
-            let piece = if (ann is None) && (subst_apply(s = s, ty = Array::get(eps, at = j)) is CtDouble) {
-              pname + ": Double"
+            let (pname, ann) = Array::get(params, j)
+            let piece = if (ann is None) && (subst_apply(s, Array::get(eps, j)) is CtDouble) {
+              pname + ": Float64"
             } else {
               pname
             }
@@ -203,7 +203,7 @@ fn unannotated_double_lambda_hint(pty: Type, aty: Type, arg: Expr, s: Subst, lab
             }
             j = j + 1
           }
-          "annotate the callback's `Double` parameters (`(" + spelled + ") -> ..`): `" + label + "` calls it with `Double` values, but the body's arithmetic typed an unannotated parameter `Int`"
+          "annotate the callback's `Float64` parameters (`(" + spelled + ") -> ..`): `" + label + "` calls it with `Float64` values, but the body's arithmetic typed an unannotated parameter `Int`"
         } else {
           ""
         }
@@ -217,7 +217,7 @@ fn unannotated_double_lambda_hint(pty: Type, aty: Type, arg: Expr, s: Subst, lab
 }
 
 export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_exprs: Array[Expr], s: Subst, errors: Array[String], label: String, off: Int) -> Subst {
-  unify_call_args_with_source_placement(param_tys = param_tys, arg_tys = arg_tys, arg_exprs = arg_exprs, s = s, errors = errors, label = label, off = off, placement = None)
+  unify_call_args_with_source_placement(param_tys, arg_tys, arg_exprs, s, errors, label, off, None)
 }
 
 /// A formal-order argument view retains its explicit written-source indices
@@ -225,15 +225,15 @@ export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_expr
 export fn unify_call_args_with_source_placement(param_tys: Array[Type], arg_tys: Array[Type], arg_exprs: Array[Expr], s: Subst, errors: Array[String], label: String, off: Int, placement: Option[(Array[Int], Int)]) -> Subst {
   let mut out = s
   let mut ui = 0
-  let ul = min_int(a = Array::length(arg_tys), b = Array::length(param_tys))
+  let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
   // One expression per TYPE, not merely enough of them: a length floor would
   // admit an array that is misaligned but long enough, which is exactly how the
   // two receiver-prepended method sites below slipped through a first draft
   // (their `arg_tys` comes from `all_args`, one longer than `args`).
   let have_exprs = Array::length(arg_exprs) == Array::length(arg_tys)
   while ui < ul {
-    let pty = Array::get(param_tys, at = ui)
-    let aty = Array::get(arg_tys, at = ui)
+    let pty = Array::get(param_tys, ui)
+    let aty = Array::get(arg_tys, ui)
     let mut source_index = ui
     let mut source_count = Array::length(arg_exprs)
     let mut wrapped = false
@@ -242,7 +242,7 @@ export fn unify_call_args_with_source_placement(param_tys: Array[Type], arg_tys:
         source_index = -1
         source_count = written
         if Array::length(slots) == Array::length(arg_tys) && ui < Array::length(slots) {
-          let code = Array::get(slots, at = ui)
+          let code = Array::get(slots, ui)
           let index = code / 2 - 1
           if code >= 2 && index < written {
             source_index = index
@@ -257,11 +257,11 @@ export fn unify_call_args_with_source_placement(param_tys: Array[Type], arg_tys:
       None => ()
     }
     let diagnostic_expr = if have_exprs {
-      let expr = Array::get(arg_exprs, at = ui)
+      let expr = Array::get(arg_exprs, ui)
       if wrapped {
         match expr {
           ECall(EIdent("Some", _), values, _, _) => if Array::length(values) == 1 {
-            Array::get(values, at = 0)
+            Array::get(values, 0)
           } else {
             expr
           },
@@ -298,14 +298,14 @@ export fn unify_call_args_with_source_placement(param_tys: Array[Type], arg_tys:
         if lo >= 0 {
           (lo, lpath)
         } else {
-          (off, literal_arg_position_path(e = diagnostic_expr, index = source_index, count = source_count))
+          (off, literal_arg_position_path(diagnostic_expr, source_index, source_count))
         }
       }
     } else {
       (off, "")
     }
     out = if label == "__to_string" {
-      match unify(a = pty, b = aty, s = out) {
+      match unify(pty, aty, out) {
         Some(su) => su,
         None => out
       }
@@ -319,15 +319,15 @@ export fn unify_call_args_with_source_placement(param_tys: Array[Type], arg_tys:
         ()
       }
       let hint = if have_exprs {
-        unannotated_double_lambda_hint(pty = pty, aty = aty, arg = diagnostic_expr, s = out, label = label)
+        unannotated_double_lambda_hint(pty, aty, diagnostic_expr, out, label)
       } else {
         ""
       }
       let checked = if hint != "" {
-        Array::push(errors, value = String::concat(hint, off_marker(a_off)))
+        Array::push(errors, String::concat(hint, off_marker(a_off)))
         out
       } else {
-        check_assignable_for(expected = pty, actual = aty, s = out, errors = errors, what_head = "argument type mismatch for ", what_tail = label, off = a_off)
+        check_assignable_for(pty, aty, out, errors, "argument type mismatch for ", label, a_off)
       }
       // A check that reported nothing leaves the path unconsumed.
       check_assignable_set_enclosing("")
@@ -349,8 +349,8 @@ export fn unify_call_args_with_source_placement(param_tys: Array[Type], arg_tys:
 /// qualifies (`f([1, 2])`), and the callee anchor stands.
 fn literal_arg_anchor(_ e: Expr) -> (Int, String) {
   match e {
-    EArray(items) => literal_items_anchor(items = items, kind = "1"),
-    ETuple(items) => literal_items_anchor(items = items, kind = "2"),
+    EArray(items) => literal_items_anchor(items, "1"),
+    ETuple(items) => literal_items_anchor(items, "2"),
     _ => (0 - 1, "")
   }
 }
@@ -385,7 +385,7 @@ fn literal_items_anchor(items: Array[Expr], kind: String) -> (Int, String) {
   let mut path = ""
   let mut i = 0
   while off < 0 && i < Array::length(items) {
-    let item = Array::get(items, at = i)
+    let item = Array::get(items, i)
     let (item_off, item_path) = match item {
       EString(_, so) => (so, ""),
       EIdent(_, io) => (io, ""),
@@ -405,13 +405,13 @@ fn literal_items_anchor(items: Array[Expr], kind: String) -> (Int, String) {
 }
 
 export fn param_marker_index(_ label: String) -> Option[Int] {
-  if String::starts_with(label, prefix = "#param[") {
-    let close = String::index_of(label, needle = "]")
+  if String::starts_with(label, "#param[") {
+    let close = String::index_of(label, "]")
     if close > 7 {
       let mut id = 0
       let mut p = 7
       while p < close {
-        id = id * 10 + (String::char_code_at(label, at = p) - 48)
+        id = id * 10 + (String::char_code_at(label, p) - 48)
         p = p + 1
       }
       Some(id)
@@ -426,24 +426,24 @@ export fn param_marker_index(_ label: String) -> Option[Int] {
 export fn add_param_capture_dependency(ty: Type, index: Int) -> Type {
   match ty {
     CtFn(params, ret, effect) => CtFn(for param in params {
-      add_param_capture_dependency(ty = param, index = index)
-    }, add_param_capture_dependency(ty = ret, index = index), merge_provenance_row(expected = effect, actual = Some(String::concat("#param[", String::concat(__to_string(index), "]"))))),
-    CtArray(elem) => CtArray(add_param_capture_dependency(ty = elem, index = index)),
-    CtOption(elem) => CtOption(add_param_capture_dependency(ty = elem, index = index)),
+      add_param_capture_dependency(param, index)
+    }, add_param_capture_dependency(ret, index), merge_provenance_row(effect, Some(String::concat("#param[", String::concat(__to_string(index), "]"))))),
+    CtArray(elem) => CtArray(add_param_capture_dependency(elem, index)),
+    CtOption(elem) => CtOption(add_param_capture_dependency(elem, index)),
     CtTuple(items) => CtTuple(for item in items {
-      add_param_capture_dependency(ty = item, index = index)
+      add_param_capture_dependency(item, index)
     }),
     CtRecord(fields) => CtRecord(for field in fields {
       let (name, field_ty) = field
-      (name, add_param_capture_dependency(ty = field_ty, index = index))
+      (name, add_param_capture_dependency(field_ty, index))
     }),
     CtNamed(name, args) => CtNamed(name, for arg in args {
-      add_param_capture_dependency(ty = arg, index = index)
+      add_param_capture_dependency(arg, index)
     }),
-    CtApplied(head, args) => apply_type_constructor(head = add_param_capture_dependency(ty = head, index = index), args = for arg in args {
-      add_param_capture_dependency(ty = arg, index = index)
+    CtApplied(head, args) => apply_type_constructor(add_param_capture_dependency(head, index), for arg in args {
+      add_param_capture_dependency(arg, index)
     }),
-    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, add_param_capture_dependency(ty = body, index = index)),
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, add_param_capture_dependency(body, index)),
     _ => ty
   }
 }
@@ -452,43 +452,43 @@ export fn collect_internal_provenance(ty: Type, out: Array[String]) -> Unit {
   match ty {
     CtFn(params, ret, effect) => {
       match effect {
-        Some(row) => for raw in String::split(row, sep = ",") {
+        Some(row) => for raw in String::split(row, ",") {
           let label = String::trim(raw)
-          if (String::starts_with(label, prefix = "#region_") || String::starts_with(label, prefix = "#capture[") || String::starts_with(label, prefix = "#param[")) && !checker_string_array_has(items = out, wanted = label) {
-            Array::push(out, value = label)
+          if (String::starts_with(label, "#region_") || String::starts_with(label, "#capture[") || String::starts_with(label, "#param[")) && !checker_string_array_has(out, label) {
+            Array::push(out, label)
           }
         },
         None => ()
       }
       for param in params {
-        collect_internal_provenance(ty = param, out = out)
+        collect_internal_provenance(param, out)
       }
-      collect_internal_provenance(ty = ret, out = out)
+      collect_internal_provenance(ret, out)
     },
-    CtArray(elem) => collect_internal_provenance(ty = elem, out = out),
-    CtOption(elem) => collect_internal_provenance(ty = elem, out = out),
+    CtArray(elem) => collect_internal_provenance(elem, out),
+    CtOption(elem) => collect_internal_provenance(elem, out),
     CtTuple(items) => for item in items {
-      collect_internal_provenance(ty = item, out = out)
+      collect_internal_provenance(item, out)
     },
     CtRecord(fields) => for field in fields {
       let (_, field_ty) = field
-      collect_internal_provenance(ty = field_ty, out = out)
+      collect_internal_provenance(field_ty, out)
     },
     CtNamed(name, args) => {
-      if String::starts_with(name, prefix = "#region_") && !checker_string_array_has(items = out, wanted = name) {
-        Array::push(out, value = name)
+      if String::starts_with(name, "#region_") && !checker_string_array_has(out, name) {
+        Array::push(out, name)
       }
       for arg in args {
-        collect_internal_provenance(ty = arg, out = out)
+        collect_internal_provenance(arg, out)
       }
     },
     CtApplied(head, args) => {
-      collect_internal_provenance(ty = head, out = out)
+      collect_internal_provenance(head, out)
       for arg in args {
-        collect_internal_provenance(ty = arg, out = out)
+        collect_internal_provenance(arg, out)
       }
     },
-    CtForAll(_, _, body) => collect_internal_provenance(ty = body, out = out),
+    CtForAll(_, _, body) => collect_internal_provenance(body, out),
     _ => ()
   }
 }
@@ -498,24 +498,24 @@ export fn type_has_param_marker(ty: Type, marker: Int) -> Bool {
   match ty {
     CtFn(params, ret, effect) => {
       let mut found = match effect {
-        Some(row) => checker_string_array_has(items = for raw in String::split(row, sep = ",") {
+        Some(row) => checker_string_array_has(for raw in String::split(row, ",") {
           String::trim(raw)
-        }, wanted = wanted),
+        }, wanted),
         None => false
       }
       for param in params {
-        if type_has_param_marker(ty = param, marker = marker) {
+        if type_has_param_marker(param, marker) {
           found = true
         }
       }
-      found || type_has_param_marker(ty = ret, marker = marker)
+      found || type_has_param_marker(ret, marker)
     },
-    CtArray(elem) => type_has_param_marker(ty = elem, marker = marker),
-    CtOption(elem) => type_has_param_marker(ty = elem, marker = marker),
+    CtArray(elem) => type_has_param_marker(elem, marker),
+    CtOption(elem) => type_has_param_marker(elem, marker),
     CtTuple(items) => {
       let mut found = false
       for item in items {
-        if type_has_param_marker(ty = item, marker = marker) {
+        if type_has_param_marker(item, marker) {
           found = true
         }
       }
@@ -525,7 +525,7 @@ export fn type_has_param_marker(ty: Type, marker: Int) -> Bool {
       let mut found = false
       for field in fields {
         let (_, field_ty) = field
-        if type_has_param_marker(ty = field_ty, marker = marker) {
+        if type_has_param_marker(field_ty, marker) {
           found = true
         }
       }
@@ -534,16 +534,16 @@ export fn type_has_param_marker(ty: Type, marker: Int) -> Bool {
     CtNamed(_, args) => {
       let mut found = false
       for arg in args {
-        if type_has_param_marker(ty = arg, marker = marker) {
+        if type_has_param_marker(arg, marker) {
           found = true
         }
       }
       found
     },
     CtApplied(head, args) => {
-      let mut found = type_has_param_marker(ty = head, marker = marker)
+      let mut found = type_has_param_marker(head, marker)
       for arg in args {
-        if type_has_param_marker(ty = arg, marker = marker) {
+        if type_has_param_marker(arg, marker) {
           found = true
         }
       }
@@ -554,12 +554,12 @@ export fn type_has_param_marker(ty: Type, marker: Int) -> Bool {
 }
 
 fn param_marker_argument(marker: Int, param_tys: Array[Type], arg_tys: Array[Type]) -> Option[Type] {
-  let len = min_int(a = Array::length(param_tys), b = Array::length(arg_tys))
+  let len = min_int(Array::length(param_tys), Array::length(arg_tys))
   let mut i = 0
   let mut found = None
   while i < len {
-    if type_has_param_marker(ty = Array::get(param_tys, at = i), marker = marker) {
-      found = Some(Array::get(arg_tys, at = i))
+    if type_has_param_marker(Array::get(param_tys, i), marker) {
+      found = Some(Array::get(arg_tys, i))
     }
     i = i + 1
   }
@@ -571,58 +571,58 @@ fn resolve_param_provenance(ty: Type, param_tys: Array[Type], arg_tys: Array[Typ
     CtFn(params, ret, effect) => {
       let labels = array_empty()
       match effect {
-        Some(row) => for raw in String::split(row, sep = ",") {
+        Some(row) => for raw in String::split(row, ",") {
           let label = String::trim(raw)
           match param_marker_index(label) {
-            Some(marker) => match param_marker_argument(marker = marker, param_tys = param_tys, arg_tys = arg_tys) {
-              Some(arg_ty) => collect_internal_provenance(ty = arg_ty, out = labels),
-              None => Array::push(labels, value = label)
+            Some(marker) => match param_marker_argument(marker, param_tys, arg_tys) {
+              Some(arg_ty) => collect_internal_provenance(arg_ty, labels),
+              None => Array::push(labels, label)
             },
-            None => Array::push(labels, value = label)
+            None => Array::push(labels, label)
           }
         },
         None => ()
       }
       let mapped_params = for param in params {
-        resolve_param_provenance(ty = param, param_tys = param_tys, arg_tys = arg_tys)
+        resolve_param_provenance(param, param_tys, arg_tys)
       }
       let resolved_effect = if Array::length(labels) == 0 {
         None
       } else {
-        Some(String::join(labels, sep = ", "))
+        Some(String::join(labels, ", "))
       }
-      CtFn(mapped_params, resolve_param_provenance(ty = ret, param_tys = param_tys, arg_tys = arg_tys), resolved_effect)
+      CtFn(mapped_params, resolve_param_provenance(ret, param_tys, arg_tys), resolved_effect)
     },
-    CtArray(elem) => CtArray(resolve_param_provenance(ty = elem, param_tys = param_tys, arg_tys = arg_tys)),
-    CtOption(elem) => CtOption(resolve_param_provenance(ty = elem, param_tys = param_tys, arg_tys = arg_tys)),
+    CtArray(elem) => CtArray(resolve_param_provenance(elem, param_tys, arg_tys)),
+    CtOption(elem) => CtOption(resolve_param_provenance(elem, param_tys, arg_tys)),
     CtTuple(items) => CtTuple(for item in items {
-      resolve_param_provenance(ty = item, param_tys = param_tys, arg_tys = arg_tys)
+      resolve_param_provenance(item, param_tys, arg_tys)
     }),
     CtRecord(fields) => CtRecord(for field in fields {
       let (name, field_ty) = field
-      (name, resolve_param_provenance(ty = field_ty, param_tys = param_tys, arg_tys = arg_tys))
+      (name, resolve_param_provenance(field_ty, param_tys, arg_tys))
     }),
     CtNamed(name, args) => CtNamed(name, for arg in args {
-      resolve_param_provenance(ty = arg, param_tys = param_tys, arg_tys = arg_tys)
+      resolve_param_provenance(arg, param_tys, arg_tys)
     }),
-    CtApplied(head, args) => apply_type_constructor(head = resolve_param_provenance(ty = head, param_tys = param_tys, arg_tys = arg_tys), args = for arg in args {
-      resolve_param_provenance(ty = arg, param_tys = param_tys, arg_tys = arg_tys)
+    CtApplied(head, args) => apply_type_constructor(resolve_param_provenance(head, param_tys, arg_tys), for arg in args {
+      resolve_param_provenance(arg, param_tys, arg_tys)
     }),
     _ => ty
   }
 }
 
 export fn call_result_with_provenance(ret: Type, param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Type {
-  let resolved_ret = subst_apply(s = s, ty = ret)
+  let resolved_ret = subst_apply(s, ret)
   match resolved_ret {
     CtFn(_, _, _)|CtArray(_)|CtOption(_)|CtTuple(_)|CtRecord(_)|CtNamed(_, _)|CtApplied(_, _) => {
       let resolved_params = for param in param_tys {
-        subst_apply(s = s, ty = param)
+        subst_apply(s, param)
       }
       let resolved_args = for arg in arg_tys {
-        subst_apply(s = s, ty = arg)
+        subst_apply(s, arg)
       }
-      resolve_param_provenance(ty = resolved_ret, param_tys = resolved_params, arg_tys = resolved_args)
+      resolve_param_provenance(resolved_ret, resolved_params, resolved_args)
     },
     _ => resolved_ret
   }
@@ -640,7 +640,7 @@ export fn let_rhs_is_alias(_ val: Expr) -> Bool {
     EIdent(_, _) => true,
     ECall(callee, args, _, _) => if Array::length(args) == 1 {
       match ascription_lambda_ann(callee) {
-        Some(_) => match Array::get(args, at = 0) {
+        Some(_) => match Array::get(args, 0) {
           EIdent(_, _) => true,
           _ => false
         },
@@ -660,8 +660,8 @@ export fn let_rhs_closure_literal(_ val: Expr) -> Option[Expr] {
     EFn(_, _, _, _, _, _) => Some(val),
     ECall(callee, args, _, _) => if Array::length(args) == 1 {
       match ascription_lambda_ann(callee) {
-        Some(_) => match Array::get(args, at = 0) {
-          EFn(_, _, _, _, _, _) => Some(Array::get(args, at = 0)),
+        Some(_) => match Array::get(args, 0) {
+          EFn(_, _, _, _, _, _) => Some(Array::get(args, 0)),
           _ => None
         },
         None => None
@@ -692,7 +692,7 @@ export fn ascription_lambda_ann(_ callee: Expr) -> Option[TypeExpr] {
         None => match effect {
           Some(_) => None,
           None => {
-            let (pname, pann) = Array::get(params, at = 0)
+            let (pname, pann) = Array::get(params, 0)
             if pname == "__asc" {
               match body {
                 EIdent(bname, _) => if bname == "__asc" {
@@ -761,8 +761,8 @@ export fn enum_def_env_target(_ binding_name: String) -> Option[String] {
   let suffix = "::__variants__"
   let slen = String::length(suffix)
   let blen = String::length(binding_name)
-  if blen > slen && String::ends_with(binding_name, suffix = suffix) {
-    Some(String::substring(binding_name, start = 0, end = blen - slen))
+  if blen > slen && String::ends_with(binding_name, suffix) {
+    Some(String::substring(binding_name, 0, blen - slen))
   } else {
     None
   }
@@ -799,17 +799,17 @@ export fn encode_enum_def(params: Array[String], variants: Array[(String, Array[
     let param_entries = array_empty()
     let mut pi = 0
     while pi < Array::length(params) {
-      Array::push(param_entries, value = CtNamed(Array::get(params, at = pi), array_empty()))
+      Array::push(param_entries, CtNamed(Array::get(params, pi), array_empty()))
       pi = pi + 1
     }
-    Array::push(entries, value = CtNamed(enum_def_params_marker(), param_entries))
+    Array::push(entries, CtNamed(enum_def_params_marker(), param_entries))
   } else {
     ()
   }
   let mut i = 0
   while i < Array::length(variants) {
-    let (vname, payloads) = Array::get(variants, at = i)
-    Array::push(entries, value = CtNamed(vname, payloads))
+    let (vname, payloads) = Array::get(variants, i)
+    Array::push(entries, CtNamed(vname, payloads))
     i = i + 1
   }
   CtNamed("__variants__", entries)
@@ -817,7 +817,7 @@ export fn encode_enum_def(params: Array[String], variants: Array[(String, Array[
 
 /// Monomorphic shorthand for `encode_enum_def`.
 export fn encode_enum_def_variants(_ variants: Array[(String, Array[Type])]) -> Type {
-  encode_enum_def(params = array_empty(), variants = variants)
+  encode_enum_def(array_empty(), variants)
 }
 
 /// Inverse of `encode_enum_def`, as `(params, variants)`. Returns None rather
@@ -832,12 +832,12 @@ export fn decode_enum_def(_ ty: Type) -> Option[(Array[String], Array[(String, A
       let mut ok = true
       let mut i = 0
       while i < Array::length(entries) {
-        match Array::get(entries, at = i) {
+        match Array::get(entries, i) {
           CtNamed(vname, payloads) => if vname == enum_def_params_marker() {
             let mut pi = 0
             while pi < Array::length(payloads) {
-              match Array::get(payloads, at = pi) {
-                CtNamed(pname, _) => Array::push(params, value = pname),
+              match Array::get(payloads, pi) {
+                CtNamed(pname, _) => Array::push(params, pname),
                 _ => {
                   ok = false
                 }
@@ -845,7 +845,7 @@ export fn decode_enum_def(_ ty: Type) -> Option[(Array[String], Array[(String, A
               pi = pi + 1
             }
           } else {
-            Array::push(out, value = (vname, payloads))
+            Array::push(out, (vname, payloads))
           },
           _ => {
             ok = false
@@ -913,7 +913,7 @@ export fn is_region_tagged_ty(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(targs) && !found {
-        found = is_region_tagged_ty(Array::get(targs, at = i))
+        found = is_region_tagged_ty(Array::get(targs, i))
         i = i + 1
       }
       found
@@ -924,7 +924,7 @@ export fn is_region_tagged_ty(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(elems) && !found {
-        found = is_region_tagged_ty(Array::get(elems, at = i))
+        found = is_region_tagged_ty(Array::get(elems, i))
         i = i + 1
       }
       found
@@ -953,17 +953,17 @@ export fn is_future_cell_ty(t: Type, defs: Array[TypeDef], depth: Int) -> Bool {
     true
   } else {
     match t {
-      CtNamed(n, targs) => n == "Future" || named_args_hold_future_cell(n = n, targs = targs, defs = defs, depth = depth + 1) || decl_holds_future_cell(name = n, defs = defs, depth = depth + 1),
-      CtStruct(n) => decl_holds_future_cell(name = n, defs = defs, depth = depth + 1),
-      CtEnum(n) => decl_holds_future_cell(name = n, defs = defs, depth = depth + 1),
-      CtTuple(elems) => is_future_cell_ty_any(ts = elems, defs = defs, depth = depth + 1),
-      CtOption(e) => is_future_cell_ty(t = e, defs = defs, depth = depth + 1),
-      CtArray(e) => is_future_cell_ty(t = e, defs = defs, depth = depth + 1),
-      CtApplied(h, args) => is_future_cell_ty(t = h, defs = defs, depth = depth + 1) || is_future_cell_ty_any(ts = args, defs = defs, depth = depth + 1),
-      CtRecord(fields) => is_future_cell_ty_any(ts = for f in fields {
+      CtNamed(n, targs) => n == "Future" || named_args_hold_future_cell(n, targs, defs, depth + 1) || decl_holds_future_cell(n, defs, depth + 1),
+      CtStruct(n) => decl_holds_future_cell(n, defs, depth + 1),
+      CtEnum(n) => decl_holds_future_cell(n, defs, depth + 1),
+      CtTuple(elems) => is_future_cell_ty_any(elems, defs, depth + 1),
+      CtOption(e) => is_future_cell_ty(e, defs, depth + 1),
+      CtArray(e) => is_future_cell_ty(e, defs, depth + 1),
+      CtApplied(h, args) => is_future_cell_ty(h, defs, depth + 1) || is_future_cell_ty_any(args, defs, depth + 1),
+      CtRecord(fields) => is_future_cell_ty_any(for f in fields {
         let (_, ft) = f
         ft
-      }, defs = defs, depth = depth + 1),
+      }, defs, depth + 1),
       _ => false
     }
   }
@@ -974,17 +974,17 @@ export fn is_future_cell_ty(t: Type, defs: Array[TypeDef], depth: Int) -> Bool {
 /// at `Marker[Future[a]]` holds no cell, so it must not keep `a` monomorphic
 /// (Codex on #3091). An undeclared head keeps every argument.
 fn named_args_hold_future_cell(n: String, targs: Array[Type], defs: Array[TypeDef], depth: Int) -> Bool {
-  match find_typedef(defs = defs, name = n) {
+  match find_typedef(defs, n) {
     Some(_) => {
       let mut hit = false
       let mut i = 0
       while i < Array::length(targs) && !hit {
-        hit = is_future_cell_ty(t = Array::get(targs, at = i), defs = defs, depth = depth) && decl_param_stores_future(n = n, idx = i, defs = defs, depth = depth)
+        hit = is_future_cell_ty(Array::get(targs, i), defs, depth) && decl_param_stores_future(n, i, defs, depth)
         i = i + 1
       }
       hit
     },
-    None => is_future_cell_ty_any(ts = targs, defs = defs, depth = depth)
+    None => is_future_cell_ty_any(targs, defs, depth)
   }
 }
 
@@ -1001,14 +1001,14 @@ fn decl_param_stores_future(n: String, idx: Int, defs: Array[TypeDef], depth: In
   let mut seen = false
   let mut wi = 0
   while wi < Array::length(future_param_walk) && !seen {
-    seen = Array::get(future_param_walk, at = wi) == key
+    seen = Array::get(future_param_walk, wi) == key
     wi = wi + 1
   }
   if seen {
     false
   } else {
-    Array::push(future_param_walk, value = key)
-    let stores = match find_typedef(defs = defs, name = n) {
+    Array::push(future_param_walk, key)
+    let stores = match find_typedef(defs, n) {
       Some(td) => {
         let (tparams, field_tys) = match td {
           TDStruct(_, fields, _, tps) => (tps, for f in fields {
@@ -1019,10 +1019,10 @@ fn decl_param_stores_future(n: String, idx: Int, defs: Array[TypeDef], depth: In
             let all: Array[Type] = []
             let mut vi = 0
             while vi < Array::length(variants) {
-              let (_, payload) = Array::get(variants, at = vi)
+              let (_, payload) = Array::get(variants, vi)
               let mut pi = 0
               while pi < Array::length(payload) {
-                Array::push(all, value = Array::get(payload, at = pi))
+                Array::push(all, Array::get(payload, pi))
                 pi = pi + 1
               }
               vi = vi + 1
@@ -1038,7 +1038,7 @@ fn decl_param_stores_future(n: String, idx: Int, defs: Array[TypeDef], depth: In
           let probe: Array[Type] = []
           let mut pj = 0
           while pj < Array::length(tparams) {
-            Array::push(probe, value = if pj == idx {
+            Array::push(probe, if pj == idx {
               CtNamed("Future", [CtInt])
             } else {
               CtInt
@@ -1048,15 +1048,15 @@ fn decl_param_stores_future(n: String, idx: Int, defs: Array[TypeDef], depth: In
           let inst: Array[Type] = []
           let mut fi = 0
           while fi < Array::length(field_tys) {
-            Array::push(inst, value = subst_type_params(ty = Array::get(field_tys, at = fi), params = tparams, args = probe))
+            Array::push(inst, subst_type_params(Array::get(field_tys, fi), tparams, probe))
             fi = fi + 1
           }
-          is_future_cell_ty_any(ts = inst, defs = defs, depth = depth + 1)
+          is_future_cell_ty_any(inst, defs, depth + 1)
         }
       },
       None => true
     }
-    Array::truncate(future_param_walk, length = Array::length(future_param_walk) - 1)
+    Array::truncate(future_param_walk, Array::length(future_param_walk) - 1)
     stores
   }
 }
@@ -1065,7 +1065,7 @@ fn is_future_cell_ty_any(ts: Array[Type], defs: Array[TypeDef], depth: Int) -> B
   let mut hit = false
   let mut i = 0
   while i < Array::length(ts) && !hit {
-    hit = is_future_cell_ty(t = Array::get(ts, at = i), defs = defs, depth = depth)
+    hit = is_future_cell_ty(Array::get(ts, i), defs, depth)
     i = i + 1
   }
   hit
@@ -1087,37 +1087,37 @@ fn decl_holds_future_cell(name: String, defs: Array[TypeDef], depth: Int) -> Boo
   let mut seen = false
   let mut i = 0
   while i < Array::length(future_cell_walk) && !seen {
-    seen = Array::get(future_cell_walk, at = i) == name
+    seen = Array::get(future_cell_walk, i) == name
     i = i + 1
   }
   if seen {
     false
   } else {
-    Array::push(future_cell_walk, value = name)
-    let holds = decl_holds_future_cell_fields(name = name, defs = defs, depth = depth)
-    Array::truncate(future_cell_walk, length = Array::length(future_cell_walk) - 1)
+    Array::push(future_cell_walk, name)
+    let holds = decl_holds_future_cell_fields(name, defs, depth)
+    Array::truncate(future_cell_walk, Array::length(future_cell_walk) - 1)
     holds
   }
 }
 
 fn decl_holds_future_cell_fields(name: String, defs: Array[TypeDef], depth: Int) -> Bool {
-  match find_typedef(defs = defs, name = name) {
+  match find_typedef(defs, name) {
     Some(td) => match td {
-      TDStruct(_, fields, _, _) => is_future_cell_ty_any(ts = for f in fields {
+      TDStruct(_, fields, _, _) => is_future_cell_ty_any(for f in fields {
         let (_, ft) = f
         ft
-      }, defs = defs, depth = depth),
+      }, defs, depth),
       TDEnum(_, _, variants) => {
         let mut hit = false
         let mut i = 0
         while i < Array::length(variants) && !hit {
-          let (_, payload) = Array::get(variants, at = i)
-          hit = is_future_cell_ty_any(ts = payload, defs = defs, depth = depth)
+          let (_, payload) = Array::get(variants, i)
+          hit = is_future_cell_ty_any(payload, defs, depth)
           i = i + 1
         }
         hit
       },
-      TDAlias(_, _, body) => is_future_cell_ty(t = body, defs = defs, depth = depth),
+      TDAlias(_, _, body) => is_future_cell_ty(body, defs, depth),
       _ => false
     },
     None => false
@@ -1135,7 +1135,7 @@ export fn is_array_builder_ty(_ t: Type) -> Bool {
         let mut i = 0
         let mut found = false
         while i < Array::length(elems) && !found {
-          found = is_array_builder_ty(Array::get(elems, at = i))
+          found = is_array_builder_ty(Array::get(elems, i))
           i = i + 1
         }
         found
@@ -1144,7 +1144,7 @@ export fn is_array_builder_ty(_ t: Type) -> Bool {
         let mut i = 0
         let mut found = false
         while i < Array::length(targs) && !found {
-          found = is_array_builder_ty(Array::get(targs, at = i))
+          found = is_array_builder_ty(Array::get(targs, i))
           i = i + 1
         }
         found
@@ -1183,7 +1183,7 @@ export fn ty_has_open_array_elem(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = ty_has_open_array_elem(ret)
       while i < Array::length(params) && !found {
-        found = ty_has_open_array_elem(Array::get(params, at = i))
+        found = ty_has_open_array_elem(Array::get(params, i))
         i = i + 1
       }
       found
@@ -1198,7 +1198,7 @@ export fn ty_has_open_array_elem(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = ty_has_open_array_elem(head)
       while i < Array::length(args) && !found {
-        found = ty_has_open_array_elem(Array::get(args, at = i))
+        found = ty_has_open_array_elem(Array::get(args, i))
         i = i + 1
       }
       found
@@ -1208,7 +1208,7 @@ export fn ty_has_open_array_elem(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(elems) && !found {
-        found = ty_has_open_array_elem(Array::get(elems, at = i))
+        found = ty_has_open_array_elem(Array::get(elems, i))
         i = i + 1
       }
       found
@@ -1217,7 +1217,7 @@ export fn ty_has_open_array_elem(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(targs) && !found {
-        found = ty_has_open_array_elem(Array::get(targs, at = i))
+        found = ty_has_open_array_elem(Array::get(targs, i))
         i = i + 1
       }
       found
@@ -1233,7 +1233,7 @@ export fn ty_has_open_array_elem(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(fields) && !found {
-        let (_, field_ty) = Array::get(fields, at = i)
+        let (_, field_ty) = Array::get(fields, i)
         found = ty_has_open_array_elem(field_ty)
         i = i + 1
       }
@@ -1257,7 +1257,7 @@ fn ty_elem_mentions_open_var(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(elems) && !found {
-        found = ty_elem_mentions_open_var(Array::get(elems, at = i))
+        found = ty_elem_mentions_open_var(Array::get(elems, i))
         i = i + 1
       }
       found
@@ -1266,7 +1266,7 @@ fn ty_elem_mentions_open_var(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(targs) && !found {
-        found = ty_elem_mentions_open_var(Array::get(targs, at = i))
+        found = ty_elem_mentions_open_var(Array::get(targs, i))
         i = i + 1
       }
       found
@@ -1275,7 +1275,7 @@ fn ty_elem_mentions_open_var(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(fields) && !found {
-        let (_, field_ty) = Array::get(fields, at = i)
+        let (_, field_ty) = Array::get(fields, i)
         found = ty_elem_mentions_open_var(field_ty)
         i = i + 1
       }
@@ -1285,7 +1285,7 @@ fn ty_elem_mentions_open_var(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = ty_elem_mentions_open_var(ret)
       while i < Array::length(params) && !found {
-        found = ty_elem_mentions_open_var(Array::get(params, at = i))
+        found = ty_elem_mentions_open_var(Array::get(params, i))
         i = i + 1
       }
       found
@@ -1294,7 +1294,7 @@ fn ty_elem_mentions_open_var(_ t: Type) -> Bool {
       let mut i = 0
       let mut found = ty_elem_mentions_open_var(head)
       while i < Array::length(args) && !found {
-        found = ty_elem_mentions_open_var(Array::get(args, at = i))
+        found = ty_elem_mentions_open_var(Array::get(args, i))
         i = i + 1
       }
       found
@@ -1316,7 +1316,7 @@ export fn direct_builtin_return(_ name: String) -> Option[Type] {
   else if name == "String::length" || name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" {
     Some(CtInt)
   }
-  else if name == "Bytes::get" || name == "String::index_of" || name == "String::char_code_at" || name == "String::last_index_of" || name == "Char::to_int" || name == "Double::to_int" || name == "Double::to_i64_bits_lo" || name == "Double::to_i64_bits_hi" || name == "Env::args_len" || name == "Stdin::read_char" || name == "Int64Array::get" {
+  else if name == "Bytes::get" || name == "String::index_of" || name == "String::char_code_at" || name == "String::last_index_of" || name == "Char::to_int" || name == "Float64::to_int" || name == "Float64::to_i64_bits_lo" || name == "Float64::to_i64_bits_hi" || name == "Env::args_len" || name == "Stdin::read_char" || name == "Int64Array::get" {
     Some(CtInt)
   }
   else if name == "String::equals" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "Array::any" || name == "Array::all" || name == "Map::has_key" || name == "map_has" || name == "MapBuilder::has_key" || name == "Path::is_absolute" || name == "Fs::exists" || name == "Fs::is_dir" || name == "Fs::is_file" || name == "eq" || name == "not" {
@@ -1334,10 +1334,10 @@ export fn direct_builtin_return(_ name: String) -> Option[Type] {
   else if name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "MutList::truncate" || name == "FixedArray::set" || name == "FixedArray::blit" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" || name == "Bytes::set" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "Stdout::write_char" || name == "Stdout::write_stream" || name == "sleep" || name == "Fs::copy" || name == "Fs::chdir" || name == "Fs::mkdir" || name == "Fs::mkdir_p" || name == "Fs::append" || name == "Fs::remove" || name == "Fs::remove_file" || name == "Fs::remove_tree" || name == "Fs::rename" || name == "Fs::write_file" || name == "Fs::write_bytes" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "__set_field" {
     Some(CtUnit)
   }
-  else if name == "Double::from_i64_bits" || name == "Double::from_i64_bits_lohi" || name == "Int::to_double" || name == "Float::to_double" {
+  else if name == "Float64::from_i64_bits" || name == "Float64::from_i64_bits_lohi" || name == "Int::to_float64" || name == "Float32::to_float64" {
     Some(CtDouble)
   }
-  else if name == "Double::to_float" || name == "Int::to_float" {
+  else if name == "Float64::to_float32" || name == "Int::to_float32" {
     Some(CtFloat)
   }
   else if name == "Char::from_int" {
@@ -1382,17 +1382,17 @@ export fn future_builtin_arity(_ name: String) -> Int {
 /// future's variable is settled by what resolves it.
 export fn future_builtin_type(name: String, arg_tys: Array[Type], args: Array[Expr], s: Subst, c: Int, errors: Array[String], callee_off: Int) -> (Type, Subst, Int) {
   if name == "Future::ready" {
-    (CtNamed("Future", [subst_apply(s = s, ty = Array::get(arg_tys, at = 0))]), s, c)
+    (CtNamed("Future", [subst_apply(s, Array::get(arg_tys, 0))]), s, c)
   } else if name == "Future::pending" {
     (CtNamed("Future", [CtVar(c)]), s, c + 1)
   } else if name == "await" {
     let payload = CtVar(c)
-    let s2 = unify_call_args(param_tys = [CtNamed("Future", [payload])], arg_tys = arg_tys, arg_exprs = args, s = s, errors = errors, label = name, off = callee_off)
-    (subst_apply(s = s2, ty = payload), s2, c + 1)
+    let s2 = unify_call_args([CtNamed("Future", [payload])], arg_tys, args, s, errors, name, callee_off)
+    (subst_apply(s2, payload), s2, c + 1)
   } else {
     // Future::resolve(f, v)
     let payload = CtVar(c)
-    let s2 = unify_call_args(param_tys = [CtNamed("Future", [payload]), payload], arg_tys = arg_tys, arg_exprs = args, s = s, errors = errors, label = name, off = callee_off)
+    let s2 = unify_call_args([CtNamed("Future", [payload]), payload], arg_tys, args, s, errors, name, callee_off)
     (CtUnit, s2, c + 1)
   }
 }
@@ -1403,7 +1403,7 @@ export fn direct_call_return(env: TypeEnv, name: String, callee_off: Int) -> Opt
   // in one walk; ordinary value lookup hides surfaces and needs a second.
   match direct_builtin_return(canonical_builtin_name(name)) {
     None => None,
-    Some(ret) => if builtin_resolves_at(env = env, name = name, ident_off = callee_off) {
+    Some(ret) => if builtin_resolves_at(env, name, callee_off) {
       Some(ret)
     } else {
       None
@@ -1419,7 +1419,7 @@ export fn env_lookup_unless_synthesized_builtin(env: TypeEnv, name: String, iden
   if is_builtin_ref_offset(ident_off) && is_some_type(lookup_builtin(name)) {
     None
   } else {
-    env_lookup(env = env, name = name)
+    env_lookup(env, name)
   }
 }
 
@@ -1434,7 +1434,7 @@ fn is_some_type(_ t: Option[Type]) -> Bool {
 /// source spelling claimed by this module. Do not let a same-named builtin
 /// turn that invalid local use into different executable behavior (#2287).
 export fn lookup_builtin_in_env(env: TypeEnv, name: String) -> Option[Type] {
-  if env_has_reexport_surface_binding(env = env, name = name) {
+  if env_has_reexport_surface_binding(env, name) {
     None
   } else {
     lookup_builtin(name)
@@ -1586,9 +1586,9 @@ fn builtin_arg_head_rest(name: String, i: Int) -> Int {
 /// `Bytes::new` is handled separately (0 or 1 capacity arg).
 export fn builtin_fixed_arity(_ name: String) -> Int {
   let name = canonical_builtin_name(name)
-  if name == "Array::length" || name == "Array::reverse" || name == "String::length" || name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::iter_length" || name == "Bytes::length" || name == "Bytes::to_array" || name == "Bytes::from_array" || name == "Map::keys" || name == "Map::iter_length" || name == "Char::to_int" || name == "Char::from_int" || name == "Double::to_int" || name == "Double::from_i64_bits" || name == "Int::to_double" || name == "Double::to_float" || name == "Float::to_double" || name == "Double::to_i64_bits_lo" || name == "Double::to_i64_bits_hi" || name == "Path::is_absolute" || name == "Path::resolve" || name == "Path::to_string" || name == "__len" || name == "not" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "__to_string" || name == "FixedArray::length" || name == "Int64Array::length" {
+  if name == "Array::length" || name == "Array::reverse" || name == "String::length" || name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::iter_length" || name == "Bytes::length" || name == "Bytes::to_array" || name == "Bytes::from_array" || name == "Map::keys" || name == "Map::iter_length" || name == "Char::to_int" || name == "Char::from_int" || name == "Float64::to_int" || name == "Float64::from_i64_bits" || name == "Int::to_float64" || name == "Float64::to_float32" || name == "Float32::to_float64" || name == "Float64::to_i64_bits_lo" || name == "Float64::to_i64_bits_hi" || name == "Path::is_absolute" || name == "Path::resolve" || name == "Path::to_string" || name == "__len" || name == "not" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "__to_string" || name == "FixedArray::length" || name == "Int64Array::length" {
     1
-  } else if name == "Array::get" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "Array::concat" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "String::equals" || name == "String::concat" || name == "String::char_code_at" || name == "String::index_of" || name == "String::last_index_of" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::join" || name == "String::iter_get" || name == "Bytes::get" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::concat" || name == "Map::has_key" || name == "Map::iter_get" || name == "map_has" || name == "MapBuilder::has_key" || name == "MapBuilder::get" || name == "eq" || name == "assert_eq" || name == "FixedArray::get" || name == "FixedArray::make" || name == "Int64Array::get" || name == "Int64Array::make" || name == "Double::from_i64_bits_lohi" || name == "MutList::truncate" {
+  } else if name == "Array::get" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "Array::concat" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "String::equals" || name == "String::concat" || name == "String::char_code_at" || name == "String::index_of" || name == "String::last_index_of" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::join" || name == "String::iter_get" || name == "Bytes::get" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::concat" || name == "Map::has_key" || name == "Map::iter_get" || name == "map_has" || name == "MapBuilder::has_key" || name == "MapBuilder::get" || name == "eq" || name == "assert_eq" || name == "FixedArray::get" || name == "FixedArray::make" || name == "Int64Array::get" || name == "Int64Array::make" || name == "Float64::from_i64_bits_lohi" || name == "MutList::truncate" {
     2
   } else if name == "Array::set" || name == "Array::slice" || name == "String::substring" || name == "Bytes::set" || name == "Bytes::slice" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" || name == "__set_field" {
     3
@@ -1641,12 +1641,12 @@ export fn builtin_param_head(name: String, i: Int) -> Int {
   let hand = if i == 0 {
     builtin_first_arg_head(normalized)
   } else {
-    builtin_arg_head_rest(name = normalized, i = i)
+    builtin_arg_head_rest(normalized, i)
   }
   if hand != 0 {
     hand
   } else {
-    match registry_builtin_param_type(name = normalized, i = i) {
+    match registry_builtin_param_type(normalized, i) {
       Some(t) => head_fold_char(head_kind(t)),
       None => 0
     }
@@ -1684,19 +1684,19 @@ export fn builtin_param_head(name: String, i: Int) -> Int {
 /// Call it with the receiver type ALREADY substituted, right after the arm
 /// binds it.
 export fn check_builtin_arg_head(name: String, i: Int, arg_ty: Type, defs: Array[TypeDef], errors: Array[String], callee_off: Int) -> Unit {
-  let want_head = builtin_param_head(name = name, i = i)
+  let want_head = builtin_param_head(name, i)
   if want_head != 0 {
-    let got_head = receiver_head_kind(defs = defs, t = arg_ty)
+    let got_head = receiver_head_kind(defs, arg_ty)
     if got_head != 0 && got_head != want_head {
       // Same two wordings the general arm produces, so a diagnostic does not
       // depend on which path happened to check the call.
       if i == 0 {
-        Array::push(errors, value = String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(arg_ty), off_marker_len(off = callee_off, len = String::length(name)))))
+        Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(arg_ty), off_marker_len(callee_off, String::length(name)))))
       } else {
-        Array::push(errors, value = String::concat(String::concat("argument type mismatch for ", String::concat(name, String::concat(" (arg ", String::concat(__to_string(i), "): ")))), String::concat(type_to_string(arg_ty), off_marker_len(off = callee_off, len = String::length(name)))))
+        Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, String::concat(" (arg ", String::concat(__to_string(i), "): ")))), String::concat(type_to_string(arg_ty), off_marker_len(callee_off, String::length(name)))))
       }
     } else if i == 0 && want_head == 9 && is_bytestream_named_type(arg_ty) {
-      Array::push(errors, value = String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(arg_ty), String::concat(" is a ByteStream, not an Array", off_marker_len(off = callee_off, len = String::length(name))))))
+      Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(arg_ty), String::concat(" is a ByteStream, not an Array", off_marker_len(callee_off, String::length(name))))))
     } else {
       ()
     }
@@ -1736,7 +1736,7 @@ export fn bind_builtin_arg_var(arg_ty: Type, want: Int, s: Subst, c: Int) -> (Su
         None
       }
       match target {
-        Some(t) => match unify(a = arg_ty, b = t, s = s) {
+        Some(t) => match unify(arg_ty, t, s) {
           Some(s2) => (s2, if want == 9 {
             c + 1
           } else {
@@ -1765,7 +1765,7 @@ export fn receiver_head_kind(defs: Array[TypeDef], t: Type) -> Int {
   } else {
     match t {
       CtNamed(name, nargs) => if Array::length(nargs) > 0 {
-        match find_typedef(defs = defs, name = name) {
+        match find_typedef(defs, name) {
           Some(TDStruct(_, _, _, _)) => head_kind(CtStruct(name)),
           Some(TDEnum(_, _, _)) => head_kind(CtEnum(name)),
           _ => 0
@@ -1798,7 +1798,7 @@ export fn check_hof_param_vs_elem(recv_ty: Type, fn_ty: Type, pidx: Int, s: Subs
   match recv_ty {
     CtArray(elem) => match fn_ty {
       CtFn(ptys, _, _) => if Array::length(ptys) > pidx {
-        check_assignable(expected = subst_apply(s = s, ty = Array::get(ptys, at = pidx)), actual = subst_apply(s = s, ty = elem), s = s, errors = errors, what = msg, off = 0 - 1)
+        check_assignable(subst_apply(s, Array::get(ptys, pidx)), subst_apply(s, elem), s, errors, msg, 0 - 1)
       } else {
         s
       },
@@ -1815,7 +1815,7 @@ export fn check_hof_param_vs_elem(recv_ty: Type, fn_ty: Type, pidx: Int, s: Subs
 export fn check_two_array_elems(a_app: Type, b_app: Type, s: Subst, errors: Array[String], msg: String) -> Subst {
   match a_app {
     CtArray(ea) => match b_app {
-      CtArray(eb) => check_assignable(expected = subst_apply(s = s, ty = ea), actual = subst_apply(s = s, ty = eb), s = s, errors = errors, what = msg, off = 0 - 1),
+      CtArray(eb) => check_assignable(subst_apply(s, ea), subst_apply(s, eb), s, errors, msg, 0 - 1),
       _ => s
     },
     _ => s
@@ -1826,14 +1826,14 @@ export fn check_two_array_elems(a_app: Type, b_app: Type, s: Subst, errors: Arra
 /// or field is unknown. Used to recognise a field-stored-function call
 /// `b.f(args)` when no method/builtin `T::f` exists.
 fn struct_field_type(defs: Array[TypeDef], sname: String, field: String) -> Option[Type] {
-  match find_typedef(defs = defs, name = sname) {
+  match find_typedef(defs, sname) {
     Some(td) => match td {
       TDStruct(_, fields, _, _) => {
         let rec go: (Int) -> Option[Type] = (i) -> {
           if i >= Array::length(fields) {
             None
           } else {
-            let (fname, ftype) = Array::get(fields, at = i)
+            let (fname, ftype) = Array::get(fields, i)
             if fname == field {
               Some(ftype)
             } else {
@@ -1855,7 +1855,7 @@ fn struct_field_type(defs: Array[TypeDef], sname: String, field: String) -> Opti
 /// which downstream checks tolerate exactly as before.
 export fn inst_struct_field_ty(ft: Type, tparams: Array[String], targs: Array[Type]) -> Type {
   if Array::length(tparams) > 0 && Array::length(tparams) == Array::length(targs) {
-    inst_struct_field_rows(ft = subst_type_params(ty = ft, params = tparams, args = targs), tparams = tparams, targs = targs)
+    inst_struct_field_rows(subst_type_params(ft, tparams, targs), tparams, targs)
   } else {
     ft
   }
@@ -1868,9 +1868,9 @@ export fn inst_struct_field_ty(ft: Type, tparams: Array[String], targs: Array[Ty
 /// A read, a write and a call through the field ask here; a struct pattern
 /// asks `elided_owned_head_field_refusal` itself.
 export fn owned_head_field_ty(defs: Array[TypeDef], recv: Type, field: String, ft: Type, errors: Array[String], marker: String) -> Type {
-  match elided_owned_head_field_refusal(defs = defs, recv = recv, field = field) {
+  match elided_owned_head_field_refusal(defs, recv, field) {
     Some(message) => {
-      Array::push(errors, value = String::concat(message, marker))
+      Array::push(errors, String::concat(message, marker))
       CtUnknown
     },
     None => ft
@@ -1890,14 +1890,14 @@ fn inst_struct_field_rows(ft: Type, tparams: Array[String], targs: Array[Type]) 
   let tos: Array[String] = []
   let mut i = 0
   while i < Array::length(tparams) && i < Array::length(targs) {
-    let formal = type_param_name(Array::get(tparams, at = i))
-    match Array::get(targs, at = i) {
+    let formal = type_param_name(Array::get(tparams, i))
+    match Array::get(targs, i) {
       // #3589: the argument is a row: one variable (`Holder[e]`), a fresh
       // one a call renamed it to, or the labels a literal stored there
       // (`Holder[Console]`, `Console, e`).
-      CtNamed(n, xs) => if Array::length(xs) == 0 && is_row_var_spelling(formal) && String::length(n) > 0 && !String::starts_with(n, prefix = "#") && n != formal {
-        Array::push(froms, value = formal)
-        Array::push(tos, value = n)
+      CtNamed(n, xs) => if Array::length(xs) == 0 && is_row_var_spelling(formal) && String::length(n) > 0 && !String::starts_with(n, "#") && n != formal {
+        Array::push(froms, formal)
+        Array::push(tos, n)
       },
       _ => ()
     }
@@ -1906,7 +1906,7 @@ fn inst_struct_field_rows(ft: Type, tparams: Array[String], targs: Array[Type]) 
   if Array::length(froms) == 0 {
     ft
   } else {
-    rename_row_labels(t = ft, froms = froms, tos = tos)
+    rename_row_labels(ft, froms, tos)
   }
 }
 
@@ -1926,38 +1926,38 @@ fn inst_struct_field_rows(ft: Type, tparams: Array[String], targs: Array[Type]) 
 /// on to a nested struct's row parameter (`a: Inner[r]`) takes the labels
 /// of the row argument the stored value carries there (`Inner[Console]`).
 export fn collect_struct_row_labels(defs: Array[TypeDef], field_ty: Type, value_ty: Type, tparams: Array[String], s: Subst, formals: Array[String], labels: Array[Array[String]]) -> Unit {
-  match (field_ty, resolve_type_head(t = value_ty, s = s)) {
+  match (field_ty, resolve_type_head(value_ty, s)) {
     (CtFn(_, _, Some(frow)), CtFn(_, _, Some(vrow))) => {
       let own: Array[String] = []
       for l in plain_row_labels(frow) {
-        if is_row_var_spelling(l) && checker_string_array_has(items = tparam_names(tparams), wanted = l) {
-          Array::push(own, value = l)
+        if is_row_var_spelling(l) && checker_string_array_has(tparam_names(tparams), l) {
+          Array::push(own, l)
         }
       }
       let fixed: Array[String] = []
       for l in plain_row_labels(frow) {
-        if !checker_string_array_has(items = own, wanted = l) {
-          Array::push(fixed, value = l)
+        if !checker_string_array_has(own, l) {
+          Array::push(fixed, l)
         }
       }
       let vars: Array[String] = []
       for l in plain_row_labels(vrow) {
-        if !checker_string_array_has(items = fixed, wanted = l) && !checker_string_array_has(items = vars, wanted = l) {
-          Array::push(vars, value = l)
+        if !checker_string_array_has(fixed, l) && !checker_string_array_has(vars, l) {
+          Array::push(vars, l)
         }
       }
       if Array::length(own) == 1 && Array::length(vars) > 0 {
-        add_row_formal_labels(formal = Array::get(own, at = 0), vars = vars, formals = formals, labels = labels)
+        add_row_formal_labels(Array::get(own, 0), vars, formals, labels)
       }
     },
-    (CtArray(fe), CtArray(ve)) => collect_struct_row_labels(defs = defs, field_ty = fe, value_ty = ve, tparams = tparams, s = s, formals = formals, labels = labels),
-    (CtOption(fe), CtOption(ve)) => collect_struct_row_labels(defs = defs, field_ty = fe, value_ty = ve, tparams = tparams, s = s, formals = formals, labels = labels),
+    (CtArray(fe), CtArray(ve)) => collect_struct_row_labels(defs, fe, ve, tparams, s, formals, labels),
+    (CtOption(fe), CtOption(ve)) => collect_struct_row_labels(defs, fe, ve, tparams, s, formals, labels),
     // A function stored inside a tuple field (`run: (() -> Int with r,
     // Int)`) binds the row formal the same way, element by element.
     (CtTuple(fes), CtTuple(ves)) => {
       let mut i = 0
       while i < Array::length(fes) && i < Array::length(ves) {
-        collect_struct_row_labels(defs = defs, field_ty = Array::get(fes, at = i), value_ty = Array::get(ves, at = i), tparams = tparams, s = s, formals = formals, labels = labels)
+        collect_struct_row_labels(defs, Array::get(fes, i), Array::get(ves, i), tparams, s, formals, labels)
         i = i + 1
       }
     },
@@ -1968,7 +1968,7 @@ export fn collect_struct_row_labels(defs: Array[TypeDef], field_ty: Type, value_
     (CtNamed(fname, fargs), CtNamed(vname, vargs0)) => if fname == vname && Array::length(fargs) == Array::length(vargs0) {
       // `subst_apply` resolves a row variable where it is an ARGUMENT
       // (`Inner[$5]` reads `Inner[Console]`), not the bare variable alone.
-      let vargs = match subst_apply(s = s, ty = CtNamed(vname, vargs0)) {
+      let vargs = match subst_apply(s, CtNamed(vname, vargs0)) {
         CtNamed(_, xs) => if Array::length(xs) == Array::length(vargs0) {
           xs
         } else {
@@ -1978,21 +1978,21 @@ export fn collect_struct_row_labels(defs: Array[TypeDef], field_ty: Type, value_
       }
       let mut k = 0
       while k < Array::length(fargs) {
-        let fa = Array::get(fargs, at = k)
+        let fa = Array::get(fargs, k)
         let mut handled = false
         match fa {
-          CtNamed(l, ls) => if Array::length(ls) == 0 && is_row_var_spelling(l) && checker_string_array_has(items = tparam_names(tparams), wanted = l) && struct_row_param(defs = defs, m = fname, k = k) {
+          CtNamed(l, ls) => if Array::length(ls) == 0 && is_row_var_spelling(l) && checker_string_array_has(tparam_names(tparams), l) && struct_row_param(defs, fname, k) {
             handled = true
-            match Array::get(vargs, at = k) {
+            match Array::get(vargs, k) {
               CtNamed(row, rs) => if Array::length(rs) == 0 {
                 let vars: Array[String] = []
                 for x in plain_row_labels(row) {
-                  if !String::starts_with(x, prefix = "$") && !checker_string_array_has(items = vars, wanted = x) {
-                    Array::push(vars, value = x)
+                  if !String::starts_with(x, "$") && !checker_string_array_has(vars, x) {
+                    Array::push(vars, x)
                   }
                 }
                 if Array::length(vars) > 0 {
-                  add_row_formal_labels(formal = l, vars = vars, formals = formals, labels = labels)
+                  add_row_formal_labels(l, vars, formals, labels)
                 }
               },
               _ => ()
@@ -2001,7 +2001,7 @@ export fn collect_struct_row_labels(defs: Array[TypeDef], field_ty: Type, value_
           _ => ()
         }
         if !handled {
-          collect_struct_row_labels(defs = defs, field_ty = fa, value_ty = Array::get(vargs, at = k), tparams = tparams, s = s, formals = formals, labels = labels)
+          collect_struct_row_labels(defs, fa, Array::get(vargs, k), tparams, s, formals, labels)
         }
         k = k + 1
       }
@@ -2015,20 +2015,20 @@ fn add_row_formal_labels(formal: String, vars: Array[String], formals: Array[Str
   let mut at = 0 - 1
   let mut i = 0
   while i < Array::length(formals) {
-    if Array::get(formals, at = i) == formal {
+    if Array::get(formals, i) == formal {
       at = i
     }
     i = i + 1
   }
   if at < 0 {
-    Array::push(formals, value = formal)
-    Array::push(labels, value = array_empty())
+    Array::push(formals, formal)
+    Array::push(labels, array_empty())
     at = Array::length(formals) - 1
   }
-  let acc = Array::get(labels, at = at)
+  let acc = Array::get(labels, at)
   for l in vars {
-    if !checker_string_array_has(items = acc, wanted = l) {
-      Array::push(acc, value = l)
+    if !checker_string_array_has(acc, l) {
+      Array::push(acc, l)
     }
   }
   ()
@@ -2044,9 +2044,9 @@ export fn bind_struct_row_unions(tparams: Array[String], targs: Array[Type], for
   while f < Array::length(formals) {
     let mut k = 0
     while k < Array::length(tparams) && k < Array::length(targs) {
-      if type_param_name(Array::get(tparams, at = k)) == Array::get(formals, at = f) {
-        let bound: Type = CtNamed(String::join(sort_labels(Array::get(labels, at = f)), sep = ", "), array_empty())
-        match unify(a = Array::get(targs, at = k), b = bound, s = out) {
+      if type_param_name(Array::get(tparams, k)) == Array::get(formals, f) {
+        let bound: Type = CtNamed(String::join(sort_labels(Array::get(labels, f)), ", "), array_empty())
+        match unify(Array::get(targs, k), bound, out) {
           Some(ns) => out = ns,
           None => ()
         }
@@ -2070,14 +2070,14 @@ export fn bind_struct_row_unions(tparams: Array[String], targs: Array[Type], for
 /// (`TaskGroup[rg, e]`) keeps its own handling.
 export fn row_formal_arg_positions(defs: Array[TypeDef], name: String, args: Array[Type]) -> Array[Int] {
   let out: Array[Int] = []
-  if row_formal_arg_candidate(name = name, args = args) {
-    match find_typedef(defs = defs, name = name) {
+  if row_formal_arg_candidate(name, args) {
+    match find_typedef(defs, name) {
       Some(TDStruct(_, fields, _, params)) => {
         let mut j = 0
         while j < Array::length(args) && j < Array::length(params) {
-          match Array::get(args, at = j) {
-            CtNamed(n, xs) => if Array::length(xs) == 0 && is_row_var_spelling(n) && struct_param_is_row(defs = defs, fields = fields, formal = type_param_name(Array::get(params, at = j))) {
-              Array::push(out, value = j)
+          match Array::get(args, j) {
+            CtNamed(n, xs) => if Array::length(xs) == 0 && is_row_var_spelling(n) && struct_param_is_row(defs, fields, type_param_name(Array::get(params, j))) {
+              Array::push(out, j)
             },
             _ => ()
           }
@@ -2114,14 +2114,14 @@ export fn row_formal_arg_candidate(name: String, args: Array[Type]) -> Bool {
 export fn repin_row_formal_args(before: Type, after: Type, defs: Array[TypeDef]) -> Type {
   match (before, after) {
     (CtNamed(bn, bxs), CtNamed(an, axs)) => if bn == an && Array::length(bxs) == Array::length(axs) && Array::length(bxs) > 0 {
-      let pins = row_formal_arg_positions(defs = defs, name = bn, args = bxs)
+      let pins = row_formal_arg_positions(defs, bn, bxs)
       let out: Array[Type] = []
       let mut i = 0
       while i < Array::length(axs) {
-        if checker_int_array_has(xs = pins, x = i) {
-          Array::push(out, value = Array::get(bxs, at = i))
+        if checker_int_array_has(pins, i) {
+          Array::push(out, Array::get(bxs, i))
         } else {
-          Array::push(out, value = repin_row_formal_args(before = Array::get(bxs, at = i), after = Array::get(axs, at = i), defs = defs))
+          Array::push(out, repin_row_formal_args(Array::get(bxs, i), Array::get(axs, i), defs))
         }
         i = i + 1
       }
@@ -2133,20 +2133,20 @@ export fn repin_row_formal_args(before: Type, after: Type, defs: Array[TypeDef])
       let out: Array[Type] = []
       let mut i = 0
       while i < Array::length(aps) {
-        Array::push(out, value = repin_row_formal_args(before = Array::get(bps, at = i), after = Array::get(aps, at = i), defs = defs))
+        Array::push(out, repin_row_formal_args(Array::get(bps, i), Array::get(aps, i), defs))
         i = i + 1
       }
-      CtFn(out, repin_row_formal_args(before = br, after = ar, defs = defs), arow)
+      CtFn(out, repin_row_formal_args(br, ar, defs), arow)
     } else {
       after
     },
-    (CtArray(b), CtArray(a)) => CtArray(repin_row_formal_args(before = b, after = a, defs = defs)),
-    (CtOption(b), CtOption(a)) => CtOption(repin_row_formal_args(before = b, after = a, defs = defs)),
+    (CtArray(b), CtArray(a)) => CtArray(repin_row_formal_args(b, a, defs)),
+    (CtOption(b), CtOption(a)) => CtOption(repin_row_formal_args(b, a, defs)),
     (CtTuple(bs), CtTuple(xs)) => if Array::length(bs) == Array::length(xs) {
       let out: Array[Type] = []
       let mut i = 0
       while i < Array::length(xs) {
-        Array::push(out, value = repin_row_formal_args(before = Array::get(bs, at = i), after = Array::get(xs, at = i), defs = defs))
+        Array::push(out, repin_row_formal_args(Array::get(bs, i), Array::get(xs, i), defs))
         i = i + 1
       }
       CtTuple(out)
@@ -2182,7 +2182,7 @@ fn resolve_type_head(t: Type, s: Subst) -> Type {
   let mut done = false
   while !done && steps < 64 {
     match cur {
-      CtVar(id) => match subst_lookup(s = s, id = id) {
+      CtVar(id) => match subst_lookup(s, id) {
         Some(next) => cur = next,
         None => done = true
       },
@@ -2197,7 +2197,7 @@ fn resolve_type_head(t: Type, s: Subst) -> Type {
 /// read off the receiver's tuple type with its row as written, or None when
 /// the receiver is not a tuple or the element is not a function.
 export fn tuple_projection_fn_type(recv: Type, field: String, s: Subst) -> Option[Type] {
-  match resolve_type_head(t = recv, s = s) {
+  match resolve_type_head(recv, s) {
     CtTuple(items) => {
       let mut idx = 0 - 1
       if String::length(field) > 0 {
@@ -2205,7 +2205,7 @@ export fn tuple_projection_fn_type(recv: Type, field: String, s: Subst) -> Optio
         let mut n = 0
         let mut i = 0
         while i < String::length(field) {
-          let ch = String::char_code_at(field, at = i)
+          let ch = String::char_code_at(field, i)
           if ch >= 48 && ch <= 57 {
             n = n * 10 + (ch - 48)
           } else {
@@ -2218,7 +2218,7 @@ export fn tuple_projection_fn_type(recv: Type, field: String, s: Subst) -> Optio
         }
       }
       if idx >= 0 && idx < Array::length(items) {
-        match resolve_type_head(t = Array::get(items, at = idx), s = s) {
+        match resolve_type_head(Array::get(items, idx), s) {
           CtFn(ps, r, row) => Some(CtFn(ps, r, row)),
           _ => None
         }
@@ -2235,29 +2235,29 @@ export fn tuple_projection_fn_type(recv: Type, field: String, s: Subst) -> Optio
 fn rename_row_labels(t: Type, froms: Array[String], tos: Array[String]) -> Type {
   match t {
     CtFn(ps, r, row) => CtFn(for p in ps {
-      rename_row_labels(t = p, froms = froms, tos = tos)
-    }, rename_row_labels(t = r, froms = froms, tos = tos), match row {
+      rename_row_labels(p, froms, tos)
+    }, rename_row_labels(r, froms, tos), match row {
       Some(text) => {
         let parts: Array[String] = []
-        for seg in String::split(text, sep = ",") {
+        for seg in String::split(text, ",") {
           let label = String::trim(seg)
           let mut out = seg
           let mut k = 0
           while k < Array::length(froms) {
-            if Array::get(froms, at = k) == label {
-              out = Array::get(tos, at = k)
+            if Array::get(froms, k) == label {
+              out = Array::get(tos, k)
             }
             k = k + 1
           }
-          Array::push(parts, value = out)
+          Array::push(parts, out)
         }
         let mut joined = ""
         let mut j = 0
         while j < Array::length(parts) {
           joined = if j == 0 {
-            Array::get(parts, at = j)
+            Array::get(parts, j)
           } else {
-            joined + "," + Array::get(parts, at = j)
+            joined + "," + Array::get(parts, j)
           }
           j = j + 1
         }
@@ -2265,13 +2265,13 @@ fn rename_row_labels(t: Type, froms: Array[String], tos: Array[String]) -> Type 
       },
       None => None
     }),
-    CtArray(e) => CtArray(rename_row_labels(t = e, froms = froms, tos = tos)),
-    CtOption(e) => CtOption(rename_row_labels(t = e, froms = froms, tos = tos)),
+    CtArray(e) => CtArray(rename_row_labels(e, froms, tos)),
+    CtOption(e) => CtOption(rename_row_labels(e, froms, tos)),
     CtTuple(items) => CtTuple(for x in items {
-      rename_row_labels(t = x, froms = froms, tos = tos)
+      rename_row_labels(x, froms, tos)
     }),
     CtNamed(n, xs) => CtNamed(n, for x in xs {
-      rename_row_labels(t = x, froms = froms, tos = tos)
+      rename_row_labels(x, froms, tos)
     }),
     _ => t
   }
@@ -2283,11 +2283,11 @@ fn rename_row_labels(t: Type, froms: Array[String], tos: Array[String]) -> Type 
 /// is not a known struct or the field does not exist.
 export fn receiver_struct_field_type(defs: Array[TypeDef], recv: Type, field: String) -> Option[Type] {
   match recv {
-    CtStruct(sname) => struct_field_type(defs = defs, sname = sname, field = field),
-    CtNamed(sname, targs) => match find_typedef(defs = defs, name = sname) {
+    CtStruct(sname) => struct_field_type(defs, sname, field),
+    CtNamed(sname, targs) => match find_typedef(defs, sname) {
       Some(td) => match td {
-        TDStruct(_, _, _, tparams) => match struct_field_type(defs = defs, sname = sname, field = field) {
-          Some(ft) => Some(inst_struct_field_ty(ft = ft, tparams = tparams, targs = targs)),
+        TDStruct(_, _, _, tparams) => match struct_field_type(defs, sname, field) {
+          Some(ft) => Some(inst_struct_field_ty(ft, tparams, targs)),
           None => None
         },
         _ => None
@@ -2313,8 +2313,8 @@ export fn is_order_binop(_ op: String) -> Bool {
 export fn type_name_prefix(_ ty: Type) -> String {
   match ty {
     CtInt => "Int",
-    CtDouble => "Double",
-    CtFloat => "Float",
+    CtDouble => "Float64",
+    CtFloat => "Float32",
     CtBool => "Bool",
     CtString => "String",
     CtChar => "Char",

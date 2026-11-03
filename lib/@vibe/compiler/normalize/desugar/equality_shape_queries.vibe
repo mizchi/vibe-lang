@@ -63,7 +63,7 @@ export fn is_empty_array_lit(_ e: Expr) -> Bool {
 
 export fn is_untyped_empty_array_name(e: Expr, var_types: Array[(String, String)]) -> Bool {
   match e {
-    EIdent(name, _) => match lookup_var_type(var_types = var_types, name = eq_shape_key(name)) {
+    EIdent(name, _) => match lookup_var_type(var_types, eq_shape_key(name)) {
       Some(sh) => sh == "[__EqEmpty]",
       None => false
     },
@@ -85,9 +85,9 @@ export fn is_untyped_empty_array_name(e: Expr, var_types: Array[(String, String)
 /// pass never inferred (an array returned by a function, an empty literal)
 /// still gets the identity `eq`, the documented #695 residual.
 export fn eq_var_array_elem(l: Expr, r: Expr, var_types: Array[(String, String)]) -> Option[TypeExpr] {
-  match eq_operand_elem_name(e = l, var_types = var_types) {
+  match eq_operand_elem_name(l, var_types) {
     Some(n) => Some(TyName(n)),
-    None => match eq_operand_elem_name(e = r, var_types = var_types) {
+    None => match eq_operand_elem_name(r, var_types) {
       Some(n) => Some(TyName(n)),
       None => None
     }
@@ -96,7 +96,7 @@ export fn eq_var_array_elem(l: Expr, r: Expr, var_types: Array[(String, String)]
 
 fn eq_operand_elem_name(e: Expr, var_types: Array[(String, String)]) -> Option[String] {
   match e {
-    EIdent(name, _) => match array_elem_type_of(var_types = var_types, name = name) {
+    EIdent(name, _) => match array_elem_type_of(var_types, name) {
       Some(n) => if eq_elem_name_dispatchable(n) {
         Some(n)
       } else {
@@ -149,7 +149,7 @@ export fn eq_formal_shape_of_name(var_types: Array[(String, String)], n: String)
   let mut decided = false
   let mut i = Array::length(var_types) - 1
   while i >= 0 && !decided {
-    let (k, v) = Array::get(var_types, at = i)
+    let (k, v) = Array::get(var_types, i)
     if k == fk {
       result = v
       decided = true
@@ -180,7 +180,7 @@ export fn eq_fn_result_of_name(var_types: Array[(String, String)], n: String) ->
   let mut decided = false
   let mut i = Array::length(var_types) - 1
   while i >= 0 && !decided {
-    let (k, v) = Array::get(var_types, at = i)
+    let (k, v) = Array::get(var_types, i)
     if k == fk {
       result = impl_target_from_key(v)
       decided = true
@@ -214,7 +214,7 @@ export fn fn_eq_shape_key(_ fname: String) -> String {
 /// parameter is a value type, a bare `Option` keeps its value meaning: a
 /// literal's shape (`Box::{ v: None }`) records one that way.
 fn shape_to_eq_ctor_arg(head: String, index: Int, sh: String) -> TypeExpr {
-  let arity = eq_shape_head_param_arity(head = head, index = index)
+  let arity = eq_shape_head_param_arity(head, index)
   if arity > 0 {
     if shape_is_bare_name(sh) {
       TyName(sh)
@@ -229,7 +229,7 @@ fn shape_to_eq_ctor_arg(head: String, index: Int, sh: String) -> TypeExpr {
 }
 
 fn shape_is_bare_name(_ sh: String) -> Bool {
-  String::length(sh) > 0 && !String::starts_with(sh, prefix = "{") && !String::starts_with(sh, prefix = "[") && !String::starts_with(sh, prefix = "(") && !String::contains(sh, needle = ",")
+  String::length(sh) > 0 && !String::starts_with(sh, "{") && !String::starts_with(sh, "[") && !String::starts_with(sh, "(") && !String::contains(sh, ",")
 }
 
 /// The arity of the `index`th type parameter `head`'s generic struct or enum
@@ -238,14 +238,14 @@ fn eq_shape_head_param_arity(head: String, index: Int) -> Int {
   let mut out = 0 - 1
   for decl in dtd_eq_generic_structs {
     if decl.0 == head && index < Array::length(decl.1) {
-      out = type_param_arity(Array::get(decl.1, at = index))
+      out = type_param_arity(Array::get(decl.1, index))
     } else {
       ()
     }
   }
   for edecl in dtd_eq_enum_decls {
     if edecl.0 == head && index < Array::length(edecl.1) {
-      out = type_param_arity(Array::get(edecl.1, at = index))
+      out = type_param_arity(Array::get(edecl.1, index))
     } else {
       ()
     }
@@ -264,58 +264,58 @@ export fn shape_to_eq_ty(_ sh: String) -> TypeExpr {
     TyName("?EqUnknown")
   } else if sh == "{u}" {
     TyUnit
-  } else if String::starts_with(sh, prefix = "(") {
+  } else if String::starts_with(sh, "(") {
     let parts = shape_split(shape_inner(sh))
     let ts = empty_type_exprs()
     let mut i = 0
     while i < Array::length(parts) {
-      Array::push(ts, value = shape_to_eq_ty(Array::get(parts, at = i)))
+      Array::push(ts, shape_to_eq_ty(Array::get(parts, i)))
       i = i + 1
     }
     TyTuple(ts)
-  } else if String::starts_with(sh, prefix = "[") {
-    TyApp("Array", Array::slice([shape_to_eq_ty(shape_inner(sh))], start = 0, end = 1))
-  } else if String::starts_with(sh, prefix = "{o:") {
+  } else if String::starts_with(sh, "[") {
+    TyApp("Array", Array::slice([shape_to_eq_ty(shape_inner(sh))], 0, 1))
+  } else if String::starts_with(sh, "{o:") {
     TyApp("Option", Array::slice([
-      shape_to_eq_ty(String::substring(sh, start = 3, end = String::length(sh) - 1))
-    ], start = 0, end = 1))
-  } else if String::starts_with(sh, prefix = "{m:") {
-    let parts = shape_split(String::substring(sh, start = 3, end = String::length(sh) - 1))
+      shape_to_eq_ty(String::substring(sh, 3, String::length(sh) - 1))
+    ], 0, 1))
+  } else if String::starts_with(sh, "{m:") {
+    let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
     if Array::length(parts) == 2 {
       TyApp("Map", Array::slice([
-        shape_to_eq_ty(Array::get(parts, at = 0)),
-        shape_to_eq_ty(Array::get(parts, at = 1))
-      ], start = 0, end = 2))
+        shape_to_eq_ty(Array::get(parts, 0)),
+        shape_to_eq_ty(Array::get(parts, 1))
+      ], 0, 2))
     } else {
       TyName("?EqUnknown")
     }
-  } else if String::starts_with(sh, prefix = "{r:") {
-    let parts = shape_split(String::substring(sh, start = 3, end = String::length(sh) - 1))
+  } else if String::starts_with(sh, "{r:") {
+    let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
     if Array::length(parts) == 2 {
       TyApp("Result", Array::slice([
-        shape_to_eq_ty(Array::get(parts, at = 0)),
-        shape_to_eq_ty(Array::get(parts, at = 1))
-      ], start = 0, end = 2))
+        shape_to_eq_ty(Array::get(parts, 0)),
+        shape_to_eq_ty(Array::get(parts, 1))
+      ], 0, 2))
     } else {
       TyName("?EqUnknown")
     }
-  } else if String::starts_with(sh, prefix = "{g:") {
-    let parts = shape_split(String::substring(sh, start = 3, end = String::length(sh) - 1))
+  } else if String::starts_with(sh, "{g:") {
+    let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
     if Array::length(parts) > 1 {
       let args = empty_type_exprs()
       let mut i = 0
       while i + 1 < Array::length(parts) {
-        Array::push(args, value = shape_to_eq_ctor_arg(head = Array::get(parts, at = 0), index = i, sh = Array::get(parts, at = i + 1)))
+        Array::push(args, shape_to_eq_ctor_arg(Array::get(parts, 0), i, Array::get(parts, i + 1)))
         i = i + 1
       }
-      TyApp(Array::get(parts, at = 0), args)
+      TyApp(Array::get(parts, 0), args)
     } else {
       TyName("?EqUnknown")
     }
   } else if sh == "Option" {
-    TyApp("Option", Array::slice([TyName("?EqUnknown")], start = 0, end = 1))
+    TyApp("Option", Array::slice([TyName("?EqUnknown")], 0, 1))
   } else if sh == "Result" {
-    TyApp("Result", Array::slice([TyName("?EqUnknown"), TyName("?EqUnknown")], start = 0, end = 2))
+    TyApp("Result", Array::slice([TyName("?EqUnknown"), TyName("?EqUnknown")], 0, 2))
   } else if sh == "Array" || sh == "Tuple" || sh == "Map" {
     TyName("?EqUnknown")
   } else {
@@ -351,8 +351,8 @@ export fn ty_needs_typed_eq(_ t: TypeExpr) -> Bool {
 
 fn ty_needs_typed_eq_expanded(_ t: TypeExpr) -> Bool {
   match t {
-    TyName(n) => n == "Bytes" || n == "Double" || n == "Float",
-    TyApp(n, args) => if n == "Array" || n == "Map" || builtin_string_map_applied(name = n, args = args) || generic_eq_struct_declared(n) || (eq_generic_enum_declared(n) && Array::length(args) > 0) {
+    TyName(n) => n == "Bytes" || n == "Float64" || n == "Float32",
+    TyApp(n, args) => if n == "Array" || n == "Map" || builtin_string_map_applied(n, args) || generic_eq_struct_declared(n) || (eq_generic_enum_declared(n) && Array::length(args) > 0) {
       // #2467: a generic ENUM instantiation reached through a name takes
       // its specialized comparator, as a generic struct's does; through the
       // bare-name rung it called the derived `Wrap::equals`, whose erased
@@ -362,7 +362,7 @@ fn ty_needs_typed_eq_expanded(_ t: TypeExpr) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(args) {
-        if ty_needs_typed_eq_expanded(Array::get(args, at = i)) {
+        if ty_needs_typed_eq_expanded(Array::get(args, i)) {
           found = true
         } else {
           ()
@@ -375,7 +375,7 @@ fn ty_needs_typed_eq_expanded(_ t: TypeExpr) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(ts) {
-        if ty_needs_typed_eq_expanded(Array::get(ts, at = i)) {
+        if ty_needs_typed_eq_expanded(Array::get(ts, i)) {
           found = true
         } else {
           ()
@@ -417,13 +417,13 @@ export fn infer_earray_elem_type(_ arr: Expr) -> Option[TypeExpr] {
     EArray(elems) => if Array::length(elems) == 0 {
       None
     } else {
-      match Array::get(elems, at = 0) {
+      match Array::get(elems, 0) {
         EInt(_) => Some(TyName("Int")),
         EBool(_) => Some(TyName("Bool")),
         EString(_, _) => Some(TyName("String")),
-        EFloat(_) => Some(TyName("Double")),
-        EArray(_) => match infer_earray_elem_type(Array::get(elems, at = 0)) {
-          Some(inner) => Some(TyApp("Array", Array::slice([inner], start = 0, end = 1))),
+        EFloat(_) => Some(TyName("Float64")),
+        EArray(_) => match infer_earray_elem_type(Array::get(elems, 0)) {
+          Some(inner) => Some(TyApp("Array", Array::slice([inner], 0, 1))),
           None => None
         },
         _ => None
@@ -452,7 +452,7 @@ export fn ty_contains_eq_unknown(_ t: TypeExpr) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(args) {
-        if ty_contains_eq_unknown(Array::get(args, at = i)) {
+        if ty_contains_eq_unknown(Array::get(args, i)) {
           found = true
         } else {
           ()
@@ -465,7 +465,7 @@ export fn ty_contains_eq_unknown(_ t: TypeExpr) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(ts) {
-        if ty_contains_eq_unknown(Array::get(ts, at = i)) {
+        if ty_contains_eq_unknown(Array::get(ts, i)) {
           found = true
         } else {
           ()
@@ -482,13 +482,13 @@ fn generic_record_direct_arg(fields: Array[(String, Expr)], decl_fields: Array[(
   if i >= Array::length(decl_fields) {
     None
   } else {
-    let (decl_name, decl_ty) = Array::get(decl_fields, at = i)
+    let (decl_name, decl_ty) = Array::get(decl_fields, i)
     match decl_ty {
       TyName(n) => if n == param {
         let mut j = 0
         let mut out: Option[TypeExpr] = None
         while j < Array::length(fields) {
-          let (value_name, value_expr) = Array::get(fields, at = j)
+          let (value_name, value_expr) = Array::get(fields, j)
           if value_name == decl_name {
             out = infer_static_eq_type(value_expr)
           } else {
@@ -498,9 +498,9 @@ fn generic_record_direct_arg(fields: Array[(String, Expr)], decl_fields: Array[(
         }
         out
       } else {
-        generic_record_direct_arg(fields = fields, decl_fields = decl_fields, param = param, i = i + 1)
+        generic_record_direct_arg(fields, decl_fields, param, i + 1)
       },
-      _ => generic_record_direct_arg(fields = fields, decl_fields = decl_fields, param = param, i = i + 1)
+      _ => generic_record_direct_arg(fields, decl_fields, param, i + 1)
     }
   }
 }
@@ -509,14 +509,14 @@ export fn infer_generic_record_static(name: String, fields: Array[(String, Expr)
   if i >= Array::length(dtd_eq_generic_structs) {
     None
   } else {
-    let (decl_name, params, decl_fields) = Array::get(dtd_eq_generic_structs, at = i)
+    let (decl_name, params, decl_fields) = Array::get(dtd_eq_generic_structs, i)
     if decl_name == name && Array::length(params) == 1 {
-      match generic_record_direct_arg(fields = fields, decl_fields = decl_fields, param = Array::get(params, at = 0), i = 0) {
-        Some(arg) => Some(TyApp(name, Array::slice([arg], start = 0, end = 1))),
-        None => infer_generic_record_static(name = name, fields = fields, i = i + 1)
+      match generic_record_direct_arg(fields, decl_fields, Array::get(params, 0), 0) {
+        Some(arg) => Some(TyApp(name, Array::slice([arg], 0, 1))),
+        None => infer_generic_record_static(name, fields, i + 1)
       }
     } else {
-      infer_generic_record_static(name = name, fields = fields, i = i + 1)
+      infer_generic_record_static(name, fields, i + 1)
     }
   }
 }
@@ -540,7 +540,7 @@ export fn infer_static_eq_type(_ e: Expr) -> Option[TypeExpr] {
     EInt(_) => Some(TyName("Int")),
     EBool(_) => Some(TyName("Bool")),
     EString(_, _) => Some(TyName("String")),
-    EFloat(_) => Some(TyName("Double")),
+    EFloat(_) => Some(TyName("Float64")),
     EUnit => Some(TyUnit),
     // #2457: an operator expression whose result is an Int / Bool word by
     // construction. A shift or bitwise operator admits only Int operands; a
@@ -580,18 +580,18 @@ export fn infer_static_eq_type(_ e: Expr) -> Option[TypeExpr] {
     ERecord(name, fields, targs) => if generic_eq_struct_declared(name) && Array::length(targs) > 0 {
       Some(TyApp(name, targs))
     } else if generic_eq_struct_declared(name) {
-      infer_generic_record_static(name = name, fields = fields, i = 0)
+      infer_generic_record_static(name, fields, 0)
     } else {
       None
     },
     EArray(elems) => if Array::length(elems) == 0 {
       None
     } else {
-      match infer_static_eq_type(Array::get(elems, at = 0)) {
+      match infer_static_eq_type(Array::get(elems, 0)) {
         Some(t) => if ty_contains_eq_unknown(t) {
           None
         } else {
-          Some(TyApp("Array", Array::slice([t], start = 0, end = 1)))
+          Some(TyApp("Array", Array::slice([t], 0, 1)))
         },
         None => None
       }
@@ -600,16 +600,16 @@ export fn infer_static_eq_type(_ e: Expr) -> Option[TypeExpr] {
       let ts = empty_type_exprs()
       let mut i = 0
       while i < Array::length(es) {
-        match infer_static_eq_type(Array::get(es, at = i)) {
-          Some(t) => Array::push(ts, value = t),
-          None => Array::push(ts, value = TyName("?EqUnknown"))
+        match infer_static_eq_type(Array::get(es, i)) {
+          Some(t) => Array::push(ts, t),
+          None => Array::push(ts, TyName("?EqUnknown"))
         }
         i = i + 1
       }
       Some(TyTuple(ts))
     },
     EIdent(n, _) => if n == "None" {
-      Some(TyApp("Option", Array::slice([TyName("?EqUnknown")], start = 0, end = 1)))
+      Some(TyApp("Option", Array::slice([TyName("?EqUnknown")], 0, 1)))
     } else {
       None
     },
@@ -619,56 +619,56 @@ export fn infer_static_eq_type(_ e: Expr) -> Option[TypeExpr] {
       // shape as the bare forms — they fell through to the name-only path
       // where aggregate payloads word-compare.
       EIdent("Option::Some", _) => if Array::length(args) == 1 {
-        let pt = match infer_static_eq_type(Array::get(args, at = 0)) {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
           None => TyName("?EqUnknown")
         }
-        Some(TyApp("Option", Array::slice([pt], start = 0, end = 1)))
+        Some(TyApp("Option", Array::slice([pt], 0, 1)))
       } else {
         None
       },
       EIdent("Result::Ok", _) => if Array::length(args) == 1 {
-        let pt = match infer_static_eq_type(Array::get(args, at = 0)) {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
           None => TyName("?EqUnknown")
         }
-        Some(TyApp("Result", Array::slice([pt, TyName("?EqUnknown")], start = 0, end = 2)))
+        Some(TyApp("Result", Array::slice([pt, TyName("?EqUnknown")], 0, 2)))
       } else {
         None
       },
       EIdent("Result::Err", _) => if Array::length(args) == 1 {
-        let pt = match infer_static_eq_type(Array::get(args, at = 0)) {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
           None => TyName("?EqUnknown")
         }
-        Some(TyApp("Result", Array::slice([TyName("?EqUnknown"), pt], start = 0, end = 2)))
+        Some(TyApp("Result", Array::slice([TyName("?EqUnknown"), pt], 0, 2)))
       } else {
         None
       },
       EIdent("Some", _) => if Array::length(args) == 1 {
-        let pt = match infer_static_eq_type(Array::get(args, at = 0)) {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
           None => TyName("?EqUnknown")
         }
-        Some(TyApp("Option", Array::slice([pt], start = 0, end = 1)))
+        Some(TyApp("Option", Array::slice([pt], 0, 1)))
       } else {
         None
       },
       EIdent("Ok", _) => if Array::length(args) == 1 {
-        let pt = match infer_static_eq_type(Array::get(args, at = 0)) {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
           None => TyName("?EqUnknown")
         }
-        Some(TyApp("Result", Array::slice([pt, TyName("?EqUnknown")], start = 0, end = 2)))
+        Some(TyApp("Result", Array::slice([pt, TyName("?EqUnknown")], 0, 2)))
       } else {
         None
       },
       EIdent("Err", _) => if Array::length(args) == 1 {
-        let pt = match infer_static_eq_type(Array::get(args, at = 0)) {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
           None => TyName("?EqUnknown")
         }
-        Some(TyApp("Result", Array::slice([TyName("?EqUnknown"), pt], start = 0, end = 2)))
+        Some(TyApp("Result", Array::slice([TyName("?EqUnknown"), pt], 0, 2)))
       } else {
         None
       },
@@ -729,13 +729,13 @@ export fn collect_bare_array_eq_keys(e: Expr, acc: Array[TypeExpr], acc_keys: Ar
         match et {
           Some(t) => {
             let k = type_key(t)
-            if !str_array_contains(arr = acc_keys, val = k) {
-              Array::push(acc, value = t)
-              Array::push(acc_keys, value = k)
+            if !str_array_contains(acc_keys, k) {
+              Array::push(acc, t)
+              Array::push(acc_keys, k)
             } else {
               ()
             }
-            collect_array_elem_types(ty = t, acc = acc, acc_keys = acc_keys)
+            collect_array_elem_types(t, acc, acc_keys)
           },
           None => ()
         }
@@ -743,16 +743,16 @@ export fn collect_bare_array_eq_keys(e: Expr, acc: Array[TypeExpr], acc_keys: Ar
         // nested inside Option/Result/tuple literals (`Some([1,2]) == ...`,
         // `([1,2], 0) == ...`, `[Some(1)] == ...`) — collect them so their
         // `__arr_equals__<key>` helpers exist for `eq_for_typed`'s calls.
-        let sty = infer_static_eq_type_binop(l = l, r = r)
+        let sty = infer_static_eq_type_binop(l, r)
         match sty {
-          Some(t2) => collect_array_elem_types(ty = t2, acc = acc, acc_keys = acc_keys),
+          Some(t2) => collect_array_elem_types(t2, acc, acc_keys),
           None => ()
         }
       } else {
         ()
       }
-      collect_bare_array_eq_keys(e = l, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys(e = r, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(l, acc, acc_keys)
+      collect_bare_array_eq_keys(r, acc, acc_keys)
     },
     EInt(_) => (),
     EFloat(_) => (),
@@ -760,93 +760,93 @@ export fn collect_bare_array_eq_keys(e: Expr, acc: Array[TypeExpr], acc_keys: Ar
     EBool(_) => (),
     EIdent(_, _) => (),
     EUnit => (),
-    ETuple(es) => collect_bare_array_eq_keys_list(es = es, acc = acc, acc_keys = acc_keys),
-    EArray(es) => collect_bare_array_eq_keys_list(es = es, acc = acc, acc_keys = acc_keys),
+    ETuple(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
+    EArray(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
     ERecord(_, fs, _) => {
       let mut i = 0
       while i < Array::length(fs) {
-        let (_, fe) = Array::get(fs, at = i)
-        collect_bare_array_eq_keys(e = fe, acc = acc, acc_keys = acc_keys)
+        let (_, fe) = Array::get(fs, i)
+        collect_bare_array_eq_keys(fe, acc, acc_keys)
         i = i + 1
       }
     },
     EMap(fs) => {
       let mut i = 0
       while i < Array::length(fs) {
-        let (_, fe) = Array::get(fs, at = i)
-        collect_bare_array_eq_keys(e = fe, acc = acc, acc_keys = acc_keys)
+        let (_, fe) = Array::get(fs, i)
+        collect_bare_array_eq_keys(fe, acc, acc_keys)
         i = i + 1
       }
     },
     EIf(c, t, el) => {
-      collect_bare_array_eq_keys(e = c, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys(e = t, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys(e = el, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+      collect_bare_array_eq_keys(t, acc, acc_keys)
+      collect_bare_array_eq_keys(el, acc, acc_keys)
     },
     ELet(_, v, b, _) => {
-      collect_bare_array_eq_keys(e = v, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys(e = b, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
     },
     ELetRec(_, v, b) => {
-      collect_bare_array_eq_keys(e = v, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys(e = b, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
     },
     ELetMut(_, v, b, _) => {
-      collect_bare_array_eq_keys(e = v, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys(e = b, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
     },
     EAssign(_, v, c, _) => {
-      collect_bare_array_eq_keys(e = v, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys(e = c, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(c, acc, acc_keys)
     },
     EAssignOp(_, _, v, c, _) => {
-      collect_bare_array_eq_keys(e = v, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys(e = c, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(c, acc, acc_keys)
     },
     ESeq(a, b) => {
-      collect_bare_array_eq_keys(e = a, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys(e = b, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(a, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
     },
     EMatch(s, arms) => {
-      collect_bare_array_eq_keys(e = s, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys_arms(arms = arms, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(s, acc, acc_keys)
+      collect_bare_array_eq_keys_arms(arms, acc, acc_keys)
     },
     EHandle(s, arms) => {
-      collect_bare_array_eq_keys(e = s, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys_arms(arms = arms, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(s, acc, acc_keys)
+      collect_bare_array_eq_keys_arms(arms, acc, acc_keys)
     },
     EWhile(c, b) => {
-      collect_bare_array_eq_keys(e = c, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys(e = b, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
     },
     ELoop(params, b) => {
       let mut i = 0
       while i < Array::length(params) {
-        let (_, init) = Array::get(params, at = i)
-        collect_bare_array_eq_keys(e = init, acc = acc, acc_keys = acc_keys)
+        let (_, init) = Array::get(params, i)
+        collect_bare_array_eq_keys(init, acc, acc_keys)
         i = i + 1
       }
-      collect_bare_array_eq_keys(e = b, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
     },
     EForIn(_, _, it, b) => {
-      collect_bare_array_eq_keys(e = it, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys(e = b, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(it, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
     },
     ECall(callee, args, _, _) => {
-      collect_bare_array_eq_keys(e = callee, acc = acc, acc_keys = acc_keys)
-      collect_bare_array_eq_keys_list(es = args, acc = acc, acc_keys = acc_keys)
+      collect_bare_array_eq_keys(callee, acc, acc_keys)
+      collect_bare_array_eq_keys_list(args, acc, acc_keys)
     },
-    EUnaryOp(_, x) => collect_bare_array_eq_keys(e = x, acc = acc, acc_keys = acc_keys),
-    EFn(_, _, _, _, _, b) => collect_bare_array_eq_keys(e = b, acc = acc, acc_keys = acc_keys),
-    EDot(o, _, _, _) => collect_bare_array_eq_keys(e = o, acc = acc, acc_keys = acc_keys),
-    ELabeledArg(_, _, b) => collect_bare_array_eq_keys(e = b, acc = acc, acc_keys = acc_keys),
-    EReturn(x) => collect_bare_array_eq_keys(e = x, acc = acc, acc_keys = acc_keys),
+    EUnaryOp(_, x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    EFn(_, _, _, _, _, b) => collect_bare_array_eq_keys(b, acc, acc_keys),
+    EDot(o, _, _, _) => collect_bare_array_eq_keys(o, acc, acc_keys),
+    ELabeledArg(_, _, b) => collect_bare_array_eq_keys(b, acc, acc_keys),
+    EReturn(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
     EBreak(opt) => match opt {
-      Some(x) => collect_bare_array_eq_keys(e = x, acc = acc, acc_keys = acc_keys),
+      Some(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
       None => ()
     },
-    EContinue(es) => collect_bare_array_eq_keys_list(es = es, acc = acc, acc_keys = acc_keys),
-    ESpread(x) => collect_bare_array_eq_keys(e = x, acc = acc, acc_keys = acc_keys),
+    EContinue(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
+    ESpread(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
     _ => ()
   }
 }
@@ -854,7 +854,7 @@ export fn collect_bare_array_eq_keys(e: Expr, acc: Array[TypeExpr], acc_keys: Ar
 fn collect_bare_array_eq_keys_list(es: Array[Expr], acc: Array[TypeExpr], acc_keys: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(es) {
-    collect_bare_array_eq_keys(e = Array::get(es, at = i), acc = acc, acc_keys = acc_keys)
+    collect_bare_array_eq_keys(Array::get(es, i), acc, acc_keys)
     i = i + 1
   }
 }
@@ -862,8 +862,8 @@ fn collect_bare_array_eq_keys_list(es: Array[Expr], acc: Array[TypeExpr], acc_ke
 fn collect_bare_array_eq_keys_arms(arms: Array[(Pat, Expr)], acc: Array[TypeExpr], acc_keys: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    let (_, b) = Array::get(arms, at = i)
-    collect_bare_array_eq_keys(e = b, acc = acc, acc_keys = acc_keys)
+    let (_, b) = Array::get(arms, i)
+    collect_bare_array_eq_keys(b, acc, acc_keys)
     i = i + 1
   }
 }

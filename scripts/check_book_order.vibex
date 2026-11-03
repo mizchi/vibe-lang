@@ -1,0 +1,381 @@
+// The book has ONE reading order, and `book/SUMMARY.md` is it. #3672 ported
+// this gate from check_book_order.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_book_order.vibex -- [--root DIR]
+//
+// It used to have three, which disagreed:
+//
+//   * SUMMARY.md          -- the rendered order, and a sane one
+//   * the file numbering  -- a fossil of an earlier tour (`01_values_functions`
+//                            … `19_a_small_program`)
+//   * the `Next:` footers -- which followed the FILE numbers
+//
+// So a reader following the footer links left the SUMMARY spine at chapter 2
+// and, walking only `Next:`, reached 12 of 20 chapters before hitting a dead
+// end -- never seeing tests, modules, collections, generics or equality. One
+// footer pointed back to chapter 3, making a cycle. check_book_links could not
+// see any of it: every one of those links RESOLVED. Resolving and being right
+// are different questions.
+//
+// The spine is SUMMARY.md's `- [title](en/NN_name.vibe.md)` lines, in order;
+// fewer than 10 means the list's shape changed and this gate can no longer see
+// its subject, so it fails. Checked, per chapter, against its position N:
+//   1. the first `# ` heading starts with its number (`# 0N — ...`; the dash
+//      may be `-`, `—` or `–`)
+//   2. `Previous:` names the SUMMARY predecessor (chapter 1 names the intro,
+//      00_introduction.md)
+//   3. `Next:` names the SUMMARY successor (the last names the appendix,
+//      99_appendix.md)
+// A footer is a line starting `Previous:` / `Next:`, then a `[text](target)`
+// link whose target is a chapter file name, optionally under `../<dir>/`.
+//
+// The SAME three checks run over book/ja/, paired by filename. The translation
+// is not a second spine -- it follows the English one -- but it has its own
+// copy of the heading and the footers, so it drifts on its own. It did: after
+// the English side was repaired, ja/13 still called itself chapter 05 and
+// pointed back to Option, and ja/14 through ja/20 carried NO footer at all, so
+// the Japanese book simply stopped at chapter 13 (#2156 review). Japanese
+// chapters spell the footers `前:` / `次:`. A chapter with no translation is
+// skipped here: that is check_tutorial_translation_parity.vibex's question.
+//
+// Not checked: prose link mentions inside a chapter body. Those are
+// cross-references, not the spine, and a chapter may legitimately point
+// forward to where a topic is finished. --root DIR checks another tree (the
+// self-test's).
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/process {
+  exit
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn under(root: String, rel: String) -> String {
+  if root == "." {
+    rel
+  } else {
+    "\{root}/\{rel}"
+  }
+}
+
+fn is_digit(c: Char) -> Bool {
+  c >= '0' && c <= '9'
+}
+
+fn is_lower_or_underscore(c: Char) -> Bool {
+  (c >= 'a' && c <= 'z') || c == '_'
+}
+
+fn is_blank(c: Char) -> Bool {
+  let code = Char::to_int(c)
+  c == ' ' || (code >= 9 && code <= 13)
+}
+
+fn rest_of(s: String, at: Int) -> String {
+  String::substring(s, at, String::length(s))
+}
+
+/// The end of `NN_name` followed by `suffix`, starting at `at`, or -1.
+/// `NN` is two digits and `name` is `[a-z_]+`.
+fn chapter_name_end(s: String, at: Int, suffixes: Array[String]) -> Int {
+  let n = String::length(s)
+  if at + 3 > n || !is_digit(String::byte_at(s, at)) || !is_digit(String::byte_at(s, at + 1)) || String::byte_at(s, at + 2) != '_' {
+    -1
+  } else {
+    let mut k = at + 3
+    while k < n && is_lower_or_underscore(String::byte_at(s, k)) {
+      k = k + 1
+    }
+    let mut end = -1
+    if k > at + 3 {
+      let mut x = 0
+      while x < Array::length(suffixes) {
+        if end < 0 && String::starts_with(rest_of(s, k), Array::get(suffixes, x)) {
+          end = k + String::length(Array::get(suffixes, x))
+        } else {
+          ()
+        }
+        x = x + 1
+      }
+    } else {
+      ()
+    }
+    end
+  }
+}
+
+/// SUMMARY.md's `- [title](en/NN_name.vibe.md)` lines: the chapter file names,
+/// in order.
+fn spine(summary: String) -> Array[String] {
+  let out: Array[String] = []
+  let lines = String::split(summary, "\n")
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, "- [") {
+      let close = String::index_of_from(line, "](en/", 3)
+      // `[^\]]+`: one or more characters, none of them `]`.
+      let first_close = String::index_of_from(line, "]", 3)
+      if close > 3 && close == first_close {
+        let at = close + 5
+        let end = chapter_name_end(line, at, [".vibe.md)"])
+        if end > 0 {
+          Array::push(out, String::substring(line, at, end - 1))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The chapter a `<kw>:` footer links to, or "" when no footer does: the first
+/// line starting `<kw>:`, then blanks (newlines included), then a
+/// `[text](target)` link to `[../dir/]NN_name.md` or `.vibe.md`.
+fn footer_target(body: String, kw: String) -> String {
+  let n = String::length(body)
+  let head = "\{kw}:"
+  let mut found = ""
+  let mut start = 0
+  while start < n && found == "" {
+    let eol = String::index_of_from(body, "\n", start)
+    let line_end = if eol < 0 {
+      n
+    } else {
+      eol
+    }
+    if String::starts_with(rest_of(body, start), head) {
+      let mut p = start + String::length(head)
+      while p < n && is_blank(String::byte_at(body, p)) {
+        p = p + 1
+      }
+      if p < n && String::byte_at(body, p) == '[' {
+        let close = String::index_of_from(body, "]", p + 1)
+        if close >= 0 && close + 1 < n && String::byte_at(body, close + 1) == '(' {
+          let mut t = close + 2
+          // An optional `../<dir>/`.
+          if String::starts_with(rest_of(body, t), "../") {
+            let mut d = t + 3
+            while d < n && String::byte_at(body, d) >= 'a' && String::byte_at(body, d) <= 'z' {
+              d = d + 1
+            }
+            if d > t + 3 && d < n && String::byte_at(body, d) == '/' {
+              t = d + 1
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          let end = chapter_name_end(body, t, [".vibe.md)", ".md)"])
+          if end > 0 {
+            found = String::substring(body, t, end - 1)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    start = line_end + 1
+  }
+  found
+}
+
+/// The digits a `# NN — ...` heading starts with, as written, or "".
+fn heading_digits(h1: String) -> String {
+  let n = String::length(h1)
+  let mut p = 1
+  let mut blanks = 0
+  while p < n && is_blank(String::byte_at(h1, p)) {
+    p = p + 1
+    blanks = blanks + 1
+  }
+  let digits_start = p
+  while p < n && is_digit(String::byte_at(h1, p)) {
+    p = p + 1
+  }
+  let digits = String::substring(h1, digits_start, p)
+  if blanks == 0 || digits == "" {
+    ""
+  } else {
+    while p < n && is_blank(String::byte_at(h1, p)) {
+      p = p + 1
+    }
+    let rest = rest_of(h1, p)
+    if String::starts_with(rest, "-") || String::starts_with(rest, "—") || String::starts_with(rest, "–") {
+      digits
+    } else {
+      ""
+    }
+  }
+}
+
+fn two_digits(n: Int) -> String {
+  if n < 10 {
+    "0\{n}"
+  } else {
+    "\{n}"
+  }
+}
+
+fn first_h1(body: String) -> String {
+  let lines = String::split(body, "\n")
+  let mut out = ""
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(lines) && !found {
+    if String::starts_with(Array::get(lines, i), "# ") {
+      out = Array::get(lines, i)
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn digits_value(digits: String) -> Int {
+  let mut value = 0
+  let mut i = 0
+  while i < String::length(digits) {
+    value = value * 10 + (Char::to_int(String::byte_at(digits, i)) - 48)
+    i = i + 1
+  }
+  value
+}
+
+fn trim(s: String) -> String {
+  String::trim(s)
+}
+
+/// The three checks over one language's copy of the spine.
+fn check_spine(root: String, chapters: Array[String], prefix: String, prev_kw: String, next_kw: String, required: Bool, fails: Array[String]) -> Unit with Fs::is_file + Fs::read_file {
+  let mut i = 0
+  while i < Array::length(chapters) {
+    let name = Array::get(chapters, i)
+    let path = under(root, "book/\{prefix}/\{name}")
+    if !Fs::is_file(path) {
+      if required {
+        Array::push(fails, "\{prefix}/\{name}: listed in SUMMARY.md but not on disk")
+      } else {
+        ()
+      }
+    } else {
+      let body = Fs::read_file(path)
+      let n = i + 1
+      let h1 = first_h1(body)
+      let digits = heading_digits(h1)
+      if digits == "" {
+        let got = if trim(h1) == "" {
+          "(no H1)"
+        } else {
+          trim(h1)
+        }
+        Array::push(fails, "\{prefix}/\{name}: the H1 must start with its chapter number (want `# \{two_digits(n)} — …`), got: \{got}")
+      } else if digits_value(digits) != n {
+        Array::push(fails, "\{prefix}/\{name}: H1 says chapter \{digits}, but SUMMARY.md places it at \{n}. SUMMARY is the order; renumber the heading.")
+      } else {
+        ()
+      }
+      let want_prev = if i > 0 {
+        Array::get(chapters, i - 1)
+      } else {
+        "00_introduction.md"
+      }
+      let want_next = if i + 1 < Array::length(chapters) {
+        Array::get(chapters, i + 1)
+      } else {
+        "99_appendix.md"
+      }
+      let got_prev = footer_target(body, prev_kw)
+      let got_next = footer_target(body, next_kw)
+      if got_prev != want_prev {
+        let shown = if got_prev == "" {
+          "(absent)"
+        } else {
+          got_prev
+        }
+        Array::push(fails, "\{prefix}/\{name}: \{prev_kw}: is \{shown}, want \{want_prev}")
+      } else {
+        ()
+      }
+      if got_next != want_next {
+        let shown = if got_next == "" {
+          "(absent)"
+        } else {
+          got_next
+        }
+        Array::push(fails, "\{prefix}/\{name}: \{next_kw}: is \{shown}, want \{want_next}")
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+}
+
+fn main allows Env + Fs::is_file + Fs::read_file + Console::write_stream + Stderr::write_stream + Process {
+  let root = option("--root", ".")
+  let summary_path = under(root, "book/SUMMARY.md")
+  let chapters = if Fs::is_file(summary_path) {
+    spine(Fs::read_file(summary_path))
+  } else {
+    []
+  }
+  if Array::length(chapters) < 10 {
+    Stderr::write_stream("book-order: FAIL: read only \{Array::length(chapters)} chapters out of SUMMARY.md -- the list shape changed and this gate can no longer see its subject\n")
+    exit(1)
+  } else {
+    let fails: Array[String] = []
+    check_spine(root, chapters, "en", "Previous", "Next", true, fails)
+    check_spine(root, chapters, "ja", "前", "次", false, fails)
+    if Array::length(fails) > 0 {
+      let mut f = 0
+      while f < Array::length(fails) {
+        Stderr::write_stream("book-order: FAIL: \{Array::get(fails, f)}\n")
+        f = f + 1
+      }
+      Stderr::write_stream("book-order: \{Array::length(fails)} chapter(s) disagree with book/SUMMARY.md\n")
+      exit(1)
+    } else {
+      let mut ja_seen = 0
+      let mut j = 0
+      while j < Array::length(chapters) {
+        if Fs::is_file(under(root, "book/ja/\{Array::get(chapters, j)}")) {
+          ja_seen = ja_seen + 1
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      Console::write_stream("book-order: ok (\{Array::length(chapters)} en chapters + \{ja_seen} ja follow book/SUMMARY.md, headings and prev/next included)\n")
+    }
+  }
+}

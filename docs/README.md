@@ -18,7 +18,7 @@ same change as the document.
 [user/reference/cheatsheet.md](user/reference/cheatsheet.md).
 
 `book/` stays at the top level and `docs/user/` links to it rather than
-containing it: it has its own gates (`scripts/check_book_links.sh`,
+containing it: it has its own gates (`scripts/check_book_links.vibex`,
 `scripts/vibe_md.sh check`, `scripts/check_tutorial_translation_parity.vibex`) and
 external links to The Vibe Book (decided in #2565).
 

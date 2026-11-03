@@ -1,0 +1,61 @@
+import ../type_db.vibe {
+  TypeDb, db_new, db_set_source, db_typecheck
+}
+
+import @vibe/compiler/runtime {
+  set_collect_module_diagnostics
+}
+
+// #1872 boundary 2: the in-memory type db runs the shared module walk
+// (`run_module_typecheck_walk`, #3702) with the db as its source provider, so
+// it orders and steps modules the way the filesystem lane does. It must also
+// honour `set_collect_module_diagnostics` the way that lane does: it used to
+// pass `false` to the walk and stop at the first diagnostic whatever the
+// caller asked for.
+
+fn with_sources(_ files: Array[(String, String)]) -> TypeDb {
+  let mut db = db_new()
+  for entry in files {
+    let (path, source) = entry
+    db = db_set_source(db, path, source)
+  }
+  db
+}
+
+fn typecheck_error(db: TypeDb, path: String) -> String with Env {
+  handle {
+    let _ = db_typecheck(db, path)
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+fn two_bad_leaves() -> TypeDb {
+  with_sources([
+    ("main.vibe", "import ./alpha.vibe { a }\nimport ./beta.vibe { b }\nexport fn m() -> Int { a() + b() }\n"),
+    ("alpha.vibe", "export fn a() -> Int { \"one\" }\n"),
+    ("beta.vibe", "export fn b() -> Int { true }\n")
+  ])
+}
+
+test "collecting reports every independent module's diagnostic" {
+  // Both leaves are diagnosed, in canonical (path) order, and `main` --
+  // blocked by both rather than broken -- adds nothing of its own.
+  set_collect_module_diagnostics(true)
+  let err = typecheck_error(two_bad_leaves(), "main.vibe")
+  // Restored before the assertion: the cell is process-global.
+  set_collect_module_diagnostics(false)
+  inspect(err, "return type mismatch: expected Int, got String [@off=23:28]\nreturn type mismatch: expected Int, got Bool [@fn=b]")
+}
+
+test "without collecting, the walk stops at the first diagnostic" {
+  inspect(typecheck_error(two_bad_leaves(), "main.vibe"), "return type mismatch: expected Int, got String [@off=23:28]")
+}
+
+test "an import cycle is refused with the whole cycle" {
+  let db = with_sources([
+    ("main.vibe", "import ./a.vibe { fa }\nexport fn m() -> Int { fa() }\n"),
+    ("a.vibe", "import ./b.vibe { fb }\nexport fn fa() -> Int { fb() }\n"),
+    ("b.vibe", "import ./a.vibe { fa }\nexport fn fb() -> Int { fa() }\n")
+  ])
+  inspect(typecheck_error(db, "main.vibe"), "break this import cycle -- move what these modules share into a module that imports none of them: a.vibe imports b.vibe imports a.vibe (import cycle)")
+}

@@ -93,13 +93,17 @@ echo "[host-stream-value-probe-gate] 42: bytes delivered one at a time, end-of-s
 # 0.8 * 3 * DELAY_MS pins that the parks genuinely suspended and resumed.
 DELAY_MS=60
 LOG2="$OUT_DIR/run_delayed.log"
-t0=$(date +%s%3N)
+# Milliseconds from nanoseconds, the spelling every other timed gate here uses.
+# `%3N` (a width on %N) is a GNU extension: on the ubuntu-26.04 runner, whose
+# `date` is uutils, this gate measured "-287ms" while the `%s%N` gates in the
+# same job read their usual times (#3753).
+t0=$(( $(date +%s%N) / 1000000 ))
 if ! VIBE_ASYNC_STREAMS="body=10|15|17@${DELAY_MS}" run_bounded 60 "$RUNNER" "$COMPONENT" >"$LOG2" 2>&1; then
   echo "host stream value probe gate FAILED: delayed run did not exit 0 (BLOCKED/park path)" >&2
   cat "$LOG2" >&2
   exit 1
 fi
-t1=$(date +%s%3N)
+t1=$(( $(date +%s%N) / 1000000 ))
 GOT2="$(cat "$LOG2")"
 WALL=$(( t1 - t0 ))
 MIN_MS=$(( 3 * DELAY_MS * 8 / 10 ))

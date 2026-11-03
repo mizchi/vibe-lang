@@ -1,0 +1,58 @@
+import @vibe/ast {
+  Expr, TypeExpr
+}
+import @vibe/compiler/core {
+  rewrite_import_alias_expr
+}
+
+// #3749 review: an import item is kept as written (`{ Double as D }`, since a
+// bare `Double` may be a constructor), but every pass after the parser knows a
+// float namespace only as `Float64::` / `Float32::` and the legacy conversions
+// only by their width names. The alias rewrite used to splice the item's
+// spelling back in, so `D::floor` reached code generation as `Double::floor`
+// and the build stopped with an internal compiler error.
+
+fn ident_of(_ e: Expr) -> String {
+  match e {
+    EIdent(n, _) => n,
+    _ => "<not an identifier>"
+  }
+}
+
+fn aliases() -> Array[(String, String)] {
+  [("D", "Double"), ("F", "Float"), ("I", "Int"), ("Twice", "Double")]
+}
+
+fn rewritten(_ name: String) -> String {
+  ident_of(rewrite_import_alias_expr(expr = EIdent(name, 0), aliases = aliases()))
+}
+
+test "an aliased float namespace is rewritten to its canonical head" {
+  inspect(rewritten("D::floor"), content = "Float64::floor")
+  inspect(rewritten("F::abs"), content = "Float32::abs")
+}
+
+test "an aliased legacy conversion is rewritten to its width name" {
+  inspect(rewritten("D::to_float"), content = "Float64::to_float32")
+  inspect(rewritten("F::to_double"), content = "Float32::to_float64")
+  inspect(rewritten("I::to_double"), content = "Int::to_float64")
+  inspect(rewritten("I::to_float"), content = "Int::to_float32")
+  inspect(rewritten("I::to_string"), content = "Int::to_string")
+}
+
+test "a bare alias keeps the item's spelling, which may name a constructor" {
+  inspect(rewritten("Twice"), content = "Double")
+  inspect(rewritten("D"), content = "Double")
+}
+
+test "an aliased float type in an annotation is the canonical type" {
+  let lambda = EFn([], [], [("x", Some(TyName("F")))], Some(TyApp("D", [])), None, EIdent("x", 0))
+  match rewrite_import_alias_expr(expr = lambda, aliases = aliases()) {
+    EFn(_, _, params, ret, _, _) => {
+      let (_, ty) = Array::get(params, at = 0)
+      inspect(ty == Some(TyName("Float32")), content = "true")
+      inspect(ret == Some(TyApp("Float64", [])), content = "true")
+    },
+    _ => assert(false)
+  }
+}

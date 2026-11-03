@@ -202,6 +202,18 @@ test "symbol_spans: an impl is located after `for`, so `impl T for T` names the 
   inspect(String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", __to_string(s))))), "Show 6 52")
 }
 
+test "symbol_spans: a declaration spelled with a legacy float name is located (#3728)" {
+  // The parser names `impl Hash for Double` after the canonical `Float64`
+  // and `fn Double::to_float` as `Float64::to_float32`, while the tokens
+  // still say `Double` / `to_float`. Before the scan read the canonical
+  // spelling, both rows were dropped and their docs with them.
+  let src = "trait Hash { }\nimpl Hash for Double { }\nimpl Hash for f32 { }\nfn Double::to_float(x: Int) -> Int { x }\n"
+  let syms = symbol_spans(src)
+  inspect(sym_fmt(syms), "Hash 11, Float64 6, Float32 6, Float64::to_float32 12")
+  let (_, _, s, e) = Array::get(syms, 3)
+  inspect(String::substring(src, s, e), "Double::to_float")
+}
+
 test "symbol_spans: empty test/bench names emit the keyword so outline is not empty (#1944)" {
   // The parser rejects unnamed `test { }` / `bench { }` (needs a string
   // literal). An empty string is the stable stand-in for that missing name.

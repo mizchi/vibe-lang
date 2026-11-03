@@ -39,29 +39,29 @@ fn sum_call() -> String {
 
 test "an Add with differently typed operands is refused at Float" {
   let src = "trait Add { add(Int, Int) -> Int }\nimpl Add for Float { add(a: Int, b: Int) -> Int { a + b } }\n" + sum_call()
-  inspect(String::contains(diagnostics(src), needle = "no impl `Add` for `Float`"), content = "true")
+  inspect(String::contains(diagnostics(src), "no impl `Add` for `Float32`"), content = "true")
 }
 
 test "an Add returning a different type is refused at Float" {
   let src = "trait Add { add(Self, Self) -> Int }\nimpl Add for Float { add(a: Float, b: Float) -> Int { 0 } }\n" + sum_call()
-  inspect(String::contains(diagnostics(src), needle = "no impl `Add` for `Float`"), content = "true")
+  inspect(String::contains(diagnostics(src), "no impl `Add` for `Float32`"), content = "true")
 }
 
 test "an operator cannot supply a method's additional type parameter" {
   let src = "trait Add { add: [U: Eq](Self, Self) -> Self }\nimpl Add for Float { add[U: Eq](a: Float, b: Float) -> Float { a + b } }\n" + sum_call()
-  inspect(String::contains(diagnostics(src), needle = "no impl `Add` for `Float`"), content = "true")
+  inspect(String::contains(diagnostics(src), "no impl `Add` for `Float32`"), content = "true")
 }
 
 test "a wrong first inherited add cannot authorize boxed arithmetic" {
   let src = "trait Bad { add(Int, Int) -> Int }\ntrait Key: Bad + Add\nimpl Key for Float { add(a: Int, b: Int) -> Int { a + b } }\nfn sum[T: Key](a: T, b: T) -> T { a + b }\nlet value = sum(0.1f, 0.2f)\n"
-  inspect(String::contains(diagnostics(src), needle = "no impl `Add` for `Float`"), content = "true")
+  inspect(String::contains(diagnostics(src), "no impl `Add` for `Float32`"), content = "true")
 }
 
 fn inherited_owner(_ supers: String) -> String with Exception {
   let src = "trait Add { add(Self, Self) -> Self }\ntrait Weird { add(Self, Self) -> Self }\ntrait Key: " + supers + "\nfn sum[T: Key](a: T, b: T) -> T { a + b }\n"
   let stmts = parse_program(lex(src))
   desugar_trait_dicts(stmts)
-  trait_method_declaring_owner(trait_name = "Key", method = "add")
+  trait_method_declaring_owner("Key", "add")
 }
 
 test "declaring-owner cache belongs to one program" {
@@ -72,10 +72,10 @@ test "declaring-owner cache belongs to one program" {
 
 test "operator bound reachability terminates on cycles" {
   let env = EnvTraitDef("Loop", ["Loop"], true, [], EnvEmpty, [], [])
-  inspect(bound_entails_trait(env = env, bound = "Loop", wanted = "Add"), content = "false")
-  inspect(bound_entails_trait(env = env, bound = "Loop", wanted = "Ord"), content = "false")
+  inspect(bound_entails_trait(env, "Loop", "Add"), content = "false")
+  inspect(bound_entails_trait(env, "Loop", "Ord"), content = "false")
   let linked = EnvTraitDef("Key", ["Loop", "Add"], true, [], env, [], [])
-  inspect(bound_entails_trait(env = linked, bound = "Key", wanted = "Add"), content = "true")
+  inspect(bound_entails_trait(linked, "Key", "Add"), content = "true")
 }
 
 test "bare result correspondence does not authorize nested witnesses" {
@@ -84,10 +84,9 @@ test "bare result correspondence does not authorize nested witnesses" {
   let nested = ECall(EIdent("pick", -1), [
     ECall(EIdent("Some", -1), [EInt(1)], -1, [])
   ], -1, [])
-  inspect(match infer_impl_target_expr(arg = scalar, struct_sets = [], var_types = [
-  ], fn_returns = returns) {
+  inspect(match infer_impl_target_expr(scalar, [], [], returns) {
     Some(TyName(name)) => name == "Int",
     _ => false
   }, content = "true")
-  inspect(infer_impl_target_expr(arg = nested, struct_sets = [], var_types = [], fn_returns = returns) is None, content = "true")
+  inspect(infer_impl_target_expr(nested, [], [], returns) is None, content = "true")
 }

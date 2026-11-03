@@ -1,0 +1,418 @@
+// vibe-lang naming-consistency lint (#1189, ADR-0081 "wave 2"): every
+// package-owned type X's exported "recv-shaped" function --
+// `fn name(recv: X, ...) -> ...` -- should have a `Type::name` qualified
+// companion. That's what a `recv.name(...)` dot call resolves to
+// (desugar_trait_dict.vibe) and what `vibe normalize` rewrites bare dot
+// calls back to (#1194): a bare-only name is invisible to both. #3672 ported
+// this lint from lint_method_style_naming.sh.
+//
+//   bash scripts/vibe_run.sh scripts/lint_method_style_naming.vibex -- [--root DIR]
+//
+// Scope: every index.vpkg under lib/@vibe/ and lib/@vibex/, nested packages
+// included, EXCLUDING lib/@vibe/compiler/ and lib/@vibe/cli/. Those two
+// pervasively thread a big internal ctx/dispatch-state struct as a first
+// parameter across hundreds of functions that are compiler-internal plumbing,
+// not public "UFCS-style" API -- flagging those would be almost entirely false
+// positives, so this lint doesn't look at compiler-internal code at all rather
+// than trying to distinguish ctx params heuristically (the blocker named in
+// #1189's note).
+//
+// Only index.vpkg CONTRACT files are scanned, not raw impl .vibe sources: each
+// package's index.vpkg is its authoritative, single-line-per-fn public surface
+// listing, so it's both the right scope (only PUBLIC API matters for dot-call
+// discoverability) and a far more regular format to parse reliably than
+// arbitrary source spread across many impl files.
+//
+// What is read, per contract:
+//   - owned types: a line starting `type`, `struct` or `enum` (after an
+//     optional `export ` and `opaque `) and a capitalized name, minus the
+//     language's own primitives. A contract may re-declare `type Int` /
+//     `type String` / ... so it reads as a self-contained surface --
+//     @vibe/builtin does -- but re-declaring a name is not owning it: the
+//     `Int::` / `String::` namespaces belong to builtin_registry.vibe, and no
+//     package can add to them. Counting them made every
+//     `fn f(s: String, ...)` in prelude a gap wanting a `String::f` companion,
+//     which is not a function anyone can write.
+//   - companions: `fn Type::name` for an owned Type.
+//   - recv-shaped functions: `fn name(recv: Type...` where Type is owned,
+//     optionally followed by one `[...]` argument list, then `,` or `)`. The
+//     receiver may be positional (`fn name(_ recv: Type ...)`): ADR-0120
+//     (#3723) respelled most stdlib receivers that way, and the shell lint's
+//     pattern stopped seeing them -- 80 functions, all of them already on the
+//     allowlist, so the lint kept saying ok while checking less.
+//
+// This is a RATCHET: scripts/method_style_naming_allowlist.txt grandfathers
+// the gaps that predate the lint (`<index.vpkg path>\t<bare fn name>`, with
+// an optional third column of notes). New gaps that aren't in the allowlist
+// fail; an allowlisted name that now has its companion is reported, so the
+// list can shrink.
+//
+// Known heuristic limitation (documented, not "fixed" -- see the allowlist
+// comments for real examples): the companion name is assumed to be
+// `Type::exact_same_name`. Some existing bare names use a different lowercase
+// prefix than the type name itself (`set_union` -> `StringSet::union`), or
+// the semantically correct qualifier isn't the first parameter's type at all
+// (@vibe/json's `stringify_error(id: RpcId, ...)` is intentionally
+// `RpcMessage::stringify_error`). Both read as heuristic "violations" here;
+// they're allowlisted with a note rather than taught to the matcher.
+//
+// --root DIR lints another tree (the self-test's); its allowlist is
+// DIR/scripts/method_style_naming_allowlist.txt.
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/process {
+  exit
+}
+import @vibex/shell {
+  find, sort_str
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn contains(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == x {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn is_upper(c: Char) -> Bool {
+  c >= 'A' && c <= 'Z'
+}
+
+fn is_ident_start(c: Char) -> Bool {
+  (c >= 'a' && c <= 'z') || is_upper(c) || c == '_'
+}
+
+fn is_ident(c: Char) -> Bool {
+  is_ident_start(c) || (c >= '0' && c <= '9')
+}
+
+/// The end of the identifier starting at `at`, or `at` when there is none.
+fn ident_end(s: String, at: Int) -> Int {
+  if at < String::length(s) && is_ident_start(String::byte_at(s, at)) {
+    let mut j = at + 1
+    while j < String::length(s) && is_ident(String::byte_at(s, j)) {
+      j = j + 1
+    }
+    j
+  } else {
+    at
+  }
+}
+
+/// The end of the capitalized name starting at `at`, or `at`.
+fn type_end(s: String, at: Int) -> Int {
+  if at < String::length(s) && is_upper(String::byte_at(s, at)) {
+    ident_end(s, at)
+  } else {
+    at
+  }
+}
+
+fn skip_word(s: String, at: Int, word: String) -> Int {
+  if String::starts_with(String::substring(s, at, String::length(s)), word) {
+    at + String::length(word)
+  } else {
+    at
+  }
+}
+
+fn primitives() -> Array[String] {
+  [
+    "Int",
+    "Float",
+    "Double",
+    "Bool",
+    "String",
+    "Char",
+    "Unit",
+    "Bytes",
+    "Array",
+    "Option"
+  ]
+}
+
+/// The type a declaration line introduces, or "".
+fn declared_type(line: String) -> String {
+  let a = skip_word(line, 0, "export ")
+  let b = skip_word(line, a, "opaque ")
+  let mut c = b
+  let kinds = ["type ", "struct ", "enum "]
+  let mut k = 0
+  while k < Array::length(kinds) {
+    let next = skip_word(line, b, Array::get(kinds, k))
+    if next > b {
+      c = next
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  let end = type_end(line, c)
+  if c == b || end == c {
+    ""
+  } else {
+    String::substring(line, c, end)
+  }
+}
+
+/// `Type::name` for a `fn Type::name` line over an owned type, or "".
+fn companion(line: String, types: Array[String]) -> String {
+  if !String::starts_with(line, "fn ") {
+    ""
+  } else {
+    let sep = String::index_of_from(line, "::", 3)
+    if sep < 0 {
+      ""
+    } else {
+      let ty = String::substring(line, 3, sep)
+      let end = ident_end(line, sep + 2)
+      if contains(types, ty) && end > sep + 2 {
+        "\{ty}::\{String::substring(line, sep + 2, end)}"
+      } else {
+        ""
+      }
+    }
+  }
+}
+
+/// (name, receiver type) for a recv-shaped `fn` line over an owned type, or
+/// ("", "").
+fn recv_shaped(line: String, types: Array[String]) -> (String, String) {
+  let none = ("", "")
+  if !String::starts_with(line, "fn ") {
+    none
+  } else {
+    let name_end = ident_end(line, 3)
+    if name_end == 3 || name_end >= String::length(line) || String::byte_at(line, name_end) != '(' {
+      none
+    } else {
+      // An optional positional marker, then the parameter name and `: `.
+      let p0 = skip_word(line, name_end + 1, "_ ")
+      let p_end = ident_end(line, p0)
+      let t0 = skip_word(line, p_end, ": ")
+      if p_end == p0 || t0 == p_end {
+        none
+      } else {
+        let t_end = type_end(line, t0)
+        let ty = String::substring(line, t0, t_end)
+        let n = String::length(line)
+        // One `[...]` argument list (no `]` inside it), then `,` or `)`.
+        let after = if t_end < n && String::byte_at(line, t_end) == '[' {
+          let close = String::index_of_from(line, "]", t_end)
+          if close < 0 {
+            n
+          } else {
+            close + 1
+          }
+        } else {
+          t_end
+        }
+        if t_end > t0 && contains(types, ty) && after < n && (String::byte_at(line, after) == ',' || String::byte_at(line, after) == ')') {
+          (String::substring(line, 3, name_end), ty)
+        } else {
+          none
+        }
+      }
+    }
+  }
+}
+
+/// The (path, name) pairs on the allowlist.
+fn allowlist(text: String) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  let lines = String::split(text, "\n")
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if line != "" && !String::starts_with(line, "#") {
+      let cells = String::split(line, "\t")
+      if Array::length(cells) >= 2 {
+        Array::push(out, (Array::get(cells, 0), Array::get(cells, 1)))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn is_allowed(allowed: Array[(String, String)], path: String, name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(allowed) && !found {
+    let (p, n) = Array::get(allowed, i)
+    if p == path && n == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The in-scope contracts, as root-relative paths, sorted.
+fn contracts(root: String) -> Array[String] with Fs {
+  let out: Array[String] = []
+  let prefix = "\{root}/"
+  let dirs = ["lib/@vibe", "lib/@vibex"]
+  let mut d = 0
+  while d < Array::length(dirs) {
+    let dir = "\{root}/\{Array::get(dirs, d)}"
+    if Fs::is_dir(dir) {
+      let entries = find(dir)
+      let mut i = 0
+      while i < Array::length(entries) {
+        let entry = Array::get(entries, i)
+        if !entry.is_dir && entry.name == "index.vpkg" {
+          let rel = if String::starts_with(entry.path, prefix) {
+            String::substring(entry.path, String::length(prefix), String::length(entry.path))
+          } else {
+            entry.path
+          }
+          // A package's own index.vpkg, at least one directory below the
+          // scope root, outside the compiler and the CLI.
+          let depth_ok = String::index_of_from(rel, "/", String::length(Array::get(dirs, d)) + 1) >= 0
+          if depth_ok && !String::starts_with(rel, "lib/@vibe/compiler/") && !String::starts_with(rel, "lib/@vibe/cli/") {
+            Array::push(out, rel)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    } else {
+      ()
+    }
+    d = d + 1
+  }
+  sort_str(out)
+}
+
+fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process {
+  let root = option("--root", ".")
+  let allow_path = "\{root}/scripts/method_style_naming_allowlist.txt"
+  let allowed = if Fs::is_file(allow_path) {
+    allowlist(Fs::read_file(allow_path))
+  } else {
+    []
+  }
+  let vpkgs = contracts(root)
+  if Array::length(vpkgs) == 0 {
+    Stderr::write_stream("method-style-naming lint: no index.vpkg files found under lib/@vibe or lib/@vibex\n")
+    exit(1)
+  } else {
+    let violations: Array[String] = []
+    let stale: Array[String] = []
+    let mut checked = 0
+    let mut known_debt = 0
+    let mut v = 0
+    while v < Array::length(vpkgs) {
+      let vpkg = Array::get(vpkgs, v)
+      let lines = String::split(Fs::read_file("\{root}/\{vpkg}"), "\n")
+      let types: Array[String] = []
+      let mut i = 0
+      while i < Array::length(lines) {
+        let ty = declared_type(Array::get(lines, i))
+        if ty != "" && !contains(primitives(), ty) {
+          Array::push(types, ty)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if Array::length(types) > 0 {
+        let qualified: Array[String] = []
+        let mut q = 0
+        while q < Array::length(lines) {
+          let c = companion(Array::get(lines, q), types)
+          if c != "" {
+            Array::push(qualified, c)
+          } else {
+            ()
+          }
+          q = q + 1
+        }
+        let mut r = 0
+        while r < Array::length(lines) {
+          let (name, ty) = recv_shaped(Array::get(lines, r), types)
+          if name != "" {
+            checked = checked + 1
+            let is_gap = !contains(qualified, "\{ty}::\{name}")
+            let listed = is_allowed(allowed, vpkg, name)
+            if is_gap && listed {
+              known_debt = known_debt + 1
+            } else if is_gap {
+              Array::push(violations, "\{vpkg}: \{name}(recv: \{ty}, ...)")
+            } else if listed {
+              Array::push(stale, "\{vpkg} \{name}")
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          r = r + 1
+        }
+      } else {
+        ()
+      }
+      v = v + 1
+    }
+    if Array::length(stale) > 0 {
+      Stderr::write_stream("method-style-naming lint: note -- these allowlist entries now have a Type::method companion; remove them from \{allow_path} to shrink the ratchet:\n")
+      let mut s = 0
+      while s < Array::length(stale) {
+        Stderr::write_stream("  \{Array::get(stale, s)}\n")
+        s = s + 1
+      }
+    } else {
+      ()
+    }
+    if Array::length(violations) > 0 {
+      Stderr::write_stream("method-style-naming lint: found \{Array::length(violations)} new function(s) without a Type::method companion:\n")
+      let mut k = 0
+      while k < Array::length(violations) {
+        Stderr::write_stream("  \{Array::get(violations, k)}\n")
+        k = k + 1
+      }
+      Stderr::write_stream("method-style-naming lint: add an export fn Type::name(recv, ...) companion, or a justified entry in \{allow_path}\n")
+    } else {
+      ()
+    }
+    Console::write_stream("method-style-naming lint: checked \{checked} recv-shaped fn(s) across \{Array::length(vpkgs)} package(s) (\{known_debt} known debt, \{Array::length(violations)} new violations)\n")
+    if Array::length(violations) > 0 {
+      exit(1)
+    } else {
+      ()
+    }
+  }
+}

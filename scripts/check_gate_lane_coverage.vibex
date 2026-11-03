@@ -1,0 +1,289 @@
+// A caller that ENUMERATES compiler-gate lanes must name them all. #3672
+// ported this gate from check_gate_lane_coverage.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_gate_lane_coverage.vibex -- [--root DIR]
+//
+// scripts/compiler_gate.sh with no arguments runs every lane in GATE_LANES. A
+// caller that passes lanes explicitly pins the set at the moment it was
+// written, so adding a lane leaves that caller running the old set --
+// silently, because the caller still succeeds.
+//
+// That happened the day the `selftests` lane landed (#2650 review): the CI
+// matrix selected it, `Taskfile.pkl`'s post-generation-gate still said
+// `compiler_gate.sh early mid late`, and so the documented `pkf run full-gate`
+// path stopped running the gate self-test ratchet entirely. Same shape as
+// #2580, where three gates went dark and no gate noticed.
+//
+// The lanes are the words of the first `GATE_LANES="..."` line in
+// tests/gates/lib.sh. The callers are Taskfile.pkl and
+// .github/workflows/ci.yml: the workflow is a caller too, and scanning only
+// the Taskfile left a workflow step edited to `compiler_gate.sh early mid
+// late` dropping the selftests lane from CI while both guards stayed green
+// (#2650 review). An enumeration is `compiler_gate.sh` followed by blank-
+// separated words (`[a-z][a-z0-9_-]*`) of which at least one is a lane; a
+// comment line (`//` or `#`) is not a caller, and `--list` or a bare call is
+// not an enumeration.
+//
+// `bootstrap` is the one exemption, and it is not a convention: the
+// enumerating task runs AFTER the generation step that already ran that lane.
+// Every other lane must appear. No enumeration found at all fails: the scan
+// matching nothing is not a pass. --root DIR checks another tree (the
+// self-test's).
+
+import @vibe/builtin {
+  String::index_of_from, String::replace_all
+}
+import @vibe/process {
+  exit
+}
+import @vibex/shell {
+  sort_str
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn under(root: String, rel: String) -> String {
+  if root == "." {
+    rel
+  } else {
+    "\{root}/\{rel}"
+  }
+}
+
+fn contains(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == x {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn words(s: String) -> Array[String] {
+  let out: Array[String] = []
+  let parts = String::split(String::replace_all(s, "\t", " "), " ")
+  let mut i = 0
+  while i < Array::length(parts) {
+    if Array::get(parts, i) != "" && !contains(out, Array::get(parts, i)) {
+      Array::push(out, Array::get(parts, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn is_word_start(c: Char) -> Bool {
+  c >= 'a' && c <= 'z'
+}
+
+fn is_word_char(c: Char) -> Bool {
+  is_word_start(c) || (c >= '0' && c <= '9') || c == '_' || c == '-'
+}
+
+fn is_hblank(c: Char) -> Bool {
+  c == ' ' || c == '\t'
+}
+
+/// The words after the first `compiler_gate.sh` on the line that is followed
+/// by at least one, or "" when there is none.
+fn enumeration(line: String) -> String {
+  let marker = "compiler_gate.sh"
+  let n = String::length(line)
+  let mut out = ""
+  let mut from = 0
+  let mut going = true
+  while going {
+    let hit = String::index_of_from(line, marker, from)
+    if hit < 0 {
+      going = false
+    } else {
+      let start = hit + String::length(marker)
+      let mut p = start
+      let mut end = start
+      let mut more = true
+      while more {
+        let mut q = p
+        while q < n && is_hblank(String::byte_at(line, q)) {
+          q = q + 1
+        }
+        if q > p && q < n && is_word_start(String::byte_at(line, q)) {
+          let mut r = q + 1
+          while r < n && is_word_char(String::byte_at(line, r)) {
+            r = r + 1
+          }
+          end = r
+          p = r
+        } else {
+          more = false
+        }
+      }
+      if end > start {
+        out = String::substring(line, start, end)
+        going = false
+      } else {
+        from = hit + 1
+      }
+    }
+  }
+  out
+}
+
+fn gate_lanes(text: String) -> (Bool, Array[String]) {
+  let prefix = "GATE_LANES=\""
+  let lines = String::split(text, "\n")
+  let mut found = false
+  let mut lanes: Array[String] = []
+  let mut i = 0
+  while i < Array::length(lines) && !found {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, prefix) {
+      let close = String::index_of_from(line, "\"", String::length(prefix))
+      if close >= 0 {
+        found = true
+        lanes = words(String::substring(line, String::length(prefix), close))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  (found, lanes)
+}
+
+fn join(xs: Array[String]) -> String {
+  String::join(sort_str(xs), ", ")
+}
+
+fn main allows Env + Fs::is_file + Fs::read_file + Console::write_stream + Stderr::write_stream + Process {
+  let root = option("--root", ".")
+  let lib = "tests/gates/lib.sh"
+  if !Fs::is_file(under(root, lib)) {
+    Stderr::write_stream("[gate-lane-coverage] FAIL: cannot read \{lib}\n")
+    exit(1)
+  } else {
+    let (found, lanes) = gate_lanes(Fs::read_file(under(root, lib)))
+    if !found {
+      Stderr::write_stream("[gate-lane-coverage] FAIL: no GATE_LANES assignment in \{lib} -- the scan has nothing to compare against, which is not the same as agreement\n")
+      exit(1)
+    } else if Array::length(lanes) == 0 {
+      Stderr::write_stream("[gate-lane-coverage] FAIL: GATE_LANES is empty in \{lib}\n")
+      exit(1)
+    } else {
+      let required: Array[String] = []
+      let mut l = 0
+      while l < Array::length(lanes) {
+        if Array::get(lanes, l) != "bootstrap" {
+          Array::push(required, Array::get(lanes, l))
+        } else {
+          ()
+        }
+        l = l + 1
+      }
+      let callers = ["Taskfile.pkl", ".github/workflows/ci.yml"]
+      let mut bad = false
+      let mut seen = false
+      let mut c = 0
+      while c < Array::length(callers) {
+        let path = Array::get(callers, c)
+        if !Fs::is_file(under(root, path)) {
+          Stderr::write_stream("[gate-lane-coverage] FAIL: cannot read \{path} -- a caller that cannot be read is unchecked, not clean\n")
+          bad = true
+        } else {
+          let lines = String::split(Fs::read_file(under(root, path)), "\n")
+          let mut i = 0
+          while i < Array::length(lines) {
+            let line = Array::get(lines, i)
+            let t = String::trim(line)
+            let listed = if String::starts_with(t, "//") || String::starts_with(t, "#") {
+              ""
+            } else {
+              enumeration(line)
+            }
+            let named = words(listed)
+            let mut any_lane = false
+            let mut w = 0
+            while w < Array::length(named) {
+              if contains(lanes, Array::get(named, w)) {
+                any_lane = true
+              } else {
+                ()
+              }
+              w = w + 1
+            }
+            if any_lane {
+              seen = true
+              let missing: Array[String] = []
+              let mut r = 0
+              while r < Array::length(required) {
+                if !contains(named, Array::get(required, r)) {
+                  Array::push(missing, Array::get(required, r))
+                } else {
+                  ()
+                }
+                r = r + 1
+              }
+              let unknown: Array[String] = []
+              let mut u = 0
+              while u < Array::length(named) {
+                if !contains(lanes, Array::get(named, u)) {
+                  Array::push(unknown, Array::get(named, u))
+                } else {
+                  ()
+                }
+                u = u + 1
+              }
+              if Array::length(unknown) > 0 {
+                Stderr::write_stream("[gate-lane-coverage] \{path}:\{i + 1} names lanes that do not exist: \{join(unknown)}\n")
+                bad = true
+              } else {
+                ()
+              }
+              if Array::length(missing) > 0 {
+                Stderr::write_stream("[gate-lane-coverage] \{path}:\{i + 1} enumerates lanes and omits: \{join(missing)}\n")
+                Stderr::write_stream("    \{t}\n")
+                Stderr::write_stream("  An enumeration pins the lane set at the moment it was written, so a lane added later never runs here -- and this caller still passes.\n")
+                Stderr::write_stream("  Add the lane, or drop the arguments so every lane in GATE_LANES runs.\n")
+                bad = true
+              } else {
+                ()
+              }
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+        }
+        c = c + 1
+      }
+      if !seen {
+        Stderr::write_stream("[gate-lane-coverage] FAIL: no lane enumeration found in \{String::join(callers, ", ")} -- the scan matched nothing, which is not a pass. If the enumerations were removed on purpose, remove this gate too.\n")
+        exit(1)
+      } else if bad {
+        exit(1)
+      } else {
+        Console::write_stream("[gate-lane-coverage] ok (\{Array::length(required)} required lanes reach every enumeration)\n")
+      }
+    }
+  }
+}
