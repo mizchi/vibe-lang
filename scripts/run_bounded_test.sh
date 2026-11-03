@@ -15,7 +15,7 @@ set -euo pipefail
 # functions into this process's environment, and an inherited export would
 # satisfy the xargs-worker rung for a mutant that never exports them.
 unset VIBE_RUN_BOUNDED_IMPL
-unset -f run_bounded run_bounded_watchdog run_bounded_monotonic_seconds 2>/dev/null || true
+unset -f run_bounded run_bounded_watchdog run_bounded_monotonic_seconds run_bounded_gnu_timeout 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$SCRIPT_DIR/run_bounded.sh"
@@ -90,9 +90,14 @@ contract() { # <lib> <impl>
 }
 
 # --- green: the real helper, under every mechanism this machine can offer.
+# Only a binary the helper would pick: a non-GNU `timeout` (uutils, Ubuntu
+# 26.04) is not trusted with the contract, and auto-selection skips it.
 impls="watchdog"
-command -v timeout >/dev/null 2>&1 && impls="$impls timeout"
-command -v gtimeout >/dev/null 2>&1 && impls="$impls gtimeout"
+for bin in "timeout" "gtimeout"; do
+  if command -v "$bin" >/dev/null 2>&1 && bash -c '. "$1"; run_bounded_gnu_timeout "$2"' _ "$LIB" "$bin"; then
+    impls="$impls $bin"
+  fi
+done
 for impl in $impls; do
   broken="$(contract "$LIB" "$impl")"
   [ -z "$broken" ] || fail "the real helper breaks the contract under $impl: $broken"
@@ -111,6 +116,29 @@ case "$out" in
 esac
 ok "0 = unbounded, a fractional bound is refused, and a watchdog with no marker refuses (125) rather than guessing"
 
+# --- a `timeout` that is not GNU coreutils' is not trusted (ubuntu-26.04's
+# uutils one let a TERM-ignoring command run 20 s past a 1 s bound). The fake
+# below ignores the bound outright; auto-selection must fall to the watchdog.
+fakebin="$WORK/fakebin"
+mkdir -p "$fakebin"
+cat > "$fakebin/timeout" <<'FAKEEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then echo "timeout(1) from uutils coreutils 0.2.2"; exit 0; fi
+while [ "$#" -gt 0 ] && [ "$1" != "--" ] && case "$1" in -*|[0-9]*) true ;; *) false ;; esac; do shift; done
+exec "$@"
+FAKEEOF
+chmod +x "$fakebin/timeout"
+non_gnu_bound() { # <lib> -> "rc=N secs=S"
+  local t0 t1 r
+  t0="$(monotonic_seconds)"
+  r="$(PATH="$fakebin:$PATH" bash -c '. "$1"; run_bounded 1 sleep 6; echo "rc=$?"' _ "$1" 2>/dev/null | tail -1)"
+  t1="$(monotonic_seconds)"
+  printf '%s secs=%s' "$r" "$((t1 - t0))"
+}
+r="$(non_gnu_bound "$LIB")"
+case "$r" in "rc=124 secs="[0-4]) ;; *) fail "a non-GNU timeout(1) on PATH was trusted with the bound: $r" ;; esac
+ok "a non-GNU timeout(1) on PATH is skipped for the watchdog ($r)"
+
 # --- red: each property fails on a mutant carrying the wrong shape. Every
 # mutation is checked to have LANDED before its verdict is believed.
 mutant() { # <name> <sed-expr> <marker-text-that-must-appear>
@@ -119,6 +147,12 @@ mutant() { # <name> <sed-expr> <marker-text-that-must-appear>
   grep -qF -- "$3" "$m" || fail "mutant $1 did not land"
   printf '%s' "$m"
 }
+
+# Trusting any `timeout` on PATH, GNU or not.
+m="$(mutant trust_any 's/ \&\& run_bounded_gnu_timeout timeout;/;/' 'if command -v timeout >/dev/null 2>&1; then')"
+r="$(non_gnu_bound "$m")"
+case "$r" in "rc=124 secs="[0-4]) fail "the trust-any-timeout mutant was not caught: $r" ;;
+  *) ok "red: trusting a non-GNU timeout(1) lets the command outlive the bound ($r)" ;; esac
 
 # The status-based guess the three local run_with_timeout copies made.
 m="$(mutant status_guess 's/^  if \[ -e "\$marker" \]; then$/  if [ "$rc" -ne 143 ] \&\& [ "$rc" -ne 137 ]; then/' 'if [ "$rc" -ne 143 ]')"

@@ -65,6 +65,20 @@ run_bounded_monotonic_seconds() {
   fi
 }
 
+# Whether the `timeout` binary named by $1 is GNU coreutils'. Only that one is
+# known to keep the contract: uutils' `timeout` (the default coreutils on
+# Ubuntu 26.04, which `ubuntu-latest` became on 2026-11-03) let a TERM-ignoring
+# command run its full 20 s past a 1 s bound, so it is left to the watchdog.
+# Through a variable, like the call below, so no tool name is in command
+# position for scripts/check_gate_portability.sh.
+run_bounded_gnu_timeout() { # <binary>
+  local bin="$1"
+  case "$("$bin" --version 2>/dev/null)" in
+    *"GNU coreutils"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 run_bounded() { # <seconds> <cmd...>
   if [ "$#" -lt 2 ]; then
     echo "run_bounded: usage: run_bounded <seconds> <cmd...>" >&2
@@ -84,9 +98,9 @@ run_bounded() { # <seconds> <cmd...>
   fi
   local impl="${VIBE_RUN_BOUNDED_IMPL:-}"
   if [ -z "$impl" ]; then
-    if command -v timeout >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1 && run_bounded_gnu_timeout timeout; then
       impl="timeout"
-    elif command -v gtimeout >/dev/null 2>&1; then
+    elif command -v gtimeout >/dev/null 2>&1 && run_bounded_gnu_timeout gtimeout; then
       impl="gtimeout"
     else
       impl="watchdog"
@@ -193,7 +207,7 @@ run_bounded_watchdog() { # <seconds> <cmd...>
 # exported, is `command not found` there -- exit 127 again, the very failure
 # this file exists to remove.
 export -f run_bounded run_bounded_watchdog
-export -f run_bounded_monotonic_seconds
+export -f run_bounded_monotonic_seconds run_bounded_gnu_timeout
 
 # Executed rather than sourced: run the command given on the command line.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
