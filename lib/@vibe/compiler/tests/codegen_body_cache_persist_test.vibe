@@ -1059,10 +1059,12 @@ test "#2669: an edit to the FIRST file replays the files after it" {
 
 test "#2669: a layout-drifting edit recompiles fully, then the next build replays it all" {
   // Three files, and the edit lands on the MIDDLE one so there is an
-  // unchanged prefix: `p_a` stays put, `p_b` gains a function, `p_main` is
-  // downstream. A new function moves the function vector, which `guard_layout`
+  // unchanged prefix: `p_a` stays put, `p_b` gains a type, `p_main` is
+  // downstream. A new type moves the constructor table, which `guard_layout`
   // pins, so this is a drift the body loop declines on. (A string literal
-  // edit used to be the example; the pool is relocated now, #2669.)
+  // and then an added function used to be the example; the pool is relocated
+  // and an added function tolerated now, #2669 --
+  // `body_cache_insert_function_test.vibe`.)
   //
   // This used to be the test for carrying a REPLAYED prefix back into the
   // artifact. A drifted layout no longer replays a prefix (its bodies embed
@@ -1074,7 +1076,7 @@ test "#2669: a layout-drifting edit recompiles fully, then the next build replay
   let main_path = "/tmp/vibe_body_cache_pfx_main.vibe"
   let a_source = "export let p_eq: () -> Bool = () -> { [1, 2] == [1, 2] }\nexport let p_one: () -> String = () -> { \"one\" }\nexport let p_two: () -> Int = () -> { 22 }"
   let b_base = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() }"
-  let b_longer = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b\") }\nexport let p_b_extra: () -> Int = () -> { 3 }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() + p_b_extra() }"
+  let b_longer = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nenum PbTag { PbA; PbB }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() + (match PbA { PbA => 3, PbB => 4 }) }"
   let main_source = "import ./vibe_body_cache_pfx_b.vibe { p_b_one, p_b_two }\nlet run: () -> Int = () -> { String::length(p_b_one()) + p_b_two() }"
   let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(main_path)))
   remove_file_if_exists(artifact_path)
@@ -1091,8 +1093,7 @@ test "#2669: a layout-drifting edit recompiles fully, then the next build replay
   // Non-vacuity: the file table DID offer the prefix's entries, so it is the
   // body loop that declined them, not the decoder.
   inspect(Array::get(edited_counts, 0) > 0, content = "true")
-  // Everything recompiled. (The new function takes one of the pin region's
-  // pad slots, so the count is the cold build's, not one more.)
+  // Everything recompiled.
   inspect(Array::get(edited_counts, 1) >= cold_n, content = "true")
   // Nothing changed since: the artifact is the edited build's whole harvest,
   // so the next build replays it all.

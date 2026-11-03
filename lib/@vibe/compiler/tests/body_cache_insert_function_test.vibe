@@ -1,0 +1,153 @@
+//# The body cache across a build that ADDED functions (#2669).
+//#
+//# Adding a function moves most of the program-wide tables the layout guard
+//# pins -- the function vector, the lambda plan, the name-keyed return and
+//# capture sets -- so it used to decline every cached body. A body below the
+//# new function that never spells its name cannot see any of that, and these
+//# rows check that it replays, that the build still answers what a fresh
+//# compile answers, and that the cases where something else moved still
+//# recompile.
+//#
+//# Each row: cold compile on the base, the edit, then a warm body-cached
+//# compile against a fresh one. `replayed` is whether the warm compile rebuilt
+//# fewer bodies than the cold one; `equal` is byte equality with the fresh
+//# compile.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+}
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_artifact_cache_path
+}
+
+fn bif_bytes(s: String) -> Bytes {
+  let out = Bytes::new()
+  let mut i = 0
+  while i < String::length(s) {
+    Bytes::push(out, String::byte_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+fn bif_bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  let n = Bytes::length(a)
+  if n != Bytes::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Bytes::get(a, i) != Bytes::get(b, i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+let bif_a_path: String = "/tmp/vibe_body_cache_bif_a.vibe"
+
+let bif_main_path: String = "/tmp/vibe_body_cache_bif_main.vibe"
+
+/// The upstream file. `bif_cap` closes over a local named `base`, so a new
+/// global of that spelling would change what its lambda captures; `bif_peek`
+/// is an ordinary leaf; the array comparison forces a derived comparator, which is what makes the
+/// compile record guards at all.
+fn bif_a() -> String {
+  String::join([
+    "export let bif_n: () -> Int = () -> { 4 }",
+    "export let bif_render: () -> String = () -> { \"render=\\{bif_n()}\" }",
+    "export let bif_eq: () -> Bool = () -> { [1, 2] == [1, 2] }",
+    "export let bif_cap: (Int) -> Int = (k) -> {",
+    "  let base = k + 1",
+    "  let f = (x) -> x + base",
+    "  f(2)",
+    "}",
+    "export let bif_peek: (Array[Int]) -> Int = (xs) -> { Array::length(xs) }"
+  ], "\n")
+}
+
+/// The downstream file: `before` and `after` are extra declarations placed
+/// before and after its one function, and `use` is a term added to that
+/// function's result. An added function has to be CALLED: one nothing
+/// reaches is removed before code generation, and the edit never gets there.
+fn bif_main(before: String, after: String, use: String) -> String {
+  String::join([
+    "import ./vibe_body_cache_bif_a.vibe { bif_cap, bif_eq, bif_peek, bif_render }",
+    before,
+    "let run: () -> Int = () -> {",
+    "  let xs = [1, 2, 3]",
+    "  String::length(bif_render()) + bif_cap(3) + bif_peek(xs) + (if bif_eq() { 1 } else { 0 })\{use}",
+    "}",
+    after
+  ], "\n")
+}
+
+fn bif_probe(label: String, before: String, after: String, use: String) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bif_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bif_a_path, bif_bytes(bif_a()))
+  Fs::write_bytes(bif_main_path, bif_bytes(bif_main("", "", "")))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bif_main_path, "run", "on", cold_counts)
+  if Array::get(cold_counts, 0) != 0 || Array::get(cold_counts, 1) <= 0 {
+    throw("insert-function fixture: the cold run for \{label} offered \{Array::get(cold_counts, 0)} and compiled \{Array::get(cold_counts, 1)}")
+  } else {
+    ()
+  }
+  Fs::write_bytes(bif_main_path, bif_bytes(bif_main(before, after, use)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bif_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bif_main_path, "run")
+  let replayed = Array::get(warm_counts, 1) < Array::get(cold_counts, 1)
+  "\{label} replayed=\{replayed} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+/// Two more warm builds on top of the first. If the artifact the insertion
+/// lane refreshed had lost a body it replayed, the second build would
+/// recompile it and re-record it, and the third would recompile less --
+/// so `stable` is the two counts agreeing. (Neither count is zero: the pin
+/// region's pads and the synthesized region always recompile.)
+fn bif_probe_twice(label: String, after: String, use: String) -> String with Env + Exception + Fs {
+  let first = bif_probe(label, "", after, use)
+  let second_counts: Array[Int] = []
+  let second = compile_file_fs_mode_rc_body_cached_counted(bif_main_path, "run", "on", second_counts)
+  let third_counts: Array[Int] = []
+  let _third = compile_file_fs_mode_rc_body_cached_counted(bif_main_path, "run", "on", third_counts)
+  let fresh = compile_file_fs_mode_rc(bif_main_path, "run")
+  "\{first} stable=\{Array::get(second_counts, 1) == Array::get(third_counts, 1)} again_equal=\{bif_bytes_eq(second, fresh)}"
+}
+
+test "a function added downstream keeps the upstream bodies" {
+  // A helper appended to the edited file: every upstream body sits below it
+  // and none spells its name.
+  inspect(bif_probe("append", "", "let helper: (Int) -> Int = (n) -> { n * 2 }", " + helper(1)"), content = "append replayed=true equal=true")
+  // The same helper placed BEFORE the file's existing function: the added
+  // index is lower, but still above every upstream body.
+  inspect(bif_probe("prepend", "let helper: (Int) -> Int = (n) -> { n * 2 }", "", " + helper(1)"), content = "prepend replayed=true equal=true")
+  // An added function with a closure of its own shifts the lambda plan of
+  // everything after it; nothing upstream is after it.
+  inspect(bif_probe("with-lambda", "", "let helper: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(1) }", " + helper(1)"), content = "with-lambda replayed=true equal=true")
+}
+
+test "an added function that changes something upstream still recompiles it" {
+  // A new global spelled like the local `bif_cap` captures. The upstream body
+  // spells `base`, so it is recompiled rather than replayed; the rest replay.
+  inspect(bif_probe("captured-name", "", "let base: () -> Int = () -> { 7 }", " + base()"), content = "captured-name replayed=true equal=true")
+  // A function added together with a TYPE: the constructor table moves too,
+  // and it is not keyed by the added function's name, so the restricted
+  // guard differs and nothing replays.
+  inspect(bif_probe("with-type", "", "enum BifTag { BifA; BifB }\nlet helper: () -> Int = () -> { match BifA { BifA => 1, BifB => 2 } }", " + helper()"), content = "with-type replayed=false equal=true")
+}
+
+test "the refreshed artifact keeps what the insertion lane replayed" {
+  inspect(bif_probe_twice("append-twice", "let helper: (Int) -> Int = (n) -> { n * 2 }", " + helper(1)"), content = "append-twice replayed=true equal=true stable=true again_equal=true")
+}

@@ -1071,7 +1071,7 @@ anywhere declined the whole cache. It is a relocation class now:
   shape, on every compile. Only the function-value kinds pair with a funcref
   slot; the pairing checks count those alone.
 - **Carried with the pool.** The harvest stores its pool below
-  `src_str_base` (`guard_str_pool`, VBC8).
+  `src_str_base` (`guard_str_pool`, added in VBC8).
 - **Relocated at replay.** When the pools differ, every recorded slot is
   mapped through its STRING to this compile's slot (`lc_string_remap`); a
   string the new pool lacks declines the whole cache. Each replayed body is
@@ -1084,6 +1084,64 @@ anywhere declined the whole cache. It is a relocation class now:
 `tests/body_cache_downstream_edit_test.vibe` is the acceptance row: a longer
 or shorter literal downstream replays the unchanged file's bodies and answers
 what a fresh compile answers.
+
+##### An added function is tolerated, not pinned (#2669)
+
+Adding a function moves most of what `guard_layout` pins: the function vector
+gains a name and loses a pad, the lambda plan shifts behind the new function,
+and every name-keyed table (the return classes, the capture index, the borrow
+table) gains an entry. So adding one helper to the file being edited used to
+recompile every body in the program.
+
+None of that reaches a body that sits below the new function and never spells
+its name. Its own index, its lambdas' indices and every function it calls are
+below the insertion, because merge order is topological. A lookup keyed by a
+name it does not spell cannot answer differently. What remains to show is that
+nothing else moved, and that takes the harvest's names, not a fingerprint of
+them:
+
+- **Carried by name.** The harvest stores its source region by name, in index
+  order (`guard_src_names`, VBC9).
+- **Recognised as an insertion.** `lc_insertion_of`
+  (`linked_body_cache_insert.vibe`) accepts the harvest's names only when they
+  are, in order, a subsequence of this build's, and when no added name also
+  existed before. A removal or a reorder is not an insertion.
+- **Compared without the added names.** Under an insertion, the guards are
+  asked of this build's tables with the added functions taken out:
+  - `guard_meta`'s source count is the harvest's plus the added count;
+  - the synthesized region is compared by name, since the added statements
+    shift its statement positions and no body reads one;
+  - the borrow and unmangled-name tables drop the added names;
+  - `guard_layout_restricted` fingerprints the function vector with the
+    harvest's pads put back, the lambda plan without the added lambdas, and
+    every name-keyed table without the added names.
+
+  Any other difference declines the cache, as before.
+- **Replayed only below the insertion.** A body replays only when its index is
+  below the first added one and its body spells no added name
+  (`lc_insertion_replayable`). The second rule is load-bearing: a new global
+  spelled like a local an upstream lambda captures changes what that lambda
+  captures. With the rule switched off, the `captured-name` row compiles to
+  different bytes from a fresh build.
+- **Re-recorded.** The harvest's guards describe the old layout, so the
+  consumed cache is not merged back. Each replayed body is re-recorded instead,
+  as a relocated one is, and the next build finds a complete artifact.
+
+`tests/body_cache_insert_function_test.vibe` holds the rows:
+
+- **Byte-equal and reused:**
+  - a helper appended to the edited file;
+  - a helper placed before the file's function;
+  - a helper with a closure of its own.
+- **Byte-equal and reused, with `bif_cap` recompiled:** a new global spelled
+  like a captured local.
+- **Byte-equal and not reused:** a function added together with a type, which
+  moves the constructor table.
+- **A stable refreshed artifact:** a second warm build recompiles exactly what
+  a third does.
+
+The added function must be called. One that nothing reaches is removed before
+code generation, and the edit never reaches the body cache at all.
 
 Measured on the compiler's own closure (`codegen_lexer_test.vibe`, 196 files,
 5263 functions), `scripts/body_cache_reuse.sh`, one temperature per process

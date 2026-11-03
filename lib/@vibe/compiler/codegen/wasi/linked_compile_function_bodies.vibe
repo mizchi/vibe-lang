@@ -248,6 +248,10 @@ import ./linked_body_cache_strings.vibe {
   lc_relocate_replayed_strings, lc_string_remap
 }
 
+import ./linked_body_cache_insert.vibe {
+  lc_insertion_active, lc_insertion_replayable
+}
+
 import ./linked_emission_layout.vibe {
   lc_build_emission_layout
 }
@@ -315,6 +319,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   let blind_owners = input.blind_owners
   let blind_syms = input.blind_syms
   let body_cache_in = input.body_cache_in
+  let body_cache_insertion = input.body_cache_insertion
   let body_cache_in_ok = input.body_cache_in_ok
   let body_cache_out = input.body_cache_out
   let bool_render_offsets = input.bool_render_offsets
@@ -455,7 +460,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   let planned_bodies = function_plan.bodies
   let lambda_bases = function_plan.lambda_bases
   let lambda_base_acc = function_plan.lambda_count
-  let emission_layout = lc_build_emission_layout(input, lambda_bases, coverage, enable_rc, rc_shadow)
+  let emission_layout = lc_build_emission_layout(input, lambda_bases, lambda_base_acc, coverage, enable_rc, rc_shadow)
   let capture_name_index_shared = emission_layout.capture_names
   let thunk_names_sorted_shared = emission_layout.thunk_names
   let guard_layout_now = emission_layout.guard_layout
@@ -497,7 +502,14 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   let lc_wide_ok = if pin_region_capacity < 0 {
     true
   } else {
-    Array::length(body_cache_in.guard_layout) > 0 && bcc_int_lists_equal(body_cache_in.guard_layout, guard_layout_now)
+    // #2669: a build that only ADDED functions is compared without them
+    // (`guard_layout_restricted`); the body loop then replays only what sits
+    // below the first one and never spells an added name.
+    Array::length(body_cache_in.guard_layout) > 0 && bcc_int_lists_equal(body_cache_in.guard_layout, if lc_insertion_active(body_cache_insertion) {
+      emission_layout.guard_layout_restricted
+    } else {
+      guard_layout_now
+    })
   }
   // Dropping, not narrowing. A drifted layout replays NOTHING, the unchanged
   // leading files included: their bodies are not layout-independent. They
@@ -535,6 +547,17 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
     None => lc_fresh_int_array()
   }
   let str_relocating = Array::length(str_remap) > 0
+  // #2669: under a tolerated insertion, which functions may still replay.
+  // A replay there is also re-recorded, like a relocated one: the harvest's
+  // guards describe the old layout, so the consumed cache is not merged back
+  // and the refreshed artifact must hold every replayed body itself.
+  let insert_replaying = lc_insertion_active(body_cache_insertion) && Array::length(body_cache_use.fn_indices) > 0
+  let insert_replayable = if insert_replaying {
+    lc_insertion_replayable(body_cache_insertion, planned_bodies, num_user_funcs)
+  } else {
+    lc_fresh_int_array()
+  }
+  let rerecord_replays = str_relocating || insert_replaying
   // #2388 step 3 follow-up: function index -> cache slot, built once. The
   // lookup below runs per function, and scanning the whole cache each time is
   // quadratic in the function count -- ~8.9 million comparisons to answer the
@@ -593,7 +616,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
       // This is where a parallel body phase pays off: the whole per-function
       // pipeline below -- Perceus plan, locals analysis, ctx construction,
       // compile_expr -- is skipped, not merely discarded.
-      let __cache_hit = if body_cache_in_ok {
+      let __cache_hit = if body_cache_in_ok && (!insert_replaying || Array::get(insert_replayable, bi) == 1) {
         codegen_body_cache_find_at(body_cache_slot_index, bi)
       } else {
         0 - 1
@@ -615,7 +638,10 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
       // duplicate makes the name meaningless for this function even if the
       // cache kept a single entry under it -- which the prefix filter can
       // produce, by dropping one of the pair and keeping the other.
-      if body_cache_in_ok && Array::get(lc_name_unique, bi) == 1 {
+      // A function the insertion lane withholds was never looked up by
+      // index, so there is nothing for the name lookup to agree with.
+      let __insert_withheld = insert_replaying && Array::get(insert_replayable, bi) == 0
+      if body_cache_in_ok && !__insert_withheld && Array::get(lc_name_unique, bi) == 1 {
         let __named_hit = codegen_body_cache_find_named_at(body_cache_names_sorted, body_cache_names_pos, Array::get(fn_names_list, bi))
         // -2 is AMBIGUOUS, which the name lookup documents as a miss, so it is
         // not a disagreement to report -- comparing a miss sentinel against a
@@ -681,14 +707,19 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
         // them onto this compile's pool, then record the relocated function
         // as this compile's own harvest -- the refreshed artifact must hold
         // the NEW addresses, and a replayed function is otherwise never
-        // re-recorded.
-        if str_relocating {
+        // re-recorded. A replay under a tolerated insertion is re-recorded
+        // too, for the reason `rerecord_replays` gives.
+        if rerecord_replays {
           let __r_lam_hi = if bi + 1 < num_user_funcs {
             Array::get(lambda_bases, bi + 1)
           } else {
             lambda_base_acc
           }
-          lc_relocate_replayed_strings(str_remap, str_table_shared, bi, bodies, lt_w, Array::get(lambda_bases, bi), __r_lam_hi, blind_owners, blind_offsets, blind_kinds, blind_syms, __r_blind_lo, fn_linemap, __r_lm_lo)
+          if str_relocating {
+            lc_relocate_replayed_strings(str_remap, str_table_shared, bi, bodies, lt_w, Array::get(lambda_bases, bi), __r_lam_hi, blind_owners, blind_offsets, blind_kinds, blind_syms, __r_blind_lo, fn_linemap, __r_lm_lo)
+          } else {
+            ()
+          }
           Array::push(body_cache_out.relocated, bi)
           codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), lc_fn_origin_lookup(lc_fn_file_of, Array::get(fn_names_list, bi)), lc_fn_origin_lookup(lc_fn_stmt_of, Array::get(fn_names_list, bi)), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), __r_lam_hi, table_slots_used, __r_slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __r_blind_lo, Array::length(blind_owners), fn_linemap, __r_lm_lo)
         } else {
