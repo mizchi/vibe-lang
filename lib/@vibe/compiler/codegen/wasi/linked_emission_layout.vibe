@@ -181,7 +181,14 @@ export fn lc_build_emission_layout(input: LinkedBodyInputs, lambda_bases: Array[
   // whose source functions changed is compared on these: the global half
   // whole, the rows of the names both builds hold.
   let src_n = input.pin_region_src_n
-  let split_on = pin_region_capacity >= 0 && src_n >= 0 && src_n <= Array::length(all_fn_names_list)
+  // Only for a compile whose harvest someone reads, or that consumes one: an
+  // ordinary build hands a discarding out-cache (`collect == [0]`) and an
+  // empty in-cache, and the split would be allocated for nothing -- measured
+  // as +2% of the selfcompile KPI's warm allocation volume, with the body
+  // cache off.
+  let out_collects = Array::length(input.body_cache_out.collect) == 0 || Array::get(input.body_cache_out.collect, 0) != 0
+  let split_wanted = out_collects || Array::length(input.body_cache_in.fn_indices) > 0
+  let split_on = split_wanted && pin_region_capacity >= 0 && src_n >= 0 && src_n <= Array::length(all_fn_names_list)
   let src_names = lc_fresh_string_array()
   if split_on {
     let mut si = 0
