@@ -103,7 +103,7 @@ import ./checker_builtin_arg_head_rest.vibe {
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
-  callee_inst_types_cell, env_has_active_region
+  callee_inst_types_cell, env_has_active_region, map_key_site_offsets, rewind_call_records
 }
 
 import ./checker_region_retention_arms.vibe {
@@ -2435,6 +2435,7 @@ struct RetentionCheckpoint {
   field_reads: Array[(Int, String, Int, Int, String, Int)];
   eq_sites: Array[(Int, Type, String)];
   callee_inst: Int;
+  map_sites: Int;
   throw_sites: Int;
   efn_formals: Int;
   formal_rows: Int;
@@ -2447,6 +2448,7 @@ fn retention_checkpoint() -> RetentionCheckpoint {
     field_reads: Array::slice(deferred_field_reads, 0, Array::length(deferred_field_reads)),
     eq_sites: Array::slice(deferred_eq_sites, 0, Array::length(deferred_eq_sites)),
     callee_inst: Array::length(callee_inst_types_cell),
+    map_sites: Array::length(map_key_site_offsets),
     throw_sites: Array::length(throw_payload_sites),
     efn_formals: Array::length(efn_substituted_formals),
     formal_rows: eq_formal_rows_mark(),
@@ -2464,11 +2466,7 @@ fn retention_restore(cp: RetentionCheckpoint) -> Unit {
   for row in cp.eq_sites {
     Array::push(deferred_eq_sites, row)
   }
-  if Array::length(callee_inst_types_cell) > cp.callee_inst {
-    Array::truncate(callee_inst_types_cell, cp.callee_inst)
-  } else {
-    ()
-  }
+  rewind_call_records(cp.callee_inst, cp.map_sites)
   if Array::length(throw_payload_sites) > cp.throw_sites {
     Array::truncate(throw_payload_sites, cp.throw_sites)
   } else {
