@@ -309,3 +309,65 @@ test "moved indices that cross a LEB width band are rebuilt" {
   // record that no longer sits on its constant.
   inspect(biw_probe("width-band", "let biw_h1: (Int) -> Int = (n) -> { n }\nlet biw_h2: (Int) -> Int = (n) -> { biw_h1(n) }"), content = "width-band saved=4 equal=true")
 }
+
+//# Removals, renames, reorders and closures in the middle file. Each is a
+//# change the per-function rows absorb: the names both builds hold are
+//# compared row by row, and every moved index is relocated.
+
+/// The middle file with `bim_two` replaced: `defs` are its declarations,
+/// which must still export `bim_two` and `bim_three` for the downstream file.
+fn bim_probe_defs(label: String, base_defs: String, defs: String) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  Fs::write_bytes(bim_a_path, bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bif_bytes(String::concat(head, base_defs)))
+  Fs::write_bytes(bim_main_path, bif_bytes(bim_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", cold_counts)
+  Fs::write_bytes(bim_b_path, bif_bytes(String::concat(head, defs)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bim_main_path, "run")
+  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+let bim_two_line: String = "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() }"
+
+let bim_three_line: String = "export let bim_three: (Int) -> Int = (n) -> { bim_two(n) * 3 + (if bim_eq() { 1 } else { 0 }) }"
+
+test "a function removed, renamed or moved in a middle file keeps the files after it" {
+  let helper = "let bim_helper: (Int) -> Int = (n) -> { n + 7 }"
+  let with_helper = String::join([
+    helper,
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_helper(0) }",
+    bim_three_line
+  ], "\n")
+  let plain = String::join([bim_two_line, bim_three_line], "\n")
+  // `saved=4`: the upstream file's 2 bodies and the downstream file's 2.
+  inspect(bim_probe_defs("remove", with_helper, plain), content = "remove saved=4 equal=true")
+  let renamed = String::join([
+    "let bim_aid: (Int) -> Int = (n) -> { n + 7 }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_aid(0) }",
+    bim_three_line
+  ], "\n")
+  let r1 = bim_probe_defs("rename", with_helper, renamed)
+  // The same functions in another order: every index in the file moves.
+  let two_calls = "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_helper(0) }"
+  let r2 = bim_probe_defs("reorder", String::join([
+    helper,
+    two_calls,
+    bim_three_line
+  ], "\n"), String::join([two_calls, helper, bim_three_line], "\n"))
+  // A closure added inside an existing function: no name changes, but every
+  // later lambda moves.
+  let r3 = bim_probe_defs("add-closure", plain, String::join([
+    "export let bim_two: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(bim_one()) }",
+    bim_three_line
+  ], "\n"))
+  inspect(String::join([r1, r2, r3], " | "), content = "rename saved=4 equal=true | reorder saved=4 equal=true | add-closure saved=4 equal=true")
+}

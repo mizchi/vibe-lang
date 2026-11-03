@@ -1,7 +1,7 @@
 // Owned emission-layout summaries shared by ordinary emission and preparation.
 
 import @vibe/compiler/core {
-  sorted_names_of
+  bsearch_leftmost, sort_perm_by_names, sorted_names_of
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -16,8 +16,8 @@ import ./linked_compile_linkedhostplan.vibe {
   LinkedBodyInputs
 }
 
-import ./linked_body_cache_insert.vibe {
-  lc_added_lambda_count, lc_insertion_active, lc_restricted_fn_vectors, lc_restricted_lambda_bases, lc_without_added, lc_without_added_ints
+import ./linked_body_cache_edit.vibe {
+  lc_lambda_counts, lc_without, lc_without_ints
 }
 
 /// These owned arrays contain no syntax or function bodies. Preparation can
@@ -26,17 +26,14 @@ export struct LinkedEmissionLayout {
   capture_names: Array[String];
   thunk_names: Array[String];
   guard_layout: Array[Int];
-  /// #2669: `guard_layout` asked of this build WITHOUT the functions it added
-  /// to the harvest's (`LinkedBodyInputs.body_cache_insertion`) -- what the
-  /// harvest's own guard is compared against when replay tolerates them.
-  /// Empty when no insertion is being tolerated.
-  guard_layout_restricted: Array[Int];
-  /// #2669: under the same insertion, the harvest's lambda plan -- this
-  /// build's without the added functions' lambdas -- and its lambda count.
-  /// What `lc_insertion_reindex` maps old lambda indices from. Empty / -1
-  /// when no insertion is being tolerated.
-  restricted_lambda_bases: Array[Int];
-  restricted_lambda_count: Int
+  /// #2669: the two halves a source edit is compared on
+  /// (`linked_body_cache_edit.vibe`): `guard_layout` without anything keyed
+  /// by a source function's name, one `[h1, h2]` row per source function of
+  /// what those tables say about it, and each source function's lambda
+  /// count by value. Empty when the pin reorder did not run.
+  guard_layout_global: Array[Int];
+  src_rows: Array[Int];
+  src_lambdas: Array[Int]
 }
 
 /// The program-wide tables `guard_layout` fingerprints that an added
@@ -170,47 +167,79 @@ export fn lc_build_emission_layout(input: LinkedBodyInputs, lambda_bases: Array[
   } else {
     lc_fresh_int_array()
   }
-  // #2669: the same fingerprint over this build's tables WITHOUT the
-  // functions it added -- the function vector with their pads put back, the
-  // lambda plan without their lambdas, every name-keyed table without their
-  // names. Equal to the harvest's exactly when the added functions are the
-  // only thing that moved, which is what lets a body below them replay.
-  let ins = input.body_cache_insertion
-  let insertion_on = pin_region_capacity >= 0 && lc_insertion_active(ins)
-  let restricted_lambda_bases = if insertion_on {
-    lc_restricted_lambda_bases(ins, all_fn_names_list, lambda_bases, lambda_count, input.pin_region_src_n)
+  // #2669: the same fingerprint with every entry keyed by a source function
+  // taken out, and those entries as one row per function instead. A build
+  // whose source functions changed is compared on these: the global half
+  // whole, the rows of the names both builds hold.
+  let src_n = input.pin_region_src_n
+  let split_on = pin_region_capacity >= 0 && src_n >= 0 && src_n <= Array::length(all_fn_names_list)
+  let src_names = lc_fresh_string_array()
+  if split_on {
+    let mut si = 0
+    while si < src_n {
+      Array::push(src_names, Array::get(all_fn_names_list, si))
+      si = si + 1
+    }
+    // The pads are part of the source region's shape, not of anything a
+    // body reads by name.
+    let mut pi = src_n
+    while pi < pin_region_capacity && pi < Array::length(all_fn_names_list) {
+      Array::push(src_names, Array::get(all_fn_names_list, pi))
+      pi = pi + 1
+    }
+  } else {
+    ()
+  }
+  let drop = sorted_names_of(src_names)
+  let guard_layout_global = if split_on {
+    let g_names = lc_fresh_string_array()
+    let g_indices = lc_fresh_int_array()
+    let g_params = lc_fresh_int_array()
+    let g_returns = lc_fresh_int_array()
+    let g_envs: Array[Bool] = []
+    let mut gi = pin_region_capacity
+    while gi < Array::length(all_fn_names_list) {
+      Array::push(g_names, Array::get(all_fn_names_list, gi))
+      Array::push(g_indices, Array::get(all_fn_indices_list, gi))
+      Array::push(g_params, Array::get(all_fn_param_counts, gi))
+      Array::push(g_returns, Array::get(all_fn_returns_list, gi))
+      Array::push(g_envs, Array::get(all_fn_needs_env_list, gi))
+      gi = gi + 1
+    }
+    let const_names_g = lc_without(drop, const_int_names_list)
+    lc_layout_fingerprint(input, LcLayoutTables::{
+      fn_names: g_names,
+      fn_indices: g_indices,
+      fn_params: g_params,
+      fn_returns: g_returns,
+      fn_envs: g_envs,
+      // The synthesized region's lambda COUNTS: its bases move with the
+      // source region's lambdas, which the relocation follows.
+      lambda_bases: lc_lambda_counts(lambda_bases, lambda_count, pin_region_capacity, input.num_user_funcs),
+      capture_names: lc_capture_index(g_names, ctor_names_list, const_names_g),
+      thunk_names: lc_without(drop, thunk_names_sorted_shared),
+      float_ret: lc_without(drop, float_ret_fn_names),
+      const_names: const_names_g,
+      const_values: lc_without_ints(drop, const_int_names_list, const_int_values_list),
+      agg_names: lc_without(drop, lc_agg_ret_names),
+      agg_infos: lc_without_ints(drop, lc_agg_ret_names, lc_agg_ret_infos),
+      heap_ret: lc_without(drop, lc_heap_ret_names),
+      scalar_ret: lc_without(drop, lc_scalar_ret_names),
+      borrow_ret: lc_without(drop, lc_borrow_ret_names),
+      borrow_view: lc_without(drop, lc_borrow_view_ret),
+      borrow_param: lc_without(drop, lc_borrow_param_user_srt),
+      borrow_mask: lc_without_ints(drop, lc_borrow_param_user_srt, lc_borrow_param_mask)
+    }, coverage, enable_rc, rc_shadow)
   } else {
     lc_fresh_int_array()
   }
-  let restricted_lambda_count = if insertion_on {
-    lambda_count - lc_added_lambda_count(ins, all_fn_names_list, lambda_bases, lambda_count, input.pin_region_src_n)
+  let src_rows = if split_on {
+    lc_src_rows(all_fn_names_list, all_fn_indices_list, all_fn_param_counts, all_fn_returns_list, all_fn_needs_env_list, src_n, func_offset, thunk_names_sorted_shared, float_ret_fn_names, const_int_names_list, const_int_values_list, lc_agg_ret_names, lc_agg_ret_infos, lc_heap_ret_names, lc_scalar_ret_names, lc_borrow_ret_names, lc_borrow_view_ret, lc_borrow_param_user_srt, lc_borrow_param_mask)
   } else {
-    0 - 1
+    lc_fresh_int_array()
   }
-  let guard_layout_restricted = if insertion_on {
-    let fns = lc_restricted_fn_vectors(ins, all_fn_names_list, all_fn_indices_list, all_fn_param_counts, all_fn_returns_list, all_fn_needs_env_list, input.pin_region_src_n, pin_region_capacity, func_offset)
-    let const_names_r = lc_without_added(ins, const_int_names_list)
-    lc_layout_fingerprint(input, LcLayoutTables::{
-      fn_names: fns.names,
-      fn_indices: fns.indices,
-      fn_params: fns.params,
-      fn_returns: fns.returns,
-      fn_envs: fns.envs,
-      lambda_bases: restricted_lambda_bases,
-      capture_names: lc_capture_index(fns.names, ctor_names_list, const_names_r),
-      thunk_names: lc_without_added(ins, thunk_names_sorted_shared),
-      float_ret: lc_without_added(ins, float_ret_fn_names),
-      const_names: const_names_r,
-      const_values: lc_without_added_ints(ins, const_int_names_list, const_int_values_list),
-      agg_names: lc_without_added(ins, lc_agg_ret_names),
-      agg_infos: lc_without_added_ints(ins, lc_agg_ret_names, lc_agg_ret_infos),
-      heap_ret: lc_without_added(ins, lc_heap_ret_names),
-      scalar_ret: lc_without_added(ins, lc_scalar_ret_names),
-      borrow_ret: lc_without_added(ins, lc_borrow_ret_names),
-      borrow_view: lc_without_added(ins, lc_borrow_view_ret),
-      borrow_param: lc_without_added(ins, lc_borrow_param_user_srt),
-      borrow_mask: lc_without_added_ints(ins, lc_borrow_param_user_srt, lc_borrow_param_mask)
-    }, coverage, enable_rc, rc_shadow)
+  let src_lambdas = if split_on {
+    lc_lambda_counts(lambda_bases, lambda_count, 0, src_n)
   } else {
     lc_fresh_int_array()
   }
@@ -218,10 +247,94 @@ export fn lc_build_emission_layout(input: LinkedBodyInputs, lambda_bases: Array[
     capture_names: capture_name_index_shared,
     thunk_names: thunk_names_sorted_shared,
     guard_layout: guard_layout_now,
-    guard_layout_restricted: guard_layout_restricted,
-    restricted_lambda_bases: restricted_lambda_bases,
-    restricted_lambda_count: restricted_lambda_count
+    guard_layout_global: guard_layout_global,
+    src_rows: src_rows,
+    src_lambdas: src_lambdas
   }
+}
+
+/// Membership in a name list, and the value aligned with it: `(sorted,
+/// values-in-sorted-order)`, looked up by bisection.
+struct LcKeyed {
+  names: Array[String];
+  vals: Array[Int]
+}
+
+fn lc_keyed(names: Array[String], vals: Array[Int]) -> LcKeyed {
+  let perm = sort_perm_by_names(names)
+  let out = LcKeyed::{
+    names: lc_fresh_string_array(),
+    vals: lc_fresh_int_array()
+  }
+  for p in perm {
+    Array::push(out.names, Array::get(names, p))
+    Array::push(out.vals, if p < Array::length(vals) {
+      Array::get(vals, p)
+    } else {
+      1
+    })
+  }
+  out
+}
+
+/// `[present, value]` for `name`: `[0, 0]` when absent.
+fn lc_keyed_push(row: Array[Int], k: LcKeyed, name: String) -> Unit {
+  let at = bsearch_leftmost(k.names, name)
+  if at >= 0 {
+    Array::push(row, 1)
+    Array::push(row, Array::get(k.vals, at))
+  } else {
+    Array::push(row, 0)
+    Array::push(row, 0)
+  }
+}
+
+/// One `[h1, h2]` row per source function: everything the name-keyed
+/// tables `guard_layout` folds say about it. Its index is NOT in the row
+/// (relocation follows it) except where it is not the function's own
+/// position -- a bridged builtin -- and neither is its lambda count.
+fn lc_src_rows(names: Array[String], indices: Array[Int], params: Array[Int], returns: Array[Int], envs: Array[Bool], src_n: Int, func_offset: Int, thunk: Array[String], float_ret: Array[String], const_names: Array[String], const_values: Array[Int], agg_names: Array[String], agg_infos: Array[Int], heap: Array[String], scalar: Array[String], borrow_ret: Array[String], borrow_view: Array[String], borrow_param: Array[String], borrow_mask: Array[Int]) -> Array[Int] {
+  let none: Array[Int] = []
+  let k_thunk = lc_keyed(thunk, none)
+  let k_float = lc_keyed(float_ret, none)
+  let k_const = lc_keyed(const_names, const_values)
+  let k_agg = lc_keyed(agg_names, agg_infos)
+  let k_heap = lc_keyed(heap, none)
+  let k_scalar = lc_keyed(scalar, none)
+  let k_bret = lc_keyed(borrow_ret, none)
+  let k_bview = lc_keyed(borrow_view, none)
+  let k_bparam = lc_keyed(borrow_param, borrow_mask)
+  let out = lc_fresh_int_array()
+  let mut i = 0
+  while i < src_n {
+    let name = Array::get(names, i)
+    let idx = Array::get(indices, i)
+    let row = lc_fresh_int_array()
+    Array::push(row, Array::get(params, i))
+    Array::push(row, if Array::get(envs, i) {
+      1
+    } else {
+      0
+    })
+    Array::push(row, Array::get(returns, i))
+    Array::push(row, if idx == func_offset + i {
+      0 - 1
+    } else {
+      idx
+    })
+    lc_keyed_push(row, k_thunk, name)
+    lc_keyed_push(row, k_float, name)
+    lc_keyed_push(row, k_const, name)
+    lc_keyed_push(row, k_agg, name)
+    lc_keyed_push(row, k_heap, name)
+    lc_keyed_push(row, k_scalar, name)
+    lc_keyed_push(row, k_bret, name)
+    lc_keyed_push(row, k_bview, name)
+    lc_keyed_push(row, k_bparam, name)
+    bcc_layout_fp_ints(out, row)
+    i = i + 1
+  }
+  out
 }
 
 fn lc_layout_fingerprint(input: LinkedBodyInputs, t: LcLayoutTables, coverage: Bool, enable_rc: Bool, rc_shadow: Bool) -> Array[Int] {

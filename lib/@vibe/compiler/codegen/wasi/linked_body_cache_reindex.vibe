@@ -1,6 +1,6 @@
 // lib/@vibe/compiler/codegen/wasi/linked_body_cache_reindex.vibe -- moving
-// cached bodies that sit ABOVE an added function into this build's function
-// index space (#2669).
+// cached bodies into this build's function index space after source
+// functions were added, removed or reordered (#2669).
 
 import @vibe/compiler/codegen/common_base {
   CodegenBodyCache, codegen_body_cache_guards_only
@@ -20,12 +20,8 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i32_const, emit_i64_const
 }
 
-import @vibe/compiler/core {
-  bsearch_leftmost
-}
-
-import ./linked_body_cache_insert.vibe {
-  LcInsertion
+import ./linked_body_cache_edit.vibe {
+  LcSrcEdit
 }
 
 import ./linked_compile_lc_rename_sleep_calls.vibe {
@@ -34,9 +30,8 @@ import ./linked_compile_lc_rename_sleep_calls.vibe {
 
 //# What moves, and what does not
 //
-// Functions added at index `first` push every user function at or above it
-// up by the number added, and their lambdas push every later lambda up by
-// theirs. A cached body names those indices in four places:
+// Functions added, removed or reordered move every user function after the
+// change, and a changed lambda count moves every later lambda. A cached body names those indices in four places:
 //
 // - `call` immediates, which the instruction encoding makes certain
 //   (`scan_body_relocs`, `reloc_kind_func`);
@@ -49,7 +44,7 @@ import ./linked_compile_lc_rename_sleep_calls.vibe {
 // move; the synthesized region sits past the pin region's capacity and does
 // not move either. A lambda's WASM function index sits past the user
 // functions and moves with the lambda plan, so a body that calls one directly
-// is relocated only when the added functions carry no lambdas. Anything this
+// is relocated only when no lambda index moved. Anything this
 // cannot place -- an unknown opcode, a reference to a removed slot, a record
 // that does not sit on its instruction -- drops that one entry, which then
 // recompiles.
@@ -341,63 +336,93 @@ fn lc_group_rows(owners: Array[Int], n: Int) -> Array[Array[Int]] {
   groups
 }
 
-/// `cache` in this build's index space under `ins`. Entries below the first
-/// added index are carried unchanged -- nothing they reference moved. Each
-/// entry above it is moved: its index, its lambdas, every body it holds, its
-/// slots, records and linemap rows; one that cannot be moved is dropped.
-/// `old_bases` / `old_lambda_count` are the harvest's lambda plan -- this
-/// build's without the added functions' lambdas, which the restricted layout
-/// guard has already shown equal to the harvest's.
-export fn lc_insertion_reindex(cache: CodegenBodyCache, ins: LcInsertion, new_names: Array[String], new_src_n: Int, capacity: Int, num_user_funcs: Int, func_offset: Int, lambda_slot_base: Int, old_bases: Array[Int], old_lambda_count: Int, new_bases: Array[Int], new_lambda_count: Int) -> CodegenBodyCache {
-  let fns = lc_fresh_int_array_of_len(num_user_funcs, 0 - 1)
-  let mut j = 0
-  let mut i = 0
-  while i < new_src_n {
-    if bsearch_leftmost(ins.names, Array::get(new_names, i)) < 0 {
-      if j < num_user_funcs {
-        Array::set(fns, j, i)
+/// The lowest harvest source index at or above which something moved: its
+/// position, or its lambdas' (`old_plan` against `new_bases`). Every entry
+/// below it is carried as it is -- nothing it can reference moved, because
+/// merge order is topological and a body creates only its own closures.
+fn lc_first_change(e: LcSrcEdit, old_plan: Array[Int], new_bases: Array[Int]) -> Int {
+  let mut first = e.old_src_n
+  let mut o = 0
+  while first == e.old_src_n && o < e.old_src_n {
+    let n = Array::get(e.o2n, o)
+    if n != o || n < 0 || n >= Array::length(new_bases) || Array::get(old_plan, o) != Array::get(new_bases, n) {
+      first = o
+    } else {
+      ()
+    }
+    o = o + 1
+  }
+  first
+}
+
+/// `cache` in this build's index space under `e`. Entries below the first
+/// change are carried unchanged. Each entry above it is moved: its index,
+/// its lambdas, every body it holds, its slots, records and linemap rows;
+/// one that cannot be moved, or whose function was removed, is dropped.
+/// `old_plan` is the harvest's lambda plan with its total last
+/// (`lc_old_lambda_plan`). Answers `cache` itself when nothing moved.
+export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: Int, num_user_funcs: Int, func_offset: Int, lambda_slot_base: Int, old_plan: Array[Int], new_bases: Array[Int], new_lambda_count: Int) -> CodegenBodyCache {
+  let first = lc_first_change(e, old_plan, new_bases)
+  if first >= e.old_src_n {
+    cache
+  } else {
+    let fns = lc_fresh_int_array_of_len(num_user_funcs, 0 - 1)
+    let mut o = 0
+    while o < e.old_src_n && o < num_user_funcs {
+      Array::set(fns, o, Array::get(e.o2n, o))
+      o = o + 1
+    }
+    let mut y = capacity
+    while y < num_user_funcs {
+      Array::set(fns, y, y)
+      y = y + 1
+    }
+    let old_bases = lc_fresh_int_array()
+    let mut q = 0
+    while q < num_user_funcs {
+      Array::push(old_bases, Array::get(old_plan, q))
+      q = q + 1
+    }
+    let old_lambda_count = Array::get(old_plan, Array::length(old_plan) - 1)
+    let mut lambdas_moved = old_lambda_count != new_lambda_count
+    let mut l = 0
+    while !lambdas_moved && l < num_user_funcs {
+      let n = Array::get(fns, l)
+      if n >= 0 && Array::get(old_bases, l) != Array::get(new_bases, n) {
+        lambdas_moved = true
       } else {
         ()
       }
-      j = j + 1
-    } else {
-      ()
+      l = l + 1
     }
-    i = i + 1
-  }
-  let mut y = capacity
-  while y < num_user_funcs {
-    Array::set(fns, y, y)
-    y = y + 1
-  }
-  let m = LcIndexMap::{
-    fns: fns,
-    old_bases: old_bases,
-    old_lambda_count: old_lambda_count,
-    new_bases: new_bases,
-    // Any added lambda moves every lambda after it.
-    lambdas_moved: new_lambda_count != old_lambda_count,
-    num_user_funcs: num_user_funcs,
-    func_offset: func_offset,
-    lambda_slot_base: lambda_slot_base
-  }
-  let out = codegen_body_cache_guards_only(cache)
-  let lam_rows = lc_group_rows(cache.lam_owner, num_user_funcs)
-  let slot_rows = lc_group_rows(cache.slot_owner, num_user_funcs)
-  let blind_rows = lc_group_rows(cache.blind_fn, num_user_funcs)
-  let lm_rows = lc_group_rows(cache.lm_owner, num_user_funcs)
-  let mut e = 0
-  while e < Array::length(cache.fn_indices) {
-    let o = Array::get(cache.fn_indices, e)
-    let n = lc_map_fn(m, o)
-    if o >= 0 && o < num_user_funcs && n >= 0 {
-      lc_reindex_entry(m, cache, out, e, o, n, o >= ins.first, Array::get(lam_rows, o), Array::get(slot_rows, o), Array::get(blind_rows, o), Array::get(lm_rows, o))
-    } else {
-      ()
+    let m = LcIndexMap::{
+      fns: fns,
+      old_bases: old_bases,
+      old_lambda_count: old_lambda_count,
+      new_bases: new_bases,
+      lambdas_moved: lambdas_moved,
+      num_user_funcs: num_user_funcs,
+      func_offset: func_offset,
+      lambda_slot_base: lambda_slot_base
     }
-    e = e + 1
+    let out = codegen_body_cache_guards_only(cache)
+    let lam_rows = lc_group_rows(cache.lam_owner, num_user_funcs)
+    let slot_rows = lc_group_rows(cache.slot_owner, num_user_funcs)
+    let blind_rows = lc_group_rows(cache.blind_fn, num_user_funcs)
+    let lm_rows = lc_group_rows(cache.lm_owner, num_user_funcs)
+    let mut x = 0
+    while x < Array::length(cache.fn_indices) {
+      let fo = Array::get(cache.fn_indices, x)
+      let n = lc_map_fn(m, fo)
+      if fo >= 0 && fo < num_user_funcs && n >= 0 {
+        lc_reindex_entry(m, cache, out, x, fo, n, fo >= first, Array::get(lam_rows, fo), Array::get(slot_rows, fo), Array::get(blind_rows, fo), Array::get(lm_rows, fo))
+      } else {
+        ()
+      }
+      x = x + 1
+    }
+    out
   }
-  out
 }
 
 /// Move entry `e` (harvest index `o`, this build's `n`) into `out`, or leave

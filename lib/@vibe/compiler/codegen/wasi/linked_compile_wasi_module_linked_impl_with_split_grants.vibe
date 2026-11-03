@@ -142,8 +142,8 @@ import ./linked_compile_lc_retarget_call.vibe {
   lc_host_hooks_install, lc_program_defines_top_level, lc_program_keeps_stream_read, lc_settle_drop_stream_band, lc_stmts_call_host_future
 }
 
-import ./linked_body_cache_insert.vibe {
-  lc_insertion_active, lc_insertion_none, lc_insertion_of, lc_names_range_equal, lc_without_added, lc_without_added_ints
+import ./linked_body_cache_edit.vibe {
+  lc_names_range_equal, lc_src_edit_none, lc_src_edit_of, lc_src_edit_ok, lc_without, lc_without_ints
 }
 
 import ./linked_compile_linkedhostplan.vibe {
@@ -1533,14 +1533,32 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
   } else {
     body_cache_in
   }
-  // #2669: did this build only ADD source functions to the harvest's? Then
-  // the guards below are asked of every table restricted to the harvest's
-  // names, and the body loop replays only what sits below the first added
-  // index (linked_body_cache_insert.vibe).
-  let body_cache_insertion = if pin_region_capacity >= 0 && Array::length(body_cache_in_fold.fn_indices) > 0 && Array::length(body_cache_in_fold.guard_meta) == 5 && Array::get(body_cache_in_fold.guard_meta, 0) != pin_region_src_n {
-    lc_insertion_of(body_cache_in_fold.guard_src_names, fn_names_list, pin_region_src_n)
+  // #2669: how this build's source functions differ from the harvest's, by
+  // name (linked_body_cache_edit.vibe). Two lanes accept the cache:
+  //
+  // - STRICT: every guard below is the harvest's exactly, as it has always
+  //   been required to be;
+  // - EDIT: source functions were added, removed, renamed or reordered, or a
+  //   lambda count moved. The guards here are then asked without the names
+  //   only one side holds, the synthesized region is compared by NAME (the
+  //   changed statements shift its statement positions, and no body reads
+  //   one), and the body loop compares the layout name by name and relocates
+  //   every moved index.
+  let body_cache_edit_raw = if pin_region_capacity >= 0 && Array::length(body_cache_in_fold.fn_indices) > 0 && Array::length(body_cache_in_fold.guard_meta) == 5 {
+    lc_src_edit_of(body_cache_in_fold.guard_src_names, fn_names_list, pin_region_src_n)
   } else {
-    lc_insertion_none()
+    lc_src_edit_none()
+  }
+  let body_cache_strict = if Array::length(body_cache_in_fold.fn_indices) == 0 || pin_region_capacity < 0 || Array::length(body_cache_in_fold.guard_meta) == 0 {
+    true
+  } else {
+    Array::length(body_cache_in_fold.guard_meta) == 5 && Array::get(body_cache_in_fold.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in_fold.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in_fold.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in_fold.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in_fold.guard_meta, 4) == num_generated && Array::length(body_cache_in_fold.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in_fold, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in_fold.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(body_cache_in_fold.guard_borrow_names, lc_borrow_param_user_srt) && bcc_int_lists_equal(body_cache_in_fold.guard_borrow_masks, lc_borrow_param_mask) && bcc_string_lists_equal(body_cache_in_fold.guard_unmangled_names, guard_unmangled_now)
+  }
+  let body_cache_edit_ok = lc_src_edit_ok(body_cache_edit_raw) && Array::length(body_cache_in_fold.guard_meta) == 5 && Array::get(body_cache_in_fold.guard_meta, 0) == body_cache_edit_raw.old_src_n && Array::get(body_cache_in_fold.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in_fold.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in_fold.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in_fold.guard_meta, 4) == num_generated && lc_names_range_equal(body_cache_in_fold.guard_synth_names, fn_names_list, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in_fold.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(lc_without(body_cache_edit_raw.removed, body_cache_in_fold.guard_borrow_names), lc_without(body_cache_edit_raw.added, lc_borrow_param_user_srt)) && bcc_int_lists_equal(lc_without_ints(body_cache_edit_raw.removed, body_cache_in_fold.guard_borrow_names, body_cache_in_fold.guard_borrow_masks), lc_without_ints(body_cache_edit_raw.added, lc_borrow_param_user_srt, lc_borrow_param_mask)) && bcc_string_lists_equal(lc_without(body_cache_edit_raw.removed, body_cache_in_fold.guard_unmangled_names), lc_without(body_cache_edit_raw.added, guard_unmangled_now))
+  let body_cache_edit = if body_cache_edit_ok {
+    body_cache_edit_raw
+  } else {
+    lc_src_edit_none()
   }
   let body_cache_in_ok = if Array::length(body_cache_in_fold.fn_indices) == 0 {
     true
@@ -1561,16 +1579,8 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
     // records guards, and codegen_body_cache_filter_src_below empties a
     // guard-less cache before it can cross compiles). Accept unchanged.
     true
-  } else if lc_insertion_active(body_cache_insertion) {
-    // Functions were ADDED, so the counts and sets below moved by exactly
-    // those names: ask each of them of this build without the added names.
-    // The synthesized region is compared by NAME, not by merged-statement
-    // position -- the added statements shift every synthesized statement
-    // that sits after them, and no body reads a statement position (the
-    // layout guard's closed set, linked_emission_layout.vibe).
-    Array::get(body_cache_in_fold.guard_meta, 0) == body_cache_insertion.old_src_n && Array::get(body_cache_in_fold.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in_fold.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in_fold.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in_fold.guard_meta, 4) == num_generated && lc_names_range_equal(body_cache_in_fold.guard_synth_names, fn_names_list, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in_fold.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(body_cache_in_fold.guard_borrow_names, lc_without_added(body_cache_insertion, lc_borrow_param_user_srt)) && bcc_int_lists_equal(body_cache_in_fold.guard_borrow_masks, lc_without_added_ints(body_cache_insertion, lc_borrow_param_user_srt, lc_borrow_param_mask)) && bcc_string_lists_equal(body_cache_in_fold.guard_unmangled_names, lc_without_added(body_cache_insertion, guard_unmangled_now))
   } else {
-    Array::length(body_cache_in_fold.guard_meta) == 5 && Array::get(body_cache_in_fold.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in_fold.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in_fold.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in_fold.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in_fold.guard_meta, 4) == num_generated && Array::length(body_cache_in_fold.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in_fold, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in_fold.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(body_cache_in_fold.guard_borrow_names, lc_borrow_param_user_srt) && bcc_int_lists_equal(body_cache_in_fold.guard_borrow_masks, lc_borrow_param_mask) && bcc_string_lists_equal(body_cache_in_fold.guard_unmangled_names, guard_unmangled_now)
+    body_cache_strict || body_cache_edit_ok
   }
   let fn_indices_list = lc_fresh_int_array()
   let fn_returns_list = lc_fresh_int_array()
@@ -1956,7 +1966,8 @@ export fn lc_prepare_module_with_split_grants(stmts: Array[Stmt], entry_name_in:
     blind_syms: blind_syms,
     body_cache_in: body_cache_in_fold,
     body_cache_in_ok: body_cache_in_ok,
-    body_cache_insertion: body_cache_insertion,
+    body_cache_edit: body_cache_edit,
+    body_cache_strict: body_cache_strict,
     body_cache_out: body_cache_out,
     bool_render_offsets: bool_render_offsets,
     bytes_append_idx: bytes_append_idx,

@@ -1085,85 +1085,95 @@ anywhere declined the whole cache. It is a relocation class now:
 or shorter literal downstream replays the unchanged file's bodies and answers
 what a fresh compile answers.
 
-##### An added function is tolerated, not pinned (#2669)
+##### A changed set of source functions is relocated, not pinned (#2669)
 
-Adding a function moves most of what `guard_layout` pins: the function vector
-gains a name and loses a pad, the lambda plan shifts behind the new function,
-and every name-keyed table (the return classes, the capture index, the borrow
-table) gains an entry. So adding one helper to the file being edited used to
-recompile every body in the program.
+Adding, removing, renaming or reordering a function, or giving one a new
+closure, moves most of what `guard_layout` pins: the function vector, the
+lambda plan, and every name-keyed table (the return classes, the capture
+index, the borrow table). Pinned whole, one helper added to the file being
+edited recompiled every body in the program.
 
-None of that reaches a body that sits below the new function and never spells
-its name. Its own index, its lambdas' indices and every function it calls are
-below the insertion, because merge order is topological. A lookup keyed by a
-name it does not spell cannot answer differently. What remains to show is that
-nothing else moved, and that takes the harvest's names, not a fingerprint of
-them:
+A body that never spells a changed name sees that change only through
+indices, and indices are relocated. So the harvest records the layout split
+in two, next to the full fingerprint (`linked_emission_layout.vibe`, VBC10):
 
-- **Carried by name.** The harvest stores its source region by name, in index
-  order (`guard_src_names`, VBC9).
-- **Recognised as an insertion.** `lc_insertion_of`
-  (`linked_body_cache_insert.vibe`) accepts the harvest's names only when they
-  are, in order, a subsequence of this build's, and when no added name also
-  existed before. A removal or a reorder is not an insertion.
-- **Compared without the added names.** Under an insertion, the guards are
-  asked of this build's tables with the added functions taken out:
-  - `guard_meta`'s source count is the harvest's plus the added count;
-  - the synthesized region is compared by name, since the added statements
-    shift its statement positions and no body reads one;
-  - the borrow and unmangled-name tables drop the added names;
-  - `guard_layout_restricted` fingerprints the function vector with the
-    harvest's pads put back, the lambda plan without the added lambdas, and
-    every name-keyed table without the added names.
+- **`guard_layout_global`**: the same fingerprint without anything keyed by a
+  source function's name. It covers the constructor and effect tables, the
+  synthesized region (its lambda counts, not its bases), the builtins and the
+  modes.
+- **`guard_src_rows`**: one fingerprint per source function, in index order,
+  of what the name-keyed tables say about it: arity, env, return class,
+  borrow mask, whether it is a thunk or a folded constant. Its index and its
+  lambda count are left out, because the relocation follows both.
+- **`guard_src_names`** and **`guard_src_lambdas`**: the names and lambda
+  counts by value.
 
-  Any other difference declines the cache, as before.
-- **Replayed when it spells no added name** (`lc_insertion_replayable`). This
+A build whose full fingerprint differs is then compared as an edit
+(`linked_body_cache_edit.vibe`):
+
+- **Matched by name.** `lc_src_edit_of` maps each harvest function to this
+  build's position. A name that occurs twice on either side identifies
+  nothing, and the cache is declined.
+- **Compared in halves.** The global half must match whole, and the rows of
+  every name both builds hold must match one by one. The meta guards are
+  asked without the names only one side holds: the borrow and unmangled-name
+  tables, and the synthesized region by name, because the changed statements
+  shift its statement positions and no body reads one.
+- **Replayed when it spells no changed name** (`lc_src_edit_replayable`). This
   rule is load-bearing: a new global spelled like a local an upstream lambda
   captures changes what that lambda captures. With the rule switched off, the
   `captured-name` row compiles to different bytes from a fresh build.
-- **Moved when it sits above the insertion** (`lc_insertion_reindex`,
-  `linked_body_cache_reindex.vibe`). The file table keeps every unchanged file
-  when only the edited files' statement counts moved, rebasing each kept
-  entry's statement position. An entry above the first added index is then
+- **Moved when it sits above the first change** (`lc_src_edit_reindex`,
+  `linked_body_cache_reindex.vibe`). The file table keeps every unchanged
+  file when only the edited files' statement counts moved, rebasing each kept
+  entry's statement position. Each entry above the first moved index is then
   moved into this build's index space:
   - `call` immediates, found by `scan_body_relocs`;
   - function values (kinds 101 and 102) and the funcref slot log;
-  - lambda indices, through the harvest's lambda plan (this build's without
-    the added lambdas, which the restricted guard showed equal);
+  - lambda indices, through the harvest's lambda plan
+    (`lc_old_lambda_plan`);
   - record owners, and the record and linemap offsets that a different LEB
     width moves.
 
-  An entry that cannot be moved is dropped and recompiles. That covers an
-  opcode the scanner does not know, a reference to a pad, a record that does
-  not sit on its instruction, and a direct call into the lambda region while
-  the lambdas moved. Each of the three remaps is load-bearing: with any one of
-  them made the identity, a middle-file row compiles to different bytes.
+  An entry that cannot be moved is dropped and recompiles. That covers a
+  removed function, an opcode the scanner does not know, a reference to a
+  pad, a record that does not sit on its instruction, and a direct call into
+  the lambda region while lambdas moved. Each of the three remaps is
+  load-bearing: with any one of them made the identity, a middle-file row
+  compiles to different bytes.
 - **Re-recorded.** The harvest's guards describe the old layout, so the
-  consumed cache is not merged back. Each replayed body is re-recorded instead,
-  as a relocated one is, and the next build finds a complete artifact.
+  consumed cache is not merged back. Each replayed body is re-recorded
+  instead, as a relocated one is.
 
-`tests/body_cache_insert_function_test.vibe` holds the rows:
+The rows are defence in depth for one class: a changed borrow ABI moves the
+row and the borrow table both, and in the probe built for it the borrow guard
+declined first. No row of the corpus is caught by the rows alone.
 
-- **Byte-equal and reused:**
-  - a helper appended to the edited file;
-  - a helper placed before the file's function;
-  - a helper with a closure of its own.
-- **Byte-equal and reused, with `bif_cap` recompiled:** a new global spelled
-  like a captured local.
-- **Byte-equal and not reused:** a function added together with a type, which
-  moves the constructor table.
+`tests/body_cache_insert_function_test.vibe` holds the rows, every one compared
+byte for byte against a fresh build:
+
+- **Reused:** a helper appended, prepended, or with its own closure, in the
+  last file.
+- **Reused, with `bif_cap` recompiled:** a new global spelled like a captured
+  local.
+- **Not reused:** a function added together with a type, which moves the
+  constructor table.
 - **A stable refreshed artifact:** a second warm build recompiles exactly what
   a third does.
-- **The edit in a middle file**, with the downstream file calling the moved
-  functions, taking one as a value and building closures: both the upstream
-  and the downstream bodies reused, byte-equal. Also with a closure in the
-  added helper, which moves every later lambda.
+- **Middle-file edits**, with the downstream file calling the moved
+  functions, taking one as a value and building closures. Both the upstream
+  and the downstream bodies are reused for each of:
+  - an added helper, with and without a closure;
+  - a removed helper;
+  - a renamed helper;
+  - a reorder;
+  - a closure added inside an existing function.
 - **Width bands:** 200 functions moved by two, so call targets cross the
   one-byte uleb boundary and function-value constants the one-byte sleb one.
-  The row is byte-equal. With every width-changing edit skipped, this row and
-  no other fails, so the crossing really happens.
+  With every width-changing edit skipped, this row and no other fails, so the
+  crossing really happens.
 
-The added function must be called. One that nothing reaches is removed before
+An added function must be called. One that nothing reaches is removed before
 code generation, and the edit never reaches the body cache at all.
 
 Measured on the compiler's own closure (`codegen_lexer_test.vibe`, 196 files,

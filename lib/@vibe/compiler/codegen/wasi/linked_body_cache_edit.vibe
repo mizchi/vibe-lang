@@ -1,0 +1,321 @@
+// lib/@vibe/compiler/codegen/wasi/linked_body_cache_edit.vibe -- replaying
+// cached bodies across a build whose source functions were added, removed,
+// renamed or reordered (#2669).
+
+import @vibe/compiler/core {
+  Expr, bsearch_leftmost, expr_children, sort_perm_by_names, sorted_names_of
+}
+
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  lc_fresh_int_array, lc_fresh_int_array_of_len, lc_fresh_string_array
+}
+
+//# Why the layout guard has two halves
+//
+// `guard_layout` fingerprints every program-wide table a body is compiled
+// against, and any change to the set of source functions moves most of it:
+// the function vector, the lambda plan, every name-keyed set. Fingerprinting
+// the whole of it means one added, removed or renamed helper recompiles every
+// body in the program.
+//
+// A body that never spells a changed name cannot see that change except
+// through INDICES, and indices are relocated (`linked_body_cache_reindex.vibe`).
+// So the harvest also records the tables split in two:
+//
+// - `guard_layout_global`: the same fingerprint with every entry keyed by a
+//   source function's name taken out -- the constructor and effect tables,
+//   the synthesized region, the builtins, the modes;
+// - `guard_src_rows`: one fingerprint per source function, of everything a
+//   name-keyed table says about it (its arity, env, return and borrow
+//   classes, whether it is a thunk or a folded constant).
+//
+// A later build is then compared on the global half and on the rows of the
+// names both builds hold. A name only one side holds is a change, and a body
+// that spells one is not replayed. Each function's LAMBDA COUNT is carried by
+// value instead (`guard_src_lambdas`): it only moves indices, which the
+// relocation follows.
+
+/// How this build's source region differs from the harvest's. `added` /
+/// `removed` / `touched` (their union) are sorted. `o2n` maps each harvest
+/// source index to this build's, -1 for a removed function. `first_old` is
+/// the lowest harvest index whose position moved (`old_src_n` when none did).
+/// `ok` is false when a name occurs twice on either side, which makes it
+/// identify nothing.
+export struct LcSrcEdit {
+  ok: Bool;
+  added: Array[String];
+  removed: Array[String];
+  touched: Array[String];
+  o2n: Array[Int];
+  first_old: Int;
+  old_src_n: Int
+}
+
+export fn lc_src_edit_none() -> LcSrcEdit {
+  LcSrcEdit::{
+    ok: false,
+    added: lc_fresh_string_array(),
+    removed: lc_fresh_string_array(),
+    touched: lc_fresh_string_array(),
+    o2n: lc_fresh_int_array(),
+    first_old: 0 - 1,
+    old_src_n: 0 - 1
+  }
+}
+
+/// Does `e` describe a comparable source region?
+export fn lc_src_edit_ok(e: LcSrcEdit) -> Bool {
+  e.ok
+}
+
+/// Did any source function's name, presence or position change?
+export fn lc_src_edit_moves(e: LcSrcEdit) -> Bool {
+  e.ok && (Array::length(e.touched) > 0 || e.first_old < e.old_src_n)
+}
+
+fn lc_has_duplicate(sorted: Array[String]) -> Bool {
+  let mut dup = false
+  let mut i = 1
+  while !dup && i < Array::length(sorted) {
+    if Array::get(sorted, i) == Array::get(sorted, i - 1) {
+      dup = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  dup
+}
+
+/// Compare the harvest's source region with this build's `[0, new_src_n)`.
+export fn lc_src_edit_of(old_src: Array[String], new_names: Array[String], new_src_n: Int) -> LcSrcEdit {
+  let old_n = Array::length(old_src)
+  if old_n == 0 || new_src_n < 0 || new_src_n > Array::length(new_names) {
+    lc_src_edit_none()
+  } else {
+    let new_src = lc_fresh_string_array()
+    let mut i = 0
+    while i < new_src_n {
+      Array::push(new_src, Array::get(new_names, i))
+      i = i + 1
+    }
+    let perm = sort_perm_by_names(new_src)
+    let new_sorted = lc_fresh_string_array()
+    let new_pos = lc_fresh_int_array()
+    for p in perm {
+      Array::push(new_sorted, Array::get(new_src, p))
+      Array::push(new_pos, p)
+    }
+    let old_sorted = sorted_names_of(old_src)
+    if lc_has_duplicate(new_sorted) || lc_has_duplicate(old_sorted) {
+      lc_src_edit_none()
+    } else {
+      let o2n = lc_fresh_int_array()
+      let removed = lc_fresh_string_array()
+      let mut first_old = old_n
+      let mut o = 0
+      while o < old_n {
+        let name = Array::get(old_src, o)
+        let at = bsearch_leftmost(new_sorted, name)
+        let n = if at >= 0 {
+          Array::get(new_pos, at)
+        } else {
+          0 - 1
+        }
+        Array::push(o2n, n)
+        if n < 0 {
+          Array::push(removed, name)
+        } else {
+          ()
+        }
+        if n != o && first_old == old_n {
+          first_old = o
+        } else {
+          ()
+        }
+        o = o + 1
+      }
+      let added = lc_fresh_string_array()
+      for name in new_sorted {
+        if bsearch_leftmost(old_sorted, name) < 0 {
+          Array::push(added, name)
+        } else {
+          ()
+        }
+      }
+      let touched = lc_fresh_string_array()
+      for name in added {
+        Array::push(touched, name)
+      }
+      for name in removed {
+        Array::push(touched, name)
+      }
+      LcSrcEdit::{
+        ok: true,
+        added: added,
+        removed: sorted_names_of(removed),
+        touched: sorted_names_of(touched),
+        o2n: o2n,
+        first_old: first_old,
+        old_src_n: old_n
+      }
+    }
+  }
+}
+
+/// `xs` without the names in the sorted `drop`, order kept.
+export fn lc_without(drop: Array[String], xs: Array[String]) -> Array[String] {
+  let out = lc_fresh_string_array()
+  for x in xs {
+    if bsearch_leftmost(drop, x) < 0 {
+      Array::push(out, x)
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// The values aligned with `names`, without the entries of names in `drop`.
+export fn lc_without_ints(drop: Array[String], names: Array[String], vals: Array[Int]) -> Array[Int] {
+  let out = lc_fresh_int_array()
+  let mut i = 0
+  while i < Array::length(names) && i < Array::length(vals) {
+    if bsearch_leftmost(drop, Array::get(names, i)) < 0 {
+      Array::push(out, Array::get(vals, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Is `expected` exactly `xs[lo..hi)`?
+export fn lc_names_range_equal(expected: Array[String], xs: Array[String], lo: Int, hi: Int) -> Bool {
+  if lo < 0 || hi > Array::length(xs) || hi - lo != Array::length(expected) {
+    false
+  } else {
+    let mut same = true
+    let mut i = lo
+    while same && i < hi {
+      if Array::get(xs, i) != Array::get(expected, i - lo) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+/// Are the rows of every function both builds hold the same? Rows are two
+/// ints each, in each build's own index order.
+export fn lc_src_rows_agree(e: LcSrcEdit, old_rows: Array[Int], new_rows: Array[Int]) -> Bool {
+  if Array::length(old_rows) != 2 * e.old_src_n {
+    false
+  } else {
+    let mut same = true
+    let mut o = 0
+    while same && o < e.old_src_n {
+      let n = Array::get(e.o2n, o)
+      if n >= 0 {
+        if 2 * n + 1 >= Array::length(new_rows) || Array::get(old_rows, 2 * o) != Array::get(new_rows, 2 * n) || Array::get(old_rows, 2 * o + 1) != Array::get(new_rows, 2 * n + 1) {
+          same = false
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      o = o + 1
+    }
+    same
+  }
+}
+
+/// The harvest's lambda plan: its source functions' lambda counts by value,
+/// no lambdas in the pads, and this build's synthesized region (which the
+/// global guard has shown is the harvest's). The last element is the total.
+export fn lc_old_lambda_plan(old_counts: Array[Int], capacity: Int, num_user_funcs: Int, new_bases: Array[Int], new_count: Int) -> Array[Int] {
+  let out = lc_fresh_int_array()
+  let mut acc = 0
+  for c in old_counts {
+    Array::push(out, acc)
+    acc = acc + c
+  }
+  let mut p = Array::length(old_counts)
+  while p < capacity {
+    Array::push(out, acc)
+    p = p + 1
+  }
+  let mut y = capacity
+  while y < num_user_funcs {
+    Array::push(out, acc)
+    let hi = if y + 1 < num_user_funcs {
+      Array::get(new_bases, y + 1)
+    } else {
+      new_count
+    }
+    acc = acc + (hi - Array::get(new_bases, y))
+    y = y + 1
+  }
+  Array::push(out, acc)
+  out
+}
+
+/// Each function's lambda count, from its plan.
+export fn lc_lambda_counts(bases: Array[Int], count: Int, lo: Int, hi: Int) -> Array[Int] {
+  let out = lc_fresh_int_array()
+  let mut i = lo
+  while i < hi && i < Array::length(bases) {
+    let next = if i + 1 < Array::length(bases) {
+      Array::get(bases, i + 1)
+    } else {
+      count
+    }
+    Array::push(out, next - Array::get(bases, i))
+    i = i + 1
+  }
+  out
+}
+
+fn lc_mentions_any(e: Expr, sorted: Array[String]) -> Bool {
+  match e {
+    EIdent(n, _) => bsearch_leftmost(sorted, n) >= 0,
+    _ => {
+      let kids = expr_children(e)
+      let mut hit = false
+      let mut i = 0
+      while !hit && i < Array::length(kids) {
+        hit = lc_mentions_any(Array::get(kids, i), sorted)
+        i = i + 1
+      }
+      hit
+    }
+  }
+}
+
+/// Per user function, 1 when its cached body may still be replayed under
+/// `e`: it never spells a changed name -- not as a call, not as a captured
+/// local that a new global of the same spelling would stop the capture of,
+/// or that a removed one would start it. That an entry above the change was
+/// moved into this build's index space is `lc_src_edit_reindex`'s part; one
+/// it could not move is not in the cache to find.
+export fn lc_src_edit_replayable(e: LcSrcEdit, bodies: Array[Expr], num_user_funcs: Int) -> Array[Int] {
+  let out = lc_fresh_int_array_of_len(num_user_funcs, 1)
+  if Array::length(e.touched) > 0 {
+    let mut bi = 0
+    while bi < num_user_funcs {
+      if lc_mentions_any(Array::get(bodies, bi), e.touched) {
+        Array::set(out, bi, 0)
+      } else {
+        ()
+      }
+      bi = bi + 1
+    }
+  } else {
+    ()
+  }
+  out
+}

@@ -248,12 +248,12 @@ import ./linked_body_cache_strings.vibe {
   lc_relocate_replayed_strings, lc_string_remap
 }
 
-import ./linked_body_cache_insert.vibe {
-  lc_insertion_active, lc_insertion_replayable
+import ./linked_body_cache_edit.vibe {
+  lc_old_lambda_plan, lc_src_edit_ok, lc_src_edit_replayable, lc_src_rows_agree
 }
 
 import ./linked_body_cache_reindex.vibe {
-  lc_insertion_reindex
+  lc_src_edit_reindex
 }
 
 import ./linked_emission_layout.vibe {
@@ -323,7 +323,8 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   let blind_owners = input.blind_owners
   let blind_syms = input.blind_syms
   let body_cache_in = input.body_cache_in
-  let body_cache_insertion = input.body_cache_insertion
+  let body_cache_edit = input.body_cache_edit
+  let body_cache_strict = input.body_cache_strict
   let body_cache_in_ok = input.body_cache_in_ok
   let body_cache_out = input.body_cache_out
   let bool_render_offsets = input.bool_render_offsets
@@ -469,6 +470,16 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   let thunk_names_sorted_shared = emission_layout.thunk_names
   let guard_layout_now = emission_layout.guard_layout
   if pin_region_capacity >= 0 {
+    // #2669: the halves a later source edit is compared on.
+    for v in emission_layout.guard_layout_global {
+      Array::push(body_cache_out.guard_layout_global, v)
+    }
+    for v in emission_layout.src_rows {
+      Array::push(body_cache_out.guard_src_rows, v)
+    }
+    for v in emission_layout.src_lambdas {
+      Array::push(body_cache_out.guard_src_lambdas, v)
+    }
     let mut __glc2 = 0
     while __glc2 < Array::length(guard_layout_now) {
       Array::push(body_cache_out.guard_layout, Array::get(guard_layout_now, __glc2))
@@ -503,17 +514,20 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   // this narrowed there, `VIBE_CODEGEN_BODY_CACHE=verify` would byte-compare
   // the prefix lane and never see the wide one. Cross-compile drift is caught
   // before that point, by `body_cache_guards_equal` against the fresh harvest.
+  // #2669: two ways to accept the harvest's layout. STRICT: it is exactly
+  // this compile's. EDIT: the source functions changed (added, removed,
+  // renamed, reordered, or a lambda count moved), and the layout is compared
+  // in two halves instead -- everything not keyed by a source function's name
+  // whole, and the rows of the names both builds hold one by one; every
+  // moved index is then relocated (`lc_src_edit_reindex`).
+  let edit_on = !body_cache_strict || !bcc_int_lists_equal(body_cache_in.guard_layout, guard_layout_now)
+  let edit_lane = pin_region_capacity >= 0 && edit_on && lc_src_edit_ok(body_cache_edit) && Array::length(body_cache_in.guard_layout_global) > 0 && bcc_int_lists_equal(body_cache_in.guard_layout_global, emission_layout.guard_layout_global) && Array::length(body_cache_in.guard_src_lambdas) == body_cache_edit.old_src_n && lc_src_rows_agree(body_cache_edit, body_cache_in.guard_src_rows, emission_layout.src_rows)
   let lc_wide_ok = if pin_region_capacity < 0 {
     true
+  } else if edit_on {
+    edit_lane
   } else {
-    // #2669: a build that only ADDED functions is compared without them
-    // (`guard_layout_restricted`); the body loop then replays only what sits
-    // below the first one and never spells an added name.
-    Array::length(body_cache_in.guard_layout) > 0 && bcc_int_lists_equal(body_cache_in.guard_layout, if lc_insertion_active(body_cache_insertion) {
-      emission_layout.guard_layout_restricted
-    } else {
-      guard_layout_now
-    })
+    Array::length(body_cache_in.guard_layout) > 0
   }
   // Dropping, not narrowing. A drifted layout replays NOTHING, the unchanged
   // leading files included: their bodies are not layout-independent. They
@@ -527,13 +541,10 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   // there. Measured on the compiler's own CLI closure: one string edited in
   // `cli/commands/pkg.vibe` gave a warm build 15 stale addresses, and
   // `tests/body_cache_downstream_edit_test.vibe` pins the same shape small.
-  // #2669: under a tolerated insertion, the cached entries above it are
-  // moved into this build's function index space first; one that cannot be
-  // moved is left out and recompiles.
   let body_cache_wide = if !lc_wide_ok {
     codegen_body_cache_new()
-  } else if pin_region_capacity >= 0 && lc_insertion_active(body_cache_insertion) && Array::length(body_cache_in.fn_indices) > 0 {
-    lc_insertion_reindex(body_cache_in, body_cache_insertion, fn_names_list, input.pin_region_src_n, pin_region_capacity, num_user_funcs, func_offset, lambda_slot_base, emission_layout.restricted_lambda_bases, emission_layout.restricted_lambda_count, lambda_bases, lambda_base_acc)
+  } else if edit_lane && Array::length(body_cache_in.fn_indices) > 0 {
+    lc_src_edit_reindex(body_cache_in, body_cache_edit, pin_region_capacity, num_user_funcs, func_offset, lambda_slot_base, lc_old_lambda_plan(body_cache_in.guard_src_lambdas, pin_region_capacity, num_user_funcs, lambda_bases, lambda_base_acc), lambda_bases, lambda_base_acc)
   } else {
     body_cache_in
   }
@@ -556,13 +567,14 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
     None => lc_fresh_int_array()
   }
   let str_relocating = Array::length(str_remap) > 0
-  // #2669: under a tolerated insertion, which functions may still replay.
-  // A replay there is also re-recorded, like a relocated one: the harvest's
-  // guards describe the old layout, so the consumed cache is not merged back
-  // and the refreshed artifact must hold every replayed body itself.
-  let insert_replaying = lc_insertion_active(body_cache_insertion) && Array::length(body_cache_use.fn_indices) > 0
+  // #2669: under the edit lane, which functions may still replay -- none
+  // that spells a changed name. A replay there is also re-recorded, like a
+  // relocated one: the harvest's guards describe the old layout, so the
+  // consumed cache is not merged back and the refreshed artifact must hold
+  // every replayed body itself.
+  let insert_replaying = edit_lane && Array::length(body_cache_use.fn_indices) > 0
   let insert_replayable = if insert_replaying {
-    lc_insertion_replayable(body_cache_insertion, planned_bodies, num_user_funcs)
+    lc_src_edit_replayable(body_cache_edit, planned_bodies, num_user_funcs)
   } else {
     lc_fresh_int_array()
   }
@@ -647,7 +659,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
       // duplicate makes the name meaningless for this function even if the
       // cache kept a single entry under it -- which the prefix filter can
       // produce, by dropping one of the pair and keeping the other.
-      // A function the insertion lane withholds was never looked up by
+      // A function the edit lane withholds was never looked up by
       // index, so there is nothing for the name lookup to agree with.
       let __insert_withheld = insert_replaying && Array::get(insert_replayable, bi) == 0
       if body_cache_in_ok && !__insert_withheld && Array::get(lc_name_unique, bi) == 1 {
@@ -716,7 +728,7 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
         // them onto this compile's pool, then record the relocated function
         // as this compile's own harvest -- the refreshed artifact must hold
         // the NEW addresses, and a replayed function is otherwise never
-        // re-recorded. A replay under a tolerated insertion is re-recorded
+        // re-recorded. A replay on the edit lane is re-recorded
         // too, for the reason `rerecord_replays` gives.
         if rerecord_replays {
           let __r_lam_hi = if bi + 1 < num_user_funcs {
