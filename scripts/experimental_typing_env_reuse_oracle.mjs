@@ -310,7 +310,19 @@ function stableCachePath(cache, version, prefix, seed, suffix) {
   return join(cache, `vibe_${prefix}_${token}${suffix}`);
 }
 
-function typeEnvPath(stage2, cache, target, major = "v29") {
+// The persistent cache namespace's `vNN` major, read from the same flattened
+// stage source as the codegen fingerprint. It was a literal here, so every
+// namespace bump (`persistent_cache_version_tag`) failed this oracle with an
+// ENOENT on a TypeEnv path that no longer exists, and the fix was to bump the
+// literal by hand (#3440).
+function stageCacheMajor(stage2) {
+  const stageSource = readFileSync(join(dirname(stage2), "cli_adapter_module_source.vibe"), "utf8");
+  const majors = [...new Set([...stageSource.matchAll(/"(v[0-9]+)\|cg-"/g)].map((m) => m[1]))];
+  if (majors.length !== 1) fail(`expected one persistent cache major in the stage source, found ${majors.length}`);
+  return majors[0];
+}
+
+function typeEnvPath(stage2, cache, target, major = stageCacheMajor(stage2)) {
   return stableCachePath(cache, `${major}|cg-${stageCodegenFingerprint(stage2)}`, "selfhost_type_env_v10", target, ".tsv");
 }
 

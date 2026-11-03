@@ -1,7 +1,15 @@
 //# Imports
 
-import ../cli_support.vibe {
-  compile_release_file_mode, check_linked_file, check_deprecated_warnings_from_source_groups, check_redundant_import_warnings, check_redundant_import_warnings_from_source_groups, finalize_thrown_diagnostic, verify_culprit_off_marker, verify_culprit_off_marker_fs_fail_closed, verify_culprit_off_marker_snapshot
+import @vibe/cli/support {
+  check_deprecated_warnings_from_source_groups,
+  check_linked_file,
+  check_redundant_import_warnings,
+  check_redundant_import_warnings_from_source_groups,
+  compile_release_file_mode,
+  finalize_thrown_diagnostic,
+  verify_culprit_off_marker,
+  verify_culprit_off_marker_fs_fail_closed,
+  verify_culprit_off_marker_snapshot
 }
 
 import @vibe/compiler/loader {
@@ -23,26 +31,26 @@ fn string_to_bytes(s: String) -> Bytes {
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Array::push(out, String::char_code_at(s, i))
+    Array::push(out, value = String::char_code_at(s, at = i))
     i = i + 1
   }
   Bytes::from_array(out)
 }
 
 fn assert_wasm_magic(bytes: Bytes) -> Unit {
-  assert(Bytes::get(bytes, 0) == 0)
-  assert(Bytes::get(bytes, 1) == 97)
-  assert(Bytes::get(bytes, 2) == 115)
-  assert(Bytes::get(bytes, 3) == 109)
+  assert(Bytes::get(bytes, at = 0) == 0)
+  assert(Bytes::get(bytes, at = 1) == 97)
+  assert(Bytes::get(bytes, at = 2) == 115)
+  assert(Bytes::get(bytes, at = 3) == 109)
 }
 
 //# Misc
 
 test "FS/build culprit marker is fail-closed without its compile snapshot (#1596)" {
   let msg = "cannot lower (here: the call to 'bump') [@off=112:116]"
-  let verified = verify_culprit_off_marker_fs_fail_closed(msg)
-  assert(String::contains(verified, "here: the call to 'bump'"))
-  assert(!String::contains(verified, "[@off="))
+  let verified = verify_culprit_off_marker_fs_fail_closed(msg = msg)
+  assert(String::contains(verified, needle = "here: the call to 'bump'"))
+  assert(!String::contains(verified, needle = "[@off="))
 }
 
 test "an unresolved interpolation refusal reaches the reader without its marker" {
@@ -51,18 +59,18 @@ test "an unresolved interpolation refusal reaches the reader without its marker"
   // thrown diagnostic as is. With no merge recorded no file owns the offset.
   merged_offset_space_reset()
   let msg = "cannot interpolate `d`: its type is an Option, Array, tuple, Bytes or record whose shape the renderer could not resolve here (#2987) [@off=94021]"
-  let shown = finalize_thrown_diagnostic(msg, ["run", "a.vibex"])
-  assert(String::contains(shown, "cannot interpolate `d`"))
-  assert(!String::contains(shown, "[@off="))
+  let shown = finalize_thrown_diagnostic(msg = msg, args = ["run", "a.vibex"])
+  assert(String::contains(shown, needle = "cannot interpolate `d`"))
+  assert(!String::contains(shown, needle = "[@off="))
 }
 
 test "a refusal whose merged offset a recorded file owns is located there" {
   merged_offset_space_reset()
   let source = "fn main allows Console {\n  let d = 1\n  println(\"\\{d}\")\n}\n"
-  merged_offset_space_add("/tmp/located.vibex", source, 1000)
-  let local = String::index_of(source, "{d}") + 1
+  merged_offset_space_add(path = "/tmp/located.vibex", source = source, base = 1000)
+  let local = String::index_of(source, needle = "{d}") + 1
   let msg = String::concat("cannot interpolate `d`: shape unknown (#2987) [@off=", String::concat(__to_string(1000 + local), "]"))
-  let shown = finalize_thrown_diagnostic(msg, ["run", "a.vibex"])
+  let shown = finalize_thrown_diagnostic(msg = msg, args = ["run", "a.vibex"])
   merged_offset_space_reset()
   inspect(shown, content = "/tmp/located.vibex: line 3:14: cannot interpolate `d`: shape unknown (#2987)")
 }
@@ -70,11 +78,11 @@ test "a refusal whose merged offset a recorded file owns is located there" {
 test "cli support dispatches mvp through pruned compile path" {
   let main_path = "/tmp/vibe_cli_support_mode_main.vibe"
   let source = "let unused: () -> Int = () -> { 0 }\nlet answer: () -> Int = () -> { 40 + 2 }\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
-  let bytes_no_dce = compile_release_file_mode(main_path, "answer", "no-dce")
-  let bytes_mvp = compile_release_file_mode(main_path, "answer", "mvp")
-  assert_wasm_magic(bytes_no_dce)
-  assert_wasm_magic(bytes_mvp)
+  Fs::write_bytes(main_path, bytes = string_to_bytes(s = source))
+  let bytes_no_dce = compile_release_file_mode(input_path = main_path, entry_name = "answer", mode = "no-dce")
+  let bytes_mvp = compile_release_file_mode(input_path = main_path, entry_name = "answer", mode = "mvp")
+  assert_wasm_magic(bytes = bytes_no_dce)
+  assert_wasm_magic(bytes = bytes_mvp)
   assert(Bytes::length(bytes_mvp) < Bytes::length(bytes_no_dce))
 }
 
@@ -85,11 +93,11 @@ test "cli support compiles enum constructors imported through index module" {
   let index_path = String::concat(core_dir, "/index.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(core_dir)
-  Fs::write_bytes(ast_path, string_to_bytes("export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"))
-  Fs::write_bytes(index_path, string_to_bytes("export ./ast.vibe { TypeExpr }"))
-  Fs::write_bytes(main_path, string_to_bytes("import ./core { TypeExpr }\nlet answer: () -> Int = () -> { let ann: TypeExpr = TyTuple([TyName(\"Int\")]); match ann { TyTuple(items) => Array::length(items), _ => 0 } }\n"))
-  let bytes = compile_release_file_mode(main_path, "answer", "no-dce")
-  assert_wasm_magic(bytes)
+  Fs::write_bytes(ast_path, bytes = string_to_bytes(s = "export enum TypeExpr { TyName(String); TyTuple(Array[TypeExpr]) }"))
+  Fs::write_bytes(index_path, bytes = string_to_bytes(s = "export ./ast.vibe { TypeExpr }"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(s = "import ./core { TypeExpr }\nlet answer: () -> Int = () -> { let ann: TypeExpr = TyTuple([TyName(\"Int\")]); match ann { TyTuple(items) => Array::length(items), _ => 0 } }\n"))
+  let bytes = compile_release_file_mode(input_path = main_path, entry_name = "answer", mode = "no-dce")
+  assert_wasm_magic(bytes = bytes)
 }
 
 /// #946(3): check_linked_file (Gate v2 #492, `vibe check`'s real implementation
@@ -101,17 +109,17 @@ test "cli support compiles enum constructors imported through index module" {
 /// contradicting `vibe diagnostics` (clean) on the identical input.
 test "check_linked_file: comment-only file has nothing to check -- succeeds" {
   let empty_path = "/tmp/vibe_cli_support_check_empty.vibe"
-  Fs::write_bytes(empty_path, string_to_bytes("// just a comment\n"))
-  let rc = check_linked_file(empty_path)
+  Fs::write_bytes(empty_path, bytes = string_to_bytes(s = "// just a comment\n"))
+  let rc = check_linked_file(input_path = empty_path)
   assert(rc == 0)
 }
 
 test "parser binder context low-level constructor is public but untrusted" {
   let path = "/tmp/vibe_parser_binder_context_untrusted_constructor.vibe"
   let source = "import @vibe/parser { struct ParserBinderContext, binder_capture_context }\nlet empty: Array[Int] = []\nlet forged: ParserBinderContext = binder_capture_context(empty, empty)\n"
-  Fs::write_bytes(path, string_to_bytes(source))
+  Fs::write_bytes(path, bytes = string_to_bytes(s = source))
   let message = handle {
-    let _ = check_linked_file(path)
+    let _ = check_linked_file(input_path = path)
     ""
   } with { Exception::Throw(error) => error }
   // This is intentionally clean: the constructor is public cross-file
@@ -127,26 +135,26 @@ test "parser binder context low-level constructor is public but untrusted" {
 /// dropped to fix the empty-file case above.
 test "check_linked_file: bad inline-wasm lane index throws a located error" {
   let bad_lane_path = "/tmp/vibe_cli_support_check_badlane.vibe"
-  Fs::write_bytes(bad_lane_path, string_to_bytes("fn bad_lane(a: Int) -> Int = wasm \"(i8x16.extract_lane_s 16 (local.get $a))\"\n\nexport fn main() -> Int {\n  bad_lane(1)\n}\n"))
+  Fs::write_bytes(bad_lane_path, bytes = string_to_bytes(s = "fn bad_lane(a: Int) -> Int = wasm \"(i8x16.extract_lane_s 16 (local.get $a))\"\n\nexport fn main() -> Int {\n  bad_lane(1)\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(bad_lane_path)
+    let _ = check_linked_file(input_path = bad_lane_path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "lane index 16 is out of range"))
-  assert(String::contains(msg, "line 1:"))
+  assert(String::contains(msg, needle = "lane index 16 is out of range"))
+  assert(String::contains(msg, needle = "line 1:"))
 }
 
 /// Sanity guard: a genuine type error must still fail check_linked_file (the
 /// empty-file relaxation above must not turn into "check never fails").
 test "check_linked_file: a genuine type error still throws, located" {
   let bad_name_path = "/tmp/vibe_cli_support_check_badname.vibe"
-  Fs::write_bytes(bad_name_path, string_to_bytes("export let main = () -> Int { zzz }\n"))
+  Fs::write_bytes(bad_name_path, bytes = string_to_bytes(s = "export let main = () -> Int { zzz }\n"))
   let msg = handle {
-    let _ = check_linked_file(bad_name_path)
+    let _ = check_linked_file(input_path = bad_name_path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "unknown name: zzz"))
-  assert(String::contains(msg, "line 1:"))
+  assert(String::contains(msg, needle = "unknown name: zzz"))
+  assert(String::contains(msg, needle = "line 1:"))
 }
 
 test "check_linked_file: later re-export alias blocks an earlier plain re-export" {
@@ -155,14 +163,14 @@ test "check_linked_file: later re-export alias blocks an earlier plain re-export
   let b_path = String::concat(base_dir, "/b.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(a_path, string_to_bytes("export fn foo() -> Int { 1 }\n"))
-  Fs::write_bytes(b_path, string_to_bytes("export fn f() -> Int { 2 }\n"))
-  Fs::write_bytes(main_path, string_to_bytes("export ./a.vibe { foo }\nexport ./b.vibe { f as foo }\nexport fn answer() -> Int { foo() }\n"))
+  Fs::write_bytes(a_path, bytes = string_to_bytes(s = "export fn foo() -> Int { 1 }\n"))
+  Fs::write_bytes(b_path, bytes = string_to_bytes(s = "export fn f() -> Int { 2 }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(s = "export ./a.vibe { foo }\nexport ./b.vibe { f as foo }\nexport fn answer() -> Int { foo() }\n"))
   let msg = handle {
-    let _ = check_linked_file(main_path)
+    let _ = check_linked_file(input_path = main_path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "unknown name: foo"))
+  assert(String::contains(msg, needle = "unknown name: foo"))
 }
 
 /// #946 P1 (Codex, PR #1006): check_linked_file's dep-collection
@@ -179,13 +187,13 @@ test "check_linked_file: wrong-typed call to an imported function throws (#946 P
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(dep_path, string_to_bytes("export fn f(x: Int) -> Int { x + 1 }\n"))
-  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { f }\nexport fn main() -> Int { f(\"x\") }\n"))
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(s = "export fn f(x: Int) -> Int { x + 1 }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(s = "import ./dep.vibe { f }\nexport fn main() -> Int { f(\"x\") }\n"))
   let msg = handle {
-    let _ = check_linked_file(main_path)
+    let _ = check_linked_file(input_path = main_path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "f"))
+  assert(String::contains(msg, needle = "f"))
   assert(msg != "")
 }
 
@@ -197,26 +205,26 @@ test "check_linked_file: wrong-typed call to an imported function throws (#946 P
 /// runs, so it must throw HERE.
 test "check_linked_file: handle body calling a local closure fails eligibility at check (#1511)" {
   let path = "/tmp/vibe_cli_support_check_edp_ineligible.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(path, bytes = string_to_bytes(s = "effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(path)
+    let _ = check_linked_file(input_path = path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "cannot be compiled here"))
+  assert(String::contains(msg, needle = "cannot be compiled here"))
 }
 
 test "check_linked_file: an unowned user effect is rejected at the entry boundary (#1683)" {
   let path = "/tmp/vibe_cli_support_check_entry_effect.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Ask {\n  Get() -> Int\n}\n\nfn main() -> Unit allows Ask::Get + Console {\n  let x = perform Ask::Get()\n  println(\"\\{x}\")\n}\n"))
+  Fs::write_bytes(path, bytes = string_to_bytes(s = "effect Ask {\n  Get() -> Int\n}\n\nfn main() -> Unit allows Ask::Get + Console {\n  let x = perform Ask::Get()\n  println(\"\\{x}\")\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(path)
+    let _ = check_linked_file(input_path = path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "line 6:"))
-  assert(String::contains(msg, "entry point 'main' cannot discharge { Ask::Get }"))
-  assert(String::contains(msg, "handle ... with Ask"))
-  assert(!String::contains(msg, "declare 'fn main"))
-  assert(!String::contains(msg, "[@off="))
+  assert(String::contains(msg, needle = "line 6:"))
+  assert(String::contains(msg, needle = "entry point 'main' cannot discharge { Ask::Get }"))
+  assert(String::contains(msg, needle = "handle ... with Ask"))
+  assert(!String::contains(msg, needle = "declare 'fn main"))
+  assert(!String::contains(msg, needle = "[@off="))
 }
 
 /// #1514 C (repair 08): the same ineligibility error must now NAME the call
@@ -226,14 +234,14 @@ test "check_linked_file: an unowned user effect is rejected at the entry boundar
 /// transport marker must never survive to the reader.
 test "check_linked_file: ineligible handle names the culprit call, located (#1514)" {
   let path = "/tmp/vibe_cli_support_check_edp_culprit.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(path, bytes = string_to_bytes(s = "effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(path)
+    let _ = check_linked_file(input_path = path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "here: the call to 'bump'"))
-  assert(String::contains(msg, "line 5:12"))
-  assert(!String::contains(msg, "[@off="))
+  assert(String::contains(msg, needle = "here: the call to 'bump'"))
+  assert(String::contains(msg, needle = "line 5:12"))
+  assert(!String::contains(msg, needle = "[@off="))
 }
 
 /// The culprit-call marker's offsets index the text of whichever MODULE the
@@ -247,15 +255,15 @@ test "check_linked_file: dep-module culprit is located in the dependency, no mar
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
-  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { run }\nexport fn main() -> Int { run() }\n"))
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(s = "effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(s = "import ./dep.vibe { run }\nexport fn main() -> Int { run() }\n"))
   let msg = handle {
-    let _ = check_linked_file(main_path)
+    let _ = check_linked_file(input_path = main_path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "here: the call to 'bump'"))
-  assert(String::starts_with(msg, String::concat(dep_path, ": line 5:12-16")))
-  assert(!String::contains(msg, "[@off="))
+  assert(String::contains(msg, needle = "here: the call to 'bump'"))
+  assert(String::starts_with(msg, prefix = String::concat(dep_path, ": line 5:12-16")))
+  assert(!String::contains(msg, needle = "[@off="))
 }
 
 /// #1596: the harder basis collision. The dependency's culprit `bump` starts
@@ -270,16 +278,16 @@ test "check_linked_file: identical dep and entry culprit spans locate the depend
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
-  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { run }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { run() }\n"))
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(s = "effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(s = "import ./dep.vibe { run }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { run() }\n"))
   let msg = handle {
-    let _ = check_linked_file(main_path)
+    let _ = check_linked_file(input_path = main_path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "here: the call to 'bump'"))
-  assert(String::starts_with(msg, String::concat(dep_path, ": line 5:12-16")))
-  assert(!String::contains(msg, main_path))
-  assert(!String::contains(msg, "[@off="))
+  assert(String::contains(msg, needle = "here: the call to 'bump'"))
+  assert(String::starts_with(msg, prefix = String::concat(dep_path, ": line 5:12-16")))
+  assert(!String::contains(msg, needle = main_path))
+  assert(!String::contains(msg, needle = "[@off="))
 }
 
 /// The source proof must use the snapshot consumed by the check, not reread a
@@ -290,16 +298,16 @@ test "culprit snapshot proof is stable across post-collection source changes (#1
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
-  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { run }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { run() }\n"))
-  let source_groups = collect_source_groups_fs(main_path)
-  Fs::write_bytes(dep_path, string_to_bytes("export fn run() -> Int { 0 }\n"))
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(s = "effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(s = "import ./dep.vibe { run }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { run() }\n"))
+  let source_groups = collect_source_groups_fs(entry_path = main_path)
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(s = "export fn run() -> Int { 0 }\n"))
   let msg = "cannot lower (here: the call to 'bump') [@off=112:116]"
-  let (_, verified) = verify_culprit_off_marker_snapshot(main_path, source_groups, msg)
-  assert(!String::contains(verified, "[@off="))
-  let fresh_groups = collect_source_groups_fs(main_path)
-  let (_, fresh_verified) = verify_culprit_off_marker_snapshot(main_path, fresh_groups, msg)
-  assert(String::contains(fresh_verified, "[@off=112:116]"))
+  let (_, verified) = verify_culprit_off_marker_snapshot(input_path = main_path, source_groups = source_groups, msg = msg)
+  assert(!String::contains(verified, needle = "[@off="))
+  let fresh_groups = collect_source_groups_fs(entry_path = main_path)
+  let (_, fresh_verified) = verify_culprit_off_marker_snapshot(input_path = main_path, source_groups = fresh_groups, msg = msg)
+  assert(String::contains(fresh_verified, needle = "[@off=112:116]"))
 }
 
 /// A transitive dependency collision is part of the same grouped snapshot: the
@@ -310,17 +318,17 @@ test "check_linked_file: transitive dep and entry culprit spans locate the depen
   let mid_path = String::concat(base_dir, "/mid.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
-  Fs::write_bytes(mid_path, string_to_bytes("import ./dep.vibe { run }\nexport fn relay() -> Int { run() }\n"))
-  Fs::write_bytes(main_path, string_to_bytes("import ./mid.vibe { relay }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { relay() }\n"))
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(s = "effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(mid_path, bytes = string_to_bytes(s = "import ./dep.vibe { run }\nexport fn relay() -> Int { run() }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(s = "import ./mid.vibe { relay }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { relay() }\n"))
   let msg = handle {
-    let _ = check_linked_file(main_path)
+    let _ = check_linked_file(input_path = main_path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "here: the call to 'bump'"))
-  assert(String::starts_with(msg, String::concat(dep_path, ": line 5:12-16")))
-  assert(!String::contains(msg, main_path))
-  assert(!String::contains(msg, "[@off="))
+  assert(String::contains(msg, needle = "here: the call to 'bump'"))
+  assert(String::starts_with(msg, prefix = String::concat(dep_path, ": line 5:12-16")))
+  assert(!String::contains(msg, needle = main_path))
+  assert(!String::contains(msg, needle = "[@off="))
 }
 
 /// Codex review on PR #1594: the spelling check must match a WHOLE
@@ -330,9 +338,9 @@ test "check_linked_file: transitive dep and entry culprit spans locate the depen
 test "verify_culprit_off_marker rejects a span inside a longer identifier (#1594 review)" {
   let source = "let run_all = 1"
   let msg = "handle of effect 'Ask' cannot be compiled here (here: the call to 'run') -- fix it. [@off=4:7]"
-  let out = verify_culprit_off_marker(source, msg)
-  assert(!String::contains(out, "[@off="))
-  assert(String::contains(out, "here: the call to 'run'"))
+  let out = verify_culprit_off_marker(source = source, msg = msg)
+  assert(!String::contains(out, needle = "[@off="))
+  assert(String::contains(out, needle = "here: the call to 'run'"))
 }
 
 /// The accept counterpart: the same span as a whole identifier keeps the
@@ -340,8 +348,8 @@ test "verify_culprit_off_marker rejects a span inside a longer identifier (#1594
 test "verify_culprit_off_marker keeps a whole-identifier span (#1594 review)" {
   let source = "let run = 1"
   let msg = "handle of effect 'Ask' cannot be compiled here (here: the call to 'run') -- fix it. [@off=4:7]"
-  let out = verify_culprit_off_marker(source, msg)
-  assert(String::contains(out, "[@off=4:7]"))
+  let out = verify_culprit_off_marker(source = source, msg = msg)
+  assert(String::contains(out, needle = "[@off=4:7]"))
 }
 
 /// Codex review on PR #1594: a user-authored callee that happens to spell the
@@ -351,14 +359,14 @@ test "verify_culprit_off_marker keeps a whole-identifier span (#1594 review)" {
 /// the diagnostic also keeps its `line:col`.
 test "check_linked_file: user-authored __edpsh_ culprit is reported verbatim (#1594 review)" {
   let path = "/tmp/vibe_cli_support_check_edp_user_prefix.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let __edpsh_0_bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { __edpsh_0_bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(path, bytes = string_to_bytes(s = "effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let __edpsh_0_bump = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { __edpsh_0_bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(path)
+    let _ = check_linked_file(input_path = path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "here: the call to '__edpsh_0_bump'"))
-  assert(String::contains(msg, "line 5:12"))
-  assert(!String::contains(msg, "[@off="))
+  assert(String::contains(msg, needle = "here: the call to '__edpsh_0_bump'"))
+  assert(String::contains(msg, needle = "line 5:12"))
+  assert(!String::contains(msg, needle = "[@off="))
 }
 
 /// The generated counterpart: a local that SHADOWS a needing fn is renamed to
@@ -366,14 +374,14 @@ test "check_linked_file: user-authored __edpsh_ culprit is reported verbatim (#1
 /// still un-mangle THAT back to the user's spelling, located at the call.
 test "check_linked_file: generated __edpsh_ culprit still un-mangles (#1594 review)" {
   let path = "/tmp/vibe_cli_support_check_edp_gen_prefix.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nfn use_it() -> Int with Ask { ask_once() }\nexport fn main() -> Int {\n  let use_it = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { use_it(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(path, bytes = string_to_bytes(s = "effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nfn use_it() -> Int with Ask { ask_once() }\nexport fn main() -> Int {\n  let use_it = (x: Int) -> Int { ((y: Int) -> Int { y })(x) }\n  handle { use_it(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(path)
+    let _ = check_linked_file(input_path = path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "here: the call to 'use_it'"))
-  assert(String::contains(msg, "line 6:12"))
-  assert(!String::contains(msg, "[@off="))
+  assert(String::contains(msg, needle = "here: the call to 'use_it'"))
+  assert(String::contains(msg, needle = "line 6:12"))
+  assert(!String::contains(msg, needle = "[@off="))
 }
 
 /// The eligible counterpart: the same handle with the perform statically
@@ -381,8 +389,8 @@ test "check_linked_file: generated __edpsh_ culprit still un-mangles (#1594 revi
 /// the new prelude run must not reject programs codegen accepts.
 test "check_linked_file: eligible handle still checks clean (#1511)" {
   let path = "/tmp/vibe_cli_support_check_edp_eligible.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  handle { ask_once() } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
-  let rc = check_linked_file(path)
+  Fs::write_bytes(path, bytes = string_to_bytes(s = "effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  handle { ask_once() } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
+  let rc = check_linked_file(input_path = path)
   assert(rc == 0)
 }
 
@@ -407,22 +415,22 @@ test "check_linked_file: eligible handle still checks clean (#1511)" {
 /// exactly where the pass genuinely cannot see the kind.
 test "check_linked_file: suspend-class handle with perform in a for loop fails at check (#1536)" {
   let path = "/tmp/vibe_cli_support_check_scps_ineligible.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let mut acc = 0\n    let mk = () -> { [1, 2] }\n    for j in mk() {\n      acc = acc + (perform Sus::Suspend(j))\n    }\n    acc\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  Fs::write_bytes(path, bytes = string_to_bytes(s = "effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let mut acc = 0\n    let mk = () -> { [1, 2] }\n    for j in mk() {\n      acc = acc + (perform Sus::Suspend(j))\n    }\n    acc\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(path)
+    let _ = check_linked_file(input_path = path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "captures `resume` as a value"))
+  assert(String::contains(msg, needle = "captures `resume` as a value"))
   // #3520: no ADR number or issue reference reaches the reader.
-  assert(!String::contains(msg, "ADR-"))
+  assert(!String::contains(msg, needle = "ADR-"))
 }
 
 /// The suspend-class counterpart that IS eligible (perform on the let spine,
 /// resume captured as a value) — must keep checking clean.
 test "check_linked_file: eligible suspend-class handle still checks clean (#1536)" {
   let path = "/tmp/vibe_cli_support_check_scps_eligible.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let a = perform Sus::Suspend(1)\n    a * 10\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
-  let rc = check_linked_file(path)
+  Fs::write_bytes(path, bytes = string_to_bytes(s = "effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let a = perform Sus::Suspend(1)\n    a * 10\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  let rc = check_linked_file(input_path = path)
   assert(rc == 0)
 }
 
@@ -433,17 +441,17 @@ test "check_linked_file: eligible suspend-class handle still checks clean (#1536
 /// to the reader.
 test "check_linked_file: ineligible suspend handle names the culprit call, located (#1536)" {
   let path = "/tmp/vibe_cli_support_check_scps_culprit.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle {\n    let a = perform Sus::Suspend(1)\n    bump(a)\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  Fs::write_bytes(path, bytes = string_to_bytes(s = "effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle {\n    let a = perform Sus::Suspend(1)\n    bump(a)\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(path)
+    let _ = check_linked_file(input_path = path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "captures `resume` as a value"))
+  assert(String::contains(msg, needle = "captures `resume` as a value"))
   // #3520: no ADR number or issue reference reaches the reader.
-  assert(!String::contains(msg, "ADR-"))
-  assert(String::contains(msg, "here: the call to 'bump'"))
-  assert(String::contains(msg, "line 7:5"))
-  assert(!String::contains(msg, "[@off="))
+  assert(!String::contains(msg, needle = "ADR-"))
+  assert(String::contains(msg, needle = "here: the call to 'bump'"))
+  assert(String::contains(msg, needle = "line 7:5"))
+  assert(!String::contains(msg, needle = "[@off="))
 }
 
 /// The Phase 3b clone site (#1536's original victim shape, async_iter_*): a
@@ -456,15 +464,15 @@ test "check_linked_file: tainted closure-param callee names the culprit, located
   // here performs the split effect, which taints the slot and keeps the
   // see-through error with the same culprit naming and location.
   let path = "/tmp/vibe_cli_support_check_scps_needing_culprit.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nfn helper(f: (x: Int) -> Int) -> Int with Sus {\n  let a = perform Sus::Suspend(1)\n  f(a)\n}\nexport fn main() -> Int {\n  handle {\n    helper((x: Int) -> Int { perform Sus::Suspend(x) })\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  Fs::write_bytes(path, bytes = string_to_bytes(s = "effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nfn helper(f: (x: Int) -> Int) -> Int with Sus {\n  let a = perform Sus::Suspend(1)\n  f(a)\n}\nexport fn main() -> Int {\n  handle {\n    helper((x: Int) -> Int { perform Sus::Suspend(x) })\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(path)
+    let _ = check_linked_file(input_path = path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "function `helper`"))
-  assert(String::contains(msg, "here: the call to 'f'"))
-  assert(String::contains(msg, "line 5:3"))
-  assert(!String::contains(msg, "[@off="))
+  assert(String::contains(msg, needle = "function `helper`"))
+  assert(String::contains(msg, needle = "here: the call to 'f'"))
+  assert(String::contains(msg, needle = "line 5:3"))
+  assert(!String::contains(msg, needle = "[@off="))
 }
 
 // The ACCEPT side of #1536 (a) (perform-free literal at every site =>
@@ -483,35 +491,35 @@ test "vpkg #deprecated type alias warns even when source_groups hold the facade"
   let entry_path = "/tmp/vibe_cli_support_dep_vpkg_entry.vibe"
   let vpkg_src = "#deprecated(\"use MutMap\")\ntype HashMap[K, V] = MutMap[K, V]\n"
   let entry_src = "import ./index.vpkg {\n  HashMap\n}\nfn take(m: HashMap[String, Int]) -> Int {\n  1\n}\n"
-  Fs::write_bytes(vpkg_path, string_to_bytes(vpkg_src))
-  Fs::write_bytes(entry_path, string_to_bytes(entry_src))
-  let facade = ingest_source_text_fs(vpkg_path, vpkg_src)
+  Fs::write_bytes(vpkg_path, bytes = string_to_bytes(s = vpkg_src))
+  Fs::write_bytes(entry_path, bytes = string_to_bytes(s = entry_src))
+  let facade = ingest_source_text_fs(path = vpkg_path, raw = vpkg_src)
   let groups = [("g", [(entry_path, entry_src), (vpkg_path, facade)])]
-  let lines = check_deprecated_warnings_from_source_groups(entry_path, groups)
+  let lines = check_deprecated_warnings_from_source_groups(input_path = entry_path, source_groups = groups)
   assert(Array::length(lines) > 0)
-  assert(String::contains(Array::get(lines, 0), "'HashMap' is deprecated: use MutMap"))
+  assert(String::contains(Array::get(lines, at = 0), needle = "'HashMap' is deprecated: use MutMap"))
 }
 
 test "vibe check warning flags an owner plus a redundant namespace member" {
   let path = "/tmp/vibe_cli_support_redundant_namespace_import.vibe"
   let source = "import ./dep.vibe { MutMap, MutMap::get }\nlet f = MutMap::get\n"
-  Fs::write_bytes(path, string_to_bytes(source))
-  let warnings = check_redundant_import_warnings(path)
+  Fs::write_bytes(path, bytes = string_to_bytes(s = source))
+  let warnings = check_redundant_import_warnings(input_path = path)
   assert(Array::length(warnings) == 1)
-  assert(String::starts_with(Array::get(warnings, 0), "line 1:"))
-  assert(String::contains(Array::get(warnings, 0), "remove 'MutMap::get' from the import list"))
+  assert(String::starts_with(Array::get(warnings, at = 0), prefix = "line 1:"))
+  assert(String::contains(Array::get(warnings, at = 0), needle = "remove 'MutMap::get' from the import list"))
 }
 
 test "redundant import warnings use the checked source snapshot" {
   let path = "/tmp/vibe_cli_support_redundant_namespace_snapshot.vibe"
   let checked = "import ./dep.vibe { MutMap, MutMap::get }\nlet f = MutMap::get\n"
   let replaced = "import ./dep.vibe { MutMap }\nlet broken = =\n"
-  Fs::write_bytes(path, string_to_bytes(replaced))
-  let warnings = check_redundant_import_warnings_from_source_groups(path, [
+  Fs::write_bytes(path, bytes = string_to_bytes(s = replaced))
+  let warnings = check_redundant_import_warnings_from_source_groups(input_path = path, source_groups = [
     ("g", [(path, checked)])
   ])
   assert(Array::length(warnings) == 1)
-  assert(String::contains(Array::get(warnings, 0), "remove 'MutMap::get' from the import list"))
+  assert(String::contains(Array::get(warnings, at = 0), needle = "remove 'MutMap::get' from the import list"))
 }
 
 test "redundant import warning locations ignore synthetic vpkg prefixes" {
@@ -519,14 +527,14 @@ test "redundant import warning locations ignore synthetic vpkg prefixes" {
   let path = dir + "/impl.vibe"
   let checked = "import ./dep.vibe { MutMap, MutMap::get }\nlet f = MutMap::get\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dir + "/index.vpkg", string_to_bytes("import @vibe/core { println }\n\nfn value() -> Int\n"))
-  Fs::write_bytes(path, string_to_bytes(checked))
-  let expanded = ingest_source_text_fs(path, checked)
-  let warnings = check_redundant_import_warnings_from_source_groups(path, [
+  Fs::write_bytes(dir + "/index.vpkg", bytes = string_to_bytes(s = "import @vibe/core { println }\n\nfn value() -> Int\n"))
+  Fs::write_bytes(path, bytes = string_to_bytes(s = checked))
+  let expanded = ingest_source_text_fs(path = path, raw = checked)
+  let warnings = check_redundant_import_warnings_from_source_groups(input_path = path, source_groups = [
     ("g", [(path, expanded)])
   ])
   assert(Array::length(warnings) == 1)
-  assert(String::starts_with(Array::get(warnings, 0), "line 1:"))
+  assert(String::starts_with(Array::get(warnings, at = 0), prefix = "line 1:"))
 }
 
 test "synthetic vpkg warnings require an exact physical snapshot" {
@@ -535,10 +543,10 @@ test "synthetic vpkg warnings require an exact physical snapshot" {
   let checked = "// checked snapshot\nimport ./dep.vibe { MutMap, MutMap::get }\nlet f = MutMap::get\n"
   let physical = "import ./dep.vibe { MutMap, MutMap::get }\nlet f = MutMap::get\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(dir + "/index.vpkg", string_to_bytes("import @vibe/core { println }\n\nfn value() -> Int\n"))
-  let expanded = ingest_source_text_fs(path, checked)
-  Fs::write_bytes(path, string_to_bytes(physical))
-  let warnings = check_redundant_import_warnings_from_source_groups(path, [
+  Fs::write_bytes(dir + "/index.vpkg", bytes = string_to_bytes(s = "import @vibe/core { println }\n\nfn value() -> Int\n"))
+  let expanded = ingest_source_text_fs(path = path, raw = checked)
+  Fs::write_bytes(path, bytes = string_to_bytes(s = physical))
+  let warnings = check_redundant_import_warnings_from_source_groups(input_path = path, source_groups = [
     ("g", [(path, expanded)])
   ])
   assert(Array::length(warnings) == 0)
@@ -549,15 +557,15 @@ test "contract facade warnings use the physical vpkg source" {
   let path = dir + "/index.vpkg"
   let physical = "import ./dep.vibe { MutMap, MutMap::get }\n\nfn value() -> Int\n"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(path, string_to_bytes(physical))
-  Fs::write_bytes(dir + "/dep.vibe", string_to_bytes("export fn value() -> Int { 1 }\n"))
-  let _prepared = ingest_source_text_fs(path, physical)
-  let facade = ingest_source_text_fs(path, physical)
-  let warnings = check_redundant_import_warnings_from_source_groups(path, [
+  Fs::write_bytes(path, bytes = string_to_bytes(s = physical))
+  Fs::write_bytes(dir + "/dep.vibe", bytes = string_to_bytes(s = "export fn value() -> Int { 1 }\n"))
+  let _prepared = ingest_source_text_fs(path = path, raw = physical)
+  let facade = ingest_source_text_fs(path = path, raw = physical)
+  let warnings = check_redundant_import_warnings_from_source_groups(input_path = path, source_groups = [
     ("g", [(path, facade)])
   ])
   assert(Array::length(warnings) == 1)
-  assert(String::contains(Array::get(warnings, 0), "remove 'MutMap::get'"))
+  assert(String::contains(Array::get(warnings, at = 0), needle = "remove 'MutMap::get'"))
 }
 
 test "shipped HashMap type alias in core/index.vpkg is still a transparent alias" {
@@ -565,8 +573,8 @@ test "shipped HashMap type alias in core/index.vpkg is still a transparent alias
   // bootstrap bump (seed parse rejects `#`). The warning comes from
   // the language table in deprecated_scan.vibe instead.
   let src = Fs::read_file("lib/@vibe/core/index.vpkg")
-  assert(String::contains(src, "type HashMap[K, V] = MutMap[K, V]"))
-  assert(!String::contains(src, "#deprecated(\"use MutMap\")"))
+  assert(String::contains(src, needle = "type HashMap[K, V] = MutMap[K, V]"))
+  assert(!String::contains(src, needle = "#deprecated(\"use MutMap\")"))
 }
 
 //# #2198 / #2244 review: the missing-Show interpolation path prefix must
@@ -579,15 +587,15 @@ test "entry-file missing-Show interpolation names the entry path and line" {
   let base_dir = "/tmp/vibe_cli_support_show_entry"
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(main_path, string_to_bytes("struct Bare {\n  x: Int\n}\n\nfn main() -> Unit {\n  let b = Bare::{ x: 1 }\n  let s = \"\\{b}\"\n  ()\n}\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(s = "struct Bare {\n  x: Int\n}\n\nfn main() -> Unit {\n  let b = Bare::{ x: 1 }\n  let s = \"\\{b}\"\n  ()\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(main_path)
+    let _ = check_linked_file(input_path = main_path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "cannot interpolate a value of type"))
+  assert(String::contains(msg, needle = "cannot interpolate a value of type"))
   // The backslash of `"\{b}"` is line 7, column 12. The enclosing `main` is not it.
-  assert(String::contains(msg, "/main.vibe: line 7:12:"))
-  assert(!String::contains(msg, "line 5:"))
+  assert(String::contains(msg, needle = "/main.vibe: line 7:12:"))
+  assert(!String::contains(msg, needle = "line 5:"))
 }
 
 test "dependency missing-Show interpolation locates the dep file, not the entry" {
@@ -598,16 +606,16 @@ test "dependency missing-Show interpolation locates the dep file, not the entry"
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/entrymod.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(dep_path, string_to_bytes("struct Hidden {\n  x: Int\n}\n\nexport fn render() -> String {\n  let h = Hidden::{ x: 1 }\n  \"\\{h}\"\n}\n"))
-  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { render }\n\nfn main() -> Unit {\n  let _s = render()\n  ()\n}\n"))
+  Fs::write_bytes(dep_path, bytes = string_to_bytes(s = "struct Hidden {\n  x: Int\n}\n\nexport fn render() -> String {\n  let h = Hidden::{ x: 1 }\n  \"\\{h}\"\n}\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(s = "import ./dep.vibe { render }\n\nfn main() -> Unit {\n  let _s = render()\n  ()\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(main_path)
+    let _ = check_linked_file(input_path = main_path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "cannot interpolate a value of type"))
-  assert(String::contains(msg, "/dep.vibe: line 7:4:"))
-  assert(!String::contains(msg, "entrymod.vibe"))
-  assert(!String::contains(msg, " [@"))
+  assert(String::contains(msg, needle = "cannot interpolate a value of type"))
+  assert(String::contains(msg, needle = "/dep.vibe: line 7:4:"))
+  assert(!String::contains(msg, needle = "entrymod.vibe"))
+  assert(!String::contains(msg, needle = " [@"))
 }
 
 test "shared-import sibling missing-Show locates against the physical file" {
@@ -622,48 +630,54 @@ test "shared-import sibling missing-Show locates against the physical file" {
   Fs::mkdir_p(base_dir)
   let contract_path = String::concat(base_dir, "/index.vpkg")
   let impl_path = String::concat(base_dir, "/impl.vibe")
-  Fs::write_bytes(contract_path, string_to_bytes("import @vibe/random { seed }\n\nfn render() -> String\n"))
-  Fs::write_bytes(impl_path, string_to_bytes("struct Hidden {\n  x: Int\n}\n\nexport fn render() -> String {\n  let h = Hidden::{ x: 1 }\n  \"\\{h}\"\n}\n"))
+  Fs::write_bytes(contract_path, bytes = string_to_bytes(s = "import @vibe/random { seed }\n\nfn render() -> String\n"))
+  Fs::write_bytes(impl_path, bytes = string_to_bytes(s = "struct Hidden {\n  x: Int\n}\n\nexport fn render() -> String {\n  let h = Hidden::{ x: 1 }\n  \"\\{h}\"\n}\n"))
   let msg = handle {
-    let _ = check_linked_file(impl_path)
+    let _ = check_linked_file(input_path = impl_path)
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "cannot interpolate a value of type"))
-  if String::contains(msg, "line ") {
+  assert(String::contains(msg, needle = "cannot interpolate a value of type"))
+  if String::contains(msg, needle = "line ") {
     // Located answers must carry the PHYSICAL interpolation, not the
     // enclosing `render` and not a line shifted by a prepended import.
     // The backslash of `"\{h}"` is line 7, column 4 of the physical file.
-    assert(String::contains(msg, "/impl.vibe: line 7:4:"))
+    assert(String::contains(msg, needle = "/impl.vibe: line 7:4:"))
   } else {
     // Fail-closed (unlocatable) is acceptable; a wrong line is not.
-    assert(!String::contains(msg, " [@"))
+    assert(!String::contains(msg, needle = " [@"))
   }
 }
 
 test "a marker-like fragment inside a path is not stripped" {
   merged_offset_space_reset()
   let msg = "cannot read /tmp/example [@off=1].vibe: no such file"
-  assert_eq(finalize_thrown_diagnostic(msg, ["run", "a.vibex"]), msg)
+  assert_eq(finalize_thrown_diagnostic(msg = msg, args = ["run", "a.vibex"]), msg)
 }
 
 test "only well-formed trailing markers are stripped, each line on its own" {
   merged_offset_space_reset()
-  assert_eq(finalize_thrown_diagnostic("unknown name: x [@assign-target]", []), "unknown name: x")
+  assert_eq(finalize_thrown_diagnostic(msg = "unknown name: x [@assign-target]", args = [
+  ]), "unknown name: x")
   // #3248: the target token's offset rides the same marker.
-  assert_eq(finalize_thrown_diagnostic("unknown name: x [@assign-target=12]", []), "unknown name: x")
-  assert_eq(finalize_thrown_diagnostic("keeps [@assign-target=x1]", []), "keeps [@assign-target=x1]")
-  assert_eq(finalize_thrown_diagnostic("bad [@off=12:15] [@fn=main]\nnext [@off=3]", [
+  assert_eq(finalize_thrown_diagnostic(msg = "unknown name: x [@assign-target=12]", args = [
+  ]), "unknown name: x")
+  assert_eq(finalize_thrown_diagnostic(msg = "keeps [@assign-target=x1]", args = [
+  ]), "keeps [@assign-target=x1]")
+  assert_eq(finalize_thrown_diagnostic(msg = "bad [@off=12:15] [@fn=main]\nnext [@off=3]", args = [
   ]), "bad\nnext")
-  assert_eq(finalize_thrown_diagnostic("keeps [@off=abc]", []), "keeps [@off=abc]")
+  assert_eq(finalize_thrown_diagnostic(msg = "keeps [@off=abc]", args = []), "keeps [@off=abc]")
 }
 
 test "a marker-shaped suffix the reader typed is printed as thrown" {
   merged_offset_space_reset()
   let msg = "no such input file: /tmp/example [@off=1]"
-  assert_eq(finalize_thrown_diagnostic(msg, ["build", "/tmp/example [@off=1]"]), msg)
+  assert_eq(finalize_thrown_diagnostic(msg = msg, args = [
+    "build",
+    "/tmp/example [@off=1]"
+  ]), msg)
 }
 
 test "repeated markers of one kind are not all stripped" {
   merged_offset_space_reset()
-  assert_eq(finalize_thrown_diagnostic("x [@off=1] [@off=2]", []), "x [@off=1]")
+  assert_eq(finalize_thrown_diagnostic(msg = "x [@off=1] [@off=2]", args = []), "x [@off=1]")
 }

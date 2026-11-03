@@ -34,7 +34,7 @@ Three threads in this repository are stuck on the same missing object:
 - **The `.wit`.** `vibe compile --wit` renders a program's own effects as WIT
   and leaves every host capability as a comment, `// host capability effect
   'Fs' (provided by the vibe runtime; no WIT mapping yet)`
-  (`lib/@vibe/compiler/wit_gen.vibe`). The compiler's own boundary has no WIT
+  (`lib/@vibe/compiler/codegen/wit/wit_gen.vibe`). The compiler's own boundary has no WIT
   at all: a hand-authored one fell behind the emitter, because nothing kept it
   in step, and was deleted ([compiler-host-boundary.md](compiler-host-boundary.md)).
   The `vibec` component ships its own hand-written `vibec-hosted.wit` with four
@@ -72,9 +72,9 @@ what proves it.
 | `vibe.abi` custom section (`version=1`, `host_import_abi=raw`) on both lanes | emitted, read by the node runner | `lib/@vibe/compiler/codegen/wasm_emit/metadata.vibe` |
 | `vibe.tagmode` custom section for adapters | emitted where an adapter is selected, required by ADR-0106 | the composer, `lib/@vibe/compiler/codegen/component/component_codegen*.vibe` |
 | `vibe.capabilities` section + `__vibe_granted$<label>` globals + trapping stub | designed; withholding landed on both runners (`VIBE_HOST_WITHHOLD`) | [capability-host-contract.md](capability-host-contract.md) |
-| `--wit` generator for user effects and exports | implemented; host capabilities are a comment | `lib/@vibe/compiler/wit_gen.vibe` |
+| `--wit` generator for user effects and exports | implemented; host capabilities are a comment | `lib/@vibe/compiler/codegen/wit/wit_gen.vibe` |
 | `viberun --commands`: `vibe-commands-v1` manifest, `run: func(args: string) -> string`, result frame, lazy load proven by a poisoned-row gate | implemented; launcher does not use it | `runtime/viberun/src/commands.rs`, [component-lazy-dispatch.md](component-lazy-dispatch.md) |
-| per-verb DCE (`dce-root`): `check` as a command is 2.6 MB against a 38 MB whole CLI | implemented | `lib/@vibe/compiler/cli_support.vibe` |
+| per-verb DCE (`dce-root`): `check` as a command is 2.6 MB against a 38 MB whole CLI | implemented | `lib/@vibe/cli/support/compile_support.vibe` |
 | `Fs::remove` parity (#2758): the recursive form is `Fs::remove_tree`; `fs_remove`, `fs_remove_file`, `fs_remove_tree` are all `portableCore` now | landed (PR #2823, merged) | the manifest above |
 | launcher artifact selection: one `vibe-cli.wasm`, a `.cwasm` picked by an mtime freshness rule | implemented | `runtime/vibe` (`pick_cli`) |
 

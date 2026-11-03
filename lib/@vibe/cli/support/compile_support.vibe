@@ -8,7 +8,6 @@ import @vibe/compiler/core {
   Expr,
   Stmt,
   dir_of_path,
-  executable_export_kept_bytes,
   is_contract_ext,
   loader_physical_located,
   loader_prepended_prefix_bytes,
@@ -18,10 +17,6 @@ import @vibe/compiler/core {
 
 import @vibe/compiler/cache {
   cache_read_source_fs, cache_source_memo_token
-}
-
-import @vibe/compiler/config {
-  configure_compiler_cfg_flags
 }
 
 import @vibe/compiler/checker {
@@ -67,7 +62,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   refuse_linked_witness_imports
 }
 
-import ./type_db.vibe {
+import @vibe/compiler/runtime {
   db_new
 }
 
@@ -120,7 +115,7 @@ import @vibe/compiler/syntax {
 fn append_stmt_array(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(src) {
-    Array::push(dst, Array::get(src, i))
+    Array::push(dst, value = Array::get(src, at = i))
     i = i + 1
   }
 }
@@ -174,43 +169,43 @@ fn normalize_release_mode(mode: String) -> String with Exception {
 }
 
 export fn compile_release_file_mode(input_path: String, entry_name: String, mode: String) -> Bytes with Env + Exception + Fs {
-  let compile_mode = normalize_release_mode(mode)
-  let (bytes, _) = compile_file_fs_mode_cached(db_new(), input_path, entry_name, compile_mode)
+  let compile_mode = normalize_release_mode(mode = mode)
+  let (bytes, _) = compile_file_fs_mode_cached(db = db_new(), entry_path = input_path, entry_name = entry_name, mode = compile_mode)
   bytes
 }
 
 export fn compile_release_file_mode_uncached(input_path: String, entry_name: String, mode: String) -> Bytes with Env + Exception + Fs {
-  let compile_mode = normalize_release_mode(mode)
-  compile_file_fs_mode(input_path, entry_name, compile_mode)
+  let compile_mode = normalize_release_mode(mode = mode)
+  compile_file_fs_mode(entry_path = input_path, entry_name = entry_name, mode = compile_mode)
 }
 
 export fn compile_release_file_mode_profiled(input_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
-  let compile_mode = normalize_release_mode(mode)
-  let (bytes, _, load_us, type_us, bundle_us, parse_us, compile_us, total_us) = compile_file_fs_mode_cached_profiled(db_new(), input_path, entry_name, compile_mode)
+  let compile_mode = normalize_release_mode(mode = mode)
+  let (bytes, _, load_us, type_us, bundle_us, parse_us, compile_us, total_us) = compile_file_fs_mode_cached_profiled(db = db_new(), entry_path = input_path, entry_name = entry_name, mode = compile_mode)
   (bytes, load_us, type_us, bundle_us, parse_us, compile_us, total_us)
 }
 
 export fn compile_release_file_mode_uncached_profiled(input_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
-  let compile_mode = normalize_release_mode(mode)
-  compile_file_fs_mode_profiled(input_path, entry_name, compile_mode)
+  let compile_mode = normalize_release_mode(mode = mode)
+  compile_file_fs_mode_profiled(entry_path = input_path, entry_name = entry_name, mode = compile_mode)
 }
 
 export fn compile_release_file(input_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
-  compile_release_file_mode(input_path, entry_name, "no-dce")
+  compile_release_file_mode(input_path = input_path, entry_name = entry_name, mode = "no-dce")
 }
 
 export fn compile_debug_library(dep_path: String) -> Bytes with Env + Exception + Fs {
-  compile_file_wasi_library(dep_path)
+  compile_file_wasi_library(dep_path = dep_path)
 }
 
 fn append_non_import_stmts(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(src) {
-    match Array::get(src, i) {
+    match Array::get(src, at = i) {
       SImport(_, _) => (),
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
-      _ => Array::push(dst, Array::get(src, i))
+      _ => Array::push(dst, value = Array::get(src, at = i))
     }
     i = i + 1
   }
@@ -240,7 +235,7 @@ fn parse_marker_digits(s: String) -> Int {
   let mut acc = 0
   let mut ok = n > 0
   while i < n && ok {
-    let c = String::char_code_at(s, i)
+    let c = String::char_code_at(s, at = i)
     if c >= 48 && c <= 57 {
       acc = acc * 10 + (c - 48)
     } else {
@@ -263,33 +258,33 @@ fn marker_ident_char(c: Int) -> Bool {
 
 export fn verify_culprit_off_marker(source: String, msg: String) -> String {
   let clause = " (here: the call to '"
-  let ci = String::index_of(msg, clause)
+  let ci = String::index_of(msg, needle = clause)
   let marker = " [@off="
-  let mi = String::index_of(msg, marker)
+  let mi = String::index_of(msg, needle = marker)
   if ci < 0 || mi < 0 {
     msg
   } else {
     let name_start = ci + String::length(clause)
-    let name_rel = String::index_of(String::substring(msg, name_start, String::length(msg)), "')")
+    let name_rel = String::index_of(String::substring(msg, start = name_start, end = String::length(msg)), needle = "')")
     let inner_start = mi + String::length(marker)
-    let close_rel = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
+    let close_rel = String::index_of(String::substring(msg, start = inner_start, end = String::length(msg)), needle = "]")
     if name_rel < 0 || close_rel < 0 {
       msg
     } else {
-      let culprit = String::substring(msg, name_start, name_start + name_rel)
-      let inner = String::substring(msg, inner_start, inner_start + close_rel)
-      let colon = String::index_of(inner, ":")
+      let culprit = String::substring(msg, start = name_start, end = name_start + name_rel)
+      let inner = String::substring(msg, start = inner_start, end = inner_start + close_rel)
+      let colon = String::index_of(inner, needle = ":")
       let span_ok = if colon < 0 {
         false
       } else {
-        let n = parse_marker_digits(String::substring(inner, 0, colon))
-        let m = parse_marker_digits(String::substring(inner, colon + 1, String::length(inner)))
-        if n >= 0 && m > n && m <= String::length(source) && String::substring(source, n, m) == culprit {
+        let n = parse_marker_digits(s = String::substring(inner, start = 0, end = colon))
+        let m = parse_marker_digits(s = String::substring(inner, start = colon + 1, end = String::length(inner)))
+        if n >= 0 && m > n && m <= String::length(source) && String::substring(source, start = n, end = m) == culprit {
           // Whole-identifier boundary: the byte before N / at M must not
           // extend the identifier, or the "match" is a slice of a longer
           // name and the basis is not the entry file.
-          let left_ok = n == 0 || !marker_ident_char(String::char_code_at(source, n - 1))
-          let right_ok = m == String::length(source) || !marker_ident_char(String::char_code_at(source, m))
+          let left_ok = n == 0 || !marker_ident_char(c = String::char_code_at(source, at = n - 1))
+          let right_ok = m == String::length(source) || !marker_ident_char(c = String::char_code_at(source, at = m))
           left_ok && right_ok
         } else {
           false
@@ -298,7 +293,7 @@ export fn verify_culprit_off_marker(source: String, msg: String) -> String {
       if span_ok {
         msg
       } else {
-        String::concat(String::substring(msg, 0, mi), String::substring(msg, inner_start + close_rel + 1, String::length(msg)))
+        String::concat(String::substring(msg, start = 0, end = mi), String::substring(msg, start = inner_start + close_rel + 1, end = String::length(msg)))
       }
     }
   }
@@ -324,30 +319,30 @@ let eq_refusal_prefix: String = "structural `==` cannot be decided here: "
 /// such a refusal is located against its own file and path-prefixed the way a
 /// checker diagnostic is.
 export fn verify_culprit_off_marker_fs_fail_closed(msg: String) -> String {
-  if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
+  if String::contains(msg, needle = " [@off=") && String::contains(msg, needle = " (here: the call to '") {
     // #3520: the merge's record owns the culprit's offset when it names a
     // name in a recorded file, the same evidence an interpolation refusal is
     // located by; only an offset nothing owns is stripped.
-    let located = locate_merged_interp_refusal(msg, 0)
+    let located = locate_merged_interp_refusal(msg = msg, site = 0)
     if located != msg {
       located
     } else {
-      verify_culprit_off_marker("", msg)
+      verify_culprit_off_marker(source = "", msg = msg)
     }
-  } else if String::starts_with(msg, "cannot interpolate ") && String::contains(msg, " [@off=") {
-    locate_merged_interp_refusal(msg, 0)
-  } else if String::starts_with(msg, index_refusal_prefix) && String::contains(msg, " [@off=") {
+  } else if String::starts_with(msg, prefix = "cannot interpolate ") && String::contains(msg, needle = " [@off=") {
+    locate_merged_interp_refusal(msg = msg, site = 0)
+  } else if String::starts_with(msg, prefix = index_refusal_prefix) && String::contains(msg, needle = " [@off=") {
     // #3133: an index refusal is keyed by the index's `[`.
-    locate_merged_interp_refusal(msg, 1)
-  } else if String::starts_with(msg, eq_refusal_prefix) && String::contains(msg, " [@off=") {
+    locate_merged_interp_refusal(msg = msg, site = 1)
+  } else if String::starts_with(msg, prefix = eq_refusal_prefix) && String::contains(msg, needle = " [@off=") {
     // #3297: an equality refusal is keyed by its operator.
-    locate_merged_interp_refusal(msg, 2)
-  } else if String::contains(msg, " [@off=") {
+    locate_merged_interp_refusal(msg = msg, site = 2)
+  } else if String::contains(msg, needle = " [@off=") {
     // #3520: any other refusal raised after the merge -- the suspend
     // lowering's, a run-to-completion task's -- carries the merged offset of a
     // name. Located when the record owns it; a marker left unresolved is
     // stripped by the caller (strip_trailing_markers) rather than printed raw.
-    locate_merged_interp_refusal(msg, 0)
+    locate_merged_interp_refusal(msg = msg, site = 0)
   } else {
     msg
   }
@@ -360,23 +355,23 @@ export fn verify_culprit_off_marker_fs_fail_closed(msg: String) -> String {
 /// marker (#1445's leaked `[@off=135]` is the failure mode this guards against).
 fn strip_side_marker(msg: String, marker: String) -> String {
   let mut out = msg
-  let mut mi = String::index_of(out, marker)
+  let mut mi = String::index_of(out, needle = marker)
   while mi >= 0 {
     let inner_start = mi + String::length(marker)
-    let rest = String::substring(out, inner_start, String::length(out))
-    let rel = String::index_of(rest, "]")
+    let rest = String::substring(out, start = inner_start, end = String::length(out))
+    let rel = String::index_of(rest, needle = "]")
     if rel < 0 {
-      out = String::substring(out, 0, mi)
+      out = String::substring(out, start = 0, end = mi)
     } else {
-      out = String::concat(String::substring(out, 0, mi), String::substring(out, inner_start + rel + 1, String::length(out)))
+      out = String::concat(String::substring(out, start = 0, end = mi), String::substring(out, start = inner_start + rel + 1, end = String::length(out)))
     }
-    mi = String::index_of(out, marker)
+    mi = String::index_of(out, needle = marker)
   }
   out
 }
 
 export fn strip_off_marker(msg: String) -> String {
-  strip_side_marker(strip_side_marker(strip_side_marker(msg, " [@off="), " [@fn="), " [@assign-target")
+  strip_side_marker(msg = strip_side_marker(msg = strip_side_marker(msg = msg, marker = " [@off="), marker = " [@fn="), marker = " [@assign-target")
 }
 
 /// #3090 / book review: the last step before a thrown diagnostic is printed
@@ -393,10 +388,10 @@ export fn strip_off_marker(msg: String) -> String {
 /// a marker-shaped suffix, so the message is printed exactly as thrown rather
 /// than risk naming a file that does not exist.
 export fn finalize_thrown_diagnostic(msg: String, args: Array[String]) -> String {
-  if args_carry_marker_text(args) {
+  if args_carry_marker_text(args = args) {
     msg
   } else {
-    let lines = String::split(verify_culprit_off_marker_fs_fail_closed(msg), "\n")
+    let lines = String::split(verify_culprit_off_marker_fs_fail_closed(msg = msg), sep = "\n")
     let mut out = ""
     let mut i = 0
     while i < Array::length(lines) {
@@ -405,7 +400,7 @@ export fn finalize_thrown_diagnostic(msg: String, args: Array[String]) -> String
       } else {
         ()
       }
-      out = String::concat(out, strip_trailing_markers(Array::get(lines, i)))
+      out = String::concat(out, strip_trailing_markers(line = Array::get(lines, at = i)))
       i = i + 1
     }
     out
@@ -416,31 +411,31 @@ fn args_carry_marker_text(args: Array[String]) -> Bool {
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(args) {
-    found = String::contains(Array::get(args, i), "[@")
+    found = String::contains(Array::get(args, at = i), needle = "[@")
     i = i + 1
   }
   found
 }
 
 fn strip_trailing_markers(line: String) -> String {
-  let after_fn = strip_one_trailing_marker(line, true)
-  strip_one_trailing_marker(after_fn, false)
+  let after_fn = strip_one_trailing_marker(line = line, fn_kind = true)
+  strip_one_trailing_marker(line = after_fn, fn_kind = false)
 }
 
 /// Strip one trailing marker: the ` [@fn=..]` kind when `fn_kind`, else the
 /// ` [@off=..]` / ` [@assign-target..]` kind. Anything else is left as is.
 fn strip_one_trailing_marker(line: String, fn_kind: Bool) -> String {
   let n = String::length(line)
-  if n == 0 || String::byte_at(line, n - 1) != 93 {
+  if n == 0 || String::byte_at(line, at = n - 1) != 93 {
     line
   } else {
-    let open_at = last_marker_open(line)
+    let open_at = last_marker_open(line = line)
     if open_at < 0 {
       line
     } else {
-      let body = String::substring(line, open_at + 3, n - 1)
-      if marker_body_ok(body, fn_kind) {
-        String::substring(line, 0, open_at)
+      let body = String::substring(line, start = open_at + 3, end = n - 1)
+      if marker_body_ok(body = body, fn_kind = fn_kind) {
+        String::substring(line, start = 0, end = open_at)
       } else {
         line
       }
@@ -454,8 +449,8 @@ fn last_marker_open(line: String) -> Int {
   let mut from = 0
   let mut going = true
   while going {
-    let rest = String::substring(line, from, String::length(line))
-    let rel = String::index_of(rest, " [@")
+    let rest = String::substring(line, start = from, end = String::length(line))
+    let rel = String::index_of(rest, needle = " [@")
     if rel < 0 {
       going = false
     } else {
@@ -469,14 +464,14 @@ fn last_marker_open(line: String) -> Int {
 /// `body` is the text between ` [@` and the closing `]`.
 fn marker_body_ok(body: String, fn_kind: Bool) -> Bool {
   if fn_kind {
-    String::starts_with(body, "fn=") && String::length(body) > 3 && !String::contains(body, " ") && !String::contains(body, "]")
-  } else if String::starts_with(body, "off=") {
-    let digits = String::substring(body, 4, String::length(body))
-    String::length(digits) > 0 && all_offset_chars(digits)
-  } else if String::starts_with(body, "assign-target=") {
+    String::starts_with(body, prefix = "fn=") && String::length(body) > 3 && !String::contains(body, needle = " ") && !String::contains(body, needle = "]")
+  } else if String::starts_with(body, prefix = "off=") {
+    let digits = String::substring(body, start = 4, end = String::length(body))
+    String::length(digits) > 0 && all_offset_chars(s = digits)
+  } else if String::starts_with(body, prefix = "assign-target=") {
     // #3248: the target token's offset.
-    let digits = String::substring(body, 14, String::length(body))
-    String::length(digits) > 0 && all_offset_chars(digits)
+    let digits = String::substring(body, start = 14, end = String::length(body))
+    String::length(digits) > 0 && all_offset_chars(s = digits)
   } else {
     body == "assign-target"
   }
@@ -486,7 +481,7 @@ fn all_offset_chars(s: String) -> Bool {
   let mut ok = true
   let mut i = 0
   while ok && i < String::length(s) {
-    let c = String::byte_at(s, i)
+    let c = String::byte_at(s, at = i)
     ok = (c >= 48 && c <= 57) || c == 58
     i = i + 1
   }
@@ -509,46 +504,46 @@ fn all_offset_chars(s: String) -> Bool {
 /// `site` 0 is an interpolation refusal.
 fn locate_merged_interp_refusal(msg: String, site: Int) -> String {
   let marker = " [@off="
-  let mi = String::index_of(msg, marker)
+  let mi = String::index_of(msg, needle = marker)
   let inner_start = mi + String::length(marker)
-  let rest = String::substring(msg, inner_start, String::length(msg))
-  let rel = String::index_of(rest, "]")
+  let rest = String::substring(msg, start = inner_start, end = String::length(msg))
+  let rel = String::index_of(rest, needle = "]")
   if rel < 0 {
     msg
   } else {
-    let inner = String::substring(rest, 0, rel)
-    let colon = String::index_of(inner, ":")
-    let start = parse_marker_digits(if colon < 0 {
+    let inner = String::substring(rest, start = 0, end = rel)
+    let colon = String::index_of(inner, needle = ":")
+    let start = parse_marker_digits(s = if colon < 0 {
       inner
     } else {
-      String::substring(inner, 0, colon)
+      String::substring(inner, start = 0, end = colon)
     })
     let end = if colon < 0 {
       -1
     } else {
-      parse_marker_digits(String::substring(inner, colon + 1, String::length(inner)))
+      parse_marker_digits(s = String::substring(inner, start = colon + 1, end = String::length(inner)))
     }
     if start < 0 || (colon >= 0 && end < start) {
       msg
     } else {
-      match merged_offset_owner(start) {
+      match merged_offset_owner(off = start) {
         Some((path, source, local)) => {
           // #3656: a directory-shared sibling is the file as written past the
           // block the loader prepended; only an offset inside that block, or
           // a text the loader generated, has no position on disk.
-          let skip = loader_prepended_prefix_bytes(source)
+          let skip = loader_prepended_prefix_bytes(source = source)
           let transformed = if skip > 0 {
             local < skip
           } else {
-            String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker)
+            String::starts_with(source, prefix = vpkg_shared_import_marker) || String::starts_with(source, prefix = contract_facade_marker)
           }
           let site_ok = if site == 1 {
             // #3139: a written `Array::set(..)` is keyed by its name.
-            local >= 0 && local < String::length(source) && (String::char_code_at(source, local) == '[' || offset_starts_name(source, local))
+            local >= 0 && local < String::length(source) && (String::char_code_at(source, at = local) == '[' || offset_starts_name(source = source, off = local))
           } else if site == 2 {
-            local >= 0 && local + 1 < String::length(source) && (String::byte_at(source, local) == 61 || String::byte_at(source, local) == 33) && String::byte_at(source, local + 1) == 61
+            local >= 0 && local + 1 < String::length(source) && (String::byte_at(source, at = local) == 61 || String::byte_at(source, at = local) == 33) && String::byte_at(source, at = local + 1) == 61
           } else {
-            offset_inside_interpolation(source, local) || offset_starts_name(source, local)
+            offset_inside_interpolation(source = source, off = local) || offset_starts_name(source = source, off = local)
           }
           if transformed || !site_ok {
             msg
@@ -558,9 +553,9 @@ fn locate_merged_interp_refusal(msg: String, site: Int) -> String {
             } else {
               String::concat(__to_string(local), String::concat(":", __to_string(local + end - start)))
             }
-            let rebased = String::concat(String::substring(msg, 0, inner_start), String::concat(local_inner, String::substring(msg, inner_start + rel, String::length(msg))))
-            let located = loader_physical_located(source, locate_type_error(source, rebased))
-            if String::starts_with(located, "line ") {
+            let rebased = String::concat(String::substring(msg, start = 0, end = inner_start), String::concat(local_inner, String::substring(msg, start = inner_start + rel, end = String::length(msg))))
+            let located = loader_physical_located(source = source, located = locate_type_error(source = source, msg = rebased))
+            if String::starts_with(located, prefix = "line ") {
               String::concat(path, String::concat(": ", located))
             } else {
               msg
@@ -579,9 +574,9 @@ fn offset_starts_name(source: String, off: Int) -> Bool {
   if off < 0 || off >= String::length(source) {
     false
   } else {
-    let c = String::char_code_at(source, off)
+    let c = String::char_code_at(source, at = off)
     let starts = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
-    starts && (off == 0 || !marker_ident_char(String::char_code_at(source, off - 1)))
+    starts && (off == 0 || !marker_ident_char(c = String::char_code_at(source, at = off - 1)))
   }
 }
 
@@ -593,14 +588,14 @@ fn offset_inside_interpolation(source: String, off: Int) -> Bool {
   let n = String::length(source)
   if off < 0 || off >= n {
     false
-  } else if off + 1 < n && String::char_code_at(source, off) == 92 && String::char_code_at(source, off + 1) == 123 {
+  } else if off + 1 < n && String::char_code_at(source, at = off) == 92 && String::char_code_at(source, at = off + 1) == 123 {
     true
   } else {
     let mut depth = 0
     let mut i = off - 1
     let mut answer = false
     while i >= 0 {
-      let c = String::char_code_at(source, i)
+      let c = String::char_code_at(source, at = i)
       if c == 10 {
         i = -1
       } else if c == 125 {
@@ -608,7 +603,7 @@ fn offset_inside_interpolation(source: String, off: Int) -> Bool {
         i = i - 1
       } else if c == 123 {
         if depth == 0 {
-          answer = i > 0 && String::char_code_at(source, i - 1) == 92
+          answer = i > 0 && String::char_code_at(source, at = i - 1) == 92
           i = -1
         } else {
           depth = depth - 1
@@ -633,36 +628,36 @@ export fn verify_culprit_off_marker_snapshot(input_path: String, source_groups: 
   let mut entry_count = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
-    let (_, sources) = Array::get(source_groups, gi)
+    let (_, sources) = Array::get(source_groups, at = gi)
     let mut si = 0
     while si < Array::length(sources) {
-      let (path, source) = Array::get(sources, si)
+      let (path, source) = Array::get(sources, at = si)
       if path == input_path {
         entry_source = source
         entry_count = entry_count + 1
       } else {
-        Array::push(dep_sources, source)
+        Array::push(dep_sources, value = source)
       }
       si = si + 1
     }
     gi = gi + 1
   }
   if entry_count != 1 {
-    (entry_source, verify_culprit_off_marker("", msg))
+    (entry_source, verify_culprit_off_marker(source = "", msg = msg))
   } else {
-    let entry_verified = verify_culprit_off_marker(entry_source, msg)
-    if !String::contains(entry_verified, " [@off=") {
+    let entry_verified = verify_culprit_off_marker(source = entry_source, msg = msg)
+    if !String::contains(entry_verified, needle = " [@off=") {
       (entry_source, entry_verified)
     } else {
       let mut i = 0
       let mut ambiguous = false
       while i < Array::length(dep_sources) && !ambiguous {
-        let dep_verified = verify_culprit_off_marker(Array::get(dep_sources, i), msg)
-        ambiguous = String::contains(dep_verified, " [@off=")
+        let dep_verified = verify_culprit_off_marker(source = Array::get(dep_sources, at = i), msg = msg)
+        ambiguous = String::contains(dep_verified, needle = " [@off=")
         i = i + 1
       }
       if ambiguous {
-        (entry_source, verify_culprit_off_marker("", msg))
+        (entry_source, verify_culprit_off_marker(source = "", msg = msg))
       } else {
         (entry_source, entry_verified)
       }
@@ -671,10 +666,10 @@ export fn verify_culprit_off_marker_snapshot(input_path: String, source_groups: 
 }
 
 export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (Bytes, Array[(String, String)]) with Env + Exception + Fs {
-  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = collect_linked_compile_inputs_with_rows(input_path)
+  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = collect_linked_compile_inputs_with_rows(entry_path = input_path)
   let main_stmts = array_empty()
-  append_stmt_array(main_stmts, resolved_type_stmts)
-  append_non_import_stmts(main_stmts, entry_stmts)
+  append_stmt_array(dst = main_stmts, src = resolved_type_stmts)
+  append_non_import_stmts(dst = main_stmts, src = entry_stmts)
   // #3625: the entry is parsed located, and `write_linked_debug_build_checked`
   // ran the import-resolving check on it first, so that check's typed tables
   // are there for exactly this text: desugar and codegen read them as the
@@ -684,9 +679,9 @@ export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (B
   // (no check ran, or it checked another text) both of those are refused
   // with the edit here, rather than answered wrongly by codegen's own
   // (idempotent) run.
-  refuse_linked_witness_imports(linked_dep_specs, linked_imports)
-  desugar_linked_entry(main_stmts, checked_rows)
-  let bytes = compile_linked_entry_module(main_stmts, entry_name, empty_source_pairs(), linked_imports, checked_rows)
+  refuse_linked_witness_imports(specs = linked_dep_specs, imports = linked_imports)
+  desugar_linked_entry(stmts = main_stmts, checked = checked_rows)
+  let bytes = compile_linked_entry_module(stmts = main_stmts, entry_name = entry_name, srcs = empty_source_pairs(), linked_imports = linked_imports, checked = checked_rows)
   (bytes, linked_dep_specs)
 }
 
@@ -710,14 +705,14 @@ fn resolved_dep_members(input_path: String, groups: Array[(String, Array[(String
   let out: Array[(String, String)] = array_empty()
   let mut gi = 0
   while gi < Array::length(groups) {
-    let (_group_name, members) = Array::get(groups, gi)
+    let (_group_name, members) = Array::get(groups, at = gi)
     let mut mi = 0
     while mi < Array::length(members) {
-      let (path, source) = Array::get(members, mi)
+      let (path, source) = Array::get(members, at = mi)
       if path == input_path {
         ()
       } else {
-        Array::push(out, (path, source))
+        Array::push(out, value = (path, source))
       }
       mi = mi + 1
     }
@@ -730,14 +725,14 @@ fn resolved_dep_sources(input_path: String, groups: Array[(String, Array[(String
   let out: Array[String] = array_empty()
   let mut gi = 0
   while gi < Array::length(groups) {
-    let (_group_name, members) = Array::get(groups, gi)
+    let (_group_name, members) = Array::get(groups, at = gi)
     let mut mi = 0
     while mi < Array::length(members) {
-      let (path, source) = Array::get(members, mi)
+      let (path, source) = Array::get(members, at = mi)
       if path == input_path {
         ()
       } else {
-        Array::push(out, source)
+        Array::push(out, value = source)
       }
       mi = mi + 1
     }
@@ -777,12 +772,12 @@ fn cli_located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_m
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(lex_err_msgs) {
-    let msg = Array::get(lex_err_msgs, i)
-    let entry = if String::starts_with(msg, "line ") {
+    let msg = Array::get(lex_err_msgs, at = i)
+    let entry = if String::starts_with(msg, prefix = "line ") {
       msg
     } else {
-      let off = Array::get(lex_err_offsets, i)
-      let (line, col) = offset_to_line_col(source, off)
+      let off = Array::get(lex_err_offsets, at = i)
+      let (line, col) = offset_to_line_col(source = source, offset = off)
       String::concat("line ", String::concat(Int::to_string(line), String::concat(":", String::concat(Int::to_string(col), String::concat(": ", msg)))))
     }
     // An explicit scan rather than `Array::contains`: that builtin does not
@@ -792,7 +787,7 @@ fn cli_located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_m
     let mut seen = false
     let mut j = 0
     while !seen && j < Array::length(out) {
-      if Array::get(out, j) == entry {
+      if Array::get(out, at = j) == entry {
         seen = true
       } else {
         ()
@@ -802,7 +797,7 @@ fn cli_located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_m
     if seen {
       ()
     } else {
-      Array::push(out, entry)
+      Array::push(out, value = entry)
     }
     i = i + 1
   }
@@ -810,7 +805,7 @@ fn cli_located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_m
 }
 
 export fn check_linked_file(input_path: String) -> Int with Env + Exception + Fs {
-  let _groups = check_linked_file_source_groups(input_path)
+  let _groups = check_linked_file_source_groups(input_path = input_path)
   0
 }
 
@@ -846,11 +841,11 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
   // (`apply_vpkg_directory_shared_imports_fs`) can PREPEND import lines to an
   // ordinary `.vibe` file, which would shift every offset below and mislocate
   // the diagnostics this pre-parse exists to locate exactly.
-  let raw_entry_source = cache_read_source_fs(input_path)
-  let entry_source = if is_contract_ext(input_path) {
-    ingest_source_text_fs(input_path, raw_entry_source)
+  let raw_entry_source = cache_read_source_fs(path = input_path)
+  let entry_source = if is_contract_ext(path = input_path) {
+    ingest_source_text_fs(path = input_path, raw = raw_entry_source)
   } else {
-    let (_, pin_blanked) = extract_require_pins(raw_entry_source)
+    let (_, pin_blanked) = extract_require_pins(source = raw_entry_source)
     pin_blanked
   }
   // #2831: the RECOVERING lexer, for the same reason the parse below is
@@ -869,12 +864,12 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
     // `collect_all_diagnostics_on`'s lex branch, and the same `\n`-joined
     // throw the parse branch below already uses -- the renderer splits on
     // lines and prefixes each with `error: `.
-    throw(String::join(cli_located_lex_errors(entry_source, lex_err_offsets, lex_err_msgs), "\n"))
+    throw(String::join(cli_located_lex_errors(source = entry_source, lex_err_offsets = lex_err_offsets, lex_err_msgs = lex_err_msgs), sep = "\n"))
   } else {
     ()
   }
-  ingestion_pipeline_telemetry_add(14, 1)
-  let (entry_stmts, parse_diags) = parse_program_recovering(tokens, starts, entry_source)
+  ingestion_pipeline_telemetry_add(index = 14, amount = 1)
+  let (entry_stmts, parse_diags) = parse_program_recovering(tokens = tokens, starts = starts, source = entry_source)
   if Array::length(parse_diags) > 0 {
     // Each is already a full `line L:col C: msg` string (see the import
     // comment above). Report ALL of them, one per line.
@@ -887,14 +882,14 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
     // worse version of the same question -- a file with three broken
     // statements took three edit-and-rerun cycles instead of one. The two
     // verbs now agree on COUNT as well as on wording.
-    throw(String::join(parse_diags, "\n"))
+    throw(String::join(parse_diags, sep = "\n"))
   } else {
     ()
   }
   // Capture one grouped-source snapshot and pass that exact value through the
   // failing check and culprit ownership proof. Recollecting after Throw would
   // reintroduce #1596's concurrent-edit TOCTOU.
-  let source_groups = collect_source_groups_fs(input_path)
+  let source_groups = collect_source_groups_fs(entry_path = input_path)
   let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_loader")
   // #946 P1 (Codex, PR #1006): the type-check itself must go through
   // check_file_fs_mode (the fs-mode source-group + db_typecheck_fs pipeline
@@ -911,7 +906,7 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
   // an imported file too) are now built from `source_groups` as well — see
   // `resolved_dep_members`. That scan is independent of type information.
   handle {
-    let _ = check_file_fs_mode_from_source_groups(input_path, source_groups)
+    let _ = check_file_fs_mode_from_source_groups(entry_path = input_path, source_groups = source_groups)
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_fs_mode")
     // #1262 follow-up: parse the dependency sources the LOADER resolved
     // (`source_groups`, captured above) instead of re-resolving them. The old
@@ -919,11 +914,11 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
     // whole check down with it; and the set scanned here should be the set the
     // build compiles, which is what `source_groups` is by construction.
     let stmts = array_empty()
-    let dep_members = resolved_dep_members(input_path, source_groups)
+    let dep_members = resolved_dep_members(input_path = input_path, groups = source_groups)
     let mut dsi = 0
     while dsi < Array::length(dep_members) {
-      let (dep_path, dep_source) = Array::get(dep_members, dsi)
-      ingestion_pipeline_telemetry_add(16, 1)
+      let (dep_path, dep_source) = Array::get(dep_members, at = dsi)
+      ingestion_pipeline_telemetry_add(index = 16, amount = 1)
       // A dependency that does not parse cannot reach here: the typecheck
       // immediately above compiles this same set and would have thrown first.
       // #2945: through the loader's located-parse memo, keyed by (path, exact
@@ -933,11 +928,11 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
       // lib/@vibe/cli/entry.vibe` needed -- and the bump heap never gives it
       // back. The memo hands out a fresh top-level array, so appending to
       // it below writes to nothing the memo shares.
-      append_stmt_array(stmts, parse_program_located_shared(dep_path, dep_source))
+      append_stmt_array(dst = stmts, src = parse_program_located_shared(path = dep_path, source = dep_source))
       dsi = dsi + 1
     }
     let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_dep_reparse")
-    append_stmt_array(stmts, entry_stmts)
+    append_stmt_array(dst = stmts, src = entry_stmts)
     // #3456: no interpolation pass here. The prelude above already ran it on
     // the merged program, with the checker's typed rows, and refused there
     // what the build refuses. This array has neither the rows nor a shared
@@ -951,8 +946,8 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
     // exercises); an error rooted in an imported dependency degrades to the
     // unlocated message, same as before this fix, rather than mis-locating it
     // against the wrong file's text.
-    match check_inline_wasm_fns(stmts) {
-      Some(msg) => throw(locate_type_error(entry_source, msg)),
+    match check_inline_wasm_fns(stmts = stmts) {
+      Some(msg) => throw(locate_type_error(source = entry_source, msg = msg)),
       None => ()
     }
   } with {
@@ -960,8 +955,8 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
     // the culprit/span. A dependency collision keeps the culprit name but
     // drops the potentially false entry location.
     Exception::Throw(msg) => {
-      if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
-        throw(locate_merged_marker(input_path, entry_source, source_groups, msg, true))
+      if String::contains(msg, needle = " [@off=") && String::contains(msg, needle = " (here: the call to '") {
+        throw(locate_merged_marker(input_path = input_path, entry_source = entry_source, source_groups = source_groups, msg = msg, culprit = true))
       } else {
         // #2198: the missing-Show interpolation throw escapes the desugar
         // (reached via check_file_fs_mode's effect_lowering_prelude) with no
@@ -984,22 +979,22 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
         // #1596 same-name collision, or two files with `\{` at the same
         // byte) fail closed to the unlocated message with no path --
         // missing information beats misinformation.
-        if String::starts_with(msg, "cannot interpolate a value of type `") {
-          let msg = marker_in_file_space(msg)
+        if String::starts_with(msg, prefix = "cannot interpolate a value of type `") {
+          let msg = marker_in_file_space(msg = msg)
           let mut owner_path = ""
           let mut owner_source = ""
           let mut owners = 0
           let seen_paths: Array[String] = array_empty()
           let mut gi2 = 0
           while gi2 < Array::length(source_groups) {
-            let (_gname2, members2) = Array::get(source_groups, gi2)
+            let (_gname2, members2) = Array::get(source_groups, at = gi2)
             let mut mi2 = 0
             while mi2 < Array::length(members2) {
-              let (mpath, msource) = Array::get(members2, mi2)
+              let (mpath, msource) = Array::get(members2, at = mi2)
               let mut seen2 = false
               let mut si2 = 0
               while si2 < Array::length(seen_paths) {
-                if Array::get(seen_paths, si2) == mpath {
+                if Array::get(seen_paths, at = si2) == mpath {
                   seen2 = true
                 } else {
                   ()
@@ -1009,7 +1004,7 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
               if seen2 {
                 ()
               } else {
-                Array::push(seen_paths, mpath)
+                Array::push(seen_paths, value = mpath)
                 // #2244 review round 5: a directory-shared vpkg import or a
                 // contract facade makes the ingested group source differ
                 // from the physical file (imports prepended / contract
@@ -1018,8 +1013,8 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
                 // checked_entry_source does -- re-ingest and require an
                 // exact match -- and drop the candidate (not an owner) when
                 // they cannot be verified.
-                match owner_locating_source(mpath, msource) {
-                  Some(mlocating) => if missing_show_source_owns(mlocating, msg) {
+                match owner_locating_source(path = mpath, source = msource) {
+                  Some(mlocating) => if missing_show_source_owns(source = mlocating, msg = msg) {
                     owners = owners + 1
                     owner_path = mpath
                     owner_source = mlocating
@@ -1034,11 +1029,11 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
             gi2 = gi2 + 1
           }
           if owners == 1 {
-            throw(String::concat(owner_path, String::concat(": ", loader_physical_located(owner_source, locate_type_error(owner_source, msg)))))
+            throw(String::concat(owner_path, String::concat(": ", loader_physical_located(source = owner_source, located = locate_type_error(source = owner_source, msg = msg)))))
           } else {
             // locate against an empty source: the anchor cannot resolve, so
             // this only strips the side marker from the message.
-            throw(locate_type_error("", msg))
+            throw(locate_type_error(source = "", msg = msg))
           }
         } else {
           // #3348: a module job's diagnostics already carry their path (and
@@ -1049,13 +1044,13 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
             let (_, members) = group
             for member in members {
               let (mpath, _) = member
-              Array::push(known_paths, mpath)
+              Array::push(known_paths, value = mpath)
             }
           }
-          if String::contains(msg, " [@off=") && !starts_with_known_path(msg, known_paths) {
-            throw(locate_merged_marker(input_path, entry_source, source_groups, msg, false))
+          if String::contains(msg, needle = " [@off=") && !starts_with_known_path(msg = msg, paths = known_paths) {
+            throw(locate_merged_marker(input_path = input_path, entry_source = entry_source, source_groups = source_groups, msg = msg, culprit = false))
           } else {
-            throw(String::join(locate_type_error_lines_except_paths(entry_source, msg, known_paths), "\n"))
+            throw(String::join(locate_type_error_lines_except_paths(source = entry_source, msg = msg, paths = known_paths), sep = "\n"))
           }
         }
       }
@@ -1071,15 +1066,15 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
 /// `warning:` lines. A file that fails to parse gets no warnings — the
 /// check itself already failed loudly.
 export fn check_deprecated_warnings(input_path: String) -> Array[String] with Env + Exception + Fs {
-  check_deprecated_warnings_from_source_groups(input_path, collect_source_groups_fs(input_path))
+  check_deprecated_warnings_from_source_groups(input_path = input_path, source_groups = collect_source_groups_fs(entry_path = input_path))
 }
 
 /// Redundant owner/member selections in the entry file. The linked checker has
 /// already accepted the file before this runs; this is a non-fatal `vibe check`
 /// hygiene report with an actionable removal.
 export fn check_redundant_import_warnings(input_path: String) -> Array[String] with Env + Exception + Fs {
-  let source = cache_read_source_fs(input_path)
-  check_redundant_import_warnings_from_source_groups(input_path, [
+  let source = cache_read_source_fs(path = input_path)
+  check_redundant_import_warnings_from_source_groups(input_path = input_path, source_groups = [
     ("entry", [(input_path, source)])
   ])
 }
@@ -1102,25 +1097,25 @@ export fn check_redundant_import_warnings(input_path: String) -> Array[String] w
 /// -- is left as it is.
 fn marker_in_file_space(msg: String) -> String {
   let marker = " [@off="
-  let mi = String::index_of(msg, marker)
+  let mi = String::index_of(msg, needle = marker)
   if mi < 0 {
     msg
   } else {
     let inner_start = mi + String::length(marker)
-    let rest = String::substring(msg, inner_start, String::length(msg))
-    let start_end = marker_digits_end(rest, 0)
-    let n = parse_marker_digits(String::substring(rest, 0, start_end))
+    let rest = String::substring(msg, start = inner_start, end = String::length(msg))
+    let start_end = marker_digits_end(s = rest, from = 0)
+    let n = parse_marker_digits(s = String::substring(rest, start = 0, end = start_end))
     if n < 0 {
       msg
     } else {
-      match merged_offset_owner(n) {
+      match merged_offset_owner(off = n) {
         Some((_, _, local)) => {
           let delta = n - local
-          let mut out = String::concat(String::substring(msg, 0, inner_start), Int::to_string(local))
+          let mut out = String::concat(String::substring(msg, start = 0, end = inner_start), Int::to_string(local))
           let mut tail_from = start_end
-          if start_end < String::length(rest) && String::byte_at(rest, start_end) == 58 {
-            let range_end = marker_digits_end(rest, start_end + 1)
-            let m = parse_marker_digits(String::substring(rest, start_end + 1, range_end))
+          if start_end < String::length(rest) && String::byte_at(rest, at = start_end) == 58 {
+            let range_end = marker_digits_end(s = rest, from = start_end + 1)
+            let m = parse_marker_digits(s = String::substring(rest, start = start_end + 1, end = range_end))
             if m >= 0 {
               out = String::concat(out, String::concat(":", Int::to_string(m - delta)))
               tail_from = range_end
@@ -1130,7 +1125,7 @@ fn marker_in_file_space(msg: String) -> String {
           } else {
             ()
           }
-          String::concat(out, String::substring(rest, tail_from, String::length(rest)))
+          String::concat(out, String::substring(rest, start = tail_from, end = String::length(rest)))
         },
         None => msg
       }
@@ -1143,7 +1138,7 @@ fn marker_in_file_space(msg: String) -> String {
 fn starts_with_known_path(msg: String, paths: Array[String]) -> Bool {
   let mut found = false
   for p in paths {
-    if String::length(p) > 0 && String::starts_with(msg, String::concat(p, ": ")) {
+    if String::length(p) > 0 && String::starts_with(msg, prefix = String::concat(p, ": ")) {
       found = true
     } else {
       ()
@@ -1167,73 +1162,73 @@ fn starts_with_known_path(msg: String, paths: Array[String]) -> Bool {
 /// disk.
 fn locate_merged_marker(input_path: String, entry_source: String, source_groups: Array[(String, Array[(String, String)])], msg: String, culprit: Bool) -> String with Env + Exception + Fs {
   let marker = " [@off="
-  let mi = String::index_of(msg, marker)
-  let rest = String::substring(msg, mi + String::length(marker), String::length(msg))
-  let n = parse_marker_digits(String::substring(rest, 0, marker_digits_end(rest, 0)))
+  let mi = String::index_of(msg, needle = marker)
+  let rest = String::substring(msg, start = mi + String::length(marker), end = String::length(msg))
+  let n = parse_marker_digits(s = String::substring(rest, start = 0, end = marker_digits_end(s = rest, from = 0)))
   let owner = if n < 0 {
     None
   } else {
-    merged_offset_owner(n)
+    merged_offset_owner(off = n)
   }
   match owner {
     Some((path, source, _)) => {
-      let local = marker_in_file_space(msg)
+      let local = marker_in_file_space(msg = msg)
       // The entry too: its recorded text can be synthesized (a directory's
       // shared vpkg imports prepended), and `entry_source` is the file as read.
       // #3656: a directory-shared sibling (the entry or not) is located in
       // its recorded text and moved past the prepended block, which leaves a
       // position on disk or none.
-      if loader_prepended_prefix_bytes(source) > 0 {
+      if loader_prepended_prefix_bytes(source = source) > 0 {
         let verified = if culprit {
-          verify_culprit_off_marker(source, local)
+          verify_culprit_off_marker(source = source, msg = local)
         } else {
           local
         }
-        let located = loader_physical_located(source, locate_type_error(source, verified))
-        if String::starts_with(located, "line ") {
+        let located = loader_physical_located(source = source, located = locate_type_error(source = source, msg = verified))
+        if String::starts_with(located, prefix = "line ") {
           String::concat(path, String::concat(": ", located))
         } else {
-          locate_type_error("", verified)
+          locate_type_error(source = "", msg = verified)
         }
-      } else if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
-        locate_type_error("", verify_culprit_off_marker("", local))
+      } else if String::starts_with(source, prefix = vpkg_shared_import_marker) || String::starts_with(source, prefix = contract_facade_marker) {
+        locate_type_error(source = "", msg = verify_culprit_off_marker(source = "", msg = local))
       } else if path == input_path {
-        let located = locate_type_error(entry_source, if culprit {
-          verify_culprit_off_marker(entry_source, local)
+        let located = locate_type_error(source = entry_source, msg = if culprit {
+          verify_culprit_off_marker(source = entry_source, msg = local)
         } else {
           local
         })
         // #3520: name the file, as a module job's diagnostic and the same
         // refusal under `vibe run` both do.
-        if String::starts_with(located, "line ") {
+        if String::starts_with(located, prefix = "line ") {
           String::concat(path, String::concat(": ", located))
         } else {
           located
         }
       } else {
         let verified = if culprit {
-          verify_culprit_off_marker(source, local)
+          verify_culprit_off_marker(source = source, msg = local)
         } else {
           local
         }
-        if String::contains(verified, marker) {
-          String::concat(path, String::concat(": ", locate_type_error(source, verified)))
+        if String::contains(verified, needle = marker) {
+          String::concat(path, String::concat(": ", locate_type_error(source = source, msg = verified)))
         } else {
-          locate_type_error("", verified)
+          locate_type_error(source = "", msg = verified)
         }
       }
     },
     // No merge recorded (the first file's base is 0, so `owner(0)` is Some
     // whenever one is): the offsets are still each file's own.
-    None => if merged_offset_owner(0) is None {
+    None => if merged_offset_owner(off = 0) is None {
       if culprit {
-        let (snapshot_entry_source, verified) = verify_culprit_off_marker_snapshot(input_path, source_groups, msg)
-        locate_type_error(snapshot_entry_source, verified)
+        let (snapshot_entry_source, verified) = verify_culprit_off_marker_snapshot(input_path = input_path, source_groups = source_groups, msg = msg)
+        locate_type_error(source = snapshot_entry_source, msg = verified)
       } else {
-        locate_type_error(entry_source, msg)
+        locate_type_error(source = entry_source, msg = msg)
       }
     } else {
-      locate_type_error("", verify_culprit_off_marker("", msg))
+      locate_type_error(source = "", msg = verify_culprit_off_marker(source = "", msg = msg))
     }
   }
 }
@@ -1241,7 +1236,7 @@ fn locate_merged_marker(input_path: String, entry_source: String, source_groups:
 /// The index just past the run of ASCII digits in `s` starting at `from`.
 fn marker_digits_end(s: String, from: Int) -> Int {
   let mut i = from
-  while i < String::length(s) && String::byte_at(s, i) >= 48 && String::byte_at(s, i) <= 57 {
+  while i < String::length(s) && String::byte_at(s, at = i) >= 48 && String::byte_at(s, at = i) <= 57 {
     i = i + 1
   }
   i
@@ -1249,25 +1244,25 @@ fn marker_digits_end(s: String, from: Int) -> Int {
 
 fn missing_show_source_owns(source: String, msg: String) -> Bool {
   let marker = " [@off="
-  let mi = String::index_of(msg, marker)
+  let mi = String::index_of(msg, needle = marker)
   if mi < 0 {
-    String::starts_with(locate_type_error(source, msg), "line ")
+    String::starts_with(locate_type_error(source = source, msg = msg), prefix = "line ")
   } else {
     let inner_start = mi + String::length(marker)
-    let rest = String::substring(msg, inner_start, String::length(msg))
-    let rel = String::index_of(rest, "]")
+    let rest = String::substring(msg, start = inner_start, end = String::length(msg))
+    let rel = String::index_of(rest, needle = "]")
     if rel < 0 {
       false
     } else {
-      let inner = String::substring(rest, 0, rel)
-      let colon = String::index_of(inner, ":")
+      let inner = String::substring(rest, start = 0, end = rel)
+      let colon = String::index_of(inner, needle = ":")
       let digits = if colon < 0 {
         inner
       } else {
-        String::substring(inner, 0, colon)
+        String::substring(inner, start = 0, end = colon)
       }
-      let n = parse_marker_digits(digits)
-      n >= 0 && n + 1 < String::length(source) && String::char_code_at(source, n) == 92 && String::char_code_at(source, n + 1) == 123
+      let n = parse_marker_digits(s = digits)
+      n >= 0 && n + 1 < String::length(source) && String::char_code_at(source, at = n) == 92 && String::char_code_at(source, at = n + 1) == 123
     }
   }
 }
@@ -1288,12 +1283,12 @@ fn missing_show_source_owns(source: String, msg: String) -> Bool {
 /// PHYSICAL text was returned and read at the INGESTED offset, a block's
 /// length away from the byte the offset names.
 fn owner_locating_source(path: String, source: String) -> Option[String] with Env + Exception + Fs {
-  if loader_prepended_prefix_bytes(source) > 0 {
+  if loader_prepended_prefix_bytes(source = source) > 0 {
     Some(source)
-  } else if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
+  } else if String::starts_with(source, prefix = vpkg_shared_import_marker) || String::starts_with(source, prefix = contract_facade_marker) {
     if Fs::exists(path) {
-      let physical = cache_read_source_fs(path)
-      if source == ingest_source_text_fs(path, physical) {
+      let physical = cache_read_source_fs(path = path)
+      if source == ingest_source_text_fs(path = path, raw = physical) {
         Some(physical)
       } else {
         None
@@ -1311,10 +1306,10 @@ fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[
   let mut count = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
-    let (_, sources) = Array::get(source_groups, gi)
+    let (_, sources) = Array::get(source_groups, at = gi)
     let mut si = 0
     while si < Array::length(sources) {
-      let (path, source) = Array::get(sources, si)
+      let (path, source) = Array::get(sources, at = si)
       if path == input_path {
         found = Some(source)
         count = count + 1
@@ -1327,15 +1322,15 @@ fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[
   }
   if count == 1 {
     match found {
-      Some(source) => if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
+      Some(source) => if String::starts_with(source, prefix = vpkg_shared_import_marker) || String::starts_with(source, prefix = contract_facade_marker) {
         // The loader prepends inherited `.vpkg` imports or replaces a contract
         // with its generated facade before checking.
         // Warning locations must refer to the physical file. Re-ingest the
         // current bytes and require the complete synthetic snapshot to match;
         // a suffix comparison would accept a file whose leading bytes changed.
         if Fs::exists(input_path) {
-          let physical = cache_read_source_fs(input_path)
-          if source == ingest_source_text_fs(input_path, physical) {
+          let physical = cache_read_source_fs(path = input_path)
+          if source == ingest_source_text_fs(path = input_path, raw = physical) {
             Some(physical)
           } else {
             None
@@ -1366,11 +1361,11 @@ fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[
 /// closure lane below already call. Delegation rather than a move of the
 /// declarations, so the package contract and every consumer are untouched.
 export fn unstable_surface_diagnostics_located(input_path: String, detected: String, located: String) -> Array[String] with Exception {
-  unstable_import_diagnostics(input_path, detected, located)
+  unstable_import_diagnostics(input_path = input_path, detected = detected, located = located)
 }
 
 export fn unstable_surface_diagnostics(input_path: String, source: String) -> Array[String] with Exception {
-  unstable_import_diagnostics(input_path, source, source)
+  unstable_import_diagnostics(input_path = input_path, detected = source, located = source)
 }
 
 /// The BUILD lane's entry point: one file read, no import closure. It used to
@@ -1411,16 +1406,16 @@ export fn check_unstable_surface_warnings_from_closure() -> Array[String] with E
   let candidates = unstable_candidates()
   let mut i = 0
   while i < Array::length(candidates) {
-    let (path, ingested) = Array::get(candidates, i)
+    let (path, ingested) = Array::get(candidates, at = i)
     let located = handle {
       Fs::read_file(path)
     } with { Exception::Throw(_) => ingested }
     let diags = handle {
-      unstable_surface_diagnostics_located(path, ingested, located)
+      unstable_surface_diagnostics_located(input_path = path, detected = ingested, located = located)
     } with { Exception::Throw(_) => array_empty() }
     let mut j = 0
     while j < Array::length(diags) {
-      let diag = Array::get(diags, j)
+      let diag = Array::get(diags, at = j)
       let report = String::concat(path, String::concat(": ", diag))
       // #2289: DEDUPE, on two axes, because printing every report (rather than
       // just the first) exposed two different floods.
@@ -1438,14 +1433,14 @@ export fn check_unstable_surface_warnings_from_closure() -> Array[String] with E
       // (file, diagnostic), which keeps two siblings that each physically
       // spell the import reporting separately, and keeps a file's own
       // inherited and physical reports distinct -- they differ in the note.
-      let key = if String::index_of(diag, unstable_inherited_marker) >= 0 {
-        String::concat("inherited\n", String::concat(dir_of_path(path), String::concat("\n", diag)))
+      let key = if String::index_of(diag, needle = unstable_inherited_marker) >= 0 {
+        String::concat("inherited\n", String::concat(dir_of_path(file_path = path), String::concat("\n", diag)))
       } else {
         String::concat("own\n", report)
       }
-      if unstable_index_of_str(seen, key) < 0 {
-        Array::push(seen, key)
-        Array::push(out, report)
+      if unstable_index_of_str(hay = seen, needle = key) < 0 {
+        Array::push(seen, value = key)
+        Array::push(out, value = report)
       } else {
         ()
       }
@@ -1465,7 +1460,7 @@ export fn unstable_closure_reset() -> Unit {
 
 export fn check_unstable_surface_warnings_from_path(input_path: String) -> Array[String] with Env + Exception + Fs {
   handle {
-    unstable_surface_diagnostics_located(input_path, ingest_source_text_fs(input_path, Fs::read_file(input_path)), Fs::read_file(input_path))
+    unstable_surface_diagnostics_located(input_path = input_path, detected = ingest_source_text_fs(path = input_path, raw = Fs::read_file(input_path)), located = Fs::read_file(input_path))
   } with {
     // An unreadable or uningestable entry is the compile's error to report, in
     // its own words.
@@ -1477,18 +1472,18 @@ export fn check_unstable_surface_warnings_from_path(input_path: String) -> Array
 /// by the successful linked check. Missing or duplicate entry identity is
 /// fail-closed: no warning is safer than describing unchecked contents.
 export fn check_redundant_import_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
-  let source = match checked_entry_source(input_path, source_groups) {
+  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
     Some(snapshot) => snapshot,
     None => return array_empty()
   }
-  match checked_warning_stmts(input_path, source) {
+  match checked_warning_stmts(input_path = input_path, source = source) {
     Some(stmts) => {
-      let rows = detect_redundant_namespace_imports(stmts)
+      let rows = detect_redundant_namespace_imports(stmts = stmts)
       let out = array_empty()
       let mut i = 0
       while i < Array::length(rows) {
-        let (_, _, msg) = Array::get(rows, i)
-        Array::push(out, locate_type_error(source, String::concat("warning: ", msg)))
+        let (_, _, msg) = Array::get(rows, at = i)
+        Array::push(out, value = locate_type_error(source = source, msg = String::concat("warning: ", msg)))
         i = i + 1
       }
       out
@@ -1501,18 +1496,18 @@ export fn check_redundant_import_warnings_from_source_groups(input_path: String,
 /// one spelling. Same snapshot discipline as the redundant-import warnings:
 /// entry file only, fail-closed when the checked snapshot cannot be located.
 export fn check_let_star_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
-  let source = match checked_entry_source(input_path, source_groups) {
+  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
     Some(snapshot) => snapshot,
     None => return array_empty()
   }
-  match checked_warning_stmts(input_path, source) {
+  match checked_warning_stmts(input_path = input_path, source = source) {
     Some(stmts) => {
-      let rows = detect_top_level_let_star(stmts)
+      let rows = detect_top_level_let_star(stmts = stmts)
       let out = array_empty()
       let mut i = 0
       while i < Array::length(rows) {
-        let (_, _, msg) = Array::get(rows, i)
-        Array::push(out, locate_type_error(source, String::concat("warning: ", msg)))
+        let (_, _, msg) = Array::get(rows, at = i)
+        Array::push(out, value = locate_type_error(source = source, msg = String::concat("warning: ", msg)))
         i = i + 1
       }
       out
@@ -1524,18 +1519,18 @@ export fn check_let_star_warnings_from_source_groups(input_path: String, source_
 /// #3549: a `match` arm an earlier arm already covers never runs. Entry
 /// file only, from the checked snapshot, like the `let*` warning above.
 export fn check_unreachable_arm_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
-  let source = match checked_entry_source(input_path, source_groups) {
+  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
     Some(snapshot) => snapshot,
     None => return array_empty()
   }
-  if is_contract_ext(input_path) {
+  if is_contract_ext(path = input_path) {
     array_empty()
   } else {
-    let rows = detect_unreachable_match_arms(source)
+    let rows = detect_unreachable_match_arms(source = source)
     let out = array_empty()
     let mut i = 0
     while i < Array::length(rows) {
-      Array::push(out, locate_type_error(source, String::concat("warning: ", Array::get(rows, i))))
+      Array::push(out, value = locate_type_error(source = source, msg = String::concat("warning: ", Array::get(rows, at = i))))
       i = i + 1
     }
     out
@@ -1576,7 +1571,7 @@ export fn check_unreachable_arm_warnings_from_source_groups(input_path: String, 
 /// every other warning this lane emits) and the owning path otherwise, so a
 /// dependency's row says which file to edit.
 fn append_builtin_shadowing_warnings(out: Array[String], path: String, source: String, label: String) -> Unit with Exception {
-  let stmts = match closure_warning_stmts(path, source) {
+  let stmts = match closure_warning_stmts(path = path, source = source) {
     Some(parsed) => parsed,
     None => return ()
   }
@@ -1586,18 +1581,18 @@ fn append_builtin_shadowing_warnings(out: Array[String], path: String, source: S
   // cannot disagree about what a definition binds -- a source-spelled alias
   // (`String::byte_at`) counts, a `Trait::operation` of a trait declared in
   // the same file does not.
-  let names = collect_builtin_shadowing_names(stmts)
+  let names = collect_builtin_shadowing_names(stmts = stmts)
   let mut i = 0
   while i < Array::length(names) {
-    let name = Array::get(names, i)
+    let name = Array::get(names, at = i)
     // #3180: "for the whole linked program" stopped being true with #3132 --
     // the calls the compiler synthesizes by a builtin's name (a `for` loop's
     // `Array::length` / `Array::get`, array interpolation, structural `==`)
     // reach the builtin, not this definition. What it replaces is the calls
     // the program writes, in every file it links.
     let tail = String::concat("` -- a qualified definition of a builtin name replaces that builtin at the program's own call sites, in every linked file including files that never import it (calls the compiler generates itself still reach the builtin). Use a different name, or `let ", String::concat(name, " = <builtin>` if you mean to re-export it."))
-    let located = locate_type_error(source, String::concat("warning: rename `", String::concat(name, tail)))
-    Array::push(out, if String::length(label) == 0 {
+    let located = locate_type_error(source = source, msg = String::concat("warning: rename `", String::concat(name, tail)))
+    Array::push(out, value = if String::length(label) == 0 {
       located
     } else {
       String::concat(label, String::concat(": ", located))
@@ -1615,11 +1610,11 @@ fn append_builtin_shadowing_warnings(out: Array[String], path: String, source: S
 /// check past the wasm32 ceiling. A source that does not parse answers None,
 /// as `checked_warning_stmts` does.
 fn closure_warning_stmts(path: String, source: String) -> Option[Array[Stmt]] with Exception {
-  if is_contract_ext(path) {
-    checked_warning_stmts(path, source)
+  if is_contract_ext(path = path) {
+    checked_warning_stmts(input_path = path, source = source)
   } else {
     handle {
-      Some(parse_program_located_shared(path, source))
+      Some(parse_program_located_shared(path = path, source = source))
     } with { Exception::Throw(_) => None }
   }
 }
@@ -1640,15 +1635,15 @@ export fn check_builtin_shadowing_warnings_from_source_groups(input_path: String
   let seen = array_empty()
   let mut gi = 0
   while gi < Array::length(source_groups) {
-    let (_group, members) = Array::get(source_groups, gi)
+    let (_group, members) = Array::get(source_groups, at = gi)
     let mut mi = 0
     while mi < Array::length(members) {
-      let (path, source) = Array::get(members, mi)
-      if str_array_contains_path(seen, path) {
+      let (path, source) = Array::get(members, at = mi)
+      if str_array_contains_path(arr = seen, value = path) {
         ()
       } else {
-        Array::push(seen, path)
-        append_builtin_shadowing_warnings(out, path, source, if path == input_path {
+        Array::push(seen, value = path)
+        append_builtin_shadowing_warnings(out = out, path = path, source = source, label = if path == input_path {
           ""
         } else {
           path
@@ -1665,7 +1660,7 @@ fn str_array_contains_path(arr: Array[String], value: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(arr) {
-    if Array::get(arr, i) == value {
+    if Array::get(arr, at = i) == value {
       found = true
       i = Array::length(arr)
     } else {
@@ -1678,12 +1673,12 @@ fn str_array_contains_path(arr: Array[String], value: String) -> Bool {
 /// The same warnings, from source groups the caller already has. `vibe check`
 /// uses this form so the whole lane collects exactly once.
 export fn check_deprecated_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
-  let entry_source = match checked_entry_source(input_path, source_groups) {
+  let entry_source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
     Some(snapshot) => snapshot,
     None => return array_empty()
   }
-  ingestion_pipeline_telemetry_add(17, 1)
-  let entry_stmts = match checked_warning_stmts(input_path, entry_source) {
+  ingestion_pipeline_telemetry_add(index = 17, amount = 1)
+  let entry_stmts = match checked_warning_stmts(input_path = input_path, source = entry_source) {
     Some(stmts) => stmts,
     None => return array_empty()
   }
@@ -1692,11 +1687,11 @@ export fn check_deprecated_warnings_from_source_groups(input_path: String, sourc
   // `@scope/pkg`, so a deprecated alias published by a PACKAGE -- which is
   // every alias the ADR-0100 (3) collection rename shipped -- was invisible
   // here and the migration warning this function promises never appeared.
-  let dep_sources = resolved_dep_sources(input_path, source_groups)
+  let dep_sources = resolved_dep_sources(input_path = input_path, groups = source_groups)
   // A `.vpkg` reaches source_groups as a generated facade (and its type
   // aliases as a materialized types module). `#deprecated` on a contract
   // type alias lives only in the on-disk file, so re-read those paths.
-  append_raw_vpkg_dep_sources(input_path, source_groups, dep_sources)
+  append_raw_vpkg_dep_sources(input_path = input_path, groups = source_groups, out = dep_sources)
   // Codex review (PR #1713, P2): the closure above is deliberately WIDE -- it
   // has to be, because a package publishes its markers from a sibling file the
   // entry never names. Wide marker COLLECTION plus a token-level scanner would
@@ -1705,7 +1700,7 @@ export fn check_deprecated_warnings_from_source_groups(input_path: String, sourc
   // to use `MutMap::new_string`. So a dependency's marker only counts for a
   // name the entry actually IMPORTED. Markers the entry declares itself still
   // count unconditionally (a file deprecating its own helper needs no import).
-  deprecated_warning_lines_visible(entry_source, dep_sources, Some(entry_imported_names(entry_stmts)))
+  deprecated_warning_lines_visible(entry_source = entry_source, dep_sources = dep_sources, visible_names = Some(entry_imported_names(entry_stmts = entry_stmts)))
 }
 
 /// Re-read every on-disk `.vpkg` in `groups` (except the entry itself) so
@@ -1714,12 +1709,12 @@ export fn check_deprecated_warnings_from_source_groups(input_path: String, sourc
 fn append_raw_vpkg_dep_sources(input_path: String, groups: Array[(String, Array[(String, String)])], out: Array[String]) -> Unit with Fs {
   let mut gi = 0
   while gi < Array::length(groups) {
-    let (_g, members) = Array::get(groups, gi)
+    let (_g, members) = Array::get(groups, at = gi)
     let mut mi = 0
     while mi < Array::length(members) {
-      let (path, _source) = Array::get(members, mi)
-      if path != input_path && String::ends_with(path, ".vpkg") && Fs::exists(path) {
-        Array::push(out, cache_read_source_fs(path))
+      let (path, _source) = Array::get(members, at = mi)
+      if path != input_path && String::ends_with(path, suffix = ".vpkg") && Fs::exists(path) {
+        Array::push(out, value = cache_read_source_fs(path = path))
       } else {
         ()
       }
@@ -1737,20 +1732,20 @@ fn entry_imported_names(entry_stmts: Array[Stmt]) -> Array[String] {
   let out: Array[String] = array_empty()
   let mut i = 0
   while i < Array::length(entry_stmts) {
-    match Array::get(entry_stmts, i) {
+    match Array::get(entry_stmts, at = i) {
       SImport(_, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let iname = Array::get(items, j).name
-          Array::push(out, iname)
+          let iname = Array::get(items, at = j).name
+          Array::push(out, value = iname)
           j = j + 1
         }
       },
       SReExport(_, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let iname = Array::get(items, j).name
-          Array::push(out, iname)
+          let iname = Array::get(items, at = j).name
+          Array::push(out, value = iname)
           j = j + 1
         }
       },
@@ -1763,209 +1758,7 @@ fn entry_imported_names(entry_stmts: Array[Stmt]) -> Array[String] {
 
 //# Release wasm stripping (#1100 size)
 
-/// Read one unsigned LEB128 at `i`; returns (value, next_index) or (-1, end)
-/// when malformed/truncated so callers can bail out to the untouched input.
-fn strip_read_uleb(wasm: Bytes, start: Int, end: Int) -> (Int, Int) {
-  let mut i = start
-  let mut v = 0
-  let mut shift = 0
-  while i < end && shift < 35 {
-    let b = Bytes::get(wasm, i)
-    v = v|((b&127)<<shift)
-    i = i + 1
-    if (b&128) == 0 {
-      return (v, i)
-    } else {
-      shift = shift + 7
-    }
-  }
-  (0 - 1, end)
-}
-
-fn strip_bytes_range_eq_str(wasm: Bytes, start: Int, n: Int, s: String) -> Bool {
-  if n != String::length(s) {
-    false
-  } else {
-    let mut i = 0
-    let mut same = true
-    while same && i < n {
-      if Bytes::get(wasm, start + i) != String::char_code_at(s, i) {
-        same = false
-      } else {
-        i = i + 1
-      }
-    }
-    same
-  }
-}
-
-fn strip_push_range(out: Bytes, wasm: Bytes, start: Int, end: Int) -> Unit {
-  Bytes::blit(out, wasm, start, end)
-}
-
-fn strip_push_uleb(out: Bytes, value: Int) -> Unit {
-  let mut v = value
-  let mut more = true
-  while more {
-    let b = v&127
-    v = v>>7
-    if v == 0 {
-      Bytes::push(out, b)
-      more = false
-    } else {
-      Bytes::push(out, b|128)
-    }
-  }
-}
-
-/// Executable-output post-pass: drop debug custom sections (`name`,
-/// `vibe.linemap`, `vibe.dbgfiles`) and/or filter the export section down to
-/// the entries an executable's runners actually address by name — the entry
-/// function, `_start`, `cli_main`, per-block `__bench_*`/`__test_*` exports,
-/// and every non-function export (memory / `__heap_ptr` global / `error`
-/// tag). Everything else is a module-linking artifact (`*_exp_lib__*`
-/// mangled names from the flat module source) that nothing external can
-/// reasonably call. Section-level surgery only: removing a custom section or
-/// export ENTRIES never renumbers any index, so the code/table/elem sections
-/// are byte-identical. Any parse anomaly returns the input untouched.
-/// Component/library/test paths must NOT come through here — components lift
-/// core exports by name and `vibe test` tooling reads `__test_*` frames from
-/// the name section (callers gate on entry_name/env, see
-/// strip_executable_wasm_env). `vibe run` keeps these sections
-/// (`write_user_run_executable` passes strip_names=false) so a trap still
-/// reports path:line (#2199).
-export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bool, filter_exports: Bool) -> Bytes {
-  if !strip_names && !filter_exports {
-    return wasm
-  } else {
-    ()
-  }
-  let len = Bytes::length(wasm)
-  if len < 8 {
-    return wasm
-  } else {
-    ()
-  }
-  let out = Bytes::new()
-  strip_push_range(out, wasm, 0, 8)
-  let mut i = 8
-  let mut ok = true
-  while ok && i < len {
-    let sid = Bytes::get(wasm, i)
-    let (ssz, payload_start) = strip_read_uleb(wasm, i + 1, len)
-    if ssz < 0 || payload_start + ssz > len {
-      ok = false
-    } else {
-      let payload_end = payload_start + ssz
-      let mut handled = false
-      if sid == 0 && strip_names {
-        // custom section: drop iff its name is exactly "name"
-        let (cn_len, cn_start) = strip_read_uleb(wasm, payload_start, payload_end)
-        if cn_len >= 0 && cn_start + cn_len <= payload_end {
-          if strip_bytes_range_eq_str(wasm, cn_start, cn_len, "name") || strip_bytes_range_eq_str(wasm, cn_start, cn_len, "vibe.linemap") || strip_bytes_range_eq_str(wasm, cn_start, cn_len, "vibe.dbgfiles") {
-            handled = true
-          } else {
-            ()
-          }
-        } else {
-          ()
-        }
-      } else {
-        ()
-      }
-      if !handled && sid == 7 && filter_exports {
-        let (exp_count, cur0) = strip_read_uleb(wasm, payload_start, payload_end)
-        if exp_count >= 0 {
-          let kept = Bytes::new()
-          let mut kept_count = 0
-          let mut cur = cur0
-          let mut ei = 0
-          let mut parse_ok = true
-          while parse_ok && ei < exp_count {
-            let entry_start = cur
-            let (nlen, nstart) = strip_read_uleb(wasm, cur, payload_end)
-            if nlen < 0 || nstart + nlen + 1 > payload_end {
-              parse_ok = false
-            } else {
-              let kind = Bytes::get(wasm, nstart + nlen)
-              let (_eidx, entry_end) = strip_read_uleb(wasm, nstart + nlen + 1, payload_end)
-              if entry_end > payload_end {
-                parse_ok = false
-              } else {
-                let keep = kind != 0 || executable_export_kept_bytes(wasm, nstart, nlen, entry_name)
-                if keep {
-                  strip_push_range(kept, wasm, entry_start, entry_end)
-                  kept_count = kept_count + 1
-                } else {
-                  ()
-                }
-                cur = entry_end
-                ei = ei + 1
-              }
-            }
-          }
-          if parse_ok {
-            Bytes::push(out, 7)
-            let sec_content = Bytes::new()
-            strip_push_uleb(sec_content, kept_count)
-            Bytes::append(sec_content, kept)
-            strip_push_uleb(out, Bytes::length(sec_content))
-            Bytes::append(out, sec_content)
-            handled = true
-          } else {
-            ok = false
-          }
-        } else {
-          ok = false
-        }
-      } else {
-        ()
-      }
-      if ok && !handled {
-        strip_push_range(out, wasm, i, payload_end)
-      } else {
-        ()
-      }
-      i = payload_end
-    }
-  }
-  if ok {
-    out
-  } else {
-    wasm
-  }
-}
-
 // Compatibility entry; the worker shares the same configuration owner.
-export fn configure_cfg_flags() -> Unit with Env {
-  configure_compiler_cfg_flags()
-}
-
-/// Env-gated policy wrapper shared by the CLI adapter (env-mode interface) and
-/// the command dispatch layer: executables (a real entry name) are stripped by
-/// default; `__no_entry__` builds (test/bench/serve cores) are left untouched
-/// because their tooling reads `__test_*` name-section frames, greps the
-/// binary for `__test_`, enumerates `__bench_*` exports, or lifts component
-/// exports by name. VIBE_WASM_NAMES=1 keeps the name section (profiling /
-/// trap-backtrace workflows); VIBE_WASM_KEEP_EXPORTS=1 keeps every export.
-export fn strip_executable_wasm_env(wasm: Bytes, entry_name: String) -> Bytes with Env {
-  if entry_name == "__no_entry__" {
-    wasm
-  } else {
-    strip_executable_wasm(wasm, entry_name, Env::get("VIBE_WASM_NAMES") != "1", Env::get("VIBE_WASM_KEEP_EXPORTS") != "1")
-  }
-}
-
-/// The export half of `strip_executable_wasm_env`'s decision, answerable
-/// BEFORE the compile: will this executable's exports be filtered down to the
-/// keep list? `fold_const_bool_params` (core) needs the answer while it still
-/// has the AST -- an `export fn` that the strip is about to drop is not a
-/// caller anyone outside can reach, so its Bool parameters may fold like any
-/// other function's; one that stays exported may not. Same inputs as the
-/// strip itself, so the two cannot disagree.
-export fn executable_exports_stripped(entry_name: String) -> Bool with Env {
-  entry_name != "__no_entry__" && Env::get("VIBE_WASM_KEEP_EXPORTS") != "1"
-}
 
 /// #2305 (Codex review, round 3): the ADR-0068 boundary for the DEBUG lane,
 /// gating the snapshot this function itself compiled.
@@ -2000,21 +1793,21 @@ export fn write_linked_debug_build_checked(input_path: String, output_path: Stri
   // The compile below reads the files again, so the build is refused unless
   // every checked file is unchanged once it has finished
   // (`refuse_changed_checked_sources`): the bytes written are the bytes checked.
-  let checked = checked_source_tokens(check_linked_file_source_groups(input_path))
-  let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path, entry_name)
+  let checked = checked_source_tokens(groups = check_linked_file_source_groups(input_path = input_path))
+  let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path = input_path, entry_name = entry_name)
   // STAGE every dependency before the verdict. `compile_debug_library` reads
   // the dependency again, so compiling them after the check would authorize
   // one snapshot and publish another -- a dependency that gains an
   // `@vibe/concurrent` import in that window would be compiled and written
   // unchecked (Codex review on #2313). Compiling first means the record the
   // check consults covers every byte that will be published.
-  let output_dir = linked_output_dir(output_path)
+  let output_dir = linked_output_dir(output_path = output_path)
   let staged = array_empty()
   let mut si = 0
   while si < Array::length(linked_dep_specs) {
-    let (module_name, dep_path) = Array::get(linked_dep_specs, si)
+    let (module_name, dep_path) = Array::get(linked_dep_specs, at = si)
     let lib_output_path = String::concat(output_dir, String::concat("/", String::concat(module_name, ".wasm")))
-    Array::push(staged, (lib_output_path, compile_debug_library(dep_path)))
+    Array::push(staged, value = (lib_output_path, compile_debug_library(dep_path = dep_path)))
     si = si + 1
   }
   if allow_unstable {
@@ -2022,17 +1815,17 @@ export fn write_linked_debug_build_checked(input_path: String, output_path: Stri
   } else {
     let diags = check_unstable_surface_warnings_from_closure()
     if Array::length(diags) > 0 {
-      throw(String::join(diags, "\n"))
+      throw(String::join(diags, sep = "\n"))
     } else {
       ()
     }
   }
-  refuse_changed_checked_sources(checked)
-  Fs::write_bytes(output_path, entry_bytes)
+  refuse_changed_checked_sources(checked = checked)
+  Fs::write_bytes(output_path, bytes = entry_bytes)
   let mut pi = 0
   while pi < Array::length(staged) {
-    let (lib_output_path, lib_bytes) = Array::get(staged, pi)
-    Fs::write_bytes(lib_output_path, lib_bytes)
+    let (lib_output_path, lib_bytes) = Array::get(staged, at = pi)
+    Fs::write_bytes(lib_output_path, bytes = lib_bytes)
     pi = pi + 1
   }
 }
@@ -2042,7 +1835,7 @@ export fn write_linked_debug_build(input_path: String, output_path: String, entr
   // stages every library before writing, so the comparison with the checked
   // files covers them too. `true` skips only the unstable-surface verdict,
   // which this builder never ran.
-  write_linked_debug_build_checked(input_path, output_path, entry_name, true)
+  write_linked_debug_build_checked(input_path = input_path, output_path = output_path, entry_name = entry_name, allow_unstable = true)
 }
 
 /// #3577: each file the check read, with the stat token the source memo took
@@ -2054,8 +1847,8 @@ fn checked_source_tokens(groups: Array[(String, Array[(String, String)])]) -> Ar
     let (_group_name, members) = group
     for member in members {
       let (path, _source) = member
-      let memo = cache_source_memo_token(path)
-      Array::push(out, (path, if memo == 0 - 1 {
+      let memo = cache_source_memo_token(path = path)
+      Array::push(out, value = (path, if memo == 0 - 1 {
         Fs::stat_token(path)
       } else {
         memo
