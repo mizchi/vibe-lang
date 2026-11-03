@@ -109,7 +109,20 @@ run_bounded() { # <seconds> <cmd...>
         run_bounded_watchdog "$secs" "$@"
         return $?
       fi
-      "$bin" -k 2 "$secs" "$@" || rc=$?
+      # Job control around the launch makes timeout(1) a process-group
+      # leader, as the watchdog makes its child one. GNU timeout signals that
+      # group itself, but not every timeout(1) does: one that sends the -k
+      # KILL to its direct child alone leaves a TERM-ignoring grandchild
+      # alive, holding the caller's pipe open until it finishes on its own.
+      # Once the bound has fired, nothing in the group may outlive it, so the
+      # group is killed here whichever timeout(1) ran.
+      local had_monitor=0 tpid
+      case "$-" in *m*) had_monitor=1 ;; esac
+      set -m
+      "$bin" -k 2 "$secs" "$@" &
+      tpid=$!
+      [ "$had_monitor" -eq 1 ] || set +m
+      wait "$tpid" 2>/dev/null || rc=$?
       # Whole seconds: a kill before the bound reads at most `secs` elapsed
       # (it can round UP to it), so only a 137 strictly past it -- where the
       # bound's TERM was already sent -- is the escalation (#3099 review).
@@ -117,6 +130,9 @@ run_bounded() { # <seconds> <cmd...>
         if [ $((end - start)) -gt "$secs" ]; then
           rc=124
         fi
+      fi
+      if [ "$rc" -eq 124 ]; then
+        kill -KILL "-$tpid" 2>/dev/null || true
       fi
       return "$rc"
       ;;

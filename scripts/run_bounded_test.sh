@@ -120,6 +120,29 @@ mutant() { # <name> <sed-expr> <marker-text-that-must-appear>
   printf '%s' "$m"
 }
 
+# A timeout(1) that sends its -k KILL to the direct child alone must still end
+# the whole tree. GNU's own --foreground mode has exactly that shape, so it
+# stands in for the timeout(1) a CI runner image shipped: its TERM-ignoring
+# grandchild held the pipe for the full 20s of a 1s bound.
+if command -v timeout >/dev/null 2>&1; then
+  real_timeout="$(command -v timeout)"
+  if "$real_timeout" --foreground 1 true >/dev/null 2>&1; then
+    fg_dir="$WORK/child-only-timeout"
+    mkdir -p "$fg_dir"
+    printf '#!/usr/bin/env bash\nexec "%s" --foreground "$@"\n' "$real_timeout" > "$fg_dir/timeout"
+    chmod +x "$fg_dir/timeout"
+    broken="$(PATH="$fg_dir:$PATH" contract "$LIB" timeout)"
+    [ -z "$broken" ] || fail "the real helper breaks the contract under a child-only timeout(1): $broken"
+    ok "the real helper keeps timeout(1)'s contract under a timeout(1) that signals only its child"
+    m="$(mutant no_group_kill 's/^        kill -KILL "-\$tpid" 2>\/dev\/null || true$/        : no-group-kill/' ': no-group-kill')"
+    broken="$(PATH="$fg_dir:$PATH" contract "$m" timeout)"
+    case "$broken" in *term-ignoring*) ok "red: without the group kill, a child-only timeout(1) lets a TERM-ignoring grandchild outlive the bound" ;;
+      *) fail "the no-group-kill mutant was not caught: ${broken:-<no rung failed>}" ;; esac
+  else
+    echo "  skip  this timeout(1) has no --foreground, so the child-only case cannot be staged"
+  fi
+fi
+
 # The status-based guess the three local run_with_timeout copies made.
 m="$(mutant status_guess 's/^  if \[ -e "\$marker" \]; then$/  if [ "$rc" -ne 143 ] \&\& [ "$rc" -ne 137 ]; then/' 'if [ "$rc" -ne 143 ]')"
 broken="$(contract "$m" watchdog)"
