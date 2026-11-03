@@ -417,6 +417,74 @@ export fn lc_thunk_map(old_names: Array[String], new_names: Array[String]) -> Ar
   out
 }
 
+/// The first constructor tag that can move: user types start at
+/// `type_index` 2, and the tags below are the built-in fallbacks.
+export let lc_first_user_tag: Int = 2<<16
+
+/// Harvest constructor tag -> this build's, through the constructor names
+/// that held it: `(old tags sorted, new tags aligned)`. A tag whose names
+/// now disagree, or one of whose names is gone, maps to -1. A tag below
+/// `lc_first_user_tag` is not in the map; it never moves.
+export struct LcCtorTagMap {
+  old_tags: Array[Int];
+  new_tags: Array[Int];
+  identity: Bool
+}
+
+export fn lc_ctor_tag_map(old_names: Array[String], old_tags: Array[Int], new_names: Array[String], new_tags: Array[Int]) -> LcCtorTagMap {
+  let new_sorted = sort_perm_by_names(new_names)
+  let ns: Array[String] = []
+  let nt: Array[Int] = []
+  for p in new_sorted {
+    Array::push(ns, Array::get(new_names, p))
+    Array::push(nt, Array::get(new_tags, p))
+  }
+  let olds = lc_fresh_int_array()
+  let news = lc_fresh_int_array()
+  let mut identity = true
+  let mut i = 0
+  while i < Array::length(old_names) && i < Array::length(old_tags) {
+    let t = Array::get(old_tags, i)
+    if t >= lc_first_user_tag {
+      let at = bsearch_leftmost(ns, Array::get(old_names, i))
+      let n = if at >= 0 {
+        Array::get(nt, at)
+      } else {
+        0 - 1
+      }
+      if n != t {
+        identity = false
+      } else {
+        ()
+      }
+      // Insert by old tag; a second name holding the same tag must agree.
+      let mut k = 0
+      let mut found = 0 - 1
+      while found < 0 && k < Array::length(olds) {
+        if Array::get(olds, k) == t {
+          found = k
+        } else {
+          k = k + 1
+        }
+      }
+      if found >= 0 {
+        if Array::get(news, found) != n {
+          Array::set(news, found, 0 - 1)
+        } else {
+          ()
+        }
+      } else {
+        Array::push(olds, t)
+        Array::push(news, n)
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  LcCtorTagMap::{ old_tags: olds, new_tags: news, identity: identity }
+}
+
 /// Is `map` the identity?
 export fn lc_map_is_identity(map: Array[Int]) -> Bool {
   let mut same = true

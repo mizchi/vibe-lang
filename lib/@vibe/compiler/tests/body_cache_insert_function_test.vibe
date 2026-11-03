@@ -375,9 +375,9 @@ test "a function removed, renamed or moved in a middle file keeps the files afte
 
 //# Types. Constructor tags are `(type_index << 16) | variant`, and
 //# `type_index` counts type declarations in merge order, so a type added in
-//# a middle file moves the tag of every type declared after it. The table is
-//# compared per type, tag values included: an added type is tolerated where
-//# it moves no existing tag, and declines where it does.
+//# a middle file moves the tag of every type declared after it. Every tag a
+//# body embeds is recorded at emission (kind 105, `emit_ctor_tag`) and
+//# relocated through the constructor names that held it.
 
 fn bim_main_typed(with_type: Bool) -> String {
   let decl = if with_type {
@@ -427,14 +427,15 @@ fn bim_probe_type(label: String, downstream_type: Bool) -> String with Env + Exc
   "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
 }
 
-test "a type added in a middle file is tolerated where it moves no tag" {
+test "a type added in a middle file relocates the tags it moves" {
   // No type after the middle file: every existing tag is where it was, and
   // both the upstream and downstream bodies are reused.
   let tolerated = bim_probe_type("no-later-type", false)
-  // The downstream file declares a type, whose tag the new one moves: that
-  // type's row changes, and nothing is reused.
+  // The downstream file declares a type, whose tag the new one moves. The
+  // downstream body embeds that tag (construction and match), recorded as
+  // kind 105, and it is relocated through the constructor's name.
   let moved = bim_probe_type("later-type-moves", true)
-  inspect(String::join([tolerated, moved], " | "), content = "no-later-type saved=4 equal=true | later-type-moves saved=0 equal=true")
+  inspect(String::join([tolerated, moved], " | "), content = "no-later-type saved=4 equal=true | later-type-moves saved=4 equal=true")
 }
 
 //# A new module. Importing one inserts a file into the merge order, so every
@@ -590,11 +591,10 @@ test "an added effect relocates the tags it moves" {
     bie_probe("effect-ahead", true)
   } with { Exception::Throw(m) => String::concat("THROW ", m) }
   // In the middle file: `BieLog` keeps tag 3, the new effect takes 4, and
-  // the tags past them move by one -- the handlers upstream and downstream
-  // name those, and are relocated. Declared AHEAD of `BieLog` in the first
+  // the tags past them move by one. Declared AHEAD of `BieLog` in the first
   // file, the new effect also brings a synthesized type that moves later
-  // constructor tags, which are not relocated, so nothing is reused.
-  inspect(String::join([r1, r2], " | "), content = "effect-in-middle saved=4 equal=true | effect-ahead saved=0 equal=true")
+  // constructor tags; those are relocated too.
+  inspect(String::join([r1, r2], " | "), content = "effect-in-middle saved=4 equal=true | effect-ahead saved=1 equal=true")
 }
 
 //# Structs. A field access dispatches over every struct holding the field,
@@ -662,4 +662,57 @@ test "a thunk added ahead of a cached one moves its memo globals with it" {
   let warm = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", warm_counts)
   let fresh = compile_file_fs_mode_rc(bim_main_path, "run")
   inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=4 equal=true")
+}
+
+//# Every tag-bearing form, downstream of a type inserted ahead: every tag
+//# the downstream body embeds moves, and a form whose tag were emitted
+//# without a record would replay the old value and differ from a fresh
+//# build.
+
+fn bit_main() -> String {
+  String::join([
+    "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }",
+    "enum BitShape { BitDot; BitLine(Int); BitBox(Int, Int) }",
+    "enum BitWrap { BitIn(BitShape); BitOut }",
+    "struct BitP { x: Int; y: Int }",
+    "struct BitQ { y: Int; z: Int }",
+    "let bit_area: (BitShape) -> Int = (s) -> { match s { BitDot => 0, BitLine(n) => n, BitBox(w, h) => w * h } }",
+    "let bit_nested: (BitWrap) -> Int = (w) -> { match w { BitIn(BitBox(a, _)) => a, BitIn(BitLine(n)) if n > 2 => n, BitIn(_) => 1, BitOut => 0 } }",
+    "let bit_is: (BitShape) -> Int = (s) -> { if s is BitDot { 7 } else { 8 } }",
+    "let bit_y: (BitP, BitQ) -> Int = (p, q) -> { p.y + q.y }",
+    "let bit_record: () -> Int = () -> { let r = record { x: 1, y: 2 }\n r.x }",
+    "let bit_opt: (Option[Int]) -> Int = (o) -> { match o { Some(v) => v, None => 0 } }",
+    "let run: () -> Int = () -> {",
+    "  let BitIn(inner) = BitIn(BitLine(3))",
+    "  bit_area(BitBox(2, 3)) + bit_area(inner) + bit_nested(BitIn(BitBox(4, 1))) + bit_is(BitDot) + bit_y(BitP::{ x: 1, y: 2 }, BitQ::{ y: 3, z: 4 }) + bit_record() + bit_opt(Some(5)) + bim_two(1) + bim_three(2)",
+    "}"
+  ], "\n")
+}
+
+test "every tag-bearing form is relocated across a type inserted ahead" {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  let head = "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }\n"
+  Fs::write_bytes(bim_a_path, bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bif_bytes(String::concat(head, String::join([
+    bim_two_line,
+    bim_three_line
+  ], "\n"))))
+  Fs::write_bytes(bim_main_path, bif_bytes(bit_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", cold_counts)
+  let typed_b = String::join([
+    "enum BimMark { BimOn; BimOff }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + (match BimOn { BimOn => 0, BimOff => 1 }) }",
+    bim_three_line
+  ], "\n")
+  Fs::write_bytes(bim_b_path, bif_bytes(String::concat(head, typed_b)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bim_main_path, "run")
+  inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=9 equal=true")
 }

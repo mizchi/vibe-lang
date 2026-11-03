@@ -7,6 +7,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/reloc {
+  blind_kind_ctor_tag,
   blind_kind_fn_value,
   blind_kind_table_slot_i32,
   blind_owner_is_lambda,
@@ -23,7 +24,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./linked_body_cache_edit.vibe {
-  LcSrcEdit
+  LcCtorTagMap, LcSrcEdit, lc_first_user_tag
 }
 
 import ./linked_compile_lc_rename_sleep_calls.vibe {
@@ -44,7 +45,9 @@ import ./linked_compile_lc_rename_sleep_calls.vibe {
 // - exception tags, `throw` / `catch` immediates the encoding makes certain
 //   (`reloc_kind_tag`), when the declared effects changed;
 // - a thunk's memo globals (`reloc_kind_global`), which follow the thunk's
-//   position in the unsorted thunk list.
+//   position in the unsorted thunk list;
+// - constructor tags (kind 105, `emit_ctor_tag`), which follow the names
+//   that held them when a type declared ahead moved them.
 //
 // Imports and generated builtins sit below the user functions and do not
 // move; the synthesized region sits past the pin region's capacity and does
@@ -74,7 +77,9 @@ struct LcIndexMap {
   /// memo global: thunk `k` owns globals `thunk_base + 2k` and `+ 1`, the
   /// last globals of the module.
   thunks: Array[Int];
-  thunk_base: Int
+  thunk_base: Int;
+  /// Harvest constructor tag -> this build's (`lc_ctor_tag_map`).
+  ctor_tags: LcCtorTagMap
 }
 
 fn lc_map_fn(m: LcIndexMap, o: Int) -> Int {
@@ -179,6 +184,26 @@ fn lc_map_global(m: LcIndexMap, g: Int) -> Int {
     } else {
       m.thunk_base + 2 * Array::get(m.thunks, k) + (g - m.thunk_base) % 2
     }
+  }
+}
+
+/// A constructor tag: a built-in one never moves; a user type's follows the
+/// names that held it, and one the map cannot place is -1.
+fn lc_map_ctor_tag(m: LcIndexMap, t: Int) -> Int {
+  if t < lc_first_user_tag {
+    t
+  } else {
+    let mut n = 0 - 1
+    let mut k = 0
+    while n < 0 && k < Array::length(m.ctor_tags.old_tags) {
+      if Array::get(m.ctor_tags.old_tags, k) == t {
+        n = Array::get(m.ctor_tags.new_tags, k)
+        k = Array::length(m.ctor_tags.old_tags)
+      } else {
+        k = k + 1
+      }
+    }
+    n
   }
 }
 
@@ -304,7 +329,7 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
   }
   for k in rows {
     let kind = Array::get(cache.blind_kinds, k)
-    if ok && Array::get(cache.blind_body, k) == owner && (kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32) {
+    if ok && Array::get(cache.blind_body, k) == owner && (kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32 || kind == blind_kind_ctor_tag) {
       let off = Array::get(cache.blind_offsets, k)
       let op = if kind == blind_kind_fn_value {
         66
@@ -312,7 +337,11 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
         65
       }
       let s = Array::get(cache.blind_syms, k)
-      let n = lc_map_slot(m, s)
+      let n = if kind == blind_kind_ctor_tag {
+        lc_map_ctor_tag(m, s)
+      } else {
+        lc_map_slot(m, s)
+      }
       if off < 0 || off >= Bytes::length(body) || Bytes::get(body, off) != op || n < 0 {
         ok = false
       } else if n != s {
@@ -426,10 +455,10 @@ fn lc_first_change(e: LcSrcEdit, old_plan: Array[Int], new_bases: Array[Int]) ->
 /// one that cannot be moved, or whose function was removed, is dropped.
 /// `old_plan` is the harvest's lambda plan with its total last
 /// (`lc_old_lambda_plan`). Answers `cache` itself when nothing moved.
-export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: Int, num_user_funcs: Int, func_offset: Int, lambda_slot_base: Int, old_plan: Array[Int], new_bases: Array[Int], new_lambda_count: Int, tag_map: Array[Int], thunk_map: Array[Int], thunk_base: Int) -> CodegenBodyCache {
+export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: Int, num_user_funcs: Int, func_offset: Int, lambda_slot_base: Int, old_plan: Array[Int], new_bases: Array[Int], new_lambda_count: Int, tag_map: Array[Int], thunk_map: Array[Int], thunk_base: Int, ctor_tags: LcCtorTagMap) -> CodegenBodyCache {
   // A moved exception tag can sit in ANY body, and so can a moved thunk's
-  // memo global, so every entry moves then.
-  let first = if lc_tags_identity(tag_map) && lc_tags_identity(thunk_map) {
+  // memo global or a moved constructor tag, so every entry moves then.
+  let first = if lc_tags_identity(tag_map) && lc_tags_identity(thunk_map) && ctor_tags.identity {
     lc_first_change(e, old_plan, new_bases)
   } else {
     0
@@ -477,7 +506,8 @@ export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: I
       lambda_slot_base: lambda_slot_base,
       tags: tag_map,
       thunks: thunk_map,
-      thunk_base: thunk_base
+      thunk_base: thunk_base,
+      ctor_tags: ctor_tags
     }
     let out = codegen_body_cache_guards_only(cache)
     let lam_rows = lc_group_rows(cache.lam_owner, num_user_funcs)
@@ -610,6 +640,8 @@ fn lc_reindex_entry(m: LcIndexMap, cache: CodegenBodyCache, out: CodegenBodyCach
       Array::push(out.blind_kinds, kind)
       Array::push(out.blind_syms, if moving && (kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32) {
         lc_map_slot(m, sym)
+      } else if moving && kind == blind_kind_ctor_tag {
+        lc_map_ctor_tag(m, sym)
       } else {
         sym
       })

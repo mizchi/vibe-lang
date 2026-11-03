@@ -1166,18 +1166,41 @@ id in body bytes, and `dbg_line_on` is part of the global half besides.
 
 **Types.** Constructor tags are `(type_index << 16) | variant`, and
 `type_index` counts type declarations in merge order, so a type declared
-anywhere moves the tag of every later type. While every constructor and
-struct name is unique, the global half leaves the constructor table out, and
-it is compared per TYPE instead (`guard_type_names` / `guard_type_rows`,
-VBC11). A type's row covers its constructors' names, tags, field counts and
-Double fields.
+anywhere moves the tag of every later type. Every tag a body embeds is
+recorded at emission: kind 105, `emit_ctor_tag`, `sym` being the tag value.
+That covers construction, every match form, `is`, the struct field-dispatch
+cases and the record-literal stamp. `lc_verify_blind_relocs` checks each
+record against its `i32.const` on every compile. The harvest carries the
+constructor table by value (`guard_ctor_names` / `guard_ctor_tags`, VBC15).
+A replay maps each old tag through the names that held it
+(`lc_ctor_tag_map`); tags below `2 << 16` are built-in and never move. While
+every constructor and struct name is unique, the table is compared per TYPE
+(`guard_type_rows`). A type's row covers its constructors' names, variants,
+field counts and Double fields, but not the moving half of the tag.
 
-- Every type the harvest had must be present with the same row, tag values
-  included.
-- A type added where it moves no existing tag is tolerated, and its name and
-  constructors join the mention check.
-- A removed type, a changed type (a new variant moves its row) and a moved tag
-  all decline.
+- Every type the harvest had must be present with the same row.
+- An added type is tolerated, and its name and constructors join the mention
+  check.
+- A removed type, or a changed one (a new variant moves its row), declines.
+- Load-bearing: with the tag remap made the identity, the `later-type-moves`
+  row and the edit-classes `add-type-ahead` row compile to different bytes.
+- `every tag-bearing form is relocated across a type inserted ahead` puts each
+  form in one downstream file: construction with and without payload, nested
+  and guarded matches, `is`, a destructuring `let`, two-candidate field
+  dispatch, a record literal and `Option`. Every body is reused,
+  byte-equal.
+- At scale: a type inserted into `core/hex.vibe` (file 14 of the CLI closure's
+  680) moves nearly every tag in the compiler. The warm build with the cache
+  on is byte-identical to the cache-off one (16.7 s against 17.5 s), and
+  every record check passed.
+- The used-builtin set collects constructor names too, so under an edit it is
+  compared with this build's constructor names taken out of both sides.
+- Not enforced: no lint makes a NEW tag site use `emit_ctor_tag`. At the
+  emission point a tag is an ordinary integer, so no pattern separates it
+  from one. A missed site would replay a stale tag, and only the corpus row's
+  byte comparison catches it, for a form the row covers. Add a form to that
+  row when you add a tag site.
+
 - Structs are compared by value (`guard_struct_names` /
   `guard_struct_fields`, VBC13). Every struct the harvest had must survive
   with the same fields, in the same relative order. An added struct is
@@ -1236,12 +1259,13 @@ byte for byte against a fresh build:
   local.
 - **Reused:** a function added together with a type in the last file, which
   moves no existing tag.
-- **Types in a middle file:** reused when no later file declares a type; not
-  reused when one does, because its tag moved.
+- **Types in a middle file:** reused whether or not a later file declares a
+  type; a later type's moved tags are relocated.
 - **A newly imported module**, listed after the existing imports and before
   them: the unchanged files are reused either way, byte-equal.
-- **Effects:** one added in the middle file is reused. One declared ahead of
-  an existing effect declines, because its synthesized type moves later tags.
+- **Effects:** one added in the middle file is reused, and one declared ahead
+  of an existing effect is partly reused (its synthesized type's moved tags
+  are relocated).
 - **Structs:** one added in the middle file with new fields is reused. One
   that shares a field with an existing struct declines.
 - **Thunks:** one added in the middle file ahead of a downstream file's own
