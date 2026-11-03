@@ -1,5 +1,9 @@
 // Collection access.
 
+import ./map_scalar_keys.vibe {
+  map_index_get_cell
+}
+
 import @vibe/compiler/core {
   Expr,
   Stmt,
@@ -225,7 +229,7 @@ export fn index_refusals_report() -> Unit with Exception {
 /// the receiver's spelling is available: a `Map::new()` literal or a
 /// `Map[..]`-annotated binding (`infer_arg_type_name` reports "Map").
 /// `rwargs` are the already-rewritten arguments to carry into the new call.
-export fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], typed: Bool) -> Option[Expr] {
+export fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], typed: Bool, call_off: Int) -> Option[Expr] {
   match callee {
     EIdent(nm, site_key) => if nm == "__index" && Array::length(args) == 2 {
       let bracket_off = index_site_offset(site_key)
@@ -243,7 +247,22 @@ export fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr]
       // would otherwise be rewritten to `Map::get` (#3133 review).
       let recv_map = verdict == typed_index_map_verdict() || (verdict != typed_index_open_verdict() && (spelled == "Map" || spelled == "StringMap"))
       if recv_map {
-        Some(ECall(builtin_ref("Map::get"), rwargs, -1, []))
+        // #2334: the lookup is located at the index -- its own offset, or
+        // the bracket's when the parser left the call unlocated. The railway
+        // pass lowers `m[k]` BEFORE the check, so the checker's `Map::get`
+        // arm types this call, and files its key row, at that offset; a
+        // lowering after the check reads that row and takes the scalar get.
+        let site = if call_off >= 0 {
+          call_off
+        } else {
+          bracket_off
+        }
+        let cell = if typed {
+          map_index_get_cell(site)
+        } else {
+          []
+        }
+        Some(ECall(builtin_ref("Map::get"), rwargs, site, cell))
       } else {
         // An open verdict is refused. (#3138 retired an exemption for a
         // receiver SPELLED as a sequence: it existed because a struct literal
