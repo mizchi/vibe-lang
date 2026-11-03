@@ -1270,9 +1270,19 @@ field counts and Double fields, but not the moving half of the tag.
   nothing". A hash collision only withholds more.
 - `body_cache_changed_struct_test` swaps two fields, makes one Double, adds
   one, and adds a struct that shares a field. The bodies that never read the
-  struct (and `==` on two values of it, which compares positionally) are
-  reused byte-equal; the ones that read a field recompile. An added field
-  still declines, because the builder's aggregate-return row changes.
+  struct (and `==` on two values of it) are reused byte-equal; the ones
+  that read a field recompile, and so does the builder.
+- A source function whose ROW changed (an added field moves the builder's
+  aggregate-return row) no longer declines the lane either
+  (`lc_src_rows_mark`). Its name joins the mention check, since a caller
+  consumes a row only through a call, a function value or a thunk
+  reference that spells it. Its own index is withheld as well, because
+  whole-program inference can move the row of a function whose file did
+  not change, and its body was lowered against the old one.
+  `body_cache_changed_row_test` holds two rows, and neither needs the
+  marking: a folded constant's callers are already withheld by the
+  per-entry fold signature, and a changed return class moves the
+  used-builtin set, which declines first.
 - Measured: with the layout check and the field mention both off, the swap
   row replays a stale field offset and is NOT byte-equal. With either one
   alone it is. `body_cache_layout_refuse_test` pins the sentinel rule

@@ -38,8 +38,8 @@ import ./linked_compile_lc_rename_sleep_calls.vibe {
 //   classes, whether it is a thunk or a folded constant).
 //
 // A later build is then compared on the global half and on the rows of the
-// names both builds hold. A name only one side holds is a change, and a body
-// that spells one is not replayed. Each function's LAMBDA COUNT is carried by
+// names both builds hold. A name only one side holds, or one whose row
+// changed, is a change, and a body that spells one is not replayed. Each function's LAMBDA COUNT is carried by
 // value instead (`guard_src_lambdas`): it only moves indices, which the
 // relocation follows.
 
@@ -239,6 +239,39 @@ export fn lc_src_rows_agree(e: LcSrcEdit, old_rows: Array[Int], new_rows: Array[
       o = o + 1
     }
     same
+  }
+}
+
+/// Like `lc_src_rows_agree`, but a function whose row changed is not a reason
+/// to decline: its name goes into `e.touched` -- every row a body consumes,
+/// it consumes through a call, a function value or a thunk reference that
+/// spells the name -- and its own index into `changed`, because its own body
+/// may have been lowered against its old row (a return or borrow class that
+/// whole-program inference moved). False only when the row lists do not
+/// line up with the edit.
+export fn lc_src_rows_mark(e: LcSrcEdit, old_rows: Array[Int], new_rows: Array[Int], new_names: Array[String], changed: Array[Int]) -> Bool {
+  if Array::length(old_rows) != 2 * e.old_src_n {
+    false
+  } else {
+    let mut ok = true
+    let mut o = 0
+    while ok && o < e.old_src_n {
+      let n = Array::get(e.o2n, o)
+      if n >= 0 {
+        if 2 * n + 1 >= Array::length(new_rows) || n >= Array::length(new_names) {
+          ok = false
+        } else if Array::get(old_rows, 2 * o) != Array::get(new_rows, 2 * n) || Array::get(old_rows, 2 * o + 1) != Array::get(new_rows, 2 * n + 1) {
+          Array::push(e.touched, Array::get(new_names, n))
+          Array::push(changed, n)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      o = o + 1
+    }
+    ok
   }
 }
 
