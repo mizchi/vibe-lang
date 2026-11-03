@@ -41,29 +41,25 @@ run_case() {
   local copy="$WORK/$name.vibe"
   cp "$REAL" "$copy"
   python3 - "$copy" "$mutation" <<'PY'
-import sys
+import re, sys
 path, which = sys.argv[1], sys.argv[2]
 s = open(path, encoding="utf-8").read()
 before = s
-needle = (
-    '("Array::push", CtFn(reg_p2(CtArray(reg_var(0)), reg_var(0)), CtUnit, None), '
-    "true, true, true, false, false, false, true)"
-)
+# Preserve the type expression, including any argument labels inside it.
+# The mutation concerns the tuple shape and lane flags, not that syntax.
+row = re.search(
+    r'(?P<head>\("Array::push", CtFn\(.*\)), true, true, true, false, false, false, true\)',
+    s)
+if row is None:
+    sys.stderr.write("builtin-parity-selftest: Array::push 9-tuple not found\n")
+    sys.exit(2)
+needle = row.group(0)
 if which == "shape":
-    repl = (
-        '("Array::push", CtFn(reg_p2(CtArray(reg_var(0)), reg_var(0)), CtUnit, None), '
-        "true, true, true)"
-    )
+    repl = row.group("head") + ", true, true, true)"
 elif which == "neither":
-    repl = (
-        '("Array::push", CtFn(reg_p2(CtArray(reg_var(0)), reg_var(0)), CtUnit, None), '
-        "false, false, true, false, false, false, true)"
-    )
+    repl = row.group("head") + ", false, false, true, false, false, false, true)"
 else:
     sys.stderr.write(f"builtin-parity-selftest: unknown mutation '{which}'\n")
-    sys.exit(2)
-if needle not in s:
-    sys.stderr.write("builtin-parity-selftest: Array::push 9-tuple not found\n")
     sys.exit(2)
 s = s.replace(needle, repl, 1)
 if s == before:
@@ -161,12 +157,29 @@ done
 FUTURE_COPY="$WORK/backend_future_call.vibe"
 python3 - "$GC_CALLSITE_REAL" "$FUTURE_COPY" <<'PY'
 import sys
+from pathlib import Path
 src, dst = sys.argv[1:]
 s = open(src, encoding="utf-8").read()
-needle = 'fname == "Future::resolve") && !gc_name_is_user_defined(ctx, local_names, fname)'
+positional = 'gc_name_is_user_defined(ctx, local_names, fname)'
+named = 'gc_name_is_user_defined(ctx = ctx, local_names = local_names, name = fname)'
+guards = ['fname == "Future::resolve") && !' + call for call in [positional, named]]
+found = [guard for guard in guards if guard in s]
+assert len(found) == 1, "GC future refusal guard not found in either argument spelling"
+needle = found[0]
 assert s.count(needle) == 1, "GC future refusal guard not found exactly once"
 open(dst, "w", encoding="utf-8").write(s.replace(needle, needle.replace(' && !', ' && '), 1))
+for style, call in [('positional', positional), ('named', named),
+                    ('wrong_label', named.replace('name = fname', 'wrong_name = fname'))]:
+    replacement = 'fname == "Future::resolve") && !' + call
+    Path(dst).with_name('future_' + style + '.vibe').write_text(s.replace(needle, replacement, 1), encoding="utf-8")
 PY
+for style in positional named; do
+  if ! gate --gc-callsite "$WORK/future_$style.vibe" >"$WORK/future_$style.log" 2>&1; then
+    cat "$WORK/future_$style.log" >&2
+    fail "the valid $style future guard was rejected"
+  fi
+done
+echo "builtin-parity-selftest:   green ok: positional and named gc-future guards"
 if gate --gc-callsite "$FUTURE_COPY" >"$WORK/future.log" 2>&1; then
   cat "$WORK/future.log" >&2
   fail "the gate PASSED after the GC future shadowing guard changed"
@@ -176,5 +189,14 @@ if ! grep -qF 'GC guest future rejection shape changed' "$WORK/future.log"; then
   fail "the future-guard mutation failed for another reason"
 fi
 echo "builtin-parity-selftest:   red ok: gc-future-refusal"
+
+if gate --gc-callsite "$WORK/future_wrong_label.vibe" >"$WORK/future_wrong_label.log" 2>&1; then
+  fail "the gate PASSED with the wrong GC future parameter label"
+fi
+grep -qF 'GC guest future rejection shape changed' "$WORK/future_wrong_label.log" || {
+  cat "$WORK/future_wrong_label.log" >&2
+  fail "the wrong-label mutation failed for another reason"
+}
+echo "builtin-parity-selftest:   red ok: gc-future-parameter-label"
 
 echo "builtin-parity-selftest: ok"

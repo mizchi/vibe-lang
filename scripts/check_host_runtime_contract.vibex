@@ -1968,6 +1968,161 @@ fn validate_operation_ladder(text: String, bound: Array[Pair]) -> Int with Stder
 
 // --- main -------------------------------------------------------------------
 
+/// ADR-0120: the emitter helpers the matchers above read have a stable
+/// positional ABI, and a call may spell each argument with its parameter
+/// label. These are the labels each helper's argument slots may carry; an
+/// empty entry is a positional slot.
+fn call_labels(callee: String) -> Array[String] {
+  if callee == "emit_name" {
+    ["buf", "name"]
+  } else if callee == "bytebuf_push" {
+    ["buf", "byte"]
+  } else if callee == "bytebuf_push_vec_header" {
+    ["buf", "count"]
+  } else if callee == "leb128_encode_u32" {
+    ["buf", "value"]
+  } else if callee == "Array::get" {
+    ["", "at"]
+  } else if callee == "Map::has_key" {
+    ["", "key"]
+  } else {
+    []
+  }
+}
+
+/// The end of the vibe token at `at` (`at` is not whitespace): a string or
+/// char literal, a `::`-qualified identifier, `==`, `=>`, or one byte.
+fn token_end(s: String, at: Int) -> Int {
+  let n = String::length(s)
+  let c = String::byte_at(s, at)
+  if c == '"' || c == '\'' {
+    let mut k = at + 1
+    while k < n && String::byte_at(s, k) != c {
+      if String::byte_at(s, k) == '\\' {
+        k = k + 2
+      } else {
+        k = k + 1
+      }
+    }
+    if k < n {
+      k + 1
+    } else {
+      n
+    }
+  } else if is_ident_start(c) {
+    let mut k = word_end(s, at)
+    while has_at(s, k, "::") && k + 2 < n && is_ident_start(String::byte_at(s, k + 2)) {
+      k = word_end(s, k + 2)
+    }
+    k
+  } else if has_at(s, at, "==") || has_at(s, at, "=>") {
+    at + 2
+  } else {
+    at + 1
+  }
+}
+
+/// `text` with the known argument labels of `call_labels` removed, so each
+/// call reads in its positional spelling. Only a label that names the slot
+/// it sits in is removed: a wrong label, or any label of another callee,
+/// stays in place and still fails the match that reads it. Comments are not
+/// tokens, so a label written inside one is never removed.
+fn without_argument_labels(text: String) -> String {
+  let n = String::length(text)
+  let starts: Array[Int] = []
+  let words: Array[String] = []
+  let mut k = skip_spaces(text, 0)
+  while k < n {
+    if has_at(text, k, "//") {
+      while k < n && String::byte_at(text, k) != '\n' {
+        k = k + 1
+      }
+    } else {
+      let e = token_end(text, k)
+      Array::push(starts, k)
+      Array::push(words, String::substring(text, k, e))
+      k = e
+    }
+    k = skip_spaces(text, k)
+  }
+  // One frame per open delimiter: its opener, the callee of a `(`, the
+  // argument index, and whether the next token heads an argument.
+  let opener: Array[String] = []
+  let callee: Array[String] = []
+  let arg: Array[Int] = []
+  let head: Array[Bool] = []
+  let mut depth = 0
+  let cuts: Array[(Int, Int)] = []
+  let count = Array::length(words)
+  let mut i = 0
+  while i < count {
+    let w = Array::get(words, i)
+    if w == ")" || w == "]" || w == "}" {
+      let opener_of = if w == ")" {
+        "("
+      } else if w == "]" {
+        "["
+      } else {
+        "{"
+      }
+      if depth > 0 && Array::get(opener, depth - 1) == opener_of {
+        depth = depth - 1
+      } else {
+        ()
+      }
+    } else if depth > 0 && w == "," && Array::get(opener, depth - 1) == "(" {
+      Array::set(arg, depth - 1, Array::get(arg, depth - 1) + 1)
+      Array::set(head, depth - 1, true)
+    } else {
+      if depth > 0 && Array::get(head, depth - 1) {
+        let labels = call_labels(Array::get(callee, depth - 1))
+        let a = Array::get(arg, depth - 1)
+        if a < Array::length(labels) && Array::get(labels, a) == w && w != "" && i + 2 < count && Array::get(words, i + 1) == "=" {
+          Array::push(cuts, (Array::get(starts, i), Array::get(starts, i + 2)))
+        } else {
+          ()
+        }
+        Array::set(head, depth - 1, false)
+      } else {
+        ()
+      }
+      if w == "(" || w == "[" || w == "{" {
+        let name = if w == "(" && i > 0 {
+          Array::get(words, i - 1)
+        } else {
+          ""
+        }
+        if depth < Array::length(opener) {
+          Array::set(opener, depth, w)
+          Array::set(callee, depth, name)
+          Array::set(arg, depth, 0)
+          Array::set(head, depth, true)
+        } else {
+          Array::push(opener, w)
+          Array::push(callee, name)
+          Array::push(arg, 0)
+          Array::push(head, true)
+        }
+        depth = depth + 1
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  let out = StringBuilder::new()
+  let mut from = 0
+  let mut c = 0
+  while c < Array::length(cuts) {
+    let (cut_start, cut_end) = Array::get(cuts, c)
+    StringBuilder::push(out, String::substring(text, from, cut_start))
+    from = cut_end
+    c = c + 1
+  }
+  StringBuilder::push(out, String::substring(text, from, n))
+  StringBuilder::freeze(out)
+}
+
 fn read_group(path: String) -> String with Fs::is_file + Fs::read_file + Stderr::write_stream + Process {
   let (text, missing) = read_source_group(path)
   if missing != "" {
@@ -2063,7 +2218,7 @@ fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Con
   let debug_only = Array::get(bands, 2)
   let native_only = Array::get(bands, 3)
   let adapter_only = Array::get(bands, 4)
-  let emitter_text = read_group(emitter_path)
+  let emitter_text = without_argument_labels(read_group(emitter_path))
   let (emitted, dynamic) = validate_emitter_contract(manifest, emitter_text)
   let emitted_names = keys_of(emitted)
   let missing = minus(all_names, emitted_names)
@@ -2146,7 +2301,7 @@ fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Con
   } else {
     ()
   }
-  let gc_count = validate_gc_lists(all_names, read_group(gc_path), import_types, sigs)
+  let gc_count = validate_gc_lists(all_names, without_argument_labels(read_group(gc_path)), import_types, sigs)
   let bound = validate_linear_bindings(emitter_text)
   if !Fs::is_file(ladder_path) {
     die("canonical_builtin_name_ladder not found")

@@ -175,7 +175,7 @@ mutate g1 "$GC" once '("Console::write_stream", 1, 16, 0)' '("Console::write_str
 expect_red "a stdout alias pointing at another index" g1 "must alias Stdout::write_stream"
 
 tree g2
-mutate g2 "$GC" once ' || Map::has_key(used_builtins, "Fs::is_dir")' ''
+mutate g2 "$GC" once ' || Map::has_key(used_builtins, key = "Fs::is_dir")' ''
 expect_red "use_host losing a builtin" g2 "gc use_host/host_defs drift"
 
 tree g3
@@ -192,11 +192,11 @@ expect_red "host_imports losing an entry" g4 "gc host_imports has 23 entries for
 # the realistic desync, and the one only `hbo == len(host_defs)` sees.
 tree g5
 mutate g5 "$GC" re '(let hbo = if use_host \{\s*\n\s*)24' '\g<1>23'
-mutate g5 "$GC" re '(bytebuf_push_vec_header\(imp_content,\s*)25' '\g<1>24'
+mutate g5 "$GC" re '(bytebuf_push_vec_header\(buf = imp_content,\s*count = )25' '\g<1>24'
 expect_red "hbo desynced from host_defs, header moved with it" g5 "gc hbo is 23 for 24 host imports"
 
 tree g6
-mutate g6 "$GC" re '(bytebuf_push_vec_header\(imp_content,\s*)25' '\g<1>24'
+mutate g6 "$GC" re '(bytebuf_push_vec_header\(buf = imp_content,\s*count = )25' '\g<1>24'
 expect_red "the import vector header off by one" g6 "gc import vector header is 24, expected hbo + 1 = 25"
 
 tree g7
@@ -223,7 +223,7 @@ expect_red "host_imports gaining an entry" g10 "gc host_imports has 25 entries f
 
 # Renamed consistently across the three gc lists: only band membership sees it.
 tree g11
-mutate g11 "$GC" once 'Map::has_key(used_builtins, "Fs::exists")' 'Map::has_key(used_builtins, "Fs::invented")'
+mutate g11 "$GC" once 'Map::has_key(used_builtins, key = "Fs::exists")' 'Map::has_key(used_builtins, key = "Fs::invented")'
 mutate g11 "$GC" once '("Fs::exists", 1, 5, 1)' '("Fs::invented", 1, 5, 1)'
 mutate g11 "$GC" once '("fs_exists", 3)' '("fs_invented", 3)'
 expect_red "an import the contract's bands do not know" g11 "gc host_imports names absent from the host-runtime contract: ['fs_invented']"
@@ -250,13 +250,23 @@ python3 - "$WORK/l2/$WASI/linked_compile_module_sections.vibe" <<'PYEOF' || fail
 import sys
 path = sys.argv[1]
 s = open(path, encoding="utf-8").read()
-start = s.index('  if fs_is_dir_import_idx >= 0 {\n    emit_name(import_content, "vibe")')
-end = s.index('  if fs_is_file_import_idx >= 0 {\n    emit_name(import_content, "vibe")')
+start = s.index('  if fs_is_dir_import_idx >= 0 {\n    emit_name(buf = import_content, name = "vibe")')
+end = s.index('  if fs_is_file_import_idx >= 0 {\n    emit_name(buf = import_content, name = "vibe")')
 block, rest = s[start:end], s[end:]
 close = rest.index("\n  }\n") + len("\n  }\n")
 open(path, "w", encoding="utf-8").write(s[:start] + rest[:close] + block + rest[close:])
 PYEOF
 expect_red "imports emitted out of their reservation order" l2 "imports are emitted in a different order from their index reservation"
+
+# ADR-0120: the readers canonicalize ONLY the label each helper's slot carries.
+# A wrong label is left in place, so the row it spells is not read.
+tree w1
+mutate w1 "$WASI" once 'emit_name(buf = import_content, name = "vibe")' 'emit_name(other = import_content, name = "vibe")'
+expect_red "an emitter argument under a wrong label" w1 "emitter signature drift: missing=['env-get']"
+
+tree w2
+mutate w2 "$GC" re '(bytebuf_push_vec_header\(buf = imp_content,\s*)count = 25' '\g<1>size = 25'
+expect_red "the gc import vector header count under a wrong label" w2 "could not find the gc backend's import vector header"
 
 tree l3
 mutate l3 "$LADDER" once '"Fs::IsDir" => "Fs::is_dir",' '"Fs::IsDir" => "Fs::is_file",'
@@ -331,4 +341,4 @@ diff "$WORK/signatures.want" "$WORK/signatures.got" >&2 \
   || fail "the signature parser accepted or rejected the wrong forms"
 pass "the signature parser accepts the 7 ABI forms and rejects the 14 that are not"
 
-echo "host-runtime-contract-test: ok (control + 32 red cases + the signature parser)"
+echo "host-runtime-contract-test: ok (control + 34 red cases + the signature parser)"

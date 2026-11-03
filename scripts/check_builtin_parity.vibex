@@ -626,12 +626,24 @@ fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Con
     "Future::pending",
     "Future::resolve"
   ]
-  let future_throw = refusal_names(gc_raw, future_alts, "(", ")", [
-    "&&",
+  // ADR-0120: the guard may spell its arguments positionally or with their
+  // parameter labels. Each spelling keeps the context, the locals and the
+  // callee explicit, so a different argument or a wrong label still fails.
+  let guard_spellings = [
     "!gc_name_is_user_defined(ctx, local_names, fname)",
-    "{",
-    "throw(\"compile with the linear or RC backend:"
-  ])
+    "!gc_name_is_user_defined(ctx = ctx, local_names = local_names, name = fname)"
+  ]
+  let mut future_throw: Array[String] = []
+  let mut g = 0
+  while g < Array::length(guard_spellings) && Array::length(future_throw) == 0 {
+    future_throw = refusal_names(gc_raw, future_alts, "(", ")", [
+      "&&",
+      Array::get(guard_spellings, at = g),
+      "{",
+      "throw(\"compile with the linear or RC backend:"
+    ])
+    g = g + 1
+  }
   if !same_set(future_throw, future_alts) {
     die("GC guest future rejection shape changed; update the throw-only extraction without counting rejection as implementation (found \{repr_list(future_throw)})")
   } else {
