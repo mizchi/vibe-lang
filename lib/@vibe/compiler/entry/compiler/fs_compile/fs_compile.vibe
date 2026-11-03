@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, parse_program, print_program, rewrite_string_binops_stmts, shift_stmt_offsets, shift_stmts_offsets
+  lex, parse_program, print_program, rewrite_string_binops_stmts
 }
 
 import @vibe/core {
@@ -21,40 +21,15 @@ import @vibe/compiler/codegen/wasi {
 }
 
 import @vibe/compiler/checker {
-  check_program, typed_lowering_binop_anchor
+  typed_lowering_binop_anchor
 }
 
 import @vibe/compiler/core {
-  ExportRenamePlan,
-  Stmt,
-  append_builtin_iterator_plan_operation_markers,
-  append_import_alias_rewritten_non_import_stmts_with_renames,
-  apply_export_renames_stmts,
-  build_export_rename_plan,
-  builtin_iterator_serialized_boundary_markers,
-  collect_import_alias_collision_refs,
-  collect_import_value_renames,
-  dce_stmts_before_trait_desugar,
-  dir_of_path,
-  export_plan_renames_for,
-  import_value_rename_locals,
-  linked_unit,
-  merged_offset_space_add,
-  merged_offset_space_reset,
-  merged_source_boundary_names,
-  namespace_entry_import_shadows,
-  namespace_private_value_stmts,
-  namespace_rename_originals_reset,
-  refuse_linked_impl_overlaps,
-  resolve_import_path,
-  resolved_callee_row_rebase,
-  rewrite_imported_value_stmt_to_local,
-  trait_import_local_operation_renames,
-  trait_import_local_operation_renames_preserving_exports
+  Stmt, builtin_iterator_serialized_boundary_markers, dce_stmts_before_trait_desugar, namespace_private_value_stmts
 }
 
 import @vibe/compiler/loader {
-  collect_all_sources_fs, collect_source_groups_fs, flatten_group_sources, load_persistent_source_group_fingerprint_if_valid
+  flatten_group_sources
 }
 
 import @vibe/compiler/runtime {
@@ -68,25 +43,18 @@ import @vibe/compiler/runtime {
   db_store_artifact,
   db_typecheck,
   db_typecheck_count,
-  db_typecheck_fs,
-  module_typed_lowering_offsets_for_path,
   parse_program_with_path,
   split_typed_lowering_offsets,
   union_module_typed_eq_rows,
   union_module_typed_lowering_with_clones
 }
 
-import @vibe/compiler/cache {
-  build_fs_compile_module_artifact_fingerprint_for_entry_path,
-  build_fs_compile_module_artifact_fingerprint_from_group_fingerprint_for_entry_path,
-  build_fs_compile_wasi_artifact_fingerprint_for_entry_path,
-  build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path,
-  load_persistent_artifact,
-  store_persistent_artifact
+import @vibe/compiler/linker/merge {
+  artifact_fingerprint_from_source, build_inline_merged_stmts, module_lane_filter_stmts, typed_offsets_key
 }
 
 import ./closure_order.vibe {
-  collect_inline_sources_ordered, source_lookup_or_throw
+  collect_inline_sources_ordered
 }
 
 //# Functions
@@ -196,133 +164,9 @@ export fn source_group_filtered_group_count(main_source: String, main_path: Stri
   Array::length(filtered_groups)
 }
 
-fn string_array_contains_local(items: Array[String], target: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(items) && !found {
-    if Array::get(items, i) == target {
-      found = true
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-/// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
-/// are the locals the export-rename plan already rewrites; the inline copy gets
-/// the target file's export renames applied first.
-/// #716: collision-def fallback. `excluded_locals` are the locals the
-/// export-rename plan already rewrites.
-///
-/// #2449: the provider body comes from the merge's own authoritative parsed
-/// copy (already rebased into the provider file's offset range), not from a
-/// second `parse_program(lex(source))` of the same text. A clone is a real
-/// second copy of provider CODE, so it gets an offset range of its own past
-/// every file's -- and, with it, a second copy of the provider's
-/// typed-lowering rows, or a Double-returning call inside the clone's body
-/// would fall back to the syntactic classifier and print raw bits. Entries for
-/// provider statements the clone does not contain match no node and stay
-/// inert.
-fn append_inline_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], file_paths: Array[String], located_file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, excluded_locals: Array[String], flat_paths: Array[String], flat_bases: Array[Int], clone_offset_delta: Array[Int], clone_offset_span: Int, clone_float_offsets_out: Array[Int]) -> Array[String] with Exception {
-  let refs = collect_import_alias_collision_refs(stmts)
-  let emitted = array_empty()
-  let base_dir = dir_of_path(current_path)
-  let mut i = 0
-  while i < Array::length(refs) {
-    let (raw_path, original, local) = Array::get(refs, i)
-    if !string_array_contains_local(emitted, local) && !string_array_contains_local(excluded_locals, local) {
-      let resolved = resolve_import_path(base_dir, raw_path)
-      let provider_index = index_of_path_or_throw(file_paths, resolved)
-      let source_stmts = namespace_private_value_stmts(resolved, apply_export_renames_stmts(Array::get(located_file_stmts, provider_index), export_plan_renames_for(plan, resolved)))
-      let mut j = 0
-      let mut done = false
-      while j < Array::length(source_stmts) && !done {
-        match rewrite_imported_value_stmt_to_local(Array::get(source_stmts, j), original, local) {
-          Some(local_stmt) => {
-            let delta = Array::get(clone_offset_delta, 0)
-            Array::set(clone_offset_delta, 0, delta + clone_offset_span)
-            match lookup_inline_flat_base(flat_paths, flat_bases, resolved) {
-              Some(provider_base) => match module_typed_lowering_offsets_for_path(resolved) {
-                Some(provider_offsets) => {
-                  let mut k = 0
-                  while k < Array::length(provider_offsets) {
-                    // The table is tag-encoded (offset * 16 + tag, see
-                    // typed_lowering_enc), so shifting a row by the clone's
-                    // merge-space delta adds (base + delta) * 16 -- the tag
-                    // bits stay untouched. Callee tag 7 adds the identity bits,
-                    // so rebasing is shared with core/resolved_callee.
-                    let row = Array::get(provider_offsets, k)
-                    Array::push(clone_float_offsets_out, resolved_callee_row_rebase(row, (provider_base + delta)))
-                    k = k + 1
-                  }
-                },
-                None => ()
-              },
-              None => ()
-            }
-            Array::push(merged, shift_stmt_offsets(local_stmt, delta))
-            Array::push(emitted, local)
-            done = true
-          },
-          None => ()
-        }
-        j = j + 1
-      }
-    }
-    i = i + 1
-  }
-  emitted
-}
-
-/// The index of `path` in the merge's flat file list. A collision ref names an
-/// import this merge already resolved, so a miss is an internal inconsistency,
-/// not a user error -- it throws rather than skipping the clone silently,
-/// which is what `source_lookup_or_throw` did for the same reason.
-fn index_of_path_or_throw(file_paths: Array[String], path: String) -> Int with Exception {
-  let n = Array::length(file_paths)
-  let mut i = 0
-  let mut found = 0 - 1
-  while i < n {
-    if Array::get(file_paths, i) == path {
-      found = i
-      i = n
-    } else {
-      i = i + 1
-    }
-  }
-  if found < 0 {
-    throw(String::concat("inline merge: no source for import target ", path))
-  } else {
-    ()
-  }
-  found
-}
-
-/// The disjoint-merge offset base recorded for `path`.
-fn lookup_inline_flat_base(flat_paths: Array[String], flat_bases: Array[Int], path: String) -> Option[Int] {
-  let n = Array::length(flat_paths)
-  let mut i = 0
-  let mut found: Option[Int] = None
-  while i < n {
-    if Array::get(flat_paths, i) == path {
-      found = Some(Array::get(flat_bases, i))
-      i = n
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
 export fn prepare_modules_cached(db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with Env + Exception {
   let seeded = seed_type_db(db, main_path, main_source, sources)
   db_typecheck(seeded, main_path)
-}
-
-fn prepare_modules_persistent_fs_cached(db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with Env + Exception + Fs {
-  let seeded = seed_type_db(db, main_path, main_source, sources)
-  db_typecheck_fs(seeded, main_path)
 }
 
 export fn source_group_prepare_typecheck_count(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Int with Env + Exception {
@@ -358,24 +202,6 @@ export fn compile_with_modules(main_source: String, main_path: String, sources: 
 export fn compile_with_modules_wasi(main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> Bytes with Env + Exception {
   let (bytes, _) = compile_with_modules_wasi_cached(db_new(), main_source, main_path, sources, entry_name)
   bytes
-}
-
-fn artifact_fingerprint_from_source(source: String) -> String {
-  let mod1 = 2147483647
-  let mod2 = 2147483629
-  let step1 = 131
-  let step2 = 65599
-  let len = String::length(source)
-  let mut h1 = 17
-  let mut h2 = 29
-  let mut i = 0
-  while i < len {
-    let c = String::char_code_at(source, i)
-    h1 = (h1 * step1 + c + 1) % mod1
-    h2 = (h2 * step2 + c + i + 1) % mod2
-    i = i + 1
-  }
-  String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
 }
 
 fn build_merge_fingerprint_inline(sources: Array[(String, String)]) -> String {
@@ -416,91 +242,8 @@ fn build_merged_stmts_inline(sources: Array[(String, String)]) -> Array[Stmt] wi
 /// same memoized parse the per-module check already performed, so this reads
 /// one merge's worth of parsing rather than adding a second one.
 fn build_merged_stmts_inline_impl(sources: Array[(String, String)], flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int]) -> Array[Stmt] with Exception {
-  // #2205: the rename table describes ONE merged program.
-  namespace_rename_originals_reset()
-  let merged = empty_stmt_array()
-  let source_count = Array::length(sources)
-  // #716: parse once, then build the whole-program export-rename plan (last
-  // source is the entry) before appending any file.
-  let file_paths = array_empty()
-  let file_stmts = array_empty()
-  let mut pi = 0
-  while pi < source_count {
-    let (path, source) = Array::get(sources, pi)
-    Array::push(file_paths, path)
-    Array::push(file_stmts, parse_program_with_path(path, source))
-    pi = pi + 1
-  }
-  // Every parser offset is relative to one file. The typed-lowering tables are
-  // keyed by those offsets, so merging files without rebasing would let one
-  // file's Double call classify another file's Int call. Shift before the
-  // namespace/import rewrites; they preserve locations.
-  let located_file_stmts = array_empty()
-  let mut offset_base = 0
-  let mut li = 0
-  // #3090: record this merge's offset space (core/merged_offset_space.vibe).
-  merged_offset_space_reset()
-  while li < source_count {
-    Array::push(located_file_stmts, shift_stmts_offsets(Array::get(file_stmts, li), offset_base))
-    Array::push(flat_paths_out, Array::get(file_paths, li))
-    Array::push(flat_bases_out, offset_base)
-    let (source_path, source) = Array::get(sources, li)
-    merged_offset_space_add(source_path, source, offset_base)
-    // A source of N bytes occupies [base, base + N). The extra byte keeps
-    // even an offset exactly at EOF disjoint from the following file.
-    offset_base = offset_base + String::length(source) + 1
-    li = li + 1
-  }
-  // Alias-collision clones are second copies of provider code, so they get
-  // offset ranges of their own past every file's range.
-  let clone_offset_span = offset_base
-  let clone_offset_delta = [offset_base]
-  let plan_entry = if source_count > 0 {
-    Array::get(file_paths, source_count - 1)
-  } else {
-    ""
-  }
-  let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
-  let units = []
-  let mut si = 0
-  while si < source_count {
-    let path = Array::get(file_paths, si)
-    let stmts = Array::get(located_file_stmts, si)
-    let is_entry_source = si == source_count - 1
-    let unit_start = Array::length(merged)
-    let import_renames = collect_import_value_renames(plan, path, stmts)
-    let (boundary_locals, boundary_surface_only) = merged_source_boundary_names(stmts)
-    append_builtin_iterator_plan_operation_markers(boundary_locals, import_renames, plan)
-    Array::push(merged, SReExportSourceBoundary(boundary_locals, boundary_surface_only))
-    let collision_renames = if is_entry_source {
-      trait_import_local_operation_renames_preserving_exports(stmts, path)
-    } else {
-      trait_import_local_operation_renames(stmts, path)
-    }
-    let collision_renamed = apply_export_renames_stmts(stmts, collision_renames)
-    let export_renamed = if is_entry_source {
-      collision_renamed
-    } else {
-      apply_export_renames_stmts(collision_renamed, export_plan_renames_for(plan, path))
-    }
-    let namespaced_stmts = if is_entry_source {
-      namespace_entry_import_shadows(path, export_renamed)
-    } else {
-      namespace_private_value_stmts(path, export_renamed)
-    }
-    // #3443: only the locals the fallback cloned stop being rewritten. A
-    // collision local with no value to clone (a type, a constructor) keeps
-    // its alias: dropping it left `B::plain` unresolved at codegen when `Box`
-    // also arrived through a re-export of the same module.
-    let skipped_locals = append_inline_import_alias_collision_defs(merged, path, stmts, file_paths, located_file_stmts, plan, import_value_rename_locals(import_renames), flat_paths_out, flat_bases_out, clone_offset_delta, clone_offset_span, clone_float_offsets_out)
-    append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
-    let (_, unit_source) = Array::get(sources, si)
-    Array::push(units, linked_unit(path, unit_source, unit_start, Array::length(merged)))
-    si = si + 1
-  }
-  // #3544: two modules' impls of one method name would collapse to one here.
-  refuse_linked_impl_overlaps(merged, units)
-  merged
+  // #1872 boundary 4: one merge implementation (linker/merge).
+  build_inline_merged_stmts(sources, flat_paths_out, flat_bases_out, clone_float_offsets_out)
 }
 
 /// #2449: the inline merge plus the typed-lowering tables the per-module check
@@ -568,75 +311,6 @@ export fn source_group_pruned_stmt_count(db: TypeDb, main_source: String, main_p
   let merged_stmts = build_merged_stmts_inline(ordered_sources)
   let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
   count_executable_merge_stmts(pruned_stmts)
-}
-
-/// The statement filter `build_module_source` applies while reprinting: a
-/// module keeps its top-level function bindings and the serialized
-/// builtin-iterator boundary markers, and nothing else.
-///
-/// #2437/#2449: lifted out of the reprint so the statement merge can be
-/// filtered directly. Selecting statements preserves every node offset, which
-/// is what lets the rebased typed-lowering tables still name the right nodes.
-/// #2621 review: the typed-lowering tables belong IN the artifact key.
-///
-/// The key is derived from `print_program(filtered)`, and
-/// `module_lane_filter_stmts` drops everything that is not a top-level function
-/// binding -- type aliases included. So two programs that differ only in a
-/// DROPPED declaration print identically:
-///
-///   type Value = Int      let render: (Value) -> String = (v) -> { __to_string(v) }
-///   type Value = Bool     let render: (Value) -> String = (v) -> { __to_string(v) }
-///
-/// The retained text is the same; the Int-render and Bool-render channels are
-/// not. On a shared `TypeDb`, the second compile would hit the first's artifact
-/// and emit the first program's lowering for the second program's types.
-///
-/// Folding the tables in costs one pass over three small Int arrays and makes
-/// the key a function of everything codegen actually reads, rather than of the
-/// text alone. Cheaper and narrower than hashing the whole checked input.
-fn typed_offsets_key(floats: Array[Int], ints: Array[Int], bools: Array[Int]) -> String {
-  let out = StringBuilder::new()
-  let mut k = 0
-  while k < 3 {
-    let table = if k == 0 {
-      floats
-    } else if k == 1 {
-      ints
-    } else {
-      bools
-    }
-    StringBuilder::push(out, "|")
-    let mut i = 0
-    while i < Array::length(table) {
-      StringBuilder::push(out, Int::to_string(Array::get(table, i)))
-      StringBuilder::push(out, ",")
-      i = i + 1
-    }
-    k = k + 1
-  }
-  StringBuilder::freeze(out)
-}
-
-fn module_lane_filter_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
-  let filtered = empty_stmt_array()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
-    let keep = match stmt {
-      SLet(_, _, _, _, expr) => match expr {
-        EFn(_, _, _, _, _, _) => true,
-        _ => false
-      },
-      _ => builtin_iterator_serialized_boundary_markers(stmt) is Some(_)
-    }
-    if keep {
-      Array::push(filtered, stmt)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  filtered
 }
 
 /// #2437/#2449: the last of the three inline entries to leave the reprint.
@@ -814,6 +488,9 @@ export fn compile_with_closure_sources_wasi_mode_unchecked(main_source: String, 
   bytes
 }
 
+/// The in-memory closure compile with no `Env`: what a portable host that
+/// supplies its own sources reaches. scripts/check_portable_boundary.sh pins
+/// its row.
 export fn compile_with_closure_sources_wasi_mode_uncached(main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String, mode: String) -> Bytes with Exception {
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let merged_stmts = build_merged_stmts_inline(ordered_sources)
@@ -902,110 +579,5 @@ export fn compile_with_source_groups_via_module_source_wasi_unchecked_rc(db: Typ
       let bytes = compile_wasi_module_rc_impl(pruned_stmts, entry_name)
       (bytes, db_store_artifact(codegen_db, main_path, "wasi-module-source-rc", entry_name, artifact_fingerprint, bytes))
     }
-  }
-}
-
-/// #769: the compile chain below bottoms out in compile_file_fs_cached_slow's
-/// `Env::get("VIBE_DUMP_FS_MERGED")` debug hook (#740) — that call was never
-/// declared in ANY of these signatures. It went unnoticed because this
-/// unreached-from-cli_main slow path is only actually type-checked in full
-/// when something (e.g. the #769 unit-test corpus scan) compiles a program
-/// whose import closure reaches it directly, rather than via the pre-flattened
-/// bundle the real self-build/CLI binaries compile from.
-export fn compile_file_fs(entry_path: String, entry_name: String) -> Bytes with Exception + Fs + Env {
-  let (bytes, _) = compile_file_fs_cached(db_new(), entry_path, entry_name)
-  bytes
-}
-
-export fn compile_file_fs_module(entry_path: String) -> Bytes with Env + Exception + Fs {
-  let (bytes, _) = compile_file_fs_module_cached(db_new(), entry_path)
-  bytes
-}
-
-export fn prepare_file_fs_cached(db: TypeDb, entry_path: String) -> TypeDb with Env + Exception + Fs {
-  let source_groups = collect_source_groups_fs(entry_path)
-  prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
-}
-
-fn prepare_file_fs_from_source_groups_persistent_cached(db: TypeDb, entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> TypeDb with Env + Exception + Fs {
-  let sources = flatten_group_sources(source_groups)
-  let main_source = source_lookup_or_throw(sources, entry_path)
-  prepare_modules_persistent_fs_cached(db, entry_path, main_source, sources)
-}
-
-fn compile_file_fs_cached_slow(db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with Exception + Fs + Env {
-  let source_groups = collect_source_groups_fs(entry_path)
-  let persistent_artifact_fingerprint = build_fs_compile_wasi_artifact_fingerprint_for_entry_path(source_groups, entry_path, entry_name)
-  match load_persistent_artifact("fs-compile-wasi", entry_name, persistent_artifact_fingerprint) {
-    Some(bytes) => (bytes, db),
-    None => {
-      let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
-      let (merged_source, _, codegen_db) = db_grouped_merged_source(next_db, source_groups)
-      // #740 debug hook: dump the grouped-merge output for lane forensics
-      // (the flatten lane has VIBE_EMIT_MERGED_SOURCE; this lane had no
-      // equivalent, which made its rename/visibility bugs opaque).
-      let dump_path = Env::get("VIBE_DUMP_FS_MERGED")
-      if dump_path == "" {
-        ()
-      } else {
-        Fs::write_file(dump_path, merged_source)
-      }
-      let artifact_fingerprint = artifact_fingerprint_from_source(merged_source)
-      match db_load_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint) {
-        Some(bytes) => (bytes, codegen_db),
-        None => {
-          let merged_stmts = parse_program(lex(merged_source))
-          let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
-          let bytes = compile_wasi_module(pruned_stmts, entry_name)
-          store_persistent_artifact("fs-compile-wasi", entry_name, persistent_artifact_fingerprint, bytes)
-          (bytes, db_store_artifact(codegen_db, entry_path, "wasi", entry_name, artifact_fingerprint, bytes))
-        }
-      }
-    }
-  }
-}
-
-export fn compile_file_fs_cached(db: TypeDb, entry_path: String, entry_name: String) -> (Bytes, TypeDb) with Exception + Fs + Env {
-  match load_persistent_source_group_fingerprint_if_valid(entry_path) {
-    Some(source_groups_fingerprint) =>
-    match load_persistent_artifact("fs-compile-wasi", entry_name, build_fs_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name)) {
-      Some(bytes) => (bytes, db),
-      None => compile_file_fs_cached_slow(db, entry_path, entry_name)
-    },
-    None => compile_file_fs_cached_slow(db, entry_path, entry_name)
-  }
-}
-
-fn compile_file_fs_module_cached_slow(db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with Env + Exception + Fs {
-  let source_groups = collect_source_groups_fs(entry_path)
-  let persistent_artifact_fingerprint = build_fs_compile_module_artifact_fingerprint_for_entry_path(source_groups, entry_path)
-  match load_persistent_artifact("fs-compile-module", "", persistent_artifact_fingerprint) {
-    Some(bytes) => (bytes, db),
-    None => {
-      let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
-      let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(next_db, source_groups)
-      let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
-      let artifact_fingerprint = artifact_fingerprint_from_source(module_source)
-      match db_load_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint) {
-        Some(bytes) => (bytes, codegen_db),
-        None => {
-          let merged_stmts = parse_program(lex(module_source))
-          let bytes = compile_module(merged_stmts)
-          store_persistent_artifact("fs-compile-module", "", persistent_artifact_fingerprint, bytes)
-          (bytes, db_store_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint, bytes))
-        }
-      }
-    }
-  }
-}
-
-export fn compile_file_fs_module_cached(db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with Env + Exception + Fs {
-  match load_persistent_source_group_fingerprint_if_valid(entry_path) {
-    Some(source_groups_fingerprint) =>
-    match load_persistent_artifact("fs-compile-module", "", build_fs_compile_module_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path)) {
-      Some(bytes) => (bytes, db),
-      None => compile_file_fs_module_cached_slow(db, entry_path)
-    },
-    None => compile_file_fs_module_cached_slow(db, entry_path)
   }
 }
