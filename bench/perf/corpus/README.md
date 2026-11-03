@@ -19,11 +19,11 @@ measured comment handling.
 count, the revision it was taken at, and the live source file's digest at that
 moment.
 
-The **sha256 is the identity** — it is what `--check` verifies, and it is what
-survives a squash merge. `taken_at` is provenance only: this repository
-squash-merges, so the commit a snapshot was cut from is rewritten and the
-recorded SHA becomes unreachable. `source_sha256` is what answers "was this copy
-faithful?" without needing that commit to exist.
+The **sha256 is the identity** — it is what `scripts/check_bench_corpus.vibex`
+verifies, and it is what survives a squash merge. `taken_at` is provenance only:
+this repository squash-merges, so the commit a snapshot was cut from is
+rewritten and the recorded SHA becomes unreachable. `source_sha256` is what
+answers "was this copy faithful?" without needing that commit to exist.
 
 ## Why the copies exist
 
@@ -48,8 +48,9 @@ corpus growth. A measurement that cannot tell those apart is not one.
   them out of every sweep that walks `*.vibe`, and keeps a stale copy of
   `checker.vibe` from turning up in a grep for live code as if it were live.
 - **Do not edit them** — not to fix a warning, not to reformat, not to keep them
-  in step with the source. That is the whole defect. `check_bench_corpus.sh`
-  fails on any content change that `PROVENANCE.tsv` does not record.
+  in step with the source. That is the whole defect. `check_bench_corpus.vibex`
+  fails on any content change that `PROVENANCE.tsv` does not record, and on a
+  snapshot `PROVENANCE.tsv` has no row for.
 - **Bumping resets the series.** Every bytes-per-op number taken before a bump is
   about a different input, so the pipeline's history across it is not a
   comparison.
@@ -59,7 +60,7 @@ corpus growth. A measurement that cannot tell those apart is not one.
 ```bash
 bash scripts/bump_bench_corpus.sh          # freeze only MISSING snapshots
 bash scripts/bump_bench_corpus.sh --all    # re-freeze every snapshot (a BUMP)
-bash scripts/bump_bench_corpus.sh --check  # verify digests only
+bash scripts/vibe_run.sh scripts/check_bench_corpus.vibex  # verify digests
 ```
 
 It rewrites the banners and `PROVENANCE.tsv` together, which is what lets the
