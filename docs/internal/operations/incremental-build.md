@@ -997,13 +997,16 @@ An edit to an early module therefore recompiled nearly the whole program
 whether or not anything those bodies referred to had moved — which is most of
 why a one-module edit measured at 93% of a cold build.
 
-The prefix rule was not timidity. Merge order is topological, so a body in the
-unchanged prefix can only reference things declared in the unchanged prefix:
-its call immediates, funcref slots, string offsets, constructor tags and
-exception tags could not have moved. **A body from a file after the edit has
-none of that protection**, and widening the filter is exactly the act of giving
-it up. So the filter now keeps every unchanged file, and what the prefix
-supplied for free is recorded and checked instead.
+The prefix rule looked safe because merge order is topological: a body in the
+unchanged prefix can only reference things declared in the unchanged prefix,
+so its call immediates, funcref slots, constructor tags and exception tags
+could not have moved. **Its string addresses could.** The pool places every
+plain literal before the interpolation parts, map keys and the runtime's own
+messages (a `%`'s divide-by-zero check among them), so a literal added in a
+LATER file moves addresses a prefix body embeds. A body from a file after the
+edit has no protection at all, and widening the filter is exactly the act of
+giving it up. So the filter now keeps every unchanged file, and what the prefix
+was assumed to supply for free is recorded and checked instead.
 
 **What has to be pinned is a closed set, and `CompileCtx` is what closes it.**
 A function's bytes are a function of its own AST and the context it compiles
@@ -1040,10 +1043,17 @@ by reading:
   recompiled one consults them against its own current offsets, which shift
   with the same text. What could change an unchanged file's lowering is a
   cross-file CLASSIFICATION change, and those are name-keyed and pinned.
-- **Widening must NARROW, not drop.** When a guard does not hold the body loop
-  falls back to the prefix the decoder measured. Without that, every edit the
-  guards reject — a new closure, a new literal, a reordered declaration — would
-  lose the prefix it replays today: a regression dressed as an improvement.
+- **A failed layout guard replays nothing, the prefix included.** The body
+  loop used to fall back to the unchanged leading files the decoder measured
+  (`consumer_src_limit`), on the reasoning above. That lane was never run by
+  the edit-class corpus, which edits only the FIRST file, where the prefix is
+  empty; measured on the compiler's own CLI closure, one string literal edited
+  in `cli/commands/pkg.vibe` gave a warm `VIBE_CODEGEN_BODY_CACHE=on` build 15
+  stale addresses against a fresh compile, each 16 bytes too low, and
+  `verify` passed it because it replays only when every guard holds.
+  `tests/body_cache_downstream_edit_test.vibe` pins that shape on a two-file
+  program. The cost is reuse on exactly the edits the guard rejects (a new
+  literal, closure or declaration), which now recompile in full.
 
 Measured on the compiler's own closure (`codegen_lexer_test.vibe`, 196 files,
 5263 functions), `scripts/body_cache_reuse.sh`, one temperature per process
@@ -1791,7 +1801,8 @@ missed: `VIBE_OUTPUT`, which the runner sets from the output argument, made
 every build into a fresh path miss.
 
 `VIBE_LINKED_OUTPUT_MEMO=off` compiles anyway and `verify` compiles and
-refuses a stored module that differs from the fresh one. The launcher's
+refuses a stored module that differs from the fresh one, after replacing it,
+so the next default build cannot replay it. The launcher's
 internal `VIBE_FS_COMPILE` lane defaults to `off`, because the KPI's `warm`
 column and the compiler's other warm measurements compile through it and
 measure the back end's own reuse; the KPI turns the memo on for its `cold` and

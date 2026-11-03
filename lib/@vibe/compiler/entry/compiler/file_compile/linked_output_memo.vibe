@@ -355,7 +355,8 @@ fn lom_mark(event: String) -> Unit with Env {
 
 /// `compile` behind the memo, in the given mode. `verify` always compiles and
 /// throws when a stored module for the same identity differs from the fresh
-/// one -- that would mean the identity is missing an input.
+/// one -- that would mean the identity is missing an input -- after replacing
+/// the slot with the fresh module, so a later `on` build cannot replay it.
 export fn linked_output_memo_run(mode: String, lane: String, entry_path: String, entry_name: String, identity: String, compile: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
   if mode == "off" {
     compile()
@@ -372,7 +373,10 @@ export fn linked_output_memo_run(mode: String, lane: String, entry_path: String,
         if fresh == bytes {
           fresh
         } else {
-          throw(String::concat("linked-output memo verify: the stored module for ", String::concat(entry_path, " differs from a fresh compile with the same input identity, so the identity is missing an input; unset VIBE_LINKED_OUTPUT_MEMO and report this")))
+          // Replace the slot before refusing: the next build defaults to
+          // `on`, and must not replay the module this run just proved wrong.
+          linked_output_memo_store(lane, entry_path, entry_name, identity, fresh)
+          throw(String::concat("linked-output memo verify: the stored module for ", String::concat(entry_path, " differed from a fresh compile with the same input identity, so the identity is missing an input. The slot now holds the fresh module; set VIBE_LINKED_OUTPUT_MEMO=off to compile without the memo, and report this")))
         }
       },
       None => {
