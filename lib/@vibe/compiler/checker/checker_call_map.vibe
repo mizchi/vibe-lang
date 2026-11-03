@@ -319,12 +319,72 @@ fn map_formal_key_refusal(name: String, scalar: String, off: Int) -> String {
   String::join(parts, "")
 }
 
-fn map_scalar_key_name(s: Subst, ty: Type) -> String {
+/// The refusal for a call of `name` at a key the builtin map has no
+/// implementation for at all (`Float64`, a struct, ...): the edit first.
+fn map_formal_key_unsupported_refusal(name: String, key: String, off: Int) -> String {
+  let parts = [
+    "`",
+    name,
+    "` uses a type parameter as a `Map` key, so it cannot be called with `",
+    key,
+    "` keys: the builtin map takes `String`, `Int`, `Char` or `Bool` keys -- use `MutMap[K, V]` from `@vibe/core` for other keys (#2334)",
+    off_marker_len(off, String::length(name))
+  ]
+  String::join(parts, "")
+}
+
+/// The refusal an instantiation of a map-key parameter at `ty` earns, or ""
+/// when `ty` is `String` (the body's own key operations) or still unknown.
+fn map_formal_key_instance_refusal(s: Subst, ty: Type, name: String, off: Int) -> String {
   match subst_apply(s, ty) {
-    CtInt => "Int",
-    CtChar => "Char",
-    CtBool => "Bool",
-    _ => ""
+    CtInt => map_formal_key_refusal(name, "Int", off),
+    CtChar => map_formal_key_refusal(name, "Char", off),
+    CtBool => map_formal_key_refusal(name, "Bool", off),
+    CtString => "",
+    CtVar(_) => "",
+    CtUnknown => "",
+    other => map_formal_key_unsupported_refusal(name, type_to_string(other), off)
+  }
+}
+
+/// (scheme variable, instance type) for every variable of `st`, read against
+/// the instantiated `it`. Like `scheme_var_types_from`, but it also descends
+/// record fields and applied heads, so a helper carried in a record keeps its
+/// restriction.
+fn map_scheme_pairs(st: Type, it: Type, out: Array[(Int, Type)]) -> Unit {
+  match (st, it) {
+    (CtVar(id), _) => Array::push(out, (id, it)),
+    (CtApplied(CtVar(_), _), _) => scheme_var_types_from(st, it, out),
+    (CtArray(e), CtArray(ie)) => map_scheme_pairs(e, ie, out),
+    (CtOption(e), CtOption(ie)) => map_scheme_pairs(e, ie, out),
+    (CtTuple(xs), CtTuple(ys)) => map_scheme_pair_lists(xs, ys, out),
+    (CtNamed(_, xs), CtNamed(_, ys)) => map_scheme_pair_lists(xs, ys, out),
+    (CtApplied(_, xs), CtApplied(_, ys)) => map_scheme_pair_lists(xs, ys, out),
+    (CtFn(xs, r, _), CtFn(ys, ir, _)) => {
+      map_scheme_pair_lists(xs, ys, out)
+      map_scheme_pairs(r, ir, out)
+    },
+    (CtRecord(fs), CtRecord(gs)) => for f in fs {
+      let (fname, fty) = f
+      for g in gs {
+        let (gname, gty) = g
+        if fname == gname {
+          map_scheme_pairs(fty, gty, out)
+        } else {
+          ()
+        }
+      }
+    },
+    _ => ()
+  }
+  ()
+}
+
+fn map_scheme_pair_lists(xs: Array[Type], ys: Array[Type], out: Array[(Int, Type)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) && i < Array::length(ys) {
+    map_scheme_pairs(Array::get(xs, i), Array::get(ys, i), out)
+    i = i + 1
   }
 }
 
@@ -422,7 +482,7 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
         let vars: Array[Int] = []
         match scheme {
           CtForAll(own_vars, _, own_body) => {
-            scheme_var_types_from(own_body, inst, pairs)
+            map_scheme_pairs(own_body, inst, pairs)
             for id in own_vars {
               Array::push(vars, id)
             }
@@ -435,7 +495,7 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
           // local generic of the same spelling has its own shape, and its
           // record already carries its own scheme.
           Some(CtForAll(checked_vars, checked_bounds, checked_body)) => if map_scheme_same_shape(scheme, CtForAll(checked_vars, checked_bounds, checked_body)) {
-            scheme_var_types_from(checked_body, inst, pairs)
+            map_scheme_pairs(checked_body, inst, pairs)
             for id in checked_vars {
               Array::push(vars, id)
             }
@@ -451,11 +511,11 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
                 Some(_) => for pair in pairs {
                   let (pid, pty) = pair
                   if pid == id {
-                    let scalar = map_scalar_key_name(s, pty)
-                    if scalar != "" {
+                    let refusal = map_formal_key_instance_refusal(s, pty, name, callee_off)
+                    if refusal != "" {
                       if MutMap::get(reported, callee_off) is None {
                         MutMap::set(reported, callee_off, 1)
-                        Array::push(errors, map_formal_key_refusal(name, scalar, callee_off))
+                        Array::push(errors, refusal)
                       } else {
                         ()
                       }
