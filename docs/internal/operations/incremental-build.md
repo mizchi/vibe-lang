@@ -1,9 +1,10 @@
 # Incremental build design
 
 Status: design and measurement plan. The current compiler has persistent loader
-and type-environment caches, but the final build still merges and code-generates
-the whole program. This document defines the user-visible target before changing
-that architecture.
+and type-environment caches, and `vibe run` / `build` / `test` replay the
+finished module of an exact no-op (the linked-output memo below). After an edit
+the final build still merges and code-generates the whole program. This
+document defines the user-visible target before changing that architecture.
 
 Related documents:
 
@@ -1731,19 +1732,25 @@ not to represent the sizes people actually build. Each corpus is a committed
 root with a REAL entry — a `__no_entry__` root skips the constant-Bool fold
 and the late DCE, which is most of what a build does after the checker (#2818).
 
-Measured at `3869051`:
+Measured on a stage2 built from `bcb306a` plus the linked-output memo (below):
 
-| corpus | modules | modules skipped | heap | wall |
-|---|---:|---:|---:|---:|
-| small (`bench/incremental/edit_cycle`) | 2 | 100 % | 93 % | 95 % |
-| medium (`scripts/review_lint.vibex`) | 12 | 100 % | 86 % | 89 % |
-| selfhost (`lib/@vibe/cli/entry.vibe`) | 420 | 100 % | **76 %** | **44 %** |
+| corpus | modules | modules skipped | heap | wall | no-op heap | no-op wall |
+|---|---:|---:|---:|---:|---:|---:|
+| small (`bench/incremental/edit_cycle`) | 2 | 100 % | 90 % | 82 % | 74 % | 51 % |
+| medium (`scripts/review_lint.vibex`) | 16 | 100 % | 79 % | 76 % | 23 % | 31 % |
+| selfhost (`lib/@vibe/cli/entry.vibe`) | 678 | 100 % | 62 % | 59 % | **9 %** | **4 %** |
 
-Read the first column against the others. **The module walk is fully skipped
-at every size** — nothing is rechecked — and a small project still pays 95 % of
-a cold build's wall and 93 % of its heap. The incremental win is almost
-entirely a selfhost-scale phenomenon, and it is the whole-program back end
-(`§Which layer a distributed cache should carry`) that decides the rest.
+Absolute, in the same run: selfhost cold 20.2 s / 2381 MB, warm 12.0 s /
+1482 MB, no-op 0.85 s / 207 MB; medium 412 / 314 / 129 ms; small 201 / 165 /
+103 ms, where a bare `--version` invoke of the same compiler takes ~87 ms.
+
+Read `modules skipped` against `heap` and `wall`. **The module walk is fully
+skipped at every size** — nothing is rechecked — and a small project still
+pays 82 % of a cold build's wall when the back end runs again. That back end is
+whole-program (`§Which layer a distributed cache should carry`), which is what
+the no-op columns answer for the case where nothing changed: the memo replays
+the module and skips it entirely. What an EDIT costs is still the `heap` /
+`wall` columns' question.
 
 `skipped` is `1 − modules_rechecked / modules_planned`; `heap` and `wall` are
 warm ÷ cold. The counters and `heap_ptr` are deterministic for a given input
@@ -1752,6 +1759,45 @@ a shared runner is advisory** and is labelled that way in the report. A warm
 rebuild whose output differs from the cold one fails the KPI outright rather
 than being reported — every ratio above assumes the two builds produced the
 same program, and the run checks it.
+
+### The exact no-op: the linked-output memo (#2825)
+
+The contract's first row below is "an exact no-op does no semantic work". The
+typing walk already met it; the back end did not, and ran in full on every
+unchanged rebuild. `vibe run`, `vibe build` and `vibe test` now replay the
+finished module when the compile's complete input identity matches the last
+compile of that root (`lib/@vibe/compiler/entry/compiler/file_compile/linked_output_memo.vibe`):
+
+- the compiler, through the persistent store's namespace (the hash of the
+  compiler sources and the cfg flags);
+- the lane, entry path and entry name, the `--allow-*` / `--deny-*` grants and
+  whether the executable's exports will be stripped;
+- every source the loader resolved, by group, path and content fingerprint,
+  in load order (a typed wasm import is its synthesized binding text);
+- the value of every environment variable the compiler reads.
+
+The lookup runs after the typing walk, so a no-op still reports a type error,
+records the closure for the unstable-surface gate and fills the typing
+telemetry; only the back end is skipped. The identity is compared in full,
+not by a hash of it, and the store keeps one module per root.
+
+The variable list is the part that could be silently wrong: a setting that
+reaches the output but is not in the key would replay a module built for the
+other setting. It is not curated by judgement. `scripts/check_linked_output_memo_env.vibex`
+reads every variable name the compiler's code mentions and fails unless each is
+keyed or exempt with a reason, and its self-test drops `VIBE_RC` from the key
+to prove the gate fires. The KPI caught the one exemption the first draft
+missed: `VIBE_OUTPUT`, which the runner sets from the output argument, made
+every build into a fresh path miss.
+
+`VIBE_LINKED_OUTPUT_MEMO=off` compiles anyway and `verify` compiles and
+refuses a stored module that differs from the fresh one. The launcher's
+internal `VIBE_FS_COMPILE` lane defaults to `off`, because the KPI's `warm`
+column and the compiler's other warm measurements compile through it and
+measure the back end's own reuse; the KPI turns the memo on for its `cold` and
+`no-op` builds and requires the no-op to replay, which the compiler signals by
+reading the never-set `VIBE_PROFILE_MEMORY_MARK:linked_output_memo_hit` (the
+node runner echoes it under `VIBE_DEBUG_ENV=1`).
 
 ### What the run refuses to report (#2836 §2)
 
@@ -1768,7 +1814,9 @@ So the run now **fails** rather than reporting when
   (an asymmetrically warmed baseline — the #2393 trap, which turned a +3.5 %
   regression into a "−31 %/−42 % win"), or
 - the warm rebuild reused nothing of what it planned (no incremental build
-  happened, so there is no KPI to state).
+  happened, so there is no KPI to state), or
+- the cold build replayed a linked-output memo, or the no-op rebuild did not
+  replay one, or replayed a different module.
 
 The LEVELS are deliberately not asserted. How much gets skipped is the KPI; a
 KPI with a budget is a gate. `scripts/incremental_kpi_test.sh` makes each
