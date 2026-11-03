@@ -233,7 +233,7 @@ run_case "scriptTask without inputs is rejected" 1 'local function scriptTask(ta
 }
 local later = new Task {
   name = "later"
-  cmd = "bash scripts/check_book_links.sh"
+  cmd = "bash scripts/check_gate_portability.sh"
   inputs { ...compilerProbeInputs }
 }'
 
@@ -264,7 +264,7 @@ run_case "cache = false before same-line member is accepted" 0 'local t = new Ta
 # A task that does not reach the compiler is none of this gate's business.
 run_case "pure-text task is not flagged" 0 'local t = new Task {
   name = "probe"
-  cmd = "bash scripts/check_book_links.sh"
+  cmd = "bash scripts/check_gate_portability.sh"
   inputs { "book/**/*.md" }
 }'
 
