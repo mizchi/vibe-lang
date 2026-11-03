@@ -1922,6 +1922,35 @@ local incrementalKpi = new Task {
   deps { selfhostGeneration }
 }
 
+// #3647: reserved linear-memory pages of fixed package closures. Gated per
+// probe at baseline +10% (bench/perf/reserved_pages_baseline.tsv); the 128 MiB
+// design target is reported, not gated. Never cached, and it names HEAD's
+// generation or refuses, like kpi-incremental above.
+local reservedPagesKpi = new Task {
+  name = "kpi-reserved-pages"
+  description =
+    "reserved-page KPI: json / optimizer / parser package closures, gated at baseline +10% (#3647)"
+  cmd = "bash scripts/reserved_pages_kpi.sh $@"
+  acceptsArgs = true
+  cache = false
+  deps { selfhostGeneration }
+}
+
+// The gate's self-test: a fake runner, the committed baseline and mutated
+// copies of it. Needs no stage2, so it runs in release-check.
+local testReservedPagesKpi = new Task {
+  name = "test-kpi-reserved-pages"
+  description =
+    "reserved-page KPI self-test: threshold, missing metric, drifting trial, mutated baseline"
+  cmd = "bash scripts/reserved_pages_kpi_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "runtime/vibe"
+    "bench/perf/reserved_pages_baseline.tsv"
+  }
+}
+
 local editCycleKpi = new Task {
   name = "kpi-edit-cycle"
   description = "user edit-cycle check KPI: cold/no-op/comment/private/public edits as JSONL"
@@ -2506,6 +2535,7 @@ local releaseCheck = new Task {
     checkTaskEnvSanitized
     checkGateWiring
     checkGatePortability
+    testReservedPagesKpi
     checkGeneratedStampReport
     checkBenchCorpus
     checkBodyCacheDiscard
@@ -2836,6 +2866,8 @@ tasks {
   compareCompilerMemory
   checkedModuleCacheCost
   incrementalKpi
+  reservedPagesKpi
+  testReservedPagesKpi
   testCompareCompilerMemory
   editCycleKpi
   testEditCycleKpi
