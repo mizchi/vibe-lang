@@ -5,18 +5,21 @@ import @vibe/core {
   struct MutSet
 }
 import @vibe/compiler/lowering/effects/queries {
-  edp_collect_program_binders, edp_mf_set_stmt
+  edp_collect_program_binders, edp_mf_dirty_indices, edp_mf_dirty_reset, edp_mf_set_stmt
 }
 import @vibe/compiler/lowering/effects/evidence {
   edp_append_ctor_inert_names,
   edp_append_free_host_inert_names,
   edp_append_visible_pure_lambda_names,
   edp_collect_fn_defs,
+  edp_etawrap_stmts_in,
   edp_mf_base,
   edp_mf_binders,
   edp_mf_new,
   edp_mf_refresh,
   edp_mf_row_lit_scan,
+  edp_mf_statements_naming,
+  edp_needing_escape_stmts_in,
   edp_pure_fn_names,
   edp_row_lit_scan
 }
@@ -58,7 +61,7 @@ fn same_members(a: MutSet[String], b: MutSet[String]) -> Bool {
 
 // Refresh, then demand exactly the walked answer: same names in the same
 // order, and the same binder census.
-fn facts_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])], stmts: Array[Stmt]) -> Bool {
+fn facts_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt]) -> Bool {
   edp_mf_refresh(facts, stmts)
   let from_facts = String::join(edp_mf_base(facts, stmts, edp_collect_fn_defs(stmts)), ",")
   from_facts == walked_base(stmts) && same_members(edp_mf_binders(facts), edp_collect_program_binders(stmts))
@@ -109,7 +112,7 @@ fn row_lambda(body: Expr) -> Expr {
 
 // The facts-filtered scan must collect exactly what the whole scan collects:
 // the same binding names in the same order, and as many literals.
-fn row_scans_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String])], stmts: Array[Stmt], needing: Array[String]) -> String {
+fn row_scans_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt], needing: Array[String]) -> String {
   let es_names: Array[String] = []
   let es_members: Array[Array[String]] = []
   let whole_binds: Array[String] = []
@@ -139,4 +142,63 @@ test "the facts-filtered row-literal scan collects what the whole scan collects"
   // A marked rewrite that introduces a row literal is seen by the next scan.
   edp_mf_set_stmt(stmts, 3, top_fn("plain", [], ELet("late", row_lambda(EInt(3)), EInt(0), -1)))
   inspect(row_scans_agree(facts, stmts, ["needy"]), content = "g,h,late lits=2")
+}
+
+fn row_free_slot() -> TypeExpr {
+  TyFn([TyName("Int")], TyName("Int"), None)
+}
+
+fn call_cb() -> Expr {
+  ECall(EIdent("cb", -1), [EInt(1)], -1, [])
+}
+
+fn passing_program() -> Array[Stmt] {
+  [
+    top_fn("f", [("x", None)], EIdent("x", -1)),
+    // A row-free function slot: passing a needing function here escapes.
+    top_fn("g", [("cb", Some(row_free_slot()))], call_cb()),
+    top_fn("user", [], ECall(EIdent("g", -1), [EIdent("f", -1)], -1, [])),
+    top_fn("alias", [], ELet("h", EIdent("f", -1), EInt(0), -1)),
+    top_fn("plain", [], ECall(EIdent("g", -1), [EIdent("other", -1)], -1, [])),
+    SExpr(EInt(0))
+  ]
+}
+
+// The eta-wrap and escape walks restricted to the statements the facts name
+// must answer what the whole walks answer, and rewrite the same statements.
+fn wrap_and_escape(filtered: Bool) -> String {
+  let stmts = passing_program()
+  let fn_defs = edp_collect_fn_defs(stmts)
+  let needing = ["f"]
+  let es_names: Array[String] = []
+  let es_members: Array[Array[String]] = []
+  let facts = edp_mf_new()
+  let escape_first = edp_needing_escape_stmts_in(stmts, if filtered {
+    Some(edp_mf_statements_naming(facts, stmts, needing, false))
+  } else {
+    None
+  }, needing, "Ask", fn_defs, es_names, es_members)
+  let wrap_at = if filtered {
+    Some(edp_mf_statements_naming(facts, stmts, needing, true))
+  } else {
+    None
+  }
+  edp_mf_dirty_reset()
+  let rebuilt = edp_etawrap_stmts_in(stmts, wrap_at, needing, "Ask", fn_defs, es_names, es_members)
+  let written: Array[String] = []
+  for i in edp_mf_dirty_indices() {
+    Array::push(written, Int::to_string(i))
+  }
+  let wrapped = if rebuilt {
+    "yes"
+  } else {
+    "no"
+  }
+  "escape=" + escape_first + " rebuilt=" + wrapped + " written=" + String::join(written, ",")
+}
+
+test "the facts-filtered eta-wrap and escape walks match the whole walks" {
+  let whole = wrap_and_escape(false)
+  assert(wrap_and_escape(true) == whole)
+  inspect(whole, content = "escape=f rebuilt=yes written=2,3")
 }
