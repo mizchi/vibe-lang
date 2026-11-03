@@ -13,8 +13,8 @@
 //
 // The maps mutate their buckets in place, so the DB is *linear*: callers must
 // use the returned db and discard the old one. The selfhost compiler always
-// threads `next_db`, so this is safe. eval_count lives in a 1-element array so
-// it is bumped without rebuilding the enum payload.
+// threads `next_db`, so this is safe. The evaluation count and source-set
+// revision share a counter array so neither rebuilds the enum payload.
 
 //# Values
 
@@ -209,6 +209,7 @@ fn depsmap_set(m: DepsMap, key: String, deps: Array[String]) -> Unit {
 export fn ripple_new() -> RippleDb {
   let count = ArrayBuilder::new()
   ArrayBuilder::push(count, 0)
+  ArrayBuilder::push(count, 0)
   RippleDb(strmap_new(), strmap_new(), depsmap_new(), ArrayBuilder::freeze(count))
 }
 
@@ -218,22 +219,20 @@ export fn ripple_get_source(db: RippleDb, path: String) -> Option[String] {
   }
 }
 
-/// #1872: every path that has a source in `db`, in bucket order (callers
-/// that need an order sort it). The in-memory `Source` provider lists a
-/// directory from these.
+/// A fresh path list, in unspecified bucket order. Neither fingerprint-only
+/// records nor edits to this returned array change the source map.
 export fn ripple_source_paths(db: RippleDb) -> Array[String] {
+  let paths: Array[String] = []
   match db {
     RippleDb(StrMap(buckets), _, _, _) => {
-      let out = empty_strings()
       for bucket in buckets {
         for entry in bucket {
-          let (k, _) = entry
-          Array::push(out, k)
+          Array::push(paths, entry.0)
         }
       }
-      out
     }
   }
+  paths
 }
 
 export fn ripple_get_fingerprint(db: RippleDb, path: String) -> Option[String] {
@@ -254,9 +253,20 @@ export fn ripple_eval_count(db: RippleDb) -> Int {
   }
 }
 
+/// Resolution observes source membership as well as text. Every insertion,
+/// including filesystem loading, advances this revision; text edits do not.
+export fn ripple_source_revision(db: RippleDb) -> Int {
+  match db {
+    RippleDb(_, _, _, count) => Array::get(count, 1)
+  }
+}
+
 export fn ripple_set_source(db: RippleDb, path: String, source: String) -> RippleDb {
   match db {
-    RippleDb(sources, _, _, _) => {
+    RippleDb(sources, _, _, count) => {
+      if strmap_get(sources, path) is None {
+        Array::set(count, 1, Array::get(count, 1) + 1)
+      } else ()
       strmap_set(sources, path, source)
       db
     }

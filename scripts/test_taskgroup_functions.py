@@ -154,7 +154,7 @@ def assert_finisher_recompile_refused(repo, compiler, artifacts, runner, env, pr
     private.mkdir()
     target = repo / "lib/@vibe/function_build/phases/entry.vibe"
     source = target.read_text()
-    before = "finish_function_assembly(assembly, merged)"
+    before = "finish_function_assembly(state = assembly, products = merged)"
     after = 'compile_file_fs_mode_rc_body_cached(Env::get("VIBE_LOWERING_INPUT"), Env::get("VIBE_LOWERING_ENTRY"), "off")'
     assert source.count(before) == 1
     overlay = private / "serial-finisher.vibe"
@@ -188,7 +188,7 @@ def assert_original_phase_receipt_bound(repo, compiler, artifacts, runner, env, 
     """A valid rewritten packet needs its original returned digest, not a file."""
     target = repo / "lib/@vibe/function_build/phases/entry.vibe"
     source = target.read_text()
-    marker = '  Fs::write_bytes(directory + "/function.assembly", packet)\n'
+    marker = '  Fs::write_bytes(directory + "/function.assembly", bytes = packet)\n'
     assert source.count(marker) == 1
     rewrite = '''  Array::push(assembly.replay.guard_layout, 9)
   let changed_packet = write_function_assembly(assembly, context_digest)

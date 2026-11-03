@@ -86,6 +86,103 @@ else
   ok "a missing stage2 is rejected"
 fi
 
+# Selection runs in an isolated real git checkout. Its build stand-ins copy
+# source bytes through the generated flat input, so reusing either a stale
+# generation or a stale fallback produces the wrong artifact, not just a
+# missing marker. No fake generation enters the working checkout.
+selection_repo="$WORK/selection"
+mkdir -p "$selection_repo/scripts" "$selection_repo/lib/@vibe/compiler"
+git -C "$selection_repo" init --quiet
+git -C "$selection_repo" config user.name vibe
+git -C "$selection_repo" config user.email vibe@example.invalid
+printf 'current source A' > "$selection_repo/source.vibe"
+git -C "$selection_repo" add source.vibe
+git -C "$selection_repo" commit --quiet -m init
+cp "$ROOT_DIR/scripts/run_bounded.sh" "$ROOT_DIR/scripts/resolve_stage2.sh" "$selection_repo/scripts/"
+cat > "$selection_repo/scripts/ensure_generated.sh" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+[ ! -f fail-freshen ] || exit 8
+cp source.vibe lib/@vibe/compiler/_cli_adapter_module_source.vibe
+EOF
+cat > "$selection_repo/scripts/generations.sh" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+[ "$*" = 'build --out-dir _build/_gate_lane_gen' ]
+[ "$VIBE_PREBUILT_MODULE_SOURCE" = 'lib/@vibe/compiler/_cli_adapter_module_source.vibe' ]
+[ ! -f fail-build ] || exit 7
+mkdir -p _build/_gate_lane_gen
+if [ -f empty-build ]; then : > _build/_gate_lane_gen/stage2.wasm; exit 0; fi
+cp "$VIBE_PREBUILT_MODULE_SOURCE" _build/_gate_lane_gen/stage2.wasm
+printf 'build\n' >> builds
+EOF
+selection_sha="$(git -C "$selection_repo" rev-parse --short HEAD)"
+head_gen="$selection_repo/_build/selfhost/generations/seed_$selection_sha"
+stale_gen="$selection_repo/_build/selfhost/generations/seed_deadbee"
+mkdir -p "$head_gen" "$stale_gen"
+printf 'current HEAD compiler' > "$head_gen/stage2.wasm"
+printf 'stale compiler' > "$stale_gen/stage2.wasm"
+touch -t 203001010000 "$stale_gen"
+[ "$stale_gen" -nt "$head_gen" ] || { echo 'FAIL: newer stale-generation mutation did not land' >&2; exit 1; }
+select_compiler() {
+  ROOT_DIR="$selection_repo" SCRIPT_DIR="$selection_repo/scripts" VIBE_STAGE2_WASM="${1:-}" \
+    bash -c '. "$1"; gate_resolve_stage2; [ "$stage2_wasm" = "$VIBE_STAGE2_WASM" ] || exit 91; cat "$stage2_wasm"' \
+    _ "$GATES_DIR/lib.sh"
+}
+if [ "$(select_compiler)" = 'current HEAD compiler' ]; then
+  ok "HEAD's generation wins over a newer stale generation and is exported"
+else
+  bad "a newer stale generation hijacks the compiler selection"
+fi
+printf 'explicit compiler' > "$WORK/explicit.wasm"
+if [ "$(select_compiler "$WORK/explicit.wasm")" = 'explicit compiler' ]; then
+  ok "an explicit compiler wins over the HEAD generation and is exported"
+else
+  bad "an explicit compiler was ignored"
+fi
+if select_compiler "$WORK/missing.wasm" > "$WORK/missing.out" 2>&1; then
+  bad "a missing explicit compiler silently falls back"
+else
+  ok "a missing explicit compiler is refused"
+fi
+rm -rf "$head_gen"
+mkdir -p "$selection_repo/_build/_gate_lane_gen"
+printf 'stale fallback' > "$selection_repo/_build/_gate_lane_gen/stage2.wasm"
+if select_compiler > "$WORK/build.out" && cmp -s "$selection_repo/source.vibe" "$selection_repo/_build/_gate_lane_gen/stage2.wasm"; then
+  ok "without HEAD's generation, current sources build instead of reusing stale artifacts"
+else
+  bad "a stale generation or fallback was reused instead of building current sources"
+fi
+rm -rf "$stale_gen"
+printf 'current source B' > "$selection_repo/source.vibe"
+if select_compiler > "$WORK/rebuild.out" && cmp -s "$selection_repo/source.vibe" "$selection_repo/_build/_gate_lane_gen/stage2.wasm" && [ "$(wc -l < "$selection_repo/builds" | tr -d ' ')" = 2 ]; then
+  ok "a later invocation rebuilds an unproven fallback from changed sources"
+else
+  bad "an existing fallback masks changed sources"
+fi
+printf 'current source C' > "$selection_repo/source.vibe"
+: > "$selection_repo/fail-build"
+if select_compiler > "$WORK/failed-build.out" 2>&1; then
+  bad "a failed build returns the old fallback artifact"
+else
+  ok "a failed build refuses even when an old fallback remains"
+fi
+rm "$selection_repo/fail-build"
+printf 'current source D' > "$selection_repo/source.vibe"
+: > "$selection_repo/fail-freshen"
+if select_compiler > "$WORK/failed-freshen.out" 2>&1; then
+  bad "failed source regeneration still builds from stale flat input"
+else
+  ok "failed source regeneration is refused"
+fi
+rm "$selection_repo/fail-freshen"
+: > "$selection_repo/empty-build"
+if select_compiler > "$WORK/empty-build.out" 2>&1; then
+  bad "a successful build can return an empty artifact"
+else
+  ok "an empty build product is refused"
+fi
+
 echo "----"
 echo "passed: $passed, failed: $failed"
 [ "$failed" -eq 0 ]

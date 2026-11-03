@@ -377,26 +377,43 @@ fn cp_write_origin(out: Bytes, value: BindingOrigin) -> Unit {
     BindingOriginDefaultedFunctionHeader(params, flags) => {
       Bytes::push(out, 6)
       cp_write_array_string(out, params)
-      ast_binary_write_varint(out, Array::length(flags))
-      for flag in flags {
-        ast_binary_write_bool(out, flag)
-      }
+      cp_write_default_bits(out, flags)
     },
     BindingOriginFunctionHeader(params) => {
       Bytes::push(out, 4)
       cp_write_array_string(out, params)
     },
-    BindingOriginModuleFunctionHeader(path, source, names) => {
-      Bytes::push(out, 7)
+    // #3440: a header with parameter defaults takes its own tag (9 / 10)
+    // and appends the bits, so a header without defaults keeps its bytes.
+    BindingOriginModuleFunctionHeader(path, source, names, defaults) => {
+      Bytes::push(out, if Array::length(defaults) > 0 {
+        9
+      } else {
+        7
+      })
       ast_binary_write_string(out, path)
       ast_binary_write_string(out, source)
       cp_write_array_string(out, names)
+      if Array::length(defaults) > 0 {
+        cp_write_default_bits(out, defaults)
+      } else {
+        ()
+      }
     },
-    BindingOriginReExportFunctionHeader(path, source, names) => {
-      Bytes::push(out, 8)
+    BindingOriginReExportFunctionHeader(path, source, names, defaults) => {
+      Bytes::push(out, if Array::length(defaults) > 0 {
+        10
+      } else {
+        8
+      })
       ast_binary_write_string(out, path)
       ast_binary_write_string(out, source)
       cp_write_array_string(out, names)
+      if Array::length(defaults) > 0 {
+        cp_write_default_bits(out, defaults)
+      } else {
+        ()
+      }
     },
     BindingOriginModuleExport(field_0, field_1) => {
       Bytes::push(out, 2)
@@ -409,6 +426,40 @@ fn cp_write_origin(out: Bytes, value: BindingOrigin) -> Unit {
       ast_binary_write_string(out, field_1)
     },
   }
+}
+
+fn cp_write_default_bits(out: Bytes, flags: Array[Bool]) -> Unit {
+  ast_binary_write_varint(out, Array::length(flags))
+  for flag in flags {
+    ast_binary_write_bool(out, flag)
+  }; ()
+}
+
+/// A header's parameter-default bits, one per parameter. An artifact cannot
+/// invent a bit for an absent parameter, and an all-false vector is a header
+/// without defaults spelled differently, so both refuse.
+fn cp_read_default_bits(reader: AstBinaryReader, count: Int) -> Array[Bool] with Exception {
+  let written = ast_binary_read_count_checked(reader)
+  if written != count {
+    throw("checked program: invalid parameter defaults")
+  } else {
+    ()
+  }
+  let flags: Array[Bool] = []
+  let mut any = false
+  let mut i = 0
+  while i < written {
+    let flag = ast_binary_read_bool_checked(reader)
+    Array::push(flags, flag)
+    any = any || flag
+    i = i + 1
+  }
+  if !any {
+    throw("checked program: empty parameter defaults")
+  } else {
+    ()
+  }
+  flags
 }
 
 fn cp_read_origin(reader: AstBinaryReader) -> BindingOrigin with Exception {
@@ -431,37 +482,31 @@ fn cp_read_origin(reader: AstBinaryReader) -> BindingOrigin with Exception {
     5 => BindingOriginUncertainFunctionHeader,
     6 => {
       let names = cp_read_array_string(reader)
-      let count = ast_binary_read_count_checked(reader)
-      if count != Array::length(names) {
-        throw("checked program: invalid parameter defaults")
-      } else {
-        ()
-      }
-      let flags: Array[Bool] = []
-      let mut any = false
-      let mut i = 0
-      while i < count {
-        let flag = ast_binary_read_bool_checked(reader)
-        Array::push(flags, flag)
-        any = any || flag
-        i = i + 1
-      }
-      if !any {
-        throw("checked program: empty parameter defaults")
-      } else {
-        ()
-      }
-      BindingOriginDefaultedFunctionHeader(names, flags)
+      BindingOriginDefaultedFunctionHeader(names, cp_read_default_bits(reader, Array::length(names)))
     },
     7 => {
       let path = ast_binary_read_string_checked(reader)
       let source = ast_binary_read_string_checked(reader)
-      BindingOriginModuleFunctionHeader(path, source, cp_read_array_string(reader))
+      BindingOriginModuleFunctionHeader(path, source, cp_read_array_string(reader), [
+      ])
     },
     8 => {
       let path = ast_binary_read_string_checked(reader)
       let source = ast_binary_read_string_checked(reader)
-      BindingOriginReExportFunctionHeader(path, source, cp_read_array_string(reader))
+      BindingOriginReExportFunctionHeader(path, source, cp_read_array_string(reader), [
+      ])
+    },
+    9 => {
+      let path = ast_binary_read_string_checked(reader)
+      let source = ast_binary_read_string_checked(reader)
+      let names = cp_read_array_string(reader)
+      BindingOriginModuleFunctionHeader(path, source, names, cp_read_default_bits(reader, Array::length(names)))
+    },
+    10 => {
+      let path = ast_binary_read_string_checked(reader)
+      let source = ast_binary_read_string_checked(reader)
+      let names = cp_read_array_string(reader)
+      BindingOriginReExportFunctionHeader(path, source, names, cp_read_default_bits(reader, Array::length(names)))
     },
     _ => throw("checked program: unknown BindingOrigin tag")
   }

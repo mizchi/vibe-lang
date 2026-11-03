@@ -526,8 +526,9 @@ frozen:
 - Struct literals use the `Type::{ ... }` style.
 - The formatter (`vibe fmt`) is idempotent.
 - Type naming: user types are CamelCase by convention (§2.3a; a lowercase
-  type name is accepted). The lowercase builtin type names such as `i32` are
-  reserved: declaring a struct named `i32` is refused.
+  type name is accepted). The lowercase builtin type names such as `f64` are
+  reserved: declaring a struct named `f64` is refused. `i32` is not a type
+  (#3727) but stays reserved the same way.
 
 ---
 

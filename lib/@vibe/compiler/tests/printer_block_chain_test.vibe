@@ -1,0 +1,36 @@
+//# Imports
+
+import @vibe/compiler/syntax {
+  lex, print_expr
+}
+
+import ../parser.vibe {
+  parse
+}
+
+import ./printer_test_support.vibe {
+  roundtrip
+}
+
+//# Misc
+
+// A block is a right-nested chain of `let` / `let rec` / `let mut` /
+// assignment / compound assignment / sequence links. The printer walks the
+// chain instead of recursing on each link's body (that recursion copied the
+// rest of the block once per statement), and the text must not change.
+test "every block link kind prints as nested braces" {
+  let src = "{ let a = 1; let rec go = (n) -> n; let mut m = a; m = m + 1; m += 2; println(\"x\"); go(m) }"
+  inspect(print_expr(parse(lex(src))), content = "{ let a = 1; { let rec go = (n) -> { n }; { let mut m = a; { m = (m + 1); { m += 2; { println(\"x\"); go(m) } } } } } }")
+}
+
+test "a block nested in a link's value keeps its own braces" {
+  let src = "{ let a = { let b = 1; b + 1 }; let c = a; c }"
+  inspect(print_expr(parse(lex(src))), content = "{ let a = { let b = 1; (b + 1) }; { let c = a; c } }")
+}
+
+test "a long block round-trips" {
+  let ok = handle {
+    roundtrip("{ let a = 1; let b = a; let c = b; let d = c; let e = d; let f = e; let g = f; let h = g; h }")
+  } with { Exception::Throw(_) => false }
+  assert(ok)
+}

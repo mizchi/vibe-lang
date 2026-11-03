@@ -18,6 +18,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_handle_matches_effect,
   edp_has_unsafe_construct,
   edp_is_pure_builtin_call,
+  edp_mf_set_stmt,
   edp_pat_binds,
   edp_perform_facts,
   edp_perform_facts_performs,
@@ -416,27 +417,27 @@ export fn edp_erase_effect_handles_with_index(stmts: Array[Stmt], ename: String,
     }
     match Array::get(stmts, i) {
       SLet(exported, is_rec, name, ty, expr) => if edp_rq_fold(hq, expr) > 0 {
-        Array::set(stmts, i, SLet(exported, is_rec, name, ty, edp_erase_effect_handles_expr(expr, ename, analyze, perf_fns, inert, fn_names)))
+        edp_mf_set_stmt(stmts, i, SLet(exported, is_rec, name, ty, edp_erase_effect_handles_expr(expr, ename, analyze, perf_fns, inert, fn_names)))
       } else {
         ()
       },
       SLetMut(nm, ty, expr) => if edp_rq_fold(hq, expr) > 0 {
-        Array::set(stmts, i, SLetMut(nm, ty, edp_erase_effect_handles_expr(expr, ename, analyze, perf_fns, inert, fn_names)))
+        edp_mf_set_stmt(stmts, i, SLetMut(nm, ty, edp_erase_effect_handles_expr(expr, ename, analyze, perf_fns, inert, fn_names)))
       } else {
         ()
       },
       SExpr(expr) => if edp_rq_fold(hq, expr) > 0 {
-        Array::set(stmts, i, SExpr(edp_erase_effect_handles_expr(expr, ename, analyze, perf_fns, inert, fn_names)))
+        edp_mf_set_stmt(stmts, i, SExpr(edp_erase_effect_handles_expr(expr, ename, analyze, perf_fns, inert, fn_names)))
       } else {
         ()
       },
       STest(tn, expr) => if edp_rq_fold(hq, expr) > 0 {
-        Array::set(stmts, i, STest(tn, edp_erase_effect_handles_expr(expr, ename, analyze, perf_fns, inert, fn_names)))
+        edp_mf_set_stmt(stmts, i, STest(tn, edp_erase_effect_handles_expr(expr, ename, analyze, perf_fns, inert, fn_names)))
       } else {
         ()
       },
       SBench(bn, expr) => if edp_rq_fold(hq, expr) > 0 {
-        Array::set(stmts, i, SBench(bn, edp_erase_effect_handles_expr(expr, ename, analyze, perf_fns, inert, fn_names)))
+        edp_mf_set_stmt(stmts, i, SBench(bn, edp_erase_effect_handles_expr(expr, ename, analyze, perf_fns, inert, fn_names)))
       } else {
         ()
       },
@@ -1532,18 +1533,42 @@ export fn edp_row_typed_param_names(params: Array[(String, Option[TypeExpr])], e
 export fn edp_row_lit_scan(stmts: Array[Stmt], ename: String, needing: Array[String], es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => match expr {
-        EFn(_, _, _, _, _, fb) => edp_row_lit_scan_expr(fb, ename, needing, es_names, es_members_list, binds, lits),
-        _ => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits)
-      },
-      SLetMut(_, _, expr) => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits),
-      SExpr(expr) => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits),
-      STest(_, expr) => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits),
-      SBench(_, expr) => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits),
-      _ => ()
-    }
+    edp_row_lit_scan_stmt(Array::get(stmts, i), ename, needing, es_names, es_members_list, binds, lits)
     i = i + 1
+  }
+}
+
+/// edp_row_lit_scan over only the statements `indices` names, ascending.
+/// Equal to the whole scan when every statement left out holds nothing it
+/// would collect (see edp_mf_row_lit_scan).
+export fn edp_row_lit_scan_in(stmts: Array[Stmt], indices: Array[Int], ename: String, needing: Array[String], es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
+  for i in indices {
+    edp_row_lit_scan_stmt(Array::get(stmts, i), ename, needing, es_names, es_members_list, binds, lits)
+  }
+  ()
+}
+
+/// The region of a statement edp_row_lit_scan reads: a top-level `fn`'s body
+/// (the function value itself is the needing rewrite's), or the whole
+/// expression of the other forms it reads.
+export fn edp_row_lit_region(stmt: Stmt) -> Option[Expr] {
+  match stmt {
+    SLet(_, _, _, _, expr) => match expr {
+      EFn(_, _, _, _, _, fb) => Some(fb),
+      _ => Some(expr)
+    },
+    SLetMut(_, _, expr) => Some(expr),
+    SExpr(expr) => Some(expr),
+    STest(_, expr) => Some(expr),
+    SBench(_, expr) => Some(expr),
+    _ => None
+  }
+}
+
+fn edp_row_lit_scan_stmt(stmt: Stmt, ename: String, needing: Array[String], es_names: Array[String], es_members_list: Array[Array[String]], binds: Array[String], lits: Array[Expr]) -> Unit {
+  match edp_row_lit_region(stmt) {
+    Some(expr) => edp_row_lit_scan_expr(expr, ename, needing, es_names, es_members_list, binds, lits),
+    None => ()
   }
 }
 

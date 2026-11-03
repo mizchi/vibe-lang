@@ -432,7 +432,7 @@ The English file is the source of truth. Prose and code comments translate;
 ` ```output ` blocks are identical between the two files.** `scripts/vibe_md.sh
 check` (`pkf run vibe-md-tutorial`) proves each file on its own; the pair is
 enforced by `pkf run check-tutorial-translation-parity`
-(`scripts/check_tutorial_translation_parity.sh`, in `release-check`), which
+(`scripts/check_tutorial_translation_parity.vibex`, in `release-check`), which
 fails when a chapter has no translation, a translation has no chapter, or the
 two record different output.
 

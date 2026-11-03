@@ -1,0 +1,1877 @@
+//# Imports
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Stmt,
+  dir_of_path,
+  is_contract_ext,
+  loader_physical_located,
+  loader_prepended_prefix_bytes,
+  merged_offset_owner,
+  unstable_package_note
+}
+
+import @vibe/compiler/cache {
+  cache_read_source_fs, cache_source_memo_token
+}
+
+import @vibe/compiler/checker {
+  collect_builtin_shadowing_names, detect_redundant_namespace_imports, detect_top_level_let_star, detect_unreachable_match_arms
+}
+
+import @vibe/compiler/contract {
+  contract_facade_marker, extract_require_pins, parse_contract_program, vpkg_shared_import_marker
+}
+
+import @vibe/compiler/entry/compiler/file_compile {
+  check_file_fs_mode_from_source_groups,
+  compile_file_fs_mode,
+  compile_file_fs_mode_cached,
+  compile_file_fs_mode_cached_profiled,
+  compile_file_fs_mode_profiled
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs,
+  ingest_source_text_fs,
+  ingestion_pipeline_telemetry_add,
+  parse_program_located_shared,
+  unstable_candidates,
+  unstable_candidates_reset
+}
+
+// #897: package-form import (wasi_only/ is now an index.vpkg boundary) --
+// these used to be three separate leaf imports (linked_artifacts.vibe,
+// preprocess_interp.vibe, linked_library.vibe), now merged into one. A
+// fourth leaf import (path_utils.vibe's `empty_stmt_array`) is dropped
+// entirely: it is a private helper only promoted to sibling-file visibility
+// within wasi_only/ (not part of this package's declared contract surface,
+// see wasi_only/index.vpkg's header), and its body is a one-line forward to
+// `@vibe/core`'s generic `array_empty[T]()` -- already imported below under
+// its own name, so the two call sites that used `empty_stmt_array()` now
+// call `array_empty()` directly instead.
+import @vibe/compiler/entry/source_compile/wasi_only {
+  collect_linked_compile_inputs_with_rows,
+  compile_file_wasi_library,
+  compile_linked_entry_module,
+  desugar_linked_entry,
+  refuse_linked_witness_imports
+}
+
+import @vibe/compiler/runtime {
+  db_new
+}
+
+// #946(3,4): `vibe check` runs this same inline-wasm codegen validation (lane
+// index / align / etc.) as `vibe diagnostics` — see check_inline_wasm_fns'
+// doc comment in typecheck_fs.vibe. Without this, making `check` genuinely
+// codegen-free (Gate v2 #492, wired to the CLI by #946(3)) would have made it
+// blind to inline-wasm errors that used to be caught by the old full-compile
+// `check` — a regression trade for fixing the empty-file false-positive.
+// `locate_type_error` recovers the `line:col` prefix the OLD full-compile
+// `check` got for free via typecheck_fs.vibe's own db_typecheck_fs path
+// (finish_typecheck_fs_impl wraps every Throw with it) — without rewrapping
+// here, check_linked_file's raw check_file_fs_mode/check_program message
+// would regress every located-diagnostic case check has (scripts/
+// test_located_diagnostics.sh).
+import @vibe/compiler/runtime {
+  check_inline_wasm_fns,
+  checked_warning_stmts,
+  locate_type_error,
+  locate_type_error_lines_except_paths,
+  unstable_import_diagnostics,
+  unstable_index_of_str,
+  unstable_inherited_marker
+}
+
+import @vibe/compiler/query {
+  deprecated_warning_lines_visible
+}
+
+// #946(3): parse the entry file for check_linked_file ITSELF (see its doc
+// comment) rather than through collect_linked_compile_inputs, whose entry
+// parse is the build's (located since #3625, but not recovering). Uses the
+// RECOVERING parser (not
+// parse_program_located): every diagnostic parse_program_recovering emits is
+// ALREADY a full `line L:col C: msg` string (extract_err_token_pos +
+// offset_to_line_col at the point of the throw, in parser.vibe) — the same
+// robust locating parse_program_located does only for its own top-level
+// throws, missing errors that bubble up from nested expr-parsing helpers
+// (e.g. `export let bad = = 5`'s "unexpected token at #9: ..." came back
+// unlocated through parse_program_located but located through the recovering
+// parser). check_linked_file only wants the single FIRST parse error (`check`
+// is one-error-at-a-time; `vibe diagnostics` is the multi-diagnostic surface
+// — collect_all_diagnostics already uses this same recovering parser).
+import @vibe/compiler/syntax {
+  Token, lex_with_offsets_recovering, offset_to_line_col, parse_program_recovering, token_to_string
+}
+
+//# Functions
+
+fn append_stmt_array(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, value = Array::get(src, at = i))
+    i = i + 1
+  }
+}
+
+fn linked_output_dir(output_path: String) -> String {
+  let len = String::length(output_path)
+  if len >= 5 && output_path[len - 5: len] == ".wasm" {
+    String::concat(output_path[0: len - 5], ".debug")
+  } else {
+    String::concat(output_path, ".debug")
+  }
+}
+
+fn empty_source_pairs() -> Array[(String, String)] {
+  array_empty()
+}
+
+/// The DCE root a command component is pruned from: the one export the wrap
+/// lifts. Under `command_component_compile_mode()` this name is the DCE ROOT
+/// and NOT the codegen entry -- the core is still emitted as a library.
+export fn command_component_entry() -> String {
+  "vibe_command"
+}
+
+/// The compile lane a command component takes.
+///
+/// Both front doors of `vibe build --component` call this rather than spelling
+/// a mode literal: the `.vibex` CLI (`lib/@vibe/cli/dispatch.vibe`) and the
+/// launcher's `VIBE_BUILD_COMPONENT` adapter (`cli_adapter.vibe`). They had
+/// independent literals for one commit, and the same flag produced a 40 MB
+/// artifact through one door and 2.6 MB through the other.
+export fn command_component_compile_mode() -> String {
+  "dce-root"
+}
+
+fn normalize_release_mode(mode: String) -> String with Exception {
+  if mode == "" || mode == "release" || mode == "no-dce" {
+    "no-dce"
+  } else if mode == "mvp" {
+    "mvp"
+  } else if mode == command_component_compile_mode() {
+    // The command-component lane: prune from a NAMED root, emit a library.
+    // Without this arm the `.vibex` CLI's `build --component` throws while the
+    // launcher's `VIBE_BUILD_COMPONENT` lane -- which calls
+    // `compile_file_fs_mode` directly -- succeeds, so the same flag would mean
+    // two different things depending on which front door was used.
+    command_component_compile_mode()
+  } else {
+    throw(String::concat("unsupported release mode: ", mode))
+  }
+}
+
+export fn compile_release_file_mode(input_path: String, entry_name: String, mode: String) -> Bytes with Env + Exception + Fs {
+  let compile_mode = normalize_release_mode(mode = mode)
+  let (bytes, _) = compile_file_fs_mode_cached(db = db_new(), entry_path = input_path, entry_name = entry_name, mode = compile_mode)
+  bytes
+}
+
+export fn compile_release_file_mode_uncached(input_path: String, entry_name: String, mode: String) -> Bytes with Env + Exception + Fs {
+  let compile_mode = normalize_release_mode(mode = mode)
+  compile_file_fs_mode(entry_path = input_path, entry_name = entry_name, mode = compile_mode)
+}
+
+export fn compile_release_file_mode_profiled(input_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
+  let compile_mode = normalize_release_mode(mode = mode)
+  let (bytes, _, load_us, type_us, bundle_us, parse_us, compile_us, total_us) = compile_file_fs_mode_cached_profiled(db = db_new(), entry_path = input_path, entry_name = entry_name, mode = compile_mode)
+  (bytes, load_us, type_us, bundle_us, parse_us, compile_us, total_us)
+}
+
+export fn compile_release_file_mode_uncached_profiled(input_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Env + Exception + Fs + Profiler {
+  let compile_mode = normalize_release_mode(mode = mode)
+  compile_file_fs_mode_profiled(entry_path = input_path, entry_name = entry_name, mode = compile_mode)
+}
+
+export fn compile_release_file(input_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {
+  compile_release_file_mode(input_path = input_path, entry_name = entry_name, mode = "no-dce")
+}
+
+export fn compile_debug_library(dep_path: String) -> Bytes with Env + Exception + Fs {
+  compile_file_wasi_library(dep_path = dep_path)
+}
+
+fn append_non_import_stmts(dst: Array[Stmt], src: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    match Array::get(src, at = i) {
+      SImport(_, _) => (),
+      SReExport(_, _) => (),
+      SAliasDecl(_, _) => (),
+      _ => Array::push(dst, value = Array::get(src, at = i))
+    }
+    i = i + 1
+  }
+}
+
+/// #1514 C (repair 08): the evidence-passing hard error carries the culprit
+/// call as `(here: the call to 'X') ... [@off=N:M]`, where N:M index the text
+/// of whichever MODULE the handle lives in. This lane resolves markers against
+/// the ENTRY file's text, which is only correct when the culprit is in the
+/// entry file itself. Verify the span actually spells `X` in `source` — as a
+/// whole identifier, not a slice of a longer one (a dep offset landing inside
+/// the entry's `run_all` must not pass for culprit `run`) — before letting
+/// locate_type_error resolve it; on mismatch (a dep-module offset) strip the
+/// marker so the message degrades to unlocated instead of naming a
+/// plausible-but-wrong entry-file line (worse than no position, per #1445).
+/// Messages without the culprit clause pass through untouched. This is the
+/// single-source primitive; linked lanes must use
+/// verify_culprit_off_marker_snapshot below, which additionally rejects an
+/// entry match when any dependency in the same consumed snapshot matches the
+/// same culprit and span (#1596).
+/// Parse a run of ASCII digits as a non-negative Int, or -1 when `s` is empty
+/// or contains any non-digit (local copy of typecheck_fs's parse_offset_digits,
+/// which is module-private there).
+fn parse_marker_digits(s: String) -> Int {
+  let n = String::length(s)
+  let mut i = 0
+  let mut acc = 0
+  let mut ok = n > 0
+  while i < n && ok {
+    let c = String::char_code_at(s, at = i)
+    if c >= 48 && c <= 57 {
+      acc = acc * 10 + (c - 48)
+    } else {
+      ok = false
+    }
+    i = i + 1
+  }
+  if ok {
+    acc
+  } else {
+    -1
+  }
+}
+
+/// True when char code `c` can appear in a vibe identifier (ASCII letter,
+/// digit, or underscore) — used for the whole-identifier boundary check.
+fn marker_ident_char(c: Int) -> Bool {
+  (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95
+}
+
+export fn verify_culprit_off_marker(source: String, msg: String) -> String {
+  let clause = " (here: the call to '"
+  let ci = String::index_of(msg, needle = clause)
+  let marker = " [@off="
+  let mi = String::index_of(msg, needle = marker)
+  if ci < 0 || mi < 0 {
+    msg
+  } else {
+    let name_start = ci + String::length(clause)
+    let name_rel = String::index_of(String::substring(msg, start = name_start, end = String::length(msg)), needle = "')")
+    let inner_start = mi + String::length(marker)
+    let close_rel = String::index_of(String::substring(msg, start = inner_start, end = String::length(msg)), needle = "]")
+    if name_rel < 0 || close_rel < 0 {
+      msg
+    } else {
+      let culprit = String::substring(msg, start = name_start, end = name_start + name_rel)
+      let inner = String::substring(msg, start = inner_start, end = inner_start + close_rel)
+      let colon = String::index_of(inner, needle = ":")
+      let span_ok = if colon < 0 {
+        false
+      } else {
+        let n = parse_marker_digits(s = String::substring(inner, start = 0, end = colon))
+        let m = parse_marker_digits(s = String::substring(inner, start = colon + 1, end = String::length(inner)))
+        if n >= 0 && m > n && m <= String::length(source) && String::substring(source, start = n, end = m) == culprit {
+          // Whole-identifier boundary: the byte before N / at M must not
+          // extend the identifier, or the "match" is a slice of a longer
+          // name and the basis is not the entry file.
+          let left_ok = n == 0 || !marker_ident_char(c = String::char_code_at(source, at = n - 1))
+          let right_ok = m == String::length(source) || !marker_ident_char(c = String::char_code_at(source, at = m))
+          left_ok && right_ok
+        } else {
+          false
+        }
+      }
+      if span_ok {
+        msg
+      } else {
+        String::concat(String::substring(msg, start = 0, end = mi), String::substring(msg, start = inner_start + close_rel + 1, end = String::length(msg)))
+      }
+    }
+  }
+}
+
+/// #3133 / #3139 / #3145: the lead of the index and Array-reader refusals,
+/// (`dtd_index_refuse`, `dtd_array_reader_refuse`), which carry a merged `[@off=N]` like an
+/// interpolation refusal does.
+let index_refusal_prefix: String = "cannot tell whether this "
+
+/// #3297: the lead of a structural-`==` refusal (`eq_refusals_report`). One
+/// that names its site carries the merged offset of the `==` / `!=` operator.
+let eq_refusal_prefix: String = "structural `==` cannot be decided here: "
+
+/// FS/build compilation does not yet return the grouped-source snapshot that
+/// produced a Throw. Without same-snapshot ownership evidence, keep the culprit
+/// name but strip its unproven transport offset (#1596).
+///
+/// #3090: an interpolation refusal thrown after the merge (normalize, or
+/// either codegen lane) carries an offset in the MERGED program's disjoint
+/// offset space, which the merge recorded together with the exact text of
+/// each file (core/merged_offset_space.vibe). That record IS the snapshot, so
+/// such a refusal is located against its own file and path-prefixed the way a
+/// checker diagnostic is.
+export fn verify_culprit_off_marker_fs_fail_closed(msg: String) -> String {
+  if String::contains(msg, needle = " [@off=") && String::contains(msg, needle = " (here: the call to '") {
+    // #3520: the merge's record owns the culprit's offset when it names a
+    // name in a recorded file, the same evidence an interpolation refusal is
+    // located by; only an offset nothing owns is stripped.
+    let located = locate_merged_interp_refusal(msg = msg, site = 0)
+    if located != msg {
+      located
+    } else {
+      verify_culprit_off_marker(source = "", msg = msg)
+    }
+  } else if String::starts_with(msg, prefix = "cannot interpolate ") && String::contains(msg, needle = " [@off=") {
+    locate_merged_interp_refusal(msg = msg, site = 0)
+  } else if String::starts_with(msg, prefix = index_refusal_prefix) && String::contains(msg, needle = " [@off=") {
+    // #3133: an index refusal is keyed by the index's `[`.
+    locate_merged_interp_refusal(msg = msg, site = 1)
+  } else if String::starts_with(msg, prefix = eq_refusal_prefix) && String::contains(msg, needle = " [@off=") {
+    // #3297: an equality refusal is keyed by its operator.
+    locate_merged_interp_refusal(msg = msg, site = 2)
+  } else if String::contains(msg, needle = " [@off=") {
+    // #3520: any other refusal raised after the merge -- the suspend
+    // lowering's, a run-to-completion task's -- carries the merged offset of a
+    // name. Located when the record owns it; a marker left unresolved is
+    // stripped by the caller (strip_trailing_markers) rather than printed raw.
+    locate_merged_interp_refusal(msg = msg, site = 0)
+  } else {
+    msg
+  }
+}
+
+/// Remove a ` [@off=...]` side-channel marker WITHOUT resolving it. The marker
+/// is internal transport for a source offset (#1514); a lane that does not know
+/// which source text the offset indexes (the FS-compile lane compiles MERGED
+/// module text) must degrade to the unlocated message -- never print the raw
+/// marker (#1445's leaked `[@off=135]` is the failure mode this guards against).
+fn strip_side_marker(msg: String, marker: String) -> String {
+  let mut out = msg
+  let mut mi = String::index_of(out, needle = marker)
+  while mi >= 0 {
+    let inner_start = mi + String::length(marker)
+    let rest = String::substring(out, start = inner_start, end = String::length(out))
+    let rel = String::index_of(rest, needle = "]")
+    if rel < 0 {
+      out = String::substring(out, start = 0, end = mi)
+    } else {
+      out = String::concat(String::substring(out, start = 0, end = mi), String::substring(out, start = inner_start + rel + 1, end = String::length(out)))
+    }
+    mi = String::index_of(out, needle = marker)
+  }
+  out
+}
+
+export fn strip_off_marker(msg: String) -> String {
+  strip_side_marker(msg = strip_side_marker(msg = strip_side_marker(msg = msg, marker = " [@off="), marker = " [@fn="), marker = " [@assign-target")
+}
+
+/// #3090 / book review: the last step before a thrown diagnostic is printed
+/// by a door that has no source snapshot of its own (lib/@vibe/cli/entry.vibe,
+/// which `vibe run` / `vibe build` reach when a compile throws). A refusal
+/// carrying a merged offset is located against the recorded merge, and any
+/// marker still unresolved is stripped: a raw ` [@off=N]` indexes the merged
+/// program, not a file the reader can open.
+///
+/// Only the compiler's own marker shapes at the END of a line are stripped:
+/// at most one ` [@fn=name]`, then at most one ` [@off=N]` / ` [@off=N:M]` or
+/// ` [@assign-target]` / ` [@assign-target=N]`. `args` is the command line:
+/// when any argument contains `[@`, a path the reader typed may itself end in
+/// a marker-shaped suffix, so the message is printed exactly as thrown rather
+/// than risk naming a file that does not exist.
+export fn finalize_thrown_diagnostic(msg: String, args: Array[String]) -> String {
+  if args_carry_marker_text(args = args) {
+    msg
+  } else {
+    let lines = String::split(verify_culprit_off_marker_fs_fail_closed(msg = msg), sep = "\n")
+    let mut out = ""
+    let mut i = 0
+    while i < Array::length(lines) {
+      if i > 0 {
+        out = String::concat(out, "\n")
+      } else {
+        ()
+      }
+      out = String::concat(out, strip_trailing_markers(line = Array::get(lines, at = i)))
+      i = i + 1
+    }
+    out
+  }
+}
+
+fn args_carry_marker_text(args: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(args) {
+    found = String::contains(Array::get(args, at = i), needle = "[@")
+    i = i + 1
+  }
+  found
+}
+
+fn strip_trailing_markers(line: String) -> String {
+  let after_fn = strip_one_trailing_marker(line = line, fn_kind = true)
+  strip_one_trailing_marker(line = after_fn, fn_kind = false)
+}
+
+/// Strip one trailing marker: the ` [@fn=..]` kind when `fn_kind`, else the
+/// ` [@off=..]` / ` [@assign-target..]` kind. Anything else is left as is.
+fn strip_one_trailing_marker(line: String, fn_kind: Bool) -> String {
+  let n = String::length(line)
+  if n == 0 || String::byte_at(line, at = n - 1) != 93 {
+    line
+  } else {
+    let open_at = last_marker_open(line = line)
+    if open_at < 0 {
+      line
+    } else {
+      let body = String::substring(line, start = open_at + 3, end = n - 1)
+      if marker_body_ok(body = body, fn_kind = fn_kind) {
+        String::substring(line, start = 0, end = open_at)
+      } else {
+        line
+      }
+    }
+  }
+}
+
+/// The index of the last ` [@` in `line`, or -1.
+fn last_marker_open(line: String) -> Int {
+  let mut found = -1
+  let mut from = 0
+  let mut going = true
+  while going {
+    let rest = String::substring(line, start = from, end = String::length(line))
+    let rel = String::index_of(rest, needle = " [@")
+    if rel < 0 {
+      going = false
+    } else {
+      found = from + rel
+      from = found + 1
+    }
+  }
+  found
+}
+
+/// `body` is the text between ` [@` and the closing `]`.
+fn marker_body_ok(body: String, fn_kind: Bool) -> Bool {
+  if fn_kind {
+    String::starts_with(body, prefix = "fn=") && String::length(body) > 3 && !String::contains(body, needle = " ") && !String::contains(body, needle = "]")
+  } else if String::starts_with(body, prefix = "off=") {
+    let digits = String::substring(body, start = 4, end = String::length(body))
+    String::length(digits) > 0 && all_offset_chars(s = digits)
+  } else if String::starts_with(body, prefix = "assign-target=") {
+    // #3248: the target token's offset.
+    let digits = String::substring(body, start = 14, end = String::length(body))
+    String::length(digits) > 0 && all_offset_chars(s = digits)
+  } else {
+    body == "assign-target"
+  }
+}
+
+fn all_offset_chars(s: String) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while ok && i < String::length(s) {
+    let c = String::byte_at(s, at = i)
+    ok = (c >= 48 && c <= 57) || c == 58
+    i = i + 1
+  }
+  ok
+}
+
+/// #3090: resolve an interpolation refusal's merged `[@off=N]` (or
+/// `[@off=N:M]`) to `path: line L:C: ...` against the file the merge placed at
+/// N. Fails closed -- returns `msg` unchanged, and the caller strips the
+/// marker -- when no file owns N, when that file's text is a loader transform
+/// rather than what the reader wrote, or when N names neither an interpolation
+/// nor the start of a name (a render argument is keyed by its identifier, its
+/// field name or its callee, and `__to_string(v)` is a render with no
+/// interpolation around it): an offset anywhere else says the basis is not
+/// this record, and no position beats a wrong one.
+///
+/// #3133: `site` 1 says the refusal is an index refusal, keyed by the `[` of
+/// `xs[k]`; its offset must name that bracket instead. #3297: `site` 2 is an
+/// equality refusal, keyed by the first byte of its `==` / `!=` operator.
+/// `site` 0 is an interpolation refusal.
+fn locate_merged_interp_refusal(msg: String, site: Int) -> String {
+  let marker = " [@off="
+  let mi = String::index_of(msg, needle = marker)
+  let inner_start = mi + String::length(marker)
+  let rest = String::substring(msg, start = inner_start, end = String::length(msg))
+  let rel = String::index_of(rest, needle = "]")
+  if rel < 0 {
+    msg
+  } else {
+    let inner = String::substring(rest, start = 0, end = rel)
+    let colon = String::index_of(inner, needle = ":")
+    let start = parse_marker_digits(s = if colon < 0 {
+      inner
+    } else {
+      String::substring(inner, start = 0, end = colon)
+    })
+    let end = if colon < 0 {
+      -1
+    } else {
+      parse_marker_digits(s = String::substring(inner, start = colon + 1, end = String::length(inner)))
+    }
+    if start < 0 || (colon >= 0 && end < start) {
+      msg
+    } else {
+      match merged_offset_owner(off = start) {
+        Some((path, source, local)) => {
+          // #3656: a directory-shared sibling is the file as written past the
+          // block the loader prepended; only an offset inside that block, or
+          // a text the loader generated, has no position on disk.
+          let skip = loader_prepended_prefix_bytes(source = source)
+          let transformed = if skip > 0 {
+            local < skip
+          } else {
+            String::starts_with(source, prefix = vpkg_shared_import_marker) || String::starts_with(source, prefix = contract_facade_marker)
+          }
+          let site_ok = if site == 1 {
+            // #3139: a written `Array::set(..)` is keyed by its name.
+            local >= 0 && local < String::length(source) && (String::char_code_at(source, at = local) == '[' || offset_starts_name(source = source, off = local))
+          } else if site == 2 {
+            local >= 0 && local + 1 < String::length(source) && (String::byte_at(source, at = local) == 61 || String::byte_at(source, at = local) == 33) && String::byte_at(source, at = local + 1) == 61
+          } else {
+            offset_inside_interpolation(source = source, off = local) || offset_starts_name(source = source, off = local)
+          }
+          if transformed || !site_ok {
+            msg
+          } else {
+            let local_inner = if colon < 0 {
+              __to_string(local)
+            } else {
+              String::concat(__to_string(local), String::concat(":", __to_string(local + end - start)))
+            }
+            let rebased = String::concat(String::substring(msg, start = 0, end = inner_start), String::concat(local_inner, String::substring(msg, start = inner_start + rel, end = String::length(msg))))
+            let located = loader_physical_located(source = source, located = locate_type_error(source = source, msg = rebased))
+            if String::starts_with(located, prefix = "line ") {
+              String::concat(path, String::concat(": ", located))
+            } else {
+              msg
+            }
+          }
+        },
+        None => msg
+      }
+    }
+  }
+}
+
+/// Does byte `off` of `source` start a name -- an identifier character that no
+/// identifier character precedes?
+fn offset_starts_name(source: String, off: Int) -> Bool {
+  if off < 0 || off >= String::length(source) {
+    false
+  } else {
+    let c = String::char_code_at(source, at = off)
+    let starts = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+    starts && (off == 0 || !marker_ident_char(c = String::char_code_at(source, at = off - 1)))
+  }
+}
+
+/// Does byte `off` of `source` lie in an interpolation? True at the backslash
+/// of an interpolation opener itself (the anchor the normalize refusals use),
+/// or when the nearest unmatched `{` before `off` on the same line is one
+/// opened by a backslash.
+fn offset_inside_interpolation(source: String, off: Int) -> Bool {
+  let n = String::length(source)
+  if off < 0 || off >= n {
+    false
+  } else if off + 1 < n && String::char_code_at(source, at = off) == 92 && String::char_code_at(source, at = off + 1) == 123 {
+    true
+  } else {
+    let mut depth = 0
+    let mut i = off - 1
+    let mut answer = false
+    while i >= 0 {
+      let c = String::char_code_at(source, at = i)
+      if c == 10 {
+        i = -1
+      } else if c == 125 {
+        depth = depth + 1
+        i = i - 1
+      } else if c == 123 {
+        if depth == 0 {
+          answer = i > 0 && String::char_code_at(source, at = i - 1) == 92
+          i = -1
+        } else {
+          depth = depth - 1
+          i = i - 1
+        }
+      } else {
+        i = i - 1
+      }
+    }
+    answer
+  }
+}
+
+/// Verify a culprit marker against the exact grouped-source snapshot consumed
+/// by the failing check. The entry must occur exactly once in that snapshot and
+/// be the unique reachable source spelling the named whole identifier at the
+/// marker span. Missing/duplicate entry identity or a dependency collision is
+/// fail-closed: keep the culprit name, but strip the transport marker (#1596).
+export fn verify_culprit_off_marker_snapshot(input_path: String, source_groups: Array[(String, Array[(String, String)])], msg: String) -> (String, String) {
+  let mut entry_source = ""
+  let dep_sources: Array[String] = array_empty()
+  let mut entry_count = 0
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, at = gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, source) = Array::get(sources, at = si)
+      if path == input_path {
+        entry_source = source
+        entry_count = entry_count + 1
+      } else {
+        Array::push(dep_sources, value = source)
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  if entry_count != 1 {
+    (entry_source, verify_culprit_off_marker(source = "", msg = msg))
+  } else {
+    let entry_verified = verify_culprit_off_marker(source = entry_source, msg = msg)
+    if !String::contains(entry_verified, needle = " [@off=") {
+      (entry_source, entry_verified)
+    } else {
+      let mut i = 0
+      let mut ambiguous = false
+      while i < Array::length(dep_sources) && !ambiguous {
+        let dep_verified = verify_culprit_off_marker(source = Array::get(dep_sources, at = i), msg = msg)
+        ambiguous = String::contains(dep_verified, needle = " [@off=")
+        i = i + 1
+      }
+      if ambiguous {
+        (entry_source, verify_culprit_off_marker(source = "", msg = msg))
+      } else {
+        (entry_source, entry_verified)
+      }
+    }
+  }
+}
+
+export fn build_linked_debug_entry(input_path: String, entry_name: String) -> (Bytes, Array[(String, String)]) with Env + Exception + Fs {
+  let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs, checked_rows) = collect_linked_compile_inputs_with_rows(entry_path = input_path)
+  let main_stmts = array_empty()
+  append_stmt_array(dst = main_stmts, src = resolved_type_stmts)
+  append_non_import_stmts(dst = main_stmts, src = entry_stmts)
+  // #3625: the entry is parsed located, and `write_linked_debug_build_checked`
+  // ran the import-resolving check on it first, so that check's typed tables
+  // are there for exactly this text: desugar and codegen read them as the
+  // default lane does -- a Double or `Float` an imported function returns is
+  // one, each `Float` arithmetic result is rounded to f32 (#3543), and an
+  // interpolated untyped shadow renders by its own type (#3456). Without them
+  // (no check ran, or it checked another text) both of those are refused
+  // with the edit here, rather than answered wrongly by codegen's own
+  // (idempotent) run.
+  refuse_linked_witness_imports(specs = linked_dep_specs, imports = linked_imports)
+  desugar_linked_entry(stmts = main_stmts, checked = checked_rows)
+  let bytes = compile_linked_entry_module(stmts = main_stmts, entry_name = entry_name, srcs = empty_source_pairs(), linked_imports = linked_imports, checked = checked_rows)
+  (bytes, linked_dep_specs)
+}
+
+/// Every source the LOADER says this entry compiles, minus the entry itself.
+///
+/// #1262 follow-up: the two callers below used to re-resolve imports with
+/// `collect_linked_dep_inputs_for_stmts`, whose `resolve_import_path` is a
+/// plain path join -- it turns `import @vibe/core { ... }` into the filename
+/// `@vibe/core.vibe` and the read throws. That made `vibe check` ABORT on any
+/// file importing a `@scope/pkg` package (verified on the committed seed, so
+/// it is not new), even though the very same file compiles: the typecheck
+/// above already goes through `collect_source_groups_fs`, which does the real
+/// store/lib/contract resolution. Two resolution paths, one of them wrong.
+///
+/// This is the same rule `vibe deps` states: report the loader's own
+/// collection rather than a separately-derived graph, because a derived graph
+/// drifts from real resolution and then under-reports silently.
+/// `resolved_dep_sources` with each source's path, for a caller that parses
+/// them: the shared parse memo is keyed by (path, source).
+fn resolved_dep_members(input_path: String, groups: Array[(String, Array[(String, String)])]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = array_empty()
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_group_name, members) = Array::get(groups, at = gi)
+    let mut mi = 0
+    while mi < Array::length(members) {
+      let (path, source) = Array::get(members, at = mi)
+      if path == input_path {
+        ()
+      } else {
+        Array::push(out, value = (path, source))
+      }
+      mi = mi + 1
+    }
+    gi = gi + 1
+  }
+  out
+}
+
+fn resolved_dep_sources(input_path: String, groups: Array[(String, Array[(String, String)])]) -> Array[String] {
+  let out: Array[String] = array_empty()
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_group_name, members) = Array::get(groups, at = gi)
+    let mut mi = 0
+    while mi < Array::length(members) {
+      let (path, source) = Array::get(members, at = mi)
+      if path == input_path {
+        ()
+      } else {
+        Array::push(out, value = source)
+      }
+      mi = mi + 1
+    }
+    gi = gi + 1
+  }
+  out
+}
+
+/// Gate v2 (#492): parse + typecheck only, with imports linked. The checker
+/// knows builtin signatures, so this surfaces REAL language/checker
+/// expressiveness gaps (parse errors, type errors, genuine unknown names)
+/// WITHOUT the codegen builtin-body-linking confounder that makes the `debug`
+/// mode emit spurious `undefined variable: Ns::method`. No wasm is produced.
+/// #1536(c)/#1511(b): "typecheck only" no longer means blind to effect-lowering
+/// eligibility — check_file_fs_mode below also runs the ADR-0076 prelude
+/// (suspend CPS split + evidence-passing migration, shared verbatim with the
+/// real compile) on the merged program, so a handle/suspend shape codegen
+/// would reject fails here instead of first failing at build/test/doctest.
+/// Still no wasm and no builtin-body linking.
+/// #2831: a lexer error, with the position `lex_with_offsets_recovering`
+/// already recorded for it.
+///
+/// A local twin of `typecheck_fs.vibe`'s `located_lex_errors`, which is
+/// file-local there. The rule it encodes is not: a handful of lexer throw
+/// sites (the `\(expr)` interpolation message, #997's scientific-notation
+/// ones) embed their OWN `line L:C: ` prefix, because the recorded offset is
+/// the START of the enclosing `lex_one_token` call and is wrong for a throw
+/// raised partway through a multi-char token. Prepending the outer location
+/// on top of a self-located message produced `line 1:9: line 1:18: ...`.
+/// So a message that already starts with `line ` is passed through.
+///
+/// The dedupe is the other half: a non-quote-delimited lex error resumes ONE
+/// character past the failure, so a multi-digit literal re-throws the same
+/// underlying error once per remaining digit. With the outer prefix
+/// suppressed those reports are byte-identical and collapse to one.
+fn cli_located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(lex_err_msgs) {
+    let msg = Array::get(lex_err_msgs, at = i)
+    let entry = if String::starts_with(msg, prefix = "line ") {
+      msg
+    } else {
+      let off = Array::get(lex_err_offsets, at = i)
+      let (line, col) = offset_to_line_col(source = source, offset = off)
+      String::concat("line ", String::concat(Int::to_string(line), String::concat(":", String::concat(Int::to_string(col), String::concat(": ", msg)))))
+    }
+    // An explicit scan rather than `Array::contains`: that builtin does not
+    // resolve on the merge-flatten compiler build this file is part of
+    // (`internal compiler error: Array::contains (local, @call) reached code
+    // generation unresolved`), measured on this very edit.
+    let mut seen = false
+    let mut j = 0
+    while !seen && j < Array::length(out) {
+      if Array::get(out, at = j) == entry {
+        seen = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    if seen {
+      ()
+    } else {
+      Array::push(out, value = entry)
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn check_linked_file(input_path: String) -> Int with Env + Exception + Fs {
+  let _groups = check_linked_file_source_groups(input_path = input_path)
+  0
+}
+
+/// Same check, but hands back the source groups it collected so a caller that
+/// needs them next (`check_deprecated_warnings_from_source_groups`) does not
+/// pay for -- or re-enter -- a second `collect_source_groups_fs`. Re-entering
+/// it is not merely wasteful: the second call reads back the persistent
+/// source-group cache the first call just wrote, and that round-trip is TAB-
+/// hostile (rows are TAB-separated with a fixed field count, so an entry path
+/// containing a TAB parses as too many fields -- #1712). Collecting once keeps
+/// this lane off that latent bug entirely.
+export fn check_linked_file_source_groups(input_path: String) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
+  // #946(3): parse the entry file OURSELVES first (located + recovering —
+  // see the import comment above) so a parse error is reported with an exact
+  // `line:col` before any other check runs.
+  // #2227: blank `require ... = #pkg:sha1:` pin heads before parsing, the
+  // way every build-lane ingestion does (ingest_source_text_fs) -- a pin
+  // head is a header directive, not statement grammar, and parsing it raw
+  // made `vibe check` report a parse error for a file the build compiles.
+  // extract_require_pins blanks to spaces (byte length preserved), so every
+  // diagnostic offset below stays exact.
+  //
+  // #2280: a CONTRACT (`.vpkg`) is not statement grammar -- it is a list of
+  // bodyless declarations, and every compile lane reads it through
+  // `ingest_source_text_fs`, which replaces it with the generated facade
+  // before anything parses it. This lane read the raw bytes and so answered
+  // `expected { but got fn` about `lib/@vibe/random/index.vpkg`, a committed
+  // contract the build consumes on every run: a diagnostic that asserts
+  // something untrue about the file. Ingest contracts here too, so `check`
+  // answers about the package the contract describes.
+  //
+  // Contracts ONLY. `ingest_source_text_fs`'s other branch
+  // (`apply_vpkg_directory_shared_imports_fs`) can PREPEND import lines to an
+  // ordinary `.vibe` file, which would shift every offset below and mislocate
+  // the diagnostics this pre-parse exists to locate exactly.
+  let raw_entry_source = cache_read_source_fs(path = input_path)
+  let entry_source = if is_contract_ext(path = input_path) {
+    ingest_source_text_fs(path = input_path, raw = raw_entry_source)
+  } else {
+    let (_, pin_blanked) = extract_require_pins(source = raw_entry_source)
+    pin_blanked
+  }
+  // #2831: the RECOVERING lexer, for the same reason the parse below is
+  // recovering. `lex_with_offsets` throws a bare message, so a lex error on
+  // this lane reported `unexpected character: 日` with no line, no column and
+  // not even a path -- while `vibe check --single-file --json` reported
+  // `line 1, character 10-11` for that identical file and the FS lane's own
+  // `--json` answered `0:0` with `synthetic: true`. The position was never
+  // missing; this call site threw it away, and the JSON lane then INVENTED
+  // one, which is what the source-range contract forbids outright and what
+  // made the two `--json` lanes disagree.
+  let (tokens, starts, _ends, lex_err_offsets, lex_err_msgs) = lex_with_offsets_recovering(entry_source)
+  if Array::length(lex_err_msgs) > 0 {
+    // Only the lexer errors: the recovered token stream has holes, so
+    // parse diagnostics on it would be follow-on noise. Same rule as
+    // `collect_all_diagnostics_on`'s lex branch, and the same `\n`-joined
+    // throw the parse branch below already uses -- the renderer splits on
+    // lines and prefixes each with `error: `.
+    throw(String::join(cli_located_lex_errors(source = entry_source, lex_err_offsets = lex_err_offsets, lex_err_msgs = lex_err_msgs), sep = "\n"))
+  } else {
+    ()
+  }
+  ingestion_pipeline_telemetry_add(index = 14, amount = 1)
+  let (entry_stmts, parse_diags) = parse_program_recovering(tokens = tokens, starts = starts, source = entry_source)
+  if Array::length(parse_diags) > 0 {
+    // Each is already a full `line L:col C: msg` string (see the import
+    // comment above). Report ALL of them, one per line.
+    //
+    // #1567: this used to throw only `parse_diags[0]`, on the grounds that
+    // one-error-at-a-time was "check's convention" and `vibe diagnostics` was
+    // the multi-diagnostic surface. That split is exactly what #1567 is about:
+    // the recovering parser has already collected every top-level error by
+    // this point, so dropping all but the first made `check` answer a strictly
+    // worse version of the same question -- a file with three broken
+    // statements took three edit-and-rerun cycles instead of one. The two
+    // verbs now agree on COUNT as well as on wording.
+    throw(String::join(parse_diags, sep = "\n"))
+  } else {
+    ()
+  }
+  // Capture one grouped-source snapshot and pass that exact value through the
+  // failing check and culprit ownership proof. Recollecting after Throw would
+  // reintroduce #1596's concurrent-edit TOCTOU.
+  let source_groups = collect_source_groups_fs(entry_path = input_path)
+  let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_loader")
+  // #946 P1 (Codex, PR #1006): the type-check itself must go through
+  // check_file_fs_mode (the fs-mode source-group + db_typecheck_fs pipeline
+  // compile_file_fs_mode already relies on for a real compile), NOT
+  // collect_linked_dep_inputs_for_stmts + check_program. That "linked"
+  // mechanism exists to feed the wasm import-linking codegen boundary: it
+  // copies a dependency's SEnum/struct declarations into the checked stmts
+  // but never a `let rec fn` signature, so check_program never learned an
+  // imported function's real type and a wrong-typed call site (e.g.
+  // `f("x")` against `fn f(x: Int)`) typechecked cleanly no matter what was
+  // passed — confirmed via a live two-file repro before this fix.
+  //
+  // The merged stmts check_inline_wasm_fns scans (inline-wasm fns can live in
+  // an imported file too) are now built from `source_groups` as well — see
+  // `resolved_dep_members`. That scan is independent of type information.
+  handle {
+    let _ = check_file_fs_mode_from_source_groups(entry_path = input_path, source_groups = source_groups)
+    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_fs_mode")
+    // #1262 follow-up: parse the dependency sources the LOADER resolved
+    // (`source_groups`, captured above) instead of re-resolving them. The old
+    // second resolution could not express `@scope/pkg` and threw, taking the
+    // whole check down with it; and the set scanned here should be the set the
+    // build compiles, which is what `source_groups` is by construction.
+    let stmts = array_empty()
+    let dep_members = resolved_dep_members(input_path = input_path, groups = source_groups)
+    let mut dsi = 0
+    while dsi < Array::length(dep_members) {
+      let (dep_path, dep_source) = Array::get(dep_members, at = dsi)
+      ingestion_pipeline_telemetry_add(index = 16, amount = 1)
+      // A dependency that does not parse cannot reach here: the typecheck
+      // immediately above compiles this same set and would have thrown first.
+      // #2945: through the loader's located-parse memo, keyed by (path, exact
+      // source), which the walk and the merge above already filled for this
+      // very snapshot. Parsing again here allocated the whole closure's ASTs
+      // a further time -- measured 359 MB of the 4 GB a cold `vibe check
+      // lib/@vibe/cli/entry.vibe` needed -- and the bump heap never gives it
+      // back. The memo hands out a fresh top-level array, so appending to
+      // it below writes to nothing the memo shares.
+      append_stmt_array(dst = stmts, src = parse_program_located_shared(path = dep_path, source = dep_source))
+      dsi = dsi + 1
+    }
+    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_dep_reparse")
+    append_stmt_array(dst = stmts, src = entry_stmts)
+    // #3456: no interpolation pass here. The prelude above already ran it on
+    // the merged program, with the checker's typed rows, and refused there
+    // what the build refuses. This array has neither the rows nor a shared
+    // offset space to key them in, so a second pass read an untyped
+    // shadowing `let` through the OUTER binding's type: it refused `"\{b}"`
+    // for a `b: Raw` rebound to an `Int`, which the build compiles.
+    // #946(3): locate errors against the ENTRY file's own source text. `stmts`
+    // is the MERGED entry+deps statement list, so a [@off=N]/by-name location
+    // is only exact for errors whose blame is in the entry file itself (the
+    // common case, and the one every located-diagnostic regression test
+    // exercises); an error rooted in an imported dependency degrades to the
+    // unlocated message, same as before this fix, rather than mis-locating it
+    // against the wrong file's text.
+    match check_inline_wasm_fns(stmts = stmts) {
+      Some(msg) => throw(locate_type_error(source = entry_source, msg = msg)),
+      None => ()
+    }
+  } with {
+    // #1596: locate only when entry is the unique reachable source matching
+    // the culprit/span. A dependency collision keeps the culprit name but
+    // drops the potentially false entry location.
+    Exception::Throw(msg) => {
+      if String::contains(msg, needle = " [@off=") && String::contains(msg, needle = " (here: the call to '") {
+        throw(locate_merged_marker(input_path = input_path, entry_source = entry_source, source_groups = source_groups, msg = msg, culprit = true))
+      } else {
+        // #2198: the missing-Show interpolation throw escapes the desugar
+        // (reached via check_file_fs_mode's effect_lowering_prelude) with no
+        // `<path>: ` prefix -- path
+        // prefixing lives in check_module_job, which that throw bypasses.
+        // Prefix this one message class here; every other message reaching
+        // this catch is already path-prefixed by its module job, and
+        // prefixing unconditionally would double those.
+        //
+        // #2244 review (Codex P1): the throw itself carries no source
+        // identity -- the desugar ran on the MERGED statements, so the
+        // culprit can live in a dependency. Naming the entry file for a
+        // dep-file error would be confidently wrong, so the path is added
+        // only when exactly one source in the consumed group set owns the
+        // marker (`missing_show_source_owns`): a `[@off=]` fragment whose
+        // preceding bytes are `\{`, or a `[@fn=]` binder that resolves.
+        // That source's own path and text locate it. Zero owners (the
+        // marker was absent, the offset is not an interpolation in any
+        // file, or the merge renamed the binder) or two-plus owners (the
+        // #1596 same-name collision, or two files with `\{` at the same
+        // byte) fail closed to the unlocated message with no path --
+        // missing information beats misinformation.
+        if String::starts_with(msg, prefix = "cannot interpolate a value of type `") {
+          let msg = marker_in_file_space(msg = msg)
+          let mut owner_path = ""
+          let mut owner_source = ""
+          let mut owners = 0
+          let seen_paths: Array[String] = array_empty()
+          let mut gi2 = 0
+          while gi2 < Array::length(source_groups) {
+            let (_gname2, members2) = Array::get(source_groups, at = gi2)
+            let mut mi2 = 0
+            while mi2 < Array::length(members2) {
+              let (mpath, msource) = Array::get(members2, at = mi2)
+              let mut seen2 = false
+              let mut si2 = 0
+              while si2 < Array::length(seen_paths) {
+                if Array::get(seen_paths, at = si2) == mpath {
+                  seen2 = true
+                } else {
+                  ()
+                }
+                si2 = si2 + 1
+              }
+              if seen2 {
+                ()
+              } else {
+                Array::push(seen_paths, value = mpath)
+                // #2244 review round 5: a directory-shared vpkg import or a
+                // contract facade makes the ingested group source differ
+                // from the physical file (imports prepended / contract
+                // replaced), so an offset computed on it names a line below
+                // the real one. Recover the physical bytes the way
+                // checked_entry_source does -- re-ingest and require an
+                // exact match -- and drop the candidate (not an owner) when
+                // they cannot be verified.
+                match owner_locating_source(path = mpath, source = msource) {
+                  Some(mlocating) => if missing_show_source_owns(source = mlocating, msg = msg) {
+                    owners = owners + 1
+                    owner_path = mpath
+                    owner_source = mlocating
+                  } else {
+                    ()
+                  },
+                  None => ()
+                }
+              }
+              mi2 = mi2 + 1
+            }
+            gi2 = gi2 + 1
+          }
+          if owners == 1 {
+            throw(String::concat(owner_path, String::concat(": ", loader_physical_located(source = owner_source, located = locate_type_error(source = owner_source, msg = msg)))))
+          } else {
+            // locate against an empty source: the anchor cannot resolve, so
+            // this only strips the side marker from the message.
+            throw(locate_type_error(source = "", msg = msg))
+          }
+        } else {
+          // #3348: a module job's diagnostics already carry their path (and
+          // their location, when there is one); only the rest is located
+          // against the entry file here.
+          let known_paths: Array[String] = [input_path]
+          for group in source_groups {
+            let (_, members) = group
+            for member in members {
+              let (mpath, _) = member
+              Array::push(known_paths, value = mpath)
+            }
+          }
+          if String::contains(msg, needle = " [@off=") && !starts_with_known_path(msg = msg, paths = known_paths) {
+            throw(locate_merged_marker(input_path = input_path, entry_source = entry_source, source_groups = source_groups, msg = msg, culprit = false))
+          } else {
+            throw(String::join(locate_type_error_lines_except_paths(source = entry_source, msg = msg, paths = known_paths), sep = "\n"))
+          }
+        }
+      }
+    }
+  }
+  source_groups
+}
+
+/// `#deprecated` warnings for a file that already passed check_linked_file
+/// (#1262 / ADR-0101). Markers are collected from the entry file AND every
+/// linked dependency file (the same linked_dep_specs set the debug build
+/// links); uses are reported for the entry file only, as non-fatal
+/// `warning:` lines. A file that fails to parse gets no warnings — the
+/// check itself already failed loudly.
+export fn check_deprecated_warnings(input_path: String) -> Array[String] with Env + Exception + Fs {
+  check_deprecated_warnings_from_source_groups(input_path = input_path, source_groups = collect_source_groups_fs(entry_path = input_path))
+}
+
+/// Redundant owner/member selections in the entry file. The linked checker has
+/// already accepted the file before this runs; this is a non-fatal `vibe check`
+/// hygiene report with an actionable removal.
+export fn check_redundant_import_warnings(input_path: String) -> Array[String] with Env + Exception + Fs {
+  let source = cache_read_source_fs(path = input_path)
+  check_redundant_import_warnings_from_source_groups(input_path = input_path, source_groups = [
+    ("entry", [(input_path, source)])
+  ])
+}
+
+/// True when `source` is the file the missing-Show throw came from.
+///
+/// `[@off=N]` is the backslash of `\{`, not the expression. An in-range
+/// test is not ownership: N is small and every file longer than N would
+/// count, which either names the entry for a dependency's error or fails
+/// closed on every multi-file program.
+/// `[@fn=]` (no fragment offset) still owns the file whose binder the
+/// marker resolves, and only that file.
+/// #3456: `msg` with its `[@off=N]` / `[@off=N:M]` marker rewritten from the
+/// merged offset space (`merged_offset_owner`) to the owning file's own
+/// offsets -- the range end `M` by the same base as `N`. The check's prelude
+/// merges into that space (so its typed rows key one expression each), while
+/// the ownership checks below read a marker against one file's text, as they
+/// did when the merge kept each file's own offsets. A marker no recorded file
+/// owns -- no merge recorded, or an alias-collision clone past the last file
+/// -- is left as it is.
+fn marker_in_file_space(msg: String) -> String {
+  let marker = " [@off="
+  let mi = String::index_of(msg, needle = marker)
+  if mi < 0 {
+    msg
+  } else {
+    let inner_start = mi + String::length(marker)
+    let rest = String::substring(msg, start = inner_start, end = String::length(msg))
+    let start_end = marker_digits_end(s = rest, from = 0)
+    let n = parse_marker_digits(s = String::substring(rest, start = 0, end = start_end))
+    if n < 0 {
+      msg
+    } else {
+      match merged_offset_owner(off = n) {
+        Some((_, _, local)) => {
+          let delta = n - local
+          let mut out = String::concat(String::substring(msg, start = 0, end = inner_start), Int::to_string(local))
+          let mut tail_from = start_end
+          if start_end < String::length(rest) && String::byte_at(rest, at = start_end) == 58 {
+            let range_end = marker_digits_end(s = rest, from = start_end + 1)
+            let m = parse_marker_digits(s = String::substring(rest, start = start_end + 1, end = range_end))
+            if m >= 0 {
+              out = String::concat(out, String::concat(":", Int::to_string(m - delta)))
+              tail_from = range_end
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          String::concat(out, String::substring(rest, start = tail_from, end = String::length(rest)))
+        },
+        None => msg
+      }
+    }
+  }
+}
+
+/// True when `msg` already names one of `paths` -- a module job's diagnostic,
+/// which carries its own location.
+fn starts_with_known_path(msg: String, paths: Array[String]) -> Bool {
+  let mut found = false
+  for p in paths {
+    if String::length(p) > 0 && String::starts_with(msg, prefix = String::concat(p, ": ")) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// #3456: a refusal the check's prelude throws, located in the file that owns
+/// its `[@off=]` marker. The prelude runs on the merged program, so the marker
+/// indexes the merged offset space; read against the entry's own text, an
+/// entry that follows a dependency lost its location or named a wrong line.
+///
+/// The owner comes from the merge's record, so it is one file, and only that
+/// file is read: the entry is located as before, a dependency is named by its
+/// path. A culprit-call refusal (`culprit`) must also spell the culprit at its
+/// span in that file (`verify_culprit_off_marker`), or it keeps only the
+/// name. Fails closed to the bare message for an offset past every recorded
+/// file (an alias-collision clone) and for a file, the entry included, whose
+/// text the loader synthesized, where a parsed offset is not one in the file on
+/// disk.
+fn locate_merged_marker(input_path: String, entry_source: String, source_groups: Array[(String, Array[(String, String)])], msg: String, culprit: Bool) -> String with Env + Exception + Fs {
+  let marker = " [@off="
+  let mi = String::index_of(msg, needle = marker)
+  let rest = String::substring(msg, start = mi + String::length(marker), end = String::length(msg))
+  let n = parse_marker_digits(s = String::substring(rest, start = 0, end = marker_digits_end(s = rest, from = 0)))
+  let owner = if n < 0 {
+    None
+  } else {
+    merged_offset_owner(off = n)
+  }
+  match owner {
+    Some((path, source, _)) => {
+      let local = marker_in_file_space(msg = msg)
+      // The entry too: its recorded text can be synthesized (a directory's
+      // shared vpkg imports prepended), and `entry_source` is the file as read.
+      // #3656: a directory-shared sibling (the entry or not) is located in
+      // its recorded text and moved past the prepended block, which leaves a
+      // position on disk or none.
+      if loader_prepended_prefix_bytes(source = source) > 0 {
+        let verified = if culprit {
+          verify_culprit_off_marker(source = source, msg = local)
+        } else {
+          local
+        }
+        let located = loader_physical_located(source = source, located = locate_type_error(source = source, msg = verified))
+        if String::starts_with(located, prefix = "line ") {
+          String::concat(path, String::concat(": ", located))
+        } else {
+          locate_type_error(source = "", msg = verified)
+        }
+      } else if String::starts_with(source, prefix = vpkg_shared_import_marker) || String::starts_with(source, prefix = contract_facade_marker) {
+        locate_type_error(source = "", msg = verify_culprit_off_marker(source = "", msg = local))
+      } else if path == input_path {
+        let located = locate_type_error(source = entry_source, msg = if culprit {
+          verify_culprit_off_marker(source = entry_source, msg = local)
+        } else {
+          local
+        })
+        // #3520: name the file, as a module job's diagnostic and the same
+        // refusal under `vibe run` both do.
+        if String::starts_with(located, prefix = "line ") {
+          String::concat(path, String::concat(": ", located))
+        } else {
+          located
+        }
+      } else {
+        let verified = if culprit {
+          verify_culprit_off_marker(source = source, msg = local)
+        } else {
+          local
+        }
+        if String::contains(verified, needle = marker) {
+          String::concat(path, String::concat(": ", locate_type_error(source = source, msg = verified)))
+        } else {
+          locate_type_error(source = "", msg = verified)
+        }
+      }
+    },
+    // No merge recorded (the first file's base is 0, so `owner(0)` is Some
+    // whenever one is): the offsets are still each file's own.
+    None => if merged_offset_owner(off = 0) is None {
+      if culprit {
+        let (snapshot_entry_source, verified) = verify_culprit_off_marker_snapshot(input_path = input_path, source_groups = source_groups, msg = msg)
+        locate_type_error(source = snapshot_entry_source, msg = verified)
+      } else {
+        locate_type_error(source = entry_source, msg = msg)
+      }
+    } else {
+      locate_type_error(source = "", msg = verify_culprit_off_marker(source = "", msg = msg))
+    }
+  }
+}
+
+/// The index just past the run of ASCII digits in `s` starting at `from`.
+fn marker_digits_end(s: String, from: Int) -> Int {
+  let mut i = from
+  while i < String::length(s) && String::byte_at(s, at = i) >= 48 && String::byte_at(s, at = i) <= 57 {
+    i = i + 1
+  }
+  i
+}
+
+fn missing_show_source_owns(source: String, msg: String) -> Bool {
+  let marker = " [@off="
+  let mi = String::index_of(msg, needle = marker)
+  if mi < 0 {
+    String::starts_with(locate_type_error(source = source, msg = msg), prefix = "line ")
+  } else {
+    let inner_start = mi + String::length(marker)
+    let rest = String::substring(msg, start = inner_start, end = String::length(msg))
+    let rel = String::index_of(rest, needle = "]")
+    if rel < 0 {
+      false
+    } else {
+      let inner = String::substring(rest, start = 0, end = rel)
+      let colon = String::index_of(inner, needle = ":")
+      let digits = if colon < 0 {
+        inner
+      } else {
+        String::substring(inner, start = 0, end = colon)
+      }
+      let n = parse_marker_digits(s = digits)
+      n >= 0 && n + 1 < String::length(source) && String::char_code_at(source, at = n) == 92 && String::char_code_at(source, at = n + 1) == 123
+    }
+  }
+}
+
+/// The source text an offset-bearing diagnostic may be located against for
+/// one (path, source) member of a consumed group set. A plain member locates
+/// against its snapshot as-is. A member whose snapshot carries the loader's
+/// shared-import or contract-facade transform (imports prepended / contract
+/// replaced) must locate against the PHYSICAL file, recovered the same way
+/// checked_entry_source recovers the entry: re-ingest the current bytes and
+/// require the complete synthetic snapshot to match. None when the physical
+/// text cannot be verified -- the caller must then treat the member as
+/// unlocatable rather than emit coordinates computed on synthetic text.
+///
+/// #3656: a directory-shared sibling is answered with its recorded text, in
+/// whose space the offset is counted; the caller moves the position it locates
+/// there past the prepended block (`loader_physical_located`). Before, the
+/// PHYSICAL text was returned and read at the INGESTED offset, a block's
+/// length away from the byte the offset names.
+fn owner_locating_source(path: String, source: String) -> Option[String] with Env + Exception + Fs {
+  if loader_prepended_prefix_bytes(source = source) > 0 {
+    Some(source)
+  } else if String::starts_with(source, prefix = vpkg_shared_import_marker) || String::starts_with(source, prefix = contract_facade_marker) {
+    if Fs::exists(path) {
+      let physical = cache_read_source_fs(path = path)
+      if source == ingest_source_text_fs(path = path, raw = physical) {
+        Some(physical)
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+  } else {
+    Some(source)
+  }
+}
+
+fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Option[String] with Env + Exception + Fs {
+  let mut found: Option[String] = None
+  let mut count = 0
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, at = gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, source) = Array::get(sources, at = si)
+      if path == input_path {
+        found = Some(source)
+        count = count + 1
+      } else {
+        ()
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  if count == 1 {
+    match found {
+      Some(source) => if String::starts_with(source, prefix = vpkg_shared_import_marker) || String::starts_with(source, prefix = contract_facade_marker) {
+        // The loader prepends inherited `.vpkg` imports or replaces a contract
+        // with its generated facade before checking.
+        // Warning locations must refer to the physical file. Re-ingest the
+        // current bytes and require the complete synthetic snapshot to match;
+        // a suffix comparison would accept a file whose leading bytes changed.
+        if Fs::exists(input_path) {
+          let physical = cache_read_source_fs(path = input_path)
+          if source == ingest_source_text_fs(path = input_path, raw = physical) {
+            Some(physical)
+          } else {
+            None
+          }
+        } else {
+          None
+        }
+      } else {
+        Some(source)
+      },
+      None => None
+    }
+  } else {
+    None
+  }
+}
+
+//# ADR-0068 single-file scan (#2297)
+
+/// The scan itself now lives in `@vibe/compiler/runtime` (typecheck_fs.vibe),
+/// beside `collect_all_diagnostics`, so that every single-file consumer --
+/// this lane, `vibe check --single-file --json`, and the live LSP -- inherits
+/// one answer instead of the adapter splicing its own into two of them and the
+/// third going without.
+///
+/// These two stay here as the package's declared surface
+/// (`lib/@vibe/compiler/index.vpkg`) and as what `cli_adapter.vibe` and the
+/// closure lane below already call. Delegation rather than a move of the
+/// declarations, so the package contract and every consumer are untouched.
+export fn unstable_surface_diagnostics_located(input_path: String, detected: String, located: String) -> Array[String] with Exception {
+  unstable_import_diagnostics(input_path = input_path, detected = detected, located = located)
+}
+
+export fn unstable_surface_diagnostics(input_path: String, source: String) -> Array[String] with Exception {
+  unstable_import_diagnostics(input_path = input_path, detected = source, located = source)
+}
+
+/// The BUILD lane's entry point: one file read, no import closure. It used to
+/// call `collect_source_groups_fs`, which parses every reachable file a second
+/// time purely to find the entry again -- measured as a 1.1% self-compile heap
+/// regression that took CI's selfcompile KPI over its +10% ceiling (#2277 CI).
+/// Only the entry is scanned, so only the entry needs reading.
+/// INGESTED, not raw. The build ingests before it parses, and ingestion blanks
+/// the package header -- so a pinned `require @scope/pkg x.y.z = #pkg:sha1:...`
+/// line reaches a raw scan with a `#` in it, the lexer refuses it ("unknown #
+/// directive"), the parse yields nothing, and the gate goes SILENT while the
+/// build compiles the unstable import anyway. Measured: the same file unpinned
+/// produced the diagnostic, pinned produced none. That is the two-verbs-
+/// disagree defect this gate exists to prevent, reintroduced by reading the
+/// file a different way than the build reads it (#2277 review).
+/// The CLOSURE lane: every module the compile actually loaded, not just the
+/// entry (#2284).
+///
+/// The entry-only scan let a sibling carry the import -- `main.vibe` importing
+/// `./worker.vibe`, with the concurrency in `worker.vibe`, is the normal shape
+/// of a project, so the boundary was absent for exactly the structure it most
+/// needed to cover. Measured before this: that two-file program built an
+/// artifact and checked clean with no opt-in.
+///
+/// The loader records candidates as it ingests (`unstable_candidates`), so this
+/// costs no extra traversal -- the alternative, calling `collect_source_groups_fs`
+/// a second time, was measured as a 1.1% self-compile heap regression that put
+/// the selfcompile KPI over its ceiling.
+///
+/// Each candidate is confirmed by the same token scan the entry lane uses, so a
+/// module that merely MENTIONS the package in a comment yields nothing. The
+/// diagnostic names the file that actually spells the import, which is the edit
+/// point even when that file is a dependency the reader did not write --
+/// `VIBE_UNSTABLE=1` stays the escape hatch either way.
+export fn check_unstable_surface_warnings_from_closure() -> Array[String] with Exception + Fs {
+  let out = array_empty()
+  let seen: Array[String] = array_empty()
+  let candidates = unstable_candidates()
+  let mut i = 0
+  while i < Array::length(candidates) {
+    let (path, ingested) = Array::get(candidates, at = i)
+    let located = handle {
+      Fs::read_file(path)
+    } with { Exception::Throw(_) => ingested }
+    let diags = handle {
+      unstable_surface_diagnostics_located(input_path = path, detected = ingested, located = located)
+    } with { Exception::Throw(_) => array_empty() }
+    let mut j = 0
+    while j < Array::length(diags) {
+      let diag = Array::get(diags, at = j)
+      let report = String::concat(path, String::concat(": ", diag))
+      // #2289: DEDUPE, on two axes, because printing every report (rather than
+      // just the first) exposed two different floods.
+      //
+      // 1. The loader ingests a module more than once per compile (header
+      //    cache, source-group collection) and records a candidate each time,
+      //    so one file's single import arrived three times.
+      // 2. An INHERITED import is one edit -- the directory's index.vpkg --
+      //    but ingestion prepends it to every sibling, so a package with N
+      //    members reported it N times. Measured on a 3-member package: ten
+      //    reports for one `import` line.
+      //
+      // So an inherited report keys by (DIRECTORY, diagnostic): the file
+      // differs per sibling, the edit does not. Everything else keys by
+      // (file, diagnostic), which keeps two siblings that each physically
+      // spell the import reporting separately, and keeps a file's own
+      // inherited and physical reports distinct -- they differ in the note.
+      let key = if String::index_of(diag, needle = unstable_inherited_marker) >= 0 {
+        String::concat("inherited\n", String::concat(dir_of_path(file_path = path), String::concat("\n", diag)))
+      } else {
+        String::concat("own\n", report)
+      }
+      if unstable_index_of_str(hay = seen, needle = key) < 0 {
+        Array::push(seen, value = key)
+        Array::push(out, value = report)
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Clear the record before a compile. The unit-test batch compiles many files
+/// in one long-lived daemon, so a record left standing would report a previous
+/// file's dependency against the next one.
+export fn unstable_closure_reset() -> Unit {
+  unstable_candidates_reset()
+}
+
+export fn check_unstable_surface_warnings_from_path(input_path: String) -> Array[String] with Env + Exception + Fs {
+  handle {
+    unstable_surface_diagnostics_located(input_path = input_path, detected = ingest_source_text_fs(path = input_path, raw = Fs::read_file(input_path)), located = Fs::read_file(input_path))
+  } with {
+    // An unreadable or uningestable entry is the compile's error to report, in
+    // its own words.
+    Exception::Throw(_) => array_empty()
+  }
+}
+
+/// Redundant import warnings derived from the exact source snapshot consumed
+/// by the successful linked check. Missing or duplicate entry identity is
+/// fail-closed: no warning is safer than describing unchecked contents.
+export fn check_redundant_import_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
+  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
+    Some(snapshot) => snapshot,
+    None => return array_empty()
+  }
+  match checked_warning_stmts(input_path = input_path, source = source) {
+    Some(stmts) => {
+      let rows = detect_redundant_namespace_imports(stmts = stmts)
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(rows) {
+        let (_, _, msg) = Array::get(rows, at = i)
+        Array::push(out, value = locate_type_error(source = source, msg = String::concat("warning: ", msg)))
+        i = i + 1
+      }
+      out
+    },
+    None => array_empty()
+  }
+}
+
+/// #3044: a `let*` in a function body's top-level block, where `?` is the
+/// one spelling. Same snapshot discipline as the redundant-import warnings:
+/// entry file only, fail-closed when the checked snapshot cannot be located.
+export fn check_let_star_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
+  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
+    Some(snapshot) => snapshot,
+    None => return array_empty()
+  }
+  match checked_warning_stmts(input_path = input_path, source = source) {
+    Some(stmts) => {
+      let rows = detect_top_level_let_star(stmts = stmts)
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(rows) {
+        let (_, _, msg) = Array::get(rows, at = i)
+        Array::push(out, value = locate_type_error(source = source, msg = String::concat("warning: ", msg)))
+        i = i + 1
+      }
+      out
+    },
+    None => array_empty()
+  }
+}
+
+/// #3549: a `match` arm an earlier arm already covers never runs. Entry
+/// file only, from the checked snapshot, like the `let*` warning above.
+export fn check_unreachable_arm_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
+  let source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
+    Some(snapshot) => snapshot,
+    None => return array_empty()
+  }
+  if is_contract_ext(path = input_path) {
+    array_empty()
+  } else {
+    let rows = detect_unreachable_match_arms(source = source)
+    let out = array_empty()
+    let mut i = 0
+    while i < Array::length(rows) {
+      Array::push(out, value = locate_type_error(source = source, msg = String::concat("warning: ", Array::get(rows, at = i))))
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// #2378: a qualified definition (`Type::method`) of a name the builtin
+/// registry owns replaces that builtin at every call site the program writes,
+/// in every file of the linked program, including files that never import it
+/// -- and nothing said so. (Since #3132 the calls the compiler synthesizes by
+/// that name still reach the builtin, #3180.)
+///
+/// The rule is narrow because the leak is. Measured: a BARE `fn eq` in a
+/// dependency does not leak (export namespacing renames every non-entry value
+/// def to `name_exp_<path>`), while `fn String::index_of` does.
+/// `append_export_def_name` excludes a name containing `::` from that rename on
+/// purpose -- `collect_export_def_value_names`'s doc comment says "ordinary
+/// `Type::method` lets remain global receiver dispatch" -- so this shape, and
+/// only this shape, is program-wide.
+///
+/// A VALUE ALIAS is exempt, and that is not a convenience: `lib/@vibe/fs/fs.vibe`
+/// records that `perform Fs::<Op>` lowers to a call of the builtin NAME
+/// `Fs::<op>`, that a real fn DEF occupying that name hijacks the lowering
+/// (measured there: an arity-broken wasm call), and that a bare value alias
+/// does not participate in that resolution at all. So `export let Fs::exists =
+/// exists` is a re-export of the builtin, while `export fn Fs::exists(..)` is a
+/// replacement of it. Only the second is reported.
+///
+/// Reported at the DEFINING file as a WARNING, which is where the edit goes
+/// and where a shadow can be deliberate (an entry's own shadow is explicit and
+/// legal). The module that IMPORTS such a file -- the one that never asked for
+/// the override and gets it anyway -- is REFUSED by the loader
+/// (runtime/typecheck_fs.vibe, builtin_shadow_diagnostics_into), on every
+/// lane. Measured against `lib/**`: zero rows today.
+/// One file's offending definitions, appended to `out`.
+///
+/// `label` is empty for the entry (its own warnings need no path prefix, like
+/// every other warning this lane emits) and the owning path otherwise, so a
+/// dependency's row says which file to edit.
+fn append_builtin_shadowing_warnings(out: Array[String], path: String, source: String, label: String) -> Unit with Exception {
+  let stmts = match closure_warning_stmts(path = path, source = source) {
+    Some(parsed) => parsed,
+    None => return ()
+  }
+  // ONE predicate for the whole rule: the checker's collector is also what the
+  // loader marks a published environment with and refuses the importer for
+  // (runtime/typecheck_fs.vibe), so the warning here and the refusal there
+  // cannot disagree about what a definition binds -- a source-spelled alias
+  // (`String::byte_at`) counts, a `Trait::operation` of a trait declared in
+  // the same file does not.
+  let names = collect_builtin_shadowing_names(stmts = stmts)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, at = i)
+    // #3180: "for the whole linked program" stopped being true with #3132 --
+    // the calls the compiler synthesizes by a builtin's name (a `for` loop's
+    // `Array::length` / `Array::get`, array interpolation, structural `==`)
+    // reach the builtin, not this definition. What it replaces is the calls
+    // the program writes, in every file it links.
+    let tail = String::concat("` -- a qualified definition of a builtin name replaces that builtin at the program's own call sites, in every linked file including files that never import it (calls the compiler generates itself still reach the builtin). Use a different name, or `let ", String::concat(name, " = <builtin>` if you mean to re-export it."))
+    let located = locate_type_error(source = source, msg = String::concat("warning: rename `", String::concat(name, tail)))
+    Array::push(out, value = if String::length(label) == 0 {
+      located
+    } else {
+      String::concat(label, String::concat(": ", located))
+    })
+    i = i + 1
+  }
+}
+
+/// The statements of one member of the checked closure, for a warning that
+/// reads EVERY member (#2945). A contract keeps `checked_warning_stmts`'
+/// contract grammar. Any other member goes through the loader's located-parse
+/// memo, keyed by (path, exact source): the walk and the merge already parsed
+/// this snapshot, so a second parser run allocated the whole closure's ASTs
+/// again -- 359 MB on `lib/@vibe/cli/entry.vibe`, the phase that pushed a cold
+/// check past the wasm32 ceiling. A source that does not parse answers None,
+/// as `checked_warning_stmts` does.
+fn closure_warning_stmts(path: String, source: String) -> Option[Array[Stmt]] with Exception {
+  if is_contract_ext(path = path) {
+    checked_warning_stmts(input_path = path, source = source)
+  } else {
+    handle {
+      Some(parse_program_located_shared(path = path, source = source))
+    } with { Exception::Throw(_) => None }
+  }
+}
+
+export fn check_builtin_shadowing_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception + Fs {
+  let out = array_empty()
+  // #2628 review: the WHOLE closure, not just the entry.
+  //
+  // Scanning only `input_path` missed the case #2378 is actually about.
+  // Measured: `dep.vibe` defines `String::index_of`, `main.vibe` imports only
+  // `unrelated_helper` from it -- `vibe check dep.vibe` warned, and `vibe check
+  // main.vibe` said `ok` while being the program that gets the wrong builtin.
+  // The definer is who must edit, but the caller is who is surprised, and the
+  // caller is who runs `vibe check` on their own entry.
+  //
+  // Each member is visited once, keyed by path: a file reachable through two
+  // groups must not warn twice.
+  let seen = array_empty()
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_group, members) = Array::get(source_groups, at = gi)
+    let mut mi = 0
+    while mi < Array::length(members) {
+      let (path, source) = Array::get(members, at = mi)
+      if str_array_contains_path(arr = seen, value = path) {
+        ()
+      } else {
+        Array::push(seen, value = path)
+        append_builtin_shadowing_warnings(out = out, path = path, source = source, label = if path == input_path {
+          ""
+        } else {
+          path
+        })
+      }
+      mi = mi + 1
+    }
+    gi = gi + 1
+  }
+  out
+}
+
+fn str_array_contains_path(arr: Array[String], value: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, at = i) == value {
+      found = true
+      i = Array::length(arr)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The same warnings, from source groups the caller already has. `vibe check`
+/// uses this form so the whole lane collects exactly once.
+export fn check_deprecated_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Env + Exception + Fs {
+  let entry_source = match checked_entry_source(input_path = input_path, source_groups = source_groups) {
+    Some(snapshot) => snapshot,
+    None => return array_empty()
+  }
+  ingestion_pipeline_telemetry_add(index = 17, amount = 1)
+  let entry_stmts = match checked_warning_stmts(input_path = input_path, source = entry_source) {
+    Some(stmts) => stmts,
+    None => return array_empty()
+  }
+  // #1262 follow-up: markers come from the LOADER's resolved set, not from a
+  // second path-joining resolver. The old collection could not resolve
+  // `@scope/pkg`, so a deprecated alias published by a PACKAGE -- which is
+  // every alias the ADR-0100 (3) collection rename shipped -- was invisible
+  // here and the migration warning this function promises never appeared.
+  let dep_sources = resolved_dep_sources(input_path = input_path, groups = source_groups)
+  // A `.vpkg` reaches source_groups as a generated facade (and its type
+  // aliases as a materialized types module). `#deprecated` on a contract
+  // type alias lives only in the on-disk file, so re-read those paths.
+  append_raw_vpkg_dep_sources(input_path = input_path, groups = source_groups, out = dep_sources)
+  // Codex review (PR #1713, P2): the closure above is deliberately WIDE -- it
+  // has to be, because a package publishes its markers from a sibling file the
+  // entry never names. Wide marker COLLECTION plus a token-level scanner would
+  // be too wide the other way, though: a file importing something unrelated
+  // from `@vibe/core` and declaring its own `HashMap::new_string` would be told
+  // to use `MutMap::new_string`. So a dependency's marker only counts for a
+  // name the entry actually IMPORTED. Markers the entry declares itself still
+  // count unconditionally (a file deprecating its own helper needs no import).
+  deprecated_warning_lines_visible(entry_source = entry_source, dep_sources = dep_sources, visible_names = Some(entry_imported_names(entry_stmts = entry_stmts)))
+}
+
+/// Re-read every on-disk `.vpkg` in `groups` (except the entry itself) so
+/// `#deprecated` markers on contract-only type aliases are visible to the
+/// token scanner. The generated facade in `groups` does not preserve them.
+fn append_raw_vpkg_dep_sources(input_path: String, groups: Array[(String, Array[(String, String)])], out: Array[String]) -> Unit with Fs {
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_g, members) = Array::get(groups, at = gi)
+    let mut mi = 0
+    while mi < Array::length(members) {
+      let (path, _source) = Array::get(members, at = mi)
+      if path != input_path && String::ends_with(path, suffix = ".vpkg") && Fs::exists(path) {
+        Array::push(out, value = cache_read_source_fs(path = path))
+      } else {
+        ()
+      }
+      mi = mi + 1
+    }
+    gi = gi + 1
+  }
+}
+
+/// Every name the entry selects from an import / re-export, in source order.
+/// The alias half of `import p { old as new }` is intentionally not included:
+/// the entry's later uses spell `new`, and the `old` at the import site is
+/// itself a use worth warning about.
+fn entry_imported_names(entry_stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = array_empty()
+  let mut i = 0
+  while i < Array::length(entry_stmts) {
+    match Array::get(entry_stmts, at = i) {
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let iname = Array::get(items, at = j).name
+          Array::push(out, value = iname)
+          j = j + 1
+        }
+      },
+      SReExport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let iname = Array::get(items, at = j).name
+          Array::push(out, value = iname)
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+//# Release wasm stripping (#1100 size)
+
+// Compatibility entry; the worker shares the same configuration owner.
+
+/// #2305 (Codex review, round 3): the ADR-0068 boundary for the DEBUG lane,
+/// gating the snapshot this function itself compiled.
+///
+/// The CLI's first attempt ran `check_linked_file` as a preflight and then
+/// called the plain builder. That authorized one filesystem snapshot and
+/// emitted a second: a dependency edited in between -- an editor save racing
+/// `build --debug` -- could introduce an unstable import the preflight never
+/// saw. It also paid for a whole extra typecheck traversal.
+///
+/// Checking here removes both. `build_linked_debug_entry` is what ingests the
+/// closure, so the record this consults describes exactly the bytes about to
+/// be written, and nothing is written until it passes. A rejected build wastes
+/// the compile, which is the same trade the release lane already makes.
+///
+/// #3577: the TYPE check cannot be read off that record -- the entry compile
+/// runs no checker -- so it does run first, on the loader's snapshot. What
+/// keeps it from authorizing one snapshot and emitting another is the
+/// comparison before anything is written: every file the check read must
+/// still carry the stat token it had when the check read it. #3625: the same
+/// check files the entry's `Float` arithmetic rows, which the entry compile
+/// reads for exactly the text it parsed.
+///
+/// `allow_unstable` is the caller's, read at the edge; this function has no
+/// Env effect.
+export fn write_linked_debug_build_checked(input_path: String, output_path: String, entry_name: String, allow_unstable: Bool) -> Unit with Env + Exception + Fs {
+  unstable_closure_reset()
+  // #3577: `--debug` changes code generation only. `build_linked_debug_entry`
+  // runs no checker of its own, so a type error compiled and
+  // ran (`let x: Int = "s"` printed `st`). Run the check `vibe check` and the
+  // release build run, on the same import resolution, before emitting.
+  // The compile below reads the files again, so the build is refused unless
+  // every checked file is unchanged once it has finished
+  // (`refuse_changed_checked_sources`): the bytes written are the bytes checked.
+  let checked = checked_source_tokens(groups = check_linked_file_source_groups(input_path = input_path))
+  let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path = input_path, entry_name = entry_name)
+  // STAGE every dependency before the verdict. `compile_debug_library` reads
+  // the dependency again, so compiling them after the check would authorize
+  // one snapshot and publish another -- a dependency that gains an
+  // `@vibe/concurrent` import in that window would be compiled and written
+  // unchecked (Codex review on #2313). Compiling first means the record the
+  // check consults covers every byte that will be published.
+  let output_dir = linked_output_dir(output_path = output_path)
+  let staged = array_empty()
+  let mut si = 0
+  while si < Array::length(linked_dep_specs) {
+    let (module_name, dep_path) = Array::get(linked_dep_specs, at = si)
+    let lib_output_path = String::concat(output_dir, String::concat("/", String::concat(module_name, ".wasm")))
+    Array::push(staged, value = (lib_output_path, compile_debug_library(dep_path = dep_path)))
+    si = si + 1
+  }
+  if allow_unstable {
+    ()
+  } else {
+    let diags = check_unstable_surface_warnings_from_closure()
+    if Array::length(diags) > 0 {
+      throw(String::join(diags, sep = "\n"))
+    } else {
+      ()
+    }
+  }
+  refuse_changed_checked_sources(checked = checked)
+  Fs::write_bytes(output_path, bytes = entry_bytes)
+  let mut pi = 0
+  while pi < Array::length(staged) {
+    let (lib_output_path, lib_bytes) = Array::get(staged, at = pi)
+    Fs::write_bytes(lib_output_path, bytes = lib_bytes)
+    pi = pi + 1
+  }
+}
+
+export fn write_linked_debug_build(input_path: String, output_path: String, entry_name: String) -> Unit with Env + Exception + Fs {
+  // #3577: the same check as the gated builder, on the same snapshot: it
+  // stages every library before writing, so the comparison with the checked
+  // files covers them too. `true` skips only the unstable-surface verdict,
+  // which this builder never ran.
+  write_linked_debug_build_checked(input_path = input_path, output_path = output_path, entry_name = entry_name, allow_unstable = true)
+}
+
+/// #3577: each file the check read, with the stat token the source memo took
+/// just before reading it. A path the memo did not see is stat'ed now, which
+/// is later than its read and so only ever errs toward refusing.
+fn checked_source_tokens(groups: Array[(String, Array[(String, String)])]) -> Array[(String, Int)] with Fs {
+  let out: Array[(String, Int)] = array_empty()
+  for group in groups {
+    let (_group_name, members) = group
+    for member in members {
+      let (path, _source) = member
+      let memo = cache_source_memo_token(path = path)
+      Array::push(out, value = (path, if memo == 0 - 1 {
+        Fs::stat_token(path)
+      } else {
+        memo
+      }))
+    }
+  }
+  out
+}
+
+/// #3577: refuse to write a debug build whose sources changed after they were
+/// type-checked. The compile reads them again, so a save racing the build
+/// would otherwise publish bytes no check ever saw. The token is the one the
+/// source memo trusts; -1 means the host gives none, and that file is not
+/// compared.
+fn refuse_changed_checked_sources(checked: Array[(String, Int)]) -> Unit with Exception + Fs {
+  for entry in checked {
+    let (path, token) = entry
+    if token != 0 - 1 && Fs::stat_token(path) != token {
+      throw("run the build again: `\{path}` changed after it was type-checked, so the compiled output may hold code that was never checked")
+    } else {
+      ()
+    }
+  }
+  ()
+}
+

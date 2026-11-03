@@ -254,9 +254,10 @@ export let g2: () -> String = () -> { greet("hi", 3) }
 - Defaults apply only to a direct call of a top-level `fn` by its name. A
   function with defaults cannot be used as a value (wrap it in a lambda that
   calls it, `(a) -> greet(a)`), and a namespaced `T::f` cannot carry one,
-  since a method call (`x.f(..)`) bypasses them. An exported function cannot
-  carry one yet either: an importer cannot tell a default from a plain `x?`
-  (#3440).
+  since a method call (`x.f(..)`) bypasses them.
+- An exported function keeps its defaults across the import (#3440): an
+  importer, an alias and a re-export may omit the argument, and a written
+  `None` / `Some(..)` or use as a value is refused there too.
 
 `x?` is an optional parameter (#1500). It is declared at type `Option[T]` and
 the call site may omit it:
@@ -307,11 +308,13 @@ enum Color { Red; Green; Blue } derive(Eq)
 export enum Shape { Circle(Int); Rect(Int, Int) }
 ```
 
-A declaration may not take a builtin type's spelling: `Int`, `Bool`, `i32`
+A declaration may not take a builtin type's spelling: `Int`, `Bool`, `f64`
 and the like at arity 0, and `Array[_]` / `Option[_]` at arity 1. An
 annotation resolves those to the builtin before it looks at declarations, so
 such a type could never be named in one, and the declaration is refused with
-a message naming the rename (#2475). This example used to declare
+a message naming the rename (#2475). `i32` is refused too: it is no longer a
+type (below), and stays reserved so that no declaration gives it a new
+meaning. This example used to declare
 `enum Option[T]`, which is why the rule is worth stating here.
 
 Constructors may be used in expressions and patterns.
@@ -829,7 +832,8 @@ Bool
 Char
 String
 Unit
-i32
+Float64
+Float32
 f32
 f64
 
@@ -845,8 +849,17 @@ Option[T]
 
 Rules:
 
-- `i32`, `f32`, and `f64` are aliases for `Int`, `Float`, and `Double` in type
-  positions.
+- `Float64` and `Float32` are the width-named spellings of `Double` and
+  `Float`, in type positions and as a namespace (`Float64::to_string`)
+  (ADR-0122). `f32` and `f64` are aliases for `Float` and `Double` in type
+  positions; they and the old names retire in favour of the width names.
+- There is no `i32`: vibe's integer type is `Int`, which is 63-bit. `i32`
+  used to be accepted as an alias of `Int`, so code that declared 32 bits got
+  63-bit arithmetic (`2147483647 + 1` was `2147483648`); it is now an unknown
+  type whose message names `Int` (#3727). The same hint follows the other
+  fixed-width spellings vibe does not define (`i8`, `i128`, `u128`, `isize`,
+  `usize`). `i64`, `u8`..`u64`, `i16` and `v128` are separate builtin types,
+  not spellings of `Int`.
 - Function effects appear after return type: `-> T with Effect`.
 - A type-constructor parameter may declare its arity with underscore slots:
   `F[_]` has one input and `F[_, _]` has two, and those forms are

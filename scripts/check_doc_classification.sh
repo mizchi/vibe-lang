@@ -35,7 +35,7 @@
 #
 # A row pointing outside docs/ (`../book/README.md`) is skipped: the corpus is
 # docs/, and book/ has its own gates (check_book_links.sh, vibe_md.sh,
-# check_tutorial_translation_parity.sh).
+# check_tutorial_translation_parity.vibex).
 #
 # THE GATE MUST NOT BE ABLE TO SEE ITSELF (AGENTS.md, twice-learned in #2138).
 # Two ways that could happen here, both closed:

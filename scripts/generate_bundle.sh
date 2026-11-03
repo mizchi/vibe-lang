@@ -1000,7 +1000,9 @@ merge_flatten_tool_fingerprint() {
 
 # #3439: the seed compiles the whole compiler in the two steps below with bump
 # allocation (VIBE_RC=0), so a compile's peak is everything it allocates and
-# the wasm32 maximum (4 GiB) is a hard ceiling. Crossing it traps with
+# the wasm32 maximum (4 GiB) is a hard ceiling. The two flattens (bootstrap
+# pass 1, run by the seed, and the merge flatten, run by the tool pass 3
+# builds) allocate without freeing too and report the same figure. Crossing it traps with
 # `memory access out of bounds` and names no source location. VIBE_MEM=1 has
 # the runner report what the compile allocated (it does not change the
 # output); this names the headroom on success and the ceiling on failure.
@@ -1016,7 +1018,7 @@ seed_compile_memory_note() {
   # #3447).
   local headroom=$(( SEED_COMPILE_MEMORY_CEILING - peak ))
   if [ "$headroom" -lt $(( 16 * 1048576 )) ]; then
-    echo "generate_bundle: $label ran the seed out of wasm32 memory: its heap reached $peak of $SEED_COMPILE_MEMORY_CEILING bytes. The seed compiles the whole compiler here without freeing, so a change that makes the compiler source more expensive to compile can cross the ceiling; see #3439." >&2
+    echo "generate_bundle: $label ran out of wasm32 memory: its heap reached $peak of $SEED_COMPILE_MEMORY_CEILING bytes. This step processes the whole compiler without freeing, so a change that makes the compiler source more expensive to process can cross the ceiling; see #3439." >&2
   else
     echo "generate_bundle: $label allocated $allocated bytes; its heap peaked $(( headroom / 1048576 )) MiB under the wasm32 ceiling (#3439)" >&2
   fi
@@ -1042,10 +1044,11 @@ bootstrap_merge_flatten_tool() {
   # Pass 1: the seed flattens the live tree.
   rm -f "$seed_merged" "$seed_merged.diag"
   (cd "$PROJECT_ROOT" && \
-    export VIBE_EMIT_MERGED_SOURCE=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    export VIBE_EMIT_MERGED_SOURCE=1 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
       VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" && \
     run_bundle_runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$seed_wasm" \
       lib/@vibe/compiler/cli_adapter.vibe "$seed_merged" cli_main >"$tool_log.seedflat" 2>&1) || true
+  seed_compile_memory_note "$tool_log.seedflat" "the seed's flatten of the live tree (bootstrap pass 1)"
   if [ ! -s "$seed_merged" ]; then
     echo "generate_bundle: seed could not flatten the live tree (bootstrap pass 1)" >&2
     cat "$seed_merged.diag" >&2 2>/dev/null || true
@@ -1090,10 +1093,11 @@ build_exact_adapter_merged_source() {
   fi
   rm -f "$merged_path.diag"
   (cd "$PROJECT_ROOT" && \
-    export VIBE_EMIT_MERGED_SOURCE=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
+    export VIBE_EMIT_MERGED_SOURCE=1 VIBE_MEM=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
       VIBE_IMPORT_ABI="${VIBE_IMPORT_ABI:-raw}" VIBE_NODE_WASM_FLAGS="$tool_node_flags" && \
     run_bundle_runner "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$flatten_wasm" \
       lib/@vibe/compiler/cli_adapter.vibe "$merged_path" cli_main >"$tool_log.flatten" 2>&1) || true
+  seed_compile_memory_note "$tool_log.flatten" "the merge flatten"
   if [ ! -s "$merged_path" ]; then
     echo "generate_bundle: merge flatten failed" >&2
     cat "$merged_path.diag" >&2 2>/dev/null || true

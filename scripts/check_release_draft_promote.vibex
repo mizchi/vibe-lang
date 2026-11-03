@@ -1,0 +1,129 @@
+// `release.yml` must stage the release as a DRAFT and then promote it. #3672
+// ported this gate from check_release_draft_promote.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_release_draft_promote.vibex -- [--workflow FILE]
+//
+// This repository has immutable releases enabled: assets can only be attached
+// before a release is published. Publishing directly created the release and
+// then lost every upload -- measured at v0.1.0-rc.0:
+//
+//   Cannot upload asset vibe-toolchain-v0.1.0-rc.0.tar.gz to an immutable
+//   release. GitHub only allows asset uploads before a release is published
+//
+// leaving a PUBLISHED pre-release with ZERO downloadable assets, which the same
+// immutability makes uncorrectable in place. The workflow already encoded this
+// rule for the release BODY (build_release_body.sh refuses a dead link because
+// "a body cannot be corrected after publishing here") -- the assets were the
+// half nobody connected.
+//
+// WHAT THIS CHECKS, AND WHAT IT DOES NOT.
+//
+// The property that matters is "the published release carries its assets", and
+// that is only decidable by cutting a real tag against a real immutable-release
+// repository. This gate cannot do that. So it checks the LEXICAL structure that
+// the fix consists of, and says so rather than implying more:
+//
+//   1. the publish step stages a draft (a line `draft: true` after one or more
+//      leading spaces)
+//   2. a later step promotes it (`gh release edit ` and, later on the same
+//      line, `--draft=false`)
+//   3. that promotion VERIFIES the end state instead of assuming it
+//      (`assets=$want_assets` and `prerelease=$want_pre`) -- the v0.1.0-rc.0
+//      failure produced a release that existed, was correctly marked
+//      pre-release, and was empty, so "the step ran" is not the property
+//
+// The end-to-end check lives in the workflow itself (the promote step compares
+// the published asset count against what was staged) and fires at the next tag.
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/process {
+  exit
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn contains(s: String, part: String) -> Bool {
+  String::index_of_from(s, part, 0) >= 0
+}
+
+/// `^ +draft: true`: one or more spaces, then `draft: true`.
+fn stages_draft(line: String) -> Bool {
+  let mut i = 0
+  while i < String::length(line) && String::byte_at(line, i) == ' ' {
+    i = i + 1
+  }
+  i > 0 && String::starts_with(String::substring(line, i, String::length(line)), "draft: true")
+}
+
+/// `gh release edit .*--draft=false`.
+fn promotes_draft(line: String) -> Bool {
+  let at = String::index_of_from(line, "gh release edit ", 0)
+  at >= 0 && String::index_of_from(line, "--draft=false", at + 16) >= 0
+}
+
+fn any_line(lines: Array[String], pred: (String) -> Bool) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(lines) && !found {
+    if pred(Array::get(lines, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn main allows Env + Fs::is_file + Fs::read_file + Console::write_stream + Stderr::write_stream + Process {
+  let wf = option("--workflow", ".github/workflows/release.yml")
+  if !Fs::is_file(wf) {
+    Stderr::write_stream("release-draft-promote: no workflow at \{wf}\n")
+    exit(2)
+  } else {
+    let text = Fs::read_file(wf)
+    let lines = String::split(text, "\n")
+    let mut fail = false
+    if any_line(lines, stages_draft) {
+      Console::write_stream("  ok   the publish step stages a draft\n")
+    } else {
+      Console::write_stream("  FAIL no 'draft: true' -- assets would upload to an already-published immutable release\n")
+      fail = true
+    }
+    if any_line(lines, promotes_draft) {
+      Console::write_stream("  ok   a later step promotes the draft\n")
+    } else {
+      Console::write_stream("  FAIL nothing promotes the draft -- the release would never publish\n")
+      fail = true
+    }
+    // The promotion must read the published state back: the comparison must
+    // exist, not merely a mention of `gh release view`.
+    if contains(text, "assets=$want_assets") && contains(text, "prerelease=$want_pre") {
+      Console::write_stream("  ok   the promotion verifies draft/prerelease/asset-count after publishing\n")
+    } else {
+      Console::write_stream("  FAIL the promotion does not check what it published -- an empty release would pass\n")
+      fail = true
+    }
+    Console::write_stream("\n")
+    if fail {
+      Console::write_stream("[release-draft-promote] FAIL\n")
+      exit(1)
+    } else {
+      Console::write_stream("[release-draft-promote] ok\n")
+    }
+  }
+}

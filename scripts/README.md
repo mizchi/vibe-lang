@@ -95,9 +95,12 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 
 ## Check / lint / gate / repro
 - `check_portable_boundary.sh`
-- `check_scripts_readme.sh` (+ `_test`) — every script THIS file names is in
-  the tree (#2001): literal names, one brace group, and `*` patterns are all
-  read; a name for a script that is gone fails
+- `check_scripts_inventory.vibex` (+ `check_scripts_inventory_test.sh`) —
+  every file under `scripts/` has a row in `inventory.tsv` (category, entry,
+  host reason or porting issue, removal condition), and every script THIS file
+  names is in the tree (#3675, #2001): literal names, one brace group, and `*`
+  patterns are all read; an unregistered script, a row for one that is gone,
+  and a name for a script that is gone all fail
 - `check_vibe_fmt.sh` (+ `vibe_fmt_allowlist.txt`) — CI-enforced `vibe fmt`
   gate (`vibe-fmt-check` job, required): every `lib/**/*.vibe` file must be a
   `vibe_fmt.sh --check` fixpoint unless listed in the allowlist, which now

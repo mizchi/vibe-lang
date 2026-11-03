@@ -179,14 +179,15 @@ if case_block:
     for arm in re.findall(r'^  ([A-Za-z][A-Za-z0-9|-]*)\)', case_block.group(1), re.M):
         verbs |= {v.lstrip("-") for v in arm.split("|") if v and v.lstrip("-")[:1].isalpha()}
 # Argv verbs moved into the compiler wasm (#2858): the match in
-# lib/@vibe/compiler/user_dispatch.vibe is the dispatcher the launcher invokes,
+# lib/@vibe/cli/commands/dispatch.vibe is the dispatcher the launcher invokes,
 # so a documented command must appear there or in the remaining host-only
 # case arms.
 try:
-    ud = read_source_group("lib/@vibe/compiler/user_dispatch.vibe")
+    ud = read_source_group("lib/@vibe/cli/commands/dispatch.vibe")
     verbs |= set(re.findall(r'^    "([a-z][a-z0-9-]*)" =>', ud, re.M))
-except OSError:
-    pass
+except OSError as exc:
+    print(f"check-doc-commands: FAIL: cannot read CLI dispatcher: {exc}", file=sys.stderr)
+    sys.exit(1)
 # A parse that finds nothing would pass every doc silently. Fail loudly instead.
 if len(verbs) < 20:
     print(f"check-doc-commands: FAIL: read only {len(verbs)} verbs from runtime/vibe -- the "

@@ -2052,8 +2052,8 @@ REPL_HELP
     # compile asks for again, so what a mutant adds to a cache is dead weight
     # that grows with the run: on the formatter's modules it filled the disk
     # partway through. The baseline's entries are kept (each mutant reuses
-    # them for the modules it did not touch); anything newer than the mark is
-    # a mutant's and is deleted after it.
+    # them for the modules it did not touch); keys absent from the baseline
+    # are a mutant's and are deleted after it, independent of file mtimes.
     mkdir -p "$mwork/cache"
     # Compile test files into a test plan WITHOUT running it; the plan's
     # records (line 6 on) are `src<TAB>wasm<TAB>...` (plan_test_record), an
@@ -2101,24 +2101,6 @@ REPL_HELP
         from=$((from + nrows - nskip))
       done
       [ -n "$total" ] && [ "$(grep -c . "$out" || true)" = "$total" ]
-    }
-    # A run-tests plan record (`src<TAB>wasm<TAB>...`, see plan_test_record)
-    # into mrec_src / mrec_wasm, splitting on EVERY tab. `IFS=<tab> read`
-    # cannot do this: tab is IFS whitespace, so a run of tabs is one
-    # separator and an empty field vanishes. A file that did not compile has
-    # an empty wasm, and since its record also carries the verdict lines
-    # (`src<TAB><TAB><TAB><TAB>FAIL (compile) ...`, #3711), `read` handed the
-    # fail line back as the wasm path and the mutant was run instead of being
-    # counted unviable.
-    mutate_plan_record() {
-      local rest
-      mrec_src="${1%%	*}"
-      rest="${1#*	}"
-      if [ "$rest" = "$1" ]; then
-        mrec_wasm=""
-      else
-        mrec_wasm="${rest%%	*}"
-      fi
     }
     mutate_wasm_path() {
       case "$1" in /*) printf '%s' "$1" ;; '') ;; *) printf '%s' "$PROJECT_ROOT/$1" ;; esac
@@ -2185,10 +2167,12 @@ REPL_HELP
     printf 'target\t%s\t%s\n' "$mtarget" "$msnap" > "$mresults"
     mfi=0; mtid=0; mbase_ok=1
     : > "$mwork/tests.tsv"
+    # A failed compile has an empty wasm field followed by display fields.
+    # IFS tab splitting collapses that empty field into the failure line.
     while IFS= read -r mrec; do
-      mutate_plan_record "$mrec"
-      msrc="$mrec_src"
-      mwasm="$(mutate_wasm_path "$mrec_wasm")"
+      plan_test_record "$mrec"
+      msrc="$src"
+      mwasm="$(mutate_wasm_path "$wasm")"
       [ -n "$mwasm" ] || { cat "$mwork/compile.log" >&2; die "vibe mutate: $msrc did not compile"; }
       cp "$mwasm" "$mwork/base/$mfi.wasm"
       printf '%s\n' "$msrc" >> "$mwork/tests.files"
@@ -2210,7 +2194,12 @@ REPL_HELP
     [ "$mtid" -gt 0 ] || die "vibe mutate: the test files contain no test blocks"
     cmp -s "$mabs" "$msnap" || die "vibe mutate: $mtarget changed while the baseline ran; run again"
     invoke_cli mutants "$msnap" > "$mwork/sites.txt" || die "vibe mutate: could not list the mutation sites of $mtarget"
-    touch "$mwork/cache.mark"
+    # Compiler cache keys are generated relative filenames. Keeping the root
+    # out of the list also preserves project paths containing whitespace.
+    mutate_cache_keys() {
+      ( cd "$mwork/cache" && find . -type f -print ) | LC_ALL=C sort
+    }
+    mutate_cache_keys > "$mwork/cache.baseline"
     mtotal="$(grep -c . "$mwork/sites.txt" || true)"
     echo "[vibe-mutate] $mtotal mutants of $mtarget x $mtid tests in ${#mrel[@]} file(s)" >&2
     mn=0
@@ -2223,8 +2212,8 @@ REPL_HELP
       if VIBE_SOURCE_OVERLAY="$mabs" VIBE_SOURCE_OVERLAY_WITH="$mfile" mutate_compile "$mwork/m.plan" "${mrel[@]}"; then
         mfi=0
         while IFS= read -r mrec; do
-          mutate_plan_record "$mrec"
-          mwasm="$(mutate_wasm_path "$mrec_wasm")"
+          plan_test_record "$mrec"
+          mwasm="$(mutate_wasm_path "$wasm")"
           if [ -n "$mwasm" ]; then
             mcompiled=1
             if ! cmp -s "$mwasm" "$mwork/base/$mfi.wasm"; then
@@ -2250,7 +2239,11 @@ REPL_HELP
       printf 'mutant\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$mid" "$mstart" "$mend" "$mkind" "$morig" "$mrepl" "$mstatus" "$mkillers" >> "$mresults"
       echo "[vibe-mutate] $mn/$mtotal $mtarget:$mpos $mkind $morig -> ${mrepl:-(deleted)}: $mstatus" >&2
       rm -f "$mfile"
-      find "$mwork/cache" -type f -newer "$mwork/cache.mark" -exec rm -f {} + 2>/dev/null || true
+      mutate_cache_keys > "$mwork/cache.current"
+      LC_ALL=C comm -13 "$mwork/cache.baseline" "$mwork/cache.current" |
+        while IFS= read -r mcache_key; do
+          rm -f -- "$mwork/cache/$mcache_key"
+        done
     done < "$mwork/sites.txt"
     # The run's own cache must end where the baseline left it; say so, so the
     # pruning above can be checked from outside the run.

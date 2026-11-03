@@ -1,0 +1,212 @@
+// Keep book/en tour chapters and book/ja translations from drifting apart.
+// #3672 ported this gate from check_tutorial_translation_parity.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_tutorial_translation_parity.vibex -- [--root DIR]
+//
+// AGENTS.md "Language and documentation policy" makes the English chapter the
+// source of truth and the `-ja` file a translation of prose and comments only:
+// the program in each ```vibe run block stays the same program. That invariant
+// is what makes the pair maintainable -- fix a bug in one chapter and the other
+// needs a prose edit, not a re-derivation.
+//
+// `scripts/vibe_md.sh check` already proves each file individually: every block
+// compiles, runs, and matches its own recorded ```output. What it cannot see is
+// the pair. So the check here is exactly the part that survives that: two files
+// that run the same programs record the same outputs, in the same order. If the
+// code in one copy drifts, either its own output block goes stale (vibe_md.sh
+// catches it) or the output changes (this catches it).
+//
+// Comparing outputs rather than sources is deliberate. The sources legitimately
+// differ -- comments are translated -- so a source diff would be noise, and
+// normalizing comments away would just re-encode the same guess about which
+// differences are allowed.
+//
+// A chapter is a `NN_*.vibe.md` directly under book/en. Every chapter needs a
+// translation, with no allowlist: there used to be one naming seven files, and
+// deleting the translation of any other chapter passed in silence (#2156
+// review). A translation with no chapter fails too -- it would never be
+// checked or updated again. --root DIR checks another tree (the self-test's).
+
+import @vibe/process {
+  exit
+}
+import @vibex/shell {
+  ls, sort_str
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn is_digit(c: Char) -> Bool {
+  c >= '0' && c <= '9'
+}
+
+/// `[0-9][0-9]_*.vibe.md`.
+fn is_chapter_name(name: String) -> Bool {
+  String::length(name) >= 11 && is_digit(String::byte_at(name, 0)) && is_digit(String::byte_at(name, 1)) && String::byte_at(name, 2) == '_' && String::ends_with(name, ".vibe.md")
+}
+
+/// The chapter files directly under `dir`, by name, sorted.
+fn chapters(dir: String) -> Array[String] with Fs {
+  let names: Array[String] = []
+  if Fs::is_dir(dir) {
+    let entries = ls(dir)
+    let mut i = 0
+    while i < Array::length(entries) {
+      let entry = Array::get(entries, i)
+      if !entry.is_dir && is_chapter_name(entry.name) {
+        Array::push(names, entry.name)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  sort_str(names)
+}
+
+fn end_marker() -> String {
+  "---end-of-output-block---"
+}
+
+/// The ```output blocks of a .vibe.md, in order, each followed by a marker so
+/// that "same text, different block boundaries" is still a difference.
+fn outputs(text: String) -> Array[String] {
+  let lines = String::split(text, "\n")
+  // A final newline ends the last line; it does not start an empty one.
+  let n = if Array::length(lines) > 0 && Array::get(lines, Array::length(lines) - 1) == "" {
+    Array::length(lines) - 1
+  } else {
+    Array::length(lines)
+  }
+  let out: Array[String] = []
+  let mut inblock = false
+  let mut i = 0
+  while i < n {
+    let line = Array::get(lines, i)
+    if line == "```output" {
+      inblock = true
+    } else if line == "```" {
+      if inblock {
+        Array::push(out, end_marker())
+      } else {
+        ()
+      }
+      inblock = false
+    } else if inblock {
+      Array::push(out, line)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn at_or_end(xs: Array[String], i: Int) -> String {
+  if i < Array::length(xs) {
+    Array::get(xs, i)
+  } else {
+    "(end of output blocks)"
+  }
+}
+
+/// The index of the first line where the two sequences differ, or -1.
+fn first_difference(a: Array[String], b: Array[String]) -> Int {
+  let mut i = 0
+  let mut at = -1
+  while at < 0 && (i < Array::length(a) || i < Array::length(b)) {
+    if i >= Array::length(a) || i >= Array::length(b) || Array::get(a, i) != Array::get(b, i) {
+      at = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  at
+}
+
+fn block_of(xs: Array[String], i: Int) -> Int {
+  let mut block = 1
+  let mut k = 0
+  while k < i && k < Array::length(xs) {
+    if Array::get(xs, k) == end_marker() {
+      block = block + 1
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  block
+}
+
+fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process {
+  let root = option("--root", ".")
+  let en_dir = "\{root}/book/en"
+  let ja_dir = "\{root}/book/ja"
+  let english = chapters(en_dir)
+  if Array::length(english) == 0 {
+    Stderr::write_stream("check-tutorial-translation-parity: FAIL: no chapters found under book/en\n")
+    exit(1)
+  } else {
+    let mut fail = false
+    let mut i = 0
+    while i < Array::length(english) {
+      let name = Array::get(english, i)
+      if String::ends_with(name, "-ja.vibe.md") {
+        ()
+      } else if !Fs::is_file("\{ja_dir}/\{name}") {
+        Stderr::write_stream("check-tutorial-translation-parity: FAIL: \{name} has no translation\n")
+        Stderr::write_stream("  expected book/ja/\{name}\n")
+        fail = true
+      } else {
+        let en = outputs(Fs::read_file("\{en_dir}/\{name}"))
+        let ja = outputs(Fs::read_file("\{ja_dir}/\{name}"))
+        let at = first_difference(en, ja)
+        if at >= 0 {
+          Stderr::write_stream("check-tutorial-translation-parity: FAIL: \{name} and its translation ran different programs\n")
+          Stderr::write_stream("  output block \{block_of(en, at)}, line \{at + 1} of the output blocks:\n")
+          Stderr::write_stream("    book/en: \{at_or_end(en, at)}\n")
+          Stderr::write_stream("    book/ja: \{at_or_end(ja, at)}\n")
+          Stderr::write_stream("  The two files must run the SAME programs, so their ```output blocks must match.\n")
+          Stderr::write_stream("  Port the code change to both, then: bash scripts/vibe_md.sh write book/en/*.vibe.md book/ja/*.vibe.md\n")
+          fail = true
+        } else {
+          ()
+        }
+      }
+      i = i + 1
+    }
+    let japanese = chapters(ja_dir)
+    let mut j = 0
+    while j < Array::length(japanese) {
+      let name = Array::get(japanese, j)
+      if !Fs::is_file("\{en_dir}/\{name}") {
+        Stderr::write_stream("check-tutorial-translation-parity: FAIL: book/ja/\{name} has no canonical English chapter\n")
+        Stderr::write_stream("  expected book/en/\{name} -- the translation is the copy, not the source.\n")
+        fail = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    if fail {
+      exit(1)
+    } else {
+      Console::write_stream("check-tutorial-translation-parity: ok (\{Array::length(english)} chapters incl. translations)\n")
+    }
+  }
+}

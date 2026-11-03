@@ -47,9 +47,11 @@ gate_lane_script() {
 }
 
 # Fill $stage2_wasm (and $latest_gen when a generations tree already exists).
-# Prefer an explicit VIBE_STAGE2_WASM, then the freshest generations/ tree
-# left by the bootstrap lane, then a unit-test-style build from the
-# committed flat module source (no stage3, same as the CI unit shards).
+# Prefer an explicit VIBE_STAGE2_WASM, then HEAD's generation left by the
+# bootstrap lane. Without either, regenerate the flat source and build for
+# this invocation (no stage3, same as the CI unit shards). Directory mtimes
+# identify neither the source revision nor the seed, so never use them to
+# choose a compiler. An unproven _gate_lane_gen output is rebuilt too.
 # EXPORTS the answer, it does not merely assign it (#2650 review). A lane
 # spawns child processes that ask the same question for themselves, and two of
 # them read it out of the ENVIRONMENT: check_compile_only_lanes.sh takes
@@ -74,20 +76,26 @@ gate_resolve_stage2() {
     export VIBE_STAGE2_WASM="$stage2_wasm"
     return 0
   fi
-  latest_gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
-  if [ -n "$latest_gen" ] && [ -f "${latest_gen}stage2.wasm" ]; then
-    stage2_wasm="${latest_gen}stage2.wasm"
+  . "$ROOT_DIR/scripts/resolve_stage2.sh"
+  if stage2_wasm="$(resolve_stage2_strict compiler-gate "" 2>/dev/null)"; then
+    latest_gen="${stage2_wasm%/*}/"
     export VIBE_STAGE2_WASM="$stage2_wasm"
     return 0
   fi
+  latest_gen=""
   mkdir -p _build/_gate_lane_gen
-  if [ ! -f _build/_gate_lane_gen/stage2.wasm ]; then
-    echo "[compiler-gate] building stage2 for this lane (no generations tree, no VIBE_STAGE2_WASM)"
-    VIBE_PREBUILT_MODULE_SOURCE="lib/@vibe/compiler/_cli_adapter_module_source.vibe" \
-      bash scripts/generations.sh build --out-dir _build/_gate_lane_gen
-  fi
+  echo "[compiler-gate] building stage2 for this lane (no HEAD generation or explicit compiler)"
+  bash scripts/ensure_generated.sh || {
+    echo "[compiler-gate] FAIL: could not regenerate current compiler sources" >&2
+    exit 1
+  }
+  VIBE_PREBUILT_MODULE_SOURCE="lib/@vibe/compiler/_cli_adapter_module_source.vibe" \
+    bash scripts/generations.sh build --out-dir _build/_gate_lane_gen || {
+      echo "[compiler-gate] FAIL: could not build this lane's compiler" >&2
+      exit 1
+    }
   stage2_wasm="_build/_gate_lane_gen/stage2.wasm"
-  if [ ! -f "$stage2_wasm" ]; then
+  if [ ! -s "$stage2_wasm" ]; then
     echo "[compiler-gate] FAIL: lane stage2 build produced no wasm" >&2
     exit 1
   fi

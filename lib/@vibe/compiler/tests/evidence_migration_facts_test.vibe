@@ -1,0 +1,204 @@
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+import @vibe/core {
+  struct MutSet
+}
+import @vibe/compiler/lowering/effects/queries {
+  edp_collect_program_binders, edp_mf_dirty_indices, edp_mf_dirty_reset, edp_mf_set_stmt
+}
+import @vibe/compiler/lowering/effects/evidence {
+  edp_append_ctor_inert_names,
+  edp_append_free_host_inert_names,
+  edp_append_visible_pure_lambda_names,
+  edp_collect_fn_defs,
+  edp_etawrap_stmts_in,
+  edp_mf_base,
+  edp_mf_binders,
+  edp_mf_new,
+  edp_mf_refresh,
+  edp_mf_row_lit_scan,
+  edp_mf_statements_naming,
+  edp_needing_escape_stmts_in,
+  edp_pure_fn_names,
+  edp_row_lit_scan
+}
+
+fn call(name: String) -> Expr {
+  ECall(EIdent(name, -1), [], -1, [])
+}
+
+fn pure_lambda() -> Expr {
+  EFn([], [], [("x", None)], None, None, EIdent("x", -1))
+}
+
+fn host_lambda() -> Expr {
+  EFn([], [], [("x", None)], None, None, call("vibe_clock_raw"))
+}
+
+fn top_fn(name: String, params: Array[(String, Option[TypeExpr])], body: Expr) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], params, None, None, body))
+}
+
+// The whole-program walks a migration used to run on every rewritten tree.
+fn walked_base(stmts: Array[Stmt]) -> String {
+  let base = edp_pure_fn_names(edp_collect_fn_defs(stmts))
+  edp_append_free_host_inert_names(stmts, base)
+  edp_append_ctor_inert_names(stmts, base)
+  edp_append_visible_pure_lambda_names(stmts, base)
+  String::join(base, ",")
+}
+
+fn same_members(a: MutSet[String], b: MutSet[String]) -> Bool {
+  let mut same = MutSet::size(a) == MutSet::size(b)
+  for nm in MutSet::to_array(a) {
+    if !MutSet::has(b, nm) {
+      same = false
+    }
+  }
+  same
+}
+
+// Refresh, then demand exactly the walked answer: same names in the same
+// order, and the same binder census.
+fn facts_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt]) -> Bool {
+  edp_mf_refresh(facts, stmts)
+  let from_facts = String::join(edp_mf_base(facts, stmts, edp_collect_fn_defs(stmts)), ",")
+  from_facts == walked_base(stmts) && same_members(edp_mf_binders(facts), edp_collect_program_binders(stmts))
+}
+
+fn program() -> Array[Stmt] {
+  let use_helper = ECall(EIdent("helper", -1), [EInt(1)], -1, [])
+  [
+    top_fn("top", [], ELet("helper", pure_lambda(), use_helper, -1)),
+    // `helper` is rebound as a parameter here, so it is not a sole spelling.
+    top_fn("other", [("helper", None)], ESeq(call("vibe_fs_raw"), EIdent("helper", -1))),
+    SLetMut("m", None, ELet("only", pure_lambda(), call("vibe_fs_raw"), -1)),
+    SExpr(ESeq(call("vibe_net_raw"), ELet("t", EInt(0), EIdent("t", -1), -1))),
+    SEnum(false, "Choice", [], [("Yes", []), ("No", [])], [])
+  ]
+}
+
+test "migration facts give the walked base and census, through marked rewrites and appends" {
+  let stmts = program()
+  let facts = edp_mf_new()
+  assert(facts_agree(facts, stmts))
+  inspect(walked_base(stmts), content = "top,other,vibe_fs_raw,vibe_net_raw,Some,Ok,Err,Yes,No,only")
+  // A marked rewrite: `other` no longer rebinds `helper`, so `helper` becomes
+  // a sole lambda spelling, and a host callee moves.
+  edp_mf_set_stmt(stmts, 1, top_fn("other", [], ESeq(call("vibe_env_raw"), EInt(0))))
+  assert(facts_agree(facts, stmts))
+  inspect(walked_base(stmts), content = "top,other,vibe_env_raw,vibe_fs_raw,vibe_net_raw,Some,Ok,Err,Yes,No,helper,only")
+  // An append past the end is walked as new.
+  Array::push(stmts, top_fn("late", [], ELet("only", host_lambda(), EInt(0), -1)))
+  assert(facts_agree(facts, stmts))
+  // The same statement rewritten twice before one refresh.
+  edp_mf_set_stmt(stmts, 3, SExpr(EInt(0)))
+  edp_mf_set_stmt(stmts, 3, SExpr(ELet("t2", EInt(0), call("vibe_tty_raw"), -1)))
+  assert(facts_agree(facts, stmts))
+}
+
+test "an unmarked rewrite is not seen, which is why every migration write is marked" {
+  let stmts = program()
+  let facts = edp_mf_new()
+  assert(facts_agree(facts, stmts))
+  Array::set(stmts, 1, top_fn("other", [], EInt(0)))
+  assert(!facts_agree(facts, stmts))
+}
+
+fn row_lambda(body: Expr) -> Expr {
+  EFn([], [], [], None, Some("Ask"), body)
+}
+
+// The facts-filtered scan must collect exactly what the whole scan collects:
+// the same binding names in the same order, and as many literals.
+fn row_scans_agree(facts: Array[(Array[String], Array[Expr], Array[String], Array[String], Array[String], Bool, Array[String], Array[String])], stmts: Array[Stmt], needing: Array[String]) -> String {
+  let es_names: Array[String] = []
+  let es_members: Array[Array[String]] = []
+  let whole_binds: Array[String] = []
+  let whole_lits: Array[Expr] = []
+  edp_row_lit_scan(stmts, "Ask", needing, es_names, es_members, whole_binds, whole_lits)
+  let some_binds: Array[String] = []
+  let some_lits: Array[Expr] = []
+  edp_mf_row_lit_scan(Some(facts), stmts, "Ask", needing, es_names, es_members, some_binds, some_lits)
+  assert(String::join(whole_binds, ",") == String::join(some_binds, ","))
+  assert(Array::length(whole_lits) == Array::length(some_lits))
+  String::join(some_binds, ",") + " lits=" + Int::to_string(Array::length(some_lits))
+}
+
+test "the facts-filtered row-literal scan collects what the whole scan collects" {
+  let stmts = [
+    top_fn("owner", [], ELet("g", row_lambda(EInt(1)), EIdent("g", -1), -1)),
+    SExpr(ELet("h", EIdent("needy", -1), EInt(0), -1)),
+    SExpr(ELet("k", EIdent("other", -1), EInt(0), -1)),
+    top_fn("plain", [], EInt(0)),
+    // A top-level function with a row is the needing rewrite's, not a literal.
+    SLet(false, false, "rowed", None, row_lambda(EInt(2)))
+  ]
+  let facts = edp_mf_new()
+  edp_mf_refresh(facts, stmts)
+  inspect(row_scans_agree(facts, stmts, ["needy"]), content = "g,h lits=1")
+  inspect(row_scans_agree(facts, stmts, []), content = "g lits=1")
+  // A marked rewrite that introduces a row literal is seen by the next scan.
+  edp_mf_set_stmt(stmts, 3, top_fn("plain", [], ELet("late", row_lambda(EInt(3)), EInt(0), -1)))
+  inspect(row_scans_agree(facts, stmts, ["needy"]), content = "g,h,late lits=2")
+}
+
+fn row_free_slot() -> TypeExpr {
+  TyFn([TyName("Int")], TyName("Int"), None)
+}
+
+fn call_cb() -> Expr {
+  ECall(EIdent("cb", -1), [EInt(1)], -1, [])
+}
+
+fn passing_program() -> Array[Stmt] {
+  [
+    top_fn("f", [("x", None)], EIdent("x", -1)),
+    // A row-free function slot: passing a needing function here escapes.
+    top_fn("g", [("cb", Some(row_free_slot()))], call_cb()),
+    top_fn("user", [], ECall(EIdent("g", -1), [EIdent("f", -1)], -1, [])),
+    top_fn("alias", [], ELet("h", EIdent("f", -1), EInt(0), -1)),
+    top_fn("plain", [], ECall(EIdent("g", -1), [EIdent("other", -1)], -1, [])),
+    SExpr(EInt(0))
+  ]
+}
+
+// The eta-wrap and escape walks restricted to the statements the facts name
+// must answer what the whole walks answer, and rewrite the same statements.
+fn wrap_and_escape(filtered: Bool) -> String {
+  let stmts = passing_program()
+  let fn_defs = edp_collect_fn_defs(stmts)
+  let needing = ["f"]
+  let es_names: Array[String] = []
+  let es_members: Array[Array[String]] = []
+  let facts = edp_mf_new()
+  let escape_first = edp_needing_escape_stmts_in(stmts, if filtered {
+    Some(edp_mf_statements_naming(facts, stmts, needing, false))
+  } else {
+    None
+  }, needing, "Ask", fn_defs, es_names, es_members)
+  let wrap_at = if filtered {
+    Some(edp_mf_statements_naming(facts, stmts, needing, true))
+  } else {
+    None
+  }
+  edp_mf_dirty_reset()
+  let rebuilt = edp_etawrap_stmts_in(stmts, wrap_at, needing, "Ask", fn_defs, es_names, es_members)
+  let written: Array[String] = []
+  for i in edp_mf_dirty_indices() {
+    Array::push(written, Int::to_string(i))
+  }
+  let wrapped = if rebuilt {
+    "yes"
+  } else {
+    "no"
+  }
+  "escape=" + escape_first + " rebuilt=" + wrapped + " written=" + String::join(written, ",")
+}
+
+test "the facts-filtered eta-wrap and escape walks match the whole walks" {
+  let whole = wrap_and_escape(false)
+  assert(wrap_and_escape(true) == whole)
+  inspect(whole, content = "escape=f rebuilt=yes written=2,3")
+}

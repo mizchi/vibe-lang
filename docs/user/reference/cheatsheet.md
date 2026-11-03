@@ -92,6 +92,31 @@ let b: Bool = true
 let u: Unit = ()
 ```
 
+### `Float64` / `Float32`: the width-named float spellings
+
+`Float64` and `Float32` are the width-named spellings of `Double` and
+`Float` (ADR-0122, #3728). They work everywhere a type or a type's namespace
+does: annotations, `impl ... for Float64`, `fn Float64::m(..)`, and the
+builtins (`Float64::to_string`, `Float64::parse`, `Float32::to_string`). The
+conversions take width names too: `Int::to_float64`, `Int::to_float32`,
+`Float64::to_float32`, `Float32::to_float64`, and `Float64::to_int` /
+`Float32::to_int`. Diagnostics and hover still print `Double` / `Float`, and
+the old spellings keep working; the tree moves to the new names in #3729.
+Because every `Float64` / `Float32` in a type or a `X::` path names the
+builtin, neither can be the name of a declared type, trait, effect, alias or
+type parameter (a constructor may still be called `Float64`). A type
+parameter may not take any builtin float spelling (`Double`, `Float`, `f64`,
+`f32` too), since it would capture the `Float64` written beside it.
+
+```vibe
+test "width-named floats" {
+  let d: Float64 = Int::to_float64(3) / 2.0
+  let f: Float32 = Float64::to_float32(d)
+  assert(Float64::to_string(d) == "1.5")
+  assert(Float32::to_float64(f) == 1.5)
+}
+```
+
 ### `Float` is 32-bit
 
 `Float` is IEEE binary32 and every `Float` value is an f32 value (#3543).
@@ -566,8 +591,9 @@ let e = label("v", "rc")   // => "v-rc"
 - Defaults apply only to a direct call of a top-level `fn` by its name. A
   function with defaults cannot be used as a value (wrap it in a lambda that
   calls it, `(n) -> greet(n)`), and a namespaced `T::f` cannot carry one,
-  since a method call (`x.f(..)`) bypasses them. An exported function cannot
-  carry one yet: an importer cannot tell a default from a plain `x?` (#3440).
+  since a method call (`x.f(..)`) bypasses them. An exported function keeps
+  its defaults across the import, through an alias or a re-export, and the
+  same refusals apply to the importer (#3440).
   A written `None` / `Some(..)` passed to a defaulted parameter is refused,
   since it would read as an omitted argument; bind the value and pass the
   name.

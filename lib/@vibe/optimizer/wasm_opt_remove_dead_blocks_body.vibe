@@ -35,64 +35,64 @@ import ./wasm_opt_decode_instr.vibe {
   write_uleb128
 }
 
-export fn find_reachable(bytes: Bytes) -> Array[Int] {
+export fn find_reachable(_ bytes: Bytes) -> Array[Int] {
   // #1109: delegate to reachable_from (O(1) graph index BFS) with the full
   // root set (exports + start + elem + ref.func — collect_func_roots), the
   // same roots dce_remove uses. The old private copy of the BFS re-scanned
   // the whole call-graph array per dequeued function, which is what made a
   // single stubbing-dce round on the 7,600-function vibec core take the
   // better part of an hour.
-  reachable_from(bytes, collect_func_roots(bytes))
+  reachable_from(bytes = bytes, roots = collect_func_roots(bytes))
 }
 
-export fn dce(bytes: Bytes) -> Bytes {
+export fn dce(_ bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
-    copy_bytes(bytes, 0, len)
+    copy_bytes(src = bytes, start = 0, end_pos = len)
   }
   else {
     let reachable = find_reachable(bytes)
     let import_count = count_import_funcs(bytes)
     let total_funcs = count_functions(bytes)
-    let reachable_flags = FixedArray::make(total_funcs + 1, 0)
+    let reachable_flags = FixedArray::make(total_funcs + 1, value = 0)
     let mut ri = 0
     while ri < Array::length(reachable) {
-      let idx = Array::get(reachable, ri)
+      let idx = Array::get(reachable, at = ri)
       if (idx >= 0) && (idx <= total_funcs) {
-        FixedArray::set(reachable_flags, idx, 1)
+        FixedArray::set(reachable_flags, at = idx, value = 1)
       }
       ri = ri + 1
     }
     let out = Bytes::new()
     let mut i = 0
     while i < 8 {
-      Bytes::push(out, bytes[i]); i = i + 1
+      Bytes::push(out, value = bytes[i]); i = i + 1
     }
     let sections = list_sections(bytes)
     let mut s = 0
     while s < Array::length(sections) {
-      let (sid, off, sz) = Array::get(sections, s)
+      let (sid, off, sz) = Array::get(sections, at = s)
       if sid == 10 {
-        let raw_bodies = parse_code_bodies(bytes, off, sz)
-        let dce_bodies = Array::slice([(Bytes::new())], 0, 0)
+        let raw_bodies = parse_code_bodies(bytes = bytes, offset = off, size = sz)
+        let dce_bodies = Array::slice([(Bytes::new())], start = 0, end = 0)
         let mut fi2 = 0
         while fi2 < Array::length(raw_bodies) {
           let func_idx2 = import_count + fi2
-          if (func_idx2 >= 0) && (func_idx2 <= total_funcs) && (FixedArray::get(reachable_flags, func_idx2) == 1) {
-            Array::push(dce_bodies, Array::get(raw_bodies, fi2))
+          if (func_idx2 >= 0) && (func_idx2 <= total_funcs) && (FixedArray::get(reachable_flags, at = func_idx2) == 1) {
+            Array::push(dce_bodies, value = Array::get(raw_bodies, at = fi2))
           } else {
             let stub = Bytes::new()
-            Bytes::push(stub, 0x00)
-            Bytes::push(stub, 0x00)
-            Bytes::push(stub, 0x0B)
-            Array::push(dce_bodies, stub)
+            Bytes::push(stub, value = 0x00)
+            Bytes::push(stub, value = 0x00)
+            Bytes::push(stub, value = 0x0B)
+            Array::push(dce_bodies, value = stub)
           }
           fi2 = fi2 + 1
         }
-        emit_section(out, 10, rebuild_code_section(dce_bodies))
+        emit_section(out = out, sec_id = 10, content = rebuild_code_section(dce_bodies))
       } else {
-        let content = copy_bytes(bytes, off, off + sz)
-        emit_section(out, sid, content)
+        let content = copy_bytes(src = bytes, start = off, end_pos = off + sz)
+        emit_section(out = out, sec_id = sid, content = content)
       }
       s = s + 1
     }
@@ -103,44 +103,44 @@ export fn dce(bytes: Bytes) -> Bytes {
 /// Roots for true DCE: exported functions, any function named by a start
 /// section, and any function placed in a table by an element segment (it may be
 /// reached via call_indirect we cannot trace, so it must be kept).
-export fn collect_func_roots(bytes: Bytes) -> Array[Int] {
-  let roots = Array::slice([(0)], 0, 0)
+export fn collect_func_roots(_ bytes: Bytes) -> Array[Int] {
+  let roots = Array::slice([(0)], start = 0, end = 0)
   let exp = get_export_func_indices(bytes)
   let mut i = 0
   while i < Array::length(exp) {
-    Array::push(roots, Array::get(exp, i))
+    Array::push(roots, value = Array::get(exp, at = i))
     i = i + 1
   }
   let sections = list_sections(bytes)
   let mut s = 0
   while s < Array::length(sections) {
-    let (sid, off, sz) = Array::get(sections, s)
+    let (sid, off, sz) = Array::get(sections, at = s)
     if sid == 8 {
-      let (fidx, _) = read_uleb128(bytes, off)
-      Array::push(roots, fidx)
+      let (fidx, _) = read_uleb128(buf = bytes, offset = off)
+      Array::push(roots, value = fidx)
     }
     else if sid == 9 {
-      let emap = parse_element_table_map(bytes, off, sz)
+      let emap = parse_element_table_map(bytes = bytes, elem_off = off, elem_sz = sz)
       let mut e = 0
       while e < Array::length(emap) {
-        let (_, fidx) = Array::get(emap, e)
-        Array::push(roots, fidx)
+        let (_, fidx) = Array::get(emap, at = e)
+        Array::push(roots, value = fidx)
         e = e + 1
       }
     }
     else if sid == 10 {
       // ref.func takes a function as a first-class value; the referenced
       // function may be called through that reference, so it is a root.
-      let raw_bodies = parse_code_bodies(bytes, off, sz)
+      let raw_bodies = parse_code_bodies(bytes = bytes, offset = off, size = sz)
       let mut bi = 0
       while bi < Array::length(raw_bodies) {
-        let body = Array::get(raw_bodies, bi)
+        let body = Array::get(raw_bodies, at = bi)
         let spans = parse_full_body_spans(body)
         let mut si = 0
         while si < Array::length(spans) {
-          let (s_i, _, op_i) = Array::get(spans, si)
+          let (s_i, _, op_i) = Array::get(spans, at = si)
           if op_i == 0xD2 {
-            Array::push(roots, span_read_uleb_imm(body, s_i))
+            Array::push(roots, value = span_read_uleb_imm(body = body, span_start = s_i))
           }
           si = si + 1
         }
@@ -159,13 +159,13 @@ fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
   let mut max_func_idx = import_count
   let mut gi2 = 0
   while gi2 < Array::length(graph) {
-    let (func_idx, callees) = Array::get(graph, gi2)
+    let (func_idx, callees) = Array::get(graph, at = gi2)
     if func_idx >= max_func_idx {
       max_func_idx = func_idx + 1
     }
     let mut ci2 = 0
     while ci2 < Array::length(callees) {
-      let callee = Array::get(callees, ci2)
+      let callee = Array::get(callees, at = ci2)
       if callee >= max_func_idx {
         max_func_idx = callee + 1
       }
@@ -175,52 +175,52 @@ fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
   }
   let mut ri0 = 0
   while ri0 < Array::length(roots) {
-    let r = Array::get(roots, ri0)
+    let r = Array::get(roots, at = ri0)
     if r >= max_func_idx {
       max_func_idx = r + 1
     }
     ri0 = ri0 + 1
   }
-  let visited = FixedArray::make(max_func_idx + 2, 0)
+  let visited = FixedArray::make(max_func_idx + 2, value = 0)
   // #1109: O(1) func_idx -> graph position index. The BFS below used to
   // re-scan the whole graph array per dequeued function (O(queue * graph) —
   // ~30x slower than linear on the 7,600-function vibec core, where a single
   // dce round sat for the better part of an hour).
-  let graph_pos = FixedArray::make(max_func_idx + 2, -1)
+  let graph_pos = FixedArray::make(max_func_idx + 2, value = -1)
   let mut gpi = 0
   while gpi < Array::length(graph) {
-    let (gp_idx, _) = Array::get(graph, gpi)
+    let (gp_idx, _) = Array::get(graph, at = gpi)
     if (gp_idx >= 0) && (gp_idx <= max_func_idx) {
-      FixedArray::set(graph_pos, gp_idx, gpi)
+      FixedArray::set(graph_pos, at = gp_idx, value = gpi)
     }
     gpi = gpi + 1
   }
-  let reachable = Array::slice([(0)], 0, 0)
-  let queue = Array::slice([(0)], 0, 0)
+  let reachable = Array::slice([(0)], start = 0, end = 0)
+  let queue = Array::slice([(0)], start = 0, end = 0)
   let mut ri = 0
   while ri < Array::length(roots) {
-    let root = Array::get(roots, ri)
-    if (root >= 0) && (root <= max_func_idx) && (FixedArray::get(visited, root) == 0) {
-      FixedArray::set(visited, root, 1)
-      Array::push(queue, root)
-      Array::push(reachable, root)
+    let root = Array::get(roots, at = ri)
+    if (root >= 0) && (root <= max_func_idx) && (FixedArray::get(visited, at = root) == 0) {
+      FixedArray::set(visited, at = root, value = 1)
+      Array::push(queue, value = root)
+      Array::push(reachable, value = root)
     }
     ri = ri + 1
   }
   let mut qi = 0
   while qi < Array::length(queue) {
-    let current = Array::get(queue, qi)
-    let gi = FixedArray::get(graph_pos, current)
+    let current = Array::get(queue, at = qi)
+    let gi = FixedArray::get(graph_pos, at = current)
     if gi >= 0 {
-      let (_, callees) = Array::get(graph, gi)
+      let (_, callees) = Array::get(graph, at = gi)
       {
         let mut ci = 0
         while ci < Array::length(callees) {
-          let callee = Array::get(callees, ci)
-          if (callee >= 0) && (callee <= max_func_idx) && (FixedArray::get(visited, callee) == 0) {
-            FixedArray::set(visited, callee, 1)
-            Array::push(reachable, callee)
-            Array::push(queue, callee)
+          let callee = Array::get(callees, at = ci)
+          if (callee >= 0) && (callee <= max_func_idx) && (FixedArray::get(visited, at = callee) == 0) {
+            FixedArray::set(visited, at = callee, value = 1)
+            Array::push(reachable, value = callee)
+            Array::push(queue, value = callee)
           }
           ci = ci + 1
         }
@@ -235,31 +235,31 @@ fn reachable_from(bytes: Bytes, roots: Array[Int]) -> Array[Int] {
 /// through idx_map (old global func index -> new index).
 fn remap_export_section(bytes: Bytes, offset: Int, size: Int, idx_map: Array[Int]) -> Bytes {
   let end_pos = offset + size
-  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let (cnt, pos0) = read_uleb128(buf = bytes, offset = offset)
   let mut pos = pos0
   let out = Bytes::new()
-  write_uleb128(out, cnt)
+  write_uleb128(buf = out, n = cnt)
   let mut i = 0
   while (i < cnt) && (pos < end_pos) {
-    let (name, np) = read_name(bytes, pos)
+    let (name, np) = read_name(bytes = bytes, offset = pos)
     pos = np
     let kind = bytes[pos]
     pos = pos + 1
-    let (index, np2) = read_uleb128(bytes, pos)
+    let (index, np2) = read_uleb128(buf = bytes, offset = pos)
     pos = np2
-    write_uleb128(out, String::length(name))
+    write_uleb128(buf = out, n = String::length(name))
     let mut ci = 0
     while ci < String::length(name) {
-      Bytes::push(out, String::char_code_at(name, ci))
+      Bytes::push(out, value = String::char_code_at(name, at = ci))
       ci = ci + 1
     }
-    Bytes::push(out, kind)
+    Bytes::push(out, value = kind)
     let new_index = if (kind == 0) && (index < Array::length(idx_map)) {
-      Array::get(idx_map, index)
+      Array::get(idx_map, at = index)
     } else {
       index
     }
-    write_uleb128(out, if new_index >= 0 {
+    write_uleb128(buf = out, n = if new_index >= 0 {
       new_index
     } else {
       index
@@ -275,9 +275,9 @@ fn remap_export_section(bytes: Bytes, offset: Int, size: Int, idx_map: Array[Int
 /// success; on any unsupported shape returns (_, false) so dce_remove bails.
 fn remap_element_section(bytes: Bytes, offset: Int, size: Int, idx_map: Array[Int]) -> (Bytes, Bool) {
   let end_pos = offset + size
-  let (seg_count, pos0) = read_uleb128(bytes, offset)
+  let (seg_count, pos0) = read_uleb128(buf = bytes, offset = offset)
   let out = Bytes::new()
-  write_uleb128(out, seg_count)
+  write_uleb128(buf = out, n = seg_count)
   let mut pos = pos0
   let mut si = 0
   let mut ok = true
@@ -285,40 +285,40 @@ fn remap_element_section(bytes: Bytes, offset: Int, size: Int, idx_map: Array[In
     let flags = bytes[pos]
     pos = pos + 1
     if (flags == 0) || (flags == 2) {
-      Bytes::push(out, flags)
+      Bytes::push(out, value = flags)
       if flags == 2 {
-        let (tidx, pt) = read_uleb128(bytes, pos)
-        write_uleb128(out, tidx)
+        let (tidx, pt) = read_uleb128(buf = bytes, offset = pos)
+        write_uleb128(buf = out, n = tidx)
         pos = pt
       }
       if (pos < end_pos) && (bytes[pos] == 0x41) {
-        Bytes::push(out, 0x41)
+        Bytes::push(out, value = 0x41)
         let sleb_start = pos + 1
-        let (_, p1) = read_sleb128(bytes, sleb_start)
+        let (_, p1) = read_sleb128(buf = bytes, offset = sleb_start)
         let mut cp = sleb_start
         while cp < p1 {
-          Bytes::push(out, bytes[cp]); cp = cp + 1
+          Bytes::push(out, value = bytes[cp]); cp = cp + 1
         }
         pos = p1
         if (pos < end_pos) && (bytes[pos] == 0x0B) {
-          Bytes::push(out, 0x0B)
+          Bytes::push(out, value = 0x0B)
           pos = pos + 1
           if flags == 2 {
-            Bytes::push(out, bytes[pos]); pos = pos + 1
+            Bytes::push(out, value = bytes[pos]); pos = pos + 1
           }
-          let (fc, pfc) = read_uleb128(bytes, pos)
+          let (fc, pfc) = read_uleb128(buf = bytes, offset = pos)
           pos = pfc
-          write_uleb128(out, fc)
+          write_uleb128(buf = out, n = fc)
           let mut fi = 0
           while (fi < fc) && (pos < end_pos) {
-            let (fidx, p3) = read_uleb128(bytes, pos)
+            let (fidx, p3) = read_uleb128(buf = bytes, offset = pos)
             pos = p3
-            let nf = if (fidx < Array::length(idx_map)) && (Array::get(idx_map, fidx) >= 0) {
-              Array::get(idx_map, fidx)
+            let nf = if (fidx < Array::length(idx_map)) && (Array::get(idx_map, at = fidx) >= 0) {
+              Array::get(idx_map, at = fidx)
             } else {
               fidx
             }
-            write_uleb128(out, nf)
+            write_uleb128(buf = out, n = nf)
             fi = fi + 1
           }
         } else {
@@ -340,10 +340,10 @@ fn remap_element_section(bytes: Bytes, offset: Int, size: Int, idx_map: Array[In
 /// start, element segments), unlike `dce` which only stubs dead bodies. Bails
 /// (returns input unchanged) only when an element section uses a shape
 /// remap_element_section cannot reserialize; callers fall back to `dce` then.
-export fn dce_remove(bytes: Bytes) -> Bytes {
+export fn dce_remove(_ bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
-    copy_bytes(bytes, 0, len)
+    copy_bytes(src = bytes, start = 0, end_pos = len)
   }
   else {
     let sections = list_sections(bytes)
@@ -351,41 +351,41 @@ export fn dce_remove(bytes: Bytes) -> Bytes {
     let total_funcs = count_functions(bytes)
     let defined_type_indices = parse_func_type_indices(bytes)
     let roots = collect_func_roots(bytes)
-    let reachable = reachable_from(bytes, roots)
-    let keep = FixedArray::make(total_funcs + 1, 0)
+    let reachable = reachable_from(bytes = bytes, roots = roots)
+    let keep = FixedArray::make(total_funcs + 1, value = 0)
     let mut ic = 0
     while ic < import_count {
       if ic <= total_funcs {
-        FixedArray::set(keep, ic, 1)
+        FixedArray::set(keep, at = ic, value = 1)
       }
       ic = ic + 1
     }
     let mut rr = 0
     while rr < Array::length(reachable) {
-      let idx = Array::get(reachable, rr)
+      let idx = Array::get(reachable, at = rr)
       if (idx >= 0) && (idx <= total_funcs) {
-        FixedArray::set(keep, idx, 1)
+        FixedArray::set(keep, at = idx, value = 1)
       }
       rr = rr + 1
     }
-    let idx_map = Array::slice([(0)], 0, 0)
+    let idx_map = Array::slice([(0)], start = 0, end = 0)
     let mut next_new = 0
     let mut gi = 0
     while gi < total_funcs {
-      if FixedArray::get(keep, gi) == 1 {
-        Array::push(idx_map, next_new)
+      if FixedArray::get(keep, at = gi) == 1 {
+        Array::push(idx_map, value = next_new)
         next_new = next_new + 1
       } else {
-        Array::push(idx_map, -1)
+        Array::push(idx_map, value = -1)
       }
       gi = gi + 1
     }
-    let kept_defined = Array::slice([(0)], 0, 0)
+    let kept_defined = Array::slice([(0)], start = 0, end = 0)
     let mut df = 0
     while df < (total_funcs - import_count) {
       let g = import_count + df
-      if (g <= total_funcs) && (FixedArray::get(keep, g) == 1) {
-        Array::push(kept_defined, df)
+      if (g <= total_funcs) && (FixedArray::get(keep, at = g) == 1) {
+        Array::push(kept_defined, value = df)
       }
       df = df + 1
     }
@@ -395,81 +395,81 @@ export fn dce_remove(bytes: Bytes) -> Bytes {
     let mut elem_bytes = Bytes::new()
     let mut es = 0
     while es < Array::length(sections) {
-      let (sid, off, sz) = Array::get(sections, es)
+      let (sid, off, sz) = Array::get(sections, at = es)
       if sid == 9 {
         elem_present = true
-        let (eb, eok) = remap_element_section(bytes, off, sz, idx_map)
+        let (eb, eok) = remap_element_section(bytes = bytes, offset = off, size = sz, idx_map = idx_map)
         elem_bytes = eb
         elem_ok = eok
       }
       es = es + 1
     }
     if elem_present && (elem_ok == false) {
-      copy_bytes(bytes, 0, len)
+      copy_bytes(src = bytes, start = 0, end_pos = len)
     }
     else {
       let out = Bytes::new()
       let mut bi = 0
       while bi < 8 {
-        Bytes::push(out, bytes[bi]); bi = bi + 1
+        Bytes::push(out, value = bytes[bi]); bi = bi + 1
       }
       let mut s = 0
       while s < Array::length(sections) {
-        let (sid, off, sz) = Array::get(sections, s)
+        let (sid, off, sz) = Array::get(sections, at = s)
         if sid == 3 {
           if kept_count > 0 {
             let fsec = Bytes::new()
-            write_uleb128(fsec, kept_count)
+            write_uleb128(buf = fsec, n = kept_count)
             let mut ki = 0
             while ki < kept_count {
-              let fi = Array::get(kept_defined, ki)
+              let fi = Array::get(kept_defined, at = ki)
               let tidx = if fi < Array::length(defined_type_indices) {
-                Array::get(defined_type_indices, fi)
+                Array::get(defined_type_indices, at = fi)
               } else {
                 0
               }
-              write_uleb128(fsec, tidx)
+              write_uleb128(buf = fsec, n = tidx)
               ki = ki + 1
             }
-            emit_section(out, 3, fsec)
+            emit_section(out = out, sec_id = 3, content = fsec)
           }
         }
         else if sid == 10 {
           if kept_count > 0 {
-            let raw_bodies = parse_code_bodies(bytes, off, sz)
-            let new_bodies = Array::slice([(Bytes::new())], 0, 0)
+            let raw_bodies = parse_code_bodies(bytes = bytes, offset = off, size = sz)
+            let new_bodies = Array::slice([(Bytes::new())], start = 0, end = 0)
             let mut ki = 0
             while ki < kept_count {
-              let fi = Array::get(kept_defined, ki)
+              let fi = Array::get(kept_defined, at = ki)
               if fi < Array::length(raw_bodies) {
-                let body = Array::get(raw_bodies, fi)
-                Array::push(new_bodies, rewrite_body_calls(body, idx_map, total_funcs - 1, true))
+                let body = Array::get(raw_bodies, at = fi)
+                Array::push(new_bodies, value = rewrite_body_calls(body = body, fwd_lookup = idx_map, max_func = total_funcs - 1, remap_reffunc = true))
               }
               ki = ki + 1
             }
-            emit_section(out, 10, rebuild_code_section(new_bodies))
+            emit_section(out = out, sec_id = 10, content = rebuild_code_section(new_bodies))
           }
         }
         else if sid == 7 {
-          emit_section(out, 7, remap_export_section(bytes, off, sz, idx_map))
+          emit_section(out = out, sec_id = 7, content = remap_export_section(bytes = bytes, offset = off, size = sz, idx_map = idx_map))
         }
         else if sid == 9 {
-          emit_section(out, 9, elem_bytes)
+          emit_section(out = out, sec_id = 9, content = elem_bytes)
         }
         else if sid == 8 {
-          let (fidx, _) = read_uleb128(bytes, off)
-          let new_fidx = if (fidx < Array::length(idx_map)) && (Array::get(idx_map, fidx) >= 0) {
-            Array::get(idx_map, fidx)
+          let (fidx, _) = read_uleb128(buf = bytes, offset = off)
+          let new_fidx = if (fidx < Array::length(idx_map)) && (Array::get(idx_map, at = fidx) >= 0) {
+            Array::get(idx_map, at = fidx)
           } else {
             fidx
           }
           let ssec = Bytes::new()
-          write_uleb128(ssec, new_fidx)
-          emit_section(out, 8, ssec)
+          write_uleb128(buf = ssec, n = new_fidx)
+          emit_section(out = out, sec_id = 8, content = ssec)
         }
         else {
-          let content = copy_bytes(bytes, off, off + sz)
-          emit_section(out, sid, content)
+          let content = copy_bytes(src = bytes, start = off, end_pos = off + sz)
+          emit_section(out = out, sec_id = sid, content = content)
         }
         s = s + 1
       }
@@ -480,8 +480,8 @@ export fn dce_remove(bytes: Bytes) -> Bytes {
 
 fn parse_element_table_map(bytes: Bytes, elem_off: Int, elem_sz: Int) -> Array[(Int, Int)] {
   let end_pos = elem_off + elem_sz
-  let result = Array::slice([(0, 0)], 0, 0)
-  let (seg_count, pos0) = read_uleb128(bytes, elem_off)
+  let result = Array::slice([(0, 0)], start = 0, end = 0)
+  let (seg_count, pos0) = read_uleb128(buf = bytes, offset = elem_off)
   let mut pos = pos0
   let mut si = 0
   let mut failed = false
@@ -490,15 +490,15 @@ fn parse_element_table_map(bytes: Bytes, elem_off: Int, elem_sz: Int) -> Array[(
     pos = pos + 1
     if flags == 0 {
       if (pos < end_pos) && (bytes[pos] == 0x41) {
-        let (offset_val, p1) = read_sleb128(bytes, pos + 1)
+        let (offset_val, p1) = read_sleb128(buf = bytes, offset = pos + 1)
         if (p1 < end_pos) && (bytes[p1] == 0x0B) {
           pos = p1 + 1
-          let (func_count, p2) = read_uleb128(bytes, pos)
+          let (func_count, p2) = read_uleb128(buf = bytes, offset = pos)
           pos = p2
           let mut fi = 0
           while (fi < func_count) && (pos < end_pos) {
-            let (func_idx, p3) = read_uleb128(bytes, pos)
-            Array::push(result, (offset_val + fi, func_idx))
+            let (func_idx, p3) = read_uleb128(buf = bytes, offset = pos)
+            Array::push(result, value = (offset_val + fi, func_idx))
             pos = p3
             fi = fi + 1
           }
@@ -510,20 +510,20 @@ fn parse_element_table_map(bytes: Bytes, elem_off: Int, elem_sz: Int) -> Array[(
       }
     } else {
       if flags == 2 {
-        let (table_idx, p1) = read_uleb128(bytes, pos)
+        let (table_idx, p1) = read_uleb128(buf = bytes, offset = pos)
         pos = p1
         if (table_idx == 0) && (pos < end_pos) && (bytes[pos] == 0x41) {
-          let (offset_val, p2) = read_sleb128(bytes, pos + 1)
+          let (offset_val, p2) = read_sleb128(buf = bytes, offset = pos + 1)
           if (p2 < end_pos) && (bytes[p2] == 0x0B) {
             pos = p2 + 1
             if pos < end_pos {
               pos = pos + 1
-              let (func_count, p3) = read_uleb128(bytes, pos)
+              let (func_count, p3) = read_uleb128(buf = bytes, offset = pos)
               pos = p3
               let mut fi = 0
               while (fi < func_count) && (pos < end_pos) {
-                let (func_idx, p4) = read_uleb128(bytes, pos)
-                Array::push(result, (offset_val + fi, func_idx))
+                let (func_idx, p4) = read_uleb128(buf = bytes, offset = pos)
+                Array::push(result, value = (offset_val + fi, func_idx))
                 pos = p4
                 fi = fi + 1
               }
@@ -543,27 +543,27 @@ fn parse_element_table_map(bytes: Bytes, elem_off: Int, elem_sz: Int) -> Array[(
     si = si + 1
   }
   if failed {
-    Array::slice([(0, 0)], 0, 0)
+    Array::slice([(0, 0)], start = 0, end = 0)
   }
   else {
     result
   }
 }
 
-fn parse_func_type_indices(bytes: Bytes) -> Array[Int] {
-  let result = Array::slice([(0)], 0, 0)
+fn parse_func_type_indices(_ bytes: Bytes) -> Array[Int] {
+  let result = Array::slice([(0)], start = 0, end = 0)
   let sections = list_sections(bytes)
   let mut s = 0
   while s < Array::length(sections) {
-    let (sid, off, sz) = Array::get(sections, s)
+    let (sid, off, sz) = Array::get(sections, at = s)
     if sid == 3 {
       let end_pos = off + sz
-      let (cnt, pos0) = read_uleb128(bytes, off)
+      let (cnt, pos0) = read_uleb128(buf = bytes, offset = off)
       let mut pos = pos0
       let mut i = 0
       while (i < cnt) && (pos < end_pos) {
-        let (tidx, np) = read_uleb128(bytes, pos)
-        Array::push(result, tidx)
+        let (tidx, np) = read_uleb128(buf = bytes, offset = pos)
+        Array::push(result, value = tidx)
         pos = np
         i = i + 1
       }
@@ -575,10 +575,10 @@ fn parse_func_type_indices(bytes: Bytes) -> Array[Int] {
   result
 }
 
-export fn coalesce_locals(bytes: Bytes) -> Bytes {
+export fn coalesce_locals(_ bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
-    copy_bytes(bytes, 0, len)
+    copy_bytes(src = bytes, start = 0, end_pos = len)
   }
   else {
     let sections = list_sections(bytes)
@@ -586,7 +586,7 @@ export fn coalesce_locals(bytes: Bytes) -> Bytes {
     let mut type_sec_sz = 0
     let mut si = 0
     while si < Array::length(sections) {
-      let (sid, off, sz) = Array::get(sections, si)
+      let (sid, off, sz) = Array::get(sections, at = si)
       if sid == 1 {
         type_sec_off = off; type_sec_sz = sz
       }
@@ -599,17 +599,17 @@ export fn coalesce_locals(bytes: Bytes) -> Bytes {
     let out = Bytes::new()
     let mut i = 0
     while i < 8 {
-      Bytes::push(out, bytes[i]); i = i + 1
+      Bytes::push(out, value = bytes[i]); i = i + 1
     }
     si = 0
     while si < Array::length(sections) {
-      let (sid, off, sz) = Array::get(sections, si)
+      let (sid, off, sz) = Array::get(sections, at = si)
       if sid == 10 {
-        let new_content = coalesce_code_section(bytes, off, sz, type_sec_off, type_sec_sz, func_type_indices)
-        emit_section(out, 10, new_content)
+        let new_content = coalesce_code_section(bytes = bytes, offset = off, size = sz, type_sec_off = type_sec_off, type_sec_sz = type_sec_sz, func_type_indices = func_type_indices)
+        emit_section(out = out, sec_id = 10, content = new_content)
       } else {
-        let content = copy_bytes(bytes, off, off + sz)
-        emit_section(out, sid, content)
+        let content = copy_bytes(src = bytes, start = off, end_pos = off + sz)
+        emit_section(out = out, sec_id = sid, content = content)
       }
       si = si + 1
     }
@@ -617,39 +617,39 @@ export fn coalesce_locals(bytes: Bytes) -> Bytes {
   }
 }
 
-export fn build_func_type_by_index(bytes: Bytes) -> Array[Int] {
-  let result = Array::slice([(0)], 0, 0)
+export fn build_func_type_by_index(_ bytes: Bytes) -> Array[Int] {
+  let result = Array::slice([(0)], start = 0, end = 0)
   let sections = list_sections(bytes)
   let mut s = 0
   while s < Array::length(sections) {
-    let (sid, off, sz) = Array::get(sections, s)
+    let (sid, off, sz) = Array::get(sections, at = s)
     if sid == 2 {
       let end_pos = off + sz
-      let (cnt, pos0) = read_uleb128(bytes, off)
+      let (cnt, pos0) = read_uleb128(buf = bytes, offset = off)
       let mut pos = pos0
       let mut i = 0
       while (i < cnt) && (pos < end_pos) {
-        let (mlen, mp) = read_uleb128(bytes, pos); pos = mp + mlen
-        let (flen, fp) = read_uleb128(bytes, pos); pos = fp + flen
+        let (mlen, mp) = read_uleb128(buf = bytes, offset = pos); pos = mp + mlen
+        let (flen, fp) = read_uleb128(buf = bytes, offset = pos); pos = fp + flen
         if pos < end_pos {
           let kind = bytes[pos]; pos = pos + 1
           if kind == 0 {
-            let (tidx, np) = read_uleb128(bytes, pos); pos = np
-            Array::push(result, tidx)
+            let (tidx, np) = read_uleb128(buf = bytes, offset = pos); pos = np
+            Array::push(result, value = tidx)
           } else {
             if kind == 1 {
               pos = pos + 1
               let flag = bytes[pos]; pos = pos + 1
-              let (_, np2) = read_uleb128(bytes, pos); pos = np2
+              let (_, np2) = read_uleb128(buf = bytes, offset = pos); pos = np2
               if flag == 1 {
-                let (_, np3) = read_uleb128(bytes, pos); pos = np3
+                let (_, np3) = read_uleb128(buf = bytes, offset = pos); pos = np3
               }
             } else {
               if kind == 2 {
                 let flag = bytes[pos]; pos = pos + 1
-                let (_, np2) = read_uleb128(bytes, pos); pos = np2
+                let (_, np2) = read_uleb128(buf = bytes, offset = pos); pos = np2
                 if flag == 1 {
-                  let (_, np3) = read_uleb128(bytes, pos); pos = np3
+                  let (_, np3) = read_uleb128(buf = bytes, offset = pos); pos = np3
                 }
               } else {
                 if kind == 3 {
@@ -669,15 +669,15 @@ export fn build_func_type_by_index(bytes: Bytes) -> Array[Int] {
   }
   s = 0
   while s < Array::length(sections) {
-    let (sid, off, sz) = Array::get(sections, s)
+    let (sid, off, sz) = Array::get(sections, at = s)
     if sid == 3 {
       let end_pos = off + sz
-      let (cnt, pos0) = read_uleb128(bytes, off)
+      let (cnt, pos0) = read_uleb128(buf = bytes, offset = off)
       let mut pos = pos0
       let mut i = 0
       while (i < cnt) && (pos < end_pos) {
-        let (tidx, np) = read_uleb128(bytes, pos)
-        Array::push(result, tidx)
+        let (tidx, np) = read_uleb128(buf = bytes, offset = pos)
+        Array::push(result, value = tidx)
         pos = np
         i = i + 1
       }
@@ -687,32 +687,32 @@ export fn build_func_type_by_index(bytes: Bytes) -> Array[Int] {
   result
 }
 
-fn build_forwarding_map(bytes: Bytes) -> Array[(Int, Int)] {
-  let result = Array::slice([(0, 0)], 0, 0)
+fn build_forwarding_map(_ bytes: Bytes) -> Array[(Int, Int)] {
+  let result = Array::slice([(0, 0)], start = 0, end = 0)
   let import_count = count_import_funcs(bytes)
   let func_type_by_idx = build_func_type_by_index(bytes)
   let sections = list_sections(bytes)
   let mut s = 0
   while s < Array::length(sections) {
-    let (sid, off, sz) = Array::get(sections, s)
+    let (sid, off, sz) = Array::get(sections, at = s)
     if sid == 10 {
       let end_pos = off + sz
-      let (func_count, pos0) = read_uleb128(bytes, off)
+      let (func_count, pos0) = read_uleb128(buf = bytes, offset = off)
       let mut pos = pos0
       let mut fi = 0
       while (fi < func_count) && (pos < end_pos) {
         let func_idx = import_count + fi
-        let (body_size, bp) = read_uleb128(bytes, pos)
-        let body = copy_bytes(bytes, bp, bp + body_size)
-        let param_count = get_func_param_count(bytes, func_idx, func_type_by_idx)
+        let (body_size, bp) = read_uleb128(buf = bytes, offset = pos)
+        let body = copy_bytes(src = bytes, start = bp, end_pos = bp + body_size)
+        let param_count = get_func_param_count(bytes = bytes, func_idx = func_idx, func_type_by_idx = func_type_by_idx)
         if param_count >= 0 {
-          let target = detect_forward_call(body, param_count)
+          let target = detect_forward_call(body = body, param_count = param_count)
           if (target >= 0) && (target != func_idx) {
             if (target < Array::length(func_type_by_idx)) && (func_idx < Array::length(func_type_by_idx)) {
-              let wrapper_type = Array::get(func_type_by_idx, func_idx)
-              let target_type = Array::get(func_type_by_idx, target)
+              let wrapper_type = Array::get(func_type_by_idx, at = func_idx)
+              let target_type = Array::get(func_type_by_idx, at = target)
               if wrapper_type == target_type {
-                Array::push(result, (func_idx, target))
+                Array::push(result, value = (func_idx, target))
               }
             }
           }
@@ -723,10 +723,10 @@ fn build_forwarding_map(bytes: Bytes) -> Array[(Int, Int)] {
     }
     s = s + 1
   }
-  let resolved = Array::slice([(0, 0)], 0, 0)
+  let resolved = Array::slice([(0, 0)], start = 0, end = 0)
   let mut ri = 0
   while ri < Array::length(result) {
-    let (wrapper, initial_target) = Array::get(result, ri)
+    let (wrapper, initial_target) = Array::get(result, at = ri)
     let mut current = initial_target
     let mut steps = 0
     let mut valid = true
@@ -734,7 +734,7 @@ fn build_forwarding_map(bytes: Bytes) -> Array[(Int, Int)] {
       let mut found = false
       let mut fi2 = 0
       while (fi2 < Array::length(result)) && (found == false) {
-        let (w, t) = Array::get(result, fi2)
+        let (w, t) = Array::get(result, at = fi2)
         if w == current {
           if t == wrapper {
             valid = false
@@ -753,7 +753,7 @@ fn build_forwarding_map(bytes: Bytes) -> Array[(Int, Int)] {
       }
     }
     if valid {
-      Array::push(resolved, (wrapper, current))
+      Array::push(resolved, value = (wrapper, current))
     }
     ri = ri + 1
   }
@@ -762,19 +762,19 @@ fn build_forwarding_map(bytes: Bytes) -> Array[(Int, Int)] {
 
 fn has_disallowed_table_ops(bytes: Bytes, code_off: Int, code_sz: Int) -> Bool {
   let end_pos = code_off + code_sz
-  let (func_count, pos0) = read_uleb128(bytes, code_off)
+  let (func_count, pos0) = read_uleb128(buf = bytes, offset = code_off)
   let mut pos = pos0
   let mut fi = 0
   let mut found = false
   while (fi < func_count) && (pos < end_pos) && (found == false) {
-    let (body_size, bp) = read_uleb128(bytes, pos)
-    let body = copy_bytes(bytes, bp, bp + body_size)
+    let (body_size, bp) = read_uleb128(buf = bytes, offset = pos)
+    let body = copy_bytes(src = bytes, start = bp, end_pos = bp + body_size)
     let body_len = Bytes::length(body)
-    let (local_count, lp) = read_uleb128(body, 0)
+    let (local_count, lp) = read_uleb128(buf = body, offset = 0)
     let mut bpos = lp
     let mut lc = 0
     while lc < local_count {
-      let (_, tp) = read_uleb128(body, bpos)
+      let (_, tp) = read_uleb128(buf = body, offset = bpos)
       bpos = tp + 1
       lc = lc + 1
     }
@@ -784,7 +784,7 @@ fn has_disallowed_table_ops(bytes: Bytes, code_off: Int, code_sz: Int) -> Bool {
         found = true
       } else {
         if op == 0xFC {
-          let (sub_op, _) = read_uleb128(body, bpos + 1)
+          let (sub_op, _) = read_uleb128(buf = body, offset = bpos + 1)
           if (sub_op >= 12) && (sub_op <= 17) {
             found = true
           }
@@ -795,7 +795,7 @@ fn has_disallowed_table_ops(bytes: Bytes, code_off: Int, code_sz: Int) -> Bool {
           ()
         }
       }
-      let (_, _, next) = decode_instr(body, bpos)
+      let (_, _, next) = decode_instr(body = body, pos = bpos)
       bpos = next
     }
     pos = bp + body_size
@@ -804,22 +804,22 @@ fn has_disallowed_table_ops(bytes: Bytes, code_off: Int, code_sz: Int) -> Bool {
   found
 }
 
-export fn directize(bytes: Bytes) -> Bytes {
+export fn directize(_ bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
-    copy_bytes(bytes, 0, len)
+    copy_bytes(src = bytes, start = 0, end_pos = len)
   }
   else {
     if count_imported_tables(bytes) > 0 {
-      copy_bytes(bytes, 0, len)
+      copy_bytes(src = bytes, start = 0, end_pos = len)
     }
     else {
       if count_local_tables(bytes) != 1 {
-        copy_bytes(bytes, 0, len)
+        copy_bytes(src = bytes, start = 0, end_pos = len)
       }
       else {
         if is_table_exported(bytes) {
-          copy_bytes(bytes, 0, len)
+          copy_bytes(src = bytes, start = 0, end_pos = len)
         }
         else {
           let sections = list_sections(bytes)
@@ -831,7 +831,7 @@ export fn directize(bytes: Bytes) -> Bytes {
           let mut has_code = false
           let mut s = 0
           while s < Array::length(sections) {
-            let (sid, off, sz) = Array::get(sections, s)
+            let (sid, off, sz) = Array::get(sections, at = s)
             if sid == 9 {
               elem_off = off; elem_sz = sz; has_elem = true
             }
@@ -846,55 +846,55 @@ export fn directize(bytes: Bytes) -> Bytes {
             s = s + 1
           }
           if (has_elem == false) || (has_code == false) {
-            copy_bytes(bytes, 0, len)
+            copy_bytes(src = bytes, start = 0, end_pos = len)
           }
           else {
-            if has_disallowed_table_ops(bytes, code_off, code_sz) {
-              copy_bytes(bytes, 0, len)
+            if has_disallowed_table_ops(bytes = bytes, code_off = code_off, code_sz = code_sz) {
+              copy_bytes(src = bytes, start = 0, end_pos = len)
             }
             else {
-              let table_map = parse_element_table_map(bytes, elem_off, elem_sz)
+              let table_map = parse_element_table_map(bytes = bytes, elem_off = elem_off, elem_sz = elem_sz)
               if Array::length(table_map) == 0 {
-                copy_bytes(bytes, 0, len)
+                copy_bytes(src = bytes, start = 0, end_pos = len)
               }
               else {
                 let func_type_by_idx = build_func_type_by_index(bytes)
                 let mut max_slot = 0
                 let mut ti = 0
                 while ti < Array::length(table_map) {
-                  let (slot, _) = Array::get(table_map, ti)
+                  let (slot, _) = Array::get(table_map, at = ti)
                   if slot > max_slot {
                     max_slot = slot
                   }
                   ti = ti + 1
                 }
-                let slot_to_func = Array::slice([(0)], 0, 0)
+                let slot_to_func = Array::slice([(0)], start = 0, end = 0)
                 let mut si2 = 0
                 while si2 < (max_slot + 2) {
-                  Array::push(slot_to_func, (-1)); si2 = si2 + 1
+                  Array::push(slot_to_func, value = (-1)); si2 = si2 + 1
                 }
                 ti = 0
                 while ti < Array::length(table_map) {
-                  let (slot, func_idx) = Array::get(table_map, ti)
+                  let (slot, func_idx) = Array::get(table_map, at = ti)
                   if (slot >= 0) && (slot <= max_slot) {
-                    Array::set(slot_to_func, slot, func_idx)
+                    Array::set(slot_to_func, at = slot, value = func_idx)
                   }
                   ti = ti + 1
                 }
-                let new_code = directize_code_section(bytes, code_off, code_sz, slot_to_func, max_slot, func_type_by_idx)
+                let new_code = directize_code_section(bytes = bytes, offset = code_off, size = code_sz, slot_to_func = slot_to_func, max_slot = max_slot, func_type_by_idx = func_type_by_idx)
                 let out = Bytes::new()
                 let mut i = 0
                 while i < 8 {
-                  Bytes::push(out, bytes[i]); i = i + 1
+                  Bytes::push(out, value = bytes[i]); i = i + 1
                 }
                 s = 0
                 while s < Array::length(sections) {
-                  let (sid, off, sz) = Array::get(sections, s)
+                  let (sid, off, sz) = Array::get(sections, at = s)
                   if sid == 10 {
-                    emit_section(out, 10, new_code)
+                    emit_section(out = out, sec_id = 10, content = new_code)
                   } else {
-                    let content = copy_bytes(bytes, off, off + sz)
-                    emit_section(out, sid, content)
+                    let content = copy_bytes(src = bytes, start = off, end_pos = off + sz)
+                    emit_section(out = out, sec_id = sid, content = content)
                   }
                   s = s + 1
                 }
@@ -909,38 +909,38 @@ export fn directize(bytes: Bytes) -> Bytes {
 }
 
 fn rewrite_calls_forwarding(bytes: Bytes, offset: Int, size: Int, fwd_lookup: Array[Int], max_func: Int) -> Bytes {
-  let raw_bodies = parse_code_bodies(bytes, offset, size)
-  let optimized = Array::slice([(Bytes::new())], 0, 0)
+  let raw_bodies = parse_code_bodies(bytes = bytes, offset = offset, size = size)
+  let optimized = Array::slice([(Bytes::new())], start = 0, end = 0)
   let mut fi = 0
   while fi < Array::length(raw_bodies) {
-    Array::push(optimized, rewrite_body_calls(Array::get(raw_bodies, fi), fwd_lookup, max_func, false))
+    Array::push(optimized, value = rewrite_body_calls(body = Array::get(raw_bodies, at = fi), fwd_lookup = fwd_lookup, max_func = max_func, remap_reffunc = false))
     fi = fi + 1
   }
   rebuild_code_section(optimized)
 }
 
-export fn call_forwarding(bytes: Bytes) -> Bytes {
+export fn call_forwarding(_ bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
-    copy_bytes(bytes, 0, len)
+    copy_bytes(src = bytes, start = 0, end_pos = len)
   }
   else {
     let fwd_map = build_forwarding_map(bytes)
     if Array::length(fwd_map) == 0 {
-      copy_bytes(bytes, 0, len)
+      copy_bytes(src = bytes, start = 0, end_pos = len)
     }
     else {
       let total_funcs = count_functions(bytes)
-      let fwd_lookup = Array::slice([(0)], 0, 0)
+      let fwd_lookup = Array::slice([(0)], start = 0, end = 0)
       let mut fli = 0
       while fli < (total_funcs + 1) {
-        Array::push(fwd_lookup, (-1)); fli = fli + 1
+        Array::push(fwd_lookup, value = (-1)); fli = fli + 1
       }
       let mut mi = 0
       while mi < Array::length(fwd_map) {
-        let (wrapper, target) = Array::get(fwd_map, mi)
+        let (wrapper, target) = Array::get(fwd_map, at = mi)
         if (wrapper >= 0) && (wrapper <= total_funcs) {
-          Array::set(fwd_lookup, wrapper, target)
+          Array::set(fwd_lookup, at = wrapper, value = target)
         }
         mi = mi + 1
       }
@@ -948,17 +948,17 @@ export fn call_forwarding(bytes: Bytes) -> Bytes {
       let out = Bytes::new()
       let mut i = 0
       while i < 8 {
-        Bytes::push(out, bytes[i]); i = i + 1
+        Bytes::push(out, value = bytes[i]); i = i + 1
       }
       let mut s = 0
       while s < Array::length(sections) {
-        let (sid, off, sz) = Array::get(sections, s)
+        let (sid, off, sz) = Array::get(sections, at = s)
         if sid == 10 {
-          let new_code = rewrite_calls_forwarding(bytes, off, sz, fwd_lookup, total_funcs)
-          emit_section(out, 10, new_code)
+          let new_code = rewrite_calls_forwarding(bytes = bytes, offset = off, size = sz, fwd_lookup = fwd_lookup, max_func = total_funcs)
+          emit_section(out = out, sec_id = 10, content = new_code)
         } else {
-          let content = copy_bytes(bytes, off, off + sz)
-          emit_section(out, sid, content)
+          let content = copy_bytes(src = bytes, start = off, end_pos = off + sz)
+          emit_section(out = out, sec_id = sid, content = content)
         }
         s = s + 1
       }
@@ -967,21 +967,21 @@ export fn call_forwarding(bytes: Bytes) -> Bytes {
   }
 }
 
-fn collect_used_type_indices(bytes: Bytes) -> Array[Int] {
-  let used = Array::slice([(0)], 0, 0)
+fn collect_used_type_indices(_ bytes: Bytes) -> Array[Int] {
+  let used = Array::slice([(0)], start = 0, end = 0)
   let sections = list_sections(bytes)
   let mut s = 0
   while s < Array::length(sections) {
-    let (sid, off, sz) = Array::get(sections, s)
+    let (sid, off, sz) = Array::get(sections, at = s)
     if sid == 3 {
       let end_pos = off + sz
-      let (cnt, pos0) = read_uleb128(bytes, off)
+      let (cnt, pos0) = read_uleb128(buf = bytes, offset = off)
       let mut pos = pos0
       let mut i = 0
       while (i < cnt) && (pos < end_pos) {
-        let (tidx, np) = read_uleb128(bytes, pos)
-        if array_contains_int(used, tidx) == false {
-          Array::push(used, tidx)
+        let (tidx, np) = read_uleb128(buf = bytes, offset = pos)
+        if array_contains_int(arr = used, target = tidx) == false {
+          Array::push(used, value = tidx)
         } else {
           ()
         }
@@ -991,28 +991,28 @@ fn collect_used_type_indices(bytes: Bytes) -> Array[Int] {
     } else {
       if sid == 2 {
         let end_pos = off + sz
-        let (cnt, pos0) = read_uleb128(bytes, off)
+        let (cnt, pos0) = read_uleb128(buf = bytes, offset = off)
         let mut pos = pos0
         let mut i = 0
         while (i < cnt) && (pos < end_pos) {
-          let (mlen, mp) = read_uleb128(bytes, pos); pos = mp + mlen
-          let (flen, fp) = read_uleb128(bytes, pos); pos = fp + flen
+          let (mlen, mp) = read_uleb128(buf = bytes, offset = pos); pos = mp + mlen
+          let (flen, fp) = read_uleb128(buf = bytes, offset = pos); pos = fp + flen
           if pos < end_pos {
             let kind = bytes[pos]; pos = pos + 1
             if kind == 0 {
-              let (tidx, np) = read_uleb128(bytes, pos); pos = np
-              if array_contains_int(used, tidx) == false {
-                Array::push(used, tidx)
+              let (tidx, np) = read_uleb128(buf = bytes, offset = pos); pos = np
+              if array_contains_int(arr = used, target = tidx) == false {
+                Array::push(used, value = tidx)
               } else {
                 ()
               }
             } else {
               if kind == 1 {
-                let (_, np) = read_uleb128(bytes, pos); pos = np
+                let (_, np) = read_uleb128(buf = bytes, offset = pos); pos = np
                 let flag = bytes[pos]; pos = pos + 1
-                let (_, np2) = read_uleb128(bytes, pos); pos = np2
+                let (_, np2) = read_uleb128(buf = bytes, offset = pos); pos = np2
                 if flag == 1 {
-                  let (_, np3) = read_uleb128(bytes, pos); pos = np3
+                  let (_, np3) = read_uleb128(buf = bytes, offset = pos); pos = np3
                 }
                 else {
                   ()
@@ -1020,9 +1020,9 @@ fn collect_used_type_indices(bytes: Bytes) -> Array[Int] {
               } else {
                 if kind == 2 {
                   let flag = bytes[pos]; pos = pos + 1
-                  let (_, np2) = read_uleb128(bytes, pos); pos = np2
+                  let (_, np2) = read_uleb128(buf = bytes, offset = pos); pos = np2
                   if flag == 1 {
-                    let (_, np3) = read_uleb128(bytes, pos); pos = np3
+                    let (_, np3) = read_uleb128(buf = bytes, offset = pos); pos = np3
                   }
                   else {
                     ()
@@ -1065,11 +1065,11 @@ fn collect_body_type_refs(body: Bytes, used: Array[Int]) -> Unit {
     ()
   }
   else {
-    let (local_count, lp) = read_uleb128(body, 0)
+    let (local_count, lp) = read_uleb128(buf = body, offset = 0)
     let mut pos = lp
     let mut lc = 0
     while lc < local_count {
-      let (_, tp) = read_uleb128(body, pos)
+      let (_, tp) = read_uleb128(buf = body, offset = pos)
       pos = tp + 1
       lc = lc + 1
     }
@@ -1079,21 +1079,21 @@ fn collect_body_type_refs(body: Bytes, used: Array[Int]) -> Unit {
       ()
     }
     else {
-      let spans = parse_body_spans(body, code_start, code_end)
+      let spans = parse_body_spans(body = body, start = code_start, end_pos = code_end)
       let mut i = 0
       while i < Array::length(spans) {
-        let (s_i, _, op_i) = Array::get(spans, i)
+        let (s_i, _, op_i) = Array::get(spans, at = i)
         if (op_i == 0x02) || (op_i == 0x03) || (op_i == 0x04) || (op_i == 0x1F) {
-          let (bt, _) = read_sleb128(body, s_i + 1)
-          if bt >= 0 && array_contains_int(used, bt) == false {
-            Array::push(used, bt)
+          let (bt, _) = read_sleb128(buf = body, offset = s_i + 1)
+          if bt >= 0 && array_contains_int(arr = used, target = bt) == false {
+            Array::push(used, value = bt)
           } else {
             ()
           }
         } else if op_i == 0x11 {
-          let (tidx, _) = read_uleb128(body, s_i + 1)
-          if array_contains_int(used, tidx) == false {
-            Array::push(used, tidx)
+          let (tidx, _) = read_uleb128(buf = body, offset = s_i + 1)
+          if array_contains_int(arr = used, target = tidx) == false {
+            Array::push(used, value = tidx)
           } else {
             ()
           }
@@ -1109,73 +1109,73 @@ fn collect_body_type_refs(body: Bytes, used: Array[Int]) -> Unit {
 fn rewrite_body_types(body: Bytes, type_map: Array[Int]) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
-    copy_bytes(body, 0, body_len)
+    copy_bytes(src = body, start = 0, end_pos = body_len)
   }
   else {
-    let (local_count, lp) = read_uleb128(body, 0)
+    let (local_count, lp) = read_uleb128(buf = body, offset = 0)
     let mut pos = lp
     let mut lc = 0
     while lc < local_count {
-      let (_, tp) = read_uleb128(body, pos)
+      let (_, tp) = read_uleb128(buf = body, offset = pos)
       pos = tp + 1
       lc = lc + 1
     }
     let code_start = pos
     let code_end = body_len - 1
     if code_start >= code_end {
-      copy_bytes(body, 0, body_len)
+      copy_bytes(src = body, start = 0, end_pos = body_len)
     }
     else {
-      let spans = parse_body_spans(body, code_start, code_end)
+      let spans = parse_body_spans(body = body, start = code_start, end_pos = code_end)
       let out = Bytes::new()
       let mut ci = 0
       while ci < code_start {
-        Bytes::push(out, body[ci]); ci = ci + 1
+        Bytes::push(out, value = body[ci]); ci = ci + 1
       }
       let mut i = 0
       while i < Array::length(spans) {
-        let (s_i, e_i, op_i) = Array::get(spans, i)
+        let (s_i, e_i, op_i) = Array::get(spans, at = i)
         if (op_i == 0x02) || (op_i == 0x03) || (op_i == 0x04) || (op_i == 0x1F) {
-          let (bt, p1) = read_sleb128(body, s_i + 1)
+          let (bt, p1) = read_sleb128(buf = body, offset = s_i + 1)
           if bt >= 0 {
-            Bytes::push(out, op_i)
-            let nt = if (bt < Array::length(type_map)) && (Array::get(type_map, bt) >= 0) {
-              Array::get(type_map, bt)
+            Bytes::push(out, value = op_i)
+            let nt = if (bt < Array::length(type_map)) && (Array::get(type_map, at = bt) >= 0) {
+              Array::get(type_map, at = bt)
             } else {
               bt
             }
-            write_sleb128(out, nt)
+            write_sleb128(buf = out, n = nt)
             // try_table: the catch vec after the blocktype carries no type
             // refs — copy it through verbatim. Plain block headers end at p1.
-            copy_span_bytes(out, body, p1, e_i)
+            copy_span_bytes(out = out, body = body, start = p1, end_pos = e_i)
           } else {
-            copy_span_bytes(out, body, s_i, e_i)
+            copy_span_bytes(out = out, body = body, start = s_i, end_pos = e_i)
           }
         } else if op_i == 0x11 {
-          Bytes::push(out, 0x11)
-          let (tidx, p1) = read_uleb128(body, s_i + 1)
-          let nt = if (tidx < Array::length(type_map)) && (Array::get(type_map, tidx) >= 0) {
-            Array::get(type_map, tidx)
+          Bytes::push(out, value = 0x11)
+          let (tidx, p1) = read_uleb128(buf = body, offset = s_i + 1)
+          let nt = if (tidx < Array::length(type_map)) && (Array::get(type_map, at = tidx) >= 0) {
+            Array::get(type_map, at = tidx)
           } else {
             tidx
           }
-          write_uleb128(out, nt)
-          copy_span_bytes(out, body, p1, e_i)
+          write_uleb128(buf = out, n = nt)
+          copy_span_bytes(out = out, body = body, start = p1, end_pos = e_i)
         } else {
-          copy_span_bytes(out, body, s_i, e_i)
+          copy_span_bytes(out = out, body = body, start = s_i, end_pos = e_i)
         }
         i = i + 1
       }
-      Bytes::push(out, 0x0B)
+      Bytes::push(out, value = 0x0B)
       out
     }
   }
 }
 
-export fn remove_unused_types(bytes: Bytes) -> Bytes {
+export fn remove_unused_types(_ bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
-    copy_bytes(bytes, 0, len)
+    copy_bytes(src = bytes, start = 0, end_pos = len)
   }
   else {
     let used = collect_used_type_indices(bytes)
@@ -1184,12 +1184,12 @@ export fn remove_unused_types(bytes: Bytes) -> Bytes {
     // blocktypes) so they are neither dropped nor left stale below.
     let mut cs = 0
     while cs < Array::length(sections) {
-      let (csid, coff, csz) = Array::get(sections, cs)
+      let (csid, coff, csz) = Array::get(sections, at = cs)
       if csid == 10 {
-        let bodies = parse_code_bodies(bytes, coff, csz)
+        let bodies = parse_code_bodies(bytes = bytes, offset = coff, size = csz)
         let mut bi = 0
         while bi < Array::length(bodies) {
-          collect_body_type_refs(Array::get(bodies, bi), used)
+          collect_body_type_refs(body = Array::get(bodies, at = bi), used = used)
           bi = bi + 1
         }
       } else {
@@ -1200,70 +1200,70 @@ export fn remove_unused_types(bytes: Bytes) -> Bytes {
     let mut type_count = 0
     let mut ts = 0
     while ts < Array::length(sections) {
-      let (sid, off, _) = Array::get(sections, ts)
+      let (sid, off, _) = Array::get(sections, at = ts)
       if sid == 1 {
-        let (cnt, _) = read_uleb128(bytes, off); type_count = cnt
+        let (cnt, _) = read_uleb128(buf = bytes, offset = off); type_count = cnt
       }
       else {
         ()
       }
       ts = ts + 1
     }
-    let used_bitset = FixedArray::make(type_count + 1, 0)
+    let used_bitset = FixedArray::make(type_count + 1, value = 0)
     let mut ui = 0
     while ui < Array::length(used) {
-      let tidx = Array::get(used, ui)
+      let tidx = Array::get(used, at = ui)
       if (tidx >= 0) && (tidx < type_count) {
-        FixedArray::set(used_bitset, tidx, 1)
+        FixedArray::set(used_bitset, at = tidx, value = 1)
       }
       ui = ui + 1
     }
-    let type_map = Array::slice([(0)], 0, 0)
+    let type_map = Array::slice([(0)], start = 0, end = 0)
     let mut new_idx = 0
     let mut ti = 0
     while ti < type_count {
-      if FixedArray::get(used_bitset, ti) == 1 {
-        Array::push(type_map, new_idx)
+      if FixedArray::get(used_bitset, at = ti) == 1 {
+        Array::push(type_map, value = new_idx)
         new_idx = new_idx + 1
       } else {
-        Array::push(type_map, (-1))
+        Array::push(type_map, value = (-1))
       }
       ti = ti + 1
     }
     let out = Bytes::new()
     let mut i = 0
     while i < 8 {
-      Bytes::push(out, bytes[i]); i = i + 1
+      Bytes::push(out, value = bytes[i]); i = i + 1
     }
     let mut si = 0
     while si < Array::length(sections) {
-      let (sid, off, sz) = Array::get(sections, si)
+      let (sid, off, sz) = Array::get(sections, at = si)
       if sid == 1 {
-        let new_content = rewrite_type_section(bytes, off, sz, used)
-        emit_section(out, 1, new_content)
+        let new_content = rewrite_type_section(bytes = bytes, offset = off, size = sz, used = used)
+        emit_section(out = out, sec_id = 1, content = new_content)
       } else {
         if sid == 3 {
-          let new_content = remap_func_section(bytes, off, sz, type_map)
-          emit_section(out, 3, new_content)
+          let new_content = remap_func_section(bytes = bytes, offset = off, size = sz, type_map = type_map)
+          emit_section(out = out, sec_id = 3, content = new_content)
         } else {
           if sid == 2 {
-            let new_content = remap_import_section(bytes, off, sz, type_map)
-            emit_section(out, 2, new_content)
+            let new_content = remap_import_section(bytes = bytes, offset = off, size = sz, type_map = type_map)
+            emit_section(out = out, sec_id = 2, content = new_content)
           } else {
             if sid == 10 {
               // Renumber call_indirect typeidx + func-type blocktypes in every
               // body (collected above, so nothing referenced here was dropped).
-              let bodies = parse_code_bodies(bytes, off, sz)
-              let rewritten = Array::slice([(Bytes::new())], 0, 0)
+              let bodies = parse_code_bodies(bytes = bytes, offset = off, size = sz)
+              let rewritten = Array::slice([(Bytes::new())], start = 0, end = 0)
               let mut rbi = 0
               while rbi < Array::length(bodies) {
-                Array::push(rewritten, rewrite_body_types(Array::get(bodies, rbi), type_map))
+                Array::push(rewritten, value = rewrite_body_types(body = Array::get(bodies, at = rbi), type_map = type_map))
                 rbi = rbi + 1
               }
-              emit_section(out, 10, rebuild_code_section(rewritten))
+              emit_section(out = out, sec_id = 10, content = rebuild_code_section(rewritten))
             } else {
-              let content = copy_bytes(bytes, off, off + sz)
-              emit_section(out, sid, content)
+              let content = copy_bytes(src = bytes, start = off, end_pos = off + sz)
+              emit_section(out = out, sec_id = sid, content = content)
             }
           }
         }
@@ -1275,37 +1275,37 @@ export fn remove_unused_types(bytes: Bytes) -> Bytes {
 }
 
 fn optimize_code_section_content(bytes: Bytes, offset: Int, size: Int) -> Bytes {
-  let raw_bodies = parse_code_bodies(bytes, offset, size)
-  let optimized = Array::slice([(Bytes::new())], 0, 0)
+  let raw_bodies = parse_code_bodies(bytes = bytes, offset = offset, size = size)
+  let optimized = Array::slice([(Bytes::new())], start = 0, end = 0)
   let mut fi = 0
   while fi < Array::length(raw_bodies) {
-    Array::push(optimized, peephole_body(Array::get(raw_bodies, fi)))
+    Array::push(optimized, value = peephole_body(Array::get(raw_bodies, at = fi)))
     fi = fi + 1
   }
   rebuild_code_section(optimized)
 }
 
-export fn optimize_code_section(bytes: Bytes) -> Bytes {
+export fn optimize_code_section(_ bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
-    copy_bytes(bytes, 0, len)
+    copy_bytes(src = bytes, start = 0, end_pos = len)
   }
   else {
     let out = Bytes::new()
     let mut i = 0
     while i < 8 {
-      Bytes::push(out, bytes[i]); i = i + 1
+      Bytes::push(out, value = bytes[i]); i = i + 1
     }
     let sections = list_sections(bytes)
     let mut s = 0
     while s < Array::length(sections) {
-      let (sid, off, sz) = Array::get(sections, s)
+      let (sid, off, sz) = Array::get(sections, at = s)
       if sid == 10 {
-        let new_content = optimize_code_section_content(bytes, off, sz)
-        emit_section(out, 10, new_content)
+        let new_content = optimize_code_section_content(bytes = bytes, offset = off, size = sz)
+        emit_section(out = out, sec_id = 10, content = new_content)
       } else {
-        let content = copy_bytes(bytes, off, off + sz)
-        emit_section(out, sid, content)
+        let content = copy_bytes(src = bytes, start = off, end_pos = off + sz)
+        emit_section(out = out, sec_id = sid, content = content)
       }
       s = s + 1
     }
@@ -1327,67 +1327,67 @@ export fn optimize_code_section(bytes: Bytes) -> Bytes {
 /// `br`. Getting this wrong would corrupt effectful programs (vibe effects
 /// compile to wasm exception handling). A single forward pass suffices: every
 /// branch inside a block is seen before the block's `end`.
-fn remove_dead_blocks_body(body: Bytes) -> Bytes {
+fn remove_dead_blocks_body(_ body: Bytes) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
-    copy_bytes(body, 0, body_len)
+    copy_bytes(src = body, start = 0, end_pos = body_len)
   }
   else {
     let mut pos = 0
-    let (local_count, lp) = read_uleb128(body, 0)
+    let (local_count, lp) = read_uleb128(buf = body, offset = 0)
     pos = lp
     let mut lc = 0
     while lc < local_count {
-      let (_, tp) = read_uleb128(body, pos)
+      let (_, tp) = read_uleb128(buf = body, offset = pos)
       pos = tp + 1
       lc = lc + 1
     }
     let code_start = pos
     let code_end = body_len - 1
     if code_start >= code_end {
-      copy_bytes(body, 0, body_len)
+      copy_bytes(src = body, start = 0, end_pos = body_len)
     } else {
       let cap = code_end - code_start + 1
-      let frame_op = FixedArray::make(cap + 1, 0)
-      let frame_hdr_start = FixedArray::make(cap + 1, 0)
-      let frame_hdr_end = FixedArray::make(cap + 1, 0)
+      let frame_op = FixedArray::make(cap + 1, value = 0)
+      let frame_hdr_start = FixedArray::make(cap + 1, value = 0)
+      let frame_hdr_end = FixedArray::make(cap + 1, value = 0)
       // frame_bad[sp] == 1: a branch/catch targets this frame, or an inner
       // branch escapes it (both block removal here).
-      let frame_bad = FixedArray::make(cap + 1, 0)
-      let skip = FixedArray::make(cap + 1, 0)
+      let frame_bad = FixedArray::make(cap + 1, value = 0)
+      let skip = FixedArray::make(cap + 1, value = 0)
       let mut sp = 0
       let mut p = code_start
       let mut any = 0
       while p < code_end {
         let op = body[p]
-        let (_, _, next) = decode_instr(body, p)
+        let (_, _, next) = decode_instr(body = body, pos = p)
         if (op == 0x02) || (op == 0x03) || (op == 0x04) {
-          FixedArray::set(frame_op, sp, op)
-          FixedArray::set(frame_hdr_start, sp, p)
-          FixedArray::set(frame_hdr_end, sp, next)
-          FixedArray::set(frame_bad, sp, 0)
+          FixedArray::set(frame_op, at = sp, value = op)
+          FixedArray::set(frame_hdr_start, at = sp, value = p)
+          FixedArray::set(frame_hdr_end, at = sp, value = next)
+          FixedArray::set(frame_bad, at = sp, value = 0)
           sp = sp + 1
         }
         else if op == 0x1F {
-          FixedArray::set(frame_op, sp, op)
-          FixedArray::set(frame_hdr_start, sp, p)
-          FixedArray::set(frame_hdr_end, sp, next)
-          FixedArray::set(frame_bad, sp, 0)
+          FixedArray::set(frame_op, at = sp, value = op)
+          FixedArray::set(frame_hdr_start, at = sp, value = p)
+          FixedArray::set(frame_hdr_end, at = sp, value = next)
+          FixedArray::set(frame_bad, at = sp, value = 0)
           sp = sp + 1
-          let (_, q1) = read_sleb128(body, p + 1)
-          let (cnt, q2) = read_uleb128(body, q1)
+          let (_, q1) = read_sleb128(buf = body, offset = p + 1)
+          let (cnt, q2) = read_uleb128(buf = body, offset = q1)
           let mut qq = q2
           let mut ki = 0
           while ki < cnt {
             let kind = body[qq]
             qq = qq + 1
             let label = if (kind == 0) || (kind == 1) {
-              let (_, qa) = read_uleb128(body, qq)
-              let (lab, qb) = read_uleb128(body, qa)
+              let (_, qa) = read_uleb128(buf = body, offset = qq)
+              let (lab, qb) = read_uleb128(buf = body, offset = qa)
               qq = qb
               lab
             } else {
-              let (lab, qa) = read_uleb128(body, qq)
+              let (lab, qa) = read_uleb128(buf = body, offset = qq)
               qq = qa
               lab
             }
@@ -1401,7 +1401,7 @@ fn remove_dead_blocks_body(body: Bytes) -> Bytes {
             }
             let mut j = lo
             while j < sp {
-              FixedArray::set(frame_bad, j, 1)
+              FixedArray::set(frame_bad, at = j, value = 1)
               j = j + 1
             }
             ki = ki + 1
@@ -1410,21 +1410,21 @@ fn remove_dead_blocks_body(body: Bytes) -> Bytes {
         else if op == 0x0B {
           if sp > 0 {
             sp = sp - 1
-            if (FixedArray::get(frame_op, sp) == 0x02) && (FixedArray::get(frame_bad, sp) == 0) {
-              let hs = FixedArray::get(frame_hdr_start, sp)
-              let he = FixedArray::get(frame_hdr_end, sp)
+            if (FixedArray::get(frame_op, at = sp) == 0x02) && (FixedArray::get(frame_bad, at = sp) == 0) {
+              let hs = FixedArray::get(frame_hdr_start, at = sp)
+              let he = FixedArray::get(frame_hdr_end, at = sp)
               let mut b = hs
               while b < he {
-                FixedArray::set(skip, b - code_start, 1)
+                FixedArray::set(skip, at = b - code_start, value = 1)
                 b = b + 1
               }
-              FixedArray::set(skip, p - code_start, 1)
+              FixedArray::set(skip, at = p - code_start, value = 1)
               any = 1
             }
           }
         }
         else if (op == 0x0C) || (op == 0x0D) {
-          let (label, _) = read_uleb128(body, p + 1)
+          let (label, _) = read_uleb128(buf = body, offset = p + 1)
           // mark the branch target and every block it escapes (target at
           // sp - 1 - label)
           let ti = sp - 1 - label
@@ -1435,16 +1435,16 @@ fn remove_dead_blocks_body(body: Bytes) -> Bytes {
           }
           let mut j = lo
           while j < sp {
-            FixedArray::set(frame_bad, j, 1)
+            FixedArray::set(frame_bad, at = j, value = 1)
             j = j + 1
           }
         }
         else if op == 0x0E {
-          let (cnt, q0) = read_uleb128(body, p + 1)
+          let (cnt, q0) = read_uleb128(buf = body, offset = p + 1)
           let mut q = q0
           let mut bi = 0
           while bi <= cnt {
-            let (label, qn) = read_uleb128(body, q)
+            let (label, qn) = read_uleb128(buf = body, offset = q)
             q = qn
             let ti = sp - 1 - label
             let lo = if ti < 0 {
@@ -1454,7 +1454,7 @@ fn remove_dead_blocks_body(body: Bytes) -> Bytes {
             }
             let mut j = lo
             while j < sp {
-              FixedArray::set(frame_bad, j, 1)
+              FixedArray::set(frame_bad, at = j, value = 1)
               j = j + 1
             }
             bi = bi + 1
@@ -1466,22 +1466,22 @@ fn remove_dead_blocks_body(body: Bytes) -> Bytes {
         p = next
       }
       if any == 0 {
-        copy_bytes(body, 0, body_len)
+        copy_bytes(src = body, start = 0, end_pos = body_len)
       } else {
         let out = Bytes::new()
         let mut hi = 0
         while hi < code_start {
-          Bytes::push(out, body[hi])
+          Bytes::push(out, value = body[hi])
           hi = hi + 1
         }
         let mut ci = code_start
         while ci < code_end {
-          if FixedArray::get(skip, ci - code_start) == 0 {
-            Bytes::push(out, body[ci])
+          if FixedArray::get(skip, at = ci - code_start) == 0 {
+            Bytes::push(out, value = body[ci])
           }
           ci = ci + 1
         }
-        Bytes::push(out, body[code_end])
+        Bytes::push(out, value = body[code_end])
         out
       }
     }
@@ -1489,37 +1489,37 @@ fn remove_dead_blocks_body(body: Bytes) -> Bytes {
 }
 
 fn remove_dead_blocks_code_section(bytes: Bytes, offset: Int, size: Int) -> Bytes {
-  let raw_bodies = parse_code_bodies(bytes, offset, size)
-  let optimized = Array::slice([(Bytes::new())], 0, 0)
+  let raw_bodies = parse_code_bodies(bytes = bytes, offset = offset, size = size)
+  let optimized = Array::slice([(Bytes::new())], start = 0, end = 0)
   let mut fi = 0
   while fi < Array::length(raw_bodies) {
-    Array::push(optimized, remove_dead_blocks_body(Array::get(raw_bodies, fi)))
+    Array::push(optimized, value = remove_dead_blocks_body(Array::get(raw_bodies, at = fi)))
     fi = fi + 1
   }
   rebuild_code_section(optimized)
 }
 
-export fn remove_dead_blocks(bytes: Bytes) -> Bytes {
+export fn remove_dead_blocks(_ bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
-    copy_bytes(bytes, 0, len)
+    copy_bytes(src = bytes, start = 0, end_pos = len)
   }
   else {
     let out = Bytes::new()
     let mut i = 0
     while i < 8 {
-      Bytes::push(out, bytes[i]); i = i + 1
+      Bytes::push(out, value = bytes[i]); i = i + 1
     }
     let sections = list_sections(bytes)
     let mut s = 0
     while s < Array::length(sections) {
-      let (sid, off, sz) = Array::get(sections, s)
+      let (sid, off, sz) = Array::get(sections, at = s)
       if sid == 10 {
-        let new_content = remove_dead_blocks_code_section(bytes, off, sz)
-        emit_section(out, 10, new_content)
+        let new_content = remove_dead_blocks_code_section(bytes = bytes, offset = off, size = sz)
+        emit_section(out = out, sec_id = 10, content = new_content)
       } else {
-        let content = copy_bytes(bytes, off, off + sz)
-        emit_section(out, sid, content)
+        let content = copy_bytes(src = bytes, start = off, end_pos = off + sz)
+        emit_section(out = out, sec_id = sid, content = content)
       }
       s = s + 1
     }
@@ -1530,15 +1530,15 @@ export fn remove_dead_blocks(bytes: Bytes) -> Bytes {
 /// Result-arity of a function type (mirror of get_type_param_count).
 fn get_type_result_count(bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, type_idx: Int) -> Int {
   let end_pos = type_sec_off + type_sec_sz
-  let (type_count, pos0) = read_uleb128(bytes, type_sec_off)
+  let (type_count, pos0) = read_uleb128(buf = bytes, offset = type_sec_off)
   let mut pos = pos0
   let mut ti = 0
   let mut result = 0
   while (ti < type_count) && (pos < end_pos) {
     pos = pos + 1
-    let (param_count, pp) = read_uleb128(bytes, pos)
+    let (param_count, pp) = read_uleb128(buf = bytes, offset = pos)
     pos = pp + param_count
-    let (result_count, rp) = read_uleb128(bytes, pos)
+    let (result_count, rp) = read_uleb128(buf = bytes, offset = pos)
     pos = rp + result_count
     if ti == type_idx {
       result = result_count
@@ -1552,17 +1552,17 @@ fn get_type_result_count(bytes: Bytes, type_sec_off: Int, type_sec_sz: Int, type
 }
 
 /// A function body with no instructions other than the terminating `end`.
-fn is_body_empty(body: Bytes) -> Bool {
+fn is_body_empty(_ body: Bytes) -> Bool {
   let body_len = Bytes::length(body)
   if body_len < 2 {
     false
   }
   else {
-    let (local_count, lp) = read_uleb128(body, 0)
+    let (local_count, lp) = read_uleb128(buf = body, offset = 0)
     let mut pos = lp
     let mut lc = 0
     while lc < local_count {
-      let (_, tp) = read_uleb128(body, pos)
+      let (_, tp) = read_uleb128(buf = body, offset = pos)
       pos = tp + 1
       lc = lc + 1
     }
@@ -1576,46 +1576,46 @@ fn is_body_empty(body: Bytes) -> Bool {
 fn remove_noop_calls_body(body: Bytes, noop: Array[Int], max_func: Int) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
-    copy_bytes(body, 0, body_len)
+    copy_bytes(src = body, start = 0, end_pos = body_len)
   }
   else {
-    let (local_count, lp) = read_uleb128(body, 0)
+    let (local_count, lp) = read_uleb128(buf = body, offset = 0)
     let mut pos = lp
     let mut lc = 0
     while lc < local_count {
-      let (_, tp) = read_uleb128(body, pos)
+      let (_, tp) = read_uleb128(buf = body, offset = pos)
       pos = tp + 1
       lc = lc + 1
     }
     let code_start = pos
     let code_end = body_len - 1
     if code_start >= code_end {
-      copy_bytes(body, 0, body_len)
+      copy_bytes(src = body, start = 0, end_pos = body_len)
     }
     else {
-      let spans = parse_body_spans(body, code_start, code_end)
+      let spans = parse_body_spans(body = body, start = code_start, end_pos = code_end)
       let out = Bytes::new()
       let mut ci = 0
       while ci < code_start {
-        Bytes::push(out, body[ci]); ci = ci + 1
+        Bytes::push(out, value = body[ci]); ci = ci + 1
       }
       let n = Array::length(spans)
       let mut i = 0
       while i < n {
-        let (s_i, e_i, op_i) = Array::get(spans, i)
+        let (s_i, e_i, op_i) = Array::get(spans, at = i)
         if op_i == 0x10 {
-          let target = span_read_uleb_imm(body, s_i)
-          if (target >= 0) && (target <= max_func) && array_contains_int(noop, target) {
+          let target = span_read_uleb_imm(body = body, span_start = s_i)
+          if (target >= 0) && (target <= max_func) && array_contains_int(arr = noop, target = target) {
             ()
           } else {
-            copy_span_bytes(out, body, s_i, e_i)
+            copy_span_bytes(out = out, body = body, start = s_i, end_pos = e_i)
           }
         } else {
-          copy_span_bytes(out, body, s_i, e_i)
+          copy_span_bytes(out = out, body = body, start = s_i, end_pos = e_i)
         }
         i = i + 1
       }
-      Bytes::push(out, 0x0B)
+      Bytes::push(out, value = 0x0B)
       out
     }
   }
@@ -1623,10 +1623,10 @@ fn remove_noop_calls_body(body: Bytes, noop: Array[Int], max_func: Int) -> Bytes
 
 /// Inline (delete) calls to empty () -> () functions; the now-uncalled empty
 /// functions are removed by the following DCE pass.
-export fn inline_empty_calls(bytes: Bytes) -> Bytes {
+export fn inline_empty_calls(_ bytes: Bytes) -> Bytes {
   let len = Bytes::length(bytes)
   if len < 8 {
-    copy_bytes(bytes, 0, len)
+    copy_bytes(src = bytes, start = 0, end_pos = len)
   }
   else {
     let func_type_by_idx = build_func_type_by_index(bytes)
@@ -1639,7 +1639,7 @@ export fn inline_empty_calls(bytes: Bytes) -> Bytes {
     let mut code_sz = 0
     let mut si = 0
     while si < Array::length(sections) {
-      let (sid, off, sz) = Array::get(sections, si)
+      let (sid, off, sz) = Array::get(sections, at = si)
       if sid == 1 {
         type_off = off
         type_sz = sz
@@ -1651,47 +1651,47 @@ export fn inline_empty_calls(bytes: Bytes) -> Bytes {
       si = si + 1
     }
     if (code_off < 0) || (type_off < 0) {
-      copy_bytes(bytes, 0, len)
+      copy_bytes(src = bytes, start = 0, end_pos = len)
     }
     else {
-      let raw_bodies = parse_code_bodies(bytes, code_off, code_sz)
-      let noop = Array::slice([(0)], 0, 0)
+      let raw_bodies = parse_code_bodies(bytes = bytes, offset = code_off, size = code_sz)
+      let noop = Array::slice([(0)], start = 0, end = 0)
       let mut fi = 0
       while fi < Array::length(raw_bodies) {
         let g = import_count + fi
         if (g >= 0) && (g < Array::length(func_type_by_idx)) {
-          let tidx = Array::get(func_type_by_idx, g)
-          let pc = get_type_param_count(bytes, type_off, type_sz, tidx)
-          let rc = get_type_result_count(bytes, type_off, type_sz, tidx)
-          if (pc == 0) && (rc == 0) && is_body_empty(Array::get(raw_bodies, fi)) {
-            Array::push(noop, g)
+          let tidx = Array::get(func_type_by_idx, at = g)
+          let pc = get_type_param_count(bytes = bytes, type_sec_off = type_off, type_sec_sz = type_sz, type_idx = tidx)
+          let rc = get_type_result_count(bytes = bytes, type_sec_off = type_off, type_sec_sz = type_sz, type_idx = tidx)
+          if (pc == 0) && (rc == 0) && is_body_empty(Array::get(raw_bodies, at = fi)) {
+            Array::push(noop, value = g)
           }
         }
         fi = fi + 1
       }
       if Array::length(noop) == 0 {
-        copy_bytes(bytes, 0, len)
+        copy_bytes(src = bytes, start = 0, end_pos = len)
       }
       else {
-        let new_bodies = Array::slice([(Bytes::new())], 0, 0)
+        let new_bodies = Array::slice([(Bytes::new())], start = 0, end = 0)
         let mut bi = 0
         while bi < Array::length(raw_bodies) {
-          Array::push(new_bodies, remove_noop_calls_body(Array::get(raw_bodies, bi), noop, total_funcs - 1))
+          Array::push(new_bodies, value = remove_noop_calls_body(body = Array::get(raw_bodies, at = bi), noop = noop, max_func = total_funcs - 1))
           bi = bi + 1
         }
         let out = Bytes::new()
         let mut hi = 0
         while hi < 8 {
-          Bytes::push(out, bytes[hi]); hi = hi + 1
+          Bytes::push(out, value = bytes[hi]); hi = hi + 1
         }
         let mut s = 0
         while s < Array::length(sections) {
-          let (sid, off, sz) = Array::get(sections, s)
+          let (sid, off, sz) = Array::get(sections, at = s)
           if sid == 10 {
-            emit_section(out, 10, rebuild_code_section(new_bodies))
+            emit_section(out = out, sec_id = 10, content = rebuild_code_section(new_bodies))
           } else {
-            let content = copy_bytes(bytes, off, off + sz)
-            emit_section(out, sid, content)
+            let content = copy_bytes(src = bytes, start = off, end_pos = off + sz)
+            emit_section(out = out, sec_id = sid, content = content)
           }
           s = s + 1
         }
@@ -1702,47 +1702,47 @@ export fn inline_empty_calls(bytes: Bytes) -> Bytes {
 }
 
 /// Parse instruction spans of a whole function body (locals header skipped).
-export fn parse_full_body_spans(body: Bytes) -> Array[(Int, Int, Int)] {
+export fn parse_full_body_spans(_ body: Bytes) -> Array[(Int, Int, Int)] {
   let body_len = Bytes::length(body)
   if body_len < 2 {
-    Array::slice([(0, 0, 0)], 0, 0)
+    Array::slice([(0, 0, 0)], start = 0, end = 0)
   }
   else {
-    let (local_count, lp) = read_uleb128(body, 0)
+    let (local_count, lp) = read_uleb128(buf = body, offset = 0)
     let mut pos = lp
     let mut lc = 0
     while lc < local_count {
-      let (_, tp) = read_uleb128(body, pos)
+      let (_, tp) = read_uleb128(buf = body, offset = pos)
       pos = tp + 1
       lc = lc + 1
     }
-    parse_body_spans(body, pos, body_len - 1)
+    parse_body_spans(body = body, start = pos, end_pos = body_len - 1)
   }
 }
 
 /// Minimum size of each *defined* table (index space after imported tables).
-export fn parse_table_mins(bytes: Bytes) -> Array[Int] {
-  let result = Array::slice([(0)], 0, 0)
+export fn parse_table_mins(_ bytes: Bytes) -> Array[Int] {
+  let result = Array::slice([(0)], start = 0, end = 0)
   let sections = list_sections(bytes)
   let mut s = 0
   while s < Array::length(sections) {
-    let (sid, off, sz) = Array::get(sections, s)
+    let (sid, off, sz) = Array::get(sections, at = s)
     if sid == 4 {
       let end_pos = off + sz
-      let (cnt, pos0) = read_uleb128(bytes, off)
+      let (cnt, pos0) = read_uleb128(buf = bytes, offset = off)
       let mut pos = pos0
       let mut i = 0
       while (i < cnt) && (pos < end_pos) {
         pos = pos + 1
         let flag = bytes[pos]
         pos = pos + 1
-        let (min_v, np) = read_uleb128(bytes, pos)
+        let (min_v, np) = read_uleb128(buf = bytes, offset = pos)
         pos = np
         if flag == 1 {
-          let (_, np2) = read_uleb128(bytes, pos)
+          let (_, np2) = read_uleb128(buf = bytes, offset = pos)
           pos = np2
         }
-        Array::push(result, min_v)
+        Array::push(result, value = min_v)
         i = i + 1
       }
     }
@@ -1753,26 +1753,26 @@ export fn parse_table_mins(bytes: Bytes) -> Array[Int] {
 
 /// True if any body uses a table opcode: call_indirect, table.get/set, or any
 /// 0xFC table.* (init/drop/copy/grow/size/fill). Used to decide table removal.
-export fn code_uses_any_table_op(bytes: Bytes) -> Bool {
+export fn code_uses_any_table_op(_ bytes: Bytes) -> Bool {
   let sections = list_sections(bytes)
   let mut found = false
   let mut s = 0
   while s < Array::length(sections) {
-    let (sid, off, sz) = Array::get(sections, s)
+    let (sid, off, sz) = Array::get(sections, at = s)
     if sid == 10 {
-      let raw_bodies = parse_code_bodies(bytes, off, sz)
+      let raw_bodies = parse_code_bodies(bytes = bytes, offset = off, size = sz)
       let mut bi = 0
       while bi < Array::length(raw_bodies) {
-        let body = Array::get(raw_bodies, bi)
+        let body = Array::get(raw_bodies, at = bi)
         let spans = parse_full_body_spans(body)
         let mut i = 0
         while i < Array::length(spans) {
-          let (s_i, _, op_i) = Array::get(spans, i)
+          let (s_i, _, op_i) = Array::get(spans, at = i)
           if (op_i == 0x11) || (op_i == 0x25) || (op_i == 0x26) {
             found = true
           }
           else if op_i == 0xFC {
-            let (sub, _) = read_uleb128(body, s_i + 1)
+            let (sub, _) = read_uleb128(buf = body, offset = s_i + 1)
             if (sub >= 12) && (sub <= 17) {
               found = true
             }
@@ -1791,51 +1791,51 @@ export fn code_uses_any_table_op(bytes: Bytes) -> Bool {
 export fn fold_table_size_body(body: Bytes, table_mins: Array[Int]) -> Bytes {
   let body_len = Bytes::length(body)
   if body_len < 2 {
-    copy_bytes(body, 0, body_len)
+    copy_bytes(src = body, start = 0, end_pos = body_len)
   }
   else {
-    let (local_count, lp) = read_uleb128(body, 0)
+    let (local_count, lp) = read_uleb128(buf = body, offset = 0)
     let mut pos = lp
     let mut lc = 0
     while lc < local_count {
-      let (_, tp) = read_uleb128(body, pos)
+      let (_, tp) = read_uleb128(buf = body, offset = pos)
       pos = tp + 1
       lc = lc + 1
     }
     let code_start = pos
     let code_end = body_len - 1
     if code_start >= code_end {
-      copy_bytes(body, 0, body_len)
+      copy_bytes(src = body, start = 0, end_pos = body_len)
     }
     else {
-      let spans = parse_body_spans(body, code_start, code_end)
+      let spans = parse_body_spans(body = body, start = code_start, end_pos = code_end)
       let out = Bytes::new()
       let mut ci = 0
       while ci < code_start {
-        Bytes::push(out, body[ci]); ci = ci + 1
+        Bytes::push(out, value = body[ci]); ci = ci + 1
       }
       let mut i = 0
       while i < Array::length(spans) {
-        let (s_i, e_i, op_i) = Array::get(spans, i)
+        let (s_i, e_i, op_i) = Array::get(spans, at = i)
         if op_i == 0xFC {
-          let (sub, p_after_sub) = read_uleb128(body, s_i + 1)
+          let (sub, p_after_sub) = read_uleb128(buf = body, offset = s_i + 1)
           if sub == 16 {
-            let (tidx, _) = read_uleb128(body, p_after_sub)
+            let (tidx, _) = read_uleb128(buf = body, offset = p_after_sub)
             if (tidx >= 0) && (tidx < Array::length(table_mins)) {
-              Bytes::push(out, 0x41)
-              write_sleb128(out, Array::get(table_mins, tidx))
+              Bytes::push(out, value = 0x41)
+              write_sleb128(buf = out, n = Array::get(table_mins, at = tidx))
             } else {
-              copy_span_bytes(out, body, s_i, e_i)
+              copy_span_bytes(out = out, body = body, start = s_i, end_pos = e_i)
             }
           } else {
-            copy_span_bytes(out, body, s_i, e_i)
+            copy_span_bytes(out = out, body = body, start = s_i, end_pos = e_i)
           }
         } else {
-          copy_span_bytes(out, body, s_i, e_i)
+          copy_span_bytes(out = out, body = body, start = s_i, end_pos = e_i)
         }
         i = i + 1
       }
-      Bytes::push(out, 0x0B)
+      Bytes::push(out, value = 0x0B)
       out
     }
   }

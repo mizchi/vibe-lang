@@ -1,3 +1,11 @@
+import @vibe/checker/engine {
+  DependencyInterfaceSet
+}
+
+import @vibe/compiler/runtime/typecheck_walk {
+  ModuleWalk, ModuleWalkState, run_module_typecheck_walk
+}
+
 // lib/@vibe/compiler/runtime/typecheck_fs.vibe — ensure fingerprint fs impl.
 
 import @vibe/compiler/cache {
@@ -124,16 +132,7 @@ import ./typecheck_fs_find_fn_anchor_off.vibe {
 }
 
 import ./typecheck_fs_finish_typecheck_fs_impl.vibe {
-  DepLookup,
-  PlanCache,
-  fs_deps_answer,
-  fs_leaf_fingerprint_answer,
-  fs_prefetch_answer,
-  locate_type_error,
-  locate_type_error_lines,
-  plan_deps_of,
-  plan_import_graph_core,
-  step_module_fs_using_interfaces
+  locate_type_error, locate_type_error_lines, plan_deps_of, plan_import_graph_fs, step_module_fs_using_interfaces
 }
 
 import ./typecheck_fs_interface_decl_lines.vibe {
@@ -214,90 +213,6 @@ export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String])
   }
   (StringBuilder::freeze(buf), ordered_sources)
 }
-/// True when one of `path`'s planned dependencies is in `failed` -- i.e. was
-/// itself diagnosed, or was blocked by this same rule.
-///
-/// A blocked module cannot be checked at all: its dependency has no
-/// fingerprint to fold into its cache key and no environment to import. It
-/// therefore contributes NO diagnostic of its own. Reporting one would be a
-/// cascade -- "unknown binding x", once per importer -- which is precisely the
-/// noise a canonical diagnostic set exists to be free of.
-///
-/// Transitivity comes from the wave order: blocked modules are pushed onto
-/// `failed` too, and every dependency of a module was stepped in a strictly
-/// earlier wave, so `failed` is already complete for `path` when this runs.
-fn module_is_blocked(plan_edges: Array[(String, Array[String])], failed: Array[String], path: String) -> Bool {
-  if Array::length(failed) == 0 {
-    false
-  } else {
-    match plan_deps_of(plan_edges, path) {
-      // A missing source or validated dependency-free leaf has no edge entry
-      // and no dependencies to be blocked by.
-      None => false,
-      Some(deps) => {
-        let n = Array::length(deps)
-        let mut i = 0
-        let mut blocked = false
-        while i < n && !blocked {
-          if contains_str(failed, Array::get(deps, i)) {
-            blocked = true
-          } else {
-            i = i + 1
-          }
-        }
-        blocked
-      }
-    }
-  }
-}
-/// Canonical order for two collected diagnostics: normalized module path
-/// first, then the message.
-///
-/// #1239 step 5 specifies path -> source start/end -> diagnostic code ->
-/// message. Only the first and last of those exist today: check_module emits
-/// AT MOST ONE diagnostic per module (its Diagnosed arm builds a one-element
-/// array), so within a path there is nothing to break ties between, and there
-/// are no diagnostic codes yet. The message tiebreak is here anyway to keep
-/// the order TOTAL, so the day a worker returns several diagnostics for one
-/// module they sort deterministically instead of silently inheriting
-/// collection order.
-///
-/// str_lt, not `<`: canonical ordering must be true lexicographic. The builtin
-/// compares length first, which would make the order depend on path length
-/// (CLAUDE.md documents that footgun; @vibe/compiler/module_graph's plan_module_order avoids
-/// it the same way).
-fn module_diag_lt(a: (String, String), b: (String, String)) -> Bool {
-  if a.0 == b.0 {
-    str_lt(a.1, b.1)
-  } else {
-    str_lt(a.0, b.0)
-  }
-}
-/// Insertion sort into canonical order. One diagnostic per failing module, and
-/// a build with enough failing modules for O(N^2) to matter has bigger
-/// problems than the sort.
-fn sort_module_diagnostics(diags: Array[(String, String)]) -> Array[(String, String)] {
-  let out: Array[(String, String)] = []
-  let n = Array::length(diags)
-  let mut i = 0
-  while i < n {
-    let entry = Array::get(diags, i)
-    Array::push(out, entry)
-    let mut j = Array::length(out) - 1
-    while j > 0 && module_diag_lt(entry, Array::get(out, j - 1)) {
-      Array::set(out, j, Array::get(out, j - 1))
-      Array::set(out, j - 1, entry)
-      j = j - 1
-    }
-    i = i + 1
-  }
-  out
-}
-/// The collected set as one error string: canonical order, exact duplicates
-/// dropped, one diagnostic per line. A single collected diagnostic is
-/// therefore byte-identical to what the fail-fast walk would have thrown --
-/// which is what makes collection mode a superset of the default rather than
-/// a different output format.
 /// The `project` half of a scheduler trace: one row per planned module, with
 /// its rank and its dependency list. This IS Scheduler.lean's `Project` --
 /// `dependencies` and `rank` -- serialized, so the oracle can check
@@ -329,17 +244,6 @@ fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Arra
     StringBuilder::push(buf, "\n")
     i = i + 1
   }
-} fn join_module_diagnostics(diags: Array[(String, String)]) -> String {
-  let sorted = sort_module_diagnostics(diags)
-  let msgs = array_empty()
-  let n = Array::length(sorted)
-  let mut i = 0
-  while i < n {
-    let entry = Array::get(sorted, i)
-    Array::push(msgs, entry.1)
-    i = i + 1
-  }
-  String::join(dedupe_diagnostics(msgs), "\n")
 }
 /// The import-DAG walk, as the wave loop a coordinator dispatches from
 /// (#1239 step 4(D)).
@@ -371,256 +275,100 @@ fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Arra
 /// that matters: it is exactly the choice a parallel coordinator makes
 /// differently from run to run, and scripts/dep_order_oracle.sh asserts the
 /// compiled output is byte-identical across seeds regardless.
-/// #1872 boundary 2: one module's step on the shared walk
-/// (`typecheck_walk_core`), and where its scheduler trace goes. `Step` is
-/// asked once per scheduled module with the plan, the accepted fingerprints
-/// and the walk's state as of entry to the step; it answers the module's
-/// fingerprint and the state after it, or the module's diagnostic, which the
-/// walk raises or collects. A failed step's state is ignored.
-export effect ModuleStep {
-  Step(Array[(String, String)], Array[(String, Array[String])], Array[(String, String)], RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int, String, DependencyInterfaceSet) -> ((String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int), Option[String])
-  Trace(String, String) -> Unit
-}
-
-/// The filesystem step: the persistent caches, then the check.
-fn fs_step_answer(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: DependencyInterfaceSet) -> ((String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int), Option[String]) with Env + Fs {
-  handle {
-    (step_module_fs_using_interfaces(plan_leaf_fps, plan_edges, fps, rdb, env_cache, dep_source_cache, parse_count, path, interfaces), None)
-  } with { Exception::Throw(msg) => ((String::concat("diagnosed:", path), rdb, env_cache, dep_source_cache, parse_count), Some(msg)) }
-}
-
-/// #1872 boundary 2: the type-db walk itself -- plan, order, step each wave,
-/// collect diagnostics -- shared by every provider. What differs between the
-/// filesystem lane and an in-memory db is asked for, not branched on: the
-/// dependencies (`DepLookup`), the planning caches (`PlanCache`) and the step
-/// of one module (`ModuleStep`), which is where a provider's persistent cache
-/// lives. Process-wide memo resets and the root's final environment belong to
-/// the caller, since a warm in-memory db reuses memos across walks.
-///
-/// The result -- the root's fingerprint and the walk's state after it -- is
-/// pushed onto `out` rather than returned. A caller answers the walk's
-/// effects with a `handle`, and a handled call whose result can hold a
-/// function (the db and the environments can) reads to the checker as one
-/// that may return a closure performing those effects past the handler. The
-/// walk returns no closure; handing the state back through a cell the caller
-/// creates inside its `handle` says so without that question arising.
-export fn typecheck_walk_core(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, interfaces: DependencyInterfaceSet, out: Array[(String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int)]) -> Unit with Env + Exception + DepLookup + PlanCache + ModuleStep {
-  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_core(rdb, dep_source_cache, parse_count, path)
-  // #1239 step 4(A): an import cycle is rejected HERE -- before a single
-  // module is checked, committed, or written to the persistent cache --
-  // instead of incidentally, partway through the walk, on whichever module a
-  // DFS happened to re-enter first.
-  let (order, ranks) = plan_module_order(plan_edges, path)
-  incremental_typecheck_telemetry_add(0, Array::length(order))
-  let fps = typecheck_fs_empty_dep_fps()
-  let mut db = rdb
-  let mut envc = env_cache
-  let mut dsc = dep_source_cache
-  let mut pc = planned_parse_count
-  // #1259: empty unless collection is on, in which case `failed` holds every
-  // module that was diagnosed OR blocked by one, and `diags` the (path,
-  // message) pairs to sort at the end.
-  let failed = empty_stack()
-  let diags: Array[(String, String)] = []
-  // A module that failed to PLAN (a syntax error in its own source -- see
-  // plan_import_graph_fs) is already terminal: it has no dependency list, so
-  // it is a leaf to the schedule and nothing about it can be checked. Seed it
-  // as failed before the loop so the wave skips it and module_is_blocked
-  // catches its importers. Always empty when collection is off, since planning
-  // rethrows in that mode.
-  let mut pdi = 0
-  while pdi < Array::length(plan_diags) {
-    let entry = Array::get(plan_diags, pdi)
-    Array::push(failed, entry.0)
-    Array::push(diags, entry)
-    pdi = pdi + 1
-  }
-  // #1259 (#1239 step 8): the scheduler trace. Off unless
-  // VIBE_SCHEDULER_TRACE named a file.
-  let trace_path = scheduler_trace_path()
-  let tracing = String::length(trace_path) > 0
-  let trace = StringBuilder::new()
-  if tracing {
-    scheduler_trace_project(trace, order, ranks, plan_edges)
-  } else {
-    ()
-  }
-  let n = Array::length(order)
-  let mut i = 0
-  while i < n {
-    // `order` is sorted by rank, so one wave is a contiguous run.
-    let r = Array::get(ranks, i)
-    let mut j = i
-    while j < n && Array::get(ranks, j) == r {
-      j = j + 1
-    }
-    let wave = j - i
-    let visit = dep_visit_order(wave)
-    let mut k = 0
-    while k < wave {
-      let m = Array::get(order, i + Array::get(visit, k))
-      // `contains_str(failed, m)` first: a module that failed to plan is
-      // already in `failed` and has no edge entry, so module_is_blocked alone
-      // would let it through to a step that cannot succeed.
-      if contains_str(failed, m) || module_is_blocked(plan_edges, failed, m) {
-        incremental_typecheck_telemetry_add(4, 1)
-        Array::push(failed, m)
-      } else {
-        // Snapshots of the accumulators as of ENTRY to this module's step.
-        // The handler needs values it can close over, and they are also the
-        // right state to carry forward when the step raises: a module that
-        // does not check commits nothing.
-        let cur_db = db
-        let cur_envc = envc
-        let cur_dsc = dsc
-        let cur_pc = pc
-        // The provider steps the module and answers its failure rather than
-        // raising it, so the step's handler arm never throws.
-        let (stepped, step_failure) = perform ModuleStep::Step(plan_leaf_fps, plan_edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m, interfaces)
-        let raised = empty_stack()
-        match step_failure {
-          Some(msg) => Array::push(raised, msg),
-          None => ()
-        }
-        let (fp, next_db, next_envc, next_dsc, next_pc) = if Array::length(raised) > 0 {
-          (String::concat("diagnosed:", m), cur_db, cur_envc, cur_dsc, cur_pc)
-        } else {
-          stepped
-        }
-        if Array::length(raised) > 0 {
-          let msg = Array::get(raised, 0)
-          // Re-raised OUTSIDE the handler, so this is ordinary propagation
-          // and not a throw from within a handler body. Two cases never
-          // become collected diagnostics:
-          //
-          //   - fail-fast mode, the default: identical message, identical
-          //     partial state, raised one frame later than before
-          //   - an internal invariant violation (the `type_db:` prefix, the
-          //     two unreachable arms in step_module_fs / commit_with_deps_fs)
-          //     -- infrastructure failure, not something the user's program
-          //     said, so it must stay fatal even while collecting
-          if !collect_module_diagnostics() || String::starts_with(msg, "type_db: ") {
-            throw(msg)
-          } else {
-            incremental_typecheck_telemetry_add(4, 1)
-            Array::push(failed, m)
-            Array::push(diags, (m, msg))
-          }
-        } else {
-          // A successful recheck commits exactly one full-module parse;
-          // any successful no-body-parse path leaves `pc` unchanged. This
-          // includes in-memory and persistent reuse; it is intentionally not
-          // a per-cache-class hit count. Count the classification here, at the
-          // same publish point used by scheduler tracing, so every planned
-          // module belongs to rechecked, reused, or failed/blocked.
-          if next_pc > cur_pc {
-            incremental_typecheck_telemetry_add(1, 1)
-            incremental_typecheck_telemetry_decide(m, "rechecked")
-          } else {
-            incremental_typecheck_telemetry_add(2, 1)
-            incremental_typecheck_telemetry_decide(m, "reused")
-          }
-          match typecheck_fs_lookup_env_cache(next_envc, m) {
-            Some(env) => dependency_interface_set_publish(interfaces, m, env),
-            None => ()
-          }
-          db = next_db
-          envc = next_envc
-          dsc = next_dsc
-          pc = next_pc
-          Array::push(fps, (m, fp))
-          // One Step.run, recorded where the result is PUBLISHED -- the same
-          // point `BuildState.finish` sits at in the model. Recording it
-          // before the step would let a trace claim a module completed that
-          // then raised.
-          //
-          // Codex review P1: the fingerprint alone is NOT the JobResult. It is
-          // build_fingerprint(source, dep_fps) -- a pure function of the source
-          // graph, computed before the module is even checked -- so comparing
-          // fingerprints across schedules compares content-addressed cache KEYS
-          // that are schedule-independent by construction, and StoreCorrect
-          // would have held even if two schedules produced different TypeEnvs.
-          // The env hash is what makes that comparison mean anything: it is the
-          // checked environment the module actually published, serialized the
-          // same way commit_module_outcome writes it to the persistent cache.
-          //
-          // "-" is for the arms that publish no environment (a reusable cached
-          // fingerprint, or a persistent leaf-fingerprint hit). Both are cache
-          // hits, so on the cold cache dir the oracle uses they should be rare
-          // -- scheduler_trace_oracle.sh fails if too many steps carry "-",
-          // since a trace of all-"-" would be back to comparing keys.
-          if tracing {
-            let env_hash = match typecheck_fs_lookup_env_cache(next_envc, m) {
-              Some(env) => compact_string_fingerprint(persistent_type_env_cache_text(env)),
-              None => "-"
-            }
-            StringBuilder::push(trace, "step\t")
-            StringBuilder::push(trace, m)
-            StringBuilder::push(trace, "\t")
-            StringBuilder::push(trace, fp)
-            StringBuilder::push(trace, "\t")
-            StringBuilder::push(trace, env_hash)
-            StringBuilder::push(trace, "\n")
-          } else {
-            ()
-          }
-        }
-      }
-      k = k + 1
-    }
-    i = j
-  }
-  if tracing {
-    perform ModuleStep::Trace(trace_path, StringBuilder::freeze(trace))
-  } else {
-    ()
-  }
-  // Before the root lookup: with the root itself diagnosed or blocked there is
-  // no fingerprint and no environment for it, and reporting "missing:" for a
-  // module whose real problem is a type error two levels down would bury the
-  // diagnostics this whole pass exists to produce.
-  if Array::length(diags) > 0 {
-    throw(join_module_diagnostics(diags))
-  } else {
-    ()
-  }
-  let root_fingerprint = match typecheck_fs_lookup_string_pair(fps, path) {
-    Some(f) => f,
-    // The root is always interned by plan_module_order, so it is always
-    // stepped; this is the empty-graph shape rather than a miss.
-    None => String::concat("missing:", path)
-  }
-  incremental_typecheck_telemetry_add(3, pc - parse_count)
-  Array::push(out, (root_fingerprint, db, envc, dsc, pc))
-}
-
 export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
-  // #2391: the float-offsets memo lives for exactly one walk -- every module
-  // this walk accepts re-binds its row (from the check, the combined entry, or the
-  // TDRE10 target), and the FS merge consumes the rows right after the walk
-  // returns. Resetting here is what rules out a row surviving from an
-  // earlier compile of a since-edited file, without any eviction policy that
-  // could drop a row the ACTIVE compile still needs.
+  let interfaces = dependency_interface_set_new()
   module_typed_lowering_memo_reset()
   typing_dependency_env_reuse_valid_witness_memo_reset()
   checked_module_cache_reset()
-  // #2386: the source-text fingerprint memo spans one compile too.
   compact_source_fingerprint_memo_reset()
-  let (root_fingerprint, db, envc, dsc, pc) = handle {
-    // The walk hands its result back through `out` (see
-    // typecheck_walk_core); the step receives the interface set from it.
-    let interfaces = dependency_interface_set_new()
-    let out: Array[(String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int)] = [
-    ]
-    typecheck_walk_core(rdb, env_cache, dep_source_cache, parse_count, path, interfaces, out)
-    Array::get(out, 0)
-  } with { DepLookup::Compute(p, text, c) => resume(fs_deps_answer(p, text, c)); PlanCache::Prefetch(p, text) => resume(fs_prefetch_answer(p, text)); PlanCache::LeafFingerprint(p, text) => resume(fs_leaf_fingerprint_answer(p, text)); ModuleStep::Step(leaf_fps, edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m, step_interfaces) => resume(fs_step_answer(leaf_fps, edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m, step_interfaces)); ModuleStep::Trace(trace_path, text) => {
-    Fs::write_file(trace_path, text)
+  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)
+  let trace_path = scheduler_trace_path()
+  let tracing = String::length(trace_path) > 0
+  let trace = StringBuilder::new()
+  let initial = ModuleWalkState::{
+    rdb,
+    env_cache,
+    dep_sources: dep_source_cache,
+    parse_count: planned_parse_count
+  }
+  let result_state = [initial]
+  let fingerprint = handle {
+    run_module_typecheck_walk(plan_edges, plan_diags, Array::get(result_state, 0), path, collect_module_diagnostics())
+  } with { ModuleWalk::Planned(order, ranks, edges) => {
+    incremental_typecheck_telemetry_add(0, Array::length(order))
+    if tracing {
+      scheduler_trace_project(trace, order, ranks, edges)
+    } else ()
     resume(())
+  }; ModuleWalk::Visit(n) => resume(dep_visit_order(n)); ModuleWalk::Step(fps, current, module_path) => resume(fs_walk_step_answer(plan_leaf_fps, plan_edges, fps, current, module_path, interfaces)); ModuleWalk::Published(module_path, fp, next, previous_parse_count) => {
+    fs_walk_published(module_path, fp, next, previous_parse_count, interfaces, trace, tracing)
+    resume(())
+  }; ModuleWalk::Failed(_) => {
+    incremental_typecheck_telemetry_add(4, 1)
+    resume(())
+  }; ModuleWalk::Complete => {
+    if tracing {
+      Fs::write_file(trace_path, StringBuilder::freeze(trace))
+    } else ()
+    resume(())
+  }; ModuleWalk::Finish(current, root) => {
+    let (finished, error) = fs_walk_finish_answer(current, root, parse_count)
+    Array::set(result_state, 0, finished)
+    resume(error)
   } }
-  let final_env_cache = ensure_env_cache_for_path(db, envc, path)
-  (root_fingerprint, db, final_env_cache, dsc, pc)
+  let state = Array::get(result_state, 0)
+  (fingerprint, state.rdb, state.env_cache, state.dep_sources, state.parse_count)
 }
+
+// Exception is handled in the provider helper, not raised from an effect arm:
+// throwing arms force the handler onto the suspend-CPS driver (#3693).
+fn fs_walk_step_answer(leaf_fps: Array[(String, String)], edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, path: String, interfaces: DependencyInterfaceSet) -> (String, ModuleWalkState, Option[String]) with Env + Fs {
+  handle {
+    let (fp, rdb, env_cache, dep_sources, parse_count) = step_module_fs_using_interfaces(leaf_fps, edges, fps, state.rdb, state.env_cache, state.dep_sources, state.parse_count, path, interfaces)
+    (fp, ModuleWalkState::{ rdb, env_cache, dep_sources, parse_count }, None)
+  } with { Exception::Throw(message) => (String::concat("diagnosed:", path), state, Some(message)) }
+}
+
+fn fs_walk_published(path: String, fp: String, state: ModuleWalkState, previous_parse_count: Int, interfaces: DependencyInterfaceSet, trace: StringBuilder, tracing: Bool) -> Unit {
+  if state.parse_count > previous_parse_count {
+    incremental_typecheck_telemetry_add(1, 1)
+    incremental_typecheck_telemetry_decide(path, "rechecked")
+  } else {
+    incremental_typecheck_telemetry_add(2, 1)
+    incremental_typecheck_telemetry_decide(path, "reused")
+  }
+  match typecheck_fs_lookup_env_cache(state.env_cache, path) {
+    Some(env) => dependency_interface_set_publish(interfaces, path, env),
+    None => ()
+  }
+  if tracing {
+    let env_hash = match typecheck_fs_lookup_env_cache(state.env_cache, path) {
+      Some(env) => compact_string_fingerprint(persistent_type_env_cache_text(env)),
+      None => "-"
+    }
+    StringBuilder::push(trace, "step\t")
+    StringBuilder::push(trace, path)
+    StringBuilder::push(trace, "\t")
+    StringBuilder::push(trace, fp)
+    StringBuilder::push(trace, "\t")
+    StringBuilder::push(trace, env_hash)
+    StringBuilder::push(trace, "\n")
+  } else ()
+}
+
+fn fs_walk_finish_answer(state: ModuleWalkState, path: String, starting_parse_count: Int) -> (ModuleWalkState, Option[String]) with Env + Fs {
+  handle {
+    let env_cache = ensure_env_cache_for_path(state.rdb, state.env_cache, path)
+    incremental_typecheck_telemetry_add(3, state.parse_count - starting_parse_count)
+    (ModuleWalkState::{
+      rdb: state.rdb,
+      env_cache,
+      dep_sources: state.dep_sources,
+      parse_count: state.parse_count
+    }, None)
+  } with { Exception::Throw(message) => (state, Some(message)) }
+}
+
 /// #946: drop exact duplicates from a diagnostics list, preserving first-seen
 /// order. Each entry already embeds its location ("line L:C: msg"), so string
 /// equality IS (position, message) identity. O(N^2) — diagnostic lists are tiny.
@@ -1942,5 +1690,5 @@ export fn unstable_import_diagnostics(input_path: String, detected: String, loca
 }
 
 import ./typecheck_fs_bind_import_names_from_cache_collecting.vibe {
-  DependencyInterfaceSet, dependency_interface_set_new, dependency_interface_set_publish
+  dependency_interface_set_new, dependency_interface_set_publish
 }

@@ -1,0 +1,650 @@
+//# Imports
+
+import @vibe/compiler/codegen/wit {
+  serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler, wit_from_program, wit_kebab_ident, wit_type_text
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/core {
+  Expr, ImportItem, ImportKind, Stmt, TypeExpr
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Helpers
+
+fn no_strings() -> Array[String] {
+  array_empty()
+}
+
+fn string_ty() -> TypeExpr {
+  TyName("String")
+}
+
+/// An EFn body with fully annotated String params named `names`.
+fn efn_of_string_params(names: Array[String]) -> Expr {
+  let params = array_empty()
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(params, (Array::get(names, i), Some(TyName("String"))))
+    i = i + 1
+  }
+  EFn(no_strings(), array_empty(), params, Some(TyName("String")), None, EUnit)
+}
+
+//# Tests
+
+test "wit_kebab_ident: CamelCase / snake_case / mixed" {
+  assert(wit_kebab_ident("HttpReq") == "http-req")
+  assert(wit_kebab_ident("now_us") == "now-us")
+  assert(wit_kebab_ident("Fs") == "fs")
+  assert(wit_kebab_ident("handler") == "handler")
+  assert(wit_kebab_ident("readFile2") == "read-file2")
+}
+
+test "wit_type_text: scalar and container mapping" {
+  assert(wit_type_text(TyName("Int")) == "s64")
+  assert(wit_type_text(TyName("Double")) == "f64")
+  assert(wit_type_text(TyName("Bool")) == "bool")
+  assert(wit_type_text(TyName("String")) == "string")
+  assert(wit_type_text(TyName("Bytes")) == "list<u8>")
+  assert(wit_type_text(TyApp("Array", [TyName("Int")])) == "list<s64>")
+  assert(wit_type_text(TyApp("Option", [TyName("String")])) == "option<string>")
+  assert(wit_type_text(TyApp("Result", [TyName("Int"), TyName("String")])) == "result<s64, string>")
+  assert(wit_type_text(TyApp("StringMap", [TyName("Int")])) == "list<tuple<string, s64>>")
+  assert(wit_type_text(TyTuple([TyName("Int"), TyName("Bool")])) == "tuple<s64, bool>")
+}
+
+test "wit_from_program: effect import + exports, Error and Exception filtered" {
+  let ops = [
+    ("Method", array_empty(), TyName("String")),
+    ("Header", [string_ty()], TyName("String"))
+  ]
+  let route_ann = TyFn([string_ty()], TyName("String"), Some("HttpReq, Error, Exception"))
+  let route_body = efn_of_string_params(["prefix"])
+  let stmts = [
+    SEffectDef(false, "HttpReq", no_strings(), ops),
+    SLet(true, false, "route", Some(route_ann), route_body),
+    SLet(true, false, "handler", None, efn_of_string_params(serve_handler_param_names()))
+  ]
+  let wit = wit_from_program(stmts, stmts, "my_world")
+  assert(String::contains(wit, "world my-world {"))
+  assert(String::contains(wit, "import http-req: interface {"))
+  assert(String::contains(wit, "method: func() -> string;"))
+  assert(String::contains(wit, "header: func(arg0: string) -> string;"))
+  assert(String::contains(wit, "export route: func(prefix: string) -> string;"))
+  assert(String::contains(wit, "export handler: func(method: string, url: string, headers: string, body: string) -> string;"))
+  // The interim Error/Exception aliases must never surface as imports.
+  assert(!String::contains(wit, "import error"))
+  assert(!String::contains(wit, "import exception"))
+}
+
+test "wit_from_program: source StringMap is not the builtin projection" {
+  let stmts = [
+    SStruct(false, "StringMap", [("value", TyName("T"))], array_empty(), array_empty(), [
+      "T"
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "shadowed")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: an IMPORTED StringMap is not the builtin projection" {
+  // #2276 (Codex): an import binds the name just as a declaration does --
+  // `import ./dep.vibe { Box as StringMap }` makes `StringMap` a source-owned
+  // nominal type. The WIT CLI parses only the entry file and never resolves
+  // imports, so the ownership scan is the only place this can be seen.
+  // Before the `SImport` arm the projection published
+  // `list<tuple<string, s64>>` for the user's own type -- an ABI that does not
+  // match the function's representation, and silently so.
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: None, name: "Box", alias: Some("StringMap") }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "imported")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a non-String Map key has no WIT mapping" {
+  // #2276 (Codex): both WIT CLI paths parse the entry and call
+  // `wit_from_program` WITHOUT running the checker, so an unrestricted `Map`
+  // arm published `list<tuple<s64, string>>` for an annotation ordinary
+  // compilation now rejects -- an interface for a program that does not
+  // compile. Measured before the fix: it emitted exactly that.
+  let stmts = [
+    SLet(true, false, "f", Some(TyFn([
+      TyApp("Map", [TyName("Int"), TyName("String")])
+    ], TyName("Int"), None)), efn_of_string_params(["m"]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "badkey")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a String-keyed Map still projects" {
+  let stmts = [
+    SLet(true, false, "f", Some(TyFn([
+      TyApp("Map", [TyName("String"), TyName("Int")])
+    ], TyName("Int"), None)), efn_of_string_params(["m"]))
+  ]
+  let wit = wit_from_program(stmts, stmts, "goodkey")
+  assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
+test "wit_from_program: an UNKINDED import named StringMap fails closed" {
+  // #2276 (Codex rounds 9 and 11). Round 9 made this case NOT shadow, by
+  // guessing from the source name's case. Round 11 showed the guess is
+  // unsound at its root: this repository REQUIRES effect operations to be
+  // CamelCase (`Log::Emit`), so an upper-case source name is not evidence of
+  // a type and no refinement of the guess can become correct.
+  //
+  // With the guess gone the choice is which way to be wrong, and the design
+  // policy settles it: this now fails LOUDLY rather than publishing an
+  // imported TYPE with the builtin's ABI, which would be silently wrong.
+  // Writing the kind is what makes the answer exact -- see the two tests
+  // below.
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: None, name: "helper", alias: Some("StringMap") }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "unkinded")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a RE-EXPORTED StringMap type shadows the builtin" {
+  // #2276 (Codex round 11): `export ./dep.vibe { struct Box as StringMap }`
+  // binds the name in the entry exactly as the import form does. Handling
+  // only `SImport` published the nominal parameter with the builtin's ABI.
+  let stmts = [
+    SReExport("./dep.vibe", [
+      ImportItem::{
+        kind: Some(ImportStruct),
+        name: "Box",
+        alias: Some("StringMap")
+      }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "reexport")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a GENERIC BINDER named StringMap shadows the builtin" {
+  // #2276 (Codex round 14): `export fn f[StringMap](m: StringMap[Int])` makes
+  // `StringMap` the function's own type parameter. The checker rejects that
+  // program (a type parameter cannot take arguments, #2268), but neither
+  // `--wit` path runs the checker, so the projection published the builtin
+  // ABI for a program that does not compile.
+  let params = array_empty()
+  Array::push(params, ("m", Some(TyApp("StringMap", [TyName("Int")]))))
+  let generic_fn = EFn(["StringMap"], array_empty(), params, Some(TyName("Int")), None, EUnit)
+  let stmts = [
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), generic_fn)
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "generic")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a KINDED GENERIC BINDER named StringMap shadows the builtin" {
+  let params = array_empty()
+  Array::push(params, ("m", Some(TyApp("StringMap", [TyName("Int")]))))
+  let generic_fn = EFn(["$type_param$1$StringMap"], array_empty(), params, Some(TyName("Int")), None, EUnit)
+  let stmts = [
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), generic_fn)
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "generic")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: an UNAPPLIED StringMap binder does not shadow the builtin" {
+  // #2276 (Codex round 16): `fn id[StringMap](x: StringMap) -> StringMap` is a
+  // VALID program -- #2268 rejects an APPLIED formal, not a declared one -- so
+  // its binder must not disable the builtin projection for an unrelated export
+  // in the same file. Round 14 tested the binder alone and broke exactly this.
+  let id_params = array_empty()
+  Array::push(id_params, ("x", Some(TyName("StringMap"))))
+  let id_fn = EFn(["StringMap"], array_empty(), id_params, Some(TyName("StringMap")), None, EUnit)
+  let read_params = array_empty()
+  Array::push(read_params, ("m", Some(TyApp("StringMap", [TyName("Int")]))))
+  let read_fn = EFn(no_strings(), array_empty(), read_params, Some(TyName("Int")), None, EUnit)
+  let stmts = [
+    SLet(false, false, "id", Some(TyFn([TyName("StringMap")], TyName("StringMap"), None)), id_fn),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), read_fn)
+  ]
+  let wit = wit_from_program(stmts, stmts, "unapplied")
+  assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
+test "wit_from_program: a LOCAL suberror named StringMap shadows the builtin" {
+  // #2276 (Codex round 20): a suberror claims a typedef slot as a `TDEnum`, so
+  // the annotation is source-owned and publishing the builtin ABI for it is
+  // silently wrong -- the same shape as rounds 18 and 19, one keyword further.
+  let stmts = [
+    SSuberror(false, "StringMap", array_empty()),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "localsuberror")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a LOCAL effect named StringMap shadows the builtin" {
+  // #2276 (Codex round 19): the checker registers a local effect as a
+  // `TDEffect`, so the annotation is source-owned exactly as for the imported
+  // form fixed in round 18. Projecting the builtin ABI for it is silently
+  // wrong. The resolver half is pinned in `types_test.vibe`.
+  let stmts = [
+    SEffectDef(false, "StringMap", array_empty(), array_empty()),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "localeffect")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a LOCAL effectset named StringMap does NOT shadow the builtin" {
+  // Correcting round 19: `TDEffectSet` reaches `defs` only through
+  // `seed_imported_type_defs`, so a LOCAL effectset leaves the checker
+  // resolving `StringMap[Int]` as the builtin map. Measured on the equality
+  // lowering, which asks the same question: the effect form emits 1174 bytes
+  // (nominal), the effectset form 4413 (the generated map comparator).
+  // Treating it as ownership failed `--wit` for a valid program.
+  let stmts = [
+    SEffectSet(false, "StringMap", array_empty()),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let wit = wit_from_program(stmts, stmts, "localeffectset")
+  assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
+test "wit_from_program: a TRAIT import named StringMap does not shadow the builtin" {
+  // #2276 (Codex round 10): a trait lives in the trait environment, not in
+  // `defs`, so `import ./dep.vibe { trait StringMap }` leaves the checker
+  // resolving `StringMap[V]` to the builtin. Treating every written `kind` as
+  // type-like failed this valid program with `no WIT mapping` -- measured, it
+  // did. Only ImportType / ImportStruct / ImportEnum own a type spelling.
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: Some(ImportTrait), name: "StringMap", alias: None }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let wit = wit_from_program(stmts, stmts, "traitimport")
+  assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
+test "wit_from_program: an EFFECT import named StringMap shadows the builtin" {
+  // #2276 (Codex round 18): imported effects are stored in the checker's
+  // TypeDef environment, unlike traits, so they own this nominal spelling.
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{
+        kind: Some(ImportEffect),
+        name: "Box",
+        alias: Some("StringMap")
+      }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "effectimport")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a STRUCT import named StringMap does shadow the builtin" {
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: Some(ImportStruct), name: "StringMap", alias: None }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "structimport")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: undeclared capability effect renders as comment" {
+  let stats_ann = TyFn([TyName("Int")], TyName("Int"), Some("Fs"))
+  let stmts = [
+    SLet(true, false, "stats", Some(stats_ann), EFn(no_strings(), array_empty(), [
+      ("n", Some(TyName("Int")))
+    ], Some(TyName("Int")), None, EUnit))
+  ]
+  let wit = wit_from_program(stmts, stmts, "caps")
+  assert(String::contains(wit, "// host capability effect 'Fs'"))
+  assert(String::contains(wit, "export stats: func(n: s64) -> s64;"))
+}
+
+test "#1961: WIT does not admit a non-owned operation as the host provider" {
+  let stats_ann = TyFn([TyName("Int")], TyName("Int"), Some("Console::Get"))
+  let stmts = [
+    SLet(true, false, "stats", Some(stats_ann), EFn(no_strings(), array_empty(), [
+      ("n", Some(TyName("Int")))
+    ], Some(TyName("Int")), None, EUnit))
+  ]
+  let wit = wit_from_program(stmts, stmts, "caps")
+  assert(!String::contains(wit, "host capability effect 'Console'"))
+  assert(String::contains(wit, "export stats: func(n: s64) -> s64;"))
+}
+
+test "#1961: WIT admits an exact owned host operation" {
+  let stats_ann = TyFn([TyName("Int")], TyName("Int"), Some("Console::write_stream"))
+  let stmts = [
+    SLet(true, false, "stats", Some(stats_ann), EFn(no_strings(), array_empty(), [
+      ("n", Some(TyName("Int")))
+    ], Some(TyName("Int")), None, EUnit))
+  ]
+  let wit = wit_from_program(stmts, stmts, "caps")
+  assert(String::contains(wit, "host capability effect 'Console'"))
+}
+
+test "#1961: parsed Console::Get is not host-admitted by effect name" {
+  // Effect-name admission would take the Console prefix and emit
+  // `host capability effect 'Console'`. Identity admission must not.
+  let source = "export fn stats(n: Int) -> Int with Console::Get {\n  n\n}\n"
+  let stmts = parse_program(lex(source))
+  let wit = wit_from_program(stmts, stmts, "caps")
+  assert(!String::contains(wit, "host capability effect 'Console'"))
+  assert(!String::contains(wit, "import console"))
+  assert(String::contains(wit, "export stats:"))
+}
+
+test "#1961: parsed Console::write_stream is host-admitted by identity" {
+  let source = "export fn stats(n: Int) -> Int with Console::write_stream {\n  n\n}\n"
+  let stmts = parse_program(lex(source))
+  let wit = wit_from_program(stmts, stmts, "caps")
+  assert(String::contains(wit, "host capability effect 'Console'"))
+}
+
+test "#1961: a declared ::-less user effect is not host-admitted by provider name" {
+  // `effect Console` is a user effect. `with Console::Get` must not become
+  // the host Console provider, and must not be dropped: WIT should import
+  // the declared user interface.
+  let source = "effect Console { Get() -> Int }\nexport fn stats(n: Int) -> Int with Console::Get {\n  n\n}\n"
+  let stmts = parse_program(lex(source))
+  let wit = wit_from_program(stmts, stmts, "caps")
+  assert(!String::contains(wit, "host capability effect 'Console'"))
+  assert(String::contains(wit, "import console: interface"))
+  assert(String::contains(wit, "get: func() -> s64;"))
+}
+
+test "validate_serve_handler: accepts the 4-string contract" {
+  let stmts = [
+    SLet(true, false, "handler", None, efn_of_string_params(serve_handler_param_names()))
+  ]
+  validate_serve_handler(stmts)
+  assert(true)
+}
+
+test "validate_serve_handler: rejects wrong arity" {
+  let stmts = [
+    SLet(true, false, "handler", None, efn_of_string_params(["method", "url"]))
+  ]
+  let rejected = handle {
+    validate_serve_handler(stmts)
+    false
+  } with { Exception::Throw(_) => true }
+  assert(rejected)
+}
+
+test "validate_serve_handler: rejects a missing handler export" {
+  let stmts = [
+    SLet(false, false, "handler", None, efn_of_string_params(serve_handler_param_names()))
+  ]
+  let rejected = handle {
+    validate_serve_handler(stmts)
+    false
+  } with { Exception::Throw(_) => true }
+  assert(rejected)
+}
+
+/// #1540: `Async` gets its own rejection, because the generic one gives advice
+/// that cannot be followed. `Async` is not a capability and has no operations,
+/// so "discharge the effect with `handle`" sends the reader after something
+/// that does not exist. Since #1540 scope 4 the lane DOES exist, so the answer
+/// changed from "not wired up yet" to what actually unlocks it: the body
+/// parameter the suspension is for.
+test "validate_serve_handler: an all-String Async handler is told what Async is for (#1540)" {
+  let async_ann = TyFn([
+    TyName("String"),
+    TyName("String"),
+    TyName("String"),
+    TyName("String")
+  ], TyName("String"), Some("Async"))
+  let stmts = [
+    SLet(true, false, "handler", Some(async_ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  let msg = handle {
+    validate_serve_handler(stmts)
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "needs a `body: HostStream` parameter"))
+  // The advice the generic arm gives must NOT appear here: there is nothing to
+  // handle, and following it would waste the reader's time.
+  assert(!String::contains(msg, "discharge the effect with `handle`"))
+}
+
+/// #1540 scope 4: the shape the whole issue was for. A last parameter typed
+/// `HostStream` plus `with Async` is the stream serve lane's contract, and it
+/// must pass -- every earlier revision of this function rejected it.
+test "validate_serve_handler: accepts a HostStream body with Async (#1540)" {
+  let stream_ann = TyFn([
+    TyName("String"),
+    TyName("String"),
+    TyName("String"),
+    TyName("HostStream")
+  ], TyName("String"), Some("Async"))
+  let stmts = [
+    SLet(true, false, "handler", Some(stream_ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  validate_serve_handler(stmts)
+  assert(serve_handler_takes_body_stream(stmts))
+}
+
+/// The converse. `host_stream_next` suspends, so a `HostStream` body with no
+/// `Async` in the row is a parameter the handler can never read -- reject at
+/// the boundary rather than serve a handler that silently sees no body.
+test "validate_serve_handler: a HostStream body without Async is rejected (#1540)" {
+  let stream_ann = TyFn([
+    TyName("String"),
+    TyName("String"),
+    TyName("String"),
+    TyName("HostStream")
+  ], TyName("String"), None)
+  let stmts = [
+    SLet(true, false, "handler", Some(stream_ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  let msg = handle {
+    validate_serve_handler(stmts)
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "needs `with Async`"))
+}
+
+/// The lane selector is what `vibe serve` branches on, so it must answer NO
+/// for the String contract -- picking the stream lane there would emit a
+/// component whose export takes a `stream<u8>` the adapter never supplies.
+test "serve_handler_takes_body_stream: false for the all-String contract (#1540)" {
+  let ann = TyFn([
+    TyName("String"),
+    TyName("String"),
+    TyName("String"),
+    TyName("String")
+  ], TyName("String"), None)
+  let stmts = [
+    SLet(true, false, "handler", Some(ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  assert(!serve_handler_takes_body_stream(stmts))
+}
+
+/// The generic arm still answers for real capability effects -- this is a new
+/// branch, not a replacement.
+test "validate_serve_handler: a capability effect keeps the discharge advice (#1540)" {
+  let fs_ann = TyFn([
+    TyName("String"),
+    TyName("String"),
+    TyName("String"),
+    TyName("String")
+  ], TyName("String"), Some("Fs"))
+  let stmts = [
+    SLet(true, false, "handler", Some(fs_ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  let msg = handle {
+    validate_serve_handler(stmts)
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "requires capability effect 'Fs'"))
+  assert(String::contains(msg, "discharge the effect with `handle`"))
+}
+
+test "wit_type_text: Future projects to future, ByteStream to stream<u8> (ADR-0089 D5)" {
+  assert(wit_type_text(TyApp("Future", [TyName("Int")])) == "future<s64>")
+  assert(wit_type_text(TyApp("Future", [TyName("String")])) == "future<string>")
+  assert(wit_type_text(TyName("ByteStream")) == "stream<u8>")
+  // #1540 scope 4: the parameter-side sibling, same projection.
+  assert(wit_type_text(TyName("HostStream")) == "stream<u8>")
+}
+
+test "wit_type_text: eager Stream stays unmapped (boundary rule, spec §3.3)" {
+  let r = handle {
+    let _t = wit_type_text(TyApp("Stream", [TyName("Int")]))
+    ""
+  } with { Exception::Throw(msg) => msg }
+  assert(String::contains(r, "no WIT mapping"))
+}
+
+test "wit_from_program: Async export becomes async func, never an import" {
+  let run_ann = TyFn(array_empty(), TyName("Int"), Some("Async, Error"))
+  let stmts = [
+    SLet(true, false, "run", Some(run_ann), EFn(no_strings(), array_empty(), array_empty(), Some(TyName("Int")), Some("Async, Error"), EUnit))
+  ]
+  let wit = wit_from_program(stmts, stmts, "aw")
+  assert(String::contains(wit, "export run: async func() -> s64;"))
+  assert(!String::contains(wit, "host capability effect 'Async'"))
+  assert(!String::contains(wit, "import async"))
+}
+
+test "wit_from_program: transparent local Async declaration still lifts, not imports" {
+  // A program carrying the #752 transparent `effect Async { Suspend }`
+  // declaration (every @vibe/concurrent user) must not get an
+  // `import async: interface { suspend: ... }` -- Async is the suspension
+  // effect, realized by the async lift (ADR-0089 D1/D5).
+  let ops = [("Suspend", [TyName("Int")], TyName("Int"))]
+  let run_ann = TyFn(array_empty(), TyName("Int"), Some("Async"))
+  let stmts = [
+    SEffectDef(false, "Async", no_strings(), ops),
+    SLet(true, false, "run", Some(run_ann), EFn(no_strings(), array_empty(), array_empty(), Some(TyName("Int")), Some("Async"), EUnit))
+  ]
+  let wit = wit_from_program(stmts, stmts, "aw2")
+  assert(String::contains(wit, "export run: async func() -> s64;"))
+  assert(!String::contains(wit, "import async"))
+  assert(!String::contains(wit, "suspend"))
+}
+
+test "wit_from_program: future-returning async export round-trips both D5 mappings" {
+  let fetch_ann = TyFn(array_empty(), TyApp("Future", [TyName("Int")]), Some("Async"))
+  let stmts = [
+    SLet(true, false, "fetch_price", Some(fetch_ann), EFn(no_strings(), array_empty(), array_empty(), Some(TyApp("Future", [
+      TyName("Int")
+    ])), Some("Async"), EUnit))
+  ]
+  let wit = wit_from_program(stmts, stmts, "prices")
+  assert(String::contains(wit, "export fetch-price: async func() -> future<s64>;"))
+}
+
+/// #1963: the serve validator asked `ename == "Async"`, but the checker accepts
+/// an operation-qualified row label and carries it through verbatim -- measured
+/// on a stage2 from this tree, `fn f() -> Int with Async::Suspend` checks clean
+/// and a caller missing it is told `missing { Async::Suspend }`. So this
+/// handler went to the GENERIC arm and was told to "discharge the effect with
+/// `handle`", the one piece of advice the Async arm exists to avoid giving:
+/// Async has no operations to handle. It now gets the same answer the bare
+/// spelling gets.
+test "validate_serve_handler: an operation-qualified Async row gets the Async answer (#1963)" {
+  let ann = TyFn([string_ty(), string_ty(), string_ty(), string_ty()], string_ty(), Some("Async::Suspend"))
+  let stmts = [
+    SLet(true, false, "handler", Some(ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  let msg = handle {
+    validate_serve_handler(stmts)
+    "<accepted>"
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "needs a `body: HostStream` parameter"))
+  assert(!String::contains(msg, "discharge the effect with `handle`"))
+  assert(!String::contains(msg, "must be a pure function"))
+}
+
+/// The other half, and the worse one: this is the stream serve lane's own
+/// contract written with the qualified spelling, and it was REJECTED outright
+/// -- `serve_effects_have_async` scanned for the literal `"Async"`, found none,
+/// and reported a row that does carry Async as one that does not. A valid
+/// program refused, with advice pointing away from the fix.
+test "validate_serve_handler: a HostStream body with an operation-qualified Async row is accepted (#1963)" {
+  let ann = TyFn([string_ty(), string_ty(), string_ty(), TyName("HostStream")], string_ty(), Some("Async::Suspend"))
+  let stmts = [
+    SLet(true, false, "handler", Some(ann), efn_of_string_params(serve_handler_param_names()))
+  ]
+  let msg = handle {
+    validate_serve_handler(stmts)
+    "<accepted>"
+  } with { Exception::Throw(m) => m }
+  inspect(msg, "<accepted>")
+}

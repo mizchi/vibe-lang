@@ -1,8 +1,12 @@
 import @vibe/lowering_worker/linear {
   linear_string_reader
 }
-import @vibe/compiler {
-  configure_cfg_flags, executable_exports_stripped, strip_executable_wasm_env
+import @vibe/compiler/config {
+  configure_compiler_cfg_flags
+}
+
+import @vibe/compiler/codegen/executable {
+  executable_exports_stripped, strip_executable_wasm_env
 }
 // One synchronous compiler instance surrounds the Async-only coordinator.
 // The component composition cannot host the compiler's Env/Fs imports yet.
@@ -35,7 +39,7 @@ import @vibe/lowering_worker {
 }
 
 fn compile_input() -> Bytes with Env + Exception + Fs {
-  compile_file_fs_mode_rc_body_cached_split(Env::get("VIBE_LOWERING_INPUT"), Env::get("VIBE_LOWERING_ENTRY"), "off", true)
+  compile_file_fs_mode_rc_body_cached_split(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off", use_split = true)
 }
 
 // These callbacks belong to this transient compile image. The host calls
@@ -51,56 +55,56 @@ let cursor: Array[Int] = [0]
 
 // Bytes are raw pointers in the RC ABI. Reset only the length; preserve the
 // allocation and capacity. No decoded AST or strings borrow these buffers.
-fn clear_bytes(bytes: Bytes) -> Int = wasm
+fn clear_bytes(_ bytes: Bytes) -> Int = wasm
 "local.get $bytes i32.wrap_i64 i32.const 0 i32.store offset=4 i64.const 0"
 
 /// Serialize the immutable context once before the host starts worker waves.
 export fn lowering_shared_context() -> Bytes with Exception {
   let bytes = Bytes::with_capacity(64 * 1024 * 1024)
-  Array::set(input_buffer, 0, bytes)
-  write_prelude_shared_context(bytes, Array::get(shared_contexts, 0))
-  Array::set(context_digest, 0, blake3_bytes_simd(bytes))
+  Array::set(input_buffer, at = 0, value = bytes)
+  write_prelude_shared_context(b = bytes, context = Array::get(shared_contexts, at = 0))
+  Array::set(context_digest, at = 0, value = blake3_bytes_simd(bytes))
   bytes
 }
 
-export fn lowering_job_input(index: Int) -> Bytes with Exception {
-  let bytes = Array::get(input_buffer, 0)
+export fn lowering_job_input(_ index: Int) -> Bytes with Exception {
+  let bytes = Array::get(input_buffer, at = 0)
   clear_bytes(bytes)
-  let batch = Array::get(batches, 0)
+  let batch = Array::get(batches, at = 0)
   let entry = if index == batch.entry_fid {
     batch.entry_name
   } else {
     ""
   }
-  write_prelude_shared_job(bytes, Array::get(batch.parts, index), Array::get(batch.context_indices, index), "f\{index}", entry, Array::get(context_digest, 0))
-  Array::set(input_digests, index, blake3_bytes_simd(bytes))
+  write_prelude_shared_job(b = bytes, own = Array::get(batch.parts, at = index), indices = Array::get(batch.context_indices, at = index), tag = "f\{index}", entry = entry, digest = Array::get(context_digest, at = 0))
+  Array::set(input_digests, at = index, value = blake3_bytes_simd(bytes))
   bytes
 }
 
 export fn lowering_input_release() -> Unit {
-  clear_bytes(Array::get(input_buffer, 0))
+  clear_bytes(Array::get(input_buffer, at = 0))
   ()
 }
 
 export fn lowering_product_allocate(index: Int, length: Int) -> Bytes with Exception {
-  if index != Array::get(cursor, 0) || length <= 0 {
+  if index != Array::get(cursor, at = 0) || length <= 0 {
     throw("lowering: invalid product allocation order or length")
   } else ()
-  if length > Array::get(product_capacity, 0) {
-    Array::set(product_buffer, 0, Bytes::with_capacity(length))
-    Array::set(product_capacity, 0, length)
+  if length > Array::get(product_capacity, at = 0) {
+    Array::set(product_buffer, at = 0, value = Bytes::with_capacity(length))
+    Array::set(product_capacity, at = 0, value = length)
   } else ()
-  let buffer = Array::get(product_buffer, 0)
+  let buffer = Array::get(product_buffer, at = 0)
   clear_bytes(buffer)
   buffer
 }
 
 export fn lowering_product_consume(index: Int, input_digest: String, product_digest: String) -> Unit with Exception {
-  if index != Array::get(cursor, 0) || index >= Array::length(input_digests) {
+  if index != Array::get(cursor, at = 0) || index >= Array::length(input_digests) {
     throw("lowering: product count or order mismatch")
   } else ()
-  let bytes = Array::get(product_buffer, 0)
-  if input_digest != Array::get(input_digests, index) {
+  let bytes = Array::get(product_buffer, at = 0)
+  if input_digest != Array::get(input_digests, at = index) {
     throw("lowering: product does not match its prepared input: input receipt")
   } else ()
   if product_digest != blake3_bytes_simd(bytes) {
@@ -110,42 +114,42 @@ export fn lowering_product_consume(index: Int, input_digest: String, product_dig
   if product.module_tag != "f\{index}" {
     throw("lowering: product belongs to a different module")
   } else ()
-  let batch = Array::get(batches, 0)
-  let own = Array::get(batch.parts, index)
-  Array::truncate(own, 0)
+  let batch = Array::get(batches, at = 0)
+  let own = Array::get(batch.parts, at = index)
+  Array::truncate(own, length = 0)
   for stmt in product.own {
-    Array::push(own, stmt)
+    Array::push(own, value = stmt)
   }
   for key in product.synth_keys {
-    Array::push(batch.synth, key)
+    Array::push(batch.synth, value = key)
   }
   let mut i = 0
   while i < Array::length(product.tail.keys) {
-    prelude_tail_record(batch.tail, Array::get(product.tail.keys, i), Array::get(product.tail.passes, i))
+    prelude_tail_record(tail = batch.tail, key = Array::get(product.tail.keys, at = i), pass = Array::get(product.tail.passes, at = i))
     i = i + 1
   }
   for diag in product.diagnostics {
-    Array::push(batch.diagnostics, diag)
+    Array::push(batch.diagnostics, value = diag)
   }
   for name in product.inline_names {
-    Array::push(batch.env.iw_names, name)
+    Array::push(batch.env.iw_names, value = name)
   }
   for wat in product.inline_wats {
-    Array::push(batch.env.iw_wats, wat)
+    Array::push(batch.env.iw_wats, value = wat)
   }
   module_lowering_deferred_merge(product.deferred)
   eq_invisible_nominals_reset()
   for name in product.invisible_nominals {
-    Array::push(dtd_eq_invisible_nominals, name)
+    Array::push(dtd_eq_invisible_nominals, value = name)
   }
-  clear_bytes(Array::get(product_buffer, 0))
-  Array::set(cursor, 0, index + 1)
+  clear_bytes(Array::get(product_buffer, at = 0))
+  Array::set(cursor, at = 0, value = index + 1)
 }
 
-fn execute_batch(batch: PreludeModuleBatch) -> Unit with Exception {
-  Array::push(batches, batch)
+fn execute_batch(_ batch: PreludeModuleBatch) -> Unit with Exception {
+  Array::push(batches, value = batch)
   let count = Array::length(batch.parts)
-  Array::push(shared_contexts, PreludeSharedContext::{
+  Array::push(shared_contexts, value = PreludeSharedContext::{
     interfaces: batch.context_pool,
     typed_offsets: batch.offsets,
     typed_keys: batch.keys,
@@ -158,41 +162,41 @@ fn execute_batch(batch: PreludeModuleBatch) -> Unit with Exception {
   })
   let mut index = 0
   while index < count {
-    Array::push(input_digests, "")
+    Array::push(input_digests, value = "")
     index = index + 1
   }
   let completed = compiler_lowering_run(count)
-  if completed != count || Array::get(cursor, 0) != count {
+  if completed != count || Array::get(cursor, at = 0) != count {
     throw("lowering: unconsumed module products")
   } else ()
-  Array::truncate(shared_contexts, 0)
-  Array::truncate(input_digests, 0)
-  Array::truncate(batches, 0)
+  Array::truncate(shared_contexts, length = 0)
+  Array::truncate(input_digests, length = 0)
+  Array::truncate(batches, length = 0)
   // Clear callback state after the service; Bytes remain bump-backed.
   // Resetting these references does not reclaim their capacity or linear memory.
-  Array::set(input_buffer, 0, Bytes::new())
-  Array::set(product_buffer, 0, Bytes::new())
-  Array::set(product_capacity, 0, 0)
-  Array::set(context_digest, 0, "")
+  Array::set(input_buffer, at = 0, value = Bytes::new())
+  Array::set(product_buffer, at = 0, value = Bytes::new())
+  Array::set(product_capacity, at = 0, value = 0)
+  Array::set(context_digest, at = 0, value = "")
 }
 
 fn single_compile() -> Unit with Env + Exception + Fs {
-  let bytes = prelude_with_module_batch_executor(execute_batch, () -> Bytes with Env + Exception + Fs {
+  let bytes = prelude_with_module_batch_executor(executor = execute_batch, action = () -> Bytes with Env + Exception + Fs {
     compile_input()
   })
-  if Array::get(cursor, 0) == 0 {
+  if Array::get(cursor, at = 0) == 0 {
     throw("build without VIBE_TASKGROUP_LOWERING=1 for this program")
   } else ()
-  Fs::write_bytes(Env::get("VIBE_LOWERING_OUTPUT"), strip_executable_wasm_env(bytes, Env::get("VIBE_LOWERING_ENTRY")))
+  Fs::write_bytes(Env::get("VIBE_LOWERING_OUTPUT"), bytes = strip_executable_wasm_env(wasm = bytes, entry_name = Env::get("VIBE_LOWERING_ENTRY")))
 }
 
 fn main() -> Unit allows Env + Exception + Fs {
-  configure_cfg_flags()
-  set_executable_exports_stripped(executable_exports_stripped(Env::get("VIBE_LOWERING_ENTRY")))
-  set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
+  configure_compiler_cfg_flags()
+  set_executable_exports_stripped(stripped = executable_exports_stripped(entry_name = Env::get("VIBE_LOWERING_ENTRY")))
+  set_error_row_checked(on = Env::get("VIBE_CHECK_ERROR_ROW") != "0")
   let mode = Env::get("VIBE_LOWERING_MODE")
   if mode == "serial" {
-    Fs::write_bytes(Env::get("VIBE_LOWERING_OUTPUT"), strip_executable_wasm_env(compile_input(), Env::get("VIBE_LOWERING_ENTRY")))
+    Fs::write_bytes(Env::get("VIBE_LOWERING_OUTPUT"), bytes = strip_executable_wasm_env(wasm = compile_input(), entry_name = Env::get("VIBE_LOWERING_ENTRY")))
   } else if mode == "single" {
     single_compile()
   }
