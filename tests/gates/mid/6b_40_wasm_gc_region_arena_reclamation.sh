@@ -902,7 +902,7 @@ echo "[compiler-gate] wasm-gc scalar-keyed Map refusal ok"
 # something else, and silently-wrong outranks a crash (docs/internal/project/issue-triage.md).
 # So the same file runs on the LINEAR lane too, as the oracle.
 #
-# check_builtin_parity.sh already fails if either lane loses an arm. It reads
+# check_builtin_parity.vibex already fails if either lane loses an arm. It reads
 # callsite arms, though, and cannot tell a correct lowering from a wrong one.
 echo "[compiler-gate] 40h8b/40 gc<->linear builtin lane parity (#1861)"
 if ! VIBE_TEST_CLI_WASM="$stage2_wasm" \

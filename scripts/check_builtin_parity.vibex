@@ -1,0 +1,826 @@
+// #415 B-3: builtin parity gate (selfhost re-implementation of the retired
+// check_codegen_parity.sh idea). #3672 ported this gate from
+// check_builtin_parity.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_builtin_parity.vibex -- \
+//     [--lin-callsite PATH] [--gc-callsite PATH] [--registry PATH]
+//
+// The registry (core/builtin_registry.vibe) already hard-verifies the two
+// FUNC-TABLE lanes at compile time (verify_lane_builtins runs inside every
+// linear compile and every gc compile, incl. the gate's 40h gc smoke). What it
+// cannot see are the CALLSITE lowerings -- the `fname == "..."` dispatch arms
+// in expr/compile_call.vibe (linear) and gc/backend_call.vibe (gc). That is
+// exactly where the wasm-gc HOF-gap class of regression lived: a builtin wired
+// into one lane's dispatch with the other lane silently left behind.
+//
+// This gate extracts the full served-name set per lane (callsite arms +
+// registry lane flags + the gc host-import table) and requires every
+// SINGLE-LANE name to be classified in scripts/builtin_parity_classification.tsv
+// -- and every classified row to still be a real divergence. Adding a builtin
+// to one lane without either porting it or classifying it fails the build; so
+// does leaving a stale row behind after porting. Divergence is therefore always
+// an explicit, reviewed decision, never drift.
+//
+// Every source is read as its source group (scripts/source_group.vibe). The
+// three options point the gate at a mutated, flattened COPY instead of the
+// tree's own file -- the self-test's use; a real invocation passes none.
+//
+// Each extraction pins the shape it reads and FAILS when the shape moves,
+// rather than silently counting zero: a parity guard that quietly stops seeing
+// a lane is worse than one that breaks loudly.
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/process {
+  exit
+}
+import @vibex/shell {
+  sort_str
+}
+import ./source_group.vibe {
+  read_source_group
+}
+
+struct Row {
+  name: String;
+  bools: Array[String]
+}
+
+fn option(name: String, fallback: String) -> String with Env::args_get + Env::args_len {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn die(message: String) -> Unit with Stderr::write_stream + Process {
+  Stderr::write_stream("[builtin-parity] FAIL: \{message}\n")
+  exit(1)
+}
+
+fn group(path: String) -> String with Fs::is_file + Fs::read_file + Stderr::write_stream + Process {
+  let (text, missing) = read_source_group(path)
+  if missing != "" {
+    die("\{missing} is part of the source group of \{path} and does not exist")
+  } else {
+    ()
+  }
+  text
+}
+
+fn rest_of(s: String, at: Int) -> String {
+  String::substring(s, at, String::length(s))
+}
+
+fn is_space(c: Char) -> Bool {
+  let code = Char::to_int(c)
+  c == ' ' || (code >= 9 && code <= 13)
+}
+
+fn skip_spaces(s: String, at: Int) -> Int {
+  let mut k = at
+  while k < String::length(s) && is_space(String::byte_at(s, k)) {
+    k = k + 1
+  }
+  k
+}
+
+fn has_at(s: String, at: Int, lit: String) -> Bool {
+  at >= 0 && at <= String::length(s) && String::starts_with(rest_of(s, at), lit)
+}
+
+fn contains(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == x {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Sorted, without repeats.
+fn set_of(xs: Array[String]) -> Array[String] {
+  let sorted = sort_str(xs)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(sorted) {
+    let x = Array::get(sorted, i)
+    if Array::length(out) == 0 || Array::get(out, Array::length(out) - 1) != x {
+      Array::push(out, x)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn union(xs: Array[String], ys: Array[String]) -> Array[String] {
+  let all: Array[String] = []
+  let mut i = 0
+  while i < Array::length(xs) {
+    Array::push(all, Array::get(xs, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(ys) {
+    Array::push(all, Array::get(ys, j))
+    j = j + 1
+  }
+  set_of(all)
+}
+
+fn minus(xs: Array[String], ys: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(xs) {
+    if !contains(ys, Array::get(xs, i)) {
+      Array::push(out, Array::get(xs, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn intersect(xs: Array[String], ys: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(xs) {
+    if contains(ys, Array::get(xs, i)) {
+      Array::push(out, Array::get(xs, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn same_set(xs: Array[String], ys: Array[String]) -> Bool {
+  let a = set_of(xs)
+  let b = set_of(ys)
+  Array::length(a) == Array::length(b) && Array::length(minus(a, b)) == 0
+}
+
+/// A Python list's repr of a sorted set of names: `['a', 'b']`.
+fn repr_list(xs: Array[String]) -> String {
+  let parts: Array[String] = []
+  let sorted = set_of(xs)
+  let mut i = 0
+  while i < Array::length(sorted) {
+    Array::push(parts, "'\{Array::get(sorted, i)}'")
+    i = i + 1
+  }
+  "[\{String::join(parts, ", ")}]"
+}
+
+/// Drop `//` comments, respecting string literals.
+///
+/// Codex review on #1864: the scan reads raw source, so a spelling left behind
+/// in prose counted as an implemented dispatch arm. Measured: replacing the
+/// `MutList::push` arm with `if false` while leaving
+/// `// removed: fname == "MutList::push" used to be handled here` above it kept
+/// the gate green. A parity guard that a COMMENT can satisfy is not a guard.
+///
+/// String literals are deliberately NOT stripped -- the dispatch arms being
+/// detected ARE string comparisons (`fname == "MutList::push"`), so removing
+/// them would remove the signal.
+fn strip_line_comments(text: String) -> String {
+  let out = StringBuilder::new()
+  let n = String::length(text)
+  let mut i = 0
+  let mut in_str = false
+  let mut run = 0
+  while i < n {
+    let c = String::byte_at(text, i)
+    if in_str {
+      if c == '\\' && i + 1 < n {
+        i = i + 2
+      } else {
+        if c == '"' {
+          in_str = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    } else if c == '"' {
+      in_str = true
+      i = i + 1
+    } else if c == '/' && i + 1 < n && String::byte_at(text, i + 1) == '/' {
+      StringBuilder::push(out, String::substring(text, run, i))
+      while i < n && String::byte_at(text, i) != '\n' {
+        i = i + 1
+      }
+      run = i
+    } else {
+      i = i + 1
+    }
+  }
+  StringBuilder::push(out, String::substring(text, run, n))
+  StringBuilder::freeze(out)
+}
+
+/// Every `<head>X"` in a text with X non-empty and quote-free (it may span
+/// lines), leftmost first, as `re.findall(head + '([^"]+)"')` reads it.
+fn quoted_after(text: String, head: String) -> Array[String] {
+  let out: Array[String] = []
+  let mut from = 0
+  let mut going = true
+  while going {
+    let at = String::index_of_from(text, head, from)
+    if at < 0 {
+      going = false
+    } else {
+      let start = at + String::length(head)
+      let close = String::index_of_from(text, "\"", start)
+      if close < 0 {
+        going = false
+      } else if close > start {
+        Array::push(out, String::substring(text, start, close))
+        from = close + 1
+      } else {
+        from = at + 1
+      }
+    }
+  }
+  out
+}
+
+/// The dispatch arms one lane serves. THREE spellings reach the same place,
+/// and reading only the first made whole families invisible:
+///   fname == ".."                     the main dispatch chains
+///   get_eident_name(callee) == ".."   the ADR-0090 region rewrites, which sit
+///                                     before `fname` is bound
+///   fname0 == ".."                    the MutList/MutBytes alias table in
+///                                     compile_call_core
+/// Missing the second called every region name gc-only the moment the gc lane
+/// implemented it; missing the third did the same for MutList::push / get /
+/// length. Both are backwards -- the linear lane serves all of them.
+fn callsite_names(stripped: String) -> Array[String] {
+  union(union(quoted_after(stripped, "fname == \""), quoted_after(stripped, "fname0 == \"")), quoted_after(stripped, "get_eident_name(callee) == \""))
+}
+
+/// `(?:fname == "(?:ALT)"(?:\s*\|\|\s*)?)+` at `at`: the end and the names, or
+/// -1 when not even one term matches.
+fn alternation(text: String, at: Int, alts: Array[String]) -> (Int, Array[String]) {
+  let names: Array[String] = []
+  let mut p = at
+  let mut end = -1
+  let mut going = true
+  while going {
+    let mut term = -1
+    let mut a = 0
+    while a < Array::length(alts) && term < 0 {
+      let lit = "fname == \"\{Array::get(alts, a)}\""
+      if has_at(text, p, lit) {
+        term = p + String::length(lit)
+        Array::push(names, Array::get(alts, a))
+      } else {
+        ()
+      }
+      a = a + 1
+    }
+    if term < 0 {
+      going = false
+    } else {
+      end = term
+      let s = skip_spaces(text, term)
+      if has_at(text, s, "||") {
+        end = skip_spaces(text, s + 2)
+        p = end
+      } else {
+        going = false
+      }
+    }
+  }
+  (end, names)
+}
+
+/// The names of the first `if\s+<opening><alternation><closing>\s*<tail>` in a
+/// text (`tail` matched with `\s*` before each of its pieces), or none.
+fn refusal_names(text: String, alts: Array[String], opening: String, closing: String, tail: Array[String]) -> Array[String] {
+  let mut found: Array[String] = []
+  let mut done = false
+  let mut from = 0
+  while !done {
+    let at = String::index_of_from(text, "if", from)
+    if at < 0 {
+      done = true
+    } else {
+      let s = skip_spaces(text, at + 2)
+      if s > at + 2 && has_at(text, s, opening) {
+        let (end, names) = alternation(text, s + String::length(opening), alts)
+        let mut p = end
+        if p >= 0 && has_at(text, p, closing) {
+          p = p + String::length(closing)
+          let mut t = 0
+          while p >= 0 && t < Array::length(tail) {
+            let q = skip_spaces(text, p)
+            if has_at(text, q, Array::get(tail, t)) {
+              p = q + String::length(Array::get(tail, t))
+            } else {
+              p = -1
+            }
+            t = t + 1
+          }
+          if p >= 0 {
+            found = names
+            done = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      from = at + 1
+    }
+  }
+  found
+}
+
+fn is_bool_at(s: String, at: Int) -> Int {
+  if has_at(s, at, "true") {
+    at + 4
+  } else if has_at(s, at, "false") {
+    at + 5
+  } else {
+    -1
+  }
+}
+
+/// `,\s*BOOL` seven times (the first `,` at `at`), then `\s*\)`: the end and
+/// the seven bools, or -1.
+fn bool_tail(s: String, at: Int) -> (Int, Array[String]) {
+  let bools: Array[String] = []
+  let mut p = at
+  let mut n = 0
+  while p >= 0 && n < 7 {
+    let c = if n == 0 {
+      p
+    } else {
+      skip_spaces(s, p)
+    }
+    if has_at(s, c, ",") {
+      let b = skip_spaces(s, c + 1)
+      let e = is_bool_at(s, b)
+      if e >= 0 {
+        Array::push(bools, String::substring(s, b, e))
+      } else {
+        ()
+      }
+      p = e
+    } else {
+      p = -1
+    }
+    n = n + 1
+  }
+  if p >= 0 {
+    let q = skip_spaces(s, p)
+    if has_at(s, q, ")") {
+      (q + 1, bools)
+    } else {
+      (-1, bools)
+    }
+  } else {
+    (-1, bools)
+  }
+}
+
+/// `\(\s*"NAME"\s*,\s*CtFn` at `at`: the name and the end, or "" / -1.
+fn ctfn_head(s: String, at: Int) -> (String, Int) {
+  if !has_at(s, at, "(") {
+    ("", -1)
+  } else {
+    let q = skip_spaces(s, at + 1)
+    if !has_at(s, q, "\"") {
+      ("", -1)
+    } else {
+      let close = String::index_of_from(s, "\"", q + 1)
+      if close <= q + 1 {
+        ("", -1)
+      } else {
+        let c = skip_spaces(s, close + 1)
+        if has_at(s, c, ",") {
+          let f = skip_spaces(s, c + 1)
+          if has_at(s, f, "CtFn") {
+            (String::substring(s, q + 1, close), f + 4)
+          } else {
+            ("", -1)
+          }
+        } else {
+          ("", -1)
+        }
+      }
+    }
+  }
+}
+
+/// Every `("NAME", CtFn` spelling, as `re.findall` reads them.
+fn ctfn_names(s: String) -> Array[String] {
+  let out: Array[String] = []
+  let mut from = 0
+  let mut going = true
+  while going {
+    let at = String::index_of_from(s, "(", from)
+    if at < 0 {
+      going = false
+    } else {
+      let (name, end) = ctfn_head(s, at)
+      if end >= 0 {
+        Array::push(out, name)
+        from = end
+      } else {
+        from = at + 1
+      }
+    }
+  }
+  out
+}
+
+/// #2584: each registry row is a 9-tuple (name, CtFn, in_linear, in_gc,
+/// visible, is_pure, is_non_allocating, is_borrow_ret, is_safe_mut). `CtFn` is
+/// followed by the fewest characters on its line before the seven bools, as
+/// `CtFn.*?` takes them. A 5-tuple (pre-#2584) must not match: the old pattern
+/// anchored on `bool, bool, bool)` and so consumed the LAST three bools of a
+/// 9-tuple as if they were the lane flags. Measured on #2845: that reported
+/// Array::push as a dead row claiming neither lane.
+fn registry_rows(s: String) -> Array[Row] {
+  let out: Array[Row] = []
+  let n = String::length(s)
+  let mut from = 0
+  let mut going = true
+  while going {
+    let at = String::index_of_from(s, "(", from)
+    if at < 0 {
+      going = false
+    } else {
+      let (name, head_end) = ctfn_head(s, at)
+      if head_end < 0 {
+        from = at + 1
+      } else {
+        let mut k = head_end
+        let mut end = -1
+        let mut bools: Array[String] = []
+        while end < 0 && k < n && String::byte_at(s, k) != '\n' {
+          let (e, b) = bool_tail(s, k)
+          if e >= 0 {
+            end = e
+            bools = b
+          } else {
+            k = k + 1
+          }
+        }
+        if end >= 0 {
+          Array::push(out, Row::{ name: name, bools: bools })
+          from = end
+        } else {
+          from = at + 1
+        }
+      }
+    }
+  }
+  out
+}
+
+/// The names in `let host_defs = [` ... `\n    ]`, each a
+/// `("NAME", D, D, D)` row with blanks allowed around the commas.
+fn gc_host_names(text: String) -> (Bool, Array[String]) {
+  let head = "let host_defs = ["
+  let at = String::index_of_from(text, head, 0)
+  let end = if at < 0 {
+    -1
+  } else {
+    String::index_of_from(text, "\n    ]", at + String::length(head))
+  }
+  if end < 0 {
+    (false, [])
+  } else {
+    let body = String::substring(text, at + String::length(head), end)
+    let out: Array[String] = []
+    let mut from = 0
+    let mut going = true
+    while going {
+      let p = String::index_of_from(body, "(", from)
+      if p < 0 {
+        going = false
+      } else {
+        let q = skip_spaces(body, p + 1)
+        let close = if has_at(body, q, "\"") {
+          String::index_of_from(body, "\"", q + 1)
+        } else {
+          -1
+        }
+        let mut k = if close > q + 1 {
+          close + 1
+        } else {
+          -1
+        }
+        let mut d = 0
+        while k >= 0 && d < 3 {
+          let c = skip_spaces(body, k)
+          if has_at(body, c, ",") {
+            let s = skip_spaces(body, c + 1)
+            let mut e = s
+            while e < String::length(body) && String::byte_at(body, e) >= '0' && String::byte_at(body, e) <= '9' {
+              e = e + 1
+            }
+            k = if e > s {
+              e
+            } else {
+              -1
+            }
+          } else {
+            k = -1
+          }
+          d = d + 1
+        }
+        let r = if k >= 0 {
+          skip_spaces(body, k)
+        } else {
+          -1
+        }
+        if r >= 0 && has_at(body, r, ")") {
+          Array::push(out, String::substring(body, q + 1, close))
+          from = r + 1
+        } else {
+          from = p + 1
+        }
+      }
+    }
+    (true, set_of(out))
+  }
+}
+
+fn key(name: String, lane: String) -> String {
+  "\{name}\t\{lane}"
+}
+
+fn print_keys(xs: Array[String]) -> Unit with Stderr::write_stream {
+  let mut i = 0
+  while i < Array::length(xs) {
+    let k = Array::get(xs, i)
+    let tab = String::index_of_from(k, "\t", 0)
+    Stderr::write_stream("  \{String::substring(k, 0, tab)}  (\{String::substring(k, tab + 1, String::length(k))})\n")
+    i = i + 1
+  }
+}
+
+fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Console::write_stream + Stderr::write_stream + Process {
+  let lin_callsite = option("--lin-callsite", "lib/@vibe/compiler/codegen/expr/compile_call.vibe")
+  let gc_callsite = option("--gc-callsite", "lib/@vibe/compiler/codegen/gc/backend_call.vibe")
+  let registry = option("--registry", "lib/@vibe/compiler/core/builtin_registry.vibe")
+  let linked = "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
+  let gc_body = "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
+  let classification = "scripts/builtin_parity_classification.tsv"
+  let lin_text = strip_line_comments(group(lin_callsite))
+  let gc_raw = group(gc_callsite)
+  let gc_stripped = strip_line_comments(gc_raw)
+  let lin_cs = callsite_names(lin_text)
+  let mut gc_cs = callsite_names(gc_stripped)
+  // A loud rejection is not an implementation. Keep this subtraction narrow
+  // and mutation-checked: these public rows deliberately appear in one GC
+  // condition whose body only throws the component-only diagnostic. If that
+  // shape moves, fail instead of silently counting (or excluding) the wrong
+  // names.
+  let stdin_alts = [
+    "Stdin::read_via_stream",
+    "StdinStream::next",
+    "StdinStream::close",
+    "StdinStream::read_chunk"
+  ]
+  let throw_only = refusal_names(gc_raw, stdin_alts, "", "", [
+    "{",
+    "throw(\"StdinStream is unsupported on gc backend;"
+  ])
+  if !same_set(throw_only, stdin_alts) {
+    die("GC StdinStream rejection shape changed; update the throw-only extraction without counting rejection as implementation (found \{repr_list(throw_only)})")
+  } else {
+    ()
+  }
+  gc_cs = minus(gc_cs, throw_only)
+  // #3188: guest futures and builtin await are also deliberate GC refusals.
+  // Match the complete guard and throw so a future implementation, a removed
+  // shadowing check, or a changed diagnosis cannot silently count as served.
+  let future_alts = [
+    "await",
+    "Future::ready",
+    "Future::pending",
+    "Future::resolve"
+  ]
+  let future_throw = refusal_names(gc_raw, future_alts, "(", ")", [
+    "&&",
+    "!gc_name_is_user_defined(ctx, local_names, fname)",
+    "{",
+    "throw(\"compile with the linear or RC backend:"
+  ])
+  if !same_set(future_throw, future_alts) {
+    die("GC guest future rejection shape changed; update the throw-only extraction without counting rejection as implementation (found \{repr_list(future_throw)})")
+  } else {
+    ()
+  }
+  gc_cs = minus(gc_cs, future_throw)
+  if Array::length(lin_cs) == 0 || Array::length(gc_cs) == 0 {
+    die("extracted no dispatch arms (linear \{Array::length(lin_cs)}, gc \{Array::length(gc_cs)}) -- did the dispatch pattern move away from `fname == \"...\"`? Update scripts/check_builtin_parity.vibex alongside it.")
+  } else {
+    ()
+  }
+  let registry_text = group(registry)
+  let named = ctfn_names(registry_text)
+  let rows = registry_rows(registry_text)
+  if Array::length(rows) < 90 {
+    die("parsed only \{Array::length(rows)} registry rows (expected 90+) -- registry row shape changed? Update scripts/check_builtin_parity.vibex alongside it.")
+  } else {
+    ()
+  }
+  if Array::length(rows) != Array::length(named) {
+    die("parsed \{Array::length(rows)} 9-tuple registry rows but found \{Array::length(named)} `(\"name\", CtFn` spellings -- a row is not a 9-tuple (name, CtFn, 3 lane flags, 4 classification flags)? Update scripts/check_builtin_parity.vibex alongside it.")
+  } else {
+    ()
+  }
+  let reg_lin_all: Array[String] = []
+  let reg_gc_all: Array[String] = []
+  let mut r = 0
+  while r < Array::length(rows) {
+    let row = Array::get(rows, r)
+    if Array::get(row.bools, 0) == "true" {
+      Array::push(reg_lin_all, row.name)
+    } else {
+      ()
+    }
+    if Array::get(row.bools, 1) == "true" {
+      Array::push(reg_gc_all, row.name)
+    } else {
+      ()
+    }
+    r = r + 1
+  }
+  let reg_lin = set_of(reg_lin_all)
+  let reg_gc = set_of(reg_gc_all)
+  // Compiler-owned wrappers can implement a checker-visible builtin without a
+  // func-table row. Keep this exception exact and mutation-checked: read_chunk
+  // must still be retargeted to its injected linear/RC implementation.
+  let wrapper_only_expected = ["StdinStream::read_chunk"]
+  let linked_text = group(linked)
+  let wrapper_only_found: Array[String] = []
+  let mut w = 0
+  while w < Array::length(wrapper_only_expected) {
+    let n = Array::get(wrapper_only_expected, w)
+    if String::index_of_from(linked_text, "\"\{n}\"", 0) >= 0 && String::index_of_from(linked_text, "__stdin_provider_read_chunk_surface", 0) >= 0 {
+      Array::push(wrapper_only_found, n)
+    } else {
+      ()
+    }
+    w = w + 1
+  }
+  if !same_set(wrapper_only_found, wrapper_only_expected) {
+    die("compiler-owned StdinStream wrapper shape changed (found \{repr_list(wrapper_only_found)})")
+  } else {
+    ()
+  }
+  // #2397: `abort` is served on BOTH lanes by a call-site lowering rather than
+  // a func-table row, so its lane flags are honestly false and the row is not
+  // dead. The exemption is mutation-checked against the arms that actually
+  // serve it, so a lowering that is deleted or renamed fails here instead of
+  // being waved through as "a name nobody registered". Fs::readdir likewise
+  // has a checker signature but lowers to a raw directory import plus
+  // String::split at each call, without a func-table slot. Require both real
+  // dispatch arms; a spelling left in a comment is not implementation.
+  let callsite_only_expected = ["abort", "Fs::readdir"]
+  let missing_arms: Array[String] = []
+  let mut c = 0
+  while c < Array::length(callsite_only_expected) {
+    let n = Array::get(callsite_only_expected, c)
+    let arm = "fname == \"\{n}\""
+    if String::index_of_from(lin_text, arm, 0) < 0 || String::index_of_from(gc_stripped, arm, 0) < 0 {
+      Array::push(missing_arms, n)
+    } else {
+      ()
+    }
+    c = c + 1
+  }
+  if Array::length(missing_arms) > 0 {
+    die("call-site-lowered builtin has no `fname == \"<name>\"` arm on both lanes: \{String::join(set_of(missing_arms), ", ")} -- either the lowering moved (update this exemption) or the row is dead (drop it from the registry)")
+  } else {
+    ()
+  }
+  let neither_all: Array[String] = []
+  let mut d = 0
+  while d < Array::length(rows) {
+    let row = Array::get(rows, d)
+    if Array::get(row.bools, 0) == "false" && Array::get(row.bools, 1) == "false" && !contains(wrapper_only_expected, row.name) && !contains(callsite_only_expected, row.name) {
+      Array::push(neither_all, row.name)
+    } else {
+      ()
+    }
+    d = d + 1
+  }
+  let neither = sort_str(neither_all)
+  if Array::length(neither) > 0 {
+    die("registry rows claiming NEITHER lane (dead rows?): \{String::join(neither, ", ")}")
+  } else {
+    ()
+  }
+  // The gc lane serves host builtins through an import table in
+  // backend_body.vibe, not through a `fname == ...` dispatch arm and not
+  // through a registry in_gc row -- so neither source above sees them. Every
+  // gc host import (Env::get, Fs::read_file, Fs::exists, ...) was already
+  // served and already recorded as `linear-only`, with a reason line saying
+  // the gc lane "gates these out as a group". It does not.
+  let (has_defs, gc_host) = gc_host_names(group(gc_body))
+  if !has_defs {
+    die("could not find the gc host_defs table in \{gc_body} -- did it move or change shape? Update scripts/check_builtin_parity.vibex alongside it.")
+  } else {
+    ()
+  }
+  if Array::length(gc_host) < 10 {
+    die("parsed only \{Array::length(gc_host)} gc host imports (expected 10+) -- host_defs row shape changed? Update scripts/check_builtin_parity.vibex alongside it.")
+  } else {
+    ()
+  }
+  let served_lin = union(union(lin_cs, reg_lin), wrapper_only_expected)
+  let served_gc = union(union(gc_cs, reg_gc), gc_host)
+  let lin_only = minus(served_lin, served_gc)
+  let gc_only = minus(served_gc, served_lin)
+  let actual_all: Array[String] = []
+  let mut a = 0
+  while a < Array::length(lin_only) {
+    Array::push(actual_all, key(Array::get(lin_only, a), "linear-only"))
+    a = a + 1
+  }
+  let mut g = 0
+  while g < Array::length(gc_only) {
+    Array::push(actual_all, key(Array::get(gc_only, g), "gc-only"))
+    g = g + 1
+  }
+  let actual = set_of(actual_all)
+  if !Fs::is_file(classification) {
+    die("cannot read \{classification}")
+  } else {
+    ()
+  }
+  let classified: Array[String] = []
+  let lines = String::split(Fs::read_file(classification), "\n")
+  let mut ln = 0
+  while ln < Array::length(lines) {
+    let line = Array::get(lines, ln)
+    if String::trim(line) == "" || String::starts_with(line, "#") {
+      ()
+    } else {
+      let parts = String::split(line, "\t")
+      if Array::length(parts) < 4 || (Array::get(parts, 1) != "linear-only" && Array::get(parts, 1) != "gc-only") {
+        die("malformed classification row at \{classification}:\{ln + 1}: \{String::trim(line)}")
+      } else {
+        ()
+      }
+      let k = key(Array::get(parts, 0), Array::get(parts, 1))
+      if contains(classified, k) {
+        die("duplicate classification row for \{Array::get(parts, 0)} (\{classification}:\{ln + 1})")
+      } else {
+        ()
+      }
+      Array::push(classified, k)
+    }
+    ln = ln + 1
+  }
+  let unclassified = minus(actual, classified)
+  let stale = sort_str(minus(classified, actual))
+  let mut ok = true
+  if Array::length(unclassified) > 0 {
+    ok = false
+    Stderr::write_stream("[builtin-parity] FAIL: unclassified single-lane builtins (port them to the other lane, or add a classified row to \{classification}):\n")
+    print_keys(unclassified)
+  } else {
+    ()
+  }
+  if Array::length(stale) > 0 {
+    ok = false
+    Stderr::write_stream("[builtin-parity] FAIL: stale classification rows (no longer a single-lane divergence -- remove them from \{classification}):\n")
+    print_keys(stale)
+  } else {
+    ()
+  }
+  if !ok {
+    exit(1)
+  } else {
+    Console::write_stream("[builtin-parity] ok: linear serves \{Array::length(served_lin)}, gc serves \{Array::length(served_gc)}, both \{Array::length(intersect(served_lin, served_gc))}, classified divergence \{Array::length(actual)} (linear-only \{Array::length(lin_only)}, gc-only \{Array::length(gc_only)})\n")
+  }
+}
