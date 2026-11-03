@@ -8,7 +8,7 @@ cd "$ROOT_DIR"
 
 echo "[compiler-gate] 0/3 builtin parity (#415 B-3)"
 bash scripts/check_builtin_parity.sh
-bash scripts/check_gate_registry.sh
+bash scripts/vibe_run.sh scripts/check_gate_registry.vibex
 bash scripts/check_inline_builtin_capture.sh
 bash scripts/check_fixture_snapshots_test.sh
 bash scripts/check_fixture_execution.sh

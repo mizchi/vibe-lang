@@ -12,7 +12,7 @@ hold live in independently runnable lane scripts:
 | `selftests` | `tests/gates/selftests/run.sh` | every gate companion `*_test.sh`, serially |
 
 `tests/gates/registry.tsv` is the fail-closed inventory (#2001 Phase 0).
-`scripts/check_gate_registry.sh` rejects duplicate ids, missing lane
+`scripts/check_gate_registry.vibex` rejects duplicate ids, missing lane
 scripts, unregistered section banners, and missing fixture paths.
 
 ```sh

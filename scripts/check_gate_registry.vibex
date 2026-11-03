@@ -1,0 +1,475 @@
+// Fail-closed compiler-gate registry (#2001 Phase 0 / #1849). #3672 ported
+// this gate from check_gate_registry.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_gate_registry.vibex -- [--root DIR] [--list]
+//
+// THE INVARIANT: every independently runnable lane has a registry row for
+// every section it announces, and every registry row names a live lane
+// script. There is no third state in which a gate exists only as a comment
+// or a lane script exists without an owner.
+//
+// The lanes are the words of the `GATE_LANES="..."` line in
+// tests/gates/lib.sh; lane L runs tests/gates/L/run.sh, plus every section it
+// sources with a line `source "$ROOT_DIR/tests/gates/..."`, and the bootstrap
+// lane also runs tests/gates/bootstrap/preflight.sh. A lib.sh with no
+// GATE_LANES line fails: no lanes read is not a clean registry.
+//
+// Rejects:
+//   - a malformed registry row (`id<TAB>lane<TAB>title`) and a duplicate id
+//   - an unknown lane, and a lane whose entrypoint is missing
+//   - a registry row whose title no source of its lane contains
+//   - a section banner (`echo "[compiler-gate] ..."`, alone on its line) in a
+//     lane source that no registry line contains, unless it is a success
+//     banner (`ok`, `FAIL: ...`, or one containing ` ok ` / ` ok:` / ` ok (`
+//     or ending in ` ok`)
+//   - a quoted `"fixtures/..."` path a lane source names that does not exist
+//     (paths with `{`, `${` or `*` are patterns, not paths)
+//   - a compile whose failure the lane checks (`if [ ! -s .. ]`) but which can
+//     abort the lane before that check (#2107 fallout: three separate gate
+//     steps died at exit 1 with no message at all, because `set -e` killed the
+//     lane on the compile itself and the step's own FAIL echo was one line too
+//     late to run). A `run_wasm_vibe_host_runner.sh` invocation (continued
+//     across `\` lines) whose last line has no `||`, `&&` or `="$(` and whose
+//     next non-blank line is `if [ -s` / `if [ ! -s` is refused: add `|| true`.
+//
+// --list prints the registry rows (`id<TAB>lane<TAB>title`) after checking
+// them. --root DIR checks another tree (the self-test's copy).
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/process {
+  exit
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn has_flag(name: String) -> Bool with Env {
+  let mut found = false
+  let mut i = 0
+  while i < Env::args_len() {
+    if Env::args_get(i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn contains(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == x {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn has(s: String, part: String) -> Bool {
+  String::index_of_from(s, part, 0) >= 0
+}
+
+fn under(root: String, rel: String) -> String {
+  if root == "." {
+    rel
+  } else {
+    "\{root}/\{rel}"
+  }
+}
+
+fn lines_of(text: String) -> Array[String] {
+  let lines = String::split(text, "\n")
+  if Array::length(lines) > 0 && Array::get(lines, Array::length(lines) - 1) == "" {
+    Array::slice(lines, start = 0, end = Array::length(lines) - 1)
+  } else {
+    lines
+  }
+}
+
+fn read_lines(path: String) -> Array[String] with Fs::is_file + Fs::read_file {
+  if Fs::is_file(path) {
+    lines_of(Fs::read_file(path))
+  } else {
+    []
+  }
+}
+
+fn is_blank_char(c: Char) -> Bool {
+  c == ' ' || c == '\t'
+}
+
+fn trim_left(s: String) -> String {
+  let mut i = 0
+  while i < String::length(s) && is_blank_char(String::byte_at(s, i)) {
+    i = i + 1
+  }
+  String::substring(s, i, String::length(s))
+}
+
+fn is_blank_line(s: String) -> Bool {
+  trim_left(s) == ""
+}
+
+/// The words of `GATE_LANES="..."` in tests/gates/lib.sh.
+fn gate_lanes(root: String) -> Array[String] with Fs::is_file + Fs::read_file {
+  let out: Array[String] = []
+  let prefix = "GATE_LANES=\""
+  let lines = read_lines(under(root, "tests/gates/lib.sh"))
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if Array::length(out) == 0 && String::starts_with(line, prefix) && String::ends_with(line, "\"") && String::length(line) > String::length(prefix) {
+      let words = String::split(String::substring(line, String::length(prefix), String::length(line) - 1), " ")
+      let mut w = 0
+      while w < Array::length(words) {
+        if Array::get(words, w) != "" {
+          Array::push(out, Array::get(words, w))
+        } else {
+          ()
+        }
+        w = w + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn lane_script(lane: String) -> String {
+  "tests/gates/\{lane}/run.sh"
+}
+
+/// A lane's entrypoint, the sections it sources, and the bootstrap preflight.
+fn lane_sources(root: String, lane: String) -> Array[String] with Fs::is_file + Fs::read_file {
+  let script = lane_script(lane)
+  let out = [script]
+  let prefix = "source \"$ROOT_DIR/"
+  let lines = read_lines(under(root, script))
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, prefix) && String::ends_with(line, "\"") && String::length(line) > String::length(prefix) + 1 {
+      let path = String::substring(line, String::length(prefix), String::length(line) - 1)
+      if String::starts_with(path, "tests/gates/") && !has(path, "\"") && !has(path, " ") {
+        Array::push(out, path)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if lane == "bootstrap" {
+    Array::push(out, "tests/gates/bootstrap/preflight.sh")
+  } else {
+    ()
+  }
+  out
+}
+
+fn is_success_banner(rest: String) -> Bool {
+  rest == "ok" || String::starts_with(rest, "FAIL:") || has(rest, " ok ") || String::ends_with(rest, " ok") || has(rest, " ok:") || has(rest, " ok (")
+}
+
+/// The section a line announces with `echo "[compiler-gate] ..."`, or "".
+fn banner(line: String) -> String {
+  let prefix = "echo \"[compiler-gate] "
+  if String::starts_with(line, prefix) && String::ends_with(line, "\"") && String::length(line) > String::length(prefix) {
+    String::substring(line, String::length(prefix), String::length(line) - 1)
+  } else {
+    ""
+  }
+}
+
+/// The quoted `"<dir>/..."` paths on a line: leftmost-first, as grep -o reads
+/// `"(fixtures|lib|docs|scripts|tests)/[^"$]+"`.
+fn quoted_paths(line: String) -> Array[String] {
+  let out: Array[String] = []
+  let dirs = ["fixtures/", "lib/", "docs/", "scripts/", "tests/"]
+  let n = String::length(line)
+  let mut i = 0
+  while i < n {
+    let mut next = i + 1
+    if String::byte_at(line, i) == '"' {
+      let rest = String::substring(line, i + 1, n)
+      let mut d = 0
+      let mut dir_len = 0
+      while d < Array::length(dirs) {
+        if dir_len == 0 && String::starts_with(rest, Array::get(dirs, d)) {
+          dir_len = String::length(Array::get(dirs, d))
+        } else {
+          ()
+        }
+        d = d + 1
+      }
+      if dir_len > 0 {
+        let start = i + 1 + dir_len
+        let mut j = start
+        while j < n && String::byte_at(line, j) != '"' && String::byte_at(line, j) != '$' {
+          j = j + 1
+        }
+        if j > start && j < n && String::byte_at(line, j) == '"' {
+          Array::push(out, String::substring(line, i + 1, j))
+          next = j + 1
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = next
+  }
+  out
+}
+
+fn generated_paths() -> Array[String] {
+  [
+    "lib/@vibe/compiler/_cli_adapter_module_source.vibe",
+    "lib/@vibe/compiler/compiler_sources_bundle.vibe",
+    "lib/@vibe/compiler/cli_adapter_bundle.vibe",
+    "lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe",
+    "lib/@vibe/compiler/cache/codegen_fingerprint.vibe"
+  ]
+}
+
+fn fail_line(msg: String) -> Unit with Stderr::write_stream {
+  Stderr::write_stream("[gate-registry] FAIL: \{msg}\n")
+}
+
+/// `if [ -s ` or `if [ ! -s `, after leading blanks.
+fn checks_artifact(line: String) -> Bool {
+  let t = trim_left(line)
+  String::starts_with(t, "if [ -s ") || String::starts_with(t, "if [ ! -s ")
+}
+
+/// The compile-then-check rule over one lane source; true when it holds.
+fn compiles_are_guarded(script: String, lines: Array[String]) -> Bool with Stderr::write_stream {
+  let mut ok = true
+  let mut in_cmd = false
+  let mut pending = 0
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if !in_cmd && has(line, "run_wasm_vibe_host_runner.sh") && !String::starts_with(trim_left(line), "#") {
+      in_cmd = true
+    } else {
+      ()
+    }
+    if in_cmd {
+      if String::ends_with(line, "\\") {
+        ()
+      } else {
+        in_cmd = false
+        if !(has(line, "||") || has(line, "&&") || has(line, "=\"$(")) {
+          pending = i + 1
+        } else {
+          ()
+        }
+      }
+    } else if pending > 0 && is_blank_line(line) {
+      ()
+    } else if pending > 0 {
+      if checks_artifact(line) {
+        fail_line("\{script}:\{pending} compiles then checks the artifact, but a failed compile aborts the lane before that check -- add `|| true`")
+        ok = false
+      } else {
+        ()
+      }
+      pending = 0
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn any_source_contains(root: String, sources: Array[String], text: String) -> Bool with Fs::is_file + Fs::read_file {
+  let mut found = false
+  let mut s = 0
+  while s < Array::length(sources) && !found {
+    let path = under(root, Array::get(sources, s))
+    if Fs::is_file(path) && has(Fs::read_file(path), text) {
+      found = true
+    } else {
+      ()
+    }
+    s = s + 1
+  }
+  found
+}
+
+fn main allows Env + Fs::is_file + Fs::exists + Fs::read_file + Console::write_stream + Stderr::write_stream + Process {
+  let root = option("--root", ".")
+  let list = has_flag("--list")
+  let registry_path = under(root, "tests/gates/registry.tsv")
+  if !Fs::is_file(registry_path) {
+    fail_line("missing tests/gates/registry.tsv")
+    exit(1)
+  } else {
+    let lanes = gate_lanes(root)
+    let mut ok = true
+    if Array::length(lanes) == 0 {
+      fail_line("tests/gates/lib.sh has no GATE_LANES=\"...\" line, so no lane was read")
+      ok = false
+    } else {
+      ()
+    }
+    let registry_text = Fs::read_file(registry_path)
+    let rows = lines_of(registry_text)
+    let ids: Array[String] = []
+    let mut r = 0
+    while r < Array::length(rows) {
+      let row = Array::get(rows, r)
+      let tab1 = String::index_of_from(row, "\t", 0)
+      let id = if tab1 >= 0 {
+        String::substring(row, 0, tab1)
+      } else {
+        row
+      }
+      if id == "" || String::starts_with(id, "#") || id == "id" {
+        ()
+      } else {
+        let tab2 = if tab1 >= 0 {
+          String::index_of_from(row, "\t", tab1 + 1)
+        } else {
+          -1
+        }
+        let lane = if tab1 < 0 {
+          ""
+        } else if tab2 < 0 {
+          String::substring(row, tab1 + 1, String::length(row))
+        } else {
+          String::substring(row, tab1 + 1, tab2)
+        }
+        let title = if tab2 < 0 {
+          ""
+        } else {
+          String::substring(row, tab2 + 1, String::length(row))
+        }
+        if lane == "" || title == "" {
+          fail_line("malformed row: id='\{id}' lane='\{lane}'")
+          ok = false
+        } else if contains(ids, id) {
+          fail_line("duplicate id '\{id}'")
+          ok = false
+        } else {
+          Array::push(ids, id)
+          if list {
+            Console::write_stream("\{id}\t\{lane}\t\{title}\n")
+          } else {
+            ()
+          }
+          if !contains(lanes, lane) {
+            fail_line("id '\{id}' names unknown lane '\{lane}'")
+            ok = false
+          } else {
+            ()
+          }
+          let script = lane_script(lane)
+          if !Fs::is_file(under(root, script)) {
+            fail_line("missing lane entrypoint \{script}")
+            ok = false
+          } else if !any_source_contains(root, lane_sources(root, lane), title) {
+            fail_line("id '\{id}' title not found in lane '\{lane}' sources")
+            ok = false
+          } else {
+            ()
+          }
+        }
+      }
+      r = r + 1
+    }
+    if list {
+      if ok {
+        ()
+      } else {
+        exit(1)
+      }
+    } else {
+      if Array::length(ids) == 0 {
+        fail_line("registry has no rows")
+        exit(1)
+      } else {
+        ()
+      }
+      let mut l = 0
+      while l < Array::length(lanes) {
+        let sources = lane_sources(root, Array::get(lanes, l))
+        let mut s = 0
+        while s < Array::length(sources) {
+          let script = Array::get(sources, s)
+          if !Fs::is_file(under(root, script)) {
+            fail_line("missing lane entrypoint \{script}")
+            ok = false
+          } else {
+            let lines = read_lines(under(root, script))
+            let mut i = 0
+            while i < Array::length(lines) {
+              let line = Array::get(lines, i)
+              let rest = banner(line)
+              if rest != "" && !is_success_banner(rest) && !has(registry_text, rest) {
+                fail_line("\{script} announces unregistered section: \{rest}")
+                ok = false
+              } else {
+                ()
+              }
+              let paths = quoted_paths(line)
+              let mut p = 0
+              while p < Array::length(paths) {
+                let path = Array::get(paths, p)
+                if has(path, "{") || has(path, "*") || contains(generated_paths(), path) {
+                  ()
+                } else if String::starts_with(path, "fixtures/") && !Fs::exists(under(root, path)) {
+                  fail_line("\{script} names missing fixture \{path}")
+                  ok = false
+                } else {
+                  ()
+                }
+                p = p + 1
+              }
+              i = i + 1
+            }
+            if !compiles_are_guarded(script, lines) {
+              ok = false
+            } else {
+              ()
+            }
+          }
+          s = s + 1
+        }
+        l = l + 1
+      }
+      if ok {
+        Console::write_stream("[gate-registry] ok\n")
+      } else {
+        exit(1)
+      }
+    }
+  }
+}
