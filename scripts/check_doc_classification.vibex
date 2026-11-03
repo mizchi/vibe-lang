@@ -1,0 +1,325 @@
+// Every document under docs/ has exactly one audience class, and a new one
+// fails closed (#2562, part of #2002). #3672 ported this gate from
+// check_doc_classification.sh.
+//
+//   bash scripts/vibe_run.sh scripts/check_doc_classification.vibex -- [--root DIR] [--list]
+//
+// docs/README.md is the audience router: classes (user, maintainer /
+// internal, generated), one table row per document. It was written as an
+// inventory with no enforcement, so the only thing standing between the
+// classification and the tree was its own "Inventory coverage" section -- a
+// list of names copied by hand from `ls docs/` at one commit. That is a PROXY
+// for "every document is classified", not the property, and it drifted within
+// three weeks of being written.
+//
+// This gate answers the property instead. It enumerates the tree and asks, for
+// each file, which class claims it:
+//
+//   0 classes -> FAIL. Unclassified: the document exists and no reader knows
+//                who it is for.
+//   2 classes -> FAIL. Ambiguous ownership, which #2002's rule 4 forbids: a
+//                normative statement has one canonical home.
+//   a row matching nothing -> FAIL. A stale row is the same defect pointing
+//                the other way, and it is what a move without a link rewrite
+//                leaves behind.
+//
+// A class is a `## <digit>. <title>` heading; any other `## ` heading ends
+// the class, so the "Inventory coverage" section is not a fifth one. A row is
+// a line starting `| [text](target)` inside a class. A row whose target is a
+// DIRECTORY covers every file beneath it; a row pointing outside docs/
+// (`../book/README.md`) is skipped. The router itself is not in its own corpus.
+// `.git` directories are not walked. A router that parses to no rows, and a
+// docs/ with no files, refuse to answer (exit 2 / exit 2) rather than pass.
+//
+// --list prints each document and the class that claims it. --root DIR checks
+// another tree (the self-test's).
+
+import @vibe/builtin {
+  String::index_of_from
+}
+import @vibe/process {
+  exit
+}
+import @vibex/shell {
+  find, sort_str
+}
+
+struct Row {
+  cls: String;
+  target: String;
+  line: Int
+}
+
+fn option(name: String, fallback: String) -> String with Env {
+  let mut out = fallback
+  let mut i = 0
+  while i + 1 < Env::args_len() {
+    if Env::args_get(i) == name {
+      out = Env::args_get(i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn has_flag(name: String) -> Bool with Env {
+  let mut found = false
+  let mut i = 0
+  while i < Env::args_len() {
+    if Env::args_get(i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn under(root: String, rel: String) -> String {
+  if root == "." {
+    rel
+  } else {
+    "\{root}/\{rel}"
+  }
+}
+
+fn is_blank(c: Char) -> Bool {
+  let code = Char::to_int(c)
+  c == ' ' || (code >= 9 && code <= 13)
+}
+
+fn trim_right(s: String) -> String {
+  let mut end = String::length(s)
+  while end > 0 && is_blank(String::byte_at(s, end - 1)) {
+    end = end - 1
+  }
+  String::substring(s, 0, end)
+}
+
+/// `N. title` for a `## N. title` heading (one digit), or "".
+fn class_heading(line: String) -> String {
+  let n = String::length(line)
+  if n >= 7 && String::starts_with(line, "## ") && String::byte_at(line, 3) >= '0' && String::byte_at(line, 3) <= '9' && String::byte_at(line, 4) == '.' && String::byte_at(line, 5) == ' ' {
+    let title = trim_right(String::substring(line, 6, n))
+    // `.+?` takes at least one character even when it is a blank.
+    let kept = if title == "" {
+      String::substring(line, 6, 7)
+    } else {
+      title
+    }
+    "\{String::substring(line, 3, 4)}. \{kept}"
+  } else {
+    ""
+  }
+}
+
+/// The target of a `| [text](target)` row, or "".
+fn row_target(line: String) -> String {
+  if !String::starts_with(line, "| [") {
+    ""
+  } else {
+    let close = String::index_of_from(line, "]", 3)
+    if close < 0 || close + 1 >= String::length(line) || String::byte_at(line, close + 1) != '(' {
+      ""
+    } else {
+      let end = String::index_of_from(line, ")", close + 2)
+      if end > close + 2 {
+        String::substring(line, close + 2, end)
+      } else {
+        ""
+      }
+    }
+  }
+}
+
+fn strip_trailing_slashes(s: String) -> String {
+  let mut end = String::length(s)
+  while end > 0 && String::byte_at(s, end - 1) == '/' {
+    end = end - 1
+  }
+  String::substring(s, 0, end)
+}
+
+fn contains(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == x {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn covers(target: String, path: String) -> Bool {
+  path == target || String::starts_with(path, "\{target}/")
+}
+
+/// The classes claiming a document, sorted, without repeats.
+fn claims(rows: Array[Row], path: String) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(rows) {
+    let row = Array::get(rows, i)
+    if covers(row.target, path) && !contains(out, row.cls) {
+      Array::push(out, row.cls)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  sort_str(out)
+}
+
+fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process {
+  let root = option("--root", ".")
+  let list = has_flag("--list")
+  let docs = under(root, "docs")
+  let router_rel = "docs/README.md"
+  if !Fs::is_dir(docs) {
+    Stderr::write_stream("doc-classification: no docs/ under \{root}\n")
+    exit(2)
+  } else if !Fs::is_file(under(root, router_rel)) {
+    Stderr::write_stream("doc-classification: \{router_rel} is missing -- it is the router this gate reads the classification from\n")
+    exit(2)
+  } else {
+    let lines = String::split(Fs::read_file(under(root, router_rel)), "\n")
+    let rows: Array[Row] = []
+    let mut parsed = 0
+    let mut cls = ""
+    let mut i = 0
+    while i < Array::length(lines) {
+      let line = Array::get(lines, i)
+      let head = class_heading(line)
+      if head != "" {
+        cls = head
+      } else if String::starts_with(line, "## ") {
+        cls = ""
+      } else if cls != "" {
+        let target = row_target(line)
+        if target != "" {
+          parsed = parsed + 1
+          if !String::starts_with(target, "../") {
+            Array::push(rows, Row::{
+              cls: cls,
+              target: "docs/\{strip_trailing_slashes(target)}",
+              line: i + 1
+            })
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if parsed == 0 {
+      Stderr::write_stream("doc-classification: parsed no rows out of \{router_rel}. The gate would pass by seeing nothing, so it fails instead -- check that the class headings still read `## 1. ...` and rows still start `| [`\n")
+      exit(2)
+    } else {
+      ()
+    }
+    let prefix = if root == "." {
+      ""
+    } else {
+      "\{root}/"
+    }
+    let collected: Array[String] = []
+    let entries = find(docs)
+    let mut e = 0
+    while e < Array::length(entries) {
+      let entry = Array::get(entries, e)
+      let rel = if prefix != "" && String::starts_with(entry.path, prefix) {
+        String::substring(entry.path, String::length(prefix), String::length(entry.path))
+      } else {
+        entry.path
+      }
+      let in_git = String::index_of_from("/\{rel}/", "/.git/", 0) >= 0
+      if !entry.is_dir && !in_git && rel != router_rel {
+        Array::push(collected, rel)
+      } else {
+        ()
+      }
+      e = e + 1
+    }
+    let corpus = sort_str(collected)
+    if Array::length(corpus) == 0 {
+      Stderr::write_stream("doc-classification: walked docs/ and found no files. The gate would pass by seeing nothing, so it fails instead\n")
+      exit(2)
+    } else if list {
+      let mut c = 0
+      while c < Array::length(corpus) {
+        let path = Array::get(corpus, c)
+        let got = claims(rows, path)
+        let shown = if Array::length(got) == 0 {
+          "(none)"
+        } else {
+          String::join(got, ",")
+        }
+        Console::write_stream("\{path}\t\{shown}\n")
+        c = c + 1
+      }
+    } else {
+      let mut fails = 0
+      let mut c = 0
+      while c < Array::length(corpus) {
+        let path = Array::get(corpus, c)
+        if Array::length(claims(rows, path)) == 0 {
+          Stderr::write_stream("doc-classification: FAIL: \{path} is in no class table.\n    Add a row for it to \{router_rel} under the class whose PRIMARY READER it is written for (#2002: classify by reader, not by the subsystem it mentions).\n")
+          fails = fails + 1
+        } else {
+          ()
+        }
+        c = c + 1
+      }
+      let mut a = 0
+      while a < Array::length(corpus) {
+        let path = Array::get(corpus, a)
+        let got = claims(rows, path)
+        if Array::length(got) > 1 {
+          Stderr::write_stream("doc-classification: FAIL: \{path} is claimed by \{Array::length(got)} classes (\{String::join(got, ", ")}).\n    A normative statement has one canonical home (#2002 rule 4). Delete the row in the class that is not its primary reader, or split the document.\n")
+          fails = fails + 1
+        } else {
+          ()
+        }
+        a = a + 1
+      }
+      let mut r = 0
+      while r < Array::length(rows) {
+        let row = Array::get(rows, r)
+        let mut hit = false
+        let mut p = 0
+        while p < Array::length(corpus) && !hit {
+          if covers(row.target, Array::get(corpus, p)) {
+            hit = true
+          } else {
+            ()
+          }
+          p = p + 1
+        }
+        if !hit {
+          Stderr::write_stream("doc-classification: FAIL: \{router_rel}:\{row.line} classifies \{row.target} under '\{row.cls}', and nothing is there.\n    Repoint the row at where the file moved, or delete the row if the file is gone.\n")
+          fails = fails + 1
+        } else {
+          ()
+        }
+        r = r + 1
+      }
+      if fails > 0 {
+        Stderr::write_stream("doc-classification: \{fails} problem(s). Run with --list to see what claims each file.\n")
+        exit(1)
+      } else {
+        Console::write_stream("doc-classification: ok (\{Array::length(corpus)} documents, \{Array::length(rows)} rows, every document in exactly one class)\n")
+      }
+    }
+  }
+}
