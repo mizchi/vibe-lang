@@ -119,7 +119,10 @@ run_bounded() { # <seconds> <cmd...>
       local had_monitor=0 tpid
       case "$-" in *m*) had_monitor=1 ;; esac
       set -m
-      "$bin" -k 2 "$secs" "$@" &
+      # `<&0`: an asynchronous command whose shell has no job control (a
+      # command substitution, which is how most callers read the result)
+      # reads /dev/null instead of the caller's stdin. Say it explicitly.
+      "$bin" -k 2 "$secs" "$@" <&0 &
       tpid=$!
       [ "$had_monitor" -eq 1 ] || set +m
       wait "$tpid" 2>/dev/null || rc=$?
@@ -171,7 +174,9 @@ run_bounded_watchdog() { # <seconds> <cmd...>
   local had_monitor=0
   case "$-" in *m*) had_monitor=1 ;; esac
   set -m
-  "$@" &
+  # `<&0`, as in the timeout(1) path: inside a command substitution the job
+  # would otherwise read /dev/null instead of the caller's stdin.
+  "$@" <&0 &
   local cmd_pid=$!
   [ "$had_monitor" -eq 1 ] || set +m
   (

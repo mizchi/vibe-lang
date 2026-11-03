@@ -76,6 +76,13 @@ contract() { # <lib> <impl>
   #    timeout(1): `VAR=x timeout 60 cmd <in` was the commonest call shape.
   r="$(printf 'piped\n' | VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; PROBE_VAR=seen run_bounded 10 sh -c "read -r l; echo \"\$PROBE_VAR/\$l\""' _ "$lib" 2>/dev/null | tail -1)"
   [ "$r" = "seen/piped" ] || echo "env+stdin: $r"
+  # 4b. ...also when the caller reads the result through a command
+  #     substitution, the commonest shape of all (`x="$(run_bounded ..)"`).
+  #     A backgrounded launch reads /dev/null there unless stdin is passed
+  #     on explicitly: the wasi stdin gate drained 0 bytes instead of 42.
+  printf 'redirected\n' > "$WORK/stdin-$impl.txt"
+  r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; got="$(run_bounded 10 cat <"$2")"; echo "got=$got"' _ "$lib" "$WORK/stdin-$impl.txt" 2>/dev/null | tail -1)"
+  [ "$r" = "got=redirected" ] || echo "subst-stdin: $r"
   # 5. A caller under `set -e` survives a failing command it checks.
   r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c 'set -euo pipefail; . "$1"; run_bounded 10 false || echo "checked=$?"; echo after' _ "$lib" 2>/dev/null | tr '\n' ' ')"
   [ "$r" = "checked=1 after " ] || echo "set-e: $r"
@@ -142,6 +149,13 @@ if command -v timeout >/dev/null 2>&1; then
     echo "  skip  this timeout(1) has no --foreground, so the child-only case cannot be staged"
   fi
 fi
+
+# Launching without `<&0` hands the job /dev/null inside a substitution.
+m="$(mutant no_stdin 's/ <&0 &$/ \&/' '"$@" &')"
+grep -qF -- '"$@" <&0 &' "$m" && fail "mutant no_stdin still passes stdin on"
+broken="$(contract "$m" watchdog)"
+case "$broken" in *subst-stdin*) ok "red: a launch without <&0 reads /dev/null inside a command substitution" ;;
+  *) fail "the no-stdin mutant was not caught: ${broken:-<no rung failed>}" ;; esac
 
 # The status-based guess the three local run_with_timeout copies made.
 m="$(mutant status_guess 's/^  if \[ -e "\$marker" \]; then$/  if [ "$rc" -ne 143 ] \&\& [ "$rc" -ne 137 ]; then/' 'if [ "$rc" -ne 143 ]')"
