@@ -1195,13 +1195,29 @@ every constructor and struct name is unique, the table is compared per TYPE
 (`guard_type_rows`). A type's row covers its constructors' names, variants,
 field counts and Double fields, but not the moving half of the tag.
 
-- Every type both builds declare must have the same row.
 - An added or a removed type is tolerated. Its name and constructors join the
   mention check, the removed ones taken from the harvest's constructor table.
   A removed constructor's tag maps to nothing, so a body still naming it
   fails closed.
-- A changed type declines. A new variant moves the type's row, and it can
-  change how a match over the type lowers in a body that never spells it.
+- A changed type is tolerated too: a variant added, removed, reordered or
+  reshaped. Its name and constructors join the mention check, which also
+  walks match and handler patterns and record literals. Its constructors are
+  also WITHHELD from the tag map (`lc_ctor_tag_map`), so their old tags map
+  to nothing and a body embedding one fails closed in the relocation. Every
+  constructor arm and construction embeds its tag (a constructor pattern is
+  never a catch-all), so each net refuses such a body on its own.
+- `body_cache_changed_type_test` adds a variant at the end, adds one in the
+  middle, removes an unused one, and makes a payload Double. Each time, the
+  downstream file's bodies that only pass the value along are reused,
+  byte-equal. The one that matches the type recompiles (`saved=5`).
+- Each net alone keeps `saved=5`. With both off, the matching body replays
+  (`saved=6`) and is still byte-equal: its tag relocates by name, and a
+  payload slot is one word whatever it holds. So no row shows such a replay
+  going wrong, and the nets are a conservative refusal.
+- A payload made Double declines the whole downstream file when the payload
+  reaches a typed site there (an interpolation, a `==`): the per-file
+  typed-lowering guard sees the operand type change. The test passes it to a
+  generic to keep the lane open.
 - `a type removed from a middle file relocates the tags it moved` holds every
   downstream form while their tags move DOWN. It is reused byte-equal, and
   with the tag remap made the identity it compiles to different bytes.
