@@ -252,6 +252,10 @@ import ./linked_body_cache_insert.vibe {
   lc_insertion_active, lc_insertion_replayable
 }
 
+import ./linked_body_cache_reindex.vibe {
+  lc_insertion_reindex
+}
+
 import ./linked_emission_layout.vibe {
   lc_build_emission_layout
 }
@@ -523,10 +527,15 @@ export fn LinkedFunctionPlan::emit(function_plan: LinkedFunctionPlan, input: Lin
   // there. Measured on the compiler's own CLI closure: one string edited in
   // `cli/commands/pkg.vibe` gave a warm build 15 stale addresses, and
   // `tests/body_cache_downstream_edit_test.vibe` pins the same shape small.
-  let body_cache_wide = if lc_wide_ok {
-    body_cache_in
-  } else {
+  // #2669: under a tolerated insertion, the cached entries above it are
+  // moved into this build's function index space first; one that cannot be
+  // moved is left out and recompiles.
+  let body_cache_wide = if !lc_wide_ok {
     codegen_body_cache_new()
+  } else if pin_region_capacity >= 0 && lc_insertion_active(body_cache_insertion) && Array::length(body_cache_in.fn_indices) > 0 {
+    lc_insertion_reindex(body_cache_in, body_cache_insertion, fn_names_list, input.pin_region_src_n, pin_region_capacity, num_user_funcs, func_offset, lambda_slot_base, emission_layout.restricted_lambda_bases, emission_layout.restricted_lambda_count, lambda_bases, lambda_base_acc)
+  } else {
+    body_cache_in
   }
   // #2669: string references. A harvest from the same pool replays as it is;
   // one from another pool replays through `str_remap` when every string it

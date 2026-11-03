@@ -1117,12 +1117,27 @@ them:
     every name-keyed table without the added names.
 
   Any other difference declines the cache, as before.
-- **Replayed only below the insertion.** A body replays only when its index is
-  below the first added one and its body spells no added name
-  (`lc_insertion_replayable`). The second rule is load-bearing: a new global
-  spelled like a local an upstream lambda captures changes what that lambda
-  captures. With the rule switched off, the `captured-name` row compiles to
-  different bytes from a fresh build.
+- **Replayed when it spells no added name** (`lc_insertion_replayable`). This
+  rule is load-bearing: a new global spelled like a local an upstream lambda
+  captures changes what that lambda captures. With the rule switched off, the
+  `captured-name` row compiles to different bytes from a fresh build.
+- **Moved when it sits above the insertion** (`lc_insertion_reindex`,
+  `linked_body_cache_reindex.vibe`). The file table keeps every unchanged file
+  when only the edited files' statement counts moved, rebasing each kept
+  entry's statement position. An entry above the first added index is then
+  moved into this build's index space:
+  - `call` immediates, found by `scan_body_relocs`;
+  - function values (kinds 101 and 102) and the funcref slot log;
+  - lambda indices, through the harvest's lambda plan (this build's without
+    the added lambdas, which the restricted guard showed equal);
+  - record owners, and the record and linemap offsets that a different LEB
+    width moves.
+
+  An entry that cannot be moved is dropped and recompiles. That covers an
+  opcode the scanner does not know, a reference to a pad, a record that does
+  not sit on its instruction, and a direct call into the lambda region while
+  the lambdas moved. Each of the three remaps is load-bearing: with any one of
+  them made the identity, a middle-file row compiles to different bytes.
 - **Re-recorded.** The harvest's guards describe the old layout, so the
   consumed cache is not merged back. Each replayed body is re-recorded instead,
   as a relocated one is, and the next build finds a complete artifact.
@@ -1139,6 +1154,10 @@ them:
   moves the constructor table.
 - **A stable refreshed artifact:** a second warm build recompiles exactly what
   a third does.
+- **The edit in a middle file**, with the downstream file calling the moved
+  functions, taking one as a value and building closures: both the upstream
+  and the downstream bodies reused, byte-equal. Also with a closure in the
+  added helper, which moves every later lambda.
 
 The added function must be called. One that nothing reaches is removed before
 code generation, and the edit never reaches the body cache at all.

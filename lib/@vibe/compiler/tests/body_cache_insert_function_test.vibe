@@ -151,3 +151,80 @@ test "an added function that changes something upstream still recompiles it" {
 test "the refreshed artifact keeps what the insertion lane replayed" {
   inspect(bif_probe_twice("append-twice", "let helper: (Int) -> Int = (n) -> { n * 2 }", " + helper(1)"), content = "append-twice replayed=true equal=true stable=true again_equal=true")
 }
+
+//# The edit in a MIDDLE file: the unchanged file after it calls into the
+//# shifted functions, takes one as a value, and builds closures, so every
+//# class of index it holds moves.
+
+let bim_a_path: String = "/tmp/vibe_body_cache_bim_a.vibe"
+
+let bim_b_path: String = "/tmp/vibe_body_cache_bim_b.vibe"
+
+let bim_main_path: String = "/tmp/vibe_body_cache_bim_main.vibe"
+
+fn bim_a() -> String {
+  String::join([
+    "export let bim_eq: () -> Bool = () -> { [1, 2] == [1, 2] }",
+    "export let bim_one: () -> Int = () -> { 1 }"
+  ], "\n")
+}
+
+/// The middle file. `top` goes before its functions, `extra` is a term in
+/// `bim_two`'s result.
+fn bim_b(top: String, extra: String) -> String {
+  String::join([
+    "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }",
+    top,
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one()\{extra} }",
+    "export let bim_three: (Int) -> Int = (n) -> { bim_two(n) * 3 + (if bim_eq() { 1 } else { 0 }) }"
+  ], "\n")
+}
+
+fn bim_main() -> String {
+  String::join([
+    "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }",
+    "let apply: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }",
+    "let run: () -> Int = () -> {",
+    "  let k = 5",
+    "  let add_k = (x) -> x + k",
+    "  let twice = (x) -> x * 2",
+    "  apply(bim_two, 1) + apply(add_k, 2) + apply(twice, 3) + bim_three(4)",
+    "}"
+  ], "\n")
+}
+
+/// `label replayed=<the downstream file's bodies replayed> equal=<bytes>`.
+/// `downstream` compares against the same edit with nothing past the edited
+/// file kept: fewer recompiled than that means the unchanged file after the
+/// edit was reused.
+fn bim_probe(label: String, top: String, extra: String) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bim_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bim_a_path, bif_bytes(bim_a()))
+  Fs::write_bytes(bim_b_path, bif_bytes(bim_b("", "")))
+  Fs::write_bytes(bim_main_path, bif_bytes(bim_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", cold_counts)
+  Fs::write_bytes(bim_b_path, bif_bytes(bim_b(top, extra)))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bim_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bim_main_path, "run")
+  "\{label} offered=\{Array::get(warm_counts, 0)} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+test "a function added in a middle file keeps the files after it" {
+  // `saved` is how many fewer bodies the warm build compiled than the cold
+  // one. The upstream file holds 2 functions and the downstream one 2
+  // (`apply`, `run`); the added helper takes a pad's slot, so it costs
+  // nothing in the count. Reusing only the upstream file saves 2; reusing
+  // both saves 4. The helper sits at the TOP of the edited file, so every
+  // function the downstream body calls or takes as a value moved.
+  inspect(bim_probe("helper-at-top", "let bim_helper: (Int) -> Int = (n) -> { n + 7 }", " + bim_helper(0)"), content = "helper-at-top offered=4 saved=4 equal=true")
+  // A helper with a closure moves every lambda after it too, so the
+  // downstream closures' table slots are rewritten as well.
+  inspect(bim_probe("helper-with-lambda", "let bim_helper: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(1) }", " + bim_helper(0)"), content = "helper-with-lambda offered=4 saved=4 equal=true")
+}

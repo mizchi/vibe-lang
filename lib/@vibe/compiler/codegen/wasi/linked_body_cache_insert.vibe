@@ -276,6 +276,28 @@ export fn lc_restricted_lambda_bases(ins: LcInsertion, names: Array[String], lam
   out
 }
 
+/// How many lambdas the added functions hold -- this build's lambda count
+/// minus the harvest's.
+export fn lc_added_lambda_count(ins: LcInsertion, names: Array[String], lambda_bases: Array[Int], lambda_count: Int, new_src_n: Int) -> Int {
+  let n = Array::length(lambda_bases)
+  let mut added = 0
+  let mut i = 0
+  while i < new_src_n && i < n {
+    if lc_is_added(ins, Array::get(names, i)) {
+      let hi = if i + 1 < n {
+        Array::get(lambda_bases, i + 1)
+      } else {
+        lambda_count
+      }
+      added = added + (hi - Array::get(lambda_bases, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  added
+}
+
 fn lc_mentions_any(e: Expr, sorted: Array[String]) -> Bool {
   match e {
     EIdent(n, _) => bsearch_leftmost(sorted, n) >= 0,
@@ -293,14 +315,16 @@ fn lc_mentions_any(e: Expr, sorted: Array[String]) -> Bool {
 }
 
 /// Per user function, 1 when its cached body may still be replayed under
-/// `ins`: it sits below the first added index, and its body never spells an
-/// added name -- not as a call, not as a captured local that a new global
-/// of the same spelling would stop the capture of.
+/// `ins`: its body never spells an added name -- not as a call, not as a
+/// captured local that a new global of the same spelling would stop the
+/// capture of. A body above the insertion is also moved into this build's
+/// index space first (`lc_insertion_reindex`), and one that cannot be moved
+/// is not in the cache to find.
 export fn lc_insertion_replayable(ins: LcInsertion, bodies: Array[Expr], num_user_funcs: Int) -> Array[Int] {
   let out = lc_fresh_int_array()
   let mut bi = 0
   while bi < num_user_funcs {
-    Array::push(out, if bi < ins.first && !lc_mentions_any(Array::get(bodies, bi), ins.names) {
+    Array::push(out, if !lc_mentions_any(Array::get(bodies, bi), ins.names) {
       1
     } else {
       0
