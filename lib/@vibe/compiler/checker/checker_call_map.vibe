@@ -328,6 +328,54 @@ fn map_scalar_key_name(s: Subst, ty: Type) -> String {
   }
 }
 
+/// Whether two schemes are the same up to a renaming of their variables.
+fn map_scheme_same_shape(a: Type, b: Type) -> Bool {
+  match (a, b) {
+    (CtForAll(av, _, ab), CtForAll(bv, _, bb)) => if Array::length(av) == Array::length(bv) {
+      let ren: MutMap[Int, Int] = MutMap::new_int()
+      map_types_same_shape(ab, bb, ren)
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+fn map_types_same_shape(a: Type, b: Type, ren: MutMap[Int, Int]) -> Bool {
+  match (a, b) {
+    (CtVar(x), CtVar(y)) => match MutMap::get(ren, x) {
+      Some(z) => z == y,
+      None => {
+        MutMap::set(ren, x, y)
+        true
+      }
+    },
+    (CtFn(ap, ar, _), CtFn(bp, br, _)) => map_type_lists_same_shape(ap, bp, ren) && map_types_same_shape(ar, br, ren),
+    (CtArray(x), CtArray(y)) => map_types_same_shape(x, y, ren),
+    (CtOption(x), CtOption(y)) => map_types_same_shape(x, y, ren),
+    (CtTuple(xs), CtTuple(ys)) => map_type_lists_same_shape(xs, ys, ren),
+    (CtNamed(xn, xs), CtNamed(yn, ys)) => xn == yn && map_type_lists_same_shape(xs, ys, ren),
+    (CtApplied(xh, xs), CtApplied(yh, ys)) => map_types_same_shape(xh, yh, ren) && map_type_lists_same_shape(xs, ys, ren),
+    (CtVar(_), _) => false,
+    (_, CtVar(_)) => false,
+    _ => type_to_string(a) == type_to_string(b)
+  }
+}
+
+fn map_type_lists_same_shape(xs: Array[Type], ys: Array[Type], ren: MutMap[Int, Int]) -> Bool {
+  if Array::length(xs) != Array::length(ys) {
+    false
+  } else {
+    let mut ok = true
+    let mut i = 0
+    while ok && i < Array::length(xs) {
+      ok = map_types_same_shape(Array::get(xs, i), Array::get(ys, i), ren)
+      i = i + 1
+    }
+    ok
+  }
+}
+
 /// #2334: a generic body is lowered once, so a keyed map call whose key is a
 /// type parameter uses the String key operations for every instantiation --
 /// with an `Int` key it would hash the number as a String pointer. Refuse each
@@ -382,11 +430,17 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
           _ => ()
         }
         match env_lookup(env, name) {
-          Some(CtForAll(checked_vars, _, checked_body)) => {
+          // Only the same binding's checked scheme: a hoisted and a checked
+          // signature of one function differ in their variables alone. A
+          // local generic of the same spelling has its own shape, and its
+          // record already carries its own scheme.
+          Some(CtForAll(checked_vars, checked_bounds, checked_body)) => if map_scheme_same_shape(scheme, CtForAll(checked_vars, checked_bounds, checked_body)) {
             scheme_var_types_from(checked_body, inst, pairs)
             for id in checked_vars {
               Array::push(vars, id)
             }
+          } else {
+            ()
           },
           _ => ()
         }
