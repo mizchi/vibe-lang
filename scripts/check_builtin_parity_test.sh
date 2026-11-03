@@ -44,17 +44,17 @@ path, which = sys.argv[1], sys.argv[2]
 s = open(path, encoding="utf-8").read()
 before = s
 needle = (
-    '("Array::push", CtFn(reg_p2(CtArray(reg_var(0)), reg_var(0)), CtUnit, None), '
+    '("Array::push", CtFn(reg_p2(a = CtArray(reg_var(0)), b = reg_var(0)), CtUnit, None), '
     "true, true, true, false, false, false, true)"
 )
 if which == "shape":
     repl = (
-        '("Array::push", CtFn(reg_p2(CtArray(reg_var(0)), reg_var(0)), CtUnit, None), '
+        '("Array::push", CtFn(reg_p2(a = CtArray(reg_var(0)), b = reg_var(0)), CtUnit, None), '
         "true, true, true)"
     )
 elif which == "neither":
     repl = (
-        '("Array::push", CtFn(reg_p2(CtArray(reg_var(0)), reg_var(0)), CtUnit, None), '
+        '("Array::push", CtFn(reg_p2(a = CtArray(reg_var(0)), b = reg_var(0)), CtUnit, None), '
         "false, false, true, false, false, false, true)"
     )
 else:

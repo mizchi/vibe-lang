@@ -479,10 +479,10 @@ class OperationIdentityTest(unittest.TestCase):
         self.assert_mutation_fails(module.validate_linear_bindings, mutated)
 
     def test_emission_order_drift_fails(self):
-        anchor = 'emit_name(import_content, "fs_is_dir")'
+        anchor = 'emit_name(buf = import_content, name = "fs_is_dir")'
         self.assertIn(anchor, self.linked)
-        start = self.linked.index("  if fs_is_dir_import_idx >= 0 {\n    emit_name(import_content, \"vibe\")")
-        end = self.linked.index("  if fs_is_file_import_idx >= 0 {\n    emit_name(import_content, \"vibe\")")
+        start = self.linked.index("  if fs_is_dir_import_idx >= 0 {\n    emit_name(buf = import_content, name = \"vibe\")")
+        end = self.linked.index("  if fs_is_file_import_idx >= 0 {\n    emit_name(buf = import_content, name = \"vibe\")")
         block = self.linked[start:end]
         rest = self.linked[end:]
         close = rest.index("\n  }\n") + len("\n  }\n")

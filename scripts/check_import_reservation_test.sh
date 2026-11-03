@@ -52,7 +52,7 @@ python3 - "$LINKED" "$WORK/mutated_linked.vibe" <<'PY'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 s = open(src).read()
-clause = ' || Map::has_key(used_builtin_names, "Console::read_char")'
+clause = ' || Map::has_key(used_builtin_names, key = "Console::read_char")'
 if clause not in s:
     sys.stderr.write(
         "import-reservation-selftest: the mutation target is not present -- the "
@@ -70,7 +70,7 @@ if ! cmp -s "$LINKED" "$WORK/mutated_linked.vibe"; then :; else
 fi
 grep -q '"Console::read_char" =>' "$WORK/mutated_linked.vibe" \
   || fail "the mutation removed the MAPPING too; it must remove only the reservation"
-grep -q 'Map::has_key(used_builtin_names, "Console::read_char")' "$WORK/mutated_linked.vibe" \
+grep -q 'Map::has_key(used_builtin_names, key = "Console::read_char")' "$WORK/mutated_linked.vibe" \
   && fail "the reservation clause survived the mutation"
 
 # --- RED: the gate must fail, and must NAME the spelling. -------------------

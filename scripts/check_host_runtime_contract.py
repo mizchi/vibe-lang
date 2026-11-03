@@ -84,6 +84,10 @@ def gc_import_name_for(def_name: str) -> str:
     return def_name.replace("::", "_").lower()
 
 
+# ADR-0120: a call may spell an argument with its label (`f(x = 1)`), so each
+# argument the readers below match may carry one.
+L = r'(?:[a-z_][a-z0-9_]* = )?'
+
 def die(message: str) -> None:
     print(f"host-runtime-contract: {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -92,10 +96,10 @@ def die(message: str) -> None:
 def emitter_imports(text: str) -> dict[str, str]:
     # Dynamic named component imports are checked separately below.
     pattern = re.compile(
-        r'emit_name\(import_content, "vibe"\)\s*\n\s*'
-        r'emit_name\(import_content, "([^"]+)"\)\s*\n\s*'
-        r'bytebuf_push\(import_content, 0\)\s*\n\s*'
-        r'leb128_encode_u32\(import_content, ([^)]+)\)'
+        rf'emit_name\({L}import_content, {L}"vibe"\)\s*\n\s*'
+        rf'emit_name\({L}import_content, {L}"([^"]+)"\)\s*\n\s*'
+        rf'bytebuf_push\({L}import_content, {L}0\)\s*\n\s*'
+        rf'leb128_encode_u32\({L}import_content, {L}([^)]+)\)'
     )
     found: dict[str, str] = {}
     for name, type_id in pattern.findall(text):
@@ -110,11 +114,11 @@ def emitter_imports(text: str) -> dict[str, str]:
 def emitter_dynamic_imports(text: str) -> dict[str, tuple[str, str]]:
     """Extract generated `<prefix><Array::get(names, i)>` import descriptors."""
     pattern = re.compile(
-        r'emit_name\(import_content, "vibe"\)\s*\n\s*'
-        r'emit_name\(import_content, String::concat\("([^"]+)",\s*'
-        r'Array::get\(([A-Za-z_][A-Za-z0-9_]*),\s*[A-Za-z_][A-Za-z0-9_]*\)\)\)\s*\n\s*'
-        r'bytebuf_push\(import_content, 0\)\s*\n\s*'
-        r'leb128_encode_u32\(import_content, ([^)]+)\)'
+        rf'emit_name\({L}import_content, {L}"vibe"\)\s*\n\s*'
+        rf'emit_name\({L}import_content, {L}String::concat\({L}"([^"]+)",\s*{L}'
+        rf'Array::get\({L}([A-Za-z_][A-Za-z0-9_]*),\s*{L}[A-Za-z_][A-Za-z0-9_]*\)\)\)\s*\n\s*'
+        rf'bytebuf_push\({L}import_content, {L}0\)\s*\n\s*'
+        rf'leb128_encode_u32\({L}import_content, {L}([^)]+)\)'
     )
     found: dict[str, tuple[str, str]] = {}
     for prefix, names_array, type_id in pattern.findall(text):
@@ -518,7 +522,7 @@ def linear_bindings(text: str) -> list[tuple[str, str]]:
     reserved = [name for name, _ in re.findall(r"^\s*let (\w+_import_idx) = if ([^\n{]+)\{", text, re.M)]
     idx_of = dict(re.findall(r"^\s*let (\w+_idx) = if (\w+_import_idx) >= 0 \{", text, re.M))
     emits = re.findall(
-        r'if (\w+_import_idx) >= 0 \{\s*\n\s*emit_name\(import_content, "vibe"\)\s*\n\s*emit_name\(import_content, "([^"]+)"\)',
+        rf'if (\w+_import_idx) >= 0 \{{\s*\n\s*emit_name\({L}import_content, {L}"vibe"\)\s*\n\s*emit_name\({L}import_content, {L}"([^"]+)"\)',
         text,
     )
     if not reserved or not emits:

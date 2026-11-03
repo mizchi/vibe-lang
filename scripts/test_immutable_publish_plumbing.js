@@ -27,7 +27,7 @@ includes(
 );
 includes(
   "lib/@vibe/compiler/core/builtin_registry.vibe",
-  '("Fs::publish_immutable_text", CtFn(reg_p2(CtString, CtString), CtBool, Some("Fs")), true, false, true, false, false, false, false)',
+  '("Fs::publish_immutable_text", CtFn(reg_p2(a = CtString, b = CtString), CtBool, Some("Fs")), true, false, true, false, false, false, false)',
 );
 includes(
   "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe",
@@ -35,7 +35,7 @@ includes(
 );
 includes(
   "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe",
-  'emit_name(import_content, "fs_publish_immutable_text")',
+  'emit_name(buf = import_content, name = "fs_publish_immutable_text")',
 );
 includes(
   "lib/@vibe/compiler/codegen/gc/backend_body.vibe",

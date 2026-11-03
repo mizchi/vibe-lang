@@ -85,8 +85,8 @@ if unknown:
     print("  unknown: " + ", ".join(unknown), file=sys.stderr)
     sys.exit(1)
 PY
-emitted="$(grep -ho 'emit_name(import_content, "[^"]*")' lib/@vibe/compiler/codegen/wasi/linked_compile_module_sections.vibe \
-  | sed 's/.*, "//; s/")$//' | sort -u | grep -vx 'vibe\|wasi_snapshot_preview1\|fd_write')"
+emitted="$(grep -hoE 'emit_name\((buf = )?import_content, (name = )?"[^"]*"\)' lib/@vibe/compiler/codegen/wasi/linked_compile_module_sections.vibe \
+  | sed 's/.*"\([^"]*\)")$/\1/' | sort -u | grep -vx 'vibe\|wasi_snapshot_preview1\|fd_write')"
 [ -n "$emitted" ] || fail "found no emitted import names (the emitter moved?)"
 for f in $emitted; do
   has "$known" "$f" || fail "the compiler can emit vibe.$f, which the authority table does not know"
