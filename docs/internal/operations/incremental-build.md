@@ -1178,12 +1178,37 @@ Double fields.
   constructors join the mention check.
 - A removed type, a changed type (a new variant moves its row) and a moved tag
   all decline.
-- The struct tables stay in the global half. A field access dispatches over
-  every struct with that field, and a bare record literal is matched against
-  every struct's fields, so a struct added anywhere can change a body that
-  spells neither it nor its constructor.
+- Structs are compared by value (`guard_struct_names` /
+  `guard_struct_fields`, VBC13). Every struct the harvest had must survive
+  with the same fields, in the same relative order. An added struct is
+  tolerated only when none of its fields is a field of a harvest struct: a
+  field access dispatches over every struct holding the field, and a bare
+  record literal is matched against every struct's fields. An unchanged
+  body names only fields the harvest's structs have, so it cannot reach the
+  new one. A declared effect brings such a struct, which is how this rule
+  was found.
 - The used-builtin set collects constructor names too, so under an edit it is
   compared with this build's constructor names taken out of both sides.
+
+**Effects.** A declared effect routes through exception tag `3 + its index`,
+and the tags past the effects (the unknown-op fallback and the control tag)
+move with their count. A body names a tag only as a `throw` or `try_table`
+catch immediate, and the scanner reports both (`reloc_kind_tag`). So the
+global half leaves the declared effects out. They are compared per effect,
+over each effect's ops and arities (`guard_effect_names` /
+`guard_effect_rows`, VBC12). A changed effect list is relocated through the
+names (`lc_tag_map`), and every entry moves while the map is not the identity.
+Added and removed effects are tolerated, with their names and ops in the
+mention check.
+
+No row exercises a moved tag. The edit-classes corpus's `add-effect-ahead`
+row is reused now, but with the remap made the identity it still answers
+byte-equal. An effect declared in the middle file keeps
+the existing effects' tags, and none of the corpus's handlers names the tags
+past them. An effect declared AHEAD of an existing one also brings a
+synthesized type that moves later constructor tags, and that declines on the
+type rows. The tag remap uses the same scanned-immediate rebuild as the call
+remap, which is tested, and a tag the map does not cover fails closed.
 
 The rows are defence in depth for one class: a changed borrow ABI moves the
 row and the borrow table both, and in the probe built for it the borrow guard
@@ -1202,6 +1227,10 @@ byte for byte against a fresh build:
   reused when one does, because its tag moved.
 - **A newly imported module**, listed after the existing imports and before
   them: the unchanged files are reused either way, byte-equal.
+- **Effects:** one added in the middle file is reused. One declared ahead of
+  an existing effect declines, because its synthesized type moves later tags.
+- **Structs:** one added in the middle file with new fields is reused. One
+  that shares a field with an existing struct declines.
 - **A stable refreshed artifact:** a second warm build recompiles exactly what
   a third does.
 - **Middle-file edits**, with the downstream file calling the moved

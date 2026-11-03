@@ -490,3 +490,138 @@ test "a newly imported module keeps the unchanged files' bodies" {
   // another file.
   inspect(String::join([after, before], " | "), content = "new-module-last saved=4 equal=true | new-module-first saved=4 equal=true")
 }
+
+//# Effects. A declared effect routes through exception tag `3 + its index`,
+//# and the tags past the effects move with their count. A body names a tag
+//# only as a `throw` / `catch` immediate, so a changed effect list is
+//# relocated through the effects' names.
+
+fn bie_a(ahead: Bool) -> String {
+  let first = if ahead {
+    "effect BieFirst {\n  Ping(Int) -> Int\n}\nexport let bie_ping: () -> Int with BieFirst = () -> { perform BieFirst::Ping(2) }\nexport let bie_ping_handled: () -> Int = () -> { handle { bie_ping() } with { BieFirst::Ping(x) => resume(x * 3) } }\n"
+  } else {
+    ""
+  }
+  String::join([
+    first,
+    "export effect BieLog {",
+    "  Note(Int) -> Int",
+    "}",
+    "export let bie_eq: () -> Bool = () -> { [1, 2] == [1, 2] }",
+    "export let bie_noted: () -> Int with BieLog = () -> { perform BieLog::Note(1) }"
+  ], "\n")
+}
+
+fn bie_b(extra: Bool) -> String {
+  let decl = if extra {
+    "effect BieTrace {\n  Mark(Int) -> Int\n}\nlet bie_marked: () -> Int = () -> { handle { perform BieTrace::Mark(5) } with { BieTrace::Mark(x) => resume(x) } }\n"
+  } else {
+    ""
+  }
+  let use = if extra {
+    " + bie_marked()"
+  } else {
+    ""
+  }
+  String::join([
+    "import ./vibe_body_cache_bie_a.vibe { BieLog, bie_eq, bie_noted }",
+    decl,
+    "export let bie_two: (Int) -> Int = (n) -> { n + (if bie_eq() { 1 } else { 0 })\{use} }"
+  ], "\n")
+}
+
+fn bie_main(ahead: Bool) -> String {
+  let imports = if ahead {
+    "import ./vibe_body_cache_bie_a.vibe { BieLog, bie_noted, bie_ping_handled }"
+  } else {
+    "import ./vibe_body_cache_bie_a.vibe { BieLog, bie_noted }"
+  }
+  let use = if ahead {
+    " + bie_ping_handled()"
+  } else {
+    ""
+  }
+  String::join([
+    imports,
+    "import ./vibe_body_cache_bie_b.vibe { bie_two }",
+    "let logged: () -> Int = () -> { handle { bie_noted() } with { BieLog::Note(x) => resume(x + 10) } }",
+    "let run: () -> Int = () -> { logged() + bie_two(1)\{use} }"
+  ], "\n")
+}
+
+let bie_a_path: String = "/tmp/vibe_body_cache_bie_a.vibe"
+
+let bie_b_path: String = "/tmp/vibe_body_cache_bie_b.vibe"
+
+let bie_main_path: String = "/tmp/vibe_body_cache_bie_main.vibe"
+
+/// Cold on the base, then the edit: `ahead` declares an effect before
+/// `BieLog` in the first file (moving its tag, which the downstream handler
+/// names); otherwise the middle file gains an effect after it.
+fn bie_probe(label: String, ahead: Bool) -> String with Env + Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bie_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(bie_a_path, bif_bytes(bie_a(false)))
+  Fs::write_bytes(bie_b_path, bif_bytes(bie_b(false)))
+  Fs::write_bytes(bie_main_path, bif_bytes(bie_main(false)))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(bie_main_path, "run", "on", cold_counts)
+  if ahead {
+    Fs::write_bytes(bie_a_path, bif_bytes(bie_a(true)))
+    Fs::write_bytes(bie_main_path, bif_bytes(bie_main(true)))
+  } else {
+    Fs::write_bytes(bie_b_path, bif_bytes(bie_b(true)))
+  }
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(bie_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(bie_main_path, "run")
+  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+}
+
+test "an added effect relocates the tags it moves" {
+  let r1 = handle {
+    bie_probe("effect-in-middle", false)
+  } with { Exception::Throw(m) => String::concat("THROW ", m) }
+  let r2 = handle {
+    bie_probe("effect-ahead", true)
+  } with { Exception::Throw(m) => String::concat("THROW ", m) }
+  // In the middle file: `BieLog` keeps tag 3, the new effect takes 4, and
+  // the tags past them move by one -- the handlers upstream and downstream
+  // name those, and are relocated. Declared AHEAD of `BieLog` in the first
+  // file, the new effect also brings a synthesized type that moves later
+  // constructor tags, which are not relocated, so nothing is reused.
+  inspect(String::join([r1, r2], " | "), content = "effect-in-middle saved=4 equal=true | effect-ahead saved=0 equal=true")
+}
+
+//# Structs. A field access dispatches over every struct holding the field,
+//# and a bare record literal is matched against every struct's fields, so a
+//# struct added in a middle file is tolerated only when its fields are
+//# disjoint from every existing struct's.
+
+test "an added struct is tolerated when its fields are new" {
+  let pt = "struct BimPt { x: Int }"
+  let base = String::join([
+    pt,
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + BimPt::{ x: 1 }.x }",
+    bim_three_line
+  ], "\n")
+  let fresh_fields = String::join([
+    pt,
+    "struct BimBox { bim_box_v: Int }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + BimPt::{ x: 1 }.x + BimBox::{ bim_box_v: 2 }.bim_box_v }",
+    bim_three_line
+  ], "\n")
+  let shared_field = String::join([
+    pt,
+    "struct BimQ { x: Int }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + BimPt::{ x: 1 }.x + BimQ::{ x: 2 }.x }",
+    bim_three_line
+  ], "\n")
+  let r1 = bim_probe_defs("disjoint-fields", base, fresh_fields)
+  let r2 = bim_probe_defs("shared-field", base, shared_field)
+  inspect(String::join([r1, r2], " | "), content = "disjoint-fields saved=4 equal=true | shared-field saved=0 equal=true")
+}

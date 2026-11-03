@@ -264,6 +264,154 @@ export fn lc_types_agree(old_names: Array[String], old_rows: Array[Int], new_nam
   }
 }
 
+/// Do the declared effects both builds hold have the same ops? Effects added
+/// or removed are tolerated -- their tags move, and the relocation maps every
+/// tag (`lc_tag_map`) -- and their names, with an added one's op keys, go
+/// into `touched`. False when a name occurs twice on either side.
+export fn lc_effects_agree(old_names: Array[String], old_rows: Array[Int], new_names: Array[String], new_rows: Array[Int], new_ops: Array[String], touched: Array[String]) -> Bool {
+  if Array::length(old_names) == 0 {
+    let mut i = 0
+    while i < Array::length(new_names) {
+      Array::push(touched, Array::get(new_names, i))
+      for op in String::split(Array::get(new_ops, i), "\n") {
+        Array::push(touched, op)
+      }
+      i = i + 1
+    }
+    Array::length(old_rows) == 0
+  } else {
+    let e = lc_src_edit_of(old_names, new_names, Array::length(new_names))
+    if !e.ok || !lc_src_rows_agree(e, old_rows, new_rows) {
+      false
+    } else {
+      for name in e.touched {
+        Array::push(touched, name)
+      }
+      let mut i = 0
+      while i < Array::length(new_names) {
+        if bsearch_leftmost(e.added, Array::get(new_names, i)) >= 0 {
+          for op in String::split(Array::get(new_ops, i), "\n") {
+            Array::push(touched, op)
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      true
+    }
+  }
+}
+
+/// Does this build's struct table keep the harvest's? Every struct the
+/// harvest had must be there with the same fields, in the same relative
+/// order (a field access tries the structs holding the field in table
+/// order). A struct this build added is tolerated only when none of its
+/// fields is a field of a harvest struct: a field access or a bare record
+/// literal in an unchanged body names only fields those structs have, so it
+/// cannot reach the new one. An added struct's name goes into `touched`.
+export fn lc_structs_agree(old_names: Array[String], old_fields: Array[String], new_names: Array[String], new_fields: Array[String], touched: Array[String]) -> Bool {
+  let e = lc_src_edit_of(old_names, new_names, Array::length(new_names))
+  if Array::length(old_names) == 0 {
+    for name in new_names {
+      Array::push(touched, name)
+    }
+    Array::length(old_fields) == 0
+  } else if !e.ok || Array::length(e.removed) > 0 {
+    false
+  } else {
+    let mut ok = true
+    let mut last = 0 - 1
+    let old_field_names: Array[String] = []
+    let mut o = 0
+    while ok && o < Array::length(old_names) {
+      let n = Array::get(e.o2n, o)
+      if n <= last || Array::get(old_fields, o) != Array::get(new_fields, n) {
+        ok = false
+      } else {
+        last = n
+        for f in String::split(Array::get(old_fields, o), "\n") {
+          Array::push(old_field_names, f)
+        }
+      }
+      o = o + 1
+    }
+    let known = sorted_names_of(old_field_names)
+    let mut i = 0
+    while ok && i < Array::length(new_names) {
+      if bsearch_leftmost(e.added, Array::get(new_names, i)) >= 0 {
+        for f in String::split(Array::get(new_fields, i), "\n") {
+          if f != "" && bsearch_leftmost(known, f) >= 0 {
+            ok = false
+          } else {
+            ()
+          }
+        }
+        Array::push(touched, Array::get(new_names, i))
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+/// Harvest exception tag -> this build's, for tags `[0, 4 + old effects]`:
+/// the three fixed tags stay, a declared effect's `3 + i` follows its name
+/// (-1 for a removed one), and the tags past the effects (the unknown-op
+/// fallback and the control tag) move by how much the effect count moved.
+export fn lc_tag_map(old_names: Array[String], new_names: Array[String]) -> Array[Int] {
+  let old_n = Array::length(old_names)
+  let new_n = Array::length(new_names)
+  let out = lc_fresh_int_array()
+  let mut t = 0
+  while t < 3 {
+    Array::push(out, t)
+    t = t + 1
+  }
+  for name in old_names {
+    let mut at = 0 - 1
+    let mut j = 0
+    while at < 0 && j < new_n {
+      if Array::get(new_names, j) == name {
+        at = j
+      } else {
+        j = j + 1
+      }
+    }
+    Array::push(out, if at >= 0 {
+      3 + at
+    } else {
+      0 - 1
+    })
+  }
+  let mut x = 0
+  while x < 2 {
+    Array::push(out, 3 + new_n + x)
+    x = x + 1
+  }
+  if old_n + 5 != Array::length(out) {
+    lc_fresh_int_array()
+  } else {
+    out
+  }
+}
+
+/// Is `map` the identity?
+export fn lc_map_is_identity(map: Array[Int]) -> Bool {
+  let mut same = true
+  let mut i = 0
+  while same && i < Array::length(map) {
+    if Array::get(map, i) != i {
+      same = false
+    } else {
+      i = i + 1
+    }
+  }
+  same
+}
+
 /// The harvest's lambda plan: its source functions' lambda counts by value,
 /// no lambdas in the pads, and this build's synthesized region (which the
 /// global guard has shown is the harvest's). The last element is the total.

@@ -13,6 +13,7 @@ import @vibe/compiler/codegen/reloc {
   blind_owner_lambda_index,
   blind_owner_of_lambda,
   reloc_kind_func,
+  reloc_kind_tag,
   scan_body_relocs
 }
 
@@ -38,7 +39,9 @@ import ./linked_compile_lc_rename_sleep_calls.vibe {
 // - function values, `i64.const ((slot << 2) | 2)` and `i32.const slot`,
 //   which the emitter recorded (kinds 101 / 102);
 // - the funcref slot log the element section is built from;
-// - the owner of every record and linemap row, and each lambda's index.
+// - the owner of every record and linemap row, and each lambda's index;
+// - exception tags, `throw` / `catch` immediates the encoding makes certain
+//   (`reloc_kind_tag`), when the declared effects changed.
 //
 // Imports and generated builtins sit below the user functions and do not
 // move; the synthesized region sits past the pin region's capacity and does
@@ -60,7 +63,10 @@ struct LcIndexMap {
   lambdas_moved: Bool;
   num_user_funcs: Int;
   func_offset: Int;
-  lambda_slot_base: Int
+  lambda_slot_base: Int;
+  /// Harvest exception tag -> this build's (`lc_tag_map`); -1 for a tag
+  /// whose effect was removed.
+  tags: Array[Int]
 }
 
 fn lc_map_fn(m: LcIndexMap, o: Int) -> Int {
@@ -134,6 +140,22 @@ fn lc_map_call(m: LcIndexMap, v: Int) -> Int {
     0 - 1
   } else {
     v
+  }
+}
+
+fn lc_map_tag(m: LcIndexMap, t: Int) -> Int {
+  if t < 0 {
+    0 - 1
+  } else if t >= Array::length(m.tags) {
+    // Past the map: only the identity extends past it (effects pinned whole
+    // by the global half record no names, and their tags cannot move).
+    if lc_tags_identity(m.tags) {
+      t
+    } else {
+      0 - 1
+    }
+  } else {
+    Array::get(m.tags, t)
   }
 }
 
@@ -227,9 +249,14 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
     Some(r) => {
       let mut i = 0
       while ok && i < Array::length(r.offsets) {
-        if Array::get(r.kinds, i) == reloc_kind_func {
+        let rk = Array::get(r.kinds, i)
+        if rk == reloc_kind_func || rk == reloc_kind_tag {
           let v = Array::get(r.values, i)
-          let n = lc_map_call(m, v)
+          let n = if rk == reloc_kind_func {
+            lc_map_call(m, v)
+          } else {
+            lc_map_tag(m, v)
+          }
           if n < 0 {
             ok = false
           } else if n != v {
@@ -336,6 +363,19 @@ fn lc_group_rows(owners: Array[Int], n: Int) -> Array[Array[Int]] {
   groups
 }
 
+fn lc_tags_identity(map: Array[Int]) -> Bool {
+  let mut same = true
+  let mut i = 0
+  while same && i < Array::length(map) {
+    if Array::get(map, i) != i {
+      same = false
+    } else {
+      i = i + 1
+    }
+  }
+  same
+}
+
 /// The lowest harvest source index at or above which something moved: its
 /// position, or its lambdas' (`old_plan` against `new_bases`). Every entry
 /// below it is carried as it is -- nothing it can reference moved, because
@@ -361,8 +401,13 @@ fn lc_first_change(e: LcSrcEdit, old_plan: Array[Int], new_bases: Array[Int]) ->
 /// one that cannot be moved, or whose function was removed, is dropped.
 /// `old_plan` is the harvest's lambda plan with its total last
 /// (`lc_old_lambda_plan`). Answers `cache` itself when nothing moved.
-export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: Int, num_user_funcs: Int, func_offset: Int, lambda_slot_base: Int, old_plan: Array[Int], new_bases: Array[Int], new_lambda_count: Int) -> CodegenBodyCache {
-  let first = lc_first_change(e, old_plan, new_bases)
+export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: Int, num_user_funcs: Int, func_offset: Int, lambda_slot_base: Int, old_plan: Array[Int], new_bases: Array[Int], new_lambda_count: Int, tag_map: Array[Int]) -> CodegenBodyCache {
+  // A moved exception tag can sit in ANY body, so every entry moves then.
+  let first = if lc_tags_identity(tag_map) {
+    lc_first_change(e, old_plan, new_bases)
+  } else {
+    0
+  }
   if first >= e.old_src_n {
     cache
   } else {
@@ -403,7 +448,8 @@ export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, capacity: I
       lambdas_moved: lambdas_moved,
       num_user_funcs: num_user_funcs,
       func_offset: func_offset,
-      lambda_slot_base: lambda_slot_base
+      lambda_slot_base: lambda_slot_base,
+      tags: tag_map
     }
     let out = codegen_body_cache_guards_only(cache)
     let lam_rows = lc_group_rows(cache.lam_owner, num_user_funcs)
