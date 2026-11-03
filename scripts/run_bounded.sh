@@ -184,7 +184,12 @@ run_bounded_watchdog() { # <seconds> <cmd...>
   local had_monitor=0
   case "$-" in *m*) had_monitor=1 ;; esac
   set -m
-  "$@" &
+  # Inside a command substitution `set -m` does not take, and an asynchronous
+  # command without job control has /dev/null as its stdin -- assigned BEFORE
+  # any explicit redirection, so `<&0` would read /dev/null too. Hand the
+  # caller's stdin over on fd 3 instead: `x="$(run_bounded 60 cmd <file)"`
+  # read nothing while the same call outside `$(...)` read the file.
+  { "$@" <&3 3<&- & } 3<&0
   local cmd_pid=$!
   [ "$had_monitor" -eq 1 ] || set +m
   (

@@ -77,6 +77,15 @@ contract() { # <lib> <impl>
   #    timeout(1): `VAR=x timeout 60 cmd <in` was the commonest call shape.
   r="$(printf 'piped\n' | VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; PROBE_VAR=seen run_bounded 10 sh -c "read -r l; echo \"\$PROBE_VAR/\$l\""' _ "$lib" 2>/dev/null | tail -1)"
   [ "$r" = "seen/piped" ] || echo "env+stdin: $r"
+  # 4b. ...and a file redirected into a call made INSIDE the caller's own
+  #     command substitution, the shape every gate that captures a
+  #     component's output uses (`actual="$(run_bounded 60 wasmtime ... <in)"`).
+  #     A `$(...)` subshell runs without job control, so a background launch
+  #     got /dev/null as its stdin: the watchdog read nothing there, and the
+  #     wasi:cli/stdin gate saw `drain expected 42, got 0`.
+  printf 'filed\n' >"$WORK/stdin_in_subst.txt"
+  r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c '. "$1"; x="$(run_bounded 10 sh -c "read -r l; echo \"\$l\"" <"$2")"; echo "got=$x"' _ "$lib" "$WORK/stdin_in_subst.txt" 2>/dev/null | tail -1)"
+  [ "$r" = "got=filed" ] || echo "stdin-in-substitution: $r"
   # 5. A caller under `set -e` survives a failing command it checks.
   r="$(VIBE_RUN_BOUNDED_IMPL="$impl" bash -c 'set -euo pipefail; . "$1"; run_bounded 10 false || echo "checked=$?"; echo after' _ "$lib" 2>/dev/null | tr '\n' ' ')"
   [ "$r" = "checked=1 after " ] || echo "set-e: $r"
