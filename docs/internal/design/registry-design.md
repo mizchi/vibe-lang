@@ -122,7 +122,7 @@ requirement 5 (immutable yank). No database, no server code — the
 "registry" is one directory that rsync / static HTTP can serve as-is.
 `VIBE_REGISTRY_LOG_DIR` (default `$VIBE_HOME/log`) points at it.
 `vibe pkg publish|install|add|yank|update` (#805) runs in the compiler CLI
-(`lib/@vibe/compiler/user_pkg.vibe`, over `lib/@vibe/pkgstore`, #3673), so an
+(`lib/@vibe/cli/commands/pkg.vibe`, over `lib/@vibe/pkgstore`, #3673), so an
 installed toolchain needs nothing beyond its compiler and runner. The one host
 step is `git fetch`: the launcher fetches a source into a directory and hands
 it to `vibe pkg add-fetched`, and `vibe pkg fetch-pins` reports the pins it
@@ -194,5 +194,5 @@ cannot satisfy offline as `need` rows for the launcher to fetch.
 - #751 (resolution order + VIBE_LIB + freeze), #754 (version directive /
   cache / materialise / same-version republish forbidden), #755 (this
   design), #805 (Phase 1 minimum slice: transparency log + yank + `vibe pkg`)
-- `lib/@vibe/compiler/user_pkg.vibe` and `lib/@vibe/pkgstore` (publish /
+- `lib/@vibe/cli/commands/pkg.vibe` and `lib/@vibe/pkgstore` (publish /
   install / add / yank / update), gates 6h–6l

@@ -1,0 +1,202 @@
+import @vibe/compiler/core {
+  executable_export_kept_bytes
+}
+
+/// Read one unsigned LEB128 at `i`; returns (value, next_index) or (-1, end)
+/// when malformed/truncated so callers can bail out to the untouched input.
+fn strip_read_uleb(wasm: Bytes, start: Int, end: Int) -> (Int, Int) {
+  let mut i = start
+  let mut v = 0
+  let mut shift = 0
+  while i < end && shift < 35 {
+    let b = Bytes::get(wasm, i)
+    v = v|((b&127)<<shift)
+    i = i + 1
+    if (b&128) == 0 {
+      return (v, i)
+    } else {
+      shift = shift + 7
+    }
+  }
+  (0 - 1, end)
+}
+
+fn strip_bytes_range_eq_str(wasm: Bytes, start: Int, n: Int, s: String) -> Bool {
+  if n != String::length(s) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Bytes::get(wasm, start + i) != String::char_code_at(s, i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+fn strip_push_range(out: Bytes, wasm: Bytes, start: Int, end: Int) -> Unit {
+  Bytes::blit(out, wasm, start, end)
+}
+
+fn strip_push_uleb(out: Bytes, value: Int) -> Unit {
+  let mut v = value
+  let mut more = true
+  while more {
+    let b = v&127
+    v = v>>7
+    if v == 0 {
+      Bytes::push(out, b)
+      more = false
+    } else {
+      Bytes::push(out, b|128)
+    }
+  }
+}
+
+/// Executable-output post-pass: drop debug custom sections (`name`,
+/// `vibe.linemap`, `vibe.dbgfiles`) and/or filter the export section down to
+/// the entries an executable's runners actually address by name — the entry
+/// function, `_start`, `cli_main`, per-block `__bench_*`/`__test_*` exports,
+/// and every non-function export (memory / `__heap_ptr` global / `error`
+/// tag). Everything else is a module-linking artifact (`*_exp_lib__*`
+/// mangled names from the flat module source) that nothing external can
+/// reasonably call. Section-level surgery only: removing a custom section or
+/// export ENTRIES never renumbers any index, so the code/table/elem sections
+/// are byte-identical. Any parse anomaly returns the input untouched.
+/// Component/library/test paths must NOT come through here — components lift
+/// core exports by name and `vibe test` tooling reads `__test_*` frames from
+/// the name section (callers gate on entry_name/env, see
+/// strip_executable_wasm_env). `vibe run` keeps these sections
+/// (`write_user_run_executable` passes strip_names=false) so a trap still
+/// reports path:line (#2199).
+export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bool, filter_exports: Bool) -> Bytes {
+  if !strip_names && !filter_exports {
+    return wasm
+  } else {
+    ()
+  }
+  let len = Bytes::length(wasm)
+  if len < 8 {
+    return wasm
+  } else {
+    ()
+  }
+  let out = Bytes::new()
+  strip_push_range(out, wasm, 0, 8)
+  let mut i = 8
+  let mut ok = true
+  while ok && i < len {
+    let sid = Bytes::get(wasm, i)
+    let (ssz, payload_start) = strip_read_uleb(wasm, i + 1, len)
+    if ssz < 0 || payload_start + ssz > len {
+      ok = false
+    } else {
+      let payload_end = payload_start + ssz
+      let mut handled = false
+      if sid == 0 && strip_names {
+        // custom section: drop iff its name is exactly "name"
+        let (cn_len, cn_start) = strip_read_uleb(wasm, payload_start, payload_end)
+        if cn_len >= 0 && cn_start + cn_len <= payload_end {
+          if strip_bytes_range_eq_str(wasm, cn_start, cn_len, "name") || strip_bytes_range_eq_str(wasm, cn_start, cn_len, "vibe.linemap") || strip_bytes_range_eq_str(wasm, cn_start, cn_len, "vibe.dbgfiles") {
+            handled = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      if !handled && sid == 7 && filter_exports {
+        let (exp_count, cur0) = strip_read_uleb(wasm, payload_start, payload_end)
+        if exp_count >= 0 {
+          let kept = Bytes::new()
+          let mut kept_count = 0
+          let mut cur = cur0
+          let mut ei = 0
+          let mut parse_ok = true
+          while parse_ok && ei < exp_count {
+            let entry_start = cur
+            let (nlen, nstart) = strip_read_uleb(wasm, cur, payload_end)
+            if nlen < 0 || nstart + nlen + 1 > payload_end {
+              parse_ok = false
+            } else {
+              let kind = Bytes::get(wasm, nstart + nlen)
+              let (_eidx, entry_end) = strip_read_uleb(wasm, nstart + nlen + 1, payload_end)
+              if entry_end > payload_end {
+                parse_ok = false
+              } else {
+                let keep = kind != 0 || executable_export_kept_bytes(wasm, nstart, nlen, entry_name)
+                if keep {
+                  strip_push_range(kept, wasm, entry_start, entry_end)
+                  kept_count = kept_count + 1
+                } else {
+                  ()
+                }
+                cur = entry_end
+                ei = ei + 1
+              }
+            }
+          }
+          if parse_ok {
+            Bytes::push(out, 7)
+            let sec_content = Bytes::new()
+            strip_push_uleb(sec_content, kept_count)
+            Bytes::append(sec_content, kept)
+            strip_push_uleb(out, Bytes::length(sec_content))
+            Bytes::append(out, sec_content)
+            handled = true
+          } else {
+            ok = false
+          }
+        } else {
+          ok = false
+        }
+      } else {
+        ()
+      }
+      if ok && !handled {
+        strip_push_range(out, wasm, i, payload_end)
+      } else {
+        ()
+      }
+      i = payload_end
+    }
+  }
+  if ok {
+    out
+  } else {
+    wasm
+  }
+}
+
+/// Env-gated policy wrapper shared by the CLI adapter (env-mode interface) and
+/// the command dispatch layer: executables (a real entry name) are stripped by
+/// default; `__no_entry__` builds (test/bench/serve cores) are left untouched
+/// because their tooling reads `__test_*` name-section frames, greps the
+/// binary for `__test_`, enumerates `__bench_*` exports, or lifts component
+/// exports by name. VIBE_WASM_NAMES=1 keeps the name section (profiling /
+/// trap-backtrace workflows); VIBE_WASM_KEEP_EXPORTS=1 keeps every export.
+export fn strip_executable_wasm_env(wasm: Bytes, entry_name: String) -> Bytes with Env {
+  if entry_name == "__no_entry__" {
+    wasm
+  } else {
+    strip_executable_wasm(wasm, entry_name, Env::get("VIBE_WASM_NAMES") != "1", Env::get("VIBE_WASM_KEEP_EXPORTS") != "1")
+  }
+}
+
+/// The export half of `strip_executable_wasm_env`'s decision, answerable
+/// BEFORE the compile: will this executable's exports be filtered down to the
+/// keep list? `fold_const_bool_params` (core) needs the answer while it still
+/// has the AST -- an `export fn` that the strip is about to drop is not a
+/// caller anyone outside can reach, so its Bool parameters may fold like any
+/// other function's; one that stays exported may not. Same inputs as the
+/// strip itself, so the two cannot disagree.
+export fn executable_exports_stripped(entry_name: String) -> Bool with Env {
+  entry_name != "__no_entry__" && Env::get("VIBE_WASM_KEEP_EXPORTS") != "1"
+}

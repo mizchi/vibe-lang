@@ -4,12 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_guest_profile_lint.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
-mkdir -p "$TMP_ROOT/runtime/viberun/src" "$TMP_ROOT/docs/internal/design" "$TMP_ROOT/lib/@vibe/compiler"
+mkdir -p "$TMP_ROOT/runtime/viberun/src" "$TMP_ROOT/docs/internal/design" "$TMP_ROOT/lib/@vibe/cli/commands"
 python3 "$ROOT/scripts/source_files.py" "$ROOT/runtime/viberun/src/main.rs" > "$TMP_ROOT/runner_original.rs"
 sed -i.bak '/^[[:space:]]*mod [A-Za-z_]*;$/d' "$TMP_ROOT/runner_original.rs"
 cp "$TMP_ROOT/runner_original.rs" "$TMP_ROOT/runtime/viberun/src/main.rs"
 cp "$ROOT/runtime/vibe" "$TMP_ROOT/runtime/vibe"
-python3 "$ROOT/scripts/source_files.py" "$ROOT/lib/@vibe/compiler/user_dispatch.vibe" > "$TMP_ROOT/lib/@vibe/compiler/user_dispatch.vibe"
+python3 "$ROOT/scripts/source_files.py" "$ROOT/lib/@vibe/cli/commands/plans.vibe" > "$TMP_ROOT/lib/@vibe/cli/commands/plans.vibe"
 cp "$ROOT/docs/internal/design/profiling.md" "$TMP_ROOT/docs/internal/design/profiling.md"
 
 VIBE_GUEST_PROFILE_LINT_ROOT="$TMP_ROOT" bash "$ROOT/scripts/lint_guest_profile_contract.sh" >/dev/null
@@ -33,5 +33,17 @@ if VIBE_GUEST_PROFILE_LINT_ROOT="$TMP_ROOT" \
 fi
 grep -q 'heap sampler absolute-deadline state is missing' "$TMP_ROOT/out" \
   || { echo "guest-profile contract self-test: missing heap deadline diagnostic" >&2; exit 1; }
+
+cp "$TMP_ROOT/runner_original.rs" "$TMP_ROOT/runtime/viberun/src/main.rs"
+sed 's/guest_profile_requested/removed_profile_request/g' \
+  "$TMP_ROOT/lib/@vibe/cli/commands/plans.vibe" > "$TMP_ROOT/plans_without_request.vibe"
+mv "$TMP_ROOT/plans_without_request.vibe" "$TMP_ROOT/lib/@vibe/cli/commands/plans.vibe"
+if VIBE_GUEST_PROFILE_LINT_ROOT="$TMP_ROOT" \
+  bash "$ROOT/scripts/lint_guest_profile_contract.sh" >"$TMP_ROOT/out" 2>&1; then
+  echo "guest-profile contract self-test: omitted/empty profile distinction unexpectedly passed" >&2
+  exit 1
+fi
+grep -q 'bench cannot distinguish omitted and empty' "$TMP_ROOT/out" \
+  || { echo "guest-profile contract self-test: missing profile request diagnostic" >&2; exit 1; }
 
 echo "guest-profile contract self-test: ok"

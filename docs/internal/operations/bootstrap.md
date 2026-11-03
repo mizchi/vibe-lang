@@ -44,9 +44,10 @@ check that it reproduces.
 - A seed is not updated on every commit. An update is a bootstrap bump: its
   own commit and PR, allowed only when every gate below passes.
 
-The seed's entry is `lib/@vibe/compiler/cli_support.vibe` / `cli_main`. For
-that entry, `scripts/generations.sh` compiles each stage from the flat module
-source that `scripts/generate_bundle.sh` produces for
+The `entry` in `bootstrap/seed.json` records the seed producer's legacy CLI
+entry identity; it does not name the current support module. For that identity,
+`scripts/generations.sh` selects the current flat module source that
+`scripts/generate_bundle.sh` produces for
 `lib/@vibe/compiler/cli_adapter.vibe`. CLI argv parsing and command dispatch
 live in `lib/@vibe/cli/`; the compiler and its link/check/build helpers live in
 `lib/@vibe/compiler/`. Stage outputs go under
