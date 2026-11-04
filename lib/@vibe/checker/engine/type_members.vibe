@@ -105,34 +105,6 @@ export fn engine_resolve_cached_import_path(base_dir: String, raw_path: String, 
     selected
   }
 }
-/// ADR-0122 (#3728): the canonical head of a type item. The parser names a
-/// declaration `fn Float::abs` and a reference `Float::abs(x)` as
-/// `Float32::abs`, but keeps an import or export ITEM as written, because a
-/// bare `Double` may be an enum constructor rather than the float type. So
-/// where an item `T` stands for its `T::` members, `T` is read canonically.
-export fn engine_float_type_head(_ name: String) -> String {
-  if name == "Double" {
-    "Float64"
-  } else if name == "Float" {
-    "Float32"
-  } else {
-    name
-  }
-}
-
-/// Whether `names` holds `name`, either spelling of a float type counting as
-/// the same name (`engine_float_type_head`).
-export fn engine_names_contain_type_head(names: Array[String], name: String) -> Bool {
-  let head = engine_float_type_head(name)
-  let mut found = false
-  for n in names {
-    if !found && (n == name || engine_float_type_head(n) == head) {
-      found = true
-    }
-  }
-  found
-}
-
 export fn engine_starts_with_upper(_ name: String) -> Bool {
   if String::length(name) == 0 {
     false
@@ -176,7 +148,7 @@ export fn engine_is_selected_type_companion(name: String, binding: EnvValueBindi
   if String::starts_with(name, prefix = marker_prefix) {
     let member_name = String::substring(name, start = String::length(marker_prefix), end = String::length(name))
     let sep = String::index_of(member_name, needle = "::")
-    return sep > 0 && engine_names_contain_type_head(names = type_surface, name = String::substring(member_name, start = 0, end = sep))
+    return sep > 0 && contains_str(arr = type_surface, target = String::substring(member_name, start = 0, end = sep))
   }
   let foreign = strict && (match binding.origin {
     BindingOriginUnavailable => false,
@@ -191,7 +163,7 @@ export fn engine_is_selected_type_companion(name: String, binding: EnvValueBindi
   let mut selected = false
   while i < Array::length(type_surface) && !selected {
     let type_name = Array::get(type_surface, at = i)
-    let own = String::concat(engine_float_type_head(type_name), "::")
+    let own = String::concat(type_name, "::")
     let member = if String::starts_with(name, prefix = own) {
       String::substring(name, start = String::length(own), end = String::length(name))
     } else {
@@ -1171,7 +1143,7 @@ export fn engine_dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bind
       // Companions (`Set::add`) carry `[T: Hash]` even when the type `Set`
       // itself does not. Walk them the same way bind_enum_constructor_companions
       // selects them, or importing `{ Set }` drops `impl Hash for Int`.
-      let qual_prefix = String::concat(engine_float_type_head(name), "::")
+      let qual_prefix = String::concat(name, "::")
       let mut ui = 0
       while ui < Array::length(upper_slots) {
         let (candidate_name, candidate_ty) = Array::get(dep_bindings, at = Array::get(upper_slots, at = ui))

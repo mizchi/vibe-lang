@@ -78,12 +78,12 @@ compile-checks against the current compiler.
 ### 2.1 Values and types
 - Primitives: `Int` (63-bit tagged, literals up to 2^62-1, arithmetic wraps as
   63-bit two's complement — ADR-0006, #1877; a shift count of 63 or more, or a
-  negative one, saturates: `<<` gives `0`, `>>` gives the sign; `Double::to_int`
+  negative one, saturates: `<<` gives `0`, `>>` gives the sign; `Float64::to_int`
   saturates to `Int::max_value` / `Int::min_value` and maps NaN to `0` — #2978),
-  `Double` (64-bit), `String` (a **byte** string with byte-offset indexing, ADR-0098),
+  `Float64` (64-bit IEEE; named `Double` until #3729, ADR-0122), `String` (a **byte** string with byte-offset indexing, ADR-0098),
   `Char` (an `Int` alias), `Bool`, `Unit`.
 - Literals: integers (decimal / `0x` hex), doubles (`3.14`), strings
-  (interpolation `\{expr}`), chars `'A'`, `true`/`false`, `()`. `Float` and
+  (interpolation `\{expr}`), chars `'A'`, `true`/`false`, `()`. `Float32` and
   its `1.5f` literal are not frozen (§6.1).
 - Composite types: tuples `(A, B)`, `Array[T]`, `StringMap[V]` (the builtin
   map; `Map[K, V]` with other keys is not frozen — see §3), record, struct,
@@ -429,7 +429,8 @@ The stable symbols listed under "Key Builtins" in the
   it is frozen by §3's `@vibe/core` entry rather than by the builtin surface.
 - **Int64Array**: `make`, `get`, `set`, `length` cannot be frozen as
   first-class values (call-only; #2275).
-- **Conversions**: `Int::to_double`, `Double::to_int`.
+- **Conversions**: `Int::to_float64`, `Float64::to_int` (renamed from their
+  `Double` spellings by #3729).
   `Int::to_string` cannot be frozen as a first-class value (call-only; #2275).
 - **Iteration**: the finite indexed `Iterator[T]` trait, its `for-in` desugar,
   and eager namespace operations (ADR-0044, ADR-0110). Importing
@@ -528,9 +529,10 @@ frozen:
 - Struct literals use the `Type::{ ... }` style.
 - The formatter (`vibe fmt`) is idempotent.
 - Type naming: user types are CamelCase by convention (§2.3a; a lowercase
-  type name is accepted). The lowercase builtin type names such as `f64` are
-  reserved: declaring a struct named `f64` is refused. `i32` is not a type
-  (#3727) but stays reserved the same way.
+  type name is accepted). The lowercase builtin type names such as `u8` are
+  reserved: declaring a struct named `u8` is refused. `i32` is not a type
+  (#3727) but stays reserved the same way, and the retired float spellings
+  `f64` / `f32` (#3729) are refused in every type position.
 
 ---
 
@@ -600,18 +602,19 @@ surface below gave a silently wrong answer, or failed to compile, in a way
 that could not be fixed safely before `0.1.0`, and none is needed to write an
 ordinary program. They stay usable but are **not frozen** for `0.1.0`.
 
-- **`Float`** (`1.5f` literals, `Float` annotations, `Double::to_float` /
-  `Float::to_double`). The hunt found it documented as 32-bit but computing
-  as a 64-bit double, so `16777217.0f == 16777216.0f` was `false` (#3543).
-  It is IEEE binary32 now: a type distinct from `Double`, whose literals,
+- **`Float32`** (`1.5f` literals, `Float32` annotations, `Float64::to_float32` /
+  `Float32::to_float64`; spelled `Float` until #3729). The hunt found it
+  documented as 32-bit but computing as a 64-bit double, so
+  `16777217.0f == 16777216.0f` was `false` (#3543).
+  It is IEEE binary32 now: a type distinct from `Float64`, whose literals,
   conversions and arithmetic results are rounded to the nearest f32 (see the
   cheatsheet's "`Float` is 32-bit"). Those semantics are newer than the
   freeze, so it stays outside it. The default build, `vibe build --debug`,
   and library builds round its arithmetic. A linked entry with no matching
-  checked source still refuses `Float`. Generic `Eq`, `Show` and `Add`
-  bounds accept `Float` and `f32` (#3625); addition uses a witness and rounds
+  checked source still refuses `Float32`. Generic `Eq`, `Show` and `Add`
+  bounds accept `Float32` (#3625); addition uses a witness and rounds
   each result to f32. `Signed`, `Default` and library-source `Hash` retain
-  their Float coverage. A method-bearing generic imported across debug libraries
+  their `Float32` coverage. A method-bearing generic imported across debug libraries
   is refused with an edit to export a concrete wrapper or use the default
   build. See §6.2 for generic-call arithmetic behavior.
 - **`derive (Hash)` and the `Map::*_by` operations keyed on it.** The derived
@@ -619,7 +622,7 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   a key, and `-0.0` and `0.0` share one as `==` says they should (#3544).
   The one exception is NaN: every NaN shares one key, because `==` calls a
   NaN unequal even to itself and a key that followed it could never be read
-  back. A `Double` is keyed exactly as a derived `compare` orders it (two
+  back. A `Float64` is keyed exactly as a derived `compare` orders it (two
   NaNs are `Equal` there, and so are the zeros). A
   field the key cannot encode is refused at the derive, naming the edit: a
   declared type with no `hash_key` of its own, a type whose written

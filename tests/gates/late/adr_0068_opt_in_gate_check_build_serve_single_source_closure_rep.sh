@@ -864,8 +864,8 @@ cat > "$eqdir/eq.vibe" <<'EQEOF'
 fn main() -> Unit allows Console {
   let eq = (a: Int, b: Int) -> Int { a + b }
   println(Int::to_string(eq(1, 2)))
-  let feq = (a: Double, b: Double) -> Double { a + b }
-  println(Double::to_string(feq(1.5, 2.5)))
+  let feq = (a: Float64, b: Float64) -> Float64 { a + b }
+  println(Float64::to_string(feq(1.5, 2.5)))
 }
 EQEOF
 # The float arm is the sharper of the two: it had no shadowing guard at all, and
@@ -873,8 +873,8 @@ EQEOF
 # pass while every shipped build was wrong.
 cat > "$eqdir/eqf.vibe" <<'EQEOF'
 fn main() -> Unit allows Console {
-  let eq = (a: Double, b: Double) -> Double { a + b }
-  println(Double::to_string(eq(1.5, 2.5)))
+  let eq = (a: Float64, b: Float64) -> Float64 { a + b }
+  println(Float64::to_string(eq(1.5, 2.5)))
 }
 EQEOF
 for probe in eq eqf; do

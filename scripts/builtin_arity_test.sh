@@ -59,8 +59,8 @@ check_of() { # check_of <expr> -> first diagnostic line, empty when clean
 }
 
 note "=== 1. RED: a seven-argument call is refused ==="
-for n in Double::from_i64_bits_lohi Double::to_float Double::to_i64_bits_hi \
-         Double::to_i64_bits_lo Float::to_double MutList::truncate \
+for n in Float64::from_i64_bits_lohi Float64::to_float32 Float64::to_i64_bits_hi \
+         Float64::to_i64_bits_lo Float32::to_float64 MutList::truncate \
          Path::is_absolute Path::resolve Path::to_string __len __set_field; do
   out="$(check_of "$n(0, 0, 0, 0, 0, 0, 0)")"
   case "$out" in
@@ -74,9 +74,9 @@ note "=== 2. CONTROL: the declared arity is still accepted ==="
 # A wrong arity in the table would reject correct code, and every red row
 # above would still pass. This is the half that catches that.
 for e in 'Path::resolve("/a")' 'Path::is_absolute(Path::resolve("/a"))' \
-         'Path::to_string(Path::resolve("/a"))' 'Double::to_i64_bits_hi(1.5)' \
-         'Double::to_i64_bits_lo(1.5)' 'Double::from_i64_bits_lohi(0, 0)' \
-         'Double::to_float(1.5)' '__len([1, 2])'; do
+         'Path::to_string(Path::resolve("/a"))' 'Float64::to_i64_bits_hi(1.5)' \
+         'Float64::to_i64_bits_lo(1.5)' 'Float64::from_i64_bits_lohi(0, 0)' \
+         'Float64::to_float32(1.5)' '__len([1, 2])'; do
   out="$(check_of "$e")"
   if [ -z "$out" ]; then note "  ok   $e"
   else note "  FAIL $e: $(printf '%s' "$out" | sed 's/.*[0-9]: //' | cut -c1-60)"; fail=1; fi
@@ -85,9 +85,9 @@ done
 note "=== 3. CONTROL: and such a program still runs ==="
 cat > "$WORK/run.vibex" <<'V'
 fn main allows Console {
-  let hi = Double::to_i64_bits_hi(1.5)
-  let lo = Double::to_i64_bits_lo(1.5)
-  let back = Double::from_i64_bits_lohi(lo, hi)
+  let hi = Float64::to_i64_bits_hi(1.5)
+  let lo = Float64::to_i64_bits_lo(1.5)
+  let back = Float64::from_i64_bits_lohi(lo, hi)
   println("roundtrip=\{back} len=\{__len([1, 2, 3])}")
 }
 V

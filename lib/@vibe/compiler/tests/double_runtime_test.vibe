@@ -116,20 +116,20 @@ test "the prelude is appended only to a program that can hold AND format or pars
   inspect(program_needs_double_runtime(parse_program(lex(no_double))), content = "false")
   // Holds a Double, formats none: bench/binary_size/variant_float.vibe's
   // shape. Appending here cost 124 B of pruning residue for nothing.
-  let holds_only = "fn main() -> Int { let x = 1.5 * Int::to_double(3)\n Double::to_int(x) }"
+  let holds_only = "fn main() -> Int { let x = 1.5 * Int::to_float64(3)\n Float64::to_int(x) }"
   inspect(program_mentions_double(parse_program(lex(holds_only))), content = "true")
   inspect(program_has_render_site(parse_program(lex(holds_only))), content = "false")
   inspect(program_needs_double_runtime(parse_program(lex(holds_only))), content = "false")
   // Each render / parse spelling codegen can turn into a prelude call.
   let via_interp = "fn main() -> Unit { let x = 1.5\n println(\"\\{x}\") }"
   inspect(program_needs_double_runtime(parse_program(lex(via_interp))), content = "true")
-  let via_to_string = "fn main() -> Unit { println(Double::to_string(1.5)) }"
+  let via_to_string = "fn main() -> Unit { println(Float64::to_string(1.5)) }"
   inspect(program_needs_double_runtime(parse_program(lex(via_to_string))), content = "true")
-  let via_render = "fn main() -> Unit { println(__to_string(Int::to_double(3))) }"
+  let via_render = "fn main() -> Unit { println(__to_string(Int::to_float64(3))) }"
   inspect(program_needs_double_runtime(parse_program(lex(via_render))), content = "true")
-  let via_parse = "fn main() -> Unit { let x = Double::parse(\"1\")\n () }"
+  let via_parse = "fn main() -> Unit { let x = Float64::parse(\"1\")\n () }"
   inspect(program_needs_double_runtime(parse_program(lex(via_parse))), content = "true")
-  let via_wrapper = "fn to_string(x: Double) -> String { __to_string(x) }\nfn main() -> Unit { println(to_string(2.5)) }"
+  let via_wrapper = "fn to_string(x: Float64) -> String { __to_string(x) }\nfn main() -> Unit { println(to_string(2.5)) }"
   inspect(program_needs_double_runtime(parse_program(lex(via_wrapper))), content = "true")
   // A render site with no Double in reach never needs it either.
   let render_int = "fn main() -> Unit { let n = 3\n println(\"\\{n}\") }"
@@ -138,27 +138,27 @@ test "the prelude is appended only to a program that can hold AND format or pars
 }
 
 test "#2652 the values the issue measured print the same on every lane" {
-  let prelude = "fn pow10(n: Int) -> Double {\n  let mut r = 1.0\n  let mut i = 0\n  while i < n {\n    r = r * 10.0\n    i = i + 1\n  }\n  r\n}\n"
+  let prelude = "fn pow10(n: Int) -> Float64 {\n  let mut r = 1.0\n  let mut i = 0\n  while i < n {\n    r = r * 10.0\n    i = i + 1\n  }\n  r\n}\n"
   let checks = [
-    ("Double::to_string(2.2250738585072014)", "2.2250738585072014"),
-    ("Double::to_string(pow10(300))", "1.0000000000000002e+300"),
-    ("Double::to_string(0.0 - pow10(300))", "-1.0000000000000002e+300"),
-    ("Double::to_string(1.0 / pow10(300))", "9.999999999999999e-301"),
-    ("Double::to_string(Double::from_i64_bits_lohi(2281731484, 2117592124))", "1e+300"),
-    ("Double::to_string(0.1 + 0.2)", "0.30000000000000004"),
-    ("Double::to_string(1.5)", "1.5"),
-    ("Double::to_string(0.0)", "0"),
-    ("Double::to_string(0.0 * (0.0 - 1.0))", "-0"),
-    ("Double::to_string(pow10(21))", "1e+21"),
-    ("Double::to_string(pow10(20))", "100000000000000000000"),
-    ("Double::to_string(pow10(300) * pow10(300))", "Infinity"),
-    ("Double::to_string(0.0 / 0.0)", "NaN")
+    ("Float64::to_string(2.2250738585072014)", "2.2250738585072014"),
+    ("Float64::to_string(pow10(300))", "1.0000000000000002e+300"),
+    ("Float64::to_string(0.0 - pow10(300))", "-1.0000000000000002e+300"),
+    ("Float64::to_string(1.0 / pow10(300))", "9.999999999999999e-301"),
+    ("Float64::to_string(Float64::from_i64_bits_lohi(2281731484, 2117592124))", "1e+300"),
+    ("Float64::to_string(0.1 + 0.2)", "0.30000000000000004"),
+    ("Float64::to_string(1.5)", "1.5"),
+    ("Float64::to_string(0.0)", "0"),
+    ("Float64::to_string(0.0 * (0.0 - 1.0))", "-0"),
+    ("Float64::to_string(pow10(21))", "1e+21"),
+    ("Float64::to_string(pow10(20))", "100000000000000000000"),
+    ("Float64::to_string(pow10(300) * pow10(300))", "Infinity"),
+    ("Float64::to_string(0.0 / 0.0)", "NaN")
   ]
   assert_lanes_agree(src = score_program(prelude = prelude, checks = checks), label = "issue_values", expected = all_bits(13))
 }
 
 test "#2652 __to_string of a Double takes the prelude" {
-  let prelude = "fn half(x: Double) -> Double {\n  x / 2.0\n}\n"
+  let prelude = "fn half(x: Float64) -> Float64 {\n  x / 2.0\n}\n"
   let checks = [
     ("__to_string(0.1)", "0.1"),
     ("__to_string(half(5.0))", "2.5"),
@@ -168,8 +168,8 @@ test "#2652 __to_string of a Double takes the prelude" {
   assert_lanes_agree(src = score_program(prelude = prelude, checks = checks), label = "to_string", expected = all_bits(4))
 }
 
-test "#2652 Double::parse reads exponents, specials, and the old spellings" {
-  let prelude = "fn show(s: String) -> String {\n  match Double::parse(s) {\n    None => \"None\",\n    Some(d) => Double::to_string(d)\n  }\n}\n"
+test "#2652 Float64::parse reads exponents, specials, and the old spellings" {
+  let prelude = "fn show(s: String) -> String {\n  match Float64::parse(s) {\n    None => \"None\",\n    Some(d) => Float64::to_string(d)\n  }\n}\n"
   let checks = [
     ("show(\"1e300\")", "1e+300"),
     ("show(\"2.2250738585072014\")", "2.2250738585072014"),
@@ -193,7 +193,7 @@ test "#2652 parse(to_string(d)) is exact at the edges of the format" {
   // Bit patterns rather than literals: the smallest subnormal, the largest
   // finite, the smallest normal, and three 17-digit values; each prints,
   // reads back, and must land on the same bits.
-  let prelude = "fn rt(lo: Int, hi: Int) -> String {\n  let d = Double::from_i64_bits_lohi(lo, hi)\n  match Double::parse(Double::to_string(d)) {\n    None => \"None\",\n    Some(b) => if Double::to_i64_bits_hi(b) == hi && Double::to_i64_bits_lo(b) == lo {\n      String::concat(Double::to_string(d), \" ok\")\n    } else {\n      String::concat(Double::to_string(d), \" MISMATCH\")\n    }\n  }\n}\n"
+  let prelude = "fn rt(lo: Int, hi: Int) -> String {\n  let d = Float64::from_i64_bits_lohi(lo, hi)\n  match Float64::parse(Float64::to_string(d)) {\n    None => \"None\",\n    Some(b) => if Float64::to_i64_bits_hi(b) == hi && Float64::to_i64_bits_lo(b) == lo {\n      String::concat(Float64::to_string(d), \" ok\")\n    } else {\n      String::concat(Float64::to_string(d), \" MISMATCH\")\n    }\n  }\n}\n"
   let checks = [
     ("rt(1, 0)", "5e-324 ok"),
     ("rt(4294967295, 2146435071)", "1.7976931348623157e+308 ok"),
@@ -205,16 +205,16 @@ test "#2652 parse(to_string(d)) is exact at the edges of the format" {
   assert_lanes_agree(src = score_program(prelude = prelude, checks = checks), label = "roundtrip", expected = all_bits(6))
 }
 
-test "#2708 review: a Double that arrives through a type annotation is a Double source" {
+test "#2708 review: a Float64 that arrives through a type annotation is a Float64 source" {
   // no float literal and no `Double::*` call anywhere -- the value comes from
   // outside, and the interpolation is the render site
   let shapes = [
-    "export fn render(x: Double) -> String {\n  \"\\{x}\"\n}\n",
-    "struct P {\n  x: Double\n}\n\nfn show(p: P) -> String {\n  \"\\{p.x}\"\n}\n",
-    "enum E {\n  V(Float)\n}\n\nfn show(e: E) -> String {\n  match e {\n    V(x) => \"\\{x}\"\n  }\n}\n",
-    "type Pair = (Double, Int)\n\nfn show(p: Pair) -> String {\n  \"\\{p.0}\"\n}\n",
-    "fn show(xs: Array[Double]) -> String {\n  \"\\{Array::get(xs, 0)}\"\n}\n",
-    "fn show(f: () -> Double) -> String {\n  \"\\{f()}\"\n}\n"
+    "export fn render(x: Float64) -> String {\n  \"\\{x}\"\n}\n",
+    "struct P {\n  x: Float64\n}\n\nfn show(p: P) -> String {\n  \"\\{p.x}\"\n}\n",
+    "enum E {\n  V(Float32)\n}\n\nfn show(e: E) -> String {\n  match e {\n    V(x) => \"\\{x}\"\n  }\n}\n",
+    "type Pair = (Float64, Int)\n\nfn show(p: Pair) -> String {\n  \"\\{p.0}\"\n}\n",
+    "fn show(xs: Array[Float64]) -> String {\n  \"\\{Array::get(xs, 0)}\"\n}\n",
+    "fn show(f: () -> Float64) -> String {\n  \"\\{f()}\"\n}\n"
   ]
   let mut i = 0
   while i < Array::length(shapes) {
@@ -234,13 +234,13 @@ test "#2708 review: a render of a Double parameter compiles and links the prelud
   // "`__vibe_double_to_string` ... is not linked into this program" on a
   // valid program: `render` is exported, so it is compiled, and its hole
   // lowers to the prelude.
-  let src = "export fn render(x: Double) -> String {\n  \"\\{x}\"\n}\n\nfn main() -> Int {\n  1\n}\n"
+  let src = "export fn render(x: Float64) -> String {\n  \"\\{x}\"\n}\n\nfn main() -> Int {\n  1\n}\n"
   assert_lanes_agree(src = src, label = "typed_param", expected = "1")
 }
 
-test "#2708 review: a program's own fn Double::to_string is that program's function on every lane" {
+test "#2708 review: a program's own fn Float64::to_string is that program's function on every lane" {
   // the same guard the String length views got: the arm is off when the
   // program defines the name, at the top level and inside a closure
-  let src = "fn Double::to_string(d: Double) -> String {\n  \"shadow\"\n}\n\nfn main() -> Int {\n  let inside = Array::map([1.5], (x) -> Double::to_string(x))\n  String::length(Double::to_string(2.5)) * 10 + String::length(Array::get(inside, 0))\n}\n"
+  let src = "fn Float64::to_string(d: Float64) -> String {\n  \"shadow\"\n}\n\nfn main() -> Int {\n  let inside = Array::map([1.5], (x) -> Float64::to_string(x))\n  String::length(Float64::to_string(2.5)) * 10 + String::length(Array::get(inside, 0))\n}\n"
   assert_lanes_agree(src = src, label = "shadow", expected = "66")
 }
