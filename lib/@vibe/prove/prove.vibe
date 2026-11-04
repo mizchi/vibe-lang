@@ -1388,39 +1388,47 @@ fn collect_adts(_ stmts: Array[Stmt]) -> Array[Adt] {
     let (n, _, _) = r
     n
   }
-  let mut changed = true
-  while changed {
-    changed = false
-    let next: Array[String] = []
-    for r in raw {
-      let (n, _, cs) = r
-      if contains_name(xs = kept, x = n) {
-        let mut ok = true
-        for c in cs {
-          let (_, fs) = c
-          for f in fs {
-            let (_, t) = f
-            match t {
-              TyName(tn) => if tn != "Int" && tn != "Bool" && !contains_name(xs = kept, x = tn) {
-                ok = false
-              } else {
-                ()
-              },
-              _ => ok = false
+  // Both conditions are re-run until neither drops anything: a type
+  // dropped as uninhabited can leave another naming an undeclared sort.
+  let mut outer = true
+  while outer {
+    let before = Array::length(kept)
+    let mut changed = true
+    while changed {
+      changed = false
+      let next: Array[String] = []
+      for r in raw {
+        let (n, _, cs) = r
+        if contains_name(xs = kept, x = n) {
+          let mut ok = true
+          for c in cs {
+            let (_, fs) = c
+            for f in fs {
+              let (_, t) = f
+              match t {
+                TyName(tn) => if tn != "Int" && tn != "Bool" && !contains_name(xs = kept, x = tn) {
+                  ok = false
+                } else {
+                  ()
+                },
+                _ => ok = false
+              }
             }
+            ()
           }
+          if ok {
+            Array::push(next, value = n)
+          } else {
+            changed = true
+          }
+        } else {
           ()
         }
-        if ok {
-          Array::push(next, value = n)
-        } else {
-          changed = true
-        }
-      } else {
-        ()
       }
+      kept = next
     }
-    kept = next
+    kept = adt_inhabited(raw = raw, kept = kept)
+    outer = Array::length(kept) != before
   }
   let out: Array[Adt] = []
   for r in raw {
@@ -1513,6 +1521,54 @@ fn mark_custom_eq(stmts: Array[Stmt], adts: Array[Adt]) -> Array[Adt] {
       custom_eq: contains_name(xs = marked, x = a.name)
     }
   }
+}
+
+/// The kept types an SMT datatype can declare: each needs a constructor whose
+/// every field is `Int`, `Bool` or a type already shown inhabited, found to a
+/// least fixpoint. An empty enum, or a struct that only contains itself, has
+/// none and would make z3 reject the whole declaration -- and with it every
+/// query of the file.
+fn adt_inhabited(raw: Array[(String, Bool, Array[(String, Array[(String, TypeExpr)])])], kept: Array[String]) -> Array[String] {
+  let inhabited: Array[String] = []
+  let mut changed = true
+  while changed {
+    changed = false
+    for r in raw {
+      let (n, _, cs) = r
+      if contains_name(xs = kept, x = n) && !contains_name(xs = inhabited, x = n) {
+        let mut any = false
+        for c in cs {
+          let (_, fs) = c
+          let mut all = true
+          for f in fs {
+            let (_, t) = f
+            match t {
+              TyName(tn) => if tn != "Int" && tn != "Bool" && !contains_name(xs = inhabited, x = tn) {
+                all = false
+              } else {
+                ()
+              },
+              _ => all = false
+            }
+          }
+          if all {
+            any = true
+          } else {
+            ()
+          }
+        }
+        if any {
+          Array::push(inhabited, value = n)
+          changed = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    }
+  }
+  inhabited
 }
 
 /// One `declare-datatypes` for every datatype of the file, so a type may

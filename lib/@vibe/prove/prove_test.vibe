@@ -65,6 +65,25 @@ test "#3719: a counterexample is shown as the program spells it" {
   inspect(prove_verdict("sat\n((|s| (|Shape::Circle| (- 3))) (|p| (|Point::{}| 1 2)) (|e| |Shape::Empty|))\n"), content = "(unproved, s = Shape::Circle(-3), p = Point::{ 1, 2 }, e = Shape::Empty)")
 }
 
+test "#3719: an uninhabited type is not declared, so it cannot spoil another proof" {
+  let src = "enum Never {}\nstruct Loop {\n  next: Loop\n}\nenum Wrap {\n  W(Never)\n}\nstruct Point {\n  x: Int\n}\nfn inc(x: Int) -> Int where { requires: x >= 0 && x < 100, ensures: result > x } {\n  x + 1\n}\n"
+  let mut mentions = 0
+  let mut declared = 0
+  for o in prove_obligations(src) {
+    if String::contains(o.query, needle = "|Never|") || String::contains(o.query, needle = "|Loop|") || String::contains(o.query, needle = "|Wrap|") {
+      mentions = mentions + 1
+    } else {
+      ()
+    }
+    if String::contains(o.query, needle = "(|Point| 0)") {
+      declared = declared + 1
+    } else {
+      ()
+    }
+  }
+  inspect((mentions, declared > 0), content = "(0, true)")
+}
+
 test "only unsat proves" {
   inspect(prove_verdict("unsat\n"), content = "(proved, )")
   inspect(prove_verdict("sat\n((|x| (- 1))\n (|y| 0))\n"), content = "(unproved, x = -1, y = 0)")
