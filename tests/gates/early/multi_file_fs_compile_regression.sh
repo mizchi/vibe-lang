@@ -1628,6 +1628,14 @@ gate_require_artifact "$edir/viol_ret_shadow.wasm" "early-return ensures program
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret_shadow.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: a local named like the ensures checker let an early return skip it (#3715)" >&2; exit 1
 fi
+# The same through a struct pattern's field binder, which the printer
+# abbreviates to `W::{...}`: the fresh-name check reads the AST's binders.
+printf 'fn s(x: Int, w: W) -> Int where { ensures: result > 0 } {\n  match w {\n    W::{ __vibe_ensures } => if x < 0 {\n      return x\n    } else {\n      ()\n    }\n  }\n  x + 1\n}\n\nstruct W { __vibe_ensures: (Int) -> Int }\n\nexport let _start: () -> Int = () -> { s(0 - 5, W::{ __vibe_ensures: (v: Int) -> Int { v } }) }\n' > "$edir/viol_ret_pattern.vibe"
+gate_fs_compile "$edir/viol_ret_pattern.vibe" "$edir/viol_ret_pattern.wasm" _start
+gate_require_artifact "$edir/viol_ret_pattern.wasm" "early-return ensures program with a checker-named field did not compile (#3715)"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret_pattern.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: a struct field named like the ensures checker let an early return skip it (#3715)" >&2; exit 1
+fi
 printf 'fn h(x: Int) -> Int where { ensures: result > 0 } {\n  if x > 100 {\n    return 100\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { h(500) }\n' > "$edir/ok_ret.vibe"
 gate_fs_compile "$edir/ok_ret.vibe" "$edir/ok_ret.wasm" _start
 gate_require_artifact "$edir/ok_ret.wasm" "satisfied early-return ensures program did not compile (#3715)"
