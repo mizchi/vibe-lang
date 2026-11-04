@@ -4,6 +4,8 @@
 # and compares each report with the one pinned below:
 #
 #   proved.vibe       every obligation proved -> no output, exit 0
+#   datatypes.vibe    structs / enums as SMT datatypes and `match` as a case
+#                     split, every obligation proved -> no output, exit 0
 #   unproved.vibe     a false ensures, an Int overflow, a callee's unmet
 #                     requires, a parameter the body shadows, a branch-local
 #                     `let` -> one line each with a counterexample, exit 1
@@ -50,16 +52,19 @@ run_case() {
 }
 
 run_case proved 0 ""
+run_case datatypes 0 ""
 run_case unproved 1 "$dir/unproved.vibe:5:1: unproved: ensures (result > x) of \`dec\` -- counterexample: <model>
 $dir/unproved.vibe:12:5: unproved: overflow in (x + 1) in \`inc\` -- counterexample: <model>
 $dir/unproved.vibe:21:3: unproved: requires of half: (x >= 0), called in \`call_half\` -- counterexample: <model>
 $dir/unproved.vibe:26:1: unproved: ensures (result == x) of \`shadowed\` -- counterexample: <model>
-$dir/unproved.vibe:33:1: unproved: ensures (result == 0) of \`branch_scope\` -- counterexample: <model>"
+$dir/unproved.vibe:33:1: unproved: ensures (result == 0) of \`branch_scope\` -- counterexample: <model>
+$dir/unproved.vibe:49:1: unproved: ensures (result > 0) of \`coin_value\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:4:1: unsupported: \`let mut\` is outside the provable fragment (in \`sum_to\`)
-$dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\` or \`Bool\` (in \`first\`)
+$dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
 $dir/unsupported.vibe:24:1: unsupported: \`pong\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`pong\`)
-$dir/unsupported.vibe:38:11: unsupported: \`spin\` has no \`where\` contract, so the call cannot be checked modularly; give it one (\`ensures: true\` at least), and its body is proved too (in \`calls_helper\`)"
+$dir/unsupported.vibe:38:11: unsupported: \`spin\` has no \`where\` contract, so the call cannot be checked modularly; give it one (\`ensures: true\` at least), and its body is proved too (in \`calls_helper\`)
+$dir/unsupported.vibe:47:1: unsupported: parameter \`h\` is not \`Int\`, \`Bool\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`held\`)"
 run_case unknown 1 "$dir/unknown.vibe:5:1: unknown: ensures result of \`fermat3\` -- z3 timed out (5000 ms limit)"
 
 [ "$fail" = 0 ] || exit 1

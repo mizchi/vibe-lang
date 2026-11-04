@@ -36,11 +36,21 @@ struct FnSig {
 /// assumption can never discharge an earlier obligation.
 struct Ctx {
   fn_name: String;
+  adts: Array[Adt];
   decls: Array[(String, String)];
   assumes: Array[String];
   pending: Array[(String, String, Int, String, Int)];
   fns: Array[FnSig];
   counter: Array[Int]
+}
+
+/// #3719: a struct or enum of the file the prover reads as an SMT datatype:
+/// non-generic, without `mut` fields, and every field `Int`, `Bool` or
+/// another such type. A struct is one constructor; an enum one per variant.
+struct Adt {
+  name: String;
+  is_struct: Bool;
+  ctors: Array[(String, Array[(String, String)])]
 }
 
 //# Constants
@@ -65,7 +75,8 @@ fn unsupported_marker() -> String {
 export fn prove_obligations(_ source: String) -> Array[Obligation] with Exception {
   let (tokens, starts, _) = lex_with_offsets(source)
   let stmts = parse_program_preserving_located(tokens = tokens, starts = starts, source = source)
-  let fns = collect_sigs(stmts)
+  let adts = collect_adts(stmts)
+  let fns = collect_sigs(stmts = stmts, adts = adts)
   let graph = call_graph(stmts)
   let out: Array[Obligation] = []
   for s in stmts {
@@ -84,7 +95,7 @@ export fn prove_obligations(_ source: String) -> Array[Obligation] with Exceptio
           query: ""
         })
       } else {
-        prove_fn(name = name, value = value, fns = fns, decl_off = decl_offset(source = source, name = name), out = out)
+        prove_fn(name = name, value = value, fns = fns, adts = adts, decl_off = decl_offset(source = source, name = name), out = out)
       },
       _ => ()
     }
@@ -92,7 +103,7 @@ export fn prove_obligations(_ source: String) -> Array[Obligation] with Exceptio
   out
 }
 
-fn collect_sigs(_ stmts: Array[Stmt]) -> Array[FnSig] {
+fn collect_sigs(stmts: Array[Stmt], adts: Array[Adt]) -> Array[FnSig] {
   let out: Array[FnSig] = []
   for s in stmts {
     match s {
@@ -105,14 +116,14 @@ fn collect_sigs(_ stmts: Array[Stmt]) -> Array[FnSig] {
           }
           for p in params {
             let (pn, pty) = p
-            let sort = sort_of(pty)
+            let sort = sort_of(adts = adts, ty = pty)
             if sort == "" {
               ok = false
             } else {
               Array::push(ps, value = (pn, sort))
             }
           }
-          let rs = sort_of(ret)
+          let rs = sort_of(adts = adts, ty = ret)
           Array::push(out, value = FnSig::{
             name: name,
             params: ps,
@@ -305,16 +316,25 @@ fn expr_kids(_ e: Expr) -> Array[Expr] {
   }
 }
 
-fn sort_of(_ ty: Option[TypeExpr]) -> String {
+fn sort_of(adts: Array[Adt], ty: Option[TypeExpr]) -> String {
   match ty {
-    Some(TyName(n)) => if n == "Int" {
-      "Int"
-    } else if n == "Bool" {
-      "Bool"
-    } else {
-      ""
-    },
+    Some(TyName(n)) => name_sort(adts = adts, name = n),
     _ => ""
+  }
+}
+
+/// The SMT sort of a type spelled `n`: `Int`, `Bool`, a datatype of the
+/// file, or "" when it is none of them.
+fn name_sort(adts: Array[Adt], name: String) -> String {
+  if name == "Int" {
+    "Int"
+  } else if name == "Bool" {
+    "Bool"
+  } else {
+    match find_adt(adts = adts, name = name) {
+      Some(_) => adt_sort(name),
+      None => ""
+    }
   }
 }
 
@@ -359,9 +379,10 @@ fn is_ident_byte(_ c: Int) -> Bool {
   (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
 }
 
-fn prove_fn(name: String, value: Expr, fns: Array[FnSig], decl_off: Int, out: Array[Obligation]) -> Unit with Exception {
+fn prove_fn(name: String, value: Expr, fns: Array[FnSig], adts: Array[Adt], decl_off: Int, out: Array[Obligation]) -> Unit with Exception {
   let ctx = Ctx::{
     fn_name: name,
+    adts: adts,
     decls: [],
     assumes: [],
     pending: [],
@@ -428,18 +449,18 @@ fn prove_fn_body(ctx: Ctx, value: Expr) -> Unit with Exception {
         Some(row) => unsupported(off = 0 - 1, reason = "a function with an effect row (`with \{row}`) is outside the provable fragment"),
         None => ()
       }
-      let ret_sort = sort_of(ret)
+      let ret_sort = sort_of(adts = ctx.adts, ty = ret)
       if ret_sort == "" {
-        unsupported(off = 0 - 1, reason = "only an `Int` or `Bool` result is provable")
+        unsupported(off = 0 - 1, reason = "only an `Int`, `Bool`, struct or enum result is provable")
       } else {
         ()
       }
       let env: Array[(String, String, String)] = []
       for p in params {
         let (pn, pty) = p
-        let sort = sort_of(pty)
+        let sort = sort_of(adts = ctx.adts, ty = pty)
         if sort == "" {
-          unsupported(off = 0 - 1, reason = "parameter `\{pn}` is not `Int` or `Bool`")
+          unsupported(off = 0 - 1, reason = "parameter `\{pn}` is not `Int`, `Bool`, or a struct / enum of this file (non-generic, every field `Int`, `Bool` or such a type)")
         } else {
           ()
         }
@@ -520,6 +541,11 @@ fn guarded(pc: Array[String], goal: String) -> String {
 /// assumptions: `unsat` proves it, a model is a counterexample.
 fn build_query(ctx: Ctx, goal: String, upto: Int) -> String {
   let lines: Array[String] = ["(set-option :produce-models true)"]
+  if Array::length(ctx.adts) > 0 {
+    Array::push(lines, value = datatypes_decl(ctx.adts))
+  } else {
+    ()
+  }
   for d in ctx.decls {
     let (n, s) = d
     Array::push(lines, value = "(declare-const \{n} \{s})")
@@ -649,9 +675,22 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
     EUnit => [with_value(st = st, value = "true", sort = "Unit")],
     EIdent(name, off) => match env_lookup(env = st.env, name = name) {
       Some((t, s)) => [with_value(st = st, value = t, sort = s)],
-      None => {
-        unsupported(off = off, reason = "`\{name}` is not a parameter or local of the provable fragment")
-        []
+      None => match resolve_ctor(adts = ctx.adts, name = name) {
+        Some((adt, ctor)) => {
+          let (_, fields) = ctor
+          if Array::length(fields) > 0 {
+            unsupported(off = off, reason = "constructor `\{name}` used without its fields")
+          } else {
+            ()
+          }
+          [
+            with_value(st = st, value = ctor_smt(adt = adt, ctor = ctor), sort = adt_sort(adt.name))
+          ]
+        },
+        None => {
+          unsupported(off = off, reason = "`\{name}` is not a parameter or local of the provable fragment")
+          []
+        }
       }
     },
     EUnaryOp(op, x) => {
@@ -746,12 +785,65 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
       out
     },
     ECall(callee, args, off, _) => match callee {
-      EIdent(fname, _) => sym_call(ctx = ctx, fname = fname, args = args, off = off, st = st),
+      EIdent(fname, _) => match resolve_ctor(adts = ctx.adts, name = fname) {
+        Some((adt, ctor)) => sym_construct(ctx = ctx, adt = adt, ctor = ctor, named = [
+        ], args = args, off = off, st = st),
+        None => sym_call(ctx = ctx, fname = fname, args = args, off = off, st = st)
+      },
       _ => {
         unsupported(off = off, reason = "only a call to a named function is provable")
         []
       }
     },
+    ERecord(rname, fields, _) => match find_adt(adts = ctx.adts, name = rname) {
+      Some(adt) => if adt.is_struct {
+        sym_construct(ctx = ctx, adt = adt, ctor = Array::get(adt.ctors, at = 0), named = fields, args = [
+        ], off = expr_off(e), st = st)
+      } else {
+        unsupported(off = expr_off(e), reason = "`\{rname}` is not a struct")
+        []
+      },
+      None => {
+        unsupported(off = expr_off(e), reason = "struct `\{rname}` is not a struct of this file whose fields are `Int`, `Bool`, or such a struct / enum")
+        []
+      }
+    },
+    EDot(x, field, off, _) => {
+      let out: Array[Outcome] = []
+      for o in sym(ctx = ctx, e = x, st = st) {
+        if o.returned {
+          Array::push(out, value = o)
+        } else {
+          match adt_of_sort(adts = ctx.adts, sort = o.sort) {
+            Some(adt) => if adt.is_struct {
+              let (_, fs) = Array::get(adt.ctors, at = 0)
+              let mut found = false
+              for f in fs {
+                let (fname, fsort) = f
+                if fname == field {
+                  found = true
+                  let t = "(\{sel_smt(adt = adt, ctor = Array::get(adt.ctors, at = 0), field = fname)} \{o.value})"
+                  assume_range(ctx = ctx, term = t, sort = fsort)
+                  Array::push(out, value = with_value(st = o, value = t, sort = fsort))
+                } else {
+                  ()
+                }
+              }
+              if !found {
+                unsupported(off = off, reason = "`\{adt.name}` has no field `\{field}`")
+              } else {
+                ()
+              }
+            } else {
+              unsupported(off = off, reason = "a field read on the enum `\{adt.name}`")
+            },
+            None => unsupported(off = off, reason = "a field read on a `\{o.sort}`")
+          }
+        }
+      }
+      out
+    },
+    EMatch(scr, arms) => sym_match(ctx = ctx, scr = scr, arms = arms, off = expr_off(e), st = st),
     _ => {
       unsupported(off = expr_off(e), reason = "`\{construct_name(e)}` is outside the provable fragment")
       []
@@ -1087,11 +1179,569 @@ fn find_byte(text: String, byte: Int, from: Int) -> Int {
   i
 }
 
+/// A model value as the program would spell it: `-5` for `(- 5)`,
+/// `Shape::Circle(3)` for `(|Shape::Circle| 3)`, `Point::{ 1, 2 }` for a
+/// struct (fields in declaration order). Anything else is shown as z3 gave it.
 fn smt_value_text(_ v: String) -> String {
-  if String::starts_with(v, prefix = "(- ") && String::ends_with(v, suffix = ")") {
-    "-\{String::trim(String::substring(v, start = 3, end = String::length(v) - 1))}"
+  let toks = smt_tokens(v)
+  let pos = [0]
+  let out = smt_render(toks = toks, pos = pos)
+  if Array::get(pos, at = 0) == Array::length(toks) {
+    out
   } else {
     v
   }
 }
 
+fn smt_tokens(_ v: String) -> Array[String] {
+  let out: Array[String] = []
+  let n = String::length(v)
+  let mut i = 0
+  while i < n {
+    let c = String::byte_at(v, at = i)
+    if c == '(' || c == ')' {
+      Array::push(out, value = String::substring(v, start = i, end = i + 1))
+      i = i + 1
+    } else if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
+      i = i + 1
+    } else if c == '|' {
+      let close = find_byte(text = v, byte = '|', from = i + 1)
+      Array::push(out, value = String::substring(v, start = i, end = close + 1))
+      i = close + 1
+    } else {
+      let mut j = i
+      while j < n && !(String::byte_at(v, at = j) == '(' || String::byte_at(v, at = j) == ')' || String::byte_at(v, at = j) == ' ' || String::byte_at(v, at = j) == '\n') {
+        j = j + 1
+      }
+      Array::push(out, value = String::substring(v, start = i, end = j))
+      i = j
+    }
+  }
+  out
+}
+
+fn smt_unquote(_ t: String) -> String {
+  if String::starts_with(t, prefix = "|") && String::ends_with(t, suffix = "|") && String::length(t) >= 2 {
+    String::substring(t, start = 1, end = String::length(t) - 1)
+  } else {
+    t
+  }
+}
+
+fn smt_render(toks: Array[String], pos: Array[Int]) -> String {
+  let i = Array::get(pos, at = 0)
+  if i >= Array::length(toks) {
+    ""
+  } else {
+    let t = Array::get(toks, at = i)
+    Array::set(pos, at = 0, value = i + 1)
+    if t != "(" {
+      smt_unquote(t)
+    } else {
+      let head = if Array::get(pos, at = 0) < Array::length(toks) {
+        Array::get(toks, at = Array::get(pos, at = 0))
+      } else {
+        ""
+      }
+      Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+      let args: Array[String] = []
+      while Array::get(pos, at = 0) < Array::length(toks) && Array::get(toks, at = Array::get(pos, at = 0)) != ")" {
+        Array::push(args, value = smt_render(toks = toks, pos = pos))
+      }
+      Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+      let name = smt_unquote(head)
+      if head == "-" && Array::length(args) == 1 {
+        "-\{Array::get(args, at = 0)}"
+      } else if String::ends_with(name, suffix = "::{}") {
+        "\{String::substring(name, start = 0, end = String::length(name) - 4)}::{ \{String::join(args, sep = ", ")} }"
+      } else {
+        "\{name}(\{String::join(args, sep = ", ")})"
+      }
+    }
+  }
+}
+
+//# Datatypes (#3719)
+
+fn adt_sort(_ name: String) -> String {
+  "|\{name}|"
+}
+
+/// The SMT constructor of `ctor` of `adt`: `|Shape::Circle|` for a variant,
+/// `|Point::{}|` for a struct. `::` cannot appear in a type or variant name,
+/// so no two constructors share a spelling.
+fn ctor_smt(adt: Adt, ctor: (String, Array[(String, String)])) -> String {
+  let (cname, _) = ctor
+  if adt.is_struct {
+    "|\{adt.name}::{}|"
+  } else {
+    "|\{adt.name}::\{cname}|"
+  }
+}
+
+/// The selector of `field` of `ctor`: `|Point.x|` for a struct field,
+/// `|Shape::Circle.0|` for a variant's payload position.
+fn sel_smt(adt: Adt, ctor: (String, Array[(String, String)]), field: String) -> String {
+  let (cname, _) = ctor
+  if adt.is_struct {
+    "|\{adt.name}.\{field}|"
+  } else {
+    "|\{adt.name}::\{cname}.\{field}|"
+  }
+}
+
+fn find_adt(adts: Array[Adt], name: String) -> Option[Adt] {
+  let mut found = None
+  for a in adts {
+    if a.name == name {
+      found = Some(a)
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn adt_of_sort(adts: Array[Adt], sort: String) -> Option[Adt] {
+  let mut found = None
+  for a in adts {
+    if adt_sort(a.name) == sort {
+      found = Some(a)
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// A constructor spelled `name` -- `Shape::Circle`, or a bare `Circle` that
+/// exactly one enum of the file declares.
+fn resolve_ctor(adts: Array[Adt], name: String) -> Option[(Adt, (String, Array[(String, String)]))] {
+  let sep = String::index_of(name, needle = "::")
+  let (owner, member) = if sep >= 0 {
+    (String::substring(name, start = 0, end = sep), String::substring(name, start = sep + 2, end = String::length(name)))
+  } else {
+    ("", name)
+  }
+  let hits: Array[(Adt, (String, Array[(String, String)]))] = []
+  for a in adts {
+    if !a.is_struct && (owner == "" || owner == a.name) {
+      for c in a.ctors {
+        let (cname, _) = c
+        if cname == member {
+          Array::push(hits, value = (a, c))
+        } else {
+          ()
+        }
+      }
+      ()
+    } else {
+      ()
+    }
+  }
+  if Array::length(hits) == 1 {
+    Some(Array::get(hits, at = 0))
+  } else {
+    None
+  }
+}
+
+/// The structs and enums of the file the prover reads as datatypes. A type
+/// that mentions one that does not qualify is dropped too, until nothing
+/// changes, so every field sort names `Int`, `Bool` or a kept datatype.
+fn collect_adts(_ stmts: Array[Stmt]) -> Array[Adt] {
+  let raw: Array[(String, Bool, Array[(String, Array[(String, TypeExpr)])])] = [
+  ]
+  for st in stmts {
+    match st {
+      SStruct(_, name, fields, _, muts, tparams) => if Array::length(tparams) == 0 && Array::length(muts) == 0 {
+        Array::push(raw, value = (name, true, [(name, fields)]))
+      } else {
+        ()
+      },
+      SEnum(_, name, tparams, variants, _) => if Array::length(tparams) == 0 {
+        let cs: Array[(String, Array[(String, TypeExpr)])] = []
+        for v in variants {
+          let (vname, payload) = v
+          let fs: Array[(String, TypeExpr)] = []
+          let mut i = 0
+          for t in payload {
+            Array::push(fs, value = (Int::to_string(i), t))
+            i = i + 1
+          }
+          Array::push(cs, value = (vname, fs))
+        }
+        Array::push(raw, value = (name, false, cs))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  let mut kept: Array[String] = for r in raw {
+    let (n, _, _) = r
+    n
+  }
+  let mut changed = true
+  while changed {
+    changed = false
+    let next: Array[String] = []
+    for r in raw {
+      let (n, _, cs) = r
+      if contains_name(xs = kept, x = n) {
+        let mut ok = true
+        for c in cs {
+          let (_, fs) = c
+          for f in fs {
+            let (_, t) = f
+            match t {
+              TyName(tn) => if tn != "Int" && tn != "Bool" && !contains_name(xs = kept, x = tn) {
+                ok = false
+              } else {
+                ()
+              },
+              _ => ok = false
+            }
+          }
+          ()
+        }
+        if ok {
+          Array::push(next, value = n)
+        } else {
+          changed = true
+        }
+      } else {
+        ()
+      }
+    }
+    kept = next
+  }
+  let out: Array[Adt] = []
+  for r in raw {
+    let (n, is_struct, cs) = r
+    if contains_name(xs = kept, x = n) {
+      let ctors: Array[(String, Array[(String, String)])] = for c in cs {
+        let (cname, fs) = c
+        (cname, for f in fs {
+          let (fname, t) = f
+          let sort = match t {
+            TyName(tn) => if tn == "Int" || tn == "Bool" {
+              tn
+            } else {
+              adt_sort(tn)
+            },
+            _ => ""
+          }
+          (fname, sort)
+        })
+      }
+      Array::push(out, value = Adt::{
+        name: n,
+        is_struct: is_struct,
+        ctors: ctors
+      })
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// One `declare-datatypes` for every datatype of the file, so a type may
+/// name another declared after it.
+fn datatypes_decl(_ adts: Array[Adt]) -> String {
+  let heads: Array[String] = for a in adts {
+    "(\{adt_sort(a.name)} 0)"
+  }
+  let bodies: Array[String] = for a in adts {
+    let cs: Array[String] = for c in a.ctors {
+      let (_, fs) = c
+      let sels: Array[String] = for f in fs {
+        let (fname, fsort) = f
+        " (\{sel_smt(adt = a, ctor = c, field = fname)} \{fsort})"
+      }
+      "(\{ctor_smt(adt = a, ctor = c)}\{String::join(sels, sep = "")})"
+    }
+    "(\{String::join(cs, sep = " ")})"
+  }
+  "(declare-datatypes (\{String::join(heads, sep = " ")}) (\{String::join(bodies, sep = " ")}))"
+}
+
+/// A constructor applied to its fields: positional `args` for a variant,
+/// `named` fields for a struct literal (evaluated as written, placed in
+/// declaration order).
+fn sym_construct(ctx: Ctx, adt: Adt, ctor: (String, Array[(String, String)]), named: Array[(String, Expr)], args: Array[Expr], off: Int, st: Outcome) -> Array[Outcome] with Exception {
+  let (cname, fields) = ctor
+  let exprs: Array[Expr] = if adt.is_struct {
+    if Array::length(named) != Array::length(fields) {
+      unsupported(off = off, reason = "struct `\{adt.name}` built without every field")
+    } else {
+      ()
+    }
+    for f in fields {
+      let (fname, _) = f
+      let mut hit = None
+      for nf in named {
+        let (nn, ne) = nf
+        if nn == fname {
+          hit = Some(ne)
+        } else {
+          ()
+        }
+      }
+      match hit {
+        Some(x) => x,
+        None => {
+          unsupported(off = off, reason = "struct `\{adt.name}` built without field `\{fname}`")
+          EUnit
+        }
+      }
+    }
+  } else {
+    if Array::length(args) != Array::length(fields) {
+      unsupported(off = off, reason = "`\{cname}` takes \{Array::length(fields)} field(s)")
+    } else {
+      ()
+    }
+    args
+  }
+  let out: Array[Outcome] = []
+  for done in sym_list(ctx = ctx, items = exprs, st = st) {
+    let (o, values) = done
+    if o.returned {
+      Array::push(out, value = o)
+    } else {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fsort) = Array::get(fields, at = i)
+        let (_, vsort) = Array::get(values, at = i)
+        if fsort != vsort {
+          unsupported(off = off, reason = "field \{i} of `\{cname}` is a `\{vsort}` where `\{fsort}` is declared")
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      let terms: Array[String] = for v in values {
+        let (t, _) = v
+        t
+      }
+      let value = if Array::length(terms) == 0 {
+        ctor_smt(adt = adt, ctor = ctor)
+      } else {
+        "(\{ctor_smt(adt = adt, ctor = ctor)} \{String::join(terms, sep = " ")})"
+      }
+      Array::push(out, value = with_value(st = o, value = value, sort = adt_sort(adt.name)))
+    }
+  }
+  out
+}
+
+/// `items` evaluated left to right: each outcome with the value and sort of
+/// every item on its path. A path that returns early carries no values.
+fn sym_list(ctx: Ctx, items: Array[Expr], st: Outcome) -> Array[(Outcome, Array[(String, String)])] with Exception {
+  let mut paths: Array[(Outcome, Array[(String, String)])] = [(st, [])]
+  for it in items {
+    let next: Array[(Outcome, Array[(String, String)])] = []
+    for p in paths {
+      let (o, values) = p
+      if o.returned {
+        Array::push(next, value = p)
+      } else {
+        for r in sym(ctx = ctx, e = it, st = o) {
+          if r.returned {
+            Array::push(next, value = (r, []))
+          } else {
+            let vs: Array[(String, String)] = for v in values {
+              v
+            }
+            Array::push(vs, value = (r.value, r.sort))
+            Array::push(next, value = (r, vs))
+          }
+        }
+        ()
+      }
+    }
+    paths = next
+  }
+  paths
+}
+
+/// `match` as a case split: each arm's path has its own pattern holding and
+/// every earlier arm's failing, as the first matching arm runs.
+fn sym_match(ctx: Ctx, scr: Expr, arms: Array[(Pat, Expr)], off: Int, st: Outcome) -> Array[Outcome] with Exception {
+  if Array::length(arms) == 0 {
+    unsupported(off = off, reason = "a `match` with no arms")
+  } else {
+    ()
+  }
+  let out: Array[Outcome] = []
+  for o in sym(ctx = ctx, e = scr, st = st) {
+    if o.returned {
+      Array::push(out, value = o)
+    } else {
+      let earlier: Array[String] = []
+      for arm in arms {
+        let (pat, body) = arm
+        let binds: Array[(String, String, String)] = []
+        let cond = pattern_cond(ctx = ctx, pat = pat, term = o.value, sort = o.sort, binds = binds, off = off)
+        let mut arm_st = with_pc(st = o, cond = cond)
+        for prior in earlier {
+          arm_st = with_pc(st = arm_st, cond = "(not \{prior})")
+        }
+        let mut env = arm_st.env
+        for b in binds {
+          let (bn, bt, bs) = b
+          env = env_bind(env = env, name = bn, term = bt, sort = bs)
+        }
+        let bound = Outcome::{
+          pc: arm_st.pc,
+          value: "",
+          sort: "Unit",
+          returned: false,
+          env: env
+        }
+        for x in sym(ctx = ctx, e = body, st = bound) {
+          // The arm's bindings end with the arm.
+          Array::push(out, value = Outcome::{
+            pc: x.pc,
+            value: x.value,
+            sort: x.sort,
+            returned: x.returned,
+            env: o.env
+          })
+        }
+        Array::push(earlier, value = cond)
+      }
+      ()
+    }
+  }
+  out
+}
+
+/// The condition under which `pat` matches `term`, binding its names into
+/// `binds`. A shape the prover does not read is unsupported.
+fn pattern_cond(ctx: Ctx, pat: Pat, term: String, sort: String, binds: Array[(String, String, String)], off: Int) -> String with Exception {
+  match pat {
+    PWild => "true",
+    PBind(n) => {
+      Array::push(binds, value = (n, term, sort))
+      "true"
+    },
+    PInt(n) => if sort == "Int" {
+      "(= \{term} \{smt_int(n)})"
+    } else {
+      unsupported(off = off, reason = "an integer pattern on a `\{sort}`")
+      "false"
+    },
+    PBool(b) => if sort == "Bool" {
+      if b {
+        term
+      } else {
+        "(not \{term})"
+      }
+    } else {
+      unsupported(off = off, reason = "a Bool pattern on a `\{sort}`")
+      "false"
+    },
+    PCtor(name, subs) => match adt_of_sort(adts = ctx.adts, sort = sort) {
+      Some(adt) => {
+        let sep = String::index_of(name, needle = "::")
+        let base = if sep >= 0 {
+          String::substring(name, start = sep + 2, end = String::length(name))
+        } else {
+          name
+        }
+        let mut found = None
+        for c in adt.ctors {
+          let (cname, _) = c
+          if !adt.is_struct && cname == base {
+            found = Some(c)
+          } else {
+            ()
+          }
+        }
+        match found {
+          Some(ctor) => {
+            let (_, fields) = ctor
+            if Array::length(fields) != Array::length(subs) {
+              unsupported(off = off, reason = "pattern `\{name}` with \{Array::length(subs)} field(s) where \{Array::length(fields)} are declared")
+            } else {
+              ()
+            }
+            let conds: Array[String] = [
+              "((_ is \{ctor_smt(adt = adt, ctor = ctor)}) \{term})"
+            ]
+            let mut i = 0
+            while i < Array::length(fields) {
+              let (fname, fsort) = Array::get(fields, at = i)
+              let t = "(\{sel_smt(adt = adt, ctor = ctor, field = fname)} \{term})"
+              assume_range(ctx = ctx, term = t, sort = fsort)
+              Array::push(conds, value = pattern_cond(ctx = ctx, pat = Array::get(subs, at = i), term = t, sort = fsort, binds = binds, off = off))
+              i = i + 1
+            }
+            "(and \{String::join(conds, sep = " ")})"
+          },
+          None => {
+            unsupported(off = off, reason = "`\{name}` is not a variant of `\{adt.name}`")
+            "false"
+          }
+        }
+      },
+      None => {
+        unsupported(off = off, reason = "a constructor pattern on a `\{sort}`")
+        "false"
+      }
+    },
+    PStruct(sname, fpats) => match adt_of_sort(adts = ctx.adts, sort = sort) {
+      Some(adt) => if adt.is_struct && adt.name == sname {
+        let ctor = Array::get(adt.ctors, at = 0)
+        let (_, fields) = ctor
+        let conds: Array[String] = ["true"]
+        for fp in fpats {
+          let (fname, sub) = fp
+          let mut fsort = ""
+          for f in fields {
+            let (n, s) = f
+            if n == fname {
+              fsort = s
+            } else {
+              ()
+            }
+          }
+          if fsort == "" {
+            unsupported(off = off, reason = "`\{sname}` has no field `\{fname}`")
+          } else {
+            ()
+          }
+          let t = "(\{sel_smt(adt = adt, ctor = ctor, field = fname)} \{term})"
+          assume_range(ctx = ctx, term = t, sort = fsort)
+          Array::push(conds, value = pattern_cond(ctx = ctx, pat = sub, term = t, sort = fsort, binds = binds, off = off))
+        }
+        "(and \{String::join(conds, sep = " ")})"
+      } else {
+        unsupported(off = off, reason = "a `\{sname}` pattern on a `\{sort}`")
+        "false"
+      },
+      None => {
+        unsupported(off = off, reason = "a struct pattern on a `\{sort}`")
+        "false"
+      }
+    },
+    POr(a, b) => {
+      let before = Array::length(binds)
+      let ca = pattern_cond(ctx = ctx, pat = a, term = term, sort = sort, binds = binds, off = off)
+      let cb = pattern_cond(ctx = ctx, pat = b, term = term, sort = sort, binds = binds, off = off)
+      if Array::length(binds) != before {
+        unsupported(off = off, reason = "an or-pattern that binds names")
+      } else {
+        ()
+      }
+      "(or \{ca} \{cb})"
+    },
+    _ => {
+      unsupported(off = off, reason = "this pattern is outside the provable fragment")
+      "false"
+    }
+  }
+}
