@@ -1,3 +1,6 @@
+import ./checker_scalar_locals.vibe {
+  append_scalar_local_rows, scalar_local_sites_reset
+}
 import ./checker_call_map.vibe {
   check_map_key_formal_instantiations, map_key_sites_reset, map_scalar_key_rows
 }
@@ -558,25 +561,15 @@ fn checked_render_rows(_ checked: CheckedProgram) -> (Array[Int], Array[String])
   (offs, keys)
 }
 
-/// #3066: the typed-`==` rows with the render rows appended. They share one
-/// channel on purpose (see `typed_render_row_head`); the head keeps a lookup of
-/// one kind from ever reading the other.
-fn append_render_rows(eq_offs: Array[Int], eq_keys: Array[String], row_offs: Array[Int], row_keys: Array[String]) -> (Array[Int], Array[String]) {
-  let offs: Array[Int] = []
-  let keys: Array[String] = []
+/// The equality extractor owns these fresh output arrays. Append each typed
+/// row family once instead of copying all preceding families at every step.
+fn append_typed_rows(offs: Array[Int], keys: Array[String], row_offs: Array[Int], row_keys: Array[String]) -> Unit {
   let mut i = 0
-  while i < Array::length(eq_offs) {
-    Array::push(offs, value = Array::get(eq_offs, at = i))
-    Array::push(keys, value = Array::get(eq_keys, at = i))
+  while i < Array::length(row_offs) {
+    Array::push(offs, value = Array::get(row_offs, at = i))
+    Array::push(keys, value = Array::get(row_keys, at = i))
     i = i + 1
   }
-  let mut j = 0
-  while j < Array::length(row_offs) {
-    Array::push(offs, value = Array::get(row_offs, at = j))
-    Array::push(keys, value = Array::get(row_keys, at = j))
-    j = j + 1
-  }
-  (offs, keys)
 }
 
 /// #2987: the Int channel with the tag-6 rows folded in under
@@ -791,21 +784,20 @@ fn check_program_double_call_result_observation_impl(_ stmts: Array[Stmt]) -> Op
 // Preserve the same equality, rendering, index and iterand facts in every
 // observer. Callers that already extracted render rows reuse that extraction.
 fn typed_eq_render_receiver_rows(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture, row_offs: Array[Int], row_keys: Array[String]) -> (Array[Int], Array[String]) {
-  let (eq_only_offs, eq_only_keys) = eq_binop_type_keys_from_capture(checked = checked, capture = capture)
-  let (eq_render_offs, eq_render_keys) = append_render_rows(eq_offs = eq_only_offs, eq_keys = eq_only_keys, row_offs = row_offs, row_keys = row_keys)
+  let (offs, keys) = eq_binop_type_keys_from_capture(checked = checked, capture = capture)
+  append_typed_rows(offs = offs, keys = keys, row_offs = row_offs, row_keys = row_keys)
   let (index_offs, index_keys) = index_receiver_rows_from_capture(checked = checked, capture = capture)
-  let (eq_index_offs, eq_index_keys) = append_render_rows(eq_offs = eq_render_offs, eq_keys = eq_render_keys, row_offs = index_offs, row_keys = index_keys)
+  append_typed_rows(offs = offs, keys = keys, row_offs = index_offs, row_keys = index_keys)
   let (forin_offs, forin_keys) = forin_receiver_rows_from_capture(checked = checked, capture = capture)
-  let (eq_forin_offs, eq_forin_keys) = append_render_rows(eq_offs = eq_index_offs, eq_keys = eq_index_keys, row_offs = forin_offs, row_keys = forin_keys)
-  // #3543: the Float arithmetic rows, under their own head.
+  append_typed_rows(offs = offs, keys = keys, row_offs = forin_offs, row_keys = forin_keys)
   let (f32_offs, f32_keys) = float_arith_rows_from_capture(capture)
-  let (eq_f32_offs, eq_f32_keys) = append_render_rows(eq_offs = eq_forin_offs, eq_keys = eq_forin_keys, row_offs = f32_offs, row_keys = f32_keys)
-  // #3730: the 32-bit integer wrap rows, under their own head.
+  append_typed_rows(offs = offs, keys = keys, row_offs = f32_offs, row_keys = f32_keys)
   let (i32_offs, i32_keys) = int32_arith_rows_from_capture(capture)
-  let (eq_i32_offs, eq_i32_keys) = append_render_rows(eq_offs = eq_f32_offs, eq_keys = eq_f32_keys, row_offs = i32_offs, row_keys = i32_keys)
-  // #2334: the scalar-keyed map calls, under their own head.
+  append_typed_rows(offs = offs, keys = keys, row_offs = i32_offs, row_keys = i32_keys)
   let (map_offs, map_keys) = map_scalar_key_rows(checked.final_subst)
-  append_render_rows(eq_offs = eq_i32_offs, eq_keys = eq_i32_keys, row_offs = map_offs, row_keys = map_keys)
+  append_typed_rows(offs = offs, keys = keys, row_offs = map_offs, row_keys = map_keys)
+  append_scalar_local_rows(offs = offs, keys = keys)
+  (offs, keys)
 }
 
 /// #2424: fold the Double render/`eq` ARGUMENT offsets (tag 4 on the modular
@@ -1334,6 +1326,7 @@ fn stmts_bind_top_level(stmts: Array[Stmt], name: String) -> Bool {
 fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> CheckedProgramTypeDefsObservation with Exception {
   call_placement_capture_begin()
   map_key_sites_reset()
+  scalar_local_sites_reset()
   handle {
     let checked = check_program_with_env_source_impl(stmts = stmts, initial_env = initial_env, capture = capture, role_lane_capture = role_lane_capture, imports_already_projected = imports_already_projected)
     call_placement_capture_end()

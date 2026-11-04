@@ -1,3 +1,6 @@
+import ./checker_scalar_locals.vibe {
+  scalar_local_sites_mark, scalar_local_sites_rewind
+}
 // lib/@vibe/compiler/checker -- a region's token kept by code written outside
 // the region body (#3343).
 
@@ -2567,6 +2570,7 @@ fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], 
     (1, every)
   } else {
     Array::push(retention_recheck_stack, value = key)
+    let scalar_mark = scalar_local_sites_mark()
     let cp = retention_checkpoint()
     Array::truncate(retention_param_override_cell, length = 0)
     Array::push(retention_param_override_cell, value = overrides)
@@ -2577,6 +2581,7 @@ fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], 
     let result_regions = Array::slice(retention_result_cell, start = 0, end = Array::length(retention_result_cell))
     Array::truncate(retention_result_cell, length = 0)
     retention_restore(cp)
+    scalar_local_sites_rewind(scalar_mark)
     Array::truncate(retention_recheck_stack, length = Array::length(retention_recheck_stack) - 1)
     (retention_escape_kind(rc_errors), result_regions)
   }
@@ -2736,9 +2741,11 @@ fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: Str
     RetentionTrusted => (),
     _ => {
       let regions = retention_active_regions(env)
+      let scalar_mark = scalar_local_sites_mark()
       let cp = retention_checkpoint()
       let (arg_tys, s_args, c_args) = retention_arg_types(args = args, env = env, defs = defs, s = s, c = c, check_child = check_child)
       retention_restore(cp)
+      scalar_local_sites_rewind(scalar_mark)
       let mentioned = array_empty()
       // Codex on #3359: an argument may carry a region its type does not
       // show -- a struct built from the token, a closure that captured it --
