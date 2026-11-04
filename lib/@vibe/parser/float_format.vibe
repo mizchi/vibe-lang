@@ -39,7 +39,7 @@ import ./polyfill.vibe {
 // operand. The linear/RC backends classify float ops syntactically
 // (#772/#797: `expr_is_floatish`), so keep it in this shape.
 
-export fn parse_decimal_float(int_str: String, frac_str: String) -> Double with Exception {
+export fn parse_decimal_float(int_str: String, frac_str: String) -> Float64 with Exception {
   let flen = String::length(frac_str)
   let all = String::concat(int_str, frac_str)
   let total = String::length(all)
@@ -76,9 +76,9 @@ export fn parse_decimal_float(int_str: String, frac_str: String) -> Double with 
         pj = pj + 1
       }
       if exp10 >= 0 {
-        Int::to_double(m) * pw
+        Int::to_float64(m) * pw
       } else {
-        Int::to_double(m) / pw
+        Int::to_float64(m) / pw
       }
     } else {
       let text = if flen == 0 {
@@ -86,7 +86,7 @@ export fn parse_decimal_float(int_str: String, frac_str: String) -> Double with 
       } else {
         String::concat(int_str, String::concat(".", frac_str))
       }
-      match Double::parse(text) {
+      match Float64::parse(text) {
         Some(v) => v,
         // Unreachable for a digit string; refuse rather than invent a value.
         None => throw(String::concat("internal error: `Double::parse` refused the digits of the float literal ", text))
@@ -104,7 +104,7 @@ export fn parse_decimal_float(int_str: String, frac_str: String) -> Double with 
 // and double the decimal digit array back up. The exact expansion re-parses
 // bit-identically under `parse_decimal_float`.
 
-fn big_double_exact_int_decimal(_ abs_d: Double) -> String {
+fn big_double_exact_int_decimal(_ abs_d: Float64) -> String {
   // 2^61 built by doubling a tracked literal-rooted mut (see the style NOTE
   // above parse_decimal_float — annotated lets / big literals miscompile).
   let mut two_61 = 1.0
@@ -127,7 +127,7 @@ fn big_double_exact_int_decimal(_ abs_d: Double) -> String {
       halving_go = 0
     }
   }
-  let m = Double::to_int(x)
+  let m = Float64::to_int(x)
   let ms = __to_string(m)
   let mlen = String::length(ms)
   // decimal digits, least-significant first (finite doubles need <= 309)
@@ -203,7 +203,7 @@ fn trim_trailing_zeros(_ s: String) -> String {
   }
 }
 
-export fn double_to_string_compiler(_ d: Double) -> String {
+export fn double_to_string_compiler(_ d: Float64) -> String {
   if d != d {
     "nan"
   } else {
@@ -234,9 +234,9 @@ export fn double_to_string_compiler(_ d: Double) -> String {
         body
       }
     } else {
-      let int_part = Double::to_int(abs_d)
-      let frac = abs_d - Int::to_double(int_part)
-      let scaled_raw = Double::to_int(frac * 1000000.0 + 0.5)
+      let int_part = Float64::to_int(abs_d)
+      let frac = abs_d - Int::to_float64(int_part)
+      let scaled_raw = Float64::to_int(frac * 1000000.0 + 0.5)
       let int_norm = if scaled_raw == 1000000 {
         int_part + 1
       } else {
@@ -278,15 +278,15 @@ export fn double_to_string_compiler(_ d: Double) -> String {
 // and the comparison decides the direction.
 
 /// #3625: the f32 nearest the decimal `int_str.frac_str`, held as a Double.
-export fn round_decimal_to_f32(int_str: String, frac_str: String) -> Double with Exception {
-  let d: Double = parse_decimal_float(int_str = int_str, frac_str = frac_str)
-  let f: Double = Float::to_double(Double::to_float(d))
+export fn round_decimal_to_f32(int_str: String, frac_str: String) -> Float64 with Exception {
+  let d: Float64 = parse_decimal_float(int_str = int_str, frac_str = frac_str)
+  let f: Float64 = Float32::to_float64(Float64::to_float32(d))
   // At or above 2^128 every value rounds to Infinity, midpoint or not.
   if f == d || d >= 340282366920938463463374607431768211456.0 {
     f
   } else {
     // `u` is the f32 ulp at `d`, 2^e: 2^-149 below the normal range.
-    let mut u: Double = 1.0
+    let mut u: Float64 = 1.0
     let mut e = 0
     while e > -149 {
       u = u / 2.0
@@ -296,18 +296,18 @@ export fn round_decimal_to_f32(int_str: String, frac_str: String) -> Double with
       u = u * 2.0
       e = e + 1
     }
-    let q: Double = d / u
-    let n: Double = Double::floor(q)
+    let q: Float64 = d / u
+    let n: Float64 = Float64::floor(q)
     if q - n != 0.5 {
       f
     } else {
       // The midpoint is (2n + 1) * 2^(e - 1).
-      let cmp = compare_decimal_to_dyadic(int_str = int_str, frac_str = frac_str, m = Double::to_int(n) * 2 + 1, e = e - 1)
+      let cmp = compare_decimal_to_dyadic(int_str = int_str, frac_str = frac_str, m = Float64::to_int(n) * 2 + 1, e = e - 1)
       if cmp > 0 {
-        let up: Double = (n + 1.0) * u
-        Float::to_double(Double::to_float(up))
+        let up: Float64 = (n + 1.0) * u
+        Float32::to_float64(Float64::to_float32(up))
       } else if cmp < 0 {
-        let down: Double = n * u
+        let down: Float64 = n * u
         down
       } else {
         f
