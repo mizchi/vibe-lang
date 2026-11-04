@@ -1,0 +1,95 @@
+//# Imports
+
+import @vibe/prove {
+  Obligation, prove_obligations, prove_verdict
+}
+
+//# Functions
+
+/// #3717 (ADR-0121): `vibe check --prove <file>...`. Each obligation of each
+/// contracted function becomes one SMT-LIB query, answered by an external
+/// `z3` with a 5 s limit, fed on standard input so no query file is shared
+/// with another run. The report follows `vibe check`'s contract: one
+/// line per obligation that is not proved, empty output when every one is,
+/// exit 1 otherwise. Only `unsat` proves; `unknown`, a timeout and a
+/// construct outside the provable fragment are failures, never skipped.
+export fn selfhost_cli_user_check_prove(_ paths: Array[String]) -> Int with Exception + Fs + Process + Console {
+  if !z3_available() {
+    throw("check --prove: `z3` is not on PATH; install it (for example `nix shell nixpkgs#z3`, `apt install z3` or `brew install z3`) and run again")
+  } else {
+    ()
+  }
+  let mut code = 0
+  for path in paths {
+    let source = Fs::read_file(path)
+    for o in prove_obligations(source) {
+      let at = "\{path}:\{line_col(source = source, off = o.off)}"
+      if o.kind == "unsupported" {
+        println("\{at}: unsupported: \{o.label} (in `\{o.fn_name}`)")
+        code = 1
+      } else {
+        let (verdict, detail) = prove_verdict(run_z3(o.query))
+        if verdict == "unproved" {
+          println("\{at}: unproved: \{obligation_text(o)} -- counterexample: \{detail}")
+          code = 1
+        } else if verdict != "proved" {
+          println("\{at}: unknown: \{obligation_text(o)} -- \{detail} (5000 ms limit)")
+          code = 1
+        } else {
+          ()
+        }
+      }
+    }
+    ()
+  }
+  code
+}
+
+fn obligation_text(_ o: Obligation) -> String {
+  if o.kind == "ensures" {
+    "ensures \{o.label} of `\{o.fn_name}`"
+  } else if o.kind == "requires" {
+    "requires of \{o.label}, called in `\{o.fn_name}`"
+  } else {
+    "\{o.kind} in \{o.label} in `\{o.fn_name}`"
+  }
+}
+
+fn z3_available() -> Bool with Process {
+  let h = vibe_sh_capture_raw("command -v z3 >/dev/null 2>&1")
+  let status = vibe_sh_capture_exit_code_raw(h)
+  vibe_sh_capture_close_raw(h)
+  status == 0
+}
+
+/// The query reaches z3 on standard input through a quoted heredoc. Its
+/// SMT-LIB symbols are `|name|`-quoted program identifiers, so no line of it
+/// can be the terminator.
+fn run_z3(_ query: String) -> String with Process {
+  let h = vibe_sh_capture_raw("z3 -T:5 -in 2>&1 <<'VIBE_PROVE_EOF'\n\{query}VIBE_PROVE_EOF\n")
+  let out = vibe_sh_capture_stdout_raw(h)
+  vibe_sh_capture_close_raw(h)
+  out
+}
+
+/// `L:C`, 1-based, with C a byte column (ADR-0108); `1:1` when the offset is
+/// unknown.
+fn line_col(source: String, off: Int) -> String {
+  if off < 0 {
+    "1:1"
+  } else {
+    let mut line = 1
+    let mut col = 1
+    let mut i = 0
+    while i < off && i < String::length(source) {
+      if String::byte_at(source, at = i) == '\n' {
+        line = line + 1
+        col = 1
+      } else {
+        col = col + 1
+      }
+      i = i + 1
+    }
+    "\{line}:\{col}"
+  }
+}

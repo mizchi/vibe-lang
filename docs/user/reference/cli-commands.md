@@ -207,7 +207,35 @@ vibe check --single-file <file>          # this buffer only, imports not followe
 vibe check --json <file>                 # LSP Diagnostic array (`[]` when nothing is reported)
 vibe check --profile-tsv timing.tsv <file...>
 vibe check --warn-missing-labels <file...>   # also warn where an argument label will be required
+vibe check --prove <file...>             # prove `where` contracts with an external z3 (#3717)
 ```
+
+`--prove` turns each contracted function's `requires` / `ensures` into
+verification conditions and asks an external `z3` (5 s per query) whether they
+hold; it never changes what a build produces (ADR-0121). The report keeps
+`vibe check`'s shape: **empty output and exit 0 mean every obligation is
+proved**, and each line names one that is not:
+
+```
+f.vibe:5:1: unproved: ensures (result > x) of `dec` -- counterexample: x = 1
+f.vibe:12:5: unproved: overflow in (x + 1) in `inc` -- counterexample: x = 4611686018427387903
+f.vibe:21:3: unproved: requires of half: (x >= 0), called in `call_half` -- counterexample: y = -4611686018427387904
+f.vibe:4:1: unsupported: `let mut` is outside the provable fragment (in `sum_to`)
+f.vibe:5:1: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
+```
+
+Only an `unsat` answer proves, so `unknown`, a timeout and an unsupported
+construct fail (exit 1), never pass. The provable fragment is pure functions
+over `Int` and `Bool`: `let`, `if`, `return` (every exit checks `ensures`),
+`+ - *` and comparisons, `&&` / `||` / `!`, and calls to other functions of the
+file with such signatures. `Int` is a mathematical integer plus one
+no-overflow obligation per operation, which is exact for the 63-bit `Int`. A
+call is modular: the callee's `requires` is owed at the call and its
+`ensures` assumed of the result, and the callee's own body is proved in the
+same run. A call to a function with no `where` contract is unsupported (it is
+not assumed to return), and so is a recursive call (termination is not
+proved). `z3` must be on `PATH`; without it the command refuses with the
+edit. `--json` and `--single-file` are refused with `--prove` for now.
 
 `--warn-missing-labels` adds one warning per argument that will need its
 parameter's label once labels are required (ADR-0120):
