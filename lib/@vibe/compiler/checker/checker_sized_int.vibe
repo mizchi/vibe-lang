@@ -72,13 +72,14 @@ export fn sized_int_operand_type(e: Expr, ty: Type, other: Type, s: Subst, error
 /// are range-checked here.
 export fn sized_int_array_elem(items: Array[Expr], at: Int, elem_ty: Type, it: Type, s: Subst, errors: Array[String]) -> (Type, Type) {
   let item_ty = sized_int_operand_type(e = Array::get(items, at = at), ty = it, other = elem_ty, s = s, errors = errors, off = 0 - 1)
-  let earlier_literals = sized_int_all_literals(Array::slice(items, start = 0, end = at))
   let sized_now = String::length(sized_int_type_name(subst_apply(s = s, ty = item_ty))) > 0
   let elem_is_int = match subst_apply(s = s, ty = elem_ty) {
     CtInt => true,
     _ => false
   }
-  if sized_now && elem_is_int && earlier_literals {
+  // The earlier elements are only read when a sized element follows `Int`s,
+  // so an ordinary array literal costs nothing here.
+  if sized_now && elem_is_int && sized_int_literals_before(items = items, at = at) {
     let mut i = 0
     while i < at {
       let _ = sized_int_literal_type(e = Array::get(items, at = i), expected = item_ty, s = s, errors = errors, off = 0 - 1)
@@ -96,6 +97,21 @@ fn sized_int_type_name(_ t: Type) -> String {
     CtUInt32 => "UInt32",
     _ => ""
   }
+}
+
+fn sized_int_literals_before(items: Array[Expr], at: Int) -> Bool {
+  let mut all = true
+  let mut i = 0
+  while i < at && all {
+    match sized_int_literal_value(Array::get(items, at = i)) {
+      Some(_) => (),
+      None => {
+        all = false
+      }
+    }
+    i = i + 1
+  }
+  all
 }
 
 fn sized_int_all_literals(_ items: Array[Expr]) -> Bool {
