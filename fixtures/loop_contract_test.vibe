@@ -1,0 +1,104 @@
+// #3716 (ADR-0121 Phase 0): a loop's `where { invariant: .., decreases: .. }`
+// is checked at run time on entry and after every iteration, one ended by
+// `continue` included. These loops satisfy their contracts, so they run to the
+// end; a violation traps, which gate step 6d pins (a trap would fail this
+// whole file).
+
+fn sum_while(_ xs: Array[Int]) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < Array::length(xs) where {
+    invariant: 0 <= i && i <= Array::length(xs),
+    decreases: Array::length(xs) - i,
+  } {
+    acc = acc + Array::get(xs, at = i)
+    i = i + 1
+  }
+  acc
+}
+
+fn count_even_continue(_ n: Int) -> Int {
+  let mut i = 0
+  let mut evens = 0
+  while i < n where { invariant: evens <= i, decreases: n - i } {
+    i = i + 1
+    if i % 2 == 1 {
+      continue
+    } else {
+      ()
+    }
+    evens = evens + 1
+  }
+  evens
+}
+
+// The clauses read the loop's own variables: the body's `let n = 0` shadows
+// `n` inside the body only, and the invariant still reads the outer one.
+fn shadowed_inside(_ n: Int) -> Int {
+  let mut i = 0
+  while i < n where { invariant: i <= n } {
+    let n = 0
+    i = i + 1 + n
+  }
+  i
+}
+
+fn sum_for(_ xs: Array[Int]) -> Int {
+  let mut acc = 0
+  let mut seen = 0
+  for x in xs where { invariant: seen <= Array::length(xs), decreases: Array::length(xs) - seen } {
+    seen = seen + 1
+    if x < 0 {
+      continue
+    } else {
+      ()
+    }
+    acc = acc + x
+  }
+  acc
+}
+
+fn countdown_loop(_ start: Int) -> Int {
+  loop (k = start, steps = 0) where { invariant: k >= 0, decreases: k } {
+    if k == 0 {
+      break steps
+    } else {
+      continue(k - 1, steps + 1)
+    }
+  }
+}
+
+fn bare_loop(_ limit: Int) -> Int {
+  let mut i = 0
+  loop where { invariant: i <= limit } {
+    if i == limit {
+      break
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  i
+}
+
+test "a satisfied while contract runs to the end" {
+  inspect(sum_while([1, 2, 3, 4]), content = "10")
+  inspect(sum_while([]), content = "0")
+}
+
+test "a continue still reaches the next checkpoint" {
+  inspect(count_even_continue(7), content = "3")
+}
+
+test "a clause reads the loop's scope, not the body's" {
+  inspect(shadowed_inside(3), content = "3")
+}
+
+test "a for contract holds across continue" {
+  inspect(sum_for([1, -2, 3]), content = "4")
+}
+
+test "loop with parameters and a bare loop take the clause" {
+  inspect(countdown_loop(5), content = "5")
+  inspect(bare_loop(4), content = "4")
+}
