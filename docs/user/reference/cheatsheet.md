@@ -454,10 +454,11 @@ kept in the AST (`SFnDecl`, #727) and lowered to the `let rec` form below
 just before checking/codegen, so checker/codegen semantics are identical.
 The optional `where { requires: .., ensures: .. }` contract runs as
 always-on runtime asserts (#731 Phase 1): each `requires` condition asserts
-at entry; each `ensures` condition sees the function value bound as
-`result` and asserts at exit; a violating call traps. Known limits: an
-early `return` bypasses `ensures`, and `result` shadows any user binding of
-that name inside ensures conditions. `vibe normalize` and the AST printer
+at entry; each `ensures` condition sees the returned value bound as
+`result` and asserts at every exit, the tail and each `return` alike (#3715,
+one nested in a loop or a `match` arm included); a violating call traps. The
+conditions read the function's parameters even where the body shadows one.
+`result` shadows any user binding of that name inside ensures conditions. `vibe normalize` and the AST printer
 round-trip fn declarations in fn + where form — fn sources are no longer
 refused or rewritten to `let rec`.
 

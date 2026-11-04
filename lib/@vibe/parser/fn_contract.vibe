@@ -1,0 +1,115 @@
+//# Imports
+
+import @vibe/ast {
+  Expr, TypeExpr
+}
+
+import ./parser_base.vibe {
+  _no_tb, _no_tp
+}
+
+//# Functions
+
+/// #3715: the name of the checker every exit of a function with an `ensures`
+/// goes through. `__vibe_` is the compiler's reserved prefix, so no program
+/// binding can shadow it.
+fn ensures_check_name() -> String {
+  "__vibe_ensures"
+}
+
+/// #3715 (ADR-0121 (6)): a function body whose every exit checks `ensures`.
+///
+/// The conditions are asserted in one closure defined at entry, which takes
+/// the returned value as `result` and hands it back. The tail expression and
+/// every `return e` that leaves this function pass their value through it, so
+/// an early `return` is checked like the tail. The closure is defined before
+/// the body runs, so a condition reads the function's parameters even where
+/// the body shadows one of their names. It carries the function's own effect
+/// row, so a condition may call what the body may.
+fn ensures_checked_body(body: Expr, ensures: Array[Expr], ret: Option[TypeExpr], eff: Option[String]) -> Expr {
+  let check = ensures_check_name()
+  let mut asserts = EIdent("result", 0 - 1)
+  let mut ei = Array::length(ensures)
+  while ei > 0 {
+    ei = ei - 1
+    asserts = ESeq(ECall(EIdent("assert", 0 - 1), [Array::get(ensures, at = ei)], 0 - 1, [
+    ]), asserts)
+  }
+  let lam = EFn(_no_tp(), _no_tb(), [("result", ret)], ret, eff, asserts)
+  let routed = route_returns(expr = body, check = check)
+  ELet(check, lam, ECall(EIdent(check, 0 - 1), [routed], 0 - 1, []), 0 - 1)
+}
+
+/// Every `return e` that leaves the enclosing function becomes
+/// `return check(e)`. A lambda's `return` leaves the lambda, so a lambda is
+/// not entered; a loop's body is, since a `return` inside it leaves the
+/// function. Every variant is listed so a new one is a compile error here
+/// rather than an exit that skips the check.
+fn route_returns(expr: Expr, check: String) -> Expr {
+  let go = (e: Expr) -> route_returns(expr = e, check = check)
+  match expr {
+    EReturn(v) => EReturn(ECall(EIdent(check, 0 - 1), [go(v)], 0 - 1, [])),
+    EFn(_, _, _, _, _, _) => expr,
+    EWhile(c, b) => EWhile(go(c), go(b)),
+    ELoop(params, b) => ELoop(for p in params {
+      let (pname, pv) = p
+      (pname, go(pv))
+    }, go(b)),
+    EForIn(v, i, it, b) => EForIn(v, i, go(it), go(b)),
+    EContinue(args) => EContinue(for a in args {
+      go(a)
+    }),
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_, _) => expr,
+    EBool(_) => expr,
+    EIdent(_, _) => expr,
+    EUnit => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(for x in items {
+      go(x)
+    }),
+    EArray(items) => EArray(for x in items {
+      go(x)
+    }),
+    ERecord(name, fields, targs) => ERecord(name, for f in fields {
+      let (fname, v) = f
+      (fname, go(v))
+    }, targs),
+    EMap(fields) => EMap(for f in fields {
+      let (fname, v) = f
+      (fname, go(v))
+    }),
+    EIf(c, t, e) => EIf(go(c), go(t), go(e)),
+    ELet(n, v, b, off) => ELet(n, go(v), go(b), off),
+    ELetRec(n, v, b) => ELetRec(n, go(v), go(b)),
+    ELetMut(n, v, b, off) => ELetMut(n, go(v), go(b), off),
+    EAssign(n, v, c, off) => EAssign(n, go(v), go(c), off),
+    EAssignOp(n, op, v, c, off) => EAssignOp(n, op, go(v), go(c), off),
+    ESeq(a, b) => ESeq(go(a), go(b)),
+    EMatch(s, arms) => EMatch(go(s), for a in arms {
+      let (p, ex) = a
+      (p, go(ex))
+    }),
+    EHandle(b, arms) => EHandle(go(b), for a in arms {
+      let (p, ex) = a
+      (p, go(ex))
+    }),
+    ECall(callee, args, off, cell) => ECall(go(callee), for a in args {
+      go(a)
+    }, off, cell),
+    EBinOp(op, l, r, off) => EBinOp(op, go(l), go(r), off),
+    EUnaryOp(op, e) => EUnaryOp(op, go(e)),
+    EDot(obj, field, off, foff) => EDot(go(obj), field, off, foff),
+    ELabeledArg(label, name, v) => ELabeledArg(label, name, go(v)),
+    EBreak(v) => EBreak(match v {
+      Some(x) => Some(go(x)),
+      None => None
+    }),
+    ESpread(v) => ESpread(go(v))
+  }
+}
+
+export {
+  ensures_checked_body
+}

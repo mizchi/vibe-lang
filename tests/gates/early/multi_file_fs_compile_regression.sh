@@ -1605,6 +1605,28 @@ gate_require_artifact "$edir/viol.wasm" "where-contract program did not compile 
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: violated requires clause did not trap (#731)" >&2; exit 1
 fi
+# (b2) #3715: every exit checks `ensures`, an early `return` included -- one
+#      nested in a loop as well as one at the top of the body. A satisfying
+#      early return still returns its value.
+printf 'fn f(x: Int) -> Int where { ensures: result > 0 } {\n  if x < 0 {\n    return x\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { f(0 - 5) }\n' > "$edir/viol_ret.vibe"
+gate_fs_compile "$edir/viol_ret.vibe" "$edir/viol_ret.wasm" _start
+gate_require_artifact "$edir/viol_ret.wasm" "early-return ensures program did not compile (#3715)"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: an early return that violates ensures did not trap (#3715)" >&2; exit 1
+fi
+printf 'fn g(n: Int) -> Int where { ensures: result >= 10 } {\n  let mut i = 0\n  while i < n {\n    if i == 2 {\n      return i\n    } else {\n      ()\n    }\n    i = i + 1\n  }\n  10\n}\nexport let _start: () -> Int = () -> { g(5) }\n' > "$edir/viol_ret_loop.vibe"
+gate_fs_compile "$edir/viol_ret_loop.vibe" "$edir/viol_ret_loop.wasm" _start
+gate_require_artifact "$edir/viol_ret_loop.wasm" "early-return-in-loop ensures program did not compile (#3715)"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret_loop.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: a return inside a loop that violates ensures did not trap (#3715)" >&2; exit 1
+fi
+printf 'fn h(x: Int) -> Int where { ensures: result > 0 } {\n  if x > 100 {\n    return 100\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { h(500) }\n' > "$edir/ok_ret.vibe"
+gate_fs_compile "$edir/ok_ret.vibe" "$edir/ok_ret.wasm" _start
+gate_require_artifact "$edir/ok_ret.wasm" "satisfied early-return ensures program did not compile (#3715)"
+gate_run ok_ret_out stdout-last --invoke _start "$edir/ok_ret.wasm"
+if [ "$ok_ret_out" != "100" ]; then
+  echo "[compiler-gate] FAIL: a satisfying early return returned '$ok_ret_out' (want 100) (#3715)" >&2; exit 1
+fi
 # (c) violated ensures: exit assert (over the `result` binding) traps.
 printf 'fn bad_dec(x: Int) -> Int where { ensures: result > x } { x - 1 }\nexport let _start: () -> Int = () -> { bad_dec(7) }\n' > "$edir/viol_ens.vibe"
 gate_fs_compile "$edir/viol_ens.vibe" "$edir/viol_ens.wasm" _start
