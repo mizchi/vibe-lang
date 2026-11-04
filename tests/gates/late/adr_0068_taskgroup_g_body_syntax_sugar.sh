@@ -252,11 +252,8 @@ export let main = () -> Int {
 VEOF
 gate_fs_compile "$c1203dir/main.vibe" "$c1203dir/out.wasm" main
 gate_require_artifact "$c1203dir/out.wasm" "closure-param/top-level-name collision program did not compile (#1203)"
-c1203_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$c1203dir/out.wasm" 2>&1 | tail -1)"
-if [ "$c1203_out" != "8" ]; then
-  echo "[compiler-gate] FAIL: closure-param/top-level-name collision program got '$c1203_out' (want 8 = double(addone(3))) -- #1203 regressed (compose's own 'f'/'g' params silently dropped from its returned closure's captures)" >&2
-  exit 1
-fi
+gate_run c1203_out last "$c1203dir/out.wasm"
+gate_require_eq "$c1203_out" "8" "closure-param/top-level-name collision program got '$c1203_out' (want 8 = double(addone(3))) -- #1203 regressed (compose's own 'f'/'g' params silently dropped from its returned closure's captures)"
 rm -rf "$c1203dir"
 echo "[compiler-gate] closure param shadowing a same-named top-level fn ok (8)"
 
@@ -297,11 +294,8 @@ export let main = () -> Int {
 VEOF
 gate_fs_compile "$c1203bdir/main.vibe" "$c1203bdir/out.wasm" main
 gate_require_artifact "$c1203bdir/out.wasm" "write-only closure capture / top-level-name collision program did not compile (#1203 follow-up) -- #1212 review regressed"
-c1203b_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$c1203bdir/out.wasm" 2>&1 | tail -1)"
-if [ "$c1203b_out" != "0" ]; then
-  echo "[compiler-gate] FAIL: write-only closure capture / top-level-name collision program got '$c1203b_out' (want 0) -- #1212 review regressed" >&2
-  exit 1
-fi
+gate_run c1203b_out last "$c1203bdir/out.wasm"
+gate_require_eq "$c1203b_out" "0" "write-only closure capture / top-level-name collision program got '$c1203b_out' (want 0) -- #1212 review regressed"
 rm -rf "$c1203bdir"
 echo "[compiler-gate] closure write-only capture shadowing a same-named top-level fn ok"
 
@@ -398,10 +392,7 @@ if [ "$cyc_rc" = "0" ]; then
   exit 1
 fi
 cyc_deps="$(find "$cycdir/cache_cyclic" -name 'vibe_selfhost_dep_list_*' 2>/dev/null | wc -l | tr -d ' ')"
-if [ "$cyc_deps" != "0" ]; then
-  echo "[compiler-gate] FAIL: rejecting a cyclic import pair left $cyc_deps dep-list cache entries behind (want 0) -- modules are being committed before the upfront plan rejects the cycle" >&2
-  exit 1
-fi
+gate_require_eq "$cyc_deps" "0" "rejecting a cyclic import pair left $cyc_deps dep-list cache entries behind (want 0) -- modules are being committed before the upfront plan rejects the cycle"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   VIBE_BUILD_CACHE_DIR="$ROOT_DIR/$cycdir/cache_acyclic" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -525,11 +516,8 @@ for bag_be in gc linear; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/gc_bytes_append_grow.vibe" "$bagdir/$bag_be.wasm" main >/dev/null 2>&1 || true
   gate_require_artifact "$bagdir/$bag_be.wasm" "gc_bytes_append_grow.vibe did not compile on the $bag_be backend"
-  bag_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$bagdir/$bag_be.wasm" 2>&1 | tail -1)"
-  if [ "$bag_out" != "4027170" ]; then
-    echo "[compiler-gate] FAIL: Bytes::append on the $bag_be backend got '$bag_out' (want 4027170) -- a grow or an aliased append copied the wrong bytes" >&2
-    exit 1
-  fi
+  gate_run bag_out last "$bagdir/$bag_be.wasm"
+  gate_require_eq "$bag_out" "4027170" "Bytes::append on the $bag_be backend got '$bag_out' (want 4027170) -- a grow or an aliased append copied the wrong bytes"
 done
 rm -rf "$bagdir"
 echo "[compiler-gate] Bytes::append runs correctly on both backends ok (4027170)"
@@ -621,11 +609,8 @@ VIBE_DIAGNOSTICS_ALL=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPOR
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$dcolldir/src/main.vibe" "$dcolldir/ok.wasm" _start >/dev/null 2>&1 || true
 gate_require_artifact "$dcolldir/ok.wasm" "a clean project failed to compile with VIBE_DIAGNOSTICS_ALL=1"
-diag_ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dcolldir/ok.wasm" 2>&1 | tail -1)"
-if [ "$diag_ok_out" != "3" ]; then
-  echo "[compiler-gate] FAIL: the clean control got '$diag_ok_out' (want 3) with VIBE_DIAGNOSTICS_ALL=1" >&2
-  exit 1
-fi
+gate_run diag_ok_out last "$dcolldir/ok.wasm"
+gate_require_eq "$diag_ok_out" "3" "the clean control got '$diag_ok_out' (want 3) with VIBE_DIAGNOSTICS_ALL=1"
 rm -rf "$dcolldir"
 echo "[compiler-gate] cross-module diagnostic collection ok (1 fail-fast, 2 collected, seed-invariant)"
 # 75/75. ADR-0090 Phase 1 (#1262): `region r { body }` + MutList[T, r]
@@ -1120,11 +1105,8 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=r
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/spawn_suspend_wrapper_inline.vibe "$ssldir/wrapper_inline.wasm" main >/dev/null 2>&1 || true
 gate_require_artifact "$ssldir/wrapper_inline.wasm" "the inline edit for an Async-taking wrapper did not compile (#3194)"
-wrapper_inline_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/wrapper_inline.wasm" 2>/dev/null | tail -1)"
-if [ "$wrapper_inline_result" != "6" ]; then
-  echo "[compiler-gate] FAIL: the inline edit for an Async-taking wrapper returned '$wrapper_inline_result' (want 6, #3194)" >&2
-  exit 1
-fi
+gate_run wrapper_inline_result stdout-last --invoke main "$ssldir/wrapper_inline.wasm"
+gate_require_eq "$wrapper_inline_result" "6" "the inline edit for an Async-taking wrapper returned '$wrapper_inline_result' (want 6, #3194)"
 cat > "$ssldir/inline.vibe" <<'VIBE'
 import @vibe/concurrent/experimental { TaskGroup, TaskHandle }
 fn main() -> Int allows Async + Exception {
@@ -1139,18 +1121,12 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=r
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ssldir/inline.vibe" "$ssldir/inline.wasm" main >/dev/null 2>&1 || true
 gate_require_artifact "$ssldir/inline.wasm" "the inline task closure did not compile (#3194)"
-ssl_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/inline.wasm" 2>/dev/null | tail -1)"
-if [ "$ssl_result" != "6" ]; then
-  echo "[compiler-gate] FAIL: the inline task closure returned '$ssl_result' instead of 6 (#3194)" >&2
-  exit 1
-fi
+gate_run ssl_result stdout-last --invoke main "$ssldir/inline.wasm"
+gate_require_eq "$ssl_result" "6" "the inline task closure returned '$ssl_result' instead of 6 (#3194)"
 gate_fs_compile fixtures/spawn_suspend_user_defined_named.vibe "$ssldir/user_defined.wasm" main
 gate_require_artifact "$ssldir/user_defined.wasm" "user-defined qualified spawn_suspend was mistaken for the builtin (#3194)"
-ssl_user_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/user_defined.wasm" 2>/dev/null | tail -1)"
-if [ "$ssl_user_result" != "5" ]; then
-  echo "[compiler-gate] FAIL: user-defined spawn_suspend returned '$ssl_user_result' instead of 5 (#3194)" >&2
-  exit 1
-fi
+gate_run ssl_user_result stdout-last --invoke main "$ssldir/user_defined.wasm"
+gate_require_eq "$ssl_user_result" "5" "user-defined spawn_suspend returned '$ssl_user_result' instead of 5 (#3194)"
 # #3517: a run-to-completion task (`TaskGroup::spawn`, `Parallel::map`) whose
 # closure uses `Async` is refused with the `spawn_suspend` edit. Each of these
 # used to compile clean and answer a heap pointer from `join`.
@@ -1170,11 +1146,8 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=r
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/spawn_task_nested_suspend_group.vibe "$ssldir/nested_group.wasm" main >/dev/null 2>&1 || true
 gate_require_artifact "$ssldir/nested_group.wasm" "a plain task holding its own suspendable group was refused (#3517)"
-ssl_nested_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/nested_group.wasm" 2>/dev/null | tail -1)"
-if [ "$ssl_nested_result" != "6" ]; then
-  echo "[compiler-gate] FAIL: a plain task holding its own suspendable group returned '$ssl_nested_result' instead of 6 (#3517)" >&2
-  exit 1
-fi
+gate_run ssl_nested_result stdout-last --invoke main "$ssldir/nested_group.wasm"
+gate_require_eq "$ssl_nested_result" "6" "a plain task holding its own suspendable group returned '$ssl_nested_result' instead of 6 (#3517)"
 # #3523: an `Async` entry that reaches an `Async` function of its own gets the
 # suspend-class boundary, so the call answers instead of handing a step object
 # (or an unhandled suspension) back. #3555: a task closure handed to an
@@ -1188,11 +1161,8 @@ for async_entry_case in "async_entry_calls_async_closure:5" "async_entry_calls_s
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/${async_entry_fixture}.vibe" "$ssldir/${async_entry_fixture}.wasm" main >/dev/null 2>&1 || true
   gate_require_artifact "$ssldir/${async_entry_fixture}.wasm" "${async_entry_fixture}.vibe did not compile (#3523)"
-  async_entry_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/${async_entry_fixture}.wasm" 2>/dev/null | tail -1)"
-  if [ "$async_entry_got" != "$async_entry_want" ]; then
-    echo "[compiler-gate] FAIL: ${async_entry_fixture}.vibe returned '$async_entry_got' instead of $async_entry_want (#3523)" >&2
-    exit 1
-  fi
+  gate_run async_entry_got stdout-last --invoke main "$ssldir/${async_entry_fixture}.wasm"
+  gate_require_eq "$async_entry_got" "$async_entry_want" "${async_entry_fixture}.vibe returned '$async_entry_got' instead of $async_entry_want (#3523)"
 done
 # #3523 / #3519: a suspendable task that prints and sleeps; the two tasks
 # interleave at each `sleep`, and the whole output is the answer.
@@ -1201,10 +1171,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_UNSTABLE=1 VIBE_IMPORT_ABI=r
   fixtures/suspend_task_prints_and_sleeps.vibe "$ssldir/prints_and_sleeps.wasm" main >/dev/null 2>&1 || true
 gate_require_artifact "$ssldir/prints_and_sleeps.wasm" "suspend_task_prints_and_sleeps.vibe did not compile (#3523, #3519)"
 ssl_interleave="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ssldir/prints_and_sleeps.wasm" 2>/dev/null | tr '\n' ' ')"
-if [ "$ssl_interleave" != "a1 b1 a2 b2 3 " ]; then
-  echo "[compiler-gate] FAIL: suspend_task_prints_and_sleeps.vibe printed '$ssl_interleave' instead of 'a1 b1 a2 b2 3 ' (#3523, #3519)" >&2
-  exit 1
-fi
+gate_require_eq "$ssl_interleave" "a1 b1 a2 b2 3 " "suspend_task_prints_and_sleeps.vibe printed '$ssl_interleave' instead of 'a1 b1 a2 b2 3 ' (#3523, #3519)"
 # #3523: the shapes that still cannot run are refused, not miscompiled: an
 # `Async` closure handed to a parameter that calls it plainly, and a top-level
 # `Async` function passed by name to a run-to-completion task, and a program
@@ -1263,30 +1230,21 @@ rm -rf "$asb89dir"; mkdir -p "$asb89dir"
 cp fixtures/async_sleep_boundary_test.vibe "$asb89dir/pos.vibe"
 gate_fs_compile "$asb89dir/pos.vibe" "$asb89dir/pos.wasm" main
 gate_require_artifact "$asb89dir/pos.wasm" "async_sleep_boundary_test.vibe did not compile -- ADR-0089 D1 sleep boundary regressed"
-asb89_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/pos.wasm" 2>/dev/null | tail -1)"
-if [ "$asb89_pos_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: async_sleep_boundary_test.vibe got '$asb89_pos_out' (want 42)" >&2
-  exit 1
-fi
+gate_run asb89_pos_out stdout-last --invoke main "$asb89dir/pos.wasm"
+gate_require_eq "$asb89_pos_out" "42" "async_sleep_boundary_test.vibe got '$asb89_pos_out' (want 42)"
 cp fixtures/async_boundary_spawn_suspend_test.vibe "$asb89dir/spawn.vibe"
 gate_fs_compile "$asb89dir/spawn.vibe" "$asb89dir/spawn.wasm" main
 gate_require_artifact "$asb89dir/spawn.wasm" "async_boundary_spawn_suspend_test.vibe did not compile -- an Async entry spawning suspend-class tasks is refused again (#2065 wall 2)"
-asb89_spawn_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/spawn.wasm" 2>/dev/null | tail -1)"
-if [ "$asb89_spawn_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: async_boundary_spawn_suspend_test.vibe got '$asb89_spawn_out' (want 42)" >&2
-  exit 1
-fi
+gate_run asb89_spawn_out stdout-last --invoke main "$asb89dir/spawn.wasm"
+gate_require_eq "$asb89_spawn_out" "42" "async_boundary_spawn_suspend_test.vibe got '$asb89_spawn_out' (want 42)"
 # #1342: the boundary must key on what is actually injected:
 # async_boundary_user_sleep_test.vibe supplies its OWN `sleep`, so no
 # boundary is built -- it must COMPILE and return 42.
 cp fixtures/async_boundary_user_sleep_test.vibe "$asb89dir/usersleep.vibe"
 gate_fs_compile "$asb89dir/usersleep.vibe" "$asb89dir/usersleep.wasm" main
 gate_require_artifact "$asb89dir/usersleep.wasm" "async_boundary_user_sleep_test.vibe was rejected -- the guard fired without an injected boundary (#1342)"
-asb89_us_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/usersleep.wasm" 2>/dev/null | tail -1)"
-if [ "$asb89_us_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: async_boundary_user_sleep_test.vibe got '$asb89_us_out' (want 42)" >&2
-  exit 1
-fi
+gate_run asb89_us_out stdout-last --invoke main "$asb89dir/usersleep.wasm"
+gate_require_eq "$asb89_us_out" "42" "async_boundary_user_sleep_test.vibe got '$asb89_us_out' (want 42)"
 echo "[compiler-gate] async boundary mixing guard: position-independent + injection-keyed ok (#1342)"
 # Increment 2 (#1218): a `handle ... with Async` discharges the builtin
 # row (the enclosing fn needs no `with Async`) and the handler REALLY
@@ -1296,11 +1254,8 @@ echo "[compiler-gate] async boundary mixing guard: position-independent + inject
 cp fixtures/async_sleep_handler_discharge_test.vibe "$asb89dir/dis.vibe"
 gate_fs_compile "$asb89dir/dis.vibe" "$asb89dir/dis.wasm" main
 gate_require_artifact "$asb89dir/dis.wasm" "async_sleep_handler_discharge_test.vibe did not compile -- handle-with-Async must discharge the builtin row (ADR-0089 D1 increment 2)"
-asb89_dis_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/dis.wasm" 2>/dev/null | tail -1)"
-if [ "$asb89_dis_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: async_sleep_handler_discharge_test.vibe got '$asb89_dis_out' (want 42 -- the user handler must intercept the sleeps)" >&2
-  exit 1
-fi
+gate_run asb89_dis_out stdout-last --invoke main "$asb89dir/dis.wasm"
+gate_require_eq "$asb89_dis_out" "42" "async_sleep_handler_discharge_test.vibe got '$asb89_dis_out' (want 42 -- the user handler must intercept the sleeps)"
 # Increment 4 (#1218): `await` of a PENDING future drives through a user
 # Async handler -- the poll loop is a synthesized named `__aw_poll` fn, so
 # the tail-resumptive evidence migration sees it (an inline while-wrapped
@@ -1309,22 +1264,16 @@ fi
 cp fixtures/async_await_handler_discharge_test.vibe "$asb89dir/aw.vibe"
 gate_fs_compile "$asb89dir/aw.vibe" "$asb89dir/aw.wasm" main
 gate_require_artifact "$asb89dir/aw.wasm" "async_await_handler_discharge_test.vibe did not compile -- a pending-future await under a user Async handler must be evidence-eligible (ADR-0089 D1 increment 4)"
-asb89_aw_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/aw.wasm" 2>/dev/null | tail -1)"
-if [ "$asb89_aw_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: async_await_handler_discharge_test.vibe got '$asb89_aw_out' (want 42 -- the handler must receive the poll and its resolution must unblock the await)" >&2
-  exit 1
-fi
+gate_run asb89_aw_out stdout-last --invoke main "$asb89dir/aw.wasm"
+gate_require_eq "$asb89_aw_out" "42" "async_await_handler_discharge_test.vibe got '$asb89_aw_out' (want 42 -- the handler must receive the poll and its resolution must unblock the await)"
 # Codex P1 on #1312: scoped retargeting. A handler receives its own
 # lexical sleeps while an Async-row top-level fn called from row-free code
 # keeps the blocking builtin (no stranded perform). 40 + 1 + 1 = 42.
 cp fixtures/async_sleep_mixed_scope_test.vibe "$asb89dir/mx.vibe"
 gate_fs_compile "$asb89dir/mx.vibe" "$asb89dir/mx.wasm" main
 gate_require_artifact "$asb89dir/mx.wasm" "async_sleep_mixed_scope_test.vibe did not compile -- scoped retargeting must not strand performs (Codex P1 on #1312)"
-asb89_mx_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/mx.wasm" 2>/dev/null | tail -1)"
-if [ "$asb89_mx_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: async_sleep_mixed_scope_test.vibe got '$asb89_mx_out' (want 42)" >&2
-  exit 1
-fi
+gate_run asb89_mx_out stdout-last --invoke main "$asb89dir/mx.wasm"
+gate_require_eq "$asb89_mx_out" "42" "async_sleep_mixed_scope_test.vibe got '$asb89_mx_out' (want 42)"
 # ADR-0089 Decision 2 (#1218): the Future cell primitives
 # (Future::pending/ready/resolve) are inert callees for the evidence
 # migration -- a pending future created, resolved, and awaited under an
@@ -1335,11 +1284,8 @@ fi
 cp fixtures/async_future_boundary_resolved_test.vibe "$asb89dir/fr.vibe"
 gate_fs_compile "$asb89dir/fr.vibe" "$asb89dir/fr.wasm" main
 gate_require_artifact "$asb89dir/fr.wasm" "async_future_boundary_resolved_test.vibe did not compile -- Future cell primitives must be evidence-inert (ADR-0089 D2)"
-asb89_fr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$asb89dir/fr.wasm" 2>/dev/null | tail -1)"
-if [ "$asb89_fr_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: async_future_boundary_resolved_test.vibe got '$asb89_fr_out' (want 42)" >&2
-  exit 1
-fi
+gate_run asb89_fr_out stdout-last --invoke main "$asb89dir/fr.wasm"
+gate_require_eq "$asb89_fr_out" "42" "async_future_boundary_resolved_test.vibe got '$asb89_fr_out' (want 42)"
 # ...and awaiting a pending future NOTHING can resolve under the
 # tail-resumptive boundary is a deadlock that must trap deterministically
 # (the boundary arm asserts req < 1 -> `unreachable`), not livelock:
@@ -1393,42 +1339,30 @@ rm -rf "$fo65dir"; mkdir -p "$fo65dir"
 cp fixtures/async_first_order_rowvar_boundary_test.vibe "$fo65dir/pos.vibe"
 gate_fs_compile "$fo65dir/pos.vibe" "$fo65dir/pos.wasm" main
 gate_require_artifact "$fo65dir/pos.wasm" "async_first_order_rowvar_boundary_test.vibe did not compile -- the #2065 first-order row-variable admission regressed"
-fo65_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/pos.wasm" 2>/dev/null | tail -1)"
-if [ "$fo65_pos_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: async_first_order_rowvar_boundary_test.vibe got '$fo65_pos_out' (want 42)" >&2
-  exit 1
-fi
+gate_run fo65_pos_out stdout-last --invoke main "$fo65dir/pos.wasm"
+gate_require_eq "$fo65_pos_out" "42" "async_first_order_rowvar_boundary_test.vibe got '$fo65_pos_out' (want 42)"
 # The HIGHER-ORDER twin, called with a closure LITERAL that cannot perform
 # Async, is admitted by the call-site argument-inertness rule
 # (edp_argcond_admits) and must answer 42 too.
 cp fixtures/async_higher_order_rowvar_literal_boundary_test.vibe "$fo65dir/lit.vibe"
 gate_fs_compile "$fo65dir/lit.vibe" "$fo65dir/lit.wasm" main
 gate_require_artifact "$fo65dir/lit.wasm" "async_higher_order_rowvar_literal_boundary_test.vibe did not compile -- the #2065 call-site argument-inertness admission regressed"
-fo65_lit_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/lit.wasm" 2>/dev/null | tail -1)"
-if [ "$fo65_lit_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: async_higher_order_rowvar_literal_boundary_test.vibe got '$fo65_lit_out' (want 42)" >&2
-  exit 1
-fi
+gate_run fo65_lit_out stdout-last --invoke main "$fo65dir/lit.wasm"
+gate_require_eq "$fo65_lit_out" "42" "async_higher_order_rowvar_literal_boundary_test.vibe got '$fo65_lit_out' (want 42)"
 # The shape that motivates it: a spawn-free `TaskGroup::run` under the same
 # injected Async boundary, whose body parameter sits under a row variable.
 cp fixtures/async_taskgroup_run_boundary_test.vibe "$fo65dir/tg.vibe"
 gate_fs_compile "$fo65dir/tg.vibe" "$fo65dir/tg.wasm" main
 gate_require_artifact "$fo65dir/tg.wasm" "async_taskgroup_run_boundary_test.vibe did not compile -- TaskGroup::run under an Async entry is refused again (#2065)"
-fo65_tg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/tg.wasm" 2>/dev/null | tail -1)"
-if [ "$fo65_tg_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: async_taskgroup_run_boundary_test.vibe got '$fo65_tg_out' (want 42)" >&2
-  exit 1
-fi
+gate_run fo65_tg_out stdout-last --invoke main "$fo65dir/tg.wasm"
+gate_require_eq "$fo65_tg_out" "42" "async_taskgroup_run_boundary_test.vibe got '$fo65_tg_out' (want 42)"
 # #1962 (Codex on #3059): an entry granted through its binding annotation
 # (`let main: () -> Int with Fs = () -> { .. }`) gets the host provider too.
 cp fixtures/host_provider_annotated_entry.vibe "$fo65dir/annot.vibe"
 gate_fs_compile "$fo65dir/annot.vibe" "$fo65dir/annot.wasm" main
 gate_require_artifact "$fo65dir/annot.wasm" "host_provider_annotated_entry.vibe did not compile"
-fo65_annot_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$fo65dir/annot.wasm" 2>/dev/null | tail -1)"
-if [ "$fo65_annot_out" != "1" ]; then
-  echo "[compiler-gate] FAIL: host_provider_annotated_entry.vibe got '$fo65_annot_out' (want 1) -- an annotation-granted entry lost the host provider" >&2
-  exit 1
-fi
+gate_run fo65_annot_out stdout-last --invoke main "$fo65dir/annot.wasm"
+gate_require_eq "$fo65_annot_out" "1" "host_provider_annotated_entry.vibe got '$fo65_annot_out' (want 1) -- an annotation-granted entry lost the host provider"
 # ... and with a NAMED function in that position it must stay refused: the
 # argument's row is not readable at the call site, so it could instantiate the
 # row variable to Async and the perform would happen where the injected
@@ -1484,12 +1418,8 @@ if grep -q 'host_future_get\$price' "$nhf37dir/shadowed.wasm"; then
   echo "[compiler-gate] FAIL: a SHADOWED host_future_named still reserved the 'price' host import (#1337)" >&2
   exit 1
 fi
-nhf37_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$nhf37dir/shadowed.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$nhf37_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: shadowed host_future_named output '$nhf37_out' (want 42, #1337)" >&2
-  exit 1
-fi
+gate_run nhf37_out int --invoke _start "$nhf37dir/shadowed.wasm"
+gate_require_eq "$nhf37_out" "42" "shadowed host_future_named output '$nhf37_out' (want 42, #1337)"
 rm -rf "$nhf37dir"
 echo "[compiler-gate] named host future collector ok"
 

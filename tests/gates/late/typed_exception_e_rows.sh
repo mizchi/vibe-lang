@@ -208,10 +208,7 @@ exn_msg_expect() {
     exit 1
   fi
   got="$(grep "uncaught error" "$exnmsgdir/$name.stderr" | head -1)"
-  if [ "$got" != "vibe: uncaught error: $want" ]; then
-    echo "[compiler-gate] FAIL: $name got '$got' (want 'vibe: uncaught error: $want') (#1392 slice 3)" >&2
-    exit 1
-  fi
+  gate_require_eq "$got" "vibe: uncaught error: $want" "$name got '$got' (want 'vibe: uncaught error: $want') (#1392 slice 3)"
 }
 # derive(Show) enum: the VALUE, not `<AppError>` (which is what #1374 printed).
 exn_msg_expect shown "Failed(io)"
@@ -291,8 +288,7 @@ if ! VIBE_RC_ASSERT_SIZE0_ONLY=1 python3 scripts/rc_patch_freelist_assert.py \
   echo "[compiler-gate] FAIL: could not splice the alloc_size==0 assert into __rt_rc_drop (#1262)" >&2
   exit 1
 fi
-refcell_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$refcelldir/cell_sz0.wasm" 2>&1 | tail -1)"
+gate_run refcell_out last --invoke _start "$refcelldir/cell_sz0.wasm"
 if [ "$refcell_out" != "1" ]; then
   echo "[compiler-gate] FAIL: a headerless ref-cell box reached __rt_rc_drop (#1262)" >&2
   echo "  got '$refcell_out' (want 1); an 'unreachable' trap here means a captured" >&2
@@ -505,10 +501,7 @@ pbexports="$(node -e '
     if (e.kind === "function" && e.name.startsWith("__test_")) console.log(e.name);
   }
 ' "$pbdir/pb.wasm" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ' || true)"
-if [ "$pbexports" != "__test_alpha_ok __test_beta_fails __test_gamma_ok " ]; then
-  echo "[compiler-gate] FAIL: expected one __test_<name> export per test block, got: '$pbexports' (#819)" >&2
-  exit 1
-fi
+gate_require_eq "$pbexports" "__test_alpha_ok __test_beta_fails __test_gamma_ok " "expected one __test_<name> export per test block, got: '$pbexports' (#819)"
 # Isolation: the passing blocks must pass even though a sibling block traps.
 # Before #819 this failed, because the runner ran `_start` (every block) first.
 for pbname in __test_alpha_ok __test_gamma_ok; do
@@ -553,10 +546,7 @@ for pbslot in 1 2 3; do
   fi
 done
 pbrcs="$(cat "$pbbatch/1.rc" "$pbbatch/2.rc" "$pbbatch/3.rc" | tr '\n' ' ')"
-if [ "$pbrcs" != "0 1 0 " ]; then
-  echo "[compiler-gate] FAIL: expected batch statuses '0 1 0 ', got '$pbrcs' (#141)" >&2
-  exit 1
-fi
+gate_require_eq "$pbrcs" "0 1 0 " "expected batch statuses '0 1 0 ', got '$pbrcs' (#141)"
 # Each target's stdout is its OWN, not the concatenation -- this is what the
 # doctest harness compares against a block's ```output.
 if [ "$(cat "$pbbatch/1.out")" != "from alpha" ] || [ -s "$pbbatch/2.out" ] \
@@ -1256,7 +1246,7 @@ fn main() -> Int {
 INSPF
 gate_flat_compile "$inspdir/shadow_fn.vibe" "$inspdir/shadow_fn.wasm" main
 gate_require_artifact "$inspdir/shadow_fn.wasm" "a user-declared \`inspect\` did not compile -- the rewrite hijacked the call (#1571 shadow)"
-insp_fn_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$inspdir/shadow_fn.wasm" 2>/dev/null | tail -1)"
+gate_run insp_fn_out stdout-last "$inspdir/shadow_fn.wasm"
 if [ "$insp_fn_out" != "7" ]; then
   echo "[compiler-gate] FAIL: a user-declared \`inspect\` got '$insp_fn_out' (want 7) -- its body did not run (#1571 shadow)" >&2
   exit 1
@@ -1618,11 +1608,8 @@ sed 's/StringBuilder::build(b)/StringBuilder::freeze(b)/' "$sbdir/build.vibe" > 
 for spelling in build freeze; do
   gate_fs_compile "$sbdir/$spelling.vibe" "$sbdir/$spelling.wasm" main
   gate_require_artifact "$sbdir/$spelling.wasm" "StringBuilder::$spelling did not compile (ADR-0101 (3) / #1262)"
-  sb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sbdir/$spelling.wasm" 2>&1 | tail -1)"
-  if [ "$sb_out" != "11" ]; then
-    echo "[compiler-gate] FAIL: StringBuilder::$spelling produced '$sb_out' (want 11 = len(\"hello world\")) -- the two spellings must lower identically (#1262)" >&2
-    exit 1
-  fi
+  gate_run sb_out last "$sbdir/$spelling.wasm"
+  gate_require_eq "$sb_out" "11" "StringBuilder::$spelling produced '$sb_out' (want 11 = len(\"hello world\")) -- the two spellings must lower identically (#1262)"
 done
 # Byte-identical output is the strong form of "same lowering": the alias is
 # resolved before anything downstream can branch on the spelling, so the two

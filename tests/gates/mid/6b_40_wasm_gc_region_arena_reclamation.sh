@@ -125,7 +125,7 @@ for gcmd_be in linear gc; do
   env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcmd_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/gc_map_delete.vibe" "$gcmddir/$gcmd_be.wasm" main >/dev/null 2>&1
-  gcmd_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcmddir/$gcmd_be.wasm" 2>&1 | tail -1)"
+  gate_run gcmd_got last "$gcmddir/$gcmd_be.wasm"
   if [ "$gcmd_be" = "linear" ]; then
     gcmd_out="$gcmd_got"
   elif [ "$gcmd_got" != "$gcmd_out" ]; then
@@ -176,10 +176,7 @@ for gcsi_be in linear gc; do
 done
 # 65,066 = two distinct bytes read in order (a cursor that never advanced
 # would give 65,065). Pinned so both lanes breaking the same way still fails.
-if [ "$gcsi_out" != "65066123452" ]; then
-  echo "[compiler-gate] FAIL: stdin probe returned '$gcsi_out' (want 65066123452) on both lanes (#1262)" >&2
-  exit 1
-fi
+gate_require_eq "$gcsi_out" "65066123452" "stdin probe returned '$gcsi_out' (want 65066123452) on both lanes (#1262)"
 rm -rf "$gcsidir"
 echo "[compiler-gate] wasm-gc stdin + Int::parse ok (linear + gc, real input via VIBE_STDIN_BYTES)"
 
@@ -239,20 +236,14 @@ for gcss_be in linear gc; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/gc_sibling_slot_reuse.vibe" "$gcssdir/mixed.$gcss_be.wasm" main >/dev/null 2>&1 || true
   gate_require_artifact "$gcssdir/mixed.$gcss_be.wasm" "gc_sibling_slot_reuse.vibe did not compile on the $gcss_be backend (#1985)"
-  gcss_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcssdir/mixed.$gcss_be.wasm" 2>&1 | tail -1)"
-  if [ "$gcss_out" != "105" ]; then
-    echo "[compiler-gate] FAIL: gc_sibling_slot_reuse.vibe got '$gcss_out' on the $gcss_be backend (want 105; a wasm validation error here means an arm reused a slot another arm declared as a reference) (#1985)" >&2
-    exit 1
-  fi
+  gate_run gcss_out last "$gcssdir/mixed.$gcss_be.wasm"
+  gate_require_eq "$gcss_out" "105" "gc_sibling_slot_reuse.vibe got '$gcss_out' on the $gcss_be backend (want 105; a wasm validation error here means an arm reused a slot another arm declared as a reference) (#1985)"
   env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcss_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/gc_nested_branch_locals.vibe" "$gcssdir/nested.$gcss_be.wasm" main >/dev/null 2>&1 || true
   gate_require_artifact "$gcssdir/nested.$gcss_be.wasm" "gc_nested_branch_locals.vibe did not compile on the $gcss_be backend (#1985)"
-  gcss_nested_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcssdir/nested.$gcss_be.wasm" 2>&1 | tail -1)"
-  if [ "$gcss_nested_out" != "546" ]; then
-    echo "[compiler-gate] FAIL: gc_nested_branch_locals.vibe got '$gcss_nested_out' on the $gcss_be backend (want 546) (#1985)" >&2
-    exit 1
-  fi
+  gate_run gcss_nested_out last "$gcssdir/nested.$gcss_be.wasm"
+  gate_require_eq "$gcss_nested_out" "546" "gc_nested_branch_locals.vibe got '$gcss_nested_out' on the $gcss_be backend (want 546) (#1985)"
 done
 gcss_lin_locals="$(node scripts/wasm_local_counts.mjs --max "$gcssdir/nested.linear.wasm")"
 gcss_gc_locals="$(node scripts/wasm_local_counts.mjs --max "$gcssdir/nested.gc.wasm")"
@@ -277,11 +268,8 @@ VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/gc_for_in_string_test.vibe" "$gcstrdir/out.wasm" main >/dev/null 2>&1 || true
 gate_require_artifact "$gcstrdir/out.wasm" "gc String for-in fixture did not compile"
-gcstr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcstrdir/out.wasm" 2>&1 | tail -1)"
-if [ "$gcstr_out" != "1666" ]; then
-  echo "[compiler-gate] FAIL: gc String for-in got '$gcstr_out' (want 1666)" >&2
-  exit 1
-fi
+gate_run gcstr_out last "$gcstrdir/out.wasm"
+gate_require_eq "$gcstr_out" "1666" "gc String for-in got '$gcstr_out' (want 1666)"
 rm -rf "$gcstrdir"
 echo "[compiler-gate] wasm-gc String for-in ok (1666)"
 
@@ -300,11 +288,8 @@ VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/gc_backend_effect_evidence_dict.vibe" "$gcedir/out.wasm" main >/dev/null 2>&1 || true
 gate_require_artifact "$gcedir/out.wasm" "gc_backend_effect_evidence_dict.vibe did not compile under VIBE_BACKEND=gc"
-gce_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcedir/out.wasm" 2>&1 | tail -1)"
-if [ "$gce_out" != "17" ]; then
-  echo "[compiler-gate] FAIL: gc_backend_effect_evidence_dict.vibe got '$gce_out' (want 17) -- gc-lane evidence-dict wiring regressed" >&2
-  exit 1
-fi
+gate_run gce_out last "$gcedir/out.wasm"
+gate_require_eq "$gce_out" "17" "gc_backend_effect_evidence_dict.vibe got '$gce_out' (want 17) -- gc-lane evidence-dict wiring regressed"
 rm -rf "$gcedir"
 echo "[compiler-gate] wasm-gc backend evidence-dict user-defined effect support ok (17)"
 
@@ -438,11 +423,8 @@ for dormant_fixture in \
   fixtures/fnvalue_nested_handle_dormant_enum.vibe; do
   gate_fs_compile "$dormant_fixture" "$nhvdir/dormant.wasm" main
   gate_require_artifact "$nhvdir/dormant.wasm" "dormant owner use refused the live entry: $dormant_fixture (#3195)"
-  dormant_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dormant.wasm" 2>/dev/null | tr -dc '0-9')"
-  if [ "$dormant_result" != "1" ]; then
-    echo "[compiler-gate] FAIL: dormant owner use changed the live result: $dormant_fixture ($dormant_result, want 1, #3195)" >&2
-    exit 1
-  fi
+  gate_run dormant_result digits --invoke main "$nhvdir/dormant.wasm"
+  gate_require_eq "$dormant_result" "1" "dormant owner use changed the live result: $dormant_fixture ($dormant_result, want 1, #3195)"
 done
 gate_fs_compile fixtures/err_fnvalue_nested_handle_eager_constructor_argument.vibe "$nhvdir/eager_constructor_argument.wasm" main
 if [ -s "$nhvdir/eager_constructor_argument.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/eager_constructor_argument.wasm.diag" 2>/dev/null; then
@@ -463,88 +445,52 @@ if [ -s "$nhvdir/library_export.wasm" ] || ! grep -qF 'pass an explicitly row-an
 fi
 gate_fs_compile fixtures/fnvalue_nested_handle_dead.vibe "$nhvdir/dead.wasm" main
 gate_require_artifact "$nhvdir/dead.wasm" "unreachable nested-handler call rejected the live entry (#3195)"
-dead_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$dead_result" != "42" ]; then
-  echo "[compiler-gate] FAIL: reachable entry returned '$dead_result' with an unreachable nested-handler call (#3195)" >&2
-  exit 1
-fi
+gate_run dead_result digits --invoke main "$nhvdir/dead.wasm"
+gate_require_eq "$dead_result" "42" "reachable entry returned '$dead_result' with an unreachable nested-handler call (#3195)"
 gate_fs_compile fixtures/fnvalue_nested_handle_dead_caller.vibe "$nhvdir/dead_caller.wasm" main
 gate_require_artifact "$nhvdir/dead_caller.wasm" "an unreachable call site rejected a reachable handler owner (#3195)"
-dead_caller_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead_caller.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$dead_caller_result" != "1" ]; then
-  echo "[compiler-gate] FAIL: reachable handler owner returned '$dead_caller_result' (want 1, #3195)" >&2
-  exit 1
-fi
+gate_run dead_caller_result digits --invoke main "$nhvdir/dead_caller.wasm"
+gate_require_eq "$dead_caller_result" "1" "reachable handler owner returned '$dead_caller_result' (want 1, #3195)"
 gate_fs_compile fixtures/fnvalue_nested_handle_dead_owner_value.vibe "$nhvdir/dead_owner_value.wasm" main
 gate_require_artifact "$nhvdir/dead_owner_value.wasm" "a dead value reference rejected a reachable direct handler-owner call (#3195)"
-dead_owner_value_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead_owner_value.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$dead_owner_value_result" != "1" ]; then
-  echo "[compiler-gate] FAIL: reachable owner with dead value reference returned '$dead_owner_value_result' (want 1, #3195)" >&2
-  exit 1
-fi
+gate_run dead_owner_value_result digits --invoke main "$nhvdir/dead_owner_value.wasm"
+gate_require_eq "$dead_owner_value_result" "1" "reachable owner with dead value reference returned '$dead_owner_value_result' (want 1, #3195)"
 gate_fs_compile fixtures/fnvalue_nested_handle_shadowed_owner_value.vibe "$nhvdir/shadowed_owner_value.wasm" main
 gate_require_artifact "$nhvdir/shadowed_owner_value.wasm" "a local value shadow rejected the reachable handler owner (#3195)"
-shadowed_owner_value_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/shadowed_owner_value.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$shadowed_owner_value_result" != "6" ]; then
-  echo "[compiler-gate] FAIL: reachable owner with local value shadow returned '$shadowed_owner_value_result' (want 6, #3195)" >&2
-  exit 1
-fi
+gate_run shadowed_owner_value_result digits --invoke main "$nhvdir/shadowed_owner_value.wasm"
+gate_require_eq "$shadowed_owner_value_result" "6" "reachable owner with local value shadow returned '$shadowed_owner_value_result' (want 6, #3195)"
 gate_fs_compile fixtures/fnvalue_nested_handle_labeled_shadow_value.vibe "$nhvdir/labeled_shadow_value.wasm" main
 gate_require_artifact "$nhvdir/labeled_shadow_value.wasm" "a labeled parameter was attributed to the top-level handler owner (#3195)"
-labeled_shadow_value_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/labeled_shadow_value.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$labeled_shadow_value_result" != "6" ]; then
-  echo "[compiler-gate] FAIL: labeled parameter shadow returned '$labeled_shadow_value_result' (want 6, #3195)" >&2
-  exit 1
-fi
+gate_run labeled_shadow_value_result digits --invoke main "$nhvdir/labeled_shadow_value.wasm"
+gate_require_eq "$labeled_shadow_value_result" "6" "labeled parameter shadow returned '$labeled_shadow_value_result' (want 6, #3195)"
 gate_fs_compile fixtures/fnvalue_nested_handle_dead_local.vibe "$nhvdir/dead_local.wasm" main
 gate_require_artifact "$nhvdir/dead_local.wasm" "an unused local closure rejected a reachable handler owner (#3195)"
-dead_local_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead_local.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$dead_local_result" != "1" ]; then
-  echo "[compiler-gate] FAIL: reachable owner with unused local closure returned '$dead_local_result' (want 1, #3195)" >&2
-  exit 1
-fi
+gate_run dead_local_result digits --invoke main "$nhvdir/dead_local.wasm"
+gate_require_eq "$dead_local_result" "1" "reachable owner with unused local closure returned '$dead_local_result' (want 1, #3195)"
 gate_fs_compile fixtures/fnvalue_nested_handle_dead_array.vibe "$nhvdir/dead_array.wasm" main
 gate_require_artifact "$nhvdir/dead_array.wasm" "an unused array of closures rejected a reachable handler owner (#3195)"
-dead_array_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead_array.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$dead_array_result" != "1" ]; then
-  echo "[compiler-gate] FAIL: reachable owner with unused closure array returned '$dead_array_result' (want 1, #3195)" >&2
-  exit 1
-fi
+gate_run dead_array_result digits --invoke main "$nhvdir/dead_array.wasm"
+gate_require_eq "$dead_array_result" "1" "reachable owner with unused closure array returned '$dead_array_result' (want 1, #3195)"
 gate_fs_compile fixtures/fnvalue_nested_handle_shadowed_dead_local.vibe "$nhvdir/shadowed_dead_local.wasm" main
 gate_require_artifact "$nhvdir/shadowed_dead_local.wasm" "a shadowed unused closure rejected a reachable handler owner (#3195)"
-shadowed_dead_local_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/shadowed_dead_local.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$shadowed_dead_local_result" != "3" ]; then
-  echo "[compiler-gate] FAIL: reachable owner with shadowed unused closure returned '$shadowed_dead_local_result' (want 3, #3195)" >&2
-  exit 1
-fi
+gate_run shadowed_dead_local_result digits --invoke main "$nhvdir/shadowed_dead_local.wasm"
+gate_require_eq "$shadowed_dead_local_result" "3" "reachable owner with shadowed unused closure returned '$shadowed_dead_local_result' (want 3, #3195)"
 gate_fs_compile fixtures/fnvalue_nested_handle_dormant_reference.vibe "$nhvdir/dormant_reference.wasm" main
 gate_require_artifact "$nhvdir/dormant_reference.wasm" "a reference inside another unused closure made a dormant closure reachable (#3195)"
-dormant_reference_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dormant_reference.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$dormant_reference_result" != "1" ]; then
-  echo "[compiler-gate] FAIL: reachable owner with dormant reference returned '$dormant_reference_result' (want 1, #3195)" >&2
-  exit 1
-fi
+gate_run dormant_reference_result digits --invoke main "$nhvdir/dormant_reference.wasm"
+gate_require_eq "$dormant_reference_result" "1" "reachable owner with dormant reference returned '$dormant_reference_result' (want 1, #3195)"
 gate_fs_compile fixtures/fnvalue_nested_handle_dormant_array_reference.vibe "$nhvdir/dormant_array_reference.wasm" main
 gate_require_artifact "$nhvdir/dormant_array_reference.wasm" "a function reference in an unused array made a dormant closure reachable (#3195)"
-dormant_array_reference_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dormant_array_reference.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$dormant_array_reference_result" != "1" ]; then
-  echo "[compiler-gate] FAIL: reachable owner with dormant array reference returned '$dormant_array_reference_result' (want 1, #3195)" >&2
-  exit 1
-fi
+gate_run dormant_array_reference_result digits --invoke main "$nhvdir/dormant_array_reference.wasm"
+gate_require_eq "$dormant_array_reference_result" "1" "reachable owner with dormant array reference returned '$dormant_array_reference_result' (want 1, #3195)"
 gate_fs_compile fixtures/fnvalue_nested_handle_shadowed_local_row.vibe "$nhvdir/shadowed_local_row.wasm" main
 gate_require_artifact "$nhvdir/shadowed_local_row.wasm" "a local row-annotated closure was confused with a self-discharging top-level function (#3195)"
-shadowed_local_row_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/shadowed_local_row.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$shadowed_local_row_result" != "1" ]; then
-  echo "[compiler-gate] FAIL: shadowed local row returned '$shadowed_local_row_result' (want 1, #3195)" >&2
-  exit 1
-fi
+gate_run shadowed_local_row_result digits --invoke main "$nhvdir/shadowed_local_row.wasm"
+gate_require_eq "$shadowed_local_row_result" "1" "shadowed local row returned '$shadowed_local_row_result' (want 1, #3195)"
 gate_fs_compile fixtures/fnvalue_nested_handle_shadowed_owner.vibe "$nhvdir/shadowed_owner.wasm" main
 gate_require_artifact "$nhvdir/shadowed_owner.wasm" "a local shadow of the handler owner was mistaken for the top-level owner (#3195)"
-shadowed_owner_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/shadowed_owner.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$shadowed_owner_result" != "9" ]; then
-  echo "[compiler-gate] FAIL: shadowed handler owner returned '$shadowed_owner_result' (want 9, #3195)" >&2
-  exit 1
-fi
+gate_run shadowed_owner_result digits --invoke main "$nhvdir/shadowed_owner.wasm"
+gate_require_eq "$shadowed_owner_result" "9" "shadowed handler owner returned '$shadowed_owner_result' (want 9, #3195)"
 gate_fs_compile fixtures/err_fnvalue_nested_handle_unused_eager_array.vibe "$nhvdir/eager_array.wasm" main
 if [ -s "$nhvdir/eager_array.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/eager_array.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: an eager call in an unused array escaped the refusal (#3195)" >&2
@@ -817,10 +763,7 @@ VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="$svdir/handler.wit" \
   gate_flat_compile "fixtures/serve_handler_smoke.vibe" "$svdir/handler.component.wasm" main
 gate_require_artifact "$svdir/handler.component.wasm" "VIBE_SERVE_COMPONENT produced no component"
 sv_magic="$(od -An -t x1 -N 4 "$svdir/handler.component.wasm" | tr -d ' \n')"
-if [ "$sv_magic" != "0061736d" ]; then
-  echo "[compiler-gate] FAIL: serve component is not wasm (magic=$sv_magic)" >&2
-  exit 1
-fi
+gate_require_eq "$sv_magic" "0061736d" "serve component is not wasm (magic=$sv_magic)"
 gate_require_artifact "$svdir/handler.wit" "VIBE_SERVE_WIT_OUT sidecar missing"
 SERVE_WASMTIME="$(bash scripts/wasmtime_bin.sh 2>/dev/null || command -v wasmtime || true)"
 if [ -n "$SERVE_WASMTIME" ] && "$SERVE_WASMTIME" --version >/dev/null 2>&1; then
@@ -1075,11 +1018,8 @@ a71fdir="_build/_gate_effectset_contract"
 rm -rf "$a71fdir"; mkdir -p "$a71fdir"
 gate_fs_compile "fixtures/contract_effectset_vpkg_main.vibe" "$a71fdir/out.wasm" main
 gate_require_artifact "$a71fdir/out.wasm" "contract_effectset_vpkg_main.vibe did not compile -- effectset contract passthrough regressed"
-a71f_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71fdir/out.wasm" 2>&1 | tail -1)"
-if [ "$a71f_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: contract_effectset_vpkg_main got '$a71f_out' (want 42)" >&2
-  exit 1
-fi
+gate_run a71f_out last "$a71fdir/out.wasm"
+gate_require_eq "$a71f_out" "42" "contract_effectset_vpkg_main got '$a71f_out' (want 42)"
 rm -rf "$a71fdir"
 echo "[compiler-gate] effectset contract passthrough ok"
 
@@ -1100,11 +1040,8 @@ a71gdir="_build/_gate_effectset_sig_alias"
 rm -rf "$a71gdir"; mkdir -p "$a71gdir"
 gate_fs_compile "fixtures/contract_effectset_signature_alias_main.vibe" "$a71gdir/out.wasm" main
 gate_require_artifact "$a71gdir/out.wasm" "contract_effectset_signature_alias_main.vibe did not compile -- effectset-aware contract signature matching regressed"
-a71g_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$a71gdir/out.wasm" 2>&1 | tail -1)"
-if [ "$a71g_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: contract_effectset_signature_alias_main got '$a71g_out' (want 42)" >&2
-  exit 1
-fi
+gate_run a71g_out last "$a71gdir/out.wasm"
+gate_require_eq "$a71g_out" "42" "contract_effectset_signature_alias_main got '$a71g_out' (want 42)"
 rm -rf "$a71gdir"
 echo "[compiler-gate] effectset contract signature-matching ok"
 

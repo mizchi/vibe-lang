@@ -2081,10 +2081,7 @@ printf '%s\n' "$fwd_cases" | while IFS='|' read -r nm call def; do
   fi
   # ...and both must REJECT. Agreeing by accepting everything is the failure
   # this section exists to catch, and an order comparison alone cannot see it.
-  if [ "$fv" != "rejected" ]; then
-    echo "[compiler-gate] FAIL: case '$nm' is ACCEPTED in both orders -- the ill-typed call is not being checked at all (#2318)" >&2
-    exit 1
-  fi
+  gate_require_eq "$fv" "rejected" "case '$nm' is ACCEPTED in both orders -- the ill-typed call is not being checked at all (#2318)"
 done || exit 1
 # A CORRECT forward call must still compile and run, or "reject everything"
 # would pass every assertion above.
@@ -2110,10 +2107,7 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   exit 1
 fi
 ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fwddir/ok.wasm" 2>&1 | head -1)"
-if [ "$ok_out" != "3" ]; then
-  echo "[compiler-gate] FAIL: the correct forward call ran to '$ok_out', expected 3 (#2318)" >&2
-  exit 1
-fi
+gate_require_eq "$ok_out" "3" "the correct forward call ran to '$ok_out', expected 3 (#2318)"
 # An optional parameter may be omitted by a legitimate call, so the hoisted
 # signature must stand down for it rather than report a false arity error.
 cat > "$fwddir/opt.vibe" <<'FWDEOF'

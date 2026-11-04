@@ -310,6 +310,68 @@ else
   bad "gate_fs_compile_on failed an unknown lane without naming it: $(cat "$WORK/req.out")"
 fi
 
+# --- gate_run / gate_require_eq (#3671) --------------------------------------
+# gate_host_run is the harness's one process launch; each case below replaces
+# it in a subshell with a fake runner, so no compiler or module is needed.
+fake_runner() { # <status>: print a fixed transcript, then exit <status>
+  printf 'a\n12x-3\n'
+  printf 'trap: oops\n' >&2
+  return "$1"
+}
+mkdir -p "$WORK/tmp"
+
+# 13. each shape reduces the transcript the way the inline spelling did.
+for case_ in "last|trap: oops" "stdout-last|12x-3" "digits|123" "int|12-3"; do
+  shape="${case_%%|*}"; want="${case_#*|}"
+  got="$( gate_host_run() { fake_runner 0; }; TMPDIR="$WORK/tmp"; gate_run v "$shape" m.wasm; printf '%s' "$v" )" || got="<aborted>"
+  if [ "$got" = "$want" ]; then
+    ok "gate_run $shape reads '$want'"
+  else
+    bad "gate_run $shape read '$got' (want '$want')"
+  fi
+done
+if [ -z "$(ls -A "$WORK/tmp")" ]; then
+  ok "gate_run leaves no temporary file behind"
+else
+  bad "gate_run left temporary files: $(ls -A "$WORK/tmp")"
+fi
+
+# 14. a run that exits non-zero FAILS, naming the module -- even when what it
+# printed is the expected answer, as under the lanes' `set -euo pipefail`.
+if ( gate_host_run() { fake_runner 3; }; TMPDIR="$WORK/tmp"; gate_run v stdout-last --invoke main m.wasm; gate_require_eq "$v" "12x-3" "unreached" ) >"$WORK/req.out" 2>&1; then
+  bad "gate_run accepted a run that exited 3"
+elif grep -qF "running --invoke main m.wasm exited 3" "$WORK/req.out" && grep -qF "trap: oops" "$WORK/req.out"; then
+  ok "gate_run fails a non-zero run by name and shows its output"
+else
+  bad "gate_run failed a non-zero run without naming it: $(cat "$WORK/req.out")"
+fi
+
+# 15. an unknown shape fails by name rather than assigning nothing.
+if ( gate_host_run() { fake_runner 0; }; gate_run v tail m.wasm ) >"$WORK/req.out" 2>&1; then
+  bad "gate_run accepted an unknown shape"
+elif grep -qF "unknown shape 'tail'" "$WORK/req.out"; then
+  ok "gate_run fails an unknown shape by name"
+else
+  bad "gate_run failed an unknown shape without naming it: $(cat "$WORK/req.out")"
+fi
+
+# 16. gate_require_eq passes an exact match and fails anything else with the
+# lane's message -- a prefix and the empty string included.
+if ( gate_require_eq "42" "42" "unreached" ) >"$WORK/req.out" 2>&1; then
+  ok "gate_require_eq passes an exact match"
+else
+  bad "gate_require_eq failed an exact match: $(cat "$WORK/req.out")"
+fi
+for got_ in "4" "420" ""; do
+  if ( gate_require_eq "$got_" "42" "got '$got_' (want 42)" ) >"$WORK/req.out" 2>&1; then
+    bad "gate_require_eq accepted '$got_' for 42"
+  elif grep -qF "[compiler-gate] FAIL: got '$got_' (want 42)" "$WORK/req.out"; then
+    ok "gate_require_eq fails '$got_' for 42 with the lane's message"
+  else
+    bad "gate_require_eq failed '$got_' without the lane's message: $(cat "$WORK/req.out")"
+  fi
+done
+
 echo "----"
 echo "passed: $passed, failed: $failed"
 [ "$failed" -eq 0 ]

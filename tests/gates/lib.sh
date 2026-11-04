@@ -245,3 +245,67 @@ gate_flat_compile() {
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$@" >/dev/null 2>&1 || true
 }
+
+# --- run and compare (#3671) ---------------------------------------------------
+
+# gate_host_run <runner arg...>
+#
+# Run a compiled module on the node host runner with the repository preopened.
+# The one place the harness launches a module, so the self-test can stand a
+# fake runner in for it by redefining this function -- not through a variable
+# a caller's environment could set (#2252).
+gate_host_run() {
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$@"
+}
+
+# gate_run <var> <shape> <runner arg...>
+#
+# Run a module (gate_host_run) and assign what it printed, reduced by <shape>,
+# to <var>:
+#   last         the last line of stdout and stderr together (`2>&1 | tail -1`)
+#   stdout-last  the last line of stdout alone (`2>/dev/null | tail -1`)
+#   digits       every digit stdout printed (`2>/dev/null | tr -dc '0-9'`)
+#   int          every digit and `-` stdout printed (`| tr -dc '0-9-'`)
+# A run that exits non-zero FAILS the lane, naming the module and showing the
+# end of what it printed on both streams (a shape that reads stdout alone
+# still shows the stderr that says why). That is what the inline spelling it replaces did under the
+# lanes' `set -euo pipefail` -- killed the lane, though with no message -- so a
+# program that prints the expected answer and then traps is still red. An
+# unknown <shape> fails too, rather than assigning nothing.
+gate_run() {
+  local __var="$1" __shape="$2"; shift 2
+  local __f __rc=0 __val
+  __f="$(mktemp "${TMPDIR:-/tmp}/vibe_gate_run.XXXXXX")"
+  case "$__shape" in
+    last) gate_host_run "$@" >"$__f" 2>&1 || __rc=$? ;;
+    stdout-last|digits|int) gate_host_run "$@" >"$__f" 2>"$__f.err" || __rc=$? ;;
+    *)
+      rm -f "$__f"
+      echo "[compiler-gate] FAIL: gate_run: unknown shape '$__shape' (want last, stdout-last, digits or int)" >&2
+      exit 1 ;;
+  esac
+  if [ "$__rc" -ne 0 ]; then
+    echo "[compiler-gate] FAIL: running $* exited $__rc" >&2
+    tail -n 20 "$__f" >&2 || true
+    tail -n 20 "$__f.err" >&2 2>/dev/null || true
+    rm -f "$__f" "$__f.err"
+    exit 1
+  fi
+  case "$__shape" in
+    last|stdout-last) __val="$(tail -1 "$__f")" ;;
+    digits) __val="$(tr -dc '0-9' <"$__f")" ;;
+    int) __val="$(tr -dc '0-9-' <"$__f")" ;;
+  esac
+  rm -f "$__f" "$__f.err"
+  printf -v "$__var" '%s' "$__val"
+}
+
+# gate_require_eq <got> <want> <message>
+#
+# FAIL the lane with <message> unless <got> is exactly <want>.
+gate_require_eq() {
+  if [ "$1" != "$2" ]; then
+    echo "[compiler-gate] FAIL: $3" >&2
+    exit 1
+  fi
+}
