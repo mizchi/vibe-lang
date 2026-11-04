@@ -343,19 +343,23 @@ test "unsupported and forged lanes fail closed" {
   }, "true")
 }
 
-test "contract rows follow lowered requires result body ensures order" {
+test "contract rows follow lowered requires checker result ensures body order" {
+  // #3715: `ensures` is checked by a closure bound before the body, so its
+  // name and its `result` parameter are the two synthetic rows, and the
+  // conditions' rows precede the body's.
   let source = "fn f(x: Int) -> Int where { requires: ((r) -> { r })(true), ensures: ((e) -> { e })(true) } { ((b) -> { b })(x) }"
   match parse_source_located_with_binder_authority(source) {
     Some(authority) => {
       let rows = located_program_binder_authority_rows(authority)
-      inspect(Array::length(rows), "6")
+      inspect(Array::length(rows), "7")
       let expected = [
         "f",
         "x",
         "r",
+        "__vibe_ensures",
         "result",
-        "b",
-        "e"
+        "e",
+        "b"
       ]
       let mut i = 0
       for row in rows {
@@ -365,8 +369,8 @@ test "contract rows follow lowered requires result body ensures order" {
             inspect(String::substring(source, start, end), name)
           },
           Synthetic(name, _) => {
-            inspect(i, "3")
-            inspect(name, "result")
+            inspect(i == 3 || i == 4, "true")
+            inspect(name == Array::get(expected, i), "true")
           }
         }
         i = i + 1

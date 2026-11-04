@@ -62,7 +62,7 @@ import ./parser_base.vibe {
 }
 
 import ./fn_contract.vibe {
-  ensures_checked_body
+  ensures_check_name, ensures_checked_body
 }
 
 import ./parser_expr_core.vibe {
@@ -1399,13 +1399,19 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
       Some((req_out, ens_out)) => {
         let body_rows = binder_capture_take_from(context = context, mark = body_mark)
         binder_capture_append(context = context, rows = ArrayBuilder::freeze(req_out))
+        // #3715: the rows follow the lowered shape -- `requires` asserts, then
+        // `let <checker> = (result) -> { ensures }` around a call on the body
+        // (`ensures_checked_body`), so the checker and `result` come first,
+        // then the conditions' rows, then the body's.
         if Array::length(enss) > 0 {
+          binder_capture_synthetic(context = context, name = ensures_check_name(body = body, ensures = enss, params = params))
           binder_capture_synthetic(context = context, name = "result")
+          binder_capture_append(context = context, rows = ArrayBuilder::freeze(ens_out))
+          binder_capture_append(context = context, rows = body_rows)
         } else {
-          ()
+          binder_capture_append(context = context, rows = body_rows)
+          binder_capture_append(context = context, rows = ArrayBuilder::freeze(ens_out))
         }
-        binder_capture_append(context = context, rows = body_rows)
-        binder_capture_append(context = context, rows = ArrayBuilder::freeze(ens_out))
       },
       None => ()
     }
