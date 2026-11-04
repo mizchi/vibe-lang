@@ -135,7 +135,9 @@ fn attach_while_contract(cond: Expr, body: Expr, invariants: Array[Expr], decrea
 /// iterand's type after checking, so there is no condition to join; the
 /// checkpoint is a closure defined before the loop -- in the loop's own scope,
 /// for the reason `attach_while_contract` gives -- and called on entry, at the
-/// end of the body, and before each `continue` that targets this loop.
+/// end of the body, and before each `continue` that targets this loop. The
+/// loop ends up the tail of that wrapper, which the checker treats as a
+/// statement where the wrapper stands as one (`check_seq_spine`).
 fn attach_for_contract(value_name: String, index_name: Option[String], iterable: Expr, body: Expr, invariants: Array[Expr], decreases: Array[Expr], tag: Int) -> Expr {
   if Array::length(invariants) == 0 && Array::length(decreases) == 0 {
     EForIn(value_name, index_name, iterable, body)
@@ -143,7 +145,10 @@ fn attach_for_contract(value_name: String, index_name: Option[String], iterable:
     let check = "__loop_check_\{tag}"
     let call = () -> ECall(EIdent(check, 0 - 1), [], 0 - 1, [])
     let lam = EFn(_no_tp(), _no_tb(), [], None, None, contract_checkpoint(invariants = invariants, decreases = decreases, tag = tag))
-    let looped = EForIn(value_name, index_name, iterable, ESeq(check_before_continue(expr = body, check = check), call()))
+    // The body's value is kept across the checkpoint: a `for` over an Array
+    // collects it.
+    let body_value = "__loop_body_\{tag}"
+    let looped = EForIn(value_name, index_name, iterable, ELet(body_value, check_before_continue(expr = body, check = check), ESeq(call(), EIdent(body_value, 0 - 1)), 0 - 1))
     with_measure_cells(inner = ELet(check, lam, ESeq(call(), looped), 0 - 1), decreases = decreases, tag = tag)
   }
 }

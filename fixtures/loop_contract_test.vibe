@@ -58,6 +58,42 @@ fn sum_for(_ xs: Array[Int]) -> Int {
   acc
 }
 
+// A `for` over an Array collects its body's value; the checkpoint after the
+// body does not replace it.
+fn doubled(_ xs: Array[Int]) -> Array[Int] {
+  for x in xs where { invariant: Array::length(xs) >= 0 } {
+    x * 2
+  }
+}
+
+// A non-collecting `for` (a struct iterator) is a statement with a contract
+// as without one.
+trait Steps {
+  next(Self) -> Option[(Int, Self)]
+}
+
+struct Upto { at: Int; end: Int }
+
+impl Steps for Upto {
+  next(self) -> Option[(Int, Upto)] {
+    if self.at < self.end {
+      Some((self.at, Upto::{ at: self.at + 1, end: self.end }))
+    } else {
+      None
+    }
+  }
+}
+
+fn sum_upto(_ n: Int) -> Int {
+  let mut acc = 0
+  let mut seen = 0
+  for x in Upto::{ at: 0, end: n } where { invariant: seen <= n, decreases: n - seen } {
+    acc = acc + x
+    seen = seen + 1
+  }
+  acc
+}
+
 fn countdown_loop(_ start: Int) -> Int {
   loop (k = start, steps = 0) where { invariant: k >= 0, decreases: k } {
     if k == 0 {
@@ -96,6 +132,14 @@ test "a clause reads the loop's scope, not the body's" {
 
 test "a for contract holds across continue" {
   inspect(sum_for([1, -2, 3]), content = "4")
+}
+
+test "a contracted for over an Array still collects the body's value" {
+  inspect(doubled([1, 2, 3]), content = "[2, 4, 6]")
+}
+
+test "a contracted non-collecting for is a statement" {
+  inspect(sum_upto(4), content = "6")
 }
 
 test "loop with parameters and a bare loop take the clause" {

@@ -309,7 +309,7 @@ fn assign_target_marker(_ off: Int) -> String {
 /// forward reference). Semantics are identical to the recursive arms: each `let`
 /// binds its (generalized, or raw for `mut`) value type into the env seen by the
 /// rest of the spine, and the final non-spine expression's result is returned.
-fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), ce_discarded_root: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Type, Subst, Int) {
+fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), ce_discarded_root: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), discarded_tail: Bool) -> (Type, Subst, Int) {
   let mut cur = expr
   let mut cenv = env
   let mut s1 = s
@@ -326,12 +326,20 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
   while !done {
     match cur {
       ESeq(left, right) => {
-        // Only a DIRECT EForIn at the head of a sequence is statement-shaped.
-        // Do not put this context in TypeEnv: an ambient sentinel leaks through
-        // if/lambda/block children (and can collide with a user binding), which
-        // would let a nested consumed iterator result revive #1679.
+        // Only an EForIn at the head of a sequence is statement-shaped: a
+        // DIRECT one, or one that is the tail of a `let` / sequence spine
+        // standing there -- that spine's value is its tail, and it is
+        // discarded (#3716: a loop contract wraps its loop in the measure
+        // cells and the checkpoint closure). Do not put this context in
+        // TypeEnv: an ambient sentinel leaks through if/lambda/block children
+        // (and can collide with a user binding), which would let a nested
+        // consumed iterator result revive #1679.
         let (_, ns, nc) = match left {
           EForIn(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
+          ESeq(_, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
+          ELet(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
+          ELetRec(_, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
+          ELetMut(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
           _ => ce(left, cenv, defs, s1, c1, errors, tytab, capture, lane)
         }
         s1 = ns
@@ -506,7 +514,13 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       _ => {
         // `cur` already owns the active virtual right-child frame. Calling
         // the wrapper here would add a fictional child before checking it.
-        result = check_expr_capture_impl(expr = cur, env = cenv, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = false)
+        // A `for` tail is a statement exactly when the spine is one; any
+        // other tail keeps the value context it always had.
+        let tail_discarded = discarded_tail && match cur {
+          EForIn(_, _, _, _) => true,
+          _ => false
+        }
+        result = check_expr_capture_impl(expr = cur, env = cenv, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane, discarded_root = tail_discarded)
         done = true
       }
     }
@@ -844,10 +858,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
     },
-    ESeq(_, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root),
-    ELet(_, _, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root),
-    ELetRec(_, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root),
-    ELetMut(_, _, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root),
+    ESeq(_, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root, discarded_tail = discarded_root),
+    ELet(_, _, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root, discarded_tail = discarded_root),
+    ELetRec(_, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root, discarded_tail = discarded_root),
+    ELetMut(_, _, _, _) => check_seq_spine(expr = expr, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane, ce = check_expr_capture, ce_discarded_root = check_expr_capture_discarded_root, discarded_tail = discarded_root),
     EIf(cond, then_e, else_e) => {
       let (ct, s1, c1) = check_expr_capture(expr = cond, env = env, defs = defs, s = s, c = c, errors = errors, tytab = tytab, capture = capture, lane = lane)
       let resolved_ct = subst_apply(s = s1, ty = ct)
