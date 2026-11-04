@@ -116,6 +116,43 @@ test "width-named floats" {
 }
 ```
 
+### `Int32` / `UInt32`: exact 32-bit integers
+
+`Int32` (-2147483648 .. 2147483647) and `UInt32` (0 .. 4294967295) sit next
+to the unsized 63-bit `Int`, ADR-0122 (#3730). They are held as the same
+tagged immediate an `Int` is, and every value lies in its type's range:
+
+- **Arithmetic wraps at 32 bits.** `+ - * /` and the shifts wrap on every lane
+  (`2147483647 + 1` is `-2147483648`); `& | ^ %` and `~` stay in range. A
+  shift count is taken modulo 32, as wasm's `i32` shifts take it. `>>` is
+  arithmetic on `Int32` and logical on `UInt32`. Unary `-` exists on `Int32`
+  only (`-x` of the minimum is the minimum); write `0 - x` on a `UInt32`.
+- **Both operands have one type.** `Int` never converts implicitly, and the
+  type error names the conversion. Widening is `Int32::to_int(x)` /
+  `UInt32::to_int(x)`. Narrowing is checked, `Int::to_int32(n)` /
+  `Int::to_uint32(n)` returning `None` out of range, or wraps by name:
+  `Int::wrap_int32(n)` / `Int::wrap_uint32(n)` keep the low 32 bits.
+- **Literals take the type expected of them.** An integer literal is an
+  `Int32` / `UInt32` beside an operand of that type (`x + 1`), under an
+  annotation (`let x: Int32 = 5`, an array literal included), as an argument,
+  a return value or an assignment, and it is refused when it does not fit.
+  Elsewhere (a struct field, `Some(5)`), convert with `Int::wrap_int32`.
+- **Traits.** `Eq`, `Ord` and `Show` treat them as the scalars they are, and
+  `Int32::to_string` / `UInt32::to_string` render them. `[T: Add]` refuses
+  them, because a generic `+` would not wrap. `Default`, `Hash` (and with
+  it a `Map` key) and the WIT / `.wasm` boundary mappings are not there yet.
+
+```vibe
+test "exact 32-bit integers" {
+  let max: Int32 = 2147483647
+  assert(Int32::to_int(max + 1) == -2147483648)
+  let all: UInt32 = 4294967295
+  assert(UInt32::to_int(all + 1) == 0)
+  assert(Int::to_int32(2147483648) == None)
+  assert(Int32::to_int(Int::wrap_int32(4294967295)) == -1)
+}
+```
+
 ### `Float` is 32-bit
 
 `Float` is IEEE binary32 and every `Float` value is an f32 value (#3543).

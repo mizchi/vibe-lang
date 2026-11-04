@@ -72,6 +72,10 @@ import @vibe/compiler/checker/patterns {
   check_pattern, match_nonexhaustive_witness
 }
 
+import ./checker_int32.vibe {
+  binop_mismatch_msg, infer_integer_binop, int32_binop_candidate
+}
+
 import ./checker_resolve.vibe {
   collect_unknown_type_names
 }
@@ -2207,15 +2211,6 @@ fn rigid_trait_bound_binop(env: TypeEnv, left_ty: Type, right_ty: Type, trait_na
   }
 }
 
-/// `type mismatch in '<op>': <tail>`, carrying the operand anchor as the
-/// strippable `[@off=N]` marker. Every binop mismatch in `infer_binop_type`
-/// goes through here so none of them can silently go back to being unlocated:
-/// the offset is a parameter of the message, not an afterthought at one site.
-/// String::concat only (`+`/interpolation mis-codegen to NUL here).
-fn binop_mismatch_msg(op: String, tail: String, off: Int) -> String {
-  String::concat(String::concat("type mismatch in '", String::concat(op, tail)), off_marker(off))
-}
-
 /// `off` is the source anchor of the offending operator expression (the left
 /// operand's offset, falling back to the right's) -- see the EBinOp arm. -1
 /// when neither operand carries one, which is what a literal-only expression
@@ -2280,17 +2275,20 @@ export fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeE
   else if is_order_binop(op) {
     match rigid_trait_bound_binop(env = env, left_ty = left_ty, right_ty = right_ty, trait_name = "Ord", s = s) {
       Some((_, s1)) => (CtBool, s1),
-      None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtInt, s = s) {
-        Some(s1) => (CtBool, s1),
-        None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtDouble, s = s) {
+      None => match int32_binop_candidate(left_ty = left_ty, right_ty = right_ty, s = s) {
+        Some((_, s1)) => (CtBool, s1),
+        None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtInt, s = s) {
           Some(s1) => (CtBool, s1),
-          None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtFloat, s = s) {
+          None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtDouble, s = s) {
             Some(s1) => (CtBool, s1),
-            None => match infer_named_trait_binop(env = env, left_ty = left_ty, right_ty = right_ty, trait_name = "Ord", s = s) {
-              Some((_, s1)) => (CtBool, s1),
-              None => {
-                Array::push(errors, value = binop_mismatch_msg(op = op, tail = float_mix_hint(left_ty = left_ty, right_ty = right_ty, s = s, base = "': operands must be Int or Float64"), off = off))
-                (CtUnknown, s)
+            None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtFloat, s = s) {
+              Some(s1) => (CtBool, s1),
+              None => match infer_named_trait_binop(env = env, left_ty = left_ty, right_ty = right_ty, trait_name = "Ord", s = s) {
+                Some((_, s1)) => (CtBool, s1),
+                None => {
+                  Array::push(errors, value = binop_mismatch_msg(op = op, tail = float_mix_hint(left_ty = left_ty, right_ty = right_ty, s = s, base = "': operands must be Int or Float64"), off = off))
+                  (CtUnknown, s)
+                }
               }
             }
           }
@@ -2301,19 +2299,22 @@ export fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeE
   else if op == "+" {
     match rigid_trait_bound_binop(env = env, left_ty = left_ty, right_ty = right_ty, trait_name = "Add", s = s) {
       Some((resolved, s1)) => (resolved, s1),
-      None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtInt, s = s) {
-        Some(s1) => (CtInt, s1),
-        None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtDouble, s = s) {
-          Some(s1) => (CtDouble, s1),
-          None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtFloat, s = s) {
-            Some(s1) => (CtFloat, s1),
-            None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtString, s = s) {
-              Some(s1) => (CtString, s1),
-              None => match infer_named_trait_binop(env = env, left_ty = left_ty, right_ty = right_ty, trait_name = "Add", s = s) {
-                Some((resolved, s1)) => (resolved, s1),
-                None => {
-                  Array::push(errors, value = binop_mismatch_msg(op = "+", tail = float_mix_hint(left_ty = left_ty, right_ty = right_ty, s = s, base = "': operands must be Int, Float64, or String"), off = off))
-                  (CtUnknown, s)
+      None => match int32_binop_candidate(left_ty = left_ty, right_ty = right_ty, s = s) {
+        Some((t, s1)) => (t, s1),
+        None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtInt, s = s) {
+          Some(s1) => (CtInt, s1),
+          None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtDouble, s = s) {
+            Some(s1) => (CtDouble, s1),
+            None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtFloat, s = s) {
+              Some(s1) => (CtFloat, s1),
+              None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtString, s = s) {
+                Some(s1) => (CtString, s1),
+                None => match infer_named_trait_binop(env = env, left_ty = left_ty, right_ty = right_ty, trait_name = "Add", s = s) {
+                  Some((resolved, s1)) => (resolved, s1),
+                  None => {
+                    Array::push(errors, value = binop_mismatch_msg(op = "+", tail = float_mix_hint(left_ty = left_ty, right_ty = right_ty, s = s, base = "': operands must be Int, Float64, or String"), off = off))
+                    (CtUnknown, s)
+                  }
                 }
               }
             }
@@ -2332,61 +2333,49 @@ export fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeE
     } else {
       "Div"
     }
-    match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtInt, s = s) {
-      Some(s1) => (CtInt, s1),
-      None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtDouble, s = s) {
-        Some(s1) => (CtDouble, s1),
-        None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtFloat, s = s) {
-          Some(s1) => (CtFloat, s1),
-          None => match infer_named_trait_binop(env = env, left_ty = left_ty, right_ty = right_ty, trait_name = trait_name, s = s) {
-            Some((resolved, s1)) => (resolved, s1),
-            None => {
-              // #2206, #3041: a Unit LHS under `-` is almost always a
-              // line-leading `- x` (minus, then a space) glued onto the
-              // previous statement. Since #3041 a line-leading `-x` with no
-              // space is a prefix minus that starts a new expression, so only
-              // the spaced spelling still continues the line. The checker never
-              // sees line layout, so the clause states the language rule
-              // rather than claiming this line started with `-`; the base text
-              // stays a prefix so substring pins hold.
-              let minus_unit_lhs = if op == "-" {
-                match subst_apply(s = s, ty = left_ty) {
-                  CtUnit => true,
-                  _ => false
+    match int32_binop_candidate(left_ty = left_ty, right_ty = right_ty, s = s) {
+      Some((t, s1)) => (t, s1),
+      None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtInt, s = s) {
+        Some(s1) => (CtInt, s1),
+        None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtDouble, s = s) {
+          Some(s1) => (CtDouble, s1),
+          None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtFloat, s = s) {
+            Some(s1) => (CtFloat, s1),
+            None => match infer_named_trait_binop(env = env, left_ty = left_ty, right_ty = right_ty, trait_name = trait_name, s = s) {
+              Some((resolved, s1)) => (resolved, s1),
+              None => {
+                // #2206, #3041: a Unit LHS under `-` is almost always a
+                // line-leading `- x` (minus, then a space) glued onto the
+                // previous statement. Since #3041 a line-leading `-x` with no
+                // space is a prefix minus that starts a new expression, so only
+                // the spaced spelling still continues the line. The checker never
+                // sees line layout, so the clause states the language rule
+                // rather than claiming this line started with `-`; the base text
+                // stays a prefix so substring pins hold.
+                let minus_unit_lhs = if op == "-" {
+                  match subst_apply(s = s, ty = left_ty) {
+                    CtUnit => true,
+                    _ => false
+                  }
+                } else {
+                  false
                 }
-              } else {
-                false
+                let tail = if minus_unit_lhs {
+                  "': operands must be Int or Float64 (the left operand is Unit -- a `-` followed by a space at the start of a line continues the previous line's expression; to start a new expression with a negative value, remove the space (`-1`, `-x`) or parenthesize the negated value, e.g. `(-1)`)"
+                } else {
+                  "': operands must be Int or Float64"
+                }
+                Array::push(errors, value = binop_mismatch_msg(op = op, tail = float_mix_hint(left_ty = left_ty, right_ty = right_ty, s = s, base = tail), off = off))
+                (CtUnknown, s)
               }
-              let tail = if minus_unit_lhs {
-                "': operands must be Int or Float64 (the left operand is Unit -- a `-` followed by a space at the start of a line continues the previous line's expression; to start a new expression with a negative value, remove the space (`-1`, `-x`) or parenthesize the negated value, e.g. `(-1)`)"
-              } else {
-                "': operands must be Int or Float64"
-              }
-              Array::push(errors, value = binop_mismatch_msg(op = op, tail = float_mix_hint(left_ty = left_ty, right_ty = right_ty, s = s, base = tail), off = off))
-              (CtUnknown, s)
             }
           }
         }
       }
     }
   }
-  else if op == "%" {
-    match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtInt, s = s) {
-      Some(s1) => (CtInt, s1),
-      None => {
-        Array::push(errors, value = binop_mismatch_msg(op = "%", tail = "': operands must be Int", off = off))
-        (CtUnknown, s)
-      }
-    }
-  }
-  else if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" {
-    match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtInt, s = s) {
-      Some(s1) => (CtInt, s1),
-      None => {
-        Array::push(errors, value = binop_mismatch_msg(op = op, tail = "': operands must be Int", off = off))
-        (CtUnknown, s)
-      }
-    }
+  else if op == "%" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" {
+    infer_integer_binop(op = op, left_ty = left_ty, right_ty = right_ty, s = s, errors = errors, off = off)
   }
   else {
     Array::push(errors, value = String::concat(String::concat("unknown operator: ", op), off_marker(off)))
@@ -2985,3 +2974,4 @@ export fn record_receiver_kind(capture: Option[TypedOccurrenceRoleLaneCapture], 
     None => ()
   }
 }
+

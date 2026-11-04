@@ -173,6 +173,18 @@ export fn typed_f32_row_head() -> String {
   "#f32"
 }
 
+/// #3730: the head that marks a typed-`==` channel row as a 32-bit integer
+/// WRAP row -- one operation the checker typed as producing an `Int32` or a
+/// `UInt32`, whose result the post-check rewrite (`rewrite_int32_stmts`)
+/// wraps to that type's range. The verdict names the site's shape and type:
+/// `Binop` / `Assign` / `Neg` / `Not`, then `32` for `Int32` or `U32` for
+/// `UInt32` (`BinopU32`). A binop is keyed by its operator offset, a compound
+/// assignment by its target offset, and a unary operator by
+/// `int32_unary_operand_key` of its operand.
+export fn typed_int32_row_head() -> String {
+  "#i32"
+}
+
 /// #2334: the head that marks a typed-`==` channel row as a MAP KEY row --
 /// the checker's verdict on the key of one `Map::set` / `Map::get` /
 /// `Map::has_key` / `Map::delete` call, keyed by that call's offset. The only
@@ -262,6 +274,34 @@ export fn typed_negation_operand_key(_ operand: Expr) -> Int {
     ELetRec(_, _, body) => typed_negation_operand_key(body),
     ESeq(_, second) => typed_negation_operand_key(second),
     _ => typed_lowering_arg_offset(operand)
+  }
+}
+
+/// #3730: the key an `Int32` / `UInt32` unary operator's wrap row is filed
+/// under and looked up by. It is `typed_negation_operand_key`, plus the two
+/// operands that key leaves unlocated: a binop operand (`-(x + 1)`) is keyed
+/// by its operator offset, a unary one (`-(-x)`, `~(~x)`) by its own
+/// operand's key, and an index (`-xs[0]`) by its `[` offset. A row is filed per verdict (`Neg32` / `NotU32`), so a key
+/// shared with another row kind cannot be misread, and two unary operators
+/// that share a key apply to one value of one type -- wrapping each is right.
+export fn int32_unary_operand_key(_ operand: Expr) -> Int {
+  match operand {
+    EBinOp(_, _, _, boff) => boff,
+    EUnaryOp(_, inner) => int32_unary_operand_key(inner),
+    EIf(_, then_e, _) => int32_unary_operand_key(then_e),
+    EMatch(_, arms) => if Array::length(arms) > 0 {
+      let (_, body) = Array::get(arms, at = 0)
+      int32_unary_operand_key(body)
+    } else {
+      0 - 1
+    },
+    ELet(_, _, body, _) => int32_unary_operand_key(body),
+    ELetMut(_, _, body, _) => int32_unary_operand_key(body),
+    ELetRec(_, _, body) => int32_unary_operand_key(body),
+    ESeq(_, second) => int32_unary_operand_key(second),
+    // An index `xs[i]` keeps its `[` offset on the callee, which
+    // `typed_render_row_offset` recovers (#3542).
+    _ => typed_render_row_offset(operand)
   }
 }
 

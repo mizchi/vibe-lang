@@ -329,6 +329,8 @@ export fn send_subst_vars(ty: Type, vids: Array[Int], args: Array[Type]) -> Type
 fn send_ok_rec(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, seen: Array[String]) -> Bool {
   match subst_apply(s = s, ty = ty) {
     CtInt => true,
+    CtInt32 => true,
+    CtUInt32 => true,
     CtDouble => true,
     CtFloat => true,
     CtBool => true,
@@ -451,7 +453,7 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   // and the other arithmetic bodies retain their concrete Int restriction.
   // The prelude declares the same impls (builtin_trait_seed_parity_test).
   let env_show = if !seed_withheld(withheld = withheld, trait_name = "Show") {
-    EnvTraitImpl("Show", CtFloat, EnvTraitImpl("Show", CtString, EnvTraitImpl("Show", CtChar, EnvTraitImpl("Show", CtBool, EnvTraitImpl("Show", CtDouble, EnvTraitImpl("Show", CtInt, env))))))
+    EnvTraitImpl("Show", CtUInt32, EnvTraitImpl("Show", CtInt32, EnvTraitImpl("Show", CtFloat, EnvTraitImpl("Show", CtString, EnvTraitImpl("Show", CtChar, EnvTraitImpl("Show", CtBool, EnvTraitImpl("Show", CtDouble, EnvTraitImpl("Show", CtInt, env))))))))
   } else {
     env
   }
@@ -471,7 +473,12 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   // #3187: the prelude declares `impl Eq for Char` too. Its witness is the
   // annotated `a == b` desugar_trait_dict synthesizes for each scalar.
   let e10c = EnvTraitImpl("Eq", CtChar, e10)
-  let e11 = EnvTraitImpl("Ord", CtInt, e10c)
+  // #3730: `Int32` / `UInt32` compare, order and render as the `Int` they are
+  // held as. No arithmetic trait is seeded: an erased `+` would not wrap, so
+  // `[T: Add]` stays refused at them. `Default` and `Hash` follow once the
+  // seed reads the types (their impls are library source).
+  let e10i = EnvTraitImpl("Eq", CtUInt32, EnvTraitImpl("Eq", CtInt32, e10c))
+  let e11 = EnvTraitImpl("Ord", CtUInt32, EnvTraitImpl("Ord", CtInt32, EnvTraitImpl("Ord", CtInt, e10i)))
   let e12 = EnvTraitImpl("Ord", CtFloat, EnvTraitImpl("Ord", CtDouble, e11))
   let e13 = EnvTraitImpl("Ord", CtString, e12)
   let e14 = EnvTraitImpl("Add", CtInt, e13)
@@ -497,7 +504,7 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   let e59 = EnvTraitImpl("Send", CtInt, e58)
   // #3625: Float has distinct Eq / Show / Add witnesses after the seed bump.
   let e60 = EnvTraitImpl("Send", CtFloat, EnvTraitImpl("Send", CtDouble, e59))
-  let e61 = EnvTraitImpl("Send", CtString, e60)
+  let e61 = EnvTraitImpl("Send", CtUInt32, EnvTraitImpl("Send", CtInt32, EnvTraitImpl("Send", CtString, e60)))
   let e62 = EnvTraitImpl("Send", CtBool, e61)
   let e63 = EnvTraitImpl("Send", CtUnit, e62)
   let e64 = EnvTraitImpl("Send", CtChar, e63)

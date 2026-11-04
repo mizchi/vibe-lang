@@ -351,9 +351,21 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
     // (`match 5 { "x" => .. }`, or a nested `Some(true)` over `Option[Int]`),
     // it is a type error. Type variables / unknown / named (generic) scrutinees
     // are tolerated.
-    PInt(_) => {
+    PInt(pv) => {
       match scrutinee_ty {
         CtInt => (),
+        // #3730: an `Int32` / `UInt32` holds only values of its range, so a
+        // literal outside it could never match.
+        CtInt32 => if pv < 0 - 2147483648 || pv > 2147483647 {
+          Array::push(errors, value = "integer literal pattern \{pv} does not fit `Int32` (-2147483648 .. 2147483647) and can never match this `Int32` scrutinee")
+        } else {
+          ()
+        },
+        CtUInt32 => if pv < 0 || pv > 4294967295 {
+          Array::push(errors, value = "integer literal pattern \{pv} does not fit `UInt32` (0 .. 4294967295) and can never match this `UInt32` scrutinee")
+        } else {
+          ()
+        },
         // Char is a transparent alias of Int (char literals lex to TInt), so an
         // integer/char literal pattern matches a Char scrutinee too (char_test).
         CtChar => (),
@@ -484,6 +496,8 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
           // Type vars / unknown / named / enum / option scrutinees are tolerated.
           let non_enum_scrutinee = match scrutinee_ty {
             CtInt => true,
+            CtInt32 => true,
+            CtUInt32 => true,
             CtDouble => true,
             CtFloat => true,
             CtBool => true,
@@ -578,6 +592,8 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
           // tolerated.
           let concrete_non_tuple = match scrutinee_ty {
             CtInt => true,
+            CtInt32 => true,
+            CtUInt32 => true,
             CtDouble => true,
             CtFloat => true,
             CtBool => true,
@@ -787,6 +803,8 @@ fn cp_ctor_base_name(_ name: String) -> String {
 fn cp_scrutinee_is_structural(_ ty: Type) -> Bool {
   match ty {
     CtInt => true,
+    CtInt32 => true,
+    CtUInt32 => true,
     CtDouble => true,
     CtFloat => true,
     CtBool => true,
