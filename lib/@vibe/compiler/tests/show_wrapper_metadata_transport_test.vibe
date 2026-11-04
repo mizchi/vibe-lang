@@ -15,7 +15,7 @@ import @vibe/compiler/runtime {
   parse_persistent_type_env,
   persistent_module_cache_text,
   persistent_type_env_cache_text,
-  typing_dependency_transport_input_key
+  typing_dependency_transport_input_key, typing_dependency_transport_input_key_memo
 }
 
 fn show_transport_env() -> TypeEnv {
@@ -159,4 +159,38 @@ test "unchanged signatures with changed wrapper facts invalidate dependency reus
     ("/dep.vibe", after)
   ])
   assert(first != second)
+}
+
+test "the memoized reuse key is byte-identical to the reference key" {
+  // The memo is keyed by the dependency's fingerprint, so two consumers of
+  // one dependency at one fingerprint share one encoding -- and a different
+  // fingerprint is encoded afresh rather than read back stale.
+  let binding = env_bind(env = EnvEmpty, name = "show", ty = CtFn([CtBool], CtString, None))
+  let before = env_with_show_wrapper_facts(env = binding, wrappers = ["show"], unknown = [
+  ])
+  let after = env_with_show_wrapper_facts(env = binding, wrappers = [], unknown = [
+  ])
+  let source = "import ./dep.vibe { show }\nlet value = show(true)"
+  let reference = typing_dependency_transport_input_key(path = "/user.vibe", source = source, semantics_seed = "semantics", dep_envs = [
+    ("/dep.vibe", before)
+  ])
+  let memoized = typing_dependency_transport_input_key_memo(path = "/user.vibe", source = source, semantics_seed = "semantics", dep_envs = [
+    ("/dep.vibe", before)
+  ], dep_fps = [("/dep.vibe", "memo-test-fp-1")])
+  let again = typing_dependency_transport_input_key_memo(path = "/user.vibe", source = source, semantics_seed = "semantics", dep_envs = [
+    ("/dep.vibe", before)
+  ], dep_fps = [("/dep.vibe", "memo-test-fp-1")])
+  let other_fp = typing_dependency_transport_input_key_memo(path = "/user.vibe", source = source, semantics_seed = "semantics", dep_envs = [
+    ("/dep.vibe", after)
+  ], dep_fps = [("/dep.vibe", "memo-test-fp-2")])
+  let unkeyed = typing_dependency_transport_input_key_memo(path = "/user.vibe", source = source, semantics_seed = "semantics", dep_envs = [
+    ("/dep.vibe", after)
+  ], dep_fps = [])
+  let after_reference = typing_dependency_transport_input_key(path = "/user.vibe", source = source, semantics_seed = "semantics", dep_envs = [
+    ("/dep.vibe", after)
+  ])
+  assert(memoized == reference)
+  assert(again == reference)
+  assert(other_fp == after_reference)
+  assert(unkeyed == after_reference)
 }
