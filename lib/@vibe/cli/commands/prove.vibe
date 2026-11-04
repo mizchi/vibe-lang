@@ -8,7 +8,8 @@ import @vibe/prove {
 
 /// #3717 (ADR-0121): `vibe check --prove <file>...`. Each obligation of each
 /// contracted function becomes one SMT-LIB query, answered by an external
-/// `z3` with a 5 s timeout. The report follows `vibe check`'s contract: one
+/// `z3` with a 5 s limit, fed on standard input so no query file is shared
+/// with another run. The report follows `vibe check`'s contract: one
 /// line per obligation that is not proved, empty output when every one is,
 /// exit 1 otherwise. Only `unsat` proves; `unknown`, a timeout and a
 /// construct outside the provable fragment are failures, never skipped.
@@ -18,10 +19,7 @@ export fn selfhost_cli_user_check_prove(_ paths: Array[String]) -> Int with Exce
   } else {
     ()
   }
-  let dir = ".vibe/build/prove"
-  Fs::mkdir_p(dir)
   let mut code = 0
-  let mut k = 0
   for path in paths {
     let source = Fs::read_file(path)
     for o in prove_obligations(source) {
@@ -30,10 +28,7 @@ export fn selfhost_cli_user_check_prove(_ paths: Array[String]) -> Int with Exce
         println("\{at}: unsupported: \{o.label} (in `\{o.fn_name}`)")
         code = 1
       } else {
-        let qpath = "\{dir}/q\{k}.smt2"
-        k = k + 1
-        Fs::write_file(qpath, contents = o.query)
-        let (verdict, detail) = prove_verdict(run_z3(qpath))
+        let (verdict, detail) = prove_verdict(run_z3(o.query))
         if verdict == "unproved" {
           println("\{at}: unproved: \{obligation_text(o)} -- counterexample: \{detail}")
           code = 1
@@ -67,8 +62,11 @@ fn z3_available() -> Bool with Process {
   status == 0
 }
 
-fn run_z3(_ path: String) -> String with Process {
-  let h = vibe_sh_capture_raw("z3 -T:5 '\{path}' 2>&1")
+/// The query reaches z3 on standard input through a quoted heredoc. Its
+/// SMT-LIB symbols are `|name|`-quoted program identifiers, so no line of it
+/// can be the terminator.
+fn run_z3(_ query: String) -> String with Process {
+  let h = vibe_sh_capture_raw("z3 -T:5 -in 2>&1 <<'VIBE_PROVE_EOF'\n\{query}VIBE_PROVE_EOF\n")
   let out = vibe_sh_capture_stdout_raw(h)
   vibe_sh_capture_close_raw(h)
   out

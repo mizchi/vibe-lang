@@ -231,8 +231,10 @@ over `Int` and `Bool`: `let`, `if`, `return` (every exit checks `ensures`),
 file with such signatures. `Int` is a mathematical integer plus one
 no-overflow obligation per operation, which is exact for the 63-bit `Int`. A
 call is modular: the callee's `requires` is owed at the call and its
-`ensures` assumed of the result. A recursive call is unsupported (termination
-is not proved). `z3` must be on `PATH`; without it the command refuses with the
+`ensures` assumed of the result, and the callee's own body is proved in the
+same run. A call to a function with no `where` contract is unsupported (it is
+not assumed to return), and so is a recursive call (termination is not
+proved). `z3` must be on `PATH`; without it the command refuses with the
 edit. `--json` and `--single-file` are refused with `--prove` for now.
 
 `--warn-missing-labels` adds one warning per argument that will need its

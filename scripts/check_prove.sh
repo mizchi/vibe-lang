@@ -7,7 +7,8 @@
 #   unproved.vibe     a false ensures, an Int overflow, a callee's unmet
 #                     requires, a parameter the body shadows, a branch-local
 #                     `let` -> one line each with a counterexample, exit 1
-#   unsupported.vibe  constructs outside the fragment, and a recursive
+#   unsupported.vibe  constructs outside the fragment, a call to a function
+#                     with no contract, and a recursive
 #                     cycle, are reported, exit 1
 #   unknown.vibe      the solver running out of time is `unknown`, which
 #                     fails, exit 1
@@ -57,7 +58,8 @@ $dir/unproved.vibe:33:1: unproved: ensures (result == 0) of \`branch_scope\` -- 
 run_case unsupported 1 "$dir/unsupported.vibe:4:1: unsupported: \`let mut\` is outside the provable fragment (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\` or \`Bool\` (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
-$dir/unsupported.vibe:24:1: unsupported: \`pong\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`pong\`)"
+$dir/unsupported.vibe:24:1: unsupported: \`pong\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`pong\`)
+$dir/unsupported.vibe:38:11: unsupported: \`spin\` has no \`where\` contract, so the call cannot be checked modularly; give it one (\`ensures: true\` at least), and its body is proved too (in \`calls_helper\`)"
 run_case unknown 1 "$dir/unknown.vibe:5:1: unknown: ensures result of \`fermat3\` -- z3 timed out (5000 ms limit)"
 
 [ "$fail" = 0 ] || exit 1
