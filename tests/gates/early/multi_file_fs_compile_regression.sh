@@ -1614,8 +1614,9 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invo
 fi
 # (d) #3716: a loop's where-clause traps when a checkpoint fails. Each case
 #     breaks exactly one clause, at one checkpoint: on entry, after an
-#     iteration, after an iteration ended by `continue`, and a measure that
-#     does not decrease. The satisfied loop returns its count.
+#     iteration, after an iteration ended by `continue` (one written inside
+#     a string interpolation's hole included), and a measure that does not
+#     decrease. The satisfied loop returns its count.
 loop_ok='fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { invariant: i <= 3, decreases: 3 - i } {\n    i = i + 1\n  }\n  i\n}\nexport let _start: () -> Int = () -> { run() }\n'
 printf "$loop_ok" > "$edir/loop_ok.vibe"
 gate_fs_compile "$edir/loop_ok.vibe" "$edir/loop_ok.wasm" _start
@@ -1629,7 +1630,8 @@ for loop_case in \
   "after|fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { invariant: i < 2 } {\n    i = i + 1\n  }\n  i\n}" \
   "continue|fn run() -> Int {\n  let mut n = 0\n  for x in [1, 2, 3] where { invariant: n < 2 } {\n    n = n + 1\n    if x > 0 { continue } else { () }\n  }\n  n\n}" \
   "measure|fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { decreases: 10 } {\n    i = i + 1\n  }\n  i\n}" \
-  "negative|fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { decreases: 1 - i } {\n    i = i + 1\n  }\n  i\n}"; do
+  "negative|fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { decreases: 1 - i } {\n    i = i + 1\n  }\n  i\n}" \
+  "interp|fn run() -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    n = n + 1\n    let s = \"\\{if x > 0 { continue } else { 0 }}\"\n    let _ = s\n  }\n  n\n}"; do
   loop_name="${loop_case%%|*}"
   printf "${loop_case#*|}\nexport let _start: () -> Int = () -> { run() }\n" > "$edir/loop_$loop_name.vibe"
   gate_fs_compile "$edir/loop_$loop_name.vibe" "$edir/loop_$loop_name.wasm" _start
