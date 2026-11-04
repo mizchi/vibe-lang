@@ -1,0 +1,121 @@
+// 32-bit integer wrap rows (#3730): what the checker files so the post-check
+// rewrite can wrap each `Int32` / `UInt32` result.
+
+import @vibe/compiler/core {
+  Expr, Subst, Type, TypeEnv, subst_apply, type_to_string, typed_negation_operand_key
+}
+
+import @vibe/compiler/checker/type_relations {
+  int32_kind_name
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+
+import ./checker_throw_kind_of_type.vibe {
+  railway_expr_off
+}
+
+import ./checker_infer_binop_type.vibe {
+  TypedOccurrenceRoleLaneCapture, infer_binop_type
+}
+
+import ./checker_int32.vibe {
+  int32_literal_adapt, int32_op_wraps
+}
+
+//# Functions
+
+/// #3730: record one operation the checker typed as producing an `Int32`
+/// (kinds 16 binop, 18 compound assignment, 20 negation) or a `UInt32`
+/// (17, 19, 21 bit-not), so the post-check rewrite wraps its result. Two
+/// identical rows, as for `record_float_arith`. A synthesized site (no
+/// offset) has no row to carry the wrap, so it is refused rather than left
+/// computing a 63-bit value.
+export fn record_int32_arith(capture: Option[TypedOccurrenceRoleLaneCapture], off: Int, kind: Int, ty: Type, errors: Array[String]) -> Unit {
+  match capture {
+    Some(c) => if c.provenance_enabled {
+      ()
+    } else if off >= 0 {
+      Array::push(c.binop_offsets, value = off)
+      Array::push(c.binop_kinds, value = kind)
+      Array::push(c.binop_types, value = ty)
+      Array::push(c.binop_offsets, value = off)
+      Array::push(c.binop_kinds, value = kind)
+      Array::push(c.binop_types, value = ty)
+    } else {
+      Array::push(errors, value = "internal: compiler-generated `\{type_to_string(ty)}` arithmetic has no source position to wrap at (#3730); write the operation out, or compute it in `Int` and narrow with `Int::wrap_int32`")
+    },
+    None => ()
+  }
+}
+
+/// #3730: whether a compound assignment's target or value is an `Int32` /
+/// `UInt32`, so it is typed by `int32_compound_assign`.
+export fn int32_involved(target: Type, value: Type) -> Bool {
+  int32_kind_name(target) != "" || int32_kind_name(value) != ""
+}
+
+/// #3730: a compound assignment (`x += 1`) on an `Int32` / `UInt32`, or of
+/// one, is typed as the binop it stands for, and its result is wrapped like
+/// that binop's: the row is filed under the target's offset.
+export fn int32_compound_assign(aop: String, target: Type, value: Type, target_off: Int, env: TypeEnv, s: Subst, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture]) -> Subst {
+  let (res_ty, s1) = infer_binop_type(op = aop, left_ty = target, right_ty = value, env = env, s = s, errors = errors, tytab = tytab, off = target_off)
+  if int32_op_wraps(aop) {
+    match subst_apply(s = s1, ty = res_ty) {
+      CtInt32 => record_int32_arith(capture = capture, off = target_off, kind = 18, ty = CtInt32, errors = errors),
+      CtUInt32 => record_int32_arith(capture = capture, off = target_off, kind = 19, ty = CtUInt32, errors = errors),
+      _ => ()
+    }
+  } else {
+    ()
+  }
+  s1
+}
+
+/// #3730: the type a value takes where `expected` is wanted -- an integer
+/// literal takes an `Int32` / `UInt32` (`int32_literal_adapt`).
+export fn int32_assigned_type(e: Expr, expected: Type, actual: Type, s: Subst, errors: Array[String], off: Int) -> Type {
+  int32_literal_adapt(e = e, expected = expected, actual = actual, s = s, errors = errors, off = off)
+}
+
+/// #3730: a binop's operand types, a literal operand taking the other
+/// operand's `Int32` / `UInt32` type (`x + 1`), range-checked.
+export fn int32_binop_operands(left: Expr, right: Expr, left_ty: Type, right_ty: Type, s: Subst, errors: Array[String], off: Int) -> (Type, Type) {
+  (int32_literal_adapt(e = left, expected = right_ty, actual = left_ty, s = s, errors = errors, off = off), int32_literal_adapt(e = right, expected = left_ty, actual = right_ty, s = s, errors = errors, off = off))
+}
+
+/// #3730: file the wrap row of a binop whose result is an `Int32` / `UInt32`
+/// and whose operator can leave the range.
+export fn record_int32_binop(capture: Option[TypedOccurrenceRoleLaneCapture], op: String, result: Type, off: Int, errors: Array[String]) -> Unit {
+  if int32_op_wraps(op) {
+    match result {
+      CtInt32 => record_int32_arith(capture = capture, off = off, kind = 16, ty = result, errors = errors),
+      CtUInt32 => record_int32_arith(capture = capture, off = off, kind = 17, ty = result, errors = errors),
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// #3730: unary `-` and `~` on an `Int32` / `UInt32` keep the type. `-x`
+/// leaves the `Int32` range at its minimum, and `~x` of a `UInt32` is taken
+/// over 32 bits, so both file a wrap row; `-` on a `UInt32` is refused with
+/// the edit. `~x` of an `Int32` stays in range.
+export fn int32_unary(op: String, ty: Type, operand: Expr, capture: Option[TypedOccurrenceRoleLaneCapture], errors: Array[String]) -> Type {
+  match ty {
+    CtInt32 => if op == "-" {
+      record_int32_arith(capture = capture, off = typed_negation_operand_key(operand), kind = 20, ty = ty, errors = errors)
+    } else {
+      ()
+    },
+    _ => if op == "-" {
+      Array::push(errors, value = String::concat("unary `-` is not defined on `UInt32`: write `0 - x` for the wrapping negation, or convert with `UInt32::to_int(x)` first", off_marker(railway_expr_off(operand))))
+    } else {
+      record_int32_arith(capture = capture, off = typed_negation_operand_key(operand), kind = 21, ty = ty, errors = errors)
+    }
+  }
+  ty
+}

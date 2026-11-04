@@ -1,0 +1,64 @@
+// The 32-bit integers' type-error hints (#3730).
+
+import @vibe/compiler/core {
+  Type, type_to_string
+}
+
+//# Functions
+
+/// `Int32` / `UInt32` for those two types, "" for any other.
+export fn int32_kind_name(_ t: Type) -> String {
+  match t {
+    CtInt32 => "Int32",
+    CtUInt32 => "UInt32",
+    _ => ""
+  }
+}
+
+/// The edit for a binop whose operands are an `Int32` / `UInt32` and another
+/// type, or "" when neither operand is one of the two (or both are the same).
+export fn int32_mix_hint(l: Type, r: Type) -> String {
+  let li = int32_kind_name(l)
+  let ri = int32_kind_name(r)
+  if (li != "" || ri != "") && li != ri {
+    let named = if li != "" {
+      li
+    } else {
+      ri
+    }
+    let other = if li != "" {
+      type_to_string(r)
+    } else {
+      type_to_string(l)
+    }
+    let lower = if named == "Int32" {
+      "int32"
+    } else {
+      "uint32"
+    }
+    "': both operands must be `\{named}` -- one is `\{named}` and the other `\{other}`, and neither converts implicitly; widen with `\{named}::to_int(x)`, or narrow an `Int` with `Int::to_\{lower}(n)` (checked) or `Int::wrap_\{lower}(n)`; an integer literal takes the other operand's type"
+  } else {
+    ""
+  }
+}
+
+/// The edit for an `Int` given where an `Int32` / `UInt32` is expected, or
+/// the other way round. Neither converts implicitly.
+export fn int32_assign_hint(expected: Type, actual: Type) -> String {
+  match expected {
+    CtInt => match actual {
+      CtInt32 => " -- widen the Int32 with `Int32::to_int(x)`, which is exact",
+      CtUInt32 => " -- widen the UInt32 with `UInt32::to_int(x)`, which is exact",
+      _ => ""
+    },
+    CtInt32 => match actual {
+      CtInt => " -- narrow the Int with `Int::to_int32(n)` (an `Option`, `None` out of range) or `Int::wrap_int32(n)` (keeps the low 32 bits)",
+      _ => ""
+    },
+    CtUInt32 => match actual {
+      CtInt => " -- narrow the Int with `Int::to_uint32(n)` (an `Option`, `None` out of range) or `Int::wrap_uint32(n)` (keeps the low 32 bits)",
+      _ => ""
+    },
+    _ => ""
+  }
+}

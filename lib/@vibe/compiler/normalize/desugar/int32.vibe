@@ -1,0 +1,635 @@
+// 32-bit integers (#3730).
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, expr_any_node, typed_negation_operand_key
+}
+
+import @vibe/ast {
+  builtin_ref
+}
+
+//# Functions
+
+/// #3730 (ADR-0122): `Int32` and `UInt32` are held exactly as an `Int` is
+/// (a tagged immediate), and every value of them lies in its own range. The
+/// checker types them apart from `Int`; this pass, run once after the check,
+/// makes the program an `Int` program that computes the same values:
+///
+/// - every operation the checker filed a wrap row for (`#i32` under
+///   `typed_int32_row_head`) has its result wrapped to the range:
+///   `((r + 2^31) & (2^32 - 1)) - 2^31` for `Int32`, `r & (2^32 - 1)` for
+///   `UInt32`. `+ - * <<` are exact modulo 2^63 on `Int`, so their low 32
+///   bits are the 32-bit answer; `/` leaves the range only at
+///   `-2147483648 / -1`, which wraps to itself. A shift's count is masked to
+///   0 .. 31 first, as wasm's `i32` shifts mask it;
+/// - the conversions become `Int` operations: widening is the value itself,
+///   `Int::wrap_int32` / `Int::wrap_uint32` wrap, and `Int::to_int32` /
+///   `Int::to_uint32` answer `Some` in range and `None` outside it;
+/// - every `Int32` / `UInt32` in a type, and the `Int32::` / `UInt32::`
+///   namespaces, become `Int`, so no later pass or lane sees either name.
+///
+/// `&`, `|`, `^`, `%` and `>>` of in-range values are in range, and `~` of an
+/// `Int32` is, so those file no row (a shift files one for its count).
+/// Statements that hold no row and do not spell either type are left as they
+/// are.
+export fn rewrite_int32_stmts(stmts: Array[Stmt], binop32: Array[Int], binopu32: Array[Int], assign32: Array[Int], assignu32: Array[Int], neg32: Array[Int], notu32: Array[Int]) -> Unit {
+  let rows = Int32Rows::{
+    binop32: binop32,
+    binopu32: binopu32,
+    assign32: assign32,
+    assignu32: assignu32,
+    neg32: neg32,
+    notu32: notu32
+  }
+  let any_rows = Array::length(rows.binop32) + Array::length(rows.binopu32) + Array::length(rows.assign32) + Array::length(rows.assignu32) + Array::length(rows.neg32) + Array::length(rows.notu32) > 0
+  if any_rows || program_mentions_int32(stmts) {
+    let fresh = i32_fresh_base(stmts)
+    let mut i = 0
+    while i < Array::length(stmts) {
+      Array::set(stmts, at = i, value = i32_stmt(stmt = Array::get(stmts, at = i), rows = rows, fresh = fresh))
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// #3730: the wrap rows the checker filed, split by the site's shape and
+/// type. Binops are keyed by operator offset, compound assignments by target
+/// offset, unary operators by `typed_negation_operand_key` of the operand.
+struct Int32Rows {
+  binop32: Array[Int];
+  binopu32: Array[Int];
+  assign32: Array[Int];
+  assignu32: Array[Int];
+  neg32: Array[Int];
+  notu32: Array[Int]
+}
+
+/// #3730: the refusal a build lane WITHOUT typed rows gives a program that
+/// spells `Int32` or `UInt32`: with no rows, no result could be wrapped, and
+/// a 32-bit sum would be left as its 63-bit value.
+export fn refuse_rowless_int32_program(_ stmts: Array[Stmt]) -> Unit with Exception {
+  if program_mentions_int32(stmts) {
+    throw("build without `--debug`: this linked build has no type check of the exact text it compiles, so it cannot wrap `Int32` / `UInt32` arithmetic to 32 bits (#3730); the default build, `vibe run` and `vibe test` can")
+  } else {
+    ()
+  }
+}
+
+/// Whether `stmts` spell `Int32` / `UInt32` in a type or a qualified name.
+/// A program that does neither cannot hold one: an integer literal is an
+/// `Int` unless such a type is expected of it.
+export fn program_mentions_int32(_ stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    found = i32_stmt_mentions(Array::get(stmts, at = i))
+    i = i + 1
+  }
+  found
+}
+
+fn i32_name(_ n: String) -> Bool {
+  n == "Int32" || n == "UInt32"
+}
+
+fn i32_qualified(_ n: String) -> Bool {
+  String::starts_with(n, prefix = "Int32::") || String::starts_with(n, prefix = "UInt32::") || n == "Int::to_int32" || n == "Int::to_uint32" || n == "Int::wrap_int32" || n == "Int::wrap_uint32"
+}
+
+fn i32_ty_mentions(_ t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => i32_name(n),
+    TyApp(n, args) => i32_name(n) || i32_tys_mention(args),
+    TyFn(params, ret, _) => i32_tys_mention(params) || i32_ty_mentions(ret),
+    TyTuple(items) => i32_tys_mention(items),
+    TyUnit => false
+  }
+}
+
+fn i32_tys_mention(_ tys: Array[TypeExpr]) -> Bool {
+  let mut found = false
+  for t in tys {
+    if i32_ty_mentions(t) {
+      found = true
+    }
+  }
+  found
+}
+
+fn i32_opt_ty_mentions(_ t: Option[TypeExpr]) -> Bool {
+  match t {
+    Some(x) => i32_ty_mentions(x),
+    None => false
+  }
+}
+
+fn i32_expr_mentions(_ e: Expr) -> Bool {
+  expr_any_node(expr = e, pred = (n) -> match n {
+    EIdent(name, _) => i32_qualified(name),
+    EFn(_, _, params, ret, _, _) => {
+      let mut hit = i32_opt_ty_mentions(ret)
+      for p in params {
+        let (_, pt) = p
+        if i32_opt_ty_mentions(pt) {
+          hit = true
+        }
+      }
+      hit
+    },
+    ERecord(_, _, targs) => i32_tys_mention(targs),
+    _ => false
+  })
+}
+
+fn i32_variants_mention(_ variants: Array[(String, Array[TypeExpr])]) -> Bool {
+  let mut found = false
+  for v in variants {
+    let (_, payload) = v
+    if i32_tys_mention(payload) {
+      found = true
+    }
+  }
+  found
+}
+
+fn i32_sigs_mention(_ sigs: Array[(String, Array[TypeExpr], TypeExpr)]) -> Bool {
+  let mut found = false
+  for sg in sigs {
+    let (_, params, ret) = sg
+    if i32_tys_mention(params) || i32_ty_mentions(ret) {
+      found = true
+    }
+  }
+  found
+}
+
+fn i32_stmt_mentions(_ stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, ty, body) => i32_opt_ty_mentions(ty) || i32_expr_mentions(body),
+    SLetMut(_, ty, body) => i32_opt_ty_mentions(ty) || i32_expr_mentions(body),
+    SLetPat(_, body) => i32_expr_mentions(body),
+    STest(_, body) => i32_expr_mentions(body),
+    SBench(_, body) => i32_expr_mentions(body),
+    SExample(_, body) => i32_expr_mentions(body),
+    SExpr(body) => i32_expr_mentions(body),
+    SFnDecl(_, _, body, requires, ensures) => {
+      let mut found = i32_expr_mentions(body)
+      for e in requires {
+        if i32_expr_mentions(e) {
+          found = true
+        }
+      }
+      for e in ensures {
+        if i32_expr_mentions(e) {
+          found = true
+        }
+      }
+      found
+    },
+    SStruct(_, _, fields, _, _, _) => {
+      let mut found = false
+      for f in fields {
+        let (_, fty) = f
+        if i32_ty_mentions(fty) {
+          found = true
+        }
+      }
+      found
+    },
+    SEnum(_, _, _, variants, _) => i32_variants_mention(variants),
+    SSuberror(_, _, variants) => i32_variants_mention(variants),
+    STypeAlias(_, _, _, ty) => i32_ty_mentions(ty),
+    STrait(_, _, _, methods, _, _) => i32_sigs_mention(methods),
+    SEffectDef(_, _, _, ops) => i32_sigs_mention(ops),
+    SImpl(_, _, _, target) => i32_ty_mentions(target),
+    SExternLet(_, ty) => i32_ty_mentions(ty),
+    SModule(_, _, inner) => program_mentions_int32(inner),
+    _ => false
+  }
+}
+
+//# Erasure
+
+fn i32_ty(_ t: TypeExpr) -> TypeExpr {
+  match t {
+    TyName(n) => if i32_name(n) {
+      TyName("Int")
+    } else {
+      t
+    },
+    TyApp(n, args) => TyApp(n, i32_tys(args)),
+    TyFn(params, ret, eff) => TyFn(i32_tys(params), i32_ty(ret), eff),
+    TyTuple(items) => TyTuple(i32_tys(items)),
+    TyUnit => t
+  }
+}
+
+fn i32_tys(_ tys: Array[TypeExpr]) -> Array[TypeExpr] {
+  for t in tys {
+    i32_ty(t)
+  }
+}
+
+fn i32_opt_ty(_ t: Option[TypeExpr]) -> Option[TypeExpr] {
+  match t {
+    Some(x) => Some(i32_ty(x)),
+    None => None
+  }
+}
+
+fn i32_variants(_ variants: Array[(String, Array[TypeExpr])]) -> Array[(String, Array[TypeExpr])] {
+  for v in variants {
+    let (n, payload) = v
+    (n, i32_tys(payload))
+  }
+}
+
+fn i32_sigs(_ sigs: Array[(String, Array[TypeExpr], TypeExpr)]) -> Array[(String, Array[TypeExpr], TypeExpr)] {
+  for sg in sigs {
+    let (n, params, ret) = sg
+    (n, i32_tys(params), i32_ty(ret))
+  }
+}
+
+//# Wrapping
+
+/// `((r + 2^31) & (2^32 - 1)) - 2^31`: the `Int32` whose low 32 bits are
+/// `r`'s.
+fn i32_wrap_signed(_ e: Expr) -> Expr {
+  EBinOp("-", EBinOp("&", EBinOp("+", e, EInt(2147483648), -1), EInt(4294967295), -1), EInt(2147483648), -1)
+}
+
+/// `r & (2^32 - 1)`: the `UInt32` whose low 32 bits are `r`'s.
+fn i32_wrap_unsigned(_ e: Expr) -> Expr {
+  EBinOp("&", e, EInt(4294967295), -1)
+}
+
+fn i32_has(offs: Array[Int], off: Int) -> Bool {
+  if off < 0 {
+    false
+  } else {
+    let mut found = false
+    let mut i = 0
+    while i < Array::length(offs) && !found {
+      if Array::get(offs, at = i) == off {
+        found = true
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
+/// The wrapped `op` of two operands that are already rewritten: a shift's
+/// count masked to 0 .. 31, then the result wrapped.
+fn i32_wrapped_binop(op: String, l: Expr, r: Expr, unsigned: Bool) -> Expr {
+  let count = if op == "<<" || op == ">>" {
+    EBinOp("&", r, EInt(31), -1)
+  } else {
+    r
+  }
+  let raw = EBinOp(op, l, count, -1)
+  if unsigned {
+    i32_wrap_unsigned(raw)
+  } else {
+    i32_wrap_signed(raw)
+  }
+}
+
+//# Fresh names
+
+/// A binder prefix no name in `stmts` starts with, for the temporaries the
+/// checked narrowing conversions bind.
+fn i32_fresh_base(_ stmts: Array[Stmt]) -> String {
+  let mut k = 0
+  let mut base = "__int32_t"
+  while i32_stmts_use_prefix(stmts = stmts, prefix = base) {
+    k = k + 1
+    base = "__int32_t\{k}_"
+  }
+  base
+}
+
+fn i32_stmts_use_prefix(stmts: Array[Stmt], prefix: String) -> Bool {
+  let mut found = false
+  for st in stmts {
+    let body = match st {
+      SLet(_, _, name, _, b) => if String::starts_with(name, prefix = prefix) {
+        found = true
+        EUnit
+      } else {
+        b
+      },
+      SLetMut(name, _, b) => if String::starts_with(name, prefix = prefix) {
+        found = true
+        EUnit
+      } else {
+        b
+      },
+      STest(_, b) => b,
+      SBench(_, b) => b,
+      SExample(_, b) => b,
+      SExpr(b) => b,
+      SLetPat(pat, b) => if i32_pat_uses_prefix(p = pat, prefix = prefix) {
+        found = true
+        EUnit
+      } else {
+        b
+      },
+      SFnDecl(_, name, b, _, _) => if String::starts_with(name, prefix = prefix) {
+        found = true
+        EUnit
+      } else {
+        b
+      },
+      SModule(_, _, inner) => {
+        if i32_stmts_use_prefix(stmts = inner, prefix = prefix) {
+          found = true
+        }
+        EUnit
+      },
+      _ => EUnit
+    }
+    if !found && i32_expr_uses_prefix(e = body, prefix = prefix) {
+      found = true
+    }
+  }
+  found
+}
+
+fn i32_expr_uses_prefix(e: Expr, prefix: String) -> Bool {
+  expr_any_node(expr = e, pred = (n) -> match n {
+    EIdent(name, _) => String::starts_with(name, prefix = prefix),
+    ELet(name, _, _, _) => String::starts_with(name, prefix = prefix),
+    ELetMut(name, _, _, _) => String::starts_with(name, prefix = prefix),
+    ELetRec(name, _, _) => String::starts_with(name, prefix = prefix),
+    EAssign(name, _, _, _) => String::starts_with(name, prefix = prefix),
+    EFn(_, _, params, _, _, _) => {
+      let mut hit = false
+      for p in params {
+        let (pn, _) = p
+        if String::starts_with(pn, prefix = prefix) {
+          hit = true
+        }
+      }
+      hit
+    },
+    EForIn(name, idx, _, _) => String::starts_with(name, prefix = prefix) || match idx {
+      Some(i) => String::starts_with(i, prefix = prefix),
+      None => false
+    },
+    EMatch(_, arms) => i32_arms_use_prefix(arms = arms, prefix = prefix),
+    EHandle(_, arms) => i32_arms_use_prefix(arms = arms, prefix = prefix),
+    _ => false
+  })
+}
+
+fn i32_arms_use_prefix(arms: Array[(Pat, Expr)], prefix: String) -> Bool {
+  let mut hit = false
+  for a in arms {
+    let (p, _) = a
+    if i32_pat_uses_prefix(p = p, prefix = prefix) {
+      hit = true
+    }
+  }
+  hit
+}
+
+fn i32_pat_uses_prefix(p: Pat, prefix: String) -> Bool {
+  match p {
+    PBind(n) => String::starts_with(n, prefix = prefix),
+    PCtor(_, subs) => {
+      let mut hit = false
+      for sp in subs {
+        if i32_pat_uses_prefix(p = sp, prefix = prefix) {
+          hit = true
+        }
+      }
+      hit
+    },
+    PTuple(subs) => {
+      let mut hit = false
+      for sp in subs {
+        if i32_pat_uses_prefix(p = sp, prefix = prefix) {
+          hit = true
+        }
+      }
+      hit
+    },
+    POr(a, b) => i32_pat_uses_prefix(p = a, prefix = prefix) || i32_pat_uses_prefix(p = b, prefix = prefix),
+    PStruct(_, fields) => {
+      let mut hit = false
+      for f in fields {
+        let (_, sp) = f
+        if i32_pat_uses_prefix(p = sp, prefix = prefix) {
+          hit = true
+        }
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+/// `Some(v)` when `lo <= v <= hi`, else `None`, binding `v` once. It stays a
+/// call -- an applied lambda at the conversion's own offset -- because the
+/// rows that say how to render or compare a call's result are keyed by that
+/// offset.
+fn i32_checked(arg: Expr, lo: Int, hi: Int, off: Int, fresh: String, counter: Array[Int]) -> Expr {
+  let k = Array::get(counter, at = 0)
+  Array::set(counter, at = 0, value = k + 1)
+  let name = "\{fresh}\{k}"
+  let v = EIdent(name, -1)
+  let in_range = EBinOp("&&", EBinOp(">=", v, EInt(lo), -1), EBinOp("<=", v, EInt(hi), -1), -1)
+  let body = EIf(in_range, ECall(EIdent("Some", -1), [v], -1, []), EIdent("None", -1))
+  ECall(EFn([], [], [(name, Some(TyName("Int")))], Some(TyApp("Option", [
+    TyName("Int")
+  ])), None, body), [arg], off, [])
+}
+
+//# Walk
+
+fn i32_stmt(stmt: Stmt, rows: Int32Rows, fresh: String) -> Stmt {
+  let counter = [0]
+  match stmt {
+    SLet(exported, recursive, name, annotation, expr) => SLet(exported, recursive, name, i32_opt_ty(annotation), i32_expr(expr = expr, rows = rows, fresh = fresh, counter = counter)),
+    SLetMut(name, annotation, expr) => SLetMut(name, i32_opt_ty(annotation), i32_expr(expr = expr, rows = rows, fresh = fresh, counter = counter)),
+    STest(name, expr) => STest(name, i32_expr(expr = expr, rows = rows, fresh = fresh, counter = counter)),
+    SBench(name, expr) => SBench(name, i32_expr(expr = expr, rows = rows, fresh = fresh, counter = counter)),
+    SExample(name, expr) => SExample(name, i32_expr(expr = expr, rows = rows, fresh = fresh, counter = counter)),
+    SExpr(expr) => SExpr(i32_expr(expr = expr, rows = rows, fresh = fresh, counter = counter)),
+    SLetPat(pattern, expr) => SLetPat(pattern, i32_expr(expr = expr, rows = rows, fresh = fresh, counter = counter)),
+    SModule(exported, name, inner) => {
+      let copy = for s in inner {
+        s
+      }
+      let mut i = 0
+      while i < Array::length(copy) {
+        Array::set(copy, at = i, value = i32_stmt(stmt = Array::get(copy, at = i), rows = rows, fresh = fresh))
+        i = i + 1
+      }
+      SModule(exported, name, copy)
+    },
+    SFnDecl(exported, name, expr, requires, ensures) => SFnDecl(exported, name, i32_expr(expr = expr, rows = rows, fresh = fresh, counter = counter), i32_exprs(items = requires, rows = rows, fresh = fresh, counter = counter), i32_exprs(items = ensures, rows = rows, fresh = fresh, counter = counter)),
+    SStruct(exported, name, fields, derives, muts, tparams) => SStruct(exported, name, for f in fields {
+      let (fname, fty) = f
+      (fname, i32_ty(fty))
+    }, derives, muts, tparams),
+    SEnum(exported, name, tparams, variants, derives) => SEnum(exported, name, tparams, i32_variants(variants), derives),
+    SSuberror(exported, name, variants) => SSuberror(exported, name, i32_variants(variants)),
+    STypeAlias(exported, name, tparams, ty) => STypeAlias(exported, name, tparams, i32_ty(ty)),
+    STrait(exported, name, supers, methods, generics, header) => STrait(exported, name, supers, i32_sigs(methods), generics, header),
+    SEffectDef(exported, name, tparams, ops) => SEffectDef(exported, name, tparams, i32_sigs(ops)),
+    SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, i32_ty(target)),
+    SExternLet(name, ty) => SExternLet(name, i32_ty(ty)),
+    _ => stmt
+  }
+}
+
+fn i32_exprs(items: Array[Expr], rows: Int32Rows, fresh: String, counter: Array[Int]) -> Array[Expr] {
+  for it in items {
+    i32_expr(expr = it, rows = rows, fresh = fresh, counter = counter)
+  }
+}
+
+fn i32_named(fields: Array[(String, Expr)], rows: Int32Rows, fresh: String, counter: Array[Int]) -> Array[(String, Expr)] {
+  for fld in fields {
+    let (n, v) = fld
+    (n, i32_expr(expr = v, rows = rows, fresh = fresh, counter = counter))
+  }
+}
+
+fn i32_arms(arms: Array[(Pat, Expr)], rows: Int32Rows, fresh: String, counter: Array[Int]) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, e) = a
+    (p, i32_expr(expr = e, rows = rows, fresh = fresh, counter = counter))
+  }
+}
+
+/// A conversion call rewritten to its `Int` operation, or None for any other
+/// callee.
+fn i32_conversion(name: String, args: Array[Expr], off: Int, fresh: String, counter: Array[Int]) -> Option[Expr] {
+  if Array::length(args) != 1 {
+    None
+  } else {
+    let a = Array::get(args, at = 0)
+    if name == "Int32::to_int" || name == "UInt32::to_int" {
+      Some(a)
+    } else if name == "Int::wrap_int32" {
+      Some(i32_wrap_signed(a))
+    } else if name == "Int::wrap_uint32" {
+      Some(i32_wrap_unsigned(a))
+    } else if name == "Int::to_int32" {
+      Some(i32_checked(arg = a, lo = 0 - 2147483648, hi = 2147483647, off = off, fresh = fresh, counter = counter))
+    } else if name == "Int::to_uint32" {
+      Some(i32_checked(arg = a, lo = 0, hi = 4294967295, off = off, fresh = fresh, counter = counter))
+    } else {
+      None
+    }
+  }
+}
+
+/// `Int32::to_string` / `UInt32::to_string` (and any other member of the two
+/// namespaces) name the `Int` operation of the same name.
+fn i32_ident(e: Expr) -> Expr {
+  match e {
+    EIdent(name, off) => if String::starts_with(name, prefix = "Int32::") {
+      EIdent(String::concat("Int::", String::substring(name, start = 7, end = String::length(name))), off)
+    } else if String::starts_with(name, prefix = "UInt32::") {
+      EIdent(String::concat("Int::", String::substring(name, start = 8, end = String::length(name))), off)
+    } else {
+      e
+    },
+    _ => e
+  }
+}
+
+fn i32_expr(expr: Expr, rows: Int32Rows, fresh: String, counter: Array[Int]) -> Expr {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_, _) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    EIdent(_, _) => i32_ident(expr),
+    ETuple(items) => ETuple(i32_exprs(items = items, rows = rows, fresh = fresh, counter = counter)),
+    EArray(items) => EArray(i32_exprs(items = items, rows = rows, fresh = fresh, counter = counter)),
+    ERecord(rn, fields, targs) => ERecord(rn, i32_named(fields = fields, rows = rows, fresh = fresh, counter = counter), i32_tys(targs)),
+    EIf(c, t, e) => EIf(i32_expr(expr = c, rows = rows, fresh = fresh, counter = counter), i32_expr(expr = t, rows = rows, fresh = fresh, counter = counter), i32_expr(expr = e, rows = rows, fresh = fresh, counter = counter)),
+    ELet(n, v, b, soff) => ELet(n, i32_expr(expr = v, rows = rows, fresh = fresh, counter = counter), i32_expr(expr = b, rows = rows, fresh = fresh, counter = counter), soff),
+    ELetRec(n, v, b) => ELetRec(n, i32_expr(expr = v, rows = rows, fresh = fresh, counter = counter), i32_expr(expr = b, rows = rows, fresh = fresh, counter = counter)),
+    ELetMut(n, v, b, soff) => ELetMut(n, i32_expr(expr = v, rows = rows, fresh = fresh, counter = counter), i32_expr(expr = b, rows = rows, fresh = fresh, counter = counter), soff),
+    EAssign(n, v, b, target_off) => EAssign(n, i32_expr(expr = v, rows = rows, fresh = fresh, counter = counter), i32_expr(expr = b, rows = rows, fresh = fresh, counter = counter), target_off),
+    EAssignOp(n, op, v, b, target_off) => {
+      let rv = i32_expr(expr = v, rows = rows, fresh = fresh, counter = counter)
+      let rb = i32_expr(expr = b, rows = rows, fresh = fresh, counter = counter)
+      // `x op= v` is `x = x op v`, which is how every backend lowers it; the
+      // result is wrapped before it is stored.
+      if i32_has(offs = rows.assign32, off = target_off) {
+        EAssign(n, i32_wrapped_binop(op = op, l = EIdent(n, -1), r = rv, unsigned = false), rb, target_off)
+      } else if i32_has(offs = rows.assignu32, off = target_off) {
+        EAssign(n, i32_wrapped_binop(op = op, l = EIdent(n, -1), r = rv, unsigned = true), rb, target_off)
+      } else {
+        EAssignOp(n, op, rv, rb, target_off)
+      }
+    },
+    ESeq(a, b) => ESeq(i32_expr(expr = a, rows = rows, fresh = fresh, counter = counter), i32_expr(expr = b, rows = rows, fresh = fresh, counter = counter)),
+    EMatch(s, arms) => EMatch(i32_expr(expr = s, rows = rows, fresh = fresh, counter = counter), i32_arms(arms = arms, rows = rows, fresh = fresh, counter = counter)),
+    EHandle(s, arms) => EHandle(i32_expr(expr = s, rows = rows, fresh = fresh, counter = counter), i32_arms(arms = arms, rows = rows, fresh = fresh, counter = counter)),
+    EWhile(c, b) => EWhile(i32_expr(expr = c, rows = rows, fresh = fresh, counter = counter), i32_expr(expr = b, rows = rows, fresh = fresh, counter = counter)),
+    ELoop(params, b) => ELoop(i32_named(fields = params, rows = rows, fresh = fresh, counter = counter), i32_expr(expr = b, rows = rows, fresh = fresh, counter = counter)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, i32_expr(expr = it, rows = rows, fresh = fresh, counter = counter), i32_expr(expr = b, rows = rows, fresh = fresh, counter = counter)),
+    ECall(callee, args, off, callee_resolution) => {
+      let rargs = i32_exprs(items = args, rows = rows, fresh = fresh, counter = counter)
+      let converted = match callee {
+        EIdent(name, _) => i32_conversion(name = name, args = rargs, off = off, fresh = fresh, counter = counter),
+        _ => None
+      }
+      match converted {
+        Some(e) => e,
+        None => ECall(i32_expr(expr = callee, rows = rows, fresh = fresh, counter = counter), rargs, off, callee_resolution)
+      }
+    },
+    EBinOp(op, l, r, boff) => {
+      let rl = i32_expr(expr = l, rows = rows, fresh = fresh, counter = counter)
+      let rr = i32_expr(expr = r, rows = rows, fresh = fresh, counter = counter)
+      if i32_has(offs = rows.binop32, off = boff) {
+        i32_wrapped_binop(op = op, l = rl, r = rr, unsigned = false)
+      } else if i32_has(offs = rows.binopu32, off = boff) {
+        i32_wrapped_binop(op = op, l = rl, r = rr, unsigned = true)
+      } else {
+        EBinOp(op, rl, rr, boff)
+      }
+    },
+    EUnaryOp(op, e) => {
+      // The key is read off the operand as the checker saw it.
+      let key = typed_negation_operand_key(e)
+      let re = i32_expr(expr = e, rows = rows, fresh = fresh, counter = counter)
+      if op == "-" && i32_has(offs = rows.neg32, off = key) {
+        i32_wrap_signed(EUnaryOp(op, re))
+      } else if op == "~" && i32_has(offs = rows.notu32, off = key) {
+        i32_wrap_unsigned(EUnaryOp(op, re))
+      } else {
+        EUnaryOp(op, re)
+      }
+    },
+    EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, for p in params {
+      let (pn, pt) = p
+      (pn, i32_opt_ty(pt))
+    }, i32_opt_ty(ret), eff, i32_expr(expr = body, rows = rows, fresh = fresh, counter = counter)),
+    EDot(e, field, off, fdoff) => EDot(i32_expr(expr = e, rows = rows, fresh = fresh, counter = counter), field, off, fdoff),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, i32_expr(expr = v, rows = rows, fresh = fresh, counter = counter)),
+    EReturn(e) => EReturn(i32_expr(expr = e, rows = rows, fresh = fresh, counter = counter)),
+    EBreak(opt) => match opt {
+      Some(v) => EBreak(Some(i32_expr(expr = v, rows = rows, fresh = fresh, counter = counter))),
+      None => expr
+    },
+    EContinue(args) => EContinue(i32_exprs(items = args, rows = rows, fresh = fresh, counter = counter)),
+    EMap(fields) => EMap(i32_named(fields = fields, rows = rows, fresh = fresh, counter = counter)),
+    ESpread(e) => ESpread(i32_expr(expr = e, rows = rows, fresh = fresh, counter = counter)),
+    EStringInterp(_) => expr
+  }
+}

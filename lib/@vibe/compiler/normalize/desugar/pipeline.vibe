@@ -34,6 +34,7 @@ import @vibe/compiler/core {
   typed_index_map_verdict,
   typed_index_open_verdict,
   typed_index_row_head,
+  typed_int32_row_head,
   typed_map_key_row_head,
   typed_map_scalar_key_verdict,
   typed_render_row_head
@@ -89,6 +90,10 @@ import ./exceptions.vibe {
 
 import ./float_rounding.vibe {
   refuse_rowless_float_program, rewrite_float_arith_stmts
+}
+
+import ./int32.vibe {
+  refuse_rowless_int32_program, rewrite_int32_stmts
 }
 
 import ./formal_scope.vibe {
@@ -215,6 +220,8 @@ fn dtd_whole_program(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_
   // program that can hold a Float rather than compute it in f64.
   if rowless_build {
     refuse_rowless_float_program(stmts)
+    // #3730: nor could an `Int32` / `UInt32` result be wrapped to 32 bits.
+    refuse_rowless_int32_program(stmts)
     // #2334: nor could a scalar-keyed map's calls get the scalar operations.
     refuse_rowless_scalar_map_program(stmts)
   } else {
@@ -520,6 +527,22 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
     TyName(typed_map_scalar_key_verdict())
   ]))
   let map_scalar_offs: Array[Int] = []
+  // #3730: the 32-bit integer wrap rows, consumed by `rewrite_int32_stmts`.
+  let i32_key = (verdict: String) -> impl_target_key(TyApp(typed_int32_row_head(), [
+    TyName(verdict)
+  ]))
+  let i32_binop_key = i32_key("Binop32")
+  let u32_binop_key = i32_key("BinopU32")
+  let i32_assign_key = i32_key("Assign32")
+  let u32_assign_key = i32_key("AssignU32")
+  let i32_neg_key = i32_key("Neg32")
+  let u32_not_key = i32_key("NotU32")
+  let i32_binop_offs: Array[Int] = []
+  let u32_binop_offs: Array[Int] = []
+  let i32_assign_offs: Array[Int] = []
+  let u32_assign_offs: Array[Int] = []
+  let i32_neg_offs: Array[Int] = []
+  let u32_not_offs: Array[Int] = []
   let mut teq_i = 0
   while teq_i < Array::length(typed_eq_offsets) {
     let tkey = Array::get(typed_eq_keys, at = teq_i)
@@ -535,6 +558,18 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
       Array::push(fop_negation_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == f32_negation_key {
       Array::push(f32_negation_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+    } else if tkey == i32_binop_key {
+      Array::push(i32_binop_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+    } else if tkey == u32_binop_key {
+      Array::push(u32_binop_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+    } else if tkey == i32_assign_key {
+      Array::push(i32_assign_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+    } else if tkey == u32_assign_key {
+      Array::push(u32_assign_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+    } else if tkey == i32_neg_key {
+      Array::push(i32_neg_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+    } else if tkey == u32_not_key {
+      Array::push(u32_not_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == map_scalar_key {
       Array::push(map_scalar_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == forin_map_key {
@@ -567,6 +602,9 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // every float operation's operands, before the `+` / `<` rewrite below
   // can read a generic call's result as a type formal.
   rewrite_float_arith_stmts(stmts = stmts, binop_offs = f32_binop_offs, assign_offs = f32_assign_offs, operand_offs = fop_binop_offs, operand_assign_offs = fop_assign_offs, negation_offs = fop_negation_offs, f32_negation_offs = f32_negation_offs)
+  // #3730: wrap every `Int32` / `UInt32` result to 32 bits and erase both
+  // types to `Int`, before any pass below reads a type or copies a site.
+  rewrite_int32_stmts(stmts = stmts, binop32 = i32_binop_offs, binopu32 = u32_binop_offs, assign32 = i32_assign_offs, assignu32 = u32_assign_offs, neg32 = i32_neg_offs, notu32 = u32_not_offs)
   // #2334: and every scalar-keyed map call to its scalar operation, before a
   // pass below copies or inlines the call.
   rewrite_map_scalar_key_stmts(stmts = stmts, offs = map_scalar_offs)
