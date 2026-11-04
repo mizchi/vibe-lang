@@ -900,6 +900,25 @@ fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) 
     let t = "(\{op} \{a.value} \{b.value})"
     push_obligation(ctx = ctx, kind = "overflow", label = print_expr(e), off = off, goal = guarded(pc = b.pc, goal = in_range(t)))
     with_value(st = b, value = t, sort = "Int")
+  } else if (op == "/" || op == "%") && ints {
+    // Runtime `/` and `%` truncate toward zero (`-7 / 2 == -3`,
+    // `-7 % 2 == -1`), and a zero divisor aborts, so a path continues past
+    // the operator only where the divisor is not zero. SMT-LIB `div` is
+    // Euclidean: the quotient is taken on a non-negative dividend and
+    // negated back, and the remainder is what that quotient leaves.
+    // `MIN / -1` leaves the range, so the result carries the overflow
+    // obligation `+` / `-` / `*` do.
+    let nonzero = "(not (= \{b.value} 0))"
+    push_obligation(ctx = ctx, kind = "divisor", label = print_expr(e), off = off, goal = guarded(pc = b.pc, goal = nonzero))
+    let st = with_pc(st = b, cond = nonzero)
+    let q = trunc_div(a = a.value, b = b.value)
+    let t = if op == "/" {
+      q
+    } else {
+      "(- \{a.value} (* \{b.value} \{q}))"
+    }
+    push_obligation(ctx = ctx, kind = "overflow", label = print_expr(e), off = off, goal = guarded(pc = st.pc, goal = in_range(t)))
+    with_value(st = st, value = t, sort = "Int")
   } else if (op == "<" || op == "<=" || op == ">" || op == ">=") && ints {
     with_value(st = b, value = "(\{op} \{a.value} \{b.value})", sort = "Bool")
   } else if (op == "==" || op == "!=") && a.sort == b.sort && a.sort != "Unit" && adt_has_custom_eq(adts = ctx.adts, sort = a.sort) {
@@ -916,6 +935,11 @@ fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) 
     unsupported(off = off, reason = "`\{op}` on `\{a.sort}` and `\{b.sort}` is outside the provable fragment")
     b
   }
+}
+
+/// The quotient `a / b` truncated toward zero, as the runtime computes it.
+fn trunc_div(a: String, b: String) -> String {
+  "(ite (>= \{a} 0) (div \{a} \{b}) (- (div (- \{a}) \{b})))"
 }
 
 /// A call is modular: the callee's `requires` become obligations at the

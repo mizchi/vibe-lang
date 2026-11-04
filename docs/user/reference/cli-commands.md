@@ -227,15 +227,21 @@ f.vibe:5:1: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
 Only an `unsat` answer proves, so `unknown`, a timeout and an unsupported
 construct fail (exit 1), never pass. The provable fragment is pure functions
 over `Int` and `Bool`: `let`, `if`, `return` (every exit checks `ensures`),
-`+ - *` and comparisons, `&&` / `||` / `!`, and calls to other functions of the
-file with such signatures. `Int` is a mathematical integer plus one
-no-overflow obligation per operation, which is exact for the 63-bit `Int`. A
+`+ - * / %` and comparisons, `&&` / `||` / `!`, and calls to other functions
+of the file with such signatures. `Int` is a mathematical integer plus one
+no-overflow obligation per operation, which is exact for the 63-bit `Int`.
+`/` and `%` truncate toward zero as the runtime does (`-7 / 2 == -3`,
+`-7 % 2 == -1`) and also owe a non-zero divisor, since a zero one aborts; the
+code after them assumes it was not zero. A
 call is modular: the callee's `requires` is owed at the call and its
 `ensures` assumed of the result, and the callee's own body is proved in the
 same run. A call to a function with no `where` contract is unsupported (it is
 not assumed to return), and so is a recursive call (termination is not
 proved). `z3` must be on `PATH`; without it the command refuses with the
-edit. `--json` and `--single-file` are refused with `--prove` for now.
+edit. With `--json`, each file's report is the LSP Diagnostic array `vibe
+check --json` prints (one array per file, `[]` when every obligation is
+proved), carrying the same messages. `--single-file` is refused: the prover
+already reads each file on its own.
 
 A struct or enum of the file is an SMT datatype (#3719) when it is not
 generic, has no `mut` field, and every field is `Int`, `Bool` or another such
