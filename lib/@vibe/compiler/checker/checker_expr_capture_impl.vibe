@@ -1,9 +1,16 @@
 import ./checker_sized_int.vibe {
-  sized_int_array_elem, sized_int_field_type, sized_int_involved, sized_int_operand_type, sized_int_wrap_kind, sized_negation_key
+  sized_int_arm_join,
+  sized_int_array_elem,
+  sized_int_field_type,
+  sized_int_involved,
+  sized_int_operand_type,
+  sized_int_tail,
+  sized_int_wrap_kind,
+  sized_negation_key
 }
 
 import ./checker_expr_capture_markers.vibe {
-  assign_target_marker, erased_throw_binder_settle, resume_continuation_marker, resume_is_continuation
+  assign_target_marker, erased_throw_binder_settle, match_temp_anchor_key, resume_continuation_marker, resume_is_continuation
 }
 
 import ./checker_call_map.vibe {
@@ -862,9 +869,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
       let header_fork = checker_call_header_snapshot()
-      let (tt, s2, c2) = check_expr_capture(expr = then_e, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (tt0, s2, c2) = check_expr_capture(expr = then_e, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
       checker_call_header_rewind(header_fork)
-      let (et, s3, c3) = check_expr_capture(expr = else_e, env = env, defs = defs, s = s2, c = c2, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (et0, s3, c3) = check_expr_capture(expr = else_e, env = env, defs = defs, s = s2, c = c2, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      // #3730: a literal branch beside an `Int32` / `UInt32` branch takes its type.
+      let tt = sized_int_operand_type(e = sized_int_tail(then_e), ty = tt0, other = subst_apply(s = s3, ty = et0), s = s3, errors = errors, off = tail_expr_off(then_e))
+      let et = sized_int_operand_type(e = sized_int_tail(else_e), ty = et0, other = subst_apply(s = s3, ty = tt0), s = s3, errors = errors, off = tail_expr_off(else_e))
       checker_call_header_merge(header_fork)
       // The two branches must agree when both yield a real value (previously
       // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
@@ -1334,7 +1344,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // lowers to `match val { Some(v) => v, None => return None }` — the
             // `return` arm yields no value to the match, so it must not force
             // the match's result type (it would clash `T` vs `Option[T]`).
-            let r2 = subst_apply(s = si, ty = arm_ty)
+            let (result_adj, r2) = sized_int_arm_join(arms = arms, at = ai, result_ty = result_ty, arm_ty = subst_apply(s = si, ty = arm_ty), s = si, errors = errors)
+            result_ty = result_adj
             si = if arm_tail_all_return(body) {
               si
             } else {
@@ -2979,11 +2990,4 @@ fn check_unmatched_call_args(args: Array[Expr], env: TypeEnv, defs: Array[TypeDe
     i = i + 1
   }
   (s1, c1)
-}
-
-/// #3548: the environment key under which the guard desugar's match temp
-/// carries the offset of the scrutinee it was bound to. Spelled so no source
-/// name can collide with it.
-fn match_temp_anchor_key() -> String {
-  "__match_temp_anchor@"
 }

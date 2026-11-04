@@ -2,7 +2,7 @@
 // literals.
 
 import @vibe/compiler/core {
-  Expr, Subst, Type, subst_apply, typed_negation_operand_key, types_equal, unify
+  Expr, Pat, Subst, Type, subst_apply, typed_negation_operand_key, types_equal, unify
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -135,6 +135,47 @@ export fn sized_int_array_elem(items: Array[Expr], at: Int, elem_ty: Type, it: T
     (item_ty, item_ty)
   } else {
     (elem_ty, item_ty)
+  }
+}
+
+/// One `match` arm's result against the arms joined so far: an integer
+/// literal arm beside an `Int32` / `UInt32` arm takes its type, whichever
+/// comes first. Answers the match's type so far and this arm's type to join;
+/// earlier literal arms a sized arm now types are range-checked here.
+export fn sized_int_arm_join(arms: Array[(Pat, Expr)], at: Int, result_ty: Type, arm_ty: Type, s: Subst, errors: Array[String]) -> (Type, Type) {
+  let (_, body) = Array::get(arms, at = at)
+  let item_ty = sized_int_operand_type(e = sized_int_tail(body), ty = arm_ty, other = result_ty, s = s, errors = errors, off = 0 - 1)
+  let sized_now = String::length(sized_int_type_name(subst_apply(s = s, ty = item_ty))) > 0
+  let result_is_int = match subst_apply(s = s, ty = result_ty) {
+    CtInt => true,
+    _ => false
+  }
+  if sized_now && result_is_int && at > 0 {
+    let mut all = true
+    let mut i = 0
+    while i < at && all {
+      let (_, prior) = Array::get(arms, at = i)
+      match sized_int_literal_value(sized_int_tail(prior)) {
+        Some(_) => (),
+        None => {
+          all = false
+        }
+      }
+      i = i + 1
+    }
+    if all {
+      let mut j = 0
+      while j < at {
+        let (_, prior) = Array::get(arms, at = j)
+        let _ = sized_int_literal_type(e = sized_int_tail(prior), expected = item_ty, s = s, errors = errors, off = 0 - 1)
+        j = j + 1
+      }
+      (item_ty, item_ty)
+    } else {
+      (result_ty, item_ty)
+    }
+  } else {
+    (result_ty, item_ty)
   }
 }
 
