@@ -60,15 +60,9 @@ let main: () -> Int = () -> { 42 }
 EOF
 rm -f "$a69dir/typo.wasm"
 gate_fs_compile "$a69dir/typo.vibe" "$a69dir/typo.wasm" mian
-if [ -s "$a69dir/typo.wasm" ]; then
-  echo "[compiler-gate] FAIL: entry typo 'mian' compiled to a module (should be 'entry not found' error)" >&2
-  exit 1
-fi
-if ! grep -q "not found" "$a69dir/typo.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: entry typo diag missing 'not found' message" >&2
-  cat "$a69dir/typo.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$a69dir/typo.wasm" "entry typo 'mian' compiled to a module (should be 'entry not found' error)"
+gate_require_diag_matches "$a69dir/typo.wasm.diag" "not found" \
+  "entry typo diag missing 'not found' message"
 cat > "$a69dir/toplevel_expr.vibe" <<'EOF'
 let f = (n: Int) -> Int { n + 1 }
 f(41)
@@ -76,20 +70,14 @@ export let _start: () -> Int = () -> { f(41) }
 EOF
 rm -f "$a69dir/toplevel_expr.wasm"
 gate_fs_compile "$a69dir/toplevel_expr.vibe" "$a69dir/toplevel_expr.wasm" _start
-if [ -s "$a69dir/toplevel_expr.wasm" ]; then
-  echo "[compiler-gate] FAIL: top-level expression statement compiled (should be rejected, ADR-0069)" >&2
-  exit 1
-fi
+gate_require_refused "$a69dir/toplevel_expr.wasm" "top-level expression statement compiled (should be rejected, ADR-0069)"
 cat > "$a69dir/toplevel_mut.vibe" <<'EOF'
 let mut counter = 0
 export let _start: () -> Int = () -> { counter }
 EOF
 rm -f "$a69dir/toplevel_mut.wasm"
 gate_fs_compile "$a69dir/toplevel_mut.vibe" "$a69dir/toplevel_mut.wasm" _start
-if [ -s "$a69dir/toplevel_mut.wasm" ]; then
-  echo "[compiler-gate] FAIL: top-level let mut compiled (should be rejected, ADR-0069)" >&2
-  exit 1
-fi
+gate_require_refused "$a69dir/toplevel_mut.wasm" "top-level let mut compiled (should be rejected, ADR-0069)"
 rm -rf "$a69dir"
 echo "[compiler-gate] ADR-0069 fn main sugar + entry/top-level hardening ok"
 
@@ -178,10 +166,7 @@ export let _start: () -> Int = () -> { String::length(y.v) }
 EOF
 rm -f "$g844dir/toplevel_narrow.wasm"
 gate_fs_compile "$g844dir/toplevel_narrow.vibe" "$g844dir/toplevel_narrow.wasm" _start
-if [ -s "$g844dir/toplevel_narrow.wasm" ]; then
-  echo "[compiler-gate] FAIL: top-level annotation-laundered generic-struct re-narrowing compiled (#844 regressed)" >&2
-  exit 1
-fi
+gate_require_refused "$g844dir/toplevel_narrow.wasm" "top-level annotation-laundered generic-struct re-narrowing compiled (#844 regressed)"
 if ! grep -q "binding type mismatch" "$g844dir/toplevel_narrow.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: top-level #844 rejection lacks the expected diagnostic" >&2
   cat "$g844dir/toplevel_narrow.wasm.diag" >&2 2>/dev/null; exit 1
@@ -197,10 +182,7 @@ export let _start: () -> Int = () -> { bad() }
 EOF
 rm -f "$g844dir/local_narrow.wasm"
 gate_fs_compile "$g844dir/local_narrow.vibe" "$g844dir/local_narrow.wasm" _start
-if [ -s "$g844dir/local_narrow.wasm" ]; then
-  echo "[compiler-gate] FAIL: local-let annotation-laundered generic-struct re-narrowing compiled (#844 regressed)" >&2
-  exit 1
-fi
+gate_require_refused "$g844dir/local_narrow.wasm" "local-let annotation-laundered generic-struct re-narrowing compiled (#844 regressed)"
 if ! grep -q "binding type mismatch" "$g844dir/local_narrow.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: local-let #844 rejection lacks the expected diagnostic" >&2
   cat "$g844dir/local_narrow.wasm.diag" >&2 2>/dev/null; exit 1
@@ -277,15 +259,9 @@ rm -f "$g1078dir/ctor_collision.wasm"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g1078dir/ctor_collision.vibe" "$g1078dir/ctor_collision.wasm" main >/dev/null 2>&1 || true
-if [ -s "$g1078dir/ctor_collision.wasm" ]; then
-  echo "[compiler-gate] FAIL: same-named variant across two enums compiled (should be rejected, #1078)" >&2
-  exit 1
-fi
-if ! grep -q "constructor name collision" "$g1078dir/ctor_collision.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: ctor-collision diag missing the descriptive #1078 message (still the misleading wrong-declaration mismatch?)" >&2
-  cat "$g1078dir/ctor_collision.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$g1078dir/ctor_collision.wasm" "same-named variant across two enums compiled (should be rejected, #1078)"
+gate_require_diag_matches "$g1078dir/ctor_collision.wasm.diag" "constructor name collision" \
+  "ctor-collision diag missing the descriptive #1078 message (still the misleading wrong-declaration mismatch?)"
 rm -rf "$g1078dir"
 echo "[compiler-gate] enum constructor name collision rejection ok (#1078)"
 
@@ -368,15 +344,9 @@ export let _start: () -> Int = () -> { a }
 EOF
 rm -f "$g859dir/toplevel_refutable_destr.wasm"
 gate_fs_compile "$g859dir/toplevel_refutable_destr.vibe" "$g859dir/toplevel_refutable_destr.wasm" _start
-if [ -s "$g859dir/toplevel_refutable_destr.wasm" ]; then
-  echo "[compiler-gate] FAIL: top-level 'let Some(a) = ..' compiled (refutable, should be rejected, #1281)" >&2
-  exit 1
-fi
-if ! grep -q "requires an irrefutable pattern" "$g859dir/toplevel_refutable_destr.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: refutable top-level pattern let diag missing the clear #1281 message" >&2
-  cat "$g859dir/toplevel_refutable_destr.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$g859dir/toplevel_refutable_destr.wasm" "top-level 'let Some(a) = ..' compiled (refutable, should be rejected, #1281)"
+gate_require_diag_matches "$g859dir/toplevel_refutable_destr.wasm.diag" "requires an irrefutable pattern" \
+  "refutable top-level pattern let diag missing the clear #1281 message"
 # The function-body forms (which already worked, per the #859 writeup) must
 # keep compiling AND running to the correct values -- the regression net for
 # the working case, so a future change to the block-step destructure desugar
@@ -458,15 +428,9 @@ rm -f "$g944dir/leak_on.wasm"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$g944dir/leak.vibe" "$g944dir/leak_on.wasm" main >/dev/null 2>&1 || true
-if [ -s "$g944dir/leak_on.wasm" ]; then
-  echo "[compiler-gate] FAIL: default-on checked-Error mode did not reject the row-less caller (#944)" >&2
-  exit 1
-fi
-if ! grep -q "missing { Exception }" "$g944dir/leak_on.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: checked-Error rejection diag missing the row-mismatch message (#944)" >&2
-  cat "$g944dir/leak_on.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$g944dir/leak_on.wasm" "default-on checked-Error mode did not reject the row-less caller (#944)"
+gate_require_diag_matches "$g944dir/leak_on.wasm.diag" "missing { Exception }" \
+  "checked-Error rejection diag missing the row-mismatch message (#944)"
 rm -f "$g944dir/discharged.wasm"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -805,15 +769,9 @@ fi
 send_check_reject() {
   local fixture="$1" needle="$2" tag="$3"
   gate_fs_compile "fixtures/$fixture" "$senddir/$tag.wasm" main
-  if [ -s "$senddir/$tag.wasm" ]; then
-    echo "[compiler-gate] FAIL: $fixture compiled successfully -- must be rejected" >&2
-    exit 1
-  fi
-  if ! grep -qF "$needle" "$senddir/$tag.wasm.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: $fixture did not produce the expected diagnostic ($needle)" >&2
-    cat "$senddir/$tag.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_refused "$senddir/$tag.wasm" "$fixture compiled successfully -- must be rejected"
+  gate_require_diag_has "$senddir/$tag.wasm.diag" "$needle" \
+    "$fixture did not produce the expected diagnostic ($needle)"
 }
 send_check_reject "err_type_send_array_bound.vibe" 'no impl `Send` for `Array[Int]`' "arr"
 # #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`) is Send in
@@ -987,15 +945,9 @@ fn main {
 }
 SENDUSE
 gate_fs_compile "$senddir/send_use.vibe" "$senddir/send_use.wasm" main
-if [ -s "$senddir/send_use.wasm" ]; then
-  echo "[compiler-gate] FAIL: Send bound bypassed on the import path (send_use.vibe compiled)" >&2
-  exit 1
-fi
-if ! grep -qF 'no impl `Send` for `Array[Int]`' "$senddir/send_use.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: import-path Send violation did not produce the expected diagnostic" >&2
-  cat "$senddir/send_use.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$senddir/send_use.wasm" "Send bound bypassed on the import path (send_use.vibe compiled)"
+gate_require_diag_has "$senddir/send_use.wasm.diag" 'no impl `Send` for `Array[Int]`' \
+  "import-path Send violation did not produce the expected diagnostic"
 rm -rf "$senddir"
 echo "[compiler-gate] ADR-0068 Send marker ok"
 
@@ -1106,15 +1058,9 @@ scps_check_reject() {
   local fixture="$1" needle="$2" tag="$3"
   sed '/^_start()$/d' "fixtures/$fixture" > "$scpsdir/$tag.vibe"
   gate_fs_compile "$scpsdir/$tag.vibe" "$scpsdir/$tag.wasm" _start
-  if [ -s "$scpsdir/$tag.wasm" ]; then
-    echo "[compiler-gate] FAIL: $fixture compiled successfully -- must be rejected" >&2
-    exit 1
-  fi
-  if ! grep -qF "$needle" "$scpsdir/$tag.wasm.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: $fixture did not produce the expected diagnostic ($needle)" >&2
-    cat "$scpsdir/$tag.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_refused "$scpsdir/$tag.wasm" "$fixture compiled successfully -- must be rejected"
+  gate_require_diag_has "$scpsdir/$tag.wasm.diag" "$needle" \
+    "$fixture did not produce the expected diagnostic ($needle)"
 }
 # #1536 (a): a row-free closure param whose every by-name call site
 # passes a provably suspend-inert literal is see-through (plain call in
@@ -1527,15 +1473,9 @@ fi
 rm -f "$ccpsdir/mixed.wasm"
 cp fixtures/err_effect_closure_cps_mixed_convention.vibe "$ccpsdir/mixed.vibe"
 gate_fs_compile "$ccpsdir/mixed.vibe" "$ccpsdir/mixed.wasm" _start
-if [ -s "$ccpsdir/mixed.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_effect_closure_cps_mixed_convention compiled (must be a hard error)" >&2
-  exit 1
-fi
-if ! grep -qF "mixing the step convention" "$ccpsdir/mixed.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: mixed-convention fixture did not produce the expected diagnostic" >&2
-  cat "$ccpsdir/mixed.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$ccpsdir/mixed.wasm" "err_effect_closure_cps_mixed_convention compiled (must be a hard error)"
+gate_require_diag_has "$ccpsdir/mixed.wasm.diag" "mixing the step convention" \
+  "mixed-convention fixture did not produce the expected diagnostic"
 # #1324: ordinary arithmetic on a value bound from a GENERIC suspend-lane
 # callee must stay eligible. `v`'s syntactically inferable type is the type
 # variable `T`, so desugar_trait_dict rewrites `v + 2` to `__generic_add`
@@ -1571,15 +1511,9 @@ fi
 rm -f "$tdevdir/inelig.wasm"
 cp fixtures/err_closure_value_evidence_ineligible.vibe "$tdevdir/inelig.vibe"
 gate_fs_compile "$tdevdir/inelig.vibe" "$tdevdir/inelig.wasm" _start
-if [ -s "$tdevdir/inelig.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_closure_value_evidence_ineligible compiled (must be a hard error)" >&2
-  exit 1
-fi
-if ! grep -qF "type-directed evidence" "$tdevdir/inelig.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: ineligible closure-value fixture did not produce the expected diagnostic" >&2
-  cat "$tdevdir/inelig.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$tdevdir/inelig.wasm" "err_closure_value_evidence_ineligible compiled (must be a hard error)"
+gate_require_diag_has "$tdevdir/inelig.wasm.diag" "type-directed evidence" \
+  "ineligible closure-value fixture did not produce the expected diagnostic"
 rm -f "$tdevdir/multi.wasm"
 gate_fs_compile fixtures/effect_closure_value_evidence_multi.vibe "$tdevdir/multi.wasm" _start
 gate_require_artifact "$tdevdir/multi.wasm" "effect_closure_value_evidence_multi fixture did not compile"
@@ -1626,18 +1560,12 @@ fi
 rm -f "$v2dir/reject.wasm"
 cp fixtures/err_effect_handle_replay_removed.vibe "$v2dir/reject.vibe"
 gate_fs_compile "$v2dir/reject.vibe" "$v2dir/reject.wasm" _start
-if [ -s "$v2dir/reject.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_effect_handle_replay_removed compiled (a live unmigratable non-Error handle must be a hard error)" >&2
-  exit 1
-fi
+gate_require_refused "$v2dir/reject.wasm" "err_effect_handle_replay_removed compiled (a live unmigratable non-Error handle must be a hard error)"
 # #1511 rewrote this message (actionable sentence first, ADR jargon last).
 # Anchor on the identifying phrase rather than the trailing ADR note, which is
 # the part most likely to be reworded again.
-if ! grep -qF "cannot be compiled here" "$v2dir/reject.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: replay-removed reject fixture did not produce the expected diagnostic" >&2
-  cat "$v2dir/reject.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_diag_has "$v2dir/reject.wasm.diag" "cannot be compiled here" \
+  "replay-removed reject fixture did not produce the expected diagnostic"
 rm -rf "$v2dir"
 echo "[compiler-gate] replay frontier removal ok"
 
@@ -1782,15 +1710,9 @@ fi
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_region_escape_return.vibe "$regiondir/neg.wasm" main
-if [ -s "$regiondir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_region_escape_return.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF 'region escapes its nursery scope' "$regiondir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_region_escape_return.vibe did not produce the expected diagnostic" >&2
-  cat "$regiondir/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$regiondir/neg.wasm" "err_region_escape_return.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$regiondir/neg.wasm.diag" 'region escapes its nursery scope' \
+  "err_region_escape_return.vibe did not produce the expected diagnostic"
 rm -rf "$regiondir"
 echo "[compiler-gate] ADR-0068 region generativity ok"
 
@@ -1843,70 +1765,40 @@ fi
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_spawnable_capture_array.vibe "$spawnabledir/neg_array.wasm" main
-if [ -s "$spawnabledir/neg_array.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_spawnable_capture_array.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF 'no impl `Spawnable` for `Array[Int]`' "$spawnabledir/neg_array.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_spawnable_capture_array.vibe did not produce the expected diagnostic" >&2
-  cat "$spawnabledir/neg_array.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$spawnabledir/neg_array.wasm" "err_spawnable_capture_array.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$spawnabledir/neg_array.wasm.diag" 'no impl `Spawnable` for `Array[Int]`' \
+  "err_spawnable_capture_array.vibe did not produce the expected diagnostic"
 # #3125: the same capture through an ALIAS of TaskGroup::spawn. The check
 # used to key on the spelling, so this compiled and ran; it now follows the
 # callee's type and gives the direct call's diagnostic. Its positive twin
 # captures only a Send value and still compiles.
 gate_fs_compile fixtures/err_spawnable_capture_alias.vibe "$spawnabledir/neg_alias.wasm" main
-if [ -s "$spawnabledir/neg_alias.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_spawnable_capture_alias.vibe compiled successfully -- an alias of TaskGroup::spawn skipped the capture check" >&2
-  exit 1
-fi
-if ! grep -qF 'no impl `Spawnable` for `Array[Int]`' "$spawnabledir/neg_alias.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_spawnable_capture_alias.vibe did not produce the direct call's diagnostic" >&2
-  cat "$spawnabledir/neg_alias.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$spawnabledir/neg_alias.wasm" "err_spawnable_capture_alias.vibe compiled successfully -- an alias of TaskGroup::spawn skipped the capture check"
+gate_require_diag_has "$spawnabledir/neg_alias.wasm.diag" 'no impl `Spawnable` for `Array[Int]`' \
+  "err_spawnable_capture_alias.vibe did not produce the direct call's diagnostic"
 gate_fs_compile fixtures/spawnable_alias_send_ok.vibe "$spawnabledir/pos_alias.wasm" main
 gate_require_artifact "$spawnabledir/pos_alias.wasm" "spawnable_alias_send_ok.vibe did not compile -- an alias capturing only Send values must pass"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_spawnable_capture_cross_region.vibe "$spawnabledir/neg_cross.wasm" main
-if [ -s "$spawnabledir/neg_cross.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_spawnable_capture_cross_region.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF 'no impl `Spawnable`' "$spawnabledir/neg_cross.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_spawnable_capture_cross_region.vibe did not produce the expected diagnostic" >&2
-  cat "$spawnabledir/neg_cross.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$spawnabledir/neg_cross.wasm" "err_spawnable_capture_cross_region.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$spawnabledir/neg_cross.wasm.diag" 'no impl `Spawnable`' \
+  "err_spawnable_capture_cross_region.vibe did not produce the expected diagnostic"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_spawnable_capture_letmut.vibe "$spawnabledir/neg_letmut.wasm" main
-if [ -s "$spawnabledir/neg_letmut.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_spawnable_capture_letmut.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF "no impl \`Spawnable\` for a \`let mut\` binding" "$spawnabledir/neg_letmut.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_spawnable_capture_letmut.vibe did not produce the expected diagnostic" >&2
-  cat "$spawnabledir/neg_letmut.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$spawnabledir/neg_letmut.wasm" "err_spawnable_capture_letmut.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$spawnabledir/neg_letmut.wasm.diag" "no impl \`Spawnable\` for a \`let mut\` binding" \
+  "err_spawnable_capture_letmut.vibe did not produce the expected diagnostic"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_spawnable_capture_letmut_outer_scope.vibe "$spawnabledir/neg_letmut_outer.wasm" main
-if [ -s "$spawnabledir/neg_letmut_outer.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_spawnable_capture_letmut_outer_scope.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF "no impl \`Spawnable\` for a \`let mut\` binding" "$spawnabledir/neg_letmut_outer.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_spawnable_capture_letmut_outer_scope.vibe did not produce the expected diagnostic" >&2
-  cat "$spawnabledir/neg_letmut_outer.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$spawnabledir/neg_letmut_outer.wasm" "err_spawnable_capture_letmut_outer_scope.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$spawnabledir/neg_letmut_outer.wasm.diag" "no impl \`Spawnable\` for a \`let mut\` binding" \
+  "err_spawnable_capture_letmut_outer_scope.vibe did not produce the expected diagnostic"
 # Codex review (PR #1152, P1): the whole-program `let mut` capture pass
 # used to collect every `let mut` name reachable ANYWHERE in a top-level
 # declaration into one flat, scope-blind list and cross-match by name
@@ -1959,15 +1851,9 @@ for spawn_route in \
   spawn_fx="${spawn_route%%:*}"
   spawn_needle="${spawn_route#*:}"
   gate_fs_compile "fixtures/$spawn_fx.vibe" "$spawnabledir/$spawn_fx.wasm" main
-  if [ -s "$spawnabledir/$spawn_fx.wasm" ]; then
-    echo "[compiler-gate] FAIL: $spawn_fx.vibe compiled successfully -- must be rejected (#3125)" >&2
-    exit 1
-  fi
-  if ! grep -qF "$spawn_needle" "$spawnabledir/$spawn_fx.wasm.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: $spawn_fx.vibe did not produce the expected diagnostic (#3125)" >&2
-    cat "$spawnabledir/$spawn_fx.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_refused "$spawnabledir/$spawn_fx.wasm" "$spawn_fx.vibe compiled successfully -- must be rejected (#3125)"
+  gate_require_diag_has "$spawnabledir/$spawn_fx.wasm.diag" "$spawn_needle" \
+    "$spawn_fx.vibe did not produce the expected diagnostic (#3125)"
 done
 # #3125 positive side: an alias whose closures capture only `Send` values
 # keeps compiling and running (82 = 41 + 1 + 40, pinned by the fixture's

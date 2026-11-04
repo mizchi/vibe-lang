@@ -26,15 +26,9 @@ fi
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_taskgroup_sugar_region_escape.vibe "$taskgroupdir/neg.wasm" main
-if [ -s "$taskgroupdir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_taskgroup_sugar_region_escape.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF 'region escapes its nursery scope' "$taskgroupdir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_taskgroup_sugar_region_escape.vibe did not produce the expected diagnostic" >&2
-  cat "$taskgroupdir/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$taskgroupdir/neg.wasm" "err_taskgroup_sugar_region_escape.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$taskgroupdir/neg.wasm.diag" 'region escapes its nursery scope' \
+  "err_taskgroup_sugar_region_escape.vibe did not produce the expected diagnostic"
 rm -rf "$taskgroupdir"
 echo "[compiler-gate] taskgroup { g => body } syntax sugar ok"
 
@@ -87,15 +81,9 @@ fi
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_type_send_frozen_array_of_array_bound.vibe "$frozenarrdir/neg.wasm" main
-if [ -s "$frozenarrdir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_type_send_frozen_array_of_array_bound.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF 'no impl `Send` for `FrozenArray[Array[Int]]`' "$frozenarrdir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_type_send_frozen_array_of_array_bound.vibe did not produce the expected diagnostic" >&2
-  cat "$frozenarrdir/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$frozenarrdir/neg.wasm" "err_type_send_frozen_array_of_array_bound.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$frozenarrdir/neg.wasm.diag" 'no impl `Send` for `FrozenArray[Array[Int]]`' \
+  "err_type_send_frozen_array_of_array_bound.vibe did not produce the expected diagnostic"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
@@ -122,26 +110,14 @@ eff639dir="_build/_gate_eff639"
 rm -rf "$eff639dir"; mkdir -p "$eff639dir"
 cp fixtures/err_effect_missing_annotation.vibe "$eff639dir/no_with.vibe"
 gate_fs_compile "$eff639dir/no_with.vibe" "$eff639dir/no_with.wasm" __no_entry__
-if [ -s "$eff639dir/no_with.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_effect_missing_annotation.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF "missing { Ask::Value } (no 'with' clause, requires { Ask::Value })" "$eff639dir/no_with.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_effect_missing_annotation.vibe did not produce the expected diagnostic" >&2
-  cat "$eff639dir/no_with.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$eff639dir/no_with.wasm" "err_effect_missing_annotation.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$eff639dir/no_with.wasm.diag" "missing { Ask::Value } (no 'with' clause, requires { Ask::Value })" \
+  "err_effect_missing_annotation.vibe did not produce the expected diagnostic"
 cp fixtures/err_effect_handle_partial_discharge.vibe "$eff639dir/partial.vibe"
 gate_fs_compile "$eff639dir/partial.vibe" "$eff639dir/partial.wasm" __no_entry__
-if [ -s "$eff639dir/partial.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_effect_handle_partial_discharge.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF "missing { Fs } (no 'with' clause, requires { Fs })" "$eff639dir/partial.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_effect_handle_partial_discharge.vibe did not produce the expected diagnostic" >&2
-  cat "$eff639dir/partial.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$eff639dir/partial.wasm" "err_effect_handle_partial_discharge.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$eff639dir/partial.wasm.diag" "missing { Fs } (no 'with' clause, requires { Fs })" \
+  "err_effect_handle_partial_discharge.vibe did not produce the expected diagnostic"
 rm -rf "$eff639dir"
 echo "[compiler-gate] effect-row mismatch diagnostic snapshots ok"
 
@@ -154,15 +130,9 @@ eff1157dir="_build/_gate_eff1157"
 rm -rf "$eff1157dir"; mkdir -p "$eff1157dir"
 cp fixtures/err_effect_zero_arg_perform_no_parens.vibe "$eff1157dir/x.vibe"
 gate_fs_compile "$eff1157dir/x.vibe" "$eff1157dir/x.wasm" __no_entry__
-if [ -s "$eff1157dir/x.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_effect_zero_arg_perform_no_parens.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF "missing { Ask::Get } (no 'with' clause, requires { Ask::Get })" "$eff1157dir/x.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_effect_zero_arg_perform_no_parens.vibe did not produce the expected diagnostic" >&2
-  cat "$eff1157dir/x.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$eff1157dir/x.wasm" "err_effect_zero_arg_perform_no_parens.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$eff1157dir/x.wasm.diag" "missing { Ask::Get } (no 'with' clause, requires { Ask::Get })" \
+  "err_effect_zero_arg_perform_no_parens.vibe did not produce the expected diagnostic"
 rm -rf "$eff1157dir"
 echo "[compiler-gate] zero-arg perform effect-row check ok"
 
@@ -178,20 +148,11 @@ eff1161dir="_build/_gate_eff1161"
 rm -rf "$eff1161dir"; mkdir -p "$eff1161dir"
 cp fixtures/err_effect_op_level_partial_row_bare_perform.vibe "$eff1161dir/x.vibe"
 gate_fs_compile "$eff1161dir/x.vibe" "$eff1161dir/x.wasm" __no_entry__
-if [ -s "$eff1161dir/x.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_effect_op_level_partial_row_bare_perform.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF "missing { Ask::Get } (declared { Ask::Other }, requires { Ask::Get, Ask::Other })" "$eff1161dir/x.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_effect_op_level_partial_row_bare_perform.vibe did not produce the expected diagnostic" >&2
-  cat "$eff1161dir/x.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
-if ! grep -qF "hint: change 'with Ask::Other' to 'with Ask::Get + Ask::Other' on 'asks'" "$eff1161dir/x.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_effect_op_level_partial_row_bare_perform.vibe did not produce the expected operation-level fix-it hint" >&2
-  cat "$eff1161dir/x.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$eff1161dir/x.wasm" "err_effect_op_level_partial_row_bare_perform.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$eff1161dir/x.wasm.diag" "missing { Ask::Get } (declared { Ask::Other }, requires { Ask::Get, Ask::Other })" \
+  "err_effect_op_level_partial_row_bare_perform.vibe did not produce the expected diagnostic"
+gate_require_diag_has "$eff1161dir/x.wasm.diag" "hint: change 'with Ask::Other' to 'with Ask::Get + Ask::Other' on 'asks'" \
+  "err_effect_op_level_partial_row_bare_perform.vibe did not produce the expected operation-level fix-it hint"
 rm -rf "$eff1161dir"
 echo "[compiler-gate] operation-level fix-it precision ok"
 
@@ -647,11 +608,8 @@ done
 # inert. Fail-fast reports whichever module the wave visited first, so at
 # seed 7 it must report beta -- the opposite of the unseeded run's alpha.
 run_diag_collect ffseed VIBE_DEP_ORDER_SEED=7 >/dev/null
-if ! grep -q 'beta\.vibe' "$dcolldir/ffseed.wasm.diag"; then
-  echo "[compiler-gate] FAIL: VIBE_DEP_ORDER_SEED=7 did not reorder the two-module wave (fail-fast still reported alpha first) -- the seed-invariance check above proves nothing" >&2
-  cat "$dcolldir/ffseed.wasm.diag" >&2
-  exit 1
-fi
+gate_require_diag_matches "$dcolldir/ffseed.wasm.diag" 'beta\.vibe' \
+  "VIBE_DEP_ORDER_SEED=7 did not reorder the two-module wave (fail-fast still reported alpha first) -- the seed-invariance check above proves nothing"
 # The control: with collection on and NOTHING wrong, the same shape still
 # compiles. Without this, every assertion above would also pass if
 # VIBE_DIAGNOSTICS_ALL had simply broken the compiler.
@@ -700,55 +658,31 @@ if ! r90_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host
 fi
 cp fixtures/err_region_escape_return_value.vibe "$r90dir/neg.vibe"
 gate_fs_compile "$r90dir/neg.vibe" "$r90dir/neg.wasm" __no_entry__
-if [ -s "$r90dir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_region_escape_return_value.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF 'region escapes its scope' "$r90dir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_region_escape_return_value.vibe did not produce the expected diagnostic" >&2
-  cat "$r90dir/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$r90dir/neg.wasm" "err_region_escape_return_value.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$r90dir/neg.wasm.diag" 'region escapes its scope' \
+  "err_region_escape_return_value.vibe did not produce the expected diagnostic"
 # #1274 Codex P1: the token is unforgeable -- MutList::empty with a
 # non-skolem argument must be rejected.
 cp fixtures/err_region_token_forged.vibe "$r90dir/forged.vibe"
 gate_fs_compile "$r90dir/forged.vibe" "$r90dir/forged.wasm" __no_entry__
-if [ -s "$r90dir/forged.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_region_token_forged.vibe compiled successfully -- the region token must be unforgeable" >&2
-  exit 1
-fi
-if ! grep -qF 'region token' "$r90dir/forged.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_region_token_forged.vibe did not produce the expected diagnostic" >&2
-  cat "$r90dir/forged.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$r90dir/forged.wasm" "err_region_token_forged.vibe compiled successfully -- the region token must be unforgeable"
+gate_require_diag_has "$r90dir/forged.wasm.diag" 'region token' \
+  "err_region_token_forged.vibe did not produce the expected diagnostic"
 # #1725: the return-position check above scans the region body's RESULT TYPE
 # for the skolem, so a region value hidden in a CLOSURE's captured
 # environment slips past it -- the result type `() -> Array[Int]` mentions no
 # region. These two fixtures pin BOTH directions, which is the whole
 # difficulty: capture is legitimate, only escape is not.
 gate_fs_compile fixtures/err_region_escape_closure_capture.vibe "$r90dir/cap.wasm" __no_entry__
-if [ -s "$r90dir/cap.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_region_escape_closure_capture.vibe compiled successfully -- a region value must not escape inside a closure (#1725)" >&2
-  exit 1
-fi
-if ! grep -qF 'region escapes its scope' "$r90dir/cap.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_region_escape_closure_capture.vibe did not produce the expected diagnostic" >&2
-  cat "$r90dir/cap.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$r90dir/cap.wasm" "err_region_escape_closure_capture.vibe compiled successfully -- a region value must not escape inside a closure (#1725)"
+gate_require_diag_has "$r90dir/cap.wasm.diag" 'region escapes its scope' \
+  "err_region_escape_closure_capture.vibe did not produce the expected diagnostic"
 # The sharper negative: the escaping closure holds the region TOKEN, with no
 # outer binding for a spine walk to find.
 gate_fs_compile fixtures/err_region_escape_token_capture.vibe "$r90dir/tok.wasm" __no_entry__
-if [ -s "$r90dir/tok.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_region_escape_token_capture.vibe compiled successfully -- a closure holding the region token must not escape (#1725)" >&2
-  exit 1
-fi
-if ! grep -qF 'region escapes its scope' "$r90dir/tok.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_region_escape_token_capture.vibe did not produce the expected diagnostic" >&2
-  cat "$r90dir/tok.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$r90dir/tok.wasm" "err_region_escape_token_capture.vibe compiled successfully -- a closure holding the region token must not escape (#1725)"
+gate_require_diag_has "$r90dir/tok.wasm.diag" 'region escapes its scope' \
+  "err_region_escape_token_capture.vibe did not produce the expected diagnostic"
 # #1938: capture provenance is part of the checked function type, not a
 # terminal-lambda syntax check. Pin every laundering shape that the old
 # stopgap missed (plus a deep alias witness).
@@ -819,15 +753,9 @@ for r90_fixture in \
   r90_escape="${r90_fixture#fixtures/err_region_escape_}"
   r90_escape="${r90_escape%.vibe}"
   gate_fs_compile "$r90_fixture" "$r90dir/${r90_escape}.wasm" __no_entry__
-  if [ -s "$r90dir/${r90_escape}.wasm" ]; then
-    echo "[compiler-gate] FAIL: $r90_fixture compiled successfully -- region capture provenance was lost (#1938)" >&2
-    exit 1
-  fi
-  if ! grep -qF 'region escapes its scope' "$r90dir/${r90_escape}.wasm.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: $r90_fixture did not produce the expected diagnostic (#1938)" >&2
-    cat "$r90dir/${r90_escape}.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_refused "$r90dir/${r90_escape}.wasm" "$r90_fixture compiled successfully -- region capture provenance was lost (#1938)"
+  gate_require_diag_has "$r90dir/${r90_escape}.wasm.diag" 'region escapes its scope' \
+    "$r90_fixture did not produce the expected diagnostic (#1938)"
 done
 
 # The false-positive guard: a closure that captures a region value but stays
@@ -969,15 +897,9 @@ for r90b_neg in err_region_bytes_token_forged:'region token' err_region_bytes_es
   r90b_fixture="${r90b_neg%%:*}"
   r90b_needle="${r90b_neg#*:}"
   gate_fs_compile "fixtures/$r90b_fixture.vibe" "$r90dir/bneg.wasm" __no_entry__
-  if [ -s "$r90dir/bneg.wasm" ]; then
-    echo "[compiler-gate] FAIL: $r90b_fixture.vibe compiled successfully -- must be rejected" >&2
-    exit 1
-  fi
-  if ! grep -qF "$r90b_needle" "$r90dir/bneg.wasm.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: $r90b_fixture.vibe did not produce the expected diagnostic ('$r90b_needle')" >&2
-    cat "$r90dir/bneg.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_refused "$r90dir/bneg.wasm" "$r90b_fixture.vibe compiled successfully -- must be rejected"
+  gate_require_diag_has "$r90dir/bneg.wasm.diag" "$r90b_needle" \
+    "$r90b_fixture.vibe did not produce the expected diagnostic ('$r90b_needle')"
   rm -f "$r90dir/bneg.wasm" "$r90dir/bneg.wasm.diag"
 done
 gate_fs_compile fixtures/region_bytes_ok_copy_out.vibe "$r90dir/bcopy.wasm" __no_entry__
@@ -1065,28 +987,16 @@ if ! za91_pos_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_hos
 fi
 cp fixtures/err_zero_alloc_ctor.vibe "$za91dir/neg.vibe"
 gate_fs_compile "$za91dir/neg.vibe" "$za91dir/neg.wasm" __no_entry__
-if [ -s "$za91dir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_zero_alloc_ctor.vibe compiled successfully -- must be rejected" >&2
-  exit 1
-fi
-if ! grep -qF 'zero_alloc' "$za91dir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_zero_alloc_ctor.vibe did not produce the expected diagnostic" >&2
-  cat "$za91dir/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$za91dir/neg.wasm" "err_zero_alloc_ctor.vibe compiled successfully -- must be rejected"
+gate_require_diag_has "$za91dir/neg.wasm.diag" 'zero_alloc' \
+  "err_zero_alloc_ctor.vibe did not produce the expected diagnostic"
 # #1274 Codex P1: a param shadowing a clean top-level fn is an indirect
 # callee and must be rejected.
 cp fixtures/err_zero_alloc_shadowed_call.vibe "$za91dir/shadowed.vibe"
 gate_fs_compile "$za91dir/shadowed.vibe" "$za91dir/shadowed.wasm" __no_entry__
-if [ -s "$za91dir/shadowed.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_zero_alloc_shadowed_call.vibe compiled successfully -- shadowed callees must be treated as indirect" >&2
-  exit 1
-fi
-if ! grep -qF 'zero_alloc' "$za91dir/shadowed.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_zero_alloc_shadowed_call.vibe did not produce the expected diagnostic" >&2
-  cat "$za91dir/shadowed.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$za91dir/shadowed.wasm" "err_zero_alloc_shadowed_call.vibe compiled successfully -- shadowed callees must be treated as indirect"
+gate_require_diag_has "$za91dir/shadowed.wasm.diag" 'zero_alloc' \
+  "err_zero_alloc_shadowed_call.vibe did not produce the expected diagnostic"
 # #1838: typed operators can allocate even when their operands are variables.
 # Pin both allocating overloads: linear Double arithmetic boxes its result,
 # and String `+` lowers to concatenation. Int arithmetic remains covered by
@@ -1094,15 +1004,9 @@ fi
 for za_typed in double_operator string_operator shadowed_operator; do
   cp "fixtures/err_zero_alloc_${za_typed}.vibe" "$za91dir/${za_typed}.vibe"
   gate_fs_compile "$za91dir/${za_typed}.vibe" "$za91dir/${za_typed}.wasm" __no_entry__
-  if [ -s "$za91dir/${za_typed}.wasm" ]; then
-    echo "[compiler-gate] FAIL: err_zero_alloc_${za_typed}.vibe compiled successfully -- typed allocating operator must be rejected" >&2
-    exit 1
-  fi
-  if ! grep -qF 'zero_alloc' "$za91dir/${za_typed}.wasm.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: err_zero_alloc_${za_typed}.vibe did not produce the expected diagnostic" >&2
-    cat "$za91dir/${za_typed}.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_refused "$za91dir/${za_typed}.wasm" "err_zero_alloc_${za_typed}.vibe compiled successfully -- typed allocating operator must be rejected"
+  gate_require_diag_has "$za91dir/${za_typed}.wasm.diag" 'zero_alloc' \
+    "err_zero_alloc_${za_typed}.vibe did not produce the expected diagnostic"
 done
 rm -rf "$za91dir"
 # ADR-0091 #1262: the check and the MEASUREMENT pin each other. The two
@@ -1532,15 +1436,9 @@ fi
 cp fixtures/err_async_rowvar_higher_order_refused.vibe "$fo65dir/neg.vibe"
 rm -f "$fo65dir/neg.wasm"
 gate_fs_compile "$fo65dir/neg.vibe" "$fo65dir/neg.wasm" main
-if [ -s "$fo65dir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_async_rowvar_higher_order_refused.vibe compiled -- a higher-order row-variable callee must keep the ADR-0076 追記34 V1 rejection" >&2
-  exit 1
-fi
-if ! grep -qF "type-directed evidence" "$fo65dir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_async_rowvar_higher_order_refused.vibe did not produce the V1 guard diagnostic" >&2
-  cat "$fo65dir/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$fo65dir/neg.wasm" "err_async_rowvar_higher_order_refused.vibe compiled -- a higher-order row-variable callee must keep the ADR-0076 追記34 V1 rejection"
+gate_require_diag_has "$fo65dir/neg.wasm.diag" "type-directed evidence" \
+  "err_async_rowvar_higher_order_refused.vibe did not produce the V1 guard diagnostic"
 
 echo "[compiler-gate] 78/78 named host future collector: total + shadow-aware (#1337)"
 nhf37dir="_build/_gate_1337"
@@ -1623,28 +1521,16 @@ fi
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_generic_effect_perform_arity.vibe "$g1340dir/arity.wasm" main
-if [ -s "$g1340dir/arity.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_generic_effect_perform_arity.vibe compiled -- the #1218 generic-effect arity hole is back" >&2
-  exit 1
-fi
-if ! grep -q "perform State::Get expects 0 argument(s), got 3" "$g1340dir/arity.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_generic_effect_perform_arity.vibe did not produce the arity diagnostic" >&2
-  cat "$g1340dir/arity.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$g1340dir/arity.wasm" "err_generic_effect_perform_arity.vibe compiled -- the #1218 generic-effect arity hole is back"
+gate_require_diag_matches "$g1340dir/arity.wasm.diag" "perform State::Get expects 0 argument(s), got 3" \
+  "err_generic_effect_perform_arity.vibe did not produce the arity diagnostic"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_generic_effect_row_targ.vibe "$g1340dir/rowtarg.wasm" main
-if [ -s "$g1340dir/rowtarg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_generic_effect_row_targ.vibe compiled -- a bracketed row item on a non-generic effect must be rejected" >&2
-  exit 1
-fi
-if ! grep -q "effect Log declares no type parameters" "$g1340dir/rowtarg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_generic_effect_row_targ.vibe did not produce the row-instantiation diagnostic" >&2
-  cat "$g1340dir/rowtarg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$g1340dir/rowtarg.wasm" "err_generic_effect_row_targ.vibe compiled -- a bracketed row item on a non-generic effect must be rejected"
+gate_require_diag_matches "$g1340dir/rowtarg.wasm.diag" "effect Log declares no type parameters" \
+  "err_generic_effect_row_targ.vibe did not produce the row-instantiation diagnostic"
 rm -rf "$g1340dir"
 echo "[compiler-gate] generic effect instantiation ok"
 
@@ -1684,15 +1570,9 @@ let main = () -> Int {
 }
 EOF
 gate_fs_compile "$opb/neg.vibe" "$opb/neg.wasm" main
-if [ -s "$opb/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: with Fs::read_file authorized Fs::write_file -- operation grants are not minimal (#1343)" >&2
-  exit 1
-fi
-if ! grep -q "missing { Fs::write_file }" "$opb/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the diagnostic must name the missing OPERATION, not the whole effect (ADR-0071/#1343)" >&2
-  cat "$opb/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$opb/neg.wasm" "with Fs::read_file authorized Fs::write_file -- operation grants are not minimal (#1343)"
+gate_require_diag_matches "$opb/neg.wasm.diag" "missing { Fs::write_file }" \
+  "the diagnostic must name the missing OPERATION, not the whole effect (ADR-0071/#1343)"
 cat > "$opb/bare.vibe" <<'EOF'
 fn both(p: String) -> Unit with Fs {
   Fs::write_file(p, Fs::read_file(p))
@@ -1733,15 +1613,9 @@ fi
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_async_for_undeclared.vibe "$afdir/neg.wasm" main
-if [ -s "$afdir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_async_for_undeclared.vibe compiled -- a for loop over a Future-returning iterator must require { Async } (#1358)" >&2
-  exit 1
-fi
-if ! grep -q "Countdown::next" "$afdir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the async-for diagnostic must name the iterator's next method (#1358)" >&2
-  cat "$afdir/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$afdir/neg.wasm" "err_async_for_undeclared.vibe compiled -- a for loop over a Future-returning iterator must require { Async } (#1358)"
+gate_require_diag_matches "$afdir/neg.wasm.diag" "Countdown::next" \
+  "the async-for diagnostic must name the iterator's next method (#1358)"
 # Codex review on PR #1364 (P1 x2): two iterand shapes reached the await
 # lowering but slipped past the row requirement -- a GENERIC impl (recorded as
 # EnvTraitImplGen, skipped by the scan) and an ENUM iterand (CtEnum, dropped by
@@ -1781,10 +1655,7 @@ let main = () -> Int {
 }
 EOF
 gate_fs_compile "$afdir/generic.vibe" "$afdir/generic.wasm" main
-if [ -s "$afdir/generic.wasm" ]; then
-  echo "[compiler-gate] FAIL: a GENERICALLY implemented async iterator escaped the Async requirement -- EnvTraitImplGen must be matched like EnvTraitImpl (#1358, Codex P1 on #1364)" >&2
-  exit 1
-fi
+gate_require_refused "$afdir/generic.wasm" "a GENERICALLY implemented async iterator escaped the Async requirement -- EnvTraitImplGen must be matched like EnvTraitImpl (#1358, Codex P1 on #1364)"
 cat > "$afdir/enum.vibe" <<'EOF'
 trait AIter[T] {
   next(Self) -> Future[Option[(T, Self)]]
@@ -1815,10 +1686,7 @@ let main = () -> Int {
 }
 EOF
 gate_fs_compile "$afdir/enum.vibe" "$afdir/enum.wasm" main
-if [ -s "$afdir/enum.wasm" ]; then
-  echo "[compiler-gate] FAIL: an ENUM async iterand escaped the Async requirement -- CtEnum must keep its head name (#1358, Codex P1 on #1364)" >&2
-  exit 1
-fi
+gate_require_refused "$afdir/enum.wasm" "an ENUM async iterand escaped the Async requirement -- CtEnum must keep its head name (#1358, Codex P1 on #1364)"
 rm -rf "$afdir"
 echo "[compiler-gate] async for-loop Async requirement ok"
 
@@ -1838,15 +1706,9 @@ rm -rf "$lcdir"; mkdir -p "$lcdir"
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_local_closure_effect_leak.vibe "$lcdir/neg.wasm" main
-if [ -s "$lcdir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_local_closure_effect_leak.vibe compiled -- a local closure's declared row must leak into its caller (#1361)" >&2
-  exit 1
-fi
-if ! grep -q "missing { Env }" "$lcdir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the local-closure leak must be reported as the caller's missing row label (#1361)" >&2
-  cat "$lcdir/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$lcdir/neg.wasm" "err_local_closure_effect_leak.vibe compiled -- a local closure's declared row must leak into its caller (#1361)"
+gate_require_diag_matches "$lcdir/neg.wasm.diag" "missing { Env }" \
+  "the local-closure leak must be reported as the caller's missing row label (#1361)"
 cat > "$lcdir/pos.vibe" <<'EOF'
 let main = () -> Unit with Console + Env {
   let read_home = () -> String with Env {
@@ -1890,15 +1752,9 @@ rm -rf "$hsdir"; mkdir -p "$hsdir"
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_handler_switch_dead_handle.vibe "$hsdir/neg.wasm" main
-if [ -s "$hsdir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_handler_switch_dead_handle.vibe compiled -- the handler-switch no-op is silent again (#1347)" >&2
-  exit 1
-fi
-if ! grep -q "can never fire" "$hsdir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the dead-handle diagnostic is missing (#1347)" >&2
-  cat "$hsdir/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$hsdir/neg.wasm" "err_handler_switch_dead_handle.vibe compiled -- the handler-switch no-op is silent again (#1347)"
+gate_require_diag_matches "$hsdir/neg.wasm.diag" "can never fire" \
+  "the dead-handle diagnostic is missing (#1347)"
 cat > "$hsdir/live.vibe" <<'EOF'
 effect Yield {
   Yield(Int) -> Unit
@@ -1962,10 +1818,7 @@ rm -rf "$hodir"; mkdir -p "$hodir"
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_higher_order_effectful_block.vibe "$hodir/neg.wasm" main
-if [ -s "$hodir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: an operation taking an EFFECTFUL block must still be rejected (#1347)" >&2
-  exit 1
-fi
+gate_require_refused "$hodir/neg.wasm" "an operation taking an EFFECTFUL block must still be rejected (#1347)"
 if ! grep -q "Higher-order effects" "$hodir/neg.wasm.diag" 2>/dev/null || ! grep -q "Tracing::Span" "$hodir/neg.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: the diagnostic must name the higher-order OPERATION and the limitation (#1347)" >&2
   cat "$hodir/neg.wasm.diag" >&2 2>/dev/null || true

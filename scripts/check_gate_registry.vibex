@@ -23,15 +23,17 @@
 //     banner (`ok`, `FAIL: ...`, or one containing ` ok ` / ` ok:` / ` ok (`
 //     or ending in ` ok`)
 //   - a quoted `"fixtures/..."` path a lane source names that does not exist
-//     (paths with `{`, `${` or `*` are patterns, not paths; the message of a
-//     `gate_require_artifact` line is prose, not a reference)
+//     (paths with `{`, `${` or `*` are patterns, not paths; only the first
+//     argument of a `gate_require_*` line is a reference, its needle and
+//     message are prose)
 //   - a compile whose failure the lane checks (`if [ ! -s .. ]`) but which can
 //     abort the lane before that check (#2107 fallout: three separate gate
 //     steps died at exit 1 with no message at all, because `set -e` killed the
 //     lane on the compile itself and the step's own FAIL echo was one line too
 //     late to run). A `run_wasm_vibe_host_runner.sh` invocation (continued
 //     across `\` lines) whose last line has no `||`, `&&` or `="$(` and whose
-//     next non-blank line is `if [ -s` / `if [ ! -s` is refused: add `|| true`.
+//     next non-blank line is `if [ -s` / `if [ ! -s` (or gate_require_artifact /
+//     gate_require_refused, which are those checks) is refused: add `|| true`.
 //
 // --list prints the registry rows (`id<TAB>lane<TAB>title`) after checking
 // them. --root DIR checks another tree (the self-test's copy).
@@ -204,15 +206,36 @@ fn banner(line: String) -> String {
   }
 }
 
-/// The part of a line whose quoted paths are references. A
-/// `gate_require_artifact <out> "<message>"` line (tests/gates/lib.sh) names
-/// its artifact first and then the lane's words for what failed to compile,
-/// which may start with the path it is about; that message is prose, as it was
-/// when it sat in an `echo "[compiler-gate] FAIL: ..."`.
+/// The part of a line whose quoted paths are references. The
+/// `gate_require_*` helpers (tests/gates/lib.sh) name a path first -- the
+/// artifact, or the diagnostic file -- and then a needle or the lane's words
+/// for what failed, either of which may start with the path it is about; those
+/// are prose, as they were when they sat in an `echo "[compiler-gate] FAIL:
+/// ..."` or a `grep -q "..."`.
+fn require_head(t: String) -> String {
+  let heads = [
+    "gate_require_artifact ",
+    "gate_require_refused ",
+    "gate_require_diag_has ",
+    "gate_require_diag_matches "
+  ]
+  let mut found = ""
+  let mut i = 0
+  while i < Array::length(heads) {
+    if found == "" && String::starts_with(t, Array::get(heads, i)) {
+      found = Array::get(heads, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn path_scope(line: String) -> String {
   let t = String::trim(line)
-  let head = "gate_require_artifact "
-  if String::starts_with(t, head) && String::starts_with(String::substring(t, String::length(head), String::length(t)), "\"") {
+  let head = require_head(t)
+  if head != "" && String::starts_with(String::substring(t, String::length(head), String::length(t)), "\"") {
     let start = String::length(head) + 1
     let close = String::index_of_from(t, "\"", start)
     if close > 0 {
@@ -283,10 +306,12 @@ fn fail_line(msg: String) -> Unit with Stderr::write_stream {
   Stderr::write_stream("[gate-registry] FAIL: \{msg}\n")
 }
 
-/// `if [ -s ` or `if [ ! -s `, after leading blanks.
+/// `if [ -s ` or `if [ ! -s `, or one of the tests/gates/lib.sh helpers that
+/// are those checks (`gate_require_artifact` / `gate_require_refused`), after
+/// leading blanks.
 fn checks_artifact(line: String) -> Bool {
   let t = trim_left(line)
-  String::starts_with(t, "if [ -s ") || String::starts_with(t, "if [ ! -s ")
+  String::starts_with(t, "if [ -s ") || String::starts_with(t, "if [ ! -s ") || String::starts_with(t, "gate_require_artifact ") || String::starts_with(t, "gate_require_refused ")
 }
 
 /// The compile-then-check rule over one lane source; true when it holds.

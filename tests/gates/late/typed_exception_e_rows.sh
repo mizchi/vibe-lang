@@ -27,15 +27,9 @@ fi
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_exception_kind_mismatch.vibe "$excdir/neg.wasm" main
-if [ -s "$excdir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: with Exception[ParseError] authorized an IoError throw -- exact-kind rows are not enforced (#1344)" >&2
-  exit 1
-fi
-if ! grep -q "missing { Exception\[IoError\] }" "$excdir/neg.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the diagnostic must name the missing KIND (#1344)" >&2
-  cat "$excdir/neg.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$excdir/neg.wasm" "with Exception[ParseError] authorized an IoError throw -- exact-kind rows are not enforced (#1344)"
+gate_require_diag_matches "$excdir/neg.wasm.diag" "missing { Exception\[IoError\] }" \
+  "the diagnostic must name the missing KIND (#1344)"
 # #1344 follow-up: the same rejection when the payload is a LOCAL binder rather
 # than an inline constructor application. Until the payload-kind scope was
 # threaded through the perform walk this compiled -- a local's type was
@@ -46,15 +40,9 @@ fi
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_exception_local_binder_kind.vibe "$excdir/neglocal.wasm" main
-if [ -s "$excdir/neglocal.wasm" ]; then
-  echo "[compiler-gate] FAIL: a LOCAL binder's throw payload was not kind-checked (#1344 follow-up)" >&2
-  exit 1
-fi
-if ! grep -q "missing { Exception\[IoError\] }" "$excdir/neglocal.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the local-binder diagnostic must name the missing KIND (#1344 follow-up)" >&2
-  cat "$excdir/neglocal.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$excdir/neglocal.wasm" "a LOCAL binder's throw payload was not kind-checked (#1344 follow-up)"
+gate_require_diag_matches "$excdir/neglocal.wasm.diag" "missing { Exception\[IoError\] }" \
+  "the local-binder diagnostic must name the missing KIND (#1344 follow-up)"
 # The fix-it must be pasteable: the row grammar takes `Eff::Op` and `Eff[T]`
 # but NOT `Eff[T]::Op`, so a `Exception[IoError]::Throw` hint would name a
 # label that does not parse. Feed the hint's row back through the compiler.
@@ -103,10 +91,7 @@ let main = () -> Int {
 }
 EOF
 gate_fs_compile "$excdir/handle.vibe" "$excdir/handle.wasm" main
-if [ -s "$excdir/handle.wasm" ]; then
-  echo "[compiler-gate] FAIL: handle with Exception[ParseError] discharged an IoError throw (#1344)" >&2
-  exit 1
-fi
+gate_require_refused "$excdir/handle.wasm" "handle with Exception[ParseError] discharged an IoError throw (#1344)"
 # #2985: a kinded arm is a catch-all at run time, so the checker now refuses
 # the foreign kind AT THE HANDLE ("it also raises { Exception[IoError] }")
 # instead of leaving it in the row ("missing { Exception[IoError] }"); either
@@ -416,10 +401,7 @@ res_case() {
   if [ "$expect" = "ok" ]; then
     gate_require_artifact "$resdir/$rname.wasm" "resource case '$rname' should compile but did not (ADR-0075/#1343)"
   else
-    if [ -s "$resdir/$rname.wasm" ]; then
-      echo "[compiler-gate] FAIL: resource case '$rname' should be rejected but compiled (ADR-0075/#1343)" >&2
-      exit 1
-    fi
+    gate_require_refused "$resdir/$rname.wasm" "resource case '$rname' should be rejected but compiled (ADR-0075/#1343)"
     if [ -n "$rneedle" ] && ! grep -q -- "$rneedle" "$resdir/$rname.wasm.diag" 2>/dev/null; then
       echo "[compiler-gate] FAIL: resource case '$rname' rejected without naming '$rneedle' (ADR-0075/#1343):" >&2
       cat "$resdir/$rname.wasm.diag" >&2 2>/dev/null || true
@@ -632,10 +614,7 @@ en_case() {
   if [ "$expect" = "ok" ]; then
     gate_require_artifact "$endir/$ename.wasm" "enum-import case '$ename' should compile but did not (#1455)"
   else
-    if [ -s "$endir/$ename.wasm" ]; then
-      echo "[compiler-gate] FAIL: enum-import case '$ename' should be rejected but compiled (#1455)" >&2
-      exit 1
-    fi
+    gate_require_refused "$endir/$ename.wasm" "enum-import case '$ename' should be rejected but compiled (#1455)"
     if [ -n "$eneedle" ] && ! grep -q -- "$eneedle" "$endir/$ename.wasm.diag" 2>/dev/null; then
       echo "[compiler-gate] FAIL: enum-import case '$ename' rejected without naming '$eneedle' (#1455):" >&2
       cat "$endir/$ename.wasm.diag" >&2 2>/dev/null || true
@@ -856,15 +835,9 @@ ui_case() {
   if [ "$uexpect" = "ok" ]; then
     gate_require_artifact "$uidir/$uname.wasm" "unresolved-import case '$uname' should compile but did not (#1521)"
   else
-    if [ -s "$uidir/$uname.wasm" ]; then
-      echo "[compiler-gate] FAIL: unresolved-import case '$uname' compiled; the bogus import was not caught (#1521)" >&2
-      exit 1
-    fi
-    if ! grep -q "is not exported by" "$uidir/$uname.wasm.diag" 2>/dev/null; then
-      echo "[compiler-gate] FAIL: unresolved-import case '$uname' was rejected by something OTHER than the #1521 check" >&2
-      cat "$uidir/$uname.wasm.diag" >&2 2>/dev/null || true
-      exit 1
-    fi
+    gate_require_refused "$uidir/$uname.wasm" "unresolved-import case '$uname' compiled; the bogus import was not caught (#1521)"
+    gate_require_diag_matches "$uidir/$uname.wasm.diag" "is not exported by" \
+      "unresolved-import case '$uname' was rejected by something OTHER than the #1521 check"
   fi
 }
 # 1. The reported shape: a value import that does not exist, and is used.
@@ -1372,11 +1345,8 @@ if [ "$diag_n" != "2" ]; then
 fi
 # Same errors, not merely the same count: both must name line 1 and line 3.
 for want in 'line 1:' 'line 3:'; do
-  if ! grep -qF "$want" "$chkdir/check.out.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: vibe check's report is missing '$want' (#1567)" >&2
-    cat "$chkdir/check.out.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_diag_has "$chkdir/check.out.diag" "$want" \
+    "vibe check's report is missing '$want' (#1567)"
   if ! grep -qF "$want" "$chkdir/diag.out" 2>/dev/null; then
     echo "[compiler-gate] FAIL: vibe diagnostics' report is missing '$want' (#1567)" >&2
     cat "$chkdir/diag.out" >&2 2>/dev/null || true

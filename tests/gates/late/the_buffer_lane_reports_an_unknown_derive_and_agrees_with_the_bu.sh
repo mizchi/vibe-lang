@@ -194,11 +194,8 @@ for probe in later first; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$clsdir/$probe/index.vpkg" "$clsdir/$probe.imp" main >/dev/null 2>&1 || true
-  if ! grep -qF "$cls_msg" "$clsdir/$probe.imp.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: the import lane no longer refuses a top-level let in a contract ($probe) -- repoint this probe (#2317)" >&2
-    cat "$clsdir/$probe.imp.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_diag_has "$clsdir/$probe.imp.diag" "$cls_msg" \
+    "the import lane no longer refuses a top-level let in a contract ($probe) -- repoint this probe (#2317)"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$clsdir/$probe/index.vpkg" "$clsdir/$probe.buf" main >/dev/null 2>&1 || true

@@ -71,15 +71,9 @@ fi
 
 # build: the same three, through the FS-compile lane.
 uw_build "$uwdir/uses.vibe" "$uwdir/uses.wasm"
-if [ -s "$uwdir/uses.wasm" ]; then
-  echo "[compiler-gate] FAIL: vibe build accepted @vibe/concurrent/experimental with no opt-in -- the build accepts what the check rejects (#2248)" >&2
-  exit 1
-fi
-if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/uses.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the build rejection did not name the opt-in (#2248)" >&2
-  cat "$uwdir/uses.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$uwdir/uses.wasm" "vibe build accepted @vibe/concurrent/experimental with no opt-in -- the build accepts what the check rejects (#2248)"
+gate_require_diag_has "$uwdir/uses.wasm.diag" 'VIBE_UNSTABLE=1' \
+  "the build rejection did not name the opt-in (#2248)"
 uw_build "$uwdir/uses.vibe" "$uwdir/uses_optin.wasm" VIBE_UNSTABLE=1
 gate_require_artifact "$uwdir/uses_optin.wasm" "VIBE_UNSTABLE=1 did not let the build through (#2248)"
 uw_build "$uwdir/plain.vibe" "$uwdir/plain.wasm"
@@ -143,10 +137,7 @@ for uw_odd in tab spaces; do
     exit 1
   fi
   uw_build "$uwdir/$uw_odd.vibe" "$uwdir/$uw_odd.wasm"
-  if [ -s "$uwdir/$uw_odd.wasm" ]; then
-    echo "[compiler-gate] FAIL: '$uw_odd' whitespace spelling of the import bypassed the build gate (#2277)" >&2
-    exit 1
-  fi
+  gate_require_refused "$uwdir/$uw_odd.wasm" "'$uw_odd' whitespace spelling of the import bypassed the build gate (#2277)"
 done
 
 # The reported line must be the OFFENDING import, not the first line that
@@ -164,11 +155,8 @@ fn main() -> Int allows Exception {
 }
 UWEOF
 uw_build "$uwdir/comment.vibe" "$uwdir/comment.wasm"
-if ! grep -qF 'line 3:' "$uwdir/comment.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the opt-in diagnostic named the wrong import line (#2277)" >&2
-  cat "$uwdir/comment.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_diag_has "$uwdir/comment.wasm.diag" 'line 3:' \
+  "the opt-in diagnostic named the wrong import line (#2277)"
 
 # A PINNED `require` header must not silence the gate. The build ingests before
 # it parses, and ingestion blanks that header; a scan that read the raw bytes
@@ -190,15 +178,9 @@ fn main() -> Int allows Exception {
 }
 UWEOF
 uw_build "$uwdir/pinned.vibe" "$uwdir/pinned.wasm"
-if [ -s "$uwdir/pinned.wasm" ]; then
-  echo "[compiler-gate] FAIL: a pinned-require entry built against @vibe/concurrent/experimental with no opt-in (#2277)" >&2
-  exit 1
-fi
-if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/pinned.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: a pinned require header silenced the opt-in gate (#2277)" >&2
-  cat "$uwdir/pinned.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$uwdir/pinned.wasm" "a pinned-require entry built against @vibe/concurrent/experimental with no opt-in (#2277)"
+gate_require_diag_has "$uwdir/pinned.wasm.diag" 'VIBE_UNSTABLE=1' \
+  "a pinned require header silenced the opt-in gate (#2277)"
 
 # The path may be on the NEXT line. `import\n  @vibe/concurrent/experimental { .. }` is valid
 # source; a same-line search missed it and fell back to line 1, naming an
@@ -207,11 +189,8 @@ fi
 # The import here starts on line 5.
 printf 'fn helper() -> Int {\n  1\n}\n\nimport\n  @vibe/concurrent/experimental { TaskGroup }\n\nfn main() -> Int allows Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/multiline.vibe"
 uw_build "$uwdir/multiline.vibe" "$uwdir/multiline.wasm"
-if ! grep -qF 'line 5:' "$uwdir/multiline.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: a multiline import declaration got the wrong line (#2277)" >&2
-  cat "$uwdir/multiline.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_diag_has "$uwdir/multiline.wasm.diag" 'line 5:' \
+  "a multiline import declaration got the wrong line (#2277)"
 
 # The BUFFER lane must agree too. `vibe check --single-file` (VIBE_DIAGNOSTICS)
 # does not resolve imports, so an UNUSED `import @vibe/concurrent/experimental` analyzed
@@ -296,15 +275,9 @@ rm -f "$uwdir/serve.component.wasm" "$uwdir/serve.component.wasm.diag"
 env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$uwdir/serve.vibe" "$uwdir/serve.component.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ -s "$uwdir/serve.component.wasm" ]; then
-  echo "[compiler-gate] FAIL: vibe serve emitted a component for an unstable import with no opt-in (#2277)" >&2
-  exit 1
-fi
-if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/serve.component.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: vibe serve refused the handler for the wrong reason (#2277)" >&2
-  cat "$uwdir/serve.component.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$uwdir/serve.component.wasm" "vibe serve emitted a component for an unstable import with no opt-in (#2277)"
+gate_require_diag_has "$uwdir/serve.component.wasm.diag" 'VIBE_UNSTABLE=1' \
+  "vibe serve refused the handler for the wrong reason (#2277)"
 rm -f "$uwdir/serve.optin.wasm" "$uwdir/serve.optin.wasm.diag"
 VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -327,10 +300,7 @@ fn main() -> Int {
 }
 UWEOF
 uw_build "$uwdir/reexport.vibe" "$uwdir/reexport.wasm"
-if [ -s "$uwdir/reexport.wasm" ]; then
-  echo "[compiler-gate] FAIL: a re-export of the unstable package built with no opt-in (#2277)" >&2
-  exit 1
-fi
+gate_require_refused "$uwdir/reexport.wasm" "a re-export of the unstable package built with no opt-in (#2277)"
 # TWO acceptable refusals, and the check has to distinguish them or it passes
 # for a reason it never verified. Today the form does not parse at all -- the
 # parser builds `SReExport` for `TDot`/`TDotDot` paths only and answers a
@@ -364,15 +334,9 @@ rm -f "$uwdir/bare.wasm" "$uwdir/bare.wasm.diag"
 env -u VIBE_UNSTABLE -u VIBE_FS_COMPILE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$uwdir/bare.vibe" "$uwdir/bare.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ -s "$uwdir/bare.wasm" ]; then
-  echo "[compiler-gate] FAIL: the single-source lane built an unstable import with no opt-in (#2277)" >&2
-  exit 1
-fi
-if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/bare.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the single-source lane refused the file for the wrong reason (#2277)" >&2
-  cat "$uwdir/bare.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$uwdir/bare.wasm" "the single-source lane built an unstable import with no opt-in (#2277)"
+gate_require_diag_has "$uwdir/bare.wasm.diag" 'VIBE_UNSTABLE=1' \
+  "the single-source lane refused the file for the wrong reason (#2277)"
 rm -f "$uwdir/bare.optin.wasm" "$uwdir/bare.optin.wasm.diag"
 env -u VIBE_FS_COMPILE VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -442,20 +406,11 @@ fn main() -> Int allows Exception {
 }
 UWEOF
 uw_build "$uwdir/sib/main.vibe" "$uwdir/sib/main.wasm"
-if [ -s "$uwdir/sib/main.wasm" ]; then
-  echo "[compiler-gate] FAIL: a sibling file carried the unstable import past the gate (#2284)" >&2
-  exit 1
-fi
-if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/sib/main.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the sibling import was refused for the wrong reason (#2284)" >&2
-  cat "$uwdir/sib/main.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
-if ! grep -qF 'worker.vibe' "$uwdir/sib/main.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the diagnostic named the entry, not the file that spells the import (#2284)" >&2
-  cat "$uwdir/sib/main.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$uwdir/sib/main.wasm" "a sibling file carried the unstable import past the gate (#2284)"
+gate_require_diag_has "$uwdir/sib/main.wasm.diag" 'VIBE_UNSTABLE=1' \
+  "the sibling import was refused for the wrong reason (#2284)"
+gate_require_diag_has "$uwdir/sib/main.wasm.diag" 'worker.vibe' \
+  "the diagnostic named the entry, not the file that spells the import (#2284)"
 uw_build "$uwdir/sib/main.vibe" "$uwdir/sib/optin.wasm" VIBE_UNSTABLE=1
 gate_require_artifact "$uwdir/sib/optin.wasm" "VIBE_UNSTABLE=1 did not let the sibling case build (#2284)"
 # `vibe check` must agree -- the whole point is that the two verbs answer alike.
@@ -508,20 +463,11 @@ rm -f "$uwdir/srv/c.wasm" "$uwdir/srv/c.wasm.diag"
 env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$uwdir/srv/h.vibe" "$uwdir/srv/c.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ -s "$uwdir/srv/c.wasm" ]; then
-  echo "[compiler-gate] FAIL: vibe serve emitted a component whose dependency imports the unstable package (#2284)" >&2
-  exit 1
-fi
-if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/srv/c.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: vibe serve refused the handler for the wrong reason -- the gate must outrank the purity check (#2302)" >&2
-  cat "$uwdir/srv/c.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
-if ! grep -qF 'dep.vibe' "$uwdir/srv/c.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the serve diagnostic named the handler, not the file that spells the import (#2284)" >&2
-  cat "$uwdir/srv/c.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$uwdir/srv/c.wasm" "vibe serve emitted a component whose dependency imports the unstable package (#2284)"
+gate_require_diag_has "$uwdir/srv/c.wasm.diag" 'VIBE_UNSTABLE=1' \
+  "vibe serve refused the handler for the wrong reason -- the gate must outrank the purity check (#2302)"
+gate_require_diag_has "$uwdir/srv/c.wasm.diag" 'dep.vibe' \
+  "the serve diagnostic named the handler, not the file that spells the import (#2284)"
 # With the opt-in the gate stands down -- whatever happens next is not its say.
 rm -f "$uwdir/srv/optin.wasm" "$uwdir/srv/optin.wasm.diag"
 VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
@@ -1297,11 +1243,8 @@ rm -f "$ihdir/only.out" "$ihdir/only.out.diag"
 env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ihdir/pkg/impl.vibe" "$ihdir/only.out" main >/dev/null 2>&1 || true
-if ! grep -qF 'inherits' "$ihdir/only.out.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: a file that only inherits the import no longer says so (#2289)" >&2
-  cat "$ihdir/only.out.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_diag_has "$ihdir/only.out.diag" 'inherits' \
+  "a file that only inherits the import no longer says so (#2289)"
 rm -rf "$ihdir"
 echo "[compiler-gate] inherited and physical unstable imports are each reported, each in its own words ok (#2289)"
 
@@ -1561,11 +1504,8 @@ rm -f "$tdlabdir/chk.out" "$tdlabdir/chk.out.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdlabdir/trait.vibe" "$tdlabdir/chk.out" main >/dev/null 2>&1 || true
-if ! grep -qF 'Store::lookup' "$tdlabdir/chk.out.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: vibe check no longer names the trait method (#2286)" >&2
-  cat "$tdlabdir/chk.out.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_diag_has "$tdlabdir/chk.out.diag" 'Store::lookup' \
+  "vibe check no longer names the trait method (#2286)"
 # ...and an INHERITED method names the trait that declares it. `flatten_traits`
 # copies a supertrait's signatures into the child, so `ChildDict` carries fields
 # `Child` never declared. Keying the provenance record by struct alone reported
@@ -2078,11 +2018,8 @@ generated_hash =
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$vpbufdir/$dirpos/index.vpkg" "$vpbufdir/$dirpos.imp" main >/dev/null 2>&1 || true
-  if ! grep -qF 'unsupported # directive in a contract file: eof' "$vpbufdir/$dirpos.imp.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: the import lane no longer reports a '#eof' directive ($dirpos the header) -- repoint this probe (#2316)" >&2
-    cat "$vpbufdir/$dirpos.imp.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_diag_has "$vpbufdir/$dirpos.imp.diag" 'unsupported # directive in a contract file: eof' \
+    "the import lane no longer reports a '#eof' directive ($dirpos the header) -- repoint this probe (#2316)"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$vpbufdir/$dirpos/index.vpkg" "$vpbufdir/$dirpos.buf" main >/dev/null 2>&1 || true

@@ -1848,9 +1848,7 @@ fi
 # that are actually defined later).
 printf 'export let _start: () -> Int = () -> { genuinely_undefined_name() }\n' > "$wdir/undef.vibe"
 gate_fs_compile "$wdir/undef.vibe" "$wdir/undef.wasm" _start
-if [ -s "$wdir/undef.wasm" ]; then
-  echo "[compiler-gate] FAIL: undefined name compiled (#602 hoist over-permitted)" >&2; exit 1
-fi
+gate_require_refused "$wdir/undef.wasm" "undefined name compiled (#602 hoist over-permitted)"
 rm -rf "$wdir"
 echo "[compiler-gate] forward-reference regression ok"
 

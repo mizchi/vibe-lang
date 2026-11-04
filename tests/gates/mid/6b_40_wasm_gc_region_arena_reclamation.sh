@@ -411,15 +411,9 @@ for sdc_backend in "" gc; do
   fi
 done
 gate_fs_compile fixtures/err_effect_self_discharge_arm_reperform.vibe "$sdcdir/rej.wasm" main
-if [ -s "$sdcdir/rej.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_effect_self_discharge_arm_reperform.vibe compiled -- an arm re-perform escapes the callee, so call-inertness must NOT apply (P0 silent-wrong risk)" >&2
-  exit 1
-fi
-if ! grep -qF "hides a perform from it" "$sdcdir/rej.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_effect_self_discharge_arm_reperform.vibe rejection lacks the #1591 culprit diagnostic (want 'hides a perform from it')" >&2
-  cat "$sdcdir/rej.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$sdcdir/rej.wasm" "err_effect_self_discharge_arm_reperform.vibe compiled -- an arm re-perform escapes the callee, so call-inertness must NOT apply (P0 silent-wrong risk)"
+gate_require_diag_has "$sdcdir/rej.wasm.diag" "hides a perform from it" \
+  "err_effect_self_discharge_arm_reperform.vibe rejection lacks the #1591 culprit diagnostic (want 'hides a perform from it')"
 rm -rf "$sdcdir"
 echo "[compiler-gate] self-discharging callee call-inertness ok (#1595/#1591)"
 
@@ -431,25 +425,13 @@ echo "[compiler-gate] 40h4c/40 nested-handler function value refuses before an a
 nhvdir="_build/_gate_nested_handle_value"
 rm -rf "$nhvdir"; mkdir -p "$nhvdir"
 gate_fs_compile fixtures/err_fnvalue_nested_handle.vibe "$nhvdir/rej.wasm" main
-if [ -s "$nhvdir/rej.wasm" ]; then
-  echo "[compiler-gate] FAIL: named self-discharging function value compiled and can trap at an indirect call (#3195)" >&2
-  exit 1
-fi
-if ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/rej.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: nested-handler function value refusal lacks the working edit (#3195)" >&2
-  cat "$nhvdir/rej.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$nhvdir/rej.wasm" "named self-discharging function value compiled and can trap at an indirect call (#3195)"
+gate_require_diag_has "$nhvdir/rej.wasm.diag" 'pass an explicitly row-annotated closure that calls `inner_handled`' \
+  "nested-handler function value refusal lacks the working edit (#3195)"
 gate_fs_compile fixtures/err_fnvalue_nested_handle_test_owner_alias.vibe "$nhvdir/test_owner_alias.wasm" main
-if [ -s "$nhvdir/test_owner_alias.wasm" ]; then
-  echo "[compiler-gate] FAIL: a test alias of the handler owner compiled and can trap at an indirect call (#3195)" >&2
-  exit 1
-fi
-if ! grep -qF 'using this handler owner as a value cannot safely select the closure call convention' "$nhvdir/test_owner_alias.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: a test alias of the handler owner lacks the working edit (#3195)" >&2
-  cat "$nhvdir/test_owner_alias.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$nhvdir/test_owner_alias.wasm" "a test alias of the handler owner compiled and can trap at an indirect call (#3195)"
+gate_require_diag_has "$nhvdir/test_owner_alias.wasm.diag" 'using this handler owner as a value cannot safely select the closure call convention' \
+  "a test alias of the handler owner lacks the working edit (#3195)"
 for dormant_fixture in \
   fixtures/fnvalue_nested_handle_dormant_owner_alias.vibe \
   fixtures/fnvalue_nested_handle_dormant_option.vibe \
@@ -1008,28 +990,16 @@ rm -rf "$a71cdir"; mkdir -p "$a71cdir"
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_effectset_cycle.vibe "$a71cdir/cycle.wasm" main
-if [ -s "$a71cdir/cycle.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_effectset_cycle.vibe compiled successfully -- circular effectset references must be rejected" >&2
-  exit 1
-fi
-if ! grep -q "effectset cycle: A -> B -> A" "$a71cdir/cycle.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_effectset_cycle.vibe did not produce the expected cycle diagnostic" >&2
-  cat "$a71cdir/cycle.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$a71cdir/cycle.wasm" "err_effectset_cycle.vibe compiled successfully -- circular effectset references must be rejected"
+gate_require_diag_matches "$a71cdir/cycle.wasm.diag" "effectset cycle: A -> B -> A" \
+  "err_effectset_cycle.vibe did not produce the expected cycle diagnostic"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
 gate_fs_compile fixtures/err_effectset_operation_collision.vibe "$a71cdir/collision.wasm" main
-if [ -s "$a71cdir/collision.wasm" ]; then
-  echo "[compiler-gate] FAIL: err_effectset_operation_collision.vibe compiled successfully -- an effectset colliding with an operation name must be rejected" >&2
-  exit 1
-fi
-if ! grep -q "collides with an operation of the same name" "$a71cdir/collision.wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: err_effectset_operation_collision.vibe did not produce the expected collision diagnostic" >&2
-  cat "$a71cdir/collision.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_refused "$a71cdir/collision.wasm" "err_effectset_operation_collision.vibe compiled successfully -- an effectset colliding with an operation name must be rejected"
+gate_require_diag_matches "$a71cdir/collision.wasm.diag" "collides with an operation of the same name" \
+  "err_effectset_operation_collision.vibe did not produce the expected collision diagnostic"
 rm -rf "$a71cdir"
 echo "[compiler-gate] effectset cycle + operation-collision detection ok"
 
