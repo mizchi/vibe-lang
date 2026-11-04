@@ -2,7 +2,7 @@
 // literals.
 
 import @vibe/compiler/core {
-  Expr, Subst, Type, subst_apply, typed_negation_operand_key, unify
+  Expr, Subst, Type, subst_apply, typed_negation_operand_key, types_equal, unify
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -34,12 +34,59 @@ export fn sized_int_binop(left_ty: Type, right_ty: Type, s: Subst) -> Option[(Ty
 /// A binop operand's type, with an integer literal opposite a sized-integer
 /// operand taking that operand's type (`x + 1`, `x << 3`, `5 < x`).
 export fn sized_int_operand_type(e: Expr, ty: Type, other: Type, s: Subst, errors: Array[String], off: Int) -> Type {
-  match sized_int_literal_type(e = e, expected = other, s = s, errors = errors, off = off) {
+  sized_int_reshape(e = e, ty = subst_apply(s = s, ty = ty), expected = subst_apply(s = s, ty = other), s = s, errors = errors, off = off)
+}
+
+/// `e`'s inferred type `ty`, with every integer literal inside `e` that sits
+/// where `expected` has an `Int32` / `UInt32` given that type: the literal
+/// itself, and the literals inside a tuple, a `Some(..)`, an array literal or
+/// both branches of an `if`, following `expected`'s shape. A part the shapes
+/// do not line up for keeps its inferred type, so the assignability check
+/// that follows still reports a real mismatch.
+fn sized_int_reshape(e: Expr, ty: Type, expected: Type, s: Subst, errors: Array[String], off: Int) -> Type {
+  match sized_int_literal_type(e = e, expected = expected, s = s, errors = errors, off = off) {
     Some(t) => t,
     None => match e {
+      ETuple(items) => match ty {
+        CtTuple(actuals) => match expected {
+          CtTuple(wants) => if Array::length(items) == Array::length(actuals) && Array::length(items) == Array::length(wants) {
+            let out: Array[Type] = []
+            let mut i = 0
+            while i < Array::length(items) {
+              Array::push(out, value = sized_int_reshape(e = Array::get(items, at = i), ty = subst_apply(s = s, ty = Array::get(actuals, at = i)), expected = subst_apply(s = s, ty = Array::get(wants, at = i)), s = s, errors = errors, off = off))
+              i = i + 1
+            }
+            CtTuple(out)
+          } else {
+            ty
+          },
+          _ => ty
+        },
+        _ => ty
+      },
+      ECall(EIdent(ctor, _), args, _, _) => if ctor == "Some" && Array::length(args) == 1 {
+        match ty {
+          CtOption(inner) => match expected {
+            CtOption(want) => CtOption(sized_int_reshape(e = Array::get(args, at = 0), ty = subst_apply(s = s, ty = inner), expected = subst_apply(s = s, ty = want), s = s, errors = errors, off = off)),
+            _ => ty
+          },
+          _ => ty
+        }
+      } else {
+        ty
+      },
+      EIf(_, then_e, else_e) => {
+        let t = sized_int_reshape(e = sized_int_tail(then_e), ty = ty, expected = expected, s = s, errors = errors, off = off)
+        let f = sized_int_reshape(e = sized_int_tail(else_e), ty = ty, expected = expected, s = s, errors = errors, off = off)
+        if types_equal(a = t, b = f) {
+          t
+        } else {
+          ty
+        }
+      },
       // An array literal of integer literals where an `Array[Int32]` /
       // `Array[UInt32]` is expected: each element takes the element type.
-      EArray(items) => match subst_apply(s = s, ty = other) {
+      EArray(items) => match expected {
         CtArray(elem) => if Array::length(items) > 0 && sized_int_all_literals(items) {
           let mut sized = true
           for it in items {

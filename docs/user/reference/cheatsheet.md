@@ -188,10 +188,12 @@ is checked (`Int::to_int32(n)` / `Int::to_uint32(n)`, an `Option`) or wraps
 by name (`Int::wrap_int32(n)` / `Int::wrap_uint32(n)`).
 
 An integer literal takes the sized type where one is expected -- an
-annotated `let`, an argument, a struct field, a return value, the other
-operand of an operator, an array literal of literals -- and is refused when
-it does not fit (`let x: UInt32 = -1` names `Int::wrap_uint32`). Elsewhere
-it is an `Int`. `==`, `<`, `Eq` and `Ord` bounds, interpolation and
+annotated `let` (top level too), an assignment, an argument, a struct field,
+a return value, the other operand of an operator, an array element beside a
+sized one, a `match` pattern, and inside a tuple, a `Some(..)` or both
+branches of an `if` in any of those places -- and is refused when it does not
+fit (`let x: UInt32 = -1` names `Int::wrap_uint32`). Elsewhere it is an
+`Int`. `==`, `<`, `Eq` and `Ord` bounds, interpolation and
 `derive (Eq, Show)` read the value. Not yet: an `Add`-family bound at a sized
 type (refused rather than computed unwrapped), an `impl` for one, a
 conversion taken as a value, and a negation of an operator (`-(a + b)`;
