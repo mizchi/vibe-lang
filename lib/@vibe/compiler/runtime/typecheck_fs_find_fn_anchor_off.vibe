@@ -601,11 +601,13 @@ export fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String
 // The target text is intentionally not replaced by a compact fingerprint:
 // cache corruption must not turn a fingerprint collision into checker reuse.
 //
-// The alias carries only the input key and the target fingerprint (TDRE11A):
-// the target text it used to repeat is already in the witness the lookup
-// requires, and the witness's text is checked against the record itself, so
-// the binding is still alias key = witness key, witness text = record text.
-// An alias in the older three-segment shape does not parse and misses.
+// The alias carries only the target fingerprint (TDRE11A). Its path is a hash
+// of the input key, and the key and the target text it used to repeat are
+// already in the witness the lookup requires: the lookup checks the witness's
+// key against its own verbatim key and the witness's target text against the
+// raw record. So a path-hash collision lands on a witness whose key differs
+// and misses, and the binding is still exact. An alias in an older shape
+// does not parse and misses.
 let typing_dependency_env_reuse_alias_v11_tag: String = "TDRE11A"
 let typing_dependency_env_reuse_witness_v10_tag: String = "TDRE10W"
 
@@ -660,28 +662,23 @@ fn typing_dependency_reuse_binding_text(tag: String, input_key: String, target_f
   StringBuilder::freeze(out)
 }
 
-fn typing_dependency_reuse_alias_text(input_key: String, target_fingerprint: String) -> String {
+fn typing_dependency_reuse_alias_text(_ target_fingerprint: String) -> String {
   let out = StringBuilder::new()
   StringBuilder::push(out, value = typing_dependency_env_reuse_alias_v11_tag)
-  push_typing_reuse_segment(out = out, text = input_key)
   push_typing_reuse_segment(out = out, text = target_fingerprint)
   StringBuilder::freeze(out)
 }
 
-fn parse_typing_dependency_reuse_alias(_ text: String) -> Option[(String, String)] {
+fn parse_typing_dependency_reuse_alias(_ text: String) -> Option[String] {
   let tag = typing_dependency_env_reuse_alias_v11_tag
   if !String::starts_with(text, prefix = tag) {
     None
   } else {
     match parse_typing_reuse_segment(text = text, pos = String::length(tag)) {
-      Some((input_key, after_input)) =>
-      match parse_typing_reuse_segment(text = text, pos = after_input) {
-        Some((target_fingerprint, end)) => if end == String::length(text) && String::length(input_key) > 0 && String::length(target_fingerprint) > 0 {
-          Some((input_key, target_fingerprint))
-        } else {
-          None
-        },
-        None => None
+      Some((target_fingerprint, end)) => if end == String::length(text) && String::length(target_fingerprint) > 0 {
+        Some(target_fingerprint)
+      } else {
+        None
       },
       None => None
     }
@@ -960,12 +957,9 @@ export fn load_typing_dependency_env_reuse_target(path: String, input_key: Strin
     None
   } else {
     match parse_typing_dependency_reuse_alias(Fs::read_file(sidecar_path)) {
-      Some((alias_input_key, target_fingerprint)) =>
-      if alias_input_key != input_key {
-        None
-      } else {
-        // Only an exact three-way binding reuses: the alias's key is the
-        // witness's key, and the witness's target text is the raw record.
+      Some(target_fingerprint) => {
+        // Only an exact binding reuses: the witness the alias names carries
+        // this verbatim input key, and its target text is the raw record.
         match typing_dependency_env_reuse_witness_text(target_fingerprint) {
           Some((witness_input_key, target_text)) => if witness_input_key != input_key {
             None
@@ -991,7 +985,7 @@ export fn load_typing_dependency_env_reuse_target(path: String, input_key: Strin
 }
 
 export fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String) -> Unit with Env + Fs {
-  Fs::write_file(typing_reuse_sidecar_path(input_key), contents = typing_dependency_reuse_alias_text(input_key = input_key, target_fingerprint = target_fingerprint))
+  Fs::write_file(typing_reuse_sidecar_path(input_key), contents = typing_dependency_reuse_alias_text(target_fingerprint))
 }
 
 export fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Array[String]) -> Unit with Env + Fs {
