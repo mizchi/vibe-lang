@@ -1193,13 +1193,27 @@ fn typed_clause_arg(_ e: Expr) -> Option[Expr] {
 /// inside the body leaves the function as it does anywhere.
 fn sym_loop(ctx: Ctx, lp: Loop, st: Outcome) -> Array[Outcome] with Exception {
   let out: Array[Outcome] = []
+  // A clause is read as a formula, so an assignment inside one would be
+  // dropped while the runtime performs it.
+  let clause_writes: Array[String] = []
+  for inv in lp.invariants {
+    collect_assigned(e = inv, out = clause_writes)
+  }
+  collect_assigned(e = lp.measure, out = clause_writes)
+  if Array::length(clause_writes) > 0 {
+    unsupported(off = expr_off(lp.measure), reason = "a loop's `invariant` or `decreases` clause assigns `\{Array::get(clause_writes, at = 0)}`")
+  } else {
+    ()
+  }
   for inv in lp.invariants {
     push_obligation(ctx = ctx, kind = "invariant-entry", label = print_expr(inv), off = expr_off(inv), goal = clause_formula(ctx = ctx, clause = inv, state = st))
   }
   let m_entry = single_int(ctx = ctx, e = lp.measure, st = st)
   push_obligation(ctx = ctx, kind = "measure-entry", label = print_expr(lp.measure), off = expr_off(lp.measure), goal = guarded(pc = st.pc, goal = "(>= \{m_entry} 0)"))
-  // The arbitrary checkpoint.
+  // The arbitrary checkpoint. The condition runs after it on every
+  // iteration, so what the condition assigns varies too.
   let assigned: Array[String] = []
+  collect_assigned(e = lp.cond, out = assigned)
   collect_assigned(e = lp.body, out = assigned)
   let mut env = st.env
   for name in assigned {
