@@ -65,6 +65,39 @@ export fn sized_int_operand_type(e: Expr, ty: Type, other: Type, s: Subst, error
   }
 }
 
+/// One array literal element against the element type so far: an integer
+/// literal next to an `Int32` / `UInt32` element takes that type, whichever
+/// comes first (`[1, x32]`, `[x32, 1]`). Answers the element type and this
+/// element's type to unify. Earlier literals that a sized element now types
+/// are range-checked here.
+export fn sized_int_array_elem(items: Array[Expr], at: Int, elem_ty: Type, it: Type, s: Subst, errors: Array[String]) -> (Type, Type) {
+  let item_ty = sized_int_operand_type(e = Array::get(items, at = at), ty = it, other = elem_ty, s = s, errors = errors, off = 0 - 1)
+  let earlier_literals = sized_int_all_literals(Array::slice(items, start = 0, end = at))
+  let sized_now = String::length(sized_int_type_name(subst_apply(s = s, ty = item_ty))) > 0
+  let elem_is_int = match subst_apply(s = s, ty = elem_ty) {
+    CtInt => true,
+    _ => false
+  }
+  if sized_now && elem_is_int && earlier_literals {
+    let mut i = 0
+    while i < at {
+      let _ = sized_int_literal_type(e = Array::get(items, at = i), expected = item_ty, s = s, errors = errors, off = 0 - 1)
+      i = i + 1
+    }
+    (item_ty, item_ty)
+  } else {
+    (elem_ty, item_ty)
+  }
+}
+
+fn sized_int_type_name(_ t: Type) -> String {
+  match t {
+    CtInt32 => "Int32",
+    CtUInt32 => "UInt32",
+    _ => ""
+  }
+}
+
 fn sized_int_all_literals(_ items: Array[Expr]) -> Bool {
   let mut all = true
   for it in items {
