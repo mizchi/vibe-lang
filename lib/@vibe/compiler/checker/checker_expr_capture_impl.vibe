@@ -1,3 +1,11 @@
+import ./checker_sized_int.vibe {
+  sized_int_involved, sized_int_operand_type
+}
+
+import ./checker_expr_capture_markers.vibe {
+  assign_target_marker, erased_throw_binder_settle, resume_continuation_marker, resume_is_continuation
+}
+
 import ./checker_call_map.vibe {
   map_empty_literal_type
 }
@@ -289,19 +297,6 @@ fn tab_dot_field_name_ty(tytab: Array[(Int, Type)], field_off: Int, ty: Type, ca
   append_legacy_typed_occurrence(tytab = tytab, offset = field_off, ty = ty, capture = capture, role = "DotFieldName", lane = lane)
 }
 
-/// #3248: the marker an unknown assignment target carries. ` [@assign-target=N]`
-/// names the target token the parser recorded (`N` is its start byte, so the
-/// locator can read the token's own extent back, `r#name` included). A
-/// synthesized assignment has no token (`off < 0`) and gets the bare
-/// ` [@assign-target]`, which the locator strips without inventing a position.
-fn assign_target_marker(_ off: Int) -> String {
-  if off >= 0 {
-    String::concat(" [@assign-target=", String::concat(__to_string(off), "]"))
-  } else {
-    " [@assign-target]"
-  }
-}
-
 /// Iteratively check a sequence/let SPINE (`ESeq` and `ELet`/`ELetMut`/`ELetRec`
 /// chains) instead of recursing into each `body`, so a long function body — a
 /// deep right-nested `let` chain — does not exhaust the wasm call stack during
@@ -523,20 +518,6 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
   typed_occurrence_capture_record_virtual_spine_returns(capture = capture, start_depth = start_frame_depth, ty = result.0, lane = lane)
   typed_occurrence_capture_restore_frame_depth(capture = capture, expected_depth = start_frame_depth)
   result
-}
-
-/// #3301: what check_resume_values' walk starts with `resume` bound to: the
-/// arm's own continuation. A binder the walk meets inside the arm rebinds the
-/// name to something else, which is what shadows it.
-fn resume_continuation_marker() -> Type {
-  CtNamed("$resume_continuation", [])
-}
-
-fn resume_is_continuation(_ t: Type) -> Bool {
-  match t {
-    CtNamed(name, _) => name == "$resume_continuation",
-    _ => false
-  }
 }
 
 /// The handler-arm `resume(x)` re-check: each `x` must be assignable to the
@@ -971,8 +952,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // operator's own offset (#2435) is where the reader looks.
         boff
       }
-      let left_applied = subst_apply(s = s2, ty = left_ty)
-      let right_applied = subst_apply(s = s2, ty = right_ty)
+      // #3730: an integer literal opposite an `Int32` / `UInt32` takes its type.
+      let left_raw = subst_apply(s = s2, ty = left_ty)
+      let right_raw = subst_apply(s = s2, ty = right_ty)
+      let left_applied = sized_int_operand_type(e = left, ty = left_raw, other = right_raw, s = s2, errors = errors, off = bin_off)
+      let right_applied = sized_int_operand_type(e = right, ty = right_raw, other = left_raw, s = s2, errors = errors, off = bin_off)
       // #2391 slice 2 / #2435: the typed String-lowering channel. The types
       // recorded here may still be unresolved variables; the extraction
       // resolves them against the FINAL substitution, so a binding unified
@@ -1060,6 +1044,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             (CtFloat, s1, c1)
           },
           CtInt => (CtInt, s1, c1),
+          CtInt32 => (CtInt32, s1, c1),
+          CtUInt32 => (CtUInt32, s1, c1),
           CtVar(_) => match unify(a = operand_ty, b = CtInt, s = s1) {
             Some(s2) => (CtInt, s2, c1),
             None => (CtUnknown, s1, c1)
@@ -1085,6 +1071,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // diagnostic names the operator the author actually wrote.
         match subst_apply(s = s1, ty = operand_ty) {
           CtInt => (CtInt, s1, c1),
+          CtInt32 => (CtInt32, s1, c1),
+          CtUInt32 => (CtUInt32, s1, c1),
           CtVar(_) => match unify(a = operand_ty, b = CtInt, s = s1) {
             Some(s2) => (CtInt, s2, c1),
             None => (CtUnknown, s1, c1)
@@ -1146,7 +1134,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // way `x + 1.5` is, and the row tells the rewrite to round the sum.
           // Other compound assignments keep their existing, untyped checking.
           let target_applied = subst_apply(s = s1, ty = target_ty)
-          let val_applied = subst_apply(s = s1, ty = val_ty)
+          let val_applied = sized_int_operand_type(e = val, ty = subst_apply(s = s1, ty = val_ty), other = target_applied, s = s1, errors = errors, off = target_off)
           let float_involved = match target_applied {
             CtFloat => true,
             _ => match val_applied {
@@ -1154,7 +1142,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               _ => false
             }
           }
-          let s1f_inner = if (float_involved || (aop == "+" && add_formal_for_type(ty = target_applied, env = env, s = s1) != "")) && (aop == "+" || aop == "-" || aop == "*" || aop == "/") {
+          // #3730: every compound assignment on a sized integer is typed.
+          let s1f_inner = if sized_int_involved(a = target_applied, b = val_applied) || ((float_involved || (aop == "+" && add_formal_for_type(ty = target_applied, env = env, s = s1) != "")) && (aop == "+" || aop == "-" || aop == "*" || aop == "/")) {
             let (res_ty, s1r) = infer_binop_type(op = aop, left_ty = target_applied, right_ty = val_applied, env = env, s = s1, errors = errors, tytab = tytab, off = target_off)
             match subst_apply(s = s1r, ty = res_ty) {
               CtFloat => match target_applied {
@@ -2237,6 +2226,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             CtInt => true,
             CtDouble => true,
             CtFloat => true,
+            CtInt32 => true,
+            CtUInt32 => true,
             CtBool => true,
             CtUnit => true,
             CtChar => true,
@@ -2963,31 +2954,6 @@ fn check_unmatched_call_args(args: Array[Expr], env: TypeEnv, defs: Array[TypeDe
     i = i + 1
   }
   (s1, c1)
-}
-
-/// #3541: settle the binder of an ERASED exception arm (`Exception::Throw(m)`)
-/// once its body is typed. `var` is the fresh variable `m` was bound to. A
-/// body that left it open used `m` only where any type is accepted, and it is
-/// pinned to `String`, the thrown message, so a later use outside the arm
-/// (the handle's result) is checked against that. A body that used it as
-/// `String` is accepted. Any other type is refused with the edit: only a
-/// kinded arm knows its payload's type.
-fn erased_throw_binder_settle(name: String, var: Type, s: Subst, errors: Array[String], off: Int) -> Subst {
-  let now = subst_apply(s = s, ty = var)
-  match now {
-    CtString => s,
-    CtVar(_) => match unify(a = now, b = CtString, s = s) {
-      Some(s2) => s2,
-      None => s
-    },
-    _ => {
-      let shown = type_to_string(now)
-      let edit = String::concat("write `Exception[", String::concat(shown, String::concat("]::Throw(", String::concat(name, String::concat(")` to catch a thrown `", String::concat(shown, "`"))))))
-      let why = String::concat(": the erased `Exception::Throw(", String::concat(name, String::concat(")` arm binds `", String::concat(name, String::concat("` as the thrown message, a `String`, and this arm uses it as `", String::concat(shown, "`"))))))
-      Array::push(errors, value = String::concat(edit, String::concat(why, off_marker(off))))
-      s
-    }
-  }
 }
 
 /// #3548: the environment key under which the guard desugar's match temp

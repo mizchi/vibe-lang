@@ -1,0 +1,55 @@
+// #3730 (ADR-0122 (5)): the exact 32-bit integers' type-level helpers.
+
+import @vibe/compiler/core {
+  Type
+}
+
+//# Functions
+
+/// The sized integer type `t` names, or "" for any other type.
+export fn sized_int_name(_ t: Type) -> String {
+  match t {
+    CtInt32 => "Int32",
+    CtUInt32 => "UInt32",
+    _ => ""
+  }
+}
+
+/// #3730: an `Int32` / `UInt32` never converts implicitly, so mixing one with
+/// an `Int` (or with the other sized type) in one operator is a type error
+/// whose edit is a named conversion.
+export fn sized_int_mix_hint(l: Type, r: Type, base: String) -> String {
+  let ln = sized_int_name(l)
+  let rn = sized_int_name(r)
+  let l_int = match l {
+    CtInt => true,
+    _ => false
+  }
+  let r_int = match r {
+    CtInt => true,
+    _ => false
+  }
+  let sized = if String::length(ln) > 0 {
+    ln
+  } else {
+    rn
+  }
+  if String::length(sized) == 0 || ln == rn {
+    base
+  } else if l_int || r_int {
+    let lower = if sized == "Int32" {
+      "int32"
+    } else {
+      "uint32"
+    }
+    "': convert one operand -- `" + sized + "::to_int(x)` widens the " + sized + ", and `Int::to_" + lower + "(n)` (checked, an `Option`) or `Int::wrap_" + lower + "(n)` (wrapping) narrows the Int; one operand is an `" + sized + "` and the other an `Int`, and neither converts implicitly"
+  } else if String::length(ln) == 0 || String::length(rn) == 0 {
+    base
+  } else {
+    "': convert one operand through `Int` -- `" + ln + "::to_int(x)` then `Int::wrap_" + (if rn == "Int32" {
+      "int32"
+    } else {
+      "uint32"
+    }) + "(n)`; one operand is an `" + ln + "` and the other an `" + rn + "`, and neither converts implicitly"
+  }
+}

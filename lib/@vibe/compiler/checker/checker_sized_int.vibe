@@ -1,0 +1,103 @@
+// #3730 (ADR-0122 (5)): typing the exact 32-bit integers' operators and
+// literals.
+
+import @vibe/compiler/core {
+  Expr, Subst, Type, subst_apply, unify
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+
+//# Functions
+
+export fn unify_binop_candidate(left_ty: Type, right_ty: Type, target_ty: Type, s: Subst) -> Option[Subst] {
+  match unify(a = left_ty, b = target_ty, s = s) {
+    Some(s1) => unify(a = right_ty, b = target_ty, s = s1),
+    None => None
+  }
+}
+
+/// #3730: an operator on two `Int32`s (or two `UInt32`s) is typed at that
+/// width. Tried after `Int`, so two variable operands still default to `Int`
+/// and a sized result always has a concrete sized operand behind it.
+export fn sized_int_binop(left_ty: Type, right_ty: Type, s: Subst) -> Option[(Type, Subst)] {
+  match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtInt32, s = s) {
+    Some(s1) => Some((CtInt32, s1)),
+    None => match unify_binop_candidate(left_ty = left_ty, right_ty = right_ty, target_ty = CtUInt32, s = s) {
+      Some(s1) => Some((CtUInt32, s1)),
+      None => None
+    }
+  }
+}
+
+/// A binop operand's type, with an integer literal opposite a sized-integer
+/// operand taking that operand's type (`x + 1`, `x << 3`, `5 < x`).
+export fn sized_int_operand_type(e: Expr, ty: Type, other: Type, s: Subst, errors: Array[String], off: Int) -> Type {
+  match sized_int_literal_type(e = e, expected = other, s = s, errors = errors, off = off) {
+    Some(t) => t,
+    None => ty
+  }
+}
+
+/// Whether either operand of a compound assignment is a sized integer, so the
+/// assignment is typed as the binop it stands for.
+export fn sized_int_involved(a: Type, b: Type) -> Bool {
+  match a {
+    CtInt32 => true,
+    CtUInt32 => true,
+    _ => match b {
+      CtInt32 => true,
+      CtUInt32 => true,
+      _ => false
+    }
+  }
+}
+
+/// The value of an integer literal as written: `5`, or `-5` (the parser reads
+/// a negative literal as unary minus over `EInt`). `None` for any other
+/// expression.
+export fn sized_int_literal_value(_ e: Expr) -> Option[Int] {
+  match e {
+    EInt(n) => Some(n),
+    EUnaryOp(op, inner) => if op == "-" {
+      match inner {
+        EInt(n) => Some(0 - n),
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// #3730: an integer literal where an `Int32` / `UInt32` is expected takes
+/// that type, and is refused when it does not fit -- the checker is not
+/// bidirectional, so each site that knows its expected type asks here.
+/// Answers the type the literal takes (`expected` when it applies), or
+/// `None` when `e` is not a literal or `expected` is not a sized integer.
+export fn sized_int_literal_type(e: Expr, expected: Type, s: Subst, errors: Array[String], off: Int) -> Option[Type] {
+  match sized_int_literal_value(e) {
+    Some(n) => match subst_apply(s = s, ty = expected) {
+      CtInt32 => {
+        if n < 0 - 2147483648 || n > 2147483647 {
+          Array::push(errors, value = "integer literal \{n} does not fit `Int32` (-2147483648 ..= 2147483647) -- write it as an `Int`, or convert one with `Int::to_int32(n)` (checked) or `Int::wrap_int32(n)` (wrapping)" + off_marker(off))
+        } else {
+          ()
+        }
+        Some(CtInt32)
+      },
+      CtUInt32 => {
+        if n < 0 || n > 4294967295 {
+          Array::push(errors, value = "integer literal \{n} does not fit `UInt32` (0 ..= 4294967295) -- write it as an `Int`, or convert one with `Int::to_uint32(n)` (checked) or `Int::wrap_uint32(n)` (wrapping)" + off_marker(off))
+        } else {
+          ()
+        }
+        Some(CtUInt32)
+      },
+      _ => None
+    },
+    None => None
+  }
+}

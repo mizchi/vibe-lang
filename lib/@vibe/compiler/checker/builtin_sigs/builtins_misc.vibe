@@ -208,6 +208,39 @@ fn lookup_double_to_i64_bits(_ name: String) -> Option[Type] {
   else None
 }
 
+/// #3730 (ADR-0122 (5)): the conversions between `Int` and the exact 32-bit
+/// integers. None is implicit: widening is total (`Int32::to_int`), and
+/// narrowing is checked (`Int::to_int32`, an `Option`) or wraps by name
+/// (`Int::wrap_int32`). The post-check desugar rewrites each to `Int`
+/// arithmetic before any lowering sees it.
+fn lookup_sized_int_conversion(_ name: String) -> Option[Type] {
+  if name == "Int32::to_int" {
+    Some(CtFn(misc_one_param(CtInt32), CtInt, None))
+  }
+  else if name == "UInt32::to_int" {
+    Some(CtFn(misc_one_param(CtUInt32), CtInt, None))
+  }
+  else if name == "Int::to_int32" {
+    Some(CtFn(misc_one_param(CtInt), CtOption(CtInt32), None))
+  }
+  else if name == "Int::to_uint32" {
+    Some(CtFn(misc_one_param(CtInt), CtOption(CtUInt32), None))
+  }
+  else if name == "Int::wrap_int32" {
+    Some(CtFn(misc_one_param(CtInt), CtInt32, None))
+  }
+  else if name == "Int::wrap_uint32" {
+    Some(CtFn(misc_one_param(CtInt), CtUInt32, None))
+  }
+  else if name == "Int32::to_string" {
+    Some(CtFn(misc_one_param(CtInt32), CtString, None))
+  }
+  else if name == "UInt32::to_string" {
+    Some(CtFn(misc_one_param(CtUInt32), CtString, None))
+  }
+  else None
+}
+
 fn lookup_misc_group_c(_ name: String) -> Option[Type] {
   match lookup_throw(name) {
     Some(t) => Some(t),
@@ -215,7 +248,10 @@ fn lookup_misc_group_c(_ name: String) -> Option[Type] {
       Some(t) => Some(t),
       None => match lookup_double_to_int(name) {
         Some(t) => Some(t),
-        None => lookup_double_to_i64_bits(name)
+        None => match lookup_double_to_i64_bits(name) {
+          Some(t) => Some(t),
+          None => lookup_sized_int_conversion(name)
+        }
       }
     }
   }

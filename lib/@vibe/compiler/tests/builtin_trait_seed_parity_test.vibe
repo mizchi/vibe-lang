@@ -46,9 +46,11 @@ fn prelude_path() -> String {
 
 /// Seeded rows the prelude does not declare, each for a reason that is not
 /// drift. `Send` is compiler-judged (ADR-0068): `impl Send` is an error, so the
-/// prelude cannot state it.
-fn seeded_only(_ trait_name: String) -> Bool {
-  trait_name == "Send"
+/// prelude cannot state it. `Int32` / `UInt32` (#3730) are types the committed
+/// seed cannot resolve, so the prelude declares their impls only after the
+/// seed bump that follows them; until then the seeded rows stand alone.
+fn seeded_only(trait_name: String, target: String) -> Bool {
+  trait_name == "Send" || target == "Int32" || target == "UInt32"
 }
 
 fn push_seeded_rows(env: TypeEnv, out: Array[(String, String)]) -> Unit {
@@ -136,7 +138,7 @@ fn disagreements(_ prelude_source: String) -> String with Exception {
   let mut j = 0
   while j < Array::length(seeded) {
     let (t, ty) = Array::get(seeded, at = j)
-    if !seeded_only(t) && !has_row(rows = declared, trait_name = t, target = ty) {
+    if !seeded_only(trait_name = t, target = ty) && !has_row(rows = declared, trait_name = t, target = ty) {
       Array::push(lines, value = "seeded by register_builtin_traits_for but not declared in builtin_traits.vibe: `impl \{t} for \{ty}`")
     }
     j = j + 1
