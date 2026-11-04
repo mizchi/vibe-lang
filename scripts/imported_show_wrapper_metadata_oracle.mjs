@@ -35,12 +35,12 @@ import ./leaf.vibe { Qualified::render as qualified_show }
 import ./facade.vibe { last as show, mono, ordinary as show_ordinary }
 fn main() -> Int allows Console {
   let b = () -> Bool { 1 < 2 }
-  let d = () -> Double { 2.5 }
+  let d = () -> Float64 { 2.5 }
   let c = () -> Char { Char::from_int(113) }
   let u = () -> Unit { () }
   let a = () -> Array[Bool] { [1 < 2, 2 < 1] }
   let o = () -> Option[Char] { Some(Char::from_int(122)) }
-  let t = () -> (Double, Bool, Unit) { (2.5, 1 < 2, ()) }
+  let t = () -> (Float64, Bool, Unit) { (2.5, 1 < 2, ()) }
   assert(show(b()) == "true")
   assert(to_string(b()) == "true")
   assert(to_string(c()) == "q")

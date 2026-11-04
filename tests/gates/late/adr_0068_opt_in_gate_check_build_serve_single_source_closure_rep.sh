@@ -1431,7 +1431,7 @@ echo "[compiler-gate] vibe lsp reports the ADR-0068 opt-in, the opt-in suppresse
 # compile lane emits exactly one diagnostic and that was it, so suppressing it
 # would have lost a real type error.
 #
-# The bad key is `Double`: since #2334 the builtin map takes `Int`, `Char`
+# The bad key is `Float64`: since #2334 the builtin map takes `Int`, `Char`
 # and `Bool` keys as well as `String`.
 #
 # The second case is the one that killed the previous attempt (#2276): a
@@ -1442,7 +1442,7 @@ tdlabdir="_build/_gate_trait_dict_label"
 rm -rf "$tdlabdir"; mkdir -p "$tdlabdir"
 cat > "$tdlabdir/trait.vibe" <<'TDEOF'
 trait Store {
-  lookup(Self, Map[Double, String]) -> String
+  lookup(Self, Map[Float64, String]) -> String
 }
 
 fn main() -> Int {
@@ -1468,7 +1468,7 @@ fi
 # The red case: a HAND-WRITTEN struct with the conventional name must still be
 # described as what it is. This is what a name-convention fix gets wrong.
 cat > "$tdlabdir/handwritten.vibe" <<'TDEOF'
-struct StoreDict { lookup: Map[Double, String] }
+struct StoreDict { lookup: Map[Float64, String] }
 
 fn main() -> Int {
   0
@@ -1504,7 +1504,7 @@ trait Child: Base {
 }
 
 trait Base {
-  lookup(Self, Map[Double, String]) -> String
+  lookup(Self, Map[Float64, String]) -> String
 }
 
 fn main() -> Int {
@@ -1531,7 +1531,7 @@ fi
 # could pass the assertion above by always naming a supertrait.
 cat > "$tdlabdir/ownmethod.vibe" <<'TDEOF'
 trait Child: Base {
-  own(Self, Map[Double, String]) -> String
+  own(Self, Map[Float64, String]) -> String
 }
 
 trait Base {
