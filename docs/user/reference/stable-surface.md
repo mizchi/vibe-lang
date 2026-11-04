@@ -593,6 +593,11 @@ that.
   (an unused import is fine, #1976). The linear backend remains the stable
   surface. Builtin-level differences are enumerated in
   `scripts/builtin_parity_classification.tsv` and enforced at the gate.
+- **`Int32` / `UInt32`** (ADR-0122 (5), #3730): the exact 32-bit integers,
+  their wrapping arithmetic, their literals and the named conversions with
+  `Int`. They are newer than the freeze, and their trait coverage (`Add` and
+  the other arithmetic bounds, `Hash`, `Default`, `impl`s) and their WIT /
+  `.wasm` mappings are still to come.
 
 ---
 
@@ -609,7 +614,7 @@ ordinary program. They stay usable but are **not frozen** for `0.1.0`.
   `16777217.0f == 16777216.0f` was `false` (#3543).
   It is IEEE binary32 now: a type distinct from `Float64`, whose literals,
   conversions and arithmetic results are rounded to the nearest f32 (see the
-  cheatsheet's "`Float` is 32-bit"). Those semantics are newer than the
+  cheatsheet's "`Float32` is 32-bit"). Those semantics are newer than the
   freeze, so it stays outside it. The default build, `vibe build --debug`,
   and library builds round its arithmetic. A linked entry with no matching
   checked source still refuses `Float32`. Generic `Eq`, `Show` and `Add`

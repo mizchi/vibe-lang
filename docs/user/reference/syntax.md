@@ -826,6 +826,8 @@ of the function.
 ```vibe skip
 // doctest-skip: form catalogue: bare surface forms, not a compilable program
 Int
+Int32
+UInt32
 Float64
 Float32
 Bool
@@ -848,6 +850,10 @@ Rules:
 - The float types are `Float64` and `Float32`, in type positions and as a
   namespace (`Float64::to_string`) (ADR-0122). The old spellings `Double`,
   `Float`, `f64` and `f32` are refused, with the width name to write (#3729).
+- `Int32` / `UInt32` are the exact 32-bit integers (ADR-0122 (5), #3730): their
+  arithmetic wraps at 32 bits, and every conversion with `Int` is named
+  (`Int32::to_int`, `Int::to_int32` / `Int::wrap_int32`, and the `UInt32`
+  forms); see the cheatsheet's "`Int32` / `UInt32`" section.
 - There is no `i32`: vibe's integer type is `Int`, which is 63-bit. `i32`
   used to be accepted as an alias of `Int`, so code that declared 32 bits got
   63-bit arithmetic (`2147483647 + 1` was `2147483648`); it is now an unknown

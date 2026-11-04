@@ -64,7 +64,7 @@ let x: Int = 42                // 63-bit (RC lane: 1-bit-tagged i64),
                                // out-of-range literals are rejected with
                                // IntLiteralOverflow
 let f: Float32 = 1.5f          // 32-bit IEEE binary32 (suffix f); see
-                               // "`Float` is 32-bit" below
+                               // "`Float32` is 32-bit" below
 let d: Float64 = 3.14          // 64-bit (default decimal)
 let s: String = "hello \{x}"   // interpolation with \{expr}
                                // (`\(x)` は非対応、`\{x}` を使う)
@@ -116,32 +116,32 @@ test "width-named floats" {
 }
 ```
 
-### `Float` is 32-bit
+### `Float32` is 32-bit
 
-`Float` is IEEE binary32 and every `Float` value is an f32 value (#3543).
+`Float32` is IEEE binary32 and every `Float32` value is an f32 value (#3543).
 A decimal `f` literal rounds directly to the nearest f32, ties to even.
-`Double::to_float`, `Int::to_float` and each `+ - * /` result
+`Float64::to_float32`, `Int::to_float32` and each `+ - * /` result
 (compound assignment included) use the same rounding rule;
 a result too large for an f32 is `Infinity` / `-Infinity`, and `0.0f / 0.0f`
-is NaN, which `==` calls unequal even to itself. `Float::to_double` widens
-exactly. `Float::to_string` and interpolation print the shortest decimal
+is NaN, which `==` calls unequal even to itself. `Float32::to_float64` widens
+exactly. `Float32::to_string` and interpolation print the shortest decimal
 that reads back as the same f32 (`0.1f` prints `0.1`, `1.0f / 3.0f` prints
-`0.33333334`), in `Double`'s spelling.
+`0.33333334`), in `Float64`'s spelling.
 
-`Float` and `Double` are different types, and neither converts implicitly:
-`x * 2.5` on a `Float` `x` is a type error whose message names the edit
-(`2.5f`, or `Double::to_float` / `Float::to_double`). A `Float` holds the f64
+`Float32` and `Float64` are different types, and neither converts implicitly:
+`x * 2.5` on a `Float32` `x` is a type error whose message names the edit
+(`2.5f`, or `Float64::to_float32` / `Float32::to_float64`). A `Float32` holds the f64
 of its f32 value at run time, so equality, ordering and hashing see exactly
-the f32 value. The builtin `Eq`, `Show` and `Add` traits also accept `Float`
-and its `f32` alias. Generic equality follows IEEE rules (NaN is unequal to
+the f32 value. The builtin `Eq`, `Show` and `Add` traits also accept
+`Float32`. Generic equality follows IEEE rules (NaN is unequal to
 itself, and signed zeros are equal), rendering preserves the shortest f32
 spelling, and each generic `+` or `+=` rounds its result to f32 (#3625).
-`Signed` and `Default` bounds retain their existing coverage, and Float's
+`Signed` and `Default` bounds retain their existing coverage, and `Float32`'s
 library-source `Hash` keys and `Default` dispatch are available as well.
 
 `Add` carries `add(Self, Self) -> Self`. A generic `+` or `+=` calls that
-witness; builtin defaults add `Int`, join `String`, add `Double` at f64
-precision, and add `Float` at f32 precision. A program's own marker `Add`,
+witness; builtin defaults add `Int`, join `String`, add `Float64` at f64
+precision, and add `Float32` at f32 precision. A program's own marker `Add`,
 or one without that retained signature, still refuses boxed types through
 the bound. A method with additional type parameters is not an operator
 witness; call it explicitly.
@@ -172,6 +172,41 @@ test "Float rounds to f32" {
 A decimal `f` literal is rounded once, straight to the nearest f32 with ties
 to even: `16777217.000000001f` is 16777218, while `16777217f`, exactly halfway
 between 16777216 and 16777218, is 16777216.
+
+### `Int32` / `UInt32`: exact 32-bit integers
+
+`Int32` (-2147483648 ..= 2147483647) and `UInt32` (0 ..= 4294967295) are
+integers whose arithmetic wraps at 32 bits on every backend (ADR-0122 (5),
+#3730): `+ - * /`, `%`, `<<`, `>>` (arithmetic on `Int32`, logical on
+`UInt32`), `& | ^`, `~` and unary `-` all give the 32-bit answer, so
+`Int32` max + 1 is min and `UInt32` `0 - 1` is 4294967295. A shift count of
+32 or more gives 0 (or the sign, for `Int32` `>>`), as on `Int`. Both
+operands of an operator must have the same type: neither type converts
+implicitly to or from `Int`, and mixing them is a type error that names the
+conversion. Widening is total (`Int32::to_int`, `UInt32::to_int`); narrowing
+is checked (`Int::to_int32(n)` / `Int::to_uint32(n)`, an `Option`) or wraps
+by name (`Int::wrap_int32(n)` / `Int::wrap_uint32(n)`).
+
+An integer literal takes the sized type where one is expected -- an
+annotated `let`, an argument, a struct field, a return value, the other
+operand of an operator, an array literal of literals -- and is refused when
+it does not fit (`let x: UInt32 = -1` names `Int::wrap_uint32`). Elsewhere
+it is an `Int`. `==`, `<`, `Eq` and `Ord` bounds, interpolation and
+`derive (Eq, Show)` read the value. Not yet: an `Add`-family bound at a sized
+type (refused rather than computed unwrapped), an `impl` for one, a
+conversion taken as a value, and a negation of an operator (`-(a + b)`;
+write `0 - (a + b)`). Each is refused with the edit.
+
+```vibe
+test "Int32 and UInt32 wrap at 32 bits" {
+  let max: Int32 = 2147483647
+  assert(Int32::to_int(max + 1) == -2147483648)
+  let zero: UInt32 = 0
+  assert(UInt32::to_int(zero - 1) == 4294967295)
+  assert(Int::to_int32(4294967295) == None)
+  assert(Int32::to_int(Int::wrap_int32(4294967295)) == -1)
+}
+```
 
 ### Multi-line raw strings (`#|`)
 
@@ -804,9 +839,9 @@ test "an annotated lambda compares by content" {
 `export trait Eq` with no methods, but the checker registers that trait as
 method-bearing and the lowering injects `equals(Self, Self) -> Bool` when a
 program carries the bound. `derive (Eq)` registers the impl. `[T: Eq]` at a
-`derive (Eq)` struct compares by content, and so does `Double` — the scalar
+`derive (Eq)` struct compares by content, and so does `Float64` — the scalar
 whose erased comparison used to read the box. Pinned by
-`fixtures/eq_bound_derive_test.vibe`, including `Box[Double]` /
+`fixtures/eq_bound_derive_test.vibe`, including `Box[Float64]` /
 `Box[Array[Int]]` through the bound.
 
 A program may still declare its **own** `trait Eq`. At a type the builtin
@@ -883,7 +918,7 @@ types keep a struct usable is an allow-list, measured on a
 
 | declared field type | `==` |
 |---|---|
-| `Int`, `String`, `Double`, `Bytes` | `true` |
+| `Int`, `String`, `Float64`, `Bytes` | `true` |
 | `Array[Int]`, `Array[Double]`, `Option[Int]`, `(Int, String)` | `true` |
 | a declared struct | `true` |
 | `Map[String, Int]` | `true`, since #2218 |
@@ -1311,7 +1346,7 @@ let b2 = Box[Int]::{ v: 2 }               // explicit type args PIN the instanti
 // Bag[Int]::{ xs: [] })
 // struct derive(Ord) -> Point::compare(a, b) : Ordering   (lexicographic)
 // enum derive(Ord) -> E::compare(a, b) : Ordering   (variant order, then payload)
-// A `Double` field is ordered totally: NaN sorts after every number and is
+// A `Float64` field is ordered totally: NaN sorts after every number and is
 // `Equal` to another NaN, and `0.0` / `-0.0` are `Equal`. Derived `==` stays
 // IEEE (NaN equals nothing), so `compare` can sort what `==` cannot match.
 // `Ordering` is a prelude enum { Less; Equal; Greater } (#3042, ADR-0118):
@@ -1329,7 +1364,7 @@ let ord_text = match ord {
 // The `to_string` is derived only when every field has a renderer (#3567).
 // Otherwise the type keeps its key and has no `to_string`, and interpolating
 // it asks for `derive(Show)`.
-// The key follows `==`, except that a `Double` is keyed as `compare` orders
+// The key follows `==`, except that a `Float64` is keyed as `compare` orders
 // it: every NaN shares one key, so a NaN key can be read back from a Map.
 // derive(Default) -> T::default() + `impl Default for T` 登録 (#1847) —
 //   derive した型はそのまま `[T: Default]` bound を満たす
@@ -3061,7 +3096,7 @@ fewer than `k + 1` set bits — so `Int::select1(x, 0)` agrees with `Int::ctz(x)
 for every non-zero `x`. `~x` (prefix bit-not, #2344) completes the set: it is
 the complement over the 63-bit two's complement `Int`, so `~x == -x - 1`
 (`~0 == -1`, `~5 == -6`, and `~` is its own inverse). It binds like the other
-prefix operators, and `Int` is its only operand type — there is no `Double`
+prefix operators, and `Int` is its only operand type — there is no `Float64`
 form, and `~true` is rejected as `operand of \`~\` must be Int`. The same `~`
 still marks a labeled parameter (`x~: Int`); only the expression-start
 position is the operator.
@@ -3470,7 +3505,7 @@ same name are **both** withheld.
 | `i64` param | `Int` | exact |
 | `i64` result | `Int` | **traps** when it needs the 64th bit (a 63-bit `Int` cannot hold it) |
 | no result | `Unit` | |
-| `f32` / `f64` / `v128` / references / multiple results | — | not offered yet (a `Double` has no inline-wasm boundary) |
+| `f32` / `f64` / `v128` / references / multiple results | — | not offered yet (a `Float64` has no inline-wasm boundary) |
 
 A module whose memory a runner can reach (exported, or imported) also gets
 `wasm_memory_load_u8(addr) -> Int`, `wasm_memory_store_u8(addr, value)` and

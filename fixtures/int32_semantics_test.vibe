@@ -1,0 +1,151 @@
+//# #3730 (ADR-0122 (5)): `Int32` / `UInt32` arithmetic wraps at 32 bits.
+//#
+//# Each value is held as an in-range `Int`, and every result that can leave
+//# the range is wrapped back into it after the check, so these answers are
+//# the same on every backend. `"\{x}"` and `==` read the in-range `Int`.
+
+//# Functions
+
+fn i32_add(a: Int32, b: Int32) -> Int32 {
+  a + b
+}
+
+fn i32_sub(a: Int32, b: Int32) -> Int32 {
+  a - b
+}
+
+fn i32_mul(a: Int32, b: Int32) -> Int32 {
+  a * b
+}
+
+fn i32_div(a: Int32, b: Int32) -> Int32 {
+  a / b
+}
+
+fn i32_shl(a: Int32, n: Int32) -> Int32 {
+  a << n
+}
+
+fn i32_shr(a: Int32, n: Int32) -> Int32 {
+  a >> n
+}
+
+fn i32_neg(a: Int32) -> Int32 {
+  -a
+}
+
+fn u32_add(a: UInt32, b: UInt32) -> UInt32 {
+  a + b
+}
+
+fn u32_sub(a: UInt32, b: UInt32) -> UInt32 {
+  a - b
+}
+
+fn u32_mul(a: UInt32, b: UInt32) -> UInt32 {
+  a * b
+}
+
+fn u32_shr(a: UInt32, n: UInt32) -> UInt32 {
+  a >> n
+}
+
+fn u32_not(a: UInt32) -> UInt32 {
+  ~a
+}
+
+fn u32_neg(a: UInt32) -> UInt32 {
+  -a
+}
+
+fn i32_bump(a: Int32) -> Int32 {
+  let mut x = a
+  x += 1
+  x
+}
+
+fn show_i32(_ x: Int32) -> String {
+  "\{x}"
+}
+
+fn show_u32(_ x: UInt32) -> String {
+  "\{x}"
+}
+
+//# Misc
+
+test "Int32 wraps at 32 bits" {
+  let max: Int32 = 2147483647
+  let min: Int32 = -2147483648
+  inspect(show_i32(i32_add(max, 1)), content = "-2147483648")
+  inspect(show_i32(i32_sub(min, 1)), content = "2147483647")
+  inspect(show_i32(i32_mul(max, max)), content = "1")
+  inspect(show_i32(i32_mul(65536, 65536)), content = "0")
+  inspect(show_i32(i32_div(min, -1)), content = "-2147483648")
+  inspect(show_i32(i32_neg(min)), content = "-2147483648")
+  inspect(show_i32(i32_shl(1, 31)), content = "-2147483648")
+  inspect(show_i32(i32_shr(min, 31)), content = "-1")
+  inspect(show_i32(i32_bump(max)), content = "-2147483648")
+}
+
+test "UInt32 wraps at 32 bits" {
+  let max: UInt32 = 4294967295
+  inspect(show_u32(u32_add(max, 1)), content = "0")
+  inspect(show_u32(u32_sub(0, 1)), content = "4294967295")
+  inspect(show_u32(u32_mul(max, max)), content = "1")
+  inspect(show_u32(u32_shr(max, 31)), content = "1")
+  inspect(show_u32(u32_not(0)), content = "4294967295")
+  inspect(show_u32(u32_neg(1)), content = "4294967295")
+}
+
+test "conversions are explicit and exact" {
+  inspect(Int32::to_int(i32_add(2147483647, 1)), content = "-2147483648")
+  inspect(UInt32::to_int(u32_sub(0, 1)), content = "4294967295")
+  inspect(show_i32(Int::wrap_int32(4294967295)), content = "-1")
+  inspect(show_u32(Int::wrap_uint32(-1)), content = "4294967295")
+  inspect(Int::to_int32(2147483648) == None, content = "true")
+  inspect(Int::to_int32(-5) == Some(Int::wrap_int32(-5)), content = "true")
+  inspect(Int::to_uint32(-1) == None, content = "true")
+}
+
+test "comparison and equality are by value" {
+  let a: Int32 = -3
+  let b: Int32 = 7
+  inspect(a < b, content = "true")
+  inspect(i32_add(a, 10) == b, content = "true")
+  let u: UInt32 = 4294967295
+  inspect(u > 0, content = "true")
+}
+
+struct Pixel {
+  x: Int32;
+  level: UInt32
+} derive (Eq, Show)
+
+fn same[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+fn smaller[T: Ord](a: T, b: T) -> Bool {
+  a < b
+}
+
+test "sized integers satisfy Eq and Ord bounds by value" {
+  let a: Int32 = -7
+  inspect(same(a, i32_add(-8, 1)), content = "true")
+  inspect(smaller(a, 0), content = "true")
+  let u: UInt32 = 4294967295
+  inspect(smaller(u32_add(u, 1), u), content = "true")
+}
+
+test "aggregates holding sized integers compare and render by value" {
+  let p = Pixel::{ x: i32_add(2147483647, 2), level: u32_sub(0, 2) }
+  let q = Pixel::{ x: -2147483647, level: 4294967294 }
+  inspect(p == q, content = "true")
+  inspect("\{p}", content = "Pixel { x: -2147483647, level: 4294967294 }")
+  let xs: Array[Int32] = [1, 2, 3]
+  let ys: Array[Int32] = [1, 2, i32_add(1, 2)]
+  inspect(xs == ys, content = "true")
+  let o: Option[UInt32] = Int::to_uint32(70000)
+  inspect(o == Some(u32_add(69999, 1)), content = "true")
+}

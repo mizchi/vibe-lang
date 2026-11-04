@@ -36,8 +36,46 @@ export fn sized_int_binop(left_ty: Type, right_ty: Type, s: Subst) -> Option[(Ty
 export fn sized_int_operand_type(e: Expr, ty: Type, other: Type, s: Subst, errors: Array[String], off: Int) -> Type {
   match sized_int_literal_type(e = e, expected = other, s = s, errors = errors, off = off) {
     Some(t) => t,
-    None => ty
+    None => match e {
+      // An array literal of integer literals where an `Array[Int32]` /
+      // `Array[UInt32]` is expected: each element takes the element type.
+      EArray(items) => match subst_apply(s = s, ty = other) {
+        CtArray(elem) => if Array::length(items) > 0 && sized_int_all_literals(items) {
+          let mut sized = true
+          for it in items {
+            match sized_int_literal_type(e = it, expected = elem, s = s, errors = errors, off = off) {
+              Some(_) => (),
+              None => {
+                sized = false
+              }
+            }
+          }
+          if sized {
+            CtArray(subst_apply(s = s, ty = elem))
+          } else {
+            ty
+          }
+        } else {
+          ty
+        },
+        _ => ty
+      },
+      _ => ty
+    }
   }
+}
+
+fn sized_int_all_literals(_ items: Array[Expr]) -> Bool {
+  let mut all = true
+  for it in items {
+    match sized_int_literal_value(it) {
+      Some(_) => (),
+      None => {
+        all = false
+      }
+    }
+  }
+  all
 }
 
 /// Whether either operand of a compound assignment is a sized integer, so the
@@ -121,6 +159,21 @@ export fn sized_negation_key(operand: Expr, op: String, errors: Array[String]) -
     ()
   }
   key
+}
+
+/// A struct literal field's value type, with an integer literal taking the
+/// field's declared `Int32` / `UInt32` type (`Pixel::{ x: 3 }`).
+export fn sized_int_field_type(exprs: Array[(String, Expr)], name: String, ty: Type, expected: Type, s: Subst, errors: Array[String]) -> Type {
+  let mut value = EUnit
+  for f in exprs {
+    let (n, v) = f
+    if n == name {
+      value = v
+    } else {
+      ()
+    }
+  }
+  sized_int_operand_type(e = value, ty = ty, other = expected, s = s, errors = errors, off = 0 - 1)
 }
 
 /// The value of an integer literal as written: `5`, or `-5` (the parser reads
