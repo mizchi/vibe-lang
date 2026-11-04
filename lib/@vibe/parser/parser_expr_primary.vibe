@@ -12,6 +12,10 @@ import ./intern.vibe {
   intern_qualified, refuse_retired_qualified
 }
 
+import ./loop_contract.vibe {
+  attach_while_contract, parse_loop_where
+}
+
 import ./parser_base.vibe {
   _no_tb,
   _no_tp,
@@ -812,7 +816,8 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
           _ => throw("expected loop parameter name or ')'")
         }
       }
-      let body_pos = expect_tk(tokens = tokens, pos = cur, expected = "{")
+      let (invariants, decreases, wn) = parse_loop_where(tokens = tokens, pos = cur, parse_recur = parse_recur, context = context)
+      let body_pos = expect_tk(tokens = tokens, pos = wn, expected = "{")
       let body_mark = binder_capture_mark(context)
       let (body, end_pos) = parse_recur(tokens, body_pos, 20, context)
       binder_capture_insert_synthetic_at(context = context, mark = body_mark, name = "__loop_result")
@@ -820,7 +825,7 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
       let pnames = ArrayBuilder::freeze(param_names_b)
       let pinits = ArrayBuilder::freeze(param_inits_b)
       let transformed_body = desugar_loop_body(expr = body, param_names = pnames, context = context)
-      let while_expr = EWhile(EBool(true), transformed_body)
+      let while_expr = attach_while_contract(cond = EBool(true), body = transformed_body, invariants = invariants, decreases = decreases, tag = pos)
       let result = ELetMut("__loop_result", EInt(0), ESeq(while_expr, EIdent("__loop_result", -1)), -1)
       let mut wrapped = result
       let mut wi = Array::length(pnames) - 1
@@ -831,9 +836,10 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
       (wrapped, end_pos)
     },
     _ => {
-      let body_pos = expect_tk(tokens = tokens, pos = pos + 1, expected = "{")
+      let (invariants, decreases, wn) = parse_loop_where(tokens = tokens, pos = pos + 1, parse_recur = parse_recur, context = context)
+      let body_pos = expect_tk(tokens = tokens, pos = wn, expected = "{")
       let (body, end_pos) = parse_recur(tokens, body_pos, 20, context)
-      (EWhile(EBool(true), body), end_pos)
+      (attach_while_contract(cond = EBool(true), body = body, invariants = invariants, decreases = decreases, tag = pos), end_pos)
     }
   }
 }

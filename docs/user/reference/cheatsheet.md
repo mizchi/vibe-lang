@@ -459,6 +459,35 @@ that name inside ensures conditions. `vibe normalize` and the AST printer
 round-trip fn declarations in fn + where form — fn sources are no longer
 refused or rewritten to `let rec`.
 
+A loop takes the same block, with `invariant` and `decreases` (#3716,
+ADR-0121 Phase 0). `while`, `for` and `loop` (with or without parameters)
+accept it between their header and their body:
+
+```vibe
+fn sum(_ xs: Array[Int]) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < Array::length(xs) where {
+    invariant: 0 <= i && i <= Array::length(xs),
+    decreases: Array::length(xs) - i,
+  } {
+    acc = acc + Array::get(xs, at = i)
+    i = i + 1
+  }
+  acc
+}
+```
+
+Each `invariant` (a `Bool`) is asserted on entry and after every iteration,
+one ended by `continue` included. The `decreases` measure (one `Int`) is
+asserted non-negative at the same points and strictly smaller than at the
+previous one. A violation traps, as a function contract does. The clauses
+read the variables in scope at the loop, never a binding the body declares,
+and a `for` clause cannot name the loop's own element. A `break` leaves
+without a check. Unlike a function's `where`, the printer and
+`vibe normalize` show the loop's clauses lowered to `assert`s, as they
+already show `loop` lowered to `while`.
+
 The entry is the one exception to "full annotations required", and it is
 deliberate (#3119). `fn main { .. }` and `fn main allows R { .. }` omit both
 the parameter list and the return type: they are sugar for
