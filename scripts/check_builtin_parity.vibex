@@ -739,15 +739,25 @@ fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Con
   // rows. `rewrite_int32_stmts` turns every call of them -- and every use as a
   // value -- into `Int` operations after the check, so no lane lowers the
   // name and both lane flags are honestly false. Mutation-checked like the
-  // call-site rows above: the rewrite must still spell each name, or the row
-  // has lost the pass that serves it.
-  let desugared_expected = ["Int32::to_int", "Int32::to_string", "Int::to_int32", "Int::to_uint32", "Int::wrap_int32", "Int::wrap_uint32", "UInt32::to_int", "UInt32::to_string"]
+  // call-site rows above, against the dispatch arm itself: each name needs a
+  // `name == "<name>"` arm inside the function that rewrites it
+  // (`i32_conversion` for the conversions, `i32_ident` for `to_string`), so
+  // a spelling elsewhere in the file -- a predicate, a comment -- is not taken
+  // for the implementation.
   let int32_pass = strip_line_comments(Fs::read_file(int32_rewrite))
+  let conversion_body = fn_body_text(text = int32_pass, name = "i32_conversion")
+  let ident_body = fn_body_text(text = int32_pass, name = "i32_ident")
+  let desugared_expected = ["Int32::to_int", "Int32::to_string", "Int::to_int32", "Int::to_uint32", "Int::wrap_int32", "Int::wrap_uint32", "UInt32::to_int", "UInt32::to_string"]
   let missing_rewrites: Array[String] = []
   let mut r = 0
   while r < Array::length(desugared_expected) {
     let n = Array::get(desugared_expected, r)
-    if String::index_of_from(int32_pass, "\"\{n}\"", 0) < 0 {
+    let body = if String::ends_with(n, "::to_string") {
+      ident_body
+    } else {
+      conversion_body
+    }
+    if String::index_of_from(body, "name == \"\{n}\"", 0) < 0 {
       Array::push(missing_rewrites, n)
     } else {
       ()
@@ -755,7 +765,7 @@ fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Con
     r = r + 1
   }
   if Array::length(missing_rewrites) > 0 {
-    die("checker-only builtin is no longer rewritten by normalize/desugar/int32.vibe: \{String::join(set_of(missing_rewrites), ", ")} -- either the rewrite moved (update this exemption) or the row is dead (drop it from the registry)")
+    die("checker-only builtin is no longer rewritten by normalize/desugar/int32.vibe: \{String::join(set_of(missing_rewrites), ", ")} -- its dispatch arm in i32_conversion / i32_ident is gone; either the rewrite moved (update this exemption) or the row is dead (drop it from the registry)")
   } else {
     ()
   }
@@ -859,5 +869,22 @@ fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Con
     exit(1)
   } else {
     Console::write_stream("[builtin-parity] ok: linear serves \{Array::length(served_lin)}, gc serves \{Array::length(served_gc)}, both \{Array::length(intersect(served_lin, served_gc))}, classified divergence \{Array::length(actual)} (linear-only \{Array::length(lin_only)}, gc-only \{Array::length(gc_only)})\n")
+  }
+}
+
+/// #3730: the text of `fn <name>(` up to the next top-level `fn`, or "" when
+/// the file declares no such function.
+fn fn_body_text(text: String, name: String) -> String {
+  let start = String::index_of_from(text, "\nfn \{name}(", 0)
+  if start < 0 {
+    ""
+  } else {
+    let next = String::index_of_from(text, "\nfn ", start + 1)
+    let stop = if next < 0 {
+      String::length(text)
+    } else {
+      next
+    }
+    String::substring(text, start, stop)
   }
 }
