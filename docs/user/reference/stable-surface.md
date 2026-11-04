@@ -529,10 +529,11 @@ frozen:
 - Struct literals use the `Type::{ ... }` style.
 - The formatter (`vibe fmt`) is idempotent.
 - Type naming: user types are CamelCase by convention (§2.3a; a lowercase
-  type name is accepted). The lowercase builtin type names such as `u8` are
-  reserved: declaring a struct named `u8` is refused. `i32` is not a type
-  (#3727) but stays reserved the same way, and the retired float spellings
-  `f64` / `f32` (#3729) are refused in every type position.
+  type name is accepted). The lowercase builtin type names such as `v128` are
+  reserved: declaring a struct named `v128` is refused. `i32` (#3727) and
+  `i64` / `i16` / `u8` .. `u64` (#3793) are not types but stay reserved the
+  same way, and the retired float spellings `f64` / `f32` (#3729) are refused
+  in every type position.
 
 ---
 
