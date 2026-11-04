@@ -31,4 +31,13 @@ fi
 if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
   echo "[prove-selftest] FAIL: the gate accepted an ensures that no longer holds" >&2; exit 1
 fi
+# A loop body that no longer keeps its invariant: `count_to` steps by 2, so
+# `i <= n` can break after an iteration and the proof must stop.
+sed 's/^    i += 1$/    i += 2/' fixtures/prove/proved.vibe > "$work/proved.vibe"
+if cmp -s fixtures/prove/proved.vibe "$work/proved.vibe"; then
+  echo "[prove-selftest] FAIL: the loop mutation did not apply" >&2; exit 1
+fi
+if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
+  echo "[prove-selftest] FAIL: the gate accepted a loop whose invariant no longer holds" >&2; exit 1
+fi
 echo "[prove-selftest] ok (a weakened implementation stops proving and the gate fails)"

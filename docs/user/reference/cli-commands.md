@@ -220,7 +220,7 @@ proved**, and each line names one that is not:
 f.vibe:5:1: unproved: ensures (result > x) of `dec` -- counterexample: x = 1
 f.vibe:12:5: unproved: overflow in (x + 1) in `inc` -- counterexample: x = 4611686018427387903
 f.vibe:21:3: unproved: requires of half: (x >= 0), called in `call_half` -- counterexample: y = -4611686018427387904
-f.vibe:4:1: unsupported: `let mut` is outside the provable fragment (in `sum_to`)
+f.vibe:7:9: unsupported: a `while` without a `where { decreases: .. }` measure: termination is not proved, so the result would be partial correctness only (in `sum_to`)
 f.vibe:5:1: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
 ```
 
@@ -235,7 +235,14 @@ no-overflow obligation per operation, which is exact for the 63-bit `Int`.
 code after them assumes it was not zero. `<<` and `>>` are admitted by a
 constant count from 0 to 62: `x << k` is `x * 2^k` with its overflow
 obligation, and `>>` is the arithmetic (floored) shift, so `-7 >> 2 == -2`.
-Any other count is unsupported. A
+Any other count is unsupported. `let mut` locals and assignment (`=`, `+=`,
+`-=`, `*=`) are read along each path. A `while` is proved when its `where` block gives a
+`decreases` measure (#3716), by induction: its invariants and `measure >= 0`
+are owed when the loop starts; one iteration from an arbitrary state where
+they hold owes the invariants again and a smaller, still non-negative
+measure; and the code after the loop knows the invariants and the negated
+condition. A `while` with no measure is unsupported, since it may not
+terminate, and so are `break`, `continue`, `for` and `loop`. A
 call is modular: the callee's `requires` is owed at the call and its
 `ensures` assumed of the result, and the callee's own body is proved in the
 same run. A call to a function with no `where` contract is unsupported (it is
