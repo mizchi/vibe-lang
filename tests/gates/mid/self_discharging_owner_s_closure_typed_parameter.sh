@@ -243,10 +243,7 @@ rm -f "$cfsdir/b.wasm"
 env -u VIBE_CFG VIBE_BUILD_CACHE_DIR="$cfsdir/cache" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
   build "$cfsdir/main.vibex" -o "$cfsdir/b.wasm" >/dev/null 2>&1 || true
-if [ -s "$cfsdir/b.wasm" ]; then
-  echo "[compiler-gate] FAIL: with no VIBE_CFG the split CLI built a program whose only f is #cfg-guarded (#2513)" >&2
-  exit 1
-fi
+gate_require_refused "$cfsdir/b.wasm" "with no VIBE_CFG the split CLI built a program whose only f is #cfg-guarded (#2513)"
 rm -rf "$cfsdir"
 echo "[compiler-gate] #cfg flags reach imported modules through the split CLI, and a flag switch is a cache miss ok (#2513)"
 

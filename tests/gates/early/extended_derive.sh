@@ -121,10 +121,7 @@ struct P { x: Int } derive(Foo)
 export let _start: () -> Int = () -> { P::{ x: 1 }.x }
 EOF
 gate_fs_compile "$undir/u.vibe" "$undir/u.wasm" _start
-if [ -s "$undir/u.wasm" ]; then
-  echo "[compiler-gate] FAIL: derive(Foo) unknown trait was accepted (should error)" >&2
-  exit 1
-fi
+gate_require_refused "$undir/u.wasm" "derive(Foo) unknown trait was accepted (should error)"
 rm -rf "$undir"
 echo "[compiler-gate] extended derive (enum Ord/Show, Default, Eq, Hash + Map keys) ok"
 
@@ -176,15 +173,9 @@ for eqrefuse_src in fixtures/structural_eq_untyped_empty_*_refused.vibe; do
   eqrefuse_name="$(basename "${eqrefuse_src%.vibe}")"
   eqrefuse_wasm="$eqtrapdir/$eqrefuse_name.wasm"
   gate_fs_compile "$eqrefuse_src" "$eqrefuse_wasm" _start
-  if [ -s "$eqrefuse_wasm" ]; then
-    echo "[compiler-gate] FAIL: $eqrefuse_src compiled; expected a compile-time refusal (#2475)" >&2
-    exit 1
-  fi
-  if ! grep -qF 'structural `==` cannot be decided here' "$eqrefuse_wasm.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: $eqrefuse_src was refused without the #2475 message" >&2
-    cat "$eqrefuse_wasm.diag" >&2 2>/dev/null
-    exit 1
-  fi
+  gate_require_refused "$eqrefuse_wasm" "$eqrefuse_src compiled; expected a compile-time refusal (#2475)"
+  gate_require_diag_has "$eqrefuse_wasm.diag" 'structural `==` cannot be decided here' \
+    "$eqrefuse_src was refused without the #2475 message"
   if ! grep -qiE 'annotate|rename the declared type' "$eqrefuse_wasm.diag" 2>/dev/null; then
     echo "[compiler-gate] FAIL: $eqrefuse_src refusal does not name an edit" >&2
     cat "$eqrefuse_wasm.diag" >&2 2>/dev/null
@@ -211,10 +202,7 @@ rm -rf "$amrdir"; mkdir -p "$amrdir"
 amr_src="fixtures/err_array_map_render_refused.vibe"
 amr_wasm="$amrdir/refused.wasm"
 gate_fs_compile "$amr_src" "$amr_wasm" _start
-if [ -s "$amr_wasm" ]; then
-  echo "[compiler-gate] FAIL: $amr_src compiled; expected a compile-time refusal (#2912)" >&2
-  exit 1
-fi
+gate_require_refused "$amr_wasm" "$amr_src compiled; expected a compile-time refusal (#2912)"
 if ! grep -qF 'cannot render the result of' "$amr_wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: $amr_src was refused without the #2912 message" >&2
   cat "$amr_wasm.diag" >&2 2>/dev/null; exit 1
@@ -270,10 +258,7 @@ ur_refused() {
   else
     gate_fs_compile "$ur_src" "$ur_wasm" _start
   fi
-  if [ -s "$ur_wasm" ]; then
-    echo "[compiler-gate] FAIL: $ur_src compiled on $ur_lane; expected a compile-time refusal (#2987)" >&2
-    exit 1
-  fi
+  gate_require_refused "$ur_wasm" "$ur_src compiled on $ur_lane; expected a compile-time refusal (#2987)"
   if ! grep -qF "$ur_msg" "$ur_wasm.diag" 2>/dev/null; then
     echo "[compiler-gate] FAIL: $ur_src was refused without the #2987 message ($ur_msg)" >&2
     cat "$ur_wasm.diag" >&2 2>/dev/null; exit 1
@@ -943,15 +928,9 @@ rm -rf "$eqrejdir"; mkdir -p "$eqrejdir"
 eqrej_src="fixtures/structural_eq_untyped_empty_lexical_formal_rejected.vibe"
 eqrej_wasm="$eqrejdir/lexical_formal_rejected.wasm"
 gate_fs_compile "$eqrej_src" "$eqrej_wasm" _start
-if [ -s "$eqrej_wasm" ]; then
-  echo "[compiler-gate] FAIL: $eqrej_src compiled; expected the checker to reject == on an unbounded formal (#2474)" >&2
-  exit 1
-fi
-if ! grep -qF 'compares two values of type `Array[T]`, but the type parameter `T` has no `Eq` bound' "$eqrej_wasm.diag" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: $eqrej_src was refused for another reason than the missing Eq bound (#2474)" >&2
-  cat "$eqrej_wasm.diag" >&2 2>/dev/null
-  exit 1
-fi
+gate_require_refused "$eqrej_wasm" "$eqrej_src compiled; expected the checker to reject == on an unbounded formal (#2474)"
+gate_require_diag_has "$eqrej_wasm.diag" 'compares two values of type `Array[T]`, but the type parameter `T` has no `Eq` bound' \
+  "$eqrej_src was refused for another reason than the missing Eq bound (#2474)"
 rm -rf "$eqrejdir"
 echo "[compiler-gate] untyped-empty equality on an unbounded formal is rejected at check time ok (#2474)"
 
@@ -1001,17 +980,11 @@ for hetero_src in fixtures/empty_array_hetero_*_reject.vibe; do
   hetero_name="$(basename "${hetero_src%.vibe}")"
   hetero_wasm="$heterodir/$hetero_name.wasm"
   gate_fs_compile "$hetero_src" "$hetero_wasm" _start
-  if [ -s "$hetero_wasm" ]; then
-    echo "[compiler-gate] FAIL: $hetero_src compiled; expected a check rejection" >&2
-    exit 1
-  fi
+  gate_require_refused "$hetero_wasm" "$hetero_src compiled; expected a check rejection"
   # Not any failure: the rejection must be the ELEMENT-TYPE mismatch, so a
   # fixture broken some other way (syntax, missing name) cannot green this.
-  if ! grep -q "type mismatch" "$hetero_wasm.diag" 2>/dev/null; then
-    echo "[compiler-gate] FAIL: $hetero_src was rejected without the expected type mismatch diagnostic" >&2
-    cat "$hetero_wasm.diag" >&2 2>/dev/null
-    exit 1
-  fi
+  gate_require_diag_matches "$hetero_wasm.diag" "type mismatch" \
+    "$hetero_src was rejected without the expected type mismatch diagnostic"
 done
 rm -rf "$heterodir"
 echo "[compiler-gate] empty-array heterogeneous use rejected ok"
@@ -1513,10 +1486,7 @@ export let _start: () -> Int = () -> {
 }
 EOF
 gate_fs_compile "$mixdir/m.vibe" "$mixdir/m.wasm" _start
-if [ -s "$mixdir/m.wasm" ]; then
-  echo "[compiler-gate] FAIL: mixed Result/Option let* chain compiled (should be a type error)" >&2
-  exit 1
-fi
+gate_require_refused "$mixdir/m.wasm" "mixed Result/Option let* chain compiled (should be a type error)"
 rm -rf "$mixdir"
 echo "[compiler-gate] railway let*/? Option generalization ok"
 
@@ -1809,10 +1779,7 @@ let bad = (src: LazyIter[String]) -> Int {
 export let _start: () -> Int = () -> { bad(lazy_iter_arr(["a", "b"])) }
 EOF
 gate_fs_compile "$eidir/neg.vibe" "$eidir/neg.wasm" _start
-if [ -s "$eidir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: element-type negative program compiled (element typed CtUnknown, not String -> element-type safety regressed)" >&2
-  exit 1
-fi
+gate_require_refused "$eidir/neg.wasm" "element-type negative program compiled (element typed CtUnknown, not String -> element-type safety regressed)"
 if ! grep -q "type mismatch in '+'" "$eidir/neg.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: element-type negative rejected for the wrong reason" >&2
   cat "$eidir/neg.wasm.diag" >&2 2>/dev/null; exit 1
@@ -1879,10 +1846,7 @@ let needs = [U: Marky](x: U) -> Int { 1 }
 export let _start: () -> Int = () -> { needs([1, 2, 3]) }
 EOF
 gate_fs_compile "$gidir/neg.vibe" "$gidir/neg.wasm" _start
-if [ -s "$gidir/neg.wasm" ]; then
-  echo "[compiler-gate] FAIL: marker-trait generic impl was accepted (unsound — should be rejected)" >&2
-  exit 1
-fi
+gate_require_refused "$gidir/neg.wasm" "marker-trait generic impl was accepted (unsound — should be rejected)"
 rm -rf "$gidir"
 echo "[compiler-gate] generic trait impl (Increment A) ok"
 
@@ -2104,17 +2068,11 @@ EOF
 gate_fs_compile "$pfdir/good.vibe" "$pfdir/good.wasm" _start
 gate_require_artifact "$pfdir/good.wasm" "declared effect calls did not compile (#626 over-rejects)"
 gate_fs_compile "$pfdir/bad_perform.vibe" "$pfdir/bad_perform.wasm" _start
-if [ -s "$pfdir/bad_perform.wasm" ]; then
-  echo "[compiler-gate] FAIL: undeclared perform compiled (#626 criterion 1 regressed)" >&2; exit 1
-fi
+gate_require_refused "$pfdir/bad_perform.wasm" "undeclared perform compiled (#626 criterion 1 regressed)"
 gate_fs_compile "$pfdir/bad_builtin.vibe" "$pfdir/bad_builtin.wasm" _start
-if [ -s "$pfdir/bad_builtin.wasm" ]; then
-  echo "[compiler-gate] FAIL: undeclared effectful builtin call compiled (#626 builtin slice regressed)" >&2; exit 1
-fi
+gate_require_refused "$pfdir/bad_builtin.wasm" "undeclared effectful builtin call compiled (#626 builtin slice regressed)"
 gate_fs_compile "$pfdir/bad_transitive.vibe" "$pfdir/bad_transitive.wasm" _start
-if [ -s "$pfdir/bad_transitive.wasm" ]; then
-  echo "[compiler-gate] FAIL: undeclared transitive effect call compiled (#626 transitive enforcement regressed)" >&2; exit 1
-fi
+gate_require_refused "$pfdir/bad_transitive.wasm" "undeclared transitive effect call compiled (#626 transitive enforcement regressed)"
 # #639: effect-row diagnostics — the transitive reject above must print the
 # EXPECTED vs ACTUAL rows as a set difference, and (since `mid` has no `with`
 # clause at all) a declare-form fix-it hint that blames the CALLER `mid`,
@@ -2140,9 +2098,7 @@ let mid: (String) -> String with Exception = (p) -> {
 export let _start: () -> Int = () -> { 42 }
 EOF
 gate_fs_compile "$pfdir/bad_row_single.vibe" "$pfdir/bad_row_single.wasm" _start
-if [ -s "$pfdir/bad_row_single.wasm" ]; then
-  echo "[compiler-gate] FAIL: partially-declared transitive effect call compiled (#639)" >&2; exit 1
-fi
+gate_require_refused "$pfdir/bad_row_single.wasm" "partially-declared transitive effect call compiled (#639)"
 # #1461: the fixture used to DECLARE `with Error` while the diagnostic reported
 # the canonical `Exception` -- an asymmetry that was the point of Step 1's flip,
 # and what this assertion pinned. The final stage retired the alias as a
@@ -2170,9 +2126,7 @@ let mid: (String) -> String = (p) -> {
 export let _start: () -> Int = () -> { 42 }
 EOF
 gate_fs_compile "$pfdir/bad_row_multi.vibe" "$pfdir/bad_row_multi.wasm" _start
-if [ -s "$pfdir/bad_row_multi.wasm" ]; then
-  echo "[compiler-gate] FAIL: multi-effect transitive call compiled (#639)" >&2; exit 1
-fi
+gate_require_refused "$pfdir/bad_row_multi.wasm" "multi-effect transitive call compiled (#639)"
 if ! grep -qF "effect row mismatch for 'mid': missing { Env, Fs }" "$pfdir/bad_row_multi.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: multi-effect reject is not an aggregated sorted set difference (#639)" >&2
   cat "$pfdir/bad_row_multi.wasm.diag" >&2 2>/dev/null; exit 1
@@ -2211,9 +2165,7 @@ let g: (String) -> String with Exception + Fs = (p) -> {
 export let _start: () -> Int = () -> { 42 }
 EOF
 gate_fs_compile "$pfdir/bad_import_transitive.vibe" "$pfdir/bad_import_transitive.wasm" _start
-if [ -s "$pfdir/bad_import_transitive.wasm" ]; then
-  echo "[compiler-gate] FAIL: undeclared call of IMPORTED effectful function compiled (#812 regressed)" >&2; exit 1
-fi
+gate_require_refused "$pfdir/bad_import_transitive.wasm" "undeclared call of IMPORTED effectful function compiled (#812 regressed)"
 gate_fs_compile "$pfdir/good_import_transitive.vibe" "$pfdir/good_import_transitive.wasm" _start
 gate_require_artifact "$pfdir/good_import_transitive.wasm" "correctly-declared imported effect call did not compile (#812 over-rejects)"
 rm -rf "$pfdir"
@@ -2255,9 +2207,7 @@ EOF
 gate_fs_compile "$hdir/discharge.vibe" "$hdir/discharge.wasm" _start
 gate_require_artifact "$hdir/discharge.wasm" "handle did not discharge its own effect (#626 criterion 2 over-rejects)"
 gate_fs_compile "$hdir/leak.vibe" "$hdir/leak.wasm" _start
-if [ -s "$hdir/leak.wasm" ]; then
-  echo "[compiler-gate] FAIL: a different undeclared effect leaked through a handle (#626 criterion 2 regressed)" >&2; exit 1
-fi
+gate_require_refused "$hdir/leak.wasm" "a different undeclared effect leaked through a handle (#626 criterion 2 regressed)"
 # Multi-operation handler dispatch (#665): the perform/handler ABI records the
 # operation index (g_op_index) so a handler over a multi-operation effect routes
 # each performed operation to the matching arm (previously every operation
@@ -2377,9 +2327,7 @@ if [ "$op_out" != "42" ]; then
 fi
 for bad in bad_performarg bad_performarity bad_armname bad_armpayload bad_resumeval bad_kconv bad_missingarm bad_resume0; do
   gate_fs_compile "$odir/$bad.vibe" "$odir/$bad.wasm" _start
-  if [ -s "$odir/$bad.wasm" ]; then
-    echo "[compiler-gate] FAIL: ill-typed $bad compiled (#813 regressed)" >&2; exit 1
-  fi
+  gate_require_refused "$odir/$bad.wasm" "ill-typed $bad compiled (#813 regressed)"
 done
 rm -rf "$odir"
 echo "[compiler-gate] effect op signature checking ok"

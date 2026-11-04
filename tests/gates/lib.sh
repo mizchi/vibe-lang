@@ -165,3 +165,39 @@ gate_require_artifact() {
     exit 1
   fi
 }
+
+# gate_require_refused <out> <message>
+#
+# FAIL the lane with <message> if <out> is a non-empty file: the compile was
+# supposed to be refused. Pair it with gate_fs_compile, which removes a stale
+# <out> first, so a refusal is not mistaken for success, nor a success for an
+# old refusal.
+gate_require_refused() {
+  if [ -s "$1" ]; then
+    echo "[compiler-gate] FAIL: $2" >&2
+    exit 1
+  fi
+}
+
+# gate_require_diag_has <diag> <text> <message>
+# gate_require_diag_matches <diag> <pattern> <message>
+#
+# FAIL the lane with <message>, showing <diag>, unless the diagnostic file
+# contains <text> (a fixed string, grep -F) or a line matching <pattern> (a
+# basic regular expression, plain grep). A refusal is checked by its MESSAGE,
+# not merely by its happening: the wrong error refuses a program too.
+gate_require_diag_has() {
+  if ! grep -qF -- "$2" "$1" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $3" >&2
+    cat "$1" >&2 2>/dev/null || true
+    exit 1
+  fi
+}
+
+gate_require_diag_matches() {
+  if ! grep -q -- "$2" "$1" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $3" >&2
+    cat "$1" >&2 2>/dev/null || true
+    exit 1
+  fi
+}
