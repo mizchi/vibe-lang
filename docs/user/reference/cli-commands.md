@@ -221,7 +221,7 @@ f.vibe:5:1: unproved: ensures (result > x) of `dec` -- counterexample: x = 1
 f.vibe:12:5: unproved: overflow in (x + 1) in `inc` -- counterexample: x = 4611686018427387903
 f.vibe:21:3: unproved: requires of half: (x >= 0), called in `call_half` -- counterexample: y = -4611686018427387904
 f.vibe:4:1: unsupported: `let mut` is outside the provable fragment (in `sum_to`)
-f.vibe:5:1: unknown: ensures result of `fermat3` -- z3 timed out (timeout 5000 ms)
+f.vibe:5:1: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
 ```
 
 Only an `unsat` answer proves, so `unknown`, a timeout and an unsupported

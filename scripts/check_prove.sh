@@ -9,7 +9,8 @@
 #                     `let` -> one line each with a counterexample, exit 1
 #   unsupported.vibe  constructs outside the fragment, and a recursive
 #                     cycle, are reported, exit 1
-#   unknown.vibe      a timeout is `unknown`, which fails, exit 1
+#   unknown.vibe      the solver running out of time is `unknown`, which
+#                     fails, exit 1
 #
 # Counterexample VALUES are masked: they are whatever model the solver picks,
 # and a different z3 may pick another. That one exists is still checked.
@@ -57,7 +58,7 @@ run_case unsupported 1 "$dir/unsupported.vibe:4:1: unsupported: \`let mut\` is o
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\` or \`Bool\` (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
 $dir/unsupported.vibe:24:1: unsupported: \`pong\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`pong\`)"
-run_case unknown 1 "$dir/unknown.vibe:5:1: unknown: ensures result of \`fermat3\` -- z3 timed out (timeout 5000 ms)"
+run_case unknown 1 "$dir/unknown.vibe:5:1: unknown: ensures result of \`fermat3\` -- z3 timed out (5000 ms limit)"
 
 [ "$fail" = 0 ] || exit 1
-echo "[prove] ok (proved silent, unproved with counterexamples, unsupported reported, a timeout fails)"
+echo "[prove] ok (proved silent, unproved with counterexamples, unsupported reported, an unknown answer fails)"
