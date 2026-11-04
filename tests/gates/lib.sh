@@ -201,3 +201,47 @@ gate_require_diag_matches() {
     exit 1
   fi
 }
+
+# gate_fs_compile_on <lane> <src> <out> <entry> [arg...]
+#
+# gate_fs_compile on one lane of the backend / allocator matrix: `bump` (the
+# VIBE_RC=0 this file pins), `linear` (VIBE_RC=0 spelled out), `rc`
+# (VIBE_RC=1), `shadow` (VIBE_RC=shadow) or `gc` (VIBE_BACKEND=gc). Each lane's
+# selector is a literal in its own arm, never routed through a variable
+# (#2248); a lane this does not know FAILS rather than compiling nothing, which
+# would read as a refusal. Same contract as gate_fs_compile otherwise.
+gate_fs_compile_on() {
+  local lane="$1"; shift
+  rm -f "$2" "$2.diag"
+  case "$lane" in
+    bump) VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "$@" >/dev/null 2>&1 || true ;;
+    linear) VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "$@" >/dev/null 2>&1 || true ;;
+    rc) VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "$@" >/dev/null 2>&1 || true ;;
+    shadow) VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "$@" >/dev/null 2>&1 || true ;;
+    gc) VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "$@" >/dev/null 2>&1 || true ;;
+    *)
+      echo "[compiler-gate] FAIL: gate_fs_compile_on: unknown lane '$lane' (want bump, linear, rc, shadow or gc)" >&2
+      exit 1 ;;
+  esac
+}
+
+# gate_fs_compile_rc / gate_fs_compile_gc <src> <out> <entry> [arg...]:
+# gate_fs_compile_on rc / gc.
+gate_fs_compile_rc() { gate_fs_compile_on rc "$@"; }
+gate_fs_compile_gc() { gate_fs_compile_on gc "$@"; }
+
+# gate_flat_compile <src> <out> <entry> [arg...]
+#
+# The single-source (flat) compile, without VIBE_FS_COMPILE. Same contract as
+# gate_fs_compile.
+gate_flat_compile() {
+  rm -f "$2" "$2.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$@" >/dev/null 2>&1 || true
+}

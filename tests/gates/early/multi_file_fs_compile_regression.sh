@@ -489,9 +489,7 @@ for u32_case in "${u32_cases[@]}"; do
   for u32_lane in $u32_lanes; do
     u32_wasm="$u32dir/${u32_name}_$u32_lane.wasm"
     if [ "$u32_lane" = gc ]; then
-      VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-        "$u32_src" "$u32_wasm" main >/dev/null 2>&1 || true
+      gate_fs_compile_gc "$u32_src" "$u32_wasm" main
     else
       env -u VIBE_RC VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
         bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -1972,9 +1970,7 @@ if [ "$tl_cov_out" != "4116" ]; then
 fi
 # The control: the SAME program through the ordinary entry. Both must agree --
 # that agreement, not the constant, is what #2469 is about.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$tldir/bool_render.vibe" "$tldir/plain.wasm" _start >/dev/null 2>&1 || true
+gate_flat_compile "$tldir/bool_render.vibe" "$tldir/plain.wasm" _start
 tl_plain_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$tldir/plain.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$tl_plain_out" != "$tl_cov_out" ]; then

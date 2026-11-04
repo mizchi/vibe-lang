@@ -1224,9 +1224,7 @@ fn main() -> Int allows Console {
   0
 }
 INSPH
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$inspdir/hygiene.vibe" "$inspdir/hygiene.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$inspdir/hygiene.vibe" "$inspdir/hygiene.wasm" main
 gate_require_artifact "$inspdir/hygiene.wasm" "the inspect hygiene sample did not compile"
 if insp_hyg="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$inspdir/hygiene.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: inspect(1, __vibe_inspect_actual) PASSED -- the expansion's temporary captured the argument, so it compared a value against itself (#1571 hygiene)" >&2
@@ -1237,9 +1235,7 @@ fi
 # The same freshness boundary when the candidate appears ONLY as a compound-
 # assignment target inside the value expression. A target-blind scan reuses the
 # name, so the generated let captures the mutation and the snapshot observes 1.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/inspect_assignop_target_freshness.vibe "$inspdir/assignop.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_flat_compile fixtures/inspect_assignop_target_freshness.vibe "$inspdir/assignop.wasm" __no_entry__
 gate_require_artifact "$inspdir/assignop.wasm" "inspect EAssignOp target-only freshness fixture did not compile"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
     --invoke _start "$inspdir/assignop.wasm" >/dev/null 2>&1; then
@@ -1258,9 +1254,7 @@ fn main() -> Int {
   inspect(2, "ignored")
 }
 INSPF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$inspdir/shadow_fn.vibe" "$inspdir/shadow_fn.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$inspdir/shadow_fn.vibe" "$inspdir/shadow_fn.wasm" main
 gate_require_artifact "$inspdir/shadow_fn.wasm" "a user-declared \`inspect\` did not compile -- the rewrite hijacked the call (#1571 shadow)"
 insp_fn_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$inspdir/shadow_fn.wasm" 2>/dev/null | tail -1)"
 if [ "$insp_fn_out" != "7" ]; then
@@ -1289,9 +1283,7 @@ fn main() -> Int allows Console {
   }
 }
 INSPP
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$inspdir/shadow_pat.vibe" "$inspdir/shadow_pat.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$inspdir/shadow_pat.vibe" "$inspdir/shadow_pat.wasm" main
 gate_require_artifact "$inspdir/shadow_pat.wasm" "a pattern-bound \`inspect\` did not compile (#1571 shadow, pattern binders)"
 insp_pat_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$inspdir/shadow_pat.wasm" 2>&1)"
 case "$insp_pat_out" in
