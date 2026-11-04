@@ -32,10 +32,7 @@ RETIREDEOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$vdir/retired_v128.vibe" "$vdir/v128.wasm" __no_entry__ >"$vdir/out.txt" 2>&1 || true
-if [ -s "$vdir/v128.wasm" ]; then
-  echo "[compiler-gate] FAIL: v128_load still compiles -- the retired intrinsic surface came back (#2342)" >&2
-  exit 1
-fi
+gate_require_refused "$vdir/v128.wasm" "v128_load still compiles -- the retired intrinsic surface came back (#2342)"
 if ! cat "$vdir/out.txt" "$vdir/v128.wasm.diag" 2>/dev/null | grep -q "unknown name: v128_load"; then
   echo "[compiler-gate] FAIL: v128_load was rejected, but not with 'unknown name' -- the diagnostic must say what is wrong" >&2
   cat "$vdir/out.txt" "$vdir/v128.wasm.diag" >&2 2>/dev/null || true
@@ -300,10 +297,7 @@ export let other = (body: HostStream) -> Int with Async {
 }
 HSEOF
 gate_fs_compile "$hsdir/two.vibe" "$hsdir/two.wasm" __no_entry__
-if [ -s "$hsdir/two.wasm" ]; then
-  echo "[compiler-gate] FAIL: two exported Async functions silently picked a boundary (#1540)" >&2
-  exit 1
-fi
+gate_require_refused "$hsdir/two.wasm" "two exported Async functions silently picked a boundary (#1540)"
 echo "[compiler-gate] two exported Async functions still refuse to guess a boundary (#1540)"
 # #1746 (RC lane): the raw-ABI shim dispatched on the callee NAME alone, so a
 # program defining its own top-level `fn sleep` had the shim applied to ITS

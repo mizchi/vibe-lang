@@ -233,6 +233,53 @@ else
   bad "gate_fs_compile aborted on a failing compile; the caller's check would never run"
 fi
 
+# --- gate_require_refused / gate_require_diag_has / _matches (#3671) ----------
+
+# 9. a refusal: no artifact passes, an artifact fails with the message.
+rm -f "$WORK/refused.wasm"
+if (gate_require_refused "$WORK/refused.wasm" "should not fire") >/dev/null 2>&1; then
+  ok "gate_require_refused passes when nothing was written"
+else
+  bad "gate_require_refused failed although nothing was written"
+fi
+printf 'wasm' > "$WORK/refused.wasm"
+if (gate_require_refused "$WORK/refused.wasm" "the bad program compiled") >"$WORK/req.out" 2>&1; then
+  bad "gate_require_refused passed a written artifact"
+elif grep -qF "[compiler-gate] FAIL: the bad program compiled" "$WORK/req.out"; then
+  ok "gate_require_refused fails a written artifact with the message"
+else
+  bad "gate_require_refused failed without the message: $(cat "$WORK/req.out")"
+fi
+
+# 10. the diagnostic's MESSAGE: present passes, absent fails and shows the file.
+printf 'error: binding type mismatch for x: expected Int, got String\n' > "$WORK/m.diag"
+if (gate_require_diag_has "$WORK/m.diag" "expected Int, got String" "x") >/dev/null 2>&1; then
+  ok "gate_require_diag_has passes when the text is there"
+else
+  bad "gate_require_diag_has failed although the text is there"
+fi
+if (gate_require_diag_has "$WORK/m.diag" "unknown name" "the refusal gave the wrong error") >"$WORK/req.out" 2>&1; then
+  bad "gate_require_diag_has passed text that is not there"
+elif grep -qF "the refusal gave the wrong error" "$WORK/req.out" && grep -qF "binding type mismatch" "$WORK/req.out"; then
+  ok "gate_require_diag_has fails absent text with the message and the diagnostic"
+else
+  bad "gate_require_diag_has failed without the message or the diagnostic: $(cat "$WORK/req.out")"
+fi
+# A fixed string is fixed: `.` is not a wildcard there, and is one for _matches.
+if (gate_require_diag_has "$WORK/m.diag" "expected.Int" "x") >/dev/null 2>&1; then
+  bad "gate_require_diag_has read its text as a pattern"
+elif (gate_require_diag_matches "$WORK/m.diag" "expected.Int" "x") >/dev/null 2>&1; then
+  ok "gate_require_diag_has is a fixed string and gate_require_diag_matches a pattern"
+else
+  bad "gate_require_diag_matches did not match a basic regular expression"
+fi
+# A missing diagnostic file is a failure, not a silent pass.
+if (gate_require_diag_matches "$WORK/no_such.diag" "x" "no diag") >/dev/null 2>&1; then
+  bad "gate_require_diag_matches passed a missing diagnostic"
+else
+  ok "gate_require_diag_matches fails a missing diagnostic"
+fi
+
 echo "----"
 echo "passed: $passed, failed: $failed"
 [ "$failed" -eq 0 ]

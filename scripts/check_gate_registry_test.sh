@@ -134,6 +134,12 @@ printf 'gate_require_artifact "$d/out.wasm" "fixtures/no_such_fixture_for_the_re
 landed "$tree/tests/gates/early/run.sh" 'did not compile' "require message"
 assert_ok "a gate_require_artifact message is not a fixture reference" gate --root "$WORK_REL/tree"
 
+# ...and so are the needle and message of gate_require_diag_has / _refused.
+reset_tree
+printf 'gate_require_diag_has "$d/out.wasm.diag" "fixtures/no_such_fixture_for_the_registry_test.vibe: line 3" "wrong error"\ngate_require_refused "$d/out.wasm" "fixtures/no_such_fixture_for_the_registry_test.vibe compiled"\n' >> "$tree/tests/gates/early/run.sh"
+landed "$tree/tests/gates/early/run.sh" 'wrong error' "diag needle"
+assert_ok "a gate_require_diag_has needle is not a fixture reference" gate --root "$WORK_REL/tree"
+
 # #2107 fallout: a compile whose failure the lane checks must not be able to
 # abort the lane before the check. Red case built by REMOVING the guard from a
 # live step, so the test breaks if the rule stops being enforced rather than if
@@ -150,6 +156,13 @@ open(p, 'w').write(s.replace(old, old[:-len(" || true")], 1))
 PYEOF
 landed "$lane_copy" '__no_entry__ >"$vdir/out.txt" 2>&1' "unguarded compile"
 red "unguarded compile-then-check" "add \`|| true\`"
+
+# ...and the check spelled as tests/gates/lib.sh's gate_require_artifact is a
+# check too: an unguarded compile before it is refused the same way.
+reset_tree
+printf 'bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "$d/a.vibe" "$d/a.wasm" main >/dev/null 2>&1\ngate_require_artifact "$d/a.wasm" "a did not compile"\n' >> "$tree/tests/gates/early/run.sh"
+landed "$tree/tests/gates/early/run.sh" 'gate_require_artifact "$d/a.wasm"' "unguarded compile before gate_require_artifact"
+red "unguarded compile before gate_require_artifact" "add \`|| true\`"
 
 # No lanes read is not a clean registry.
 reset_tree

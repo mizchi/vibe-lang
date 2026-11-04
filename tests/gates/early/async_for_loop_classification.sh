@@ -149,13 +149,9 @@ if [ "$perf_out" != "$throw_out" ]; then
   echo "[compiler-gate] FAIL: perform Error::Throw diverged from throw ('$perf_out' vs '$throw_out'; #640 regressed)" >&2; exit 1
 fi
 gate_fs_compile "$edir/bad_resume_arm.vibe" "$edir/bad_resume_arm.wasm" _start
-if [ -s "$edir/bad_resume_arm.wasm" ]; then
-  echo "[compiler-gate] FAIL: resume(...) in a with-Error arm compiled (#640 regressed)" >&2; exit 1
-fi
+gate_require_refused "$edir/bad_resume_arm.wasm" "resume(...) in a with-Error arm compiled (#640 regressed)"
 gate_fs_compile "$edir/bad_resume_loop.vibe" "$edir/bad_resume_loop.wasm" _start
-if [ -s "$edir/bad_resume_loop.wasm" ]; then
-  echo "[compiler-gate] FAIL: resume(...) nested in loop/break inside a with-Error arm compiled (walk gap; Codex P2 on #933)" >&2; exit 1
-fi
+gate_require_refused "$edir/bad_resume_loop.wasm" "resume(...) nested in loop/break inside a with-Error arm compiled (walk gap; Codex P2 on #933)"
 # 27e2 (#640 Stage 2): `throw(x)` desugars at PARSE time to the exact
 # `perform Error::Throw(x)` AST (single internal form), so the two spellings
 # must produce BYTE-IDENTICAL wasm — a much stronger pin than the equal-output
@@ -410,13 +406,9 @@ gate_require_artifact "$adir/right.wasm" "a correctly-typed call did not compile
 gate_fs_compile "$adir/ffright.vibe" "$adir/ffright.wasm" _start
 gate_require_artifact "$adir/ffright.wasm" "a correct field-stored-function call did not compile (over-rejects)"
 gate_fs_compile "$adir/wrong.vibe" "$adir/wrong.wasm" _start
-if [ -s "$adir/wrong.wasm" ]; then
-  echo "[compiler-gate] FAIL: an ill-typed argument (Int <- String) compiled (arg-check regressed)" >&2; exit 1
-fi
+gate_require_refused "$adir/wrong.wasm" "an ill-typed argument (Int <- String) compiled (arg-check regressed)"
 gate_fs_compile "$adir/ffwrong.vibe" "$adir/ffwrong.wasm" _start
-if [ -s "$adir/ffwrong.wasm" ]; then
-  echo "[compiler-gate] FAIL: ill-typed field-stored-function call (Int <- String) compiled" >&2; exit 1
-fi
+gate_require_refused "$adir/ffwrong.wasm" "ill-typed field-stored-function call (Int <- String) compiled"
 rm -rf "$adir"
 echo "[compiler-gate] argument type checking ok"
 
@@ -609,9 +601,7 @@ gate_fs_compile "$tdir/ok_genfield.vibe" "$tdir/ok_genfield.wasm" _start
 gate_require_artifact "$tdir/ok_genfield.wasm" "well-typed generic-struct field reads did not compile (over-rejects, #829)"
 for bad in bad_let bad_assign bad_if bad_ifnoelse bad_struct bad_locallet bad_missingfield bad_fnannot bad_return bad_retviaannot bad_genhead bad_builtinarg bad_dupfield bad_some2 bad_optfield bad_concatarg bad_concatarg0 bad_substrarg bad_unknownfield bad_guardonly bad_arity_get bad_arity_bytesnew bad_mutann bad_agrecv bad_agidx bad_asrecv bad_streamlen bad_streamget bad_streamset bad_interp_paren bad_declcomma bad_structcomma bad_genfield; do
   gate_fs_compile "$tdir/$bad.vibe" "$tdir/$bad.wasm" _start
-  if [ -s "$tdir/$bad.wasm" ]; then
-    echo "[compiler-gate] FAIL: ill-typed $bad compiled (type-check regressed)" >&2; exit 1
-  fi
+  gate_require_refused "$tdir/$bad.wasm" "ill-typed $bad compiled (type-check regressed)"
 done
 rm -rf "$tdir"
 echo "[compiler-gate] assignment / binding / if-branch / struct-field / local-let type checking ok"
@@ -651,9 +641,7 @@ gate_fs_compile "$mdir/ok_mut.vibe" "$mdir/ok_mut.wasm" _start
 gate_require_artifact "$mdir/ok_mut.wasm" "mut-field write did not compile (over-rejects)"
 for bad in bad_nonmut bad_valty; do
   gate_fs_compile "$mdir/$bad.vibe" "$mdir/$bad.wasm" _start
-  if [ -s "$mdir/$bad.wasm" ]; then
-    echo "[compiler-gate] FAIL: $bad field write compiled (mut/value-type check regressed)" >&2; exit 1
-  fi
+  gate_require_refused "$mdir/$bad.wasm" "$bad field write compiled (mut/value-type check regressed)"
 done
 rm -rf "$mdir"
 echo "[compiler-gate] mut-field write escape analysis ok"
@@ -701,9 +689,7 @@ gate_fs_compile "$cdir/ok.vibe" "$cdir/ok.wasm" _start
 gate_require_artifact "$cdir/ok.wasm" "well-typed match/array did not compile (over-rejects)"
 for bad in bad_match bad_array bad_arraynest bad_call bad_calloption bad_not bad_forint bad_tuparity; do
   gate_fs_compile "$cdir/$bad.vibe" "$cdir/$bad.wasm" _start
-  if [ -s "$cdir/$bad.wasm" ]; then
-    echo "[compiler-gate] FAIL: ill-typed $bad compiled (consistency check regressed)" >&2; exit 1
-  fi
+  gate_require_refused "$cdir/$bad.wasm" "ill-typed $bad compiled (consistency check regressed)"
 done
 rm -rf "$cdir"
 echo "[compiler-gate] match-arm / array / non-fn-call / unary-not / for-iterable type checking ok"
@@ -729,9 +715,7 @@ EOF
 gate_fs_compile "$mudir/ok.vibe" "$mudir/ok.wasm" _start
 gate_require_artifact "$mudir/ok.wasm" "well-typed mut/accumulator did not compile (over-rejects)"
 gate_fs_compile "$mudir/bad.vibe" "$mudir/bad.wasm" _start
-if [ -s "$mudir/bad.wasm" ]; then
-  echo "[compiler-gate] FAIL: immutable-let reassignment compiled (mutability check regressed)" >&2; exit 1
-fi
+gate_require_refused "$mudir/bad.wasm" "immutable-let reassignment compiled (mutability check regressed)"
 rm -rf "$mudir"
 echo "[compiler-gate] mutability discipline ok"
 
@@ -760,9 +744,7 @@ EOF
 gate_fs_compile "$mu2dir/ok.vibe" "$mu2dir/ok.wasm" _start
 gate_require_artifact "$mu2dir/ok.wasm" "legal mut reassignment inside Map::from_pairs value did not compile (over-rejects)"
 gate_fs_compile "$mu2dir/bad.vibe" "$mu2dir/bad.wasm" _start
-if [ -s "$mu2dir/bad.wasm" ]; then
-  echo "[compiler-gate] FAIL: immutable-let reassignment inside map literal compiled (completeness regressed)" >&2; exit 1
-fi
+gate_require_refused "$mu2dir/bad.wasm" "immutable-let reassignment inside map literal compiled (completeness regressed)"
 rm -rf "$mu2dir"
 echo "[compiler-gate] mutability discipline completeness ok"
 
@@ -792,9 +774,7 @@ gate_fs_compile "$pdir/ok.vibe" "$pdir/ok.wasm" _start
 gate_require_artifact "$pdir/ok.wasm" "well-typed ctor patterns did not compile (over-rejects)"
 for bad in bad_arity bad_scalar; do
   gate_fs_compile "$pdir/$bad.vibe" "$pdir/$bad.wasm" _start
-  if [ -s "$pdir/$bad.wasm" ]; then
-    echo "[compiler-gate] FAIL: ill-typed pattern $bad compiled (pattern check regressed)" >&2; exit 1
-  fi
+  gate_require_refused "$pdir/$bad.wasm" "ill-typed pattern $bad compiled (pattern check regressed)"
 done
 rm -rf "$pdir"
 echo "[compiler-gate] constructor-pattern arity / scrutinee type checking ok"
@@ -867,9 +847,7 @@ gate_fs_compile "$idir/ok.vibe" "$idir/ok.wasm" _start
 gate_require_artifact "$idir/ok.wasm" "well-typed index/tuple did not compile (over-rejects)"
 for bad in bad_index bad_tuple bad_idxtype bad_idxelem bad_stridx bad_arrget bad_arrpush bad_arrset bad_arrmap bad_arrfold bad_mapparam bad_foldparam bad_arrslice bad_arrconcat bad_arrconcatmix bad_arrpushallmix bad_arrrev; do
   gate_fs_compile "$idir/$bad.vibe" "$idir/$bad.wasm" _start
-  if [ -s "$idir/$bad.wasm" ]; then
-    echo "[compiler-gate] FAIL: ill-typed $bad compiled (index/tuple check regressed)" >&2; exit 1
-  fi
+  gate_require_refused "$idir/$bad.wasm" "ill-typed $bad compiled (index/tuple check regressed)"
 done
 rm -rf "$idir"
 echo "[compiler-gate] indexing / tuple-projection type checking ok"
@@ -926,9 +904,7 @@ EOF
 gate_fs_compile "$xdir/ok.vibe" "$xdir/ok.wasm" _start
 gate_require_artifact "$xdir/ok.wasm" "exhaustive matches did not compile (over-rejects)"
 gate_fs_compile "$xdir/bad.vibe" "$xdir/bad.wasm" _start
-if [ -s "$xdir/bad.wasm" ]; then
-  echo "[compiler-gate] FAIL: non-exhaustive match compiled (exhaustiveness check regressed)" >&2; exit 1
-fi
+gate_require_refused "$xdir/bad.wasm" "non-exhaustive match compiled (exhaustiveness check regressed)"
 rm -rf "$xdir"
 echo "[compiler-gate] match exhaustiveness ok"
 
@@ -957,9 +933,7 @@ gate_fs_compile "$ldir/ok.vibe" "$ldir/ok.wasm" _start
 gate_require_artifact "$ldir/ok.wasm" "well-typed literal patterns did not compile (over-rejects)"
 for bad in bad_lit bad_nested; do
   gate_fs_compile "$ldir/$bad.vibe" "$ldir/$bad.wasm" _start
-  if [ -s "$ldir/$bad.wasm" ]; then
-    echo "[compiler-gate] FAIL: ill-typed literal pattern $bad compiled (check regressed)" >&2; exit 1
-  fi
+  gate_require_refused "$ldir/$bad.wasm" "ill-typed literal pattern $bad compiled (check regressed)"
 done
 rm -rf "$ldir"
 echo "[compiler-gate] literal-pattern type checking ok"
@@ -989,9 +963,7 @@ gate_fs_compile "$bdir/ok.vibe" "$bdir/ok.wasm" _start
 gate_require_artifact "$bdir/ok.wasm" "well-typed negation/break/continue did not compile (over-rejects)"
 for bad in bad_neg bad_break; do
   gate_fs_compile "$bdir/$bad.vibe" "$bdir/$bad.wasm" _start
-  if [ -s "$bdir/$bad.wasm" ]; then
-    echo "[compiler-gate] FAIL: ill-formed $bad compiled (unary-minus/break check regressed)" >&2; exit 1
-  fi
+  gate_require_refused "$bdir/$bad.wasm" "ill-formed $bad compiled (unary-minus/break check regressed)"
 done
 rm -rf "$bdir"
 echo "[compiler-gate] unary-minus / break-outside-loop checking ok"
@@ -1012,9 +984,7 @@ EOF
 gate_fs_compile "$tdir/ok.vibe" "$tdir/ok.wasm" _start
 gate_require_artifact "$tdir/ok.wasm" "well-typed tuple destructure did not compile (over-rejects)"
 gate_fs_compile "$tdir/bad_nontuple.vibe" "$tdir/bad_nontuple.wasm" _start
-if [ -s "$tdir/bad_nontuple.wasm" ]; then
-  echo "[compiler-gate] FAIL: ill-typed tuple destructure compiled (tuple-pattern check regressed)" >&2; exit 1
-fi
+gate_require_refused "$tdir/bad_nontuple.wasm" "ill-typed tuple destructure compiled (tuple-pattern check regressed)"
 rm -rf "$tdir"
 echo "[compiler-gate] tuple-pattern destructuring type checking ok"
 
