@@ -410,7 +410,11 @@ fn ez_checked(arg: Expr, lo: Int, hi: Int, counter: Array[Int]) -> Expr {
 /// callee is not one. Any other `Int32::` / `UInt32::` member is refused.
 fn ez_conversion(callee: String, args: Array[Expr], counter: Array[Int]) -> Option[Expr] with Exception {
   let one = Array::length(args) == 1
-  if callee == "Int32::to_int" || callee == "UInt32::to_int" {
+  if ez_is_program_definition(callee) {
+    // A program's own `fn Int32::to_int` (moved aside to `..$user` by
+    // `rename_builtin_shadow_defs`) answers its calls, so they stay calls.
+    None
+  } else if callee == "Int32::to_int" || callee == "UInt32::to_int" {
     if one {
       Some(Array::get(args, at = 0))
     } else {
@@ -439,6 +443,13 @@ fn ez_conversion(callee: String, args: Array[Expr], counter: Array[Int]) -> Opti
   }
 }
 
+/// A program's own definition at a builtin conversion's spelling, renamed by
+/// `rename_builtin_shadow_defs` (`builtin_shadow_rename_of`, a `$user` suffix
+/// no source identifier can carry).
+fn ez_is_program_definition(_ name: String) -> Bool {
+  String::ends_with(name, suffix = "$user")
+}
+
 fn ez_expr(expr: Expr, counter: Array[Int]) -> Expr with Exception {
   match expr {
     EInt(_) => expr,
@@ -449,7 +460,7 @@ fn ez_expr(expr: Expr, counter: Array[Int]) -> Expr with Exception {
     EStringInterp(_) => expr,
     // A conversion taken as a value (`let f = Int32::to_int`) has no
     // compiled form: only its calls are rewritten.
-    EIdent(name, _) => if String::starts_with(name, prefix = "Int32::") || String::starts_with(name, prefix = "UInt32::") || name == "Int::to_int32" || name == "Int::to_uint32" || name == "Int::wrap_int32" || name == "Int::wrap_uint32" {
+    EIdent(name, _) => if !ez_is_program_definition(name) && String::starts_with(name, prefix = "Int32::") || String::starts_with(name, prefix = "UInt32::") || name == "Int::to_int32" || name == "Int::to_uint32" || name == "Int::wrap_int32" || name == "Int::wrap_uint32" {
       throw("call `\{name}(..)` directly: a sized-integer conversion cannot be passed as a value yet (#3730)")
     } else {
       expr
@@ -588,7 +599,7 @@ fn ez_opt_ty_mentions(_ t: Option[TypeExpr]) -> Bool {
 
 fn ez_expr_mentions(_ e: Expr) -> Bool {
   match e {
-    EIdent(name, _) => String::starts_with(name, prefix = "Int32::") || String::starts_with(name, prefix = "UInt32::") || name == "Int::to_int32" || name == "Int::to_uint32" || name == "Int::wrap_int32" || name == "Int::wrap_uint32",
+    EIdent(name, _) => !ez_is_program_definition(name) && (String::starts_with(name, prefix = "Int32::") || String::starts_with(name, prefix = "UInt32::") || name == "Int::to_int32" || name == "Int::to_uint32" || name == "Int::wrap_int32" || name == "Int::wrap_uint32"),
     EFn(_, _, params, ret, _, body) => {
       let mut found = ez_opt_ty_mentions(ret) || ez_expr_mentions(body)
       for p in params {
