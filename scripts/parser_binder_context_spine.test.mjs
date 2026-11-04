@@ -760,7 +760,7 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
   ], ["emit_top_level_pat_bindings(out, pat, tmp)"]);
   assertNoneWrapper(exprSource, "expand_top_level_pattern_lets", "expand_top_level_pattern_lets_with_binder_context(stmts = stmts, context = None)");
   assertContextual(exprSource, "lower_fn_decl_stmt_with_binder_context", [
-    'ELet("result", body, exit_expr, -1)',
+    "ensures_checked_body(body = body, ensures = enss, params = params, ret = ret_opt, eff = eff_opt)",
     "SLet(exported, true, name, None, EFn",
   ]);
   assertNoneWrapper(exprSource, "lower_fn_decl_stmt", "lower_fn_decl_stmt_with_binder_context(stmt = stmt, context = None)");
