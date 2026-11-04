@@ -63,9 +63,9 @@ let x: Int = 42                // 63-bit (RC lane: 1-bit-tagged i64),
                                // every backend (#1877): max + 1 == min;
                                // out-of-range literals are rejected with
                                // IntLiteralOverflow
-let f: Float = 1.5f            // 32-bit IEEE binary32 (suffix f); see
+let f: Float32 = 1.5f          // 32-bit IEEE binary32 (suffix f); see
                                // "`Float` is 32-bit" below
-let d: Double = 3.14           // 64-bit (default decimal)
+let d: Float64 = 3.14          // 64-bit (default decimal)
 let s: String = "hello \{x}"   // interpolation with \{expr}
                                // (`\(x)` は非対応、`\{x}` を使う)
                                // #1392: 補間の値に `T::to_string`
@@ -163,8 +163,8 @@ that adds a concrete type annotation.
 ```vibe
 test "Float rounds to f32" {
   assert(16777217.0f == 16777216.0f)
-  assert(Float::to_double(0.1f) != 0.1)
-  assert(Float::to_string(1.0f / 3.0f) == "0.33333334")
+  assert(Float32::to_float64(0.1f) != 0.1)
+  assert(Float32::to_string(1.0f / 3.0f) == "0.33333334")
   let mut acc = 0.0f
   acc += 0.1f
   assert(acc == 0.1f)
