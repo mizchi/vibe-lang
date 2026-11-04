@@ -100,6 +100,10 @@ import @vibe/lsp {
   lsp_diagnostics_json_of_messages, lsp_diagnostics_json_of_messages_for
 }
 
+import ./prove.vibe {
+  selfhost_cli_user_check_prove
+}
+
 import ./refactor.vibe {
   selfhost_cli_user_refactor_args, user_check_missing_label_rows
 }
@@ -427,7 +431,26 @@ fn write_check_profiles(tsv_path: String, callstack_path: String, elapsed_us: In
   }
 }
 
-fn selfhost_cli_user_check_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Console + Stderr + Profiler {
+fn selfhost_cli_user_check_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Console + Stderr + Process + Profiler {
+  let mut prove = false
+  for a in args {
+    if a == "--prove" {
+      prove = true
+    } else {
+      ()
+    }
+  }
+  if prove {
+    let (_, single, json) = parse_user_check_args(args)
+    if json || single {
+      throw("check --prove: `--json` and `--single-file` are not supported with `--prove` yet; drop them (the report is one line per obligation, as `vibe check` prints)")
+    } else {
+      ()
+    }
+    return selfhost_cli_user_check_prove(user_check_paths(args))
+  } else {
+    ()
+  }
   let mut missing_vpkg = false
   let mut deps_missing = false
   let mut i = 1
@@ -1726,7 +1749,7 @@ fn selfhost_cli_user_grep_args(_ args: Array[String]) -> Int with Env + Exceptio
 /// framed diagnostic goes to STDERR, where `runtime/vibe` used to print the
 /// adapter's `.diag` sidecar, so a verb's machine-readable stdout (symbols
 /// rows, grep matches, check diagnostics) is never interleaved with it.
-export fn run_user_dispatch_args(_ args: Array[String]) -> Int with Fs + Env + Stdin + Console + Stderr + Profiler {
+export fn run_user_dispatch_args(_ args: Array[String]) -> Int with Fs + Env + Stdin + Console + Stderr + Process + Profiler {
   handle {
     selfhost_cli_user_dispatch_args(args)
   } with { Exception::Throw(e) => {
@@ -1785,7 +1808,7 @@ fn run_args_input_path(_ args: Array[String]) -> String {
   found
 }
 
-export fn selfhost_cli_user_dispatch_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Stdin + Console + Stderr + Profiler {
+export fn selfhost_cli_user_dispatch_args(_ args: Array[String]) -> Int with Exception + Fs + Env + Stdin + Console + Stderr + Process + Profiler {
   let argv = rewrite_user_argv(args = args, invoke_dir = Env::get("VIBE_INVOKE_DIR"), project_root = Fs::getcwd())
   let first = if Array::length(argv) == 0 {
     "help"

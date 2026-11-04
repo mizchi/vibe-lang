@@ -1,0 +1,50 @@
+//# Imports
+
+import .{
+  Obligation, prove_obligations, prove_verdict
+}
+
+//# Helpers
+
+fn kinds(_ source: String) -> String with Exception {
+  let out: Array[String] = []
+  for o in prove_obligations(source) {
+    Array::push(out, value = "\{o.fn_name}:\{o.kind}:\{o.label}")
+  }
+  String::join(out, sep = " | ")
+}
+
+//# Tests
+
+test "a contracted function yields its ensures and its overflow obligations" {
+  let src = "fn inc(x: Int) -> Int where { requires: x >= 0, ensures: result > x } {\n  x + 1\n}\n"
+  inspect(kinds(src), content = "inc:overflow:(x + 1) | inc:ensures:(result > x)")
+}
+
+test "a function without a contract is not a claim" {
+  inspect(kinds("fn plain(x: Int) -> Int {\n  x\n}\n"), content = "")
+}
+
+test "every return is an exit the ensures covers" {
+  let src = "fn abs(x: Int) -> Int where { requires: x > 0 - 100, ensures: result >= 0 } {\n  if x < 0 {\n    return 0 - x\n  } else {\n    ()\n  }\n  x\n}\n"
+  inspect(kinds(src), content = "abs:overflow:(0 - 100) | abs:overflow:(0 - x) | abs:ensures:(result >= 0) | abs:ensures:(result >= 0)")
+}
+
+test "a call assumes the callee's ensures and owes its requires" {
+  let src = "fn half(x: Int) -> Int where { requires: x >= 0, ensures: result >= 0 } {\n  x\n}\nfn use(y: Int) -> Int where { requires: y >= 2, ensures: result >= 0 } {\n  half(y)\n}\n"
+  inspect(kinds(src), content = "half:ensures:(result >= 0) | use:requires:half: (x >= 0) | use:ensures:(result >= 0)")
+}
+
+test "outside the fragment is unsupported, never skipped" {
+  inspect(kinds("fn f(xs: Array[Int]) -> Int where { ensures: result >= 0 } {\n  0\n}\n"), content = "f:unsupported:parameter `xs` is not `Int` or `Bool`")
+  inspect(kinds("fn g(x: Int) -> Int where { ensures: result >= 0 } {\n  let mut y = x\n  y\n}\n"), content = "g:unsupported:`let mut` is outside the provable fragment")
+  inspect(kinds("fn h(x: Int) -> Int where { ensures: result >= 0 } {\n  h(x)\n}\n"), content = "h:unsupported:a recursive call: termination is not proved, so the result would be partial correctness only")
+}
+
+test "only unsat proves" {
+  inspect(prove_verdict("unsat\n"), content = "(proved, )")
+  inspect(prove_verdict("sat\n((|x| (- 1))\n (|y| 0))\n"), content = "(unproved, x = -1, y = 0)")
+  inspect(prove_verdict("unknown\n"), content = "(unknown, z3 returned unknown)")
+  inspect(prove_verdict("timeout\n"), content = "(unknown, z3 timed out)")
+  inspect(prove_verdict(""), content = "(unknown, z3 did not answer: )")
+}
