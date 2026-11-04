@@ -40,6 +40,14 @@ export fn peek(tokens: Array[Token], pos: Int) -> Token {
 /// ADR-0122 (#3729): the retired float spellings are refused the same way and
 /// at the same places, naming the width-named type to write.
 fn refuse_retired_type(_ name: String) -> Unit with Exception {
+  if Array::length(retired_type_refusal_holds) == 0 {
+    refuse_retired_type_name(name)
+  } else {
+    ()
+  }
+}
+
+fn refuse_retired_type_name(_ name: String) -> Unit with Exception {
   if name == "i32" {
     throw("unknown type `i32` -- write `Int`: vibe's integer type is 63-bit and wraps at 63 bits, and there is no `i32`")
   } else {
@@ -48,6 +56,83 @@ fn refuse_retired_type(_ name: String) -> Unit with Exception {
       throw("unknown type `" + name + "` -- write `" + renamed + "`: the float types are named by width (`Float64`, `Float32`)")
     } else {
       ()
+    }
+  }
+}
+
+/// A lambda's `->` is followed by EITHER a return type or the body, and the
+/// parser decides which by parsing a type and looking at what follows it
+/// (`{` / `with` means a type). Until then `f64` in `() -> f64(x)` or the
+/// constructor `Double` in `() -> Double` is an expression that merely parses
+/// as a type, so the retired-name refusal must not fire during that look: it
+/// broke `let f31 = () -> f32()` (#3729). The refusal is held while
+/// `parse_type_tentatively` runs, and a caller that commits to the type asks
+/// `refuse_retired_in_type` afterwards. A log rather than a flag, like
+/// `compiler_spelled_type_params` below (top-level bindings are immutable).
+let retired_type_refusal_holds: Array[Int] = Array::slice([0], start = 0, end = 0)
+
+/// `parse_type_with_source_context` at mode 0 with the retired-name refusal
+/// held; a parse error still propagates. Pair it with
+/// `refuse_retired_in_type` once the type is known to be one.
+export fn parse_type_tentatively(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (TypeExpr, Int) with Exception {
+  let depth = Array::length(retired_type_refusal_holds)
+  Array::push(retired_type_refusal_holds, value = 1)
+  let (parsed, msg) = handle {
+    let (ty, next) = parse_type_with_source_context(tokens = tokens, pos = pos, mode = 0, context = context)
+    (Some((ty, next)), "")
+  } with { Exception::Throw(m) => (None, m) }
+  Array::truncate(retired_type_refusal_holds, length = depth)
+  match parsed {
+    Some(pair) => pair,
+    None => throw(msg)
+  }
+}
+
+/// The refusal `parse_type_tentatively` held, applied to a type the caller
+/// has committed to: the first retired name in it, left to right, including
+/// the names inside a function type's effect row.
+export fn refuse_retired_in_type(_ ty: TypeExpr) -> Unit with Exception {
+  match ty {
+    TyName(name) => refuse_retired_type_name(name),
+    TyApp(name, args) => {
+      refuse_retired_type_name(name)
+      for arg in args {
+        refuse_retired_in_type(arg)
+      }
+    },
+    TyFn(params, ret, row) => {
+      for p in params {
+        refuse_retired_in_type(p)
+      }
+      refuse_retired_in_type(ret)
+      match row {
+        Some(text) => refuse_retired_in_row_text(text),
+        None => ()
+      }
+    },
+    TyTuple(items) => for item in items {
+      refuse_retired_in_type(item)
+    },
+    TyUnit => ()
+  }
+}
+
+fn row_text_ident_byte(_ b: Int) -> Bool {
+  (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
+}
+
+fn refuse_retired_in_row_text(_ text: String) -> Unit with Exception {
+  let n = String::length(text)
+  let mut i = 0
+  while i < n {
+    if row_text_ident_byte(String::byte_at(text, at = i)) {
+      let start = i
+      while i < n && row_text_ident_byte(String::byte_at(text, at = i)) {
+        i = i + 1
+      }
+      refuse_retired_type_name(String::substring(text, start = start, end = i))
+    } else {
+      i = i + 1
     }
   }
 }

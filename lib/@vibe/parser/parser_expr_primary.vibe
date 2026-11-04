@@ -25,8 +25,10 @@ import ./parser_base.vibe {
   parse_param_list_with_binder_context,
   parse_type_impl,
   parse_type_param_kind,
+  parse_type_tentatively,
   parse_type_with_source_context,
   peek,
+  refuse_retired_in_type,
   tk_name,
   untyped_brace_lambda_param
 }
@@ -1300,13 +1302,18 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
       let after_arrow = after_params + 1
       match peek(tokens = tokens, pos = after_arrow) {
         TIdent(_) => {
-          let (ty, ty_pos) = parse_type_with_source_context(tokens = tokens, pos = after_arrow, mode = 0, context = context)
+          // A name after `->` may begin the body (`() -> f64(x)`, the
+          // constructor `() -> Double`), so it is read as a type tentatively
+          // and the retired-name refusal applies only once it is one (#3729).
+          let (ty, ty_pos) = parse_type_tentatively(tokens = tokens, pos = after_arrow, context = context)
           match peek(tokens = tokens, pos = ty_pos) {
             TLBrace => {
+              refuse_retired_in_type(ty)
               let (body, end) = parse_recur(tokens, ty_pos + 1, 20, context)
               (EFn(_no_tp(), _no_tb(), params, Some(ty), None, body), end)
             },
             TWith => {
+              refuse_retired_in_type(ty)
               let effect_pair = parse_effect_row(tokens = tokens, pos = ty_pos + 1)
               let effect_name = effect_pair.0
               let effect_next = effect_pair.1
@@ -1329,8 +1336,10 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
           // `.`), so recover and parse the parens as the body instead. When the
           // type parse SUCCEEDS but is not followed by `{`/`with` it is likewise
           // a body (the `_` arm) — e.g. a nested-lambda body `(x) -> f`. #788.
+          // The retired-name refusal waits for the type to be one, as in the
+          // `TIdent` arm above: `() -> (f64(x), 1)` is a body (#3729).
           let ty_opt = handle {
-            let (ty, ty_pos) = parse_type_with_source_context(tokens = tokens, pos = after_arrow, mode = 0, context = context)
+            let (ty, ty_pos) = parse_type_tentatively(tokens = tokens, pos = after_arrow, context = context)
             Some((ty, ty_pos))
           } with { Exception::Throw(_) => None }
           match ty_opt {
@@ -1338,10 +1347,12 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
               let (ty, ty_pos) = pair
               match peek(tokens = tokens, pos = ty_pos) {
                 TLBrace => {
+                  refuse_retired_in_type(ty)
                   let (body, end) = parse_recur(tokens, ty_pos + 1, 20, context)
                   (EFn(_no_tp(), _no_tb(), params, Some(ty), None, body), end)
                 },
                 TWith => {
+                  refuse_retired_in_type(ty)
                   let effect_pair = parse_effect_row(tokens = tokens, pos = ty_pos + 1)
                   let effect_name = effect_pair.0
                   let effect_next = effect_pair.1

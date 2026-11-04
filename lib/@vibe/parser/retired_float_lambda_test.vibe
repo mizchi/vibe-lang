@@ -1,0 +1,50 @@
+//# Imports
+
+import ./lexer.vibe {
+  lex
+}
+
+import ./parser.vibe {
+  parse_program
+}
+
+import ./printer.vibe {
+  print_program
+}
+
+//# A name after a lambda's `->` (#3729)
+
+/// What the parser answers for `source`: the printed program, or the refusal.
+fn parsed_or_refused(_ source: String) -> String {
+  handle {
+    print_program(parse_program(lex(source)))
+  } with { Exception::Throw(msg) => "REFUSED: " + msg }
+}
+
+// The parser reads a name after `->` as a type first and keeps it as one
+// only when `{` or `with` follows. Until then the name may begin the body, so
+// a function called `f32` / `f64` or a constructor called `Double` / `Float`
+// is not a retired type name there. The refusal used to fire during that look:
+// `let f31 = () -> f32()` did not parse.
+test "a retired float spelling that begins a lambda body is an expression" {
+  inspect([
+    parsed_or_refused("let g = () -> f32()"),
+    parsed_or_refused("let g = () -> f64(1)"),
+    parsed_or_refused("let g = () -> Double"),
+    parsed_or_refused("let g = (x: Int) -> (f64(x), Float)"),
+  ], content = "[let g = () -> { f32() }, let g = () -> { f64(1) }, let g = () -> { Double }, let g = (x: Int) -> { (f64(x), Float) }]")
+}
+
+test "a retired float spelling in a lambda's return type is still refused" {
+  inspect([
+    parsed_or_refused("let g = () -> Double { 1.0 }"),
+    parsed_or_refused("let g = () -> Array[f32] { [] }"),
+    parsed_or_refused("let g = () -> (Int, Float) { (1, 1.0f) }"),
+    parsed_or_refused("let g = () -> Option[f64] with Exception { None }"),
+    parsed_or_refused("let g = () -> ((Double) -> Int) { (x) -> 1 }"),
+  ], content = "[REFUSED: unknown type `Double` -- write `Float64`: the float types are named by width (`Float64`, `Float32`), REFUSED: unknown type `f32` -- write `Float32`: the float types are named by width (`Float64`, `Float32`), REFUSED: unknown type `Float` -- write `Float32`: the float types are named by width (`Float64`, `Float32`), REFUSED: unknown type `f64` -- write `Float64`: the float types are named by width (`Float64`, `Float32`), REFUSED: unknown type `Double` -- write `Float64`: the float types are named by width (`Float64`, `Float32`)]")
+}
+
+test "the width-named return types parse" {
+  inspect(parsed_or_refused("let g = () -> Float64 { 1.0 }"), content = "let g = () -> Float64 { 1.0 }")
+}
