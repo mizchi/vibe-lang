@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr
+  Expr, TypeExpr
 }
 
 import ./token.vibe {
@@ -73,6 +73,15 @@ fn contract_assert(_ cond: Expr) -> Expr {
   ECall(EIdent("assert", 0 - 1), [cond], 0 - 1, [])
 }
 
+/// A clause passed through an identity lambda whose parameter is typed `ty`,
+/// so a clause of the wrong type is ONE located error at the clause
+/// (`expected Bool, got Int`) rather than a mismatch reported against the
+/// `assert` / measure cells this lowering introduces, which the program
+/// never wrote.
+fn typed_clause(clause: Expr, ty: String) -> Expr {
+  ECall(EFn(_no_tp(), _no_tb(), [("v", Some(TyName(ty)))], Some(TyName(ty)), None, EIdent("v", 0 - 1)), [clause], 0 - 1, [])
+}
+
 /// One checkpoint: every invariant holds, and the measure is non-negative and
 /// below the previous checkpoint's. `prev` / `seen` are the loop's own
 /// mutable cells (`seen` is false until the first checkpoint has recorded a
@@ -86,12 +95,12 @@ fn contract_checkpoint(invariants: Array[Expr], decreases: Array[Expr], tag: Int
     let now = "__loop_dec_now_\{tag}"
     let record = EAssign(prev, EIdent(now, 0 - 1), EAssign(seen, EBool(true), EUnit, 0 - 1), 0 - 1)
     let below = EIf(EIdent(seen, 0 - 1), contract_assert(EBinOp("<", EIdent(now, 0 - 1), EIdent(prev, 0 - 1), 0 - 1)), EUnit)
-    ELet(now, Array::get(decreases, at = 0), ESeq(contract_assert(EBinOp(">=", EIdent(now, 0 - 1), EInt(0), 0 - 1)), ESeq(below, record)), 0 - 1)
+    ELet(now, typed_clause(clause = Array::get(decreases, at = 0), ty = "Int"), ESeq(contract_assert(EBinOp(">=", EIdent(now, 0 - 1), EInt(0), 0 - 1)), ESeq(below, record)), 0 - 1)
   }
   let mut i = Array::length(invariants)
   while i > 0 {
     i = i - 1
-    acc = ESeq(contract_assert(Array::get(invariants, at = i)), acc)
+    acc = ESeq(contract_assert(typed_clause(clause = Array::get(invariants, at = i), ty = "Bool")), acc)
   }
   acc
 }
