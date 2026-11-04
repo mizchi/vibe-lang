@@ -66,13 +66,25 @@ export fn prove_obligations(_ source: String) -> Array[Obligation] with Exceptio
   let (tokens, starts, _) = lex_with_offsets(source)
   let stmts = parse_program_preserving_located(tokens = tokens, starts = starts, source = source)
   let fns = collect_sigs(stmts)
+  let graph = call_graph(stmts)
   let out: Array[Obligation] = []
   for s in stmts {
     match s {
-      SFnDecl(_, name, value, reqs, enss) => if Array::length(reqs) + Array::length(enss) > 0 {
-        prove_fn(name = name, value = value, fns = fns, decl_off = decl_offset(source = source, name = name), out = out)
-      } else {
+      SFnDecl(_, name, value, reqs, enss) => if Array::length(reqs) + Array::length(enss) == 0 {
         ()
+      } else if reaches_cycle(graph = graph, node = name, path = [], done = []) {
+        // A modular call assumes the callee's `ensures`; around a cycle that
+        // assumption is circular, so `ensures: false` on both of two
+        // mutually recursive functions would "prove" each other.
+        Array::push(out, value = Obligation::{
+          fn_name: name,
+          kind: "unsupported",
+          label: "`\{name}` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only",
+          off: decl_offset(source = source, name = name),
+          query: ""
+        })
+      } else {
+        prove_fn(name = name, value = value, fns = fns, decl_off = decl_offset(source = source, name = name), out = out)
       },
       _ => ()
     }
@@ -116,6 +128,181 @@ fn collect_sigs(_ stmts: Array[Stmt]) -> Array[FnSig] {
     }
   }
   out
+}
+
+//# Call graph
+
+/// Each function of the file and the names it calls, in its body and in its
+/// clauses (a clause may call a function too).
+fn call_graph(_ stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let out: Array[(String, Array[String])] = []
+  for s in stmts {
+    match s {
+      SFnDecl(_, name, value, reqs, enss) => {
+        let calls: Array[String] = []
+        collect_calls(expr = value, out = calls)
+        for r in reqs {
+          collect_calls(expr = r, out = calls)
+        }
+        for e in enss {
+          collect_calls(expr = e, out = calls)
+        }
+        Array::push(out, value = (name, calls))
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+fn graph_callees(graph: Array[(String, Array[String])], name: String) -> Option[Array[String]] {
+  let mut found = None
+  for g in graph {
+    let (n, calls) = g
+    if n == name {
+      found = Some(calls)
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn contains_name(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  for y in xs {
+    if y == x {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// Whether a cycle of the call graph is reachable from `node`, `node`
+/// itself included. `path` is the current DFS path; `done` holds nodes
+/// already shown to reach no cycle.
+fn reaches_cycle(graph: Array[(String, Array[String])], node: String, path: Array[String], done: Array[String]) -> Bool {
+  if contains_name(xs = path, x = node) {
+    true
+  } else if contains_name(xs = done, x = node) {
+    false
+  } else {
+    match graph_callees(graph = graph, name = node) {
+      None => false,
+      Some(calls) => {
+        let next = Array::slice(path, start = 0, end = Array::length(path))
+        Array::push(next, value = node)
+        let mut found = false
+        for c in calls {
+          if !found && reaches_cycle(graph = graph, node = c, path = next, done = done) {
+            found = true
+          } else {
+            ()
+          }
+        }
+        if !found {
+          Array::push(done, value = node)
+        } else {
+          ()
+        }
+        found
+      }
+    }
+  }
+}
+
+/// Every name `expr` calls directly (`f(..)`), anywhere inside it.
+fn collect_calls(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    ECall(callee, _, _, _) => match callee {
+      EIdent(n, _) => Array::push(out, value = n),
+      _ => ()
+    },
+    _ => ()
+  }
+  for k in expr_kids(expr) {
+    collect_calls(expr = k, out = out)
+  }
+  ()
+}
+
+/// The direct sub-expressions of `e`. Every variant is listed, so a new one
+/// is a compile error here rather than a call edge the cycle check misses.
+fn expr_kids(_ e: Expr) -> Array[Expr] {
+  match e {
+    EInt(_) => [],
+    EFloat(_) => [],
+    EString(_, _) => [],
+    EBool(_) => [],
+    EIdent(_, _) => [],
+    EUnit => [],
+    EStringInterp(_) => [],
+    ETuple(items) => items,
+    EArray(items) => items,
+    ERecord(_, fields, _) => for f in fields {
+      let (_, v) = f
+      v
+    },
+    EMap(fields) => for f in fields {
+      let (_, v) = f
+      v
+    },
+    EIf(c, t, f) => [c, t, f],
+    ELet(_, v, b, _) => [v, b],
+    ELetRec(_, v, b) => [v, b],
+    ELetMut(_, v, b, _) => [v, b],
+    EAssign(_, v, c, _) => [v, c],
+    EAssignOp(_, _, v, c, _) => [v, c],
+    ESeq(a, b) => [a, b],
+    EMatch(sc, arms) => {
+      let out = [sc]
+      for a in arms {
+        let (_, x) = a
+        Array::push(out, value = x)
+      }
+      out
+    },
+    EHandle(b, arms) => {
+      let out = [b]
+      for a in arms {
+        let (_, x) = a
+        Array::push(out, value = x)
+      }
+      out
+    },
+    EWhile(c, b) => [c, b],
+    ELoop(params, b) => {
+      let out: Array[Expr] = []
+      for p in params {
+        let (_, v) = p
+        Array::push(out, value = v)
+      }
+      Array::push(out, value = b)
+      out
+    },
+    EForIn(_, _, it, b) => [it, b],
+    ECall(callee, args, _, _) => {
+      let out = [callee]
+      for a in args {
+        Array::push(out, value = a)
+      }
+      out
+    },
+    EBinOp(_, l, r, _) => [l, r],
+    EUnaryOp(_, x) => [x],
+    EFn(_, _, _, _, _, b) => [b],
+    EDot(obj, _, _, _) => [obj],
+    ELabeledArg(_, _, v) => [v],
+    EReturn(v) => [v],
+    EBreak(v) => match v {
+      Some(x) => [x],
+      None => []
+    },
+    EContinue(args) => args,
+    ESpread(v) => [v]
+  }
 }
 
 fn sort_of(_ ty: Option[TypeExpr]) -> String {
@@ -276,7 +463,10 @@ fn prove_fn_body(ctx: Ctx, value: Expr) -> Unit with Exception {
               ()
             }
             for c in sig.ensures {
-              let renv = env_bind(env = o.env, name = "result", term = o.value, sort = ret_sort)
+              // The parameters as they were at entry, as the runtime check
+              // reads them (`ensures_checked_body`): a body that shadows one
+              // does not change what the clause says.
+              let renv = env_bind(env = env, name = "result", term = o.value, sort = ret_sort)
               let goal = clause_formula(ctx = ctx, clause = c, state = Outcome::{
                 pc: o.pc,
                 value: "",
@@ -512,8 +702,16 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
             returned: false,
             env: env_bind(env = o.env, name = name, term = o.value, sort = o.sort)
           }
+          // The binding's scope ends with the `let`: what follows sees the
+          // enclosing names again.
           for x in sym(ctx = ctx, e = b, st = bound) {
-            Array::push(out, value = x)
+            Array::push(out, value = Outcome::{
+              pc: x.pc,
+              value: x.value,
+              sort: x.sort,
+              returned: x.returned,
+              env: o.env
+            })
           }
           ()
         }

@@ -18,8 +18,11 @@ trap 'rm -rf "$work"' EXIT
 cp fixtures/prove/*.vibe "$work/"
 
 # The unmutated copy passes.
-VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1 \
-  || { echo "[prove-selftest] FAIL: the gate refused the unmutated fixtures" >&2; exit 1; }
+if ! VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" > "$work/base.log" 2>&1; then
+  echo "[prove-selftest] FAIL: the gate refused the unmutated fixtures:" >&2
+  cat "$work/base.log" >&2
+  exit 1
+fi
 
 sed 's/^  a + b$/  a - b/' fixtures/prove/proved.vibe > "$work/proved.vibe"
 if cmp -s fixtures/prove/proved.vibe "$work/proved.vibe"; then

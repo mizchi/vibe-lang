@@ -5,8 +5,10 @@
 #
 #   proved.vibe       every obligation proved -> no output, exit 0
 #   unproved.vibe     a false ensures, an Int overflow, a callee's unmet
-#                     requires -> one line each with a counterexample, exit 1
-#   unsupported.vibe  constructs outside the fragment are reported, exit 1
+#                     requires, a parameter the body shadows, a branch-local
+#                     `let` -> one line each with a counterexample, exit 1
+#   unsupported.vibe  constructs outside the fragment, and a recursive
+#                     cycle, are reported, exit 1
 #   unknown.vibe      a timeout is `unknown`, which fails, exit 1
 #
 # Counterexample VALUES are masked: they are whatever model the solver picks,
@@ -48,9 +50,13 @@ run_case() {
 run_case proved 0 ""
 run_case unproved 1 "$dir/unproved.vibe:5:1: unproved: ensures (result > x) of \`dec\` -- counterexample: <model>
 $dir/unproved.vibe:12:5: unproved: overflow in (x + 1) in \`inc\` -- counterexample: <model>
-$dir/unproved.vibe:21:3: unproved: requires of half: (x >= 0), called in \`call_half\` -- counterexample: <model>"
+$dir/unproved.vibe:21:3: unproved: requires of half: (x >= 0), called in \`call_half\` -- counterexample: <model>
+$dir/unproved.vibe:26:1: unproved: ensures (result == x) of \`shadowed\` -- counterexample: <model>
+$dir/unproved.vibe:33:1: unproved: ensures (result == 0) of \`branch_scope\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:4:1: unsupported: \`let mut\` is outside the provable fragment (in \`sum_to\`)
-$dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\` or \`Bool\` (in \`first\`)"
+$dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\` or \`Bool\` (in \`first\`)
+$dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
+$dir/unsupported.vibe:24:1: unsupported: \`pong\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`pong\`)"
 run_case unknown 1 "$dir/unknown.vibe:5:1: unknown: ensures result of \`fermat3\` -- z3 timed out (timeout 5000 ms)"
 
 [ "$fail" = 0 ] || exit 1

@@ -38,7 +38,12 @@ test "a call assumes the callee's ensures and owes its requires" {
 test "outside the fragment is unsupported, never skipped" {
   inspect(kinds("fn f(xs: Array[Int]) -> Int where { ensures: result >= 0 } {\n  0\n}\n"), content = "f:unsupported:parameter `xs` is not `Int` or `Bool`")
   inspect(kinds("fn g(x: Int) -> Int where { ensures: result >= 0 } {\n  let mut y = x\n  y\n}\n"), content = "g:unsupported:`let mut` is outside the provable fragment")
-  inspect(kinds("fn h(x: Int) -> Int where { ensures: result >= 0 } {\n  h(x)\n}\n"), content = "h:unsupported:a recursive call: termination is not proved, so the result would be partial correctness only")
+  inspect(kinds("fn h(x: Int) -> Int where { ensures: result >= 0 } {\n  h(x)\n}\n"), content = "h:unsupported:`h` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only")
+}
+
+test "a recursive cycle is unsupported, not assumed" {
+  let src = "fn ping(x: Int) -> Int where { ensures: false } {\n  pong(x)\n}\nfn pong(x: Int) -> Int where { ensures: false } {\n  ping(x)\n}\nfn helper(x: Int) -> Int {\n  helper(x)\n}\nfn uses(x: Int) -> Int where { ensures: true } {\n  helper(x)\n}\n"
+  inspect(kinds(src), content = "ping:unsupported:`ping` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only | pong:unsupported:`pong` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only | uses:unsupported:`uses` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only")
 }
 
 test "only unsat proves" {
