@@ -1,0 +1,219 @@
+//# Imports
+
+import @vibe/ast {
+  Expr, TypeExpr
+}
+
+import ./token.vibe {
+  Token
+}
+
+import ./parser_base.vibe {
+  _no_tb, _no_tp, expect_tk, peek
+}
+
+import ./parser_binder_context.vibe {
+  ParserBinderContext
+}
+
+//# Functions
+
+/// #3716 (ADR-0121 Phase 0): the clauses of a loop's `where { .. }` block,
+/// read after a `while` condition, a `for` iterand or a `loop` header. Returns
+/// the `invariant` conditions, the `decreases` measures (at most one) and the
+/// position of the loop body's `{`. With no `where` it returns two empty
+/// arrays and `pos` unchanged.
+fn parse_loop_where(tokens: Array[Token], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Array[Expr], Array[Expr], Int) with Exception {
+  let invariants: Array[Expr] = []
+  let decreases: Array[Expr] = []
+  match peek(tokens = tokens, pos = pos) {
+    TIdent(w) => if w == "where" {
+      let mut wp = expect_tk(tokens = tokens, pos = pos + 1, expected = "{")
+      let mut done = false
+      while !done {
+        match peek(tokens = tokens, pos = wp) {
+          TRBrace => {
+            wp = wp + 1
+            done = true
+          },
+          TIdent(kind) => {
+            if kind == "requires" || kind == "ensures" {
+              throw("a loop's where clause takes `invariant` and `decreases`; `\{kind}` belongs in a function's where clause")
+            } else if kind != "invariant" && kind != "decreases" {
+              throw("expected 'invariant' or 'decreases' in a loop's where clause, got '\{kind}'")
+            } else {
+              ()
+            }
+            let cp = expect_tk(tokens = tokens, pos = wp + 1, expected = ":")
+            let (cond, cnext) = parse_recur(tokens, cp, 0, context)
+            if kind == "invariant" {
+              Array::push(invariants, value = cond)
+            } else if Array::length(decreases) > 0 {
+              throw("a loop's where clause takes one `decreases` measure; combine them into one Int expression")
+            } else {
+              Array::push(decreases, value = cond)
+            }
+            wp = match peek(tokens = tokens, pos = cnext) {
+              TComma => cnext + 1,
+              _ => cnext
+            }
+          },
+          _ => throw("expected 'invariant', 'decreases', or '}' in a loop's where clause")
+        }
+      }
+      (invariants, decreases, wp)
+    } else {
+      (invariants, decreases, pos)
+    },
+    _ => (invariants, decreases, pos)
+  }
+}
+
+fn contract_assert(_ cond: Expr) -> Expr {
+  ECall(EIdent("assert", 0 - 1), [cond], 0 - 1, [])
+}
+
+/// A clause passed through an identity lambda whose parameter is typed `ty`,
+/// so a clause of the wrong type is ONE located error at the clause
+/// (`expected Bool, got Int`) rather than a mismatch reported against the
+/// `assert` / measure cells this lowering introduces, which the program
+/// never wrote.
+fn typed_clause(clause: Expr, ty: String) -> Expr {
+  ECall(EFn(_no_tp(), _no_tb(), [("v", Some(TyName(ty)))], Some(TyName(ty)), None, EIdent("v", 0 - 1)), [
+    clause
+  ], 0 - 1, [])
+}
+
+/// One checkpoint: every invariant holds, and the measure is non-negative and
+/// below the previous checkpoint's. `prev` / `seen` are the loop's own
+/// mutable cells (`seen` is false until the first checkpoint has recorded a
+/// measure).
+fn contract_checkpoint(invariants: Array[Expr], decreases: Array[Expr], tag: Int) -> Expr {
+  let mut acc = if Array::length(decreases) == 0 {
+    EUnit
+  } else {
+    let prev = "__loop_dec_prev_\{tag}"
+    let seen = "__loop_dec_seen_\{tag}"
+    let now = "__loop_dec_now_\{tag}"
+    let record = EAssign(prev, EIdent(now, 0 - 1), EAssign(seen, EBool(true), EUnit, 0 - 1), 0 - 1)
+    let below = EIf(EIdent(seen, 0 - 1), contract_assert(EBinOp("<", EIdent(now, 0 - 1), EIdent(prev, 0 - 1), 0 - 1)), EUnit)
+    ELet(now, typed_clause(clause = Array::get(decreases, at = 0), ty = "Int"), ESeq(contract_assert(EBinOp(">=", EIdent(now, 0 - 1), EInt(0), 0 - 1)), ESeq(below, record)), 0 - 1)
+  }
+  let mut i = Array::length(invariants)
+  while i > 0 {
+    i = i - 1
+    acc = ESeq(contract_assert(typed_clause(clause = Array::get(invariants, at = i), ty = "Bool")), acc)
+  }
+  acc
+}
+
+/// The cells a `decreases` measure needs, around `inner`. The previous
+/// measure starts at 0 only so the cell is an `Int`; `seen` says it was never
+/// read before the first checkpoint stores one.
+fn with_measure_cells(inner: Expr, decreases: Array[Expr], tag: Int) -> Expr {
+  if Array::length(decreases) == 0 {
+    inner
+  } else {
+    ELetMut("__loop_dec_prev_\{tag}", EInt(0), ELetMut("__loop_dec_seen_\{tag}", EBool(false), inner, 0 - 1), 0 - 1)
+  }
+}
+
+/// #3716: a `while` (or a desugared `loop`) with a contract. The checkpoint
+/// joins the condition, `while { checkpoint; cond }`: the condition is
+/// evaluated on entry and after every iteration -- one ended by `continue`
+/// included -- and always in the loop's own scope, so a clause never reads a
+/// binding the body shadows. The clause expressions appear once.
+fn attach_while_contract(cond: Expr, body: Expr, invariants: Array[Expr], decreases: Array[Expr], tag: Int) -> Expr {
+  if Array::length(invariants) == 0 && Array::length(decreases) == 0 {
+    EWhile(cond, body)
+  } else {
+    with_measure_cells(inner = EWhile(ESeq(contract_checkpoint(invariants = invariants, decreases = decreases, tag = tag), cond), body), decreases = decreases, tag = tag)
+  }
+}
+
+/// #3716: a `for` with a contract. Its iteration is decided from the
+/// iterand's type after checking, so there is no condition to join; the
+/// checkpoint is a closure defined before the loop -- in the loop's own scope,
+/// for the reason `attach_while_contract` gives -- and called on entry, at the
+/// end of the body, and before each `continue` that targets this loop.
+fn attach_for_contract(value_name: String, index_name: Option[String], iterable: Expr, body: Expr, invariants: Array[Expr], decreases: Array[Expr], tag: Int) -> Expr {
+  if Array::length(invariants) == 0 && Array::length(decreases) == 0 {
+    EForIn(value_name, index_name, iterable, body)
+  } else {
+    let check = "__loop_check_\{tag}"
+    let call = () -> ECall(EIdent(check, 0 - 1), [], 0 - 1, [])
+    let lam = EFn(_no_tp(), _no_tb(), [], None, None, contract_checkpoint(invariants = invariants, decreases = decreases, tag = tag))
+    let looped = EForIn(value_name, index_name, iterable, ESeq(check_before_continue(expr = body, check = check), call()))
+    with_measure_cells(inner = ELet(check, lam, ESeq(call(), looped), 0 - 1), decreases = decreases, tag = tag)
+  }
+}
+
+/// Every `continue` that targets the loop whose body this is gets a call to
+/// `check` first. A nested loop's `continue` targets that loop, and a lambda's
+/// body is not this loop's, so neither is entered. Every variant is listed so
+/// a new one is a compile error here rather than a skipped checkpoint.
+fn check_before_continue(expr: Expr, check: String) -> Expr {
+  let go = (e: Expr) -> check_before_continue(expr = e, check = check)
+  match expr {
+    EContinue(args) => ESeq(ECall(EIdent(check, 0 - 1), [], 0 - 1, []), EContinue(for a in args {
+      go(a)
+    })),
+    EWhile(_, _) => expr,
+    ELoop(_, _) => expr,
+    EForIn(_, _, _, _) => expr,
+    EFn(_, _, _, _, _, _) => expr,
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_, _) => expr,
+    EBool(_) => expr,
+    EIdent(_, _) => expr,
+    EUnit => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(for x in items {
+      go(x)
+    }),
+    EArray(items) => EArray(for x in items {
+      go(x)
+    }),
+    ERecord(name, fields, targs) => ERecord(name, for f in fields {
+      let (fname, v) = f
+      (fname, go(v))
+    }, targs),
+    EMap(fields) => EMap(for f in fields {
+      let (fname, v) = f
+      (fname, go(v))
+    }),
+    EIf(c, t, e) => EIf(go(c), go(t), go(e)),
+    ELet(n, v, b, off) => ELet(n, go(v), go(b), off),
+    ELetRec(n, v, b) => ELetRec(n, go(v), go(b)),
+    ELetMut(n, v, b, off) => ELetMut(n, go(v), go(b), off),
+    EAssign(n, v, c, off) => EAssign(n, go(v), go(c), off),
+    EAssignOp(n, op, v, c, off) => EAssignOp(n, op, go(v), go(c), off),
+    ESeq(a, b) => ESeq(go(a), go(b)),
+    EMatch(s, arms) => EMatch(go(s), for a in arms {
+      let (p, ex) = a
+      (p, go(ex))
+    }),
+    EHandle(b, arms) => EHandle(go(b), for a in arms {
+      let (p, ex) = a
+      (p, go(ex))
+    }),
+    ECall(callee, args, off, cell) => ECall(go(callee), for a in args {
+      go(a)
+    }, off, cell),
+    EBinOp(op, l, r, off) => EBinOp(op, go(l), go(r), off),
+    EUnaryOp(op, e) => EUnaryOp(op, go(e)),
+    EDot(obj, field, off, foff) => EDot(go(obj), field, off, foff),
+    ELabeledArg(label, name, v) => ELabeledArg(label, name, go(v)),
+    EReturn(v) => EReturn(go(v)),
+    EBreak(v) => EBreak(match v {
+      Some(x) => Some(go(x)),
+      None => None
+    }),
+    ESpread(v) => ESpread(go(v))
+  }
+}
+
+export {
+  attach_for_contract, attach_while_contract, parse_loop_where
+}
