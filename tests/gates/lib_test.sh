@@ -280,6 +280,36 @@ else
   ok "gate_require_diag_matches fails a missing diagnostic"
 fi
 
+# --- gate_fs_compile_on / gate_flat_compile (#3671) --------------------------
+
+# 11. every lane of the matrix removes a stale artifact and never aborts, like
+# gate_fs_compile; the flat compile does too.
+for lane in bump linear rc shadow gc; do
+  printf 'stale' > "$WORK/lane.wasm"; printf 'stale' > "$WORK/lane.wasm.diag"
+  if ( stage2_wasm="$WORK/no_such_stage2.wasm"; gate_fs_compile_on "$lane" "$WORK/src.vibe" "$WORK/lane.wasm" main ) \
+    && [ ! -e "$WORK/lane.wasm" ] && [ ! -e "$WORK/lane.wasm.diag" ]; then
+    ok "gate_fs_compile_on $lane removes a stale artifact and never aborts"
+  else
+    bad "gate_fs_compile_on $lane aborted or left a stale artifact"
+  fi
+done
+printf 'stale' > "$WORK/flat.wasm"
+if ( stage2_wasm="$WORK/no_such_stage2.wasm"; gate_flat_compile "$WORK/src.vibe" "$WORK/flat.wasm" main ) && [ ! -e "$WORK/flat.wasm" ]; then
+  ok "gate_flat_compile removes a stale artifact and never aborts"
+else
+  bad "gate_flat_compile aborted or left a stale artifact"
+fi
+
+# 12. a lane the matrix does not know FAILS, rather than compiling nothing --
+# which a refusal check would read as the refusal it wanted.
+if ( stage2_wasm="$WORK/no_such_stage2.wasm"; gate_fs_compile_on rcx "$WORK/src.vibe" "$WORK/lane.wasm" main ) >"$WORK/req.out" 2>&1; then
+  bad "gate_fs_compile_on accepted an unknown lane"
+elif grep -qF "unknown lane 'rcx'" "$WORK/req.out"; then
+  ok "gate_fs_compile_on fails an unknown lane by name"
+else
+  bad "gate_fs_compile_on failed an unknown lane without naming it: $(cat "$WORK/req.out")"
+fi
+
 echo "----"
 echo "passed: $passed, failed: $failed"
 [ "$failed" -eq 0 ]

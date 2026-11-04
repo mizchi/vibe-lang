@@ -606,10 +606,7 @@ fn main() -> Unit allows Console {
   println(assert_eq(1, 2))
 }
 ASEOF
-rm -f "$asdir/shadow.wasm" "$asdir/shadow.wasm.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asdir/shadow.vibe" "$asdir/shadow.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$asdir/shadow.vibe" "$asdir/shadow.wasm" main
 gate_require_artifact "$asdir/shadow.wasm" "a program defining its own assert_eq did not compile (#2283)"
 as_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$asdir/shadow.wasm" 2>&1 || true)"
 if ! printf '%s\n' "$as_out" | grep -qx '3'; then
@@ -686,10 +683,7 @@ fn main() -> Unit allows Console {
   println(Int::to_string(assert_true(1)))
 }
 ASEOF
-rm -f "$asdir/local.wasm" "$asdir/local.wasm.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asdir/local.vibe" "$asdir/local.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$asdir/local.vibe" "$asdir/local.wasm" main
 gate_require_artifact "$asdir/local.wasm" "a program binding assert_eq locally did not compile (#2285)"
 local_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$asdir/local.wasm" 2>&1 || true)"
 if [ "$(printf '%s\n' "$local_out" | grep -c '^3$')" != "3" ] || \
@@ -734,10 +728,7 @@ fn main() -> Unit allows Console {
   println("ok")
 }
 ASEOF
-rm -f "$asdir/lambda.wasm" "$asdir/lambda.wasm.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$asdir/lambda.vibe" "$asdir/lambda.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$asdir/lambda.vibe" "$asdir/lambda.wasm" main
 gate_require_artifact "$asdir/lambda.wasm" "a lambda calling a bare assert did not compile (#1095 guard, #2285)"
 lambda_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$asdir/lambda.wasm" 2>&1 || true)"
 if ! printf '%s\n' "$lambda_out" | grep -qx 'ok'; then
@@ -943,10 +934,7 @@ fn main() -> Unit allows Console {
   println(Int::to_string(eq(1, 2)))
 }
 EQEOF
-rm -f "$eqdir/toplevel.wasm" "$eqdir/toplevel.wasm.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$eqdir/toplevel.vibe" "$eqdir/toplevel.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$eqdir/toplevel.vibe" "$eqdir/toplevel.wasm" main
 gate_require_artifact "$eqdir/toplevel.wasm" "the top-level eq probe did not compile (#2309)"
 top_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/toplevel.wasm" 2>&1 || true)"
 if ! printf '%s\n' "$top_out" | grep -qx '3'; then
@@ -1461,10 +1449,7 @@ fn main() -> Int {
   0
 }
 TDEOF
-rm -f "$tdlabdir/t.wasm" "$tdlabdir/t.wasm.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$tdlabdir/trait.vibe" "$tdlabdir/t.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$tdlabdir/trait.vibe" "$tdlabdir/t.wasm" main
 td_report="$(cat "$tdlabdir/t.wasm.diag" 2>/dev/null || true)"
 if [ -z "$td_report" ]; then
   echo "[compiler-gate] FAIL: the bad Map key in a trait method produced no diagnostic at all (#2286)" >&2
@@ -1489,10 +1474,7 @@ fn main() -> Int {
   0
 }
 TDEOF
-rm -f "$tdlabdir/h.wasm" "$tdlabdir/h.wasm.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$tdlabdir/handwritten.vibe" "$tdlabdir/h.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$tdlabdir/handwritten.vibe" "$tdlabdir/h.wasm" main
 hw_report="$(cat "$tdlabdir/h.wasm.diag" 2>/dev/null || true)"
 if ! printf '%s\n' "$hw_report" | grep -qF 'of struct `StoreDict`'; then
   echo "[compiler-gate] FAIL: a hand-written StoreDict lost its field label -- the fix is reading the name convention, not the desugar's record (#2286)" >&2
@@ -1529,10 +1511,7 @@ fn main() -> Int {
   0
 }
 TDEOF
-rm -f "$tdlabdir/i.wasm" "$tdlabdir/i.wasm.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$tdlabdir/inherit.vibe" "$tdlabdir/i.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$tdlabdir/inherit.vibe" "$tdlabdir/i.wasm" main
 inh_report="$(cat "$tdlabdir/i.wasm.diag" 2>/dev/null || true)"
 if [ -z "$inh_report" ]; then
   echo "[compiler-gate] FAIL: the bad Map key in an inherited trait method produced no diagnostic at all (#2286)" >&2
@@ -1563,10 +1542,7 @@ fn main() -> Int {
   0
 }
 TDEOF
-rm -f "$tdlabdir/o.wasm" "$tdlabdir/o.wasm.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$tdlabdir/ownmethod.vibe" "$tdlabdir/o.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$tdlabdir/ownmethod.vibe" "$tdlabdir/o.wasm" main
 own_report="$(cat "$tdlabdir/o.wasm.diag" 2>/dev/null || true)"
 if ! printf '%s\n' "$own_report" | grep -qF 'Child::own'; then
   echo "[compiler-gate] FAIL: a trait's OWN method is no longer attributed to it (#2286)" >&2

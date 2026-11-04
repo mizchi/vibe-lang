@@ -814,9 +814,7 @@ echo "[compiler-gate] 40j/40 serve handler componentization (#537)"
 svdir="_build/_gate_serve"
 rm -rf "$svdir"; mkdir -p "$svdir"
 VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="$svdir/handler.wit" \
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "fixtures/serve_handler_smoke.vibe" "$svdir/handler.component.wasm" main >/dev/null 2>&1 || true
+  gate_flat_compile "fixtures/serve_handler_smoke.vibe" "$svdir/handler.component.wasm" main
 gate_require_artifact "$svdir/handler.component.wasm" "VIBE_SERVE_COMPONENT produced no component"
 sv_magic="$(od -An -t x1 -N 4 "$svdir/handler.component.wasm" | tr -d ' \n')"
 if [ "$sv_magic" != "0061736d" ]; then
