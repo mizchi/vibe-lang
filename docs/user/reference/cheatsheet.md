@@ -2816,7 +2816,14 @@ read_line()        // with Console - @vibe/console
 eprintln(s)        // with Console - @vibe/console
 sh("ls -la")       // with Process - shell command
 sh_lines("ls")     // -> Array[String]
+Process::exit(1)   // with Process::exit - set the exit status and stop
 ```
+
+**Exiting is a `Process` operation of its own** (#3720). `Process::exit(code)`
+needs `Process::exit` on the row (or `Process`, which includes it), so a
+program that only reports a status can say `fn main allows Fs::read_file +
+Process::exit` without being granted `sh` / `run`, which execute commands.
+`main` returning an `Int` does not set the status: `_start` prints it.
 
 **Profiling** (require `Profiler` effect; linear backend only; use the
 direct-call surface — unhandled `perform` throws):
