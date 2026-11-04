@@ -28,6 +28,17 @@ export fn peek(tokens: Array[Token], pos: Int) -> Token {
   } else TEof
 }
 
+/// A lambda's `->` is followed by EITHER a return type or the body, and the
+/// parser decides which by parsing a type and looking at what follows it
+/// (`{` / `with` means a type). Until then `f64` in `() -> f64(x)` or the
+/// constructor `Double` in `() -> Double` is an expression that merely parses
+/// as a type, so the retired-name refusal must not fire during that look: it
+/// broke `let f31 = () -> f32()` (#3729). The refusal is held while
+/// `parse_type_tentatively` runs, and a caller that commits to the type asks
+/// `refuse_retired_in_type` afterwards. A log rather than a flag, like
+/// `compiler_spelled_type_params` below (top-level bindings are immutable).
+let retired_type_refusal_holds: Array[Int] = Array::slice([0], start = 0, end = 0)
+
 /// Parse the optional constructor-kind suffix of a type binder. `F` has kind
 /// Type, `F[_]` has kind Type -> Type, and each additional underscore adds one
 /// input. The returned String is the AST contract key, not source spelling.
@@ -59,17 +70,6 @@ fn refuse_retired_type_name(_ name: String) -> Unit with Exception {
     }
   }
 }
-
-/// A lambda's `->` is followed by EITHER a return type or the body, and the
-/// parser decides which by parsing a type and looking at what follows it
-/// (`{` / `with` means a type). Until then `f64` in `() -> f64(x)` or the
-/// constructor `Double` in `() -> Double` is an expression that merely parses
-/// as a type, so the retired-name refusal must not fire during that look: it
-/// broke `let f31 = () -> f32()` (#3729). The refusal is held while
-/// `parse_type_tentatively` runs, and a caller that commits to the type asks
-/// `refuse_retired_in_type` afterwards. A log rather than a flag, like
-/// `compiler_spelled_type_params` below (top-level bindings are immutable).
-let retired_type_refusal_holds: Array[Int] = Array::slice([0], start = 0, end = 0)
 
 /// `parse_type_with_source_context` at mode 0 with the retired-name refusal
 /// held; a parse error still propagates. Pair it with
