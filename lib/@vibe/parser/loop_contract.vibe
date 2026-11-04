@@ -16,6 +16,10 @@ import ./parser_binder_context.vibe {
   ParserBinderContext
 }
 
+import ./printer.vibe {
+  print_expr
+}
+
 //# Functions
 
 /// #3716 (ADR-0121 Phase 0): the clauses of a loop's `where { .. }` block,
@@ -92,13 +96,13 @@ fn typed_clause(clause: Expr, ty: String) -> Expr {
 /// below the previous checkpoint's. `prev` / `seen` are the loop's own
 /// mutable cells (`seen` is false until the first checkpoint has recorded a
 /// measure).
-fn contract_checkpoint(invariants: Array[Expr], decreases: Array[Expr], tag: Int) -> Expr {
+fn contract_checkpoint(invariants: Array[Expr], decreases: Array[Expr], stem: String) -> Expr {
   let mut acc = if Array::length(decreases) == 0 {
     EUnit
   } else {
-    let prev = "__loop_dec_prev_\{tag}"
-    let seen = "__loop_dec_seen_\{tag}"
-    let now = "__loop_dec_now_\{tag}"
+    let prev = "\{stem}_dec_prev"
+    let seen = "\{stem}_dec_seen"
+    let now = "\{stem}_dec_now"
     let record = EAssign(prev, EIdent(now, 0 - 1), EAssign(seen, EBool(true), EUnit, 0 - 1), 0 - 1)
     let below = EIf(EIdent(seen, 0 - 1), contract_assert(EBinOp("<", EIdent(now, 0 - 1), EIdent(prev, 0 - 1), 0 - 1)), EUnit)
     ELet(now, typed_clause(clause = Array::get(decreases, at = 0), ty = "Int"), ESeq(contract_assert(EBinOp(">=", EIdent(now, 0 - 1), EInt(0), 0 - 1)), ESeq(below, record)), 0 - 1)
@@ -111,14 +115,49 @@ fn contract_checkpoint(invariants: Array[Expr], decreases: Array[Expr], tag: Int
   acc
 }
 
+/// The prefix of every name a contracted loop's lowering binds around the
+/// loop: `__loop_T`, or `__loop<N>_T` for the first N, where `__loop<N>`
+/// occurs NOWHERE in the loop's printed parts (condition or iterand, body,
+/// clauses, a `for`'s variables). Those bindings enclose the loop, so a fixed
+/// spelling could capture a name the loop mentions; a prefix the text never
+/// uses changes no binding (the printer's own rule for its match temporary).
+/// `T` is the loop's token position, which keeps nested loops apart.
+fn loop_stem(exprs: Array[Expr], names: Array[String], invariants: Array[Expr], decreases: Array[Expr], tag: Int) -> String {
+  let text = StringBuilder::new()
+  for e in exprs {
+    StringBuilder::push(text, value = print_expr(e))
+    StringBuilder::push(text, value = " ")
+  }
+  for e in invariants {
+    StringBuilder::push(text, value = print_expr(e))
+    StringBuilder::push(text, value = " ")
+  }
+  for e in decreases {
+    StringBuilder::push(text, value = print_expr(e))
+    StringBuilder::push(text, value = " ")
+  }
+  for n in names {
+    StringBuilder::push(text, value = n)
+    StringBuilder::push(text, value = " ")
+  }
+  let seen = StringBuilder::freeze(text)
+  let mut base = "__loop"
+  let mut k = 0
+  while String::contains(seen, needle = base) {
+    k = k + 1
+    base = "__loop\{k}"
+  }
+  "\{base}_\{tag}"
+}
+
 /// The cells a `decreases` measure needs, around `inner`. The previous
 /// measure starts at 0 only so the cell is an `Int`; `seen` says it was never
 /// read before the first checkpoint stores one.
-fn with_measure_cells(inner: Expr, decreases: Array[Expr], tag: Int) -> Expr {
+fn with_measure_cells(inner: Expr, decreases: Array[Expr], stem: String) -> Expr {
   if Array::length(decreases) == 0 {
     inner
   } else {
-    ELetMut("__loop_dec_prev_\{tag}", EInt(0), ELetMut("__loop_dec_seen_\{tag}", EBool(false), inner, 0 - 1), 0 - 1)
+    ELetMut("\{stem}_dec_prev", EInt(0), ELetMut("\{stem}_dec_seen", EBool(false), inner, 0 - 1), 0 - 1)
   }
 }
 
@@ -131,7 +170,8 @@ fn attach_while_contract(cond: Expr, body: Expr, invariants: Array[Expr], decrea
   if Array::length(invariants) == 0 && Array::length(decreases) == 0 {
     EWhile(cond, body)
   } else {
-    with_measure_cells(inner = EWhile(ESeq(contract_checkpoint(invariants = invariants, decreases = decreases, tag = tag), cond), body), decreases = decreases, tag = tag)
+    let stem = loop_stem(exprs = [cond, body], names = [], invariants = invariants, decreases = decreases, tag = tag)
+    with_measure_cells(inner = EWhile(ESeq(contract_checkpoint(invariants = invariants, decreases = decreases, stem = stem), cond), body), decreases = decreases, stem = stem)
   }
 }
 
@@ -146,14 +186,19 @@ fn attach_for_contract(value_name: String, index_name: Option[String], iterable:
   if Array::length(invariants) == 0 && Array::length(decreases) == 0 {
     EForIn(value_name, index_name, iterable, body)
   } else {
-    let check = "__loop_check_\{tag}"
+    let names = match index_name {
+      Some(i) => [value_name, i],
+      None => [value_name]
+    }
+    let stem = loop_stem(exprs = [iterable, body], names = names, invariants = invariants, decreases = decreases, tag = tag)
+    let check = "\{stem}_check"
     let call = () -> ECall(EIdent(check, 0 - 1), [], 0 - 1, [])
-    let lam = EFn(_no_tp(), _no_tb(), [], None, None, contract_checkpoint(invariants = invariants, decreases = decreases, tag = tag))
+    let lam = EFn(_no_tp(), _no_tb(), [], None, None, contract_checkpoint(invariants = invariants, decreases = decreases, stem = stem))
     // The body's value is kept across the checkpoint: a `for` over an Array
     // collects it.
-    let body_value = "__loop_body_\{tag}"
+    let body_value = "\{stem}_body"
     let looped = EForIn(value_name, index_name, iterable, ELet(body_value, check_before_continue(expr = body, check = check), ESeq(call(), EIdent(body_value, 0 - 1)), 0 - 1))
-    with_measure_cells(inner = ELet(check, lam, ESeq(call(), looped), 0 - 1), decreases = decreases, tag = tag)
+    with_measure_cells(inner = ELet(check, lam, ESeq(call(), looped), 0 - 1), decreases = decreases, stem = stem)
   }
 }
 
