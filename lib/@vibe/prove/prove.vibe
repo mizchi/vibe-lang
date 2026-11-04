@@ -50,7 +50,10 @@ struct Ctx {
 struct Adt {
   name: String;
   is_struct: Bool;
-  ctors: Array[(String, Array[(String, String)])]
+  ctors: Array[(String, Array[(String, String)])];
+  /// The type, or one it contains, has its own `equals`: `==` runs that
+  /// comparator, which SMT `=` does not model.
+  custom_eq: Bool
 }
 
 //# Constants
@@ -843,7 +846,7 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
       }
       out
     },
-    EMatch(scr, arms) => sym_match(ctx = ctx, scr = scr, arms = arms, off = expr_off(e), st = st),
+    EMatch(scr, arms) => sym_match(ctx = ctx, scr = scr, arms = arms, off = expr_off(scr), st = st),
     _ => {
       unsupported(off = expr_off(e), reason = "`\{construct_name(e)}` is outside the provable fragment")
       []
@@ -895,6 +898,9 @@ fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) 
     with_value(st = b, value = t, sort = "Int")
   } else if (op == "<" || op == "<=" || op == ">" || op == ">=") && ints {
     with_value(st = b, value = "(\{op} \{a.value} \{b.value})", sort = "Bool")
+  } else if (op == "==" || op == "!=") && a.sort == b.sort && a.sort != "Unit" && adt_has_custom_eq(adts = ctx.adts, sort = a.sort) {
+    unsupported(off = off, reason = "`\{op}` on `\{smt_unquote(a.sort)}` calls a program-written `equals` (on that type or one it contains), which the prover does not read")
+    b
   } else if (op == "==" || op == "!=") && a.sort == b.sort && a.sort != "Unit" {
     let eq = "(= \{a.value} \{b.value})"
     with_value(st = b, value = if op == "==" {
@@ -1438,13 +1444,75 @@ fn collect_adts(_ stmts: Array[Stmt]) -> Array[Adt] {
       Array::push(out, value = Adt::{
         name: n,
         is_struct: is_struct,
-        ctors: ctors
+        ctors: ctors,
+        custom_eq: false
       })
     } else {
       ()
     }
   }
-  out
+  mark_custom_eq(stmts = stmts, adts = out)
+}
+
+/// The datatypes with a program-written `equals` (`fn T::equals`, or an
+/// `impl Eq for T` method, which binds the same name), and every datatype
+/// with a field of one, to a fixpoint.
+fn mark_custom_eq(stmts: Array[Stmt], adts: Array[Adt]) -> Array[Adt] {
+  let names: Array[String] = []
+  for st in stmts {
+    match st {
+      SFnDecl(_, name, _, _, _) => Array::push(names, value = name),
+      SLet(_, _, name, _, _) => Array::push(names, value = name),
+      _ => ()
+    }
+  }
+  let marked: Array[String] = []
+  for a in adts {
+    if contains_name(xs = names, x = "\{a.name}::equals") {
+      Array::push(marked, value = a.name)
+    } else {
+      ()
+    }
+  }
+  let mut changed = true
+  while changed {
+    changed = false
+    for a in adts {
+      if !contains_name(xs = marked, x = a.name) {
+        let mut hit = false
+        for c in a.ctors {
+          let (_, fs) = c
+          for f in fs {
+            let (_, fsort) = f
+            for m in marked {
+              if fsort == adt_sort(m) {
+                hit = true
+              } else {
+                ()
+              }
+            }
+          }
+          ()
+        }
+        if hit {
+          Array::push(marked, value = a.name)
+          changed = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    }
+  }
+  for a in adts {
+    Adt::{
+      name: a.name,
+      is_struct: a.is_struct,
+      ctors: a.ctors,
+      custom_eq: contains_name(xs = marked, x = a.name)
+    }
+  }
 }
 
 /// One `declare-datatypes` for every datatype of the file, so a type may
@@ -1613,6 +1681,9 @@ fn sym_match(ctx: Ctx, scr: Expr, arms: Array[(Pat, Expr)], off: Int, st: Outcom
         }
         Array::push(earlier, value = cond)
       }
+      // A value no arm matches traps at run time, so some arm must hold on
+      // every path that reaches the `match`.
+      push_obligation(ctx = ctx, kind = "coverage", label = print_expr(scr), off = off, goal = guarded(pc = o.pc, goal = "(or false \{String::join(earlier, sep = " ")})"))
       ()
     }
   }
@@ -1743,5 +1814,12 @@ fn pattern_cond(ctx: Ctx, pat: Pat, term: String, sort: String, binds: Array[(St
       unsupported(off = off, reason = "this pattern is outside the provable fragment")
       "false"
     }
+  }
+}
+
+fn adt_has_custom_eq(adts: Array[Adt], sort: String) -> Bool {
+  match adt_of_sort(adts = adts, sort = sort) {
+    Some(a) => a.custom_eq,
+    None => false
   }
 }
