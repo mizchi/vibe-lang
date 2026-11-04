@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  builtin_ref
+  builtin_ref, impl_method_owner
 }
 
 //# Functions
@@ -483,7 +483,8 @@ fn i32_stmt(stmt: Stmt, rows: Int32Rows, fresh: String) -> Stmt {
     STypeAlias(exported, name, tparams, ty) => STypeAlias(exported, name, tparams, i32_ty(ty)),
     STrait(exported, name, supers, methods, generics, header) => STrait(exported, name, supers, i32_sigs(methods), generics, header),
     SEffectDef(exported, name, tparams, ops) => SEffectDef(exported, name, tparams, i32_sigs(ops)),
-    SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, i32_ty(target)),
+    // A marker impl keeps its target: erased, it would duplicate `Int`'s.
+    SImpl(_, _, _, _) => stmt,
     SExternLet(name, ty) => SExternLet(name, i32_ty(ty)),
     _ => stmt
   }
@@ -532,18 +533,93 @@ fn i32_conversion(name: String, args: Array[Expr], off: Int, fresh: String, coun
   }
 }
 
-/// `Int32::to_string` / `UInt32::to_string` (and any other member of the two
-/// namespaces) name the `Int` operation of the same name.
-fn i32_ident(e: Expr) -> Expr {
+/// `Int32::to_string` / `UInt32::to_string` name `Int::to_string`. Only the
+/// builtin members are renamed: a program's own `Int32::` function is refused
+/// before this pass (`refuse_int32_owned_decls`), so no other member exists.
+///
+/// A conversion used as a VALUE (`Array::map(xs, Int::wrap_int32)`) becomes
+/// the lambda its call would be, so no lane is left to lower the name.
+fn i32_ident(e: Expr, fresh: String, counter: Array[Int]) -> Expr {
   match e {
-    EIdent(name, off) => if String::starts_with(name, prefix = "Int32::") {
-      EIdent(String::concat("Int::", String::substring(name, start = 7, end = String::length(name))), off)
-    } else if String::starts_with(name, prefix = "UInt32::") {
-      EIdent(String::concat("Int::", String::substring(name, start = 8, end = String::length(name))), off)
+    EIdent(name, off) => if name == "Int32::to_string" || name == "UInt32::to_string" {
+      builtin_ref("Int::to_string")
+    } else if i32_is_conversion(name) {
+      let k = Array::get(counter, at = 0)
+      Array::set(counter, at = 0, value = k + 1)
+      let param = "\{fresh}\{k}"
+      match i32_conversion(name = name, args = [EIdent(param, -1)], off = off, fresh = fresh, counter = counter) {
+        Some(body) => EFn([], [], [(param, Some(TyName("Int")))], None, None, body),
+        None => e
+      }
     } else {
       e
     },
     _ => e
+  }
+}
+
+fn i32_is_conversion(_ name: String) -> Bool {
+  name == "Int32::to_int" || name == "UInt32::to_int" || name == "Int::wrap_int32" || name == "Int::wrap_uint32" || name == "Int::to_int32" || name == "Int::to_uint32"
+}
+
+/// #3730: a program's own impl with methods for a type that mentions
+/// `Int32` / `UInt32`, or its own function in either namespace, is refused.
+/// Both types are erased to `Int` after the check, so such an impl would be
+/// looked up as `Int`'s -- reaching another impl, or none -- and a method's
+/// references would stop naming its declaration. A bodyless marker impl
+/// (`impl Show for Int32`, as the prelude declares) has nothing to reach and
+/// is kept as written.
+export fn refuse_int32_owned_decls(_ stmts: Array[Stmt]) -> Unit with Exception {
+  let names: Array[String] = []
+  i32_collect_decl_names(stmts = stmts, out = names)
+  i32_refuse_owned(stmts = stmts, names = names)
+}
+
+fn i32_collect_decl_names(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  for st in stmts {
+    match st {
+      SLet(_, _, name, _, _) => Array::push(out, value = name),
+      SFnDecl(_, name, _, _, _) => Array::push(out, value = name),
+      SModule(_, _, inner) => i32_collect_decl_names(stmts = inner, out = out),
+      _ => ()
+    }
+  }
+  ()
+}
+
+fn i32_refuse_owned(stmts: Array[Stmt], names: Array[String]) -> Unit with Exception {
+  for st in stmts {
+    match st {
+      SImpl(tparams, _, trait_name, target) => if i32_ty_mentions(target) && i32_impl_has_methods(owner = impl_method_owner(tparams = tparams, trait_name = trait_name, target = target), names = names) {
+        throw("`impl \{trait_name} for` a type that mentions `Int32` / `UInt32` cannot have methods yet (#3730): both are held as `Int` after the check, so the impl could not be told apart from `Int`'s; write a function that takes the value instead")
+      } else {
+        ()
+      },
+      SLet(_, _, name, _, _) => i32_refuse_owned_name(name),
+      SFnDecl(_, name, _, _, _) => i32_refuse_owned_name(name),
+      SModule(_, _, inner) => i32_refuse_owned(stmts = inner, names = names),
+      _ => ()
+    }
+  }
+  ()
+}
+
+fn i32_impl_has_methods(owner: String, names: Array[String]) -> Bool {
+  let prefix = String::concat(owner, "::")
+  let mut found = false
+  for n in names {
+    if String::starts_with(n, prefix = prefix) {
+      found = true
+    }
+  }
+  found
+}
+
+fn i32_refuse_owned_name(_ name: String) -> Unit with Exception {
+  if String::starts_with(name, prefix = "Int32::") || String::starts_with(name, prefix = "UInt32::") {
+    throw("`\{name}` cannot be declared yet (#3730): the `Int32` / `UInt32` namespaces hold only their builtin operations; declare it as a plain function that takes the value")
+  } else {
+    ()
   }
 }
 
@@ -554,7 +630,7 @@ fn i32_expr(expr: Expr, rows: Int32Rows, fresh: String, counter: Array[Int]) -> 
     EString(_, _) => expr,
     EBool(_) => expr,
     EUnit => expr,
-    EIdent(_, _) => i32_ident(expr),
+    EIdent(_, _) => i32_ident(e = expr, fresh = fresh, counter = counter),
     ETuple(items) => ETuple(i32_exprs(items = items, rows = rows, fresh = fresh, counter = counter)),
     EArray(items) => EArray(i32_exprs(items = items, rows = rows, fresh = fresh, counter = counter)),
     ERecord(rn, fields, targs) => ERecord(rn, i32_named(fields = fields, rows = rows, fresh = fresh, counter = counter), i32_tys(targs)),

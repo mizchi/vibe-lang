@@ -588,6 +588,7 @@ fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Con
   let lin_callsite = option("--lin-callsite", "lib/@vibe/compiler/codegen/expr/compile_call.vibe")
   let gc_callsite = option("--gc-callsite", "lib/@vibe/compiler/codegen/gc/backend_call.vibe")
   let registry = option("--registry", "lib/@vibe/compiler/core/builtin_registry.vibe")
+  let int32_rewrite = option("--int32-rewrite", "lib/@vibe/compiler/normalize/desugar/int32.vibe")
   let linked = "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
   let gc_body = "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
   let classification = "scripts/builtin_parity_classification.tsv"
@@ -734,11 +735,35 @@ fn main allows Env::args_get + Env::args_len + Fs::is_file + Fs::read_file + Con
   } else {
     ()
   }
+  // #3730: the 32-bit integer conversions and `to_string`s are checker-only
+  // rows. `rewrite_int32_stmts` turns every call of them -- and every use as a
+  // value -- into `Int` operations after the check, so no lane lowers the
+  // name and both lane flags are honestly false. Mutation-checked like the
+  // call-site rows above: the rewrite must still spell each name, or the row
+  // has lost the pass that serves it.
+  let desugared_expected = ["Int32::to_int", "Int32::to_string", "Int::to_int32", "Int::to_uint32", "Int::wrap_int32", "Int::wrap_uint32", "UInt32::to_int", "UInt32::to_string"]
+  let int32_pass = strip_line_comments(Fs::read_file(int32_rewrite))
+  let missing_rewrites: Array[String] = []
+  let mut r = 0
+  while r < Array::length(desugared_expected) {
+    let n = Array::get(desugared_expected, r)
+    if String::index_of_from(int32_pass, "\"\{n}\"", 0) < 0 {
+      Array::push(missing_rewrites, n)
+    } else {
+      ()
+    }
+    r = r + 1
+  }
+  if Array::length(missing_rewrites) > 0 {
+    die("checker-only builtin is no longer rewritten by normalize/desugar/int32.vibe: \{String::join(set_of(missing_rewrites), ", ")} -- either the rewrite moved (update this exemption) or the row is dead (drop it from the registry)")
+  } else {
+    ()
+  }
   let neither_all: Array[String] = []
   let mut d = 0
   while d < Array::length(rows) {
     let row = Array::get(rows, d)
-    if Array::get(row.bools, 0) == "false" && Array::get(row.bools, 1) == "false" && !contains(wrapper_only_expected, row.name) && !contains(callsite_only_expected, row.name) {
+    if Array::get(row.bools, 0) == "false" && Array::get(row.bools, 1) == "false" && !contains(wrapper_only_expected, row.name) && !contains(callsite_only_expected, row.name) && !contains(desugared_expected, row.name) {
       Array::push(neither_all, row.name)
     } else {
       ()
