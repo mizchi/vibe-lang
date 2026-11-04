@@ -34,11 +34,11 @@ vibe 42 0.5 true
 ```vibe run
 fn main allows Console {
   let x: Int = 42
-  let d: Double = 3.14
+  let d: Float64 = 3.14
   let b: Bool = true
   let c = 'A'
   println("x = \{x}")
-  println("d = \{d}, rounded = \{Double::to_int(d * 100.0)}")
+  println("d = \{d}, rounded = \{Float64::to_int(d * 100.0)}")
   println("b = \{b}")
   println("c = \{c}")
 }
