@@ -13,10 +13,7 @@ run_test_block_fixtures_gc() {
   for fx in "$@"; do
     [ -f "$fx" ] || { echo "[compiler-gate] FAIL: $label: no such fixture '$fx'" >&2; exit 1; }
     fxout="_build/_gate_tbfgc_$(basename "${fx%.vibe}").wasm"
-    rm -f "$fxout" "$fxout.diag"
-    VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1 || true
+    gate_fs_compile_gc "$fx" "$fxout" __no_entry__
     gate_require_artifact "$fxout" "$fx did not compile on the gc lane ($label)"
     if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
         --invoke _start "$fxout" >/dev/null 2>&1; then
@@ -42,10 +39,7 @@ run_test_block_fixtures_rc() {
   for fx in "$@"; do
     [ -f "$fx" ] || { echo "[compiler-gate] FAIL: $label: no such fixture '$fx'" >&2; exit 1; }
     fxout="_build/_gate_tbfrc_$(basename "${fx%.vibe}").wasm"
-    rm -f "$fxout" "$fxout.diag"
-    VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1 || true
+    gate_fs_compile_rc "$fx" "$fxout" __no_entry__
     gate_require_artifact "$fxout" "$fx did not compile on the RC lane ($label)"
     if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
         --invoke _start "$fxout" >/dev/null 2>&1; then
@@ -252,9 +246,7 @@ ur_refused() {
   local ur_src="$1" ur_msg="$2" ur_edit="$3" ur_lane="${4:-linear}" ur_at="${5:-}"
   local ur_wasm="$urdir/$(basename "${ur_src%.vibe}")_$ur_lane.wasm"
   if [ "$ur_lane" = gc ]; then
-    VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-      "$ur_src" "$ur_wasm" _start >/dev/null 2>&1 || true
+    gate_fs_compile_gc "$ur_src" "$ur_wasm" _start
   else
     gate_fs_compile "$ur_src" "$ur_wasm" _start
   fi
@@ -613,9 +605,7 @@ for ur_ok in \
     ur_okw="$urdir/ok${ur_i}_$ur_lane.wasm"
     rm -f "$ur_okw"
     if [ "$ur_lane" = gc ]; then
-      VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-        "$urdir/ok$ur_i.vibe" "$ur_okw" main >/dev/null 2>&1 || true
+      gate_fs_compile_gc "$urdir/ok$ur_i.vibe" "$ur_okw" main
     else
       gate_fs_compile "$urdir/ok$ur_i.vibe" "$ur_okw" main
     fi
@@ -640,9 +630,7 @@ rm -rf "$mgdir"; mkdir -p "$mgdir"
 for mg_backend in linear gc; do
   mg_wasm="$mgdir/miss_$mg_backend.wasm"
   if [ "$mg_backend" = gc ]; then
-    VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-      fixtures/map_get_missing_key_trap.vibe "$mg_wasm" main >/dev/null 2>&1 || true
+    gate_fs_compile_gc fixtures/map_get_missing_key_trap.vibe "$mg_wasm" main
   else
     gate_fs_compile fixtures/map_get_missing_key_trap.vibe "$mg_wasm" main
   fi
@@ -680,9 +668,7 @@ for dz_case in "int_div_zero_trap|/|7|5" "int_rem_zero_trap|%|7|5" "int_div_assi
   for dz_backend in linear gc; do
     dz_wasm="$dzdir/${dz_name}_$dz_backend.wasm"
     if [ "$dz_backend" = gc ]; then
-      VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-        "$dz_src" "$dz_wasm" main >/dev/null 2>&1 || true
+      gate_fs_compile_gc "$dz_src" "$dz_wasm" main
     else
       gate_fs_compile "$dz_src" "$dz_wasm" main
     fi
@@ -722,9 +708,7 @@ for lr_case in "let_refutable_mismatch_trap|Some(v)|7|7|before 2" "let_refutable
   for lr_backend in linear gc; do
     lr_wasm="$lrdir/${lr_name}_$lr_backend.wasm"
     if [ "$lr_backend" = gc ]; then
-      VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-        "$lr_src" "$lr_wasm" main >/dev/null 2>&1 || true
+      gate_fs_compile_gc "$lr_src" "$lr_wasm" main
     else
       gate_fs_compile "$lr_src" "$lr_wasm" main
     fi
@@ -764,9 +748,7 @@ dg_want="Int \`/\` by zero at $dg_src:31:5"
 for dg_backend in linear gc; do
   dg_wasm="$dgdir/int_div_zero_generic_dispatch_trap_$dg_backend.wasm"
   if [ "$dg_backend" = gc ]; then
-    VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-      "$dg_src" "$dg_wasm" main >/dev/null 2>&1 || true
+    gate_fs_compile_gc "$dg_src" "$dg_wasm" main
   else
     gate_fs_compile "$dg_src" "$dg_wasm" main
   fi

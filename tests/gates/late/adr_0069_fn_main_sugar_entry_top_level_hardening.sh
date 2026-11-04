@@ -256,9 +256,7 @@ export let main = () -> Int {
 }
 EOF
 rm -f "$g1078dir/ctor_collision.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$g1078dir/ctor_collision.vibe" "$g1078dir/ctor_collision.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$g1078dir/ctor_collision.vibe" "$g1078dir/ctor_collision.wasm" main
 gate_require_refused "$g1078dir/ctor_collision.wasm" "same-named variant across two enums compiled (should be rejected, #1078)"
 gate_require_diag_matches "$g1078dir/ctor_collision.wasm.diag" "constructor name collision" \
   "ctor-collision diag missing the descriptive #1078 message (still the misleading wrong-declaration mismatch?)"
@@ -425,16 +423,12 @@ VIBE_CHECK_ERROR_ROW=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   "$g944dir/leak.vibe" "$g944dir/leak_off.wasm" main >/dev/null 2>&1 || true
 gate_require_artifact "$g944dir/leak_off.wasm" "VIBE_CHECK_ERROR_ROW=0 opt-out did not restore the old exemption (#944)"
 rm -f "$g944dir/leak_on.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$g944dir/leak.vibe" "$g944dir/leak_on.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$g944dir/leak.vibe" "$g944dir/leak_on.wasm" main
 gate_require_refused "$g944dir/leak_on.wasm" "default-on checked-Error mode did not reject the row-less caller (#944)"
 gate_require_diag_matches "$g944dir/leak_on.wasm.diag" "missing { Exception }" \
   "checked-Error rejection diag missing the row-mismatch message (#944)"
 rm -f "$g944dir/discharged.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$g944dir/discharged.vibe" "$g944dir/discharged.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile "$g944dir/discharged.vibe" "$g944dir/discharged.wasm" main
 gate_require_artifact "$g944dir/discharged.wasm" "checked-Error mode rejected a handle-with-Error discharge (over-strict, #944)"
 g944_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$g944dir/discharged.wasm" 2>&1 | tail -1)"
 if [ "$g944_out" != "1" ]; then
@@ -455,9 +449,7 @@ rm -rf "$g944cdir"; mkdir -p "$g944cdir"
 # asserted below, so the fixture carries no `__DATA__` tail any more and is
 # compiled AS-IS -- no `sed` strip, no temp copy.
 rm -f "$g944cdir/out.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/entry_error_boundary.vibe "$g944cdir/out.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile fixtures/entry_error_boundary.vibe "$g944cdir/out.wasm" main
 gate_require_artifact "$g944cdir/out.wasm" "entry_error_boundary.vibe did not compile (#944 stage C)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$g944cdir/out.wasm" >"$g944cdir/stdout.txt" 2>"$g944cdir/stderr.txt"; then
   echo "[compiler-gate] FAIL: entry_error_boundary exited 0 through _start (#1945)" >&2
@@ -486,9 +478,7 @@ fi
 #     what it printed before either fix. This is the additivity check: the
 #     overwhelmingly common case must not have moved.
 rm -f "$g944cdir/typed.wasm" "$g944cdir/typed_stderr.txt"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_entry_boundary_typed_payload.vibe "$g944cdir/typed.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile fixtures/err_entry_boundary_typed_payload.vibe "$g944cdir/typed.wasm" main
 gate_require_artifact "$g944cdir/typed.wasm" "err_entry_boundary_typed_payload.vibe did not compile (#1372 review)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$g944cdir/typed.wasm" >"$g944cdir/typed_stdout.txt" 2>"$g944cdir/typed_stderr.txt"; then
   echo "[compiler-gate] FAIL: typed-payload entry boundary exited 0 (#1945)" >&2
@@ -502,9 +492,7 @@ fi
 # #1374 additivity: a String payload must print verbatim, exactly as it did
 # before the kind channel existed.
 rm -f "$g944cdir/strp.wasm" "$g944cdir/strp_stderr.txt"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/err_entry_boundary_string_payload.vibe "$g944cdir/strp.wasm" main >/dev/null 2>&1 || true
+gate_flat_compile fixtures/err_entry_boundary_string_payload.vibe "$g944cdir/strp.wasm" main
 gate_require_artifact "$g944cdir/strp.wasm" "err_entry_boundary_string_payload.vibe did not compile (#1374)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$g944cdir/strp.wasm" >"$g944cdir/strp_stdout.txt" 2>"$g944cdir/strp_stderr.txt"; then
   echo "[compiler-gate] FAIL: String-payload entry boundary exited 0 (#1945)" >&2
@@ -543,9 +531,7 @@ rm -rf "$g1087dir"; mkdir -p "$g1087dir"
 # the test-block runner; a mismatch prints inspect's own actual/expected
 # (1 vs 41) from inside the run and fails it.
 rm -f "$g1087dir/out.wasm"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/effect_handle_error_nontail.vibe "$g1087dir/out.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_flat_compile fixtures/effect_handle_error_nontail.vibe "$g1087dir/out.wasm" __no_entry__
 gate_require_artifact "$g1087dir/out.wasm" "effect_handle_error_nontail.vibe did not compile (#1087)"
 if ! g1087_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$g1087dir/out.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: effect_handle_error_nontail want 1, NOT 41 -- a non-tail throw in a with-Error handle body ran the body's continuation instead of aborting to the arm's value (#1087; check idp_arms_discharge_error in inline_direct_perform.vibe)" >&2

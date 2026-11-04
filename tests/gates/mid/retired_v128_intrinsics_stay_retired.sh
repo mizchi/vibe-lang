@@ -656,11 +656,7 @@ echo "[compiler-gate] 40f-b/40 branch-tail borrow let retain (#3103)"
 bbdir="_build/_gate_rc_branch_borrow_let"
 rm -rf "$bbdir"; mkdir -p "$bbdir"
 for bb_lane in rc shadow; do
-  rm -f "$bbdir/bb.wasm" "$bbdir/bb.wasm.diag"
-  case "$bb_lane" in
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_branch_borrow_let_test.vibe" "$bbdir/bb.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_branch_borrow_let_test.vibe" "$bbdir/bb.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$bb_lane" "fixtures/rc_branch_borrow_let_test.vibe" "$bbdir/bb.wasm" main
   gate_require_artifact "$bbdir/bb.wasm" "rc_branch_borrow_let fixture did not compile on the $bb_lane lane (#3103)"
   bb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$bbdir/bb.wasm" 2>&1 | tail -1)"
   if [ "$bb_out" != "334444" ]; then
@@ -996,13 +992,7 @@ echo "[compiler-gate] 40f0/40 truncate does not invalidate a saved element view 
 svdir="_build/_gate_truncate_saved_view"
 rm -rf "$svdir"; mkdir -p "$svdir"
 for sv_lane in bump rc shadow gc; do
-  rm -f "$svdir/sv.wasm" "$svdir/sv.wasm.diag"
-  case "$sv_lane" in
-    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_saved_view_test.vibe" "$svdir/sv.wasm" main >/dev/null 2>&1 || true ;;
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_saved_view_test.vibe" "$svdir/sv.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_saved_view_test.vibe" "$svdir/sv.wasm" main >/dev/null 2>&1 || true ;;
-    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_saved_view_test.vibe" "$svdir/sv.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$sv_lane" "fixtures/rc_truncate_saved_view_test.vibe" "$svdir/sv.wasm" main
   gate_require_artifact "$svdir/sv.wasm" "rc_truncate_saved_view fixture did not compile on the $sv_lane lane (#2837)"
   sv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$svdir/sv.wasm" 2>&1 | tail -1)"
   if [ "$sv_out" != "2122312" ]; then
@@ -1027,13 +1017,7 @@ echo "[compiler-gate] 40f0b/40 truncate releases removed owned elements (#2837)"
 trdir="_build/_gate_truncate_reclaim"
 rm -rf "$trdir"; mkdir -p "$trdir"
 for tr_lane in bump rc shadow gc; do
-  rm -f "$trdir/tr.wasm" "$trdir/tr.wasm.diag"
-  case "$tr_lane" in
-    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
-    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$tr_lane" "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main
   gate_require_artifact "$trdir/tr.wasm" "rc_truncate_reclaim_bounded fixture did not compile on the $tr_lane lane (#2837)"
   tr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$trdir/tr.wasm" 2>&1 | tail -1)"
   if [ "$tr_out" != "2000" ]; then
@@ -1085,13 +1069,7 @@ echo "[compiler-gate] 40f0c/40 alias of a borrowed view is not released twice (#
 vadir="_build/_gate_rc_view_alias"
 rm -rf "$vadir"; mkdir -p "$vadir"
 for va_lane in bump rc shadow gc; do
-  rm -f "$vadir/va.wasm" "$vadir/va.wasm.diag"
-  case "$va_lane" in
-    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
-    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$va_lane" "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main
   gate_require_artifact "$vadir/va.wasm" "rc_view_alias_drop fixture did not compile on the $va_lane lane (#3114)"
   va_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$vadir/va.wasm" 2>&1 | tail -1)"
   if [ "$va_out" != "126354332566498532" ]; then
@@ -1114,13 +1092,7 @@ echo "[compiler-gate] 40f0d/40 alias of a loop-carried binding is retained per i
 lcdir="_build/_gate_rc_loop_carried_alias"
 rm -rf "$lcdir"; mkdir -p "$lcdir"
 for lc_lane in bump rc shadow gc; do
-  rm -f "$lcdir/lc.wasm" "$lcdir/lc.wasm.diag"
-  case "$lc_lane" in
-    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
-    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$lc_lane" "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main
   gate_require_artifact "$lcdir/lc.wasm" "rc_loop_carried_alias fixture did not compile on the $lc_lane lane (#3134)"
   lc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcdir/lc.wasm" 2>&1 | tail -1)"
   if [ "$lc_out" != "362412181109361818" ]; then
@@ -1140,13 +1112,7 @@ echo "[compiler-gate] 40f0e/40 alias of a Double literal inside a loop keeps the
 dldir="_build/_gate_rc_double_literal_alias"
 rm -rf "$dldir"; mkdir -p "$dldir"
 for dl_lane in bump rc shadow gc; do
-  rm -f "$dldir/dl.wasm" "$dldir/dl.wasm.diag"
-  case "$dl_lane" in
-    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
-    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$dl_lane" "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main
   gate_require_artifact "$dldir/dl.wasm" "rc_double_literal_alias fixture did not compile on the $dl_lane lane (#3135)"
   dl_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dldir/dl.wasm" 2>&1 | tail -1)"
   if [ "$dl_out" != "6333" ]; then
@@ -1175,13 +1141,7 @@ echo "[compiler-gate] 40f0f/40 discarded for, handle and while bodies release th
 fddir="_build/_gate_rc_forin_discard"
 rm -rf "$fddir"; mkdir -p "$fddir"
 for fd_lane in bump rc shadow gc; do
-  rm -f "$fddir/fd.wasm" "$fddir/fd.wasm.diag"
-  case "$fd_lane" in
-    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_forin_discard_bounded_test.vibe" "$fddir/fd.wasm" main >/dev/null 2>&1 || true ;;
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_forin_discard_bounded_test.vibe" "$fddir/fd.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_forin_discard_bounded_test.vibe" "$fddir/fd.wasm" main >/dev/null 2>&1 || true ;;
-    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_forin_discard_bounded_test.vibe" "$fddir/fd.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$fd_lane" "fixtures/rc_forin_discard_bounded_test.vibe" "$fddir/fd.wasm" main
   gate_require_artifact "$fddir/fd.wasm" "rc_forin_discard_bounded fixture did not compile on the $fd_lane lane (#3137)"
   fd_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$fddir/fd.wasm" 2>&1 | tail -1)"
   if [ "$fd_out" != "2007000" ]; then
@@ -1228,13 +1188,7 @@ echo "[compiler-gate] 40f0g/40 a field assignment releases the value it overwrit
 sfdir="_build/_gate_rc_set_field"
 rm -rf "$sfdir"; mkdir -p "$sfdir"
 for sf_lane in bump rc shadow gc; do
-  rm -f "$sfdir/sf.wasm" "$sfdir/sf.wasm.diag"
-  case "$sf_lane" in
-    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_set_field_bounded_test.vibe" "$sfdir/sf.wasm" main >/dev/null 2>&1 || true ;;
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_set_field_bounded_test.vibe" "$sfdir/sf.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_set_field_bounded_test.vibe" "$sfdir/sf.wasm" main >/dev/null 2>&1 || true ;;
-    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_set_field_bounded_test.vibe" "$sfdir/sf.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$sf_lane" "fixtures/rc_set_field_bounded_test.vibe" "$sfdir/sf.wasm" main
   gate_require_artifact "$sfdir/sf.wasm" "rc_set_field_bounded fixture did not compile on the $sf_lane lane (#3140)"
   sf_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sfdir/sf.wasm" 2>&1 | tail -1)"
   if [ "$sf_out" != "2019000" ]; then
@@ -1298,13 +1252,7 @@ echo "[compiler-gate] 40f0h/40 an early exit releases the scopes it leaves (#314
 exdir="_build/_gate_rc_early_exit"
 rm -rf "$exdir"; mkdir -p "$exdir"
 for ex_lane in bump rc shadow gc; do
-  rm -f "$exdir/ex.wasm" "$exdir/ex.wasm.diag"
-  case "$ex_lane" in
-    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_early_exit_bounded_test.vibe" "$exdir/ex.wasm" main >/dev/null 2>&1 || true ;;
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_early_exit_bounded_test.vibe" "$exdir/ex.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_early_exit_bounded_test.vibe" "$exdir/ex.wasm" main >/dev/null 2>&1 || true ;;
-    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_early_exit_bounded_test.vibe" "$exdir/ex.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$ex_lane" "fixtures/rc_early_exit_bounded_test.vibe" "$exdir/ex.wasm" main
   gate_require_artifact "$exdir/ex.wasm" "rc_early_exit_bounded fixture did not compile on the $ex_lane lane (#3141)"
   ex_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$exdir/ex.wasm" 2>&1 | tail -1)"
   if [ "$ex_out" != "2049000" ]; then
@@ -1356,13 +1304,7 @@ echo "[compiler-gate] 40f0i/40 a let mut owns the view or loop-carried binding i
 msdir="_build/_gate_rc_mut_store_view"
 rm -rf "$msdir"; mkdir -p "$msdir"
 for ms_lane in bump rc shadow gc; do
-  rm -f "$msdir/ms.wasm" "$msdir/ms.wasm.diag"
-  case "$ms_lane" in
-    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_mut_store_view_bounded_test.vibe" "$msdir/ms.wasm" main >/dev/null 2>&1 || true ;;
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_mut_store_view_bounded_test.vibe" "$msdir/ms.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_mut_store_view_bounded_test.vibe" "$msdir/ms.wasm" main >/dev/null 2>&1 || true ;;
-    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_mut_store_view_bounded_test.vibe" "$msdir/ms.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$ms_lane" "fixtures/rc_mut_store_view_bounded_test.vibe" "$msdir/ms.wasm" main
   gate_require_artifact "$msdir/ms.wasm" "rc_mut_store_view_bounded fixture did not compile on the $ms_lane lane (#3184)"
   ms_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$msdir/ms.wasm" 2>&1 | tail -1)"
   if [ "$ms_out" != "88000" ]; then
@@ -1511,13 +1453,7 @@ echo "[compiler-gate] 40f0j/40 a Double an operator or a parameter reads is rele
 dbdir="_build/_gate_rc_double_release"
 rm -rf "$dbdir"; mkdir -p "$dbdir"
 for db_lane in bump rc shadow gc; do
-  rm -f "$dbdir/db.wasm" "$dbdir/db.wasm.diag"
-  case "$db_lane" in
-    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_release_bounded_test.vibe" "$dbdir/db.wasm" main >/dev/null 2>&1 || true ;;
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_release_bounded_test.vibe" "$dbdir/db.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_release_bounded_test.vibe" "$dbdir/db.wasm" main >/dev/null 2>&1 || true ;;
-    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_double_release_bounded_test.vibe" "$dbdir/db.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$db_lane" "fixtures/rc_double_release_bounded_test.vibe" "$dbdir/db.wasm" main
   gate_require_artifact "$dbdir/db.wasm" "rc_double_release_bounded fixture did not compile on the $db_lane lane (#3135)"
   db_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dbdir/db.wasm" 2>&1 | tail -1)"
   if [ "$db_out" != "29007002" ]; then
@@ -1563,13 +1499,7 @@ echo "[compiler-gate] 40f0k/40 a user-effect handle releases its evidence dictio
 ehdir="_build/_gate_rc_user_effect_handle"
 rm -rf "$ehdir"; mkdir -p "$ehdir"
 for eh_lane in bump rc shadow gc; do
-  rm -f "$ehdir/eh.wasm" "$ehdir/eh.wasm.diag"
-  case "$eh_lane" in
-    bump) env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_user_effect_handle_bounded_test.vibe" "$ehdir/eh.wasm" main >/dev/null 2>&1 || true ;;
-    rc) env VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_user_effect_handle_bounded_test.vibe" "$ehdir/eh.wasm" main >/dev/null 2>&1 || true ;;
-    shadow) env VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_user_effect_handle_bounded_test.vibe" "$ehdir/eh.wasm" main >/dev/null 2>&1 || true ;;
-    gc) env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"       "fixtures/rc_user_effect_handle_bounded_test.vibe" "$ehdir/eh.wasm" main >/dev/null 2>&1 || true ;;
-  esac
+  gate_fs_compile_on "$eh_lane" "fixtures/rc_user_effect_handle_bounded_test.vibe" "$ehdir/eh.wasm" main
   gate_require_artifact "$ehdir/eh.wasm" "rc_user_effect_handle_bounded fixture did not compile on the $eh_lane lane (#3169)"
   eh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$ehdir/eh.wasm" 2>&1 | tail -1)"
   if [ "$eh_out" != "10005000" ]; then
@@ -1858,9 +1788,7 @@ cf_fs_got=""
 for cf_flag in dev release dev; do
   rm -f "$cfdir/fs.wasm" "$cfdir/fs.wasm.diag"
   VIBE_CFG="$cf_flag" VIBE_FS_COMPILE=1 VIBE_BUILD_CACHE_DIR="$cfdir/cache" \
-    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$cfdir/main.vibe" "$cfdir/fs.wasm" main >/dev/null 2>&1 || true
+    gate_flat_compile "$cfdir/main.vibe" "$cfdir/fs.wasm" main
   if [ -s "$cfdir/fs.wasm" ]; then
     cf_fs_got="$cf_fs_got $(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfdir/fs.wasm" 2>&1 | tail -1)"
   else
