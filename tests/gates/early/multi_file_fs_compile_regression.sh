@@ -16,10 +16,7 @@ printf 'import ./helper.vibe { add }\nexport let _start = () -> Int { add(40, 2)
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fsdir/main.vibe" "$fsdir/main.wasm" _start || true
-if [ ! -s "$fsdir/main.wasm" ]; then
-  echo "[compiler-gate] FAIL: multi-file FS-compile produced no wasm" >&2
-  exit 1
-fi
+gate_require_artifact "$fsdir/main.wasm" "multi-file FS-compile produced no wasm"
 fsres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fsdir/main.wasm" 2>/dev/null | tr -dc '0-9')"
 rm -rf "$fsdir"
 if [ "$fsres" != "42" ]; then
@@ -174,14 +171,8 @@ export let _start: () -> Int with Fs = () -> {
   }
 }
 VEOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$drdir/main.vibe" "$drdir/main.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$drdir/main.wasm" ]; then
-  echo "[compiler-gate] FAIL: deep-resume regression program did not compile" >&2
-  cat "$drdir/main.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$drdir/main.vibe" "$drdir/main.wasm" _start
+gate_require_artifact "$drdir/main.wasm" "deep-resume regression program did not compile"
 drres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$drdir/main.wasm" 2>/dev/null | tr -dc '0-9')"
 rm -rf "$drdir"
 if [ "$drres" != "42" ]; then
@@ -278,14 +269,8 @@ fn main allows Console {
   println(render())
 }
 VEOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$dsdir/main.vibe" "$dsdir/main.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$dsdir/main.wasm" ]; then
-  echo "[compiler-gate] FAIL: derive(Show) rename sample did not compile" >&2
-  cat "$dsdir/main.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$dsdir/main.vibe" "$dsdir/main.wasm" main
+gate_require_artifact "$dsdir/main.wasm" "derive(Show) rename sample did not compile"
 dsout="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$dsdir/main.wasm" 2>/dev/null)"
 rm -rf "$dsdir"
 if [ "$dsout" != "Point { x: 3, y: 4 }|Mix(1, 2)|Lone" ]; then
@@ -359,11 +344,7 @@ oob_compile_one() {
   env -u VIBE_RC VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$src" "$out" main >/dev/null 2>&1 || true
-  if [ ! -s "$out" ]; then
-    echo "[compiler-gate] FAIL: OOB sample did not compile: $src" >&2
-    cat "$out.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_artifact "$out" "OOB sample did not compile: $src"
 }
 oob_compile_one "$oobdir/arr_get.vibe" "$oobdir/arr_get.wasm"
 oob_compile_one "$oobdir/arr_set.vibe" "$oobdir/arr_set.wasm"
@@ -421,14 +402,8 @@ oob_check "Map::get" "Map::get: key not found" "$oobdir/map_get.vibe:4" "$oob_ma
 # VIBE_TEST_BACKEND=gc / --backend gc) trapped with only a backtrace after the
 # linear lane gained the message. That lane carries no production linemap, so
 # only the message is asserted. The selector is inline (#2248).
-VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$oobdir/map_get.vibe" "$oobdir/map_get_gc.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$oobdir/map_get_gc.wasm" ]; then
-  echo "[compiler-gate] FAIL: Map::get miss sample did not compile on the gc lane" >&2
-  cat "$oobdir/map_get_gc.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+VIBE_BACKEND=gc gate_fs_compile "$oobdir/map_get.vibe" "$oobdir/map_get_gc.wasm" main
+gate_require_artifact "$oobdir/map_get_gc.wasm" "Map::get miss sample did not compile on the gc lane"
 set +e
 oob_map_gc_out="$(oob_run_one "$oobdir/map_get_gc.wasm")"
 oob_map_gc_rc=$?
@@ -522,11 +497,7 @@ for u32_case in "${u32_cases[@]}"; do
         bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
         "$u32_src" "$u32_wasm" main >/dev/null 2>&1 || true
     fi
-    if [ ! -s "$u32_wasm" ]; then
-      echo "[compiler-gate] FAIL: $u32_name did not compile on $u32_lane (#3543)" >&2
-      cat "$u32_wasm.diag" >&2 2>/dev/null || true
-      exit 1
-    fi
+    gate_require_artifact "$u32_wasm" "$u32_name did not compile on $u32_lane (#3543)"
     u32_status=0
     u32_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_RUNNER_EXIT_WITH_RESULT=1 bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$u32_wasm" 2>&1)" || u32_status=$?
     if ! printf '%s\n' "$u32_out" | grep -qxF 'before'; then
@@ -579,14 +550,8 @@ fn main allows Console {
   println("returned")
 }
 VEOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$hmdir/fill.vibe" "$hmdir/fill.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$hmdir/fill.wasm" ]; then
-  echo "[compiler-gate] FAIL: #2362 probe did not compile" >&2
-  cat "$hmdir/fill.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile "$hmdir/fill.vibe" "$hmdir/fill.wasm" main
+gate_require_artifact "$hmdir/fill.wasm" "#2362 probe did not compile"
 set +e
 hm_out="$(run_bounded 60 env VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$hmdir/fill.wasm" 2>&1)"
 hm_rc=$?
@@ -711,9 +676,7 @@ decl_probe_reports_unknown() { # <probe-source> <name>
   local src="$1" name="$2"
   rm -f "$dcldir/p.vibe" "$dcldir/p.out" "$dcldir/p.out.diag"
   cp "$src" "$dcldir/p.vibe"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$dcldir/p.vibe" "$dcldir/p.out" __no_entry__ check >/dev/null 2>&1 || true
+  gate_fs_compile "$dcldir/p.vibe" "$dcldir/p.out" __no_entry__ check
   grep -qF "unknown name: $name" "$dcldir/p.out.diag" 2>/dev/null
 }
 reachable=""
@@ -751,10 +714,7 @@ for ctl_form in value call; do
   else
     printf 'fn probe(b: Bytes) -> Int {\n  simd_skip_ws(b, 0, 1)\n}\n' > "$dcldir/ctl.vibe"
   fi
-  rm -f "$dcldir/ctl.out" "$dcldir/ctl.out.diag"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$dcldir/ctl.vibe" "$dcldir/ctl.out" __no_entry__ check >/dev/null 2>&1 || true
+  gate_fs_compile "$dcldir/ctl.vibe" "$dcldir/ctl.out" __no_entry__ check
   if grep -qF "unknown name: simd_skip_ws" "$dcldir/ctl.out.diag" 2>/dev/null; then
     echo "[compiler-gate] FAIL: the #2343 $ctl_form-form control reported simd_skip_ws unknown -- it is declared in $decl_src and must resolve, so this harness is calling everything unreachable" >&2
     cat "$dcldir/ctl.out.diag" >&2 2>/dev/null || true
@@ -779,10 +739,7 @@ done
 # carry authority to an indirect call site where the row is not checked --
 # ADR-0075/0084/0088), not as a gap someone may close.
 printf 'fn probe() -> Int {\n  let _x = Fs::read_file\n  0\n}\n' > "$dcldir/ctl.vibe"
-rm -f "$dcldir/ctl.out" "$dcldir/ctl.out.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$dcldir/ctl.vibe" "$dcldir/ctl.out" __no_entry__ check >/dev/null 2>&1 || true
+gate_fs_compile "$dcldir/ctl.vibe" "$dcldir/ctl.out" __no_entry__ check
 if ! grep -qF "not a value" "$dcldir/ctl.out.diag" 2>/dev/null \
    || ! grep -qF "Fs::read_file" "$dcldir/ctl.out.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: the #2343 liveness control did not produce the expected \"not a value\" diagnostic naming Fs::read_file -- the probe did not compile, or the diagnostic changed, so this harness is not measuring reachability (#2433/#2442)" >&2
@@ -810,9 +767,7 @@ printf 'test "bad" {\n  assert_eq(2 + 2, 5)\n}\n' > "$tdir/fail_test.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tdir/pass_test.vibe" "$tdir/pass_test.wasm" __no_entry__ >/dev/null 2>&1
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$tdir/fail_test.vibe" "$tdir/fail_test.wasm" __no_entry__ >/dev/null 2>&1 || true
+gate_fs_compile "$tdir/fail_test.vibe" "$tdir/fail_test.wasm" __no_entry__
 if [ ! -s "$tdir/pass_test.wasm" ] || [ ! -s "$tdir/fail_test.wasm" ]; then
   echo "[compiler-gate] FAIL: test-block compile produced no wasm" >&2; exit 1
 fi
@@ -840,9 +795,7 @@ printf 'let dead: () -> Int = () -> { 0 }\nlet helper: () -> Int = () -> { 1 }\n
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/in.vibe" "$ndir/out.vibe" >/dev/null 2>&1 || true
-if [ ! -s "$ndir/out.vibe" ]; then
-  echo "[compiler-gate] FAIL: normalize produced no output" >&2; exit 1
-fi
+gate_require_artifact "$ndir/out.vibe" "normalize produced no output"
 # `dead` must be eliminated; `helper` (reached from the exported `run`) kept.
 if grep -q "dead" "$ndir/out.vibe" || ! grep -q "helper" "$ndir/out.vibe"; then
   echo "[compiler-gate] FAIL: normalize DCE incorrect" >&2
@@ -865,9 +818,7 @@ printf 'fn checked_inc(x: Int) -> Int where { requires: x >= 0, ensures: result 
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/keep_fn.vibe" "$ndir/keep_fn.out.vibe" >/dev/null 2>&1 || true
-if [ ! -s "$ndir/keep_fn.out.vibe" ]; then
-  echo "[compiler-gate] FAIL: fn-bearing source was not normalized (#727)" >&2; exit 1
-fi
+gate_require_artifact "$ndir/keep_fn.out.vibe" "fn-bearing source was not normalized (#727)"
 if ! grep -q "fn checked_inc" "$ndir/keep_fn.out.vibe" \
   || ! grep -q "fn run" "$ndir/keep_fn.out.vibe" \
   || ! grep -q "where { requires:" "$ndir/keep_fn.out.vibe" \
@@ -894,9 +845,7 @@ fi
 # must succeed.
 cp "$ndir/out.vibe" "$ndir/compile.vibe"
 printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$ndir/compile.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/compile.vibe" "$ndir/out.wasm" _start >/dev/null 2>&1 || true
+gate_fs_compile "$ndir/compile.vibe" "$ndir/out.wasm" _start
 if [ ! -s "$ndir/out.wasm" ]; then
   echo "[compiler-gate] FAIL: normalized output does not compile" >&2
   cat "$ndir/compile.vibe" >&2; exit 1
@@ -920,13 +869,8 @@ printf 'import ./pkg { add }\nexport let _start: () -> Int = () -> { add(40, 2) 
 # beside the (valid) wasm the second pass writes. Cold-only ingestion rot
 # (#740/#749 class) surfaces exactly there, so assert "no sidecar" too.
 find "$ROOT_DIR/_build" -maxdepth 1 -type f -name "vibe_*" -delete 2>/dev/null || true
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$cdir/ok.vibe" "$cdir/ok.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$cdir/ok.wasm" ]; then
-  echo "[compiler-gate] FAIL: contract package import did not compile (#729)" >&2
-  cat "$cdir/ok.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$cdir/ok.vibe" "$cdir/ok.wasm" _start
+gate_require_artifact "$cdir/ok.wasm" "contract package import did not compile (#729)"
 if [ -s "$cdir/ok.wasm.diag" ]; then
   echo "[compiler-gate] FAIL: cold contract compile left a stale .diag beside a valid wasm (#749 first-pass ingestion failure)" >&2
   cat "$cdir/ok.wasm.diag" >&2; exit 1
@@ -959,13 +903,8 @@ rm -rf "$gsdir"; mkdir -p "$gsdir/pkg"
 printf 'export struct Box[T] {\n  v: T\n}\n\nexport fn Box::wrap[T](v: T) -> Box[T] {\n  Box::{ v: v }\n}\n' > "$gsdir/pkg/box.vibe"
 printf 'version 0.0.1\nimport ./box.vibe {}\ntype Box[T]\nfn Box::wrap[T](v: T) -> Box[T]\n' > "$gsdir/pkg/index.vibei"
 printf 'import ./pkg { Box::wrap }\nexport let _start: () -> Int = () -> { 0 }\n' > "$gsdir/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$gsdir/ok.vibe" "$gsdir/ok.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$gsdir/ok.wasm" ]; then
-  echo "[compiler-gate] FAIL: contract-correct 'type Box[T]' arity was rejected (over-reject)" >&2
-  cat "$gsdir/ok.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$gsdir/ok.vibe" "$gsdir/ok.wasm" _start
+gate_require_artifact "$gsdir/ok.wasm" "contract-correct 'type Box[T]' arity was rejected (over-reject)"
 printf 'version 0.0.1\nimport ./box.vibe {}\ntype Box\nfn Box::wrap[T](v: T) -> Box[T]\n' > "$gsdir/pkg/index.vibei"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -990,13 +929,8 @@ echo "[compiler-gate] 6b2b explicit struct type args (#886)"
 stdir="_build/_gate_struct_targs"
 rm -rf "$stdir"; mkdir -p "$stdir"
 printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nstruct Bag[T] {\n  xs: Array[T]\n}\n\nexport let _start: () -> Unit with Console = () -> {\n  let p = Pair[Int]::{ a: 1, b: 2 }\n  assert_eq(p.a + p.b, 3)\n  let g = Bag[Int]::{ xs: [] }\n  Array::push(g.xs, 42)\n  assert_eq(Array::get(g.xs, 0), 42)\n  let n = Pair[Array[Int]]::{ a: [1, 2], b: [] }\n  assert_eq(Array::length(n.a), 2)\n}\n' > "$stdir/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$stdir/ok.vibe" "$stdir/ok.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$stdir/ok.wasm" ]; then
-  echo "[compiler-gate] FAIL: explicit struct type args (#886) did not compile" >&2
-  cat "$stdir/ok.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$stdir/ok.vibe" "$stdir/ok.wasm" _start
+gate_require_artifact "$stdir/ok.wasm" "explicit struct type args (#886) did not compile"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$stdir/ok.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: explicit struct type args (#886) compiled but trapped at runtime" >&2; exit 1
 fi
@@ -1043,13 +977,8 @@ printf 'export struct X {\n  v: Int\n}\n\nexport fn make(v: Int) -> X {\n  X::{ 
 printf 'import ./impl.vibe {}\nimport ../pkgb { type X }\nfn wrap(v: Int) -> X\n' > "$xpdir/pkga/index.vibei"
 printf 'import ../pkgb { X, make }\nexport fn wrap(v: Int) -> X {\n  make(v)\n}\n' > "$xpdir/pkga/impl.vibe"
 printf 'import ./pkga { wrap }\nimport ./pkgb { value }\nexport let _start: () -> Int = () -> { value(wrap(42)) }\n' > "$xpdir/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$xpdir/ok.vibe" "$xpdir/ok.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$xpdir/ok.wasm" ]; then
-  echo "[compiler-gate] FAIL: .vibei contract's cross-package directory import (../pkgb) did not resolve (#842)" >&2
-  cat "$xpdir/ok.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$xpdir/ok.vibe" "$xpdir/ok.wasm" _start
+gate_require_artifact "$xpdir/ok.wasm" ".vibei contract's cross-package directory import (../pkgb) did not resolve (#842)"
 xpres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xpdir/ok.wasm" 2>/dev/null | tr -dc '0-9')"
 rm -rf "$xpdir"
 if [ "$xpres" != "42" ]; then
@@ -1084,13 +1013,8 @@ if ! printf '%s' "$pin" | grep -qE '^#pkg:b3:[0-9a-f]{64}$'; then
   echo "$pin" >&2; exit 1
 fi
 printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' "$pin" > "$cdir2/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$cdir2/ok.vibe" "$cdir2/ok.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$cdir2/ok.wasm" ]; then
-  echo "[compiler-gate] FAIL: pinned store import did not compile (#730)" >&2
-  cat "$cdir2/ok.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$cdir2/ok.vibe" "$cdir2/ok.wasm" _start
+gate_require_artifact "$cdir2/ok.wasm" "pinned store import did not compile (#730)"
 # #2227: check must agree with the build lane it just exercised -- the same
 # require-pin head used to be a parse error on the check lane. A clean check
 # writes no .diag sidecar.
@@ -1105,14 +1029,8 @@ fi
 # #2227: same pin head in a .vibex -- the script-head directive scan used to
 # read the pin's #pkg:sha1: as an unknown # directive before pin extraction.
 printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\n\nfn main allows () {\n  let _ = triple(14)\n}\n' "$pin" > "$cdir2/ok_pin.vibex"
-rm -f "$cdir2/ok_pin.wasm" "$cdir2/ok_pin.wasm.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$cdir2/ok_pin.vibex" "$cdir2/ok_pin.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$cdir2/ok_pin.wasm" ]; then
-  echo "[compiler-gate] FAIL: a .vibex with a require-pin head did not compile (#2227)" >&2
-  cat "$cdir2/ok_pin.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$cdir2/ok_pin.vibex" "$cdir2/ok_pin.wasm" main
+gate_require_artifact "$cdir2/ok_pin.wasm" "a .vibex with a require-pin head did not compile (#2227)"
 printf 'require @gate/d2pkg 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -1140,13 +1058,8 @@ if ! grep -qE "= #pkg:b3:[0-9a-f]{64}" "$cdir2/filled.vibe" 2>/dev/null; then
   echo "[compiler-gate] FAIL: VIBE_FILL_PINS did not insert the pin (#730 D-3 / #2829)" >&2
   cat "$cdir2/filled.vibe.diag" >&2 2>/dev/null; exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$cdir2/filled.vibe" "$cdir2/filled.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$cdir2/filled.wasm" ]; then
-  echo "[compiler-gate] FAIL: pin-filled source did not compile (#730 D-3)" >&2
-  cat "$cdir2/filled.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$cdir2/filled.vibe" "$cdir2/filled.wasm" _start
+gate_require_artifact "$cdir2/filled.wasm" "pin-filled source did not compile (#730 D-3)"
 VIBE_NORMALIZE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/filled.vibe" "$cdir2/norm.vibe" >/dev/null 2>&1 || true
@@ -1171,13 +1084,8 @@ printf 'export fn greet_n(x: Int) -> Int { x + 2 }\n' > "$lpkg/impl.vibe"
 ldir="_build/_gate_lib751"
 rm -rf "$ldir"; mkdir -p "$ldir"
 printf 'import @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ldir/ok.vibe" "$ldir/ok.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$ldir/ok.wasm" ]; then
-  echo "[compiler-gate] FAIL: unpinned lib/ package import did not compile (#751)" >&2
-  cat "$ldir/ok.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$ldir/ok.vibe" "$ldir/ok.wasm" _start
+gate_require_artifact "$ldir/ok.wasm" "unpinned lib/ package import did not compile (#751)"
 printf 'require @gate751/greet 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -1220,13 +1128,8 @@ fi
 # (2) a ":"-separated VIBE_LIB resolves through the first root that has the
 #     package (missing roots skipped); the compiled program runs.
 printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 }\n' > "$xdir/ext.vibe"
-VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$xdir/ext.vibe" "$xdir/ext.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$xdir/ext.wasm" ]; then
-  echo "[compiler-gate] FAIL: VIBE_LIB root resolution did not compile (#751)" >&2
-  cat "$xdir/ext.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+VIBE_LIB="$xroot/does-not-exist:$xroot" gate_fs_compile "$xdir/ext.vibe" "$xdir/ext.wasm" _start
+gate_require_artifact "$xdir/ext.wasm" "VIBE_LIB root resolution did not compile (#751)"
 ext_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xdir/ext.wasm" 2>/dev/null | tail -1)"
 if [ "$ext_out" != "42" ]; then
   echo "[compiler-gate] FAIL: VIBE_LIB-resolved package returned '$ext_out' (want 42) (#751)" >&2; exit 1
@@ -1236,13 +1139,8 @@ mkdir -p "lib/@gate751x/echo"
 printf 'fn echo_n(x: Int) -> Int\n' > "lib/@gate751x/echo/index.vibei"
 printf 'export fn echo_n(x: Int) -> Int { x + 3 }\n' > "lib/@gate751x/echo/impl.vibe"
 printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 }\n' > "$xdir/ws.vibe"
-VIBE_LIB="$xroot/does-not-exist:$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$xdir/ws.vibe" "$xdir/ws.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$xdir/ws.wasm" ]; then
-  echo "[compiler-gate] FAIL: workspace-precedence consumer did not compile (#751)" >&2
-  cat "$xdir/ws.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+VIBE_LIB="$xroot/does-not-exist:$xroot" gate_fs_compile "$xdir/ws.vibe" "$xdir/ws.wasm" _start
+gate_require_artifact "$xdir/ws.wasm" "workspace-precedence consumer did not compile (#751)"
 ws_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xdir/ws.wasm" 2>/dev/null | tail -1)"
 if [ "$ws_out" != "43" ]; then
   echo "[compiler-gate] FAIL: workspace lib/ did not win over VIBE_LIB root (got '$ws_out', want 43) (#751)" >&2; exit 1
@@ -1267,13 +1165,8 @@ fi
 #     resolving).
 rm -rf "lib/@gate751x"
 printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(38) }\n' > "$xdir/replay.vibe"
-VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$xdir/replay.vibe" "$xdir/replay1.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$xdir/replay1.wasm" ]; then
-  echo "[compiler-gate] FAIL: replay warm-up compile failed (#758)" >&2
-  cat "$xdir/replay1.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+VIBE_LIB="$xroot" gate_fs_compile "$xdir/replay.vibe" "$xdir/replay1.wasm" _start
+gate_require_artifact "$xdir/replay1.wasm" "replay warm-up compile failed (#758)"
 if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/replay.vibe" "$xdir/replay2.wasm" _start >/dev/null 2>&1 \
@@ -1378,13 +1271,8 @@ if ! VIBE_HOME="$jhome" gate_vibe_pkg install "@gate754/mathx@1.0.0" > "$jdir/in
   cat "$jdir/inst1.log" >&2; exit 1
 fi
 printf 'import @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) }\n' > "$jdir/use.vibe"
-VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$jdir/use.vibe" "$jdir/use.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$jdir/use.wasm" ]; then
-  echo "[compiler-gate] FAIL: materialized package did not resolve via VIBE_HOME default root (#754)" >&2
-  cat "$jdir/use.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+VIBE_HOME="$jhome" gate_fs_compile "$jdir/use.vibe" "$jdir/use.wasm" _start
+gate_require_artifact "$jdir/use.wasm" "materialized package did not resolve via VIBE_HOME default root (#754)"
 juse_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$jdir/use.wasm" 2>/dev/null | tail -1)"
 if [ "$juse_out" != "44" ]; then
   echo "[compiler-gate] FAIL: materialized package returned '$juse_out' (want 44) (#754)" >&2; exit 1
@@ -1396,13 +1284,8 @@ if ! VIBE_HOME="$jhome" gate_vibe_pkg install "@gate754/mathx@1.0.0" --store > "
 fi
 jhash="$(awk -F'\t' '$1 == "@gate754/mathx@1.0.0" { print $2 }' "$jhome/cache/versions.tsv")"
 printf 'require @gate754/mathx 1.0.0 = #%s\n\nimport @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) + 0 }\n' "$jhash" > "$jdir/pinned.vibe"
-VIBE_REQUIRE_PINS=1 VIBE_HOME="$jhome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$jdir/pinned.vibe" "$jdir/pinned.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$jdir/pinned.wasm" ]; then
-  echo "[compiler-gate] FAIL: pinned store build under VIBE_REQUIRE_PINS=1 failed (#754)" >&2
-  cat "$jdir/pinned.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+VIBE_REQUIRE_PINS=1 VIBE_HOME="$jhome" gate_fs_compile "$jdir/pinned.vibe" "$jdir/pinned.wasm" _start
+gate_require_artifact "$jdir/pinned.wasm" "pinned store build under VIBE_REQUIRE_PINS=1 failed (#754)"
 # same-version republish with different content must be rejected
 printf 'export fn quad(x: Int) -> Int { x * 5 }\n' > "$jsrc/impl.vibe"
 if VIBE_HOME="$jhome" gate_vibe_pkg publish "$jsrc" > "$jdir/pub2.log" 2>&1; then
@@ -1514,9 +1397,7 @@ if ! grep -q "@gate755/hex@1.0.0" "$khome/cache/provenance.tsv" 2>/dev/null; the
   echo "[compiler-gate] FAIL: git add did not record provenance (#755)" >&2; exit 1
 fi
 printf 'import @gate755/hex { hex_n }\nexport let _start: () -> Int = () -> { hex_n(36) }\n' > "$kdir/use.vibe"
-VIBE_HOME="$khome" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$kdir/use.vibe" "$kdir/use.wasm" _start >/dev/null 2>&1 || true
+VIBE_HOME="$khome" gate_fs_compile "$kdir/use.vibe" "$kdir/use.wasm" _start
 kuse_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$kdir/use.wasm" 2>/dev/null | tail -1)"
 if [ "$kuse_out" != "42" ]; then
   echo "[compiler-gate] FAIL: git-added package returned '$kuse_out' (want 42) (#755)" >&2; exit 1
@@ -1618,9 +1499,7 @@ if ! awk -F'\t' '$1 == "0" && $2 == "publish" && $3 == "@gate805/logx@1.0.0"' "$
   echo "[compiler-gate] FAIL: publish did not append a transparency-log record (#805)" >&2
   cat "$lhome805/log/records.tsv" >&2 2>/dev/null; exit 1
 fi
-if [ ! -s "$lhome805/log/head" ]; then
-  echo "[compiler-gate] FAIL: publish did not write a merkle head (#805)" >&2; exit 1
-fi
+gate_require_artifact "$lhome805/log/head" "publish did not write a merkle head (#805)"
 cp "$lhome805/log/records.tsv" "$ldir805/log1.records"
 cp "$lhome805/log/head" "$ldir805/log1.head"
 # (2) a second publish extends the log; install verifies an inclusion proof
@@ -1727,38 +1606,23 @@ edir="_build/_gate_ef"
 rm -rf "$edir"; mkdir -p "$edir"
 # (a) satisfied contract: requires + ensures hold, the call returns 42.
 printf 'fn checked_add(x: Int, y: Int) -> Int where { requires: x >= 0, requires: y >= 0, ensures: result >= x } { x + y }\nexport let _start: () -> Int = () -> { checked_add(40, 2) }\n' > "$edir/ok.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$edir/ok.vibe" "$edir/ok.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$edir/ok.wasm" ]; then
-  echo "[compiler-gate] FAIL: satisfied where-contract program did not compile (#731)" >&2
-  cat "$edir/ok.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$edir/ok.vibe" "$edir/ok.wasm" _start
+gate_require_artifact "$edir/ok.wasm" "satisfied where-contract program did not compile (#731)"
 ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/ok.wasm" 2>/dev/null | tail -1)"
 if [ "$ok_out" != "42" ]; then
   echo "[compiler-gate] FAIL: satisfied where-contract returned '$ok_out' (want 42) (#731)" >&2; exit 1
 fi
 # (b) violated requires: entry assert traps.
 printf 'fn half_pos(x: Int) -> Int where { requires: x > 0 } { x / 2 }\nexport let _start: () -> Int = () -> { half_pos(0 - 4) }\n' > "$edir/viol.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$edir/viol.vibe" "$edir/viol.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$edir/viol.wasm" ]; then
-  echo "[compiler-gate] FAIL: where-contract program did not compile (#731)" >&2
-  cat "$edir/viol.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$edir/viol.vibe" "$edir/viol.wasm" _start
+gate_require_artifact "$edir/viol.wasm" "where-contract program did not compile (#731)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: violated requires clause did not trap (#731)" >&2; exit 1
 fi
 # (c) violated ensures: exit assert (over the `result` binding) traps.
 printf 'fn bad_dec(x: Int) -> Int where { ensures: result > x } { x - 1 }\nexport let _start: () -> Int = () -> { bad_dec(7) }\n' > "$edir/viol_ens.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$edir/viol_ens.vibe" "$edir/viol_ens.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$edir/viol_ens.wasm" ]; then
-  echo "[compiler-gate] FAIL: ensures-contract program did not compile (#731)" >&2
-  cat "$edir/viol_ens.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$edir/viol_ens.vibe" "$edir/viol_ens.wasm" _start
+gate_require_artifact "$edir/viol_ens.wasm" "ensures-contract program did not compile (#731)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ens.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: violated ensures clause did not trap (#731)" >&2; exit 1
 fi
@@ -1821,13 +1685,8 @@ export let _start: () -> Int = () -> {
   0
 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$cdir6f/consumer.vibe" "$cdir6f/consumer.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$cdir6f/consumer.wasm" ]; then
-  echo "[compiler-gate] FAIL: pinned @vibe/core consumer did not compile" >&2
-  cat "$cdir6f/consumer.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$cdir6f/consumer.vibe" "$cdir6f/consumer.wasm" _start
+gate_require_artifact "$cdir6f/consumer.wasm" "pinned @vibe/core consumer did not compile"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cdir6f/consumer.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: @vibe/core consumer trapped at runtime" >&2; exit 1
 fi
@@ -1856,12 +1715,8 @@ export let _start: () -> Int = () -> {
 }
 EOF
 # Expected: 11 + 21 + 10 + 20 = 62
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$pdir/litpat.vibe" "$pdir/litpat.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$pdir/litpat.wasm" ]; then
-  echo "[compiler-gate] FAIL: literal sub-pattern program did not compile" >&2; exit 1
-fi
+gate_fs_compile "$pdir/litpat.vibe" "$pdir/litpat.wasm" _start
+gate_require_artifact "$pdir/litpat.wasm" "literal sub-pattern program did not compile"
 litpat_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$pdir/litpat.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$litpat_out" != "62" ]; then
@@ -1885,9 +1740,7 @@ printf 'let sum: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }\nexport let r
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/in.vibe" "$ldir/out.vibe" >/dev/null 2>&1 || true
-if [ ! -s "$ldir/out.vibe" ]; then
-  echo "[compiler-gate] FAIL: labeled-param normalize produced no output" >&2; exit 1
-fi
+gate_require_artifact "$ldir/out.vibe" "labeled-param normalize produced no output"
 # Param names must survive verbatim; a digit before `~` means the gensym bug is back.
 if ! grep -q "(x~, y~)" "$ldir/out.vibe" || grep -Eq "[0-9]+~" "$ldir/out.vibe"; then
   echo "[compiler-gate] FAIL: labeled param names mangled (#604 regressed)" >&2
@@ -1960,12 +1813,8 @@ export let _start: () -> Int = () -> {
 EOF
 # Expected: (4+6) + (4+7+6) = 10 + 17 = 27.
 # The bound `x` in Some(x) must compile (no trap), and Some must not route to None.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/nested.vibe" "$ndir/nested.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$ndir/nested.wasm" ]; then
-  echo "[compiler-gate] FAIL: nested ctor sub-pattern program did not compile (#608 regressed: codegen trap)" >&2; exit 1
-fi
+gate_fs_compile "$ndir/nested.vibe" "$ndir/nested.wasm" _start
+gate_require_artifact "$ndir/nested.wasm" "nested ctor sub-pattern program did not compile (#608 regressed: codegen trap)"
 nested_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$ndir/nested.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$nested_out" != "27" ]; then
@@ -1987,12 +1836,8 @@ let early: () -> Int = () -> { late() }
 let late: () -> Int = () -> { 41 }
 export let _start: () -> Int = () -> { early() + 1 }
 EOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$wdir/fwd.vibe" "$wdir/fwd.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$wdir/fwd.wasm" ]; then
-  echo "[compiler-gate] FAIL: forward-reference program did not compile (#602 regressed: checker trap)" >&2; exit 1
-fi
+gate_fs_compile "$wdir/fwd.vibe" "$wdir/fwd.wasm" _start
+gate_require_artifact "$wdir/fwd.wasm" "forward-reference program did not compile (#602 regressed: checker trap)"
 fwd_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$wdir/fwd.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$fwd_out" != "42" ]; then
@@ -2002,9 +1847,7 @@ fi
 # Guard: a genuinely-undefined name must still be rejected (hoist only adds names
 # that are actually defined later).
 printf 'export let _start: () -> Int = () -> { genuinely_undefined_name() }\n' > "$wdir/undef.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$wdir/undef.vibe" "$wdir/undef.wasm" _start >/dev/null 2>&1 || true
+gate_fs_compile "$wdir/undef.vibe" "$wdir/undef.wasm" _start
 if [ -s "$wdir/undef.wasm" ]; then
   echo "[compiler-gate] FAIL: undefined name compiled (#602 hoist over-permitted)" >&2; exit 1
 fi
@@ -2031,12 +1874,8 @@ export let _start: () -> Int = () -> {
 }
 EOF
 # 3*1000 + 52*100 + 3*10 + 0 = 3000 + 5200 + 30 = 8230
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$idir/interp.vibe" "$idir/interp.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$idir/interp.wasm" ]; then
-  echo "[compiler-gate] FAIL: interpolation program did not compile" >&2; exit 1
-fi
+gate_fs_compile "$idir/interp.vibe" "$idir/interp.wasm" _start
+gate_require_artifact "$idir/interp.wasm" "interpolation program did not compile"
 interp_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$idir/interp.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$interp_out" != "8230" ]; then
@@ -2066,17 +1905,11 @@ test "pos" {
   assert(pick(5) == 1)
 }
 EOF
-VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$cdir/cov_test.wasm" ]; then
-  echo "[compiler-gate] FAIL: coverage build produced no wasm (#cov regressed)" >&2; exit 1
-fi
+VIBE_COVERAGE=1 gate_fs_compile "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __no_entry__
+gate_require_artifact "$cdir/cov_test.wasm" "coverage build produced no wasm (#cov regressed)"
 VIBE_COV_OUT="$cdir/cov.json" VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cdir/cov_test.wasm" >/dev/null 2>&1 || true
-if [ ! -s "$cdir/cov.json" ]; then
-  echo "[compiler-gate] FAIL: no coverage report produced (vibe_cov section missing?)" >&2; exit 1
-fi
+gate_require_artifact "$cdir/cov.json" "no coverage report produced (vibe_cov section missing?)"
 cov_check="$(python3 - "$cdir/cov.json" <<'PY'
 import json, sys
 r = json.load(open(sys.argv[1]))
@@ -2132,11 +1965,7 @@ EOF
 VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tldir/bool_render.vibe" "$tldir/cov.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$tldir/cov.wasm" ]; then
-  echo "[compiler-gate] FAIL: coverage build of the #2469 probe produced no wasm" >&2
-  cat "$tldir/cov.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$tldir/cov.wasm" "coverage build of the #2469 probe produced no wasm"
 tl_cov_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$tldir/cov.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$tl_cov_out" != "4116" ]; then
@@ -2191,13 +2020,8 @@ export let _start: () -> Int = () -> {
 }
 EOF
 # Expected: 42 + 42 + 42 + 84 + (10+20) + (7+8) + (42+43) = 340
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$mbtdir/mbt.vibe" "$mbtdir/mbt.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$mbtdir/mbt.wasm" ]; then
-  echo "[compiler-gate] FAIL: trait dict-passing program did not compile" >&2
-  cat "$mbtdir/mbt.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$mbtdir/mbt.vibe" "$mbtdir/mbt.wasm" _start
+gate_require_artifact "$mbtdir/mbt.wasm" "trait dict-passing program did not compile"
 mbt_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$mbtdir/mbt.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$mbt_out" != "340" ]; then
@@ -2234,13 +2058,8 @@ export let _start: () -> Int = () -> {
 }
 EOF
 # Expected: 84 (both Int and String witnesses resolved -> correct shown strings)
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$mgdir/mg.vibe" "$mgdir/mg.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$mgdir/mg.wasm" ]; then
-  echo "[compiler-gate] FAIL: rank-1 trait-method generic program did not compile" >&2
-  cat "$mgdir/mg.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$mgdir/mg.vibe" "$mgdir/mg.wasm" _start
+gate_require_artifact "$mgdir/mg.wasm" "rank-1 trait-method generic program did not compile"
 mg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$mgdir/mg.wasm" 2>/dev/null | tr -dc '0-9')"
 if [ "$mg_out" != "84" ]; then
@@ -2266,13 +2085,8 @@ rm -rf "$ufcsdir"; mkdir -p "$ufcsdir"
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
 # actual/expected and fails the run.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/trait_bound_ufcs_method.vibe "$ufcsdir/ufcs.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$ufcsdir/ufcs.wasm" ]; then
-  echo "[compiler-gate] FAIL: UFCS-on-bounded-tparam program did not compile" >&2
-  cat "$ufcsdir/ufcs.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile fixtures/trait_bound_ufcs_method.vibe "$ufcsdir/ufcs.wasm" __no_entry__
+gate_require_artifact "$ufcsdir/ufcs.wasm" "UFCS-on-bounded-tparam program did not compile"
 if ! ufcs_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$ufcsdir/ufcs.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: UFCS-on-bounded-tparam mismatch (want 97097 -> #931 regressed)" >&2
@@ -2309,13 +2123,8 @@ export let _start: () -> Int = () -> {
 EOF
 # Expected: Less=1, Greater=3, Equal=2, then len("P { x: 7, y: 9 }")=16
 # -> 132016
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$drvdir/drv.vibe" "$drvdir/drv.wasm" _start >/dev/null 2>&1 || true
-if [ ! -s "$drvdir/drv.wasm" ]; then
-  echo "[compiler-gate] FAIL: derive program did not compile" >&2
-  cat "$drvdir/drv.wasm.diag" >&2 2>/dev/null; exit 1
-fi
+gate_fs_compile "$drvdir/drv.vibe" "$drvdir/drv.wasm" _start
+gate_require_artifact "$drvdir/drv.wasm" "derive program did not compile"
 drv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$drvdir/drv.wasm" 2>/dev/null | tr -dc '0-9-')"
 if [ "$drv_out" != "132016" ]; then
@@ -2348,14 +2157,8 @@ run_test_block_fixtures() {
     # here rather than reporting it as a compile failure of a missing file.
     [ -f "$fx" ] || { echo "[compiler-gate] FAIL: $label: no such fixture '$fx'" >&2; exit 1; }
     fxout="_build/_gate_tbf_$(basename "${fx%.vibe}").wasm"
-    rm -f "$fxout" "$fxout.diag"
-    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1 || true
-    if [ ! -s "$fxout" ]; then
-      echo "[compiler-gate] FAIL: $fx did not compile ($label)" >&2
-      cat "$fxout.diag" >&2 2>/dev/null; exit 1
-    fi
+    gate_fs_compile "$fx" "$fxout" __no_entry__
+    gate_require_artifact "$fxout" "$fx did not compile ($label)"
     if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
         --invoke _start "$fxout" >/dev/null 2>&1; then
       echo "[compiler-gate] FAIL: $fx has a failing test (assert trapped) ($label)" >&2

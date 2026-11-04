@@ -19,6 +19,7 @@ import @vibe/compiler/core {
   append_non_import_stmts_without_alias_rewrite,
   apply_export_renames_stmts,
   build_export_rename_plan,
+  builtin_iterator_serialized_boundary_markers,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
   dir_of_path,
@@ -191,7 +192,7 @@ fn lookup_flat_base(flat_paths: Array[String], flat_bases: Array[Int], path: Str
 /// program (the merge output of one file depends on the export surfaces of ALL
 /// files: ambiguous exported names are renamed at their defs and at importing
 /// files' references).
-fn parse_sources_for_merge(_ sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with Env + Exception {
+fn parse_sources_for_merge(_ sources: Array[(String, String)]) -> (Array[String], Array[Array[Stmt]]) with Exception {
   let file_paths = array_empty()
   let file_stmts = array_empty()
   let mut si = 0
@@ -208,7 +209,7 @@ fn parse_sources_for_merge(_ sources: Array[(String, String)]) -> (Array[String]
 /// statements, `is_entry_source` mirrors the pre-#716 per-group entry rule
 /// (entry keeps its private names), and `plan`/`sources` drive the export-name
 /// rewriting and the collision-def fallback.
-fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int], units: Array[LinkedUnit]) -> Unit with Env + Exception {
+fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int], units: Array[LinkedUnit]) -> Unit with Exception {
   let unit_start = Array::length(merged)
   // Preserve the proof that an optimized trait namespace came from the
   // standard module. Desugaring consumes this source-local marker before
@@ -251,7 +252,7 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
 /// consume it. Counts and statement IDs describe every flat source seat,
 /// including repeated paths and empty files; clone bodies belong to their
 /// importing source's contribution.
-fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, String)])], disjoint_offset_spaces: Bool, flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int], stmt_file_id_out: Array[Int], collect_stmt_ids: Bool, file_fps_out: Array[String], file_counts_out: Array[Int], collect_file_counts: Bool) -> Array[Stmt] with Env + Exception {
+fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, String)])], disjoint_offset_spaces: Bool, flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int], stmt_file_id_out: Array[Int], collect_stmt_ids: Bool, file_fps_out: Array[String], file_counts_out: Array[Int], collect_file_counts: Bool) -> Array[Stmt] with Exception {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let merged = array_empty()
@@ -554,9 +555,90 @@ export fn ordinary_lane_dbg_prov(file_paths: Array[String], file_counts: Array[I
   DbgProv::{ files: files, file_nls: file_nls, stmt_file_id: stmt_file_id }
 }
 
+/// #1872 boundary 4: the inline-sources merge (`entry/compiler/fs_compile`) --
+/// one flat source list in import order, entry last -- is the grouped merge
+/// over a single group, with disjoint offset spaces. The group's name is never
+/// read, so there is one merge implementation for both entry families. Each
+/// file's base and every alias-collision clone's float offsets are reported for
+/// the caller to rebase its own typed-lowering rows.
+export fn build_inline_merged_stmts(sources: Array[(String, String)], flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int]) -> Array[Stmt] with Exception {
+  build_grouped_merged_stmts_impl(source_groups = [("", sources)], disjoint_offset_spaces = true, flat_paths_out = flat_paths_out, flat_bases_out = flat_bases_out, clone_float_offsets_out = clone_float_offsets_out, stmt_file_id_out = [
+  ], collect_stmt_ids = false, file_fps_out = [], file_counts_out = [], collect_file_counts = false)
+}
+
 /// Located merge without statement provenance, retaining the shared file bases.
 export fn build_grouped_merged_stmts_with_offsets(source_groups: Array[(String, Array[(String, String)])], flat_paths: Array[String], flat_bases: Array[Int]) -> Array[Stmt] with Env + Exception {
   build_grouped_merged_stmts_impl(source_groups = source_groups, disjoint_offset_spaces = true, flat_paths_out = flat_paths, flat_bases_out = flat_bases, clone_float_offsets_out = [
   ], stmt_file_id_out = [], collect_stmt_ids = false, file_fps_out = [], file_counts_out = [
   ], collect_file_counts = false)
+}
+
+/// #1872 boundary 4: the in-db artifact fingerprint of a merged or module
+/// source text, shared by both compile driver families (one copy, so the two
+/// lanes cannot key one artifact two ways).
+export fn artifact_fingerprint_from_source(_ source: String) -> String {
+  let mod1 = 2147483647
+  let mod2 = 2147483629
+  let step1 = 131
+  let step2 = 65599
+  let len = String::length(source)
+  let mut h1 = 17
+  let mut h2 = 29
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(source, at = i)
+    h1 = (h1 * step1 + c + 1) % mod1
+    h2 = (h2 * step2 + c + i + 1) % mod2
+    i = i + 1
+  }
+  String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
+}
+
+/// #1872 boundary 4: the cache-key text of the three typed-lowering offset
+/// tables (float calls, Int renders, Bool renders), shared by both drivers.
+export fn typed_offsets_key(floats: Array[Int], ints: Array[Int], bools: Array[Int]) -> String {
+  let out = StringBuilder::new()
+  let mut k = 0
+  while k < 3 {
+    let table = if k == 0 {
+      floats
+    } else if k == 1 {
+      ints
+    } else {
+      bools
+    }
+    StringBuilder::push(out, value = "|")
+    let mut i = 0
+    while i < Array::length(table) {
+      StringBuilder::push(out, value = Int::to_string(Array::get(table, at = i)))
+      StringBuilder::push(out, value = ",")
+      i = i + 1
+    }
+    k = k + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+/// #1872 boundary 4: the module lane keeps only function bindings and the
+/// serialized builtin-iterator boundary markers; shared by both drivers.
+export fn module_lane_filter_stmts(_ stmts: Array[Stmt]) -> Array[Stmt] {
+  let filtered = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, at = i)
+    let keep = match stmt {
+      SLet(_, _, _, _, expr) => match expr {
+        EFn(_, _, _, _, _, _) => true,
+        _ => false
+      },
+      _ => builtin_iterator_serialized_boundary_markers(stmt) is Some(_)
+    }
+    if keep {
+      Array::push(filtered, value = stmt)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  filtered
 }

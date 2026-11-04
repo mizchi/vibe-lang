@@ -130,3 +130,38 @@ gate_split_cli_cache_is_current() {
   rm -rf "$_gscc_dir"
   return 1
 }
+
+# --- the compile-and-require harness (#3671) ---------------------------------
+#
+# Every lane used to spell an FS-lane compile in three lines and its "the
+# compile must have produced a module" check in five, hundreds of times over.
+# These two helpers are those spellings, so a lane states WHAT it compiles and
+# WHAT it requires, and the mechanics live in one place.
+
+# gate_fs_compile <src> <out> <entry> [arg...]
+#
+# Compile <src> to <out> on the FS lane with $stage2_wasm. The previous <out>
+# and <out>.diag are removed FIRST, so a compile that fails cannot be mistaken
+# for one that succeeded by a stale artifact left by an earlier run. Never
+# aborts: the caller's own check -- gate_require_artifact, or an assertion on
+# the .diag -- is always reached. The selectors are inline, not routed through
+# a variable (#2248).
+gate_fs_compile() {
+  rm -f "$2" "$2.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$@" >/dev/null 2>&1 || true
+}
+
+# gate_require_artifact <out> <message>
+#
+# FAIL the lane with <message> unless <out> is a non-empty file, showing the
+# compiler's <out>.diag. <message> says what did not compile, in the lane's
+# words.
+gate_require_artifact() {
+  if [ ! -s "$1" ]; then
+    echo "[compiler-gate] FAIL: $2" >&2
+    cat "$1.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+}

@@ -183,6 +183,56 @@ else
   ok "an empty build product is refused"
 fi
 
+# --- gate_require_artifact (#3671) ---------------------------------------------
+#
+# It exits, so each case runs in a subshell and the case reads its status.
+
+# 5. a non-empty artifact passes, silently.
+printf 'wasm' > "$WORK/ok.wasm"
+if (gate_require_artifact "$WORK/ok.wasm" "should not fire") >"$WORK/req.out" 2>&1 && [ ! -s "$WORK/req.out" ]; then
+  ok "gate_require_artifact passes a non-empty artifact"
+else
+  bad "gate_require_artifact rejected a non-empty artifact: $(cat "$WORK/req.out")"
+fi
+
+# 6. a missing artifact fails with the message AND the compiler's diagnostic.
+rm -f "$WORK/none.wasm"
+printf 'error: unknown name: frobnicate\n' > "$WORK/none.wasm.diag"
+if (gate_require_artifact "$WORK/none.wasm" "the probe did not compile") >"$WORK/req.out" 2>&1; then
+  bad "gate_require_artifact passed a missing artifact"
+elif grep -qF "[compiler-gate] FAIL: the probe did not compile" "$WORK/req.out" \
+  && grep -qF "unknown name: frobnicate" "$WORK/req.out"; then
+  ok "gate_require_artifact fails a missing artifact with the message and the .diag"
+else
+  bad "gate_require_artifact failed without the message or the .diag: $(cat "$WORK/req.out")"
+fi
+
+# 7. an EMPTY artifact is a failure too: a zero-byte module is not a module.
+: > "$WORK/empty.wasm"
+if (gate_require_artifact "$WORK/empty.wasm" "empty") >/dev/null 2>&1; then
+  bad "gate_require_artifact passed an empty artifact"
+else
+  ok "gate_require_artifact fails an empty artifact"
+fi
+
+# --- gate_fs_compile (#3671) -------------------------------------------------
+#
+# 8. a compile that fails leaves NO artifact behind, even when an earlier run
+# left one at the same path -- otherwise gate_require_artifact would pass on
+# the stale module. A compiler that does not exist is the failing compile.
+printf 'stale' > "$WORK/stale.wasm"
+printf 'stale diag' > "$WORK/stale.wasm.diag"
+printf 'let x = 1\n' > "$WORK/src.vibe"
+if ( stage2_wasm="$WORK/no_such_stage2.wasm"; gate_fs_compile "$WORK/src.vibe" "$WORK/stale.wasm" main ); then
+  if [ ! -e "$WORK/stale.wasm" ] && [ ! -e "$WORK/stale.wasm.diag" ]; then
+    ok "gate_fs_compile removes a stale artifact and never aborts"
+  else
+    bad "gate_fs_compile left the stale artifact or its .diag in place"
+  fi
+else
+  bad "gate_fs_compile aborted on a failing compile; the caller's check would never run"
+fi
+
 echo "----"
 echo "passed: $passed, failed: $failed"
 [ "$failed" -eq 0 ]

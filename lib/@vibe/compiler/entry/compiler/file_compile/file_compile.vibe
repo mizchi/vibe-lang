@@ -1,11 +1,14 @@
 import @vibe/compiler/linker/merge {
+  artifact_fingerprint_from_source,
   build_grouped_merged_stmts,
   build_grouped_merged_stmts_counted,
   build_grouped_merged_stmts_gc,
   build_grouped_merged_stmts_prov,
   build_grouped_merged_stmts_with_offsets,
   merged_stmts_and_offsets,
-  ordinary_lane_dbg_prov
+  module_lane_filter_stmts,
+  ordinary_lane_dbg_prov,
+  typed_offsets_key
 }
 
 import @vibe/compiler/linker/import_closure {
@@ -46,7 +49,6 @@ import @vibe/core {
 
 import @vibe/compiler/core {
   Stmt,
-  builtin_iterator_serialized_boundary_markers,
   dce_stmts_before_trait_desugar,
   mark_private_builtin_references,
   merged_offset_space_reset,
@@ -156,24 +158,6 @@ fn elapsed_us_since(_ start_us: Int) -> Int with Profiler {
   }
 }
 
-fn artifact_fingerprint_from_source(_ source: String) -> String {
-  let mod1 = 2147483647
-  let mod2 = 2147483629
-  let step1 = 131
-  let step2 = 65599
-  let len = String::length(source)
-  let mut h1 = 17
-  let mut h2 = 29
-  let mut i = 0
-  while i < len {
-    let c = String::char_code_at(source, at = i)
-    h1 = (h1 * step1 + c + 1) % mod1
-    h2 = (h2 * step2 + c + i + 1) % mod2
-    i = i + 1
-  }
-  String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
-}
-
 fn seed_type_db_from_source_groups(db: TypeDb, source_groups: Array[(String, Array[(String, String)])]) -> TypeDb {
   let mut seeded = db
   let mut gi = 0
@@ -241,77 +225,6 @@ export fn prelude_ordinary_lane_prov_report_fs(_ entry_path: String) -> String w
 export fn prelude_module_import_closure_report_fs(_ entry_path: String) -> String with Env + Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   prelude_module_import_closure_report(source_groups)
-}
-
-/// The statement filter `build_module_source` (runtime.vibe) applies while
-/// reprinting: a module keeps its top-level function bindings and the
-/// serialized builtin-iterator boundary markers, and nothing else.
-///
-/// #2437: lifted out of the reprint so the statement merge can be filtered
-/// directly. Selecting statements preserves every node offset, which is what
-/// lets the rebased typed-lowering tables still name the right nodes. Kept
-/// byte-identical to `fs_compile`'s copy on purpose -- the two lanes must
-/// agree on what a module contains.
-/// #2621 review: the typed-lowering tables belong IN the artifact key.
-///
-/// The key is derived from `print_program(filtered)`, and
-/// `module_lane_filter_stmts` drops everything that is not a top-level function
-/// binding -- type aliases included. So two programs that differ only in a
-/// DROPPED declaration print identically:
-///
-///   type Value = Int      let render: (Value) -> String = (v) -> { __to_string(v) }
-///   type Value = Bool     let render: (Value) -> String = (v) -> { __to_string(v) }
-///
-/// The retained text is the same; the Int-render and Bool-render channels are
-/// not. On a shared `TypeDb`, the second compile would hit the first's artifact
-/// and emit the first program's lowering for the second program's types.
-///
-/// Folding the tables in costs one pass over three small Int arrays and makes
-/// the key a function of everything codegen actually reads, rather than of the
-/// text alone. Cheaper and narrower than hashing the whole checked input.
-fn typed_offsets_key(floats: Array[Int], ints: Array[Int], bools: Array[Int]) -> String {
-  let out = StringBuilder::new()
-  let mut k = 0
-  while k < 3 {
-    let table = if k == 0 {
-      floats
-    } else if k == 1 {
-      ints
-    } else {
-      bools
-    }
-    StringBuilder::push(out, value = "|")
-    let mut i = 0
-    while i < Array::length(table) {
-      StringBuilder::push(out, value = Int::to_string(Array::get(table, at = i)))
-      StringBuilder::push(out, value = ",")
-      i = i + 1
-    }
-    k = k + 1
-  }
-  StringBuilder::freeze(out)
-}
-
-fn module_lane_filter_stmts(_ stmts: Array[Stmt]) -> Array[Stmt] {
-  let filtered = array_empty()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, at = i)
-    let keep = match stmt {
-      SLet(_, _, _, _, expr) => match expr {
-        EFn(_, _, _, _, _, _) => true,
-        _ => false
-      },
-      _ => builtin_iterator_serialized_boundary_markers(stmt) is Some(_)
-    }
-    if keep {
-      Array::push(filtered, value = stmt)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  filtered
 }
 
 fn prepare_file_fs_from_source_groups_persistent_cached(db: TypeDb, entry_path: String, source_groups: Array[(String, Array[(String, String)])]) -> TypeDb with Env + Exception + Fs {
@@ -2019,14 +1932,12 @@ export fn compile_file_fs_mode_cached_profiled(db: TypeDb, entry_path: String, e
 ///
 /// Two deliberate consequences:
 ///
-///   - The in-db artifact kind is `module-typed`, not `module`. `fs_compile`
-///     carries a second copy of this entry that still compiles WITHOUT the
-///     tables and still writes `module`; sharing a kind would let one entry
-///     silently return the other's lowering on a shared `TypeDb`. The two
-///     PERSISTENT kinds were already distinct (`file-compile-module` vs
-///     `fs-compile-module`) and that key folds in `codegen_fingerprint()`, a
-///     hash of every compiler source, so entries written before this change
-///     cold-miss on their own.
+///   - The in-db artifact kind is `module-typed`, not `module`: the
+///     sources-in module entries (`entry/compiler/fs_compile`) still write
+///     `module`, and sharing a kind would let one entry silently return the
+///     other's lowering on a shared `TypeDb`. The persistent key folds in
+///     `codegen_fingerprint()`, a hash of every compiler source, so entries
+///     written before a change cold-miss on their own.
 ///   - `db_grouped_merged_source` / `db_module_source` are no longer called
 ///     here, so this entry no longer bumps their counters. Those counters were
 ///     this lane's only behavioural coverage, so the tests that read them were

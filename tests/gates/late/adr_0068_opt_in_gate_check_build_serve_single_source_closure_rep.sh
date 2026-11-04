@@ -81,17 +81,9 @@ if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/uses.wasm.diag" 2>/dev/null; then
   exit 1
 fi
 uw_build "$uwdir/uses.vibe" "$uwdir/uses_optin.wasm" VIBE_UNSTABLE=1
-if [ ! -s "$uwdir/uses_optin.wasm" ]; then
-  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not let the build through (#2248)" >&2
-  cat "$uwdir/uses_optin.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$uwdir/uses_optin.wasm" "VIBE_UNSTABLE=1 did not let the build through (#2248)"
 uw_build "$uwdir/plain.vibe" "$uwdir/plain.wasm"
-if [ ! -s "$uwdir/plain.wasm" ]; then
-  echo "[compiler-gate] FAIL: a file not importing @vibe/concurrent/experimental failed to build (#2248)" >&2
-  cat "$uwdir/plain.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$uwdir/plain.wasm" "a file not importing @vibe/concurrent/experimental failed to build (#2248)"
 
 # The stable core needs no opt-in: `@vibe/concurrent` re-exports the task
 # group, channel and `Parallel::map` subset of the experimental package, and
@@ -126,11 +118,7 @@ if [ -n "$uw_stable_out" ]; then
   exit 1
 fi
 uw_build "$uwdir/stable.vibe" "$uwdir/stable.wasm"
-if [ ! -s "$uwdir/stable.wasm" ]; then
-  echo "[compiler-gate] FAIL: the stable @vibe/concurrent did not build with no opt-in" >&2
-  cat "$uwdir/stable.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$uwdir/stable.wasm" "the stable @vibe/concurrent did not build with no opt-in"
 uw_leak_out="$(VIBE_UNSTABLE=1 VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
   VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" check "$uwdir/stable_leak.vibe" 2>&1 || true)"
 if ! printf '%s\n' "$uw_leak_out" | grep -qF 'TaskGroup::spawn_suspend'; then
@@ -389,11 +377,7 @@ rm -f "$uwdir/bare.optin.wasm" "$uwdir/bare.optin.wasm.diag"
 env -u VIBE_FS_COMPILE VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$uwdir/bare.vibe" "$uwdir/bare.optin.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$uwdir/bare.optin.wasm" ]; then
-  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not clear the single-source gate (#2277)" >&2
-  cat "$uwdir/bare.optin.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$uwdir/bare.optin.wasm" "VIBE_UNSTABLE=1 did not clear the single-source gate (#2277)"
 # ...and an ordinary file on that lane is untouched, so the gate is not simply
 # refusing everything.
 printf 'test "plain" {\n  assert_true(1 + 1 == 2)\n}\n' > "$uwdir/bare_plain.vibe"
@@ -401,11 +385,7 @@ rm -f "$uwdir/bare_plain.wasm" "$uwdir/bare_plain.wasm.diag"
 env -u VIBE_UNSTABLE -u VIBE_FS_COMPILE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$uwdir/bare_plain.vibe" "$uwdir/bare_plain.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$uwdir/bare_plain.wasm" ]; then
-  echo "[compiler-gate] FAIL: the single-source gate refused an ordinary file (#2277)" >&2
-  cat "$uwdir/bare_plain.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$uwdir/bare_plain.wasm" "the single-source gate refused an ordinary file (#2277)"
 # TWO imports of the same package must be located independently. The offset scan
 # restarted from token zero for each `SImport`, so both diagnostics carried the
 # FIRST declaration's coordinates -- and the second one then names a line whose
@@ -477,11 +457,7 @@ if ! grep -qF 'worker.vibe' "$uwdir/sib/main.wasm.diag" 2>/dev/null; then
   exit 1
 fi
 uw_build "$uwdir/sib/main.vibe" "$uwdir/sib/optin.wasm" VIBE_UNSTABLE=1
-if [ ! -s "$uwdir/sib/optin.wasm" ]; then
-  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not let the sibling case build (#2284)" >&2
-  cat "$uwdir/sib/optin.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$uwdir/sib/optin.wasm" "VIBE_UNSTABLE=1 did not let the sibling case build (#2284)"
 # `vibe check` must agree -- the whole point is that the two verbs answer alike.
 uw_sib_out="$(uw_check "$uwdir/sib/main.vibe" || true)"
 if ! printf '%s\n' "$uw_sib_out" | grep -qF 'VIBE_UNSTABLE=1'; then
@@ -495,11 +471,7 @@ mkdir -p "$uwdir/plain2"
 printf 'export fn helper() -> Int {\n  7\n}\n' > "$uwdir/plain2/dep.vibe"
 printf 'import ./dep.vibe {\n  helper\n}\n\nfn main() -> Int {\n  helper()\n}\n' > "$uwdir/plain2/main.vibe"
 uw_build "$uwdir/plain2/main.vibe" "$uwdir/plain2/main.wasm"
-if [ ! -s "$uwdir/plain2/main.wasm" ]; then
-  echo "[compiler-gate] FAIL: the closure scan refused an ordinary two-file program (#2284)" >&2
-  cat "$uwdir/plain2/main.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$uwdir/plain2/main.wasm" "the closure scan refused an ordinary two-file program (#2284)"
 
 # `vibe serve` needs its own copy of the closure gate: it returns before the
 # FS-compile branch that carries the other one, so a handler whose DEPENDENCY
@@ -566,11 +538,7 @@ rm -f "$uwdir/srv/plain.wasm" "$uwdir/srv/plain.wasm.diag"
 env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$uwdir/srv/plain.vibe" "$uwdir/srv/plain.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$uwdir/srv/plain.wasm" ]; then
-  echo "[compiler-gate] FAIL: the serve closure gate refused an ordinary handler (#2302)" >&2
-  cat "$uwdir/srv/plain.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$uwdir/srv/plain.wasm" "the serve closure gate refused an ordinary handler (#2302)"
 
 rm -rf "$uwdir"
 echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + single-source + closure + repeated-import + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
@@ -696,11 +664,7 @@ rm -f "$asdir/shadow.wasm" "$asdir/shadow.wasm.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$asdir/shadow.vibe" "$asdir/shadow.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$asdir/shadow.wasm" ]; then
-  echo "[compiler-gate] FAIL: a program defining its own assert_eq did not compile (#2283)" >&2
-  cat "$asdir/shadow.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$asdir/shadow.wasm" "a program defining its own assert_eq did not compile (#2283)"
 as_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$asdir/shadow.wasm" 2>&1 || true)"
 if ! printf '%s\n' "$as_out" | grep -qx '3'; then
   echo "[compiler-gate] FAIL: the user's own assert_eq was not the function that ran (#2283)" >&2
@@ -780,11 +744,7 @@ rm -f "$asdir/local.wasm" "$asdir/local.wasm.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$asdir/local.vibe" "$asdir/local.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$asdir/local.wasm" ]; then
-  echo "[compiler-gate] FAIL: a program binding assert_eq locally did not compile (#2285)" >&2
-  cat "$asdir/local.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$asdir/local.wasm" "a program binding assert_eq locally did not compile (#2285)"
 local_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$asdir/local.wasm" 2>&1 || true)"
 if [ "$(printf '%s\n' "$local_out" | grep -c '^3$')" != "3" ] || \
    ! printf '%s\n' "$local_out" | grep -qx '42'; then
@@ -832,11 +792,7 @@ rm -f "$asdir/lambda.wasm" "$asdir/lambda.wasm.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$asdir/lambda.vibe" "$asdir/lambda.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$asdir/lambda.wasm" ]; then
-  echo "[compiler-gate] FAIL: a lambda calling a bare assert did not compile (#1095 guard, #2285)" >&2
-  cat "$asdir/lambda.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$asdir/lambda.wasm" "a lambda calling a bare assert did not compile (#1095 guard, #2285)"
 lambda_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$asdir/lambda.wasm" 2>&1 || true)"
 if ! printf '%s\n' "$lambda_out" | grep -qx 'ok'; then
   echo "[compiler-gate] FAIL: a bare assert inside a lambda no longer runs -- #1095 is back (#2285)" >&2
@@ -987,11 +943,7 @@ EQEOF
 for probe in eq eqf; do
   rm -f "$eqdir/$probe.wasm" "$eqdir/$probe.wasm.diag"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"     "$eqdir/$probe.vibe" "$eqdir/$probe.wasm" main >/dev/null 2>&1 || true
-  if [ ! -s "$eqdir/$probe.wasm" ]; then
-    echo "[compiler-gate] FAIL: the $probe shadow probe did not compile (#2309)" >&2
-    cat "$eqdir/$probe.wasm.diag" >&2 2>/dev/null || true
-    exit 1
-  fi
+  gate_require_artifact "$eqdir/$probe.wasm" "the $probe shadow probe did not compile (#2309)"
 done
 eq_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/eq.wasm" 2>&1 || true)"
 if ! printf '%s
@@ -1022,11 +974,7 @@ fn main() -> Unit allows Console {
 EQEOF
 rm -f "$eqdir/builtin.wasm" "$eqdir/builtin.wasm.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$eqdir/builtin.vibe" "$eqdir/builtin.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$eqdir/builtin.wasm" ]; then
-  echo "[compiler-gate] FAIL: the unshadowed eq probe did not compile (#2309)" >&2
-  cat "$eqdir/builtin.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$eqdir/builtin.wasm" "the unshadowed eq probe did not compile (#2309)"
 builtin_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/builtin.wasm" 2>&1 || true)"
 if [ "$(printf '%s
 ' "$builtin_out" | tr -d '[:space:]')" != "nyyn" ]; then
@@ -1053,11 +1001,7 @@ rm -f "$eqdir/toplevel.wasm" "$eqdir/toplevel.wasm.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$eqdir/toplevel.vibe" "$eqdir/toplevel.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$eqdir/toplevel.wasm" ]; then
-  echo "[compiler-gate] FAIL: the top-level eq probe did not compile (#2309)" >&2
-  cat "$eqdir/toplevel.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$eqdir/toplevel.wasm" "the top-level eq probe did not compile (#2309)"
 top_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/toplevel.wasm" 2>&1 || true)"
 if ! printf '%s\n' "$top_out" | grep -qx '3'; then
   echo "[compiler-gate] FAIL: a top-level fn eq is still replaced by the builtin -- want 3 (#2309)" >&2
@@ -1082,11 +1026,7 @@ rm -f "$eqdir/withsemver.wasm" "$eqdir/withsemver.wasm.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FS_COMPILE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$eqdir/withsemver.vibe" "$eqdir/withsemver.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$eqdir/withsemver.wasm" ]; then
-  echo "[compiler-gate] FAIL: the semver+eq probe did not compile (#2309)" >&2
-  cat "$eqdir/withsemver.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_require_artifact "$eqdir/withsemver.wasm" "the semver+eq probe did not compile (#2309)"
 sem_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/withsemver.wasm" 2>&1 || true)"
 if [ "$(printf '%s\n' "$sem_out" | tr -d '[:space:]')" != "yn" ]; then
   echo "[compiler-gate] FAIL: another module's top-level eq stood the builtin down -- want y n (#2309, #711)" >&2
