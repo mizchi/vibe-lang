@@ -78,8 +78,12 @@ fn contract_assert(_ cond: Expr) -> Expr {
 /// (`expected Bool, got Int`) rather than a mismatch reported against the
 /// `assert` / measure cells this lowering introduces, which the program
 /// never wrote.
+///
+/// The parameter is spelled with the compiler's reserved `__vibe_` prefix:
+/// the editor's binding recovery matches a parameter to the next source token
+/// of its name, so a plain `v` would claim a later `let v` of the program.
 fn typed_clause(clause: Expr, ty: String) -> Expr {
-  ECall(EFn(_no_tp(), _no_tb(), [("v", Some(TyName(ty)))], Some(TyName(ty)), None, EIdent("v", 0 - 1)), [
+  ECall(EFn(_no_tp(), _no_tb(), [("__vibe_clause", Some(TyName(ty)))], Some(TyName(ty)), None, EIdent("__vibe_clause", 0 - 1)), [
     clause
   ], 0 - 1, [])
 }
@@ -155,7 +159,10 @@ fn attach_for_contract(value_name: String, index_name: Option[String], iterable:
 
 /// Every `continue` that targets the loop whose body this is gets a call to
 /// `check` first. A nested loop's `continue` targets that loop, and a lambda's
-/// body is not this loop's, so neither is entered. Every variant is listed so
+/// body is not this loop's, so neither is entered -- except what a nested
+/// loop evaluates before it starts: a `for`'s iterand and a `loop`'s initial
+/// parameter values, where a `continue` still targets this loop. (A `while`
+/// condition is the nested loop's own: a `continue` there re-tests it.) Every variant is listed so
 /// a new one is a compile error here rather than a skipped checkpoint.
 fn check_before_continue(expr: Expr, check: String) -> Expr {
   let go = (e: Expr) -> check_before_continue(expr = e, check = check)
@@ -164,8 +171,11 @@ fn check_before_continue(expr: Expr, check: String) -> Expr {
       go(a)
     })),
     EWhile(_, _) => expr,
-    ELoop(_, _) => expr,
-    EForIn(_, _, _, _) => expr,
+    ELoop(params, b) => ELoop(for p in params {
+      let (pname, pv) = p
+      (pname, go(pv))
+    }, b),
+    EForIn(v, i, it, b) => EForIn(v, i, go(it), b),
     EFn(_, _, _, _, _, _) => expr,
     EInt(_) => expr,
     EFloat(_) => expr,
