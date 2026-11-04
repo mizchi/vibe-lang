@@ -469,7 +469,7 @@ fn prove_fn_body(ctx: Ctx, value: Expr) -> Unit with Exception {
         }
         let smt = smt_symbol(pn)
         Array::push(ctx.decls, value = (smt, sort))
-        assume_range(ctx = ctx, term = smt, sort = sort)
+        assume_range(ctx = ctx, term = smt, sort = sort, pc = [])
         Array::push(env, value = (pn, smt, sort))
       }
       match find_sig(fns = ctx.fns, name = ctx.fn_name) {
@@ -520,9 +520,13 @@ fn push_obligation(ctx: Ctx, kind: String, label: String, off: Int, goal: String
   Array::push(ctx.pending, value = (kind, label, off, goal, Array::length(ctx.assumes)))
 }
 
-fn assume_range(ctx: Ctx, term: String, sort: String) -> Unit {
+/// An `Int` term holds a 63-bit value, so it may be assumed in range -- but
+/// only on the path that computes it. An assumption is global to the query,
+/// so one taken unguarded on one branch would also constrain its siblings and
+/// could leave a reachable path's obligation vacuous.
+fn assume_range(ctx: Ctx, term: String, sort: String, pc: Array[String]) -> Unit {
   if sort == "Int" {
-    Array::push(ctx.assumes, value = "(and (<= \{int_min()} \{term}) (<= \{term} \{int_max()}))")
+    Array::push(ctx.assumes, value = guarded(pc = pc, goal = in_range(term)))
   } else {
     ()
   }
@@ -826,7 +830,7 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
                 if fname == field {
                   found = true
                   let t = "(\{sel_smt(adt = adt, ctor = Array::get(adt.ctors, at = 0), field = fname)} \{o.value})"
-                  assume_range(ctx = ctx, term = t, sort = fsort)
+                  assume_range(ctx = ctx, term = t, sort = fsort, pc = o.pc)
                   Array::push(out, value = with_value(st = o, value = t, sort = fsort))
                 } else {
                   ()
@@ -1023,7 +1027,7 @@ fn sym_call(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -
       push_obligation(ctx = ctx, kind = "requires", label = "\{fname}: \{print_expr(r)}", off = off, goal = goal)
     }
     let res = fresh(ctx = ctx, sort = sig.ret)
-    assume_range(ctx = ctx, term = res, sort = sig.ret)
+    assume_range(ctx = ctx, term = res, sort = sig.ret, pc = s1.pc)
     let ens_env = env_bind(env = callee_env, name = "result", term = res, sort = sig.ret)
     for c in sig.ensures {
       let f = clause_formula(ctx = ctx, clause = c, state = Outcome::{
@@ -1708,7 +1712,7 @@ fn sym_match(ctx: Ctx, scr: Expr, arms: Array[(Pat, Expr)], off: Int, st: Outcom
       for arm in arms {
         let (pat, body) = arm
         let binds: Array[(String, String, String)] = []
-        let cond = pattern_cond(ctx = ctx, pat = pat, term = o.value, sort = o.sort, binds = binds, off = off)
+        let cond = pattern_cond(ctx = ctx, pat = pat, term = o.value, sort = o.sort, binds = binds, off = off, pc = o.pc)
         let mut arm_st = with_pc(st = o, cond = cond)
         for prior in earlier {
           arm_st = with_pc(st = arm_st, cond = "(not \{prior})")
@@ -1748,7 +1752,7 @@ fn sym_match(ctx: Ctx, scr: Expr, arms: Array[(Pat, Expr)], off: Int, st: Outcom
 
 /// The condition under which `pat` matches `term`, binding its names into
 /// `binds`. A shape the prover does not read is unsupported.
-fn pattern_cond(ctx: Ctx, pat: Pat, term: String, sort: String, binds: Array[(String, String, String)], off: Int) -> String with Exception {
+fn pattern_cond(ctx: Ctx, pat: Pat, term: String, sort: String, binds: Array[(String, String, String)], off: Int, pc: Array[String]) -> String with Exception {
   match pat {
     PWild => "true",
     PBind(n) => {
@@ -1803,8 +1807,8 @@ fn pattern_cond(ctx: Ctx, pat: Pat, term: String, sort: String, binds: Array[(St
             while i < Array::length(fields) {
               let (fname, fsort) = Array::get(fields, at = i)
               let t = "(\{sel_smt(adt = adt, ctor = ctor, field = fname)} \{term})"
-              assume_range(ctx = ctx, term = t, sort = fsort)
-              Array::push(conds, value = pattern_cond(ctx = ctx, pat = Array::get(subs, at = i), term = t, sort = fsort, binds = binds, off = off))
+              assume_range(ctx = ctx, term = t, sort = fsort, pc = pc)
+              Array::push(conds, value = pattern_cond(ctx = ctx, pat = Array::get(subs, at = i), term = t, sort = fsort, binds = binds, off = off, pc = pc))
               i = i + 1
             }
             "(and \{String::join(conds, sep = " ")})"
@@ -1842,8 +1846,8 @@ fn pattern_cond(ctx: Ctx, pat: Pat, term: String, sort: String, binds: Array[(St
             ()
           }
           let t = "(\{sel_smt(adt = adt, ctor = ctor, field = fname)} \{term})"
-          assume_range(ctx = ctx, term = t, sort = fsort)
-          Array::push(conds, value = pattern_cond(ctx = ctx, pat = sub, term = t, sort = fsort, binds = binds, off = off))
+          assume_range(ctx = ctx, term = t, sort = fsort, pc = pc)
+          Array::push(conds, value = pattern_cond(ctx = ctx, pat = sub, term = t, sort = fsort, binds = binds, off = off, pc = pc))
         }
         "(and \{String::join(conds, sep = " ")})"
       } else {
@@ -1857,8 +1861,8 @@ fn pattern_cond(ctx: Ctx, pat: Pat, term: String, sort: String, binds: Array[(St
     },
     POr(a, b) => {
       let before = Array::length(binds)
-      let ca = pattern_cond(ctx = ctx, pat = a, term = term, sort = sort, binds = binds, off = off)
-      let cb = pattern_cond(ctx = ctx, pat = b, term = term, sort = sort, binds = binds, off = off)
+      let ca = pattern_cond(ctx = ctx, pat = a, term = term, sort = sort, binds = binds, off = off, pc = pc)
+      let cb = pattern_cond(ctx = ctx, pat = b, term = term, sort = sort, binds = binds, off = off, pc = pc)
       if Array::length(binds) != before {
         unsupported(off = off, reason = "an or-pattern that binds names")
       } else {

@@ -59,7 +59,9 @@ $dir/unproved.vibe:21:3: unproved: requires of half: (x >= 0), called in \`call_
 $dir/unproved.vibe:26:1: unproved: ensures (result == x) of \`shadowed\` -- counterexample: <model>
 $dir/unproved.vibe:33:1: unproved: ensures (result == 0) of \`branch_scope\` -- counterexample: <model>
 $dir/unproved.vibe:49:1: unproved: ensures (result > 0) of \`coin_value\` -- counterexample: <model>
-$dir/unproved.vibe:59:9: unproved: a \`match\` on x covers every value, in \`uncovered\` -- counterexample: <model>"
+$dir/unproved.vibe:59:9: unproved: a \`match\` on x covers every value, in \`uncovered\` -- counterexample: <model>
+$dir/unproved.vibe:71:1: unproved: ensures (result == 0) of \`field_branch\` -- counterexample: <model>
+$dir/unproved.vibe:87:1: unproved: ensures (result == 0) of \`pattern_branch\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:4:1: unsupported: \`let mut\` is outside the provable fragment (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
