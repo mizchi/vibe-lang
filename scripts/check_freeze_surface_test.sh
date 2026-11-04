@@ -138,7 +138,7 @@ doc '- **String**: `length`, `concat`
 expect 0 "frozen builtin operations pass through the not-a-value branch"
 
 # 3. Already-qualified names are read as-is.
-doc '- **conv**: `Int::to_double`, `Double::to_int`'
+doc '- **conv**: `Int::to_float64`, `Float64::to_int`'
 expect 0 "qualified names are read directly"
 
 # 4. `Foo::a/b/c` expands.

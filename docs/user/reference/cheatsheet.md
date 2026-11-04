@@ -92,22 +92,20 @@ let b: Bool = true
 let u: Unit = ()
 ```
 
-### `Float64` / `Float32`: the width-named float spellings
+### `Float64` / `Float32`: the float types are named by width
 
-`Float64` and `Float32` are the width-named spellings of `Double` and
-`Float` (ADR-0122, #3728). They work everywhere a type or a type's namespace
-does: annotations, `impl ... for Float64`, `fn Float64::m(..)`, and the
-builtins (`Float64::to_string`, `Float64::parse`, `Float32::to_string`). The
-conversions take width names too: `Int::to_float64`, `Int::to_float32`,
+The float types are `Float64` (IEEE binary64, the type of `1.5`) and
+`Float32` (IEEE binary32, the type of `1.5f`), ADR-0122. Their namespaces
+and conversions use the same names: `Float64::to_string`, `Float64::parse`,
+`Float32::to_string`, `Int::to_float64`, `Int::to_float32`,
 `Float64::to_float32`, `Float32::to_float64`, and `Float64::to_int` /
-`Float32::to_int`. `Float64` / `Float32` are the canonical names: diagnostics,
-hover and `vibe type-at` print them. The old spellings still parse as aliases
-of the same types; the tree moves to the new names in #3729.
-Because every `Float64` / `Float32` in a type or a `X::` path names the
-builtin, neither can be the name of a declared type, trait, effect, alias or
-type parameter (a constructor may still be called `Float64`). A type
-parameter may not take any builtin float spelling (`Double`, `Float`, `f64`,
-`f32` too), since it would capture the `Float64` written beside it.
+`Float32::to_int`. The old spellings `Double`, `Float`, `f64` and `f32`, and
+the conversions `Int::to_double` / `Int::to_float` / `Double::to_float` /
+`Float::to_double`, are refused by the parser with the name to write
+(``unknown type `Double` -- write `Float64` ``, #3729). Because every
+`Float64` / `Float32` in a type or an `X::` path names the builtin, neither
+can be the name of a declared type, trait, effect, alias or type parameter
+(a constructor may still be called `Float64`, or `Double`).
 
 ```vibe
 test "width-named floats" {

@@ -826,16 +826,12 @@ of the function.
 ```vibe skip
 // doctest-skip: form catalogue: bare surface forms, not a compilable program
 Int
-Float
-Double
+Float64
+Float32
 Bool
 Char
 String
 Unit
-Float64
-Float32
-f32
-f64
 
 Array[T]
 Map[K, V]
