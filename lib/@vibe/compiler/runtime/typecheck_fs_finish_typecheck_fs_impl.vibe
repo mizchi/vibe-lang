@@ -161,7 +161,7 @@ import ./typecheck_fs_find_fn_anchor_off.vibe {
   typecheck_fs_upsert_string_pair,
   typecheck_ident_run,
   typing_dependency_env_reuse_is_eligible,
-  typing_dependency_transport_input_key,
+  typing_dependency_transport_input_key_memo,
   write_persistent_dep_list_if_missing,
   write_typing_dependency_env_reuse_sidecar
 }
@@ -397,7 +397,7 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       if eligible_here {
         let input_key = match reuse_input_key {
           Some(known_key) => known_key,
-          None => typing_dependency_transport_input_key(path = path, source = job.source, semantics_seed = typing_semantics_seed(), dep_envs = job.dep_envs)
+          None => typing_dependency_transport_input_key_memo(path = path, source = job.source, semantics_seed = typing_semantics_seed(), dep_envs = job.dep_envs, dep_fps = job.dep_fps)
         }
         publish_typing_dependency_env_reuse_eligibility(input_key = input_key, fingerprint = fingerprint, target_text = target_text)
         write_typing_dependency_env_reuse_sidecar(input_key = input_key, target_fingerprint = fingerprint, target_text = target_text)
@@ -687,7 +687,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
         false
       }
       let reuse_input_key = if reuse_eligible {
-        Some(typing_dependency_transport_input_key(path = path, source = source, semantics_seed = typing_semantics_seed(), dep_envs = projected_dep_envs))
+        Some(typing_dependency_transport_input_key_memo(path = path, source = source, semantics_seed = typing_semantics_seed(), dep_envs = projected_dep_envs, dep_fps = dep_fps))
       } else {
         None
       }
@@ -722,7 +722,10 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
             None => ()
           }
           publish_typing_dependency_env_reuse_eligibility(input_key = input_key, fingerprint = fingerprint, target_text = target_text)
-          write_typing_dependency_env_reuse_sidecar(input_key = input_key, target_fingerprint = fingerprint, target_text = target_text)
+          // The alias is NOT rewritten: it is how this hit was found, so it
+          // already binds this input key to a target whose record and witness
+          // were just validated, and pointing it at this fingerprint instead
+          // would rewrite the same binding text under another name.
           let next_env_cache = typecheck_fs_upsert_env_cache(cache = coordinated_env_cache, path = path, env = target_env)
           let next_db = ripple_record_eval(db = rdb, path = path, fingerprint = fingerprint, deps = deps)
           incremental_typecheck_telemetry_add(index = 8, amount = 1)
