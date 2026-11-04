@@ -235,10 +235,7 @@ for cfs_flag in dev release dev; do
     cfs_got="$cfs_got nocompile"
   fi
 done
-if [ "$cfs_got" != " 101 2 101" ]; then
-  echo "[compiler-gate] FAIL: #cfg through the split CLI (dev, release, warm dev) answered '$cfs_got', want ' 101 2 101' (#2513)" >&2
-  exit 1
-fi
+gate_require_eq "$cfs_got" " 101 2 101" "#cfg through the split CLI (dev, release, warm dev) answered '$cfs_got', want ' 101 2 101' (#2513)"
 rm -f "$cfsdir/b.wasm"
 env -u VIBE_CFG VIBE_BUILD_CACHE_DIR="$cfsdir/cache" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \

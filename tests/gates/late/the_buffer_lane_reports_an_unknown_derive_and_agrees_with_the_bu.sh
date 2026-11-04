@@ -785,10 +785,7 @@ while IFS= read -r sc_file; do
   found_record=1
   head -2 "$sc_file" > "$sc_file.torn" && mv "$sc_file.torn" "$sc_file"
 done < <(grep -rl "^module_typed_lowering_offsets" "$ffsdir/cache" 2>/dev/null)
-if [ "$found_record" != "1" ]; then
-  echo "[compiler-gate] FAIL: no float-offsets records found to corrupt (#2391) -- the probe went stale" >&2
-  exit 1
-fi
+gate_require_eq "$found_record" "1" "no float-offsets records found to corrupt (#2391) -- the probe went stale"
 VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/torn.wasm" __no_entry__ \

@@ -38,10 +38,7 @@ a69_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.s
 # `_start` synthesis must NOT print the entry's return (a Unit entry used to
 # get a stray trailing `0` line from the Int-return print_int convention,
 # PR #834 review). Int-returning entries keep the print (see below).
-if [ "$a69_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: fn main {} run output '$a69_out' (want exactly '42'; a trailing 0 line means the Unit entry hit print_int)" >&2
-  exit 1
-fi
+gate_require_eq "$a69_out" "42" "fn main {} run output '$a69_out' (want exactly '42'; a trailing 0 line means the Unit entry hit print_int)"
 # Int-returning `let main` keeps the historical return-print convention.
 cat > "$a69dir/int_main.vibe" <<'EOF'
 let main: () -> Int = () -> { 41 + 1 }
@@ -51,10 +48,7 @@ gate_fs_compile "$a69dir/int_main.vibe" "$a69dir/int_main.wasm" main
 gate_require_artifact "$a69dir/int_main.wasm" "Int-returning let main did not compile"
 a69_int_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$a69dir/int_main.wasm" 2>&1 || true)"
-if [ "$a69_int_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: Int-returning main output '$a69_int_out' (want '42' — the return-print convention must survive for Int entries)" >&2
-  exit 1
-fi
+gate_require_eq "$a69_int_out" "42" "Int-returning main output '$a69_int_out' (want '42' — the return-print convention must survive for Int entries)"
 cat > "$a69dir/typo.vibe" <<'EOF'
 let main: () -> Int = () -> { 42 }
 EOF
@@ -101,12 +95,8 @@ EOF
 rm -f "$g830dir/toplevel_record_destr.wasm"
 gate_fs_compile "$g830dir/toplevel_record_destr.vibe" "$g830dir/toplevel_record_destr.wasm" _start
 gate_require_artifact "$g830dir/toplevel_record_destr.wasm" "top-level 'let record { .. } = ..' did not compile (#1281)"
-g830_top_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$g830dir/toplevel_record_destr.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$g830_top_out" != "407" ]; then
-  echo "[compiler-gate] FAIL: top-level record-pattern destructure output '$g830_top_out' (want 407, #1281)" >&2
-  exit 1
-fi
+gate_run g830_top_out int --invoke _start "$g830dir/toplevel_record_destr.wasm"
+gate_require_eq "$g830_top_out" "407" "top-level record-pattern destructure output '$g830_top_out' (want 407, #1281)"
 # The function-body form (the one #830 says already worked) must keep
 # compiling AND running to the correct values -- this is the regression net
 # for the working case, so a future change to the block-step record-destr
@@ -125,10 +115,7 @@ gate_fs_compile "$g830dir/fnbody_record_destr.vibe" "$g830dir/fnbody_record_dest
 gate_require_artifact "$g830dir/fnbody_record_destr.wasm" "function-body 'let record { .. } = ..' did not compile"
 g830_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   --invoke _start "$g830dir/fnbody_record_destr.wasm" 2>&1 || true)"
-if [ "$g830_out" != "407" ]; then
-  echo "[compiler-gate] FAIL: function-body record-pattern destructure output '$g830_out' (want '407' = length(\"vibe\")*100 + 7)" >&2
-  exit 1
-fi
+gate_require_eq "$g830_out" "407" "function-body record-pattern destructure output '$g830_out' (want '407' = length(\"vibe\")*100 + 7)"
 rm -rf "$g830dir"
 echo "[compiler-gate] top-level record-pattern let (#830 / #1281) ok"
 
@@ -197,12 +184,8 @@ export let _start: () -> Int = () -> { y.v }
 EOF
 gate_fs_compile "$g844dir/ok_bare_roundtrip.vibe" "$g844dir/ok_bare_roundtrip.wasm" _start
 gate_require_artifact "$g844dir/ok_bare_roundtrip.wasm" "bare-to-bare generic-struct annotation round-trip over-rejected (#844 fix too aggressive)"
-g844_ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$g844dir/ok_bare_roundtrip.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$g844_ok_out" != "1" ]; then
-  echo "[compiler-gate] FAIL: bare-to-bare generic-struct round-trip returned '$g844_ok_out' (want 1)" >&2
-  exit 1
-fi
+gate_run g844_ok_out int --invoke _start "$g844dir/ok_bare_roundtrip.wasm"
+gate_require_eq "$g844_ok_out" "1" "bare-to-bare generic-struct round-trip returned '$g844_ok_out' (want 1)"
 cat > "$g844dir/ok_matching.vibe" <<'EOF'
 struct Box[T] { v: T }
 let x: Box[Int] = Box::{ v: 41 }
@@ -211,12 +194,8 @@ export let _start: () -> Int = () -> { y.v + 1 }
 EOF
 gate_fs_compile "$g844dir/ok_matching.vibe" "$g844dir/ok_matching.wasm" _start
 gate_require_artifact "$g844dir/ok_matching.wasm" "explicit matching generic-struct instantiation over-rejected (#844 fix too aggressive)"
-g844_ok2_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$g844dir/ok_matching.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$g844_ok2_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: explicit matching generic-struct instantiation returned '$g844_ok2_out' (want 42)" >&2
-  exit 1
-fi
+gate_run g844_ok2_out int --invoke _start "$g844dir/ok_matching.wasm"
+gate_require_eq "$g844_ok2_out" "42" "explicit matching generic-struct instantiation returned '$g844_ok2_out' (want 42)"
 rm -rf "$g844dir"
 echo "[compiler-gate] generic-struct annotation re-narrowing regression (#844) ok"
 
@@ -278,12 +257,8 @@ EOF
 rm -f "$g859dir/toplevel_tuple_destr.wasm"
 gate_fs_compile "$g859dir/toplevel_tuple_destr.vibe" "$g859dir/toplevel_tuple_destr.wasm" _start
 gate_require_artifact "$g859dir/toplevel_tuple_destr.wasm" "top-level 'let (a, b) = ..' did not compile (#1281)"
-g859_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$g859dir/toplevel_tuple_destr.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$g859_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: top-level tuple-pattern destructure output '$g859_out' (want 42, #1281)" >&2
-  exit 1
-fi
+gate_run g859_out int --invoke _start "$g859dir/toplevel_tuple_destr.wasm"
+gate_require_eq "$g859_out" "42" "top-level tuple-pattern destructure output '$g859_out' (want 42, #1281)"
 cat > "$g859dir/toplevel_struct_destr.vibe" <<'EOF'
 struct Pair { x: Int; y: Int }
 let Pair::{ x, y } = Pair::{ x: 10, y: 32 }
@@ -292,12 +267,8 @@ EOF
 rm -f "$g859dir/toplevel_struct_destr.wasm"
 gate_fs_compile "$g859dir/toplevel_struct_destr.vibe" "$g859dir/toplevel_struct_destr.wasm" _start
 gate_require_artifact "$g859dir/toplevel_struct_destr.wasm" "top-level 'let Name::{ .. } = ..' did not compile (#1281)"
-g859_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$g859dir/toplevel_struct_destr.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$g859_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: top-level struct-pattern destructure output '$g859_out' (want 42, #1281)" >&2
-  exit 1
-fi
+gate_run g859_out int --invoke _start "$g859dir/toplevel_struct_destr.wasm"
+gate_require_eq "$g859_out" "42" "top-level struct-pattern destructure output '$g859_out' (want 42, #1281)"
 cat > "$g859dir/toplevel_record_destr.vibe" <<'EOF'
 let record { a, b } = record { a: 10, b: 32 }
 export let _start: () -> Int = () -> { a + b }
@@ -305,12 +276,8 @@ EOF
 rm -f "$g859dir/toplevel_record_destr.wasm"
 gate_fs_compile "$g859dir/toplevel_record_destr.vibe" "$g859dir/toplevel_record_destr.wasm" _start
 gate_require_artifact "$g859dir/toplevel_record_destr.wasm" "top-level 'let record { .. } = ..' did not compile (#1281)"
-g859_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$g859dir/toplevel_record_destr.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$g859_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: top-level record-pattern destructure output '$g859_out' (want 42, #1281)" >&2
-  exit 1
-fi
+gate_run g859_out int --invoke _start "$g859dir/toplevel_record_destr.wasm"
+gate_require_eq "$g859_out" "42" "top-level record-pattern destructure output '$g859_out' (want 42, #1281)"
 # The value is evaluated ONCE, however many names the pattern binds: `mk`
 # appends to a log, so a re-evaluated RHS shows up as a second entry (242).
 cat > "$g859dir/toplevel_destr_once.vibe" <<'EOF'
@@ -328,8 +295,7 @@ EOF
 rm -f "$g859dir/toplevel_destr_once.wasm"
 gate_fs_compile "$g859dir/toplevel_destr_once.vibe" "$g859dir/toplevel_destr_once.wasm" _start
 gate_require_artifact "$g859dir/toplevel_destr_once.wasm" "top-level destructure of a call did not compile (#1281)"
-g859_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$g859dir/toplevel_destr_once.wasm" 2>/dev/null | tr -dc '0-9-')"
+gate_run g859_out int --invoke _start "$g859dir/toplevel_destr_once.wasm"
 if [ "$g859_out" != "142" ]; then
   echo "[compiler-gate] FAIL: top-level pattern let evaluated its value $((g859_out / 100)) times (want 1, output '$g859_out' vs 142, #1281)" >&2
   exit 1
@@ -360,12 +326,8 @@ EOF
 rm -f "$g859dir/fnbody_tuple_destr.wasm"
 gate_fs_compile "$g859dir/fnbody_tuple_destr.vibe" "$g859dir/fnbody_tuple_destr.wasm" _start
 gate_require_artifact "$g859dir/fnbody_tuple_destr.wasm" "function-body 'let (a, b) = ..' did not compile"
-g859_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$g859dir/fnbody_tuple_destr.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$g859_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: function-body tuple-pattern destructure output '$g859_out' (want 42)" >&2
-  exit 1
-fi
+gate_run g859_out int --invoke _start "$g859dir/fnbody_tuple_destr.wasm"
+gate_require_eq "$g859_out" "42" "function-body tuple-pattern destructure output '$g859_out' (want 42)"
 rm -rf "$g859dir"
 echo "[compiler-gate] top-level irrefutable pattern let (#1281) ok"
 
@@ -430,11 +392,8 @@ gate_require_diag_matches "$g944dir/leak_on.wasm.diag" "missing { Exception }" \
 rm -f "$g944dir/discharged.wasm"
 gate_flat_compile "$g944dir/discharged.vibe" "$g944dir/discharged.wasm" main
 gate_require_artifact "$g944dir/discharged.wasm" "checked-Error mode rejected a handle-with-Error discharge (over-strict, #944)"
-g944_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$g944dir/discharged.wasm" 2>&1 | tail -1)"
-if [ "$g944_out" != "1" ]; then
-  echo "[compiler-gate] FAIL: checked-Error discharged sample got '$g944_out' (want 1)" >&2
-  exit 1
-fi
+gate_run g944_out last "$g944dir/discharged.wasm"
+gate_require_eq "$g944_out" "1" "checked-Error discharged sample got '$g944_out' (want 1)"
 rm -rf "$g944dir"
 echo "[compiler-gate] opt-in checked-Error row discipline ok (#944 stage A)"
 
@@ -1431,11 +1390,8 @@ rcocdir="_build/_gate_rc_owned_capture"
 rm -rf "$rcocdir"; mkdir -p "$rcocdir"
 VIBE_RC=1 gate_fs_compile fixtures/rc_closure_owned_capture_escape.vibe "$rcocdir/esc.wasm" _start
 gate_require_artifact "$rcocdir/esc.wasm" "rc_closure_owned_capture_escape fixture did not compile"
-rcoc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$rcocdir/esc.wasm" 2>/dev/null | tail -1)"
-if [ "$rcoc_out" != "4067" ]; then
-  echo "[compiler-gate] FAIL: rc_closure_owned_capture_escape got '$rcoc_out' (want 4067) -- owned-captures regressed" >&2
-  exit 1
-fi
+gate_run rcoc_out stdout-last --invoke _start "$rcocdir/esc.wasm"
+gate_require_eq "$rcoc_out" "4067" "rc_closure_owned_capture_escape got '$rcoc_out' (want 4067) -- owned-captures regressed"
 rm -rf "$rcocdir"
 echo "[compiler-gate] RC owned-captures escape ok"
 
@@ -1451,11 +1407,8 @@ ccpsdir="_build/_gate_closure_cps"
 rm -rf "$ccpsdir"; mkdir -p "$ccpsdir"
 gate_fs_compile fixtures/effect_closure_cps_param.vibe "$ccpsdir/param.wasm" _start
 gate_require_artifact "$ccpsdir/param.wasm" "effect_closure_cps_param fixture did not compile"
-ccps_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$ccpsdir/param.wasm" 2>/dev/null | tail -1)"
-if [ "$ccps_out" != "2130" ]; then
-  echo "[compiler-gate] FAIL: effect_closure_cps_param got '$ccps_out' (want 2130) -- closure-CPS regressed" >&2
-  exit 1
-fi
+gate_run ccps_out stdout-last --invoke _start "$ccpsdir/param.wasm"
+gate_require_eq "$ccps_out" "2130" "effect_closure_cps_param got '$ccps_out' (want 2130) -- closure-CPS regressed"
 rm -f "$ccpsdir/mixed.wasm"
 cp fixtures/err_effect_closure_cps_mixed_convention.vibe "$ccpsdir/mixed.vibe"
 gate_fs_compile "$ccpsdir/mixed.vibe" "$ccpsdir/mixed.wasm" _start
@@ -1470,11 +1423,8 @@ gate_require_diag_has "$ccpsdir/mixed.wasm.diag" "mixing the step convention" \
 # synthesized callee name alone. Positive pin 70.
 gate_fs_compile fixtures/effect_closure_cps_generic_operand.vibe "$ccpsdir/genop.wasm" _start
 gate_require_artifact "$ccpsdir/genop.wasm" "effect_closure_cps_generic_operand did not compile -- a pure desugar helper (__generic_add / __generic_rel_diff / str_lex_diff) sank a suspend-class closure literal again (#1324)"
-ccps_genop_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$ccpsdir/genop.wasm" 2>/dev/null | tail -1)"
-if [ "$ccps_genop_out" != "70" ]; then
-  echo "[compiler-gate] FAIL: effect_closure_cps_generic_operand got '$ccps_genop_out' (want 70)" >&2
-  exit 1
-fi
+gate_run ccps_genop_out stdout-last --invoke _start "$ccpsdir/genop.wasm"
+gate_require_eq "$ccps_genop_out" "70" "effect_closure_cps_generic_operand got '$ccps_genop_out' (want 70)"
 rm -rf "$ccpsdir"
 echo "[compiler-gate] closure-CPS param suspend ok"
 
@@ -1489,11 +1439,8 @@ tdevdir="_build/_gate_td_evidence"
 rm -rf "$tdevdir"; mkdir -p "$tdevdir"
 gate_fs_compile fixtures/effect_closure_value_evidence_m2.vibe "$tdevdir/m2.wasm" _start
 gate_require_artifact "$tdevdir/m2.wasm" "effect_closure_value_evidence_m2 fixture did not compile"
-tdev_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$tdevdir/m2.wasm" 2>/dev/null | tail -1)"
-if [ "$tdev_out" != "2062" ]; then
-  echo "[compiler-gate] FAIL: effect_closure_value_evidence_m2 got '$tdev_out' (want 2062; 2064 = replay M2 duplication returned)" >&2
-  exit 1
-fi
+gate_run tdev_out stdout-last --invoke _start "$tdevdir/m2.wasm"
+gate_require_eq "$tdev_out" "2062" "effect_closure_value_evidence_m2 got '$tdev_out' (want 2062; 2064 = replay M2 duplication returned)"
 rm -f "$tdevdir/inelig.wasm"
 cp fixtures/err_closure_value_evidence_ineligible.vibe "$tdevdir/inelig.vibe"
 gate_fs_compile "$tdevdir/inelig.vibe" "$tdevdir/inelig.wasm" _start
@@ -1503,19 +1450,13 @@ gate_require_diag_has "$tdevdir/inelig.wasm.diag" "type-directed evidence" \
 rm -f "$tdevdir/multi.wasm"
 gate_fs_compile fixtures/effect_closure_value_evidence_multi.vibe "$tdevdir/multi.wasm" _start
 gate_require_artifact "$tdevdir/multi.wasm" "effect_closure_value_evidence_multi fixture did not compile"
-multi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$tdevdir/multi.wasm" 2>/dev/null | tail -1)"
-if [ "$multi_out" != "33" ]; then
-  echo "[compiler-gate] FAIL: effect_closure_value_evidence_multi got '$multi_out' (want 33; a blanket __ev_ guard drops __ev_B and the raw B perform escapes -- #1116 Codex P1)" >&2
-  exit 1
-fi
+gate_run multi_out stdout-last --invoke _start "$tdevdir/multi.wasm"
+gate_require_eq "$multi_out" "33" "effect_closure_value_evidence_multi got '$multi_out' (want 33; a blanket __ev_ guard drops __ev_B and the raw B perform escapes -- #1116 Codex P1)"
 rm -f "$tdevdir/shadow.wasm"
 gate_fs_compile fixtures/effect_closure_value_evidence_shadow.vibe "$tdevdir/shadow.wasm" _start
 gate_require_artifact "$tdevdir/shadow.wasm" "effect_closure_value_evidence_shadow fixture did not compile"
-shadow_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$tdevdir/shadow.wasm" 2>/dev/null | tail -1)"
-if [ "$shadow_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: effect_closure_value_evidence_shadow got '$shadow_out' (want 42; a top-level pure fn sharing a name with a nested row-E closure must not get a stray evidence arg -- #1117 Codex P1)" >&2
-  exit 1
-fi
+gate_run shadow_out stdout-last --invoke _start "$tdevdir/shadow.wasm"
+gate_require_eq "$shadow_out" "42" "effect_closure_value_evidence_shadow got '$shadow_out' (want 42; a top-level pure fn sharing a name with a nested row-E closure must not get a stray evidence arg -- #1117 Codex P1)"
 rm -rf "$tdevdir"
 echo "[compiler-gate] type-directed closure evidence ok"
 
@@ -1646,11 +1587,8 @@ VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw 
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$c1078dir/merged.vibe" "$c1078dir/out.wasm" main >/dev/null 2>&1 || true
 gate_require_artifact "$c1078dir/out.wasm" "merged ctor/effect-op collision program did not compile -- bare-name resolution picked the wrong declaration (#1078)"
-c1078_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$c1078dir/out.wasm" 2>&1 | tail -1)"
-if [ "$c1078_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: merged ctor/effect-op collision program got '$c1078_out' (want 42) -- #1078 regressed" >&2
-  exit 1
-fi
+gate_run c1078_out last "$c1078dir/out.wasm"
+gate_require_eq "$c1078_out" "42" "merged ctor/effect-op collision program got '$c1078_out' (want 42) -- #1078 regressed"
 rm -rf "$c1078dir"
 echo "[compiler-gate] merged ctor/effect-op collision ok (42)"
 

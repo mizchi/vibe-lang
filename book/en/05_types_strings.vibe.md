@@ -115,7 +115,7 @@ fn main allows Console {
   println("Float:  \{third}")
   println("Double: \{1.0 / 3.0}")
   println("2^24 + 1 as a Float: \{16777217.0f}")
-  println("widened: \{Float::to_double(0.1f)}")
+  println("widened: \{Float32::to_float64(0.1f)}")
 }
 ```
 

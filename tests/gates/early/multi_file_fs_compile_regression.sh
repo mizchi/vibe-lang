@@ -17,12 +17,9 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fsdir/main.vibe" "$fsdir/main.wasm" _start || true
 gate_require_artifact "$fsdir/main.wasm" "multi-file FS-compile produced no wasm"
-fsres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fsdir/main.wasm" 2>/dev/null | tr -dc '0-9')"
+gate_run fsres digits --invoke _start "$fsdir/main.wasm"
 rm -rf "$fsdir"
-if [ "$fsres" != "42" ]; then
-  echo "[compiler-gate] FAIL: multi-file FS-compile sample returned '$fsres' (expected 42)" >&2
-  exit 1
-fi
+gate_require_eq "$fsres" "42" "multi-file FS-compile sample returned '$fsres' (expected 42)"
 echo "[compiler-gate] multi-file FS-compile ok (42)"
 
 # #3213: the byte-indexed char lexer rejects a multi-byte character. Both
@@ -173,12 +170,9 @@ export let _start: () -> Int with Fs = () -> {
 VEOF
 gate_fs_compile "$drdir/main.vibe" "$drdir/main.wasm" _start
 gate_require_artifact "$drdir/main.wasm" "deep-resume regression program did not compile"
-drres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$drdir/main.wasm" 2>/dev/null | tr -dc '0-9')"
+gate_run drres digits --invoke _start "$drdir/main.wasm"
 rm -rf "$drdir"
-if [ "$drres" != "42" ]; then
-  echo "[compiler-gate] FAIL: deep-resume regression returned '$drres' (expected 42) — #737-class resume corruption" >&2
-  exit 1
-fi
+gate_require_eq "$drres" "42" "deep-resume regression returned '$drres' (expected 42) — #737-class resume corruption"
 echo "[compiler-gate] deep-recursion effect resume ok (42)"
 
 # 4c. missing-import diagnostic regression (#831): a file that imports a path
@@ -273,10 +267,7 @@ gate_fs_compile "$dsdir/main.vibe" "$dsdir/main.wasm" main
 gate_require_artifact "$dsdir/main.wasm" "derive(Show) rename sample did not compile"
 dsout="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$dsdir/main.wasm" 2>/dev/null)"
 rm -rf "$dsdir"
-if [ "$dsout" != "Point { x: 3, y: 4 }|Mix(1, 2)|Lone" ]; then
-  echo "[compiler-gate] FAIL: derive(Show) rendered '$dsout' (expected 'Point { x: 3, y: 4 }|Mix(1, 2)|Lone') — #2205 merge-renamed name leaking" >&2
-  exit 1
-fi
+gate_require_eq "$dsout" "Point { x: 3, y: 4 }|Mix(1, 2)|Lone" "derive(Show) rendered '$dsout' (expected 'Point { x: 3, y: 4 }|Mix(1, 2)|Lone') — #2205 merge-renamed name leaking"
 echo "[compiler-gate] derive(Show) source-name rendering ok"
 
 # 4e. OOB abort names the operation, index, and length, and reports an
@@ -977,12 +968,9 @@ printf 'import ../pkgb { X, make }\nexport fn wrap(v: Int) -> X {\n  make(v)\n}\
 printf 'import ./pkga { wrap }\nimport ./pkgb { value }\nexport let _start: () -> Int = () -> { value(wrap(42)) }\n' > "$xpdir/ok.vibe"
 gate_fs_compile "$xpdir/ok.vibe" "$xpdir/ok.wasm" _start
 gate_require_artifact "$xpdir/ok.wasm" ".vibei contract's cross-package directory import (../pkgb) did not resolve (#842)"
-xpres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xpdir/ok.wasm" 2>/dev/null | tr -dc '0-9')"
+gate_run xpres digits --invoke _start "$xpdir/ok.wasm"
 rm -rf "$xpdir"
-if [ "$xpres" != "42" ]; then
-  echo "[compiler-gate] FAIL: cross-package contract import sample returned '$xpres' (expected 42)" >&2
-  exit 1
-fi
+gate_require_eq "$xpres" "42" "cross-package contract import sample returned '$xpres' (expected 42)"
 echo "[compiler-gate] cross-package contract import resolution regression ok"
 
 # 6c. content-addressed store regression (#730 D-2): `vibe hash` prints a
@@ -1128,7 +1116,7 @@ fi
 printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 }\n' > "$xdir/ext.vibe"
 VIBE_LIB="$xroot/does-not-exist:$xroot" gate_fs_compile "$xdir/ext.vibe" "$xdir/ext.wasm" _start
 gate_require_artifact "$xdir/ext.wasm" "VIBE_LIB root resolution did not compile (#751)"
-ext_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xdir/ext.wasm" 2>/dev/null | tail -1)"
+gate_run ext_out stdout-last --invoke _start "$xdir/ext.wasm"
 if [ "$ext_out" != "42" ]; then
   echo "[compiler-gate] FAIL: VIBE_LIB-resolved package returned '$ext_out' (want 42) (#751)" >&2; exit 1
 fi
@@ -1139,7 +1127,7 @@ printf 'export fn echo_n(x: Int) -> Int { x + 3 }\n' > "lib/@gate751x/echo/impl.
 printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 }\n' > "$xdir/ws.vibe"
 VIBE_LIB="$xroot/does-not-exist:$xroot" gate_fs_compile "$xdir/ws.vibe" "$xdir/ws.wasm" _start
 gate_require_artifact "$xdir/ws.wasm" "workspace-precedence consumer did not compile (#751)"
-ws_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$xdir/ws.wasm" 2>/dev/null | tail -1)"
+gate_run ws_out stdout-last --invoke _start "$xdir/ws.wasm"
 if [ "$ws_out" != "43" ]; then
   echo "[compiler-gate] FAIL: workspace lib/ did not win over VIBE_LIB root (got '$ws_out', want 43) (#751)" >&2; exit 1
 fi
@@ -1271,7 +1259,7 @@ fi
 printf 'import @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) }\n' > "$jdir/use.vibe"
 VIBE_HOME="$jhome" gate_fs_compile "$jdir/use.vibe" "$jdir/use.wasm" _start
 gate_require_artifact "$jdir/use.wasm" "materialized package did not resolve via VIBE_HOME default root (#754)"
-juse_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$jdir/use.wasm" 2>/dev/null | tail -1)"
+gate_run juse_out stdout-last --invoke _start "$jdir/use.wasm"
 if [ "$juse_out" != "44" ]; then
   echo "[compiler-gate] FAIL: materialized package returned '$juse_out' (want 44) (#754)" >&2; exit 1
 fi
@@ -1396,7 +1384,7 @@ if ! grep -q "@gate755/hex@1.0.0" "$khome/cache/provenance.tsv" 2>/dev/null; the
 fi
 printf 'import @gate755/hex { hex_n }\nexport let _start: () -> Int = () -> { hex_n(36) }\n' > "$kdir/use.vibe"
 VIBE_HOME="$khome" gate_fs_compile "$kdir/use.vibe" "$kdir/use.wasm" _start
-kuse_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$kdir/use.wasm" 2>/dev/null | tail -1)"
+gate_run kuse_out stdout-last --invoke _start "$kdir/use.wasm"
 if [ "$kuse_out" != "42" ]; then
   echo "[compiler-gate] FAIL: git-added package returned '$kuse_out' (want 42) (#755)" >&2; exit 1
 fi
@@ -1606,7 +1594,7 @@ rm -rf "$edir"; mkdir -p "$edir"
 printf 'fn checked_add(x: Int, y: Int) -> Int where { requires: x >= 0, requires: y >= 0, ensures: result >= x } { x + y }\nexport let _start: () -> Int = () -> { checked_add(40, 2) }\n' > "$edir/ok.vibe"
 gate_fs_compile "$edir/ok.vibe" "$edir/ok.wasm" _start
 gate_require_artifact "$edir/ok.wasm" "satisfied where-contract program did not compile (#731)"
-ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/ok.wasm" 2>/dev/null | tail -1)"
+gate_run ok_out stdout-last --invoke _start "$edir/ok.wasm"
 if [ "$ok_out" != "42" ]; then
   echo "[compiler-gate] FAIL: satisfied where-contract returned '$ok_out' (want 42) (#731)" >&2; exit 1
 fi
@@ -1715,12 +1703,8 @@ EOF
 # Expected: 11 + 21 + 10 + 20 = 62
 gate_fs_compile "$pdir/litpat.vibe" "$pdir/litpat.wasm" _start
 gate_require_artifact "$pdir/litpat.wasm" "literal sub-pattern program did not compile"
-litpat_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$pdir/litpat.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$litpat_out" != "62" ]; then
-  echo "[compiler-gate] FAIL: literal sub-pattern mismatch (got '$litpat_out', want 62 -> #603 regressed)" >&2
-  exit 1
-fi
+gate_run litpat_out digits --invoke _start "$pdir/litpat.wasm"
+gate_require_eq "$litpat_out" "62" "literal sub-pattern mismatch (got '$litpat_out', want 62 -> #603 regressed)"
 rm -rf "$pdir"
 echo "[compiler-gate] literal sub-pattern regression ok"
 
@@ -1750,8 +1734,7 @@ printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$ldir/compile.vi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/compile.vibe" "$ldir/out.wasm" _start >/dev/null 2>&1
-labeled_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$ldir/out.wasm" 2>/dev/null | tr -dc '0-9')"
+gate_run labeled_out digits --invoke _start "$ldir/out.wasm"
 if [ "$labeled_out" != "3" ]; then
   echo "[compiler-gate] FAIL: normalized labeled-param output did not compile/run to 3 (got '$labeled_out')" >&2
   cat "$ldir/compile.vibe" >&2; exit 1
@@ -1779,8 +1762,7 @@ printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$fdir/compile.vi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fdir/compile.vibe" "$fdir/out.wasm" _start >/dev/null 2>&1
-fold_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$fdir/out.wasm" 2>/dev/null | tr -dc '0-9')"
+gate_run fold_out digits --invoke _start "$fdir/out.wasm"
 if [ "$fold_out" != "60" ]; then
   echo "[compiler-gate] FAIL: folded program did not run to 60 (got '$fold_out')" >&2; exit 1
 fi
@@ -1813,12 +1795,8 @@ EOF
 # The bound `x` in Some(x) must compile (no trap), and Some must not route to None.
 gate_fs_compile "$ndir/nested.vibe" "$ndir/nested.wasm" _start
 gate_require_artifact "$ndir/nested.wasm" "nested ctor sub-pattern program did not compile (#608 regressed: codegen trap)"
-nested_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$ndir/nested.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$nested_out" != "27" ]; then
-  echo "[compiler-gate] FAIL: nested ctor sub-pattern mismatch (got '$nested_out', want 27 -> #608 regressed)" >&2
-  exit 1
-fi
+gate_run nested_out digits --invoke _start "$ndir/nested.wasm"
+gate_require_eq "$nested_out" "27" "nested ctor sub-pattern mismatch (got '$nested_out', want 27 -> #608 regressed)"
 rm -rf "$ndir"
 echo "[compiler-gate] nested ctor sub-pattern regression ok"
 
@@ -1836,12 +1814,8 @@ export let _start: () -> Int = () -> { early() + 1 }
 EOF
 gate_fs_compile "$wdir/fwd.vibe" "$wdir/fwd.wasm" _start
 gate_require_artifact "$wdir/fwd.wasm" "forward-reference program did not compile (#602 regressed: checker trap)"
-fwd_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$wdir/fwd.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$fwd_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: forward-reference mismatch (got '$fwd_out', want 42 -> #602 regressed)" >&2
-  exit 1
-fi
+gate_run fwd_out digits --invoke _start "$wdir/fwd.wasm"
+gate_require_eq "$fwd_out" "42" "forward-reference mismatch (got '$fwd_out', want 42 -> #602 regressed)"
 # Guard: a genuinely-undefined name must still be rejected (hoist only adds names
 # that are actually defined later).
 printf 'export let _start: () -> Int = () -> { genuinely_undefined_name() }\n' > "$wdir/undef.vibe"
@@ -1872,12 +1846,8 @@ EOF
 # 3*1000 + 52*100 + 3*10 + 0 = 3000 + 5200 + 30 = 8230
 gate_fs_compile "$idir/interp.vibe" "$idir/interp.wasm" _start
 gate_require_artifact "$idir/interp.wasm" "interpolation program did not compile"
-interp_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$idir/interp.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$interp_out" != "8230" ]; then
-  echo "[compiler-gate] FAIL: interpolation mismatch (got '$interp_out', want 8230 -> #606 regressed)" >&2
-  exit 1
-fi
+gate_run interp_out digits --invoke _start "$idir/interp.wasm"
+gate_require_eq "$interp_out" "8230" "interpolation mismatch (got '$interp_out', want 8230 -> #606 regressed)"
 rm -rf "$idir"
 echo "[compiler-gate] string-interpolation conversion regression ok"
 
@@ -1962,21 +1932,13 @@ VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tldir/bool_render.vibe" "$tldir/cov.wasm" _start >/dev/null 2>&1 || true
 gate_require_artifact "$tldir/cov.wasm" "coverage build of the #2469 probe produced no wasm"
-tl_cov_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$tldir/cov.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$tl_cov_out" != "4116" ]; then
-  echo "[compiler-gate] FAIL: VIBE_COVERAGE=1 rendered a Bool as '$tl_cov_out' (want 4116 = \"true\"; 1049 = \"1\" means the coverage entry is back on the unlocated parse and its typed-lowering tables are empty -- #2469)" >&2
-  exit 1
-fi
+gate_run tl_cov_out digits --invoke _start "$tldir/cov.wasm"
+gate_require_eq "$tl_cov_out" "4116" "VIBE_COVERAGE=1 rendered a Bool as '$tl_cov_out' (want 4116 = \"true\"; 1049 = \"1\" means the coverage entry is back on the unlocated parse and its typed-lowering tables are empty -- #2469)"
 # The control: the SAME program through the ordinary entry. Both must agree --
 # that agreement, not the constant, is what #2469 is about.
 gate_flat_compile "$tldir/bool_render.vibe" "$tldir/plain.wasm" _start
-tl_plain_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$tldir/plain.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$tl_plain_out" != "$tl_cov_out" ]; then
-  echo "[compiler-gate] FAIL: the coverage build ($tl_cov_out) and the ordinary build ($tl_plain_out) rendered the same Bool differently (#2469)" >&2
-  exit 1
-fi
+gate_run tl_plain_out digits --invoke _start "$tldir/plain.wasm"
+gate_require_eq "$tl_plain_out" "$tl_cov_out" "the coverage build ($tl_cov_out) and the ordinary build ($tl_plain_out) rendered the same Bool differently (#2469)"
 rm -rf "$tldir"
 echo "[compiler-gate] instrumented build typed-lowering tables ok (#2469)"
 
@@ -2016,12 +1978,8 @@ EOF
 # Expected: 42 + 42 + 42 + 84 + (10+20) + (7+8) + (42+43) = 340
 gate_fs_compile "$mbtdir/mbt.vibe" "$mbtdir/mbt.wasm" _start
 gate_require_artifact "$mbtdir/mbt.wasm" "trait dict-passing program did not compile"
-mbt_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$mbtdir/mbt.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$mbt_out" != "340" ]; then
-  echo "[compiler-gate] FAIL: trait dict-passing mismatch (got '$mbt_out', want 340 -> #641 PR-3 regressed)" >&2
-  exit 1
-fi
+gate_run mbt_out digits --invoke _start "$mbtdir/mbt.wasm"
+gate_require_eq "$mbt_out" "340" "trait dict-passing mismatch (got '$mbt_out', want 340 -> #641 PR-3 regressed)"
 rm -rf "$mbtdir"
 echo "[compiler-gate] method-bearing-trait dict-passing regression ok"
 
@@ -2054,12 +2012,8 @@ EOF
 # Expected: 84 (both Int and String witnesses resolved -> correct shown strings)
 gate_fs_compile "$mgdir/mg.vibe" "$mgdir/mg.wasm" _start
 gate_require_artifact "$mgdir/mg.wasm" "rank-1 trait-method generic program did not compile"
-mg_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$mgdir/mg.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$mg_out" != "84" ]; then
-  echo "[compiler-gate] FAIL: rank-1 trait-method generic mismatch (got '$mg_out', want 84 -> #684 regressed)" >&2
-  exit 1
-fi
+gate_run mg_out digits --invoke _start "$mgdir/mg.wasm"
+gate_require_eq "$mg_out" "84" "rank-1 trait-method generic mismatch (got '$mg_out', want 84 -> #684 regressed)"
 rm -rf "$mgdir"
 echo "[compiler-gate] rank-1 trait-method generics regression ok"
 
@@ -2119,12 +2073,8 @@ EOF
 # -> 132016
 gate_fs_compile "$drvdir/drv.vibe" "$drvdir/drv.wasm" _start
 gate_require_artifact "$drvdir/drv.wasm" "derive program did not compile"
-drv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$drvdir/drv.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$drv_out" != "132016" ]; then
-  echo "[compiler-gate] FAIL: derive mismatch (got '$drv_out', want 132016 -> #638 / #3042 regressed)" >&2
-  exit 1
-fi
+gate_run drv_out int --invoke _start "$drvdir/drv.wasm"
+gate_require_eq "$drv_out" "132016" "derive mismatch (got '$drv_out', want 132016 -> #638 / #3042 regressed)"
 rm -rf "$drvdir"
 echo "[compiler-gate] derive(Ord/Show) structural-generation regression ok"
 

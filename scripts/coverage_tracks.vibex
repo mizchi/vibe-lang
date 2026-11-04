@@ -24,25 +24,25 @@ struct Track {
   what: String;
   hit: Int;
   total: Int;
-  rate: Double;
+  rate: Float64;
   exact: Bool;
-  min_rate: Double
+  min_rate: Float64
 }
 
 /// A floor from the environment: unset or blank means the default, and
 /// anything else must parse. A typo such as `40,03` used to fall back to the
 /// default -- for the self-compile floor that is 0.0, so a ratchet someone
 /// set was silently switched off. The Python original raised on it.
-fn parse_floor(raw: String, fallback: Double) -> Option[Double] {
+fn parse_floor(raw: String, fallback: Float64) -> Option[Float64] {
   let text = String::trim(raw)
   if text == "" {
     Some(fallback)
   } else {
-    Double::parse(text)
+    Float64::parse(text)
   }
 }
 
-fn env_double(name: String, fallback: Double) -> Double with Env + Stderr + Process {
+fn env_double(name: String, fallback: Float64) -> Float64 with Env + Stderr + Process {
   let raw = Env::get(name)
   match parse_floor(raw, fallback) {
     Some(v) => v,
@@ -73,7 +73,7 @@ fn obj_field(obj: Json, key: String) -> Option[Json] {
   }
 }
 
-fn num_or(obj: Json, key: String, fallback: Double) -> Double {
+fn num_or(obj: Json, key: String, fallback: Float64) -> Float64 {
   match Json::get_opt(obj, key) {
     Some(v) => if Json::type_of(v) == "number" { Json::number(v) } else { fallback },
     None => fallback
@@ -89,10 +89,10 @@ fn bool_or(obj: Json, key: String, fallback: Bool) -> Bool {
 
 /// Python's default `str` of a coverage rate: one decimal when the
 /// hundredths digit is 0 (`57.0`, `10.0`), otherwise two (`57.88`, `40.03`).
-fn format_rate(d: Double) -> String {
+fn format_rate(d: Float64) -> String {
   let neg = d < 0.0
   let abs = if neg { 0.0 - d } else { d }
-  let scaled = Double::to_int(abs * 100.0 + 0.5)
+  let scaled = Float64::to_int(abs * 100.0 + 0.5)
   let whole = scaled / 100
   let frac = scaled % 100
   let frac_s = if frac % 10 == 0 {
@@ -121,7 +121,7 @@ fn format_rate(d: Double) -> String {
 /// the floors CI uses are the defaults (57.0 and 0.0, whole numbers) and no
 /// workflow or task sets a two-decimal one, so no current verdict moves.
 /// Adding 0.5 instead (the first port) rounded every tie up, 1/32 to 3.13.
-fn pct(hit: Int, total: Int) -> Double {
+fn pct(hit: Int, total: Int) -> Float64 {
   if total <= 0 {
     0.0
   } else {
@@ -137,19 +137,19 @@ fn pct(hit: Int, total: Int) -> Double {
     } else {
       q
     }
-    Int::to_double(hundredths) / 100.0
+    Int::to_float64(hundredths) / 100.0
   }
 }
 
-fn push_track(out: Array[Track], name: String, what: String, hit: Int, total: Int, rate: Double, exact: Bool, min_rate: Double) -> Unit {
+fn push_track(out: Array[Track], name: String, what: String, hit: Int, total: Int, rate: Float64, exact: Bool, min_rate: Float64) -> Unit {
   Array::push(out, Track::{ name: name, what: what, hit: hit, total: total, rate: rate, exact: exact, min_rate: min_rate })
 }
 
-fn load_tracks(suite_path: String, corpus_path: String, min_in: Double, min_self: Double) -> Array[Track] with Fs {
+fn load_tracks(suite_path: String, corpus_path: String, min_in: Float64, min_self: Float64) -> Array[Track] with Fs {
   let out: Array[Track] = []
   match read_obj(suite_path) {
     Some(suite) => match obj_field(suite, "branch_union") {
-      Some(b) => push_track(out, "in-process", "branches the compiled test programs execute", Double::to_int(num_or(b, "hit", 0.0)), Double::to_int(num_or(b, "total", 0.0)), num_or(b, "rate", 0.0), bool_or(b, "exact", true), min_in),
+      Some(b) => push_track(out, "in-process", "branches the compiled test programs execute", Float64::to_int(num_or(b, "hit", 0.0)), Float64::to_int(num_or(b, "total", 0.0)), num_or(b, "rate", 0.0), bool_or(b, "exact", true), min_in),
       None => ()
     },
     None => ()
@@ -157,8 +157,8 @@ fn load_tracks(suite_path: String, corpus_path: String, min_in: Double, min_self
   match read_obj(corpus_path) {
     Some(corpus) => match obj_field(corpus, "branch") {
       Some(b) => {
-        let hit = Double::to_int(num_or(b, "hit", 0.0))
-        let total = Double::to_int(num_or(b, "total", 0.0))
+        let hit = Float64::to_int(num_or(b, "hit", 0.0))
+        let total = Float64::to_int(num_or(b, "total", 0.0))
         push_track(out, "self-compile", "compiler branches executed while compiling a corpus", hit, total, pct(hit, total), true, min_self)
       },
       None => ()
@@ -179,7 +179,7 @@ fn max_name(rows: Array[Track]) -> Int {
   w
 }
 
-fn rate_below(rate: Double, floor: Double) -> Bool {
+fn rate_below(rate: Float64, floor: Float64) -> Bool {
   // Not `rate < floor` at the call. In `report` that expression answered
   // false for 10.0 and 57.0, while the same comparison with the two values
   // bound as parameters answered true. The parameters are what make the

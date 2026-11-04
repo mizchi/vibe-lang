@@ -278,10 +278,7 @@ if command -v wasm-tools >/dev/null 2>&1; then
   fi
   hs_named="$(wasm-tools print "$hsdir/handler.wasm" 2>/dev/null | grep -c 'host_stream_get' || true)"
   [ -n "$hs_named" ] || hs_named=0
-  if [ "$hs_named" != "0" ]; then
-    echo "[compiler-gate] FAIL: the stream came from a NAMED import, not the parameter (#1540)" >&2
-    exit 1
-  fi
+  gate_require_eq "$hs_named" "0" "the stream came from a NAMED import, not the parameter (#1540)"
   echo "[compiler-gate] HostStream parameter: reads via host_stream_read, no named get (#1540)"
 fi
 # The other half: with TWO exported Async functions there is no single
@@ -320,11 +317,8 @@ if command -v wasm-tools >/dev/null 2>&1; then
 else
   echo "[compiler-gate] note: wasm-tools absent, skipping the validate half of #1746"
 fi
-sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$shdir/sh.wasm" 2>&1 | tail -1)"
-if [ "$sh_out" != "42" ]; then
-  echo "[compiler-gate] FAIL: rc_user_shadowed_sleep got '$sh_out' (want 42 -- the USER's sleep must be called)" >&2
-  exit 1
-fi
+gate_run sh_out last --invoke main "$shdir/sh.wasm"
+gate_require_eq "$sh_out" "42" "rc_user_shadowed_sleep got '$sh_out' (want 42 -- the USER's sleep must be called)"
 echo "[compiler-gate] RC user-shadowed builtin name ok (#1746)"
 echo "[compiler-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume+builder-return)"
 lkdir="_build/_gate_rc_leak"
@@ -636,11 +630,8 @@ shdir="_build/_gate_rc_shadow"
 rm -rf "$shdir"; mkdir -p "$shdir"
 VIBE_RC=shadow gate_fs_compile "fixtures/rc_shadow_regression_test.vibe" "$shdir/shadow.wasm" main
 gate_require_artifact "$shdir/shadow.wasm" "rc_shadow_regression fixture did not compile under VIBE_RC=shadow"
-sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$shdir/shadow.wasm" 2>&1 | tail -1)"
-if [ "$sh_out" != "25377489" ]; then
-  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 25377489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
-  exit 1
-fi
+gate_run sh_out last "$shdir/shadow.wasm"
+gate_require_eq "$sh_out" "25377489" "rc_shadow_regression got '$sh_out' (want 25377489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology."
 rm -rf "$shdir"
 echo "[compiler-gate] RC shadow-liveness regression guard ok (25377489)"
 
@@ -658,11 +649,8 @@ rm -rf "$bbdir"; mkdir -p "$bbdir"
 for bb_lane in rc shadow; do
   gate_fs_compile_on "$bb_lane" "fixtures/rc_branch_borrow_let_test.vibe" "$bbdir/bb.wasm" main
   gate_require_artifact "$bbdir/bb.wasm" "rc_branch_borrow_let fixture did not compile on the $bb_lane lane (#3103)"
-  bb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$bbdir/bb.wasm" 2>&1 | tail -1)"
-  if [ "$bb_out" != "334444" ]; then
-    echo "[compiler-gate] FAIL: rc_branch_borrow_let got '$bb_out' on the $bb_lane lane (want 334444). The digit that moved names the shape (see fixtures/rc_branch_borrow_let_test.vibe); a shadow abort means an if/match branch tail's borrowed element was dropped without a retain (#3103)." >&2
-    exit 1
-  fi
+  gate_run bb_out last "$bbdir/bb.wasm"
+  gate_require_eq "$bb_out" "334444" "rc_branch_borrow_let got '$bb_out' on the $bb_lane lane (want 334444). The digit that moved names the shape (see fixtures/rc_branch_borrow_let_test.vibe); a shadow abort means an if/match branch tail's borrowed element was dropped without a retain (#3103)."
 done
 
 rm -rf "$bbdir"
@@ -968,10 +956,7 @@ for ga_fx in fixtures/builtin_shadow_gc_direct_abi_generic_test.vibe fixtures/bu
   env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "$ga_fx" "$ga_out" __no_entry__ >/dev/null 2>&1 || true
   gate_require_artifact "$ga_out" "$ga_fx did not build on wasm-gc (#3144):"
   ga_native=$(node -e 'const b=require("fs").readFileSync(process.argv[1]);let n=0;for(let i=0;i+2<b.length;i++){if(b[i]===0xfb&&b[i+1]===0x07&&b[i+2]===0x0c)n++}console.log(n)' "$ga_out")
-  if [ "$ga_native" != "0" ]; then
-    echo "[compiler-gate] FAIL: $ga_fx put a program's own Array::length on the gc native Array-reference ABI ($ga_native native literal(s), expected 0) (#3144)" >&2
-    exit 1
-  fi
+  gate_require_eq "$ga_native" "0" "$ga_fx put a program's own Array::length on the gc native Array-reference ABI ($ga_native native literal(s), expected 0) (#3144)"
 done
 rm -rf "$gadir"
 echo "[compiler-gate] builtin-named gc direct-ABI tables ok (generic + export block)"
@@ -994,11 +979,8 @@ rm -rf "$svdir"; mkdir -p "$svdir"
 for sv_lane in bump rc shadow gc; do
   gate_fs_compile_on "$sv_lane" "fixtures/rc_truncate_saved_view_test.vibe" "$svdir/sv.wasm" main
   gate_require_artifact "$svdir/sv.wasm" "rc_truncate_saved_view fixture did not compile on the $sv_lane lane (#2837)"
-  sv_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$svdir/sv.wasm" 2>&1 | tail -1)"
-  if [ "$sv_out" != "2122312" ]; then
-    echo "[compiler-gate] FAIL: rc_truncate_saved_view got '$sv_out' on the $sv_lane lane (want 2122312). Each shape sits at its own decimal place -- 1s plain, 100s aliased, 10000s reserved, 1000000s nested -- so the digit that moved names the one that broke. A trap means a saved element view was freed by a truncation (#2837)." >&2
-    exit 1
-  fi
+  gate_run sv_out last "$svdir/sv.wasm"
+  gate_require_eq "$sv_out" "2122312" "rc_truncate_saved_view got '$sv_out' on the $sv_lane lane (want 2122312). Each shape sits at its own decimal place -- 1s plain, 100s aliased, 10000s reserved, 1000000s nested -- so the digit that moved names the one that broke. A trap means a saved element view was freed by a truncation (#2837)."
 done
 rm -rf "$svdir"
 echo "[compiler-gate] truncate saved-view guard ok (2122312 on bump/rc/shadow/gc)"
@@ -1019,11 +1001,8 @@ rm -rf "$trdir"; mkdir -p "$trdir"
 for tr_lane in bump rc shadow gc; do
   gate_fs_compile_on "$tr_lane" "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main
   gate_require_artifact "$trdir/tr.wasm" "rc_truncate_reclaim_bounded fixture did not compile on the $tr_lane lane (#2837)"
-  tr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$trdir/tr.wasm" 2>&1 | tail -1)"
-  if [ "$tr_out" != "2000" ]; then
-    echo "[compiler-gate] FAIL: rc_truncate_reclaim_bounded got '$tr_out' on the $tr_lane lane (want 2000). A smaller count means a saved view read a freed, reused block; a trap means a truncate released an element something still held (#2837)." >&2
-    exit 1
-  fi
+  gate_run tr_out last "$trdir/tr.wasm"
+  gate_require_eq "$tr_out" "2000" "rc_truncate_reclaim_bounded got '$tr_out' on the $tr_lane lane (want 2000). A smaller count means a saved view read a freed, reused block; a trap means a truncate released an element something still held (#2837)."
   if [ "$tr_lane" = rc ]; then
     tr_json="$(node scripts/measure_heap.mjs "$trdir/tr.wasm" main 2>/dev/null)"
     tr_used="$(printf '%s' "$tr_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1071,11 +1050,8 @@ rm -rf "$vadir"; mkdir -p "$vadir"
 for va_lane in bump rc shadow gc; do
   gate_fs_compile_on "$va_lane" "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main
   gate_require_artifact "$vadir/va.wasm" "rc_view_alias_drop fixture did not compile on the $va_lane lane (#3114)"
-  va_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$vadir/va.wasm" 2>&1 | tail -1)"
-  if [ "$va_out" != "126354332566498532" ]; then
-    echo "[compiler-gate] FAIL: rc_view_alias_drop got '$va_out' on the $va_lane lane (want 126354332566498532). Each alias shape sits at its own decimal place -- see the fixture header for which digit is which. A trap means an alias of a borrowed view released a reference it never took (#3114)." >&2
-    exit 1
-  fi
+  gate_run va_out last "$vadir/va.wasm"
+  gate_require_eq "$va_out" "126354332566498532" "rc_view_alias_drop got '$va_out' on the $va_lane lane (want 126354332566498532). Each alias shape sits at its own decimal place -- see the fixture header for which digit is which. A trap means an alias of a borrowed view released a reference it never took (#3114)."
 done
 rm -rf "$vadir"
 echo "[compiler-gate] borrowed-view alias guard ok (126354332566498532 on bump/rc/shadow/gc)"
@@ -1094,11 +1070,8 @@ rm -rf "$lcdir"; mkdir -p "$lcdir"
 for lc_lane in bump rc shadow gc; do
   gate_fs_compile_on "$lc_lane" "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main
   gate_require_artifact "$lcdir/lc.wasm" "rc_loop_carried_alias fixture did not compile on the $lc_lane lane (#3134)"
-  lc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lcdir/lc.wasm" 2>&1 | tail -1)"
-  if [ "$lc_out" != "362412181109361818" ]; then
-    echo "[compiler-gate] FAIL: rc_loop_carried_alias got '$lc_out' on the $lc_lane lane (want 362412181109361818). Each loop shape owns a two-digit block -- see all_shapes in the fixture. A trap means an alias inside a loop body spent a reference of a binding declared outside it (#3134)." >&2
-    exit 1
-  fi
+  gate_run lc_out last "$lcdir/lc.wasm"
+  gate_require_eq "$lc_out" "362412181109361818" "rc_loop_carried_alias got '$lc_out' on the $lc_lane lane (want 362412181109361818). Each loop shape owns a two-digit block -- see all_shapes in the fixture. A trap means an alias inside a loop body spent a reference of a binding declared outside it (#3134)."
 done
 rm -rf "$lcdir"
 echo "[compiler-gate] loop-carried alias guard ok (362412181109361818 on bump/rc/shadow/gc)"
@@ -1114,11 +1087,8 @@ rm -rf "$dldir"; mkdir -p "$dldir"
 for dl_lane in bump rc shadow gc; do
   gate_fs_compile_on "$dl_lane" "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main
   gate_require_artifact "$dldir/dl.wasm" "rc_double_literal_alias fixture did not compile on the $dl_lane lane (#3135)"
-  dl_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dldir/dl.wasm" 2>&1 | tail -1)"
-  if [ "$dl_out" != "6333" ]; then
-    echo "[compiler-gate] FAIL: rc_double_literal_alias got '$dl_out' on the $dl_lane lane (want 6333). Each shape sits at its own decimal place -- see the fixture header. A trap means an alias of a Double inside a loop released the source's box (#3135)." >&2
-    exit 1
-  fi
+  gate_run dl_out last "$dldir/dl.wasm"
+  gate_require_eq "$dl_out" "6333" "rc_double_literal_alias got '$dl_out' on the $dl_lane lane (want 6333). Each shape sits at its own decimal place -- see the fixture header. A trap means an alias of a Double inside a loop released the source's box (#3135)."
 done
 rm -rf "$dldir"
 echo "[compiler-gate] Double-literal alias guard ok (6333 on bump/rc/shadow/gc)"
@@ -1143,11 +1113,8 @@ rm -rf "$fddir"; mkdir -p "$fddir"
 for fd_lane in bump rc shadow gc; do
   gate_fs_compile_on "$fd_lane" "fixtures/rc_forin_discard_bounded_test.vibe" "$fddir/fd.wasm" main
   gate_require_artifact "$fddir/fd.wasm" "rc_forin_discard_bounded fixture did not compile on the $fd_lane lane (#3137)"
-  fd_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$fddir/fd.wasm" 2>&1 | tail -1)"
-  if [ "$fd_out" != "2007000" ]; then
-    echo "[compiler-gate] FAIL: rc_forin_discard_bounded got '$fd_out' on the $fd_lane lane (want 2007000). A trap means a discarded for, handle or while body released a binding it never owned (#3137, #3162)." >&2
-    exit 1
-  fi
+  gate_run fd_out last "$fddir/fd.wasm"
+  gate_require_eq "$fd_out" "2007000" "rc_forin_discard_bounded got '$fd_out' on the $fd_lane lane (want 2007000). A trap means a discarded for, handle or while body released a binding it never owned (#3137, #3162)."
   if [ "$fd_lane" = rc ]; then
     fd_json="$(node scripts/measure_heap.mjs "$fddir/fd.wasm" main 2>/dev/null)"
     fd_used="$(printf '%s' "$fd_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1190,11 +1157,8 @@ rm -rf "$sfdir"; mkdir -p "$sfdir"
 for sf_lane in bump rc shadow gc; do
   gate_fs_compile_on "$sf_lane" "fixtures/rc_set_field_bounded_test.vibe" "$sfdir/sf.wasm" main
   gate_require_artifact "$sfdir/sf.wasm" "rc_set_field_bounded fixture did not compile on the $sf_lane lane (#3140)"
-  sf_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sfdir/sf.wasm" 2>&1 | tail -1)"
-  if [ "$sf_out" != "2019000" ]; then
-    echo "[compiler-gate] FAIL: rc_set_field_bounded got '$sf_out' on the $sf_lane lane (want 2019000). A trap means a field assignment released a value something still held (#3140)." >&2
-    exit 1
-  fi
+  gate_run sf_out last "$sfdir/sf.wasm"
+  gate_require_eq "$sf_out" "2019000" "rc_set_field_bounded got '$sf_out' on the $sf_lane lane (want 2019000). A trap means a field assignment released a value something still held (#3140)."
   if [ "$sf_lane" = rc ]; then
     sf_json="$(node scripts/measure_heap.mjs "$sfdir/sf.wasm" main 2>/dev/null)"
     sf_used="$(printf '%s' "$sf_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1254,11 +1218,8 @@ rm -rf "$exdir"; mkdir -p "$exdir"
 for ex_lane in bump rc shadow gc; do
   gate_fs_compile_on "$ex_lane" "fixtures/rc_early_exit_bounded_test.vibe" "$exdir/ex.wasm" main
   gate_require_artifact "$exdir/ex.wasm" "rc_early_exit_bounded fixture did not compile on the $ex_lane lane (#3141)"
-  ex_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$exdir/ex.wasm" 2>&1 | tail -1)"
-  if [ "$ex_out" != "2049000" ]; then
-    echo "[compiler-gate] FAIL: rc_early_exit_bounded got '$ex_out' on the $ex_lane lane (want 2049000). A trap means an early exit, or a loop's result slot, released a binding it did not own or one still in use (#3141, #3168)." >&2
-    exit 1
-  fi
+  gate_run ex_out last "$exdir/ex.wasm"
+  gate_require_eq "$ex_out" "2049000" "rc_early_exit_bounded got '$ex_out' on the $ex_lane lane (want 2049000). A trap means an early exit, or a loop's result slot, released a binding it did not own or one still in use (#3141, #3168)."
   if [ "$ex_lane" = rc ]; then
     ex_json="$(node scripts/measure_heap.mjs "$exdir/ex.wasm" main 2>/dev/null)"
     ex_used="$(printf '%s' "$ex_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1306,11 +1267,8 @@ rm -rf "$msdir"; mkdir -p "$msdir"
 for ms_lane in bump rc shadow gc; do
   gate_fs_compile_on "$ms_lane" "fixtures/rc_mut_store_view_bounded_test.vibe" "$msdir/ms.wasm" main
   gate_require_artifact "$msdir/ms.wasm" "rc_mut_store_view_bounded fixture did not compile on the $ms_lane lane (#3184)"
-  ms_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$msdir/ms.wasm" 2>&1 | tail -1)"
-  if [ "$ms_out" != "88000" ]; then
-    echo "[compiler-gate] FAIL: rc_mut_store_view_bounded got '$ms_out' on the $ms_lane lane (want 88000). A trap, or fewer than 44 per round, means a let or let mut held a value some other binding released (#3184, #3190, #3215)." >&2
-    exit 1
-  fi
+  gate_run ms_out last "$msdir/ms.wasm"
+  gate_require_eq "$ms_out" "88000" "rc_mut_store_view_bounded got '$ms_out' on the $ms_lane lane (want 88000). A trap, or fewer than 44 per round, means a let or let mut held a value some other binding released (#3184, #3190, #3215)."
   if [ "$ms_lane" = rc ]; then
     ms_json="$(node scripts/measure_heap.mjs "$msdir/ms.wasm" main 2>/dev/null)"
     ms_used="$(printf '%s' "$ms_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1365,11 +1323,8 @@ for lr_case in for_named_array loop_owning_call match_binder_nested_loop; do
         "fixtures/rc_${lr_case}_bounded_test.vibe" "$lrdir/lr.wasm" main >/dev/null 2>&1 || true
     fi
     gate_require_artifact "$lrdir/lr.wasm" "rc_${lr_case}_bounded did not compile on $lr_lane"
-    lr_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$lrdir/lr.wasm" 2>&1 | tail -1)"
-    if [ "$lr_out" != "$lr_want" ]; then
-      echo "[compiler-gate] FAIL: rc_${lr_case}_bounded got '$lr_out' on $lr_lane (want $lr_want)" >&2
-      exit 1
-    fi
+    gate_run lr_out last "$lrdir/lr.wasm"
+    gate_require_eq "$lr_out" "$lr_want" "rc_${lr_case}_bounded got '$lr_out' on $lr_lane (want $lr_want)"
     if [ "$lr_lane" = rc ]; then
       lr_json="$(node scripts/measure_heap.mjs "$lrdir/lr.wasm" main 2>/dev/null)"
       lr_used="$(printf '%s' "$lr_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1412,11 +1367,8 @@ for rl_case in mut_restore_loop mut_shadowed_use for_collect_named_array; do
         "fixtures/rc_${rl_case}_bounded_test.vibe" "$rl_dir/rl.wasm" main >/dev/null 2>&1 || true
     fi
     gate_require_artifact "$rl_dir/rl.wasm" "rc_${rl_case}_bounded did not compile on $rl_lane"
-    rl_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$rl_dir/rl.wasm" 2>&1 | tail -1)"
-    if [ "$rl_out" != "$rl_want" ]; then
-      echo "[compiler-gate] FAIL: rc_${rl_case}_bounded got '$rl_out' on $rl_lane (want $rl_want)" >&2
-      exit 1
-    fi
+    gate_run rl_out last "$rl_dir/rl.wasm"
+    gate_require_eq "$rl_out" "$rl_want" "rc_${rl_case}_bounded got '$rl_out' on $rl_lane (want $rl_want)"
     if [ "$rl_lane" = rc ]; then
       rl_json="$(node scripts/measure_heap.mjs "$rl_dir/rl.wasm" main 2>/dev/null)"
       rl_used="$(printf '%s' "$rl_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1455,11 +1407,8 @@ rm -rf "$dbdir"; mkdir -p "$dbdir"
 for db_lane in bump rc shadow gc; do
   gate_fs_compile_on "$db_lane" "fixtures/rc_double_release_bounded_test.vibe" "$dbdir/db.wasm" main
   gate_require_artifact "$dbdir/db.wasm" "rc_double_release_bounded fixture did not compile on the $db_lane lane (#3135)"
-  db_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$dbdir/db.wasm" 2>&1 | tail -1)"
-  if [ "$db_out" != "29007002" ]; then
-    echo "[compiler-gate] FAIL: rc_double_release_bounded got '$db_out' on the $db_lane lane (want 29007002). A trap means a Double box was released while an operator, a builtin or a callee still read it (#3135)." >&2
-    exit 1
-  fi
+  gate_run db_out last "$dbdir/db.wasm"
+  gate_require_eq "$db_out" "29007002" "rc_double_release_bounded got '$db_out' on the $db_lane lane (want 29007002). A trap means a Double box was released while an operator, a builtin or a callee still read it (#3135)."
   if [ "$db_lane" = rc ]; then
     db_json="$(node scripts/measure_heap.mjs "$dbdir/db.wasm" main 2>/dev/null)"
     db_used="$(printf '%s' "$db_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1501,11 +1450,8 @@ rm -rf "$ehdir"; mkdir -p "$ehdir"
 for eh_lane in bump rc shadow gc; do
   gate_fs_compile_on "$eh_lane" "fixtures/rc_user_effect_handle_bounded_test.vibe" "$ehdir/eh.wasm" main
   gate_require_artifact "$ehdir/eh.wasm" "rc_user_effect_handle_bounded fixture did not compile on the $eh_lane lane (#3169)"
-  eh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$ehdir/eh.wasm" 2>&1 | tail -1)"
-  if [ "$eh_out" != "10005000" ]; then
-    echo "[compiler-gate] FAIL: rc_user_effect_handle_bounded got '$eh_out' on the $eh_lane lane (want 10005000). A trap means a callee released an evidence dictionary it did not own, or one still in use (#3169)." >&2
-    exit 1
-  fi
+  gate_run eh_out last "$ehdir/eh.wasm"
+  gate_require_eq "$eh_out" "10005000" "rc_user_effect_handle_bounded got '$eh_out' on the $eh_lane lane (want 10005000). A trap means a callee released an evidence dictionary it did not own, or one still in use (#3169)."
   if [ "$eh_lane" = rc ]; then
     eh_json="$(node scripts/measure_heap.mjs "$ehdir/eh.wasm" main 2>/dev/null)"
     eh_used="$(printf '%s' "$eh_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1554,11 +1500,8 @@ for cl_lane in bump rc shadow gc; do
       fixtures/rc_local_closure_capture_bounded_test.vibe "$cldir/cl.wasm" main >/dev/null 2>&1 || true ;;
   esac
   gate_require_artifact "$cldir/cl.wasm" "rc_local_closure_capture_bounded did not compile on $cl_lane (#3203)"
-  cl_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cldir/cl.wasm" 2>&1 | tail -1)"
-  if [ "$cl_out" != "6003000" ]; then
-    echo "[compiler-gate] FAIL: rc_local_closure_capture_bounded got '$cl_out' on $cl_lane (want 6003000; #3203)" >&2
-    exit 1
-  fi
+  gate_run cl_out last "$cldir/cl.wasm"
+  gate_require_eq "$cl_out" "6003000" "rc_local_closure_capture_bounded got '$cl_out' on $cl_lane (want 6003000; #3203)"
   if [ "$cl_lane" = rc ]; then
     cl_json="$(node scripts/measure_heap.mjs "$cldir/cl.wasm" main 2>/dev/null)"
     cl_used="$(printf '%s' "$cl_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1598,11 +1541,8 @@ for sq_lane in bump rc shadow gc; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     fixtures/rc_seq_discard_bounded_test.vibe "$sqdir/sq.wasm" main >/dev/null 2>&1 || true
   gate_require_artifact "$sqdir/sq.wasm" "rc_seq_discard_bounded did not compile on $sq_lane (#3199)"
-  sq_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sqdir/sq.wasm" 2>&1 | tail -1)"
-  if [ "$sq_out" != "4000" ]; then
-    echo "[compiler-gate] FAIL: rc_seq_discard_bounded got '$sq_out' on $sq_lane (want 4000; #3199)" >&2
-    exit 1
-  fi
+  gate_run sq_out last "$sqdir/sq.wasm"
+  gate_require_eq "$sq_out" "4000" "rc_seq_discard_bounded got '$sq_out' on $sq_lane (want 4000; #3199)"
   if [ "$sq_lane" = rc ]; then
     sq_json="$(node scripts/measure_heap.mjs "$sqdir/sq.wasm" main 2>/dev/null)"
     sq_used="$(printf '%s' "$sq_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1616,11 +1556,8 @@ for sq_lane in bump rc shadow gc; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     fixtures/rc_seq_discard_extended_test.vibe "$sqdir/extended.wasm" main >/dev/null 2>&1 || true
   gate_require_artifact "$sqdir/extended.wasm" "rc_seq_discard_extended did not compile on $sq_lane (#3199)"
-  sq_extended_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$sqdir/extended.wasm" 2>&1 | tail -1)"
-  if [ "$sq_extended_out" != "52000" ]; then
-    echo "[compiler-gate] FAIL: rc_seq_discard_extended got '$sq_extended_out' on $sq_lane (want 52000; #3199)" >&2
-    exit 1
-  fi
+  gate_run sq_extended_out last "$sqdir/extended.wasm"
+  gate_require_eq "$sq_extended_out" "52000" "rc_seq_discard_extended got '$sq_extended_out' on $sq_lane (want 52000; #3199)"
   if [ "$sq_lane" = rc ]; then
     sq_extended_json="$(node scripts/measure_heap.mjs "$sqdir/extended.wasm" main 2>/dev/null)"
     sq_extended_used="$(printf '%s' "$sq_extended_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
@@ -1663,10 +1600,7 @@ VIBE_RC=shadow gate_fs_compile "fixtures/rc_shadow_large_heap.vibe" "$lhdir/shad
 gate_require_artifact "$lhdir/shadow.wasm" "rc_shadow_large_heap did not compile under VIBE_RC=shadow (#2427)"
 lh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_WASM_PRE_GROW_PAGES=40000 \
   bash scripts/run_wasm_vibe_host_runner.sh "$lhdir/shadow.wasm" 2>&1 | tail -1)"
-if [ "$lh_out" != "418804" ]; then
-  echo "[compiler-gate] FAIL: rc_shadow_large_heap got '$lh_out' (want 418804). This fixture has no RC bug: a shadow abort here means the shadow table and the heap overlap again, so VIBE_RC=shadow is reporting the program's own bytes as freed-marks -- see rc_shadow_heap_start in codegen/common_base and #2427." >&2
-  exit 1
-fi
+gate_require_eq "$lh_out" "418804" "rc_shadow_large_heap got '$lh_out' (want 418804). This fixture has no RC bug: a shadow abort here means the shadow table and the heap overlap again, so VIBE_RC=shadow is reporting the program's own bytes as freed-marks -- see rc_shadow_heap_start in codegen/common_base and #2427."
 rm -rf "$lhdir"
 echo "[compiler-gate] RC shadow table / heap overlap ok (418804)"
 
@@ -1703,12 +1637,8 @@ VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tlsdir/bool_render.vibe" "$tlsdir/shadow.wasm" _start >/dev/null 2>&1 || true
 gate_require_artifact "$tlsdir/shadow.wasm" "VIBE_RC=shadow build of the #2469 probe produced no wasm"
-tls_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$tlsdir/shadow.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$tls_out" != "4116" ]; then
-  echo "[compiler-gate] FAIL: VIBE_RC=shadow rendered a Bool as '$tls_out' (want 4116 = \"true\"; 1049 = \"1\" means the shadow entry is back on the unlocated parse and its typed-lowering tables are empty -- #2469)" >&2
-  exit 1
-fi
+gate_run tls_out digits --invoke _start "$tlsdir/shadow.wasm"
+gate_require_eq "$tls_out" "4116" "VIBE_RC=shadow rendered a Bool as '$tls_out' (want 4116 = \"true\"; 1049 = \"1\" means the shadow entry is back on the unlocated parse and its typed-lowering tables are empty -- #2469)"
 rm -rf "$tlsdir"
 echo "[compiler-gate] shadow build typed-lowering tables ok (#2469)"
 
@@ -1758,11 +1688,11 @@ rm -rf "$cfdir"; mkdir -p "$cfdir"
 VIBE_CFG=dev VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/cfg_flag_test.vibe" "$cfdir/dev.wasm" main >/dev/null 2>&1
-cf_dev="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfdir/dev.wasm" 2>&1 | tail -1)"
+gate_run cf_dev last "$cfdir/dev.wasm"
 VIBE_CFG=release VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/cfg_flag_test.vibe" "$cfdir/rel.wasm" main >/dev/null 2>&1
-cf_rel="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfdir/rel.wasm" 2>&1 | tail -1)"
+gate_run cf_rel last "$cfdir/rel.wasm"
 if [ "$cf_dev" != "102" ] || [ "$cf_rel" != "2" ]; then
   echo "[compiler-gate] FAIL: #cfg selection wrong (dev='$cf_dev' want 102, release='$cf_rel' want 2)" >&2
   exit 1
@@ -1795,10 +1725,7 @@ for cf_flag in dev release dev; do
     cf_fs_got="$cf_fs_got nocompile($(tr '\n' ' ' < "$cfdir/fs.wasm.diag" 2>/dev/null | cut -c1-80))"
   fi
 done
-if [ "$cf_fs_got" != " 101 2 101" ]; then
-  echo "[compiler-gate] FAIL: #cfg on the FS lane (dev, release, warm dev) answered '$cf_fs_got', want ' 101 2 101' (#2513)" >&2
-  exit 1
-fi
+gate_require_eq "$cf_fs_got" " 101 2 101" "#cfg on the FS lane (dev, release, warm dev) answered '$cf_fs_got', want ' 101 2 101' (#2513)"
 rm -rf "$cfdir"
 echo "[compiler-gate] #cfg conditional compilation ok (dev=102 release=2; FS lane + warm switch ok)"
 
@@ -1815,11 +1742,8 @@ VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/gc_backend_smoke_test.vibe" "$gcdir/smoke.wasm" main >/dev/null 2>&1 || true
 gate_require_artifact "$gcdir/smoke.wasm" "gc backend smoke did not compile under VIBE_BACKEND=gc"
-gc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcdir/smoke.wasm" 2>&1 | tail -1)"
-if [ "$gc_out" != "101556" ]; then
-  echo "[compiler-gate] FAIL: gc backend smoke got '$gc_out' (want 101556)" >&2
-  exit 1
-fi
+gate_run gc_out last "$gcdir/smoke.wasm"
+gate_require_eq "$gc_out" "101556" "gc backend smoke got '$gc_out' (want 101556)"
 rm -rf "$gcdir"
 echo "[compiler-gate] wasm-gc backend smoke ok (101556)"
 
@@ -1918,10 +1842,7 @@ for gcabi_be in linear gc; do
 done
 # 160 = missing:0 present:1 read_len:6 env_len:0 -- pin the value too, so a
 # change that breaks BOTH lanes the same way cannot pass the agreement check.
-if [ "$gcabi_out" != "160" ]; then
-  echo "[compiler-gate] FAIL: host-import probe returned '$gcabi_out' (want 160) on both lanes (#1814)" >&2
-  exit 1
-fi
+gate_require_eq "$gcabi_out" "160" "host-import probe returned '$gcabi_out' (want 160) on both lanes (#1814)"
 if ! grep -qa "vibe.abi" "$gcabidir/gc.wasm"; then
   echo "[compiler-gate] FAIL: the gc module carries no vibe.abi custom section (#1814)" >&2
   exit 1
@@ -1995,7 +1916,7 @@ for gchb_be in linear gc; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/gc_host_builtins.vibe" "$gchbdir/$gchb_be.wasm" main >/dev/null 2>&1 || true
   gate_require_artifact "$gchbdir/$gchb_be.wasm" "gc_host_builtins.vibe did not compile on the $gchb_be backend (#1262)"
-  gchb_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gchbdir/$gchb_be.wasm" 2>&1 | tail -1)"
+  gate_run gchb_got last "$gchbdir/$gchb_be.wasm"
   if [ "$gchb_be" = "linear" ]; then
     gchb_out="$gchb_got"
   elif [ "$gchb_got" != "$gchb_out" ]; then
@@ -2005,10 +1926,7 @@ for gchb_be in linear gc; do
 done
 # Pin the value too: agreement alone passes when BOTH lanes break the same way.
 gchb_want="gc-host-builtins:10101010202101011"
-if [ "$gchb_out" != "$gchb_want" ]; then
-  echo "[compiler-gate] FAIL: gc host builtin probe returned '$gchb_out' (want $gchb_want) on both lanes (#1262)" >&2
-  exit 1
-fi
+gate_require_eq "$gchb_out" "$gchb_want" "gc host builtin probe returned '$gchb_out' (want $gchb_want) on both lanes (#1262)"
 # Console::write_stream / write_char are aliases onto the stdout imports.
 # The gc host table used to register only Stdout::write_stream, so
 # @vibe/console's print compiled on linear and died in gc codegen.
@@ -2018,11 +1936,8 @@ for gchb_be in linear gc; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$gchbdir/console_write.vibe" "$gchbdir/console_$gchb_be.wasm" main >/dev/null 2>&1 || true
   gate_require_artifact "$gchbdir/console_$gchb_be.wasm" "Console::write_stream did not compile on the $gchb_be backend"
-  gchb_con="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gchbdir/console_$gchb_be.wasm" 2>&1 | tail -1)"
-  if [ "$gchb_con" != "console-gc1" ]; then
-    echo "[compiler-gate] FAIL: Console write on $gchb_be returned '$gchb_con' (want console-gc1)" >&2
-    exit 1
-  fi
+  gate_run gchb_con last "$gchbdir/console_$gchb_be.wasm"
+  gate_require_eq "$gchb_con" "console-gc1" "Console write on $gchb_be returned '$gchb_con' (want console-gc1)"
 done
 # `Fs::readdir` inside a CLOSURE, kept as its own check rather than folded
 # into the fixture value. The surface rewrite is guarded on the name not
@@ -2040,11 +1955,8 @@ env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$gchbdir/rdclosure.vibe" "$gchbdir/rdclosure.wasm" main >/dev/null 2>&1 || true
 gate_require_artifact "$gchbdir/rdclosure.wasm" "Fs::readdir inside a closure did not compile on the gc lane -- is it still listed in gc_direct_abi_names()? (#1262)"
-gchb_rd="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gchbdir/rdclosure.wasm" 2>&1 | tail -1)"
-if [ "$gchb_rd" != "2" ]; then
-  echo "[compiler-gate] FAIL: Fs::readdir inside a closure returned '$gchb_rd' (want 2) on the gc lane (#1262)" >&2
-  exit 1
-fi
+gate_run gchb_rd last "$gchbdir/rdclosure.wasm"
+gate_require_eq "$gchb_rd" "2" "Fs::readdir inside a closure returned '$gchb_rd' (want 2) on the gc lane (#1262)"
 rm -rf "$gchbdir" _build/gc_host_builtins_probe
 echo "[compiler-gate] wasm-gc host builtins ok (linear + gc, =$gchb_want; readdir incl. empty dir and closure)"
 
