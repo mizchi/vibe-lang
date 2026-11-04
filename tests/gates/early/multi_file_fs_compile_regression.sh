@@ -1615,8 +1615,11 @@ fi
 # (d) #3716: a loop's where-clause traps when a checkpoint fails. Each case
 #     breaks exactly one clause, at one checkpoint: on entry, after an
 #     iteration, after an iteration ended by `continue` (one written inside
-#     a string interpolation's hole included), and a measure that does not
-#     decrease. The satisfied loop returns its count.
+#     a string interpolation's hole, or in a nested `for`'s iterand,
+#     included), and a measure that does not decrease. `capture` binds the
+#     name the lowering generated for that loop before it was made fresh
+#     (`__loop_check_14`, 14 being the `for`'s token position); a fixed name
+#     let that binding replace the checkpoint. The satisfied loop returns its count.
 loop_ok='fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { invariant: i <= 3, decreases: 3 - i } {\n    i = i + 1\n  }\n  i\n}\nexport let _start: () -> Int = () -> { run() }\n'
 printf "$loop_ok" > "$edir/loop_ok.vibe"
 gate_fs_compile "$edir/loop_ok.vibe" "$edir/loop_ok.wasm" _start
@@ -1631,7 +1634,9 @@ for loop_case in \
   "continue|fn run() -> Int {\n  let mut n = 0\n  for x in [1, 2, 3] where { invariant: n < 2 } {\n    n = n + 1\n    if x > 0 { continue } else { () }\n  }\n  n\n}" \
   "measure|fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { decreases: 10 } {\n    i = i + 1\n  }\n  i\n}" \
   "negative|fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { decreases: 1 - i } {\n    i = i + 1\n  }\n  i\n}" \
-  "interp|fn run() -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    n = n + 1\n    let s = \"\\{if x > 0 { continue } else { 0 }}\"\n    let _ = s\n  }\n  n\n}"; do
+  "interp|fn run() -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    n = n + 1\n    let s = \"\\{if x > 0 { continue } else { 0 }}\"\n    let _ = s\n  }\n  n\n}" \
+  "iterand|fn run() -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    n = n + 1\n    for y in {\n      continue\n      [1]\n    } {\n      ()\n    }\n  }\n  n\n}" \
+  "capture|fn run() -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    let __loop_check_14 = () -> ()\n    n = n + 1\n    continue\n  }\n  n\n}"; do
   loop_name="${loop_case%%|*}"
   printf "${loop_case#*|}\nexport let _start: () -> Int = () -> { run() }\n" > "$edir/loop_$loop_name.vibe"
   gate_fs_compile "$edir/loop_$loop_name.vibe" "$edir/loop_$loop_name.wasm" _start
@@ -1640,6 +1645,16 @@ for loop_case in \
     echo "[compiler-gate] FAIL: violated loop contract ($loop_name) did not trap (#3716)" >&2; exit 1
   fi
 done
+# A struct pattern's field binder spelled like the generated checkpoint
+# (`__loop_17_check`, 17 being the `for`'s token position) does not replace
+# it: the printer abbreviates the pattern to `S::{...}`, so the fresh-name
+# check reads binders from the AST rather than from printed text.
+printf 'fn run(s: S) -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    n = n + 1\n    match s {\n      S::{ __loop_17_check } => {\n        continue\n      }\n    }\n  }\n  n\n}\n\nstruct S { __loop_17_check: () -> Unit }\n\nexport let _start: () -> Int = () -> { run(S::{ __loop_17_check: () -> () }) }\n' > "$edir/loop_pattern_capture.vibe"
+gate_fs_compile "$edir/loop_pattern_capture.vibe" "$edir/loop_pattern_capture.wasm" _start
+gate_require_artifact "$edir/loop_pattern_capture.wasm" "loop contract case 'pattern_capture' did not compile (#3716)"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/loop_pattern_capture.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: violated loop contract (pattern_capture) did not trap (#3716)" >&2; exit 1
+fi
 printf 'fn a(x: Int) -> Int\n' > "$edir/prev.vibei"
 printf 'fn a(x: Int) -> Int\nfn b(x: Int) -> Int\n' > "$edir/next.vibei"
 VIBE_PUBLISH_CHECK=1 VIBE_PUBLISH_PREV="$edir/prev.vibei" VIBE_PUBLISH_PREV_VERSION=1.0.0 VIBE_PUBLISH_VERSION=1.1.0 \

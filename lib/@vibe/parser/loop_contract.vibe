@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, TypeExpr
+  Expr, Pat, TypeExpr
 }
 
 import ./token.vibe {
@@ -78,8 +78,12 @@ fn contract_assert(_ cond: Expr) -> Expr {
 /// (`expected Bool, got Int`) rather than a mismatch reported against the
 /// `assert` / measure cells this lowering introduces, which the program
 /// never wrote.
+///
+/// The parameter is spelled with the compiler's reserved `__vibe_` prefix:
+/// the editor's binding recovery matches a parameter to the next source token
+/// of its name, so a plain `v` would claim a later `let v` of the program.
 fn typed_clause(clause: Expr, ty: String) -> Expr {
-  ECall(EFn(_no_tp(), _no_tb(), [("v", Some(TyName(ty)))], Some(TyName(ty)), None, EIdent("v", 0 - 1)), [
+  ECall(EFn(_no_tp(), _no_tb(), [("__vibe_clause", Some(TyName(ty)))], Some(TyName(ty)), None, EIdent("__vibe_clause", 0 - 1)), [
     clause
   ], 0 - 1, [])
 }
@@ -88,13 +92,13 @@ fn typed_clause(clause: Expr, ty: String) -> Expr {
 /// below the previous checkpoint's. `prev` / `seen` are the loop's own
 /// mutable cells (`seen` is false until the first checkpoint has recorded a
 /// measure).
-fn contract_checkpoint(invariants: Array[Expr], decreases: Array[Expr], tag: Int) -> Expr {
+fn contract_checkpoint(invariants: Array[Expr], decreases: Array[Expr], stem: String) -> Expr {
   let mut acc = if Array::length(decreases) == 0 {
     EUnit
   } else {
-    let prev = "__loop_dec_prev_\{tag}"
-    let seen = "__loop_dec_seen_\{tag}"
-    let now = "__loop_dec_now_\{tag}"
+    let prev = "\{stem}_dec_prev"
+    let seen = "\{stem}_dec_seen"
+    let now = "\{stem}_dec_now"
     let record = EAssign(prev, EIdent(now, 0 - 1), EAssign(seen, EBool(true), EUnit, 0 - 1), 0 - 1)
     let below = EIf(EIdent(seen, 0 - 1), contract_assert(EBinOp("<", EIdent(now, 0 - 1), EIdent(prev, 0 - 1), 0 - 1)), EUnit)
     ELet(now, typed_clause(clause = Array::get(decreases, at = 0), ty = "Int"), ESeq(contract_assert(EBinOp(">=", EIdent(now, 0 - 1), EInt(0), 0 - 1)), ESeq(below, record)), 0 - 1)
@@ -107,14 +111,237 @@ fn contract_checkpoint(invariants: Array[Expr], decreases: Array[Expr], tag: Int
   acc
 }
 
+/// The prefix of every name a contracted loop's lowering binds around the
+/// loop: `__loop_T`, or `__loop<N>_T` for the first N, where no name the
+/// loop binds or mentions (`collect_names` over its condition or iterand,
+/// body and clauses, plus a `for`'s variables) starts with `__loop<N>`.
+/// Those bindings enclose the loop, so a fixed spelling could capture a name
+/// the loop mentions, or be shadowed by one it binds. `T` is the loop's token
+/// position, which keeps nested loops apart.
+fn loop_stem(exprs: Array[Expr], names: Array[String], invariants: Array[Expr], decreases: Array[Expr], tag: Int) -> String {
+  let seen: Array[String] = []
+  for n in names {
+    Array::push(seen, value = n)
+  }
+  for e in exprs {
+    collect_names(expr = e, out = seen)
+  }
+  for e in invariants {
+    collect_names(expr = e, out = seen)
+  }
+  for e in decreases {
+    collect_names(expr = e, out = seen)
+  }
+  let mut base = "__loop"
+  let mut k = 0
+  while names_use_prefix(names = seen, prefix = base) {
+    k = k + 1
+    base = "__loop\{k}"
+  }
+  "\{base}_\{tag}"
+}
+
+/// Every name `expr` binds or mentions: `let` names, lambda parameters and
+/// type parameters, `for` / `loop` variables, assignment targets, pattern
+/// binders (a struct pattern's fields included) and identifiers. A generated
+/// name that no entry starts with can neither capture nor be captured by any
+/// binding in `expr`. Read from the AST, not from printed text: the printer
+/// abbreviates a named struct pattern to `S::{...}`, dropping its binders.
+fn collect_names(expr: Expr, out: Array[String]) -> Unit {
+  let go = (e: Expr) -> collect_names(expr = e, out = out)
+  let all = (es: Array[Expr]) -> {
+    for e in es {
+      go(e)
+    }
+    ()
+  }
+  match expr {
+    EIdent(n, _) => Array::push(out, value = n),
+    ELet(n, v, b, _) => {
+      Array::push(out, value = n)
+      go(v)
+      go(b)
+    },
+    ELetRec(n, v, b) => {
+      Array::push(out, value = n)
+      go(v)
+      go(b)
+    },
+    ELetMut(n, v, b, _) => {
+      Array::push(out, value = n)
+      go(v)
+      go(b)
+    },
+    EAssign(n, v, c, _) => {
+      Array::push(out, value = n)
+      go(v)
+      go(c)
+    },
+    EAssignOp(n, _, v, c, _) => {
+      Array::push(out, value = n)
+      go(v)
+      go(c)
+    },
+    EFn(tps, _, params, _, _, b) => {
+      for t in tps {
+        Array::push(out, value = t)
+      }
+      for p in params {
+        let (pn, _) = p
+        Array::push(out, value = pn)
+      }
+      go(b)
+    },
+    EForIn(v, i, it, b) => {
+      Array::push(out, value = v)
+      match i {
+        Some(n) => Array::push(out, value = n),
+        None => ()
+      }
+      go(it)
+      go(b)
+    },
+    ELoop(params, b) => {
+      for p in params {
+        let (pn, pv) = p
+        Array::push(out, value = pn)
+        go(pv)
+      }
+      go(b)
+    },
+    EMatch(s, arms) => {
+      go(s)
+      for a in arms {
+        let (p, ex) = a
+        collect_pat_names(pat = p, out = out)
+        go(ex)
+      }
+      ()
+    },
+    EHandle(b, arms) => {
+      go(b)
+      for a in arms {
+        let (p, ex) = a
+        collect_pat_names(pat = p, out = out)
+        go(ex)
+      }
+      ()
+    },
+    EStringInterp(parts) => {
+      for part in parts {
+        Array::push(out, value = part)
+      }
+      ()
+    },
+    ETuple(items) => all(items),
+    EArray(items) => all(items),
+    ERecord(_, fields, _) => {
+      for f in fields {
+        let (_, v) = f
+        go(v)
+      }
+      ()
+    },
+    EMap(fields) => {
+      for f in fields {
+        let (_, v) = f
+        go(v)
+      }
+      ()
+    },
+    EIf(c, t, e) => {
+      go(c)
+      go(t)
+      go(e)
+    },
+    ESeq(a, b) => {
+      go(a)
+      go(b)
+    },
+    EWhile(c, b) => {
+      go(c)
+      go(b)
+    },
+    ECall(callee, args, _, _) => {
+      go(callee)
+      all(args)
+    },
+    EBinOp(_, l, r, _) => {
+      go(l)
+      go(r)
+    },
+    EUnaryOp(_, e) => go(e),
+    EDot(obj, _, _, _) => go(obj),
+    ELabeledArg(_, _, v) => go(v),
+    EReturn(v) => go(v),
+    EBreak(v) => match v {
+      Some(x) => go(x),
+      None => ()
+    },
+    EContinue(args) => all(args),
+    ESpread(v) => go(v),
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_, _) => (),
+    EBool(_) => (),
+    EUnit => ()
+  }
+}
+
+fn collect_pat_names(pat: Pat, out: Array[String]) -> Unit {
+  match pat {
+    PBind(n) => Array::push(out, value = n),
+    PCtor(_, items) => {
+      for p in items {
+        collect_pat_names(pat = p, out = out)
+      }
+      ()
+    },
+    PTuple(items) => {
+      for p in items {
+        collect_pat_names(pat = p, out = out)
+      }
+      ()
+    },
+    POr(l, r) => {
+      collect_pat_names(pat = l, out = out)
+      collect_pat_names(pat = r, out = out)
+    },
+    PStruct(_, fields) => {
+      for f in fields {
+        let (fname, p) = f
+        Array::push(out, value = fname)
+        collect_pat_names(pat = p, out = out)
+      }
+      ()
+    },
+    PWild => (),
+    PInt(_) => (),
+    PFloat(_) => (),
+    PString(_) => (),
+    PBool(_) => ()
+  }
+}
+
+/// Whether some entry of `names` starts with `prefix`.
+fn names_use_prefix(names: Array[String], prefix: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(names) && !found {
+    found = String::starts_with(Array::get(names, at = i), prefix = prefix)
+    i = i + 1
+  }
+  found
+}
+
 /// The cells a `decreases` measure needs, around `inner`. The previous
 /// measure starts at 0 only so the cell is an `Int`; `seen` says it was never
 /// read before the first checkpoint stores one.
-fn with_measure_cells(inner: Expr, decreases: Array[Expr], tag: Int) -> Expr {
+fn with_measure_cells(inner: Expr, decreases: Array[Expr], stem: String) -> Expr {
   if Array::length(decreases) == 0 {
     inner
   } else {
-    ELetMut("__loop_dec_prev_\{tag}", EInt(0), ELetMut("__loop_dec_seen_\{tag}", EBool(false), inner, 0 - 1), 0 - 1)
+    ELetMut("\{stem}_dec_prev", EInt(0), ELetMut("\{stem}_dec_seen", EBool(false), inner, 0 - 1), 0 - 1)
   }
 }
 
@@ -127,7 +354,8 @@ fn attach_while_contract(cond: Expr, body: Expr, invariants: Array[Expr], decrea
   if Array::length(invariants) == 0 && Array::length(decreases) == 0 {
     EWhile(cond, body)
   } else {
-    with_measure_cells(inner = EWhile(ESeq(contract_checkpoint(invariants = invariants, decreases = decreases, tag = tag), cond), body), decreases = decreases, tag = tag)
+    let stem = loop_stem(exprs = [cond, body], names = [], invariants = invariants, decreases = decreases, tag = tag)
+    with_measure_cells(inner = EWhile(ESeq(contract_checkpoint(invariants = invariants, decreases = decreases, stem = stem), cond), body), decreases = decreases, stem = stem)
   }
 }
 
@@ -142,20 +370,28 @@ fn attach_for_contract(value_name: String, index_name: Option[String], iterable:
   if Array::length(invariants) == 0 && Array::length(decreases) == 0 {
     EForIn(value_name, index_name, iterable, body)
   } else {
-    let check = "__loop_check_\{tag}"
+    let names = match index_name {
+      Some(i) => [value_name, i],
+      None => [value_name]
+    }
+    let stem = loop_stem(exprs = [iterable, body], names = names, invariants = invariants, decreases = decreases, tag = tag)
+    let check = "\{stem}_check"
     let call = () -> ECall(EIdent(check, 0 - 1), [], 0 - 1, [])
-    let lam = EFn(_no_tp(), _no_tb(), [], None, None, contract_checkpoint(invariants = invariants, decreases = decreases, tag = tag))
+    let lam = EFn(_no_tp(), _no_tb(), [], None, None, contract_checkpoint(invariants = invariants, decreases = decreases, stem = stem))
     // The body's value is kept across the checkpoint: a `for` over an Array
     // collects it.
-    let body_value = "__loop_body_\{tag}"
+    let body_value = "\{stem}_body"
     let looped = EForIn(value_name, index_name, iterable, ELet(body_value, check_before_continue(expr = body, check = check), ESeq(call(), EIdent(body_value, 0 - 1)), 0 - 1))
-    with_measure_cells(inner = ELet(check, lam, ESeq(call(), looped), 0 - 1), decreases = decreases, tag = tag)
+    with_measure_cells(inner = ELet(check, lam, ESeq(call(), looped), 0 - 1), decreases = decreases, stem = stem)
   }
 }
 
 /// Every `continue` that targets the loop whose body this is gets a call to
 /// `check` first. A nested loop's `continue` targets that loop, and a lambda's
-/// body is not this loop's, so neither is entered. Every variant is listed so
+/// body is not this loop's, so neither is entered -- except what a nested
+/// loop evaluates before it starts: a `for`'s iterand and a `loop`'s initial
+/// parameter values, where a `continue` still targets this loop. (A `while`
+/// condition is the nested loop's own: a `continue` there re-tests it.) Every variant is listed so
 /// a new one is a compile error here rather than a skipped checkpoint.
 fn check_before_continue(expr: Expr, check: String) -> Expr {
   let go = (e: Expr) -> check_before_continue(expr = e, check = check)
@@ -164,8 +400,11 @@ fn check_before_continue(expr: Expr, check: String) -> Expr {
       go(a)
     })),
     EWhile(_, _) => expr,
-    ELoop(_, _) => expr,
-    EForIn(_, _, _, _) => expr,
+    ELoop(params, b) => ELoop(for p in params {
+      let (pname, pv) = p
+      (pname, go(pv))
+    }, b),
+    EForIn(v, i, it, b) => EForIn(v, i, go(it), b),
     EFn(_, _, _, _, _, _) => expr,
     EInt(_) => expr,
     EFloat(_) => expr,
