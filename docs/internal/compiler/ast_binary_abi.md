@@ -193,7 +193,7 @@ so the **order** is what the format fixes.
 | 0x01 | `PWild` | — |
 | 0x02 | `PBind(String)` | `string(name)` |
 | 0x03 | `PInt(Int)` | `svarint(value)` |
-| 0x04 | `PFloat(Double)` | `f64(value)` |
+| 0x04 | `PFloat(Float64)` | `f64(value)` |
 | 0x05 | `PString(String)` | `string(value)` |
 | 0x06 | `PBool(Bool)` | `bool(value)` |
 | 0x07 | `PCtor(String, Array[Pat])` | `string(name) array<Pat>(args)` |
@@ -222,7 +222,7 @@ ImportItem : opt<ImportKind>(kind) string(name) optstr(alias)
 | Tag  | Variant | Payload |
 |------|---------|---------|
 | 0x01 | `EInt(Int)` | `svarint(value)` |
-| 0x02 | `EFloat(Double)` | `f64(value)` |
+| 0x02 | `EFloat(Float64)` | `f64(value)` |
 | 0x03 | `EString(String, Int)` | `string(value)`, `svarint(off)` |
 | 0x04 | `EBool(Bool)` | `bool(value)` |
 | 0x05 | `EIdent(String, Int)` | `string(name) svarint(byte_offset)` |
