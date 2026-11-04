@@ -611,10 +611,7 @@ for ur_ok in \
     fi
     gate_require_artifact "$ur_okw" "a RESOLVABLE render was refused on $ur_lane (#2987 over-refuses): $ur_body"
     ur_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$ur_okw" 2>/dev/null | head -1)"
-    if [ "$ur_got" != "$ur_want" ]; then
-      echo "[compiler-gate] FAIL: control $ur_i rendered '$ur_got' on $ur_lane, expected '$ur_want' (#2987)" >&2
-      exit 1
-    fi
+    gate_require_eq "$ur_got" "$ur_want" "control $ur_i rendered '$ur_got' on $ur_lane, expected '$ur_want' (#2987)"
   done
 done
 rm -rf "$urdir"
@@ -1525,12 +1522,8 @@ EOF
 # Expected: (1+2+3+4) + (1+2+3+4) + (1+2+3+4) = 30
 gate_fs_compile "$itdir/iter.vibe" "$itdir/iter.wasm" _start
 gate_require_artifact "$itdir/iter.wasm" "Iterator trait program did not compile"
-it_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$itdir/iter.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$it_out" != "30" ]; then
-  echo "[compiler-gate] FAIL: Iterator dispatch mismatch (got '$it_out', want 30 -> #636 regressed)" >&2
-  exit 1
-fi
+gate_run it_out int --invoke _start "$itdir/iter.wasm"
+gate_require_eq "$it_out" "30" "Iterator dispatch mismatch (got '$it_out', want 30 -> #636 regressed)"
 rm -rf "$itdir"
 echo "[compiler-gate] trait-type-parameter / Iterator regression ok"
 
@@ -1591,12 +1584,8 @@ EOF
 # Expected: 20 + 20 + 7 = 47
 gate_fs_compile "$lcdir/lc.vibe" "$lcdir/lc.wasm" _start
 gate_require_artifact "$lcdir/lc.wasm" "lazy combinators program did not compile"
-lc_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$lcdir/lc.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$lc_out" != "47" ]; then
-  echo "[compiler-gate] FAIL: lazy combinators mismatch (got '$lc_out', want 47 -> #636 regressed)" >&2
-  exit 1
-fi
+gate_run lc_out int --invoke _start "$lcdir/lc.wasm"
+gate_require_eq "$lc_out" "47" "lazy combinators mismatch (got '$lc_out', want 47 -> #636 regressed)"
 rm -rf "$lcdir"
 echo "[compiler-gate] lazy iterator combinators regression ok"
 
@@ -1641,12 +1630,8 @@ export let _start: () -> Int = () -> { lazy_iter_count(lazy_iter_arr([10, 20, 30
 EOF
 gate_fs_compile "$xidir/main.vibe" "$xidir/main.wasm" _start
 gate_require_artifact "$xidir/main.wasm" "cross-import trait-iterator program did not compile"
-xi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$xidir/main.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$xi_out" != "5" ]; then
-  echo "[compiler-gate] FAIL: cross-import trait-iterator mismatch (got '$xi_out', want 5 -> import method namespacing regressed)" >&2
-  exit 1
-fi
+gate_run xi_out int --invoke _start "$xidir/main.wasm"
+gate_require_eq "$xi_out" "5" "cross-import trait-iterator mismatch (got '$xi_out', want 5 -> import method namespacing regressed)"
 rm -rf "$xidir"
 echo "[compiler-gate] cross-import trait-iterator regression ok"
 
@@ -1692,12 +1677,8 @@ EOF
 # Expected: async iterator 10+20+30 = 60, pull closure 1+2+3+4 = 10 -> 70.
 gate_fs_compile "$fadir/fa.vibe" "$fadir/fa.wasm" _start
 gate_require_artifact "$fadir/fa.wasm" "async for-loop program did not compile"
-fa_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$fadir/fa.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$fa_out" != "70" ]; then
-  echo "[compiler-gate] FAIL: async for-loop unification mismatch (got '$fa_out', want 70 -> #636/#1350 regressed)" >&2
-  exit 1
-fi
+gate_run fa_out int --invoke _start "$fadir/fa.wasm"
+gate_require_eq "$fa_out" "70" "async for-loop unification mismatch (got '$fa_out', want 70 -> #636/#1350 regressed)"
 rm -rf "$fadir"
 echo "[compiler-gate] async for-loop unification regression ok"
 
@@ -1744,12 +1725,8 @@ export let _start: () -> Int = () -> { sum_direct(lazy_iter_arr([10, 20, 30, 40]
 EOF
 gate_fs_compile "$eidir/pos.vibe" "$eidir/pos.wasm" _start
 gate_require_artifact "$eidir/pos.wasm" "element-type positive program did not compile"
-ei_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$eidir/pos.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$ei_out" != "100" ]; then
-  echo "[compiler-gate] FAIL: element-type positive mismatch (got '$ei_out', want 100)" >&2
-  exit 1
-fi
+gate_run ei_out int --invoke _start "$eidir/pos.wasm"
+gate_require_eq "$ei_out" "100" "element-type positive mismatch (got '$ei_out', want 100)"
 # (b) negative: Int accumulator + String element must be a type error.
 cat > "$eidir/neg.vibe" <<'EOF'
 import ./li.vibe { LazyIter, lazy_iter_arr }
@@ -1814,12 +1791,8 @@ export let _start: () -> Int = () -> { total([10, 20, 30, 40]) + total(Box::{ v:
 EOF
 gate_fs_compile "$gidir/pos.vibe" "$gidir/pos.wasm" _start
 gate_require_artifact "$gidir/pos.wasm" "generic-impl positive program did not compile"
-gi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$gidir/pos.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$gi_out" != "5" ]; then
-  echo "[compiler-gate] FAIL: generic-impl positive mismatch (got '$gi_out', want 5)" >&2
-  exit 1
-fi
+gate_run gi_out int --invoke _start "$gidir/pos.wasm"
+gate_require_eq "$gi_out" "5" "generic-impl positive mismatch (got '$gi_out', want 5)"
 # Soundness: a marker-trait generic impl must NOT satisfy the bound.
 cat > "$gidir/neg.vibe" <<'EOF'
 trait Marky[T]
@@ -1858,12 +1831,8 @@ let use_it = [U: Show2](x: U) -> Int { U::show2(x) }'
 } > "$gjdir/pos.vibe"
 gate_fs_compile "$gjdir/pos.vibe" "$gjdir/pos.wasm" _start
 gate_require_artifact "$gjdir/pos.wasm" "dict-of-dict positive program did not compile"
-gj_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$gjdir/pos.wasm" 2>/dev/null | tr -dc '0-9-')"
-if [ "$gj_out" != "66" ]; then
-  echo "[compiler-gate] FAIL: dict-of-dict mismatch (got '$gj_out', want 66 = 60 + 6)" >&2
-  exit 1
-fi
+gate_run gj_out int --invoke _start "$gjdir/pos.wasm"
+gate_require_eq "$gj_out" "66" "dict-of-dict mismatch (got '$gj_out', want 66 = 60 + 6)"
 # Soundness: an element type with no Show2 impl must not silently dispatch.
 { printf '%s\n' "$gj_prelude"
   printf 'struct Qux[T] { w: T }\n'
@@ -1970,12 +1939,8 @@ EOF
 # fails to compile the bare-tuple binding).
 gate_fs_compile "$nldir/nestedlit.vibe" "$nldir/nestedlit.wasm" _start
 gate_require_artifact "$nldir/nestedlit.wasm" "nested literal sub-pattern program did not compile"
-nestedlit_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$nldir/nestedlit.wasm" 2>/dev/null | tr -dc '0-9')"
-if [ "$nestedlit_out" != "3075" ]; then
-  echo "[compiler-gate] FAIL: nested literal sub-pattern mismatch (got '$nestedlit_out', want 3075 -> #613 regressed)" >&2
-  exit 1
-fi
+gate_run nestedlit_out digits --invoke _start "$nldir/nestedlit.wasm"
+gate_require_eq "$nestedlit_out" "3075" "nested literal sub-pattern mismatch (got '$nestedlit_out', want 3075 -> #613 regressed)"
 rm -rf "$nldir"
 echo "[compiler-gate] nested literal sub-pattern discrimination ok"
 
@@ -2227,8 +2192,7 @@ EOF
 gate_fs_compile "$hdir/multiop.vibe" "$hdir/multiop.wasm" _start
 gate_require_artifact "$hdir/multiop.wasm" "multi-operation effect handler did not compile (#665 dispatch regressed)"
 # a = Mul(3)*1000 = 3000 ; b = Mul(3)*10 + Add(5)+10 = 30+15 = 45 ; total 3045
-multiop_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-  --invoke _start "$hdir/multiop.wasm" 2>/dev/null | tr -dc '0-9')"
+gate_run multiop_out digits --invoke _start "$hdir/multiop.wasm"
 if [ "$multiop_out" != "3045" ]; then
   echo "[compiler-gate] FAIL: multi-operation dispatch wrong (got '$multiop_out', want 3045 -> #665 regressed)" >&2; exit 1
 fi

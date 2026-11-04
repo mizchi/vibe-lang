@@ -874,7 +874,7 @@ export let _start: () -> Int = () -> {
 EOF
 gate_fs_compile "$gdir/guard.vibe" "$gdir/guard.wasm" _start
 gate_require_artifact "$gdir/guard.wasm" "guarded match did not compile"
-gres="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gdir/guard.wasm" 2>/dev/null | tr -dc '0-9-')"
+gate_run gres int --invoke _start "$gdir/guard.wasm"
 rm -rf "$gdir"
 # 7 (guard misses -> wildcard) + 11 (guard hits) + 2 (second guard) + 102 (bind fall-through) = 122
 if [ "$gres" != "122" ]; then
