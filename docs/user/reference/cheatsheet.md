@@ -92,22 +92,20 @@ let b: Bool = true
 let u: Unit = ()
 ```
 
-### `Float64` / `Float32`: the width-named float spellings
+### `Float64` / `Float32`: the float types are named by width
 
-`Float64` and `Float32` are the width-named spellings of `Double` and
-`Float` (ADR-0122, #3728). They work everywhere a type or a type's namespace
-does: annotations, `impl ... for Float64`, `fn Float64::m(..)`, and the
-builtins (`Float64::to_string`, `Float64::parse`, `Float32::to_string`). The
-conversions take width names too: `Int::to_float64`, `Int::to_float32`,
+The float types are `Float64` (IEEE binary64, the type of `1.5`) and
+`Float32` (IEEE binary32, the type of `1.5f`), ADR-0122. Their namespaces
+and conversions use the same names: `Float64::to_string`, `Float64::parse`,
+`Float32::to_string`, `Int::to_float64`, `Int::to_float32`,
 `Float64::to_float32`, `Float32::to_float64`, and `Float64::to_int` /
-`Float32::to_int`. `Float64` / `Float32` are the canonical names: diagnostics,
-hover and `vibe type-at` print them. The old spellings still parse as aliases
-of the same types; the tree moves to the new names in #3729.
-Because every `Float64` / `Float32` in a type or a `X::` path names the
-builtin, neither can be the name of a declared type, trait, effect, alias or
-type parameter (a constructor may still be called `Float64`). A type
-parameter may not take any builtin float spelling (`Double`, `Float`, `f64`,
-`f32` too), since it would capture the `Float64` written beside it.
+`Float32::to_int`. The old spellings `Double`, `Float`, `f64` and `f32`, and
+the conversions `Int::to_double` / `Int::to_float` / `Double::to_float` /
+`Float::to_double`, are refused by the parser with the name to write
+(``unknown type `Double` -- write `Float64` ``, #3729). Because every
+`Float64` / `Float32` in a type or an `X::` path names the builtin, neither
+can be the name of a declared type, trait, effect, alias or type parameter
+(a constructor may still be called `Float64`, or `Double`).
 
 ```vibe
 test "width-named floats" {
@@ -454,12 +452,42 @@ kept in the AST (`SFnDecl`, #727) and lowered to the `let rec` form below
 just before checking/codegen, so checker/codegen semantics are identical.
 The optional `where { requires: .., ensures: .. }` contract runs as
 always-on runtime asserts (#731 Phase 1): each `requires` condition asserts
-at entry; each `ensures` condition sees the function value bound as
-`result` and asserts at exit; a violating call traps. Known limits: an
-early `return` bypasses `ensures`, and `result` shadows any user binding of
-that name inside ensures conditions. `vibe normalize` and the AST printer
+at entry; each `ensures` condition sees the returned value bound as
+`result` and asserts at every exit, the tail and each `return` alike (#3715,
+one nested in a loop or a `match` arm included); a violating call traps. The
+conditions read the function's parameters even where the body shadows one.
+`result` shadows any user binding of that name inside ensures conditions. `vibe normalize` and the AST printer
 round-trip fn declarations in fn + where form — fn sources are no longer
 refused or rewritten to `let rec`.
+
+A loop takes the same block, with `invariant` and `decreases` (#3716,
+ADR-0121 Phase 0). `while`, `for` and `loop` (with or without parameters)
+accept it between their header and their body:
+
+```vibe
+fn sum(_ xs: Array[Int]) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < Array::length(xs) where {
+    invariant: 0 <= i && i <= Array::length(xs),
+    decreases: Array::length(xs) - i,
+  } {
+    acc = acc + Array::get(xs, at = i)
+    i = i + 1
+  }
+  acc
+}
+```
+
+Each `invariant` (a `Bool`) is asserted on entry and after every iteration,
+one ended by `continue` included. The `decreases` measure (one `Int`) is
+asserted non-negative at the same points and strictly smaller than at the
+previous one. A violation traps, as a function contract does. The clauses
+read the variables in scope at the loop, never a binding the body declares,
+and a `for` clause cannot name the loop's own element. A `break` leaves
+without a check. Unlike a function's `where`, the printer and
+`vibe normalize` show the loop's clauses lowered to `assert`s, as they
+already show `loop` lowered to `while`.
 
 The entry is the one exception to "full annotations required", and it is
 deliberate (#3119). `fn main { .. }` and `fn main allows R { .. }` omit both
@@ -2816,7 +2844,14 @@ read_line()        // with Console - @vibe/console
 eprintln(s)        // with Console - @vibe/console
 sh("ls -la")       // with Process - shell command
 sh_lines("ls")     // -> Array[String]
+Process::exit(1)   // with Process::exit - set the exit status and stop
 ```
+
+**Exiting is a `Process` operation of its own** (#3720). `Process::exit(code)`
+needs `Process::exit` on the row (or `Process`, which includes it), so a
+program that only reports a status can say `fn main allows Fs::read_file +
+Process::exit` without being granted `sh` / `run`, which execute commands.
+`main` returning an `Int` does not set the status: `_start` prints it.
 
 **Profiling** (require `Profiler` effect; linear backend only; use the
 direct-call surface — unhandled `perform` throws):

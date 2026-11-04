@@ -336,8 +336,8 @@ fi
 # that the real adapter refuses corrupt or unbound products before writing.
 typed="$work/typed"; mkdir -p "$typed"
 cat > "$typed/source.vibe" <<'EOF'
-export fn take(value: Double) -> Double { value + 0.5 }
-export fn probe() -> Double { take(1.5) }
+export fn take(value: Float64) -> Float64 { value + 0.5 }
+export fn probe() -> Float64 { take(1.5) }
 EOF
 printf 'version\t1\npath\t%s/typed.vibe\n' "$LOGICAL_ROOT" > "$typed/job.txt"
 run_job "$typed"

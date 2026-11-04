@@ -1,0 +1,327 @@
+//# Imports
+
+import @vibe/ast {
+  Expr, Pat, TypeExpr
+}
+
+import ./parser_base.vibe {
+  _no_tb, _no_tp
+}
+
+//# Functions
+
+/// #3715: the name of the checker every exit of a function with an `ensures`
+/// goes through. It is bound inside the function, so a fixed spelling could
+/// capture a parameter or body binding of that name, or be shadowed by one at
+/// a rewritten `return` -- the `__vibe_` prefix is reserved only at top level.
+/// So it is `__vibe_ensures`, or `__vibe_ensures_N` for the first N, that no
+/// name the function binds or mentions starts with: its parameters, and
+/// `collect_names` over its body and conditions.
+fn ensures_check_name(body: Expr, ensures: Array[Expr], params: Array[(String, Option[TypeExpr])]) -> String {
+  let seen: Array[String] = []
+  for p in params {
+    let (pname, _) = p
+    Array::push(seen, value = pname)
+  }
+  collect_names(expr = body, out = seen)
+  for e in ensures {
+    collect_names(expr = e, out = seen)
+  }
+  let mut cand = "__vibe_ensures"
+  let mut n = 0
+  while names_use_prefix(names = seen, prefix = cand) {
+    n = n + 1
+    cand = "__vibe_ensures_\{n}"
+  }
+  cand
+}
+
+/// Every name `expr` binds or mentions: `let` names, lambda parameters and
+/// type parameters, `for` / `loop` variables, assignment targets, pattern
+/// binders (a struct pattern's fields included) and identifiers. A generated
+/// name that no entry starts with can neither capture nor be captured by any
+/// binding in `expr`. Read from the AST, not from printed text: the printer
+/// abbreviates a named struct pattern to `S::{...}`, dropping its binders.
+fn collect_names(expr: Expr, out: Array[String]) -> Unit {
+  let go = (e: Expr) -> collect_names(expr = e, out = out)
+  let all = (es: Array[Expr]) -> {
+    for e in es {
+      go(e)
+    }
+    ()
+  }
+  match expr {
+    EIdent(n, _) => Array::push(out, value = n),
+    ELet(n, v, b, _) => {
+      Array::push(out, value = n)
+      go(v)
+      go(b)
+    },
+    ELetRec(n, v, b) => {
+      Array::push(out, value = n)
+      go(v)
+      go(b)
+    },
+    ELetMut(n, v, b, _) => {
+      Array::push(out, value = n)
+      go(v)
+      go(b)
+    },
+    EAssign(n, v, c, _) => {
+      Array::push(out, value = n)
+      go(v)
+      go(c)
+    },
+    EAssignOp(n, _, v, c, _) => {
+      Array::push(out, value = n)
+      go(v)
+      go(c)
+    },
+    EFn(tps, _, params, _, _, b) => {
+      for t in tps {
+        Array::push(out, value = t)
+      }
+      for p in params {
+        let (pn, _) = p
+        Array::push(out, value = pn)
+      }
+      go(b)
+    },
+    EForIn(v, i, it, b) => {
+      Array::push(out, value = v)
+      match i {
+        Some(n) => Array::push(out, value = n),
+        None => ()
+      }
+      go(it)
+      go(b)
+    },
+    ELoop(params, b) => {
+      for p in params {
+        let (pn, pv) = p
+        Array::push(out, value = pn)
+        go(pv)
+      }
+      go(b)
+    },
+    EMatch(s, arms) => {
+      go(s)
+      for a in arms {
+        let (p, ex) = a
+        collect_pat_names(pat = p, out = out)
+        go(ex)
+      }
+      ()
+    },
+    EHandle(b, arms) => {
+      go(b)
+      for a in arms {
+        let (p, ex) = a
+        collect_pat_names(pat = p, out = out)
+        go(ex)
+      }
+      ()
+    },
+    EStringInterp(parts) => {
+      for part in parts {
+        Array::push(out, value = part)
+      }
+      ()
+    },
+    ETuple(items) => all(items),
+    EArray(items) => all(items),
+    ERecord(_, fields, _) => {
+      for f in fields {
+        let (_, v) = f
+        go(v)
+      }
+      ()
+    },
+    EMap(fields) => {
+      for f in fields {
+        let (_, v) = f
+        go(v)
+      }
+      ()
+    },
+    EIf(c, t, e) => {
+      go(c)
+      go(t)
+      go(e)
+    },
+    ESeq(a, b) => {
+      go(a)
+      go(b)
+    },
+    EWhile(c, b) => {
+      go(c)
+      go(b)
+    },
+    ECall(callee, args, _, _) => {
+      go(callee)
+      all(args)
+    },
+    EBinOp(_, l, r, _) => {
+      go(l)
+      go(r)
+    },
+    EUnaryOp(_, e) => go(e),
+    EDot(obj, _, _, _) => go(obj),
+    ELabeledArg(_, _, v) => go(v),
+    EReturn(v) => go(v),
+    EBreak(v) => match v {
+      Some(x) => go(x),
+      None => ()
+    },
+    EContinue(args) => all(args),
+    ESpread(v) => go(v),
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_, _) => (),
+    EBool(_) => (),
+    EUnit => ()
+  }
+}
+
+fn collect_pat_names(pat: Pat, out: Array[String]) -> Unit {
+  match pat {
+    PBind(n) => Array::push(out, value = n),
+    PCtor(_, items) => {
+      for p in items {
+        collect_pat_names(pat = p, out = out)
+      }
+      ()
+    },
+    PTuple(items) => {
+      for p in items {
+        collect_pat_names(pat = p, out = out)
+      }
+      ()
+    },
+    POr(l, r) => {
+      collect_pat_names(pat = l, out = out)
+      collect_pat_names(pat = r, out = out)
+    },
+    PStruct(_, fields) => {
+      for f in fields {
+        let (fname, p) = f
+        Array::push(out, value = fname)
+        collect_pat_names(pat = p, out = out)
+      }
+      ()
+    },
+    PWild => (),
+    PInt(_) => (),
+    PFloat(_) => (),
+    PString(_) => (),
+    PBool(_) => ()
+  }
+}
+
+/// Whether some entry of `names` starts with `prefix`.
+fn names_use_prefix(names: Array[String], prefix: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(names) && !found {
+    found = String::starts_with(Array::get(names, at = i), prefix = prefix)
+    i = i + 1
+  }
+  found
+}
+
+/// #3715 (ADR-0121 (6)): a function body whose every exit checks `ensures`.
+///
+/// The conditions are asserted in one closure defined at entry, which takes
+/// the returned value as `result` and hands it back. The tail expression and
+/// every `return e` that leaves this function pass their value through it, so
+/// an early `return` is checked like the tail. The closure is defined before
+/// the body runs, so a condition reads the function's parameters even where
+/// the body shadows one of their names. It carries the function's own effect
+/// row, so a condition may call what the body may.
+fn ensures_checked_body(body: Expr, ensures: Array[Expr], params: Array[(String, Option[TypeExpr])], ret: Option[TypeExpr], eff: Option[String]) -> Expr {
+  let check = ensures_check_name(body = body, ensures = ensures, params = params)
+  let mut asserts = EIdent("result", 0 - 1)
+  let mut ei = Array::length(ensures)
+  while ei > 0 {
+    ei = ei - 1
+    asserts = ESeq(ECall(EIdent("assert", 0 - 1), [Array::get(ensures, at = ei)], 0 - 1, [
+    ]), asserts)
+  }
+  let lam = EFn(_no_tp(), _no_tb(), [("result", ret)], ret, eff, asserts)
+  let routed = route_returns(expr = body, check = check)
+  ELet(check, lam, ECall(EIdent(check, 0 - 1), [routed], 0 - 1, []), 0 - 1)
+}
+
+/// Every `return e` that leaves the enclosing function becomes
+/// `return check(e)`. A lambda's `return` leaves the lambda, so a lambda is
+/// not entered; a loop's body is, since a `return` inside it leaves the
+/// function. Every variant is listed so a new one is a compile error here
+/// rather than an exit that skips the check.
+fn route_returns(expr: Expr, check: String) -> Expr {
+  let go = (e: Expr) -> route_returns(expr = e, check = check)
+  match expr {
+    EReturn(v) => EReturn(ECall(EIdent(check, 0 - 1), [go(v)], 0 - 1, [])),
+    EFn(_, _, _, _, _, _) => expr,
+    EWhile(c, b) => EWhile(go(c), go(b)),
+    ELoop(params, b) => ELoop(for p in params {
+      let (pname, pv) = p
+      (pname, go(pv))
+    }, go(b)),
+    EForIn(v, i, it, b) => EForIn(v, i, go(it), go(b)),
+    EContinue(args) => EContinue(for a in args {
+      go(a)
+    }),
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_, _) => expr,
+    EBool(_) => expr,
+    EIdent(_, _) => expr,
+    EUnit => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(for x in items {
+      go(x)
+    }),
+    EArray(items) => EArray(for x in items {
+      go(x)
+    }),
+    ERecord(name, fields, targs) => ERecord(name, for f in fields {
+      let (fname, v) = f
+      (fname, go(v))
+    }, targs),
+    EMap(fields) => EMap(for f in fields {
+      let (fname, v) = f
+      (fname, go(v))
+    }),
+    EIf(c, t, e) => EIf(go(c), go(t), go(e)),
+    ELet(n, v, b, off) => ELet(n, go(v), go(b), off),
+    ELetRec(n, v, b) => ELetRec(n, go(v), go(b)),
+    ELetMut(n, v, b, off) => ELetMut(n, go(v), go(b), off),
+    EAssign(n, v, c, off) => EAssign(n, go(v), go(c), off),
+    EAssignOp(n, op, v, c, off) => EAssignOp(n, op, go(v), go(c), off),
+    ESeq(a, b) => ESeq(go(a), go(b)),
+    EMatch(s, arms) => EMatch(go(s), for a in arms {
+      let (p, ex) = a
+      (p, go(ex))
+    }),
+    EHandle(b, arms) => EHandle(go(b), for a in arms {
+      let (p, ex) = a
+      (p, go(ex))
+    }),
+    ECall(callee, args, off, cell) => ECall(go(callee), for a in args {
+      go(a)
+    }, off, cell),
+    EBinOp(op, l, r, off) => EBinOp(op, go(l), go(r), off),
+    EUnaryOp(op, e) => EUnaryOp(op, go(e)),
+    EDot(obj, field, off, foff) => EDot(go(obj), field, off, foff),
+    ELabeledArg(label, name, v) => ELabeledArg(label, name, go(v)),
+    EBreak(v) => EBreak(match v {
+      Some(x) => Some(go(x)),
+      None => None
+    }),
+    ESpread(v) => ESpread(go(v))
+  }
+}
+
+export {
+  ensures_check_name, ensures_checked_body
+}

@@ -40,7 +40,7 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/core {
-  array_empty
+  MutMap, array_empty
 }
 
 import @vibe/ast {
@@ -702,6 +702,69 @@ export fn typing_dependency_transport_input_key(path: String, source: String, se
   StringBuilder::freeze(out)
 }
 
+/// A dependency's encoded env text, by the dependency's conservative
+/// fingerprint. `typing_dependency_transport_input_key` encodes every direct
+/// dependency's env once per CONSUMER, so a widely imported module was
+/// re-encoded once per importer -- measured on the CLI closure, the encoding
+/// alone was 0.7 s of a warm edited build and 1.7 s of a cold one.
+///
+/// Keyed by the fingerprint, not by the path: the env cache is an array two
+/// routes mutate (`typecheck_fs_upsert_env_cache`, `ensure_env_cache_for_path`),
+/// and a path-keyed memo would have to be invalidated on both, where one
+/// missed invalidation encodes a stale env into a reuse key. A fingerprint
+/// names one persisted record (`persistent_type_env_cache_path`), and the env
+/// cache holds, for each path, the env of the fingerprint the walk recorded
+/// for it -- the identity the conservative reuse path already rests on. So
+/// the memo carries no lifetime of its own and is never reset.
+let typing_dependency_env_text_memo: MutMap[String, String] = MutMap::new_string()
+
+/// `typing_dependency_transport_input_key`, with each dependency's env text
+/// taken from `typing_dependency_env_text_memo` by its fingerprint in
+/// `dep_fps`. The key is byte-identical to the unmemoized one; a dependency
+/// with no fingerprint in `dep_fps` is encoded directly.
+export fn typing_dependency_transport_input_key_memo(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)], dep_fps: Array[(String, String)]) -> String with Env {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, value = "vibe-typing-dependency-transport-env:v10")
+  push_typing_reuse_segment(out = out, text = normalize_path(path))
+  push_typing_reuse_segment(out = out, text = source)
+  push_typing_reuse_segment(out = out, text = semantics_seed)
+  push_typing_reuse_segment(out = out, text = resolution_env_seed())
+  push_typing_reuse_segment(out = out, text = __to_string(Array::length(dep_envs)))
+  let mut i = 0
+  while i < Array::length(dep_envs) {
+    let (dep_path, dep_env) = Array::get(dep_envs, at = i)
+    push_typing_reuse_segment(out = out, text = dep_path)
+    push_typing_reuse_segment(out = out, text = typing_dependency_env_text(dep_path = dep_path, dep_env = dep_env, dep_fps = dep_fps))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+fn typing_dependency_env_text(dep_path: String, dep_env: TypeEnv, dep_fps: Array[(String, String)]) -> String {
+  let mut fp = ""
+  let mut j = 0
+  while fp == "" && j < Array::length(dep_fps) {
+    let (p, f) = Array::get(dep_fps, at = j)
+    if p == dep_path {
+      fp = f
+    } else {
+      j = j + 1
+    }
+  }
+  if fp == "" {
+    persistent_type_env_cache_text(dep_env)
+  } else {
+    match MutMap::get(typing_dependency_env_text_memo, k = fp) {
+      Some(text) => text,
+      None => {
+        let text = persistent_type_env_cache_text(dep_env)
+        MutMap::set(typing_dependency_env_text_memo, k = fp, v = text)
+        text
+      }
+    }
+  }
+}
+
 /// Decode both outputs strictly and require canonical re-encoding to equal
 /// the raw file and the exact witness/alias text. Ordinary cache loading may
 /// normalize a legacy host prefix; reuse bindings require byte equality.
@@ -724,6 +787,25 @@ fn load_canonical_typing_dependency_env_reuse_target(target_fingerprint: String,
         None => None
       }
     } with { Exception::Throw(_) => None }
+  }
+}
+
+/// The witness binding published for `fingerprint`, parsed but with its
+/// target NOT re-validated: `(input key, target text)`. Callers that have not
+/// validated that target themselves use `typing_dependency_env_reuse_witness_binding`.
+fn typing_dependency_env_reuse_witness_text(_ fingerprint: String) -> Option[(String, String)] with Env + Fs {
+  let witness_path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint)
+  if !Fs::exists(witness_path) {
+    None
+  } else {
+    match parse_typing_dependency_reuse_binding(text = Fs::read_file(witness_path), tag = typing_dependency_env_reuse_witness_v10_tag) {
+      Some((input_key, target_fingerprint, target_text)) => if target_fingerprint != fingerprint {
+        None
+      } else {
+        Some((input_key, target_text))
+      },
+      None => None
+    }
   }
 }
 
@@ -802,9 +884,19 @@ export fn typing_dependency_env_reuse_is_eligible(_ dep_fps: Array[(String, Stri
   deps_eligible
 }
 
+/// Publishing a witness also records it as valid for this walk: it binds the
+/// target this walk just committed under `fingerprint`, so reading it back to
+/// validate it for the next dependent would re-read and re-encode a record
+/// whose text is the one just written. The memo still only admits the alias
+/// lookup, which validates the exact three-way binding itself.
 export fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fingerprint: String, target_text: String) -> Unit with Env + Fs {
   let witness_text = typing_dependency_reuse_binding_text(tag = typing_dependency_env_reuse_witness_v10_tag, input_key = input_key, target_fingerprint = fingerprint, target_text = target_text)
   Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), contents = witness_text)
+  if contains_str(arr = typing_dependency_env_reuse_valid_witness_memo, target = fingerprint) {
+    ()
+  } else {
+    Array::push(typing_dependency_env_reuse_valid_witness_memo, value = fingerprint)
+  }
 }
 
 export fn load_typing_dependency_env_reuse_target(path: String, input_key: String) -> Option[(String, String, TypeEnv)] with Env + Fs {
@@ -820,8 +912,12 @@ export fn load_typing_dependency_env_reuse_target(path: String, input_key: Strin
         // Validate the raw target before consulting the separately published
         // witness. Only an exact three-way alias/witness/target binding reuses.
         match load_canonical_typing_dependency_env_reuse_target(target_fingerprint = target_fingerprint, expected_target_text = target_text) {
+          // The target was just validated against `target_text`, and the
+          // witness must name that same text, so the witness's own target
+          // validation would re-read and re-encode the same record to the same
+          // answer: it is skipped here, and only here.
           Some(record) =>
-          match typing_dependency_env_reuse_witness_binding(target_fingerprint) {
+          match typing_dependency_env_reuse_witness_text(target_fingerprint) {
             Some((witness_input_key, witness_target_text)) =>
             if witness_input_key == input_key && witness_target_text == target_text {
               match record.lowering {

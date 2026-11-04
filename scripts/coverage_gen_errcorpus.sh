@@ -19,7 +19,7 @@ emit() { printf '%s\n' "$2" > "$OUT/$1.vibe"; }
 #      unify, types_equal, serialize_type, type_name_prefix, __to_string) ----
 emit t_int_str       'export let main: () -> Int = () -> { let x: Int = "s"; 0 }'
 emit t_str_int       'export let main: () -> Int = () -> { let x: String = 1; 0 }'
-emit t_float_int     'export let main: () -> Int = () -> { let x: Float = 1; 0 }'
+emit t_float_int     'export let main: () -> Int = () -> { let x: Float32 = 1; 0 }'
 emit t_bool_int      'export let main: () -> Int = () -> { let x: Bool = 1; 0 }'
 emit t_int_bool      'export let main: () -> Int = () -> { let x: Int = true; 0 }'
 emit t_unit_int      'export let main: () -> Int = () -> { let x: Int = (); 0 }'

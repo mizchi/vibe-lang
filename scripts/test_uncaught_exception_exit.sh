@@ -61,6 +61,13 @@ fn main() -> Unit allows Process {
   vibe_process_exit_raw(7)
 }
 EOF
+# #3720: the operation spelling of the exit builtin, under the one-operation
+# grant that does not authorize running commands, sets the same status.
+cat >"$WORK/explicit_op.vibe" <<'EOF'
+fn main() -> Unit allows Process::exit {
+  Process::exit(9)
+}
+EOF
 
 compile_core() {
   # Two statements: bash expands every word of one `local` before assigning
@@ -98,12 +105,13 @@ run_core() {
 }
 
 for backend in linear gc; do
-  for name in uncaught handled explicit; do
+  for name in uncaught handled explicit explicit_op; do
     compile_core "$backend" "$name"
   done
   run_core "$backend" uncaught 1
   run_core "$backend" handled 0
   run_core "$backend" explicit 7
+  run_core "$backend" explicit_op 9
 done
 
 # #3023: `vibe run` (scripts/vibe_run.sh) and the node runner invoke the entry
@@ -277,6 +285,27 @@ if ! grep -q "the program calls the host exit" "$component_exit.diag" 2>/dev/nul
   exit 1
 fi
 
+# #3720: the operation spelling is the same host exit, so it is refused too.
+cat >"$WORK/component_exit_op.vibe" <<'EOF'
+let run: () -> Int with Async + Process::exit = () -> {
+  Process::exit(0)
+  0
+}
+EOF
+component_exit_op="$WORK/component_exit_op.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$COMPILER" \
+  "$WORK/component_exit_op.vibe" "$component_exit_op" run >/dev/null 2>&1 || true
+if [ -s "$component_exit_op" ]; then
+  echo "[exception-exit] async component calling Process::exit was built (its exit would trap)" >&2
+  exit 1
+fi
+if ! grep -q "the program calls the host exit" "$component_exit_op.diag" 2>/dev/null; then
+  echo "[exception-exit] async component Process::exit refusal did not name the edit" >&2
+  cat "$component_exit_op.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+
 # #3030: a binding the program itself names `vibe_process_exit_raw` is that
 # binding, not the host exit, so it does not refuse the build.
 cat >"$WORK/component_exit_local.vibe" <<'EOF'
@@ -295,4 +324,4 @@ if [ ! -s "$component_exit_local" ]; then
   exit 1
 fi
 
-echo "[exception-exit] ok (linear/gc status+diagnostic via _start and main, handled=0, explicit=7, component non-zero, component user exit refused, local of that name built)"
+echo "[exception-exit] ok (linear/gc status+diagnostic via _start and main, handled=0, explicit=7, Process::exit=9, component non-zero, component user exit refused (both spellings), local of that name built)"

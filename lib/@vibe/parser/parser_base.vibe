@@ -9,7 +9,7 @@ import @vibe/ast {
 }
 
 import ./intern.vibe {
-  float_width_alias, intern_qualified
+  intern_qualified, refuse_retired_qualified, retired_float_type_replacement
 }
 
 import ./parser_binder_context.vibe {
@@ -28,6 +28,17 @@ export fn peek(tokens: Array[Token], pos: Int) -> Token {
   } else TEof
 }
 
+/// A lambda's `->` is followed by EITHER a return type or the body, and the
+/// parser decides which by parsing a type and looking at what follows it
+/// (`{` / `with` means a type). Until then `f64` in `() -> f64(x)` or the
+/// constructor `Double` in `() -> Double` is an expression that merely parses
+/// as a type, so the retired-name refusal must not fire during that look: it
+/// broke `let f31 = () -> f32()` (#3729). The refusal is held while
+/// `parse_type_tentatively` runs, and a caller that commits to the type asks
+/// `refuse_retired_in_type` afterwards. A log rather than a flag, like
+/// `compiler_spelled_type_params` below (top-level bindings are immutable).
+let retired_type_refusal_holds: Array[Int] = Array::slice([0], start = 0, end = 0)
+
 /// Parse the optional constructor-kind suffix of a type binder. `F` has kind
 /// Type, `F[_]` has kind Type -> Type, and each additional underscore adds one
 /// input. The returned String is the AST contract key, not source spelling.
@@ -36,11 +47,93 @@ export fn peek(tokens: Array[Token], pos: Int) -> Token {
 /// at all now, and no declaration may take the name, so EVERY type position
 /// can refuse it on sight; the parser is the one place all of them pass
 /// through (`parse_type`, plus the row arguments collected as text).
-fn refuse_i32_type(_ name: String) -> Unit with Exception {
+///
+/// ADR-0122 (#3729): the retired float spellings are refused the same way and
+/// at the same places, naming the width-named type to write.
+fn refuse_retired_type(_ name: String) -> Unit with Exception {
+  if Array::length(retired_type_refusal_holds) == 0 {
+    refuse_retired_type_name(name)
+  } else {
+    ()
+  }
+}
+
+fn refuse_retired_type_name(_ name: String) -> Unit with Exception {
   if name == "i32" {
     throw("unknown type `i32` -- write `Int`: vibe's integer type is 63-bit and wraps at 63 bits, and there is no `i32`")
   } else {
-    ()
+    let renamed = retired_float_type_replacement(name)
+    if String::length(renamed) > 0 {
+      throw("unknown type `" + name + "` -- write `" + renamed + "`: the float types are named by width (`Float64`, `Float32`)")
+    } else {
+      ()
+    }
+  }
+}
+
+/// `parse_type_with_source_context` at mode 0 with the retired-name refusal
+/// held; a parse error still propagates. Pair it with
+/// `refuse_retired_in_type` once the type is known to be one.
+export fn parse_type_tentatively(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (TypeExpr, Int) with Exception {
+  let depth = Array::length(retired_type_refusal_holds)
+  Array::push(retired_type_refusal_holds, value = 1)
+  let (parsed, msg) = handle {
+    let (ty, next) = parse_type_with_source_context(tokens = tokens, pos = pos, mode = 0, context = context)
+    (Some((ty, next)), "")
+  } with { Exception::Throw(m) => (None, m) }
+  Array::truncate(retired_type_refusal_holds, length = depth)
+  match parsed {
+    Some(pair) => pair,
+    None => throw(msg)
+  }
+}
+
+/// The refusal `parse_type_tentatively` held, applied to a type the caller
+/// has committed to: the first retired name in it, left to right, including
+/// the names inside a function type's effect row.
+export fn refuse_retired_in_type(_ ty: TypeExpr) -> Unit with Exception {
+  match ty {
+    TyName(name) => refuse_retired_type_name(name),
+    TyApp(name, args) => {
+      refuse_retired_type_name(name)
+      for arg in args {
+        refuse_retired_in_type(arg)
+      }
+    },
+    TyFn(params, ret, row) => {
+      for p in params {
+        refuse_retired_in_type(p)
+      }
+      refuse_retired_in_type(ret)
+      match row {
+        Some(text) => refuse_retired_in_row_text(text),
+        None => ()
+      }
+    },
+    TyTuple(items) => for item in items {
+      refuse_retired_in_type(item)
+    },
+    TyUnit => ()
+  }
+}
+
+fn row_text_ident_byte(_ b: Int) -> Bool {
+  (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
+}
+
+fn refuse_retired_in_row_text(_ text: String) -> Unit with Exception {
+  let n = String::length(text)
+  let mut i = 0
+  while i < n {
+    if row_text_ident_byte(String::byte_at(text, at = i)) {
+      let start = i
+      while i < n && row_text_ident_byte(String::byte_at(text, at = i)) {
+        i = i + 1
+      }
+      refuse_retired_type_name(String::substring(text, start = start, end = i))
+    } else {
+      i = i + 1
+    }
   }
 }
 
@@ -1222,8 +1315,10 @@ export fn parse_import_item_with_binder_context(tokens: Array[Token], pos: Int, 
       TIdent(name) => {
         let (base, after) = match peek(tokens = tokens, pos = name_pos + 1) {
           TDoubleColon => match peek(tokens = tokens, pos = name_pos + 2) {
-            TIdent(member) =>
-            (intern_qualified(ns = name, member = member), name_pos + 3),
+            TIdent(member) => {
+              refuse_retired_qualified(ns = name, member = member)
+              (intern_qualified(ns = name, member = member), name_pos + 3)
+            },
             _ => throw("expected qualified member name after '::'")
           },
           _ => (name, name_pos + 1)
@@ -1278,6 +1373,7 @@ export fn parse_binding_name_with_binder_context(tokens: Array[Token], pos: Int,
     TIdent(name) => match peek(tokens = tokens, pos = pos + 1) {
       TDoubleColon => match peek(tokens = tokens, pos = pos + 2) {
         TIdent(member) => {
+          refuse_retired_qualified(ns = name, member = member)
           let qualified = intern_qualified(ns = name, member = member)
           match context {
             Some(_) => binder_capture_source(context = context, name = qualified, first_token = pos, last_token = pos + 2),
@@ -1444,8 +1540,8 @@ fn collect_row_item_targs(tokens: Array[Token], pos: Int, depth: Int, acc: Strin
     // `parse_type`, so the width-named float spellings are canonicalized here
     // too: `with Box[Float64]` names the same row as `with Box[Double]`.
     TIdent(nm) => {
-      refuse_i32_type(nm)
-      collect_row_item_targs(tokens = tokens, pos = pos + 1, depth = depth, acc = String::concat(acc, float_width_alias(nm)))
+      refuse_retired_type(nm)
+      collect_row_item_targs(tokens = tokens, pos = pos + 1, depth = depth, acc = String::concat(acc, nm))
     },
     TComma => throw("a generic effect row item takes exactly one type argument for now (multi-argument instantiations in `with { ... }` are not yet supported)"),
     TLBracket => collect_row_item_targs(tokens = tokens, pos = pos + 1, depth = depth + 1, acc = String::concat(acc, "[")),
@@ -1880,23 +1976,23 @@ export fn parse_type_with_source_context(tokens: Array[Token], pos: Int, mode: I
       },
       TIdent(name) => match peek(tokens = tokens, pos = pos + 1) {
         TLBracket => {
-          refuse_i32_type(name)
+          refuse_retired_type(name)
           let (first, n1) = parse_type_with_source_context(tokens = tokens, pos = pos + 2, mode = 0, context = context)
           match peek(tokens = tokens, pos = n1) {
-            TRBracket => (TyApp(float_width_alias(name), [first]), n1 + 1),
+            TRBracket => (TyApp(name, [first]), n1 + 1),
             TComma => {
               let b = ArrayBuilder::new()
               ArrayBuilder::push(b, value = first)
               let (rest, end) = parse_type_list_rest(tokens = tokens, pos = n1, b = b, context = context)
               let en = expect_tk(tokens = tokens, pos = end, expected = "]");
-              (TyApp(float_width_alias(name), rest), en)
+              (TyApp(name, rest), en)
             },
             _ => throw("expected ']' or ',' in type application")
           }
         },
         _ => {
-          refuse_i32_type(name)
-          (TyName(float_width_alias(name)), pos + 1)
+          refuse_retired_type(name)
+          (TyName(name), pos + 1)
         }
       },
       _ => {

@@ -1,0 +1,1097 @@
+//# Imports
+
+import @vibe/ast {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/parser {
+  lex_with_offsets, parse_program_preserving_located, print_expr
+}
+
+//# Types
+
+/// A path through a function: the conditions that lead to it, the value it
+/// produced (an SMT-LIB term), that value's sort (`Int`, `Bool`, `Unit`),
+/// whether it left the function by `return`, and the names in scope.
+struct Outcome {
+  pc: Array[String];
+  value: String;
+  sort: String;
+  returned: Bool;
+  env: Array[(String, String, String)]
+}
+
+/// A contracted function of the file, as the prover reads it at a call.
+struct FnSig {
+  name: String;
+  params: Array[(String, String)];
+  ret: String;
+  requires: Array[Expr];
+  ensures: Array[Expr];
+  pure: Bool
+}
+
+/// The function being proved. `assumes` grows as the walk reaches calls;
+/// an obligation records how many of them precede it, so a later call's
+/// assumption can never discharge an earlier obligation.
+struct Ctx {
+  fn_name: String;
+  decls: Array[(String, String)];
+  assumes: Array[String];
+  pending: Array[(String, String, Int, String, Int)];
+  fns: Array[FnSig];
+  counter: Array[Int]
+}
+
+//# Constants
+
+fn int_min() -> String {
+  "(- 4611686018427387904)"
+}
+
+fn int_max() -> String {
+  "4611686018427387903"
+}
+
+fn unsupported_marker() -> String {
+  "__vibe_prove_unsupported:"
+}
+
+//# Entry
+
+/// Every obligation of every function in `source` that carries a `where`
+/// contract, in source order. A function outside the provable fragment
+/// yields one `unsupported` obligation instead of being skipped.
+export fn prove_obligations(_ source: String) -> Array[Obligation] with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_preserving_located(tokens = tokens, starts = starts, source = source)
+  let fns = collect_sigs(stmts)
+  let graph = call_graph(stmts)
+  let out: Array[Obligation] = []
+  for s in stmts {
+    match s {
+      SFnDecl(_, name, value, reqs, enss) => if Array::length(reqs) + Array::length(enss) == 0 {
+        ()
+      } else if reaches_cycle(graph = graph, node = name, path = [], done = []) {
+        // A modular call assumes the callee's `ensures`; around a cycle that
+        // assumption is circular, so `ensures: false` on both of two
+        // mutually recursive functions would "prove" each other.
+        Array::push(out, value = Obligation::{
+          fn_name: name,
+          kind: "unsupported",
+          label: "`\{name}` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only",
+          off: decl_offset(source = source, name = name),
+          query: ""
+        })
+      } else {
+        prove_fn(name = name, value = value, fns = fns, decl_off = decl_offset(source = source, name = name), out = out)
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+fn collect_sigs(_ stmts: Array[Stmt]) -> Array[FnSig] {
+  let out: Array[FnSig] = []
+  for s in stmts {
+    match s {
+      SFnDecl(_, name, value, reqs, enss) => match value {
+        EFn(tps, _, params, ret, eff, _) => {
+          let ps: Array[(String, String)] = []
+          let mut ok = Array::length(tps) == 0 && match eff {
+            Some(_) => false,
+            None => true
+          }
+          for p in params {
+            let (pn, pty) = p
+            let sort = sort_of(pty)
+            if sort == "" {
+              ok = false
+            } else {
+              Array::push(ps, value = (pn, sort))
+            }
+          }
+          let rs = sort_of(ret)
+          Array::push(out, value = FnSig::{
+            name: name,
+            params: ps,
+            ret: rs,
+            requires: reqs,
+            ensures: enss,
+            pure: ok && rs != ""
+          })
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+//# Call graph
+
+/// Each function of the file and the names it calls, in its body and in its
+/// clauses (a clause may call a function too).
+fn call_graph(_ stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let out: Array[(String, Array[String])] = []
+  for s in stmts {
+    match s {
+      SFnDecl(_, name, value, reqs, enss) => {
+        let calls: Array[String] = []
+        collect_calls(expr = value, out = calls)
+        for r in reqs {
+          collect_calls(expr = r, out = calls)
+        }
+        for e in enss {
+          collect_calls(expr = e, out = calls)
+        }
+        Array::push(out, value = (name, calls))
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+fn graph_callees(graph: Array[(String, Array[String])], name: String) -> Option[Array[String]] {
+  let mut found = None
+  for g in graph {
+    let (n, calls) = g
+    if n == name {
+      found = Some(calls)
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn contains_name(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  for y in xs {
+    if y == x {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// Whether a cycle of the call graph is reachable from `node`, `node`
+/// itself included. `path` is the current DFS path; `done` holds nodes
+/// already shown to reach no cycle.
+fn reaches_cycle(graph: Array[(String, Array[String])], node: String, path: Array[String], done: Array[String]) -> Bool {
+  if contains_name(xs = path, x = node) {
+    true
+  } else if contains_name(xs = done, x = node) {
+    false
+  } else {
+    match graph_callees(graph = graph, name = node) {
+      None => false,
+      Some(calls) => {
+        let next = Array::slice(path, start = 0, end = Array::length(path))
+        Array::push(next, value = node)
+        let mut found = false
+        for c in calls {
+          if !found && reaches_cycle(graph = graph, node = c, path = next, done = done) {
+            found = true
+          } else {
+            ()
+          }
+        }
+        if !found {
+          Array::push(done, value = node)
+        } else {
+          ()
+        }
+        found
+      }
+    }
+  }
+}
+
+/// Every name `expr` calls directly (`f(..)`), anywhere inside it.
+fn collect_calls(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    ECall(callee, _, _, _) => match callee {
+      EIdent(n, _) => Array::push(out, value = n),
+      _ => ()
+    },
+    _ => ()
+  }
+  for k in expr_kids(expr) {
+    collect_calls(expr = k, out = out)
+  }
+  ()
+}
+
+/// The direct sub-expressions of `e`. Every variant is listed, so a new one
+/// is a compile error here rather than a call edge the cycle check misses.
+fn expr_kids(_ e: Expr) -> Array[Expr] {
+  match e {
+    EInt(_) => [],
+    EFloat(_) => [],
+    EString(_, _) => [],
+    EBool(_) => [],
+    EIdent(_, _) => [],
+    EUnit => [],
+    EStringInterp(_) => [],
+    ETuple(items) => items,
+    EArray(items) => items,
+    ERecord(_, fields, _) => for f in fields {
+      let (_, v) = f
+      v
+    },
+    EMap(fields) => for f in fields {
+      let (_, v) = f
+      v
+    },
+    EIf(c, t, f) => [c, t, f],
+    ELet(_, v, b, _) => [v, b],
+    ELetRec(_, v, b) => [v, b],
+    ELetMut(_, v, b, _) => [v, b],
+    EAssign(_, v, c, _) => [v, c],
+    EAssignOp(_, _, v, c, _) => [v, c],
+    ESeq(a, b) => [a, b],
+    EMatch(sc, arms) => {
+      let out = [sc]
+      for a in arms {
+        let (_, x) = a
+        Array::push(out, value = x)
+      }
+      out
+    },
+    EHandle(b, arms) => {
+      let out = [b]
+      for a in arms {
+        let (_, x) = a
+        Array::push(out, value = x)
+      }
+      out
+    },
+    EWhile(c, b) => [c, b],
+    ELoop(params, b) => {
+      let out: Array[Expr] = []
+      for p in params {
+        let (_, v) = p
+        Array::push(out, value = v)
+      }
+      Array::push(out, value = b)
+      out
+    },
+    EForIn(_, _, it, b) => [it, b],
+    ECall(callee, args, _, _) => {
+      let out = [callee]
+      for a in args {
+        Array::push(out, value = a)
+      }
+      out
+    },
+    EBinOp(_, l, r, _) => [l, r],
+    EUnaryOp(_, x) => [x],
+    EFn(_, _, _, _, _, b) => [b],
+    EDot(obj, _, _, _) => [obj],
+    ELabeledArg(_, _, v) => [v],
+    EReturn(v) => [v],
+    EBreak(v) => match v {
+      Some(x) => [x],
+      None => []
+    },
+    EContinue(args) => args,
+    ESpread(v) => [v]
+  }
+}
+
+fn sort_of(_ ty: Option[TypeExpr]) -> String {
+  match ty {
+    Some(TyName(n)) => if n == "Int" {
+      "Int"
+    } else if n == "Bool" {
+      "Bool"
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+fn find_sig(fns: Array[FnSig], name: String) -> Option[FnSig] {
+  let mut found = None
+  for f in fns {
+    if f.name == name {
+      found = Some(f)
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+//# One function
+
+/// Where `fn <name>` is declared in `source`: the report's position for an
+/// obligation whose own node carries no offset.
+fn decl_offset(source: String, name: String) -> Int {
+  let needle = "fn \{name}"
+  let n = String::length(source)
+  let m = String::length(needle)
+  let mut i = 0
+  let mut found = 0 - 1
+  while i + m <= n && found < 0 {
+    if String::substring(source, start = i, end = i + m) == needle && (i == 0 || is_space(String::byte_at(source, at = i - 1))) && (i + m == n || !is_ident_byte(String::byte_at(source, at = i + m))) {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn is_space(_ c: Int) -> Bool {
+  c == ' ' || c == '\n' || c == '\t' || c == '\r'
+}
+
+fn is_ident_byte(_ c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+fn prove_fn(name: String, value: Expr, fns: Array[FnSig], decl_off: Int, out: Array[Obligation]) -> Unit with Exception {
+  let ctx = Ctx::{
+    fn_name: name,
+    decls: [],
+    assumes: [],
+    pending: [],
+    fns: fns,
+    counter: [0]
+  }
+  let result = handle {
+    prove_fn_body(ctx = ctx, value = value)
+    ""
+  } with { Exception::Throw(msg) => msg }
+  let marker = unsupported_marker()
+  if String::starts_with(result, prefix = marker) {
+    let rest = String::substring(result, start = String::length(marker), end = String::length(result))
+    let colon = String::index_of(rest, needle = ":")
+    let off = match Int::parse(String::substring(rest, start = 0, end = colon)) {
+      Some(n) => n,
+      None => 0 - 1
+    }
+    Array::push(out, value = Obligation::{
+      fn_name: name,
+      kind: "unsupported",
+      label: String::substring(rest, start = colon + 1, end = String::length(rest)),
+      off: if off < 0 {
+        decl_off
+      } else {
+        off
+      },
+      query: ""
+    })
+  } else if String::length(result) > 0 {
+    throw(result)
+  } else {
+    for p in ctx.pending {
+      let (kind, label, off, goal, upto) = p
+      Array::push(out, value = Obligation::{
+        fn_name: name,
+        kind: kind,
+        label: label,
+        off: if off < 0 {
+          decl_off
+        } else {
+          off
+        },
+        query: build_query(ctx = ctx, goal = goal, upto = upto)
+      })
+    }
+    ()
+  }
+}
+
+fn unsupported(off: Int, reason: String) -> Unit with Exception {
+  throw("\{unsupported_marker()}\{off}:\{reason}")
+}
+
+fn prove_fn_body(ctx: Ctx, value: Expr) -> Unit with Exception {
+  match value {
+    EFn(tps, _, params, ret, eff, body) => {
+      if Array::length(tps) > 0 {
+        unsupported(off = 0 - 1, reason = "a generic function is outside the provable fragment")
+      } else {
+        ()
+      }
+      match eff {
+        Some(row) => unsupported(off = 0 - 1, reason = "a function with an effect row (`with \{row}`) is outside the provable fragment"),
+        None => ()
+      }
+      let ret_sort = sort_of(ret)
+      if ret_sort == "" {
+        unsupported(off = 0 - 1, reason = "only an `Int` or `Bool` result is provable")
+      } else {
+        ()
+      }
+      let env: Array[(String, String, String)] = []
+      for p in params {
+        let (pn, pty) = p
+        let sort = sort_of(pty)
+        if sort == "" {
+          unsupported(off = 0 - 1, reason = "parameter `\{pn}` is not `Int` or `Bool`")
+        } else {
+          ()
+        }
+        let smt = smt_symbol(pn)
+        Array::push(ctx.decls, value = (smt, sort))
+        assume_range(ctx = ctx, term = smt, sort = sort)
+        Array::push(env, value = (pn, smt, sort))
+      }
+      match find_sig(fns = ctx.fns, name = ctx.fn_name) {
+        Some(sig) => {
+          for r in sig.requires {
+            let f = clause_formula(ctx = ctx, clause = r, state = start_state(env))
+            Array::push(ctx.assumes, value = f)
+          }
+          let outs = sym(ctx = ctx, e = body, st = start_state(env))
+          for o in outs {
+            let v_sort = o.sort
+            if v_sort != ret_sort {
+              unsupported(off = 0 - 1, reason = "a path ends with a `\{v_sort}` where `\{ret_sort}` is returned")
+            } else {
+              ()
+            }
+            for c in sig.ensures {
+              // The parameters as they were at entry, as the runtime check
+              // reads them (`ensures_checked_body`): a body that shadows one
+              // does not change what the clause says.
+              let renv = env_bind(env = env, name = "result", term = o.value, sort = ret_sort)
+              let goal = clause_formula(ctx = ctx, clause = c, state = Outcome::{
+                pc: o.pc,
+                value: "",
+                sort: "Unit",
+                returned: false,
+                env: renv
+              })
+              push_obligation(ctx = ctx, kind = "ensures", label = print_expr(c), off = expr_off(c), goal = goal)
+            }
+          }
+          ()
+        },
+        None => ()
+      }
+    },
+    _ => unsupported(off = 0 - 1, reason = "not a function")
+  }
+}
+
+fn start_state(_ env: Array[(String, String, String)]) -> Outcome {
+  Outcome::{ pc: [], value: "", sort: "Unit", returned: false, env: env }
+}
+
+//# Obligations and queries
+
+fn push_obligation(ctx: Ctx, kind: String, label: String, off: Int, goal: String) -> Unit {
+  Array::push(ctx.pending, value = (kind, label, off, goal, Array::length(ctx.assumes)))
+}
+
+fn assume_range(ctx: Ctx, term: String, sort: String) -> Unit {
+  if sort == "Int" {
+    Array::push(ctx.assumes, value = "(and (<= \{int_min()} \{term}) (<= \{term} \{int_max()}))")
+  } else {
+    ()
+  }
+}
+
+fn in_range(_ term: String) -> String {
+  "(and (<= \{int_min()} \{term}) (<= \{term} \{int_max()}))"
+}
+
+fn guarded(pc: Array[String], goal: String) -> String {
+  if Array::length(pc) == 0 {
+    goal
+  } else {
+    "(=> (and true \{String::join(pc, sep = " ")}) \{goal})"
+  }
+}
+
+/// The SMT-LIB query that `goal` holds under the function's first `upto`
+/// assumptions: `unsat` proves it, a model is a counterexample.
+fn build_query(ctx: Ctx, goal: String, upto: Int) -> String {
+  let lines: Array[String] = ["(set-option :produce-models true)"]
+  for d in ctx.decls {
+    let (n, s) = d
+    Array::push(lines, value = "(declare-const \{n} \{s})")
+  }
+  let mut i = 0
+  while i < upto {
+    Array::push(lines, value = "(assert \{Array::get(ctx.assumes, at = i)})")
+    i = i + 1
+  }
+  Array::push(lines, value = "(assert (not \{goal}))")
+  Array::push(lines, value = "(check-sat)")
+  let names: Array[String] = []
+  for d in ctx.decls {
+    let (n, _) = d
+    if !String::starts_with(n, prefix = "|r!") {
+      Array::push(names, value = n)
+    } else {
+      ()
+    }
+  }
+  if Array::length(names) > 0 {
+    Array::push(lines, value = "(get-value (\{String::join(names, sep = " ")}))")
+  } else {
+    ()
+  }
+  String::join(lines, sep = "\n") + "\n"
+}
+
+/// A program name as an SMT-LIB quoted symbol (`|x|`), so no spelling can
+/// collide with an SMT-LIB keyword.
+fn smt_symbol(_ name: String) -> String {
+  "|\{name}|"
+}
+
+fn smt_int(_ n: Int) -> String {
+  if n < 0 {
+    "(- \{0 - n})"
+  } else {
+    "\{n}"
+  }
+}
+
+//# Clauses
+
+/// A clause as one formula: every path through it ends in a true value.
+/// Its arithmetic is checked for overflow like the body's, since the runtime
+/// assert evaluates it with the same 63-bit `Int`.
+fn clause_formula(ctx: Ctx, clause: Expr, state: Outcome) -> String with Exception {
+  let outs = sym(ctx = ctx, e = clause, st = state)
+  let parts: Array[String] = []
+  for o in outs {
+    if o.sort != "Bool" {
+      unsupported(off = expr_off(clause), reason = "a contract clause must be a `Bool`")
+    } else {
+      ()
+    }
+    Array::push(parts, value = guarded(pc = o.pc, goal = o.value))
+  }
+  if Array::length(parts) == 1 {
+    Array::get(parts, at = 0)
+  } else {
+    "(and true \{String::join(parts, sep = " ")})"
+  }
+}
+
+//# Symbolic execution
+
+fn env_bind(env: Array[(String, String, String)], name: String, term: String, sort: String) -> Array[(String, String, String)] {
+  let out = Array::slice(env, start = 0, end = Array::length(env))
+  Array::push(out, value = (name, term, sort))
+  out
+}
+
+fn env_lookup(env: Array[(String, String, String)], name: String) -> Option[(String, String)] {
+  let mut i = Array::length(env)
+  let mut found = None
+  let mut done = false
+  while i > 0 && !done {
+    i = i - 1
+    let (n, t, s) = Array::get(env, at = i)
+    if n == name {
+      found = Some((t, s))
+      done = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn with_value(st: Outcome, value: String, sort: String) -> Outcome {
+  Outcome::{ pc: st.pc, value: value, sort: sort, returned: false, env: st.env }
+}
+
+fn with_pc(st: Outcome, cond: String) -> Outcome {
+  let pc = Array::slice(st.pc, start = 0, end = Array::length(st.pc))
+  Array::push(pc, value = cond)
+  Outcome::{
+    pc: pc,
+    value: st.value,
+    sort: st.sort,
+    returned: st.returned,
+    env: st.env
+  }
+}
+
+fn fresh(ctx: Ctx, sort: String) -> String {
+  let k = Array::get(ctx.counter, at = 0)
+  Array::set(ctx.counter, at = 0, value = k + 1)
+  let name = "|r!\{k}|"
+  Array::push(ctx.decls, value = (name, sort))
+  name
+}
+
+/// Every path through `e` from `st`. A path that already left by `return`
+/// is carried through unchanged by every enclosing form.
+fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
+  match e {
+    EInt(n) => [with_value(st = st, value = smt_int(n), sort = "Int")],
+    EBool(b) => [
+      with_value(st = st, value = if b {
+        "true"
+      } else {
+        "false"
+      }, sort = "Bool")
+    ],
+    EUnit => [with_value(st = st, value = "true", sort = "Unit")],
+    EIdent(name, off) => match env_lookup(env = st.env, name = name) {
+      Some((t, s)) => [with_value(st = st, value = t, sort = s)],
+      None => {
+        unsupported(off = off, reason = "`\{name}` is not a parameter or local of the provable fragment")
+        []
+      }
+    },
+    EUnaryOp(op, x) => {
+      let out: Array[Outcome] = []
+      for o in sym(ctx = ctx, e = x, st = st) {
+        if o.returned {
+          Array::push(out, value = o)
+        } else if op == "!" && o.sort == "Bool" {
+          Array::push(out, value = with_value(st = o, value = "(not \{o.value})", sort = "Bool"))
+        } else if op == "-" && o.sort == "Int" {
+          let t = "(- \{o.value})"
+          push_obligation(ctx = ctx, kind = "overflow", label = print_expr(e), off = expr_off(e), goal = guarded(pc = o.pc, goal = in_range(t)))
+          Array::push(out, value = with_value(st = o, value = t, sort = "Int"))
+        } else {
+          unsupported(off = expr_off(e), reason = "unary `\{op}` on a `\{o.sort}`")
+        }
+      }
+      out
+    },
+    EBinOp(op, l, r, off) => sym_binop(ctx = ctx, e = e, op = op, l = l, r = r, off = off, st = st),
+    EIf(c, t, f) => {
+      let out: Array[Outcome] = []
+      for o in sym(ctx = ctx, e = c, st = st) {
+        if o.returned {
+          Array::push(out, value = o)
+        } else {
+          for a in sym(ctx = ctx, e = t, st = with_pc(st = o, cond = o.value)) {
+            Array::push(out, value = a)
+          }
+          for b in sym(ctx = ctx, e = f, st = with_pc(st = o, cond = "(not \{o.value})")) {
+            Array::push(out, value = b)
+          }
+          ()
+        }
+      }
+      out
+    },
+    ELet(name, v, b, _) => {
+      let out: Array[Outcome] = []
+      for o in sym(ctx = ctx, e = v, st = st) {
+        if o.returned {
+          Array::push(out, value = o)
+        } else {
+          let bound = Outcome::{
+            pc: o.pc,
+            value: "",
+            sort: "Unit",
+            returned: false,
+            env: env_bind(env = o.env, name = name, term = o.value, sort = o.sort)
+          }
+          // The binding's scope ends with the `let`: what follows sees the
+          // enclosing names again.
+          for x in sym(ctx = ctx, e = b, st = bound) {
+            Array::push(out, value = Outcome::{
+              pc: x.pc,
+              value: x.value,
+              sort: x.sort,
+              returned: x.returned,
+              env: o.env
+            })
+          }
+          ()
+        }
+      }
+      out
+    },
+    ESeq(a, b) => {
+      let out: Array[Outcome] = []
+      for o in sym(ctx = ctx, e = a, st = st) {
+        if o.returned {
+          Array::push(out, value = o)
+        } else {
+          for x in sym(ctx = ctx, e = b, st = o) {
+            Array::push(out, value = x)
+          }
+          ()
+        }
+      }
+      out
+    },
+    EReturn(v) => {
+      let out: Array[Outcome] = []
+      for o in sym(ctx = ctx, e = v, st = st) {
+        Array::push(out, value = Outcome::{
+          pc: o.pc,
+          value: o.value,
+          sort: o.sort,
+          returned: true,
+          env: o.env
+        })
+      }
+      out
+    },
+    ECall(callee, args, off, _) => match callee {
+      EIdent(fname, _) => sym_call(ctx = ctx, fname = fname, args = args, off = off, st = st),
+      _ => {
+        unsupported(off = off, reason = "only a call to a named function is provable")
+        []
+      }
+    },
+    _ => {
+      unsupported(off = expr_off(e), reason = "`\{construct_name(e)}` is outside the provable fragment")
+      []
+    }
+  }
+}
+
+fn sym_binop(ctx: Ctx, e: Expr, op: String, l: Expr, r: Expr, off: Int, st: Outcome) -> Array[Outcome] with Exception {
+  let out: Array[Outcome] = []
+  for lo in sym(ctx = ctx, e = l, st = st) {
+    if lo.returned {
+      Array::push(out, value = lo)
+    } else if op == "&&" || op == "||" {
+      if lo.sort != "Bool" {
+        unsupported(off = off, reason = "`\{op}` on a `\{lo.sort}`")
+      } else {
+        ()
+      }
+      // Short-circuit: the right side runs only where it decides.
+      let (stop_cond, stop_value, go_cond) = if op == "&&" {
+        ("(not \{lo.value})", "false", lo.value)
+      } else {
+        (lo.value, "true", "(not \{lo.value})")
+      }
+      Array::push(out, value = with_value(st = with_pc(st = lo, cond = stop_cond), value = stop_value, sort = "Bool"))
+      for ro in sym(ctx = ctx, e = r, st = with_pc(st = lo, cond = go_cond)) {
+        Array::push(out, value = ro)
+      }
+      ()
+    } else {
+      for ro in sym(ctx = ctx, e = r, st = lo) {
+        if ro.returned {
+          Array::push(out, value = ro)
+        } else {
+          Array::push(out, value = binop_value(ctx = ctx, e = e, op = op, a = lo, b = ro, off = off))
+        }
+      }
+      ()
+    }
+  }
+  out
+}
+
+fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) -> Outcome with Exception {
+  let ints = a.sort == "Int" && b.sort == "Int"
+  if (op == "+" || op == "-" || op == "*") && ints {
+    let t = "(\{op} \{a.value} \{b.value})"
+    push_obligation(ctx = ctx, kind = "overflow", label = print_expr(e), off = off, goal = guarded(pc = b.pc, goal = in_range(t)))
+    with_value(st = b, value = t, sort = "Int")
+  } else if (op == "<" || op == "<=" || op == ">" || op == ">=") && ints {
+    with_value(st = b, value = "(\{op} \{a.value} \{b.value})", sort = "Bool")
+  } else if (op == "==" || op == "!=") && a.sort == b.sort && a.sort != "Unit" {
+    let eq = "(= \{a.value} \{b.value})"
+    with_value(st = b, value = if op == "==" {
+      eq
+    } else {
+      "(not \{eq})"
+    }, sort = "Bool")
+  } else {
+    unsupported(off = off, reason = "`\{op}` on `\{a.sort}` and `\{b.sort}` is outside the provable fragment")
+    b
+  }
+}
+
+/// A call is modular: the callee's `requires` become obligations at the
+/// call, and its `ensures` an assumption about a fresh result.
+fn sym_call(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -> Array[Outcome] with Exception {
+  if fname == ctx.fn_name {
+    unsupported(off = off, reason = "a recursive call: termination is not proved, so the result would be partial correctness only")
+  } else {
+    ()
+  }
+  let sig = match find_sig(fns = ctx.fns, name = fname) {
+    Some(s) => s,
+    None => {
+      unsupported(off = off, reason = "`\{fname}` is not a function of this file with an `Int` / `Bool` signature")
+      FnSig::{
+        name: "",
+        params: [],
+        ret: "",
+        requires: [],
+        ensures: [],
+        pure: false
+      }
+    }
+  }
+  // A callee is summarized by its contract, which this run proves too, so
+  // the call stands on that proof. A callee with no contract has nothing to
+  // stand on: its body is not proved here, and it may loop forever or trap
+  // on a precondition it breaks, so assuming it returns would be unsound.
+  if Array::length(sig.requires) + Array::length(sig.ensures) == 0 {
+    unsupported(off = off, reason = "`\{fname}` has no `where` contract, so the call cannot be checked modularly; give it one (`ensures: true` at least), and its body is proved too")
+  } else {
+    ()
+  }
+  if !sig.pure || Array::length(sig.params) != Array::length(args) {
+    unsupported(off = off, reason = "`\{fname}` is not a pure function with `Int` / `Bool` parameters and result")
+  } else {
+    ()
+  }
+  // Arguments run left to right, in the order written; each path carries
+  // the values so far. A labeled argument (`f(x = e)`) is matched to the
+  // parameter of that name afterwards.
+  let mut states: Array[(Outcome, Array[String])] = [(st, [])]
+  let out: Array[Outcome] = []
+  let slots: Array[Int] = []
+  let mut pos = 0
+  for a in args {
+    match a {
+      ELabeledArg(label, _, _) => Array::push(slots, value = param_index(sig = sig, name = label, off = off)),
+      _ => {
+        Array::push(slots, value = pos)
+        pos = pos + 1
+      }
+    }
+  }
+  for a0 in args {
+    let a = match a0 {
+      ELabeledArg(_, _, v) => v,
+      _ => a0
+    }
+    let next: Array[(Outcome, Array[String])] = []
+    for pair in states {
+      let (s0, vals) = pair
+      for o in sym(ctx = ctx, e = a, st = s0) {
+        if o.returned {
+          Array::push(out, value = o)
+        } else {
+          let vs = Array::slice(vals, start = 0, end = Array::length(vals))
+          Array::push(vs, value = o.value)
+          Array::push(next, value = (o, vs))
+        }
+      }
+      ()
+    }
+    states = next
+  }
+  for pair in states {
+    let (s1, vals) = pair
+    let callee_env: Array[(String, String, String)] = []
+    let mut i = 0
+    while i < Array::length(sig.params) {
+      let (pn, ps) = Array::get(sig.params, at = i)
+      let mut j = 0
+      let mut v = ""
+      while j < Array::length(slots) {
+        if Array::get(slots, at = j) == i {
+          v = Array::get(vals, at = j)
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      if v == "" {
+        unsupported(off = off, reason = "a call to `\{fname}` that does not pass `\{pn}` (a default argument) is outside the provable fragment")
+      } else {
+        ()
+      }
+      Array::push(callee_env, value = (pn, v, ps))
+      i = i + 1
+    }
+    let at_call = Outcome::{
+      pc: s1.pc,
+      value: "",
+      sort: "Unit",
+      returned: false,
+      env: callee_env
+    }
+    for r in sig.requires {
+      let goal = clause_formula(ctx = ctx, clause = r, state = at_call)
+      push_obligation(ctx = ctx, kind = "requires", label = "\{fname}: \{print_expr(r)}", off = off, goal = goal)
+    }
+    let res = fresh(ctx = ctx, sort = sig.ret)
+    assume_range(ctx = ctx, term = res, sort = sig.ret)
+    let ens_env = env_bind(env = callee_env, name = "result", term = res, sort = sig.ret)
+    for c in sig.ensures {
+      let f = clause_formula(ctx = ctx, clause = c, state = Outcome::{
+        pc: s1.pc,
+        value: "",
+        sort: "Unit",
+        returned: false,
+        env: ens_env
+      })
+      Array::push(ctx.assumes, value = f)
+    }
+    Array::push(out, value = with_value(st = s1, value = res, sort = sig.ret))
+  }
+  out
+}
+
+fn param_index(sig: FnSig, name: String, off: Int) -> Int with Exception {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(sig.params) {
+    let (pn, _) = Array::get(sig.params, at = i)
+    if pn == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if found < 0 {
+    unsupported(off = off, reason = "`\{sig.name}` has no parameter `\{name}`")
+  } else {
+    ()
+  }
+  found
+}
+
+//# Source positions
+
+/// The smallest source offset recorded inside `e`, or -1.
+fn expr_off(_ e: Expr) -> Int {
+  match e {
+    EIdent(_, off) => off,
+    EBinOp(_, l, r, off) => min_off(a = min_off(a = off, b = expr_off(l)), b = expr_off(r)),
+    EUnaryOp(_, x) => expr_off(x),
+    ECall(callee, _, off, _) => min_off(a = off, b = expr_off(callee)),
+    EIf(c, _, _) => expr_off(c),
+    EString(_, off) => off,
+    _ => 0 - 1
+  }
+}
+
+fn min_off(a: Int, b: Int) -> Int {
+  if a < 0 {
+    b
+  } else if b < 0 || a < b {
+    a
+  } else {
+    b
+  }
+}
+
+fn construct_name(_ e: Expr) -> String {
+  match e {
+    ELetMut(_, _, _, _) => "let mut",
+    EAssign(_, _, _, _) => "assignment",
+    EAssignOp(_, _, _, _, _) => "assignment",
+    EWhile(_, _) => "while",
+    ELoop(_, _) => "loop",
+    EForIn(_, _, _, _) => "for",
+    EMatch(_, _) => "match",
+    EHandle(_, _) => "handle",
+    EFn(_, _, _, _, _, _) => "a lambda",
+    EString(_, _) => "a String",
+    EStringInterp(_) => "a String",
+    EFloat(_) => "a Float64",
+    EArray(_) => "an Array",
+    ETuple(_) => "a tuple",
+    ERecord(_, _, _) => "a struct",
+    EMap(_) => "a Map",
+    EDot(_, _, _, _) => "a field access",
+    EBreak(_) => "break",
+    EContinue(_) => "continue",
+    _ => "this expression"
+  }
+}
+
+//# Solver output
+
+/// What z3 answered for one query: `proved` on `unsat`; `unproved` with the
+/// model's parameter values on `sat`; `unknown` with the reason otherwise
+/// (`unknown`, a timeout, or a solver error). Only `unsat` proves.
+export fn prove_verdict(_ z3_out: String) -> (String, String) {
+  let lines = String::split(z3_out, sep = "\n")
+  let first = if Array::length(lines) > 0 {
+    String::trim(Array::get(lines, at = 0))
+  } else {
+    ""
+  }
+  if first == "unsat" {
+    ("proved", "")
+  } else if first == "sat" {
+    let rest = String::join(Array::slice(lines, start = 1, end = Array::length(lines)), sep = " ")
+    ("unproved", model_text(rest))
+  } else if first == "timeout" {
+    ("unknown", "z3 timed out")
+  } else if first == "unknown" {
+    ("unknown", "z3 returned unknown")
+  } else {
+    ("unknown", "z3 did not answer: \{String::trim(z3_out)}")
+  }
+}
+
+/// `((|x| (- 1)) (|y| 0))` as `x = -1, y = 0`.
+fn model_text(_ text: String) -> String {
+  let parts: Array[String] = []
+  let mut i = 0
+  let n = String::length(text)
+  while i < n {
+    if String::byte_at(text, at = i) == '|' {
+      let close = find_byte(text = text, byte = '|', from = i + 1)
+      let name = String::substring(text, start = i + 1, end = close)
+      let mut j = close + 1
+      let mut depth = 0
+      let start = j
+      let mut done = false
+      while j < n && !done {
+        let c = String::byte_at(text, at = j)
+        if c == '(' {
+          depth = depth + 1
+        } else if c == ')' {
+          if depth == 0 {
+            done = true
+          } else {
+            depth = depth - 1
+          }
+        } else {
+          ()
+        }
+        if !done {
+          j = j + 1
+        } else {
+          ()
+        }
+      }
+      Array::push(parts, value = "\{name} = \{smt_value_text(String::trim(String::substring(text, start = start, end = j)))}")
+      i = j
+    } else {
+      i = i + 1
+    }
+  }
+  String::join(parts, sep = ", ")
+}
+
+fn find_byte(text: String, byte: Int, from: Int) -> Int {
+  let mut i = from
+  while i < String::length(text) && String::byte_at(text, at = i) != byte {
+    i = i + 1
+  }
+  i
+}
+
+fn smt_value_text(_ v: String) -> String {
+  if String::starts_with(v, prefix = "(- ") && String::ends_with(v, suffix = ")") {
+    "-\{String::trim(String::substring(v, start = 3, end = String::length(v) - 1))}"
+  } else {
+    v
+  }
+}
+

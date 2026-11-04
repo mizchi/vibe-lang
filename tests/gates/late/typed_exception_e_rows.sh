@@ -319,16 +319,16 @@ echo "[compiler-gate] RC ref cell header ok"
 #
 # So this lock is STATIC. A runtime lock would have to build an RC stage2 first
 # (minutes), and the default gate has no RC-built compiler to ask.
-badf64="$(grep -rn 'emit_f64_const_bits(\|Double::to_i64_bits(' lib/@vibe/compiler --include=*.vibe \
+badf64="$(grep -rn 'emit_f64_const_bits(\|Double::to_i64_bits(\|Float64::to_i64_bits(' lib/@vibe/compiler --include=*.vibe \
   | grep -v 'compiler_sources_bundle\|cli_adapter_bundle\|selfbuild_runtime_entry_bundle\|_cli_adapter_module_source' \
   | grep -v 'export fn emit_f64_const_bits(' \
-  | grep -v 'declare Double::to_i64_bits(' || true)"
+  | grep -v 'declare Double::to_i64_bits(\|declare Float64::to_i64_bits(' || true)"
 if [ -n "$badf64" ]; then
   echo "[compiler-gate] FAIL: full-f64-pattern-through-Int in codegen (#1262, ADR-0055 Blocker-2)" >&2
   echo "$badf64" >&2
   echo "  A full f64 bit pattern does not fit the 62-bit Int; under RC it arrives halved" >&2
   echo "  and every emitted f64.const byte becomes (true_byte >> 1)." >&2
-  echo "  Use: emit_f64_const_lohi(buf, Double::to_i64_bits_lo(v), Double::to_i64_bits_hi(v))" >&2
+  echo "  Use: emit_f64_const_lohi(buf, Float64::to_i64_bits_lo(v), Float64::to_i64_bits_hi(v))" >&2
   exit 1
 fi
 echo "[compiler-gate] f64 literal lo/hi split ok"
@@ -1760,7 +1760,7 @@ echo "[compiler-gate] linear source-lane Double call-result offsets ok (#2158)"
 tadir="_build/_gate_typeat_callsite"
 rm -rf "$tadir"; mkdir -p "$tadir"
 cat > "$tadir/ta.vibe" <<'TAEOF'
-struct Box { get: () -> Double }
+struct Box { get: () -> Float64 }
 fn mk_box() -> Box { Box::{ get: () -> { 2.5 } } }
 fn main() -> Int {
   let v = mk_box().get()

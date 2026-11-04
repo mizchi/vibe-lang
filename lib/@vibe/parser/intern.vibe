@@ -229,30 +229,24 @@ export fn intern_str(_ s: String) -> String {
   intern_slice(s = s, start = 0, end = String::length(s))
 }
 
-/// ADR-0122 (#3728): `Float64` / `Float32` are the canonical float type
-/// names. The parser reads every legacy spelling (`Double` / `Float`, and the
-/// lowercase aliases `f64` / `f32`) as them at the places a type name is
-/// formed -- a type expression and the namespace of a qualified name -- so
-/// every later pass, including the many that compare type spellings as
-/// strings, sees one spelling. A bare constructor named `Double` is neither,
-/// and keeps its spelling.
-export fn float_width_alias(_ name: String) -> String {
+/// ADR-0122 (#3729): the float types are named by their width, `Float64` and
+/// `Float32`. Their old spellings (`Double` / `Float`, and the aliases `f64` /
+/// `f32`) are retired: each is refused where the parser reads a type, naming
+/// the replacement, rather than quietly read as the new name. The width name a
+/// retired spelling stands for, or "" for any other name.
+export fn retired_float_type_replacement(_ name: String) -> String {
   if name == "Double" || name == "f64" {
     "Float64"
   } else if name == "Float" || name == "f32" {
     "Float32"
   } else {
-    name
+    ""
   }
 }
 
-/// ADR-0122 (#3728): the legacy float conversions, as members of the
-/// already-canonicalized namespace (`Double::to_float` arrives here as
-/// `Float64` / `to_float`), read as their width-named spellings. Canonicalized
-/// at the same point as the namespace, so every pass that recognizes a
-/// conversion by name (the rowless-lane Float guard, the f32 rounding
-/// rewrite, ...) sees the one spelling it knows.
-fn float_width_conversion(space: String, member: String) -> String {
+/// The width-named conversion a retired one stands for, as a member of the
+/// width-named namespace (`Int::to_double` is `Int::to_float64`), or "".
+fn retired_float_conversion(space: String, member: String) -> String {
   if space == "Int" && member == "to_double" {
     "to_float64"
   } else if space == "Int" && member == "to_float" {
@@ -262,7 +256,31 @@ fn float_width_conversion(space: String, member: String) -> String {
   } else if space == "Float32" && member == "to_double" {
     "to_float64"
   } else {
+    ""
+  }
+}
+
+/// Refuse a qualified name that uses a retired float spelling, as its
+/// namespace (`Double::floor`) or as a retired conversion
+/// (`Int::to_double`), with the name to write instead. The parser calls this
+/// wherever it reads `ns::member` from source.
+export fn refuse_retired_qualified(ns: String, member: String) -> Unit with Exception {
+  let renamed = retired_float_type_replacement(ns)
+  let space = if String::length(renamed) > 0 {
+    renamed
+  } else {
+    ns
+  }
+  let conversion = retired_float_conversion(space = space, member = member)
+  let leaf = if String::length(conversion) > 0 {
+    conversion
+  } else {
     member
+  }
+  if space != ns || leaf != member {
+    throw("unknown name `" + ns + "::" + member + "` -- write `" + space + "::" + leaf + "`: the float types and their conversions are named by width (`Float64`, `Float32`)")
+  } else {
+    ()
   }
 }
 
@@ -270,12 +288,9 @@ fn float_width_conversion(space: String, member: String) -> String {
 /// the concatenation on a hit. This is the parser's qualified-name shape
 /// (`Array::push`, `Iterator::map`, ...): it used to allocate a fresh concat
 /// per OCCURRENCE; now each distinct spelling allocates once, ever.
-/// `Double::x` / `Float::x` intern as `Float64::x` / `Float32::x`
-/// (`float_width_alias`), and the legacy conversion members as their
-/// width-named spellings (`float_width_conversion`).
 export fn intern_qualified(ns: String, member: String) -> String {
-  let space = float_width_alias(ns)
-  let leaf = float_width_conversion(space = space, member = member)
+  let space = ns
+  let leaf = member
   if String::length(space) == 0 && String::length(leaf) == 0 {
     ""
   } else {

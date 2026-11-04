@@ -106,6 +106,36 @@ test "#1961: provider ownership is exact operation identity" {
   assert(!standard_provider_owns_operation("Ask::Get"))
 }
 
+test "#3720: exiting is a Process operation of its own" {
+  assert(standard_provider_owns_operation("Process::exit"))
+  assert(is_instantiate_authority("Process::exit"))
+  // The perform-style spelling of `@vibe/process`'s own effect is not the
+  // host's operation.
+  assert(!standard_provider_owns_operation("Process::Exit"))
+}
+
+test "#3720: `allows Process::exit` authorizes `Process::exit`" {
+  assert_eq(first_check_error("fn main() -> Unit allows Process::exit {\n  Process::exit(3)\n}\n"), "")
+  // The raw spelling still charges the whole effect, so no row that compiled
+  // before changes meaning.
+  assert(String::contains(first_check_error("fn main() -> Unit allows Process::exit {\n  vibe_process_exit_raw(3)\n}\n"), needle = "missing { Process }"))
+  // A helper that only exits declares the one operation, and a caller holding
+  // the whole provider still covers it.
+  assert_eq(first_check_error("fn bye() -> Unit with Process::exit {\n  Process::exit(1)\n}\nfn main() -> Unit allows Process {\n  bye()\n}\n"), "")
+}
+
+test "#3720: `allows Process::exit` does not authorize running a command" {
+  let msg = first_check_error("fn main() -> Unit allows Process::exit {\n  let _ = sh(\"ls\")\n  Process::exit(0)\n}\n")
+  assert(String::contains(msg, needle = "missing { Process }"))
+}
+
+test "#3720: a missing exit grant names the one operation" {
+  let msg = first_check_error("fn bye() -> Unit {\n  Process::exit(1)\n}\n")
+  assert(String::contains(msg, needle = "missing { Process::exit }"))
+  let through = first_check_error("fn bye() -> Unit with Process::exit {\n  Process::exit(1)\n}\nfn main() -> Unit allows Fs {\n  bye()\n}\n")
+  assert(String::contains(through, needle = "Process::exit"))
+}
+
 test "ADR-0088: `with .. allows ..` is not a spelling" {
   // The entry's row is ONE clause, `allows`. The split form ADR-0088 once
   // proposed is refused by name so the reader learns the edit rather than

@@ -155,13 +155,13 @@ try {
   exercise("diamond", "main.vibe", "main_value", 28, 3);
   writeFileSync(join(project, "typed_leaf.vibe"), `export fn render[T](value: T) -> String { __to_string(value) }
 export fn mono(value: Bool) -> String { __to_string(value) }
-export fn take(value: Double) -> Double { value + 0.5 }
+export fn take(value: Float64) -> Float64 { value + 0.5 }
 `);
   writeFileSync(join(project, "typed_facade.vibe"), "export ./typed_leaf.vibe { render as show, mono, take }\n");
   writeFileSync(join(project, "typed_main.vibe"), `import ./typed_facade.vibe { show, mono, take }
 export fn typed_main() -> Int {
   let b = () -> Bool { 1 < 2 }
-  let d = () -> Double { 2.5 }
+  let d = () -> Float64 { 2.5 }
   let a = () -> Array[Bool] { [1 < 2, 2 < 1] }
   assert(show(b()) == "true")
   assert(show(d()) == "2.5")

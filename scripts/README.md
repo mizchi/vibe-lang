@@ -117,6 +117,11 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   live in executable `inspect` snapshots (#1571). Invoked by the fixture
   execution check; its mutation tests run in bootstrap preflight and the
   pre-commit self-test.
+- `check_prove.sh` (+ `check_prove_test.sh`) — `vibe check --prove` (#3717)
+  over `fixtures/prove/` with an external z3: a proved file is silent, an
+  unproved obligation names a counterexample, an unsupported construct and a
+  timeout fail. A missing z3 fails the gate. CI's `compiler-gate (examples)`
+  installs z3 for it.
 - `check_import_reservation.vibex` (+ `check_import_reservation_test.sh`) — every user-callable
   capability spelling reserves the host import it lowers onto (#2905).
 - `check_vibex_grants.vibex` (+ `check_vibex_grants_test.sh`) — every

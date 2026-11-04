@@ -42,7 +42,7 @@ for name,ids,count in [('one',[0],1),('two',[0,1],1),('four',list(range(4)),1),(
                 assert mutated!=manifest and 'version\t999\n' in mutated
                 manifest=mutated
             (job/'job.txt').write_text(manifest)
-            (job/'source.vibe').write_text('\n'.join(f'fn f{k}(x: Int) -> Int {{ x + {k} }}' for k in range(1000))+'\nfn double_id(x: Double) -> Double { x }\nexport fn main() -> Int { let d = double_id(1.5); if d == 1.5 { f999(1) } else { 0 } }\n')
+            (job/'source.vibe').write_text('\n'.join(f'fn f{k}(x: Int) -> Int {{ x + {k} }}' for k in range(1000))+'\nfn double_id(x: Float64) -> Float64 { x }\nexport fn main() -> Int { let d = double_id(1.5); if d == 1.5 { f999(1) } else { 0 } }\n')
     text+='TaskGroup::pump_all(g)\n'+' + '.join(f'TaskHandle::join(t{i})' for i in ids)+'\n })\n}\n'
     src=out/f'{name}.vibe';src.write_text(text)
     env={**base,'VIBE_FS_COMPILE':'1','VIBE_LIB':str(root/'lib'),'VIBE_PREOPEN_DIR':str(root),

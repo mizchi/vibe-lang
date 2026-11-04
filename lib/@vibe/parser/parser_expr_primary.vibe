@@ -9,7 +9,11 @@ import @vibe/ast {
 }
 
 import ./intern.vibe {
-  intern_qualified
+  intern_qualified, refuse_retired_qualified
+}
+
+import ./loop_contract.vibe {
+  attach_while_contract, parse_loop_where
 }
 
 import ./parser_base.vibe {
@@ -25,8 +29,10 @@ import ./parser_base.vibe {
   parse_param_list_with_binder_context,
   parse_type_impl,
   parse_type_param_kind,
+  parse_type_tentatively,
   parse_type_with_source_context,
   peek,
+  refuse_retired_in_type,
   tk_name,
   untyped_brace_lambda_param
 }
@@ -810,7 +816,8 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
           _ => throw("expected loop parameter name or ')'")
         }
       }
-      let body_pos = expect_tk(tokens = tokens, pos = cur, expected = "{")
+      let (invariants, decreases, wn) = parse_loop_where(tokens = tokens, pos = cur, parse_recur = parse_recur, context = context)
+      let body_pos = expect_tk(tokens = tokens, pos = wn, expected = "{")
       let body_mark = binder_capture_mark(context)
       let (body, end_pos) = parse_recur(tokens, body_pos, 20, context)
       binder_capture_insert_synthetic_at(context = context, mark = body_mark, name = "__loop_result")
@@ -818,7 +825,7 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
       let pnames = ArrayBuilder::freeze(param_names_b)
       let pinits = ArrayBuilder::freeze(param_inits_b)
       let transformed_body = desugar_loop_body(expr = body, param_names = pnames, context = context)
-      let while_expr = EWhile(EBool(true), transformed_body)
+      let while_expr = attach_while_contract(cond = EBool(true), body = transformed_body, invariants = invariants, decreases = decreases, tag = pos)
       let result = ELetMut("__loop_result", EInt(0), ESeq(while_expr, EIdent("__loop_result", -1)), -1)
       let mut wrapped = result
       let mut wi = Array::length(pnames) - 1
@@ -829,9 +836,10 @@ fn parse_loop_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_
       (wrapped, end_pos)
     },
     _ => {
-      let body_pos = expect_tk(tokens = tokens, pos = pos + 1, expected = "{")
+      let (invariants, decreases, wn) = parse_loop_where(tokens = tokens, pos = pos + 1, parse_recur = parse_recur, context = context)
+      let body_pos = expect_tk(tokens = tokens, pos = wn, expected = "{")
       let (body, end_pos) = parse_recur(tokens, body_pos, 20, context)
-      (EWhile(EBool(true), body), end_pos)
+      (attach_while_contract(cond = EBool(true), body = body, invariants = invariants, decreases = decreases, tag = pos), end_pos)
     }
   }
 }
@@ -1300,13 +1308,18 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
       let after_arrow = after_params + 1
       match peek(tokens = tokens, pos = after_arrow) {
         TIdent(_) => {
-          let (ty, ty_pos) = parse_type_with_source_context(tokens = tokens, pos = after_arrow, mode = 0, context = context)
+          // A name after `->` may begin the body (`() -> f64(x)`, the
+          // constructor `() -> Double`), so it is read as a type tentatively
+          // and the retired-name refusal applies only once it is one (#3729).
+          let (ty, ty_pos) = parse_type_tentatively(tokens = tokens, pos = after_arrow, context = context)
           match peek(tokens = tokens, pos = ty_pos) {
             TLBrace => {
+              refuse_retired_in_type(ty)
               let (body, end) = parse_recur(tokens, ty_pos + 1, 20, context)
               (EFn(_no_tp(), _no_tb(), params, Some(ty), None, body), end)
             },
             TWith => {
+              refuse_retired_in_type(ty)
               let effect_pair = parse_effect_row(tokens = tokens, pos = ty_pos + 1)
               let effect_name = effect_pair.0
               let effect_next = effect_pair.1
@@ -1329,8 +1342,10 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
           // `.`), so recover and parse the parens as the body instead. When the
           // type parse SUCCEEDS but is not followed by `{`/`with` it is likewise
           // a body (the `_` arm) — e.g. a nested-lambda body `(x) -> f`. #788.
+          // The retired-name refusal waits for the type to be one, as in the
+          // `TIdent` arm above: `() -> (f64(x), 1)` is a body (#3729).
           let ty_opt = handle {
-            let (ty, ty_pos) = parse_type_with_source_context(tokens = tokens, pos = after_arrow, mode = 0, context = context)
+            let (ty, ty_pos) = parse_type_tentatively(tokens = tokens, pos = after_arrow, context = context)
             Some((ty, ty_pos))
           } with { Exception::Throw(_) => None }
           match ty_opt {
@@ -1338,10 +1353,12 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
               let (ty, ty_pos) = pair
               match peek(tokens = tokens, pos = ty_pos) {
                 TLBrace => {
+                  refuse_retired_in_type(ty)
                   let (body, end) = parse_recur(tokens, ty_pos + 1, 20, context)
                   (EFn(_no_tp(), _no_tb(), params, Some(ty), None, body), end)
                 },
                 TWith => {
+                  refuse_retired_in_type(ty)
                   let effect_pair = parse_effect_row(tokens = tokens, pos = ty_pos + 1)
                   let effect_name = effect_pair.0
                   let effect_next = effect_pair.1
@@ -1525,7 +1542,10 @@ fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name:
   } else {
     match peek(tokens = tokens, pos = pos + 1) {
       TDoubleColon => match peek(tokens = tokens, pos = pos + 2) {
-        TIdent(member) => (EIdent(intern_qualified(ns = name, member = member), offset_at(starts = starts, p = pos)), pos + 3),
+        TIdent(member) => {
+          refuse_retired_qualified(ns = name, member = member)
+          (EIdent(intern_qualified(ns = name, member = member), offset_at(starts = starts, p = pos)), pos + 3)
+        },
         TLBrace => {
           let b = ArrayBuilder::new()
           let (fields, end_pos) = parse_ctor_record_fields(tokens = tokens, starts = starts, pos = pos + 3, b = b, parse_recur = parse_recur, context = context)

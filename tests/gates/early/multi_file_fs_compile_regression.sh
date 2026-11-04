@@ -1605,12 +1605,93 @@ gate_require_artifact "$edir/viol.wasm" "where-contract program did not compile 
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: violated requires clause did not trap (#731)" >&2; exit 1
 fi
+# (b2) #3715: every exit checks `ensures`, an early `return` included -- one
+#      nested in a loop as well as one at the top of the body. A satisfying
+#      early return still returns its value.
+printf 'fn f(x: Int) -> Int where { ensures: result > 0 } {\n  if x < 0 {\n    return x\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { f(0 - 5) }\n' > "$edir/viol_ret.vibe"
+gate_fs_compile "$edir/viol_ret.vibe" "$edir/viol_ret.wasm" _start
+gate_require_artifact "$edir/viol_ret.wasm" "early-return ensures program did not compile (#3715)"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: an early return that violates ensures did not trap (#3715)" >&2; exit 1
+fi
+printf 'fn g(n: Int) -> Int where { ensures: result >= 10 } {\n  let mut i = 0\n  while i < n {\n    if i == 2 {\n      return i\n    } else {\n      ()\n    }\n    i = i + 1\n  }\n  10\n}\nexport let _start: () -> Int = () -> { g(5) }\n' > "$edir/viol_ret_loop.vibe"
+gate_fs_compile "$edir/viol_ret_loop.vibe" "$edir/viol_ret_loop.wasm" _start
+gate_require_artifact "$edir/viol_ret_loop.wasm" "early-return-in-loop ensures program did not compile (#3715)"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret_loop.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: a return inside a loop that violates ensures did not trap (#3715)" >&2; exit 1
+fi
+# A body closure spelled like the generated checker does not replace it at
+# a rewritten `return`: the checker's name is fresh for each function.
+printf 'fn s(x: Int) -> Int where { ensures: result > 0 } {\n  let __vibe_ensures = (v: Int) -> Int { v }\n  if x < 0 {\n    return x\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { s(0 - 5) }\n' > "$edir/viol_ret_shadow.vibe"
+gate_fs_compile "$edir/viol_ret_shadow.vibe" "$edir/viol_ret_shadow.wasm" _start
+gate_require_artifact "$edir/viol_ret_shadow.wasm" "early-return ensures program with a checker-named local did not compile (#3715)"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret_shadow.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: a local named like the ensures checker let an early return skip it (#3715)" >&2; exit 1
+fi
+# The same through a struct pattern's field binder, which the printer
+# abbreviates to `W::{...}`: the fresh-name check reads the AST's binders.
+printf 'fn s(x: Int, w: W) -> Int where { ensures: result > 0 } {\n  match w {\n    W::{ __vibe_ensures } => if x < 0 {\n      return x\n    } else {\n      ()\n    }\n  }\n  x + 1\n}\n\nstruct W { __vibe_ensures: (Int) -> Int }\n\nexport let _start: () -> Int = () -> { s(0 - 5, W::{ __vibe_ensures: (v: Int) -> Int { v } }) }\n' > "$edir/viol_ret_pattern.vibe"
+gate_fs_compile "$edir/viol_ret_pattern.vibe" "$edir/viol_ret_pattern.wasm" _start
+gate_require_artifact "$edir/viol_ret_pattern.wasm" "early-return ensures program with a checker-named field did not compile (#3715)"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret_pattern.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: a struct field named like the ensures checker let an early return skip it (#3715)" >&2; exit 1
+fi
+printf 'fn h(x: Int) -> Int where { ensures: result > 0 } {\n  if x > 100 {\n    return 100\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { h(500) }\n' > "$edir/ok_ret.vibe"
+gate_fs_compile "$edir/ok_ret.vibe" "$edir/ok_ret.wasm" _start
+gate_require_artifact "$edir/ok_ret.wasm" "satisfied early-return ensures program did not compile (#3715)"
+gate_run ok_ret_out stdout-last --invoke _start "$edir/ok_ret.wasm"
+if [ "$ok_ret_out" != "100" ]; then
+  echo "[compiler-gate] FAIL: a satisfying early return returned '$ok_ret_out' (want 100) (#3715)" >&2; exit 1
+fi
 # (c) violated ensures: exit assert (over the `result` binding) traps.
 printf 'fn bad_dec(x: Int) -> Int where { ensures: result > x } { x - 1 }\nexport let _start: () -> Int = () -> { bad_dec(7) }\n' > "$edir/viol_ens.vibe"
 gate_fs_compile "$edir/viol_ens.vibe" "$edir/viol_ens.wasm" _start
 gate_require_artifact "$edir/viol_ens.wasm" "ensures-contract program did not compile (#731)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ens.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: violated ensures clause did not trap (#731)" >&2; exit 1
+fi
+# (d) #3716: a loop's where-clause traps when a checkpoint fails. Each case
+#     breaks exactly one clause, at one checkpoint: on entry, after an
+#     iteration, after an iteration ended by `continue` (one written inside
+#     a string interpolation's hole, or in a nested `for`'s iterand,
+#     included), and a measure that does not decrease. `capture` binds the
+#     name the lowering generated for that loop before it was made fresh
+#     (`__loop_check_14`, 14 being the `for`'s token position); a fixed name
+#     let that binding replace the checkpoint. The satisfied loop returns its count.
+loop_ok='fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { invariant: i <= 3, decreases: 3 - i } {\n    i = i + 1\n  }\n  i\n}\nexport let _start: () -> Int = () -> { run() }\n'
+printf "$loop_ok" > "$edir/loop_ok.vibe"
+gate_fs_compile "$edir/loop_ok.vibe" "$edir/loop_ok.wasm" _start
+gate_require_artifact "$edir/loop_ok.wasm" "satisfied loop contract did not compile (#3716)"
+loop_ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/loop_ok.wasm" 2>/dev/null | tail -1)"
+if [ "$loop_ok_out" != "3" ]; then
+  echo "[compiler-gate] FAIL: satisfied loop contract returned '$loop_ok_out' (want 3) (#3716)" >&2; exit 1
+fi
+for loop_case in \
+  "entry|fn run() -> Int {\n  let mut i = 5\n  while i < 3 where { invariant: i <= 3 } {\n    i = i + 1\n  }\n  i\n}" \
+  "after|fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { invariant: i < 2 } {\n    i = i + 1\n  }\n  i\n}" \
+  "continue|fn run() -> Int {\n  let mut n = 0\n  for x in [1, 2, 3] where { invariant: n < 2 } {\n    n = n + 1\n    if x > 0 { continue } else { () }\n  }\n  n\n}" \
+  "measure|fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { decreases: 10 } {\n    i = i + 1\n  }\n  i\n}" \
+  "negative|fn run() -> Int {\n  let mut i = 0\n  while i < 3 where { decreases: 1 - i } {\n    i = i + 1\n  }\n  i\n}" \
+  "interp|fn run() -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    n = n + 1\n    let s = \"\\{if x > 0 { continue } else { 0 }}\"\n    let _ = s\n  }\n  n\n}" \
+  "iterand|fn run() -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    n = n + 1\n    for y in {\n      continue\n      [1]\n    } {\n      ()\n    }\n  }\n  n\n}" \
+  "capture|fn run() -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    let __loop_check_14 = () -> ()\n    n = n + 1\n    continue\n  }\n  n\n}"; do
+  loop_name="${loop_case%%|*}"
+  printf "${loop_case#*|}\nexport let _start: () -> Int = () -> { run() }\n" > "$edir/loop_$loop_name.vibe"
+  gate_fs_compile "$edir/loop_$loop_name.vibe" "$edir/loop_$loop_name.wasm" _start
+  gate_require_artifact "$edir/loop_$loop_name.wasm" "loop contract case '$loop_name' did not compile (#3716)"
+  if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/loop_$loop_name.wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: violated loop contract ($loop_name) did not trap (#3716)" >&2; exit 1
+  fi
+done
+# A struct pattern's field binder spelled like the generated checkpoint
+# (`__loop_17_check`, 17 being the `for`'s token position) does not replace
+# it: the printer abbreviates the pattern to `S::{...}`, so the fresh-name
+# check reads binders from the AST rather than from printed text.
+printf 'fn run(s: S) -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    n = n + 1\n    match s {\n      S::{ __loop_17_check } => {\n        continue\n      }\n    }\n  }\n  n\n}\n\nstruct S { __loop_17_check: () -> Unit }\n\nexport let _start: () -> Int = () -> { run(S::{ __loop_17_check: () -> () }) }\n' > "$edir/loop_pattern_capture.vibe"
+gate_fs_compile "$edir/loop_pattern_capture.vibe" "$edir/loop_pattern_capture.wasm" _start
+gate_require_artifact "$edir/loop_pattern_capture.wasm" "loop contract case 'pattern_capture' did not compile (#3716)"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/loop_pattern_capture.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: violated loop contract (pattern_capture) did not trap (#3716)" >&2; exit 1
 fi
 printf 'fn a(x: Int) -> Int\n' > "$edir/prev.vibei"
 printf 'fn a(x: Int) -> Int\nfn b(x: Int) -> Int\n' > "$edir/next.vibei"

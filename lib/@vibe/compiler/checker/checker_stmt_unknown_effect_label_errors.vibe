@@ -24,6 +24,7 @@ import @vibe/compiler/checker/effects {
   row_text_labels,
   set_call_callee_types,
   set_throw_site_kinds,
+  standard_provider_owns_operation,
   stmt_type_rows
 }
 
@@ -2328,14 +2329,17 @@ fn unknown_effect_label_message(label: String, es_names: Array[String], ed_names
       if declared_idx >= 0 {
         // #1963: the exception owner, not `head == "Exception"`, so the
         // erased `Error` spelling is the same effect here as everywhere else.
-        if uel_contains(xs = Array::get(ed_ops, at = declared_idx), x = op) || is_exception_effect_name(head) {
+        // #3720: a registry-owned host operation stays one when a linked
+        // module declares an effect of the provider's name (`@vibe/process`
+        // declares `effect Process`, and `Process::exit` is the host exit).
+        if uel_contains(xs = Array::get(ed_ops, at = declared_idx), x = op) || is_exception_effect_name(head) || standard_provider_owns_operation(String::concat(head, String::concat("::", op))) {
           ""
         } else {
           String::concat("effect `", String::concat(head, String::concat("` has no such operation `", String::concat(op, "`"))))
         }
       } else if has_standard_host_provider(head) {
         let qn = String::concat(head, String::concat("::", op))
-        if lookup_builtin(qn) != None || lookup_registry_builtin(qn) != None || uel_contains(xs = env_labels, x = qn) {
+        if lookup_builtin(qn) != None || lookup_registry_builtin(qn) != None || uel_contains(xs = env_labels, x = qn) || standard_provider_owns_operation(qn) {
           ""
         } else {
           String::concat("effect `", String::concat(head, String::concat("` has no such operation `", String::concat(op, "`"))))

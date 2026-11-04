@@ -37,8 +37,8 @@ def prepare(name, count, *, bad=False, slow=False, cfg=False):
             assert mutated != manifest and "version\t999\n" in mutated
             manifest = mutated
         source = (
-            f"fn double_id(x: Double) -> Double {{ x }}\n"
-            f"export fn main() -> Double {{ double_id({i}.5) }}\n"
+            f"fn double_id(x: Float64) -> Float64 {{ x }}\n"
+            f"export fn main() -> Float64 {{ double_id({i}.5) }}\n"
         )
         if name == "mixed" and i == 7:
             source = 'export fn failure() -> Int { throw("failure") }\n'

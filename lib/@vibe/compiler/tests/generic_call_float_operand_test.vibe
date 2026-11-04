@@ -2,7 +2,7 @@
 
 // #3629: the checker files a float-operand row for every `Double` / `Float`
 // arithmetic or ordering binop and compound assignment, and the desugar marks
-// its operands with `Float32::to_float64`, the identity at code generation. A
+// its operands with `Float::to_double`, the identity at code generation. A
 // generic call's result reads as its callee's type formal to the desugar, so
 // without the mark `pick(2.5) + 1.0` went to the runtime Int/String dispatch
 // (`__generic_add`) and added the Double's box as an Int. A build lane with
@@ -50,7 +50,7 @@ fn pick_src(_ body: String) -> String {
 //# Tests
 
 test "#3629: a Double binop over a generic call marks its operands" {
-  let out = desugared_with_rows(pick_src("fn f() -> Double {\n  pick(2.5) + 1.0\n}\n"))
+  let out = desugared_with_rows(pick_src("fn f() -> Float64 {\n  pick(2.5) + 1.0\n}\n"))
   inspect(String::contains(out, needle = "Float32::to_float64(pick(2.5))"), content = "true")
   inspect(String::contains(out, needle = "__generic_add"), content = "false")
 }
@@ -62,7 +62,7 @@ test "#3629: a Double ordering over generic calls marks both operands" {
 }
 
 test "#3629: a Double compound assignment marks its value" {
-  let out = desugared_with_rows(pick_src("fn f() -> Double {\n  let mut a = 1.0\n  a += pick(2.5)\n  a\n}\n"))
+  let out = desugared_with_rows(pick_src("fn f() -> Float64 {\n  let mut a = 1.0\n  a += pick(2.5)\n  a\n}\n"))
   inspect(String::contains(out, needle = "Float32::to_float64(pick(2.5))"), content = "true")
 }
 
@@ -74,13 +74,13 @@ test "#3629: an Int or String binop over a generic call is left alone" {
 }
 
 test "#3629: with no rows, a generic call result under `+` is refused with the edit" {
-  let msg = rowless(pick_src("fn f() -> Double {\n  pick(2.5) + 1.0\n}\n"))
+  let msg = rowless(pick_src("fn f() -> Float64 {\n  pick(2.5) + 1.0\n}\n"))
   inspect(String::starts_with(msg, prefix = "bind this operand of `+` with its type first"), content = "true")
   let rel = rowless(pick_src("fn f() -> Bool {\n  let v = pick(2.5)\n  v < 1.0\n}\n"))
   inspect(String::starts_with(rel, prefix = "bind this operand of `<` with its type first"), content = "true")
 }
 
 test "#3629: with no rows, an annotated binding and an enclosing formal still compile" {
-  inspect(rowless(pick_src("fn f() -> Double {\n  let v: Double = pick(2.5)\n  v + 1.0\n}\n")), content = "clean")
+  inspect(rowless(pick_src("fn f() -> Float64 {\n  let v: Float64 = pick(2.5)\n  v + 1.0\n}\n")), content = "clean")
   inspect(rowless("fn lt[T: Ord](a: T, b: T) -> Bool {\n  a < b\n}\n"), content = "clean")
 }
