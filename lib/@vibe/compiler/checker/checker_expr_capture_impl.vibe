@@ -1,5 +1,5 @@
 import ./checker_sized_int.vibe {
-  sized_int_involved, sized_int_operand_type
+  sized_int_involved, sized_int_operand_type, sized_int_wrap_kind, sized_negation_key
 }
 
 import ./checker_expr_capture_markers.vibe {
@@ -992,6 +992,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         },
         _ => ()
       }
+      // #3730: and an `Int32` / `UInt32` result is wrapped to 32 bits.
+      let wrap_kind = sized_int_wrap_kind(op = op, result = bin_result, assign = false)
+      if wrap_kind > 0 {
+        record_float_arith(capture = capture, off = boff, kind = wrap_kind)
+      }
       // #3629: a `Double` / `Float` operation whose operands the lowering
       // may not see as floats (a generic call's result, an index), filed so
       // the post-check rewrite marks them; see `float_operand_binop`.
@@ -1044,8 +1049,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             (CtFloat, s1, c1)
           },
           CtInt => (CtInt, s1, c1),
-          CtInt32 => (CtInt32, s1, c1),
-          CtUInt32 => (CtUInt32, s1, c1),
+          // #3730: `-x` wraps (`-MIN` is `MIN`; a `UInt32` negates modulo 2^32).
+          CtInt32 => {
+            record_float_arith(capture = capture, off = sized_negation_key(operand = operand, op = "-", errors = errors), kind = 20)
+            (CtInt32, s1, c1)
+          },
+          CtUInt32 => {
+            record_float_arith(capture = capture, off = sized_negation_key(operand = operand, op = "-", errors = errors), kind = 21)
+            (CtUInt32, s1, c1)
+          },
           CtVar(_) => match unify(a = operand_ty, b = CtInt, s = s1) {
             Some(s2) => (CtInt, s2, c1),
             None => (CtUnknown, s1, c1)
@@ -1071,8 +1083,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // diagnostic names the operator the author actually wrote.
         match subst_apply(s = s1, ty = operand_ty) {
           CtInt => (CtInt, s1, c1),
+          // `~` of an in-range `Int32` is in range; a `UInt32`'s is negative.
           CtInt32 => (CtInt32, s1, c1),
-          CtUInt32 => (CtUInt32, s1, c1),
+          CtUInt32 => {
+            record_float_arith(capture = capture, off = sized_negation_key(operand = operand, op = "~", errors = errors), kind = 22)
+            (CtUInt32, s1, c1)
+          },
           CtVar(_) => match unify(a = operand_ty, b = CtInt, s = s1) {
             Some(s2) => (CtInt, s2, c1),
             None => (CtUnknown, s1, c1)
@@ -1151,6 +1167,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 _ => ()
               },
               _ => ()
+            }
+            let assign_wrap = sized_int_wrap_kind(op = aop, result = subst_apply(s = s1r, ty = res_ty), assign = true)
+            if assign_wrap > 0 {
+              record_float_arith(capture = capture, off = target_off, kind = assign_wrap)
             }
             s1r
           } else {
@@ -2753,6 +2773,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // Explicit `return e`: anchor on `e` itself, so this spelling locates
             // the same way the implicit tail-expression return does above.
             check_assignable_set_end(string_lit_end(e))
+            let ate = sized_int_operand_type(e = e, ty = ate, other = rte, s = s1, errors = errors, off = railway_expr_off(e))
             let _ = check_assignable(expected = rte, actual = ate, s = s1, errors = errors, what = "return type mismatch", off = railway_expr_off(e))
             ()
           }

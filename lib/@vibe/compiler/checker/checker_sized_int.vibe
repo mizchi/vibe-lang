@@ -2,7 +2,7 @@
 // literals.
 
 import @vibe/compiler/core {
-  Expr, Subst, Type, subst_apply, unify
+  Expr, Subst, Type, subst_apply, typed_negation_operand_key, unify
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -52,6 +52,75 @@ export fn sized_int_involved(a: Type, b: Type) -> Bool {
       _ => false
     }
   }
+}
+
+/// The expression a block evaluates to -- its tail past `;` and `let`s --
+/// for the literal check of a function body against its return type.
+export fn sized_int_tail(_ e: Expr) -> Expr {
+  match e {
+    ESeq(_, rest) => sized_int_tail(rest),
+    ELet(_, _, rest, _) => sized_int_tail(rest),
+    ELetRec(_, _, rest) => sized_int_tail(rest),
+    ELetMut(_, _, rest, _) => sized_int_tail(rest),
+    _ => e
+  }
+}
+
+/// #3730: the capture kind of a sized-integer operation whose `Int` result
+/// must be wrapped to 32 bits (`typed_int_wrap_verdict`), or 0 when it needs
+/// no wrap. `assign` selects the compound-assignment kinds. The result of
+/// `>>`, `&`, `|`, `^` on in-range operands is already in range, and so are
+/// `/` and `%` on `UInt32`; `Int32 / -1` of `MIN` is not, so `/` wraps there.
+export fn sized_int_wrap_kind(op: String, result: Type, assign: Bool) -> Int {
+  let base = match result {
+    CtInt32 => if op == "+" || op == "-" || op == "*" || op == "/" || op == "<<" {
+      16
+    } else {
+      0
+    },
+    CtUInt32 => if op == "+" || op == "-" || op == "*" || op == "<<" {
+      17
+    } else {
+      0
+    },
+    _ => 0
+  }
+  if base > 0 && assign {
+    base + 2
+  } else {
+    base
+  }
+}
+
+/// #3730: the row type a capture kind records: the sized type for the wrap
+/// kinds (16..22), `Float32` for the float kinds `record_float_arith` files.
+export fn arith_row_type(_ kind: Int) -> Type {
+  if kind == 16 || kind == 18 || kind == 20 {
+    CtInt32
+  } else if kind == 17 || kind == 19 || kind == 21 || kind == 22 {
+    CtUInt32
+  } else {
+    CtFloat
+  }
+}
+
+/// #3730: the key a sized negation's (or `UInt32` `~`'s) wrap row is filed
+/// under. A unary operator has no offset of its own, so the row is keyed by
+/// its operand (`typed_negation_operand_key`); an operand with no key -- a
+/// nested operator, `-(a + b)` -- is refused with the edit rather than left
+/// unwrapped.
+export fn sized_negation_key(operand: Expr, op: String, errors: Array[String]) -> Int {
+  let key = typed_negation_operand_key(operand)
+  if key < 0 {
+    Array::push(errors, value = "write this `" + op + "` on an `Int32` / `UInt32` as `0 - (..)`" + (if op == "~" {
+      " or `(..) ^ 4294967295`"
+    } else {
+      ""
+    }) + ": the compiler wraps a sized negation by its operand's position, and this operand (an operator or a literal) has none")
+  } else {
+    ()
+  }
+  key
 }
 
 /// The value of an integer literal as written: `5`, or `-5` (the parser reads

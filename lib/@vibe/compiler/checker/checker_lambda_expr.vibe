@@ -1,5 +1,13 @@
 // lib/@vibe/compiler/checker/checker.vibe — lambda expr.
 
+import ./checker_expr_capture_markers.vibe {
+  builtin_field_access_message, formal_field_access_message
+}
+
+import ./checker_sized_int.vibe {
+  sized_int_operand_type, sized_int_tail
+}
+
 import @vibe/compiler/checker/annotations {
   collect_formal_kind_uses,
   collect_hkt_related_formals,
@@ -1325,32 +1333,6 @@ fn tuple_named_field_message(field: String, arity: Int) -> String {
 /// `CtNamed(name, args)` an instantiated generic enum (`Wrap[Int]`) resolves to.
 fn enum_field_access_message(enum_name: String, field: String) -> String {
   String::concat("match on ", String::concat(enum_name, String::concat(" to read a variant's payload; field access `.", String::concat(field, String::concat("` needs a struct, and ", String::concat(enum_name, " is an enum"))))))
-}
-
-/// #2820: the same shape for a BUILTIN receiver (`Array`, `Map`, `Bytes`,
-/// `String`, ...). A builtin container has no fields at all, so unlike the
-/// struct case there is no "you named the wrong one" reading -- the only edit
-/// that can give `.name` a meaning is a qualified call, which is also what the
-/// dot-call diagnostics on these receivers already recommend
-/// (``call it as `Array::length(...)` ``). Leading with that keeps one
-/// vocabulary across both.
-fn builtin_field_access_message(type_name: String, field: String) -> String {
-  String::concat("call `", String::concat(type_name, String::concat("::", String::concat(field, String::concat("(...)` if you meant a method; field access `.", String::concat(field, String::concat("` needs a struct, and ", String::concat(type_name, " is a builtin type"))))))))
-}
-
-/// #2848: the same shape for a receiver typed by a TYPE PARAMETER. Nothing a
-/// bound can say promises `T` a field -- there is no `HasField` bound, and a
-/// generic body is lowered once for every instantiation -- so the only edit
-/// that gives `.name` a meaning is naming the struct in the signature. Before
-/// this refusal the read typed as `CtUnknown` and codegen resolved the field
-/// by SPELLING against any struct in the program declaring it: measured on the
-/// committed seed, `struct Crate { payload: Int }` in scope and `fn read[T](m:
-/// T) -> Int { m.payload }` applied to `7` compiled clean and answered `0`,
-/// slot 0 of a tagged integer read through `Crate`'s offset; with no struct
-/// declaring the name the same program was clean in `vibe check` and died in
-/// the build with an unlocated `unknown struct field: v`.
-fn formal_field_access_message(tparam: String, field: String) -> String {
-  String::concat("write the struct that declares `", String::concat(field, String::concat("` in place of the type parameter `", String::concat(tparam, String::concat("`; field access `.", String::concat(field, String::concat("` needs a struct, and a bound on `", String::concat(tparam, "` cannot promise one"))))))))
 }
 
 /// #2848: the source name of the OPEN type parameter that unification variable
@@ -2749,6 +2731,8 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
           // SLet/ELet then tags those with `[@fn=name]` so locate_type_error
           // recovers the function name instead of a synthetic 0:0 range.
           check_assignable_set_end(string_lit_end(body))
+          // #3730: a literal tail where an `Int32` / `UInt32` is returned.
+          let bt = sized_int_operand_type(e = sized_int_tail(body), ty = bt, other = resolved_ret, s = s2, errors = errors, off = tail_expr_off(body))
           let ns_ret = check_assignable(expected = resolved_ret, actual = bt, s = s2, errors = errors, what = "return type mismatch", off = tail_expr_off(body))
           // #3341: a returned function value is used at the declared row.
           let ns = effect_inst_annotation_check(env = body_env, value = body, value_ty = bt, want_ty = resolved_ret, s = ns_ret, subject = "the returned function", slot = "the return type's row", defs = defs, errors = errors)

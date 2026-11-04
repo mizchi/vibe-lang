@@ -1,5 +1,6 @@
-// Small helpers of `checker_expr_capture_impl.vibe`, split out to keep that
-// file under the source-size limit.
+// Small pure helpers of `checker_expr_capture_impl.vibe` and
+// `checker_lambda_expr.vibe`, split out to keep those files under the
+// source-size limit.
 
 import @vibe/compiler/core {
   Subst, Type, subst_apply, type_to_string, unify
@@ -61,4 +62,30 @@ export fn assign_target_marker(_ off: Int) -> String {
 /// name to something else, which is what shadows it.
 export fn resume_continuation_marker() -> Type {
   CtNamed("$resume_continuation", [])
+}
+
+/// #2820: the same shape for a BUILTIN receiver (`Array`, `Map`, `Bytes`,
+/// `String`, ...). A builtin container has no fields at all, so unlike the
+/// struct case there is no "you named the wrong one" reading -- the only edit
+/// that can give `.name` a meaning is a qualified call, which is also what the
+/// dot-call diagnostics on these receivers already recommend
+/// (``call it as `Array::length(...)` ``). Leading with that keeps one
+/// vocabulary across both.
+export fn builtin_field_access_message(type_name: String, field: String) -> String {
+  String::concat("call `", String::concat(type_name, String::concat("::", String::concat(field, String::concat("(...)` if you meant a method; field access `.", String::concat(field, String::concat("` needs a struct, and ", String::concat(type_name, " is a builtin type"))))))))
+}
+
+/// #2848: the same shape for a receiver typed by a TYPE PARAMETER. Nothing a
+/// bound can say promises `T` a field -- there is no `HasField` bound, and a
+/// generic body is lowered once for every instantiation -- so the only edit
+/// that gives `.name` a meaning is naming the struct in the signature. Before
+/// this refusal the read typed as `CtUnknown` and codegen resolved the field
+/// by SPELLING against any struct in the program declaring it: measured on the
+/// committed seed, `struct Crate { payload: Int }` in scope and `fn read[T](m:
+/// T) -> Int { m.payload }` applied to `7` compiled clean and answered `0`,
+/// slot 0 of a tagged integer read through `Crate`'s offset; with no struct
+/// declaring the name the same program was clean in `vibe check` and died in
+/// the build with an unlocated `unknown struct field: v`.
+export fn formal_field_access_message(tparam: String, field: String) -> String {
+  String::concat("write the struct that declares `", String::concat(field, String::concat("` in place of the type parameter `", String::concat(tparam, String::concat("`; field access `.", String::concat(field, String::concat("` needs a struct, and a bound on `", String::concat(tparam, "` cannot promise one"))))))))
 }

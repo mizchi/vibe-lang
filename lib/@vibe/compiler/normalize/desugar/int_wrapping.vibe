@@ -1,0 +1,685 @@
+// #3730 (ADR-0122 (5)): the exact 32-bit integers after the check.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, typed_negation_operand_key
+}
+
+import @vibe/ast {
+  builtin_ref
+}
+
+//# Functions
+
+/// #3730: `Int32` and `UInt32` are held as an `Int` in range (-2^31 ..
+/// 2^31-1, and 0 .. 2^32-1), so code generation computes `a + b` on two of
+/// them as a 63-bit `Int` sum. Every result the checker typed as a sized
+/// integer that can leave the range is therefore wrapped back into it before
+/// anything reads it: the checker files one row per such site (capture kinds
+/// 16..22, `typed_int_wrap_verdict`) and this pass rewrites each hit.
+///
+/// `Int32` wraps by `(e << 31) >> 31`: the 63-bit shift keeps the low 32
+/// bits (an `Int` wraps at 63 bits, ADR-0105), and the arithmetic shift back
+/// sign-extends bit 31. `UInt32` wraps by `e & 4294967295`. Both evaluate `e`
+/// once. A 63-bit result has the exact 32-bit result in its low 32 bits for
+/// `+ - * <<`, negation and `~`, and so does `MIN / -1`, so one wrap after
+/// the `Int` operation is the exact 32-bit answer on every backend.
+///
+/// `offs` / `verdicts` are parallel: a binop is keyed by its operator offset,
+/// a compound assignment by its target's, and a negation or `~` by
+/// `typed_negation_operand_key` of its operand. A `Conflict` verdict -- one
+/// shared body checked at two widths -- is refused, because the body is
+/// lowered once and cannot wrap both ways.
+export fn rewrite_int_wrap_stmts(stmts: Array[Stmt], offs: Array[Int], verdicts: Array[String]) -> Unit with Exception {
+  for v in verdicts {
+    if v == "Conflict" {
+      throw("one operation is computed at two integer widths (an `Int32` and a `UInt32`, from one shared generic body), and a body is compiled once, so it cannot wrap both ways -- give each width its own function")
+    } else {
+      ()
+    }
+  }
+  if Array::length(offs) > 0 {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      Array::set(stmts, at = i, value = iw_stmt(stmt = Array::get(stmts, at = i), offs = offs, verdicts = verdicts))
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+fn iw_verdict(offs: Array[Int], verdicts: Array[String], off: Int) -> String {
+  if off < 0 {
+    ""
+  } else {
+    let mut found = ""
+    let mut i = 0
+    while i < Array::length(offs) && String::length(found) == 0 {
+      if Array::get(offs, at = i) == off {
+        found = Array::get(verdicts, at = i)
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
+/// `(e << 31) >> 31`: `e` wrapped to a signed 32-bit value.
+fn iw_wrap_i32(_ e: Expr) -> Expr {
+  EBinOp(">>", EBinOp("<<", e, EInt(31), 0 - 1), EInt(31), 0 - 1)
+}
+
+/// `e & 4294967295`: `e` wrapped to an unsigned 32-bit value.
+fn iw_wrap_u32(_ e: Expr) -> Expr {
+  EBinOp("&", e, EInt(4294967295), 0 - 1)
+}
+
+/// Wrap `e` for a verdict of width `I32` / `U32`; `e` unchanged for "".
+fn iw_wrap(verdict: String, e: Expr) -> Expr {
+  if String::starts_with(verdict, prefix = "I32") {
+    iw_wrap_i32(e)
+  } else if String::starts_with(verdict, prefix = "U32") {
+    iw_wrap_u32(e)
+  } else {
+    e
+  }
+}
+
+fn iw_stmt(stmt: Stmt, offs: Array[Int], verdicts: Array[String]) -> Stmt {
+  match stmt {
+    SLet(exported, recursive, name, annotation, expr) => SLet(exported, recursive, name, annotation, iw_expr(expr = expr, offs = offs, verdicts = verdicts)),
+    SLetMut(name, annotation, expr) => SLetMut(name, annotation, iw_expr(expr = expr, offs = offs, verdicts = verdicts)),
+    STest(name, expr) => STest(name, iw_expr(expr = expr, offs = offs, verdicts = verdicts)),
+    SBench(name, expr) => SBench(name, iw_expr(expr = expr, offs = offs, verdicts = verdicts)),
+    SExample(name, expr) => SExample(name, iw_expr(expr = expr, offs = offs, verdicts = verdicts)),
+    SExpr(expr) => SExpr(iw_expr(expr = expr, offs = offs, verdicts = verdicts)),
+    SLetPat(pattern, expr) => SLetPat(pattern, iw_expr(expr = expr, offs = offs, verdicts = verdicts)),
+    SModule(exported, name, inner) => SModule(exported, name, for s in inner {
+      iw_stmt(stmt = s, offs = offs, verdicts = verdicts)
+    }),
+    SFnDecl(exported, name, expr, requires, ensures) => SFnDecl(exported, name, iw_expr(expr = expr, offs = offs, verdicts = verdicts), iw_exprs(items = requires, offs = offs, verdicts = verdicts), iw_exprs(items = ensures, offs = offs, verdicts = verdicts)),
+    _ => stmt
+  }
+}
+
+fn iw_exprs(items: Array[Expr], offs: Array[Int], verdicts: Array[String]) -> Array[Expr] {
+  for it in items {
+    iw_expr(expr = it, offs = offs, verdicts = verdicts)
+  }
+}
+
+fn iw_named(fields: Array[(String, Expr)], offs: Array[Int], verdicts: Array[String]) -> Array[(String, Expr)] {
+  for fld in fields {
+    let (n, v) = fld
+    (n, iw_expr(expr = v, offs = offs, verdicts = verdicts))
+  }
+}
+
+fn iw_arms(arms: Array[(Pat, Expr)], offs: Array[Int], verdicts: Array[String]) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, e) = a
+    (p, iw_expr(expr = e, offs = offs, verdicts = verdicts))
+  }
+}
+
+fn iw_expr(expr: Expr, offs: Array[Int], verdicts: Array[String]) -> Expr {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_, _) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    EIdent(_, _) => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(iw_exprs(items = items, offs = offs, verdicts = verdicts)),
+    EArray(items) => EArray(iw_exprs(items = items, offs = offs, verdicts = verdicts)),
+    ERecord(rn, fields, targs) => ERecord(rn, iw_named(fields = fields, offs = offs, verdicts = verdicts), targs),
+    EIf(c, t, e) => EIf(iw_expr(expr = c, offs = offs, verdicts = verdicts), iw_expr(expr = t, offs = offs, verdicts = verdicts), iw_expr(expr = e, offs = offs, verdicts = verdicts)),
+    ELet(n, v, b, soff) => ELet(n, iw_expr(expr = v, offs = offs, verdicts = verdicts), iw_expr(expr = b, offs = offs, verdicts = verdicts), soff),
+    ELetRec(n, v, b) => ELetRec(n, iw_expr(expr = v, offs = offs, verdicts = verdicts), iw_expr(expr = b, offs = offs, verdicts = verdicts)),
+    ELetMut(n, v, b, soff) => ELetMut(n, iw_expr(expr = v, offs = offs, verdicts = verdicts), iw_expr(expr = b, offs = offs, verdicts = verdicts), soff),
+    EAssign(n, v, b, target_off) => EAssign(n, iw_expr(expr = v, offs = offs, verdicts = verdicts), iw_expr(expr = b, offs = offs, verdicts = verdicts), target_off),
+    EAssignOp(n, op, v, b, target_off) => {
+      let rv = iw_expr(expr = v, offs = offs, verdicts = verdicts)
+      let rb = iw_expr(expr = b, offs = offs, verdicts = verdicts)
+      let verdict = iw_verdict(offs = offs, verdicts = verdicts, off = target_off)
+      if String::length(verdict) > 0 {
+        // `x op= v` is `x = x op v`, which is how every backend lowers it;
+        // the result is wrapped before it is stored.
+        EAssign(n, iw_wrap(verdict = verdict, e = EBinOp(op, EIdent(n, 0 - 1), rv, 0 - 1)), rb, target_off)
+      } else {
+        EAssignOp(n, op, rv, rb, target_off)
+      }
+    },
+    ESeq(a, b) => ESeq(iw_expr(expr = a, offs = offs, verdicts = verdicts), iw_expr(expr = b, offs = offs, verdicts = verdicts)),
+    EMatch(s, arms) => EMatch(iw_expr(expr = s, offs = offs, verdicts = verdicts), iw_arms(arms = arms, offs = offs, verdicts = verdicts)),
+    EHandle(s, arms) => EHandle(iw_expr(expr = s, offs = offs, verdicts = verdicts), iw_arms(arms = arms, offs = offs, verdicts = verdicts)),
+    EWhile(c, b) => EWhile(iw_expr(expr = c, offs = offs, verdicts = verdicts), iw_expr(expr = b, offs = offs, verdicts = verdicts)),
+    ELoop(params, b) => ELoop(iw_named(fields = params, offs = offs, verdicts = verdicts), iw_expr(expr = b, offs = offs, verdicts = verdicts)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, iw_expr(expr = it, offs = offs, verdicts = verdicts), iw_expr(expr = b, offs = offs, verdicts = verdicts)),
+    ECall(callee, args, off, callee_resolution) => ECall(iw_expr(expr = callee, offs = offs, verdicts = verdicts), iw_exprs(items = args, offs = offs, verdicts = verdicts), off, callee_resolution),
+    EBinOp(op, l, r, boff) => iw_wrap(verdict = iw_verdict(offs = offs, verdicts = verdicts, off = boff), e = EBinOp(op, iw_expr(expr = l, offs = offs, verdicts = verdicts), iw_expr(expr = r, offs = offs, verdicts = verdicts), boff)),
+    EUnaryOp(op, e) => {
+      // The key is read off the operand as the checker saw it.
+      let key = typed_negation_operand_key(e)
+      let verdict = iw_verdict(offs = offs, verdicts = verdicts, off = key)
+      let hit = (op == "-" && (verdict == "I32Neg" || verdict == "U32Neg")) || (op == "~" && verdict == "U32Not")
+      let rebuilt = EUnaryOp(op, iw_expr(expr = e, offs = offs, verdicts = verdicts))
+      if hit {
+        iw_wrap(verdict = verdict, e = rebuilt)
+      } else {
+        rebuilt
+      }
+    },
+    EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, iw_expr(expr = body, offs = offs, verdicts = verdicts)),
+    EDot(e, field, off, fdoff) => EDot(iw_expr(expr = e, offs = offs, verdicts = verdicts), field, off, fdoff),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, iw_expr(expr = v, offs = offs, verdicts = verdicts)),
+    EReturn(e) => EReturn(iw_expr(expr = e, offs = offs, verdicts = verdicts)),
+    EBreak(opt) => match opt {
+      Some(v) => EBreak(Some(iw_expr(expr = v, offs = offs, verdicts = verdicts))),
+      None => expr
+    },
+    EContinue(args) => EContinue(iw_exprs(items = args, offs = offs, verdicts = verdicts)),
+    EMap(fields) => EMap(iw_named(fields = fields, offs = offs, verdicts = verdicts)),
+    ESpread(e) => ESpread(iw_expr(expr = e, offs = offs, verdicts = verdicts))
+  }
+}
+
+//# Erasure
+
+/// #3730: after the wraps are in, `Int32` / `UInt32` are erased to `Int`, so
+/// no later pass and no backend ever sees them: every value already is an
+/// in-range `Int`, and `==`, `<`, rendering and hashing an `Int` give the
+/// sized answer. Every type annotation, field, payload, signature and effect
+/// row is rewritten, and so are the conversions, which become `Int`
+/// arithmetic:
+///
+/// - `Int32::to_int(x)` / `UInt32::to_int(x)` -- the value itself;
+/// - `Int::wrap_int32(x)` / `Int::wrap_uint32(x)` -- the wrap above;
+/// - `Int::to_int32(x)` / `Int::to_uint32(x)` -- `Some(x)` in range, else
+///   `None`, with `x` evaluated once;
+/// - `Int32::to_string` / `UInt32::to_string` / `*::equals` -- `Int`'s.
+///
+/// Every match here is exhaustive over the AST, so a new statement or
+/// expression form cannot be left unerased without the compiler refusing
+/// this file. An `impl` whose target is a sized integer is refused: after the
+/// erasure it would be an impl for `Int`, and nothing could tell the two
+/// apart.
+export fn erase_sized_int_stmts(_ stmts: Array[Stmt]) -> Unit with Exception {
+  let counter: Array[Int] = [0]
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::set(stmts, at = i, value = ez_stmt(stmt = Array::get(stmts, at = i), counter = counter))
+    i = i + 1
+  }
+}
+
+fn ez_name(_ n: String) -> String {
+  if n == "Int32" || n == "UInt32" {
+    "Int"
+  } else {
+    n
+  }
+}
+
+fn ez_ty(_ t: TypeExpr) -> TypeExpr {
+  match t {
+    TyName(n) => TyName(ez_name(n)),
+    TyApp(n, args) => TyApp(ez_name(n), ez_tys(args)),
+    TyFn(params, ret, row) => TyFn(ez_tys(params), ez_ty(ret), ez_opt_row(row)),
+    TyTuple(items) => TyTuple(ez_tys(items)),
+    TyUnit => TyUnit
+  }
+}
+
+fn ez_tys(_ tys: Array[TypeExpr]) -> Array[TypeExpr] {
+  for t in tys {
+    ez_ty(t)
+  }
+}
+
+fn ez_opt_ty(_ t: Option[TypeExpr]) -> Option[TypeExpr] {
+  match t {
+    Some(x) => Some(ez_ty(x)),
+    None => None
+  }
+}
+
+fn ez_ident_byte(_ b: Int) -> Bool {
+  (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
+}
+
+/// An effect row is text (`Exception[Int32] + Log`): each whole-word
+/// `Int32` / `UInt32` in it becomes `Int`.
+fn ez_row(_ text: String) -> String {
+  let out = StringBuilder::new()
+  let n = String::length(text)
+  let mut i = 0
+  while i < n {
+    if ez_ident_byte(String::byte_at(text, at = i)) {
+      let start = i
+      while i < n && ez_ident_byte(String::byte_at(text, at = i)) {
+        i = i + 1
+      }
+      StringBuilder::push(out, value = ez_name(String::substring(text, start = start, end = i)))
+    } else {
+      StringBuilder::push(out, value = String::substring(text, start = i, end = i + 1))
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(out)
+}
+
+fn ez_opt_row(_ row: Option[String]) -> Option[String] {
+  match row {
+    Some(r) => Some(ez_row(r)),
+    None => None
+  }
+}
+
+fn ez_rows(_ rows: Array[String]) -> Array[String] {
+  for r in rows {
+    ez_row(r)
+  }
+}
+
+fn ez_variants(_ variants: Array[(String, Array[TypeExpr])]) -> Array[(String, Array[TypeExpr])] {
+  for v in variants {
+    let (name, payload) = v
+    (name, ez_tys(payload))
+  }
+}
+
+fn ez_sigs(_ sigs: Array[(String, Array[TypeExpr], TypeExpr)]) -> Array[(String, Array[TypeExpr], TypeExpr)] {
+  for sg in sigs {
+    let (name, params, ret) = sg
+    (name, ez_tys(params), ez_ty(ret))
+  }
+}
+
+fn ez_bounds(_ bounds: Array[(String, Array[String])]) -> Array[(String, Array[String])] {
+  for b in bounds {
+    let (name, traits) = b
+    (name, ez_rows(traits))
+  }
+}
+
+fn ez_stmt(stmt: Stmt, counter: Array[Int]) -> Stmt with Exception {
+  match stmt {
+    SLet(exported, recursive, name, annotation, expr) => SLet(exported, recursive, name, ez_opt_ty(annotation), ez_expr(expr = expr, counter = counter)),
+    SLetMut(name, annotation, expr) => SLetMut(name, ez_opt_ty(annotation), ez_expr(expr = expr, counter = counter)),
+    SEnum(exported, name, tparams, variants, derives) => SEnum(exported, name, tparams, ez_variants(variants), derives),
+    SSuberror(exported, name, variants) => SSuberror(exported, name, ez_variants(variants)),
+    SStruct(exported, name, fields, tparams, muts, derives) => SStruct(exported, name, for f in fields {
+      let (fname, fty) = f
+      (fname, ez_ty(fty))
+    }, tparams, muts, derives),
+    STypeAlias(exported, name, tparams, ty) => STypeAlias(exported, name, tparams, ez_ty(ty)),
+    STrait(exported, name, supers, methods, gens, extra) => STrait(exported, name, supers, ez_sigs(methods), for g in gens {
+      let (gname, gparams, gbounds) = g
+      (gname, gparams, ez_bounds(gbounds))
+    }, extra),
+    SImpl(tparams, bounds, trait_name, target) => {
+      let erased = ez_ty(target)
+      if ez_ty_mentions_sized(target) {
+        throw("an `impl` for `Int32` / `UInt32` is not supported yet: the type is compiled as an `Int`, so the impl would be one for `Int` too -- write the operation as a function that takes the sized integer (#3730)")
+      } else {
+        ()
+      }
+      SImpl(tparams, ez_bounds(bounds), trait_name, erased)
+    },
+    SExternLet(name, ty) => SExternLet(name, ez_ty(ty)),
+    SImport(_, _) => stmt,
+    STest(name, expr) => STest(name, ez_expr(expr = expr, counter = counter)),
+    SBench(name, expr) => SBench(name, ez_expr(expr = expr, counter = counter)),
+    SExample(name, expr) => SExample(name, ez_expr(expr = expr, counter = counter)),
+    SExpr(expr) => SExpr(ez_expr(expr = expr, counter = counter)),
+    SExport(_) => stmt,
+    SReExport(_, _) => stmt,
+    SAliasDecl(_, _) => stmt,
+    SReExportSourceBoundary(_, _) => stmt,
+    SQualifiedPatternRefs(_) => stmt,
+    STestEffectRows(rows) => STestEffectRows(for r in rows {
+      let (n, row) = r
+      (n, ez_row(row))
+    }),
+    SPositionalParams(_) => stmt,
+    SLetPat(pattern, expr) => SLetPat(pattern, ez_expr(expr = expr, counter = counter)),
+    SModule(exported, name, inner) => SModule(exported, name, for s in inner {
+      ez_stmt(stmt = s, counter = counter)
+    }),
+    SEffectDef(exported, name, tparams, ops) => SEffectDef(exported, name, tparams, ez_sigs(ops)),
+    SEffectSet(exported, name, members) => SEffectSet(exported, name, ez_rows(members)),
+    SResource(_, _) => stmt,
+    SFnDecl(exported, name, expr, requires, ensures) => SFnDecl(exported, name, ez_expr(expr = expr, counter = counter), ez_exprs(items = requires, counter = counter), ez_exprs(items = ensures, counter = counter))
+  }
+}
+
+fn ez_ty_mentions_sized(_ t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == "Int32" || n == "UInt32",
+    TyApp(n, args) => n == "Int32" || n == "UInt32" || ez_tys_mention_sized(args),
+    TyFn(params, ret, _) => ez_tys_mention_sized(params) || ez_ty_mentions_sized(ret),
+    TyTuple(items) => ez_tys_mention_sized(items),
+    TyUnit => false
+  }
+}
+
+fn ez_tys_mention_sized(_ tys: Array[TypeExpr]) -> Bool {
+  let mut found = false
+  for t in tys {
+    if ez_ty_mentions_sized(t) {
+      found = true
+    }
+  }
+  found
+}
+
+fn ez_exprs(items: Array[Expr], counter: Array[Int]) -> Array[Expr] with Exception {
+  for it in items {
+    ez_expr(expr = it, counter = counter)
+  }
+}
+
+fn ez_named(fields: Array[(String, Expr)], counter: Array[Int]) -> Array[(String, Expr)] with Exception {
+  for fld in fields {
+    let (n, v) = fld
+    (n, ez_expr(expr = v, counter = counter))
+  }
+}
+
+fn ez_arms(arms: Array[(Pat, Expr)], counter: Array[Int]) -> Array[(Pat, Expr)] with Exception {
+  for a in arms {
+    let (p, e) = a
+    (p, ez_expr(expr = e, counter = counter))
+  }
+}
+
+/// `Some(x)` when `lo <= x <= hi`, else `None`, with `x` bound once.
+fn ez_checked(arg: Expr, lo: Int, hi: Int, counter: Array[Int]) -> Expr {
+  let k = Array::get(counter, at = 0)
+  Array::set(counter, at = 0, value = k + 1)
+  let tmp = "__sized_int_value_\{k}"
+  let v = EIdent(tmp, 0 - 1)
+  let in_range = EBinOp("&&", EBinOp(">=", v, EInt(lo), 0 - 1), EBinOp("<=", v, EInt(hi), 0 - 1), 0 - 1)
+  ELet(tmp, arg, EIf(in_range, ECall(EIdent("Some", 0 - 1), [v], 0 - 1, []), EIdent("None", 0 - 1)), 0 - 1)
+}
+
+/// The rewrite of one call to a sized-integer conversion, or `None` when the
+/// callee is not one. Any other `Int32::` / `UInt32::` member is refused.
+fn ez_conversion(callee: String, args: Array[Expr], counter: Array[Int]) -> Option[Expr] with Exception {
+  let one = Array::length(args) == 1
+  if callee == "Int32::to_int" || callee == "UInt32::to_int" {
+    if one {
+      Some(Array::get(args, at = 0))
+    } else {
+      None
+    }
+  } else if callee == "Int::wrap_int32" && one {
+    Some(iw_wrap_i32(Array::get(args, at = 0)))
+  } else if callee == "Int::wrap_uint32" && one {
+    Some(iw_wrap_u32(Array::get(args, at = 0)))
+  } else if callee == "Int::to_int32" && one {
+    Some(ez_checked(arg = Array::get(args, at = 0), lo = 0 - 2147483648, hi = 2147483647, counter = counter))
+  } else if callee == "Int::to_uint32" && one {
+    Some(ez_checked(arg = Array::get(args, at = 0), lo = 0, hi = 4294967295, counter = counter))
+  } else if callee == "Int32::to_string" || callee == "UInt32::to_string" {
+    Some(ECall(builtin_ref("Int::to_string"), args, 0 - 1, []))
+  } else if callee == "Int32::equals" || callee == "UInt32::equals" {
+    if Array::length(args) == 2 {
+      Some(EBinOp("==", Array::get(args, at = 0), Array::get(args, at = 1), 0 - 1))
+    } else {
+      None
+    }
+  } else if String::starts_with(callee, prefix = "Int32::") || String::starts_with(callee, prefix = "UInt32::") {
+    throw("`\{callee}` has no compiled form yet (#3730): convert with `Int32::to_int(x)` / `UInt32::to_int(x)` and use the `Int` operation")
+  } else {
+    None
+  }
+}
+
+fn ez_expr(expr: Expr, counter: Array[Int]) -> Expr with Exception {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_, _) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    EStringInterp(_) => expr,
+    // A conversion taken as a value (`let f = Int32::to_int`) has no
+    // compiled form: only its calls are rewritten.
+    EIdent(name, _) => if String::starts_with(name, prefix = "Int32::") || String::starts_with(name, prefix = "UInt32::") || name == "Int::to_int32" || name == "Int::to_uint32" || name == "Int::wrap_int32" || name == "Int::wrap_uint32" {
+      throw("call `\{name}(..)` directly: a sized-integer conversion cannot be passed as a value yet (#3730)")
+    } else {
+      expr
+    },
+    ETuple(items) => ETuple(ez_exprs(items = items, counter = counter)),
+    EArray(items) => EArray(ez_exprs(items = items, counter = counter)),
+    ERecord(rn, fields, targs) => ERecord(rn, ez_named(fields = fields, counter = counter), ez_tys(targs)),
+    EIf(c, t, e) => EIf(ez_expr(expr = c, counter = counter), ez_expr(expr = t, counter = counter), ez_expr(expr = e, counter = counter)),
+    ELet(n, v, b, soff) => ELet(n, ez_expr(expr = v, counter = counter), ez_expr(expr = b, counter = counter), soff),
+    ELetRec(n, v, b) => ELetRec(n, ez_expr(expr = v, counter = counter), ez_expr(expr = b, counter = counter)),
+    ELetMut(n, v, b, soff) => ELetMut(n, ez_expr(expr = v, counter = counter), ez_expr(expr = b, counter = counter), soff),
+    EAssign(n, v, b, target_off) => EAssign(n, ez_expr(expr = v, counter = counter), ez_expr(expr = b, counter = counter), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, ez_expr(expr = v, counter = counter), ez_expr(expr = b, counter = counter), target_off),
+    ESeq(a, b) => ESeq(ez_expr(expr = a, counter = counter), ez_expr(expr = b, counter = counter)),
+    EMatch(s, arms) => EMatch(ez_expr(expr = s, counter = counter), ez_arms(arms = arms, counter = counter)),
+    EHandle(s, arms) => EHandle(ez_expr(expr = s, counter = counter), ez_arms(arms = arms, counter = counter)),
+    EWhile(c, b) => EWhile(ez_expr(expr = c, counter = counter), ez_expr(expr = b, counter = counter)),
+    ELoop(params, b) => ELoop(ez_named(fields = params, counter = counter), ez_expr(expr = b, counter = counter)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, ez_expr(expr = it, counter = counter), ez_expr(expr = b, counter = counter)),
+    ECall(callee, args, off, callee_resolution) => {
+      let rargs = ez_exprs(items = args, counter = counter)
+      let converted = match callee {
+        EIdent(name, _) => ez_conversion(callee = name, args = rargs, counter = counter),
+        _ => None
+      }
+      match converted {
+        Some(e) => e,
+        None => ECall(ez_expr(expr = callee, counter = counter), rargs, off, callee_resolution)
+      }
+    },
+    EBinOp(op, l, r, boff) => EBinOp(op, ez_expr(expr = l, counter = counter), ez_expr(expr = r, counter = counter), boff),
+    EUnaryOp(op, e) => EUnaryOp(op, ez_expr(expr = e, counter = counter)),
+    EFn(tp, tb, params, ret, eff, body) => EFn(tp, ez_bounds(tb), for p in params {
+      let (pn, pty) = p
+      (pn, ez_opt_ty(pty))
+    }, ez_opt_ty(ret), ez_opt_row(eff), ez_expr(expr = body, counter = counter)),
+    EDot(e, field, off, fdoff) => EDot(ez_expr(expr = e, counter = counter), field, off, fdoff),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, ez_expr(expr = v, counter = counter)),
+    EReturn(e) => EReturn(ez_expr(expr = e, counter = counter)),
+    EBreak(opt) => match opt {
+      Some(v) => EBreak(Some(ez_expr(expr = v, counter = counter))),
+      None => expr
+    },
+    EContinue(args) => EContinue(ez_exprs(items = args, counter = counter)),
+    EMap(fields) => EMap(ez_named(fields = fields, counter = counter)),
+    ESpread(e) => ESpread(ez_expr(expr = e, counter = counter))
+  }
+}
+
+//# Lanes without rows
+
+/// #3730: the refusal a build lane WITHOUT typed rows gives a program that
+/// can hold a sized integer, for the reason `refuse_rowless_float_program`
+/// gives one for a `Float32`: with no rows the wraps cannot be placed, and the
+/// arithmetic would be the 63-bit `Int`'s -- silently not the declared width.
+export fn refuse_rowless_sized_int_program(_ stmts: Array[Stmt]) -> Unit with Exception {
+  if program_mentions_sized_int(stmts) {
+    throw("build without `--debug`: this linked build has no type check of the exact text it compiles, so it cannot wrap `Int32` / `UInt32` arithmetic to 32 bits (#3730); the default build, `vibe run` and `vibe test` can")
+  } else {
+    ()
+  }
+}
+
+/// Whether `stmts` spell `Int32` / `UInt32` in a type, or call a sized
+/// conversion.
+export fn program_mentions_sized_int(_ stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  for s in stmts {
+    if !found && ez_stmt_mentions(s) {
+      found = true
+    }
+  }
+  found
+}
+
+fn ez_stmt_mentions(_ stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, ty, body) => ez_opt_ty_mentions(ty) || ez_expr_mentions(body),
+    SLetMut(_, ty, body) => ez_opt_ty_mentions(ty) || ez_expr_mentions(body),
+    SLetPat(_, body) => ez_expr_mentions(body),
+    STest(_, body) => ez_expr_mentions(body),
+    SBench(_, body) => ez_expr_mentions(body),
+    SExample(_, body) => ez_expr_mentions(body),
+    SExpr(body) => ez_expr_mentions(body),
+    SFnDecl(_, _, body, _, _) => ez_expr_mentions(body),
+    SStruct(_, _, fields, _, _, _) => {
+      let mut found = false
+      for f in fields {
+        let (_, fty) = f
+        if ez_ty_mentions_sized(fty) {
+          found = true
+        }
+      }
+      found
+    },
+    SEnum(_, _, _, variants, _) => ez_variants_mention(variants),
+    SSuberror(_, _, variants) => ez_variants_mention(variants),
+    STypeAlias(_, _, _, ty) => ez_ty_mentions_sized(ty),
+    STrait(_, _, _, methods, _, _) => ez_sigs_mention(methods),
+    SEffectDef(_, _, _, ops) => ez_sigs_mention(ops),
+    SImpl(_, _, _, target) => ez_ty_mentions_sized(target),
+    SExternLet(_, ty) => ez_ty_mentions_sized(ty),
+    SModule(_, _, inner) => program_mentions_sized_int(inner),
+    _ => false
+  }
+}
+
+fn ez_variants_mention(_ variants: Array[(String, Array[TypeExpr])]) -> Bool {
+  let mut found = false
+  for v in variants {
+    let (_, payload) = v
+    if ez_tys_mention_sized(payload) {
+      found = true
+    }
+  }
+  found
+}
+
+fn ez_sigs_mention(_ sigs: Array[(String, Array[TypeExpr], TypeExpr)]) -> Bool {
+  let mut found = false
+  for sg in sigs {
+    let (_, params, ret) = sg
+    if ez_tys_mention_sized(params) || ez_ty_mentions_sized(ret) {
+      found = true
+    }
+  }
+  found
+}
+
+fn ez_opt_ty_mentions(_ t: Option[TypeExpr]) -> Bool {
+  match t {
+    Some(x) => ez_ty_mentions_sized(x),
+    None => false
+  }
+}
+
+fn ez_expr_mentions(_ e: Expr) -> Bool {
+  match e {
+    EIdent(name, _) => String::starts_with(name, prefix = "Int32::") || String::starts_with(name, prefix = "UInt32::") || name == "Int::to_int32" || name == "Int::to_uint32" || name == "Int::wrap_int32" || name == "Int::wrap_uint32",
+    EFn(_, _, params, ret, _, body) => {
+      let mut found = ez_opt_ty_mentions(ret) || ez_expr_mentions(body)
+      for p in params {
+        let (_, pty) = p
+        if ez_opt_ty_mentions(pty) {
+          found = true
+        }
+      }
+      found
+    },
+    ERecord(_, fields, targs) => {
+      let mut found = ez_tys_mention_sized(targs)
+      for f in fields {
+        let (_, v) = f
+        if ez_expr_mentions(v) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => {
+      let mut found = false
+      for c in ez_children(e) {
+        if !found && ez_expr_mentions(c) {
+          found = true
+        }
+      }
+      found
+    }
+  }
+}
+
+fn ez_children(_ e: Expr) -> Array[Expr] {
+  match e {
+    ETuple(items) => items,
+    EArray(items) => items,
+    EIf(c, t, f) => [c, t, f],
+    ELet(_, v, b, _) => [v, b],
+    ELetRec(_, v, b) => [v, b],
+    ELetMut(_, v, b, _) => [v, b],
+    EAssign(_, v, b, _) => [v, b],
+    EAssignOp(_, _, v, b, _) => [v, b],
+    ESeq(a, b) => [a, b],
+    EMatch(s, arms) => {
+      let out = [s]
+      for a in arms {
+        let (_, body) = a
+        Array::push(out, value = body)
+      }
+      out
+    },
+    EHandle(s, arms) => {
+      let out = [s]
+      for a in arms {
+        let (_, body) = a
+        Array::push(out, value = body)
+      }
+      out
+    },
+    EWhile(c, b) => [c, b],
+    ELoop(params, b) => {
+      let out = [b]
+      for p in params {
+        let (_, v) = p
+        Array::push(out, value = v)
+      }
+      out
+    },
+    EForIn(_, _, it, b) => [it, b],
+    ECall(callee, args, _, _) => {
+      let out = [callee]
+      for a in args {
+        Array::push(out, value = a)
+      }
+      out
+    },
+    EBinOp(_, l, r, _) => [l, r],
+    EUnaryOp(_, x) => [x],
+    EDot(x, _, _, _) => [x],
+    ELabeledArg(_, _, v) => [v],
+    EReturn(x) => [x],
+    EBreak(opt) => match opt {
+      Some(v) => [v],
+      None => []
+    },
+    EContinue(args) => args,
+    EMap(fields) => for f in fields {
+      let (_, v) = f
+      v
+    },
+    ESpread(x) => [x],
+    _ => []
+  }
+}
