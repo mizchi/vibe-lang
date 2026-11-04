@@ -48,7 +48,7 @@ import @vibe/compiler/entry/compiler/file_compile {
 // `ordinary_lane_closure_admits` answers `false` for a path it cannot resolve
 // uniquely, so a typo would otherwise read as "correctly excluded".
 
-fn rx_paths(tag: String) -> (String, String, String, String, String) {
+fn rx_paths(_ tag: String) -> (String, String, String, String, String) {
   let priv_p = String::concat("/tmp/vibe_rxx_priv_", String::concat(tag, ".vibe"))
   let mid_p = String::concat("/tmp/vibe_rxx_mid_", String::concat(tag, ".vibe"))
   let leaf_p = String::concat("/tmp/vibe_rxx_leaf_", String::concat(tag, ".vibe"))
@@ -58,10 +58,10 @@ fn rx_paths(tag: String) -> (String, String, String, String, String) {
 }
 
 /// Writes the five-module program and returns the entry path.
-fn write_three_shape_program(tag: String) -> String with Exception + Fs {
+fn write_three_shape_program(_ tag: String) -> String with Exception + Fs {
   let (priv_p, mid_p, leaf_p, facade_p, main_p) = rx_paths(tag)
-  Fs::write_file(priv_p, "export fn secret_add(a: Int, b: Int) -> Int {\n  a + b\n}\n")
-  Fs::write_file(mid_p, String::concat("import ./vibe_rxx_priv_", String::concat(tag, ".vibe {\n  secret_add\n}\n\nexport fn via_mid(n: Int) -> Int {\n  secret_add(n, 1)\n}\n")))
+  Fs::write_file(priv_p, contents = "export fn secret_add(a: Int, b: Int) -> Int {\n  a + b\n}\n")
+  Fs::write_file(mid_p, contents = String::concat("import ./vibe_rxx_priv_", String::concat(tag, ".vibe {\n  secret_add\n}\n\nexport fn via_mid(n: Int) -> Int {\n  secret_add(n, 1)\n}\n")))
   // The bounded generic is the third shape the issue asks for: `apply_dbl` is
   // rewritten to take a witness dictionary, and the CALLER adds that argument
   // only when the trait is in scope. `main` reaches `Doubler` ONLY across the
@@ -69,11 +69,11 @@ fn write_three_shape_program(tag: String) -> String with Exception + Fs {
   // decorative -- a closure that drops it leaves `main` lowering a call into a
   // trait it cannot see. See the header for why that is asserted on the
   // closure's shape here and not on bytes.
-  Fs::write_file(leaf_p, "export trait Doubler {\n  dbl(Self) -> Int\n}\n\nexport struct Box {\n  v: Int\n}\n\nimpl Doubler for Box {\n  dbl(b: Box) -> Int {\n    b.v * 2\n  }\n}\n\nexport fn apply_dbl[T: Doubler](x: T) -> Int {\n  T::dbl(x)\n}\n")
-  Fs::write_file(facade_p, String::concat("export ./vibe_rxx_leaf_", String::concat(tag, ".vibe {\n  Doubler, Box, apply_dbl\n}\n")))
+  Fs::write_file(leaf_p, contents = "export trait Doubler {\n  dbl(Self) -> Int\n}\n\nexport struct Box {\n  v: Int\n}\n\nimpl Doubler for Box {\n  dbl(b: Box) -> Int {\n    b.v * 2\n  }\n}\n\nexport fn apply_dbl[T: Doubler](x: T) -> Int {\n  T::dbl(x)\n}\n")
+  Fs::write_file(facade_p, contents = String::concat("export ./vibe_rxx_leaf_", String::concat(tag, ".vibe {\n  Doubler, Box, apply_dbl\n}\n")))
   let main_tail = String::concat(tag, ".vibe {\n  Doubler, Box, apply_dbl\n}\n\nfn main() -> Int {\n  apply_dbl(Box::{ v: via_mid(20) })\n}\n")
   let main_mid = String::concat(".vibe {\n  via_mid\n}\n\nimport ./vibe_rxx_facade_", main_tail)
-  Fs::write_file(main_p, String::concat("import ./vibe_rxx_mid_", String::concat(tag, main_mid)))
+  Fs::write_file(main_p, contents = String::concat("import ./vibe_rxx_mid_", String::concat(tag, main_mid)))
   main_p
 }
 
@@ -89,13 +89,13 @@ test "2658: the closure admits a re-exported module and excludes a private one" 
   inspect(mapped > 0, content = "true")
   // The contract, stated as membership so the two errors cannot cancel.
   // ADMITTED: `leaf` reaches `main` only across `facade`'s re-export edge.
-  inspect(ordinary_lane_closure_admits(entry, "main_edges.vibe", "leaf_edges.vibe"), content = "true")
+  inspect(ordinary_lane_closure_admits(entry_path = entry, owner = "main_edges.vibe", member = "leaf_edges.vibe"), content = "true")
   // EXCLUDED: `priv` reaches `mid` by a PRIVATE import, so it must not reach
   // `main`. The row below pins that both names resolve, so this `false` is a
   // real exclusion and not an unresolved lookup.
-  inspect(ordinary_lane_closure_admits(entry, "main_edges.vibe", "priv_edges.vibe"), content = "false")
-  inspect(ordinary_lane_closure_admits(entry, "mid_edges.vibe", "priv_edges.vibe"), content = "true")
-  inspect(ordinary_lane_closure_admits(entry, "main_edges.vibe", "facade_edges.vibe"), content = "true")
+  inspect(ordinary_lane_closure_admits(entry_path = entry, owner = "main_edges.vibe", member = "priv_edges.vibe"), content = "false")
+  inspect(ordinary_lane_closure_admits(entry_path = entry, owner = "mid_edges.vibe", member = "priv_edges.vibe"), content = "true")
+  inspect(ordinary_lane_closure_admits(entry_path = entry, owner = "main_edges.vibe", member = "facade_edges.vibe"), content = "true")
   // Coarse cross-check only -- see the header for why this cannot stand alone.
   inspect(ordinary_lane_closure_edges(entry), content = "5")
 }

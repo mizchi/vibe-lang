@@ -232,7 +232,7 @@ import ./compile_match.vibe {
 /// `cc_is_ref_cell_read`.
 fn cet2_is_ref_cell_read(e: Expr, ctx: CompileCtx) -> Bool {
   match e {
-    EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n),
+    EIdent(n, _) => array_contains_str(arr = ctx.ref_cell_names, s = n),
     _ => false
   }
 }
@@ -243,7 +243,7 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
     let __tuple_elems = get_etuple_elems(expr)
     let num_elems = Array::length(__tuple_elems)
     let ptr_local = next_local
-    Array::push(local_names, "__tuple_ptr")
+    Array::push(local_names, value = "__tuple_ptr")
     let mut nl = next_local + 1
     if ctx.enable_rc {
       // RC layout (docs/internal/design/uniform-value-repr.md):
@@ -256,42 +256,42 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
       // ADR-0055 Stage 4: allocate via the free-list search helper (vibe_rc_alloc) —
       // exact-fit reuse anywhere in the list, else bump. Replaces the inline
       // head-only check, which fragmented when interleaved sizes were freed.
-      emit_i64_const(buf, total)
-      emit_call(buf, ctx.rc_alloc_func_idx)
-      emit_local_set(buf, ptr_local)
+      emit_i64_const(buf = buf, value = total)
+      emit_call(buf = buf, func_idx = ctx.rc_alloc_func_idx)
+      emit_local_set(buf = buf, idx = ptr_local)
       // header words at block_start
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, total)
-      emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, ptr_local)
+      emit_i32_const(buf = buf, value = total)
+      emit_i32_store(buf = buf, align = 2, offset = 0)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 1)
-      emit_i32_store(buf, 2, 4)
+      emit_i32_const(buf = buf, value = 1)
+      emit_i32_store(buf = buf, align = 2, offset = 4)
       // ADR-0055 Stage 2c/3: uniform drop-class byte in the rc_count word's high
       // byte (block+7 = value-1). rc stays in the low 24 bits, so dec (full-word
       // -1) and the `*256 == 0` zero-test ignore this byte. 1 = field-vector
       // ([?@value+0][count@value+4][fields@value+8+i*8]) — the generic recursive
       // rc_drop loops `count` fields. (docs/internal/design/uniform-value-repr.md)
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 1)
-      emit_i32_store8(buf, 0, 7)
-      emit_local_get(buf, ptr_local)
+      emit_i32_const(buf = buf, value = 1)
+      emit_i32_store8(buf = buf, align = 0, offset = 7)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 3)
-      emit_i32_store(buf, 2, 8)
-      emit_local_get(buf, ptr_local)
+      emit_i32_const(buf = buf, value = 3)
+      emit_i32_store(buf = buf, align = 2, offset = 8)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, num_elems)
-      emit_i32_store(buf, 2, 12)
+      emit_i32_const(buf = buf, value = num_elems)
+      emit_i32_store(buf = buf, align = 2, offset = 12)
       let mut tri = 0
       while tri < num_elems {
-        let __tup_elem = Array::get(__tuple_elems, tri)
+        let __tup_elem = Array::get(__tuple_elems, at = tri)
         nl = compile_expr(buf, __tup_elem, local_names, nl, ctx, ld)
         let __tup_val_local = nl
-        Array::push(local_names, "__tup_val")
-        emit_local_set(buf, __tup_val_local)
+        Array::push(local_names, value = "__tup_val")
+        emit_local_set(buf = buf, idx = __tup_val_local)
         nl = nl + 1
         // #715: a tuple element sourced from a field projection (`a.f`) or a
         // borrow-returning call (Array::get/Map::get/__rec_field/a user
@@ -312,49 +312,49 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
         // at (checker.vibe's `(pt2, s1, c1)` in check_expr's EFn param loop
         // -- the `enum Shape { Circle }` / `(Int) -> Int` one-line repros'
         // confirmed UAF site).
-        let __tup_is_proj = cc_is_borrowed_projection(__tup_elem, ctx)
-        if ctx.enable_rc && (__tup_is_proj || cet2_is_ref_cell_read(__tup_elem, ctx) || cc_is_borrow_ret_call(__tup_elem, ctx) || cc_is_loop_borrowed_ident(__tup_elem, ctx)) {
-          emit_rc_dup_guarded(buf, __tup_val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        let __tup_is_proj = cc_is_borrowed_projection(e = __tup_elem, ctx = ctx)
+        if ctx.enable_rc && (__tup_is_proj || cet2_is_ref_cell_read(e = __tup_elem, ctx = ctx) || cc_is_borrow_ret_call(e = __tup_elem, ctx = ctx) || cc_is_loop_borrowed_ident(e = __tup_elem, ctx = ctx)) {
+          emit_rc_dup_guarded(buf = buf, local_idx = __tup_val_local, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
         } else {
           ()
         }
-        emit_local_get(buf, ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_local_get(buf, __tup_val_local)
-        emit_i64_store(buf, 3, 16 + tri * 8)
+        emit_local_get(buf = buf, idx = __tup_val_local)
+        emit_i64_store(buf = buf, align = 3, offset = 16 + tri * 8)
         tri = tri + 1
       }
       // tuple value = (block_start + 8) | 1 (ADR-0055 Stage 2: all heap pointers
       // are odd so a generic recursive rc_drop can classify fields by `& 1`).
-      emit_local_get(buf, ptr_local)
-      emit_i64_const(buf, 8)
+      emit_local_get(buf = buf, idx = ptr_local)
+      emit_i64_const(buf = buf, value = 8)
       emit_i64_add(buf)
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_or(buf)
       nl
     } else {
       let alloc_size = num_elems * 8
-      emit_global_get(buf, 0)
+      emit_global_get(buf = buf, idx = 0)
       emit_i64_extend_i32_u(buf)
-      emit_local_tee(buf, ptr_local)
+      emit_local_tee(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, alloc_size)
+      emit_i32_const(buf = buf, value = alloc_size)
       emit_i32_add(buf)
-      emit_global_set(buf, 0)
-      emit_heap_grow_after_heap_set(buf, ctx)
+      emit_global_set(buf = buf, idx = 0)
+      emit_heap_grow_after_heap_set(buf = buf, ctx = ctx)
       let mut ti = 0
       while ti < num_elems {
-        emit_local_get(buf, ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        nl = compile_expr(buf, Array::get(__tuple_elems, ti), local_names, nl, ctx, ld)
-        emit_i64_store(buf, 3, ti * 8)
+        nl = compile_expr(buf, Array::get(__tuple_elems, at = ti), local_names, nl, ctx, ld)
+        emit_i64_store(buf = buf, align = 3, offset = ti * 8)
         ti = ti + 1
       }
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       nl
     }
   } else if __tag == 16 {
-    compile_match(buf, expr, local_names, next_local, ctx, ld, compile_expr)
+    compile_match(buf = buf, expr = expr, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, ce = compile_expr)
   } else if __tag == 17 {
     let elems = get_earray_elems(expr)
     let n_elems = Array::length(elems)
@@ -375,53 +375,53 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
       }
       let total = 20 + cap * 8
       let ptr_local = next_local
-      Array::push(local_names, "__arr_ptr")
+      Array::push(local_names, value = "__arr_ptr")
       let mut nl = next_local + 1
       // ADR-0055 Stage 4: allocate via the free-list search helper (vibe_rc_alloc).
-      emit_i64_const(buf, total)
-      emit_call(buf, ctx.rc_alloc_func_idx)
-      emit_local_set(buf, ptr_local)
+      emit_i64_const(buf = buf, value = total)
+      emit_call(buf = buf, func_idx = ctx.rc_alloc_func_idx)
+      emit_local_set(buf = buf, idx = ptr_local)
       // header at block_start
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, total)
-      emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, ptr_local)
+      emit_i32_const(buf = buf, value = total)
+      emit_i32_store(buf = buf, align = 2, offset = 0)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 1)
-      emit_i32_store(buf, 2, 4)
+      emit_i32_const(buf = buf, value = 1)
+      emit_i32_store(buf = buf, align = 2, offset = 4)
       // ADR-0055 Stage 2c/3: drop-class byte (block+7). 5 = array — value+0 is
       // capacity (not a count) and elements live behind data_ptr@value+8, so the
       // recursive rc_drop must use the array path, not the field-vector loop.
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 5)
-      emit_i32_store8(buf, 0, 7)
+      emit_i32_const(buf = buf, value = 5)
+      emit_i32_store8(buf = buf, align = 0, offset = 7)
       // array object at block_start+8 = value: capacity, length, data_ptr
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, cap)
-      emit_i32_store(buf, 2, 8)
-      emit_local_get(buf, ptr_local)
+      emit_i32_const(buf = buf, value = cap)
+      emit_i32_store(buf = buf, align = 2, offset = 8)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, n_elems)
-      emit_i32_store(buf, 2, 12)
+      emit_i32_const(buf = buf, value = n_elems)
+      emit_i32_store(buf = buf, align = 2, offset = 12)
       // data_ptr = value + 12 = block_start + 20 (inline buffer)
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 20)
+      emit_i32_const(buf = buf, value = 20)
       emit_i32_add(buf)
-      emit_i32_store(buf, 2, 16)
+      emit_i32_store(buf = buf, align = 2, offset = 16)
       // store elements at block_start + 20 + i*8
       let mut ai = 0
       while ai < n_elems {
-        let __arr_elem = Array::get(elems, ai)
+        let __arr_elem = Array::get(elems, at = ai)
         nl = compile_expr(buf, __arr_elem, local_names, nl, ctx, ld)
         let __arr_val_local = nl
-        Array::push(local_names, "__arr_val")
-        emit_local_set(buf, __arr_val_local)
+        Array::push(local_names, value = "__arr_val")
+        emit_local_set(buf = buf, idx = __arr_val_local)
         nl = nl + 1
         // #715: an array-literal element sourced from a projection, a
         // borrow-returning call, or a borrow-bound/loop-borrowed bare ident
@@ -429,47 +429,47 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
         // (drop class 5 recurses), so retain it or the source's drop frees
         // the block this array still points at. Same gap/fix as the ETuple
         // case above (see its comment).
-        let __arr_is_proj = cc_is_borrowed_projection(__arr_elem, ctx)
-        if __arr_is_proj || (ctx.enable_rc && cet2_is_ref_cell_read(__arr_elem, ctx)) || cc_is_borrow_ret_call(__arr_elem, ctx) || cc_is_loop_borrowed_ident(__arr_elem, ctx) {
-          emit_rc_dup_guarded(buf, __arr_val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        let __arr_is_proj = cc_is_borrowed_projection(e = __arr_elem, ctx = ctx)
+        if __arr_is_proj || (ctx.enable_rc && cet2_is_ref_cell_read(e = __arr_elem, ctx = ctx)) || cc_is_borrow_ret_call(e = __arr_elem, ctx = ctx) || cc_is_loop_borrowed_ident(e = __arr_elem, ctx = ctx) {
+          emit_rc_dup_guarded(buf = buf, local_idx = __arr_val_local, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
         } else {
           ()
         }
-        emit_local_get(buf, ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_local_get(buf, __arr_val_local)
-        emit_i64_store(buf, 3, 20 + ai * 8)
+        emit_local_get(buf = buf, idx = __arr_val_local)
+        emit_i64_store(buf = buf, align = 3, offset = 20 + ai * 8)
         ai = ai + 1
       }
       // array value = (block_start + 8) | 1 (ADR-0055 Stage 2b: odd heap pointer)
-      emit_local_get(buf, ptr_local)
-      emit_i64_const(buf, 8)
+      emit_local_get(buf = buf, idx = ptr_local)
+      emit_i64_const(buf = buf, value = 8)
       emit_i64_add(buf)
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_or(buf)
       nl
     } else {
-      let (arr_new_idx, _, _) = resolve_func(ctx.func_table, "array_new")
-      let (arr_push_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+      let (arr_new_idx, _, _) = resolve_func(ft = ctx.func_table, name = "array_new")
+      let (arr_push_idx, _, _) = resolve_func(ft = ctx.func_table, name = "Array::push")
       let arr_local = next_local
-      emit_call(buf, arr_new_idx)
-      emit_local_set(buf, arr_local)
-      Array::push(local_names, "__arr_lit")
+      emit_call(buf = buf, func_idx = arr_new_idx)
+      emit_local_set(buf = buf, idx = arr_local)
+      Array::push(local_names, value = "__arr_lit")
       let mut nl = next_local + 1
       let mut ei = 0
       while ei < Array::length(elems) {
-        emit_local_get(buf, arr_local)
-        nl = compile_expr(buf, Array::get(elems, ei), local_names, nl, ctx, ld)
-        emit_call(buf, arr_push_idx)
+        emit_local_get(buf = buf, idx = arr_local)
+        nl = compile_expr(buf, Array::get(elems, at = ei), local_names, nl, ctx, ld)
+        emit_call(buf = buf, func_idx = arr_push_idx)
         ei = ei + 1
       }
-      emit_local_get(buf, arr_local)
+      emit_local_get(buf = buf, idx = arr_local)
       nl
     }
   } else if __tag == 18 {
-    compile_forin_loop(buf, expr, local_names, next_local, ctx, ld, compile_expr, true)
+    compile_forin_loop(buf = buf, expr = expr, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, compile_expr = compile_expr, collect = true)
   } else {
-    compile_expr_tail3(buf, expr, local_names, next_local, ctx, ld, compile_expr)
+    compile_expr_tail3(buf = buf, expr = expr, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, compile_expr = compile_expr)
   }
 }
 
@@ -496,30 +496,30 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   if ctx.enable_rc {
     let mut lbi = 0
     while lbi < names_len_at_forin {
-      Array::push(ctx.loop_borrowed_names, Array::get(local_names, lbi))
+      Array::push(ctx.loop_borrowed_names, value = Array::get(local_names, at = lbi))
       lbi = lbi + 1
     }
   } else {
     ()
   }
-  let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
-  let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
-  let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
-  let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+  let (arr_new_fi, _, _) = resolve_func(ft = ctx.func_table, name = "array_new")
+  let (arr_len_fi, _, _) = resolve_func(ft = ctx.func_table, name = "Array::length")
+  let (arr_get_fi, _, _) = resolve_func(ft = ctx.func_table, name = "Array::get")
+  let (arr_push_fi, _, _) = resolve_func(ft = ctx.func_table, name = "Array::push")
   let result_local = next_local
   let arr_local = next_local + 1
   let i_local = next_local + 2
-  Array::push(local_names, "__forin_res")
-  Array::push(local_names, "__forin_arr")
-  Array::push(local_names, "__forin_i")
+  Array::push(local_names, value = "__forin_res")
+  Array::push(local_names, value = "__forin_arr")
+  Array::push(local_names, value = "__forin_i")
   if collect {
-    emit_call(buf, arr_new_fi)
+    emit_call(buf = buf, func_idx = arr_new_fi)
   } else {
-    emit_i64_const(buf, 0)
+    emit_i64_const(buf = buf, value = 0)
   }
-  emit_local_set(buf, result_local)
+  emit_local_set(buf = buf, idx = result_local)
   let nl1pre = compile_expr(buf, iter_expr, local_names, next_local + 3, ctx, ld)
-  emit_local_set(buf, arr_local)
+  emit_local_set(buf = buf, idx = arr_local)
   // #807: for-in over a String silently iterated zero times — the loop
   // below reads `Array::length` from the value, but a String is an
   // `(offset << 32) | length` fat pointer, not an array pointer. Array
@@ -533,76 +533,76 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   // shift never sign-extends. Under RC the materialized array is released
   // after the loop (below); its slot is cleared first, because an enclosing
   // loop runs this code again and a stale value would be released twice.
-  let (str_len_fi, _, _) = resolve_func(ctx.func_table, "String::length")
-  let (str_ccat_fi, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
+  let (str_len_fi, _, _) = resolve_func(ft = ctx.func_table, name = "String::length")
+  let (str_ccat_fi, _, _) = resolve_func(ft = ctx.func_table, name = "String::char_code_at")
   let conv_local = nl1pre
   let j_local = nl1pre + 1
-  Array::push(local_names, "__forin_conv")
-  Array::push(local_names, "__forin_j")
+  Array::push(local_names, value = "__forin_conv")
+  Array::push(local_names, value = "__forin_j")
   let nl1 = nl1pre + 2
-  emit_i64_const(buf, 0)
-  emit_local_set(buf, conv_local)
-  emit_local_get(buf, arr_local)
-  emit_i64_const(buf, 32)
+  emit_i64_const(buf = buf, value = 0)
+  emit_local_set(buf = buf, idx = conv_local)
+  emit_local_get(buf = buf, idx = arr_local)
+  emit_i64_const(buf = buf, value = 32)
   emit_i64_shr_s(buf)
   emit_i64_eqz(buf)
   emit_if_void(buf)
   emit_else(buf)
-  emit_call(buf, arr_new_fi)
-  emit_local_set(buf, conv_local)
-  emit_i64_const(buf, 0)
-  emit_local_set(buf, j_local)
+  emit_call(buf = buf, func_idx = arr_new_fi)
+  emit_local_set(buf = buf, idx = conv_local)
+  emit_i64_const(buf = buf, value = 0)
+  emit_local_set(buf = buf, idx = j_local)
   emit_block_void(buf)
   emit_loop_void(buf)
-  emit_local_get(buf, j_local)
-  emit_local_get(buf, arr_local)
-  emit_call(buf, str_len_fi)
+  emit_local_get(buf = buf, idx = j_local)
+  emit_local_get(buf = buf, idx = arr_local)
+  emit_call(buf = buf, func_idx = str_len_fi)
   if ctx.enable_rc {
-    emit_i64_const(buf, 1)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_shr_s(buf)
   } else {
     ()
   }
   emit_i64_ge_s(buf)
-  emit_br_if(buf, 1)
-  emit_local_get(buf, conv_local)
-  emit_local_get(buf, arr_local)
-  emit_local_get(buf, j_local)
+  emit_br_if(buf = buf, label = 1)
+  emit_local_get(buf = buf, idx = conv_local)
+  emit_local_get(buf = buf, idx = arr_local)
+  emit_local_get(buf = buf, idx = j_local)
   if ctx.enable_rc {
-    emit_i64_const(buf, 1)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_shl(buf)
   } else {
     ()
   }
-  emit_call(buf, str_ccat_fi)
-  emit_call(buf, arr_push_fi)
-  emit_local_get(buf, j_local)
-  emit_i64_const(buf, 1)
+  emit_call(buf = buf, func_idx = str_ccat_fi)
+  emit_call(buf = buf, func_idx = arr_push_fi)
+  emit_local_get(buf = buf, idx = j_local)
+  emit_i64_const(buf = buf, value = 1)
   emit_i64_add(buf)
-  emit_local_set(buf, j_local)
-  emit_br(buf, 0)
+  emit_local_set(buf = buf, idx = j_local)
+  emit_br(buf = buf, label = 0)
   emit_end(buf)
   emit_end(buf)
-  emit_local_get(buf, conv_local)
-  emit_local_set(buf, arr_local)
+  emit_local_get(buf = buf, idx = conv_local)
+  emit_local_set(buf = buf, idx = arr_local)
   emit_end(buf)
-  emit_i64_const(buf, 0)
-  emit_local_set(buf, i_local)
+  emit_i64_const(buf = buf, value = 0)
+  emit_local_set(buf = buf, idx = i_local)
   emit_block_void(buf)
   emit_loop_void(buf)
-  emit_local_get(buf, i_local)
-  emit_local_get(buf, arr_local)
-  emit_call(buf, arr_len_fi)
+  emit_local_get(buf = buf, idx = i_local)
+  emit_local_get(buf = buf, idx = arr_local)
+  emit_call(buf = buf, func_idx = arr_len_fi)
   // `i_local` is a raw counter (init 0, step 1). Under RC `Array::length`
   // returns a tagged Int (`len << 1`), so untag it to compare against the raw
   // counter — otherwise the loop runs twice per element (#704). The index is
   // re-tagged at the `Array::get` site below.
   if ctx.enable_rc {
-    emit_i64_const(buf, 1)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_shr_s(buf)
   }
   emit_i64_ge_s(buf)
-  emit_br_if(buf, 1)
+  emit_br_if(buf = buf, label = 1)
   // Indexed `for i, x in arr`: bind the loop counter to the user index name
   // before the value var (gc backend parity — backend_expr.vibe). The counter
   // `i_local` is a raw i64; under RC ints are `value << 1`, so shift to match
@@ -610,28 +610,28 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   let index_name = get_eforin_index(expr)
   let var_local = match index_name {
     Some(idx_name) => {
-      emit_local_get(buf, i_local)
+      emit_local_get(buf = buf, idx = i_local)
       if ctx.enable_rc {
-        emit_i64_const(buf, 1)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_shl(buf)
       }
-      emit_local_set(buf, nl1)
-      Array::push(local_names, idx_name)
+      emit_local_set(buf = buf, idx = nl1)
+      Array::push(local_names, value = idx_name)
       nl1 + 1
     },
     None => nl1
   }
-  emit_local_get(buf, arr_local)
-  emit_local_get(buf, i_local)
+  emit_local_get(buf = buf, idx = arr_local)
+  emit_local_get(buf = buf, idx = i_local)
   // Re-tag the raw counter to a vibe Int (`i << 1`) so `Array::get` (which
   // untags its index under RC) reads the correct element (#704).
   if ctx.enable_rc {
-    emit_i64_const(buf, 1)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_shl(buf)
   }
-  emit_call(buf, arr_get_fi)
-  emit_local_set(buf, var_local)
-  Array::push(local_names, var_name)
+  emit_call(buf = buf, func_idx = arr_get_fi)
+  emit_local_set(buf = buf, idx = var_local)
+  Array::push(local_names, value = var_name)
   // #715: `var_name` is bound to `Array::get(arr, i)`'s result every
   // iteration -- a BORROWED view into `arr_local`, exactly like a
   // hand-written `let var_name = Array::get(arr, i)` (compile_expr_tail.vibe's
@@ -648,22 +648,22 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   // missing dup; the existing `Array::truncate(ctx.loop_borrowed_names, lb_base)`
   // below already restores the outer state since this push lands after lb_base.
   if ctx.enable_rc {
-    Array::push(ctx.loop_borrowed_names, var_name)
+    Array::push(ctx.loop_borrowed_names, value = var_name)
   } else {
     ()
   }
   // #1967: step the index before the body. `continue` is `br` to this
   // loop header (`ld = 0`). If the increment stayed after the body, an
   // even-element `continue` retried the same `i` forever.
-  emit_local_get(buf, i_local)
-  emit_i64_const(buf, 1)
+  emit_local_get(buf = buf, idx = i_local)
+  emit_i64_const(buf = buf, value = 1)
   emit_i64_add(buf)
-  emit_local_set(buf, i_local)
+  emit_local_set(buf = buf, idx = i_local)
   let nl2 = var_local + 1
   // Same innermost-loop ld reset as EWhile (see compile_expr_tail3).
   // #3141: and the same loop-body boundary for `break` / `continue`.
   let xmark = Array::length(ctx.rc_exit_stack_names)
-  rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, "", 100, 0 - 1, 0 - 1)
+  rc_exit_push(names = ctx.rc_exit_stack_names, info = ctx.rc_exit_stack_info, name = "", kind = 100, local = 0 - 1, flag = 0 - 1)
   // A collected `for` owns every value it pushes, and the top-node retain
   // below reads only a body that IS a view. A view handed back through a
   // branch, a block or an assignment's continuation (`for x in xs { if c {
@@ -671,36 +671,36 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   // element with the iterable, and releasing the iterable freed it. Retain
   // each view tail of a compound body (the result spine `rs_map` walks).
   let body_c = if collect && ctx.enable_rc {
-    cc_retain_view_tails_unlogged(body, local_names, ctx)
+    cc_retain_view_tails_unlogged(e = body, local_names = local_names, ctx = ctx)
   } else {
     body
   }
   let nl3 = compile_expr(buf, body_c, local_names, nl2, ctx, 0)
-  rc_exit_truncate(ctx, xmark)
+  rc_exit_truncate(ctx = ctx, mark = xmark)
   let body_val = nl3
-  Array::push(local_names, "__forin_val")
+  Array::push(local_names, value = "__forin_val")
   if collect {
-    emit_local_set(buf, body_val)
+    emit_local_set(buf = buf, idx = body_val)
     // A collected `for` owns every value pushed into its result. The element
     // binding (and any projection or borrow-returning read of it) is a view
     // into the iterable, whose own scope-end drop still runs after the loop.
     // Match the ownership transfer at array-literal element stores above.
-    let body_is_proj = cc_is_borrowed_projection(body, ctx)
-    if ctx.enable_rc && (body_is_proj || cet2_is_ref_cell_read(body, ctx) || cc_is_borrow_ret_call(body, ctx) || cc_is_loop_borrowed_ident(body, ctx)) {
-      emit_rc_dup_guarded(buf, body_val, ctx.rc_shadow, ctx.rc_dup_func_idx)
+    let body_is_proj = cc_is_borrowed_projection(e = body, ctx = ctx)
+    if ctx.enable_rc && (body_is_proj || cet2_is_ref_cell_read(e = body, ctx = ctx) || cc_is_borrow_ret_call(e = body, ctx = ctx) || cc_is_loop_borrowed_ident(e = body, ctx = ctx)) {
+      emit_rc_dup_guarded(buf = buf, local_idx = body_val, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
     } else {
       ()
     }
-    emit_local_get(buf, result_local)
-    emit_local_get(buf, body_val)
-    emit_call(buf, arr_push_fi)
+    emit_local_get(buf = buf, idx = result_local)
+    emit_local_get(buf = buf, idx = body_val)
+    emit_call(buf = buf, func_idx = arr_push_fi)
   } else {
     // Discard form: the body value is not collected. A plain stack drop
     // matches what ESeq does with a discarded head today (no rc release
     // -- releasing here could double-free a borrowed body value).
     emit_drop(buf)
   }
-  emit_br(buf, 0)
+  emit_br(buf = buf, label = 0)
   emit_end(buf)
   emit_end(buf)
   // The loop owned nothing it iterated over: a NAMED array stays its
@@ -710,16 +710,16 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   // into it, and an owning use of that view retains (loop_borrowed_names), as
   // does a collected body, so nothing outlives it by now.
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
-    emit_local_get(buf, conv_local)
-    emit_call(buf, ctx.rc_drop_func_idx)
-    if cc_is_owned_temp(iter_expr, ctx) {
+    emit_local_get(buf = buf, idx = conv_local)
+    emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+    if cc_is_owned_temp(e = iter_expr, ctx = ctx) {
       // A String iterable's slot holds the materialized array by now, and
       // the String itself is no rc block.
-      emit_local_get(buf, conv_local)
+      emit_local_get(buf = buf, idx = conv_local)
       emit_i64_eqz(buf)
       emit_if_void(buf)
-      emit_local_get(buf, arr_local)
-      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_local_get(buf = buf, idx = arr_local)
+      emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
       emit_end(buf)
     } else {
       ()
@@ -727,8 +727,8 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   } else {
     ()
   }
-  Array::truncate(ctx.loop_borrowed_names, lb_base)
-  emit_local_get(buf, result_local)
+  Array::truncate(ctx.loop_borrowed_names, length = lb_base)
+  emit_local_get(buf = buf, idx = result_local)
   // Restore the outer scope. The loop's internal bindings (result/arr/i, the
   // optional index name, the value name, and the body temp) must not leak into
   // later identifier lookups, which scan local_names from the end and would
@@ -736,9 +736,9 @@ export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String],
   // compile_match: truncate back to the entry length, then pad with placeholders
   // up to the high-water local count so slot numbering is preserved.
   let final_nl = nl3 + 1
-  Array::truncate(local_names, names_len_at_forin)
+  Array::truncate(local_names, length = names_len_at_forin)
   while Array::length(local_names) < final_nl {
-    Array::push(local_names, "")
+    Array::push(local_names, value = "")
   }
   final_nl
 }

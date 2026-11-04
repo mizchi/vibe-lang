@@ -41,15 +41,15 @@ import @vibe/core {
 fn esc_pat_binds(pat: Pat, name: String) -> Bool {
   match pat {
     PBind(n) => n == name,
-    PCtor(_, pats) => esc_pat_list_binds(pats, name),
-    PTuple(pats) => esc_pat_list_binds(pats, name),
-    POr(a, b) => esc_pat_binds(a, name) || esc_pat_binds(b, name),
+    PCtor(_, pats) => esc_pat_list_binds(pats = pats, name = name),
+    PTuple(pats) => esc_pat_list_binds(pats = pats, name = name),
+    POr(a, b) => esc_pat_binds(pat = a, name = name) || esc_pat_binds(pat = b, name = name),
     PStruct(_, fields) => {
       let mut i = 0
       let mut found = false
       while i < Array::length(fields) {
-        let (_, fpat) = Array::get(fields, i)
-        if esc_pat_binds(fpat, name) {
+        let (_, fpat) = Array::get(fields, at = i)
+        if esc_pat_binds(pat = fpat, name = name) {
           found = true
         } else {
           ()
@@ -66,7 +66,7 @@ fn esc_pat_list_binds(pats: Array[Pat], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(pats) {
-    if esc_pat_binds(Array::get(pats, i), name) {
+    if esc_pat_binds(pat = Array::get(pats, at = i), name = name) {
       found = true
     } else {
       ()
@@ -83,10 +83,10 @@ fn esc_pat_list_binds(pats: Array[Pat], name: String) -> Bool {
 /// `let mut x = 0; let f = (x~: Int) -> Int { let g = () -> Int { x }; g() }`
 /// report the OUTER `x` as escaping, which is exactly the false positive the
 /// strict lane exists to avoid.
-fn esc_param_base_name(raw: String) -> String {
+fn esc_param_base_name(_ raw: String) -> String {
   let len = String::length(raw)
   if len > 0 {
-    let last = String::char_code_at(raw, len - 1)
+    let last = String::char_code_at(raw, at = len - 1)
     if last == '~' || last == '?' {
       raw[0: len - 1]
     } else {
@@ -102,7 +102,7 @@ fn esc_params_bind(params: Array[(String, Option[TypeExpr])], name: String) -> B
   let mut i = 0
   let mut found = false
   while i < Array::length(params) {
-    let (pname, _) = Array::get(params, i)
+    let (pname, _) = Array::get(params, at = i)
     if esc_param_base_name(pname) == name {
       found = true
     } else {
@@ -117,7 +117,7 @@ fn esc_free_in_list(items: Array[Expr], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(items) {
-    if esc_free_in(Array::get(items, i), name) {
+    if esc_free_in(expr = Array::get(items, at = i), name = name) {
       found = true
     } else {
       ()
@@ -131,8 +131,8 @@ fn esc_free_in_fields(fields: Array[(String, Expr)], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(fields) {
-    let (_, fval) = Array::get(fields, i)
-    if esc_free_in(fval, name) {
+    let (_, fval) = Array::get(fields, at = i)
+    if esc_free_in(expr = fval, name = name) {
       found = true
     } else {
       ()
@@ -148,8 +148,8 @@ fn esc_free_in_arms(arms: Array[(Pat, Expr)], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(arms) {
-    let (pat, body) = Array::get(arms, i)
-    if !esc_pat_binds(pat, name) && esc_free_in(body, name) {
+    let (pat, body) = Array::get(arms, at = i)
+    if !esc_pat_binds(pat = pat, name = name) && esc_free_in(expr = body, name = name) {
       found = true
     } else {
       ()
@@ -168,8 +168,8 @@ fn esc_loop_free_in(params: Array[(String, Expr)], body: Expr, name: String) -> 
   let mut shadowed = false
   let mut found = false
   while i < Array::length(params) {
-    let (pname, init) = Array::get(params, i)
-    if !shadowed && esc_free_in(init, name) {
+    let (pname, init) = Array::get(params, at = i)
+    if !shadowed && esc_free_in(expr = init, name = name) {
       found = true
     } else {
       ()
@@ -181,7 +181,7 @@ fn esc_loop_free_in(params: Array[(String, Expr)], body: Expr, name: String) -> 
     }
     i = i + 1
   }
-  if !shadowed && esc_free_in(body, name) {
+  if !shadowed && esc_free_in(expr = body, name = name) {
     found = true
   } else {
     ()
@@ -200,41 +200,41 @@ fn esc_loop_free_in(params: Array[(String, Expr)], body: Expr, name: String) -> 
 fn esc_free_in(expr: Expr, name: String) -> Bool {
   match expr {
     EIdent(n, _) => n == name,
-    EAssign(n, val, cont, _) => n == name || esc_free_in(val, name) || esc_free_in(cont, name),
-    EAssignOp(n, _, val, cont, _) => n == name || esc_free_in(val, name) || esc_free_in(cont, name),
-    ELet(n, val, body, _) => esc_free_in(val, name) || (n != name && esc_free_in(body, name)),
-    ELetMut(n, val, body, _) => esc_free_in(val, name) || (n != name && esc_free_in(body, name)),
-    ELetRec(n, val, body) => n != name && (esc_free_in(val, name) || esc_free_in(body, name)),
-    EFn(_, _, params, _, _, body) => !esc_params_bind(params, name) && esc_free_in(body, name),
+    EAssign(n, val, cont, _) => n == name || esc_free_in(expr = val, name = name) || esc_free_in(expr = cont, name = name),
+    EAssignOp(n, _, val, cont, _) => n == name || esc_free_in(expr = val, name = name) || esc_free_in(expr = cont, name = name),
+    ELet(n, val, body, _) => esc_free_in(expr = val, name = name) || (n != name && esc_free_in(expr = body, name = name)),
+    ELetMut(n, val, body, _) => esc_free_in(expr = val, name = name) || (n != name && esc_free_in(expr = body, name = name)),
+    ELetRec(n, val, body) => n != name && (esc_free_in(expr = val, name = name) || esc_free_in(expr = body, name = name)),
+    EFn(_, _, params, _, _, body) => !esc_params_bind(params = params, name = name) && esc_free_in(expr = body, name = name),
     EForIn(n, index_name, iter, body) => {
       let index_shadows = match index_name {
         Some(ixn) => ixn == name,
         None => false
       }
-      esc_free_in(iter, name) || (n != name && !index_shadows && esc_free_in(body, name))
+      esc_free_in(expr = iter, name = name) || (n != name && !index_shadows && esc_free_in(expr = body, name = name))
     },
-    ELoop(params, body) => esc_loop_free_in(params, body, name),
-    EMatch(scrut, arms) => esc_free_in(scrut, name) || esc_free_in_arms(arms, name),
-    EHandle(body, arms) => esc_free_in(body, name) || esc_free_in_arms(arms, name),
-    ECall(callee, args, _, _) => esc_free_in(callee, name) || esc_free_in_list(args, name),
-    ESeq(a, b) => esc_free_in(a, name) || esc_free_in(b, name),
-    EIf(c, t, e) => esc_free_in(c, name) || esc_free_in(t, name) || esc_free_in(e, name),
-    EBinOp(_, l, r, _) => esc_free_in(l, name) || esc_free_in(r, name),
-    EUnaryOp(_, e) => esc_free_in(e, name),
-    EWhile(c, b) => esc_free_in(c, name) || esc_free_in(b, name),
-    ETuple(elems) => esc_free_in_list(elems, name),
-    EArray(elems) => esc_free_in_list(elems, name),
-    ERecord(_, fields, _) => esc_free_in_fields(fields, name),
-    EMap(entries) => esc_free_in_fields(entries, name),
-    EDot(recv, _, _, _) => esc_free_in(recv, name),
-    ELabeledArg(_, _, e) => esc_free_in(e, name),
-    EReturn(e) => esc_free_in(e, name),
-    ESpread(e) => esc_free_in(e, name),
+    ELoop(params, body) => esc_loop_free_in(params = params, body = body, name = name),
+    EMatch(scrut, arms) => esc_free_in(expr = scrut, name = name) || esc_free_in_arms(arms = arms, name = name),
+    EHandle(body, arms) => esc_free_in(expr = body, name = name) || esc_free_in_arms(arms = arms, name = name),
+    ECall(callee, args, _, _) => esc_free_in(expr = callee, name = name) || esc_free_in_list(items = args, name = name),
+    ESeq(a, b) => esc_free_in(expr = a, name = name) || esc_free_in(expr = b, name = name),
+    EIf(c, t, e) => esc_free_in(expr = c, name = name) || esc_free_in(expr = t, name = name) || esc_free_in(expr = e, name = name),
+    EBinOp(_, l, r, _) => esc_free_in(expr = l, name = name) || esc_free_in(expr = r, name = name),
+    EUnaryOp(_, e) => esc_free_in(expr = e, name = name),
+    EWhile(c, b) => esc_free_in(expr = c, name = name) || esc_free_in(expr = b, name = name),
+    ETuple(elems) => esc_free_in_list(items = elems, name = name),
+    EArray(elems) => esc_free_in_list(items = elems, name = name),
+    ERecord(_, fields, _) => esc_free_in_fields(fields = fields, name = name),
+    EMap(entries) => esc_free_in_fields(fields = entries, name = name),
+    EDot(recv, _, _, _) => esc_free_in(expr = recv, name = name),
+    ELabeledArg(_, _, e) => esc_free_in(expr = e, name = name),
+    EReturn(e) => esc_free_in(expr = e, name = name),
+    ESpread(e) => esc_free_in(expr = e, name = name),
     EBreak(opt) => match opt {
-      Some(e) => esc_free_in(e, name),
+      Some(e) => esc_free_in(expr = e, name = name),
       None => false
     },
-    EContinue(args) => esc_free_in_list(args, name),
+    EContinue(args) => esc_free_in_list(items = args, name = name),
     EInt(_) => false,
     EFloat(_) => false,
     EString(_, _) => false,
@@ -248,14 +248,14 @@ fn esc_free_in(expr: Expr, name: String) -> Bool {
 /// the same strict, shadowing-aware free-variable judgment as `let mut`
 /// enforcement; region capture must not grow a second binder walk.
 export fn expr_free_in(expr: Expr, name: String) -> Bool {
-  esc_free_in(expr, name)
+  esc_free_in(expr = expr, name = name)
 }
 
 fn esc_scan_list(items: Array[Expr], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(items) {
-    if esc_scan(Array::get(items, i), name) {
+    if esc_scan(expr = Array::get(items, at = i), name = name) {
       found = true
     } else {
       ()
@@ -269,8 +269,8 @@ fn esc_scan_fields(fields: Array[(String, Expr)], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(fields) {
-    let (_, fval) = Array::get(fields, i)
-    if esc_scan(fval, name) {
+    let (_, fval) = Array::get(fields, at = i)
+    if esc_scan(expr = fval, name = name) {
       found = true
     } else {
       ()
@@ -284,8 +284,8 @@ fn esc_scan_arms(arms: Array[(Pat, Expr)], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(arms) {
-    let (pat, body) = Array::get(arms, i)
-    if !esc_pat_binds(pat, name) && esc_scan(body, name) {
+    let (pat, body) = Array::get(arms, at = i)
+    if !esc_pat_binds(pat = pat, name = name) && esc_scan(expr = body, name = name) {
       found = true
     } else {
       ()
@@ -300,8 +300,8 @@ fn esc_scan_loop(params: Array[(String, Expr)], body: Expr, name: String) -> Boo
   let mut shadowed = false
   let mut found = false
   while i < Array::length(params) {
-    let (pname, init) = Array::get(params, i)
-    if !shadowed && esc_scan(init, name) {
+    let (pname, init) = Array::get(params, at = i)
+    if !shadowed && esc_scan(expr = init, name = name) {
       found = true
     } else {
       ()
@@ -313,7 +313,7 @@ fn esc_scan_loop(params: Array[(String, Expr)], body: Expr, name: String) -> Boo
     }
     i = i + 1
   }
-  if !shadowed && esc_scan(body, name) {
+  if !shadowed && esc_scan(expr = body, name = name) {
     found = true
   } else {
     ()
@@ -329,41 +329,41 @@ fn esc_scan_loop(params: Array[(String, Expr)], body: Expr, name: String) -> Boo
 /// too, which `esc_free_in` already answers.
 fn esc_scan(expr: Expr, name: String) -> Bool {
   match expr {
-    EFn(_, _, params, _, _, body) => !esc_params_bind(params, name) && esc_free_in(body, name),
-    ELet(n, val, body, _) => esc_scan(val, name) || (n != name && esc_scan(body, name)),
-    ELetMut(n, val, body, _) => esc_scan(val, name) || (n != name && esc_scan(body, name)),
-    ELetRec(n, val, body) => n != name && (esc_scan(val, name) || esc_scan(body, name)),
+    EFn(_, _, params, _, _, body) => !esc_params_bind(params = params, name = name) && esc_free_in(expr = body, name = name),
+    ELet(n, val, body, _) => esc_scan(expr = val, name = name) || (n != name && esc_scan(expr = body, name = name)),
+    ELetMut(n, val, body, _) => esc_scan(expr = val, name = name) || (n != name && esc_scan(expr = body, name = name)),
+    ELetRec(n, val, body) => n != name && (esc_scan(expr = val, name = name) || esc_scan(expr = body, name = name)),
     EForIn(n, index_name, iter, body) => {
       let index_shadows = match index_name {
         Some(ixn) => ixn == name,
         None => false
       }
-      esc_scan(iter, name) || (n != name && !index_shadows && esc_scan(body, name))
+      esc_scan(expr = iter, name = name) || (n != name && !index_shadows && esc_scan(expr = body, name = name))
     },
-    ELoop(params, body) => esc_scan_loop(params, body, name),
-    EMatch(scrut, arms) => esc_scan(scrut, name) || esc_scan_arms(arms, name),
-    EHandle(body, arms) => esc_scan(body, name) || esc_scan_arms(arms, name),
-    EAssign(_, val, cont, _) => esc_scan(val, name) || esc_scan(cont, name),
-    EAssignOp(_, _, val, cont, _) => esc_scan(val, name) || esc_scan(cont, name),
-    ECall(callee, args, _, _) => esc_scan(callee, name) || esc_scan_list(args, name),
-    ESeq(a, b) => esc_scan(a, name) || esc_scan(b, name),
-    EIf(c, t, e) => esc_scan(c, name) || esc_scan(t, name) || esc_scan(e, name),
-    EBinOp(_, l, r, _) => esc_scan(l, name) || esc_scan(r, name),
-    EUnaryOp(_, e) => esc_scan(e, name),
-    EWhile(c, b) => esc_scan(c, name) || esc_scan(b, name),
-    ETuple(elems) => esc_scan_list(elems, name),
-    EArray(elems) => esc_scan_list(elems, name),
-    ERecord(_, fields, _) => esc_scan_fields(fields, name),
-    EMap(entries) => esc_scan_fields(entries, name),
-    EDot(recv, _, _, _) => esc_scan(recv, name),
-    ELabeledArg(_, _, e) => esc_scan(e, name),
-    EReturn(e) => esc_scan(e, name),
-    ESpread(e) => esc_scan(e, name),
+    ELoop(params, body) => esc_scan_loop(params = params, body = body, name = name),
+    EMatch(scrut, arms) => esc_scan(expr = scrut, name = name) || esc_scan_arms(arms = arms, name = name),
+    EHandle(body, arms) => esc_scan(expr = body, name = name) || esc_scan_arms(arms = arms, name = name),
+    EAssign(_, val, cont, _) => esc_scan(expr = val, name = name) || esc_scan(expr = cont, name = name),
+    EAssignOp(_, _, val, cont, _) => esc_scan(expr = val, name = name) || esc_scan(expr = cont, name = name),
+    ECall(callee, args, _, _) => esc_scan(expr = callee, name = name) || esc_scan_list(items = args, name = name),
+    ESeq(a, b) => esc_scan(expr = a, name = name) || esc_scan(expr = b, name = name),
+    EIf(c, t, e) => esc_scan(expr = c, name = name) || esc_scan(expr = t, name = name) || esc_scan(expr = e, name = name),
+    EBinOp(_, l, r, _) => esc_scan(expr = l, name = name) || esc_scan(expr = r, name = name),
+    EUnaryOp(_, e) => esc_scan(expr = e, name = name),
+    EWhile(c, b) => esc_scan(expr = c, name = name) || esc_scan(expr = b, name = name),
+    ETuple(elems) => esc_scan_list(items = elems, name = name),
+    EArray(elems) => esc_scan_list(items = elems, name = name),
+    ERecord(_, fields, _) => esc_scan_fields(fields = fields, name = name),
+    EMap(entries) => esc_scan_fields(fields = entries, name = name),
+    EDot(recv, _, _, _) => esc_scan(expr = recv, name = name),
+    ELabeledArg(_, _, e) => esc_scan(expr = e, name = name),
+    EReturn(e) => esc_scan(expr = e, name = name),
+    ESpread(e) => esc_scan(expr = e, name = name),
     EBreak(opt) => match opt {
-      Some(e) => esc_scan(e, name),
+      Some(e) => esc_scan(expr = e, name = name),
       None => false
     },
-    EContinue(args) => esc_scan_list(args, name),
+    EContinue(args) => esc_scan_list(items = args, name = name),
     EIdent(_, _) => false,
     EInt(_) => false,
     EFloat(_) => false,
@@ -381,7 +381,7 @@ fn esc_scan(expr: Expr, name: String) -> Bool {
 /// is in scope -- so a same-named binding declared BEFORE it, or one declared
 /// inside it that shadows it, is correctly not this binding.
 export fn mut_binding_escapes(body: Expr, name: String) -> Bool {
-  esc_scan(body, name)
+  esc_scan(expr = body, name = name)
 }
 
 //# #1951 Diag::Report — compiler-private diagnostic effect.
@@ -400,28 +400,28 @@ export fn diag_report_into(errors: Array[String], msg: String) -> Unit {
   let _ = handle {
     perform Diag::Report(msg)
   } with { Diag::Report(m) => {
-    Array::push(errors, m)
+    Array::push(errors, value = m)
     resume(m)
   } }
 }
 
-export fn diag_collect_all(msg: String) -> Array[String] {
+export fn diag_collect_all(_ msg: String) -> Array[String] {
   let out = array_empty()
-  diag_report_into(out, msg)
+  diag_report_into(errors = out, msg = msg)
   out
 }
 
-export fn diag_collect_all_many(msgs: Array[String]) -> Array[String] {
+export fn diag_collect_all_many(_ msgs: Array[String]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(msgs) {
-    diag_report_into(out, Array::get(msgs, i))
+    diag_report_into(errors = out, msg = Array::get(msgs, at = i))
     i = i + 1
   }
   out
 }
 
-export fn diag_fail_fast(msg: String) -> String {
+export fn diag_fail_fast(_ msg: String) -> String {
   handle {
     perform Diag::Report(msg)
   } with { Diag::Report(m) => resume(m) }

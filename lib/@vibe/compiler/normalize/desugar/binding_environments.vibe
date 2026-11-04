@@ -72,16 +72,16 @@ import ./witness_targets.vibe {
 /// keeps the throw-site rendered message channel.
 export fn dtd_exception_kind_arm_var_types(p: Pat, var_types: Array[(String, String)]) -> Array[(String, String)] {
   match p {
-    PCtor(name, sub) => if Array::length(sub) == 1 && String::ends_with(name, "::Throw") {
-      let kind = exception_effect_kind(String::substring(name, 0, String::length(name) - 7))
-      match Array::get(sub, 0) {
+    PCtor(name, sub) => if Array::length(sub) == 1 && String::ends_with(name, suffix = "::Throw") {
+      let kind = exception_effect_kind(String::substring(name, start = 0, end = String::length(name) - 7))
+      match Array::get(sub, at = 0) {
         PBind(v) => if String::length(kind) > 0 {
           let parsed: Option[TypeExpr] = handle {
-            let (kind_te, _) = parse_type(lex(kind), 0)
+            let (kind_te, _) = parse_type(tokens = lex(kind), pos = 0)
             Some(kind_te)
           } with { Exception::Throw(_unreadable) => None }
           match parsed {
-            Some(te) => seed_var_types([(v, Some(te))], dtd_scope_formals, var_types),
+            Some(te) => seed_var_types(params = [(v, Some(te))], tparams = dtd_scope_formals, base = var_types),
             None => var_types
           }
         } else {
@@ -97,7 +97,7 @@ export fn dtd_exception_kind_arm_var_types(p: Pat, var_types: Array[(String, Str
 }
 
 export fn bind_let_env(var_types: Array[(String, String)], name: String, val: Expr, inferred: Option[String], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  bind_let_env_into(clone_var_types(var_types), name, val, inferred, struct_sets, fn_returns)
+  bind_let_env_into(out = clone_var_types(var_types), name = name, val = val, inferred = inferred, struct_sets = struct_sets, fn_returns = fn_returns)
 }
 
 /// `bind_let_env` without the copy: appends the binding's entries to `out`
@@ -113,8 +113,8 @@ export fn bind_let_env_into(out: Array[(String, String)], name: String, val: Exp
   let formal_shape = if Array::length(dtd_scope_formals) == 0 {
     ""
   } else match val {
-    EIdent(n, _) => eq_formal_shape_of_name(out, n),
-    EDot(obj, field, _, _) => match dtd_field_projection(obj, field, struct_sets, out, fn_returns) {
+    EIdent(n, _) => eq_formal_shape_of_name(var_types = out, n = n),
+    EDot(obj, field, _, _) => match dtd_field_projection(obj = obj, field = field, struct_sets = struct_sets, var_types = out, fn_returns = fn_returns) {
       FieldTyped(t) => if eq_ty_has_formal(t) {
         ty_to_eq_shape(t)
       } else {
@@ -125,21 +125,21 @@ export fn bind_let_env_into(out: Array[(String, String)], name: String, val: Exp
     _ => ""
   }
   match inferred {
-    Some(tname) => Array::push(out, (name, tname)),
+    Some(tname) => Array::push(out, value = (name, tname)),
     // #3434: a shadowing binding the renderer cannot type must not render
     // through the outer one's entry (`"\{b}"` printed `None` for 5). Only
     // the renderer reads the mask; see `render_masked`.
-    None => match lookup_var_type(out, name) {
-      Some(_) => Array::push(out, (render_mask_key(name), "")),
+    None => match lookup_var_type(var_types = out, name = name) {
+      Some(_) => Array::push(out, value = (render_mask_key(name), "")),
       None => ()
     }
   }
-  dtd_mask_shadowed_fn_into(out, name, fn_returns)
-  bind_impl_target_key_into(out, name, val, struct_sets, fn_returns)
-  bind_shapes_into(out, name, val, struct_sets, fn_returns)
-  eq_shape_bind_into(out, name, val, struct_sets, fn_returns)
+  dtd_mask_shadowed_fn_into(out = out, name = name, fn_returns = fn_returns)
+  bind_impl_target_key_into(out = out, name = name, value = val, struct_sets = struct_sets, fn_returns = fn_returns)
+  bind_shapes_into(out = out, name = name, val = val, struct_sets = struct_sets, fn_returns = fn_returns)
+  eq_shape_bind_into(out = out, name = name, val = val, struct_sets = struct_sets, fn_returns = fn_returns)
   if String::length(formal_shape) > 0 {
-    Array::push(out, (eq_formal_shape_key(name), formal_shape))
+    Array::push(out, value = (eq_formal_shape_key(name), formal_shape))
   }
   out
 }
@@ -174,7 +174,7 @@ fn eq_shape_bind_into(out: Array[(String, String)], name: String, val: Expr, str
   } else {
     match val {
       EFn(tparams, _, _, ret, _, fbody) => match ret {
-        Some(rt) => if ty_mentions_name_in(rt, tparams) {
+        Some(rt) => if ty_mentions_name_in(t = rt, names = tparams) {
           ""
         } else {
           ty_to_eq_shape(rt)
@@ -182,18 +182,18 @@ fn eq_shape_bind_into(out: Array[(String, String)], name: String, val: Expr, str
         None => if Array::length(tparams) > 0 {
           ""
         } else {
-          infer_shape(fn_body_tail_expr(fbody), struct_sets, out, fn_returns)
+          infer_shape(e = fn_body_tail_expr(fbody), struct_sets = struct_sets, var_types = out, fn_returns = fn_returns)
         }
       },
       EArray(items) => if Array::length(items) == 0 {
         "[__EqEmpty]"
       } else {
-        infer_eq_shape(val, struct_sets, out, fn_returns)
+        infer_eq_shape(e = val, struct_sets = struct_sets, var_types = out, fn_returns = fn_returns)
       },
-      _ => infer_eq_shape(val, struct_sets, out, fn_returns)
+      _ => infer_eq_shape(e = val, struct_sets = struct_sets, var_types = out, fn_returns = fn_returns)
     }
   }
-  Array::push(out, (eq_shape_key(name), if shape_is_composite(sh) {
+  Array::push(out, value = (eq_shape_key(name), if shape_is_composite(sh) {
     sh
   } else {
     ""

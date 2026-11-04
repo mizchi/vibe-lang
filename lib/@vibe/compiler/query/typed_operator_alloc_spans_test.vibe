@@ -18,7 +18,7 @@ fn has_kind(source: String, want: String) -> Bool with Exception {
   let mut i = 0
   let mut found = false
   while i < Array::length(spans) {
-    let (_fn, kind, _off) = Array::get(spans, i)
+    let (_fn, kind, _off) = Array::get(spans, at = i)
     if kind == want {
       found = true
     } else {
@@ -31,13 +31,13 @@ fn has_kind(source: String, want: String) -> Bool with Exception {
 
 test "Double arithmetic operators are typed allocation sites" {
   let double_add = "fn add(a: Double, b: Double) -> Double {\n  let sum = a + b\n  sum - a\n}\n"
-  assert(has_kind(double_add, "operator:Float64:+"))
-  assert(has_kind(double_add, "operator:Float64:-"))
+  assert(has_kind(source = double_add, want = "operator:Float64:+"))
+  assert(has_kind(source = double_add, want = "operator:Float64:-"))
 }
 
 test "String addition is a typed allocation site" {
   let string_add = "fn join(a: String, b: String) -> String {\n  a + b\n}\n"
-  assert(has_kind(string_add, "operator:String:+"))
+  assert(has_kind(source = string_add, want = "operator:String:+"))
 }
 
 test "typed scalar operators that do not allocate stay clean" {
@@ -49,9 +49,9 @@ test "typed scalar operators that do not allocate stay clean" {
 
 test "an unknown inner binding does not inherit a shadowed outer scalar kind" {
   let shadowed = "fn f(x: Int, a: Double, b: Double, c: Bool) -> Double {\n  let x = if c { a } else { b }\n  x + a\n}\n"
-  assert(has_kind(shadowed, "operator:Float64:+"))
+  assert(has_kind(source = shadowed, want = "operator:Float64:+"))
   let marked = String::concat("#zero_alloc\n", shadowed)
-  assert(String::contains(zero_alloc_check(parse_program(lex(marked))), "operator:Float64:+"))
+  assert(String::contains(zero_alloc_check(parse_program(lex(marked))), needle = "operator:Float64:+"))
 }
 
 test "zero_alloc accepts an immediate capture-free lambda value" {
@@ -61,7 +61,7 @@ test "zero_alloc accepts an immediate capture-free lambda value" {
 
 test "zero_alloc rejects a lambda that allocates a capture environment" {
   let source = "#zero_alloc\nfn factory(n: Int) -> () -> Int {\n  () -> Int { n }\n}\n"
-  assert(String::contains(zero_alloc_check(parse_program(lex(source))), "closure literal"))
+  assert(String::contains(zero_alloc_check(parse_program(lex(source))), needle = "closure literal"))
 }
 
 test "zero_alloc capture classification treats top-level functions as globals" {
@@ -73,8 +73,8 @@ test "zero_alloc default allows region arena but strict rejects it" {
   let region_src = "fn use_region() -> Int {\n  region r {\n    let xs = MutList::empty(r)\n    MutList::push(xs, 1)\n    MutList::length(xs)\n  }\n}\n"
   assert_eq(zero_alloc_check(parse_program(lex(String::concat("#zero_alloc\n", region_src)))), "")
   let strict_msg = zero_alloc_check(parse_program(lex(String::concat("#zero_alloc(strict)\n", region_src))))
-  assert(String::contains(strict_msg, "zero_alloc"))
-  assert(String::contains(strict_msg, "region/arena allocation"))
+  assert(String::contains(strict_msg, needle = "zero_alloc"))
+  assert(String::contains(strict_msg, needle = "region/arena allocation"))
 }
 
 test "zero_alloc assume is a caller trust boundary but fail-closed on its own body" {
@@ -82,20 +82,20 @@ test "zero_alloc assume is a caller trust boundary but fail-closed on its own bo
   assert_eq(zero_alloc_check(parse_program(lex(assume_ok))), "")
   let assume_hides = "#zero_alloc(assume)\nfn dirty() -> Array[Int] {\n  [1, 2]\n}\n#zero_alloc\nfn hot() -> Array[Int] { dirty() }\n"
   let hide_msg = zero_alloc_check(parse_program(lex(assume_hides)))
-  assert(String::contains(hide_msg, "zero_alloc"))
-  assert(String::contains(hide_msg, "dirty"))
-  assert(String::contains(hide_msg, "array literal"))
+  assert(String::contains(hide_msg, needle = "zero_alloc"))
+  assert(String::contains(hide_msg, needle = "dirty"))
+  assert(String::contains(hide_msg, needle = "array literal"))
 }
 
 test "#2379 review: zero_alloc resolves source-owned Map accessors before builtins" {
   let iter_get = "fn Map::iter_get(_map: Int, _index: Int) -> Array[Int] { [1] }\n#zero_alloc\nfn hot() -> Array[Int] { Map::iter_get(0, 0) }\n"
   let iter_get_msg = zero_alloc_check(parse_program(lex(iter_get)))
-  assert(String::contains(iter_get_msg, "Map::iter_get"))
-  assert(String::contains(iter_get_msg, "array literal"))
+  assert(String::contains(iter_get_msg, needle = "Map::iter_get"))
+  assert(String::contains(iter_get_msg, needle = "array literal"))
   let unchecked = "fn Map::__iter_get_unchecked(_map: Int, _index: Int) -> Array[Int] { [1] }\n#zero_alloc\nfn hot() -> Array[Int] { Map::__iter_get_unchecked(0, 0) }\n"
   let unchecked_msg = zero_alloc_check(parse_program(lex(unchecked)))
-  assert(String::contains(unchecked_msg, "Map::__iter_get_unchecked"))
-  assert(String::contains(unchecked_msg, "array literal"))
+  assert(String::contains(unchecked_msg, needle = "Map::__iter_get_unchecked"))
+  assert(String::contains(unchecked_msg, needle = "array literal"))
 }
 
 test "#2379 review: zero_alloc keeps intrinsic Map accessors allocation-free" {

@@ -18,11 +18,11 @@ import @vibe/compiler/cache {
   compact_string_fingerprint, persistent_artifact_cache_path
 }
 
-fn bcs_bytes(s: String) -> Bytes {
+fn bcs_bytes(_ s: String) -> Bytes {
   let out = Bytes::new()
   let mut i = 0
   while i < String::length(s) {
-    Bytes::push(out, String::byte_at(s, i))
+    Bytes::push(out, value = String::byte_at(s, at = i))
     i = i + 1
   }
   out
@@ -36,7 +36,7 @@ fn bcs_bytes_eq(a: Bytes, b: Bytes) -> Bool {
     let mut i = 0
     let mut same = true
     while same && i < n {
-      if Bytes::get(a, i) != Bytes::get(b, i) {
+      if Bytes::get(a, at = i) != Bytes::get(b, at = i) {
         same = false
       } else {
         i = i + 1
@@ -57,7 +57,7 @@ fn bcs_b(decl: String, build: String) -> String {
     decl,
     "export let bcs_mk: (Int) -> BcsPt = (n) -> { \{build} }",
     "export let bcs_half: (Double) -> Double = (x) -> { x * 0.5 }"
-  ], "\n")
+  ], sep = "\n")
 }
 
 let bcs_base_decl: String = "export struct BcsPt { x: Int; y: Int }"
@@ -78,40 +78,40 @@ fn bcs_main() -> String {
     "let run: () -> Int = () -> {",
     "  bcs_y(2) + bcs_wrap(3) + (if bcs_same(1, 1) { 1 } else { 0 }) + String::length(\"\\{bcs_half(3.0)}\") + (if bcs_half(1.0) == 0.5 { 1 } else { 0 })",
     "}"
-  ], "\n")
+  ], sep = "\n")
 }
 
 fn bcs_probe(decl: String, build: String) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bcs_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bcs_main_path)))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
     ()
   }
-  Fs::write_bytes(bcs_b_path, bcs_bytes(bcs_b(bcs_base_decl, bcs_base_build)))
-  Fs::write_bytes(bcs_main_path, bcs_bytes(bcs_main()))
+  Fs::write_bytes(bcs_b_path, bytes = bcs_bytes(bcs_b(decl = bcs_base_decl, build = bcs_base_build)))
+  Fs::write_bytes(bcs_main_path, bytes = bcs_bytes(bcs_main()))
   let cold_counts: Array[Int] = []
-  let _cold = compile_file_fs_mode_rc_body_cached_counted(bcs_main_path, "run", "on", cold_counts)
-  Fs::write_bytes(bcs_b_path, bcs_bytes(bcs_b(decl, build)))
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bcs_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  Fs::write_bytes(bcs_b_path, bytes = bcs_bytes(bcs_b(decl = decl, build = build)))
   let warm_counts: Array[Int] = []
-  let warm = compile_file_fs_mode_rc_body_cached_counted(bcs_main_path, "run", "on", warm_counts)
-  let fresh = compile_file_fs_mode_rc(bcs_main_path, "run")
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bcs_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bcs_main_path, entry_name = "run")
   "saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bcs_bytes_eq(warm, fresh)}"
 }
 
 test "a struct field made Double recompiles the body that reads it" {
-  inspect(bcs_probe("export struct BcsPt { x: Int; y: Double }", "BcsPt::{ x: n, y: 1.5 }"), content = "saved=4 equal=true")
+  inspect(bcs_probe(decl = "export struct BcsPt { x: Int; y: Double }", build = "BcsPt::{ x: n, y: 1.5 }"), content = "saved=4 equal=true")
 }
 
 test "swapped struct fields recompile the body that reads one" {
-  inspect(bcs_probe("export struct BcsPt { y: Int; x: Int }", bcs_base_build), content = "saved=4 equal=true")
+  inspect(bcs_probe(decl = "export struct BcsPt { y: Int; x: Int }", build = bcs_base_build), content = "saved=4 equal=true")
 }
 
 test "a field added recompiles the bodies that read the struct" {
-  inspect(bcs_probe("export struct BcsPt { x: Int; y: Int; z: Int }", "BcsPt::{ x: n, y: n + 1, z: 0 }"), content = "saved=3 equal=true")
+  inspect(bcs_probe(decl = "export struct BcsPt { x: Int; y: Int; z: Int }", build = "BcsPt::{ x: n, y: n + 1, z: 0 }"), content = "saved=3 equal=true")
 }
 
 test "an added struct sharing a field recompiles the bodies that read the field" {
   // `p.y` now dispatches over two structs holding `y`.
-  inspect(bcs_probe(String::concat(bcs_base_decl, "\nexport struct BcsQ { w: Int; y: Int }\nexport let bcs_q: (Int) -> Int = (n) -> { BcsQ::{ w: 1, y: n }.y }"), bcs_base_build), content = "saved=4 equal=true")
+  inspect(bcs_probe(decl = String::concat(bcs_base_decl, "\nexport struct BcsQ { w: Int; y: Int }\nexport let bcs_q: (Int) -> Int = (n) -> { BcsQ::{ w: 1, y: n }.y }"), build = bcs_base_build), content = "saved=4 equal=true")
 }

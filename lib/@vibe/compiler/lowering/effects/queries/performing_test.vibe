@@ -14,16 +14,16 @@ import @vibe/compiler/lowering/effects/queries {
   edp_rq_fold
 }
 
-fn call(name: String) -> Expr {
+fn call(_ name: String) -> Expr {
   ECall(EIdent(name, -1), [], -1, [])
 }
 fn perform_ask() -> Expr {
   ECall(EIdent("perform", -1), [call("Ask::Get")], -1, [])
 }
-fn name_set(names: Array[String]) -> MutSet[String] {
+fn name_set(_ names: Array[String]) -> MutSet[String] {
   let set: MutSet[String] = MutSet::new_string()
   for name in names {
-    MutSet::add(set, name)
+    MutSet::add(set, x = name)
   }
   set
 }
@@ -38,11 +38,11 @@ fn oracle(names: Array[String], bodies: Array[Option[Expr]], effect: String, ine
     grew = false
     let mut i = 0
     while i < Array::length(names) {
-      let name = Array::get(names, i)
-      if !MutSet::has(out, name) {
-        match Array::get(bodies, i) {
-          Some(body) => if edp_rq_fold(RQPerformsUserEffect(effect), body) > 0 || edp_rq_fold(RQOpaqueCall(inert, known), body) > 0 || edp_rq_fold(RQCallsAny(out), body) > 0 {
-            MutSet::add(out, name)
+      let name = Array::get(names, at = i)
+      if !MutSet::has(out, x = name) {
+        match Array::get(bodies, at = i) {
+          Some(body) => if edp_rq_fold(q = RQPerformsUserEffect(effect), e = body) > 0 || edp_rq_fold(q = RQOpaqueCall(inert, known), e = body) > 0 || edp_rq_fold(q = RQCallsAny(out), e = body) > 0 {
+            MutSet::add(out, x = name)
             grew = true
           },
           None => ()
@@ -59,35 +59,35 @@ fn oracle(names: Array[String], bodies: Array[Option[Expr]], effect: String, ine
 fn check_facts_agree(names: Array[String], bodies: Array[Option[Expr]], effect: String, inert: MutSet[String], known: MutSet[String], actual: Array[String]) -> Unit {
   let facts: Array[Option[(Bool, Array[String], Array[String])]] = []
   for body in bodies {
-    Array::push(facts, match body {
-      Some(b) => Some(edp_perform_facts(b, inert, known)),
+    Array::push(facts, value = match body {
+      Some(b) => Some(edp_perform_facts(e = b, inert = inert, fn_names = known)),
       None => None
     })
   }
-  let from_facts = edp_performing_names_from_facts(names, facts, effect)
+  let from_facts = edp_performing_names_from_facts(names = names, facts = facts, effect = effect)
   assert(Array::length(from_facts) == Array::length(actual))
   let mut k = 0
   while k < Array::length(actual) {
-    assert(Array::get(from_facts, k) == Array::get(actual, k)); k = k + 1
+    assert(Array::get(from_facts, at = k) == Array::get(actual, at = k)); k = k + 1
   }
   for body in bodies {
     match body {
       Some(b) => {
-        let fact = edp_perform_facts(b, inert, known)
+        let fact = edp_perform_facts(e = b, inert = inert, fn_names = known)
         for e in [effect, "Ask", "Other", ""] {
           let scratch: Array[String] = []
-          assert(edp_perform_facts_hit(fact, e) == (edp_rq_fold(RQPerformSummary(e, inert, known, scratch), b) > 0))
-          assert(edp_perform_facts_performs(fact, e) == (edp_rq_fold(RQPerformsUserEffect(e), b) > 0))
+          assert(edp_perform_facts_hit(facts = fact, effect = e) == (edp_rq_fold(q = RQPerformSummary(e, inert, known, scratch), e = b) > 0))
+          assert(edp_perform_facts_performs(facts = fact, effect = e) == (edp_rq_fold(q = RQPerformsUserEffect(e), e = b) > 0))
         }
         // On a tree it does not hit, the per-effect walk collects the same
         // callees in the same order.
         let calls: Array[String] = []
-        if edp_rq_fold(RQPerformSummary(effect, inert, known, calls), b) == 0 {
+        if edp_rq_fold(q = RQPerformSummary(effect, inert, known, calls), e = b) == 0 {
           let (_, _, fact_calls) = fact
           assert(Array::length(calls) == Array::length(fact_calls))
           let mut j = 0
           while j < Array::length(calls) {
-            assert(Array::get(calls, j) == Array::get(fact_calls, j)); j = j + 1
+            assert(Array::get(calls, at = j) == Array::get(fact_calls, at = j)); j = j + 1
           }
         }
       },
@@ -100,17 +100,17 @@ fn check_facts_agree(names: Array[String], bodies: Array[Option[Expr]], effect: 
 fn check_graph(names: Array[String], bodies: Array[Option[Expr]], effect: String) -> Array[String] {
   let inert = name_set(["Ask::Get", "Other::Get"])
   let known = name_set(names)
-  let actual = edp_performing_names(names, bodies, effect, inert, known)
-  check_facts_agree(names, bodies, effect, inert, known, actual)
+  let actual = edp_performing_names(names = names, bodies = bodies, effect = effect, inert = inert, fn_names = known)
+  check_facts_agree(names = names, bodies = bodies, effect = effect, inert = inert, known = known, actual = actual)
   let set = name_set(actual)
-  let expected = oracle(names, bodies, effect, inert)
+  let expected = oracle(names = names, bodies = bodies, effect = effect, inert = inert)
   for name in names {
-    assert(MutSet::has(set, name) == MutSet::has(expected, name))
+    assert(MutSet::has(set, x = name) == MutSet::has(expected, x = name))
   }
   // The queue contains each name once, even with duplicate definitions/edges.
   let seen: MutSet[String] = MutSet::new_string()
   for name in actual {
-    assert(!MutSet::has(seen, name)); MutSet::add(seen, name)
+    assert(!MutSet::has(seen, x = name)); MutSet::add(seen, x = name)
   }
   actual
 }
@@ -140,12 +140,12 @@ test "effect reachability closes reverse chains and cycles, with duplicate defin
     Some(call("duplicate")),
     None
   ]
-  let out = name_set(check_graph(names, bodies, "Ask"))
-  assert(MutSet::has(out, "a"))
-  assert(MutSet::has(out, "caller"))
-  assert(!MutSet::has(out, "quiet"))
-  assert(!MutSet::has(out, "missing"))
-  assert(Array::length(check_graph(names, bodies, "Other")) == 0)
+  let out = name_set(check_graph(names = names, bodies = bodies, effect = "Ask"))
+  assert(MutSet::has(out, x = "a"))
+  assert(MutSet::has(out, x = "caller"))
+  assert(!MutSet::has(out, x = "quiet"))
+  assert(!MutSet::has(out, x = "missing"))
+  assert(Array::length(check_graph(names = names, bodies = bodies, effect = "Other")) == 0)
 }
 
 test "opaque callbacks and nested closures remain conservative" {
@@ -158,15 +158,15 @@ test "opaque callbacks and nested closures remain conservative" {
     Some(call("callback")),
     Some(call("String::length"))
   ]
-  let ask = name_set(check_graph(names, bodies, "Ask"))
-  assert(MutSet::has(ask, "nested"))
-  assert(MutSet::has(ask, "handled"))
-  assert(!MutSet::has(ask, "pure"))
-  let other = name_set(check_graph(names, bodies, "Other"))
-  assert(MutSet::has(other, "callback"))
-  assert(MutSet::has(other, "indirect"))
-  assert(MutSet::has(other, "caller"))
-  assert(!MutSet::has(other, "nested"))
+  let ask = name_set(check_graph(names = names, bodies = bodies, effect = "Ask"))
+  assert(MutSet::has(ask, x = "nested"))
+  assert(MutSet::has(ask, x = "handled"))
+  assert(!MutSet::has(ask, x = "pure"))
+  let other = name_set(check_graph(names = names, bodies = bodies, effect = "Other"))
+  assert(MutSet::has(other, x = "callback"))
+  assert(MutSet::has(other, x = "indirect"))
+  assert(MutSet::has(other, x = "caller"))
+  assert(!MutSet::has(other, x = "nested"))
 }
 
 test "perform summaries agree with separate queries across expression containers" {
@@ -201,20 +201,20 @@ test "perform summaries agree with separate queries across expression containers
     ESpread(hit)
   ]
   for body in containers {
-    let result = check_graph(["caller", "target"], [
+    let result = check_graph(names = ["caller", "target"], bodies = [
       Some(body),
       Some(perform_ask())
-    ], "Ask")
-    assert(MutSet::has(name_set(result), "caller"))
+    ], effect = "Ask")
+    assert(MutSet::has(name_set(result), x = "caller"))
   }
 }
 
-fn chain_graph(size: Int) -> (Array[String], Array[Option[Expr]]) {
+fn chain_graph(_ size: Int) -> (Array[String], Array[Option[Expr]]) {
   let names: Array[String] = []
   let bodies: Array[Option[Expr]] = []
   let mut i = 0
   while i < size {
-    Array::push(names, "f" + Int::to_string(i))
+    Array::push(names, value = "f" + Int::to_string(i))
     let mut body = if i + 1 == size {
       perform_ask()
     } else {
@@ -224,7 +224,7 @@ fn chain_graph(size: Int) -> (Array[String], Array[Option[Expr]]) {
     while j < 16 {
       body = ESeq(EInt(j), body); j = j + 1
     }
-    Array::push(bodies, Some(body))
+    Array::push(bodies, value = Some(body))
     i = i + 1
   }
   (names, bodies)
@@ -232,7 +232,7 @@ fn chain_graph(size: Int) -> (Array[String], Array[Option[Expr]]) {
 
 test "effect reachability propagates through a long reverse-ordered chain" {
   let (names, bodies) = chain_graph(64)
-  assert(Array::length(check_graph(names, bodies, "Ask")) == 64)
+  assert(Array::length(check_graph(names = names, bodies = bodies, effect = "Ask")) == 64)
 }
 
 test "one facts walk answers every effect the per-effect walks answer" {
@@ -258,6 +258,6 @@ test "one facts walk answers every effect the per-effect walks answer" {
     Some(ECall(EIdent("unknown", -1), [call("quiet")], -1, []))
   ]
   for effect in ["Ask", "Other", "Missing", ""] {
-    check_graph(names, bodies, effect)
+    check_graph(names = names, bodies = bodies, effect = effect)
   }
 }

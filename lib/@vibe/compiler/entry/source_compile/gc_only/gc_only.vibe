@@ -96,16 +96,16 @@ fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> (String, Bool
   let mut has_entry = false
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       STest(tname, tbody) => {
         let test_fn = String::concat("__test_", tname)
-        Array::push(test_fn_names, test_fn)
-        Array::set(stmts, i, SLet(false, false, test_fn, None, EFn(empty_tp, empty_bounds, empty_params, None, None, ESeq(tbody, EInt(0)))))
+        Array::push(test_fn_names, value = test_fn)
+        Array::set(stmts, at = i, value = SLet(false, false, test_fn, None, EFn(empty_tp, empty_bounds, empty_params, None, None, ESeq(tbody, EInt(0)))))
       },
       SBench(bname, bbody) => {
         let bench_fn = String::concat("__bench_", bname)
-        Array::push(test_fn_names, bench_fn)
-        Array::set(stmts, i, SLet(false, false, bench_fn, None, EFn(empty_tp, empty_bounds, empty_params, None, None, ESeq(bbody, EInt(0)))))
+        Array::push(test_fn_names, value = bench_fn)
+        Array::set(stmts, at = i, value = SLet(false, false, bench_fn, None, EFn(empty_tp, empty_bounds, empty_params, None, None, ESeq(bbody, EInt(0)))))
       },
       SLet(_, _, name, _, _) => if name == entry_name {
         has_entry = true
@@ -121,17 +121,17 @@ fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> (String, Bool
     let mut body = EInt(0)
     let mut ti = Array::length(test_fn_names) - 1
     while ti >= 0 {
-      body = ESeq(ECall(EIdent(Array::get(test_fn_names, ti), 0 - 1), array_empty(), 0 - 1, [
+      body = ESeq(ECall(EIdent(Array::get(test_fn_names, at = ti), 0 - 1), array_empty(), 0 - 1, [
       ]), body)
       ti = ti - 1
     }
-    Array::push(stmts, SLet(true, false, "_start", None, EFn(empty_tp, empty_bounds, empty_params, None, None, body)))
+    Array::push(stmts, value = SLet(true, false, "_start", None, EFn(empty_tp, empty_bounds, empty_params, None, None, body)))
     // #2762 round 4 (Codex): `_start` is synthesized HERE, so it belongs in the
     // reported set too. Returning only `test_fn_names` left it out, and
     // `export { _start }` in a file with a test and no `main` was accepted by
     // this lane while the FS lane refused it -- measured, the same disagreement
     // the round-3 finding was about, one binding later.
-    Array::push(test_fn_names, "_start")
+    Array::push(test_fn_names, value = "_start")
     ("_start", true, test_fn_names)
   }
 }
@@ -163,7 +163,7 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // node this erases. Carry the exact synthesized-name list into the check
   // so its ambient grant survives without granting authority to a user's
   // ordinary `__test_*` or `__bench_*` declaration.
-  let (effective_entry, generated_test_artifact, lowered_test_names) = lower_test_blocks_gc(stmts, entry_name)
+  let (effective_entry, generated_test_artifact, lowered_test_names) = lower_test_blocks_gc(stmts = stmts, entry_name = entry_name)
   // #2441: the same observation carries the typed-`==` rows. On this lane
   // they need no rename mapping (the check runs on the POST-merge,
   // post-rename statements, so the keys already name the merged
@@ -188,17 +188,17 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
     // `export { __test_probe }` look resolved and this lane ACCEPTED it while
     // the FS lane refused -- measured, and the lane disagreement this issue is
     // about.
-    validate_user_source_exports_excluding(stmts, checked.final_env, lowered_test_names)
+    validate_user_source_exports_excluding(stmts = stmts, env = checked.final_env, synthesized = lowered_test_names)
   } else {
     ()
   }
   // #3545: retain the checker's String operand facts before erasure. Runtime
   // String producers need not be recognizable by the syntactic classifier.
   // Float VALUE offsets and the other typed rows retain their old contracts.
-  let string_rewritten = rewrite_string_binops_stmts(stmts, string_rels, string_pluses, typed_lowering_binop_anchor)
+  let string_rewritten = rewrite_string_binops_stmts(stmts = stmts, rels = string_rels, pluses = string_pluses, anchor = typed_lowering_binop_anchor)
   let mut string_i = 0
   while string_i < Array::length(stmts) {
-    Array::set(stmts, string_i, Array::get(string_rewritten, string_i))
+    Array::set(stmts, at = string_i, value = Array::get(string_rewritten, at = string_i))
     string_i = string_i + 1
   }
   // #3144 round 4: move a program's own `Array::length` / `Map::keys` / ...
@@ -229,7 +229,7 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // #3545: remember source roots before synthesis makes unused trait
   // dictionaries look like ordinary initializers. The GC-owned collector also
   // retains all exact test/bench names and normalizes a builtin-shadow entry.
-  let gc_source_roots = gc_source_dce_roots(stmts, effective_entry, lowered_test_names, generated_test_artifact)
+  let gc_source_roots = gc_source_dce_roots(stmts = stmts, entry_name = effective_entry, lowered_test_names = lowered_test_names, generated_test_artifact = generated_test_artifact)
   // Same effective order as the linear lane: check the source contract first,
   // lower trait witnesses while generic binders are still present, then erase
   // those binders for codegen. GC previously lowered inside
@@ -237,18 +237,18 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // rank-1 witness field such as `map[A, B]` as a monomorphic struct field.
   // Constructor-indexed pipeline calls then rejected `Array[Int]` against the
   // generated `Array[A]`, despite the original source checking cleanly.
-  desugar_trait_dicts_with_typed_eq(stmts, gc_eq_offsets, gc_eq_keys)
+  desugar_trait_dicts_with_typed_eq(stmts = stmts, typed_eq_offsets = gc_eq_offsets, typed_eq_keys = gc_eq_keys)
   // Trait-dict desugaring hoists capture-free effectful lambdas after the
   // pre-erasure snapshot. Add only those generated declarations; ordinary
   // declarations must keep the binder-aware pre-erasure answer.
-  gc_add_hoisted_float_returning_names(stmts, gc_pre_hoist_fn_names, gc_float_ret_fn_names)
+  gc_add_hoisted_float_returning_names(stmts = stmts, before_names = gc_pre_hoist_fn_names, names = gc_float_ret_fn_names)
   strip_generic_type_params(stmts)
   // Located offsets are relative to one source file. The filesystem GC lane
   // merges several such ASTs, so the same integer can name unrelated calls.
   // Keep only keys that identify exactly one call in the final statements;
   // a collision then loses a float hint instead of misclassifying an Int call.
   let unique_gc_float_call_offsets = if merged_offset_spaces {
-    unique_typed_lowering_offsets_in_stmts(stmts, gc_float_call_offsets)
+    unique_typed_lowering_offsets_in_stmts(stmts = stmts, candidates = gc_float_call_offsets)
   } else {
     // Direct source parsing has one offset space already. Avoid an extra AST
     // walk on the performance-sensitive selfbuild path.
@@ -264,37 +264,37 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // tags 3 and 5, so its `__to_string` lowering never saw a refusal row and
   // printed the argument's address where linear refused the build.
   let (gc_int_only, gc_bool_render_offsets, gc_unrenderable) = checked_int_bool_and_unrenderable_render_offsets(checked)
-  let gc_int_render_offsets = merge_unrenderable_render_offsets(gc_int_only, gc_unrenderable)
+  let gc_int_render_offsets = merge_unrenderable_render_offsets(ints = gc_int_only, unrenderable = gc_unrenderable)
   // Decide offset uniqueness over the complete graph above. Removing a dead
   // occurrence first could make a collided key look unique for the wrong type.
-  gc_prune_source_functions(stmts, gc_source_roots)
-  let emitted = compile_wasi_module_gc(stmts, effective_entry, generated_test_artifact, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, unique_gc_float_call_offsets, gc_int_render_offsets, gc_bool_render_offsets)
-  gc_prune_unreachable_functions(emitted, effective_entry)
+  gc_prune_source_functions(stmts = stmts, source_roots = gc_source_roots)
+  let emitted = compile_wasi_module_gc(stmts = stmts, entry_name = effective_entry, generated_test_artifact = generated_test_artifact, gc_to_string_is_wrapper = gc_to_string_is_wrapper, direct_abi_generic_names = direct_abi_generic_names, gc_float_ret_fn_names = gc_float_ret_fn_names, gc_float_call_offsets = unique_gc_float_call_offsets, gc_int_render_offsets = gc_int_render_offsets, gc_bool_render_offsets = gc_bool_render_offsets)
+  gc_prune_unreachable_functions(mod_bytes = emitted, entry_name = effective_entry)
 }
 
 fn compile_source_gc_only_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
   gc_merged_offset_space_reset()
   let (tokens, starts, _) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
   if !trusted_generated {
     validate_user_source_stmts(stmts)
   } else {
     ()
   }
-  compile_stmts_gc_only_impl(stmts, entry_name, false, !trusted_generated)
+  compile_stmts_gc_only_impl(stmts = stmts, entry_name = entry_name, merged_offset_spaces = false, validate_exports = !trusted_generated)
 }
 
 export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_gc_only_impl(source, entry_name, false)
+  compile_source_gc_only_impl(source = source, entry_name = entry_name, trusted_generated = false)
 }
 
 export fn compile_generated_source_gc_only(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_gc_only_impl(source, entry_name, true)
+  compile_source_gc_only_impl(source = source, entry_name = entry_name, trusted_generated = true)
 }
 
 /// Compile an import-resolved, compiler-generated statement graph without a
 /// source round trip. Module merging may use internal identifier spellings
 /// that are valid in the AST but deliberately not accepted by the user lexer.
 export fn compile_generated_stmts_gc_only(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
-  compile_stmts_gc_only_impl(stmts, entry_name, true, false)
+  compile_stmts_gc_only_impl(stmts = stmts, entry_name = entry_name, merged_offset_spaces = true, validate_exports = false)
 }

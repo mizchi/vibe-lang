@@ -87,7 +87,7 @@ export fn railway_bind_payload_type(val: Expr, struct_sets: Array[(String, Array
   match val {
     ECall(callee, inner_args, _, _) => match callee {
       EIdent(cname, _) => if (cname == "Some" || cname == "Ok") && Array::length(inner_args) == 1 {
-        infer_arg_type_name(Array::get(inner_args, 0), struct_sets, var_types, fn_returns)
+        infer_arg_type_name(arg = Array::get(inner_args, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
       } else {
         None
       },
@@ -101,32 +101,32 @@ export fn railway_bind_payload_type(val: Expr, struct_sets: Array[(String, Array
 /// recovery still sees the mask so a stale outer witness cannot be selected.
 export fn constructor_rewrite_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
   match inferred {
-    Some(tname) => extend_constructor_var_types(var_types, name, Some(tname)),
-    None => if !constructor_binding_has_evidence(var_types, name) && !constructor_env_has_binding(var_types, name) {
+    Some(tname) => extend_constructor_var_types(var_types = var_types, name = name, inferred = Some(tname)),
+    None => if !constructor_binding_has_evidence(var_types = var_types, name = name) && !constructor_env_has_binding(var_types = var_types, name = name) {
       var_types
     } else {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(var_types) {
-        let entry = Array::get(var_types, i)
+        let entry = Array::get(var_types, at = i)
         let (entry_name, _) = entry
         if entry_name == constructor_mask_key(name) || entry_name == constructor_head_key(name) || entry_name == local_fn_return_key(name) {
           ()
         } else {
-          Array::push(out, entry)
+          Array::push(out, value = entry)
         }
         i = i + 1
       }
-      Array::push(out, (constructor_mask_key(name), ""))
+      Array::push(out, value = (constructor_mask_key(name), ""))
       out
     }
   }
 }
 
 export fn constructor_for_body_var_types(iter: Expr, value_name: String, index_name: Option[String], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let value_vars = constructor_rewrite_var_types(var_types, value_name, infer_arg_elem_type_name(iter, struct_sets, var_types, fn_returns))
+  let value_vars = constructor_rewrite_var_types(var_types = var_types, name = value_name, inferred = infer_arg_elem_type_name(arg = iter, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns))
   match index_name {
-    Some(name) => constructor_rewrite_var_types(value_vars, name, Some("Int")),
+    Some(name) => constructor_rewrite_var_types(var_types = value_vars, name = name, inferred = Some("Int")),
     None => value_vars
   }
 }
@@ -150,38 +150,38 @@ export fn for_body_var_types(iter: Expr, value_name: String, index_name: Option[
     Some(iname) => [value_name, iname],
     None => [value_name]
   }
-  let elem = infer_arg_elem_type_name(iter, struct_sets, var_types, fn_returns)
-  let tracking = Array::get(dtd_constructor_tracking, 0)
-  if (elem is None) && (index_name is None) && !for_binders_shadow(var_types, names) {
+  let elem = infer_arg_elem_type_name(arg = iter, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
+  let tracking = Array::get(dtd_constructor_tracking, at = 0)
+  if (elem is None) && (index_name is None) && !for_binders_shadow(var_types = var_types, names = names) {
     if tracking {
-      constructor_for_body_var_types(iter, value_name, index_name, struct_sets, var_types, fn_returns)
+      constructor_for_body_var_types(iter = iter, value_name = value_name, index_name = index_name, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
     } else {
       var_types
     }
   } else {
-    let target = for_elem_impl_target(iter, elem, struct_sets, var_types, fn_returns)
+    let target = for_elem_impl_target(iter = iter, elem = elem, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
     let params: Array[(String, Option[TypeExpr])] = for n in names {
       (n, None)
     }
-    let masked = seed_var_types(params, empty_str_array(), var_types)
+    let masked = seed_var_types(params = params, tparams = empty_str_array(), base = var_types)
     let out = if tracking {
-      constructor_rewrite_var_types(masked, value_name, elem)
+      constructor_rewrite_var_types(var_types = masked, name = value_name, inferred = elem)
     } else {
       match elem {
-        Some(t) => Array::push(masked, (value_name, t)),
+        Some(t) => Array::push(masked, value = (value_name, t)),
         None => ()
       }
       masked
     }
     match target {
-      Some(key) => Array::push(out, (impl_target_var_key(value_name), key)),
+      Some(key) => Array::push(out, value = (impl_target_var_key(value_name), key)),
       None => ()
     }
     match index_name {
       Some(iname) => if tracking {
-        constructor_rewrite_var_types(out, iname, Some("Int"))
+        constructor_rewrite_var_types(var_types = out, name = iname, inferred = Some("Int"))
       } else {
-        Array::push(out, (iname, "Int"))
+        Array::push(out, value = (iname, "Int"))
         out
       },
       None => out
@@ -196,9 +196,9 @@ fn for_binders_shadow(var_types: Array[(String, String)], names: Array[String]) 
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(var_types) {
-    let (key, _) = Array::get(var_types, i)
+    let (key, _) = Array::get(var_types, at = i)
     for n in names {
-      if key == n || String::ends_with(key, String::concat("$", n)) {
+      if key == n || String::ends_with(key, suffix = String::concat("$", n)) {
         found = true
       } else {
         ()
@@ -213,9 +213,9 @@ fn for_binders_shadow(var_types: Array[(String, String)], names: Array[String]) 
 /// `Array[..]` target when its head agrees with `elem`.
 fn for_elem_impl_target(iter: Expr, elem: Option[String], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match elem {
-    Some(head) => match infer_impl_target_expr(iter, struct_sets, var_types, fn_returns) {
+    Some(head) => match infer_impl_target_expr(arg = iter, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
       Some(TyApp(c, args)) => if c == "Array" && Array::length(args) == 1 {
-        let t = Array::get(args, 0)
+        let t = Array::get(args, at = 0)
         let thead = match t {
           TyName(n) => n,
           TyApp(n, _) => n,
@@ -235,11 +235,11 @@ fn for_elem_impl_target(iter: Expr, elem: Option[String], struct_sets: Array[(St
   }
 }
 
-fn gen_uses_constructor_receiver(gen: DictGen) -> Bool {
+fn gen_uses_constructor_receiver(_ gen: DictGen) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(gen.threaded) && !found {
-    let (_, _, recv_idx) = Array::get(gen.threaded, i)
+    let (_, _, recv_idx) = Array::get(gen.threaded, at = i)
     found = is_constructor_recv_index(recv_idx)
     i = i + 1
   }
@@ -248,11 +248,11 @@ fn gen_uses_constructor_receiver(gen: DictGen) -> Bool {
 
 // A call can use a constructor witness only if its resolved generic entry
 // threads one. Avoid walking every expression when the table has none.
-export fn gens_use_constructor_receiver(gens: Array[DictGen]) -> Bool {
+export fn gens_use_constructor_receiver(_ gens: Array[DictGen]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(gens) && !found {
-    found = gen_uses_constructor_receiver(Array::get(gens, i))
+    found = gen_uses_constructor_receiver(Array::get(gens, at = i))
     i = i + 1
   }
   found
@@ -262,8 +262,8 @@ export fn gens_use_constructor_receiver(gens: Array[DictGen]) -> Bool {
 /// these values need extended constructor inference; block/match/handler results
 /// are inferred when they are used directly as witness receivers.
 export fn result_uses_constructor_witness(expr: Expr, gens: Array[DictGen]) -> Bool {
-  Array::get(dtd_constructor_tracking, 0) && match expr {
-    ECall(EIdent(name, _), _, _, _) => match lookup_gen_entry(gens, name) {
+  Array::get(dtd_constructor_tracking, at = 0) && match expr {
+    ECall(EIdent(name, _), _, _, _) => match lookup_gen_entry(gens = gens, name = name) {
       Some(gen) => gen_uses_constructor_receiver(gen),
       None => false
     },
@@ -271,19 +271,19 @@ export fn result_uses_constructor_witness(expr: Expr, gens: Array[DictGen]) -> B
   }
 }
 
-fn collect_constructor_receiver_names(expr: Expr) -> Unit {
+fn collect_constructor_receiver_names(_ expr: Expr) -> Unit {
   match expr {
-    EIdent(name, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+    EIdent(name, _) => if str_array_contains(arr = dtd_constructor_local_returns, val = name) {
       ()
     } else {
-      Array::push(dtd_constructor_local_returns, name)
+      Array::push(dtd_constructor_local_returns, value = name)
     },
     _ => ()
   }
   let children = expr_children(expr)
   let mut i = 0
   while i < Array::length(children) {
-    collect_constructor_receiver_names(Array::get(children, i))
+    collect_constructor_receiver_names(Array::get(children, at = i))
     i = i + 1
   }
 }
@@ -291,10 +291,10 @@ fn collect_constructor_receiver_names(expr: Expr) -> Unit {
 fn record_constructor_receiver_names(gen: DictGen, args: Array[Expr]) -> Unit {
   let mut i = 0
   while i < Array::length(gen.constructor_recvs) {
-    let (_, encoded_index) = Array::get(gen.constructor_recvs, i)
+    let (_, encoded_index) = Array::get(gen.constructor_recvs, at = i)
     let index = decode_constructor_recv_index(encoded_index)
     if index >= 0 && index < Array::length(args) {
-      collect_constructor_receiver_names(Array::get(args, index))
+      collect_constructor_receiver_names(Array::get(args, at = index))
     } else {
       ()
     }
@@ -304,9 +304,9 @@ fn record_constructor_receiver_names(gen: DictGen, args: Array[Expr]) -> Unit {
 
 fn expr_uses_constructor_witness(expr: Expr, gens: Array[DictGen]) -> Bool {
   let here = match expr {
-    ECall(EIdent(name, _), args, _, _) => match lookup_gen_entry(gens, name) {
+    ECall(EIdent(name, _), args, _, _) => match lookup_gen_entry(gens = gens, name = name) {
       Some(gen) => if gen_uses_constructor_receiver(gen) {
-        record_constructor_receiver_names(gen, args)
+        record_constructor_receiver_names(gen = gen, args = args)
         true
       } else {
         false
@@ -320,7 +320,7 @@ fn expr_uses_constructor_witness(expr: Expr, gens: Array[DictGen]) -> Bool {
   let mut i = mark
   let mut found = here
   while i < end {
-    if expr_uses_constructor_witness(expr_child_at(i), gens) {
+    if expr_uses_constructor_witness(expr = expr_child_at(i), gens = gens) {
       found = true
     } else {
       ()
@@ -335,16 +335,16 @@ export fn stmts_use_constructor_witness(stmts: Array[Stmt], gens: Array[DictGen]
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) {
-    let current = match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => expr_uses_constructor_witness(expr, gens),
-      SLetMut(_, _, expr) => expr_uses_constructor_witness(expr, gens),
-      SLetPat(_, expr) => expr_uses_constructor_witness(expr, gens),
-      STest(_, expr) => expr_uses_constructor_witness(expr, gens),
-      SBench(_, expr) => expr_uses_constructor_witness(expr, gens),
-      SExample(_, expr) => expr_uses_constructor_witness(expr, gens),
-      SExpr(expr) => expr_uses_constructor_witness(expr, gens),
-      SFnDecl(_, _, expr, requires, ensures) => expr_uses_constructor_witness(expr, gens) || expr_list_uses_constructor_witness(requires, gens) || expr_list_uses_constructor_witness(ensures, gens),
-      SModule(_, _, body) => stmts_use_constructor_witness(body, gens),
+    let current = match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, expr) => expr_uses_constructor_witness(expr = expr, gens = gens),
+      SLetMut(_, _, expr) => expr_uses_constructor_witness(expr = expr, gens = gens),
+      SLetPat(_, expr) => expr_uses_constructor_witness(expr = expr, gens = gens),
+      STest(_, expr) => expr_uses_constructor_witness(expr = expr, gens = gens),
+      SBench(_, expr) => expr_uses_constructor_witness(expr = expr, gens = gens),
+      SExample(_, expr) => expr_uses_constructor_witness(expr = expr, gens = gens),
+      SExpr(expr) => expr_uses_constructor_witness(expr = expr, gens = gens),
+      SFnDecl(_, _, expr, requires, ensures) => expr_uses_constructor_witness(expr = expr, gens = gens) || expr_list_uses_constructor_witness(exprs = requires, gens = gens) || expr_list_uses_constructor_witness(exprs = ensures, gens = gens),
+      SModule(_, _, body) => stmts_use_constructor_witness(stmts = body, gens = gens),
       _ => false
     }
     if current {
@@ -361,7 +361,7 @@ fn expr_list_uses_constructor_witness(exprs: Array[Expr], gens: Array[DictGen]) 
   let mut i = 0
   let mut found = false
   while i < Array::length(exprs) {
-    if expr_uses_constructor_witness(Array::get(exprs, i), gens) {
+    if expr_uses_constructor_witness(expr = Array::get(exprs, at = i), gens = gens) {
       found = true
     } else {
       ()
@@ -371,58 +371,58 @@ fn expr_list_uses_constructor_witness(exprs: Array[Expr], gens: Array[DictGen]) 
   found
 }
 
-fn constructor_receiver_pattern_is_needed(pat: Pat) -> Bool {
+fn constructor_receiver_pattern_is_needed(_ pat: Pat) -> Bool {
   let binders = empty_str_array()
-  collect_pat_binders(pat, binders)
+  collect_pat_binders(p = pat, out = binders)
   let mut i = 0
   let mut needed = false
   while i < Array::length(binders) && !needed {
-    needed = str_array_contains(dtd_constructor_local_returns, Array::get(binders, i))
+    needed = str_array_contains(arr = dtd_constructor_local_returns, val = Array::get(binders, at = i))
     i = i + 1
   }
   needed
 }
 
-fn constructor_receiver_arms_need_scrutinee(arms: Array[(Pat, Expr)]) -> Bool {
+fn constructor_receiver_arms_need_scrutinee(_ arms: Array[(Pat, Expr)]) -> Bool {
   let mut i = 0
   let mut needed = false
   while i < Array::length(arms) && !needed {
-    let (pat, _) = Array::get(arms, i)
+    let (pat, _) = Array::get(arms, at = i)
     needed = constructor_receiver_pattern_is_needed(pat)
     i = i + 1
   }
   needed
 }
 
-fn propagate_constructor_receiver_names_expr(expr: Expr) -> Unit {
+fn propagate_constructor_receiver_names_expr(_ expr: Expr) -> Unit {
   match expr {
-    ELet(name, value, _, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+    ELet(name, value, _, _) => if str_array_contains(arr = dtd_constructor_local_returns, val = name) {
       collect_constructor_receiver_names(value)
     } else {
       ()
     },
-    ELetRec(name, value, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+    ELetRec(name, value, _) => if str_array_contains(arr = dtd_constructor_local_returns, val = name) {
       collect_constructor_receiver_names(value)
     } else {
       ()
     },
-    ELetMut(name, value, _, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+    ELetMut(name, value, _, _) => if str_array_contains(arr = dtd_constructor_local_returns, val = name) {
       collect_constructor_receiver_names(value)
     } else {
       ()
     },
-    EAssign(name, value, _, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+    EAssign(name, value, _, _) => if str_array_contains(arr = dtd_constructor_local_returns, val = name) {
       collect_constructor_receiver_names(value)
     } else {
       ()
     },
-    EAssignOp(name, _, value, _, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+    EAssignOp(name, _, value, _, _) => if str_array_contains(arr = dtd_constructor_local_returns, val = name) {
       collect_constructor_receiver_names(value)
     } else {
       ()
     },
-    EForIn(value_name, key_name, iter, _) => if str_array_contains(dtd_constructor_local_returns, value_name) || match key_name {
-      Some(name) => str_array_contains(dtd_constructor_local_returns, name),
+    EForIn(value_name, key_name, iter, _) => if str_array_contains(arr = dtd_constructor_local_returns, val = value_name) || match key_name {
+      Some(name) => str_array_contains(arr = dtd_constructor_local_returns, val = name),
       None => false
     } {
       collect_constructor_receiver_names(iter)
@@ -432,8 +432,8 @@ fn propagate_constructor_receiver_names_expr(expr: Expr) -> Unit {
     ELoop(params, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        let (name, initial) = Array::get(params, i)
-        if str_array_contains(dtd_constructor_local_returns, name) {
+        let (name, initial) = Array::get(params, at = i)
+        if str_array_contains(arr = dtd_constructor_local_returns, val = name) {
           collect_constructor_receiver_names(initial)
         } else {
           ()
@@ -456,17 +456,17 @@ fn propagate_constructor_receiver_names_expr(expr: Expr) -> Unit {
   let children = expr_children(expr)
   let mut i = 0
   while i < Array::length(children) {
-    propagate_constructor_receiver_names_expr(Array::get(children, i))
+    propagate_constructor_receiver_names_expr(Array::get(children, at = i))
     i = i + 1
   }
 }
 
-export fn propagate_constructor_receiver_names(stmts: Array[Stmt]) -> Unit {
+export fn propagate_constructor_receiver_names(_ stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, _, expr) => {
-        if str_array_contains(dtd_constructor_local_returns, name) {
+        if str_array_contains(arr = dtd_constructor_local_returns, val = name) {
           collect_constructor_receiver_names(expr)
         } else {
           ()
@@ -474,7 +474,7 @@ export fn propagate_constructor_receiver_names(stmts: Array[Stmt]) -> Unit {
         propagate_constructor_receiver_names_expr(expr)
       },
       SLetMut(name, _, expr) => {
-        if str_array_contains(dtd_constructor_local_returns, name) {
+        if str_array_contains(arr = dtd_constructor_local_returns, val = name) {
           collect_constructor_receiver_names(expr)
         } else {
           ()
@@ -497,12 +497,12 @@ export fn propagate_constructor_receiver_names(stmts: Array[Stmt]) -> Unit {
         propagate_constructor_receiver_names_expr(expr)
         let mut ri = 0
         while ri < Array::length(requires) {
-          propagate_constructor_receiver_names_expr(Array::get(requires, ri))
+          propagate_constructor_receiver_names_expr(Array::get(requires, at = ri))
           ri = ri + 1
         }
         let mut ei = 0
         while ei < Array::length(ensures) {
-          propagate_constructor_receiver_names_expr(Array::get(ensures, ei))
+          propagate_constructor_receiver_names_expr(Array::get(ensures, at = ei))
           ei = ei + 1
         }
       },
@@ -525,15 +525,15 @@ export fn qual_ctor_member(head: String, member: String, struct_sets: Array[(Str
   // `C::Red` (it follows `TDAlias`) while this pass leaves the name qualified,
   // and codegen -- whose ctor table is keyed unqualified -- dies with
   // `undefined variable (ident): C::Red`. A non-alias head resolves to itself.
-  let head = resolve_alias_head(fn_returns, head)
-  if struct_set_has(struct_sets, head) {
+  let head = resolve_alias_head(fn_returns = fn_returns, head = head)
+  if struct_set_has(struct_sets = struct_sets, name = head) {
     // #1491: ask whether `member` is recorded as a constructor of THIS enum,
     // not what `member`'s first table entry returns. Constructor names collide
     // across enums (`enum Color { Red }` next to an imported `enum Paint
     // { Red }`), and the first-match form answered about the wrong enum, left
     // the name qualified, and handed codegen -- whose ctor table is keyed
     // unqualified -- `undefined variable (ident): Color::Red`.
-    if fn_returns_has_type(fn_returns, member, head) {
+    if fn_returns_has_type(fn_returns = fn_returns, fname = member, want = head) {
       Some(member)
     } else {
       None

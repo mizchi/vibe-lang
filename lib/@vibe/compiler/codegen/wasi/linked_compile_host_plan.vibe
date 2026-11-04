@@ -74,25 +74,25 @@ import ./linked_compile_linkedhostplan.vibe {
 
 // Reserve host imports and generated builtin indices in their existing order.
 export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bool, entry_name: String, linemap_on: Bool, linked_imports: Array[(String, String, Int, Int)], need_div_zero_abort: Bool, need_region_arena: Bool, pre_prelude_let_files: Array[Int], pre_prelude_let_names: Array[String], pre_prelude_owner_files: Array[Int], pre_prelude_owner_keys: Array[String], rc_shadow: Bool, stmts: Array[Stmt], used_builtin_names: Map[String, Bool]) -> LinkedHostPlan with Exception {
-  let need_env_get_builtin = Map::has_key(used_builtin_names, "Env::get")
-  let need_env_args_len_builtin = Map::has_key(used_builtin_names, "Env::args_len")
-  let need_env_args_get_builtin = Map::has_key(used_builtin_names, "Env::args_get")
-  let need_fs_read_file_builtin = Map::has_key(used_builtin_names, "Fs::read_file")
-  let need_fs_exists_builtin = Map::has_key(used_builtin_names, "Fs::exists")
+  let need_env_get_builtin = Map::has_key(used_builtin_names, key = "Env::get")
+  let need_env_args_len_builtin = Map::has_key(used_builtin_names, key = "Env::args_len")
+  let need_env_args_get_builtin = Map::has_key(used_builtin_names, key = "Env::args_get")
+  let need_fs_read_file_builtin = Map::has_key(used_builtin_names, key = "Fs::read_file")
+  let need_fs_exists_builtin = Map::has_key(used_builtin_names, key = "Fs::exists")
   // #795: vibe_fs_stat_token_raw is the alias-collision-proof surface for the
   // same import (lib/@vibe/fs/fs.vibe calls it; see core/builtin_registry.vibe).
-  let need_fs_stat_token_builtin = Map::has_key(used_builtin_names, "Fs::stat_token") || Map::has_key(used_builtin_names, "vibe_fs_stat_token_raw")
-  let need_fs_write_file_builtin = Map::has_key(used_builtin_names, "Fs::write_file")
+  let need_fs_stat_token_builtin = Map::has_key(used_builtin_names, key = "Fs::stat_token") || Map::has_key(used_builtin_names, key = "vibe_fs_stat_token_raw")
+  let need_fs_write_file_builtin = Map::has_key(used_builtin_names, key = "Fs::write_file")
   // Atomically publish text only when the target is absent. Kept unused by
   // compiler sources until the future cache-publisher PR adopts it.
-  let need_fs_publish_immutable_text_builtin = Map::has_key(used_builtin_names, "Fs::publish_immutable_text")
-  let need_fs_write_bytes_builtin = Map::has_key(used_builtin_names, "Fs::write_bytes")
+  let need_fs_publish_immutable_text_builtin = Map::has_key(used_builtin_names, key = "Fs::publish_immutable_text")
+  let need_fs_write_bytes_builtin = Map::has_key(used_builtin_names, key = "Fs::write_bytes")
   // #632: `Fs::read_bytes(path) -> Bytes` — the binary-exact read counterpart of
   // Fs::write_bytes, a `vibe.fs_read_bytes (i64) -> i64` host import (type 3,
   // same shape as fs_read_file). Gated on use so non-users reserve no import
   // (fixpoint-safe). Lets the persistent artifact cache store/load wasm raw.
-  let need_fs_read_bytes_builtin = Map::has_key(used_builtin_names, "Fs::read_bytes")
-  let need_compiler_lowering = Map::has_key(used_builtin_names, "compiler_lowering_run")
+  let need_fs_read_bytes_builtin = Map::has_key(used_builtin_names, key = "Fs::read_bytes")
+  let need_compiler_lowering = Map::has_key(used_builtin_names, key = "compiler_lowering_run")
   // #729/#730: `Fs::readdir(path) -> Array[String]` — a `vibe.fs_read_dir_nul
   // (i64) -> i64` host import (type 3, same packed-string shape as
   // fs_read_file: the host returns the byte-sorted entry NAMES NUL-joined as
@@ -103,19 +103,19 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   // Array[String] surface to `String::split` over that string. Gated on use
   // (fixpoint-safe). Unblocks contract-package sibling auto-discovery and the
   // global store walk.
-  let need_fs_readdir_builtin = Map::has_key(used_builtin_names, "Fs::readdir")
-  let need_profiler_now_us_builtin = Map::has_key(used_builtin_names, "Profiler::now_us")
+  let need_fs_readdir_builtin = Map::has_key(used_builtin_names, key = "Fs::readdir")
+  let need_profiler_now_us_builtin = Map::has_key(used_builtin_names, key = "Profiler::now_us")
   // `Profiler::heap_bytes() -> Int`: a `vibe.profile-heap-bytes () -> i64`
   // host import (type 5, same shape as profile-now-us). Returns the guest's
   // current bump-heap pointer (`__heap_ptr`) so vibe code can attribute its
   // own allocation growth per phase, mirroring how now_us attributes time.
   // Gated on use so non-users reserve no import (fixpoint-safe).
-  let need_profiler_heap_bytes_builtin = Map::has_key(used_builtin_names, "Profiler::heap_bytes")
+  let need_profiler_heap_bytes_builtin = Map::has_key(used_builtin_names, key = "Profiler::heap_bytes")
   // `sleep(ms)` (Async): a `vibe.sleep (i64) -> ()` host import. The host
   // implements it as an async function so the guest fiber genuinely
   // suspends/resumes (docs/internal/design/wasi-p3-async.md §2.3, examples/async_host).
   // Gated on use, so programs without `sleep` reserve no import (fixpoint-safe).
-  let need_sleep_builtin = Map::has_key(used_builtin_names, "sleep") || Map::has_key(used_builtin_names, "sleep_blocking")
+  let need_sleep_builtin = Map::has_key(used_builtin_names, key = "sleep") || Map::has_key(used_builtin_names, key = "sleep_blocking")
   // `Stdin::read_char() -> Int`: a value-returning `vibe.stdin_read_char () ->
   // i64` host import. Implemented async by the host (it can suspend the guest
   // until a char is available), so this is the data-consuming analog of `sleep`
@@ -128,7 +128,7 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   // back to the never-called stub, and the call reached a target of a
   // different arity -- a module that BUILDS CLEAN and then fails to validate
   // ("not enough arguments on the stack for call (need 1, got 0)").
-  let need_stdin_read_char_builtin = Map::has_key(used_builtin_names, "Stdin::read_char") || Map::has_key(used_builtin_names, "Console::read_char")
+  let need_stdin_read_char_builtin = Map::has_key(used_builtin_names, key = "Stdin::read_char") || Map::has_key(used_builtin_names, key = "Console::read_char")
   // ADR-0089 step 4 (#1218): host-future imports -- `vibe.host_future_get
   // () -> i64` (the tagged readable-end handle) and `vibe.host_future_wait
   // (i64) -> i64` (park on the handle via waitable-set.wait, return the
@@ -159,17 +159,17 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   let hf_response_arg_addresses = lc_fresh_string_array()
   let mut hf_split_i = 0
   while hf_split_i < Array::length(hf_collected_names) {
-    let hf_split_name = Array::get(hf_collected_names, hf_split_i)
-    if String::starts_with(hf_split_name, "!?") {
-      Array::push(hf_response_arg_names, hf_split_name)
-      Array::push(hf_response_arg_addresses, String::substring(hf_split_name, 2, String::length(hf_split_name)))
-    } else if String::starts_with(hf_split_name, "!") {
-      Array::push(hf_response_names, hf_split_name)
-      Array::push(hf_response_addresses, String::substring(hf_split_name, 1, String::length(hf_split_name)))
-    } else if String::index_of(hf_split_name, "#") > 0 {
-      Array::push(hf_wit_names, hf_split_name)
+    let hf_split_name = Array::get(hf_collected_names, at = hf_split_i)
+    if String::starts_with(hf_split_name, prefix = "!?") {
+      Array::push(hf_response_arg_names, value = hf_split_name)
+      Array::push(hf_response_arg_addresses, value = String::substring(hf_split_name, start = 2, end = String::length(hf_split_name)))
+    } else if String::starts_with(hf_split_name, prefix = "!") {
+      Array::push(hf_response_names, value = hf_split_name)
+      Array::push(hf_response_addresses, value = String::substring(hf_split_name, start = 1, end = String::length(hf_split_name)))
+    } else if String::index_of(hf_split_name, needle = "#") > 0 {
+      Array::push(hf_wit_names, value = hf_split_name)
     } else {
-      Array::push(hf_named_names, hf_split_name)
+      Array::push(hf_named_names, value = hf_split_name)
     }
     hf_split_i = hf_split_i + 1
   }
@@ -178,26 +178,26 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   // anonymous surface: a program that awaits `host_future_named("price")`
   // alone must import `price`, not a `get-future` nothing calls (an unused
   // import is still an import the host has to satisfy).
-  let need_host_future_builtin = Map::has_key(used_builtin_names, "host_future_get") || Map::has_key(used_builtin_names, "vibe_hf_get_raw")
+  let need_host_future_builtin = Map::has_key(used_builtin_names, key = "host_future_get") || Map::has_key(used_builtin_names, key = "vibe_hf_get_raw")
   // The WAIT half is shared by every host future: `__entry_settle`'s
   // waitable arm parks on a handle without caring where it came from.
-  let need_host_future_wait_builtin = need_host_future_builtin || Map::has_key(used_builtin_names, "vibe_hf_wait_raw") || Array::length(hf_all_names) > 0
+  let need_host_future_wait_builtin = need_host_future_builtin || Map::has_key(used_builtin_names, key = "vibe_hf_wait_raw") || Array::length(hf_all_names) > 0
   // #1537: the group-wide wait (arm + wait-any), used only by the bodies
   // lc_host_hooks_install gives @vibe/concurrent's hooks.
-  let need_host_future_arm_builtin = Map::has_key(used_builtin_names, "vibe_hf_arm_raw")
-  let need_host_future_wait_any_builtin = Map::has_key(used_builtin_names, "vibe_hf_wait_any_raw")
-  let need_host_stream_arm_builtin = Map::has_key(used_builtin_names, "vibe_hs_arm_raw")
-  let need_host_sleep_arm_builtin = Map::has_key(used_builtin_names, "vibe_hf_sleep_arm_raw")
-  let need_host_sleep_cancel_builtin = Map::has_key(used_builtin_names, "vibe_hf_sleep_cancel_raw")
-  let need_host_future_cancel_builtin = Map::has_key(used_builtin_names, "vibe_hf_cancel_raw")
-  let need_host_stream_cancel_builtin = Map::has_key(used_builtin_names, "vibe_hs_cancel_raw")
+  let need_host_future_arm_builtin = Map::has_key(used_builtin_names, key = "vibe_hf_arm_raw")
+  let need_host_future_wait_any_builtin = Map::has_key(used_builtin_names, key = "vibe_hf_wait_any_raw")
+  let need_host_stream_arm_builtin = Map::has_key(used_builtin_names, key = "vibe_hs_arm_raw")
+  let need_host_sleep_arm_builtin = Map::has_key(used_builtin_names, key = "vibe_hf_sleep_arm_raw")
+  let need_host_sleep_cancel_builtin = Map::has_key(used_builtin_names, key = "vibe_hf_sleep_cancel_raw")
+  let need_host_future_cancel_builtin = Map::has_key(used_builtin_names, key = "vibe_hf_cancel_raw")
+  let need_host_stream_cancel_builtin = Map::has_key(used_builtin_names, key = "vibe_hs_cancel_raw")
   // #2066: the push is SYNTHESIZED by the `host_response_named_with`
   // lowering, after the used-name collect ran over the source, so the
   // request-parameter responses the collector found demand it too.
-  let need_host_arg_push_builtin = Map::has_key(used_builtin_names, "vibe_hf_arg_push_raw") || Array::length(hf_response_arg_names) > 0
+  let need_host_arg_push_builtin = Map::has_key(used_builtin_names, key = "vibe_hf_arg_push_raw") || Array::length(hf_response_arg_names) > 0
   // #2066: `HostResponse::body` lowers to the claim, also after the collect,
   // so any response in the program demands it.
-  let need_host_claim_builtin = Map::has_key(used_builtin_names, "vibe_hs_claim_raw") || Array::length(hf_response_arg_names) > 0 || Array::length(hf_response_names) > 0
+  let need_host_claim_builtin = Map::has_key(used_builtin_names, key = "vibe_hs_claim_raw") || Array::length(hf_response_arg_names) > 0 || Array::length(hf_response_names) > 0
   // ADR-0089 Decision 3 (#1218): the program's NAMED host streams (sorted,
   // deduped). Each gets its own `vibe.host_stream_get$<name>` core import;
   // they all share the single `vibe.host_stream_read` half (park is per
@@ -205,50 +205,50 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   // `__entry_settle` stream arm calls -- the injection runs before the
   // used-name collect, so the raw name also lands in used_builtin_names.
   let hs_named_names = lc_collect_host_stream_names(stmts)
-  let need_host_stream_read_builtin = Map::has_key(used_builtin_names, "vibe_hs_read_raw") || Array::length(hs_named_names) > 0
-  let serve_handler_has_host_stream = lc_serve_handler_takes_host_stream(stmts, entry_name)
+  let need_host_stream_read_builtin = Map::has_key(used_builtin_names, key = "vibe_hs_read_raw") || Array::length(hs_named_names) > 0
+  let serve_handler_has_host_stream = lc_serve_handler_takes_host_stream(stmts = stmts, entry_name = entry_name)
   // #1342: an `() -> Int with Async` entry named `run` that sleeps is routed
   // to the adapter-backed composition too (its `vibe.sleep` import is
   // satisfied by the adapter's sleep half), so its core has to publish the
   // value convention the adapter decodes the ms argument with (ADR-0106).
   // Keyed on the same pair the router keys on, so an ordinary program that
   // sleeps is not componentized and its bytes do not move.
-  let sleep_needs_component_adapter = need_sleep_builtin && entry_name == "run" && lc_entry_declares_async(stmts, entry_name)
+  let sleep_needs_component_adapter = need_sleep_builtin && entry_name == "run" && lc_entry_declares_async(stmts = stmts, entry_name = entry_name)
   // ADR-0089 Decision 3 follow-up (#1218): the shared CLOSE half. Gated on
   // ACTUAL use (unlike the read half, which every named stream implies) so
   // a program that always drains to EOS reserves no extra import and its
   // module bytes are unchanged -- the injected `__hs_close` is the only
   // caller, and it only exists when the source called `host_stream_close`.
-  let need_host_stream_close_builtin = Map::has_key(used_builtin_names, "vibe_hs_close_raw")
+  let need_host_stream_close_builtin = Map::has_key(used_builtin_names, key = "vibe_hs_close_raw")
   // #1539 public names and checker-hidden raw names share the exact three
   // component-private import targets. Gate each half independently.
-  let need_stdin_provider_acquire_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_acquire_raw") || Map::has_key(used_builtin_names, "Stdin::read_via_stream")
-  let need_stdin_provider_read_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_read_raw") || Map::has_key(used_builtin_names, "StdinStream::next")
-  let need_stdin_provider_close_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_close_raw") || Map::has_key(used_builtin_names, "StdinStream::close")
+  let need_stdin_provider_acquire_builtin = Map::has_key(used_builtin_names, key = "vibe_stdin_provider_acquire_raw") || Map::has_key(used_builtin_names, key = "Stdin::read_via_stream")
+  let need_stdin_provider_read_builtin = Map::has_key(used_builtin_names, key = "vibe_stdin_provider_read_raw") || Map::has_key(used_builtin_names, key = "StdinStream::next")
+  let need_stdin_provider_close_builtin = Map::has_key(used_builtin_names, key = "vibe_stdin_provider_close_raw") || Map::has_key(used_builtin_names, key = "StdinStream::close")
   // Process effect host imports: `sh(cmd)` runs a shell command (returns 0) and
   // `sh_lines(cmd)` returns its stdout "\n"-joined as ONE string (same packed
   // ABI as fs_read_dir; compile_call lowers the Array[String] surface to a
   // String::split). Both `vibe.sh` / `vibe.sh_lines (i64) -> i64` host imports,
   // gated on use so non-users reserve no import (fixpoint-safe). Revives the
   // process/time/shell stdlib whose functions call these.
-  let need_sh_builtin = Map::has_key(used_builtin_names, "sh")
-  let need_sh_lines_builtin = Map::has_key(used_builtin_names, "sh_lines")
+  let need_sh_builtin = Map::has_key(used_builtin_names, key = "sh")
+  let need_sh_lines_builtin = Map::has_key(used_builtin_names, key = "sh_lines")
   // #865: structured subprocess result host imports -- `vibe_sh_capture_raw`
   // runs the command once (handle), the three accessors read the cached
   // {exit_code, stdout, stderr}, `vibe_sh_capture_close_raw` frees it. Same
   // handle+accessor shape as the #794 HTTP client imports below. Gated on
   // use, same fixpoint-safety discipline as sh/sh_lines above.
-  let need_sh_capture_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_raw")
-  let need_sh_capture_exit_code_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_exit_code_raw")
-  let need_sh_capture_stdout_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_stdout_raw")
-  let need_sh_capture_stderr_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_stderr_raw")
-  let need_sh_capture_close_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_close_raw")
+  let need_sh_capture_builtin = Map::has_key(used_builtin_names, key = "vibe_sh_capture_raw")
+  let need_sh_capture_exit_code_builtin = Map::has_key(used_builtin_names, key = "vibe_sh_capture_exit_code_raw")
+  let need_sh_capture_stdout_builtin = Map::has_key(used_builtin_names, key = "vibe_sh_capture_stdout_raw")
+  let need_sh_capture_stderr_builtin = Map::has_key(used_builtin_names, key = "vibe_sh_capture_stderr_raw")
+  let need_sh_capture_close_builtin = Map::has_key(used_builtin_names, key = "vibe_sh_capture_close_raw")
   // #903/#865: `Process::exit(code) -> Unit` -- propagates the guest's exit
   // code to the real OS process exit status via the host runner's
   // exit-trap mechanism (never returns in practice, but is typed Unit --
   // there's no `Never` type). `vibe.process_exit (i64) -> ()` host import,
   // void like Fs::remove/sh_capture_close, gated on use (fixpoint-safe).
-  let need_process_exit_builtin = Map::has_key(used_builtin_names, "vibe_process_exit_raw")
+  let need_process_exit_builtin = Map::has_key(used_builtin_names, key = "vibe_process_exit_raw")
   // Stdin/Stdout host effects for vibe/io: `Stdin::read_stream(n) -> String`
   // (`vibe.stdin_read_stream (i64) -> i64`, value-returning like fs_read_file),
   // `Stdout::write_stream(s) -> Unit` and `Stdout::write_char(c) -> Unit`
@@ -263,57 +263,57 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   // `Console` is a source-and-checker rename with NO ABI consequence. Reusing
   // the imports also keeps the compiler's own bytes unchanged while both name
   // sets are live, which is what makes the pre-seed-bump build a fixpoint.
-  let need_stdin_read_stream_builtin = Map::has_key(used_builtin_names, "Stdin::read_stream") || Map::has_key(used_builtin_names, "Console::read_stream")
+  let need_stdin_read_stream_builtin = Map::has_key(used_builtin_names, key = "Stdin::read_stream") || Map::has_key(used_builtin_names, key = "Console::read_stream")
   // #929: the println/print BUILTIN lowering (compile_call.vibe) synthesizes
   // calls onto these two imports when no source-provided println/print is
   // merged, so their use also gates the imports in. collect_used_builtin_names
   // only counts FREE names -- a program using @vibe/io's (or its own) println
   // fn does not trip this, exactly matching the lowering's cc_ft_has guard.
-  let used_print_builtin = Map::has_key(used_builtin_names, "println") || Map::has_key(used_builtin_names, "print")
-  let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, "Stdout::write_stream") || Map::has_key(used_builtin_names, "Console::write_stream") || used_print_builtin
-  let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, "Stdout::write_char") || Map::has_key(used_builtin_names, "Console::write_char") || used_print_builtin
+  let used_print_builtin = Map::has_key(used_builtin_names, key = "println") || Map::has_key(used_builtin_names, key = "print")
+  let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, key = "Stdout::write_stream") || Map::has_key(used_builtin_names, key = "Console::write_stream") || used_print_builtin
+  let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, key = "Stdout::write_char") || Map::has_key(used_builtin_names, key = "Console::write_char") || used_print_builtin
   // #865: `Stderr::write_stream(s) -> Unit` / `Stderr::write_char(c) -> Unit`
   // (`vibe.stderr_write_stream` / `vibe.stderr_write_char (i64) -> ()`, void
   // like stdout's), same shapes/gating as the Stdout pair above.
-  let need_stderr_write_stream_builtin = Map::has_key(used_builtin_names, "Stderr::write_stream") || Map::has_key(used_builtin_names, "Console::write_err_stream")
-  let need_stderr_write_char_builtin = Map::has_key(used_builtin_names, "Stderr::write_char") || Map::has_key(used_builtin_names, "Console::write_err_char")
+  let need_stderr_write_stream_builtin = Map::has_key(used_builtin_names, key = "Stderr::write_stream") || Map::has_key(used_builtin_names, key = "Console::write_err_stream")
+  let need_stderr_write_char_builtin = Map::has_key(used_builtin_names, key = "Stderr::write_char") || Map::has_key(used_builtin_names, key = "Console::write_err_char")
   // #762: `Path::ref` / `Path::resolve` both lower (compile_call) to the
   // `resolve_path` host import — resolve a path to absolute against the process
   // CWD. `vibe.resolve_path (i64) -> i64`, value-returning like fs_read_file,
   // gated on either surface name so non-users reserve no import (fixpoint-safe).
-  let need_resolve_path_builtin = Map::has_key(used_builtin_names, "Path::ref") || Map::has_key(used_builtin_names, "Path::resolve")
+  let need_resolve_path_builtin = Map::has_key(used_builtin_names, key = "Path::ref") || Map::has_key(used_builtin_names, key = "Path::resolve")
   // #768: `Fs::remove(path) -> Unit` — a `vibe.fs_remove (i64) -> ()` host
   // import (type 1, like sleep/stdout_write_char). Checker-recognized since
   // the original Fs signature lookup but never wired to codegen, so any
   // caller hit "undefined variable (local): Fs::remove @call". Gated on use so
   // non-users reserve no import (fixpoint-safe).
-  let need_fs_remove_builtin = Map::has_key(used_builtin_names, "Fs::remove")
+  let need_fs_remove_builtin = Map::has_key(used_builtin_names, key = "Fs::remove")
   // #2738: `Fs::remove_file(path) -> Unit` -- the NON-recursive sibling of
   // Fs::remove. Same `(i64) -> ()` shape and the same gating, so a non-user
   // reserves no import.
-  let need_fs_remove_file_builtin = Map::has_key(used_builtin_names, "Fs::remove_file")
+  let need_fs_remove_file_builtin = Map::has_key(used_builtin_names, key = "Fs::remove_file")
   // #2758: `Fs::remove_tree(path) -> Unit` -- the RECURSIVE remove, split out
   // of `Fs::remove` so one builtin means one thing on both hosts. Same
   // `(i64) -> ()` shape and the same gating, so a non-user reserves no import.
-  let need_fs_remove_tree_builtin = Map::has_key(used_builtin_names, "Fs::remove_tree")
+  let need_fs_remove_tree_builtin = Map::has_key(used_builtin_names, key = "Fs::remove_tree")
   // #768: `Fs::mkdir_p(path) -> Unit` (recursive mkdir) — same shape/import
   // type as Fs::remove. Same gap: the checker recognized it before codegen
   // had any wiring for the call.
-  let need_fs_mkdir_p_builtin = Map::has_key(used_builtin_names, "Fs::mkdir_p")
+  let need_fs_mkdir_p_builtin = Map::has_key(used_builtin_names, key = "Fs::mkdir_p")
   // #768: the rest of lib/@vibe/shell/commands.vibe's Fs surface — same
   // "checker-legal (or newly made so), zero codegen wiring" gap as
   // Fs::remove/Fs::mkdir_p, and the JS host runner already implements all of
   // fs_mkdir/fs_chdir/fs_copy/fs_append/fs_rename/fs_is_dir/fs_is_file/
   // fs_getcwd. Fs::mkdir (non-recursive, distinct from Fs::mkdir_p) was
   // likewise checker-legal but had no codegen wiring at all.
-  let need_fs_mkdir_builtin = Map::has_key(used_builtin_names, "Fs::mkdir")
-  let need_fs_chdir_builtin = Map::has_key(used_builtin_names, "Fs::chdir")
-  let need_fs_copy_builtin = Map::has_key(used_builtin_names, "Fs::copy")
-  let need_fs_append_builtin = Map::has_key(used_builtin_names, "Fs::append")
-  let need_fs_rename_builtin = Map::has_key(used_builtin_names, "Fs::rename")
-  let need_fs_is_dir_builtin = Map::has_key(used_builtin_names, "Fs::is_dir")
-  let need_fs_is_file_builtin = Map::has_key(used_builtin_names, "Fs::is_file")
-  let need_fs_getcwd_builtin = Map::has_key(used_builtin_names, "Fs::getcwd")
+  let need_fs_mkdir_builtin = Map::has_key(used_builtin_names, key = "Fs::mkdir")
+  let need_fs_chdir_builtin = Map::has_key(used_builtin_names, key = "Fs::chdir")
+  let need_fs_copy_builtin = Map::has_key(used_builtin_names, key = "Fs::copy")
+  let need_fs_append_builtin = Map::has_key(used_builtin_names, key = "Fs::append")
+  let need_fs_rename_builtin = Map::has_key(used_builtin_names, key = "Fs::rename")
+  let need_fs_is_dir_builtin = Map::has_key(used_builtin_names, key = "Fs::is_dir")
+  let need_fs_is_file_builtin = Map::has_key(used_builtin_names, key = "Fs::is_file")
+  let need_fs_getcwd_builtin = Map::has_key(used_builtin_names, key = "Fs::getcwd")
   // Socket::tcp_connect/tcp_read/tcp_write/tcp_close -- same "checker-legal
   // (builtins/declarations.vibe + builtin_registry.vibe), zero codegen
   // wiring" gap as the Fs::* additions above: the checker accepts these
@@ -321,10 +321,10 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   // never emitted the host imports, so any real caller hit "undefined
   // variable (local): Socket::tcp_connect @call". Gated on use so non-users
   // reserve no import (fixpoint-safe).
-  let need_tcp_connect_builtin = Map::has_key(used_builtin_names, "vibe_tcp_connect_raw")
-  let need_tcp_read_builtin = Map::has_key(used_builtin_names, "vibe_tcp_read_raw")
-  let need_tcp_write_builtin = Map::has_key(used_builtin_names, "vibe_tcp_write_raw")
-  let need_tcp_close_builtin = Map::has_key(used_builtin_names, "vibe_tcp_close_raw")
+  let need_tcp_connect_builtin = Map::has_key(used_builtin_names, key = "vibe_tcp_connect_raw")
+  let need_tcp_read_builtin = Map::has_key(used_builtin_names, key = "vibe_tcp_read_raw")
+  let need_tcp_write_builtin = Map::has_key(used_builtin_names, key = "vibe_tcp_write_raw")
+  let need_tcp_close_builtin = Map::has_key(used_builtin_names, key = "vibe_tcp_close_raw")
   // #794: HTTP client host imports. lib/@vibe/http's client functions call
   // the `__http_*_raw` builtins (dunder names so units bundling the package's
   // index.vibe -- which exports alias functions literally named
@@ -335,11 +335,11 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   // does not import lib/@vibe/http -- the shape a `test .. with Http::request`
   // block uses) also reserve the import: compile_call lowers them onto the
   // same raw names (http_client_surface_to_raw).
-  let need_http_request_builtin = Map::has_key(used_builtin_names, "vibe_http_request_raw") || Map::has_key(used_builtin_names, "Http::request")
-  let need_http_response_status_builtin = Map::has_key(used_builtin_names, "vibe_http_response_status_raw") || Map::has_key(used_builtin_names, "Http::response_status")
-  let need_http_response_header_builtin = Map::has_key(used_builtin_names, "vibe_http_response_header_raw") || Map::has_key(used_builtin_names, "Http::response_header")
-  let need_http_response_body_builtin = Map::has_key(used_builtin_names, "vibe_http_response_body_raw") || Map::has_key(used_builtin_names, "Http::response_body")
-  let need_http_close_builtin = Map::has_key(used_builtin_names, "vibe_http_close_raw") || Map::has_key(used_builtin_names, "Http::close")
+  let need_http_request_builtin = Map::has_key(used_builtin_names, key = "vibe_http_request_raw") || Map::has_key(used_builtin_names, key = "Http::request")
+  let need_http_response_status_builtin = Map::has_key(used_builtin_names, key = "vibe_http_response_status_raw") || Map::has_key(used_builtin_names, key = "Http::response_status")
+  let need_http_response_header_builtin = Map::has_key(used_builtin_names, key = "vibe_http_response_header_raw") || Map::has_key(used_builtin_names, key = "Http::response_header")
+  let need_http_response_body_builtin = Map::has_key(used_builtin_names, key = "vibe_http_response_body_raw") || Map::has_key(used_builtin_names, key = "Http::response_body")
+  let need_http_close_builtin = Map::has_key(used_builtin_names, key = "vibe_http_close_raw") || Map::has_key(used_builtin_names, key = "Http::close")
   let mut next_import_idx = 1
   let env_get_import_idx = if need_env_get_builtin {
     let idx = next_import_idx
@@ -549,7 +549,7 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   let hf_named_import_indices = lc_fresh_int_array()
   let mut hf_named_i = 0
   while hf_named_i < Array::length(hf_all_names) {
-    Array::push(hf_named_import_indices, next_import_idx)
+    Array::push(hf_named_import_indices, value = next_import_idx)
     next_import_idx = next_import_idx + 1
     hf_named_i = hf_named_i + 1
   }
@@ -598,7 +598,7 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   let hs_named_import_indices = lc_fresh_int_array()
   let mut hs_named_i = 0
   while hs_named_i < Array::length(hs_named_names) {
-    Array::push(hs_named_import_indices, next_import_idx)
+    Array::push(hs_named_import_indices, value = next_import_idx)
     next_import_idx = next_import_idx + 1
     hs_named_i = hs_named_i + 1
   }
@@ -905,12 +905,12 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   // hoisted lambda, and a production linemap that had the name index without
   // it filed every hoisted body under file 0.
   let dbg_name_file: MutMap[String, Int] = if linemap_on {
-    lc_dbg_build_file_index(pre_prelude_let_names, pre_prelude_let_files)
+    lc_dbg_build_file_index(keys = pre_prelude_let_names, files = pre_prelude_let_files)
   } else {
     MutMap::new_string()
   }
   let dbg_owner_file: MutMap[String, Int] = if linemap_on {
-    lc_dbg_build_file_index(pre_prelude_owner_keys, pre_prelude_owner_files)
+    lc_dbg_build_file_index(keys = pre_prelude_owner_keys, files = pre_prelude_owner_files)
   } else {
     MutMap::new_string()
   }
@@ -925,9 +925,9 @@ export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bo
   let linked_import_names = lc_fresh_string_array()
   let mut li_i = 0
   while li_i < Array::length(linked_imports) {
-    let (_, lfn_name, _, _) = Array::get(linked_imports, li_i)
-    Array::push(linked_import_indices, next_import_idx)
-    Array::push(linked_import_names, lfn_name)
+    let (_, lfn_name, _, _) = Array::get(linked_imports, at = li_i)
+    Array::push(linked_import_indices, value = next_import_idx)
+    Array::push(linked_import_names, value = lfn_name)
     next_import_idx = next_import_idx + 1
     li_i = li_i + 1
   }
@@ -1782,15 +1782,15 @@ export fn lc_with_foreign_imports(linked_imports: Array[(String, String, Int, In
     let defined: MutMap[String, Bool] = MutMap::new_string()
     for st in stmts {
       match st {
-        SLet(_, _, name, _, _) => MutMap::set(defined, name, true),
+        SLet(_, _, name, _, _) => MutMap::set(defined, k = name, v = true),
         _ => ()
       }
     }
     let live_wats: Array[String] = []
     let mut wi = 0
     while wi < Array::length(iw_wats) && wi < Array::length(iw_names) {
-      if MutMap::has(defined, Array::get(iw_names, wi)) {
-        Array::push(live_wats, Array::get(iw_wats, wi))
+      if MutMap::has(defined, k = Array::get(iw_names, at = wi)) {
+        Array::push(live_wats, value = Array::get(iw_wats, at = wi))
       } else {
         ()
       }
@@ -1798,11 +1798,11 @@ export fn lc_with_foreign_imports(linked_imports: Array[(String, String, Int, In
     }
     let out: Array[(String, String, Int, Int)] = []
     for li in linked_imports {
-      Array::push(out, li)
+      Array::push(out, value = li)
     }
     for callee in wasm_import_callees_in(live_wats) {
       match wasm_import_decode_callee(callee) {
-        Some((m, _, _, _)) => Array::push(out, (m, callee, -1, -1)),
+        Some((m, _, _, _)) => Array::push(out, value = (m, callee, -1, -1)),
         None => ()
       }
     }
@@ -1816,9 +1816,9 @@ export fn lc_with_foreign_imports(linked_imports: Array[(String, String, Int, In
 export fn lc_push_foreign_iw_callees(iw_callees: Array[(String, Int, Int)], linked_imports_all: Array[(String, String, Int, Int)], linked_import_indices: Array[Int]) -> Unit {
   let mut i = 0
   while i < Array::length(linked_imports_all) {
-    let (_, callee, lparams, _) = Array::get(linked_imports_all, i)
+    let (_, callee, lparams, _) = Array::get(linked_imports_all, at = i)
     if lparams < 0 {
-      Array::push(iw_callees, (callee, Array::get(linked_import_indices, i), -1))
+      Array::push(iw_callees, value = (callee, Array::get(linked_import_indices, at = i), -1))
     } else {
       ()
     }

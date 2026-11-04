@@ -94,16 +94,16 @@ import ./utilities.vibe {
 /// type is known. (#695.)
 export fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
   if Array::length(dtd_eq_formal_witnesses) == 0 {
-    eq_for_typed_plain(fty0, lhs, rhs, known_types)
+    eq_for_typed_plain(fty0 = fty0, lhs = lhs, rhs = rhs, known_types = known_types)
   } else {
-    match eq_for_typed_witnessed(eq_expand_alias_ty(subst_scope_formals_ty(fty0)), lhs, rhs, known_types) {
+    match eq_for_typed_witnessed(fty = eq_expand_alias_ty(subst_scope_formals_ty(fty0)), lhs = lhs, rhs = rhs, known_types = known_types) {
       Some(e) => e,
-      None => eq_for_typed_plain(fty0, lhs, rhs, known_types)
+      None => eq_for_typed_plain(fty0 = fty0, lhs = lhs, rhs = rhs, known_types = known_types)
     }
   }
 }
 
-fn is_none[A](o: Option[A]) -> Bool {
+fn is_none[A](_ o: Option[A]) -> Bool {
   match o {
     Some(_) => false,
     None => true
@@ -113,9 +113,9 @@ fn is_none[A](o: Option[A]) -> Bool {
 /// #3287: the formal's witness dictionary, when the comparison being lowered
 /// compares this formal through it. Matches the source spelling and the
 /// re-spelled one (`subst_scope_formals_ty`), which name the same formal.
-fn eq_formal_witness_dict(n: String) -> Option[String] {
+fn eq_formal_witness_dict(_ n: String) -> Option[String] {
   let source = if is_marked_formal_name(n) {
-    String::substring(n, String::length(scope_formal_mark_prefix), String::length(n))
+    String::substring(n, start = String::length(scope_formal_mark_prefix), end = String::length(n))
   } else {
     n
   }
@@ -130,7 +130,7 @@ fn eq_formal_witness_dict(n: String) -> Option[String] {
   result
 }
 
-fn eq_ty_mentions_witnessed_formal(t: TypeExpr) -> Bool {
+fn eq_ty_mentions_witnessed_formal(_ t: TypeExpr) -> Bool {
   match t {
     TyName(n) => match eq_formal_witness_dict(n) {
       Some(_) => true,
@@ -191,7 +191,7 @@ fn eq_for_typed_witnessed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Arra
     TyApp(head, args) => if !eq_ty_mentions_witnessed_formal(fty) {
       None
     } else if head == "Array" && Array::length(args) == 1 {
-      Some(eq_inline_array_witnessed(Array::get(args, 0), lhs, rhs, known_types))
+      Some(eq_inline_array_witnessed(elem = Array::get(args, at = 0), lhs = lhs, rhs = rhs, known_types = known_types))
     } else if head == "Map" || head == "StringMap" {
       Some(eq_trap())
     } else if (head == "Option" || head == "Result") && eq_builtin_enum_arm_applies(head) && !eq_builtin_head_owned_by_nonenum(head) {
@@ -199,7 +199,7 @@ fn eq_for_typed_witnessed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Arra
     } else if eq_has_explicit_equals(head) {
       None
     } else if eq_generic_enum_declared(head) || generic_eq_struct_declared(head) {
-      Some(eq_inline_generic_witnessed(head, args, lhs, rhs, known_types))
+      Some(eq_inline_generic_witnessed(head = head, args = args, lhs = lhs, rhs = rhs, known_types = known_types))
     } else {
       None
     },
@@ -219,7 +219,7 @@ fn eq_inline_array_witnessed(elem: TypeExpr, lhs: Expr, rhs: Expr, known_types: 
   let elem_of = (name: String) -> Expr {
     ECall(builtin_ref("Array::get"), [EIdent(name, -1), EIdent(iv, -1)], -1, [])
   }
-  let elem_eq = eq_for_typed(elem, elem_of(la), elem_of(lb), known_types)
+  let elem_eq = eq_for_typed(fty0 = elem, lhs = elem_of(la), rhs = elem_of(lb), known_types = known_types)
   let set_false = EIf(ECall(EIdent("not", -1), [elem_eq], -1, []), EAssign(okv, EBool(false), EUnit, -1), EUnit)
   let incr = EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1), -1), EUnit, -1)
   let cond = EBinOp("&&", EIdent(okv, -1), EBinOp("<", EIdent(iv, -1), len_of(la), -1), -1)
@@ -240,7 +240,7 @@ fn eq_inline_generic_witnessed(head: String, args: Array[TypeExpr], lhs: Expr, r
   if on_stack {
     eq_trap()
   } else {
-    Array::push(dtd_eq_witness_inline_stack, head)
+    Array::push(dtd_eq_witness_inline_stack, value = head)
     let uid = idx_str(eq_tuple_uid_next())
     let ln = String::concat("__weq_l", uid)
     let rn = String::concat("__weq_r", uid)
@@ -251,9 +251,9 @@ fn eq_inline_generic_witnessed(head: String, args: Array[TypeExpr], lhs: Expr, r
         let mut conj = EBool(true)
         let mut fi = Array::length(fields) - 1
         while fi >= 0 {
-          let (fname, fty) = Array::get(fields, fi)
-          let sub = eq_expand_alias_ty(eq_subst_ty(fty, formals, args))
-          conj = EBinOp("&&", eq_for_typed(sub, EDot(EIdent(ln, -1), fname, -1, -1), EDot(EIdent(rn, -1), fname, -1, -1), known_types), conj, -1)
+          let (fname, fty) = Array::get(fields, at = fi)
+          let sub = eq_expand_alias_ty(eq_subst_ty(ty = fty, params = formals, args = args))
+          conj = EBinOp("&&", eq_for_typed(fty0 = sub, lhs = EDot(EIdent(ln, -1), fname, -1, -1), rhs = EDot(EIdent(rn, -1), fname, -1, -1), known_types = known_types), conj, -1)
           fi = fi - 1
         }
         body = conj
@@ -267,31 +267,31 @@ fn eq_inline_generic_witnessed(head: String, args: Array[TypeExpr], lhs: Expr, r
         let outer_arms = array_empty()
         let mut vi = 0
         while vi < Array::length(variants) {
-          let (vname, payloads) = Array::get(variants, vi)
+          let (vname, payloads) = Array::get(variants, at = vi)
           let apre = String::concat(String::concat("__weq_a", uid), String::concat("_", idx_str(vi)))
           let bpre = String::concat(String::concat("__weq_b", uid), String::concat("_", idx_str(vi)))
           let abinds = array_empty()
           let bbinds = array_empty()
           let mut pi = 0
           while pi < Array::length(payloads) {
-            Array::push(abinds, PBind(String::concat(apre, String::concat("_", idx_str(pi)))))
-            Array::push(bbinds, PBind(String::concat(bpre, String::concat("_", idx_str(pi)))))
+            Array::push(abinds, value = PBind(String::concat(apre, String::concat("_", idx_str(pi)))))
+            Array::push(bbinds, value = PBind(String::concat(bpre, String::concat("_", idx_str(pi)))))
             pi = pi + 1
           }
           let mut conj = EBool(true)
           let mut bi = Array::length(payloads) - 1
           while bi >= 0 {
-            let sub = eq_expand_alias_ty(eq_subst_ty(Array::get(payloads, bi), formals, args))
+            let sub = eq_expand_alias_ty(eq_subst_ty(ty = Array::get(payloads, at = bi), params = formals, args = args))
             let av = EIdent(String::concat(apre, String::concat("_", idx_str(bi))), -1)
             let bv = EIdent(String::concat(bpre, String::concat("_", idx_str(bi))), -1)
-            conj = EBinOp("&&", eq_for_typed(sub, av, bv, known_types), conj, -1)
+            conj = EBinOp("&&", eq_for_typed(fty0 = sub, lhs = av, rhs = bv, known_types = known_types), conj, -1)
             bi = bi - 1
           }
           let inner = EMatch(EIdent(rn, -1), [
             (PCtor(vname, bbinds), conj),
             (PWild, EBool(false))
           ])
-          Array::push(outer_arms, (PCtor(vname, abinds), inner))
+          Array::push(outer_arms, value = (PCtor(vname, abinds), inner))
           vi = vi + 1
         }
         body = EMatch(EIdent(ln, -1), outer_arms)
@@ -299,7 +299,7 @@ fn eq_inline_generic_witnessed(head: String, args: Array[TypeExpr], lhs: Expr, r
         ()
       }
     }
-    Array::truncate(dtd_eq_witness_inline_stack, Array::length(dtd_eq_witness_inline_stack) - 1)
+    Array::truncate(dtd_eq_witness_inline_stack, length = Array::length(dtd_eq_witness_inline_stack) - 1)
     ELet(ln, lhs, ELet(rn, rhs, body, -1), -1)
   }
 }
@@ -317,15 +317,17 @@ fn eq_for_typed_plain(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[S
   match fty {
     TyName(n) => if n == "__EqAliasCycle" {
       eq_trap()
-    } else if str_array_contains(dtd_eq_type_owners, n) && str_array_contains(known_types, n) {
+    } else if str_array_contains(arr = dtd_eq_type_owners, val = n) && str_array_contains(arr = known_types, val = n) {
       // Codex round 17 on #2456: a source-owned spelling takes its declared
       // comparator BEFORE any builtin arm below can claim it. Measured: with
       // `struct Int { value: String }`, an untyped-empty `Array[Int]` filled
       // by name reached the `Int` arm and compared the reference words
       // (`+ 0`), answering `false` for equal content.
-      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1, [
-      ])
-    } else if str_array_contains(dtd_eq_type_owners, n) {
+      ECall(EIdent(qualified_name(tname = n, method = "equals"), -1), Array::slice([
+        lhs,
+        rhs
+      ], start = 0, end = 2), -1, [])
+    } else if str_array_contains(arr = dtd_eq_type_owners, val = n) {
       // Owned by an alias or an effect: no comparator to call. Fail closed
       // rather than fall to a builtin arm for a name that is not the builtin.
       eq_trap()
@@ -341,8 +343,8 @@ fn eq_for_typed_plain(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[S
       // unbox-then-f64.eq path. Not `Double::to_float`: that one ROUNDS to f32
       // (#3543), which would equate two distinct Doubles. This pass runs after
       // the checker, so the wrapper's declared parameter type is never read.
-      EBinOp("==", ECall(builtin_ref("Float32::to_float64"), Array::slice([lhs], 0, 1), -1, [
-      ]), ECall(builtin_ref("Float32::to_float64"), Array::slice([rhs], 0, 1), -1, [
+      EBinOp("==", ECall(builtin_ref("Float32::to_float64"), Array::slice([lhs], start = 0, end = 1), -1, [
+      ]), ECall(builtin_ref("Float32::to_float64"), Array::slice([rhs], start = 0, end = 1), -1, [
       ]), -1)
     } else if n == "Bytes" {
       // #1526 (ADR-0097): `Bytes` is byte content, not an address — compare it
@@ -350,11 +352,13 @@ fn eq_for_typed_plain(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[S
       // tuple elements, Array[Bytes] elements). `is_scalar_type_name` lists
       // "Bytes", so this must answer before the scalar fallthrough below.
       bytes_eq_needed_record()
-      ECall(EIdent(bytes_equals_name(), -1), Array::slice([lhs, rhs], 0, 2), -1, [
+      ECall(EIdent(bytes_equals_name(), -1), Array::slice([lhs, rhs], start = 0, end = 2), -1, [
       ])
-    } else if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
-      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1, [
-      ])
+    } else if !is_scalar_type_name(n) && str_array_contains(arr = known_types, val = n) {
+      ECall(EIdent(qualified_name(tname = n, method = "equals"), -1), Array::slice([
+        lhs,
+        rhs
+      ], start = 0, end = 2), -1, [])
     } else if n == "Int" || n == "Char" {
       // Codex round 6 on #2456: an `Int` slot reached through a generated
       // comparator (an `Option` payload binder, a tuple element, an array
@@ -394,10 +398,10 @@ fn eq_for_typed_plain(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[S
       // answering by reference.
       eq_trap()
     } else if eq_name_is_invisible_nominal(n) {
-      if str_array_contains(dtd_eq_invisible_nominals, n) {
+      if str_array_contains(arr = dtd_eq_invisible_nominals, val = n) {
         ()
       } else {
-        Array::push(dtd_eq_invisible_nominals, n)
+        Array::push(dtd_eq_invisible_nominals, value = n)
       }
       // #2631: a declared struct or enum this statement list cannot see still
       // gets the STRUCTURAL call, not a raw `==` on an aggregate. The name is
@@ -412,32 +416,34 @@ fn eq_for_typed_plain(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[S
       // per-module lane that reaches it, and there the emitted call is a
       // reference the link resolves against the module that declares the type
       // -- the same shape as any other cross-module call.
-      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1, [
-      ])
+      ECall(EIdent(qualified_name(tname = n, method = "equals"), -1), Array::slice([
+        lhs,
+        rhs
+      ], start = 0, end = 2), -1, [])
     } else {
       EBinOp("==", lhs, rhs, -1)
     },
     TyApp("Option", args) => if eq_builtin_head_owned_by_nonenum("Option") {
-      eq_for_typed_declared_app(fty, "Option", args, lhs, rhs, known_types)
+      eq_for_typed_declared_app(fty = fty, n = "Option", args = args, lhs = lhs, rhs = rhs, known_types = known_types)
     } else if Array::length(args) == 1 && !eq_builtin_enum_arm_applies("Option") {
-      eq_for_typed_nonstandard_enum("Option", args, lhs, rhs)
+      eq_for_typed_nonstandard_enum(head = "Option", args = args, lhs = lhs, rhs = rhs)
     } else if Array::length(args) == 1 {
-      let t = Array::get(args, 0)
-      let inner_eq = eq_for_typed(t, EIdent("__oeq_l", -1), EIdent("__oeq_r", -1), known_types)
+      let t = Array::get(args, at = 0)
+      let inner_eq = eq_for_typed(fty0 = t, lhs = EIdent("__oeq_l", -1), rhs = EIdent("__oeq_r", -1), known_types = known_types)
       let some_inner = EMatch(rhs, Array::slice([
-        (PCtor("Some", Array::slice([PBind("__oeq_r")], 0, 1)), inner_eq),
+        (PCtor("Some", Array::slice([PBind("__oeq_r")], start = 0, end = 1)), inner_eq),
         // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
         (PWild, EBool(false))
-      ], 0, 2))
+      ], start = 0, end = 2))
       let none_inner = EMatch(rhs, Array::slice([
         (PCtor("None", array_empty()), EBool(true)),
         (PWild, EBool(false))
-      ], 0, 2))
+      ], start = 0, end = 2))
       EMatch(lhs, Array::slice([
-        (PCtor("Some", Array::slice([PBind("__oeq_l")], 0, 1)), some_inner),
+        (PCtor("Some", Array::slice([PBind("__oeq_l")], start = 0, end = 1)), some_inner),
         // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
         (PCtor("None", array_empty()), none_inner)
-      ], 0, 2))
+      ], start = 0, end = 2))
     } else {
       EBinOp("==", lhs, rhs, -1)
     },
@@ -450,30 +456,30 @@ fn eq_for_typed_plain(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[S
     // `Map` below is ownership-gated, because `__map_equals__` reads runtime
     // map internals that a declared struct does not have.
     TyApp("Result", args) => if eq_builtin_head_owned_by_nonenum("Result") {
-      eq_for_typed_declared_app(fty, "Result", args, lhs, rhs, known_types)
+      eq_for_typed_declared_app(fty = fty, n = "Result", args = args, lhs = lhs, rhs = rhs, known_types = known_types)
     } else if Array::length(args) == 2 && !eq_builtin_enum_arm_applies("Result") {
-      eq_for_typed_nonstandard_enum("Result", args, lhs, rhs)
+      eq_for_typed_nonstandard_enum(head = "Result", args = args, lhs = lhs, rhs = rhs)
     } else if Array::length(args) == 2 {
-      let t = Array::get(args, 0)
-      let e = Array::get(args, 1)
-      let ok_eq = eq_for_typed(t, EIdent("__req_l", -1), EIdent("__req_r", -1), known_types)
-      let err_eq = eq_for_typed(e, EIdent("__req_l", -1), EIdent("__req_r", -1), known_types)
+      let t = Array::get(args, at = 0)
+      let e = Array::get(args, at = 1)
+      let ok_eq = eq_for_typed(fty0 = t, lhs = EIdent("__req_l", -1), rhs = EIdent("__req_r", -1), known_types = known_types)
+      let err_eq = eq_for_typed(fty0 = e, lhs = EIdent("__req_l", -1), rhs = EIdent("__req_r", -1), known_types = known_types)
       let ok_inner = EMatch(rhs, Array::slice([
-        (PCtor("Ok", Array::slice([PBind("__req_r")], 0, 1)), ok_eq),
+        (PCtor("Ok", Array::slice([PBind("__req_r")], start = 0, end = 1)), ok_eq),
         // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
         (PWild, EBool(false))
-      ], 0, 2))
+      ], start = 0, end = 2))
       let err_inner = EMatch(rhs, Array::slice([
-        (PCtor("Err", Array::slice([PBind("__req_r")], 0, 1)), err_eq),
+        (PCtor("Err", Array::slice([PBind("__req_r")], start = 0, end = 1)), err_eq),
         // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
         (PWild, EBool(false))
-      ], 0, 2))
+      ], start = 0, end = 2))
       EMatch(lhs, Array::slice([
-        (PCtor("Ok", Array::slice([PBind("__req_l")], 0, 1)), ok_inner),
+        (PCtor("Ok", Array::slice([PBind("__req_l")], start = 0, end = 1)), ok_inner),
         // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
-        (PCtor("Err", Array::slice([PBind("__req_l")], 0, 1)), err_inner)
+        (PCtor("Err", Array::slice([PBind("__req_l")], start = 0, end = 1)), err_inner)
         // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
-      ], 0, 2))
+      ], start = 0, end = 2))
     } else {
       EBinOp("==", lhs, rhs, -1)
     },
@@ -493,58 +499,58 @@ fn eq_for_typed_plain(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[S
       let rpats = array_empty()
       let mut i = 0
       while i < n {
-        Array::push(lpats, PBind(String::concat(lpfx, idx_str(i))))
-        Array::push(rpats, PBind(String::concat(rpfx, idx_str(i))))
+        Array::push(lpats, value = PBind(String::concat(lpfx, idx_str(i))))
+        Array::push(rpats, value = PBind(String::concat(rpfx, idx_str(i))))
         i = i + 1
       }
       let mut conj = EBool(true)
       let mut j = n - 1
       while j >= 0 {
-        let cmp = eq_for_typed(Array::get(ts, j), EIdent(String::concat(lpfx, idx_str(j)), -1), EIdent(String::concat(rpfx, idx_str(j)), -1), known_types)
+        let cmp = eq_for_typed(fty0 = Array::get(ts, at = j), lhs = EIdent(String::concat(lpfx, idx_str(j)), -1), rhs = EIdent(String::concat(rpfx, idx_str(j)), -1), known_types = known_types)
         conj = EBinOp("&&", cmp, conj, -1)
         j = j - 1
       }
-      let inner = EMatch(rhs, Array::slice([(PTuple(rpats), conj)], 0, 1))
-      EMatch(lhs, Array::slice([(PTuple(lpats), inner)], 0, 1))
+      let inner = EMatch(rhs, Array::slice([(PTuple(rpats), conj)], start = 0, end = 1))
+      EMatch(lhs, Array::slice([(PTuple(lpats), inner)], start = 0, end = 1))
     },
-    TyApp("StringMap", args) => if builtin_string_map_applied("StringMap", args) {
-      let value_ty = Array::get(args, 0)
-      map_eq_needed_record(TyName("String"), value_ty)
-      ECall(EIdent(map_equals_name(TyName("String"), value_ty), -1), Array::slice([
+    TyApp("StringMap", args) => if builtin_string_map_applied(name = "StringMap", args = args) {
+      let value_ty = Array::get(args, at = 0)
+      map_eq_needed_record(k_ty = TyName("String"), v_ty = value_ty)
+      ECall(EIdent(map_equals_name(k_ty = TyName("String"), v_ty = value_ty), -1), Array::slice([
         lhs,
         rhs
-      ], 0, 2), -1, [])
+      ], start = 0, end = 2), -1, [])
     } else {
-      eq_for_typed_declared_app(fty, "StringMap", args, lhs, rhs, known_types)
+      eq_for_typed_declared_app(fty = fty, n = "StringMap", args = args, lhs = lhs, rhs = rhs, known_types = known_types)
     },
     // Codex round 2 on #2456: a source declaration owns the `Map` spelling
     // (#2263, `fixtures/typecheck/map_local_shadow_ok.vibe`). The builtin
     // `__map_equals__` reads its operands as runtime maps, so handing it a
     // program-declared `Map[K, V]` struct read past the value (measured:
     // `memory access out of bounds`). Same ownership rule as StringMap above.
-    TyApp("Map", args) => if Array::length(args) == 2 && !str_array_contains(dtd_eq_type_owners, "Map") {
+    TyApp("Map", args) => if Array::length(args) == 2 && !str_array_contains(arr = dtd_eq_type_owners, val = "Map") {
       // #2218: the only site that builds a `__map_equals__` call.
-      map_eq_needed_record(Array::get(args, 0), Array::get(args, 1))
-      ECall(EIdent(map_equals_name(Array::get(args, 0), Array::get(args, 1)), -1), Array::slice([
+      map_eq_needed_record(k_ty = Array::get(args, at = 0), v_ty = Array::get(args, at = 1))
+      ECall(EIdent(map_equals_name(k_ty = Array::get(args, at = 0), v_ty = Array::get(args, at = 1)), -1), Array::slice([
         lhs,
         rhs
-      ], 0, 2), -1, [])
+      ], start = 0, end = 2), -1, [])
     } else {
-      eq_for_typed_declared_app(fty, "Map", args, lhs, rhs, known_types)
+      eq_for_typed_declared_app(fty = fty, n = "Map", args = args, lhs = lhs, rhs = rhs, known_types = known_types)
     },
     TyApp("Array", args) => if Array::length(args) == 1 {
       // #1526: the second (and last) site that references a helper.
       // #2141: the entry re-spelling above already marked any in-scope formal
       // in this element type.
-      arr_eq_needed_record(Array::get(args, 0))
-      ECall(EIdent(arr_equals_name(Array::get(args, 0)), -1), Array::slice([
+      arr_eq_needed_record(Array::get(args, at = 0))
+      ECall(EIdent(arr_equals_name(Array::get(args, at = 0)), -1), Array::slice([
         lhs,
         rhs
-      ], 0, 2), -1, [])
+      ], start = 0, end = 2), -1, [])
     } else {
       EBinOp("==", lhs, rhs, -1)
     },
-    TyApp(n, args) => eq_for_typed_declared_app(fty, n, args, lhs, rhs, known_types),
+    TyApp(n, args) => eq_for_typed_declared_app(fty = fty, n = n, args = args, lhs = lhs, rhs = rhs, known_types = known_types),
     _ => EBinOp("==", lhs, rhs, -1)
   }
 }
@@ -570,16 +576,20 @@ fn eq_for_typed_plain(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[S
 fn eq_for_typed_nonstandard_enum(head: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr) -> Expr {
   let fail_closed = eq_trap()
   if eq_has_explicit_equals(head) {
-    if eq_explicit_equals_matches(head, args) {
-      ECall(EIdent(qualified_name(head, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1, [
-      ])
+    if eq_explicit_equals_matches(head = head, args = args) {
+      ECall(EIdent(qualified_name(tname = head, method = "equals"), -1), Array::slice([
+        lhs,
+        rhs
+      ], start = 0, end = 2), -1, [])
     } else {
       fail_closed
     }
   } else if eq_ty_has_formal(TyApp(head, args)) {
     if eq_generic_enum_payloads_concrete_comparable(head) {
-      ECall(EIdent(qualified_name(head, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1, [
-      ])
+      ECall(EIdent(qualified_name(tname = head, method = "equals"), -1), Array::slice([
+        lhs,
+        rhs
+      ], start = 0, end = 2), -1, [])
     } else {
       fail_closed
     }
@@ -587,14 +597,14 @@ fn eq_for_typed_nonstandard_enum(head: String, args: Array[TypeExpr], lhs: Expr,
     let canonical_args = for arg in args {
       eq_expand_alias_ty(arg)
     }
-    if generic_eq_is_expanding_recursion(head, canonical_args) {
+    if generic_eq_is_expanding_recursion(head = head, args = canonical_args) {
       fail_closed
     } else {
-      generic_eq_record(head, canonical_args)
-      ECall(EIdent(generic_eq_name(head, canonical_args), -1), Array::slice([
+      generic_eq_record(head = head, args = canonical_args)
+      ECall(EIdent(generic_eq_name(head = head, args = canonical_args), -1), Array::slice([
         lhs,
         rhs
-      ], 0, 2), -1, [])
+      ], start = 0, end = 2), -1, [])
     }
   }
 }
@@ -610,23 +620,25 @@ export fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeEx
     // A source-owned generic ENUM (`enum Map[K, V] { Entry(K, V) }`, or any
     // `enum Wrap[T]`): a concrete instantiation takes its specialized
     // comparator (#2467), the rest is decided in eq_for_typed_nonstandard_enum.
-    eq_for_typed_nonstandard_enum(n, args, lhs, rhs)
+    eq_for_typed_nonstandard_enum(head = n, args = args, lhs = lhs, rhs = rhs)
   } else if generic_eq_struct_declared(n) && Array::length(args) > 0 && !eq_ty_has_formal(fty) {
     let canonical_args = for arg in args {
       eq_expand_alias_ty(arg)
     }
-    if generic_eq_is_expanding_recursion(n, canonical_args) {
+    if generic_eq_is_expanding_recursion(head = n, args = canonical_args) {
       eq_trap()
     } else {
-      generic_eq_record(n, canonical_args)
-      ECall(EIdent(generic_eq_name(n, canonical_args), -1), Array::slice([
+      generic_eq_record(head = n, args = canonical_args)
+      ECall(EIdent(generic_eq_name(head = n, args = canonical_args), -1), Array::slice([
         lhs,
         rhs
-      ], 0, 2), -1, [])
+      ], start = 0, end = 2), -1, [])
     }
-  } else if str_array_contains(known_types, n) {
-    ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1, [
-    ])
+  } else if str_array_contains(arr = known_types, val = n) {
+    ECall(EIdent(qualified_name(tname = n, method = "equals"), -1), Array::slice([
+      lhs,
+      rhs
+    ], start = 0, end = 2), -1, [])
   } else {
     // #2634: the `TyApp` twin of the `TyName` fallthrough this pass records
     // above -- a GENERIC HEAD the statement list cannot see, declining
@@ -639,12 +651,12 @@ export fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeEx
     // not the other and the two sets looked disjoint. A measurement that
     // covers one arm of a dispatch reports the arm it does not cover as
     // absence.
-    if eq_name_is_invisible_nominal(n) && !eq_name_needs_unmintable_trap(n) && !str_array_contains(dtd_eq_invisible_nominals, String::concat(n, "[]")) {
-      Array::push(dtd_eq_invisible_nominals, String::concat(n, "[]"))
+    if eq_name_is_invisible_nominal(n) && !eq_name_needs_unmintable_trap(n) && !str_array_contains(arr = dtd_eq_invisible_nominals, val = String::concat(n, "[]")) {
+      Array::push(dtd_eq_invisible_nominals, value = String::concat(n, "[]"))
     } else {
       ()
     }
-    eq_deferred_request_record_ty(eq_deferred_key_for_ty(fty), fty)
+    eq_deferred_request_record_ty(key = eq_deferred_key_for_ty(fty), t = fty)
     // #2634: emit the REFERENCE, and let the link mint the definition.
     //
     // This is the `TyApp` counterpart of #2631's fix, and it needed the link's
@@ -692,10 +704,10 @@ export fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeEx
       let canonical_args = for arg in args {
         eq_expand_alias_ty(arg)
       }
-      ECall(EIdent(generic_eq_name(n, canonical_args), -1), Array::slice([
+      ECall(EIdent(generic_eq_name(head = n, args = canonical_args), -1), Array::slice([
         lhs,
         rhs
-      ], 0, 2), -1, [])
+      ], start = 0, end = 2), -1, [])
     } else {
       EBinOp("==", lhs, rhs, -1)
     }

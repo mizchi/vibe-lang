@@ -9,7 +9,7 @@ fn strip_read_uleb(wasm: Bytes, start: Int, end: Int) -> (Int, Int) {
   let mut v = 0
   let mut shift = 0
   while i < end && shift < 35 {
-    let b = Bytes::get(wasm, i)
+    let b = Bytes::get(wasm, at = i)
     v = v|((b&127)<<shift)
     i = i + 1
     if (b&128) == 0 {
@@ -28,7 +28,7 @@ fn strip_bytes_range_eq_str(wasm: Bytes, start: Int, n: Int, s: String) -> Bool 
     let mut i = 0
     let mut same = true
     while same && i < n {
-      if Bytes::get(wasm, start + i) != String::char_code_at(s, i) {
+      if Bytes::get(wasm, at = start + i) != String::char_code_at(s, at = i) {
         same = false
       } else {
         i = i + 1
@@ -39,7 +39,7 @@ fn strip_bytes_range_eq_str(wasm: Bytes, start: Int, n: Int, s: String) -> Bool 
 }
 
 fn strip_push_range(out: Bytes, wasm: Bytes, start: Int, end: Int) -> Unit {
-  Bytes::blit(out, wasm, start, end)
+  Bytes::blit(out, src = wasm, start = start, end = end)
 }
 
 fn strip_push_uleb(out: Bytes, value: Int) -> Unit {
@@ -49,10 +49,10 @@ fn strip_push_uleb(out: Bytes, value: Int) -> Unit {
     let b = v&127
     v = v>>7
     if v == 0 {
-      Bytes::push(out, b)
+      Bytes::push(out, value = b)
       more = false
     } else {
-      Bytes::push(out, b|128)
+      Bytes::push(out, value = b|128)
     }
   }
 }
@@ -86,12 +86,12 @@ export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bo
     ()
   }
   let out = Bytes::new()
-  strip_push_range(out, wasm, 0, 8)
+  strip_push_range(out = out, wasm = wasm, start = 0, end = 8)
   let mut i = 8
   let mut ok = true
   while ok && i < len {
-    let sid = Bytes::get(wasm, i)
-    let (ssz, payload_start) = strip_read_uleb(wasm, i + 1, len)
+    let sid = Bytes::get(wasm, at = i)
+    let (ssz, payload_start) = strip_read_uleb(wasm = wasm, start = i + 1, end = len)
     if ssz < 0 || payload_start + ssz > len {
       ok = false
     } else {
@@ -99,9 +99,9 @@ export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bo
       let mut handled = false
       if sid == 0 && strip_names {
         // custom section: drop iff its name is exactly "name"
-        let (cn_len, cn_start) = strip_read_uleb(wasm, payload_start, payload_end)
+        let (cn_len, cn_start) = strip_read_uleb(wasm = wasm, start = payload_start, end = payload_end)
         if cn_len >= 0 && cn_start + cn_len <= payload_end {
-          if strip_bytes_range_eq_str(wasm, cn_start, cn_len, "name") || strip_bytes_range_eq_str(wasm, cn_start, cn_len, "vibe.linemap") || strip_bytes_range_eq_str(wasm, cn_start, cn_len, "vibe.dbgfiles") {
+          if strip_bytes_range_eq_str(wasm = wasm, start = cn_start, n = cn_len, s = "name") || strip_bytes_range_eq_str(wasm = wasm, start = cn_start, n = cn_len, s = "vibe.linemap") || strip_bytes_range_eq_str(wasm = wasm, start = cn_start, n = cn_len, s = "vibe.dbgfiles") {
             handled = true
           } else {
             ()
@@ -113,7 +113,7 @@ export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bo
         ()
       }
       if !handled && sid == 7 && filter_exports {
-        let (exp_count, cur0) = strip_read_uleb(wasm, payload_start, payload_end)
+        let (exp_count, cur0) = strip_read_uleb(wasm = wasm, start = payload_start, end = payload_end)
         if exp_count >= 0 {
           let kept = Bytes::new()
           let mut kept_count = 0
@@ -122,18 +122,18 @@ export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bo
           let mut parse_ok = true
           while parse_ok && ei < exp_count {
             let entry_start = cur
-            let (nlen, nstart) = strip_read_uleb(wasm, cur, payload_end)
+            let (nlen, nstart) = strip_read_uleb(wasm = wasm, start = cur, end = payload_end)
             if nlen < 0 || nstart + nlen + 1 > payload_end {
               parse_ok = false
             } else {
-              let kind = Bytes::get(wasm, nstart + nlen)
-              let (_eidx, entry_end) = strip_read_uleb(wasm, nstart + nlen + 1, payload_end)
+              let kind = Bytes::get(wasm, at = nstart + nlen)
+              let (_eidx, entry_end) = strip_read_uleb(wasm = wasm, start = nstart + nlen + 1, end = payload_end)
               if entry_end > payload_end {
                 parse_ok = false
               } else {
-                let keep = kind != 0 || executable_export_kept_bytes(wasm, nstart, nlen, entry_name)
+                let keep = kind != 0 || executable_export_kept_bytes(wasm = wasm, start = nstart, n = nlen, entry_name = entry_name)
                 if keep {
-                  strip_push_range(kept, wasm, entry_start, entry_end)
+                  strip_push_range(out = kept, wasm = wasm, start = entry_start, end = entry_end)
                   kept_count = kept_count + 1
                 } else {
                   ()
@@ -144,12 +144,12 @@ export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bo
             }
           }
           if parse_ok {
-            Bytes::push(out, 7)
+            Bytes::push(out, value = 7)
             let sec_content = Bytes::new()
-            strip_push_uleb(sec_content, kept_count)
-            Bytes::append(sec_content, kept)
-            strip_push_uleb(out, Bytes::length(sec_content))
-            Bytes::append(out, sec_content)
+            strip_push_uleb(out = sec_content, value = kept_count)
+            Bytes::append(sec_content, bytes = kept)
+            strip_push_uleb(out = out, value = Bytes::length(sec_content))
+            Bytes::append(out, bytes = sec_content)
             handled = true
           } else {
             ok = false
@@ -161,7 +161,7 @@ export fn strip_executable_wasm(wasm: Bytes, entry_name: String, strip_names: Bo
         ()
       }
       if ok && !handled {
-        strip_push_range(out, wasm, i, payload_end)
+        strip_push_range(out = out, wasm = wasm, start = i, end = payload_end)
       } else {
         ()
       }
@@ -186,7 +186,7 @@ export fn strip_executable_wasm_env(wasm: Bytes, entry_name: String) -> Bytes wi
   if entry_name == "__no_entry__" {
     wasm
   } else {
-    strip_executable_wasm(wasm, entry_name, Env::get("VIBE_WASM_NAMES") != "1", Env::get("VIBE_WASM_KEEP_EXPORTS") != "1")
+    strip_executable_wasm(wasm = wasm, entry_name = entry_name, strip_names = Env::get("VIBE_WASM_NAMES") != "1", filter_exports = Env::get("VIBE_WASM_KEEP_EXPORTS") != "1")
   }
 }
 
@@ -197,6 +197,6 @@ export fn strip_executable_wasm_env(wasm: Bytes, entry_name: String) -> Bytes wi
 /// caller anyone outside can reach, so its Bool parameters may fold like any
 /// other function's; one that stays exported may not. Same inputs as the
 /// strip itself, so the two cannot disagree.
-export fn executable_exports_stripped(entry_name: String) -> Bool with Env {
+export fn executable_exports_stripped(_ entry_name: String) -> Bool with Env {
   entry_name != "__no_entry__" && Env::get("VIBE_WASM_KEEP_EXPORTS") != "1"
 }

@@ -75,16 +75,16 @@ import ./compile_match.vibe {
 fn linemap_record(lm: LineMapState, buf: Bytes, file_id: Int, line: Int) -> Unit {
   if lm.enabled {
     let off = bytebuf_length(buf)
-    let fn_i = Array::get(lm.cur_fn, 0)
+    let fn_i = Array::get(lm.cur_fn, at = 0)
     let n = Array::length(lm.offsets)
-    let same_fn = n > 0 && Array::get(lm.funcs, n - 1) == fn_i
-    if same_fn && Array::get(lm.offsets, n - 1) == off {
+    let same_fn = n > 0 && Array::get(lm.funcs, at = n - 1) == fn_i
+    if same_fn && Array::get(lm.offsets, at = n - 1) == off {
       // Same (func, offset) as the previous probe: keep ONE row and let the
       // later record win so a call-site OOB attributes the access, not the
       // enclosing statement (#2199 size).
-      Array::set(lm.file_ids, n - 1, file_id)
-      Array::set(lm.lines, n - 1, line)
-    } else if same_fn && Array::get(lm.file_ids, n - 1) == file_id && Array::get(lm.lines, n - 1) == line {
+      Array::set(lm.file_ids, at = n - 1, value = file_id)
+      Array::set(lm.lines, at = n - 1, value = line)
+    } else if same_fn && Array::get(lm.file_ids, at = n - 1) == file_id && Array::get(lm.lines, at = n - 1) == line {
       // A row that answers what the row already covering this offset answers.
       // Resolution is "the last row at or before the target", so every offset
       // this one would cover resolves to the same (file, line) without it.
@@ -93,10 +93,10 @@ fn linemap_record(lm: LineMapState, buf: Bytes, file_id: Int, line: Int) -> Unit
       // its arguments are written on one line.
       ()
     } else {
-      Array::push(lm.funcs, fn_i)
-      Array::push(lm.offsets, off)
-      Array::push(lm.file_ids, file_id)
-      Array::push(lm.lines, line)
+      Array::push(lm.funcs, value = fn_i)
+      Array::push(lm.offsets, value = off)
+      Array::push(lm.file_ids, value = file_id)
+      Array::push(lm.lines, value = line)
     }
   } else {
     ()
@@ -110,12 +110,12 @@ fn linemap_record(lm: LineMapState, buf: Bytes, file_id: Int, line: Int) -> Unit
 /// linemap is off or the expression has no source offset.
 export fn linemap_enter_call_site(buf: Bytes, expr: Expr, ctx: CompileCtx) -> Int {
   if ctx.linemap.enabled {
-    let prev = Array::get(ctx.linemap.site, 0)
+    let prev = Array::get(ctx.linemap.site, at = 0)
     let off = first_offset(expr)
     if off >= 0 {
-      let line = offset_to_line(ctx.dbg_line_nl, off)
-      linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, line)
-      Array::set(ctx.linemap.site, 0, line)
+      let line = offset_to_line(nl = ctx.dbg_line_nl, off = off)
+      linemap_record(lm = ctx.linemap, buf = buf, file_id = ctx.dbg_line_file_id, line = line)
+      Array::set(ctx.linemap.site, at = 0, value = line)
     } else {
       ()
     }
@@ -146,9 +146,9 @@ export fn linemap_enter_call_site(buf: Bytes, expr: Expr, ctx: CompileCtx) -> In
 /// the function epilogue, which contain no call to trap in.
 export fn linemap_leave_call_site(buf: Bytes, ctx: CompileCtx, prev: Int) -> Unit {
   if ctx.linemap.enabled {
-    Array::set(ctx.linemap.site, 0, prev)
+    Array::set(ctx.linemap.site, at = 0, value = prev)
     if prev > 0 {
-      linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, prev)
+      linemap_record(lm = ctx.linemap, buf = buf, file_id = ctx.dbg_line_file_id, line = prev)
     } else {
       ()
     }
@@ -173,26 +173,26 @@ export fn emit_dbg_line_stmt(buf: Bytes, value: Expr, stmt_off: Int, ctx: Compil
     stmt_off
   }
   if off >= 0 && ctx.linemap.enabled {
-    let line = offset_to_line(ctx.dbg_line_nl, off)
-    linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, line)
+    let line = offset_to_line(nl = ctx.dbg_line_nl, off = off)
+    linemap_record(lm = ctx.linemap, buf = buf, file_id = ctx.dbg_line_file_id, line = line)
     // #2199: and this statement is the enclosing site until the next one, so
     // the last call in it restores THIS line rather than leaving the
     // innermost callee's behind for whatever the statement emits after it.
-    Array::set(ctx.linemap.site, 0, line)
+    Array::set(ctx.linemap.site, at = 0, value = line)
   } else {
     ()
   }
   if ctx.dbg_line_idx >= 0 && off >= 0 {
-    let line = offset_to_line(ctx.dbg_line_nl, off)
-    emit_i32_const(buf, ctx.dbg_line_file_id)
-    emit_i32_const(buf, line)
-    emit_call(buf, ctx.dbg_line_idx)
+    let line = offset_to_line(nl = ctx.dbg_line_nl, off = off)
+    emit_i32_const(buf = buf, value = ctx.dbg_line_file_id)
+    emit_i32_const(buf = buf, value = line)
+    emit_call(buf = buf, func_idx = ctx.dbg_line_idx)
   } else {
     ()
   }
 }
 
-export fn is_edot(e: Expr) -> Bool {
+export fn is_edot(_ e: Expr) -> Bool {
   match e {
     EDot(_, _, _, _) => true,
     _ => false
@@ -204,11 +204,11 @@ export fn efn_is_capturing(value: Expr, ctx: CompileCtx) -> Bool with Exception 
   let pnames = array_empty()
   let mut pi = 0
   while pi < Array::length(params) {
-    let (pn, _) = Array::get(params, pi)
-    Array::push(pnames, pn)
+    let (pn, _) = Array::get(params, at = pi)
+    Array::push(pnames, value = pn)
     pi = pi + 1
   }
-  let caps = collect_free_vars_indexed(get_efn_body(value), pnames, ctx.capture_name_index)
+  let caps = collect_free_vars_indexed(body = get_efn_body(value), param_names = pnames, fn_name_index = ctx.capture_name_index)
   Array::length(caps) > 0
 }
 
@@ -217,7 +217,7 @@ export fn slot_is_floatish(ctx: CompileCtx, slot: Int) -> Bool {
   let mut j = Array::length(arr) - 1
   let mut result = false
   while j >= 0 {
-    let entry = Array::get(arr, j)
+    let entry = Array::get(arr, at = j)
     if entry / 2 == slot {
       result = (entry % 2) == 1
       j = -1
@@ -245,7 +245,7 @@ export fn slot_is_intish(ctx: CompileCtx, slot: Int) -> Bool {
   let mut j = Array::length(arr) - 1
   let mut result = false
   while j >= 0 {
-    let entry = Array::get(arr, j)
+    let entry = Array::get(arr, at = j)
     if entry / 4 == slot {
       result = (entry % 2) == 1
       j = -1
@@ -266,7 +266,7 @@ export fn slot_is_stringish(ctx: CompileCtx, slot: Int) -> Bool {
   let mut j = Array::length(arr) - 1
   let mut result = false
   while j >= 0 {
-    let entry = Array::get(arr, j)
+    let entry = Array::get(arr, at = j)
     if entry / 4 == slot {
       result = (entry % 4) == 2
       j = -1
@@ -282,14 +282,14 @@ export fn slot_is_stringish(ctx: CompileCtx, slot: Int) -> Bool {
 /// imports; compile_call cannot import this file back without a cycle, which
 /// is why there used to be a second, identical copy here.
 export fn expr_is_boolish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
-  cc_expr_is_boolish(raw_e, local_names, ctx)
+  cc_expr_is_boolish(raw_e = raw_e, local_names = local_names, ctx = ctx)
 }
 
 /// Blocker-3 (ADR-0055): does `e` statically evaluate to an f64 bit pattern?
 /// Delegates to compile_call's `cc_expr_is_floatish` for the same reason as
 /// `expr_is_boolish` above: one copy of the classifier per lane.
 export fn expr_is_floatish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
-  cc_expr_is_floatish(raw_e, local_names, ctx)
+  cc_expr_is_floatish(raw_e = raw_e, local_names = local_names, ctx = ctx)
 }
 
 /// #678: is `e` unambiguously an integer/bool scalar — never a string or float?
@@ -317,7 +317,7 @@ export fn expr_is_intish(raw_e: Expr, local_names: Array[String], ctx: CompileCt
     let mut i = len - 1
     let mut slot = -1
     while i >= 0 {
-      if Array::get(local_names, i) == nm {
+      if Array::get(local_names, at = i) == nm {
         slot = i
         i = -1
       } else {
@@ -325,7 +325,7 @@ export fn expr_is_intish(raw_e: Expr, local_names: Array[String], ctx: CompileCt
       }
     }
     if slot >= 0 {
-      slot_is_intish(ctx, slot)
+      slot_is_intish(ctx = ctx, slot = slot)
     } else {
       false
     }
@@ -334,7 +334,7 @@ export fn expr_is_intish(raw_e: Expr, local_names: Array[String], ctx: CompileCt
     if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" {
       true
     } else if op == "+" || op == "-" || op == "*" || op == "/" {
-      !expr_is_floatish(e, local_names, ctx)
+      !expr_is_floatish(raw_e = e, local_names = local_names, ctx = ctx)
     } else {
       false
     }
@@ -354,27 +354,27 @@ export fn expr_is_intish(raw_e: Expr, local_names: Array[String], ctx: CompileCt
 export fn assign_value_mentions(value: Expr, name: String) -> Bool {
   let empty1 = array_empty()
   let empty2 = array_empty()
-  array_contains_str(collect_free_vars(value, empty1, empty2), name)
+  array_contains_str(arr = collect_free_vars(body = value, param_names = empty1, fn_names = empty2), s = name)
 }
 
 export fn reassign_carry_safe(e: Expr, name: String) -> Bool {
-  if !assign_value_mentions(e, name) {
+  if !assign_value_mentions(value = e, name = name) {
     true
   } else {
     match e {
       EIdent(_, _) => true,
       EDot(_, _, _, _) => proj_root_ident(e) == name,
-      EBinOp(_, l, r, _) => reassign_carry_safe(l, name) && reassign_carry_safe(r, name),
-      EUnaryOp(_, x) => reassign_carry_safe(x, name),
+      EBinOp(_, l, r, _) => reassign_carry_safe(e = l, name = name) && reassign_carry_safe(e = r, name = name),
+      EUnaryOp(_, x) => reassign_carry_safe(e = x, name = name),
       _ => false
     }
   }
 }
 
 fn emit_rc_value_ptr_i32(buf: Bytes, local_idx: Int, tagged: Bool) -> Unit {
-  emit_local_get(buf, local_idx)
+  emit_local_get(buf = buf, idx = local_idx)
   if tagged {
-    emit_i64_const(buf, -2)
+    emit_i64_const(buf = buf, value = -2)
     emit_i64_and(buf)
   } else {
     ()
@@ -385,40 +385,40 @@ fn emit_rc_value_ptr_i32(buf: Bytes, local_idx: Int, tagged: Bool) -> Unit {
 export fn emit_rc_drop_local(buf: Bytes, local_idx: Int, tagged: Bool) -> Unit {
   // #720: a saturated rc (low 24 bits == 0xFFFFFF) marks an immortal block
   // (see emit_rc_word_inc_saturating) -- never decrement, never free.
-  emit_rc_value_ptr_i32(buf, local_idx, tagged)
-  emit_i32_const(buf, 4)
+  emit_rc_value_ptr_i32(buf = buf, local_idx = local_idx, tagged = tagged)
+  emit_i32_const(buf = buf, value = 4)
   emit_i32_sub(buf)
-  emit_i32_load(buf, 2, 0)
-  emit_i32_const(buf, 16777215)
-  bytebuf_push(buf, 113)
-  emit_i32_const(buf, 16777215)
+  emit_i32_load(buf = buf, align = 2, offset = 0)
+  emit_i32_const(buf = buf, value = 16777215)
+  bytebuf_push(buf = buf, byte = 113)
+  emit_i32_const(buf = buf, value = 16777215)
   emit_i32_ne(buf)
   emit_if_void(buf)
-  emit_rc_value_ptr_i32(buf, local_idx, tagged)
-  emit_i32_const(buf, 4)
+  emit_rc_value_ptr_i32(buf = buf, local_idx = local_idx, tagged = tagged)
+  emit_i32_const(buf = buf, value = 4)
   emit_i32_sub(buf)
-  emit_rc_value_ptr_i32(buf, local_idx, tagged)
-  emit_i32_const(buf, 4)
+  emit_rc_value_ptr_i32(buf = buf, local_idx = local_idx, tagged = tagged)
+  emit_i32_const(buf = buf, value = 4)
   emit_i32_sub(buf)
-  emit_i32_load(buf, 2, 0)
-  emit_i32_const(buf, 1)
+  emit_i32_load(buf = buf, align = 2, offset = 0)
+  emit_i32_const(buf = buf, value = 1)
   emit_i32_sub(buf)
-  emit_i32_store(buf, 2, 0)
-  emit_rc_value_ptr_i32(buf, local_idx, tagged)
-  emit_i32_const(buf, 4)
+  emit_i32_store(buf = buf, align = 2, offset = 0)
+  emit_rc_value_ptr_i32(buf = buf, local_idx = local_idx, tagged = tagged)
+  emit_i32_const(buf = buf, value = 4)
   emit_i32_sub(buf)
-  emit_i32_load(buf, 2, 0)
-  emit_i32_const(buf, 256)
+  emit_i32_load(buf = buf, align = 2, offset = 0)
+  emit_i32_const(buf = buf, value = 256)
   emit_i32_mul(buf)
   emit_i32_eqz(buf)
   emit_if_void(buf)
-  emit_rc_value_ptr_i32(buf, local_idx, tagged)
-  emit_i32_const(buf, 4)
+  emit_rc_value_ptr_i32(buf = buf, local_idx = local_idx, tagged = tagged)
+  emit_i32_const(buf = buf, value = 4)
   emit_i32_sub(buf)
-  emit_global_get(buf, 2)
-  emit_i32_store(buf, 2, 0)
-  emit_rc_value_ptr_i32(buf, local_idx, tagged)
-  emit_global_set(buf, 2)
+  emit_global_get(buf = buf, idx = 2)
+  emit_i32_store(buf = buf, align = 2, offset = 0)
+  emit_rc_value_ptr_i32(buf = buf, local_idx = local_idx, tagged = tagged)
+  emit_global_set(buf = buf, idx = 2)
   emit_end(buf)
   emit_end(buf)
 }

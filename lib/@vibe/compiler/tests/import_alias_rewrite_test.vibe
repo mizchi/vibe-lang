@@ -42,15 +42,15 @@ test "namespace paths preserve ASCII names and replace each non-name byte" {
   inspect(sanitize_namespace_path("Az_09"), "Az_09")
   inspect(sanitize_namespace_path("/A-Z_09/foo.vibe"), "_A_Z_09_foo_vibe")
   inspect(sanitize_namespace_path("あ"), "___")
-  inspect(namespace_private_name("/tmp/A-Z.vibe", "value"), "value_dep__tmp_A_Z_vibe")
-  inspect(namespace_exported_name("/tmp/A-Z.vibe", "value"), "value_exp__tmp_A_Z_vibe")
+  inspect(namespace_private_name(path = "/tmp/A-Z.vibe", name = "value"), "value_dep__tmp_A_Z_vibe")
+  inspect(namespace_exported_name(path = "/tmp/A-Z.vibe", name = "value"), "value_exp__tmp_A_Z_vibe")
 }
 
 test "namespace sanitization avoids one temporary string per valid byte" {
   let buf = StringBuilder::new()
   let mut i = 0
   while i < 128 {
-    StringBuilder::push(buf, "abcdefgh")
+    StringBuilder::push(buf, value = "abcdefgh")
     i = i + 1
   }
   let chunk = StringBuilder::freeze(buf)
@@ -66,11 +66,11 @@ test "namespace sanitization avoids one temporary string per valid byte" {
 
 test "standard Iterator provenance is scoped to its local import namespace" {
   let imported = parse_program(lex("import @vibe/builtin { trait Iterator }\nlet answer = Iterator::map([1], (x: Int) -> Int { x })"))
-  match Array::get(imported, 0) {
+  match Array::get(imported, at = 0) {
     SImport(path, items) => {
       inspect(path, "@vibe/builtin")
-      inspect(Array::get(items, 0).name, "Iterator")
-      inspect(match Array::get(items, 0).kind {
+      inspect(Array::get(items, at = 0).name, "Iterator")
+      inspect(match Array::get(items, at = 0).kind {
         Some(ImportTrait) => "trait",
         Some(_) => "other",
         None => "none"
@@ -80,12 +80,12 @@ test "standard Iterator provenance is scoped to its local import namespace" {
   }
   let imported_markers = builtin_iterator_namespace_markers(imported)
   inspect(Array::length(imported_markers), "1")
-  inspect(builtin_iterator_namespace_from_marker(Array::get(imported_markers, 0)), "Some(Iterator)")
+  inspect(builtin_iterator_namespace_from_marker(Array::get(imported_markers, at = 0)), "Some(Iterator)")
   let shadowed = parse_program(lex("import @vibe/builtin { trait Iterator }\nfn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { xs }"))
   inspect(Array::length(builtin_iterator_namespace_markers(shadowed)), "0")
   let aliased = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }\nlet answer = Iter::map([1], (x: Int) -> Int { x })"))
   let alias_markers = builtin_iterator_namespace_markers(aliased)
-  inspect(builtin_iterator_namespace_from_marker(Array::get(alias_markers, 0)), "Some(Iter)")
+  inspect(builtin_iterator_namespace_from_marker(Array::get(alias_markers, at = 0)), "Some(Iter)")
   let alias_with_canonical_helper = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }\nfn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }"))
   inspect(Array::length(builtin_iterator_namespace_markers(alias_with_canonical_helper)), "1")
   let alias_with_local_helper = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }\nfn Iter::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }"))
@@ -98,14 +98,14 @@ test "standard Iterator provenance is scoped to its local import namespace" {
   inspect(Array::length(builtin_iterator_namespace_markers(local_flatmap)), "0")
   let replaced_trait = parse_program(lex("import @vibe/builtin { trait Iterator }\nimport ./custom.vibe { trait Iterator }\nlet answer = Iterator::map([1], (x: Int) -> Int { x })"))
   inspect(Array::length(builtin_iterator_namespace_markers(replaced_trait)), "0")
-  let collision_renames = trait_import_local_operation_renames(alias_with_canonical_helper, "/virtual/main.vibe")
+  let collision_renames = trait_import_local_operation_renames(stmts = alias_with_canonical_helper, path = "/virtual/main.vibe")
   inspect(Array::length(collision_renames), "1")
-  let (source_name, private_name) = Array::get(collision_renames, 0)
+  let (source_name, private_name) = Array::get(collision_renames, at = 0)
   inspect(source_name, "Iterator::map")
   assert(private_name != source_name)
-  assert(!String::starts_with(private_name, "Iterator::"))
-  let collision_rewritten = print_program(apply_export_renames_stmts(alias_with_canonical_helper, collision_renames))
-  assert(String::contains(collision_rewritten, String::concat(private_name, " =")))
+  assert(!String::starts_with(private_name, prefix = "Iterator::"))
+  let collision_rewritten = print_program(apply_export_renames_stmts(stmts = alias_with_canonical_helper, renames = collision_renames))
+  assert(String::contains(collision_rewritten, needle = String::concat(private_name, " =")))
 }
 
 test "Iterator provenance cache carrier roundtrips through source text" {
@@ -114,10 +114,10 @@ test "Iterator provenance cache carrier roundtrips through source text" {
     builtin_iterator_serialized_boundary(imported)
   ])
   let reparsed = parse_program(lex(serialized))
-  match builtin_iterator_serialized_boundary_markers(Array::get(reparsed, 0)) {
+  match builtin_iterator_serialized_boundary_markers(Array::get(reparsed, at = 0)) {
     Some(markers) => {
       inspect(Array::length(markers), "1")
-      inspect(builtin_iterator_namespace_from_marker(Array::get(markers, 0)), "Some(Iter)")
+      inspect(builtin_iterator_namespace_from_marker(Array::get(markers, at = 0)), "Some(Iter)")
     },
     None => assert(false)
   }
@@ -130,10 +130,10 @@ test "Iterator provenance cache carrier roundtrips through source text" {
   let reexported_roundtrip = parse_program(lex(print_program([
     builtin_iterator_serialized_boundary(reexported)
   ])))
-  match builtin_iterator_serialized_boundary_markers(Array::get(reexported_roundtrip, 0)) {
+  match builtin_iterator_serialized_boundary_markers(Array::get(reexported_roundtrip, at = 0)) {
     Some(markers) => {
       inspect(Array::length(markers), "1")
-      inspect(Array::get(markers, 0), "assert_eq")
+      inspect(Array::get(markers, at = 0), "assert_eq")
     },
     None => assert(false)
   }
@@ -145,17 +145,17 @@ test "source merging preserves Iterator provenance cache carriers" {
     builtin_iterator_serialized_boundary(imported)
   ])
   let stmts = parse_program(lex(String::concat(serialized, "let answer = Iter::map([1], (x: Int) -> Int { x + 1 })")))
-  let out = Array::slice(stmts, 0, 0)
-  append_import_alias_rewritten_non_import_stmts(out, stmts)
+  let out = Array::slice(stmts, start = 0, end = 0)
+  append_import_alias_rewritten_non_import_stmts(merged = out, stmts = stmts)
   inspect(Array::length(out), "2")
-  match builtin_iterator_serialized_boundary_markers(Array::get(out, 0)) {
+  match builtin_iterator_serialized_boundary_markers(Array::get(out, at = 0)) {
     Some(markers) => {
       inspect(Array::length(markers), "1")
-      inspect(builtin_iterator_namespace_from_marker(Array::get(markers, 0)), "Some(Iter)")
+      inspect(builtin_iterator_namespace_from_marker(Array::get(markers, at = 0)), "Some(Iter)")
     },
     None => assert(false)
   }
-  assert(String::contains(print_program(out), "answer = Iter::map"))
+  assert(String::contains(print_program(out), needle = "answer = Iter::map"))
 }
 
 test "Iterator provenance cache carriers do not act as source imports" {
@@ -164,82 +164,82 @@ test "Iterator provenance cache carriers do not act as source imports" {
     builtin_iterator_serialized_boundary(imported)
   ])
   let stmts = parse_program(lex(String::concat(serialized, "fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }")))
-  inspect(Array::length(trait_import_local_operation_renames(stmts, "/virtual/merged.vibe")), "0")
+  inspect(Array::length(trait_import_local_operation_renames(stmts = stmts, path = "/virtual/merged.vibe")), "0")
 }
 
 test "a materialized aliased trait operation keeps its local namespace" {
   let stmts = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }\nfn Iter::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { xs }\nlet standard = Iter::map([1], (x: Int) -> Int { x })\nlet canonical = Iterator::map([1], (x: Int) -> Int { x })"))
-  let out = Array::slice(stmts, 0, 0)
-  append_import_alias_rewritten_non_import_stmts(out, stmts)
+  let out = Array::slice(stmts, start = 0, end = 0)
+  append_import_alias_rewritten_non_import_stmts(merged = out, stmts = stmts)
   let printed = print_program(out)
-  assert(String::contains(printed, "standard = Iter::map"))
-  assert(String::contains(printed, "canonical = Iterator::map"))
+  assert(String::contains(printed, needle = "standard = Iter::map"))
+  assert(String::contains(printed, needle = "canonical = Iterator::map"))
 }
 
 test "provider-local operation separation applies to every trait alias" {
   let source = parse_program(lex("import ./traits.vibe { trait Reducible as R }\nfn Reducible::reduce(xs: Array[Int]) -> Int { Array::length(xs) }\nfn R::reduce(xs: Array[Int]) -> Int { Array::length(xs) }"))
-  let renames = trait_import_local_operation_renames(source, "/virtual/main.vibe")
+  let renames = trait_import_local_operation_renames(stmts = source, path = "/virtual/main.vibe")
   inspect(Array::length(renames), "1")
-  let (original, private_name) = Array::get(renames, 0)
+  let (original, private_name) = Array::get(renames, at = 0)
   inspect(original, "Reducible::reduce")
-  assert(String::starts_with(private_name, "__local_trait_Reducible::reduce"))
+  assert(String::starts_with(private_name, prefix = "__local_trait_Reducible::reduce"))
 }
 
 test "Iterator intrinsic provenance does not cross into a renamed local namespace" {
   let source = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }\nfn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nlet local = Iterator::map([1, 2], (x: Int) -> Int { x + 1 })\nlet standard = Iter::map([1, 2], (x: Int) -> Int { x + 1 })"))
-  let renamed = apply_export_renames_stmts(source, trait_import_local_operation_renames(source, "/virtual/main.vibe"))
+  let renamed = apply_export_renames_stmts(stmts = source, renames = trait_import_local_operation_renames(stmts = source, path = "/virtual/main.vibe"))
   inspect(handle {
     desugar_trait_dicts(renamed)
     "ok"
   } with { Exception::Throw(msg) => msg }, "ok")
   let printed = print_program(renamed)
-  inspect(String::contains(printed, "local = __local_trait_Iterator::map_exp__virtual_main_vibe"), "true")
-  inspect(String::contains(printed, "standard = Array::map"), "true")
+  inspect(String::contains(printed, needle = "local = __local_trait_Iterator::map_exp__virtual_main_vibe"), "true")
+  inspect(String::contains(printed, needle = "standard = Array::map"), "true")
 }
 
 test "trait imports resolve provider operations to unique flattened names" {
   let provider = parse_program(lex("export trait Iterator[T]\nexport fn Iterator::map[T, C: Iterator[T]](xs: C, f: (T) -> T) -> Array[T] { [f(C::iter_get(xs, 0))] }"))
   assert(Array::length(collect_export_def_value_names(provider)) == 1)
   let entry = parse_program(lex("import ./provider.vibe { trait Iterator as Iter }\nexport fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nlet standard = Iter::map([1], (x: Int) -> Int { x })\nlet local = Iterator::map([1], (x: Int) -> Int { x })"))
-  let plan = build_export_rename_plan(["provider.vibe", "main.vibe"], [
+  let plan = build_export_rename_plan(paths = ["provider.vibe", "main.vibe"], stmts_list = [
     provider,
     entry
-  ], "main.vibe")
-  let provider_renames = export_plan_renames_for(plan, "provider.vibe")
+  ], entry_path = "main.vibe")
+  let provider_renames = export_plan_renames_for(plan = plan, path = "provider.vibe")
   inspect(Array::length(provider_renames), "1")
-  let (provider_name, provider_unique) = Array::get(provider_renames, 0)
+  let (provider_name, provider_unique) = Array::get(provider_renames, at = 0)
   inspect(provider_name, "Iterator::map")
   assert(provider_unique != provider_name)
-  let imported = collect_import_value_renames(plan, "main.vibe", entry)
+  let imported = collect_import_value_renames(plan = plan, path = "main.vibe", stmts = entry)
   inspect(Array::length(imported), "1")
-  inspect(Array::get(imported, 0).0, "Iter::map")
-  inspect(Array::get(imported, 0).1, provider_unique)
+  inspect(Array::get(imported, at = 0).0, "Iter::map")
+  inspect(Array::get(imported, at = 0).1, provider_unique)
   let standard_import = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }"))
   let markers = builtin_iterator_namespace_markers(standard_import)
-  append_builtin_iterator_operation_markers(markers, [
+  append_builtin_iterator_operation_markers(markers = markers, renames = [
     ("Iter::map", provider_unique)
   ])
   inspect(Array::length(markers), "2")
-  inspect(builtin_iterator_namespace_from_marker(Array::get(markers, 1)), String::concat("Some(", String::concat(String::substring(provider_unique, 0, String::index_of(provider_unique, "::")), ")")))
+  inspect(builtin_iterator_namespace_from_marker(Array::get(markers, at = 1)), String::concat("Some(", String::concat(String::substring(provider_unique, start = 0, end = String::index_of(provider_unique, needle = "::")), ")")))
   let serialized = print_program([
     builtin_iterator_serialized_boundary_from_markers(markers)
   ])
   let optimized = parse_program(lex(String::concat(serialized, String::concat("let answer = ", String::concat(provider_unique, "(loop (i = 0) { let xs = [i]; break xs }, (x: Int) -> Int { x + 1 })")))))
   desugar_trait_dicts(optimized)
-  assert(String::contains(print_program(optimized), "answer = Array::map"))
+  assert(String::contains(print_program(optimized), needle = "answer = Array::map"))
 }
 
 test "provider operation projection is trait-generic" {
   let provider = parse_program(lex("export trait Reducible[T]\nexport fn Reducible::reduce[T, C: Reducible[T]](_xs: C) -> Int { 1 }"))
   let entry = parse_program(lex("import ./provider.vibe { trait Reducible as R }\nlet answer = R::reduce([1])"))
-  let plan = build_export_rename_plan(["provider.vibe", "main.vibe"], [
+  let plan = build_export_rename_plan(paths = ["provider.vibe", "main.vibe"], stmts_list = [
     provider,
     entry
-  ], "main.vibe")
-  let imported = collect_import_value_renames(plan, "main.vibe", entry)
+  ], entry_path = "main.vibe")
+  let imported = collect_import_value_renames(plan = plan, path = "main.vibe", stmts = entry)
   inspect(Array::length(imported), "1")
-  inspect(Array::get(imported, 0).0, "R::reduce")
-  assert(String::ends_with(Array::get(imported, 0).1, "::reduce"))
+  inspect(Array::get(imported, at = 0).0, "R::reduce")
+  assert(String::ends_with(Array::get(imported, at = 0).1, suffix = "::reduce"))
 }
 
 test "trait companion projection follows facade re-exports" {
@@ -249,15 +249,15 @@ test "trait companion projection follows facade re-exports" {
   let provider = parse_program(lex("export trait Reducible[T]\nexport fn Reducible::reduce[T, C: Reducible[T]](_xs: C) -> Int { 41 }"))
   let facade = parse_program(lex("export ./provider.vibe { trait Reducible }"))
   let entry = parse_program(lex("import ./facade.vibe { trait Reducible as R }\nlet answer = R::reduce([1])"))
-  let plan = build_export_rename_plan([provider_path, facade_path, entry_path], [
-    provider,
-    facade,
-    entry
-  ], entry_path)
-  let imported = collect_import_value_renames(plan, entry_path, entry)
+  let plan = build_export_rename_plan(paths = [
+    provider_path,
+    facade_path,
+    entry_path
+  ], stmts_list = [provider, facade, entry], entry_path = entry_path)
+  let imported = collect_import_value_renames(plan = plan, path = entry_path, stmts = entry)
   inspect(Array::length(imported), "1")
-  inspect(Array::get(imported, 0).0, "R::reduce")
-  assert(String::ends_with(Array::get(imported, 0).1, "::reduce"))
+  inspect(Array::get(imported, at = 0).0, "R::reduce")
+  assert(String::ends_with(Array::get(imported, at = 0).1, suffix = "::reduce"))
 }
 
 test "#2379 review: builtin Iterator companion projection follows an export facade" {
@@ -267,26 +267,27 @@ test "#2379 review: builtin Iterator companion projection follows an export faca
   let builtin = parse_program(lex("export trait Iterator[T]\nexport fn Iterator::map[T, C: Iterator[T]](_xs: C, _f: (T) -> T) -> Array[T] { [] }"))
   let facade = parse_program(lex("import @vibe/builtin { trait Iterator }\nexport { Iterator }"))
   let entry = parse_program(lex("import ./facade.vibe { trait Iterator }\nlet answer = Iterator::map([1], (x: Int) -> Int { x })"))
-  let plan = build_export_rename_plan([builtin_path, facade_path, entry_path], [
-    builtin,
-    facade,
-    entry
-  ], entry_path)
-  let facade_renames = export_plan_renames_for(plan, facade_path)
-  let imported = collect_import_value_renames(plan, entry_path, entry)
+  let plan = build_export_rename_plan(paths = [
+    builtin_path,
+    facade_path,
+    entry_path
+  ], stmts_list = [builtin, facade, entry], entry_path = entry_path)
+  let facade_renames = export_plan_renames_for(plan = plan, path = facade_path)
+  let imported = collect_import_value_renames(plan = plan, path = entry_path, stmts = entry)
   inspect(Array::length(facade_renames), "1")
   inspect(Array::length(imported), "1")
-  inspect(Array::get(imported, 0).0, "Iterator::map")
+  inspect(Array::get(imported, at = 0).0, "Iterator::map")
   let markers = builtin_iterator_namespace_markers(entry)
   inspect(Array::length(markers), "0")
-  append_builtin_iterator_plan_operation_markers(markers, imported, plan)
+  append_builtin_iterator_plan_operation_markers(markers = markers, renames = imported, plan = plan)
   inspect(Array::length(markers), "1")
   let merged: Array[Stmt] = [
     builtin_iterator_serialized_boundary_from_markers(markers)
   ]
-  append_import_alias_rewritten_non_import_stmts_with_renames(merged, entry, [], imported)
+  append_import_alias_rewritten_non_import_stmts_with_renames(merged = merged, stmts = entry, skipped_locals = [
+  ], extra_renames = imported)
   desugar_trait_dicts(merged)
-  assert(String::contains(print_program(merged), "answer = Array::map"))
+  assert(String::contains(print_program(merged), needle = "answer = Array::map"))
 }
 
 test "#2379 review: a custom Iterator facade cannot forge builtin provenance" {
@@ -296,21 +297,22 @@ test "#2379 review: a custom Iterator facade cannot forge builtin provenance" {
   let provider = parse_program(lex("export trait Iterator[T]\nexport fn Iterator::map[T, C: Iterator[T]](_xs: C, _f: (T) -> T) -> Array[T] { [] }"))
   let facade = parse_program(lex("export ./provider.vibe { trait Iterator }"))
   let entry = parse_program(lex("import ./facade.vibe { trait Iterator }\nlet answer = Iterator::map([1], (x: Int) -> Int { x })"))
-  let plan = build_export_rename_plan([provider_path, facade_path, entry_path], [
-    provider,
-    facade,
-    entry
-  ], entry_path)
-  let imported = collect_import_value_renames(plan, entry_path, entry)
+  let plan = build_export_rename_plan(paths = [
+    provider_path,
+    facade_path,
+    entry_path
+  ], stmts_list = [provider, facade, entry], entry_path = entry_path)
+  let imported = collect_import_value_renames(plan = plan, path = entry_path, stmts = entry)
   let markers = builtin_iterator_namespace_markers(entry)
-  append_builtin_iterator_plan_operation_markers(markers, imported, plan)
+  append_builtin_iterator_plan_operation_markers(markers = markers, renames = imported, plan = plan)
   inspect(Array::length(markers), "0")
   let merged: Array[Stmt] = [
     builtin_iterator_serialized_boundary_from_markers(markers)
   ]
-  append_import_alias_rewritten_non_import_stmts_with_renames(merged, entry, [], imported)
+  append_import_alias_rewritten_non_import_stmts_with_renames(merged = merged, stmts = entry, skipped_locals = [
+  ], extra_renames = imported)
   desugar_trait_dicts(merged)
-  assert(!String::contains(print_program(merged), "answer = Array::map"))
+  assert(!String::contains(print_program(merged), needle = "answer = Array::map"))
 }
 
 test "#2379 review: the last trait import owns a facade re-export" {
@@ -323,26 +325,26 @@ test "#2379 review: the last trait import owns a facade re-export" {
   let custom = parse_program(lex(provider))
   let custom_last = parse_program(lex("import @vibe/builtin { trait Iterator }\nimport ./custom.vibe { trait Iterator }\nexport { Iterator }"))
   let entry = parse_program(lex("import ./facade.vibe { trait Iterator }\nlet answer = Iterator::map([1], (x: Int) -> Int { x })"))
-  let custom_plan = build_export_rename_plan([
+  let custom_plan = build_export_rename_plan(paths = [
     builtin_path,
     custom_path,
     facade_path,
     entry_path
-  ], [builtin, custom, custom_last, entry], entry_path)
-  let custom_imported = collect_import_value_renames(custom_plan, entry_path, entry)
+  ], stmts_list = [builtin, custom, custom_last, entry], entry_path = entry_path)
+  let custom_imported = collect_import_value_renames(plan = custom_plan, path = entry_path, stmts = entry)
   let custom_markers = builtin_iterator_namespace_markers(entry)
-  append_builtin_iterator_plan_operation_markers(custom_markers, custom_imported, custom_plan)
+  append_builtin_iterator_plan_operation_markers(markers = custom_markers, renames = custom_imported, plan = custom_plan)
   inspect(Array::length(custom_markers), "0")
   let builtin_last = parse_program(lex("import ./custom.vibe { trait Iterator }\nimport @vibe/builtin { trait Iterator }\nexport { Iterator }"))
-  let builtin_plan = build_export_rename_plan([
+  let builtin_plan = build_export_rename_plan(paths = [
     builtin_path,
     custom_path,
     facade_path,
     entry_path
-  ], [builtin, custom, builtin_last, entry], entry_path)
-  let builtin_imported = collect_import_value_renames(builtin_plan, entry_path, entry)
+  ], stmts_list = [builtin, custom, builtin_last, entry], entry_path = entry_path)
+  let builtin_imported = collect_import_value_renames(plan = builtin_plan, path = entry_path, stmts = entry)
   let builtin_markers = builtin_iterator_namespace_markers(entry)
-  append_builtin_iterator_plan_operation_markers(builtin_markers, builtin_imported, builtin_plan)
+  append_builtin_iterator_plan_operation_markers(markers = builtin_markers, renames = builtin_imported, plan = builtin_plan)
   inspect(Array::length(builtin_markers), "1")
 }
 
@@ -353,14 +355,14 @@ test "#2379 review: a local trait owns a facade export over an import" {
   let builtin = parse_program(lex("export trait Iterator[T]\nexport fn Iterator::map[T, C: Iterator[T]](_xs: C, _f: (T) -> T) -> Array[T] { [] }"))
   let facade = parse_program(lex("import @vibe/builtin { trait Iterator }\ntrait Iterator[T]\nexport { Iterator }"))
   let entry = parse_program(lex("import ./facade.vibe { trait Iterator }\nlet answer = Iterator::map([1], (x: Int) -> Int { x })"))
-  let plan = build_export_rename_plan([builtin_path, facade_path, entry_path], [
-    builtin,
-    facade,
-    entry
-  ], entry_path)
-  let imported = collect_import_value_renames(plan, entry_path, entry)
+  let plan = build_export_rename_plan(paths = [
+    builtin_path,
+    facade_path,
+    entry_path
+  ], stmts_list = [builtin, facade, entry], entry_path = entry_path)
+  let imported = collect_import_value_renames(plan = plan, path = entry_path, stmts = entry)
   let markers = builtin_iterator_namespace_markers(entry)
-  append_builtin_iterator_plan_operation_markers(markers, imported, plan)
+  append_builtin_iterator_plan_operation_markers(markers = markers, renames = imported, plan = plan)
   inspect(Array::length(markers), "0")
 }
 
@@ -369,11 +371,11 @@ test "Array Iterator flatmap specialization gets a provider-unique name" {
   let entry_path = "/virtual/main.vibe"
   let provider = parse_program(lex("export trait Iterator[T]\nexport fn Iterator::flatmap(xs: Array[Int], f: (Int) -> Array[Int]) -> Array[Int] { Array::flatmap(xs, f) }\nexport fn Array::flatmap(xs: Array[Int], _f: (Int) -> Array[Int]) -> Array[Int] { [88] }"))
   let entry = parse_program(lex("import ./provider.vibe { trait Iterator }\nfn Array::flatmap(xs: Array[Int], _f: (Int) -> Array[Int]) -> Array[Int] { [77] }"))
-  let plan = build_export_rename_plan([provider_path, entry_path], [
+  let plan = build_export_rename_plan(paths = [provider_path, entry_path], stmts_list = [
     provider,
     entry
-  ], entry_path)
-  let provider_renames = export_plan_renames_for(plan, provider_path)
+  ], entry_path = entry_path)
+  let provider_renames = export_plan_renames_for(plan = plan, path = provider_path)
   inspect(Array::length(provider_renames), "2")
   let mut specialization = ""
   for rename in provider_renames {
@@ -381,15 +383,15 @@ test "Array Iterator flatmap specialization gets a provider-unique name" {
       specialization = rename.1
     }
   }
-  assert(String::starts_with(specialization, "Array_exp_"))
-  assert(String::ends_with(specialization, "::flatmap"))
-  let imported = collect_import_value_renames(plan, entry_path, entry)
+  assert(String::starts_with(specialization, prefix = "Array_exp_"))
+  assert(String::ends_with(specialization, suffix = "::flatmap"))
+  let imported = collect_import_value_renames(plan = plan, path = entry_path, stmts = entry)
   inspect(Array::length(imported), "1")
-  inspect(Array::get(imported, 0).0, "Iterator::flatmap")
-  let iterator_unique = Array::get(imported, 0).1
+  inspect(Array::get(imported, at = 0).0, "Iterator::flatmap")
+  let iterator_unique = Array::get(imported, at = 0).1
   let standard_import = parse_program(lex("import @vibe/builtin { trait Iterator }"))
   let markers = builtin_iterator_namespace_markers(standard_import)
-  append_builtin_iterator_operation_markers(markers, [
+  append_builtin_iterator_operation_markers(markers = markers, renames = [
     ("Iterator::flatmap", iterator_unique)
   ])
   let serialized = print_program([
@@ -397,76 +399,76 @@ test "Array Iterator flatmap specialization gets a provider-unique name" {
   ])
   let optimized = parse_program(lex(String::concat(serialized, String::concat("let answer = ", String::concat(iterator_unique, "([1], (x: Int) -> Array[Int] { [x] })")))))
   desugar_trait_dicts(optimized)
-  assert(String::contains(print_program(optimized), String::concat("answer = ", String::concat(specialization, "([1]"))))
+  assert(String::contains(print_program(optimized), needle = String::concat("answer = ", String::concat(specialization, "([1]"))))
 }
 
 test "append import alias rewrite resolves import aliases" {
   let stmts = parse_program(lex("import ./dep.vibe { answer as local }\nexport let run: () -> Int = () -> { local() }"))
-  let out = Array::slice(stmts, 0, 0)
-  append_import_alias_rewritten_non_import_stmts(out, stmts)
+  let out = Array::slice(stmts, start = 0, end = 0)
+  append_import_alias_rewritten_non_import_stmts(merged = out, stmts = stmts)
   let printed = print_program(out)
-  assert(String::contains(printed, "answer()"))
-  assert(!String::contains(printed, "local()"))
+  assert(String::contains(printed, needle = "answer()"))
+  assert(!String::contains(printed, needle = "local()"))
 }
 
 test "imported type aliases rewrite fn annotations but not type formals" {
   let stmts = parse_program(lex("import ./dep.vibe { StdinStream as S }\nfn take(stream: S) -> S { stream }\nfn id[S](value: S) -> S { value }"))
-  let out = Array::slice(stmts, 0, 0)
-  append_import_alias_rewritten_non_import_stmts(out, stmts)
+  let out = Array::slice(stmts, start = 0, end = 0)
+  append_import_alias_rewritten_non_import_stmts(merged = out, stmts = stmts)
   let printed = print_program(out)
-  assert(String::contains(printed, "StdinStream"))
-  assert(!String::contains(printed, "(stream: S)"))
-  assert(String::contains(printed, "(value: S)"))
+  assert(String::contains(printed, needle = "StdinStream"))
+  assert(!String::contains(printed, needle = "(stream: S)"))
+  assert(String::contains(printed, needle = "(value: S)"))
 }
 
 test "kinded constructor formals shadow imported type aliases" {
   let stmts = parse_program(lex("import ./dep.vibe { StdinStream as F }\nfn id[F[_], A](x: F[A]) -> F[A] { x }"))
-  let out = Array::slice(stmts, 0, 0)
-  append_import_alias_rewritten_non_import_stmts(out, stmts)
+  let out = Array::slice(stmts, start = 0, end = 0)
+  append_import_alias_rewritten_non_import_stmts(merged = out, stmts = stmts)
   let printed = print_program(out)
-  assert(String::contains(printed, "(x: F[A])"))
-  assert(String::contains(printed, "-> F[A]"))
-  assert(!String::contains(printed, "StdinStream"))
+  assert(String::contains(printed, needle = "(x: F[A])"))
+  assert(String::contains(printed, needle = "-> F[A]"))
+  assert(!String::contains(printed, needle = "StdinStream"))
 }
 
 test "import aliases rewrite concrete impl method owners with their targets" {
   let stmts = parse_program(lex("import ./dep.vibe { Box as B }\ntrait Measured { measure(Self) -> Int }\nimpl Measured for B[Int] { measure(self) -> Int { 1 } }"))
-  let out = Array::slice(stmts, 0, 0)
-  append_import_alias_rewritten_non_import_stmts(out, stmts)
+  let out = Array::slice(stmts, start = 0, end = 0)
+  append_import_alias_rewritten_non_import_stmts(merged = out, stmts = stmts)
   let printed = print_program(out)
-  let old_name = impl_method_binding_name([], "Measured", TyApp("B", [
+  let old_name = impl_method_binding_name(tparams = [], trait_name = "Measured", target = TyApp("B", [
     TyName("Int")
-  ]), "measure")
-  let expected_name = impl_method_binding_name([], "Measured", TyApp("Box", [
+  ]), method = "measure")
+  let expected_name = impl_method_binding_name(tparams = [], trait_name = "Measured", target = TyApp("Box", [
     TyName("Int")
-  ]), "measure")
-  assert(String::contains(printed, expected_name))
-  assert(!String::contains(printed, old_name))
+  ]), method = "measure")
+  assert(String::contains(printed, needle = expected_name))
+  assert(!String::contains(printed, needle = old_name))
 }
 
 test "kinded local alias impl targets substitute constructor arguments" {
   let stmts = parse_program(lex("trait Trait { }\nstruct Holder[F[_], A] { value: A }\ntype Wrap[G[_], A] = Holder[G, A]\nimpl Trait for Wrap[Array, Int] { }"))
-  let out = Array::slice(stmts, 0, 0)
-  append_import_alias_rewritten_non_import_stmts(out, stmts)
+  let out = Array::slice(stmts, start = 0, end = 0)
+  append_import_alias_rewritten_non_import_stmts(merged = out, stmts = stmts)
   let printed = print_program(out)
-  assert(String::contains(printed, "impl Trait for Holder[Array, Int]"))
-  assert(!String::contains(printed, "Holder[G, Int]"))
+  assert(String::contains(printed, needle = "impl Trait for Holder[Array, Int]"))
+  assert(!String::contains(printed, needle = "Holder[G, Int]"))
 }
 
 test "transparent aliases rewrite concrete impl method owners with their targets" {
   let stmts = parse_program(lex("type Vec[T] = Array[T]\ntrait Measured { measure(Self) -> Int }\nimpl Measured for Vec[Int] { measure(self) -> Int { 1 } }"))
-  let out = Array::slice(stmts, 0, 0)
-  append_import_alias_rewritten_non_import_stmts(out, stmts)
+  let out = Array::slice(stmts, start = 0, end = 0)
+  append_import_alias_rewritten_non_import_stmts(merged = out, stmts = stmts)
   let printed = print_program(out)
-  let old_name = impl_method_binding_name([], "Measured", TyApp("Vec", [
+  let old_name = impl_method_binding_name(tparams = [], trait_name = "Measured", target = TyApp("Vec", [
     TyName("Int")
-  ]), "measure")
-  let expected_name = impl_method_binding_name([], "Measured", TyApp("Array", [
+  ]), method = "measure")
+  let expected_name = impl_method_binding_name(tparams = [], trait_name = "Measured", target = TyApp("Array", [
     TyName("Int")
-  ]), "measure")
-  assert(String::contains(printed, expected_name))
-  assert(!String::contains(printed, old_name))
-  assert(String::contains(printed, "impl Measured for Array[Int]"))
+  ]), method = "measure")
+  assert(String::contains(printed, needle = expected_name))
+  assert(!String::contains(printed, needle = old_name))
+  assert(String::contains(printed, needle = "impl Measured for Array[Int]"))
 }
 
 test "later plain re-export wins over an earlier import reference rename" {
@@ -479,17 +481,17 @@ test "later plain re-export wins over an earlier import reference rename" {
   let facade_stmts = parse_program(lex("import ./a.vibe { foo }\nexport ./b.vibe { foo }\nexport fn bar() -> Int { foo() }"))
   let main_stmts = parse_program(lex("import ./facade.vibe { bar }\nexport fn answer() -> Int { bar() }"))
   let paths = [a_path, b_path, facade_path, main_path]
-  let plan = build_export_rename_plan(paths, [
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
     a_stmts,
     b_stmts,
     facade_stmts,
     main_stmts
-  ], main_path)
-  let renames = collect_import_value_renames(plan, facade_path, facade_stmts)
+  ], entry_path = main_path)
+  let renames = collect_import_value_renames(plan = plan, path = facade_path, stmts = facade_stmts)
   assert(Array::length(renames) == 1)
-  let (local, target) = Array::get(renames, 0)
+  let (local, target) = Array::get(renames, at = 0)
   assert(local == "foo")
-  assert(target == namespace_exported_name(b_path, "foo"))
+  assert(target == namespace_exported_name(path = b_path, name = "foo"))
 }
 
 test "later aliased re-export blocks an earlier import reference rename" {
@@ -501,13 +503,13 @@ test "later aliased re-export blocks an earlier import reference rename" {
   let b_stmts = parse_program(lex("export fn new() -> Int { 2 }"))
   let facade_stmts = parse_program(lex("import ./a.vibe { old as foo }\nexport ./b.vibe { new as foo }\nexport fn bar() -> Int { foo() }"))
   let main_stmts = parse_program(lex("import ./facade.vibe { bar }\nexport fn answer() -> Int { bar() }"))
-  let plan = build_export_rename_plan([a_path, b_path, facade_path, main_path], [
-    a_stmts,
-    b_stmts,
-    facade_stmts,
-    main_stmts
-  ], main_path)
-  let renames = collect_import_value_renames(plan, facade_path, facade_stmts)
+  let plan = build_export_rename_plan(paths = [
+    a_path,
+    b_path,
+    facade_path,
+    main_path
+  ], stmts_list = [a_stmts, b_stmts, facade_stmts, main_stmts], entry_path = main_path)
+  let renames = collect_import_value_renames(plan = plan, path = facade_path, stmts = facade_stmts)
   assert(Array::length(renames) == 0)
 }
 
@@ -522,24 +524,30 @@ test "an enum re-export alias rewrites only its importer" {
     "/virtual/entry.vibe",
     "/virtual/other.vibe"
   ]
-  let plan = build_export_rename_plan(paths, [provider, facade, entry, other], "/virtual/entry.vibe")
-  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
+    provider,
+    facade,
+    entry,
+    other
+  ], entry_path = "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan = plan, path = "/virtual/entry.vibe", stmts = entry)
   assert(Array::length(renames) == 1)
-  inspect(Array::get(renames, 0).0, "PublicChoice")
-  inspect(Array::get(renames, 0).1, "Choice")
+  inspect(Array::get(renames, at = 0).0, "PublicChoice")
+  inspect(Array::get(renames, at = 0).1, "Choice")
   let merged: Array[Stmt] = []
-  append_import_alias_rewritten_non_import_stmts(merged, provider)
-  append_import_alias_rewritten_non_import_stmts(merged, facade)
-  append_import_alias_rewritten_non_import_stmts_with_renames(merged, entry, [], renames)
-  append_import_alias_rewritten_non_import_stmts(merged, other)
+  append_import_alias_rewritten_non_import_stmts(merged = merged, stmts = provider)
+  append_import_alias_rewritten_non_import_stmts(merged = merged, stmts = facade)
+  append_import_alias_rewritten_non_import_stmts_with_renames(merged = merged, stmts = entry, skipped_locals = [
+  ], extra_renames = renames)
+  append_import_alias_rewritten_non_import_stmts(merged = merged, stmts = other)
   let before = print_program(merged)
-  assert(!String::contains(before, "type PublicChoice = Choice"))
-  assert(String::contains(before, "answer = Choice::First"))
-  assert(String::contains(before, "other = PublicChoice::Local"))
+  assert(!String::contains(before, needle = "type PublicChoice = Choice"))
+  assert(String::contains(before, needle = "answer = Choice::First"))
+  assert(String::contains(before, needle = "other = PublicChoice::Local"))
   desugar_trait_dicts(merged)
   let after = print_program(merged)
-  assert(String::contains(after, "answer = First"))
-  assert(String::contains(after, "other = Local"))
+  assert(String::contains(after, needle = "answer = First"))
+  assert(String::contains(after, needle = "other = Local"))
 }
 
 test "a re-exported transparent alias reaches its enum constructors" {
@@ -551,11 +559,15 @@ test "a re-exported transparent alias reaches its enum constructors" {
     "/virtual/facade.vibe",
     "/virtual/entry.vibe"
   ]
-  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
-  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
+    provider,
+    facade,
+    entry
+  ], entry_path = "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan = plan, path = "/virtual/entry.vibe", stmts = entry)
   inspect(Array::length(renames), "1")
-  inspect(Array::get(renames, 0).0, "PublicShade")
-  inspect(Array::get(renames, 0).1, "Color")
+  inspect(Array::get(renames, at = 0).0, "PublicShade")
+  inspect(Array::get(renames, at = 0).1, "Color")
 }
 
 test "a re-exported parameterized alias reaches its enum constructors" {
@@ -567,11 +579,15 @@ test "a re-exported parameterized alias reaches its enum constructors" {
     "/virtual/facade.vibe",
     "/virtual/entry.vibe"
   ]
-  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
-  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
+    provider,
+    facade,
+    entry
+  ], entry_path = "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan = plan, path = "/virtual/entry.vibe", stmts = entry)
   assert(Array::length(renames) >= 1)
-  inspect(Array::get(renames, 0).0, "PublicAtt")
-  inspect(Array::get(renames, 0).1, "Attempt")
+  inspect(Array::get(renames, at = 0).0, "PublicAtt")
+  inspect(Array::get(renames, at = 0).1, "Attempt")
 }
 
 test "a re-exported alias follows an imported enum head" {
@@ -585,16 +601,16 @@ test "a re-exported alias follows an imported enum head" {
     "/virtual/facade.vibe",
     "/virtual/entry.vibe"
   ]
-  let plan = build_export_rename_plan(paths, [
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
     dependency,
     provider,
     facade,
     entry
-  ], "/virtual/entry.vibe")
-  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  ], entry_path = "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan = plan, path = "/virtual/entry.vibe", stmts = entry)
   inspect(Array::length(renames), "1")
-  inspect(Array::get(renames, 0).0, "PublicAlias")
-  inspect(Array::get(renames, 0).1, "Color")
+  inspect(Array::get(renames, at = 0).0, "PublicAlias")
+  inspect(Array::get(renames, at = 0).1, "Color")
 }
 
 test "a later plain enum re-export replaces an earlier alias" {
@@ -608,13 +624,13 @@ test "a later plain enum re-export replaces an earlier alias" {
   let later_path = "/virtual/later.vibe"
   let facade_path = "/virtual/facade.vibe"
   let entry_path = "/virtual/entry.vibe"
-  let plan = build_export_rename_plan([
+  let plan = build_export_rename_plan(paths = [
     first_path,
     later_path,
     facade_path,
     entry_path
-  ], [first, later, facade, entry], entry_path)
-  let renames = collect_import_value_renames(plan, entry_path, entry)
+  ], stmts_list = [first, later, facade, entry], entry_path = entry_path)
+  let renames = collect_import_value_renames(plan = plan, path = entry_path, stmts = entry)
   inspect(Array::length(renames), "0")
 }
 
@@ -629,20 +645,20 @@ test "an enum re-export chain is not limited to sixteen hops" {
   while i < 18 {
     let facade = "f" + Int::to_string(i)
     let next_name = "A" + Int::to_string(i)
-    Array::push(paths, "/virtual/" + facade + ".vibe")
-    Array::push(stmts_list, parse_program(lex("export ./" + previous + ".vibe { " + public_name + " as " + next_name + " }")))
+    Array::push(paths, value = "/virtual/" + facade + ".vibe")
+    Array::push(stmts_list, value = parse_program(lex("export ./" + previous + ".vibe { " + public_name + " as " + next_name + " }")))
     previous = facade
     public_name = next_name
     i = i + 1
   }
   let entry = parse_program(lex("import ./" + previous + ".vibe { " + public_name + " }\nlet answer = " + public_name + "::First"))
   let entry_path = "/virtual/entry.vibe"
-  Array::push(paths, entry_path)
-  Array::push(stmts_list, entry)
-  let plan = build_export_rename_plan(paths, stmts_list, entry_path)
-  let renames = collect_import_value_renames(plan, entry_path, entry)
+  Array::push(paths, value = entry_path)
+  Array::push(stmts_list, value = entry)
+  let plan = build_export_rename_plan(paths = paths, stmts_list = stmts_list, entry_path = entry_path)
+  let renames = collect_import_value_renames(plan = plan, path = entry_path, stmts = entry)
   inspect(Array::length(renames), "1")
-  inspect(Array::get(renames, 0).1, "Choice")
+  inspect(Array::get(renames, at = 0).1, "Choice")
 }
 
 test "an enum alias change invalidates the export plan fingerprint" {
@@ -655,8 +671,16 @@ test "an enum alias change invalidates the export plan fingerprint" {
     "/virtual/facade.vibe",
     "/virtual/entry.vibe"
   ]
-  let old_plan = build_export_rename_plan(paths, [provider, old_facade, entry], "/virtual/entry.vibe")
-  let new_plan = build_export_rename_plan(paths, [provider, new_facade, entry], "/virtual/entry.vibe")
+  let old_plan = build_export_rename_plan(paths = paths, stmts_list = [
+    provider,
+    old_facade,
+    entry
+  ], entry_path = "/virtual/entry.vibe")
+  let new_plan = build_export_rename_plan(paths = paths, stmts_list = [
+    provider,
+    new_facade,
+    entry
+  ], entry_path = "/virtual/entry.vibe")
   inspect(export_plan_fingerprint_text(old_plan) == export_plan_fingerprint_text(new_plan), "false")
 }
 
@@ -672,18 +696,18 @@ test "a new exported same-name enum invalidates the export plan fingerprint" {
     "/virtual/sibling.vibe",
     "/virtual/entry.vibe"
   ]
-  let old_plan = build_export_rename_plan(paths, [
+  let old_plan = build_export_rename_plan(paths = paths, stmts_list = [
     provider,
     facade,
     sibling_before,
     entry
-  ], "/virtual/entry.vibe")
-  let new_plan = build_export_rename_plan(paths, [
+  ], entry_path = "/virtual/entry.vibe")
+  let new_plan = build_export_rename_plan(paths = paths, stmts_list = [
     provider,
     facade,
     sibling_after,
     entry
-  ], "/virtual/entry.vibe")
+  ], entry_path = "/virtual/entry.vibe")
   inspect(export_plan_fingerprint_text(old_plan) == export_plan_fingerprint_text(new_plan), "false")
 }
 
@@ -698,8 +722,13 @@ test "an alias formal does not follow a same-spelled imported enum" {
     "/virtual/facade.vibe",
     "/virtual/entry.vibe"
   ]
-  let plan = build_export_rename_plan(paths, [hue, provider, facade, entry], "/virtual/entry.vibe")
-  inspect(Array::length(collect_import_value_renames(plan, "/virtual/entry.vibe", entry)), "0")
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
+    hue,
+    provider,
+    facade,
+    entry
+  ], entry_path = "/virtual/entry.vibe")
+  inspect(Array::length(collect_import_value_renames(plan = plan, path = "/virtual/entry.vibe", stmts = entry)), "0")
 }
 
 test "a higher-kinded alias formal does not follow a same-spelled enum" {
@@ -713,8 +742,13 @@ test "a higher-kinded alias formal does not follow a same-spelled enum" {
     "/virtual/facade.vibe",
     "/virtual/entry.vibe"
   ]
-  let plan = build_export_rename_plan(paths, [enum_f, provider, facade, entry], "/virtual/entry.vibe")
-  inspect(Array::length(collect_import_value_renames(plan, "/virtual/entry.vibe", entry)), "0")
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
+    enum_f,
+    provider,
+    facade,
+    entry
+  ], entry_path = "/virtual/entry.vibe")
+  inspect(Array::length(collect_import_value_renames(plan = plan, path = "/virtual/entry.vibe", stmts = entry)), "0")
 }
 
 test "a local effect head blocks an imported enum alias rewrite" {
@@ -726,8 +760,12 @@ test "a local effect head blocks an imported enum alias rewrite" {
     "/virtual/facade.vibe",
     "/virtual/entry.vibe"
   ]
-  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
-  inspect(Array::length(collect_import_value_renames(plan, "/virtual/entry.vibe", entry)), "0")
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
+    provider,
+    facade,
+    entry
+  ], entry_path = "/virtual/entry.vibe")
+  inspect(Array::length(collect_import_value_renames(plan = plan, path = "/virtual/entry.vibe", stmts = entry)), "0")
 }
 
 test "an aggregate export of a local effect does not re-export an imported enum" {
@@ -739,8 +777,12 @@ test "an aggregate export of a local effect does not re-export an imported enum"
     "/virtual/facade.vibe",
     "/virtual/entry.vibe"
   ]
-  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
-  inspect(Array::length(collect_import_value_renames(plan, "/virtual/entry.vibe", entry)), "0")
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
+    provider,
+    facade,
+    entry
+  ], entry_path = "/virtual/entry.vibe")
+  inspect(Array::length(collect_import_value_renames(plan = plan, path = "/virtual/entry.vibe", stmts = entry)), "0")
 }
 
 test "a provider-local struct stops an imported enum origin" {
@@ -754,13 +796,13 @@ test "a provider-local struct stops an imported enum origin" {
     "/virtual/facade.vibe",
     "/virtual/entry.vibe"
   ]
-  let plan = build_export_rename_plan(paths, [
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
     dependency,
     provider,
     facade,
     entry
-  ], "/virtual/entry.vibe")
-  inspect(Array::length(collect_import_value_renames(plan, "/virtual/entry.vibe", entry)), "0")
+  ], entry_path = "/virtual/entry.vibe")
+  inspect(Array::length(collect_import_value_renames(plan = plan, path = "/virtual/entry.vibe", stmts = entry)), "0")
 }
 
 test "a public alias preserves a private enum origin" {
@@ -772,21 +814,25 @@ test "a public alias preserves a private enum origin" {
     "/virtual/facade.vibe",
     "/virtual/entry.vibe"
   ]
-  let plan = build_export_rename_plan(paths, [provider, facade, entry], "/virtual/entry.vibe")
-  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
+    provider,
+    facade,
+    entry
+  ], entry_path = "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan = plan, path = "/virtual/entry.vibe", stmts = entry)
   inspect(Array::length(renames), "3")
-  inspect(Array::get(renames, 0).0, "Api")
-  inspect(Array::get(renames, 0).1, "Public")
-  inspect(Array::get(renames, 1).0, "Api::A")
-  inspect(Array::get(renames, 1).1, namespace_private_name("/virtual/provider.vibe", "A"))
-  inspect(Array::get(renames, 2).0, "Api::B")
-  inspect(Array::get(renames, 2).1, namespace_private_name("/virtual/provider.vibe", "B"))
+  inspect(Array::get(renames, at = 0).0, "Api")
+  inspect(Array::get(renames, at = 0).1, "Public")
+  inspect(Array::get(renames, at = 1).0, "Api::A")
+  inspect(Array::get(renames, at = 1).1, namespace_private_name(path = "/virtual/provider.vibe", name = "A"))
+  inspect(Array::get(renames, at = 2).0, "Api::B")
+  inspect(Array::get(renames, at = 2).1, namespace_private_name(path = "/virtual/provider.vibe", name = "B"))
 }
 
 //# #2348: a WAT body's `call $name` survives the merge rename
 
 /// The name a top-level value statement binds, however it is spelled.
-fn iw_stmt_binding_name(stmt: Stmt) -> String {
+fn iw_stmt_binding_name(_ stmt: Stmt) -> String {
   match stmt {
     SFnDecl(_, name, _, _, _) => name,
     SLet(_, _, name, _, _) => name,
@@ -800,23 +846,23 @@ test "#2348 merge: a WAT callee is renamed together with its definition" {
   // rewrite could not see it and the caller was left naming a fn that no
   // longer existed -- a program whose per-file `vibe check` is clean.
   let stmts = parse_program(lex("fn helper(a: Int, b: Int) -> Int = wasm\"(i64.sub (local.get $a) (local.get $b))\"\nexport fn caller(a: Int) -> Int = wasm\"(call $helper (local.get $a) (i64.const 8))\"\n"))
-  let renamed = namespace_private_value_stmts("dep.vibe", stmts)
-  let helper_name = iw_stmt_binding_name(Array::get(renamed, 0))
+  let renamed = namespace_private_value_stmts(path = "dep.vibe", stmts = stmts)
+  let helper_name = iw_stmt_binding_name(Array::get(renamed, at = 0))
   // The definition really was renamed; without this the assertion below
   // would hold vacuously on a build where nothing is namespaced at all.
   assert(helper_name != "helper")
   assert(String::length(helper_name) > 6)
   let printed = print_program(renamed)
   // The callee token now names exactly the renamed definition ...
-  assert(String::contains(printed, String::concat("call $", helper_name)))
+  assert(String::contains(printed, needle = String::concat("call $", helper_name)))
   // ... and no longer the original spelling. The trailing space matters:
   // `call $helper` is a prefix of `call $helper_dep_vibe`.
-  assert(!String::contains(printed, "call $helper "))
+  assert(!String::contains(printed, needle = "call $helper "))
 }
 
 test "a dependency-private qualified pattern tracks its renamed constructor" {
   let source = "enum Hidden { A; B }\nexport fn selected(x: Hidden) -> Int { match x { Hidden::A => 1, Hidden::B => 2 } }"
-  let renamed = namespace_private_value_stmts("dep.vibe", parse_program(lex(source)))
+  let renamed = namespace_private_value_stmts(path = "dep.vibe", stmts = parse_program(lex(source)))
   let mut enum_name = ""
   let mut ctor_name = ""
   let mut ref_qualifier = ""
@@ -825,11 +871,11 @@ test "a dependency-private qualified pattern tracks its renamed constructor" {
     match stmt {
       SEnum(_, name, _, ctors, _) => {
         enum_name = name
-        let (name, _) = Array::get(ctors, 0)
+        let (name, _) = Array::get(ctors, at = 0)
         ctor_name = name
       },
       SQualifiedPatternRefs(rows) => {
-        let (qualifier, variant) = Array::get(rows, 0)
+        let (qualifier, variant) = Array::get(rows, at = 0)
         ref_qualifier = qualifier
         ref_variant = variant
       },
@@ -844,12 +890,12 @@ test "a dependency-private qualified pattern tracks its renamed constructor" {
 
 test "a local alias of a public enum keeps its public constructor spelling" {
   let source = "export enum Public { A }\nenum Hidden { A }\ntype Local = Public\nexport fn selected(x: Local) -> Int { match x { Local::A => 1 } }"
-  let renamed = namespace_private_value_stmts("dep.vibe", parse_program(lex(source)))
+  let renamed = namespace_private_value_stmts(path = "dep.vibe", stmts = parse_program(lex(source)))
   let mut ref_variant = ""
   for stmt in renamed {
     match stmt {
       SQualifiedPatternRefs(rows) => {
-        let (_, variant) = Array::get(rows, 0)
+        let (_, variant) = Array::get(rows, at = 0)
         ref_variant = variant
       },
       _ => ()
@@ -863,10 +909,10 @@ test "#2348 merge: a local spelled like a private fn is left alone" {
   // local or label that happens to share a renamed fn's name keeps its
   // spelling -- renaming it would silently change which slot the body reads.
   let stmts = parse_program(lex("fn helper(a: Int, b: Int) -> Int = wasm\"(i64.sub (local.get $a) (local.get $b))\"\nexport fn caller(a: Int) -> Int = wasm\"(i64.add (local.get $helper) (i64.const 8))\"\n"))
-  let renamed = namespace_private_value_stmts("dep.vibe", stmts)
-  assert(iw_stmt_binding_name(Array::get(renamed, 0)) != "helper")
+  let renamed = namespace_private_value_stmts(path = "dep.vibe", stmts = stmts)
+  assert(iw_stmt_binding_name(Array::get(renamed, at = 0)) != "helper")
   let printed = print_program(renamed)
-  assert(String::contains(printed, "local.get $helper)"))
+  assert(String::contains(printed, needle = "local.get $helper)"))
 }
 
 test "#2348 merge: a parameter named like the callee does not block the rename" {
@@ -874,18 +920,18 @@ test "#2348 merge: a parameter named like the callee does not block the rename" 
   // the body is rewritten. A WAT `$name` callee is a wasm FUNCTION name, a
   // namespace of its own, so it must not inherit that shadowing -- it did,
   // and the caller was left naming a definition the merge had renamed.
-  let renamed = namespace_private_value_stmts("dep.vibe", parse_program(lex("fn helper(a: Int, b: Int) -> Int = wasm\"(i64.sub (local.get $a) (local.get $b))\"\nexport fn caller(helper: Int) -> Int = wasm\"(call $helper (local.get $helper) (i64.const 8))\"\n")))
-  assert(iw_stmt_binding_name(Array::get(renamed, 0)) != "helper")
+  let renamed = namespace_private_value_stmts(path = "dep.vibe", stmts = parse_program(lex("fn helper(a: Int, b: Int) -> Int = wasm\"(i64.sub (local.get $a) (local.get $b))\"\nexport fn caller(helper: Int) -> Int = wasm\"(call $helper (local.get $helper) (i64.const 8))\"\n")))
+  assert(iw_stmt_binding_name(Array::get(renamed, at = 0)) != "helper")
   let printed = print_program(renamed)
-  assert(!String::contains(printed, "call $helper "))
+  assert(!String::contains(printed, needle = "call $helper "))
   // ... while the parameter read keeps its own spelling.
-  assert(String::contains(printed, "local.get $helper)"))
+  assert(String::contains(printed, needle = "local.get $helper)"))
 }
 
 fn plan_refusal(paths: Array[String], stmts_list: Array[Array[Stmt]], entry: String, entry_stmts: Array[Stmt]) -> String {
   handle {
-    let plan = build_export_rename_plan(paths, stmts_list, entry)
-    let _ = collect_import_value_renames(plan, entry, entry_stmts)
+    let plan = build_export_rename_plan(paths = paths, stmts_list = stmts_list, entry_path = entry)
+    let _ = collect_import_value_renames(plan = plan, path = entry, stmts = entry_stmts)
     "clean"
   } with { Exception::Throw(msg) => msg }
 }
@@ -901,11 +947,16 @@ test "#3445: an import through a facade follows the later of two re-exports" {
     "/virtual/facade.vibe",
     "/virtual/entry.vibe"
   ]
-  let plan = build_export_rename_plan(paths, [a, b, facade, entry], "/virtual/entry.vibe")
-  let renames = collect_import_value_renames(plan, "/virtual/entry.vibe", entry)
+  let plan = build_export_rename_plan(paths = paths, stmts_list = [
+    a,
+    b,
+    facade,
+    entry
+  ], entry_path = "/virtual/entry.vibe")
+  let renames = collect_import_value_renames(plan = plan, path = "/virtual/entry.vibe", stmts = entry)
   inspect(Array::length(renames), "1")
-  let b_foo = Array::get(export_plan_renames_for(plan, "/virtual/b.vibe"), 0).1
-  inspect(Array::get(renames, 0).1 == b_foo, "true")
+  let b_foo = Array::get(export_plan_renames_for(plan = plan, path = "/virtual/b.vibe"), at = 0).1
+  inspect(Array::get(renames, at = 0).1 == b_foo, "true")
 }
 
 test "#3448: two modules exporting a struct of one name are refused with the rename" {
@@ -917,8 +968,8 @@ test "#3448: two modules exporting a struct of one name are refused with the ren
     "/virtual/depb.vibe",
     "/virtual/entry.vibe"
   ]
-  let msg = plan_refusal(paths, [depa, depb, entry], "/virtual/entry.vibe", entry)
-  inspect(String::starts_with(msg, "rename one of the structs named `Box`: `/virtual/depa.vibe` and `/virtual/depb.vibe` both declare it"), "true")
+  let msg = plan_refusal(paths = paths, stmts_list = [depa, depb, entry], entry = "/virtual/entry.vibe", entry_stmts = entry)
+  inspect(String::starts_with(msg, prefix = "rename one of the structs named `Box`: `/virtual/depa.vibe` and `/virtual/depb.vibe` both declare it"), "true")
 }
 
 test "#3448: the entry's own type is its own and is not judged here" {
@@ -927,7 +978,7 @@ test "#3448: the entry's own type is its own and is not judged here" {
   let dep = parse_program(lex("export enum Hue {\n  Red;\n  Blue\n}\nexport fn red() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./dep.vibe { red }\nenum Hue {\n  Green\n}\nlet answer = red()"))
   let paths = ["/virtual/dep.vibe", "/virtual/entry.vibe"]
-  inspect(plan_refusal(paths, [dep, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [dep, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3448: two dependencies publishing one definition are one type (#3036)" {
@@ -935,16 +986,16 @@ test "#3448: two dependencies publishing one definition are one type (#3036)" {
   let b = parse_program(lex("export struct Box[U] {\n  value: U\n}\nexport fn unbox(b: Box[Int]) -> Int {\n  b.value\n}"))
   let entry = parse_program(lex("import ./a.vibe { box_of }\nimport ./b.vibe { unbox }\nlet answer = unbox(box_of(1))"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [a, b, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   let ja = parse_program(lex("export struct Job {\n  run: () -> Unit with Fs + Env\n}\nexport fn ta(j: Job) -> Int {\n  1\n}"))
   let jb = parse_program(lex("export struct Job {\n  run: () -> Unit with Env + Fs + Env\n}\nexport fn tb(j: Job) -> Int {\n  1\n}"))
   let jentry = parse_program(lex("import ./a.vibe { ta }\nimport ./b.vibe { tb }\nlet answer = 1"))
-  inspect(plan_refusal(paths, [ja, jb, jentry], "/virtual/entry.vibe", jentry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [ja, jb, jentry], entry = "/virtual/entry.vibe", entry_stmts = jentry), "clean")
   // A field spelled through the module's own transparent alias is that type
   // (Codex on #3467).
   let na = parse_program(lex("type N = Int\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
   let nb = parse_program(lex("type Ints[X] = Array[X]\nexport struct Box[U] {\n  value: Int\n}\nexport fn unbox(b: Box[Int]) -> Int {\n  b.value\n}"))
-  inspect(plan_refusal(paths, [na, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [na, nb, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // So is one spelled through an alias the module imports (Codex on #3467).
   let shared = parse_program(lex("export type N = Int"))
   let ia = parse_program(lex("import ./aliases.vibe { N }\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
@@ -954,11 +1005,11 @@ test "#3448: two dependencies publishing one definition are one type (#3036)" {
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(ipaths, [shared, ia, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = ipaths, stmts_list = [shared, ia, nb, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // An alias published through an export list is read the same way (Codex
   // on #3467).
   let listed = parse_program(lex("type N = Int\nexport { N }"))
-  inspect(plan_refusal(ipaths, [listed, ia, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = ipaths, stmts_list = [listed, ia, nb, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // And through a facade that only re-exports it (Codex on #3467).
   let facade = parse_program(lex("export ./aliases.vibe { N }"))
   let via_facade = parse_program(lex("import ./facade.vibe { N }\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
@@ -969,18 +1020,35 @@ test "#3448: two dependencies publishing one definition are one type (#3036)" {
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(fpaths, [shared, facade, via_facade, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = fpaths, stmts_list = [
+    shared,
+    facade,
+    via_facade,
+    nb,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // The two-step form re-exports it as well (Codex on #3467).
   let listed_facade = parse_program(lex("import ./aliases.vibe { N }\nexport { N }"))
-  inspect(plan_refusal(fpaths, [shared, listed_facade, via_facade, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = fpaths, stmts_list = [
+    shared,
+    listed_facade,
+    via_facade,
+    nb,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // A file that does not import the alias reads its own `N`, a struct, so
   // the types stay apart (Codex on #3467).
   let own_n = parse_program(lex("struct N {\n  v: String\n}\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: N::{ v: \"\" } }\n}"))
-  inspect(String::starts_with(plan_refusal(ipaths, [shared, own_n, nb, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = ipaths, stmts_list = [
+    shared,
+    own_n,
+    nb,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
   // An alias read through its provider's own private alias is the same
   // type (Codex on #3467).
   let layered = parse_program(lex("type Hidden = Int\nexport type N = Hidden"))
-  inspect(plan_refusal(ipaths, [layered, ia, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = ipaths, stmts_list = [layered, ia, nb, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // So is one spelled through an alias its provider imports.
   let base_alias = parse_program(lex("export type N = Int"))
   let relay_alias = parse_program(lex("import ./base.vibe { N }\nexport type M = N"))
@@ -992,7 +1060,13 @@ test "#3448: two dependencies publishing one definition are one type (#3036)" {
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(rpaths, [base_alias, relay_alias, im, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = rpaths, stmts_list = [
+    base_alias,
+    relay_alias,
+    im,
+    nb,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // And through a chain of such imports, however many deep (Codex on #3467).
   let relay2_alias = parse_program(lex("import ./aliases.vibe { M }\nexport type K = M"))
   let ik = parse_program(lex("import ./aliases2.vibe { K }\nexport struct Box[T] {\n  value: K\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: n }\n}"))
@@ -1004,14 +1078,14 @@ test "#3448: two dependencies publishing one definition are one type (#3036)" {
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(kpaths, [
+  inspect(plan_refusal(paths = kpaths, stmts_list = [
     base_alias,
     relay_alias,
     relay2_alias,
     ik,
     nb,
     entry
-  ], "/virtual/entry.vibe", entry), "clean")
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // An `N` imported from another module is that module's, not the alias of
   // the same name (Codex on #3467).
   let nominal = parse_program(lex("export struct N {\n  v: String\n}"))
@@ -1023,13 +1097,13 @@ test "#3448: two dependencies publishing one definition are one type (#3036)" {
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(npaths, [
+  inspect(String::starts_with(plan_refusal(paths = npaths, stmts_list = [
     shared,
     nominal,
     other_import,
     nb,
     entry
-  ], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
   // Another file exporting an `N` of its own does not change which one the
   // import reads: aliases are keyed by provider (Codex on #3467).
   let other_n = parse_program(lex("export type N = String"))
@@ -1040,19 +1114,29 @@ test "#3448: two dependencies publishing one definition are one type (#3036)" {
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(apaths, [shared, other_n, ia, nb, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = apaths, stmts_list = [
+    shared,
+    other_n,
+    ia,
+    nb,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // Imported from the provider whose `N` is `String`, it is another type.
   let ia2 = parse_program(lex("import ./aliases2.vibe { N }\nexport struct Box[T] {\n  value: N\n}\nexport fn box_of(n: Int) -> Box[Int] {\n  Box::{ value: \"\" }\n}"))
-  inspect(String::starts_with(plan_refusal(apaths, [
+  inspect(String::starts_with(plan_refusal(paths = apaths, stmts_list = [
     shared,
     other_n,
     ia2,
     nb,
     entry
-  ], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
   // A field of another type is another type.
   let c = parse_program(lex("export struct Box[U] {\n  value: Option[U]\n}\nexport fn unbox(b: Box[Int]) -> Int {\n  0\n}"))
-  inspect(String::starts_with(plan_refusal(paths, [a, c, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    a,
+    c,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: a private type of the same name in a dependency is not a collision" {
@@ -1064,7 +1148,7 @@ test "#3448: a private type of the same name in a dependency is not a collision"
     "/virtual/depb.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(paths, [depa, depb, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [depa, depb, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3448: a package member the program never reaches does not collide" {
@@ -1082,12 +1166,24 @@ test "#3448: a package member the program never reaches does not collide" {
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(paths, [used, unused, facade, other, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [
+    used,
+    unused,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // Importing the member's function through the facade reaches it, and then
   // its `Attempt` and the other module's are two types in one program.
   let entry2 = parse_program(lex("import ./facade.vibe { attempt_good }\nimport ./other.vibe { mine }\nlet answer = mine()"))
-  let msg = plan_refusal(paths, [used, unused, facade, other, entry2], "/virtual/entry.vibe", entry2)
-  inspect(String::starts_with(msg, "rename one of the enums named `Attempt`"), "true")
+  let msg = plan_refusal(paths = paths, stmts_list = [
+    used,
+    unused,
+    facade,
+    other,
+    entry2
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry2)
+  inspect(String::starts_with(msg, prefix = "rename one of the enums named `Attempt`"), "true")
 }
 
 test "#3448: a file reached through a facade's own re-export collides" {
@@ -1104,11 +1200,16 @@ test "#3448: a file reached through a facade's own re-export collides" {
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [p, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    p,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
   // A re-export the facade's own code never names reaches nothing (the #3036
   // control `dup_type_formal_marker_ok`).
   let pass_on = parse_program(lex("export ./p.vibe { Box }\nexport fn wrapper() -> Int {\n  1\n}"))
-  inspect(plan_refusal(paths, [p, pass_on, other, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [p, pass_on, other, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3448: an alias's constructor parameter in head position takes its argument" {
@@ -1119,8 +1220,12 @@ test "#3448: an alias's constructor parameter in head position takes its argumen
   let same = parse_program(lex("type Apply[F[_], A] = F[A]\nexport struct Box {\n  value: Option[Int]\n}\nexport fn box_b() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { box_a }\nimport ./b.vibe { box_b }\nlet answer = box_a() + box_b()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
-  inspect(plan_refusal(paths, [a, same, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    a,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
+  inspect(plan_refusal(paths = paths, stmts_list = [a, same, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3448: a provider's own alias does not capture a kinded formal of the same name" {
@@ -1136,7 +1241,12 @@ test "#3448: a provider's own alias does not capture a kinded formal of the same
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [provider, a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    provider,
+    a,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: a facade re-exporting one alias name twice provides the later one" {
@@ -1155,14 +1265,14 @@ test "#3448: a facade re-exporting one alias name twice provides the later one" 
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
     ai,
     astr,
     facade,
     a,
     b,
     entry
-  ], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: a file's own applied alias wins over an imported one of its name" {
@@ -1178,7 +1288,12 @@ test "#3448: a file's own applied alias wins over an imported one of its name" {
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [provider, a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    provider,
+    a,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3489: a row spelled through an effectset is the row of its members" {
@@ -1186,7 +1301,7 @@ test "#3489: a row spelled through an effectset is the row of its members" {
   let b = parse_program(lex("effect Ask {\n  Get() -> Int\n}\nexport struct Job {\n  run: () -> Int with Ask\n}\nexport fn jb() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [a, b, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // Imported from the module that declares it.
   let sets = parse_program(lex("effect Ask {\n  Get() -> Int\n}\nexport effectset All = { Ask }"))
   let ia = parse_program(lex("import ./sets.vibe { All }\nexport struct Job {\n  run: () -> Int with All\n}\nexport fn ja() -> Int {\n  1\n}"))
@@ -1196,10 +1311,14 @@ test "#3489: a row spelled through an effectset is the row of its members" {
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(ipaths, [sets, ia, b, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = ipaths, stmts_list = [sets, ia, b, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // A set with another member is another row.
   let wide = parse_program(lex("effect Ask {\n  Get() -> Int\n}\neffect Tell {\n  Put(Int) -> Unit\n}\neffectset All = { Ask, Tell }\nexport struct Job {\n  run: () -> Int with All\n}\nexport fn ja() -> Int {\n  1\n}"))
-  inspect(String::starts_with(plan_refusal(paths, [wide, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    wide,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Job`"), "true")
 }
 
 test "#3448: a re-export a facade names only in a type reaches its provider" {
@@ -1215,26 +1334,46 @@ test "#3448: a re-export a facade names only in a type reaches its provider" {
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [p, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    p,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
   // A result type and a field each name it too.
   let by_result = parse_program(lex("export ./p.vibe { Box }\nexport fn make() -> Option[Box] {\n  None\n}"))
-  inspect(String::starts_with(plan_refusal(paths, [p, by_result, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    p,
+    by_result,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
   let by_field = parse_program(lex("export ./p.vibe { Box }\nexport struct Holder {\n  b: Box\n}\nexport fn read() -> Int {\n  1\n}"))
-  inspect(String::starts_with(plan_refusal(paths, [p, by_field, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    p,
+    by_field,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
   // A type parameter spelled `Box` is that parameter, not the re-export
   // (Codex on #3492).
   let by_param = parse_program(lex("export ./p.vibe { Box }\nexport fn read[Box](x: Box) -> Box {\n  x\n}"))
-  inspect(plan_refusal(paths, [p, by_param, other, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [p, by_param, other, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   let by_struct_param = parse_program(lex("export ./p.vibe { Box }\nexport struct Holder[Box] {\n  b: Box\n}\nexport fn read() -> Int {\n  1\n}"))
-  inspect(plan_refusal(paths, [p, by_struct_param, other, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [
+    p,
+    by_struct_param,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // A facade's own `Box` is its own (Codex on #3492): a recursive field
   // naming it does not reach the re-export.
   let own_box = parse_program(lex("export ./p.vibe { Box }\nstruct Box {\n  next: Option[Box]\n}\nexport fn read() -> Int {\n  1\n}"))
-  inspect(plan_refusal(paths, [p, own_box, other, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [p, own_box, other, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // An operation named like the re-export (`with Console::Box`) is not it
   // (Codex on #3492).
   let by_op = parse_program(lex("export ./p.vibe { Box }\nexport fn read() -> Int with Console::Box {\n  1\n}"))
-  inspect(plan_refusal(paths, [p, by_op, other, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [p, by_op, other, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3448: builtin spellings the checker resolves alike are one type" {
@@ -1244,10 +1383,14 @@ test "#3448: builtin spellings the checker resolves alike are one type" {
   let b = parse_program(lex("export struct Box {\n  u: ();\n  n: Int;\n  d: Double\n}\nexport fn jb() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [a, b, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // A spelling the checker keeps apart stays apart.
   let c = parse_program(lex("export struct Box {\n  u: Unit;\n  n: i64;\n  d: Double\n}\nexport fn jb() -> Int {\n  1\n}"))
-  inspect(String::starts_with(plan_refusal(paths, [a, c, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    a,
+    c,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3489: an exported effectset over another is read in its provider" {
@@ -1262,7 +1405,7 @@ test "#3489: an exported effectset over another is read in its provider" {
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(paths, [sets, a, b, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [sets, a, b, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3489: a kind-qualified import binds only its namespace" {
@@ -1279,9 +1422,14 @@ test "#3489: a kind-qualified import binds only its namespace" {
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [sets, a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    sets,
+    a,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Job`"), "true")
   // Unqualified, the item still reads the effectset.
-  inspect(plan_refusal(paths, [sets, unqualified, b, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [sets, unqualified, b, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3489: an effectset chain past the depth bound never compares equal" {
@@ -1291,7 +1439,11 @@ test "#3489: an effectset chain past the depth bound never compares equal" {
   let b = parse_program(lex("effect Tell {\n  Put(Int) -> Unit\n}\neffectset S0 = { S1 }\neffectset S1 = { S2 }\neffectset S2 = { S3 }\neffectset S3 = { S4 }\neffectset S4 = { S5 }\neffectset S5 = { S6 }\neffectset S6 = { S7 }\neffectset S7 = { S8 }\neffectset S8 = { S9 }\neffectset S9 = { S10 }\neffectset S10 = { S11 }\neffectset S11 = { S12 }\neffectset S12 = { S13 }\neffectset S13 = { S14 }\neffectset S14 = { S15 }\neffectset S15 = { S16 }\neffectset S16 = { Tell }\nexport struct Job {\n  run: () -> Int with S0\n}\nexport fn jb() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    a,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Job`"), "true")
 }
 
 test "#3448: a re-export named only in a generic bound reaches its provider" {
@@ -1307,7 +1459,12 @@ test "#3448: a re-export named only in a generic bound reaches its provider" {
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [k, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    k,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: a bound's trait head is not hidden by a type parameter of its name" {
@@ -1322,7 +1479,12 @@ test "#3448: a bound's trait head is not hidden by a type parameter of its name"
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [k, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    k,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: a bound's trait head is not hidden by a local type of its name" {
@@ -1338,7 +1500,12 @@ test "#3448: a bound's trait head is not hidden by a local type of its name" {
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [k, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    k,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: a supertrait head is not hidden by a trait parameter of its name" {
@@ -1353,7 +1520,12 @@ test "#3448: a supertrait head is not hidden by a trait parameter of its name" {
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [k, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    k,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: a row's effect head is not hidden by a type parameter of its name" {
@@ -1368,7 +1540,12 @@ test "#3448: a row's effect head is not hidden by a type parameter of its name" 
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [k, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    k,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: an applied trait in an impl reaches its provider" {
@@ -1384,7 +1561,12 @@ test "#3448: an applied trait in an impl reaches its provider" {
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [k, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    k,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: effects spelled like builtin types stay apart" {
@@ -1394,7 +1576,11 @@ test "#3448: effects spelled like builtin types stay apart" {
   let b = parse_program(lex("effect Double {\n  Get() -> Int\n}\nexport struct Job {\n  run: () -> Int with Double\n}\nexport fn jb() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    a,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Job`"), "true")
 }
 
 test "#3448: a private alias inside a row argument is read through" {
@@ -1404,7 +1590,11 @@ test "#3448: a private alias inside a row argument is read through" {
   let b = parse_program(lex("effect State[T] {\n  Get() -> T\n}\ntype Payload = String\nexport struct Job {\n  run: () -> Int with State[Payload]\n}\nexport fn jb() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    a,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Job`"), "true")
 }
 
 test "#3448: a generic alias inside a row argument is read through" {
@@ -1414,7 +1604,11 @@ test "#3448: a generic alias inside a row argument is read through" {
   let b = parse_program(lex("effect State[T] {\n  Get() -> T\n}\ntype Payload[T] = Array[T]\nexport struct Job {\n  run: () -> Int with State[Payload[Int]]\n}\nexport fn jb() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Job`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    a,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Job`"), "true")
 }
 
 test "#3448: a type parameter in a row argument shadows an alias of its spelling" {
@@ -1426,8 +1620,12 @@ test "#3448: a type parameter in a row argument shadows an alias of its spelling
   let same = parse_program(lex("effect State[S] {\n  Get() -> S\n}\nexport struct Box[U] {\n  f: () -> Unit with State[U]\n}\nexport fn jb() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
-  inspect(plan_refusal(paths, [a, same, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    a,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
+  inspect(plan_refusal(paths = paths, stmts_list = [a, same, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3448: a row head is not renamed as a type parameter of its spelling" {
@@ -1437,7 +1635,11 @@ test "#3448: a row head is not renamed as a type parameter of its spelling" {
   let b = parse_program(lex("effect Write {\n  Put() -> Int\n}\nexport struct Box[Write] {\n  run: () -> Int with Write\n}\nexport fn jb() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    a,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: builtin spellings inside a row compare alike" {
@@ -1446,7 +1648,7 @@ test "#3448: builtin spellings inside a row compare alike" {
   let b = parse_program(lex("effect Probe[T] {\n  Take() -> T\n}\nexport struct Job {\n  run: () -> Int with Probe[Double]\n}\nexport fn jb() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [a, b, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3448: declarations a facade reads its re-exports through (Codex on #3492)" {
@@ -1461,22 +1663,47 @@ test "#3448: declarations a facade reads its re-exports through (Codex on #3492)
   ]
   // A top-level destructuring `let` names its pattern's head.
   let by_let_pat = parse_program(lex("export ./p.vibe { Box, make }\nlet Box::{ value } = make()\nexport fn read() -> Int {\n  value\n}"))
-  inspect(String::starts_with(plan_refusal(paths, [p, by_let_pat, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    p,
+    by_let_pat,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
   // A facade's own `Box` is the one its alias target names.
   let own_alias = parse_program(lex("export ./p.vibe { Box }\nstruct Box {\n  n: Int\n}\ntype Local = Box\nexport fn read() -> Int {\n  1\n}"))
-  inspect(plan_refusal(paths, [p, own_alias, other, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [p, own_alias, other, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // A trait parameter spelled `Box` is the parameter in its signatures.
   let super_param = parse_program(lex("export ./p.vibe { Box }\ntrait Key {\n  key(Self) -> Int\n}\ntrait Uses[Box]: Key {\n  uses(Self, Box) -> Int\n}\nexport fn read() -> Int {\n  1\n}"))
-  inspect(plan_refusal(paths, [p, super_param, other, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [
+    p,
+    super_param,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // A method's own type parameter spelled `Box` hides it in its signature.
   let method_param = parse_program(lex("export ./p.vibe { Box }\ntrait Uses {\n  project[Box](Self, Box) -> Box\n}\nexport fn read() -> Int {\n  1\n}"))
-  inspect(plan_refusal(paths, [p, method_param, other, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [
+    p,
+    method_param,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
   // A contract names what it calls.
   let by_contract = parse_program(lex("export ./p.vibe { Box, make }\nexport fn read(n: Int) -> Int where {\n  requires: make().value == n,\n} {\n  n\n}"))
-  inspect(String::starts_with(plan_refusal(paths, [p, by_contract, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    p,
+    by_contract,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
   // A test block names what it uses.
   let by_test = parse_program(lex("export ./p.vibe { Box, make }\nexport fn read() -> Int {\n  1\n}\ntest \"t\" {\n  let b: Box = make()\n  assert_eq(b.value, 1)\n}"))
-  inspect(String::starts_with(plan_refusal(paths, [p, by_test, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    p,
+    by_test,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3489: an effectset a facade re-exports is read in the facade's own rows" {
@@ -1491,7 +1718,7 @@ test "#3489: an effectset a facade re-exports is read in the facade's own rows" 
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(paths, [sets, facade, b, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [sets, facade, b, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3448: a facade's own constructor pattern is its own (Codex on #3492)" {
@@ -1505,7 +1732,7 @@ test "#3448: a facade's own constructor pattern is its own (Codex on #3492)" {
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(paths, [p, facade, other, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [p, facade, other, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3489: an effectset chain across three modules is read to its members" {
@@ -1525,7 +1752,7 @@ test "#3489: an effectset chain across three modules is read to its members" {
     "/virtual/b.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(plan_refusal(paths, [ma, mb, mc, a, b, entry], "/virtual/entry.vibe", entry), "clean")
+  inspect(plan_refusal(paths = paths, stmts_list = [ma, mb, mc, a, b, entry], entry = "/virtual/entry.vibe", entry_stmts = entry), "clean")
 }
 
 test "#3448: a qualified pattern reaches the re-export it names (Codex on #3492)" {
@@ -1539,7 +1766,12 @@ test "#3448: a qualified pattern reaches the re-export it names (Codex on #3492)
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [p, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    p,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the"), "true")
 }
 
 test "#3448: an operation in a row is not renamed as a type parameter (Codex on #3492)" {
@@ -1547,7 +1779,11 @@ test "#3448: an operation in a row is not renamed as a type parameter (Codex on 
   let b = parse_program(lex("effect Console {\n  T() -> Int;\n  U() -> Int\n}\nexport struct Box[U] {\n  run: () -> Int with Console::U\n}\nexport fn jb() -> Int {\n  1\n}"))
   let entry = parse_program(lex("import ./a.vibe { ja }\nimport ./b.vibe { jb }\nlet answer = ja() + jb()"))
   let paths = ["/virtual/a.vibe", "/virtual/b.vibe", "/virtual/entry.vibe"]
-  inspect(String::starts_with(plan_refusal(paths, [a, b, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    a,
+    b,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: a test's declared row reaches the re-export it names (Codex on #3492)" {
@@ -1561,7 +1797,12 @@ test "#3448: a test's declared row reaches the re-export it names (Codex on #349
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [p, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    p,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }
 
 test "#3448: a trait method's generic bound reaches its re-export (Codex on #3492)" {
@@ -1575,5 +1816,10 @@ test "#3448: a trait method's generic bound reaches its re-export (Codex on #349
     "/virtual/other.vibe",
     "/virtual/entry.vibe"
   ]
-  inspect(String::starts_with(plan_refusal(paths, [k, facade, other, entry], "/virtual/entry.vibe", entry), "rename one of the structs named `Box`"), "true")
+  inspect(String::starts_with(plan_refusal(paths = paths, stmts_list = [
+    k,
+    facade,
+    other,
+    entry
+  ], entry = "/virtual/entry.vibe", entry_stmts = entry), prefix = "rename one of the structs named `Box`"), "true")
 }

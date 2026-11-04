@@ -30,11 +30,11 @@ import @vibe/compiler/cache {
   compact_string_fingerprint, persistent_artifact_cache_path
 }
 
-fn bct_bytes(s: String) -> Bytes {
+fn bct_bytes(_ s: String) -> Bytes {
   let out = Bytes::new()
   let mut i = 0
   while i < String::length(s) {
-    Bytes::push(out, String::byte_at(s, i))
+    Bytes::push(out, value = String::byte_at(s, at = i))
     i = i + 1
   }
   out
@@ -48,7 +48,7 @@ fn bct_bytes_eq(a: Bytes, b: Bytes) -> Bool {
     let mut i = 0
     let mut same = true
     while same && i < n {
-      if Bytes::get(a, i) != Bytes::get(b, i) {
+      if Bytes::get(a, at = i) != Bytes::get(b, at = i) {
         same = false
       } else {
         i = i + 1
@@ -73,7 +73,7 @@ fn bct_b(decl: String, line: String) -> String {
     "export let bct_half: (Double) -> Double = (x) -> { x * 0.5 }",
     "export enum BctBoxed { BctBoxedD(Double) } derive(Eq)",
     "export let bct_boxed: (Double) -> Bool = (x) -> { BctBoxedD(x) == BctBoxedD(x) }"
-  ], "\n")
+  ], sep = "\n")
 }
 
 let bct_base_decl: String = "export enum BctShape { BctDot; BctLine(Int); BctNone } derive(Eq)"
@@ -94,42 +94,42 @@ fn bct_main() -> String {
     "let run: () -> Int = () -> {",
     "  bct_pass(2) + bct_text(3) + String::length(\"\\{bct_half(3.0)}\") + (if bct_half(1.0) == 0.5 && bct_boxed(2.0) { 1 } else { 0 }) + (if bct_same(1, 1) { 1 } else { 0 })",
     "}"
-  ], "\n")
+  ], sep = "\n")
 }
 
 fn bct_probe(decl: String, line: String) -> String with Env + Exception + Fs {
-  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bct_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bct_main_path)))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
     ()
   }
-  Fs::write_bytes(bct_b_path, bct_bytes(bct_b(bct_base_decl, "BctLine(n)")))
-  Fs::write_bytes(bct_main_path, bct_bytes(bct_main()))
+  Fs::write_bytes(bct_b_path, bytes = bct_bytes(bct_b(decl = bct_base_decl, line = "BctLine(n)")))
+  Fs::write_bytes(bct_main_path, bytes = bct_bytes(bct_main()))
   let cold_counts: Array[Int] = []
-  let _cold = compile_file_fs_mode_rc_body_cached_counted(bct_main_path, "run", "on", cold_counts)
-  Fs::write_bytes(bct_b_path, bct_bytes(bct_b(decl, line)))
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bct_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  Fs::write_bytes(bct_b_path, bytes = bct_bytes(bct_b(decl = decl, line = line)))
   let warm_counts: Array[Int] = []
-  let warm = compile_file_fs_mode_rc_body_cached_counted(bct_main_path, "run", "on", warm_counts)
-  let fresh = compile_file_fs_mode_rc(bct_main_path, "run")
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bct_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bct_main_path, entry_name = "run")
   "saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bct_bytes_eq(warm, fresh)}"
 }
 
 test "a variant added at the end keeps the bodies that never build or match the type" {
-  inspect(bct_probe("export enum BctShape { BctDot; BctLine(Int); BctNone; BctBox(Int, Int) } derive(Eq)", "BctLine(n)"), content = "saved=5 equal=true")
+  inspect(bct_probe(decl = "export enum BctShape { BctDot; BctLine(Int); BctNone; BctBox(Int, Int) } derive(Eq)", line = "BctLine(n)"), content = "saved=5 equal=true")
 }
 
 test "a variant added in the middle moves the later tags, and their bodies recompile" {
-  inspect(bct_probe("export enum BctShape { BctDot; BctBox(Int, Int); BctLine(Int); BctNone } derive(Eq)", "BctLine(n)"), content = "saved=5 equal=true")
+  inspect(bct_probe(decl = "export enum BctShape { BctDot; BctBox(Int, Int); BctLine(Int); BctNone } derive(Eq)", line = "BctLine(n)"), content = "saved=5 equal=true")
 }
 
 test "an unused variant removed keeps the bodies that never build or match the type" {
-  inspect(bct_probe("export enum BctShape { BctDot; BctLine(Int) } derive(Eq)", "BctLine(n)"), content = "saved=5 equal=true")
+  inspect(bct_probe(decl = "export enum BctShape { BctDot; BctLine(Int) } derive(Eq)", line = "BctLine(n)"), content = "saved=5 equal=true")
 }
 
 test "a payload made Double recompiles the body that matches it" {
   // `bct_text` binds the now-Double payload only through a pattern, and it
   // passes the binding to a generic, so no typed-lowering site of its file
   // changes and the edit lane stays open.
-  inspect(bct_probe("export enum BctShape { BctDot; BctLine(Double); BctNone } derive(Eq)", "BctLine(1.5)"), content = "saved=5 equal=true")
+  inspect(bct_probe(decl = "export enum BctShape { BctDot; BctLine(Double); BctNone } derive(Eq)", line = "BctLine(1.5)"), content = "saved=5 equal=true")
 }

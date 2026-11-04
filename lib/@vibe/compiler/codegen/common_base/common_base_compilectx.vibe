@@ -63,8 +63,8 @@ export fn str_table_new(strs: Array[String], offsets: Array[Int], lengths: Array
   let mut i = Array::length(strs)
   while i > 0 {
     i = i - 1
-    let s = Array::get(strs, i)
-    MutMap::set(index, s, i)
+    let s = Array::get(strs, at = i)
+    MutMap::set(index, k = s, v = i)
   }
   StrTable::{
     strs: strs,
@@ -90,7 +90,7 @@ export fn str_table_lite(strs: Array[String], offsets: Array[Int], lengths: Arra
 /// lane's table was not seeded with `s` (the lite module path's table is empty).
 export fn str_table_slot_or_neg(st: StrTable, s: String) -> Int {
   if MutMap::size(st.index) > 0 {
-    match MutMap::get(st.index, s) {
+    match MutMap::get(st.index, k = s) {
       Some(i) => i,
       None => 0 - 1
     }
@@ -100,7 +100,7 @@ export fn str_table_slot_or_neg(st: StrTable, s: String) -> Int {
     let mut i = 0
     let mut found = 0 - 1
     while i < len {
-      if String::equals(Array::get(strs, i), s) {
+      if String::equals(Array::get(strs, at = i), s) {
         found = i
         i = len
       } else {
@@ -118,11 +118,11 @@ export fn str_table_fat_or_zero(st: StrTable, s: String) -> Int {
   if String::length(s) == 0 {
     0
   } else {
-    let idx = str_table_slot_or_neg(st, s)
+    let idx = str_table_slot_or_neg(st = st, s = s)
     if idx < 0 {
       0
     } else {
-      (Array::get(st.offsets, idx)<<32)|Array::get(st.lengths, idx)
+      (Array::get(st.offsets, at = idx)<<32)|Array::get(st.lengths, at = idx)
     }
   }
 }
@@ -130,7 +130,7 @@ export fn str_table_fat_or_zero(st: StrTable, s: String) -> Int {
 /// The slot of `s` in `st` -- the first one that holds it -- or a thrown
 /// "string not in table" (the message str_table_lookup throws).
 export fn str_table_index_of(st: StrTable, s: String) -> Int with Exception {
-  let found = str_table_slot_or_neg(st, s)
+  let found = str_table_slot_or_neg(st = st, s = s)
   if found < 0 {
     throw(String::concat("string not in table: ", s))
   }
@@ -215,13 +215,13 @@ export fn cov_disabled() -> CovState {
 /// only when that branch is actually taken at run time.
 export fn cov_emit_branch(buf: Bytes, cov: CovState) -> Unit {
   if cov.enabled {
-    let id = Array::get(cov.next, 0)
+    let id = Array::get(cov.next, at = 0)
     if id < cov.cap {
-      Array::set(cov.next, 0, id + 1)
-      Array::push(cov.owners, Array::get(cov.cur_fn, 0))
-      emit_i32_const(buf, cov.base + id)
-      emit_i32_const(buf, 1)
-      emit_i32_store8(buf, 0, 0)
+      Array::set(cov.next, at = 0, value = id + 1)
+      Array::push(cov.owners, value = Array::get(cov.cur_fn, at = 0))
+      emit_i32_const(buf = buf, value = cov.base + id)
+      emit_i32_const(buf = buf, value = 1)
+      emit_i32_store8(buf = buf, align = 0, offset = 0)
     } else {
       ()
     }
@@ -927,8 +927,8 @@ export fn linemap_disabled() -> LineMapState {
 /// the first row of a function absolute and every later row a delta from its
 /// predecessor, the rebase touches `grp_first_off` alone -- so the emitter
 /// re-encodes that one field and blits the rest of the group unchanged.
-export fn linemap_flush_fn(lm: LineMapState) -> Unit {
-  linemap_flush_fn_into(lm, lm)
+export fn linemap_flush_fn(_ lm: LineMapState) -> Unit {
+  linemap_flush_fn_into(lm = lm, dst = lm)
 }
 
 /// Encode a completed function's private scratch directly into the publisher's
@@ -939,11 +939,11 @@ export fn linemap_flush_fn_into(lm: LineMapState, dst: LineMapState) -> Unit {
   if n == 0 {
     ()
   } else {
-    Array::push(dst.grp_fn, Array::get(lm.funcs, 0))
-    Array::push(dst.grp_first_off, Array::get(lm.offsets, 0))
-    Array::push(dst.grp_start, bytebuf_length(dst.stream))
-    leb128_encode_u32(dst.stream, Array::get(lm.file_ids, 0))
-    leb128_encode_u32(dst.stream, Array::get(lm.lines, 0))
+    Array::push(dst.grp_fn, value = Array::get(lm.funcs, at = 0))
+    Array::push(dst.grp_first_off, value = Array::get(lm.offsets, at = 0))
+    Array::push(dst.grp_start, value = bytebuf_length(dst.stream))
+    leb128_encode_u32(buf = dst.stream, value = Array::get(lm.file_ids, at = 0))
+    leb128_encode_u32(buf = dst.stream, value = Array::get(lm.lines, at = 0))
     let mut i = 1
     while i < n {
       // The zero function delta is part of the row, not an optimization the
@@ -953,15 +953,15 @@ export fn linemap_flush_fn_into(lm: LineMapState, dst: LineMapState) -> Unit {
       // for rows after the group's first cost a whole afternoon: the module
       // still validated, and the prune re-emitted 449 bytes of plausible
       // garbage where 406 KiB of rows belonged.
-      leb128_encode_u32(dst.stream, 0)
-      leb128_encode_u32(dst.stream, Array::get(lm.offsets, i) - Array::get(lm.offsets, i - 1))
-      leb128_encode_u32(dst.stream, Array::get(lm.file_ids, i))
-      leb128_encode_u32(dst.stream, Array::get(lm.lines, i))
+      leb128_encode_u32(buf = dst.stream, value = 0)
+      leb128_encode_u32(buf = dst.stream, value = Array::get(lm.offsets, at = i) - Array::get(lm.offsets, at = i - 1))
+      leb128_encode_u32(buf = dst.stream, value = Array::get(lm.file_ids, at = i))
+      leb128_encode_u32(buf = dst.stream, value = Array::get(lm.lines, at = i))
       i = i + 1
     }
-    Array::truncate(lm.funcs, 0)
-    Array::truncate(lm.offsets, 0)
-    Array::truncate(lm.file_ids, 0)
-    Array::truncate(lm.lines, 0)
+    Array::truncate(lm.funcs, length = 0)
+    Array::truncate(lm.offsets, length = 0)
+    Array::truncate(lm.file_ids, length = 0)
+    Array::truncate(lm.lines, length = 0)
   }
 }

@@ -66,10 +66,10 @@ import ./typed_equality.vibe {
 }
 
 /// The innermost element of `Array[..[Array[e]]..]`.
-fn show_array_innermost(t: TypeExpr) -> TypeExpr {
+fn show_array_innermost(_ t: TypeExpr) -> TypeExpr {
   match t {
     TyApp("Array", args) => if Array::length(args) == 1 {
-      show_array_innermost(Array::get(args, 0))
+      show_array_innermost(Array::get(args, at = 0))
     } else {
       t
     },
@@ -81,7 +81,7 @@ fn show_array_innermost(t: TypeExpr) -> TypeExpr {
 /// declaration? Its `__arr_to_string__` helper would have to render an erased
 /// formal, which the checker refuses, so the array is rendered in place
 /// (`show_array_inline`) and no helper is generated.
-fn show_array_of_bare_formal(t: TypeExpr) -> Bool {
+fn show_array_of_bare_formal(_ t: TypeExpr) -> Bool {
   match show_array_innermost(t) {
     TyName(n) => Array::length(arr_helper_tparams(TyName(n))) > 0,
     _ => false
@@ -94,7 +94,7 @@ fn show_array_of_bare_formal(t: TypeExpr) -> Bool {
 /// `FrozenArray` / `FixedArray` / `MutList` / `MutBytes` / `Future` fields
 /// printed their address too (`S { v: 280 }`).
 fn show_opaque_handle_head(n: String, known_types: Array[String]) -> Bool {
-  (n == "Map" || n == "StringMap" || n == "ArrayBuilder" || n == "MapBuilder" || n == "StringBuilder" || n == "FrozenArray" || n == "FixedArray" || n == "MutList" || n == "MutBytes" || n == "Future") && !str_array_contains(known_types, n)
+  (n == "Map" || n == "StringMap" || n == "ArrayBuilder" || n == "MapBuilder" || n == "StringBuilder" || n == "FrozenArray" || n == "FixedArray" || n == "MutList" || n == "MutBytes" || n == "Future") && !str_array_contains(arr = known_types, val = n)
 }
 
 /// The first builtin handle the derived renderer of a field of type `t`
@@ -108,22 +108,22 @@ fn show_opaque_handle_head(n: String, known_types: Array[String]) -> Bool {
 fn show_opaque_handle_in(stmts: Array[Stmt], t0: TypeExpr, known_types: Array[String], seen: Array[String], depth: Int) -> String {
   let t = eq_expand_alias_ty(t0)
   match t {
-    TyName(n) => if show_opaque_handle_head(n, known_types) {
+    TyName(n) => if show_opaque_handle_head(n = n, known_types = known_types) {
       n
     } else {
       ""
     },
-    TyApp(n, args) => if show_opaque_handle_head(n, known_types) {
+    TyApp(n, args) => if show_opaque_handle_head(n = n, known_types = known_types) {
       n
     } else if n == "Option" || n == "Result" || n == "Array" {
-      show_opaque_handle_in_any(stmts, args, known_types, seen, depth)
-    } else if depth >= 16 || str_array_contains(seen, hk_type_text(t)) || dtd_source_op_defined(stmts, qualified_name(n, "to_string")) {
+      show_opaque_handle_in_any(stmts = stmts, ts = args, known_types = known_types, seen = seen, depth = depth)
+    } else if depth >= 16 || str_array_contains(arr = seen, val = hk_type_text(t)) || dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = n, method = "to_string")) {
       ""
     } else {
-      Array::push(seen, hk_type_text(t))
-      show_opaque_handle_in_any(stmts, derived_renderer_generic_parts(stmts, n, args), known_types, seen, depth + 1)
+      Array::push(seen, value = hk_type_text(t))
+      show_opaque_handle_in_any(stmts = stmts, ts = derived_renderer_generic_parts(stmts = stmts, n = n, args = args), known_types = known_types, seen = seen, depth = depth + 1)
     },
-    TyTuple(ts) => show_opaque_handle_in_any(stmts, ts, known_types, seen, depth),
+    TyTuple(ts) => show_opaque_handle_in_any(stmts = stmts, ts = ts, known_types = known_types, seen = seen, depth = depth),
     _ => ""
   }
 }
@@ -136,19 +136,19 @@ fn derived_renderer_generic_parts(stmts: Array[Stmt], n: String, args: Array[Typ
   let parts: Array[TypeExpr] = []
   for st in stmts {
     match st {
-      SStruct(_, sname, fields, derives, _, formals) => if sname == n && Array::length(formals) > 0 && (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) {
+      SStruct(_, sname, fields, derives, _, formals) => if sname == n && Array::length(formals) > 0 && (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) {
         for field in fields {
           let (_, fty) = field
-          Array::push(parts, eq_subst_ty(fty, formals, args))
+          Array::push(parts, value = eq_subst_ty(ty = fty, params = formals, args = args))
         }
       } else {
         ()
       },
-      SEnum(_, ename, formals, variants, derives) => if ename == n && Array::length(formals) > 0 && (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) {
+      SEnum(_, ename, formals, variants, derives) => if ename == n && Array::length(formals) > 0 && (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) {
         for variant in variants {
           let (_, ftypes) = variant
           for p in ftypes {
-            Array::push(parts, eq_subst_ty(p, formals, args))
+            Array::push(parts, value = eq_subst_ty(ty = p, params = formals, args = args))
           }
         }
       } else {
@@ -164,7 +164,7 @@ fn show_opaque_handle_in_any(stmts: Array[Stmt], ts: Array[TypeExpr], known_type
   let mut found = ""
   let mut i = 0
   while i < Array::length(ts) && found == "" {
-    found = show_opaque_handle_in(stmts, Array::get(ts, i), known_types, seen, depth)
+    found = show_opaque_handle_in(stmts = stmts, t0 = Array::get(ts, at = i), known_types = known_types, seen = seen, depth = depth)
     i = i + 1
   }
   found
@@ -181,7 +181,8 @@ fn show_opaque_handle_in_any(stmts: Array[Stmt], ts: Array[TypeExpr], known_type
 /// derive, leading with the edit, whether or not the value is ever rendered:
 /// no instantiation of the derived renderer can render the field.
 fn show_note_opaque_field(stmts: Array[Stmt], tname: String, fname: String, fty: TypeExpr, known_types: Array[String], via_show: Bool) -> Unit {
-  let head = show_opaque_handle_in(stmts, fty, known_types, [], 0)
+  let head = show_opaque_handle_in(stmts = stmts, t0 = fty, known_types = known_types, seen = [
+  ], depth = 0)
   if head != "" {
     let shown = namespace_rename_original(tname)
     let edit = if via_show {
@@ -190,8 +191,8 @@ fn show_note_opaque_field(stmts: Array[Stmt], tname: String, fname: String, fty:
       "write `" + shown + "::to_string` yourself: `derive (Hash)` also derives the renderer an interpolation of `" + shown + "` calls, and field `"
     }
     let msg = edit + fname + "` holds `" + hk_type_text(fty) + "`; `" + head + "` is a handle with no text form, so the derived renderer would print its memory address. A renderer you write can show what you read out of it (its keys, a value you look up, an array you copy out of it) [@fn=" + shown + "]"
-    if !str_array_contains(dtd_show_refusals, msg) {
-      Array::push(dtd_show_refusals, msg)
+    if !str_array_contains(arr = dtd_show_refusals, val = msg) {
+      Array::push(dtd_show_refusals, value = msg)
     } else {
       ()
     }
@@ -222,41 +223,41 @@ fn gen_enum_eq_fn(ename: String, variants: Array[(String, Array[TypeExpr])], kno
   let outer_arms = array_empty()
   let mut vi = 0
   while vi < Array::length(variants) {
-    let (vname, ftypes) = Array::get(variants, vi)
+    let (vname, ftypes) = Array::get(variants, at = vi)
     let nf = Array::length(ftypes)
     let abinds = array_empty()
     let bbinds = array_empty()
     let mut fi = 0
     while fi < nf {
-      Array::push(abinds, PBind(String::concat("__a", idx_str(fi))))
-      Array::push(bbinds, PBind(String::concat("__b", idx_str(fi))))
+      Array::push(abinds, value = PBind(String::concat("__a", idx_str(fi))))
+      Array::push(bbinds, value = PBind(String::concat("__b", idx_str(fi))))
       fi = fi + 1
     }
     let mut body = EBool(true)
     let mut bi = nf - 1
     while bi >= 0 {
-      let cmp = eq_for_typed(Array::get(ftypes, bi), EIdent(String::concat("__a", idx_str(bi)), -1), EIdent(String::concat("__b", idx_str(bi)), -1), known_types)
+      let cmp = eq_for_typed(fty0 = Array::get(ftypes, at = bi), lhs = EIdent(String::concat("__a", idx_str(bi)), -1), rhs = EIdent(String::concat("__b", idx_str(bi)), -1), known_types = known_types)
       body = EBinOp("&&", cmp, body, -1)
       bi = bi - 1
     }
     let inner_arms = Array::slice([
       (PCtor(vname, bbinds), body),
       (PWild, EBool(false))
-    ], 0, 2)
+    ], start = 0, end = 2)
     let inner = EMatch(EIdent("b", -1), inner_arms)
-    Array::push(outer_arms, (PCtor(vname, abinds), inner))
+    Array::push(outer_arms, value = (PCtor(vname, abinds), inner))
     vi = vi + 1
   }
   let params = Array::slice([
     ("a", Some(TyName(ename))),
     ("b", Some(TyName(ename)))
-  ], 0, 2)
+  ], start = 0, end = 2)
   let no_tp = array_empty()
   let no_tb = array_empty()
-  SLet(false, false, qualified_name(ename, "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, EMatch(EIdent("a", -1), outer_arms)))
+  SLet(false, false, qualified_name(tname = ename, method = "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, EMatch(EIdent("a", -1), outer_arms)))
 }
 
-export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
+export fn desugar_derives(_ stmts: Array[Stmt]) -> Unit {
   let gen = empty_stmt_list()
   let own_end = dtd_own_end(stmts)
   let known_types = collect_decl_type_names(stmts)
@@ -266,7 +267,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   // here because this is the first pass that generates one, and read again by
   // `emit_recorded_arr_equals`, which runs later in the same
   // `desugar_trait_dicts` call.
-  type_param_names_reset(stmts, known_types)
+  type_param_names_reset(stmts = stmts, known_types = known_types)
   // #694 Layer 2: collect `Array[e]` element types referenced by Show/Hash-
   // deriving types' fields/payloads, so each gets a `__arr_to_string__<key>`
   // helper. A worklist closes nesting (`Array[Array[Int]]` -> `Array[Int]`).
@@ -274,27 +275,27 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let arr_keys = empty_str_array()
   let mut i = 0
   while i < own_end {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SStruct(_, name, fields0, derives, _, decl_tparams) => {
         // #2141: the declaration's tparams scope its field types -- re-spell
         // them before any generator reads them (see subst_field_formals).
-        let fields = subst_field_formals(fields0, decl_tparams)
+        let fields = subst_field_formals(fields = fields0, formals = decl_tparams)
         // `derive(Hash)` also needs the structural `to_string`: a Hash type's
         // stable Map-key string is its structural representation (#638), so
         // generate `to_string` for Show OR Hash. #3567: except where a field
         // it would render has no renderer (`hash_renderless_types`); the key
         // does not need one.
-        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) && !str_array_contains(dtd_hash_renderless, name) {
-          if str_array_contains(derives, "Show") {
+        if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = name) {
+          if str_array_contains(arr = derives, val = "Show") {
             for field in fields {
               let (fname, fty) = field
-              show_note_opaque_field(stmts, name, fname, fty, known_types, true)
+              show_note_opaque_field(stmts = stmts, tname = name, fname = fname, fty = fty, known_types = known_types, via_show = true)
             }
           } else {
             ()
           }
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_show_fn(name, fields, known_types))
+          Array::push(gen, value = gen_show_fn(tname = name, fields = fields, known_types = known_types))
           derived_renderer_record(name)
         } else {
           ()
@@ -307,46 +308,46 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // a `to_string` is written -- the key does not call it. Noted before
         // the key is generated, so this refusal is the one reported, not a
         // renderer's for the same field.
-        if str_array_contains(derives, "Hash") && !dtd_source_op_defined(stmts, qualified_name(name, "hash_key")) {
+        if str_array_contains(arr = derives, val = "Hash") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "hash_key")) {
           for field in fields {
             let (fname, fty) = field
-            hash_note_unkeyed_field(name, fname, fty, known_types, hash_types)
+            hash_note_unkeyed_field(tname = name, fname = fname, fty = fty, known_types = known_types, hash_types = hash_types)
           }
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_struct_hash_key_fn(name, fields, known_types, hash_types))
+          Array::push(gen, value = gen_struct_hash_key_fn(tname = name, fields = fields, known_types = known_types, hash_types = hash_types))
         } else {
           ()
         }
         // #3551 review: a Hash-only derive generates the same renderer, and
         // interpolating the value calls it. Noted after the key, so a field the
         // derived key refuses keeps that refusal.
-        if str_array_contains(derives, "Hash") && !str_array_contains(derives, "Show") && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) && !str_array_contains(dtd_hash_renderless, name) {
+        if str_array_contains(arr = derives, val = "Hash") && !str_array_contains(arr = derives, val = "Show") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = name) {
           for field in fields {
             let (fname, fty) = field
-            show_note_opaque_field(stmts, name, fname, fty, known_types, false)
+            show_note_opaque_field(stmts = stmts, tname = name, fname = fname, fty = fty, known_types = known_types, via_show = false)
           }
         } else {
           ()
         }
-        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !str_array_contains(dtd_hash_renderless, name) {
+        if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !str_array_contains(arr = dtd_hash_renderless, val = name) {
           let mut fi = 0
           while fi < Array::length(fields) {
-            let (_, fty) = Array::get(fields, fi)
-            collect_show_array_elems(fty, arr_elems, arr_keys)
+            let (_, fty) = Array::get(fields, at = fi)
+            collect_show_array_elems(ty = fty, acc = arr_elems, keys = arr_keys)
             fi = fi + 1
           }
         } else {
           ()
         }
-        if str_array_contains(derives, "Ord") && !dtd_source_op_defined(stmts, qualified_name(name, "compare")) {
+        if str_array_contains(arr = derives, val = "Ord") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "compare")) {
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_compare_fn(name, fields, known_types))
+          Array::push(gen, value = gen_compare_fn(tname = name, fields = fields, known_types = known_types))
         } else {
           ()
         }
-        if str_array_contains(derives, "Default") && !dtd_source_op_defined(stmts, qualified_name(name, "default")) {
+        if str_array_contains(arr = derives, val = "Default") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "default")) {
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_default_fn(name, fields, known_types))
+          Array::push(gen, value = gen_default_fn(tname = name, fields = fields, known_types = known_types))
         } else {
           ()
         }
@@ -354,23 +355,23 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // `==` dispatch below always resolves; structural equality is the
         // sensible default for any struct, and a struct never relied on the old
         // pointer-identity `==` (which was silently always-false).
-        if !dtd_source_op_defined(stmts, qualified_name(name, "equals")) {
+        if !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "equals")) {
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_eq_fn(name, fields, known_types))
+          Array::push(gen, value = gen_eq_fn(tname = name, fields = fields, known_types = known_types))
         } else {
           ()
         }
       },
       SEnum(_, ename, decl_tparams, variants0, derives) => {
         // #2141: same re-spelling as the SStruct arm, for payload types.
-        let variants = subst_variant_formals(variants0, decl_tparams)
-        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) && !str_array_contains(dtd_hash_renderless, ename) {
-          if str_array_contains(derives, "Show") {
+        let variants = subst_variant_formals(variants = variants0, formals = decl_tparams)
+        if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = ename) {
+          if str_array_contains(arr = derives, val = "Show") {
             for variant in variants {
               let (vname, ftypes) = variant
               let mut pi = 0
               while pi < Array::length(ftypes) {
-                show_note_opaque_field(stmts, ename, namespace_rename_original(vname) + "." + idx_str(pi), Array::get(ftypes, pi), known_types, true)
+                show_note_opaque_field(stmts = stmts, tname = ename, fname = namespace_rename_original(vname) + "." + idx_str(pi), fty = Array::get(ftypes, at = pi), known_types = known_types, via_show = true)
                 pi = pi + 1
               }
             }
@@ -378,46 +379,46 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
             ()
           }
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_enum_show_fn(ename, variants, known_types))
+          Array::push(gen, value = gen_enum_show_fn(ename = ename, variants = variants, known_types = known_types))
           derived_renderer_record(ename)
         } else {
           ()
         }
         // #3551: as in the SStruct arm, noted before the key is generated.
-        if str_array_contains(derives, "Hash") && !dtd_source_op_defined(stmts, qualified_name(ename, "hash_key")) {
+        if str_array_contains(arr = derives, val = "Hash") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "hash_key")) {
           for variant in variants {
             let (vname, ftypes) = variant
             let mut pi = 0
             while pi < Array::length(ftypes) {
-              hash_note_unkeyed_field(ename, namespace_rename_original(vname) + "." + idx_str(pi), Array::get(ftypes, pi), known_types, hash_types)
+              hash_note_unkeyed_field(tname = ename, fname = namespace_rename_original(vname) + "." + idx_str(pi), fty = Array::get(ftypes, at = pi), known_types = known_types, hash_types = hash_types)
               pi = pi + 1
             }
           }
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_enum_hash_key_fn(ename, variants, known_types, hash_types))
+          Array::push(gen, value = gen_enum_hash_key_fn(ename = ename, variants = variants, known_types = known_types, hash_types = hash_types))
         } else {
           ()
         }
         // #3551 review: as in the SStruct arm, after the key.
-        if str_array_contains(derives, "Hash") && !str_array_contains(derives, "Show") && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) && !str_array_contains(dtd_hash_renderless, ename) {
+        if str_array_contains(arr = derives, val = "Hash") && !str_array_contains(arr = derives, val = "Show") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = ename) {
           for variant in variants {
             let (vname, ftypes) = variant
             let mut pi = 0
             while pi < Array::length(ftypes) {
-              show_note_opaque_field(stmts, ename, namespace_rename_original(vname) + "." + idx_str(pi), Array::get(ftypes, pi), known_types, false)
+              show_note_opaque_field(stmts = stmts, tname = ename, fname = namespace_rename_original(vname) + "." + idx_str(pi), fty = Array::get(ftypes, at = pi), known_types = known_types, via_show = false)
               pi = pi + 1
             }
           }
         } else {
           ()
         }
-        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !str_array_contains(dtd_hash_renderless, ename) {
+        if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !str_array_contains(arr = dtd_hash_renderless, val = ename) {
           let mut vi = 0
           while vi < Array::length(variants) {
-            let (vname, ftypes) = Array::get(variants, vi)
+            let (vname, ftypes) = Array::get(variants, at = vi)
             let mut ti = 0
             while ti < Array::length(ftypes) {
-              collect_show_array_elems(Array::get(ftypes, ti), arr_elems, arr_keys)
+              collect_show_array_elems(ty = Array::get(ftypes, at = ti), acc = arr_elems, keys = arr_keys)
               ti = ti + 1
             }
             vi = vi + 1
@@ -425,23 +426,23 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         }
-        if str_array_contains(derives, "Ord") && !dtd_source_op_defined(stmts, qualified_name(ename, "compare")) {
+        if str_array_contains(arr = derives, val = "Ord") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "compare")) {
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_enum_compare_fn(ename, variants, known_types))
+          Array::push(gen, value = gen_enum_compare_fn(ename = ename, variants = variants, known_types = known_types))
         } else {
           ()
         }
-        if str_array_contains(derives, "Default") && !dtd_source_op_defined(stmts, qualified_name(ename, "default")) {
+        if str_array_contains(arr = derives, val = "Default") && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "default")) {
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_enum_default_fn(ename, variants, known_types))
+          Array::push(gen, value = gen_enum_default_fn(ename = ename, variants = variants, known_types = known_types))
         } else {
           ()
         }
         // Generate `E::equals` for every enum (same rationale as structs), so
         // the `==` dispatch resolves enum operands too.
-        if !dtd_source_op_defined(stmts, qualified_name(ename, "equals")) {
+        if !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "equals")) {
           dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
+          Array::push(gen, value = gen_enum_eq_fn(ename = ename, variants = variants, known_types = known_types))
         } else {
           ()
         }
@@ -466,13 +467,13 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
     if dtd_is_own_index(ci) {
       ()
     } else {
-      match Array::get(stmts, ci) {
-        SStruct(_, name, _, derives, _, _) => if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) && !str_array_contains(dtd_hash_renderless, name) {
+      match Array::get(stmts, at = ci) {
+        SStruct(_, name, _, derives, _, _) => if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = name, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = name) {
           context_renderer_record(name)
         } else {
           ()
         },
-        SEnum(_, ename, _, _, derives) => if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) && !str_array_contains(dtd_hash_renderless, ename) {
+        SEnum(_, ename, _, _, derives) => if (str_array_contains(arr = derives, val = "Show") || str_array_contains(arr = derives, val = "Hash")) && !dtd_source_op_defined(stmts = stmts, fname = qualified_name(tname = ename, method = "to_string")) && !str_array_contains(arr = dtd_hash_renderless, val = ename) {
           context_renderer_record(ename)
         } else {
           ()
@@ -492,38 +493,38 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let elem_keys = empty_str_array()
   let mut si = 0
   while si < own_end {
-    match Array::get(stmts, si) {
+    match Array::get(stmts, at = si) {
       // #2141: read the fields/payloads through the same decl-tparams
       // re-spelling the generator arms use, or this walk predicts an
       // unsubstituted DUPLICATE helper next to the substituted one the
       // generated `equals` actually calls.
       SStruct(_, _, fields, _, _, decl_tparams) => {
-        let sfields = subst_field_formals(fields, decl_tparams)
+        let sfields = subst_field_formals(fields = fields, formals = decl_tparams)
         let mut fi = 0
         while fi < Array::length(sfields) {
-          let (_, fty) = Array::get(sfields, fi)
-          collect_array_elem_types(fty, elem_types, elem_keys)
+          let (_, fty) = Array::get(sfields, at = fi)
+          collect_array_elem_types(ty = fty, acc = elem_types, acc_keys = elem_keys)
           fi = fi + 1
         }
       },
       SEnum(_, _, decl_tparams, variants, _) => {
-        let svariants = subst_variant_formals(variants, decl_tparams)
+        let svariants = subst_variant_formals(variants = variants, formals = decl_tparams)
         let mut vi = 0
         while vi < Array::length(svariants) {
-          let (_, ftypes) = Array::get(svariants, vi)
+          let (_, ftypes) = Array::get(svariants, at = vi)
           let mut ti = 0
           while ti < Array::length(ftypes) {
-            collect_array_elem_types(Array::get(ftypes, ti), elem_types, elem_keys)
+            collect_array_elem_types(ty = Array::get(ftypes, at = ti), acc = elem_types, acc_keys = elem_keys)
             ti = ti + 1
           }
           vi = vi + 1
         }
       },
-      SLet(_, _, _, _, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
-      SLetMut(_, _, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
-      SExpr(e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
-      STest(_, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
-      SBench(_, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      SLet(_, _, _, _, e) => collect_bare_array_eq_keys(e = e, acc = elem_types, acc_keys = elem_keys),
+      SLetMut(_, _, e) => collect_bare_array_eq_keys(e = e, acc = elem_types, acc_keys = elem_keys),
+      SExpr(e) => collect_bare_array_eq_keys(e = e, acc = elem_types, acc_keys = elem_keys),
+      STest(_, e) => collect_bare_array_eq_keys(e = e, acc = elem_types, acc_keys = elem_keys),
+      SBench(_, e) => collect_bare_array_eq_keys(e = e, acc = elem_types, acc_keys = elem_keys),
       _ => ()
     }
     si = si + 1
@@ -532,15 +533,15 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   // nested array element types (e.g. `Array[Array[Int]]` -> `Array[Int]`).
   let mut wi = 0
   while wi < Array::length(elem_types) {
-    collect_array_elem_types(Array::get(elem_types, wi), elem_types, elem_keys)
+    collect_array_elem_types(ty = Array::get(elem_types, at = wi), acc = elem_types, acc_keys = elem_keys)
     wi = wi + 1
   }
   let mut ei = 0
   while ei < Array::length(elem_types) {
-    let et = Array::get(elem_types, ei)
-    if !top_level_fn_exists(stmts, arr_equals_name(et)) {
+    let et = Array::get(elem_types, at = ei)
+    if !top_level_fn_exists(stmts = stmts, fname = arr_equals_name(et)) {
       dtd_fresh_reset_for_decl()
-      Array::push(gen, gen_arr_equals_fn(et, known_types))
+      Array::push(gen, value = gen_arr_equals_fn(elem_ty = et, known_types = known_types))
     } else {
       ()
     }
@@ -552,31 +553,31 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   // #3082: plus the element types a generic field rendered at its
   // substituted type needs (`show_generic_inline`); generating a helper can
   // surface more, so they are merged again after each one.
-  show_inline_merge_arr_elems(arr_elems, arr_keys)
+  show_inline_merge_arr_elems(arr_elems = arr_elems, arr_keys = arr_keys)
   let mut wi2 = 0
   while wi2 < Array::length(arr_elems) {
-    collect_show_array_elems(Array::get(arr_elems, wi2), arr_elems, arr_keys)
+    collect_show_array_elems(ty = Array::get(arr_elems, at = wi2), acc = arr_elems, keys = arr_keys)
     wi2 = wi2 + 1
   }
   let mut ei2 = 0
   while ei2 < Array::length(arr_elems) {
-    let et2 = Array::get(arr_elems, ei2)
+    let et2 = Array::get(arr_elems, at = ei2)
     if show_array_of_bare_formal(et2) {
       // Rendered in place (`show_array_inline`): a helper generic over the
       // formal would render it erased, which the checker refuses (#3547).
       ()
-    } else if !top_level_fn_exists(stmts, arr_to_string_name(et2)) {
+    } else if !top_level_fn_exists(stmts = stmts, fname = arr_to_string_name(et2)) {
       dtd_fresh_reset_for_decl()
-      Array::push(gen, gen_arr_to_string_fn(et2, known_types))
+      Array::push(gen, value = gen_arr_to_string_fn(elem_ty = et2, known_types = known_types))
     } else {
       ()
     }
-    show_inline_merge_arr_elems(arr_elems, arr_keys)
+    show_inline_merge_arr_elems(arr_elems = arr_elems, arr_keys = arr_keys)
     ei2 = ei2 + 1
   }
   let mut g = 0
   while g < Array::length(gen) {
-    Array::push(stmts, Array::get(gen, g))
+    Array::push(stmts, value = Array::get(gen, at = g))
     g = g + 1
   }
 }

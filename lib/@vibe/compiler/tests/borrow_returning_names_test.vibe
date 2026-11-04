@@ -20,7 +20,7 @@ import @vibe/compiler/core {
   borrow_ret_builtin_names, is_borrow_ret_builtin
 }
 
-fn borrow_set_of(src: String) -> Array[String] with Exception {
+fn borrow_set_of(_ src: String) -> Array[String] with Exception {
   compute_borrow_returning_names(parse_program(lex(src)))
 }
 
@@ -28,7 +28,7 @@ fn contains(names: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(names) {
-    if Array::get(names, i) == name {
+    if Array::get(names, at = i) == name {
       found = true
     } else {
       ()
@@ -40,12 +40,12 @@ fn contains(names: Array[String], name: String) -> Bool {
 
 test "builder returned through if branches is not borrow-returning" {
   let src = "fn make(n: Int) -> Array[Int] {\n  let out: Array[Int] = []\n  let mut i = 0\n  while i < n {\n    Array::push(out, i)\n    i = i + 1\n  }\n  if n >= 0 {\n    out\n  } else {\n    out\n  }\n}\n"
-  inspect(contains(borrow_set_of(src), "make"), "false")
+  inspect(contains(names = borrow_set_of(src), name = "make"), "false")
 }
 
 test "owned-call binding returned through if branches is not borrow-returning" {
   let src = "fn helper(n: Int) -> Array[Int] {\n  [1, 2, 3]\n}\n\nfn make(n: Int) -> Array[Int] {\n  let out = helper(n)\n  if n >= 0 {\n    out\n  } else {\n    out\n  }\n}\n"
-  inspect(contains(borrow_set_of(src), "make"), "false")
+  inspect(contains(names = borrow_set_of(src), name = "make"), "false")
 }
 
 test "sentinel fallback around a borrowed access stays borrow-returning" {
@@ -53,19 +53,19 @@ test "sentinel fallback around a borrowed access stays borrow-returning" {
   // nullary-ctor identifier as the out-of-range fallback. The ident does not
   // resolve to a spine binding, so the safe fallback must survive.
   let src = "enum Tok {\n  TEof;\n  TInt(Int)\n}\n\nfn peek(tokens: Array[Tok], pos: Int) -> Tok {\n  if pos < Array::length(tokens) {\n    Array::get(tokens, pos)\n  } else {\n    TEof\n  }\n}\n"
-  inspect(contains(borrow_set_of(src), "peek"), "true")
+  inspect(contains(names = borrow_set_of(src), name = "peek"), "true")
 }
 
 test "mut binding reassigned to a view stays borrow-returning" {
   // A `let mut` target is never resolved (its final value is flow-dependent);
   // rejecting it here would make callers drop a genuinely borrowed result.
   let src = "fn pick(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  let mut out = Array::get(a, 0)\n  if i > 0 {\n    out = Array::get(a, i)\n  } else {\n    ()\n  }\n  if i >= 0 {\n    out\n  } else {\n    out\n  }\n}\n"
-  inspect(contains(borrow_set_of(src), "pick"), "true")
+  inspect(contains(names = borrow_set_of(src), name = "pick"), "true")
 }
 
 test "borrowed-call binding returned through if branches stays borrow-returning" {
   let src = "fn head(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  let v = Array::get(a, i)\n  if i >= 0 {\n    v\n  } else {\n    v\n  }\n}\n"
-  inspect(contains(borrow_set_of(src), "head"), "true")
+  inspect(contains(names = borrow_set_of(src), name = "head"), "true")
 }
 
 test "MutList::get binding returned through if branches stays borrow-returning" {
@@ -73,7 +73,7 @@ test "MutList::get binding returned through if branches stays borrow-returning" 
   // is_borrow_ret_fname hardcodes -- MutList::get was missing, which would
   // classify this binding owned and make RC callers drop an interior view.
   let src = "fn head(l: Array[Array[Int]], i: Int) -> Array[Int] {\n  let v = MutList::get(l, i)\n  if i >= 0 {\n    v\n  } else {\n    v\n  }\n}\n"
-  inspect(contains(borrow_set_of(src), "head"), "true")
+  inspect(contains(names = borrow_set_of(src), name = "head"), "true")
 }
 
 test "Map iterator key views and their wrappers stay borrow-returning" {
@@ -84,20 +84,20 @@ test "Map iterator key views and their wrappers stay borrow-returning" {
   inspect(is_borrow_ret_builtin("Map::iter_get"), "true")
   inspect(is_borrow_ret_builtin("Map::__iter_get_unchecked"), "true")
   let src = "fn key_at(m: Map[String, Int], i: Int) -> String {\n  Map::iter_get(m, i)\n}\n"
-  inspect(contains(borrow_set_of(src), "key_at"), "true")
+  inspect(contains(names = borrow_set_of(src), name = "key_at"), "true")
 }
 
 test "source-owned Map iterator accessors derive ownership from their bodies" {
   let owned = "fn Map::iter_get(_m: Int, _i: Int) -> String {\n  String::concat(\"owned\", \" result\")\n}\nfn Map::__iter_get_unchecked(_m: Int, _i: Int) -> String {\n  String::concat(\"owned\", \" result\")\n}\nfn checked_wrapper(m: Int, i: Int) -> String { Map::iter_get(m, i) }\nfn unchecked_wrapper(m: Int, i: Int) -> String { Map::__iter_get_unchecked(m, i) }\n"
   let owned_names = borrow_set_of(owned)
-  inspect(contains(owned_names, "Map::iter_get"), "false")
-  inspect(contains(owned_names, "Map::__iter_get_unchecked"), "false")
-  inspect(contains(owned_names, "checked_wrapper"), "false")
-  inspect(contains(owned_names, "unchecked_wrapper"), "false")
+  inspect(contains(names = owned_names, name = "Map::iter_get"), "false")
+  inspect(contains(names = owned_names, name = "Map::__iter_get_unchecked"), "false")
+  inspect(contains(names = owned_names, name = "checked_wrapper"), "false")
+  inspect(contains(names = owned_names, name = "unchecked_wrapper"), "false")
   let borrowed = "fn Map::iter_get(xs: Array[String], i: Int) -> String { Array::get(xs, i) }\nfn key_at(xs: Array[String], i: Int) -> String { Map::iter_get(xs, i) }\n"
   let borrowed_names = borrow_set_of(borrowed)
-  inspect(contains(borrowed_names, "Map::iter_get"), "true")
-  inspect(contains(borrowed_names, "key_at"), "true")
+  inspect(contains(names = borrowed_names, name = "Map::iter_get"), "true")
+  inspect(contains(names = borrowed_names, name = "key_at"), "true")
 }
 
 //# #1979 review: the two exported APIs must not be two spellings of the set.
@@ -115,7 +115,7 @@ test "every borrow-returning builtin name is recognized by the predicate" {
   let mut i = 0
   let mut all = true
   while i < Array::length(names) {
-    if !is_borrow_ret_builtin(Array::get(names, i)) {
+    if !is_borrow_ret_builtin(Array::get(names, at = i)) {
       all = false
     } else {
       ()

@@ -58,8 +58,8 @@ export fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], v
       let mut acc = "("
       let mut i = 0
       while i < Array::length(items) {
-        let item = Array::get(items, i)
-        let sub0 = infer_eq_shape(item, struct_sets, var_types, fn_returns)
+        let item = Array::get(items, at = i)
+        let sub0 = infer_eq_shape(e = item, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
         // Strictly ADDITIVE against what the `_` arm used to do, which was
         // `infer_shape` on the whole tuple, i.e. `infer_shape` per element.
         // `infer_eq_shape` answers for more elements than that, but for FEWER
@@ -75,7 +75,7 @@ export fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], v
         let sub = if String::length(sub0) > 0 {
           sub0
         } else {
-          infer_shape(item, struct_sets, var_types, fn_returns)
+          infer_shape(e = item, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
         }
         acc = if i == 0 {
           String::concat(acc, sub)
@@ -87,9 +87,9 @@ export fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], v
       String::concat(acc, ")")
     },
     EIdent(n, _) => {
-      match lookup_var_type(var_types, eq_shape_key(n)) {
+      match lookup_var_type(var_types = var_types, name = eq_shape_key(n)) {
         Some(s) => s,
-        None => infer_shape(e, struct_sets, var_types, fn_returns)
+        None => infer_shape(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
       }
     },
     // #2234: `Map::from_pairs` is normalized by the parser into EMap before
@@ -100,29 +100,29 @@ export fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], v
     EMap(fields) => if Array::length(fields) == 0 {
       ""
     } else {
-      let (_, first_value) = Array::get(fields, 0)
-      String::concat("{m:String,", String::concat(infer_eq_shape(first_value, struct_sets, var_types, fn_returns), "}"))
+      let (_, first_value) = Array::get(fields, at = 0)
+      String::concat("{m:String,", String::concat(infer_eq_shape(e = first_value, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns), "}"))
     },
     ECall(EIdent(fname, _), args, _, _) => if (fname == "Some" || fname == "Option::Some") && Array::length(args) == 1 {
-      String::concat("{o:", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), "}"))
+      String::concat("{o:", String::concat(infer_eq_shape(e = Array::get(args, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns), "}"))
     } else if (fname == "Ok" || fname == "Result::Ok") && Array::length(args) == 1 {
-      String::concat("{r:", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), ",?EqUnknown}"))
+      String::concat("{r:", String::concat(infer_eq_shape(e = Array::get(args, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns), ",?EqUnknown}"))
     } else if (fname == "Err" || fname == "Result::Err") && Array::length(args) == 1 {
-      String::concat("{r:?EqUnknown,", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), "}"))
+      String::concat("{r:?EqUnknown,", String::concat(infer_eq_shape(e = Array::get(args, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns), "}"))
     } else {
       // Codex on #3302: a call through a function-typed parameter whose
       // declared result mentions a formal has that type, so `Some(make())`
       // for `make: () -> T` is `Option[T]`, not an unknown payload.
-      let local_shape = match eq_fn_result_of_name(var_types, fname) {
+      let local_shape = match eq_fn_result_of_name(var_types = var_types, n = fname) {
         Some(rt) => Some(ty_to_eq_shape(rt)),
-        None => lookup_var_type(var_types, eq_shape_key(fname))
+        None => lookup_var_type(var_types = var_types, name = eq_shape_key(fname))
       }
       match local_shape {
         Some(s) => s,
-        None => match fn_return_type(fn_returns, fn_eq_shape_key(fname)) {
+        None => match fn_return_type(fn_returns = fn_returns, fname = fn_eq_shape_key(fname)) {
           Some(s) => s,
           None => {
-            let ordinary = infer_shape(e, struct_sets, var_types, fn_returns)
+            let ordinary = infer_shape(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
             if shape_is_composite(ordinary) {
               ordinary
             } else {
@@ -136,7 +136,7 @@ export fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], v
       }
     },
     _ => {
-      let ordinary = infer_shape(e, struct_sets, var_types, fn_returns)
+      let ordinary = infer_shape(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
       if shape_is_composite(ordinary) {
         ordinary
       } else {
@@ -150,7 +150,7 @@ export fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], v
 }
 
 fn eq_operand_shape_ty(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
-  let sh = infer_eq_shape(e, struct_sets, var_types, fn_returns)
+  let sh = infer_eq_shape(e = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
   if shape_is_composite(sh) {
     let t = shape_to_eq_ty(sh)
     // A partial operand must not win merely because its container head is
@@ -168,8 +168,8 @@ fn eq_operand_shape_ty(e: Expr, struct_sets: Array[(String, Array[String])], var
 }
 
 export fn eq_var_shape_dispatch(l: Expr, r: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
-  match eq_operand_shape_ty(l, struct_sets, var_types, fn_returns) {
+  match eq_operand_shape_ty(e = l, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
     Some(t) => Some(t),
-    None => eq_operand_shape_ty(r, struct_sets, var_types, fn_returns)
+    None => eq_operand_shape_ty(e = r, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
   }
 }

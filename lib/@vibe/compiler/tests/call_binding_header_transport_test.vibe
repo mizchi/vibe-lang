@@ -44,8 +44,8 @@ fn header_type() -> Type {
   CtFn([CtInt, CtOption(CtInt)], CtInt, None)
 }
 
-fn assert_header(env: TypeEnv) -> Unit {
-  match env_lookup_binding(env, "f") {
+fn assert_header(_ env: TypeEnv) -> Unit {
+  match env_lookup_binding(env = env, name = "f") {
     Some(binding) => assert(binding.origin == BindingOriginFunctionHeader([
       "second~",
       "first?"
@@ -56,13 +56,13 @@ fn assert_header(env: TypeEnv) -> Unit {
 
 /// The actual binding owns its header, including when a cache answers lookup.
 test "a same-typed value shadow does not inherit a declaration header" {
-  let env = env_cache(env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginFunctionHeader([
+  let env = env_cache(env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = BindingOriginFunctionHeader([
     "second~",
     "first?"
   ])))
   assert_header(env)
-  let shadow = env_bind(env, "f", header_type())
-  match env_lookup_binding(shadow, "f") {
+  let shadow = env_bind(env = env, name = "f", ty = header_type())
+  match env_lookup_binding(env = shadow, name = "f") {
     Some(binding) => assert(binding.origin == BindingOriginUnavailable),
     None => assert(false)
   }
@@ -71,7 +71,7 @@ test "a same-typed value shadow does not inherit a declaration header" {
 
 /// Persistent environments retain declaration names independently of the type.
 test "persistent environment carries the resolved function header" {
-  let env = env_cache(env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginFunctionHeader([
+  let env = env_cache(env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = BindingOriginFunctionHeader([
     "second~",
     "first?"
   ])))
@@ -90,13 +90,13 @@ test "checked program seals local function headers with its environment" {
   let names = ["second~", "first?"]
   let original = CheckedProgram::{
     checked_stmts: [SExpr(EInt(0))],
-    final_env: env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginFunctionHeader(names)),
+    final_env: env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = BindingOriginFunctionHeader(names)),
     type_defs: [],
     final_subst: SubstEmpty,
     typed_occurrences: []
   }
   let encoded = encode_checked_program(original)
-  Array::set(names, 0, "changed")
+  Array::set(names, at = 0, value = "changed")
   assert(encode_checked_program(original) != encoded)
   match decode_checked_program(encoded) {
     Some(decoded) => {
@@ -110,13 +110,16 @@ test "checked program seals local function headers with its environment" {
 /// Default bits follow the actual binding through persistent contexts and
 /// checked-program transport, instead of being recovered from its spelling.
 test "defaulted declaration headers survive both environment transports" {
-  let env = env_cache(env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginDefaultedFunctionHeader([
+  let env = env_cache(env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = BindingOriginDefaultedFunctionHeader([
     "x",
     "y?"
   ], [false, true])))
-  assert(checker_call_header_defaults(env, "f") == Some([false, true]))
+  assert(checker_call_header_defaults(env = env, name = "f") == Some([
+    false,
+    true
+  ]))
   match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
-    Some(decoded) => assert(checker_call_header_defaults(decoded, "f") == Some([
+    Some(decoded) => assert(checker_call_header_defaults(env = decoded, name = "f") == Some([
       false,
       true
     ])),
@@ -130,20 +133,20 @@ test "defaulted declaration headers survive both environment transports" {
     typed_occurrences: []
   }
   match decode_checked_program(encode_checked_program(checked)) {
-    Some(decoded) => assert(checker_call_header_defaults(decoded.final_env, "f") == Some([
+    Some(decoded) => assert(checker_call_header_defaults(env = decoded.final_env, name = "f") == Some([
       false,
       true
     ])),
     None => assert(false)
   }
-  assert(checker_call_header_defaults(env_bind(env, "f", header_type()), "f") == None)
+  assert(checker_call_header_defaults(env = env_bind(env = env, name = "f", ty = header_type()), name = "f") == None)
 }
 
 /// A cache cannot invent a default bit for an absent parameter or carry an
 /// empty fact as a different spelling of an ordinary declaration header.
 test "defaulted header transports refuse malformed flag vectors" {
   for flags in [[true], [false, false]] {
-    let env = env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginDefaultedFunctionHeader([
+    let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = BindingOriginDefaultedFunctionHeader([
       "x",
       "y?"
     ], flags))
@@ -167,9 +170,9 @@ test "defaulted header transports refuse malformed flag vectors" {
 test "checking a declaration retains its parser-owned default bits" {
   let source = "fn f(x: Int, y: Int = 3) -> Int { x }"
   let (tokens, starts, _) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
-  let (checked, _, _, _) = check_program_with_env_typed_lowering_located_observation(stmts, EnvEmpty)
-  assert(checker_call_header_defaults(checked.final_env, "f") == Some([
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
+  let (checked, _, _, _) = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = EnvEmpty)
+  assert(checker_call_header_defaults(env = checked.final_env, name = "f") == Some([
     false,
     true
   ]))
@@ -177,38 +180,41 @@ test "checking a declaration retains its parser-owned default bits" {
 
 /// Optional demand follows the actual value binding and the nearest imported marker.
 test "optional header demand cannot inherit a shadowed declaration" {
-  let local = env_cache(env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginFunctionHeader([
+  let local = env_cache(env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = BindingOriginFunctionHeader([
     "value~",
     "extra?"
   ])))
-  assert(checker_call_header_has_optional(local, "f"))
-  assert(!checker_call_header_has_optional(env_bind(local, "f", header_type()), "f"))
-  let imported = env_bind(env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginModuleExport("dep.vibe", "f")), "#params:f", CtRecord([
+  assert(checker_call_header_has_optional(env = local, name = "f"))
+  assert(!checker_call_header_has_optional(env = env_bind(env = local, name = "f", ty = header_type()), name = "f"))
+  let imported = env_bind(env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = BindingOriginModuleExport("dep.vibe", "f")), name = "#params:f", ty = CtRecord([
     ("value~", CtUnit),
     ("extra?", CtUnit)
   ]))
-  assert(checker_call_header_has_optional(imported, "f"))
-  assert(!checker_call_header_has_optional(env_bind(imported, "#params:f", CtUnit), "f"))
-  let positional = env_bind(env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginModuleExport("dep.vibe", "f")), "#params:f", CtRecord([
+  assert(checker_call_header_has_optional(env = imported, name = "f"))
+  assert(!checker_call_header_has_optional(env = env_bind(env = imported, name = "#params:f", ty = CtUnit), name = "f"))
+  let positional = env_bind(env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = BindingOriginModuleExport("dep.vibe", "f")), name = "#params:f", ty = CtRecord([
     ("value", CtUnit),
     ("extra", CtUnit)
   ]))
-  assert(!checker_call_header_has_optional(positional, "f"))
+  assert(!checker_call_header_has_optional(env = positional, name = "f"))
 }
 
 fn assert_imported_header(env: TypeEnv, expected: BindingOrigin, surface: Bool) -> Unit {
-  match env_lookup_binding_including_surface(env, "f") {
+  match env_lookup_binding_including_surface(env = env, name = "f") {
     Some(binding) => assert(binding.origin == expected),
     None => assert(false)
   }
   if surface {
-    assert(env_lookup_binding(env, "f") is None)
-    assert(checker_call_header_names(env, "f") is None)
-    assert(!checker_call_header_has_optional(env, "f"))
+    assert(env_lookup_binding(env = env, name = "f") is None)
+    assert(checker_call_header_names(env = env, name = "f") is None)
+    assert(!checker_call_header_has_optional(env = env, name = "f"))
   } else {
-    assert(checker_call_header_names(env, "f") == Some(["second~", "first?"]))
-    assert(checker_call_header_has_optional(env, "f"))
-    assert(checker_call_header_names(env_bind(env, "f", header_type()), "f") is None)
+    assert(checker_call_header_names(env = env, name = "f") == Some([
+      "second~",
+      "first?"
+    ]))
+    assert(checker_call_header_has_optional(env = env, name = "f"))
+    assert(checker_call_header_names(env = env_bind(env = env, name = "f", ty = header_type()), name = "f") is None)
   }
 }
 
@@ -226,11 +232,11 @@ test "imported headers retain module identity and surface barriers in caches" {
   ]
   let mut i = 0
   while i < Array::length(origins) {
-    let origin = Array::get(origins, i)
-    let env = env_cache(env_bind_with_origin(EnvEmpty, "f", header_type(), origin))
-    assert_imported_header(env, origin, i == 1)
+    let origin = Array::get(origins, at = i)
+    let env = env_cache(env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = origin))
+    assert_imported_header(env = env, expected = origin, surface = i == 1)
     match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
-      Some(decoded) => assert_imported_header(decoded, origin, i == 1),
+      Some(decoded) => assert_imported_header(env = decoded, expected = origin, surface = i == 1),
       None => assert(false)
     }
     let checked = CheckedProgram::{
@@ -241,7 +247,7 @@ test "imported headers retain module identity and surface barriers in caches" {
       typed_occurrences: []
     }
     match decode_checked_program(encode_checked_program(checked)) {
-      Some(decoded) => assert_imported_header(decoded.final_env, origin, i == 1),
+      Some(decoded) => assert_imported_header(env = decoded.final_env, expected = origin, surface = i == 1),
       None => assert(false)
     }
     i = i + 1
@@ -254,14 +260,17 @@ test "imported headers retain module identity and surface barriers in caches" {
 /// bits are checked on the binding itself; a header without defaults answers
 /// `None`.
 fn assert_default_bits(env: TypeEnv, origin: BindingOrigin, surface: Bool) -> Unit {
-  match env_lookup_binding_including_surface(env, "f") {
+  match env_lookup_binding_including_surface(env = env, name = "f") {
     Some(binding) => assert(binding.origin == origin),
     None => assert(false)
   }
   if surface {
     ()
   } else {
-    assert(checker_call_header_defaults(env, "f") == Some([false, true]))
+    assert(checker_call_header_defaults(env = env, name = "f") == Some([
+      false,
+      true
+    ]))
   }
 }
 
@@ -278,11 +287,11 @@ test "imported headers retain their parameter-default bits in caches" {
   ]
   let mut i = 0
   while i < Array::length(origins) {
-    let origin = Array::get(origins, i)
-    let env = env_cache(env_bind_with_origin(EnvEmpty, "f", header_type(), origin))
-    assert_default_bits(env, origin, i == 1)
+    let origin = Array::get(origins, at = i)
+    let env = env_cache(env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = origin))
+    assert_default_bits(env = env, origin = origin, surface = i == 1)
     match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
-      Some(decoded) => assert_default_bits(decoded, origin, i == 1),
+      Some(decoded) => assert_default_bits(env = decoded, origin = origin, surface = i == 1),
       None => assert(false)
     }
     let checked = CheckedProgram::{
@@ -293,23 +302,23 @@ test "imported headers retain their parameter-default bits in caches" {
       typed_occurrences: []
     }
     match decode_checked_program(encode_checked_program(checked)) {
-      Some(decoded) => assert_default_bits(decoded.final_env, origin, i == 1),
+      Some(decoded) => assert_default_bits(env = decoded.final_env, origin = origin, surface = i == 1),
       None => assert(false)
     }
     i = i + 1
   }
-  let plain = env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginModuleFunctionHeader("dep.vibe", "original", [
+  let plain = env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = BindingOriginModuleFunctionHeader("dep.vibe", "original", [
     "x",
     "y?"
   ], []))
-  assert(checker_call_header_defaults(plain, "f") == None)
+  assert(checker_call_header_defaults(env = plain, name = "f") == None)
 }
 
 /// A cache cannot invent a default bit for an imported header's absent
 /// parameter, or carry an all-false vector as a second spelling of none.
 test "imported header transports refuse malformed default bits" {
   for flags in [[true], [false, false]] {
-    let env = env_bind_with_origin(EnvEmpty, "f", header_type(), BindingOriginModuleFunctionHeader("dep.vibe", "original", [
+    let env = env_bind_with_origin(env = EnvEmpty, name = "f", ty = header_type(), origin = BindingOriginModuleFunctionHeader("dep.vibe", "original", [
       "x",
       "y?"
     ], flags))
@@ -333,10 +342,12 @@ test "imported callable headers preserve the type declaration's module origin" {
   let definitions = EnvTypeDefs([TDStruct("Box", [("value", CtInt)], [], [])], [
     "Box"
   ], EnvEmpty)
-  let env = env_bind_with_origin(definitions, "Box", CtFn([CtInt], CtStruct("Box"), None), BindingOriginModuleFunctionHeader("dep.vibe", "Box", [
+  let env = env_bind_with_origin(env = definitions, name = "Box", ty = CtFn([
+    CtInt
+  ], CtStruct("Box"), None), origin = BindingOriginModuleFunctionHeader("dep.vibe", "Box", [
     "value"
   ], []))
-  assert(env_type_definition_origin(env, "Box") == Some(BindingOriginModuleExport("dep.vibe", "Box")))
+  assert(env_type_definition_origin(env = env, name = "Box") == Some(BindingOriginModuleExport("dep.vibe", "Box")))
 }
 
 /// A derived cache index cannot turn a published callable surface into a binder.
@@ -346,13 +357,13 @@ test "imported callable surfaces preserve builtin resolution authority" {
     "value"
   ], [])
   let binding = EnvValueBinding::{ ty: CtUnknown, origin: origin }
-  let actual = env_bind_with_origin(EnvEmpty, name, CtUnknown, origin)
-  assert(!builtin_resolves_at(actual, name, 10))
-  assert(!builtin_resolves_at(env_cache(actual), name, 10))
-  let accelerator_only = env_cached([name], [binding], EnvEmpty)
-  assert(builtin_resolves_at(accelerator_only, name, 10))
-  let imported = env_bind_with_origin(EnvEmpty, name, header_type(), BindingOriginModuleFunctionHeader("dep.vibe", "length", [
+  let actual = env_bind_with_origin(env = EnvEmpty, name = name, ty = CtUnknown, origin = origin)
+  assert(!builtin_resolves_at(env = actual, name = name, ident_off = 10))
+  assert(!builtin_resolves_at(env = env_cache(actual), name = name, ident_off = 10))
+  let accelerator_only = env_cached(names = [name], bindings = [binding], rest = EnvEmpty)
+  assert(builtin_resolves_at(env = accelerator_only, name = name, ident_off = 10))
+  let imported = env_bind_with_origin(env = EnvEmpty, name = name, ty = header_type(), origin = BindingOriginModuleFunctionHeader("dep.vibe", "length", [
     "value"
   ], []))
-  assert(!builtin_resolves_at(imported, name, 10))
+  assert(!builtin_resolves_at(env = imported, name = name, ident_off = 10))
 }

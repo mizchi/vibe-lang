@@ -24,11 +24,11 @@ import @vibe/compiler/cache {
   compact_string_fingerprint, persistent_artifact_cache_path
 }
 
-fn bcr_bytes(s: String) -> Bytes {
+fn bcr_bytes(_ s: String) -> Bytes {
   let out = Bytes::new()
   let mut i = 0
   while i < String::length(s) {
-    Bytes::push(out, String::byte_at(s, i))
+    Bytes::push(out, value = String::byte_at(s, at = i))
     i = i + 1
   }
   out
@@ -42,7 +42,7 @@ fn bcr_bytes_eq(a: Bytes, b: Bytes) -> Bool {
     let mut i = 0
     let mut same = true
     while same && i < n {
-      if Bytes::get(a, i) != Bytes::get(b, i) {
+      if Bytes::get(a, at = i) != Bytes::get(b, at = i) {
         same = false
       } else {
         i = i + 1
@@ -58,11 +58,11 @@ let bcr_main_path: String = "/tmp/vibe_body_cache_bcr_main.vibe"
 
 /// The middle file. `bcr_k` folds to the constant `k`, which every caller
 /// inlines.
-fn bcr_b(k: Int) -> String {
+fn bcr_b(_ k: Int) -> String {
   String::join([
     "export let bcr_k: () -> Int = () -> { \{k} }",
     "export let bcr_eq: () -> Bool = () -> { [1, 2] == [1, 2] }"
-  ], "\n")
+  ], sep = "\n")
 }
 
 /// The downstream file: `bcr_use` calls `bcr_k`, `bcr_plain` never does.
@@ -72,24 +72,24 @@ fn bcr_main() -> String {
     "let bcr_plain: (Int) -> Int = (n) -> { n * 3 + 1 }",
     "let bcr_use: (Int) -> Int = (n) -> { n + bcr_k() }",
     "let run: () -> Int = () -> { bcr_use(2) + bcr_plain(3) + (if bcr_eq() { 1 } else { 0 }) }"
-  ], "\n")
+  ], sep = "\n")
 }
 
 test "a folded constant changed recompiles exactly its callers" {
-  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bcr_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bcr_main_path)))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
     ()
   }
-  Fs::write_bytes(bcr_b_path, bcr_bytes(bcr_b(5)))
-  Fs::write_bytes(bcr_main_path, bcr_bytes(bcr_main()))
+  Fs::write_bytes(bcr_b_path, bytes = bcr_bytes(bcr_b(5)))
+  Fs::write_bytes(bcr_main_path, bytes = bcr_bytes(bcr_main()))
   let cold_counts: Array[Int] = []
-  let _cold = compile_file_fs_mode_rc_body_cached_counted(bcr_main_path, "run", "on", cold_counts)
-  Fs::write_bytes(bcr_b_path, bcr_bytes(bcr_b(6)))
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bcr_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  Fs::write_bytes(bcr_b_path, bytes = bcr_bytes(bcr_b(6)))
   let warm_counts: Array[Int] = []
-  let warm = compile_file_fs_mode_rc_body_cached_counted(bcr_main_path, "run", "on", warm_counts)
-  let fresh = compile_file_fs_mode_rc(bcr_main_path, "run")
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bcr_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bcr_main_path, entry_name = "run")
   inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bcr_bytes_eq(warm, fresh)}", content = "saved=3 equal=true")
 }
 
@@ -99,7 +99,7 @@ fn bcr_b_ret(ret: String, body: String) -> String {
   String::join([
     "export let bcr_s: (Int) -> \{ret} = (n) -> { \{body} }",
     "export let bcr_eq: () -> Bool = () -> { [1, 2] == [1, 2] }"
-  ], "\n")
+  ], sep = "\n")
 }
 
 /// `bcr_pass` hands `bcr_s`'s result to a generic, so it type-checks whatever
@@ -111,26 +111,26 @@ fn bcr_main_ret() -> String {
     "let bcr_plain: (Int) -> Int = (n) -> { n * 3 + 1 }",
     "let bcr_pass: (Int) -> Int = (n) -> { bcr_gen(bcr_s(n)) + bcr_gen(bcr_s(n + 1)) }",
     "let run: () -> Int = () -> { bcr_pass(2) + bcr_plain(3) + (if bcr_eq() { 1 } else { 0 }) + String::length(\"\\{bcr_plain(1)}\") }"
-  ], "\n")
+  ], sep = "\n")
 }
 
 // A return class that changes also changes the set of builtins the program
 // uses (here the string runtime), and that guard declines the lane first:
 // the row is recorded, not reached. Kept so the case stays byte-exact.
 test "a return class changed declines and compiles byte-exact" {
-  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(bcr_main_path)))
+  let artifact_path = persistent_artifact_cache_path(kind = "codegen-body-cache", entry_name = "run", fingerprint = String::concat("self-describing-", compact_string_fingerprint(bcr_main_path)))
   if Fs::exists(artifact_path) {
     Fs::remove(artifact_path)
   } else {
     ()
   }
-  Fs::write_bytes(bcr_b_path, bcr_bytes(bcr_b_ret("Int", "n")))
-  Fs::write_bytes(bcr_main_path, bcr_bytes(bcr_main_ret()))
+  Fs::write_bytes(bcr_b_path, bytes = bcr_bytes(bcr_b_ret(ret = "Int", body = "n")))
+  Fs::write_bytes(bcr_main_path, bytes = bcr_bytes(bcr_main_ret()))
   let cold_counts: Array[Int] = []
-  let _cold = compile_file_fs_mode_rc_body_cached_counted(bcr_main_path, "run", "on", cold_counts)
-  Fs::write_bytes(bcr_b_path, bcr_bytes(bcr_b_ret("String", "String::concat(\"s\", \"\\{n}\")")))
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bcr_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
+  Fs::write_bytes(bcr_b_path, bytes = bcr_bytes(bcr_b_ret(ret = "String", body = "String::concat(\"s\", \"\\{n}\")")))
   let warm_counts: Array[Int] = []
-  let warm = compile_file_fs_mode_rc_body_cached_counted(bcr_main_path, "run", "on", warm_counts)
-  let fresh = compile_file_fs_mode_rc(bcr_main_path, "run")
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bcr_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
+  let fresh = compile_file_fs_mode_rc(entry_path = bcr_main_path, entry_name = "run")
   inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bcr_bytes_eq(warm, fresh)}", content = "saved=0 equal=true")
 }

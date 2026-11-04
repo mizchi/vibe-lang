@@ -12,7 +12,7 @@ import @vibe/compiler/syntax {
 
 /// First checker error message for `source`, or "" when it checks clean.
 /// (check_program throws the first collected diagnostic.)
-fn first_check_error(source: String) -> String {
+fn first_check_error(_ source: String) -> String {
   handle {
     let _ = check_program(parse_program(lex(source)))
     ""
@@ -36,51 +36,51 @@ fn first_check_error(source: String) -> String {
 test "resume outside any handler arm is rejected" {
   let src = "fn f() -> Int { resume(1); 2 }\nfn main() -> Int { f() }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "only valid inside a handler arm"))
-  assert(String::contains(msg, "#942"))
+  assert(String::contains(msg, needle = "only valid inside a handler arm"))
+  assert(String::contains(msg, needle = "#942"))
 }
 
 test "resume at a fn's tail but outside any handle is rejected" {
   let src = "fn f() -> Int { resume(1) }\nfn main() -> Int { f() }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "only valid inside a handler arm"))
+  assert(String::contains(msg, needle = "only valid inside a handler arm"))
 }
 
 test "#2287 review: a surface-only re-export alias does not shadow special resume" {
   let src = "export ./dep.vibe { f as resume }\nfn main() -> Int { resume(1) }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "only valid inside a handler arm"))
+  assert(String::contains(msg, needle = "only valid inside a handler arm"))
 }
 
 test "resume in the handled body (not in an arm) is rejected" {
   let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { resume(1) } with { Ask::Get() => resume(2) } }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "only valid inside a handler arm"))
+  assert(String::contains(msg, needle = "only valid inside a handler arm"))
 }
 
 test "double resume via let-bind in one arm is rejected (non-tail)" {
   let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => { let a = resume(1); resume(2) } } }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "tail position"))
-  assert(String::contains(msg, "#942"))
+  assert(String::contains(msg, needle = "tail position"))
+  assert(String::contains(msg, needle = "#942"))
 }
 
 test "statement-position resume followed by another resume is rejected" {
   let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => { resume(1); resume(2) } } }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "tail position"))
+  assert(String::contains(msg, needle = "tail position"))
 }
 
 test "resume whose value feeds another expression is rejected (non-tail)" {
   let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with { Ask::Get() => resume(1) + 1 } }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "tail position"))
+  assert(String::contains(msg, needle = "tail position"))
 }
 
 test "resume inside a while loop in an arm is rejected (would resume per iteration)" {
   let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with { Ask::Get() => { let mut i = 0\n  while i < 2 { resume(1)\n    i = i + 1 }\n  0 } } }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "tail position"))
+  assert(String::contains(msg, needle = "tail position"))
 }
 
 test "single tail resume stays accepted" {
@@ -116,13 +116,13 @@ test "nested handle INSIDE an arm with its own tail resume stays accepted" {
 test "non-tail resume inside a nested handle's arm is rejected too" {
   let src = "effect Ask { Get() -> Int }\neffect Tell { Say(Int) -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with { Ask::Get() => handle { resume(perform Tell::Say(3)) } with { Tell::Say(n) => { let x = resume(n); resume(x) } } } }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "tail position"))
+  assert(String::contains(msg, needle = "tail position"))
 }
 
 test "#2969: an arm whose tail is a bare value is refused and names resume" {
   let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => 42 } }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "handler arm `Ask::Get` must pass its value back with resume(...)"))
+  assert(String::contains(msg, needle = "handler arm `Ask::Get` must pass its value back with resume(...)"))
 }
 
 test "#2969: the same arm ending in resume is accepted" {
@@ -175,21 +175,21 @@ test "return resume(v) as the arm's final expression stays accepted" {
 test "unshadowed non-tail resume is still rejected when another local exists" {
   let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => { let other = 1\n  let a = resume(other)\n  resume(2) } } }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "tail position"))
+  assert(String::contains(msg, needle = "tail position"))
 }
 
 test "Error arm resume keeps the #640 non-resumable message (not the #942 one)" {
   let src = "fn main() -> Int { handle { throw(\"x\")\n  1 } with { Exception::Throw(_e) => resume(0) } }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "non-resumable"))
-  assert(String::contains(msg, "#640"))
+  assert(String::contains(msg, needle = "non-resumable"))
+  assert(String::contains(msg, needle = "#640"))
 }
 
 test "Exception alias arm also rejects resume" {
   let src = "fn main() -> Int { handle { perform Exception::Throw(\"x\")\n  1 } with { Exception::Throw(_e) => resume(0) } }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "non-resumable"))
-  assert(String::contains(msg, "#640"))
+  assert(String::contains(msg, needle = "non-resumable"))
+  assert(String::contains(msg, needle = "#640"))
 }
 
 /// Codex P2 on #970: a `resume` binding shadowed INSIDE the arm body (not just

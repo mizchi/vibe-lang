@@ -5,8 +5,8 @@ import @vibe/compiler/refactor {
   mark_positional
 }
 
-fn marked(source: String) -> String with Exception {
-  mark_positional("t.vibe", source).source
+fn marked(_ source: String) -> String with Exception {
+  mark_positional(path = "t.vibe", source = source).source
 }
 
 test "a receiver typed as its owner is marked; a constructor is not" {
@@ -24,21 +24,21 @@ test "generic receivers, wildcards and marked slots" {
   let source = "struct Box[T] {\n  v: T\n}\nfn Box::get[T](b: Box[T], at: Int) -> T {\n  b.v\n}\nfn ignore(_: Int) -> Int {\n  0\n}\nfn twice(_ x: Int) -> Int {\n  x * 2\n}\n"
   let once = marked(source)
   inspect(once, content = "struct Box[T] {\n  v: T\n}\nfn Box::get[T](_ b: Box[T], at: Int) -> T {\n  b.v\n}\nfn ignore(_: Int) -> Int {\n  0\n}\nfn twice(_ x: Int) -> Int {\n  x * 2\n}\n")
-  inspect(mark_positional("t.vibe", once).marked, content = "0")
+  inspect(mark_positional(path = "t.vibe", source = once).marked, content = "0")
 }
 
 test "a contract's bodyless declarations are marked the same way" {
   let source = "name = @t/pkg\nversion = 0.1.0\n\nimport ./impl.vibe {}\n\nfn Box::get[T](b: Box[T], at: Int) -> T\nfn neg(x: Int) -> Int\n"
-  let result = mark_positional("index.vpkg", source)
+  let result = mark_positional(path = "index.vpkg", source = source)
   inspect(result.source, content = "name = @t/pkg\nversion = 0.1.0\n\nimport ./impl.vibe {}\n\nfn Box::get[T](_ b: Box[T], at: Int) -> T\nfn neg(_ x: Int) -> Int\n")
-  inspect(String::join(result.lines, "\n"), content = "index.vpkg:6:16: Box::get b (receiver)\nindex.vpkg:7:8: neg x (single parameter)")
+  inspect(String::join(result.lines, sep = "\n"), content = "index.vpkg:6:16: Box::get b (receiver)\nindex.vpkg:7:8: neg x (single parameter)")
 }
 
 test "a first parameter that only mentions the owner is not a receiver" {
   // A tuple or a function type starts with `(`; its first identifier is not
   // the parameter's type, so neither slot is marked (Codex on #3710).
   let source = "fn P::from_pair(pair: (P, Int), scale: Int) -> Int {\n  scale\n}\nfn P::build(make: () -> P, n: Int) -> Int {\n  n\n}\nfn P::scale(p: P, by: Int) -> Int {\n  by\n}\n"
-  let result = mark_positional("t.vibe", source)
+  let result = mark_positional(path = "t.vibe", source = source)
   inspect(result.source, content = "fn P::from_pair(pair: (P, Int), scale: Int) -> Int {\n  scale\n}\nfn P::build(make: () -> P, n: Int) -> Int {\n  n\n}\nfn P::scale(_ p: P, by: Int) -> Int {\n  by\n}\n")
   inspect(result.marked, content = "1")
 }
@@ -47,7 +47,7 @@ test "an unparenthesized function or an optional of the owner is not a receiver"
   // `P -> P` and `P?` start with the owner's name; the whole type is still a
   // function or an `Option[P]` (Codex on #3710).
   let source = "fn P::build(make: P -> P, n: Int) -> Int {\n  n\n}\nfn P::maybe(p: P?, n: Int) -> Int {\n  n\n}\nfn P::wrap(p: P[Int], n: Int) -> Int {\n  n\n}\n"
-  let result = mark_positional("t.vibe", source)
+  let result = mark_positional(path = "t.vibe", source = source)
   inspect(result.source, content = "fn P::build(make: P -> P, n: Int) -> Int {\n  n\n}\nfn P::maybe(p: P?, n: Int) -> Int {\n  n\n}\nfn P::wrap(_ p: P[Int], n: Int) -> Int {\n  n\n}\n")
   inspect(result.marked, content = "1")
 }

@@ -8,7 +8,7 @@ import @vibe/core {
 /// The region-carrying builtin heads: their region is an argument of the
 /// type, so a use of the head with no `#region_` argument is a spelling that
 /// erased it (`TaskHandle[Int]`, a struct field `MutList[Int]`).
-fn retention_is_region_head(name: String) -> Bool {
+fn retention_is_region_head(_ name: String) -> Bool {
   name == "TaskHandle" || name == "TaskGroup" || name == "Sender" || name == "Receiver" || name == "Channel" || name == "MutList" || name == "MutBytes" || name == "Region" || name == "Task" || name == "Nursery"
 }
 
@@ -40,9 +40,9 @@ fn retention_declared_type(name: String, defs: Array[TypeDef]) -> Bool {
   found
 }
 
-fn retention_type_has_region_skolem(t: Type) -> Bool {
+fn retention_type_has_region_skolem(_ t: Type) -> Bool {
   match t {
-    CtNamed(n, args) => if String::starts_with(n, "#region_") {
+    CtNamed(n, args) => if String::starts_with(n, prefix = "#region_") {
       true
     } else {
       let mut found = false
@@ -70,7 +70,7 @@ fn retention_subst_params(t: Type, names: Array[String], args: Array[Type]) -> T
         let mut hit = -1
         let mut i = 0
         while i < Array::length(names) && i < Array::length(args) {
-          if hit < 0 && String::equals(Array::get(names, i), n) && Array::length(targs) == 0 {
+          if hit < 0 && String::equals(Array::get(names, at = i), n) && Array::length(targs) == 0 {
             hit = i
           } else {
             ()
@@ -78,25 +78,25 @@ fn retention_subst_params(t: Type, names: Array[String], args: Array[Type]) -> T
           i = i + 1
         }
         if hit >= 0 {
-          Array::get(args, hit)
+          Array::get(args, at = hit)
         } else {
           CtNamed(n, for a in targs {
-            retention_subst_params(a, names, args)
+            retention_subst_params(t = a, names = names, args = args)
           })
         }
       },
-      CtArray(e) => CtArray(retention_subst_params(e, names, args)),
-      CtOption(e) => CtOption(retention_subst_params(e, names, args)),
+      CtArray(e) => CtArray(retention_subst_params(t = e, names = names, args = args)),
+      CtOption(e) => CtOption(retention_subst_params(t = e, names = names, args = args)),
       CtTuple(items) => CtTuple(for item in items {
-        retention_subst_params(item, names, args)
+        retention_subst_params(t = item, names = names, args = args)
       }),
       CtRecord(fields) => CtRecord(for field in fields {
         let (fname, fty) = field
-        (fname, retention_subst_params(fty, names, args))
+        (fname, retention_subst_params(t = fty, names = names, args = args))
       }),
       CtFn(ps, ret, eff) => CtFn(for p in ps {
-        retention_subst_params(p, names, args)
-      }, retention_subst_params(ret, names, args), eff),
+        retention_subst_params(t = p, names = names, args = args)
+      }, retention_subst_params(t = ret, names = names, args = args), eff),
       _ => t
     }
   }
@@ -105,7 +105,7 @@ fn retention_subst_params(t: Type, names: Array[String], args: Array[Type]) -> T
 fn retention_any_hides(items: Array[Type], defs: Array[TypeDef], visiting: Array[String]) -> Bool {
   let mut any = false
   for item in items {
-    if !any && retention_hides(item, defs, visiting) {
+    if !any && retention_hides(t = item, defs = defs, visiting = visiting) {
       any = true
     } else {
       ()
@@ -119,8 +119,8 @@ fn retention_any_hides(items: Array[Type], defs: Array[TypeDef], visiting: Array
 /// declaration, but inspect its current arguments: a recursive occurrence
 /// may replace a harmless parameter with a region-hiding type.
 fn retention_named_hides(name: String, args: Array[Type], defs: Array[TypeDef], visiting: Array[String]) -> Bool {
-  if retention_string_has(visiting, name) {
-    retention_any_hides(args, defs, visiting)
+  if retention_string_has(items = visiting, wanted = name) {
+    retention_any_hides(items = args, defs = defs, visiting = visiting)
   } else {
     let mut found = false
     let mut answer = false
@@ -129,35 +129,35 @@ fn retention_named_hides(name: String, args: Array[Type], defs: Array[TypeDef], 
         match d {
           TDStruct(dn, fields, _, tparams) => if String::equals(dn, name) {
             found = true
-            Array::push(visiting, name)
-            answer = retention_any_hides(for field in fields {
+            Array::push(visiting, value = name)
+            answer = retention_any_hides(items = for field in fields {
               let (_, fty) = field
-              retention_subst_params(fty, tparams, args)
-            }, defs, visiting)
-            Array::truncate(visiting, Array::length(visiting) - 1)
+              retention_subst_params(t = fty, names = tparams, args = args)
+            }, defs = defs, visiting = visiting)
+            Array::truncate(visiting, length = Array::length(visiting) - 1)
           } else {
             ()
           },
           TDEnum(dn, tparams, variants) => if String::equals(dn, name) {
             found = true
-            Array::push(visiting, name)
+            Array::push(visiting, value = name)
             let payloads = array_empty()
             for v in variants {
               let (_, tys) = v
               for t in tys {
-                Array::push(payloads, retention_subst_params(t, tparams, args))
+                Array::push(payloads, value = retention_subst_params(t = t, names = tparams, args = args))
               }
             }
-            answer = retention_any_hides(payloads, defs, visiting)
-            Array::truncate(visiting, Array::length(visiting) - 1)
+            answer = retention_any_hides(items = payloads, defs = defs, visiting = visiting)
+            Array::truncate(visiting, length = Array::length(visiting) - 1)
           } else {
             ()
           },
           TDAlias(dn, tparams, body) => if String::equals(dn, name) {
             found = true
-            Array::push(visiting, name)
-            answer = retention_hides(retention_subst_params(body, tparams, args), defs, visiting)
-            Array::truncate(visiting, Array::length(visiting) - 1)
+            Array::push(visiting, value = name)
+            answer = retention_hides(t = retention_subst_params(t = body, names = tparams, args = args), defs = defs, visiting = visiting)
+            Array::truncate(visiting, length = Array::length(visiting) - 1)
           } else {
             ()
           },
@@ -174,13 +174,13 @@ fn retention_named_hides(name: String, args: Array[Type], defs: Array[TypeDef], 
       // anything; a lowercase spelling is a type or row variable's name
       // (`e` of `TaskHandle[r, e, T]`), not a declaration.
       let head = if String::length(name) > 0 {
-        String::byte_at(name, 0)
+        String::byte_at(name, at = 0)
       } else {
         0
       }
       !(head >= 97 && head <= 122)
     } else {
-      retention_any_hides(args, defs, visiting)
+      retention_any_hides(items = args, defs = defs, visiting = visiting)
     }
   }
 }
@@ -203,22 +203,22 @@ fn retention_hides(t: Type, defs: Array[TypeDef], visiting: Array[String]) -> Bo
     // element type stayed open) is a copy out of the region.
     CtUnknown => false,
     CtConstructor(_, _) => false,
-    CtArray(e) => retention_hides(e, defs, visiting),
-    CtOption(e) => retention_hides(e, defs, visiting),
-    CtTuple(items) => retention_any_hides(items, defs, visiting),
-    CtRecord(fields) => retention_any_hides(for field in fields {
+    CtArray(e) => retention_hides(t = e, defs = defs, visiting = visiting),
+    CtOption(e) => retention_hides(t = e, defs = defs, visiting = visiting),
+    CtTuple(items) => retention_any_hides(items = items, defs = defs, visiting = visiting),
+    CtRecord(fields) => retention_any_hides(items = for field in fields {
       let (_, fty) = field
       fty
-    }, defs, visiting),
+    }, defs = defs, visiting = visiting),
     // A closure's type does not list everything it captured.
     CtFn(_, _, _) => true,
-    CtForAll(_, _, body) => retention_hides(body, defs, visiting),
+    CtForAll(_, _, body) => retention_hides(t = body, defs = defs, visiting = visiting),
     CtApplied(_, _) => true,
-    CtStruct(name) => retention_named_hides(name, array_empty(), defs, visiting),
-    CtEnum(name) => retention_named_hides(name, array_empty(), defs, visiting),
-    CtNamed(name, args) => if String::starts_with(name, "#region_") {
+    CtStruct(name) => retention_named_hides(name = name, args = array_empty(), defs = defs, visiting = visiting),
+    CtEnum(name) => retention_named_hides(name = name, args = array_empty(), defs = defs, visiting = visiting),
+    CtNamed(name, args) => if String::starts_with(name, prefix = "#region_") {
       false
-    } else if retention_is_region_head(name) && !retention_declared_type(name, defs) {
+    } else if retention_is_region_head(name) && !retention_declared_type(name = name, defs = defs) {
       let mut shown = false
       for a in args {
         if retention_type_has_region_skolem(a) {
@@ -227,9 +227,9 @@ fn retention_hides(t: Type, defs: Array[TypeDef], visiting: Array[String]) -> Bo
           ()
         }
       }
-      !shown || retention_any_hides(args, defs, visiting)
+      !shown || retention_any_hides(items = args, defs = defs, visiting = visiting)
     } else {
-      retention_named_hides(name, args, defs, visiting)
+      retention_named_hides(name = name, args = args, defs = defs, visiting = visiting)
     }
   }
 }
@@ -239,7 +239,7 @@ fn retention_hides(t: Type, defs: Array[TypeDef], visiting: Array[String]) -> Bo
 /// region, a closure, a declared struct or enum holding either (through its
 /// type arguments too), or a type whose declaration is not visible.
 export fn retention_type_hides_region(t: Type, defs: Array[TypeDef]) -> Bool {
-  retention_hides(t, defs, array_empty())
+  retention_hides(t = t, defs = defs, visiting = array_empty())
 }
 
 fn retention_string_has(items: Array[String], wanted: String) -> Bool {

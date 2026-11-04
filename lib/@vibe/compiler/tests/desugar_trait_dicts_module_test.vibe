@@ -53,9 +53,9 @@ fn render_named(stmts: Array[Stmt], name: String) -> String {
   let mut out = ""
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, n, _, _) => if n == name {
-        out = print_stmt(Array::get(stmts, i))
+        out = print_stmt(Array::get(stmts, at = i))
       } else {
         ()
       },
@@ -66,11 +66,11 @@ fn render_named(stmts: Array[Stmt], name: String) -> String {
   out
 }
 
-fn stmt_names(stmts: Array[Stmt]) -> String {
+fn stmt_names(_ stmts: Array[Stmt]) -> String {
   let mut out = ""
   let mut i = 0
   while i < Array::length(stmts) {
-    let n = match Array::get(stmts, i) {
+    let n = match Array::get(stmts, at = i) {
       SLet(_, _, n, _, _) => n,
       SStruct(_, n, _, _, _, _) => String::concat("struct ", n),
       STrait(_, n, _, _, _, _) => String::concat("trait ", n),
@@ -87,18 +87,19 @@ fn stmt_names(stmts: Array[Stmt]) -> String {
   out
 }
 
-fn whole_named(name: String) -> String with Exception {
+fn whole_named(_ name: String) -> String with Exception {
   let stmts = parse_program(lex(String::concat(dep_src(), own_src())))
   desugar_trait_dicts(stmts)
-  render_named(stmts, name)
+  render_named(stmts = stmts, name = name)
 }
 
 test "the module entry threads the witness into a call of the context's bounded generic" {
   let ctx = parse_program(lex(dep_src()))
   let own = parse_program(lex(own_src()))
-  let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
-  inspect(render_named(own, "contains") == whole_named("contains"), content = "true")
-  inspect(render_named(own, "contains"), content = "export let rec contains = [T: Hash](__dict_Hash_T: HashDict[T], s: Set[T], value: T) -> Bool { Map::has_key(s.entries, map_key_to_string(__dict_Hash_T, value)) }")
+  let synth = desugar_trait_dicts_module(own = own, ctx = ctx, module_tag = "", typed_eq_offsets = [
+  ], typed_eq_keys = [])
+  inspect(render_named(stmts = own, name = "contains") == whole_named("contains"), content = "true")
+  inspect(render_named(stmts = own, name = "contains"), content = "export let rec contains = [T: Hash](__dict_Hash_T: HashDict[T], s: Set[T], value: T) -> Bool { Map::has_key(s.entries, map_key_to_string(__dict_Hash_T, value)) }")
   // The context is read, never rewritten or extended: its trait gets no
   // operation and no dict struct from this module's run. What the pass
   // appends -- the module's own derived comparator and the program-level
@@ -117,7 +118,8 @@ test "the whole-program entry is the module entry with no context and everything
 test "the dependency's own run places its trait operation inside the module and its dict struct in the synthesized set" {
   let own = parse_program(lex(dep_src()))
   let ctx = parse_program(lex(own_src()))
-  let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
+  let synth = desugar_trait_dicts_module(own = own, ctx = ctx, module_tag = "", typed_eq_offsets = [
+  ], typed_eq_keys = [])
   // The namespace operation is inserted directly after the trait's impls,
   // growing the module's own region; the context's structs are not derived
   // for here. It used to be placed one step further -- past the run of
@@ -132,32 +134,34 @@ test "the dependency's own run places its trait operation inside the module and 
 test "generated local names restart at every declaration, so a module compiled after the dependency gets the names it gets alone" {
   let ctx = parse_program(lex(dep_src()))
   let own = parse_program(lex(own_src()))
-  let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
+  let synth = desugar_trait_dicts_module(own = own, ctx = ctx, module_tag = "", typed_eq_offsets = [
+  ], typed_eq_keys = [])
   // Whole-program, the dependency's `Key::equals` and `fail_dep` would have
   // consumed the tuple-binder and payload counters first.
-  inspect(render_named(synth, "Pair::equals"), content = "let Pair::equals = (a: Pair, b: Pair) -> Bool { (match a.p { (__teq_l0_0, __teq_l0_1) => match b.p { (__teq_r0_0, __teq_r0_1) => (((__teq_l0_0 + 0) == (__teq_r0_0 + 0)) && ((__teq_l0_1 == __teq_r0_1) && true)) } } && true) }")
-  inspect(render_named(own, "fail_own"), content = "export let rec fail_own = (msg: String) -> Int with Exception { { let __exn_payload0 = msg; { Array::set(__exn_kind_cell, 0, \"String\"); { Array::set(__exn_kind_cell, 1, \"\"); throw(__exn_payload0) } } } }")
-  inspect(render_named(synth, "Pair::equals") == whole_named("Pair::equals"), content = "true")
-  inspect(render_named(own, "fail_own") == whole_named("fail_own"), content = "true")
+  inspect(render_named(stmts = synth, name = "Pair::equals"), content = "let Pair::equals = (a: Pair, b: Pair) -> Bool { (match a.p { (__teq_l0_0, __teq_l0_1) => match b.p { (__teq_r0_0, __teq_r0_1) => (((__teq_l0_0 + 0) == (__teq_r0_0 + 0)) && ((__teq_l0_1 == __teq_r0_1) && true)) } } && true) }")
+  inspect(render_named(stmts = own, name = "fail_own"), content = "export let rec fail_own = (msg: String) -> Int with Exception { { let __exn_payload0 = msg; { Array::set(__exn_kind_cell, 0, \"String\"); { Array::set(__exn_kind_cell, 1, \"\"); throw(__exn_payload0) } } } }")
+  inspect(render_named(stmts = synth, name = "Pair::equals") == whole_named("Pair::equals"), content = "true")
+  inspect(render_named(stmts = own, name = "fail_own") == whole_named("fail_own"), content = "true")
 }
 
-fn whole2_named(name: String) -> String with Exception {
+fn whole2_named(_ name: String) -> String with Exception {
   let stmts = parse_program(lex(String::concat(dep2_src(), own2_src())))
   let _ = check_program(stmts)
   desugar_trait_dicts(stmts)
-  render_named(stmts, name)
+  render_named(stmts = stmts, name = name)
 }
 
 test "a hoisted local lambda's labeled call is reordered in a per-module run" {
   let ctx = parse_program(lex(dep2_src()))
   let own = parse_program(lex(own2_src()))
   // Placement is checker-owned; normalization consumes this exact checked AST.
-  let checked = Array::slice(ctx, 0, Array::length(ctx))
+  let checked = Array::slice(ctx, start = 0, end = Array::length(ctx))
   for stmt in own {
-    Array::push(checked, stmt)
+    Array::push(checked, value = stmt)
   }
   let _ = check_program(checked)
-  let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
+  let synth = desugar_trait_dicts_module(own = own, ctx = ctx, module_tag = "", typed_eq_offsets = [
+  ], typed_eq_keys = [])
   // #2388: the hoisted function goes next to the declaration it came out of,
   // so it is one of the module's OWN statements and the synthesized set stays
   // empty here. It used to be appended past the context block, which made it
@@ -165,19 +169,20 @@ test "a hoisted local lambda's labeled call is reordered in a per-module run" {
   inspect(stmt_names(own), content = "forty_two, via_apply, use_local, __hoisted_lam_9_use_local_0_f")
   inspect(stmt_names(synth), content = "")
   // The hoisted body retains the checker's optional argument placement.
-  inspect(render_named(own, "__hoisted_lam_9_use_local_0_f"), content = "let __hoisted_lam_9_use_local_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Int) -> Int { b }; g(a, None) } } }")
-  inspect(render_named(own, "__hoisted_lam_9_use_local_0_f") == whole2_named("__hoisted_lam_9_use_local_0_f"), content = "true")
-  inspect(render_named(own, "use_local") == whole2_named("use_local"), content = "true")
+  inspect(render_named(stmts = own, name = "__hoisted_lam_9_use_local_0_f"), content = "let __hoisted_lam_9_use_local_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Int) -> Int { b }; g(a, None) } } }")
+  inspect(render_named(stmts = own, name = "__hoisted_lam_9_use_local_0_f") == whole2_named("__hoisted_lam_9_use_local_0_f"), content = "true")
+  inspect(render_named(stmts = own, name = "use_local") == whole2_named("use_local"), content = "true")
 }
 
 test "a trivial wrapper defined in the dependency is not inlined by a per-module run" {
   let ctx = parse_program(lex(dep2_src()))
   let own = parse_program(lex(own2_src()))
-  let _ = desugar_trait_dicts_module(own, ctx, "", [], [])
+  let _ = desugar_trait_dicts_module(own = own, ctx = ctx, module_tag = "", typed_eq_offsets = [
+  ], typed_eq_keys = [])
   // The whole-program run reads `apply`'s body and inlines the call; a
   // dependency interface carries no body, so a per-module run cannot, and
   // must not pretend to by reading the body it happens to be handed.
-  inspect(render_named(own, "via_apply"), content = "export let rec via_apply = () -> Int { apply(forty_two) }")
+  inspect(render_named(stmts = own, name = "via_apply"), content = "export let rec via_apply = () -> Int { apply(forty_two) }")
   inspect(whole2_named("via_apply"), content = "export let rec via_apply = () -> Int { forty_two() }")
 }
 
@@ -187,7 +192,7 @@ fn wrapper_call_off(stmts: Array[Stmt], name: String) -> Int {
   let mut out = 0 - 99
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, n, _, EFn(_, _, _, _, _, body)) => if n == name {
         out = match body {
           ECall(_, _, off, _) => off,
@@ -214,11 +219,12 @@ test "a trait namespace operation carries the same synthetic offset whether its 
   // trait's statement index.
   let own = parse_program(lex(dep_src()))
   let ctx = parse_program(lex(own2_src()))
-  let _ = desugar_trait_dicts_module(own, ctx, "", [], [])
+  let _ = desugar_trait_dicts_module(own = own, ctx = ctx, module_tag = "", typed_eq_offsets = [
+  ], typed_eq_keys = [])
   let whole = parse_program(lex(String::concat(own2_src(), dep_src())))
   desugar_trait_dicts(whole)
-  inspect(wrapper_call_off(own, "Hash::hash_key"), content = "-2")
-  inspect(wrapper_call_off(whole, "Hash::hash_key"), content = "-2")
+  inspect(wrapper_call_off(stmts = own, name = "Hash::hash_key"), content = "-2")
+  inspect(wrapper_call_off(stmts = whole, name = "Hash::hash_key"), content = "-2")
 }
 
 // #2388: a hoisted lambda becomes a TOP-LEVEL definition, so its name has to
@@ -237,11 +243,11 @@ fn own4_src() -> String {
   "effect OwnLog {\n  Emit(String) -> Unit\n}\n\nexport fn own_use() -> Int with OwnLog {\n  let f = (a: Int) -> Int with OwnLog {\n    perform OwnLog::Emit(\"own\")\n    a + 1\n  }\n  f(2)\n}\n"
 }
 
-fn whole4_named(name: String) -> String with Exception {
+fn whole4_named(_ name: String) -> String with Exception {
   let stmts = parse_program(lex(String::concat(dep4_src(), own4_src())))
   let _ = check_program(stmts)
   desugar_trait_dicts(stmts)
-  render_named(stmts, name)
+  render_named(stmts = stmts, name = name)
 }
 
 test "a hoisted lambda is named after the declaration it came out of, so two modules cannot mint the same top-level name" {
@@ -249,8 +255,10 @@ test "a hoisted lambda is named after the declaration it came out of, so two mod
   let dep = parse_program(lex(dep4_src()))
   let ctx_for_own = parse_program(lex(dep4_src()))
   let ctx_for_dep = parse_program(lex(own4_src()))
-  let own_synth = desugar_trait_dicts_module(own, ctx_for_own, "", [], [])
-  let dep_synth = desugar_trait_dicts_module(dep, ctx_for_dep, "", [], [])
+  let own_synth = desugar_trait_dicts_module(own = own, ctx = ctx_for_own, module_tag = "", typed_eq_offsets = [
+  ], typed_eq_keys = [])
+  let dep_synth = desugar_trait_dicts_module(own = dep, ctx = ctx_for_dep, module_tag = "", typed_eq_offsets = [
+  ], typed_eq_keys = [])
   // The hoisted function is one of the module's own statements now (#2388), so
   // each module's name shows up there rather than in the synthesized set.
   inspect(stmt_names(own), content = "?, own_use, __hoisted_lam_7_own_use_0_f")
@@ -259,19 +267,19 @@ test "a hoisted lambda is named after the declaration it came out of, so two mod
   // What each module mints alone is what the whole-program run mints for it:
   // the counter restarts at every declaration and the name carries that
   // declaration, so neither spelling depends on the other module.
-  inspect(render_named(own, "__hoisted_lam_7_own_use_0_f") == whole4_named("__hoisted_lam_7_own_use_0_f"), content = "true")
-  inspect(render_named(dep, "__hoisted_lam_7_dep_use_0_f") == whole4_named("__hoisted_lam_7_dep_use_0_f"), content = "true")
+  inspect(render_named(stmts = own, name = "__hoisted_lam_7_own_use_0_f") == whole4_named("__hoisted_lam_7_own_use_0_f"), content = "true")
+  inspect(render_named(stmts = dep, name = "__hoisted_lam_7_dep_use_0_f") == whole4_named("__hoisted_lam_7_dep_use_0_f"), content = "true")
   inspect(whole4_named("__hoisted_lam_7_own_use_0_f"), content = "let __hoisted_lam_7_own_use_0_f = (a: Int) -> Int with OwnLog { { perform OwnLog::Emit(\"own\"); (a + 1) } }")
 }
 
 /// The top-level names this pass minted for hoisted lambdas, in program order.
-fn hoisted_names(stmts: Array[Stmt]) -> String {
+fn hoisted_names(_ stmts: Array[Stmt]) -> String {
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, n, _, _) => if String::starts_with(n, "__hoisted_lam_") {
-        Array::push(out, n)
+    match Array::get(stmts, at = i) {
+      SLet(_, _, n, _, _) => if String::starts_with(n, prefix = "__hoisted_lam_") {
+        Array::push(out, value = n)
       } else {
         ()
       },
@@ -279,7 +287,7 @@ fn hoisted_names(stmts: Array[Stmt]) -> String {
     }
     i = i + 1
   }
-  String::join(out, ", ")
+  String::join(out, sep = ", ")
 }
 
 // #2618 review (Codex P1): the owner key has to be INJECTIVE, or the collision
@@ -320,15 +328,15 @@ test "the owner, the counter and the local name join into one name unambiguously
 
 /// What every hoisted name in `stmts` decodes back to, in program order.
 /// `<none>` for a name the decoder refuses.
-fn hoisted_owners(stmts: Array[Stmt]) -> String {
+fn hoisted_owners(_ stmts: Array[Stmt]) -> String {
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, n, _, _) => if String::starts_with(n, "__hoisted_lam_") {
+    match Array::get(stmts, at = i) {
+      SLet(_, _, n, _, _) => if String::starts_with(n, prefix = "__hoisted_lam_") {
         match hoisted_lambda_owner_key(n) {
-          Some(owner) => Array::push(out, owner),
-          None => Array::push(out, "<none>")
+          Some(owner) => Array::push(out, value = owner),
+          None => Array::push(out, value = "<none>")
         }
       } else {
         ()
@@ -337,7 +345,7 @@ fn hoisted_owners(stmts: Array[Stmt]) -> String {
     }
     i = i + 1
   }
-  String::join(out, ", ")
+  String::join(out, sep = ", ")
 }
 
 // #2388: the name carries the owner so that a consumer which sees only the
@@ -360,7 +368,7 @@ test "the ambiguously joined names decode to the owners their lengths declare" {
 }
 
 /// `Some(owner)` rendered, or `<none>`.
-fn decoded(name: String) -> String {
+fn decoded(_ name: String) -> String {
   match hoisted_lambda_owner_key(name) {
     Some(owner) => owner,
     None => "<none>"
@@ -440,14 +448,14 @@ test "a hoisted name whose local half is not a source identifier decodes to noth
 /// The owner key each top-level statement would give a lambda hoisted out of
 /// it, in program order. Every statement answers: one with no name to be known
 /// by answers with its POSITION.
-fn owner_keys(stmts: Array[Stmt]) -> String {
+fn owner_keys(_ stmts: Array[Stmt]) -> String {
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    Array::push(out, hoisted_lambda_owner_of_stmt(Array::get(stmts, i), i))
+    Array::push(out, value = hoisted_lambda_owner_of_stmt(stmt = Array::get(stmts, at = i), idx = i))
     i = i + 1
   }
-  String::join(out, ", ")
+  String::join(out, sep = ", ")
 }
 
 // Codex P2 on #2623: a consumer that indexes definitions BY OWNER used to
@@ -517,16 +525,18 @@ fn invisible_probe(own_text: String, ctx_text: String) -> String with Exception 
   let own = parse_program(lex(own_text))
   let ctx = parse_program(lex(ctx_text))
   eq_invisible_nominals_reset()
-  let _ = desugar_trait_dicts_module(own, ctx, "", [], [])
-  String::join(eq_invisible_nominals_list(), ", ")
+  let _ = desugar_trait_dicts_module(own = own, ctx = ctx, module_tag = "", typed_eq_offsets = [
+  ], typed_eq_keys = [])
+  String::join(eq_invisible_nominals_list(), sep = ", ")
 }
 
 /// The comparator `desugar_trait_dicts_module` synthesized for `name`, rendered.
 fn module_comparator(own_text: String, ctx_text: String, name: String) -> String with Exception {
   let own = parse_program(lex(own_text))
   let ctx = parse_program(lex(ctx_text))
-  let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
-  render_named(synth, name)
+  let synth = desugar_trait_dicts_module(own = own, ctx = ctx, module_tag = "", typed_eq_offsets = [
+  ], typed_eq_keys = [])
+  render_named(stmts = synth, name = name)
 }
 
 // #2631: the body a module emits must NOT depend on how much of the field's
@@ -541,11 +551,11 @@ fn module_comparator(own_text: String, ctx_text: String, name: String) -> String
 test "the comparator a module synthesizes is the same whether or not it can see the field's type" {
   let owner = "struct P {\n  kind: K\n} derive (Eq)\n\nexport fn use_p(a: P, b: P) -> Bool {\n  a == b\n}\n"
   let kind_decl = "export enum K {\n  Ka;\n  Kb\n}\n"
-  let seen = module_comparator(owner, kind_decl, "P::equals")
-  let unseen = module_comparator(owner, "", "P::equals")
+  let seen = module_comparator(own_text = owner, ctx_text = kind_decl, name = "P::equals")
+  let unseen = module_comparator(own_text = owner, ctx_text = "", name = "P::equals")
   // Not merely equal: equal AND structural. Two raw `==` bodies would also be
   // equal, and would be the defect rather than its absence.
-  inspect(String::contains(seen, "K::equals("), content = "true")
+  inspect(String::contains(seen, needle = "K::equals("), content = "true")
   inspect(unseen == seen, content = "true")
 }
 
@@ -562,14 +572,14 @@ test "the comparator a module synthesizes is the same whether or not it can see 
 test "a generic instantiation the module cannot see is a reference, not a raw ==" {
   let owner = "struct Holder {\n  slot: Box[Int]\n} derive (Eq)\n\nexport fn use_h(a: Holder, b: Holder) -> Bool {\n  a == b\n}\n"
   let box_decl = "export struct Box[T] {\n  v: T\n} derive (Eq)\n"
-  let seen = module_comparator(owner, box_decl, "Holder::equals")
-  let unseen = module_comparator(owner, "", "Holder::equals")
+  let seen = module_comparator(own_text = owner, ctx_text = box_decl, name = "Holder::equals")
+  let unseen = module_comparator(own_text = owner, ctx_text = "", name = "Holder::equals")
   // Seen: the specialized comparator, generated in this module.
-  inspect(String::contains(seen, "Box::equals__"), content = "true")
+  inspect(String::contains(seen, needle = "Box::equals__"), content = "true")
   // Unseen: the SAME call, as a reference the link resolves -- not `a.slot ==
   // b.slot`, which would compare the box by identity.
-  inspect(String::contains(unseen, "Box::equals__"), content = "true")
-  inspect(String::contains(unseen, "a.slot == b.slot"), content = "false")
+  inspect(String::contains(unseen, needle = "Box::equals__"), content = "true")
+  inspect(String::contains(unseen, needle = "a.slot == b.slot"), content = "false")
 }
 
 test "a nominal the module cannot see is reported, and one it can see is not" {
@@ -577,18 +587,18 @@ test "a nominal the module cannot see is reported, and one it can see is not" {
   let kind_decl = "export enum K {\n  Ka;\n  Kb\n}\n"
   // The module sees only its own struct: `K` is a name it cannot resolve to a
   // declaration, so the comparator it synthesizes falls to the raw `==`.
-  inspect(invisible_probe(owner, ""), content = "K")
+  inspect(invisible_probe(own_text = owner, ctx_text = ""), content = "K")
   // The SAME module with `K`'s declaration in its context reports nothing --
   // so the report is about visibility and not about the struct, and a checker
   // that simply always reported would fail here.
-  inspect(invisible_probe(owner, kind_decl), content = "")
+  inspect(invisible_probe(own_text = owner, ctx_text = kind_decl), content = "")
   // A type FORMAL is not an invisible nominal: it has no declaration to be
   // invisible to, and refusing it would reject every bounded generic. This is
   // the control that keeps the predicate from degenerating into "not declared
   // here".
   let generic = "struct Holder[T] {\n  item: T\n} derive (Eq)\n"
-  inspect(invisible_probe(generic, ""), content = "")
+  inspect(invisible_probe(own_text = generic, ctx_text = ""), content = "")
   // And a scalar field never reports, whatever the context.
   let scalar = "struct S {\n  n: Int;\n  s: String\n} derive (Eq)\n"
-  inspect(invisible_probe(scalar, ""), content = "")
+  inspect(invisible_probe(own_text = scalar, ctx_text = ""), content = "")
 }

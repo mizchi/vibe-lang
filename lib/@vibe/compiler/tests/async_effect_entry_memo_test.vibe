@@ -27,10 +27,10 @@ fn sleep_fn() -> Expr {
 }
 
 fn user_sleep_env() -> TypeEnv {
-  env_bind(EnvEmpty, "sleep", CtFn([CtInt], CtInt, None))
+  env_bind(env = EnvEmpty, name = "sleep", ty = CtFn([CtInt], CtInt, None))
 }
 
-fn for_over(iterand: Expr) -> Expr {
+fn for_over(_ iterand: Expr) -> Expr {
   EForIn("x", None, iterand, EIdent("x", -1))
 }
 
@@ -38,7 +38,7 @@ fn holder_body() -> Expr {
   EFn(array_empty(), array_empty(), [("holder", Some(TyName("Holder")))], None, None, for_over(EDot(EIdent("holder", -1), "stream", -1, -1)))
 }
 
-fn holder_defs(rest: TypeEnv) -> TypeEnv {
+fn holder_defs(_ rest: TypeEnv) -> TypeEnv {
   EnvTypeDefs([
     TDStruct("Holder", [("stream", CtNamed("AsyncIter", [CtInt]))], [], []),
     TDStruct("AsyncIter", [], [], ["T"])
@@ -47,29 +47,29 @@ fn holder_defs(rest: TypeEnv) -> TypeEnv {
 
 fn builtin_async_iter_env() -> TypeEnv {
   let origin = BindingOriginModuleExport("/workspace/lib/@vibe/builtin/index.vpkg", "AsyncIter")
-  let source = EnvBind("AsyncIter", env_value_binding_with_origin(CtUnknown, origin), EnvEmpty)
-  env_preserve_type_definition_origins(holder_defs(EnvEmpty), source)
+  let source = EnvBind("AsyncIter", env_value_binding_with_origin(ty = CtUnknown, origin = origin), EnvEmpty)
+  env_preserve_type_definition_origins(env = holder_defs(EnvEmpty), source = source)
 }
 
-fn count(errors: Array[EffectError]) -> Int {
+fn count(_ errors: Array[EffectError]) -> Int {
   Array::length(errors)
 }
 
 test "an async-primitive answer does not outlive its entry (statements)" {
   let stmts = [STest("t", sleep_call())]
-  assert_eq(count(check_async_effects_stmts(stmts, user_sleep_env())), 0)
-  assert_true(count(check_async_effects_stmts(stmts, EnvEmpty)) > 0)
-  assert_eq(count(check_async_effects_stmts(stmts, user_sleep_env())), 0)
+  assert_eq(count(check_async_effects_stmts(stmts = stmts, env = user_sleep_env())), 0)
+  assert_true(count(check_async_effects_stmts(stmts = stmts, env = EnvEmpty)) > 0)
+  assert_eq(count(check_async_effects_stmts(stmts = stmts, env = user_sleep_env())), 0)
 }
 
 test "an async-primitive answer does not outlive its entry (expression and statement entries)" {
-  assert_true(count(check_async_effects_expr(sleep_call(), EnvEmpty, false)) > 0)
-  assert_eq(count(check_async_effects_expr(sleep_call(), user_sleep_env(), false)), 0)
-  assert_true(count(check_async_effects_expr(sleep_call(), EnvEmpty, false)) > 0)
+  assert_true(count(check_async_effects_expr(expr = sleep_call(), env = EnvEmpty, in_async = false)) > 0)
+  assert_eq(count(check_async_effects_expr(expr = sleep_call(), env = user_sleep_env(), in_async = false)), 0)
+  assert_true(count(check_async_effects_expr(expr = sleep_call(), env = EnvEmpty, in_async = false)) > 0)
   let stmt = SLet(false, false, "f", None, sleep_fn())
-  assert_eq(count(check_async_effects_stmt(stmt, user_sleep_env())), 0)
-  assert_true(count(check_async_effects_stmt(stmt, EnvEmpty)) > 0)
-  assert_eq(count(check_async_effects_stmt(stmt, user_sleep_env())), 0)
+  assert_eq(count(check_async_effects_stmt(stmt = stmt, env = user_sleep_env())), 0)
+  assert_true(count(check_async_effects_stmt(stmt = stmt, env = EnvEmpty)) > 0)
+  assert_eq(count(check_async_effects_stmt(stmt = stmt, env = user_sleep_env())), 0)
 }
 
 test "the same name is asked once per entry, not once per site" {
@@ -77,16 +77,16 @@ test "the same name is asked once per entry, not once per site" {
   // second, and both agree with the per-site answer.
   let two = EFn(array_empty(), array_empty(), array_empty(), None, None, ELet("a", sleep_call(), sleep_call(), -1))
   let stmts = [STest("t", two)]
-  assert_eq(count(check_async_effects_stmts(stmts, user_sleep_env())), 0)
-  assert_true(count(check_async_effects_stmts(stmts, EnvEmpty)) >= 2)
+  assert_eq(count(check_async_effects_stmts(stmts = stmts, env = user_sleep_env())), 0)
+  assert_true(count(check_async_effects_stmts(stmts = stmts, env = EnvEmpty)) >= 2)
 }
 
 test "the AsyncIter provenance answer does not outlive its entry" {
   let stmts = [STest("projected field", holder_body())]
-  assert_true(count(check_async_effects_stmts(stmts, builtin_async_iter_env())) > 0)
-  assert_eq(count(check_async_effects_stmts(stmts, holder_defs(EnvEmpty))), 0)
-  assert_true(count(check_async_effects_stmts(stmts, builtin_async_iter_env())) > 0)
-  assert_eq(count(check_async_effects_stmts(stmts, holder_defs(EnvEmpty))), 0)
+  assert_true(count(check_async_effects_stmts(stmts = stmts, env = builtin_async_iter_env())) > 0)
+  assert_eq(count(check_async_effects_stmts(stmts = stmts, env = holder_defs(EnvEmpty))), 0)
+  assert_true(count(check_async_effects_stmts(stmts = stmts, env = builtin_async_iter_env())) > 0)
+  assert_eq(count(check_async_effects_stmts(stmts = stmts, env = holder_defs(EnvEmpty))), 0)
 }
 
 // #2495 review: the field-type table is built at the very start of an entry,
@@ -114,30 +114,32 @@ fn holder_stmts() -> Array[Stmt] {
   ]
 }
 
-fn mk_env(rest: TypeEnv) -> TypeEnv {
-  env_bind(rest, "mk", CtFn([], CtNamed("Holder", []), None))
+fn mk_env(_ rest: TypeEnv) -> TypeEnv {
+  env_bind(env = rest, name = "mk", ty = CtFn([], CtNamed("Holder", []), None))
 }
 
 fn builtin_mk_env() -> TypeEnv {
   let origin = BindingOriginModuleExport("/workspace/lib/@vibe/builtin/index.vpkg", "AsyncIter")
-  let source = EnvBind("AsyncIter", env_value_binding_with_origin(CtUnknown, origin), EnvEmpty)
-  env_preserve_type_definition_origins(mk_env(holder_defs(EnvEmpty)), source)
+  let source = EnvBind("AsyncIter", env_value_binding_with_origin(ty = CtUnknown, origin = origin), EnvEmpty)
+  env_preserve_type_definition_origins(env = mk_env(holder_defs(EnvEmpty)), source = source)
 }
 
 test "a program declaring its own AsyncIter is synchronous right after a builtin-provenance entry" {
-  assert_true(count(check_async_effects_stmts([
+  assert_true(count(check_async_effects_stmts(stmts = [
     STest("projected field", holder_body())
-  ], builtin_async_iter_env())) > 0)
-  assert_eq(count(check_async_effects_stmts(holder_stmts(), EnvEmpty)), 0)
-  assert_eq(count(check_async_effects_stmts(holder_stmts(), EnvEmpty)), 0)
-  assert_true(count(check_async_effects_stmts([
+  ], env = builtin_async_iter_env())) > 0)
+  assert_eq(count(check_async_effects_stmts(stmts = holder_stmts(), env = EnvEmpty)), 0)
+  assert_eq(count(check_async_effects_stmts(stmts = holder_stmts(), env = EnvEmpty)), 0)
+  assert_true(count(check_async_effects_stmts(stmts = [
     STest("projected field", holder_body())
-  ], builtin_async_iter_env())) > 0)
+  ], env = builtin_async_iter_env())) > 0)
 }
 
 test "a call-result or let-bound projection is classified by its own entry's env" {
-  assert_true(count(check_async_effects_stmts([STest("call", call_body())], builtin_mk_env())) > 0)
-  assert_eq(count(check_async_effects_stmts([STest("call", call_body())], mk_env(holder_defs(EnvEmpty)))), 0)
-  assert_true(count(check_async_effects_stmts([STest("let", let_body())], builtin_mk_env())) > 0)
-  assert_eq(count(check_async_effects_stmts([STest("let", let_body())], mk_env(holder_defs(EnvEmpty)))), 0)
+  assert_true(count(check_async_effects_stmts(stmts = [
+    STest("call", call_body())
+  ], env = builtin_mk_env())) > 0)
+  assert_eq(count(check_async_effects_stmts(stmts = [STest("call", call_body())], env = mk_env(holder_defs(EnvEmpty)))), 0)
+  assert_true(count(check_async_effects_stmts(stmts = [STest("let", let_body())], env = builtin_mk_env())) > 0)
+  assert_eq(count(check_async_effects_stmts(stmts = [STest("let", let_body())], env = mk_env(holder_defs(EnvEmpty)))), 0)
 }

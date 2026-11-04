@@ -40,7 +40,7 @@ fn bytes_contains(hay: Bytes, needle: String) -> Bool {
       let mut ok = true
       let mut j = 0
       while j < nlen && ok {
-        ok = Bytes::get(hay, i + j) == String::char_code_at(needle, j)
+        ok = Bytes::get(hay, at = i + j) == String::char_code_at(needle, at = j)
         j = j + 1
       }
       if ok {
@@ -53,24 +53,24 @@ fn bytes_contains(hay: Bytes, needle: String) -> Bool {
   }
 }
 
-fn compile_assert_eq_main(body: String) -> Bytes with Exception {
-  compile_source_wasi(String::concat("let main: () -> Int with Console = () -> {\n  ", String::concat(body, "\n  0\n}")), "main")
+fn compile_assert_eq_main(_ body: String) -> Bytes with Exception {
+  compile_source_wasi(source = String::concat("let main: () -> Int with Console = () -> {\n  ", String::concat(body, "\n  0\n}")), entry_name = "main")
 }
 
-fn assert_compiled_eq_diag(bytes: Bytes) -> Unit {
-  assert(bytes_contains(bytes, "assert_eq failed"))
-  assert(bytes_contains(bytes, "expected:"))
-  assert(bytes_contains(bytes, "actual:"))
+fn assert_compiled_eq_diag(_ bytes: Bytes) -> Unit {
+  assert(bytes_contains(hay = bytes, needle = "assert_eq failed"))
+  assert(bytes_contains(hay = bytes, needle = "expected:"))
+  assert(bytes_contains(hay = bytes, needle = "actual:"))
 }
 
-fn capture_failing_assert_eq(body: String) -> String with Exception + Fs + Process {
+fn capture_failing_assert_eq(_ body: String) -> String with Exception + Fs + Process {
   let bytes = compile_assert_eq_main(body)
-  Fs::write_bytes("_build/vibe_test/assert_eq_fail_probe.wasm", bytes)
+  Fs::write_bytes("_build/vibe_test/assert_eq_fail_probe.wasm", bytes = bytes)
   let _ = sh("bash -c 'scripts/run_wasm_vibe_host_runner.sh _build/vibe_test/assert_eq_fail_probe.wasm >_build/vibe_test/assert_eq_fail_probe.err 2>&1 || true'")
   Fs::read_file("_build/vibe_test/assert_eq_fail_probe.err")
 }
 
-fn desugared_assert_eq_source(source: String) -> String with Exception {
+fn desugared_assert_eq_source(_ source: String) -> String with Exception {
   let stmts = parse_program(lex(source))
   desugar_trait_dicts(stmts)
   print_program(stmts)
@@ -95,48 +95,48 @@ test "assert_eq failure compiles expected and actual for a tuple" {
 }
 
 test "assert_eq failure compiles expected and actual for a Show struct" {
-  let bytes = compile_source_wasi("struct Point { x: Int; y: Int } derive(Eq, Show)\nlet main: () -> Int with Console = () -> {\n  assert_eq(Point::{ x: 1, y: 2 }, Point::{ x: 1, y: 9 })\n  0\n}", "main")
+  let bytes = compile_source_wasi(source = "struct Point { x: Int; y: Int } derive(Eq, Show)\nlet main: () -> Int with Console = () -> {\n  assert_eq(Point::{ x: 1, y: 2 }, Point::{ x: 1, y: 9 })\n  0\n}", entry_name = "main")
   assert_compiled_eq_diag(bytes)
 }
 
 test "assert_eq failure compiles a fallback for an unrenderable value" {
-  let bytes = compile_source_wasi("struct Opaque { n: Int } derive(Eq)\nlet main: () -> Int with Console = () -> {\n  assert_eq(Opaque::{ n: 1 }, Opaque::{ n: 2 })\n  0\n}", "main")
-  assert(bytes_contains(bytes, "assert_eq failed"))
-  assert(bytes_contains(bytes, "<unprintable>"))
+  let bytes = compile_source_wasi(source = "struct Opaque { n: Int } derive(Eq)\nlet main: () -> Int with Console = () -> {\n  assert_eq(Opaque::{ n: 1 }, Opaque::{ n: 2 })\n  0\n}", entry_name = "main")
+  assert(bytes_contains(hay = bytes, needle = "assert_eq failed"))
+  assert(bytes_contains(hay = bytes, needle = "<unprintable>"))
 }
 
 /// Same lowering, then execute it. `vibe test` keeps stderr and discards
 /// stdout, so the diagnostic has to land on stderr for `vt_fail_detail`.
 test "assert_eq lowering still compiles on the gc lane" {
-  let bytes = compile_source_gc_only("let main: () -> Int with Console = () -> {\n  assert_eq(1, 1)\n  0\n}", "main")
+  let bytes = compile_source_gc_only(source = "let main: () -> Int with Console = () -> {\n  assert_eq(1, 1)\n  0\n}", entry_name = "main")
   assert(Bytes::length(bytes) > 8)
 }
 
 test "#2287 review: a surface-only re-export alias preserves the local assert_eq blocker" {
   let out = desugared_assert_eq_source("export ./dep.vibe { cmp as assert_eq }\nfn valid() -> Unit { assert_eq(1, 2) }\n")
-  inspect(String::contains(out, "assert_eq failed"), content = "false")
+  inspect(String::contains(out, needle = "assert_eq failed"), content = "false")
 }
 
 test "#2287 review: a plain assert_eq re-export still suppresses builtin lowering" {
   let out = desugared_assert_eq_source("export ./dep.vibe { assert_eq }\nfn valid() -> Unit { assert_eq(1, 2) }\n")
-  inspect(String::contains(out, "assert_eq failed"), content = "false")
+  inspect(String::contains(out, needle = "assert_eq failed"), content = "false")
 }
 
 test "assert_eq failure prints expected and actual on stderr" {
   let err = capture_failing_assert_eq("assert_eq(1, 2)")
-  inspect(String::contains(err, "assert_eq failed"), "true")
-  inspect(String::contains(err, "expected: 2"), "true")
-  inspect(String::contains(err, "actual:   1"), "true")
+  inspect(String::contains(err, needle = "assert_eq failed"), "true")
+  inspect(String::contains(err, needle = "expected: 2"), "true")
+  inspect(String::contains(err, needle = "actual:   1"), "true")
 }
 
 test "#2202: a failing assert_eq report includes the call offset" {
   let err = capture_failing_assert_eq("assert_eq(1, 2)")
-  inspect(String::contains(err, "at off="), content = "true")
+  inspect(String::contains(err, needle = "at off="), content = "true")
 }
 
 test "#2266: a negative Int expected value is printed, not <unprintable>" {
   let err = capture_failing_assert_eq("assert_eq(\"abcde\", -999999)")
-  inspect(String::contains(err, "<unprintable>"), "false")
-  inspect(String::contains(err, "assert_eq failed"), "true")
-  inspect(String::contains(err, "abcde"), "true")
+  inspect(String::contains(err, needle = "<unprintable>"), "false")
+  inspect(String::contains(err, needle = "assert_eq failed"), "true")
+  inspect(String::contains(err, needle = "abcde"), "true")
 }

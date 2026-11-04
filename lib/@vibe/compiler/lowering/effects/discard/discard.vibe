@@ -32,11 +32,11 @@ import @vibe/compiler/lowering/effects/queries {
 /// EForIn is the residual builtin lowering this optimization targets.
 /// EHandle stays untouched (conservative -- its arms/body feed the Error
 /// handler codegen).
-fn fdp_has_forin(e: Expr) -> Bool {
-  edp_rq_fold(RQContainsForIn, e) > 0
+fn fdp_has_forin(_ e: Expr) -> Bool {
+  edp_rq_fold(q = RQContainsForIn, e = e) > 0
 }
 
-fn fdp_ret_is_unit(ret: Option[TypeExpr]) -> Bool {
+fn fdp_ret_is_unit(_ ret: Option[TypeExpr]) -> Bool {
   match ret {
     Some(TyUnit) => true,
     Some(TyName(n)) => n == "Unit",
@@ -51,7 +51,7 @@ fn fdp_expr(e: Expr, discard: Bool) -> Expr {
   if !fdp_has_forin(e) {
     e
   } else {
-    fdp_expr_rebuild(e, discard)
+    fdp_expr_rebuild(e = e, discard = discard)
   }
 }
 
@@ -69,27 +69,27 @@ fn fdp_spine(root: Expr, discard: Bool) -> Expr {
   while walking {
     match cur {
       ESeq(_, b) => {
-        Array::push(parts, cur)
+        Array::push(parts, value = cur)
         cur = b
       },
       ELet(_, _, b, _) => {
-        Array::push(parts, cur)
+        Array::push(parts, value = cur)
         cur = b
       },
       ELetRec(_, _, b) => {
-        Array::push(parts, cur)
+        Array::push(parts, value = cur)
         cur = b
       },
       ELetMut(_, _, b, _) => {
-        Array::push(parts, cur)
+        Array::push(parts, value = cur)
         cur = b
       },
       EAssign(_, _, b, _) => {
-        Array::push(parts, cur)
+        Array::push(parts, value = cur)
         cur = b
       },
       EAssignOp(_, _, _, b, _) => {
-        Array::push(parts, cur)
+        Array::push(parts, value = cur)
         cur = b
       },
       _ => {
@@ -97,16 +97,16 @@ fn fdp_spine(root: Expr, discard: Bool) -> Expr {
       }
     }
   }
-  let mut acc = fdp_expr(cur, discard)
+  let mut acc = fdp_expr(e = cur, discard = discard)
   let mut i = Array::length(parts) - 1
   while i >= 0 {
-    acc = match Array::get(parts, i) {
-      ESeq(a, _) => ESeq(fdp_expr(a, true), acc),
-      ELet(n, v, _, off) => ELet(n, fdp_expr(v, false), acc, off),
-      ELetRec(n, v, _) => ELetRec(n, fdp_expr(v, false), acc),
-      ELetMut(n, v, _, off) => ELetMut(n, fdp_expr(v, false), acc, off),
-      EAssign(n, v, _, target_off) => EAssign(n, fdp_expr(v, false), acc, target_off),
-      EAssignOp(n, op, v, _, target_off) => EAssignOp(n, op, fdp_expr(v, false), acc, target_off),
+    acc = match Array::get(parts, at = i) {
+      ESeq(a, _) => ESeq(fdp_expr(e = a, discard = true), acc),
+      ELet(n, v, _, off) => ELet(n, fdp_expr(e = v, discard = false), acc, off),
+      ELetRec(n, v, _) => ELetRec(n, fdp_expr(e = v, discard = false), acc),
+      ELetMut(n, v, _, off) => ELetMut(n, fdp_expr(e = v, discard = false), acc, off),
+      EAssign(n, v, _, target_off) => EAssign(n, fdp_expr(e = v, discard = false), acc, target_off),
+      EAssignOp(n, op, v, _, target_off) => EAssignOp(n, op, fdp_expr(e = v, discard = false), acc, target_off),
       _ => acc
     }
     i = i - 1
@@ -117,31 +117,31 @@ fn fdp_spine(root: Expr, discard: Bool) -> Expr {
 fn fdp_expr_rebuild(e: Expr, discard: Bool) -> Expr {
   match e {
     EForIn(nm, idx, it, b) => {
-      let it2 = fdp_expr(it, false)
+      let it2 = fdp_expr(e = it, discard = false)
       if discard {
         // The no-collect form drops the body value each iteration, so the
         // body tail is itself a discard position.
-        ESeq(EForIn(nm, idx, it2, fdp_expr(b, true)), EUnit)
+        ESeq(EForIn(nm, idx, it2, fdp_expr(e = b, discard = true)), EUnit)
       } else {
-        EForIn(nm, idx, it2, fdp_expr(b, false))
+        EForIn(nm, idx, it2, fdp_expr(e = b, discard = false))
       }
     },
-    ESeq(_, _) => fdp_spine(e, discard),
-    ELet(_, _, _, _) => fdp_spine(e, discard),
-    ELetRec(_, _, _) => fdp_spine(e, discard),
-    ELetMut(_, _, _, _) => fdp_spine(e, discard),
-    EAssign(_, _, _, _) => fdp_spine(e, discard),
-    EAssignOp(_, _, _, _, _) => fdp_spine(e, discard),
-    EIf(c, t, el) => EIf(fdp_expr(c, false), fdp_expr(t, discard), fdp_expr(el, discard)),
+    ESeq(_, _) => fdp_spine(root = e, discard = discard),
+    ELet(_, _, _, _) => fdp_spine(root = e, discard = discard),
+    ELetRec(_, _, _) => fdp_spine(root = e, discard = discard),
+    ELetMut(_, _, _, _) => fdp_spine(root = e, discard = discard),
+    EAssign(_, _, _, _) => fdp_spine(root = e, discard = discard),
+    EAssignOp(_, _, _, _, _) => fdp_spine(root = e, discard = discard),
+    EIf(c, t, el) => EIf(fdp_expr(e = c, discard = false), fdp_expr(e = t, discard = discard), fdp_expr(e = el, discard = discard)),
     EMatch(s, arms) => {
       let arms2: Array[(Pat, Expr)] = []
       let mut i = 0
       while i < Array::length(arms) {
-        let (p, ex) = Array::get(arms, i)
-        Array::push(arms2, (p, fdp_expr(ex, discard)))
+        let (p, ex) = Array::get(arms, at = i)
+        Array::push(arms2, value = (p, fdp_expr(e = ex, discard = discard)))
         i = i + 1
       }
-      EMatch(fdp_expr(s, false), arms2)
+      EMatch(fdp_expr(e = s, discard = false), arms2)
     },
     // #3043: a discarded handle discards each arm's value, which is only the
     // handle's result. The body's value is discarded too unless an arm can
@@ -151,50 +151,50 @@ fn fdp_expr_rebuild(e: Expr, discard: Bool) -> Expr {
       let mut resumes = false
       let mut i = 0
       while i < Array::length(harms) {
-        let (p, ex) = Array::get(harms, i)
-        if edp_rq_fold(RQIdentUses("resume"), ex) > 0 {
+        let (p, ex) = Array::get(harms, at = i)
+        if edp_rq_fold(q = RQIdentUses("resume"), e = ex) > 0 {
           resumes = true
         }
-        Array::push(harms2, (p, fdp_expr(ex, discard)))
+        Array::push(harms2, value = (p, fdp_expr(e = ex, discard = discard)))
         i = i + 1
       }
-      EHandle(fdp_expr(hb, discard && !resumes), harms2)
+      EHandle(fdp_expr(e = hb, discard = discard && !resumes), harms2)
     },
-    EWhile(c, b) => EWhile(fdp_expr(c, false), fdp_expr(b, true)),
+    EWhile(c, b) => EWhile(fdp_expr(e = c, discard = false), fdp_expr(e = b, discard = true)),
     ELoop(pairs, b) => {
       let pairs2: Array[(String, Expr)] = []
       let mut i = 0
       while i < Array::length(pairs) {
-        let (n, v) = Array::get(pairs, i)
-        Array::push(pairs2, (n, fdp_expr(v, false)))
+        let (n, v) = Array::get(pairs, at = i)
+        Array::push(pairs2, value = (n, fdp_expr(e = v, discard = false)))
         i = i + 1
       }
-      ELoop(pairs2, fdp_expr(b, false))
+      ELoop(pairs2, fdp_expr(e = b, discard = false))
     },
-    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, fdp_expr(b, fdp_ret_is_unit(ret))),
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, fdp_expr(e = b, discard = fdp_ret_is_unit(ret))),
     ECall(callee, args, off, callee_resolution) => {
       let args2: Array[Expr] = []
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(args2, fdp_expr(Array::get(args, i), false))
+        Array::push(args2, value = fdp_expr(e = Array::get(args, at = i), discard = false))
         i = i + 1
       }
-      ECall(fdp_expr(callee, false), args2, off, callee_resolution)
+      ECall(fdp_expr(e = callee, discard = false), args2, off, callee_resolution)
     },
-    EBinOp(op, l, r, boff) => EBinOp(op, fdp_expr(l, false), fdp_expr(r, false), boff),
-    EUnaryOp(op, x) => EUnaryOp(op, fdp_expr(x, false)),
-    EDot(o, f, a, b2) => EDot(fdp_expr(o, false), f, a, b2),
-    ELabeledArg(k, n, v) => ELabeledArg(k, n, fdp_expr(v, false)),
-    EReturn(x) => EReturn(fdp_expr(x, false)),
+    EBinOp(op, l, r, boff) => EBinOp(op, fdp_expr(e = l, discard = false), fdp_expr(e = r, discard = false), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, fdp_expr(e = x, discard = false)),
+    EDot(o, f, a, b2) => EDot(fdp_expr(e = o, discard = false), f, a, b2),
+    ELabeledArg(k, n, v) => ELabeledArg(k, n, fdp_expr(e = v, discard = false)),
+    EReturn(x) => EReturn(fdp_expr(e = x, discard = false)),
     EBreak(opt) => match opt {
-      Some(x) => EBreak(Some(fdp_expr(x, false))),
+      Some(x) => EBreak(Some(fdp_expr(e = x, discard = false))),
       None => e
     },
     EContinue(args) => {
       let args2: Array[Expr] = []
       let mut i = 0
       while i < Array::length(args) {
-        Array::push(args2, fdp_expr(Array::get(args, i), false))
+        Array::push(args2, value = fdp_expr(e = Array::get(args, at = i), discard = false))
         i = i + 1
       }
       EContinue(args2)
@@ -203,7 +203,7 @@ fn fdp_expr_rebuild(e: Expr, discard: Bool) -> Expr {
       let items2: Array[Expr] = []
       let mut i = 0
       while i < Array::length(items) {
-        Array::push(items2, fdp_expr(Array::get(items, i), false))
+        Array::push(items2, value = fdp_expr(e = Array::get(items, at = i), discard = false))
         i = i + 1
       }
       ETuple(items2)
@@ -212,7 +212,7 @@ fn fdp_expr_rebuild(e: Expr, discard: Bool) -> Expr {
       let items2: Array[Expr] = []
       let mut i = 0
       while i < Array::length(items) {
-        Array::push(items2, fdp_expr(Array::get(items, i), false))
+        Array::push(items2, value = fdp_expr(e = Array::get(items, at = i), discard = false))
         i = i + 1
       }
       EArray(items2)
@@ -221,8 +221,8 @@ fn fdp_expr_rebuild(e: Expr, discard: Bool) -> Expr {
       let fields2: Array[(String, Expr)] = []
       let mut i = 0
       while i < Array::length(fields) {
-        let (n, v) = Array::get(fields, i)
-        Array::push(fields2, (n, fdp_expr(v, false)))
+        let (n, v) = Array::get(fields, at = i)
+        Array::push(fields2, value = (n, fdp_expr(e = v, discard = false)))
         i = i + 1
       }
       ERecord(nm, fields2, targs)
@@ -231,43 +231,43 @@ fn fdp_expr_rebuild(e: Expr, discard: Bool) -> Expr {
       let fields2: Array[(String, Expr)] = []
       let mut i = 0
       while i < Array::length(fields) {
-        let (n, v) = Array::get(fields, i)
-        Array::push(fields2, (n, fdp_expr(v, false)))
+        let (n, v) = Array::get(fields, at = i)
+        Array::push(fields2, value = (n, fdp_expr(e = v, discard = false)))
         i = i + 1
       }
       EMap(fields2)
     },
-    ESpread(x) => ESpread(fdp_expr(x, false)),
+    ESpread(x) => ESpread(fdp_expr(e = x, discard = false)),
     _ => e
   }
 }
 
-export fn forin_discard_pass(stmts: Array[Stmt]) -> Unit {
+export fn forin_discard_pass(_ stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(ex, isrec, nm, ty, expr) => if fdp_has_forin(expr) {
-        Array::set(stmts, i, SLet(ex, isrec, nm, ty, fdp_expr(expr, false)))
+        Array::set(stmts, at = i, value = SLet(ex, isrec, nm, ty, fdp_expr(e = expr, discard = false)))
       } else {
         ()
       },
       SLetMut(nm, ty, expr) => if fdp_has_forin(expr) {
-        Array::set(stmts, i, SLetMut(nm, ty, fdp_expr(expr, false)))
+        Array::set(stmts, at = i, value = SLetMut(nm, ty, fdp_expr(e = expr, discard = false)))
       } else {
         ()
       },
       SExpr(expr) => if fdp_has_forin(expr) {
-        Array::set(stmts, i, SExpr(fdp_expr(expr, true)))
+        Array::set(stmts, at = i, value = SExpr(fdp_expr(e = expr, discard = true)))
       } else {
         ()
       },
       STest(tn, expr) => if fdp_has_forin(expr) {
-        Array::set(stmts, i, STest(tn, fdp_expr(expr, true)))
+        Array::set(stmts, at = i, value = STest(tn, fdp_expr(e = expr, discard = true)))
       } else {
         ()
       },
       SBench(bn, expr) => if fdp_has_forin(expr) {
-        Array::set(stmts, i, SBench(bn, fdp_expr(expr, true)))
+        Array::set(stmts, at = i, value = SBench(bn, fdp_expr(e = expr, discard = true)))
       } else {
         ()
       },

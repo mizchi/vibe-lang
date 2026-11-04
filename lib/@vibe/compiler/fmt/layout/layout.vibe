@@ -116,13 +116,13 @@ let decl_none = 0
 
 let decl_enum = 2
 
-fn container_indents(c: Int) -> Bool {
+fn container_indents(_ c: Int) -> Bool {
   c == c_brace_block || c == c_brace_record || c == c_brace_import_wrap ||
   c == c_brace_match || c == c_brace_enum || c == c_bracket_array ||
   c == c_brace_struct || c == c_brace_effects_broken
 }
 
-fn container_forces_list_newlines(c: Int) -> Bool {
+fn container_forces_list_newlines(_ c: Int) -> Bool {
   c == c_brace_record || c == c_brace_match || c == c_brace_import_wrap ||
   c == c_brace_enum || c == c_bracket_array || c == c_brace_struct ||
   c == c_brace_effects_broken
@@ -138,7 +138,7 @@ fn span_has_direct_comment(toks: Array[LTok], open_idx: Int, close_idx: Int) -> 
   let mut depth = 0
   let mut found = false
   while !found && i < close_idx {
-    let k = Array::get(toks, i).kind
+    let k = Array::get(toks, at = i).kind
     if k == k_lbrace || k == k_lparen || k == k_lbracket {
       depth = depth + 1
     } else if k == k_rbrace || k == k_rparen || k == k_rbracket {
@@ -155,7 +155,7 @@ fn span_has_direct_comment(toks: Array[LTok], open_idx: Int, close_idx: Int) -> 
 /// one may emit a newline — not the closer, not a separator, not a nested
 /// container — so every newline decision is suppressed while one is open
 /// (inline_depth in format_tokens).
-fn container_is_inline(c: Int) -> Bool {
+fn container_is_inline(_ c: Int) -> Bool {
   c == c_bracket_array_inline || c == c_brace_struct_inline
 }
 
@@ -170,7 +170,7 @@ fn import_list_width(toks: Array[LTok], open_idx: Int, close_idx: Int, base_col:
   let mut prev_kind = k_none
   let mut first_in_item = true
   while i < close_idx {
-    let k = Array::get(toks, i).kind
+    let k = Array::get(toks, at = i).kind
     if k == k_ws || k == k_newline || k == k_comment {
       i = i + 1
     } else if k == k_comma {
@@ -179,7 +179,7 @@ fn import_list_width(toks: Array[LTok], open_idx: Int, close_idx: Int, base_col:
       first_in_item = true
       i = i + 1
     } else {
-      let t = Array::get(toks, i).text
+      let t = Array::get(toks, at = i).text
       let need_sp = !first_in_item && prev_kind != k_double_colon && k != k_double_colon
       total = total + (if need_sp {
         1
@@ -195,18 +195,18 @@ fn import_list_width(toks: Array[LTok], open_idx: Int, close_idx: Int, base_col:
 }
 
 fn import_list_should_wrap(toks: Array[LTok], open_idx: Int, base_col: Int) -> Bool {
-  let close = find_matching_rbrace(toks, open_idx)
+  let close = find_matching_rbrace(toks = toks, start = open_idx)
   if close < 0 {
     false
   } else {
-    import_list_width(toks, open_idx, close, base_col) > max_import_list_width
+    import_list_width(toks = toks, open_idx = open_idx, close_idx = close, base_col = base_col) > max_import_list_width
   }
 }
 
 /// Rendered width of one token, close enough to drive a threshold (the exact
 /// rendering is still token_text_for_output's job). Quoted kinds pay for their
 /// delimiters; escapes inside them are not counted.
-fn approx_token_width(tok: LTok) -> Int {
+fn approx_token_width(_ tok: LTok) -> Int {
   let k = tok.kind
   if k == k_string || k == k_string_interp || k == k_char {
     String::length(tok.text) + 2
@@ -255,7 +255,7 @@ fn collection_fits_inline(toks: Array[LTok], open_idx: Int, close_idx: Int, base
     let mut prev_kind = k_none
     let mut ok = true
     while ok && i <= close_idx {
-      let tok = Array::get(toks, i)
+      let tok = Array::get(toks, at = i)
       let k = tok.kind
       if k == k_comment {
         ok = false
@@ -264,7 +264,7 @@ fn collection_fits_inline(toks: Array[LTok], open_idx: Int, close_idx: Int, base
       } else if k == k_string_interp && text_contains_newline(tok.text) {
         ok = false
       } else {
-        col = col + (if approx_needs_space(prev_kind, k) {
+        col = col + (if approx_needs_space(prev_kind = prev_kind, curr_kind = k) {
           1
         } else {
           0
@@ -281,7 +281,7 @@ fn collection_fits_inline(toks: Array[LTok], open_idx: Int, close_idx: Int, base
   }
 }
 
-fn trim_ascii_ws(text: String) -> String {
+fn trim_ascii_ws(_ text: String) -> String {
   let len = String::length(text)
   if len == 0 {
     ""
@@ -289,7 +289,7 @@ fn trim_ascii_ws(text: String) -> String {
     let mut start = 0
     let mut going = true
     while going && start < len {
-      let c = String::char_code_at(text, start)
+      let c = String::char_code_at(text, at = start)
       if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
         start = start + 1
       } else {
@@ -299,14 +299,14 @@ fn trim_ascii_ws(text: String) -> String {
     let mut end = len
     let mut g2 = true
     while g2 && end > start {
-      let c = String::char_code_at(text, end - 1)
+      let c = String::char_code_at(text, at = end - 1)
       if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
         end = end - 1
       } else {
         g2 = false
       }
     }
-    String::substring(text, start, end)
+    String::substring(text, start = start, end = end)
   }
 }
 
@@ -342,30 +342,30 @@ fn write_escaped_char(c: Int, for_char: Bool) -> String {
   }
 }
 
-fn quote_string_literal(text: String) -> String {
+fn quote_string_literal(_ text: String) -> String {
   // O(N) build via StringBuilder; per-char String::concat was O(L²) over the
   // string-literal length, paid when re-emitting every literal (issue #366).
   let out = StringBuilder::new()
-  StringBuilder::push(out, "\"")
+  StringBuilder::push(out, value = "\"")
   let n = String::length(text)
   let mut i = 0
   while i < n {
-    StringBuilder::push(out, write_escaped_char(String::char_code_at(text, i), false))
+    StringBuilder::push(out, value = write_escaped_char(c = String::char_code_at(text, at = i), for_char = false))
     i = i + 1
   }
-  StringBuilder::push(out, "\"")
+  StringBuilder::push(out, value = "\"")
   StringBuilder::freeze(out)
 }
 
-fn quote_char_literal(text: String) -> String {
+fn quote_char_literal(_ text: String) -> String {
   let mut out = "'"
   if String::length(text) > 0 {
-    out = String::concat(out, write_escaped_char(String::char_code_at(text, 0), true))
+    out = String::concat(out, write_escaped_char(c = String::char_code_at(text, at = 0), for_char = true))
   }
   String::concat(out, "'")
 }
 
-fn should_escape_identifier_text(text: String) -> Bool {
+fn should_escape_identifier_text(_ text: String) -> Bool {
   text == "let" || text == "import" || text == "declare" ||
   text == "test" || text == "if" || text == "else" || text == "match" ||
   text == "record" || text == "fn" || text == "rec" ||
@@ -398,7 +398,7 @@ fn token_text_for_output(tok: LTok, next_kind: Int) -> String {
   }
 }
 
-fn container_kind_for_brace(prev_kind: Int) -> Int {
+fn container_kind_for_brace(_ prev_kind: Int) -> Int {
   if prev_kind == k_record {
     c_brace_record
   }
@@ -423,7 +423,7 @@ fn should_force_newline_before(kind: Int, container_stack: Array[Int]) -> Bool {
   } else if Array::length(container_stack) == 0 {
     false
   } else {
-    container_indents(Array::get(container_stack, Array::length(container_stack) - 1))
+    container_indents(Array::get(container_stack, at = Array::length(container_stack) - 1))
   }
 }
 
@@ -437,10 +437,10 @@ fn is_line_leading_binary_minus(toks: Array[LTok], i: Int, kind: Int, line_has_c
   if kind != k_minus || line_has_content || i + 1 >= Array::length(toks) {
     false
   } else {
-    let after = Array::get(toks, i + 1).kind
-    let before = prev_non_trivia_index(toks, i)
+    let after = Array::get(toks, at = i + 1).kind
+    let before = prev_non_trivia_index(toks = toks, start = i)
     (after == k_ws || after == k_newline) && before >= 0 &&
-    is_index_receiver_kind(Array::get(toks, before).kind)
+    is_index_receiver_kind(Array::get(toks, at = before).kind)
   }
 }
 
@@ -540,7 +540,7 @@ fn needs_space(prev_prev_kind: Int, prev_kind: Int, curr_kind: Int, prev_prefix:
   }
 }
 
-fn spaces(n: Int) -> String {
+fn spaces(_ n: Int) -> String {
   let mut out = ""
   let mut i = 0
   while i < n {
@@ -550,13 +550,13 @@ fn spaces(n: Int) -> String {
   out
 }
 
-fn arr_pop_int(arr: Array[Int]) -> Int {
+fn arr_pop_int(_ arr: Array[Int]) -> Int {
   let n = Array::length(arr)
   if n == 0 {
     -1
   } else {
-    let v = Array::get(arr, n - 1)
-    Array::truncate(arr, n - 1)
+    let v = Array::get(arr, at = n - 1)
+    Array::truncate(arr, length = n - 1)
     v
   }
 }
@@ -601,7 +601,7 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
   let mut i = 0
   let n = Array::length(toks)
   while i < n {
-    let tok = Array::get(toks, i)
+    let tok = Array::get(toks, at = i)
     let kind = tok.kind
     if kind == k_ws {
       i = i + 1
@@ -613,7 +613,7 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
       if pending_newlines > 0 {
         let mut j = 0
         while j < pending_newlines {
-          Array::push(out, "\n")
+          Array::push(out, value = "\n")
           j = j + 1
         }
         pending_newlines = 0
@@ -622,11 +622,11 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         } else {
           indent * indent_size
         }
-        Array::push(out, spaces(pad))
+        Array::push(out, value = spaces(pad))
         cur_col = pad
         line_has_content = false
       }
-      Array::push(out, comment_text)
+      Array::push(out, value = comment_text)
       cur_col = cur_col + String::length(comment_text)
       line_has_content = true
       prev_prev_kind = k_none
@@ -637,7 +637,7 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
       prev_pipe = false
       path_active = false
       prev_line_comment = String::length(comment_text) >= 2 &&
-      String::char_code_at(comment_text, 0) == '/' && String::char_code_at(comment_text, 1) == '/'
+      String::char_code_at(comment_text, at = 0) == '/' && String::char_code_at(comment_text, at = 1) == '/'
       i = i + 1
     } else if kind == k_newline {
       saw_newline = true
@@ -653,11 +653,11 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         prev_line_comment = false
         i = i + 1
       } else {
-        let next_kind = next_non_trivia_kind(toks, i)
+        let next_kind = next_non_trivia_kind(toks = toks, start = i)
         let collapse_generic_break =
         (prev_kind == k_impl || prev_kind == k_eq) && next_kind == k_lbracket
         let in_effects_brace = Array::length(container_stack) > 0 &&
-        Array::get(container_stack, Array::length(container_stack) - 1) == c_brace_effects
+        Array::get(container_stack, at = Array::length(container_stack) - 1) == c_brace_effects
         // A newline directly inside a brace BLOCK (one statement per source
         // line) is significant even when that block sits inside an enclosing
         // call's parens (`run(() -> {`) or an array/bracket literal -- only a
@@ -670,12 +670,12 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         // brace block nested in an outer call's argument list, collapsing the
         // whole block onto one line.
         let base_paren = if Array::length(cpb_stack) > 0 {
-          Array::get(cpb_stack, Array::length(cpb_stack) - 1)
+          Array::get(cpb_stack, at = Array::length(cpb_stack) - 1)
         } else {
           0
         }
         let base_bracket = if Array::length(cpb_bracket_stack) > 0 {
-          Array::get(cpb_bracket_stack, Array::length(cpb_bracket_stack) - 1)
+          Array::get(cpb_bracket_stack, at = Array::length(cpb_bracket_stack) - 1)
         } else {
           0
         }
@@ -698,9 +698,9 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
       i = i + 1
     } else {
       if kind == k_match {
-        Array::push(pm_paren, paren_depth)
-        Array::push(pm_brace, brace_depth)
-        Array::push(pm_bracket, bracket_depth)
+        Array::push(pm_paren, value = paren_depth)
+        Array::push(pm_brace, value = brace_depth)
+        Array::push(pm_bracket, value = bracket_depth)
       }
       if saw_newline && paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 &&
       is_statement_start(kind) {
@@ -709,14 +709,14 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
       }
       saw_newline = false
       if pending_newlines == 0 && inline_depth == 0 &&
-      should_force_newline_before(kind, container_stack) {
+      should_force_newline_before(kind = kind, container_stack = container_stack) {
         pending_newlines = 1
       }
       let mut dedented_before = false
       if pending_newlines > 0 {
         if kind == k_rbrace || kind == k_rbracket {
           if Array::length(container_stack) > 0 {
-            let container = Array::get(container_stack, Array::length(container_stack) - 1)
+            let container = Array::get(container_stack, at = Array::length(container_stack) - 1)
             if container_indents(container) && indent > 0 {
               indent = indent - 1
               dedented_before = true
@@ -725,7 +725,7 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         }
         let mut j = 0
         while j < pending_newlines {
-          Array::push(out, "\n")
+          Array::push(out, value = "\n")
           j = j + 1
         }
         pending_newlines = 0
@@ -734,7 +734,7 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         } else {
           indent * indent_size
         }
-        Array::push(out, spaces(pad))
+        Array::push(out, value = spaces(pad))
         cur_col = pad
         prev_prev_kind = k_none
         prev_prev_text = ""
@@ -745,15 +745,15 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         path_active = false
         line_has_content = false
       }
-      let next_kind = next_non_trivia_kind(toks, i)
+      let next_kind = next_non_trivia_kind(toks = toks, start = i)
       let curr_pipe = kind == k_pipe && next_kind == k_gt
       let in_enum_container = Array::length(container_stack) > 0 &&
-      Array::get(container_stack, Array::length(container_stack) - 1) == c_brace_enum
+      Array::get(container_stack, at = Array::length(container_stack) - 1) == c_brace_enum
       let enum_top_level = in_enum_container && Array::length(cpb_stack) > 0 &&
-      paren_depth == Array::get(cpb_stack, Array::length(cpb_stack) - 1)
+      paren_depth == Array::get(cpb_stack, at = Array::length(cpb_stack) - 1)
       let in_broken_effects = Array::length(container_stack) > 0 &&
-      Array::get(container_stack, Array::length(container_stack) - 1) == c_brace_effects_broken &&
-      Array::length(cpb_stack) > 0 && paren_depth == Array::get(cpb_stack, Array::length(cpb_stack) - 1)
+      Array::get(container_stack, at = Array::length(container_stack) - 1) == c_brace_effects_broken &&
+      Array::length(cpb_stack) > 0 && paren_depth == Array::get(cpb_stack, at = Array::length(cpb_stack) - 1)
       let rendered_text = if kind == k_comma && enum_top_level {
         ";"
       } else if kind == k_semicolon && in_broken_effects && next_kind == k_rbrace {
@@ -761,15 +761,15 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         // a `;` with only comments between it and `}` separates nothing.
         ""
       } else {
-        token_text_for_output(tok, next_kind)
+        token_text_for_output(tok = tok, next_kind = next_kind)
       }
       if String::length(rendered_text) == 0 {
         i = i + 1
       } else {
-        let curr_prefix = !is_line_leading_binary_minus(toks, i, kind, line_has_content) &&
-        is_prefix_op(kind, prev_kind)
+        let curr_prefix = !is_line_leading_binary_minus(toks = toks, i = i, kind = kind, line_has_content = line_has_content) &&
+        is_prefix_op(kind = kind, prev_kind = prev_kind)
         let closing_container = if kind == k_rbrace && Array::length(container_stack) > 0 {
-          Array::get(container_stack, Array::length(container_stack) - 1)
+          Array::get(container_stack, at = Array::length(container_stack) - 1)
         } else {
           -1
         }
@@ -786,11 +786,11 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         // now-single-line brace as inline and put the space back.
         let inline_rbrace = kind == k_rbrace && inline_depth > 0 && prev_kind != k_lbrace
         if line_has_content &&
-        (effects_rbrace || inline_rbrace || needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe, path_active)) {
-          Array::push(out, " ")
+        (effects_rbrace || inline_rbrace || needs_space(prev_prev_kind = prev_prev_kind, prev_kind = prev_kind, curr_kind = kind, prev_prefix = prev_prefix, prev_pipe = prev_pipe, path_active = path_active)) {
+          Array::push(out, value = " ")
           cur_col = cur_col + 1
         }
-        Array::push(out, rendered_text)
+        Array::push(out, value = rendered_text)
         cur_col = cur_col + String::length(rendered_text)
         line_has_content = true
         if kind == k_enum {
@@ -812,9 +812,9 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
             // statement blocks. Short ones stay on the line they start on;
             // once broken, one field per line (c_brace_struct), instead of
             // today's "break the braces, then pack the fields".
-            let struct_close = find_matching_rbrace(toks, i)
-            let struct_container = if !span_has_newline(toks, i, struct_close) &&
-            collection_fits_inline(toks, i, struct_close, cur_col + 1) {
+            let struct_close = find_matching_rbrace(toks = toks, start = i)
+            let struct_container = if !span_has_newline(toks = toks, open_idx = i, close_idx = struct_close) &&
+            collection_fits_inline(toks = toks, open_idx = i, close_idx = struct_close, base_col = cur_col + 1) {
               c_brace_struct_inline
             } else {
               c_brace_struct
@@ -822,7 +822,7 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
             let container = if type_decl_header == decl_enum {
               c_brace_enum
             } else if is_effects_brace {
-              if span_has_direct_comment(toks, i, find_matching_rbrace(toks, i)) {
+              if span_has_direct_comment(toks = toks, open_idx = i, close_idx = find_matching_rbrace(toks = toks, start = i)) {
                 c_brace_effects_broken
               } else {
                 c_brace_effects
@@ -834,9 +834,9 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
               let pml = Array::length(pm_paren)
               let is_mb = if pml == 0 {
                 false
-              } else if paren_depth != Array::get(pm_paren, pml - 1) ||
-              brace_depth != Array::get(pm_brace, pml - 1) ||
-              bracket_depth != Array::get(pm_bracket, pml - 1) {
+              } else if paren_depth != Array::get(pm_paren, at = pml - 1) ||
+              brace_depth != Array::get(pm_brace, at = pml - 1) ||
+              bracket_depth != Array::get(pm_bracket, at = pml - 1) {
                 false
               } else {
                 prev_kind != k_match && prev_kind != k_record &&
@@ -850,8 +850,8 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
               } else if prev_kind == k_double_colon {
                 // `Name::{ .. }` — a struct literal, never a block.
                 struct_container
-              } else if brace_starts_import_list(toks, i) &&
-              import_list_should_wrap(toks, i, (indent + 1) * indent_size) {
+              } else if brace_starts_import_list(toks = toks, open_idx = i) &&
+              import_list_should_wrap(toks = toks, open_idx = i, base_col = (indent + 1) * indent_size) {
                 c_brace_import_wrap
               } else {
                 container_kind_for_brace(prev_kind)
@@ -862,9 +862,9 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
               type_decl_header = decl_none
             }
             struct_header = false
-            Array::push(container_stack, container)
-            Array::push(cpb_stack, paren_depth)
-            Array::push(cpb_bracket_stack, bracket_depth)
+            Array::push(container_stack, value = container)
+            Array::push(cpb_stack, value = paren_depth)
+            Array::push(cpb_bracket_stack, value = bracket_depth)
             if container_is_inline(container) {
               inline_depth = inline_depth + 1
             }
@@ -875,20 +875,20 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
               }
             }
           } else {
-            let generic_hint = prev_kind == k_impl || is_generic_param_bracket(toks, i)
-            let raw_container = container_kind_for_bracket(prev_kind, generic_hint)
+            let generic_hint = prev_kind == k_impl || is_generic_param_bracket(toks = toks, start = i)
+            let raw_container = container_kind_for_bracket(prev_kind = prev_kind, generic_hint = generic_hint)
             // #2103: an array literal that fits on the line it starts on is
             // written there — `[1, 2, 3]`, `[]` — instead of one element per
             // line unconditionally.
             let container = if raw_container == c_bracket_array &&
-            collection_fits_inline(toks, i, find_matching_rbracket(toks, i), cur_col) {
+            collection_fits_inline(toks = toks, open_idx = i, close_idx = find_matching_rbracket(toks = toks, start = i), base_col = cur_col) {
               c_bracket_array_inline
             } else {
               raw_container
             }
-            Array::push(container_stack, container)
-            Array::push(cpb_stack, paren_depth)
-            Array::push(cpb_bracket_stack, bracket_depth)
+            Array::push(container_stack, value = container)
+            Array::push(cpb_stack, value = paren_depth)
+            Array::push(cpb_bracket_stack, value = bracket_depth)
             bracket_depth = bracket_depth + 1
             if container_is_inline(container) {
               inline_depth = inline_depth + 1
@@ -908,7 +908,7 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
             bracket_depth = bracket_depth - 1
           }
           if Array::length(container_stack) > 0 {
-            let container = Array::get(container_stack, Array::length(container_stack) - 1)
+            let container = Array::get(container_stack, at = Array::length(container_stack) - 1)
             if container_indents(container) && !dedented_before && indent > 0 {
               indent = indent - 1
             }
@@ -927,8 +927,8 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
           }
         } else if kind == k_comma || kind == k_semicolon {
           if inline_depth == 0 && Array::length(container_stack) > 0 && Array::length(cpb_stack) > 0 &&
-          container_forces_list_newlines(Array::get(container_stack, Array::length(container_stack) - 1)) &&
-          paren_depth == Array::get(cpb_stack, Array::length(cpb_stack) - 1) &&
+          container_forces_list_newlines(Array::get(container_stack, at = Array::length(container_stack) - 1)) &&
+          paren_depth == Array::get(cpb_stack, at = Array::length(cpb_stack) - 1) &&
           pending_newlines == 0 {
             pending_newlines = 1
           }
@@ -961,9 +961,9 @@ export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
   if pending_newlines > 0 {
     let mut j = 0
     while j < pending_newlines {
-      Array::push(out, "\n")
+      Array::push(out, value = "\n")
       j = j + 1
     }
   }
-  String::join(out, "")
+  String::join(out, sep = "")
 }

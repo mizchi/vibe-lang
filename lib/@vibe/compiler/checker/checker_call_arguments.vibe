@@ -28,7 +28,7 @@ let labeled_value_marker: String = "#call.labeled.value"
 
 /// Shape inspection may unwrap a label; recursive checking still enters its
 /// source wrapper so occurrence paths retain that structural child.
-export fn checker_call_argument_value(arg: Expr) -> Expr {
+export fn checker_call_argument_value(_ arg: Expr) -> Expr {
   match arg {
     ELabeledArg(_, _, value) => value,
     _ => arg
@@ -48,12 +48,12 @@ export fn checker_call_argument_env(arg: Expr, env: TypeEnv, cell: Array[Int]) -
         if (binding.ty == CtUnit) == known {
           env
         } else {
-          labeled_value_env(rest, known)
+          labeled_value_env(rest = rest, known = known)
         }
       } else {
-        labeled_value_env(env, known)
+        labeled_value_env(rest = env, known = known)
       },
-      _ => labeled_value_env(env, known)
+      _ => labeled_value_env(rest = env, known = known)
     }
   } else {
     env
@@ -70,7 +70,7 @@ fn labeled_value_env(rest: TypeEnv, known: Bool) -> TypeEnv {
 
 /// Pop the call-local wrapper context without walking or changing its value's
 /// lexical environment. Unresolved value calls retain legacy Unknown typing.
-export fn checker_labeled_argument_context(env: TypeEnv) -> (Bool, TypeEnv) {
+export fn checker_labeled_argument_context(_ env: TypeEnv) -> (Bool, TypeEnv) {
   match env {
     EnvBind(name, binding, rest) => if name == labeled_value_marker {
       (binding.ty == CtUnit, rest)
@@ -85,7 +85,7 @@ fn written_formal_slot(slots: Array[Int], written: Int) -> Int {
   let mut result = -1
   let mut i = 0
   while i < Array::length(slots) && result < 0 {
-    let code = Array::get(slots, i)
+    let code = Array::get(slots, at = i)
     if code >= 2 && code / 2 - 1 == written {
       result = i
     } else {
@@ -103,7 +103,7 @@ fn call_args_have_callback(_ args: Array[Expr]) -> Bool {
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(args) {
-    found = checker_call_argument_value(Array::get(args, i)) is EFn(_, _, _, _, _, _)
+    found = checker_call_argument_value(Array::get(args, at = i)) is EFn(_, _, _, _, _, _)
     i = i + 1
   }
   found
@@ -118,8 +118,8 @@ fn call_argument_visit_order(args: Array[Expr], slots: Array[Int]) -> Option[Arr
     let order: Array[Int] = []
     let mut i = 0
     while i < Array::length(args) {
-      if !(checker_call_argument_value(Array::get(args, i)) is EFn(_, _, _, _, _, _)) {
-        Array::push(order, i)
+      if !(checker_call_argument_value(Array::get(args, at = i)) is EFn(_, _, _, _, _, _)) {
+        Array::push(order, value = i)
       } else {
         ()
       }
@@ -128,8 +128,8 @@ fn call_argument_visit_order(args: Array[Expr], slots: Array[Int]) -> Option[Arr
     for code in slots {
       if code >= 2 {
         let source = code / 2 - 1
-        if checker_call_argument_value(Array::get(args, source)) is EFn(_, _, _, _, _, _) {
-          Array::push(order, source)
+        if checker_call_argument_value(Array::get(args, at = source)) is EFn(_, _, _, _, _, _) {
+          Array::push(order, value = source)
         } else {
           ()
         }
@@ -150,10 +150,10 @@ fn call_argument_capture_cursor(capture: Option[TypedOccurrenceRoleLaneCapture],
   match capture {
     Some(c) => if c.provenance_enabled && c.frame_depth > 0 {
       let parent = c.frame_depth - 1
-      let previous = Array::get(c.frame_next_children, parent)
+      let previous = Array::get(c.frame_next_children, at = parent)
       if next >= 0 {
-        if next <= Array::get(c.frame_expected_children, parent) {
-          Array::set(c.frame_next_children, parent, next)
+        if next <= Array::get(c.frame_expected_children, at = parent) {
+          Array::set(c.frame_next_children, at = parent, value = next)
         } else {
           c.complete = false
         }
@@ -176,12 +176,12 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
   // An identity placement with no literal callback is a positional call, so
   // it takes that path without copying the payload. A callback keeps the plan:
   // its visit order checks callbacks after the value arguments after them.
-  let plan = if call_placement_is_pending(cell) && !(call_placement_is_identity(cell, Array::length(args)) && !call_args_have_callback(args)) {
+  let plan = if call_placement_is_pending(cell) && !(call_placement_is_identity(cell = cell, written = Array::length(args)) && !call_args_have_callback(args)) {
     match call_placement_get(cell) {
       Some((written, mode, slots)) => if mode != 0 {
         None
-      } else if written != Array::length(args) || !call_placement_payload_valid(written, mode, slots) {
-        Array::push(errors, call_placement_error(cell, EIdent(name, -1), -1)); None
+      } else if written != Array::length(args) || !call_placement_payload_valid(written = written, mode = mode, slots = slots) {
+        Array::push(errors, value = call_placement_error(cell = cell, callee = EIdent(name, -1), offset = -1)); None
       } else {
         Some(slots)
       },
@@ -210,9 +210,9 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
     Some(slots) => {
       let mut pi = 0
       while pi < Array::length(slots) {
-        if Array::get(slots, pi) == 0 {
+        if Array::get(slots, at = pi) == 0 {
           let (payload, next) = fresh_var(c2)
-          Array::set(arg_tys, pi, CtOption(payload))
+          Array::set(arg_tys, at = pi, value = CtOption(payload))
           c2 = next
         } else {
           ()
@@ -224,36 +224,36 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
   }
   let known = call_placement_mode(cell) == 0
   let order = match plan {
-    Some(slots) => call_argument_visit_order(args, slots),
+    Some(slots) => call_argument_visit_order(args = args, slots = slots),
     None => None
   }
   let capture_base = match order {
-    Some(_) => call_argument_capture_cursor(capture, -1),
+    Some(_) => call_argument_capture_cursor(capture = capture, next = -1),
     None => -1
   }
   let mut ai = 0
   while ai < Array::length(args) {
     let source_index = match order {
-      Some(indices) => Array::get(indices, ai),
+      Some(indices) => Array::get(indices, at = ai),
       None => ai
     }
-    let source_arg = Array::get(args, source_index)
+    let source_arg = Array::get(args, at = source_index)
     let arg = if known {
       checker_call_argument_value(source_arg)
     } else {
       source_arg
     }
     let slot = match plan {
-      Some(slots) => written_formal_slot(slots, source_index),
+      Some(slots) => written_formal_slot(slots = slots, written = source_index),
       None => ai
     }
     let original_expected = if slot >= 0 && slot < Array::length(param_tys) {
-      Array::get(param_tys, slot)
+      Array::get(param_tys, at = slot)
     } else {
       CtUnknown
     }
     let wrap = match plan {
-      Some(slots) => slot >= 0 && Array::get(slots, slot) % 2 == 1,
+      Some(slots) => slot >= 0 && Array::get(slots, at = slot) % 2 == 1,
       None => false
     }
     let expected = if wrap {
@@ -271,8 +271,8 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
         if deferred {
           let mut j = 0
           while j < slot {
-            Array::push(out, if j < Array::length(param_tys) {
-              Array::get(param_tys, j)
+            Array::push(out, value = if j < Array::length(param_tys) {
+              Array::get(param_tys, at = j)
             } else {
               CtUnknown
             })
@@ -280,37 +280,37 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
           }
         } else {
           for previous in seen_params {
-            Array::push(out, previous)
+            Array::push(out, value = previous)
           }; ()
         }
-        Array::push(out, expected); out
+        Array::push(out, value = expected); out
       },
       None => param_tys
     }
     let prefix_types = match plan {
       Some(_) => if deferred {
-        Array::slice(arg_tys, 0, slot)
+        Array::slice(arg_tys, start = 0, end = slot)
       } else {
         seen_types
       },
       None => arg_tys
     }
-    let arg_s = callback_prefix_subst(arg, prefix_params, prefix_types, s2, callee_inst)
+    let arg_s = callback_prefix_subst(arg = arg, param_tys = prefix_params, arg_tys = prefix_types, s = s2, callee = callee_inst)
     let arg_env = if slot >= 0 && slot < Array::length(param_tys) {
-      callback_arg_env(env, arg, expected, arg_s, callee_inst, defs)
+      callback_arg_env(env = env, arg = arg, param_ty = expected, s = arg_s, callee = callee_inst, defs = defs)
     } else {
       env
     }
-    seed_lambda_arg_from_call(arg, prefix_params, prefix_types, arg_s)
+    seed_lambda_arg_from_call(arg = arg, param_tys = prefix_params, arg_tys = prefix_types, s = arg_s)
     let saved_child = if capture_base >= 0 {
-      call_argument_capture_cursor(capture, capture_base + source_index)
+      call_argument_capture_cursor(capture = capture, next = capture_base + source_index)
     } else {
       -1
     }
-    let source_env = checker_call_argument_env(source_arg, arg_env, cell)
+    let source_env = checker_call_argument_env(arg = source_arg, env = arg_env, cell = cell)
     let (at, ns, nc) = check_child(source_arg, source_env, defs, arg_s, c2, errors, tytab, capture, lane)
     if saved_child >= 0 {
-      let _ = call_argument_capture_cursor(capture, saved_child); ()
+      let _ = call_argument_capture_cursor(capture = capture, next = saved_child); ()
     } else {
       ()
     }
@@ -321,7 +321,7 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
     }
     let logical_expr = match plan {
       Some(_) => if slot >= 0 {
-        Array::get(formal_args, slot)
+        Array::get(formal_args, at = slot)
       } else {
         arg
       },
@@ -332,18 +332,18 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
     match plan {
       Some(_) => {
         if slot >= 0 {
-          Array::set(arg_tys, slot, logical)
+          Array::set(arg_tys, at = slot, value = logical)
         } else {
           ()
         }
-        Array::push(seen_params, original_expected)
-        Array::push(seen_types, logical)
+        Array::push(seen_params, value = original_expected)
+        Array::push(seen_types, value = logical)
       },
-      None => Array::push(arg_tys, at)
+      None => Array::push(arg_tys, value = at)
     }
     s2 = if slot >= 0 && slot < Array::length(param_tys) {
-      let ns_inst = effect_inst_arg_check(env, logical_expr, logical, original_expected, ns, callee_inst, name, defs, errors)
-      refine_trait_bounds_from_receiver(env, ns_inst, original_expected, logical)
+      let ns_inst = effect_inst_arg_check(env = env, arg = logical_expr, arg_ty = logical, param_ty = original_expected, s = ns, callee = callee_inst, callee_name = name, defs = defs, errors = errors)
+      refine_trait_bounds_from_receiver(env = env, s = ns_inst, param = original_expected, receiver = logical)
     } else {
       ns
     }
@@ -351,7 +351,7 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
     ai = ai + 1
   }
   if capture_base >= 0 {
-    let _ = call_argument_capture_cursor(capture, capture_base + Array::length(args)); ()
+    let _ = call_argument_capture_cursor(capture = capture, next = capture_base + Array::length(args)); ()
   } else {
     ()
   }
@@ -359,8 +359,8 @@ export fn check_written_call_arguments(args: Array[Expr], formal_args: Array[Exp
 }
 
 /// Preserve source positions independently of the logical formal-order view.
-export fn checker_call_argument_positions(cell: Array[Int]) -> Option[(Array[Int], Int)] {
-  if call_placement_is_pending(cell) && !call_placement_is_identity(cell, Array::length(cell) - 5) {
+export fn checker_call_argument_positions(_ cell: Array[Int]) -> Option[(Array[Int], Int)] {
+  if call_placement_is_pending(cell) && !call_placement_is_identity(cell = cell, written = Array::length(cell) - 5) {
     match call_placement_get(cell) {
       Some((written, mode, slots)) => if mode == 0 {
         Some((slots, written))

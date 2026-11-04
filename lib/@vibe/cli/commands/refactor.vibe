@@ -28,7 +28,7 @@ import @vibe/parser {
   lex_with_offsets, parse_program_located
 }
 
-fn refactor_byte_offset(text: String) -> Int with Exception {
+fn refactor_byte_offset(_ text: String) -> Int with Exception {
   if String::length(text) == 0 {
     throw("refactor: offsets must be nonnegative decimal byte offsets")
   } else {
@@ -48,7 +48,7 @@ fn refactor_byte_offset(text: String) -> Int with Exception {
   value
 }
 
-fn refactor_first_line(message: String) -> String {
+fn refactor_first_line(_ message: String) -> String {
   let cut = String::index_of(message, needle = "\n")
   if cut < 0 {
     message
@@ -64,7 +64,7 @@ fn refactor_first_line(message: String) -> String {
 /// default prints one `path:line:col: callee +N` row per call it would edit and
 /// a summary; `--write` rewrites the files. A file that does not check is named
 /// and left alone, and so is a file whose edit would not check.
-fn refactor_add_labels(args: Array[String]) -> Int with Env + Exception + Fs + Console {
+fn refactor_add_labels(_ args: Array[String]) -> Int with Env + Exception + Fs + Console {
   let usage = "usage: vibe refactor add-labels [--write] [--positional=none|receiver|receiver+single] <path>..."
   let mut write = false
   let mut policy = add_labels_positional_receiver_single
@@ -75,7 +75,7 @@ fn refactor_add_labels(args: Array[String]) -> Int with Env + Exception + Fs + C
     if arg == "--write" {
       write = true
     } else if String::starts_with(arg, prefix = "--positional=") {
-      match add_labels_policy_named(name = arg[13: String::length(arg)]) {
+      match add_labels_policy_named(arg[13: String::length(arg)]) {
         Some(p) => policy = p,
         None => throw(usage)
       }
@@ -94,7 +94,7 @@ fn refactor_add_labels(args: Array[String]) -> Int with Env + Exception + Fs + C
   let files: Array[String] = []
   for path in paths {
     if Fs::is_dir(path) {
-      for f in grep_collect_files(root = path) {
+      for f in grep_collect_files(path) {
         if String::ends_with(f, suffix = ".vibe") {
           Array::push(files, value = f)
         } else {
@@ -115,11 +115,11 @@ fn refactor_add_labels(args: Array[String]) -> Int with Env + Exception + Fs + C
   let mut deferred_labels = 0
   let mut unchecked = 0
   let mut refused = 0
-  let answers: Array[LabelSiteFile] = query_label_sites_fs(files = files)
+  let answers: Array[LabelSiteFile] = query_label_sites_fs(files)
   for answer in answers {
     if String::length(answer.error) > 0 {
       unchecked = unchecked + 1
-      println(answer.path + ": not checked, left alone: " + refactor_first_line(message = answer.error))
+      println(answer.path + ": not checked, left alone: " + refactor_first_line(answer.error))
     } else {
       let result: AddLabelsResult = add_labels(path = answer.path, source = answer.source, offset_delta = answer.offset_delta, sites = answer.sites, policy = policy)
       // An edit is reported or written only once the edited file checks: the
@@ -132,7 +132,7 @@ fn refactor_add_labels(args: Array[String]) -> Int with Env + Exception + Fs + C
       }
       if String::length(problem) > 0 {
         refused = refused + 1
-        println(answer.path + ": the edit would not check, left alone: " + refactor_first_line(message = problem))
+        println(answer.path + ": the edit would not check, left alone: " + refactor_first_line(problem))
       } else {
         calls = calls + result.calls
         labels = labels + result.labels
@@ -175,7 +175,7 @@ fn refactor_add_labels(args: Array[String]) -> Int with Env + Exception + Fs + C
 /// or every one under a named directory -- contracts included, so a
 /// declaration and its contract keep agreeing. The default prints one row per
 /// mark; `--write` rewrites the files.
-fn refactor_mark_positional(args: Array[String]) -> Int with Env + Exception + Fs + Console {
+fn refactor_mark_positional(_ args: Array[String]) -> Int with Env + Exception + Fs + Console {
   let usage = "usage: vibe refactor mark-positional [--write] <path>..."
   let mut write = false
   let paths: Array[String] = []
@@ -253,8 +253,8 @@ fn missing_label_rows(source: String, result: AddLabelsResult) -> Array[String] 
 /// policy -- so a file `vibe refactor add-labels --write` has rewritten
 /// reports nothing. A file that does not check reports no rows here; its
 /// errors are the check's report.
-export fn user_check_missing_label_rows(src: String) -> Array[String] with Env + Exception + Fs {
-  let answers: Array[LabelSiteFile] = query_label_sites_fs(files = [src])
+export fn user_check_missing_label_rows(_ src: String) -> Array[String] with Env + Exception + Fs {
+  let answers: Array[LabelSiteFile] = query_label_sites_fs([src])
   let rows: Array[String] = []
   for answer in answers {
     if String::length(answer.error) == 0 {
@@ -277,9 +277,9 @@ export fn user_check_missing_label_rows_single(path: String, source: String) -> 
   let typed = handle {
     // The buffer is typed the way the lane's own check reads it: a leading
     // `require ... = #pkg:..` head blanked, every offset kept.
-    let (_, parsed) = extract_require_pins(source = source)
+    let (_, parsed) = extract_require_pins(source)
     let (tokens, starts, _) = lex_with_offsets(parsed)
-    let _ = check_program(stmts = parse_program_located(tokens = tokens, starts = starts, source = parsed))
+    let _ = check_program(parse_program_located(tokens = tokens, starts = starts, source = parsed))
     true
   } with { Exception::Throw(_) => false }
   let sites = label_sites_end()
@@ -292,7 +292,7 @@ export fn user_check_missing_label_rows_single(path: String, source: String) -> 
 
 /// Preview validated edits on stdout; --write publishes the same result only
 /// after every range, binding, and type check has succeeded.
-export fn selfhost_cli_user_refactor_args(args: Array[String]) -> Int with Env + Exception + Fs + Console {
+export fn selfhost_cli_user_refactor_args(_ args: Array[String]) -> Int with Env + Exception + Fs + Console {
   let usage = "usage: vibe refactor extract-function <file.vibe> <start-byte> <end-byte> <name> [--write]\n       vibe refactor add-labels [--write] [--positional=none|receiver|receiver+single] <path>...\n       vibe refactor mark-positional [--write] <path>..."
   if Array::length(args) == 2 && (Array::get(args, at = 1) == "--help" || Array::get(args, at = 1) == "-h") {
     println(usage)
@@ -301,9 +301,9 @@ export fn selfhost_cli_user_refactor_args(args: Array[String]) -> Int with Env +
     println("mark-positional: writes `_` before the receiver of each `T::f` and the only parameter of each one-parameter `fn`, in .vibe and .vpkg files alike. The default reports one row per slot; --write rewrites the files.")
     0
   } else if Array::length(args) >= 2 && Array::get(args, at = 1) == "add-labels" {
-    refactor_add_labels(args = args)
+    refactor_add_labels(args)
   } else if Array::length(args) >= 2 && Array::get(args, at = 1) == "mark-positional" {
-    refactor_mark_positional(args = args)
+    refactor_mark_positional(args)
   } else if Array::length(args) < 6 || Array::length(args) > 7 || Array::get(args, at = 1) != "extract-function" {
     throw(usage)
   } else {
@@ -317,8 +317,8 @@ export fn selfhost_cli_user_refactor_args(args: Array[String]) -> Int with Env +
       false
     }
     let path = Array::get(args, at = 2)
-    let start = refactor_byte_offset(text = Array::get(args, at = 3))
-    let end = refactor_byte_offset(text = Array::get(args, at = 4))
+    let start = refactor_byte_offset(Array::get(args, at = 3))
+    let end = refactor_byte_offset(Array::get(args, at = 4))
     let name = Array::get(args, at = 5)
     let original = Fs::read_file(path)
     let edited = extract_function(source = original, start = start, end = end, name = name)

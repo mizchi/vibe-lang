@@ -30,7 +30,7 @@ fn sym_row(syms: Array[(String, Int, Int, Int, String)], name: String) -> (Strin
   let mut found = ("", 0 - 1, 0 - 1, 0 - 1, "")
   let mut i = 0
   while i < Array::length(syms) {
-    let (n, k, s, e, d) = Array::get(syms, i)
+    let (n, k, s, e, d) = Array::get(syms, at = i)
     if n == name {
       found = (n, k, s, e, d)
     } else {
@@ -45,28 +45,28 @@ fn sym_row(syms: Array[(String, Int, Int, Int, String)], name: String) -> (Strin
 /// span is asserted by SLICING, so a lane emitting plausible-looking offsets
 /// cannot pass. A name with no row answers `<missing>`.
 fn sym_slice(src: String, syms: Array[(String, Int, Int, Int, String)], name: String) -> String {
-  let (n, k, s, e, _d) = sym_row(syms, name)
+  let (n, k, s, e, _d) = sym_row(syms = syms, name = name)
   if n == "" {
     "<missing>"
   } else {
-    String::concat(n, String::concat(":", String::concat(__to_string(k), String::concat(":", String::substring(src, s, e)))))
+    String::concat(n, String::concat(":", String::concat(__to_string(k), String::concat(":", String::substring(src, start = s, end = e)))))
   }
 }
 
 test "symbols: a contract's fn, val, bodyless type and opaque type are all declarations" {
   let src = contract_src()
-  let syms = symbol_spans_with_docs_for_path("index.vpkg", src)
+  let syms = symbol_spans_with_docs_for_path(path = "index.vpkg", source = src)
   inspect(Array::length(syms), content = "5")
 }
 
 test "symbols: each contract declaration's span cuts its own name out of the source" {
   let src = contract_src()
-  let syms = symbol_spans_with_docs_for_path("index.vpkg", src)
-  inspect(sym_slice(src, syms, "List"), content = "List:26:List")
-  inspect(sym_slice(src, syms, "Handle"), content = "Handle:26:Handle")
-  inspect(sym_slice(src, syms, "make"), content = "make:12:make")
-  inspect(sym_slice(src, syms, "Handle::close"), content = "Handle::close:12:Handle::close")
-  inspect(sym_slice(src, syms, "origin"), content = "origin:13:origin")
+  let syms = symbol_spans_with_docs_for_path(path = "index.vpkg", source = src)
+  inspect(sym_slice(src = src, syms = syms, name = "List"), content = "List:26:List")
+  inspect(sym_slice(src = src, syms = syms, name = "Handle"), content = "Handle:26:Handle")
+  inspect(sym_slice(src = src, syms = syms, name = "make"), content = "make:12:make")
+  inspect(sym_slice(src = src, syms = syms, name = "Handle::close"), content = "Handle::close:12:Handle::close")
+  inspect(sym_slice(src = src, syms = syms, name = "origin"), content = "origin:13:origin")
 }
 
 test "symbols: the EXTENSION picks the grammar, not the content" {
@@ -74,7 +74,7 @@ test "symbols: the EXTENSION picks the grammar, not the content" {
   // bodyless `type List[T]` is not a declaration it can read.
   let src = contract_src()
   let threw = handle {
-    let _ = symbol_spans_with_docs_for_path("index.vibe", src)
+    let _ = symbol_spans_with_docs_for_path(path = "index.vibe", source = src)
     false
   } with { Exception::Throw(_) => true }
   inspect(threw, content = "true")
@@ -83,10 +83,10 @@ test "symbols: the EXTENSION picks the grammar, not the content" {
 test "symbols: a script file's answer is unchanged by the path-aware entry" {
   let src = "export struct Point { x: Int }\nexport fn twice(n: Int) -> Int { n * 2 }\n"
   let plain = symbol_spans_with_docs(src)
-  let viapath = symbol_spans_with_docs_for_path("a.vibe", src)
+  let viapath = symbol_spans_with_docs_for_path(path = "a.vibe", source = src)
   inspect(Array::length(plain) == Array::length(viapath), content = "true")
-  inspect(sym_slice(src, viapath, "Point"), content = "Point:23:Point")
-  inspect(sym_slice(src, viapath, "twice"), content = "twice:12:twice")
+  inspect(sym_slice(src = src, syms = viapath, name = "Point"), content = "Point:23:Point")
+  inspect(sym_slice(src = src, syms = viapath, name = "twice"), content = "twice:12:twice")
 }
 
 test "symbols: a declaration anchors on its own name, not an earlier parameter" {
@@ -94,16 +94,16 @@ test "symbols: a declaration anchors on its own name, not an earlier parameter" 
   // it. A scan resuming where the previous row stopped would report the
   // parameter; the floor is set to each declaration's own first token instead.
   let src = "name = @demo/pkg\n\nfn f(origin: Int) -> Int\nlet origin: Int\n"
-  let syms = symbol_spans_with_docs_for_path("index.vpkg", src)
-  let (_n, _k, s, _e, _d) = sym_row(syms, "origin")
-  let decl_at = String::index_of(src, "let origin")
+  let syms = symbol_spans_with_docs_for_path(path = "index.vpkg", source = src)
+  let (_n, _k, s, _e, _d) = sym_row(syms = syms, name = "origin")
+  let decl_at = String::index_of(src, needle = "let origin")
   inspect(s > decl_at, content = "true")
 }
 
 test "symbols: a contract's doc comments attach the same way" {
   let src = "name = @demo/pkg\n\n/// The published entry point.\nfn make(n: Int) -> Int\n"
-  let syms = symbol_spans_with_docs_for_path("index.vpkg", src)
-  let (_n, _k, _s, _e, doc) = sym_row(syms, "make")
+  let syms = symbol_spans_with_docs_for_path(path = "index.vpkg", source = src)
+  let (_n, _k, _s, _e, doc) = sym_row(syms = syms, name = "make")
   inspect(doc, content = "The published entry point.")
 }
 
@@ -112,7 +112,7 @@ test "symbols: a broken contract's failure says where it stopped" {
   // which is the property AGENTS.md asks these queries for.
   let src = "name = @demo/pkg\n\nfn make(n: Int) -> Int {\n"
   let msg = handle {
-    let _ = symbol_spans_with_docs_for_path("index.vpkg", src)
+    let _ = symbol_spans_with_docs_for_path(path = "index.vpkg", source = src)
     ""
   } with { Exception::Throw(m) => m }
   inspect(msg == "", content = "false")
@@ -120,12 +120,12 @@ test "symbols: a broken contract's failure says where it stopped" {
   // parser.vibe, `vibe check`). `line L:col C: ` is the WARNING path's
   // spelling and is not this one; asserting it here is what made the first
   // version of this test fail against a correct answer.
-  let located = symbol_spans_locate_failure("index.vpkg", src, msg)
-  inspect(String::starts_with(located, "line 3:"), content = "true")
-  inspect(String::index_of(located, "must not have a body") > 0, content = "true")
+  let located = symbol_spans_locate_failure(path = "index.vpkg", source = src, msg = msg)
+  inspect(String::starts_with(located, prefix = "line 3:"), content = "true")
+  inspect(String::index_of(located, needle = "must not have a body") > 0, content = "true")
 }
 
 test "symbols: a non-contract path's failure text is passed through untouched" {
   let msg = "unexpected token: {"
-  inspect(symbol_spans_locate_failure("a.vibe", "let x = 1\n", msg), content = "unexpected token: {")
+  inspect(symbol_spans_locate_failure(path = "a.vibe", source = "let x = 1\n", msg = msg), content = "unexpected token: {")
 }

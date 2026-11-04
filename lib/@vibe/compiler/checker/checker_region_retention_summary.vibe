@@ -56,25 +56,25 @@ let retention_summary_prefix: String = "#retains:"
 
 /// The binding that carries `name`'s summary in a module's environment and
 /// in the interface it publishes. No source identifier can spell it.
-export fn retention_summary_marker(name: String) -> String {
+export fn retention_summary_marker(_ name: String) -> String {
   String::concat(retention_summary_prefix, name)
 }
 
 /// Whether a binding name is a `retention_summary_marker`. Allocates nothing,
 /// so a scan over every binding of a dependency costs no heap.
-export fn is_retention_summary_marker(name: String) -> Bool {
-  String::starts_with(name, retention_summary_prefix)
+export fn is_retention_summary_marker(_ name: String) -> Bool {
+  String::starts_with(name, prefix = retention_summary_prefix)
 }
 
 /// The function a `retention_summary_marker` binding names.
-export fn retention_summary_marker_target(name: String) -> String {
-  String::substring(name, String::length(retention_summary_prefix), String::length(name))
+export fn retention_summary_marker_target(_ name: String) -> String {
+  String::substring(name, start = String::length(retention_summary_prefix), end = String::length(name))
 }
 
 /// Every summary bound in `env`, as (function name, marker type), nearest
 /// binding first and each name once: what a module publishes for the names
 /// it exports, its own functions' and those of the functions it re-exports.
-export fn env_retention_summary_rows(env: TypeEnv) -> Array[(String, Type)] {
+export fn env_retention_summary_rows(_ env: TypeEnv) -> Array[(String, Type)] {
   let rows: Array[(String, Type)] = []
   let mut current = env
   let mut done = false
@@ -85,7 +85,7 @@ export fn env_retention_summary_rows(env: TypeEnv) -> Array[(String, Type)] {
       seen = seen || row.0 == fname
     }
     if !seen {
-      Array::push(rows, (fname, ty))
+      Array::push(rows, value = (fname, ty))
     } else {
       ()
     }
@@ -126,8 +126,8 @@ export fn retention_summary_region() -> String {
 
 /// Whether a module at `path` belongs to the standard library, whose
 /// functions are neither summarized nor read through a summary.
-export fn retention_summary_skips_path(path: String) -> Bool {
-  String::starts_with(path, "@vibe/") || String::starts_with(path, "lib/@vibe/") || String::contains(path, "/lib/@vibe/") || String::contains(path, "/store/@vibe/")
+export fn retention_summary_skips_path(_ path: String) -> Bool {
+  String::starts_with(path, prefix = "@vibe/") || String::starts_with(path, prefix = "lib/@vibe/") || String::contains(path, needle = "/lib/@vibe/") || String::contains(path, needle = "/store/@vibe/")
 }
 
 /// Whether the module being checked is summarized: set by the lanes that
@@ -137,18 +137,18 @@ export fn retention_summary_skips_path(path: String) -> Bool {
 let retention_summaries_cell: Array[Bool] = []
 
 /// Before a module at `path` is checked for publication.
-export fn retention_summaries_for_path(path: String) -> Unit {
-  Array::truncate(retention_summaries_cell, 0)
-  Array::push(retention_summaries_cell, !retention_summary_skips_path(path))
+export fn retention_summaries_for_path(_ path: String) -> Unit {
+  Array::truncate(retention_summaries_cell, length = 0)
+  Array::push(retention_summaries_cell, value = !retention_summary_skips_path(path))
 }
 
 /// After the module's check.
 export fn retention_summaries_clear() -> Unit {
-  Array::truncate(retention_summaries_cell, 0)
+  Array::truncate(retention_summaries_cell, length = 0)
 }
 
 export fn retention_summaries_enabled() -> Bool {
-  Array::length(retention_summaries_cell) > 0 && Array::get(retention_summaries_cell, 0)
+  Array::length(retention_summaries_cell) > 0 && Array::get(retention_summaries_cell, at = 0)
 }
 
 /// The most top-level statements a module may have before none of its
@@ -167,12 +167,12 @@ export fn retention_summary_budget() -> Int {
 export fn retention_summary_candidate(params: Array[Type], defs: Array[TypeDef]) -> Bool {
   let mut any = false
   for t in params {
-    any = any || retention_summary_source(t, defs)
+    any = any || retention_summary_source(t = t, defs = defs)
   }
   any
 }
 
-fn retention_type_has_var(t: Type) -> Bool {
+fn retention_type_has_var(_ t: Type) -> Bool {
   match t {
     CtVar(_) => true,
     CtArray(e) => retention_type_has_var(e),
@@ -188,7 +188,7 @@ fn retention_type_has_var(t: Type) -> Bool {
   }
 }
 
-fn retention_types_have_var(items: Array[Type]) -> Bool {
+fn retention_types_have_var(_ items: Array[Type]) -> Bool {
   let mut any = false
   for t in items {
     any = any || retention_type_has_var(t)
@@ -205,29 +205,29 @@ fn retention_types_have_var(items: Array[Type]) -> Bool {
 fn retention_summary_carrier(t: Type, rname: String) -> Type {
   match t {
     CtVar(_) => CtNamed("#retention_carrier", [CtNamed(rname, [])]),
-    CtArray(e) => CtArray(retention_summary_carrier(e, rname)),
-    CtOption(e) => CtOption(retention_summary_carrier(e, rname)),
+    CtArray(e) => CtArray(retention_summary_carrier(t = e, rname = rname)),
+    CtOption(e) => CtOption(retention_summary_carrier(t = e, rname = rname)),
     CtTuple(items) => CtTuple(for item in items {
-      retention_summary_carrier(item, rname)
+      retention_summary_carrier(t = item, rname = rname)
     }),
     CtRecord(fields) => CtRecord(for f in fields {
-      (f.0, retention_summary_carrier(f.1, rname))
+      (f.0, retention_summary_carrier(t = f.1, rname = rname))
     }),
     CtFn(ps, r, e) => CtFn(for p in ps {
-      retention_summary_carrier(p, rname)
-    }, retention_summary_carrier(r, rname), e),
+      retention_summary_carrier(t = p, rname = rname)
+    }, retention_summary_carrier(t = r, rname = rname), e),
     CtNamed(n, args) => CtNamed(n, for a in args {
-      retention_summary_carrier(a, rname)
+      retention_summary_carrier(t = a, rname = rname)
     }),
     CtApplied(h, args) => CtApplied(h, for a in args {
-      retention_summary_carrier(a, rname)
+      retention_summary_carrier(t = a, rname = rname)
     }),
     _ => t
   }
 }
 
 /// The parameter types of a checked function type, generalized or not.
-export fn retention_fn_param_types(ty: Type) -> Option[Array[Type]] {
+export fn retention_fn_param_types(_ ty: Type) -> Option[Array[Type]] {
   match ty {
     CtForAll(_, _, body) => retention_fn_param_types(body),
     CtFn(ps, _, _) => Some(ps),
@@ -238,12 +238,12 @@ export fn retention_fn_param_types(ty: Type) -> Option[Array[Type]] {
 /// Whether an argument of type `t` may carry a region into the function: a
 /// type that may hide one, or one a caller instantiates (`T`, `Cell[T]`).
 fn retention_summary_source(t: Type, defs: Array[TypeDef]) -> Bool {
-  retention_type_hides_region(t, defs) || retention_type_has_var(t)
+  retention_type_hides_region(t = t, defs = defs) || retention_type_has_var(t)
 }
 
 /// Whether a parameter of type `t` holds a function, whose body the re-check
 /// cannot see: a call of it with the region is refused.
-fn retention_summary_fn_param(t: Type) -> Bool {
+fn retention_summary_fn_param(_ t: Type) -> Bool {
   match t {
     CtFn(_, _, _) => true,
     CtForAll(_, _, body) => retention_summary_fn_param(body),
@@ -269,14 +269,14 @@ export fn retention_summarize(params: Array[Type], defs: Array[TypeDef], fresh: 
   let rows: Array[String] = []
   let mut i = 0
   while i < n {
-    if retention_summary_source(Array::get(params, i), defs) {
+    if retention_summary_source(t = Array::get(params, at = i), defs = defs) {
       // `outer(k)`: whether argument `k` is declared before the region in
       // this run; `-1` all, `-2` none.
       let run = (outer: Int, tag: String) -> {
         let overrides: Array[(Type, Array[String], String, Array[String])] = []
         let mut k = 0
         while k < n {
-          let pt = Array::get(params, k)
+          let pt = Array::get(params, at = k)
           let predates = if k != i && (outer == -1 || outer == k) {
             [summary_region]
           } else {
@@ -293,32 +293,32 @@ export fn retention_summarize(params: Array[Type], defs: Array[TypeDef], fresh: 
             ""
           }
           let ty = if k == i {
-            retention_summary_carrier(pt, summary_region)
+            retention_summary_carrier(t = pt, rname = summary_region)
           } else {
             fresh(k)
           }
-          Array::push(overrides, (ty, predates, callee, carried))
+          Array::push(overrides, value = (ty, predates, callee, carried))
           k = k + 1
         }
         recheck(overrides, String::concat(__to_string(i), tag))
       }
       let (kept, to_result) = run(-1, "*")
       if to_result {
-        Array::push(rows, String::concat(__to_string(i), ">r"))
+        Array::push(rows, value = String::concat(__to_string(i), ">r"))
       } else {
         ()
       }
       if kept > 0 {
         let (unavoidable, _) = run(-2, "g")
         if unavoidable == 1 {
-          Array::push(rows, String::concat(__to_string(i), ">g"))
+          Array::push(rows, value = String::concat(__to_string(i), ">g"))
         } else if unavoidable > 1 {
-          Array::push(rows, String::concat(__to_string(i), ">f"))
+          Array::push(rows, value = String::concat(__to_string(i), ">f"))
         } else {
           let mut j = 0
           while j < n {
             if j != i && run(j, String::concat(">", __to_string(j))).0 > 0 {
-              Array::push(rows, String::concat(__to_string(i), String::concat(">", __to_string(j))))
+              Array::push(rows, value = String::concat(__to_string(i), String::concat(">", __to_string(j))))
             } else {
               ()
             }
@@ -333,14 +333,14 @@ export fn retention_summarize(params: Array[Type], defs: Array[TypeDef], fresh: 
     }
     i = i + 1
   }
-  String::join(rows, ",")
+  String::join(rows, sep = ",")
 }
 
 /// Whether, by `summary`, argument `i` may reach the function's result.
 export fn retention_summary_result_from(summary: String, i: Int) -> Bool {
   let wanted = String::concat(__to_string(i), ">r")
   let mut found = false
-  for row in String::split(summary, ",") {
+  for row in String::split(summary, sep = ",") {
     found = found || row == wanted
   }
   found
@@ -352,14 +352,14 @@ fn retention_summary_opaque(params: Array[Type], defs: Array[TypeDef]) -> String
   let rows: Array[String] = []
   let mut i = 0
   while i < Array::length(params) {
-    if retention_summary_source(Array::get(params, i), defs) {
-      Array::push(rows, String::concat(__to_string(i), ">f"))
+    if retention_summary_source(t = Array::get(params, at = i), defs = defs) {
+      Array::push(rows, value = String::concat(__to_string(i), ">f"))
     } else {
       ()
     }
     i = i + 1
   }
-  String::join(rows, ",")
+  String::join(rows, sep = ",")
 }
 
 /// The names a summary is computed for: every top-level binding and every
@@ -369,13 +369,13 @@ fn retention_summary_opaque(params: Array[Type], defs: Array[TypeDef]) -> String
 /// of one it keeps private is never read (Codex on #3473, whose rounds found
 /// each of those routes in turn). A name listed twice is an error the
 /// checker reports, so the list is not deduplicated.
-fn retention_summary_names(stmts: Array[Stmt]) -> Array[String] {
+fn retention_summary_names(_ stmts: Array[Stmt]) -> Array[String] {
   let names: Array[String] = []
   for stmt in stmts {
     match stmt {
-      SLet(_, _, fname, _, _) => Array::push(names, fname),
+      SLet(_, _, fname, _, _) => Array::push(names, value = fname),
       SExport(items) => for n in items {
-        Array::push(names, n)
+        Array::push(names, value = n)
       },
       _ => ()
     }
@@ -397,12 +397,12 @@ export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array
     retention_summary_names(stmts)
   }
   for name in names {
-    match env_lookup(env, name) {
+    match env_lookup(env = env, name = name) {
       Some(fty) => match retention_fn_param_types(fty) {
-        Some(params) => if retention_summary_candidate(params, defs) {
+        Some(params) => if retention_summary_candidate(params = params, defs = defs) {
           let (kind, lit) = resolve(name)
           if kind > 0 {
-            Array::push(candidates, (name, kind, lit, params))
+            Array::push(candidates, value = (name, kind, lit, params))
           } else {
             ()
           }
@@ -421,13 +421,14 @@ export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array
     for cand in candidates {
       let (name, kind, lit, params) = cand
       let summary = if kind == 1 {
-        retention_summarize(params, defs, fresh, (overrides, key) -> recheck(lit, overrides, String::concat("summary|", String::concat(name, String::concat("|", key)))))
+        retention_summarize(params = params, defs = defs, fresh = fresh, recheck = (overrides, key) -> recheck(lit, overrides, String::concat("summary|", String::concat(name, String::concat("|", key)))))
       } else {
-        retention_summary_opaque(params, defs)
+        retention_summary_opaque(params = params, defs = defs)
       }
       // One that keeps nothing is bound too, as `""`, so whatever binding of
       // the name is nearest is this module's own answer.
-      out = env_bind(out, retention_summary_marker(name), CtNamed(summary, []))
+      out = env_bind(env = out, name = retention_summary_marker(name), ty = CtNamed(summary, [
+      ]))
     }
     out
   }
@@ -439,13 +440,13 @@ export fn retention_summaries_bind(stmts: Array[Stmt], env: TypeEnv, defs: Array
 /// `j`'s location was declared before.
 export fn retention_summary_refuses(summary: String, carried: Array[Array[String]], predates: Array[Array[String]]) -> Int {
   let mut kind = 0
-  for row in String::split(summary, ",") {
-    let parts = String::split(row, ">")
+  for row in String::split(summary, sep = ",") {
+    let parts = String::split(row, sep = ">")
     if Array::length(parts) == 2 {
-      let i = retention_summary_index(Array::get(parts, 0))
-      let target = Array::get(parts, 1)
+      let i = retention_summary_index(Array::get(parts, at = 0))
+      let target = Array::get(parts, at = 1)
       if i >= 0 && i < Array::length(carried) {
-        let regions = Array::get(carried, i)
+        let regions = Array::get(carried, at = i)
         if target == "g" || target == "f" {
           if Array::length(regions) > 0 && kind != 1 {
             kind = if target == "g" {
@@ -460,7 +461,7 @@ export fn retention_summary_refuses(summary: String, carried: Array[Array[String
           let j = retention_summary_index(target)
           if j >= 0 && j < Array::length(predates) {
             for r in regions {
-              for p in Array::get(predates, j) {
+              for p in Array::get(predates, at = j) {
                 if String::equals(r, p) {
                   kind = 1
                 } else {
@@ -483,12 +484,12 @@ export fn retention_summary_refuses(summary: String, carried: Array[Array[String
 }
 
 /// A non-negative decimal's value, or `-1` when `text` is not one.
-export fn retention_summary_index(text: String) -> Int {
+export fn retention_summary_index(_ text: String) -> Int {
   let mut out = 0
   let mut ok = String::length(text) > 0
   let mut k = 0
   while k < String::length(text) {
-    let ch = String::byte_at(text, k)
+    let ch = String::byte_at(text, at = k)
     if ch >= 48 && ch <= 57 {
       out = out * 10 + (ch - 48)
     } else {
@@ -509,8 +510,8 @@ export fn retention_regions_mentioned(ty: Type, regions: Array[(String, Bool)]) 
   let out = array_empty()
   for r in regions {
     let (rname, _) = r
-    if type_mentions_named(ty, rname) {
-      Array::push(out, r)
+    if type_mentions_named(ty = ty, name = rname) {
+      Array::push(out, value = r)
     } else {
       ()
     }
@@ -518,7 +519,7 @@ export fn retention_regions_mentioned(ty: Type, regions: Array[(String, Bool)]) 
   out
 }
 
-export fn retention_any_nursery(regions: Array[(String, Bool)]) -> Bool {
+export fn retention_any_nursery(_ regions: Array[(String, Bool)]) -> Bool {
   let mut any = false
   for r in regions {
     let (_, nursery) = r

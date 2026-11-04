@@ -136,6 +136,60 @@ fn number_after(src: String, head: String, tail: String, blank_before_tail: Bool
   found
 }
 
+fn starts_at(src: String, at: Int, token: String) -> Bool {
+  at >= 0 && at + String::length(token) <= String::length(src) && String::substring(src, at, at + String::length(token)) == token
+}
+
+/// Skip only this parameter's actual label. A wrong label remains unread.
+fn argument_value_at(src: String, at: Int, label: String) -> Int {
+  let value = skip_spaces(src, at)
+  if starts_at(src, value, label) {
+    let eq = skip_spaces(src, value + String::length(label))
+    if starts_at(src, eq, "=") && !starts_at(src, eq, "==") {
+      skip_spaces(src, eq + 1)
+    } else {
+      value
+    }
+  } else {
+    value
+  }
+}
+
+/// Read the import buffer's header in positional or labeled call syntax.
+fn import_vector_count(src: String) -> Int {
+  let head = "bytebuf_push_vec_header("
+  let mut from = 0
+  let mut found = -1
+  let mut going = true
+  while going {
+    let at = String::index_of_from(src, head, from)
+    if at < 0 {
+      going = false
+    } else {
+      let buffer = argument_value_at(src, at + String::length(head), "buf")
+      if starts_at(src, buffer, "imp_content") {
+        let comma = skip_spaces(src, buffer + String::length("imp_content"))
+        if starts_at(src, comma, ",") {
+          let value = argument_value_at(src, comma + 1, "count")
+          let end = digits_end(src, value)
+          if end > value && starts_at(src, skip_spaces(src, end), ")") {
+            found = to_int(String::substring(src, value, end))
+            going = false
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      from = at + String::length(head)
+    }
+  }
+  found
+}
+
 /// The text between `<head>` and the next `\n    ]` after it, or -1 when
 /// either is absent (as the second value).
 fn array_body(src: String, head: String) -> (String, Bool) {
@@ -259,7 +313,7 @@ fn main allows Env + Fs::is_file + Fs::read_file + Console::write_stream + Stder
   } else {
     ()
   }
-  let vec = number_after(src, "bytebuf_push_vec_header(imp_content,", ")", false)
+  let vec = import_vector_count(src)
   if vec < 0 {
     Array::push(fails, "could not find `bytebuf_push_vec_header(imp_content, N)`. Update the gate.")
   } else {

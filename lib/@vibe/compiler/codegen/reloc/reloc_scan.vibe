@@ -128,7 +128,7 @@ export let blind_kind_layout_read: Int = 106
 /// entry? The two function-value kinds do -- both logs are appended at the
 /// same emission sites, which is what proves the function-value records
 /// complete. A string reference has no slot.
-export fn blind_kind_pairs_slot(kind: Int) -> Bool {
+export fn blind_kind_pairs_slot(_ kind: Int) -> Bool {
   kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32
 }
 
@@ -137,7 +137,7 @@ export fn blind_slot_paired_count(kinds: Array[Int], lo: Int) -> Int {
   let mut n = 0
   let mut i = lo
   while i < Array::length(kinds) {
-    if blind_kind_pairs_slot(Array::get(kinds, i)) {
+    if blind_kind_pairs_slot(Array::get(kinds, at = i)) {
       n = n + 1
     } else {
       ()
@@ -154,15 +154,15 @@ export fn blind_slot_paired_count(kinds: Array[Int], lo: Int) -> Int {
 /// reassigned when the index arrives.
 export let blind_owner_pending: Int = -1
 
-export fn blind_owner_of_lambda(lambda_idx: Int) -> Int {
+export fn blind_owner_of_lambda(_ lambda_idx: Int) -> Int {
   0 - 2 - lambda_idx
 }
 
-export fn blind_owner_lambda_index(owner: Int) -> Int {
+export fn blind_owner_lambda_index(_ owner: Int) -> Int {
   0 - 2 - owner
 }
 
-export fn blind_owner_is_lambda(owner: Int) -> Bool {
+export fn blind_owner_is_lambda(_ owner: Int) -> Bool {
   owner <= 0 - 2
 }
 
@@ -178,7 +178,7 @@ export fn body_relocs_new() -> BodyRelocs {
   BodyRelocs::{ offsets: [], kinds: [], values: [], widths: [] }
 }
 
-export fn body_relocs_count(r: BodyRelocs) -> Int {
+export fn body_relocs_count(_ r: BodyRelocs) -> Int {
   Array::length(r.offsets)
 }
 
@@ -203,7 +203,7 @@ fn read_uleb_at(body: Bytes, pos: Int) -> (Int, Int) with Exception {
     } else {
       ()
     }
-    let b = Bytes::get(body, p)
+    let b = Bytes::get(body, at = p)
     result = result|((b&127)<<shift)
     shift = shift + 7
     p = p + 1
@@ -233,7 +233,7 @@ fn read_sleb_at(body: Bytes, pos: Int) -> (Int, Int) with Exception {
     } else {
       ()
     }
-    let b = Bytes::get(body, p)
+    let b = Bytes::get(body, at = p)
     last = b
     result = result|((b&127)<<shift)
     shift = shift + 7
@@ -272,10 +272,10 @@ fn write_uleb(out: Bytes, value: Int) -> Unit with Exception {
     let byte = v&127
     v = v>>7
     if v == 0 {
-      Bytes::push(out, byte)
+      Bytes::push(out, value = byte)
       more = false
     } else {
-      Bytes::push(out, byte|128)
+      Bytes::push(out, value = byte|128)
     }
   }
 }
@@ -289,17 +289,17 @@ fn write_sleb(out: Bytes, value: Int) -> Unit {
     v = v>>7
     let sign_set = (byte&64) != 0
     if (v == 0 && !sign_set) || (v == -1 && sign_set) {
-      Bytes::push(out, byte)
+      Bytes::push(out, value = byte)
       more = false
     } else {
-      Bytes::push(out, byte|128)
+      Bytes::push(out, value = byte|128)
     }
   }
 }
 
-export fn reloc_uleb_width(value: Int) -> Int with Exception {
+export fn reloc_uleb_width(_ value: Int) -> Int with Exception {
   let probe = Bytes::new()
-  write_uleb(probe, value)
+  write_uleb(out = probe, value = value)
   Bytes::length(probe)
 }
 
@@ -308,7 +308,7 @@ export fn reloc_uleb_width(value: Int) -> Int with Exception {
 /// argument checkable: the numeric operators occupy one contiguous block, and
 /// a decoder organised by immediate SHAPE cannot forget a member of a block
 /// the way a decoder organised by name can forget an operator.
-fn op_has_no_immediate(op: Int) -> Bool {
+fn op_has_no_immediate(_ op: Int) -> Bool {
   if op == 0x00 || op == 0x01 || op == 0x05 || op == 0x0B || op == 0x0F {
     // unreachable, nop, else, end, return
     true
@@ -328,8 +328,8 @@ fn op_has_no_immediate(op: Int) -> Bool {
 
 /// Skip a `memarg`: alignment then offset, both uleb128.
 fn skip_memarg(body: Bytes, pos: Int) -> Int with Exception {
-  let (_, p1) = read_uleb_at(body, pos)
-  let (_, p2) = read_uleb_at(body, p1)
+  let (_, p1) = read_uleb_at(body = body, pos = pos)
+  let (_, p2) = read_uleb_at(body = body, pos = p1)
   p2
 }
 
@@ -343,133 +343,133 @@ fn skip_memarg(body: Bytes, pos: Int) -> Int with Exception {
 /// silently desynchronises the walk and every later offset is then garbage
 /// that still looks like a successful scan.
 fn step_instr(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
-  let op = Bytes::get(body, pos)
+  let op = Bytes::get(body, at = pos)
   if op_has_no_immediate(op) {
     pos + 1
   } else if op == 0x02 || op == 0x03 || op == 0x04 {
     // block / loop / if <blocktype>: a value type when negative, a TYPE INDEX
     // when not -- and then it relocates.
-    push_signed_reloc(body, pos + 1, reloc_kind_blocktype, out)
+    push_signed_reloc(body = body, pos = pos + 1, kind = reloc_kind_blocktype, out = out)
   } else if op == 0x0C || op == 0x0D {
     // br / br_if <labelidx> -- local to the enclosing blocks
-    skip_local_index(body, pos + 1)
+    skip_local_index(body = body, pos = pos + 1)
   } else if op == 0x0E {
     // br_table vec(labelidx) labelidx
-    let (count, p0) = read_uleb_at(body, pos + 1)
+    let (count, p0) = read_uleb_at(body = body, pos = pos + 1)
     let mut p = p0
     let mut i = 0
     while i < count {
-      p = skip_local_index(body, p)
+      p = skip_local_index(body = body, pos = p)
       i = i + 1
     }
-    skip_local_index(body, p)
+    skip_local_index(body = body, pos = p)
   } else if op == 0x10 {
     // call <funcidx>  -- RELOCATION
-    let (v, p) = read_uleb_at(body, pos + 1)
-    Array::push(out.offsets, pos + 1)
-    Array::push(out.kinds, reloc_kind_func)
-    Array::push(out.values, v)
-    Array::push(out.widths, p - pos - 1)
+    let (v, p) = read_uleb_at(body = body, pos = pos + 1)
+    Array::push(out.offsets, value = pos + 1)
+    Array::push(out.kinds, value = reloc_kind_func)
+    Array::push(out.values, value = v)
+    Array::push(out.widths, value = p - pos - 1)
     p
   } else if op == 0xD2 {
     // ref.func <funcidx>  -- RELOCATION
-    let (v, p) = read_uleb_at(body, pos + 1)
-    Array::push(out.offsets, pos + 1)
-    Array::push(out.kinds, reloc_kind_func)
-    Array::push(out.values, v)
-    Array::push(out.widths, p - pos - 1)
+    let (v, p) = read_uleb_at(body = body, pos = pos + 1)
+    Array::push(out.offsets, value = pos + 1)
+    Array::push(out.kinds, value = reloc_kind_func)
+    Array::push(out.values, value = v)
+    Array::push(out.widths, value = p - pos - 1)
     p
   } else if op == 0x11 {
     // call_indirect <typeidx> <tableidx> -- BOTH relocate. The table index
     // was skipped until review pointed out that a module with more than one
     // table dispatches through the wrong one after a reassignment.
-    let p1 = push_reloc(body, pos + 1, reloc_kind_type, out)
-    push_reloc(body, p1, reloc_kind_table, out)
+    let p1 = push_reloc(body = body, pos = pos + 1, kind = reloc_kind_type, out = out)
+    push_reloc(body = body, pos = p1, kind = reloc_kind_table, out = out)
   } else if op == 0x23 || op == 0x24 {
     // global.get / global.set <globalidx>  -- RELOCATION
-    let (v, p) = read_uleb_at(body, pos + 1)
-    Array::push(out.offsets, pos + 1)
-    Array::push(out.kinds, reloc_kind_global)
-    Array::push(out.values, v)
-    Array::push(out.widths, p - pos - 1)
+    let (v, p) = read_uleb_at(body = body, pos = pos + 1)
+    Array::push(out.offsets, value = pos + 1)
+    Array::push(out.kinds, value = reloc_kind_global)
+    Array::push(out.values, value = v)
+    Array::push(out.widths, value = p - pos - 1)
     p
   } else if op == 0x25 || op == 0x26 {
     // table.get / table.set <tableidx>  -- RELOCATION
-    let (v, p) = read_uleb_at(body, pos + 1)
-    Array::push(out.offsets, pos + 1)
-    Array::push(out.kinds, reloc_kind_table)
-    Array::push(out.values, v)
-    Array::push(out.widths, p - pos - 1)
+    let (v, p) = read_uleb_at(body = body, pos = pos + 1)
+    Array::push(out.offsets, value = pos + 1)
+    Array::push(out.kinds, value = reloc_kind_table)
+    Array::push(out.values, value = v)
+    Array::push(out.widths, value = p - pos - 1)
     p
   } else if op >= 0x20 && op <= 0x22 {
     // local.get / local.set / local.tee <localidx> -- frame-local
-    skip_local_index(body, pos + 1)
+    skip_local_index(body = body, pos = pos + 1)
   } else if op >= 0x28 && op <= 0x3E {
     // every load and store: <memarg>
-    skip_memarg(body, pos + 1)
+    skip_memarg(body = body, pos = pos + 1)
   } else if op == 0x3F || op == 0x40 {
     // memory.size / memory.grow <memidx> -- one memory only in this target
-    skip_literal_uleb(body, pos + 1)
+    skip_literal_uleb(body = body, pos = pos + 1)
   } else if op == 0x41 || op == 0x42 {
     // i32.const / i64.const <sleb>
     //
     // A function VALUE and a data pointer both ride here (see the header).
     // Not reported: nothing in the encoding separates them from an ordinary
     // constant, and a guess would be wrong some of the time.
-    skip_literal_sleb(body, pos + 1)
+    skip_literal_sleb(body = body, pos = pos + 1)
   } else if op == 0x43 {
     pos + 5
   } else if op == 0x44 {
     pos + 9
   } else if op == 0x1C {
     // select t*: vec(valtype)
-    let (count, p0) = read_uleb_at(body, pos + 1)
+    let (count, p0) = read_uleb_at(body = body, pos = pos + 1)
     p0 + count
   } else if op == 0xD0 {
     // ref.null <heaptype> -- an index when non-negative
-    push_signed_reloc(body, pos + 1, reloc_kind_heaptype, out)
+    push_signed_reloc(body = body, pos = pos + 1, kind = reloc_kind_heaptype, out = out)
   } else if op == 0x08 {
     // throw <tagidx>  -- RELOCATION
-    push_reloc(body, pos + 1, reloc_kind_tag, out)
+    push_reloc(body = body, pos = pos + 1, kind = reloc_kind_tag, out = out)
   } else if op == 0x1F {
     // try_table <blocktype> vec(catch) -- the blocktype is a type index when
     // non-negative, exactly as in block/loop/if. Fixing those and not this one
     // is what "one class at a time" looks like from the outside.
-    let p1 = push_signed_reloc(body, pos + 1, reloc_kind_blocktype, out)
-    let (count, p2) = read_uleb_at(body, p1)
+    let p1 = push_signed_reloc(body = body, pos = pos + 1, kind = reloc_kind_blocktype, out = out)
+    let (count, p2) = read_uleb_at(body = body, pos = p1)
     let mut p = p2
     let mut i = 0
     while i < count {
-      let kind = Bytes::get(body, p)
+      let kind = Bytes::get(body, at = p)
       p = p + 1
       if kind == 0 || kind == 1 {
         // catch / catch_ref: <tagidx> <labelidx>. The tag RELOCATES; the
         // label is local to the enclosing block and never does.
-        let pa = push_reloc(body, p, reloc_kind_tag, out)
-        p = skip_local_index(body, pa)
+        let pa = push_reloc(body = body, pos = p, kind = reloc_kind_tag, out = out)
+        p = skip_local_index(body = body, pos = pa)
       } else {
         // catch_all / catch_all_ref: <labelidx> only
-        p = skip_local_index(body, p)
+        p = skip_local_index(body = body, pos = p)
       }
       i = i + 1
     }
     p
   } else if op == 0xFC {
-    step_misc(body, pos, out)
+    step_misc(body = body, pos = pos, out = out)
   } else if op == 0xFD {
-    step_simd(body, pos)
+    step_simd(body = body, pos = pos)
   } else if op == 0xFB {
-    step_gc(body, pos, out)
+    step_gc(body = body, pos = pos, out = out)
   } else {
     throw(String::concat("reloc_scan: unknown opcode 0x", int_to_hex2(op)))
   }
 }
 
-fn int_to_hex2(v: Int) -> String {
+fn int_to_hex2(_ v: Int) -> String {
   let digits = "0123456789abcdef"
   let hi = (v>>4)&15
   let lo = v&15
-  String::concat(String::substring(digits, hi, hi + 1), String::substring(digits, lo, lo + 1))
+  String::concat(String::substring(digits, start = hi, end = hi + 1), String::substring(digits, start = lo, end = lo + 1))
 }
 
 /// The 0xFB prefix: wasm-gc. The gc backend (ADR-0095) emits these, and the
@@ -482,33 +482,33 @@ fn int_to_hex2(v: Int) -> String {
 /// proportionally far more relocation sites than the linear lane: a struct
 /// field access names its type where a linear-lane load names only an offset.
 fn step_gc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
-  let (sub, p0) = read_uleb_at(body, pos + 1)
+  let (sub, p0) = read_uleb_at(body = body, pos = pos + 1)
   if sub <= 1 || (sub >= 6 && sub <= 7) || (sub >= 11 && sub <= 14) || sub == 16 {
     // struct.new / struct.new_default / array.new / array.new_default /
     // array.get{,_s,_u} / array.set / array.fill: <typeidx>
-    push_type_reloc(body, p0, out)
+    push_type_reloc(body = body, pos = p0, out = out)
   } else if sub >= 2 && sub <= 5 {
     // struct.get{,_s,_u} / struct.set: <typeidx> <fieldidx>. The field index
     // is positional WITHIN the struct type, so it moves only if the type
     // does -- and then the type index above carries the whole thing.
-    let p1 = push_type_reloc(body, p0, out)
-    skip_local_index(body, p1)
+    let p1 = push_type_reloc(body = body, pos = p0, out = out)
+    skip_local_index(body = body, pos = p1)
   } else if sub == 8 {
     // array.new_fixed <typeidx> <n> -- n is a LENGTH, not an index
-    let p1 = push_type_reloc(body, p0, out)
-    skip_literal_uleb(body, p1)
+    let p1 = push_type_reloc(body = body, pos = p0, out = out)
+    skip_literal_uleb(body = body, pos = p1)
   } else if sub == 9 || sub == 18 {
     // array.new_data / array.init_data <typeidx> <dataidx>
-    let p1 = push_type_reloc(body, p0, out)
-    push_reloc(body, p1, reloc_kind_data, out)
+    let p1 = push_type_reloc(body = body, pos = p0, out = out)
+    push_reloc(body = body, pos = p1, kind = reloc_kind_data, out = out)
   } else if sub == 10 || sub == 19 {
     // array.new_elem / array.init_elem <typeidx> <elemidx>
-    let p1 = push_type_reloc(body, p0, out)
-    push_reloc(body, p1, reloc_kind_elem, out)
+    let p1 = push_type_reloc(body = body, pos = p0, out = out)
+    push_reloc(body = body, pos = p1, kind = reloc_kind_elem, out = out)
   } else if sub == 17 {
     // array.copy <typeidx> <typeidx>
-    let p1 = push_type_reloc(body, p0, out)
-    push_type_reloc(body, p1, out)
+    let p1 = push_type_reloc(body = body, pos = p0, out = out)
+    push_type_reloc(body = body, pos = p1, out = out)
   } else if sub == 15 || (sub >= 26 && sub <= 30) {
     // array.len; any.convert_extern; extern.convert_any; ref.i31;
     // i31.get_s; i31.get_u -- no immediate
@@ -517,13 +517,13 @@ fn step_gc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
     // ref.test / ref.cast, null and non-null: <heaptype> -- a TYPE INDEX when
     // non-negative, so a reassignment makes the rebuilt body test or cast
     // against the wrong nominal type WHILE STILL VALIDATING.
-    push_signed_reloc(body, p0, reloc_kind_heaptype, out)
+    push_signed_reloc(body = body, pos = p0, kind = reloc_kind_heaptype, out = out)
   } else if sub == 24 || sub == 25 {
     // br_on_cast / br_on_cast_fail: <castflags> <labelidx> <heaptype> <heaptype>
     let p1 = p0 + 1
-    let p2 = skip_local_index(body, p1)
-    let p3 = push_signed_reloc(body, p2, reloc_kind_heaptype, out)
-    push_signed_reloc(body, p3, reloc_kind_heaptype, out)
+    let p2 = skip_local_index(body = body, pos = p1)
+    let p3 = push_signed_reloc(body = body, pos = p2, kind = reloc_kind_heaptype, out = out)
+    push_signed_reloc(body = body, pos = p3, kind = reloc_kind_heaptype, out = out)
   } else {
     throw(String::concat("reloc_scan: unknown 0xFB sub-opcode ", __to_string(sub)))
   }
@@ -540,44 +540,44 @@ fn step_gc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
 /// So: if you add an instruction, every immediate in it must be spelled with
 /// one of these. `_` is not an option the shape of this code offers.
 fn skip_local_index(body: Bytes, pos: Int) -> Int with Exception {
-  let (_, p) = read_uleb_at(body, pos)
+  let (_, p) = read_uleb_at(body = body, pos = pos)
   p
 }
 
 fn skip_literal_uleb(body: Bytes, pos: Int) -> Int with Exception {
-  let (_, p) = read_uleb_at(body, pos)
+  let (_, p) = read_uleb_at(body = body, pos = pos)
   p
 }
 
 fn skip_literal_sleb(body: Bytes, pos: Int) -> Int with Exception {
-  let (_, p) = read_sleb_at(body, pos)
+  let (_, p) = read_sleb_at(body = body, pos = pos)
   p
 }
 
 /// Read an index at `pos`, record it as a relocation site of `kind`, and
 /// return the position just past it.
 fn push_reloc(body: Bytes, pos: Int, kind: Int, out: BodyRelocs) -> Int with Exception {
-  let (v, p) = read_uleb_at(body, pos)
-  Array::push(out.offsets, pos)
-  Array::push(out.kinds, kind)
-  Array::push(out.values, v)
-  Array::push(out.widths, p - pos)
+  let (v, p) = read_uleb_at(body = body, pos = pos)
+  Array::push(out.offsets, value = pos)
+  Array::push(out.kinds, value = kind)
+  Array::push(out.values, value = v)
+  Array::push(out.widths, value = p - pos)
   p
 }
 
 fn push_type_reloc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
-  push_reloc(body, pos, reloc_kind_type, out)
+  push_reloc(body = body, pos = pos, kind = reloc_kind_type, out = out)
 }
 
 /// An s33 that is a type index when non-negative and an abstract type when
 /// not. Records only in the first case; the position advances either way.
 fn push_signed_reloc(body: Bytes, pos: Int, kind: Int, out: BodyRelocs) -> Int with Exception {
-  let (v, p) = read_sleb_at(body, pos)
+  let (v, p) = read_sleb_at(body = body, pos = pos)
   if v >= 0 {
-    Array::push(out.offsets, pos)
-    Array::push(out.kinds, kind)
-    Array::push(out.values, v)
-    Array::push(out.widths, p - pos)
+    Array::push(out.offsets, value = pos)
+    Array::push(out.kinds, value = kind)
+    Array::push(out.values, value = v)
+    Array::push(out.widths, value = p - pos)
   } else {
     ()
   }
@@ -586,17 +586,17 @@ fn push_signed_reloc(body: Bytes, pos: Int, kind: Int, out: BodyRelocs) -> Int w
 
 /// The 0xFC prefix: saturating truncation, and the bulk memory / table ops.
 fn step_misc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
-  let (sub, p0) = read_uleb_at(body, pos + 1)
+  let (sub, p0) = read_uleb_at(body = body, pos = pos + 1)
   if sub <= 7 {
     // i32/i64.trunc_sat_f32/f64_s/u -- no immediate
     p0
   } else if sub == 8 {
     // memory.init <dataidx> <memidx>
-    let p1 = push_reloc(body, p0, reloc_kind_data, out)
+    let p1 = push_reloc(body = body, pos = p0, kind = reloc_kind_data, out = out)
     p1 + 1
   } else if sub == 9 {
     // data.drop <dataidx>
-    push_reloc(body, p0, reloc_kind_data, out)
+    push_reloc(body = body, pos = p0, kind = reloc_kind_data, out = out)
   } else if sub == 10 {
     // memory.copy <memidx> <memidx>
     p0 + 2
@@ -605,18 +605,18 @@ fn step_misc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
     p0 + 1
   } else if sub == 12 {
     // table.init <elemidx> <tableidx>
-    let p1 = push_reloc(body, p0, reloc_kind_elem, out)
-    push_reloc(body, p1, reloc_kind_table, out)
+    let p1 = push_reloc(body = body, pos = p0, kind = reloc_kind_elem, out = out)
+    push_reloc(body = body, pos = p1, kind = reloc_kind_table, out = out)
   } else if sub == 14 {
     // table.copy <tableidx> <tableidx>
-    let p1 = push_reloc(body, p0, reloc_kind_table, out)
-    push_reloc(body, p1, reloc_kind_table, out)
+    let p1 = push_reloc(body = body, pos = p0, kind = reloc_kind_table, out = out)
+    push_reloc(body = body, pos = p1, kind = reloc_kind_table, out = out)
   } else if sub == 13 {
     // elem.drop <elemidx>
-    push_reloc(body, p0, reloc_kind_elem, out)
+    push_reloc(body = body, pos = p0, kind = reloc_kind_elem, out = out)
   } else if sub == 15 || sub == 16 || sub == 17 {
     // table.grow / table.size / table.fill <tableidx>
-    push_reloc(body, p0, reloc_kind_table, out)
+    push_reloc(body = body, pos = p0, kind = reloc_kind_table, out = out)
   } else {
     throw(String::concat("reloc_scan: unknown 0xFC sub-opcode ", __to_string(sub)))
   }
@@ -625,10 +625,10 @@ fn step_misc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
 /// The 0xFD prefix: SIMD. Only the shapes this codegen emits are decoded; an
 /// unknown one is refused rather than guessed, same as the main table.
 fn step_simd(body: Bytes, pos: Int) -> Int with Exception {
-  let (sub, p0) = read_uleb_at(body, pos + 1)
+  let (sub, p0) = read_uleb_at(body = body, pos = pos + 1)
   if sub == 0 || (sub >= 1 && sub <= 11) {
     // v128.load* / v128.store*: <memarg>
-    skip_memarg(body, p0)
+    skip_memarg(body = body, pos = p0)
   } else if sub == 12 {
     // v128.const: 16 immediate bytes
     p0 + 16
@@ -640,11 +640,11 @@ fn step_simd(body: Bytes, pos: Int) -> Int with Exception {
     p0 + 1
   } else if sub >= 84 && sub <= 91 {
     // v128.load*_lane / store*_lane: <memarg> + one lane byte
-    let pm = skip_memarg(body, p0)
+    let pm = skip_memarg(body = body, pos = p0)
     pm + 1
   } else if sub >= 92 && sub <= 93 {
     // v128.load32_zero / load64_zero: <memarg>
-    skip_memarg(body, p0)
+    skip_memarg(body = body, pos = p0)
   } else if sub >= 14 && sub <= 20 {
     p0
   } else if sub >= 35 && sub <= 83 {
@@ -666,7 +666,7 @@ export fn scan_body_relocs(body: Bytes, start: Int, end_pos: Int) -> BodyRelocs 
   let mut p = start
   while p < end_pos {
     let before = p
-    p = step_instr(body, p, out)
+    p = step_instr(body = body, pos = p, out = out)
     if p <= before {
       throw("reloc_scan: instruction walk did not advance")
     } else {
@@ -682,7 +682,7 @@ export fn scan_body_relocs(body: Bytes, start: Int, end_pos: Int) -> BodyRelocs 
   let n = Array::length(out.offsets)
   let mut i = 0
   while i < n {
-    Array::set(out.offsets, i, Array::get(out.offsets, i) - start)
+    Array::set(out.offsets, at = i, value = Array::get(out.offsets, at = i) - start)
     i = i + 1
   }
   out
@@ -706,7 +706,7 @@ export fn rebuild_body_relocs(body: Bytes, start: Int, end_pos: Int, r: BodyRelo
   let mut cursor = start
   let mut i = 0
   while i < n {
-    let site = start + Array::get(r.offsets, i)
+    let site = start + Array::get(r.offsets, at = i)
     if site < cursor {
       throw("reloc_scan: relocation sites are not in ascending order")
     } else {
@@ -714,21 +714,21 @@ export fn rebuild_body_relocs(body: Bytes, start: Int, end_pos: Int, r: BodyRelo
     }
     let mut c = cursor
     while c < site {
-      Bytes::push(out, Bytes::get(body, c))
+      Bytes::push(out, value = Bytes::get(body, at = c))
       c = c + 1
     }
-    let kind_i = Array::get(r.kinds, i)
+    let kind_i = Array::get(r.kinds, at = i)
     if kind_i == reloc_kind_blocktype || kind_i == reloc_kind_heaptype {
-      write_sleb(out, Array::get(new_values, i))
+      write_sleb(out = out, value = Array::get(new_values, at = i))
     } else {
-      write_uleb(out, Array::get(new_values, i))
+      write_uleb(out = out, value = Array::get(new_values, at = i))
     }
-    cursor = site + Array::get(r.widths, i)
+    cursor = site + Array::get(r.widths, at = i)
     i = i + 1
   }
   let mut c2 = cursor
   while c2 < end_pos {
-    Bytes::push(out, Bytes::get(body, c2))
+    Bytes::push(out, value = Bytes::get(body, at = c2))
     c2 = c2 + 1
   }
   out

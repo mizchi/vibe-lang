@@ -66,7 +66,7 @@ import ./utilities.vibe {
 /// are excluded outright -- `__to_string` is already faithful for them, and
 /// they are the shapes a `T::to_string` name could plausibly collide with.
 export fn interp_show_target(arg: Expr, derived_only: Bool, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
-  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+  match infer_arg_type_name(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
     Some(tn) => {
       let target = String::concat(tn, "::to_string")
       // `derived_only` (#1398 review, Codex P1) restricts this to renderers
@@ -75,7 +75,7 @@ export fn interp_show_target(arg: Expr, derived_only: Bool, struct_sets: Array[(
       // user wrote it.
       // #2141: an enclosing binder's formal shadows a same-spelled declared
       // type -- its values are NOT that struct, so its renderer must not fire.
-      if !is_scalar_type_name(tn) && !formal_in_scope(tn) && fn_exists(fn_returns, target) && target != Array::get(dtd_show_self_fn, 0) && (!derived_only || has_derived_renderer(tn)) {
+      if !is_scalar_type_name(tn) && !formal_in_scope(tn) && fn_exists(fn_returns = fn_returns, fname = target) && target != Array::get(dtd_show_self_fn, at = 0) && (!derived_only || has_derived_renderer(tn)) {
         target
       } else {
         ""
@@ -102,11 +102,11 @@ export fn interp_show_target(arg: Expr, derived_only: Bool, struct_sets: Array[(
 /// inside a generated `T::to_string`, `interp_show_target` suppresses the target
 /// by name, and that is not a missing renderer.
 export fn interp_missing_show_type(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
-  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+  match infer_arg_type_name(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
     // #2141: an enclosing binder's formal shadows a same-spelled declared
     // type. Its values are erased, not renderless-struct-shaped -- keep the
     // old fallback rendering instead of throwing a false "missing Show".
-    Some(tn) => if !is_scalar_type_name(tn) && !formal_in_scope(tn) && struct_set_has(struct_sets, tn) && !fn_exists(fn_returns, String::concat(tn, "::to_string")) {
+    Some(tn) => if !is_scalar_type_name(tn) && !formal_in_scope(tn) && struct_set_has(struct_sets = struct_sets, name = tn) && !fn_exists(fn_returns = fn_returns, fname = String::concat(tn, "::to_string")) {
       tn
     } else {
       ""
@@ -138,7 +138,7 @@ export fn interp_missing_show_type(arg: Expr, struct_sets: Array[(String, Array[
 export fn interp_unresolved_array_call(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   match arg {
     ECall(callee, cargs, _, _) => match callee {
-      EIdent(fname, _) => if String::length(dtd_elem_preserving_shape(fname, cargs, struct_sets, var_types, fn_returns)) == 0 && String::length(dtd_map_callback_shape(fname, cargs)) == 0 && dtd_names_an_array_builtin(fname) {
+      EIdent(fname, _) => if String::length(dtd_elem_preserving_shape(fname = fname, cargs = cargs, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)) == 0 && String::length(dtd_map_callback_shape(fname = fname, cargs = cargs)) == 0 && dtd_names_an_array_builtin(fname) {
         fname
       } else {
         ""
@@ -168,7 +168,7 @@ export fn interp_unresolved_array_call(arg: Expr, struct_sets: Array[(String, Ar
 /// scrutinee -- so it reuses that function verbatim rather than restating the
 /// lookup, and inherits its composite-payload handling for free.
 export fn interp_ctor_arm_var_types(arg: Expr, ctor: String, binder: String, var_types: Array[(String, String)]) -> Array[(String, String)] {
-  arm_binder_var_types(arg, PCtor(ctor, Array::slice([PBind(binder)], 0, 1)), var_types)
+  arm_binder_var_types(scrut = arg, p = PCtor(ctor, Array::slice([PBind(binder)], start = 0, end = 1)), var_types = var_types)
 }
 
 /// #1527: is the interpolated argument a Bool this pass can PROVE from
@@ -180,7 +180,7 @@ export fn interp_ctor_arm_var_types(arg: Expr, ctor: String, binder: String, var
 export fn interp_arg_is_bool(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
   match arg {
     EBool(_) => false,
-    _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    _ => match infer_arg_type_name(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
       Some(t) => t == "Bool",
       None => false
     }
@@ -205,12 +205,12 @@ export fn interp_arg_is_bool(arg: Expr, struct_sets: Array[(String, Array[String
 /// occurrence at its offset agrees, so it is neither shadowed nor guessed.
 export fn interp_arg_is_double(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
   match arg {
-    EIdent(n, _) => match lookup_var_type(var_types, n) {
-      Some(t) => (t == "Float64" && !interp_row_is_scalar(arg, "Float32")) || interp_row_is_scalar(arg, "Float64"),
-      None => interp_row_is_scalar(arg, "Float64")
+    EIdent(n, _) => match lookup_var_type(var_types = var_types, name = n) {
+      Some(t) => (t == "Float64" && !interp_row_is_scalar(arg = arg, name = "Float32")) || interp_row_is_scalar(arg = arg, name = "Float64"),
+      None => interp_row_is_scalar(arg = arg, name = "Float64")
     },
     EFloat(_) => false,
-    _ => interp_row_is_scalar(arg, "Float64")
+    _ => interp_row_is_scalar(arg = arg, name = "Float64")
   }
 }
 
@@ -221,21 +221,21 @@ export fn interp_arg_is_double(arg: Expr, struct_sets: Array[(String, Array[Stri
 /// answers first: a name whose recorded type and row disagree is a shadow.
 export fn interp_arg_is_float(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
   match arg {
-    EIdent(n, _) => match lookup_var_type(var_types, n) {
-      Some(t) => (t == "Float32" && !interp_row_is_scalar(arg, "Float64")) || interp_row_is_scalar(arg, "Float32"),
-      None => interp_row_is_scalar(arg, "Float32")
+    EIdent(n, _) => match lookup_var_type(var_types = var_types, name = n) {
+      Some(t) => (t == "Float32" && !interp_row_is_scalar(arg = arg, name = "Float64")) || interp_row_is_scalar(arg = arg, name = "Float32"),
+      None => interp_row_is_scalar(arg = arg, name = "Float32")
     },
     EFloat(_) => false,
     // An `f` literal, or an arithmetic result the Float rewrite rounded:
     // both are the compiler's own `Double::to_float` call, which carries no
     // render row of its own (a binop has no row key) and is a Float by
     // construction.
-    ECall(EIdent(cn, coff), _, _, _) => (is_builtin_ref_offset(coff) && (cn == "Float64::to_float32" || cn == "Int::to_float32")) || interp_row_is_scalar(arg, "Float32"),
+    ECall(EIdent(cn, coff), _, _, _) => (is_builtin_ref_offset(coff) && (cn == "Float64::to_float32" || cn == "Int::to_float32")) || interp_row_is_scalar(arg = arg, name = "Float32"),
     // A negation or a branch carries no row of its own; it is a Float when
     // its operand (either branch -- the checker made them agree) is one.
-    EUnaryOp(op, inner) => op == "-" && interp_arg_is_float(inner, struct_sets, var_types, fn_returns),
-    EIf(_, t, e) => interp_arg_is_float(t, struct_sets, var_types, fn_returns) || interp_arg_is_float(e, struct_sets, var_types, fn_returns),
-    _ => interp_row_is_scalar(arg, "Float32")
+    EUnaryOp(op, inner) => op == "-" && interp_arg_is_float(arg = inner, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns),
+    EIf(_, t, e) => interp_arg_is_float(arg = t, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) || interp_arg_is_float(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns),
+    _ => interp_row_is_scalar(arg = arg, name = "Float32")
   }
 }
 
@@ -253,7 +253,7 @@ fn interp_row_is_scalar(arg: Expr, name: String) -> Bool {
 /// its code point: `let c: Char = 'a'` rendered `97`. A char LITERAL lexes as
 /// an Int and is not a `Char` until something declares it one.
 export fn interp_arg_is_char(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
-  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+  match infer_arg_type_name(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
     Some(t) => t == "Char" || (dtd_head_is_leaked_formal(t) && dtd_typed_render_leaf_for(arg) == "Char"),
     None => dtd_typed_render_leaf_for(arg) == "Char"
   }
@@ -264,7 +264,7 @@ export fn interp_arg_is_char(arg: Expr, struct_sets: Array[(String, Array[String
 export fn interp_arg_is_unit(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
   match arg {
     EUnit => true,
-    _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    _ => match infer_arg_type_name(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
       Some(t) => t == "Unit" || (dtd_head_is_leaked_formal(t) && dtd_typed_render_leaf_for(arg) == "{u}"),
       None => dtd_typed_render_leaf_for(arg) == "{u}"
     }
@@ -274,9 +274,9 @@ export fn interp_arg_is_unit(arg: Expr, struct_sets: Array[(String, Array[String
 /// #3003: the formal `arg` is typed at when it is an erased top-level formal
 /// with no renderer witness (the case `dtd_check_top_interp` refuses), or "".
 export fn dtd_erased_top_formal_head(arg: Expr, dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
-  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-    Some(head) => if formal_in_scope(head) && !dtd_formal_innermost_is_nested(head) && !str_array_contains(dtd_show_shims, Array::get(dtd_show_self_fn, 0)) {
-      match dtd_show_witness_dict(dict_binds, traits, head) {
+  match infer_arg_type_name(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+    Some(head) => if formal_in_scope(head) && !dtd_formal_innermost_is_nested(head) && !str_array_contains(arr = dtd_show_shims, val = Array::get(dtd_show_self_fn, at = 0)) {
+      match dtd_show_witness_dict(dict_binds = dict_binds, traits = traits, head = head) {
         Some(_) => "",
         None => head
       }

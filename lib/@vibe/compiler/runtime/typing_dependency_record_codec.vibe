@@ -1,6 +1,6 @@
 //# Canonical framing for compiler-internal TDRE5 typing-dependency records.
 
-fn tdre5_record_tag_is_valid(tag: String) -> Bool {
+fn tdre5_record_tag_is_valid(_ tag: String) -> Bool {
   tag == "TDEO5" || tag == "TDI5" || tag == "TDRA5" || tag == "TDC5" || tag == "TDREW5"
 }
 
@@ -12,18 +12,18 @@ export fn typing_dependency_record_encode_internal(tag: String, fields: Array[St
     ""
   } else {
     let out = StringBuilder::new()
-    StringBuilder::push(out, tag)
-    StringBuilder::push(out, __to_string(Array::length(fields)))
-    StringBuilder::push(out, "[")
+    StringBuilder::push(out, value = tag)
+    StringBuilder::push(out, value = __to_string(Array::length(fields)))
+    StringBuilder::push(out, value = "[")
     let mut i = 0
     while i < Array::length(fields) {
-      let field = Array::get(fields, i)
-      StringBuilder::push(out, __to_string(String::length(field)))
-      StringBuilder::push(out, ":")
-      StringBuilder::push(out, field)
+      let field = Array::get(fields, at = i)
+      StringBuilder::push(out, value = __to_string(String::length(field)))
+      StringBuilder::push(out, value = ":")
+      StringBuilder::push(out, value = field)
       i = i + 1
     }
-    StringBuilder::push(out, "]")
+    StringBuilder::push(out, value = "]")
     StringBuilder::freeze(out)
   }
 }
@@ -37,12 +37,12 @@ fn tdre5_parse_decimal(text: String, pos: Int, terminator: Int) -> Option[(Int, 
   if pos < 0 || pos >= total {
     None
   } else {
-    let first = String::char_code_at(text, pos)
+    let first = String::char_code_at(text, at = pos)
     if first < '0' || first > '9' {
       None
     } else if first == '0' {
       let next = pos + 1
-      if next < total && String::char_code_at(text, next) == terminator {
+      if next < total && String::char_code_at(text, at = next) == terminator {
         Some((0, next + 1))
       } else {
         // Literal 0 is canonical; every longer zero-prefixed decimal is not.
@@ -52,8 +52,8 @@ fn tdre5_parse_decimal(text: String, pos: Int, terminator: Int) -> Option[(Int, 
       let mut cursor = pos
       let mut value = 0
       let mut valid = true
-      while valid && cursor < total && String::char_code_at(text, cursor) != terminator {
-        let code = String::char_code_at(text, cursor)
+      while valid && cursor < total && String::char_code_at(text, at = cursor) != terminator {
+        let code = String::char_code_at(text, at = cursor)
         let digit = code - '0'
         if code < '0' || code > '9' || value > (total - digit) / 10 {
           valid = false
@@ -62,7 +62,7 @@ fn tdre5_parse_decimal(text: String, pos: Int, terminator: Int) -> Option[(Int, 
           cursor = cursor + 1
         }
       }
-      if valid && cursor < total && String::char_code_at(text, cursor) == terminator {
+      if valid && cursor < total && String::char_code_at(text, at = cursor) == terminator {
         Some((value, cursor + 1))
       } else {
         None
@@ -72,14 +72,14 @@ fn tdre5_parse_decimal(text: String, pos: Int, terminator: Int) -> Option[(Int, 
 }
 
 fn tdre5_parse_segment(text: String, pos: Int) -> Option[(String, Int)] {
-  match tdre5_parse_decimal(text, pos, ':') {
+  match tdre5_parse_decimal(text = text, pos = pos, terminator = ':') {
     Some((field_len, start)) => {
       let remaining = String::length(text) - start
       if field_len > remaining {
         None
       } else {
         let end = start + field_len
-        Some((String::substring(text, start, end), end))
+        Some((String::substring(text, start = start, end = end), end))
       }
     },
     None => None
@@ -90,21 +90,21 @@ fn tdre5_parse_segment(text: String, pos: Int) -> Option[(String, Int)] {
 /// Malformed, noncanonical, cross-tag, and trailing input always returns None.
 export fn typing_dependency_record_decode_internal(text: String, expected_tag: String, expected_fields: Int) -> Option[Array[String]] {
   let tag_len = String::length(expected_tag)
-  if expected_fields < 0 || not(tdre5_record_tag_is_valid(expected_tag)) || not(String::starts_with(text, expected_tag)) {
+  if expected_fields < 0 || not(tdre5_record_tag_is_valid(expected_tag)) || not(String::starts_with(text, prefix = expected_tag)) {
     None
   } else {
-    match tdre5_parse_decimal(text, tag_len, '[') {
+    match tdre5_parse_decimal(text = text, pos = tag_len, terminator = '[') {
       Some((field_count, after_count)) => if field_count != expected_fields {
         None
       } else {
-        let fields = Array::slice([""], 0, 0)
+        let fields = Array::slice([""], start = 0, end = 0)
         let mut cursor = after_count
         let mut i = 0
         let mut valid = true
         while valid && i < field_count {
-          match tdre5_parse_segment(text, cursor) {
+          match tdre5_parse_segment(text = text, pos = cursor) {
             Some((field, next)) => {
-              Array::push(fields, field)
+              Array::push(fields, value = field)
               cursor = next
               i = i + 1
             },
@@ -113,9 +113,9 @@ export fn typing_dependency_record_decode_internal(text: String, expected_tag: S
             }
           }
         }
-        if not(valid) || cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' || cursor + 1 != String::length(text) {
+        if not(valid) || cursor >= String::length(text) || String::char_code_at(text, at = cursor) != ']' || cursor + 1 != String::length(text) {
           None
-        } else if typing_dependency_record_encode_internal(expected_tag, fields) != text {
+        } else if typing_dependency_record_encode_internal(tag = expected_tag, fields = fields) != text {
           // Keep this final equality even though the parser is strict: future
           // parser changes must not silently widen the canonical wire grammar.
           None

@@ -34,11 +34,11 @@
 /// The bracketed KIND argument of an exception EFFECT label, or "" when the
 /// label is an erased spelling (or not an exception label at all).
 /// `Exception[IoError]` -> "IoError"; `Error` / `Exception` -> "".
-export fn exception_effect_kind(name: String) -> String {
+export fn exception_effect_kind(_ name: String) -> String {
   // (`open` is a reserved word in vibe, hence the suffixed name.)
-  let open_at = String::index_of(name, "[")
-  if open_at > 0 && String::substring(name, 0, open_at) == "Exception" && String::length(name) > open_at + 2 && String::substring(name, String::length(name) - 1, String::length(name)) == "]" {
-    String::substring(name, open_at + 1, String::length(name) - 1)
+  let open_at = String::index_of(name, needle = "[")
+  if open_at > 0 && String::substring(name, start = 0, end = open_at) == "Exception" && String::length(name) > open_at + 2 && String::substring(name, start = String::length(name) - 1, end = String::length(name)) == "]" {
+    String::substring(name, start = open_at + 1, end = String::length(name) - 1)
   } else {
     ""
   }
@@ -46,7 +46,7 @@ export fn exception_effect_kind(name: String) -> String {
 
 /// True for either erased spelling or a kinded `Exception[K]` of the interim
 /// abortive exception effect.
-export fn is_exception_effect_name(name: String) -> Bool {
+export fn is_exception_effect_name(_ name: String) -> Bool {
   name == "Error" || name == "Exception" || String::length(exception_effect_kind(name)) > 0
 }
 
@@ -59,7 +59,7 @@ export fn is_exception_effect_name(name: String) -> Bool {
 ///
 /// `Error` stays ACCEPTED as an input spelling (is_exception_effect_name), it
 /// is simply no longer what the checker stores or any diagnostic prints.
-export fn canonical_exception_effect_name(name: String) -> String {
+export fn canonical_exception_effect_name(_ name: String) -> String {
   if name == "Error" || name == "Exception" {
     "Exception"
   } else {
@@ -68,39 +68,39 @@ export fn canonical_exception_effect_name(name: String) -> String {
 }
 
 /// True for any qualified operation of the exception effect.
-export fn is_exception_operation_name(name: String) -> Bool {
-  let split = String::index_of(name, "::")
-  split > 0 && is_exception_effect_name(String::substring(name, 0, split))
+export fn is_exception_operation_name(_ name: String) -> Bool {
+  let split = String::index_of(name, needle = "::")
+  split > 0 && is_exception_effect_name(String::substring(name, start = 0, end = split))
 }
 
 /// True for an operation name that lowers to the shared abortive exception tag.
 /// Kind-insensitive on purpose: `Exception[IoError]::Throw` and `Exception::Throw`
 /// are the same runtime transfer, so every codegen/analysis caller of this
 /// predicate keeps treating them as one operation.
-export fn is_exception_throw_operation(name: String) -> Bool {
-  let split = String::index_of(name, "::")
-  split > 0 && String::substring(name, split + 2, String::length(name)) == "Throw" && is_exception_effect_name(String::substring(name, 0, split))
+export fn is_exception_throw_operation(_ name: String) -> Bool {
+  let split = String::index_of(name, needle = "::")
+  split > 0 && String::substring(name, start = split + 2, end = String::length(name)) == "Throw" && is_exception_effect_name(String::substring(name, start = 0, end = split))
 }
 
 /// True for the constructor name used by an abortive exception handler arm.
 /// `Throw` remains accepted for the pre-existing AST-level codegen callers.
-export fn is_exception_throw_handler_name(name: String) -> Bool {
+export fn is_exception_throw_handler_name(_ name: String) -> Bool {
   name == "Throw" || is_exception_throw_operation(name)
 }
 
 /// True for a row label naming the exception effect, in either the bare-effect
 /// (`Error`, `Exception[E]`) or the qualified-operation (`Exception::Throw`) form.
-export fn is_exception_label(label: String) -> Bool {
+export fn is_exception_label(_ label: String) -> Bool {
   is_exception_effect_name(label) || is_exception_operation_name(label)
 }
 
 /// The exception kind of a row label in EITHER form -- "" for an erased label,
 /// and also "" for a label this module does not recognize (callers gate on
 /// is_exception_label first).
-export fn exception_label_kind(label: String) -> String {
-  let split = String::index_of(label, "::")
+export fn exception_label_kind(_ label: String) -> String {
+  let split = String::index_of(label, needle = "::")
   if split > 0 {
-    exception_effect_kind(String::substring(label, 0, split))
+    exception_effect_kind(String::substring(label, start = 0, end = split))
   } else {
     exception_effect_kind(label)
   }
@@ -119,7 +119,7 @@ export fn exception_label_kind(label: String) -> String {
 ///
 /// Two kinds are equal when they name one type (`exception_kinds_same`).
 export fn exception_kinds_compatible(declared_kind: String, required_kind: String) -> Bool {
-  String::length(declared_kind) == 0 || String::length(required_kind) == 0 || exception_kinds_same(declared_kind, required_kind)
+  String::length(declared_kind) == 0 || String::length(required_kind) == 0 || exception_kinds_same(a = declared_kind, b = required_kind)
 }
 
 /// #3541: is a requirement of kind `required_kind` the thrown MESSAGE, the
@@ -128,8 +128,8 @@ export fn exception_kinds_compatible(declared_kind: String, required_kind: Strin
 /// at run time, so in the body of an erased arm that reads its binder the
 /// erased label covers only these, and an erased `with Exception` row that
 /// lets another kind out carries that kind to its callers.
-export fn erased_exception_covers_kind(required_kind: String) -> Bool {
-  String::length(required_kind) == 0 || exception_kinds_same(required_kind, "String")
+export fn erased_exception_covers_kind(_ required_kind: String) -> Bool {
+  String::length(required_kind) == 0 || exception_kinds_same(a = required_kind, b = "String")
 }
 
 /// #3601: the binding that carries, in a module's environment and in the
@@ -137,18 +137,18 @@ export fn erased_exception_covers_kind(required_kind: String) -> Bool {
 /// function `name`'s erased `with Exception` row lets out (`Exception[Int]`
 /// for `fn fail() -> Int with Exception { throw(7) }`). An importer charges
 /// them like labels of that row. No source identifier can spell it.
-export fn erased_kinds_marker(name: String) -> String {
+export fn erased_kinds_marker(_ name: String) -> String {
   String::concat("#erased-kinds:", name)
 }
 
 /// Whether a binding name is an `erased_kinds_marker`. Allocates nothing.
-export fn is_erased_kinds_marker(name: String) -> Bool {
-  String::starts_with(name, "#erased-kinds:")
+export fn is_erased_kinds_marker(_ name: String) -> Bool {
+  String::starts_with(name, prefix = "#erased-kinds:")
 }
 
 /// The function an `erased_kinds_marker` binding names.
-export fn erased_kinds_marker_target(name: String) -> String {
-  String::substring(name, 14, String::length(name))
+export fn erased_kinds_marker_target(_ name: String) -> String {
+  String::substring(name, start = 14, end = String::length(name))
 }
 
 // #3033: a kind is a string in the row, but it names a TYPE. The checker
@@ -169,23 +169,23 @@ export fn erased_kinds_marker_target(name: String) -> String {
 // refusal; it never makes two different kinds compare equal.
 let exception_kind_resolution_cell: Array[(String, String)] = Array::slice([
   ("", "")
-], 0, 0)
+], start = 0, end = 0)
 
 /// `kind` without spaces, the form spellings are keyed and compared in
 /// (`Map[K, V]` and `Map[K,V]` are one spelling).
-export fn exception_kind_spaceless(kind: String) -> String {
-  if String::contains(kind, " ") {
-    String::join(String::split(kind, " "), "")
+export fn exception_kind_spaceless(_ kind: String) -> String {
+  if String::contains(kind, needle = " ") {
+    String::join(String::split(kind, sep = " "), sep = "")
   } else {
     kind
   }
 }
 
-fn exception_kind_resolution_slot(written: String) -> Int {
+fn exception_kind_resolution_slot(_ written: String) -> Int {
   let mut found = 0 - 1
   let mut i = 0
   while i < Array::length(exception_kind_resolution_cell) && found < 0 {
-    let (w, _) = Array::get(exception_kind_resolution_cell, i)
+    let (w, _) = Array::get(exception_kind_resolution_cell, at = i)
     if w == written {
       found = i
     }
@@ -201,11 +201,11 @@ export fn exception_kind_resolution_record(written: String, resolved: String) ->
   let r = String::trim(resolved)
   let slot = exception_kind_resolution_slot(w)
   if slot < 0 {
-    Array::push(exception_kind_resolution_cell, (w, r))
+    Array::push(exception_kind_resolution_cell, value = (w, r))
   } else {
-    let (_, prev) = Array::get(exception_kind_resolution_cell, slot)
+    let (_, prev) = Array::get(exception_kind_resolution_cell, at = slot)
     if prev != r {
-      Array::set(exception_kind_resolution_cell, slot, (w, ""))
+      Array::set(exception_kind_resolution_cell, at = slot, value = (w, ""))
     } else {
       ()
     }
@@ -219,24 +219,24 @@ export fn exception_kind_resolution_count() -> Int {
 
 /// Forget every recorded resolution: a new module's check starts.
 export fn exception_kind_resolutions_clear() -> Unit {
-  Array::truncate(exception_kind_resolution_cell, 0)
+  Array::truncate(exception_kind_resolution_cell, length = 0)
 }
 
 /// The recorded resolution of `kind`, spelled as the type prints ("" when
 /// none, or poisoned).
-export fn exception_kind_resolution(kind: String) -> String {
+export fn exception_kind_resolution(_ kind: String) -> String {
   let slot = exception_kind_resolution_slot(exception_kind_spaceless(kind))
   if slot < 0 {
     ""
   } else {
-    let (_, r) = Array::get(exception_kind_resolution_cell, slot)
+    let (_, r) = Array::get(exception_kind_resolution_cell, at = slot)
     r
   }
 }
 
 /// `kind` in the form kinds are compared in: its recorded resolution when
 /// there is one, the spelling itself otherwise.
-export fn exception_kind_canonical(kind: String) -> String {
+export fn exception_kind_canonical(_ kind: String) -> String {
   let r = exception_kind_resolution(kind)
   if String::length(r) > 0 {
     exception_kind_spaceless(r)
@@ -256,29 +256,29 @@ export fn exception_kinds_same(a: String, b: String) -> Bool {
 /// mean another type there). A resolution holding a comma is not written into
 /// the row, because rows are split on commas; `exception_row_unpublishable_kind`
 /// finds those for the exported-row refusal.
-export fn exception_row_resolved(row: String) -> String {
-  if Array::length(exception_kind_resolution_cell) == 0 || !String::contains(row, "Exception[") {
+export fn exception_row_resolved(_ row: String) -> String {
+  if Array::length(exception_kind_resolution_cell) == 0 || !String::contains(row, needle = "Exception[") {
     row
   } else {
     let n = String::length(row)
     let mut out = ""
     let mut i = 0
     while i < n {
-      let at = String::index_of(String::substring(row, i, n), "Exception[")
+      let at = String::index_of(String::substring(row, start = i, end = n), needle = "Exception[")
       if at < 0 {
-        out = String::concat(out, String::substring(row, i, n))
+        out = String::concat(out, String::substring(row, start = i, end = n))
         i = n
       } else {
         let kind_start = i + at + 10
-        out = String::concat(out, String::substring(row, i, kind_start))
-        let close = exception_kind_close(row, kind_start)
+        out = String::concat(out, String::substring(row, start = i, end = kind_start))
+        let close = exception_kind_close(row = row, from = kind_start)
         if close < 0 {
-          out = String::concat(out, String::substring(row, kind_start, n))
+          out = String::concat(out, String::substring(row, start = kind_start, end = n))
           i = n
         } else {
-          let kind = String::substring(row, kind_start, close)
+          let kind = String::substring(row, start = kind_start, end = close)
           let r = exception_kind_resolution(kind)
-          let spelled = if String::length(r) > 0 && !String::contains(r, ",") {
+          let spelled = if String::length(r) > 0 && !String::contains(r, needle = ",") {
             r
           } else {
             kind
@@ -299,7 +299,7 @@ fn exception_kind_close(row: String, from: Int) -> Int {
   let mut j = from
   let mut close = 0 - 1
   while j < n && close < 0 {
-    let c = String::char_code_at(row, j)
+    let c = String::char_code_at(row, at = j)
     if c == 91 {
       depth = depth + 1
     } else if c == 93 {
@@ -314,21 +314,21 @@ fn exception_kind_close(row: String, from: Int) -> Int {
 }
 
 /// Every kind written in `row` (the bracketed text of each `Exception[K]`).
-export fn exception_row_kinds(row: String) -> Array[String] {
-  let out = Array::slice([""], 0, 0)
+export fn exception_row_kinds(_ row: String) -> Array[String] {
+  let out = Array::slice([""], start = 0, end = 0)
   let n = String::length(row)
   let mut i = 0
   while i < n {
-    let at = String::index_of(String::substring(row, i, n), "Exception[")
+    let at = String::index_of(String::substring(row, start = i, end = n), needle = "Exception[")
     if at < 0 {
       i = n
     } else {
       let kind_start = i + at + 10
-      let close = exception_kind_close(row, kind_start)
+      let close = exception_kind_close(row = row, from = kind_start)
       if close < 0 {
         i = n
       } else {
-        Array::push(out, String::substring(row, kind_start, close))
+        Array::push(out, value = String::substring(row, start = kind_start, end = close))
         i = close + 1
       }
     }
@@ -342,7 +342,7 @@ export fn exception_effect_labels_equal(left: String, right: String) -> Bool {
   if left == right {
     true
   } else if is_exception_label(left) && is_exception_label(right) {
-    exception_kinds_compatible(exception_label_kind(left), exception_label_kind(right))
+    exception_kinds_compatible(declared_kind = exception_label_kind(left), required_kind = exception_label_kind(right))
   } else {
     false
   }
@@ -361,7 +361,7 @@ export fn exception_effect_labels_equal(left: String, right: String) -> Bool {
 /// (collect_row_item_targs, parser_base.vibe) accepts `Eff::Op` and `Eff[T]`
 /// but not `Eff[T]::Op`, so a `Exception[IoError]::Throw` hint would name a
 /// label that does not parse.
-export fn exception_throw_label_for_kind(kind: String) -> String {
+export fn exception_throw_label_for_kind(_ kind: String) -> String {
   if String::length(kind) == 0 {
     "Exception::Throw"
   } else {

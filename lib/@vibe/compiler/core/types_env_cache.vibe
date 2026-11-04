@@ -122,10 +122,10 @@ export enum BindingOrigin {
 }
 
 /// Persistent contexts contain label facts, never a mutable box or revision.
-export fn freeze_call_header_origin(origin: BindingOrigin) -> BindingOrigin {
+export fn freeze_call_header_origin(_ origin: BindingOrigin) -> BindingOrigin {
   match origin {
     BindingOriginMutableFunctionHeader(box) => {
-      let (kind, names, _) = Array::get(box, 0)
+      let (kind, names, _) = Array::get(box, at = 0)
       if kind == 1 {
         BindingOriginFunctionHeader(names)
       }
@@ -145,7 +145,7 @@ export struct EnvValueBinding {
   origin: BindingOrigin
 }
 
-export fn env_value_binding(ty: Type) -> EnvValueBinding {
+export fn env_value_binding(_ ty: Type) -> EnvValueBinding {
   EnvValueBinding::{
     ty: ty,
     origin: BindingOriginUnavailable
@@ -227,7 +227,7 @@ export fn env_with_show_wrapper_facts(env: TypeEnv, wrappers: Array[String], unk
 
 /// None is unavailable metadata, including old or caller-built environments.
 /// Some(([], [])) is deliberately distinct: all published names are ordinary.
-export fn env_show_wrapper_facts(env: TypeEnv) -> Option[(Array[String], Array[String])] {
+export fn env_show_wrapper_facts(_ env: TypeEnv) -> Option[(Array[String], Array[String])] {
   let mut current = env
   let mut done = false
   let mut result = None
@@ -252,7 +252,7 @@ export fn env_show_wrapper_facts(env: TypeEnv) -> Option[(Array[String], Array[S
 }
 
 export fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
-  env_bind_with_origin(env, name, ty, BindingOriginUnavailable)
+  env_bind_with_origin(env = env, name = name, ty = ty, origin = BindingOriginUnavailable)
 }
 
 /// Build an accelerator from canonical name rows. IDs stay local to this node;
@@ -276,11 +276,11 @@ export fn env_cached_after_tail_change(names: EnvNameIndex, bindings: Array[EnvV
 /// chain. This is useful for checker-owned sentinels that are queried often
 /// but must not alter lexical binding order or the persistent TypeEnv format.
 export fn env_cache_binding(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
-  env_cached([name], [env_value_binding(ty)], env)
+  env_cached(names = [name], bindings = [env_value_binding(ty)], rest = env)
 }
 
 export fn env_bind_with_origin(env: TypeEnv, name: String, ty: Type, origin: BindingOrigin) -> TypeEnv {
-  let binding = env_value_binding_with_origin(ty, origin)
+  let binding = env_value_binding_with_origin(ty = ty, origin = origin)
   match env {
     // Keeping the cache at the head is only sound while the new binding's
     // name is NOT in the cached index: env_lookup consults the index first,
@@ -295,10 +295,10 @@ export fn env_bind_with_origin(env: TypeEnv, name: String, ty: Type, origin: Bin
     // recent binds before any index is consulted. Canonical snapshots keep
     // this layout by tracking new tail names; only a proven missing name may
     // skip the chain. Ordinary partial accelerators keep falling back.)
-    EnvCached(names_sorted, types_sorted, rest) => if env_name_index_find(names_sorted, name) >= 0 {
+    EnvCached(names_sorted, types_sorted, rest) => if env_name_index_find(index = names_sorted, name = name) >= 0 {
       EnvBind(name, binding, env)
     } else {
-      env_name_index_note_tail_binding(names_sorted, name)
+      env_name_index_note_tail_binding(index = names_sorted, name = name)
       EnvCached(names_sorted, types_sorted, EnvBind(name, binding, rest))
     },
     _ => EnvBind(name, binding, env)
@@ -310,7 +310,7 @@ export fn env_bind_with_origin(env: TypeEnv, name: String, ty: Type, origin: Bin
 /// ordinary binding, so `env_lookup` behaves exactly as it would for
 /// `env_bind` and only `env_mut_escape` below can observe the difference.
 export fn env_bind_mut(env: TypeEnv, name: String, ty: Type, escapes: Bool) -> TypeEnv {
-  EnvMutCell(name, escapes, env_bind(env, name, ty))
+  EnvMutCell(name, escapes, env_bind(env = env, name = name, ty = ty))
 }
 
 /// The mutability fact for `name` at this point in the chain, or `None` when
@@ -376,7 +376,7 @@ export fn env_mut_escape(env: TypeEnv, name: String) -> Option[Bool] {
 /// Collect declaration authority in the chain's lookup order. Declaration
 /// nodes are semantic transport, not value bindings, so cached value indexes
 /// never participate in this walk.
-export fn env_type_defs(env: TypeEnv) -> Array[TypeDef] {
+export fn env_type_defs(_ env: TypeEnv) -> Array[TypeDef] {
   let out = array_empty()
   let mut cur = env
   let mut done = false
@@ -406,7 +406,7 @@ export fn env_type_defs(env: TypeEnv) -> Array[TypeDef] {
       EnvTypeDefs(defs, _, rest) => {
         let mut i = 0
         while i < Array::length(defs) {
-          Array::push(out, Array::get(defs, i))
+          Array::push(out, value = Array::get(defs, at = i))
           i = i + 1
         }
         cur = rest
@@ -422,7 +422,7 @@ export fn env_type_defs(env: TypeEnv) -> Array[TypeDef] {
   out
 }
 
-fn type_definition_origin_marker(name: String) -> String {
+fn type_definition_origin_marker(_ name: String) -> String {
   String::concat("#typedef-origin:", name)
 }
 
@@ -472,7 +472,7 @@ export fn env_type_definition_origin(env: TypeEnv, name: String) -> Option[Bindi
       EnvTraitImplGen(_, _, _, _, rest) => {
         cur = rest
       },
-      EnvTypeDefs(defs, _, rest) => match find_typedef(defs, name) {
+      EnvTypeDefs(defs, _, rest) => match find_typedef(defs = defs, name = name) {
         Some(_) => {
           result = pending
           done = true
@@ -500,9 +500,9 @@ export fn env_type_definition_origin(env: TypeEnv, name: String) -> Option[Bindi
 }
 
 fn source_type_definition_origin(env: TypeEnv, name: String) -> Option[BindingOrigin] {
-  match env_type_definition_origin(env, name) {
+  match env_type_definition_origin(env = env, name = name) {
     Some(origin) => Some(origin),
-    None => match env_lookup_binding(env, name) {
+    None => match env_lookup_binding(env = env, name = name) {
       Some(binding) => match binding.origin {
         BindingOriginModuleFunctionHeader(path, source, _, _) => Some(BindingOriginModuleExport(path, source)),
         BindingOriginReExportFunctionHeader(path, source, _, _) => Some(BindingOriginReExportSurface(path, source)),
@@ -518,7 +518,7 @@ fn source_type_definition_origin(env: TypeEnv, name: String) -> Option[BindingOr
   }
 }
 
-fn type_definition_name(def: TypeDef) -> String {
+fn type_definition_name(_ def: TypeDef) -> String {
   match def {
     TDEnum(name, _, _) => name,
     TDStruct(name, _, _, _) => name,
@@ -533,18 +533,18 @@ fn type_definition_name(def: TypeDef) -> String {
 export fn env_preserve_type_definition_origins(env: TypeEnv, source: TypeEnv) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
-    EnvBind(name, binding, rest) => EnvBind(name, binding, env_preserve_type_definition_origins(rest, source)),
-    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, env_preserve_type_definition_origins(rest, source), params, method_gens),
-    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, env_preserve_type_definition_origins(rest, source)),
-    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, env_preserve_type_definition_origins(rest, source)),
+    EnvBind(name, binding, rest) => EnvBind(name, binding, env_preserve_type_definition_origins(env = rest, source = source)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, env_preserve_type_definition_origins(env = rest, source = source), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, env_preserve_type_definition_origins(env = rest, source = source)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, env_preserve_type_definition_origins(env = rest, source = source)),
     EnvTypeDefs(defs, selectable, rest) => {
-      let mut out = EnvTypeDefs(defs, selectable, env_preserve_type_definition_origins(rest, source))
+      let mut out = EnvTypeDefs(defs, selectable, env_preserve_type_definition_origins(env = rest, source = source))
       let mut i = Array::length(defs) - 1
       while i >= 0 {
-        let name = type_definition_name(Array::get(defs, i))
-        match source_type_definition_origin(source, name) {
+        let name = type_definition_name(Array::get(defs, at = i))
+        match source_type_definition_origin(env = source, name = name) {
           Some(origin) => {
-            out = EnvBind(type_definition_origin_marker(name), env_value_binding_with_origin(CtUnknown, origin), out)
+            out = EnvBind(type_definition_origin_marker(name), env_value_binding_with_origin(ty = CtUnknown, origin = origin), out)
           },
           None => ()
         }
@@ -552,16 +552,16 @@ export fn env_preserve_type_definition_origins(env: TypeEnv, source: TypeEnv) ->
       }
       out
     },
-    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, env_preserve_type_definition_origins(rest, source)),
-    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, env_preserve_type_definition_origins(rest, source)),
+    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, env_preserve_type_definition_origins(env = rest, source = source)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, env_preserve_type_definition_origins(env = rest, source = source)),
     EnvFlat(bindings) => EnvFlat(bindings),
-    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names, bindings, env_preserve_type_definition_origins(rest, source))
+    EnvCached(names, bindings, rest) => env_cached_after_tail_change(names = names, bindings = bindings, rest = env_preserve_type_definition_origins(env = rest, source = source))
   }
 }
 
 /// Names explicitly published for selected import. The declaration closure
 /// itself can include private names needed only to interpret a public type.
-export fn env_selectable_type_defs(env: TypeEnv) -> Array[String] {
+export fn env_selectable_type_defs(_ env: TypeEnv) -> Array[String] {
   let out = array_empty()
   let mut cur = env
   let mut done = false
@@ -591,7 +591,7 @@ export fn env_selectable_type_defs(env: TypeEnv) -> Array[String] {
       EnvTypeDefs(_, selectable, rest) => {
         let mut i = 0
         while i < Array::length(selectable) {
-          Array::push(out, Array::get(selectable, i))
+          Array::push(out, value = Array::get(selectable, at = i))
           i = i + 1
         }
         cur = rest
@@ -607,7 +607,7 @@ export fn env_selectable_type_defs(env: TypeEnv) -> Array[String] {
   out
 }
 
-export fn env_cache(env: TypeEnv) -> TypeEnv {
+export fn env_cache(_ env: TypeEnv) -> TypeEnv {
   let is_empty = match env {
     EnvEmpty => true,
     _ => false
@@ -629,13 +629,13 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
             // Surface-only entries are lookup barriers, not local values. They
             // still belong in the acceleration index so an older same-named
             // real binding cannot win before the authoritative chain is read.
-            ArrayBuilder::push(names, n)
-            ArrayBuilder::push(types, binding)
+            ArrayBuilder::push(names, value = n)
+            ArrayBuilder::push(types, value = binding)
             cur = rest
           },
           _ => {
-            ArrayBuilder::push(names, n)
-            ArrayBuilder::push(types, binding)
+            ArrayBuilder::push(names, value = n)
+            ArrayBuilder::push(types, value = binding)
             cur = rest
           }
         },
@@ -660,9 +660,9 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
         EnvFlat(bindings) => {
           let mut j = 0
           while j < Array::length(bindings) {
-            let (n, binding) = Array::get(bindings, j)
-            ArrayBuilder::push(names, n)
-            ArrayBuilder::push(types, binding)
+            let (n, binding) = Array::get(bindings, at = j)
+            ArrayBuilder::push(names, value = n)
+            ArrayBuilder::push(types, value = binding)
             j = j + 1
           }
           done = true
@@ -699,14 +699,14 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
     let mut has_region_marker = false
     let mut mi = 0
     while mi < Array::length(na) {
-      if Array::get(na, mi) == "#active_region" {
+      if Array::get(na, at = mi) == "#active_region" {
         has_region_marker = true
       }
       mi = mi + 1
     }
     if !has_region_marker {
-      Array::push(na, "#active_region")
-      Array::push(ta, env_value_binding(CtUnit))
+      Array::push(na, value = "#active_region")
+      Array::push(ta, value = env_value_binding(CtUnit))
     }
     // `na`/`ta` are collected innermost-binding-first (the traversal above
     // walks `cur = rest` outward from the head). A STABLE sort keeps that
@@ -715,21 +715,21 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
     // pass or dedup step is needed to match the old Map's "last set wins"
     // (which was fed outermost-first specifically to get this same result).
     let perm = sort_perm_by_names(na)
-    let names_sorted = apply_perm_strings(na, perm)
+    let names_sorted = apply_perm_strings(names = na, perm = perm)
     let types_sorted: Array[EnvValueBinding] = Array::with_capacity(Array::length(perm))
     let mut i = 0
     while i < Array::length(perm) {
-      Array::push(types_sorted, Array::get(ta, Array::get(perm, i)))
+      Array::push(types_sorted, value = Array::get(ta, at = Array::get(perm, at = i)))
       i = i + 1
     }
-    env_cached(names_sorted, types_sorted, env)
+    env_cached(names = names_sorted, bindings = types_sorted, rest = env)
   }
 }
 
 /// Remove the previous complete snapshot from a recently extended prefix.
 /// Its authoritative tail remains intact; partial accelerators retain their
 /// existing lookup semantics. This bounds the live snapshot history.
-fn env_without_complete_prefix(env: TypeEnv) -> TypeEnv {
+fn env_without_complete_prefix(_ env: TypeEnv) -> TypeEnv {
   match env {
     EnvBind(name, binding, rest) => EnvBind(name, binding, env_without_complete_prefix(rest)),
     EnvTraitDef(name, supers, marker, methods, rest, params, gens) => EnvTraitDef(name, supers, marker, methods, env_without_complete_prefix(rest), params, gens),
@@ -751,7 +751,7 @@ fn env_without_complete_prefix(env: TypeEnv) -> TypeEnv {
 /// this constructor grants miss authority; arbitrary/decoded accelerators
 /// keep falling back. Later tuck-behind binds record their names in the
 /// snapshot's shared over-approximation before making the new chain visible.
-export fn env_cache_complete(env: TypeEnv) -> TypeEnv {
+export fn env_cache_complete(_ env: TypeEnv) -> TypeEnv {
   match env_cache(env_without_complete_prefix(env)) {
     EnvCached(names, bindings, rest) => EnvCached(env_name_index_with_tail_names(names), bindings, rest),
     other => other
@@ -762,19 +762,19 @@ fn env_read_snapshot_push(name: String, binding: EnvValueBinding, barriers: Arra
   let mut i = 0
   let mut visible = true
   while i < Array::length(barriers) && visible {
-    visible = !env_name_index_miss_is_final(Array::get(barriers, i), name)
+    visible = !env_name_index_miss_is_final(index = Array::get(barriers, at = i), name = name)
     i = i + 1
   }
   if visible {
-    Array::push(names, name)
-    Array::push(bindings, binding)
+    Array::push(names, value = name)
+    Array::push(bindings, value = binding)
   }
 }
 
 /// Freeze current lookup answers for a read-only walk. Unlike a canonical
 /// rebuild, cached rows may be the only owner of a binding and must survive.
 /// Keep the original tail for declaration, provenance and mutability walks.
-export fn env_cache_read_snapshot(env: TypeEnv) -> TypeEnv {
+export fn env_cache_read_snapshot(_ env: TypeEnv) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
     _ => {
@@ -787,7 +787,7 @@ export fn env_cache_read_snapshot(env: TypeEnv) -> TypeEnv {
         match cur {
           EnvEmpty => done = true,
           EnvBind(name, binding, rest) => {
-            env_read_snapshot_push(name, binding, barriers, names, bindings)
+            env_read_snapshot_push(name = name, binding = binding, barriers = barriers, names = names, bindings = bindings)
             cur = rest
           },
           EnvTraitDef(_, _, _, _, rest, _, _) => cur = rest,
@@ -799,8 +799,8 @@ export fn env_cache_read_snapshot(env: TypeEnv) -> TypeEnv {
           EnvFlat(rows) => {
             let mut i = 0
             while i < Array::length(rows) {
-              let (name, binding) = Array::get(rows, i)
-              env_read_snapshot_push(name, binding, barriers, names, bindings)
+              let (name, binding) = Array::get(rows, at = i)
+              env_read_snapshot_push(name = name, binding = binding, barriers = barriers, names = names, bindings = bindings)
               i = i + 1
             }
             done = true
@@ -808,16 +808,16 @@ export fn env_cache_read_snapshot(env: TypeEnv) -> TypeEnv {
           EnvCached(index, rows, rest) => {
             let mut i = 0
             while i < env_name_index_length(index) {
-              let name = env_name_index_at(index, i)
+              let name = env_name_index_at(index = index, row = i)
               // Use the same lookup as the original node. This preserves
               // first-row wins and the historical behavior of unsorted rows.
-              if env_name_index_find(index, name) == i {
-                env_read_snapshot_push(name, Array::get(rows, i), barriers, names, bindings)
+              if env_name_index_find(index = index, name = name) == i {
+                env_read_snapshot_push(name = name, binding = Array::get(rows, at = i), barriers = barriers, names = names, bindings = bindings)
               }
               i = i + 1
             }
             if env_name_index_has_tail_names(index) {
-              Array::push(barriers, index)
+              Array::push(barriers, value = index)
             }
             cur = rest
           }
@@ -830,12 +830,12 @@ export fn env_cache_read_snapshot(env: TypeEnv) -> TypeEnv {
       let sorted_bindings: Array[EnvValueBinding] = []
       let mut i = 0
       while i < Array::length(perm) {
-        let row = Array::get(perm, i)
-        let name = Array::get(names, row)
+        let row = Array::get(perm, at = i)
+        let name = Array::get(names, at = row)
         let n = Array::length(sorted_names)
-        if n == 0 || Array::get(sorted_names, n - 1) != name {
-          Array::push(sorted_names, name)
-          Array::push(sorted_bindings, Array::get(bindings, row))
+        if n == 0 || Array::get(sorted_names, at = n - 1) != name {
+          Array::push(sorted_names, value = name)
+          Array::push(sorted_bindings, value = Array::get(bindings, at = row))
         }
         i = i + 1
       }
@@ -844,7 +844,7 @@ export fn env_cache_read_snapshot(env: TypeEnv) -> TypeEnv {
   }
 }
 
-export fn fresh_var(c: Int) -> (Type, Int) {
+export fn fresh_var(_ c: Int) -> (Type, Int) {
   (CtVar(c), c + 1)
 }
 
@@ -859,7 +859,7 @@ export fn hkt_ctor_prefix() -> String {
   "#ctor."
 }
 
-export fn is_hkt_app(ty: Type) -> Bool {
+export fn is_hkt_app(_ ty: Type) -> Bool {
   match ty {
     CtNamed(name, args) => name == hkt_app_name() && Array::length(args) >= 1,
     _ => false
@@ -870,40 +870,40 @@ export fn hkt_apply_ctor(head: Type, args: Array[Type]) -> Type {
   if Array::length(args) == 0 {
     head
   } else {
-    match try_apply_alias_constructor(head, args) {
+    match try_apply_alias_constructor(head = head, args = args) {
       Some(applied) => applied,
       None => match head {
         CtNamed(n, ha) => if n == "Array" && Array::length(ha) == 0 && Array::length(args) == 1 {
-          CtArray(Array::get(args, 0))
+          CtArray(Array::get(args, at = 0))
         } else if n == "Option" && Array::length(ha) == 0 && Array::length(args) == 1 {
-          CtOption(Array::get(args, 0))
+          CtOption(Array::get(args, at = 0))
         } else if n == hkt_app_name() {
           let out = array_empty()
           let mut i = 0
           while i < Array::length(ha) {
-            Array::push(out, Array::get(ha, i))
+            Array::push(out, value = Array::get(ha, at = i))
             i = i + 1
           }
           let mut j = 0
           while j < Array::length(args) {
-            Array::push(out, Array::get(args, j))
+            Array::push(out, value = Array::get(args, at = j))
             j = j + 1
           }
           CtNamed(hkt_app_name(), out)
-        } else if String::starts_with(n, hkt_ctor_prefix()) && Array::length(ha) == 0 {
+        } else if String::starts_with(n, prefix = hkt_ctor_prefix()) && Array::length(ha) == 0 {
           let ctor = n[String::length(hkt_ctor_prefix()): String::length(n)]
-          hkt_apply_ctor(CtNamed(ctor, array_empty()), args)
+          hkt_apply_ctor(head = CtNamed(ctor, array_empty()), args = args)
         } else if Array::length(ha) == 0 {
           if n == "Array" && Array::length(args) == 1 {
-            CtArray(Array::get(args, 0))
+            CtArray(Array::get(args, at = 0))
           } else if n == "Option" && Array::length(args) == 1 {
-            CtOption(Array::get(args, 0))
-          } else if String::starts_with(n, "#hktformal.") {
+            CtOption(Array::get(args, at = 0))
+          } else if String::starts_with(n, prefix = "#hktformal.") {
             let all = array_empty()
-            Array::push(all, head)
+            Array::push(all, value = head)
             let mut k = 0
             while k < Array::length(args) {
-              Array::push(all, Array::get(args, k))
+              Array::push(all, value = Array::get(args, at = k))
               k = k + 1
             }
             CtNamed(hkt_app_name(), all)
@@ -912,30 +912,30 @@ export fn hkt_apply_ctor(head: Type, args: Array[Type]) -> Type {
           }
         } else {
           let all = array_empty()
-          Array::push(all, head)
+          Array::push(all, value = head)
           let mut k = 0
           while k < Array::length(args) {
-            Array::push(all, Array::get(args, k))
+            Array::push(all, value = Array::get(args, at = k))
             k = k + 1
           }
           CtNamed(hkt_app_name(), all)
         },
         CtVar(_) => {
           let all = array_empty()
-          Array::push(all, head)
+          Array::push(all, value = head)
           let mut k = 0
           while k < Array::length(args) {
-            Array::push(all, Array::get(args, k))
+            Array::push(all, value = Array::get(args, at = k))
             k = k + 1
           }
           CtNamed(hkt_app_name(), all)
         },
         _ => {
           let all = array_empty()
-          Array::push(all, head)
+          Array::push(all, value = head)
           let mut k = 0
           while k < Array::length(args) {
-            Array::push(all, Array::get(args, k))
+            Array::push(all, value = Array::get(args, at = k))
             k = k + 1
           }
           CtNamed(hkt_app_name(), all)
@@ -945,21 +945,21 @@ export fn hkt_apply_ctor(head: Type, args: Array[Type]) -> Type {
   }
 }
 
-export fn hkt_ctor(name: String) -> Type {
+export fn hkt_ctor(_ name: String) -> Type {
   CtNamed(String::concat(hkt_ctor_prefix(), name), array_empty())
 }
 
-export fn zonk_hkt(ty: Type) -> Type {
+export fn zonk_hkt(_ ty: Type) -> Type {
   match ty {
     CtNamed(name, args) => if name == hkt_app_name() && Array::length(args) >= 1 {
-      let head = Array::get(args, 0)
+      let head = Array::get(args, at = 0)
       let rest = array_empty()
       let mut i = 1
       while i < Array::length(args) {
-        Array::push(rest, Array::get(args, i))
+        Array::push(rest, value = Array::get(args, at = i))
         i = i + 1
       }
-      hkt_apply_ctor(head, rest)
+      hkt_apply_ctor(head = head, args = rest)
     } else {
       ty
     },
@@ -974,23 +974,23 @@ export fn occurs_in(id: Int, ty: Type) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(params) {
-        if occurs_in(id, Array::get(params, i)) {
+        if occurs_in(id = id, ty = Array::get(params, at = i)) {
           found = true
           i = Array::length(params)
         } else {
           i = i + 1
         }
       }
-      found || occurs_in(id, ret)
+      found || occurs_in(id = id, ty = ret)
     },
-    CtArray(elem) => occurs_in(id, elem),
-    CtOption(elem) => occurs_in(id, elem),
+    CtArray(elem) => occurs_in(id = id, ty = elem),
+    CtOption(elem) => occurs_in(id = id, ty = elem),
     CtConstructor(_, _) => false,
     CtApplied(head, args) => {
-      let mut found = occurs_in(id, head)
+      let mut found = occurs_in(id = id, ty = head)
       let mut ai = 0
       while ai < Array::length(args) && !found {
-        found = occurs_in(id, Array::get(args, ai))
+        found = occurs_in(id = id, ty = Array::get(args, at = ai))
         ai = ai + 1
       }
       found
@@ -999,8 +999,8 @@ export fn occurs_in(id: Int, ty: Type) -> Bool {
       let mut ri = 0
       let mut rfound = false
       while ri < Array::length(rfields) {
-        let (_, rft) = Array::get(rfields, ri)
-        if occurs_in(id, rft) {
+        let (_, rft) = Array::get(rfields, at = ri)
+        if occurs_in(id = id, ty = rft) {
           rfound = true
           ri = Array::length(rfields)
         } else {
@@ -1013,7 +1013,7 @@ export fn occurs_in(id: Int, ty: Type) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(elems) {
-        if occurs_in(id, Array::get(elems, i)) {
+        if occurs_in(id = id, ty = Array::get(elems, at = i)) {
           found = true
           i = Array::length(elems)
         } else {
@@ -1022,12 +1022,12 @@ export fn occurs_in(id: Int, ty: Type) -> Bool {
       }
       found
     },
-    CtForAll(_, _, body) => occurs_in(id, body),
+    CtForAll(_, _, body) => occurs_in(id = id, ty = body),
     CtNamed(_, args) => {
       let mut i = 0
       let mut found = false
       while i < Array::length(args) {
-        if occurs_in(id, Array::get(args, i)) {
+        if occurs_in(id = id, ty = Array::get(args, at = i)) {
           found = true
           i = Array::length(args)
         } else {
@@ -1040,18 +1040,18 @@ export fn occurs_in(id: Int, ty: Type) -> Bool {
   }
 }
 
-fn env_lookup_type_value(binding: EnvValueBinding) -> Type {
+fn env_lookup_type_value(_ binding: EnvValueBinding) -> Type {
   binding.ty
 }
 
-fn env_lookup_binding_value(binding: EnvValueBinding) -> EnvValueBinding {
+fn env_lookup_binding_value(_ binding: EnvValueBinding) -> EnvValueBinding {
   binding
 }
 
 let no_env_type: Option[Type] = None
 
 export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
-  env_lookup_project(env, name, no_env_type, env_lookup_type_value)
+  env_lookup_project(env = env, name = name, missing = no_env_type, project = env_lookup_type_value)
 }
 
 /// Whether `name` is present only to publish an aliased re-export. This is
@@ -1106,7 +1106,7 @@ export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
       EnvFlat(bindings) => {
         let mut i = 0
         while i < Array::length(bindings) && !found {
-          let (n, binding) = Array::get(bindings, i)
+          let (n, binding) = Array::get(bindings, at = i)
           if String::equals(n, name) {
             match binding.origin {
               BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => {
@@ -1125,7 +1125,7 @@ export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
         // Complete snapshots cover every canonical name, including surface
         // entries and older same-name bindings. Only a proven name miss can
         // stop this historical scan; a positive row may hide an older surface.
-        if env_name_index_miss_is_final(names, name) && env_name_index_find(names, name) < 0 {
+        if env_name_index_miss_is_final(index = names, name = name) && env_name_index_find(index = names, name = name) < 0 {
           done = true
         } else {
           cur = rest
@@ -1136,7 +1136,7 @@ export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
   found
 }
 
-fn env_without_reexport_surface_bindings(env: TypeEnv) -> TypeEnv {
+fn env_without_reexport_surface_bindings(_ env: TypeEnv) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
     EnvBind(name, binding, rest) => match binding.origin {
@@ -1153,10 +1153,10 @@ fn env_without_reexport_surface_bindings(env: TypeEnv) -> TypeEnv {
       let kept = array_empty()
       let mut i = 0
       while i < Array::length(bindings) {
-        let pair = Array::get(bindings, i)
+        let pair = Array::get(bindings, at = i)
         match pair.1.origin {
           BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => (),
-          _ => Array::push(kept, pair)
+          _ => Array::push(kept, value = pair)
         }
         i = i + 1
       }
@@ -1167,17 +1167,17 @@ fn env_without_reexport_surface_bindings(env: TypeEnv) -> TypeEnv {
       let kept_bindings = array_empty()
       let mut i = 0
       while i < env_name_index_length(names) {
-        let binding = Array::get(bindings, i)
+        let binding = Array::get(bindings, at = i)
         match binding.origin {
           BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => (),
           _ => {
-            Array::push(kept_names, env_name_index_at(names, i))
-            Array::push(kept_bindings, binding)
+            Array::push(kept_names, value = env_name_index_at(index = names, row = i))
+            Array::push(kept_bindings, value = binding)
           }
         }
         i = i + 1
       }
-      env_cached(kept_names, kept_bindings, env_without_reexport_surface_bindings(rest))
+      env_cached(names = kept_names, bindings = kept_bindings, rest = env_without_reexport_surface_bindings(rest))
     }
   }
 }
@@ -1190,8 +1190,8 @@ export fn env_with_reexport_surface_blockers(env: TypeEnv, names: Array[String])
   let mut out = env_without_reexport_surface_bindings(env)
   let mut i = 0
   while i < Array::length(names) {
-    let name = Array::get(names, i)
-    out = env_bind_with_origin(out, name, CtUnknown, BindingOriginReExportSurface("", name))
+    let name = Array::get(names, at = i)
+    out = env_bind_with_origin(env = out, name = name, ty = CtUnknown, origin = BindingOriginReExportSurface("", name))
     i = i + 1
   }
   out
@@ -1201,7 +1201,7 @@ export fn env_with_reexport_surface_blockers(env: TypeEnv, names: Array[String])
 let no_env_value_binding: Option[EnvValueBinding] = None
 
 export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBinding] {
-  env_lookup_project(env, name, no_env_value_binding, env_lookup_binding_value)
+  env_lookup_project(env = env, name = name, missing = no_env_value_binding, project = env_lookup_binding_value)
 }
 
 // Share the authoritative lookup, including re-export barriers and complete
@@ -1254,7 +1254,7 @@ fn env_lookup_project[T](env: TypeEnv, name: String, missing: Option[T], project
       EnvFlat(bindings) => {
         let mut j = 0
         while j < Array::length(bindings) && !done {
-          let (n, binding) = Array::get(bindings, j)
+          let (n, binding) = Array::get(bindings, at = j)
           if String::equals(n, name) {
             match binding.origin {
               BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => {
@@ -1274,9 +1274,9 @@ fn env_lookup_project[T](env: TypeEnv, name: String, missing: Option[T], project
         }
       },
       EnvCached(names_sorted, types_sorted, rest) => {
-        let slot = env_name_index_find(names_sorted, name)
+        let slot = env_name_index_find(index = names_sorted, name = name)
         if slot >= 0 {
-          let binding = Array::get(types_sorted, slot)
+          let binding = Array::get(types_sorted, at = slot)
           match binding.origin {
             BindingOriginReExportSurface(_, _)|BindingOriginReExportFunctionHeader(_, _, _, _) => {
               done = true
@@ -1286,7 +1286,7 @@ fn env_lookup_project[T](env: TypeEnv, name: String, missing: Option[T], project
               done = true
             }
           }
-        } else if env_name_index_miss_is_final(names_sorted, name) {
+        } else if env_name_index_miss_is_final(index = names_sorted, name = name) {
           done = true
         } else {
           cur = rest
@@ -1337,7 +1337,7 @@ export fn env_lookup_binding_including_surface(env: TypeEnv, name: String) -> Op
       EnvFlat(bindings) => {
         let mut i = 0
         while i < Array::length(bindings) && !done {
-          let (n, binding) = Array::get(bindings, i)
+          let (n, binding) = Array::get(bindings, at = i)
           if String::equals(n, name) {
             result = Some(binding)
             done = true
@@ -1348,11 +1348,11 @@ export fn env_lookup_binding_including_surface(env: TypeEnv, name: String) -> Op
         done = true
       },
       EnvCached(names_sorted, types_sorted, rest) => {
-        let slot = env_name_index_find(names_sorted, name)
+        let slot = env_name_index_find(index = names_sorted, name = name)
         if slot >= 0 {
-          result = Some(Array::get(types_sorted, slot))
+          result = Some(Array::get(types_sorted, at = slot))
           done = true
-        } else if env_name_index_miss_is_final(names_sorted, name) {
+        } else if env_name_index_miss_is_final(index = names_sorted, name = name) {
           done = true
         } else {
           cur = rest
@@ -1368,8 +1368,8 @@ export fn env_bind_all(env: TypeEnv, bindings: Array[(String, Type)]) -> TypeEnv
   let mut i = 0
   let mut acc = env
   while i < len {
-    let (name, ty) = Array::get(bindings, i)
-    acc = env_bind(acc, name, ty)
+    let (name, ty) = Array::get(bindings, at = i)
+    acc = env_bind(env = acc, name = name, ty = ty)
     i = i + 1
   }
   acc
@@ -1404,7 +1404,7 @@ export fn find_enum_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDe
       done = true
     } else {
       fuel = fuel - 1
-      match find_typedef(defs, cur) {
+      match find_typedef(defs = defs, name = cur) {
         Some(TDEnum(en, eparams, evariants)) => {
           result = Some(TDEnum(en, eparams, evariants))
           done = true
@@ -1440,7 +1440,7 @@ export fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
     if i >= len {
       done = true
     } else {
-      let d = Array::get(defs, i)
+      let d = Array::get(defs, at = i)
       let dname = match d {
         TDEnum(n, _, _) => n,
         TDStruct(n, _, _, _) => n,
@@ -1460,16 +1460,16 @@ export fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
 }
 
 fn subst_read_snapshot_push(key: String, ty: Type, seen: MutMap[String, Int], rows: Array[(String, Type)]) -> Unit {
-  if !MutMap::has(seen, key) {
-    MutMap::set(seen, key, 1)
-    Array::push(rows, (key, ty))
+  if !MutMap::has(seen, k = key) {
+    MutMap::set(seen, k = key, v = 1)
+    Array::push(rows, value = (key, ty))
   }
 }
 
 /// Index current value lookup answers for a completed substitution's read
 /// phase. Keep the original chain for bounds, effects and missing values.
 /// Bounded map chunks avoid quadratic builder work on a large substitution.
-export fn subst_cache_read_snapshot(s: Subst) -> Subst {
+export fn subst_cache_read_snapshot(_ s: Subst) -> Subst {
   let seen: MutMap[String, Int] = MutMap::new_string()
   let rows: Array[(String, Type)] = []
   let mut cur = s
@@ -1478,7 +1478,7 @@ export fn subst_cache_read_snapshot(s: Subst) -> Subst {
     match cur {
       SubstEmpty => done = true,
       SubstBind(id, ty, rest) => {
-        subst_read_snapshot_push(__to_string(id), ty, seen, rows)
+        subst_read_snapshot_push(key = __to_string(id), ty = ty, seen = seen, rows = rows)
         cur = rest
       },
       SubstBound(_, _, rest) => cur = rest,
@@ -1486,7 +1486,7 @@ export fn subst_cache_read_snapshot(s: Subst) -> Subst {
       SubstValueRange(_, rest) => cur = rest,
       SubstCached(cache, _, rest) => {
         for key in Map::keys(cache) {
-          subst_read_snapshot_push(key, Map::get(cache, key), seen, rows)
+          subst_read_snapshot_push(key = key, ty = Map::get(cache, key = key), seen = seen, rows = rows)
         }
         cur = rest
       }
@@ -1502,18 +1502,18 @@ export fn subst_cache_read_snapshot(s: Subst) -> Subst {
       Array::length(rows)
     }
     while i < end {
-      let (key, ty) = Array::get(rows, i)
-      MapBuilder::set(builder, key, ty)
+      let (key, ty) = Array::get(rows, at = i)
+      MapBuilder::set(builder, key = key, value = ty)
       i = i + 1
     }
-    Array::push(caches, MapBuilder::freeze(builder))
+    Array::push(caches, value = MapBuilder::freeze(builder))
   }
   let empty_bounds: Map[String, Array[String]] = Map::new()
   let mut out = s
   let mut j = Array::length(caches)
   while j > 0 {
     j = j - 1
-    out = SubstCached(Array::get(caches, j), empty_bounds, out)
+    out = SubstCached(Array::get(caches, at = j), empty_bounds, out)
   }
   out
 }
@@ -1572,9 +1572,9 @@ export fn subst_lookup(s: Subst, id: Int) -> Option[Type] {
     SubstValueRange(max_key, _) => if id > max_key {
       None
     } else {
-      subst_lookup_chain(s, id)
+      subst_lookup_chain(s = s, id = id)
     },
-    _ => subst_lookup_chain(s, id)
+    _ => subst_lookup_chain(s = s, id = id)
   }
 }
 
@@ -1598,8 +1598,8 @@ fn subst_lookup_chain(s: Subst, id: Int) -> Option[Type] {
       SubstBound(_, _, rest) => {
         cur = rest
       },
-      SubstCached(cache, _, rest) => if Map::has_key(cache, key) {
-        out = Some(Map::get(cache, key))
+      SubstCached(cache, _, rest) => if Map::has_key(cache, key = key) {
+        out = Some(Map::get(cache, key = key))
         done = true
       } else {
         cur = rest
@@ -1622,17 +1622,17 @@ export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
   let empty = array_empty()
   match env {
     EnvEmpty => empty,
-    EnvBind(_, _, rest) => trait_supers(rest, name),
+    EnvBind(_, _, rest) => trait_supers(env = rest, name = name),
     EnvTraitDef(tname, supers, _, _, rest, _, _) => if tname == trait_ref_name(name) {
       supers
-    } else trait_supers(rest, name),
-    EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
-    EnvShowWrappers(_, _, rest) => trait_supers(rest, name),
-    EnvMutCell(_, _, rest) => trait_supers(rest, name),
-    EnvTraitImplGen(_, _, _, _, rest) => trait_supers(rest, name),
-    EnvTypeDefs(_, _, rest) => trait_supers(rest, name),
+    } else trait_supers(env = rest, name = name),
+    EnvTraitImpl(_, _, rest) => trait_supers(env = rest, name = name),
+    EnvShowWrappers(_, _, rest) => trait_supers(env = rest, name = name),
+    EnvMutCell(_, _, rest) => trait_supers(env = rest, name = name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_supers(env = rest, name = name),
+    EnvTypeDefs(_, _, rest) => trait_supers(env = rest, name = name),
     EnvFlat(_) => empty,
-    EnvCached(_, _, rest) => trait_supers(rest, name)
+    EnvCached(_, _, rest) => trait_supers(env = rest, name = name)
   }
 }
 
@@ -1642,19 +1642,19 @@ export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
 export fn trait_definition(env: TypeEnv, name: String) -> Option[(Array[String], Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(String, Array[String], Array[(String, Array[String])])])] {
   match env {
     EnvEmpty => None,
-    EnvBind(_, _, rest) => trait_definition(rest, name),
+    EnvBind(_, _, rest) => trait_definition(env = rest, name = name),
     EnvTraitDef(tname, supers, _, methods, rest, params, method_gens) => if tname == trait_ref_name(name) {
       Some((supers, methods, params, method_gens))
     } else {
-      trait_definition(rest, name)
+      trait_definition(env = rest, name = name)
     },
-    EnvTraitImpl(_, _, rest) => trait_definition(rest, name),
-    EnvShowWrappers(_, _, rest) => trait_definition(rest, name),
-    EnvMutCell(_, _, rest) => trait_definition(rest, name),
-    EnvTraitImplGen(_, _, _, _, rest) => trait_definition(rest, name),
-    EnvTypeDefs(_, _, rest) => trait_definition(rest, name),
+    EnvTraitImpl(_, _, rest) => trait_definition(env = rest, name = name),
+    EnvShowWrappers(_, _, rest) => trait_definition(env = rest, name = name),
+    EnvMutCell(_, _, rest) => trait_definition(env = rest, name = name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_definition(env = rest, name = name),
+    EnvTypeDefs(_, _, rest) => trait_definition(env = rest, name = name),
     EnvFlat(_) => None,
-    EnvCached(_, _, rest) => trait_definition(rest, name)
+    EnvCached(_, _, rest) => trait_definition(env = rest, name = name)
   }
 }
 
@@ -1666,7 +1666,7 @@ export fn lookup_flat_trait_sigs(traits: Array[(String, Array[(String, Array[Typ
   let mut i = 0
   let mut result = None
   while i < Array::length(traits) {
-    let (tname, sigs) = Array::get(traits, i)
+    let (tname, sigs) = Array::get(traits, at = i)
     if tname == trait_ref_name(name) {
       result = Some(sigs)
       i = Array::length(traits)
@@ -1681,7 +1681,7 @@ fn flat_lookup_supers(supers_map: Array[(String, Array[String])], name: String) 
   let mut i = 0
   let mut result: Array[String] = []
   while i < Array::length(supers_map) {
-    let (tname, supers) = Array::get(supers_map, i)
+    let (tname, supers) = Array::get(supers_map, at = i)
     if tname == trait_ref_name(name) {
       result = supers
       i = Array::length(supers_map)
@@ -1696,7 +1696,7 @@ fn flat_names_have(names: Array[String], name: String) -> Bool {
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(names) {
-    if Array::get(names, i) == name {
+    if Array::get(names, at = i) == name {
       found = true
     } else {
       ()
@@ -1730,29 +1730,29 @@ fn flat_names_have(names: Array[String], name: String) -> Bool {
 /// second is dropped here, while the scan rejected the bound for the dropped
 /// one.
 export fn flatten_trait_sigs_into(tname: String, traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], supers_map: Array[(String, Array[String])], acc_names: Array[String], out: Array[(String, Array[TypeExpr], TypeExpr)], owners: Array[(String, String)], visiting: Array[String]) -> Unit {
-  if flat_names_have(visiting, tname) {
+  if flat_names_have(names = visiting, name = tname) {
     ()
   } else {
     let visiting_len = Array::length(visiting)
-    Array::push(visiting, tname)
-    let supers = flat_lookup_supers(supers_map, tname)
+    Array::push(visiting, value = tname)
+    let supers = flat_lookup_supers(supers_map = supers_map, name = tname)
     let mut s = 0
     while s < Array::length(supers) {
-      flatten_trait_sigs_into(Array::get(supers, s), traits_raw, supers_map, acc_names, out, owners, visiting)
+      flatten_trait_sigs_into(tname = Array::get(supers, at = s), traits_raw = traits_raw, supers_map = supers_map, acc_names = acc_names, out = out, owners = owners, visiting = visiting)
       s = s + 1
     }
-    Array::truncate(visiting, visiting_len)
-    match lookup_flat_trait_sigs(traits_raw, tname) {
+    Array::truncate(visiting, length = visiting_len)
+    match lookup_flat_trait_sigs(traits = traits_raw, name = tname) {
       Some(sigs) => {
         let mut i = 0
         while i < Array::length(sigs) {
-          let (mname, params, ret) = Array::get(sigs, i)
-          if flat_names_have(acc_names, mname) {
+          let (mname, params, ret) = Array::get(sigs, at = i)
+          if flat_names_have(names = acc_names, name = mname) {
             ()
           } else {
-            Array::push(acc_names, mname)
-            Array::push(out, (mname, params, ret))
-            Array::push(owners, (mname, tname))
+            Array::push(acc_names, value = mname)
+            Array::push(out, value = (mname, params, ret))
+            Array::push(owners, value = (mname, tname))
           }
           i = i + 1
         }
@@ -1771,7 +1771,7 @@ export fn flatten_trait_sigs_into(tname: String, traits_raw: Array[(String, Arra
 /// body answered `true` for two DIFFERENT `Pt`, because the rung handed erased
 /// `Pt` values to a method declared over `Int`.
 export fn trait_sigs_first_self_relation(sigs: Array[(String, Array[TypeExpr], TypeExpr)], method: String) -> Bool {
-  trait_sigs_first_self_binary(sigs, method, "Bool")
+  trait_sigs_first_self_binary(sigs = sigs, method = method, result = "Bool")
 }
 
 /// The retained binary method must accept Self twice and return the requested type.
@@ -1779,9 +1779,9 @@ export fn trait_sigs_first_self_binary(sigs: Array[(String, Array[TypeExpr], Typ
   let mut i = 0
   let mut ok = false
   while i < Array::length(sigs) {
-    let (m, params, ret) = Array::get(sigs, i)
+    let (m, params, ret) = Array::get(sigs, at = i)
     if m == method {
-      ok = Array::length(params) == 2 && flat_type_expr_is(Array::get(params, 0), "Self") && flat_type_expr_is(Array::get(params, 1), "Self") && flat_type_expr_is(ret, result)
+      ok = Array::length(params) == 2 && flat_type_expr_is(te = Array::get(params, at = 0), name = "Self") && flat_type_expr_is(te = Array::get(params, at = 1), name = "Self") && flat_type_expr_is(te = ret, name = result)
       i = Array::length(sigs)
     } else {
       i = i + 1
@@ -1799,19 +1799,19 @@ fn flat_type_expr_is(te: TypeExpr, name: String) -> Bool {
 
 /// The retained Add operation needs no additional method type parameters.
 export fn bound_flat_self_add(env: TypeEnv, bound: String) -> Bool {
-  let (flat, owners) = bound_flat_sigs(env, bound)
+  let (flat, owners) = bound_flat_sigs(env = env, bound = bound)
   let mut method_generic = false
   for owner in owners {
     if owner.0 == "add" {
-      match trait_definition(env, owner.1) {
+      match trait_definition(env = env, name = owner.1) {
         Some((_, _, _, gens)) => {
-          method_generic = Array::any(gens, (g) -> g.0 == "add" && Array::length(g.1) > 0)
+          method_generic = Array::any(gens, f = (g) -> g.0 == "add" && Array::length(g.1) > 0)
         },
         None => ()
       }
     }
   }
-  !method_generic && trait_sigs_first_self_binary(flat, "add", "Self")
+  !method_generic && trait_sigs_first_self_binary(sigs = flat, method = "add", result = "Self")
 }
 
 /// #3327 review: does the witness dictionary for `bound` carry
@@ -1825,8 +1825,8 @@ export fn bound_flat_self_add(env: TypeEnv, bound: String) -> Bool {
 /// `==` compares through it, and with `trait Key: Bad + Good + Eq {}` it is
 /// `Bad`'s `equals(Int, Int)`, which `==` does not call.
 export fn bound_flat_self_equals(env: TypeEnv, bound: String) -> Bool {
-  let (flat, _) = bound_flat_sigs(env, bound)
-  trait_sigs_first_self_relation(flat, "equals")
+  let (flat, _) = bound_flat_sigs(env = env, bound = bound)
+  trait_sigs_first_self_relation(sigs = flat, method = "equals")
 }
 
 /// #3350: the trait that declares the `equals` `bound`'s witness dictionary
@@ -1835,11 +1835,11 @@ export fn bound_flat_self_equals(env: TypeEnv, bound: String) -> Bool {
 /// Bool` witness: with `trait Key: Bad + Good + Eq {}` it is `Bad`, and the
 /// edit is to reorder or rename, not to give `Eq` a method.
 export fn bound_flat_equals_owner(env: TypeEnv, bound: String) -> String {
-  let (_, owners) = bound_flat_sigs(env, bound)
+  let (_, owners) = bound_flat_sigs(env = env, bound = bound)
   let mut owner = ""
   let mut i = 0
   while i < Array::length(owners) {
-    let (m, tname) = Array::get(owners, i)
+    let (m, tname) = Array::get(owners, at = i)
     if m == "equals" {
       owner = tname
       i = Array::length(owners)
@@ -1859,19 +1859,19 @@ fn bound_flat_sigs(env: TypeEnv, bound: String) -> (Array[(String, Array[TypeExp
   let pending: Array[String] = [trait_ref_name(bound)]
   let seen: Array[String] = []
   while Array::length(pending) > 0 {
-    let cur = Array::get(pending, Array::length(pending) - 1)
-    Array::truncate(pending, Array::length(pending) - 1)
-    if flat_names_have(seen, cur) {
+    let cur = Array::get(pending, at = Array::length(pending) - 1)
+    Array::truncate(pending, length = Array::length(pending) - 1)
+    if flat_names_have(names = seen, name = cur) {
       ()
     } else {
-      Array::push(seen, cur)
-      match trait_definition(env, cur) {
+      Array::push(seen, value = cur)
+      match trait_definition(env = env, name = cur) {
         Some((supers, methods, _, _)) => {
-          Array::push(traits_raw, (cur, methods))
-          Array::push(supers_map, (cur, supers))
+          Array::push(traits_raw, value = (cur, methods))
+          Array::push(supers_map, value = (cur, supers))
           let mut i = 0
           while i < Array::length(supers) {
-            Array::push(pending, trait_ref_name(Array::get(supers, i)))
+            Array::push(pending, value = trait_ref_name(Array::get(supers, at = i)))
             i = i + 1
           }
         },
@@ -1883,7 +1883,7 @@ fn bound_flat_sigs(env: TypeEnv, bound: String) -> (Array[(String, Array[TypeExp
   let flat: Array[(String, Array[TypeExpr], TypeExpr)] = []
   let owners: Array[(String, String)] = []
   let visiting: Array[String] = []
-  flatten_trait_sigs_into(trait_ref_name(bound), traits_raw, supers_map, acc_names, flat, owners, visiting)
+  flatten_trait_sigs_into(tname = trait_ref_name(bound), traits_raw = traits_raw, supers_map = supers_map, acc_names = acc_names, out = flat, owners = owners, visiting = visiting)
   (flat, owners)
 }
 
@@ -1895,16 +1895,16 @@ fn trait_method_binder_names(tparams: Array[String], method_gens: Array[(String,
   let out = ArrayBuilder::new()
   let mut i = 0
   while i < Array::length(tparams) {
-    ArrayBuilder::push(out, Array::get(tparams, i))
+    ArrayBuilder::push(out, value = Array::get(tparams, at = i))
     i = i + 1
   }
   let mut j = 0
   while j < Array::length(method_gens) {
-    let (mname, gparams, _) = Array::get(method_gens, j)
+    let (mname, gparams, _) = Array::get(method_gens, at = j)
     if mname == method_name {
       let mut k = 0
       while k < Array::length(gparams) {
-        ArrayBuilder::push(out, Array::get(gparams, k))
+        ArrayBuilder::push(out, value = Array::get(gparams, at = k))
         k = k + 1
       }
     } else {
@@ -1928,13 +1928,13 @@ fn trait_method_binder_names(tparams: Array[String], method_gens: Array[(String,
 export fn trait_method_sig_binders(env: TypeEnv, trait_name: String, method_name: String) -> Option[(Array[TypeExpr], TypeExpr, Array[String])] {
   match env {
     EnvEmpty => None,
-    EnvBind(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
+    EnvBind(_, _, rest) => trait_method_sig_binders(env = rest, trait_name = trait_name, method_name = method_name),
     EnvTraitDef(tname, _, _, methods, rest, tparams, method_gens) => if tname == trait_ref_name(trait_name) {
       let mlen = Array::length(methods)
       let mut i = 0
       let mut found = None
       while i < mlen {
-        let (mname, params, ret) = Array::get(methods, i)
+        let (mname, params, ret) = Array::get(methods, at = i)
         if mname == method_name {
           found = Some((params, ret))
           i = mlen
@@ -1945,18 +1945,18 @@ export fn trait_method_sig_binders(env: TypeEnv, trait_name: String, method_name
       match found {
         Some(sig) => {
           let (params, ret) = sig
-          Some((params, ret, trait_method_binder_names(tparams, method_gens, method_name)))
+          Some((params, ret, trait_method_binder_names(tparams = tparams, method_gens = method_gens, method_name = method_name)))
         },
-        None => trait_method_sig_binders(rest, trait_name, method_name)
+        None => trait_method_sig_binders(env = rest, trait_name = trait_name, method_name = method_name)
       }
-    } else trait_method_sig_binders(rest, trait_name, method_name),
-    EnvTraitImpl(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
-    EnvShowWrappers(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
-    EnvMutCell(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
-    EnvTraitImplGen(_, _, _, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
-    EnvTypeDefs(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
+    } else trait_method_sig_binders(env = rest, trait_name = trait_name, method_name = method_name),
+    EnvTraitImpl(_, _, rest) => trait_method_sig_binders(env = rest, trait_name = trait_name, method_name = method_name),
+    EnvShowWrappers(_, _, rest) => trait_method_sig_binders(env = rest, trait_name = trait_name, method_name = method_name),
+    EnvMutCell(_, _, rest) => trait_method_sig_binders(env = rest, trait_name = trait_name, method_name = method_name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_method_sig_binders(env = rest, trait_name = trait_name, method_name = method_name),
+    EnvTypeDefs(_, _, rest) => trait_method_sig_binders(env = rest, trait_name = trait_name, method_name = method_name),
     EnvFlat(_) => None,
-    EnvCached(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name)
+    EnvCached(_, _, rest) => trait_method_sig_binders(env = rest, trait_name = trait_name, method_name = method_name)
   }
 }
 
@@ -1964,7 +1964,7 @@ export fn int_array_contains(xs: Array[Int], v: Int) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(xs) {
-    if Array::get(xs, i) == v {
+    if Array::get(xs, at = i) == v {
       found = true
       i = Array::length(xs)
     } else {
@@ -1979,7 +1979,7 @@ export fn int_array_contains(xs: Array[Int], v: Int) -> Bool {
 /// shared child is dropped by Perceus when the result is consumed, and the
 /// donor (`args` of `resolve_type_alias_params`, an alias body) still owns it
 /// (#2279).
-fn type_clone(ty: Type) -> Type {
+fn type_clone(_ ty: Type) -> Type {
   match ty {
     CtInt => CtInt,
     CtDouble => CtDouble,
@@ -2039,42 +2039,42 @@ export fn resolve_type_alias_params(ty: Type, params: Array[String], args: Array
       let mut idx = 0 - 1
       let mut i = 0
       while i < Array::length(params) {
-        if type_param_name(Array::get(params, i)) == name {
+        if type_param_name(Array::get(params, at = i)) == name {
           idx = i
         }
         i = i + 1
       }
       if idx >= 0 && idx < Array::length(args) {
-        let replacement = type_clone(Array::get(args, idx))
+        let replacement = type_clone(Array::get(args, at = idx))
         if Array::length(targs) == 0 {
           replacement
         } else {
           let ra = array_empty()
           let mut ai = 0
           while ai < Array::length(targs) {
-            Array::push(ra, resolve_type_alias_params(Array::get(targs, ai), params, args))
+            Array::push(ra, value = resolve_type_alias_params(ty = Array::get(targs, at = ai), params = params, args = args))
             ai = ai + 1
           }
-          hkt_apply_ctor(replacement, ra)
+          hkt_apply_ctor(head = replacement, args = ra)
         }
       } else {
         CtNamed(name, for a in targs {
-          resolve_type_alias_params(a, params, args)
+          resolve_type_alias_params(ty = a, params = params, args = args)
         })
       }
     },
-    CtArray(e) => CtArray(resolve_type_alias_params(e, params, args)),
-    CtOption(e) => CtOption(resolve_type_alias_params(e, params, args)),
+    CtArray(e) => CtArray(resolve_type_alias_params(ty = e, params = params, args = args)),
+    CtOption(e) => CtOption(resolve_type_alias_params(ty = e, params = params, args = args)),
     CtConstructor(name, arity) => CtConstructor(name, arity),
-    CtApplied(head, applied_args) => apply_type_constructor(resolve_type_alias_params(head, params, args), for arg in applied_args {
-      resolve_type_alias_params(arg, params, args)
+    CtApplied(head, applied_args) => apply_type_constructor(head = resolve_type_alias_params(ty = head, params = params, args = args), args = for arg in applied_args {
+      resolve_type_alias_params(ty = arg, params = params, args = args)
     }),
     CtTuple(es) => CtTuple(for e in es {
-      resolve_type_alias_params(e, params, args)
+      resolve_type_alias_params(ty = e, params = params, args = args)
     }),
     CtFn(ps, ret, eff) => CtFn(for p in ps {
-      resolve_type_alias_params(p, params, args)
-    }, resolve_type_alias_params(ret, params, args), eff),
+      resolve_type_alias_params(ty = p, params = params, args = args)
+    }, resolve_type_alias_params(ty = ret, params = params, args = args), eff),
     _ => type_clone(ty)
   }
 }
@@ -2083,7 +2083,7 @@ export fn type_expr_name_is_shadowed(shadow: Array[String], name: String) -> Boo
   let mut i = 0
   let mut found = false
   while i < Array::length(shadow) {
-    if type_param_name(Array::get(shadow, i)) == name {
+    if type_param_name(Array::get(shadow, at = i)) == name {
       found = true
     }
     i = i + 1
@@ -2095,7 +2095,7 @@ export fn type_expr_shadowed_arity(shadow: Array[String], name: String) -> Int {
   let mut i = 0
   let mut arity = 0 - 1
   while i < Array::length(shadow) {
-    let param = Array::get(shadow, i)
+    let param = Array::get(shadow, at = i)
     if type_param_name(param) == name {
       arity = type_param_arity(param)
     }
@@ -2108,15 +2108,15 @@ export fn type_expr_shadowed_arity(shadow: Array[String], name: String) -> Int {
 /// their established structural nodes; nominal constructors return CtNamed.
 /// Only an unresolved variable head remains CtApplied.
 export fn apply_type_constructor(head: Type, args: Array[Type]) -> Type {
-  match try_apply_alias_constructor(head, args) {
+  match try_apply_alias_constructor(head = head, args = args) {
     Some(applied) => applied,
     None => match head {
       CtConstructor(name, arity) => if arity != Array::length(args) {
         CtApplied(head, args)
       } else if name == "Array" && arity == 1 {
-        CtArray(Array::get(args, 0))
+        CtArray(Array::get(args, at = 0))
       } else if name == "Option" && arity == 1 {
-        CtOption(Array::get(args, 0))
+        CtOption(Array::get(args, at = 0))
       } else {
         CtNamed(name, args)
       },
@@ -2133,7 +2133,7 @@ let alias_ctor_tag: String = "#alias_ctor"
 /// that declaration and not to whatever signature the value appears in -- a
 /// scan that walks them conflates them with same-named formals of the enclosing
 /// function.
-export fn is_alias_constructor(ty: Type) -> Bool {
+export fn is_alias_constructor(_ ty: Type) -> Bool {
   match ty {
     CtApplied(head, meta) => match head {
       CtNamed(n, ha) => n == alias_ctor_tag && Array::length(ha) == 0 && Array::length(meta) > 0,
@@ -2145,10 +2145,10 @@ export fn is_alias_constructor(ty: Type) -> Bool {
 
 export fn make_alias_constructor(params: Array[String], body: Type) -> Type {
   let meta = array_empty()
-  Array::push(meta, type_clone(body))
+  Array::push(meta, value = type_clone(body))
   let mut i = 0
   while i < Array::length(params) {
-    Array::push(meta, CtNamed(Array::get(params, i), array_empty()))
+    Array::push(meta, value = CtNamed(Array::get(params, at = i), array_empty()))
     i = i + 1
   }
   CtApplied(CtNamed(alias_ctor_tag, array_empty()), meta)
@@ -2159,18 +2159,18 @@ fn apply_alias_constructor(head: Type, args: Array[Type]) -> Type {
     CtApplied(_, meta) => if Array::length(meta) == 0 {
       CtApplied(head, args)
     } else {
-      let body = Array::get(meta, 0)
+      let body = Array::get(meta, at = 0)
       let params = array_empty()
       let mut i = 1
       while i < Array::length(meta) {
-        match Array::get(meta, i) {
-          CtNamed(n, _) => Array::push(params, n),
+        match Array::get(meta, at = i) {
+          CtNamed(n, _) => Array::push(params, value = n),
           _ => ()
         }
         i = i + 1
       }
       if Array::length(params) == Array::length(args) {
-        resolve_type_alias_params(body, params, args)
+        resolve_type_alias_params(ty = body, params = params, args = args)
       } else {
         CtApplied(head, args)
       }
@@ -2183,7 +2183,7 @@ fn try_apply_alias_constructor(head: Type, args: Array[Type]) -> Option[Type] {
   match head {
     CtApplied(inner, _) => match inner {
       CtNamed(n, ha) => if n == alias_ctor_tag && Array::length(ha) == 0 {
-        Some(apply_alias_constructor(head, args))
+        Some(apply_alias_constructor(head = head, args = args))
       } else {
         None
       },

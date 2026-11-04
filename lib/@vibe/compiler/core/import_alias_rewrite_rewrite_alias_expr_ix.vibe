@@ -64,15 +64,15 @@ import ./import_alias_rewrite_pat_binds_shadowing_name.vibe {
 let alias_rewrite_marks: Array[Int] = [0]
 
 fn alias_marks() -> Int {
-  Array::get(alias_rewrite_marks, 0)
+  Array::get(alias_rewrite_marks, at = 0)
 }
 
 /// The alias map's answer for `name`, counted when it renames.
 export fn aliasidx_get(am: AliasIdx, name: String) -> Option[String] {
-  let result = MutMap::get(am.idx, name)
+  let result = MutMap::get(am.idx, k = name)
   match result {
     Some(_) => {
-      Array::set(alias_rewrite_marks, 0, Array::get(alias_rewrite_marks, 0) + 1)
+      Array::set(alias_rewrite_marks, at = 0, value = Array::get(alias_rewrite_marks, at = 0) + 1)
     },
     None => ()
   }
@@ -87,12 +87,12 @@ export fn rewrite_alias_exprs_ix(items: Array[Expr], am: AliasIdx) -> Array[Expr
   let mut i = 0
   while i < Array::length(items) {
     let m = alias_marks()
-    let r = rewrite_alias_expr_ix(Array::get(items, i), am)
+    let r = rewrite_alias_expr_ix(expr = Array::get(items, at = i), am = am)
     if copied {
-      Array::push(out, r)
+      Array::push(out, value = r)
     } else if alias_marks() != m {
-      out = Array::slice(items, 0, i)
-      Array::push(out, r)
+      out = Array::slice(items, start = 0, end = i)
+      Array::push(out, value = r)
       copied = true
     } else {
       ()
@@ -108,14 +108,14 @@ fn rewrite_alias_named_exprs_ix(fields: Array[(String, Expr)], am: AliasIdx) -> 
   let mut copied = false
   let mut i = 0
   while i < Array::length(fields) {
-    let (name, value) = Array::get(fields, i)
+    let (name, value) = Array::get(fields, at = i)
     let m = alias_marks()
-    let r = rewrite_alias_expr_ix(value, am)
+    let r = rewrite_alias_expr_ix(expr = value, am = am)
     if copied {
-      Array::push(out, (name, r))
+      Array::push(out, value = (name, r))
     } else if alias_marks() != m {
-      out = Array::slice(fields, 0, i)
-      Array::push(out, (name, r))
+      out = Array::slice(fields, start = 0, end = i)
+      Array::push(out, value = (name, r))
       copied = true
     } else {
       ()
@@ -131,23 +131,23 @@ fn rewrite_alias_pattern_ctor(pat: Pat, am: AliasIdx) -> Pat {
   match pat {
     PCtor(name, args) => {
       // #3422: a qualified `Maybe::Some` is renamed by its bare name.
-      let renamed = match lookup_alias(am.pattern_ctors, pattern_ctor_base_name(name)) {
+      let renamed = match lookup_alias(aliases = am.pattern_ctors, name = pattern_ctor_base_name(name)) {
         Some(next) => {
-          Array::set(alias_rewrite_marks, 0, alias_marks() + 1)
+          Array::set(alias_rewrite_marks, at = 0, value = alias_marks() + 1)
           next
         },
         None => name
       }
       PCtor(renamed, for arg in args {
-        rewrite_alias_pattern_ctor(arg, am)
+        rewrite_alias_pattern_ctor(pat = arg, am = am)
       })
     },
     PTuple(args) => PTuple(for arg in args {
-      rewrite_alias_pattern_ctor(arg, am)
+      rewrite_alias_pattern_ctor(pat = arg, am = am)
     }),
-    POr(left, right) => POr(rewrite_alias_pattern_ctor(left, am), rewrite_alias_pattern_ctor(right, am)),
+    POr(left, right) => POr(rewrite_alias_pattern_ctor(pat = left, am = am), rewrite_alias_pattern_ctor(pat = right, am = am)),
     PStruct(name, fields) => PStruct(name, for field in fields {
-      (field.0, rewrite_alias_pattern_ctor(field.1, am))
+      (field.0, rewrite_alias_pattern_ctor(pat = field.1, am = am))
     }),
     _ => pat
   }
@@ -158,19 +158,19 @@ fn rewrite_alias_arms_ix(arms: Array[(Pat, Expr)], am: AliasIdx) -> Array[(Pat, 
   let mut copied = false
   let mut i = 0
   while i < Array::length(arms) {
-    let (pat, body) = Array::get(arms, i)
+    let (pat, body) = Array::get(arms, at = i)
     let m = alias_marks()
     let next_pat = if Array::length(am.pattern_ctors) > 0 {
-      rewrite_alias_pattern_ctor(pat, am)
+      rewrite_alias_pattern_ctor(pat = pat, am = am)
     } else {
       pat
     }
-    let r = rewrite_alias_expr_ix(body, aliasidx_without_pat(am, pat))
+    let r = rewrite_alias_expr_ix(expr = body, am = aliasidx_without_pat(am = am, pat = pat))
     if copied {
-      Array::push(out, (next_pat, r))
+      Array::push(out, value = (next_pat, r))
     } else if alias_marks() != m {
-      out = Array::slice(arms, 0, i)
-      Array::push(out, (next_pat, r))
+      out = Array::slice(arms, start = 0, end = i)
+      Array::push(out, value = (next_pat, r))
       copied = true
     } else {
       ()
@@ -190,30 +190,30 @@ fn rewrite_alias_handle_arms_ix(arms: Array[(Pat, Expr)], am: AliasIdx) -> Array
   let mut binds_resume = false
   let mut bi = 0
   while bi < Array::length(arms) && !binds_resume {
-    binds_resume = handle_arm_binds_resume(Array::get(arms, bi).0)
+    binds_resume = handle_arm_binds_resume(Array::get(arms, at = bi).0)
     bi = bi + 1
   }
   if !binds_resume {
-    rewrite_alias_arms_ix(arms, am)
+    rewrite_alias_arms_ix(arms = arms, am = am)
   } else {
-    let without_resume = aliasidx_without_name(am, "resume")
+    let without_resume = aliasidx_without_name(am = am, name = "resume")
     let mut out = arms
     let mut copied = false
     let mut i = 0
     while i < Array::length(arms) {
-      let arm = Array::get(arms, i)
+      let arm = Array::get(arms, at = i)
       let m = alias_marks()
       let arm_aliases = if handle_arm_binds_resume(arm.0) {
         without_resume
       } else {
         am
       }
-      let r = Array::get(rewrite_alias_arms_ix([arm], arm_aliases), 0)
+      let r = Array::get(rewrite_alias_arms_ix(arms = [arm], am = arm_aliases), at = 0)
       if copied {
-        Array::push(out, r)
+        Array::push(out, value = r)
       } else if alias_marks() != m {
-        out = Array::slice(arms, 0, i)
-        Array::push(out, r)
+        out = Array::slice(arms, start = 0, end = i)
+        Array::push(out, value = r)
         copied = true
       } else {
         ()
@@ -224,9 +224,9 @@ fn rewrite_alias_handle_arms_ix(arms: Array[(Pat, Expr)], am: AliasIdx) -> Array
   }
 }
 
-fn handle_arm_binds_resume(p: Pat) -> Bool {
+fn handle_arm_binds_resume(_ p: Pat) -> Bool {
   match p {
-    PCtor(label, _) => String::index_of(label, "::") > 0 && !is_exception_operation_name(label),
+    PCtor(label, _) => String::index_of(label, needle = "::") > 0 && !is_exception_operation_name(label),
     POr(l, r) => handle_arm_binds_resume(l) && handle_arm_binds_resume(r),
     _ => false
   }
@@ -239,12 +239,12 @@ fn rewrite_alias_types_ix(items: Array[TypeExpr], am: AliasIdx) -> Array[TypeExp
   let mut i = 0
   while i < Array::length(items) {
     let m = alias_marks()
-    let r = rewrite_alias_type_expr(Array::get(items, i), am)
+    let r = rewrite_alias_type_expr(te = Array::get(items, at = i), am = am)
     if copied {
-      Array::push(out, r)
+      Array::push(out, value = r)
     } else if alias_marks() != m {
-      out = Array::slice(items, 0, i)
-      Array::push(out, r)
+      out = Array::slice(items, start = 0, end = i)
+      Array::push(out, value = r)
       copied = true
     } else {
       ()
@@ -256,12 +256,12 @@ fn rewrite_alias_types_ix(items: Array[TypeExpr], am: AliasIdx) -> Array[TypeExp
 
 /// alias_map_has_name, O(1): does binding `name` shadow any alias?
 fn aliasidx_shadows(am: AliasIdx, name: String) -> Bool {
-  MutSet::has(am.shadow_keys, name)
+  MutSet::has(am.shadow_keys, x = name)
 }
 
 fn aliasidx_without_name(am: AliasIdx, name: String) -> AliasIdx {
-  if aliasidx_shadows(am, name) {
-    aliasidx_rebuild(am, alias_map_without_name(am.entries, name))
+  if aliasidx_shadows(am = am, name = name) {
+    aliasidx_rebuild(am = am, entries = alias_map_without_name(aliases = am.entries, name = name))
   } else {
     am
   }
@@ -271,14 +271,14 @@ fn aliasidx_without_names(am: AliasIdx, names: Array[String]) -> AliasIdx {
   let mut any = false
   let mut i = 0
   while i < Array::length(names) && !any {
-    if aliasidx_shadows(am, type_param_name(Array::get(names, i))) {
+    if aliasidx_shadows(am = am, name = type_param_name(Array::get(names, at = i))) {
       any = true
     } else {
       i = i + 1
     }
   }
   if any {
-    aliasidx_rebuild(am, alias_map_without_names(am.entries, names))
+    aliasidx_rebuild(am = am, entries = alias_map_without_names(aliases = am.entries, names = names))
   } else {
     am
   }
@@ -289,12 +289,12 @@ fn aliasidx_without_names(am: AliasIdx, names: Array[String]) -> AliasIdx {
 fn pat_collect_bound_names(pat: Pat, out: Array[String]) -> Int {
   match pat {
     PBind(bound) => {
-      Array::push(out, bound); 0
+      Array::push(out, value = bound); 0
     },
     PCtor(_, pats) => {
       let mut i = 0
       while i < Array::length(pats) {
-        pat_collect_bound_names(Array::get(pats, i), out)
+        pat_collect_bound_names(pat = Array::get(pats, at = i), out = out)
         i = i + 1
       }
       0
@@ -302,19 +302,19 @@ fn pat_collect_bound_names(pat: Pat, out: Array[String]) -> Int {
     PTuple(pats) => {
       let mut i = 0
       while i < Array::length(pats) {
-        pat_collect_bound_names(Array::get(pats, i), out)
+        pat_collect_bound_names(pat = Array::get(pats, at = i), out = out)
         i = i + 1
       }
       0
     },
     POr(left, right) => {
-      pat_collect_bound_names(left, out); pat_collect_bound_names(right, out)
+      pat_collect_bound_names(pat = left, out = out); pat_collect_bound_names(pat = right, out = out)
     },
     PStruct(_, fields) => {
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, field_pat) = Array::get(fields, i)
-        pat_collect_bound_names(field_pat, out)
+        let (_, field_pat) = Array::get(fields, at = i)
+        pat_collect_bound_names(pat = field_pat, out = out)
         i = i + 1
       }
       0
@@ -325,18 +325,18 @@ fn pat_collect_bound_names(pat: Pat, out: Array[String]) -> Int {
 
 fn aliasidx_without_pat(am: AliasIdx, pat: Pat) -> AliasIdx {
   let bound = empty_strings()
-  let _ = pat_collect_bound_names(pat, bound)
+  let _ = pat_collect_bound_names(pat = pat, out = bound)
   let mut any = false
   let mut i = 0
   while i < Array::length(bound) && !any {
-    if aliasidx_shadows(am, Array::get(bound, i)) {
+    if aliasidx_shadows(am = am, name = Array::get(bound, at = i)) {
       any = true
     } else {
       i = i + 1
     }
   }
   if any {
-    aliasidx_rebuild(am, alias_map_without_pat(am.entries, pat))
+    aliasidx_rebuild(am = am, entries = alias_map_without_pat(aliases = am.entries, pat = pat))
   } else {
     am
   }
@@ -346,15 +346,15 @@ fn aliasidx_without_params(am: AliasIdx, params: Array[(String, Option[TypeExpr]
   let mut any = false
   let mut i = 0
   while i < Array::length(params) && !any {
-    let (param_name, _) = Array::get(params, i)
-    if aliasidx_shadows(am, param_name) {
+    let (param_name, _) = Array::get(params, at = i)
+    if aliasidx_shadows(am = am, name = param_name) {
       any = true
     } else {
       i = i + 1
     }
   }
   if any {
-    aliasidx_rebuild(am, alias_map_without_params(am.entries, params))
+    aliasidx_rebuild(am = am, entries = alias_map_without_params(aliases = am.entries, params = params))
   } else {
     am
   }
@@ -364,7 +364,7 @@ export fn rewrite_import_alias_expr(expr: Expr, aliases: Array[(String, String)]
   if Array::length(aliases) == 0 {
     expr
   } else {
-    rewrite_alias_expr_ix(expr, aliasidx_build(aliases))
+    rewrite_alias_expr_ix(expr = expr, am = aliasidx_build(aliases))
   }
 }
 
@@ -373,10 +373,10 @@ export fn rewrite_import_alias_expr(expr: Expr, aliases: Array[(String, String)]
 /// per call, which is fine for one-shot use but was the dominant share of
 /// bump-heap growth (and ~300ms of rehash churn) when normalize's module
 /// flattening called it once per binding.
-export fn make_import_alias_rewriter(aliases: Array[(String, String)]) -> (Expr) -> Expr {
+export fn make_import_alias_rewriter(_ aliases: Array[(String, String)]) -> (Expr) -> Expr {
   let am = aliasidx_build(aliases)
   (e) -> {
-    rewrite_alias_expr_ix(e, am)
+    rewrite_alias_expr_ix(expr = e, am = am)
   }
 }
 
@@ -385,7 +385,7 @@ export fn make_import_alias_rewriter(aliases: Array[(String, String)]) -> (Expr)
 /// passes after the parser compare by that spelling (f32 rounding, the
 /// equality and hash shapes). A type position never names a constructor, so
 /// this cannot capture an enum's own `Float`.
-fn alias_type_canonical(original: String) -> String {
+fn alias_type_canonical(_ original: String) -> String {
   if original == "Double" {
     "Float64"
   } else if original == "Float" {
@@ -422,20 +422,20 @@ fn alias_qualified_canonical(original: String, member: String) -> String {
 /// returned unchanged for an unqualified name or a head that is not aliased,
 /// so the caller keeps sharing the original node in the common case.
 fn rewrite_alias_qualified_head(expr: Expr, name: String, am: AliasIdx) -> Expr {
-  let qi = String::index_of(name, "::")
+  let qi = String::index_of(name, needle = "::")
   if qi < 0 {
     expr
   } else {
-    let head = String::substring(name, 0, qi)
-    if MutMap::has(am.idx, String::concat(head, "::__vibe_trait_namespace_alias")) {
+    let head = String::substring(name, start = 0, end = qi)
+    if MutMap::has(am.idx, k = String::concat(head, "::__vibe_trait_namespace_alias")) {
       // An explicit `trait Provider as Local` import owns value names under
       // `Local::*`. Unlike a type/constructor reference, `Local::method`
       // must stay local so trait namespace helpers remain distinct from a
       // separately declared `Provider::method`.
       expr
     } else {
-      match aliasidx_get(am, head) {
-        Some(original) => EIdent(alias_qualified_canonical(original, String::substring(name, qi + 2, String::length(name))), -1),
+      match aliasidx_get(am = am, name = head) {
+        Some(original) => EIdent(alias_qualified_canonical(original = original, member = String::substring(name, start = qi + 2, end = String::length(name))), -1),
         None => expr
       }
     }
@@ -444,15 +444,15 @@ fn rewrite_alias_qualified_head(expr: Expr, name: String, am: AliasIdx) -> Expr 
 
 fn rewrite_alias_type_opt(ty: Option[TypeExpr], am: AliasIdx) -> Option[TypeExpr] {
   match ty {
-    Some(inner) => Some(rewrite_alias_type_expr(inner, am)),
+    Some(inner) => Some(rewrite_alias_type_expr(te = inner, am = am)),
     None => None
   }
 }
 
 fn rewrite_alias_trait_ref(trait_ref: String, am: AliasIdx) -> String {
   match trait_ref_from_key(trait_ref) {
-    Some(applied) => trait_ref_key(rewrite_alias_type_expr(applied, am)),
-    None => match aliasidx_get(am, trait_ref) {
+    Some(applied) => trait_ref_key(rewrite_alias_type_expr(te = applied, am = am)),
+    None => match aliasidx_get(am = am, name = trait_ref) {
       Some(original) => original,
       None => trait_ref
     }
@@ -463,7 +463,7 @@ fn rewrite_alias_bounds(bounds: Array[(String, Array[String])], am: AliasIdx) ->
   for bound in bounds {
     let (param, traits) = bound
     (param, for trait_ref in traits {
-      rewrite_alias_trait_ref(trait_ref, am)
+      rewrite_alias_trait_ref(trait_ref = trait_ref, am = am)
     })
   }
 }
@@ -471,14 +471,14 @@ fn rewrite_alias_bounds(bounds: Array[(String, Array[String])], am: AliasIdx) ->
 fn rewrite_alias_param_types(params: Array[(String, Option[TypeExpr])], am: AliasIdx) -> Array[(String, Option[TypeExpr])] {
   for param in params {
     let (name, ty) = param
-    (name, rewrite_alias_type_opt(ty, am))
+    (name, rewrite_alias_type_opt(ty = ty, am = am))
   }
 }
 
 /// #2348: is this expression an inline-wasm marker call, `%wasm("<WAT>")`?
-fn is_inline_wasm_marker_body(body: Expr) -> Bool {
+fn is_inline_wasm_marker_body(_ body: Expr) -> Bool {
   match body {
-    ECall(callee, args, _, _) => is_inline_wasm_marker(callee, args),
+    ECall(callee, args, _, _) => is_inline_wasm_marker(callee = callee, args = args),
     _ => false
   }
 }
@@ -487,7 +487,7 @@ fn is_inline_wasm_marker_body(body: Expr) -> Bool {
 fn is_inline_wasm_marker(callee: Expr, args: Array[Expr]) -> Bool {
   match callee {
     EIdent(cname, _) => if cname == inline_wasm_marker_name() && Array::length(args) == 1 {
-      match Array::get(args, 0) {
+      match Array::get(args, at = 0) {
         EString(_, _) => true,
         _ => false
       }
@@ -502,24 +502,24 @@ fn is_inline_wasm_marker(callee: Expr, args: Array[Expr]) -> Bool {
 /// text with the same map the surrounding rewrite applies to identifiers, so
 /// a kernel keeps calling the helper it named after the helper is renamed.
 fn rewrite_wat_marker_args(args: Array[Expr], am: AliasIdx) -> Array[Expr] {
-  match Array::get(args, 0) {
+  match Array::get(args, at = 0) {
     EString(wat, _) => {
       let names = wat_callee_names(wat)
       let from = array_empty()
       let to = array_empty()
       let mut i = 0
       while i < Array::length(names) {
-        let name = Array::get(names, i)
-        match aliasidx_get(am, name) {
+        let name = Array::get(names, at = i)
+        match aliasidx_get(am = am, name = name) {
           Some(renamed) => {
-            Array::push(from, name)
-            Array::push(to, renamed)
+            Array::push(from, value = name)
+            Array::push(to, value = renamed)
           },
           None => ()
         }
         i = i + 1
       }
-      [EString(wat_rewrite_callees(wat, from, to), -1)]
+      [EString(wat_rewrite_callees(wat = wat, from = from, to = to), -1)]
     },
     _ => args
   }
@@ -571,13 +571,13 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         if is_builtin_ref_offset(off) {
           expr
         } else {
-          match aliasidx_get(am, name) {
-            Some(renamed) => builtin_shadow_renamed_ident(name, renamed, off),
+          match aliasidx_get(am = am, name = name) {
+            Some(renamed) => builtin_shadow_renamed_ident(name = name, renamed = renamed, off = off),
             None => expr
           }
         }
       } else {
-        match aliasidx_get(am, name) {
+        match aliasidx_get(am = am, name = name) {
           // #3542: the reference keeps its source offset. Dropping it left an
           // imported name (`pi` from `@vibe/core`) with no key, so the
           // checker's type for it reached no consumer: a Double rendered as
@@ -590,12 +590,12 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
           // by the ORIGINAL unqualified name -- as `undefined variable (ident):
           // H::Crimson`. Rewriting the head here hands the rest of the pipeline
           // the same `Hue::Crimson` an unaliased import would have produced.
-          None => rewrite_alias_qualified_head(expr, name, am)
+          None => rewrite_alias_qualified_head(expr = expr, name = name, am = am)
         }
       },
       ETuple(items) => {
         let m = alias_marks()
-        let out = rewrite_alias_exprs_ix(items, am)
+        let out = rewrite_alias_exprs_ix(items = items, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -604,7 +604,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EArray(items) => {
         let m = alias_marks()
-        let out = rewrite_alias_exprs_ix(items, am)
+        let out = rewrite_alias_exprs_ix(items = items, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -613,7 +613,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       ERecord(rn, fields, targs) => {
         let m = alias_marks()
-        let out = rewrite_alias_named_exprs_ix(fields, am)
+        let out = rewrite_alias_named_exprs_ix(fields = fields, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -622,9 +622,9 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EIf(cond, then_expr, else_expr) => {
         let m = alias_marks()
-        let c2 = rewrite_alias_expr_ix(cond, am)
-        let t2 = rewrite_alias_expr_ix(then_expr, am)
-        let e2 = rewrite_alias_expr_ix(else_expr, am)
+        let c2 = rewrite_alias_expr_ix(expr = cond, am = am)
+        let t2 = rewrite_alias_expr_ix(expr = then_expr, am = am)
+        let e2 = rewrite_alias_expr_ix(expr = else_expr, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -633,8 +633,8 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       ELet(name, value, body, soff) => {
         let m = alias_marks()
-        let v2 = rewrite_alias_expr_ix(value, am)
-        let b2 = rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))
+        let v2 = rewrite_alias_expr_ix(expr = value, am = am)
+        let b2 = rewrite_alias_expr_ix(expr = body, am = aliasidx_without_name(am = am, name = name))
         if alias_marks() == m {
           expr
         } else {
@@ -642,10 +642,10 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         }
       },
       ELetRec(name, value, body) => {
-        let body_aliases = aliasidx_without_name(am, name)
+        let body_aliases = aliasidx_without_name(am = am, name = name)
         let m = alias_marks()
-        let v2 = rewrite_alias_expr_ix(value, body_aliases)
-        let b2 = rewrite_alias_expr_ix(body, body_aliases)
+        let v2 = rewrite_alias_expr_ix(expr = value, am = body_aliases)
+        let b2 = rewrite_alias_expr_ix(expr = body, am = body_aliases)
         if alias_marks() == m {
           expr
         } else {
@@ -654,8 +654,8 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       ELetMut(name, value, body, soff) => {
         let m = alias_marks()
-        let v2 = rewrite_alias_expr_ix(value, am)
-        let b2 = rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))
+        let v2 = rewrite_alias_expr_ix(expr = value, am = am)
+        let b2 = rewrite_alias_expr_ix(expr = body, am = aliasidx_without_name(am = am, name = name))
         if alias_marks() == m {
           expr
         } else {
@@ -664,8 +664,8 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EAssign(name, value, body, target_off) => {
         let m = alias_marks()
-        let v2 = rewrite_alias_expr_ix(value, am)
-        let b2 = rewrite_alias_expr_ix(body, am)
+        let v2 = rewrite_alias_expr_ix(expr = value, am = am)
+        let b2 = rewrite_alias_expr_ix(expr = body, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -674,8 +674,8 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EAssignOp(name, op, value, body, target_off) => {
         let m = alias_marks()
-        let v2 = rewrite_alias_expr_ix(value, am)
-        let b2 = rewrite_alias_expr_ix(body, am)
+        let v2 = rewrite_alias_expr_ix(expr = value, am = am)
+        let b2 = rewrite_alias_expr_ix(expr = body, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -684,8 +684,8 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       ESeq(left, right) => {
         let m = alias_marks()
-        let l2 = rewrite_alias_expr_ix(left, am)
-        let r2 = rewrite_alias_expr_ix(right, am)
+        let l2 = rewrite_alias_expr_ix(expr = left, am = am)
+        let r2 = rewrite_alias_expr_ix(expr = right, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -694,8 +694,8 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EMatch(scrutinee, arms) => {
         let m = alias_marks()
-        let s2 = rewrite_alias_expr_ix(scrutinee, am)
-        let arms2 = rewrite_alias_arms_ix(arms, am)
+        let s2 = rewrite_alias_expr_ix(expr = scrutinee, am = am)
+        let arms2 = rewrite_alias_arms_ix(arms = arms, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -704,8 +704,8 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EHandle(body, arms) => {
         let m = alias_marks()
-        let b2 = rewrite_alias_expr_ix(body, am)
-        let arms2 = rewrite_alias_handle_arms_ix(arms, am)
+        let b2 = rewrite_alias_expr_ix(expr = body, am = am)
+        let arms2 = rewrite_alias_handle_arms_ix(arms = arms, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -714,8 +714,8 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EWhile(cond, body) => {
         let m = alias_marks()
-        let c2 = rewrite_alias_expr_ix(cond, am)
-        let b2 = rewrite_alias_expr_ix(body, am)
+        let c2 = rewrite_alias_expr_ix(expr = cond, am = am)
+        let b2 = rewrite_alias_expr_ix(expr = body, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -726,13 +726,13 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         let mut body_aliases = am
         let mut i = 0
         while i < Array::length(params) {
-          let (name, _) = Array::get(params, i)
-          body_aliases = aliasidx_without_name(body_aliases, name)
+          let (name, _) = Array::get(params, at = i)
+          body_aliases = aliasidx_without_name(am = body_aliases, name = name)
           i = i + 1
         }
         let m = alias_marks()
-        let out_params = rewrite_alias_named_exprs_ix(params, am)
-        let b2 = rewrite_alias_expr_ix(body, body_aliases)
+        let out_params = rewrite_alias_named_exprs_ix(fields = params, am = am)
+        let b2 = rewrite_alias_expr_ix(expr = body, am = body_aliases)
         if alias_marks() == m {
           expr
         } else {
@@ -741,12 +741,12 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EForIn(name, index_name, iter, body) => {
         let body_aliases = match index_name {
-          Some(index_name) => aliasidx_without_name(aliasidx_without_name(am, name), index_name),
-          None => aliasidx_without_name(am, name)
+          Some(index_name) => aliasidx_without_name(am = aliasidx_without_name(am = am, name = name), name = index_name),
+          None => aliasidx_without_name(am = am, name = name)
         }
         let m = alias_marks()
-        let i2 = rewrite_alias_expr_ix(iter, am)
-        let b2 = rewrite_alias_expr_ix(body, body_aliases)
+        let i2 = rewrite_alias_expr_ix(expr = iter, am = am)
+        let b2 = rewrite_alias_expr_ix(expr = body, am = body_aliases)
         if alias_marks() == m {
           expr
         } else {
@@ -758,29 +758,29 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       // generic rewrite below cannot see it -- the text is an EString -- so a
       // private helper's DEFINITION was renamed by the merge while the
       // `$helper` token was left pointing at a name that no longer existed.
-      ECall(callee, args, off, callee_resolution) => if is_inline_wasm_marker(callee, args) {
+      ECall(callee, args, off, callee_resolution) => if is_inline_wasm_marker(callee = callee, args = args) {
         let m = alias_marks()
-        let c2 = rewrite_alias_expr_ix(callee, am)
-        let a2 = rewrite_wat_marker_args(args, am)
+        let c2 = rewrite_alias_expr_ix(expr = callee, am = am)
+        let a2 = rewrite_wat_marker_args(args = args, am = am)
         if alias_marks() == m {
           expr
         } else {
-          ECall(c2, a2, off, builtin_shadow_call_resolution(c2, callee_resolution, am))
+          ECall(c2, a2, off, builtin_shadow_call_resolution(callee = c2, resolution = callee_resolution, am = am))
         }
       } else {
         let m = alias_marks()
-        let c2 = rewrite_alias_expr_ix(callee, am)
-        let a2 = rewrite_alias_exprs_ix(args, am)
+        let c2 = rewrite_alias_expr_ix(expr = callee, am = am)
+        let a2 = rewrite_alias_exprs_ix(items = args, am = am)
         if alias_marks() == m {
           expr
         } else {
-          ECall(c2, a2, off, builtin_shadow_call_resolution(c2, callee_resolution, am))
+          ECall(c2, a2, off, builtin_shadow_call_resolution(callee = c2, resolution = callee_resolution, am = am))
         }
       },
       EBinOp(op, left, right, boff) => {
         let m = alias_marks()
-        let l2 = rewrite_alias_expr_ix(left, am)
-        let r2 = rewrite_alias_expr_ix(right, am)
+        let l2 = rewrite_alias_expr_ix(expr = left, am = am)
+        let r2 = rewrite_alias_expr_ix(expr = right, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -789,7 +789,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EUnaryOp(op, value) => {
         let m = alias_marks()
-        let v2 = rewrite_alias_expr_ix(value, am)
+        let v2 = rewrite_alias_expr_ix(expr = value, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -801,7 +801,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         // parameters shadowing imported VALUE aliases. Preserve both
         // namespaces while canonicalizing imported contract aliases in fn
         // parameter and return annotations (#1539 StdinStream as S).
-        let type_am = aliasidx_without_names(am, type_params)
+        let type_am = aliasidx_without_names(am = am, names = type_params)
         // #2348: a WAT body's `$name` callees are wasm FUNCTION names, a
         // namespace of their own -- `fn caller(helper: Int) = wasm"(call
         // $helper (local.get $helper))"` calls the fn and reads the param, and
@@ -811,13 +811,13 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         let body_am = if is_inline_wasm_marker_body(body) {
           am
         } else {
-          aliasidx_without_params(am, params)
+          aliasidx_without_params(am = am, params = params)
         }
         let m = alias_marks()
-        let bounds2 = rewrite_alias_bounds(bounds, type_am)
-        let params2 = rewrite_alias_param_types(params, type_am)
-        let ret2 = rewrite_alias_type_opt(ret_ty, type_am)
-        let b2 = rewrite_alias_expr_ix(body, body_am)
+        let bounds2 = rewrite_alias_bounds(bounds = bounds, am = type_am)
+        let params2 = rewrite_alias_param_types(params = params, am = type_am)
+        let ret2 = rewrite_alias_type_opt(ty = ret_ty, am = type_am)
+        let b2 = rewrite_alias_expr_ix(expr = body, am = body_am)
         if alias_marks() == m {
           expr
         } else {
@@ -832,14 +832,14 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       // rewrite (ordinary struct/record field access).
       EDot(obj, field, off, fdoff) => {
         let namespaced = match obj {
-          EIdent(ns, _) => aliasidx_get(am, String::concat(ns, String::concat(".", field))),
+          EIdent(ns, _) => aliasidx_get(am = am, name = String::concat(ns, String::concat(".", field))),
           _ => None
         }
         match namespaced {
           Some(original) => EIdent(original, -1),
           None => {
             let m = alias_marks()
-            let o2 = rewrite_alias_expr_ix(obj, am)
+            let o2 = rewrite_alias_expr_ix(expr = obj, am = am)
             if alias_marks() == m {
               expr
             } else {
@@ -850,7 +850,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       ELabeledArg(label, name, body) => {
         let m = alias_marks()
-        let b2 = rewrite_alias_expr_ix(body, am)
+        let b2 = rewrite_alias_expr_ix(expr = body, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -859,7 +859,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EReturn(value) => {
         let m = alias_marks()
-        let v2 = rewrite_alias_expr_ix(value, am)
+        let v2 = rewrite_alias_expr_ix(expr = value, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -869,7 +869,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       EBreak(value) => match value {
         Some(value) => {
           let m = alias_marks()
-          let v2 = rewrite_alias_expr_ix(value, am)
+          let v2 = rewrite_alias_expr_ix(expr = value, am = am)
           if alias_marks() == m {
             expr
           } else {
@@ -880,7 +880,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EContinue(values) => {
         let m = alias_marks()
-        let out = rewrite_alias_exprs_ix(values, am)
+        let out = rewrite_alias_exprs_ix(items = values, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -889,7 +889,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       EMap(fields) => {
         let m = alias_marks()
-        let out = rewrite_alias_named_exprs_ix(fields, am)
+        let out = rewrite_alias_named_exprs_ix(fields = fields, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -898,7 +898,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       ESpread(value) => {
         let m = alias_marks()
-        let v2 = rewrite_alias_expr_ix(value, am)
+        let v2 = rewrite_alias_expr_ix(expr = value, am = am)
         if alias_marks() == m {
           expr
         } else {
@@ -910,20 +910,20 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
   }
 }
 
-export fn collect_import_aliases(stmts: Array[Stmt]) -> Array[(String, String)] {
+export fn collect_import_aliases(_ stmts: Array[Stmt]) -> Array[(String, String)] {
   let aliases = empty_aliases()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let mut j = 0
         while j < Array::length(items) {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let original = item.name
           let alias_opt = item.alias
           match alias_opt {
             Some(alias) => if alias != original {
-              Array::push(aliases, (alias, original))
+              Array::push(aliases, value = (alias, original))
             },
             None => ()
           }
@@ -937,22 +937,22 @@ export fn collect_import_aliases(stmts: Array[Stmt]) -> Array[(String, String)] 
   aliases
 }
 
-export fn collect_import_refs(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+export fn collect_import_refs(_ stmts: Array[Stmt]) -> Array[(String, String, String)] {
   let refs = empty_import_refs()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let mut j = 0
         while j < Array::length(items) {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let original = item.name
           let alias_opt = item.alias
           let local = match alias_opt {
             Some(alias) => alias,
             None => original
           }
-          Array::push(refs, (raw_path, original, local))
+          Array::push(refs, value = (raw_path, original, local))
           j = j + 1
         }
       },
@@ -963,28 +963,28 @@ export fn collect_import_refs(stmts: Array[Stmt]) -> Array[(String, String, Stri
   refs
 }
 
-export fn collect_import_alias_collision_refs(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+export fn collect_import_alias_collision_refs(_ stmts: Array[Stmt]) -> Array[(String, String, String)] {
   let refs = collect_import_refs(stmts)
   let out = empty_import_refs()
   let mut i = 0
   while i < Array::length(refs) {
-    let (raw_path, original, local) = Array::get(refs, i)
-    if import_ref_has_other_path_for_original(refs, raw_path, original) && !import_ref_array_contains_local(out, local) {
-      Array::push(out, (raw_path, original, local))
+    let (raw_path, original, local) = Array::get(refs, at = i)
+    if import_ref_has_other_path_for_original(items = refs, raw_path = raw_path, original = original) && !import_ref_array_contains_local(items = out, target = local) {
+      Array::push(out, value = (raw_path, original, local))
     }
     i = i + 1
   }
   out
 }
 
-export fn collect_import_alias_collision_locals(stmts: Array[Stmt]) -> Array[String] {
+export fn collect_import_alias_collision_locals(_ stmts: Array[Stmt]) -> Array[String] {
   let refs = collect_import_alias_collision_refs(stmts)
   let out = empty_strings()
   let mut i = 0
   while i < Array::length(refs) {
-    let (_, _, local) = Array::get(refs, i)
-    if !import_alias_rewrite_string_array_contains(out, local) {
-      Array::push(out, local)
+    let (_, _, local) = Array::get(refs, at = i)
+    if !import_alias_rewrite_string_array_contains(items = out, target = local) {
+      Array::push(out, value = local)
     }
     i = i + 1
   }
@@ -992,7 +992,7 @@ export fn collect_import_alias_collision_locals(stmts: Array[Stmt]) -> Array[Str
 }
 
 export fn rewrite_import_alias_stmt(stmt: Stmt, aliases: Array[(String, String)]) -> Stmt {
-  rewrite_alias_stmt_ix(stmt, aliasidx_build(aliases))
+  rewrite_alias_stmt_ix(stmt = stmt, am = aliasidx_build(aliases))
 }
 
 /// Parser-generated impl methods carry the impl target in their internal
@@ -1004,15 +1004,15 @@ fn collect_impl_method_owner_aliases(stmts: Array[Stmt], aliases: Array[(String,
   let am = aliasidx_build(aliases)
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImpl(tparams, _, trait_name, target) => {
-        let type_am = aliasidx_without_names(am, tparams)
-        let rewritten_trait = rewrite_alias_trait_ref(trait_name, type_am)
-        let rewritten_target = rewrite_alias_type_expr(target, type_am)
-        let source_owner = impl_method_owner(tparams, trait_name, target)
-        let rewritten_owner = impl_method_owner(tparams, rewritten_trait, rewritten_target)
+        let type_am = aliasidx_without_names(am = am, names = tparams)
+        let rewritten_trait = rewrite_alias_trait_ref(trait_ref = trait_name, am = type_am)
+        let rewritten_target = rewrite_alias_type_expr(te = target, am = type_am)
+        let source_owner = impl_method_owner(tparams = tparams, trait_name = trait_name, target = target)
+        let rewritten_owner = impl_method_owner(tparams = tparams, trait_name = rewritten_trait, target = rewritten_target)
         if source_owner != rewritten_owner {
-          Array::push(out, (source_owner, rewritten_owner))
+          Array::push(out, value = (source_owner, rewritten_owner))
         } else {
           ()
         }
@@ -1029,10 +1029,10 @@ fn rewrite_impl_method_binding_name(name: String, owner_aliases: Array[(String, 
   let mut i = 0
   let mut found = false
   while i < Array::length(owner_aliases) && !found {
-    let (source_owner, rewritten_owner) = Array::get(owner_aliases, i)
+    let (source_owner, rewritten_owner) = Array::get(owner_aliases, at = i)
     let prefix = String::concat(source_owner, "::")
-    if String::starts_with(name, prefix) {
-      out = String::concat(rewritten_owner, String::substring(name, String::length(source_owner), String::length(name)))
+    if String::starts_with(name, prefix = prefix) {
+      out = String::concat(rewritten_owner, String::substring(name, start = String::length(source_owner), end = String::length(name)))
       found = true
     } else {
       i = i + 1
@@ -1043,23 +1043,23 @@ fn rewrite_impl_method_binding_name(name: String, owner_aliases: Array[(String, 
 
 fn rewrite_impl_method_binding(stmt: Stmt, owner_aliases: Array[(String, String)]) -> Stmt {
   match stmt {
-    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, rewrite_impl_method_binding_name(name, owner_aliases), ty, body),
-    SFnDecl(exported, name, body, requires, ensures) => SFnDecl(exported, rewrite_impl_method_binding_name(name, owner_aliases), body, requires, ensures),
+    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, rewrite_impl_method_binding_name(name = name, owner_aliases = owner_aliases), ty, body),
+    SFnDecl(exported, name, body, requires, ensures) => SFnDecl(exported, rewrite_impl_method_binding_name(name = name, owner_aliases = owner_aliases), body, requires, ensures),
     // ADR-0120 D3: a declaration's `_` slots follow its name.
     SPositionalParams(rows) => SPositionalParams(for row in rows {
       let (decl, slots) = row
-      (rewrite_impl_method_binding_name(decl, owner_aliases), slots)
+      (rewrite_impl_method_binding_name(name = decl, owner_aliases = owner_aliases), slots)
     }),
     _ => stmt
   }
 }
 
-export fn collect_local_type_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeExpr)] {
+export fn collect_local_type_aliases(_ stmts: Array[Stmt]) -> Array[(String, Array[String], TypeExpr)] {
   let out = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      STypeAlias(_, name, params, target) => Array::push(out, (name, params, target)),
+    match Array::get(stmts, at = i) {
+      STypeAlias(_, name, params, target) => Array::push(out, value = (name, params, target)),
       _ => ()
     }
     i = i + 1
@@ -1071,7 +1071,7 @@ fn lookup_local_type_alias(aliases: Array[(String, Array[String], TypeExpr)], na
   let mut i = 0
   let mut found = None
   while i < Array::length(aliases) {
-    let (alias_name, params, target) = Array::get(aliases, i)
+    let (alias_name, params, target) = Array::get(aliases, at = i)
     if alias_name == name {
       found = Some((params, target))
       i = Array::length(aliases)
@@ -1086,8 +1086,8 @@ fn local_alias_arg(params: Array[String], args: Array[TypeExpr], name: String) -
   let mut i = 0
   let mut found = None
   while i < Array::length(params) {
-    if type_param_name(Array::get(params, i)) == name && i < Array::length(args) {
-      found = Some(Array::get(args, i))
+    if type_param_name(Array::get(params, at = i)) == name && i < Array::length(args) {
+      found = Some(Array::get(args, at = i))
       i = Array::length(params)
     } else {
       i = i + 1
@@ -1098,18 +1098,18 @@ fn local_alias_arg(params: Array[String], args: Array[TypeExpr], name: String) -
 
 fn substitute_local_alias_target(target: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
   match target {
-    TyName(name) => match local_alias_arg(params, args, name) {
+    TyName(name) => match local_alias_arg(params = params, args = args, name = name) {
       Some(arg) => arg,
       None => target
     },
     TyApp(name, items) => TyApp(name, for item in items {
-      substitute_local_alias_target(item, params, args)
+      substitute_local_alias_target(target = item, params = params, args = args)
     }),
     TyFn(fn_params, ret, effect) => TyFn(for param in fn_params {
-      substitute_local_alias_target(param, params, args)
-    }, substitute_local_alias_target(ret, params, args), effect),
+      substitute_local_alias_target(target = param, params = params, args = args)
+    }, substitute_local_alias_target(target = ret, params = params, args = args), effect),
     TyTuple(items) => TyTuple(for item in items {
-      substitute_local_alias_target(item, params, args)
+      substitute_local_alias_target(target = item, params = params, args = args)
     }),
     TyUnit => target
   }
@@ -1119,42 +1119,42 @@ fn normalize_local_alias_target_with_fuel(target: TypeExpr, aliases: Array[(Stri
   if fuel <= 0 {
     target
   } else match target {
-    TyName(name) => match lookup_local_type_alias(aliases, name) {
+    TyName(name) => match lookup_local_type_alias(aliases = aliases, name = name) {
       Some(alias) => {
         let (params, alias_target) = alias
         if Array::length(params) == 0 {
-          normalize_local_alias_target_with_fuel(alias_target, aliases, fuel - 1)
+          normalize_local_alias_target_with_fuel(target = alias_target, aliases = aliases, fuel = fuel - 1)
         } else {
           target
         }
       },
       None => target
     },
-    TyApp(name, args) => match lookup_local_type_alias(aliases, name) {
+    TyApp(name, args) => match lookup_local_type_alias(aliases = aliases, name = name) {
       Some(alias) => {
         let (params, alias_target) = alias
         if Array::length(params) == Array::length(args) {
-          normalize_local_alias_target_with_fuel(substitute_local_alias_target(alias_target, params, args), aliases, fuel - 1)
+          normalize_local_alias_target_with_fuel(target = substitute_local_alias_target(target = alias_target, params = params, args = args), aliases = aliases, fuel = fuel - 1)
         } else {
           target
         }
       },
       None => TyApp(name, for arg in args {
-        normalize_local_alias_target_with_fuel(arg, aliases, fuel - 1)
+        normalize_local_alias_target_with_fuel(target = arg, aliases = aliases, fuel = fuel - 1)
       })
     },
     TyFn(params, ret, effect) => TyFn(for param in params {
-      normalize_local_alias_target_with_fuel(param, aliases, fuel - 1)
-    }, normalize_local_alias_target_with_fuel(ret, aliases, fuel - 1), effect),
+      normalize_local_alias_target_with_fuel(target = param, aliases = aliases, fuel = fuel - 1)
+    }, normalize_local_alias_target_with_fuel(target = ret, aliases = aliases, fuel = fuel - 1), effect),
     TyTuple(items) => TyTuple(for item in items {
-      normalize_local_alias_target_with_fuel(item, aliases, fuel - 1)
+      normalize_local_alias_target_with_fuel(target = item, aliases = aliases, fuel = fuel - 1)
     }),
     TyUnit => target
   }
 }
 
 fn normalize_local_alias_target(target: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)]) -> TypeExpr {
-  normalize_local_alias_target_with_fuel(target, aliases, Array::length(aliases) + 1)
+  normalize_local_alias_target_with_fuel(target = target, aliases = aliases, fuel = Array::length(aliases) + 1)
 }
 
 /// Pattern qualification needs the nominal head, even when a local alias
@@ -1162,7 +1162,7 @@ fn normalize_local_alias_target(target: TypeExpr, aliases: Array[(String, Array[
 export fn local_pattern_qualifier_head(name: String, aliases: Array[(String, Array[String], TypeExpr)], fuel: Int) -> String {
   if fuel <= 0 {
     name
-  } else match lookup_local_type_alias(aliases, name) {
+  } else match lookup_local_type_alias(aliases = aliases, name = name) {
     Some(alias) => {
       let next = match alias.1 {
         TyName(head) => head,
@@ -1172,7 +1172,7 @@ export fn local_pattern_qualifier_head(name: String, aliases: Array[(String, Arr
       if next == name {
         name
       } else {
-        local_pattern_qualifier_head(next, aliases, fuel - 1)
+        local_pattern_qualifier_head(name = next, aliases = aliases, fuel = fuel - 1)
       }
     },
     None => name
@@ -1183,13 +1183,13 @@ fn collect_local_impl_method_owner_aliases(stmts: Array[Stmt], aliases: Array[(S
   let out = empty_aliases()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImpl(tparams, _, trait_name, target) => {
-        let normalized_target = normalize_local_alias_target(target, aliases)
-        let source_owner = impl_method_owner(tparams, trait_name, target)
-        let normalized_owner = impl_method_owner(tparams, trait_name, normalized_target)
+        let normalized_target = normalize_local_alias_target(target = target, aliases = aliases)
+        let source_owner = impl_method_owner(tparams = tparams, trait_name = trait_name, target = target)
+        let normalized_owner = impl_method_owner(tparams = tparams, trait_name = trait_name, target = normalized_target)
         if source_owner != normalized_owner {
-          Array::push(out, (source_owner, normalized_owner))
+          Array::push(out, value = (source_owner, normalized_owner))
         } else {
           ()
         }
@@ -1202,38 +1202,39 @@ fn collect_local_impl_method_owner_aliases(stmts: Array[Stmt], aliases: Array[(S
 }
 
 fn rewrite_local_alias_impl_stmt(stmt: Stmt, aliases: Array[(String, Array[String], TypeExpr)], owner_aliases: Array[(String, String)]) -> Stmt {
-  match rewrite_impl_method_binding(stmt, owner_aliases) {
-    SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, normalize_local_alias_target(target, aliases)),
+  match rewrite_impl_method_binding(stmt = stmt, owner_aliases = owner_aliases) {
+    SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, normalize_local_alias_target(target = target, aliases = aliases)),
     rewritten => rewritten
   }
 }
 
 export fn rewrite_import_alias_stmts(stmts: Array[Stmt], aliases: Array[(String, String)]) -> Array[Stmt] {
-  rewrite_import_alias_stmts_with_pattern_ctors(stmts, aliases, [])
+  rewrite_import_alias_stmts_with_pattern_ctors(stmts = stmts, aliases = aliases, pattern_ctors = [
+  ])
 }
 
 export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], aliases: Array[(String, String)], pattern_ctors: Array[(String, String)]) -> Array[Stmt] {
-  let owner_aliases = collect_impl_method_owner_aliases(stmts, aliases)
+  let owner_aliases = collect_impl_method_owner_aliases(stmts = stmts, aliases = aliases)
   let combined = empty_aliases()
   let mut ai = 0
   while ai < Array::length(aliases) {
-    Array::push(combined, Array::get(aliases, ai))
+    Array::push(combined, value = Array::get(aliases, at = ai))
     ai = ai + 1
   }
   let mut oi = 0
   while oi < Array::length(owner_aliases) {
-    Array::push(combined, Array::get(owner_aliases, oi))
+    Array::push(combined, value = Array::get(owner_aliases, at = oi))
     oi = oi + 1
   }
   let mut ti = 0
   while ti < Array::length(stmts) {
-    match Array::get(stmts, ti) {
+    match Array::get(stmts, at = ti) {
       SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let mut tj = 0
         while tj < Array::length(items) {
-          let item = Array::get(items, tj)
+          let item = Array::get(items, at = tj)
           match (item.kind, item.alias) {
-            (Some(ImportTrait), Some(alias)) => Array::push(combined, (String::concat(alias, "::__vibe_trait_namespace_alias"), alias)),
+            (Some(ImportTrait), Some(alias)) => Array::push(combined, value = (String::concat(alias, "::__vibe_trait_namespace_alias"), alias)),
             _ => ()
           }
           tj = tj + 1
@@ -1250,18 +1251,18 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
   // unbound qualified constructors still canonicalize through the head alias.
   let mut bi = 0
   while bi < Array::length(stmts) {
-    let bound_name = match Array::get(stmts, bi) {
+    let bound_name = match Array::get(stmts, at = bi) {
       SLet(_, _, name, _, _) => name,
       SLetMut(name, _, _) => name,
       SExternLet(name, _) => name,
       SFnDecl(_, name, _, _, _) => name,
       _ => ""
     }
-    let qi = String::index_of(bound_name, "::")
+    let qi = String::index_of(bound_name, needle = "::")
     if qi > 0 {
-      let head = String::substring(bound_name, 0, qi)
-      if lookup_alias(aliases, head) is Some(_) {
-        Array::push(combined, (bound_name, bound_name))
+      let head = String::substring(bound_name, start = 0, end = qi)
+      if lookup_alias(aliases = aliases, name = head) is Some(_) {
+        Array::push(combined, value = (bound_name, bound_name))
       } else {
         ()
       }
@@ -1270,14 +1271,14 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
     }
     bi = bi + 1
   }
-  let am = aliasidx_with_pattern_ctors(aliasidx_build(namespace_aliases_without_top_level_values(combined, stmts)), pattern_ctors)
+  let am = aliasidx_with_pattern_ctors(am = aliasidx_build(namespace_aliases_without_top_level_values(aliases = combined, stmts = stmts)), pattern_ctors = pattern_ctors)
   let imported = for stmt in stmts {
-    rewrite_alias_stmt_ix(rewrite_impl_method_binding(stmt, owner_aliases), am)
+    rewrite_alias_stmt_ix(stmt = rewrite_impl_method_binding(stmt = stmt, owner_aliases = owner_aliases), am = am)
   }
   let local_aliases = collect_local_type_aliases(imported)
-  let local_owner_aliases = collect_local_impl_method_owner_aliases(imported, local_aliases)
+  let local_owner_aliases = collect_local_impl_method_owner_aliases(stmts = imported, aliases = local_aliases)
   for stmt in imported {
-    rewrite_local_alias_impl_stmt(stmt, local_aliases, local_owner_aliases)
+    rewrite_local_alias_impl_stmt(stmt = stmt, aliases = local_aliases, owner_aliases = local_owner_aliases)
   }
 }
 
@@ -1291,18 +1292,18 @@ fn namespace_aliases_without_top_level_values(aliases: Array[(String, String)], 
   let names = empty_strings()
   for stmt in stmts {
     match stmt {
-      SLet(_, _, name, _, _) => Array::push(names, name),
-      SLetMut(name, _, _) => Array::push(names, name),
-      SExternLet(name, _) => Array::push(names, name),
-      SFnDecl(_, name, _, _, _) => Array::push(names, name),
+      SLet(_, _, name, _, _) => Array::push(names, value = name),
+      SLetMut(name, _, _) => Array::push(names, value = name),
+      SExternLet(name, _) => Array::push(names, value = name),
+      SFnDecl(_, name, _, _, _) => Array::push(names, value = name),
       // `let (helper, n) = ..` binds `helper` too (Codex on #3492).
-      SLetPat(pat, _) => pat_bound_names_into(pat, names),
+      SLetPat(pat, _) => pat_bound_names_into(pat = pat, out = names),
       _ => ()
     }
   }
   let mut any = false
   for entry in aliases {
-    if !any && alias_namespace_rebound(entry.0, names) {
+    if !any && alias_namespace_rebound(alias = entry.0, names = names) {
       any = true
     }
   }
@@ -1311,8 +1312,8 @@ fn namespace_aliases_without_top_level_values(aliases: Array[(String, String)], 
   } else {
     let out = empty_aliases()
     for entry in aliases {
-      if !alias_namespace_rebound(entry.0, names) {
-        Array::push(out, entry)
+      if !alias_namespace_rebound(alias = entry.0, names = names) {
+        Array::push(out, value = entry)
       }
     }
     out
@@ -1321,50 +1322,50 @@ fn namespace_aliases_without_top_level_values(aliases: Array[(String, String)], 
 
 fn pat_bound_names_into(pat: Pat, out: Array[String]) -> Unit {
   match pat {
-    PBind(name) => Array::push(out, name),
-    PCtor(_, pats) => pats_bound_names_into(pats, out),
-    PTuple(pats) => pats_bound_names_into(pats, out),
-    POr(left, _) => pat_bound_names_into(left, out),
-    PStruct(_, fields) => pats_bound_names_into(for f in fields {
+    PBind(name) => Array::push(out, value = name),
+    PCtor(_, pats) => pats_bound_names_into(pats = pats, out = out),
+    PTuple(pats) => pats_bound_names_into(pats = pats, out = out),
+    POr(left, _) => pat_bound_names_into(pat = left, out = out),
+    PStruct(_, fields) => pats_bound_names_into(pats = for f in fields {
       f.1
-    }, out),
+    }, out = out),
     _ => ()
   }
 }
 
 fn pats_bound_names_into(pats: Array[Pat], out: Array[String]) -> Unit {
   for p in pats {
-    pat_bound_names_into(p, out)
+    pat_bound_names_into(pat = p, out = out)
   }
   ()
 }
 
 fn alias_namespace_rebound(alias: String, names: Array[String]) -> Bool {
-  let dot = String::index_of(alias, ".")
-  dot > 0 && import_alias_rewrite_string_array_contains(names, String::substring(alias, 0, dot))
+  let dot = String::index_of(alias, needle = ".")
+  dot > 0 && import_alias_rewrite_string_array_contains(items = names, target = String::substring(alias, start = 0, end = dot))
 }
 
 fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
   match stmt {
-    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, rewrite_alias_type_opt(ty, am), rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))),
-    SLetMut(name, ty, body) => SLetMut(name, rewrite_alias_type_opt(ty, am), rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))),
-    STest(name, body) => STest(name, rewrite_alias_expr_ix(body, am)),
-    SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, am)),
-    SExpr(body) => SExpr(rewrite_alias_expr_ix(body, am)),
+    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, rewrite_alias_type_opt(ty = ty, am = am), rewrite_alias_expr_ix(expr = body, am = aliasidx_without_name(am = am, name = name))),
+    SLetMut(name, ty, body) => SLetMut(name, rewrite_alias_type_opt(ty = ty, am = am), rewrite_alias_expr_ix(expr = body, am = aliasidx_without_name(am = am, name = name))),
+    STest(name, body) => STest(name, rewrite_alias_expr_ix(expr = body, am = am)),
+    SBench(name, body) => SBench(name, rewrite_alias_expr_ix(expr = body, am = am)),
+    SExpr(body) => SExpr(rewrite_alias_expr_ix(expr = body, am = am)),
     SLetPat(pat, body) => SLetPat(if Array::length(am.pattern_ctors) > 0 {
-      rewrite_alias_pattern_ctor(pat, am)
+      rewrite_alias_pattern_ctor(pat = pat, am = am)
     } else {
       pat
-    }, rewrite_alias_expr_ix(body, am)),
+    }, rewrite_alias_expr_ix(expr = body, am = am)),
     SQualifiedPatternRefs(rows) => SQualifiedPatternRefs(for row in rows {
-      let variant = match lookup_alias(am.pattern_ctors, row.1) {
+      let variant = match lookup_alias(aliases = am.pattern_ctors, name = row.1) {
         Some(renamed) => renamed,
         None => row.1
       }
       (row.0, variant)
     }),
     SModule(exported, name, stmts) => {
-      SModule(exported, name, rewrite_import_alias_stmts(stmts, collect_import_aliases(stmts)))
+      SModule(exported, name, rewrite_import_alias_stmts(stmts = stmts, aliases = collect_import_aliases(stmts)))
     },
     // #1502: an import alias used as a type-alias TARGET (`import { Attempt as
     // Att }` then `type Att2[T] = Att[T]`). The expression arm above already
@@ -1382,10 +1383,10 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
     // rewrite (verified by A/B against origin/main, which has no type-side
     // rewrite at all) and is tracked separately -- what this guard buys is that
     // the rewrite is not a SECOND, independent source of the same bug.
-    STypeAlias(exported, name, params, target) => STypeAlias(exported, name, params, rewrite_alias_type_expr(target, aliasidx_without_names(am, params))),
+    STypeAlias(exported, name, params, target) => STypeAlias(exported, name, params, rewrite_alias_type_expr(te = target, am = aliasidx_without_names(am = am, names = params))),
     SImpl(tparams, bounds, trait_name, target) => {
-      let type_am = aliasidx_without_names(am, tparams)
-      SImpl(tparams, rewrite_alias_bounds(bounds, type_am), rewrite_alias_trait_ref(trait_name, type_am), rewrite_alias_type_expr(target, type_am))
+      let type_am = aliasidx_without_names(am = am, names = tparams)
+      SImpl(tparams, rewrite_alias_bounds(bounds = bounds, am = type_am), rewrite_alias_trait_ref(trait_ref = trait_name, am = type_am), rewrite_alias_type_expr(te = target, am = type_am))
     },
     _ => stmt
   }
@@ -1395,17 +1396,17 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
 /// that names an import alias with the name it aliases (#1502).
 fn rewrite_alias_type_expr(te: TypeExpr, am: AliasIdx) -> TypeExpr {
   match te {
-    TyName(n) => match aliasidx_get(am, n) {
+    TyName(n) => match aliasidx_get(am = am, name = n) {
       Some(original) => TyName(alias_type_canonical(original)),
       None => te
     },
     TyApp(n, args) => {
       let m = alias_marks()
-      let next_name = match aliasidx_get(am, n) {
+      let next_name = match aliasidx_get(am = am, name = n) {
         Some(original) => alias_type_canonical(original),
         None => n
       }
-      let args2 = rewrite_alias_types_ix(args, am)
+      let args2 = rewrite_alias_types_ix(items = args, am = am)
       if alias_marks() == m {
         te
       } else {
@@ -1414,7 +1415,7 @@ fn rewrite_alias_type_expr(te: TypeExpr, am: AliasIdx) -> TypeExpr {
     },
     TyTuple(items) => {
       let m = alias_marks()
-      let items2 = rewrite_alias_types_ix(items, am)
+      let items2 = rewrite_alias_types_ix(items = items, am = am)
       if alias_marks() == m {
         te
       } else {
@@ -1423,8 +1424,8 @@ fn rewrite_alias_type_expr(te: TypeExpr, am: AliasIdx) -> TypeExpr {
     },
     TyFn(ps, ret, eff) => {
       let m = alias_marks()
-      let ps2 = rewrite_alias_types_ix(ps, am)
-      let ret2 = rewrite_alias_type_expr(ret, am)
+      let ps2 = rewrite_alias_types_ix(items = ps, am = am)
+      let ret2 = rewrite_alias_type_expr(te = ret, am = am)
       if alias_marks() == m {
         te
       } else {
@@ -1435,7 +1436,7 @@ fn rewrite_alias_type_expr(te: TypeExpr, am: AliasIdx) -> TypeExpr {
   }
 }
 
-export fn stmts_have_import_deep(stmts: Array[Stmt]) -> Bool {
+export fn stmts_have_import_deep(_ stmts: Array[Stmt]) -> Bool {
   let rec stmt_has_import_deep: (Stmt) -> Bool = (stmt) -> {
     match stmt {
       SImport(path, _) => !is_builtin_iterator_serialized_boundary_path(path),
@@ -1447,7 +1448,7 @@ export fn stmts_have_import_deep(stmts: Array[Stmt]) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(stmts) && !found {
-    if stmt_has_import_deep(Array::get(stmts, i)) {
+    if stmt_has_import_deep(Array::get(stmts, at = i)) {
       found = true
     } else {
       i = i + 1
@@ -1456,7 +1457,7 @@ export fn stmts_have_import_deep(stmts: Array[Stmt]) -> Bool {
   found
 }
 
-fn is_stdin_provider_import_value(name: String) -> Bool {
+fn is_stdin_provider_import_value(_ name: String) -> Bool {
   name == "Stdin::read_via_stream" || name == "StdinStream::next" || name == "StdinStream::close" || name == "StdinStream::read_chunk"
 }
 
@@ -1468,12 +1469,12 @@ fn is_stdin_provider_import_value(name: String) -> Bool {
 export fn append_stdin_provider_import_alias_markers(merged: Array[Stmt], items: Array[ImportItem]) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
-    let item = Array::get(items, i)
+    let item = Array::get(items, at = i)
     let original = item.name
     let alias_opt = item.alias
     match alias_opt {
       Some(_) => if is_stdin_provider_import_value(original) {
-        Array::push(merged, SExpr(EIdent(original, -1)))
+        Array::push(merged, value = SExpr(EIdent(original, -1)))
       } else {
         ()
       },
@@ -1487,55 +1488,55 @@ export fn append_non_import_stmts_without_alias_rewrite(merged: Array[Stmt], stm
   // Even an import-free file needs impl owners normalized through its local
   // transparent aliases. The empty import map keeps every ordinary name
   // untouched while rewrite_import_alias_stmts performs that owner pass.
-  let rewritten = rewrite_import_alias_stmts(stmts, empty_aliases())
+  let rewritten = rewrite_import_alias_stmts(stmts = stmts, aliases = empty_aliases())
   let mut i = 0
   while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     match stmt {
       SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
-        Array::push(merged, stmt)
+        Array::push(merged, value = stmt)
       } else {
-        append_stdin_provider_import_alias_markers(merged, items)
+        append_stdin_provider_import_alias_markers(merged = merged, items = items)
       },
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
-      _ => Array::push(merged, Array::get(rewritten, i))
+      _ => Array::push(merged, value = Array::get(rewritten, at = i))
     }
     i = i + 1
   }
 }
 
 export fn append_import_alias_rewritten_non_import_stmts_skipping(merged: Array[Stmt], stmts: Array[Stmt], skipped_locals: Array[String]) -> Unit {
-  let aliases = alias_map_without_names(collect_import_aliases(stmts), skipped_locals)
-  let rewritten = rewrite_import_alias_stmts(stmts, aliases)
+  let aliases = alias_map_without_names(aliases = collect_import_aliases(stmts), names = skipped_locals)
+  let rewritten = rewrite_import_alias_stmts(stmts = stmts, aliases = aliases)
   let mut i = 0
   while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     match stmt {
       SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
-        Array::push(merged, stmt)
+        Array::push(merged, value = stmt)
       } else {
-        append_stdin_provider_import_alias_markers(merged, items)
+        append_stdin_provider_import_alias_markers(merged = merged, items = items)
       },
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
-      _ => Array::push(merged, Array::get(rewritten, i))
+      _ => Array::push(merged, value = Array::get(rewritten, at = i))
     }
     i = i + 1
   }
 }
 
 export fn append_import_alias_rewritten_non_import_stmts(merged: Array[Stmt], stmts: Array[Stmt]) -> Unit {
-  append_import_alias_rewritten_non_import_stmts_skipping(merged, stmts, empty_strings())
+  append_import_alias_rewritten_non_import_stmts_skipping(merged = merged, stmts = stmts, skipped_locals = empty_strings())
 }
 
 export fn rewrite_imported_value_stmt_to_local(stmt: Stmt, original: String, local: String) -> Option[Stmt] {
-  let aliases = Array::slice([(original, local)], 0, 1)
+  let aliases = Array::slice([(original, local)], start = 0, end = 1)
   let rewrite_value: (Expr) -> Expr = (expr) -> {
     if original == local {
       expr
     } else {
-      rewrite_import_alias_expr(expr, aliases)
+      rewrite_import_alias_expr(expr = expr, aliases = aliases)
     }
   }
   match stmt {
@@ -1553,22 +1554,22 @@ export fn rewrite_imported_value_stmt_to_local(stmt: Stmt, original: String, loc
   }
 }
 
-fn namespace_byte_is_valid(code: Int) -> Bool {
+fn namespace_byte_is_valid(_ code: Int) -> Bool {
   (code >= 'a' && code <= 'z') || (code >= 'A' && code <= 'Z') || (code >= '0' && code <= '9') || code == '_'
 }
 
-export fn sanitize_namespace_path(path: String) -> String {
+export fn sanitize_namespace_path(_ path: String) -> String {
   // Keep valid byte spans intact instead of allocating one String and one
   // builder entry per byte. Each rejected byte still becomes one underscore.
   let out = StringBuilder::new()
   let mut span_start = 0
   let mut i = 0
   while i < String::length(path) {
-    if !namespace_byte_is_valid(String::char_code_at(path, i)) {
+    if !namespace_byte_is_valid(String::char_code_at(path, at = i)) {
       if span_start < i {
-        StringBuilder::push(out, path[span_start: i])
+        StringBuilder::push(out, value = path[span_start: i])
       }
-      StringBuilder::push(out, "_")
+      StringBuilder::push(out, value = "_")
       span_start = i + 1
     }
     i = i + 1
@@ -1577,7 +1578,7 @@ export fn sanitize_namespace_path(path: String) -> String {
     path
   } else {
     if span_start < String::length(path) {
-      StringBuilder::push(out, path[span_start: String::length(path)])
+      StringBuilder::push(out, value = path[span_start: String::length(path)])
     }
     StringBuilder::freeze(out)
   }
@@ -1614,7 +1615,7 @@ let namespace_rename_originals: Array[(String, String)] = array_empty()
 /// Reset the #2205 rename table. Called by each merge driver before it
 /// populates, and by desugar_trait_dicts once the derive generators are done.
 export fn namespace_rename_originals_reset() -> Unit {
-  Array::truncate(namespace_rename_originals, 0)
+  Array::truncate(namespace_rename_originals, length = 0)
 }
 
 /// #2205 (Codex round 4 on #2213): metadata-only replay of the private
@@ -1629,8 +1630,8 @@ export fn namespace_rename_originals_reset() -> Unit {
 export fn record_namespace_rename_originals_for_file(path: String, stmts: Array[Stmt]) -> Unit {
   let namespace_suffix_box = [""]
   let exported = collect_exported_value_names(stmts)
-  let type_renames = collect_private_type_renames(path, stmts, namespace_suffix_box, exported)
-  let _ = collect_private_ctor_renames(path, stmts, type_renames, namespace_suffix_box, exported)
+  let type_renames = collect_private_type_renames(path = path, stmts = stmts, namespace_suffix_box = namespace_suffix_box, exported = exported)
+  let _ = collect_private_ctor_renames(path = path, stmts = stmts, type_renames = type_renames, namespace_suffix_box = namespace_suffix_box, exported = exported)
 }
 
 /// How many merge renames are recorded. The table is keyed mangled -> original
@@ -1649,30 +1650,30 @@ export fn namespace_rename_originals_len() -> Int {
 export fn namespace_rename_originals_snapshot() -> Array[(String, String)] {
   let out: Array[(String, String)] = []
   for pair in namespace_rename_originals {
-    Array::push(out, pair)
+    Array::push(out, value = pair)
   }
   out
 }
 
-export fn namespace_rename_originals_restore(pairs: Array[(String, String)]) -> Unit {
+export fn namespace_rename_originals_restore(_ pairs: Array[(String, String)]) -> Unit {
   namespace_rename_originals_reset()
   for pair in pairs {
-    Array::push(namespace_rename_originals, pair)
+    Array::push(namespace_rename_originals, value = pair)
   }
   ()
 }
 
 fn record_namespace_rename_original(original: String, mangled: String) -> Unit {
-  Array::push(namespace_rename_originals, (mangled, original))
+  Array::push(namespace_rename_originals, value = (mangled, original))
 }
 
 /// The source spelling of a possibly merge-renamed type/constructor name.
 /// Returns the name unchanged when it was never renamed by this process.
-export fn namespace_rename_original(name: String) -> String {
+export fn namespace_rename_original(_ name: String) -> String {
   let mut i = 0
   let mut found = name
   while i < Array::length(namespace_rename_originals) {
-    let (mangled, original) = Array::get(namespace_rename_originals, i)
+    let (mangled, original) = Array::get(namespace_rename_originals, at = i)
     if mangled == name {
       found = original
     } else {
@@ -1695,7 +1696,7 @@ export fn namespace_rename_original(name: String) -> String {
 /// a name that IS renamed allocates. Last-wins like
 /// `namespace_rename_original`: the table is walked from the end and only a
 /// mangled spelling's LAST entry counts.
-export fn namespace_private_renamer_for_path(path: String) -> (String) -> String {
+export fn namespace_private_renamer_for_path(_ path: String) -> (String) -> String {
   let renamed = MutSet::new_string()
   let n = Array::length(namespace_rename_originals)
   let suffix = if n > 0 {
@@ -1707,16 +1708,16 @@ export fn namespace_private_renamer_for_path(path: String) -> (String) -> String
   let seen = MutSet::new_string()
   let mut i = n - 1
   while i >= 0 {
-    let (mangled, original) = Array::get(namespace_rename_originals, i)
-    if !MutSet::has(seen, mangled) {
-      MutSet::add(seen, mangled)
-      if String::length(mangled) == String::length(original) + suffix_len && String::ends_with(mangled, suffix) && String::starts_with(mangled, original) {
-        MutSet::add(renamed, original)
+    let (mangled, original) = Array::get(namespace_rename_originals, at = i)
+    if !MutSet::has(seen, x = mangled) {
+      MutSet::add(seen, x = mangled)
+      if String::length(mangled) == String::length(original) + suffix_len && String::ends_with(mangled, suffix = suffix) && String::starts_with(mangled, prefix = original) {
+        MutSet::add(renamed, x = original)
       }
     }
     i = i - 1
   }
-  (name: String) -> if MutSet::has(renamed, name) {
+  (name: String) -> if MutSet::has(renamed, x = name) {
     String::concat(name, suffix)
   } else {
     name
@@ -1728,31 +1729,31 @@ fn namespace_private_name_with_suffix(namespace_suffix: String, name: String) ->
 }
 
 fn namespace_private_name_lazy(path: String, name: String, suffix_box: Array[String]) -> String {
-  let current = Array::get(suffix_box, 0)
+  let current = Array::get(suffix_box, at = 0)
   let suffix = if String::length(current) == 0 {
     let sanitized = sanitize_namespace_path(path)
-    Array::set(suffix_box, 0, sanitized)
+    Array::set(suffix_box, at = 0, value = sanitized)
     sanitized
   } else {
     current
   }
-  namespace_private_name_with_suffix(suffix, name)
+  namespace_private_name_with_suffix(namespace_suffix = suffix, name = name)
 }
 
-export fn collect_exported_value_names(stmts: Array[Stmt]) -> Array[String] {
+export fn collect_exported_value_names(_ stmts: Array[Stmt]) -> Array[String] {
   let names = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(true, _, name, _, _) => if !import_alias_rewrite_string_array_contains(names, name) {
-        Array::push(names, name)
+    match Array::get(stmts, at = i) {
+      SLet(true, _, name, _, _) => if !import_alias_rewrite_string_array_contains(items = names, target = name) {
+        Array::push(names, value = name)
       },
       SExport(items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let name = Array::get(items, j)
-          if !import_alias_rewrite_string_array_contains(names, name) {
-            Array::push(names, name)
+          let name = Array::get(items, at = j)
+          if !import_alias_rewrite_string_array_contains(items = names, target = name) {
+            Array::push(names, value = name)
           }
           j = j + 1
         }
@@ -1767,16 +1768,16 @@ export fn collect_exported_value_names(stmts: Array[Stmt]) -> Array[String] {
 /// The names of types declared `export` in `stmts` (struct/enum/trait/alias/
 /// suberror). A qualified method `Type::m` whose `Type` is exported is part of
 /// that type's public surface, so it must NOT be module-private-renamed.
-export fn collect_exported_type_names(stmts: Array[Stmt]) -> Array[String] {
+export fn collect_exported_type_names(_ stmts: Array[Stmt]) -> Array[String] {
   let names = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SStruct(true, name, _, _, _, _) => Array::push(names, name),
-      SEnum(true, name, _, _, _) => Array::push(names, name),
-      STrait(true, name, _, _, _, _) => Array::push(names, name),
-      STypeAlias(true, name, _, _) => Array::push(names, name),
-      SSuberror(true, name, _) => Array::push(names, name),
+    match Array::get(stmts, at = i) {
+      SStruct(true, name, _, _, _, _) => Array::push(names, value = name),
+      SEnum(true, name, _, _, _) => Array::push(names, value = name),
+      STrait(true, name, _, _, _, _) => Array::push(names, value = name),
+      STypeAlias(true, name, _, _) => Array::push(names, value = name),
+      SSuberror(true, name, _) => Array::push(names, value = name),
       _ => ()
     }
     i = i + 1
@@ -1786,17 +1787,17 @@ export fn collect_exported_type_names(stmts: Array[Stmt]) -> Array[String] {
 
 /// The names of ALL types declared in `stmts` (exported or not). Used with
 /// collect_exported_type_names to decide which qualified methods are private.
-export fn collect_declared_type_names(stmts: Array[Stmt]) -> Array[String] {
+export fn collect_declared_type_names(_ stmts: Array[Stmt]) -> Array[String] {
   let names = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SStruct(_, name, _, _, _, _) => Array::push(names, name),
-      SEnum(_, name, _, _, _) => Array::push(names, name),
-      STrait(_, name, _, _, _, _) => Array::push(names, name),
-      STypeAlias(_, name, _, _) => Array::push(names, name),
-      SSuberror(_, name, _) => Array::push(names, name),
-      SEffectDef(_, name, _, _) => Array::push(names, name),
+    match Array::get(stmts, at = i) {
+      SStruct(_, name, _, _, _, _) => Array::push(names, value = name),
+      SEnum(_, name, _, _, _) => Array::push(names, value = name),
+      STrait(_, name, _, _, _, _) => Array::push(names, value = name),
+      STypeAlias(_, name, _, _) => Array::push(names, value = name),
+      SSuberror(_, name, _) => Array::push(names, value = name),
+      SEffectDef(_, name, _, _) => Array::push(names, value = name),
       _ => ()
     }
     i = i + 1
@@ -1819,15 +1820,15 @@ export fn collect_declared_type_names(stmts: Array[Stmt]) -> Array[String] {
 /// whole-name renaming: that private type is itself renamed and its call sites
 /// are rewritten through the same value-rename map, so they stay consistent.
 fn qualified_method_of_exported_type(name: String, exported_types: Array[String], declared_types: Array[String]) -> Bool {
-  let idx = String::index_of(name, "::")
+  let idx = String::index_of(name, needle = "::")
   if idx < 0 {
     false
   } else {
-    let head = String::substring(name, 0, idx)
-    if import_alias_rewrite_string_array_contains(exported_types, head) {
+    let head = String::substring(name, start = 0, end = idx)
+    if import_alias_rewrite_string_array_contains(items = exported_types, target = head) {
       true
     } else {
-      !import_alias_rewrite_string_array_contains(declared_types, head)
+      !import_alias_rewrite_string_array_contains(items = declared_types, target = head)
     }
   }
 }
@@ -1838,18 +1839,18 @@ fn collect_private_renamed_type_names(stmts: Array[Stmt], exported: Array[String
   let names = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SEnum(false, name, _, _, _) => if !import_alias_rewrite_string_array_contains(exported, name) {
-        Array::push(names, name)
+    match Array::get(stmts, at = i) {
+      SEnum(false, name, _, _, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
+        Array::push(names, value = name)
       },
-      SStruct(false, name, _, _, _, _) => if !import_alias_rewrite_string_array_contains(exported, name) {
-        Array::push(names, name)
+      SStruct(false, name, _, _, _, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
+        Array::push(names, value = name)
       },
-      STypeAlias(false, name, _, _) => if !import_alias_rewrite_string_array_contains(exported, name) {
-        Array::push(names, name)
+      STypeAlias(false, name, _, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
+        Array::push(names, value = name)
       },
-      SSuberror(false, name, _) => if !import_alias_rewrite_string_array_contains(exported, name) {
-        Array::push(names, name)
+      SSuberror(false, name, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
+        Array::push(names, value = name)
       },
       _ => ()
     }
@@ -1875,12 +1876,12 @@ fn collect_private_renamed_type_names(stmts: Array[Stmt], exported: Array[String
 /// Anything else (a plain value, or a qualified name whose head is not a
 /// renamed type, such as a private trait's) keeps the whole-name suffix.
 fn private_value_rename(path: String, name: String, renamed_types: Array[String], namespace_suffix_box: Array[String]) -> String {
-  let idx = String::index_of(name, "::")
-  if idx > 0 && import_alias_rewrite_string_array_contains(renamed_types, String::substring(name, 0, idx)) {
-    let head = String::substring(name, 0, idx)
-    String::concat(namespace_private_name_lazy(path, head, namespace_suffix_box), String::substring(name, idx, String::length(name)))
+  let idx = String::index_of(name, needle = "::")
+  if idx > 0 && import_alias_rewrite_string_array_contains(items = renamed_types, target = String::substring(name, start = 0, end = idx)) {
+    let head = String::substring(name, start = 0, end = idx)
+    String::concat(namespace_private_name_lazy(path = path, name = head, suffix_box = namespace_suffix_box), String::substring(name, start = idx, end = String::length(name)))
   } else {
-    namespace_private_name_lazy(path, name, namespace_suffix_box)
+    namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)
   }
 }
 
@@ -1888,15 +1889,15 @@ export fn collect_private_value_renames(path: String, stmts: Array[Stmt], namesp
   let renames = empty_aliases()
   let exported_types = collect_exported_type_names(stmts)
   let declared_types = collect_declared_type_names(stmts)
-  let renamed_types = collect_private_renamed_type_names(stmts, exported)
+  let renamed_types = collect_private_renamed_type_names(stmts = stmts, exported = exported)
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(false, _, name, _, _) => if !import_alias_rewrite_string_array_contains(exported, name) && !qualified_method_of_exported_type(name, exported_types, declared_types) {
-        Array::push(renames, (name, private_value_rename(path, name, renamed_types, namespace_suffix_box)))
+    match Array::get(stmts, at = i) {
+      SLet(false, _, name, _, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) && !qualified_method_of_exported_type(name = name, exported_types = exported_types, declared_types = declared_types) {
+        Array::push(renames, value = (name, private_value_rename(path = path, name = name, renamed_types = renamed_types, namespace_suffix_box = namespace_suffix_box)))
       },
-      SLetMut(name, _, _) => if !import_alias_rewrite_string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
+      SLetMut(name, _, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
+        Array::push(renames, value = (name, namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)))
       },
       _ => ()
     }
@@ -1907,24 +1908,24 @@ export fn collect_private_value_renames(path: String, stmts: Array[Stmt], namesp
 
 fn rewrite_private_type_expr(ty: TypeExpr, renames: Array[(String, String)]) -> TypeExpr {
   match ty {
-    TyName(name) => match lookup_alias(renames, name) {
+    TyName(name) => match lookup_alias(aliases = renames, name = name) {
       Some(renamed) => TyName(renamed),
       None => ty
     },
     TyApp(name, args) => {
-      let next_name = match lookup_alias(renames, name) {
+      let next_name = match lookup_alias(aliases = renames, name = name) {
         Some(renamed) => renamed,
         None => name
       }
       TyApp(next_name, for arg in args {
-        rewrite_private_type_expr(arg, renames)
+        rewrite_private_type_expr(ty = arg, renames = renames)
       })
     },
     TyFn(params, ret, effect_name) => TyFn(for param in params {
-      rewrite_private_type_expr(param, renames)
-    }, rewrite_private_type_expr(ret, renames), effect_name),
+      rewrite_private_type_expr(ty = param, renames = renames)
+    }, rewrite_private_type_expr(ty = ret, renames = renames), effect_name),
     TyTuple(items) => TyTuple(for item in items {
-      rewrite_private_type_expr(item, renames)
+      rewrite_private_type_expr(ty = item, renames = renames)
     }),
     TyUnit => ty
   }
@@ -1932,7 +1933,7 @@ fn rewrite_private_type_expr(ty: TypeExpr, renames: Array[(String, String)]) -> 
 
 fn rewrite_private_type_opt(ty: Option[TypeExpr], renames: Array[(String, String)]) -> Option[TypeExpr] {
   match ty {
-    Some(inner) => Some(rewrite_private_type_expr(inner, renames)),
+    Some(inner) => Some(rewrite_private_type_expr(ty = inner, renames = renames)),
     None => None
   }
 }
@@ -1940,7 +1941,7 @@ fn rewrite_private_type_opt(ty: Option[TypeExpr], renames: Array[(String, String
 fn rewrite_private_params(params: Array[(String, Option[TypeExpr])], type_renames: Array[(String, String)]) -> Array[(String, Option[TypeExpr])] {
   for param in params {
     let (name, ty) = param
-    (name, rewrite_private_type_opt(ty, type_renames))
+    (name, rewrite_private_type_opt(ty = ty, renames = type_renames))
   }
 }
 
@@ -1948,26 +1949,26 @@ fn rewrite_private_type_ctor_pat(pat: Pat, type_renames: Array[(String, String)]
   match pat {
     PCtor(name, pats) => {
       // #3422: a qualified `Maybe::Some` is renamed by its bare name.
-      let next_name = match lookup_alias(ctor_renames, pattern_ctor_base_name(name)) {
+      let next_name = match lookup_alias(aliases = ctor_renames, name = pattern_ctor_base_name(name)) {
         Some(renamed) => renamed,
         None => name
       }
       PCtor(next_name, for item in pats {
-        rewrite_private_type_ctor_pat(item, type_renames, ctor_renames)
+        rewrite_private_type_ctor_pat(pat = item, type_renames = type_renames, ctor_renames = ctor_renames)
       })
     },
     PTuple(pats) => PTuple(for item in pats {
-      rewrite_private_type_ctor_pat(item, type_renames, ctor_renames)
+      rewrite_private_type_ctor_pat(pat = item, type_renames = type_renames, ctor_renames = ctor_renames)
     }),
-    POr(left, right) => POr(rewrite_private_type_ctor_pat(left, type_renames, ctor_renames), rewrite_private_type_ctor_pat(right, type_renames, ctor_renames)),
+    POr(left, right) => POr(rewrite_private_type_ctor_pat(pat = left, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_pat(pat = right, type_renames = type_renames, ctor_renames = ctor_renames)),
     PStruct(name, fields) => {
-      let next_name = match lookup_alias(type_renames, name) {
+      let next_name = match lookup_alias(aliases = type_renames, name = name) {
         Some(renamed) => renamed,
         None => name
       }
       PStruct(next_name, for field in fields {
         let (field_name, field_pat) = field
-        (field_name, rewrite_private_type_ctor_pat(field_pat, type_renames, ctor_renames))
+        (field_name, rewrite_private_type_ctor_pat(pat = field_pat, type_renames = type_renames, ctor_renames = ctor_renames))
       })
     },
     _ => pat
@@ -1976,21 +1977,21 @@ fn rewrite_private_type_ctor_pat(pat: Pat, type_renames: Array[(String, String)]
 
 fn rewrite_private_type_ctor_expr(expr: Expr, type_renames: Array[(String, String)], ctor_renames: Array[(String, String)]) -> Expr {
   match expr {
-    EIdent(name, _) => match lookup_alias(ctor_renames, name) {
+    EIdent(name, _) => match lookup_alias(aliases = ctor_renames, name = name) {
       Some(renamed) => EIdent(renamed, -1),
       None => expr
     },
     ETuple(items) => ETuple(for item in items {
-      rewrite_private_type_ctor_expr(item, type_renames, ctor_renames)
+      rewrite_private_type_ctor_expr(expr = item, type_renames = type_renames, ctor_renames = ctor_renames)
     }),
     EArray(items) => EArray(for item in items {
-      rewrite_private_type_ctor_expr(item, type_renames, ctor_renames)
+      rewrite_private_type_ctor_expr(expr = item, type_renames = type_renames, ctor_renames = ctor_renames)
     }),
     ERecord(rn, fields, targs) => {
       // #810: the struct-literal name now travels in the AST — rename it
       // alongside the type (same as PStruct below), or the checker's named
       // field validation would see the pre-rename spelling after merge.
-      let next_rn = match lookup_alias(type_renames, rn) {
+      let next_rn = match lookup_alias(aliases = type_renames, name = rn) {
         Some(renamed) => renamed,
         None => rn
       }
@@ -1998,74 +1999,74 @@ fn rewrite_private_type_ctor_expr(expr: Expr, type_renames: Array[(String, Strin
       // renamed private types — rewrite them like any other type position.
       ERecord(next_rn, for field in fields {
         let (name, value) = field
-        (name, rewrite_private_type_ctor_expr(value, type_renames, ctor_renames))
+        (name, rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames))
       }, for ta in targs {
-        rewrite_private_type_expr(ta, type_renames)
+        rewrite_private_type_expr(ty = ta, renames = type_renames)
       })
     },
-    EIf(cond, then_expr, else_expr) => EIf(rewrite_private_type_ctor_expr(cond, type_renames, ctor_renames), rewrite_private_type_ctor_expr(then_expr, type_renames, ctor_renames), rewrite_private_type_ctor_expr(else_expr, type_renames, ctor_renames)),
-    ELet(name, value, body, soff) => ELet(name, rewrite_private_type_ctor_expr(value, type_renames, ctor_renames), rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_name(ctor_renames, name)), soff),
+    EIf(cond, then_expr, else_expr) => EIf(rewrite_private_type_ctor_expr(expr = cond, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = then_expr, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = else_expr, type_renames = type_renames, ctor_renames = ctor_renames)),
+    ELet(name, value, body, soff) => ELet(name, rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_name(aliases = ctor_renames, name = name)), soff),
     ELetRec(name, value, body) => {
-      let body_ctors = alias_map_without_name(ctor_renames, name)
-      ELetRec(name, rewrite_private_type_ctor_expr(value, type_renames, body_ctors), rewrite_private_type_ctor_expr(body, type_renames, body_ctors))
+      let body_ctors = alias_map_without_name(aliases = ctor_renames, name = name)
+      ELetRec(name, rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = body_ctors), rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = body_ctors))
     },
-    ELetMut(name, value, body, soff) => ELetMut(name, rewrite_private_type_ctor_expr(value, type_renames, ctor_renames), rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_name(ctor_renames, name)), soff),
-    EAssign(name, value, body, target_off) => EAssign(name, rewrite_private_type_ctor_expr(value, type_renames, ctor_renames), rewrite_private_type_ctor_expr(body, type_renames, ctor_renames), target_off),
-    EAssignOp(name, op, value, body, target_off) => EAssignOp(name, op, rewrite_private_type_ctor_expr(value, type_renames, ctor_renames), rewrite_private_type_ctor_expr(body, type_renames, ctor_renames), target_off),
-    ESeq(left, right) => ESeq(rewrite_private_type_ctor_expr(left, type_renames, ctor_renames), rewrite_private_type_ctor_expr(right, type_renames, ctor_renames)),
-    EMatch(scrutinee, arms) => EMatch(rewrite_private_type_ctor_expr(scrutinee, type_renames, ctor_renames), for arm in arms {
+    ELetMut(name, value, body, soff) => ELetMut(name, rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_name(aliases = ctor_renames, name = name)), soff),
+    EAssign(name, value, body, target_off) => EAssign(name, rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames), target_off),
+    EAssignOp(name, op, value, body, target_off) => EAssignOp(name, op, rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames), target_off),
+    ESeq(left, right) => ESeq(rewrite_private_type_ctor_expr(expr = left, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = right, type_renames = type_renames, ctor_renames = ctor_renames)),
+    EMatch(scrutinee, arms) => EMatch(rewrite_private_type_ctor_expr(expr = scrutinee, type_renames = type_renames, ctor_renames = ctor_renames), for arm in arms {
       let (pat, body) = arm
-      let next_pat = rewrite_private_type_ctor_pat(pat, type_renames, ctor_renames)
-      (next_pat, rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_pat(ctor_renames, next_pat)))
+      let next_pat = rewrite_private_type_ctor_pat(pat = pat, type_renames = type_renames, ctor_renames = ctor_renames)
+      (next_pat, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_pat(aliases = ctor_renames, pat = next_pat)))
     }),
-    EHandle(body, arms) => EHandle(rewrite_private_type_ctor_expr(body, type_renames, ctor_renames), for arm in arms {
+    EHandle(body, arms) => EHandle(rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames), for arm in arms {
       let (pat, arm_body) = arm
-      let next_pat = rewrite_private_type_ctor_pat(pat, type_renames, ctor_renames)
-      (next_pat, rewrite_private_type_ctor_expr(arm_body, type_renames, alias_map_without_pat(ctor_renames, next_pat)))
+      let next_pat = rewrite_private_type_ctor_pat(pat = pat, type_renames = type_renames, ctor_renames = ctor_renames)
+      (next_pat, rewrite_private_type_ctor_expr(expr = arm_body, type_renames = type_renames, ctor_renames = alias_map_without_pat(aliases = ctor_renames, pat = next_pat)))
     }),
-    EWhile(cond, body) => EWhile(rewrite_private_type_ctor_expr(cond, type_renames, ctor_renames), rewrite_private_type_ctor_expr(body, type_renames, ctor_renames)),
+    EWhile(cond, body) => EWhile(rewrite_private_type_ctor_expr(expr = cond, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
     ELoop(params, body) => {
       let out_params = for param in params {
         let (name, init) = param
-        (name, rewrite_private_type_ctor_expr(init, type_renames, ctor_renames))
+        (name, rewrite_private_type_ctor_expr(expr = init, type_renames = type_renames, ctor_renames = ctor_renames))
       }
       let mut body_ctors = ctor_renames
       let mut i = 0
       while i < Array::length(params) {
-        let (name, _) = Array::get(params, i)
-        body_ctors = alias_map_without_name(body_ctors, name)
+        let (name, _) = Array::get(params, at = i)
+        body_ctors = alias_map_without_name(aliases = body_ctors, name = name)
         i = i + 1
       }
-      ELoop(out_params, rewrite_private_type_ctor_expr(body, type_renames, body_ctors))
+      ELoop(out_params, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = body_ctors))
     },
     EForIn(name, index_name, iter, body) => {
       let body_ctors = match index_name {
-        Some(index_name) => alias_map_without_name(alias_map_without_name(ctor_renames, name), index_name),
-        None => alias_map_without_name(ctor_renames, name)
+        Some(index_name) => alias_map_without_name(aliases = alias_map_without_name(aliases = ctor_renames, name = name), name = index_name),
+        None => alias_map_without_name(aliases = ctor_renames, name = name)
       }
-      EForIn(name, index_name, rewrite_private_type_ctor_expr(iter, type_renames, ctor_renames), rewrite_private_type_ctor_expr(body, type_renames, body_ctors))
+      EForIn(name, index_name, rewrite_private_type_ctor_expr(expr = iter, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = body_ctors))
     },
-    ECall(callee, args, off, callee_resolution) => ECall(rewrite_private_type_ctor_expr(callee, type_renames, ctor_renames), for arg in args {
-      rewrite_private_type_ctor_expr(arg, type_renames, ctor_renames)
+    ECall(callee, args, off, callee_resolution) => ECall(rewrite_private_type_ctor_expr(expr = callee, type_renames = type_renames, ctor_renames = ctor_renames), for arg in args {
+      rewrite_private_type_ctor_expr(expr = arg, type_renames = type_renames, ctor_renames = ctor_renames)
     }, off, callee_resolution),
-    EBinOp(op, left, right, boff) => EBinOp(op, rewrite_private_type_ctor_expr(left, type_renames, ctor_renames), rewrite_private_type_ctor_expr(right, type_renames, ctor_renames), boff),
-    EUnaryOp(op, value) => EUnaryOp(op, rewrite_private_type_ctor_expr(value, type_renames, ctor_renames)),
-    EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, bounds, rewrite_private_params(params, type_renames), rewrite_private_type_opt(ret_ty, type_renames), effect, rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_params(ctor_renames, params))),
-    EDot(obj, field, off, fdoff) => EDot(rewrite_private_type_ctor_expr(obj, type_renames, ctor_renames), field, off, fdoff),
-    ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_private_type_ctor_expr(body, type_renames, ctor_renames)),
-    EReturn(value) => EReturn(rewrite_private_type_ctor_expr(value, type_renames, ctor_renames)),
+    EBinOp(op, left, right, boff) => EBinOp(op, rewrite_private_type_ctor_expr(expr = left, type_renames = type_renames, ctor_renames = ctor_renames), rewrite_private_type_ctor_expr(expr = right, type_renames = type_renames, ctor_renames = ctor_renames), boff),
+    EUnaryOp(op, value) => EUnaryOp(op, rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames)),
+    EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, bounds, rewrite_private_params(params = params, type_renames = type_renames), rewrite_private_type_opt(ty = ret_ty, renames = type_renames), effect, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_params(aliases = ctor_renames, params = params))),
+    EDot(obj, field, off, fdoff) => EDot(rewrite_private_type_ctor_expr(expr = obj, type_renames = type_renames, ctor_renames = ctor_renames), field, off, fdoff),
+    ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
+    EReturn(value) => EReturn(rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames)),
     EBreak(value) => match value {
-      Some(value) => EBreak(Some(rewrite_private_type_ctor_expr(value, type_renames, ctor_renames))),
+      Some(value) => EBreak(Some(rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames))),
       None => expr
     },
     EContinue(values) => EContinue(for value in values {
-      rewrite_private_type_ctor_expr(value, type_renames, ctor_renames)
+      rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames)
     }),
     EMap(fields) => EMap(for field in fields {
       let (name, value) = field
-      (name, rewrite_private_type_ctor_expr(value, type_renames, ctor_renames))
+      (name, rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames))
     }),
-    ESpread(value) => ESpread(rewrite_private_type_ctor_expr(value, type_renames, ctor_renames)),
+    ESpread(value) => ESpread(rewrite_private_type_ctor_expr(expr = value, type_renames = type_renames, ctor_renames = ctor_renames)),
     _ => expr
   }
 }
@@ -2074,24 +2075,24 @@ fn collect_private_type_renames(path: String, stmts: Array[Stmt], namespace_suff
   let renames = empty_aliases()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SEnum(false, name, _, _, _) => if !import_alias_rewrite_string_array_contains(exported, name) {
-        let mangled = namespace_private_name_lazy(path, name, namespace_suffix_box)
-        record_namespace_rename_original(name, mangled)
-        Array::push(renames, (name, mangled))
+    match Array::get(stmts, at = i) {
+      SEnum(false, name, _, _, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
+        let mangled = namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)
+        record_namespace_rename_original(original = name, mangled = mangled)
+        Array::push(renames, value = (name, mangled))
       },
-      SStruct(false, name, _, _, _, _) => if !import_alias_rewrite_string_array_contains(exported, name) {
-        let mangled = namespace_private_name_lazy(path, name, namespace_suffix_box)
-        record_namespace_rename_original(name, mangled)
-        Array::push(renames, (name, mangled))
+      SStruct(false, name, _, _, _, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
+        let mangled = namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)
+        record_namespace_rename_original(original = name, mangled = mangled)
+        Array::push(renames, value = (name, mangled))
       },
-      STypeAlias(false, name, _, _) => if !import_alias_rewrite_string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
+      STypeAlias(false, name, _, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
+        Array::push(renames, value = (name, namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)))
       },
-      SSuberror(false, name, _) => if !import_alias_rewrite_string_array_contains(exported, name) {
-        let mangled = namespace_private_name_lazy(path, name, namespace_suffix_box)
-        record_namespace_rename_original(name, mangled)
-        Array::push(renames, (name, mangled))
+      SSuberror(false, name, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
+        let mangled = namespace_private_name_lazy(path = path, name = name, suffix_box = namespace_suffix_box)
+        record_namespace_rename_original(original = name, mangled = mangled)
+        Array::push(renames, value = (name, mangled))
       },
       _ => ()
     }
@@ -2104,24 +2105,24 @@ fn collect_private_ctor_renames(path: String, stmts: Array[Stmt], type_renames: 
   let renames = empty_aliases()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SEnum(false, type_name, _, ctors, _) => if !import_alias_rewrite_string_array_contains(exported, type_name) {
+    match Array::get(stmts, at = i) {
+      SEnum(false, type_name, _, ctors, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = type_name) {
         let mut j = 0
         while j < Array::length(ctors) {
-          let (ctor_name, _) = Array::get(ctors, j)
-          let mangled = namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)
-          record_namespace_rename_original(ctor_name, mangled)
-          Array::push(renames, (ctor_name, mangled))
+          let (ctor_name, _) = Array::get(ctors, at = j)
+          let mangled = namespace_private_name_lazy(path = path, name = ctor_name, suffix_box = namespace_suffix_box)
+          record_namespace_rename_original(original = ctor_name, mangled = mangled)
+          Array::push(renames, value = (ctor_name, mangled))
           j = j + 1
         }
       },
-      SSuberror(false, type_name, ctors) => if !import_alias_rewrite_string_array_contains(exported, type_name) {
+      SSuberror(false, type_name, ctors) => if !import_alias_rewrite_string_array_contains(items = exported, target = type_name) {
         let mut j = 0
         while j < Array::length(ctors) {
-          let (ctor_name, _) = Array::get(ctors, j)
-          let mangled = namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)
-          record_namespace_rename_original(ctor_name, mangled)
-          Array::push(renames, (ctor_name, mangled))
+          let (ctor_name, _) = Array::get(ctors, at = j)
+          let mangled = namespace_private_name_lazy(path = path, name = ctor_name, suffix_box = namespace_suffix_box)
+          record_namespace_rename_original(original = ctor_name, mangled = mangled)
+          Array::push(renames, value = (ctor_name, mangled))
           j = j + 1
         }
       },
@@ -2136,16 +2137,16 @@ fn collect_private_ctor_renames(path: String, stmts: Array[Stmt], type_renames: 
 export fn namespace_private_value_stmts(path: String, stmts: Array[Stmt]) -> Array[Stmt] {
   let namespace_suffix_box = [""]
   let exported = collect_exported_value_names(stmts)
-  let renames = collect_private_value_renames(path, stmts, namespace_suffix_box, exported)
+  let renames = collect_private_value_renames(path = path, stmts = stmts, namespace_suffix_box = namespace_suffix_box, exported = exported)
   let value_renamed = if Array::length(renames) == 0 {
     stmts
   } else {
     let ram = aliasidx_build(renames)
     for stmt in stmts {
-      namespace_private_stmt(stmt, ram)
+      namespace_private_stmt(stmt = stmt, ram = ram)
     }
   }
-  namespace_private_type_ctor_stage(path, value_renamed, namespace_suffix_box, exported)
+  namespace_private_type_ctor_stage(path = path, value_renamed = value_renamed, namespace_suffix_box = namespace_suffix_box, exported = exported)
 }
 
 /// #3444: the ENTRY module's private top-level values that share a name with
@@ -2175,7 +2176,7 @@ export fn namespace_entry_import_shadows(path: String, stmts: Array[Stmt]) -> Ar
     for entry in imports {
       let (local, from) = entry
       // `import { g }; export { g }` re-publishes the import: no declaration.
-      if import_alias_rewrite_string_array_contains(exported, local) && import_alias_rewrite_string_array_contains(declared, local) {
+      if import_alias_rewrite_string_array_contains(items = exported, target = local) && import_alias_rewrite_string_array_contains(items = declared, target = local) {
         throw("`\{local}` is exported here and also imported from '\{from}': an exported declaration cannot share a name with an import -- remove `\{local}` from the import list, or import it under another name (`{ \{local} as other_name }`) [@fn=\{local}]")
       } else {
         ()
@@ -2183,18 +2184,20 @@ export fn namespace_entry_import_shadows(path: String, stmts: Array[Stmt]) -> Ar
     }
     let taken = declared
     for local in imported {
-      Array::push(taken, local)
+      Array::push(taken, value = local)
     }
     let renames = empty_aliases()
-    for rename in collect_private_value_renames(path, stmts, [""], exported) {
+    for rename in collect_private_value_renames(path = path, stmts = stmts, namespace_suffix_box = [
+      ""
+    ], exported = exported) {
       let (name, mangled) = rename
-      if import_alias_rewrite_string_array_contains(imported, name) {
+      if import_alias_rewrite_string_array_contains(items = imported, target = name) {
         let mut fresh = mangled
-        while import_alias_rewrite_string_array_contains(taken, fresh) {
+        while import_alias_rewrite_string_array_contains(items = taken, target = fresh) {
           fresh = String::concat(fresh, "_")
         }
-        Array::push(taken, fresh)
-        Array::push(renames, (name, fresh))
+        Array::push(taken, value = fresh)
+        Array::push(renames, value = (name, fresh))
       } else {
         ()
       }
@@ -2204,7 +2207,7 @@ export fn namespace_entry_import_shadows(path: String, stmts: Array[Stmt]) -> Ar
     } else {
       let ram = aliasidx_build(renames)
       for stmt in stmts {
-        namespace_private_stmt(stmt, ram)
+        namespace_private_stmt(stmt = stmt, ram = ram)
       }
     }
   }
@@ -2212,12 +2215,12 @@ export fn namespace_entry_import_shadows(path: String, stmts: Array[Stmt]) -> Ar
 
 /// `(local name, import path)` for each item `stmts`' top-level imports bind:
 /// the item's alias, or its own name.
-fn import_value_locals_with_paths(stmts: Array[Stmt]) -> Array[(String, String)] {
+fn import_value_locals_with_paths(_ stmts: Array[Stmt]) -> Array[(String, String)] {
   let out: Array[(String, String)] = []
   for stmt in stmts {
     match stmt {
       SImport(from, items) => for item in items {
-        Array::push(out, (match item.alias {
+        Array::push(out, value = (match item.alias {
           Some(a) => a,
           None => item.name
         }, from))
@@ -2228,14 +2231,14 @@ fn import_value_locals_with_paths(stmts: Array[Stmt]) -> Array[(String, String)]
   out
 }
 
-fn top_level_value_names(stmts: Array[Stmt]) -> Array[String] {
+fn top_level_value_names(_ stmts: Array[Stmt]) -> Array[String] {
   let out = empty_strings()
   for stmt in stmts {
     match stmt {
-      SLet(_, _, name, _, _) => Array::push(out, name),
-      SLetMut(name, _, _) => Array::push(out, name),
-      SExternLet(name, _) => Array::push(out, name),
-      SFnDecl(_, name, _, _, _) => Array::push(out, name),
+      SLet(_, _, name, _, _) => Array::push(out, value = name),
+      SLetMut(name, _, _) => Array::push(out, value = name),
+      SExternLet(name, _) => Array::push(out, value = name),
+      SFnDecl(_, name, _, _, _) => Array::push(out, value = name),
       _ => ()
     }
   }
@@ -2246,21 +2249,21 @@ fn top_level_value_names(stmts: Array[Stmt]) -> Array[String] {
 /// definition name or export items renamed, the body shared.
 export fn export_renamed_head(stmt: Stmt, exports: AliasIdx) -> Stmt {
   match stmt {
-    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, aliasidx_rename(exports, name), ty, body),
-    SFnDecl(exported, name, body, requires, ensures) => SFnDecl(exported, aliasidx_rename(exports, name), body, requires, ensures),
+    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, aliasidx_rename(am = exports, name = name), ty, body),
+    SFnDecl(exported, name, body, requires, ensures) => SFnDecl(exported, aliasidx_rename(am = exports, name = name), body, requires, ensures),
     SExport(items) => SExport(for item in items {
-      aliasidx_rename(exports, item)
+      aliasidx_rename(am = exports, name = item)
     }),
     SPositionalParams(rows) => SPositionalParams(for row in rows {
       let (decl, slots) = row
-      (aliasidx_rename(exports, decl), slots)
+      (aliasidx_rename(am = exports, name = decl), slots)
     }),
     _ => stmt
   }
 }
 
 export fn aliasidx_rename(am: AliasIdx, name: String) -> String {
-  match aliasidx_get(am, name) {
+  match aliasidx_get(am = am, name = name) {
     Some(renamed) => renamed,
     None => name
   }
@@ -2270,23 +2273,23 @@ export fn alias_entries_concat(first: Array[(String, String)], later: Array[(Str
   let out = empty_aliases()
   let mut i = 0
   while i < Array::length(first) {
-    Array::push(out, Array::get(first, i))
+    Array::push(out, value = Array::get(first, at = i))
     i = i + 1
   }
   i = 0
   while i < Array::length(later) {
-    Array::push(out, Array::get(later, i))
+    Array::push(out, value = Array::get(later, at = i))
     i = i + 1
   }
   out
 }
 
-fn qualified_head_of(name: String) -> String {
-  let qi = String::index_of(name, "::")
+fn qualified_head_of(_ name: String) -> String {
+  let qi = String::index_of(name, needle = "::")
   if qi < 0 {
     ""
   } else {
-    String::substring(name, 0, qi)
+    String::substring(name, start = 0, end = qi)
   }
 }
 
@@ -2302,9 +2305,9 @@ export fn alias_renames_compose(first: AliasIdx, later: Array[(String, String)])
   let mut ok = true
   let mut i = 0
   while ok && i < Array::length(first.entries) {
-    let (key, value) = Array::get(first.entries, i)
-    MutSet::add(first_values, value)
-    if String::contains(key, "::__vibe_trait_namespace_alias") {
+    let (key, value) = Array::get(first.entries, at = i)
+    MutSet::add(first_values, x = value)
+    if String::contains(key, needle = "::__vibe_trait_namespace_alias") {
       ok = false
     } else {
       i = i + 1
@@ -2312,10 +2315,10 @@ export fn alias_renames_compose(first: AliasIdx, later: Array[(String, String)])
   }
   i = 0
   while ok && i < Array::length(later) {
-    let (key, _) = Array::get(later, i)
-    MutSet::add(later_keys, key)
+    let (key, _) = Array::get(later, at = i)
+    MutSet::add(later_keys, x = key)
     let head = qualified_head_of(key)
-    if MutMap::has(first.idx, key) || MutSet::has(first_values, key) || String::contains(key, "::__vibe_trait_namespace_alias") || (head != "" && (MutMap::has(first.idx, head) || MutSet::has(first_values, head))) {
+    if MutMap::has(first.idx, k = key) || MutSet::has(first_values, x = key) || String::contains(key, needle = "::__vibe_trait_namespace_alias") || (head != "" && (MutMap::has(first.idx, k = head) || MutSet::has(first_values, x = head))) {
       ok = false
     } else {
       i = i + 1
@@ -2323,9 +2326,9 @@ export fn alias_renames_compose(first: AliasIdx, later: Array[(String, String)])
   }
   i = 0
   while ok && i < Array::length(first.entries) {
-    let (_, value) = Array::get(first.entries, i)
+    let (_, value) = Array::get(first.entries, at = i)
     let head = qualified_head_of(value)
-    if head != "" && MutSet::has(later_keys, head) {
+    if head != "" && MutSet::has(later_keys, x = head) {
       ok = false
     } else {
       i = i + 1
@@ -2337,43 +2340,43 @@ export fn alias_renames_compose(first: AliasIdx, later: Array[(String, String)])
 /// The type and constructor stage of `namespace_private_value_stmts`, over
 /// statements whose private values are already renamed.
 export fn namespace_private_type_ctor_stage(path: String, value_renamed: Array[Stmt], namespace_suffix_box: Array[String], exported: Array[String]) -> Array[Stmt] {
-  let type_renames = collect_private_type_renames(path, value_renamed, namespace_suffix_box, exported)
-  let ctor_renames = collect_private_ctor_renames(path, value_renamed, type_renames, namespace_suffix_box, exported)
+  let type_renames = collect_private_type_renames(path = path, stmts = value_renamed, namespace_suffix_box = namespace_suffix_box, exported = exported)
+  let ctor_renames = collect_private_ctor_renames(path = path, stmts = value_renamed, type_renames = type_renames, namespace_suffix_box = namespace_suffix_box, exported = exported)
   if Array::length(type_renames) == 0 && Array::length(ctor_renames) == 0 {
     value_renamed
   } else {
     let private_enum_heads = empty_strings()
     for stmt in value_renamed {
       match stmt {
-        SEnum(false, name, _, _, _) => if !import_alias_rewrite_string_array_contains(exported, name) {
-          Array::push(private_enum_heads, name)
+        SEnum(false, name, _, _, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
+          Array::push(private_enum_heads, value = name)
         },
-        SSuberror(false, name, _) => if !import_alias_rewrite_string_array_contains(exported, name) {
-          Array::push(private_enum_heads, name)
+        SSuberror(false, name, _) => if !import_alias_rewrite_string_array_contains(items = exported, target = name) {
+          Array::push(private_enum_heads, value = name)
         },
         _ => ()
       }
     }
     let local_type_aliases = collect_local_type_aliases(value_renamed)
-    let owner_aliases = collect_impl_method_owner_aliases(value_renamed, type_renames)
+    let owner_aliases = collect_impl_method_owner_aliases(stmts = value_renamed, aliases = type_renames)
     let owner_renamed = for stmt in value_renamed {
-      rewrite_impl_method_binding(stmt, owner_aliases)
+      rewrite_impl_method_binding(stmt = stmt, owner_aliases = owner_aliases)
     }
     for stmt in owner_renamed {
-      namespace_private_type_ctor_stmt(stmt, type_renames, ctor_renames, private_enum_heads, local_type_aliases)
+      namespace_private_type_ctor_stmt(stmt = stmt, type_renames = type_renames, ctor_renames = ctor_renames, private_enum_heads = private_enum_heads, local_type_aliases = local_type_aliases)
     }
   }
 }
 
 fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, String)], ctor_renames: Array[(String, String)], private_enum_heads: Array[String], local_type_aliases: Array[(String, Array[String], TypeExpr)]) -> Stmt {
   match stmt {
-    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, rewrite_private_type_opt(ty, type_renames), rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_name(ctor_renames, name))),
-    SLetMut(name, ty, body) => SLetMut(name, rewrite_private_type_opt(ty, type_renames), rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_name(ctor_renames, name))),
+    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, rewrite_private_type_opt(ty = ty, renames = type_renames), rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_name(aliases = ctor_renames, name = name))),
+    SLetMut(name, ty, body) => SLetMut(name, rewrite_private_type_opt(ty = ty, renames = type_renames), rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_name(aliases = ctor_renames, name = name))),
     SEnum(exported, name, params, ctors, derives) => {
       let next_name = if exported {
         name
       } else {
-        match lookup_alias(type_renames, name) {
+        match lookup_alias(aliases = type_renames, name = name) {
           Some(renamed) => renamed,
           None => name
         }
@@ -2383,13 +2386,13 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
         let next_ctor = if exported {
           ctor_name
         } else {
-          match lookup_alias(ctor_renames, ctor_name) {
+          match lookup_alias(aliases = ctor_renames, name = ctor_name) {
             Some(renamed) => renamed,
             None => ctor_name
           }
         }
         (next_ctor, for arg in args {
-          rewrite_private_type_expr(arg, type_renames)
+          rewrite_private_type_expr(ty = arg, renames = type_renames)
         })
       }, derives)
     },
@@ -2397,7 +2400,7 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
       let next_name = if exported {
         name
       } else {
-        match lookup_alias(type_renames, name) {
+        match lookup_alias(aliases = type_renames, name = name) {
           Some(renamed) => renamed,
           None => name
         }
@@ -2407,13 +2410,13 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
         let next_ctor = if exported {
           ctor_name
         } else {
-          match lookup_alias(ctor_renames, ctor_name) {
+          match lookup_alias(aliases = ctor_renames, name = ctor_name) {
             Some(renamed) => renamed,
             None => ctor_name
           }
         }
         (next_ctor, for arg in args {
-          rewrite_private_type_expr(arg, type_renames)
+          rewrite_private_type_expr(ty = arg, renames = type_renames)
         })
       })
     },
@@ -2421,35 +2424,35 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
       let next_name = if exported {
         name
       } else {
-        match lookup_alias(type_renames, name) {
+        match lookup_alias(aliases = type_renames, name = name) {
           Some(renamed) => renamed,
           None => name
         }
       }
       SStruct(exported, next_name, for field in fields {
         let (field_name, field_ty) = field
-        (field_name, rewrite_private_type_expr(field_ty, type_renames))
+        (field_name, rewrite_private_type_expr(ty = field_ty, renames = type_renames))
       }, derives, mut_fields, tparams)
     },
     STypeAlias(exported, name, params, target) => {
       let next_name = if exported {
         name
       } else {
-        match lookup_alias(type_renames, name) {
+        match lookup_alias(aliases = type_renames, name = name) {
           Some(renamed) => renamed,
           None => name
         }
       }
-      STypeAlias(exported, next_name, params, rewrite_private_type_expr(target, type_renames))
+      STypeAlias(exported, next_name, params, rewrite_private_type_expr(ty = target, renames = type_renames))
     },
     SQualifiedPatternRefs(rows) => SQualifiedPatternRefs(for row in rows {
-      let qualifier = match lookup_alias(type_renames, row.0) {
+      let qualifier = match lookup_alias(aliases = type_renames, name = row.0) {
         Some(renamed) => renamed,
         None => row.0
       }
-      let head = local_pattern_qualifier_head(row.0, local_type_aliases, Array::length(local_type_aliases) + 1)
-      let variant = if import_alias_rewrite_string_array_contains(private_enum_heads, head) {
-        match lookup_alias(ctor_renames, row.1) {
+      let head = local_pattern_qualifier_head(name = row.0, aliases = local_type_aliases, fuel = Array::length(local_type_aliases) + 1)
+      let variant = if import_alias_rewrite_string_array_contains(items = private_enum_heads, target = head) {
+        match lookup_alias(aliases = ctor_renames, name = row.1) {
           Some(renamed) => renamed,
           None => row.1
         }
@@ -2458,21 +2461,21 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
       }
       (qualifier, variant)
     }),
-    SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, rewrite_private_type_expr(target, alias_map_without_names(type_renames, tparams))),
-    SExternLet(name, ty) => SExternLet(name, rewrite_private_type_expr(ty, type_renames)),
-    STest(name, body) => STest(name, rewrite_private_type_ctor_expr(body, type_renames, ctor_renames)),
-    SBench(name, body) => SBench(name, rewrite_private_type_ctor_expr(body, type_renames, ctor_renames)),
-    SExpr(body) => SExpr(rewrite_private_type_ctor_expr(body, type_renames, ctor_renames)),
+    SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, rewrite_private_type_expr(ty = target, renames = alias_map_without_names(aliases = type_renames, names = tparams))),
+    SExternLet(name, ty) => SExternLet(name, rewrite_private_type_expr(ty = ty, renames = type_renames)),
+    STest(name, body) => STest(name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
+    SBench(name, body) => SBench(name, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
+    SExpr(body) => SExpr(rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = ctor_renames)),
     SLetPat(pat, body) => {
-      let next_pat = rewrite_private_type_ctor_pat(pat, type_renames, ctor_renames)
-      SLetPat(next_pat, rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_pat(ctor_renames, next_pat)))
+      let next_pat = rewrite_private_type_ctor_pat(pat = pat, type_renames = type_renames, ctor_renames = ctor_renames)
+      SLetPat(next_pat, rewrite_private_type_ctor_expr(expr = body, type_renames = type_renames, ctor_renames = alias_map_without_pat(aliases = ctor_renames, pat = next_pat)))
     },
-    SModule(exported, name, stmts) => SModule(exported, name, namespace_private_value_stmts(name, stmts)),
+    SModule(exported, name, stmts) => SModule(exported, name, namespace_private_value_stmts(path = name, stmts = stmts)),
     SEffectDef(exported, name, params, ops) => SEffectDef(exported, name, params, for op in ops {
       let (op_name, op_params, ret_ty) = op
       (op_name, for param in op_params {
-        rewrite_private_type_expr(param, type_renames)
-      }, rewrite_private_type_expr(ret_ty, type_renames))
+        rewrite_private_type_expr(ty = param, renames = type_renames)
+      }, rewrite_private_type_expr(ty = ret_ty, renames = type_renames))
     }),
     _ => stmt
   }
@@ -2481,31 +2484,31 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
 fn namespace_private_stmt(stmt: Stmt, ram: AliasIdx) -> Stmt {
   match stmt {
     SLet(exported, is_rec, name, ty, body) => {
-      let next_name = match aliasidx_get(ram, name) {
+      let next_name = match aliasidx_get(am = ram, name = name) {
         Some(renamed) => renamed,
         None => name
       }
-      SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, ram))
+      SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(expr = body, am = ram))
     },
     SPositionalParams(rows) => SPositionalParams(for row in rows {
       let (decl, slots) = row
-      match aliasidx_get(ram, decl) {
+      match aliasidx_get(am = ram, name = decl) {
         Some(renamed) => (renamed, slots),
         None => (decl, slots)
       }
     }),
     SLetMut(name, ty, body) => {
-      let next_name = match aliasidx_get(ram, name) {
+      let next_name = match aliasidx_get(am = ram, name = name) {
         Some(renamed) => renamed,
         None => name
       }
-      SLetMut(next_name, ty, rewrite_alias_expr_ix(body, ram))
+      SLetMut(next_name, ty, rewrite_alias_expr_ix(expr = body, am = ram))
     },
-    STest(name, body) => STest(name, rewrite_alias_expr_ix(body, ram)),
-    SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, ram)),
-    SExpr(body) => SExpr(rewrite_alias_expr_ix(body, ram)),
-    SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(body, ram)),
-    SModule(exported, name, stmts) => SModule(exported, name, namespace_private_value_stmts(name, stmts)),
+    STest(name, body) => STest(name, rewrite_alias_expr_ix(expr = body, am = ram)),
+    SBench(name, body) => SBench(name, rewrite_alias_expr_ix(expr = body, am = ram)),
+    SExpr(body) => SExpr(rewrite_alias_expr_ix(expr = body, am = ram)),
+    SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(expr = body, am = ram)),
+    SModule(exported, name, stmts) => SModule(exported, name, namespace_private_value_stmts(path = name, stmts = stmts)),
     _ => stmt
   }
 }

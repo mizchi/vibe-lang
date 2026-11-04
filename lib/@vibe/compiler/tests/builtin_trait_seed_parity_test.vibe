@@ -60,40 +60,41 @@ fn seeded_only(trait_name: String, target: String) -> Bool {
 fn push_seeded_rows(env: TypeEnv, out: Array[(String, String)]) -> Unit {
   match env {
     EnvEmpty => (),
-    EnvBind(_, _, rest) => push_seeded_rows(rest, out),
-    EnvShowWrappers(_, _, rest) => push_seeded_rows(rest, out),
-    EnvMutCell(_, _, rest) => push_seeded_rows(rest, out),
-    EnvTraitDef(_, _, _, _, rest, _, _) => push_seeded_rows(rest, out),
+    EnvBind(_, _, rest) => push_seeded_rows(env = rest, out = out),
+    EnvShowWrappers(_, _, rest) => push_seeded_rows(env = rest, out = out),
+    EnvMutCell(_, _, rest) => push_seeded_rows(env = rest, out = out),
+    EnvTraitDef(_, _, _, _, rest, _, _) => push_seeded_rows(env = rest, out = out),
     EnvTraitImpl(trait_name, target, rest) => {
-      Array::push(out, (trait_name, type_to_string(target)))
-      push_seeded_rows(rest, out)
+      Array::push(out, value = (trait_name, type_to_string(target)))
+      push_seeded_rows(env = rest, out = out)
     },
     EnvTraitImplGen(trait_name, _, _, target, rest) => {
-      Array::push(out, (trait_name, String::concat("generic ", type_to_string(target))))
-      push_seeded_rows(rest, out)
+      Array::push(out, value = (trait_name, String::concat("generic ", type_to_string(target))))
+      push_seeded_rows(env = rest, out = out)
     },
-    EnvTypeDefs(_, _, rest) => push_seeded_rows(rest, out),
+    EnvTypeDefs(_, _, rest) => push_seeded_rows(env = rest, out = out),
     EnvFlat(_) => (),
-    EnvCached(_, _, rest) => push_seeded_rows(rest, out)
+    EnvCached(_, _, rest) => push_seeded_rows(env = rest, out = out)
   }
 }
 
 /// Every impl row the checker seeds when nothing is withheld.
 fn seeded_rows() -> Array[(String, String)] {
   let out: Array[(String, String)] = []
-  push_seeded_rows(register_builtin_traits_for(EnvEmpty, []), out)
+  push_seeded_rows(env = register_builtin_traits_for(env = EnvEmpty, withheld = [
+  ]), out = out)
   out
 }
 
 /// Every `impl Trait for Type` the prelude source declares. A generic or
 /// structural target is recorded under a spelling no seeded row has, so it is
 /// reported rather than skipped.
-fn prelude_rows(source: String) -> Array[(String, String)] with Exception {
+fn prelude_rows(_ source: String) -> Array[(String, String)] with Exception {
   let out: Array[(String, String)] = []
   let stmts = parse_program(lex(source))
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImpl(tparams, _, trait_name, target) => {
         let spelled = match target {
           TyName(name) => if Array::length(tparams) == 0 {
@@ -103,7 +104,7 @@ fn prelude_rows(source: String) -> Array[(String, String)] with Exception {
           },
           _ => "a structural target"
         }
-        Array::push(out, (trait_name, spelled))
+        Array::push(out, value = (trait_name, spelled))
       },
       _ => ()
     }
@@ -116,7 +117,7 @@ fn has_row(rows: Array[(String, String)], trait_name: String, target: String) ->
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(rows) {
-    let (t, ty) = Array::get(rows, i)
+    let (t, ty) = Array::get(rows, at = i)
     found = t == trait_name && ty == target
     i = i + 1
   }
@@ -126,27 +127,27 @@ fn has_row(rows: Array[(String, String)], trait_name: String, target: String) ->
 /// Every disagreement, the prelude's side first; "" when they agree. Joined
 /// with "; " rather than newlines because a failing `inspect` prints only the
 /// first line of its actual value, which would show one missing row of many.
-fn disagreements(prelude_source: String) -> String with Exception {
+fn disagreements(_ prelude_source: String) -> String with Exception {
   let seeded = seeded_rows()
   let declared = prelude_rows(prelude_source)
   let lines: Array[String] = []
   let mut i = 0
   while i < Array::length(declared) {
-    let (t, ty) = Array::get(declared, i)
-    if !has_row(seeded, t, ty) {
-      Array::push(lines, "declared in builtin_traits.vibe but not seeded by register_builtin_traits_for: `impl \{t} for \{ty}`")
+    let (t, ty) = Array::get(declared, at = i)
+    if !has_row(rows = seeded, trait_name = t, target = ty) {
+      Array::push(lines, value = "declared in builtin_traits.vibe but not seeded by register_builtin_traits_for: `impl \{t} for \{ty}`")
     }
     i = i + 1
   }
   let mut j = 0
   while j < Array::length(seeded) {
-    let (t, ty) = Array::get(seeded, j)
-    if !seeded_only(t, ty) && !has_row(declared, t, ty) {
-      Array::push(lines, "seeded by register_builtin_traits_for but not declared in builtin_traits.vibe: `impl \{t} for \{ty}`")
+    let (t, ty) = Array::get(seeded, at = j)
+    if !seeded_only(trait_name = t, target = ty) && !has_row(rows = declared, trait_name = t, target = ty) {
+      Array::push(lines, value = "seeded by register_builtin_traits_for but not declared in builtin_traits.vibe: `impl \{t} for \{ty}`")
     }
     j = j + 1
   }
-  String::join(lines, "; ")
+  String::join(lines, sep = "; ")
 }
 
 //# Tests
@@ -167,7 +168,7 @@ test "red: a prelude impl the checker does not seed is reported" {
 
 test "red: a seeded row the prelude does not declare is reported" {
   let source = Fs::read_file(prelude_path())
-  let mutated = String::replace(source, "impl Signed for Double\n", "")
+  let mutated = String::replace(source, pattern = "impl Signed for Double\n", replacement = "")
   // The mutation hit. An edit that matched nothing would leave the tables in
   // agreement and prove nothing about the comparison.
   assert(mutated != source)
@@ -179,7 +180,7 @@ test "red: a seeded row the prelude does not declare is reported" {
 /// Every checker error for `source` on the single-file lane, or "" when it
 /// checks clean. That lane seeds the table exactly as the FS lane does for a
 /// program with no imports.
-fn check_errors(source: String) -> String {
+fn check_errors(_ source: String) -> String {
   handle {
     let _ = check_program(parse_program(lex(source)))
     ""
@@ -207,13 +208,13 @@ test "Signed and Default bounds hold at the prelude's scalars without an import"
 }
 
 test "Signed is still refused where the prelude declares no impl" {
-  inspect(String::contains(check_errors(String::concat(signed_keep(), "fn main() -> String {\n  keep(\"a\")\n}\n")), "no impl `Signed` for `String`"), content = "true")
+  inspect(String::contains(check_errors(String::concat(signed_keep(), "fn main() -> String {\n  keep(\"a\")\n}\n")), needle = "no impl `Signed` for `String`"), content = "true")
 }
 
 test "T::default() without @vibe/core names the import" {
   let msg = check_errors("fn fresh[T: Default](witness: T) -> T {\n  T::default()\n}\n\nfn main() -> Int {\n  fresh(3)\n}\n")
-  inspect(String::contains(msg, "add `import @vibe/core { Default }` to call `T::default()`"), content = "true")
-  inspect(String::contains(msg, "unknown name"), content = "false")
+  inspect(String::contains(msg, needle = "add `import @vibe/core { Default }` to call `T::default()`"), content = "true")
+  inspect(String::contains(msg, needle = "unknown name"), content = "false")
 }
 
 test "a program's own Default withholds the seeded rows" {
@@ -222,10 +223,10 @@ test "a program's own Default withholds the seeded rows" {
   // `T::default()` to a `Double::default` nobody wrote.
   let own = "trait Default {\n  default() -> Self\n}\n\nimpl Default for Int {\n  default() -> Int {\n    0\n  }\n}\n\nfn fresh[T: Default](witness: T) -> T {\n  T::default()\n}\n\n"
   inspect(check_errors(String::concat(own, "fn main() -> Int {\n  fresh(3)\n}\n")), content = "")
-  inspect(String::contains(check_errors(String::concat(own, "fn main() -> Double {\n  fresh(1.5)\n}\n")), "no impl `Default` for `Float64`"), content = "true")
+  inspect(String::contains(check_errors(String::concat(own, "fn main() -> Double {\n  fresh(1.5)\n}\n")), needle = "no impl `Default` for `Float64`"), content = "true")
 }
 
 test "a program's own Signed withholds the seeded rows" {
   let own = "trait Signed\n\n"
-  inspect(String::contains(check_errors(String::concat(own, String::concat(signed_keep(), "fn main() -> Int {\n  keep(3)\n}\n"))), "no impl `Signed` for `Int`"), content = "true")
+  inspect(String::contains(check_errors(String::concat(own, String::concat(signed_keep(), "fn main() -> Int {\n  keep(3)\n}\n"))), needle = "no impl `Signed` for `Int`"), content = "true")
 }

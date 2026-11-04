@@ -55,13 +55,13 @@ test "parse generic impl" {
 test "trait header params roundtrip with supertrait and method-generic metadata" {
   let source = "trait Iterator[T, U]: Iterable { next[V: Show](T, U) -> V }"
   let parsed = parse_program(lex(source))
-  match Array::get(parsed, 0) {
+  match Array::get(parsed, at = 0) {
     STrait(_, "Iterator", supers, methods, method_gens, tparams) => {
       assert(Array::length(tparams) == 2)
-      assert(Array::get(tparams, 0) == "T")
-      assert(Array::get(tparams, 1) == "U")
+      assert(Array::get(tparams, at = 0) == "T")
+      assert(Array::get(tparams, at = 1) == "U")
       assert(Array::length(supers) == 1)
-      assert(Array::get(supers, 0) == "Iterable")
+      assert(Array::get(supers, at = 0) == "Iterable")
       assert(Array::length(methods) == 1)
       assert(Array::length(method_gens) == 1)
     },
@@ -122,7 +122,7 @@ test "parse value-position generic let keeps type params" {
   let p1 = handle {
     print_program(parse_program(lex("let ord_max = [T: Ord](a: T, b: T) -> T { if a < b { b } else a }")))
   } with { Exception::Throw(e) => String::concat("ERR: ", e) }
-  assert(String::index_of(p1, "[T: Ord]") >= 0)
+  assert(String::index_of(p1, needle = "[T: Ord]") >= 0)
   // and it is stable across a second round-trip
   let p2 = handle {
     print_program(parse_program(lex(p1)))
@@ -136,7 +136,7 @@ test "parse expression-position generic lambda keeps type params" {
   let p1 = handle {
     print_program(parse_program(lex("let callbacks = [[T: Ord](x: T) -> T { x }]\n0")))
   } with { Exception::Throw(e) => String::concat("ERR: ", e) }
-  assert(String::index_of(p1, "[T: Ord]") >= 0)
+  assert(String::index_of(p1, needle = "[T: Ord]") >= 0)
   let p2 = handle {
     print_program(parse_program(lex(p1)))
   } with { Exception::Throw(_) => "threw" }
@@ -392,9 +392,9 @@ test "let* parses to the type-directed railway sentinel" {
   let printed = handle {
     print_program(parse_program(lex("let run = () -> { let* x = foo() \n Ok(x) }")))
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(printed, "__try_bind"))
+  assert(String::contains(printed, needle = "__try_bind"))
   // The continuation closure carries the bound name + the rest of the block.
-  assert(String::contains(printed, "Ok"))
+  assert(String::contains(printed, needle = "Ok"))
 }
 
 test "Map::new and Map::from_pairs round-trip through the printer (#960)" {
@@ -415,9 +415,9 @@ test "Map::new and Map::from_pairs round-trip through the printer (#960)" {
   let lit = handle {
     parse_print("map { \"a\": 1, \"b\": 2 }")
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(lit, "ERROR: "))
-  assert(String::contains(lit, "#960"))
-  assert(String::contains(lit, "Map::from_pairs"))
+  assert(String::starts_with(lit, prefix = "ERROR: "))
+  assert(String::contains(lit, needle = "#960"))
+  assert(String::contains(lit, needle = "Map::from_pairs"))
   // `map` stays an ordinary identifier everywhere else (no `r#` needed).
   let ident = handle {
     parse_print("map(xs, f)")
@@ -432,21 +432,21 @@ test "Map::from_pairs rejects non-literal arguments (#960)" {
   let non_literal = handle {
     parse_print("Map::from_pairs(pairs)")
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(non_literal, "ERROR: "))
-  assert(String::contains(non_literal, "#960"))
+  assert(String::starts_with(non_literal, prefix = "ERROR: "))
+  assert(String::contains(non_literal, needle = "#960"))
   let bad_key = handle {
     parse_print("Map::from_pairs([(k, 1)])")
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(bad_key, "#960"))
-  assert(String::contains(bad_key, "string literal"))
+  assert(String::contains(bad_key, needle = "#960"))
+  assert(String::contains(bad_key, needle = "string literal"))
   let non_tuple = handle {
     parse_print("Map::from_pairs([1, 2])")
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(non_tuple, "tuple literal"))
+  assert(String::contains(non_tuple, needle = "tuple literal"))
   let new_args = handle {
     parse_print("Map::new(1)")
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(new_args, "Map::new takes no arguments"))
+  assert(String::contains(new_args, needle = "Map::new takes no arguments"))
 }
 
 //# #1284: loop continue/break argument arity
@@ -477,10 +477,10 @@ test "#1284: a continue arity mismatch is a located error, not a silent miscompi
     let _ = parse_program(lex("loop (i = 0, sum = 0) { if i > 3 { break sum } continue(i + 1) }"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(too_few, "ERROR: "))
-  assert(String::contains(too_few, "#1284"))
-  assert(String::contains(too_few, "2 parameter(s) (i, sum)"))
-  assert(String::contains(too_few, "1 argument(s)"))
+  assert(String::starts_with(too_few, prefix = "ERROR: "))
+  assert(String::contains(too_few, needle = "#1284"))
+  assert(String::contains(too_few, needle = "2 parameter(s) (i, sum)"))
+  assert(String::contains(too_few, needle = "1 argument(s)"))
   // Too MANY arguments fell into a pass-through arm that dropped the payload
   // entirely: the parameters were never assigned, so the loop spun forever
   // with its initial values — compile-clean, and the same failure shape #808
@@ -489,9 +489,9 @@ test "#1284: a continue arity mismatch is a located error, not a silent miscompi
     let _ = parse_program(lex("loop (i = 0, sum = 0) { if i > 3 { break sum } continue(i + 1, sum + i, 9) }"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(too_many, "ERROR: "))
-  assert(String::contains(too_many, "#1284"))
-  assert(String::contains(too_many, "3 argument(s)"))
+  assert(String::starts_with(too_many, prefix = "ERROR: "))
+  assert(String::contains(too_many, needle = "#1284"))
+  assert(String::contains(too_many, needle = "3 argument(s)"))
 }
 
 test "#1284: break takes one value, so a parenthesized list is a tuple" {
@@ -531,16 +531,16 @@ test "#1283: a guard else that does not diverge is rejected" {
     let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o is Some(v) else { 0 }\n  v }\nf(Some(1))"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(fallthrough, "ERROR: "))
-  assert(String::contains(fallthrough, "#1283"))
-  assert(String::contains(fallthrough, "every path"))
+  assert(String::starts_with(fallthrough, prefix = "ERROR: "))
+  assert(String::contains(fallthrough, needle = "#1283"))
+  assert(String::contains(fallthrough, needle = "every path"))
   // An `if` with no `else` cannot diverge on both paths.
   let half_branch = handle {
     let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o is Some(v) else { if true { return -1 } }\n  v }\nf(Some(1))"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(half_branch, "ERROR: "))
-  assert(String::contains(half_branch, "#1283"))
+  assert(String::starts_with(half_branch, prefix = "ERROR: "))
+  assert(String::contains(half_branch, needle = "#1283"))
 }
 
 test "#1446: a guard else accepts direct canonical and compatible exception throws" {
@@ -567,14 +567,14 @@ test "#1446: a guard else rejects arbitrary performs and handled throws" {
     let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o is Some(v) else { perform Log::Emit(\"none\") }\n  v }\nf(Some(1))"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(arbitrary_perform, "ERROR: "))
-  assert(String::contains(arbitrary_perform, "Other `perform` operations"))
+  assert(String::starts_with(arbitrary_perform, prefix = "ERROR: "))
+  assert(String::contains(arbitrary_perform, needle = "Other `perform` operations"))
   let handled_throw = handle {
     let _ = parse_program(lex("let f: (Option[Int]) -> Int with Exception = (o) -> { guard o is Some(v) else { handle { throw(\"none\") } with { Exception::Throw(_) => 0 } }\n  v }\nf(Some(1))"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(handled_throw, "ERROR: "))
-  assert(String::contains(handled_throw, "handled throws"))
+  assert(String::starts_with(handled_throw, prefix = "ERROR: "))
+  assert(String::contains(handled_throw, needle = "handled throws"))
 }
 
 test "#1283: guard requires both `is` and `else`" {
@@ -582,14 +582,14 @@ test "#1283: guard requires both `is` and `else`" {
     let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o else { return -1 }\n  0 }\nf(Some(1))"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(no_is, "ERROR: "))
-  assert(String::contains(no_is, "#1283"))
+  assert(String::starts_with(no_is, prefix = "ERROR: "))
+  assert(String::contains(no_is, needle = "#1283"))
   let no_else = handle {
     let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { guard o is Some(v)\n  v }\nf(Some(1))"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(no_else, "ERROR: "))
-  assert(String::contains(no_else, "#1283"))
+  assert(String::starts_with(no_else, prefix = "ERROR: "))
+  assert(String::contains(no_else, needle = "#1283"))
 }
 
 test "#1283: the retired let-else spelling is rejected by name" {
@@ -600,10 +600,10 @@ test "#1283: the retired let-else spelling is rejected by name" {
     let _ = parse_program(lex("let f: (Option[Int]) -> Int = (o) -> { let Some(v) = o else { return -1 }\n  v }\nf(Some(1))"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(old_form, "ERROR: "))
-  assert(String::contains(old_form, "#1283"))
-  assert(String::contains(old_form, "let-else"))
-  assert(String::contains(old_form, "guard"))
+  assert(String::starts_with(old_form, prefix = "ERROR: "))
+  assert(String::contains(old_form, needle = "#1283"))
+  assert(String::contains(old_form, needle = "let-else"))
+  assert(String::contains(old_form, needle = "guard"))
   // The irrefutable pattern-let with NO else is a different construct and
   // stays legal.
   let no_else = handle {
@@ -618,7 +618,7 @@ test "#1283: `guard` is a reserved word, escapable as r#guard" {
     let _ = parse_program(lex("let guard = 1\nguard"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(reserved, "ERROR: "))
+  assert(String::starts_with(reserved, prefix = "ERROR: "))
   let escaped = handle {
     let _ = parse_program(lex("let r#guard = 1\nr#guard"))
     "ok"
@@ -627,30 +627,30 @@ test "#1283: `guard` is a reserved word, escapable as r#guard" {
   let unescapable_source = "fn fn() -> Int { 0 }"
   let unescapable = handle {
     let (tokens, starts, _) = lex_with_offsets(unescapable_source)
-    let _ = parse_program_located(tokens, starts, unescapable_source)
+    let _ = parse_program_located(tokens = tokens, starts = starts, source = unescapable_source)
     "ok"
   } with { Exception::Throw(e) => e }
-  assert(String::starts_with(unescapable, "line 1:4: "))
-  assert(String::contains(unescapable, "`fn` is a reserved word"))
-  assert(String::contains(unescapable, "cannot be escaped"))
-  assert(!(String::contains(unescapable, "r#fn")))
+  assert(String::starts_with(unescapable, prefix = "line 1:4: "))
+  assert(String::contains(unescapable, needle = "`fn` is a reserved word"))
+  assert(String::contains(unescapable, needle = "cannot be escaped"))
+  assert(!(String::contains(unescapable, needle = "r#fn")))
 }
 
 test "#1692: reserved fn name reports its own location and raw-name escape" {
   let source = "fn ok() -> Int { 0 }\nfn guard(x: Int) -> Int { x }"
   let message = handle {
     let (tokens, starts, _) = lex_with_offsets(source)
-    let _ = parse_program_located(tokens, starts, source)
+    let _ = parse_program_located(tokens = tokens, starts = starts, source = source)
     "ok"
   } with { Exception::Throw(e) => e }
-  assert(String::starts_with(message, "line 2:4: "))
-  assert(String::contains(message, "`guard` is a reserved word"))
-  assert(String::contains(message, "r#guard"))
-  assert(!(String::contains(message, "after 'let'")))
+  assert(String::starts_with(message, prefix = "line 2:4: "))
+  assert(String::contains(message, needle = "`guard` is a reserved word"))
+  assert(String::contains(message, needle = "r#guard"))
+  assert(!(String::contains(message, needle = "after 'let'")))
   let escaped_source = "fn r#guard(x: Int) -> Int { x }"
   let escaped = handle {
     let (tokens, starts, _) = lex_with_offsets(escaped_source)
-    let _ = parse_program_located(tokens, starts, escaped_source)
+    let _ = parse_program_located(tokens = tokens, starts = starts, source = escaped_source)
     "ok"
   } with { Exception::Throw(e) => e }
   assert(escaped == "ok")
@@ -665,8 +665,8 @@ test "#819: example parses and lowers to a test for every downstream stage" {
   let lowered = handle {
     print_program(parse_program(lex("example \"adds\" { assert_eq(1 + 1, 2) }")))
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(lowered, "test \"adds\""))
-  assert(!String::contains(lowered, "example \"adds\""))
+  assert(String::contains(lowered, needle = "test \"adds\""))
+  assert(!String::contains(lowered, needle = "example \"adds\""))
 }
 
 test "#819: the preserving entry point keeps the example distinguishable" {
@@ -676,7 +676,7 @@ test "#819: the preserving entry point keeps the example distinguishable" {
   let kept = handle {
     print_program(parse_program_preserving(lex("example \"adds\" { assert_eq(1 + 1, 2) }")))
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(kept, "example \"adds\""))
+  assert(String::contains(kept, needle = "example \"adds\""))
 }
 
 test "#819: an example needs a name string" {
@@ -684,8 +684,8 @@ test "#819: an example needs a name string" {
     let _ = parse_program(lex("example { assert_eq(1, 1) }"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(unnamed, "ERROR: "))
-  assert(String::contains(unnamed, "example name string"))
+  assert(String::starts_with(unnamed, prefix = "ERROR: "))
+  assert(String::contains(unnamed, needle = "example name string"))
 }
 
 test "#819: `example` is a reserved word, escapable as r#example" {
@@ -693,7 +693,7 @@ test "#819: `example` is a reserved word, escapable as r#example" {
     let _ = parse_program(lex("let example = 1\nexample"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(reserved, "ERROR: "))
+  assert(String::starts_with(reserved, prefix = "ERROR: "))
   let escaped = handle {
     let _ = parse_program(lex("let r#example = 1\nr#example"))
     "ok"
@@ -710,36 +710,36 @@ test "#1429: the braced row is rejected by name" {
   let braced = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with { Error, Fs } = (x) -> { x }")))
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(braced, "ERROR: "))
-  assert(String::contains(braced, "removed in #1429"))
-  assert(String::contains(braced, "with A + B"))
+  assert(String::starts_with(braced, prefix = "ERROR: "))
+  assert(String::contains(braced, needle = "removed in #1429"))
+  assert(String::contains(braced, needle = "with A + B"))
 }
 
 test "#1429: the braceless row parses and round-trips" {
   let braceless = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with Exception + Fs = (x) -> { x }")))
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(!String::starts_with(braceless, "ERROR: "))
-  assert(String::contains(braceless, "with Exception + Fs"))
-  assert(!String::contains(braceless, "with {"))
+  assert(!String::starts_with(braceless, prefix = "ERROR: "))
+  assert(String::contains(braceless, needle = "with Exception + Fs"))
+  assert(!String::contains(braceless, needle = "with {"))
 }
 
 test "#1429: `with ()` is the empty row and `with {}` is rejected" {
   let parens = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with () = (x) -> { x }")))
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(!String::starts_with(parens, "ERROR: "))
-  assert(String::contains(parens, "with ()"))
+  assert(!String::starts_with(parens, prefix = "ERROR: "))
+  assert(String::contains(parens, needle = "with ()"))
   let braces = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with {} = (x) -> { x }")))
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(braces, "ERROR: "))
-  assert(String::contains(braces, "removed in #1429"))
+  assert(String::starts_with(braces, prefix = "ERROR: "))
+  assert(String::contains(braces, needle = "removed in #1429"))
 }
 
 //# ADR-0088: the `allows` row of an entry point
 
-fn parse_or_error(src: String) -> String {
+fn parse_or_error(_ src: String) -> String {
   handle {
     print_program(parse_program(lex(src)))
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
@@ -747,93 +747,93 @@ fn parse_or_error(src: String) -> String {
 
 test "ADR-0088: `fn main allows` is the entry's row" {
   let allows = parse_or_error("fn main allows Fs::read_file {\n  1\n}")
-  assert(!String::starts_with(allows, "ERROR: "))
-  assert(String::contains(allows, "Fs::read_file"))
+  assert(!String::starts_with(allows, prefix = "ERROR: "))
+  assert(String::contains(allows, needle = "Fs::read_file"))
 }
 
 test "ADR-0088 (#2654): `with` on an entry head is refused and names the whole `allows` edit" {
   // The row is read before the refusal, so the message carries it: the
   // reader gets one edit, not a keyword to change and then a row to write.
   let bare = parse_or_error("fn main with Console {\n  1\n}")
-  assert(String::contains(bare, "`fn main` is an entry point and grants its row, so the keyword is `allows`"))
-  assert(String::contains(bare, "write `fn main allows Console`"))
+  assert(String::contains(bare, needle = "`fn main` is an entry point and grants its row, so the keyword is `allows`"))
+  assert(String::contains(bare, needle = "write `fn main allows Console`"))
   let sig = parse_or_error("fn main() -> Int with Fs + Env {\n  0\n}")
-  assert(String::contains(sig, "write `fn main(..) -> .. allows Fs + Env`"))
+  assert(String::contains(sig, needle = "write `fn main(..) -> .. allows Fs + Env`"))
   let start = parse_or_error("fn _start() -> Int with Fs {\n  0\n}")
-  assert(String::contains(start, "`fn _start` is an entry point"))
+  assert(String::contains(start, needle = "`fn _start` is an entry point"))
   let empty = parse_or_error("fn main with () {\n  ()\n}")
-  assert(String::contains(empty, "write `fn main allows ()`"))
+  assert(String::contains(empty, needle = "write `fn main allows ()`"))
   // The braced row of #1429 on an entry gets the same one edit, not the
   // `with A + B` rewrite that would be refused in turn.
   let braced = parse_or_error("fn main with { Console } {\n  ()\n}")
-  assert(String::contains(braced, "write `fn main allows Console`"))
+  assert(String::contains(braced, needle = "write `fn main allows Console`"))
   let block = parse_or_error("test \"a\" with Http {\n  assert(true)\n}")
-  assert(String::contains(block, "`test \"a\"` is an entry point"))
-  assert(String::contains(block, "write `test \"a\" allows Http`"))
+  assert(String::contains(block, needle = "`test \"a\"` is an entry point"))
+  assert(String::contains(block, needle = "write `test \"a\" allows Http`"))
   let bench_msg = parse_or_error("bench \"b\" with Http + Exception {\n  ()\n}")
-  assert(String::contains(bench_msg, "write `bench \"b\" allows Http + Exception`"))
+  assert(String::contains(bench_msg, needle = "write `bench \"b\" allows Http + Exception`"))
   let example_msg = parse_or_error("example \"c\" with Console {\n  ()\n}")
-  assert(String::contains(example_msg, "write `example \"c\" allows Console`"))
+  assert(String::contains(example_msg, needle = "write `example \"c\" allows Console`"))
   // A called function's `with`, a `with` inside an entry's body and a `with`
   // in a function type nested in the entry's signature are untouched; so is
   // a bodyless contract declaration (contract_entry_row_test).
   let called = parse_or_error("fn helper() -> Unit with Console {\n  println(\"x\")\n}\nfn main allows Console {\n  helper()\n  let v = handle { 1 } with { Ask::Get() => resume(1) }\n  ()\n}")
-  assert(!String::starts_with(called, "ERROR: "))
+  assert(!String::starts_with(called, prefix = "ERROR: "))
   let nested = parse_or_error("fn main() -> (() -> Int with Fs) {\n  () -> 1\n}")
-  assert(!String::starts_with(nested, "ERROR: "))
+  assert(!String::starts_with(nested, prefix = "ERROR: "))
 }
 
 test "ADR-0088: an explicit entry signature takes `allows` too" {
   let main_sig = parse_or_error("fn main() -> Int allows Console + Fs::read_file? {\n  0\n}")
-  assert(!String::starts_with(main_sig, "ERROR: "))
-  assert(String::contains(main_sig, "Fs::read_file?"))
+  assert(!String::starts_with(main_sig, prefix = "ERROR: "))
+  assert(String::contains(main_sig, needle = "Fs::read_file?"))
   let start_sig = parse_or_error("fn _start() -> Int allows Fs {\n  0\n}")
-  assert(!String::starts_with(start_sig, "ERROR: "))
+  assert(!String::starts_with(start_sig, prefix = "ERROR: "))
   let empty = parse_or_error("fn main allows () {\n  ()\n}")
-  assert(!String::starts_with(empty, "ERROR: "))
+  assert(!String::starts_with(empty, prefix = "ERROR: "))
 }
 
 test "ADR-0088: test, bench and example heads take `allows`" {
   let src = "test \"a\" allows Http {\n  assert(true)\n}\nbench \"b\" allows Http {\n  ()\n}\nexample \"c\" allows Console {\n  ()\n}"
-  assert(!String::starts_with(parse_or_error(src), "ERROR: "))
+  assert(!String::starts_with(parse_or_error(src), prefix = "ERROR: "))
 }
 
 test "ADR-0088: `allows` on a called function names the `with` edit" {
   let out = parse_or_error("fn helper() -> Int allows Fs {\n  1\n}")
-  assert(String::contains(out, "written on an entry point only"))
-  assert(String::contains(out, "`helper` requires its effects from the caller"))
-  assert(String::contains(out, "write `with` here"))
+  assert(String::contains(out, needle = "written on an entry point only"))
+  assert(String::contains(out, needle = "`helper` requires its effects from the caller"))
+  assert(String::contains(out, needle = "write `with` here"))
 }
 
 test "ADR-0088: `allows` in a function type names the `with` edit" {
   let out = parse_or_error("let f: () -> Int allows Fs = () -> { 1 }")
-  assert(String::contains(out, "a function type requires its effects from the caller"))
+  assert(String::contains(out, needle = "a function type requires its effects from the caller"))
 }
 
 test "ADR-0088: `with .. allows ..` is refused by name" {
   let split = parse_or_error("fn main with () allows Console {\n  ()\n}")
-  assert(String::contains(split, "`with .. allows ..` is not a spelling"))
+  assert(String::contains(split, needle = "`with .. allows ..` is not a spelling"))
   let typed = parse_or_error("let g: ((Int) -> Int with Log::Emit allows Fs::read_file, Int) -> Int = (f, x) -> { f(x) }")
-  assert(String::contains(typed, "`with .. allows ..` is not a spelling"))
+  assert(String::contains(typed, needle = "`with .. allows ..` is not a spelling"))
 }
 
 test "ADR-0088: `allows` is contextual, not reserved" {
   // A binding named `allows` keeps compiling: the word is recognized only
   // where an entry row may begin.
   let out = parse_or_error("let allows = 7\nlet use_it = () -> { allows }")
-  assert(!String::starts_with(out, "ERROR: "))
-  assert(String::contains(out, "let allows = 7"))
+  assert(!String::starts_with(out, prefix = "ERROR: "))
+  assert(String::contains(out, needle = "let allows = 7"))
 }
 
 test "ADR-0088: the `?` grade parses on a grant and on a requirement" {
   let granted = parse_or_error("fn main allows Fs::read_file? {\n  0\n}")
-  assert(!String::starts_with(granted, "ERROR: "))
-  assert(String::contains(granted, "Fs::read_file?"))
+  assert(!String::starts_with(granted, prefix = "ERROR: "))
+  assert(String::contains(granted, needle = "Fs::read_file?"))
   // A called function may REQUIRE an optional capability; the checker decides
   // what the grade may be attached to.
   let required = parse_or_error("fn helper() -> Int with Fs::read_file? {\n  0\n}")
-  assert(!String::starts_with(required, "ERROR: "))
-  assert(String::contains(required, "Fs::read_file?"))
+  assert(!String::starts_with(required, prefix = "ERROR: "))
+  assert(String::contains(required, needle = "Fs::read_file?"))
 }
 
 test "#1429: a parenthesized non-empty row is rejected by name" {
@@ -844,9 +844,9 @@ test "#1429: a parenthesized non-empty row is rejected by name" {
     let _ = parse_program(lex("let f: (Int) -> Int with (Error + Fs) = (x) -> { x }"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(grouped, "ERROR: "))
-  assert(String::contains(grouped, "#1429"))
-  assert(String::contains(grouped, "EMPTY effect row"))
+  assert(String::starts_with(grouped, prefix = "ERROR: "))
+  assert(String::contains(grouped, needle = "#1429"))
+  assert(String::contains(grouped, needle = "EMPTY effect row"))
 }
 
 test "#1429: a braceless row in a nested function type ends at the comma" {
@@ -867,8 +867,8 @@ test "#1429: an empty braceless row is a located error, not a silent empty row" 
     let _ = parse_program(lex("let f: (Int) -> Int with = (x) -> { x }"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(dangling, "ERROR: "))
-  assert(String::contains(dangling, "effect name"))
+  assert(String::starts_with(dangling, prefix = "ERROR: "))
+  assert(String::contains(dangling, needle = "effect name"))
 }
 
 //# ADR-0075 Phase 2: `resource` declarations (#1343 実装順 2)
@@ -877,7 +877,7 @@ test "#1343: `resource Name : Owner::Kind` parses and round-trips" {
   let printed = handle {
     print_program(parse_program(lex("resource Posts : S3::Bucket\n")))
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(printed, "resource Posts: S3::Bucket"))
+  assert(String::contains(printed, needle = "resource Posts: S3::Bucket"))
 }
 
 test "#1343: an UNQUALIFIED resource kind is rejected by name" {
@@ -887,8 +887,8 @@ test "#1343: an UNQUALIFIED resource kind is rejected by name" {
     let _ = parse_program(lex("resource Posts : Bucket\n"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(bare, "ERROR: "))
-  assert(String::contains(bare, "qualified"))
+  assert(String::starts_with(bare, prefix = "ERROR: "))
+  assert(String::contains(bare, needle = "qualified"))
 }
 
 test "#1343: a QUALIFIED resource name says which side takes the path" {
@@ -896,8 +896,8 @@ test "#1343: a QUALIFIED resource name says which side takes the path" {
     let _ = parse_program(lex("resource S3::Posts : Bucket\n"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(swapped, "ERROR: "))
-  assert(String::contains(swapped, "resource KIND"))
+  assert(String::starts_with(swapped, prefix = "ERROR: "))
+  assert(String::contains(swapped, needle = "resource KIND"))
 }
 
 test "#1343: a `resource` declaration cannot be exported" {
@@ -907,8 +907,8 @@ test "#1343: a `resource` declaration cannot be exported" {
     let _ = parse_program(lex("export resource Posts : S3::Bucket\n"))
     "ok"
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::starts_with(exported, "ERROR: "))
-  assert(String::contains(exported, "cannot be exported"))
+  assert(String::starts_with(exported, prefix = "ERROR: "))
+  assert(String::contains(exported, needle = "cannot be exported"))
 }
 
 test "#1343: `resource` is still an ordinary identifier" {
@@ -930,10 +930,10 @@ test "#1343: `resource` is still an ordinary identifier" {
 test "ADR-0088 (Codex on #2653): the printer keeps the rows of test, bench and example blocks" {
   let src = "example \"x\" allows Http {\n  assert(true)\n}\ntest \"y\" allows Fs::read_file + Exception {\n  assert(true)\n}\nbench \"z\" allows () {\n  ()\n}\ntest \"plain\" {\n  assert(true)\n}\n"
   let printed = print_program(parse_program_preserving(lex(src)))
-  assert(String::contains(printed, "example \"x\" allows Http {"))
-  assert(String::contains(printed, "test \"y\" allows Fs::read_file + Exception {"))
-  assert(String::contains(printed, "bench \"z\" allows () {"))
-  assert(String::contains(printed, "test \"plain\" {"))
+  assert(String::contains(printed, needle = "example \"x\" allows Http {"))
+  assert(String::contains(printed, needle = "test \"y\" allows Fs::read_file + Exception {"))
+  assert(String::contains(printed, needle = "bench \"z\" allows () {"))
+  assert(String::contains(printed, needle = "test \"plain\" {"))
   // The rows survive a print -> parse -> print round trip.
   assert_eq(print_program(parse_program_preserving(lex(printed))), printed)
 }

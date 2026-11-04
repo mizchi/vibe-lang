@@ -44,23 +44,23 @@ import @vibe/compiler/runtime {
 
 //# Functions
 
-fn parse_err(src: String) -> String {
+fn parse_err(_ src: String) -> String {
   handle {
     let _ = parse_program(lex(src))
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
-fn compiles_linear(src: String) -> Bool {
+fn compiles_linear(_ src: String) -> Bool {
   handle {
     let stmts = parse_program(lex(src))
     let _ = check_program(stmts)
-    let _ = compile_wasi_module_impl(stmts, "__no_entry__")
+    let _ = compile_wasi_module_impl(stmts = stmts, entry_name = "__no_entry__")
     true
   } with { Exception::Throw(_) => false }
 }
 
-fn gc_err(src: String) -> String {
+fn gc_err(_ src: String) -> String {
   handle {
     let stmts = parse_program(lex(src))
     // #1015: no strip pass runs here, so `stmts` is still the pre-strip
@@ -68,14 +68,17 @@ fn gc_err(src: String) -> String {
     let gc_to_string_is_wrapper = gc_to_string_resolves_to_show_wrapper(stmts)
     let direct_abi_generic_names = gc_direct_abi_pre_erasure_generic_names(stmts)
     let gc_float_ret_fn_names = gc_float_returning_names_pre_erasure(stmts)
-    let _ = compile_wasi_module_gc(stmts, "__no_entry__", false, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, array_empty(), array_empty(), array_empty())
+    let _ = compile_wasi_module_gc(stmts = stmts, entry_name = "__no_entry__", generated_test_artifact = false, gc_to_string_is_wrapper = gc_to_string_is_wrapper, direct_abi_generic_names = direct_abi_generic_names, gc_float_ret_fn_names = gc_float_ret_fn_names, gc_float_call_offsets = array_empty(), gc_int_render_offsets = array_empty(), gc_bool_render_offsets = array_empty())
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
-fn wat_err(wat: String) -> String {
+fn wat_err(_ wat: String) -> String {
   handle {
-    let _ = compile_inline_wat("probe", wat, ["a", "b"])
+    let _ = compile_inline_wat(fn_name = "probe", wat = wat, param_names = [
+      "a",
+      "b"
+    ])
     ""
   } with { Exception::Throw(msg) => msg }
 }
@@ -86,29 +89,35 @@ fn iw_test_callees() -> Array[(String, Int, Int)] {
   [("dbl", 7, 1), ("sub2", 9, 2)]
 }
 
-fn call_err(wat: String) -> String {
+fn call_err(_ wat: String) -> String {
   handle {
-    let _ = compile_inline_wat_calls("probe", wat, ["a", "b"], 3, iw_test_callees())
+    let _ = compile_inline_wat_calls(fn_name = "probe", wat = wat, param_names = [
+      "a",
+      "b"
+    ], extra_base = 3, callees = iw_test_callees())
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
-fn call_bytes(wat: String) -> Bytes with Exception {
-  let (out, _n32, _n64, _nv) = compile_inline_wat_calls("probe", wat, ["a", "b"], 3, iw_test_callees())
+fn call_bytes(_ wat: String) -> Bytes with Exception {
+  let (out, _n32, _n64, _nv) = compile_inline_wat_calls(fn_name = "probe", wat = wat, param_names = [
+    "a",
+    "b"
+  ], extra_base = 3, callees = iw_test_callees())
   out
 }
 
 /// #2348 part 2: assemble with `xs` declared `Array[Int]` and `n` an ordinary
 /// `Int`, the shape a kernel over a real array takes.
-fn arr_bytes(wat: String) -> Bytes with Exception {
-  let (out, _n32, _n64, _nv) = compile_inline_wat_array_params("probe", wat, [
+fn arr_bytes(_ wat: String) -> Bytes with Exception {
+  let (out, _n32, _n64, _nv) = compile_inline_wat_array_params(fn_name = "probe", wat = wat, param_names = [
     "xs",
     "n"
-  ], ["xs"], 3, iw_test_callees())
+  ], array_param_names = ["xs"], extra_base = 3, callees = iw_test_callees())
   out
 }
 
-fn arr_err(wat: String) -> String {
+fn arr_err(_ wat: String) -> String {
   handle {
     let _ = arr_bytes(wat)
     ""
@@ -118,7 +127,7 @@ fn arr_err(wat: String) -> String {
 /// The `vibe check` lane's answer for `src` — "" when every inline-wasm fn in
 /// it assembles, otherwise the first located error. Same assembler entry
 /// codegen takes, reached the way `collect_all_diagnostics` reaches it.
-fn check_lane_err(src: String) -> String {
+fn check_lane_err(_ src: String) -> String {
   handle {
     match check_inline_wasm_fns(parse_program(lex(src))) {
       Some(msg) => msg,
@@ -133,7 +142,7 @@ test "inline wasm assembler: byte-level contract (folded operand order)" {
   // Folded form emits operands FIRST, then the operator — the raw bytes are
   // exactly `local.get 0; local.get 1; i64.add` with no locals header and no
   // trailing end (linked_compile's code-section builder adds both).
-  let bytes = compile_inline_wat("probe", "(i64.add (local.get $a) (local.get $b))", [
+  let bytes = compile_inline_wat(fn_name = "probe", wat = "(i64.add (local.get $a) (local.get $b))", param_names = [
     "a",
     "b"
   ])
@@ -146,7 +155,7 @@ test "inline wasm assembler: byte-level contract (folded operand order)" {
 }
 
 test "inline wasm assembler: flat sequence equals folded form" {
-  let flat = compile_inline_wat("probe", "local.get $a local.get $b i64.add", [
+  let flat = compile_inline_wat(fn_name = "probe", wat = "local.get $a local.get $b i64.add", param_names = [
     "a",
     "b"
   ])
@@ -159,7 +168,7 @@ test "inline wasm assembler: simd 0xFD prefix" {
   // i64x2.splat = 0xFD 18. The extract_lane wrapper is what brings the body
   // back to the single i64 an inline-wasm fn returns (#2401); the bytes under
   // test are still the first four.
-  let bytes = compile_inline_wat("probe", "(i64x2.extract_lane 0 (i64x2.splat (local.get $a)))", [
+  let bytes = compile_inline_wat(fn_name = "probe", wat = "(i64x2.extract_lane 0 (i64x2.splat (local.get $a)))", param_names = [
     "a"
   ])
   assert(Bytes::length(bytes) == 7)
@@ -171,40 +180,40 @@ test "inline wasm assembler: simd 0xFD prefix" {
 
 test "inline wasm assembler: malformed WAT is a located error" {
   let e1 = wat_err("(i64.addd (local.get $a) (local.get $b))")
-  assert(String::contains(e1, "unknown or unsupported instruction 'i64.addd'"))
-  assert(String::contains(e1, "WAT offset 1"))
+  assert(String::contains(e1, needle = "unknown or unsupported instruction 'i64.addd'"))
+  assert(String::contains(e1, needle = "WAT offset 1"))
   let e2 = wat_err("(i64.add (local.get $a) (local.get $c))")
-  assert(String::contains(e2, "unknown local '$c'"))
+  assert(String::contains(e2, needle = "unknown local '$c'"))
   let e3 = wat_err("(i64.add (local.get $a) (local.get $b)")
-  assert(String::contains(e3, "missing ')'"))
+  assert(String::contains(e3, needle = "missing ')'"))
   let e4 = wat_err("(br $nowhere)")
-  assert(String::contains(e4, "unknown label '$nowhere'"))
+  assert(String::contains(e4, needle = "unknown label '$nowhere'"))
   // #2348: `call` resolves against the module's inline-wasm fns. `wat_err`
   // passes no callee table, so nothing is callable and the error says so --
   // this used to read "not supported", when no body could call anything.
   let e5 = wat_err("(call $f)")
-  assert(String::contains(e5, "no inline-wasm fn named 'f'"))
+  assert(String::contains(e5, needle = "no inline-wasm fn named 'f'"))
   let e5b = wat_err("(call_indirect (local.get $a))")
-  assert(String::contains(e5b, "not supported"))
+  assert(String::contains(e5b, needle = "not supported"))
   let e6 = wat_err("block")
-  assert(String::contains(e6, "folded form"))
+  assert(String::contains(e6, needle = "folded form"))
 }
 
 test "inline wasm assembler: lane and align immediates are validated (Codex P2 on #933)" {
   // out-of-range / negative lane indices used to be truncated with `& 255`
   // into a wasm file only the validator rejects
   let e1 = wat_err("(i8x16.extract_lane_s 16 (local.get $a))")
-  assert(String::contains(e1, "lane index 16 is out of range for 'i8x16.extract_lane_s' (0..15)"))
+  assert(String::contains(e1, needle = "lane index 16 is out of range for 'i8x16.extract_lane_s' (0..15)"))
   let e2 = wat_err("(i64x2.replace_lane -1 (local.get $a) (local.get $b))")
-  assert(String::contains(e2, "lane index -1 is out of range"))
+  assert(String::contains(e2, needle = "lane index -1 is out of range"))
   // align= used to floor-log2 any int (align=3 silently became align=2) and
   // let over-aligned memargs through to the validator
   let e3 = wat_err("(i32.load align=3 (local.get $a))")
-  assert(String::contains(e3, "align=3 is invalid (must be a positive power of two)"))
+  assert(String::contains(e3, needle = "align=3 is invalid (must be a positive power of two)"))
   let e4 = wat_err("(i32.load align=16 (local.get $a))")
-  assert(String::contains(e4, "align=16 exceeds the instruction's natural alignment (4)"))
+  assert(String::contains(e4, needle = "align=16 exceeds the instruction's natural alignment (4)"))
   let e5 = wat_err("(i32.load align=0 (local.get $a))")
-  assert(String::contains(e5, "align=0 is invalid"))
+  assert(String::contains(e5, needle = "align=0 is invalid"))
 }
 
 test "inline wasm assembler: integer immediates accept both spellings (#2341)" {
@@ -216,34 +225,34 @@ test "inline wasm assembler: integer immediates accept both spellings (#2341)" {
   // The i64.extend_i32_s wrapper only brings the body back to the single i64
   // an inline-wasm fn returns (#2401); the i32.const encoding under test is
   // still the leading bytes.
-  let unsigned_spelling = compile_inline_wat("probe", "(i64.extend_i32_s (i32.const 2654435761))", [
+  let unsigned_spelling = compile_inline_wat(fn_name = "probe", wat = "(i64.extend_i32_s (i32.const 2654435761))", param_names = [
     "a"
   ])
-  let signed_spelling = compile_inline_wat("probe", "(i64.extend_i32_s (i32.const -1640531535))", [
+  let signed_spelling = compile_inline_wat(fn_name = "probe", wat = "(i64.extend_i32_s (i32.const -1640531535))", param_names = [
     "a"
   ])
   assert(unsigned_spelling == signed_spelling)
   assert(Bytes::length(unsigned_spelling) == 7)
   assert(unsigned_spelling[0] == 0x41)
   assert(unsigned_spelling[6] == 0xAC)
-  let hex_spelling = compile_inline_wat("probe", "(i64.extend_i32_s (i32.const 0x9E3779B1))", [
+  let hex_spelling = compile_inline_wat(fn_name = "probe", wat = "(i64.extend_i32_s (i32.const 0x9E3779B1))", param_names = [
     "a"
   ])
   assert(hex_spelling == signed_spelling)
   // ... and out of range is a LOCATED error, not a truncation and not a
   // load-time failure.
   let e1 = wat_err("(i32.const 5000000000)")
-  assert(String::contains(e1, "i32.const 5000000000 is out of range for i32"))
-  assert(String::contains(e1, "-2147483648..4294967295"))
-  assert(String::contains(e1, "WAT offset"))
+  assert(String::contains(e1, needle = "i32.const 5000000000 is out of range for i32"))
+  assert(String::contains(e1, needle = "-2147483648..4294967295"))
+  assert(String::contains(e1, needle = "WAT offset"))
   let e2 = wat_err("(i32.const -2147483649)")
-  assert(String::contains(e2, "is out of range for i32"))
+  assert(String::contains(e2, needle = "is out of range for i32"))
 }
 
 test "inline wasm assembler: v128.const lanes are range-checked (#2341)" {
   // `(v >> bi * 8) & 255` truncated an out-of-range lane silently, so
   // `v128.const i8x16 300 ...` assembled as 44.
-  let ok = compile_inline_wat("probe", "(i64x2.extract_lane 0 (v128.const i8x16 200 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0))", [
+  let ok = compile_inline_wat(fn_name = "probe", wat = "(i64x2.extract_lane 0 (v128.const i8x16 200 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0))", param_names = [
     "a"
   ])
   assert(Bytes::length(ok) == 21)
@@ -251,12 +260,12 @@ test "inline wasm assembler: v128.const lanes are range-checked (#2341)" {
   assert(ok[1] == 12)
   assert(ok[2] == 200)
   let e1 = wat_err("(v128.const i8x16 300 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)")
-  assert(String::contains(e1, "v128.const i8x16 lane 300 is out of range for i8"))
-  assert(String::contains(e1, "-128..255"))
+  assert(String::contains(e1, needle = "v128.const i8x16 lane 300 is out of range for i8"))
+  assert(String::contains(e1, needle = "-128..255"))
   let e2 = wat_err("(v128.const i16x8 70000 0 0 0 0 0 0 0)")
-  assert(String::contains(e2, "is out of range for i16"))
+  assert(String::contains(e2, needle = "is out of range for i16"))
   // i64x2 needs no check: every vibe Int already fits in an i64.
-  let wide = compile_inline_wat("probe", "(i64x2.extract_lane 0 (v128.const i64x2 4611686018427387903 -1))", [
+  let wide = compile_inline_wat(fn_name = "probe", wat = "(i64x2.extract_lane 0 (v128.const i64x2 4611686018427387903 -1))", param_names = [
     "a"
   ])
   assert(Bytes::length(wide) == 21)
@@ -266,19 +275,19 @@ test "inline wasm assembler: an over-long integer literal is a located error (#2
   // #1877 made Int arithmetic wrap, so the digit accumulator used to turn an
   // over-long literal into a DIFFERENT number with no complaint.
   let e = wat_err("(i64.const 99999999999999999999)")
-  assert(String::contains(e, "integer literal '99999999999999999999' is out of range for a vibe Int"))
-  assert(String::contains(e, "WAT offset"))
+  assert(String::contains(e, needle = "integer literal '99999999999999999999' is out of range for a vibe Int"))
+  assert(String::contains(e, needle = "WAT offset"))
   let e_hex = wat_err("(i64.const 0xFFFFFFFFFFFFFFFF)")
-  assert(String::contains(e_hex, "is out of range for a vibe Int"))
+  assert(String::contains(e_hex, needle = "is out of range for a vibe Int"))
 }
 
 test "inline wasm assembler: (local ...) declarations resolve and count by type" {
   // one i32 + two v128 locals, params $a (idx 0) + env (idx 1) -> extra_base 2:
   // $p = 2, $u = 3, $v = 4. Body: local.get $v / local.set $p is a type error
   // at validation, but the assembler only resolves indices — use consistent ops.
-  let (bytes, n32, n64, nv) = compile_inline_wat_full("probe", "(local $p i32) (local $u v128) (local $v v128) (local.set $p (i32.wrap_i64 (local.get $a))) (local.set $u (i64x2.splat (local.get $a))) (local.set $v (local.get $u)) (i64x2.extract_lane 0 (local.get $v))", [
+  let (bytes, n32, n64, nv) = compile_inline_wat_full(fn_name = "probe", wat = "(local $p i32) (local $u v128) (local $v v128) (local.set $p (i32.wrap_i64 (local.get $a))) (local.set $u (i64x2.splat (local.get $a))) (local.set $v (local.get $u)) (i64x2.extract_lane 0 (local.get $v))", param_names = [
     "a"
-  ], 2)
+  ], extra_base = 2)
   assert(n32 == 1)
   assert(n64 == 0)
   assert(nv == 2)
@@ -294,23 +303,23 @@ test "inline wasm assembler: (local ...) declarations resolve and count by type"
 test "inline wasm assembler: (local ...) misuse is a located error" {
   // ungrouped types (v128 before i32)
   let e1 = wat_err("(local $v v128) (local $p i32) (i64.const 0)")
-  assert(String::contains(e1, "grouped by type in the order i32, i64, v128"))
+  assert(String::contains(e1, needle = "grouped by type in the order i32, i64, v128"))
   // unknown type
   let e2 = wat_err("(local $x f32) (i64.const 0)")
-  assert(String::contains(e2, "type must be i32, i64 or v128"))
+  assert(String::contains(e2, needle = "type must be i32, i64 or v128"))
   // duplicate name (params count too)
   let e3 = wat_err("(local $a i64) (i64.const 0)")
-  assert(String::contains(e3, "duplicate local name '$a'"))
+  assert(String::contains(e3, needle = "duplicate local name '$a'"))
   // declaration after an instruction
   let e4 = wat_err("(i64.const 0) (local $t i64)")
-  assert(String::contains(e4, "START of the body"))
+  assert(String::contains(e4, needle = "START of the body"))
   // declarations only, no instructions
   let e5 = wat_err("(local $t i64)")
-  assert(String::contains(e5, "only local declarations"))
+  assert(String::contains(e5, needle = "only local declarations"))
 }
 
 test "inline wasm assembler: i8x16.shuffle encodes 16 lane bytes" {
-  let bytes = compile_inline_wat("probe", "(i64x2.extract_lane 0 (i8x16.shuffle 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 (i64x2.splat (local.get $a)) (i64x2.splat (local.get $b))))", [
+  let bytes = compile_inline_wat(fn_name = "probe", wat = "(i64x2.extract_lane 0 (i8x16.shuffle 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 (i64x2.splat (local.get $a)) (i64x2.splat (local.get $b))))", param_names = [
     "a",
     "b"
   ])
@@ -322,7 +331,7 @@ test "inline wasm assembler: i8x16.shuffle encodes 16 lane bytes" {
   assert(bytes[10] == 0)
   assert(bytes[25] == 15)
   let e = wat_err("(i8x16.shuffle 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 32 (i64x2.splat (local.get $a)) (i64x2.splat (local.get $b)))")
-  assert(String::contains(e, "shuffle lane byte 32 is out of range"))
+  assert(String::contains(e, needle = "shuffle lane byte 32 is out of range"))
 }
 
 test "inline wasm parse: Bytes params are accepted (raw object pointer)" {
@@ -333,22 +342,22 @@ test "inline wasm parse: Bytes params are accepted (raw object pointer)" {
 test "inline wasm parse: v0.3 slice restrictions" {
   // effect row
   let e1 = parse_err("fn f(a: Int) -> Int with Fs = wasm \"(local.get $a)\"")
-  assert(String::contains(e1, "empty effect row"))
+  assert(String::contains(e1, needle = "empty effect row"))
   // generic type params
   let e2 = parse_err("fn f[T](a: Int) -> Int = wasm \"(local.get $a)\"")
-  assert(String::contains(e2, "monomorphic only"))
+  assert(String::contains(e2, needle = "monomorphic only"))
   // non-Int param
   let e3 = parse_err("fn f(a: String) -> Int = wasm \"(local.get $a)\"")
-  assert(String::contains(e3, "must be typed Int"))
+  assert(String::contains(e3, needle = "must be typed Int"))
   // non-Int return
   let e4 = parse_err("fn f(a: Int) -> Bool = wasm \"(local.get $a)\"")
-  assert(String::contains(e4, "return type must be Int"))
+  assert(String::contains(e4, needle = "return type must be Int"))
   // where-contract
   let e5 = parse_err("fn f(a: Int) -> Int where { requires: a > 0 } = wasm \"(local.get $a)\"")
-  assert(String::contains(e5, "where-contracts"))
+  assert(String::contains(e5, needle = "where-contracts"))
   // missing WAT string
   let e6 = parse_err("fn f(a: Int) -> Int = wasm { }")
-  assert(String::contains(e6, "expected WAT string literal"))
+  assert(String::contains(e6, needle = "expected WAT string literal"))
 }
 
 test "inline wasm: checker accepts and linear backend compiles" {
@@ -359,19 +368,19 @@ test "inline wasm: checker accepts and linear backend compiles" {
 test "inline wasm: gc backend rejects with a clear error" {
   let src = "fn wadd(a: Int, b: Int) -> Int = wasm \"(i64.add (local.get $a) (local.get $b))\""
   let e = gc_err(src)
-  assert(String::contains(e, "linear-backend only"))
-  assert(String::contains(e, "wadd"))
+  assert(String::contains(e, needle = "linear-backend only"))
+  assert(String::contains(e, needle = "wadd"))
 }
 
 test "inline wasm: printer round-trips the = wasm form" {
   let src = "fn wadd(a: Int, b: Int) -> Int = wasm \"(i64.add (local.get $a) (local.get $b))\""
   let stmts = parse_program_preserving(lex(src))
   assert(Array::length(stmts) == 1)
-  let printed = print_stmt(Array::get(stmts, 0))
-  assert(String::contains(printed, "= wasm \"(i64.add (local.get $a) (local.get $b))\""))
+  let printed = print_stmt(Array::get(stmts, at = 0))
+  assert(String::contains(printed, needle = "= wasm \"(i64.add (local.get $a) (local.get $b))\""))
   // and the printed form re-parses to the same print
   let stmts2 = parse_program_preserving(lex(printed))
-  assert(print_stmt(Array::get(stmts2, 0)) == printed)
+  assert(print_stmt(Array::get(stmts2, at = 0)) == printed)
 }
 
 test "#2348 inline wasm: folded call emits operands, the env slot, then the call" {
@@ -419,26 +428,29 @@ test "#2348 inline wasm: a call nests inside another call and inside an operator
 
 test "#2348 inline wasm: call arity is checked against the callee" {
   let too_few = call_err("(call $sub2 (local.get $a))")
-  assert(String::contains(too_few, "'sub2' takes 2 argument(s), called with 1"))
+  assert(String::contains(too_few, needle = "'sub2' takes 2 argument(s), called with 1"))
   let too_many = call_err("(call $dbl (local.get $a) (local.get $b))")
-  assert(String::contains(too_many, "'dbl' takes 1 argument(s), called with 2"))
+  assert(String::contains(too_many, needle = "'dbl' takes 1 argument(s), called with 2"))
 }
 
 test "#2348 inline wasm: an unknown callee names what IS callable" {
   let e = call_err("(call $nope (local.get $a))")
-  assert(String::contains(e, "no inline-wasm fn named 'nope'"))
-  assert(String::contains(e, "callable: dbl, sub2"))
+  assert(String::contains(e, needle = "no inline-wasm fn named 'nope'"))
+  assert(String::contains(e, needle = "callable: dbl, sub2"))
 }
 
 test "#2348 inline wasm: with no callee table nothing is callable" {
   // What the two back-compat entries pass, and what every `call` met before
   // this issue.
   let e = handle {
-    let _ = compile_inline_wat("probe", "(call $dbl (local.get $a))", ["a", "b"])
+    let _ = compile_inline_wat(fn_name = "probe", wat = "(call $dbl (local.get $a))", param_names = [
+      "a",
+      "b"
+    ])
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(e, "no inline-wasm fn named 'dbl'"))
-  assert(String::contains(e, "callable: (none)"))
+  assert(String::contains(e, needle = "no inline-wasm fn named 'dbl'"))
+  assert(String::contains(e, needle = "callable: (none)"))
 }
 
 test "#2348 inline wasm: flat-form call is rejected, with the fix in the message" {
@@ -446,31 +458,31 @@ test "#2348 inline wasm: flat-form call is rejected, with the fix in the message
   // in the assembler, so its arity could not be checked and the mismatch
   // would surface as a wasm validation failure at module load.
   let e = call_err("local.get $a call $dbl")
-  assert(String::contains(e, "'call' must be written in folded form"))
-  assert(String::contains(e, "(call $f (local.get $a) ...)"))
+  assert(String::contains(e, needle = "'call' must be written in folded form"))
+  assert(String::contains(e, needle = "(call $f (local.get $a) ...)"))
 }
 
 test "#2348 inline wasm: the callee must be spelled $name" {
   let e = call_err("(call dbl (local.get $a))")
-  assert(String::contains(e, "'call' callee must be written as $name"))
+  assert(String::contains(e, needle = "'call' callee must be written as $name"))
   let bare = call_err("(call)")
-  assert(String::contains(bare, "'call' needs a callee name"))
+  assert(String::contains(bare, needle = "'call' needs a callee name"))
 }
 
 test "#2348 inline wasm: call_indirect and return_call stay unsupported" {
   let ci = call_err("(call_indirect (local.get $a))")
-  assert(String::contains(ci, "'call_indirect' is not supported"))
+  assert(String::contains(ci, needle = "'call_indirect' is not supported"))
   let rc = call_err("return_call $dbl")
-  assert(String::contains(rc, "'return_call' is not supported"))
+  assert(String::contains(rc, needle = "'return_call' is not supported"))
 }
 
 /// #2348: compile through the LATE-DCE lane -- `enable_late_dce = true`, the
 /// argument `compile_file_wasi_linked_artifacts` passes. Returns "ok" or the
 /// thrown message.
-fn late_dce_compile(src: String) -> String {
+fn late_dce_compile(_ src: String) -> String {
   handle {
     let stmts = parse_program(lex(src))
-    let wasm = compile_wasi_module_linked_impl(stmts, "main", array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+    let wasm = compile_wasi_module_linked_impl(stmts = stmts, entry_name = "main", srcs = array_empty(), linked_imports = array_empty(), library_mode = false, enable_rc = false, coverage = false, debug_trace = false, debug_break = false, rc_shadow = false, enable_late_dce = true, prov = empty_dbg_prov(), body_cache_in = codegen_body_cache_new(), body_cache_out = codegen_body_cache_new(), slice_lo = 0, slice_hi = 0 - 1)
     if Bytes::length(wasm) > 0 {
       "ok"
     } else {
@@ -498,12 +510,12 @@ test "#2348 late dce: the lane compiles a kernel nobody calls too" {
 }
 
 /// #2348: assemble with the two-entry callee table; "ok" or the thrown error.
-fn call_result(wat: String) -> String {
+fn call_result(_ wat: String) -> String {
   handle {
-    let (out, _n32, _n64, _nv) = compile_inline_wat_calls("probe", wat, [
+    let (out, _n32, _n64, _nv) = compile_inline_wat_calls(fn_name = "probe", wat = wat, param_names = [
       "a",
       "b"
-    ], 3, iw_test_callees())
+    ], extra_base = 3, callees = iw_test_callees())
     if Bytes::length(out) > 0 {
       "ok"
     } else {
@@ -517,14 +529,14 @@ test "#2348 inline wasm: a call operand that leaves nothing on the stack is reje
   // `(drop ...)` is one operand that pushes NOTHING, so the call would be
   // assembled a value short and the module would fail wasm validation at load
   // -- clean `vibe check`, broken artifact.
-  assert(String::contains(call_result("(call $dbl (drop (local.get $a)))"), "does not produce an i64"))
-  assert(String::contains(call_result("(call $dbl (nop))"), "does not produce an i64"))
-  assert(String::contains(call_result("(call $dbl (local.set $a (i64.const 2)))"), "does not produce an i64"))
-  assert(String::contains(call_result("(call $dbl (i64.store (local.get $a) (local.get $b)))"), "does not produce an i64"))
+  assert(String::contains(call_result("(call $dbl (drop (local.get $a)))"), needle = "does not produce an i64"))
+  assert(String::contains(call_result("(call $dbl (nop))"), needle = "does not produce an i64"))
+  assert(String::contains(call_result("(call $dbl (local.set $a (i64.const 2)))"), needle = "does not produce an i64"))
+  assert(String::contains(call_result("(call $dbl (i64.store (local.get $a) (local.get $b)))"), needle = "does not produce an i64"))
   // A block yields a value only with an explicit `(result ...)`.
-  assert(String::contains(call_result("(call $dbl (block (i64.const 1)))"), "does not produce an i64"))
+  assert(String::contains(call_result("(call $dbl (block (i64.const 1)))"), needle = "does not produce an i64"))
   // The message names WHICH argument.
-  assert(String::contains(call_result("(call $sub2 (local.get $a) (drop (local.get $b)))"), "argument 2"))
+  assert(String::contains(call_result("(call $sub2 (local.get $a) (drop (local.get $b)))"), needle = "argument 2"))
 }
 
 test "#2348 inline wasm: a call operand of the wrong result type is rejected" {
@@ -532,16 +544,16 @@ test "#2348 inline wasm: a call operand of the wrong result type is rejected" {
   // is an i64 slot, so an i32 or v128 operand assembles a module that fails
   // validation at load just as surely as a missing one. The message names the
   // type it found.
-  assert(String::contains(call_result("(call $dbl (i32.const 1))"), "produces i32"))
-  assert(String::contains(call_result("(call $dbl (v128.const i32x4 0 0 0 0))"), "produces v128"))
-  assert(String::contains(call_result("(call $dbl (i32.wrap_i64 (local.get $a)))"), "produces i32"))
+  assert(String::contains(call_result("(call $dbl (i32.const 1))"), needle = "produces i32"))
+  assert(String::contains(call_result("(call $dbl (v128.const i32x4 0 0 0 0))"), needle = "produces v128"))
+  assert(String::contains(call_result("(call $dbl (i32.wrap_i64 (local.get $a)))"), needle = "produces i32"))
   // A comparison is i32 whatever its operand width -- a prefix rule alone
   // would type `i64.eq` as i64.
-  assert(String::contains(call_result("(call $dbl (i64.eq (local.get $a) (local.get $b)))"), "produces i32"))
-  assert(String::contains(call_result("(call $dbl (f64.abs (f64.reinterpret_i64 (local.get $a))))"), "produces f64"))
+  assert(String::contains(call_result("(call $dbl (i64.eq (local.get $a) (local.get $b)))"), needle = "produces i32"))
+  assert(String::contains(call_result("(call $dbl (f64.abs (f64.reinterpret_i64 (local.get $a))))"), needle = "produces f64"))
   // A SIMD reduction is i32; a lane extract is the lane's scalar type.
-  assert(String::contains(call_result("(call $dbl (i8x16.all_true (v128.load (i32.wrap_i64 (local.get $a)))))"), "produces i32"))
-  assert(String::contains(call_result("(call $dbl (block (result i32) (i32.const 1)))"), "produces i32"))
+  assert(String::contains(call_result("(call $dbl (i8x16.all_true (v128.load (i32.wrap_i64 (local.get $a)))))"), needle = "produces i32"))
+  assert(String::contains(call_result("(call $dbl (block (result i32) (i32.const 1)))"), needle = "produces i32"))
 }
 
 test "#2348 inline wasm: a declared local's type decides, not just its name" {
@@ -549,8 +561,8 @@ test "#2348 inline wasm: a declared local's type decides, not just its name" {
   // a declared `(local $p i32)` is not -- the locals table carries the type so
   // `local.get` can be typed instead of assumed.
   assert(call_result("(local $t i64) (call $dbl (local.get $t))") == "ok")
-  assert(String::contains(call_result("(local $p i32) (call $dbl (local.get $p))"), "produces i32"))
-  assert(String::contains(call_result("(local $v v128) (call $dbl (local.get $v))"), "produces v128"))
+  assert(String::contains(call_result("(local $p i32) (call $dbl (local.get $p))"), needle = "produces i32"))
+  assert(String::contains(call_result("(local $v v128) (call $dbl (local.get $v))"), needle = "produces v128"))
 }
 
 test "#2348 inline wasm: i64 call operands still assemble" {
@@ -588,58 +600,58 @@ test "#2401 inline wasm: the two measured cases from the issue are rejected" {
   // and the module failed only when a runtime validated it. Neither involves
   // `call`, so #2399's call-boundary check could not see them.
   let mistyped = wat_err("(i64.add (i32.const 1) (i64.const 2))")
-  assert(String::contains(mistyped, "'i64.add' expects i64 for operand 1 of 2, but the value there is i32"))
+  assert(String::contains(mistyped, needle = "'i64.add' expects i64 for operand 1 of 2, but the value there is i32"))
   let block_result = wat_err("(block (result i64) (i32.const 1))")
-  assert(String::contains(block_result, "'block' must leave i64 but leaves i32"))
+  assert(String::contains(block_result, needle = "'block' must leave i64 but leaves i32"))
 }
 
 test "#2401 inline wasm: operands are typed against the instruction" {
   // A shift amount is an i32 even when the lanes are i64.
-  assert(String::contains(wat_err("(i64x2.extract_lane 0 (i64x2.shl (i64x2.splat (local.get $a)) (i64.const 1)))"), "'i64x2.shl' expects i32 for operand 2 of 2"))
+  assert(String::contains(wat_err("(i64x2.extract_lane 0 (i64x2.shl (i64x2.splat (local.get $a)) (i64.const 1)))"), needle = "'i64x2.shl' expects i32 for operand 2 of 2"))
   // A load/store addresses through an i32.
-  assert(String::contains(wat_err("(i64.load (local.get $a))"), "'i64.load' expects i32 for operand 1 of 1"))
-  assert(String::contains(wat_err("(i64.store (i32.wrap_i64 (local.get $a)) (i32.const 1)) (local.get $a)"), "'i64.store' expects i64 for operand 2 of 2"))
+  assert(String::contains(wat_err("(i64.load (local.get $a))"), needle = "'i64.load' expects i32 for operand 1 of 1"))
+  assert(String::contains(wat_err("(i64.store (i32.wrap_i64 (local.get $a)) (i32.const 1)) (local.get $a)"), needle = "'i64.store' expects i64 for operand 2 of 2"))
   // replace_lane takes the shape's scalar, shuffle takes two vectors.
-  assert(String::contains(wat_err("(i64x2.extract_lane 0 (i64x2.replace_lane 1 (i64x2.splat (local.get $a)) (i32.const 1)))"), "'i64x2.replace_lane' expects i64 for operand 2 of 2"))
-  assert(String::contains(wat_err("(i64x2.extract_lane 0 (i8x16.shuffle 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 (local.get $a) (i64x2.splat (local.get $b))))"), "'i8x16.shuffle' expects v128 for operand 1 of 2"))
+  assert(String::contains(wat_err("(i64x2.extract_lane 0 (i64x2.replace_lane 1 (i64x2.splat (local.get $a)) (i32.const 1)))"), needle = "'i64x2.replace_lane' expects i64 for operand 2 of 2"))
+  assert(String::contains(wat_err("(i64x2.extract_lane 0 (i8x16.shuffle 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 (local.get $a) (i64x2.splat (local.get $b))))"), needle = "'i8x16.shuffle' expects v128 for operand 1 of 2"))
   // A comparison yields i32 whatever its operand width, so feeding one to an
   // i64 operator is a type error and a prefix rule alone would miss it.
-  assert(String::contains(wat_err("(i64.add (i64.eq (local.get $a) (local.get $b)) (local.get $b))"), "the value there is i32"))
+  assert(String::contains(wat_err("(i64.add (i64.eq (local.get $a) (local.get $b)) (local.get $b))"), needle = "the value there is i32"))
   // A declared local's type is the one that counts.
-  assert(String::contains(wat_err("(local $p i32) (local.set $p (local.get $a)) (local.get $a)"), "'local.set' expects i32"))
-  assert(String::contains(wat_err("(local $p i32) (i64.extend_i32_s (local.tee $p (i64.const 1)))"), "'local.tee' expects i32"))
+  assert(String::contains(wat_err("(local $p i32) (local.set $p (local.get $a)) (local.get $a)"), needle = "'local.set' expects i32"))
+  assert(String::contains(wat_err("(local $p i32) (i64.extend_i32_s (local.tee $p (i64.const 1)))"), needle = "'local.tee' expects i32"))
   // ... and `local.tee` leaves that type, not an unknown that matches
   // anything: an i32 local's tee cannot be the body's i64 result.
-  assert(String::contains(wat_err("(local $p i32) (local.tee $p (i32.const 1))"), "the inline wasm body must leave i64 but leaves i32"))
+  assert(String::contains(wat_err("(local $p i32) (local.tee $p (i32.const 1))"), needle = "the inline wasm body must leave i64 but leaves i32"))
   // `return` and `select` are the two whose signature is not a plain table row.
-  assert(String::contains(wat_err("(return (i32.const 1))"), "'return' expects i64 for operand 1 of 1"))
-  assert(String::contains(wat_err("(select (local.get $a) (i32.const 1) (i32.const 1))"), "'select' needs both value operands to have the same type, got i64 and i32"))
+  assert(String::contains(wat_err("(return (i32.const 1))"), needle = "'return' expects i64 for operand 1 of 1"))
+  assert(String::contains(wat_err("(select (local.get $a) (i32.const 1) (i32.const 1))"), needle = "'select' needs both value operands to have the same type, got i64 and i32"))
 }
 
 test "#2401 inline wasm: stack depth is tracked, in both directions" {
   // Under-supply: a folded operator with too few operands used to assemble and
   // silently take a value from whatever happened to be underneath.
-  assert(String::contains(wat_err("(i64.add (local.get $a))"), "'i64.add' takes 2 operand(s), but only 1 value(s) are on the stack here"))
-  assert(String::contains(wat_err("drop (local.get $a)"), "'drop' takes 1 operand(s), but only 0 value(s) are on the stack here"))
+  assert(String::contains(wat_err("(i64.add (local.get $a))"), needle = "'i64.add' takes 2 operand(s), but only 1 value(s) are on the stack here"))
+  assert(String::contains(wat_err("drop (local.get $a)"), needle = "'drop' takes 1 operand(s), but only 0 value(s) are on the stack here"))
   // Over-supply: an inline-wasm fn returns Int, so its body leaves ONE i64.
-  assert(String::contains(wat_err("(local.get $a) (local.get $b)"), "the inline wasm body must leave exactly one i64 but leaves 2 value(s)"))
-  assert(String::contains(wat_err("(i32.const 5)"), "the inline wasm body must leave i64 but leaves i32"))
+  assert(String::contains(wat_err("(local.get $a) (local.get $b)"), needle = "the inline wasm body must leave exactly one i64 but leaves 2 value(s)"))
+  assert(String::contains(wat_err("(i32.const 5)"), needle = "the inline wasm body must leave i64 but leaves i32"))
   // A block's frame is a FLOOR: an instruction inside it cannot reach a value
   // produced outside it, which is what wasm says and what this used to emit.
-  assert(String::contains(wat_err("(local.get $a) (block (result i64) (i64.add (local.get $b)))"), "'i64.add' takes 2 operand(s), but only 1 value(s) are on the stack here"))
+  assert(String::contains(wat_err("(local.get $a) (block (result i64) (i64.add (local.get $b)))"), needle = "'i64.add' takes 2 operand(s), but only 1 value(s) are on the stack here"))
 }
 
 test "#2401 inline wasm: block, loop and if frames are checked" {
   // A block with no (result T) must leave nothing.
-  assert(String::contains(wat_err("(block (i64.const 1))"), "'block' declares no result but leaves 1 value(s) on the stack"))
+  assert(String::contains(wat_err("(block (i64.const 1))"), needle = "'block' declares no result but leaves 1 value(s) on the stack"))
   // Each branch of an `if` produces the declared result...
-  assert(String::contains(wat_err("(if (result i64) (i32.const 1) (then (i32.const 1)) (else (local.get $b)))"), "the 'then' branch must leave i64 but leaves i32"))
-  assert(String::contains(wat_err("(if (result i64) (i32.const 1) (then (local.get $a)) (else (i32.const 1)))"), "the 'else' branch must leave i64 but leaves i32"))
+  assert(String::contains(wat_err("(if (result i64) (i32.const 1) (then (i32.const 1)) (else (local.get $b)))"), needle = "the 'then' branch must leave i64 but leaves i32"))
+  assert(String::contains(wat_err("(if (result i64) (i32.const 1) (then (local.get $a)) (else (i32.const 1)))"), needle = "the 'else' branch must leave i64 but leaves i32"))
   // ... which needs both branches to exist.
-  assert(String::contains(wat_err("(if (result i64) (i32.const 1) (then (local.get $a)))"), "needs an (else ...) branch"))
+  assert(String::contains(wat_err("(if (result i64) (i32.const 1) (then (local.get $a)))"), needle = "needs an (else ...) branch"))
   // The condition is an i32.
-  assert(String::contains(wat_err("(if (result i64) (local.get $a) (then (local.get $a)) (else (local.get $b)))"), "'if' expects i32 for operand 1 of 1"))
-  assert(String::contains(wat_err("(block (result i64) (br_if 0 (local.get $a) (local.get $b)))"), "'br_if' expects i32 for operand 1 of 1"))
+  assert(String::contains(wat_err("(if (result i64) (local.get $a) (then (local.get $a)) (else (local.get $b)))"), needle = "'if' expects i32 for operand 1 of 1"))
+  assert(String::contains(wat_err("(block (result i64) (br_if 0 (local.get $a) (local.get $b)))"), needle = "'br_if' expects i32 for operand 1 of 1"))
 }
 
 test "#2401 inline wasm: unreachable code is polymorphic but still typed" {
@@ -648,16 +660,16 @@ test "#2401 inline wasm: unreachable code is polymorphic but still typed" {
   assert(wat_err("(block (result i64) unreachable)") == "")
   assert(wat_err("(loop $l (br $l)) (local.get $a)") == "")
   // ... but wasm still types what FOLLOWS it, and so does this.
-  assert(String::contains(wat_err("unreachable (i32.const 1) (i64.add (i64.const 2))"), "'i64.add' expects i64 for operand 1 of 2"))
+  assert(String::contains(wat_err("unreachable (i32.const 1) (i64.add (i64.const 2))"), needle = "'i64.add' expects i64 for operand 1 of 2"))
   // Polymorphism relaxes only the POP at a frame's end -- a missing result can
   // come from the floor. Values pushed after the `unreachable` are live at
   // `end`, and wasm rejects those exactly as it would without it. The first
   // cut of this pass skipped the whole end-of-frame check once the flag was
   // set, so each of these assembled (Codex on #2418).
-  assert(String::contains(wat_err("(block unreachable (i64.const 1)) (local.get $a)"), "'block' declares no result but leaves 1 value(s) on the stack"))
-  assert(String::contains(wat_err("(loop $l (br $l) (i64.const 1)) (local.get $a)"), "'loop' declares no result but leaves 1 value(s) on the stack"))
-  assert(String::contains(wat_err("(block (result i64) unreachable (i64.const 1) (i64.const 2))"), "'block' must leave exactly one i64 but leaves 2 value(s)"))
-  assert(String::contains(wat_err("unreachable (i32.const 1)"), "the inline wasm body must leave i64 but leaves i32"))
+  assert(String::contains(wat_err("(block unreachable (i64.const 1)) (local.get $a)"), needle = "'block' declares no result but leaves 1 value(s) on the stack"))
+  assert(String::contains(wat_err("(loop $l (br $l) (i64.const 1)) (local.get $a)"), needle = "'loop' declares no result but leaves 1 value(s) on the stack"))
+  assert(String::contains(wat_err("(block (result i64) unreachable (i64.const 1) (i64.const 2))"), needle = "'block' must leave exactly one i64 but leaves 2 value(s)"))
+  assert(String::contains(wat_err("unreachable (i32.const 1)"), needle = "the inline wasm body must leave i64 but leaves i32"))
   // The other side of the same rule: one value of the declared type after an
   // `unreachable` is what the frame asked for, and stays accepted.
   assert(wat_err("(block (result i64) unreachable (i64.const 1))") == "")
@@ -730,10 +742,10 @@ test "#2348 part 2: an ordinary Int param in the same fn is NOT masked" {
   assert(plain[1] == 0x01)
   // And a fn with no array params at all assembles byte-identically to the
   // back-compat entry.
-  let same = compile_inline_wat_array_params("probe", "(local.get $a)", [
+  let same = compile_inline_wat_array_params(fn_name = "probe", wat = "(local.get $a)", param_names = [
     "a",
     "b"
-  ], [], 3, iw_test_callees())
+  ], array_param_names = [], extra_base = 3, callees = iw_test_callees())
   let (same_bytes, _s32, _s64, _sv) = same
   assert(Bytes::length(same_bytes) == 2)
 }
@@ -742,10 +754,10 @@ test "#2348 part 2: an Array[Int] param is read-only inside the body" {
   // Writing to the slot would hand the RC epilogue a value it did not
   // allocate, so both writing forms are refused with the edit that fixes it.
   let set_err = arr_err("(local.set $xs (i64.const 0)) (local.get $n)")
-  assert(String::index_of(set_err, "an Array[Int] param is read-only") >= 0)
-  assert(String::index_of(set_err, "(local $tmp i64)") >= 0)
+  assert(String::index_of(set_err, needle = "an Array[Int] param is read-only") >= 0)
+  assert(String::index_of(set_err, needle = "(local $tmp i64)") >= 0)
   let tee_err = arr_err("(local.tee $xs (i64.const 0))")
-  assert(String::index_of(tee_err, "an Array[Int] param is read-only") >= 0)
+  assert(String::index_of(tee_err, needle = "an Array[Int] param is read-only") >= 0)
   // The same instruction on the ordinary Int param stays accepted.
   assert(arr_err("(local.tee $n (i64.const 0))") == "")
 }
@@ -762,8 +774,8 @@ test "#2348 part 2: the numeric spelling of an array param behaves identically" 
   assert(by_index[2] == 0x42)
   assert(by_index[3] == 0x7E)
   assert(by_index[4] == 0x83)
-  assert(String::index_of(arr_err("(local.set 0 (i64.const 0)) (local.get $n)"), "an Array[Int] param is read-only") >= 0)
-  assert(String::index_of(arr_err("(local.tee 0 (i64.const 0))"), "an Array[Int] param is read-only") >= 0)
+  assert(String::index_of(arr_err("(local.set 0 (i64.const 0)) (local.get $n)"), needle = "an Array[Int] param is read-only") >= 0)
+  assert(String::index_of(arr_err("(local.tee 0 (i64.const 0))"), needle = "an Array[Int] param is read-only") >= 0)
   // The ordinary Int param at index 1 is still untouched either way.
   assert(Bytes::length(arr_bytes("(local.get 1)")) == 2)
   assert(arr_err("(local.tee 1 (i64.const 0))") == "")
@@ -774,10 +786,10 @@ test "#2348 part 2: the masked read is still typed as one i64" {
   // body still leaves exactly one i64, and an arity error is still reported.
   assert(arr_err("(local.get $xs)") == "")
   let two = arr_err("(local.get $xs) (local.get $n)")
-  assert(String::index_of(two, "leaves 2 value(s)") >= 0)
+  assert(String::index_of(two, needle = "leaves 2 value(s)") >= 0)
   // And a masked array pointer is an i64 where an i32 is required.
   let wrong = arr_err("(i64.extend_i32_s (local.get $xs))")
-  assert(String::index_of(wrong, "expects i32") >= 0)
+  assert(String::index_of(wrong, needle = "expects i32") >= 0)
 }
 
 test "#2348 part 2: an Array[Int] param is admitted, and only Array[Int]" {
@@ -785,9 +797,9 @@ test "#2348 part 2: an Array[Int] param is admitted, and only Array[Int]" {
   // The element type is part of the contract, not decoration: an element the
   // body would have to chase a pointer for is not the flat block this admits.
   let str_elem = parse_err("fn k(xs: Array[String]) -> Int = wasm \"(i64.const 0)\"")
-  assert(String::index_of(str_elem, "must be typed Int, Bytes, or Array[Int]") >= 0)
+  assert(String::index_of(str_elem, needle = "must be typed Int, Bytes, or Array[Int]") >= 0)
   let bare = parse_err("fn k(xs: Array) -> Int = wasm \"(i64.const 0)\"")
-  assert(String::index_of(bare, "must be typed Int, Bytes, or Array[Int]") >= 0)
+  assert(String::index_of(bare, needle = "must be typed Int, Bytes, or Array[Int]") >= 0)
 }
 
 test "#2348 part 2: vibe check refuses the same bodies the build refuses" {
@@ -796,12 +808,12 @@ test "#2348 part 2: vibe check refuses the same bodies the build refuses" {
   let ok = "fn k(xs: Array[Int]) -> Int = wasm \"(i64.extend_i32_u (i32.load offset=4 (i32.wrap_i64 (local.get $xs))))\""
   assert(check_lane_err(ok) == "")
   let write = "fn k(xs: Array[Int]) -> Int = wasm \"(local.set $xs (i64.const 0)) (i64.const 0)\""
-  assert(String::index_of(check_lane_err(write), "an Array[Int] param is read-only") >= 0)
+  assert(String::index_of(check_lane_err(write), needle = "an Array[Int] param is read-only") >= 0)
   assert(!compiles_linear(String::concat(write, "\nfn use_it() -> Int { k([1, 2]) }")))
   // The mask is not free typing: reading the header address as an i32 operand
   // still needs the explicit wrap, and forgetting it is a located error.
   let unwrapped = "fn k(xs: Array[Int]) -> Int = wasm \"(i64.extend_i32_u (i32.load offset=4 (local.get $xs)))\""
-  assert(String::index_of(check_lane_err(unwrapped), "expects i32") >= 0)
+  assert(String::index_of(check_lane_err(unwrapped), needle = "expects i32") >= 0)
 }
 
 test "inline wasm: String results use the declared packed i64 ABI" {
@@ -809,9 +821,9 @@ test "inline wasm: String results use the declared packed i64 ABI" {
   inspect(parse_err(src), content = "")
   inspect(check_lane_err(src), content = "")
   inspect(compiles_linear(src), content = "true")
-  inspect(String::contains(gc_err(src), "linear-backend only"), content = "true")
+  inspect(String::contains(gc_err(src), needle = "linear-backend only"), content = "true")
   let stmts = parse_program_preserving(lex(src))
-  let printed = print_stmt(Array::get(stmts, 0))
-  assert(String::contains(printed, "String"))
+  let printed = print_stmt(Array::get(stmts, at = 0))
+  assert(String::contains(printed, needle = "String"))
   assert(parse_err(printed) == "")
 }

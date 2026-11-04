@@ -9,17 +9,17 @@ import ./rc_query.vibe {
 
 fn classify_has_set(out: String, name: String, set: String) -> Bool {
   let prefix = String::concat(name, " ")
-  let lines = String::split(out, "\n")
+  let lines = String::split(out, sep = "\n")
   let mut i = 0
   let mut found = false
   while i < Array::length(lines) {
-    let line = Array::get(lines, i)
-    if String::starts_with(line, prefix) {
-      let rest = String::substring(line, String::length(prefix), String::length(line))
-      let tags = String::split(rest, ",")
+    let line = Array::get(lines, at = i)
+    if String::starts_with(line, prefix = prefix) {
+      let rest = String::substring(line, start = String::length(prefix), end = String::length(line))
+      let tags = String::split(rest, sep = ",")
       let mut j = 0
       while j < Array::length(tags) {
-        if Array::get(tags, j) == set {
+        if Array::get(tags, at = j) == set {
           found = true
         } else {
           ()
@@ -36,11 +36,11 @@ fn classify_has_set(out: String, name: String, set: String) -> Bool {
 
 fn classify_has_name(out: String, name: String) -> Bool {
   let prefix = String::concat(name, " ")
-  let lines = String::split(out, "\n")
+  let lines = String::split(out, sep = "\n")
   let mut i = 0
   let mut found = false
   while i < Array::length(lines) {
-    if String::starts_with(Array::get(lines, i), prefix) {
+    if String::starts_with(Array::get(lines, at = i), prefix = prefix) {
       found = true
     } else {
       ()
@@ -61,31 +61,31 @@ test "rc_classify_source: a let-signed Int function is scalar_ret" {
   // form linked_compile actually classifies.
   let src = "let add: (Int, Int) -> Int = (a: Int, b: Int) -> Int { a + b }\n"
   let out = rc_classify_source(src)
-  assert(classify_has_set(out, "add", "scalar_ret"))
+  assert(classify_has_set(out = out, name = "add", set = "scalar_ret"))
 }
 
 test "rc_classify_source: a thin Array::get wrapper is borrow_ret" {
   let src = "enum Tok {\n  TEof;\n  TInt(Int)\n}\n\nfn peek(tokens: Array[Tok], pos: Int) -> Tok {\n  if pos < Array::length(tokens) {\n    Array::get(tokens, pos)\n  } else {\n    TEof\n  }\n}\n"
   let out = rc_classify_source(src)
-  assert(classify_has_set(out, "peek", "borrow_ret"))
+  assert(classify_has_set(out = out, name = "peek", set = "borrow_ret"))
 }
 
 test "rc_classify_source: an annotated builder is not view_ret" {
   let src = "fn make(n: Int) -> Array[Int] {\n  let out: Array[Int] = []\n  let mut i = 0\n  while i < n {\n    Array::push(out, i)\n    i = i + 1\n  }\n  out\n}\n"
   let out = rc_classify_source(src)
-  assert(!classify_has_set(out, "make", "view_ret"))
+  assert(!classify_has_set(out = out, name = "make", set = "view_ret"))
 }
 
 test "rc_plan_source: a twice-used heap binding emits a dup" {
   let src = "fn pair(t: Array[Int]) -> (Array[Int], Array[Int]) {\n  (t, t)\n}\n"
-  let out = rc_plan_source(src, "pair")
-  assert(String::contains(out, "pair t dup "))
+  let out = rc_plan_source(source = src, fn_filter = "pair")
+  assert(String::contains(out, needle = "pair t dup "))
 }
 
 test "rc_plan_source: --fn filters to that function" {
   let src = "fn keep(t: Array[Int]) -> Array[Int] {\n  t\n}\n\nfn pair(t: Array[Int]) -> (Array[Int], Array[Int]) {\n  (t, t)\n}\n"
-  let out = rc_plan_source(src, "keep")
-  assert(!String::contains(out, "pair "))
+  let out = rc_plan_source(source = src, fn_filter = "keep")
+  assert(!String::contains(out, needle = "pair "))
 }
 
 test "rc_plan_source: later-discovered wrapper is still a view" {
@@ -97,17 +97,17 @@ test "rc_plan_source: later-discovered wrapper is still a view" {
   // is not dropped.
   let zebra_first = "fn zebra(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn apple(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn use_apple(a: Array[Array[Int]]) -> Int {\n  let v = apple(a, 0)\n  Array::length(v)\n}\n"
   let apple_first = "fn apple(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn zebra(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn use_apple(a: Array[Array[Int]]) -> Int {\n  let v = apple(a, 0)\n  Array::length(v)\n}\n"
-  let out = rc_plan_source(zebra_first, "use_apple")
-  let flipped = rc_plan_source(apple_first, "use_apple")
+  let out = rc_plan_source(source = zebra_first, fn_filter = "use_apple")
+  let flipped = rc_plan_source(source = apple_first, fn_filter = "use_apple")
   assert_eq(out, flipped)
-  assert(!String::contains(out, "use_apple v drop"))
+  assert(!String::contains(out, needle = "use_apple v drop"))
 }
 
 test "rc_plan_source: missing function throws" {
   let src = "fn keep(t: Array[Int]) -> Array[Int] {\n  t\n}\n"
   let caught = handle {
-    let _ = rc_plan_source(src, "missing")
+    let _ = rc_plan_source(source = src, fn_filter = "missing")
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(caught, "missing"))
+  assert(String::contains(caught, needle = "missing"))
 }

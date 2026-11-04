@@ -18,22 +18,22 @@ import ../type_db.vibe {
 
 //# Functions
 
-fn string_to_bytes(s: String) -> Bytes {
+fn string_to_bytes(_ s: String) -> Bytes {
   let out = array_empty()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Array::push(out, String::char_code_at(s, i))
+    Array::push(out, value = String::char_code_at(s, at = i))
     i = i + 1
   }
   Bytes::from_array(out)
 }
 
-fn assert_wasm_magic(bytes: Bytes) -> Unit {
-  assert(Bytes::get(bytes, 0) == 0)
-  assert(Bytes::get(bytes, 1) == 97)
-  assert(Bytes::get(bytes, 2) == 115)
-  assert(Bytes::get(bytes, 3) == 109)
+fn assert_wasm_magic(_ bytes: Bytes) -> Unit {
+  assert(Bytes::get(bytes, at = 0) == 0)
+  assert(Bytes::get(bytes, at = 1) == 97)
+  assert(Bytes::get(bytes, at = 2) == 115)
+  assert(Bytes::get(bytes, at = 3) == 109)
 }
 
 //# Misc
@@ -41,9 +41,9 @@ fn assert_wasm_magic(bytes: Bytes) -> Unit {
 test "compile_file_fs_mode_cached: mvp prunes unused fs statements relative to no-dce" {
   let main_path = "/tmp/vibe_compiler_file_mode_main.vibe"
   let source = "let unused: () -> Int = () -> { 0 }\nlet run: () -> Int = () -> { 40 + 2 }"
-  Fs::write_bytes(main_path, string_to_bytes(source))
-  let (bytes_no_dce, db1) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
-  let (bytes_mvp, _) = compile_file_fs_mode_cached(db1, main_path, "run", "mvp")
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
+  let (bytes_no_dce, db1) = compile_file_fs_mode_cached(db = db_new(), entry_path = main_path, entry_name = "run", mode = "no-dce")
+  let (bytes_mvp, _) = compile_file_fs_mode_cached(db = db1, entry_path = main_path, entry_name = "run", mode = "mvp")
   assert_wasm_magic(bytes_no_dce)
   assert_wasm_magic(bytes_mvp)
   assert(Bytes::length(bytes_mvp) < Bytes::length(bytes_no_dce))
@@ -57,9 +57,9 @@ test "compile_file_fs_mode: dce-root prunes from a named root that is not a comm
   // the compiler came to 40.5 MB (measured), eight times the whole CLI adapter.
   let main_path = "/tmp/vibe_compiler_dce_root_main.vibe"
   let source = "export fn unused_one(a: Int) -> Int {\n  a + 1\n}\n\nexport fn unused_two(a: Int) -> Int {\n  unused_one(a) + unused_one(a)\n}\n\nexport fn vibe_command(args: String) -> String {\n  args\n}\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
-  let bytes_no_dce = compile_file_fs_mode(main_path, "__no_entry__", "no-dce")
-  let bytes_rooted = compile_file_fs_mode(main_path, "vibe_command", "dce-root")
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
+  let bytes_no_dce = compile_file_fs_mode(entry_path = main_path, entry_name = "__no_entry__", mode = "no-dce")
+  let bytes_rooted = compile_file_fs_mode(entry_path = main_path, entry_name = "vibe_command", mode = "dce-root")
   assert_wasm_magic(bytes_no_dce)
   assert_wasm_magic(bytes_rooted)
   // The point of the lane: what the root cannot reach is gone.
@@ -73,18 +73,18 @@ test "compile_file_fs_mode: dce-root still emits a library, not a command entry"
   // refused with "WASI entry function must take 0 parameters" (measured).
   let main_path = "/tmp/vibe_compiler_dce_root_lib.vibe"
   let source = "export fn vibe_command(args: String) -> String {\n  String::concat(args, \"!\")\n}\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   // `mvp` on the SAME name and source is refused, because it hands that name
   // to a codegen that requires a 0-parameter WASI entry. Asserting the refusal
   // is what makes this test about the separation of roles rather than about
   // the output merely being non-empty.
   let mvp_result = handle {
-    let _ = compile_file_fs_mode(main_path, "vibe_command", "mvp")
+    let _ = compile_file_fs_mode(entry_path = main_path, entry_name = "vibe_command", mode = "mvp")
     "COMPILED"
   } with { Exception::Throw(e) => e }
-  assert(String::index_of(mvp_result, "0 parameters") >= 0)
+  assert(String::index_of(mvp_result, needle = "0 parameters") >= 0)
   // `dce-root` takes the same name and succeeds, as a library.
-  let bytes_rooted = compile_file_fs_mode(main_path, "vibe_command", "dce-root")
+  let bytes_rooted = compile_file_fs_mode(entry_path = main_path, entry_name = "vibe_command", mode = "dce-root")
   assert_wasm_magic(bytes_rooted)
   assert(Bytes::length(bytes_rooted) > 8)
 }
@@ -98,14 +98,14 @@ test "compile_file_fs_mode_cached: dce-root is accepted by the CACHED lane too" 
   // two answers.
   let main_path = "/tmp/vibe_compiler_dce_root_cached.vibe"
   let source = "export fn unused_one(a: Int) -> Int {\n  a + 1\n}\n\nexport fn vibe_command(args: String) -> String {\n  args\n}\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
-  let (bytes_cached, _) = compile_file_fs_mode_cached(db_new(), main_path, "vibe_command", "dce-root")
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
+  let (bytes_cached, _) = compile_file_fs_mode_cached(db = db_new(), entry_path = main_path, entry_name = "vibe_command", mode = "dce-root")
   assert_wasm_magic(bytes_cached)
   // And it must AGREE with the uncached lane. A cached lane that accepted the
   // mode but compiled it as `no-dce` would pass a bare "did not throw" check
   // while emitting an unpruned artifact -- which is what two of the codegen
   // copies would have done, since they had no `no-dce` arm and no throw.
-  let bytes_uncached = compile_file_fs_mode(main_path, "vibe_command", "dce-root")
+  let bytes_uncached = compile_file_fs_mode(entry_path = main_path, entry_name = "vibe_command", mode = "dce-root")
   assert(Bytes::length(bytes_cached) == Bytes::length(bytes_uncached))
 }
 
@@ -122,9 +122,9 @@ test "compile_file_fs_mode_cached: dce-root gets its own cache namespace" {
   // refused with "WASI entry function must take 0 parameters".
   let main_path = "/tmp/vibe_compiler_dce_root_cache_ns.vibe"
   let source = "export fn unused_one(a: Int) -> Int {\n  a + 1\n}\n\nexport fn unused_two(a: Int) -> Int {\n  unused_one(a) + unused_one(a)\n}\n\nexport fn run() -> Int {\n  7\n}\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
-  let (bytes_no_dce, _) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
-  let (bytes_rooted, _) = compile_file_fs_mode_cached(db_new(), main_path, "run", "dce-root")
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
+  let (bytes_no_dce, _) = compile_file_fs_mode_cached(db = db_new(), entry_path = main_path, entry_name = "run", mode = "no-dce")
+  let (bytes_rooted, _) = compile_file_fs_mode_cached(db = db_new(), entry_path = main_path, entry_name = "run", mode = "dce-root")
   assert_wasm_magic(bytes_no_dce)
   assert_wasm_magic(bytes_rooted)
   // Measured: 2484 vs 2230. Equal lengths would mean one mode was answered
@@ -149,14 +149,14 @@ test "compile_file_fs_mode: dce-root keeps what only an interpolation reaches" {
   // accident (Codex review of #2863).
   let main_path = "/tmp/vibe_compiler_dce_root_interp.vibe"
   let source = "let label = \"ok\"\n\nfn only_from_interp() -> String {\n  \"fn-ok\"\n}\n\nfn never_reached() -> String {\n  \"gone\"\n}\n\nexport fn vibe_command(args: String) -> String {\n  \"\\{label} \\{only_from_interp()} \\{args}\"\n}\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   // Would throw on a missing name if either were pruned.
-  let bytes_rooted = compile_file_fs_mode(main_path, "vibe_command", "dce-root")
+  let bytes_rooted = compile_file_fs_mode(entry_path = main_path, entry_name = "vibe_command", mode = "dce-root")
   assert_wasm_magic(bytes_rooted)
   // ...and pruning must still be HAPPENING, or this test passes for the wrong
   // reason: `never_reached` is unreachable by any route, so rooting at
   // `vibe_command` has to beat keeping every statement.
-  let bytes_no_dce = compile_file_fs_mode(main_path, "__no_entry__", "no-dce")
+  let bytes_no_dce = compile_file_fs_mode(entry_path = main_path, entry_name = "__no_entry__", mode = "no-dce")
   assert(Bytes::length(bytes_rooted) < Bytes::length(bytes_no_dce))
 }
 
@@ -178,35 +178,35 @@ test "compile_file_fs_mode: dce-root keeps interpolation refs on the WARM path t
   // then compile -- rather than asserting a mechanism.
   let main_path = "/tmp/vibe_compiler_dce_root_interp_warm.vibe"
   let source = "let label = \"ok\"\n\nfn only_from_interp() -> String {\n  \"fn-ok\"\n}\n\nfn never_reached() -> String {\n  \"gone\"\n}\n\nexport fn vibe_command(args: String) -> String {\n  \"\\{label} \\{only_from_interp()} \\{args}\"\n}\n"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   // Populate first, the way a prior `vibe check` would.
   let _ = check_linked_file(main_path)
   // Then compile. Would throw on a missing name if the interpolation's
   // references had been invisible to DCE.
-  let bytes_rooted = compile_file_fs_mode(main_path, "vibe_command", "dce-root")
+  let bytes_rooted = compile_file_fs_mode(entry_path = main_path, entry_name = "vibe_command", mode = "dce-root")
   assert_wasm_magic(bytes_rooted)
   // ...and pruning must still be happening, or this passes for the wrong
   // reason.
-  let bytes_no_dce = compile_file_fs_mode(main_path, "__no_entry__", "no-dce")
+  let bytes_no_dce = compile_file_fs_mode(entry_path = main_path, entry_name = "__no_entry__", mode = "no-dce")
   assert(Bytes::length(bytes_rooted) < Bytes::length(bytes_no_dce))
 }
 
 test "compile_file_fs_mode: an unknown mode is refused by name" {
   let main_path = "/tmp/vibe_compiler_dce_root_badmode.vibe"
-  Fs::write_bytes(main_path, string_to_bytes("export fn vibe_command(a: String) -> String {\n  a\n}\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("export fn vibe_command(a: String) -> String {\n  a\n}\n"))
   let result = handle {
-    let _ = compile_file_fs_mode(main_path, "vibe_command", "dce-roooot")
+    let _ = compile_file_fs_mode(entry_path = main_path, entry_name = "vibe_command", mode = "dce-roooot")
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(String::index_of(result, "unsupported compile mode") >= 0)
+  assert(String::index_of(result, needle = "unsupported compile mode") >= 0)
 }
 
 test "compile_file_fs_mode_cached: release compile keeps test block refs" {
   let main_path = "/tmp/vibe_compiler_file_mode_tests_main.vibe"
   let source = "let inc: (Int) -> Int = (x) -> { x + 1 }\ntest \"call top-level\" { assert(inc(41) == 42) }\nlet run: () -> Int = () -> { inc(41) }"
-  Fs::write_bytes(main_path, string_to_bytes(source))
-  let (bytes_no_dce, db1) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
-  let (bytes_mvp, _) = compile_file_fs_mode_cached(db1, main_path, "run", "mvp")
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
+  let (bytes_no_dce, db1) = compile_file_fs_mode_cached(db = db_new(), entry_path = main_path, entry_name = "run", mode = "no-dce")
+  let (bytes_mvp, _) = compile_file_fs_mode_cached(db = db1, entry_path = main_path, entry_name = "run", mode = "mvp")
   assert_wasm_magic(bytes_no_dce)
   assert_wasm_magic(bytes_mvp)
 }

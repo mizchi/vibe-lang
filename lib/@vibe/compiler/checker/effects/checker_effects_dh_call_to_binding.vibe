@@ -149,29 +149,29 @@ import ./checker_effects_throw_payload_kind.vibe {
 /// caller, and it is charged to the enclosing body as if the literal were
 /// applied here (`TaskGroup::run` calls its body before it returns).
 export fn closure_arg_declared(arg: Expr, declared: Array[String], callee: String, lexical_callee: Option[Array[String]], index: Int) -> Array[String] {
-  let base0 = closure_arg_declared_base(arg, declared, callee, lexical_callee, index)
+  let base0 = closure_arg_declared_base(arg = arg, declared = declared, callee = callee, lexical_callee = lexical_callee, index = index)
   let lets_var_out = match lexical_callee {
     Some(_) => false,
-    None => callee_lets_param_var_out(callee, index)
+    None => callee_lets_param_var_out(callee = callee, index = index)
   }
   let base = if under_erased_slot(base0) {
     base0
   } else if lets_var_out {
-    labels_union(base0, [erased_iife_marker()])
+    labels_union(a = base0, b = [erased_iife_marker()])
   } else {
-    labels_union(base0, [erased_arg_kept_marker()])
+    labels_union(a = base0, b = [erased_arg_kept_marker()])
   }
   match arg {
     EFn(_, _, _, _, _, _) => match lexical_callee {
       Some(_) => base,
-      None => match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+      None => match MutMap::get(Array::get(callee_sig_index, at = 0), k = callee) {
         None => base,
         Some(si) => {
-          let prows = Array::get(callee_sig_param_effs, si)
+          let prows = Array::get(callee_sig_param_effs, at = si)
           if index >= Array::length(prows) {
             base
           } else {
-            labels_union(base, closure_row_extra_labels(Array::get(prows, index)))
+            labels_union(a = base, b = closure_row_extra_labels(Array::get(prows, at = index)))
           }
         }
       }
@@ -193,34 +193,34 @@ fn closure_arg_declared_base(arg: Expr, declared: Array[String], callee: String,
       // enclosing row, as before.
       match lexical_callee {
         Some(_) => declared,
-        None => match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+        None => match MutMap::get(Array::get(callee_sig_index, at = 0), k = callee) {
           None => declared,
           Some(si) => {
-            let prows = Array::get(callee_sig_param_effs, si)
+            let prows = Array::get(callee_sig_param_effs, at = si)
             if index >= Array::length(prows) {
               declared
             } else {
-              let prow = Array::get(prows, index)
+              let prow = Array::get(prows, at = index)
               let kinds = exception_effect_labels(prow)
               if !row_has_erased_exception(prow) && Array::length(kinds) > 0 {
-                labels_union(labels_union(labels_without_exception_family(declared), [
+                labels_union(a = labels_union(a = labels_without_exception_family(declared), b = [
                   kinded_handle_marker()
-                ]), kinds)
-              } else if row_is_erased_slot(prow) && row_has_erased_exception(Array::get(callee_sig_effs, si)) {
+                ]), b = kinds)
+              } else if row_is_erased_slot(prow) && row_has_erased_exception(Array::get(callee_sig_effs, at = si)) {
                 // #3601: the parameter's erased row carries only messages, and
                 // the callee's own erased row lets what the closure raises out
                 // to its caller, so the closure's body may raise only messages
                 // and the kinds the row names. A callee whose row lets no
                 // exception out handles them itself (`TaskGroup::spawn_suspend`).
-                erased_slot_declared(declared, prow)
-              } else if row_has_erased_exception(prow) && callee_row_holds_exceptions(Array::get(callee_sig_effs, si)) {
+                erased_slot_declared(declared = declared, row = prow)
+              } else if row_has_erased_exception(prow) && callee_row_holds_exceptions(Array::get(callee_sig_effs, at = si)) {
                 // #3619: the callee's own row lets no exception out and
                 // reaches its caller through no row variable, so whatever the
                 // closure raises through the parameter's erased row is
                 // handled by the callee, exactly as for a named function
                 // argument. Charging it to the enclosing body refused
                 // `shield(() -> throw(7))` where `shield(bad)` was accepted.
-                labels_union(labels_without_exception_family(declared), [
+                labels_union(a = labels_without_exception_family(declared), b = [
                   "Exception"
                 ])
               } else {
@@ -233,24 +233,24 @@ fn closure_arg_declared_base(arg: Expr, declared: Array[String], callee: String,
     } else {
       match lexical_callee {
         Some(_) => declared,
-        None => match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+        None => match MutMap::get(Array::get(callee_sig_index, at = 0), k = callee) {
           None => declared,
           Some(si) => {
-            let prows = Array::get(callee_sig_param_effs, si)
+            let prows = Array::get(callee_sig_param_effs, at = si)
             if index >= Array::length(prows) {
               declared
             } else {
-              let prow = Array::get(prows, index)
+              let prow = Array::get(prows, at = index)
               if row_has_erased_exception(prow) {
-                labels_union(labels_without_exception_family_marker(declared), [
+                labels_union(a = labels_without_exception_family_marker(declared), b = [
                   "Exception"
                 ])
               } else {
                 let kinds = exception_effect_labels(prow)
                 if Array::length(kinds) > 0 {
-                  labels_union(labels_union(labels_without_exception_family(declared), [
+                  labels_union(a = labels_union(a = labels_without_exception_family(declared), b = [
                     kinded_handle_marker()
-                  ]), kinds)
+                  ]), b = kinds)
                 } else {
                   declared
                 }
@@ -270,8 +270,8 @@ fn closure_arg_declared_base(arg: Expr, declared: Array[String], callee: String,
 fn kinded_handle_owner(fn_name: String, declared: Array[String]) -> String {
   let mut owner = fn_name
   for l in declared {
-    if String::starts_with(l, kinded_handle_owner_prefix()) {
-      owner = String::concat("#lambda:", String::substring(l, String::length(kinded_handle_owner_prefix()), String::length(l)))
+    if String::starts_with(l, prefix = kinded_handle_owner_prefix()) {
+      owner = String::concat("#lambda:", String::substring(l, start = String::length(kinded_handle_owner_prefix()), end = String::length(l)))
     }
   }
   owner
@@ -282,14 +282,14 @@ export fn make_contextual_row_error(fn_name: String, declared: Array[String], mi
   // exception requirements are checked exactly (see kinded_handle_marker);
   // a missing exception label there is not "add it to the row" -- the row
   // may well have it -- but "this handle would catch it".
-  let strict_kinded = effect_row_has_label(Some(declared), kinded_handle_marker())
+  let strict_kinded = effect_row_has_label(row = Some(declared), wanted = kinded_handle_marker())
   let missing_exc = if strict_kinded {
     let out = no_str_labels()
     let mut mi = 0
     while mi < Array::length(missing) {
-      let ml = Array::get(missing, mi)
+      let ml = Array::get(missing, at = mi)
       if is_exception_label(ml) {
-        Array::push(out, ml)
+        Array::push(out, value = ml)
       } else {
         ()
       }
@@ -304,8 +304,8 @@ export fn make_contextual_row_error(fn_name: String, declared: Array[String], mi
   let missing_vars = no_str_labels()
   if strict_kinded {
     for ml in missing {
-      if label_is_effect_var(ml) && !effect_row_has_label(Some(missing_vars), ml) {
-        Array::push(missing_vars, ml)
+      if label_is_effect_var(ml) && !effect_row_has_label(row = Some(missing_vars), wanted = ml) {
+        Array::push(missing_vars, value = ml)
       }
     }
   }
@@ -316,7 +316,7 @@ export fn make_contextual_row_error(fn_name: String, declared: Array[String], mi
   if String::length(reads_binder) > 0 && !strict_kinded {
     for ml in missing {
       if is_exception_label(ml) && String::length(exception_label_kind(ml)) > 0 {
-        Array::push(missing_other_kinds, ml)
+        Array::push(missing_other_kinds, value = ml)
       }
     }
   }
@@ -326,33 +326,33 @@ export fn make_contextual_row_error(fn_name: String, declared: Array[String], mi
   if under_erased_slot(declared) && String::length(reads_binder) == 0 && !strict_kinded {
     for ml in missing {
       if is_exception_label(ml) && String::length(exception_label_kind(ml)) > 0 {
-        Array::push(slot_other_kinds, ml)
+        Array::push(slot_other_kinds, value = ml)
       }
     }
   }
   if Array::length(slot_other_kinds) > 0 {
-    EEErasedClosureOtherKind(kinded_handle_owner(fn_name, declared), join_labels(sort_labels(labels_union(no_str_labels(), slot_other_kinds))), off)
+    EEErasedClosureOtherKind(kinded_handle_owner(fn_name = fn_name, declared = declared), join_labels(sort_labels(labels_union(a = no_str_labels(), b = slot_other_kinds))), off)
   } else if Array::length(missing_other_kinds) > 0 {
-    EEErasedArmReadsOtherKind(kinded_handle_owner(fn_name, declared), reads_binder, join_labels(sort_labels(labels_union(no_str_labels(), missing_other_kinds))), off)
+    EEErasedArmReadsOtherKind(kinded_handle_owner(fn_name = fn_name, declared = declared), reads_binder, join_labels(sort_labels(labels_union(a = no_str_labels(), b = missing_other_kinds))), off)
   } else if Array::length(missing_exc) > 0 {
     EEKindedHandleCatchesAll(fn_name, join_labels(kinded_exception_labels(declared)), join_labels(sort_labels(missing_exc)), off)
   } else if Array::length(missing_vars) > 0 {
-    EEKindedHandleOpenRow(kinded_handle_owner(fn_name, declared), join_labels(kinded_exception_labels(declared)), join_labels(sort_labels(missing_vars)), off)
+    EEKindedHandleOpenRow(kinded_handle_owner(fn_name = fn_name, declared = declared), join_labels(kinded_exception_labels(declared)), join_labels(sort_labels(missing_vars)), off)
   } else {
-    make_contextual_row_error_plain(fn_name, labels_without_exception_family_marker(declared), missing, off)
+    make_contextual_row_error_plain(fn_name = fn_name, declared = labels_without_exception_family_marker(declared), missing = missing, off = off)
   }
 }
 
 /// `labels` without the kinded-handle marker (the exception labels stay).
-export fn labels_without_exception_family_marker(labels: Array[String]) -> Array[String] {
+export fn labels_without_exception_family_marker(_ labels: Array[String]) -> Array[String] {
   let out = no_str_labels()
   let mut i = 0
   while i < Array::length(labels) {
-    let l = Array::get(labels, i)
+    let l = Array::get(labels, at = i)
     if is_kinded_handle_pseudo_label(l) {
       ()
     } else {
-      Array::push(out, l)
+      Array::push(out, value = l)
     }
     i = i + 1
   }
@@ -362,7 +362,7 @@ export fn labels_without_exception_family_marker(labels: Array[String]) -> Array
 fn make_contextual_row_error_plain(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
   let unresolved = entry_unresolved_labels(missing)
   let bad = entry_unadmitted_labels(missing)
-  let (optional_op, optional_grant) = optional_grant_for(declared, missing)
+  let (optional_op, optional_grant) = optional_grant_for(declared = declared, missing = missing)
   if String::length(optional_grant) > 0 {
     // ADR-0088 strict grade match: an optional grant never authorizes a
     // required call, and the edit is either the `perform?` form or the
@@ -376,17 +376,17 @@ fn make_contextual_row_error_plain(fn_name: String, declared: Array[String], mis
   } else if is_entry_point_name(fn_name) && Array::length(bad) > 0 {
     EEUndischargedEntryEffect(fn_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off)
   } else {
-    make_row_mismatch(fn_name, declared, missing, off)
+    make_row_mismatch(fn_name = fn_name, declared = declared, missing = missing, off = off)
   }
 }
 
-export fn first_expr_offset(root: Expr) -> Int {
-  let stack = Array::slice([root], 0, 1)
+export fn first_expr_offset(_ root: Expr) -> Int {
+  let stack = Array::slice([root], start = 0, end = 1)
   let mut first = 0 - 1
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
-    let expr = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
+    let expr = Array::get(stack, at = n - 1)
+    Array::truncate(stack, length = n - 1)
     let off = match expr {
       EIdent(_, x) => x,
       ELet(_, _, _, x) => x,
@@ -400,7 +400,7 @@ export fn first_expr_offset(root: Expr) -> Int {
     } else {
       ()
     }
-    expr_children_into(expr, stack)
+    expr_children_into(expr = expr, out = stack)
   }
   first
 }
@@ -424,16 +424,16 @@ export fn entry_grant_errors(entry_name: String, labels: Array[String], off: Int
   let bad = entry_unadmitted_labels(labels)
   if Array::length(unresolved) > 0 || Array::length(bad) > 0 {
     if Array::length(unresolved) > 0 {
-      Array::push(errors, EEUnresolvedEntryEffectRow(entry_name, join_labels(unresolved), off))
+      Array::push(errors, value = EEUnresolvedEntryEffectRow(entry_name, join_labels(unresolved), off))
     } else {
-      Array::push(errors, EEUndischargedEntryEffect(entry_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off))
+      Array::push(errors, value = EEUndischargedEntryEffect(entry_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off))
     }
   } else {
     let mut li = 0
     while li < Array::length(labels) {
-      let core = strip_authority_grade(Array::get(labels, li))
-      if String::index_of(core, "::") >= 0 && has_standard_host_provider(core) && !entry_user_operation_requires_handler(core) && !standard_provider_owns_operation(core) {
-        Array::push(errors, EEUnknownProviderOperation(entry_name, core))
+      let core = strip_authority_grade(Array::get(labels, at = li))
+      if String::index_of(core, needle = "::") >= 0 && has_standard_host_provider(core) && !entry_user_operation_requires_handler(core) && !standard_provider_owns_operation(core) {
+        Array::push(errors, value = EEUnknownProviderOperation(entry_name, core))
       } else {
         ()
       }
@@ -450,7 +450,7 @@ export fn check_entry_declared_effects(fn_name: String, ty: Option[TypeExpr], bo
       EFn(_, _, _, _, _, fbody) => fbody,
       _ => body
     }
-    append_eff_errs(errors, entry_grant_errors(fn_name, fn_binding_effects(ty, body), first_expr_offset(inspect_body)))
+    append_eff_errs(dst = errors, src = entry_grant_errors(entry_name = fn_name, labels = fn_binding_effects(ty = ty, body = body), off = first_expr_offset(inspect_body)))
   } else {
     ()
   }
@@ -479,8 +479,8 @@ export fn set_callee_sigs(stmts: Array[Stmt], env: TypeEnv) -> Unit {
   let loc_names = array_empty()
   let loc_effs = array_empty()
   let loc_peffs = no_param_effs()
-  build_perform_fn_effs(stmts, env, loc_names, loc_effs, loc_peffs)
-  set_callee_sigs_from(loc_names, loc_effs, loc_peffs, env_fn_sigs(env))
+  build_perform_fn_effs(stmts = stmts, env = env, fn_names = loc_names, fn_effs = loc_effs, fn_param_effs = loc_peffs)
+  set_callee_sigs_from(loc_names = loc_names, loc_effs = loc_effs, loc_peffs = loc_peffs, env_sigs = env_fn_sigs(env))
 }
 
 /// `set_callee_sigs` from tables the caller already built: this module's own
@@ -488,32 +488,32 @@ export fn set_callee_sigs(stmts: Array[Stmt], env: TypeEnv) -> Unit {
 /// the env (`env_fn_sigs`). The effect pass needs both halves for its program
 /// table too, so it builds each once and hands them here.
 export fn set_callee_sigs_from(loc_names: Array[String], loc_effs: Array[Array[String]], loc_peffs: Array[Array[Array[String]]], env_sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]])) -> Unit {
-  Array::truncate(callee_sig_effs, 0)
-  Array::truncate(callee_sig_param_effs, 0)
+  Array::truncate(callee_sig_effs, length = 0)
+  Array::truncate(callee_sig_param_effs, length = 0)
   let names = array_empty()
   let mut i = 0
   while i < Array::length(loc_names) {
-    Array::push(names, Array::get(loc_names, i))
-    Array::push(callee_sig_effs, Array::get(loc_effs, i))
-    Array::push(callee_sig_param_effs, Array::get(loc_peffs, i))
+    Array::push(names, value = Array::get(loc_names, at = i))
+    Array::push(callee_sig_effs, value = Array::get(loc_effs, at = i))
+    Array::push(callee_sig_param_effs, value = Array::get(loc_peffs, at = i))
     i = i + 1
   }
   let (env_names, env_effs, env_peffs) = env_sigs
   let mut j = 0
   while j < Array::length(env_names) {
-    Array::push(names, Array::get(env_names, j))
-    Array::push(callee_sig_effs, Array::get(env_effs, j))
-    Array::push(callee_sig_param_effs, Array::get(env_peffs, j))
+    Array::push(names, value = Array::get(env_names, at = j))
+    Array::push(callee_sig_effs, value = Array::get(env_effs, at = j))
+    Array::push(callee_sig_param_effs, value = Array::get(env_peffs, at = j))
     j = j + 1
   }
-  Array::set(callee_sig_index, 0, program_fn_index(names))
+  Array::set(callee_sig_index, at = 0, value = program_fn_index(names))
 }
 
 /// #3601: may the named callee `callee` let the exceptions of a callback out
 /// to its caller through its own erased row? An unknown callee may.
-export fn callee_lets_erased_out(callee: String) -> Bool {
-  match MutMap::get(Array::get(callee_sig_index, 0), callee) {
-    Some(si) => row_has_erased_exception(Array::get(callee_sig_effs, si)),
+export fn callee_lets_erased_out(_ callee: String) -> Bool {
+  match MutMap::get(Array::get(callee_sig_index, at = 0), k = callee) {
+    Some(si) => row_has_erased_exception(Array::get(callee_sig_effs, at = si)),
     None => true
   }
 }
@@ -525,7 +525,7 @@ export fn callee_lets_erased_out(callee: String) -> Bool {
 /// deliberately -- a callee declared `with Exception[String]` that calls an
 /// erased callback unhandled is accepted at its definition and would let an
 /// `Int` out under the `String` label.
-fn callee_row_holds_exceptions(own: Array[String]) -> Bool {
+fn callee_row_holds_exceptions(_ own: Array[String]) -> Bool {
   let mut holds = true
   for l in own {
     if is_exception_label(l) || label_is_effect_var(l) {
@@ -538,14 +538,14 @@ fn callee_row_holds_exceptions(own: Array[String]) -> Bool {
 /// #3605 review: does the named callee `callee`'s own row name a row variable
 /// that its parameter `index`'s function row carries?
 fn callee_lets_param_var_out(callee: String, index: Int) -> Bool {
-  match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+  match MutMap::get(Array::get(callee_sig_index, at = 0), k = callee) {
     Some(si) => {
-      let prows = Array::get(callee_sig_param_effs, si)
+      let prows = Array::get(callee_sig_param_effs, at = si)
       if index < Array::length(prows) {
-        let own = Array::get(callee_sig_effs, si)
+        let own = Array::get(callee_sig_effs, at = si)
         let mut out = false
-        for l in Array::get(prows, index) {
-          if label_is_effect_var(l) && str_list_has(own, l) {
+        for l in Array::get(prows, at = index) {
+          if label_is_effect_var(l) && str_list_has(xs = own, name = l) {
             out = true
           }
         }
@@ -562,11 +562,11 @@ fn callee_lets_param_var_out(callee: String, index: Int) -> Bool {
 /// (empty for a parameter that is not a function), or None when the callee
 /// or the parameter is not known here.
 export fn callee_param_row(callee: String, index: Int) -> Option[Array[String]] {
-  match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+  match MutMap::get(Array::get(callee_sig_index, at = 0), k = callee) {
     Some(si) => {
-      let prows = Array::get(callee_sig_param_effs, si)
+      let prows = Array::get(callee_sig_param_effs, at = si)
       if index < Array::length(prows) {
-        Some(Array::get(prows, index))
+        Some(Array::get(prows, at = index))
       } else {
         None
       }
@@ -577,7 +577,7 @@ export fn callee_param_row(callee: String, index: Int) -> Option[Array[String]] 
 
 /// `param_type_effect_labels` over a checked `Type`: the row a function-typed
 /// parameter declares, nothing for any other parameter.
-fn type_param_effect_labels(pty: Type) -> Array[String] {
+fn type_param_effect_labels(_ pty: Type) -> Array[String] {
   match pty {
     CtFn(_, _, peff) => effect_row_labels(effect_row_parse(peff)),
     _ => no_str_labels()
@@ -585,11 +585,11 @@ fn type_param_effect_labels(pty: Type) -> Array[String] {
 }
 
 /// `fn_binding_param_effects` over a checked function `Type`, positionally.
-fn fn_type_param_effects(params: Array[Type]) -> Array[Array[String]] {
+fn fn_type_param_effects(_ params: Array[Type]) -> Array[Array[String]] {
   let out = no_param_row()
   let mut i = 0
   while i < Array::length(params) {
-    Array::push(out, type_param_effect_labels(Array::get(params, i)))
+    Array::push(out, value = type_param_effect_labels(Array::get(params, at = i)))
     i = i + 1
   }
   out
@@ -607,25 +607,25 @@ export fn no_param_row() -> Array[Array[String]] {
 /// never reaches the variable, and charging it to the caller asked `main` to
 /// declare an exception that could not reach it.
 fn rv_union_label(out: Array[String], lbl: String, concrete: Array[String]) -> Unit {
-  if effect_row_has_label(Some(out), lbl) {
+  if effect_row_has_label(row = Some(out), wanted = lbl) {
     ()
-  } else if Array::length(concrete) > 0 && decl_authorizes_op(concrete, lbl) {
+  } else if Array::length(concrete) > 0 && decl_authorizes_op(labels = concrete, op_name = lbl) {
     ()
   } else {
-    Array::push(out, lbl)
+    Array::push(out, value = lbl)
   }
 }
 
 /// The labels of a parameter row that are not row variables.
-fn rv_concrete_labels(row: Array[String]) -> Array[String] {
+fn rv_concrete_labels(_ row: Array[String]) -> Array[String] {
   let out = no_str_labels()
   let mut i = 0
   while i < Array::length(row) {
-    let lbl = Array::get(row, i)
+    let lbl = Array::get(row, at = i)
     if label_is_effect_var(lbl) {
       ()
     } else {
-      Array::push(out, lbl)
+      Array::push(out, value = lbl)
     }
     i = i + 1
   }
@@ -656,11 +656,11 @@ export fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Arra
   let mut bailed = false
   let mut saw_param = false
   while i < Array::length(callee_param_effs) {
-    if effect_row_has_label(Some(Array::get(callee_param_effs, i)), row_var) {
+    if effect_row_has_label(row = Some(Array::get(callee_param_effs, at = i)), wanted = row_var) {
       saw_param = true
-      let concrete = rv_concrete_labels(Array::get(callee_param_effs, i))
+      let concrete = rv_concrete_labels(Array::get(callee_param_effs, at = i))
       if i < Array::length(args) {
-        match Array::get(args, i) {
+        match Array::get(args, at = i) {
           EIdent(argname, _) => {
             // A named argument: its row is whatever the call-graph map or the
             // in-scope callback overlay records for it. An argument naming
@@ -670,21 +670,21 @@ export fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Arra
             // #1723: argument names obey the same lexical precedence as the
             // callee itself. An explicit empty overlay entry is a pure local
             // shadow, not permission to consult a same-named top-level fn.
-            match lookup_fn_effs(ov_names, ov_effs, argname) {
+            match lookup_fn_effs(names = ov_names, effs = ov_effs, name = argname) {
               Some(argeffs) => {
                 let mut k = 0
                 while k < Array::length(argeffs) {
-                  let lbl = Array::get(argeffs, k)
-                  rv_union_label(out, lbl, concrete)
+                  let lbl = Array::get(argeffs, at = k)
+                  rv_union_label(out = out, lbl = lbl, concrete = concrete)
                   k = k + 1
                 }
               },
-              None => match lookup_program_fn_effs(fn_index, fn_effs, argname) {
+              None => match lookup_program_fn_effs(fn_index = fn_index, effs = fn_effs, name = argname) {
                 Some(argeffs2) => {
                   let mut k2 = 0
                   while k2 < Array::length(argeffs2) {
-                    let lbl2 = Array::get(argeffs2, k2)
-                    rv_union_label(out, lbl2, concrete)
+                    let lbl2 = Array::get(argeffs2, at = k2)
+                    rv_union_label(out = out, lbl = lbl2, concrete = concrete)
                     k2 = k2 + 1
                   }
                 },
@@ -708,8 +708,8 @@ export fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Arra
             Some(lambda_effs) => {
               let mut li = 0
               while li < Array::length(lambda_effs) {
-                let llbl = Array::get(lambda_effs, li)
-                rv_union_label(out, llbl, concrete)
+                let llbl = Array::get(lambda_effs, at = li)
+                rv_union_label(out = out, lbl = llbl, concrete = concrete)
                 li = li + 1
               }
             },
@@ -756,14 +756,14 @@ export fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Arra
 /// The gc driver supplies the exact synthesized-name list while checking the
 /// lowered program. User declarations may legally use either prefix; spelling
 /// alone grants no authority. The original block name still selects its row.
-export fn lowered_test_ambient_effects(fn_name: String) -> Array[String] {
+export fn lowered_test_ambient_effects(_ fn_name: String) -> Array[String] {
   let n = String::length(fn_name)
   if !is_lowered_test_block(fn_name) {
     no_str_labels()
-  } else if String::starts_with(fn_name, "__test_") {
-    test_ambient_effects(String::substring(fn_name, 7, n))
-  } else if String::starts_with(fn_name, "__bench_") {
-    test_ambient_effects(String::substring(fn_name, 8, n))
+  } else if String::starts_with(fn_name, prefix = "__test_") {
+    test_ambient_effects(String::substring(fn_name, start = 7, end = n))
+  } else if String::starts_with(fn_name, prefix = "__bench_") {
+    test_ambient_effects(String::substring(fn_name, start = 8, end = n))
   } else {
     no_str_labels()
   }
@@ -774,11 +774,11 @@ export fn lowered_test_ambient_effects(fn_name: String) -> Array[String] {
 /// an entry point, as its unlowered `STest` / `SBench` is: what its ambient
 /// erased `Exception` grant lets out is a failing test, not a kind its
 /// caller -- the synthesized `_start` runner -- has to declare.
-export fn is_lowered_test_block(fn_name: String) -> Bool {
-  let names = Array::get(lowered_test_block_names, 0)
+export fn is_lowered_test_block(_ fn_name: String) -> Bool {
+  let names = Array::get(lowered_test_block_names, at = 0)
   // The provenance list also includes the synthesized `_start` runner. It is
   // a caller of the blocks and must retain ordinary function checking.
-  str_list_has(names, fn_name) && (String::starts_with(fn_name, "__test_") || String::starts_with(fn_name, "__bench_"))
+  str_list_has(xs = names, name = fn_name) && (String::starts_with(fn_name, prefix = "__test_") || String::starts_with(fn_name, prefix = "__bench_"))
 }
 
 let lowered_test_block_names: Array[Array[String]] = [array_empty()]
@@ -786,9 +786,9 @@ let lowered_test_block_names: Array[Array[String]] = [array_empty()]
 /// Install the gc lowering's provenance for one check and return the previous
 /// scope. The caller restores it on success and exception, including nested
 /// compilations; a later source check never inherits another program's names.
-export fn swap_lowered_test_block_names(names: Array[String]) -> Array[String] {
-  let previous = Array::get(lowered_test_block_names, 0)
-  Array::set(lowered_test_block_names, 0, names)
+export fn swap_lowered_test_block_names(_ names: Array[String]) -> Array[String] {
+  let previous = Array::get(lowered_test_block_names, at = 0)
+  Array::set(lowered_test_block_names, at = 0, value = names)
   previous
 }
 
@@ -804,22 +804,22 @@ export fn swap_lowered_test_block_names(names: Array[String]) -> Array[String] {
 export fn nested_type_rows(ty: Option[TypeExpr], body: Expr) -> Array[String] {
   let out = no_str_labels()
   match ty {
-    Some(te) => ret_fn_row_labels_into(te, out),
+    Some(te) => ret_fn_row_labels_into(te = te, out = out),
     None => ()
   }
   match body {
     EFn(_, _, params, fret, _, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        let (_, pty) = Array::get(params, i)
+        let (_, pty) = Array::get(params, at = i)
         match pty {
-          Some(pte) => ret_fn_row_labels_into(pte, out),
+          Some(pte) => ret_fn_row_labels_into(te = pte, out = out),
           None => ()
         }
         i = i + 1
       }
       match fret {
-        Some(rte) => ret_fn_row_labels_into(rte, out),
+        Some(rte) => ret_fn_row_labels_into(te = rte, out = out),
         None => ()
       }
     },
@@ -831,10 +831,10 @@ export fn nested_type_rows(ty: Option[TypeExpr], body: Expr) -> Array[String] {
 fn variant_payload_rows_into(variants: Array[(String, Array[TypeExpr])], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(variants) {
-    let (_, payload) = Array::get(variants, i)
+    let (_, payload) = Array::get(variants, at = i)
     let mut pi = 0
     while pi < Array::length(payload) {
-      ret_fn_row_labels_into(Array::get(payload, pi), out)
+      ret_fn_row_labels_into(te = Array::get(payload, at = pi), out = out)
       pi = pi + 1
     }
     i = i + 1
@@ -844,13 +844,13 @@ fn variant_payload_rows_into(variants: Array[(String, Array[TypeExpr])], out: Ar
 fn signature_rows_into(sigs: Array[(String, Array[TypeExpr], TypeExpr)], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(sigs) {
-    let (_, params, ret) = Array::get(sigs, i)
+    let (_, params, ret) = Array::get(sigs, at = i)
     let mut pi = 0
     while pi < Array::length(params) {
-      ret_fn_row_labels_into(Array::get(params, pi), out)
+      ret_fn_row_labels_into(te = Array::get(params, at = pi), out = out)
       pi = pi + 1
     }
-    ret_fn_row_labels_into(ret, out)
+    ret_fn_row_labels_into(te = ret, out = out)
     i = i + 1
   }
 }
@@ -862,40 +862,40 @@ fn signature_rows_into(sigs: Array[(String, Array[TypeExpr], TypeExpr)], out: Ar
 /// runs on them so `type Callback = () -> Int with Ask::Get?` is refused like
 /// the same row on a binding (Codex review, PR #2653). `("", [])` for any
 /// other statement; bindings are covered by `nested_type_rows`.
-export fn stmt_type_rows(stmt: Stmt) -> (String, Array[String]) {
+export fn stmt_type_rows(_ stmt: Stmt) -> (String, Array[String]) {
   let out = no_str_labels()
   let owner = match stmt {
     STypeAlias(_, name, _, te) => {
-      ret_fn_row_labels_into(te, out)
+      ret_fn_row_labels_into(te = te, out = out)
       name
     },
     SStruct(_, name, fields, _, _, _) => {
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, fte) = Array::get(fields, i)
-        ret_fn_row_labels_into(fte, out)
+        let (_, fte) = Array::get(fields, at = i)
+        ret_fn_row_labels_into(te = fte, out = out)
         i = i + 1
       }
       name
     },
     SEnum(_, name, _, variants, _) => {
-      variant_payload_rows_into(variants, out)
+      variant_payload_rows_into(variants = variants, out = out)
       name
     },
     SSuberror(_, name, variants) => {
-      variant_payload_rows_into(variants, out)
+      variant_payload_rows_into(variants = variants, out = out)
       name
     },
     STrait(_, name, _, methods, _, _) => {
-      signature_rows_into(methods, out)
+      signature_rows_into(sigs = methods, out = out)
       name
     },
     SEffectDef(_, name, _, ops) => {
-      signature_rows_into(ops, out)
+      signature_rows_into(sigs = ops, out = out)
       name
     },
     SExternLet(name, te) => {
-      ret_fn_row_labels_into(te, out)
+      ret_fn_row_labels_into(te = te, out = out)
       name
     },
     _ => ""
@@ -911,9 +911,9 @@ export fn optional_grade_errors(fn_name: String, labels: Array[String]) -> Array
   let errors = array_empty()
   let mut i = 0
   while i < Array::length(labels) {
-    let label = Array::get(labels, i)
+    let label = Array::get(labels, at = i)
     if authority_is_optional(label) && !is_instantiate_authority(label) {
-      Array::push(errors, EEOptionalGradeNotCapability(fn_name, label))
+      Array::push(errors, value = EEOptionalGradeNotCapability(fn_name, label))
     } else {
       ()
     }
@@ -955,9 +955,9 @@ export fn optional_grade_errors(fn_name: String, labels: Array[String]) -> Array
 /// sub-decision tracked on #944.
 let error_row_mode_cell: Array[Int] = array_empty()
 
-export fn set_error_row_checked(on: Bool) -> Unit {
-  Array::truncate(error_row_mode_cell, 0)
-  Array::push(error_row_mode_cell, if on {
+export fn set_error_row_checked(_ on: Bool) -> Unit {
+  Array::truncate(error_row_mode_cell, length = 0)
+  Array::push(error_row_mode_cell, value = if on {
     1
   } else {
     0
@@ -965,7 +965,7 @@ export fn set_error_row_checked(on: Bool) -> Unit {
 }
 
 export fn error_row_checked() -> Bool {
-  Array::length(error_row_mode_cell) > 0 && Array::get(error_row_mode_cell, 0) == 1
+  Array::length(error_row_mode_cell) > 0 && Array::get(error_row_mode_cell, at = 0) == 1
 }
 
 /// Canonical cache identity for the actual process-wide checker mode. Direct
@@ -978,7 +978,7 @@ export fn typing_semantics_seed() -> String {
   } else {
     "unchecked"
   }
-  let names = Array::get(lowered_test_block_names, 0)
+  let names = Array::get(lowered_test_block_names, at = 0)
   if Array::length(names) == 0 {
     mode
   } else {
@@ -1005,7 +1005,7 @@ fn test_row_has_label(labels: Array[String], target: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(labels) {
-    if Array::get(labels, i) == target {
+    if Array::get(labels, at = i) == target {
       found = true
       i = Array::length(labels)
     } else {
@@ -1015,15 +1015,15 @@ fn test_row_has_label(labels: Array[String], target: String) -> Bool {
   found
 }
 
-export fn set_test_effect_rows(stmts: Array[Stmt]) -> Unit {
-  Array::truncate(test_effect_row_tbl, 0)
+export fn set_test_effect_rows(_ stmts: Array[Stmt]) -> Unit {
+  Array::truncate(test_effect_row_tbl, length = 0)
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       STestEffectRows(rows) => {
         let mut ri = 0
         while ri < Array::length(rows) {
-          Array::push(test_effect_row_tbl, Array::get(rows, ri))
+          Array::push(test_effect_row_tbl, value = Array::get(rows, at = ri))
           ri = ri + 1
         }
       },
@@ -1044,16 +1044,16 @@ export fn set_test_effect_rows(stmts: Array[Stmt]) -> Unit {
 /// its "row は完全に明示する" note, but that reads as a rule for a future
 /// `with ()` form; taking it now would break every existing test that adds a
 /// row. Recorded on #1508.
-export fn test_ambient_effects(name: String) -> Array[String] {
+export fn test_ambient_effects(_ name: String) -> Array[String] {
   let base = test_bench_default_effects()
   let extra = test_declared_row_labels(name)
   let mut ei = 0
   while ei < Array::length(extra) {
-    let label = Array::get(extra, ei)
-    if test_row_has_label(base, label) {
+    let label = Array::get(extra, at = ei)
+    if test_row_has_label(labels = base, target = label) {
       ()
     } else {
-      Array::push(base, label)
+      Array::push(base, value = label)
     }
     ei = ei + 1
   }
@@ -1063,16 +1063,16 @@ export fn test_ambient_effects(name: String) -> Array[String] {
 /// The labels a `test` / `bench` block's own `allows` row writes (with any
 /// effectset already expanded), without the ambient default. Empty when the
 /// block declares no row.
-export fn test_declared_row_labels(name: String) -> Array[String] {
+export fn test_declared_row_labels(_ name: String) -> Array[String] {
   let out = no_str_labels()
   let mut i = 0
   while i < Array::length(test_effect_row_tbl) {
-    let (n, row) = Array::get(test_effect_row_tbl, i)
+    let (n, row) = Array::get(test_effect_row_tbl, at = i)
     if n == name {
       let extra = effect_row_labels(effect_row_parse(Some(row)))
       let mut ei = 0
       while ei < Array::length(extra) {
-        Array::push(out, Array::get(extra, ei))
+        Array::push(out, value = Array::get(extra, at = ei))
         ei = ei + 1
       }
       i = Array::length(test_effect_row_tbl)
@@ -1104,18 +1104,18 @@ fn push_env_fn_eff(name: String, ty: Type, fn_names: Array[String], fn_effs: Arr
     CtFn(params, _, eff) => {
       let labels = effect_row_labels(effect_row_parse(eff))
       if every_fn {
-        Array::push(fn_names, name)
-        Array::push(fn_effs, labels)
-        Array::push(fn_param_effs, fn_type_param_effects(params))
+        Array::push(fn_names, value = name)
+        Array::push(fn_effs, value = labels)
+        Array::push(fn_param_effs, value = fn_type_param_effects(params))
       } else if Array::length(labels) > 0 {
-        Array::push(fn_names, name)
-        Array::push(fn_effs, labels)
+        Array::push(fn_names, value = name)
+        Array::push(fn_effs, value = labels)
         // #1485: the three arrays are index-aligned, so SOMETHING is pushed
         // for every binding. #3014: an env-seeded (imported) binding's
         // parameter rows come from its checked `Type` -- an empty entry
         // exempted its row variable, so an unhandled effect passed by name
         // through an imported row-polymorphic helper compiled and trapped.
-        Array::push(fn_param_effs, fn_type_param_effects(params))
+        Array::push(fn_param_effs, value = fn_type_param_effects(params))
       } else {
         ()
       }
@@ -1129,7 +1129,7 @@ fn push_env_fn_eff(name: String, ty: Type, fn_names: Array[String], fn_effs: Arr
 /// function's row without importing the effect declaration itself, so these
 /// count as known when a row label is validated.
 export fn env_row_labels(env: TypeEnv, local_names: Array[String]) -> Array[String] {
-  env_row_labels_from(env_fn_sigs(env), local_names)
+  env_row_labels_from(sigs = env_fn_sigs(env), local_names = local_names)
 }
 
 /// Every function binding of an env with its row and parameter rows, in env
@@ -1138,11 +1138,11 @@ export fn env_row_labels(env: TypeEnv, local_names: Array[String]) -> Array[Stri
 /// three times -- the callee-signature table, the program table (its
 /// non-empty rows), and the unknown-label check -- so it is built once per
 /// pass and threaded (`env_fn_sigs` / `*_from`).
-export fn env_fn_sigs(env: TypeEnv) -> (Array[String], Array[Array[String]], Array[Array[Array[String]]]) {
+export fn env_fn_sigs(_ env: TypeEnv) -> (Array[String], Array[Array[String]], Array[Array[Array[String]]]) {
   let names = no_str_labels()
   let effs = array_empty()
   let peffs = no_param_effs()
-  seed_env_fn_effs(env, names, effs, peffs, true)
+  seed_env_fn_effs(env = env, fn_names = names, fn_effs = effs, fn_param_effs = peffs, every_fn = true)
   (names, effs, peffs)
 }
 
@@ -1156,7 +1156,7 @@ export fn env_row_labels_from(sigs: (Array[String], Array[Array[String]], Array[
     let index = MutSet::new_string()
     let mut oi = 0
     while oi < Array::length(local_names) {
-      MutSet::add(index, Array::get(local_names, oi))
+      MutSet::add(index, x = Array::get(local_names, at = oi))
       oi = oi + 1
     }
     Some(index)
@@ -1168,28 +1168,28 @@ export fn env_row_labels_from(sigs: (Array[String], Array[Array[String]], Array[
     // The checked env also binds this module's own declarations; their rows
     // are what is being validated, so they cannot vouch for themselves.
     let own = match local_index {
-      Some(index) => MutSet::has(index, Array::get(names, i)),
+      Some(index) => MutSet::has(index, x = Array::get(names, at = i)),
       // With no local names the original loop never read the name column.
       None => if Array::length(local_names) == 0 {
         false
       } else {
-        str_list_has(local_names, Array::get(names, i))
+        str_list_has(xs = local_names, name = Array::get(names, at = i))
       }
     }
     if !own {
-      let row = Array::get(effs, i)
+      let row = Array::get(effs, at = i)
       let mut j = 0
       while j < Array::length(row) {
-        Array::push(out, Array::get(row, j))
+        Array::push(out, value = Array::get(row, at = j))
         j = j + 1
       }
-      let prow = Array::get(peffs, i)
+      let prow = Array::get(peffs, at = i)
       let mut k = 0
       while k < Array::length(prow) {
-        let pr = Array::get(prow, k)
+        let pr = Array::get(prow, at = k)
         let mut m = 0
         while m < Array::length(pr) {
-          Array::push(out, Array::get(pr, m))
+          Array::push(out, value = Array::get(pr, at = m))
           m = m + 1
         }
         k = k + 1
@@ -1201,7 +1201,7 @@ export fn env_row_labels_from(sigs: (Array[String], Array[Array[String]], Array[
 }
 
 /// #2968: the labels of one written row (`Fs + Exception[E] + e`).
-export fn row_text_labels(row: String) -> Array[String] {
+export fn row_text_labels(_ row: String) -> Array[String] {
   effect_row_labels(effect_row_parse(Some(row)))
 }
 
@@ -1211,7 +1211,7 @@ fn seed_env_fn_effs(env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[
   while looping {
     match cur {
       EnvBind(name, binding, rest) => {
-        push_env_fn_eff(name, binding.ty, fn_names, fn_effs, fn_param_effs, every_fn)
+        push_env_fn_eff(name = name, ty = binding.ty, fn_names = fn_names, fn_effs = fn_effs, fn_param_effs = fn_param_effs, every_fn = every_fn)
         cur = rest
       },
       EnvTraitDef(_, _, _, _, rest, _, _) => {
@@ -1238,8 +1238,8 @@ fn seed_env_fn_effs(env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[
       EnvFlat(entries) => {
         let mut ei = 0
         while ei < Array::length(entries) {
-          let (ename, binding) = Array::get(entries, ei)
-          push_env_fn_eff(ename, binding.ty, fn_names, fn_effs, fn_param_effs, every_fn)
+          let (ename, binding) = Array::get(entries, at = ei)
+          push_env_fn_eff(name = ename, ty = binding.ty, fn_names = fn_names, fn_effs = fn_effs, fn_param_effs = fn_param_effs, every_fn = every_fn)
           ei = ei + 1
         }
         looping = false
@@ -1258,44 +1258,44 @@ export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Arra
   let written_rows = array_empty()
   let mut m = 0
   while m < Array::length(stmts) {
-    match Array::get(stmts, m) {
+    match Array::get(stmts, at = m) {
       SLet(_, _, name, None, EIdent(src, _)) => {
         // #3057: an unannotated top-level ALIAS (`let h = f`) has no row of
         // its own to read; it calls with its source's. It used to be recorded
         // with an empty row, which shadowed the env's entry, so every effect
         // a call of `h` performs was dropped -- `f`'s `with Tick` compiled
         // in a pure caller.
-        let (effs, peffs) = toplevel_alias_effects(stmts, env, name, src, 8)
-        Array::push(fn_names, name)
-        Array::push(fn_effs, effs)
-        Array::push(fn_param_effs, peffs)
-        Array::push(local_bodies, EUnit)
-        Array::push(alias_sources, src)
-        Array::push(written_rows, effs)
+        let (effs, peffs) = toplevel_alias_effects(stmts = stmts, env = env, name = name, src = src, fuel = 8)
+        Array::push(fn_names, value = name)
+        Array::push(fn_effs, value = effs)
+        Array::push(fn_param_effs, value = peffs)
+        Array::push(local_bodies, value = EUnit)
+        Array::push(alias_sources, value = src)
+        Array::push(written_rows, value = effs)
       },
       SLet(_, _, name, ty, body) => {
-        let written = fn_binding_effects(dh_expand_sig(ty), body)
-        Array::push(fn_names, name)
-        Array::push(fn_effs, bare_rows_with_published_payload(written, env, name))
-        Array::push(fn_param_effs, fn_binding_param_effects(dh_expand_sig(ty), body))
-        Array::push(local_bodies, body)
-        Array::push(alias_sources, "")
-        Array::push(written_rows, written)
+        let written = fn_binding_effects(ty = dh_expand_sig(ty), body = body)
+        Array::push(fn_names, value = name)
+        Array::push(fn_effs, value = bare_rows_with_published_payload(declared = written, env = env, name = name))
+        Array::push(fn_param_effs, value = fn_binding_param_effects(ty = dh_expand_sig(ty), body = body))
+        Array::push(local_bodies, value = body)
+        Array::push(alias_sources, value = "")
+        Array::push(written_rows, value = written)
       },
       SLetMut(name, ty, body) => {
-        let written = fn_binding_effects(dh_expand_sig(ty), body)
-        Array::push(fn_names, name)
-        Array::push(fn_effs, written)
-        Array::push(fn_param_effs, fn_binding_param_effects(dh_expand_sig(ty), body))
-        Array::push(local_bodies, EUnit)
-        Array::push(alias_sources, "")
-        Array::push(written_rows, written)
+        let written = fn_binding_effects(ty = dh_expand_sig(ty), body = body)
+        Array::push(fn_names, value = name)
+        Array::push(fn_effs, value = written)
+        Array::push(fn_param_effs, value = fn_binding_param_effects(ty = dh_expand_sig(ty), body = body))
+        Array::push(local_bodies, value = EUnit)
+        Array::push(alias_sources, value = "")
+        Array::push(written_rows, value = written)
       },
       _ => ()
     }
     m = m + 1
   }
-  resolve_bare_rows_through_callees(env, first_local, local_bodies, alias_sources, written_rows, fn_names, fn_effs, fn_param_effs)
+  resolve_bare_rows_through_callees(env = env, first_local = first_local, bodies = local_bodies, alias_sources = alias_sources, written_rows = written_rows, fn_names = fn_names, fn_effs = fn_effs, fn_param_effs = fn_param_effs)
 }
 
 /// #3408: a bare row is fixed by the callees its body reaches as well as by
@@ -1317,23 +1317,23 @@ export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Arra
 fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Array[Expr], alias_sources: Array[String], written_rows: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Unit {
   let local_count = Array::length(bodies)
   let index = program_fn_index(fn_names)
-  Array::set(bound_lambda_cell, 0, bound_lambda_table())
-  Array::set(bound_lambda_count_cell, 0, 0)
-  Array::set(bound_lambda_active_cell, 0, bound_lambda_active_empty())
-  Array::set(bound_lambda_used_cell, 0, bound_lambda_active_empty())
-  Array::set(returned_rows_cell, 0, returned_rows_empty())
+  Array::set(bound_lambda_cell, at = 0, value = bound_lambda_table())
+  Array::set(bound_lambda_count_cell, at = 0, value = 0)
+  Array::set(bound_lambda_active_cell, at = 0, value = bound_lambda_active_empty())
+  Array::set(bound_lambda_used_cell, at = 0, value = bound_lambda_active_empty())
+  Array::set(returned_rows_cell, at = 0, value = returned_rows_empty())
   let records = array_empty()
   let declared = array_empty()
   let mut any_bare = false
   let mut i = 0
   while i < local_count {
-    Array::push(declared, Array::get(fn_effs, first_local + i))
+    Array::push(declared, value = Array::get(fn_effs, at = first_local + i))
     let out = array_empty()
-    let src = Array::get(alias_sources, i)
+    let src = Array::get(alias_sources, at = i)
     if String::length(src) > 0 {
-      Array::push(out, (src, array_empty(), array_empty(), ""))
-    } else if labels_have_bare(Array::get(written_rows, i)) {
-      collect_body_records(Array::get(bodies, i), out)
+      Array::push(out, value = (src, array_empty(), array_empty(), ""))
+    } else if labels_have_bare(Array::get(written_rows, at = i)) {
+      collect_body_records(body = Array::get(bodies, at = i), out = out)
     } else {
       ()
     }
@@ -1342,7 +1342,7 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
     } else {
       ()
     }
-    Array::push(records, out)
+    Array::push(records, value = out)
     i = i + 1
   }
   let mut changed = any_bare
@@ -1352,39 +1352,39 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
     let mut li = 0
     while li < local_count {
       let idx = first_local + li
-      let recs = Array::get(records, li)
+      let recs = Array::get(records, at = li)
       if Array::length(recs) > 0 {
         let updated = array_empty()
-        for label in Array::get(written_rows, li) {
-          if String::index_of(label, "[") < 0 && String::index_of(label, "::") < 0 {
+        for label in Array::get(written_rows, at = li) {
+          if String::index_of(label, needle = "[") < 0 && String::index_of(label, needle = "::") < 0 {
             let fixed = array_empty()
-            for own in Array::get(declared, li) {
-              if label_base_is(own, label) && !checker_effects_string_has(fixed, own) {
-                Array::push(fixed, own)
+            for own in Array::get(declared, at = li) {
+              if label_base_is(label = own, base = label) && !checker_effects_string_has(xs = fixed, x = own) {
+                Array::push(fixed, value = own)
               } else {
                 ()
               }
             }
-            for item in callee_payloads_for(label, recs, env, first_local, index, fn_effs, fn_param_effs) {
-              if !checker_effects_string_has(fixed, item) {
-                Array::push(fixed, item)
+            for item in callee_payloads_for(eff = label, recs = recs, env = env, first_local = first_local, index = index, fn_effs = fn_effs, fn_param_effs = fn_param_effs) {
+              if !checker_effects_string_has(xs = fixed, x = item) {
+                Array::push(fixed, value = item)
               } else {
                 ()
               }
             }
             if Array::length(fixed) > 0 {
               for item in fixed {
-                Array::push(updated, item)
+                Array::push(updated, value = item)
               }
             } else {
-              Array::push(updated, label)
+              Array::push(updated, value = label)
             }
           } else {
-            Array::push(updated, label)
+            Array::push(updated, value = label)
           }
         }
-        if !labels_same(updated, Array::get(fn_effs, idx)) {
-          Array::set(fn_effs, idx, updated)
+        if !labels_same(a = updated, b = Array::get(fn_effs, at = idx)) {
+          Array::set(fn_effs, at = idx, value = updated)
           changed = true
         } else {
           ()
@@ -1403,10 +1403,10 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
 /// one per call), so a payload its row names is unknown: `Box[T]` reads
 /// `Box[?]`, which no row authorizes (Codex on #3409: `pass(mk)` with `mk[T]
 /// .. with Box[T]` let `mk`'s `Int` reach a `Box[String]` caller).
-fn unknown_instantiation_label(label: String) -> String {
-  let bi = String::index_of(label, "[")
+fn unknown_instantiation_label(_ label: String) -> String {
+  let bi = String::index_of(label, needle = "[")
   if bi > 0 {
-    String::concat(String::substring(label, 0, bi), "[?]")
+    String::concat(String::substring(label, start = 0, end = bi), "[?]")
   } else {
     label
   }
@@ -1416,7 +1416,7 @@ fn unknown_instantiation_label(label: String) -> String {
 fn labels_name_base(labels: Array[String], base: String) -> Bool {
   let mut found = false
   for label in labels {
-    if label == base || label_base_is(label, base) {
+    if label == base || label_base_is(label = label, base = base) {
       found = true
     } else {
       ()
@@ -1427,8 +1427,8 @@ fn labels_name_base(labels: Array[String], base: String) -> Bool {
 
 /// Is `label` an instantiation of the effect `base` (`Box[Int]` of `Box`)?
 fn label_base_is(label: String, base: String) -> Bool {
-  let bi = String::index_of(label, "[")
-  bi > 0 && String::substring(label, 0, bi) == base
+  let bi = String::index_of(label, needle = "[")
+  bi > 0 && String::substring(label, start = 0, end = bi) == base
 }
 
 fn labels_same(a: Array[String], b: Array[String]) -> Bool {
@@ -1438,7 +1438,7 @@ fn labels_same(a: Array[String], b: Array[String]) -> Bool {
     let mut same = true
     let mut i = 0
     while i < Array::length(a) {
-      if Array::get(a, i) != Array::get(b, i) {
+      if Array::get(a, at = i) != Array::get(b, at = i) {
         same = false
       } else {
         ()
@@ -1449,10 +1449,10 @@ fn labels_same(a: Array[String], b: Array[String]) -> Bool {
   }
 }
 
-fn labels_have_bare(labels: Array[String]) -> Bool {
+fn labels_have_bare(_ labels: Array[String]) -> Bool {
   let mut found = false
   for label in labels {
-    if String::index_of(label, "[") < 0 && String::index_of(label, "::") < 0 {
+    if String::index_of(label, needle = "[") < 0 && String::index_of(label, needle = "::") < 0 {
       found = true
     } else {
       ()
@@ -1477,23 +1477,23 @@ fn callee_payloads_for(eff: String, recs: Array[(String, Array[String], Array[(S
   let found = array_empty()
   for entry in recs {
     let (callee, handled, via, key) = entry
-    let generic = match env_lookup(env, callee) {
+    let generic = match env_lookup(env = env, name = callee) {
       Some(CtForAll(_, _, _)) => true,
       _ => false
     }
-    if !checker_effects_string_has(handled, eff) && !via_parameter_names(eff, via, env, first_local, index, fn_effs, fn_param_effs) {
-      let (rows, _) = callee_rows(callee, env, first_local, index, fn_effs, fn_param_effs)
+    if !checker_effects_string_has(xs = handled, x = eff) && !via_parameter_names(eff = eff, via = via, env = env, first_local = first_local, index = index, fn_effs = fn_effs, fn_param_effs = fn_param_effs) {
+      let (rows, _) = callee_rows(callee = callee, env = env, first_local = first_local, index = index, fn_effs = fn_effs, fn_param_effs = fn_param_effs)
       for row_label in rows {
         let label = if !generic {
           row_label
         } else if String::length(key) > 0 {
-          instantiate_callee_label_at(row_label, key)
+          instantiate_callee_label_at(label = row_label, key = key)
         } else {
           unknown_instantiation_label(row_label)
         }
-        let bi = String::index_of(label, "[")
-        if bi > 0 && String::substring(label, 0, bi) == eff && !checker_effects_string_has(found, label) && !via_returned_row_covers(via, label) {
-          Array::push(found, label)
+        let bi = String::index_of(label, needle = "[")
+        if bi > 0 && String::substring(label, start = 0, end = bi) == eff && !checker_effects_string_has(xs = found, x = label) && !via_returned_row_covers(via = via, label = label) {
+          Array::push(found, value = label)
         } else {
           ()
         }
@@ -1508,13 +1508,13 @@ fn callee_payloads_for(eff: String, recs: Array[(String, Array[String], Array[(S
 /// The row and per-parameter rows a call of `callee` sees: a local binding's
 /// current entry, else its checked type in `env`.
 fn callee_rows(callee: String, env: TypeEnv, first_local: Int, index: MutMap[String, Int], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> (Array[String], Array[Array[String]]) {
-  match MutMap::get(index, callee) {
+  match MutMap::get(index, k = callee) {
     Some(j) => if j >= first_local {
-      (Array::get(fn_effs, j), Array::get(fn_param_effs, j))
+      (Array::get(fn_effs, at = j), Array::get(fn_param_effs, at = j))
     } else {
-      env_binding_effects(env, callee)
+      env_binding_effects(env = env, name = callee)
     },
-    None => env_binding_effects(env, callee)
+    None => env_binding_effects(env = env, name = callee)
   }
 }
 
@@ -1523,7 +1523,7 @@ fn via_parameter_names(eff: String, via: Array[(String, Int)], env: TypeEnv, fir
   for step in via {
     let (callee, k) = step
     if is_bound_lambda_marker(callee) {
-      if bound_lambda_discharges(callee, k, eff) {
+      if bound_lambda_discharges(marker = callee, k = k, eff = eff) {
         names = true
       } else {
         ()
@@ -1534,18 +1534,18 @@ fn via_parameter_names(eff: String, via: Array[(String, Int)], env: TypeEnv, fir
     let (crow, prows) = if is_bound_lambda_marker(callee) || is_returned_step(callee) {
       (array_empty(), array_empty())
     } else {
-      callee_rows(callee, env, first_local, index, fn_effs, fn_param_effs)
+      callee_rows(callee = callee, env = env, first_local = first_local, index = index, fn_effs = fn_effs, fn_param_effs = fn_param_effs)
     }
     // Only a callee whose own row does not name the effect at all discharges
     // its callback's performs. One that names it, bare or at an instantiation
     // its own body fixed, forwards them to its caller (Codex on #3409: `pass(f:
     // () -> Int with Box) -> Int with Box { perform Box::Put("abc") + f() }`
     // publishes `Box[String]` and still passes the callback's `Box[Int]` on).
-    if !labels_name_base(crow, eff) && k < Array::length(prows) {
-      for label in Array::get(prows, k) {
-        let bi = String::index_of(label, "[")
+    if !labels_name_base(labels = crow, base = eff) && k < Array::length(prows) {
+      for label in Array::get(prows, at = k) {
+        let bi = String::index_of(label, needle = "[")
         let base = if bi > 0 {
-          String::substring(label, 0, bi)
+          String::substring(label, start = 0, end = bi)
         } else {
           label
         }
@@ -1588,18 +1588,18 @@ fn collect_body_records(body: Expr, out: Array[(String, Array[String], Array[(St
         let mut scope = array_empty()
         for param in params {
           let (pname, _) = param
-          scope = scope_with(scope, (effect_param_base_name(pname), ""))
+          scope = scope_with(scope = scope, entry = (effect_param_base_name(pname), ""))
         }
-        let rows = Array::get(returned_rows_cell, 0)
+        let rows = Array::get(returned_rows_cell, at = 0)
         let ret_via = array_empty()
-        Array::push(ret_via, (returned_step_name(), Array::length(rows)))
-        Array::push(rows, labels)
-        collect_arg_records(fbody, array_empty(), ret_via, array_empty(), scope, out)
+        Array::push(ret_via, value = (returned_step_name(), Array::length(rows)))
+        Array::push(rows, value = labels)
+        collect_arg_records(arg = fbody, handled = array_empty(), arg_via = ret_via, via = array_empty(), scope = scope, out = out)
       } else {
-        collect_runnable_records(body, array_empty(), array_empty(), array_empty(), out)
+        collect_runnable_records(expr = body, handled = array_empty(), via = array_empty(), scope = array_empty(), out = out)
       }
     },
-    _ => collect_runnable_records(body, array_empty(), array_empty(), array_empty(), out)
+    _ => collect_runnable_records(expr = body, handled = array_empty(), via = array_empty(), scope = array_empty(), out = out)
   }
 }
 
@@ -1614,17 +1614,17 @@ fn returned_step_name() -> String {
   "#returns"
 }
 
-fn is_returned_step(callee: String) -> Bool {
+fn is_returned_step(_ callee: String) -> Bool {
   callee == returned_step_name()
 }
 
 /// Does a returned step on `via` declare `label` itself?
 fn via_returned_row_covers(via: Array[(String, Int)], label: String) -> Bool {
-  let rows = Array::get(returned_rows_cell, 0)
+  let rows = Array::get(returned_rows_cell, at = 0)
   let mut covered = false
   for step in via {
     let (callee, k) = step
-    if is_returned_step(callee) && k < Array::length(rows) && checker_effects_string_has(Array::get(rows, k), label) {
+    if is_returned_step(callee) && k < Array::length(rows) && checker_effects_string_has(xs = Array::get(rows, at = k), x = label) {
       covered = true
     } else {
       ()
@@ -1648,43 +1648,43 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
     EHandle(body, arms) => {
       let inner = array_empty()
       for h in handled {
-        Array::push(inner, h)
+        Array::push(inner, value = h)
       }
       for h in collect_handle_effects(arms) {
-        Array::push(inner, h)
+        Array::push(inner, value = h)
       }
-      collect_call_records(body, inner, via, scope, out)
-      collect_arm_records(arms, handled, via, scope, out)
+      collect_call_records(expr = body, handled = inner, via = via, scope = scope, out = out)
+      collect_arm_records(arms = arms, handled = handled, via = via, scope = scope, out = out)
     },
     EMatch(scrutinee, arms) => {
-      collect_call_records(scrutinee, handled, via, scope, out)
-      collect_arm_records(arms, handled, via, scope, out)
+      collect_call_records(expr = scrutinee, handled = handled, via = via, scope = scope, out = out)
+      collect_arm_records(arms = arms, handled = handled, via = via, scope = scope, out = out)
     },
     EForIn(item, index_name, iter, body) => {
-      collect_call_records(iter, handled, via, scope, out)
-      let mut inner = scope_with(scope, (item, ""))
+      collect_call_records(expr = iter, handled = handled, via = via, scope = scope, out = out)
+      let mut inner = scope_with(scope = scope, entry = (item, ""))
       match index_name {
         Some(ix) => {
-          inner = scope_with(inner, (ix, ""))
+          inner = scope_with(scope = inner, entry = (ix, ""))
         },
         None => ()
       }
-      collect_call_records(body, handled, via, inner, out)
+      collect_call_records(expr = body, handled = handled, via = via, scope = inner, out = out)
     },
     ELoop(pairs, body) => {
       let mut inner = scope
       for pair in pairs {
         let (pname, value) = pair
-        collect_call_records(value, handled, via, scope, out)
-        inner = scope_with(inner, (pname, ""))
+        collect_call_records(expr = value, handled = handled, via = via, scope = scope, out = out)
+        inner = scope_with(scope = inner, entry = (pname, ""))
       }
-      collect_call_records(body, handled, via, inner, out)
+      collect_call_records(expr = body, handled = handled, via = via, scope = inner, out = out)
     },
     ECall(callee_expr, args, _, _) => {
       let (resolved, key) = match callee_expr {
-        EIdent(callee, coff) => (scope_resolve(scope, callee), String::concat(__to_string(coff), String::concat(":", callee))),
+        EIdent(callee, coff) => (scope_resolve(scope = scope, name = callee), String::concat(__to_string(coff), String::concat(":", callee))),
         _ => {
-          collect_runnable_records(callee_expr, handled, via, scope, out)
+          collect_runnable_records(expr = callee_expr, handled = handled, via = via, scope = scope, out = out)
           ("", "")
         }
       }
@@ -1700,22 +1700,22 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
         if Array::length(aliases) > 0 {
           mark_bound_lambda_used(resolved)
           for t in aliases {
-            Array::push(out, (t, handled, via, key))
-            Array::push(targets, t)
+            Array::push(out, value = (t, handled, via, key))
+            Array::push(targets, value = t)
           }
         } else {
-          run_bound_lambda(resolved, handled, via, out)
-          Array::push(targets, resolved)
+          run_bound_lambda(marker = resolved, handled = handled, via = via, out = out)
+          Array::push(targets, value = resolved)
         }
       } else if String::length(resolved) > 0 {
-        Array::push(out, (resolved, handled, via, key))
-        Array::push(targets, resolved)
+        Array::push(out, value = (resolved, handled, via, key))
+        Array::push(targets, value = resolved)
       } else {
         ()
       }
       if Array::length(targets) == 0 {
         for arg in args {
-          collect_arg_records(arg, handled, via, via, scope, out)
+          collect_arg_records(arg = arg, handled = handled, arg_via = via, via = via, scope = scope, out = out)
         }
       } else {
         for target in targets {
@@ -1723,10 +1723,10 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
           while k < Array::length(args) {
             let arg_via = array_empty()
             for step in via {
-              Array::push(arg_via, step)
+              Array::push(arg_via, value = step)
             }
-            Array::push(arg_via, (target, k))
-            collect_arg_records(Array::get(args, k), handled, arg_via, via, scope, out)
+            Array::push(arg_via, value = (target, k))
+            collect_arg_records(arg = Array::get(args, at = k), handled = handled, arg_via = arg_via, via = via, scope = scope, out = out)
             k = k + 1
           }
         }
@@ -1734,42 +1734,42 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
       ()
     },
     ELet(name, value, body, _) => {
-      let entry = let_scope_entry(name, value, handled, via, scope, out)
-      collect_call_records(body, handled, via, scope_with(scope, entry), out)
+      let entry = let_scope_entry(name = name, value = value, handled = handled, via = via, scope = scope, out = out)
+      collect_call_records(expr = body, handled = handled, via = via, scope = scope_with(scope = scope, entry = entry), out = out)
     },
     ELetMut(name, value, body, _) => {
-      let entry = letmut_scope_entry(name, value, handled, via, scope, out)
-      collect_call_records(body, handled, via, scope_with(scope, entry), out)
+      let entry = letmut_scope_entry(name = name, value = value, handled = handled, via = via, scope = scope, out = out)
+      collect_call_records(expr = body, handled = handled, via = via, scope = scope_with(scope = scope, entry = entry), out = out)
     },
     EAssign(target_name, value, body, _) => {
-      let bound = scope_resolve(scope, target_name)
+      let bound = scope_resolve(scope = scope, name = target_name)
       if is_bound_lambda_marker(bound) {
-        assign_to_bound_lambda(bound, value, handled, via, scope, out)
+        assign_to_bound_lambda(marker = bound, value = value, handled = handled, via = via, scope = scope, out = out)
       } else {
         // An assignment to a binding the walk does not track: a function or
         // bound lambda assigned there can be called through it from anywhere
         // after this point, so it is read here, called or not (Codex on #3409:
         // `cb = mk; cb()`).
-        read_assigned_value(value, handled, via, scope, out)
+        read_assigned_value(value = value, handled = handled, via = via, scope = scope, out = out)
       }
-      collect_call_records(body, handled, via, scope, out)
+      collect_call_records(expr = body, handled = handled, via = via, scope = scope, out = out)
     },
     ELetRec(name, value, body) => {
-      let entry = letrec_scope_entry(name, value, handled, via, scope, out)
-      collect_call_records(body, handled, via, scope_with(scope, entry), out)
+      let entry = letrec_scope_entry(name = name, value = value, handled = handled, via = via, scope = scope, out = out)
+      collect_call_records(expr = body, handled = handled, via = via, scope = scope_with(scope = scope, entry = entry), out = out)
     },
-    EFn(_, _, _, _, _, _) => collect_runnable_records(expr, handled, via, scope, out),
+    EFn(_, _, _, _, _, _) => collect_runnable_records(expr = expr, handled = handled, via = via, scope = scope, out = out),
     EIdent(x, _) => {
-      let bound = scope_resolve(scope, x)
+      let bound = scope_resolve(scope = scope, name = x)
       if is_bound_lambda_marker(bound) {
-        run_bound_lambda(bound, handled, via, out)
+        run_bound_lambda(marker = bound, handled = handled, via = via, out = out)
       } else {
         ()
       }
     },
     _ => {
       for child in expr_children(expr) {
-        collect_call_records(child, handled, via, scope, out)
+        collect_call_records(expr = child, handled = handled, via = via, scope = scope, out = out)
       }
       ()
     }
@@ -1797,25 +1797,25 @@ fn bound_lambda_table() -> MutMap[String, Array[(Expr, Array[(String, String)])]
 }
 
 fn bound_lambda_new_marker() -> String {
-  let n = Array::get(bound_lambda_count_cell, 0)
-  Array::set(bound_lambda_count_cell, 0, n + 1)
+  let n = Array::get(bound_lambda_count_cell, at = 0)
+  Array::set(bound_lambda_count_cell, at = 0, value = n + 1)
   String::concat("#lambda:", __to_string(n))
 }
 
 fn bound_lambda_add(marker: String, value: Expr, scope: Array[(String, String)]) -> Unit {
-  let table = Array::get(bound_lambda_cell, 0)
-  match MutMap::get(table, marker) {
-    Some(values) => Array::push(values, (value, scope)),
+  let table = Array::get(bound_lambda_cell, at = 0)
+  match MutMap::get(table, k = marker) {
+    Some(values) => Array::push(values, value = (value, scope)),
     None => {
       let values = array_empty()
-      Array::push(values, (value, scope))
-      MutMap::set(table, marker, values)
+      Array::push(values, value = (value, scope))
+      MutMap::set(table, k = marker, v = values)
     }
   }
 }
 
-fn bound_lambda_values(marker: String) -> Array[(Expr, Array[(String, String)])] {
-  match MutMap::get(Array::get(bound_lambda_cell, 0), marker) {
+fn bound_lambda_values(_ marker: String) -> Array[(Expr, Array[(String, String)])] {
+  match MutMap::get(Array::get(bound_lambda_cell, at = 0), k = marker) {
     Some(values) => values,
     None => array_empty()
   }
@@ -1823,19 +1823,19 @@ fn bound_lambda_values(marker: String) -> Array[(Expr, Array[(String, String)])]
 
 fn bound_lambda_marker(lambda: Expr, scope: Array[(String, String)]) -> String {
   let marker = bound_lambda_new_marker()
-  bound_lambda_add(marker, lambda, scope)
+  bound_lambda_add(marker = marker, value = lambda, scope = scope)
   marker
 }
 
-fn is_bound_lambda_marker(target: String) -> Bool {
-  String::starts_with(target, "#lambda:")
+fn is_bound_lambda_marker(_ target: String) -> Bool {
+  String::starts_with(target, prefix = "#lambda:")
 }
 
 /// A `let rec` lambda's marker: its own name is in the scope its body is
 /// read in, bound to the marker itself.
 fn bound_lambda_rec_marker(name: String, lambda: Expr, scope: Array[(String, String)]) -> String {
   let marker = bound_lambda_new_marker()
-  bound_lambda_add(marker, lambda, scope_with(scope, (name, marker)))
+  bound_lambda_add(marker = marker, value = lambda, scope = scope_with(scope = scope, entry = (name, marker)))
   marker
 }
 
@@ -1848,10 +1848,10 @@ fn bound_lambda_active_empty() -> Array[String] {
   array_empty()
 }
 
-fn mark_bound_lambda_used(marker: String) -> Unit {
-  let used = Array::get(bound_lambda_used_cell, 0)
-  if !checker_effects_string_has(used, marker) {
-    Array::push(used, marker)
+fn mark_bound_lambda_used(_ marker: String) -> Unit {
+  let used = Array::get(bound_lambda_used_cell, at = 0)
+  if !checker_effects_string_has(xs = used, x = marker) {
+    Array::push(used, value = marker)
   } else {
     ()
   }
@@ -1859,18 +1859,18 @@ fn mark_bound_lambda_used(marker: String) -> Unit {
 
 /// The top-level functions a binding's values all name, or nothing when any
 /// value is a lambda or a local binding.
-fn bound_alias_targets(marker: String) -> Array[String] {
+fn bound_alias_targets(_ marker: String) -> Array[String] {
   let found = array_empty()
   let mut all = true
   for entry in bound_lambda_values(marker) {
     let (value, def_scope) = entry
     let target = match value {
-      EIdent(x, _) => scope_resolve(def_scope, x),
+      EIdent(x, _) => scope_resolve(scope = def_scope, name = x),
       _ => ""
     }
     if String::length(target) > 0 && !is_bound_lambda_marker(target) {
-      if !checker_effects_string_has(found, target) {
-        Array::push(found, target)
+      if !checker_effects_string_has(xs = found, x = target) {
+        Array::push(found, value = target)
       } else {
         ()
       }
@@ -1887,17 +1887,17 @@ fn bound_alias_targets(marker: String) -> Array[String] {
 
 fn run_bound_lambda(marker: String, handled: Array[String], via: Array[(String, Int)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
   mark_bound_lambda_used(marker)
-  let active = Array::get(bound_lambda_active_cell, 0)
-  if !checker_effects_string_has(active, marker) {
-    Array::push(active, marker)
+  let active = Array::get(bound_lambda_active_cell, at = 0)
+  if !checker_effects_string_has(xs = active, x = marker) {
+    Array::push(active, value = marker)
     let values = bound_lambda_values(marker)
     let mut i = 0
     while i < Array::length(values) {
-      let (value, def_scope) = Array::get(values, i)
-      run_bound_value(value, handled, via, def_scope, out)
+      let (value, def_scope) = Array::get(values, at = i)
+      run_bound_value(value = value, handled = handled, via = via, scope = def_scope, out = out)
       i = i + 1
     }
-    Array::truncate(active, Array::length(active) - 1)
+    Array::truncate(active, length = Array::length(active) - 1)
   } else {
     ()
   }
@@ -1910,16 +1910,16 @@ fn run_bound_lambda(marker: String, handled: Array[String], via: Array[(String, 
 fn run_bound_value(value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
   match value {
     EIdent(x, _) => {
-      let bound = scope_resolve(scope, x)
+      let bound = scope_resolve(scope = scope, name = x)
       if is_bound_lambda_marker(bound) {
-        run_bound_lambda(bound, handled, via, out)
+        run_bound_lambda(marker = bound, handled = handled, via = via, out = out)
       } else if String::length(bound) > 0 {
-        Array::push(out, (bound, handled, via, ""))
+        Array::push(out, value = (bound, handled, via, ""))
       } else {
         ()
       }
     },
-    _ => collect_runnable_records(value, handled, via, scope, out)
+    _ => collect_runnable_records(expr = value, handled = handled, via = via, scope = scope, out = out)
   }
 }
 
@@ -1934,11 +1934,11 @@ let bound_lambda_used_cell = [bound_lambda_active_empty()]
 /// initial value is read now, and the binding is untracked, as before.
 fn letmut_scope_entry(name: String, value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> (String, String) {
   match dh_value_alias_name(value) {
-    Some(src) => (name, bound_lambda_marker(EIdent(src, 0 - 1), scope)),
+    Some(src) => (name, bound_lambda_marker(lambda = EIdent(src, 0 - 1), scope = scope)),
     None => match value {
-      EFn(_, _, _, _, _, _) => (name, bound_lambda_marker(value, scope)),
+      EFn(_, _, _, _, _, _) => (name, bound_lambda_marker(lambda = value, scope = scope)),
       _ => {
-        collect_call_records(value, handled, via, scope, out)
+        collect_call_records(expr = value, handled = handled, via = via, scope = scope, out = out)
         (name, "")
       }
     }
@@ -1960,21 +1960,21 @@ fn assign_to_bound_lambda(marker: String, value: Expr, handled: Array[String], v
   }
   match held {
     Some(v) => {
-      bound_lambda_add(marker, v, scope)
-      if checker_effects_string_has(Array::get(bound_lambda_used_cell, 0), marker) {
-        run_bound_value(v, array_empty(), array_empty(), scope, out)
+      bound_lambda_add(marker = marker, value = v, scope = scope)
+      if checker_effects_string_has(xs = Array::get(bound_lambda_used_cell, at = 0), x = marker) {
+        run_bound_value(value = v, handled = array_empty(), via = array_empty(), scope = scope, out = out)
       } else {
         ()
       }
     },
-    None => collect_call_records(value, handled, via, scope, out)
+    None => collect_call_records(expr = value, handled = handled, via = via, scope = scope, out = out)
   }
 }
 
 fn read_assigned_value(value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
   match value {
-    EIdent(_, _) => run_bound_value(value, handled, via, scope, out),
-    _ => collect_call_records(value, handled, via, scope, out)
+    EIdent(_, _) => run_bound_value(value = value, handled = handled, via = via, scope = scope, out = out),
+    _ => collect_call_records(expr = value, handled = handled, via = via, scope = scope, out = out)
   }
 }
 
@@ -1993,9 +1993,9 @@ fn bound_lambda_discharges(marker: String, k: Int, eff: String) -> Bool {
     seen = true
     let ok = match value {
       EFn(_, _, params, _, _, fbody) => if k < Array::length(params) {
-        let prows = fn_binding_param_effects(None, value)
-        let (pname, _) = Array::get(params, k)
-        labels_name_base(Array::get(prows, k), eff) && param_calls_handled(fbody, effect_param_base_name(pname), eff, array_empty())
+        let prows = fn_binding_param_effects(ty = None, body = value)
+        let (pname, _) = Array::get(params, at = k)
+        labels_name_base(labels = Array::get(prows, at = k), base = eff) && param_calls_handled(expr = fbody, pname = effect_param_base_name(pname), eff = eff, handled = array_empty())
       } else {
         false
       },
@@ -2017,15 +2017,15 @@ fn param_calls_handled(expr: Expr, pname: String, eff: String, handled: Array[St
     EHandle(body, arms) => {
       let inner = array_empty()
       for h in handled {
-        Array::push(inner, h)
+        Array::push(inner, value = h)
       }
       for h in collect_handle_effects(arms) {
-        Array::push(inner, h)
+        Array::push(inner, value = h)
       }
-      let mut ok = param_calls_handled(body, pname, eff, inner)
+      let mut ok = param_calls_handled(expr = body, pname = pname, eff = eff, handled = inner)
       for arm in arms {
         let (_, arm_body) = arm
-        if !param_calls_handled(arm_body, pname, eff, handled) {
+        if !param_calls_handled(expr = arm_body, pname = pname, eff = eff, handled = handled) {
           ok = false
         } else {
           ()
@@ -2034,9 +2034,9 @@ fn param_calls_handled(expr: Expr, pname: String, eff: String, handled: Array[St
       ok
     },
     ECall(EIdent(x, _), args, _, _) => {
-      let mut ok = x != pname || checker_effects_string_has(handled, eff)
+      let mut ok = x != pname || checker_effects_string_has(xs = handled, x = eff)
       for arg in args {
-        if !param_calls_handled(arg, pname, eff, handled) {
+        if !param_calls_handled(expr = arg, pname = pname, eff = eff, handled = handled) {
           ok = false
         } else {
           ()
@@ -2045,11 +2045,11 @@ fn param_calls_handled(expr: Expr, pname: String, eff: String, handled: Array[St
       ok
     },
     EIdent(x, _) => x != pname,
-    EFn(_, _, _, _, _, _) => !lambda_mentions_name(expr, pname),
+    EFn(_, _, _, _, _, _) => !lambda_mentions_name(expr = expr, name = pname),
     _ => {
       let mut ok = true
       for child in expr_children(expr) {
-        if !param_calls_handled(child, pname, eff, handled) {
+        if !param_calls_handled(expr = child, pname = pname, eff = eff, handled = handled) {
           ok = false
         } else {
           ()
@@ -2066,7 +2066,7 @@ fn lambda_mentions_name(expr: Expr, name: String) -> Bool {
     _ => {
       let mut found = false
       for child in expr_children(expr) {
-        if lambda_mentions_name(child, name) {
+        if lambda_mentions_name(expr = child, name = name) {
           found = true
         } else {
           ()
@@ -2087,55 +2087,55 @@ fn lambda_mentions_name(expr: Expr, name: String) -> Bool {
 /// is read under `via`.
 fn collect_arg_records(arg: Expr, handled: Array[String], arg_via: Array[(String, Int)], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
   match arg {
-    EFn(_, _, _, _, _, _) => collect_runnable_records(arg, handled, arg_via, scope, out),
+    EFn(_, _, _, _, _, _) => collect_runnable_records(expr = arg, handled = handled, via = arg_via, scope = scope, out = out),
     EIdent(x, _) => {
-      let bound = scope_resolve(scope, x)
+      let bound = scope_resolve(scope = scope, name = x)
       if is_bound_lambda_marker(bound) {
-        run_bound_lambda(bound, handled, arg_via, out)
+        run_bound_lambda(marker = bound, handled = handled, via = arg_via, out = out)
       } else if String::length(bound) > 0 {
         // A function passed by name (`pass(mk)`) is run by the callee, so it
         // is recorded as a call under the callee's context (Codex on #3409).
-        Array::push(out, (bound, handled, arg_via, ""))
+        Array::push(out, value = (bound, handled, arg_via, ""))
       } else {
         ()
       }
     },
     EIf(cond, then_e, else_e) => {
-      collect_call_records(cond, handled, via, scope, out)
-      collect_arg_records(then_e, handled, arg_via, via, scope, out)
-      collect_arg_records(else_e, handled, arg_via, via, scope, out)
+      collect_call_records(expr = cond, handled = handled, via = via, scope = scope, out = out)
+      collect_arg_records(arg = then_e, handled = handled, arg_via = arg_via, via = via, scope = scope, out = out)
+      collect_arg_records(arg = else_e, handled = handled, arg_via = arg_via, via = via, scope = scope, out = out)
     },
     EMatch(scrutinee, arms) => {
-      collect_call_records(scrutinee, handled, via, scope, out)
+      collect_call_records(expr = scrutinee, handled = handled, via = via, scope = scope, out = out)
       for arm in arms {
         let (pat, arm_body) = arm
         let bound = array_empty()
-        collect_pat_binds_into(pat, bound)
+        collect_pat_binds_into(pat = pat, acc = bound)
         let mut inner = scope
         for b in bound {
-          inner = scope_with(inner, (b, ""))
+          inner = scope_with(scope = inner, entry = (b, ""))
         }
-        collect_arg_records(arm_body, handled, arg_via, via, inner, out)
+        collect_arg_records(arg = arm_body, handled = handled, arg_via = arg_via, via = via, scope = inner, out = out)
       }
       ()
     },
     ESeq(first, rest) => {
-      collect_call_records(first, handled, via, scope, out)
-      collect_arg_records(rest, handled, arg_via, via, scope, out)
+      collect_call_records(expr = first, handled = handled, via = via, scope = scope, out = out)
+      collect_arg_records(arg = rest, handled = handled, arg_via = arg_via, via = via, scope = scope, out = out)
     },
     ELet(name, value, body, _) => {
-      let entry = let_scope_entry(name, value, handled, via, scope, out)
-      collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
+      let entry = let_scope_entry(name = name, value = value, handled = handled, via = via, scope = scope, out = out)
+      collect_arg_records(arg = body, handled = handled, arg_via = arg_via, via = via, scope = scope_with(scope = scope, entry = entry), out = out)
     },
     ELetMut(name, value, body, _) => {
-      let entry = letmut_scope_entry(name, value, handled, via, scope, out)
-      collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
+      let entry = letmut_scope_entry(name = name, value = value, handled = handled, via = via, scope = scope, out = out)
+      collect_arg_records(arg = body, handled = handled, arg_via = arg_via, via = via, scope = scope_with(scope = scope, entry = entry), out = out)
     },
     ELetRec(name, value, body) => {
-      let entry = letrec_scope_entry(name, value, handled, via, scope, out)
-      collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
+      let entry = letrec_scope_entry(name = name, value = value, handled = handled, via = via, scope = scope, out = out)
+      collect_arg_records(arg = body, handled = handled, arg_via = arg_via, via = via, scope = scope_with(scope = scope, entry = entry), out = out)
     },
-    _ => collect_call_records(arg, handled, via, scope, out)
+    _ => collect_call_records(expr = arg, handled = handled, via = via, scope = scope, out = out)
   }
 }
 
@@ -2144,11 +2144,11 @@ fn collect_arg_records(arg: Expr, handled: Array[String], arg_via: Array[(String
 /// it is used).
 fn let_scope_entry(name: String, value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> (String, String) {
   match dh_value_alias_name(value) {
-    Some(src) => (name, scope_resolve(scope, src)),
+    Some(src) => (name, scope_resolve(scope = scope, name = src)),
     None => match value {
-      EFn(_, _, _, _, _, _) => (name, bound_lambda_marker(value, scope)),
+      EFn(_, _, _, _, _, _) => (name, bound_lambda_marker(lambda = value, scope = scope)),
       _ => {
-        collect_call_records(value, handled, via, scope, out)
+        collect_call_records(expr = value, handled = handled, via = via, scope = scope, out = out)
         (name, "")
       }
     }
@@ -2161,7 +2161,7 @@ fn letrec_alias_target(src: String, name: String, scope: Array[(String, String)]
   if src == name {
     ""
   } else {
-    scope_resolve(scope, src)
+    scope_resolve(scope = scope, name = src)
   }
 }
 
@@ -2172,11 +2172,11 @@ fn letrec_alias_target(src: String, name: String, scope: Array[(String, String)]
 /// 0` charged `mk`). Any other value is read now, with the name in scope.
 fn letrec_scope_entry(name: String, value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> (String, String) {
   match dh_value_alias_name(value) {
-    Some(src) => (name, letrec_alias_target(src, name, scope)),
+    Some(src) => (name, letrec_alias_target(src = src, name = name, scope = scope)),
     None => match value {
-      EFn(_, _, _, _, _, _) => (name, bound_lambda_rec_marker(name, value, scope)),
+      EFn(_, _, _, _, _, _) => (name, bound_lambda_rec_marker(name = name, lambda = value, scope = scope)),
       _ => {
-        collect_runnable_records(value, handled, via, scope_with(scope, (name, "")), out)
+        collect_runnable_records(expr = value, handled = handled, via = via, scope = scope_with(scope = scope, entry = (name, "")), out = out)
         (name, "")
       }
     }
@@ -2188,12 +2188,12 @@ fn collect_arm_records(arms: Array[(Pat, Expr)], handled: Array[String], via: Ar
   for arm in arms {
     let (pat, arm_body) = arm
     let bound = array_empty()
-    collect_pat_binds_into(pat, bound)
+    collect_pat_binds_into(pat = pat, acc = bound)
     let mut inner = scope
     for b in bound {
-      inner = scope_with(inner, (b, ""))
+      inner = scope_with(scope = inner, entry = (b, ""))
     }
-    collect_call_records(arm_body, handled, via, inner, out)
+    collect_call_records(expr = arm_body, handled = handled, via = via, scope = inner, out = out)
   }
   ()
 }
@@ -2206,11 +2206,11 @@ fn collect_runnable_records(expr: Expr, handled: Array[String], via: Array[(Stri
       let mut inner = scope
       for param in params {
         let (pname, _) = param
-        inner = scope_with(inner, (effect_param_base_name(pname), ""))
+        inner = scope_with(scope = inner, entry = (effect_param_base_name(pname), ""))
       }
-      collect_call_records(fbody, handled, via, inner, out)
+      collect_call_records(expr = fbody, handled = handled, via = via, scope = inner, out = out)
     },
-    _ => collect_call_records(expr, handled, via, scope, out)
+    _ => collect_call_records(expr = expr, handled = handled, via = via, scope = scope, out = out)
   }
 }
 
@@ -2221,7 +2221,7 @@ fn scope_resolve(scope: Array[(String, String)], name: String) -> String {
   let mut found = name
   let mut looking = true
   while looking && i >= 0 {
-    let (bound, target) = Array::get(scope, i)
+    let (bound, target) = Array::get(scope, at = i)
     if bound == name {
       found = target
       looking = false
@@ -2236,9 +2236,9 @@ fn scope_resolve(scope: Array[(String, String)], name: String) -> String {
 fn scope_with(scope: Array[(String, String)], entry: (String, String)) -> Array[(String, String)] {
   let out: Array[(String, String)] = Array::with_capacity(Array::length(scope) + 1)
   for item in scope {
-    Array::push(out, item)
+    Array::push(out, value = item)
   }
-  Array::push(out, entry)
+  Array::push(out, value = entry)
   out
 }
 
@@ -2266,7 +2266,7 @@ fn checker_effects_string_has(xs: Array[String], x: String) -> Bool {
 fn bare_rows_with_published_payload(declared: Array[String], env: TypeEnv, name: String) -> Array[String] {
   let mut bare = false
   for label in declared {
-    if String::index_of(label, "[") < 0 {
+    if String::index_of(label, needle = "[") < 0 {
       bare = true
     } else {
       ()
@@ -2275,15 +2275,15 @@ fn bare_rows_with_published_payload(declared: Array[String], env: TypeEnv, name:
   if !bare {
     declared
   } else {
-    let (published, _) = env_binding_effects(env, name)
+    let (published, _) = env_binding_effects(env = env, name = name)
     let out = array_empty()
     for label in declared {
       let mut replaced = label
-      if String::index_of(label, "[") < 0 {
+      if String::index_of(label, needle = "[") < 0 {
         let mut matches = 0
         for candidate in published {
-          let bi = String::index_of(candidate, "[")
-          if bi > 0 && String::substring(candidate, 0, bi) == label {
+          let bi = String::index_of(candidate, needle = "[")
+          if bi > 0 && String::substring(candidate, start = 0, end = bi) == label {
             matches = matches + 1
             replaced = candidate
           } else {
@@ -2298,7 +2298,7 @@ fn bare_rows_with_published_payload(declared: Array[String], env: TypeEnv, name:
       } else {
         ()
       }
-      Array::push(out, replaced)
+      Array::push(out, value = replaced)
     }
     out
   }
@@ -2316,7 +2316,7 @@ fn toplevel_alias_effects(stmts: Array[Stmt], env: TypeEnv, name: String, src: S
   while i < Array::length(stmts) {
     match local {
       Some(_) => (),
-      None => match Array::get(stmts, i) {
+      None => match Array::get(stmts, at = i) {
         SLet(_, _, n, ty, body) => if n == src {
           local = Some((ty, body))
         },
@@ -2330,19 +2330,19 @@ fn toplevel_alias_effects(stmts: Array[Stmt], env: TypeEnv, name: String, src: S
   }
   match local {
     Some((None, EIdent(next, _))) => if fuel > 0 {
-      toplevel_alias_effects(stmts, env, name, next, fuel - 1)
+      toplevel_alias_effects(stmts = stmts, env = env, name = name, src = next, fuel = fuel - 1)
     } else {
-      env_binding_effects(env, name)
+      env_binding_effects(env = env, name = name)
     },
-    Some((ty, body)) => (fn_binding_effects(ty, body), fn_binding_param_effects(ty, body)),
-    None => env_binding_effects(env, name)
+    Some((ty, body)) => (fn_binding_effects(ty = ty, body = body), fn_binding_param_effects(ty = ty, body = body)),
+    None => env_binding_effects(env = env, name = name)
   }
 }
 
 /// The row and per-parameter rows of `name`'s checked type in `env`; nothing
 /// for a name the env does not bind to a function.
 fn env_binding_effects(env: TypeEnv, name: String) -> (Array[String], Array[Array[String]]) {
-  let fnty = match env_lookup(env, name) {
+  let fnty = match env_lookup(env = env, name = name) {
     Some(CtForAll(_, _, body)) => Some(body),
     other => other
   }
@@ -2391,7 +2391,7 @@ fn env_binding_effects(env: TypeEnv, name: String) -> (Array[String], Array[Arra
 // count as "may reach", so this pass rejects only handles it can prove
 // dead.
 
-fn dh_effect_of_perform_arg(arg: Expr) -> String {
+fn dh_effect_of_perform_arg(_ arg: Expr) -> String {
   match arg {
     ECall(EIdent(op_name, _), _, _, _) => effect_name_of_op(op_name),
     EIdent(op_name, _) => effect_name_of_op(op_name),
@@ -2400,10 +2400,10 @@ fn dh_effect_of_perform_arg(arg: Expr) -> String {
 }
 
 /// The effect of `expr` if it is a `perform` call, else "".
-export fn dh_perform_effect(expr: Expr) -> String {
+export fn dh_perform_effect(_ expr: Expr) -> String {
   match expr {
     ECall(EIdent(name, _), args, _, _) => if name == "perform" && Array::length(args) == 1 {
-      dh_effect_of_perform_arg(Array::get(args, 0))
+      dh_effect_of_perform_arg(Array::get(args, at = 0))
     } else {
       ""
     },
@@ -2413,31 +2413,31 @@ export fn dh_perform_effect(expr: Expr) -> String {
 
 fn dh_collect_performed_into(expr: Expr, acc: Array[String]) -> Unit {
   let eff = dh_perform_effect(expr)
-  if String::length(eff) > 0 && !effect_row_has_label(Some(acc), eff) {
-    Array::push(acc, eff)
+  if String::length(eff) > 0 && !effect_row_has_label(row = Some(acc), wanted = eff) {
+    Array::push(acc, value = eff)
   } else {
     ()
   }
   let children = expr_children(expr)
   let mut i = 0
   while i < Array::length(children) {
-    dh_collect_performed_into(Array::get(children, i), acc)
+    dh_collect_performed_into(expr = Array::get(children, at = i), acc = acc)
     i = i + 1
   }
 }
 
 /// Every effect the program performs, anywhere. Collected once (rather than
 /// re-scanning per handle site) because a large program has many handles.
-export fn dh_collect_performed_effects(stmts: Array[Stmt]) -> Array[String] {
+export fn dh_collect_performed_effects(_ stmts: Array[Stmt]) -> Array[String] {
   let acc = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, body) => dh_collect_performed_into(body, acc),
-      SLetMut(_, _, body) => dh_collect_performed_into(body, acc),
-      SExpr(e) => dh_collect_performed_into(e, acc),
-      STest(_, body) => dh_collect_performed_into(body, acc),
-      SBench(_, body) => dh_collect_performed_into(body, acc),
+    match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, body) => dh_collect_performed_into(expr = body, acc = acc),
+      SLetMut(_, _, body) => dh_collect_performed_into(expr = body, acc = acc),
+      SExpr(e) => dh_collect_performed_into(expr = e, acc = acc),
+      STest(_, body) => dh_collect_performed_into(expr = body, acc = acc),
+      SBench(_, body) => dh_collect_performed_into(expr = body, acc = acc),
       _ => ()
     }
     i = i + 1
@@ -2445,15 +2445,15 @@ export fn dh_collect_performed_effects(stmts: Array[Stmt]) -> Array[String] {
   acc
 }
 
-export fn dh_declared_effects(stmts: Array[Stmt]) -> Array[String] {
+export fn dh_declared_effects(_ stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SEffectDef(_, name, _, _) => if effect_row_has_label(Some(out), name) {
+    match Array::get(stmts, at = i) {
+      SEffectDef(_, name, _, _) => if effect_row_has_label(row = Some(out), wanted = name) {
         ()
       } else {
-        Array::push(out, name)
+        Array::push(out, value = name)
       },
       _ => ()
     }
@@ -2468,7 +2468,7 @@ export fn dh_labels_may_be(labels: Array[String], ename: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(labels) {
-    let l = Array::get(labels, i)
+    let l = Array::get(labels, at = i)
     if label_is_effect_var(l) || row_label_base(effect_name_of_op(l)) == ename {
       found = true
     } else {
@@ -2492,18 +2492,18 @@ export fn dh_labels_may_be(labels: Array[String], ename: String) -> Bool {
 /// here, which only ever spares a handle from a dead-handle report.
 export fn dh_texpr_may_be(t: TypeExpr, ename: String) -> Bool {
   match t {
-    TyFn(ps, ret, eff) => if dh_labels_may_be(effect_row_labels(effect_row_parse(eff)), ename) {
+    TyFn(ps, ret, eff) => if dh_labels_may_be(labels = effect_row_labels(effect_row_parse(eff)), ename = ename) {
       true
     } else {
-      dh_texprs_may_be(ps, ename) || dh_texpr_may_be(ret, ename)
+      dh_texprs_may_be(ts = ps, ename = ename) || dh_texpr_may_be(t = ret, ename = ename)
     },
-    TyName(_) => dh_alias_may_be(t, ename),
+    TyName(_) => dh_alias_may_be(t = t, ename = ename),
     TyApp(_, args) => if dh_type_alias_head(t) {
-      dh_alias_may_be(t, ename)
+      dh_alias_may_be(t = t, ename = ename)
     } else {
-      dh_texprs_may_be(args, ename)
+      dh_texprs_may_be(ts = args, ename = ename)
     },
-    TyTuple(elems) => dh_texprs_may_be(elems, ename),
+    TyTuple(elems) => dh_texprs_may_be(ts = elems, ename = ename),
     _ => false
   }
 }
@@ -2513,7 +2513,7 @@ fn dh_alias_may_be(t: TypeExpr, ename: String) -> Bool {
     false
   } else {
     match dh_expand_type_alias(t) {
-      Some(expanded) => dh_texpr_may_be(expanded, ename),
+      Some(expanded) => dh_texpr_may_be(t = expanded, ename = ename),
       None => true
     }
   }
@@ -2525,23 +2525,23 @@ fn dh_alias_may_be(t: TypeExpr, ename: String) -> Bool {
 /// for every program, so no table survives into the next one.
 let dh_type_alias_tbl: Array[(String, Array[String], TypeExpr)] = array_empty()
 
-export fn set_dh_type_aliases(stmts: Array[Stmt]) -> Unit {
-  Array::truncate(dh_type_alias_tbl, 0)
+export fn set_dh_type_aliases(_ stmts: Array[Stmt]) -> Unit {
+  Array::truncate(dh_type_alias_tbl, length = 0)
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      STypeAlias(_, name, params, body) => Array::push(dh_type_alias_tbl, (name, params, body)),
+    match Array::get(stmts, at = i) {
+      STypeAlias(_, name, params, body) => Array::push(dh_type_alias_tbl, value = (name, params, body)),
       _ => ()
     }
     i = i + 1
   }
 }
 
-fn dh_type_alias_index(name: String) -> Int {
+fn dh_type_alias_index(_ name: String) -> Int {
   let mut found = 0 - 1
   let mut i = 0
   while i < Array::length(dh_type_alias_tbl) && found < 0 {
-    let (alias, _, _) = Array::get(dh_type_alias_tbl, i)
+    let (alias, _, _) = Array::get(dh_type_alias_tbl, at = i)
     if alias == name {
       found = i
     } else {
@@ -2552,7 +2552,7 @@ fn dh_type_alias_index(name: String) -> Int {
   found
 }
 
-fn dh_type_alias_head(t: TypeExpr) -> Bool {
+fn dh_type_alias_head(_ t: TypeExpr) -> Bool {
   match t {
     TyName(name) => dh_type_alias_index(name) >= 0,
     TyApp(name, _) => dh_type_alias_index(name) >= 0,
@@ -2571,11 +2571,11 @@ fn dh_type_alias_head(t: TypeExpr) -> Bool {
 /// ascription `((__asc: Thunk) -> __asc)(lit)`. None when `val` is not such an
 /// ascription of a literal, or the annotation does not expand to a function
 /// type here (an alias from another module).
-export fn ascribed_closure_literal_row(val: Expr) -> Option[Array[String]] {
+export fn ascribed_closure_literal_row(_ val: Expr) -> Option[Array[String]] {
   match val {
     ECall(EFn(_, _, params, _, _, EIdent(body_name, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 && body_name == "__asc" {
-      match Array::get(args, 0) {
-        EFn(_, _, _, _, _, _) => match Array::get(params, 0) {
+      match Array::get(args, at = 0) {
+        EFn(_, _, _, _, _, _) => match Array::get(params, at = 0) {
           ("__asc", Some(ann)) => match dh_expand_type_alias(ann) {
             Some(TyFn(_, _, ann_eff)) => Some(effect_row_labels(effect_row_parse(ann_eff))),
             _ => None
@@ -2594,7 +2594,7 @@ export fn ascribed_closure_literal_row(val: Expr) -> Option[Array[String]] {
 /// #3347: a top-level binding's annotation with a function-type alias
 /// expanded (`let side: Thunk = ..`), so its row is the binding's as a row
 /// written out is. Anything else is returned as written.
-export fn dh_expand_sig(ty: Option[TypeExpr]) -> Option[TypeExpr] {
+export fn dh_expand_sig(_ ty: Option[TypeExpr]) -> Option[TypeExpr] {
   match ty {
     Some(t) => match dh_expand_type_alias(t) {
       Some(TyFn(ps, r, eff)) => Some(TyFn(ps, r, eff)),
@@ -2607,17 +2607,17 @@ export fn dh_expand_sig(ty: Option[TypeExpr]) -> Option[TypeExpr] {
 /// The labels of `row` a closure literal performs under besides the enclosing
 /// row (#3370, #3347): everything but exception kinds and row variables,
 /// which keep their own treatment.
-export fn closure_row_extra_labels(row: Array[String]) -> Array[String] {
+export fn closure_row_extra_labels(_ row: Array[String]) -> Array[String] {
   let added = no_str_labels()
   for label in row {
     if String::length(label) > 0 && !is_exception_label(label) && !label_is_effect_var(label) {
-      Array::push(added, label)
+      Array::push(added, value = label)
     }
   }
   added
 }
 
-export fn dh_expand_type_alias(t: TypeExpr) -> Option[TypeExpr] {
+export fn dh_expand_type_alias(_ t: TypeExpr) -> Option[TypeExpr] {
   let no_args: Array[TypeExpr] = []
   let mut current = t
   let mut fuel = 32
@@ -2642,11 +2642,11 @@ export fn dh_expand_type_alias(t: TypeExpr) -> Option[TypeExpr] {
         answer = Some(current)
         done = true
       } else {
-        let (_, params, body) = Array::get(dh_type_alias_tbl, at)
+        let (_, params, body) = Array::get(dh_type_alias_tbl, at = at)
         if Array::length(params) != Array::length(args) {
           done = true
         } else {
-          current = dh_alias_subst(body, params, args)
+          current = dh_alias_subst(t = body, params = params, args = args)
         }
       }
     }
@@ -2664,8 +2664,8 @@ export fn dh_alias_subst(t: TypeExpr, params: Array[String], args: Array[TypeExp
       let mut out = t
       let mut i = 0
       while i < Array::length(params) {
-        if type_param_name(Array::get(params, i)) == n {
-          out = Array::get(args, i)
+        if type_param_name(Array::get(params, at = i)) == n {
+          out = Array::get(args, at = i)
         } else {
           ()
         }
@@ -2674,13 +2674,13 @@ export fn dh_alias_subst(t: TypeExpr, params: Array[String], args: Array[TypeExp
       out
     },
     TyApp(n, xs) => TyApp(n, for x in xs {
-      dh_alias_subst(x, params, args)
+      dh_alias_subst(t = x, params = params, args = args)
     }),
     TyFn(ps, ret, eff) => TyFn(for p in ps {
-      dh_alias_subst(p, params, args)
-    }, dh_alias_subst(ret, params, args), eff),
+      dh_alias_subst(t = p, params = params, args = args)
+    }, dh_alias_subst(t = ret, params = params, args = args), eff),
     TyTuple(xs) => TyTuple(for x in xs {
-      dh_alias_subst(x, params, args)
+      dh_alias_subst(t = x, params = params, args = args)
     }),
     _ => t
   }
@@ -2690,7 +2690,7 @@ fn dh_texprs_may_be(ts: Array[TypeExpr], ename: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(ts) && !found {
-    found = dh_texpr_may_be(Array::get(ts, i), ename)
+    found = dh_texpr_may_be(t = Array::get(ts, at = i), ename = ename)
     i = i + 1
   }
   found
@@ -2700,9 +2700,9 @@ export fn dh_params_may_be(params: Array[(String, Option[TypeExpr])], ename: Str
   let mut i = 0
   let mut found = false
   while i < Array::length(params) && !found {
-    let (_, pty) = Array::get(params, i)
+    let (_, pty) = Array::get(params, at = i)
     found = match pty {
-      Some(t) => dh_texpr_may_be(t, ename),
+      Some(t) => dh_texpr_may_be(t = t, ename = ename),
       None => false
     }
     i = i + 1
@@ -2710,11 +2710,11 @@ export fn dh_params_may_be(params: Array[(String, Option[TypeExpr])], ename: Str
   found
 }
 
-export fn dh_value_alias_name(value: Expr) -> Option[String] {
+export fn dh_value_alias_name(_ value: Expr) -> Option[String] {
   match value {
     EIdent(source, _) => Some(source),
     ECall(_, args, _, _) => match afe_ascribed_name_type(value) {
-      Some(_) => dh_value_alias_name(Array::get(args, 0)),
+      Some(_) => dh_value_alias_name(Array::get(args, at = 0)),
       None => None
     },
     _ => None
@@ -2733,13 +2733,13 @@ export fn dh_call_to_binding(expr: Expr, name: String) -> Option[Int] {
     ECall(EIdent(nm, off), _, _, _) => if nm == name {
       Some(off)
     } else {
-      dh_call_to_binding_in(expr_children(expr), name)
+      dh_call_to_binding_in(exprs = expr_children(expr), name = name)
     },
-    ELet(nm, value, body, _) => match dh_call_to_binding(value, name) {
+    ELet(nm, value, body, _) => match dh_call_to_binding(expr = value, name = name) {
       Some(off) => Some(off),
       None => {
-        let through_alias = if dh_value_aliases_binding(value, name) {
-          dh_call_to_binding(body, nm)
+        let through_alias = if dh_value_aliases_binding(value = value, name = name) {
+          dh_call_to_binding(expr = body, name = nm)
         } else {
           None
         }
@@ -2748,31 +2748,31 @@ export fn dh_call_to_binding(expr: Expr, name: String) -> Option[Int] {
           None => if nm == name {
             None
           } else {
-            dh_call_to_binding(body, name)
+            dh_call_to_binding(expr = body, name = name)
           }
         }
       }
     },
-    ELetMut(nm, value, body, _) => match dh_call_to_binding(value, name) {
+    ELetMut(nm, value, body, _) => match dh_call_to_binding(expr = value, name = name) {
       Some(off) => Some(off),
       None => if nm == name {
         None
       } else {
-        dh_call_to_binding(body, name)
+        dh_call_to_binding(expr = body, name = name)
       }
     },
     ELetRec(nm, value, body) => if nm == name {
       None
     } else {
-      match dh_call_to_binding(value, name) {
+      match dh_call_to_binding(expr = value, name = name) {
         Some(off) => Some(off),
-        None => match if dh_value_aliases_binding(value, name) {
-          dh_call_to_binding(body, nm)
+        None => match if dh_value_aliases_binding(value = value, name = name) {
+          dh_call_to_binding(expr = body, name = nm)
         } else {
           None
         } {
           Some(off) => Some(off),
-          None => dh_call_to_binding(body, name)
+          None => dh_call_to_binding(expr = body, name = name)
         }
       }
     },
@@ -2789,23 +2789,23 @@ export fn dh_call_to_binding(expr: Expr, name: String) -> Option[Int] {
       if shadows {
         None
       } else {
-        dh_call_to_binding(body, name)
+        dh_call_to_binding(expr = body, name = name)
       }
     },
-    EMatch(scrutinee, arms) => match dh_call_to_binding(scrutinee, name) {
+    EMatch(scrutinee, arms) => match dh_call_to_binding(expr = scrutinee, name = name) {
       Some(off) => Some(off),
-      None => dh_call_to_binding_arms(arms, name)
+      None => dh_call_to_binding_arms(arms = arms, name = name)
     },
-    EHandle(body, arms) => match dh_call_to_binding(body, name) {
+    EHandle(body, arms) => match dh_call_to_binding(expr = body, name = name) {
       Some(off) => Some(off),
-      None => dh_call_to_binding_arms(arms, name)
+      None => dh_call_to_binding_arms(arms = arms, name = name)
     },
-    EForIn(nm, index_name, iter, body) => match dh_call_to_binding(iter, name) {
+    EForIn(nm, index_name, iter, body) => match dh_call_to_binding(expr = iter, name = name) {
       Some(off) => Some(off),
       None => if nm == name || index_name == Some(name) {
         None
       } else {
-        dh_call_to_binding(body, name)
+        dh_call_to_binding(expr = body, name = name)
       }
     },
     ELoop(pairs, body) => {
@@ -2816,7 +2816,7 @@ export fn dh_call_to_binding(expr: Expr, name: String) -> Option[Int] {
         match hit {
           Some(_) => (),
           None => {
-            hit = dh_call_to_binding(value, name)
+            hit = dh_call_to_binding(expr = value, name = name)
           }
         }
         if pn == name {
@@ -2830,11 +2830,11 @@ export fn dh_call_to_binding(expr: Expr, name: String) -> Option[Int] {
         None => if shadows {
           None
         } else {
-          dh_call_to_binding(body, name)
+          dh_call_to_binding(expr = body, name = name)
         }
       }
     },
-    _ => dh_call_to_binding_in(expr_children(expr), name)
+    _ => dh_call_to_binding_in(exprs = expr_children(expr), name = name)
   }
 }
 
@@ -2842,14 +2842,14 @@ fn dh_call_to_binding_arms(arms: Array[(Pat, Expr)], name: String) -> Option[Int
   let mut hit: Option[Int] = None
   let mut i = 0
   while i < Array::length(arms) {
-    let (pat, body) = Array::get(arms, i)
+    let (pat, body) = Array::get(arms, at = i)
     let bound: Array[String] = []
-    collect_pat_binds_into(pat, bound)
-    if !str_list_has(bound, name) {
+    collect_pat_binds_into(pat = pat, acc = bound)
+    if !str_list_has(xs = bound, name = name) {
       match hit {
         Some(_) => (),
         None => {
-          hit = dh_call_to_binding(body, name)
+          hit = dh_call_to_binding(expr = body, name = name)
         }
       }
     } else {
@@ -2867,7 +2867,7 @@ fn dh_call_to_binding_in(exprs: Array[Expr], name: String) -> Option[Int] {
     match hit {
       Some(_) => (),
       None => {
-        hit = dh_call_to_binding(Array::get(exprs, i), name)
+        hit = dh_call_to_binding(expr = Array::get(exprs, at = i), name = name)
       }
     }
     i = i + 1

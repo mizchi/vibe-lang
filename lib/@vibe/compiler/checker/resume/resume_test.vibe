@@ -7,25 +7,25 @@ import @vibe/compiler/checker/resume {
 test "a resume binding shadows the handler operation" {
   let call = ECall(EIdent("resume", 11), [EInt(42)], 12, [])
   let errors: Array[String] = []
-  reject_resume_outside_handler(ELet("resume", EIdent("callback", 2), call, 0), false, errors)
+  reject_resume_outside_handler(e = ELet("resume", EIdent("callback", 2), call, 0), sh = false, errors = errors)
   inspect(Array::length(errors), content = "0")
-  reject_resume_outside_handler(call, false, errors)
+  reject_resume_outside_handler(e = call, sh = false, errors = errors)
   inspect(Array::length(errors), content = "1")
-  inspect(String::ends_with(Array::get(errors, 0), " [@off=11]"), content = "true")
+  inspect(String::ends_with(Array::get(errors, at = 0), suffix = " [@off=11]"), content = "true")
 }
 
 test "#2969: a tail resume, return or throw is not a bare tail" {
   let resume_call = ECall(EIdent("resume", 3), [EInt(1)], 4, [])
-  inspect(arm_first_bare_tail(resume_call, false) is None, content = "true")
-  inspect(arm_first_bare_tail(EReturn(EInt(1)), false) is None, content = "true")
+  inspect(arm_first_bare_tail(e = resume_call, sh = false) is None, content = "true")
+  inspect(arm_first_bare_tail(e = EReturn(EInt(1)), sh = false) is None, content = "true")
   let throw_call = ECall(EIdent("throw", 3), [EString("no", 9)], 4, [])
-  inspect(arm_first_bare_tail(throw_call, false) is None, content = "true")
+  inspect(arm_first_bare_tail(e = throw_call, sh = false) is None, content = "true")
   let throw_op = ECall(EIdent("perform", 0), [
     ECall(EIdent("Exception::Throw", 8), [EString("x", 20)], 9, [])
   ], 1, [])
-  inspect(arm_first_bare_tail(throw_op, false) is None, content = "true")
+  inspect(arm_first_bare_tail(e = throw_op, sh = false) is None, content = "true")
   // A statement before the tail does not count; only the tail does.
-  inspect(arm_first_bare_tail(ESeq(EInt(0), resume_call), false) is None, content = "true")
+  inspect(arm_first_bare_tail(e = ESeq(EInt(0), resume_call), sh = false) is None, content = "true")
 }
 
 test "#3626: a refutable let's generated mismatch arm is not a bare tail" {
@@ -36,24 +36,24 @@ test "#3626: a refutable let's generated mismatch arm is not a bare tail" {
     (PCtor("Some", [PBind("v")]), resume_call),
     (PWild, refuted)
   ]
-  inspect(arm_first_bare_tail(EMatch(EIdent("o", 30), arms), false) is None, content = "true")
+  inspect(arm_first_bare_tail(e = EMatch(EIdent("o", 30), arms), sh = false) is None, content = "true")
 }
 
 test "#2969: a bare value on any tail is reported" {
   let resume_call = ECall(EIdent("resume", 3), [EInt(1)], 4, [])
-  inspect(arm_first_bare_tail(EInt(7), false) is Some(_), content = "true")
-  inspect(arm_first_bare_tail(EIf(EBool(true), resume_call, EInt(7)), false) is Some(_), content = "true")
+  inspect(arm_first_bare_tail(e = EInt(7), sh = false) is Some(_), content = "true")
+  inspect(arm_first_bare_tail(e = EIf(EBool(true), resume_call, EInt(7)), sh = false) is Some(_), content = "true")
   let other_perform = ECall(EIdent("perform", 0), [
     ECall(EIdent("Ask::Get", 8), [], 9, [])
   ], 1, [])
-  inspect(arm_first_bare_tail(other_perform, false) is Some(_), content = "true")
+  inspect(arm_first_bare_tail(e = other_perform, sh = false) is Some(_), content = "true")
 }
 
 test "#2969: a tail resume under a local binder named resume is bare" {
   let resume_call = ECall(EIdent("resume", 30), [EInt(1)], 31, [])
   let shadowed = ELet("resume", EIdent("callback", 12), resume_call, 4)
-  inspect(arm_first_bare_tail(shadowed, false) is Some(_), content = "true")
-  inspect(arm_first_bare_tail(resume_call, true) is Some(_), content = "true")
+  inspect(arm_first_bare_tail(e = shadowed, sh = false) is Some(_), content = "true")
+  inspect(arm_first_bare_tail(e = resume_call, sh = true) is Some(_), content = "true")
 }
 
 test "#2969: a tail nested handle with a suspend arm is bare" {
@@ -63,9 +63,9 @@ test "#2969: a tail nested handle with a suspend arm is bare" {
   let suspend_arm = ELet("k", EIdent("resume", 40), EInt(7), 30)
   let pat = PCtor("Inner::Pause", [])
   let nested = EHandle(inner_body, [(pat, suspend_arm)])
-  inspect(arm_first_bare_tail(nested, false) is Some(_), content = "true")
+  inspect(arm_first_bare_tail(e = nested, sh = false) is Some(_), content = "true")
   // A tail-resumptive inner arm leaves the nested handle's value to its body.
   let tail_arm = ECall(EIdent("resume", 40), [EInt(7)], 41, [])
   let plain = EHandle(inner_body, [(pat, tail_arm)])
-  inspect(arm_first_bare_tail(plain, false) is None, content = "true")
+  inspect(arm_first_bare_tail(e = plain, sh = false) is None, content = "true")
 }

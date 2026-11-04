@@ -48,7 +48,7 @@ fn ints_equal(left: Array[Int], right: Array[Int]) -> Bool {
     let mut i = 0
     let mut equal = true
     while i < Array::length(left) {
-      if Array::get(left, i) != Array::get(right, i) {
+      if Array::get(left, at = i) != Array::get(right, at = i) {
         equal = false
       } else {
         ()
@@ -60,31 +60,31 @@ fn ints_equal(left: Array[Int], right: Array[Int]) -> Bool {
 }
 
 fn assert_row_path(observation: CheckedTypedOccurrenceStatementObservation, row_index: Int, expected: Array[Int]) -> Unit {
-  match checked_typed_occurrence_statement_observation_statement_path_at(observation, row_index) {
-    Some(path) => assert(ints_equal(path, expected)),
+  match checked_typed_occurrence_statement_observation_statement_path_at(observation = observation, row_index = row_index) {
+    Some(path) => assert(ints_equal(left = path, right = expected)),
     None => assert(false)
   }
 }
 
 fn assert_row_ordinal(observation: CheckedTypedOccurrenceStatementObservation, row_index: Int, expected: Int) -> Unit {
-  match checked_typed_occurrence_statement_observation_capture_ordinal_at(observation, row_index) {
+  match checked_typed_occurrence_statement_observation_capture_ordinal_at(observation = observation, row_index = row_index) {
     Some(ordinal) => assert(ordinal == expected),
     None => assert(false)
   }
 }
 
 fn path_is(observation: CheckedTypedOccurrenceStatementObservation, row_index: Int, expected: Array[Int]) -> Bool {
-  match checked_typed_occurrence_statement_observation_statement_path_at(observation, row_index) {
-    Some(path) => ints_equal(path, expected),
+  match checked_typed_occurrence_statement_observation_statement_path_at(observation = observation, row_index = row_index) {
+    Some(path) => ints_equal(left = path, right = expected),
     None => false
   }
 }
 
 fn snapshot_contains(snapshot: String, wanted: String) -> Bool {
-  String::index_of(snapshot, wanted) >= 0
+  String::index_of(snapshot, needle = wanted) >= 0
 }
 
-fn shifted_offset_fixture(base: Int) -> Array[Stmt] {
+fn shifted_offset_fixture(_ base: Int) -> Array[Stmt] {
   [
     SStruct(false, "Box", [("value", TyName("Int"))], array_empty(), array_empty(), array_empty()),
     SLet(false, false, "box", None, ECall(EIdent("Box", base + 1), [EInt(1)], base + 2, [
@@ -100,8 +100,8 @@ fn legacy_offsets_differ(left: Array[(Int, Type)], right: Array[(Int, Type)]) ->
     let mut i = 0
     let mut differs = false
     while i < Array::length(left) {
-      let (left_offset, _) = Array::get(left, i)
-      let (right_offset, _) = Array::get(right, i)
+      let (left_offset, _) = Array::get(left, at = i)
+      let (right_offset, _) = Array::get(right, at = i)
       if left_offset != right_offset {
         differs = true
       } else {
@@ -127,28 +127,34 @@ test "statement-owner accessors retain exact root and nested paths" {
     Some(observation) => {
       assert(checked_typed_occurrence_statement_observation_row_count(observation) == 5)
       // The type-scheduled declaration does not change the first source path.
-      assert_row_path(observation, 0, [0])
-      assert_row_ordinal(observation, 0, 0)
+      assert_row_path(observation = observation, row_index = 0, expected = [0])
+      assert_row_ordinal(observation = observation, row_index = 0, expected = 0)
       // The module container owns no rows; both belong to its child.
-      assert_row_path(observation, 1, [2, 0])
-      assert_row_path(observation, 2, [2, 0])
-      assert_row_ordinal(observation, 1, 0)
-      assert_row_ordinal(observation, 2, 1)
+      assert_row_path(observation = observation, row_index = 1, expected = [
+        2,
+        0
+      ])
+      assert_row_path(observation = observation, row_index = 2, expected = [
+        2,
+        0
+      ])
+      assert_row_ordinal(observation = observation, row_index = 1, expected = 0)
+      assert_row_ordinal(observation = observation, row_index = 2, expected = 1)
       let mut i = 0
       while i < checked_typed_occurrence_statement_observation_row_count(observation) {
-        assert(!path_is(observation, i, [2]))
+        assert(!path_is(observation = observation, row_index = i, expected = [2]))
         i = i + 1
       }
       // The same legacy offset appears twice, but capture ordinals stay exact.
-      assert_row_path(observation, 3, [3])
-      assert_row_path(observation, 4, [3])
-      assert_row_ordinal(observation, 3, 0)
-      assert_row_ordinal(observation, 4, 1)
-      match checked_typed_occurrence_statement_observation_statement_path_at(observation, 5) {
+      assert_row_path(observation = observation, row_index = 3, expected = [3])
+      assert_row_path(observation = observation, row_index = 4, expected = [3])
+      assert_row_ordinal(observation = observation, row_index = 3, expected = 0)
+      assert_row_ordinal(observation = observation, row_index = 4, expected = 1)
+      match checked_typed_occurrence_statement_observation_statement_path_at(observation = observation, row_index = 5) {
         None => (),
         Some(_) => assert(false)
       }
-      match checked_typed_occurrence_statement_observation_capture_ordinal_at(observation, -1) {
+      match checked_typed_occurrence_statement_observation_capture_ordinal_at(observation = observation, row_index = -1) {
         None => (),
         Some(_) => assert(false)
       }
@@ -162,7 +168,7 @@ test "statement-owner snapshot ignores legacy EIdent ECall and EDot offsets" {
   let after = shifted_offset_fixture(100)
   let before_legacy = check_program_result(before)
   let after_legacy = check_program_result(after)
-  assert(legacy_offsets_differ(before_legacy.typed_occurrences, after_legacy.typed_occurrences))
+  assert(legacy_offsets_differ(left = before_legacy.typed_occurrences, right = after_legacy.typed_occurrences))
   match check_program_typed_occurrence_statement_observation(shifted_offset_fixture(10)) {
     Some(before_observation) => match check_program_typed_occurrence_statement_observation(shifted_offset_fixture(100)) {
       Some(after_observation) => {
@@ -186,8 +192,8 @@ test "statement-owner observation keeps final substitutions for generalized call
     Some(observation) => {
       let snapshot = canonical_checked_typed_occurrence_statement_snapshot(observation)
       // `ECall`'s fresh result variable is resolved by final_subst to Int.
-      assert(snapshot_contains(snapshot, "2:I0"))
-      assert_row_path(observation, 1, [1])
+      assert(snapshot_contains(snapshot = snapshot, wanted = "2:I0"))
+      assert_row_path(observation = observation, row_index = 1, expected = [1])
     },
     None => assert(false)
   }
@@ -195,7 +201,7 @@ test "statement-owner observation keeps final substitutions for generalized call
 
 test "statement-owner ordinary and with-env effectset-expanded observations have parity" {
   match check_program_typed_occurrence_statement_observation(effectset_fixture()) {
-    Some(ordinary) => match check_program_with_env_typed_occurrence_statement_observation(effectset_fixture(), env_bind(EnvEmpty, "seed", CtInt)) {
+    Some(ordinary) => match check_program_with_env_typed_occurrence_statement_observation(stmts = effectset_fixture(), initial_env = env_bind(env = EnvEmpty, name = "seed", ty = CtInt)) {
       Some(with_env) => {
         assert(checked_typed_occurrence_statement_observation_row_count(ordinary) == checked_typed_occurrence_statement_observation_row_count(with_env))
         assert(canonical_checked_typed_occurrence_statement_snapshot(ordinary) == canonical_checked_typed_occurrence_statement_snapshot(with_env))

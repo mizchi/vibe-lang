@@ -38,7 +38,7 @@ import @vibe/ast {
 /// the consumers in two codegen lanes, and an offset the producer files under
 /// one key and a consumer reads under another is not a diagnostic, it is
 /// silence.
-export fn typed_lowering_arg_offset(expr: Expr) -> Int {
+export fn typed_lowering_arg_offset(_ expr: Expr) -> Int {
   match expr {
     EIdent(_, off) => off,
     ECall(_, _, off, _) => off,
@@ -58,7 +58,7 @@ export fn typed_lowering_arg_offset(expr: Expr) -> Int {
 /// and the checker files the index result's type under it. Only the row
 /// channel reads this key: the codegen channels keep
 /// `typed_lowering_arg_offset`, whose answer for an index stays `-1`.
-export fn typed_render_row_offset(expr: Expr) -> Int {
+export fn typed_render_row_offset(_ expr: Expr) -> Int {
   match expr {
     ECall(EIdent("__index", site), _, off, _) => if off >= 0 {
       off
@@ -74,7 +74,7 @@ export fn typed_render_row_offset(expr: Expr) -> Int {
 /// never equal the non-negative `typed_lowering_arg_offset` an Int lookup asks
 /// for. Shared by the producer and every consumer for the same reason the key
 /// above is.
-export fn typed_render_refuse_key(off: Int) -> Int {
+export fn typed_render_refuse_key(_ off: Int) -> Int {
   0 - off - 1
 }
 
@@ -147,7 +147,7 @@ export fn typed_index_row_head() -> String {
 /// receiver, and the library-defined helpers (`Array::contains`, ...) declare
 /// `Array[T]` parameters that bind an open argument at the call, so neither is
 /// listed. `concat` / `push_all` read their SECOND argument positionally too.
-export fn array_receiver_reads(name: String) -> Bool {
+export fn array_receiver_reads(_ name: String) -> Bool {
   name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::slice" || name == "Array::concat" || name == "Array::reverse" || name == "Array::truncate" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "Array::map" || name == "Array::fold"
 }
 
@@ -206,10 +206,10 @@ export fn typed_float_operand_row_head() -> String {
 /// argument on every lane, so an operand reader that looks through it emits
 /// what it emitted before the mark: a fresh box is still released, and a
 /// nested chain is still computed on bits.
-export fn float_operand_unmarked(e: Expr) -> Expr {
+export fn float_operand_unmarked(_ e: Expr) -> Expr {
   match e {
     ECall(EIdent(f, off), args, _, _) => if f == "Float32::to_float64" && off == builtin_ref_offset() && Array::length(args) == 1 {
-      float_operand_unmarked(Array::get(args, 0))
+      float_operand_unmarked(Array::get(args, at = 0))
     } else {
       e
     },
@@ -248,11 +248,11 @@ export fn typed_f32_negation_verdict() -> String {
 /// literal, a nested operator) answers `-1` and files nothing: the lowering
 /// already reads those as floats from their syntax, or through the marks on
 /// the operators inside them.
-export fn typed_negation_operand_key(operand: Expr) -> Int {
+export fn typed_negation_operand_key(_ operand: Expr) -> Int {
   match operand {
     EIf(_, then_e, _) => typed_negation_operand_key(then_e),
     EMatch(_, arms) => if Array::length(arms) > 0 {
-      let (_, body) = Array::get(arms, 0)
+      let (_, body) = Array::get(arms, at = 0)
       typed_negation_operand_key(body)
     } else {
       0 - 1
@@ -282,7 +282,7 @@ export fn typed_index_open_verdict() -> String {
 /// lanes refuse one program with one sentence: a lane that printed an address
 /// where the other refused was #3068. It carries the argument's offset as a
 /// ` [@off=N]` marker (#3090), so both lanes name one position as well.
-export fn unrenderable_render_message(e: Expr) -> String {
+export fn unrenderable_render_message(_ e: Expr) -> String {
   let what = match e {
     EIdent(n, _) => String::concat("`", String::concat(n, "`")),
     EDot(_, f, _, _) => String::concat("field `", String::concat(f, "`")),
@@ -322,7 +322,7 @@ export fn unrenderable_render_message(e: Expr) -> String {
 /// `Int`, so a call offset shared with its callee's `CtFn` occurrence is
 /// dropped on disagreement. Tag 0's producer is the call-result capture
 /// instead, which has no such agreement rule, so the restriction lives here.
-export fn typed_lowering_float_key(expr: Expr) -> Int {
+export fn typed_lowering_float_key(_ expr: Expr) -> Int {
   match expr {
     EIdent(_, _) => 0 - 1,
     _ => typed_lowering_arg_offset(expr)
@@ -338,7 +338,7 @@ export fn typed_lowering_float_key(expr: Expr) -> Int {
 /// most of it for leaves.
 let expr_children_none: Array[Expr] = []
 
-export fn expr_children(expr: Expr) -> Array[Expr] {
+export fn expr_children(_ expr: Expr) -> Array[Expr] {
   match expr {
     EInt(_) => expr_children_none,
     EFloat(_) => expr_children_none,
@@ -355,9 +355,9 @@ export fn expr_children(expr: Expr) -> Array[Expr] {
   }
 }
 
-fn expr_children_built(expr: Expr) -> Array[Expr] {
+fn expr_children_built(_ expr: Expr) -> Array[Expr] {
   let children = array_empty()
-  expr_children_into(expr, children)
+  expr_children_into(expr = expr, out = children)
   children
 }
 
@@ -376,9 +376,9 @@ fn expr_children_built(expr: Expr) -> Array[Expr] {
 let expr_child_scratch: Array[Expr] = []
 
 /// Push `expr`'s children onto the scratch stack; the mark of the first.
-export fn expr_children_push(expr: Expr) -> Int {
+export fn expr_children_push(_ expr: Expr) -> Int {
   let mark = Array::length(expr_child_scratch)
-  expr_children_into(expr, expr_child_scratch)
+  expr_children_into(expr = expr, out = expr_child_scratch)
   mark
 }
 
@@ -387,13 +387,13 @@ export fn expr_children_top() -> Int {
   Array::length(expr_child_scratch)
 }
 
-export fn expr_child_at(i: Int) -> Expr {
-  Array::get(expr_child_scratch, i)
+export fn expr_child_at(_ i: Int) -> Expr {
+  Array::get(expr_child_scratch, at = i)
 }
 
 /// Release every slot from `mark` up.
-export fn expr_children_pop(mark: Int) -> Unit {
-  Array::truncate(expr_child_scratch, mark)
+export fn expr_children_pop(_ mark: Int) -> Unit {
+  Array::truncate(expr_child_scratch, length = mark)
 }
 
 /// Does any node of `expr` -- itself included, then every descendant
@@ -410,7 +410,7 @@ export fn expr_any_node(expr: Expr, pred: (Expr) -> Bool) -> Bool {
     let mut i = mark
     let mut found = false
     while !found && i < top {
-      found = expr_any_node(expr_child_at(i), pred)
+      found = expr_any_node(expr = expr_child_at(i), pred = pred)
       i = i + 1
     }
     expr_children_pop(mark)
@@ -431,12 +431,12 @@ export fn expr_any_node(expr: Expr, pred: (Expr) -> Bool) -> Bool {
 /// otherwise share it. Should two bindings still share a key, the query
 /// refuses it rather than answer for the wrong binding.
 fn let_rec_anchor_walk(value: Expr, skip_nested_rec: Bool) -> Int {
-  let stack = Array::slice([value], 0, 1)
+  let stack = Array::slice([value], start = 0, end = 1)
   let mut first = -1
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
-    let expr = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
+    let expr = Array::get(stack, at = n - 1)
+    Array::truncate(stack, length = n - 1)
     let (a, b) = match expr {
       EIdent(_, x) => (x, -1),
       EString(_, x) => (x, -1),
@@ -461,16 +461,16 @@ fn let_rec_anchor_walk(value: Expr, skip_nested_rec: Bool) -> Int {
       ELetRec(_, _, body) => if skip_nested_rec {
         ()
       } else {
-        Array::push(stack, body)
+        Array::push(stack, value = body)
       },
-      _ => expr_children_into(expr, stack)
+      _ => expr_children_into(expr = expr, out = stack)
     }
   }
   first
 }
 
-export fn let_rec_value_anchor(value: Expr) -> Int {
-  let_rec_anchor_walk(value, false)
+export fn let_rec_value_anchor(_ value: Expr) -> Int {
+  let_rec_anchor_walk(value = value, skip_nested_rec = false)
 }
 
 /// A callee-only recursive closure can have an offset-free value (for example
@@ -483,7 +483,7 @@ export fn let_rec_binding_anchor(value: Expr, body: Expr) -> Int {
   if value_anchor >= 0 {
     value_anchor
   } else {
-    let_rec_anchor_walk(body, true)
+    let_rec_anchor_walk(value = body, skip_nested_rec = true)
   }
 }
 
@@ -492,54 +492,54 @@ export fn let_rec_binding_anchor(value: Expr, body: Expr) -> Int {
 export fn expr_children_into(expr: Expr, out: Array[Expr]) -> Unit {
   let children = out
   match expr {
-    ETuple(elems) => append_exprs(children, elems),
-    EArray(elems) => append_exprs(children, elems),
-    ERecord(_, fields, _) => append_field_exprs(children, fields),
+    ETuple(elems) => append_exprs(dst = children, exprs = elems),
+    EArray(elems) => append_exprs(dst = children, exprs = elems),
+    ERecord(_, fields, _) => append_field_exprs(dst = children, fields = fields),
     EIf(cond, then_e, else_e) => {
-      Array::push(children, cond)
-      Array::push(children, then_e)
-      Array::push(children, else_e)
+      Array::push(children, value = cond)
+      Array::push(children, value = then_e)
+      Array::push(children, value = else_e)
     },
-    ELet(_, val, body, _) => append_pair(children, val, body),
-    ELetRec(_, val, body) => append_pair(children, val, body),
-    ELetMut(_, val, body, _) => append_pair(children, val, body),
-    EAssign(_, val, cont, _) => append_pair(children, val, cont),
-    EAssignOp(_, _, val, cont, _) => append_pair(children, val, cont),
-    ESeq(a, b) => append_pair(children, a, b),
+    ELet(_, val, body, _) => append_pair(dst = children, first = val, second = body),
+    ELetRec(_, val, body) => append_pair(dst = children, first = val, second = body),
+    ELetMut(_, val, body, _) => append_pair(dst = children, first = val, second = body),
+    EAssign(_, val, cont, _) => append_pair(dst = children, first = val, second = cont),
+    EAssignOp(_, _, val, cont, _) => append_pair(dst = children, first = val, second = cont),
+    ESeq(a, b) => append_pair(dst = children, first = a, second = b),
     EMatch(scrutinee, arms) => {
-      Array::push(children, scrutinee)
-      append_arm_exprs(children, arms)
+      Array::push(children, value = scrutinee)
+      append_arm_exprs(dst = children, arms = arms)
     },
     EHandle(body, arms) => {
-      Array::push(children, body)
-      append_arm_exprs(children, arms)
+      Array::push(children, value = body)
+      append_arm_exprs(dst = children, arms = arms)
     },
-    EWhile(cond, body) => append_pair(children, cond, body),
+    EWhile(cond, body) => append_pair(dst = children, first = cond, second = body),
     ELoop(params, body) => {
       let mut i = 0
       while i < Array::length(params) {
-        let (_, init) = Array::get(params, i)
-        Array::push(children, init)
+        let (_, init) = Array::get(params, at = i)
+        Array::push(children, value = init)
         i = i + 1
       }
-      Array::push(children, body)
+      Array::push(children, value = body)
     },
-    EForIn(_, _, iter, body) => append_pair(children, iter, body),
+    EForIn(_, _, iter, body) => append_pair(dst = children, first = iter, second = body),
     ECall(callee, args, _, _) => {
-      Array::push(children, callee)
-      append_exprs(children, args)
+      Array::push(children, value = callee)
+      append_exprs(dst = children, exprs = args)
     },
-    EBinOp(_, left, right, _) => append_pair(children, left, right),
-    EUnaryOp(_, operand) => Array::push(children, operand),
-    EFn(_, _, _, _, _, body) => Array::push(children, body),
-    EDot(obj, _, _, _) => Array::push(children, obj),
-    ELabeledArg(_, _, value) => Array::push(children, value),
-    EReturn(value) => Array::push(children, value),
-    EBreak(Some(value)) => Array::push(children, value),
+    EBinOp(_, left, right, _) => append_pair(dst = children, first = left, second = right),
+    EUnaryOp(_, operand) => Array::push(children, value = operand),
+    EFn(_, _, _, _, _, body) => Array::push(children, value = body),
+    EDot(obj, _, _, _) => Array::push(children, value = obj),
+    ELabeledArg(_, _, value) => Array::push(children, value = value),
+    EReturn(value) => Array::push(children, value = value),
+    EBreak(Some(value)) => Array::push(children, value = value),
     EBreak(None) => (),
-    EContinue(args) => append_exprs(children, args),
-    EMap(fields) => append_field_exprs(children, fields),
-    ESpread(value) => Array::push(children, value),
+    EContinue(args) => append_exprs(dst = children, exprs = args),
+    EMap(fields) => append_field_exprs(dst = children, fields = fields),
+    ESpread(value) => Array::push(children, value = value),
     EInt(_) => (),
     EFloat(_) => (),
     EString(_, _) => (),
@@ -551,14 +551,14 @@ export fn expr_children_into(expr: Expr, out: Array[Expr]) -> Unit {
 }
 
 fn append_pair(dst: Array[Expr], first: Expr, second: Expr) -> Unit {
-  Array::push(dst, first)
-  Array::push(dst, second)
+  Array::push(dst, value = first)
+  Array::push(dst, value = second)
 }
 
 fn append_exprs(dst: Array[Expr], exprs: Array[Expr]) -> Unit {
   let mut i = 0
   while i < Array::length(exprs) {
-    Array::push(dst, Array::get(exprs, i))
+    Array::push(dst, value = Array::get(exprs, at = i))
     i = i + 1
   }
 }
@@ -566,8 +566,8 @@ fn append_exprs(dst: Array[Expr], exprs: Array[Expr]) -> Unit {
 fn append_field_exprs(dst: Array[Expr], fields: Array[(String, Expr)]) -> Unit {
   let mut i = 0
   while i < Array::length(fields) {
-    let (_, value) = Array::get(fields, i)
-    Array::push(dst, value)
+    let (_, value) = Array::get(fields, at = i)
+    Array::push(dst, value = value)
     i = i + 1
   }
 }
@@ -575,8 +575,8 @@ fn append_field_exprs(dst: Array[Expr], fields: Array[(String, Expr)]) -> Unit {
 fn append_arm_exprs(dst: Array[Expr], arms: Array[(Pat, Expr)]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    let (_, body) = Array::get(arms, i)
-    Array::push(dst, body)
+    let (_, body) = Array::get(arms, at = i)
+    Array::push(dst, value = body)
     i = i + 1
   }
 }

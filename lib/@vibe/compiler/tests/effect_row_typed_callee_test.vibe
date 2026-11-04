@@ -25,7 +25,7 @@ import @vibe/compiler/checker {
 
 /// The checked exception row is a process-wide switch `cli_main` turns on;
 /// this harness calls the checker directly, so it turns it on itself.
-fn diags(src: String) -> Array[String] with Exception {
+fn diags(_ src: String) -> Array[String] with Exception {
   set_error_row_checked(true)
   collect_all_diagnostics(src)
 }
@@ -33,10 +33,10 @@ fn diags(src: String) -> Array[String] with Exception {
 /// The one diagnostic `src` reports contains `needle`.
 fn refused_with(src: String, needle: String) -> Bool with Exception {
   let ds = diags(src)
-  Array::length(ds) == 1 && String::contains(Array::get(ds, 0), needle)
+  Array::length(ds) == 1 && String::contains(Array::get(ds, at = 0), needle = needle)
 }
 
-fn clean(src: String) -> Bool with Exception {
+fn clean(_ src: String) -> Bool with Exception {
   Array::length(diags(src)) == 0
 }
 
@@ -47,63 +47,63 @@ let mk_console: String = "fn mk() -> (() -> Unit with Console) {\n  () -> printl
 /// The issue's own program: `mk()()` from an empty-row function.
 test "a call through a call result is charged the callee's row" {
   let src = String::concat(mk_console, "fn pure_fn() -> Int {\n  mk()()\n  42\n}\n")
-  assert(refused_with(src, "effect row mismatch for 'pure_fn': missing { Console }"))
-  assert(refused_with(src, "hint: declare 'fn pure_fn(...) -> T with Console'"))
+  assert(refused_with(src = src, needle = "effect row mismatch for 'pure_fn': missing { Console }"))
+  assert(refused_with(src = src, needle = "hint: declare 'fn pure_fn(...) -> T with Console'"))
 }
 
 test "a call through an annotated let of a call result is charged its row" {
   let src = String::concat(mk_console, "fn pure_fn() -> Int {\n  let g: () -> Unit with Console = mk()\n  g()\n  42\n}\n")
-  assert(refused_with(src, "missing { Console }"))
+  assert(refused_with(src = src, needle = "missing { Console }"))
 }
 
 test "a call through an unannotated let of a call result is charged its row" {
   let src = String::concat(mk_console, "fn pure_fn() -> Int {\n  let g = mk()\n  g()\n  42\n}\n")
-  assert(refused_with(src, "missing { Console }"))
+  assert(refused_with(src = src, needle = "missing { Console }"))
 }
 
 test "a call through an array element is charged its row" {
   let src = "fn pure_fn(fs: Array[() -> Unit with Console]) -> Int {\n  (Array::get(fs, 0))()\n  42\n}\n"
-  assert(refused_with(src, "missing { Console }"))
+  assert(refused_with(src = src, needle = "missing { Console }"))
 }
 
 test "a call through a struct field is charged its row" {
   let src = "struct S {\n  f: () -> Unit with Console\n}\n\nfn pure_fn(s: S) -> Int {\n  (s.f)()\n  42\n}\n"
-  assert(refused_with(src, "missing { Console }"))
+  assert(refused_with(src = src, needle = "missing { Console }"))
 }
 
 test "a call through a match binder is charged its row" {
   let src = "fn pure_fn(o: Option[() -> Unit with Console]) -> Int {\n  match o {\n    Some(f) => f(),\n    None => ()\n  }\n  42\n}\n"
-  assert(refused_with(src, "missing { Console }"))
+  assert(refused_with(src = src, needle = "missing { Console }"))
 }
 
 test "a call through a for binder is charged its row" {
   let src = "fn pure_fn(fs: Array[() -> Unit with Console]) -> Int {\n  for f in fs {\n    f()\n  }\n  42\n}\n"
-  assert(refused_with(src, "missing { Console }"))
+  assert(refused_with(src = src, needle = "missing { Console }"))
 }
 
 test "a call through a destructured binder is charged its row" {
   let src = "fn pure_fn(p: (Int, () -> Unit with Console)) -> Int {\n  let (n, f) = p\n  f()\n  n\n}\n"
-  assert(refused_with(src, "missing { Console }"))
+  assert(refused_with(src = src, needle = "missing { Console }"))
 }
 
 test "a method call is charged the method's row" {
   let src = "struct P {\n  n: Int\n}\n\nfn P::say(p: P) -> Unit with Console {\n  println(\"x\")\n}\n\nfn pure_fn(p: P) -> Int {\n  p.say()\n  42\n}\n"
-  assert(refused_with(src, "missing { Console }"))
+  assert(refused_with(src = src, needle = "missing { Console }"))
 }
 
 test "an unreadable argument to a with-e function is charged the row it binds" {
   let src = "fn apply(f: () -> Unit with e) -> Unit with e {\n  f()\n}\n\nfn pure_fn(fs: Array[() -> Unit with Console]) -> Int {\n  apply(Array::get(fs, 0))\n  42\n}\n"
-  assert(refused_with(src, "missing { Console }"))
+  assert(refused_with(src = src, needle = "missing { Console }"))
 }
 
 test "a call through a call result charges an exception row" {
   let src = "fn mk() -> (() -> Unit with Exception) {\n  () -> throw(\"boom\")\n}\n\nfn pure_fn() -> Int {\n  mk()()\n  42\n}\n"
-  assert(refused_with(src, "missing { Exception }"))
+  assert(refused_with(src = src, needle = "missing { Exception }"))
 }
 
 test "a call through a call result charges a user effect row" {
   let src = "effect Log {\n  Emit(String) -> Unit\n}\n\nfn mk() -> (() -> Unit with Log) {\n  () -> perform Log::Emit(\"x\")\n}\n\nfn pure_fn() -> Int {\n  mk()()\n  42\n}\n"
-  assert(refused_with(src, "missing { Log }"))
+  assert(refused_with(src = src, needle = "missing { Log }"))
 }
 
 // --- 1. controls: the same shapes accepted
@@ -146,24 +146,24 @@ let thrower_src: String = "fn thrower() -> Int with Exception {\n  throw(\"dropp
 
 test "a with-Exception function passed to a row-less parameter is refused" {
   let src = String::concat(thrower_src, "fn call(f: () -> Int) -> Int {\n  f()\n}\n\nfn pure() -> Int {\n  call(thrower)\n}\n")
-  assert(refused_with(src, "the { Exception } effect would be dropped"))
+  assert(refused_with(src = src, needle = "the { Exception } effect would be dropped"))
 }
 
 test "a with-Exception function bound to a row-less let is refused" {
   let src = String::concat(thrower_src, "fn pure() -> Int {\n  let g: () -> Int = thrower\n  g()\n}\n")
-  assert(refused_with(src, "the { Exception } effect would be dropped"))
+  assert(refused_with(src = src, needle = "the { Exception } effect would be dropped"))
 }
 
 test "a with-Exception function returned as a row-less type is refused" {
   let src = String::concat(thrower_src, "fn get() -> () -> Int {\n  thrower\n}\n")
-  assert(refused_with(src, "the { Exception } effect would be dropped"))
+  assert(refused_with(src = src, needle = "the { Exception } effect would be dropped"))
 }
 
 test "a with-Exception function stored in a row-less field or element is refused" {
   let field = String::concat(thrower_src, "struct S {\n  f: () -> Int\n}\n\nfn make() -> S {\n  S::{ f: thrower }\n}\n")
-  assert(refused_with(field, "effect would be dropped"))
+  assert(refused_with(src = field, needle = "effect would be dropped"))
   let elem = String::concat(thrower_src, "fn make() -> Array[() -> Int] {\n  let xs: Array[() -> Int] = [thrower]\n  xs\n}\n")
-  assert(refused_with(elem, "effect would be dropped"))
+  assert(refused_with(src = elem, needle = "effect would be dropped"))
 }
 
 test "exception rows still pass where the slot carries them" {

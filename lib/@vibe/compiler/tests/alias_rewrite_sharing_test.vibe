@@ -16,35 +16,35 @@ import @vibe/compiler/core {
 
 fn idents_of(e: Expr, out: Array[String]) -> Unit {
   match e {
-    EIdent(n, _) => Array::push(out, n),
-    EString(s, _) => Array::push(out, s),
+    EIdent(n, _) => Array::push(out, value = n),
+    EString(s, _) => Array::push(out, value = s),
     _ => ()
   }
   match e {
     EFn(_, bounds, params, ret, _, _) => {
       let mut bi = 0
       while bi < Array::length(bounds) {
-        let (_, traits) = Array::get(bounds, bi)
-        Array::push(out, String::join(traits, "+"))
+        let (_, traits) = Array::get(bounds, at = bi)
+        Array::push(out, value = String::join(traits, sep = "+"))
         bi = bi + 1
       }
       let mut pi = 0
       while pi < Array::length(params) {
-        let (_, ty) = Array::get(params, pi)
+        let (_, ty) = Array::get(params, at = pi)
         match ty {
-          Some(TyName(tn)) => Array::push(out, tn),
-          Some(TyApp(tn, _)) => Array::push(out, tn),
+          Some(TyName(tn)) => Array::push(out, value = tn),
+          Some(TyApp(tn, _)) => Array::push(out, value = tn),
           _ => ()
         }
         pi = pi + 1
       }
       match ret {
         Some(TyApp(tn, args)) => {
-          Array::push(out, tn)
+          Array::push(out, value = tn)
           let mut ai = 0
           while ai < Array::length(args) {
-            match Array::get(args, ai) {
-              TyName(an) => Array::push(out, an),
+            match Array::get(args, at = ai) {
+              TyName(an) => Array::push(out, value = an),
               _ => ()
             }
             ai = ai + 1
@@ -59,16 +59,16 @@ fn idents_of(e: Expr, out: Array[String]) -> Unit {
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    idents_of(expr_child_at(i), out)
+    idents_of(e = expr_child_at(i), out = out)
     i = i + 1
   }
   expr_children_pop(mark)
 }
 
-fn rendered(e: Expr) -> String {
+fn rendered(_ e: Expr) -> String {
   let out = []
-  idents_of(e, out)
-  String::join(out, " ")
+  idents_of(e = e, out = out)
+  String::join(out, sep = " ")
 }
 
 test "an alias is rewritten in every position the walk reaches" {
@@ -93,18 +93,20 @@ test "an alias is rewritten in every position the walk reaches" {
     lambda,
     ECall(EIdent("%wasm", 0), [EString("(call $helper)", -1)], 0, [])
   ])
-  inspect(rendered(rewrite_import_alias_expr(e, aliases)), content = "Hue::Crimson dep_x dep_f dep_f Hue::Crimson dep_f Show Stream Stream Hue dep_f %wasm (call $dep_helper)")
+  inspect(rendered(rewrite_import_alias_expr(expr = e, aliases = aliases)), content = "Hue::Crimson dep_x dep_f dep_f Hue::Crimson dep_f Show Stream Stream Hue dep_f %wasm (call $dep_helper)")
 }
 
 test "a binder that shadows the alias protects its scope, and the rest is still rewritten" {
   let aliases = [("f", "dep_f")]
   let e = ESeq(ELet("f", EInt(1), ECall(EIdent("f", 0), [EIdent("f", 0)], 0, []), 0), EIdent("f", 0))
-  inspect(rendered(rewrite_import_alias_expr(e, aliases)), content = "f f dep_f")
+  inspect(rendered(rewrite_import_alias_expr(expr = e, aliases = aliases)), content = "f f dep_f")
 }
 
 test "a tree with nothing to rename renders the same" {
   let e = EIf(EIdent("a", 0), ETuple([EIdent("b", 0), EInt(2)]), EArray([
     EIdent("c", 0)
   ]))
-  inspect(rendered(rewrite_import_alias_expr(e, [("zzz", "yyy")])), content = "a b c")
+  inspect(rendered(rewrite_import_alias_expr(expr = e, aliases = [
+    ("zzz", "yyy")
+  ])), content = "a b c")
 }

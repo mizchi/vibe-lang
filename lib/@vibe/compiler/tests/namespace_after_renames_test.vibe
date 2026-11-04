@@ -13,21 +13,21 @@ import @vibe/compiler/syntax {
 // touches).
 
 fn sequential(path: String, source: String, renames: Array[(String, String)]) -> String with Exception {
-  one_line(print_program(namespace_private_value_stmts(path, apply_export_renames_stmts(parse_program(lex(source)), renames))))
+  one_line(print_program(namespace_private_value_stmts(path = path, stmts = apply_export_renames_stmts(stmts = parse_program(lex(source)), renames = renames))))
 }
 
 fn fused(path: String, source: String, renames: Array[(String, String)]) -> String with Exception {
-  one_line(print_program(namespace_private_value_stmts_after_renames(path, parse_program(lex(source)), renames)))
+  one_line(print_program(namespace_private_value_stmts_after_renames(path = path, stmts = parse_program(lex(source)), export_renames = renames)))
 }
 
 // The printed program on one line, so a snapshot reads as a row.
-fn one_line(s: String) -> String {
-  let parts = String::split(s, "\n")
+fn one_line(_ s: String) -> String {
+  let parts = String::split(s, sep = "\n")
   let mut acc = ""
   let mut i = 0
   while i < Array::length(parts) {
-    if Array::get(parts, i) != "" {
-      acc = String::concat(String::concat(acc, Array::get(parts, i)), " | ")
+    if Array::get(parts, at = i) != "" {
+      acc = String::concat(String::concat(acc, Array::get(parts, at = i)), " | ")
     } else {
       ()
     }
@@ -40,26 +40,26 @@ let program: String = "fn helper(x: Int) -> Int { x + 1 }\nlet mut counter = 0\n
 
 test "an export rename and the private namespace land in one rebuild" {
   let renames = [("caller", "caller_exp_dep")]
-  let out = fused("dep.vibe", program, renames)
-  inspect(out == sequential("dep.vibe", program, renames), content = "true")
+  let out = fused(path = "dep.vibe", source = program, renames = renames)
+  inspect(out == sequential(path = "dep.vibe", source = program, renames = renames), content = "true")
   inspect(out, content = "let rec helper_dep_dep_vibe = (x: Int) -> Int { (x + 1) } | let mut counter_dep_dep_vibe = 0 | export let rec caller_exp_dep = (x: Int) -> Int { (helper_dep_dep_vibe(x) + counter_dep_dep_vibe) } | export let rec again = (x: Int) -> Int { caller_exp_dep(helper_dep_dep_vibe(x)) } | ")
 }
 
 test "an export rename of a private name is renamed twice, through the two passes" {
   let renames = [("helper", "helper_exp_dep")]
-  let out = fused("dep.vibe", program, renames)
-  inspect(out == sequential("dep.vibe", program, renames), content = "true")
+  let out = fused(path = "dep.vibe", source = program, renames = renames)
+  inspect(out == sequential(path = "dep.vibe", source = program, renames = renames), content = "true")
   inspect(out, content = "let rec helper_exp_dep_dep_dep_vibe = (x: Int) -> Int { (x + 1) } | let mut counter_dep_dep_vibe = 0 | export let rec caller = (x: Int) -> Int { (helper_exp_dep_dep_dep_vibe(x) + counter_dep_dep_vibe) } | export let rec again = (x: Int) -> Int { caller(helper_exp_dep_dep_dep_vibe(x)) } | ")
 }
 
 test "an export value spelled like a private definition takes the two passes" {
   let renames = [("caller", "helper")]
-  let out = fused("dep.vibe", program, renames)
-  inspect(out == sequential("dep.vibe", program, renames), content = "true")
+  let out = fused(path = "dep.vibe", source = program, renames = renames)
+  inspect(out == sequential(path = "dep.vibe", source = program, renames = renames), content = "true")
   inspect(out, content = "let rec helper = (x: Int) -> Int { (x + 1) } | let mut counter_dep_dep_vibe = 0 | export let rec helper = (x: Int) -> Int { (helper(x) + counter_dep_dep_vibe) } | export let rec again = (x: Int) -> Int { helper(helper(x)) } | ")
 }
 
 test "no export renames is the private namespace alone" {
-  let out = fused("dep.vibe", program, [])
-  inspect(out == one_line(print_program(namespace_private_value_stmts("dep.vibe", parse_program(lex(program))))), content = "true")
+  let out = fused(path = "dep.vibe", source = program, renames = [])
+  inspect(out == one_line(print_program(namespace_private_value_stmts(path = "dep.vibe", stmts = parse_program(lex(program))))), content = "true")
 }

@@ -41,7 +41,7 @@ import ./checker_call_header.vibe {
   checker_call_header_defaults, checker_call_header_has_optional, checker_call_header_names, checker_header_name_is_positional
 }
 
-fn placement_param_name(raw: String) -> String {
+fn placement_param_name(_ raw: String) -> String {
   // ADR-0120 D3 (#3681): a `_` slot's header name is `"_ " + name`.
   let named = if checker_header_name_is_positional(raw) {
     raw[2: String::length(raw)]
@@ -49,7 +49,7 @@ fn placement_param_name(raw: String) -> String {
     raw
   }
   let size = String::length(named)
-  if String::ends_with(named, "~") || String::ends_with(named, "?") {
+  if String::ends_with(named, suffix = "~") || String::ends_with(named, suffix = "?") {
     named[0: size - 1]
   } else {
     named
@@ -64,23 +64,23 @@ fn placement_plain_at_positional_slots(args: Array[Expr], names: Array[String]) 
   let mut ok = true
   let mut i = 0
   while i < Array::length(args) && ok {
-    match Array::get(args, i) {
+    match Array::get(args, at = i) {
       ELabeledArg(_, _, _) => (),
-      _ => ok = i < Array::length(names) && checker_header_name_is_positional(Array::get(names, i))
+      _ => ok = i < Array::length(names) && checker_header_name_is_positional(Array::get(names, at = i))
     }
     i = i + 1
   }
   ok
 }
 
-fn placement_value(arg: Expr) -> Expr {
+fn placement_value(_ arg: Expr) -> Expr {
   match arg {
     ELabeledArg(_, _, value) => value,
     _ => arg
   }
 }
 
-fn placement_option_value(arg: Expr) -> Bool {
+fn placement_option_value(_ arg: Expr) -> Bool {
   match placement_value(arg) {
     EIdent(name, _) => name == "None",
     ECall(EIdent(name, _), args, _, _) => name == "Some" && Array::length(args) == 1,
@@ -88,11 +88,11 @@ fn placement_option_value(arg: Expr) -> Bool {
   }
 }
 
-fn placement_identity(count: Int) -> Array[Int] {
+fn placement_identity(_ count: Int) -> Array[Int] {
   let slots: Array[Int] = []
   let mut i = 0
   while i < count {
-    Array::push(slots, (i + 1) * 2)
+    Array::push(slots, value = (i + 1) * 2)
     i = i + 1
   }
   slots
@@ -111,15 +111,15 @@ fn placement_for_header(args: Array[Expr], names: Array[String]) -> Option[Array
       _ => ()
     }
   }
-  let mut valid = labeled == 0 || labeled == Array::length(args) || placement_plain_at_positional_slots(args, names)
+  let mut valid = labeled == 0 || labeled == Array::length(args) || placement_plain_at_positional_slots(args = args, names = names)
   let mut written = 0
   while written < Array::length(args) && valid {
-    let slot = match Array::get(args, written) {
+    let slot = match Array::get(args, at = written) {
       ELabeledArg(label, _, _) => {
         let mut found = -1
         let mut i = 0
         while i < Array::length(names) && found < 0 {
-          if placement_param_name(Array::get(names, i)) == label {
+          if placement_param_name(Array::get(names, at = i)) == label {
             found = i
           } else {
             ()
@@ -132,27 +132,27 @@ fn placement_for_header(args: Array[Expr], names: Array[String]) -> Option[Array
     }
     if slot < 0 || slot >= Array::length(names) {
       valid = false
-    } else if Array::get(sources, slot) >= 0 {
+    } else if Array::get(sources, at = slot) >= 0 {
       valid = false
     } else {
-      Array::set(sources, slot, written)
+      Array::set(sources, at = slot, value = written)
     }
     written = written + 1
   }
   let slots: Array[Int] = []
   let mut slot = 0
   while slot < Array::length(names) && valid {
-    let source = Array::get(sources, slot)
-    let optional = String::ends_with(Array::get(names, slot), "?")
+    let source = Array::get(sources, at = slot)
+    let optional = String::ends_with(Array::get(names, at = slot), suffix = "?")
     if source < 0 {
       if optional {
-        Array::push(slots, 0)
+        Array::push(slots, value = 0)
       } else {
         valid = false
       }
     } else {
-      let wrap = optional && !placement_option_value(Array::get(args, source))
-      Array::push(slots, (source + 1) * 2 + if wrap {
+      let wrap = optional && !placement_option_value(Array::get(args, at = source))
+      Array::push(slots, value = (source + 1) * 2 + if wrap {
         1
       } else {
         0
@@ -176,9 +176,9 @@ export fn checker_record_opaque_call_placement(cell: Array[Int], errors: Array[S
     match call_placement_raw(cell) {
       Some((callee, args, _, offset)) => {
         let before = Array::length(errors)
-        placement_check_mixed(placement_source_name(callee), offset, args, errors)
+        placement_check_mixed(name = placement_source_name(callee), offset = offset, args = args, errors = errors)
         if Array::length(errors) == before {
-          call_placement_publish(callee, offset, cell, Array::length(args), 2, placement_identity(Array::length(args)), errors)
+          call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 2, slots = placement_identity(Array::length(args)), errors = errors)
         } else {
           ()
         }
@@ -201,9 +201,9 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
         // were decorative before Phase1c, including the content spelling;
         // this macro snapshot must not be treated as an ordinary builtin.
         if macro_call && name == "inspect" {
-          call_placement_publish(callee, offset, cell, Array::length(args), 0, placement_identity(Array::length(args)), errors)
-        } else if builtin_resolves_at(env, name, ident_offset) && (lookup_builtin(name) is Some(_)) {
-          placement_check_builtin(name, ident_offset, args, errors)
+          call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 0, slots = placement_identity(Array::length(args)), errors = errors)
+        } else if builtin_resolves_at(env = env, name = name, ident_off = ident_offset) && (lookup_builtin(name) is Some(_)) {
+          placement_check_builtin(name = name, offset = ident_offset, args = args, errors = errors)
           if Array::length(errors) == before {
             match builtin_param_labels(name) {
               Some(_) => {
@@ -212,26 +212,26 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
                 } else {
                   0
                 }
-                call_placement_publish(callee, offset, cell, Array::length(args), mode, placement_identity(Array::length(args)), errors)
+                call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = mode, slots = placement_identity(Array::length(args)), errors = errors)
               },
-              None => checker_record_opaque_call_placement(cell, errors)
+              None => checker_record_opaque_call_placement(cell = cell, errors = errors)
             }
           } else {
             ()
           }
         } else {
-          match checker_call_header_names(env, name) {
+          match checker_call_header_names(env = env, name = name) {
             Some(all_names) => {
               let names = if implicit_receiver && Array::length(all_names) > 0 {
-                Array::slice(all_names, 1, Array::length(all_names))
+                Array::slice(all_names, start = 1, end = Array::length(all_names))
               } else {
                 all_names
               }
-              let slots = placement_for_header(args, names)
-              placement_check_declared(name, ident_offset, args, names, slots, checker_call_header_defaults(env, name), errors)
+              let slots = placement_for_header(args = args, names = names)
+              placement_check_declared(name = name, offset = ident_offset, args = args, names = names, slots = slots, defaults = checker_call_header_defaults(env = env, name = name), errors = errors)
               if Array::length(errors) == before {
                 match slots {
-                  Some(found) => call_placement_publish(callee, offset, cell, Array::length(args), 0, found, errors),
+                  Some(found) => call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 0, slots = found, errors = errors),
                   None => ()
                 }
               } else {
@@ -239,9 +239,9 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
               }
             },
             None => {
-              placement_check_uncertain(env, name, ident_offset, args, errors)
+              placement_check_uncertain(env = env, name = name, offset = ident_offset, args = args, errors = errors)
               if Array::length(errors) == before {
-                checker_record_opaque_call_placement(cell, errors)
+                checker_record_opaque_call_placement(cell = cell, errors = errors)
               } else {
                 ()
               }
@@ -258,10 +258,10 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
 /// argument (`xs |> length` is `xs.length()`, the #736 arm of
 /// `check_call_expr`). Mirrors that arm's gate exactly.
 export fn checker_bare_call_is_method_retry(env: TypeEnv, name: String, argc: Int) -> Bool {
-  if String::index_of(name, "::") < 0 && argc >= 1 {
-    match env_lookup(env, name) {
+  if String::index_of(name, needle = "::") < 0 && argc >= 1 {
+    match env_lookup(env = env, name = name) {
       Some(_) => false,
-      None => lookup_builtin_in_env(env, name) is None
+      None => lookup_builtin_in_env(env = env, name = name) is None
     }
   } else {
     false
@@ -275,16 +275,16 @@ export fn checker_bare_call_is_method_retry(env: TypeEnv, name: String, argc: In
 /// the placement the lowering applies to the written call.
 export fn checker_finish_method_retry_placement(cell: Array[Int], env: TypeEnv, qualified: String, ident_offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
   let before = Array::length(errors)
-  match checker_call_header_names(env, qualified) {
-    Some(names) => if placement_plain_at_positional_slots(args, names) {
+  match checker_call_header_names(env = env, name = qualified) {
+    Some(names) => if placement_plain_at_positional_slots(args = args, names = names) {
       ()
     } else {
-      placement_check_mixed(qualified, ident_offset, args, errors)
+      placement_check_mixed(name = qualified, offset = ident_offset, args = args, errors = errors)
     },
     None => ()
   }
   if Array::length(errors) == before {
-    call_placement_prepend_receiver(cell, Array::length(args) - 1)
+    call_placement_prepend_receiver(cell = cell, explicit = Array::length(args) - 1)
   } else {
     ()
   }
@@ -301,19 +301,19 @@ export fn checker_finish_method_retry_placement(cell: Array[Int], env: TypeEnv, 
 /// receiver `_`. When the retry declines, the caller places it through
 /// `checker_record_declined_retry_call_placement`.
 export fn checker_record_call_placement(expr: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
-  placement_record_call(expr, env, errors, true)
+  placement_record_call(expr = expr, env = env, errors = errors, defer_retry = true)
 }
 
 /// The method retry declined this bare call: place it as written.
 export fn checker_record_declined_retry_call_placement(expr: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
-  placement_record_call(expr, env, errors, false)
+  placement_record_call(expr = expr, env = env, errors = errors, defer_retry = false)
 }
 
 fn placement_record_call(expr: Expr, env: TypeEnv, errors: Array[String], defer_retry: Bool) -> Unit {
   match expr {
     ECall(callee, args, offset, cell) => {
       let deferred = defer_retry && match callee {
-        EIdent(name, _) => checker_bare_call_is_method_retry(env, name, Array::length(args)),
+        EIdent(name, _) => checker_bare_call_is_method_retry(env = env, name = name, argc = Array::length(args)),
         _ => false
       }
       if deferred {
@@ -321,16 +321,16 @@ fn placement_record_call(expr: Expr, env: TypeEnv, errors: Array[String], defer_
       } else {
         let mut needed = placement_has_labels(args)
         match callee {
-          EIdent(name, _) => needed = needed || checker_call_header_has_optional(env, name),
+          EIdent(name, _) => needed = needed || checker_call_header_has_optional(env = env, name = name),
           // Namespace and receiver dispatch select their declaration below.
           _ => ()
         }
         if needed && !checker_call_header_is_probe() {
-          call_placement_capture_source(callee, args, offset, cell, false)
+          call_placement_capture_source(callee = callee, args = args, offset = offset, cell = cell, macro_call = false)
         } else {
           ()
         }
-        placement_note_and_resolve(callee, offset, cell, args, env, errors)
+        placement_note_and_resolve(callee = callee, offset = offset, cell = cell, args = args, env = env, errors = errors)
       }
     },
     _ => ()
@@ -339,19 +339,19 @@ fn placement_record_call(expr: Expr, env: TypeEnv, errors: Array[String], defer_
 
 fn placement_note_and_resolve(callee: Expr, offset: Int, cell: Array[Int], args: Array[Expr], env: TypeEnv, errors: Array[String]) -> Unit {
   match callee {
-    EIdent(name, ident_offset) => checker_note_label_site(env, name, ident_offset, offset, args, false),
+    EIdent(name, ident_offset) => checker_note_label_site(env = env, name = name, ident_offset = ident_offset, offset = offset, args = args, method_call = false),
     _ => ()
   }
   match call_placement_raw(cell) {
     Some((raw_callee, _, _, _)) => match raw_callee {
-      EIdent(name, ident_offset) => checker_record_resolved_call_placement(cell, env, name, ident_offset, false, errors),
+      EIdent(name, ident_offset) => checker_record_resolved_call_placement(cell = cell, env = env, name = name, ident_offset = ident_offset, implicit_receiver = false, errors = errors),
       _ => match callee {
         // Namespace and UFCS dispatch publish explicitly at their resolved
         // binding. Optional filling can also increase arity by one, so
         // argument counts cannot identify an implicit receiver.
         EIdent(_, _) => (),
         EDot(_, _, _, _) => (),
-        _ => checker_record_opaque_call_placement(cell, errors)
+        _ => checker_record_opaque_call_placement(cell = cell, errors = errors)
       }
     },
     None => ()
@@ -364,14 +364,14 @@ fn builtin_label_refusal(fname: String, lbl: String, at: Int, labels: Option[Arr
     None => String::concat("builtin `", String::concat(fname, String::concat("` takes positional arguments: ", String::concat(remove, " and write the arguments in parameter order")))),
     Some(names) => {
       let slot = if at < Array::length(names) {
-        Array::get(names, at)
+        Array::get(names, at = at)
       } else {
         ""
       }
       let mut declared = -1
       let mut k = 0
       while k < Array::length(names) && declared < 0 {
-        if lbl != "_" && Array::get(names, k) == lbl {
+        if lbl != "_" && Array::get(names, at = k) == lbl {
           declared = k
         } else {
           ()
@@ -393,23 +393,23 @@ fn builtin_label_refusal(fname: String, lbl: String, at: Int, labels: Option[Arr
 
 /// ` (its labels are `at`, `value`)`, or ` (every argument is positional)`
 /// when no slot has a label.
-fn builtin_label_list_hint(names: Array[String]) -> String {
+fn builtin_label_list_hint(_ names: Array[String]) -> String {
   let named = array_empty()
   for n in names {
     if n == "_" {
       ()
     } else {
-      Array::push(named, String::concat("`", String::concat(n, "`")))
+      Array::push(named, value = String::concat("`", String::concat(n, "`")))
     }
   }
   if Array::length(named) == 0 {
     " (every argument is positional)"
   } else {
-    String::concat(" (its labels are ", String::concat(String::join(named, ", "), ")"))
+    String::concat(" (its labels are ", String::concat(String::join(named, sep = ", "), ")"))
   }
 }
 
-fn placement_source_name(callee: Expr) -> String {
+fn placement_source_name(_ callee: Expr) -> String {
   match callee {
     EIdent(name, _) => name,
     EDot(_, name, _, _) => name,
@@ -417,7 +417,7 @@ fn placement_source_name(callee: Expr) -> String {
   }
 }
 
-fn placement_has_labels(args: Array[Expr]) -> Bool {
+fn placement_has_labels(_ args: Array[Expr]) -> Bool {
   let mut found = false
   for arg in args {
     match arg {
@@ -438,7 +438,7 @@ fn placement_check_mixed(name: String, offset: Int, args: Array[Expr], errors: A
     }
   }
   if labeled && plain {
-    Array::push(errors, "call to " + name + " mixes positional and labeled arguments — use either all positional or all labeled arguments" + off_marker_len(offset, String::length(name)))
+    Array::push(errors, value = "call to " + name + " mixes positional and labeled arguments — use either all positional or all labeled arguments" + off_marker_len(off = offset, len = String::length(name)))
   } else {
     ()
   }
@@ -449,18 +449,18 @@ fn placement_check_builtin(name: String, offset: Int, args: Array[Expr], errors:
   let mut ai = 0
   let mut reported = false
   while ai < Array::length(args) && !reported {
-    match Array::get(args, ai) {
+    match Array::get(args, at = ai) {
       ELabeledArg(label, _, _) => {
         let valid = if canonical_builtin_name(name) == "sh_lines" && ai > 0 {
           true
         } else {
           match labels {
-            Some(names) => label != "_" && ai < Array::length(names) && Array::get(names, ai) == label,
+            Some(names) => label != "_" && ai < Array::length(names) && Array::get(names, at = ai) == label,
             None => false
           }
         }
         if !valid {
-          Array::push(errors, builtin_label_refusal(name, label, ai, labels) + off_marker_len(offset, String::length(name)))
+          Array::push(errors, value = builtin_label_refusal(fname = name, lbl = label, at = ai, labels = labels) + off_marker_len(off = offset, len = String::length(name)))
           reported = true
         } else {
           ()
@@ -473,38 +473,38 @@ fn placement_check_builtin(name: String, offset: Int, args: Array[Expr], errors:
 }
 
 fn placement_check_declared(name: String, offset: Int, args: Array[Expr], names: Array[String], slots: Option[Array[Int]], defaults: Option[Array[Bool]], errors: Array[String]) -> Unit {
-  if placement_plain_at_positional_slots(args, names) {
+  if placement_plain_at_positional_slots(args = args, names = names) {
     ()
   } else {
-    placement_check_mixed(name, offset, args, errors)
+    placement_check_mixed(name = name, offset = offset, args = args, errors = errors)
   }
-  let marker = off_marker_len(offset, String::length(name))
+  let marker = off_marker_len(off = offset, len = String::length(name))
   let mut ai = 0
   while ai < Array::length(args) {
-    let arg = Array::get(args, ai)
+    let arg = Array::get(args, at = ai)
     let slot = match arg {
       ELabeledArg(label, _, _) => {
         let mut found = -1
         let mut pi = 0
         while pi < Array::length(names) && found < 0 {
-          if placement_param_name(Array::get(names, pi)) == label {
+          if placement_param_name(Array::get(names, at = pi)) == label {
             found = pi
           } else {
             ()
           }
           pi = pi + 1
         }
-        if found >= 0 && checker_header_name_is_positional(Array::get(names, found)) {
-          Array::push(errors, "argument " + __to_string(found + 1) + " of " + name + " is positional (the declaration writes `_` before it): remove `" + label + " = `" + marker)
+        if found >= 0 && checker_header_name_is_positional(Array::get(names, at = found)) {
+          Array::push(errors, value = "argument " + __to_string(found + 1) + " of " + name + " is positional (the declaration writes `_` before it): remove `" + label + " = `" + marker)
         } else {
           ()
         }
         match slots {
           Some(_) => (),
           None => if found < 0 {
-            Array::push(errors, "unknown labeled argument `" + label + "` for " + name + marker)
+            Array::push(errors, value = "unknown labeled argument `" + label + "` for " + name + marker)
           } else if ai != found {
-            Array::push(errors, "labeled argument `" + label + "` for " + name + " is out of declared parameter order" + marker)
+            Array::push(errors, value = "labeled argument `" + label + "` for " + name + " is out of declared parameter order" + marker)
           } else {
             ()
           }
@@ -518,8 +518,8 @@ fn placement_check_declared(name: String, offset: Int, args: Array[Expr], names:
       _ => ai
     }
     match defaults {
-      Some(flags) => if slot < Array::length(flags) && Array::get(flags, slot) && placement_option_value(arg) {
-        Array::push(errors, "argument " + __to_string(slot + 1) + " of " + name + " is a written `None` / `Some(..)` for a parameter with a default, which would read as an omitted argument; bind the value first (`let v: T = None`) and pass `v`, or omit the argument to use the default" + marker)
+      Some(flags) => if slot < Array::length(flags) && Array::get(flags, at = slot) && placement_option_value(arg) {
+        Array::push(errors, value = "argument " + __to_string(slot + 1) + " of " + name + " is a written `None` / `Some(..)` for a parameter with a default, which would read as an omitted argument; bind the value first (`let v: T = None`) and pass `v`, or omit the argument to use the default" + marker)
       } else {
         ()
       },
@@ -530,16 +530,16 @@ fn placement_check_declared(name: String, offset: Int, args: Array[Expr], names:
 }
 
 fn placement_check_uncertain(env: TypeEnv, name: String, offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
-  let uncertain = match env_lookup_binding(env, name) {
+  let uncertain = match env_lookup_binding(env = env, name = name) {
     Some(binding) => match binding.origin {
       BindingOriginUncertainFunctionHeader => true,
-      BindingOriginMutableFunctionHeader(box) => Array::get(box, 0).0 == 2,
+      BindingOriginMutableFunctionHeader(box) => Array::get(box, at = 0).0 == 2,
       _ => false
     },
     None => false
   }
   if uncertain && placement_has_labels(args) {
-    Array::push(errors, "cannot resolve labeled arguments for " + name + ": a branch, loop or closure assigns it a lambda with different parameter names, so a label does not name a position here — call " + name + " positionally, or give every lambda assigned to " + name + " the same parameter names" + off_marker_len(offset, String::length(name)))
+    Array::push(errors, value = "cannot resolve labeled arguments for " + name + ": a branch, loop or closure assigns it a lambda with different parameter names, so a label does not name a position here — call " + name + " positionally, or give every lambda assigned to " + name + " the same parameter names" + off_marker_len(off = offset, len = String::length(name)))
   } else {
     ()
   }
@@ -551,8 +551,8 @@ export fn checker_check_defaulted_value(env: TypeEnv, name: String, offset: Int,
   if checker_call_header_is_probe() {
     ()
   } else {
-    match checker_call_header_defaults(env, name) {
-      Some(_) => Array::push(errors, name + " has parameter defaults, which apply only to a direct call, so it cannot be used as a value; wrap it in a lambda that calls it, e.g. `(a) -> " + name + "(a)`" + off_marker_len(offset, String::length(name))),
+    match checker_call_header_defaults(env = env, name = name) {
+      Some(_) => Array::push(errors, value = name + " has parameter defaults, which apply only to a direct call, so it cannot be used as a value; wrap it in a lambda that calls it, e.g. `(a) -> " + name + "(a)`" + off_marker_len(off = offset, len = String::length(name))),
       None => ()
     }
   }
@@ -561,9 +561,9 @@ export fn checker_check_defaulted_value(env: TypeEnv, name: String, offset: Int,
 /// Receiver/namespace dispatch supplies the declaration it actually resolved.
 /// Capture optional-only calls here as well, without scanning source bindings.
 export fn checker_capture_resolved_call_placement(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int], env: TypeEnv, name: String) -> Unit {
-  let needed = placement_has_labels(args) || checker_call_header_has_optional(env, name)
+  let needed = placement_has_labels(args) || checker_call_header_has_optional(env = env, name = name)
   if needed && !checker_call_header_is_probe() {
-    call_placement_capture_source(callee, args, offset, cell, false)
+    call_placement_capture_source(callee = callee, args = args, offset = offset, cell = cell, macro_call = false)
   } else {
     ()
   }

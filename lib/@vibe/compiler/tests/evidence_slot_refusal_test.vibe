@@ -14,39 +14,39 @@ import @vibe/compiler/syntax {
 // runtime answers for the edits are in
 // `fixtures/callback_row_slot_edits_test.vibe`.
 
-fn refusals(decls: String) -> String with Exception {
+fn refusals(_ decls: String) -> String with Exception {
   let head = "effect Box[T] {\n  Put(T) -> Int\n}\nfn run_str(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\nfn put_abc() -> Int with Box[String] {\n  perform Box::Put(\"abc\")\n}\nfn main() -> Int {\n  go() + run_str(() -> put_abc())\n}\n"
   let stmts = parse_program(lex(String::concat(head, decls)))
-  let errs = evidence_dict_pass(stmts, "main")
+  let errs = evidence_dict_pass(stmts = stmts, entry_name = "main")
   if Array::length(errs) == 0 {
     "clean"
   } else {
-    Array::get(errs, 0)
+    Array::get(errs, at = 0)
   }
 }
 
 test "a call result whose declared type has no row is refused with the row to declare" {
   let msg = refusals("fn mk() -> (() -> Int) {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n")
-  inspect(String::starts_with(msg, "declare the effect row on the function type `mk` returns: `-> ((..) -> T with Box[String])`"), "true")
+  inspect(String::starts_with(msg, prefix = "declare the effect row on the function type `mk` returns: `-> ((..) -> T with Box[String])`"), "true")
   inspect(refusals("fn mk() -> (() -> Int with Box[String]) {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n"), "clean")
 }
 
 test "a parameter with no row passed on is refused with the annotation" {
   let msg = refusals("fn go2(h: () -> Int) -> Int {\n  run_str(h)\n}\nfn go() -> Int {\n  go2(() -> 6)\n}\n")
-  inspect(String::starts_with(msg, "annotate the parameter `h` with the effect row: `h: (..) -> T with Box[String]`"), "true")
-  inspect(String::contains(msg, "`run_str` calls it with one"), "true")
+  inspect(String::starts_with(msg, prefix = "annotate the parameter `h` with the effect row: `h: (..) -> T with Box[String]`"), "true")
+  inspect(String::contains(msg, needle = "`run_str` calls it with one"), "true")
   inspect(refusals("fn go2(h: () -> Int with Box[String]) -> Int {\n  run_str(h)\n}\nfn go() -> Int {\n  go2(() -> 6)\n}\n"), "clean")
 }
 
 test "a closure calling a local it cannot copy is refused with the edit for that local" {
   // A helper that calls another local closure moves to a top-level `fn`.
   let nested = refusals("fn go() -> Int {\n  let inner = () -> 3\n  let helper = () -> inner() + 1\n  run_str(() -> helper())\n}\n")
-  inspect(String::starts_with(nested, "move the local closure `helper` that the function value passed to `run_str` calls to a top-level `fn`"), "true")
+  inspect(String::starts_with(nested, prefix = "move the local closure `helper` that the function value passed to `run_str` calls to a top-level `fn`"), "true")
   // A parameter or a `let mut` called inside: the call moves out.
   let param = refusals("fn go2(h: () -> Int) -> Int {\n  run_str(() -> h() + 1)\n}\nfn go() -> Int {\n  go2(() -> 6)\n}\n")
-  inspect(String::starts_with(param, "call `h` outside the function value passed to `run_str` and use its result there"), "true")
+  inspect(String::starts_with(param, prefix = "call `h` outside the function value passed to `run_str` and use its result there"), "true")
   let mutable = refusals("fn go() -> Int {\n  let mut helper = () -> 3\n  helper = () -> 4\n  run_str(() -> helper())\n}\n")
-  inspect(String::starts_with(mutable, "call `helper` outside"), "true")
+  inspect(String::starts_with(mutable, prefix = "call `helper` outside"), "true")
 }
 
 test "the shapes the stamp handles stay clean" {
@@ -57,7 +57,7 @@ test "the shapes the stamp handles stay clean" {
 
 test "with nothing performing the effect, no dict is passed and nothing is refused" {
   let stmts = parse_program(lex("effect Box[T] {\n  Put(T) -> Int\n}\nfn run_str(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\nfn mk() -> (() -> Int) {\n  () -> 9\n}\nfn main() -> Int {\n  run_str(mk())\n}\n"))
-  inspect(Array::length(evidence_dict_pass(stmts, "main")), "0")
+  inspect(Array::length(evidence_dict_pass(stmts = stmts, entry_name = "main")), "0")
 }
 
 test "a callee that never names the parameter passes no dict, so nothing is refused" {
@@ -70,10 +70,10 @@ test "a slot whose row names several effects with `+` is refused for the migrate
   // Codex on #3467: the row `Box[String] + Log` was read as one label, and the
   // refusal was dropped.
   let stmts = parse_program(lex("effect Box[T] {\n  Put(T) -> Int\n}\neffect Log {\n  Note(Int) -> Int\n}\nfn run2(f: () -> Int with Box[String] + Log) -> Int {\n  handle {\n    handle {\n      f()\n    } with {\n      Box::Put(s) => resume(String::length(s))\n    }\n  } with {\n    Log::Note(n) => resume(n)\n  }\n}\nfn put_abc() -> Int with Box[String] {\n  perform Box::Put(\"abc\")\n}\nfn mk() -> (() -> Int) {\n  () -> 9\n}\nfn main() -> Int {\n  run2(() -> put_abc()) + run2(mk())\n}\n"))
-  let errs = evidence_dict_pass(stmts, "main")
+  let errs = evidence_dict_pass(stmts = stmts, entry_name = "main")
   let mut hit = false
   for e in errs {
-    if String::starts_with(e, "declare the effect row on the function type `mk` returns") {
+    if String::starts_with(e, prefix = "declare the effect row on the function type `mk` returns") {
       hit = true
     }
   }
@@ -84,13 +84,13 @@ test "a call's closure returned at a declared row is refused with the row to dec
   // #3472: the callee declares a row-free result, so the closure it hands
   // back takes no dict, and the caller of `direct` passes one.
   let direct = refusals("fn pf() -> (() -> Int) {\n  () -> 8\n}\nfn direct() -> (() -> Int with Box[String]) {\n  pf()\n}\nfn go() -> Int {\n  run_str(direct())\n}\n")
-  inspect(String::starts_with(direct, "declare the effect row on the function type `pf` returns: `-> ((..) -> T with Box[String])`"), "true")
-  inspect(String::contains(direct, "returned from here at that row"), "true")
+  inspect(String::starts_with(direct, prefix = "declare the effect row on the function type `pf` returns: `-> ((..) -> T with Box[String])`"), "true")
+  inspect(String::contains(direct, needle = "returned from here at that row"), "true")
   let named = refusals("fn pf() -> (() -> Int) {\n  () -> 8\n}\nfn direct() -> (() -> Int with Box[String]) {\n  let f = pf()\n  f\n}\nfn go() -> Int {\n  run_str(direct())\n}\n")
-  inspect(String::starts_with(named, "declare the effect row on the function type `pf` returns"), "true")
+  inspect(String::starts_with(named, prefix = "declare the effect row on the function type `pf` returns"), "true")
   // So is one a returned `let mut` may hold, beside a literal.
   let held = refusals("fn pf() -> (() -> Int) {\n  () -> 8\n}\nfn direct(c: Bool) -> (() -> Int with Box[String]) {\n  let mut f = () -> put_abc()\n  if c {\n    f = pf()\n  } else {\n    ()\n  }\n  f\n}\nfn go() -> Int {\n  run_str(direct(true))\n}\n")
-  inspect(String::starts_with(held, "declare the effect row on the function type `pf` returns"), "true")
+  inspect(String::starts_with(held, prefix = "declare the effect row on the function type `pf` returns"), "true")
   inspect(refusals("fn rf() -> (() -> Int with Box[String]) {\n  () -> 8\n}\nfn direct(c: Bool) -> (() -> Int with Box[String]) {\n  let mut f = () -> put_abc()\n  if c {\n    f = rf()\n  } else {\n    ()\n  }\n  f\n}\nfn go() -> Int {\n  run_str(direct(true))\n}\n"), "clean")
   // A callee whose result already carries the row hands back a closure
   // that takes the dict.
@@ -101,10 +101,10 @@ test "a slot whose row is an effectset alias is refused for the effect it names"
   // Codex on #3467: `with AskAll` was compared as the label `AskAll` against
   // the migrated `Ask`, and the refusal was dropped.
   let stmts = parse_program(lex("effect Ask {\n  Get() -> Int\n}\neffectset AskAll = { Ask }\nfn run_ask(f: () -> Int with AskAll) -> Int {\n  handle {\n    f()\n  } with {\n    Ask::Get() => resume(7)\n  }\n}\nfn get_one() -> Int with Ask {\n  perform Ask::Get()\n}\nfn mk() -> (() -> Int) {\n  () -> 9\n}\nfn main() -> Int {\n  run_ask(() -> get_one()) + run_ask(mk())\n}\n"))
-  let errs = evidence_dict_pass(stmts, "main")
+  let errs = evidence_dict_pass(stmts = stmts, entry_name = "main")
   let mut hit = false
   for e in errs {
-    if String::starts_with(e, "declare the effect row on the function type `mk` returns") {
+    if String::starts_with(e, prefix = "declare the effect row on the function type `mk` returns") {
       hit = true
     }
   }
@@ -114,17 +114,17 @@ test "a slot whose row is an effectset alias is refused for the effect it names"
 test "a call result whose row-free function type is spelled through an alias is refused" {
   // Codex on #3467: `fn mk() -> Thunk` with `type Thunk = () -> Int`.
   let msg = refusals("type Thunk = () -> Int\nfn mk() -> Thunk {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n")
-  inspect(String::starts_with(msg, "declare the effect row on the function type `mk` returns"), "true")
+  inspect(String::starts_with(msg, prefix = "declare the effect row on the function type `mk` returns"), "true")
   inspect(refusals("type Thunk = () -> Int with Box[String]\nfn mk() -> Thunk {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n"), "clean")
   // An applied generic alias too.
   let applied = refusals("type Thunk[T] = () -> T\nfn mk() -> Thunk[Int] {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n")
-  inspect(String::starts_with(applied, "declare the effect row on the function type `mk` returns"), "true")
+  inspect(String::starts_with(applied, prefix = "declare the effect row on the function type `mk` returns"), "true")
 }
 
 test "a method-style factory's row-free closure returned at a row is refused" {
   // Codex on #3467: `maker.mk()` is `ECall(EDot(..))`, not a call by name.
   let msg = refusals("struct Maker {\n  k: Int\n}\nfn Maker::mk(m: Maker) -> (() -> Int) {\n  () -> m.k\n}\nfn direct(maker: Maker) -> (() -> Int with Box[String]) {\n  maker.mk()\n}\nfn go() -> Int {\n  run_str(direct(Maker::{ k: 9 }))\n}\n")
-  inspect(String::starts_with(msg, "declare the effect row on the function type `Maker::mk` returns"), "true")
+  inspect(String::starts_with(msg, prefix = "declare the effect row on the function type `Maker::mk` returns"), "true")
   inspect(refusals("struct Maker {\n  k: Int\n}\nfn Maker::mk(m: Maker) -> (() -> Int with Box[String]) {\n  () -> m.k\n}\nfn direct(maker: Maker) -> (() -> Int with Box[String]) {\n  maker.mk()\n}\nfn go() -> Int {\n  run_str(direct(Maker::{ k: 9 }))\n}\n"), "clean")
 }
 
@@ -133,30 +133,30 @@ test "a method name shared with a row-carrying method is still refused for the r
   // the refusal for `Maker::mk`; this pass cannot tell which the receiver
   // selects, and the named edit compiles either way.
   let msg = refusals("struct Maker {\n  k: Int\n}\nstruct Other {\n  k: Int\n}\nfn Maker::mk(m: Maker) -> (() -> Int) {\n  () -> m.k\n}\nfn Other::mk(o: Other) -> (() -> Int with Box[String]) {\n  () -> o.k\n}\nfn direct(maker: Maker) -> (() -> Int with Box[String]) {\n  maker.mk()\n}\nfn go() -> Int {\n  run_str(direct(Maker::{ k: 9 }))\n}\n")
-  inspect(String::starts_with(msg, "declare the effect row on the function type `Maker::mk` returns"), "true")
+  inspect(String::starts_with(msg, prefix = "declare the effect row on the function type `Maker::mk` returns"), "true")
 }
 
 test "a method-call result passed to a row-typed slot is refused for a row-free method" {
   // Codex on #3467: `run_str(maker.mk())`; the statement holds no literal,
   // and the argument scan took only calls by name.
   let msg = refusals("struct Maker {\n  k: Int\n}\nfn Maker::mk(m: Maker) -> (() -> Int) {\n  () -> m.k\n}\nfn go() -> Int {\n  let maker = Maker::{ k: 9 }\n  run_str(maker.mk())\n}\n")
-  inspect(String::starts_with(msg, "declare the effect row on the function type `Maker::mk` returns"), "true")
+  inspect(String::starts_with(msg, prefix = "declare the effect row on the function type `Maker::mk` returns"), "true")
 }
 
 test "a value passed to a labeled row-typed slot is refused like a positional one" {
   // Codex on #3467: `run_str(f = h)` wrapped the value in a labeled argument,
   // and the statement was not selected for the check.
   let param = refusals("fn go2(h: () -> Int) -> Int {\n  run_str(f = h)\n}\nfn go() -> Int {\n  go2(() -> 6)\n}\n")
-  inspect(String::starts_with(param, "annotate the parameter `h` with the effect row"), "true")
+  inspect(String::starts_with(param, prefix = "annotate the parameter `h` with the effect row"), "true")
   let result = refusals("fn mk() -> (() -> Int) {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(f = mk())\n}\n")
-  inspect(String::starts_with(result, "declare the effect row on the function type `mk` returns"), "true")
+  inspect(String::starts_with(result, prefix = "declare the effect row on the function type `mk` returns"), "true")
   inspect(refusals("fn mk() -> (() -> Int with Box[String]) {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(f = mk())\n}\n"), "clean")
 }
 
 test "an applied alias whose body is its parameter declares the argument's function type" {
   // Codex on #3467: `Id[() -> Int]` expanded to the raw body `T`.
   let msg = refusals("type Id[T] = T\nfn mk() -> Id[() -> Int] {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n")
-  inspect(String::starts_with(msg, "declare the effect row on the function type `mk` returns"), "true")
+  inspect(String::starts_with(msg, prefix = "declare the effect row on the function type `mk` returns"), "true")
   inspect(refusals("type Id[T] = T\nfn mk() -> Id[() -> Int with Box[String]] {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n"), "clean")
 }
 
@@ -164,14 +164,14 @@ test "an alias's constructor parameter in head position takes the alias it is gi
   // Codex on #3467: `Apply[Thunk, Int]` read as `F[Int]`, so `mk`'s row-free
   // result was not seen.
   let msg = refusals("type Apply[F[_], A] = F[A]\ntype Thunk[T] = () -> T\nfn mk() -> Apply[Thunk, Int] {\n  () -> 9\n}\nfn go() -> Int {\n  run_str(mk())\n}\n")
-  inspect(String::starts_with(msg, "declare the effect row on the function type `mk` returns"), "true")
+  inspect(String::starts_with(msg, prefix = "declare the effect row on the function type `mk` returns"), "true")
 }
 
 test "two aliases of one name from two modules: a row-free reading is refused" {
   // Codex on #3467: the merged program can hold two `Thunk`, and the last one
   // was read whichever module `mk` came from.
   let msg = refusals("type Thunk = () -> Int\nfn mk() -> Thunk {\n  () -> 9\n}\ntype Thunk = () -> Int with Box[String]\nfn go() -> Int {\n  run_str(mk())\n}\n")
-  inspect(String::starts_with(msg, "declare the effect row on the function type `mk` returns"), "true")
+  inspect(String::starts_with(msg, prefix = "declare the effect row on the function type `mk` returns"), "true")
 }
 
 test "a generic callback field needs explicit type arguments or a declared result context" {
@@ -182,8 +182,8 @@ test "a generic callback field needs explicit type arguments or a declared resul
   // passed one, and the program trapped.
   let holder = "struct Holder[T] {\n  f: () -> Int with Box[T]\n}\n"
   let inferred = refusals(String::concat(holder, "fn go() -> Int {\n  let h = Holder::{ f: () -> 9 }\n  run_str(h.f)\n}\n"))
-  inspect(String::starts_with(inferred, "write the type arguments of `Holder` on the literal (`Holder[..]::{ .. }`) or annotate the binding it is assigned to"), "true")
-  inspect(String::contains(inferred, "the field `f` is declared `with Box[T]`, which names the type parameter `T`"), "true")
+  inspect(String::starts_with(inferred, prefix = "write the type arguments of `Holder` on the literal (`Holder[..]::{ .. }`) or annotate the binding it is assigned to"), "true")
+  inspect(String::contains(inferred, needle = "the field `f` is declared `with Box[T]`, which names the type parameter `T`"), "true")
   let returned = refusals(String::concat(holder, "fn mk() -> Holder[String] {\n  Holder::{ f: () -> 9 }\n}\nfn go() -> Int {\n  run_str(mk().f)\n}\n"))
   inspect(returned, "clean")
   inspect(refusals(String::concat(holder, "fn go() -> Int {\n  let h = Holder[String]::{ f: () -> 9 }\n  run_str(h.f)\n}\n")), "clean")
@@ -191,5 +191,5 @@ test "a generic callback field needs explicit type arguments or a declared resul
   inspect(refusals(String::concat(holder, "fn go() -> Int {\n  let h = Holder::{ f: () -> Int with Box[String] { 9 } }\n  run_str(h.f)\n}\n")), "clean")
   // A written argument a row item cannot spell asks for an alias that names it.
   let tuple = refusals(String::concat(holder, "fn go() -> Int {\n  let h = Holder[(Int, Int)]::{ f: () -> 9 }\n  run_str(h.f)\n}\n"))
-  inspect(String::starts_with(tuple, "name the type argument of `Holder` with a `type` alias"), "true")
+  inspect(String::starts_with(tuple, prefix = "name the type argument of `Holder` with a `type` alias"), "true")
 }

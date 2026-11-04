@@ -25,7 +25,7 @@ test "compiler ripple many keys roundtrip" {
     } else {
       let path = String::concat("m", Int::to_string(i))
       let src = String::concat("src", Int::to_string(i))
-      fill(ripple_set_source(db, path, src), i + 1)
+      fill(ripple_set_source(db = db, path = path, source = src), i + 1)
     }
   }
   let db = fill(ripple_new(), 0)
@@ -35,7 +35,7 @@ test "compiler ripple many keys roundtrip" {
     } else {
       let path = String::concat("m", Int::to_string(i))
       let expect = String::concat("src", Int::to_string(i))
-      match ripple_get_source(db, path) {
+      match ripple_get_source(db = db, path = path) {
         Some(src) => {
           if src == expect {
             check(i + 1)
@@ -48,7 +48,7 @@ test "compiler ripple many keys roundtrip" {
     }
   }
   assert(check(0))
-  match ripple_get_source(db, "nope.vibe") {
+  match ripple_get_source(db = db, path = "nope.vibe") {
     Some(_) => assert(false),
     None => assert(true)
   }
@@ -57,9 +57,9 @@ test "compiler ripple many keys roundtrip" {
 /// Re-setting an existing key overwrites in place (no duplicate / growth bug).
 test "compiler ripple overwrite same key" {
   let db0 = ripple_new()
-  let db1 = ripple_set_source(db0, "a.vibe", "v1")
-  let db2 = ripple_set_source(db1, "a.vibe", "v2")
-  match ripple_get_source(db2, "a.vibe") {
+  let db1 = ripple_set_source(db = db0, path = "a.vibe", source = "v1")
+  let db2 = ripple_set_source(db = db1, path = "a.vibe", source = "v2")
+  match ripple_get_source(db = db2, path = "a.vibe") {
     Some(src) => assert(src == "v2"),
     None => assert(false)
   }
@@ -67,8 +67,8 @@ test "compiler ripple overwrite same key" {
 
 test "compiler ripple set/get source" {
   let db0 = ripple_new()
-  let db1 = ripple_set_source(db0, "a.vibe", "let x = 1")
-  match ripple_get_source(db1, "a.vibe") {
+  let db1 = ripple_set_source(db = db0, path = "a.vibe", source = "let x = 1")
+  match ripple_get_source(db = db1, path = "a.vibe") {
     Some(src) => assert(src == "let x = 1"),
     None => assert(false)
   }
@@ -76,46 +76,58 @@ test "compiler ripple set/get source" {
 
 test "compiler ripple record eval increments only on fingerprint change" {
   let db0 = ripple_new()
-  let db1 = ripple_record_eval(db0, "a.vibe", "fp1", ["b.vibe"])
+  let db1 = ripple_record_eval(db = db0, path = "a.vibe", fingerprint = "fp1", deps = [
+    "b.vibe"
+  ])
   assert(eq(ripple_eval_count(db1), 1))
-  let db2 = ripple_record_eval(db1, "a.vibe", "fp1", ["b.vibe"])
+  let db2 = ripple_record_eval(db = db1, path = "a.vibe", fingerprint = "fp1", deps = [
+    "b.vibe"
+  ])
   assert(eq(ripple_eval_count(db2), 1))
-  let db3 = ripple_record_eval(db2, "a.vibe", "fp2", ["b.vibe"])
+  let db3 = ripple_record_eval(db = db2, path = "a.vibe", fingerprint = "fp2", deps = [
+    "b.vibe"
+  ])
   assert(eq(ripple_eval_count(db3), 2))
 }
 
 test "compiler ripple stores latest fingerprint" {
   let db0 = ripple_new()
-  let db1 = ripple_record_eval(db0, "a.vibe", "fp1", ["b.vibe"])
-  let db2 = ripple_record_eval(db1, "a.vibe", "fp2", ["c.vibe"])
-  match ripple_get_fingerprint(db2, "a.vibe") {
+  let db1 = ripple_record_eval(db = db0, path = "a.vibe", fingerprint = "fp1", deps = [
+    "b.vibe"
+  ])
+  let db2 = ripple_record_eval(db = db1, path = "a.vibe", fingerprint = "fp2", deps = [
+    "c.vibe"
+  ])
+  match ripple_get_fingerprint(db = db2, path = "a.vibe") {
     Some(fp) => assert(fp == "fp2"),
     None => assert(false)
   }
 }
 
 test "ripple source paths exclude fingerprint records and cannot mutate the map" {
-  let db = ripple_set_source(ripple_new(), "a.vibe", "one")
-  let db = ripple_set_source(db, "a.vibe", "two")
-  let db = ripple_record_eval(db, "only-fingerprint.vibe", "fp", [])
+  let db = ripple_set_source(db = ripple_new(), path = "a.vibe", source = "one")
+  let db = ripple_set_source(db = db, path = "a.vibe", source = "two")
+  let db = ripple_record_eval(db = db, path = "only-fingerprint.vibe", fingerprint = "fp", deps = [
+  ])
   let paths = ripple_source_paths(db)
   inspect(Array::length(paths), content = "1")
-  inspect(Array::get(paths, 0), content = "a.vibe")
-  Array::set(paths, 0, "changed.vibe")
-  inspect(Array::get(ripple_source_paths(db), 0), content = "a.vibe")
-  inspect(ripple_get_source(db, "a.vibe"), content = "Some(two)")
+  inspect(Array::get(paths, at = 0), content = "a.vibe")
+  Array::set(paths, at = 0, value = "changed.vibe")
+  inspect(Array::get(ripple_source_paths(db), at = 0), content = "a.vibe")
+  inspect(ripple_get_source(db = db, path = "a.vibe"), content = "Some(two)")
 }
 
 test "source membership revision changes only when a new source is inserted" {
   let db = ripple_new()
   inspect(ripple_source_revision(db), content = "0")
-  let db = ripple_record_eval(db, "a.vibe", "fp", [])
+  let db = ripple_record_eval(db = db, path = "a.vibe", fingerprint = "fp", deps = [
+  ])
   inspect(ripple_source_revision(db), content = "0")
-  let db = ripple_set_source(db, "a.vibe", "one")
+  let db = ripple_set_source(db = db, path = "a.vibe", source = "one")
   inspect(ripple_source_revision(db), content = "1")
-  let db = ripple_set_source(db, "a.vibe", "two")
+  let db = ripple_set_source(db = db, path = "a.vibe", source = "two")
   inspect(ripple_source_revision(db), content = "1")
-  let db = ripple_set_source(db, "b.vibe", "three")
+  let db = ripple_set_source(db = db, path = "b.vibe", source = "three")
   inspect(ripple_source_revision(db), content = "2")
   inspect(ripple_eval_count(db), content = "1")
 }

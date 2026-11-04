@@ -25,15 +25,15 @@ import @vibe/compiler/syntax {
 
 //# Functions
 
-fn first_located_error(source: String) -> String {
+fn first_located_error(_ source: String) -> String {
   handle {
     let (tokens, starts, _) = lex_with_offsets(source)
-    let _ = check_program(parse_program_located(tokens, starts, source))
+    let _ = check_program(parse_program_located(tokens = tokens, starts = starts, source = source))
     ""
   } with { Exception::Throw(msg) => msg }
 }
 
-fn parse_uint(s: String) -> Int {
+fn parse_uint(_ s: String) -> Int {
   let len = String::length(s)
   if len == 0 {
     0 - 1
@@ -42,7 +42,7 @@ fn parse_uint(s: String) -> Int {
     let mut acc = 0
     let mut ok = true
     while ok && i < len {
-      let c = String::char_code_at(s, i)
+      let c = String::char_code_at(s, at = i)
       if c >= 48 && c <= 57 {
         acc = acc * 10 + (c - 48)
         i = i + 1
@@ -60,23 +60,23 @@ fn parse_uint(s: String) -> Int {
 
 /// Decode `[@off=N]` / `[@off=N:M]` the same way `locate_type_error` does.
 /// Returns (start, end). end is -1 when the marker is start-only.
-fn parse_off_span(msg: String) -> (Int, Int) {
+fn parse_off_span(_ msg: String) -> (Int, Int) {
   let key = " [@off="
-  let mi = String::index_of(msg, key)
+  let mi = String::index_of(msg, needle = key)
   if mi < 0 {
     (0 - 1, 0 - 1)
   } else {
-    let rest = String::substring(msg, mi + String::length(key), String::length(msg))
-    let close = String::index_of(rest, "]")
+    let rest = String::substring(msg, start = mi + String::length(key), end = String::length(msg))
+    let close = String::index_of(rest, needle = "]")
     if close < 0 {
       (0 - 1, 0 - 1)
     } else {
-      let inner = String::substring(rest, 0, close)
-      let colon = String::index_of(inner, ":")
+      let inner = String::substring(rest, start = 0, end = close)
+      let colon = String::index_of(inner, needle = ":")
       if colon < 0 {
         (parse_uint(inner), 0 - 1)
       } else {
-        (parse_uint(String::substring(inner, 0, colon)), parse_uint(String::substring(inner, colon + 1, String::length(inner))))
+        (parse_uint(String::substring(inner, start = 0, end = colon)), parse_uint(String::substring(inner, start = colon + 1, end = String::length(inner))))
       }
     }
   }
@@ -86,7 +86,7 @@ fn occ_contains(occ: Array[(Int, Int)], start: Int, endo: Int) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(occ) {
-    let (s, e) = Array::get(occ, i)
+    let (s, e) = Array::get(occ, at = i)
     if s == start && e == endo {
       found = true
     } else {
@@ -103,20 +103,20 @@ fn occ_contains(occ: Array[(Int, Int)], start: Int, endo: Int) -> Bool {
 test "check and binding-at slice the same unknown identifier quux" {
   let src = "let x = quux\n"
   let token = "quux"
-  let start = String::index_of(src, token)
+  let start = String::index_of(src, needle = token)
   let endo = start + String::length(token)
   assert(start >= 0)
-  assert(String::substring(src, start, endo) == token)
+  assert(String::substring(src, start = start, end = endo) == token)
   let msg = first_located_error(src)
-  assert(String::contains(msg, "unknown name: quux"))
+  assert(String::contains(msg, needle = "unknown name: quux"))
   let (off, off_end) = parse_off_span(msg)
   assert(off == start)
   assert(off_end == endo)
-  let (line, col) = offset_to_line_col(src, off)
+  let (line, col) = offset_to_line_col(source = src, offset = off)
   assert(line > 0)
   assert(col > 0)
-  let occ = binding_occurrences(src, line, col)
-  assert(occ_contains(occ, start, endo))
+  let occ = binding_occurrences(source = src, line = line, col = col)
+  assert(occ_contains(occ = occ, start = start, endo = endo))
 }
 
 /// `fn f() -> Int { "s" }` — the diagnostic is located at the LITERAL.
@@ -131,20 +131,20 @@ test "return-type mismatch on a literal is located at the literal (#1941, #2199)
   let src = "fn f() -> Int { \"s\" }"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) == 1)
-  let msg = Array::get(diags, 0)
-  assert(String::contains(msg, "return type mismatch"))
-  assert(String::contains(msg, "line "))
-  assert(String::contains(msg, "line 1:1:") == false)
-  let lit_off = String::index_of(src, "\"s\"")
-  assert(String::substring(src, lit_off, lit_off + 3) == "\"s\"")
-  let (line, col) = offset_to_line_col(src, lit_off)
+  let msg = Array::get(diags, at = 0)
+  assert(String::contains(msg, needle = "return type mismatch"))
+  assert(String::contains(msg, needle = "line "))
+  assert(String::contains(msg, needle = "line 1:1:") == false)
+  let lit_off = String::index_of(src, needle = "\"s\"")
+  assert(String::substring(src, start = lit_off, end = lit_off + 3) == "\"s\"")
+  let (line, col) = offset_to_line_col(source = src, offset = lit_off)
   let want = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), "-"))))
-  assert(String::contains(msg, want))
+  assert(String::contains(msg, needle = want))
   // Not the fn name it used to fall back to.
-  let name_off = String::index_of(src, "fn f") + 3
-  let (nline, ncol) = offset_to_line_col(src, name_off)
+  let name_off = String::index_of(src, needle = "fn f") + 3
+  let (nline, ncol) = offset_to_line_col(source = src, offset = name_off)
   let name_want = String::concat("line ", String::concat(__to_string(nline), String::concat(":", String::concat(__to_string(ncol), "-"))))
-  assert(String::contains(msg, name_want) == false)
+  assert(String::contains(msg, needle = name_want) == false)
 }
 
 /// A preceding well-typed `fn` must not steal the range: the located literal
@@ -153,13 +153,13 @@ test "return-type mismatch points at the culpable literal, not an earlier fn (#1
   let src = "fn ok() -> Int { 1 }\nfn f() -> Int { \"s\" }"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) == 1)
-  let msg = Array::get(diags, 0)
-  assert(String::contains(msg, "return type mismatch"))
-  let lit_off = String::index_of(src, "\"s\"")
-  assert(String::substring(src, lit_off, lit_off + 3) == "\"s\"")
-  let (line, col) = offset_to_line_col(src, lit_off)
+  let msg = Array::get(diags, at = 0)
+  assert(String::contains(msg, needle = "return type mismatch"))
+  let lit_off = String::index_of(src, needle = "\"s\"")
+  assert(String::substring(src, start = lit_off, end = lit_off + 3) == "\"s\"")
+  let (line, col) = offset_to_line_col(source = src, offset = lit_off)
   assert(line == 2)
   let want = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), "-"))))
-  assert(String::contains(msg, want))
-  assert(String::contains(msg, "line 1:") == false)
+  assert(String::contains(msg, needle = want))
+  assert(String::contains(msg, needle = "line 1:") == false)
 }

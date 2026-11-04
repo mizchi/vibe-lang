@@ -28,23 +28,23 @@ import @vibe/compiler/runtime {
 
 fn projected(interfaces: DependencyInterfaceSet, source: String) -> TypeEnv with Env + Exception {
   let errors: Array[String] = []
-  let (env, _) = build_import_envs_from_interfaces(parse_program(lex(source)), "/", interfaces, [
+  let (env, _) = build_import_envs_from_interfaces(stmts = parse_program(lex(source)), base_dir = "/", interfaces = interfaces, dependency_paths = [
     "/dep.vibe"
-  ], errors)
+  ], unresolved = errors)
   assert(Array::length(errors) == 0)
   env
 }
 
 test "multiple importers keep independent aliases and original provenance" {
   let interfaces = dependency_interface_set_new()
-  let dep = env_bind_with_origin(EnvEmpty, "value", CtInt, BindingOriginModuleExport("/dep.vibe", "value"))
-  dependency_interface_set_publish(interfaces, "/dep.vibe", dep)
-  let a = projected(interfaces, "import ./dep.vibe { value as left }")
-  let b = projected(interfaces, "import ./dep.vibe { value as right }")
-  assert(env_lookup(a, "left") == Some(CtInt))
-  assert(env_lookup(b, "right") == Some(CtInt))
-  assert(env_lookup(a, "right") == None && env_lookup(b, "left") == None)
-  match env_lookup_binding(b, "right") {
+  let dep = env_bind_with_origin(env = EnvEmpty, name = "value", ty = CtInt, origin = BindingOriginModuleExport("/dep.vibe", "value"))
+  dependency_interface_set_publish(interfaces = interfaces, path = "/dep.vibe", env = dep)
+  let a = projected(interfaces = interfaces, source = "import ./dep.vibe { value as left }")
+  let b = projected(interfaces = interfaces, source = "import ./dep.vibe { value as right }")
+  assert(env_lookup(env = a, name = "left") == Some(CtInt))
+  assert(env_lookup(env = b, name = "right") == Some(CtInt))
+  assert(env_lookup(env = a, name = "right") == None && env_lookup(env = b, name = "left") == None)
+  match env_lookup_binding(env = b, name = "right") {
     Some(binding) => match binding.origin {
       BindingOriginModuleExport(path, name) => assert(path == "/dep.vibe" && name == "value"),
       _ => assert(false)
@@ -55,72 +55,74 @@ test "multiple importers keep independent aliases and original provenance" {
 
 test "a replacement publication at the same path supplies fresh facts" {
   let interfaces = dependency_interface_set_new()
-  dependency_interface_set_publish(interfaces, "/dep.vibe", env_bind(EnvEmpty, "value", CtInt))
-  let a = projected(interfaces, "import ./dep.vibe { value }")
-  dependency_interface_set_publish(interfaces, "/dep.vibe", env_bind(EnvEmpty, "value", CtString))
-  let b = projected(interfaces, "import ./dep.vibe { value }")
-  assert(env_lookup(a, "value") == Some(CtInt))
-  assert(env_lookup(b, "value") == Some(CtString))
+  dependency_interface_set_publish(interfaces = interfaces, path = "/dep.vibe", env = env_bind(env = EnvEmpty, name = "value", ty = CtInt))
+  let a = projected(interfaces = interfaces, source = "import ./dep.vibe { value }")
+  dependency_interface_set_publish(interfaces = interfaces, path = "/dep.vibe", env = env_bind(env = EnvEmpty, name = "value", ty = CtString))
+  let b = projected(interfaces = interfaces, source = "import ./dep.vibe { value }")
+  assert(env_lookup(env = a, name = "value") == Some(CtInt))
+  assert(env_lookup(env = b, name = "value") == Some(CtString))
 }
 
 test "shared declaration facts never publish a previous importer's selected aliases" {
   let interfaces = dependency_interface_set_new()
   let dep = EnvTypeDefs([TDStruct("Point", [("x", CtInt)], [], [])], ["Point"], EnvEmpty)
-  dependency_interface_set_publish(interfaces, "/dep.vibe", dep)
-  let a = projected(interfaces, "import ./dep.vibe { struct Point as Left }")
-  let b = projected(interfaces, "import ./dep.vibe { struct Point as Right }")
+  dependency_interface_set_publish(interfaces = interfaces, path = "/dep.vibe", env = dep)
+  let a = projected(interfaces = interfaces, source = "import ./dep.vibe { struct Point as Left }")
+  let b = projected(interfaces = interfaces, source = "import ./dep.vibe { struct Point as Right }")
   assert(Array::length(env_selectable_type_defs(a)) == 1)
-  assert(Array::get(env_selectable_type_defs(a), 0) == "Left")
+  assert(Array::get(env_selectable_type_defs(a), at = 0) == "Left")
   assert(Array::length(env_selectable_type_defs(b)) == 1)
-  assert(Array::get(env_selectable_type_defs(b), 0) == "Right")
+  assert(Array::get(env_selectable_type_defs(b), at = 0) == "Right")
 }
 
 test "views ignore stale accelerator rows and retain authoritative bindings" {
   let interfaces = dependency_interface_set_new()
-  let dep = env_cached(["value"], [env_value_binding(CtString)], env_bind(EnvEmpty, "value", CtInt))
-  dependency_interface_set_publish(interfaces, "/dep.vibe", dep)
-  let env = projected(interfaces, "import ./dep.vibe { value }")
-  assert(env_lookup(env, "value") == Some(CtInt))
+  let dep = env_cached(names = ["value"], bindings = [
+    env_value_binding(CtString)
+  ], rest = env_bind(env = EnvEmpty, name = "value", ty = CtInt))
+  dependency_interface_set_publish(interfaces = interfaces, path = "/dep.vibe", env = dep)
+  let env = projected(interfaces = interfaces, source = "import ./dep.vibe { value }")
+  assert(env_lookup(env = env, name = "value") == Some(CtInt))
 }
 
 test "foreign definitions sharing a name retain the collision diagnostic" {
   let interfaces = dependency_interface_set_new()
-  let a = EnvTypeDefs([TDStruct("Shared", [("x", CtInt)], [], [])], ["Shared"], env_bind(EnvEmpty, "left", CtFn([
+  let a = EnvTypeDefs([TDStruct("Shared", [("x", CtInt)], [], [])], ["Shared"], env_bind(env = EnvEmpty, name = "left", ty = CtFn([
   ], CtStruct("Shared"), None)))
   let b = EnvTypeDefs([TDStruct("Shared", [("y", CtString)], [], [])], [
     "Shared"
-  ], env_bind(EnvEmpty, "right", CtFn([], CtStruct("Shared"), None)))
-  dependency_interface_set_publish(interfaces, "/a.vibe", a)
-  dependency_interface_set_publish(interfaces, "/b.vibe", b)
+  ], env_bind(env = EnvEmpty, name = "right", ty = CtFn([], CtStruct("Shared"), None)))
+  dependency_interface_set_publish(interfaces = interfaces, path = "/a.vibe", env = a)
+  dependency_interface_set_publish(interfaces = interfaces, path = "/b.vibe", env = b)
   let errors: Array[String] = []
   let source = "import ./a.vibe { left }\nimport ./b.vibe { right }"
-  build_import_envs_from_interfaces(parse_program(lex(source)), "/", interfaces, [
+  build_import_envs_from_interfaces(stmts = parse_program(lex(source)), base_dir = "/", interfaces = interfaces, dependency_paths = [
     "/a.vibe",
     "/b.vibe"
-  ], errors)
+  ], unresolved = errors)
   assert(Array::length(errors) == 1)
-  inspect(Array::get(errors, 0), "`Shared` used by `right` from './b.vibe' and `Shared` used by `left` from './a.vibe' are different types that share the name `Shared`, and the checker would treat them as one; import only one of them, or rename one of the types")
+  inspect(Array::get(errors, at = 0), "`Shared` used by `right` from './b.vibe' and `Shared` used by `left` from './a.vibe' are different types that share the name `Shared`, and the checker would treat them as one; import only one of them, or rename one of the types")
 }
 
 test "the shared snapshot includes its construction cost and avoids repeated binding copies" {
   let mut dep = EnvEmpty
   let mut i = 0
   while i < 1024 {
-    dep = env_bind(dep, String::concat("binding_", __to_string(i)), CtInt)
+    dep = env_bind(env = dep, name = String::concat("binding_", __to_string(i)), ty = CtInt)
     i = i + 1
   }
   let statements = parse_program(lex("import ./dep.vibe { binding_0 as chosen }"))
   let start = Profiler::heap_bytes()
   let interfaces = dependency_interface_set_new()
-  dependency_interface_set_publish(interfaces, "/dep.vibe", dep)
+  dependency_interface_set_publish(interfaces = interfaces, path = "/dep.vibe", env = dep)
   i = 0
   while i < 8 {
     let errors: Array[String] = []
-    let (env, _) = build_import_envs_from_interfaces(statements, "/", interfaces, [
+    let (env, _) = build_import_envs_from_interfaces(stmts = statements, base_dir = "/", interfaces = interfaces, dependency_paths = [
       "/dep.vibe"
-    ], errors)
+    ], unresolved = errors)
     assert(Array::length(errors) == 0)
-    assert(env_lookup(env, "chosen") == Some(CtInt))
+    assert(env_lookup(env = env, name = "chosen") == Some(CtInt))
     i = i + 1
   }
   let allocated = Profiler::heap_bytes() - start
@@ -132,10 +134,12 @@ test "a stale accelerator cannot replace the declaration's module provenance" {
   let interfaces = dependency_interface_set_new()
   let original = BindingOriginModuleExport("/actual.vibe", "original")
   let stale = BindingOriginModuleExport("/wrong.vibe", "wrong")
-  let dep = env_cached(["value"], [env_value_binding_with_origin(CtInt, stale)], env_bind_with_origin(EnvEmpty, "value", CtInt, original))
-  dependency_interface_set_publish(interfaces, "/dep.vibe", dep)
-  let env = projected(interfaces, "import ./dep.vibe { value as selected }")
-  match env_lookup_binding(env, "selected") {
+  let dep = env_cached(names = ["value"], bindings = [
+    env_value_binding_with_origin(ty = CtInt, origin = stale)
+  ], rest = env_bind_with_origin(env = EnvEmpty, name = "value", ty = CtInt, origin = original))
+  dependency_interface_set_publish(interfaces = interfaces, path = "/dep.vibe", env = dep)
+  let env = projected(interfaces = interfaces, source = "import ./dep.vibe { value as selected }")
+  match env_lookup_binding(env = env, name = "selected") {
     Some(binding) => match binding.origin {
       BindingOriginModuleExport(path, name) => assert(path == "/actual.vibe" && name == "original"),
       _ => assert(false)

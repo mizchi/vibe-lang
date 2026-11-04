@@ -38,7 +38,7 @@ export struct LinkedFunctionPlan {
 ///
 /// `rc_query.vibe` seeds the same set (`rcq_body_free_names`) so `vibe
 /// rc-plan` keeps planning the body this lane compiles.
-fn lc_body_free_names(e: Expr) -> Array[String] {
+fn lc_body_free_names(_ e: Expr) -> Array[String] {
   match e {
     EFn(_, _, params, _, _, body) => {
       let pnames: Array[String] = []
@@ -46,19 +46,21 @@ fn lc_body_free_names(e: Expr) -> Array[String] {
         let (pn, _) = p
         let n = String::length(pn)
         let last = if n > 0 {
-          String::char_code_at(pn, n - 1)
+          String::char_code_at(pn, at = n - 1)
         } else {
           0
         }
-        Array::push(pnames, if last == '~' || last == '?' {
+        Array::push(pnames, value = if last == '~' || last == '?' {
           pn[0: n - 1]
         } else {
           pn
         })
       }
-      collect_free_vars_used_builtins(body, pnames, [])
+      collect_free_vars_used_builtins(body = body, param_names = pnames, fn_name_index = [
+      ])
     },
-    _ => collect_free_vars_used_builtins(e, [], [])
+    _ => collect_free_vars_used_builtins(body = e, param_names = [], fn_name_index = [
+    ])
   }
 }
 
@@ -116,17 +118,17 @@ export fn lc_prepare_function_plan(stmts: Array[Stmt], fn_stmt_indices: Array[In
   let shadow_names_only: Array[String] = []
   let mut ufn_i = 0
   while ufn_i < num_user_funcs {
-    Array::push(shadow_names_only, Array::get(fn_names_list, ufn_i))
+    Array::push(shadow_names_only, value = Array::get(fn_names_list, at = ufn_i))
     ufn_i = ufn_i + 1
   }
   let mut shadow_ci = 0
   while shadow_ci < Array::length(const_int_names_list) {
-    Array::push(shadow_names_only, Array::get(const_int_names_list, shadow_ci))
+    Array::push(shadow_names_only, value = Array::get(const_int_names_list, at = shadow_ci))
     shadow_ci = shadow_ci + 1
   }
   let mut shadow_ki = 0
   while shadow_ki < Array::length(ctor_names_list) {
-    Array::push(shadow_names_only, Array::get(ctor_names_list, shadow_ki))
+    Array::push(shadow_names_only, value = Array::get(ctor_names_list, at = shadow_ki))
     shadow_ki = shadow_ki + 1
   }
   let user_fn_names_sorted = sorted_names_of(shadow_names_only)
@@ -136,7 +138,7 @@ export fn lc_prepare_function_plan(stmts: Array[Stmt], fn_stmt_indices: Array[In
   let mut lambda_base_acc = 0
   let mut pbi = 0
   while pbi < num_user_funcs {
-    let pb_stmt = Array::get(stmts, Array::get(fn_stmt_indices, pbi))
+    let pb_stmt = Array::get(stmts, at = Array::get(fn_stmt_indices, at = pbi))
     // Shadow uniquify runs in BOTH lanes now. It was RC-only (#712,
     // name-keyed RC bookkeeping), but the bump lane needs it for a harder
     // reason: its codegen never restores `local_names` when an inner binding
@@ -154,18 +156,18 @@ export fn lc_prepare_function_plan(stmts: Array[Stmt], fn_stmt_indices: Array[In
     // free (lc_body_free_names).
     let pb_expr = if enable_rc {
       let pb_seen = lc_body_free_names(get_slet_expr(pb_stmt))
-      lift_match_scrutinees(uniquify_shadowed_bindings_fresh(get_slet_expr(pb_stmt), uq_shadow_counter, pb_seen), m_scrut_counter)
+      lift_match_scrutinees(expr = uniquify_shadowed_bindings_fresh(expr = get_slet_expr(pb_stmt), counter = uq_shadow_counter, seen = pb_seen), counter = m_scrut_counter)
     } else {
       let pb_seen = lc_body_free_names(get_slet_expr(pb_stmt))
-      uniquify_shadowed_bindings_fresh(get_slet_expr(pb_stmt), uq_shadow_counter, pb_seen)
+      uniquify_shadowed_bindings_fresh(expr = get_slet_expr(pb_stmt), counter = uq_shadow_counter, seen = pb_seen)
     }
-    Array::push(planned_bodies, if control {
-      return_control_annotate_calls(pb_expr, control_sites)
+    Array::push(planned_bodies, value = if control {
+      return_control_annotate_calls(e = pb_expr, counter = control_sites)
     } else {
       pb_expr
     })
-    Array::push(source_types, get_slet_type(pb_stmt))
-    Array::push(lambda_bases, lambda_base_acc)
+    Array::push(source_types, value = get_slet_type(pb_stmt))
+    Array::push(lambda_bases, value = lambda_base_acc)
     // A function DEFINITION is itself an EFn, and that outer EFn is the
     // function -- codegen takes its params and compiles its body, it never
     // routes it through compile_lambda. Counting it would reserve a dead slot
@@ -178,9 +180,9 @@ export fn lc_prepare_function_plan(stmts: Array[Stmt], fn_stmt_indices: Array[In
     // `1 + body`, and the 1 is exactly the dead slot the comment above says
     // not to count.
     lambda_base_acc = lambda_base_acc + (if is_efn(pb_expr) {
-      count_lambda_sites_expr(pb_expr, user_fn_names_sorted) - 1
+      count_lambda_sites_expr(expr = pb_expr, shadow_names = user_fn_names_sorted) - 1
     } else {
-      count_lambda_sites_expr(pb_expr, user_fn_names_sorted)
+      count_lambda_sites_expr(expr = pb_expr, shadow_names = user_fn_names_sorted)
     })
     pbi = pbi + 1
   }

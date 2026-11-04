@@ -28,7 +28,7 @@ import @vibe/core {
 }
 
 /// The scalar operation a keyed map call becomes, or 0 for any other callee.
-fn map_scalar_operation_for(name: String) -> Int {
+fn map_scalar_operation_for(_ name: String) -> Int {
   if name == "Map::get" {
     builtin_map_scalar_get
   } else if name == "Map::set" {
@@ -44,19 +44,19 @@ fn map_scalar_operation_for(name: String) -> Int {
 
 fn msk_mark(resolution: Array[Int], operation: Int) -> Unit {
   if Array::length(resolution) == 0 {
-    Array::push(resolution, operation)
+    Array::push(resolution, value = operation)
   } else {
-    Array::set(resolution, 0, operation)
+    Array::set(resolution, at = 0, value = operation)
   }
 }
 
 fn msk_expr(expr: Expr, offs: MutMap[Int, Int]) -> Unit {
   match expr {
-    ECall(EIdent(name, _), _, off, resolution) => match MutMap::get(offs, off) {
+    ECall(EIdent(name, _), _, off, resolution) => match MutMap::get(offs, k = off) {
       Some(_) => {
         let operation = map_scalar_operation_for(name)
         if operation > 0 {
-          msk_mark(resolution, operation)
+          msk_mark(resolution = resolution, operation = operation)
         } else {
           ()
         }
@@ -69,7 +69,7 @@ fn msk_expr(expr: Expr, offs: MutMap[Int, Int]) -> Unit {
   let end = expr_children_top()
   let mut child_index = mark
   while child_index < end {
-    msk_expr(expr_child_at(child_index), offs)
+    msk_expr(expr = expr_child_at(child_index), offs = offs)
     child_index = child_index + 1
   }
   expr_children_pop(mark)
@@ -77,7 +77,7 @@ fn msk_expr(expr: Expr, offs: MutMap[Int, Int]) -> Unit {
 
 fn msk_exprs(items: Array[Expr], offs: MutMap[Int, Int]) -> Unit {
   for item in items {
-    msk_expr(item, offs)
+    msk_expr(expr = item, offs = offs)
   }
   ()
 }
@@ -85,18 +85,18 @@ fn msk_exprs(items: Array[Expr], offs: MutMap[Int, Int]) -> Unit {
 fn msk_stmts(stmts: Array[Stmt], offs: MutMap[Int, Int]) -> Unit {
   for stmt in stmts {
     match stmt {
-      SLet(_, _, _, _, body) => msk_expr(body, offs),
-      SLetMut(_, _, body) => msk_expr(body, offs),
-      SLetPat(_, body) => msk_expr(body, offs),
-      STest(_, body) => msk_expr(body, offs),
-      SBench(_, body) => msk_expr(body, offs),
-      SExample(_, body) => msk_expr(body, offs),
-      SExpr(body) => msk_expr(body, offs),
-      SModule(_, _, children) => msk_stmts(children, offs),
+      SLet(_, _, _, _, body) => msk_expr(expr = body, offs = offs),
+      SLetMut(_, _, body) => msk_expr(expr = body, offs = offs),
+      SLetPat(_, body) => msk_expr(expr = body, offs = offs),
+      STest(_, body) => msk_expr(expr = body, offs = offs),
+      SBench(_, body) => msk_expr(expr = body, offs = offs),
+      SExample(_, body) => msk_expr(expr = body, offs = offs),
+      SExpr(body) => msk_expr(expr = body, offs = offs),
+      SModule(_, _, children) => msk_stmts(stmts = children, offs = offs),
       SFnDecl(_, _, body, requires, ensures) => {
-        msk_expr(body, offs)
-        msk_exprs(requires, offs)
-        msk_exprs(ensures, offs)
+        msk_expr(expr = body, offs = offs)
+        msk_exprs(items = requires, offs = offs)
+        msk_exprs(items = ensures, offs = offs)
       },
       _ => ()
     }
@@ -112,7 +112,7 @@ let msk_current_offsets: Array[Int] = []
 /// #2334: whether the checker filed a scalar map-key row at `off` for the
 /// program the desugar is running on -- the index lowering asks this of an
 /// `m[k]` bracket offset.
-export fn map_scalar_key_at(off: Int) -> Bool {
+export fn map_scalar_key_at(_ off: Int) -> Bool {
   let mut found = false
   for known in msk_current_offsets {
     if known == off {
@@ -126,7 +126,7 @@ export fn map_scalar_key_at(off: Int) -> Bool {
 
 /// #2334: the cell a synthesized `Map::get` takes for an index at `off`: the
 /// scalar operation when the checker typed that index's key as a scalar.
-export fn map_index_get_cell(off: Int) -> Array[Int] {
+export fn map_index_get_cell(_ off: Int) -> Array[Int] {
   if off >= 0 && map_scalar_key_at(off) {
     [builtin_map_scalar_get]
   } else {
@@ -150,16 +150,16 @@ export fn map_key_type_cell(k: TypeExpr, operation: Int) -> Array[Int] {
 /// #2334: mark the scalar-keyed map calls at `offs` (the map-key rows' call
 /// offsets). A no-op without rows.
 export fn rewrite_map_scalar_key_stmts(stmts: Array[Stmt], offs: Array[Int]) -> Unit {
-  Array::truncate(msk_current_offsets, 0)
+  Array::truncate(msk_current_offsets, length = 0)
   for off in offs {
-    Array::push(msk_current_offsets, off)
+    Array::push(msk_current_offsets, value = off)
   }
   if Array::length(offs) > 0 {
     let table: MutMap[Int, Int] = MutMap::new_int()
     for off in offs {
-      MutMap::set(table, off, 1)
+      MutMap::set(table, k = off, v = 1)
     }
-    msk_stmts(stmts, table)
+    msk_stmts(stmts = stmts, offs = table)
   } else {
     ()
   }
@@ -167,24 +167,24 @@ export fn rewrite_map_scalar_key_stmts(stmts: Array[Stmt], offs: Array[Int]) -> 
 
 // ---- the build lane with no rows
 
-fn msk_scalar_key_name(k: TypeExpr) -> Bool {
+fn msk_scalar_key_name(_ k: TypeExpr) -> Bool {
   match k {
     TyName(n) => n == "Int" || n == "Char" || n == "Bool",
     _ => false
   }
 }
 
-fn msk_ty(t: TypeExpr) -> Bool {
+fn msk_ty(_ t: TypeExpr) -> Bool {
   match t {
     TyName(_) => false,
-    TyApp(n, args) => (n == "Map" && Array::length(args) == 2 && msk_scalar_key_name(Array::get(args, 0))) || msk_tys(args),
+    TyApp(n, args) => (n == "Map" && Array::length(args) == 2 && msk_scalar_key_name(Array::get(args, at = 0))) || msk_tys(args),
     TyFn(params, ret, _) => msk_tys(params) || msk_ty(ret),
     TyTuple(items) => msk_tys(items),
     TyUnit => false
   }
 }
 
-fn msk_tys(tys: Array[TypeExpr]) -> Bool {
+fn msk_tys(_ tys: Array[TypeExpr]) -> Bool {
   let mut found = false
   for t in tys {
     if msk_ty(t) {
@@ -196,14 +196,14 @@ fn msk_tys(tys: Array[TypeExpr]) -> Bool {
   found
 }
 
-fn msk_opt_ty(t: Option[TypeExpr]) -> Bool {
+fn msk_opt_ty(_ t: Option[TypeExpr]) -> Bool {
   match t {
     Some(ty) => msk_ty(ty),
     None => false
   }
 }
 
-fn msk_scalar_literal(e: Expr) -> Bool {
+fn msk_scalar_literal(_ e: Expr) -> Bool {
   match e {
     EInt(_) => true,
     EBool(_) => true,
@@ -211,9 +211,9 @@ fn msk_scalar_literal(e: Expr) -> Bool {
   }
 }
 
-fn msk_expr_mentions(e: Expr) -> Bool {
+fn msk_expr_mentions(_ e: Expr) -> Bool {
   let here = match e {
-    ECall(EIdent(name, _), args, _, _) => map_scalar_operation_for(name) > 0 && Array::length(args) >= 2 && msk_scalar_literal(Array::get(args, 1)),
+    ECall(EIdent(name, _), args, _, _) => map_scalar_operation_for(name) > 0 && Array::length(args) >= 2 && msk_scalar_literal(Array::get(args, at = 1)),
     EFn(_, _, params, ret, _, _) => {
       let mut found = msk_opt_ty(ret)
       for p in params {
@@ -243,7 +243,7 @@ fn msk_expr_mentions(e: Expr) -> Bool {
   }
 }
 
-fn msk_stmt_mentions(stmt: Stmt) -> Bool {
+fn msk_stmt_mentions(_ stmt: Stmt) -> Bool {
   match stmt {
     SLet(_, _, _, ty, body) => msk_opt_ty(ty) || msk_expr_mentions(body),
     SLetMut(_, ty, body) => msk_opt_ty(ty) || msk_expr_mentions(body),
@@ -262,11 +262,11 @@ fn msk_stmt_mentions(stmt: Stmt) -> Bool {
 
 /// #2334: whether `stmts` visibly hold a scalar-keyed map: a `Map[Int | Char
 /// | Bool, V]` in a type, or an `Int` / `Bool` literal as a keyed call's key.
-export fn program_mentions_scalar_map_key(stmts: Array[Stmt]) -> Bool {
+export fn program_mentions_scalar_map_key(_ stmts: Array[Stmt]) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(stmts) && !found {
-    found = msk_stmt_mentions(Array::get(stmts, i))
+    found = msk_stmt_mentions(Array::get(stmts, at = i))
     i = i + 1
   }
   found
@@ -278,7 +278,7 @@ export fn program_mentions_scalar_map_key(stmts: Array[Stmt]) -> Bool {
 /// Like `refuse_rowless_float_program`, it reads the program's spelling: a map
 /// whose scalar key reaches it only through an unannotated variable is not
 /// seen here.
-export fn refuse_rowless_scalar_map_program(stmts: Array[Stmt]) -> Unit with Exception {
+export fn refuse_rowless_scalar_map_program(_ stmts: Array[Stmt]) -> Unit with Exception {
   if program_mentions_scalar_map_key(stmts) {
     throw("build without `--debug`: this linked build has no type check of the exact text it compiles, so it cannot lower a `Map` with an `Int`, `Char` or `Bool` key (#2334); the default build, `vibe run` and `vibe test` can")
   } else {

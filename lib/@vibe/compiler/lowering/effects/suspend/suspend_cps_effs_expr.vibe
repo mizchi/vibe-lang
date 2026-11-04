@@ -28,17 +28,17 @@ import @vibe/compiler/lowering/effects/queries {
 }
 
 export fn scps_locals_with(locals: Array[String], nm: String) -> Array[String] {
-  let out = Array::slice(locals, 0, Array::length(locals))
-  Array::push(out, nm)
+  let out = Array::slice(locals, start = 0, end = Array::length(locals))
+  Array::push(out, value = nm)
   out
 }
 
 export fn scps_locals_with_params(locals: Array[String], params: Array[(String, Option[TypeExpr])]) -> Array[String] {
-  let out = Array::slice(locals, 0, Array::length(locals))
+  let out = Array::slice(locals, start = 0, end = Array::length(locals))
   let mut i = 0
   while i < Array::length(params) {
-    let (pnm, _) = Array::get(params, i)
-    Array::push(out, pnm)
+    let (pnm, _) = Array::get(params, at = i)
+    Array::push(out, value = pnm)
     i = i + 1
   }
   out
@@ -46,18 +46,18 @@ export fn scps_locals_with_params(locals: Array[String], params: Array[(String, 
 
 export fn scps_pat_collect_binds(p: Pat, acc: Array[String]) -> Unit {
   match p {
-    PBind(n) => Array::push(acc, n),
-    PCtor(_, ps) => scps_pats_collect_binds(ps, acc),
-    PTuple(ps) => scps_pats_collect_binds(ps, acc),
+    PBind(n) => Array::push(acc, value = n),
+    PCtor(_, ps) => scps_pats_collect_binds(ps = ps, acc = acc),
+    PTuple(ps) => scps_pats_collect_binds(ps = ps, acc = acc),
     POr(a, b) => {
-      scps_pat_collect_binds(a, acc)
-      scps_pat_collect_binds(b, acc)
+      scps_pat_collect_binds(p = a, acc = acc)
+      scps_pat_collect_binds(p = b, acc = acc)
     },
     PStruct(_, fields) => {
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
-        scps_pat_collect_binds(fp, acc)
+        let (_, fp) = Array::get(fields, at = i)
+        scps_pat_collect_binds(p = fp, acc = acc)
         i = i + 1
       }
     },
@@ -68,7 +68,7 @@ export fn scps_pat_collect_binds(p: Pat, acc: Array[String]) -> Unit {
 fn scps_pats_collect_binds(ps: Array[Pat], acc: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(ps) {
-    scps_pat_collect_binds(Array::get(ps, i), acc)
+    scps_pat_collect_binds(p = Array::get(ps, at = i), acc = acc)
     i = i + 1
   }
 }
@@ -87,7 +87,7 @@ fn scps_pats_collect_binds(ps: Array[Pat], acc: Array[String]) -> Unit {
 /// is not a closure, so it cannot smuggle a step-compiled one into the call.
 /// An allowlist rather than "no function type": a type parameter, an alias or
 /// a struct may still carry a closure.
-export fn scps_ty_is_plain_data(t: TypeExpr) -> Bool {
+export fn scps_ty_is_plain_data(_ t: TypeExpr) -> Bool {
   match t {
     TyName(n) => n == "Int" || n == "String" || n == "Bool" || n == "Float64" || n == "Char" || n == "Bytes",
     TyApp(h, targs) => (h == "Array" || h == "Option") && scps_tys_are_plain_data(targs),
@@ -97,11 +97,11 @@ export fn scps_ty_is_plain_data(t: TypeExpr) -> Bool {
   }
 }
 
-fn scps_tys_are_plain_data(ts: Array[TypeExpr]) -> Bool {
+fn scps_tys_are_plain_data(_ ts: Array[TypeExpr]) -> Bool {
   let mut ok = true
   let mut i = 0
   while i < Array::length(ts) {
-    if !scps_ty_is_plain_data(Array::get(ts, i)) {
+    if !scps_ty_is_plain_data(Array::get(ts, at = i)) {
       ok = false
     } else {
       ()
@@ -122,7 +122,7 @@ export fn scps_plain_data_args_cleared(ctx: (Array[Stmt], Array[(String, Array[(
   let mut params: Array[(String, Option[TypeExpr])] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, snm, _, EFn(_, _, ps, _, _, _)) => if snm == name {
         params = ps
       } else {
@@ -135,15 +135,15 @@ export fn scps_plain_data_args_cleared(ctx: (Array[Stmt], Array[(String, Array[(
   let out: Array[Expr] = []
   let mut k = 0
   while k < Array::length(args) {
-    let a = Array::get(args, k)
+    let a = Array::get(args, at = k)
     let plain_ident = match a {
-      EIdent(_, _) => k < Array::length(params) && match Array::get(params, k).1 {
+      EIdent(_, _) => k < Array::length(params) && match Array::get(params, at = k).1 {
         Some(t) => scps_ty_is_plain_data(t),
         None => false
       },
       _ => false
     }
-    Array::push(out, if plain_ident {
+    Array::push(out, value = if plain_ident {
       EUnit
     } else {
       a
@@ -169,10 +169,10 @@ fn scps_safe_mut_names_build() -> Array[String] {
   let out = registry_safe_mut_builtin_names()
   // parser-desugar internals: `o.f = v` → __set_field(o, "f", v) and
   // `a[i]` → __index(a, i). Map::set / Map::delete have no registry row.
-  Array::push(out, "Map::set")
-  Array::push(out, "Map::delete")
-  Array::push(out, "__set_field")
-  Array::push(out, "__index")
+  Array::push(out, value = "Map::set")
+  Array::push(out, value = "Map::delete")
+  Array::push(out, value = "__set_field")
+  Array::push(out, value = "__index")
   out
 }
 
@@ -187,15 +187,15 @@ let scps_safe_mut_builtin_name_table: Array[String] = scps_safe_mut_names_build(
 /// classification census). Never hand out the table itself: a caller that
 /// pushed into it would widen what a suspend-lowered body may call.
 export fn scps_safe_mut_builtin_names() -> Array[String] {
-  Array::slice(scps_safe_mut_builtin_name_table, 0, Array::length(scps_safe_mut_builtin_name_table))
+  Array::slice(scps_safe_mut_builtin_name_table, start = 0, end = Array::length(scps_safe_mut_builtin_name_table))
 }
 
-export fn scps_is_safe_mut_builtin(nm: String) -> Bool {
+export fn scps_is_safe_mut_builtin(_ nm: String) -> Bool {
   let names = scps_safe_mut_builtin_name_table
   let mut i = 0
   let mut found = false
   while i < Array::length(names) {
-    if Array::get(names, i) == nm {
+    if Array::get(names, at = i) == nm {
       found = true
     } else {
       ()
@@ -214,20 +214,20 @@ export fn scps_is_safe_mut_builtin(nm: String) -> Bool {
 export fn scps_collect_cps_effs_expr(e: Expr, out: Array[String], groups: Array[(String, Array[String])]) -> Unit {
   match e {
     EHandle(b, arms) => {
-      scps_collect_cps_effs_expr(b, out, groups)
+      scps_collect_cps_effs_expr(e = b, out = out, groups = groups)
       let mut i = 0
       while i < Array::length(arms) {
-        let (p, ex) = Array::get(arms, i)
-        if scps_arm_refs_resume_value(ex, scps_pat_binds_resume(p)) {
+        let (p, ex) = Array::get(arms, at = i)
+        if scps_arm_refs_resume_value(e = ex, sh = scps_pat_binds_resume(p)) {
           match p {
             PCtor(q, _) => {
-              let ci = String::index_of(q, "::")
+              let ci = String::index_of(q, needle = "::")
               if ci > 0 {
-                let qe = scps_group_target(arms, groups)
-                if edp_str_array_contains(out, qe) {
+                let qe = scps_group_target(arms = arms, groups = groups)
+                if edp_str_array_contains(arr = out, v = qe) {
                   ()
                 } else {
-                  Array::push(out, qe)
+                  Array::push(out, value = qe)
                 }
               } else {
                 ()
@@ -238,124 +238,124 @@ export fn scps_collect_cps_effs_expr(e: Expr, out: Array[String], groups: Array[
         } else {
           ()
         }
-        scps_collect_cps_effs_expr(ex, out, groups)
+        scps_collect_cps_effs_expr(e = ex, out = out, groups = groups)
         i = i + 1
       }
     },
-    EFn(_, _, _, _, _, b) => scps_collect_cps_effs_expr(b, out, groups),
+    EFn(_, _, _, _, _, b) => scps_collect_cps_effs_expr(e = b, out = out, groups = groups),
     ELet(_, v, b, _) => {
-      scps_collect_cps_effs_expr(v, out, groups)
-      scps_collect_cps_effs_expr(b, out, groups)
+      scps_collect_cps_effs_expr(e = v, out = out, groups = groups)
+      scps_collect_cps_effs_expr(e = b, out = out, groups = groups)
     },
     ELetMut(_, v, b, _) => {
-      scps_collect_cps_effs_expr(v, out, groups)
-      scps_collect_cps_effs_expr(b, out, groups)
+      scps_collect_cps_effs_expr(e = v, out = out, groups = groups)
+      scps_collect_cps_effs_expr(e = b, out = out, groups = groups)
     },
     ELetRec(_, v, b) => {
-      scps_collect_cps_effs_expr(v, out, groups)
-      scps_collect_cps_effs_expr(b, out, groups)
+      scps_collect_cps_effs_expr(e = v, out = out, groups = groups)
+      scps_collect_cps_effs_expr(e = b, out = out, groups = groups)
     },
     ESeq(a, b) => {
-      scps_collect_cps_effs_expr(a, out, groups)
-      scps_collect_cps_effs_expr(b, out, groups)
+      scps_collect_cps_effs_expr(e = a, out = out, groups = groups)
+      scps_collect_cps_effs_expr(e = b, out = out, groups = groups)
     },
     EIf(c, t, el) => {
-      scps_collect_cps_effs_expr(c, out, groups)
-      scps_collect_cps_effs_expr(t, out, groups)
-      scps_collect_cps_effs_expr(el, out, groups)
+      scps_collect_cps_effs_expr(e = c, out = out, groups = groups)
+      scps_collect_cps_effs_expr(e = t, out = out, groups = groups)
+      scps_collect_cps_effs_expr(e = el, out = out, groups = groups)
     },
     EMatch(s, arms) => {
-      scps_collect_cps_effs_expr(s, out, groups)
+      scps_collect_cps_effs_expr(e = s, out = out, groups = groups)
       let mut i = 0
       while i < Array::length(arms) {
-        let (_, ex) = Array::get(arms, i)
-        scps_collect_cps_effs_expr(ex, out, groups)
+        let (_, ex) = Array::get(arms, at = i)
+        scps_collect_cps_effs_expr(e = ex, out = out, groups = groups)
         i = i + 1
       }
     },
     ECall(callee, args, _, _) => {
-      scps_collect_cps_effs_expr(callee, out, groups)
+      scps_collect_cps_effs_expr(e = callee, out = out, groups = groups)
       let mut i = 0
       while i < Array::length(args) {
-        scps_collect_cps_effs_expr(Array::get(args, i), out, groups)
+        scps_collect_cps_effs_expr(e = Array::get(args, at = i), out = out, groups = groups)
         i = i + 1
       }
     },
     EWhile(c, b) => {
-      scps_collect_cps_effs_expr(c, out, groups)
-      scps_collect_cps_effs_expr(b, out, groups)
+      scps_collect_cps_effs_expr(e = c, out = out, groups = groups)
+      scps_collect_cps_effs_expr(e = b, out = out, groups = groups)
     },
     EForIn(_, _, it, b) => {
-      scps_collect_cps_effs_expr(it, out, groups)
-      scps_collect_cps_effs_expr(b, out, groups)
+      scps_collect_cps_effs_expr(e = it, out = out, groups = groups)
+      scps_collect_cps_effs_expr(e = b, out = out, groups = groups)
     },
     ELoop(pairs, b) => {
       let mut i = 0
       while i < Array::length(pairs) {
-        let (_, v) = Array::get(pairs, i)
-        scps_collect_cps_effs_expr(v, out, groups)
+        let (_, v) = Array::get(pairs, at = i)
+        scps_collect_cps_effs_expr(e = v, out = out, groups = groups)
         i = i + 1
       }
-      scps_collect_cps_effs_expr(b, out, groups)
+      scps_collect_cps_effs_expr(e = b, out = out, groups = groups)
     },
     EBinOp(_, l, r, _) => {
-      scps_collect_cps_effs_expr(l, out, groups)
-      scps_collect_cps_effs_expr(r, out, groups)
+      scps_collect_cps_effs_expr(e = l, out = out, groups = groups)
+      scps_collect_cps_effs_expr(e = r, out = out, groups = groups)
     },
-    EUnaryOp(_, x) => scps_collect_cps_effs_expr(x, out, groups),
+    EUnaryOp(_, x) => scps_collect_cps_effs_expr(e = x, out = out, groups = groups),
     EAssign(_, v, c, _) => {
-      scps_collect_cps_effs_expr(v, out, groups)
-      scps_collect_cps_effs_expr(c, out, groups)
+      scps_collect_cps_effs_expr(e = v, out = out, groups = groups)
+      scps_collect_cps_effs_expr(e = c, out = out, groups = groups)
     },
     EAssignOp(_, _, v, c, _) => {
-      scps_collect_cps_effs_expr(v, out, groups)
-      scps_collect_cps_effs_expr(c, out, groups)
+      scps_collect_cps_effs_expr(e = v, out = out, groups = groups)
+      scps_collect_cps_effs_expr(e = c, out = out, groups = groups)
     },
-    EReturn(x) => scps_collect_cps_effs_expr(x, out, groups),
-    EDot(o, _, _, _) => scps_collect_cps_effs_expr(o, out, groups),
-    ELabeledArg(_, _, v) => scps_collect_cps_effs_expr(v, out, groups),
+    EReturn(x) => scps_collect_cps_effs_expr(e = x, out = out, groups = groups),
+    EDot(o, _, _, _) => scps_collect_cps_effs_expr(e = o, out = out, groups = groups),
+    ELabeledArg(_, _, v) => scps_collect_cps_effs_expr(e = v, out = out, groups = groups),
     EBreak(opt) => match opt {
-      Some(x) => scps_collect_cps_effs_expr(x, out, groups),
+      Some(x) => scps_collect_cps_effs_expr(e = x, out = out, groups = groups),
       None => ()
     },
     EContinue(args) => {
       let mut i = 0
       while i < Array::length(args) {
-        scps_collect_cps_effs_expr(Array::get(args, i), out, groups)
+        scps_collect_cps_effs_expr(e = Array::get(args, at = i), out = out, groups = groups)
         i = i + 1
       }
     },
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        scps_collect_cps_effs_expr(Array::get(items, i), out, groups)
+        scps_collect_cps_effs_expr(e = Array::get(items, at = i), out = out, groups = groups)
         i = i + 1
       }
     },
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        scps_collect_cps_effs_expr(Array::get(items, i), out, groups)
+        scps_collect_cps_effs_expr(e = Array::get(items, at = i), out = out, groups = groups)
         i = i + 1
       }
     },
     ERecord(_, fields, _) => {
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, v) = Array::get(fields, i)
-        scps_collect_cps_effs_expr(v, out, groups)
+        let (_, v) = Array::get(fields, at = i)
+        scps_collect_cps_effs_expr(e = v, out = out, groups = groups)
         i = i + 1
       }
     },
     EMap(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, v) = Array::get(fields, i)
-        scps_collect_cps_effs_expr(v, out, groups)
+        let (_, v) = Array::get(fields, at = i)
+        scps_collect_cps_effs_expr(e = v, out = out, groups = groups)
         i = i + 1
       }
     },
-    ESpread(x) => scps_collect_cps_effs_expr(x, out, groups),
+    ESpread(x) => scps_collect_cps_effs_expr(e = x, out = out, groups = groups),
     _ => ()
   }
 }

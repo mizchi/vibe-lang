@@ -12,30 +12,30 @@ import @vibe/compiler/syntax {
 
 test "module source keeps statements reachable from entry and drops unused" {
   let src = "let helper = () -> { 1 }\nlet unused = () -> { 99 }\nlet cli_main = () -> { helper() }\n"
-  let out = build_module_source_from_source(src, "cli_main")
-  assert(String::contains(out, "cli_main"))
-  assert(String::contains(out, "helper"))
-  assert(not(String::contains(out, "unused")))
+  let out = build_module_source_from_source(source = src, entry_name = "cli_main")
+  assert(String::contains(out, needle = "cli_main"))
+  assert(String::contains(out, needle = "helper"))
+  assert(not(String::contains(out, needle = "unused")))
 }
 
 test "module source preserves the original text of a kept statement" {
   let src = "let cli_main = () -> { 42 }\n"
-  let out = build_module_source_from_source(src, "cli_main")
-  assert(String::contains(out, "let cli_main = () -> { 42 }"))
+  let out = build_module_source_from_source(source = src, entry_name = "cli_main")
+  assert(String::contains(out, needle = "let cli_main = () -> { 42 }"))
 }
 
 test "module source keeps transitively reachable definitions" {
   let src = "let leaf = () -> { 7 }\nlet mid = () -> { leaf() }\nlet dead = () -> { 0 }\nlet cli_main = () -> { mid() }\n"
-  let out = build_module_source_from_source(src, "cli_main")
-  assert(String::contains(out, "leaf"))
-  assert(String::contains(out, "mid"))
-  assert(not(String::contains(out, "dead")))
+  let out = build_module_source_from_source(source = src, entry_name = "cli_main")
+  assert(String::contains(out, needle = "leaf"))
+  assert(String::contains(out, needle = "mid"))
+  assert(not(String::contains(out, needle = "dead")))
 }
 
 test "module source keeps #zero_alloc with its reachable function" {
   let src = "#zero_alloc\nfn cli_main() -> Int { 42 }\n"
-  let out = build_module_source_from_source(src, "cli_main")
-  assert(String::contains(out, "#zero_alloc\nfn cli_main"))
+  let out = build_module_source_from_source(source = src, entry_name = "cli_main")
+  assert(String::contains(out, needle = "#zero_alloc\nfn cli_main"))
 }
 
 //# #2654: the merged program carries the compiler's own type-parameter spelling
@@ -51,9 +51,9 @@ let marked_helper: String = "let __arr_equals__A1_T = [__Vfp_T](a: Array[__Vfp_T
 
 test "#2654: a dead helper with the compiler's spelling is read and dropped" {
   let src = String::concat(marked_helper, "let cli_main = () -> { 42 }\n")
-  let out = build_module_source_from_source(src, "cli_main")
-  assert(String::contains(out, "let cli_main = () -> { 42 }"))
-  assert(not(String::contains(out, "__Vfp_")))
+  let out = build_module_source_from_source(source = src, entry_name = "cli_main")
+  assert(String::contains(out, needle = "let cli_main = () -> { 42 }"))
+  assert(not(String::contains(out, needle = "__Vfp_")))
 }
 
 test "#2654: a reachable helper with the compiler's spelling is refused by name" {
@@ -61,12 +61,12 @@ test "#2654: a reachable helper with the compiler's spelling is refused by name"
   // "rename it", which names no edit an author can make.
   let src = String::concat(marked_helper, "let cli_main = () -> { __arr_equals__A1_T([1], [1]) }\n")
   let msg = handle {
-    let _ = build_module_source_from_source(src, "cli_main")
+    let _ = build_module_source_from_source(source = src, entry_name = "cli_main")
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(msg, "module source for `cli_main`"))
-  assert(String::contains(msg, "keeps the compiler's `__Vfp_` spelling"))
-  assert(String::contains(msg, "let __arr_equals__A1_T = [__Vfp_T]"))
+  assert(String::contains(msg, needle = "module source for `cli_main`"))
+  assert(String::contains(msg, needle = "keeps the compiler's `__Vfp_` spelling"))
+  assert(String::contains(msg, needle = "let __arr_equals__A1_T = [__Vfp_T]"))
 }
 
 test "#2654: a string literal spelled like a marked binder is not a marked binder" {
@@ -74,28 +74,28 @@ test "#2654: a string literal spelled like a marked binder is not a marked binde
   // the prefix in a literal and is a kept statement, so a text test refused
   // the compiler's bundle by reading itself.
   let src = "let cli_main = () -> { String::length(\"[__Vfp_T](x)\") }\n"
-  let out = build_module_source_from_source(src, "cli_main")
-  assert(String::contains(out, "[__Vfp_T](x)"))
+  let out = build_module_source_from_source(source = src, entry_name = "cli_main")
+  assert(String::contains(out, needle = "[__Vfp_T](x)"))
 }
 
 test "#2654: the builder's switch does not leak into an ordinary parse" {
   let src = String::concat(marked_helper, "let cli_main = () -> { 42 }\n")
-  let _ = build_module_source_from_source(src, "cli_main")
+  let _ = build_module_source_from_source(source = src, entry_name = "cli_main")
   let after = handle {
     let _ = parse_program(lex(src))
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(after, "uses the reserved `__Vfp_` prefix"))
+  assert(String::contains(after, needle = "uses the reserved `__Vfp_` prefix"))
   // A parse that throws inside the builder switches the refusal back on too.
   let broken = String::concat(marked_helper, "let cli_main = () -> { (\n")
   let _ = handle {
-    build_module_source_from_source(broken, "cli_main")
+    build_module_source_from_source(source = broken, entry_name = "cli_main")
   } with { Exception::Throw(_) => "" }
   let again = handle {
     let _ = parse_program(lex(src))
     ""
   } with { Exception::Throw(m) => m }
-  assert(String::contains(again, "uses the reserved `__Vfp_` prefix"))
+  assert(String::contains(again, needle = "uses the reserved `__Vfp_` prefix"))
 }
 
 //# #3331: the merged program is printed before the trait-dictionary desugar
@@ -109,15 +109,15 @@ test "#2654: the builder's switch does not leak into an ordinary parse" {
 let split_impl_program: String = "trait Facts {\n  is_float(Self, String) -> Bool\n}\nstruct Lane { prefix: String }\nimpl Facts for Lane\nlet rec Lane::is_float = (self, name) -> Bool { String::starts_with(name, self.prefix) }\nlet rec count_in = [C: Facts](ctx: C, name: String) -> Int { if Facts::is_float(ctx, name) { 1 } else { 0 } }\nlet rec unused = () -> Int { 0 }\nlet cli_main = () -> { count_in(Lane::{ prefix: \"f_\" }, \"f_x\") }\n"
 
 test "#3331: a split impl keeps its method bindings" {
-  let out = build_module_source_from_source(split_impl_program, "cli_main")
-  assert(String::contains(out, "impl Facts for Lane"))
-  assert(String::contains(out, "let rec Lane::is_float = (self, name) -> Bool"))
-  assert(String::contains(out, "let rec count_in = [C: Facts]"))
-  assert(not(String::contains(out, "unused")))
+  let out = build_module_source_from_source(source = split_impl_program, entry_name = "cli_main")
+  assert(String::contains(out, needle = "impl Facts for Lane"))
+  assert(String::contains(out, needle = "let rec Lane::is_float = (self, name) -> Bool"))
+  assert(String::contains(out, needle = "let rec count_in = [C: Facts]"))
+  assert(not(String::contains(out, needle = "unused")))
 }
 
 test "module source drops a dead allocation contract before an allocating entry" {
   let src = "#zero_alloc(strict)\nfn unused() -> Int { 1 }\nfn cli_main() -> Array[Int] { [3] }\n"
-  let out = build_module_source_from_source(src, "cli_main")
+  let out = build_module_source_from_source(source = src, entry_name = "cli_main")
   assert_eq(out, "fn cli_main() -> Array[Int] { [3] }\n")
 }

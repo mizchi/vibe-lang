@@ -38,28 +38,28 @@ import @vibe/compiler/core {
 fn push_stmt_exprs(stmts: Array[Stmt], out: Array[Expr]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, v) => Array::push(out, v),
-      SLetMut(_, _, v) => Array::push(out, v),
-      SLetPat(_, v) => Array::push(out, v),
-      STest(_, v) => Array::push(out, v),
-      SBench(_, v) => Array::push(out, v),
-      SExample(_, v) => Array::push(out, v),
-      SExpr(v) => Array::push(out, v),
+    match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, v) => Array::push(out, value = v),
+      SLetMut(_, _, v) => Array::push(out, value = v),
+      SLetPat(_, v) => Array::push(out, value = v),
+      STest(_, v) => Array::push(out, value = v),
+      SBench(_, v) => Array::push(out, value = v),
+      SExample(_, v) => Array::push(out, value = v),
+      SExpr(v) => Array::push(out, value = v),
       SFnDecl(_, _, v, reqs, enss) => {
-        Array::push(out, v)
+        Array::push(out, value = v)
         let mut r = 0
         while r < Array::length(reqs) {
-          Array::push(out, Array::get(reqs, r))
+          Array::push(out, value = Array::get(reqs, at = r))
           r = r + 1
         }
         let mut e = 0
         while e < Array::length(enss) {
-          Array::push(out, Array::get(enss, e))
+          Array::push(out, value = Array::get(enss, at = e))
           e = e + 1
         }
       },
-      SModule(_, _, inner) => push_stmt_exprs(inner, out),
+      SModule(_, _, inner) => push_stmt_exprs(stmts = inner, out = out),
       _ => ()
     }
     i = i + 1
@@ -74,21 +74,21 @@ fn push_stmt_exprs(stmts: Array[Stmt], out: Array[Expr]) -> Unit {
 /// own offset, or an `EDot`'s FIELD-NAME offset. A projection key that landed
 /// on a call key would classify that call, which is why dot keys are collected
 /// alongside call keys rather than in a separate pass.
-fn collect_call_keys(stmts: Array[Stmt]) -> Array[(Int, String)] {
+fn collect_call_keys(_ stmts: Array[Stmt]) -> Array[(Int, String)] {
   let roots: Array[Expr] = []
-  push_stmt_exprs(stmts, roots)
+  push_stmt_exprs(stmts = stmts, out = roots)
   let out: Array[(Int, String)] = []
   let mut i = 0
   while i < Array::length(roots) {
-    let e = Array::get(roots, i)
+    let e = Array::get(roots, at = i)
     match e {
       ECall(callee, args, off, _) => if off >= 0 {
-        Array::push(out, (off, callee_label(callee) + "/" + Int::to_string(Array::length(args))))
+        Array::push(out, value = (off, callee_label(callee) + "/" + Int::to_string(Array::length(args))))
       } else {
         ()
       },
       EDot(_, name, _, field_off) => if field_off >= 0 {
-        Array::push(out, (field_off, "." + name))
+        Array::push(out, value = (field_off, "." + name))
       } else {
         ()
       },
@@ -97,7 +97,7 @@ fn collect_call_keys(stmts: Array[Stmt]) -> Array[(Int, String)] {
     let kids = expr_children(e)
     let mut k = 0
     while k < Array::length(kids) {
-      Array::push(roots, Array::get(kids, k))
+      Array::push(roots, value = Array::get(kids, at = k))
       k = k + 1
     }
     i = i + 1
@@ -105,7 +105,7 @@ fn collect_call_keys(stmts: Array[Stmt]) -> Array[(Int, String)] {
   out
 }
 
-fn callee_label(callee: Expr) -> String {
+fn callee_label(_ callee: Expr) -> String {
   match callee {
     EIdent(n, _) => n,
     EDot(_, n, _, _) => "." + n,
@@ -120,7 +120,7 @@ fn callee_label(callee: Expr) -> String {
 /// module source this is meant to cover is over 7MB, and a counting array
 /// indexed by byte offset would be the reason the scan could not be run on the
 /// one input that matters most.
-fn colliding_offsets(keys: Array[(Int, String)]) -> Array[Int] {
+fn colliding_offsets(_ keys: Array[(Int, String)]) -> Array[Int] {
   let n = Array::length(keys)
   let mut cap = 16
   while cap < n * 4 {
@@ -129,22 +129,22 @@ fn colliding_offsets(keys: Array[(Int, String)]) -> Array[Int] {
   let slot: Array[Int] = []
   let mut z = 0
   while z < cap {
-    Array::push(slot, 0 - 1)
+    Array::push(slot, value = 0 - 1)
     z = z + 1
   }
   let dups: Array[Int] = []
   let mut i = 0
   while i < n {
-    let (off, _) = Array::get(keys, i)
+    let (off, _) = Array::get(keys, at = i)
     let mut h = off - off / cap * cap
     let mut placed = false
     while !placed {
-      let cur = Array::get(slot, h)
+      let cur = Array::get(slot, at = h)
       if cur < 0 {
-        Array::set(slot, h, off)
+        Array::set(slot, at = h, value = off)
         placed = true
       } else if cur == off {
-        Array::push(dups, off)
+        Array::push(dups, value = off)
         placed = true
       } else {
         h = h + 1
@@ -166,7 +166,7 @@ fn colliding_offsets(keys: Array[(Int, String)]) -> Array[Int] {
 /// what a reader has to act on.
 fn scan_source(path: String, src: String) -> String with Exception {
   let (tokens, starts, _) = lex_with_offsets(src)
-  let stmts = parse_program_located(tokens, starts, src)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = src)
   let keys = collect_call_keys(stmts)
   let dups = colliding_offsets(keys)
   if Array::length(dups) == 0 {
@@ -175,11 +175,11 @@ fn scan_source(path: String, src: String) -> String with Exception {
     let mut report = path + ": " + Int::to_string(Array::length(dups)) + " colliding offset(s)"
     let mut d = 0
     while d < Array::length(dups) && d < 4 {
-      let off = Array::get(dups, d)
+      let off = Array::get(dups, at = d)
       report = report + " @" + Int::to_string(off) + "{"
       let mut m = 0
       while m < Array::length(keys) {
-        let (mo, label) = Array::get(keys, m)
+        let (mo, label) = Array::get(keys, at = m)
         if mo == off {
           report = report + label + " "
         } else {
@@ -210,12 +210,12 @@ fn vibe_sources_under(dir: String, out: Array[String]) -> Unit with Fs {
   let names = Fs::readdir(dir)
   let mut i = 0
   while i < Array::length(names) {
-    let name = Array::get(names, i)
+    let name = Array::get(names, at = i)
     let path = dir + "/" + name
     if Fs::is_dir(path) {
-      vibe_sources_under(path, out)
-    } else if String::ends_with(name, ".vibe") && name != "declarations.vibe" && !String::ends_with(name, "_bundle.vibe") {
-      Array::push(out, path)
+      vibe_sources_under(dir = path, out = out)
+    } else if String::ends_with(name, suffix = ".vibe") && name != "declarations.vibe" && !String::ends_with(name, suffix = "_bundle.vibe") {
+      Array::push(out, value = path)
     } else {
       ()
     }
@@ -228,7 +228,7 @@ fn vibe_sources_under(dir: String, out: Array[String]) -> Unit with Fs {
 test "#2427: the `throw` desugar's two call nodes do not share a key" {
   let src = "fn f() -> Int with Exception {\n  throw(\"x\")\n}\n"
   let (tokens, starts, _) = lex_with_offsets(src)
-  let stmts = parse_program_located(tokens, starts, src)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = src)
   let keys = collect_call_keys(stmts)
   // One located call node: `perform`, at the `throw` keyword. The op call is
   // unlocated, so it contributes no key at all -- the source has no
@@ -237,10 +237,10 @@ test "#2427: the `throw` desugar's two call nodes do not share a key" {
   let mut performs = 0
   let mut i = 0
   while i < Array::length(keys) {
-    let (off, label) = Array::get(keys, i)
+    let (off, label) = Array::get(keys, at = i)
     if label == "perform/1" {
       performs = performs + 1
-      assert(off == String::index_of(src, "throw"))
+      assert(off == String::index_of(src, needle = "throw"))
     } else {
       ()
     }
@@ -255,7 +255,7 @@ test "#2427: the explicit `perform` spelling keys its two calls apart" {
   // collision -- only the sugar, which has no op-name token to anchor to, did.
   let src = "fn f() -> Int with Exception {\n  perform Exception::Throw(\"x\")\n}\n"
   let (tokens, starts, _) = lex_with_offsets(src)
-  let stmts = parse_program_located(tokens, starts, src)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = src)
   let keys = collect_call_keys(stmts)
   assert(Array::length(colliding_offsets(keys)) == 0)
   assert(Array::length(keys) == 2)
@@ -263,21 +263,21 @@ test "#2427: the explicit `perform` spelling keys its two calls apart" {
 
 test "#2427: no source in the tree has two keys on one offset" {
   let paths: Array[String] = []
-  vibe_sources_under("lib", paths)
+  vibe_sources_under(dir = "lib", out = paths)
   let mut findings = ""
   let mut keys = 0
   let mut i = 0
   while i < Array::length(paths) {
-    let path = Array::get(paths, i)
+    let path = Array::get(paths, at = i)
     let src = Fs::read_file(path)
     let (tokens, starts, _) = lex_with_offsets(src)
-    let stmts = parse_program_located(tokens, starts, src)
+    let stmts = parse_program_located(tokens = tokens, starts = starts, source = src)
     let file_keys = collect_call_keys(stmts)
     keys = keys + Array::length(file_keys)
     if Array::length(colliding_offsets(file_keys)) == 0 {
       ()
     } else {
-      findings = findings + scan_source(path, src)
+      findings = findings + scan_source(path = path, src = src)
     }
     i = i + 1
   }

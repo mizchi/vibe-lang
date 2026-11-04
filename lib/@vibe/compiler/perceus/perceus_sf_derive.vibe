@@ -109,11 +109,11 @@ import ./perceus_pctx.vibe {
 /// PerceusAction kind, no change to pc_emit or the codegen dup/drop realization.
 /// For a binding with ZERO owning occurrences (pure borrow — the already-correct
 /// baseline), this is a no-op: pe_declare already treats uses==0 like uses==1.
-fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
+fn pctx_apply_borrow_retention(_ ctx: PCtx) -> Int {
   let mut bid = 0
   while bid < ctx.next_id {
-    if Array::get(ctx.borrows, bid) > 0 {
-      Array::set(ctx.uses, bid, Array::get(ctx.uses, bid) + 1)
+    if Array::get(ctx.borrows, at = bid) > 0 {
+      Array::set(ctx.uses, at = bid, value = Array::get(ctx.uses, at = bid) + 1)
     } else {
       ()
     }
@@ -123,32 +123,32 @@ fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
 }
 
 /// Build the dup/drop plan for a function body expression.
-export fn build_perceus_plan(body: Expr) -> Array[PerceusAction] {
+export fn build_perceus_plan(_ body: Expr) -> Array[PerceusAction] {
   let no_masks: Array[Int] = []
-  let ctx = pctx_new(sorted_names_of(borrow_ret_builtin_names()), [], no_masks, [
-  ])
+  let ctx = pctx_new(borrow_ret_names = sorted_names_of(borrow_ret_builtin_names()), borrow_param_fns = [
+  ], borrow_param_masks = no_masks, view_ret_fns = [])
   let empty: PScope = PsNil
-  pc_count(ctx, empty, body)
+  pc_count(ctx = ctx, scope = empty, expr = body)
   pctx_apply_borrow_retention(ctx)
   ctx.next_id = 0
   ctx.seq_id = 0
-  pc_emit(ctx, empty, body)
+  pc_emit(ctx = ctx, scope = empty, expr = body)
   pe_emit_exit_rows(ctx)
   ctx.actions
 }
 
-fn collect_heap_ret_fns(stmts: Array[Stmt]) -> Array[String] {
+fn collect_heap_ret_fns(_ stmts: Array[Stmt]) -> Array[String] {
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, fname, oty, _) =>
       match oty {
         Some(ty) =>
         match ty {
           TyFn(_, ret, _) =>
           if type_expr_is_heap(Some(ret)) {
-            Array::push(out, fname)
+            Array::push(out, value = fname)
           } else {
             ()
           },
@@ -163,7 +163,7 @@ fn collect_heap_ret_fns(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-export fn elaborate_heap_params(stmts: Array[Stmt]) -> Array[Stmt] {
+export fn elaborate_heap_params(_ stmts: Array[Stmt]) -> Array[Stmt] {
   let ctors = collect_ctor_names(stmts)
   let heap_fns = collect_heap_ret_fns(stmts)
   let hctx0 = HeapInferCtx::{
@@ -176,28 +176,28 @@ export fn elaborate_heap_params(stmts: Array[Stmt]) -> Array[Stmt] {
   // scope index. Local inference still needs the top-level heap table below.
   let scope: Array[Expr] = []
   let scope_refs = if has_top_heap_param_candidate(stmts) {
-    top_level_call_scope(stmts, scope)
+    top_level_call_scope(stmts = stmts, out = scope)
     top_level_scope_refs(scope)
   } else {
     []
   }
-  let (top_names, top_heaps) = top_level_heap_env(stmts, hctx0)
+  let (top_names, top_heaps) = top_level_heap_env(stmts = stmts, hctx = hctx0)
   let hctx = HeapInferCtx::{
     ctors: ctors,
     heap_fns: heap_fns,
     top_names: top_names,
     top_heaps: top_heaps
   }
-  let out = Array::slice(stmts, 0, 0)
+  let out = Array::slice(stmts, start = 0, end = 0)
   let mut i = 0
   while i < Array::length(stmts) {
-    let s = Array::get(stmts, i)
+    let s = Array::get(stmts, at = i)
     let s2 = match s {
-      SLet(a, b, n, t, e) => SLet(a, b, n, t, elaborate_rw(fill_top_lambda_params(n, e, scope, scope_refs, hctx), hctx)),
-      SExpr(e) => SExpr(elaborate_rw(e, hctx)),
+      SLet(a, b, n, t, e) => SLet(a, b, n, t, elaborate_rw(e = fill_top_lambda_params(name = n, efn = e, scope = scope, scope_refs = scope_refs, hctx = hctx), hctx = hctx)),
+      SExpr(e) => SExpr(elaborate_rw(e = e, hctx = hctx)),
       _ => s
     }
-    Array::push(out, s2)
+    Array::push(out, value = s2)
     i = i + 1
   }
   out
@@ -207,13 +207,13 @@ export fn elaborate_heap_params(stmts: Array[Stmt]) -> Array[Stmt] {
 /// comment above). Most bodies truncate nothing, and pay one walk.
 fn plan_truncate_release(body: Expr, actions: Array[PerceusAction]) -> Unit {
   let receivers: Array[String] = []
-  tr_collect_receivers(body, receivers)
+  tr_collect_receivers(e = body, out = receivers)
   let mut ri = 0
   while ri < Array::length(receivers) {
-    let x = Array::get(receivers, ri)
-    if tr_receiver_only(body, x, false) {
+    let x = Array::get(receivers, at = ri)
+    if tr_receiver_only(e = body, x = x, in_fn = false) {
       let d: Array[String] = [x]
-      if tr_derive(body, d) {
+      if tr_derive(e = body, d = d) {
         let w = TrWalk::{
           x: x,
           d: d,
@@ -227,7 +227,7 @@ fn plan_truncate_release(body: Expr, actions: Array[PerceusAction]) -> Unit {
           pin_tail: [],
           ok: true
         }
-        tr_walk(w, body, true, true)
+        tr_walk(w = w, e = body, stmt = true, tail = true)
         // Rule 7: the plan itself must not count any derived binding. A view
         // holds no reference, so a planned drop or dup on one is an
         // accounting this analysis cannot vouch for -- measured: `let w = v`
@@ -235,8 +235,8 @@ fn plan_truncate_release(body: Expr, actions: Array[PerceusAction]) -> Unit {
         // acquired, which the unreleased element used to absorb.
         let mut ai = 0
         while w.ok && ai < Array::length(actions) {
-          let a = Array::get(actions, ai)
-          if a.name != x && array_contains_str_pctx(d, a.name) {
+          let a = Array::get(actions, at = ai)
+          if a.name != x && array_contains_str_pctx(arr = d, s = a.name) {
             w.ok = false
           } else {
             ()
@@ -246,9 +246,9 @@ fn plan_truncate_release(body: Expr, actions: Array[PerceusAction]) -> Unit {
         let mut needs_root = false
         let mut pi = 0
         while w.ok && pi < Array::length(w.pins) {
-          if tr_result_safe(Array::get(w.pin_bodies, pi), d) {
+          if tr_result_safe(e = Array::get(w.pin_bodies, at = pi), d = d) {
             ()
-          } else if Array::get(w.pin_tail, pi) {
+          } else if Array::get(w.pin_tail, at = pi) {
             needs_root = true
           } else {
             w.ok = false
@@ -261,10 +261,10 @@ fn plan_truncate_release(body: Expr, actions: Array[PerceusAction]) -> Unit {
           } else {
             0
           }
-          pr_push_reuse(actions, PaTruncRelease, x, extra)
+          pr_push_reuse(actions = actions, kind = PaTruncRelease, name = x, arity = extra)
           let mut pj = 0
           while pj < Array::length(w.pins) {
-            pr_push_reuse(actions, PaViewPin, Array::get(w.pins, pj), extra)
+            pr_push_reuse(actions = actions, kind = PaViewPin, name = Array::get(w.pins, at = pj), arity = extra)
             pj = pj + 1
           }
         } else {
@@ -289,18 +289,18 @@ export fn perceus_truncate_rows(plan: Array[PerceusAction], accept_root: Bool, r
   let mut cur = ""
   let mut i = 0
   while i < Array::length(plan) {
-    let a = Array::get(plan, i)
+    let a = Array::get(plan, at = i)
     if pa_is_trunc_release(a) {
       if a.extra == 0 || accept_root {
         cur = a.name
-        Array::push(release, a.name)
+        Array::push(release, value = a.name)
       } else {
         cur = ""
       }
     } else if pa_is_view_pin(a) {
       if cur != "" {
-        Array::push(pin_arrays, cur)
-        Array::push(pin_names, a.name)
+        Array::push(pin_arrays, value = cur)
+        Array::push(pin_names, value = a.name)
       } else {
         ()
       }
@@ -351,11 +351,11 @@ export fn perceus_truncate_rows(plan: Array[PerceusAction], accept_root: Bool, r
 
 /// The receiver name of a `__set_field(x, "f", v)` call, or "" when `e` is not
 /// one on a plain name.
-fn sf_receiver(e: Expr) -> String {
+fn sf_receiver(_ e: Expr) -> String {
   match e {
     ECall(callee, args, _, _) => match callee {
       EIdent(f, _) => if f == "__set_field" && Array::length(args) == 3 {
-        match Array::get(args, 0) {
+        match Array::get(args, at = 0) {
           EIdent(x, _) => x,
           _ => ""
         }
@@ -370,8 +370,8 @@ fn sf_receiver(e: Expr) -> String {
 
 fn sf_collect_receivers(e: Expr, out: Array[String]) -> Unit {
   let r = sf_receiver(e)
-  if r != "" && !array_contains_str_pctx(out, r) {
-    Array::push(out, r)
+  if r != "" && !array_contains_str_pctx(arr = out, s = r) {
+    Array::push(out, value = r)
   } else {
     ()
   }
@@ -379,7 +379,7 @@ fn sf_collect_receivers(e: Expr, out: Array[String]) -> Unit {
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    sf_collect_receivers(expr_child_at(i), out)
+    sf_collect_receivers(e = expr_child_at(i), out = out)
     i = i + 1
   }
   expr_children_pop(mark)
@@ -387,11 +387,11 @@ fn sf_collect_receivers(e: Expr, out: Array[String]) -> Unit {
 
 /// Rule 1: a struct literal, possibly behind the parser's ascription wrapper
 /// (see tr_fresh_array_value).
-fn sf_fresh_struct_value(e: Expr) -> Bool {
+fn sf_fresh_struct_value(_ e: Expr) -> Bool {
   match e {
     ERecord(_, _, _) => true,
     ECall(callee, args, _, _) => match callee {
-      EFn(_, _, params, _, _, body) => Array::length(params) == 1 && Array::length(args) == 1 && (Array::get(params, 0)).0 == "__asc" && tr_is_ident(body, "__asc") && sf_fresh_struct_value(Array::get(args, 0)),
+      EFn(_, _, params, _, _, body) => Array::length(params) == 1 && Array::length(args) == 1 && (Array::get(params, at = 0)).0 == "__asc" && tr_is_ident(e = body, x = "__asc") && sf_fresh_struct_value(Array::get(args, at = 0)),
       _ => false
     },
     _ => false
@@ -402,41 +402,41 @@ fn sf_fresh_struct_value(e: Expr) -> Bool {
 /// value, whose result this analysis cannot classify.
 fn sf_collect_binders(e: Expr, out: Array[String]) -> Unit {
   match e {
-    ELet(n, _, _, _) => Array::push(out, n),
-    ELetMut(n, _, _, _) => Array::push(out, n),
-    ELetRec(n, _, _) => Array::push(out, n),
+    ELet(n, _, _, _) => Array::push(out, value = n),
+    ELetMut(n, _, _, _) => Array::push(out, value = n),
+    ELetRec(n, _, _) => Array::push(out, value = n),
     EForIn(n, ix, _, _) => {
-      Array::push(out, n)
+      Array::push(out, value = n)
       match ix {
-        Some(i) => Array::push(out, i),
+        Some(i) => Array::push(out, value = i),
         None => ()
       }
     },
     EMatch(_, arms) => {
       let mut i = 0
       while i < Array::length(arms) {
-        let _ = pat_names((Array::get(arms, i)).0, out)
+        let _ = pat_names(pat = (Array::get(arms, at = i)).0, out = out)
         i = i + 1
       }
     },
     EHandle(_, arms) => {
       let mut i = 0
       while i < Array::length(arms) {
-        let _ = pat_names((Array::get(arms, i)).0, out)
+        let _ = pat_names(pat = (Array::get(arms, at = i)).0, out = out)
         i = i + 1
       }
     },
     ELoop(params, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        Array::push(out, (Array::get(params, i)).0)
+        Array::push(out, value = (Array::get(params, at = i)).0)
         i = i + 1
       }
     },
     EFn(_, _, params, _, _, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        Array::push(out, (Array::get(params, i)).0)
+        Array::push(out, value = (Array::get(params, at = i)).0)
         i = i + 1
       }
     },
@@ -446,7 +446,7 @@ fn sf_collect_binders(e: Expr, out: Array[String]) -> Unit {
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    sf_collect_binders(expr_child_at(i), out)
+    sf_collect_binders(e = expr_child_at(i), out = out)
     i = i + 1
   }
   expr_children_pop(mark)
@@ -459,37 +459,37 @@ fn sf_mentions_ok(e: Expr, x: String, tail: Bool) -> Bool {
     EIdent(n, _) => n != x || tail,
     EDot(obj, _, _, _) => match obj {
       EIdent(_, _) => true,
-      _ => sf_mentions_ok(obj, x, false)
+      _ => sf_mentions_ok(e = obj, x = x, tail = false)
     },
     ECall(callee, args, _, _) => if sf_receiver(e) == x {
-      sf_mentions_ok(Array::get(args, 2), x, false)
+      sf_mentions_ok(e = Array::get(args, at = 2), x = x, tail = false)
     } else {
       // A method-call spelling `x.m(..)` hands `x` itself to the method.
       let callee_ok = match callee {
-        EDot(obj, _, _, _) => !tr_is_ident(obj, x) && sf_mentions_ok(obj, x, false),
-        _ => sf_mentions_ok(callee, x, false)
+        EDot(obj, _, _, _) => !tr_is_ident(e = obj, x = x) && sf_mentions_ok(e = obj, x = x, tail = false),
+        _ => sf_mentions_ok(e = callee, x = x, tail = false)
       }
       let mut ok = callee_ok
       let mut i = 0
       while ok && i < Array::length(args) {
-        ok = sf_mentions_ok(Array::get(args, i), x, false)
+        ok = sf_mentions_ok(e = Array::get(args, at = i), x = x, tail = false)
         i = i + 1
       }
       ok
     },
-    EFn(_, _, _, _, _, body) => !tr_mentions(body, [x]),
-    ELet(_, v, b, _) => sf_mentions_ok(v, x, false) && sf_mentions_ok(b, x, tail),
-    ELetMut(_, v, b, _) => sf_mentions_ok(v, x, false) && sf_mentions_ok(b, x, tail),
-    ELetRec(_, v, b) => sf_mentions_ok(v, x, false) && sf_mentions_ok(b, x, tail),
-    ESeq(a, b) => sf_mentions_ok(a, x, false) && sf_mentions_ok(b, x, tail),
-    EAssign(n, v, b, _) => n != x && sf_mentions_ok(v, x, false) && sf_mentions_ok(b, x, tail),
-    EAssignOp(n, _, v, b, _) => n != x && sf_mentions_ok(v, x, false) && sf_mentions_ok(b, x, tail),
-    EIf(c, t, f) => sf_mentions_ok(c, x, false) && sf_mentions_ok(t, x, tail) && sf_mentions_ok(f, x, tail),
+    EFn(_, _, _, _, _, body) => !tr_mentions(e = body, names = [x]),
+    ELet(_, v, b, _) => sf_mentions_ok(e = v, x = x, tail = false) && sf_mentions_ok(e = b, x = x, tail = tail),
+    ELetMut(_, v, b, _) => sf_mentions_ok(e = v, x = x, tail = false) && sf_mentions_ok(e = b, x = x, tail = tail),
+    ELetRec(_, v, b) => sf_mentions_ok(e = v, x = x, tail = false) && sf_mentions_ok(e = b, x = x, tail = tail),
+    ESeq(a, b) => sf_mentions_ok(e = a, x = x, tail = false) && sf_mentions_ok(e = b, x = x, tail = tail),
+    EAssign(n, v, b, _) => n != x && sf_mentions_ok(e = v, x = x, tail = false) && sf_mentions_ok(e = b, x = x, tail = tail),
+    EAssignOp(n, _, v, b, _) => n != x && sf_mentions_ok(e = v, x = x, tail = false) && sf_mentions_ok(e = b, x = x, tail = tail),
+    EIf(c, t, f) => sf_mentions_ok(e = c, x = x, tail = false) && sf_mentions_ok(e = t, x = x, tail = tail) && sf_mentions_ok(e = f, x = x, tail = tail),
     EMatch(sc, arms) => {
-      let mut ok = sf_mentions_ok(sc, x, false)
+      let mut ok = sf_mentions_ok(e = sc, x = x, tail = false)
       let mut i = 0
       while ok && i < Array::length(arms) {
-        ok = sf_mentions_ok((Array::get(arms, i)).1, x, tail)
+        ok = sf_mentions_ok(e = (Array::get(arms, at = i)).1, x = x, tail = tail)
         i = i + 1
       }
       ok
@@ -500,7 +500,7 @@ fn sf_mentions_ok(e: Expr, x: String, tail: Bool) -> Bool {
       let mut ok = true
       let mut i = mark
       while ok && i < end {
-        ok = sf_mentions_ok(expr_child_at(i), x, false)
+        ok = sf_mentions_ok(e = expr_child_at(i), x = x, tail = false)
         i = i + 1
       }
       expr_children_pop(mark)
@@ -511,7 +511,7 @@ fn sf_mentions_ok(e: Expr, x: String, tail: Bool) -> Bool {
 
 /// An operator whose result is a fresh Int / Bool / Double / String, never a
 /// pointer into an operand.
-fn sf_op_fresh(op: String) -> Bool {
+fn sf_op_fresh(_ op: String) -> Bool {
   op == "+" || op == "-" || op == "*" || op == "/" || op == "%" || op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>"
 }
 
@@ -519,14 +519,14 @@ fn sf_op_fresh(op: String) -> Bool {
 /// from it (`d`)? Only shapes whose result is known to be owned or scalar
 /// answer no; anything else that mentions `d` answers yes.
 fn sf_may_view(ctx: PCtx, binders: Array[String], e: Expr, d: Array[String]) -> Bool {
-  if !tr_mentions(e, d) {
+  if !tr_mentions(e = e, names = d) {
     false
   } else {
     match e {
       ECall(callee, args, _, _) => match callee {
         EIdent(f, _) => if f == "__set_field" {
           false
-        } else if array_contains_str_pctx(binders, f) || is_borrow_ret_fname(ctx, f) || bsearch_leftmost(ctx.view_ret_user, f) >= 0 {
+        } else if array_contains_str_pctx(arr = binders, s = f) || is_borrow_ret_fname(ctx = ctx, fname = f) || bsearch_leftmost(sorted = ctx.view_ret_user, name = f) >= 0 {
           true
         } else {
           // An owned result. An argument it may keep (a constructor field, a
@@ -535,14 +535,14 @@ fn sf_may_view(ctx: PCtx, binders: Array[String], e: Expr, d: Array[String]) -> 
           let mut v = false
           let mut i = 0
           while !v && i < Array::length(args) {
-            let a = Array::get(args, i)
+            let a = Array::get(args, at = i)
             v = match a {
               EIdent(_, _) => false,
               EDot(obj, _, _, _) => match obj {
                 EIdent(_, _) => false,
-                _ => sf_may_view(ctx, binders, a, d)
+                _ => sf_may_view(ctx = ctx, binders = binders, e = a, d = d)
               },
-              _ => sf_may_view(ctx, binders, a, d)
+              _ => sf_may_view(ctx = ctx, binders = binders, e = a, d = d)
             }
             i = i + 1
           }
@@ -562,17 +562,17 @@ fn sf_value_ok(ctx: PCtx, binders: Array[String], v: Expr, d: Array[String]) -> 
   match v {
     EDot(obj, _, _, _) => match obj {
       EIdent(_, _) => true,
-      _ => !sf_may_view(ctx, binders, v, d)
+      _ => !sf_may_view(ctx = ctx, binders = binders, e = v, d = d)
     },
     ECall(callee, _, _, _) => match callee {
-      EIdent(f, _) => if !array_contains_str_pctx(binders, f) && is_borrow_ret_fname(ctx, f) {
+      EIdent(f, _) => if !array_contains_str_pctx(arr = binders, s = f) && is_borrow_ret_fname(ctx = ctx, fname = f) {
         true
       } else {
-        !sf_may_view(ctx, binders, v, d)
+        !sf_may_view(ctx = ctx, binders = binders, e = v, d = d)
       },
-      _ => !sf_may_view(ctx, binders, v, d)
+      _ => !sf_may_view(ctx = ctx, binders = binders, e = v, d = d)
     },
-    _ => !sf_may_view(ctx, binders, v, d)
+    _ => !sf_may_view(ctx = ctx, binders = binders, e = v, d = d)
   }
 }
 
@@ -582,69 +582,69 @@ fn sf_value_ok(ctx: PCtx, binders: Array[String], v: Expr, d: Array[String]) -> 
 fn sf_derive(ctx: PCtx, binders: Array[String], e: Expr, d: Array[String]) -> Bool {
   match e {
     ELet(n, v, b, _) => {
-      if sf_may_view(ctx, binders, v, d) {
-        tr_add(d, n)
+      if sf_may_view(ctx = ctx, binders = binders, e = v, d = d) {
+        tr_add(d = d, n = n)
       } else {
         ()
       }
-      sf_derive(ctx, binders, v, d) && sf_derive(ctx, binders, b, d)
+      sf_derive(ctx = ctx, binders = binders, e = v, d = d) && sf_derive(ctx = ctx, binders = binders, e = b, d = d)
     },
     ELetMut(n, v, b, _) => {
-      if sf_may_view(ctx, binders, v, d) {
-        tr_add(d, n)
+      if sf_may_view(ctx = ctx, binders = binders, e = v, d = d) {
+        tr_add(d = d, n = n)
       } else {
         ()
       }
-      sf_derive(ctx, binders, v, d) && sf_derive(ctx, binders, b, d)
+      sf_derive(ctx = ctx, binders = binders, e = v, d = d) && sf_derive(ctx = ctx, binders = binders, e = b, d = d)
     },
     ELetRec(n, v, b) => {
-      if sf_may_view(ctx, binders, v, d) {
-        tr_add(d, n)
+      if sf_may_view(ctx = ctx, binders = binders, e = v, d = d) {
+        tr_add(d = d, n = n)
       } else {
         ()
       }
-      sf_derive(ctx, binders, v, d) && sf_derive(ctx, binders, b, d)
+      sf_derive(ctx = ctx, binders = binders, e = v, d = d) && sf_derive(ctx = ctx, binders = binders, e = b, d = d)
     },
     EForIn(n, ix, it, body) => {
-      if sf_may_view(ctx, binders, it, d) {
-        tr_add(d, n)
+      if sf_may_view(ctx = ctx, binders = binders, e = it, d = d) {
+        tr_add(d = d, n = n)
         match ix {
-          Some(i) => tr_add(d, i),
+          Some(i) => tr_add(d = d, n = i),
           None => ()
         }
       } else {
         ()
       }
-      sf_derive(ctx, binders, it, d) && sf_derive(ctx, binders, body, d)
+      sf_derive(ctx = ctx, binders = binders, e = it, d = d) && sf_derive(ctx = ctx, binders = binders, e = body, d = d)
     },
     EMatch(sc, arms) => {
-      let from_d = sf_may_view(ctx, binders, sc, d)
-      let mut ok = sf_derive(ctx, binders, sc, d)
+      let from_d = sf_may_view(ctx = ctx, binders = binders, e = sc, d = d)
+      let mut ok = sf_derive(ctx = ctx, binders = binders, e = sc, d = d)
       let mut i = 0
       while ok && i < Array::length(arms) {
-        let (p, body) = Array::get(arms, i)
+        let (p, body) = Array::get(arms, at = i)
         if from_d {
-          tr_add_pat(d, p)
+          tr_add_pat(d = d, p = p)
         } else {
           ()
         }
-        ok = sf_derive(ctx, binders, body, d)
+        ok = sf_derive(ctx = ctx, binders = binders, e = body, d = d)
         i = i + 1
       }
       ok
     },
     EHandle(hb, arms) => {
-      let from_d = sf_may_view(ctx, binders, hb, d)
-      let mut ok = sf_derive(ctx, binders, hb, d)
+      let from_d = sf_may_view(ctx = ctx, binders = binders, e = hb, d = d)
+      let mut ok = sf_derive(ctx = ctx, binders = binders, e = hb, d = d)
       let mut i = 0
       while ok && i < Array::length(arms) {
-        let (p, body) = Array::get(arms, i)
+        let (p, body) = Array::get(arms, at = i)
         if from_d {
-          tr_add_pat(d, p)
+          tr_add_pat(d = d, p = p)
         } else {
           ()
         }
-        ok = sf_derive(ctx, binders, body, d)
+        ok = sf_derive(ctx = ctx, binders = binders, e = body, d = d)
         i = i + 1
       }
       ok
@@ -653,41 +653,41 @@ fn sf_derive(ctx: PCtx, binders: Array[String], e: Expr, d: Array[String]) -> Bo
       let mut ok = true
       let mut i = 0
       while ok && i < Array::length(params) {
-        let (pn, pv) = Array::get(params, i)
-        if sf_may_view(ctx, binders, pv, d) {
-          tr_add(d, pn)
+        let (pn, pv) = Array::get(params, at = i)
+        if sf_may_view(ctx = ctx, binders = binders, e = pv, d = d) {
+          tr_add(d = d, n = pn)
         } else {
           ()
         }
-        ok = sf_derive(ctx, binders, pv, d)
+        ok = sf_derive(ctx = ctx, binders = binders, e = pv, d = d)
         i = i + 1
       }
-      ok && sf_derive(ctx, binders, body, d)
+      ok && sf_derive(ctx = ctx, binders = binders, e = body, d = d)
     },
-    EAssign(_, v, b, _) => !sf_may_view(ctx, binders, v, d) && sf_derive(ctx, binders, v, d) && sf_derive(ctx, binders, b, d),
-    EAssignOp(_, _, v, b, _) => !sf_may_view(ctx, binders, v, d) && sf_derive(ctx, binders, v, d) && sf_derive(ctx, binders, b, d),
-    EReturn(v) => !sf_may_view(ctx, binders, v, d),
+    EAssign(_, v, b, _) => !sf_may_view(ctx = ctx, binders = binders, e = v, d = d) && sf_derive(ctx = ctx, binders = binders, e = v, d = d) && sf_derive(ctx = ctx, binders = binders, e = b, d = d),
+    EAssignOp(_, _, v, b, _) => !sf_may_view(ctx = ctx, binders = binders, e = v, d = d) && sf_derive(ctx = ctx, binders = binders, e = v, d = d) && sf_derive(ctx = ctx, binders = binders, e = b, d = d),
+    EReturn(v) => !sf_may_view(ctx = ctx, binders = binders, e = v, d = d),
     EBreak(ov) => match ov {
-      Some(v) => !sf_may_view(ctx, binders, v, d),
+      Some(v) => !sf_may_view(ctx = ctx, binders = binders, e = v, d = d),
       None => true
     },
     EContinue(vs) => {
       let mut ok = true
       let mut i = 0
       while ok && i < Array::length(vs) {
-        ok = !sf_may_view(ctx, binders, Array::get(vs, i), d)
+        ok = !sf_may_view(ctx = ctx, binders = binders, e = Array::get(vs, at = i), d = d)
         i = i + 1
       }
       ok
     },
-    EFn(_, _, _, _, _, body) => !tr_mentions(body, d),
+    EFn(_, _, _, _, _, body) => !tr_mentions(e = body, names = d),
     _ => {
       let mark = expr_children_push(e)
       let end = expr_children_top()
       let mut ok = true
       let mut i = mark
       while ok && i < end {
-        ok = sf_derive(ctx, binders, expr_child_at(i), d)
+        ok = sf_derive(ctx = ctx, binders = binders, e = expr_child_at(i), d = d)
         i = i + 1
       }
       expr_children_pop(mark)
@@ -710,40 +710,40 @@ struct SfWalk {
 }
 
 fn sf_push(w: SfWalk, n: String, k: Int, fresh: Bool) -> Unit {
-  Array::push(w.bn, n)
-  Array::push(w.bk, k)
-  Array::push(w.bf, fresh)
+  Array::push(w.bn, value = n)
+  Array::push(w.bk, value = k)
+  Array::push(w.bf, value = fresh)
 }
 
 fn sf_pop(w: SfWalk, mark: Int) -> Unit {
-  Array::truncate(w.bn, mark)
-  Array::truncate(w.bk, mark)
-  Array::truncate(w.bf, mark)
+  Array::truncate(w.bn, length = mark)
+  Array::truncate(w.bk, length = mark)
+  Array::truncate(w.bf, length = mark)
 }
 
 fn sf_push_pat(w: SfWalk, p: Pat) -> Unit {
   let names: Array[String] = []
-  let _ = pat_names(p, names)
+  let _ = pat_names(pat = p, out = names)
   let mut i = 0
   while i < Array::length(names) {
-    sf_push(w, Array::get(names, i), 4, false)
+    sf_push(w = w, n = Array::get(names, at = i), k = 4, fresh = false)
     i = i + 1
   }
 }
 
 /// Rules 1, 3, 4 and 5 at one field assignment of the walk's struct.
 fn sf_site(ctx: PCtx, w: SfWalk, value: Expr, stmt: Bool) -> Unit {
-  if !stmt || !sf_value_ok(ctx, w.binders, value, w.d) {
+  if !stmt || !sf_value_ok(ctx = ctx, binders = w.binders, v = value, d = w.d) {
     w.ok = false
   } else {
     let mut found = false
     let mut i = Array::length(w.bn) - 1
     while w.ok && i >= 0 {
-      let n = Array::get(w.bn, i)
+      let n = Array::get(w.bn, at = i)
       if n == w.x {
         if !found {
           found = true
-          if Array::get(w.bk, i) != 1 || !Array::get(w.bf, i) {
+          if Array::get(w.bk, at = i) != 1 || !Array::get(w.bf, at = i) {
             w.ok = false
           } else {
             ()
@@ -751,7 +751,7 @@ fn sf_site(ctx: PCtx, w: SfWalk, value: Expr, stmt: Bool) -> Unit {
         } else {
           ()
         }
-      } else if array_contains_str_pctx(w.d, n) {
+      } else if array_contains_str_pctx(arr = w.d, s = n) {
         w.ok = false
       } else {
         ()
@@ -774,83 +774,83 @@ fn sf_walk(ctx: PCtx, w: SfWalk, e: Expr, stmt: Bool) -> Unit {
   } else {
     match e {
       ELet(n, v, b, _) => {
-        sf_walk(ctx, w, v, false)
+        sf_walk(ctx = ctx, w = w, e = v, stmt = false)
         let mark = Array::length(w.bn)
-        sf_push(w, n, 1, sf_fresh_struct_value(v))
-        sf_walk(ctx, w, b, stmt)
-        sf_pop(w, mark)
+        sf_push(w = w, n = n, k = 1, fresh = sf_fresh_struct_value(v))
+        sf_walk(ctx = ctx, w = w, e = b, stmt = stmt)
+        sf_pop(w = w, mark = mark)
       },
       ELetMut(n, v, b, _) => {
-        sf_walk(ctx, w, v, false)
+        sf_walk(ctx = ctx, w = w, e = v, stmt = false)
         let mark = Array::length(w.bn)
-        sf_push(w, n, 2, false)
-        sf_walk(ctx, w, b, stmt)
-        sf_pop(w, mark)
+        sf_push(w = w, n = n, k = 2, fresh = false)
+        sf_walk(ctx = ctx, w = w, e = b, stmt = stmt)
+        sf_pop(w = w, mark = mark)
       },
       ELetRec(n, v, b) => {
         let mark = Array::length(w.bn)
-        sf_push(w, n, 3, false)
-        sf_walk(ctx, w, v, false)
-        sf_walk(ctx, w, b, stmt)
-        sf_pop(w, mark)
+        sf_push(w = w, n = n, k = 3, fresh = false)
+        sf_walk(ctx = ctx, w = w, e = v, stmt = false)
+        sf_walk(ctx = ctx, w = w, e = b, stmt = stmt)
+        sf_pop(w = w, mark = mark)
       },
       ESeq(a, b) => {
-        sf_walk(ctx, w, a, stmt)
-        sf_walk(ctx, w, b, stmt)
+        sf_walk(ctx = ctx, w = w, e = a, stmt = stmt)
+        sf_walk(ctx = ctx, w = w, e = b, stmt = stmt)
       },
       EIf(c, t, f) => {
-        sf_walk(ctx, w, c, false)
-        sf_walk(ctx, w, t, stmt)
-        sf_walk(ctx, w, f, stmt)
+        sf_walk(ctx = ctx, w = w, e = c, stmt = false)
+        sf_walk(ctx = ctx, w = w, e = t, stmt = stmt)
+        sf_walk(ctx = ctx, w = w, e = f, stmt = stmt)
       },
       EMatch(sc, arms) => {
         // A scrutinee that may view `x` is a temporary live across its arms.
-        let arm_stmt = stmt && !sf_may_view(ctx, w.binders, sc, w.d)
-        sf_walk(ctx, w, sc, false)
+        let arm_stmt = stmt && !sf_may_view(ctx = ctx, binders = w.binders, e = sc, d = w.d)
+        sf_walk(ctx = ctx, w = w, e = sc, stmt = false)
         let mut i = 0
         while i < Array::length(arms) {
-          let (p, body) = Array::get(arms, i)
+          let (p, body) = Array::get(arms, at = i)
           let mark = Array::length(w.bn)
-          sf_push_pat(w, p)
-          sf_walk(ctx, w, body, arm_stmt)
-          sf_pop(w, mark)
+          sf_push_pat(w = w, p = p)
+          sf_walk(ctx = ctx, w = w, e = body, stmt = arm_stmt)
+          sf_pop(w = w, mark = mark)
           i = i + 1
         }
       },
       EWhile(c, body) => {
-        sf_walk(ctx, w, c, false)
-        sf_walk(ctx, w, body, stmt)
+        sf_walk(ctx = ctx, w = w, e = c, stmt = false)
+        sf_walk(ctx = ctx, w = w, e = body, stmt = stmt)
       },
       EForIn(n, ix, it, body) => {
-        sf_walk(ctx, w, it, false)
+        sf_walk(ctx = ctx, w = w, e = it, stmt = false)
         let mark = Array::length(w.bn)
-        sf_push(w, n, 4, false)
+        sf_push(w = w, n = n, k = 4, fresh = false)
         match ix {
-          Some(i) => sf_push(w, i, 4, false),
+          Some(i) => sf_push(w = w, n = i, k = 4, fresh = false),
           None => ()
         }
         // The iterated array is a temporary live across the body.
-        sf_walk(ctx, w, body, stmt && !sf_may_view(ctx, w.binders, it, w.d))
-        sf_pop(w, mark)
+        sf_walk(ctx = ctx, w = w, e = body, stmt = stmt && !sf_may_view(ctx = ctx, binders = w.binders, e = it, d = w.d))
+        sf_pop(w = w, mark = mark)
       },
       EAssign(_, v, b, _) => {
-        sf_walk(ctx, w, v, false)
-        sf_walk(ctx, w, b, stmt)
+        sf_walk(ctx = ctx, w = w, e = v, stmt = false)
+        sf_walk(ctx = ctx, w = w, e = b, stmt = stmt)
       },
       EAssignOp(_, _, v, b, _) => {
-        sf_walk(ctx, w, v, false)
-        sf_walk(ctx, w, b, stmt)
+        sf_walk(ctx = ctx, w = w, e = v, stmt = false)
+        sf_walk(ctx = ctx, w = w, e = b, stmt = stmt)
       },
       ECall(callee, args, _, _) => {
         if sf_receiver(e) == w.x {
-          sf_site(ctx, w, Array::get(args, 2), stmt)
+          sf_site(ctx = ctx, w = w, value = Array::get(args, at = 2), stmt = stmt)
         } else {
           ()
         }
-        sf_walk(ctx, w, callee, false)
+        sf_walk(ctx = ctx, w = w, e = callee, stmt = false)
         let mut i = 0
         while i < Array::length(args) {
-          sf_walk(ctx, w, Array::get(args, i), false)
+          sf_walk(ctx = ctx, w = w, e = Array::get(args, at = i), stmt = false)
           i = i + 1
         }
       },
@@ -859,7 +859,7 @@ fn sf_walk(ctx: PCtx, w: SfWalk, e: Expr, stmt: Bool) -> Unit {
         let end = expr_children_top()
         let mut i = mark
         while i < end {
-          sf_walk(ctx, w, expr_child_at(i), false)
+          sf_walk(ctx = ctx, w = w, e = expr_child_at(i), stmt = false)
           i = i + 1
         }
         expr_children_pop(mark)
@@ -872,21 +872,21 @@ fn sf_walk(ctx: PCtx, w: SfWalk, e: Expr, stmt: Bool) -> Unit {
 /// above). Most bodies assign no field, and pay one walk.
 fn plan_setfield_release(ctx: PCtx, params: Array[(String, Option[TypeExpr])], body: Expr, actions: Array[PerceusAction]) -> Unit {
   let receivers: Array[String] = []
-  sf_collect_receivers(body, receivers)
+  sf_collect_receivers(e = body, out = receivers)
   if Array::length(receivers) > 0 {
     let binders: Array[String] = []
     let mut pi = 0
     while pi < Array::length(params) {
-      Array::push(binders, (Array::get(params, pi)).0)
+      Array::push(binders, value = (Array::get(params, at = pi)).0)
       pi = pi + 1
     }
-    sf_collect_binders(body, binders)
+    sf_collect_binders(e = body, out = binders)
     let mut ri = 0
     while ri < Array::length(receivers) {
-      let x = Array::get(receivers, ri)
-      if sf_mentions_ok(body, x, true) {
+      let x = Array::get(receivers, at = ri)
+      if sf_mentions_ok(e = body, x = x, tail = true) {
         let d: Array[String] = [x]
-        if sf_derive(ctx, binders, body, d) {
+        if sf_derive(ctx = ctx, binders = binders, e = body, d = d) {
           let w = SfWalk::{
             x: x,
             d: d,
@@ -896,9 +896,9 @@ fn plan_setfield_release(ctx: PCtx, params: Array[(String, Option[TypeExpr])], b
             bf: [],
             ok: true
           }
-          sf_walk(ctx, w, body, true)
+          sf_walk(ctx = ctx, w = w, e = body, stmt = true)
           if w.ok {
-            pr_push_reuse(actions, PaFieldRelease, x, 0)
+            pr_push_reuse(actions = actions, kind = PaFieldRelease, name = x, arity = 0)
           } else {
             ()
           }
@@ -920,10 +920,10 @@ fn plan_setfield_release(ctx: PCtx, params: Array[(String, Option[TypeExpr])], b
 export fn perceus_store_dup_rows(plan: Array[PerceusAction], names: Array[String], offs: Array[Int]) -> Unit {
   let mut i = 0
   while i < Array::length(plan) {
-    let a = Array::get(plan, i)
+    let a = Array::get(plan, at = i)
     if pa_is_store_dup(a) {
-      Array::push(names, a.name)
-      Array::push(offs, a.use_offset)
+      Array::push(names, value = a.name)
+      Array::push(offs, value = a.use_offset)
     } else {
       ()
     }
@@ -935,9 +935,9 @@ export fn perceus_store_dup_rows(plan: Array[PerceusAction], names: Array[String
 export fn perceus_field_release_rows(plan: Array[PerceusAction], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(plan) {
-    let a = Array::get(plan, i)
+    let a = Array::get(plan, at = i)
     if pa_is_field_release(a) {
-      Array::push(out, a.name)
+      Array::push(out, value = a.name)
     } else {
       ()
     }
@@ -945,7 +945,7 @@ export fn perceus_field_release_rows(plan: Array[PerceusAction], out: Array[Stri
   }
 }
 
-fn tr_type_is_immediate(t: TypeExpr) -> Bool {
+fn tr_type_is_immediate(_ t: TypeExpr) -> Bool {
   match t {
     TyName(n) => n == "Int" || n == "Bool" || n == "Unit",
     TyUnit => true,
@@ -984,23 +984,23 @@ fn pctx_cache_select(borrow_ret_names: Array[String], borrow_param_fns: Array[St
   // fresh one and make it the cache. Either way `ctx` is read back out of the
   // cache cell so it is uniformly a borrowed view of the cache-owned PCtx.
   if Array::length(pctx_cache) == 0 {
-    Array::push(pctx_cache, pctx_new(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns))
-  } else if pctx_cache_matches(Array::get(pctx_cache, 0), borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns) {
-    pctx_reset(Array::get(pctx_cache, 0))
+    Array::push(pctx_cache, value = pctx_new(borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns))
+  } else if pctx_cache_matches(ctx = Array::get(pctx_cache, at = 0), borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns) {
+    pctx_reset(Array::get(pctx_cache, at = 0))
   } else {
     // Refill the cached PCtx IN PLACE: field assignment drops the previous
     // tables and working state. Replacing the element via Array::set would
     // leak the whole old context -- the linear lane's arr_set stores without
     // releasing the replaced element.
-    let stale = Array::get(pctx_cache, 0)
+    let stale = Array::get(pctx_cache, at = 0)
     pctx_reset(stale)
     stale.pinned = 0
-    stale.pctx_names = Array::slice(borrow_ret_names, 0, Array::length(borrow_ret_names))
-    stale.borrow_param_user = Array::slice(borrow_param_fns, 0, Array::length(borrow_param_fns))
-    stale.borrow_param_mask = Array::slice(borrow_param_masks, 0, Array::length(borrow_param_masks))
-    stale.view_ret_user = Array::slice(view_ret_fns, 0, Array::length(view_ret_fns))
+    stale.pctx_names = Array::slice(borrow_ret_names, start = 0, end = Array::length(borrow_ret_names))
+    stale.borrow_param_user = Array::slice(borrow_param_fns, start = 0, end = Array::length(borrow_param_fns))
+    stale.borrow_param_mask = Array::slice(borrow_param_masks, start = 0, end = Array::length(borrow_param_masks))
+    stale.view_ret_user = Array::slice(view_ret_fns, start = 0, end = Array::length(view_ret_fns))
   }
-  Array::get(pctx_cache, 0)
+  Array::get(pctx_cache, at = 0)
 }
 
 /// #2386: install the four tables once per compile and hand back a token the
@@ -1010,35 +1010,35 @@ fn pctx_cache_select(borrow_ret_names: Array[String], borrow_param_fns: Array[St
 /// token no longer matches falls back to the table compare, so the token can
 /// only skip work, never change an answer. Tokens are never reused.
 export fn perceus_pin_tables(borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Int {
-  let ctx = pctx_cache_select(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns)
-  let tok = Array::get(pctx_pin_counter, 0) + 1
-  Array::set(pctx_pin_counter, 0, tok)
+  let ctx = pctx_cache_select(borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns)
+  let tok = Array::get(pctx_pin_counter, at = 0) + 1
+  Array::set(pctx_pin_counter, at = 0, value = tok)
   ctx.pinned = tok
   tok
 }
 
 export fn build_perceus_plan_with_params_split(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
-  let ctx = pctx_cache_select(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns)
-  build_perceus_plan_in_ctx(ctx, params, body, out_param_drop_start)
+  let ctx = pctx_cache_select(borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns)
+  build_perceus_plan_in_ctx(ctx = ctx, params = params, body = body, out_param_drop_start = out_param_drop_start)
 }
 
 /// `build_perceus_plan_with_params_split` for a caller holding a
 /// `perceus_pin_tables` token: the same tables, the compare skipped while the
 /// token is current.
 export fn build_perceus_plan_pinned_split(token: Int, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
-  let ctx = if token > 0 && Array::length(pctx_cache) > 0 && Array::get(pctx_cache, 0).pinned == token {
-    let c = Array::get(pctx_cache, 0)
+  let ctx = if token > 0 && Array::length(pctx_cache) > 0 && Array::get(pctx_cache, at = 0).pinned == token {
+    let c = Array::get(pctx_cache, at = 0)
     pctx_reset(c)
     c
   } else {
-    pctx_cache_select(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns)
+    pctx_cache_select(borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns)
   }
-  build_perceus_plan_in_ctx(ctx, params, body, out_param_drop_start)
+  build_perceus_plan_in_ctx(ctx = ctx, params = params, body = body, out_param_drop_start = out_param_drop_start)
 }
 
 export fn build_perceus_plan_pinned(token: Int, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Array[PerceusAction] {
   let ignored = array_empty()
-  build_perceus_plan_pinned_split(token, params, body, borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns, ignored)
+  build_perceus_plan_pinned_split(token = token, params = params, body = body, borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns, out_param_drop_start = ignored)
 }
 
 /// #2389 per-path release: turn the recorded initial-reference occurrences of
@@ -1058,20 +1058,20 @@ export fn build_perceus_plan_pinned(token: Int, params: Array[(String, Option[Ty
 /// `__shadow_0_t`. `perceus_path_release_plan_test` pins that. A check here
 /// instead would need a name table per binding, which measured as a
 /// meaningful share of the planner's allocation on a full-closure compile.
-fn pe_emit_path_release(ctx: PCtx) -> Unit {
+fn pe_emit_path_release(_ ctx: PCtx) -> Unit {
   let done: Array[Int] = []
   let done_names: Array[String] = []
   let mut mi = 0
   while mi < Array::length(ctx.mark_ids) {
-    let id = Array::get(ctx.mark_ids, mi)
-    if pe_flag_has(ctx, id, pf_split) && !pe_flag_has(ctx, id, pf_mark_bad) && !pe_flag_has(ctx, id, pf_used_after) {
-      let nm = Array::get(ctx.mark_names, mi)
-      let _ = pe_push_for(ctx, PaConsumeMark, nm, id, Array::get(ctx.mark_offs, mi))
-      if pe_int_array_has(done, id) {
+    let id = Array::get(ctx.mark_ids, at = mi)
+    if pe_flag_has(ctx = ctx, id = id, bit = pf_split) && !pe_flag_has(ctx = ctx, id = id, bit = pf_mark_bad) && !pe_flag_has(ctx = ctx, id = id, bit = pf_used_after) {
+      let nm = Array::get(ctx.mark_names, at = mi)
+      let _ = pe_push_for(ctx = ctx, kind = PaConsumeMark, name = nm, binding_id = id, use_offset = Array::get(ctx.mark_offs, at = mi))
+      if pe_int_array_has(xs = done, v = id) {
         ()
       } else {
-        Array::push(done, id)
-        Array::push(done_names, nm)
+        Array::push(done, value = id)
+        Array::push(done_names, value = nm)
       }
     } else {
       ()
@@ -1086,26 +1086,26 @@ fn pe_emit_path_release(ctx: PCtx) -> Unit {
   let bad_ids: Array[Int] = []
   let mut si = 0
   while si < Array::length(ctx.dsplit_ids) {
-    let id = Array::get(ctx.dsplit_ids, si)
-    let ok = if pe_int_array_has(ok_ids, id) {
+    let id = Array::get(ctx.dsplit_ids, at = si)
+    let ok = if pe_int_array_has(xs = ok_ids, v = id) {
       true
-    } else if pe_int_array_has(bad_ids, id) {
+    } else if pe_int_array_has(xs = bad_ids, v = id) {
       false
-    } else if pe_dsplit_marks_ok(ctx, id) {
-      Array::push(ok_ids, id)
+    } else if pe_dsplit_marks_ok(ctx = ctx, id = id) {
+      Array::push(ok_ids, value = id)
       true
     } else {
-      Array::push(bad_ids, id)
+      Array::push(bad_ids, value = id)
       false
     }
     if ok {
-      let nm = Array::get(ctx.dsplit_names, si)
-      let _ = pe_push_for(ctx, PaConsumeMark, nm, id, Array::get(ctx.dsplit_offs, si))
-      if pe_int_array_has(done, id) {
+      let nm = Array::get(ctx.dsplit_names, at = si)
+      let _ = pe_push_for(ctx = ctx, kind = PaConsumeMark, name = nm, binding_id = id, use_offset = Array::get(ctx.dsplit_offs, at = si))
+      if pe_int_array_has(xs = done, v = id) {
         ()
       } else {
-        Array::push(done, id)
-        Array::push(done_names, nm)
+        Array::push(done, value = id)
+        Array::push(done_names, value = nm)
       }
     } else {
       ()
@@ -1114,7 +1114,7 @@ fn pe_emit_path_release(ctx: PCtx) -> Unit {
   }
   let mut di = 0
   while di < Array::length(done) {
-    let _ = pe_push_for(ctx, PaPathDrop, Array::get(done_names, di), Array::get(done, di), 0 - 1)
+    let _ = pe_push_for(ctx = ctx, kind = PaPathDrop, name = Array::get(done_names, at = di), binding_id = Array::get(done, at = di), use_offset = 0 - 1)
     di = di + 1
   }
 }
@@ -1123,12 +1123,12 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
   let mut scope: PScope = PsNil
   let mut pi = 0
   while pi < Array::length(params) {
-    let (pname, ptype) = Array::get(params, pi)
-    let id = pc_declare(ctx, pname, !param_is_heap_in_body(pname, ptype, body))
+    let (pname, ptype) = Array::get(params, at = pi)
+    let id = pc_declare(ctx = ctx, _name = pname, scalar = !param_is_heap_in_body(name = pname, otype = ptype, body = body))
     scope = PsBind(pname, id, scope)
     pi = pi + 1
   }
-  pc_count(ctx, scope, body)
+  pc_count(ctx = ctx, scope = scope, expr = body)
   pctx_apply_borrow_retention(ctx)
   ctx.next_id = 0
   ctx.seq_id = 0
@@ -1136,18 +1136,18 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
   let param_ids = array_empty()
   let mut pj = 0
   while pj < Array::length(params) {
-    let (pname, _) = Array::get(params, pj)
-    let id = pe_declare(ctx, pname)
-    pe_flag_or(ctx, id, pf_exit_owner)
+    let (pname, _) = Array::get(params, at = pj)
+    let id = pe_declare(ctx = ctx, name = pname)
+    pe_flag_or(ctx = ctx, id = id, bit = pf_exit_owner)
     // A parameter's dups are taken at entry and its scope is the whole body
     // (`pe_dup_merge`).
-    pe_flag_or(ctx, id, pf_param)
-    Array::set(ctx.decl_bodies, id, body)
+    pe_flag_or(ctx = ctx, id = id, bit = pf_param)
+    Array::set(ctx.decl_bodies, at = id, value = body)
     scope2 = PsBind(pname, id, scope2)
-    Array::push(param_ids, id)
+    Array::push(param_ids, value = id)
     pj = pj + 1
   }
-  pc_emit(ctx, scope2, body)
+  pc_emit(ctx = ctx, scope = scope2, expr = body)
   // Branch-dependent dups (`pe_dup_merge`): drop the redundant rows while
   // nothing has indexed the plan yet.
   pe_apply_dup_splits(ctx)
@@ -1158,18 +1158,18 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
   // by name across the entire plan (a body-local binding that shadows a
   // borrowed parameter's name would otherwise lose its own drop -- a leak the
   // filter's comment acknowledges).
-  Array::push(out_param_drop_start, Array::length(ctx.actions))
+  Array::push(out_param_drop_start, value = Array::length(ctx.actions))
   let mut pk = 0
   while pk < Array::length(params) {
-    let (pname, _) = Array::get(params, pk)
-    pe_scope_end(ctx, Array::get(param_ids, pk), pname)
+    let (pname, _) = Array::get(params, at = pk)
+    pe_scope_end(ctx = ctx, id = Array::get(param_ids, at = pk), name = pname)
     pk = pk + 1
   }
   // ADR-0092 / #2389: append the reuse-pairing candidates AFTER the
   // param-drop suffix -- out_param_drop_start's "drops from here on are the
   // params' own" contract only speaks about drops, and reuse rows are
   // neither drops nor dups, so every existing consumer skips them.
-  plan_reuse_pairs(body, ctx.actions)
+  plan_reuse_pairs(body = body, actions = ctx.actions)
   // #2389: and the per-path release rows, after the same suffix and for the
   // same reason -- they are neither drops nor dups, so every consumer that
   // reads `out_param_drop_start` skips them.
@@ -1180,13 +1180,13 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
   pe_emit_exit_rows(ctx)
   // #2837: the truncate-release rows, after the same suffix -- neither drops
   // nor dups, so every consumer reading `out_param_drop_start` skips them.
-  plan_truncate_release(body, ctx.actions)
+  plan_truncate_release(body = body, actions = ctx.actions)
   // #3140: the field-release rows, after the same suffix for the same reason.
-  plan_setfield_release(ctx, params, body, ctx.actions)
+  plan_setfield_release(ctx = ctx, params = params, body = body, actions = ctx.actions)
   // An owned copy, NOT ctx.actions itself: the cached PCtx keeps (and later
   // resets) its own actions array, while callers hold the returned plan
   // across subsequent plan builds.
-  Array::slice(ctx.actions, 0, Array::length(ctx.actions))
+  Array::slice(ctx.actions, start = 0, end = Array::length(ctx.actions))
 }
 
 /// The plan without the param-drop split index, for callers that do not
@@ -1194,5 +1194,5 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
 /// so it is never in the borrow-param set).
 export fn build_perceus_plan_with_params(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Array[PerceusAction] {
   let ignored = array_empty()
-  build_perceus_plan_with_params_split(params, body, borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns, ignored)
+  build_perceus_plan_with_params_split(params = params, body = body, borrow_ret_names = borrow_ret_names, borrow_param_fns = borrow_param_fns, borrow_param_masks = borrow_param_masks, view_ret_fns = view_ret_fns, out_param_drop_start = ignored)
 }

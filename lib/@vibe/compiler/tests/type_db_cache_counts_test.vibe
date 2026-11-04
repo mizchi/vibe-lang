@@ -3,14 +3,14 @@ import @vibe/compiler/runtime {
 }
 
 test "memory walk counts survive a warm check and dependency edit" {
-  let db = db_set_source(db_set_source(db_new(), "counter/dep.vibe", "export let value = 1"), "counter/main.vibe", "import ./dep.vibe { value }\nlet answer = value")
-  let cold = db_typecheck(db, "counter/main.vibe")
+  let db = db_set_source(db = db_set_source(db = db_new(), path = "counter/dep.vibe", source = "export let value = 1"), path = "counter/main.vibe", source = "import ./dep.vibe { value }\nlet answer = value")
+  let cold = db_typecheck(db = db, path = "counter/main.vibe")
   inspect(db_parse_count(cold), content = "4")
   inspect(db_typecheck_count(cold), content = "2")
-  let warm = db_typecheck(cold, "counter/main.vibe")
+  let warm = db_typecheck(db = cold, path = "counter/main.vibe")
   inspect(db_parse_count(warm), content = "4")
   inspect(db_typecheck_count(warm), content = "2")
-  let changed = db_typecheck(db_set_source(warm, "counter/dep.vibe", "export let value = \"changed\""), "counter/main.vibe")
+  let changed = db_typecheck(db = db_set_source(db = warm, path = "counter/dep.vibe", source = "export let value = \"changed\""), path = "counter/main.vibe")
   inspect(db_parse_count(changed), content = "7")
   inspect(db_typecheck_count(changed), content = "4")
 }
@@ -32,33 +32,34 @@ test "memory directory imports and reexports use the production fingerprint" {
   let dep_text = "export let value = 1\n"
   let facade_text = "export ./dep.vibe { value }\n"
   let root_text = "import ./pkg { value }\nexport let answer = value\n"
-  let db = db_set_source(db_set_source(db_set_source(db_new(), dep, dep_text), facade, facade_text), root, root_text)
-  let (_, fingerprint, checked) = db_program_source(db, root)
+  let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = dep, source = dep_text), path = facade, source = facade_text), path = root, source = root_text)
+  let (_, fingerprint, checked) = db_program_source(db = db, path = root)
   let seed = typing_semantics_seed()
-  let dep_fp = engine_typecheck_fs_build_fingerprint(dep, dep_text, [], seed)
-  let facade_fp = engine_typecheck_fs_build_fingerprint(facade, facade_text, [
+  let dep_fp = engine_typecheck_fs_build_fingerprint(path = dep, source = dep_text, dep_fps = [
+  ], semantics_seed = seed)
+  let facade_fp = engine_typecheck_fs_build_fingerprint(path = facade, source = facade_text, dep_fps = [
     (dep, dep_fp)
-  ], seed)
-  let expected = engine_typecheck_fs_build_fingerprint(root, root_text, [
+  ], semantics_seed = seed)
+  let expected = engine_typecheck_fs_build_fingerprint(path = root, source = root_text, dep_fps = [
     (facade, facade_fp)
-  ], seed)
+  ], semantics_seed = seed)
   assert(fingerprint == expected)
   inspect(db_typecheck_count(checked), content = "3")
   inspect(db_parse_count(checked), content = "6")
-  let warm = db_typecheck(checked, root)
+  let warm = db_typecheck(db = checked, path = root)
   inspect(db_typecheck_count(warm), content = "3")
   inspect(db_parse_count(warm), content = "6")
 }
 
 test "memory import cycle is refused before checking any module" {
-  let db = db_set_source(db_set_source(db_new(), "cycle/a.vibe", "import ./b.vibe { y }\nexport let x = 1"), "cycle/b.vibe", "import ./a.vibe { x }\nexport let y = 2")
+  let db = db_set_source(db = db_set_source(db = db_new(), path = "cycle/a.vibe", source = "import ./b.vibe { y }\nexport let x = 1"), path = "cycle/b.vibe", source = "import ./a.vibe { x }\nexport let y = 2")
   let message = handle {
-    db_typecheck(db, "cycle/a.vibe")
+    db_typecheck(db = db, path = "cycle/a.vibe")
     "accepted"
   } with { Exception::Throw(message) => message }
-  assert(String::contains(message, "import cycle"))
-  assert(String::contains(message, "cycle/a.vibe"))
-  assert(String::contains(message, "cycle/b.vibe"))
+  assert(String::contains(message, needle = "import cycle"))
+  assert(String::contains(message, needle = "cycle/a.vibe"))
+  assert(String::contains(message, needle = "cycle/b.vibe"))
   inspect(db_typecheck_count(db), content = "0")
 }
 
@@ -70,32 +71,32 @@ test "failed import edit preserves the source dependency cache witness for retry
   let new_dep = "retry_cache/new.vibe"
   let old_source = "import ./old.vibe { value }\nexport fn read() -> Int { value }\n"
   let new_source = "import ./new.vibe { value }\nexport fn read() -> Int { value }\n"
-  let db = db_set_source(db_set_source(db_set_source(db_new(), old_dep, "export let value = 1"), new_dep, "export let value = \"wrong\""), root, old_source)
-  let cold = db_typecheck(db, root)
-  let edited = db_set_source(cold, root, new_source)
+  let db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = "export let value = 1"), path = new_dep, source = "export let value = \"wrong\""), path = root, source = old_source)
+  let cold = db_typecheck(db = db, path = root)
+  let edited = db_set_source(db = cold, path = root, source = new_source)
   let failed = handle {
-    db_typecheck(edited, root)
+    db_typecheck(db = edited, path = root)
     false
   } with { Exception::Throw(_) => true }
   assert(failed)
-  let fixed = db_set_source(edited, new_dep, "export let value = 2")
-  let checked = db_typecheck(fixed, root)
+  let fixed = db_set_source(db = edited, path = new_dep, source = "export let value = 2")
+  let checked = db_typecheck(db = fixed, path = root)
   let count = db_parse_count(checked)
-  let warm = db_typecheck(checked, root)
+  let warm = db_typecheck(db = checked, path = root)
   assert(db_parse_count(warm) == count)
-  let (_, fp, _) = db_program_source(warm, root)
+  let (_, fp, _) = db_program_source(db = warm, path = root)
   let seed = typing_semantics_seed()
-  let dependency_fp = engine_typecheck_fs_build_fingerprint(new_dep, "export let value = 2", [
-  ], seed)
-  let expected = engine_typecheck_fs_build_fingerprint(root, new_source, [
+  let dependency_fp = engine_typecheck_fs_build_fingerprint(path = new_dep, source = "export let value = 2", dep_fps = [
+  ], semantics_seed = seed)
+  let expected = engine_typecheck_fs_build_fingerprint(path = root, source = new_source, dep_fps = [
     (new_dep, dependency_fp)
-  ], seed)
+  ], semantics_seed = seed)
   inspect(fp == expected, content = "true")
 }
 
 fn memory_resolution_error(db: TypeDb, root: String) -> String with Env {
   handle {
-    db_typecheck(db, root)
+    db_typecheck(db = db, path = root)
     "accepted"
   } with { Exception::Throw(message) => message }
 }
@@ -111,14 +112,14 @@ test "adding a higher priority import candidate invalidates a warm memory plan" 
   let root_text = "import ./pkg { value }\nexport fn read() -> Int { value }\n"
   let old_text = "export let value = 1\n"
   let new_text = "export let value = \"wrong\"\n"
-  let cold = db_typecheck(db_set_source(db_set_source(db_new(), old_dep, old_text), root, root_text), root)
-  let warm = db_typecheck(cold, root)
+  let cold = db_typecheck(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = old_text), path = root, source = root_text), path = root)
+  let warm = db_typecheck(db = cold, path = root)
   assert(db_parse_count(warm) == db_parse_count(cold))
-  let edited = db_set_source(warm, new_dep, new_text)
-  let fresh = db_set_source(db_set_source(db_set_source(db_new(), old_dep, old_text), root, root_text), new_dep, new_text)
-  let expected = memory_resolution_error(fresh, root)
+  let edited = db_set_source(db = warm, path = new_dep, source = new_text)
+  let fresh = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = old_text), path = root, source = root_text), path = new_dep, source = new_text)
+  let expected = memory_resolution_error(db = fresh, root = root)
   assert(expected != "accepted")
-  inspect(memory_resolution_error(edited, root) == expected, content = "true")
+  inspect(memory_resolution_error(db = edited, root = root) == expected, content = "true")
 }
 
 test "new candidates replan transitive imports and publish their canonical fingerprint" {
@@ -130,24 +131,25 @@ test "new candidates replan transitive imports and publish their canonical finge
   let facade_text = "export ./pkg { value }\n"
   let old_text = "export let value = 1\n"
   let new_text = "export let value = \"changed\"\n"
-  let cold = db_typecheck(db_set_source(db_set_source(db_set_source(db_new(), old_dep, old_text), facade, facade_text), root, root_text), root)
-  let checked = db_typecheck(db_set_source(cold, new_dep, new_text), root)
-  let (_, fp, _) = db_program_source(checked, root)
+  let cold = db_typecheck(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = old_text), path = facade, source = facade_text), path = root, source = root_text), path = root)
+  let checked = db_typecheck(db = db_set_source(db = cold, path = new_dep, source = new_text), path = root)
+  let (_, fp, _) = db_program_source(db = checked, path = root)
   let seed = typing_semantics_seed()
-  let dep_fp = engine_typecheck_fs_build_fingerprint(new_dep, new_text, [], seed)
-  let facade_fp = engine_typecheck_fs_build_fingerprint(facade, facade_text, [
+  let dep_fp = engine_typecheck_fs_build_fingerprint(path = new_dep, source = new_text, dep_fps = [
+  ], semantics_seed = seed)
+  let facade_fp = engine_typecheck_fs_build_fingerprint(path = facade, source = facade_text, dep_fps = [
     (new_dep, dep_fp)
-  ], seed)
-  let expected = engine_typecheck_fs_build_fingerprint(root, root_text, [
+  ], semantics_seed = seed)
+  let expected = engine_typecheck_fs_build_fingerprint(path = root, source = root_text, dep_fps = [
     (facade, facade_fp)
-  ], seed)
+  ], semantics_seed = seed)
   inspect(fp == expected, content = "true")
-  let warm = db_typecheck(checked, root)
+  let warm = db_typecheck(db = checked, path = root)
   assert(db_parse_count(warm) == db_parse_count(checked))
   assert(db_typecheck_count(warm) == db_typecheck_count(checked))
 }
 
-fn memory_resolution_from_fs(failed_walk: Bool) -> Unit with Console + Env + Exception + Fs {
+fn memory_resolution_from_fs(_ failed_walk: Bool) -> Unit with Console + Env + Exception + Fs {
   let dir = if failed_walk {
     "/tmp/vibe_memory_resolution_fs_failure/.vibe/build/vpkg_types"
   } else {
@@ -163,28 +165,28 @@ fn memory_resolution_from_fs(failed_walk: Bool) -> Unit with Console + Env + Exc
   } else {
     "export let value = \"wrong\"\n"
   }
-  let cold = db_typecheck(db_set_source(db_set_source(db_new(), old_dep, old_text), root, root_text), root)
+  let cold = db_typecheck(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = old_text), path = root, source = root_text), path = root)
   Fs::mkdir_p(dir)
-  Fs::write_file(new_dep, new_text)
+  Fs::write_file(new_dep, contents = new_text)
   let loaded = if failed_walk {
     let refused = handle {
-      db_typecheck_fs(cold, new_dep)
+      db_typecheck_fs(db = cold, path = new_dep)
       false
     } with { Exception::Throw(_) => true }
     assert(refused)
     // A failed FS walk still inserted its source into the linear RippleDb.
     cold
   } else {
-    let next = db_typecheck_fs(cold, new_dep)
+    let next = db_typecheck_fs(db = cold, path = new_dep)
     // Only generated type-stub paths may be loaded without prior seeding.
     // Assert that this path really was checked, rather than a missing no-op.
-    assert(db_check_env(next, new_dep) is Some(_))
+    assert(db_check_env(db = next, path = new_dep) is Some(_))
     next
   }
-  let fresh = db_set_source(db_set_source(db_set_source(db_new(), old_dep, old_text), root, root_text), new_dep, new_text)
-  let expected = memory_resolution_error(fresh, root)
+  let fresh = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = old_dep, source = old_text), path = root, source = root_text), path = new_dep, source = new_text)
+  let expected = memory_resolution_error(db = fresh, root = root)
   assert(expected != "accepted")
-  inspect(memory_resolution_error(loaded, root) == expected, content = "true")
+  inspect(memory_resolution_error(db = loaded, root = root) == expected, content = "true")
 }
 
 test "successful FS loading invalidates a cached virtual import resolution" {

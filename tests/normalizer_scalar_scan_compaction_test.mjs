@@ -66,8 +66,14 @@ function balanced(text, openIndex) {
   assert.fail(`unterminated block at ${openIndex}`);
 }
 
+// ADR-0120: an argument may be written with its label (`f(x = 1)`). The bodies
+// below pin call structure, not spelling, so a label right after `(` or `,`
+// is dropped before comparing.
 function canonical(text) {
-  return maskNonCode(text, false).replace(/\s+/g, " ").trim();
+  return maskNonCode(text, false)
+    .replace(/\s+/g, " ")
+    .replace(/([(,] ?)[A-Za-z_][A-Za-z0-9_]* = (?!=)/g, "$1")
+    .trim();
 }
 
 function splitTopLevel(text, separator) {
@@ -350,28 +356,28 @@ function mutate(text, from, to, label) {
   assert.notEqual(out, text, `${label}: the mutation matched nothing`);
   return out;
 }
-const wrongChild = mutate(scan.body, "dinsp_scan(c, mode, name) || dinsp_scan(t, mode, name) || dinsp_scan(f, mode, name)", "dinsp_scan(t, mode, name) || dinsp_scan(c, mode, name) || dinsp_scan(f, mode, name)", "swapped recursive child");
+const wrongChild = mutate(scan.body, "dinsp_scan(expr = c, mode = mode, name = name) || dinsp_scan(expr = t, mode = mode, name = name) || dinsp_scan(expr = f, mode = mode, name = name)", "dinsp_scan(expr = t, mode = mode, name = name) || dinsp_scan(expr = c, mode = mode, name = name) || dinsp_scan(expr = f, mode = mode, name = name)", "swapped recursive child");
 expectMutationFailure("swapped recursive child", () => assertArms(matchExprArms(wrongChild).at(-1), recursiveArms, "mutated Expr"));
 const wrongDirect = mutate(scan.body, "ECall(callee, args, _, _) => if mode == 4 {", "ECall(callee, args, _, _) => if mode == 5 {", "wrong direct-callee mode");
 expectMutationFailure("wrong direct-callee mode", () => assertArms(matchExprArms(wrongDirect).at(-1), recursiveArms, "mutated call"));
-const wrongPat = mutate(collector.body, "collect_pat_binders(a, out)\n      collect_pat_binders(b, out)", "collect_pat_binders(b, out)\n      collect_pat_binders(a, out)", "reversed POr binder order");
+const wrongPat = mutate(collector.body, "collect_pat_binders(p = a, out = out)\n      collect_pat_binders(p = b, out = out)", "collect_pat_binders(p = b, out = out)\n      collect_pat_binders(p = a, out = out)", "reversed POr binder order");
 expectMutationFailure("reversed POr binder order", () => assertArms(parseMatchAt(wrongPat, maskNonCode(wrongPat).search(/\bmatch\s+p\s*\{/)), expectedPatArms, "mutated Pat"));
 expectMutationFailure("membership comparator", () => assert.equal(canonical(mutate(contains.body, "== val", "!= val", "membership comparator")), canonical(membershipBody)));
 
 // #2538: the material #2386 and #2537 added, mutated. The exemption the cell
 // rule grants is narrow, and these are what say so -- an exemption nobody can
 // break is indistinguishable from no rule at all.
-const strayCell = mutate(scan.body, "} else if mode == 2 {", "} else if mode == 2 {\n    Array::set(dinsp_census_cell, 0, 1)", "cell write outside the mode 7 arm");
+const strayCell = mutate(scan.body, "} else if mode == 2 {", "} else if mode == 2 {\n    Array::set(dinsp_census_cell, at = 0, value = 1)", "cell write outside the mode 7 arm");
 expectMutationFailure("cell write outside the mode 7 arm", () => assertCellDiscipline(strayCell, "mutated stray"));
-const otherCell = mutate(scan.body, "Array::set(dinsp_census_cell, 1, 1)", "Array::set(dinsp_other_cell, 1, 1)", "a second cell");
+const otherCell = mutate(scan.body, "Array::set(dinsp_census_cell, at = 1, value = 1)", "Array::set(dinsp_other_cell, at = 1, value = 1)", "a second cell");
 expectMutationFailure("a second cell", () => assertCellDiscipline(otherCell, "mutated other"));
-const noCell = mutate(scan.body, /Array::set\(dinsp_census_cell, \d, 1\)/g, "()", "census recorded without the cell");
+const noCell = mutate(scan.body, /Array::set\(dinsp_census_cell, at = \d, value = 1\)/g, "()", "census recorded without the cell");
 expectMutationFailure("census recorded without the cell", () => assertCellDiscipline(noCell, "mutated none"));
-const halfCensus = mutate(scan.body, "Array::set(dinsp_census_cell, 1, 1)", "Array::set(dinsp_census_cell, 0, 1)", "census records one bit twice");
+const halfCensus = mutate(scan.body, "Array::set(dinsp_census_cell, at = 1, value = 1)", "Array::set(dinsp_census_cell, at = 0, value = 1)", "census records one bit twice");
 expectMutationFailure("census records one bit twice", () => {
   const arm = censusArmText(halfCensus);
   assert.equal(canonical(halfCensus.slice(arm.start + 1, arm.end - 1)),
-    canonical(halfCensus.slice(censusArm.start + 1, censusArm.end - 1).replace("Array::set(dinsp_census_cell, 0, 1)", "KEEP")));
+    canonical(halfCensus.slice(censusArm.start + 1, censusArm.end - 1).replace("Array::set(dinsp_census_cell, at = 0, value = 1)", "KEEP")));
 });
 
 const synthetic = `fn probe(expr: Expr) -> Bool {

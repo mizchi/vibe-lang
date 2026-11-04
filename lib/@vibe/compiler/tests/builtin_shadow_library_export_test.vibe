@@ -18,12 +18,12 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 
 //# Functions
 
-fn string_to_bytes(s: String) -> Bytes {
+fn string_to_bytes(_ s: String) -> Bytes {
   let out = array_empty()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Array::push(out, String::char_code_at(s, i))
+    Array::push(out, value = String::char_code_at(s, at = i))
     i = i + 1
   }
   Bytes::from_array(out)
@@ -35,7 +35,7 @@ fn read_uleb(b: Bytes, pos: Int) -> (Int, Int) {
   let mut p = pos
   let mut more = true
   while more {
-    let byte = Bytes::get(b, p)
+    let byte = Bytes::get(b, at = p)
     result = result|((byte&127)<<shift)
     shift = shift + 7
     p = p + 1
@@ -45,28 +45,28 @@ fn read_uleb(b: Bytes, pos: Int) -> (Int, Int) {
 }
 
 /// The function export names of a wasm module, from its export section (id 7).
-fn function_export_names(b: Bytes) -> Array[String] {
+fn function_export_names(_ b: Bytes) -> Array[String] {
   let names: Array[String] = []
   let mut pos = 8
   while pos < Bytes::length(b) {
-    let id = Bytes::get(b, pos)
-    let (size, body) = read_uleb(b, pos + 1)
+    let id = Bytes::get(b, at = pos)
+    let (size, body) = read_uleb(b = b, pos = pos + 1)
     if id == 7 {
-      let (count, first) = read_uleb(b, body)
+      let (count, first) = read_uleb(b = b, pos = body)
       let mut p = first
       let mut i = 0
       while i < count {
-        let (nlen, nstart) = read_uleb(b, p)
+        let (nlen, nstart) = read_uleb(b = b, pos = p)
         let mut name = ""
         let mut k = 0
         while k < nlen {
-          name = String::concat(name, String::from_char_code(Bytes::get(b, nstart + k)))
+          name = String::concat(name, String::from_char_code(Bytes::get(b, at = nstart + k)))
           k = k + 1
         }
-        let kind = Bytes::get(b, nstart + nlen)
-        let (_, after) = read_uleb(b, nstart + nlen + 1)
+        let kind = Bytes::get(b, at = nstart + nlen)
+        let (_, after) = read_uleb(b = b, pos = nstart + nlen + 1)
         if kind == 0 {
-          Array::push(names, name)
+          Array::push(names, value = name)
         } else {
           ()
         }
@@ -85,7 +85,7 @@ fn contains_name(names: Array[String], name: String) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(names) {
-    if Array::get(names, i) == name {
+    if Array::get(names, at = i) == name {
       found = true
     } else {
       ()
@@ -100,9 +100,9 @@ test "#3132 review: a library's own Array::length is exported under its source n
   let lib_path = String::concat(base_dir, "/lib.vibe")
   Fs::mkdir_p(base_dir)
   let src = "export fn Array::length(xs: Array[String]) -> Int {\n  let _ = xs\n  77\n}\n\nexport fn count_twice(xs: Array[String]) -> Int {\n  Array::length(xs) + Array::length(xs)\n}\n"
-  Fs::write_bytes(lib_path, string_to_bytes(src))
+  Fs::write_bytes(lib_path, bytes = string_to_bytes(src))
   let names = function_export_names(compile_file_wasi_library(lib_path))
-  assert(contains_name(names, "Array::length"))
-  assert(!contains_name(names, "Array::length$user"))
-  assert(contains_name(names, "count_twice"))
+  assert(contains_name(names = names, name = "Array::length"))
+  assert(!contains_name(names = names, name = "Array::length$user"))
+  assert(contains_name(names = names, name = "count_twice"))
 }

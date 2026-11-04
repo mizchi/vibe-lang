@@ -15,7 +15,7 @@ import @vibe/compiler/core {
 let cpl_next: Array[Int] = [0]
 let cpl_require_checked: Array[Bool] = [false]
 
-fn cpl_value(arg: Expr) -> Expr {
+fn cpl_value(_ arg: Expr) -> Expr {
   match arg {
     ELabeledArg(_, _, value) => value,
     _ => arg
@@ -24,7 +24,7 @@ fn cpl_value(arg: Expr) -> Expr {
 
 // 0: stable value; 1: a name that a later argument could assign; 2: a
 // computation that can observe or change another argument's value.
-fn cpl_effect_class(expr: Expr) -> Int {
+fn cpl_effect_class(_ expr: Expr) -> Int {
   match expr {
     EInt(_) => 0,
     EFloat(_) => 0,
@@ -32,10 +32,10 @@ fn cpl_effect_class(expr: Expr) -> Int {
     EBool(_) => 0,
     EUnit => 0,
     EFn(_, _, _, _, _, _) => 0,
-    EIdent(name, _) => if String::length(name) == 0 || String::contains(name, "::") {
+    EIdent(name, _) => if String::length(name) == 0 || String::contains(name, needle = "::") {
       0
     } else {
-      let first = String::byte_at(name, 0)
+      let first = String::byte_at(name, at = 0)
       if first >= 65 && first <= 90 {
         0
       } else {
@@ -63,7 +63,7 @@ fn cpl_effect_class(expr: Expr) -> Int {
   }
 }
 
-fn cpl_effects(items: Array[Expr]) -> Int {
+fn cpl_effects(_ items: Array[Expr]) -> Int {
   let mut result = 0
   for item in items {
     let next = cpl_effect_class(item)
@@ -80,14 +80,14 @@ fn cpl_needs_temporaries(args: Array[Expr], slots: Array[Int]) -> Bool {
   let mut needed = false
   let mut i = 0
   while i < Array::length(slots) && !needed {
-    let left = Array::get(slots, i) / 2 - 1
+    let left = Array::get(slots, at = i) / 2 - 1
     if left >= 0 {
-      let lc = cpl_effect_class(Array::get(args, left))
+      let lc = cpl_effect_class(Array::get(args, at = left))
       let mut j = i + 1
       while j < Array::length(slots) && !needed {
-        let right = Array::get(slots, j) / 2 - 1
+        let right = Array::get(slots, at = j) / 2 - 1
         if right >= 0 && left > right {
-          let rc = cpl_effect_class(Array::get(args, right))
+          let rc = cpl_effect_class(Array::get(args, at = right))
           needed = lc > 0 && rc > 0 && (lc == 2 || rc == 2)
         } else {
           ()
@@ -118,22 +118,22 @@ fn cpl_call(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> E
   } else {
     match call_placement_get(cell) {
       Some((written, mode, slots)) => {
-        if written != Array::length(args) || !call_placement_payload_valid(written, mode, slots) {
-          throw(call_placement_error(cell, callee, offset))
+        if written != Array::length(args) || !call_placement_payload_valid(written = written, mode = mode, slots = slots) {
+          throw(call_placement_error(cell = cell, callee = callee, offset = offset))
         } else {
           ()
         }
-        let bind = mode == 0 && cpl_needs_temporaries(args, slots)
+        let bind = mode == 0 && cpl_needs_temporaries(args = args, slots = slots)
         let names: Array[String] = for _ in args {
           ""
         }
         if bind {
           let mut i = 0
           while i < Array::length(args) {
-            if cpl_effect_class(Array::get(args, i)) > 0 {
-              let next = Array::get(cpl_next, 0)
-              Array::set(cpl_next, 0, next + 1)
-              Array::set(names, i, "__labeled_arg$" + __to_string(next))
+            if cpl_effect_class(Array::get(args, at = i)) > 0 {
+              let next = Array::get(cpl_next, at = 0)
+              Array::set(cpl_next, at = 0, value = next + 1)
+              Array::set(names, at = i, value = "__labeled_arg$" + __to_string(next))
             } else {
               ()
             }
@@ -145,18 +145,18 @@ fn cpl_call(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> E
         let placed: Array[Expr] = []
         for slot in slots {
           if slot == 0 {
-            Array::push(placed, EIdent("None", -1))
+            Array::push(placed, value = EIdent("None", -1))
           } else {
             let source = slot / 2 - 1
-            let name = Array::get(names, source)
+            let name = Array::get(names, at = source)
             let value = if String::length(name) > 0 {
               EIdent(name, -1)
             } else if mode == 0 {
-              cpl_value(Array::get(args, source))
+              cpl_value(Array::get(args, at = source))
             } else {
-              Array::get(args, source)
+              Array::get(args, at = source)
             }
-            Array::push(placed, if slot % 2 == 1 {
+            Array::push(placed, value = if slot % 2 == 1 {
               ECall(EIdent("Some", -1), [value], -1, [])
             } else {
               value
@@ -177,7 +177,7 @@ fn cpl_call(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> E
           None
         }
         let receiver_name = match receiver {
-          Some(_) => "__labeled_recv$" + __to_string(Array::get(cpl_next, 0)),
+          Some(_) => "__labeled_recv$" + __to_string(Array::get(cpl_next, at = 0)),
           None => ""
         }
         let placed_callee = match receiver {
@@ -191,9 +191,9 @@ fn cpl_call(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> E
         let mut i = Array::length(args)
         while i > 0 {
           i = i - 1
-          let name = Array::get(names, i)
+          let name = Array::get(names, at = i)
           if String::length(name) > 0 {
-            body = ELet(name, cpl_value(Array::get(args, i)), body, -1)
+            body = ELet(name, cpl_value(Array::get(args, at = i)), body, -1)
           } else {
             ()
           }
@@ -211,8 +211,8 @@ fn cpl_call(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> E
             _ => ()
           }
         }
-        if call_placement_is_pending(cell) || (labeled && Array::get(cpl_require_checked, 0)) {
-          throw(call_placement_error(cell, callee, offset))
+        if call_placement_is_pending(cell) || (labeled && Array::get(cpl_require_checked, at = 0)) {
+          throw(call_placement_error(cell = cell, callee = callee, offset = offset))
         } else {
           ECall(callee, args, offset, cell)
         }
@@ -221,29 +221,29 @@ fn cpl_call(callee: Expr, args: Array[Expr], offset: Int, cell: Array[Int]) -> E
   }
 }
 
-fn cpl_exprs(items: Array[Expr]) -> Array[Expr] with Exception {
+fn cpl_exprs(_ items: Array[Expr]) -> Array[Expr] with Exception {
   for item in items {
     cpl_expr(item)
   }
 }
-fn cpl_fields(items: Array[(String, Expr)]) -> Array[(String, Expr)] with Exception {
+fn cpl_fields(_ items: Array[(String, Expr)]) -> Array[(String, Expr)] with Exception {
   for item in items {
     (item.0, cpl_expr(item.1))
   }
 }
-fn cpl_arms(items: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] with Exception {
+fn cpl_arms(_ items: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] with Exception {
   for item in items {
     (item.0, cpl_expr(item.1))
   }
 }
-fn cpl_opt(item: Option[Expr]) -> Option[Expr] with Exception {
+fn cpl_opt(_ item: Option[Expr]) -> Option[Expr] with Exception {
   match item {
     Some(expr) => Some(cpl_expr(expr)),
     None => None
   }
 }
 
-fn cpl_expr(expr: Expr) -> Expr with Exception {
+fn cpl_expr(_ expr: Expr) -> Expr with Exception {
   match expr {
     EInt(_) => expr,
     EFloat(_) => expr,
@@ -268,7 +268,7 @@ fn cpl_expr(expr: Expr) -> Expr with Exception {
     EWhile(c, b) => EWhile(cpl_expr(c), cpl_expr(b)),
     ELoop(params, b) => ELoop(cpl_fields(params), cpl_expr(b)),
     EForIn(v, k, it, b) => EForIn(v, k, cpl_expr(it), cpl_expr(b)),
-    ECall(callee, args, off, callee_resolution) => cpl_call(cpl_expr(callee), cpl_exprs(args), off, callee_resolution),
+    ECall(callee, args, off, callee_resolution) => cpl_call(callee = cpl_expr(callee), args = cpl_exprs(args), offset = off, cell = callee_resolution),
     EBinOp(op, l, r, boff) => EBinOp(op, cpl_expr(l), cpl_expr(r), boff),
     EUnaryOp(op, v) => EUnaryOp(op, cpl_expr(v)),
     EFn(g, bs, ps, ret, row, body) => EFn(g, bs, ps, ret, row, cpl_expr(body)),
@@ -281,7 +281,7 @@ fn cpl_expr(expr: Expr) -> Expr with Exception {
   }
 }
 
-fn cpl_here(expr: Expr) -> Bool {
+fn cpl_here(_ expr: Expr) -> Bool {
   match expr {
     ECall(_, _, _, cell) => call_placement_is_pending(cell),
     ELabeledArg(_, _, _) => true,
@@ -289,16 +289,16 @@ fn cpl_here(expr: Expr) -> Bool {
   }
 }
 
-fn cpl_body(expr: Expr) -> Expr with Exception {
-  if expr_any_node(expr, cpl_here) {
+fn cpl_body(_ expr: Expr) -> Expr with Exception {
+  if expr_any_node(expr = expr, pred = cpl_here) {
     cpl_expr(expr)
   } else {
     expr
   }
 }
 
-fn cpl_stmt(stmt: Stmt) -> Stmt with Exception {
-  Array::set(cpl_next, 0, 0)
+fn cpl_stmt(_ stmt: Stmt) -> Stmt with Exception {
+  Array::set(cpl_next, at = 0, value = 0)
   match stmt {
     SLet(ex, is_rec, name, ty, body) => SLet(ex, is_rec, name, ty, cpl_body(body)),
     SLetMut(name, ty, body) => SLetMut(name, ty, cpl_body(body)),
@@ -318,10 +318,10 @@ fn cpl_stmt(stmt: Stmt) -> Stmt with Exception {
 /// Construct call arguments from checker-owned source indices. No binding or
 /// parameter-name lookup occurs here. Strict lanes refuse unchecked labels.
 export fn lower_checked_call_placements(stmts: Array[Stmt], require_checked: Bool) -> Unit with Exception {
-  Array::set(cpl_require_checked, 0, require_checked)
+  Array::set(cpl_require_checked, at = 0, value = require_checked)
   let mut i = 0
   while i < Array::length(stmts) {
-    Array::set(stmts, i, cpl_stmt(Array::get(stmts, i)))
+    Array::set(stmts, at = i, value = cpl_stmt(Array::get(stmts, at = i)))
     i = i + 1
   }
 }

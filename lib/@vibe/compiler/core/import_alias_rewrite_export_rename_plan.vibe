@@ -92,15 +92,15 @@ fn stmts_define_iterator_namespace_operation(stmts: Array[Stmt], namespace: Stri
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) && !found {
-    found = match Array::get(stmts, i) {
-      SLet(_, _, name, _, _) => iterator_namespace_operation(name, namespace),
-      SFnDecl(_, name, _, _, _) => iterator_namespace_operation(name, namespace),
+    found = match Array::get(stmts, at = i) {
+      SLet(_, _, name, _, _) => iterator_namespace_operation(name = name, namespace = namespace),
+      SFnDecl(_, name, _, _, _) => iterator_namespace_operation(name = name, namespace = namespace),
       SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
         false
       } else {
-        import_items_bind_iterator_namespace_operation(items, namespace)
+        import_items_bind_iterator_namespace_operation(items = items, namespace = namespace)
       },
-      SReExport(_, items) => import_items_bind_iterator_namespace_operation(items, namespace),
+      SReExport(_, items) => import_items_bind_iterator_namespace_operation(items = items, namespace = namespace),
       _ => false
     }
     i = i + 1
@@ -117,11 +117,11 @@ fn builtin_iterator_trait_wins_namespace(stmts: Array[Stmt], namespace: String) 
   let mut wins = false
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImport(path, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let explicit_trait = match item.kind {
             Some(ImportTrait) => true,
             _ => false
@@ -141,7 +141,7 @@ fn builtin_iterator_trait_wins_namespace(stmts: Array[Stmt], namespace: String) 
       SReExport(_, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let explicit_trait = match item.kind {
             Some(ImportTrait) => true,
             _ => false
@@ -176,15 +176,15 @@ fn builtin_iterator_trait_wins_namespace(stmts: Array[Stmt], namespace: String) 
 /// It is emitted only when this source unit explicitly imports the standard
 /// Iterator trait and does not replace any optimized namespace operation.
 /// The marker is consumed before codegen and never becomes a runtime value.
-export fn builtin_iterator_namespace_markers(stmts: Array[Stmt]) -> Array[String] {
+export fn builtin_iterator_namespace_markers(_ stmts: Array[Stmt]) -> Array[String] {
   let out = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImport(path, items) => if path == "@vibe/builtin" {
         let mut j = 0
         while j < Array::length(items) {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let explicit_trait = match item.kind {
             Some(ImportTrait) => true,
             _ => false
@@ -198,14 +198,14 @@ export fn builtin_iterator_namespace_markers(stmts: Array[Stmt]) -> Array[String
             // occurrences canonicalize to the provider. Therefore a local
             // canonical `Iterator::*` helper is independent and cannot block
             // provenance for the imported alias.
-            if builtin_iterator_trait_wins_namespace(stmts, local) && !stmts_define_iterator_namespace_operation(stmts, local) {
+            if builtin_iterator_trait_wins_namespace(stmts = stmts, namespace = local) && !stmts_define_iterator_namespace_operation(stmts = stmts, namespace = local) {
               // Imported trait-operation wrappers keep the local namespace:
               // `trait Iterator as Iter` materializes `Iter::map`. Recording
               // the local spelling keeps optimization scoped to that wrapper
               // and cannot authorize a distinct local `Iterator::map`.
               let marker = String::concat(builtin_iterator_origin_marker_prefix(), local)
-              if !import_alias_rewrite_string_array_contains(out, marker) {
-                Array::push(out, marker)
+              if !import_alias_rewrite_string_array_contains(items = out, target = marker) {
+                Array::push(out, value = marker)
               } else {
                 ()
               }
@@ -228,10 +228,10 @@ export fn builtin_iterator_namespace_markers(stmts: Array[Stmt]) -> Array[String
 }
 
 /// Decode a compiler-only standard Iterator provenance marker.
-export fn builtin_iterator_namespace_from_marker(marker: String) -> Option[String] {
+export fn builtin_iterator_namespace_from_marker(_ marker: String) -> Option[String] {
   let prefix = builtin_iterator_origin_marker_prefix()
-  if String::starts_with(marker, prefix) && String::length(marker) > String::length(prefix) {
-    Some(String::substring(marker, String::length(prefix), String::length(marker)))
+  if String::starts_with(marker, prefix = prefix) && String::length(marker) > String::length(prefix) {
+    Some(String::substring(marker, start = String::length(prefix), end = String::length(marker)))
   } else {
     None
   }
@@ -245,25 +245,25 @@ export fn append_builtin_iterator_operation_markers(markers: Array[String], rena
   let namespaces = empty_strings()
   let mut mi = 0
   while mi < Array::length(markers) {
-    match builtin_iterator_namespace_from_marker(Array::get(markers, mi)) {
-      Some(namespace) => Array::push(namespaces, namespace),
+    match builtin_iterator_namespace_from_marker(Array::get(markers, at = mi)) {
+      Some(namespace) => Array::push(namespaces, value = namespace),
       None => ()
     }
     mi = mi + 1
   }
   let mut ri = 0
   while ri < Array::length(renames) {
-    let (local, resolved) = Array::get(renames, ri)
-    let split = String::index_of(local, "::")
+    let (local, resolved) = Array::get(renames, at = ri)
+    let split = String::index_of(local, needle = "::")
     if split > 0 {
-      let namespace = String::substring(local, 0, split)
-      if import_alias_rewrite_string_array_contains(namespaces, namespace) && iterator_namespace_operation(local, namespace) {
-        let resolved_split = String::index_of(resolved, "::")
+      let namespace = String::substring(local, start = 0, end = split)
+      if import_alias_rewrite_string_array_contains(items = namespaces, target = namespace) && iterator_namespace_operation(name = local, namespace = namespace) {
+        let resolved_split = String::index_of(resolved, needle = "::")
         if resolved_split > 0 {
-          let resolved_namespace = String::substring(resolved, 0, resolved_split)
+          let resolved_namespace = String::substring(resolved, start = 0, end = resolved_split)
           let namespace_marker = String::concat(builtin_iterator_origin_marker_prefix(), resolved_namespace)
-          if !import_alias_rewrite_string_array_contains(markers, namespace_marker) {
-            Array::push(markers, namespace_marker)
+          if !import_alias_rewrite_string_array_contains(items = markers, target = namespace_marker) {
+            Array::push(markers, value = namespace_marker)
           } else {
             ()
           }
@@ -284,26 +284,26 @@ export fn append_builtin_iterator_operation_markers(markers: Array[String], rena
 /// both the local-name blocker set used by builtin desugaring and the
 /// compiler-only Iterator provenance payload; the second field records
 /// publication-only re-export aliases for checker projection.
-export fn merged_source_boundary_names(stmts: Array[Stmt]) -> (Array[String], Array[String]) {
+export fn merged_source_boundary_names(_ stmts: Array[Stmt]) -> (Array[String], Array[String]) {
   let locals = empty_strings()
   let surface_only = empty_strings()
   let decided = empty_strings()
   let mut i = Array::length(stmts) - 1
   while i >= 0 {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SReExport(_, items) => {
         let mut j = Array::length(items) - 1
         while j >= 0 {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let local = match item.alias {
             Some(alias) => alias,
             None => item.name
           }
-          if !import_alias_rewrite_string_array_contains(decided, local) {
-            Array::push(decided, local)
-            Array::push(locals, local)
+          if !import_alias_rewrite_string_array_contains(items = decided, target = local) {
+            Array::push(decided, value = local)
+            Array::push(locals, value = local)
             match item.alias {
-              Some(alias) => Array::push(surface_only, alias),
+              Some(alias) => Array::push(surface_only, value = alias),
               None => ()
             }
           } else {
@@ -319,9 +319,9 @@ export fn merged_source_boundary_names(stmts: Array[Stmt]) -> (Array[String], Ar
   let markers = builtin_iterator_namespace_markers(stmts)
   let mut mi = 0
   while mi < Array::length(markers) {
-    let marker = Array::get(markers, mi)
-    if !import_alias_rewrite_string_array_contains(locals, marker) {
-      Array::push(locals, marker)
+    let marker = Array::get(markers, at = mi)
+    if !import_alias_rewrite_string_array_contains(items = locals, target = marker) {
+      Array::push(locals, value = marker)
     } else {
       ()
     }
@@ -340,19 +340,19 @@ export fn trait_import_local_operation_renames(stmts: Array[Stmt], path: String)
   let namespaces = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let mut j = 0
         while j < Array::length(items) {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let explicit_trait = match item.kind {
             Some(ImportTrait) => true,
             _ => false
           }
           if explicit_trait {
             match item.alias {
-              Some(alias) => if alias != item.name && !import_alias_rewrite_string_array_contains(namespaces, item.name) {
-                Array::push(namespaces, item.name)
+              Some(alias) => if alias != item.name && !import_alias_rewrite_string_array_contains(items = namespaces, target = item.name) {
+                Array::push(namespaces, value = item.name)
               } else {
                 ()
               },
@@ -371,7 +371,7 @@ export fn trait_import_local_operation_renames(stmts: Array[Stmt], path: String)
   let out = empty_aliases()
   i = 0
   while i < Array::length(stmts) {
-    let name = match Array::get(stmts, i) {
+    let name = match Array::get(stmts, at = i) {
       SLet(_, _, bound, _, _) => bound,
       SFnDecl(_, bound, _, _, _) => bound,
       _ => ""
@@ -379,15 +379,15 @@ export fn trait_import_local_operation_renames(stmts: Array[Stmt], path: String)
     let mut ni = 0
     let mut collides = false
     while ni < Array::length(namespaces) && !collides {
-      collides = trait_namespace_operation(name, Array::get(namespaces, ni))
+      collides = trait_namespace_operation(name = name, namespace = Array::get(namespaces, at = ni))
       ni = ni + 1
     }
     if collides {
       // Keep the private spelling outside the provider namespace. Later
       // normalization may recognize that namespace as a trait or intrinsic
       // surface, so a path suffix alone is not a sufficient fence.
-      let private_name = namespace_exported_name(path, String::concat("__local_trait_", name))
-      Array::push(out, (name, private_name))
+      let private_name = namespace_exported_name(path = path, name = String::concat("__local_trait_", name))
+      Array::push(out, value = (name, private_name))
     } else {
       ()
     }
@@ -399,14 +399,14 @@ export fn trait_import_local_operation_renames(stmts: Array[Stmt], path: String)
 /// Entry exports are part of the final wasm/library ABI. Keep their original
 /// qualified spelling while retaining collision renames for private helpers.
 export fn trait_import_local_operation_renames_preserving_exports(stmts: Array[Stmt], path: String) -> Array[(String, String)] {
-  let renames = trait_import_local_operation_renames(stmts, path)
+  let renames = trait_import_local_operation_renames(stmts = stmts, path = path)
   let exported = collect_exported_value_names(stmts)
   let out = empty_aliases()
   let mut i = 0
   while i < Array::length(renames) {
-    let rename = Array::get(renames, i)
-    if !import_alias_rewrite_string_array_contains(exported, rename.0) {
-      Array::push(out, rename)
+    let rename = Array::get(renames, at = i)
+    if !import_alias_rewrite_string_array_contains(items = exported, target = rename.0) {
+      Array::push(out, value = rename)
     } else {
       ()
     }
@@ -418,7 +418,7 @@ export fn trait_import_local_operation_renames_preserving_exports(stmts: Array[S
 /// Reject the source-spellable form of an internal provenance carrier.
 /// Generated merged-source caches are parsed after the user-source boundary
 /// and intentionally do not call this guard.
-export fn reject_user_iterator_serialized_boundaries(stmts: Array[Stmt]) -> Unit with Exception {
+export fn reject_user_iterator_serialized_boundaries(_ stmts: Array[Stmt]) -> Unit with Exception {
   if stmts_have_user_iterator_serialized_boundary(stmts) {
     throw("remove reserved compiler import `@vibe/compiler/internal/iterator_boundary`: this path is generated internally and cannot be imported by source files")
   } else {
@@ -430,38 +430,38 @@ export fn reject_user_iterator_serialized_boundaries(stmts: Array[Stmt]) -> Unit
 /// Ordinary in-memory merges use `SReExportSourceBoundary`; the printer drops
 /// that internal node, so TypeDb/group caches need this reserved synthetic
 /// import until the merged source is parsed for codegen.
-export fn builtin_iterator_serialized_boundary(stmts: Array[Stmt]) -> Stmt {
+export fn builtin_iterator_serialized_boundary(_ stmts: Array[Stmt]) -> Stmt {
   let (local_names, _) = merged_source_boundary_names(stmts)
   builtin_iterator_serialized_boundary_from_markers(local_names)
 }
 
-export fn builtin_iterator_serialized_boundary_from_markers(markers: Array[String]) -> Stmt {
+export fn builtin_iterator_serialized_boundary_from_markers(_ markers: Array[String]) -> Stmt {
   SImport(String::concat(builtin_iterator_serialized_boundary_payload_prefix(), encode_boundary_names(markers)), array_empty())
 }
 
 /// Recover marker payload from the reserved source-text cache carrier.
-export fn builtin_iterator_serialized_boundary_markers(stmt: Stmt) -> Option[Array[String]] {
+export fn builtin_iterator_serialized_boundary_markers(_ stmt: Stmt) -> Option[Array[String]] {
   match stmt {
-    SImport(path, items) => if String::starts_with(path, builtin_iterator_serialized_boundary_payload_prefix()) && Array::length(items) == 0 {
-      decode_boundary_names(String::substring(path, String::length(builtin_iterator_serialized_boundary_payload_prefix()), String::length(path)))
+    SImport(path, items) => if String::starts_with(path, prefix = builtin_iterator_serialized_boundary_payload_prefix()) && Array::length(items) == 0 {
+      decode_boundary_names(String::substring(path, start = String::length(builtin_iterator_serialized_boundary_payload_prefix()), end = String::length(path)))
     } else if path == builtin_iterator_serialized_boundary_path() {
       // Read compatibility for source-text caches emitted before blockers
       // moved into the path payload. New carriers bind no import names.
       let markers = empty_strings()
       let mut i = 0
       while i < Array::length(items) {
-        let item = Array::get(items, i)
+        let item = Array::get(items, at = i)
         match item.kind {
           Some(ImportTrait) => if item.name == "Iterator" {
             let namespace = match item.alias {
               Some(alias) => alias,
               None => item.name
             }
-            Array::push(markers, String::concat(builtin_iterator_origin_marker_prefix(), namespace))
+            Array::push(markers, value = String::concat(builtin_iterator_origin_marker_prefix(), namespace))
           } else {
             ()
           },
-          None => Array::push(markers, item.name),
+          None => Array::push(markers, value = item.name),
           _ => ()
         }
         i = i + 1
@@ -493,28 +493,28 @@ export fn builtin_iterator_serialized_boundary_markers(stmt: Stmt) -> Option[Arr
 /// kind's own map (`namespace_private_stmt_after_renames`).
 export fn namespace_private_value_stmts_after_renames(path: String, stmts: Array[Stmt], export_renames: Array[(String, String)]) -> Array[Stmt] {
   if Array::length(export_renames) == 0 {
-    namespace_private_value_stmts(path, stmts)
+    namespace_private_value_stmts(path = path, stmts = stmts)
   } else {
     let exports = aliasidx_build(export_renames)
     let heads = for stmt in stmts {
-      export_renamed_head(stmt, exports)
+      export_renamed_head(stmt = stmt, exports = exports)
     }
     let namespace_suffix_box = [""]
     let exported = collect_exported_value_names(heads)
-    let renames = collect_private_value_renames(path, heads, namespace_suffix_box, exported)
-    if !alias_renames_compose(exports, renames) {
-      namespace_private_value_stmts(path, apply_export_renames_stmts(stmts, export_renames))
+    let renames = collect_private_value_renames(path = path, stmts = heads, namespace_suffix_box = namespace_suffix_box, exported = exported)
+    if !alias_renames_compose(first = exports, later = renames) {
+      namespace_private_value_stmts(path = path, stmts = apply_export_renames_stmts(stmts = stmts, renames = export_renames))
     } else {
       let value_renamed = if Array::length(renames) == 0 {
-        apply_export_renames_stmts(stmts, export_renames)
+        apply_export_renames_stmts(stmts = stmts, renames = export_renames)
       } else {
         let privates = aliasidx_build(renames)
-        let both = aliasidx_build(alias_entries_concat(export_renames, renames))
+        let both = aliasidx_build(alias_entries_concat(first = export_renames, later = renames))
         for stmt in stmts {
-          namespace_private_stmt_after_renames(stmt, exports, privates, both)
+          namespace_private_stmt_after_renames(stmt = stmt, exports = exports, privates = privates, both = both)
         }
       }
-      namespace_private_type_ctor_stage(path, value_renamed, namespace_suffix_box, exported)
+      namespace_private_type_ctor_stage(path = path, value_renamed = value_renamed, namespace_suffix_box = namespace_suffix_box, exported = exported)
     }
   }
 }
@@ -526,26 +526,26 @@ export fn namespace_private_value_stmts_after_renames(path: String, stmts: Array
 /// map so the fused walk answers exactly like the pair.
 fn namespace_private_stmt_after_renames(stmt: Stmt, exports: AliasIdx, privates: AliasIdx, both: AliasIdx) -> Stmt {
   match stmt {
-    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, aliasidx_rename(both, name), ty, rewrite_alias_expr_ix(body, both)),
+    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, aliasidx_rename(am = both, name = name), ty, rewrite_alias_expr_ix(expr = body, am = both)),
     // ADR-0120 D3: a declaration's `_` slots follow its `SLet` name.
     SPositionalParams(rows) => SPositionalParams(for row in rows {
       let (decl, slots) = row
-      (aliasidx_rename(both, decl), slots)
+      (aliasidx_rename(am = both, name = decl), slots)
     }),
-    SLetMut(name, ty, body) => SLetMut(aliasidx_rename(privates, name), ty, rewrite_alias_expr_ix(body, both)),
-    SFnDecl(exported, name, body, requires, ensures) => SFnDecl(exported, aliasidx_rename(exports, name), rewrite_alias_expr_ix(body, exports), for requirement in requires {
-      rewrite_alias_expr_ix(requirement, exports)
+    SLetMut(name, ty, body) => SLetMut(aliasidx_rename(am = privates, name = name), ty, rewrite_alias_expr_ix(expr = body, am = both)),
+    SFnDecl(exported, name, body, requires, ensures) => SFnDecl(exported, aliasidx_rename(am = exports, name = name), rewrite_alias_expr_ix(expr = body, am = exports), for requirement in requires {
+      rewrite_alias_expr_ix(expr = requirement, am = exports)
     }, for guarantee in ensures {
-      rewrite_alias_expr_ix(guarantee, exports)
+      rewrite_alias_expr_ix(expr = guarantee, am = exports)
     }),
     SExport(items) => SExport(for item in items {
-      aliasidx_rename(exports, item)
+      aliasidx_rename(am = exports, name = item)
     }),
-    STest(name, body) => STest(name, rewrite_alias_expr_ix(body, both)),
-    SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, both)),
-    SExpr(body) => SExpr(rewrite_alias_expr_ix(body, both)),
-    SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(body, both)),
-    SModule(exported, name, stmts) => SModule(exported, name, namespace_private_value_stmts(name, stmts)),
+    STest(name, body) => STest(name, rewrite_alias_expr_ix(expr = body, am = both)),
+    SBench(name, body) => SBench(name, rewrite_alias_expr_ix(expr = body, am = both)),
+    SExpr(body) => SExpr(rewrite_alias_expr_ix(expr = body, am = both)),
+    SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(expr = body, am = both)),
+    SModule(exported, name, stmts) => SModule(exported, name, namespace_private_value_stmts(path = name, stmts = stmts)),
     _ => stmt
   }
 }
@@ -560,9 +560,9 @@ fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], e
   let mut origin: Option[(String, String, String, Bool)] = None
   let mut published_alias: Option[String] = None
   while depth <= Array::length(edge_tpath) + MutMap::size(enum_type_aliases) + MutMap::size(enum_import_paths) && !done {
-    let key = plan_rename_key(cur_path, cur_name)
-    if MutMap::has(enum_defs, key) {
-      origin = match MutMap::get(enum_defs, key) {
+    let key = plan_rename_key(path = cur_path, name = cur_name)
+    if MutMap::has(enum_defs, k = key) {
+      origin = match MutMap::get(enum_defs, k = key) {
         Some(true) => Some((cur_name, cur_path, cur_name, true)),
         _ => match published_alias {
           Some(alias) => Some((alias, cur_path, cur_name, false)),
@@ -570,18 +570,18 @@ fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], e
         }
       }
       done = true
-    } else if MutMap::has(enum_type_aliases, key) {
-      if published_alias == None && MutMap::has(published_aliases, key) {
+    } else if MutMap::has(enum_type_aliases, k = key) {
+      if published_alias == None && MutMap::has(published_aliases, k = key) {
         published_alias = Some(cur_name)
       }
-      match MutMap::get(enum_type_aliases, key) {
+      match MutMap::get(enum_type_aliases, k = key) {
         Some(next_name) => cur_name = next_name,
         None => done = true
       }
-    } else if MutMap::has(local_type_heads, key) {
+    } else if MutMap::has(local_type_heads, k = key) {
       done = true
-    } else if MutMap::has(enum_import_paths, key) {
-      match (MutMap::get(enum_import_paths, key), MutMap::get(enum_import_names, key)) {
+    } else if MutMap::has(enum_import_paths, k = key) {
+      match (MutMap::get(enum_import_paths, k = key), MutMap::get(enum_import_names, k = key)) {
         (Some(next_path), Some(next_name)) => {
           cur_path = next_path
           cur_name = next_name
@@ -589,10 +589,10 @@ fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], e
         _ => done = true
       }
     } else {
-      match MutMap::get(edge_last_idx, key) {
+      match MutMap::get(edge_last_idx, k = key) {
         Some(next) => {
-          cur_path = Array::get(edge_tpath, next)
-          cur_name = Array::get(edge_tname, next)
+          cur_path = Array::get(edge_tpath, at = next)
+          cur_name = Array::get(edge_tname, at = next)
         },
         None => done = true
       }
@@ -616,7 +616,7 @@ fn published_type_of(stmt: Stmt, path: String, is_entry: Bool, exported_names: A
     SSuberror(exported, name, _) => (exported, name, "error types"),
     _ => (false, "", "")
   }
-  if name == "" || is_entry || is_contract_ext(path) || !(declared || import_alias_rewrite_string_array_contains(exported_names, name)) {
+  if name == "" || is_entry || is_contract_ext(path) || !(declared || import_alias_rewrite_string_array_contains(items = exported_names, target = name)) {
     ("", "")
   } else {
     (name, kind)
@@ -633,24 +633,24 @@ fn published_types_equivalent(a: Stmt, aa: Array[(String, Array[String], TypeExp
     (SStruct(_, _, af, _, am, ap), SStruct(_, _, bf, _, bm, bp)) => {
       let ar = type_param_renames(ap)
       let br = type_param_renames(bp)
-      let mut ok = Array::length(af) == Array::length(bf) && Array::length(am) == Array::length(bm) && type_param_arities_match(ap, bp)
+      let mut ok = Array::length(af) == Array::length(bf) && Array::length(am) == Array::length(bm) && type_param_arities_match(a = ap, b = bp)
       let mut i = 0
       while ok && i < Array::length(af) {
-        let (an, aty) = Array::get(af, i)
-        let (bn, bty) = Array::get(bf, i)
-        ok = an == bn && type_exprs_equivalent(expand_type_aliases(aty, aa, ar, 0), ar, expand_type_aliases(bty, ba, br, 0), br)
+        let (an, aty) = Array::get(af, at = i)
+        let (bn, bty) = Array::get(bf, at = i)
+        ok = an == bn && type_exprs_equivalent(a = expand_type_aliases(t = aty, aliases = aa, renames = ar, depth = 0), ar = ar, b = expand_type_aliases(t = bty, aliases = ba, renames = br, depth = 0), br = br)
         i = i + 1
       }
       let mut j = 0
       while ok && j < Array::length(am) {
-        ok = import_alias_rewrite_string_array_contains(bm, Array::get(am, j))
+        ok = import_alias_rewrite_string_array_contains(items = bm, target = Array::get(am, at = j))
         j = j + 1
       }
       ok
     },
-    (SEnum(_, _, ap, actors, _), SEnum(_, _, bp, bctors, _)) => type_param_arities_match(ap, bp) && ctors_equivalent(actors, aa, type_param_renames(ap), bctors, ba, type_param_renames(bp)),
-    (SSuberror(_, _, actors), SSuberror(_, _, bctors)) => ctors_equivalent(actors, aa, [
-    ], bctors, ba, []),
+    (SEnum(_, _, ap, actors, _), SEnum(_, _, bp, bctors, _)) => type_param_arities_match(a = ap, b = bp) && ctors_equivalent(a = actors, aa = aa, ar = type_param_renames(ap), b = bctors, ba = ba, br = type_param_renames(bp)),
+    (SSuberror(_, _, actors), SSuberror(_, _, bctors)) => ctors_equivalent(a = actors, aa = aa, ar = [
+    ], b = bctors, ba = ba, br = []),
     _ => false
   }
 }
@@ -659,13 +659,13 @@ fn ctors_equivalent(a: Array[(String, Array[TypeExpr])], aa: Array[(String, Arra
   let mut ok = Array::length(a) == Array::length(b)
   let mut i = 0
   while ok && i < Array::length(a) {
-    let (an, ats) = Array::get(a, i)
-    let (bn, bts) = Array::get(b, i)
-    ok = an == bn && type_expr_lists_equivalent(for t in ats {
-      expand_type_aliases(t, aa, ar, 0)
-    }, ar, for t in bts {
-      expand_type_aliases(t, ba, br, 0)
-    }, br)
+    let (an, ats) = Array::get(a, at = i)
+    let (bn, bts) = Array::get(b, at = i)
+    ok = an == bn && type_expr_lists_equivalent(a = for t in ats {
+      expand_type_aliases(t = t, aliases = aa, renames = ar, depth = 0)
+    }, ar = ar, b = for t in bts {
+      expand_type_aliases(t = t, aliases = ba, renames = br, depth = 0)
+    }, br = br)
     i = i + 1
   }
   ok
@@ -673,12 +673,12 @@ fn ctors_equivalent(a: Array[(String, Array[TypeExpr])], aa: Array[(String, Arra
 
 /// The transparent `type` aliases a source file declares, as
 /// `(name, parameters, target)`.
-fn file_type_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeExpr)] {
+fn file_type_aliases(_ stmts: Array[Stmt]) -> Array[(String, Array[String], TypeExpr)] {
   let out: Array[(String, Array[String], TypeExpr)] = []
   for stmt in stmts {
     match stmt {
-      STypeAlias(_, name, params, target) => Array::push(out, (name, params, target)),
-      SEffectSet(_, name, members) => Array::push(out, effectset_alias_row(name, members)),
+      STypeAlias(_, name, params, target) => Array::push(out, value = (name, params, target)),
+      SEffectSet(_, name, members) => Array::push(out, value = effectset_alias_row(name = name, members = members)),
       _ => ()
     }
   }
@@ -688,7 +688,7 @@ fn file_type_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeEx
 /// #3489: an `effectset` travels with the type aliases, under a name no type
 /// can spell, so a row is read through it wherever an alias would be: the
 /// file's own, imported from its provider, re-exported, through any chain.
-fn effectset_alias_key(name: String) -> String {
+fn effectset_alias_key(_ name: String) -> String {
   String::concat("effectset ", name)
 }
 
@@ -705,10 +705,10 @@ fn effectset_alias_row(name: String, members: Array[String]) -> (String, Array[S
 fn imported_type_aliases_into(stmts: Array[Stmt], path: String, paths: Array[String], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
   for stmt in stmts {
     match stmt {
-      SImport(raw_path, items) => import_items_aliases_into(raw_path, items, path, paths, shared, out),
+      SImport(raw_path, items) => import_items_aliases_into(raw_path = raw_path, items = items, path = path, paths = paths, shared = shared, out = out),
       // A direct re-export binds its names in the facade too (Codex on
       // #3492): `export ./sets.vibe { All }` beside `with All`.
-      SReExport(raw_path, items) => import_items_aliases_into(raw_path, items, path, paths, shared, out),
+      SReExport(raw_path, items) => import_items_aliases_into(raw_path = raw_path, items = items, path = path, paths = paths, shared = shared, out = out),
       _ => ()
     }
   }
@@ -716,7 +716,7 @@ fn imported_type_aliases_into(stmts: Array[Stmt], path: String, paths: Array[Str
 }
 
 fn import_items_aliases_into(raw_path: String, items: Array[ImportItem], path: String, paths: Array[String], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, Array[String], TypeExpr)]) -> Unit {
-  let provider = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+  let provider = resolve_known_import_path(known_paths = paths, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
   for item in items {
     let local = match item.alias {
       Some(a) => a,
@@ -738,9 +738,9 @@ fn import_items_aliases_into(raw_path: String, items: Array[ImportItem], path: S
       let (from, an, ap, target) = al
       if from == provider {
         if binds_alias && an == item.name {
-          Array::push(out, (local, ap, target))
+          Array::push(out, value = (local, ap, target))
         } else if binds_effectset && an == effectset_alias_key(item.name) {
-          Array::push(out, (effectset_alias_key(local), ap, target))
+          Array::push(out, value = (effectset_alias_key(local), ap, target))
         }
       }
     }
@@ -754,7 +754,7 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
   let all: Array[(String, String, Array[String], TypeExpr)] = []
   let mut fi = 0
   while fi < Array::length(stmts_list) {
-    let stmts = Array::get(stmts_list, fi)
+    let stmts = Array::get(stmts_list, at = fi)
     let own = file_type_aliases(stmts)
     // An alias published through an export list (`type N = Int; export {
     // N }`) is exported as surely as `export type N` (Codex on #3467).
@@ -764,19 +764,19 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
         // Codex on #3467: the target is read in its provider, whose own
         // aliases (`type Hidden = Int; export type N = Hidden`) the importer
         // cannot see. A parameter of the alias is never one of them.
-        STypeAlias(exported, name, params, target) => if exported || import_alias_rewrite_string_array_contains(listed, name) {
+        STypeAlias(exported, name, params, target) => if exported || import_alias_rewrite_string_array_contains(items = listed, target = name) {
           let renames = for p in params {
             (type_param_name(p), String::concat("#param:", type_param_name(p)))
           }
-          Array::push(all, (Array::get(paths, fi), name, params, expand_type_aliases(target, own, renames, 0)))
+          Array::push(all, value = (Array::get(paths, at = fi), name, params, expand_type_aliases(t = target, aliases = own, renames = renames, depth = 0)))
         } else {
           ()
         },
-        SEffectSet(exported, name, members) => if exported || import_alias_rewrite_string_array_contains(listed, name) {
-          let (key, ps, target) = effectset_alias_row(name, members)
+        SEffectSet(exported, name, members) => if exported || import_alias_rewrite_string_array_contains(items = listed, target = name) {
+          let (key, ps, target) = effectset_alias_row(name = name, members = members)
           // Read in the provider too (Codex on #3492): `All = { Base }` over
           // its own `Base = { Ask }` publishes `Ask`.
-          Array::push(all, (Array::get(paths, fi), key, ps, flatten_effectset_target(target, own)))
+          Array::push(all, value = (Array::get(paths, at = fi), key, ps, flatten_effectset_target(target = target, aliases = own)))
         } else {
           ()
         },
@@ -803,46 +803,47 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
     while ai < Array::length(all) {
       // The provider's own spelling is re-read each round: a target already
       // rewritten names the imported provider's aliases, not this one's.
-      let (from, name, params, target) = Array::get(all, ai)
-      let (_, _, _, prev) = Array::get(cur, ai)
+      let (from, name, params, target) = Array::get(all, at = ai)
+      let (_, _, _, prev) = Array::get(cur, at = ai)
       let mut fi = 0
       let env: Array[(String, Array[String], TypeExpr)] = []
       while fi < Array::length(paths) {
-        if Array::get(paths, fi) == from {
-          imported_type_aliases_into(Array::get(stmts_list, fi), from, paths, cur, env)
+        if Array::get(paths, at = fi) == from {
+          imported_type_aliases_into(stmts = Array::get(stmts_list, at = fi), path = from, paths = paths, shared = cur, out = env)
         }
         fi = fi + 1
       }
       let renames = for p in params {
         (type_param_name(p), String::concat("#param:", type_param_name(p)))
       }
-      let next = if String::starts_with(name, "effectset ") {
+      let next = if String::starts_with(name, prefix = "effectset ") {
         // From the provider's own spelling each round (Codex on #3492), as
         // an alias is: a chain `C = { B }`, `B = { A }` reads `B`'s current
         // members, not a half-expanded `C` against `C`'s own imports.
-        flatten_effectset_target(target, env)
+        flatten_effectset_target(target = target, aliases = env)
       } else {
-        expand_type_aliases(target, env, renames, 0)
+        expand_type_aliases(t = target, aliases = env, renames = renames, depth = 0)
       }
-      if !type_exprs_equivalent(next, renames, prev, renames) {
+      if !type_exprs_equivalent(a = next, ar = renames, b = prev, br = renames) {
         changed = true
       }
-      Array::push(resolved, (from, name, params, next))
+      Array::push(resolved, value = (from, name, params, next))
       ai = ai + 1
     }
     // A facade that re-exports an alias (`export ./a.vibe { N }`) provides it
     // too, under the name it exports (Codex on #3467): an importer of the
     // facade reads the declaring file's `N`. Each round follows one more
     // facade.
-    reexported_type_aliases_into(paths, stmts_list, cur, resolved)
+    reexported_type_aliases_into(paths = paths, stmts_list = stmts_list, shared = cur, out = resolved)
     if Array::length(resolved) != Array::length(cur) {
       changed = true
     } else {
       let mut ri = Array::length(all)
       while ri < Array::length(resolved) {
-        let (rf, rn, _, rt) = Array::get(resolved, ri)
-        let (pf, pn, _, pt) = Array::get(cur, ri)
-        if rf != pf || rn != pn || !type_exprs_equivalent(rt, [], pt, []) {
+        let (rf, rn, _, rt) = Array::get(resolved, at = ri)
+        let (pf, pn, _, pt) = Array::get(cur, at = ri)
+        if rf != pf || rn != pn || !type_exprs_equivalent(a = rt, ar = [], b = pt, br = [
+        ]) {
           changed = true
         }
         ri = ri + 1
@@ -860,8 +861,8 @@ fn unique_exported_type_aliases(paths: Array[String], stmts_list: Array[Array[St
 fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[Stmt]], shared: Array[(String, String, Array[String], TypeExpr)], out: Array[(String, String, Array[String], TypeExpr)]) -> Unit {
   let mut fi = 0
   while fi < Array::length(stmts_list) {
-    let path = Array::get(paths, fi)
-    let stmts = Array::get(stmts_list, fi)
+    let path = Array::get(paths, at = fi)
+    let stmts = Array::get(stmts_list, at = fi)
     // The two-step form, `import ./a.vibe { N }` then `export { N }`,
     // re-exports the imported alias too (Codex on #3467).
     let listed = collect_exported_value_names(stmts)
@@ -875,13 +876,13 @@ fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[St
         _ => ("", [], false)
       }
       if raw_path != "" {
-        let provider = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+        let provider = resolve_known_import_path(known_paths = paths, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
         for item in items {
           let exported = match item.alias {
             Some(a) => a,
             None => item.name
           }
-          if all_items || import_alias_rewrite_string_array_contains(listed, exported) {
+          if all_items || import_alias_rewrite_string_array_contains(items = listed, target = exported) {
             for al in shared {
               let (from, an, ap, target) = al
               // An `effectset` re-exports under its own key (#3489).
@@ -896,14 +897,14 @@ fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[St
                 let mut ri = 0
                 let mut replaced = false
                 while ri < Array::length(rows) {
-                  if Array::get(rows, ri).0 == row_name {
-                    Array::set(rows, ri, (row_name, ap, target))
+                  if Array::get(rows, at = ri).0 == row_name {
+                    Array::set(rows, at = ri, value = (row_name, ap, target))
                     replaced = true
                   }
                   ri = ri + 1
                 }
                 if !replaced {
-                  Array::push(rows, (row_name, ap, target))
+                  Array::push(rows, value = (row_name, ap, target))
                 }
               }
             }
@@ -913,7 +914,7 @@ fn reexported_type_aliases_into(paths: Array[String], stmts_list: Array[Array[St
     }
     for r in rows {
       let (rn, rp, rt) = r
-      Array::push(out, (path, rn, rp, rt))
+      Array::push(out, value = (path, rn, rp, rt))
     }
     fi = fi + 1
   }
@@ -930,13 +931,13 @@ fn expand_type_aliases(t: TypeExpr, aliases: Array[(String, Array[String], TypeE
     t
   } else {
     match t {
-      TyName(x) => match find_type_alias(aliases, renames, x, 0) {
-        Some(target) => expand_type_aliases(target, aliases, renames, depth + 1),
+      TyName(x) => match find_type_alias(aliases = aliases, renames = renames, name = x, arity = 0) {
+        Some(target) => expand_type_aliases(t = target, aliases = aliases, renames = renames, depth = depth + 1),
         None => t
       },
       TyApp(x, args) => {
         let expanded = for arg in args {
-          expand_type_aliases(arg, aliases, renames, depth + 1)
+          expand_type_aliases(t = arg, aliases = aliases, renames = renames, depth = depth + 1)
         }
         let mut out = TyApp(x, expanded)
         // The first match, as `find_type_alias` reads a bare one: a file's
@@ -944,21 +945,21 @@ fn expand_type_aliases(t: TypeExpr, aliases: Array[(String, Array[String], TypeE
         let mut matched = false
         for al in aliases {
           let (an, ap, target) = al
-          if !matched && an == x && renamed_type_name(renames, x) == x && Array::length(ap) == Array::length(expanded) && Array::length(ap) > 0 {
-            out = expand_type_aliases(substitute_type_params(target, ap, expanded), aliases, renames, depth + 1)
+          if !matched && an == x && renamed_type_name(renames = renames, name = x) == x && Array::length(ap) == Array::length(expanded) && Array::length(ap) > 0 {
+            out = expand_type_aliases(t = substitute_type_params(t = target, params = ap, args = expanded), aliases = aliases, renames = renames, depth = depth + 1)
             matched = true
           }
         }
         out
       },
       TyFn(ps, r, row) => TyFn(for p in ps {
-        expand_type_aliases(p, aliases, renames, depth + 1)
-      }, expand_type_aliases(r, aliases, renames, depth + 1), match row {
-        Some(text) => Some(expand_row_effectsets(text, aliases, renames, 0)),
+        expand_type_aliases(t = p, aliases = aliases, renames = renames, depth = depth + 1)
+      }, expand_type_aliases(t = r, aliases = aliases, renames = renames, depth = depth + 1), match row {
+        Some(text) => Some(expand_row_effectsets(text = text, aliases = aliases, renames = renames, depth = 0)),
         None => None
       }),
       TyTuple(items) => TyTuple(for item in items {
-        expand_type_aliases(item, aliases, renames, depth + 1)
+        expand_type_aliases(t = item, aliases = aliases, renames = renames, depth = depth + 1)
       }),
       TyUnit => t
     }
@@ -977,7 +978,7 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
   let n = String::length(text)
   while i <= n {
     let c = if i < n {
-      String::byte_at(text, i)
+      String::byte_at(text, at = i)
     } else {
       0
     }
@@ -989,11 +990,11 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
     if c == 0 || (nest == 0 && (c == '+' || c == ',')) {
       let t = String::trim(cur)
       if t != "" {
-        Array::push(labels, t)
+        Array::push(labels, value = t)
       }
       cur = ""
     } else {
-      cur = String::concat(cur, String::substring(text, i, i + 1))
+      cur = String::concat(cur, String::substring(text, start = i, end = i + 1))
     }
     i = i + 1
   }
@@ -1009,9 +1010,9 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
       for al in aliases {
         if !found && al.0 == key {
           found = true
-          Array::set(row_label_unread_count, 0, Array::get(row_label_unread_count, 0) + 1)
+          Array::set(row_label_unread_count, at = 0, value = Array::get(row_label_unread_count, at = 0) + 1)
           members = Some([
-            String::concat(String::concat(label, " #unread"), Int::to_string(Array::get(row_label_unread_count, 0)))
+            String::concat(String::concat(label, " #unread"), Int::to_string(Array::get(row_label_unread_count, at = 0)))
           ])
         }
       }
@@ -1027,7 +1028,8 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
               match it {
                 // A member is read where the effectset is declared, outside
                 // the enclosing declaration's type parameters.
-                TyName(m) => expand_row_effectsets(m, aliases, [], depth + 1),
+                TyName(m) => expand_row_effectsets(text = m, aliases = aliases, renames = [
+                ], depth = depth + 1),
                 _ => ""
               }
             }),
@@ -1040,15 +1042,15 @@ fn expand_row_effectsets(text: String, aliases: Array[(String, Array[String], Ty
       Some(ms) => {
         for m in ms {
           if m != "" {
-            Array::push(out, m)
+            Array::push(out, value = m)
           }
         }
         ()
       },
-      None => Array::push(out, expand_row_label_args(label, aliases, renames))
+      None => Array::push(out, value = expand_row_label_args(label = label, aliases = aliases, renames = renames))
     }
   }
-  String::join(out, " + ")
+  String::join(out, sep = " + ")
 }
 
 let row_label_unread_count: Array[Int] = [0]
@@ -1061,15 +1063,15 @@ let row_label_unread_count: Array[Int] = [0]
 /// its spelling. Arguments `row_type_args_parse` does not read are left as
 /// written.
 fn expand_row_label_args(label: String, aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)]) -> String {
-  let bracket = String::index_of(label, "[")
+  let bracket = String::index_of(label, needle = "[")
   let n = String::length(label)
-  if bracket < 0 || n == 0 || String::byte_at(label, n - 1) != ']' {
+  if bracket < 0 || n == 0 || String::byte_at(label, at = n - 1) != ']' {
     label
   } else {
-    match row_type_args_parse(String::substring(label, bracket + 1, n - 1)) {
-      Some(args) => String::concat(String::concat(String::concat(String::substring(label, 0, bracket), "["), String::join(for a in args {
-        row_type_text(expand_type_aliases(a, aliases, renames, 0))
-      }, ", ")), "]"),
+    match row_type_args_parse(String::substring(label, start = bracket + 1, end = n - 1)) {
+      Some(args) => String::concat(String::concat(String::concat(String::substring(label, start = 0, end = bracket), "["), String::join(for a in args {
+        row_type_text(expand_type_aliases(t = a, aliases = aliases, renames = renames, depth = 0))
+      }, sep = ", ")), "]"),
       None => label
     }
   }
@@ -1084,14 +1086,15 @@ fn flatten_effectset_target(target: TypeExpr, aliases: Array[(String, Array[Stri
       for item in items {
         match item {
           TyName(m) => {
-            for part in String::split(expand_row_effectsets(m, aliases, [], 0), " + ") {
+            for part in String::split(expand_row_effectsets(text = m, aliases = aliases, renames = [
+            ], depth = 0), sep = " + ") {
               if part != "" {
-                Array::push(out, TyName(part))
+                Array::push(out, value = TyName(part))
               }
             }
             ()
           },
-          _ => Array::push(out, item)
+          _ => Array::push(out, value = item)
         }
       }
       TyTuple(out)
@@ -1102,7 +1105,7 @@ fn flatten_effectset_target(target: TypeExpr, aliases: Array[(String, Array[Stri
 
 fn find_type_alias(aliases: Array[(String, Array[String], TypeExpr)], renames: Array[(String, String)], name: String, arity: Int) -> Option[TypeExpr] {
   let mut out: Option[TypeExpr] = None
-  if renamed_type_name(renames, name) == name {
+  if renamed_type_name(renames = renames, name = name) == name {
     // The first match: a file's own aliases come before the program's.
     for al in aliases {
       let (an, ap, target) = al
@@ -1123,8 +1126,8 @@ fn substitute_type_params(t: TypeExpr, params: Array[String], args: Array[TypeEx
       let mut out = t
       let mut i = 0
       while i < Array::length(params) {
-        if type_param_name(Array::get(params, i)) == x {
-          out = Array::get(args, i)
+        if type_param_name(Array::get(params, at = i)) == x {
+          out = Array::get(args, at = i)
         }
         i = i + 1
       }
@@ -1132,7 +1135,7 @@ fn substitute_type_params(t: TypeExpr, params: Array[String], args: Array[TypeEx
     },
     TyApp(x, xs) => {
       let sub_args = for a in xs {
-        substitute_type_params(a, params, args)
+        substitute_type_params(t = a, params = params, args = args)
       }
       // A constructor parameter in head position (`F[A]` of `type Apply[F[_],
       // A] = F[A]`) takes the constructor it is given (Codex on #3467):
@@ -1140,8 +1143,8 @@ fn substitute_type_params(t: TypeExpr, params: Array[String], args: Array[TypeEx
       let mut head = x
       let mut i = 0
       while i < Array::length(params) && i < Array::length(args) {
-        if type_param_name(Array::get(params, i)) == x {
-          head = match Array::get(args, i) {
+        if type_param_name(Array::get(params, at = i)) == x {
+          head = match Array::get(args, at = i) {
             TyName(h) => h,
             TyApp(h, _) => h,
             _ => head
@@ -1152,17 +1155,17 @@ fn substitute_type_params(t: TypeExpr, params: Array[String], args: Array[TypeEx
       TyApp(head, sub_args)
     },
     TyFn(ps, r, row) => TyFn(for p in ps {
-      substitute_type_params(p, params, args)
-    }, substitute_type_params(r, params, args), row),
+      substitute_type_params(t = p, params = params, args = args)
+    }, substitute_type_params(t = r, params = params, args = args), row),
     TyTuple(items) => TyTuple(for item in items {
-      substitute_type_params(item, params, args)
+      substitute_type_params(t = item, params = params, args = args)
     }),
     TyUnit => t
   }
 }
 
 /// The top-level name `stmt` declares, for import reachability, or "".
-fn top_level_decl_name(stmt: Stmt) -> String {
+fn top_level_decl_name(_ stmt: Stmt) -> String {
   match stmt {
     SLet(_, _, name, _, _) => name,
     SLetMut(name, _, _) => name,
@@ -1194,18 +1197,18 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
   let path_idx: MutMap[String, Int] = MutMap::new_string()
   let mut fi = 0
   while fi < file_count {
-    let path = Array::get(paths, fi)
-    if !MutMap::has(path_idx, path) {
-      MutMap::set(path_idx, path, fi)
+    let path = Array::get(paths, at = fi)
+    if !MutMap::has(path_idx, k = path) {
+      MutMap::set(path_idx, k = path, v = fi)
     } else {
       ()
     }
-    let fstmts = Array::get(stmts_list, fi)
+    let fstmts = Array::get(stmts_list, at = fi)
     let mut di = 0
     while di < Array::length(fstmts) {
-      let dn = top_level_decl_name(Array::get(fstmts, di))
+      let dn = top_level_decl_name(Array::get(fstmts, at = di))
       if dn != "" {
-        MutMap::set(decls, plan_rename_key(path, dn), true)
+        MutMap::set(decls, k = plan_rename_key(path = path, name = dn), v = true)
       } else {
         ()
       }
@@ -1218,11 +1221,11 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
   let work_paths: Array[String] = []
   let work_names: Array[String] = []
   let reach_file: (String) -> Unit = (path) -> {
-    if !MutMap::has(reached, path) {
-      MutMap::set(reached, path, true)
-      match MutMap::get(path_idx, path) {
+    if !MutMap::has(reached, k = path) {
+      MutMap::set(reached, k = path, v = true)
+      match MutMap::get(path_idx, k = path) {
         Some(idx) => {
-          let stmts = Array::get(stmts_list, idx)
+          let stmts = Array::get(stmts_list, at = idx)
           let mut si = 0
           while si < Array::length(stmts) {
             // A re-export binds its names in the facade too, so the
@@ -1231,7 +1234,7 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
             // passes on reaches nothing until an importer names it (the
             // #3036 control `dup_type_formal_marker_ok`), and a package
             // contract holds no code at all.
-            let (raw_path, items) = match Array::get(stmts, si) {
+            let (raw_path, items) = match Array::get(stmts, at = si) {
               SImport(rp, its) => (rp, its),
               SReExport(rp, its) => if is_contract_ext(path) {
                 ("", [])
@@ -1242,8 +1245,8 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
                     Some(a) => a,
                     None => it.name
                   }
-                  if stmts_code_names(stmts, local) {
-                    Array::push(used, it)
+                  if stmts_code_names(stmts = stmts, name = local) {
+                    Array::push(used, value = it)
                   }
                 }
                 (rp, used)
@@ -1251,11 +1254,11 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
               _ => ("", [])
             }
             if raw_path != "" {
-              let target = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+              let target = resolve_known_import_path(known_paths = paths, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
               let mut ii = 0
               while ii < Array::length(items) {
-                Array::push(work_paths, target)
-                Array::push(work_names, Array::get(items, ii).name)
+                Array::push(work_paths, value = target)
+                Array::push(work_names, value = Array::get(items, at = ii).name)
                 ii = ii + 1
               }
             }
@@ -1271,18 +1274,18 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
   reach_file(entry_path)
   let mut wi = 0
   while wi < Array::length(work_paths) {
-    let wp = Array::get(work_paths, wi)
-    let wn = Array::get(work_names, wi)
-    let key = plan_rename_key(wp, wn)
-    if !MutMap::has(seen_items, key) {
-      MutMap::set(seen_items, key, true)
-      if MutMap::has(decls, key) {
+    let wp = Array::get(work_paths, at = wi)
+    let wn = Array::get(work_names, at = wi)
+    let key = plan_rename_key(path = wp, name = wn)
+    if !MutMap::has(seen_items, k = key) {
+      MutMap::set(seen_items, k = key, v = true)
+      if MutMap::has(decls, k = key) {
         reach_file(wp)
       } else {
-        match MutMap::get(edge_last_idx, key) {
+        match MutMap::get(edge_last_idx, k = key) {
           Some(ei) => {
-            Array::push(work_paths, Array::get(edge_tpath, ei))
-            Array::push(work_names, Array::get(edge_tname, ei))
+            Array::push(work_paths, value = Array::get(edge_tpath, at = ei))
+            Array::push(work_names, value = Array::get(edge_tname, at = ei))
           },
           // Neither declared nor re-exported here (a builtin, an aggregate
           // import): the file itself is what the item reaches.
@@ -1304,35 +1307,35 @@ fn reached_type_collisions(paths: Array[String], stmts_list: Array[Array[Stmt]],
   // it, under the name the import binds; a name two files export, or one the
   // file does not import (its own private `struct N`), stays unexpanded,
   // which can only keep two types apart, never join two that differ.
-  let shared_aliases = unique_exported_type_aliases(paths, stmts_list)
+  let shared_aliases = unique_exported_type_aliases(paths = paths, stmts_list = stmts_list)
   let mut ci = 0
   while ci < file_count {
-    let path = Array::get(paths, ci)
-    if MutMap::has(reached, path) {
-      let stmts = Array::get(stmts_list, ci)
+    let path = Array::get(paths, at = ci)
+    if MutMap::has(reached, k = path) {
+      let stmts = Array::get(stmts_list, at = ci)
       let exported_names = collect_exported_value_names(stmts)
       let aliases = file_type_aliases(stmts)
-      imported_type_aliases_into(stmts, path, paths, shared_aliases, aliases)
+      imported_type_aliases_into(stmts = stmts, path = path, paths = paths, shared = shared_aliases, out = aliases)
       let mut pi = 0
       while pi < Array::length(stmts) {
-        let stmt = Array::get(stmts, pi)
-        let (name, kind) = published_type_of(stmt, path, path == entry_path, exported_names)
+        let stmt = Array::get(stmts, at = pi)
+        let (name, kind) = published_type_of(stmt = stmt, path = path, is_entry = path == entry_path, exported_names = exported_names)
         if name != "" {
-          let same = match (MutMap::get(first_decl, name), MutMap::get(first_aliases, name)) {
-            (Some(prior_decl), Some(prior_aliases)) => published_types_equivalent(prior_decl, prior_aliases, stmt, aliases),
+          let same = match (MutMap::get(first_decl, k = name), MutMap::get(first_aliases, k = name)) {
+            (Some(prior_decl), Some(prior_aliases)) => published_types_equivalent(a = prior_decl, aa = prior_aliases, b = stmt, ba = aliases),
             _ => false
           }
-          match MutMap::get(first_path, name) {
+          match MutMap::get(first_path, k = name) {
             // "\n" marks a name already refused: it is never a path. Two
             // equivalent declarations are one type (#3036).
             Some(prior) => if prior != path && prior != "\n" && !same {
-              Array::push(errors, String::concat("rename one of the ", String::concat(kind, String::concat(" named `", String::concat(name, String::concat("`: `", String::concat(prior, String::concat("` and `", String::concat(path, "` both declare it for this program, and a program holds one type per name, so code compiled against one would run with the other's fields and methods")))))))))
-              MutMap::set(first_path, name, "\n")
+              Array::push(errors, value = String::concat("rename one of the ", String::concat(kind, String::concat(" named `", String::concat(name, String::concat("`: `", String::concat(prior, String::concat("` and `", String::concat(path, "` both declare it for this program, and a program holds one type per name, so code compiled against one would run with the other's fields and methods")))))))))
+              MutMap::set(first_path, k = name, v = "\n")
             },
             None => {
-              MutMap::set(first_path, name, path)
-              MutMap::set(first_decl, name, stmt)
-              MutMap::set(first_aliases, name, aliases)
+              MutMap::set(first_path, k = name, v = path)
+              MutMap::set(first_decl, k = name, v = stmt)
+              MutMap::set(first_aliases, k = name, v = aliases)
             }
           }
         } else {
@@ -1353,7 +1356,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let def_names_list = array_empty()
   let mut fi = 0
   while fi < file_count {
-    Array::push(def_names_list, collect_export_def_value_names(Array::get(stmts_list, fi)))
+    Array::push(def_names_list, value = collect_export_def_value_names(Array::get(stmts_list, at = fi)))
     fi = fi + 1
   }
   let edge_from = empty_strings()
@@ -1363,7 +1366,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let builtin_iterator_paths = empty_strings()
   let mut ei = 0
   while ei < file_count {
-    collect_reexport_edges_into(Array::get(paths, ei), Array::get(stmts_list, ei), paths, edge_from, edge_pub, edge_tpath, edge_tname, builtin_iterator_paths)
+    collect_reexport_edges_into(path = Array::get(paths, at = ei), stmts = Array::get(stmts_list, at = ei), known_paths = paths, edge_from = edge_from, edge_pub = edge_pub, edge_tpath = edge_tpath, edge_tname = edge_tname, builtin_iterator_paths = builtin_iterator_paths)
     ei = ei + 1
   }
   // The origins of the entry file's re-export surface are program ABI (wasm
@@ -1378,8 +1381,8 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let path_idx: MutMap[String, Int] = MutMap::new_string()
   let mut pi = 0
   while pi < file_count {
-    if !MutMap::has(path_idx, Array::get(paths, pi)) {
-      MutMap::set(path_idx, Array::get(paths, pi), pi)
+    if !MutMap::has(path_idx, k = Array::get(paths, at = pi)) {
+      MutMap::set(path_idx, k = Array::get(paths, at = pi), v = pi)
     } else {
       ()
     }
@@ -1388,9 +1391,9 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let edge_idx: MutMap[String, Int] = MutMap::new_string()
   let mut ei2 = 0
   while ei2 < Array::length(edge_from) {
-    let ekey = plan_rename_key(Array::get(edge_from, ei2), Array::get(edge_pub, ei2))
-    if !MutMap::has(edge_idx, ekey) {
-      MutMap::set(edge_idx, ekey, ei2)
+    let ekey = plan_rename_key(path = Array::get(edge_from, at = ei2), name = Array::get(edge_pub, at = ei2))
+    if !MutMap::has(edge_idx, k = ekey) {
+      MutMap::set(edge_idx, k = ekey, v = ei2)
     } else {
       ()
     }
@@ -1415,62 +1418,62 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let enum_import_names: MutMap[String, String] = MutMap::new_string()
   let mut dfi = 0
   while dfi < file_count {
-    let path = Array::get(paths, dfi)
-    let stmts = Array::get(stmts_list, dfi)
+    let path = Array::get(paths, at = dfi)
+    let stmts = Array::get(stmts_list, at = dfi)
     let exported_names = collect_exported_value_names(stmts)
     let mut dsi = 0
     while dsi < Array::length(stmts) {
-      match Array::get(stmts, dsi) {
+      match Array::get(stmts, at = dsi) {
         SEnum(exported, name, _, ctors, _) => {
-          MutMap::set(enum_defs, plan_rename_key(path, name), exported || import_alias_rewrite_string_array_contains(exported_names, name))
+          MutMap::set(enum_defs, k = plan_rename_key(path = path, name = name), v = exported || import_alias_rewrite_string_array_contains(items = exported_names, target = name))
           let ctor_names: Array[String] = []
           for ctor in ctors {
-            Array::push(ctor_names, ctor.0)
+            Array::push(ctor_names, value = ctor.0)
           }
-          MutMap::set(enum_ctors, plan_rename_key(path, name), ctor_names)
-          if exported || import_alias_rewrite_string_array_contains(exported_names, name) {
-            match MutMap::get(enum_origin_first_path, name) {
-              Some(first_path) => if first_path != path && !MutMap::has(enum_origin_ambiguous, name) {
-                MutMap::set(enum_origin_ambiguous, name, true)
-                Array::push(enum_origin_ambiguous_names, name)
+          MutMap::set(enum_ctors, k = plan_rename_key(path = path, name = name), v = ctor_names)
+          if exported || import_alias_rewrite_string_array_contains(items = exported_names, target = name) {
+            match MutMap::get(enum_origin_first_path, k = name) {
+              Some(first_path) => if first_path != path && !MutMap::has(enum_origin_ambiguous, k = name) {
+                MutMap::set(enum_origin_ambiguous, k = name, v = true)
+                Array::push(enum_origin_ambiguous_names, value = name)
               },
-              None => MutMap::set(enum_origin_first_path, name, path)
+              None => MutMap::set(enum_origin_first_path, k = name, v = path)
             }
           } else {
             ()
           }
         },
         STypeAlias(exported, name, params, target) => {
-          MutMap::set(local_type_heads, plan_rename_key(path, name), true)
-          if exported || import_alias_rewrite_string_array_contains(exported_names, name) {
-            MutMap::set(published_aliases, plan_rename_key(path, name), true)
+          MutMap::set(local_type_heads, k = plan_rename_key(path = path, name = name), v = true)
+          if exported || import_alias_rewrite_string_array_contains(items = exported_names, target = name) {
+            MutMap::set(published_aliases, k = plan_rename_key(path = path, name = name), v = true)
           }
           match target {
-            TyName(head) => if !enum_alias_target_is_formal(params, head) {
-              MutMap::set(enum_type_aliases, plan_rename_key(path, name), head)
+            TyName(head) => if !enum_alias_target_is_formal(params = params, head = head) {
+              MutMap::set(enum_type_aliases, k = plan_rename_key(path = path, name = name), v = head)
             },
-            TyApp(head, _) => if !enum_alias_target_is_formal(params, head) {
-              MutMap::set(enum_type_aliases, plan_rename_key(path, name), head)
+            TyApp(head, _) => if !enum_alias_target_is_formal(params = params, head = head) {
+              MutMap::set(enum_type_aliases, k = plan_rename_key(path = path, name = name), v = head)
             },
             _ => ()
           }
         },
-        SStruct(_, name, _, _, _, _) => MutMap::set(local_type_heads, plan_rename_key(path, name), true),
-        STrait(_, name, _, _, _, _) => MutMap::set(local_type_heads, plan_rename_key(path, name), true),
-        SSuberror(_, name, _) => MutMap::set(local_type_heads, plan_rename_key(path, name), true),
-        SEffectDef(_, name, _, _) => MutMap::set(local_type_heads, plan_rename_key(path, name), true),
+        SStruct(_, name, _, _, _, _) => MutMap::set(local_type_heads, k = plan_rename_key(path = path, name = name), v = true),
+        STrait(_, name, _, _, _, _) => MutMap::set(local_type_heads, k = plan_rename_key(path = path, name = name), v = true),
+        SSuberror(_, name, _) => MutMap::set(local_type_heads, k = plan_rename_key(path = path, name = name), v = true),
+        SEffectDef(_, name, _, _) => MutMap::set(local_type_heads, k = plan_rename_key(path = path, name = name), v = true),
         SImport(raw_path, items) => {
-          let resolved = resolve_known_import_path(paths, dir_of_path(path), raw_path, path)
+          let resolved = resolve_known_import_path(known_paths = paths, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
           let mut imi = 0
           while imi < Array::length(items) {
-            let item = Array::get(items, imi)
+            let item = Array::get(items, at = imi)
             let local = match item.alias {
               Some(alias) => alias,
               None => item.name
             }
-            let import_key = plan_rename_key(path, local)
-            MutMap::set(enum_import_paths, import_key, resolved)
-            MutMap::set(enum_import_names, import_key, item.name)
+            let import_key = plan_rename_key(path = path, name = local)
+            MutMap::set(enum_import_paths, k = import_key, v = resolved)
+            MutMap::set(enum_import_names, k = import_key, v = item.name)
             imi = imi + 1
           }
         },
@@ -1483,10 +1486,10 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let edge_last_idx: MutMap[String, Int] = MutMap::new_string()
   let mut eli = 0
   while eli < Array::length(edge_from) {
-    MutMap::set(edge_last_idx, plan_rename_key(Array::get(edge_from, eli), Array::get(edge_pub, eli)), eli)
+    MutMap::set(edge_last_idx, k = plan_rename_key(path = Array::get(edge_from, at = eli), name = Array::get(edge_pub, at = eli)), v = eli)
     eli = eli + 1
   }
-  let type_collision_errors = reached_type_collisions(paths, stmts_list, entry_path, edge_tpath, edge_tname, edge_last_idx)
+  let type_collision_errors = reached_type_collisions(paths = paths, stmts_list = stmts_list, entry_path = entry_path, edge_tpath = edge_tpath, edge_tname = edge_tname, edge_last_idx = edge_last_idx)
   let enum_alias_idx: MutMap[String, String] = MutMap::new_string()
   let enum_alias_private_ctors: MutMap[String, Array[(String, String)]] = MutMap::new_string()
   let enum_alias_paths = empty_strings()
@@ -1495,27 +1498,27 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let mut enum_alias_count = 0
   let mut eai = 0
   while eai < Array::length(edge_from) {
-    let key = plan_rename_key(Array::get(edge_from, eai), Array::get(edge_pub, eai))
-    match MutMap::get(edge_last_idx, key) {
+    let key = plan_rename_key(path = Array::get(edge_from, at = eai), name = Array::get(edge_pub, at = eai))
+    match MutMap::get(edge_last_idx, k = key) {
       // This lookup asks which edge won, not whether any edge has this key.
       Some(last) => {
         if last == eai {
-          match reexport_enum_origin(Array::get(edge_tpath, eai), Array::get(edge_tname, eai), edge_tpath, edge_tname, edge_last_idx, enum_defs, enum_type_aliases, published_aliases, local_type_heads, enum_import_paths, enum_import_names) {
-            Some((origin, origin_path, enum_name, is_public)) => if origin != Array::get(edge_pub, eai) || !is_public {
-              MutMap::set(enum_alias_idx, key, origin)
+          match reexport_enum_origin(path = Array::get(edge_tpath, at = eai), name = Array::get(edge_tname, at = eai), edge_tpath = edge_tpath, edge_tname = edge_tname, edge_last_idx = edge_last_idx, enum_defs = enum_defs, enum_type_aliases = enum_type_aliases, published_aliases = published_aliases, local_type_heads = local_type_heads, enum_import_paths = enum_import_paths, enum_import_names = enum_import_names) {
+            Some((origin, origin_path, enum_name, is_public)) => if origin != Array::get(edge_pub, at = eai) || !is_public {
+              MutMap::set(enum_alias_idx, k = key, v = origin)
               if !is_public {
                 let rows: Array[(String, String)] = []
-                match MutMap::get(enum_ctors, plan_rename_key(origin_path, enum_name)) {
+                match MutMap::get(enum_ctors, k = plan_rename_key(path = origin_path, name = enum_name)) {
                   Some(names) => for ctor_name in names {
-                    Array::push(rows, (ctor_name, namespace_private_name(origin_path, ctor_name)))
+                    Array::push(rows, value = (ctor_name, namespace_private_name(path = origin_path, name = ctor_name)))
                   },
                   None => ()
                 }
-                MutMap::set(enum_alias_private_ctors, key, rows)
+                MutMap::set(enum_alias_private_ctors, k = key, v = rows)
               }
-              Array::push(enum_alias_paths, Array::get(edge_from, eai))
-              Array::push(enum_alias_names, Array::get(edge_pub, eai))
-              Array::push(enum_alias_origins, origin)
+              Array::push(enum_alias_paths, value = Array::get(edge_from, at = eai))
+              Array::push(enum_alias_names, value = Array::get(edge_pub, at = eai))
+              Array::push(enum_alias_origins, value = origin)
               enum_alias_count = enum_alias_count + 1
             } else {
               ()
@@ -1532,34 +1535,34 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   }
   let excluded_idx: MutMap[String, Bool] = MutMap::new_string()
   let file_idx_of: (String) -> Int = (path) -> {
-    match MutMap::get(path_idx, path) {
+    match MutMap::get(path_idx, k = path) {
       Some(i) => i,
       None => -1
     }
   }
   let mut xi = 0
   while xi < Array::length(edge_from) {
-    if Array::get(edge_from, xi) == entry_path {
-      let mut cur_path = Array::get(edge_tpath, xi)
-      let mut cur_name = Array::get(edge_tname, xi)
+    if Array::get(edge_from, at = xi) == entry_path {
+      let mut cur_path = Array::get(edge_tpath, at = xi)
+      let mut cur_name = Array::get(edge_tname, at = xi)
       let mut depth = 0
       while depth < 16 {
         let idx = file_idx_of(cur_path)
         let is_def = if idx < 0 {
           false
         } else {
-          import_alias_rewrite_string_array_contains(Array::get(def_names_list, idx), cur_name)
+          import_alias_rewrite_string_array_contains(items = Array::get(def_names_list, at = idx), target = cur_name)
         }
         if is_def {
-          Array::push(excluded_paths, cur_path)
-          Array::push(excluded_names, cur_name)
-          MutMap::set(excluded_idx, plan_rename_key(cur_path, cur_name), true)
+          Array::push(excluded_paths, value = cur_path)
+          Array::push(excluded_names, value = cur_name)
+          MutMap::set(excluded_idx, k = plan_rename_key(path = cur_path, name = cur_name), v = true)
           depth = 16
         } else {
-          match MutMap::get(edge_idx, plan_rename_key(cur_path, cur_name)) {
+          match MutMap::get(edge_idx, k = plan_rename_key(path = cur_path, name = cur_name)) {
             Some(eidx) => {
-              cur_path = Array::get(edge_tpath, eidx)
-              cur_name = Array::get(edge_tname, eidx)
+              cur_path = Array::get(edge_tpath, at = eidx)
+              cur_name = Array::get(edge_tname, at = eidx)
               depth = depth + 1
             },
             None => {
@@ -1588,37 +1591,37 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let rename_by_path: MutMap[String, Array[Int]] = MutMap::new_string()
   let add_rename: (String, String, String) -> Unit = (rpath, rname, rmangled) -> {
     let ridx = Array::length(rename_paths)
-    Array::push(rename_paths, rpath)
-    Array::push(rename_names, rname)
-    Array::push(rename_mangled, rmangled)
-    match MutMap::get(rename_by_path, rpath) {
-      Some(bucket) => Array::push(bucket, ridx),
+    Array::push(rename_paths, value = rpath)
+    Array::push(rename_names, value = rname)
+    Array::push(rename_mangled, value = rmangled)
+    match MutMap::get(rename_by_path, k = rpath) {
+      Some(bucket) => Array::push(bucket, value = ridx),
       None => {
         let bucket: Array[Int] = []
-        Array::push(bucket, ridx)
-        MutMap::set(rename_by_path, rpath, bucket)
+        Array::push(bucket, value = ridx)
+        MutMap::set(rename_by_path, k = rpath, v = bucket)
       }
     }
   }
   let mut ri = 0
   while ri < file_count {
-    let path = Array::get(paths, ri)
+    let path = Array::get(paths, at = ri)
     if path == entry_path {
       ()
     } else {
-      let def_names = Array::get(def_names_list, ri)
+      let def_names = Array::get(def_names_list, at = ri)
       let mut ni = 0
       while ni < Array::length(def_names) {
-        let name = Array::get(def_names, ni)
-        let excluded = MutMap::has(excluded_idx, plan_rename_key(path, name))
+        let name = Array::get(def_names, at = ni)
+        let excluded = MutMap::has(excluded_idx, k = plan_rename_key(path = path, name = name))
         if excluded {
           ()
         } else {
-          let mangled = namespace_exported_def_name(path, name)
+          let mangled = namespace_exported_def_name(path = path, name = name)
           add_rename(path, name, mangled)
-          let key = plan_rename_key(path, name)
-          if !MutMap::has(rename_idx, key) {
-            MutMap::set(rename_idx, key, mangled)
+          let key = plan_rename_key(path = path, name = name)
+          if !MutMap::has(rename_idx, k = key) {
+            MutMap::set(rename_idx, k = key, v = mangled)
           } else {
             ()
           }
@@ -1629,17 +1632,17 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
       // is privately renamed before flattening. Unlike ordinary qualified
       // methods, this rename is part of the module's publication mapping so a
       // dependent import follows the helper instead of the provider builtin.
-      let source_stmts = Array::get(stmts_list, ri)
+      let source_stmts = Array::get(stmts_list, at = ri)
       let exported_names = collect_exported_value_names(source_stmts)
-      let trait_collision_renames = trait_import_local_operation_renames(source_stmts, path)
+      let trait_collision_renames = trait_import_local_operation_renames(stmts = source_stmts, path = path)
       let mut ci = 0
       while ci < Array::length(trait_collision_renames) {
-        let (name, mangled) = Array::get(trait_collision_renames, ci)
-        if import_alias_rewrite_string_array_contains(exported_names, name) {
+        let (name, mangled) = Array::get(trait_collision_renames, at = ci)
+        if import_alias_rewrite_string_array_contains(items = exported_names, target = name) {
           add_rename(path, name, mangled)
-          let key = plan_rename_key(path, name)
-          if !MutMap::has(rename_idx, key) {
-            MutMap::set(rename_idx, key, mangled)
+          let key = plan_rename_key(path = path, name = name)
+          if !MutMap::has(rename_idx, k = key) {
+            MutMap::set(rename_idx, k = key, v = mangled)
           } else {
             ()
           }
@@ -1659,27 +1662,27 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     changed = false
     let mut ci = 0
     while ci < Array::length(edge_from) {
-      let from = Array::get(edge_from, ci)
-      let pub_name = Array::get(edge_pub, ci)
+      let from = Array::get(edge_from, at = ci)
+      let pub_name = Array::get(edge_pub, at = ci)
       // #3445: two re-exports of one name in one facade -- the checker binds
       // the LATER one (its import environment is later-binding-wins), so
       // only that edge may publish a rename. Following the first one ran
       // the earlier definition under the later one's type.
-      let is_last_edge = match MutMap::get(edge_last_idx, plan_rename_key(from, pub_name)) {
+      let is_last_edge = match MutMap::get(edge_last_idx, k = plan_rename_key(path = from, name = pub_name)) {
         Some(last) => last == ci,
         None => true
       }
       if from == entry_path || !is_last_edge {
         ()
       } else {
-        match MutMap::get(rename_idx, plan_rename_key(Array::get(edge_tpath, ci), Array::get(edge_tname, ci))) {
+        match MutMap::get(rename_idx, k = plan_rename_key(path = Array::get(edge_tpath, at = ci), name = Array::get(edge_tname, at = ci))) {
           Some(mangled) => {
-            let from_key = plan_rename_key(from, pub_name)
-            if MutMap::has(rename_idx, from_key) {
+            let from_key = plan_rename_key(path = from, name = pub_name)
+            if MutMap::has(rename_idx, k = from_key) {
               ()
             } else {
               add_rename(from, pub_name, mangled)
-              MutMap::set(rename_idx, from_key, mangled)
+              MutMap::set(rename_idx, k = from_key, v = mangled)
               changed = true
             }
           },
@@ -1689,23 +1692,23 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
         // operations. They are not explicit re-export items, so carry every
         // provider-qualified rename with the same head across this edge. The
         // fixpoint makes this work through arbitrary facade chains.
-        let target_path = Array::get(edge_tpath, ci)
-        let target_name = Array::get(edge_tname, ci)
+        let target_path = Array::get(edge_tpath, at = ci)
+        let target_name = Array::get(edge_tname, at = ci)
         let target_prefix = String::concat(target_name, "::")
         let public_prefix = String::concat(pub_name, "::")
-        match MutMap::get(rename_by_path, target_path) {
+        match MutMap::get(rename_by_path, k = target_path) {
           Some(bucket) => {
             let mut bi = 0
             while bi < Array::length(bucket) {
-              let ri2 = Array::get(bucket, bi)
-              let source_name = Array::get(rename_names, ri2)
-              if String::starts_with(source_name, target_prefix) {
-                let from_name = String::concat(public_prefix, String::substring(source_name, String::length(target_prefix), String::length(source_name)))
-                let from_key = plan_rename_key(from, from_name)
-                if !MutMap::has(rename_idx, from_key) {
-                  let mangled = Array::get(rename_mangled, ri2)
+              let ri2 = Array::get(bucket, at = bi)
+              let source_name = Array::get(rename_names, at = ri2)
+              if String::starts_with(source_name, prefix = target_prefix) {
+                let from_name = String::concat(public_prefix, String::substring(source_name, start = String::length(target_prefix), end = String::length(source_name)))
+                let from_key = plan_rename_key(path = from, name = from_name)
+                if !MutMap::has(rename_idx, k = from_key) {
+                  let mangled = Array::get(rename_mangled, at = ri2)
                   add_rename(from, from_name, mangled)
-                  MutMap::set(rename_idx, from_key, mangled)
+                  MutMap::set(rename_idx, k = from_key, v = mangled)
                   changed = true
                 } else {
                   ()
@@ -1729,19 +1732,19 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let builtin_iterator_mangled = empty_strings()
   let mut bmi = 0
   while bmi < Array::length(rename_paths) {
-    let source_path = Array::get(rename_paths, bmi)
-    let source_name = Array::get(rename_names, bmi)
+    let source_path = Array::get(rename_paths, at = bmi)
+    let source_name = Array::get(rename_names, at = bmi)
     let mut trusted = false
     let mut bpi = 0
     while bpi < Array::length(builtin_iterator_paths) && !trusted {
-      let provider_path = Array::get(builtin_iterator_paths, bpi)
+      let provider_path = Array::get(builtin_iterator_paths, at = bpi)
       trusted = source_path == provider_path || (is_contract_ext(provider_path) && dir_of_path(source_path) == dir_of_path(provider_path))
       bpi = bpi + 1
     }
-    if trusted && iterator_namespace_operation(source_name, "Iterator") {
-      let mangled = Array::get(rename_mangled, bmi)
-      if !import_alias_rewrite_string_array_contains(builtin_iterator_mangled, mangled) {
-        Array::push(builtin_iterator_mangled, mangled)
+    if trusted && iterator_namespace_operation(name = source_name, namespace = "Iterator") {
+      let mangled = Array::get(rename_mangled, at = bmi)
+      if !import_alias_rewrite_string_array_contains(items = builtin_iterator_mangled, target = mangled) {
+        Array::push(builtin_iterator_mangled, value = mangled)
       } else {
         ()
       }
@@ -1775,18 +1778,18 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
 export fn append_builtin_iterator_plan_operation_markers(markers: Array[String], renames: Array[(String, String)], plan: ExportRenamePlan) -> Unit {
   // First preserve the direct-import path. Its local namespace marker is
   // emitted only when the whole namespace is free of source overrides.
-  append_builtin_iterator_operation_markers(markers, renames)
+  append_builtin_iterator_operation_markers(markers = markers, renames = renames)
   let mut i = 0
   while i < Array::length(renames) {
-    let (_, resolved) = Array::get(renames, i)
-    if import_alias_rewrite_string_array_contains(plan.builtin_iterator_mangled, resolved) {
-      let split = String::index_of(resolved, "::")
+    let (_, resolved) = Array::get(renames, at = i)
+    if import_alias_rewrite_string_array_contains(items = plan.builtin_iterator_mangled, target = resolved) {
+      let split = String::index_of(resolved, needle = "::")
       if split > 0 {
-        let namespace = String::substring(resolved, 0, split)
-        if iterator_namespace_operation(resolved, namespace) {
+        let namespace = String::substring(resolved, start = 0, end = split)
+        if iterator_namespace_operation(name = resolved, namespace = namespace) {
           let marker = String::concat(builtin_iterator_origin_marker_prefix(), namespace)
-          if !import_alias_rewrite_string_array_contains(markers, marker) {
-            Array::push(markers, marker)
+          if !import_alias_rewrite_string_array_contains(items = markers, target = marker) {
+            Array::push(markers, value = marker)
           } else {
             ()
           }
@@ -1803,7 +1806,7 @@ export fn append_builtin_iterator_plan_operation_markers(markers: Array[String],
   }
 }
 
-export fn export_plan_rename_count(plan: ExportRenamePlan) -> Int {
+export fn export_plan_rename_count(_ plan: ExportRenamePlan) -> Int {
   Array::length(plan.rename_paths)
 }
 
@@ -1815,8 +1818,8 @@ export fn export_plan_renames_for(plan: ExportRenamePlan, path: String) -> Array
   let rename_mangled = plan.rename_mangled
   let mut i = 0
   while i < Array::length(rename_paths) {
-    if Array::get(rename_paths, i) == path {
-      Array::push(out, (Array::get(rename_names, i), Array::get(rename_mangled, i)))
+    if Array::get(rename_paths, at = i) == path {
+      Array::push(out, value = (Array::get(rename_names, at = i), Array::get(rename_mangled, at = i)))
     } else {
       ()
     }
@@ -1827,51 +1830,51 @@ export fn export_plan_renames_for(plan: ExportRenamePlan, path: String) -> Array
 
 /// Deterministic text summary of the plan; callers fold it into merge cache
 /// fingerprints so a rename-set change invalidates cached merged sources.
-export fn export_plan_fingerprint_text(plan: ExportRenamePlan) -> String {
+export fn export_plan_fingerprint_text(_ plan: ExportRenamePlan) -> String {
   let rename_paths = plan.rename_paths
   let rename_names = plan.rename_names
   let rename_mangled = plan.rename_mangled
   let buf = StringBuilder::new()
-  StringBuilder::push(buf, "export-renames")
+  StringBuilder::push(buf, value = "export-renames")
   let mut i = 0
   while i < Array::length(rename_paths) {
-    StringBuilder::push(buf, "|")
-    StringBuilder::push(buf, Array::get(rename_paths, i))
-    StringBuilder::push(buf, ">")
-    StringBuilder::push(buf, Array::get(rename_names, i))
-    StringBuilder::push(buf, ">")
-    StringBuilder::push(buf, Array::get(rename_mangled, i))
+    StringBuilder::push(buf, value = "|")
+    StringBuilder::push(buf, value = Array::get(rename_paths, at = i))
+    StringBuilder::push(buf, value = ">")
+    StringBuilder::push(buf, value = Array::get(rename_names, at = i))
+    StringBuilder::push(buf, value = ">")
+    StringBuilder::push(buf, value = Array::get(rename_mangled, at = i))
     i = i + 1
   }
   let mut bi = 0
   while bi < Array::length(plan.builtin_iterator_mangled) {
-    StringBuilder::push(buf, "|builtin-iterator>")
-    StringBuilder::push(buf, Array::get(plan.builtin_iterator_mangled, bi))
+    StringBuilder::push(buf, value = "|builtin-iterator>")
+    StringBuilder::push(buf, value = Array::get(plan.builtin_iterator_mangled, at = bi))
     bi = bi + 1
   }
   let mut ai = 0
   while ai < Array::length(plan.enum_alias_paths) {
-    StringBuilder::push(buf, "|enum>")
-    StringBuilder::push(buf, Array::get(plan.enum_alias_paths, ai))
-    StringBuilder::push(buf, ">")
-    StringBuilder::push(buf, Array::get(plan.enum_alias_names, ai))
-    StringBuilder::push(buf, ">")
-    StringBuilder::push(buf, Array::get(plan.enum_alias_origins, ai))
-    let enum_key = plan_rename_key(Array::get(plan.enum_alias_paths, ai), Array::get(plan.enum_alias_names, ai))
-    match MutMap::get(plan.enum_alias_private_ctors, enum_key) {
+    StringBuilder::push(buf, value = "|enum>")
+    StringBuilder::push(buf, value = Array::get(plan.enum_alias_paths, at = ai))
+    StringBuilder::push(buf, value = ">")
+    StringBuilder::push(buf, value = Array::get(plan.enum_alias_names, at = ai))
+    StringBuilder::push(buf, value = ">")
+    StringBuilder::push(buf, value = Array::get(plan.enum_alias_origins, at = ai))
+    let enum_key = plan_rename_key(path = Array::get(plan.enum_alias_paths, at = ai), name = Array::get(plan.enum_alias_names, at = ai))
+    match MutMap::get(plan.enum_alias_private_ctors, k = enum_key) {
       Some(rows) => for row in rows {
-        StringBuilder::push(buf, "|enum-ctor>")
-        StringBuilder::push(buf, row.0)
-        StringBuilder::push(buf, ">")
-        StringBuilder::push(buf, row.1)
+        StringBuilder::push(buf, value = "|enum-ctor>")
+        StringBuilder::push(buf, value = row.0)
+        StringBuilder::push(buf, value = ">")
+        StringBuilder::push(buf, value = row.1)
       },
       None => ()
     }
     ai = ai + 1
   }
   for name in plan.enum_origin_ambiguous_names {
-    StringBuilder::push(buf, "|enum-ambiguous>")
-    StringBuilder::push(buf, name)
+    StringBuilder::push(buf, value = "|enum-ambiguous>")
+    StringBuilder::push(buf, value = name)
   }
   StringBuilder::freeze(buf)
 }
@@ -1889,14 +1892,14 @@ fn append_imported_trait_operation_renames(plan: ExportRenamePlan, target: Strin
     let source_prefix = String::concat(item.name, "::")
     let mut i = 0
     while i < Array::length(plan.rename_paths) {
-      let source_name = Array::get(plan.rename_names, i)
-      let source_path = Array::get(plan.rename_paths, i)
+      let source_name = Array::get(plan.rename_names, at = i)
+      let source_path = Array::get(plan.rename_paths, at = i)
       let same_provider = source_path == target || (is_contract_ext(target) && dir_of_path(source_path) == dir_of_path(target))
-      if same_provider && String::starts_with(source_name, source_prefix) {
-        let local_name = String::concat(local_head, String::substring(source_name, String::length(item.name), String::length(source_name)))
-        if !import_alias_rewrite_string_array_contains(locals_seen, local_name) {
-          Array::push(locals_seen, local_name)
-          Array::push(out, (local_name, Array::get(plan.rename_mangled, i)))
+      if same_provider && String::starts_with(source_name, prefix = source_prefix) {
+        let local_name = String::concat(local_head, String::substring(source_name, start = String::length(item.name), end = String::length(source_name)))
+        if !import_alias_rewrite_string_array_contains(items = locals_seen, target = local_name) {
+          Array::push(locals_seen, value = local_name)
+          Array::push(out, value = (local_name, Array::get(plan.rename_mangled, at = i)))
         } else {
           ()
         }
@@ -1913,7 +1916,7 @@ fn append_imported_trait_operation_renames(plan: ExportRenamePlan, target: Strin
 fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Array[ImportItem], plain_reexports_only: Bool, out: Array[(String, String)], locals_seen: Array[String]) -> Unit with Exception {
   let mut j = Array::length(items) - 1
   while j >= 0 {
-    let item = Array::get(items, j)
+    let item = Array::get(items, at = j)
     let original = item.name
     let alias_opt = item.alias
     let local = match alias_opt {
@@ -1928,26 +1931,26 @@ fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Ar
     } else {
       true
     }
-    append_imported_trait_operation_renames(plan, target, item, locally_visible, out, locals_seen)
-    if !import_alias_rewrite_string_array_contains(locals_seen, local) {
+    append_imported_trait_operation_renames(plan = plan, target = target, item = item, locally_visible = locally_visible, out = out, locals_seen = locals_seen)
+    if !import_alias_rewrite_string_array_contains(items = locals_seen, target = local) {
       // Walk bindings newest-first. Even a target that stays bare claims the
       // spelling and prevents an older import from supplying a stale rename.
       // Publication-only aliases claim their local spelling too: they emit no
       // rewrite, but still override an earlier import with the same local name.
-      Array::push(locals_seen, local)
+      Array::push(locals_seen, value = local)
       if locally_visible {
-        match MutMap::get(plan.rename_idx, plan_rename_key(target, original)) {
+        match MutMap::get(plan.rename_idx, k = plan_rename_key(path = target, name = original)) {
           Some(mangled) => {
-            Array::push(out, (local, mangled))
+            Array::push(out, value = (local, mangled))
           },
-          None => match MutMap::get(plan.enum_alias_idx, plan_rename_key(target, original)) {
-            Some(enum_head) => if MutMap::has(plan.enum_origin_ambiguous, enum_head) {
+          None => match MutMap::get(plan.enum_alias_idx, k = plan_rename_key(path = target, name = original)) {
+            Some(enum_head) => if MutMap::has(plan.enum_origin_ambiguous, k = enum_head) {
               throw("rename one of the enums named `" + enum_head + "`: imported alias `" + local + "` reaches that name in more than one source file, so its constructor cannot be selected safely")
             } else {
-              Array::push(out, (local, enum_head))
-              match MutMap::get(plan.enum_alias_private_ctors, plan_rename_key(target, original)) {
+              Array::push(out, value = (local, enum_head))
+              match MutMap::get(plan.enum_alias_private_ctors, k = plan_rename_key(path = target, name = original)) {
                 Some(rows) => for row in rows {
-                  Array::push(out, (local + "::" + row.0, row.1))
+                  Array::push(out, value = (local + "::" + row.0, row.1))
                 },
                 None => ()
               }
@@ -1970,7 +1973,7 @@ fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Ar
 /// publication-only in their own source unit and contribute no local rewrite.
 export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)] with Exception {
   if Array::length(plan.type_collision_errors) > 0 {
-    throw(Array::get(plan.type_collision_errors, 0))
+    throw(Array::get(plan.type_collision_errors, at = 0))
   }
   let out = empty_aliases()
   let locals_seen = empty_strings()
@@ -1986,7 +1989,7 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
     let declared_types = collect_declared_type_names(stmts)
     let mut ti = 0
     while ti < Array::length(declared_types) {
-      Array::push(locals_seen, Array::get(declared_types, ti))
+      Array::push(locals_seen, value = Array::get(declared_types, at = ti))
       ti = ti + 1
     }
     // A source-local qualified helper owns its exact spelling. In particular,
@@ -1995,13 +1998,13 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
     // distinct provider-owned spelling.
     let mut li = 0
     while li < Array::length(stmts) {
-      let local_name = match Array::get(stmts, li) {
+      let local_name = match Array::get(stmts, at = li) {
         SLet(_, _, name, _, _) => name,
         SFnDecl(_, name, _, _, _) => name,
         _ => ""
       }
-      if String::index_of(local_name, "::") > 0 && !import_alias_rewrite_string_array_contains(locals_seen, local_name) {
-        Array::push(locals_seen, local_name)
+      if String::index_of(local_name, needle = "::") > 0 && !import_alias_rewrite_string_array_contains(items = locals_seen, target = local_name) {
+        Array::push(locals_seen, value = local_name)
       } else {
         ()
       }
@@ -2013,14 +2016,14 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
     // first occurrence of each local spelling to match that environment.
     let mut i = Array::length(stmts) - 1
     while i >= 0 {
-      match Array::get(stmts, i) {
+      match Array::get(stmts, at = i) {
         SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
-          let target = resolve_known_import_path(plan.plan_paths, base_dir, raw_path, path)
-          append_import_value_renames(plan, target, items, false, out, locals_seen)
+          let target = resolve_known_import_path(known_paths = plan.plan_paths, base_dir = base_dir, raw_path = raw_path, self_path = path)
+          append_import_value_renames(plan = plan, target = target, items = items, plain_reexports_only = false, out = out, locals_seen = locals_seen)
         },
         SReExport(raw_path, items) => {
-          let target = resolve_known_import_path(plan.plan_paths, base_dir, raw_path, path)
-          append_import_value_renames(plan, target, items, true, out, locals_seen)
+          let target = resolve_known_import_path(known_paths = plan.plan_paths, base_dir = base_dir, raw_path = raw_path, self_path = path)
+          append_import_value_renames(plan = plan, target = target, items = items, plain_reexports_only = true, out = out, locals_seen = locals_seen)
         },
         _ => ()
       }
@@ -2030,12 +2033,12 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
   }
 }
 
-export fn import_value_rename_locals(renames: Array[(String, String)]) -> Array[String] {
+export fn import_value_rename_locals(_ renames: Array[(String, String)]) -> Array[String] {
   let out = empty_strings()
   let mut i = 0
   while i < Array::length(renames) {
-    let (local, _) = Array::get(renames, i)
-    Array::push(out, local)
+    let (local, _) = Array::get(renames, at = i)
+    Array::push(out, value = local)
     i = i + 1
   }
   out
@@ -2052,41 +2055,41 @@ export fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String,
     for stmt in stmts {
       match stmt {
         SLet(exported, is_rec, name, ty, body) => {
-          let next_name = match aliasidx_get(am, name) {
+          let next_name = match aliasidx_get(am = am, name = name) {
             Some(renamed) => renamed,
             None => name
           }
-          SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, am))
+          SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(expr = body, am = am))
         },
         SFnDecl(exported, name, body, requires, ensures) => {
-          let next_name = match aliasidx_get(am, name) {
+          let next_name = match aliasidx_get(am = am, name = name) {
             Some(renamed) => renamed,
             None => name
           }
-          SFnDecl(exported, next_name, rewrite_alias_expr_ix(body, am), for requirement in requires {
-            rewrite_alias_expr_ix(requirement, am)
+          SFnDecl(exported, next_name, rewrite_alias_expr_ix(expr = body, am = am), for requirement in requires {
+            rewrite_alias_expr_ix(expr = requirement, am = am)
           }, for guarantee in ensures {
-            rewrite_alias_expr_ix(guarantee, am)
+            rewrite_alias_expr_ix(expr = guarantee, am = am)
           })
         },
-        SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_alias_expr_ix(body, am)),
+        SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_alias_expr_ix(expr = body, am = am)),
         SPositionalParams(rows) => SPositionalParams(for row in rows {
           let (decl, slots) = row
-          match aliasidx_get(am, decl) {
+          match aliasidx_get(am = am, name = decl) {
             Some(renamed) => (renamed, slots),
             None => (decl, slots)
           }
         }),
         SExport(items) => SExport(for item in items {
-          match aliasidx_get(am, item) {
+          match aliasidx_get(am = am, name = item) {
             Some(renamed) => renamed,
             None => item
           }
         }),
-        STest(name, body) => STest(name, rewrite_alias_expr_ix(body, am)),
-        SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, am)),
-        SExpr(body) => SExpr(rewrite_alias_expr_ix(body, am)),
-        SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(body, am)),
+        STest(name, body) => STest(name, rewrite_alias_expr_ix(expr = body, am = am)),
+        SBench(name, body) => SBench(name, rewrite_alias_expr_ix(expr = body, am = am)),
+        SExpr(body) => SExpr(rewrite_alias_expr_ix(expr = body, am = am)),
+        SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(expr = body, am = am)),
         _ => stmt
       }
     }
@@ -2102,8 +2105,8 @@ export fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String,
 /// function alias (chains followed, ≤16) to the final EFn def's name. The
 /// alias def itself stays: it is inert once nothing refers to it, and its
 /// export flag keeps the wasm export surface unchanged.
-export fn rewrite_top_level_fn_alias_refs(stmts: Array[Stmt]) -> Unit {
-  apply_top_level_fn_alias_renames(stmts, collect_top_level_fn_alias_renames(stmts))
+export fn rewrite_top_level_fn_alias_refs(_ stmts: Array[Stmt]) -> Unit {
+  apply_top_level_fn_alias_renames(stmts = stmts, renames = collect_top_level_fn_alias_renames(stmts))
 }
 
 /// The (alias -> final EFn name) renames `rewrite_top_level_fn_alias_refs`
@@ -2116,18 +2119,18 @@ export fn rewrite_top_level_fn_alias_refs(stmts: Array[Stmt]) -> Unit {
 /// call through a non-`EFn` alias emits N arguments against the 0-parameter
 /// thunk the backend registers, which is invalid wasm on every backend. So the
 /// map is collected once on the merged program and handed to every module.
-export fn collect_top_level_fn_alias_renames(stmts: Array[Stmt]) -> Array[(String, String)] {
+export fn collect_top_level_fn_alias_renames(_ stmts: Array[Stmt]) -> Array[(String, String)] {
   let fn_names = empty_strings()
   let alias_names = empty_strings()
   let alias_targets = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, _, expr) => match expr {
-        EFn(_, _, _, _, _, _) => Array::push(fn_names, name),
+        EFn(_, _, _, _, _, _) => Array::push(fn_names, value = name),
         EIdent(target, _) => {
-          Array::push(alias_names, name)
-          Array::push(alias_targets, target)
+          Array::push(alias_names, value = name)
+          Array::push(alias_targets, value = target)
         },
         _ => ()
       },
@@ -2141,19 +2144,19 @@ export fn collect_top_level_fn_alias_renames(stmts: Array[Stmt]) -> Array[(Strin
     let renames = empty_aliases()
     let mut ai = 0
     while ai < Array::length(alias_names) {
-      let mut target = Array::get(alias_targets, ai)
+      let mut target = Array::get(alias_targets, at = ai)
       let mut final_target = ""
       let mut depth = 0
       while depth < 16 {
-        if import_alias_rewrite_string_array_contains(fn_names, target) {
+        if import_alias_rewrite_string_array_contains(items = fn_names, target = target) {
           final_target = target
           depth = 16
         } else {
           let mut hop = false
           let mut aj = 0
           while aj < Array::length(alias_names) && !hop {
-            if Array::get(alias_names, aj) == target {
-              target = Array::get(alias_targets, aj)
+            if Array::get(alias_names, at = aj) == target {
+              target = Array::get(alias_targets, at = aj)
               hop = true
             } else {
               aj = aj + 1
@@ -2166,8 +2169,8 @@ export fn collect_top_level_fn_alias_renames(stmts: Array[Stmt]) -> Array[(Strin
           }
         }
       }
-      if final_target != "" && final_target != Array::get(alias_names, ai) {
-        Array::push(renames, (Array::get(alias_names, ai), final_target))
+      if final_target != "" && final_target != Array::get(alias_names, at = ai) {
+        Array::push(renames, value = (Array::get(alias_names, at = ai), final_target))
       } else {
         ()
       }
@@ -2186,13 +2189,13 @@ export fn apply_top_level_fn_alias_renames(stmts: Array[Stmt], renames: Array[(S
     let ram = aliasidx_build(renames)
     let mut si = 0
     while si < Array::length(stmts) {
-      match Array::get(stmts, si) {
-        SLet(exported, is_rec, name, ty, body) => Array::set(stmts, si, SLet(exported, is_rec, name, ty, rewrite_alias_expr_ix(body, ram))),
-        SLetMut(name, ty, body) => Array::set(stmts, si, SLetMut(name, ty, rewrite_alias_expr_ix(body, ram))),
-        STest(name, body) => Array::set(stmts, si, STest(name, rewrite_alias_expr_ix(body, ram))),
-        SBench(name, body) => Array::set(stmts, si, SBench(name, rewrite_alias_expr_ix(body, ram))),
-        SExpr(body) => Array::set(stmts, si, SExpr(rewrite_alias_expr_ix(body, ram))),
-        SLetPat(pat, body) => Array::set(stmts, si, SLetPat(pat, rewrite_alias_expr_ix(body, ram))),
+      match Array::get(stmts, at = si) {
+        SLet(exported, is_rec, name, ty, body) => Array::set(stmts, at = si, value = SLet(exported, is_rec, name, ty, rewrite_alias_expr_ix(expr = body, am = ram))),
+        SLetMut(name, ty, body) => Array::set(stmts, at = si, value = SLetMut(name, ty, rewrite_alias_expr_ix(expr = body, am = ram))),
+        STest(name, body) => Array::set(stmts, at = si, value = STest(name, rewrite_alias_expr_ix(expr = body, am = ram))),
+        SBench(name, body) => Array::set(stmts, at = si, value = SBench(name, rewrite_alias_expr_ix(expr = body, am = ram))),
+        SExpr(body) => Array::set(stmts, at = si, value = SExpr(rewrite_alias_expr_ix(expr = body, am = ram))),
+        SLetPat(pat, body) => Array::set(stmts, at = si, value = SLetPat(pat, rewrite_alias_expr_ix(expr = body, am = ram))),
         _ => ()
       }
       si = si + 1
@@ -2466,8 +2469,8 @@ let builtin_shadow_rename_names: Array[String] = [
 /// Binary search over the sorted list: the rename asks this of every
 /// top-level definition on every run, and the list is a couple of hundred
 /// names. `builtin_shadow_rename_names_are_sorted` pins the order.
-fn is_builtin_shadow_rename_name(name: String) -> Bool {
-  bsearch_leftmost(builtin_shadow_rename_names, name) >= 0
+fn is_builtin_shadow_rename_name(_ name: String) -> Bool {
+  bsearch_leftmost(sorted = builtin_shadow_rename_names, name = name) >= 0
 }
 
 /// Whether the literal list is strictly sorted, which the binary search in
@@ -2476,7 +2479,7 @@ export fn builtin_shadow_rename_names_are_sorted() -> Bool {
   let mut ok = true
   let mut i = 1
   while ok && i < Array::length(builtin_shadow_rename_names) {
-    ok = str_lt(Array::get(builtin_shadow_rename_names, i - 1), Array::get(builtin_shadow_rename_names, i))
+    ok = str_lt(a = Array::get(builtin_shadow_rename_names, at = i - 1), b = Array::get(builtin_shadow_rename_names, at = i))
     i = i + 1
   }
   ok
@@ -2484,7 +2487,7 @@ export fn builtin_shadow_rename_names_are_sorted() -> Bool {
 
 /// Whether a program's own top-level definition of `name` is moved aside by
 /// `rename_builtin_shadow_defs`, for the tests that walk the list.
-export fn builtin_shadow_renames_name(name: String) -> Bool {
+export fn builtin_shadow_renames_name(_ name: String) -> Bool {
   is_builtin_shadow_rename_name(name)
 }
 
@@ -2497,7 +2500,7 @@ export fn builtin_shadow_rename_name_list() -> Array[String] {
 /// The spelling a program's own definition of a compiler-called builtin is
 /// renamed to. `$` cannot appear in a source identifier, so no program can
 /// declare it and no user call can collide with it.
-export fn builtin_shadow_rename_of(name: String) -> String {
+export fn builtin_shadow_rename_of(_ name: String) -> String {
   String::concat(name, "$user")
 }
 
@@ -2520,7 +2523,7 @@ export fn builtin_shadow_entry_name(stmts: Array[Stmt], entry_name: String) -> S
     let mut found = false
     let mut i = 0
     while !found && i < Array::length(stmts) {
-      let name = match Array::get(stmts, i) {
+      let name = match Array::get(stmts, at = i) {
         SLet(_, _, n, _, _) => n,
         SFnDecl(_, n, _, _, _) => n,
         _ => ""
@@ -2539,11 +2542,11 @@ export fn builtin_shadow_entry_name(stmts: Array[Stmt], entry_name: String) -> S
   }
 }
 
-export fn builtin_shadow_source_name(name: String) -> String {
+export fn builtin_shadow_source_name(_ name: String) -> String {
   let suffix = "$user"
   let n = String::length(name)
   let k = String::length(suffix)
-  if n > k && String::ends_with(name, suffix) && is_builtin_shadow_rename_name(name[0: n - k]) {
+  if n > k && String::ends_with(name, suffix = suffix) && is_builtin_shadow_rename_name(name[0: n - k]) {
     name[0: n - k]
   } else {
     name
@@ -2607,15 +2610,15 @@ export fn builtin_shadow_source_name(name: String) -> String {
 /// later run from taking it. A published definition (`export`, or named in an
 /// `export { }` list) still renames program-wide, as a library's qualified
 /// export always has (#2378). A program with no boundaries is one unit.
-export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
-  rewrite_builtin_shadow_refs(stmts, true)
+export fn rename_builtin_shadow_defs(_ stmts: Array[Stmt]) -> Unit {
+  rewrite_builtin_shadow_refs(stmts = stmts, rename_defs = true)
 }
 
 /// Preserve module-private builtin provenance before a merged source check.
 /// Definitions and owned references keep their source names so method checking
 /// still sees its original environment. The later rename owns definitions.
-export fn mark_private_builtin_references(stmts: Array[Stmt]) -> Unit {
-  rewrite_builtin_shadow_refs(stmts, false)
+export fn mark_private_builtin_references(_ stmts: Array[Stmt]) -> Unit {
+  rewrite_builtin_shadow_refs(stmts = stmts, rename_defs = false)
 }
 
 fn rewrite_builtin_shadow_refs(stmts: Array[Stmt], rename_defs: Bool) -> Unit {
@@ -2625,7 +2628,7 @@ fn rewrite_builtin_shadow_refs(stmts: Array[Stmt], rename_defs: Bool) -> Unit {
   let mut unit = 0
   let mut i = 0
   while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     if is_source_unit_boundary(stmt) {
       unit = unit + 1
     } else {
@@ -2636,14 +2639,14 @@ fn rewrite_builtin_shadow_refs(stmts: Array[Stmt], rename_defs: Bool) -> Unit {
       }
       let source = builtin_shadow_source_name(name)
       if name != "" && is_builtin_shadow_rename_name(source) {
-        if exported || builtin_shadow_name_in_unit(listed_exports, source, unit) {
-          if !builtin_shadow_rename_listed(published, source) {
-            Array::push(published, (source, builtin_shadow_rename_of(source)))
+        if exported || builtin_shadow_name_in_unit(items = listed_exports, name = source, unit = unit) {
+          if !builtin_shadow_rename_listed(renames = published, name = source) {
+            Array::push(published, value = (source, builtin_shadow_rename_of(source)))
           } else {
             ()
           }
-        } else if !builtin_shadow_name_in_unit(private_defs, source, unit) {
-          Array::push(private_defs, (source, unit))
+        } else if !builtin_shadow_name_in_unit(items = private_defs, name = source, unit = unit) {
+          Array::push(private_defs, value = (source, unit))
         } else {
           ()
         }
@@ -2660,16 +2663,16 @@ fn rewrite_builtin_shadow_refs(stmts: Array[Stmt], rename_defs: Bool) -> Unit {
     // other unit; almost always the entry's and the rest.
     let owner_units: Array[Int] = []
     let owner_maps: Array[AliasIdx] = []
-    let other_map = aliasidx_build_mode(builtin_shadow_unit_renames(published, private_defs, 0 - 1, rename_defs), true)
+    let other_map = aliasidx_build_mode(entries = builtin_shadow_unit_renames(published = published, private_defs = private_defs, unit = 0 - 1, rename_defs = rename_defs), user_refs_only = true)
     let mut si = 0
     let mut su = 0
     while si < Array::length(stmts) {
-      let stmt = Array::get(stmts, si)
+      let stmt = Array::get(stmts, at = si)
       if is_source_unit_boundary(stmt) {
         su = su + 1
       } else {
-        let am = if builtin_shadow_unit_owns(private_defs, su) {
-          builtin_shadow_owner_map(owner_units, owner_maps, published, private_defs, su, rename_defs)
+        let am = if builtin_shadow_unit_owns(private_defs = private_defs, unit = su) {
+          builtin_shadow_owner_map(owner_units = owner_units, owner_maps = owner_maps, published = published, private_defs = private_defs, unit = su, rename_defs = rename_defs)
         } else {
           other_map
         }
@@ -2680,7 +2683,7 @@ fn rewrite_builtin_shadow_refs(stmts: Array[Stmt], rename_defs: Bool) -> Unit {
             } else {
               name
             }
-            Array::set(stmts, si, SLet(exported, is_rec, new_name, ty, rewrite_alias_expr_ix(body, am)))
+            Array::set(stmts, at = si, value = SLet(exported, is_rec, new_name, ty, rewrite_alias_expr_ix(expr = body, am = am)))
           },
           SFnDecl(exported, name, value, reqs, enss) => {
             let new_name = if rename_defs && is_builtin_shadow_rename_name(name) {
@@ -2688,15 +2691,15 @@ fn rewrite_builtin_shadow_refs(stmts: Array[Stmt], rename_defs: Bool) -> Unit {
             } else {
               name
             }
-            Array::set(stmts, si, SFnDecl(exported, new_name, rewrite_alias_expr_ix(value, am), rewrite_alias_exprs_ix(reqs, am), rewrite_alias_exprs_ix(enss, am)))
+            Array::set(stmts, at = si, value = SFnDecl(exported, new_name, rewrite_alias_expr_ix(expr = value, am = am), rewrite_alias_exprs_ix(items = reqs, am = am), rewrite_alias_exprs_ix(items = enss, am = am)))
           },
-          SLetMut(name, ty, body) => Array::set(stmts, si, SLetMut(name, ty, rewrite_alias_expr_ix(body, am))),
-          STest(name, body) => Array::set(stmts, si, STest(name, rewrite_alias_expr_ix(body, am))),
-          SBench(name, body) => Array::set(stmts, si, SBench(name, rewrite_alias_expr_ix(body, am))),
-          SExpr(body) => Array::set(stmts, si, SExpr(rewrite_alias_expr_ix(body, am))),
-          SLetPat(pat, body) => Array::set(stmts, si, SLetPat(pat, rewrite_alias_expr_ix(body, am))),
-          SExport(items) => Array::set(stmts, si, SExport(for item in items {
-            if rename_defs && builtin_shadow_rename_listed(published, item) {
+          SLetMut(name, ty, body) => Array::set(stmts, at = si, value = SLetMut(name, ty, rewrite_alias_expr_ix(expr = body, am = am))),
+          STest(name, body) => Array::set(stmts, at = si, value = STest(name, rewrite_alias_expr_ix(expr = body, am = am))),
+          SBench(name, body) => Array::set(stmts, at = si, value = SBench(name, rewrite_alias_expr_ix(expr = body, am = am))),
+          SExpr(body) => Array::set(stmts, at = si, value = SExpr(rewrite_alias_expr_ix(expr = body, am = am))),
+          SLetPat(pat, body) => Array::set(stmts, at = si, value = SLetPat(pat, rewrite_alias_expr_ix(expr = body, am = am))),
+          SExport(items) => Array::set(stmts, at = si, value = SExport(for item in items {
+            if rename_defs && builtin_shadow_rename_listed(renames = published, name = item) {
               builtin_shadow_rename_of(item)
             } else {
               item
@@ -2712,7 +2715,7 @@ fn rewrite_builtin_shadow_refs(stmts: Array[Stmt], rename_defs: Bool) -> Unit {
 
 /// #3185: whether `stmt` opens a source unit of a merge: the boundary itself,
 /// or the carrier a source-text cache serializes it to.
-fn is_source_unit_boundary(stmt: Stmt) -> Bool {
+fn is_source_unit_boundary(_ stmt: Stmt) -> Bool {
   match stmt {
     SReExportSourceBoundary(_, _) => true,
     SImport(_, _) => match builtin_iterator_serialized_boundary_markers(stmt) {
@@ -2726,12 +2729,12 @@ fn is_source_unit_boundary(stmt: Stmt) -> Bool {
 /// The names every `export { .. }` list publishes, paired with its source
 /// unit. A list in a dependency cannot publish a private entry-file binding
 /// with the same spelling. A previous run may have renamed a listed name.
-fn builtin_shadow_export_items(stmts: Array[Stmt]) -> Array[(String, Int)] {
+fn builtin_shadow_export_items(_ stmts: Array[Stmt]) -> Array[(String, Int)] {
   let out: Array[(String, Int)] = []
   let mut unit = 0
   let mut i = 0
   while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     if is_source_unit_boundary(stmt) {
       unit = unit + 1
     } else {
@@ -2739,7 +2742,7 @@ fn builtin_shadow_export_items(stmts: Array[Stmt]) -> Array[(String, Int)] {
         SExport(items) => {
           let mut j = 0
           while j < Array::length(items) {
-            Array::push(out, (builtin_shadow_source_name(Array::get(items, j)), unit))
+            Array::push(out, value = (builtin_shadow_source_name(Array::get(items, at = j)), unit))
             j = j + 1
           }
         },
@@ -2755,7 +2758,7 @@ fn builtin_shadow_name_in_unit(items: Array[(String, Int)], name: String, unit: 
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(items) {
-    let (listed, owner) = Array::get(items, i)
+    let (listed, owner) = Array::get(items, at = i)
     found = listed == name && owner == unit
     i = i + 1
   }
@@ -2766,7 +2769,7 @@ fn builtin_shadow_unit_owns(private_defs: Array[(String, Int)], unit: Int) -> Bo
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(private_defs) {
-    let (_, u) = Array::get(private_defs, i)
+    let (_, u) = Array::get(private_defs, at = i)
     if u == unit {
       found = true
     } else {
@@ -2784,18 +2787,18 @@ fn builtin_shadow_unit_renames(published: Array[(String, String)], private_defs:
   let out = empty_aliases()
   let mut i = 0
   while i < Array::length(published) {
-    Array::push(out, Array::get(published, i))
+    Array::push(out, value = Array::get(published, at = i))
     i = i + 1
   }
   let mut j = 0
   while j < Array::length(private_defs) {
-    let (source, u) = Array::get(private_defs, j)
-    if builtin_shadow_rename_listed(out, source) {
+    let (source, u) = Array::get(private_defs, at = j)
+    if builtin_shadow_rename_listed(renames = out, name = source) {
       ()
     } else if u == unit {
-      Array::push(out, (source, builtin_shadow_rename_of(source)))
-    } else if !builtin_shadow_name_in_unit(private_defs, source, unit) {
-      Array::push(out, (source, source))
+      Array::push(out, value = (source, builtin_shadow_rename_of(source)))
+    } else if !builtin_shadow_name_in_unit(items = private_defs, name = source, unit = unit) {
+      Array::push(out, value = (source, source))
     } else {
       ()
     }
@@ -2807,7 +2810,7 @@ fn builtin_shadow_unit_renames(published: Array[(String, String)], private_defs:
     let marked = empty_aliases()
     for row in out {
       if row.0 == row.1 {
-        Array::push(marked, row)
+        Array::push(marked, value = row)
       } else {
         ()
       }
@@ -2820,18 +2823,18 @@ fn builtin_shadow_owner_map(owner_units: Array[Int], owner_maps: Array[AliasIdx]
   let mut found = 0 - 1
   let mut i = 0
   while found < 0 && i < Array::length(owner_units) {
-    if Array::get(owner_units, i) == unit {
+    if Array::get(owner_units, at = i) == unit {
       found = i
     } else {
       i = i + 1
     }
   }
   if found >= 0 {
-    Array::get(owner_maps, found)
+    Array::get(owner_maps, at = found)
   } else {
-    let am = aliasidx_build_mode(builtin_shadow_unit_renames(published, private_defs, unit, rename_defs), true)
-    Array::push(owner_units, unit)
-    Array::push(owner_maps, am)
+    let am = aliasidx_build_mode(entries = builtin_shadow_unit_renames(published = published, private_defs = private_defs, unit = unit, rename_defs = rename_defs), user_refs_only = true)
+    Array::push(owner_units, value = unit)
+    Array::push(owner_maps, value = am)
     am
   }
 }
@@ -2840,7 +2843,7 @@ fn builtin_shadow_rename_listed(renames: Array[(String, String)], name: String) 
   let mut found = false
   let mut i = 0
   while !found && i < Array::length(renames) {
-    let (source, _) = Array::get(renames, i)
+    let (source, _) = Array::get(renames, at = i)
     if source == name {
       found = true
     } else {
@@ -2879,9 +2882,9 @@ fn private_alias_pattern_renames(stmts: Array[Stmt], extra_renames: Array[(Strin
         let qualifier = if row.0 == "" {
           ""
         } else {
-          local_pattern_qualifier_head(row.0, local_type_aliases, Array::length(local_type_aliases) + 1)
+          local_pattern_qualifier_head(name = row.0, aliases = local_type_aliases, fuel = Array::length(local_type_aliases) + 1)
         }
-        Array::push(refs, (qualifier, row.1))
+        Array::push(refs, value = (qualifier, row.1))
       },
       _ => ()
     }
@@ -2889,11 +2892,11 @@ fn private_alias_pattern_renames(stmts: Array[Stmt], extra_renames: Array[(Strin
   let out = empty_aliases()
   for rename in extra_renames {
     let (local, target) = rename
-    let split = String::index_of(local, "::")
+    let split = String::index_of(local, needle = "::")
     if split > 0 {
       let head = local[0: split]
       let variant = local[split + 2: String::length(local)]
-      if String::starts_with(target, variant + "_dep_") {
+      if String::starts_with(target, prefix = variant + "_dep_") {
         let mut matching = false
         let mut competing = false
         for row in refs {
@@ -2904,7 +2907,7 @@ fn private_alias_pattern_renames(stmts: Array[Stmt], extra_renames: Array[(Strin
               let other_target = if row.0 == "" {
                 None
               } else {
-                lookup_alias(extra_renames, row.0 + "::" + variant)
+                lookup_alias(aliases = extra_renames, name = row.0 + "::" + variant)
               }
               match other_target {
                 Some(other) => if other != target {
@@ -2916,17 +2919,17 @@ fn private_alias_pattern_renames(stmts: Array[Stmt], extra_renames: Array[(Strin
           }
         }
         if matching {
-          if private_alias_pattern_collides_with_local_ctor(stmts, variant, target) {
+          if private_alias_pattern_collides_with_local_ctor(stmts = stmts, variant = variant, imported_ctor = target) {
             throw("rename this module's private variant `" + variant + "` or move the imported `" + local + "` match to a separate module: constructor patterns with this spelling cannot be distinguished after parsing")
           }
           if competing {
             throw("rename one of the variants named `" + variant + "` or place its match in a separate module: qualified and other patterns with that constructor name cannot be distinguished after parsing")
           }
-          match lookup_alias(out, variant) {
+          match lookup_alias(aliases = out, name = variant) {
             Some(previous) => if previous != target {
               throw("rename one of the variants named `" + variant + "` or place its match in a separate module: two private enum aliases need different constructors")
             },
-            None => Array::push(out, (variant, target))
+            None => Array::push(out, value = (variant, target))
           }
         }
       }
@@ -2936,31 +2939,31 @@ fn private_alias_pattern_renames(stmts: Array[Stmt], extra_renames: Array[(Strin
 }
 
 export fn append_import_alias_rewritten_non_import_stmts_with_renames(merged: Array[Stmt], stmts: Array[Stmt], skipped_locals: Array[String], extra_renames: Array[(String, String)]) -> Unit with Exception {
-  let legacy = alias_map_without_names(alias_map_without_names(collect_import_aliases(stmts), skipped_locals), import_value_rename_locals(extra_renames))
+  let legacy = alias_map_without_names(aliases = alias_map_without_names(aliases = collect_import_aliases(stmts), names = skipped_locals), names = import_value_rename_locals(extra_renames))
   let combined = empty_aliases()
   let mut li = 0
   while li < Array::length(legacy) {
-    Array::push(combined, Array::get(legacy, li))
+    Array::push(combined, value = Array::get(legacy, at = li))
     li = li + 1
   }
   let mut xi = 0
   while xi < Array::length(extra_renames) {
-    Array::push(combined, Array::get(extra_renames, xi))
+    Array::push(combined, value = Array::get(extra_renames, at = xi))
     xi = xi + 1
   }
-  let rewritten = rewrite_import_alias_stmts_with_pattern_ctors(stmts, combined, private_alias_pattern_renames(stmts, extra_renames))
+  let rewritten = rewrite_import_alias_stmts_with_pattern_ctors(stmts = stmts, aliases = combined, pattern_ctors = private_alias_pattern_renames(stmts = stmts, extra_renames = extra_renames))
   let mut i = 0
   while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     match stmt {
       SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
-        Array::push(merged, stmt)
+        Array::push(merged, value = stmt)
       } else {
-        append_stdin_provider_import_alias_markers(merged, items)
+        append_stdin_provider_import_alias_markers(merged = merged, items = items)
       },
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
-      _ => Array::push(merged, Array::get(rewritten, i))
+      _ => Array::push(merged, value = Array::get(rewritten, at = i))
     }
     i = i + 1
   }

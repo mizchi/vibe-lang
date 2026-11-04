@@ -15,8 +15,8 @@ import @vibe/compiler/query {
 
 //# Functions
 
-fn plan_of(source: String) -> String with Exception {
-  rc_plan_source(source, "")
+fn plan_of(_ source: String) -> String with Exception {
+  rc_plan_source(source = source, fn_filter = "")
 }
 
 let epilogue = "\nlet main: () -> Int = () -> {\n  run()\n}"
@@ -24,20 +24,20 @@ let epilogue = "\nlet main: () -> Int = () -> {\n  run()\n}"
 test "a saved view live across the truncate is pinned" {
   let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[11, 12]]\n  let saved = Array::get(xs, 0)\n  Array::truncate(xs, 0)\n  Array::push(xs, [91, 92])\n  Array::get(saved, 1)\n}", epilogue)
   let plan = plan_of(src)
-  assert(String::contains(plan, "run xs truncate_release:1 1"))
-  assert(String::contains(plan, "run saved view_pin:1 1"))
+  assert(String::contains(plan, needle = "run xs truncate_release:1 1"))
+  assert(String::contains(plan, needle = "run saved view_pin:1 1"))
 }
 
 test "a loop with no live view needs no pin and no result check" {
   let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[0, 0]]\n  let mut r = 0\n  while r < 3 {\n    Array::push(xs, [r, r])\n    Array::truncate(xs, 0)\n    r = r + 1\n  }\n  r\n}", epilogue)
   let plan = plan_of(src)
-  assert(String::contains(plan, "run xs truncate_release:0 1"))
-  assert(!String::contains(plan, "view_pin"))
+  assert(String::contains(plan, needle = "run xs truncate_release:0 1"))
+  assert(!String::contains(plan, needle = "view_pin"))
 }
 
 test "an annotated reserved array is still a fresh local" {
   let src = String::concat("let run: () -> Int = () -> {\n  let xs: Array[Array[Int]] = Array::with_capacity(4)\n  Array::push(xs, [11, 12])\n  Array::truncate(xs, 0)\n  Array::length(xs)\n}", epilogue)
-  assert(String::contains(plan_of(src), "run xs truncate_release:0 1"))
+  assert(String::contains(plan_of(src), needle = "run xs truncate_release:0 1"))
 }
 
 test "an array that escapes through an alias is declined" {
@@ -45,8 +45,8 @@ test "an array that escapes through an alias is declined" {
   // `ys` is a parameter; nothing in `run` may release, and nothing does.
   let src = String::concat("let clobber: (Array[Array[Int]]) -> Unit = (ys) -> {\n  Array::truncate(ys, 0)\n}\nlet run: () -> Int = () -> {\n  let xs = [[11, 12]]\n  let saved = Array::get(xs, 0)\n  let alias = xs\n  clobber(alias)\n  Array::get(saved, 1)\n}", epilogue)
   let plan = plan_of(src)
-  assert(!String::contains(plan, "truncate_release"))
-  assert(!String::contains(plan, "view_pin"))
+  assert(!String::contains(plan, needle = "truncate_release"))
+  assert(!String::contains(plan, needle = "view_pin"))
 }
 
 test "an alias of a pinned view releases with the pin" {
@@ -56,24 +56,24 @@ test "an alias of a pinned view releases with the pin" {
   // `fixtures/rc_truncate_alias_pin_test.vibe` runs the shape under shadow.
   let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[1, 2]]\n  let v = Array::get(xs, 0)\n  Array::truncate(xs, 0)\n  let w = v\n  Array::get(w, 1)\n}", epilogue)
   let plan = plan_of(src)
-  assert(String::contains(plan, "truncate_release"))
-  assert(String::contains(plan, "view_pin"))
+  assert(String::contains(plan, needle = "truncate_release"))
+  assert(String::contains(plan, needle = "view_pin"))
 }
 
 test "a derived let mut live across the truncate is declined" {
   let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[1, 2]]\n  let mut v = Array::get(xs, 0)\n  Array::truncate(xs, 0)\n  Array::get(v, 1)\n}", epilogue)
-  assert(!String::contains(plan_of(src), "truncate_release"))
+  assert(!String::contains(plan_of(src), needle = "truncate_release"))
 }
 
 test "a truncate inside an argument is declined" {
   // A temporary read before it in the same call may still be live.
   let src = String::concat("let pair: (Array[Int], Unit) -> Int = (a, u) -> Array::get(a, 1)\nlet run: () -> Int = () -> {\n  let xs = [[1, 2]]\n  pair(Array::get(xs, 0), Array::truncate(xs, 0))\n}", epilogue)
-  assert(!String::contains(plan_of(src), "truncate_release"))
+  assert(!String::contains(plan_of(src), needle = "truncate_release"))
 }
 
 test "an array a lambda captures is declined" {
   let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[1, 2]]\n  let f = () -> Array::length(xs)\n  Array::truncate(xs, 0)\n  f()\n}", epilogue)
-  assert(!String::contains(plan_of(src), "truncate_release"))
+  assert(!String::contains(plan_of(src), needle = "truncate_release"))
 }
 
 test "a tally of the array's length is not a view of it" {
@@ -81,11 +81,11 @@ test "a tally of the array's length is not a view of it" {
   // Int. Counting them as views declined every loop that tallied its array.
   let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[0, 0]]\n  let mut acc = 0\n  let mut r = 0\n  while r < 3 {\n    Array::push(xs, [r, r])\n    let n = Array::length(xs)\n    acc = acc + n + Array::length(xs) - 1\n    Array::truncate(xs, 0)\n    r = r + 1\n  }\n  acc\n}", epilogue)
   let plan = plan_of(src)
-  assert(String::contains(plan, "run xs truncate_release:0 1"))
-  assert(!String::contains(plan, "view_pin"))
+  assert(String::contains(plan, needle = "run xs truncate_release:0 1"))
+  assert(!String::contains(plan, needle = "view_pin"))
 }
 
 test "an assignment of an element is still a view" {
   let src = String::concat("let run: () -> Int = () -> {\n  let xs = [[0, 0]]\n  let mut cur = [1]\n  cur = Array::get(xs, 0)\n  Array::truncate(xs, 0)\n  Array::length(cur)\n}", epilogue)
-  assert(!String::contains(plan_of(src), "truncate_release"))
+  assert(!String::contains(plan_of(src), needle = "truncate_release"))
 }

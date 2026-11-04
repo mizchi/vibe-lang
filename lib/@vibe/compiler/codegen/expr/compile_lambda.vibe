@@ -266,10 +266,10 @@ import @vibe/compiler/codegen/wasm_emit {
 /// cross-file caller in the same commit are silently dropped by the
 /// merge/flatten tool (the gotcha `edp_strip_tilde` in
 /// codegen/common_base/inline_direct_perform.vibe records).
-fn strip_param_label_marker(n: String) -> String {
+fn strip_param_label_marker(_ n: String) -> String {
   let ln = String::length(n)
   if ln > 0 {
-    let c = String::char_code_at(n, ln - 1)
+    let c = String::char_code_at(n, at = ln - 1)
     if c == '~' || c == '?' {
       n[0: ln - 1]
     } else {
@@ -284,9 +284,9 @@ fn strip_param_label_marker(n: String) -> String {
 /// direct-only functions: their results can be stored in an owning aggregate.
 /// Named callbacks use the same contract as anonymous callbacks. Pure borrowed
 /// accessors keep their existing ABI unless they are used as callbacks.
-export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
+export fn cl_own_return_stmts(_ stmts: Array[Stmt]) -> Array[String] {
   let valued = array_empty()
-  let _ = ca_walk_stmts_valued(stmts, valued)
+  let _ = ca_walk_stmts_valued(stmts = stmts, out = valued)
   // `valued` is every value-position identifier in the program, once each;
   // the only question asked of it is whether a top-level function's name is
   // among them. Sorting it for a binary search cost ~9 MB of the self-compile
@@ -294,8 +294,8 @@ export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
   let fn_names = MutSet::new_string()
   let mut fi = 0
   while fi < Array::length(stmts) {
-    match Array::get(stmts, fi) {
-      SLet(_, _, n, _, EFn(_, _, _, _, _, _)) => MutSet::add(fn_names, n),
+    match Array::get(stmts, at = fi) {
+      SLet(_, _, n, _, EFn(_, _, _, _, _, _)) => MutSet::add(fn_names, x = n),
       _ => ()
     }
     fi = fi + 1
@@ -303,28 +303,28 @@ export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
   let valued_fns = MutSet::new_string()
   let mut vi = 0
   while vi < Array::length(valued) {
-    let vn = Array::get(valued, vi)
-    if MutSet::has(fn_names, vn) {
-      MutSet::add(valued_fns, vn)
+    let vn = Array::get(valued, at = vi)
+    if MutSet::has(fn_names, x = vn) {
+      MutSet::add(valued_fns, x = vn)
     }
     vi = vi + 1
   }
   let borrowed = sorted_names_of(compute_borrow_returning_names(stmts))
   let mixed = array_empty()
   for name in compute_may_return_view_fns(stmts) {
-    if bsearch_leftmost(borrowed, name) < 0 {
-      Array::push(mixed, name)
+    if bsearch_leftmost(sorted = borrowed, name = name) < 0 {
+      Array::push(mixed, value = name)
     }
   }
   let candidates = sorted_names_of(mixed)
   let owned = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, body)) => {
-        if MutSet::has(valued_fns, n) || bsearch_leftmost(candidates, n) >= 0 {
-          Array::push(owned, n)
-          Array::set(stmts, i, SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, cl_own_return(body))))
+        if MutSet::has(valued_fns, x = n) || bsearch_leftmost(sorted = candidates, name = n) >= 0 {
+          Array::push(owned, value = n)
+          Array::set(stmts, at = i, value = SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, cl_own_return(body))))
         }
       },
       _ => ()
@@ -342,10 +342,10 @@ export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
 }
 
 /// Compiler-internal return markers preserve the operand's representation.
-export fn cl_return_operand(e: Expr) -> Expr {
+export fn cl_return_operand(_ e: Expr) -> Expr {
   match e {
     ECall(EIdent(n, off), args, _, _) => if n == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
-      Array::get(args, 0)
+      Array::get(args, at = 0)
     } else {
       e
     },
@@ -358,11 +358,11 @@ export fn cl_return_operand(e: Expr) -> Expr {
 /// either a fresh object or a borrow cannot be retained uniformly after merging.
 /// The Perceus plan sees this body, so the new owning bindings get their normal
 /// dup/drop budget. Capture discovery still reads the source body.
-export fn cl_own_return(e: Expr) -> Expr {
-  cl_own_return_into(e, array_empty(), true)
+export fn cl_own_return(_ e: Expr) -> Expr {
+  cl_own_return_into(e = e, needed = array_empty(), tail = true)
 }
 
-fn cl_contains_return(e: Expr) -> Bool {
+fn cl_contains_return(_ e: Expr) -> Bool {
   match e {
     EReturn(_) => true,
     EFn(_, _, _, _, _, _) => false,
@@ -384,7 +384,7 @@ fn cl_contains_return(e: Expr) -> Bool {
 fn cl_own_return_list(items: Array[Expr], needed: Array[String]) -> Array[Expr] {
   let out = array_empty()
   for item in items {
-    Array::push(out, cl_own_return_into(item, needed, false))
+    Array::push(out, value = cl_own_return_into(e = item, needed = needed, tail = false))
   }
   out
 }
@@ -392,7 +392,7 @@ fn cl_own_return_list(items: Array[Expr], needed: Array[String]) -> Array[Expr] 
 fn cl_own_return_fields(fields: Array[(String, Expr)], needed: Array[String]) -> Array[(String, Expr)] {
   let out = array_empty()
   for field in fields {
-    Array::push(out, (field.0, cl_own_return_into(field.1, needed, false)))
+    Array::push(out, value = (field.0, cl_own_return_into(e = field.1, needed = needed, tail = false)))
   }
   out
 }
@@ -404,13 +404,13 @@ fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
     e
   } else {
     match e {
-      EReturn(value) => EReturn(cl_own_return_into(value, needed, true)),
+      EReturn(value) => EReturn(cl_own_return_into(e = value, needed = needed, tail = true)),
       EIdent(n, _) => {
-        Array::push(needed, n)
+        Array::push(needed, value = n)
         ECall(EIdent("__lambda_return_owned", -1), [e], -1, [])
       },
       EDot(obj, field, off, field_off) => {
-        let value = EDot(cl_own_return_into(obj, needed, false), field, off, field_off)
+        let value = EDot(cl_own_return_into(e = obj, needed = needed, tail = false), field, off, field_off)
         if tail {
           ECall(EIdent("__lambda_return_owned", -1), [value], -1, [])
         } else {
@@ -426,7 +426,7 @@ fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
           e
         } else {
           let value = if cl_contains_return(e) {
-            ECall(cl_own_return_into(callee, needed, false), cl_own_return_list(args, needed), off, callee_resolution)
+            ECall(cl_own_return_into(e = callee, needed = needed, tail = false), cl_own_return_list(items = args, needed = needed), off, callee_resolution)
           } else {
             e
           }
@@ -437,54 +437,54 @@ fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
           }
         }
       },
-      EIf(c, t, f) => EIf(cl_own_return_into(c, needed, false), cl_own_return_into(t, needed, tail), cl_own_return_into(f, needed, tail)),
+      EIf(c, t, f) => EIf(cl_own_return_into(e = c, needed = needed, tail = false), cl_own_return_into(e = t, needed = needed, tail = tail), cl_own_return_into(e = f, needed = needed, tail = tail)),
       EMatch(s, arms) => {
         let out = array_empty()
         for arm in arms {
-          Array::push(out, (arm.0, cl_own_return_into(arm.1, needed, tail)))
+          Array::push(out, value = (arm.0, cl_own_return_into(e = arm.1, needed = needed, tail = tail)))
         }
-        EMatch(cl_own_return_into(s, needed, false), out)
+        EMatch(cl_own_return_into(e = s, needed = needed, tail = false), out)
       },
       EHandle(body, arms) => {
         let out = array_empty()
         for arm in arms {
-          Array::push(out, (arm.0, cl_own_return_into(arm.1, needed, tail)))
+          Array::push(out, value = (arm.0, cl_own_return_into(e = arm.1, needed = needed, tail = tail)))
         }
-        EHandle(cl_own_return_into(body, needed, tail), out)
+        EHandle(cl_own_return_into(e = body, needed = needed, tail = tail), out)
       },
       ELet(n, v, b, off) => {
-        let body = cl_own_return_into(b, needed, tail)
-        let value = if array_contains_str(needed, n) {
-          cl_own_binding_value(v, needed)
+        let body = cl_own_return_into(e = b, needed = needed, tail = tail)
+        let value = if array_contains_str(arr = needed, s = n) {
+          cl_own_binding_value(e = v, needed = needed)
         } else {
-          cl_own_return_into(v, needed, false)
+          cl_own_return_into(e = v, needed = needed, tail = false)
         }
         ELet(n, value, body, off)
       },
       ELetMut(n, v, b, off) => {
-        let body = cl_own_return_into(b, needed, tail)
-        ELetMut(n, cl_own_return_into(v, needed, false), body, off)
+        let body = cl_own_return_into(e = b, needed = needed, tail = tail)
+        ELetMut(n, cl_own_return_into(e = v, needed = needed, tail = false), body, off)
       },
-      ELetRec(n, v, b) => ELetRec(n, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail)),
+      ELetRec(n, v, b) => ELetRec(n, cl_own_return_into(e = v, needed = needed, tail = false), cl_own_return_into(e = b, needed = needed, tail = tail)),
       ESeq(a, b) => {
-        let body = cl_own_return_into(b, needed, tail)
-        ESeq(cl_own_return_into(a, needed, false), body)
+        let body = cl_own_return_into(e = b, needed = needed, tail = tail)
+        ESeq(cl_own_return_into(e = a, needed = needed, tail = false), body)
       },
-      EAssign(n, v, b, target_off) => EAssign(n, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail), target_off),
-      EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail), target_off),
-      ETuple(items) => ETuple(cl_own_return_list(items, needed)),
-      EArray(items) => EArray(cl_own_return_list(items, needed)),
-      ERecord(n, fields, args) => ERecord(n, cl_own_return_fields(fields, needed), args),
-      EMap(fields) => EMap(cl_own_return_fields(fields, needed)),
-      EWhile(c, body) => EWhile(cl_own_return_into(c, needed, false), cl_own_return_into(body, needed, false)),
-      ELoop(inits, body) => ELoop(cl_own_return_fields(inits, needed), cl_own_return_into(body, needed, false)),
-      EForIn(n, label, iter, body) => EForIn(n, label, cl_own_return_into(iter, needed, false), cl_own_return_into(body, needed, false)),
-      EBinOp(op, a, b, off) => EBinOp(op, cl_own_return_into(a, needed, false), cl_own_return_into(b, needed, false), off),
-      EUnaryOp(op, value) => EUnaryOp(op, cl_own_return_into(value, needed, false)),
-      ELabeledArg(n, label, value) => ELabeledArg(n, label, cl_own_return_into(value, needed, tail)),
-      EBreak(Some(value)) => EBreak(Some(cl_own_return_into(value, needed, false))),
-      EContinue(args) => EContinue(cl_own_return_list(args, needed)),
-      ESpread(value) => ESpread(cl_own_return_into(value, needed, false)),
+      EAssign(n, v, b, target_off) => EAssign(n, cl_own_return_into(e = v, needed = needed, tail = false), cl_own_return_into(e = b, needed = needed, tail = tail), target_off),
+      EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, cl_own_return_into(e = v, needed = needed, tail = false), cl_own_return_into(e = b, needed = needed, tail = tail), target_off),
+      ETuple(items) => ETuple(cl_own_return_list(items = items, needed = needed)),
+      EArray(items) => EArray(cl_own_return_list(items = items, needed = needed)),
+      ERecord(n, fields, args) => ERecord(n, cl_own_return_fields(fields = fields, needed = needed), args),
+      EMap(fields) => EMap(cl_own_return_fields(fields = fields, needed = needed)),
+      EWhile(c, body) => EWhile(cl_own_return_into(e = c, needed = needed, tail = false), cl_own_return_into(e = body, needed = needed, tail = false)),
+      ELoop(inits, body) => ELoop(cl_own_return_fields(fields = inits, needed = needed), cl_own_return_into(e = body, needed = needed, tail = false)),
+      EForIn(n, label, iter, body) => EForIn(n, label, cl_own_return_into(e = iter, needed = needed, tail = false), cl_own_return_into(e = body, needed = needed, tail = false)),
+      EBinOp(op, a, b, off) => EBinOp(op, cl_own_return_into(e = a, needed = needed, tail = false), cl_own_return_into(e = b, needed = needed, tail = false), off),
+      EUnaryOp(op, value) => EUnaryOp(op, cl_own_return_into(e = value, needed = needed, tail = false)),
+      ELabeledArg(n, label, value) => ELabeledArg(n, label, cl_own_return_into(e = value, needed = needed, tail = tail)),
+      EBreak(Some(value)) => EBreak(Some(cl_own_return_into(e = value, needed = needed, tail = false))),
+      EContinue(args) => EContinue(cl_own_return_list(items = args, needed = needed)),
+      ESpread(value) => ESpread(cl_own_return_into(e = value, needed = needed, tail = false)),
       _ => e
     }
   }
@@ -493,18 +493,18 @@ fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
 fn cl_own_binding_value(e: Expr, needed: Array[String]) -> Expr {
   match e {
     EIdent(n, _) => {
-      Array::push(needed, n); e
+      Array::push(needed, value = n); e
     },
-    EIf(_, _, _) => cl_own_return_into(e, needed, true),
-    EMatch(_, _) => cl_own_return_into(e, needed, true),
-    EHandle(_, _) => cl_own_return_into(e, needed, true),
-    ELet(_, _, _, _) => cl_own_return_into(e, needed, true),
-    ELetMut(_, _, _, _) => cl_own_return_into(e, needed, true),
-    ELetRec(_, _, _) => cl_own_return_into(e, needed, true),
-    ESeq(_, _) => cl_own_return_into(e, needed, true),
-    EAssign(_, _, _, _) => cl_own_return_into(e, needed, true),
-    EAssignOp(_, _, _, _, _) => cl_own_return_into(e, needed, true),
-    _ => cl_own_return_into(e, needed, false)
+    EIf(_, _, _) => cl_own_return_into(e = e, needed = needed, tail = true),
+    EMatch(_, _) => cl_own_return_into(e = e, needed = needed, tail = true),
+    EHandle(_, _) => cl_own_return_into(e = e, needed = needed, tail = true),
+    ELet(_, _, _, _) => cl_own_return_into(e = e, needed = needed, tail = true),
+    ELetMut(_, _, _, _) => cl_own_return_into(e = e, needed = needed, tail = true),
+    ELetRec(_, _, _) => cl_own_return_into(e = e, needed = needed, tail = true),
+    ESeq(_, _) => cl_own_return_into(e = e, needed = needed, tail = true),
+    EAssign(_, _, _, _) => cl_own_return_into(e = e, needed = needed, tail = true),
+    EAssignOp(_, _, _, _, _) => cl_own_return_into(e = e, needed = needed, tail = true),
+    _ => cl_own_return_into(e = e, needed = needed, tail = false)
   }
 }
 
@@ -545,32 +545,32 @@ fn cl_own_binding_value(e: Expr, needed: Array[String]) -> Expr {
 /// A `test` / `bench` / `example` block is rewritten here too: this runs
 /// before those are lowered to `SLet`s, so a captured `let mut` written
 /// directly in one was otherwise left unmarked (#3130 review).
-fn cl_own_cell_stmts(stmts: Array[Stmt]) -> Unit {
+fn cl_own_cell_stmts(_ stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(ex, is_rec, n, ty, value) => if cl_has_letmut(value) {
-        Array::set(stmts, i, SLet(ex, is_rec, n, ty, cl_own_cells(value, array_empty())))
+        Array::set(stmts, at = i, value = SLet(ex, is_rec, n, ty, cl_own_cells(e = value, cells = array_empty())))
       } else {
         ()
       },
       STest(n, body) => if cl_has_letmut(body) {
-        Array::set(stmts, i, STest(n, cl_own_cells(body, array_empty())))
+        Array::set(stmts, at = i, value = STest(n, cl_own_cells(e = body, cells = array_empty())))
       } else {
         ()
       },
       SBench(n, body) => if cl_has_letmut(body) {
-        Array::set(stmts, i, SBench(n, cl_own_cells(body, array_empty())))
+        Array::set(stmts, at = i, value = SBench(n, cl_own_cells(e = body, cells = array_empty())))
       } else {
         ()
       },
       SExample(n, body) => if cl_has_letmut(body) {
-        Array::set(stmts, i, SExample(n, cl_own_cells(body, array_empty())))
+        Array::set(stmts, at = i, value = SExample(n, cl_own_cells(e = body, cells = array_empty())))
       } else {
         ()
       },
       SExpr(body) => if cl_has_letmut(body) {
-        Array::set(stmts, i, SExpr(cl_own_cells(body, array_empty())))
+        Array::set(stmts, at = i, value = SExpr(cl_own_cells(e = body, cells = array_empty())))
       } else {
         ()
       },
@@ -582,7 +582,7 @@ fn cl_own_cell_stmts(stmts: Array[Stmt]) -> Unit {
 
 /// Cheap pre-check: most bodies declare no `let mut` at all, and those are
 /// left as the same tree.
-fn cl_has_letmut(e: Expr) -> Bool {
+fn cl_has_letmut(_ e: Expr) -> Bool {
   match e {
     ELetMut(_, _, _, _) => true,
     _ => {
@@ -602,11 +602,11 @@ fn cl_has_letmut(e: Expr) -> Bool {
 
 /// `cells` without `n`: a binder of that spelling shadows the cell below it.
 fn cl_cells_without(cells: Array[String], n: String) -> Array[String] {
-  if array_contains_str(cells, n) {
+  if array_contains_str(arr = cells, s = n) {
     let out = array_empty()
     for c in cells {
       if c != n {
-        Array::push(out, c)
+        Array::push(out, value = c)
       }
     }
     out
@@ -618,7 +618,7 @@ fn cl_cells_without(cells: Array[String], n: String) -> Array[String] {
 fn cl_cells_without_all(cells: Array[String], names: Array[String]) -> Array[String] {
   let mut out = cells
   for n in names {
-    out = cl_cells_without(out, n)
+    out = cl_cells_without(cells = out, n = n)
   }
   out
 }
@@ -626,19 +626,19 @@ fn cl_cells_without_all(cells: Array[String], names: Array[String]) -> Array[Str
 /// Every name a pattern binds, including struct-field and or-pattern binders.
 fn cl_pat_binds(p: Pat, out: Array[String]) -> Unit {
   match p {
-    PBind(n) => Array::push(out, n),
+    PBind(n) => Array::push(out, value = n),
     PCtor(_, args) => for a in args {
-      cl_pat_binds(a, out)
+      cl_pat_binds(p = a, out = out)
     },
     PTuple(ps) => for a in ps {
-      cl_pat_binds(a, out)
+      cl_pat_binds(p = a, out = out)
     },
     POr(a, b) => {
-      cl_pat_binds(a, out)
-      cl_pat_binds(b, out)
+      cl_pat_binds(p = a, out = out)
+      cl_pat_binds(p = b, out = out)
     },
     PStruct(_, fields) => for f in fields {
-      cl_pat_binds(f.1, out)
+      cl_pat_binds(p = f.1, out = out)
     },
     _ => ()
   }
@@ -648,8 +648,8 @@ fn cl_arms_cells(arms: Array[(Pat, Expr)], cells: Array[String]) -> Array[(Pat, 
   let out = array_empty()
   for arm in arms {
     let binds = array_empty()
-    cl_pat_binds(arm.0, binds)
-    Array::push(out, (arm.0, cl_own_cells(arm.1, cl_cells_without_all(cells, binds))))
+    cl_pat_binds(p = arm.0, out = binds)
+    Array::push(out, value = (arm.0, cl_own_cells(e = arm.1, cells = cl_cells_without_all(cells = cells, names = binds))))
   }
   out
 }
@@ -657,7 +657,7 @@ fn cl_arms_cells(arms: Array[(Pat, Expr)], cells: Array[String]) -> Array[(Pat, 
 fn cl_list_cells(items: Array[Expr], cells: Array[String]) -> Array[Expr] {
   let out = array_empty()
   for item in items {
-    Array::push(out, cl_own_cells(item, cells))
+    Array::push(out, value = cl_own_cells(e = item, cells = cells))
   }
   out
 }
@@ -665,7 +665,7 @@ fn cl_list_cells(items: Array[Expr], cells: Array[String]) -> Array[Expr] {
 fn cl_fields_cells(fields: Array[(String, Expr)], cells: Array[String]) -> Array[(String, Expr)] {
   let out = array_empty()
   for field in fields {
-    Array::push(out, (field.0, cl_own_cells(field.1, cells)))
+    Array::push(out, value = (field.0, cl_own_cells(e = field.1, cells = cells)))
   }
   out
 }
@@ -678,7 +678,7 @@ fn cl_fields_cells(fields: Array[(String, Expr)], cells: Array[String]) -> Array
 fn cl_agg_cells(items: Array[Expr], cells: Array[String]) -> Array[Expr] {
   let out = array_empty()
   for item in items {
-    Array::push(out, cl_cell_tails(cl_own_cells(item, cells), cells, true))
+    Array::push(out, value = cl_cell_tails(e = cl_own_cells(e = item, cells = cells), cells = cells, through_dot = true))
   }
   out
 }
@@ -687,7 +687,7 @@ fn cl_agg_cells(items: Array[Expr], cells: Array[String]) -> Array[Expr] {
 fn cl_agg_fields_cells(fields: Array[(String, Expr)], cells: Array[String]) -> Array[(String, Expr)] {
   let out = array_empty()
   for field in fields {
-    Array::push(out, (field.0, cl_cell_tails(cl_own_cells(field.1, cells), cells, true)))
+    Array::push(out, value = (field.0, cl_cell_tails(e = cl_own_cells(e = field.1, cells = cells), cells = cells, through_dot = true)))
   }
   out
 }
@@ -744,32 +744,32 @@ fn cl_agg_fields_cells(fields: Array[(String, Expr)], cells: Array[String]) -> A
 /// `rs_keep_bind`.
 export fn rs_map(e: Expr, shadow: Array[String], leaf: (Expr, Array[String]) -> Expr, bind: (String, Expr) -> Expr) -> Expr {
   match e {
-    EIf(c, t, f) => EIf(c, rs_map(t, shadow, leaf, bind), rs_map(f, shadow, leaf, bind)),
-    EMatch(sc, arms) => EMatch(sc, rs_map_arms(arms, shadow, leaf, bind)),
-    EHandle(body, arms) => EHandle(rs_map(body, shadow, leaf, bind), rs_map_arms(arms, shadow, leaf, bind)),
+    EIf(c, t, f) => EIf(c, rs_map(e = t, shadow = shadow, leaf = leaf, bind = bind), rs_map(e = f, shadow = shadow, leaf = leaf, bind = bind)),
+    EMatch(sc, arms) => EMatch(sc, rs_map_arms(arms = arms, shadow = shadow, leaf = leaf, bind = bind)),
+    EHandle(body, arms) => EHandle(rs_map(e = body, shadow = shadow, leaf = leaf, bind = bind), rs_map_arms(arms = arms, shadow = shadow, leaf = leaf, bind = bind)),
     ELet(n, v, b, off) => {
-      let b2 = rs_map(b, rs_with(shadow, n), leaf, bind)
+      let b2 = rs_map(e = b, shadow = rs_with(shadow = shadow, n = n), leaf = leaf, bind = bind)
       ELet(n, bind(n, v), b2, off)
     },
-    ELetMut(n, v, b, off) => ELetMut(n, v, rs_map(b, rs_with(shadow, n), leaf, bind), off),
-    ELetRec(n, v, b) => ELetRec(n, v, rs_map(b, rs_with(shadow, n), leaf, bind)),
-    ESeq(a, b) => ESeq(a, rs_map(b, shadow, leaf, bind)),
-    EAssign(n, v, b, target_off) => EAssign(n, v, rs_map(b, shadow, leaf, bind), target_off),
-    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, v, rs_map(b, shadow, leaf, bind), target_off),
-    ELabeledArg(n, l, v) => ELabeledArg(n, l, rs_map(v, shadow, leaf, bind)),
+    ELetMut(n, v, b, off) => ELetMut(n, v, rs_map(e = b, shadow = rs_with(shadow = shadow, n = n), leaf = leaf, bind = bind), off),
+    ELetRec(n, v, b) => ELetRec(n, v, rs_map(e = b, shadow = rs_with(shadow = shadow, n = n), leaf = leaf, bind = bind)),
+    ESeq(a, b) => ESeq(a, rs_map(e = b, shadow = shadow, leaf = leaf, bind = bind)),
+    EAssign(n, v, b, target_off) => EAssign(n, v, rs_map(e = b, shadow = shadow, leaf = leaf, bind = bind), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, v, rs_map(e = b, shadow = shadow, leaf = leaf, bind = bind), target_off),
+    ELabeledArg(n, l, v) => ELabeledArg(n, l, rs_map(e = v, shadow = shadow, leaf = leaf, bind = bind)),
     ELoop(params, body) => {
       let names = array_empty()
       for p in params {
-        Array::push(names, p.0)
+        Array::push(names, value = p.0)
       }
-      ELoop(params, rs_breaks(body, rs_with_all(shadow, names), leaf, bind))
+      ELoop(params, rs_breaks(e = body, shadow = rs_with_all(shadow = shadow, names = names), leaf = leaf, bind = bind))
     },
     _ => leaf(e, shadow)
   }
 }
 
 /// Does `e` have a result tail `rs_map` walks into (see its table)?
-export fn rs_has_tail(e: Expr) -> Bool {
+export fn rs_has_tail(_ e: Expr) -> Bool {
   match e {
     EIf(_, _, _) => true,
     EMatch(_, _) => true,
@@ -796,8 +796,8 @@ fn rs_map_arms(arms: Array[(Pat, Expr)], shadow: Array[String], leaf: (Expr, Arr
   let out = array_empty()
   for arm in arms {
     let binds = array_empty()
-    cl_pat_binds(arm.0, binds)
-    Array::push(out, (arm.0, rs_map(arm.1, rs_with_all(shadow, binds), leaf, bind)))
+    cl_pat_binds(p = arm.0, out = binds)
+    Array::push(out, value = (arm.0, rs_map(e = arm.1, shadow = rs_with_all(shadow = shadow, names = binds), leaf = leaf, bind = bind)))
   }
   out
 }
@@ -807,14 +807,14 @@ fn rs_map_arms(arms: Array[(Pat, Expr)], shadow: Array[String], leaf: (Expr, Arr
 /// owns its own breaks and is not entered.
 fn rs_breaks(e: Expr, shadow: Array[String], leaf: (Expr, Array[String]) -> Expr, bind: (String, Expr) -> Expr) -> Expr {
   match e {
-    EBreak(Some(v)) => EBreak(Some(rs_map(v, shadow, leaf, bind))),
-    EIf(c, t, f) => EIf(c, rs_breaks(t, shadow, leaf, bind), rs_breaks(f, shadow, leaf, bind)),
+    EBreak(Some(v)) => EBreak(Some(rs_map(e = v, shadow = shadow, leaf = leaf, bind = bind))),
+    EIf(c, t, f) => EIf(c, rs_breaks(e = t, shadow = shadow, leaf = leaf, bind = bind), rs_breaks(e = f, shadow = shadow, leaf = leaf, bind = bind)),
     EMatch(sc, arms) => {
       let out = array_empty()
       for arm in arms {
         let binds = array_empty()
-        cl_pat_binds(arm.0, binds)
-        Array::push(out, (arm.0, rs_breaks(arm.1, rs_with_all(shadow, binds), leaf, bind)))
+        cl_pat_binds(p = arm.0, out = binds)
+        Array::push(out, value = (arm.0, rs_breaks(e = arm.1, shadow = rs_with_all(shadow = shadow, names = binds), leaf = leaf, bind = bind)))
       }
       EMatch(sc, out)
     },
@@ -822,31 +822,31 @@ fn rs_breaks(e: Expr, shadow: Array[String], leaf: (Expr, Array[String]) -> Expr
       let out = array_empty()
       for arm in arms {
         let binds = array_empty()
-        cl_pat_binds(arm.0, binds)
-        Array::push(out, (arm.0, rs_breaks(arm.1, rs_with_all(shadow, binds), leaf, bind)))
+        cl_pat_binds(p = arm.0, out = binds)
+        Array::push(out, value = (arm.0, rs_breaks(e = arm.1, shadow = rs_with_all(shadow = shadow, names = binds), leaf = leaf, bind = bind)))
       }
-      EHandle(rs_breaks(body, shadow, leaf, bind), out)
+      EHandle(rs_breaks(e = body, shadow = shadow, leaf = leaf, bind = bind), out)
     },
-    ELet(n, v, b, off) => ELet(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, rs_with(shadow, n), leaf, bind), off),
-    ELetMut(n, v, b, off) => ELetMut(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, rs_with(shadow, n), leaf, bind), off),
-    ELetRec(n, v, b) => ELetRec(n, v, rs_breaks(b, rs_with(shadow, n), leaf, bind)),
-    ESeq(a, b) => ESeq(rs_breaks(a, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind)),
-    EAssign(n, v, b, target_off) => EAssign(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind), target_off),
-    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind), target_off),
+    ELet(n, v, b, off) => ELet(n, rs_breaks(e = v, shadow = shadow, leaf = leaf, bind = bind), rs_breaks(e = b, shadow = rs_with(shadow = shadow, n = n), leaf = leaf, bind = bind), off),
+    ELetMut(n, v, b, off) => ELetMut(n, rs_breaks(e = v, shadow = shadow, leaf = leaf, bind = bind), rs_breaks(e = b, shadow = rs_with(shadow = shadow, n = n), leaf = leaf, bind = bind), off),
+    ELetRec(n, v, b) => ELetRec(n, v, rs_breaks(e = b, shadow = rs_with(shadow = shadow, n = n), leaf = leaf, bind = bind)),
+    ESeq(a, b) => ESeq(rs_breaks(e = a, shadow = shadow, leaf = leaf, bind = bind), rs_breaks(e = b, shadow = shadow, leaf = leaf, bind = bind)),
+    EAssign(n, v, b, target_off) => EAssign(n, rs_breaks(e = v, shadow = shadow, leaf = leaf, bind = bind), rs_breaks(e = b, shadow = shadow, leaf = leaf, bind = bind), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, rs_breaks(e = v, shadow = shadow, leaf = leaf, bind = bind), rs_breaks(e = b, shadow = shadow, leaf = leaf, bind = bind), target_off),
     _ => e
   }
 }
 
 fn rs_with(shadow: Array[String], n: String) -> Array[String] {
-  let out = Array::slice(shadow, 0, Array::length(shadow))
-  Array::push(out, n)
+  let out = Array::slice(shadow, start = 0, end = Array::length(shadow))
+  Array::push(out, value = n)
   out
 }
 
 fn rs_with_all(shadow: Array[String], names: Array[String]) -> Array[String] {
-  let out = Array::slice(shadow, 0, Array::length(shadow))
+  let out = Array::slice(shadow, start = 0, end = Array::length(shadow))
   for n in names {
-    Array::push(out, n)
+    Array::push(out, value = n)
   }
   out
 }
@@ -855,8 +855,8 @@ fn rs_with_all(shadow: Array[String], names: Array[String]) -> Array[String] {
 /// `through_dot`) through a projection off one?
 fn cl_is_cell_read(e: Expr, cells: Array[String], shadow: Array[String], through_dot: Bool) -> Bool {
   match e {
-    EIdent(x, _) => array_contains_str(cells, x) && !array_contains_str(shadow, x),
-    EDot(obj, _, _, _) => through_dot && cl_is_cell_read(obj, cells, shadow, true),
+    EIdent(x, _) => array_contains_str(arr = cells, s = x) && !array_contains_str(arr = shadow, s = x),
+    EDot(obj, _, _, _) => through_dot && cl_is_cell_read(e = obj, cells = cells, shadow = shadow, through_dot = true),
     _ => false
   }
 }
@@ -866,13 +866,13 @@ fn cl_cell_tails(e: Expr, cells: Array[String], through_dot: Bool) -> Expr {
   if Array::length(cells) == 0 {
     e
   } else {
-    rs_map(e, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
-      if cl_is_cell_read(x, cells, shadow, through_dot) {
+    rs_map(e = e, shadow = array_empty(), leaf = (x: Expr, shadow: Array[String]) -> Expr {
+      if cl_is_cell_read(e = x, cells = cells, shadow = shadow, through_dot = through_dot) {
         ECall(EIdent("__lambda_return_owned", -1), [x], -1, [])
       } else {
         x
       }
-    }, rs_keep_bind)
+    }, bind = rs_keep_bind)
   }
 }
 
@@ -881,24 +881,24 @@ fn cl_cell_tails(e: Expr, cells: Array[String], through_dot: Bool) -> Expr {
 /// ones that are borrows. A `let` whose name reaches a result leaf has its own
 /// value normalized the same way, so a block ending in a borrow-bound name is
 /// owned by the time it reaches the cell.
-fn cl_cell_store_value(v: Expr) -> Expr {
+fn cl_cell_store_value(_ v: Expr) -> Expr {
   let needed: Array[String] = []
-  cl_store_walk(v, needed)
+  cl_store_walk(v = v, needed = needed)
 }
 
 fn cl_store_walk(v: Expr, needed: Array[String]) -> Expr {
-  rs_map(v, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
+  rs_map(e = v, shadow = array_empty(), leaf = (x: Expr, shadow: Array[String]) -> Expr {
     let _ = shadow
-    cl_store_leaf(x, needed)
-  }, (n: String, bv: Expr) -> Expr {
-    if array_contains_str(needed, n) {
+    cl_store_leaf(x = x, needed = needed)
+  }, bind = (n: String, bv: Expr) -> Expr {
+    if array_contains_str(arr = needed, s = n) {
       match bv {
         EIdent(src, _) => {
-          Array::push(needed, src)
+          Array::push(needed, value = src)
           bv
         },
         _ => if rs_has_tail(bv) {
-          cl_store_walk(bv, needed)
+          cl_store_walk(v = bv, needed = needed)
         } else {
           bv
         }
@@ -912,7 +912,7 @@ fn cl_store_walk(v: Expr, needed: Array[String]) -> Expr {
 fn cl_store_leaf(x: Expr, needed: Array[String]) -> Expr {
   match x {
     EIdent(n, _) => {
-      Array::push(needed, n)
+      Array::push(needed, value = n)
       ECall(EIdent("__lambda_return_owned", -1), [x], -1, [])
     },
     EDot(_, _, _, _) => ECall(EIdent("__lambda_return_owned", -1), [x], -1, []),
@@ -933,7 +933,7 @@ fn cl_store_leaf(x: Expr, needed: Array[String]) -> Expr {
 /// ESeq arm) and the cell marker (`cl_own_cells`) both ask THIS, so the two
 /// cannot disagree about which for-ins collect. Every other `for` collects
 /// into a fresh array that owns (and eventually releases) its items.
-export fn forin_is_discarded_seq_head(e: Expr) -> Bool {
+export fn forin_is_discarded_seq_head(_ e: Expr) -> Bool {
   match e {
     EForIn(_, _, _, _) => true,
     _ => false
@@ -949,100 +949,102 @@ fn cl_forin_cells(e: Expr, cells: Array[String], collects: Bool) -> Expr {
   match e {
     EForIn(n, label, iter, body) => {
       let inner = match label {
-        Some(l) => cl_cells_without(cl_cells_without(cells, n), l),
-        None => cl_cells_without(cells, n)
+        Some(l) => cl_cells_without(cells = cl_cells_without(cells = cells, n = n), n = l),
+        None => cl_cells_without(cells = cells, n = n)
       }
-      let body2 = cl_own_cells(body, inner)
+      let body2 = cl_own_cells(e = body, cells = inner)
       let body3 = if collects {
-        cl_cell_tails(body2, inner, true)
+        cl_cell_tails(e = body2, cells = inner, through_dot = true)
       } else {
         body2
       }
-      EForIn(n, label, cl_own_cells(iter, cells), body3)
+      EForIn(n, label, cl_own_cells(e = iter, cells = cells), body3)
     },
-    _ => cl_own_cells(e, cells)
+    _ => cl_own_cells(e = e, cells = cells)
   }
 }
 
 fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
   match e {
     ELetMut(n, v, b, off) => {
-      let v2 = cl_own_cells(v, cells)
-      if is_mut_captured_in(b, n) {
+      let v2 = cl_own_cells(e = v, cells = cells)
+      if is_mut_captured_in(expr = b, name = n) {
         // A fresh array: `cl_cells_without` hands `cells` itself back when
         // `n` is not in it, and the enclosing scope must not see `n`.
         let inner = array_empty()
-        for c in cl_cells_without(cells, n) {
-          Array::push(inner, c)
+        for c in cl_cells_without(cells = cells, n = n) {
+          Array::push(inner, value = c)
         }
-        Array::push(inner, n)
-        let b2 = cl_cell_tails(cl_own_cells(b, inner), [n], true)
+        Array::push(inner, value = n)
+        let b2 = cl_cell_tails(e = cl_own_cells(e = b, cells = inner), cells = [
+          n
+        ], through_dot = true)
         ELetMut(n, cl_cell_store_value(v2), b2, off)
       } else {
-        ELetMut(n, cl_cell_tails(v2, cells, false), cl_own_cells(b, cl_cells_without(cells, n)), off)
+        ELetMut(n, cl_cell_tails(e = v2, cells = cells, through_dot = false), cl_own_cells(e = b, cells = cl_cells_without(cells = cells, n = n)), off)
       }
     },
     ELet(n, v, b, off) => {
-      let v2 = cl_cell_tails(cl_own_cells(v, cells), cells, false)
-      ELet(n, v2, cl_own_cells(b, cl_cells_without(cells, n)), off)
+      let v2 = cl_cell_tails(e = cl_own_cells(e = v, cells = cells), cells = cells, through_dot = false)
+      ELet(n, v2, cl_own_cells(e = b, cells = cl_cells_without(cells = cells, n = n)), off)
     },
     ELetRec(n, v, b) => {
-      let inner = cl_cells_without(cells, n)
-      ELetRec(n, cl_own_cells(v, inner), cl_own_cells(b, inner))
+      let inner = cl_cells_without(cells = cells, n = n)
+      ELetRec(n, cl_own_cells(e = v, cells = inner), cl_own_cells(e = b, cells = inner))
     },
     EAssign(n, v, b, target_off) => {
-      let v2 = cl_own_cells(v, cells)
-      let v3 = if array_contains_str(cells, n) {
+      let v2 = cl_own_cells(e = v, cells = cells)
+      let v3 = if array_contains_str(arr = cells, s = n) {
         cl_cell_store_value(v2)
       } else {
-        cl_cell_tails(v2, cells, false)
+        cl_cell_tails(e = v2, cells = cells, through_dot = false)
       }
-      EAssign(n, v3, cl_own_cells(b, cells), target_off)
+      EAssign(n, v3, cl_own_cells(e = b, cells = cells), target_off)
     },
-    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, cl_own_cells(v, cells), cl_own_cells(b, cells), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, cl_own_cells(e = v, cells = cells), cl_own_cells(e = b, cells = cells), target_off),
     ESeq(a, b) => {
       // A discarded `for` collects nothing, so its body is no owning place.
       let a2 = if forin_is_discarded_seq_head(a) {
-        cl_forin_cells(a, cells, false)
+        cl_forin_cells(e = a, cells = cells, collects = false)
       } else {
-        cl_own_cells(a, cells)
+        cl_own_cells(e = a, cells = cells)
       }
-      ESeq(a2, cl_own_cells(b, cells))
+      ESeq(a2, cl_own_cells(e = b, cells = cells))
     },
-    EIf(c, t, f) => EIf(cl_own_cells(c, cells), cl_own_cells(t, cells), cl_own_cells(f, cells)),
-    EMatch(s, arms) => EMatch(cl_own_cells(s, cells), cl_arms_cells(arms, cells)),
-    EHandle(body, arms) => EHandle(cl_own_cells(body, cells), cl_arms_cells(arms, cells)),
+    EIf(c, t, f) => EIf(cl_own_cells(e = c, cells = cells), cl_own_cells(e = t, cells = cells), cl_own_cells(e = f, cells = cells)),
+    EMatch(s, arms) => EMatch(cl_own_cells(e = s, cells = cells), cl_arms_cells(arms = arms, cells = cells)),
+    EHandle(body, arms) => EHandle(cl_own_cells(e = body, cells = cells), cl_arms_cells(arms = arms, cells = cells)),
     EFn(tps, bounds, ps, ret, eff, body) => {
       let names = array_empty()
       for p in ps {
-        Array::push(names, strip_param_label_marker(p.0))
+        Array::push(names, value = strip_param_label_marker(p.0))
       }
-      EFn(tps, bounds, ps, ret, eff, cl_own_cells(body, cl_cells_without_all(cells, names)))
+      EFn(tps, bounds, ps, ret, eff, cl_own_cells(e = body, cells = cl_cells_without_all(cells = cells, names = names)))
     },
-    ECall(callee, args, off, callee_resolution) => ECall(cl_own_cells(callee, cells), cl_list_cells(args, cells), off, callee_resolution),
-    ETuple(items) => ETuple(cl_agg_cells(items, cells)),
-    EArray(items) => EArray(cl_agg_cells(items, cells)),
-    ERecord(n, fields, args) => ERecord(n, cl_agg_fields_cells(fields, cells), args),
-    EMap(fields) => EMap(cl_agg_fields_cells(fields, cells)),
-    EWhile(c, body) => EWhile(cl_own_cells(c, cells), cl_own_cells(body, cells)),
+    ECall(callee, args, off, callee_resolution) => ECall(cl_own_cells(e = callee, cells = cells), cl_list_cells(items = args, cells = cells), off, callee_resolution),
+    ETuple(items) => ETuple(cl_agg_cells(items = items, cells = cells)),
+    EArray(items) => EArray(cl_agg_cells(items = items, cells = cells)),
+    ERecord(n, fields, args) => ERecord(n, cl_agg_fields_cells(fields = fields, cells = cells), args),
+    EMap(fields) => EMap(cl_agg_fields_cells(fields = fields, cells = cells)),
+    EWhile(c, body) => EWhile(cl_own_cells(e = c, cells = cells), cl_own_cells(e = body, cells = cells)),
     ELoop(inits, body) => {
       let names = array_empty()
       for init in inits {
-        Array::push(names, init.0)
+        Array::push(names, value = init.0)
       }
-      ELoop(cl_fields_cells(inits, cells), cl_own_cells(body, cl_cells_without_all(cells, names)))
+      ELoop(cl_fields_cells(fields = inits, cells = cells), cl_own_cells(e = body, cells = cl_cells_without_all(cells = cells, names = names)))
     },
-    EForIn(_, _, _, _) => cl_forin_cells(e, cells, true),
-    EBinOp(op, a, b, off) => EBinOp(op, cl_own_cells(a, cells), cl_own_cells(b, cells), off),
-    EUnaryOp(op, value) => EUnaryOp(op, cl_own_cells(value, cells)),
-    EDot(obj, field, off, field_off) => EDot(cl_own_cells(obj, cells), field, off, field_off),
-    ELabeledArg(n, label, value) => ELabeledArg(n, label, cl_own_cells(value, cells)),
+    EForIn(_, _, _, _) => cl_forin_cells(e = e, cells = cells, collects = true),
+    EBinOp(op, a, b, off) => EBinOp(op, cl_own_cells(e = a, cells = cells), cl_own_cells(e = b, cells = cells), off),
+    EUnaryOp(op, value) => EUnaryOp(op, cl_own_cells(e = value, cells = cells)),
+    EDot(obj, field, off, field_off) => EDot(cl_own_cells(e = obj, cells = cells), field, off, field_off),
+    ELabeledArg(n, label, value) => ELabeledArg(n, label, cl_own_cells(e = value, cells = cells)),
     // #3141: a `return` releases the scopes it leaves, the cell's included,
     // so its operand is a result path like any tail and is marked as one.
-    EReturn(value) => EReturn(cl_cell_tails(cl_own_cells(value, cells), cells, true)),
-    EBreak(Some(value)) => EBreak(Some(cl_own_cells(value, cells))),
-    EContinue(args) => EContinue(cl_list_cells(args, cells)),
-    ESpread(value) => ESpread(cl_own_cells(value, cells)),
+    EReturn(value) => EReturn(cl_cell_tails(e = cl_own_cells(e = value, cells = cells), cells = cells, through_dot = true)),
+    EBreak(Some(value)) => EBreak(Some(cl_own_cells(e = value, cells = cells))),
+    EContinue(args) => EContinue(cl_list_cells(items = args, cells = cells)),
+    ESpread(value) => ESpread(cl_own_cells(e = value, cells = cells)),
     _ => e
   }
 }
@@ -1060,8 +1062,8 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   let param_names_arr = array_empty()
   let mut pi = 0
   while pi < Array::length(params) {
-    let (pname, _) = Array::get(params, pi)
-    Array::push(param_names_arr, strip_param_label_marker(pname))
+    let (pname, _) = Array::get(params, at = pi)
+    Array::push(param_names_arr, value = strip_param_label_marker(pname))
     pi = pi + 1
   }
   // #875 fix 2: consume the "currently-compiling let-rec closure's own name"
@@ -1073,8 +1075,8 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   // lambda. Any EFn that is NOT a let-rec's own value (anonymous lambda,
   // non-rec `let`) finds this empty and behaves exactly as before.
   let self_name = if Array::length(ctx.pending_letrec_self_name) > 0 {
-    let sn = Array::get(ctx.pending_letrec_self_name, 0)
-    Array::truncate(ctx.pending_letrec_self_name, 0)
+    let sn = Array::get(ctx.pending_letrec_self_name, at = 0)
+    Array::truncate(ctx.pending_letrec_self_name, length = 0)
     sn
   } else {
     ""
@@ -1083,17 +1085,17 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   // inlined-builtin call callee (`not`/`add`/`assert`/...) that one of
   // them shadows must be captured from here, not inline-lowered to the
   // builtin -- see collect_free_vars_expr's doc comment.
-  let captures = collect_free_vars_indexed_self(fn_body, param_names_arr, ctx.capture_name_index, self_name, local_names)
+  let captures = collect_free_vars_indexed_self(body = fn_body, param_names = param_names_arr, fn_name_index = ctx.capture_name_index, self_name = self_name, encl = local_names)
   let num_captures = Array::length(captures)
   let user_params = Array::length(params)
   let lam_buf = bytebuf_new()
   let lam_locals = array_empty()
   let mut lpi = 0
   while lpi < user_params {
-    let (lpname_raw, _) = Array::get(params, lpi)
+    let (lpname_raw, _) = Array::get(params, at = lpi)
     let lpnlen = String::length(lpname_raw)
     let lpname = if lpnlen > 0 {
-      let lpc = String::char_code_at(lpname_raw, lpnlen - 1)
+      let lpc = String::char_code_at(lpname_raw, at = lpnlen - 1)
       if lpc == '~' {
         lpname_raw[0: lpnlen - 1]
       } else if lpc == '?' {
@@ -1102,30 +1104,30 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
         lpname_raw
       }
     } else lpname_raw
-    Array::push(lam_locals, lpname)
+    Array::push(lam_locals, value = lpname)
     lpi = lpi + 1
   }
-  Array::push(lam_locals, "__env")
+  Array::push(lam_locals, value = "__env")
   let env_param_idx = user_params
   let lam_nl_start = user_params + 1
   let lam_ref_cells = array_empty()
   let mut ci3 = 0
   let mut lam_nl = lam_nl_start
-  let cl_md_bmasks = md_shadow_zeroed_bmasks(fn_body, ctx.borrow_param_user, ctx.borrow_param_mask)
+  let cl_md_bmasks = md_shadow_zeroed_bmasks(e = fn_body, bfns = ctx.borrow_param_user, bmasks = ctx.borrow_param_mask)
   while ci3 < num_captures {
     let cap_local = lam_nl
-    let cap_name = Array::get(captures, ci3)
-    emit_local_get(lam_buf, env_param_idx)
+    let cap_name = Array::get(captures, at = ci3)
+    emit_local_get(buf = lam_buf, idx = env_param_idx)
     emit_i32_wrap_i64(lam_buf)
-    emit_i64_load(lam_buf, 3, 8 + ci3 * 8)
+    emit_i64_load(buf = lam_buf, align = 3, offset = 8 + ci3 * 8)
     // #699: a captured RC ref cell is stored odd-tagged in the env (so the
     // closure's class-7 drop classifies and frees it). The inner body uses the
     // cell as an even vptr (load/store at +0), so untag on load back.
-    if ctx.enable_rc && array_contains_str(ctx.ref_cell_names, cap_name) {
-      emit_i64_const(lam_buf, -2)
+    if ctx.enable_rc && array_contains_str(arr = ctx.ref_cell_names, s = cap_name) {
+      emit_i64_const(buf = lam_buf, value = -2)
       emit_i64_and(lam_buf)
     }
-    emit_local_set(lam_buf, cap_local)
+    emit_local_set(buf = lam_buf, idx = cap_local)
     // #3476: a bare free name that the enclosing scope does not bind and no
     // builtin spells is stored as 0 at creation, so the body must not resolve
     // it to this slot. A call through the name, or a read of it, then reaches
@@ -1134,13 +1136,13 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     // `TaskGroup::run` body). A builtin keeps its slot, because a call the
     // checker resolved never asks for it (`__slice`, `MutList::empty`), and
     // so does the let-rec self slot, which the binder patches after creation.
-    if cap_name == self_name || array_contains_str(local_names, cap_name) || String::index_of(cap_name, "::") >= 0 || registry_builtin_arity(cap_name) >= 0 {
-      Array::push(lam_locals, cap_name)
+    if cap_name == self_name || array_contains_str(arr = local_names, s = cap_name) || String::index_of(cap_name, needle = "::") >= 0 || registry_builtin_arity(cap_name) >= 0 {
+      Array::push(lam_locals, value = cap_name)
     } else {
-      Array::push(lam_locals, String::concat("#unbound_capture:", cap_name))
+      Array::push(lam_locals, value = String::concat("#unbound_capture:", cap_name))
     }
-    if array_contains_str(ctx.ref_cell_names, cap_name) {
-      Array::push(lam_ref_cells, cap_name)
+    if array_contains_str(arr = ctx.ref_cell_names, s = cap_name) {
+      Array::push(lam_ref_cells, value = cap_name)
     } else {
       ()
     }
@@ -1157,11 +1159,11 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     // the env store and are reclaimed by the closure's class-7 drop; skip them.
     // A projection (`p.y`) is a read, not a consume: counting it dup'd the
     // capture on every call with nothing to release it.
-    if ctx.enable_rc && !array_contains_str(ctx.ref_cell_names, cap_name) {
-      let cap_consumes = md_view_consume_count_pre(fn_body, cap_name, ctx.borrow_param_user, cl_md_bmasks)
+    if ctx.enable_rc && !array_contains_str(arr = ctx.ref_cell_names, s = cap_name) {
+      let cap_consumes = md_view_consume_count_pre(e = fn_body, name = cap_name, bfns = ctx.borrow_param_user, bmasks_zeroed = cl_md_bmasks)
       let mut cdup = 0
       while cdup < cap_consumes {
-        emit_rc_dup_guarded(lam_buf, cap_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_rc_dup_guarded(buf = lam_buf, local_idx = cap_local, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
         cdup = cdup + 1
       }
     } else {
@@ -1170,13 +1172,13 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     lam_nl = lam_nl + 1
     ci3 = ci3 + 1
   }
-  let norm_params = Array::slice(params, 0, 0)
+  let norm_params = Array::slice(params, start = 0, end = 0)
   let mut npi = 0
   while npi < Array::length(params) {
-    let (rawn, pty) = Array::get(params, npi)
+    let (rawn, pty) = Array::get(params, at = npi)
     let rnlen = String::length(rawn)
     let sn = if rnlen > 0 {
-      let lc = String::char_code_at(rawn, rnlen - 1)
+      let lc = String::char_code_at(rawn, at = rnlen - 1)
       if lc == '~' || lc == '?' {
         rawn[0: rnlen - 1]
       } else {
@@ -1185,7 +1187,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     } else {
       rawn
     }
-    Array::push(norm_params, (sn, pty))
+    Array::push(norm_params, value = (sn, pty))
     npi = npi + 1
   }
   let result_body = if ctx.enable_rc {
@@ -1214,30 +1216,30 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   let lam_exit_stack_names = array_empty()
   let lam_exit_stack_info = array_empty()
   if ctx.enable_rc {
-    let lam_plan = build_perceus_plan_pinned(ctx.perceus_pin, norm_params, result_body, ctx.borrow_ret_names, ctx.borrow_param_user, ctx.borrow_param_mask, ctx.borrow_view_ret)
+    let lam_plan = build_perceus_plan_pinned(token = ctx.perceus_pin, params = norm_params, body = result_body, borrow_ret_names = ctx.borrow_ret_names, borrow_param_fns = ctx.borrow_param_user, borrow_param_masks = ctx.borrow_param_mask, view_ret_fns = ctx.borrow_view_ret)
     // #3141: the early-exit rows, and the parameters an exit releases the
     // way the epilogue below does (a lambda's parameters are all owned).
-    perceus_exit_rows(lam_plan, lam_exit_names, lam_exit_info)
+    perceus_exit_rows(plan = lam_plan, names = lam_exit_names, info = lam_exit_info)
     let mut ldi = 0
     while ldi < Array::length(lam_plan) {
-      let lpa = Array::get(lam_plan, ldi)
+      let lpa = Array::get(lam_plan, at = ldi)
       if pa_is_drop(lpa) {
-        Array::push(lam_drops, lpa.name)
+        Array::push(lam_drops, value = lpa.name)
       } else if pa_is_alias_dup(lpa) {
-        Array::push(lam_alias_dups, lpa.name)
+        Array::push(lam_alias_dups, value = lpa.name)
       } else if pa_is_dup(lpa) {
-        Array::push(lam_dups, lpa.name)
-        Array::push(lam_dup_offsets, lpa.use_offset)
+        Array::push(lam_dups, value = lpa.name)
+        Array::push(lam_dup_offsets, value = lpa.use_offset)
       } else if pa_is_reuse_token(lpa) {
         // ADR-0092 / #2389 plan-side reuse candidates (arity in `extra`).
-        Array::push(lam_reuse_names, lpa.name)
-        Array::push(lam_reuse_arities, lpa.extra)
+        Array::push(lam_reuse_names, value = lpa.name)
+        Array::push(lam_reuse_arities, value = lpa.extra)
       } else if pa_is_path_drop(lpa) {
         // #2389 per-path release, as in linked_compile's planned-bodies loop.
-        Array::push(lam_path_drops, lpa.name)
+        Array::push(lam_path_drops, value = lpa.name)
       } else if pa_is_consume_mark(lpa) {
-        Array::push(lam_mark_names, lpa.name)
-        Array::push(lam_mark_offs, lpa.use_offset)
+        Array::push(lam_mark_names, value = lpa.name)
+        Array::push(lam_mark_offs, value = lpa.use_offset)
       } else {
         ()
       }
@@ -1245,17 +1247,17 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     }
     // #2837: a lambda's result convention is not an immediate this lowering
     // can vouch for, so a row that needs one is dropped.
-    perceus_truncate_rows(lam_plan, false, lam_trunc_release, lam_trunc_pin_arrays, lam_trunc_pin_names)
+    perceus_truncate_rows(plan = lam_plan, accept_root = false, release = lam_trunc_release, pin_arrays = lam_trunc_pin_arrays, pin_names = lam_trunc_pin_names)
     // #3140: the structs whose field assignments release the old value.
-    perceus_field_release_rows(lam_plan, lam_setf_release)
+    perceus_field_release_rows(plan = lam_plan, out = lam_setf_release)
     // #3184: the stores that retain what they store.
-    perceus_store_dup_rows(lam_plan, lam_store_dup_names, lam_store_dup_offs)
+    perceus_store_dup_rows(plan = lam_plan, names = lam_store_dup_names, offs = lam_store_dup_offs)
     let mut hpi = 0
     while hpi < Array::length(norm_params) {
-      let (hpn, hpt) = Array::get(norm_params, hpi)
-      if param_is_heap_in_body(hpn, hpt, fn_body) {
-        Array::push(lam_heap_params, hpn)
-        rc_exit_push(lam_exit_stack_names, lam_exit_stack_info, hpn, 1, hpi, 0 - 1)
+      let (hpn, hpt) = Array::get(norm_params, at = hpi)
+      if param_is_heap_in_body(name = hpn, otype = hpt, body = fn_body) {
+        Array::push(lam_heap_params, value = hpn)
+        rc_exit_push(names = lam_exit_stack_names, info = lam_exit_stack_info, name = hpn, kind = 1, local = hpi, flag = 0 - 1)
       } else {
         ()
       }
@@ -1273,16 +1275,16 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   // still reads its Double payload through EIdent in the lambda body.
   let mut cfi = 0
   while cfi < num_captures {
-    let cap_name = Array::get(captures, cfi)
-    let outer_slot = find_local_slot(local_names, cap_name)
+    let cap_name = Array::get(captures, at = cfi)
+    let outer_slot = find_local_slot(names = local_names, name = cap_name)
     if outer_slot >= 0 {
       let mut log_i = Array::length(ctx.float_local_slots) - 1
       let mut found = false
       while log_i >= 0 && !found {
-        let entry = Array::get(ctx.float_local_slots, log_i)
+        let entry = Array::get(ctx.float_local_slots, at = log_i)
         if entry / 2 == outer_slot {
           if entry % 2 == 1 {
-            Array::push(lam_float_slots, (lam_nl_start + cfi) * 2 + 1)
+            Array::push(lam_float_slots, value = (lam_nl_start + cfi) * 2 + 1)
           }
           found = true
         }
@@ -1301,20 +1303,20 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   let lam_seq_owned_slots = array_empty()
   let mut lfs_i = 0
   while lfs_i < user_params {
-    let (_, lfs_ann) = Array::get(norm_params, lfs_i)
+    let (_, lfs_ann) = Array::get(norm_params, at = lfs_i)
     match lfs_ann {
       Some(lfs_ty) => match lfs_ty {
-        TyFn(_, _, _) => Array::push(lam_seq_owned_slots, lfs_i * 2 + 1),
+        TyFn(_, _, _) => Array::push(lam_seq_owned_slots, value = lfs_i * 2 + 1),
         TyName(lfs_tn) => if lfs_tn == "Float32" || lfs_tn == "Float64" {
-          Array::push(lam_float_slots, lfs_i * 2 + 1)
+          Array::push(lam_float_slots, value = lfs_i * 2 + 1)
         } else if lfs_tn == "Bool" {
-          Array::push(lam_bool_slots, lfs_i * 4 + 3)
+          Array::push(lam_bool_slots, value = lfs_i * 4 + 3)
         } else if lfs_tn == "Int" {
           // #2422: the Int arm of the same seeding, added when the top-level
           // param loop got one. `(n: Int) -> String { __to_string(n) }` sent
           // `64 << 32` through the runtime string-pointer heuristic and
           // returned the empty string.
-          Array::push(lam_bool_slots, lfs_i * 4 + 1)
+          Array::push(lam_bool_slots, value = lfs_i * 4 + 1)
         } else {
           ()
         },
@@ -1458,12 +1460,12 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   if ctx.enable_rc {
     let mut dpi = 0
     while dpi < Array::length(norm_params) {
-      let (dpn, dpt) = Array::get(norm_params, dpi)
-      if param_is_heap_in_body(dpn, dpt, fn_body) {
+      let (dpn, dpt) = Array::get(norm_params, at = dpi)
+      if param_is_heap_in_body(name = dpn, otype = dpt, body = fn_body) {
         let mut dcount = 0
         let mut dqi = 0
         while dqi < Array::length(lam_dups) {
-          if Array::get(lam_dups, dqi) == dpn {
+          if Array::get(lam_dups, at = dqi) == dpn {
             dcount = dcount + 1
           } else {
             ()
@@ -1472,7 +1474,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
         }
         let mut de = 0
         while de < dcount {
-          emit_rc_dup_guarded(lam_buf, dpi, ctx.rc_shadow, ctx.rc_dup_func_idx)
+          emit_rc_dup_guarded(buf = lam_buf, local_idx = dpi, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
           de = de + 1
         }
       } else {
@@ -1492,15 +1494,15 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && Array::length(lam_path_drops) > 0 {
     let mut ppi = 0
     while ppi < Array::length(norm_params) {
-      let (ppn, ppt) = Array::get(norm_params, ppi)
-      if array_contains_str(lam_path_drops, ppn) && param_is_heap_in_body(ppn, ppt, fn_body) && Array::length(lam_locals) == lam_body_nl {
-        Array::push(lam_locals, "__path_flag")
-        emit_i64_const(lam_buf, 0)
-        emit_local_set(lam_buf, lam_body_nl)
-        Array::push(lam_ctx.rc_path_flag_names, ppn)
-        Array::push(lam_ctx.rc_path_flag_locals, lam_body_nl)
-        Array::push(lam_ppd_params, ppi)
-        Array::push(lam_ppd_flags, lam_body_nl)
+      let (ppn, ppt) = Array::get(norm_params, at = ppi)
+      if array_contains_str(arr = lam_path_drops, s = ppn) && param_is_heap_in_body(name = ppn, otype = ppt, body = fn_body) && Array::length(lam_locals) == lam_body_nl {
+        Array::push(lam_locals, value = "__path_flag")
+        emit_i64_const(buf = lam_buf, value = 0)
+        emit_local_set(buf = lam_buf, idx = lam_body_nl)
+        Array::push(lam_ctx.rc_path_flag_names, value = ppn)
+        Array::push(lam_ctx.rc_path_flag_locals, value = lam_body_nl)
+        Array::push(lam_ppd_params, value = ppi)
+        Array::push(lam_ppd_flags, value = lam_body_nl)
         lam_body_nl = lam_body_nl + 1
       } else {
         ()
@@ -1510,14 +1512,14 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   } else {
     ()
   }
-  let final_lam_nl = compile_fn(lam_buf, result_body, lam_locals, frame_prepare_cookie(result_body, lam_locals, lam_body_nl, lam_ctx.rc_exit_state, ctx.enable_rc), lam_ctx, -1)
+  let final_lam_nl = compile_fn(lam_buf, result_body, lam_locals, frame_prepare_cookie(body = result_body, locals = lam_locals, next = lam_body_nl, state = lam_ctx.rc_exit_state, enabled = ctx.enable_rc), lam_ctx, -1)
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
     let mut tj = 0
     while tj < Array::length(norm_params) {
-      let (dpn2, dpt2) = Array::get(norm_params, tj)
-      if param_is_heap_in_body(dpn2, dpt2, fn_body) && array_contains_str(lam_drops, dpn2) {
-        emit_local_get(lam_buf, tj)
-        emit_call(lam_buf, ctx.rc_drop_func_idx)
+      let (dpn2, dpt2) = Array::get(norm_params, at = tj)
+      if param_is_heap_in_body(name = dpn2, otype = dpt2, body = fn_body) && array_contains_str(arr = lam_drops, s = dpn2) {
+        emit_local_get(buf = lam_buf, idx = tj)
+        emit_call(buf = lam_buf, func_idx = ctx.rc_drop_func_idx)
       } else {
         ()
       }
@@ -1525,11 +1527,11 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     }
     let mut ppk = 0
     while ppk < Array::length(lam_ppd_params) {
-      emit_local_get(lam_buf, Array::get(lam_ppd_flags, ppk))
+      emit_local_get(buf = lam_buf, idx = Array::get(lam_ppd_flags, at = ppk))
       emit_i64_eqz(lam_buf)
       emit_if_void(lam_buf)
-      emit_local_get(lam_buf, Array::get(lam_ppd_params, ppk))
-      emit_call(lam_buf, ctx.rc_drop_func_idx)
+      emit_local_get(buf = lam_buf, idx = Array::get(lam_ppd_params, at = ppk))
+      emit_call(buf = lam_buf, func_idx = ctx.rc_drop_func_idx)
       emit_end(lam_buf)
       ppk = ppk + 1
     }
@@ -1559,38 +1561,38 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   // right one, since nothing else is allocating into the table concurrently.
   let live_idx = ctx.lambda_table.base + Array::length(ctx.lambda_table.bodies)
   let lambda_idx = if Array::length(ctx.lambda_plan_next) > 0 {
-    let planned = Array::get(ctx.lambda_plan_next, 0)
+    let planned = Array::get(ctx.lambda_plan_next, at = 0)
     if planned != live_idx {
       throw(String::concat("lambda plan mismatch: planned index ", String::concat(__to_string(planned), String::concat(", walk allocated ", __to_string(live_idx)))))
     } else {
       ()
     }
-    Array::set(ctx.lambda_plan_next, 0, planned + 1)
+    Array::set(ctx.lambda_plan_next, at = 0, value = planned + 1)
     planned
   } else {
     live_idx
   }
-  Array::push(ctx.lambda_table.bodies, lam_buf)
-  Array::push(ctx.lambda_table.param_counts, user_params + 1)
-  Array::push(ctx.lambda_table.captures, captures)
+  Array::push(ctx.lambda_table.bodies, value = lam_buf)
+  Array::push(ctx.lambda_table.param_counts, value = user_params + 1)
+  Array::push(ctx.lambda_table.captures, value = captures)
   let mut extra_lam = 0
   let min_lam_nl = user_params + 1
   if final_lam_nl > min_lam_nl {
     extra_lam = final_lam_nl - min_lam_nl
   }
-  Array::push(ctx.lambda_table.meta_i32, 0)
-  Array::push(ctx.lambda_table.meta_i64, extra_lam)
-  blind_reloc_assign_pending(ctx, blind_lo, blind_owner_of_lambda(lambda_idx))
+  Array::push(ctx.lambda_table.meta_i32, value = 0)
+  Array::push(ctx.lambda_table.meta_i64, value = extra_lam)
+  blind_reloc_assign_pending(ctx = ctx, lo = blind_lo, owner = blind_owner_of_lambda(lambda_idx))
   let table_slot = ctx.lambda_slot_base + lambda_idx
-  Array::push(ctx.table_slots_used, table_slot)
+  Array::push(ctx.table_slots_used, value = table_slot)
   if num_captures == 0 {
-    blind_reloc_record(ctx, buf, blind_kind_fn_value, table_slot)
-    emit_i64_const(buf, (table_slot<<2)|2)
+    blind_reloc_record(ctx = ctx, buf = buf, kind = blind_kind_fn_value, sym = table_slot)
+    emit_i64_const(buf = buf, value = (table_slot<<2)|2)
     next_local
   } else {
     let ptr_local = next_local
     let nl2 = next_local + 1
-    Array::push(local_names, "__closure_ptr")
+    Array::push(local_names, value = "__closure_ptr")
     let cap_off = if ctx.enable_rc {
       16
     } else {
@@ -1598,56 +1600,56 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     }
     if ctx.enable_rc {
       let total = 16 + num_captures * 8
-      emit_i64_const(buf, total)
-      emit_call(buf, ctx.rc_alloc_func_idx)
-      emit_local_set(buf, ptr_local)
-      emit_local_get(buf, ptr_local)
+      emit_i64_const(buf = buf, value = total)
+      emit_call(buf = buf, func_idx = ctx.rc_alloc_func_idx)
+      emit_local_set(buf = buf, idx = ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, total)
-      emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, ptr_local)
+      emit_i32_const(buf = buf, value = total)
+      emit_i32_store(buf = buf, align = 2, offset = 0)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 1)
-      emit_i32_store(buf, 2, 4)
-      emit_local_get(buf, ptr_local)
+      emit_i32_const(buf = buf, value = 1)
+      emit_i32_store(buf = buf, align = 2, offset = 4)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 7)
-      emit_i32_store8(buf, 0, 7)
-      emit_local_get(buf, ptr_local)
+      emit_i32_const(buf = buf, value = 7)
+      emit_i32_store8(buf = buf, align = 0, offset = 7)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      blind_reloc_record(ctx, buf, blind_kind_table_slot_i32, table_slot)
-      emit_i32_const(buf, table_slot)
-      emit_i32_store(buf, 2, 8)
-      emit_local_get(buf, ptr_local)
+      blind_reloc_record(ctx = ctx, buf = buf, kind = blind_kind_table_slot_i32, sym = table_slot)
+      emit_i32_const(buf = buf, value = table_slot)
+      emit_i32_store(buf = buf, align = 2, offset = 8)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, num_captures)
-      emit_i32_store(buf, 2, 12)
+      emit_i32_const(buf = buf, value = num_captures)
+      emit_i32_store(buf = buf, align = 2, offset = 12)
     } else {
-      emit_global_get(buf, 0)
+      emit_global_get(buf = buf, idx = 0)
       emit_i64_extend_i32_u(buf)
-      emit_local_tee(buf, ptr_local)
+      emit_local_tee(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 8 + num_captures * 8)
+      emit_i32_const(buf = buf, value = 8 + num_captures * 8)
       emit_i32_add(buf)
-      emit_global_set(buf, 0)
-      emit_heap_grow_after_heap_set(buf, ctx)
-      emit_local_get(buf, ptr_local)
+      emit_global_set(buf = buf, idx = 0)
+      emit_heap_grow_after_heap_set(buf = buf, ctx = ctx)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      blind_reloc_record(ctx, buf, blind_kind_table_slot_i32, table_slot)
-      emit_i32_const(buf, table_slot)
-      emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, ptr_local)
+      blind_reloc_record(ctx = ctx, buf = buf, kind = blind_kind_table_slot_i32, sym = table_slot)
+      emit_i32_const(buf = buf, value = table_slot)
+      emit_i32_store(buf = buf, align = 2, offset = 0)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, num_captures)
-      emit_i32_store(buf, 2, 4)
+      emit_i32_const(buf = buf, value = num_captures)
+      emit_i32_store(buf = buf, align = 2, offset = 4)
     }
     let mut csi = 0
     while csi < num_captures {
-      let cap_name = Array::get(captures, csi)
+      let cap_name = Array::get(captures, at = csi)
       let mut __cap_resolve = -1
       let mut __cri = Array::length(local_names) - 1
       while __cri >= 0 {
-        if Array::get(local_names, __cri) == cap_name {
+        if Array::get(local_names, at = __cri) == cap_name {
           __cap_resolve = __cri
           __cri = -1
         } else {
@@ -1655,29 +1657,29 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
         }
       }
       if __cap_resolve >= 0 {
-        if ctx.enable_rc && array_contains_str(ctx.ref_cell_names, cap_name) {
+        if ctx.enable_rc && array_contains_str(arr = ctx.ref_cell_names, s = cap_name) {
           // #699: own the captured RC ref cell. Store it odd-tagged so the
           // closure's class-7 drop (gen_rc_drop_body) recognises it as an owned
           // heap value, and bump its refcount (unguarded — a ref cell is always
           // heap) so the shared cell survives until BOTH the defining scope and
           // this closure have dropped it.
-          emit_local_get(buf, ptr_local)
+          emit_local_get(buf = buf, idx = ptr_local)
           emit_i32_wrap_i64(buf)
-          emit_local_get(buf, __cap_resolve)
-          emit_i64_const(buf, 1)
+          emit_local_get(buf = buf, idx = __cap_resolve)
+          emit_i64_const(buf = buf, value = 1)
           emit_i64_or(buf)
-          emit_i64_store(buf, 3, cap_off + csi * 8)
-          emit_rc_word_inc_saturating(buf, () -> {
-            emit_local_get(buf, __cap_resolve)
+          emit_i64_store(buf = buf, align = 3, offset = cap_off + csi * 8)
+          emit_rc_word_inc_saturating(buf = buf, push_addr = () -> {
+            emit_local_get(buf = buf, idx = __cap_resolve)
             emit_i32_wrap_i64(buf)
-            emit_i32_const(buf, 4)
+            emit_i32_const(buf = buf, value = 4)
             emit_i32_sub(buf)
           })
         } else {
-          emit_local_get(buf, ptr_local)
+          emit_local_get(buf = buf, idx = ptr_local)
           emit_i32_wrap_i64(buf)
-          emit_local_get(buf, __cap_resolve)
-          emit_i64_store(buf, 3, cap_off + csi * 8)
+          emit_local_get(buf = buf, idx = __cap_resolve)
+          emit_i64_store(buf = buf, align = 3, offset = cap_off + csi * 8)
           // owned-captures ABI (ADR-0076 追記31 Vertical A): the env OWNS
           // every heap capture — dup at creation, released by the closure's
           // class-7 recursive drop. Scalars and string/bytes fat pointers are
@@ -1689,28 +1691,28 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
           // iteration when the letrec local is re-bound, and (b) make the
           // self-cycle unreclaimable.
           if ctx.enable_rc && cap_name != self_name {
-            emit_rc_dup_guarded(buf, __cap_resolve, ctx.rc_shadow, ctx.rc_dup_func_idx)
+            emit_rc_dup_guarded(buf = buf, local_idx = __cap_resolve, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
           } else {
             ()
           }
         }
       } else {
-        emit_local_get(buf, ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i64_const(buf, 0)
-        emit_i64_store(buf, 3, cap_off + csi * 8)
+        emit_i64_const(buf = buf, value = 0)
+        emit_i64_store(buf = buf, align = 3, offset = cap_off + csi * 8)
       }
       csi = csi + 1
     }
     if ctx.enable_rc {
-      emit_local_get(buf, ptr_local)
-      emit_i64_const(buf, 8)
+      emit_local_get(buf = buf, idx = ptr_local)
+      emit_i64_const(buf = buf, value = 8)
       emit_i64_add(buf)
-      emit_i64_const(buf, 1)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_or(buf)
     } else {
-      emit_local_get(buf, ptr_local)
-      emit_i64_const(buf, 1)
+      emit_local_get(buf = buf, idx = ptr_local)
+      emit_i64_const(buf = buf, value = 1)
       emit_i64_or(buf)
     }
     nl2

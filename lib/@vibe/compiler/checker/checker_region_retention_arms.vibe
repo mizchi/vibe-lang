@@ -16,7 +16,7 @@ export let retention_decls: Array[(String, Expr)] = []
 export let hce_decl_facts: Array[(String, Bool)] = []
 
 /// The value a top-level declaration of the module being checked binds.
-export fn retention_decl_value(name: String) -> Option[Expr] {
+export fn retention_decl_value(_ name: String) -> Option[Expr] {
   let mut out: Option[Expr] = None
   for d in retention_decls {
     match out {
@@ -40,7 +40,7 @@ export fn retention_decl_value(name: String) -> Option[Expr] {
 /// form not listed here yields every subexpression its value can come from,
 /// and only a form whose value is fresh by construction -- a literal, an
 /// operator's result, a closure, a `while` (`()`), a jump -- has no parts.
-export fn retention_result_items(e: Expr) -> Array[Expr] {
+export fn retention_result_items(_ e: Expr) -> Array[Expr] {
   match e {
     ERecord(_, fields, _) => for f in fields {
       f.1
@@ -53,7 +53,7 @@ export fn retention_result_items(e: Expr) -> Array[Expr] {
         arm.1
       }
       if retention_arms_bind(arms) {
-        Array::push(items, scrut)
+        Array::push(items, value = scrut)
       }
       items
     },
@@ -65,7 +65,7 @@ export fn retention_result_items(e: Expr) -> Array[Expr] {
     // assignment sits (`while c { y = outer }; y`).
     ELetMut(name, v, b, _) => {
       let items = [v, b]
-      retention_assigned_values_into(b, name, items)
+      retention_assigned_values_into(e = b, name = name, out = items)
       items
     },
     ELetRec(_, v, b) => [v, b],
@@ -76,7 +76,7 @@ export fn retention_result_items(e: Expr) -> Array[Expr] {
       let items = for arm in arms {
         arm.1
       }
-      Array::push(items, body)
+      Array::push(items, value = body)
       items
     },
     EMap(entries) => for entry in entries {
@@ -88,7 +88,7 @@ export fn retention_result_items(e: Expr) -> Array[Expr] {
       let items = for init in inits {
         init.1
       }
-      retention_break_values_into(body, items)
+      retention_break_values_into(e = body, out = items)
       items
     },
     EBreak(Some(v)) => [v],
@@ -104,17 +104,17 @@ export fn retention_assigned_values_into(e: Expr, name: String, out: Array[Expr]
   let stack: Array[Expr] = [e]
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
-    let cur = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
+    let cur = Array::get(stack, at = n - 1)
+    Array::truncate(stack, length = n - 1)
     let hidden = match cur {
       ELet(x, v, _, _) => if x == name {
-        Array::push(stack, v)
+        Array::push(stack, value = v)
         true
       } else {
         false
       },
       ELetMut(x, v, _, _) => if x == name {
-        Array::push(stack, v)
+        Array::push(stack, value = v)
         true
       } else {
         false
@@ -124,14 +124,14 @@ export fn retention_assigned_values_into(e: Expr, name: String, out: Array[Expr]
     if !hidden {
       match cur {
         EAssign(x, v, _, _) => if x == name {
-          Array::push(out, v)
+          Array::push(out, value = v)
         } else {
           ()
         },
         _ => ()
       }
       for child in expr_children(cur) {
-        Array::push(stack, child)
+        Array::push(stack, value = child)
       }
     } else {
       ()
@@ -146,16 +146,16 @@ fn retention_break_values_into(e: Expr, out: Array[Expr]) -> Unit {
   let stack: Array[Expr] = [e]
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
-    let cur = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
+    let cur = Array::get(stack, at = n - 1)
+    Array::truncate(stack, length = n - 1)
     match cur {
-      EBreak(Some(v)) => Array::push(out, v),
+      EBreak(Some(v)) => Array::push(out, value = v),
       ELoop(_, _) => (),
       EWhile(_, _) => (),
       EForIn(_, _, _, _) => (),
       EFn(_, _, _, _, _, _) => (),
       _ => for child in expr_children(cur) {
-        Array::push(stack, child)
+        Array::push(stack, value = child)
       }
     }
   }
@@ -166,13 +166,13 @@ fn retention_break_values_into(e: Expr, out: Array[Expr]) -> Unit {
 /// may hand back the scrutinee's value under a name the outer environment
 /// does not know (#3488, Codex on #3492). `Some(x) => x` does; `Some(x) =>
 /// fresh` and `None => fresh` do not.
-export fn retention_arms_bind(arms: Array[(Pat, Expr)]) -> Bool {
+export fn retention_arms_bind(_ arms: Array[(Pat, Expr)]) -> Bool {
   let mut any = false
   for arm in arms {
     if !any {
       let names: Array[String] = []
-      retention_pat_names_into(arm.0, names)
-      any = Array::length(names) > 0 && retention_expr_names_any(arm.1, names)
+      retention_pat_names_into(p = arm.0, out = names)
+      any = Array::length(names) > 0 && retention_expr_names_any(e = arm.1, names = names)
     }
   }
   any
@@ -180,20 +180,20 @@ export fn retention_arms_bind(arms: Array[(Pat, Expr)]) -> Bool {
 
 export fn retention_pat_names_into(p: Pat, out: Array[String]) -> Unit {
   match p {
-    PBind(n) => Array::push(out, n),
-    PCtor(_, ps) => retention_pats_names_into(ps, out),
-    PTuple(ps) => retention_pats_names_into(ps, out),
-    POr(a, _) => retention_pat_names_into(a, out),
-    PStruct(_, fields) => retention_pats_names_into(for f in fields {
+    PBind(n) => Array::push(out, value = n),
+    PCtor(_, ps) => retention_pats_names_into(ps = ps, out = out),
+    PTuple(ps) => retention_pats_names_into(ps = ps, out = out),
+    POr(a, _) => retention_pat_names_into(p = a, out = out),
+    PStruct(_, fields) => retention_pats_names_into(ps = for f in fields {
       f.1
-    }, out),
+    }, out = out),
     _ => ()
   }
 }
 
 fn retention_pats_names_into(ps: Array[Pat], out: Array[String]) -> Unit {
   for q in ps {
-    retention_pat_names_into(q, out)
+    retention_pat_names_into(p = q, out = out)
   }
   ()
 }
@@ -203,8 +203,8 @@ fn retention_expr_names_any(e: Expr, names: Array[String]) -> Bool {
   let mut hit = false
   while !hit && Array::length(stack) > 0 {
     let n = Array::length(stack)
-    let cur = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
+    let cur = Array::get(stack, at = n - 1)
+    Array::truncate(stack, length = n - 1)
     match cur {
       EIdent(x, _) => {
         for name in names {
@@ -217,13 +217,13 @@ fn retention_expr_names_any(e: Expr, names: Array[String]) -> Bool {
       _ => ()
     }
     for child in expr_children(cur) {
-      Array::push(stack, child)
+      Array::push(stack, value = child)
     }
   }
   hit
 }
 
-export fn retention_is_function_type(ty: Type) -> Bool {
+export fn retention_is_function_type(_ ty: Type) -> Bool {
   match ty {
     CtFn(_, _, _) => true,
     CtForAll(_, _, body) => retention_is_function_type(body),
@@ -235,10 +235,10 @@ export fn retention_is_function_type(ty: Type) -> Bool {
 /// (`retention_alias_sources`), followed by `?` when a place its value can
 /// come from names no function beside one that does
 /// (`if c { mk } else { pick() }`): that one may be any function.
-export fn retention_alias_names(e: Expr) -> Array[String] {
+export fn retention_alias_names(_ e: Expr) -> Array[String] {
   let out: Array[String] = []
-  if !retention_alias_sources(e, out) && Array::length(out) > 0 {
-    Array::push(out, "?")
+  if !retention_alias_sources(e = e, out = out) && Array::length(out) > 0 {
+    Array::push(out, value = "?")
   }
   out
 }
@@ -253,21 +253,21 @@ export fn retention_alias_names(e: Expr) -> Array[String] {
 fn retention_alias_sources(e: Expr, out: Array[String]) -> Bool {
   match e {
     EIdent(src, _) => {
-      Array::push(out, src)
+      Array::push(out, value = src)
       true
     },
     EIf(_, a, b) => {
-      let ca = retention_alias_sources(a, out)
-      let cb = retention_alias_sources(b, out)
+      let ca = retention_alias_sources(e = a, out = out)
+      let cb = retention_alias_sources(e = b, out = out)
       ca && cb
     },
     EMatch(_, arms) => {
       let mut complete = true
       for arm in arms {
         let bound: Array[String] = []
-        retention_pat_names_into(arm.0, bound)
+        retention_pat_names_into(p = arm.0, out = bound)
         let found: Array[String] = []
-        if !retention_alias_sources(arm.1, found) {
+        if !retention_alias_sources(e = arm.1, out = found) {
           complete = false
         }
         for src in found {
@@ -280,35 +280,35 @@ fn retention_alias_sources(e: Expr, out: Array[String]) -> Bool {
           if hidden {
             complete = false
           } else {
-            Array::push(out, src)
+            Array::push(out, value = src)
           }
         }
         ()
       }
       complete
     },
-    ESeq(_, b) => retention_alias_sources(b, out),
+    ESeq(_, b) => retention_alias_sources(e = b, out = out),
     ELet(n, v, rest, _) => {
       let found: Array[String] = []
-      let mut complete = retention_alias_sources(rest, found)
+      let mut complete = retention_alias_sources(e = rest, out = found)
       for src in found {
         if src == n {
-          if !retention_alias_sources(v, out) {
+          if !retention_alias_sources(e = v, out = out) {
             complete = false
           }
         } else {
-          Array::push(out, src)
+          Array::push(out, value = src)
         }
       }
       complete
     },
     ECall(EIdent(wrapper, _), wargs, _, _) => if wrapper == "$source_span" && Array::length(wargs) > 0 {
-      retention_alias_sources(Array::get(wargs, 0), out)
+      retention_alias_sources(e = Array::get(wargs, at = 0), out = out)
     } else {
       false
     },
     ECall(callee, args, _, _) => if Array::length(args) == 1 && retention_is_ascription(callee) {
-      retention_alias_sources(Array::get(args, 0), out)
+      retention_alias_sources(e = Array::get(args, at = 0), out = out)
     } else {
       false
     },
@@ -318,14 +318,29 @@ fn retention_alias_sources(e: Expr, out: Array[String]) -> Bool {
 
 /// The parser's spelling of an annotation `e: T`, `((__asc: T) -> __asc)(e)`:
 /// is `callee` that identity lambda?
-fn retention_is_ascription(callee: Expr) -> Bool {
+fn retention_is_ascription(_ callee: Expr) -> Bool {
   match callee {
     EFn(tparams, _, params, None, None, EIdent(body, _)) => if Array::length(tparams) == 0 && Array::length(params) == 1 && body == "__asc" {
-      let (pname, _) = Array::get(params, 0)
+      let (pname, _) = Array::get(params, at = 0)
       pname == "__asc"
     } else {
       false
     },
     _ => false
+  }
+}
+
+export fn retention_named_run_body_message(body_name: String, kind: Int) -> String {
+  let named = if body_name == "" {
+    "the body this TaskGroup::run call runs"
+  } else {
+    String::concat("`", String::concat(body_name, "`, the body this TaskGroup::run call runs,"))
+  }
+  if kind == 1 {
+    String::concat("region escapes its nursery scope: ", String::concat(named, " stores the call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver` in a binding declared outside it -- join the task (or use the endpoint) inside the body and store the result instead, or declare the binding inside the body"))
+  } else if kind == 5 {
+    String::concat("region escapes its nursery scope: ", String::concat(named, " is a function whose body the checker cannot see, so what it keeps of the call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver` cannot be checked -- write the body inline at the call, or bind it with `let` to a closure literal and pass that name"))
+  } else {
+    String::concat("region escapes its nursery scope: ", String::concat(named, " passes the call's own `TaskGroup`, `TaskHandle`, `Sender` or `Receiver` on to a function whose body the checker cannot see -- join the task (or use the endpoint) inside the body and pass the result instead"))
   }
 }

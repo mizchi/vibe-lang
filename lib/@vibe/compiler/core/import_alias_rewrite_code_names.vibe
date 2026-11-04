@@ -29,110 +29,110 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
   // The file's own declarations of the name, by namespace (Codex on #3492:
   // a facade may declare a struct `Builds` and re-export a trait `Builds`).
   // An expression's spelling may mean any of them.
-  let local_type = stmts_declare_type_head(stmts, name, 0)
-  let local_trait = stmts_declare_type_head(stmts, name, 1)
-  let local_effect = stmts_declare_type_head(stmts, name, 2)
+  let local_type = stmts_declare_type_head(stmts = stmts, name = name, space = 0)
+  let local_trait = stmts_declare_type_head(stmts = stmts, name = name, space = 1)
+  let local_effect = stmts_declare_type_head(stmts = stmts, name = name, space = 2)
   let local = local_type || local_trait || local_effect
   let mut pattern_hit = false
   for st in stmts {
     match st {
       SLet(_, _, _, ann, e) => {
-        push_type_opt(w, ann, local_type)
-        Array::push(w.stack, (e, false))
+        push_type_opt(w = w, t = ann, hidden = local_type)
+        Array::push(w.stack, value = (e, false))
       },
       SLetMut(_, ann, e) => {
-        push_type_opt(w, ann, local_type)
-        Array::push(w.stack, (e, false))
+        push_type_opt(w = w, t = ann, hidden = local_type)
+        Array::push(w.stack, value = (e, false))
       },
       SFnDecl(_, _, e, requires, ensures) => {
-        Array::push(w.stack, (e, false))
+        Array::push(w.stack, value = (e, false))
         // A contract runs too (Codex on #3492).
         for c in requires {
-          Array::push(w.stack, (c, false))
+          Array::push(w.stack, value = (c, false))
         }
         for c in ensures {
-          Array::push(w.stack, (c, false))
+          Array::push(w.stack, value = (c, false))
         }
         ()
       },
-      SExpr(e) => Array::push(w.stack, (e, false)),
+      SExpr(e) => Array::push(w.stack, value = (e, false)),
       // A test or bench body names what it uses too (Codex on #3492).
-      STest(_, e) => Array::push(w.stack, (e, false)),
-      SBench(_, e) => Array::push(w.stack, (e, false)),
+      STest(_, e) => Array::push(w.stack, value = (e, false)),
+      SBench(_, e) => Array::push(w.stack, value = (e, false)),
       // A top-level destructuring `let` names its pattern's heads and its
       // initializer's (Codex on #3492): `let Box::{ value: x } = make()`.
       SLetPat(pat, e) => {
-        if pat_names(pat, name, String::concat(name, "::"), local) {
+        if pat_names(p = pat, name = name, qual = String::concat(name, "::"), hidden = local) {
           pattern_hit = true
         }
-        Array::push(w.stack, (e, false))
+        Array::push(w.stack, value = (e, false))
       },
       SStruct(_, _, fields, _, _, tparams) => {
-        let hidden = local_type || binds_type_param(tparams, name)
-        push_types(w, for f in fields {
+        let hidden = local_type || binds_type_param(tparams = tparams, name = name)
+        push_types(w = w, ts = for f in fields {
           f.1
-        }, hidden)
+        }, hidden = hidden)
       },
       SEnum(_, _, tparams, variants, _) => {
-        let hidden = local_type || binds_type_param(tparams, name)
+        let hidden = local_type || binds_type_param(tparams = tparams, name = name)
         for v in variants {
-          push_types(w, v.1, hidden)
+          push_types(w = w, ts = v.1, hidden = hidden)
         }
         ()
       },
       SSuberror(_, _, variants) => {
         for v in variants {
-          push_types(w, v.1, local_type)
+          push_types(w = w, ts = v.1, hidden = local_type)
         }
         ()
       },
-      STypeAlias(_, _, tparams, target) => Array::push(w.types, (target, local_type || binds_type_param(tparams, name))),
+      STypeAlias(_, _, tparams, target) => Array::push(w.types, value = (target, local_type || binds_type_param(tparams = tparams, name = name))),
       SImpl(tparams, bounds, tr, target) => {
-        let hidden = local_type || binds_type_param(tparams, name)
-        push_trait_ref(w, tr, local_trait, hidden)
-        Array::push(w.types, (target, hidden))
-        push_bounds(w, bounds, local_trait, hidden)
+        let hidden = local_type || binds_type_param(tparams = tparams, name = name)
+        push_trait_ref(w = w, key = tr, local = local_trait, hidden = hidden)
+        Array::push(w.types, value = (target, hidden))
+        push_bounds(w = w, bounds = bounds, local = local_trait, hidden = hidden)
       },
       STrait(_, _, supers, sigs, method_gens, tparams) => {
-        let hidden = local_type || binds_type_param(tparams, name)
+        let hidden = local_type || binds_type_param(tparams = tparams, name = name)
         // A supertrait is a trait reference, so a trait parameter of the
         // same spelling (`trait Uses[Key]: Key`) does not hide its head.
         for sup in supers {
-          push_trait_ref(w, sup, local_trait, hidden)
+          push_trait_ref(w = w, key = sup, local = local_trait, hidden = hidden)
         }
         for sg in sigs {
           // A method's own type parameters hide the name in its signature
           // (Codex on #3492): `project[Box](x: Box) -> Box`.
           let mut sig_hidden = hidden
           for mg in method_gens {
-            if mg.0 == sg.0 && binds_type_param(mg.1, name) {
+            if mg.0 == sg.0 && binds_type_param(tparams = mg.1, name = name) {
               sig_hidden = true
             }
           }
           // ... and its bounds name their traits (`project[T: Key]`).
           for mg in method_gens {
             if mg.0 == sg.0 {
-              push_bounds(w, mg.2, local_trait, sig_hidden)
+              push_bounds(w = w, bounds = mg.2, local = local_trait, hidden = sig_hidden)
             }
           }
-          push_types(w, sg.1, sig_hidden)
-          Array::push(w.types, (sg.2, sig_hidden))
+          push_types(w = w, ts = sg.1, hidden = sig_hidden)
+          Array::push(w.types, value = (sg.2, sig_hidden))
         }
         ()
       },
       SEffectDef(_, _, tparams, ops) => {
-        let hidden = local_type || binds_type_param(tparams, name)
+        let hidden = local_type || binds_type_param(tparams = tparams, name = name)
         for op in ops {
-          push_types(w, op.1, hidden)
-          Array::push(w.types, (op.2, hidden))
+          push_types(w = w, ts = op.1, hidden = hidden)
+          Array::push(w.types, value = (op.2, hidden))
         }
         ()
       },
-      SExternLet(_, t) => Array::push(w.types, (t, local_type)),
+      SExternLet(_, t) => Array::push(w.types, value = (t, local_type)),
       // A `test .. allows Ask` row lives only in this marker (Codex on #3492).
       STestEffectRows(rows) => {
         for row in rows {
-          Array::push(w.rows, (row.1, local_effect, local_type))
+          Array::push(w.rows, value = (row.1, local_effect, local_type))
         }
         ()
       },
@@ -148,7 +148,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       },
       SEffectSet(_, _, members) => {
         for m in members {
-          Array::push(w.rows, (m, local_effect, local_type))
+          Array::push(w.rows, value = (m, local_effect, local_type))
         }
         ()
       },
@@ -159,35 +159,35 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
   let mut found = pattern_hit
   while !found && Array::length(w.stack) > 0 {
     let n = Array::length(w.stack)
-    let (cur, outer_hidden) = Array::get(w.stack, n - 1)
-    Array::truncate(w.stack, n - 1)
+    let (cur, outer_hidden) = Array::get(w.stack, at = n - 1)
+    Array::truncate(w.stack, length = n - 1)
     let mut hidden = outer_hidden
     match cur {
       // A file's own type of the name owns its constructors too: `Box(b)`
       // beside a local `enum Box` is that enum's (Codex on #3492).
-      EIdent(x, _) => found = (!local && x == name) || (!local && !hidden && String::starts_with(x, qual)),
+      EIdent(x, _) => found = (!local && x == name) || (!local && !hidden && String::starts_with(x, prefix = qual)),
       ERecord(x, _, targs) => {
-        found = !local_type && !hidden && (x == name || String::starts_with(x, qual))
-        push_types(w, targs, local_type || hidden)
+        found = !local_type && !hidden && (x == name || String::starts_with(x, prefix = qual))
+        push_types(w = w, ts = targs, hidden = local_type || hidden)
       },
       EFn(tparams, bounds, params, ret, row, _) => {
-        hidden = hidden || binds_type_param(tparams, name)
+        hidden = hidden || binds_type_param(tparams = tparams, name = name)
         let type_hidden = local_type || hidden
         // A bound names its trait (`[T: Key]`), as an annotation names a type
         // (Codex on #3492).
-        push_bounds(w, bounds, local_trait, type_hidden)
+        push_bounds(w = w, bounds = bounds, local = local_trait, hidden = type_hidden)
         for p in params {
-          push_type_opt(w, p.1, type_hidden)
+          push_type_opt(w = w, t = p.1, hidden = type_hidden)
         }
-        push_type_opt(w, ret, type_hidden)
+        push_type_opt(w = w, t = ret, hidden = type_hidden)
         match row {
-          Some(text) => Array::push(w.rows, (text, local_effect, type_hidden)),
+          Some(text) => Array::push(w.rows, value = (text, local_effect, type_hidden)),
           None => ()
         }
       },
       EMatch(_, arms) => {
         for arm in arms {
-          if pat_names(arm.0, name, qual, local) {
+          if pat_names(p = arm.0, name = name, qual = qual, hidden = local) {
             found = true
           }
         }
@@ -195,7 +195,7 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       },
       EHandle(_, arms) => {
         for arm in arms {
-          if pat_names(arm.0, name, qual, local) {
+          if pat_names(p = arm.0, name = name, qual = qual, hidden = local) {
             found = true
           }
         }
@@ -204,34 +204,34 @@ export fn stmts_code_names(stmts: Array[Stmt], name: String) -> Bool {
       _ => ()
     }
     for child in expr_children(cur) {
-      Array::push(w.stack, (child, hidden))
+      Array::push(w.stack, value = (child, hidden))
     }
   }
   while !found && Array::length(w.types) > 0 {
     let n = Array::length(w.types)
-    let (cur, hidden) = Array::get(w.types, n - 1)
-    Array::truncate(w.types, n - 1)
+    let (cur, hidden) = Array::get(w.types, at = n - 1)
+    Array::truncate(w.types, length = n - 1)
     match cur {
-      TyName(x) => found = !hidden && (x == name || String::starts_with(x, qual)),
+      TyName(x) => found = !hidden && (x == name || String::starts_with(x, prefix = qual)),
       TyApp(x, args) => {
-        found = !hidden && (x == name || String::starts_with(x, qual))
-        push_types(w, args, hidden)
+        found = !hidden && (x == name || String::starts_with(x, prefix = qual))
+        push_types(w = w, ts = args, hidden = hidden)
       },
       TyFn(ps, r, row) => {
-        push_types(w, ps, hidden)
-        Array::push(w.types, (r, hidden))
+        push_types(w = w, ts = ps, hidden = hidden)
+        Array::push(w.types, value = (r, hidden))
         match row {
-          Some(text) => Array::push(w.rows, (text, local_effect, hidden)),
+          Some(text) => Array::push(w.rows, value = (text, local_effect, hidden)),
           None => ()
         }
       },
-      TyTuple(items) => push_types(w, items, hidden),
+      TyTuple(items) => push_types(w = w, ts = items, hidden = hidden),
       TyUnit => ()
     }
   }
   for row in w.rows {
     let (text, row_local, hidden) = row
-    if !found && row_text_names(text, name, row_local, hidden) {
+    if !found && row_text_names(text = text, name = name, local = row_local, hidden = hidden) {
       found = true
     }
   }
@@ -285,7 +285,7 @@ fn binds_type_param(tparams: Array[String], name: String) -> Bool {
 fn push_bounds(w: CodeNamesWalk, bounds: Array[(String, Array[String])], local: Bool, hidden: Bool) -> Unit {
   for b in bounds {
     for r in b.1 {
-      push_trait_ref(w, r, local, hidden)
+      push_trait_ref(w = w, key = r, local = local, hidden = hidden)
     }
   }
   ()
@@ -297,41 +297,41 @@ fn push_bounds(w: CodeNamesWalk, bounds: Array[(String, Array[String])], local: 
 fn push_trait_ref(w: CodeNamesWalk, key: String, local: Bool, hidden: Bool) -> Unit {
   let head = trait_ref_name(key)
   if head != "" {
-    Array::push(w.types, (TyName(head), local))
+    Array::push(w.types, value = (TyName(head), local))
   } else {
-    Array::push(w.rows, (key, local, hidden))
+    Array::push(w.rows, value = (key, local, hidden))
   }
-  push_types(w, trait_ref_args(key), hidden)
+  push_types(w = w, ts = trait_ref_args(key), hidden = hidden)
 }
 
 fn push_types(w: CodeNamesWalk, ts: Array[TypeExpr], hidden: Bool) -> Unit {
   for t in ts {
-    Array::push(w.types, (t, hidden))
+    Array::push(w.types, value = (t, hidden))
   }
   ()
 }
 
 fn push_type_opt(w: CodeNamesWalk, t: Option[TypeExpr], hidden: Bool) -> Unit {
   match t {
-    Some(x) => Array::push(w.types, (x, hidden)),
+    Some(x) => Array::push(w.types, value = (x, hidden)),
     None => ()
   }
 }
 
 fn pat_names(p: Pat, name: String, qual: String, hidden: Bool) -> Bool {
   match p {
-    PCtor(x, ps) => (!hidden && (x == name || String::starts_with(x, qual))) || pats_name(ps, name, qual, hidden),
+    PCtor(x, ps) => (!hidden && (x == name || String::starts_with(x, prefix = qual))) || pats_name(ps = ps, name = name, qual = qual, hidden = hidden),
     PStruct(x, fields) => {
-      let mut hit = !hidden && (x == name || String::starts_with(x, qual))
+      let mut hit = !hidden && (x == name || String::starts_with(x, prefix = qual))
       for f in fields {
-        if !hit && pat_names(f.1, name, qual, hidden) {
+        if !hit && pat_names(p = f.1, name = name, qual = qual, hidden = hidden) {
           hit = true
         }
       }
       hit
     },
-    PTuple(ps) => pats_name(ps, name, qual, hidden),
-    POr(a, b) => pat_names(a, name, qual, hidden) || pat_names(b, name, qual, hidden),
+    PTuple(ps) => pats_name(ps = ps, name = name, qual = qual, hidden = hidden),
+    POr(a, b) => pat_names(p = a, name = name, qual = qual, hidden = hidden) || pat_names(p = b, name = name, qual = qual, hidden = hidden),
     _ => false
   }
 }
@@ -339,7 +339,7 @@ fn pat_names(p: Pat, name: String, qual: String, hidden: Bool) -> Bool {
 fn pats_name(ps: Array[Pat], name: String, qual: String, hidden: Bool) -> Bool {
   let mut hit = false
   for p in ps {
-    if !hit && pat_names(p, name, qual, hidden) {
+    if !hit && pat_names(p = p, name = name, qual = qual, hidden = hidden) {
       hit = true
     }
   }
@@ -362,17 +362,17 @@ fn row_text_names(text: String, name: String, local: Bool, hidden: Bool) -> Bool
   let mut i = 0
   while !hit && i <= n {
     let c = if i < n {
-      String::byte_at(text, i)
+      String::byte_at(text, at = i)
     } else {
       0
     }
     if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
       if word == "" {
-        qualified = i >= 2 && String::byte_at(text, i - 1) == ':' && String::byte_at(text, i - 2) == ':'
+        qualified = i >= 2 && String::byte_at(text, at = i - 1) == ':' && String::byte_at(text, at = i - 2) == ':'
       }
-      word = String::concat(word, String::substring(text, i, i + 1))
+      word = String::concat(word, String::substring(text, start = i, end = i + 1))
     } else {
-      let head = depth == 0 && String::length(word) > 0 && String::byte_at(word, 0) >= 'A' && String::byte_at(word, 0) <= 'Z'
+      let head = depth == 0 && String::length(word) > 0 && String::byte_at(word, at = 0) >= 'A' && String::byte_at(word, at = 0) <= 'Z'
       let shadowed = if head {
         local
       } else {

@@ -58,11 +58,11 @@ import @vibe/compiler/codegen/component {
 /// `() -> Int with Async` (no params)? If so its compiled core wasm should be
 /// wrapped into an async-lifted WASM component. Detected from the declared TyFn
 /// effect annotation (before generic-param stripping).
-fn entry_expr_declares_async_int(value: Expr) -> Bool {
+fn entry_expr_declares_async_int(_ value: Expr) -> Bool {
   match value {
     EFn(_, _, params, ret, eff, _) => match ret {
       Some(TyName(rn)) => rn == "Int" && Array::length(params) == 0 && match eff {
-        Some(row) => effect_row_contains_label(Some(row), "Async"),
+        Some(row) => effect_row_contains_label(eff = Some(row), wanted = "Async"),
         None => false
       },
       _ => false
@@ -75,7 +75,7 @@ export fn entry_declares_async_int(stmts: Array[Stmt], entry_name: String) -> Bo
   let mut found = false
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, opt_ty, value) => if name == entry_name {
         // Flattened patterns: the pinned selfhost seed does not bind variables
         // inside nested constructor patterns (e.g. `Some(ty)` as a sub-pattern),
@@ -84,7 +84,7 @@ export fn entry_declares_async_int(stmts: Array[Stmt], entry_name: String) -> Bo
         match opt_ty {
           Some(ty) => match ty {
             TyFn(params, ret, opt_eff) => match opt_eff {
-              Some(eff) => if effect_row_contains_label(Some(eff), "Async") && Array::length(params) == 0 {
+              Some(eff) => if effect_row_contains_label(eff = Some(eff), wanted = "Async") && Array::length(params) == 0 {
                 match ret {
                   TyName(rn) => if rn == "Int" {
                     found = true
@@ -128,7 +128,7 @@ export fn entry_declares_async_int(stmts: Array[Stmt], entry_name: String) -> Bo
 /// host-future composition (adapter-provided imports + `get-future`
 /// component import + u32 lift, driven by viberun); everything else keeps
 /// the self-contained trampolined-p1 shape byte-identically.
-fn stdin_provider_component_only_diagnostic(mode: String) -> String {
+fn stdin_provider_component_only_diagnostic(_ mode: String) -> String {
   String::concat("StdinStream is component-only; ", String::concat(mode, " cannot emit its component-private stdin provider imports. Use an Async component entry named run without this instrumentation mode"))
 }
 
@@ -151,7 +151,7 @@ export fn reject_stdin_provider_core(bytes: Bytes, mode: String) -> Bytes with E
 export fn maybe_wrap_stdin_provider_core(bytes: Bytes, entry_name: String) -> Bytes with Exception {
   if comp_core_imports_stdin_provider(bytes) {
     if entry_name == "run" {
-      comp_emit_component_wasm_async_stdin_provider(bytes, "run")
+      comp_emit_component_wasm_async_stdin_provider(main_core_wasm = bytes, export_name = "run")
     } else {
       throw("StdinStream is component-only and requires an Async component entry named run")
     }
@@ -163,7 +163,7 @@ export fn maybe_wrap_stdin_provider_core(bytes: Bytes, entry_name: String) -> By
     // `vibe.*_get$` imports nothing can satisfy. Keyed on the imports the core
     // actually has: an `Async` `run` entry that awaits no host future or
     // stream is left as it was.
-    comp_emit_component_wasm_async_hostfuture(bytes, "run")
+    comp_emit_component_wasm_async_hostfuture(main_core_wasm = bytes, export_name = "run")
   } else {
     bytes
   }
@@ -176,12 +176,12 @@ export fn maybe_wrap_stdin_provider_core(bytes: Bytes, entry_name: String) -> By
 /// declaration, a local, a parameter, a pattern -- is that binding, not the
 /// builtin (#3030), so an unused local named `vibe_process_exit_raw` no longer
 /// refuses the build.
-fn stmts_reach_process_exit(stmts: Array[Stmt]) -> Bool {
+fn stmts_reach_process_exit(_ stmts: Array[Stmt]) -> Bool {
   let exit_name = "vibe_process_exit_raw"
   let mut declared = false
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, n, _, _) => if n == exit_name {
         declared = true
       },
@@ -198,11 +198,11 @@ fn stmts_reach_process_exit(stmts: Array[Stmt]) -> Bool {
     let mut found = false
     let mut j = 0
     while j < Array::length(stmts) && !found {
-      match Array::get(stmts, j) {
-        SLet(_, _, _, _, v) => found = expr_reaches_name(v, exit_name, false),
-        SLetMut(_, _, v) => found = expr_reaches_name(v, exit_name, false),
-        STest(_, b) => found = expr_reaches_name(b, exit_name, false),
-        SBench(_, b) => found = expr_reaches_name(b, exit_name, false),
+      match Array::get(stmts, at = j) {
+        SLet(_, _, _, _, v) => found = expr_reaches_name(e = v, name = exit_name, hidden = false),
+        SLetMut(_, _, v) => found = expr_reaches_name(e = v, name = exit_name, hidden = false),
+        STest(_, b) => found = expr_reaches_name(e = b, name = exit_name, hidden = false),
+        SBench(_, b) => found = expr_reaches_name(e = b, name = exit_name, hidden = false),
         _ => ()
       }
       j = j + 1
@@ -219,38 +219,38 @@ fn expr_reaches_name(e: Expr, name: String, hidden: Bool) -> Bool {
   } else {
     match e {
       EIdent(n, _) => n == name,
-      ELet(n, v, rest, _) => expr_reaches_name(v, name, false) || expr_reaches_name(rest, name, n == name),
-      ELetMut(n, v, rest, _) => expr_reaches_name(v, name, false) || expr_reaches_name(rest, name, n == name),
-      ELetRec(n, v, rest) => n != name && (expr_reaches_name(v, name, false) || expr_reaches_name(rest, name, false)),
+      ELet(n, v, rest, _) => expr_reaches_name(e = v, name = name, hidden = false) || expr_reaches_name(e = rest, name = name, hidden = n == name),
+      ELetMut(n, v, rest, _) => expr_reaches_name(e = v, name = name, hidden = false) || expr_reaches_name(e = rest, name = name, hidden = n == name),
+      ELetRec(n, v, rest) => n != name && (expr_reaches_name(e = v, name = name, hidden = false) || expr_reaches_name(e = rest, name = name, hidden = false)),
       EFn(_, _, params, _, _, body) => {
         let mut rebound = false
         let mut pi = 0
         while pi < Array::length(params) {
-          let (pn, _) = Array::get(params, pi)
+          let (pn, _) = Array::get(params, at = pi)
           if pn == name {
             rebound = true
           }
           pi = pi + 1
         }
-        expr_reaches_name(body, name, rebound)
+        expr_reaches_name(e = body, name = name, hidden = rebound)
       },
-      EForIn(n, n2, iter, body) => expr_reaches_name(iter, name, false) || expr_reaches_name(body, name, n == name || n2 == Some(name)),
+      EForIn(n, n2, iter, body) => expr_reaches_name(e = iter, name = name, hidden = false) || expr_reaches_name(e = body, name = name, hidden = n == name || n2 == Some(name)),
       EMatch(scrut, arms) => {
-        let mut hit = expr_reaches_name(scrut, name, false)
+        let mut hit = expr_reaches_name(e = scrut, name = name, hidden = false)
         let mut ai = 0
         while ai < Array::length(arms) && !hit {
-          let (pat, arm) = Array::get(arms, ai)
-          hit = expr_reaches_name(arm, name, pat_binds_name(pat, name))
+          let (pat, arm) = Array::get(arms, at = ai)
+          hit = expr_reaches_name(e = arm, name = name, hidden = pat_binds_name(p = pat, name = name))
           ai = ai + 1
         }
         hit
       },
       EHandle(body, arms) => {
-        let mut hit = expr_reaches_name(body, name, false)
+        let mut hit = expr_reaches_name(e = body, name = name, hidden = false)
         let mut ai = 0
         while ai < Array::length(arms) && !hit {
-          let (pat, arm) = Array::get(arms, ai)
-          hit = expr_reaches_name(arm, name, pat_binds_name(pat, name))
+          let (pat, arm) = Array::get(arms, at = ai)
+          hit = expr_reaches_name(e = arm, name = name, hidden = pat_binds_name(p = pat, name = name))
           ai = ai + 1
         }
         hit
@@ -260,7 +260,7 @@ fn expr_reaches_name(e: Expr, name: String, hidden: Bool) -> Bool {
         let mut hit = false
         let mut ki = 0
         while ki < Array::length(kids) && !hit {
-          hit = expr_reaches_name(Array::get(kids, ki), name, false)
+          hit = expr_reaches_name(e = Array::get(kids, at = ki), name = name, hidden = false)
           ki = ki + 1
         }
         hit
@@ -276,7 +276,7 @@ fn pat_binds_name(p: Pat, name: String) -> Bool {
       let mut hit = false
       let mut i = 0
       while i < Array::length(subs) && !hit {
-        hit = pat_binds_name(Array::get(subs, i), name)
+        hit = pat_binds_name(p = Array::get(subs, at = i), name = name)
         i = i + 1
       }
       hit
@@ -285,18 +285,18 @@ fn pat_binds_name(p: Pat, name: String) -> Bool {
       let mut hit = false
       let mut i = 0
       while i < Array::length(subs) && !hit {
-        hit = pat_binds_name(Array::get(subs, i), name)
+        hit = pat_binds_name(p = Array::get(subs, at = i), name = name)
         i = i + 1
       }
       hit
     },
-    POr(l, r) => pat_binds_name(l, name) || pat_binds_name(r, name),
+    POr(l, r) => pat_binds_name(p = l, name = name) || pat_binds_name(p = r, name = name),
     PStruct(_, fields) => {
       let mut hit = false
       let mut i = 0
       while i < Array::length(fields) && !hit {
-        let (_, fp) = Array::get(fields, i)
-        hit = pat_binds_name(fp, name)
+        let (_, fp) = Array::get(fields, at = i)
+        hit = pat_binds_name(p = fp, name = name)
         i = i + 1
       }
       hit
@@ -311,7 +311,7 @@ fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool, user_exits: Bool) 
     // cannot be satisfied by (or safely mixed into) generic named streams.
     // The dedicated composer validates signatures and rejects mixing.
     if comp_core_imports_stdin_provider(bytes) {
-      comp_emit_component_wasm_async_stdin_provider(bytes, "run")
+      comp_emit_component_wasm_async_stdin_provider(main_core_wasm = bytes, export_name = "run")
     } else if comp_core_imports_host_future(bytes) || comp_core_imports_host_stream(bytes) || comp_core_imports_sleep(bytes) {
       // ADR-0089 Decision 3 (#1218): host STREAMS
       // (`vibe.host_stream_get$<name>`) key the same composition -- the
@@ -321,7 +321,7 @@ fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool, user_exits: Bool) 
       // #1342: `sleep` keys it as well. The self-contained wrap below has no
       // `vibe` instance, so a sleeping component has to come from the adapter
       // composition -- which now carries a sleep half of its own.
-      comp_emit_component_wasm_async_hostfuture(bytes, "run")
+      comp_emit_component_wasm_async_hostfuture(main_core_wasm = bytes, export_name = "run")
     } else {
       // #1342: nothing below provides a host import, so prove there is none
       // before emitting an artifact that could not be instantiated.
@@ -335,7 +335,7 @@ fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool, user_exits: Bool) 
         ()
       }
       comp_reject_unsatisfiable_selfcontained_imports(bytes)
-      comp_emit_component_wasm_async_trampolined_p1(bytes, "run", 120)
+      comp_emit_component_wasm_async_trampolined_p1(main_core_wasm = bytes, export_name = "run", comp_result_valtype = 120)
     }
   } else {
     bytes
@@ -348,7 +348,7 @@ fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool, user_exits: Bool) 
 /// exactly as the gc lane passes them. The linked prelude's own call later is
 /// idempotent on the already-desugared program.
 fn desugar_after_check(stmts: Array[Stmt], eq_offsets: Array[Int], eq_keys: Array[String]) -> Unit with Exception {
-  desugar_trait_dicts_with_typed_eq(stmts, eq_offsets, eq_keys)
+  desugar_trait_dicts_with_typed_eq(stmts = stmts, typed_eq_offsets = eq_offsets, typed_eq_keys = eq_keys)
 }
 
 /// #2158: the checker's Double call-result offsets for a SINGLE-SOURCE program.
@@ -397,12 +397,12 @@ fn desugar_after_check(stmts: Array[Stmt], eq_offsets: Array[Int], eq_keys: Arra
 /// (`compile_file_wasi_only`, `compile_file_wasi_library`) take the same
 /// tables from it: they rebase every file into one disjoint offset space
 /// before the check, so the one-offset-space property holds there too.
-fn source_offsets(stmts: Array[Stmt]) -> (Array[Int], Array[Int], Array[Int], Array[Int], Array[String], Option[TypeEnv]) with Exception {
+fn source_offsets(_ stmts: Array[Stmt]) -> (Array[Int], Array[Int], Array[Int], Array[Int], Array[String], Option[TypeEnv]) with Exception {
   match check_program_double_call_result_located_observation(stmts) {
     Some((checked, offsets, eq_offs, eq_keys)) => {
       // #2987: tag 6 folds into the Int array under a negative key.
       let (int_only, bool_renders, unrenderable) = checked_int_bool_and_unrenderable_render_offsets(checked)
-      let int_renders = merge_unrenderable_render_offsets(int_only, unrenderable)
+      let int_renders = merge_unrenderable_render_offsets(ints = int_only, unrenderable = unrenderable)
       (offsets, int_renders, bool_renders, eq_offs, eq_keys, Some(checked.final_env))
     },
     None => ([], [], [], [], [], None)
@@ -428,7 +428,7 @@ fn validate_source_exports_if_user(stmts: Array[Stmt], env: Option[TypeEnv], tru
     ()
   } else {
     match env {
-      Some(checked_env) => validate_user_source_exports(stmts, checked_env),
+      Some(checked_env) => validate_user_source_exports(stmts = stmts, env = checked_env),
       None => ()
     }
   }
@@ -442,27 +442,27 @@ fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_gen
   // offset at -1, which makes the checker's offset-keyed table empty BY
   // CONSTRUCTION -- the channel would be wired up and permanently inert.
   let (tokens, starts, _ends) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
   // Before anything rewrites the statements: the exception boundary's own
   // exit is generated later and must not count as the program's (#3030).
   let user_exits = stmts_reach_process_exit(stmts)
-  validate_source_if_user(stmts, trusted_generated)
+  validate_source_if_user(stmts = stmts, trusted_generated = trusted_generated)
   expand_interp_only(stmts)
   // Check before stripping generic type params (see merge_sources.vibe).
   let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
-  validate_source_exports_if_user(stmts, checked_env, trusted_generated)
-  desugar_after_check(stmts, eq_offsets, eq_keys)
-  let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
+  validate_source_exports_if_user(stmts = stmts, env = checked_env, trusted_generated = trusted_generated)
+  desugar_after_check(stmts = stmts, eq_offsets = eq_offsets, eq_keys = eq_keys)
+  let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts = stmts, entry_name = entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, user_exits)
+  maybe_wrap_async_component(bytes = compile_wasi_module_impl_with_typed_offsets(stmts = stmts, entry_name = entry_name, checker_float_call_offsets = float_call_offsets, checker_int_render_offsets = int_render_offsets, checker_bool_render_offsets = bool_render_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys), wrap_async = wrap_async, user_exits = user_exits)
 }
 
 export fn compile_source_wasi_only(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_impl(source, entry_name, false)
+  compile_source_wasi_only_impl(source = source, entry_name = entry_name, trusted_generated = false)
 }
 
 export fn compile_generated_source_wasi_only(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_impl(source, entry_name, true)
+  compile_source_wasi_only_impl(source = source, entry_name = entry_name, trusted_generated = true)
 }
 
 /// Coverage (#cov): same source pipeline as compile_source_wasi_only but routes
@@ -487,25 +487,25 @@ fn compile_source_wasi_only_coverage_impl(source: String, entry_name: String, tr
   // arguments to `compile_wasi_module_linked_impl*`, so going through the
   // `srcs`-taking typed entry with an empty `srcs` is the same compile.
   let (tokens, starts, _ends) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
-  validate_source_if_user(stmts, trusted_generated)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
+  validate_source_if_user(stmts = stmts, trusted_generated = trusted_generated)
   expand_interp_only(stmts)
   let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
-  validate_source_exports_if_user(stmts, checked_env, trusted_generated)
-  desugar_after_check(stmts, eq_offsets, eq_keys)
+  validate_source_exports_if_user(stmts = stmts, env = checked_env, trusted_generated = trusted_generated)
+  desugar_after_check(stmts = stmts, eq_offsets = eq_offsets, eq_keys = eq_keys)
   strip_generic_type_params(stmts)
   // Coverage consumers require a standalone instrumented core. StdinStream's
   // raw provider ABI is satisfiable only inside the dedicated component, so
   // parse the emitted core imports and fail before returning any artifact.
-  reject_stdin_provider_core(compile_wasi_module_with_sources_coverage_impl_with_typed_offsets(stmts, entry_name, array_empty(), float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), "VIBE_COVERAGE=1")
+  reject_stdin_provider_core(bytes = compile_wasi_module_with_sources_coverage_impl_with_typed_offsets(stmts = stmts, entry_name = entry_name, srcs = array_empty(), checker_float_call_offsets = float_call_offsets, checker_int_render_offsets = int_render_offsets, checker_bool_render_offsets = bool_render_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys), mode = "VIBE_COVERAGE=1")
 }
 
 export fn compile_source_wasi_only_coverage(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_coverage_impl(source, entry_name, false)
+  compile_source_wasi_only_coverage_impl(source = source, entry_name = entry_name, trusted_generated = false)
 }
 
 export fn compile_generated_source_wasi_only_coverage(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_coverage_impl(source, entry_name, true)
+  compile_source_wasi_only_coverage_impl(source = source, entry_name = entry_name, trusted_generated = true)
 }
 
 /// ADR-0055 #493 cutover: same pipeline on the Perceus RC codegen path. Lets the
@@ -521,26 +521,26 @@ fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_
   // classifier alone would mean the two lanes rendered the same program's
   // Doubles differently.
   let (tokens, starts, _ends) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
   // Before anything rewrites the statements: the exception boundary's own
   // exit is generated later and must not count as the program's (#3030).
   let user_exits = stmts_reach_process_exit(stmts)
-  validate_source_if_user(stmts, trusted_generated)
+  validate_source_if_user(stmts = stmts, trusted_generated = trusted_generated)
   expand_interp_only(stmts)
   let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
-  validate_source_exports_if_user(stmts, checked_env, trusted_generated)
-  desugar_after_check(stmts, eq_offsets, eq_keys)
-  let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
+  validate_source_exports_if_user(stmts = stmts, env = checked_env, trusted_generated = trusted_generated)
+  desugar_after_check(stmts = stmts, eq_offsets = eq_offsets, eq_keys = eq_keys)
+  let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts = stmts, entry_name = entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_rc_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, user_exits)
+  maybe_wrap_async_component(bytes = compile_wasi_module_rc_impl_with_typed_offsets(stmts_in = stmts, entry_name = entry_name, checker_float_call_offsets = float_call_offsets, checker_int_render_offsets = int_render_offsets, checker_bool_render_offsets = bool_render_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys), wrap_async = wrap_async, user_exits = user_exits)
 }
 
 export fn compile_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_rc_impl(source, entry_name, false)
+  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = false)
 }
 
 export fn compile_generated_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_rc_impl(source, entry_name, true)
+  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = true)
 }
 
 /// #715 recurrence guard: same RC pipeline, but the produced module carries
@@ -559,26 +559,26 @@ fn compile_source_wasi_only_rc_shadow_impl(source: String, entry_name: String, t
   // empty and the two lanes disagreed on exactly the renders this channel
   // carries.
   let (tokens, starts, _ends) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
+  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
   // Before anything rewrites the statements: the exception boundary's own
   // exit is generated later and must not count as the program's (#3030).
   let user_exits = stmts_reach_process_exit(stmts)
-  validate_source_if_user(stmts, trusted_generated)
+  validate_source_if_user(stmts = stmts, trusted_generated = trusted_generated)
   expand_interp_only(stmts)
   let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
-  validate_source_exports_if_user(stmts, checked_env, trusted_generated)
-  desugar_after_check(stmts, eq_offsets, eq_keys)
-  let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
+  validate_source_exports_if_user(stmts = stmts, env = checked_env, trusted_generated = trusted_generated)
+  desugar_after_check(stmts = stmts, eq_offsets = eq_offsets, eq_keys = eq_keys)
+  let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts = stmts, entry_name = entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async, user_exits)
+  maybe_wrap_async_component(bytes = compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts_in = stmts, entry_name = entry_name, checker_float_call_offsets = float_call_offsets, checker_int_render_offsets = int_render_offsets, checker_bool_render_offsets = bool_render_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys), wrap_async = wrap_async, user_exits = user_exits)
 }
 
 export fn compile_source_wasi_only_rc_shadow(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_rc_shadow_impl(source, entry_name, false)
+  compile_source_wasi_only_rc_shadow_impl(source = source, entry_name = entry_name, trusted_generated = false)
 }
 
 export fn compile_generated_source_wasi_only_rc_shadow(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_rc_shadow_impl(source, entry_name, true)
+  compile_source_wasi_only_rc_shadow_impl(source = source, entry_name = entry_name, trusted_generated = true)
 }
 
 //# Misc

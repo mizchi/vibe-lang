@@ -239,7 +239,7 @@ import ./compile_match.vibe {
 /// `cc_is_ref_cell_read`.
 fn cet4_is_ref_cell_read(e: Expr, ctx: CompileCtx) -> Bool {
   match e {
-    EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n),
+    EIdent(n, _) => array_contains_str(arr = ctx.ref_cell_names, s = n),
     _ => false
   }
 }
@@ -254,9 +254,9 @@ fn cet4_is_ref_cell_read(e: Expr, ctx: CompileCtx) -> Bool {
 /// local so the field load can be followed by the release. Answers -1 and
 /// leaves the stack alone otherwise.
 fn cet4_hold_owned_temp(buf: Bytes, obj: Expr, local_names: Array[String], tmp_l: Int, ctx: CompileCtx) -> Int {
-  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && cc_is_owned_temp(obj, ctx) {
-    Array::push(local_names, "__dot_tmp")
-    emit_local_tee(buf, tmp_l)
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && cc_is_owned_temp(e = obj, ctx = ctx) {
+    Array::push(local_names, value = "__dot_tmp")
+    emit_local_tee(buf = buf, idx = tmp_l)
     tmp_l
   } else {
     0 - 1
@@ -277,12 +277,12 @@ fn cet4_release_owned_temp(buf: Bytes, local_names: Array[String], next_local: I
     next_local
   } else {
     let fld_l = next_local
-    Array::push(local_names, "__dot_fld")
-    emit_local_set(buf, fld_l)
-    emit_rc_dup_guarded(buf, fld_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
-    emit_local_get(buf, tmp_l)
-    emit_call(buf, ctx.rc_drop_func_idx)
-    emit_local_get(buf, fld_l)
+    Array::push(local_names, value = "__dot_fld")
+    emit_local_set(buf = buf, idx = fld_l)
+    emit_rc_dup_guarded(buf = buf, local_idx = fld_l, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
+    emit_local_get(buf = buf, idx = tmp_l)
+    emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
+    emit_local_get(buf = buf, idx = fld_l)
     next_local + 1
   }
 }
@@ -290,17 +290,17 @@ fn cet4_release_owned_temp(buf: Bytes, local_names: Array[String], next_local: I
 export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   match expr {
     EDot(obj, field, _, _) => {
-      let fc = String::char_code_at(field, 0)
+      let fc = String::char_code_at(field, at = 0)
       if fc >= 48 && fc <= 57 {
         // `t.N` tuple projection: purely positional.
         let mut vi = 0
         let mut vp = 0
         while vp < String::length(field) {
-          vi = vi * 10 + (String::char_code_at(field, vp) - 48)
+          vi = vi * 10 + (String::char_code_at(field, at = vp) - 48)
           vp = vp + 1
         }
         let nl0 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
-        let tmp_l = cet4_hold_owned_temp(buf, obj, local_names, nl0, ctx)
+        let tmp_l = cet4_hold_owned_temp(buf = buf, obj = obj, local_names = local_names, tmp_l = nl0, ctx = ctx)
         let nl1 = if tmp_l >= 0 {
           nl0 + 1
         } else {
@@ -308,7 +308,7 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
         }
         // RC mode: the tuple value is an odd pointer (Stage 2); untag before use.
         if ctx.enable_rc {
-          emit_i64_const(buf, -2)
+          emit_i64_const(buf = buf, value = -2)
           emit_i64_and(buf)
         }
         emit_i32_wrap_i64(buf)
@@ -318,8 +318,8 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
         } else {
           vi * 8
         }
-        emit_i64_load(buf, 3, toff)
-        cet4_release_owned_temp(buf, local_names, nl1, tmp_l, ctx)
+        emit_i64_load(buf = buf, align = 3, offset = toff)
+        cet4_release_owned_temp(buf = buf, local_names = local_names, next_local = nl1, tmp_l = tmp_l, ctx = ctx)
       } else {
         // #722: name-based struct field access. The slot index depends on
         // WHICH struct the value is — a same-named field can live at a
@@ -328,53 +328,53 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
         // they disagree, dispatch at runtime on the value's ctor tag
         // (value+0), falling back to the first-declared struct's slot for
         // legacy untagged records.
-        let cands = struct_field_candidates(ctx.ctor_table, field)
+        let cands = struct_field_candidates(ct = ctx.ctor_table, field = field)
         if Array::length(cands) == 0 {
           throw(String::concat("unknown struct field: ", field))
         }
-        let (_, idx0) = Array::get(cands, 0)
+        let (_, idx0) = Array::get(cands, at = 0)
         let dispatch = struct_field_dispatch_cases(cands)
         let nl0 = compile_expr(buf, obj, local_names, next_local, ctx, ld)
-        let tmp_l = cet4_hold_owned_temp(buf, obj, local_names, nl0, ctx)
+        let tmp_l = cet4_hold_owned_temp(buf = buf, obj = obj, local_names = local_names, tmp_l = nl0, ctx = ctx)
         let nl1 = if tmp_l >= 0 {
           nl0 + 1
         } else {
           nl0
         }
-        emit_i64_const(buf, -2)
+        emit_i64_const(buf = buf, value = -2)
         emit_i64_and(buf)
         if Array::length(dispatch) == 0 {
           emit_i32_wrap_i64(buf)
-          emit_i64_load(buf, 3, 8 + idx0 * 8)
-          cet4_release_owned_temp(buf, local_names, nl1, tmp_l, ctx)
+          emit_i64_load(buf = buf, align = 3, offset = 8 + idx0 * 8)
+          cet4_release_owned_temp(buf = buf, local_names = local_names, next_local = nl1, tmp_l = tmp_l, ctx = ctx)
         } else {
           let obj_l = nl1
-          Array::push(local_names, "__dot_obj")
-          emit_local_set(buf, obj_l)
+          Array::push(local_names, value = "__dot_obj")
+          emit_local_set(buf = buf, idx = obj_l)
           let mut di = 0
           while di < Array::length(dispatch) {
-            let (dtag, didx) = Array::get(dispatch, di)
-            emit_local_get(buf, obj_l)
+            let (dtag, didx) = Array::get(dispatch, at = di)
+            emit_local_get(buf = buf, idx = obj_l)
             emit_i32_wrap_i64(buf)
-            emit_i32_load(buf, 2, 0)
-            emit_ctor_tag(buf, ctx, dtag)
+            emit_i32_load(buf = buf, align = 2, offset = 0)
+            emit_ctor_tag(buf = buf, ctx = ctx, tag = dtag)
             emit_i32_eq(buf)
             emit_if_i64(buf)
-            emit_local_get(buf, obj_l)
+            emit_local_get(buf = buf, idx = obj_l)
             emit_i32_wrap_i64(buf)
-            emit_i64_load(buf, 3, 8 + didx * 8)
+            emit_i64_load(buf = buf, align = 3, offset = 8 + didx * 8)
             emit_else(buf)
             di = di + 1
           }
-          emit_local_get(buf, obj_l)
+          emit_local_get(buf = buf, idx = obj_l)
           emit_i32_wrap_i64(buf)
-          emit_i64_load(buf, 3, 8 + idx0 * 8)
+          emit_i64_load(buf = buf, align = 3, offset = 8 + idx0 * 8)
           let mut de = 0
           while de < Array::length(dispatch) {
             emit_end(buf)
             de = de + 1
           }
-          cet4_release_owned_temp(buf, local_names, nl1 + 1, tmp_l, ctx)
+          cet4_release_owned_temp(buf = buf, local_names = local_names, next_local = nl1 + 1, tmp_l = tmp_l, ctx = ctx)
         }
       }
     },
@@ -395,31 +395,31 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
       let lit_names = array_empty()
       let mut lni = 0
       while lni < flen {
-        let (lfn, _) = Array::get(fields, lni)
-        Array::push(lit_names, lfn)
+        let (lfn, _) = Array::get(fields, at = lni)
+        Array::push(lit_names, value = lfn)
         lni = lni + 1
       }
       let rec_si = if rec_rn == "" {
         -1
       } else {
-        struct_index_by_field_set(ctx.ctor_table, lit_names)
+        struct_index_by_field_set(ct = ctx.ctor_table, lit_names = lit_names)
       }
       let rec_tag = if rec_si >= 0 {
-        struct_tag_by_index(ctx.ctor_table, rec_si)
+        struct_tag_by_index(ct = ctx.ctor_table, si = rec_si)
       } else {
         0
       }
       let rec_fields = if rec_si >= 0 {
-        let def_fnames = struct_field_names_at(ctx.ctor_table, rec_si)
+        let def_fnames = struct_field_names_at(ct = ctx.ctor_table, si = rec_si)
         let ordered = array_empty()
         let mut oi = 0
         while oi < Array::length(def_fnames) {
-          let target_name = Array::get(def_fnames, oi)
+          let target_name = Array::get(def_fnames, at = oi)
           let mut ri2 = 0
           while ri2 < flen {
-            let (rfn, rfv) = Array::get(fields, ri2)
+            let (rfn, rfv) = Array::get(fields, at = ri2)
             if rfn == target_name {
-              Array::push(ordered, (rfn, rfv))
+              Array::push(ordered, value = (rfn, rfv))
               ri2 = flen
             } else {
               ri2 = ri2 + 1
@@ -432,7 +432,7 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
         fields
       }
       let ptr_local = next_local
-      Array::push(local_names, "__rec_ptr")
+      Array::push(local_names, value = "__rec_ptr")
       if ctx.enable_rc {
         // RC layout (mirrors the tuple in compile_expr_tail2.vibe):
         //   block_start: [alloc_size@0][rc_count@4][type_id@8][length@12][payload@16...]
@@ -442,40 +442,40 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
         // pointer shift). type_id 0 preserves the existing record read semantics.
         let total = 16 + flen * 8
         // ADR-0055 Stage 4: allocate via the free-list search helper (vibe_rc_alloc).
-        emit_i64_const(buf, total)
-        emit_call(buf, ctx.rc_alloc_func_idx)
-        emit_local_set(buf, ptr_local)
-        emit_local_get(buf, ptr_local)
+        emit_i64_const(buf = buf, value = total)
+        emit_call(buf = buf, func_idx = ctx.rc_alloc_func_idx)
+        emit_local_set(buf = buf, idx = ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, total)
-        emit_i32_store(buf, 2, 0)
-        emit_local_get(buf, ptr_local)
+        emit_i32_const(buf = buf, value = total)
+        emit_i32_store(buf = buf, align = 2, offset = 0)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 1)
-        emit_i32_store(buf, 2, 4)
+        emit_i32_const(buf = buf, value = 1)
+        emit_i32_store(buf = buf, align = 2, offset = 4)
         // ADR-0055 Stage 2c/3: drop-class byte (block+7) = 1 (field-vector); a
         // record is [type_id@value+0][len@value+4][fields@value+8+i*8], the same
         // shape the recursive rc_drop loops.
-        emit_local_get(buf, ptr_local)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 1)
-        emit_i32_store8(buf, 0, 7)
-        emit_local_get(buf, ptr_local)
+        emit_i32_const(buf = buf, value = 1)
+        emit_i32_store8(buf = buf, align = 0, offset = 7)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_ctor_tag(buf, ctx, rec_tag)
-        emit_i32_store(buf, 2, 8)
-        emit_local_get(buf, ptr_local)
+        emit_ctor_tag(buf = buf, ctx = ctx, tag = rec_tag)
+        emit_i32_store(buf = buf, align = 2, offset = 8)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, flen)
-        emit_i32_store(buf, 2, 12)
+        emit_i32_const(buf = buf, value = flen)
+        emit_i32_store(buf = buf, align = 2, offset = 12)
         let mut nl_r = next_local + 1
         let mut ri = 0
         while ri < flen {
-          let (_, fexpr) = Array::get(rec_fields, ri)
+          let (_, fexpr) = Array::get(rec_fields, at = ri)
           nl_r = compile_expr(buf, fexpr, local_names, nl_r, ctx, ld)
           let val_local = nl_r
-          Array::push(local_names, "__rec_val")
-          emit_local_set(buf, val_local)
+          Array::push(local_names, value = "__rec_val")
+          emit_local_set(buf = buf, idx = val_local)
           nl_r = nl_r + 1
           // #704: a field projection `a.f` read as a record-field value is a
           // BORROW of the source aggregate. The record OWNS its fields (its
@@ -494,59 +494,59 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
           // #715: also retain a bare-ident field whose binding is borrow-bound
           // or loop-borrowed (cc_is_loop_borrowed_ident) -- same gap as the
           // ETuple case in compile_expr_tail2.vibe (see the comment there).
-          if ctx.enable_rc && (cc_is_borrowed_projection(fexpr, ctx) || cet4_is_ref_cell_read(fexpr, ctx) || cc_is_borrow_ret_call(fexpr, ctx) || cc_is_loop_borrowed_ident(fexpr, ctx)) {
-            emit_rc_dup_guarded(buf, val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
+          if ctx.enable_rc && (cc_is_borrowed_projection(e = fexpr, ctx = ctx) || cet4_is_ref_cell_read(e = fexpr, ctx = ctx) || cc_is_borrow_ret_call(e = fexpr, ctx = ctx) || cc_is_loop_borrowed_ident(e = fexpr, ctx = ctx)) {
+            emit_rc_dup_guarded(buf = buf, local_idx = val_local, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
           } else {
             ()
           }
-          emit_local_get(buf, ptr_local)
+          emit_local_get(buf = buf, idx = ptr_local)
           emit_i32_wrap_i64(buf)
-          emit_local_get(buf, val_local)
-          emit_i64_store(buf, 3, 16 + ri * 8)
+          emit_local_get(buf = buf, idx = val_local)
+          emit_i64_store(buf = buf, align = 3, offset = 16 + ri * 8)
           ri = ri + 1
         }
         // record value = (block_start + 8) | 1
-        emit_local_get(buf, ptr_local)
-        emit_i64_const(buf, 8)
+        emit_local_get(buf = buf, idx = ptr_local)
+        emit_i64_const(buf = buf, value = 8)
         emit_i64_add(buf)
-        emit_i64_const(buf, 1)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_or(buf)
         nl_r
       } else {
         let obj_size = 8 + flen * 8
-        emit_global_get(buf, 0)
+        emit_global_get(buf = buf, idx = 0)
         emit_i64_extend_i32_u(buf)
-        emit_local_set(buf, ptr_local)
-        emit_global_get(buf, 0)
-        emit_i32_const(buf, obj_size)
+        emit_local_set(buf = buf, idx = ptr_local)
+        emit_global_get(buf = buf, idx = 0)
+        emit_i32_const(buf = buf, value = obj_size)
         emit_i32_add(buf)
-        emit_global_set(buf, 0)
-        emit_heap_grow_after_heap_set(buf, ctx)
-        emit_local_get(buf, ptr_local)
+        emit_global_set(buf = buf, idx = 0)
+        emit_heap_grow_after_heap_set(buf = buf, ctx = ctx)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_ctor_tag(buf, ctx, rec_tag)
-        emit_i32_store(buf, 2, 0)
-        emit_local_get(buf, ptr_local)
+        emit_ctor_tag(buf = buf, ctx = ctx, tag = rec_tag)
+        emit_i32_store(buf = buf, align = 2, offset = 0)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, flen)
-        emit_i32_store(buf, 2, 4)
+        emit_i32_const(buf = buf, value = flen)
+        emit_i32_store(buf = buf, align = 2, offset = 4)
         let mut nl_r = next_local + 1
         let mut ri = 0
         while ri < flen {
-          let (_, fexpr) = Array::get(rec_fields, ri)
+          let (_, fexpr) = Array::get(rec_fields, at = ri)
           nl_r = compile_expr(buf, fexpr, local_names, nl_r, ctx, ld)
           let val_local = nl_r
-          Array::push(local_names, "__rec_val")
-          emit_local_set(buf, val_local)
+          Array::push(local_names, value = "__rec_val")
+          emit_local_set(buf = buf, idx = val_local)
           nl_r = nl_r + 1
-          emit_local_get(buf, ptr_local)
+          emit_local_get(buf = buf, idx = ptr_local)
           emit_i32_wrap_i64(buf)
-          emit_local_get(buf, val_local)
-          emit_i64_store(buf, 3, 8 + ri * 8)
+          emit_local_get(buf = buf, idx = val_local)
+          emit_i64_store(buf = buf, align = 3, offset = 8 + ri * 8)
           ri = ri + 1
         }
-        emit_local_get(buf, ptr_local)
-        emit_i64_const(buf, 1)
+        emit_local_get(buf = buf, idx = ptr_local)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_or(buf)
         nl_r
       }
@@ -563,68 +563,68 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
       let flen = Array::length(fields)
       let obj_size = 8 + flen * 2 * 8
       let ptr_local = next_local
-      Array::push(local_names, "__map_ptr")
+      Array::push(local_names, value = "__map_ptr")
       if ctx.enable_rc {
-        cc_map_alloc_rc(buf, ptr_local, 6, () -> {
-          emit_i64_const(buf, obj_size)
-        }, ctx)
+        cc_map_alloc_rc(buf = buf, ptr_l = ptr_local, class = 6, push_payload = () -> {
+          emit_i64_const(buf = buf, value = obj_size)
+        }, ctx = ctx)
       } else {
-        emit_global_get(buf, 0)
+        emit_global_get(buf = buf, idx = 0)
         emit_i64_extend_i32_u(buf)
-        emit_local_set(buf, ptr_local)
-        emit_global_get(buf, 0)
-        emit_i32_const(buf, obj_size)
+        emit_local_set(buf = buf, idx = ptr_local)
+        emit_global_get(buf = buf, idx = 0)
+        emit_i32_const(buf = buf, value = obj_size)
         emit_i32_add(buf)
-        emit_global_set(buf, 0)
-        emit_heap_grow_after_heap_set(buf, ctx)
+        emit_global_set(buf = buf, idx = 0)
+        emit_heap_grow_after_heap_set(buf = buf, ctx = ctx)
       }
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, flen)
-      emit_i32_store(buf, 2, 0)
+      emit_i32_const(buf = buf, value = flen)
+      emit_i32_store(buf = buf, align = 2, offset = 0)
       let mut nl_m = next_local + 1
       let mut mi = 0
       while mi < flen {
-        let (key, val_expr) = Array::get(fields, mi)
-        emit_local_get(buf, ptr_local)
+        let (key, val_expr) = Array::get(fields, at = mi)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
-        let key_idx = str_table_index_of(ctx.str_table, key)
+        let key_idx = str_table_index_of(st = ctx.str_table, s = key)
         if key_idx >= 0 {
-          emit_str_ref_slot(buf, ctx, key_idx)
+          emit_str_ref_slot(buf = buf, ctx = ctx, slot = key_idx)
         } else {
-          emit_i64_const(buf, 0)
+          emit_i64_const(buf = buf, value = 0)
         }
-        emit_i64_store(buf, 3, 8 + mi * 16)
-        emit_local_get(buf, ptr_local)
+        emit_i64_store(buf = buf, align = 3, offset = 8 + mi * 16)
+        emit_local_get(buf = buf, idx = ptr_local)
         emit_i32_wrap_i64(buf)
         nl_m = compile_expr(buf, val_expr, local_names, nl_m, ctx, ld)
         let val_local = nl_m
-        Array::push(local_names, "__map_val")
-        emit_local_set(buf, val_local)
+        Array::push(local_names, value = "__map_val")
+        emit_local_set(buf = buf, idx = val_local)
         nl_m = nl_m + 1
         // #2683: the literal OWNS its values, so a value that is a borrowed
         // view -- a projection, a borrow-returning call, a loop-borrowed
         // name -- is retained, exactly as the array / tuple / record
         // literals do (#704/#708/#706); an owned temporary moves in.
-        let val_is_proj = cc_is_borrowed_projection(val_expr, ctx)
-        if ctx.enable_rc && (val_is_proj || cet4_is_ref_cell_read(val_expr, ctx) || cc_is_borrow_ret_call(val_expr, ctx) || cc_is_loop_borrowed_ident(val_expr, ctx)) {
-          emit_rc_dup_guarded(buf, val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        let val_is_proj = cc_is_borrowed_projection(e = val_expr, ctx = ctx)
+        if ctx.enable_rc && (val_is_proj || cet4_is_ref_cell_read(e = val_expr, ctx = ctx) || cc_is_borrow_ret_call(e = val_expr, ctx = ctx) || cc_is_loop_borrowed_ident(e = val_expr, ctx = ctx)) {
+          emit_rc_dup_guarded(buf = buf, local_idx = val_local, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
         } else {
           ()
         }
-        emit_local_get(buf, val_local)
-        emit_i64_store(buf, 3, 8 + mi * 16 + 8)
+        emit_local_get(buf = buf, idx = val_local)
+        emit_i64_store(buf = buf, align = 3, offset = 8 + mi * 16 + 8)
         mi = mi + 1
       }
-      emit_local_get(buf, ptr_local)
+      emit_local_get(buf = buf, idx = ptr_local)
       if ctx.enable_rc {
-        emit_i64_const(buf, 1)
+        emit_i64_const(buf = buf, value = 1)
         emit_i64_or(buf)
       } else {
         ()
       }
       nl_m
     },
-    _ => compile_expr_tail5(buf, expr, local_names, next_local, ctx, ld, compile_expr)
+    _ => compile_expr_tail5(buf = buf, expr = expr, local_names = local_names, next_local = next_local, ctx = ctx, ld = ld, compile_expr = compile_expr)
   }
 }

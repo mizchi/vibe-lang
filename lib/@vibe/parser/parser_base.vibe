@@ -36,7 +36,7 @@ export fn peek(tokens: Array[Token], pos: Int) -> Token {
 /// at all now, and no declaration may take the name, so EVERY type position
 /// can refuse it on sight; the parser is the one place all of them pass
 /// through (`parse_type`, plus the row arguments collected as text).
-fn refuse_i32_type(name: String) -> Unit with Exception {
+fn refuse_i32_type(_ name: String) -> Unit with Exception {
   if name == "i32" {
     throw("unknown type `i32` -- write `Int`: vibe's integer type is 63-bit and wraps at 63 bits, and there is no `i32`")
   } else {
@@ -1444,8 +1444,8 @@ fn collect_row_item_targs(tokens: Array[Token], pos: Int, depth: Int, acc: Strin
     // `parse_type`, so the width-named float spellings are canonicalized here
     // too: `with Box[Float64]` names the same row as `with Box[Double]`.
     TIdent(nm) => {
-      refuse_i32_type(name = nm)
-      collect_row_item_targs(tokens = tokens, pos = pos + 1, depth = depth, acc = String::concat(acc, float_width_alias(name = nm)))
+      refuse_i32_type(nm)
+      collect_row_item_targs(tokens = tokens, pos = pos + 1, depth = depth, acc = String::concat(acc, float_width_alias(nm)))
     },
     TComma => throw("a generic effect row item takes exactly one type argument for now (multi-argument instantiations in `with { ... }` are not yet supported)"),
     TLBracket => collect_row_item_targs(tokens = tokens, pos = pos + 1, depth = depth + 1, acc = String::concat(acc, "[")),
@@ -1880,23 +1880,23 @@ export fn parse_type_with_source_context(tokens: Array[Token], pos: Int, mode: I
       },
       TIdent(name) => match peek(tokens = tokens, pos = pos + 1) {
         TLBracket => {
-          refuse_i32_type(name = name)
+          refuse_i32_type(name)
           let (first, n1) = parse_type_with_source_context(tokens = tokens, pos = pos + 2, mode = 0, context = context)
           match peek(tokens = tokens, pos = n1) {
-            TRBracket => (TyApp(float_width_alias(name = name), [first]), n1 + 1),
+            TRBracket => (TyApp(float_width_alias(name), [first]), n1 + 1),
             TComma => {
               let b = ArrayBuilder::new()
               ArrayBuilder::push(b, value = first)
               let (rest, end) = parse_type_list_rest(tokens = tokens, pos = n1, b = b, context = context)
               let en = expect_tk(tokens = tokens, pos = end, expected = "]");
-              (TyApp(float_width_alias(name = name), rest), en)
+              (TyApp(float_width_alias(name), rest), en)
             },
             _ => throw("expected ']' or ',' in type application")
           }
         },
         _ => {
-          refuse_i32_type(name = name)
-          (TyName(float_width_alias(name = name)), pos + 1)
+          refuse_i32_type(name)
+          (TyName(float_width_alias(name)), pos + 1)
         }
       },
       _ => {

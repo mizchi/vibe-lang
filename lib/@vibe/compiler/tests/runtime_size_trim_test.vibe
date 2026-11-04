@@ -28,7 +28,7 @@ fn bytes_contains(hay: Bytes, needle: String) -> Bool {
     let mut ok = true
     let mut j = 0
     while j < nlen && ok {
-      ok = Bytes::get(hay, i + j) == String::char_code_at(needle, j)
+      ok = Bytes::get(hay, at = i + j) == String::char_code_at(needle, at = j)
       j = j + 1
     }
     found = ok
@@ -38,7 +38,7 @@ fn bytes_contains(hay: Bytes, needle: String) -> Bool {
 }
 
 fn capture_run(wasm_path: String, bytes: Bytes) -> String with Exception + Fs + Process {
-  Fs::write_bytes(wasm_path, bytes)
+  Fs::write_bytes(wasm_path, bytes = bytes)
   let _ = sh("bash -c 'scripts/run_wasm_vibe_host_runner.sh \{wasm_path} >\{wasm_path}.out 2>&1 || true'")
   Fs::read_file(String::concat(wasm_path, ".out"))
 }
@@ -46,20 +46,20 @@ fn capture_run(wasm_path: String, bytes: Bytes) -> String with Exception + Fs + 
 //# Tests
 
 test "a module with no bounds-checked operation carries no OOB message" {
-  let bytes = compile_source_wasi("let main = () -> Int {\n  1 + 2\n}\n", "main")
-  inspect(bytes_contains(bytes, " out of bounds for length "), content = "false")
-  inspect(bytes_contains(bytes, "Array::get: index "), content = "false")
+  let bytes = compile_source_wasi(source = "let main = () -> Int {\n  1 + 2\n}\n", entry_name = "main")
+  inspect(bytes_contains(hay = bytes, needle = " out of bounds for length "), content = "false")
+  inspect(bytes_contains(hay = bytes, needle = "Array::get: index "), content = "false")
 }
 
 test "a reachable bounds check keeps the message it prints" {
   let src = "let main = () -> Int {\n  let xs = [1, 2, 3]\n  Array::get(xs, 5)\n}\n"
-  let out = capture_run("_build/vibe_test/runtime_trim_oob.wasm", compile_source_wasi(src, "main"))
-  inspect(String::starts_with(out, "Array::get: index 5 out of bounds for length 3\n"), content = "true")
+  let out = capture_run(wasm_path = "_build/vibe_test/runtime_trim_oob.wasm", bytes = compile_source_wasi(source = src, entry_name = "main"))
+  inspect(String::starts_with(out, prefix = "Array::get: index 5 out of bounds for length 3\n"), content = "true")
 }
 
 test "a literal spelled like a fragment keeps its segment without an abort" {
   let src = "let main = () -> Int with Console {\n  println(\"Array::get: index \")\n  println(\" out of bounds for length \")\n  0\n}\n"
-  let out = capture_run("_build/vibe_test/runtime_trim_literal.wasm", compile_source_wasi(src, "main"))
+  let out = capture_run(wasm_path = "_build/vibe_test/runtime_trim_literal.wasm", bytes = compile_source_wasi(source = src, entry_name = "main"))
   inspect(out, content = "Array::get: index \n out of bounds for length \n0\n")
 }
 
@@ -75,29 +75,29 @@ test "main's result prints in decimal, zero and signs included" {
   ]
   let mut i = 0
   while i < Array::length(cases) {
-    let v = Array::get(cases, i)
+    let v = Array::get(cases, at = i)
     let src = "let main = () -> Int {\n  \{v}\n}\n"
-    let out = capture_run("_build/vibe_test/runtime_trim_ret.wasm", compile_source_wasi(src, "main"))
+    let out = capture_run(wasm_path = "_build/vibe_test/runtime_trim_ret.wasm", bytes = compile_source_wasi(source = src, entry_name = "main"))
     assert_eq(out, String::concat(v, "\n"))
     i = i + 1
   }
 }
 
 test "the gc lane writes the capacity message only for a program that names it" {
-  let plain = compile_source_gc_only("let main = () -> Int {\n  1 + 2\n}\n", "main")
-  inspect(bytes_contains(plain, "Bytes::with_capacity: "), content = "false")
+  let plain = compile_source_gc_only(source = "let main = () -> Int {\n  1 + 2\n}\n", entry_name = "main")
+  inspect(bytes_contains(hay = plain, needle = "Bytes::with_capacity: "), content = "false")
   let src = "let main = () -> Int {\n  let b = Bytes::with_capacity(0 - 5)\n  Bytes::length(b)\n}\n"
-  let out = capture_run("_build/vibe_test/runtime_trim_gc_cap.wasm", compile_source_gc_only(src, "main"))
-  inspect(String::starts_with(out, "Bytes::with_capacity: use a capacity between 0 and "), content = "true")
+  let out = capture_run(wasm_path = "_build/vibe_test/runtime_trim_gc_cap.wasm", bytes = compile_source_gc_only(source = src, entry_name = "main"))
+  inspect(String::starts_with(out, prefix = "Bytes::with_capacity: use a capacity between 0 and "), content = "true")
 }
 
 test "the gc lane prints main's result through the shared printer" {
   let cases = ["0", "-7", "4611686018427387903"]
   let mut i = 0
   while i < Array::length(cases) {
-    let v = Array::get(cases, i)
+    let v = Array::get(cases, at = i)
     let src = "let main = () -> Int {\n  \{v}\n}\n"
-    let out = capture_run("_build/vibe_test/runtime_trim_gc_ret.wasm", compile_source_gc_only(src, "main"))
+    let out = capture_run(wasm_path = "_build/vibe_test/runtime_trim_gc_ret.wasm", bytes = compile_source_gc_only(source = src, entry_name = "main"))
     assert_eq(out, String::concat(v, "\n"))
     i = i + 1
   }

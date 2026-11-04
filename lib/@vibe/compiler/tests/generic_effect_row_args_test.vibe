@@ -14,11 +14,11 @@ import @vibe/compiler/checker {
 
 //# Misc
 
-fn diags_of_raw(src: String) -> Array[String] with Exception {
+fn diags_of_raw(_ src: String) -> Array[String] with Exception {
   collect_all_diagnostics(src)
 }
 
-fn diags_of(body: String) -> Array[String] with Exception {
+fn diags_of(_ body: String) -> Array[String] with Exception {
   let head = "effect State[S] {\n  Get() -> S\n}\n\n"
   collect_all_diagnostics(String::concat(head, body))
 }
@@ -26,13 +26,13 @@ fn diags_of(body: String) -> Array[String] with Exception {
 test "a different closed argument is refused" {
   let d = diags_of("fn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  g(\"abc\")\n}\n")
   assert(eq(Array::length(d), 1))
-  assert(String::contains(Array::get(d, 0), "missing { State[String] }"))
+  assert(String::contains(Array::get(d, at = 0), needle = "missing { State[String] }"))
 }
 
 test "a nested closed argument is compared too" {
   let d = diags_of("fn g() -> Int with State[Array[String]] {\n  1\n}\n\nfn caller() -> Int with State[Array[Int]] {\n  g()\n}\n")
   assert(eq(Array::length(d), 1))
-  assert(String::contains(Array::get(d, 0), "missing { State[Array[String]] }"))
+  assert(String::contains(Array::get(d, at = 0), needle = "missing { State[Array[String]] }"))
 }
 
 test "the same closed argument is authorized, spacing aside" {
@@ -45,11 +45,11 @@ test "a callee's formal is instantiated at the call" {
   // The call instantiates `S` at `String`, which `State[Int]` does not cover.
   let wrong = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(\"abc\")\n}\n"))
   assert(eq(Array::length(wrong), 1))
-  assert(String::contains(Array::get(wrong, 0), "missing { State[String] }"))
+  assert(String::contains(Array::get(wrong, at = 0), needle = "missing { State[String] }"))
   // ... and the requirement names the instantiation, not the callee's formal.
   let bare = diags_of(String::concat(getter, "fn caller() -> Int {\n  get(\"abc\")\n}\n"))
   assert(eq(Array::length(bare), 1))
-  assert(String::contains(Array::get(bare, 0), "missing { State[String] }"))
+  assert(String::contains(Array::get(bare, at = 0), needle = "missing { State[String] }"))
   // The matching instantiation is authorized.
   let right = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(1)\n}\n"))
   assert(eq(Array::length(right), 0))
@@ -60,10 +60,10 @@ test "a local generic lambda and an alias are instantiated at the call" {
   // branch, which used to read the row as written.
   let local = diags_of("fn caller() -> Int with State[Int] {\n  let get = [S](x: S) -> Int with State[S] {\n    1\n  }\n  get(\"abc\")\n}\n")
   assert(eq(Array::length(local), 1))
-  assert(String::contains(Array::get(local, 0), "missing { State[String] }"))
+  assert(String::contains(Array::get(local, at = 0), needle = "missing { State[String] }"))
   let alias = diags_of("fn caller() -> Int with State[Int] {\n  let get0 = [S](x: S) -> Int with State[S] {\n    1\n  }\n  let get = get0\n  get(\"abc\")\n}\n")
   assert(eq(Array::length(alias), 1))
-  assert(String::contains(Array::get(alias, 0), "missing { State[String] }"))
+  assert(String::contains(Array::get(alias, at = 0), needle = "missing { State[String] }"))
   let right = diags_of("fn caller() -> Int with State[Int] {\n  let get = [S](x: S) -> Int with State[S] {\n    1\n  }\n  get(1)\n}\n")
   assert(eq(Array::length(right), 0))
 }
@@ -74,7 +74,7 @@ test "a higher-kinded formal is instantiated with its constructor" {
   let src = "effect Read[F[_]] {\n  Size() -> Int\n}\n\nfn use[F[_]](xs: F[Int]) -> Int with Read[F] {\n  1\n}\n\n"
   let wrong = diags_of_raw(String::concat(src, "fn caller() -> Int with Read[Option] {\n  use([1])\n}\n"))
   assert(eq(Array::length(wrong), 1))
-  assert(String::contains(Array::get(wrong, 0), "missing { Read[Array] }"))
+  assert(String::contains(Array::get(wrong, at = 0), needle = "missing { Read[Array] }"))
   let right = diags_of_raw(String::concat(src, "fn caller() -> Int with Read[Array] {\n  use([1])\n}\n"))
   assert(eq(Array::length(right), 0))
 }
@@ -85,8 +85,8 @@ test "an exported generic is still instantiated in its own module (#3051)" {
   let getter = "export fn get[S](x: S) -> Int with State[S] {\n  1\n}\n\n"
   let wrong = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(\"abc\")\n}\n"))
   assert(eq(Array::length(wrong), 1))
-  assert(String::contains(Array::get(wrong, 0), "missing { State[String] }"))
-  assert(!String::contains(Array::get(wrong, 0), "$"))
+  assert(String::contains(Array::get(wrong, at = 0), needle = "missing { State[String] }"))
+  assert(!String::contains(Array::get(wrong, at = 0), needle = "$"))
   let right = diags_of(String::concat(getter, "fn caller() -> Int with State[Int] {\n  get(1)\n}\n"))
   assert(eq(Array::length(right), 0))
 }
@@ -117,7 +117,7 @@ test "a formal that shadows a builtin name is not judged as that builtin" {
   // to it, which #3318 refuses for a formal the row names.
   let d = diags_of("fn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller[Int](x: Int) -> Bool with State[Int] {\n  g(\"abc\") > 0\n}\n")
   assert(eq(Array::length(d), 1))
-  assert(String::contains(Array::get(d, 0), "missing { State[String] }"))
+  assert(String::contains(Array::get(d, at = 0), needle = "missing { State[String] }"))
   // The formal passed through is covered by the formal.
   let ok = diags_of("fn get[S](x: S) -> Int with State[S] {\n  1\n}\n\nfn caller[Int](x: Int) -> Bool with State[Int] {\n  get(x) > 0\n}\n")
   assert(eq(Array::length(ok), 0))
@@ -128,7 +128,7 @@ test "a shadowing formal elsewhere does not switch the check off here" {
   // but `caller`'s `State[Int]` is the builtin and is still judged.
   let d = diags_of("fn id[Int](x: Int) -> Int {\n  x\n}\n\nfn g(x: String) -> Int with State[String] {\n  1\n}\n\nfn caller() -> Int with State[Int] {\n  g(\"abc\")\n}\n")
   assert(eq(Array::length(d), 1))
-  assert(String::contains(Array::get(d, 0), "missing { State[String] }"))
+  assert(String::contains(Array::get(d, at = 0), needle = "missing { State[String] }"))
 }
 
 test "two calls under one key that instantiate differently fail closed" {
@@ -141,13 +141,13 @@ test "two calls under one key that instantiate differently fail closed" {
     ("9:get", [("S", "Int")]),
     ("9:get", [("S", "Int")])
   ])
-  assert(eq(instantiate_callee_label_at("State[S]", "7:get"), "State[?S]"))
+  assert(eq(instantiate_callee_label_at(label = "State[S]", key = "7:get"), "State[?S]"))
   // The same binding recorded twice is not a conflict.
-  assert(eq(instantiate_callee_label_at("State[S]", "9:get"), "State[Int]"))
+  assert(eq(instantiate_callee_label_at(label = "State[S]", key = "9:get"), "State[Int]"))
   // Codex on #3055: one call resolving `S` and another at the same key
   // leaving it unresolved is a collision too, not the first call's binding.
   set_call_formal_bindings([("13:get", []), ("13:get", [("S", "String")])])
-  assert(eq(instantiate_callee_label_at("State[S]", "13:get"), "State[?S]"))
+  assert(eq(instantiate_callee_label_at(label = "State[S]", key = "13:get"), "State[?S]"))
   set_call_formal_bindings([
     ("7:get", [("S", "String")]),
     ("7:get", [("S", "Int")]),
@@ -155,6 +155,6 @@ test "two calls under one key that instantiate differently fail closed" {
     ("9:get", [("S", "Int")])
   ])
   // An unrecorded key leaves the label as written.
-  assert(eq(instantiate_callee_label_at("State[S]", "11:get"), "State[S]"))
+  assert(eq(instantiate_callee_label_at(label = "State[S]", key = "11:get"), "State[S]"))
   set_call_formal_bindings([])
 }

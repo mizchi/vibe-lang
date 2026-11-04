@@ -57,22 +57,22 @@ import @vibe/compiler/checker/diagnostics {
 
 /// Forget the previous program check's map key sites.
 export fn map_key_sites_reset() -> Unit {
-  Array::truncate(map_key_site_offsets, 0)
-  Array::truncate(map_key_site_types, 0)
+  Array::truncate(map_key_site_offsets, length = 0)
+  Array::truncate(map_key_site_types, length = 0)
 }
 
 /// Record one keyed map site: the call (or index bracket) offset and its key type.
 export fn map_key_site_record(call_off: Int, key: Type) -> Unit {
   if call_off >= 0 {
-    Array::push(map_key_site_offsets, call_off)
-    Array::push(map_key_site_types, key)
+    Array::push(map_key_site_offsets, value = call_off)
+    Array::push(map_key_site_types, value = key)
   } else {
     ()
   }
 }
 
 fn map_key_resolves_scalar(s: Subst, key: Type) -> Int {
-  match subst_apply(s, key) {
+  match subst_apply(s = s, ty = key) {
     CtInt => 1,
     CtChar => 1,
     CtBool => 1,
@@ -85,7 +85,7 @@ fn map_key_resolves_scalar(s: Subst, key: Type) -> Int {
 /// (offset, key) arrays. An offset recorded twice with different answers --
 /// one shared body checked under two instantiations -- files no row; the
 /// codegen backstop then traps rather than guess.
-export fn map_scalar_key_rows(s: Subst) -> (Array[Int], Array[String]) {
+export fn map_scalar_key_rows(_ s: Subst) -> (Array[Int], Array[String]) {
   let offs: Array[Int] = []
   let keys: Array[String] = []
   let n = Array::length(map_key_site_offsets)
@@ -97,17 +97,17 @@ export fn map_scalar_key_rows(s: Subst) -> (Array[Int], Array[String]) {
     let order: Array[Int] = []
     let mut i = 0
     while i < n {
-      let off = Array::get(map_key_site_offsets, i)
-      let scalar = map_key_resolves_scalar(s, Array::get(map_key_site_types, i))
-      match MutMap::get(verdicts, off) {
+      let off = Array::get(map_key_site_offsets, at = i)
+      let scalar = map_key_resolves_scalar(s = s, key = Array::get(map_key_site_types, at = i))
+      match MutMap::get(verdicts, k = off) {
         Some(prev) => if prev != scalar {
-          MutMap::set(verdicts, off, 0)
+          MutMap::set(verdicts, k = off, v = 0)
         } else {
           ()
         },
         None => {
-          MutMap::set(verdicts, off, scalar)
-          Array::push(order, off)
+          MutMap::set(verdicts, k = off, v = scalar)
+          Array::push(order, value = off)
         }
       }
       i = i + 1
@@ -116,10 +116,10 @@ export fn map_scalar_key_rows(s: Subst) -> (Array[Int], Array[String]) {
       TyName(typed_map_scalar_key_verdict())
     ]))
     for off in order {
-      match MutMap::get(verdicts, off) {
+      match MutMap::get(verdicts, k = off) {
         Some(1) => {
-          Array::push(offs, off)
-          Array::push(keys, key)
+          Array::push(offs, value = off)
+          Array::push(keys, value = key)
         },
         _ => ()
       }
@@ -133,9 +133,9 @@ export fn map_scalar_key_rows(s: Subst) -> (Array[Int], Array[String]) {
 /// other concrete type constrains nothing: these arms never checked the
 /// receiver itself, and its key slot is not this arm's question.
 export fn map_receiver_key(s: Subst, m_ty: Type, head: String) -> Type {
-  match subst_apply(s, m_ty) {
+  match subst_apply(s = s, ty = m_ty) {
     CtNamed(mn, margs) => if mn == head && Array::length(margs) == 2 {
-      subst_apply(s, Array::get(margs, 0))
+      subst_apply(s = s, ty = Array::get(margs, at = 0))
     } else {
       CtUnknown
     },
@@ -146,7 +146,7 @@ export fn map_receiver_key(s: Subst, m_ty: Type, head: String) -> Type {
 }
 
 /// Whether `arm` is one of the map arms `checker_map_call_arm` answers.
-export fn checker_map_call_arm_handles(arm: String) -> Bool {
+export fn checker_map_call_arm_handles(_ arm: String) -> Bool {
   arm == "Map::set" || arm == "Map::get" || arm == "Map::has_key" || arm == "Map::has" || arm == "map_has" || arm == "Map::delete" || arm == "Map::keys" || arm == "Map::values" || arm == "MapBuilder::new" || arm == "MapBuilder::get" || arm == "MapBuilder::freeze"
 }
 
@@ -162,28 +162,28 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     // `check_assignable` (same tolerate discipline as Array::push --
     // untyped/var receivers stay tolerant). #2334: the key is checked
     // against the receiver's key slot the same way.
-    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-    let (k_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
-    let (v_ty, s3, c3) = check_child(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
-    let s4 = check_assignable(map_receiver_key(s3, m_ty, "Map"), subst_apply(s3, k_ty), s3, errors, "argument type mismatch for Map::set", call_off)
-    map_key_site_record(call_off, k_ty)
-    let s5 = match subst_apply(s4, m_ty) {
+    let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let (v_ty, s3, c3) = check_child(Array::get(args, at = 2), env, defs, s2, c2, errors, tytab, capture, lane)
+    let s4 = check_assignable(expected = map_receiver_key(s = s3, m_ty = m_ty, head = "Map"), actual = subst_apply(s = s3, ty = k_ty), s = s3, errors = errors, what = "argument type mismatch for Map::set", off = call_off)
+    map_key_site_record(call_off = call_off, key = k_ty)
+    let s5 = match subst_apply(s = s4, ty = m_ty) {
       CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
-        check_assignable(subst_apply(s4, Array::get(margs, 1)), subst_apply(s4, v_ty), s4, errors, "Map::set value type mismatch", call_off)
+        check_assignable(expected = subst_apply(s = s4, ty = Array::get(margs, at = 1)), actual = subst_apply(s = s4, ty = v_ty), s = s4, errors = errors, what = "Map::set value type mismatch", off = call_off)
       } else {
         s4
       },
       _ => s4
     }
-    let mret = match subst_apply(s5, m_ty) {
+    let mret = match subst_apply(s = s5, ty = m_ty) {
       CtNamed(mn2, margs2) => if mn2 == "Map" && Array::length(margs2) == 2 {
-        subst_apply(s5, m_ty)
+        subst_apply(s = s5, ty = m_ty)
       } else {
         CtNamed("Map", [CtString, CtUnknown])
       },
       _ => CtNamed("Map", [CtString, CtUnknown])
     }
-    (tab_call_ty(tytab, call_off, mret, capture, lane), s5, c3)
+    (tab_call_ty(tytab = tytab, call_off = call_off, ty = mret, capture = capture, lane = lane), s5, c3)
   } else if arm == "Map::get" {
     // #983: refine the result from bare CtUnknown to the receiver's value
     // slot, so a wrongly-typed consume of the looked-up value is caught by
@@ -191,112 +191,118 @@ export fn checker_map_call_arm(arm: String, args: Array[Expr], call_off: Int, en
     // TRAPS on a miss (#2990) -- `declare Map::get(Map[T, U], T) -> U` in
     // builtins/declarations.vibe and both codegen lanes agree -- NOT an
     // Option. Untyped receivers keep the conservative CtUnknown.
-    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-    let (k_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
-    let s3 = check_assignable(map_receiver_key(s2, m_ty, "Map"), subst_apply(s2, k_ty), s2, errors, "argument type mismatch for Map::get", call_off)
-    map_key_site_record(call_off, k_ty)
-    let result = match subst_apply(s3, m_ty) {
+    let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let s3 = check_assignable(expected = map_receiver_key(s = s2, m_ty = m_ty, head = "Map"), actual = subst_apply(s = s2, ty = k_ty), s = s2, errors = errors, what = "argument type mismatch for Map::get", off = call_off)
+    map_key_site_record(call_off = call_off, key = k_ty)
+    let result = match subst_apply(s = s3, ty = m_ty) {
       CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
-        subst_apply(s3, Array::get(margs, 1))
+        subst_apply(s = s3, ty = Array::get(margs, at = 1))
       } else {
         CtUnknown
       },
       _ => CtUnknown
     }
-    (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
+    (tab_call_ty(tytab = tytab, call_off = call_off, ty = result, capture = capture, lane = lane), s3, c2)
   } else if arm == "Map::has_key" || arm == "Map::has" || arm == "map_has" {
     // #2334: the membership test checks its key against the receiver's key
     // slot. The static table typed the key `String` for every receiver.
-    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-    let (k_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
-    let s3 = check_assignable(map_receiver_key(s2, m_ty, "Map"), subst_apply(s2, k_ty), s2, errors, String::concat("argument type mismatch for ", arm), call_off)
-    map_key_site_record(call_off, k_ty)
-    (tab_call_ty(tytab, call_off, CtBool, capture, lane), s3, c2)
+    let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let s3 = check_assignable(expected = map_receiver_key(s = s2, m_ty = m_ty, head = "Map"), actual = subst_apply(s = s2, ty = k_ty), s = s2, errors = errors, what = String::concat("argument type mismatch for ", arm), off = call_off)
+    map_key_site_record(call_off = call_off, key = k_ty)
+    (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtBool, capture = capture, lane = lane), s3, c2)
   } else if arm == "Map::delete" {
     // #983: delete preserves the receiver's map type (value slot included)
     // instead of collapsing it to `Map[String, CtUnknown]`.
-    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-    let (k_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
-    let s3 = check_assignable(map_receiver_key(s2, m_ty, "Map"), subst_apply(s2, k_ty), s2, errors, "argument type mismatch for Map::delete", call_off)
-    map_key_site_record(call_off, k_ty)
-    let mret = match subst_apply(s3, m_ty) {
+    let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (k_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let s3 = check_assignable(expected = map_receiver_key(s = s2, m_ty = m_ty, head = "Map"), actual = subst_apply(s = s2, ty = k_ty), s = s2, errors = errors, what = "argument type mismatch for Map::delete", off = call_off)
+    map_key_site_record(call_off = call_off, key = k_ty)
+    let mret = match subst_apply(s = s3, ty = m_ty) {
       CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
-        subst_apply(s3, m_ty)
+        subst_apply(s = s3, ty = m_ty)
       } else {
         CtNamed("Map", [CtString, CtUnknown])
       },
       _ => CtNamed("Map", [CtString, CtUnknown])
     }
-    (tab_call_ty(tytab, call_off, mret, capture, lane), s3, c2)
+    (tab_call_ty(tytab = tytab, call_off = call_off, ty = mret, capture = capture, lane = lane), s3, c2)
   } else if arm == "Map::keys" {
     // #2263: keys() of a key-slotted map is `Array[k]`. The shape table
     // answers `Array[String]` for every receiver, so a `Map[Int, V]`
     // annotation handed its keys to `String::length` and compiled clean.
-    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-    let result = match subst_apply(s1, m_ty) {
+    let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
+    let result = match subst_apply(s = s1, ty = m_ty) {
       CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
-        CtArray(subst_apply(s1, Array::get(margs, 0)))
+        CtArray(subst_apply(s = s1, ty = Array::get(margs, at = 0)))
       } else {
         CtArray(CtString)
       },
       _ => CtArray(CtString)
     }
-    (tab_call_ty(tytab, call_off, result, capture, lane), s1, c1)
+    (tab_call_ty(tytab = tytab, call_off = call_off, ty = result, capture = capture, lane = lane), s1, c1)
   } else if arm == "Map::values" {
     // #983: values() of a value-slotted map is `Array[v]`, not
     // `Array[CtUnknown]`.
-    let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-    let result = match subst_apply(s1, m_ty) {
+    let (m_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
+    let result = match subst_apply(s = s1, ty = m_ty) {
       CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
-        CtArray(subst_apply(s1, Array::get(margs, 1)))
+        CtArray(subst_apply(s = s1, ty = Array::get(margs, at = 1)))
       } else {
         CtArray(CtUnknown)
       },
       _ => CtArray(CtUnknown)
     }
-    (tab_call_ty(tytab, call_off, result, capture, lane), s1, c1)
+    (tab_call_ty(tytab = tytab, call_off = call_off, ty = result, capture = capture, lane = lane), s1, c1)
   } else if arm == "MapBuilder::new" {
     // As `StringBuilder::new`. The value slot stays open (`CtUnknown`), as
     // `MapBuilder::set`'s row leaves it. A builder is still String-keyed:
     // its `set` row takes a `String` key.
-    (tab_call_ty(tytab, call_off, CtNamed("MapBuilder", [CtString, CtUnknown]), capture, lane), s, c)
+    (tab_call_ty(tytab = tytab, call_off = call_off, ty = CtNamed("MapBuilder", [
+      CtString,
+      CtUnknown
+    ]), capture = capture, lane = lane), s, c)
   } else if arm == "MapBuilder::get" {
     // #1310: mirror Map::get's #983 refinement -- an annotated/parameter
     // receiver `MapBuilder[K, V]` refines the direct-call fast path's bare
     // `Option[CtUnknown]` to `Option[V]`. Untyped receivers keep the
     // conservative Option[CtUnknown].
-    let (mb_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-    let (mbk_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
-    let s3 = check_assignable(CtString, subst_apply(s2, mbk_ty), s2, errors, "argument type mismatch for MapBuilder::get", call_off)
-    let mbresult = match subst_apply(s3, mb_ty) {
+    let (mb_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
+    let (mbk_ty, s2, c2) = check_child(Array::get(args, at = 1), env, defs, s1, c1, errors, tytab, capture, lane)
+    let s3 = check_assignable(expected = CtString, actual = subst_apply(s = s2, ty = mbk_ty), s = s2, errors = errors, what = "argument type mismatch for MapBuilder::get", off = call_off)
+    let mbresult = match subst_apply(s = s3, ty = mb_ty) {
       CtNamed(mn, margs) => if mn == "MapBuilder" && Array::length(margs) == 2 {
-        CtOption(subst_apply(s3, Array::get(margs, 1)))
+        CtOption(subst_apply(s = s3, ty = Array::get(margs, at = 1)))
       } else {
         CtOption(CtUnknown)
       },
       _ => CtOption(CtUnknown)
     }
-    (tab_call_ty(tytab, call_off, mbresult, capture, lane), s3, c2)
+    (tab_call_ty(tytab = tytab, call_off = call_off, ty = mbresult, capture = capture, lane = lane), s3, c2)
   } else {
     // MapBuilder::freeze: the frozen map carries the builder's value slot,
     // in the shape a map literal has (`Map[String, V]`); an untyped builder
     // gives an open slot.
-    let (fb_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-    let frozen = match subst_apply(s1, fb_ty) {
+    let (fb_ty, s1, c1) = check_child(Array::get(args, at = 0), env, defs, s, c, errors, tytab, capture, lane)
+    let frozen = match subst_apply(s = s1, ty = fb_ty) {
       CtNamed(fbn, fbargs) => if fbn == "MapBuilder" && Array::length(fbargs) == 2 {
-        CtNamed("Map", [CtString, subst_apply(s1, Array::get(fbargs, 1))])
+        CtNamed("Map", [
+          CtString,
+          subst_apply(s = s1, ty = Array::get(fbargs, at = 1))
+        ])
       } else {
         CtNamed("Map", [CtString, CtUnknown])
       },
       _ => CtNamed("Map", [CtString, CtUnknown])
     }
-    (tab_call_ty(tytab, call_off, frozen, capture, lane), s1, c1)
+    (tab_call_ty(tytab = tytab, call_off = call_off, ty = frozen, capture = capture, lane = lane), s1, c1)
   }
 }
 
 /// #2334: the type of an empty map literal (`Map::new()`): both slots open,
 /// so the first keyed call decides the key type the way it decides the value.
-export fn map_empty_literal_type(c: Int) -> (Type, Int) {
+export fn map_empty_literal_type(_ c: Int) -> (Type, Int) {
   let (k, c1) = fresh_var(c)
   let (v, c2) = fresh_var(c1)
   (CtNamed("Map", [k, v]), c2)
@@ -314,9 +320,9 @@ fn map_formal_key_refusal(name: String, scalar: String, off: Int) -> String {
     "` that takes a `Map[",
     scalar,
     ", V]`, or key the map by `String` (#2334)",
-    off_marker_len(off, String::length(name))
+    off_marker_len(off = off, len = String::length(name))
   ]
-  String::join(parts, "")
+  String::join(parts, sep = "")
 }
 
 /// The refusal for a call of `name` at a key the builtin map has no
@@ -328,22 +334,22 @@ fn map_formal_key_unsupported_refusal(name: String, key: String, off: Int) -> St
     "` uses a type parameter as a `Map` key, so it cannot be called with `",
     key,
     "` keys: the builtin map takes `String`, `Int`, `Char` or `Bool` keys -- use `MutMap[K, V]` from `@vibe/core` for other keys (#2334)",
-    off_marker_len(off, String::length(name))
+    off_marker_len(off = off, len = String::length(name))
   ]
-  String::join(parts, "")
+  String::join(parts, sep = "")
 }
 
 /// The refusal an instantiation of a map-key parameter at `ty` earns, or ""
 /// when `ty` is `String` (the body's own key operations) or still unknown.
 fn map_formal_key_instance_refusal(s: Subst, ty: Type, name: String, off: Int) -> String {
-  match subst_apply(s, ty) {
-    CtInt => map_formal_key_refusal(name, "Int", off),
-    CtChar => map_formal_key_refusal(name, "Char", off),
-    CtBool => map_formal_key_refusal(name, "Bool", off),
+  match subst_apply(s = s, ty = ty) {
+    CtInt => map_formal_key_refusal(name = name, scalar = "Int", off = off),
+    CtChar => map_formal_key_refusal(name = name, scalar = "Char", off = off),
+    CtBool => map_formal_key_refusal(name = name, scalar = "Bool", off = off),
     CtString => "",
     CtVar(_) => "",
     CtUnknown => "",
-    other => map_formal_key_unsupported_refusal(name, type_to_string(other), off)
+    other => map_formal_key_unsupported_refusal(name = name, key = type_to_string(other), off = off)
   }
 }
 
@@ -353,23 +359,23 @@ fn map_formal_key_instance_refusal(s: Subst, ty: Type, name: String, off: Int) -
 /// restriction.
 fn map_scheme_pairs(st: Type, it: Type, out: Array[(Int, Type)]) -> Unit {
   match (st, it) {
-    (CtVar(id), _) => Array::push(out, (id, it)),
-    (CtApplied(CtVar(_), _), _) => scheme_var_types_from(st, it, out),
-    (CtArray(e), CtArray(ie)) => map_scheme_pairs(e, ie, out),
-    (CtOption(e), CtOption(ie)) => map_scheme_pairs(e, ie, out),
-    (CtTuple(xs), CtTuple(ys)) => map_scheme_pair_lists(xs, ys, out),
-    (CtNamed(_, xs), CtNamed(_, ys)) => map_scheme_pair_lists(xs, ys, out),
-    (CtApplied(_, xs), CtApplied(_, ys)) => map_scheme_pair_lists(xs, ys, out),
+    (CtVar(id), _) => Array::push(out, value = (id, it)),
+    (CtApplied(CtVar(_), _), _) => scheme_var_types_from(st = st, it = it, out = out),
+    (CtArray(e), CtArray(ie)) => map_scheme_pairs(st = e, it = ie, out = out),
+    (CtOption(e), CtOption(ie)) => map_scheme_pairs(st = e, it = ie, out = out),
+    (CtTuple(xs), CtTuple(ys)) => map_scheme_pair_lists(xs = xs, ys = ys, out = out),
+    (CtNamed(_, xs), CtNamed(_, ys)) => map_scheme_pair_lists(xs = xs, ys = ys, out = out),
+    (CtApplied(_, xs), CtApplied(_, ys)) => map_scheme_pair_lists(xs = xs, ys = ys, out = out),
     (CtFn(xs, r, _), CtFn(ys, ir, _)) => {
-      map_scheme_pair_lists(xs, ys, out)
-      map_scheme_pairs(r, ir, out)
+      map_scheme_pair_lists(xs = xs, ys = ys, out = out)
+      map_scheme_pairs(st = r, it = ir, out = out)
     },
     (CtRecord(fs), CtRecord(gs)) => for f in fs {
       let (fname, fty) = f
       for g in gs {
         let (gname, gty) = g
         if fname == gname {
-          map_scheme_pairs(fty, gty, out)
+          map_scheme_pairs(st = fty, it = gty, out = out)
         } else {
           ()
         }
@@ -383,7 +389,7 @@ fn map_scheme_pairs(st: Type, it: Type, out: Array[(Int, Type)]) -> Unit {
 fn map_scheme_pair_lists(xs: Array[Type], ys: Array[Type], out: Array[(Int, Type)]) -> Unit {
   let mut i = 0
   while i < Array::length(xs) && i < Array::length(ys) {
-    map_scheme_pairs(Array::get(xs, i), Array::get(ys, i), out)
+    map_scheme_pairs(st = Array::get(xs, at = i), it = Array::get(ys, at = i), out = out)
     i = i + 1
   }
 }
@@ -393,7 +399,7 @@ fn map_scheme_same_shape(a: Type, b: Type) -> Bool {
   match (a, b) {
     (CtForAll(av, _, ab), CtForAll(bv, _, bb)) => if Array::length(av) == Array::length(bv) {
       let ren: MutMap[Int, Int] = MutMap::new_int()
-      map_types_same_shape(ab, bb, ren)
+      map_types_same_shape(a = ab, b = bb, ren = ren)
     } else {
       false
     },
@@ -403,19 +409,19 @@ fn map_scheme_same_shape(a: Type, b: Type) -> Bool {
 
 fn map_types_same_shape(a: Type, b: Type, ren: MutMap[Int, Int]) -> Bool {
   match (a, b) {
-    (CtVar(x), CtVar(y)) => match MutMap::get(ren, x) {
+    (CtVar(x), CtVar(y)) => match MutMap::get(ren, k = x) {
       Some(z) => z == y,
       None => {
-        MutMap::set(ren, x, y)
+        MutMap::set(ren, k = x, v = y)
         true
       }
     },
-    (CtFn(ap, ar, _), CtFn(bp, br, _)) => map_type_lists_same_shape(ap, bp, ren) && map_types_same_shape(ar, br, ren),
-    (CtArray(x), CtArray(y)) => map_types_same_shape(x, y, ren),
-    (CtOption(x), CtOption(y)) => map_types_same_shape(x, y, ren),
-    (CtTuple(xs), CtTuple(ys)) => map_type_lists_same_shape(xs, ys, ren),
-    (CtNamed(xn, xs), CtNamed(yn, ys)) => xn == yn && map_type_lists_same_shape(xs, ys, ren),
-    (CtApplied(xh, xs), CtApplied(yh, ys)) => map_types_same_shape(xh, yh, ren) && map_type_lists_same_shape(xs, ys, ren),
+    (CtFn(ap, ar, _), CtFn(bp, br, _)) => map_type_lists_same_shape(xs = ap, ys = bp, ren = ren) && map_types_same_shape(a = ar, b = br, ren = ren),
+    (CtArray(x), CtArray(y)) => map_types_same_shape(a = x, b = y, ren = ren),
+    (CtOption(x), CtOption(y)) => map_types_same_shape(a = x, b = y, ren = ren),
+    (CtTuple(xs), CtTuple(ys)) => map_type_lists_same_shape(xs = xs, ys = ys, ren = ren),
+    (CtNamed(xn, xs), CtNamed(yn, ys)) => xn == yn && map_type_lists_same_shape(xs = xs, ys = ys, ren = ren),
+    (CtApplied(xh, xs), CtApplied(yh, ys)) => map_types_same_shape(a = xh, b = yh, ren = ren) && map_type_lists_same_shape(xs = xs, ys = ys, ren = ren),
     (CtVar(_), _) => false,
     (_, CtVar(_)) => false,
     _ => type_to_string(a) == type_to_string(b)
@@ -429,7 +435,7 @@ fn map_type_lists_same_shape(xs: Array[Type], ys: Array[Type], ren: MutMap[Int, 
     let mut ok = true
     let mut i = 0
     while ok && i < Array::length(xs) {
-      ok = map_types_same_shape(Array::get(xs, i), Array::get(ys, i), ren)
+      ok = map_types_same_shape(a = Array::get(xs, at = i), b = Array::get(ys, at = i), ren = ren)
       i = i + 1
     }
     ok
@@ -448,13 +454,13 @@ fn map_type_lists_same_shape(xs: Array[Type], ys: Array[Type], ren: MutMap[Int, 
 /// each call is also read through the callee's checked scheme in `env`: that
 /// scheme's variables are the body's, and its shape is the instantiation's.
 export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, s: Subst, errors: Array[String]) -> Unit {
-  check_map_key_site_kinds(s, errors)
+  check_map_key_site_kinds(s = s, errors = errors)
   let keyed: MutMap[Int, Int] = MutMap::new_int()
   let mut any = false
   for key in map_key_site_types {
-    match subst_apply(s, key) {
+    match subst_apply(s = s, ty = key) {
       CtVar(id) => {
-        MutMap::set(keyed, id, 1)
+        MutMap::set(keyed, k = id, v = 1)
         any = true
       },
       _ => ()
@@ -468,10 +474,10 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
     // `let f = look` passes the restriction on to `f`'s own variables.
     let records: Array[(Int, Type, Type, String)] = []
     for r in callee_inst_types_cell {
-      Array::push(records, r)
+      Array::push(records, value = r)
     }
     for r in value_inst_types_cell {
-      Array::push(records, r)
+      Array::push(records, value = r)
     }
     while changed && rounds <= Array::length(records) {
       changed = false
@@ -482,22 +488,22 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
         let vars: Array[Int] = []
         match scheme {
           CtForAll(own_vars, _, own_body) => {
-            map_scheme_pairs(own_body, inst, pairs)
+            map_scheme_pairs(st = own_body, it = inst, out = pairs)
             for id in own_vars {
-              Array::push(vars, id)
+              Array::push(vars, value = id)
             }
           },
           _ => ()
         }
-        match env_lookup(env, name) {
+        match env_lookup(env = env, name = name) {
           // Only the same binding's checked scheme: a hoisted and a checked
           // signature of one function differ in their variables alone. A
           // local generic of the same spelling has its own shape, and its
           // record already carries its own scheme.
-          Some(CtForAll(checked_vars, checked_bounds, checked_body)) => if map_scheme_same_shape(scheme, CtForAll(checked_vars, checked_bounds, checked_body)) {
-            map_scheme_pairs(checked_body, inst, pairs)
+          Some(CtForAll(checked_vars, checked_bounds, checked_body)) => if map_scheme_same_shape(a = scheme, b = CtForAll(checked_vars, checked_bounds, checked_body)) {
+            map_scheme_pairs(st = checked_body, it = inst, out = pairs)
             for id in checked_vars {
-              Array::push(vars, id)
+              Array::push(vars, value = id)
             }
           } else {
             ()
@@ -507,22 +513,22 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
         match scheme {
           CtForAll(_, _, _) => {
             for id in vars {
-              match MutMap::get(keyed, id) {
+              match MutMap::get(keyed, k = id) {
                 Some(_) => for pair in pairs {
                   let (pid, pty) = pair
                   if pid == id {
-                    let refusal = map_formal_key_instance_refusal(s, pty, name, callee_off)
+                    let refusal = map_formal_key_instance_refusal(s = s, ty = pty, name = name, off = callee_off)
                     if refusal != "" {
-                      if MutMap::get(reported, callee_off) is None {
-                        MutMap::set(reported, callee_off, 1)
-                        Array::push(errors, refusal)
+                      if MutMap::get(reported, k = callee_off) is None {
+                        MutMap::set(reported, k = callee_off, v = 1)
+                        Array::push(errors, value = refusal)
                       } else {
                         ()
                       }
                     } else {
-                      match subst_apply(s, pty) {
-                        CtVar(caller_id) => if MutMap::get(keyed, caller_id) is None {
-                          MutMap::set(keyed, caller_id, 1)
+                      match subst_apply(s = s, ty = pty) {
+                        CtVar(caller_id) => if MutMap::get(keyed, k = caller_id) is None {
+                          MutMap::set(keyed, k = caller_id, v = 1)
                           changed = true
                         } else {
                           ()
@@ -542,7 +548,7 @@ export fn check_map_key_formal_instantiations(stmts: Array[Stmt], env: TypeEnv, 
         }
       }
     }
-    check_map_key_formal_escapes(stmts, env, s, keyed, errors)
+    check_map_key_formal_escapes(stmts = stmts, env = env, s = s, keyed = keyed, errors = errors)
   } else {
     ()
   }
@@ -556,8 +562,8 @@ fn check_map_key_site_kinds(s: Subst, errors: Array[String]) -> Unit {
   let reported: MutMap[Int, Int] = MutMap::new_int()
   let mut i = 0
   while i < Array::length(map_key_site_offsets) {
-    let off = Array::get(map_key_site_offsets, i)
-    let key = subst_apply(s, Array::get(map_key_site_types, i))
+    let off = Array::get(map_key_site_offsets, at = i)
+    let key = subst_apply(s = s, ty = Array::get(map_key_site_types, at = i))
     let supported = match key {
       CtString => true,
       CtInt => true,
@@ -567,15 +573,15 @@ fn check_map_key_site_kinds(s: Subst, errors: Array[String]) -> Unit {
       CtUnknown => true,
       _ => false
     }
-    if !supported && !MutMap::has(reported, off) {
-      MutMap::set(reported, off, 1)
+    if !supported && !MutMap::has(reported, k = off) {
+      MutMap::set(reported, k = off, v = 1)
       let parts = [
         "the builtin map takes `String`, `Int`, `Char` or `Bool` keys, so a `",
         type_to_string(key),
         "` key has no implementation -- key the map by one of those, or use `MutMap[K, V]` from `@vibe/core` for other keys",
         off_marker(off)
       ]
-      Array::push(errors, String::join(parts, ""))
+      Array::push(errors, value = String::join(parts, sep = ""))
     } else {
       ()
     }
@@ -588,11 +594,11 @@ fn check_map_key_site_kinds(s: Subst, errors: Array[String]) -> Unit {
 fn map_key_exported_names(stmts: Array[Stmt], out: MutMap[String, Int]) -> Unit {
   for stmt in stmts {
     match stmt {
-      SLet(true, _, name, _, _) => MutMap::set(out, name, 1),
+      SLet(true, _, name, _, _) => MutMap::set(out, k = name, v = 1),
       SExport(names) => for n in names {
-        MutMap::set(out, n, 1)
+        MutMap::set(out, k = n, v = 1)
       },
-      SModule(_, _, children) => map_key_exported_names(children, out),
+      SModule(_, _, children) => map_key_exported_names(stmts = children, out = out),
       _ => ()
     }
   }
@@ -602,29 +608,29 @@ fn map_key_exported_names(stmts: Array[Stmt], out: MutMap[String, Int]) -> Unit 
 /// Whether `t` mentions a type variable that keys a map.
 fn map_key_type_mentions_keyed(t: Type, keyed: MutMap[Int, Int]) -> Bool {
   match t {
-    CtVar(id) => MutMap::has(keyed, id),
+    CtVar(id) => MutMap::has(keyed, k = id),
     CtForAll(vars, _, body) => {
       let mut hit = false
       for id in vars {
-        if MutMap::has(keyed, id) {
+        if MutMap::has(keyed, k = id) {
           hit = true
         } else {
           ()
         }
       }
-      hit || map_key_type_mentions_keyed(body, keyed)
+      hit || map_key_type_mentions_keyed(t = body, keyed = keyed)
     },
-    CtFn(params, ret, _) => map_key_types_mention_keyed(params, keyed) || map_key_type_mentions_keyed(ret, keyed),
-    CtArray(e) => map_key_type_mentions_keyed(e, keyed),
-    CtOption(e) => map_key_type_mentions_keyed(e, keyed),
-    CtTuple(items) => map_key_types_mention_keyed(items, keyed),
-    CtNamed(_, args) => map_key_types_mention_keyed(args, keyed),
-    CtApplied(head, args) => map_key_type_mentions_keyed(head, keyed) || map_key_types_mention_keyed(args, keyed),
+    CtFn(params, ret, _) => map_key_types_mention_keyed(ts = params, keyed = keyed) || map_key_type_mentions_keyed(t = ret, keyed = keyed),
+    CtArray(e) => map_key_type_mentions_keyed(t = e, keyed = keyed),
+    CtOption(e) => map_key_type_mentions_keyed(t = e, keyed = keyed),
+    CtTuple(items) => map_key_types_mention_keyed(ts = items, keyed = keyed),
+    CtNamed(_, args) => map_key_types_mention_keyed(ts = args, keyed = keyed),
+    CtApplied(head, args) => map_key_type_mentions_keyed(t = head, keyed = keyed) || map_key_types_mention_keyed(ts = args, keyed = keyed),
     CtRecord(fields) => {
       let mut hit = false
       for f in fields {
         let (_, ft) = f
-        if map_key_type_mentions_keyed(ft, keyed) {
+        if map_key_type_mentions_keyed(t = ft, keyed = keyed) {
           hit = true
         } else {
           ()
@@ -639,7 +645,7 @@ fn map_key_type_mentions_keyed(t: Type, keyed: MutMap[Int, Int]) -> Bool {
 fn map_key_types_mention_keyed(ts: Array[Type], keyed: MutMap[Int, Int]) -> Bool {
   let mut hit = false
   for t in ts {
-    if map_key_type_mentions_keyed(t, keyed) {
+    if map_key_type_mentions_keyed(t = t, keyed = keyed) {
       hit = true
     } else {
       ()
@@ -653,10 +659,10 @@ fn map_key_types_mention_keyed(ts: Array[Type], keyed: MutMap[Int, Int]) -> Bool
 fn map_key_formal_exports(stmts: Array[Stmt], env: TypeEnv, s: Subst, keyed: MutMap[Int, Int], exported: MutMap[String, Int], order: Array[String]) -> Unit {
   for stmt in stmts {
     match stmt {
-      SLet(_, _, name, _, _) => if MutMap::has(exported, name) {
-        match env_lookup(env, name) {
-          Some(t) => if map_key_type_mentions_keyed(subst_apply(s, t), keyed) {
-            Array::push(order, name)
+      SLet(_, _, name, _, _) => if MutMap::has(exported, k = name) {
+        match env_lookup(env = env, name = name) {
+          Some(t) => if map_key_type_mentions_keyed(t = subst_apply(s = s, ty = t), keyed = keyed) {
+            Array::push(order, value = name)
           } else {
             ()
           },
@@ -665,7 +671,7 @@ fn map_key_formal_exports(stmts: Array[Stmt], env: TypeEnv, s: Subst, keyed: Mut
       } else {
         ()
       },
-      SModule(_, _, children) => map_key_formal_exports(children, env, s, keyed, exported, order),
+      SModule(_, _, children) => map_key_formal_exports(stmts = children, env = env, s = s, keyed = keyed, exported = exported, order = order),
       _ => ()
     }
   }
@@ -678,10 +684,10 @@ fn map_key_formal_exports(stmts: Array[Stmt], env: TypeEnv, s: Subst, keyed: Mut
 /// map by a type parameter -- the function, or an alias of it -- is refused.
 fn check_map_key_formal_escapes(stmts: Array[Stmt], env: TypeEnv, s: Subst, keyed: MutMap[Int, Int], errors: Array[String]) -> Unit {
   let exported: MutMap[String, Int] = MutMap::new_string()
-  map_key_exported_names(stmts, exported)
+  map_key_exported_names(stmts = stmts, out = exported)
   if MutMap::size(exported) > 0 {
     let order: Array[String] = []
-    map_key_formal_exports(stmts, env, s, keyed, exported, order)
+    map_key_formal_exports(stmts = stmts, env = env, s = s, keyed = keyed, exported = exported, order = order)
     for name in order {
       let parts = [
         "`",
@@ -690,7 +696,7 @@ fn check_map_key_formal_escapes(stmts: Array[Stmt], env: TypeEnv, s: Subst, keye
         name,
         "` private to this module (#2334)"
       ]
-      Array::push(errors, String::join(parts, ""))
+      Array::push(errors, value = String::join(parts, sep = ""))
     }
   } else {
     ()

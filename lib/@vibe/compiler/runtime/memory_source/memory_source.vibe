@@ -17,7 +17,7 @@ export enum MemorySources {
 
 /// Only the directory index is copied. Source reads use the walk's linear db;
 /// providers do not mutate its sources while the walk is running.
-export fn memory_sources_new(db: RippleDb) -> MemorySources {
+export fn memory_sources_new(_ db: RippleDb) -> MemorySources {
   let directories: MutMap[String, Array[String]] = MutMap::new_string()
   for path in ripple_source_paths(db) {
     let raw_dir = dir_of_path(path)
@@ -26,23 +26,23 @@ export fn memory_sources_new(db: RippleDb) -> MemorySources {
     } else {
       raw_dir
     }
-    let names = match MutMap::get(directories, dir) {
+    let names = match MutMap::get(directories, k = dir) {
       Some(entries) => entries,
       None => {
         let entries: Array[String] = []
-        MutMap::set(directories, dir, entries)
+        MutMap::set(directories, k = dir, v = entries)
         entries
       }
     }
-    let prefix = String::last_index_of(path, "/") + 1
-    Array::push(names, path[prefix: String::length(path)])
+    let prefix = String::last_index_of(path, needle = "/") + 1
+    Array::push(names, value = path[prefix: String::length(path)])
   }
   MemorySources(db, directories)
 }
 
 fn memory_read(sources: MemorySources, path: String) -> String {
   match sources {
-    MemorySources(db, _) => match ripple_get_source(db, path) {
+    MemorySources(db, _) => match ripple_get_source(db = db, path = path) {
       Some(text) => text,
       None => ""
     }
@@ -51,13 +51,13 @@ fn memory_read(sources: MemorySources, path: String) -> String {
 
 fn memory_exists(sources: MemorySources, path: String) -> Bool {
   match sources {
-    MemorySources(db, _) => ripple_get_source(db, path) is Some(_)
+    MemorySources(db, _) => ripple_get_source(db = db, path = path) is Some(_)
   }
 }
 
 fn memory_list(sources: MemorySources, path: String) -> Array[String] {
   match sources {
-    MemorySources(_, directories) => match MutMap::get(directories, path) {
+    MemorySources(_, directories) => match MutMap::get(directories, k = path) {
       Some(names) => sorted_names_of(names),
       None => []
     }
@@ -66,7 +66,7 @@ fn memory_list(sources: MemorySources, path: String) -> Array[String] {
 
 fn memory_parse(path: String, source: String) -> (Array[Stmt], Option[String]) {
   handle {
-    (parse_program_located_shared(path, source), None)
+    (parse_program_located_shared(path = path, source = source), None)
   } with { Exception::Throw(message) => ([], Some(message)) }
 }
 
@@ -74,16 +74,16 @@ fn memory_parse(path: String, source: String) -> (Array[Stmt], Option[String]) {
 /// file, so its metadata token is a non-symlink hint, never a cache identity.
 export fn memory_module_header(sources: MemorySources, path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception {
   handle {
-    module_header_source(path, source, parse_count)
-  } with { ModuleParse::Parse(p, text) => resume(memory_parse(p, text)); Source::Read(p) => resume(memory_read(sources, p)); Source::Exists(p) => resume(memory_exists(sources, p)); Source::List(p) => resume(memory_list(sources, p)); Source::StatToken(_) => resume(7) }
+    module_header_source(path = path, source = source, parse_count = parse_count)
+  } with { ModuleParse::Parse(p, text) => resume(memory_parse(path = p, source = text)); Source::Read(p) => resume(memory_read(sources = sources, path = p)); Source::Exists(p) => resume(memory_exists(sources = sources, path = p)); Source::List(p) => resume(memory_list(sources = sources, path = p)); Source::StatToken(_) => resume(7) }
 }
 
 /// Resolve the shipped owned-head declarations against the same virtual files.
 export fn memory_module_ships_owned_heads(sources: MemorySources, path: String) -> Bool with Env {
-  if String::ends_with(normalize_path(path), "@vibe/concurrent/experimental/concurrent.vibe") {
+  if String::ends_with(normalize_path(path), suffix = "@vibe/concurrent/experimental/concurrent.vibe") {
     handle {
-      is_owned_head_source_location(path, external_lib_roots())
-    } with { Source::Read(p) => resume(memory_read(sources, p)); Source::Exists(p) => resume(memory_exists(sources, p)); Source::List(p) => resume(memory_list(sources, p)); Source::StatToken(_) => resume(7) }
+      is_owned_head_source_location(path = path, roots = external_lib_roots())
+    } with { Source::Read(p) => resume(memory_read(sources = sources, path = p)); Source::Exists(p) => resume(memory_exists(sources = sources, path = p)); Source::List(p) => resume(memory_list(sources = sources, path = p)); Source::StatToken(_) => resume(7) }
   } else {
     false
   }

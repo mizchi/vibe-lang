@@ -93,7 +93,7 @@ fn lc_map_fn(m: LcIndexMap, o: Int) -> Int {
   if o < 0 || o >= Array::length(m.fns) {
     0 - 1
   } else {
-    Array::get(m.fns, o)
+    Array::get(m.fns, at = o)
   }
 }
 
@@ -104,7 +104,7 @@ fn lc_lambda_owner(m: LcIndexMap, l: Int) -> Int {
   let mut hi = Array::length(m.old_bases)
   while lo < hi {
     let mid = (lo + hi) / 2
-    if Array::get(m.old_bases, mid) <= l {
+    if Array::get(m.old_bases, at = mid) <= l {
       lo = mid + 1
     } else {
       hi = mid
@@ -117,12 +117,12 @@ fn lc_map_lambda(m: LcIndexMap, l: Int) -> Int {
   if l < 0 || l >= m.old_lambda_count {
     0 - 1
   } else {
-    let o = lc_lambda_owner(m, l)
-    let n = lc_map_fn(m, o)
+    let o = lc_lambda_owner(m = m, l = l)
+    let n = lc_map_fn(m = m, o = o)
     if o < 0 || n < 0 || n >= Array::length(m.new_bases) {
       0 - 1
     } else {
-      Array::get(m.new_bases, n) + (l - Array::get(m.old_bases, o))
+      Array::get(m.new_bases, at = n) + (l - Array::get(m.old_bases, at = o))
     }
   }
 }
@@ -133,9 +133,9 @@ fn lc_map_slot(m: LcIndexMap, s: Int) -> Int {
   if s < 0 {
     0 - 1
   } else if s < m.lambda_slot_base {
-    lc_map_fn(m, s)
+    lc_map_fn(m = m, o = s)
   } else {
-    let l = lc_map_lambda(m, s - m.lambda_slot_base)
+    let l = lc_map_lambda(m = m, l = s - m.lambda_slot_base)
     if l < 0 {
       0 - 1
     } else {
@@ -150,7 +150,7 @@ fn lc_map_call(m: LcIndexMap, v: Int) -> Int {
   if u < 0 {
     v
   } else if u < m.num_user_funcs {
-    let n = lc_map_fn(m, u)
+    let n = lc_map_fn(m = m, o = u)
     if n < 0 {
       0 - 1
     } else {
@@ -175,7 +175,7 @@ fn lc_map_tag(m: LcIndexMap, t: Int) -> Int {
       0 - 1
     }
   } else {
-    Array::get(m.tags, t)
+    Array::get(m.tags, at = t)
   }
 }
 
@@ -186,10 +186,10 @@ fn lc_map_global(m: LcIndexMap, g: Int) -> Int {
     g
   } else {
     let k = (g - m.thunk_base) / 2
-    if k >= Array::length(m.thunks) || Array::get(m.thunks, k) < 0 {
+    if k >= Array::length(m.thunks) || Array::get(m.thunks, at = k) < 0 {
       0 - 1
     } else {
-      m.thunk_base + 2 * Array::get(m.thunks, k) + (g - m.thunk_base) % 2
+      m.thunk_base + 2 * Array::get(m.thunks, at = k) + (g - m.thunk_base) % 2
     }
   }
 }
@@ -203,8 +203,8 @@ fn lc_map_ctor_tag(m: LcIndexMap, t: Int) -> Int {
     let mut n = 0 - 1
     let mut k = 0
     while n < 0 && k < Array::length(m.ctor_tags.old_tags) {
-      if Array::get(m.ctor_tags.old_tags, k) == t {
-        n = Array::get(m.ctor_tags.new_tags, k)
+      if Array::get(m.ctor_tags.old_tags, at = k) == t {
+        n = Array::get(m.ctor_tags.new_tags, at = k)
         k = Array::length(m.ctor_tags.old_tags)
       } else {
         k = k + 1
@@ -221,10 +221,10 @@ fn lc_push_uleb(out: Bytes, value: Int) -> Unit {
     let b = v&127
     v = v>>7
     if v == 0 {
-      Bytes::push(out, b)
+      Bytes::push(out, value = b)
       more = false
     } else {
-      Bytes::push(out, b|128)
+      Bytes::push(out, value = b|128)
     }
   }
 }
@@ -233,7 +233,7 @@ fn lc_sleb_end(body: Bytes, p: Int) -> Int {
   let mut i = p
   let mut done = false
   while !done && i < Bytes::length(body) {
-    if (Bytes::get(body, i)&128) == 0 {
+    if (Bytes::get(body, at = i)&128) == 0 {
       done = true
     } else {
       ()
@@ -252,18 +252,18 @@ struct LcEdit {
 
 fn lc_edit_insert(edits: Array[LcEdit], e: LcEdit) -> Unit {
   let mut at = Array::length(edits)
-  Array::push(edits, e)
+  Array::push(edits, value = e)
   let mut moving = true
   while moving && at > 0 {
-    let prev = Array::get(edits, at - 1)
+    let prev = Array::get(edits, at = at - 1)
     if prev.off > e.off {
-      Array::set(edits, at, prev)
+      Array::set(edits, at = at, value = prev)
       at = at - 1
     } else {
       moving = false
     }
   }
-  Array::set(edits, at, e)
+  Array::set(edits, at = at, value = e)
 }
 
 /// The shift a position `p` of the old body takes.
@@ -287,7 +287,7 @@ struct LcMovedBody {
   edits: Array[LcEdit]
 }
 
-fn lc_unmovable(body: Bytes) -> LcMovedBody {
+fn lc_unmovable(_ body: Bytes) -> LcMovedBody {
   LcMovedBody::{ ok: false, body: body, edits: [] }
 }
 
@@ -297,31 +297,31 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
   let edits: Array[LcEdit] = []
   let mut ok = true
   let scanned = handle {
-    Some(scan_body_relocs(body, 0, Bytes::length(body)))
+    Some(scan_body_relocs(body = body, start = 0, end_pos = Bytes::length(body)))
   } with { Exception::Throw(_) => None }
   match scanned {
     None => ok = false,
     Some(r) => {
       let mut i = 0
       while ok && i < Array::length(r.offsets) {
-        let rk = Array::get(r.kinds, i)
+        let rk = Array::get(r.kinds, at = i)
         if rk == reloc_kind_func || rk == reloc_kind_tag || rk == reloc_kind_global {
-          let v = Array::get(r.values, i)
+          let v = Array::get(r.values, at = i)
           let n = if rk == reloc_kind_func {
-            lc_map_call(m, v)
+            lc_map_call(m = m, v = v)
           } else if rk == reloc_kind_tag {
-            lc_map_tag(m, v)
+            lc_map_tag(m = m, t = v)
           } else {
-            lc_map_global(m, v)
+            lc_map_global(m = m, g = v)
           }
           if n < 0 {
             ok = false
           } else if n != v {
             let b = Bytes::new()
-            lc_push_uleb(b, n)
-            lc_edit_insert(edits, LcEdit::{
-              off: Array::get(r.offsets, i),
-              width: Array::get(r.widths, i),
+            lc_push_uleb(out = b, value = n)
+            lc_edit_insert(edits = edits, e = LcEdit::{
+              off: Array::get(r.offsets, at = i),
+              width: Array::get(r.widths, at = i),
               bytes: b
             })
           } else {
@@ -335,32 +335,32 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
     }
   }
   for k in rows {
-    let kind = Array::get(cache.blind_kinds, k)
-    if ok && Array::get(cache.blind_body, k) == owner && (kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32 || kind == blind_kind_ctor_tag) {
-      let off = Array::get(cache.blind_offsets, k)
+    let kind = Array::get(cache.blind_kinds, at = k)
+    if ok && Array::get(cache.blind_body, at = k) == owner && (kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32 || kind == blind_kind_ctor_tag) {
+      let off = Array::get(cache.blind_offsets, at = k)
       let op = if kind == blind_kind_fn_value {
         66
       } else {
         65
       }
-      let s = Array::get(cache.blind_syms, k)
+      let s = Array::get(cache.blind_syms, at = k)
       let n = if kind == blind_kind_ctor_tag {
-        lc_map_ctor_tag(m, s)
+        lc_map_ctor_tag(m = m, t = s)
       } else {
-        lc_map_slot(m, s)
+        lc_map_slot(m = m, s = s)
       }
-      if off < 0 || off >= Bytes::length(body) || Bytes::get(body, off) != op || n < 0 {
+      if off < 0 || off >= Bytes::length(body) || Bytes::get(body, at = off) != op || n < 0 {
         ok = false
       } else if n != s {
         let b = Bytes::new()
         if kind == blind_kind_fn_value {
-          emit_i64_const(b, (n<<2)|2)
+          emit_i64_const(buf = b, value = (n<<2)|2)
         } else {
-          emit_i32_const(b, n)
+          emit_i32_const(buf = b, value = n)
         }
-        lc_edit_insert(edits, LcEdit::{
+        lc_edit_insert(edits = edits, e = LcEdit::{
           off: off,
-          width: lc_sleb_end(body, off + 1) - off,
+          width: lc_sleb_end(body = body, p = off + 1) - off,
           bytes: b
         })
       } else {
@@ -384,14 +384,14 @@ fn lc_move_body(m: LcIndexMap, body: Bytes, owner: Int, cache: CodegenBodyCache,
         ()
       }
       while cursor < e.off && cursor < Bytes::length(body) {
-        Bytes::push(out, Bytes::get(body, cursor))
+        Bytes::push(out, value = Bytes::get(body, at = cursor))
         cursor = cursor + 1
       }
-      Bytes::append(out, e.bytes)
+      Bytes::append(out, bytes = e.bytes)
       cursor = e.off + e.width
     }
     while cursor < Bytes::length(body) {
-      Bytes::push(out, Bytes::get(body, cursor))
+      Bytes::push(out, value = Bytes::get(body, at = cursor))
       cursor = cursor + 1
     }
     if ok {
@@ -408,14 +408,14 @@ fn lc_group_rows(owners: Array[Int], n: Int) -> Array[Array[Int]] {
   let groups: Array[Array[Int]] = []
   let mut i = 0
   while i < n {
-    Array::push(groups, lc_fresh_int_array())
+    Array::push(groups, value = lc_fresh_int_array())
     i = i + 1
   }
   let mut r = 0
   while r < Array::length(owners) {
-    let o = Array::get(owners, r)
+    let o = Array::get(owners, at = r)
     if o >= 0 && o < n {
-      Array::push(Array::get(groups, o), r)
+      Array::push(Array::get(groups, at = o), value = r)
     } else {
       ()
     }
@@ -424,11 +424,11 @@ fn lc_group_rows(owners: Array[Int], n: Int) -> Array[Array[Int]] {
   groups
 }
 
-fn lc_tags_identity(map: Array[Int]) -> Bool {
+fn lc_tags_identity(_ map: Array[Int]) -> Bool {
   let mut same = true
   let mut i = 0
   while same && i < Array::length(map) {
-    if Array::get(map, i) != i {
+    if Array::get(map, at = i) != i {
       same = false
     } else {
       i = i + 1
@@ -445,8 +445,8 @@ fn lc_first_change(e: LcSrcEdit, old_plan: Array[Int], new_bases: Array[Int]) ->
   let mut first = e.old_src_n
   let mut o = 0
   while first == e.old_src_n && o < e.old_src_n {
-    let n = Array::get(e.o2n, o)
-    if n != o || n < 0 || n >= Array::length(new_bases) || Array::get(old_plan, o) != Array::get(new_bases, n) {
+    let n = Array::get(e.o2n, at = o)
+    if n != o || n < 0 || n >= Array::length(new_bases) || Array::get(old_plan, at = o) != Array::get(new_bases, at = n) {
       first = o
     } else {
       ()
@@ -470,36 +470,36 @@ export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, old_capacit
   // memo global, a moved constructor tag, or a call into a synthesized
   // function the capacity moved, so every entry moves then.
   let first = if lc_tags_identity(tag_map) && lc_tags_identity(thunk_map) && ctor_tags.identity && old_capacity == capacity && old_lambda_slot_base == lambda_slot_base {
-    lc_first_change(e, old_plan, new_bases)
+    lc_first_change(e = e, old_plan = old_plan, new_bases = new_bases)
   } else {
     0
   }
   if first >= e.old_src_n || old_num_user < 0 {
     cache
   } else {
-    let fns = lc_fresh_int_array_of_len(old_num_user, 0 - 1)
+    let fns = lc_fresh_int_array_of_len(n = old_num_user, fill = 0 - 1)
     let mut o = 0
     while o < e.old_src_n && o < old_num_user {
-      Array::set(fns, o, Array::get(e.o2n, o))
+      Array::set(fns, at = o, value = Array::get(e.o2n, at = o))
       o = o + 1
     }
     let mut y = old_capacity
     while y < old_num_user {
-      Array::set(fns, y, capacity + (y - old_capacity))
+      Array::set(fns, at = y, value = capacity + (y - old_capacity))
       y = y + 1
     }
     let old_bases = lc_fresh_int_array()
     let mut q = 0
     while q < old_num_user {
-      Array::push(old_bases, Array::get(old_plan, q))
+      Array::push(old_bases, value = Array::get(old_plan, at = q))
       q = q + 1
     }
-    let old_lambda_count = Array::get(old_plan, Array::length(old_plan) - 1)
+    let old_lambda_count = Array::get(old_plan, at = Array::length(old_plan) - 1)
     let mut lambdas_moved = old_lambda_count != new_lambda_count
     let mut l = 0
     while !lambdas_moved && l < old_num_user {
-      let n = Array::get(fns, l)
-      if n >= 0 && Array::get(old_bases, l) != Array::get(new_bases, n) {
+      let n = Array::get(fns, at = l)
+      if n >= 0 && Array::get(old_bases, at = l) != Array::get(new_bases, at = n) {
         lambdas_moved = true
       } else {
         ()
@@ -523,16 +523,16 @@ export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, old_capacit
       ctor_tags: ctor_tags
     }
     let out = codegen_body_cache_guards_only(cache)
-    let lam_rows = lc_group_rows(cache.lam_owner, old_num_user)
-    let slot_rows = lc_group_rows(cache.slot_owner, old_num_user)
-    let blind_rows = lc_group_rows(cache.blind_fn, old_num_user)
-    let lm_rows = lc_group_rows(cache.lm_owner, old_num_user)
+    let lam_rows = lc_group_rows(owners = cache.lam_owner, n = old_num_user)
+    let slot_rows = lc_group_rows(owners = cache.slot_owner, n = old_num_user)
+    let blind_rows = lc_group_rows(owners = cache.blind_fn, n = old_num_user)
+    let lm_rows = lc_group_rows(owners = cache.lm_owner, n = old_num_user)
     let mut x = 0
     while x < Array::length(cache.fn_indices) {
-      let fo = Array::get(cache.fn_indices, x)
-      let n = lc_map_fn(m, fo)
+      let fo = Array::get(cache.fn_indices, at = x)
+      let n = lc_map_fn(m = m, o = fo)
       if fo >= 0 && fo < old_num_user && n >= 0 {
-        lc_reindex_entry(m, cache, out, x, fo, n, fo >= first, Array::get(lam_rows, fo), Array::get(slot_rows, fo), Array::get(blind_rows, fo), Array::get(lm_rows, fo))
+        lc_reindex_entry(m = m, cache = cache, out = out, e = x, o = fo, n = n, moving = fo >= first, lams = Array::get(lam_rows, at = fo), slots = Array::get(slot_rows, at = fo), blinds = Array::get(blind_rows, at = fo), lms = Array::get(lm_rows, at = fo))
       } else {
         ()
       }
@@ -547,38 +547,46 @@ export fn lc_src_edit_reindex(cache: CodegenBodyCache, e: LcSrcEdit, old_capacit
 /// insertion, where the entry is carried as it is.
 fn lc_reindex_entry(m: LcIndexMap, cache: CodegenBodyCache, out: CodegenBodyCache, e: Int, o: Int, n: Int, moving: Bool, lams: Array[Int], slots: Array[Int], blinds: Array[Int], lms: Array[Int]) -> Unit {
   let fn_moved = if moving {
-    lc_move_body(m, Array::get(cache.fn_bodies, e), o, cache, blinds)
+    lc_move_body(m = m, body = Array::get(cache.fn_bodies, at = e), owner = o, cache = cache, rows = blinds)
   } else {
-    LcMovedBody::{ ok: true, body: Array::get(cache.fn_bodies, e), edits: [] }
+    LcMovedBody::{
+      ok: true,
+      body: Array::get(cache.fn_bodies, at = e),
+      edits: []
+    }
   }
   let lam_moved: Array[LcMovedBody] = []
   let lam_new: Array[Int] = []
   let mut ok = fn_moved.ok
   for r in lams {
-    let l = Array::get(cache.lam_indices, r)
+    let l = Array::get(cache.lam_indices, at = r)
     let nl = if moving {
-      lc_map_lambda(m, l)
+      lc_map_lambda(m = m, l = l)
     } else {
       l
     }
     let moved = if moving {
-      lc_move_body(m, Array::get(cache.lam_bodies, r), blind_owner_of_lambda(l), cache, blinds)
+      lc_move_body(m = m, body = Array::get(cache.lam_bodies, at = r), owner = blind_owner_of_lambda(l), cache = cache, rows = blinds)
     } else {
-      LcMovedBody::{ ok: true, body: Array::get(cache.lam_bodies, r), edits: [] }
+      LcMovedBody::{
+        ok: true,
+        body: Array::get(cache.lam_bodies, at = r),
+        edits: []
+      }
     }
     if nl < 0 || !moved.ok {
       ok = false
     } else {
       ()
     }
-    Array::push(lam_moved, moved)
-    Array::push(lam_new, nl)
+    Array::push(lam_moved, value = moved)
+    Array::push(lam_new, value = nl)
   }
   let slot_new: Array[Int] = []
   for r in slots {
-    let s = Array::get(cache.slot_values, r)
+    let s = Array::get(cache.slot_values, at = r)
     let ns = if moving {
-      lc_map_slot(m, s)
+      lc_map_slot(m = m, s = s)
     } else {
       s
     }
@@ -587,40 +595,40 @@ fn lc_reindex_entry(m: LcIndexMap, cache: CodegenBodyCache, out: CodegenBodyCach
     } else {
       ()
     }
-    Array::push(slot_new, ns)
+    Array::push(slot_new, value = ns)
   }
   if ok {
-    Array::push(out.fn_indices, n)
-    Array::push(out.fn_names, Array::get(cache.fn_names, e))
-    Array::push(out.fn_files, Array::get(cache.fn_files, e))
-    Array::push(out.fn_src_stmts, Array::get(cache.fn_src_stmts, e))
-    Array::push(out.fn_bodies, fn_moved.body)
-    Array::push(out.fn_meta_i32, Array::get(cache.fn_meta_i32, e))
-    Array::push(out.fn_meta_i64, Array::get(cache.fn_meta_i64, e))
-    Array::push(out.fn_meta_v128, Array::get(cache.fn_meta_v128, e))
-    Array::push(out.fn_fold_sigs, Array::get(cache.fn_fold_sigs, e))
+    Array::push(out.fn_indices, value = n)
+    Array::push(out.fn_names, value = Array::get(cache.fn_names, at = e))
+    Array::push(out.fn_files, value = Array::get(cache.fn_files, at = e))
+    Array::push(out.fn_src_stmts, value = Array::get(cache.fn_src_stmts, at = e))
+    Array::push(out.fn_bodies, value = fn_moved.body)
+    Array::push(out.fn_meta_i32, value = Array::get(cache.fn_meta_i32, at = e))
+    Array::push(out.fn_meta_i64, value = Array::get(cache.fn_meta_i64, at = e))
+    Array::push(out.fn_meta_v128, value = Array::get(cache.fn_meta_v128, at = e))
+    Array::push(out.fn_fold_sigs, value = Array::get(cache.fn_fold_sigs, at = e))
     let mut li = 0
     while li < Array::length(lams) {
-      let r = Array::get(lams, li)
-      Array::push(out.lam_owner, n)
-      Array::push(out.lam_indices, Array::get(lam_new, li))
-      Array::push(out.lam_bodies, Array::get(lam_moved, li).body)
-      Array::push(out.lam_param_counts, Array::get(cache.lam_param_counts, r))
-      Array::push(out.lam_captures, Array::get(cache.lam_captures, r))
-      Array::push(out.lam_meta_i32, Array::get(cache.lam_meta_i32, r))
-      Array::push(out.lam_meta_i64, Array::get(cache.lam_meta_i64, r))
+      let r = Array::get(lams, at = li)
+      Array::push(out.lam_owner, value = n)
+      Array::push(out.lam_indices, value = Array::get(lam_new, at = li))
+      Array::push(out.lam_bodies, value = Array::get(lam_moved, at = li).body)
+      Array::push(out.lam_param_counts, value = Array::get(cache.lam_param_counts, at = r))
+      Array::push(out.lam_captures, value = Array::get(cache.lam_captures, at = r))
+      Array::push(out.lam_meta_i32, value = Array::get(cache.lam_meta_i32, at = r))
+      Array::push(out.lam_meta_i64, value = Array::get(cache.lam_meta_i64, at = r))
       li = li + 1
     }
     let mut si = 0
     while si < Array::length(slots) {
-      Array::push(out.slot_owner, n)
-      Array::push(out.slot_values, Array::get(slot_new, si))
+      Array::push(out.slot_owner, value = n)
+      Array::push(out.slot_values, value = Array::get(slot_new, at = si))
       si = si + 1
     }
     for r in blinds {
-      let owner = Array::get(cache.blind_body, r)
-      let kind = Array::get(cache.blind_kinds, r)
-      let sym = Array::get(cache.blind_syms, r)
+      let owner = Array::get(cache.blind_body, at = r)
+      let kind = Array::get(cache.blind_kinds, at = r)
+      let sym = Array::get(cache.blind_syms, at = r)
       // Which body the record sits in, so its offset moves with that body's
       // edits, and what its owner is called now.
       let (edits, new_owner) = if blind_owner_is_lambda(owner) {
@@ -628,7 +636,7 @@ fn lc_reindex_entry(m: LcIndexMap, cache: CodegenBodyCache, out: CodegenBodyCach
         let mut found = 0 - 1
         let mut q = 0
         while q < Array::length(lams) {
-          if Array::get(cache.lam_indices, Array::get(lams, q)) == l {
+          if Array::get(cache.lam_indices, at = Array::get(lams, at = q)) == l {
             found = q
           } else {
             ()
@@ -638,7 +646,7 @@ fn lc_reindex_entry(m: LcIndexMap, cache: CodegenBodyCache, out: CodegenBodyCach
         if found < 0 {
           (fn_moved.edits, owner)
         } else {
-          (Array::get(lam_moved, found).edits, blind_owner_of_lambda(Array::get(lam_new, found)))
+          (Array::get(lam_moved, at = found).edits, blind_owner_of_lambda(Array::get(lam_new, at = found)))
         }
       } else {
         (fn_moved.edits, if owner == o {
@@ -647,23 +655,23 @@ fn lc_reindex_entry(m: LcIndexMap, cache: CodegenBodyCache, out: CodegenBodyCach
           owner
         })
       }
-      Array::push(out.blind_fn, n)
-      Array::push(out.blind_body, new_owner)
-      Array::push(out.blind_offsets, lc_edit_shift(edits, Array::get(cache.blind_offsets, r)))
-      Array::push(out.blind_kinds, kind)
-      Array::push(out.blind_syms, if moving && (kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32) {
-        lc_map_slot(m, sym)
+      Array::push(out.blind_fn, value = n)
+      Array::push(out.blind_body, value = new_owner)
+      Array::push(out.blind_offsets, value = lc_edit_shift(edits = edits, p = Array::get(cache.blind_offsets, at = r)))
+      Array::push(out.blind_kinds, value = kind)
+      Array::push(out.blind_syms, value = if moving && (kind == blind_kind_fn_value || kind == blind_kind_table_slot_i32) {
+        lc_map_slot(m = m, s = sym)
       } else if moving && kind == blind_kind_ctor_tag {
-        lc_map_ctor_tag(m, sym)
+        lc_map_ctor_tag(m = m, t = sym)
       } else {
         sym
       })
     }
     for r in lms {
-      Array::push(out.lm_owner, n)
-      Array::push(out.lm_offsets, lc_edit_shift(fn_moved.edits, Array::get(cache.lm_offsets, r)))
-      Array::push(out.lm_file_ids, Array::get(cache.lm_file_ids, r))
-      Array::push(out.lm_lines, Array::get(cache.lm_lines, r))
+      Array::push(out.lm_owner, value = n)
+      Array::push(out.lm_offsets, value = lc_edit_shift(edits = fn_moved.edits, p = Array::get(cache.lm_offsets, at = r)))
+      Array::push(out.lm_file_ids, value = Array::get(cache.lm_file_ids, at = r))
+      Array::push(out.lm_lines, value = Array::get(cache.lm_lines, at = r))
     }
   } else {
     ()

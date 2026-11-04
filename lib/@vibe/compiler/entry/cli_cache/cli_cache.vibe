@@ -18,43 +18,43 @@ import @vibe/compiler/cache {
 
 //# Functions
 
-fn strip_trailing_cr(line: String) -> String {
+fn strip_trailing_cr(_ line: String) -> String {
   let len = String::length(line)
-  if len > 0 && String::char_code_at(line, len - 1) == 13 {
+  if len > 0 && String::char_code_at(line, at = len - 1) == 13 {
     line[0: len - 1]
   } else {
     line
   }
 }
 
-fn split_tsv_fields(line: String) -> Array[String] {
+fn split_tsv_fields(_ line: String) -> Array[String] {
   let fields = array_empty()
   let len = String::length(line)
   let mut start = 0
   let mut i = 0
   while i < len {
-    if String::char_code_at(line, i) == 9 {
-      Array::push(fields, line[start: i])
+    if String::char_code_at(line, at = i) == 9 {
+      Array::push(fields, value = line[start: i])
       start = i + 1
     }
     i = i + 1
   }
-  Array::push(fields, line[start: len])
+  Array::push(fields, value = line[start: len])
   fields
 }
 
-fn string_to_bytes(s: String) -> Bytes {
+fn string_to_bytes(_ s: String) -> Bytes {
   let out = Bytes::new()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Bytes::push(out, String::char_code_at(s, i))
+    Bytes::push(out, value = String::char_code_at(s, at = i))
     i = i + 1
   }
   out
 }
 
-fn remove_file_if_exists(path: String) -> Unit with Fs {
+fn remove_file_if_exists(_ path: String) -> Unit with Fs {
   if Fs::exists(path) {
     Fs::remove(path)
   } else {
@@ -66,16 +66,16 @@ fn remove_file_if_exists(path: String) -> Unit with Fs {
 /// (typing_module_fingerprint, the one spelling of the formula) under the
 /// default typing-semantics seed.
 fn build_type_db_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
-  typing_module_fingerprint(compact_string_fingerprint(source), dep_fps, "unchecked")
+  typing_module_fingerprint(source_fingerprint = compact_string_fingerprint(source), dep_fps = dep_fps, typing_semantics_seed = "unchecked")
 }
 
-export fn parse_batch_jobs_tsv(raw: String) -> Array[(String, String, String)] with Exception {
+export fn parse_batch_jobs_tsv(_ raw: String) -> Array[(String, String, String)] with Exception {
   let jobs = array_empty()
   let len = String::length(raw)
   let mut line_start = 0
   let mut i = 0
   while i <= len {
-    if i == len || String::char_code_at(raw, i) == 10 {
+    if i == len || String::char_code_at(raw, at = i) == 10 {
       let line = strip_trailing_cr(raw[line_start: i])
       if String::length(line) > 0 {
         let fields = split_tsv_fields(line)
@@ -83,17 +83,17 @@ export fn parse_batch_jobs_tsv(raw: String) -> Array[(String, String, String)] w
         if field_count < 2 || field_count > 3 {
           throw("invalid VIBE_BATCH_TSV row: expected 2 or 3 tab-separated columns")
         }
-        let input_path = Array::get(fields, 0)
-        let output_path = Array::get(fields, 1)
+        let input_path = Array::get(fields, at = 0)
+        let output_path = Array::get(fields, at = 1)
         let entry_name = if field_count == 3 {
-          Array::get(fields, 2)
+          Array::get(fields, at = 2)
         } else {
           ""
         }
         if String::length(input_path) == 0 || String::length(output_path) == 0 {
           throw("invalid VIBE_BATCH_TSV row: input/output path must be non-empty")
         }
-        Array::push(jobs, (input_path, output_path, entry_name))
+        Array::push(jobs, value = (input_path, output_path, entry_name))
       }
       line_start = i + 1
     }
@@ -104,9 +104,9 @@ export fn parse_batch_jobs_tsv(raw: String) -> Array[(String, String, String)] w
 
 fn compile_job_cached(db: TypeDb, input_path: String, entry_name: String) -> (Bytes, TypeDb) with Env + Exception + Fs {
   if entry_name == "" {
-    compile_file_fs_module_cached(db, input_path)
+    compile_file_fs_module_cached(db = db, entry_path = input_path)
   } else {
-    compile_file_fs_cached(db, input_path, entry_name)
+    compile_file_fs_cached(db = db, entry_path = input_path, entry_name = entry_name)
   }
 }
 
@@ -114,28 +114,28 @@ fn prepare_jobs_cached_impl(db: TypeDb, jobs: Array[(String, String, String)]) -
   let mut next_db = db
   let mut i = 0
   while i < Array::length(jobs) {
-    let (input_path, _, _) = Array::get(jobs, i)
-    next_db = prepare_file_fs_cached(next_db, input_path)
+    let (input_path, _, _) = Array::get(jobs, at = i)
+    next_db = prepare_file_fs_cached(db = next_db, entry_path = input_path)
     i = i + 1
   }
   next_db
 }
 
 export fn prepare_jobs_cached(db: TypeDb, jobs: Array[(String, String, String)]) -> TypeDb with Env + Exception + Fs {
-  prepare_jobs_cached_impl(db, jobs)
+  prepare_jobs_cached_impl(db = db, jobs = jobs)
 }
 
 export fn compile_jobs_cached(db: TypeDb, jobs: Array[(String, String, String)]) -> TypeDb with Env + Exception + Fs {
   let mut next_db = if Array::length(jobs) > 1 {
-    prepare_jobs_cached_impl(db, jobs)
+    prepare_jobs_cached_impl(db = db, jobs = jobs)
   } else {
     db
   }
   let mut i = 0
   while i < Array::length(jobs) {
-    let (input_path, output_path, entry_name) = Array::get(jobs, i)
-    let (bytes, compiled_db) = compile_job_cached(next_db, input_path, entry_name)
-    Fs::write_bytes(output_path, bytes)
+    let (input_path, output_path, entry_name) = Array::get(jobs, at = i)
+    let (bytes, compiled_db) = compile_job_cached(db = next_db, input_path = input_path, entry_name = entry_name)
+    Fs::write_bytes(output_path, bytes = bytes)
     next_db = compiled_db
     i = i + 1
   }
@@ -145,17 +145,17 @@ export fn compile_jobs_cached(db: TypeDb, jobs: Array[(String, String, String)])
 export fn selfbuild_probe_cli_cache_counts() -> Int with Env + Exception + Fs {
   let helper_path = "/tmp/vibe_cli_cache_v4_helper.vibe"
   let main_path = "/tmp/vibe_cli_cache_v4_main.vibe"
-  Fs::write_file("_build/cli_cache_counts_inner_v1.txt", "before_write_sources")
-  Fs::write_bytes(helper_path, string_to_bytes("export let add: (Int, Int) -> Int = (a, b) -> { a + b }"))
-  Fs::write_bytes(main_path, string_to_bytes("import ./vibe_cli_cache_v4_helper.vibe { add }\nlet run: () -> Int = () -> { add(1, 2) }"))
+  Fs::write_file("_build/cli_cache_counts_inner_v1.txt", contents = "before_write_sources")
+  Fs::write_bytes(helper_path, bytes = string_to_bytes("export let add: (Int, Int) -> Int = (a, b) -> { a + b }"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./vibe_cli_cache_v4_helper.vibe { add }\nlet run: () -> Int = () -> { add(1, 2) }"))
   let jobs = [(main_path, "/tmp/vibe_cli_cache_v4_out.wasm", "run")]
-  Fs::write_file("_build/cli_cache_counts_inner_v1.txt", "before_prepare1")
-  let db1 = prepare_jobs_cached_impl(db_new(), jobs)
-  Fs::write_file("_build/cli_cache_counts_inner_v1.txt", String::concat("after_prepare1:", __to_string(db_typecheck_count(db1))))
+  Fs::write_file("_build/cli_cache_counts_inner_v1.txt", contents = "before_prepare1")
+  let db1 = prepare_jobs_cached_impl(db = db_new(), jobs = jobs)
+  Fs::write_file("_build/cli_cache_counts_inner_v1.txt", contents = String::concat("after_prepare1:", __to_string(db_typecheck_count(db1))))
   let count1 = db_typecheck_count(db1)
-  Fs::write_file("_build/cli_cache_counts_inner_v1.txt", "before_prepare2")
-  let db2 = prepare_jobs_cached_impl(db1, jobs)
-  Fs::write_file("_build/cli_cache_counts_inner_v1.txt", String::concat("after_prepare2:", __to_string(db_typecheck_count(db2))))
+  Fs::write_file("_build/cli_cache_counts_inner_v1.txt", contents = "before_prepare2")
+  let db2 = prepare_jobs_cached_impl(db = db1, jobs = jobs)
+  Fs::write_file("_build/cli_cache_counts_inner_v1.txt", contents = String::concat("after_prepare2:", __to_string(db_typecheck_count(db2))))
   let count2 = db_typecheck_count(db2)
   count1 * 1000 + count2
 }
@@ -165,16 +165,16 @@ export fn selfbuild_probe_cli_file_cache_counts() -> Int with Env + Exception + 
 }
 
 fn clear_prepare_probe_caches(helper_path: String, helper_source: String, main1_path: String, main1_source: String, main2_path: String, main2_source: String) -> Unit with Env + Fs {
-  let helper_fp = build_type_db_fingerprint(helper_source, array_empty())
-  let main1_fp = build_type_db_fingerprint(main1_source, [
+  let helper_fp = build_type_db_fingerprint(source = helper_source, dep_fps = array_empty())
+  let main1_fp = build_type_db_fingerprint(source = main1_source, dep_fps = [
     (helper_path, helper_fp)
   ])
-  let main2_fp = build_type_db_fingerprint(main2_source, [
+  let main2_fp = build_type_db_fingerprint(source = main2_source, dep_fps = [
     (helper_path, helper_fp)
   ])
-  remove_file_if_exists(persistent_dep_list_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_dep_list_cache_path(main1_path, compact_string_fingerprint(main1_source)))
-  remove_file_if_exists(persistent_dep_list_cache_path(main2_path, compact_string_fingerprint(main2_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = main1_path, source_fingerprint = compact_string_fingerprint(main1_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = main2_path, source_fingerprint = compact_string_fingerprint(main2_source)))
   remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main1_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main2_fp))
@@ -182,8 +182,8 @@ fn clear_prepare_probe_caches(helper_path: String, helper_source: String, main1_
 
 fn prepare_probe_sources(helper_path: String, main1_path: String, main2_path: String) -> (String, String, String) {
   let helper_source = "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"
-  let main1_source = String::concat("import ./", String::concat(String::substring(helper_path, String::last_index_of(helper_path, "/") + 1, String::length(helper_path)), " { add }\nlet run: () -> Int = () -> { add(1, 2) }"))
-  let main2_source = String::concat("import ./", String::concat(String::substring(helper_path, String::last_index_of(helper_path, "/") + 1, String::length(helper_path)), " { add }\nlet run: () -> Int = () -> { add(3, 4) }"))
+  let main1_source = String::concat("import ./", String::concat(String::substring(helper_path, start = String::last_index_of(helper_path, needle = "/") + 1, end = String::length(helper_path)), " { add }\nlet run: () -> Int = () -> { add(1, 2) }"))
+  let main2_source = String::concat("import ./", String::concat(String::substring(helper_path, start = String::last_index_of(helper_path, needle = "/") + 1, end = String::length(helper_path)), " { add }\nlet run: () -> Int = () -> { add(3, 4) }"))
   (helper_source, main1_source, main2_source)
 }
 
@@ -194,16 +194,16 @@ export fn selfbuild_probe_cli_prepare_batch_parse_counts() -> Int with Env + Exc
   let shared_helper_path = "/tmp/vibe_cli_prepare_shared_helper.vibe"
   let shared_main1_path = "/tmp/vibe_cli_prepare_shared_main1.vibe"
   let shared_main2_path = "/tmp/vibe_cli_prepare_shared_main2.vibe"
-  let (fresh_helper_source, fresh_main1_source, fresh_main2_source) = prepare_probe_sources(fresh_helper_path, fresh_main1_path, fresh_main2_path)
-  let (shared_helper_source, shared_main1_source, shared_main2_source) = prepare_probe_sources(shared_helper_path, shared_main1_path, shared_main2_path)
-  Fs::write_bytes(fresh_helper_path, string_to_bytes(fresh_helper_source))
-  Fs::write_bytes(fresh_main1_path, string_to_bytes(fresh_main1_source))
-  Fs::write_bytes(fresh_main2_path, string_to_bytes(fresh_main2_source))
-  Fs::write_bytes(shared_helper_path, string_to_bytes(shared_helper_source))
-  Fs::write_bytes(shared_main1_path, string_to_bytes(shared_main1_source))
-  Fs::write_bytes(shared_main2_path, string_to_bytes(shared_main2_source))
-  clear_prepare_probe_caches(fresh_helper_path, fresh_helper_source, fresh_main1_path, fresh_main1_source, fresh_main2_path, fresh_main2_source)
-  clear_prepare_probe_caches(shared_helper_path, shared_helper_source, shared_main1_path, shared_main1_source, shared_main2_path, shared_main2_source)
+  let (fresh_helper_source, fresh_main1_source, fresh_main2_source) = prepare_probe_sources(helper_path = fresh_helper_path, main1_path = fresh_main1_path, main2_path = fresh_main2_path)
+  let (shared_helper_source, shared_main1_source, shared_main2_source) = prepare_probe_sources(helper_path = shared_helper_path, main1_path = shared_main1_path, main2_path = shared_main2_path)
+  Fs::write_bytes(fresh_helper_path, bytes = string_to_bytes(fresh_helper_source))
+  Fs::write_bytes(fresh_main1_path, bytes = string_to_bytes(fresh_main1_source))
+  Fs::write_bytes(fresh_main2_path, bytes = string_to_bytes(fresh_main2_source))
+  Fs::write_bytes(shared_helper_path, bytes = string_to_bytes(shared_helper_source))
+  Fs::write_bytes(shared_main1_path, bytes = string_to_bytes(shared_main1_source))
+  Fs::write_bytes(shared_main2_path, bytes = string_to_bytes(shared_main2_source))
+  clear_prepare_probe_caches(helper_path = fresh_helper_path, helper_source = fresh_helper_source, main1_path = fresh_main1_path, main1_source = fresh_main1_source, main2_path = fresh_main2_path, main2_source = fresh_main2_source)
+  clear_prepare_probe_caches(helper_path = shared_helper_path, helper_source = shared_helper_source, main1_path = shared_main1_path, main1_source = shared_main1_source, main2_path = shared_main2_path, main2_source = shared_main2_source)
   // Measure the in-memory TypeDb-reuse benefit via db_typecheck_count, not
   // db_parse_count. The sibling-job sharing this probe checks is an
   // in-memory TypeDb effect: typechecking [main1, main2] in one shared db
@@ -214,13 +214,13 @@ export fn selfbuild_probe_cli_prepare_batch_parse_counts() -> Int with Env + Exc
   // across the "fresh" dbs and so reports 1/1/2 regardless of TypeDb
   // sharing — leaving shared == fresh_total (2 == 2) and the
   // `shared < fresh_total` assertion permanently false. See #540.
-  let fresh_count1 = db_typecheck_count(prepare_jobs_cached_impl(db_new(), [
+  let fresh_count1 = db_typecheck_count(prepare_jobs_cached_impl(db = db_new(), jobs = [
     (fresh_main1_path, "/tmp/vibe_cli_prepare_fresh_main1.wasm", "run")
   ]))
-  let fresh_count2 = db_typecheck_count(prepare_jobs_cached_impl(db_new(), [
+  let fresh_count2 = db_typecheck_count(prepare_jobs_cached_impl(db = db_new(), jobs = [
     (fresh_main2_path, "/tmp/vibe_cli_prepare_fresh_main2.wasm", "run")
   ]))
-  let shared_count = db_typecheck_count(prepare_jobs_cached_impl(db_new(), [
+  let shared_count = db_typecheck_count(prepare_jobs_cached_impl(db = db_new(), jobs = [
     (shared_main1_path, "/tmp/vibe_cli_prepare_shared_main1.wasm", "run"),
     (shared_main2_path, "/tmp/vibe_cli_prepare_shared_main2.wasm", "run")
   ]))

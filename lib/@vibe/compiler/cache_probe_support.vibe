@@ -37,18 +37,18 @@ import ./type_db.vibe {
 
 //# Functions
 
-fn string_to_bytes(s: String) -> Bytes {
+fn string_to_bytes(_ s: String) -> Bytes {
   let out = Bytes::new()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Bytes::push(out, String::char_code_at(s, i))
+    Bytes::push(out, value = String::char_code_at(s, at = i))
     i = i + 1
   }
   out
 }
 
-fn remove_file_if_exists(path: String) -> Unit with Fs {
+fn remove_file_if_exists(_ path: String) -> Unit with Fs {
   if Fs::exists(path) {
     Fs::remove(path)
   } else {
@@ -60,15 +60,15 @@ fn remove_file_if_exists(path: String) -> Unit with Fs {
 /// (typing_module_fingerprint, the one spelling of the formula) under the
 /// default typing-semantics seed.
 fn build_type_db_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
-  typing_module_fingerprint(compact_string_fingerprint(source), dep_fps, "unchecked")
+  typing_module_fingerprint(source_fingerprint = compact_string_fingerprint(source), dep_fps = dep_fps, typing_semantics_seed = "unchecked")
 }
 
 export fn selfbuild_probe_type_db_cache_counts() -> Int with Env + Exception {
   let main_source = "let main: () -> Int = () -> { 1 + 2 }"
-  let db1 = db_set_source(db_new(), "main.vibe", main_source)
-  let db2 = db_typecheck(db1, "main.vibe")
+  let db1 = db_set_source(db = db_new(), path = "main.vibe", source = main_source)
+  let db2 = db_typecheck(db = db1, path = "main.vibe")
   let count1 = db_typecheck_count(db2)
-  let db3 = db_typecheck(db2, "main.vibe")
+  let db3 = db_typecheck(db = db2, path = "main.vibe")
   let count2 = db_typecheck_count(db3)
   count1 * 1000 + count2
 }
@@ -78,10 +78,10 @@ export fn selfbuild_probe_type_db_merge_counts() -> Int with Env + Exception {
     ("helpers.vibe", "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"),
     ("main.vibe", "import ./helpers.vibe { add }\nlet main: () -> Int = () -> { add(1, 2) }")
   ]
-  let result1 = db_merged_source(db_new(), "main.vibe", sources)
+  let result1 = db_merged_source(db = db_new(), _entry_path = "main.vibe", sources = sources)
   let db1 = result1.2
   let count1 = db_merge_count(db1)
-  let result2 = db_merged_source(db1, "main.vibe", sources)
+  let result2 = db_merged_source(db = db1, _entry_path = "main.vibe", sources = sources)
   let db2 = result2.2
   let count2 = db_merge_count(db2)
   count1 * 1000 + count2
@@ -91,9 +91,9 @@ export fn selfbuild_probe_type_db_parse_counts() -> Int with Env + Exception {
   let helper_source = "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"
   let main_source = "import ./helpers.vibe { add }\nlet main: () -> Int = () -> { add(1, 2) }"
   let sources = [("helpers.vibe", helper_source)]
-  let db1 = prepare_modules_cached(db_new(), "main.vibe", main_source, sources)
+  let db1 = prepare_modules_cached(db = db_new(), main_path = "main.vibe", main_source = main_source, sources = sources)
   let count1 = db_parse_count(db1)
-  let db2 = prepare_modules_cached(db1, "main.vibe", main_source, sources)
+  let db2 = prepare_modules_cached(db = db1, main_path = "main.vibe", main_source = main_source, sources = sources)
   let count2 = db_parse_count(db2)
   count1 * 1000 + count2
 }
@@ -101,10 +101,10 @@ export fn selfbuild_probe_type_db_parse_counts() -> Int with Env + Exception {
 export fn selfbuild_probe_type_db_codegen_counts() -> Int with Env + Exception {
   let main_source = "let main: () -> Int = () -> { 1 + 2 }"
   let sources = array_empty()
-  let result1 = compile_with_modules_cached(db_new(), main_source, "main.vibe", sources)
+  let result1 = compile_with_modules_cached(db = db_new(), main_source = main_source, main_path = "main.vibe", sources = sources)
   let db1 = result1.1
   let count1 = db_codegen_count(db1)
-  let result2 = compile_with_modules_cached(db1, main_source, "main.vibe", sources)
+  let result2 = compile_with_modules_cached(db = db1, main_source = main_source, main_path = "main.vibe", sources = sources)
   let db2 = result2.1
   let count2 = db_codegen_count(db2)
   count1 * 1000 + count2
@@ -115,23 +115,23 @@ export fn selfbuild_probe_type_db_fs_parse_counts() -> Int with Env + Exception 
   let main_path = "_build/persistent_type_env_probe_main.vibe"
   let helper_source = "export let add: () -> Int = () -> { 1 }"
   let main_source = "import ./persistent_type_env_probe_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
-  let helper_fp = build_type_db_fingerprint(helper_source, array_empty())
-  let main_fp = build_type_db_fingerprint(main_source, [
+  let helper_fp = build_type_db_fingerprint(source = helper_source, dep_fps = array_empty())
+  let main_fp = build_type_db_fingerprint(source = main_source, dep_fps = [
     (helper_path, helper_fp)
   ])
-  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
-  Fs::write_bytes(main_path, string_to_bytes(main_source))
-  remove_file_if_exists(persistent_dep_list_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source)))
+  Fs::write_bytes(helper_path, bytes = string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
   remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
-  let db1 = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let db1 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let count1 = db_parse_count(db1)
-  let db2 = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let db2 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let count2 = db_parse_count(db2)
   count1 * 1000 + count2
 }
@@ -146,25 +146,25 @@ export fn selfbuild_probe_incremental_typecheck_telemetry() -> String with Env +
   let main_path = "_build/incremental_telemetry_probe_main.vibe"
   let helper_source = "export let add: () -> Int = () -> { 1 }"
   let main_source = "import ./incremental_telemetry_probe_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
-  let helper_fp = build_type_db_fingerprint(helper_source, array_empty())
-  let main_fp = build_type_db_fingerprint(main_source, [
+  let helper_fp = build_type_db_fingerprint(source = helper_source, dep_fps = array_empty())
+  let main_fp = build_type_db_fingerprint(source = main_source, dep_fps = [
     (helper_path, helper_fp)
   ])
-  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
-  Fs::write_bytes(main_path, string_to_bytes(main_source))
-  remove_file_if_exists(persistent_dep_list_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source)))
+  Fs::write_bytes(helper_path, bytes = string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
   remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
   set_incremental_typecheck_telemetry_enabled(true)
-  let _ = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let _ = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let cold = incremental_typecheck_telemetry_json()
   set_incremental_typecheck_telemetry_enabled(true)
-  let _ = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let _ = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let warm = incremental_typecheck_telemetry_json()
   set_incremental_typecheck_telemetry_enabled(false)
   String::concat(cold, String::concat("\n", warm))
@@ -179,10 +179,10 @@ export fn selfbuild_probe_type_db_group_merge_counts() -> Int with Env + Excepti
       ("main.vibe", "import ./helpers.vibe { add }\nlet main: () -> Int = () -> { add(1, 2) }")
     ])
   ]
-  let result1 = db_grouped_merged_source(db_new(), groups)
+  let result1 = db_grouped_merged_source(db = db_new(), groups = groups)
   let db1 = result1.2
   let count1 = db_merge_count(db1)
-  let result2 = db_grouped_merged_source(db1, groups)
+  let result2 = db_grouped_merged_source(db = db1, groups = groups)
   let db2 = result2.2
   let count2 = db_merge_count(db2)
   count1 * 1000 + count2
@@ -191,12 +191,12 @@ export fn selfbuild_probe_type_db_group_merge_counts() -> Int with Env + Excepti
 export fn selfbuild_probe_type_db_module_source_counts() -> Int with Env + Exception {
   let main_source = "let main: () -> Int = () -> { 1 + 2 }"
   let sources = array_empty()
-  let result1 = compile_with_modules_cached(db_new(), main_source, "main_a.vibe", sources)
+  let result1 = compile_with_modules_cached(db = db_new(), main_source = main_source, main_path = "main_a.vibe", sources = sources)
   let db1 = result1.1
   let count1 = db_module_source_count(db1)
   // #1290: entry paths participate in compilation identity, so only an
   // identical entry path may reuse this warm module-source cache entry.
-  let result2 = compile_with_modules_cached(db1, main_source, "main_a.vibe", sources)
+  let result2 = compile_with_modules_cached(db = db1, main_source = main_source, main_path = "main_a.vibe", sources = sources)
   let db2 = result2.1
   let count2 = db_module_source_count(db2)
   count1 * 1000 + count2
@@ -209,30 +209,30 @@ export fn selfbuild_probe_type_db_fs_multi_dep_parse_counts() -> Int with Env + 
   let helper1_source = "export let add1: () -> Int = () -> { 1 }"
   let helper2_source = "export let add2: () -> Int = () -> { 2 }"
   let main_source = String::concat("import ./persistent_type_env_multi_dep_helper1.vibe { add1 }\n", String::concat("import ./persistent_type_env_multi_dep_helper2.vibe { add2 }\n", "let run: () -> Int = () -> { add1() + add2() }"))
-  Fs::write_bytes(helper1_path, string_to_bytes(helper1_source))
-  Fs::write_bytes(helper2_path, string_to_bytes(helper2_source))
-  Fs::write_bytes(main_path, string_to_bytes(main_source))
-  let helper1_fp = build_type_db_fingerprint(helper1_source, array_empty())
-  let helper2_fp = build_type_db_fingerprint(helper2_source, array_empty())
-  let main_fp = build_type_db_fingerprint(main_source, [
+  Fs::write_bytes(helper1_path, bytes = string_to_bytes(helper1_source))
+  Fs::write_bytes(helper2_path, bytes = string_to_bytes(helper2_source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
+  let helper1_fp = build_type_db_fingerprint(source = helper1_source, dep_fps = array_empty())
+  let helper2_fp = build_type_db_fingerprint(source = helper2_source, dep_fps = array_empty())
+  let main_fp = build_type_db_fingerprint(source = main_source, dep_fps = [
     (helper1_path, helper1_fp),
     (helper2_path, helper2_fp)
   ])
-  remove_file_if_exists(persistent_dep_list_cache_path(helper1_path, compact_string_fingerprint(helper1_source)))
-  remove_file_if_exists(persistent_dep_list_cache_path(helper2_path, compact_string_fingerprint(helper2_source)))
-  remove_file_if_exists(persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(helper1_path, compact_string_fingerprint(helper1_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(helper2_path, compact_string_fingerprint(helper2_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper1_path, compact_string_fingerprint(helper1_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper2_path, compact_string_fingerprint(helper2_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = helper1_path, source_fingerprint = compact_string_fingerprint(helper1_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = helper2_path, source_fingerprint = compact_string_fingerprint(helper2_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = helper1_path, source_fingerprint = compact_string_fingerprint(helper1_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = helper2_path, source_fingerprint = compact_string_fingerprint(helper2_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = helper1_path, source_fingerprint = compact_string_fingerprint(helper1_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = helper2_path, source_fingerprint = compact_string_fingerprint(helper2_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
   remove_file_if_exists(persistent_type_env_cache_path(helper1_fp))
   remove_file_if_exists(persistent_type_env_cache_path(helper2_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
-  let db1 = db_typecheck_fs(db_set_source(db_set_source(db_set_source(db_new(), helper1_path, helper1_source), helper2_path, helper2_source), main_path, main_source), main_path)
+  let db1 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = helper1_path, source = helper1_source), path = helper2_path, source = helper2_source), path = main_path, source = main_source), path = main_path)
   let count1 = db_parse_count(db1)
-  let db2 = db_typecheck_fs(db_set_source(db_set_source(db_set_source(db_new(), helper1_path, helper1_source), helper2_path, helper2_source), main_path, main_source), main_path)
+  let db2 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = helper1_path, source = helper1_source), path = helper2_path, source = helper2_source), path = main_path, source = main_source), path = main_path)
   let count2 = db_parse_count(db2)
   count1 * 1000 + count2
 }

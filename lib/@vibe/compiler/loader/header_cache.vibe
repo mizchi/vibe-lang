@@ -73,7 +73,7 @@ export effect ModuleParse {
 
 /// The value of a provider's answer, or its failure rethrown with the same
 /// message.
-export fn source_answer[T](answer: (T, Option[String])) -> T with Exception {
+export fn source_answer[T](_ answer: (T, Option[String])) -> T with Exception {
   let (value, failure) = answer
   match failure {
     Some(message) => throw(message),
@@ -83,14 +83,14 @@ export fn source_answer[T](answer: (T, Option[String])) -> T with Exception {
 
 //# Functions
 
-fn is_special_bundle_path(path: String) -> Bool {
-  String::ends_with(path, "compiler_sources_bundle.vibe") || String::ends_with(path, "cli_adapter_bundle.vibe") || String::ends_with(path, "selfbuild_runtime_entry_bundle.vibe")
+fn is_special_bundle_path(_ path: String) -> Bool {
+  String::ends_with(path, suffix = "compiler_sources_bundle.vibe") || String::ends_with(path, suffix = "cli_adapter_bundle.vibe") || String::ends_with(path, suffix = "selfbuild_runtime_entry_bundle.vibe")
 }
 
-fn special_bundle_header(path: String) -> Option[(Array[String], Array[String])] {
-  if String::ends_with(path, "compiler_sources_bundle.vibe") {
+fn special_bundle_header(_ path: String) -> Option[(Array[String], Array[String])] {
+  if String::ends_with(path, suffix = "compiler_sources_bundle.vibe") {
     Some((array_empty(), ["compiler_sources", "compiler_source_groups"]))
-  } else if String::ends_with(path, "cli_adapter_bundle.vibe") {
+  } else if String::ends_with(path, suffix = "cli_adapter_bundle.vibe") {
     Some((array_empty(), [
       "cli_adapter_sources",
       "cli_adapter_source_groups",
@@ -98,7 +98,7 @@ fn special_bundle_header(path: String) -> Option[(Array[String], Array[String])]
       "cli_adapter_merged_source",
       "cli_adapter_module_source"
     ]))
-  } else if String::ends_with(path, "selfbuild_runtime_entry_bundle.vibe") {
+  } else if String::ends_with(path, suffix = "selfbuild_runtime_entry_bundle.vibe") {
     Some((array_empty(), ["selfbuild_runtime_entry_source"]))
   } else {
     None
@@ -113,16 +113,16 @@ fn special_bundle_header(path: String) -> Option[(Array[String], Array[String])]
 fn located_import_position(source: String, keyword: String, raw_path: String) -> String {
   let text = loader_physical_text(source)
   let needle = String::concat(keyword, String::concat(" ", raw_path))
-  let needle_off = String::index_of(text, needle)
+  let needle_off = String::index_of(text, needle = needle)
   let off = if needle_off >= 0 {
     needle_off + String::length(keyword) + 1
   } else {
-    String::index_of(text, raw_path)
+    String::index_of(text, needle = raw_path)
   }
   if off < 0 {
     ""
   } else {
-    let (line, col) = offset_to_line_col(text, off)
+    let (line, col) = offset_to_line_col(source = text, offset = off)
     String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
   }
 }
@@ -143,7 +143,7 @@ fn located_import_position(source: String, keyword: String, raw_path: String) ->
 /// import" would.
 fn located_missing_import_error(source: String, keyword: String, raw_path: String, resolved: String) -> String {
   let base_msg = String::concat("cannot resolve import '", String::concat(raw_path, String::concat("' (resolved to ", String::concat(resolved, ")"))))
-  String::concat(located_import_position(source, keyword, raw_path), base_msg)
+  String::concat(located_import_position(source = source, keyword = keyword, raw_path = raw_path), base_msg)
 }
 
 /// The `@scope/name...` spelling a relative-import-boundary error should
@@ -154,17 +154,17 @@ fn located_missing_import_error(source: String, keyword: String, raw_path: Strin
 /// first two `@scope/name` segments), this must reproduce the FULL lib/-
 /// relative path so a compiler-internal nested package (no separate `@`
 /// identity of its own) still gets a spelling that actually resolves.
-fn qualified_package_name_from_owner(owner: String) -> String {
-  let without_suffix = if String::ends_with(owner, "/index.vpkg") {
+fn qualified_package_name_from_owner(_ owner: String) -> String {
+  let without_suffix = if String::ends_with(owner, suffix = "/index.vpkg") {
     owner[0: String::length(owner) - String::length("/index.vpkg")]
-  } else if String::ends_with(owner, "/index.vibei") {
+  } else if String::ends_with(owner, suffix = "/index.vibei") {
     owner[0: String::length(owner) - String::length("/index.vibei")]
   } else {
     owner
   }
-  if String::starts_with(without_suffix, "lib/") {
+  if String::starts_with(without_suffix, prefix = "lib/") {
     without_suffix[String::length("lib/"): String::length(without_suffix)]
-  } else if String::starts_with(without_suffix, ".vibe/store/") {
+  } else if String::starts_with(without_suffix, prefix = ".vibe/store/") {
     without_suffix[String::length(".vibe/store/"): String::length(without_suffix)]
   } else {
     without_suffix
@@ -179,7 +179,7 @@ fn qualified_package_name_from_owner(owner: String) -> String {
 /// internals" / "parent package cannot import nested package internals").
 fn located_package_boundary_error(source: String, keyword: String, raw_path: String, suggestion: String) -> String {
   let base_msg = String::concat("relative ", String::concat(keyword, String::concat(" '", String::concat(raw_path, String::concat("' crosses a package boundary; use `", String::concat(keyword, String::concat(" ", String::concat(suggestion, "` instead"))))))))
-  String::concat(located_import_position(source, keyword, raw_path), base_msg)
+  String::concat(located_import_position(source = source, keyword = keyword, raw_path = raw_path), base_msg)
 }
 
 /// A relative (`./`, `../`) import must stay within the importing file's own
@@ -196,31 +196,31 @@ fn located_package_boundary_error(source: String, keyword: String, raw_path: Str
 /// migrate to yet -- enforcing this on `export` would just break working
 /// facades with no fix available.
 fn enforce_relative_import_package_boundary(raw_path: String, self_path: String, resolved: String, source: String, keyword: String) -> Unit with Exception + Source {
-  if keyword == "import" && path_has_relative_prefix(raw_path, String::length(raw_path)) {
+  if keyword == "import" && path_has_relative_prefix(raw_path = raw_path, len = String::length(raw_path)) {
     let importer_owner = nearest_vpkg_path(self_path)
     let target_owner = nearest_vpkg_path(resolved)
     if importer_owner == "" || target_owner == "" || importer_owner == target_owner {
       ()
     } else {
-      throw(located_package_boundary_error(source, keyword, raw_path, qualified_package_name_from_owner(target_owner)))
+      throw(located_package_boundary_error(source = source, keyword = keyword, raw_path = raw_path, suggestion = qualified_package_name_from_owner(target_owner)))
     }
   } else ()
 }
 
 fn resolve_checked_path(base_dir: String, raw_path: String, self_path: String, source: String, keyword: String) -> String with Env + Exception + Source {
-  let resolved = resolve_import_path_probe(base_dir, raw_path, self_path)
-  let exists = String::starts_with(raw_path, "@") || perform Source::Exists(resolved)
+  let resolved = resolve_import_path_probe(base_dir = base_dir, raw_path = raw_path, self_path = self_path)
+  let exists = String::starts_with(raw_path, prefix = "@") || perform Source::Exists(resolved)
   if exists {
-    enforce_relative_import_package_boundary(raw_path, self_path, resolved, source, keyword)
+    enforce_relative_import_package_boundary(raw_path = raw_path, self_path = self_path, resolved = resolved, source = source, keyword = keyword)
     resolved
   } else {
-    throw(located_missing_import_error(source, keyword, raw_path, resolved))
+    throw(located_missing_import_error(source = source, keyword = keyword, raw_path = raw_path, resolved = resolved))
   }
 }
 
 fn resolve_checked_path_fs(base_dir: String, raw_path: String, self_path: String, source: String, keyword: String) -> String with Env + Exception + Fs {
   handle {
-    resolve_checked_path(base_dir, raw_path, self_path, source, keyword)
+    resolve_checked_path(base_dir = base_dir, raw_path = raw_path, self_path = self_path, source = source, keyword = keyword)
   } with { Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
@@ -257,8 +257,8 @@ fn resolve_checked_path_fs(base_dir: String, raw_path: String, self_path: String
 ///     package-contract question at all.
 ///   - a package whose store/lib copy is not materialized (unresolved
 ///     `@scope/name` pin) -- the `Fs::exists` guard below.
-fn is_contract_boundary_path(path: String) -> Bool {
-  String::ends_with(path, "/index.vibei") || String::ends_with(path, "/index.vpkg")
+fn is_contract_boundary_path(_ path: String) -> Bool {
+  String::ends_with(path, suffix = "/index.vibei") || String::ends_with(path, suffix = "/index.vpkg")
 }
 
 /// Type names, enum-variant constructors, and `Type::member` qualified items
@@ -271,13 +271,13 @@ fn is_contract_boundary_path(path: String) -> Bool {
 /// vibe convention is snake_case values / UpperCamelCase types (CLAUDE.md),
 /// so a lowercase first letter reliably selects the VALUE namespace this
 /// check can actually speak to.
-fn is_lowercase_leading_plain_ident(name: String) -> Bool {
+fn is_lowercase_leading_plain_ident(_ name: String) -> Bool {
   if String::length(name) == 0 {
     false
-  } else if String::index_of(name, "::") >= 0 {
+  } else if String::index_of(name, needle = "::") >= 0 {
     false
   } else {
-    let c = String::char_code_at(name, 0)
+    let c = String::char_code_at(name, at = 0)
     c >= 97 && c <= 122
   }
 }
@@ -286,7 +286,7 @@ fn string_array_contains_hc(items: Array[String], target: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(items) && !found {
-    if Array::get(items, i) == target {
+    if Array::get(items, at = i) == target {
       found = true
     } else {
       i = i + 1
@@ -321,10 +321,10 @@ fn string_array_contains_hc(items: Array[String], target: String) -> Bool {
 /// reader (`string_array_contains_hc` only scans it).
 let export_names_memo: MutMap[String, (String, Array[String])] = MutMap::new_string()
 
-fn resolved_export_names(resolved: String) -> Array[String] with Exception + Source {
+fn resolved_export_names(_ resolved: String) -> Array[String] with Exception + Source {
   let source = perform Source::Read(resolved)
   refuse_failed_wasm_import(source)
-  let fresh = match MutMap::get(export_names_memo, resolved) {
+  let fresh = match MutMap::get(export_names_memo, k = resolved) {
     Some(entry) => {
       let (seen_source, names) = entry
       if String::equals(seen_source, source) {
@@ -338,38 +338,38 @@ fn resolved_export_names(resolved: String) -> Array[String] with Exception + Sou
   match fresh {
     Some(names) => names,
     None => {
-      let computed = resolved_export_names_of_text(resolved, source)
-      MutMap::set(export_names_memo, resolved, (source, computed))
+      let computed = resolved_export_names_of_text(resolved = resolved, source = source)
+      MutMap::set(export_names_memo, k = resolved, v = (source, computed))
       computed
     }
   }
 }
 
 fn resolved_export_names_of_text(resolved: String, source: String) -> Array[String] with Exception {
-  if is_contract_ext(resolved) && !String::starts_with(source, contract_facade_marker) {
+  if is_contract_ext(resolved) && !String::starts_with(source, prefix = contract_facade_marker) {
     let (_, pin_blanked) = extract_require_pins(source)
     let (cdecls, copaques, cextra) = parse_contract_program(lex(pin_blanked))
     let names = collect_exports(cextra)
     let mut cdi = 0
     while cdi < Array::length(cdecls) {
-      let (cdname, _) = Array::get(cdecls, cdi)
-      Array::push(names, cdname)
+      let (cdname, _) = Array::get(cdecls, at = cdi)
+      Array::push(names, value = cdname)
       cdi = cdi + 1
     }
     let mut coi = 0
     while coi < Array::length(copaques) {
-      let (coname, _) = Array::get(copaques, coi)
-      Array::push(names, coname)
+      let (coname, _) = Array::get(copaques, at = coi)
+      Array::push(names, value = coname)
       coi = coi + 1
     }
     // `version` is synthesized into the facade from the package's own
     // `version x.y.z` directive (see desugar_contract_source_fs) rather than
     // requiring a `let version: String` contract decl -- mirror that here so
     // this header-only export list agrees with the actual generated facade.
-    if extract_package_version(source) == "" || string_array_contains_hc(names, "version") {
+    if extract_package_version(source) == "" || string_array_contains_hc(items = names, target = "version") {
       ()
     } else {
-      Array::push(names, "version")
+      Array::push(names, value = "version")
     }
     names
   } else {
@@ -379,31 +379,31 @@ fn resolved_export_names_of_text(resolved: String, source: String) -> Array[Stri
 
 fn located_import_name_error(source: String, keyword: String, raw_path: String, name: String, display: String) -> String {
   let base_msg = String::concat("\"", String::concat(name, String::concat("\" is not exported by ", display)))
-  String::concat(located_import_position(source, keyword, raw_path), base_msg)
+  String::concat(located_import_position(source = source, keyword = keyword, raw_path = raw_path), base_msg)
 }
 
 /// A friendly `@scope/name` label for the error message when derivable from
 /// the resolved on-disk path (`.../lib/@vibe/json/index.vpkg` -> `@vibe/json`);
 /// falls back to the raw import spelling otherwise.
 fn import_display_name(raw_path: String, resolved: String) -> String {
-  if String::starts_with(raw_path, "@") {
+  if String::starts_with(raw_path, prefix = "@") {
     raw_path
   } else {
-    let at = String::last_index_of(resolved, "@")
+    let at = String::last_index_of(resolved, needle = "@")
     if at < 0 {
       raw_path
     } else {
-      let rest = String::substring(resolved, at, String::length(resolved))
-      let slash1 = String::index_of(rest, "/")
+      let rest = String::substring(resolved, start = at, end = String::length(resolved))
+      let slash1 = String::index_of(rest, needle = "/")
       if slash1 < 0 {
         raw_path
       } else {
-        let after_scope = String::substring(rest, slash1 + 1, String::length(rest))
-        let slash2 = String::index_of(after_scope, "/")
+        let after_scope = String::substring(rest, start = slash1 + 1, end = String::length(rest))
+        let slash2 = String::index_of(after_scope, needle = "/")
         if slash2 < 0 {
           rest
         } else {
-          String::substring(rest, 0, slash1 + 1 + slash2)
+          String::substring(rest, start = 0, end = slash1 + 1 + slash2)
         }
       }
     }
@@ -417,16 +417,16 @@ fn validate_import_names(source: String, keyword: String, raw_path: String, reso
     let mut loaded = false
     let mut i = 0
     while i < Array::length(names) {
-      let name = Array::get(names, i).name
+      let name = Array::get(names, at = i).name
       if is_lowercase_leading_plain_ident(name) {
         if !loaded {
           dep_exports = resolved_export_names(resolved)
           loaded = true
         } else ()
-        if string_array_contains_hc(dep_exports, name) {
+        if string_array_contains_hc(items = dep_exports, target = name) {
           ()
         } else {
-          throw(located_import_name_error(source, keyword, raw_path, name, import_display_name(raw_path, resolved)))
+          throw(located_import_name_error(source = source, keyword = keyword, raw_path = raw_path, name = name, display = import_display_name(raw_path = raw_path, resolved = resolved)))
         }
       } else ()
       i = i + 1
@@ -453,13 +453,13 @@ fn validate_import_names(source: String, keyword: String, raw_path: String, reso
 /// over the same statements, and a second pass would report the same error
 /// twice or, worse, differ from it.
 export fn module_reexport_deps_fs(path: String, source: String) -> Array[String] with Env + Exception + Fs {
-  let stmts = parse_program_located_shared_fs(path, source)
+  let stmts = parse_program_located_shared_fs(path = path, source = source)
   let base_dir = dir_of_path(path)
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SReExport(raw_path, _) => Array::push(out, resolve_checked_path_fs(base_dir, raw_path, path, source, "export")),
+    match Array::get(stmts, at = i) {
+      SReExport(raw_path, _) => Array::push(out, value = resolve_checked_path_fs(base_dir = base_dir, raw_path = raw_path, self_path = path, source = source, keyword = "export")),
       _ => ()
     }
     i = i + 1
@@ -471,18 +471,18 @@ fn collect_import_deps_from_stmts_source(stmts: Array[Stmt], base_dir: String, s
   let deps = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImport(raw_path, names) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
         ()
       } else {
-        let resolved = resolve_checked_path(base_dir, raw_path, self_path, source, "import")
-        validate_import_names(source, "import", raw_path, resolved, names)
-        Array::push(deps, resolved)
+        let resolved = resolve_checked_path(base_dir = base_dir, raw_path = raw_path, self_path = self_path, source = source, keyword = "import")
+        validate_import_names(source = source, keyword = "import", raw_path = raw_path, resolved = resolved, names = names)
+        Array::push(deps, value = resolved)
       },
       SReExport(raw_path, names) => {
-        let resolved = resolve_checked_path(base_dir, raw_path, self_path, source, "export")
-        validate_import_names(source, "export", raw_path, resolved, names)
-        Array::push(deps, resolved)
+        let resolved = resolve_checked_path(base_dir = base_dir, raw_path = raw_path, self_path = self_path, source = source, keyword = "export")
+        validate_import_names(source = source, keyword = "export", raw_path = raw_path, resolved = resolved, names = names)
+        Array::push(deps, value = resolved)
       },
       _ => ()
     }
@@ -509,7 +509,7 @@ fn directory_entry_path(dir: String, name: String) -> String {
 /// Discover direct production members through a read-only source provider.
 /// Source::List supplies byte-sorted basenames; only selected members are
 /// statted, preserving the filesystem lane's order and symlink policy.
-export fn contract_sibling_impl_raws_source(dir: String) -> Array[String] with Exception + Source {
+export fn contract_sibling_impl_raws_source(_ dir: String) -> Array[String] with Exception + Source {
   let out = array_empty()
   let scan_dir = if dir == "" {
     "."
@@ -519,12 +519,12 @@ export fn contract_sibling_impl_raws_source(dir: String) -> Array[String] with E
   let names = perform Source::List(scan_dir)
   let mut i = 0
   while i < Array::length(names) {
-    let name = Array::get(names, i)
-    if name != "index.vibei" && name != "index.vibe" && name != "index.vpkg" && String::ends_with(name, ".vibe") && !String::ends_with(name, "_test.vibe") && !String::ends_with(name, "_bench.vibe") && !String::ends_with(name, ".draft.vibe") && !String::starts_with(name, "_") {
-      let full = directory_entry_path(dir, name)
+    let name = Array::get(names, at = i)
+    if name != "index.vibei" && name != "index.vibe" && name != "index.vpkg" && String::ends_with(name, suffix = ".vibe") && !String::ends_with(name, suffix = "_test.vibe") && !String::ends_with(name, suffix = "_bench.vibe") && !String::ends_with(name, suffix = ".draft.vibe") && !String::starts_with(name, prefix = "_") {
+      let full = directory_entry_path(dir = dir, name = name)
       let token = perform Source::StatToken(full)
-      ensure_regular_source_token(full, token)
-      Array::push(out, String::concat("./", name))
+      ensure_regular_source_token(path = full, token = token)
+      Array::push(out, value = String::concat("./", name))
     } else {
       ()
     }
@@ -534,7 +534,7 @@ export fn contract_sibling_impl_raws_source(dir: String) -> Array[String] with E
 }
 
 /// Filesystem adapter for the shared sibling-discovery policy.
-export fn contract_sibling_impl_raws(dir: String) -> Array[String] with Exception + Fs {
+export fn contract_sibling_impl_raws(_ dir: String) -> Array[String] with Exception + Fs {
   handle {
     contract_sibling_impl_raws_source(dir)
   } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
@@ -551,23 +551,23 @@ export fn merge_impl_raws_dedupe(explicit: Array[String], discovered: Array[Stri
   let out = array_empty()
   let mut i = 0
   while i < Array::length(explicit) {
-    Array::push(out, Array::get(explicit, i))
+    Array::push(out, value = Array::get(explicit, at = i))
     i = i + 1
   }
   let mut j = 0
   while j < Array::length(discovered) {
-    let d = Array::get(discovered, j)
+    let d = Array::get(discovered, at = j)
     let mut k = 0
     let mut found = false
     while k < Array::length(out) && !found {
-      if Array::get(out, k) == d {
+      if Array::get(out, at = k) == d {
         found = true
       } else {
         k = k + 1
       }
     }
     if !found {
-      Array::push(out, d)
+      Array::push(out, value = d)
     } else {
       ()
     }
@@ -642,11 +642,11 @@ let located_parse_memo_ran_parser: Array[Bool] = [false]
 let ast_cache_prefetch_hits: Array[Int] = [0]
 
 export fn ast_cache_prefetch_count() -> Int {
-  Array::get(ast_cache_prefetch_hits, 0)
+  Array::get(ast_cache_prefetch_hits, at = 0)
 }
 
 export fn ast_cache_prefetch_count_reset() -> Unit {
-  Array::set(ast_cache_prefetch_hits, 0, 0)
+  Array::set(ast_cache_prefetch_hits, at = 0, value = 0)
 }
 
 /// Per version: whether a module check has consumed this parse yet. The
@@ -660,7 +660,7 @@ let located_parse_memo_consumed: Array[MutMap[String, Array[Bool]]] = [
 ]
 
 fn located_parse_consumed_versions(memo: MutMap[String, Array[Bool]], path: String) -> Array[Bool] {
-  match MutMap::get(memo, path) {
+  match MutMap::get(memo, k = path) {
     Some(found) => found,
     None => array_empty()
   }
@@ -670,15 +670,15 @@ fn located_parse_consumed_versions(memo: MutMap[String, Array[Bool]], path: Stri
 /// Does not mark: a check marks with `parse_program_located_shared_mark_semantic`
 /// once its parse succeeded, so a throwing parse is asked about again.
 export fn parse_program_located_shared_semantic_pending(path: String, source: String) -> Bool {
-  let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
-  let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
-  let hit = located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv())
+  let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
+  let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
+  let hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv())
   if hit < 0 {
     true
   } else {
-    let flags = located_parse_consumed_versions(Array::get(located_parse_memo_consumed, 0), path)
+    let flags = located_parse_consumed_versions(memo = Array::get(located_parse_memo_consumed, at = 0), path = path)
     if hit < Array::length(flags) {
-      !Array::get(flags, hit)
+      !Array::get(flags, at = hit)
     } else {
       true
     }
@@ -686,13 +686,13 @@ export fn parse_program_located_shared_semantic_pending(path: String, source: St
 }
 
 export fn parse_program_located_shared_mark_semantic(path: String, source: String) -> Unit {
-  let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
-  let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
-  let hit = located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv())
+  let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
+  let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
+  let hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv())
   if hit >= 0 {
-    let flags = located_parse_consumed_versions(Array::get(located_parse_memo_consumed, 0), path)
+    let flags = located_parse_consumed_versions(memo = Array::get(located_parse_memo_consumed, at = 0), path = path)
     if hit < Array::length(flags) {
-      Array::set(flags, hit, true)
+      Array::set(flags, at = hit, value = true)
     } else {
       ()
     }
@@ -704,18 +704,18 @@ export fn parse_program_located_shared_mark_semantic(path: String, source: Strin
 /// True iff the most recent `parse_program_located_shared` call ran the
 /// parser (a miss); false when it answered from the memo.
 export fn parse_program_located_shared_ran_parser() -> Bool {
-  Array::get(located_parse_memo_ran_parser, 0)
+  Array::get(located_parse_memo_ran_parser, at = 0)
 }
 
 fn located_parse_versions(memo: MutMap[String, Array[String]], path: String) -> Array[String] {
-  match MutMap::get(memo, path) {
+  match MutMap::get(memo, k = path) {
     Some(found) => found,
     None => array_empty()
   }
 }
 
 fn located_parse_stmt_versions(memo: MutMap[String, Array[Array[Stmt]]], path: String) -> Array[Array[Stmt]] {
-  match MutMap::get(memo, path) {
+  match MutMap::get(memo, k = path) {
     Some(found) => found,
     None => array_empty()
   }
@@ -725,7 +725,7 @@ fn located_parse_version_index(seen_sources: Array[String], seen_cfgs: Array[Str
   let mut hit = -1
   let mut vi = 0
   while vi < Array::length(seen_sources) && hit < 0 {
-    if Array::get(seen_sources, vi) == source && vi < Array::length(seen_cfgs) && Array::get(seen_cfgs, vi) == cfg {
+    if Array::get(seen_sources, at = vi) == source && vi < Array::length(seen_cfgs) && Array::get(seen_cfgs, at = vi) == cfg {
       hit = vi
     } else {
       ()
@@ -742,54 +742,54 @@ fn located_parse_version_index(seen_sources: Array[String], seen_cfgs: Array[Str
 fn located_parse_uncached(path: String, source: String) -> Array[Stmt] with Exception {
   handle {
     let (tokens, starts, _ends) = lex_with_offsets(source)
-    parse_program_located(tokens, starts, source)
-  } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), loader_physical_located(source, located_lex_message(source, msg)))) }
+    parse_program_located(tokens = tokens, starts = starts, source = source)
+  } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), loader_physical_located(source = source, located = located_lex_message(source = source, msg = msg)))) }
 }
 
 fn located_parse_record(path: String, source: String, parsed: Array[Stmt]) -> Unit {
-  if Array::get(located_parse_memo_size, 0) >= 1024 {
-    Array::set(located_parse_memo_sources, 0, MutMap::new_string())
-    Array::set(located_parse_memo_cfgs, 0, MutMap::new_string())
-    Array::set(located_parse_memo_stmts, 0, MutMap::new_string())
-    Array::set(located_parse_memo_consumed, 0, MutMap::new_string())
-    Array::set(located_parse_memo_size, 0, 0)
+  if Array::get(located_parse_memo_size, at = 0) >= 1024 {
+    Array::set(located_parse_memo_sources, at = 0, value = MutMap::new_string())
+    Array::set(located_parse_memo_cfgs, at = 0, value = MutMap::new_string())
+    Array::set(located_parse_memo_stmts, at = 0, value = MutMap::new_string())
+    Array::set(located_parse_memo_consumed, at = 0, value = MutMap::new_string())
+    Array::set(located_parse_memo_size, at = 0, value = 0)
   } else {
     ()
   }
-  let sources_now = Array::get(located_parse_memo_sources, 0)
-  let cfgs_now = Array::get(located_parse_memo_cfgs, 0)
-  let stmts_now = Array::get(located_parse_memo_stmts, 0)
-  let consumed_now = Array::get(located_parse_memo_consumed, 0)
-  if MutMap::has(sources_now, path) {
+  let sources_now = Array::get(located_parse_memo_sources, at = 0)
+  let cfgs_now = Array::get(located_parse_memo_cfgs, at = 0)
+  let stmts_now = Array::get(located_parse_memo_stmts, at = 0)
+  let consumed_now = Array::get(located_parse_memo_consumed, at = 0)
+  if MutMap::has(sources_now, k = path) {
     ()
   } else {
-    MutMap::set(sources_now, path, array_empty())
-    MutMap::set(cfgs_now, path, array_empty())
-    MutMap::set(stmts_now, path, array_empty())
-    MutMap::set(consumed_now, path, array_empty())
+    MutMap::set(sources_now, k = path, v = array_empty())
+    MutMap::set(cfgs_now, k = path, v = array_empty())
+    MutMap::set(stmts_now, k = path, v = array_empty())
+    MutMap::set(consumed_now, k = path, v = array_empty())
   }
-  Array::push(located_parse_versions(sources_now, path), source)
-  Array::push(located_parse_versions(cfgs_now, path), cfg_ambient_flags_csv())
-  Array::push(located_parse_stmt_versions(stmts_now, path), parsed)
-  Array::push(located_parse_consumed_versions(consumed_now, path), false)
-  Array::set(located_parse_memo_size, 0, Array::get(located_parse_memo_size, 0) + 1)
+  Array::push(located_parse_versions(memo = sources_now, path = path), value = source)
+  Array::push(located_parse_versions(memo = cfgs_now, path = path), value = cfg_ambient_flags_csv())
+  Array::push(located_parse_stmt_versions(memo = stmts_now, path = path), value = parsed)
+  Array::push(located_parse_consumed_versions(memo = consumed_now, path = path), value = false)
+  Array::set(located_parse_memo_size, at = 0, value = Array::get(located_parse_memo_size, at = 0) + 1)
 }
 
 export fn parse_program_located_shared(path: String, source: String) -> Array[Stmt] with Exception {
-  let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
-  let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
-  let hit = located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv())
+  let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
+  let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
+  let hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv())
   if hit >= 0 {
-    Array::set(located_parse_memo_ran_parser, 0, false)
-    let cached = Array::get(located_parse_stmt_versions(Array::get(located_parse_memo_stmts, 0), path), hit)
-    Array::slice(cached, 0, Array::length(cached))
+    Array::set(located_parse_memo_ran_parser, at = 0, value = false)
+    let cached = Array::get(located_parse_stmt_versions(memo = Array::get(located_parse_memo_stmts, at = 0), path = path), at = hit)
+    Array::slice(cached, start = 0, end = Array::length(cached))
   } else {
     // Set before the parse: a throwing parse ran the parser too, and the
     // exception leaves this function before anything after the call.
-    Array::set(located_parse_memo_ran_parser, 0, true)
-    let parsed = located_parse_uncached(path, source)
-    located_parse_record(path, source, parsed)
-    Array::slice(parsed, 0, Array::length(parsed))
+    Array::set(located_parse_memo_ran_parser, at = 0, value = true)
+    let parsed = located_parse_uncached(path = path, source = source)
+    located_parse_record(path = path, source = source, parsed = parsed)
+    Array::slice(parsed, start = 0, end = Array::length(parsed))
   }
 }
 
@@ -803,7 +803,7 @@ export fn parse_program_located_shared(path: String, source: String) -> Array[St
 /// `mut` Bool too. The match lives here, where no parser call does, and the
 /// caller asks `Array::length`.
 fn ast_cache_slot_fs(path: String, source_fingerprint: String) -> Array[Array[Stmt]] with Env + Exception + Fs {
-  match load_persistent_ast(path, source_fingerprint) {
+  match load_persistent_ast(path = path, source_fingerprint = source_fingerprint) {
     Some(stmts) => [stmts],
     None => array_empty()
   }
@@ -870,15 +870,15 @@ export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Env +
   if !ast_cache_active() {
     false
   } else {
-    let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
-    let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
-    if located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv()) >= 0 {
+    let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
+    let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
+    if located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv()) >= 0 {
       false
     } else {
-      let slot = ast_cache_slot_fs(path, compact_source_fingerprint_memo(path, source))
+      let slot = ast_cache_slot_fs(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source))
       if Array::length(slot) == 1 {
-        located_parse_record(path, source, Array::get(slot, 0))
-        Array::set(ast_cache_prefetch_hits, 0, Array::get(ast_cache_prefetch_hits, 0) + 1)
+        located_parse_record(path = path, source = source, parsed = Array::get(slot, at = 0))
+        Array::set(ast_cache_prefetch_hits, at = 0, value = Array::get(ast_cache_prefetch_hits, at = 0) + 1)
         true
       } else {
         false
@@ -906,25 +906,25 @@ export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Env +
 /// property `ast_binary_parse_equivalence_test.vibe` asserts against real
 /// compiler sources rather than against the codec itself.
 export fn parse_program_located_shared_fs(path: String, source: String) -> Array[Stmt] with Env + Exception + Fs {
-  let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
-  let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
-  let memo_hit = located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv()) >= 0
+  let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
+  let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
+  let memo_hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv()) >= 0
   if memo_hit || !ast_cache_active() {
-    parse_program_located_shared(path, source)
+    parse_program_located_shared(path = path, source = source)
   } else {
-    let fingerprint = compact_source_fingerprint_memo(path, source)
-    let slot = ast_cache_slot_fs(path, fingerprint)
+    let fingerprint = compact_source_fingerprint_memo(path = path, source = source)
+    let slot = ast_cache_slot_fs(path = path, source_fingerprint = fingerprint)
     if Array::length(slot) == 1 {
-      let stmts = Array::get(slot, 0)
+      let stmts = Array::get(slot, at = 0)
       // The parser did NOT run, and the telemetry has to say so: a warm
       // decode is the case this exists to create, and counting it as a parse
       // would hide exactly the number worth watching.
-      Array::set(located_parse_memo_ran_parser, 0, false)
-      located_parse_record(path, source, stmts)
-      Array::slice(stmts, 0, Array::length(stmts))
+      Array::set(located_parse_memo_ran_parser, at = 0, value = false)
+      located_parse_record(path = path, source = source, parsed = stmts)
+      Array::slice(stmts, start = 0, end = Array::length(stmts))
     } else {
-      let parsed = parse_program_located_shared(path, source)
-      store_persistent_ast(path, fingerprint, parsed)
+      let parsed = parse_program_located_shared(path = path, source = source)
+      store_persistent_ast(path = path, source_fingerprint = fingerprint, stmts = parsed)
       parsed
     }
   }
@@ -964,7 +964,7 @@ export fn module_header_source(path: String, source: String, parse_count: Int) -
   // would trigger sibling auto-discovery below and pull `_test.vibe`
   // neighbors into the package's dep set — "import cycle detected" for
   // any `import .` test). Route it to the ordinary branch instead.
-  let is_contract_source = is_contract_ext(path) && !String::starts_with(source, contract_facade_marker)
+  let is_contract_source = is_contract_ext(path) && !String::starts_with(source, prefix = contract_facade_marker)
   if is_contract_source {
     // #740 fallout: a .vibei contract is not ordinary program syntax
     // (bodyless fn/type declarations), so the full-program parse below
@@ -978,23 +978,23 @@ export fn module_header_source(path: String, source: String, parse_count: Int) -
     let cexports = collect_exports(cextra)
     let mut cdi = 0
     while cdi < Array::length(cdecls) {
-      let (cdname, _) = Array::get(cdecls, cdi)
-      Array::push(cexports, cdname)
+      let (cdname, _) = Array::get(cdecls, at = cdi)
+      Array::push(cexports, value = cdname)
       cdi = cdi + 1
     }
     let mut coi = 0
     while coi < Array::length(copaques) {
-      let (coname, _) = Array::get(copaques, coi)
-      Array::push(cexports, coname)
+      let (coname, _) = Array::get(copaques, at = coi)
+      Array::push(cexports, value = coname)
       coi = coi + 1
     }
     // Mirror resolved_export_names_of_text: `version` is synthesized into the
     // facade from the package's own `version x.y.z` directive rather than
     // requiring a `let version: String` contract decl.
-    if extract_package_version(source) == "" || string_array_contains_hc(cexports, "version") {
+    if extract_package_version(source) == "" || string_array_contains_hc(items = cexports, target = "version") {
       ()
     } else {
-      Array::push(cexports, "version")
+      Array::push(cexports, value = "version")
     }
     // #730: a contract with no implementation imports auto-discovers its
     // siblings — those files are deps of the header too, or an impl edit
@@ -1003,19 +1003,19 @@ export fn module_header_source(path: String, source: String, parse_count: Int) -
     // its explicit deps (implicit membership is unconditional for .vpkg),
     // so its header deps must include both, not just whichever won under
     // the old either/or gate.
-    let cdeps = collect_import_deps_from_stmts_source(cextra, dir_of_path(path), path, pin_blanked)
-    let is_vpkg_contract = String::ends_with(path, ".vpkg")
+    let cdeps = collect_import_deps_from_stmts_source(stmts = cextra, base_dir = dir_of_path(path), self_path = path, source = pin_blanked)
+    let is_vpkg_contract = String::ends_with(path, suffix = ".vpkg")
     let cdeps2 = if is_vpkg_contract || Array::length(cdeps) == 0 {
       let craws = if is_vpkg_contract {
         let (craws0, _) = classify_contract_stmts(cextra)
-        merge_impl_raws_dedupe(craws0, contract_sibling_impl_raws_source(dir_of_path(path)))
+        merge_impl_raws_dedupe(explicit = craws0, discovered = contract_sibling_impl_raws_source(dir_of_path(path)))
       } else {
         contract_sibling_impl_raws_source(dir_of_path(path))
       }
       let resolved = array_empty()
       let mut cri = 0
       while cri < Array::length(craws) {
-        Array::push(resolved, resolve_import_path_probe(dir_of_path(path), Array::get(craws, cri), path))
+        Array::push(resolved, value = resolve_import_path_probe(base_dir = dir_of_path(path), raw_path = Array::get(craws, at = cri), self_path = path))
         cri = cri + 1
       }
       resolved
@@ -1039,14 +1039,14 @@ export fn module_header_source(path: String, source: String, parse_count: Int) -
     // headers computed from source -- the number its callers report as
     // header parse scans -- whether the memo answered or not.
     let stmts = source_answer(perform ModuleParse::Parse(path, source))
-    (collect_import_deps_from_stmts_source(stmts, dir_of_path(path), path, source), collect_exports(stmts), parse_count + 1)
+    (collect_import_deps_from_stmts_source(stmts = stmts, base_dir = dir_of_path(path), self_path = path, source = source), collect_exports(stmts), parse_count + 1)
   }
 }
 
 /// `parse_program_located_shared_fs` as a `ModuleParse` answer.
 export fn parse_answer_fs(path: String, source: String) -> (Array[Stmt], Option[String]) with Env + Fs {
   handle {
-    (parse_program_located_shared_fs(path, source), None)
+    (parse_program_located_shared_fs(path = path, source = source), None)
   } with { Exception::Throw(message) => (array_empty(), Some(message)) }
 }
 
@@ -1055,13 +1055,13 @@ export fn parse_answer_fs(path: String, source: String) -> (Array[Stmt], Option[
 /// never sits inside a match arm (the #708 trap shape).
 fn module_header_on_fs(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception + Fs {
   handle {
-    module_header_source(path, source, parse_count)
-  } with { ModuleParse::Parse(p, text) => resume(parse_answer_fs(p, text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
+    module_header_source(path = path, source = source, parse_count = parse_count)
+  } with { ModuleParse::Parse(p, text) => resume(parse_answer_fs(path = p, source = text)); Source::Read(p) => resume(cache_read_source_fs(p)); Source::Exists(p) => resume(Fs::exists(p)); Source::List(p) => resume(Fs::readdir(p)); Source::StatToken(p) => resume(Fs::stat_token(p)) }
 }
 
 export fn load_or_parse_module_header_fs_impl(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception + Fs {
-  ingestion_pipeline_telemetry_add(10, 1)
-  let cache_path = persistent_module_header_cache_path(path, compact_source_fingerprint_memo(path, source))
+  ingestion_pipeline_telemetry_add(index = 10, amount = 1)
+  let cache_path = persistent_module_header_cache_path(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source))
   // #801 follow-up: a warm header whose package-index deps no longer match
   // the current resolution winners was written under a different resolution
   // context (a store copy appeared or vanished) — fall through to the cold
@@ -1091,23 +1091,23 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
     ()
   }
   if warm_ok {
-    ingestion_pipeline_telemetry_add(11, 1)
+    ingestion_pipeline_telemetry_add(index = 11, amount = 1)
     // The header is warm, so nothing below parses -- which is exactly when
     // the merge's pure parse has nothing to reuse. Hand it the stored AST.
-    let _ = ast_cache_prefetch_fs(path, source)
+    let _ = ast_cache_prefetch_fs(path = path, source = source)
     (warm_deps, warm_exports, parse_count)
   } else {
-    ingestion_pipeline_telemetry_add(12, 1)
-    let header_result = module_header_on_fs(path, source, parse_count)
+    ingestion_pipeline_telemetry_add(index = 12, amount = 1)
+    let header_result = module_header_on_fs(path = path, source = source, parse_count = parse_count)
     let deps = header_result.0
     let exports = header_result.1
     let next_parse_count = header_result.2
     if next_parse_count > parse_count {
-      ingestion_pipeline_telemetry_add(13, 1)
+      ingestion_pipeline_telemetry_add(index = 13, amount = 1)
     } else {
       ()
     }
-    Fs::write_file(cache_path, persistent_module_header_text(deps, exports, contract_dep_fingerprints_now(deps)))
+    Fs::write_file(cache_path, contents = persistent_module_header_text(deps = deps, exports = exports, contract_fps = contract_dep_fingerprints_now(deps)))
     (deps, exports, next_parse_count)
   }
 }
@@ -1118,13 +1118,13 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
 /// compares what was recorded, and a contract that APPEARS later changes
 /// resolution winners, which the #801 package_index_deps_are_current gate
 /// already catches.
-fn contract_dep_fingerprints_now(deps: Array[String]) -> Array[(String, String)] with Env + Fs {
+fn contract_dep_fingerprints_now(_ deps: Array[String]) -> Array[(String, String)] with Env + Fs {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(deps) {
-    let d = Array::get(deps, i)
+    let d = Array::get(deps, at = i)
     if is_contract_boundary_path(d) && Fs::exists(d) {
-      Array::push(out, (d, fingerprint_file_fs(d)))
+      Array::push(out, value = (d, fingerprint_file_fs(d)))
     } else {
       ()
     }
@@ -1136,11 +1136,11 @@ fn contract_dep_fingerprints_now(deps: Array[String]) -> Array[(String, String)]
 /// Warm-gate check: every recorded contract fingerprint must still match the
 /// on-disk contract text. A vanished or edited contract fails the gate and
 /// forces a cold re-parse + re-validation of the importer's names.
-fn contract_dep_fingerprints_current(cdeps: Array[(String, String)]) -> Bool with Env + Fs {
+fn contract_dep_fingerprints_current(_ cdeps: Array[(String, String)]) -> Bool with Env + Fs {
   let mut i = 0
   let mut ok = true
   while i < Array::length(cdeps) {
-    let (cpath, cfp) = Array::get(cdeps, i)
+    let (cpath, cfp) = Array::get(cdeps, at = i)
     if ok {
       if Fs::exists(cpath) {
         ok = fingerprint_file_fs(cpath) == cfp

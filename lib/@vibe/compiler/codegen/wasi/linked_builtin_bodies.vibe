@@ -173,11 +173,11 @@ export fn lc_build_builtin_bodies(input: LinkedBodyInputs, enable_rc: Bool, rc_s
   // section splices builtin_type_idxs in this same order; a count mismatch
   // still throws there).
   let push_builtin: (Bytes, Int, Int, Int) -> Unit = (body, m32, m64, type_idx) -> {
-    Array::push(bodies, body)
-    Array::push(meta_i32, m32)
-    Array::push(meta_i64, m64)
-    Array::push(meta_v128, 0)
-    Array::push(builtin_type_idxs, type_idx)
+    Array::push(bodies, value = body)
+    Array::push(meta_i32, value = m32)
+    Array::push(meta_i64, value = m64)
+    Array::push(meta_v128, value = 0)
+    Array::push(builtin_type_idxs, value = type_idx)
   }
   push_builtin(gen_print_i64_body(), 3, 1, 1)
   push_builtin(static_print_str_body(), 2, 0, 1)
@@ -197,10 +197,10 @@ export fn lc_build_builtin_bodies(input: LinkedBodyInputs, enable_rc: Bool, rc_s
   // operand guard needs one of these fragments; moving the PUSH instead
   // would reorder the builtins and shift every function index.
   let oob_fat_of: (String) -> Int = (frag) -> {
-    let fi = str_table_index_of(str_table_shared, frag)
-    (Array::get(str_offsets, fi)<<32)|Array::get(str_lengths, fi)
+    let fi = str_table_index_of(st = str_table_shared, s = frag)
+    (Array::get(str_offsets, at = fi)<<32)|Array::get(str_lengths, at = fi)
   }
-  push_builtin(gen_str_concat_body(rc_shadow, str_operand_abort_idx, if rc_shadow {
+  push_builtin(gen_str_concat_body(rc_shadow = rc_shadow, str_operand_abort_idx = str_operand_abort_idx, bad_operand_fat = if rc_shadow {
     oob_fat_of("String::concat operand is not a live string: ptr=")
   } else {
     0
@@ -213,45 +213,45 @@ export fn lc_build_builtin_bodies(input: LinkedBodyInputs, enable_rc: Bool, rc_s
   let oob_mid_fat = oob_fat_of(" out of bounds for length ")
   let oob_nl_fat = oob_fat_of("\n")
   if enable_rc {
-    push_builtin(gen_arr_new_body(true, rc_alloc_idx), 1, 0, 5)
+    push_builtin(gen_arr_new_body(enable_rc = true, rc_alloc_idx = rc_alloc_idx), 1, 0, 5)
     push_builtin(gen_arr_len_body(true), 0, 0, 3)
-    push_builtin(gen_arr_get_body(true, oob_arr_get_fat, oob_abort_idx), 1, 0, 4)
-    push_builtin(gen_arr_push_body(true, rc_alloc_idx, rc_shadow, -1, 0, 0), 6, 0, 6)
-    push_builtin(gen_arr_set_body(true, oob_arr_set_fat, oob_abort_idx), 1, 0, 7)
+    push_builtin(gen_arr_get_body(enable_rc = true, oob_prefix_fat = oob_arr_get_fat, oob_abort_idx = oob_abort_idx), 1, 0, 4)
+    push_builtin(gen_arr_push_body(enable_rc = true, rc_alloc_idx = rc_alloc_idx, rc_shadow = rc_shadow, arena_ptr_addr = -1, arena_data_base = 0, arena_limit = 0), 6, 0, 6)
+    push_builtin(gen_arr_set_body(enable_rc = true, oob_prefix_fat = oob_arr_set_fat, oob_abort_idx = oob_abort_idx), 1, 0, 7)
   } else {
-    push_builtin(gen_arr_new_body(false, rc_alloc_idx), 1, 0, 5)
+    push_builtin(gen_arr_new_body(enable_rc = false, rc_alloc_idx = rc_alloc_idx), 1, 0, 5)
     push_builtin(static_arr_len_body(), 0, 0, 3)
-    push_builtin(gen_arr_get_body(false, oob_arr_get_fat, oob_abort_idx), 1, 0, 4)
+    push_builtin(gen_arr_get_body(enable_rc = false, oob_prefix_fat = oob_arr_get_fat, oob_abort_idx = oob_abort_idx), 1, 0, 4)
     // ADR-0090 (#1262): ONE arr_push. Which lane a regrow allocates from is a
     // property of the ARRAY (is its block inside the arena segment?), not of
     // the call site, so it is a runtime range check inside the shared body
     // rather than a second builtin -- a MutList and an ordinary Array can both
     // be pushed through the same code. The arena form needs one extra i32
     // local for the arena bump pointer.
-    push_builtin(gen_arr_push_body(false, rc_alloc_idx, rc_shadow, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    push_builtin(gen_arr_push_body(enable_rc = false, rc_alloc_idx = rc_alloc_idx, rc_shadow = rc_shadow, arena_ptr_addr = region_ptr_addr, arena_data_base = region_data_base, arena_limit = region_limit), if need_region_arena {
       7
     } else {
       6
     }, 0, 6)
-    push_builtin(gen_arr_set_body(false, oob_arr_set_fat, oob_abort_idx), 1, 0, 7)
+    push_builtin(gen_arr_set_body(enable_rc = false, oob_prefix_fat = oob_arr_set_fat, oob_abort_idx = oob_abort_idx), 1, 0, 7)
   }
   push_builtin(static_double_to_int_body(), 0, 0, 3)
   push_builtin(static_int_to_double_body(), 0, 0, 3)
-  push_builtin(gen_str_char_code_at_body(enable_rc, oob_ccat_fat, oob_abort_idx), 1, 0, 4)
+  push_builtin(gen_str_char_code_at_body(enable_rc = enable_rc, oob_prefix_fat = oob_ccat_fat, oob_abort_idx = oob_abort_idx), 1, 0, 4)
   push_builtin(gen_str_from_char_code_body(enable_rc), 1, 0, 3)
   // #982: substring's clamp prologue needs one i64 scratch (len) — meta 2/1.
   push_builtin(gen_str_substring_body(enable_rc), 2, 1, 8)
   push_builtin(static_identity_body(), 0, 0, 3)
   if enable_rc {
-    push_builtin(gen_arr_slice_body(true, rc_alloc_idx, rc_shadow), 7, 1, 8)
+    push_builtin(gen_arr_slice_body(enable_rc = true, rc_alloc_idx = rc_alloc_idx, rc_shadow = rc_shadow), 7, 1, 8)
   } else {
     // #982: the clamp prologue's i64 len scratch (RC reuses local 10 = elem).
-    push_builtin(gen_arr_slice_body(false, rc_alloc_idx, rc_shadow), 6, 1, 8)
+    push_builtin(gen_arr_slice_body(enable_rc = false, rc_alloc_idx = rc_alloc_idx, rc_shadow = rc_shadow), 6, 1, 8)
   }
-  push_builtin(gen_array_value_copy_body(arr_len_idx, arr_slice_idx), 0, 0, 3)
+  push_builtin(gen_array_value_copy_body(arr_len_idx = arr_len_idx, arr_slice_idx = arr_slice_idx), 0, 0, 3)
   push_builtin(gen_arr_concat_body(), 9, 0, 4)
   push_builtin(gen_arr_truncate_body(enable_rc), 0, 0, 6)
-  push_builtin(gen_string_join_body(enable_rc, arr_len_idx, arr_get_idx, str_concat_idx), 9, 1, 4)
+  push_builtin(gen_string_join_body(enable_rc = enable_rc, arr_len_idx = arr_len_idx, arr_get_idx = arr_get_idx, str_concat_idx = str_concat_idx), 9, 1, 4)
   push_builtin(static_fs_stub_body(), 0, 0, 3)
   push_builtin(static_fs_stub_body(), 0, 0, 3)
   push_builtin(static_fs_stub_body(), 0, 0, 3)
@@ -260,49 +260,49 @@ export fn lc_build_builtin_bodies(input: LinkedBodyInputs, enable_rc: Bool, rc_s
   push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
   push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
   push_builtin(gen_eq_body(str_eq_idx), 0, 0, 4)
-  push_builtin(gen_string_ends_with_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 2, 1, 4)
-  push_builtin(gen_string_last_index_of_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 3, 1, 4)
+  push_builtin(gen_string_ends_with_body(enable_rc = enable_rc, str_len_idx = str_len_idx, str_substring_idx = str_substring_idx, str_eq_idx = str_eq_idx), 2, 1, 4)
+  push_builtin(gen_string_last_index_of_body(enable_rc = enable_rc, str_len_idx = str_len_idx, str_substring_idx = str_substring_idx, str_eq_idx = str_eq_idx), 3, 1, 4)
   if enable_rc {
-    push_builtin(gen_arr_push_all_body(true, rc_alloc_idx, rc_shadow), 10, 1, 6)
+    push_builtin(gen_arr_push_all_body(enable_rc = true, rc_alloc_idx = rc_alloc_idx, rc_shadow = rc_shadow), 10, 1, 6)
   } else {
-    push_builtin(gen_arr_push_all_body(false, rc_alloc_idx, rc_shadow), 9, 0, 6)
+    push_builtin(gen_arr_push_all_body(enable_rc = false, rc_alloc_idx = rc_alloc_idx, rc_shadow = rc_shadow), 9, 0, 6)
   }
   // #748 memchr rewrite: 8 i32 locals, the i64 substring scratch is gone.
-  push_builtin(gen_string_index_of_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 8, 0, 4)
-  push_builtin(gen_string_contains_body(enable_rc, string_index_of_idx), 0, 0, 4)
-  push_builtin(gen_string_starts_with_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 2, 1, 4)
-  push_builtin(gen_string_split_body(enable_rc, arr_new_idx, arr_push_idx, str_len_idx, str_substring_idx, string_index_of_idx), 4, 1, 4)
-  push_builtin(gen_string_trim_body(enable_rc, str_len_idx, str_char_code_at_idx, str_substring_idx), 4, 0, 3)
+  push_builtin(gen_string_index_of_body(enable_rc = enable_rc, str_len_idx = str_len_idx, str_substring_idx = str_substring_idx, str_eq_idx = str_eq_idx), 8, 0, 4)
+  push_builtin(gen_string_contains_body(enable_rc = enable_rc, string_index_of_idx = string_index_of_idx), 0, 0, 4)
+  push_builtin(gen_string_starts_with_body(enable_rc = enable_rc, str_len_idx = str_len_idx, str_substring_idx = str_substring_idx, str_eq_idx = str_eq_idx), 2, 1, 4)
+  push_builtin(gen_string_split_body(enable_rc = enable_rc, arr_new_idx = arr_new_idx, arr_push_idx = arr_push_idx, str_len_idx = str_len_idx, str_substring_idx = str_substring_idx, string_index_of_idx = string_index_of_idx), 4, 1, 4)
+  push_builtin(gen_string_trim_body(enable_rc = enable_rc, str_len_idx = str_len_idx, str_char_code_at_idx = str_char_code_at_idx, str_substring_idx = str_substring_idx), 4, 0, 3)
   if num_src_pairs > 0 {
-    push_builtin(gen_sources_proper_body(num_src_pairs, str_offsets, str_lengths, src_str_base, arr_new_idx, arr_push_idx), 1, 1, 5)
+    push_builtin(gen_sources_proper_body(num_sources = num_src_pairs, str_offsets = str_offsets, str_lengths = str_lengths, src_str_base = src_str_base, arr_new_idx = arr_new_idx, arr_push_idx = arr_push_idx), 1, 1, 5)
   } else {
     push_builtin(gen_sources_stub_body(arr_new_idx), 0, 0, 5)
   }
   push_builtin(gen_bytes_new_body(), 1, 0, 5)
   push_builtin(gen_bytes_len_body(enable_rc), 0, 0, 3)
-  push_builtin(gen_bytes_get_body(enable_rc, oob_bytes_get_fat, oob_abort_idx), 1, 0, 4)
-  push_builtin(gen_bytes_set_body(enable_rc, oob_bytes_set_fat, oob_abort_idx), 1, 0, 7)
+  push_builtin(gen_bytes_get_body(enable_rc = enable_rc, oob_prefix_fat = oob_bytes_get_fat, oob_abort_idx = oob_abort_idx), 1, 0, 4)
+  push_builtin(gen_bytes_set_body(enable_rc = enable_rc, oob_prefix_fat = oob_bytes_set_fat, oob_abort_idx = oob_abort_idx), 1, 0, 7)
   // ADR-0090 MutBytes: same ONE-body routing as gen_arr_push_body above --
   // whether a regrow allocates from the arena is a runtime range check on
   // the buffer's own block, so MutBytes and ordinary Bytes share this body.
   // region_ptr_addr is -1 when the module has no region (or under RC), which
   // compiles the arena branch out. The arena form needs one extra i32 local.
-  push_builtin(gen_bytes_push_body(enable_rc, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+  push_builtin(gen_bytes_push_body(enable_rc = enable_rc, arena_ptr_addr = region_ptr_addr, arena_data_base = region_data_base, arena_limit = region_limit), if need_region_arena {
     7
   } else {
     6
   }, 0, 6)
-  push_builtin(gen_bytes_append_body(region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+  push_builtin(gen_bytes_append_body(arena_ptr_addr = region_ptr_addr, arena_data_base = region_data_base, arena_limit = region_limit), if need_region_arena {
     9
   } else {
     8
   }, 0, 6)
-  push_builtin(gen_bytes_concat_body(bytes_new_idx, bytes_append_idx), 0, 1, 4)
+  push_builtin(gen_bytes_concat_body(bytes_new_idx = bytes_new_idx, bytes_append_idx = bytes_append_idx), 0, 1, 4)
   // #3543: slice loops on its i64 params; its locals are the i64 result and
   // (#3549) the i64 length its Array::slice-style clamp reads.
-  push_builtin(gen_bytes_slice_body(enable_rc, bytes_new_idx, bytes_get_idx, bytes_push_idx), 0, 2, 8)
-  push_builtin(gen_bytes_from_array_body(enable_rc, arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx), 2, 1, 3)
-  push_builtin(gen_bytes_to_array_body(enable_rc, arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx), 2, 1, 3)
+  push_builtin(gen_bytes_slice_body(enable_rc = enable_rc, bytes_new_idx = bytes_new_idx, bytes_get_idx = bytes_get_idx, bytes_push_idx = bytes_push_idx), 0, 2, 8)
+  push_builtin(gen_bytes_from_array_body(enable_rc = enable_rc, arr_len_idx = arr_len_idx, arr_get_idx = arr_get_idx, bytes_new_idx = bytes_new_idx, bytes_push_idx = bytes_push_idx), 2, 1, 3)
+  push_builtin(gen_bytes_to_array_body(enable_rc = enable_rc, arr_new_idx = arr_new_idx, arr_push_idx = arr_push_idx, bytes_len_idx = bytes_len_idx, bytes_get_idx = bytes_get_idx), 2, 1, 3)
   let uaf_dup_fat = if rc_shadow {
     oob_fat_of("dup of freed value at site ")
   } else {
@@ -314,37 +314,37 @@ export fn lc_build_builtin_bodies(input: LinkedBodyInputs, enable_rc: Bool, rc_s
     0
   }
   if enable_rc {
-    push_builtin(gen_rc_drop_body(rc_drop_idx, rc_shadow, rc_bins_base, shadow_uaf_abort_idx, uaf_drop_fat, input.rc_map_arms, input.rc_closure_arms, true), 5, 1, 1)
-    push_builtin(gen_rc_alloc_body(rc_shadow, rc_bins_base), 5, 0, 3)
-    push_builtin(gen_rc_dup_body(rc_shadow, shadow_uaf_abort_idx, uaf_dup_fat), 0, 0, 1)
+    push_builtin(gen_rc_drop_body(self_idx = rc_drop_idx, rc_shadow = rc_shadow, bins_base = rc_bins_base, uaf_abort_idx = shadow_uaf_abort_idx, prefix_fat = uaf_drop_fat, map_arms = input.rc_map_arms, closure_arms = input.rc_closure_arms, array_arm = true), 5, 1, 1)
+    push_builtin(gen_rc_alloc_body(rc_shadow = rc_shadow, bins_base = rc_bins_base), 5, 0, 3)
+    push_builtin(gen_rc_dup_body(rc_shadow = rc_shadow, uaf_abort_idx = shadow_uaf_abort_idx, prefix_fat = uaf_dup_fat), 0, 0, 1)
   } else {
     ()
   }
   push_builtin(gen_heap_grow_check_body(), 0, 0, 2)
   push_builtin(gen_simd_skip_ws_body(enable_rc), 2, 2, 8)
-  push_builtin(gen_simd_scan_alnum_body(enable_rc, false), 1, 3, 8)
-  push_builtin(gen_simd_scan_alnum_body(enable_rc, true), 1, 3, 8)
+  push_builtin(gen_simd_scan_alnum_body(enable_rc = enable_rc, is_string = false), 1, 3, 8)
+  push_builtin(gen_simd_scan_alnum_body(enable_rc = enable_rc, is_string = true), 1, 3, 8)
   push_builtin(gen_simd_scan_string_special_body(enable_rc), 1, 3, 8)
   push_builtin(gen_simd_scan_line_end_body(enable_rc), 1, 3, 8)
   push_builtin(gen_str_lex_diff_body(enable_rc), 7, 0, 4)
-  push_builtin(gen_generic_rel_diff_body(enable_rc, str_lex_diff_idx), 0, 0, 4)
-  push_builtin(gen_generic_add_body(enable_rc, str_concat_idx), 0, 0, 4)
+  push_builtin(gen_generic_rel_diff_body(enable_rc = enable_rc, str_lex_diff_idx = str_lex_diff_idx), 0, 0, 4)
+  push_builtin(gen_generic_add_body(enable_rc = enable_rc, str_concat_idx = str_concat_idx), 0, 0, 4)
   push_builtin(gen_compact_fingerprint_hash_body(enable_rc), 3, 2, 3)
   push_builtin(gen_map_hash_body(), 3, 2, 3)
   push_builtin(gen_map_cap_body(), 0, 1, 3)
   push_builtin(gen_map_index_insert_body(), 1, 4, 7)
   // #2683: the index table is an RC leaf block on the RC lane (freed by the
   // Map's class-6 rc_drop arm), a raw bump allocation on the bump lane.
-  push_builtin(gen_map_build_index_body(map_hash_idx, map_cap_idx, map_index_insert_idx, heap_grow_check_idx, if enable_rc {
+  push_builtin(gen_map_build_index_body(hash_fn_idx = map_hash_idx, cap_fn_idx = map_cap_idx, insert_fn_idx = map_index_insert_idx, heap_grow_check_idx = heap_grow_check_idx, rc_alloc_idx = if enable_rc {
     rc_alloc_idx
   } else {
     -1
   }), 0, 7, 4)
-  push_builtin(gen_map_probe_index_body(map_hash_idx, eq_idx), 1, 8, 8)
+  push_builtin(gen_map_probe_index_body(hash_fn_idx = map_hash_idx, eq_fn_idx = eq_idx), 1, 8, 8)
   // #2199: the formatted OOB abort pair, in the print_i64_raw_idx /
   // oob_abort_idx slot order fixed above.
   push_builtin(gen_print_i64_raw_body(), 3, 1, 1)
-  push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_mid_fat, oob_nl_fat), 0, 0, 7)
+  push_builtin(gen_oob_abort_body(print_str_idx = print_str_idx, print_i64_raw_idx = print_i64_raw_idx, oob_mid_fat = oob_mid_fat, oob_nl_fat = oob_nl_fat), 0, 0, 7)
   // #2344: same order as int_popcount_idx / int_ctz_idx / int_clz_idx above.
   // No extra locals, and type 3 is (i64) -> (i64) -- the same shape as
   // int_to_double above. Type 1 is (i64) -> (), which would declare these as
@@ -359,33 +359,33 @@ export fn lc_build_builtin_bodies(input: LinkedBodyInputs, enable_rc: Bool, rc_s
   push_builtin(gen_bytes_compare_body(enable_rc), 2, 4, 4)
   // The four-argument void type is appended after the closure types below;
   // its slot is filled there without shifting any existing type index.
-  push_builtin(gen_bytes_blit_linear_body(enable_rc, bytes_get_idx, bytes_push_idx, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+  push_builtin(gen_bytes_blit_linear_body(enable_rc = enable_rc, bytes_get_idx = bytes_get_idx, bytes_push_idx = bytes_push_idx, arena_ptr_addr = region_ptr_addr, arena_data_base = region_data_base, arena_limit = region_limit), if need_region_arena {
     9
   } else {
     8
   }, 0, -1)
-  push_builtin(gen_bytes_with_capacity_body(enable_rc, print_str_idx, if need_bytes_capacity {
+  push_builtin(gen_bytes_with_capacity_body(enable_rc = enable_rc, print_str_idx = print_str_idx, error_fat = if need_bytes_capacity {
     oob_fat_of(bytes_capacity_error_message())
   } else {
     0
   }), 2, 0, 3)
-  push_builtin(gen_arr_with_capacity_body(enable_rc, rc_alloc_idx, print_str_idx, if need_array_capacity {
+  push_builtin(gen_arr_with_capacity_body(enable_rc = enable_rc, rc_alloc_idx = rc_alloc_idx, print_str_idx = print_str_idx, error_fat = if need_array_capacity {
     oob_fat_of(array_capacity_error_message())
   } else {
     0
   }), 3, 0, 3)
   if rc_shadow {
-    push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of("; freed at site "), oob_nl_fat), 0, 0, 7)
+    push_builtin(gen_oob_abort_body(print_str_idx = print_str_idx, print_i64_raw_idx = print_i64_raw_idx, oob_mid_fat = oob_fat_of("; freed at site "), oob_nl_fat = oob_nl_fat), 0, 0, 7)
     // #2427: same body, ", len=" as the middle fragment -- see
     // str_operand_abort_idx. Registered immediately after the UAF abort so
     // max_builtin_func_idx stays the last push.
-    push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of(", len="), oob_nl_fat), 0, 0, 7)
+    push_builtin(gen_oob_abort_body(print_str_idx = print_str_idx, print_i64_raw_idx = print_i64_raw_idx, oob_mid_fat = oob_fat_of(", len="), oob_nl_fat = oob_nl_fat), 0, 0, 7)
   } else {
     ()
   }
   // #3126: div_zero_abort_idx -- after the shadow aborts, before the arena.
   if need_div_zero_abort {
-    push_builtin(gen_div_zero_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of(div_zero_div_message()), oob_fat_of(div_zero_rem_message()), oob_fat_of(div_zero_at_fragment()), oob_fat_of(div_zero_colon_fragment()), oob_nl_fat), 0, 0, 7)
+    push_builtin(gen_div_zero_abort_body(print_str_idx = print_str_idx, print_i64_raw_idx = print_i64_raw_idx, div_fat = oob_fat_of(div_zero_div_message()), rem_fat = oob_fat_of(div_zero_rem_message()), at_fat = oob_fat_of(div_zero_at_fragment()), colon_fat = oob_fat_of(div_zero_colon_fragment()), nl_fat = oob_nl_fat), 0, 0, 7)
   } else {
     ()
   }
@@ -393,8 +393,8 @@ export fn lc_build_builtin_bodies(input: LinkedBodyInputs, enable_rc: Bool, rc_s
   // above names region_bytes_new_idx (= region_arr_new_idx + 1) as the final
   // builtin, and num_generated/func_offset are derived from it.
   if need_region_arena {
-    push_builtin(gen_region_arr_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
-    push_builtin(gen_region_bytes_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
+    push_builtin(gen_region_arr_new_body(region_ptr_addr = region_ptr_addr, region_data_base = region_data_base, region_limit = region_limit), 2, 0, 5)
+    push_builtin(gen_region_bytes_new_body(region_ptr_addr = region_ptr_addr, region_data_base = region_data_base, region_limit = region_limit), 2, 0, 5)
   } else {
     ()
   }

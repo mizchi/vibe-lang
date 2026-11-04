@@ -44,7 +44,7 @@ fn mem_lookup(tree: MemTree, path: String) -> Option[String] {
 }
 
 fn mem_has(tree: MemTree, path: String) -> Bool {
-  match mem_lookup(tree, path) {
+  match mem_lookup(tree = tree, path = path) {
     Some(_) => true,
     None => false
   }
@@ -54,7 +54,7 @@ fn mem_has(tree: MemTree, path: String) -> Bool {
 // answers "" rather than throwing: a provider's arms do not throw (see
 // `ModuleParse`).
 fn mem_read(tree: MemTree, path: String) -> String {
-  match mem_lookup(tree, path) {
+  match mem_lookup(tree = tree, path = path) {
     Some(text) => text,
     None => ""
   }
@@ -70,10 +70,10 @@ fn mem_list(tree: MemTree, dir: String) -> Array[String] {
   let out: Array[String] = []
   for entry in tree.files {
     let (p, _) = entry
-    if String::starts_with(p, prefix) {
+    if String::starts_with(p, prefix = prefix) {
       let rest = p[String::length(prefix): String::length(p)]
-      if String::index_of(rest, "/") < 0 {
-        Array::push(out, rest)
+      if String::index_of(rest, needle = "/") < 0 {
+        Array::push(out, value = rest)
       } else {
         ()
       }
@@ -102,15 +102,15 @@ fn mem_token(tree: MemTree, path: String) -> Int {
 
 fn mem_parse(path: String, source: String) -> (Array[Stmt], Option[String]) {
   handle {
-    (parse_program_located_shared(path, source), None)
+    (parse_program_located_shared(path = path, source = source), None)
   } with { Exception::Throw(message) => ([], Some(message)) }
 }
 
 fn mem_header(tree: MemTree, path: String, source: String) -> (Array[String], Option[String]) with Env {
   handle {
     let (deps, _, _) = handle {
-      module_header_source(path, source, 0)
-    } with { ModuleParse::Parse(p, text) => resume(mem_parse(p, text)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+      module_header_source(path = path, source = source, parse_count = 0)
+    } with { ModuleParse::Parse(p, text) => resume(mem_parse(path = p, source = text)); Source::Read(p) => resume(mem_read(tree = tree, path = p)); Source::Exists(p) => resume(mem_has(tree = tree, path = p)); Source::List(p) => resume(mem_list(tree = tree, dir = p)); Source::StatToken(p) => resume(mem_token(tree = tree, path = p)) }
     (deps, None)
   } with { Exception::Throw(message) => ([], Some(message)) }
 }
@@ -121,7 +121,7 @@ fn mem_type_params(tree: MemTree, path: String) -> ((Array[(String, Array[String
   handle {
     let answer = handle {
       exported_type_params_source(path)
-    } with { ContractIngest::IngestMember(_, raw) => resume((raw, None)); ContractIngest::TypeParams(p) => resume(mem_type_params(tree, p)); ModuleParse::Parse(p, t) => resume(mem_parse(p, t)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+    } with { ContractIngest::IngestMember(_, raw) => resume((raw, None)); ContractIngest::TypeParams(p) => resume(mem_type_params(tree = tree, path = p)); ModuleParse::Parse(p, t) => resume(mem_parse(path = p, source = t)); Source::Read(p) => resume(mem_read(tree = tree, path = p)); Source::Exists(p) => resume(mem_has(tree = tree, path = p)); Source::List(p) => resume(mem_list(tree = tree, dir = p)); Source::StatToken(p) => resume(mem_token(tree = tree, path = p)) }
     (answer, None)
   } with { Exception::Throw(message) => (([], [], []), Some(message)) }
 }
@@ -131,8 +131,8 @@ fn mem_type_params(tree: MemTree, path: String) -> ((Array[(String, Array[String
 fn mem_desugar(tree: MemTree, path: String, text: String) -> (String, Option[String]) with Env {
   handle {
     let (facade, _, _) = handle {
-      desugar_contract_source(path, text)
-    } with { ContractIngest::IngestMember(_, raw) => resume((raw, None)); ContractIngest::TypeParams(p) => resume(mem_type_params(tree, p)); ModuleParse::Parse(p, t) => resume(mem_parse(p, t)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+      desugar_contract_source(path = path, source = text)
+    } with { ContractIngest::IngestMember(_, raw) => resume((raw, None)); ContractIngest::TypeParams(p) => resume(mem_type_params(tree = tree, path = p)); ModuleParse::Parse(p, t) => resume(mem_parse(path = p, source = t)); Source::Read(p) => resume(mem_read(tree = tree, path = p)); Source::Exists(p) => resume(mem_has(tree = tree, path = p)); Source::List(p) => resume(mem_list(tree = tree, dir = p)); Source::StatToken(p) => resume(mem_token(tree = tree, path = p)) }
     (facade, None)
   } with { Exception::Throw(message) => ("", Some(message)) }
 }
@@ -151,7 +151,7 @@ fn mem_facade(tree: MemTree, facades: Array[(String, String)], path: String, tex
   }
   match facade {
     Some(t) => (t, None),
-    None => mem_desugar(tree, path, text)
+    None => mem_desugar(tree = tree, path = path, text = text)
   }
 }
 
@@ -160,10 +160,10 @@ fn mem_facade(tree: MemTree, facades: Array[(String, String)], path: String, tex
 fn mem_share(tree: MemTree, path: String, text: String) -> (String, Option[String]) {
   handle {
     let (shared, types_path, types_text) = handle {
-      share_imports_source(path, text)
-    } with { Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
-    if types_path != "" && !mem_has(tree, types_path) {
-      Array::push(tree.files, (types_path, types_text))
+      share_imports_source(path = path, pin_blanked = text)
+    } with { Source::Read(p) => resume(mem_read(tree = tree, path = p)); Source::Exists(p) => resume(mem_has(tree = tree, path = p)); Source::List(p) => resume(mem_list(tree = tree, dir = p)); Source::StatToken(p) => resume(mem_token(tree = tree, path = p)) }
+    if types_path != "" && !mem_has(tree = tree, path = types_path) {
+      Array::push(tree.files, value = (types_path, types_text))
     } else {
       ()
     }
@@ -177,21 +177,21 @@ fn mem_share(tree: MemTree, path: String, text: String) -> (String, Option[Strin
 fn mem_collect(tree: MemTree, facades: Array[(String, String)], entry: String) -> Array[(String, String)] with Env + Exception {
   handle {
     collect_sources_source(entry)
-  } with { SourceIngest::Header(p, text) => resume(mem_header(tree, p, text)); SourceIngest::DesugarContract(p, text) => resume(mem_facade(tree, facades, p, text)); SourceIngest::ShareImports(p, text) => resume(mem_share(tree, p, text)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+  } with { SourceIngest::Header(p, text) => resume(mem_header(tree = tree, path = p, source = text)); SourceIngest::DesugarContract(p, text) => resume(mem_facade(tree = tree, facades = facades, path = p, text = text)); SourceIngest::ShareImports(p, text) => resume(mem_share(tree = tree, path = p, text = text)); Source::Read(p) => resume(mem_read(tree = tree, path = p)); Source::Exists(p) => resume(mem_has(tree = tree, path = p)); Source::List(p) => resume(mem_list(tree = tree, dir = p)); Source::StatToken(p) => resume(mem_token(tree = tree, path = p)) }
 }
 
-fn collected_paths(sources: Array[(String, String)]) -> Array[String] {
+fn collected_paths(_ sources: Array[(String, String)]) -> Array[String] {
   let out: Array[String] = []
   for entry in sources {
     let (p, _) = entry
-    Array::push(out, p)
+    Array::push(out, value = p)
   }
   out
 }
 
 fn mem_collect_error(tree: MemTree, entry: String) -> String with Env {
   handle {
-    let _ = mem_collect(tree, [], entry)
+    let _ = mem_collect(tree = tree, facades = [], entry = entry)
     "accepted"
   } with { Exception::Throw(message) => message }
 }
@@ -208,7 +208,7 @@ fn diamond() -> MemTree {
 }
 
 test "the collection core orders dependencies first and visits each module once" {
-  let sources = mem_collect(diamond(), [], "app/main.vibe")
+  let sources = mem_collect(tree = diamond(), facades = [], entry = "app/main.vibe")
   inspect(collected_paths(sources), "[app/b.vibe, app/a.vibe, app/main.vibe]")
 }
 
@@ -219,17 +219,17 @@ test "the collection core reports a missing import at its import site" {
     ],
     symlinks: []
   }
-  inspect(mem_collect_error(tree, "app/main.vibe"), "line 1:8: cannot resolve import './gone.vibe' (resolved to app/gone.vibe)")
+  inspect(mem_collect_error(tree = tree, entry = "app/main.vibe"), "line 1:8: cannot resolve import './gone.vibe' (resolved to app/gone.vibe)")
 }
 
 test "the collection core refuses a missing entry" {
-  inspect(mem_collect_error(diamond(), "app/none.vibe"), "cannot resolve module: app/none.vibe does not exist")
+  inspect(mem_collect_error(tree = diamond(), entry = "app/none.vibe"), "cannot resolve module: app/none.vibe does not exist")
 }
 
 test "the collection core refuses a symlinked module before reading it" {
   let tree = diamond()
   let linked = MemTree::{ files: tree.files, symlinks: ["app/b.vibe"] }
-  inspect(mem_collect_error(linked, "app/main.vibe"), "symlink module source is not allowed: app/b.vibe")
+  inspect(mem_collect_error(tree = linked, entry = "app/main.vibe"), "symlink module source is not allowed: app/b.vibe")
 }
 
 test "the collection core refuses a directory with two indexes" {
@@ -241,7 +241,7 @@ test "the collection core refuses a directory with two indexes" {
     ],
     symlinks: []
   }
-  inspect(mem_collect_error(tree, "app/main.vibe"), "index.vibe and index.vpkg exist in app (#729/#897): a boundary has exactly one index")
+  inspect(mem_collect_error(tree = tree, entry = "app/main.vibe"), "index.vibe and index.vpkg exist in app (#729/#897): a boundary has exactly one index")
 }
 
 test "the collection core refuses an import into another package's internals" {
@@ -253,10 +253,10 @@ test "the collection core refuses an import into another package's internals" {
     ],
     symlinks: []
   }
-  inspect(mem_collect_error(tree, "main.vibe"), "cannot import pkg/inner.vibe across a package boundary; target owner is pkg/index.vpkg (#729); import the owner contract instead")
+  inspect(mem_collect_error(tree = tree, entry = "main.vibe"), "cannot import pkg/inner.vibe across a package boundary; target owner is pkg/index.vpkg (#729); import the owner contract instead")
 }
 
-fn package_tree(head: String) -> MemTree {
+fn package_tree(_ head: String) -> MemTree {
   MemTree::{
     files: [
       ("app/main.vibe", "\{head}import @acme/base { greet }\nfn main() -> Int { greet() }\n"),
@@ -272,7 +272,7 @@ let package_facades: Array[(String, String)] = [
 ]
 
 test "the collection core ingests a package contract through its facade" {
-  let sources = mem_collect(package_tree(""), package_facades, "app/main.vibe")
+  let sources = mem_collect(tree = package_tree(""), facades = package_facades, entry = "app/main.vibe")
   inspect(collected_paths(sources), "[lib/@acme/base/base.vibe, lib/@acme/base/index.vpkg, app/main.vibe]")
 }
 
@@ -280,22 +280,22 @@ test "the collection core ingests a package contract through its facade" {
 // walk verifies a pin with.
 fn mem_package_hash(tree: MemTree, contract: String) -> String with Env + Exception {
   let (pkg_hash, _) = handle {
-    contract_package_hashes_source(contract, "b3")
-  } with { SourceIngest::Header(p, text) => resume(mem_header(tree, p, text)); SourceIngest::DesugarContract(p, text) => resume(mem_facade(tree, [
-  ], p, text)); SourceIngest::ShareImports(p, text) => resume(mem_share(tree, p, text)); Source::Read(p) => resume(mem_read(tree, p)); Source::Exists(p) => resume(mem_has(tree, p)); Source::List(p) => resume(mem_list(tree, p)); Source::StatToken(p) => resume(mem_token(tree, p)) }
+    contract_package_hashes_source(path = contract, algo = "b3")
+  } with { SourceIngest::Header(p, text) => resume(mem_header(tree = tree, path = p, source = text)); SourceIngest::DesugarContract(p, text) => resume(mem_facade(tree = tree, facades = [
+  ], path = p, text = text)); SourceIngest::ShareImports(p, text) => resume(mem_share(tree = tree, path = p, text = text)); Source::Read(p) => resume(mem_read(tree = tree, path = p)); Source::Exists(p) => resume(mem_has(tree = tree, path = p)); Source::List(p) => resume(mem_list(tree = tree, dir = p)); Source::StatToken(p) => resume(mem_token(tree = tree, path = p)) }
   pkg_hash
 }
 
 test "the collection core refuses a package whose content does not match the pin" {
   let tree = package_tree("require @acme/base 0.1.0 = #pkg:b3:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n")
-  let actual = mem_package_hash(tree, "lib/@acme/base/index.vpkg")
-  assert_eq(mem_collect_error(tree, "app/main.vibe"), "pin mismatch for @acme/base: app/main.vibe requires #pkg:b3:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f but the lib/ copy is #\{actual}")
+  let actual = mem_package_hash(tree = tree, contract = "lib/@acme/base/index.vpkg")
+  assert_eq(mem_collect_error(tree = tree, entry = "app/main.vibe"), "pin mismatch for @acme/base: app/main.vibe requires #pkg:b3:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f but the lib/ copy is #\{actual}")
 }
 
 test "the collection core accepts a package whose content matches the pin" {
-  let pin = mem_package_hash(package_tree(""), "lib/@acme/base/index.vpkg")
+  let pin = mem_package_hash(tree = package_tree(""), contract = "lib/@acme/base/index.vpkg")
   let tree = package_tree("require @acme/base 0.1.0 = #\{pin}\n")
-  inspect(collected_paths(mem_collect(tree, package_facades, "app/main.vibe")), "[lib/@acme/base/base.vibe, lib/@acme/base/index.vpkg, app/main.vibe]")
+  inspect(collected_paths(mem_collect(tree = tree, facades = package_facades, entry = "app/main.vibe")), "[lib/@acme/base/base.vibe, lib/@acme/base/index.vpkg, app/main.vibe]")
 }
 
 fn source_of(sources: Array[(String, String)], path: String) -> String {
@@ -312,9 +312,9 @@ fn source_of(sources: Array[(String, String)], path: String) -> String {
 }
 
 test "the collection core desugars a package contract with the shared core" {
-  let sources = mem_collect(package_tree(""), [], "app/main.vibe")
+  let sources = mem_collect(tree = package_tree(""), facades = [], entry = "app/main.vibe")
   inspect(collected_paths(sources), "[lib/@acme/base/base.vibe, lib/@acme/base/index.vpkg, app/main.vibe]")
-  inspect(source_of(sources, "lib/@acme/base/index.vpkg"), "// vibe: contract facade (desugared from .vibei)\nexport ./base.vibe { greet }\n")
+  inspect(source_of(sources = sources, path = "lib/@acme/base/index.vpkg"), "// vibe: contract facade (desugared from .vibei)\nexport ./base.vibe { greet }\n")
 }
 
 test "the desugaring core refuses a declaration no member implements" {
@@ -326,7 +326,7 @@ test "the desugaring core refuses a declaration no member implements" {
     ],
     symlinks: []
   }
-  inspect(mem_collect_error(tree, "app/main.vibe"), "lib/@acme/base/index.vpkg: contract violation: contract declaration 'missing' has no implementation")
+  inspect(mem_collect_error(tree = tree, entry = "app/main.vibe"), "lib/@acme/base/index.vpkg: contract violation: contract declaration 'missing' has no implementation")
 }
 
 fn relative_package_tree() -> MemTree {
@@ -348,11 +348,11 @@ test "the filesystem adapter desugars a contract to the in-memory facade" {
   Fs::mkdir_p(String::concat(root, "/pkg"))
   for entry in relative_package_tree().files {
     let (p, text) = entry
-    Fs::write_file(String::concat(root, String::concat("/", p)), text)
+    Fs::write_file(String::concat(root, String::concat("/", p)), contents = text)
   }
   let on_disk = collect_all_sources_fs(String::concat(root, "/app/main.vibe"))
-  let in_memory = mem_collect(relative_package_tree(), [], "app/main.vibe")
-  assert_eq(source_of(on_disk, String::concat(root, "/pkg/index.vpkg")), source_of(in_memory, "pkg/index.vpkg"))
+  let in_memory = mem_collect(tree = relative_package_tree(), facades = [], entry = "app/main.vibe")
+  assert_eq(source_of(sources = on_disk, path = String::concat(root, "/pkg/index.vpkg")), source_of(sources = in_memory, path = "pkg/index.vpkg"))
 }
 
 // The package hash is location-independent: the same package on disk hashes,
@@ -363,16 +363,16 @@ test "the filesystem adapter hashes a package to the in-memory hash" {
   Fs::mkdir_p(String::concat(root, "/pkg"))
   for entry in relative_package_tree().files {
     let (p, text) = entry
-    Fs::write_file(String::concat(root, String::concat("/", p)), text)
+    Fs::write_file(String::concat(root, String::concat("/", p)), contents = text)
   }
   let (on_disk, _) = contract_package_hashes_fs(String::concat(root, "/pkg/index.vpkg"))
-  assert_eq(on_disk, mem_package_hash(relative_package_tree(), "pkg/index.vpkg"))
+  assert_eq(on_disk, mem_package_hash(tree = relative_package_tree(), contract = "pkg/index.vpkg"))
 }
 
 // A parent contract whose member re-exports `Container` from another
 // package: the conformance check compares the kind the parent declares with
 // the kind the re-export's source exports (`TypeParams`).
-fn reexport_tree(source_kind: String) -> MemTree {
+fn reexport_tree(_ source_kind: String) -> MemTree {
   MemTree::{
     files: [
       ("parent/index.vpkg", "opaque type Container[F[_]]\n"),
@@ -386,13 +386,13 @@ fn reexport_tree(source_kind: String) -> MemTree {
 
 test "the desugaring core reads a re-exported type's kind from its source" {
   let tree = reexport_tree("Container[F[_]]")
-  let (_, failure) = mem_desugar(tree, "parent/index.vpkg", mem_read(tree, "parent/index.vpkg"))
+  let (_, failure) = mem_desugar(tree = tree, path = "parent/index.vpkg", text = mem_read(tree = tree, path = "parent/index.vpkg"))
   inspect(failure, "None")
-  let ((params, read, _), _) = mem_type_params(tree, "parent/mid.vibe")
+  let ((params, read, _), _) = mem_type_params(tree = tree, path = "parent/mid.vibe")
   let rows: Array[String] = []
   for entry in params {
     let (name, ps) = entry
-    Array::push(rows, "\{name}[\{String::join(ps, ", ")}]")
+    Array::push(rows, value = "\{name}[\{String::join(ps, ", ")}]")
   }
   let read_paths: Array[String] = read
   inspect(rows, "[Container[$type_param$1$F]]")
@@ -401,11 +401,11 @@ test "the desugaring core reads a re-exported type's kind from its source" {
 
 test "the desugaring core refuses a re-export whose source exports another kind" {
   let tree = reexport_tree("Container[F]")
-  let (_, failure) = mem_desugar(tree, "parent/index.vpkg", mem_read(tree, "parent/index.vpkg"))
+  let (_, failure) = mem_desugar(tree = tree, path = "parent/index.vpkg", text = mem_read(tree = tree, path = "parent/index.vpkg"))
   inspect(failure, "Some(parent/index.vpkg: contract violation: type 'Container' kind mismatch: contract declares [F[_]], re-exported implementation defines [F])")
 }
 
-fn share_tree(root: String) -> MemTree {
+fn share_tree(_ root: String) -> MemTree {
   MemTree::{
     files: [
       (String::concat(root, "/loose.vibe"), "export fn loose() -> Int { 3 }\n"),
@@ -418,7 +418,7 @@ fn share_tree(root: String) -> MemTree {
 }
 
 fn mem_shared_text(tree: MemTree, path: String) -> String {
-  let (text, _) = mem_share(tree, path, mem_read(tree, path))
+  let (text, _) = mem_share(tree = tree, path = path, text = mem_read(tree = tree, path = path))
   text
 }
 
@@ -431,15 +431,15 @@ test "the shared-import core matches the filesystem lane" {
   Fs::mkdir_p(String::concat(root, "/pkg"))
   for entry in tree.files {
     let (p, text) = entry
-    Fs::write_file(p, text)
+    Fs::write_file(p, contents = text)
   }
   for name in ["/pkg/base.vibe", "/pkg/base_test.vibe", "/loose.vibe"] {
     let path = String::concat(root, name)
-    assert_eq(mem_shared_text(tree, path), apply_vpkg_directory_shared_imports_fs(path, mem_read(tree, path)))
+    assert_eq(mem_shared_text(tree = tree, path = path), apply_vpkg_directory_shared_imports_fs(path = path, pin_blanked = mem_read(tree = tree, path = path)))
   }
-  assert_true(String::contains(mem_shared_text(tree, String::concat(root, "/pkg/base.vibe")), "import @vibe/core { array_empty }"))
-  assert_true(String::contains(mem_shared_text(tree, String::concat(root, "/pkg/base_test.vibe")), "import @vibe/core { array_empty }"))
-  assert_eq(mem_shared_text(tree, String::concat(root, "/loose.vibe")), "export fn loose() -> Int { 3 }\n")
+  assert_true(String::contains(mem_shared_text(tree = tree, path = String::concat(root, "/pkg/base.vibe")), needle = "import @vibe/core { array_empty }"))
+  assert_true(String::contains(mem_shared_text(tree = tree, path = String::concat(root, "/pkg/base_test.vibe")), needle = "import @vibe/core { array_empty }"))
+  assert_eq(mem_shared_text(tree = tree, path = String::concat(root, "/loose.vibe")), "export fn loose() -> Int { 3 }\n")
 }
 
 // The filesystem adapter is the same core over `Fs`: the same tree written to
@@ -449,11 +449,11 @@ test "the filesystem adapter collects the in-memory tree in the same order" {
   Fs::mkdir_p(String::concat(root, "/app"))
   for entry in diamond().files {
     let (p, text) = entry
-    Fs::write_file(String::concat(root, String::concat("/", p)), text)
+    Fs::write_file(String::concat(root, String::concat("/", p)), contents = text)
   }
   let on_disk: Array[String] = []
   for p in collected_paths(collect_all_sources_fs(String::concat(root, "/app/main.vibe"))) {
-    Array::push(on_disk, p[String::length(root) + 1: String::length(p)])
+    Array::push(on_disk, value = p[String::length(root) + 1: String::length(p)])
   }
-  assert_eq(on_disk, collected_paths(mem_collect(diamond(), [], "app/main.vibe")))
+  assert_eq(on_disk, collected_paths(mem_collect(tree = diamond(), facades = [], entry = "app/main.vibe")))
 }

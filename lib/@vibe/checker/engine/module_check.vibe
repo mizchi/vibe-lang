@@ -729,13 +729,13 @@ fn engine_locate_each_line(path: String, source: String, msg: String) -> Array[S
 /// search is then run again on the file as written.
 fn engine_locate_physical(source: String, msg: String) -> String {
   let located = engine_locate_type_error(source = source, msg = msg)
-  if loader_prepended_prefix_bytes(source = source) == 0 {
+  if loader_prepended_prefix_bytes(source) == 0 {
     located
   } else {
     let physical = loader_physical_located(source = source, located = located)
     let dropped = String::starts_with(located, prefix = "line ") && !String::starts_with(physical, prefix = "line ")
     if dropped && !String::contains(msg, needle = " [@off=") && !String::contains(msg, needle = " [@assign-target") {
-      engine_locate_type_error(source = loader_physical_text(source = source), msg = msg)
+      engine_locate_type_error(source = loader_physical_text(source), msg = msg)
     } else {
       physical
     }
@@ -1442,11 +1442,11 @@ fn engine_checked_module_typing_artifact_bytes(checked: CheckedProgram, job: Che
   // CheckJob.source; there is no filesystem reread or caller identity input.
   let source_identity = compact_source_fingerprint_memo(path = job.path, source = job.source)
   let implementation_identity = engine_incremental_implementation_identity(job.source)
-  match checked_exported_interface_artifact_from_checked_program(checked = checked) {
+  match checked_exported_interface_artifact_from_checked_program(checked) {
     Some(exported_interface) => match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked = checked, module_locator = job.path, observed_source_identity = source_identity, recorded_source_identity = source_identity, observed_implementation_identity = implementation_identity, recorded_implementation_identity = implementation_identity, dependency_interface_assumptions = engine_checked_module_dependency_interface_assumptions(job.dep_envs), recorded_implementation_closure = [
       (job.path, "provisional_token_stream_v1", implementation_identity)
     ], exported_interface = exported_interface) {
-      Some(artifact) => Some(encode_checked_module_typing_artifact_v2(artifact = artifact)),
+      Some(artifact) => Some(encode_checked_module_typing_artifact_v2(artifact)),
       None => None
     },
     None => None
@@ -1534,7 +1534,7 @@ fn engine_check_module_diagnostics(job: CheckJob, observe_typing_artifact: Bool,
     None => engine_dependency_interface_set_new()
   }
   engine_dependency_interface_set_supply_missing(interfaces = published, envs = job.dep_envs)
-  let (import_env, reexport_declarations) = engine_build_import_envs_from_interfaces(stmts = stmts, base_dir = dir_of_path(file_path = job.path), interfaces = published, dependency_paths = for row in job.dep_envs {
+  let (import_env, reexport_declarations) = engine_build_import_envs_from_interfaces(stmts = stmts, base_dir = dir_of_path(job.path), interfaces = published, dependency_paths = for row in job.dep_envs {
     row.0
   }, unresolved = unresolved_imports)
   // The CANONICAL fingerprint, computed the same way the serial walk
@@ -1567,7 +1567,7 @@ fn engine_check_module_diagnostics(job: CheckJob, observe_typing_artifact: Bool,
       // both former arms are preserved), plus this module's Double
       // call-result offsets for the FS lanes' float_call_offsets channel.
       // #3360: this module publishes what its exported functions keep.
-      retention_summaries_for_path(path = job.path)
+      retention_summaries_for_path(job.path)
       declaring_module_path_set(path = job.path, ships_owned_heads = job.ships_owned_heads)
       // A check that throws must not leave this module named as the one
       // being checked: the cells are process-global.
@@ -1623,7 +1623,7 @@ fn engine_check_module_diagnostics(job: CheckJob, observe_typing_artifact: Bool,
         None
       }
       match program_transport {
-        Some(output) => Array::push(output, value = encode_checked_program(checked = checked_program)),
+        Some(output) => Array::push(output, value = encode_checked_program(checked_program)),
         None => ()
       }
       match artifact_output {
@@ -1823,7 +1823,7 @@ export fn engine_run_module_job_dir(_ dir: String) -> Unit with Env + Exception 
     deps: deps,
     dep_fps: job_dep_fps,
     dep_envs: dep_envs,
-    ships_owned_heads: is_owned_head_source_location_env_fs(path = path)
+    ships_owned_heads: is_owned_head_source_location_env_fs(path)
   }
   // Parse errors are still an `Error` out of check_module (see the Phase 1
   // note above). At the transport boundary they have to become a value

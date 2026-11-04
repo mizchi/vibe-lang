@@ -48,11 +48,11 @@ test "compact string fingerprint keeps its byte-level cache identity" {
 test "TDRE10 cache paths use isolated alias and witness namespaces" {
   let alias_path = persistent_typing_dependency_env_reuse_sidecar_path("logical-input")
   let witness_path = persistent_typing_dependency_env_reuse_eligibility_path("conservative-target")
-  assert(String::index_of(alias_path, "selfhost_typing_dependency_env_reuse_v10") >= 0)
-  assert(String::index_of(witness_path, "selfhost_typing_dependency_env_reuse_eligibility_v10") >= 0)
+  assert(String::index_of(alias_path, needle = "selfhost_typing_dependency_env_reuse_v10") >= 0)
+  assert(String::index_of(witness_path, needle = "selfhost_typing_dependency_env_reuse_eligibility_v10") >= 0)
   assert(alias_path != witness_path)
-  assert(String::index_of(alias_path, "reuse_v4") < 0)
-  assert(String::index_of(witness_path, "eligibility_v4") < 0)
+  assert(String::index_of(alias_path, needle = "reuse_v4") < 0)
+  assert(String::index_of(witness_path, needle = "eligibility_v4") < 0)
 }
 
 test "source-group compact fingerprint preserves paths and equals full fingerprint" {
@@ -84,8 +84,8 @@ test "precomputed source-group fingerprint preserves file artifact cache identit
     ("entry_last", [("/tmp/main.vibe", "let main = helper + 1")])
   ]
   let group_fingerprint = build_source_groups_fingerprint(groups)
-  let legacy = build_file_compile_wasi_artifact_fingerprint_for_entry_path(groups, "/tmp/main.vibe", "main", "no-dce")
-  let propagated = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(group_fingerprint, "/tmp/main.vibe", "main", "no-dce")
+  let legacy = build_file_compile_wasi_artifact_fingerprint_for_entry_path(source_groups = groups, entry_path = "/tmp/main.vibe", entry_name = "main", mode = "no-dce")
+  let propagated = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint = group_fingerprint, entry_path = "/tmp/main.vibe", entry_name = "main", mode = "no-dce")
   assert(eq(legacy, propagated))
 }
 
@@ -99,17 +99,17 @@ test "compilation input fingerprint distinguishes paths, order, and entry" {
     ("/tmp/b.vibe", "let helper = 2"),
     ("/tmp/a.vibe", "let main = 1")
   ]
-  assert(compilation_input_fingerprint(left, "/tmp/a.vibe") != compilation_input_fingerprint(renamed, "/tmp/c.vibe"))
-  assert(compilation_input_fingerprint(left, "/tmp/a.vibe") != compilation_input_fingerprint(reordered, "/tmp/a.vibe"))
-  assert(compilation_input_fingerprint(left, "/tmp/a.vibe") != compilation_input_fingerprint(left, "/tmp/b.vibe"))
+  assert(compilation_input_fingerprint(sources = left, entry_path = "/tmp/a.vibe") != compilation_input_fingerprint(sources = renamed, entry_path = "/tmp/c.vibe"))
+  assert(compilation_input_fingerprint(sources = left, entry_path = "/tmp/a.vibe") != compilation_input_fingerprint(sources = reordered, entry_path = "/tmp/a.vibe"))
+  assert(compilation_input_fingerprint(sources = left, entry_path = "/tmp/a.vibe") != compilation_input_fingerprint(sources = left, entry_path = "/tmp/b.vibe"))
 }
 
-fn string_to_bytes(s: String) -> Bytes {
+fn string_to_bytes(_ s: String) -> Bytes {
   let out = Bytes::new()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Bytes::push(out, String::char_code_at(s, i))
+    Bytes::push(out, value = String::char_code_at(s, at = i))
     i = i + 1
   }
   out
@@ -119,10 +119,10 @@ fn lookup_group_source(groups: Array[(String, Array[(String, String)])], target_
   let mut gi = 0
   let mut found = None
   while gi < Array::length(groups) {
-    let (_, sources) = Array::get(groups, gi)
+    let (_, sources) = Array::get(groups, at = gi)
     let mut si = 0
     while si < Array::length(sources) {
-      let (path, source) = Array::get(sources, si)
+      let (path, source) = Array::get(sources, at = si)
       if path == target_path {
         found = Some(source)
         si = Array::length(sources)
@@ -136,7 +136,7 @@ fn lookup_group_source(groups: Array[(String, Array[(String, String)])], target_
   found
 }
 
-fn remove_file_if_exists(path: String) -> Unit with Fs {
+fn remove_file_if_exists(_ path: String) -> Unit with Fs {
   if Fs::exists(path) {
     Fs::remove(path)
   } else {
@@ -148,7 +148,7 @@ fn remove_file_if_exists(path: String) -> Unit with Fs {
 /// (typing_module_fingerprint, the one spelling of the formula) under the
 /// default typing-semantics seed.
 fn build_type_db_fingerprint(source: String, dep_fps: Array[(String, String)]) -> String {
-  typing_module_fingerprint(compact_string_fingerprint(source), dep_fps, "unchecked")
+  typing_module_fingerprint(source_fingerprint = compact_string_fingerprint(source), dep_fps = dep_fps, typing_semantics_seed = "unchecked")
 }
 
 //# Misc
@@ -157,28 +157,28 @@ test "compile_file_fs_module_cached: identical text at different entry paths doe
   let main_path1 = "/tmp/vibe_compiler_persistent_module_cache_a.vibe"
   let main_path2 = "/tmp/vibe_compiler_persistent_module_cache_b.vibe"
   let source = "let run: () -> Int = () -> { 1 + 2 }"
-  Fs::write_bytes(main_path1, string_to_bytes(source))
-  Fs::write_bytes(main_path2, string_to_bytes(source))
+  Fs::write_bytes(main_path1, bytes = string_to_bytes(source))
+  Fs::write_bytes(main_path2, bytes = string_to_bytes(source))
   let source_groups1 = collect_source_groups_fs(main_path1)
   let source_groups2 = collect_source_groups_fs(main_path2)
-  remove_file_if_exists(persistent_artifact_cache_path("file-compile-module", "", build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups1, main_path1)))
-  remove_file_if_exists(persistent_artifact_cache_path("file-compile-module", "", build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups2, main_path2)))
-  let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
+  remove_file_if_exists(persistent_artifact_cache_path(kind = "file-compile-module", entry_name = "", fingerprint = build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups = source_groups1, entry_path = main_path1)))
+  remove_file_if_exists(persistent_artifact_cache_path(kind = "file-compile-module", entry_name = "", fingerprint = build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups = source_groups2, entry_path = main_path2)))
+  let (_, db1) = compile_file_fs_module_cached(db = db_new(), entry_path = main_path1)
   assert(db_codegen_count(db1) > 0)
-  let (_, db2) = compile_file_fs_module_cached(db_new(), main_path2)
+  let (_, db2) = compile_file_fs_module_cached(db = db_new(), entry_path = main_path2)
   assert(db_codegen_count(db2) > 0)
 }
 
 test "compile_file_fs_mode_cached: fresh db reuses persistent artifact cache" {
   let main_path = "/tmp/vibe_compiler_persistent_mode_cache_main.vibe"
   let source = "let unused: () -> Int = () -> { 0 }\nlet run: () -> Int = () -> { 40 + 2 }"
-  Fs::write_bytes(main_path, string_to_bytes(source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(source))
   let source_groups = collect_source_groups_fs(main_path)
-  let cache_path = persistent_artifact_cache_path("file-compile-wasi", "run", build_file_compile_wasi_artifact_fingerprint_for_entry_path(source_groups, main_path, "run", "no-dce"))
+  let cache_path = persistent_artifact_cache_path(kind = "file-compile-wasi", entry_name = "run", fingerprint = build_file_compile_wasi_artifact_fingerprint_for_entry_path(source_groups = source_groups, entry_path = main_path, entry_name = "run", mode = "no-dce"))
   remove_file_if_exists(cache_path)
-  let (_, db1) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
+  let (_, db1) = compile_file_fs_mode_cached(db = db_new(), entry_path = main_path, entry_name = "run", mode = "no-dce")
   assert(db_codegen_count(db1) > 0)
-  let (_, db2) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
+  let (_, db2) = compile_file_fs_mode_cached(db = db_new(), entry_path = main_path, entry_name = "run", mode = "no-dce")
   assert(eq(db_codegen_count(db2), 0))
 }
 
@@ -188,15 +188,15 @@ test "collect_source_groups_fs: persistent cache invalidates when dependency sou
   let source1 = "export let add: () -> Int = () -> { 1 }"
   let source2 = "export let add: () -> Int = () -> { 2 }"
   let main_source = "import ./vibe_compiler_persistent_loader_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
-  Fs::write_bytes(helper_path, string_to_bytes(source1))
-  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  Fs::write_bytes(helper_path, bytes = string_to_bytes(source1))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
   remove_file_if_exists(persistent_source_list_cache_path(main_path))
   remove_file_if_exists(persistent_source_group_cache_path(main_path))
   collect_source_groups_fs(main_path)
   assert(Fs::exists(persistent_source_group_cache_path(main_path)))
-  Fs::write_bytes(helper_path, string_to_bytes(source2))
+  Fs::write_bytes(helper_path, bytes = string_to_bytes(source2))
   let groups2 = collect_source_groups_fs(main_path)
-  match lookup_group_source(groups2, helper_path) {
+  match lookup_group_source(groups = groups2, target_path = helper_path) {
     Some(source) => assert(source == source2),
     None => assert(false)
   }
@@ -208,8 +208,8 @@ test "load_persistent_source_group_fingerprint_if_valid: reuses cached source fi
   let helper_source1 = "export let add: () -> Int = () -> { 1 }"
   let helper_source2 = "export let add: () -> Int = () -> { 2 }"
   let main_source = "import ./vibe_compiler_persistent_loader_fp_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
-  Fs::write_bytes(helper_path, string_to_bytes(helper_source1))
-  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  Fs::write_bytes(helper_path, bytes = string_to_bytes(helper_source1))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
   remove_file_if_exists(persistent_source_group_cache_path(main_path))
   let groups = collect_source_groups_fs(main_path)
   let expected = build_source_groups_fingerprint(groups)
@@ -217,7 +217,7 @@ test "load_persistent_source_group_fingerprint_if_valid: reuses cached source fi
     Some(fingerprint) => assert(fingerprint == expected),
     None => assert(false)
   }
-  Fs::write_bytes(helper_path, string_to_bytes(helper_source2))
+  Fs::write_bytes(helper_path, bytes = string_to_bytes(helper_source2))
   match load_persistent_source_group_fingerprint_if_valid(main_path) {
     Some(_) => assert(false),
     None => assert(true)
@@ -229,32 +229,32 @@ test "compile_file_fs_mode_cached: fresh db reuses persistent type env cache whe
   let main_path = "/tmp/vibe_compiler_persistent_type_env_main.vibe"
   let helper_source = "export let add: () -> Int = () -> { 1 }"
   let main_source = "import ./vibe_compiler_persistent_type_env_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
-  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
-  Fs::write_bytes(main_path, string_to_bytes(main_source))
-  let helper_fp = build_type_db_fingerprint(helper_source, array_empty())
-  let main_fp = build_type_db_fingerprint(main_source, [
+  Fs::write_bytes(helper_path, bytes = string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
+  let helper_fp = build_type_db_fingerprint(source = helper_source, dep_fps = array_empty())
+  let main_fp = build_type_db_fingerprint(source = main_source, dep_fps = [
     (helper_path, helper_fp)
   ])
-  let helper_dep_cache = persistent_dep_list_cache_path(helper_path, compact_string_fingerprint(helper_source))
-  let main_dep_cache = persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source))
+  let helper_dep_cache = persistent_dep_list_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source))
+  let main_dep_cache = persistent_dep_list_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source))
   let source_groups = collect_source_groups_fs(main_path)
-  let artifact_cache_path = persistent_artifact_cache_path("file-compile-wasi", "run", build_file_compile_wasi_artifact_fingerprint_for_entry_path(source_groups, main_path, "run", "no-dce"))
+  let artifact_cache_path = persistent_artifact_cache_path(kind = "file-compile-wasi", entry_name = "run", fingerprint = build_file_compile_wasi_artifact_fingerprint_for_entry_path(source_groups = source_groups, entry_path = main_path, entry_name = "run", mode = "no-dce"))
   remove_file_if_exists(artifact_cache_path)
   remove_file_if_exists(persistent_source_list_cache_path(main_path))
   remove_file_if_exists(persistent_source_group_cache_path(main_path))
   remove_file_if_exists(helper_dep_cache)
   remove_file_if_exists(main_dep_cache)
-  remove_file_if_exists(persistent_module_header_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
   remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
-  let (_, db1) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
+  let (_, db1) = compile_file_fs_mode_cached(db = db_new(), entry_path = main_path, entry_name = "run", mode = "no-dce")
   let parse1 = db_parse_count(db1)
   assert(eq(parse1, 2))
   remove_file_if_exists(artifact_cache_path)
-  let (_, db2) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
+  let (_, db2) = compile_file_fs_mode_cached(db = db_new(), entry_path = main_path, entry_name = "run", mode = "no-dce")
   let parse2 = db_parse_count(db2)
   assert(eq(parse2, 0))
 }
@@ -264,26 +264,26 @@ test "db_typecheck_fs: fresh db reuses persistent type env cache" {
   let main_path = "/tmp/vibe_compiler_persistent_type_env_direct_main.vibe"
   let helper_source = "export let add: () -> Int = () -> { 1 }"
   let main_source = "import ./vibe_compiler_persistent_type_env_direct_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
-  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
-  Fs::write_bytes(main_path, string_to_bytes(main_source))
-  let helper_fp = build_type_db_fingerprint(helper_source, array_empty())
-  let main_fp = build_type_db_fingerprint(main_source, [
+  Fs::write_bytes(helper_path, bytes = string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
+  let helper_fp = build_type_db_fingerprint(source = helper_source, dep_fps = array_empty())
+  let main_fp = build_type_db_fingerprint(source = main_source, dep_fps = [
     (helper_path, helper_fp)
   ])
-  let helper_dep_cache = persistent_dep_list_cache_path(helper_path, compact_string_fingerprint(helper_source))
-  let main_dep_cache = persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source))
+  let helper_dep_cache = persistent_dep_list_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source))
+  let main_dep_cache = persistent_dep_list_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source))
   remove_file_if_exists(helper_dep_cache)
   remove_file_if_exists(main_dep_cache)
-  remove_file_if_exists(persistent_module_header_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
   remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
-  let db1 = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let db1 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let parse1 = db_parse_count(db1)
   assert(eq(parse1, 4))
-  let db2 = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let db2 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   let parse2 = db_parse_count(db2)
   assert(eq(parse2, 0))
 }
@@ -295,31 +295,31 @@ test "db_typecheck_fs: fresh db reuses persistent dep cache for multi-dep module
   let helper1_source = "export let add1: () -> Int = () -> { 1 }"
   let helper2_source = "export let add2: () -> Int = () -> { 2 }"
   let main_source = String::concat("import ./vibe_compiler_persistent_multi_dep_helper1.vibe { add1 }\n", String::concat("import ./vibe_compiler_persistent_multi_dep_helper2.vibe { add2 }\n", "let run: () -> Int = () -> { add1() + add2() }"))
-  Fs::write_bytes(helper1_path, string_to_bytes(helper1_source))
-  Fs::write_bytes(helper2_path, string_to_bytes(helper2_source))
-  Fs::write_bytes(main_path, string_to_bytes(main_source))
-  let helper1_fp = build_type_db_fingerprint(helper1_source, array_empty())
-  let helper2_fp = build_type_db_fingerprint(helper2_source, array_empty())
-  let main_fp = build_type_db_fingerprint(main_source, [
+  Fs::write_bytes(helper1_path, bytes = string_to_bytes(helper1_source))
+  Fs::write_bytes(helper2_path, bytes = string_to_bytes(helper2_source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
+  let helper1_fp = build_type_db_fingerprint(source = helper1_source, dep_fps = array_empty())
+  let helper2_fp = build_type_db_fingerprint(source = helper2_source, dep_fps = array_empty())
+  let main_fp = build_type_db_fingerprint(source = main_source, dep_fps = [
     (helper1_path, helper1_fp),
     (helper2_path, helper2_fp)
   ])
-  remove_file_if_exists(persistent_dep_list_cache_path(helper1_path, compact_string_fingerprint(helper1_source)))
-  remove_file_if_exists(persistent_dep_list_cache_path(helper2_path, compact_string_fingerprint(helper2_source)))
-  remove_file_if_exists(persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(helper1_path, compact_string_fingerprint(helper1_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(helper2_path, compact_string_fingerprint(helper2_source)))
-  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper1_path, compact_string_fingerprint(helper1_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper2_path, compact_string_fingerprint(helper2_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = helper1_path, source_fingerprint = compact_string_fingerprint(helper1_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = helper2_path, source_fingerprint = compact_string_fingerprint(helper2_source)))
+  remove_file_if_exists(persistent_dep_list_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = helper1_path, source_fingerprint = compact_string_fingerprint(helper1_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = helper2_path, source_fingerprint = compact_string_fingerprint(helper2_source)))
+  remove_file_if_exists(persistent_module_header_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = helper1_path, source_fingerprint = compact_string_fingerprint(helper1_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = helper2_path, source_fingerprint = compact_string_fingerprint(helper2_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
   remove_file_if_exists(persistent_type_env_cache_path(helper1_fp))
   remove_file_if_exists(persistent_type_env_cache_path(helper2_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
-  let db1 = db_typecheck_fs(db_set_source(db_set_source(db_set_source(db_new(), helper1_path, helper1_source), helper2_path, helper2_source), main_path, main_source), main_path)
+  let db1 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = helper1_path, source = helper1_source), path = helper2_path, source = helper2_source), path = main_path, source = main_source), path = main_path)
   let parse1 = db_parse_count(db1)
   assert(eq(parse1, 6))
-  let db2 = db_typecheck_fs(db_set_source(db_set_source(db_set_source(db_new(), helper1_path, helper1_source), helper2_path, helper2_source), main_path, main_source), main_path)
+  let db2 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_set_source(db = db_new(), path = helper1_path, source = helper1_source), path = helper2_path, source = helper2_source), path = main_path, source = main_source), path = main_path)
   let parse2 = db_parse_count(db2)
   assert(eq(parse2, 0))
 }
@@ -329,31 +329,31 @@ test "db_typecheck_fs: module header cache rebuilds missing persistent dep cache
   let main_path = "/tmp/vibe_compiler_persistent_header_main.vibe"
   let helper_source = "export let add: () -> Int = () -> { 1 }"
   let main_source = "import ./vibe_compiler_persistent_header_helper.vibe { add }\nlet run: () -> Int = () -> { add() }"
-  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
-  Fs::write_bytes(main_path, string_to_bytes(main_source))
-  let helper_fp = build_type_db_fingerprint(helper_source, array_empty())
-  let main_fp = build_type_db_fingerprint(main_source, [
+  Fs::write_bytes(helper_path, bytes = string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, bytes = string_to_bytes(main_source))
+  let helper_fp = build_type_db_fingerprint(source = helper_source, dep_fps = array_empty())
+  let main_fp = build_type_db_fingerprint(source = main_source, dep_fps = [
     (helper_path, helper_fp)
   ])
-  let helper_dep_cache = persistent_dep_list_cache_path(helper_path, compact_string_fingerprint(helper_source))
-  let main_dep_cache = persistent_dep_list_cache_path(main_path, compact_string_fingerprint(main_source))
-  let helper_header_cache = persistent_module_header_cache_path(helper_path, compact_string_fingerprint(helper_source))
-  let main_header_cache = persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source))
+  let helper_dep_cache = persistent_dep_list_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source))
+  let main_dep_cache = persistent_dep_list_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source))
+  let helper_header_cache = persistent_module_header_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source))
+  let main_header_cache = persistent_module_header_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source))
   remove_file_if_exists(helper_dep_cache)
   remove_file_if_exists(main_dep_cache)
   remove_file_if_exists(helper_header_cache)
   remove_file_if_exists(main_header_cache)
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(helper_path, compact_string_fingerprint(helper_source)))
-  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(main_path, compact_string_fingerprint(main_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = helper_path, source_fingerprint = compact_string_fingerprint(helper_source)))
+  remove_file_if_exists(persistent_leaf_fingerprint_cache_path(path = main_path, source_fingerprint = compact_string_fingerprint(main_source)))
   remove_file_if_exists(persistent_type_env_cache_path(helper_fp))
   remove_file_if_exists(persistent_type_env_cache_path(main_fp))
-  let db1 = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let db1 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   assert(eq(db_parse_count(db1), 4))
   assert(Fs::exists(helper_header_cache))
   assert(Fs::exists(main_header_cache))
   remove_file_if_exists(helper_dep_cache)
   remove_file_if_exists(main_dep_cache)
-  let db2 = db_typecheck_fs(db_set_source(db_set_source(db_new(), helper_path, helper_source), main_path, main_source), main_path)
+  let db2 = db_typecheck_fs(db = db_set_source(db = db_set_source(db = db_new(), path = helper_path, source = helper_source), path = main_path, source = main_source), path = main_path)
   assert(eq(db_parse_count(db2), 0))
   assert(Fs::exists(helper_dep_cache))
   assert(Fs::exists(main_dep_cache))

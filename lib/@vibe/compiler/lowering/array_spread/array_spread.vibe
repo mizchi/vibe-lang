@@ -17,13 +17,13 @@ import @vibe/core {
 /// never lowered it, so codegen reached ESpread and threw "unsupported expression
 /// in codegen". Ported from the legacy desugar.vibe (spread-only; no other legacy
 /// transforms). `das_arms` is mutually recursive with `das_expr`.
-fn das_expr(expr: Expr) -> Expr {
+fn das_expr(_ expr: Expr) -> Expr {
   match expr {
     EArray(elems) => {
       let mut has_spread = false
       let mut si0 = 0
       while si0 < Array::length(elems) {
-        match Array::get(elems, si0) {
+        match Array::get(elems, at = si0) {
           ESpread(_) => {
             has_spread = true
           },
@@ -36,36 +36,36 @@ fn das_expr(expr: Expr) -> Expr {
         let mut buf = spread_empty_expr_array()
         let mut si = 0
         while si < Array::length(elems) {
-          let elem = Array::get(elems, si)
+          let elem = Array::get(elems, at = si)
           match elem {
             ESpread(inner) => {
               if Array::length(buf) > 0 {
-                Array::push(segments, EArray(for e in buf {
+                Array::push(segments, value = EArray(for e in buf {
                   das_expr(e)
                 }))
                 buf = spread_empty_expr_array()
               } else {
                 ()
               }
-              Array::push(segments, das_expr(inner))
+              Array::push(segments, value = das_expr(inner))
             },
-            _ => Array::push(buf, elem)
+            _ => Array::push(buf, value = elem)
           }
           si = si + 1
         }
         if Array::length(buf) > 0 {
-          Array::push(segments, EArray(for e in buf {
+          Array::push(segments, value = EArray(for e in buf {
             das_expr(e)
           }))
         } else {
           ()
         }
-        let mut acc = Array::get(segments, 0)
+        let mut acc = Array::get(segments, at = 0)
         let mut fi = 1
         while fi < Array::length(segments) {
           acc = ECall(builtin_ref("Array::concat"), [
             acc,
-            Array::get(segments, fi)
+            Array::get(segments, at = fi)
           ], 0 - 1, [])
           fi = fi + 1
         }
@@ -83,8 +83,8 @@ fn das_expr(expr: Expr) -> Expr {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(fs) {
-        let (k, v) = Array::get(fs, i)
-        Array::push(out, (k, das_expr(v)))
+        let (k, v) = Array::get(fs, at = i)
+        Array::push(out, value = (k, das_expr(v)))
         i = i + 1
       }
       ERecord(rn, out, targs)
@@ -93,8 +93,8 @@ fn das_expr(expr: Expr) -> Expr {
       let out = array_empty()
       let mut i = 0
       while i < Array::length(fs) {
-        let (k, v) = Array::get(fs, i)
-        Array::push(out, (k, das_expr(v)))
+        let (k, v) = Array::get(fs, at = i)
+        Array::push(out, value = (k, das_expr(v)))
         i = i + 1
       }
       EMap(out)
@@ -135,18 +135,18 @@ fn das_expr(expr: Expr) -> Expr {
   }
 }
 
-fn das_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+fn das_arms(_ arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(arms) {
-    let (p, b) = Array::get(arms, i)
-    Array::push(out, (p, das_expr(b)))
+    let (p, b) = Array::get(arms, at = i)
+    Array::push(out, value = (p, das_expr(b)))
     i = i + 1
   }
   out
 }
 
-fn das_stmt(stmt: Stmt) -> Stmt {
+fn das_stmt(_ stmt: Stmt) -> Stmt {
   match stmt {
     SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, das_expr(body)),
     SLetMut(name, ty, body) => SLetMut(name, ty, das_expr(body)),
@@ -163,29 +163,29 @@ export fn lower_array_spreads(stmts: Array[Stmt], end: Int) -> Unit {
   assert_true(end >= 0 && end <= Array::length(stmts))
   let mut i = 0
   while i < end {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     // Spreads are rare; a statement without one is left as it is rather
     // than rebuilt node by node into an equal tree (~9 MB of the
     // self-compile heap). `expr_any_node` reaches every node `das_expr` does.
     if das_stmt_has_spread(stmt) {
-      Array::set(stmts, i, das_stmt(stmt))
+      Array::set(stmts, at = i, value = das_stmt(stmt))
     }
     i = i + 1
   }
 }
 
-fn das_stmt_has_spread(stmt: Stmt) -> Bool {
+fn das_stmt_has_spread(_ stmt: Stmt) -> Bool {
   let is_spread = (e: Expr) -> match e {
     ESpread(_) => true,
     _ => false
   }
   match stmt {
-    SLet(_, _, _, _, body) => expr_any_node(body, is_spread),
-    SLetMut(_, _, body) => expr_any_node(body, is_spread),
-    STest(_, body) => expr_any_node(body, is_spread),
-    SBench(_, body) => expr_any_node(body, is_spread),
-    SExpr(e) => expr_any_node(e, is_spread),
-    SLetPat(_, e) => expr_any_node(e, is_spread),
+    SLet(_, _, _, _, body) => expr_any_node(expr = body, pred = is_spread),
+    SLetMut(_, _, body) => expr_any_node(expr = body, pred = is_spread),
+    STest(_, body) => expr_any_node(expr = body, pred = is_spread),
+    SBench(_, body) => expr_any_node(expr = body, pred = is_spread),
+    SExpr(e) => expr_any_node(expr = e, pred = is_spread),
+    SLetPat(_, e) => expr_any_node(expr = e, pred = is_spread),
     _ => false
   }
 }

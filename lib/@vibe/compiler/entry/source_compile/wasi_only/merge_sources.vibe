@@ -81,7 +81,7 @@ fn string_array_contains_local(items: Array[String], target: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(items) && !found {
-    if Array::get(items, i) == target {
+    if Array::get(items, at = i) == target {
       found = true
     } else {
       i = i + 1
@@ -101,24 +101,24 @@ fn string_array_contains_local(items: Array[String], target: String) -> Bool {
 /// provider's code, so it takes a range of its own past every file, where the
 /// whole-program check files its `Float` rows apart from the original's.
 fn append_fs_import_local_def(merged: Array[Stmt], current_path: String, raw_path: String, original: String, local: String, plan: ExportRenamePlan, clone_base: Array[Int]) -> Bool with Env + Exception + Fs {
-  let resolved = resolve_import_path_probe_fs(dir_of_path(current_path), raw_path, current_path)
+  let resolved = resolve_import_path_probe_fs(base_dir = dir_of_path(current_path), raw_path = raw_path, self_path = current_path)
   // Builtin read + ingest, same as collect_parsed_sources_recursive
   // (flatten-lane wiring constraint / #741).
-  let source = ingest_source_text_fs(resolved, Fs::read_file(resolved))
-  let base = Array::get(clone_base, 0)
+  let source = ingest_source_text_fs(path = resolved, raw = Fs::read_file(resolved))
+  let base = Array::get(clone_base, at = 0)
   let parsed = if base < 0 {
     parse_program(lex(source))
   } else {
-    Array::set(clone_base, 0, base + String::length(source) + 1)
-    shift_stmts_offsets(parse_program_located_shared(resolved, source), base)
+    Array::set(clone_base, at = 0, value = base + String::length(source) + 1)
+    shift_stmts_offsets(stmts = parse_program_located_shared(path = resolved, source = source), delta = base)
   }
-  let source_stmts = namespace_private_value_stmts_after_renames(resolved, parsed, export_plan_renames_for(plan, resolved))
+  let source_stmts = namespace_private_value_stmts_after_renames(path = resolved, stmts = parsed, export_renames = export_plan_renames_for(plan = plan, path = resolved))
   let mut i = 0
   let mut done = false
   while i < Array::length(source_stmts) && !done {
-    match rewrite_imported_value_stmt_to_local(Array::get(source_stmts, i), original, local) {
+    match rewrite_imported_value_stmt_to_local(stmt = Array::get(source_stmts, at = i), original = original, local = local) {
       Some(local_stmt) => {
-        Array::push(merged, local_stmt)
+        Array::push(merged, value = local_stmt)
         done = true
       },
       None => ()
@@ -133,10 +133,10 @@ fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: Stri
   let emitted = array_empty()
   let mut i = 0
   while i < Array::length(refs) {
-    let (raw_path, original, local) = Array::get(refs, i)
-    if !string_array_contains_local(emitted, local) && !string_array_contains_local(excluded_locals, local) {
-      if append_fs_import_local_def(merged, current_path, raw_path, original, local, plan, clone_base) {
-        Array::push(emitted, local)
+    let (raw_path, original, local) = Array::get(refs, at = i)
+    if !string_array_contains_local(items = emitted, target = local) && !string_array_contains_local(items = excluded_locals, target = local) {
+      if append_fs_import_local_def(merged = merged, current_path = current_path, raw_path = raw_path, original = original, local = local, plan = plan, clone_base = clone_base) {
+        Array::push(emitted, value = local)
       } else {
         ()
       }
@@ -156,18 +156,18 @@ fn append_fs_selected_import_defs(merged: Array[Stmt], current_path: String, stm
   // than one import uses the selected local spelling.
   let mut i = Array::length(stmts) - 1
   while i >= 0 {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SImport(raw_path, items) => {
         let mut j = Array::length(items) - 1
         while j >= 0 {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let local = match item.alias {
             Some(alias) => alias,
             None => item.name
           }
-          if string_array_contains_local(selected_locals, local) && !string_array_contains_local(emitted, local) {
-            if append_fs_import_local_def(merged, current_path, raw_path, item.name, local, plan, clone_base) {
-              Array::push(emitted, local)
+          if string_array_contains_local(items = selected_locals, target = local) && !string_array_contains_local(items = emitted, target = local) {
+            if append_fs_import_local_def(merged = merged, current_path = current_path, raw_path = raw_path, original = item.name, local = local, plan = plan, clone_base = clone_base) {
+              Array::push(emitted, value = local)
             } else {
               throw(String::concat("cannot preserve imported value through re-export alias collision: ", local))
             }
@@ -187,9 +187,9 @@ fn import_rename_locals_targeting(renames: Array[(String, String)], names: Array
   let out = array_empty()
   let mut i = 0
   while i < Array::length(renames) {
-    let (local, target) = Array::get(renames, i)
-    if string_array_contains_local(names, target) && !string_array_contains_local(out, local) {
-      Array::push(out, local)
+    let (local, target) = Array::get(renames, at = i)
+    if string_array_contains_local(items = names, target = target) && !string_array_contains_local(items = out, target = local) {
+      Array::push(out, value = local)
     } else {
       ()
     }
@@ -202,9 +202,9 @@ fn import_rename_locals_named(renames: Array[(String, String)], names: Array[Str
   let out = array_empty()
   let mut i = 0
   while i < Array::length(renames) {
-    let (local, _) = Array::get(renames, i)
-    if string_array_contains_local(names, local) && !string_array_contains_local(out, local) {
-      Array::push(out, local)
+    let (local, _) = Array::get(renames, at = i)
+    if string_array_contains_local(items = names, target = local) && !string_array_contains_local(items = out, target = local) {
+      Array::push(out, value = local)
     } else {
       ()
     }
@@ -217,9 +217,9 @@ fn import_renames_without_locals(renames: Array[(String, String)], omitted_local
   let out = array_empty()
   let mut i = 0
   while i < Array::length(renames) {
-    let rename = Array::get(renames, i)
-    if !string_array_contains_local(omitted_locals, rename.0) {
-      Array::push(out, rename)
+    let rename = Array::get(renames, at = i)
+    if !string_array_contains_local(items = omitted_locals, target = rename.0) {
+      Array::push(out, value = rename)
     } else {
       ()
     }
@@ -231,9 +231,9 @@ fn import_renames_without_locals(renames: Array[(String, String)], omitted_local
 fn append_unique_strings(target: Array[String], source: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(source) {
-    let item = Array::get(source, i)
-    if !string_array_contains_local(target, item) {
-      Array::push(target, item)
+    let item = Array::get(source, at = i)
+    if !string_array_contains_local(items = target, target = item) {
+      Array::push(target, value = item)
     } else {
       ()
     }
@@ -252,11 +252,11 @@ fn append_unique_strings(target: Array[String], source: Array[String]) -> Unit {
 /// plan (ambiguous exported names + re-export facades) needs every file's
 /// export surface before any file can be rewritten.
 fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], file_sources: Array[String], file_stmts: Array[Array[Stmt]], visited: Array[Array[String]], located: Bool) -> Unit with Env + Exception + Fs {
-  if path_set_contains(visited, path) {
+  if path_set_contains(set = visited, path = path) {
     ()
   }
   else {
-    path_set_add(visited, path)
+    path_set_add(set = visited, path = path)
     // Builtin read, NOT `perform Fs::ReadFile`. The original reason (#737's
     // deep-continuation resume corruption) no longer reproduces — the
     // compiler gate keeps a recursive-perform + in-language-handler canary —
@@ -268,12 +268,12 @@ fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], fil
     // #741: ingestion (require-pin blanking + .vibei contract desugar) applies
     // in THIS lane too, so a contract package in the graph resolves to its
     // conformance-checked facade instead of a parse error on bodyless decls.
-    let source = ingest_source_text_fs(path, Fs::read_file(path))
+    let source = ingest_source_text_fs(path = path, raw = Fs::read_file(path))
     // #3625: a BUILD collects located (each file in its own offset space,
     // rebased by `collect_located_merged_stmts`); printing the merged program
     // as source text has no use for offsets.
     let stmts = if located {
-      parse_program_located_shared(path, source)
+      parse_program_located_shared(path = path, source = source)
     } else {
       parse_program(lex(source))
     }
@@ -284,46 +284,46 @@ fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], fil
     // namespace-renamed while each `SExport` keeps its written spelling. The
     // hook sits here, in the one collector both `compile_file_wasi_only` and
     // `compile_file_wasi_library` reach, rather than at either entry.
-    validate_source_file_exports(path, stmts)
+    validate_source_file_exports(path = path, stmts = stmts)
     // #3551 review: the same per-file door for a struct spelled like a shipped
     // region-first head. The merged program is checked with no module path,
     // so only here can the shipped module be told from a program's own.
-    validate_source_file_owned_heads(path, is_owned_head_source_location_env_fs(path), stmts)
+    validate_source_file_owned_heads(path = path, ships_owned_heads = is_owned_head_source_location_env_fs(path), stmts = stmts)
     let base_dir = dir_of_path(path)
     let mut i = 0
     while i < Array::length(stmts) {
-      match Array::get(stmts, i) {
+      match Array::get(stmts, at = i) {
         SImport(raw_path, _) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
           ()
         } else {
-          let resolved = resolve_import_path_probe_fs(base_dir, raw_path, path)
-          collect_parsed_sources_recursive(resolved, file_paths, file_sources, file_stmts, visited, located)
+          let resolved = resolve_import_path_probe_fs(base_dir = base_dir, raw_path = raw_path, self_path = path)
+          collect_parsed_sources_recursive(path = resolved, file_paths = file_paths, file_sources = file_sources, file_stmts = file_stmts, visited = visited, located = located)
         },
         SReExport(raw_path, _) => {
-          let resolved = resolve_import_path_probe_fs(base_dir, raw_path, path)
-          collect_parsed_sources_recursive(resolved, file_paths, file_sources, file_stmts, visited, located)
+          let resolved = resolve_import_path_probe_fs(base_dir = base_dir, raw_path = raw_path, self_path = path)
+          collect_parsed_sources_recursive(path = resolved, file_paths = file_paths, file_sources = file_sources, file_stmts = file_stmts, visited = visited, located = located)
         },
         _ => ()
       }
       i = i + 1
     }
-    Array::push(file_paths, path)
-    Array::push(file_sources, source)
-    Array::push(file_stmts, stmts)
+    Array::push(file_paths, value = path)
+    Array::push(file_sources, value = source)
+    Array::push(file_stmts, value = stmts)
   }
 }
 
 fn transformed_file_stmts(entry_path: String, path: String, stmts: Array[Stmt], plan: ExportRenamePlan) -> Array[Stmt] with Exception {
   let collision_renames = if path == entry_path {
-    trait_import_local_operation_renames_preserving_exports(stmts, path)
+    trait_import_local_operation_renames_preserving_exports(stmts = stmts, path = path)
   } else {
-    trait_import_local_operation_renames(stmts, path)
+    trait_import_local_operation_renames(stmts = stmts, path = path)
   }
-  let collision_renamed = apply_export_renames_stmts(stmts, collision_renames)
+  let collision_renamed = apply_export_renames_stmts(stmts = stmts, renames = collision_renames)
   if path == entry_path {
-    namespace_entry_import_shadows(path, collision_renamed)
+    namespace_entry_import_shadows(path = path, stmts = collision_renamed)
   } else {
-    namespace_private_value_stmts_after_renames(path, collision_renamed, export_plan_renames_for(plan, path))
+    namespace_private_value_stmts_after_renames(path = path, stmts = collision_renamed, export_renames = export_plan_renames_for(plan = plan, path = path))
   }
 }
 
@@ -337,22 +337,22 @@ fn reexport_source_boundary(stmts: Array[Stmt], retain_entry_originals: Bool) ->
   // a later alias still hides an earlier plain binding.
   let mut i = Array::length(stmts) - 1
   while i >= 0 {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SReExport(_, items) => {
         let mut j = Array::length(items) - 1
         while j >= 0 {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let local = match item.alias {
             Some(alias) => alias,
             None => item.name
           }
-          if string_array_contains_local(decided, local) {
+          if string_array_contains_local(items = decided, target = local) {
             ()
           } else {
-            Array::push(decided, local)
-            Array::push(locals, local)
+            Array::push(decided, value = local)
+            Array::push(locals, value = local)
             match item.alias {
-              Some(alias) => Array::push(surface_only, alias),
+              Some(alias) => Array::push(surface_only, value = alias),
               None => ()
             }
           }
@@ -361,10 +361,10 @@ fn reexport_source_boundary(stmts: Array[Stmt], retain_entry_originals: Bool) ->
           // import rewriting: a raw source reference is invalid, while a real
           // imported alias may legitimately rewrite to the same retained name.
           match item.alias {
-            Some(_) => if retain_entry_originals && !string_array_contains_local(decided, item.name) {
-              Array::push(decided, item.name)
-              Array::push(locals, item.name)
-              Array::push(retained_originals, item.name)
+            Some(_) => if retain_entry_originals && !string_array_contains_local(items = decided, target = item.name) {
+              Array::push(decided, value = item.name)
+              Array::push(locals, value = item.name)
+              Array::push(retained_originals, value = item.name)
             } else {
               ()
             },
@@ -387,10 +387,10 @@ fn reexport_source_boundary(stmts: Array[Stmt], retain_entry_originals: Bool) ->
 fn validate_retained_entry_source_names(stmts: Array[Stmt], retained_originals: Array[String]) -> Unit with Exception {
   if Array::length(retained_originals) > 0 {
     let source_unit = empty_stmt_array()
-    Array::push(source_unit, SReExportSourceBoundary(array_empty(), retained_originals))
+    Array::push(source_unit, value = SReExportSourceBoundary(array_empty(), retained_originals))
     let mut i = 0
     while i < Array::length(stmts) {
-      Array::push(source_unit, Array::get(stmts, i))
+      Array::push(source_unit, value = Array::get(stmts, at = i))
       i = i + 1
     }
     validate_serializable_reexport_references(source_unit)
@@ -400,58 +400,58 @@ fn validate_retained_entry_source_names(stmts: Array[Stmt], retained_originals: 
 }
 
 fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], merged: Array[Stmt], clone_base: Array[Int]) -> ExportRenamePlan with Env + Exception + Fs {
-  let plan = build_export_rename_plan(file_paths, file_stmts, entry_path)
+  let plan = build_export_rename_plan(paths = file_paths, stmts_list = file_stmts, entry_path = entry_path)
   let units = []
   let mut fi = 0
   while fi < Array::length(file_paths) {
-    let path = Array::get(file_paths, fi)
-    let stmts = Array::get(file_stmts, fi)
+    let path = Array::get(file_paths, at = fi)
+    let stmts = Array::get(file_stmts, at = fi)
     let unit_start = Array::length(merged)
-    let namespaced_stmts = transformed_file_stmts(entry_path, path, stmts, plan)
+    let namespaced_stmts = transformed_file_stmts(entry_path = entry_path, path = path, stmts = stmts, plan = plan)
     let import_renames = if stmts_have_import_deep(stmts) {
-      collect_import_value_renames(plan, path, stmts)
+      collect_import_value_renames(plan = plan, path = path, stmts = stmts)
     } else {
       array_empty()
     }
     // Imports and re-exports disappear from the executable merged AST. Keep
     // each source's locally visible names separate from aliased surface-only
     // names, without blocking builtins in the next unit (#2287).
-    let (reexport_locals, reexport_surface_only, retained_originals) = reexport_source_boundary(stmts, path == entry_path)
-    append_unique_strings(reexport_locals, builtin_iterator_namespace_markers(stmts))
-    append_builtin_iterator_plan_operation_markers(reexport_locals, import_renames, plan)
-    validate_retained_entry_source_names(stmts, retained_originals)
-    Array::push(merged, SReExportSourceBoundary(reexport_locals, reexport_surface_only))
+    let (reexport_locals, reexport_surface_only, retained_originals) = reexport_source_boundary(stmts = stmts, retain_entry_originals = path == entry_path)
+    append_unique_strings(target = reexport_locals, source = builtin_iterator_namespace_markers(stmts))
+    append_builtin_iterator_plan_operation_markers(markers = reexport_locals, renames = import_renames, plan = plan)
+    validate_retained_entry_source_names(stmts = stmts, retained_originals = retained_originals)
+    Array::push(merged, value = SReExportSourceBoundary(reexport_locals, reexport_surface_only))
     if stmts_have_import_deep(stmts) {
-      let retained_collision_locals = import_rename_locals_targeting(collect_import_aliases(stmts), reexport_surface_only)
-      append_unique_strings(retained_collision_locals, import_rename_locals_targeting(import_renames, reexport_surface_only))
-      let active_import_renames = import_renames_without_locals(import_renames, retained_collision_locals)
+      let retained_collision_locals = import_rename_locals_targeting(renames = collect_import_aliases(stmts), names = reexport_surface_only)
+      append_unique_strings(target = retained_collision_locals, source = import_rename_locals_targeting(renames = import_renames, names = reexport_surface_only))
+      let active_import_renames = import_renames_without_locals(renames = import_renames, omitted_locals = retained_collision_locals)
       let inline_exclusions = import_value_rename_locals(active_import_renames)
-      append_unique_strings(inline_exclusions, retained_collision_locals)
+      append_unique_strings(target = inline_exclusions, source = retained_collision_locals)
       // #3443: only the locals the fallback cloned stop being rewritten. A
       // collision local with no value to clone (a type, a constructor) keeps
       // its alias: dropping it left `B::plain` unresolved at codegen when `Box`
       // also arrived through a re-export of the same module.
-      let skipped_locals = append_fs_import_alias_collision_defs(merged, path, stmts, plan, inline_exclusions, clone_base)
-      append_unique_strings(skipped_locals, import_rename_locals_named(collect_import_aliases(stmts), reexport_surface_only))
-      append_unique_strings(skipped_locals, retained_collision_locals)
-      append_fs_selected_import_defs(merged, path, stmts, plan, retained_collision_locals, clone_base)
-      append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, active_import_renames)
+      let skipped_locals = append_fs_import_alias_collision_defs(merged = merged, current_path = path, stmts = stmts, plan = plan, excluded_locals = inline_exclusions, clone_base = clone_base)
+      append_unique_strings(target = skipped_locals, source = import_rename_locals_named(renames = collect_import_aliases(stmts), names = reexport_surface_only))
+      append_unique_strings(target = skipped_locals, source = retained_collision_locals)
+      append_fs_selected_import_defs(merged = merged, current_path = path, stmts = stmts, plan = plan, selected_locals = retained_collision_locals, clone_base = clone_base)
+      append_import_alias_rewritten_non_import_stmts_with_renames(merged = merged, stmts = namespaced_stmts, skipped_locals = skipped_locals, extra_renames = active_import_renames)
     } else {
-      append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
+      append_non_import_stmts_without_alias_rewrite(merged = merged, stmts = namespaced_stmts)
     }
     // #3544: this lane keeps no source text, so the refusal names paths only.
-    Array::push(units, linked_unit(path, "", unit_start, Array::length(merged)))
+    Array::push(units, value = linked_unit(path = path, source = "", start = unit_start, end = Array::length(merged)))
     fi = fi + 1
   }
-  refuse_linked_impl_overlaps(merged, units)
+  refuse_linked_impl_overlaps(merged = merged, units = units)
   plan
 }
 
-fn serialize_builtin_iterator_boundaries(stmts: Array[Stmt]) -> Unit {
+fn serialize_builtin_iterator_boundaries(_ stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SReExportSourceBoundary(markers, _) => Array::set(stmts, i, builtin_iterator_serialized_boundary_from_markers(markers)),
+    match Array::get(stmts, at = i) {
+      SReExportSourceBoundary(markers, _) => Array::set(stmts, at = i, value = builtin_iterator_serialized_boundary_from_markers(markers)),
       _ => ()
     }
     i = i + 1
@@ -462,8 +462,8 @@ fn collect_merged_stmts_recursive(entry_path: String, merged: Array[Stmt], visit
   let file_paths = array_empty()
   let file_sources = array_empty()
   let file_stmts = array_empty()
-  collect_parsed_sources_recursive(entry_path, file_paths, file_sources, file_stmts, visited, false)
-  let _ = append_parsed_merged_stmts(entry_path, file_paths, file_stmts, merged, [
+  collect_parsed_sources_recursive(path = entry_path, file_paths = file_paths, file_sources = file_sources, file_stmts = file_stmts, visited = visited, located = false)
+  let _ = append_parsed_merged_stmts(entry_path = entry_path, file_paths = file_paths, file_stmts = file_stmts, merged = merged, clone_base = [
     0 - 1
   ])
   ()
@@ -482,19 +482,19 @@ fn collect_located_merged_stmts(entry_path: String, merged: Array[Stmt], visited
   let file_paths = array_empty()
   let file_sources = array_empty()
   let file_stmts = array_empty()
-  collect_parsed_sources_recursive(entry_path, file_paths, file_sources, file_stmts, visited, true)
+  collect_parsed_sources_recursive(path = entry_path, file_paths = file_paths, file_sources = file_sources, file_stmts = file_stmts, visited = visited, located = true)
   merged_offset_space_reset()
   let rebased = array_empty()
   let mut base = 0
   let mut i = 0
   while i < Array::length(file_paths) {
-    let source = Array::get(file_sources, i)
-    Array::push(rebased, shift_stmts_offsets(Array::get(file_stmts, i), base))
-    merged_offset_space_add(Array::get(file_paths, i), source, base)
+    let source = Array::get(file_sources, at = i)
+    Array::push(rebased, value = shift_stmts_offsets(stmts = Array::get(file_stmts, at = i), delta = base))
+    merged_offset_space_add(path = Array::get(file_paths, at = i), source = source, base = base)
     base = base + String::length(source) + 1
     i = i + 1
   }
-  let _ = append_parsed_merged_stmts(entry_path, file_paths, rebased, merged, [
+  let _ = append_parsed_merged_stmts(entry_path = entry_path, file_paths = file_paths, file_stmts = rebased, merged = merged, clone_base = [
     base
   ])
   ()
@@ -505,20 +505,20 @@ fn coverage_driver_import_error(driver_path: String, raw_path: String, name: Str
 }
 
 fn closure_path_index_for_coverage_import(file_paths: Array[String], driver_path: String, raw_path: String, name: String) -> Int with Env + Exception + Fs {
-  if !String::ends_with(raw_path, ".vibe") {
-    coverage_driver_import_error(driver_path, raw_path, name, "use one exact .vibe file path; package/directory imports are unsupported")
+  if !String::ends_with(raw_path, suffix = ".vibe") {
+    coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = name, reason = "use one exact .vibe file path; package/directory imports are unsupported")
     0 - 1
   } else {
-    let candidates = resolve_import_path_candidates(dir_of_path(driver_path), raw_path)
+    let candidates = resolve_import_path_candidates(base_dir = dir_of_path(driver_path), raw_path = raw_path)
     let mut chosen = 0 - 1
     let mut matches = 0
     let mut exists_outside = false
     let mut ci = 0
     while ci < Array::length(candidates) {
-      let candidate = Array::get(candidates, ci)
+      let candidate = Array::get(candidates, at = ci)
       let mut fi = 0
       while fi < Array::length(file_paths) {
-        if Array::get(file_paths, fi) == candidate {
+        if Array::get(file_paths, at = fi) == candidate {
           chosen = fi
           matches = matches + 1
         } else {
@@ -536,13 +536,13 @@ fn closure_path_index_for_coverage_import(file_paths: Array[String], driver_path
     if matches == 1 {
       chosen
     } else if matches > 1 {
-      coverage_driver_import_error(driver_path, raw_path, name, "path resolves more than once inside the compiler closure")
+      coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = name, reason = "path resolves more than once inside the compiler closure")
       0 - 1
     } else if exists_outside {
-      coverage_driver_import_error(driver_path, raw_path, name, "target exists but is outside the collected compiler closure")
+      coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = name, reason = "target exists but is outside the collected compiler closure")
       0 - 1
     } else {
-      coverage_driver_import_error(driver_path, raw_path, name, "target file is missing from the collected compiler closure")
+      coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = name, reason = "target file is missing from the collected compiler closure")
       0 - 1
     }
   }
@@ -554,7 +554,7 @@ fn stmt_declares_named_ctor(stmt: Stmt, name: String) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(ctors) && !found {
-        let (ctor_name, _) = Array::get(ctors, i)
+        let (ctor_name, _) = Array::get(ctors, at = i)
         if ctor_name == name {
           found = true
         } else {
@@ -567,7 +567,7 @@ fn stmt_declares_named_ctor(stmt: Stmt, name: String) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(ctors) && !found {
-        let (ctor_name, _) = Array::get(ctors, i)
+        let (ctor_name, _) = Array::get(ctors, at = i)
         if ctor_name == name {
           found = true
         } else {
@@ -594,14 +594,14 @@ fn coverage_target_unsupported_kind(stmt: Stmt, name: String) -> String {
     },
     SEnum(_, stmt_name, _, _, _) => if stmt_name == name {
       "type"
-    } else if stmt_declares_named_ctor(stmt, name) {
+    } else if stmt_declares_named_ctor(stmt = stmt, name = name) {
       "constructor"
     } else {
       ""
     },
     SSuberror(_, stmt_name, _) => if stmt_name == name {
       "type"
-    } else if stmt_declares_named_ctor(stmt, name) {
+    } else if stmt_declares_named_ctor(stmt = stmt, name = name) {
       "constructor"
     } else {
       ""
@@ -632,7 +632,7 @@ fn coverage_target_unsupported_kind(stmt: Stmt, name: String) -> String {
       let mut i = 0
       let mut found = false
       while i < Array::length(ops) && !found {
-        let (op_name, _, _) = Array::get(ops, i)
+        let (op_name, _, _) = Array::get(ops, at = i)
         if op_name == name {
           found = true
         } else {
@@ -653,7 +653,7 @@ fn merged_value_name_count(stmts: Array[Stmt], name: String) -> Int {
   let mut count = 0
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, stmt_name, _, _) => if stmt_name == name {
         count = count + 1
       } else {
@@ -677,34 +677,34 @@ fn merged_value_name_count(stmts: Array[Stmt], name: String) -> Int {
 }
 
 fn resolve_coverage_value_target(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, merged: Array[Stmt], driver_path: String, raw_path: String, original: String) -> String with Env + Exception + Fs {
-  if String::contains(original, "::") {
-    coverage_driver_import_error(driver_path, raw_path, original, "method and qualified targets are unsupported")
+  if String::contains(original, needle = "::") {
+    coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = original, reason = "method and qualified targets are unsupported")
     ""
   } else {
-    let path_index = closure_path_index_for_coverage_import(file_paths, driver_path, raw_path, original)
-    let target_path = Array::get(file_paths, path_index)
-    let original_stmts = Array::get(file_stmts, path_index)
-    let transformed_stmts = transformed_file_stmts(entry_path, target_path, original_stmts, plan)
+    let path_index = closure_path_index_for_coverage_import(file_paths = file_paths, driver_path = driver_path, raw_path = raw_path, name = original)
+    let target_path = Array::get(file_paths, at = path_index)
+    let original_stmts = Array::get(file_stmts, at = path_index)
+    let transformed_stmts = transformed_file_stmts(entry_path = entry_path, path = target_path, stmts = original_stmts, plan = plan)
     let mut matches = 0
     let mut final_name = ""
     let mut unsupported = ""
     let mut i = 0
     while i < Array::length(original_stmts) {
-      let stmt = Array::get(original_stmts, i)
+      let stmt = Array::get(original_stmts, at = i)
       match stmt {
         SLet(_, _, stmt_name, _, _) => if stmt_name == original {
           matches = matches + 1
-          match Array::get(transformed_stmts, i) {
+          match Array::get(transformed_stmts, at = i) {
             SLet(_, _, transformed_name, _, _) => {
               final_name = transformed_name
             },
-            _ => coverage_driver_import_error(driver_path, raw_path, original, "production merge changed the target into a non-value declaration")
+            _ => coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = original, reason = "production merge changed the target into a non-value declaration")
           }
         } else {
           ()
         },
         _ => {
-          let kind = coverage_target_unsupported_kind(stmt, original)
+          let kind = coverage_target_unsupported_kind(stmt = stmt, name = original)
           if kind != "" {
             unsupported = kind
           } else {
@@ -715,16 +715,16 @@ fn resolve_coverage_value_target(entry_path: String, file_paths: Array[String], 
       i = i + 1
     }
     if unsupported != "" {
-      coverage_driver_import_error(driver_path, raw_path, original, String::concat("unsupported ", unsupported))
+      coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = original, reason = String::concat("unsupported ", unsupported))
       ""
     } else if matches == 0 {
-      coverage_driver_import_error(driver_path, raw_path, original, "no top-level immutable value with that exact name exists in the target file")
+      coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = original, reason = "no top-level immutable value with that exact name exists in the target file")
       ""
     } else if matches > 1 {
-      coverage_driver_import_error(driver_path, raw_path, original, "duplicate top-level value declarations in the target file")
+      coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = original, reason = "duplicate top-level value declarations in the target file")
       ""
-    } else if merged_value_name_count(merged, final_name) != 1 {
-      coverage_driver_import_error(driver_path, raw_path, original, "the production transformed name is not unique in the merged compiler")
+    } else if merged_value_name_count(stmts = merged, name = final_name) != 1 {
+      coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = original, reason = "the production transformed name is not unique in the merged compiler")
       ""
     } else {
       final_name
@@ -738,33 +738,33 @@ fn append_coverage_driver_stmts(entry_path: String, driver_path: String, driver_
   let imported_finals = array_empty()
   let mut i = 0
   while i < Array::length(driver_stmts) {
-    match Array::get(driver_stmts, i) {
+    match Array::get(driver_stmts, at = i) {
       SImport(raw_path, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let item = Array::get(items, j)
+          let item = Array::get(items, at = j)
           let original = item.name
           let alias_opt = item.alias
           let local = match alias_opt {
             Some(alias) => alias,
             None => original
           }
-          if string_array_contains_local(imported_locals, local) {
-            coverage_driver_import_error(driver_path, raw_path, original, String::concat("local import name collides with another request: ", local))
+          if string_array_contains_local(items = imported_locals, target = local) {
+            coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = original, reason = String::concat("local import name collides with another request: ", local))
           } else {
-            let final_name = resolve_coverage_value_target(entry_path, file_paths, file_stmts, plan, merged, driver_path, raw_path, original)
-            if string_array_contains_local(imported_finals, final_name) {
-              coverage_driver_import_error(driver_path, raw_path, original, "multiple requests resolve to the same transformed compiler value")
+            let final_name = resolve_coverage_value_target(entry_path = entry_path, file_paths = file_paths, file_stmts = file_stmts, plan = plan, merged = merged, driver_path = driver_path, raw_path = raw_path, original = original)
+            if string_array_contains_local(items = imported_finals, target = final_name) {
+              coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = original, reason = "multiple requests resolve to the same transformed compiler value")
             } else {
-              Array::push(imported_locals, local)
-              Array::push(imported_finals, final_name)
-              Array::push(renames, (local, final_name))
+              Array::push(imported_locals, value = local)
+              Array::push(imported_finals, value = final_name)
+              Array::push(renames, value = (local, final_name))
             }
           }
           j = j + 1
         }
       },
-      SReExport(raw_path, _) => coverage_driver_import_error(driver_path, raw_path, "*", "re-export requests are unsupported"),
+      SReExport(raw_path, _) => coverage_driver_import_error(driver_path = driver_path, raw_path = raw_path, name = "*", reason = "re-export requests are unsupported"),
       _ => ()
     }
     i = i + 1
@@ -772,7 +772,7 @@ fn append_coverage_driver_stmts(entry_path: String, driver_path: String, driver_
   let driver_values = array_empty()
   let mut di = 0
   while di < Array::length(driver_stmts) {
-    let stmt = Array::get(driver_stmts, di)
+    let stmt = Array::get(driver_stmts, at = di)
     let driver_name = match stmt {
       SLet(_, _, name, _, _) => name,
       SLetMut(name, _, _) => name,
@@ -780,21 +780,21 @@ fn append_coverage_driver_stmts(entry_path: String, driver_path: String, driver_
       _ => ""
     }
     if driver_name != "" {
-      if string_array_contains_local(driver_values, driver_name) {
-        coverage_driver_import_error(driver_path, driver_path, driver_name, "duplicate top-level value in the driver")
-      } else if string_array_contains_local(imported_locals, driver_name) {
-        coverage_driver_import_error(driver_path, driver_path, driver_name, "driver top-level value collides with an imported local name")
-      } else if merged_value_name_count(merged, driver_name) > 0 {
-        coverage_driver_import_error(driver_path, driver_path, driver_name, "driver top-level value collides with the merged compiler")
+      if string_array_contains_local(items = driver_values, target = driver_name) {
+        coverage_driver_import_error(driver_path = driver_path, raw_path = driver_path, name = driver_name, reason = "duplicate top-level value in the driver")
+      } else if string_array_contains_local(items = imported_locals, target = driver_name) {
+        coverage_driver_import_error(driver_path = driver_path, raw_path = driver_path, name = driver_name, reason = "driver top-level value collides with an imported local name")
+      } else if merged_value_name_count(stmts = merged, name = driver_name) > 0 {
+        coverage_driver_import_error(driver_path = driver_path, raw_path = driver_path, name = driver_name, reason = "driver top-level value collides with the merged compiler")
       } else {
-        Array::push(driver_values, driver_name)
+        Array::push(driver_values, value = driver_name)
       }
     } else {
       ()
     }
     di = di + 1
   }
-  append_import_alias_rewritten_non_import_stmts_with_renames(merged, driver_stmts, array_empty(), renames)
+  append_import_alias_rewritten_non_import_stmts_with_renames(merged = merged, stmts = driver_stmts, skipped_locals = array_empty(), extra_renames = renames)
 }
 
 /// #3331: the tail both merged-program printers share, from the merged
@@ -810,7 +810,7 @@ fn append_coverage_driver_stmts(entry_path: String, driver_path: String, driver_
 /// operation `Trait::op` (a reserved name), and a `<Trait>Dict` struct whose
 /// fields mention `Self`. Compiler source could not use a trait-bounded
 /// generic at all.
-fn print_merged_program(stmts: Array[Stmt]) -> String with Exception {
+fn print_merged_program(_ stmts: Array[Stmt]) -> String with Exception {
   // Complete source-scoped special-call rewrites while the in-memory boundary
   // metadata still exists. The printed program carries a parseable internal
   // sentinel so the trusted single-source bundle lane can preserve Iterator
@@ -834,17 +834,17 @@ export fn coverage_driver_program_source_fs(entry_path: String, driver_path: Str
   let file_sources = array_empty()
   let file_stmts = array_empty()
   let visited = path_set_new()
-  collect_parsed_sources_recursive(entry_path, file_paths, file_sources, file_stmts, visited, false)
+  collect_parsed_sources_recursive(path = entry_path, file_paths = file_paths, file_sources = file_sources, file_stmts = file_stmts, visited = visited, located = false)
   let merged = empty_stmt_array()
-  let plan = append_parsed_merged_stmts(entry_path, file_paths, file_stmts, merged, [
+  let plan = append_parsed_merged_stmts(entry_path = entry_path, file_paths = file_paths, file_stmts = file_stmts, merged = merged, clone_base = [
     0 - 1
   ])
-  let driver_source = ingest_source_text_fs(driver_path, Fs::read_file(driver_path))
+  let driver_source = ingest_source_text_fs(path = driver_path, raw = Fs::read_file(driver_path))
   let driver_stmts = parse_program(lex(driver_source))
   // The driver is a separate source unit from the compiler entry that precedes
   // it, so source-scoped builtin classification must start a fresh range.
-  Array::push(merged, SReExportSourceBoundary(builtin_iterator_namespace_markers(driver_stmts), array_empty()))
-  append_coverage_driver_stmts(entry_path, driver_path, driver_stmts, file_paths, file_stmts, plan, merged)
+  Array::push(merged, value = SReExportSourceBoundary(builtin_iterator_namespace_markers(driver_stmts), array_empty()))
+  append_coverage_driver_stmts(entry_path = entry_path, driver_path = driver_path, driver_stmts = driver_stmts, file_paths = file_paths, file_stmts = file_stmts, plan = plan, merged = merged)
   print_merged_program(merged)
 }
 
@@ -859,12 +859,12 @@ export fn coverage_driver_program_source_fs(entry_path: String, driver_path: Str
 /// carries the #716 visibility guarantees. Comments are dropped (printer
 /// output) — acceptable for a generated bundle artifact. Trait dictionaries
 /// are left to the compile that reads the text back (#3331).
-export fn merged_program_source_fs(entry_path: String) -> String with Env + Exception + Fs {
+export fn merged_program_source_fs(_ entry_path: String) -> String with Env + Exception + Fs {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let stmts = empty_stmt_array()
   let visited = path_set_new()
-  collect_merged_stmts_recursive(entry_path, stmts, visited)
+  collect_merged_stmts_recursive(entry_path = entry_path, merged = stmts, visited = visited)
   print_merged_program(stmts)
 }
 
@@ -873,7 +873,7 @@ export fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Byte
   namespace_rename_originals_reset()
   let stmts = empty_stmt_array()
   let visited = path_set_new()
-  collect_located_merged_stmts(entry_path, stmts, visited)
+  collect_located_merged_stmts(entry_path = entry_path, merged = stmts, visited = visited)
   // #3098: interpolation only; the trait-dictionary desugar runs after the
   // check (the #3069 order), or the checker sees its own lowering.
   expand_interp_only(stmts)
@@ -888,9 +888,9 @@ export fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Byte
   // type an interpolated untyped shadow (#3456), and the `Float` arithmetic
   // rows the desugar rounds to f32 (#3543).
   let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, _) = source_offsets(stmts)
-  desugar_trait_dicts_with_typed_eq(stmts, eq_offsets, eq_keys)
+  desugar_trait_dicts_with_typed_eq(stmts = stmts, typed_eq_offsets = eq_offsets, typed_eq_keys = eq_keys)
   strip_generic_type_params(stmts)
-  compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys)
+  compile_wasi_module_impl_with_typed_offsets(stmts = stmts, entry_name = entry_name, checker_float_call_offsets = float_call_offsets, checker_int_render_offsets = int_render_offsets, checker_bool_render_offsets = bool_render_offsets, checker_eq_offsets = eq_offsets, checker_eq_type_keys = eq_keys)
 }
 
 //# Misc

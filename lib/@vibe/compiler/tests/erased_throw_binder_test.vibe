@@ -20,7 +20,7 @@ import @vibe/compiler/checker {
 
 /// Every diagnostic, with the exception row discipline switched on (the CLI
 /// turns it on; this harness calls the checker directly).
-fn row_checked_diags(src: String) -> Array[String] with Exception {
+fn row_checked_diags(_ src: String) -> Array[String] with Exception {
   set_error_row_checked(true)
   collect_all_diagnostics(src)
 }
@@ -30,26 +30,26 @@ fn row_checked_diags(src: String) -> Array[String] with Exception {
 /// The issue's program: a thrown String read as an Int.
 test "an erased binder used as Int is refused with the kinded arm as the edit" {
   let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn g() -> Int {\n  handle { f() } with { Exception::Throw(m) => m + 1 }\n}\n"
-  assert(check_source_err_contains(src, "write `Exception[Int]::Throw(m)` to catch a thrown `Int`"))
+  assert(check_source_err_contains(source = src, needle = "write `Exception[Int]::Throw(m)` to catch a thrown `Int`"))
 }
 
 /// An annotation at another type is refused the same way.
 test "an erased binder bound at Int is refused" {
   let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn g() -> Int {\n  handle { f() } with { Exception::Throw(m) => {\n    let n: Int = m\n    n\n  } }\n}\n"
-  assert(check_source_err_contains(src, "binds `m` as the thrown message, a `String`"))
+  assert(check_source_err_contains(source = src, needle = "binds `m` as the thrown message, a `String`"))
 }
 
 /// Returned as the handle's value where the body produces an Int.
 test "an erased binder returned as the handle's Int is refused" {
   let src = "fn f() -> Int with Exception { throw(\"str\") }\nfn g() -> Int {\n  handle { f() } with { Exception::Throw(m) => m }\n}\n"
-  assert(check_source_err_contains(src, "write `Exception[Int]::Throw(m)`"))
+  assert(check_source_err_contains(source = src, needle = "write `Exception[Int]::Throw(m)`"))
 }
 
 /// The arm's body leaves the binder open and the handle's result is read at
 /// Int afterwards: pinned to String, so the later use is a mismatch.
 test "an erased binder that escapes the arm open is pinned to String" {
   let src = "fn g() -> Int {\n  let r: Int = handle { throw(\"x\") } with { Exception::Throw(m) => m }\n  r\n}\n"
-  assert(check_source_err_contains(src, "expected Int, got String"))
+  assert(check_source_err_contains(source = src, needle = "expected Int, got String"))
 }
 
 /// Controls: the uses that read the message as a String, and the uses that
@@ -85,17 +85,17 @@ test "a kinded arm binds its payload at the kind" {
 /// built by `body` from the binder `m`. The rethrow is of no known kind, so it
 /// is not advertised as `Exception[String]`. (`f` throws a message: an arm
 /// that reads `m` may catch only that, #3541.)
-fn rethrow_diags(body: String) -> Array[String] with Exception {
+fn rethrow_diags(_ body: String) -> Array[String] with Exception {
   let head = "fn f() -> Int with Exception { throw(\"seven\") }\nfn id[T](x: T) -> T { x }\nstruct Box[T] {\n  v: T\n}\n"
   let g = String::concat("fn g() -> Int with Exception[String] {\n  handle { f() } with { Exception::Throw(m) => {\n", String::concat(body, "\n  } }\n}\n"))
   row_checked_diags(String::concat(head, g))
 }
 
 /// Whether the rethrow was charged as an exception of no known kind.
-fn charged_erased(diags: Array[String]) -> Bool {
+fn charged_erased(_ diags: Array[String]) -> Bool {
   let mut found = false
   for d in diags {
-    if String::contains(d, "missing { Exception::Throw }") {
+    if String::contains(d, needle = "missing { Exception::Throw }") {
       found = true
     }
   }
@@ -171,16 +171,16 @@ fn nominal_diags(decls: String, row: String, body: String) -> Array[String] with
 /// caller's `Exception[Why]::Throw(w)` arm read the `Int` 7 as a `String`.
 test "an enum payload built from an erased binder is not a known kind" {
   let why = "enum Why {\n  Because(String)\n}\n"
-  assert(charged_erased(nominal_diags(why, "Why", "    throw(Why::Because(m))")))
-  assert(charged_erased(nominal_diags(why, "Option[Why]", "    throw(Some(Why::Because(m)))")))
-  assert(charged_erased(nominal_diags(why, "Why", "    let _n = String::length(m)\n    let w = Why::Because(m)\n    throw(w)")))
+  assert(charged_erased(nominal_diags(decls = why, row = "Why", body = "    throw(Why::Because(m))")))
+  assert(charged_erased(nominal_diags(decls = why, row = "Option[Why]", body = "    throw(Some(Why::Because(m)))")))
+  assert(charged_erased(nominal_diags(decls = why, row = "Why", body = "    let _n = String::length(m)\n    let w = Why::Because(m)\n    throw(w)")))
 }
 
 test "a struct literal built from an erased binder is not a known kind" {
   let w = "struct W {\n  s: String\n}\n"
-  assert(charged_erased(nominal_diags(w, "W", "    throw(W::{ s: m })")))
+  assert(charged_erased(nominal_diags(decls = w, row = "W", body = "    throw(W::{ s: m })")))
   let boxed = "struct Box[T] {\n  v: T\n}\n"
-  assert(charged_erased(nominal_diags(boxed, "Box[String]", "    throw(Box::{ v: m })")))
+  assert(charged_erased(nominal_diags(decls = boxed, row = "Box[String]", body = "    throw(Box::{ v: m })")))
 }
 
 /// The fields are not looked into: a declared type built from the binder
@@ -188,14 +188,14 @@ test "a struct literal built from an erased binder is not a known kind" {
 /// or the erased row is the edit.
 test "a declared type with no String field built from an erased binder is not a known kind" {
   let code = "enum Code {\n  C(Int)\n}\n"
-  assert(charged_erased(nominal_diags(code, "Code", "    throw(Code::C(String::length(m)))")))
+  assert(charged_erased(nominal_diags(decls = code, row = "Code", body = "    throw(Code::C(String::length(m)))")))
 }
 
 /// Controls: a declared value that does not carry the binder keeps its kind,
 /// and so does one built under the kinded arm.
 test "a declared value that does not carry an erased binder keeps its kind" {
   let why = "enum Why {\n  Because(String)\n}\n"
-  inspect(nominal_diags(why, "Why", "    let _n = String::length(m)\n    throw(Why::Because(\"other\"))"), "[]")
+  inspect(nominal_diags(decls = why, row = "Why", body = "    let _n = String::length(m)\n    throw(Why::Because(\"other\"))"), "[]")
   let src = "fn f() -> Int with Exception[String] { throw(\"x\") }\nenum Why {\n  Because(String)\n}\nfn g() -> Int with Exception[Why] {\n  handle { f() } with { Exception[String]::Throw(m) => throw(Why::Because(m)) }\n}\n"
   inspect(row_checked_diags(src), "[]")
 }
@@ -254,7 +254,7 @@ test "a lambda parameter that may receive an erased binder is not a String throw
 /// `g` rethrows, from an erased arm, a value read back from `outer` after
 /// `body` stored the binder `m` somewhere `outer` reaches. `store` writes its
 /// `String` into the cell, so `outer.cell.value` holds whatever `f` threw.
-fn stored_diags(body: String) -> Array[String] with Exception {
+fn stored_diags(_ body: String) -> Array[String] with Exception {
   let head = "fn f() -> Int with Exception { throw(\"seven\") }\nstruct Cell {\n  mut value: String\n}\nstruct Outer {\n  cell: Cell;\n  cells: Array[Cell]\n}\nfn store(c: Cell, v: String) -> Unit {\n  c.value = v\n}\nfn Cell::put(c: Cell, v: String) -> Unit {\n  c.value = v\n}\nfn cell_of(o: Outer) -> Cell {\n  o.cell\n}\n"
   let g = String::concat("fn g(outer: Outer) -> Int with Exception[String] {\n  handle { f() } with { Exception::Throw(m) => {\n", String::concat(body, "\n  } }\n}\n"))
   row_checked_diags(String::concat(head, g))
@@ -298,7 +298,7 @@ test "a projection nothing stored an erased binder into keeps its kind" {
 /// `g` rethrows, from an erased arm, after `body` handed the binder `m` to
 /// code the walk does not follow: the top-level `remember`, which keeps it in
 /// the global `saved` that `recall` reads, or a parameter of `g`.
-fn escape_diags(body: String) -> Array[String] with Exception {
+fn escape_diags(_ body: String) -> Array[String] with Exception {
   let head = "let saved: Array[String] = []\nfn remember(s: String) -> Unit {\n  Array::push(saved, s)\n}\nfn recall() -> String {\n  Array::get(saved, 0)\n}\nfn f() -> Int with Exception { throw(\"seven\") }\n"
   let g = String::concat("fn g(slot: (Option[String]) -> String, sink: (String) -> Unit, keep: Array[String], view: Array[String]) -> Int with Exception[String] {\n  handle { f() } with { Exception::Throw(m) => {\n", String::concat(body, "\n  } }\n}\n"))
   row_checked_diags(String::concat(head, g))
@@ -351,7 +351,7 @@ test "state read back without an escape keeps its kind" {
 fn reads_other_kind(diags: Array[String], kind: String) -> Bool {
   let mut found = false
   for d in diags {
-    if String::contains(d, String::concat("write `Exception[", String::concat(kind, "]::Throw(m)` to catch it"))) {
+    if String::contains(d, needle = String::concat("write `Exception[", String::concat(kind, "]::Throw(m)` to catch it"))) {
       found = true
     }
   }
@@ -363,17 +363,17 @@ fn reads_other_kind(diags: Array[String], kind: String) -> Bool {
 /// binder too.
 test "an arm that reads its binder is refused over another kind" {
   let direct = "fn f() -> Int with Exception[Int] { throw(7) }\nfn g() -> Int {\n  handle { f() } with { Exception::Throw(m) => String::length(m) }\n}\n"
-  assert(reads_other_kind(row_checked_diags(direct), "Int"))
+  assert(reads_other_kind(diags = row_checked_diags(direct), kind = "Int"))
   let leaked = "fn h() -> Int with Exception { throw(5) }\nfn g() -> Int {\n  handle { h() } with { Exception::Throw(m) => String::length(m) }\n}\n"
-  assert(reads_other_kind(row_checked_diags(leaked), "Int"))
+  assert(reads_other_kind(diags = row_checked_diags(leaked), kind = "Int"))
   let mixed = "fn h(c: Bool) -> Int with Exception {\n  if c {\n    throw(5)\n  } else {\n    throw(\"x\")\n  }\n}\nfn g() -> Int {\n  handle { h(true) } with { Exception::Throw(m) => String::length(m) }\n}\n"
-  assert(reads_other_kind(row_checked_diags(mixed), "Int"))
+  assert(reads_other_kind(diags = row_checked_diags(mixed), kind = "Int"))
   let chained = "fn f() -> Int with Exception[Int] { throw(7) }\nfn h1() -> Int with Exception { f() }\nfn h2() -> Int with Exception { h1() + 1 }\nfn g() -> Int {\n  handle { h2() } with { Exception::Throw(m) => String::length(m) }\n}\n"
-  assert(reads_other_kind(row_checked_diags(chained), "Int"))
+  assert(reads_other_kind(diags = row_checked_diags(chained), kind = "Int"))
   let generic = "fn h[T](x: T) -> Int with Exception { throw(x) }\nfn g() -> Int {\n  handle { h(5) } with { Exception::Throw(m) => String::length(m) }\n}\n"
-  assert(reads_other_kind(row_checked_diags(generic), "Int"))
+  assert(reads_other_kind(diags = row_checked_diags(generic), kind = "Int"))
   let rethrown = "fn f() -> Int with Exception[Int] { throw(7) }\nfn g() -> Int with Exception {\n  handle { f() } with { Exception::Throw(m) => throw(m) }\n}\n"
-  assert(reads_other_kind(row_checked_diags(rethrown), "Int"))
+  assert(reads_other_kind(diags = row_checked_diags(rethrown), kind = "Int"))
 }
 
 /// Controls: an arm that leaves its payload unread, a body that raises only

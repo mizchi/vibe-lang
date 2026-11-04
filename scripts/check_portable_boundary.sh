@@ -874,7 +874,7 @@ forbid_capability_authority() { # <file> <label>
 # because the gate runs in no CI job (#2577).
 require_line \
   "lib/@vibe/compiler/entry/source_compile/index.vpkg" \
-  '^fn compile_source\(source: String\) -> Bytes with Exception$' \
+  '^fn compile_source\((_ )?source: String\) -> Bytes with Exception$' \
   "compile_source stays in-memory"
 require_line \
   "lib/@vibe/compiler/entry/source_compile/index.vpkg" \

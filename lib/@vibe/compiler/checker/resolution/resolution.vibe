@@ -25,7 +25,7 @@ import @vibe/ast {
 /// The alias body was resolved with its params as free `CtNamed(<param>, _)`
 /// names; replace each by the corresponding actual argument (recursively).
 export fn subst_type_params(ty: Type, params: Array[String], args: Array[Type]) -> Type {
-  resolve_type_alias_params(ty, params, args)
+  resolve_type_alias_params(ty = ty, params = params, args = args)
 }
 
 /// #3572: the refusal for reaching field `field` -- a read, a write, a call
@@ -47,15 +47,15 @@ export fn elided_owned_head_field_refusal(defs: Array[TypeDef], recv: Type, fiel
     _ => ("", 0 - 1)
   }
   if name == "TaskGroup" || name == "TaskHandle" || name == "Sender" || name == "Receiver" {
-    match find_typedef(defs, name) {
+    match find_typedef(defs = defs, name = name) {
       // Only the shipped `[rg, e, ..]` shape: a program struct of the name
       // with other formals is held to them where it is written (#3536).
-      Some(TDStruct(_, _, _, tparams)) => if Array::length(tparams) >= 2 && type_param_name(Array::get(tparams, 0)) == "rg" && type_param_name(Array::get(tparams, 1)) == "e" && given != Array::length(tparams) {
+      Some(TDStruct(_, _, _, tparams)) => if Array::length(tparams) >= 2 && type_param_name(Array::get(tparams, at = 0)) == "rg" && type_param_name(Array::get(tparams, at = 1)) == "e" && given != Array::length(tparams) {
         let written = array_empty()
         for p in tparams {
-          Array::push(written, type_param_name(p))
+          Array::push(written, value = type_param_name(p))
         }
-        let full = String::join(written, ", ")
+        let full = String::join(written, sep = ", ")
         Some("write `\{name}[\{full}]` with its region and row to reach `\{field}` (`fn f[\{full}](x: \{name}[\{full}])`), or use `\{name}`'s functions instead: a `\{name}` written without them leaves the field's type unbound here, so `\{field}` could be read or written at any type")
       } else {
         None
@@ -71,7 +71,7 @@ fn is_shadowed_tyvar(shadow: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(shadow) {
-    if type_param_name(Array::get(shadow, i)) == name {
+    if type_param_name(Array::get(shadow, at = i)) == name {
       found = true
     }
     i = i + 1
@@ -80,7 +80,7 @@ fn is_shadowed_tyvar(shadow: Array[String], name: String) -> Bool {
 }
 
 export fn resolve_type_expr(te: TypeExpr, defs: Array[TypeDef]) -> Type {
-  resolve_type_expr_shadowed(te, defs, array_empty())
+  resolve_type_expr_shadowed(te = te, defs = defs, shadow = array_empty())
 }
 
 /// `resolve_type_expr`, plus the type formals bound by the enclosing
@@ -97,7 +97,7 @@ export fn resolve_type_expr(te: TypeExpr, defs: Array[TypeDef]) -> Type {
 /// lookup below finds it, and `Box[Int]` becomes `Hue`. A formal is a binder,
 /// so it wins over both `defs` and the builtins -- the shadow check runs first.
 export fn resolve_type_expr_shadowed(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Type {
-  resolve_type_expr_core_shadowed(te, defs, shadow)
+  resolve_type_expr_core_shadowed(te = te, defs = defs, shadow = shadow)
 }
 
 /// Exported for `checker.vibe`'s map-key rule (#2276 round 12): a
@@ -105,7 +105,7 @@ export fn resolve_type_expr_shadowed(te: TypeExpr, defs: Array[TypeDef], shadow:
 /// implementation, and this is the exact enumeration rather than a guess at
 /// the name's shape. The arity table itself lives in core
 /// (`compiler_owned_type_arity`) so the contract sentinel shares it.
-export fn is_wellknown_nominal_head(name: String) -> Bool {
+export fn is_wellknown_nominal_head(_ name: String) -> Bool {
   match compiler_owned_type_arity(name) {
     Some(_) => true,
     None => false
@@ -137,14 +137,14 @@ export fn is_wellknown_nominal_head(name: String) -> Bool {
 /// This is the separate question, asked where a declaration INTRODUCES an
 /// annotation and an error sink is in hand.
 export fn collect_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], out: Array[String]) -> Unit {
-  collect_unknown_type_names_walk(te, defs, shadow, array_empty(), false, out)
+  collect_unknown_type_names_walk(te = te, defs = defs, shadow = shadow, region_binders = array_empty(), at_region_slot = false, out = out)
 }
 
 /// `Array`, `Option` and `StringMap` are structural heads that
 /// `resolve_type_expr_shadowed` special-cases before any lookup, so they are
 /// never unknown -- and their arguments are ELEMENT types, never a region
 /// slot.
-fn ty_head_is_structural(name: String) -> Bool {
+fn ty_head_is_structural(_ name: String) -> Bool {
   // #2263: `StringMap` joins them -- `resolve_type_expr_core_shadowed`
   // special-cases it to `Map[String, V]` before any lookup, exactly the way
   // it special-cases these two, so it has no `TypeDef` for the sweep to find
@@ -189,20 +189,20 @@ fn ty_region_slot_index(head: String, argc: Int) -> Int {
 fn count_param_region_occurrences(t: Type, defs: Array[TypeDef], param: String, depth: Int, counts: Array[Int]) -> Unit {
   match t {
     CtNamed(head, targs) => if head == param && Array::length(targs) == 0 {
-      Array::set(counts, 0, Array::get(counts, 0) + 1)
+      Array::set(counts, at = 0, value = Array::get(counts, at = 0) + 1)
     } else {
       // As in the walk: a head that resolves to a declaration has ordinary
       // parameters (a shadowing `struct TaskHandle[A, B, C]` grants no slot);
       // the compiler-owned mapping applies only to the unresolved lane.
-      let has_typedef = match find_typedef(defs, head) {
+      let has_typedef = match find_typedef(defs = defs, name = head) {
         Some(_) => true,
         None => false
       }
       let followed = if depth <= 8 {
-        match find_typedef(defs, head) {
+        match find_typedef(defs = defs, name = head) {
           Some(td) => match td {
             TDAlias(_, hparams, hbody) => {
-              count_param_region_occurrences(subst_type_params(hbody, hparams, targs), defs, param, depth + 1, counts)
+              count_param_region_occurrences(t = subst_type_params(ty = hbody, params = hparams, args = targs), defs = defs, param = param, depth = depth + 1, counts = counts)
               true
             },
             _ => false
@@ -218,15 +218,15 @@ fn count_param_region_occurrences(t: Type, defs: Array[TypeDef], param: String, 
         let slot = if has_typedef {
           0 - 1
         } else {
-          ty_region_slot_index(head, Array::length(targs))
+          ty_region_slot_index(head = head, argc = Array::length(targs))
         }
         let mut j = 0
         while j < Array::length(targs) {
-          let child = Array::get(targs, j)
+          let child = Array::get(targs, at = j)
           if j == slot {
             match child {
               CtNamed(a, aargs) => if a == param && Array::length(aargs) == 0 {
-                Array::set(counts, 1, Array::get(counts, 1) + 1)
+                Array::set(counts, at = 1, value = Array::get(counts, at = 1) + 1)
               } else {
                 ()
               },
@@ -235,27 +235,27 @@ fn count_param_region_occurrences(t: Type, defs: Array[TypeDef], param: String, 
           } else {
             ()
           }
-          count_param_region_occurrences(child, defs, param, depth, counts)
+          count_param_region_occurrences(t = child, defs = defs, param = param, depth = depth, counts = counts)
           j = j + 1
         }
       }
     },
-    CtArray(e) => count_param_region_occurrences(e, defs, param, depth, counts),
-    CtOption(e) => count_param_region_occurrences(e, defs, param, depth, counts),
+    CtArray(e) => count_param_region_occurrences(t = e, defs = defs, param = param, depth = depth, counts = counts),
+    CtOption(e) => count_param_region_occurrences(t = e, defs = defs, param = param, depth = depth, counts = counts),
     CtTuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        count_param_region_occurrences(Array::get(elems, i), defs, param, depth, counts)
+        count_param_region_occurrences(t = Array::get(elems, at = i), defs = defs, param = param, depth = depth, counts = counts)
         i = i + 1
       }
     },
     CtFn(ps, ret, _) => {
       let mut i = 0
       while i < Array::length(ps) {
-        count_param_region_occurrences(Array::get(ps, i), defs, param, depth, counts)
+        count_param_region_occurrences(t = Array::get(ps, at = i), defs = defs, param = param, depth = depth, counts = counts)
         i = i + 1
       }
-      count_param_region_occurrences(ret, defs, param, depth, counts)
+      count_param_region_occurrences(t = ret, defs = defs, param = param, depth = depth, counts = counts)
     },
     _ => ()
   }
@@ -272,15 +272,15 @@ fn count_param_region_occurrences(t: Type, defs: Array[TypeDef], param: String, 
 /// rule, `type W[R, T] = (MutList[T, R], R)` + `fn f(x: W[r, Int]) -> Int
 /// with r` left the tuple's second component a wildcard).
 fn alias_region_slot_flags(name: String, defs: Array[TypeDef]) -> Array[Bool] {
-  match find_typedef(defs, name) {
+  match find_typedef(defs = defs, name = name) {
     Some(td) => match td {
       TDAlias(_, params, body) => {
         let flags = array_empty()
         let mut i = 0
         while i < Array::length(params) {
           let counts = [0, 0]
-          count_param_region_occurrences(body, defs, Array::get(params, i), 0, counts)
-          Array::push(flags, Array::get(counts, 1) > 0 && Array::get(counts, 1) == Array::get(counts, 0))
+          count_param_region_occurrences(t = body, defs = defs, param = Array::get(params, at = i), depth = 0, counts = counts)
+          Array::push(flags, value = Array::get(counts, at = 1) > 0 && Array::get(counts, at = 1) == Array::get(counts, at = 0))
           i = i + 1
         }
         flags
@@ -295,7 +295,7 @@ fn type_name_list_contains(names: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(names) && !found {
-    if Array::get(names, i) == name {
+    if Array::get(names, at = i) == name {
       found = true
     } else {
       i = i + 1
@@ -320,23 +320,23 @@ fn type_name_list_contains(names: Array[String], name: String) -> Bool {
 /// which declare `[rg, e, T]`). A name in any other position is a type
 /// reference and is looked up like one.
 export fn collect_unknown_type_names_regionwise(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], region_binders: Array[String], out: Array[String]) -> Unit {
-  collect_unknown_type_names_walk(te, defs, shadow, region_binders, false, out)
+  collect_unknown_type_names_walk(te = te, defs = defs, shadow = shadow, region_binders = region_binders, at_region_slot = false, out = out)
 }
 
 fn collect_unknown_type_names_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], region_binders: Array[String], at_region_slot: Bool, out: Array[String]) -> Unit {
   match te {
     TyUnit => (),
-    TyName(name) => if is_shadowed_tyvar(shadow, name) || (at_region_slot && type_name_list_contains(region_binders, name)) {
+    TyName(name) => if is_shadowed_tyvar(shadow = shadow, name = name) || (at_region_slot && type_name_list_contains(names = region_binders, name = name)) {
       ()
     } else {
       match resolve_builtin(name) {
         Some(_) => (),
-        None => match find_typedef(defs, name) {
+        None => match find_typedef(defs = defs, name = name) {
           Some(_) => (),
           None => if is_wellknown_nominal_head(name) {
             ()
           } else {
-            Array::push(out, name)
+            Array::push(out, value = name)
           }
         }
       }
@@ -350,26 +350,26 @@ fn collect_unknown_type_names_walk(te: TypeExpr, defs: Array[TypeDef], shadow: A
       // B, C]` shadowing the compiler-owned spelling has ordinary parameters,
       // so the compiler-owned mapping applies only in the unresolved
       // wellknown-head lane. An alias's slots come from its body instead.
-      let slot_index = match find_typedef(defs, name) {
+      let slot_index = match find_typedef(defs = defs, name = name) {
         Some(_) => 0 - 1,
-        None => ty_region_slot_index(name, Array::length(args))
+        None => ty_region_slot_index(head = name, argc = Array::length(args))
       }
-      let alias_flags = alias_region_slot_flags(name, defs)
+      let alias_flags = alias_region_slot_flags(name = name, defs = defs)
       let mut i = 0
       while i < Array::length(args) {
-        let at_slot = i == slot_index || (i < Array::length(alias_flags) && Array::get(alias_flags, i))
-        collect_unknown_type_names_walk(Array::get(args, i), defs, shadow, region_binders, at_slot, out)
+        let at_slot = i == slot_index || (i < Array::length(alias_flags) && Array::get(alias_flags, at = i))
+        collect_unknown_type_names_walk(te = Array::get(args, at = i), defs = defs, shadow = shadow, region_binders = region_binders, at_region_slot = at_slot, out = out)
         i = i + 1
       }
-      if ty_head_is_structural(name) || is_shadowed_tyvar(shadow, name) {
+      if ty_head_is_structural(name) || is_shadowed_tyvar(shadow = shadow, name = name) {
         ()
       } else {
-        match find_typedef(defs, name) {
+        match find_typedef(defs = defs, name = name) {
           Some(_) => (),
           None => if is_wellknown_nominal_head(name) {
             ()
           } else {
-            Array::push(out, name)
+            Array::push(out, value = name)
           }
         }
       }
@@ -377,18 +377,18 @@ fn collect_unknown_type_names_walk(te: TypeExpr, defs: Array[TypeDef], shadow: A
     TyTuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        collect_unknown_type_names_walk(Array::get(elems, i), defs, shadow, region_binders, false, out)
+        collect_unknown_type_names_walk(te = Array::get(elems, at = i), defs = defs, shadow = shadow, region_binders = region_binders, at_region_slot = false, out = out)
         i = i + 1
       }
     },
     TyFn(params, ret, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        collect_unknown_type_names_walk(Array::get(params, i), defs, shadow, region_binders, false, out)
+        collect_unknown_type_names_walk(te = Array::get(params, at = i), defs = defs, shadow = shadow, region_binders = region_binders, at_region_slot = false, out = out)
         i = i + 1
       }
-      let ret_box = Array::slice([ret], 0, 1)
-      collect_unknown_type_names_walk(Array::get(ret_box, 0), defs, shadow, region_binders, false, out)
+      let ret_box = Array::slice([ret], start = 0, end = 1)
+      collect_unknown_type_names_walk(te = Array::get(ret_box, at = 0), defs = defs, shadow = shadow, region_binders = region_binders, at_region_slot = false, out = out)
     }
   }
 }

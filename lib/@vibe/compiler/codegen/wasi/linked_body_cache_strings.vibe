@@ -40,7 +40,7 @@ fn lc_pool_prefix_equal(a: Array[String], b: Array[String], n: Int) -> Bool {
     let mut i = 0
     let mut same = true
     while same && i < n {
-      if Array::get(a, i) != Array::get(b, i) {
+      if Array::get(a, at = i) != Array::get(b, at = i) {
         same = false
       } else {
         i = i + 1
@@ -57,16 +57,16 @@ fn lc_pool_prefix_equal(a: Array[String], b: Array[String], n: Int) -> Bool {
 /// makes the whole cache unusable, because a body that cannot be relocated
 /// cannot be replayed (fail closed, never guessed).
 export fn lc_string_remap(old_pool: Array[String], table: StrTable, src_str_base: Int, kinds: Array[Int], syms: Array[Int]) -> Option[Array[Int]] {
-  if lc_pool_prefix_equal(old_pool, table.strs, src_str_base) {
+  if lc_pool_prefix_equal(a = old_pool, b = table.strs, n = src_str_base) {
     Some([])
   } else {
     let remap: Array[Int] = []
     let mut s = 0
     while s < Array::length(old_pool) {
-      let now = str_table_slot_or_neg(table, Array::get(old_pool, s))
+      let now = str_table_slot_or_neg(st = table, s = Array::get(old_pool, at = s))
       // A slot at or past `src_str_base` is not in the region the harvest
       // pinned, so it cannot be a target either.
-      Array::push(remap, if now >= src_str_base {
+      Array::push(remap, value = if now >= src_str_base {
         0 - 1
       } else {
         now
@@ -76,10 +76,10 @@ export fn lc_string_remap(old_pool: Array[String], table: StrTable, src_str_base
     let mut ok = true
     let mut k = 0
     while ok && k < Array::length(kinds) {
-      let kind = Array::get(kinds, k)
+      let kind = Array::get(kinds, at = k)
       if kind == blind_kind_str_ref || kind == blind_kind_str_fat {
-        let sym = Array::get(syms, k)
-        if sym < 0 || sym >= Array::length(remap) || Array::get(remap, sym) < 0 {
+        let sym = Array::get(syms, at = k)
+        if sym < 0 || sym >= Array::length(remap) || Array::get(remap, at = sym) < 0 {
           ok = false
         } else {
           ()
@@ -101,7 +101,7 @@ fn lc_sleb_end_at(body: Bytes, p: Int) -> Int {
   let mut i = p
   let mut done = false
   while !done && i < Bytes::length(body) {
-    if (Bytes::get(body, i)&128) == 0 {
+    if (Bytes::get(body, at = i)&128) == 0 {
       done = true
     } else {
       ()
@@ -117,8 +117,8 @@ fn lc_shifted(p: Int, site_offs: Array[Int], site_deltas: Array[Int]) -> Int {
   let mut d = 0
   let mut i = 0
   while i < Array::length(site_offs) {
-    if Array::get(site_offs, i) < p {
-      d = d + Array::get(site_deltas, i)
+    if Array::get(site_offs, at = i) < p {
+      d = d + Array::get(site_deltas, at = i)
     } else {
       ()
     }
@@ -138,17 +138,17 @@ fn lc_relocate_body(body: Bytes, owner: Int, is_fn: Bool, remap: Array[Int], tab
   let sites: Array[Int] = []
   let mut k = lo
   while k < Array::length(owners) {
-    let kind = Array::get(kinds, k)
-    if Array::get(owners, k) == owner && (kind == blind_kind_str_ref || kind == blind_kind_str_fat) {
+    let kind = Array::get(kinds, at = k)
+    if Array::get(owners, at = k) == owner && (kind == blind_kind_str_ref || kind == blind_kind_str_fat) {
       // Insertion by offset: the records are appended in emission order, so
       // this is almost always an append.
       let mut at = Array::length(sites)
-      Array::push(sites, k)
-      while at > 0 && Array::get(offsets, Array::get(sites, at - 1)) > Array::get(offsets, k) {
-        Array::set(sites, at, Array::get(sites, at - 1))
+      Array::push(sites, value = k)
+      while at > 0 && Array::get(offsets, at = Array::get(sites, at = at - 1)) > Array::get(offsets, at = k) {
+        Array::set(sites, at = at, value = Array::get(sites, at = at - 1))
         at = at - 1
       }
-      Array::set(sites, at, k)
+      Array::set(sites, at = at, value = k)
     } else {
       ()
     }
@@ -163,42 +163,42 @@ fn lc_relocate_body(body: Bytes, owner: Int, is_fn: Bool, remap: Array[Int], tab
     let mut cursor = 0
     let mut j = 0
     while j < Array::length(sites) {
-      let ri = Array::get(sites, j)
-      let off = Array::get(offsets, ri)
-      if off < cursor || off >= Bytes::length(body) || Bytes::get(body, off) != 66 {
+      let ri = Array::get(sites, at = j)
+      let off = Array::get(offsets, at = ri)
+      if off < cursor || off >= Bytes::length(body) || Bytes::get(body, at = off) != 66 {
         throw("body cache: a string reference does not sit on an i64.const in the replayed body")
       } else {
         ()
       }
       while cursor < off {
-        Bytes::push(out, Bytes::get(body, cursor))
+        Bytes::push(out, value = Bytes::get(body, at = cursor))
         cursor = cursor + 1
       }
-      let old_end = lc_sleb_end_at(body, off + 1)
-      let slot = Array::get(remap, Array::get(syms, ri))
-      let addr = Array::get(table.offsets, slot)
-      let value = if Array::get(kinds, ri) == blind_kind_str_ref {
+      let old_end = lc_sleb_end_at(body = body, p = off + 1)
+      let slot = Array::get(remap, at = Array::get(syms, at = ri))
+      let addr = Array::get(table.offsets, at = slot)
+      let value = if Array::get(kinds, at = ri) == blind_kind_str_ref {
         addr
       } else {
-        (addr<<32)|Array::get(table.lengths, slot)
+        (addr<<32)|Array::get(table.lengths, at = slot)
       }
       let before = Bytes::length(out)
-      emit_i64_const(out, value)
-      Array::push(site_offs, off)
-      Array::push(site_deltas, (Bytes::length(out) - before) - (old_end - off))
-      Array::set(syms, ri, slot)
+      emit_i64_const(buf = out, value = value)
+      Array::push(site_offs, value = off)
+      Array::push(site_deltas, value = (Bytes::length(out) - before) - (old_end - off))
+      Array::set(syms, at = ri, value = slot)
       cursor = old_end
       j = j + 1
     }
     while cursor < Bytes::length(body) {
-      Bytes::push(out, Bytes::get(body, cursor))
+      Bytes::push(out, value = Bytes::get(body, at = cursor))
       cursor = cursor + 1
     }
     // Every offset into this body moves by the width changes before it.
     let mut r = lo
     while r < Array::length(owners) {
-      if Array::get(owners, r) == owner {
-        Array::set(offsets, r, lc_shifted(Array::get(offsets, r), site_offs, site_deltas))
+      if Array::get(owners, at = r) == owner {
+        Array::set(offsets, at = r, value = lc_shifted(p = Array::get(offsets, at = r), site_offs = site_offs, site_deltas = site_deltas))
       } else {
         ()
       }
@@ -207,7 +207,7 @@ fn lc_relocate_body(body: Bytes, owner: Int, is_fn: Bool, remap: Array[Int], tab
     if is_fn {
       let mut m = lm_lo
       while m < Array::length(lm.offsets) {
-        Array::set(lm.offsets, m, lc_shifted(Array::get(lm.offsets, m), site_offs, site_deltas))
+        Array::set(lm.offsets, at = m, value = lc_shifted(p = Array::get(lm.offsets, at = m), site_offs = site_offs, site_deltas = site_deltas))
         m = m + 1
       }
     } else {
@@ -222,10 +222,10 @@ fn lc_relocate_body(body: Bytes, owner: Int, is_fn: Bool, remap: Array[Int], tab
 /// its records are `[rec_lo, len)` -- onto `table` through `remap`.
 export fn lc_relocate_replayed_strings(remap: Array[Int], table: StrTable, fn_index: Int, bodies: Array[Bytes], lt: LambdaTable, lam_lo: Int, lam_hi: Int, owners: Array[Int], offsets: Array[Int], kinds: Array[Int], syms: Array[Int], rec_lo: Int, lm: LineMapState, lm_lo: Int) -> Unit with Exception {
   let last = Array::length(bodies) - 1
-  Array::set(bodies, last, lc_relocate_body(Array::get(bodies, last), fn_index, true, remap, table, owners, offsets, kinds, syms, rec_lo, lm, lm_lo))
+  Array::set(bodies, at = last, value = lc_relocate_body(body = Array::get(bodies, at = last), owner = fn_index, is_fn = true, remap = remap, table = table, owners = owners, offsets = offsets, kinds = kinds, syms = syms, lo = rec_lo, lm = lm, lm_lo = lm_lo))
   let mut k = rec_lo
   while k < Array::length(owners) {
-    let owner = Array::get(owners, k)
+    let owner = Array::get(owners, at = k)
     if blind_owner_is_lambda(owner) {
       let li = blind_owner_lambda_index(owner)
       if li < lam_lo || li >= lam_hi {
@@ -242,7 +242,7 @@ export fn lc_relocate_replayed_strings(remap: Array[Int], table: StrTable, fn_in
   while li < lam_hi {
     // Once per lambda: a rebuilt body's records hold this compile's slots
     // already, so a second pass over the same owner would remap them again.
-    Array::set(lt.bodies, li, lc_relocate_body(Array::get(lt.bodies, li), blind_owner_of_lambda(li), false, remap, table, owners, offsets, kinds, syms, rec_lo, lm, lm_lo))
+    Array::set(lt.bodies, at = li, value = lc_relocate_body(body = Array::get(lt.bodies, at = li), owner = blind_owner_of_lambda(li), is_fn = false, remap = remap, table = table, owners = owners, offsets = offsets, kinds = kinds, syms = syms, lo = rec_lo, lm = lm, lm_lo = lm_lo))
     li = li + 1
   }
 }

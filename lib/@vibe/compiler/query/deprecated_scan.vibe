@@ -46,9 +46,9 @@ fn dep_empty_strs() -> Array[String] {
 /// After `#deprecated`, consume an optional `("message")`.
 /// Returns (next_pos, message).
 fn dep_directive_msg(tokens: Array[Token], j: Int) -> (Int, String) {
-  match peek(tokens, j) {
-    TLParen => match peek(tokens, j + 1) {
-      TString(m) => match peek(tokens, j + 2) {
+  match peek(tokens = tokens, pos = j) {
+    TLParen => match peek(tokens = tokens, pos = j + 1) {
+      TString(m) => match peek(tokens = tokens, pos = j + 2) {
         TRParen => (j + 3, m),
         _ => (j, "")
       },
@@ -59,7 +59,7 @@ fn dep_directive_msg(tokens: Array[Token], j: Int) -> (Int, String) {
 }
 
 fn dep_simple_name(tokens: Array[Token], pos: Int) -> String {
-  match peek(tokens, pos) {
+  match peek(tokens = tokens, pos = pos) {
     TIdent(nm) => nm,
     _ => ""
   }
@@ -67,9 +67,9 @@ fn dep_simple_name(tokens: Array[Token], pos: Int) -> String {
 
 /// `fn` declarations may be method-shaped: `fn Ns::method(...)`.
 fn dep_qualified_name(tokens: Array[Token], pos: Int) -> String {
-  match peek(tokens, pos) {
-    TIdent(a) => match peek(tokens, pos + 1) {
-      TDoubleColon => match peek(tokens, pos + 2) {
+  match peek(tokens = tokens, pos = pos) {
+    TIdent(a) => match peek(tokens = tokens, pos = pos + 1) {
+      TDoubleColon => match peek(tokens = tokens, pos = pos + 2) {
         TIdent(b) => String::concat(a, String::concat("::", b)),
         _ => a
       },
@@ -84,16 +84,16 @@ fn dep_qualified_name(tokens: Array[Token], pos: Int) -> String {
 /// marker is then ignored.
 fn dep_decl_name(tokens: Array[Token], pos0: Int) -> String {
   let mut pos = pos0
-  match peek(tokens, pos) {
+  match peek(tokens = tokens, pos = pos) {
     TExport => {
       pos = pos + 1
     }
     _ => ()
   }
-  match peek(tokens, pos) {
+  match peek(tokens = tokens, pos = pos) {
     TLet => {
       let mut q = pos + 1
-      match peek(tokens, q) {
+      match peek(tokens = tokens, pos = q) {
         TMut => {
           q = q + 1
         }
@@ -102,14 +102,14 @@ fn dep_decl_name(tokens: Array[Token], pos0: Int) -> String {
         }
         _ => ()
       }
-      dep_simple_name(tokens, q)
+      dep_simple_name(tokens = tokens, pos = q)
     },
-    TFn => dep_qualified_name(tokens, pos + 1),
-    TEnum => dep_simple_name(tokens, pos + 1),
-    TStruct => dep_simple_name(tokens, pos + 1),
-    TType => dep_simple_name(tokens, pos + 1),
+    TFn => dep_qualified_name(tokens = tokens, pos = pos + 1),
+    TEnum => dep_simple_name(tokens = tokens, pos = pos + 1),
+    TStruct => dep_simple_name(tokens = tokens, pos = pos + 1),
+    TType => dep_simple_name(tokens = tokens, pos = pos + 1),
     TIdent(kw) => if kw == "effect" {
-      dep_simple_name(tokens, pos + 1)
+      dep_simple_name(tokens = tokens, pos = pos + 1)
     } else {
       ""
     },
@@ -122,18 +122,18 @@ fn collect_deprecated_decls_tokens(tokens: Array[Token], out: Array[(String, Str
   let n = Array::length(tokens)
   let mut i = 0
   while i < n {
-    let is_dep = match Array::get(tokens, i) {
-      THash => match peek(tokens, i + 1) {
+    let is_dep = match Array::get(tokens, at = i) {
+      THash => match peek(tokens = tokens, pos = i + 1) {
         TIdent(dname) => dname == "deprecated",
         _ => false
       },
       _ => false
     }
     if is_dep {
-      let (j, msg) = dep_directive_msg(tokens, i + 2)
-      let name = dep_decl_name(tokens, j)
+      let (j, msg) = dep_directive_msg(tokens = tokens, j = i + 2)
+      let name = dep_decl_name(tokens = tokens, pos0 = j)
       if name != "" {
-        Array::push(out, (name, msg))
+        Array::push(out, value = (name, msg))
       } else {
         ()
       }
@@ -149,7 +149,7 @@ fn dep_find(deprecated: Array[(String, String)], name: String) -> Int {
   let mut i = 0
   let mut found = 0 - 1
   while found < 0 && i < Array::length(deprecated) {
-    let (dn, _) = Array::get(deprecated, i)
+    let (dn, _) = Array::get(deprecated, at = i)
     if dn == name {
       found = i
     } else {
@@ -162,13 +162,13 @@ fn dep_find(deprecated: Array[(String, String)], name: String) -> Int {
 /// How many tokens a declaration keyword at `i` binds (keyword + binder
 /// name), so declaration sites do not warn about their own name.
 fn dep_binder_skip(tokens: Array[Token], i: Int) -> Int {
-  match Array::get(tokens, i) {
-    TLet => match peek(tokens, i + 1) {
+  match Array::get(tokens, at = i) {
+    TLet => match peek(tokens = tokens, pos = i + 1) {
       TMut => 3,
       TRec => 3,
       _ => 2
     },
-    TFn => match peek(tokens, i + 2) {
+    TFn => match peek(tokens = tokens, pos = i + 2) {
       TDoubleColon => 4,
       _ => 2
     },
@@ -180,7 +180,7 @@ fn dep_binder_skip(tokens: Array[Token], i: Int) -> Int {
 }
 
 fn dep_warning_line(source: String, offset: Int, name: String, msg: String) -> String {
-  let (line, col) = offset_to_line_col(source, offset)
+  let (line, col) = offset_to_line_col(source = source, offset = offset)
   let head = String::concat("warning: line ", String::concat(Int::to_string(line), String::concat(":col ", String::concat(Int::to_string(col), String::concat(": '", String::concat(name, "' is deprecated"))))))
   if msg == "" {
     head
@@ -205,48 +205,48 @@ fn deprecated_use_warnings_tokens(source: String, tokens: Array[Token], starts: 
   let n = Array::length(tokens)
   let mut i = 0
   while i < n {
-    match Array::get(tokens, i) {
+    match Array::get(tokens, at = i) {
       TLet => {
-        i = i + dep_binder_skip(tokens, i)
+        i = i + dep_binder_skip(tokens = tokens, i = i)
       }
       TFn => {
-        i = i + dep_binder_skip(tokens, i)
+        i = i + dep_binder_skip(tokens = tokens, i = i)
       }
       TEnum => {
-        i = i + dep_binder_skip(tokens, i)
+        i = i + dep_binder_skip(tokens = tokens, i = i)
       }
       TStruct => {
-        i = i + dep_binder_skip(tokens, i)
+        i = i + dep_binder_skip(tokens = tokens, i = i)
       }
       TType => {
-        i = i + dep_binder_skip(tokens, i)
+        i = i + dep_binder_skip(tokens = tokens, i = i)
       }
       TIdent(name) => {
         // combine one `A::b` level so qualified uses match qualified decls
-        let is_qual = match peek(tokens, i + 1) {
-          TDoubleColon => match peek(tokens, i + 2) {
+        let is_qual = match peek(tokens = tokens, pos = i + 1) {
+          TDoubleColon => match peek(tokens = tokens, pos = i + 2) {
             TIdent(_) => true,
             _ => false
           },
           _ => false
         }
         let full = if is_qual {
-          match peek(tokens, i + 2) {
+          match peek(tokens = tokens, pos = i + 2) {
             TIdent(b) => String::concat(name, String::concat("::", b)),
             _ => name
           }
         } else {
           name
         }
-        let hit = dep_find(deprecated, full)
+        let hit = dep_find(deprecated = deprecated, name = full)
         let hit2 = if hit < 0 && is_qual {
-          dep_find(deprecated, name)
+          dep_find(deprecated = deprecated, name = name)
         } else {
           hit
         }
         if hit2 >= 0 {
-          let (dn, dm) = Array::get(deprecated, hit2)
-          Array::push(out, dep_warning_line(source, base + Array::get(starts, i), dn, dm))
+          let (dn, dm) = Array::get(deprecated, at = hit2)
+          Array::push(out, value = dep_warning_line(source = source, offset = base + Array::get(starts, at = i), name = dn, msg = dm))
         } else {
           ()
         }
@@ -269,14 +269,14 @@ fn deprecated_use_warnings_tokens(source: String, tokens: Array[Token], starts: 
         // lexed once to produce this token).
         let mut pi = 0
         while pi < Array::length(iparts) {
-          let part_base = Array::get(ioffsets, pi)
+          let part_base = Array::get(ioffsets, at = pi)
           if part_base >= 0 {
             handle {
-              let (sub_tokens, sub_starts, _sub_ends) = lex_with_offsets(Array::get(iparts, pi))
-              let sub = deprecated_use_warnings_tokens(source, sub_tokens, sub_starts, deprecated, base + part_base)
+              let (sub_tokens, sub_starts, _sub_ends) = lex_with_offsets(Array::get(iparts, at = pi))
+              let sub = deprecated_use_warnings_tokens(source = source, tokens = sub_tokens, starts = sub_starts, deprecated = deprecated, base = base + part_base)
               let mut wi = 0
               while wi < Array::length(sub) {
-                Array::push(out, Array::get(sub, wi))
+                Array::push(out, value = Array::get(sub, at = wi))
                 wi = wi + 1
               }
             } with { Exception::Throw(_) => () }
@@ -300,7 +300,7 @@ fn deprecated_use_warnings_tokens(source: String, tokens: Array[Token], starts: 
 /// Warnings for every use, in `entry_source`, of a name whose declaration is
 /// marked `#deprecated` in `entry_source` itself or in any of `dep_sources`.
 export fn deprecated_warning_lines(entry_source: String, dep_sources: Array[String]) -> Array[String] with Exception {
-  deprecated_warning_lines_visible(entry_source, dep_sources, dep_all_names())
+  deprecated_warning_lines_visible(entry_source = entry_source, dep_sources = dep_sources, visible_names = dep_all_names())
 }
 
 /// Sentinel for "do not filter": `deprecated_warning_lines` keeps the old
@@ -327,7 +327,7 @@ fn dep_all_names() -> Option[Array[String]] {
 export fn deprecated_warning_lines_visible(entry_source: String, dep_sources: Array[String], visible_names: Option[Array[String]]) -> Array[String] with Exception {
   let deprecated = dep_empty_pairs()
   let (tokens, starts, _ends) = lex_with_offsets(entry_source)
-  collect_deprecated_decls_tokens(tokens, deprecated)
+  collect_deprecated_decls_tokens(tokens = tokens, out = deprecated)
   // Builtins have no `#deprecated` declaration site. Always honour the
   // language-level table (not gated on imports).
   append_builtin_deprecated(deprecated)
@@ -335,29 +335,29 @@ export fn deprecated_warning_lines_visible(entry_source: String, dep_sources: Ar
   // bootstrap bump (seed parse rejects `#` in index.vpkg). Honour the
   // same names here, gated on the entry's imports — a file that never
   // imported `HashMap` must not be told to rename its own type.
-  append_visible_legacy_types(deprecated, visible_names)
+  append_visible_legacy_types(out = deprecated, visible_names = visible_names)
   let mut d = 0
   while d < Array::length(dep_sources) {
     let dep_marks = dep_empty_pairs()
-    let dep_source = Array::get(dep_sources, d)
+    let dep_source = Array::get(dep_sources, at = d)
     // #2945: a marker is the token pair `#` `deprecated`, so a source that
     // never spells `deprecated` has none, and lexing it -- as this loop did
     // for every file of the closure -- only allocated its tokens for good.
-    if String::contains(dep_source, "deprecated") {
+    if String::contains(dep_source, needle = "deprecated") {
       let (dtokens, _dstarts, _dends) = lex_with_offsets(dep_source)
-      collect_deprecated_decls_tokens(dtokens, dep_marks)
+      collect_deprecated_decls_tokens(tokens = dtokens, out = dep_marks)
     } else {
       ()
     }
     let mut m = 0
     while m < Array::length(dep_marks) {
-      let (mname, mmsg) = Array::get(dep_marks, m)
+      let (mname, mmsg) = Array::get(dep_marks, at = m)
       let keep = match visible_names {
         None => true,
-        Some(names) => dep_names_contain(names, mname)
+        Some(names) => dep_names_contain(names = names, name = mname)
       }
       if keep {
-        Array::push(deprecated, (mname, mmsg))
+        Array::push(deprecated, value = (mname, mmsg))
       } else {
         ()
       }
@@ -365,16 +365,16 @@ export fn deprecated_warning_lines_visible(entry_source: String, dep_sources: Ar
     }
     d = d + 1
   }
-  deprecated_use_warnings_tokens(entry_source, tokens, starts, deprecated, 0)
+  deprecated_use_warnings_tokens(source = entry_source, tokens = tokens, starts = starts, deprecated = deprecated, base = 0)
 }
 
 /// ADR-0100 (3) type aliases that live only in index.vpkg.
-fn append_legacy_type_deprecated(out: Array[(String, String)]) -> Unit {
-  Array::push(out, ("HashMap", "use MutMap"))
-  Array::push(out, ("HashSet", "use MutSet"))
-  Array::push(out, ("SortedMap", "use MutSortedMap"))
-  Array::push(out, ("SortedSet", "use MutSortedSet"))
-  Array::push(out, ("ImmutMap", "use MapHamt"))
+fn append_legacy_type_deprecated(_ out: Array[(String, String)]) -> Unit {
+  Array::push(out, value = ("HashMap", "use MutMap"))
+  Array::push(out, value = ("HashSet", "use MutSet"))
+  Array::push(out, value = ("SortedMap", "use MutSortedMap"))
+  Array::push(out, value = ("SortedSet", "use MutSortedSet"))
+  Array::push(out, value = ("ImmutMap", "use MapHamt"))
 }
 
 fn append_visible_legacy_types(out: Array[(String, String)], visible_names: Option[Array[String]]) -> Unit {
@@ -382,13 +382,13 @@ fn append_visible_legacy_types(out: Array[(String, String)], visible_names: Opti
   append_legacy_type_deprecated(marks)
   let mut i = 0
   while i < Array::length(marks) {
-    let (mname, mmsg) = Array::get(marks, i)
+    let (mname, mmsg) = Array::get(marks, at = i)
     let keep = match visible_names {
       None => true,
-      Some(names) => dep_names_contain(names, mname)
+      Some(names) => dep_names_contain(names = names, name = mname)
     }
     if keep {
-      Array::push(out, (mname, mmsg))
+      Array::push(out, value = (mname, mmsg))
     } else {
       ()
     }
@@ -400,7 +400,7 @@ fn dep_names_contain(names: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(names) {
-    if Array::get(names, i) == name {
+    if Array::get(names, at = i) == name {
       found = true
     } else {
       ()

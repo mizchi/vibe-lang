@@ -23,21 +23,21 @@ fn large_string() -> String {
   }
   value
 }
-fn encode_string(value: String) -> Bytes {
+fn encode_string(_ value: String) -> Bytes {
   let bytes = Bytes::new()
-  ast_binary_write_string(bytes, value)
+  ast_binary_write_string(buf = bytes, s = value)
   bytes
 }
 fn equal_bytes(a: Bytes, b: Bytes) -> Bool {
   let mut equal = Bytes::length(a) == Bytes::length(b)
   let mut i = 0
   while equal && i < Bytes::length(a) {
-    equal = Bytes::get(a, i) == Bytes::get(b, i)
+    equal = Bytes::get(a, at = i) == Bytes::get(b, at = i)
     i = i + 1
   }
   equal
 }
-fn read_error(reader: AstBinaryReader) -> String {
+fn read_error(_ reader: AstBinaryReader) -> String {
   handle {
     ast_binary_read_string_checked(reader)
     "accepted"
@@ -48,20 +48,20 @@ test "large strings reference an immutable pool without changing ordinary bytes"
   let large = large_string()
   let source: Array[String] = [large]
   let pool = FrozenArray::from_array(source)
-  Array::set(source, 0, "changed")
+  Array::set(source, at = 0, value = "changed")
   let before = encode_string(large)
-  let encoded = ast_binary_with_string_pool(pool, () -> Bytes with Exception {
+  let encoded = ast_binary_with_string_pool(strings = pool, action = () -> Bytes with Exception {
     encode_string(large)
   })
   assert(Bytes::length(encoded) < 32)
-  let reader = ast_binary_reader_with_string_pool(ast_binary_reader_new(encoded), pool)
+  let reader = ast_binary_reader_with_string_pool(r = ast_binary_reader_new(encoded), strings = pool)
   assert(ast_binary_read_string_checked(reader) == large)
   assert_eq(ast_binary_reader_remaining(reader), 0)
-  assert(equal_bytes(before, encode_string(large)))
-  let small = ast_binary_with_string_pool(pool, () -> Bytes with Exception {
+  assert(equal_bytes(a = before, b = encode_string(large)))
+  let small = ast_binary_with_string_pool(strings = pool, action = () -> Bytes with Exception {
     encode_string("short")
   })
-  assert(equal_bytes(small, encode_string("short")))
+  assert(equal_bytes(a = small, b = encode_string("short")))
 }
 
 test "a reference index is not bounded by the remaining wire byte count" {
@@ -69,14 +69,14 @@ test "a reference index is not bounded by the remaining wire byte count" {
   let source: Array[String] = []
   let mut i = 0
   while i < 300 {
-    Array::push(source, "small"); i = i + 1
+    Array::push(source, value = "small"); i = i + 1
   }
-  Array::push(source, large)
+  Array::push(source, value = large)
   let pool = FrozenArray::from_array(source)
-  let encoded = ast_binary_with_string_pool(pool, () -> Bytes with Exception {
+  let encoded = ast_binary_with_string_pool(strings = pool, action = () -> Bytes with Exception {
     encode_string(large)
   })
-  let reader = ast_binary_reader_with_string_pool(ast_binary_reader_new(encoded), pool)
+  let reader = ast_binary_reader_with_string_pool(r = ast_binary_reader_new(encoded), strings = pool)
   assert(ast_binary_read_string_checked(reader) == large)
   assert_eq(ast_binary_reader_remaining(reader), 0)
 }
@@ -84,28 +84,28 @@ test "a reference index is not bounded by the remaining wire byte count" {
 test "checked references refuse an absent pool and invalid indices" {
   let large = large_string()
   let pool = FrozenArray::from_array([large])
-  let encoded = ast_binary_with_string_pool(pool, () -> Bytes with Exception {
+  let encoded = ast_binary_with_string_pool(strings = pool, action = () -> Bytes with Exception {
     encode_string(large)
   })
   inspect(read_error(ast_binary_reader_new(encoded)), "ast_binary: string reference requires a transport pool")
   let bad = Bytes::new()
-  ast_binary_write_varint(bad, 1<<60)
-  ast_binary_write_varint(bad, 1)
-  inspect(read_error(ast_binary_reader_with_string_pool(ast_binary_reader_new(bad), pool)), "ast_binary: string reference is outside the immutable pool")
+  ast_binary_write_varint(buf = bad, v = 1<<60)
+  ast_binary_write_varint(buf = bad, v = 1)
+  inspect(read_error(ast_binary_reader_with_string_pool(r = ast_binary_reader_new(bad), strings = pool)), "ast_binary: string reference is outside the immutable pool")
   let truncated = Bytes::new()
-  ast_binary_write_varint(truncated, 1<<60)
-  assert(read_error(ast_binary_reader_with_string_pool(ast_binary_reader_new(truncated), pool)) != "accepted")
+  ast_binary_write_varint(buf = truncated, v = 1<<60)
+  assert(read_error(ast_binary_reader_with_string_pool(r = ast_binary_reader_new(truncated), strings = pool)) != "accepted")
 }
 
 test "child cursors inherit the immutable pool and advance only their own span" {
   let large = large_string()
   let pool = FrozenArray::from_array([large])
-  let one = ast_binary_with_string_pool(pool, () -> Bytes with Exception {
+  let one = ast_binary_with_string_pool(strings = pool, action = () -> Bytes with Exception {
     encode_string(large)
   })
   let bytes = Bytes::concat(one, one)
-  let parent = ast_binary_reader_with_string_pool(ast_binary_reader_new(bytes), pool)
-  let child = ast_binary_reader_take(parent, Bytes::length(one))
+  let parent = ast_binary_reader_with_string_pool(r = ast_binary_reader_new(bytes), strings = pool)
+  let child = ast_binary_reader_take(r = parent, length = Bytes::length(one))
   assert(ast_binary_read_string_checked(child) == large)
   assert_eq(ast_binary_reader_remaining(child), 0)
   assert(ast_binary_read_string_checked(parent) == large)
@@ -116,16 +116,16 @@ test "encoder failure restores ordinary encoding and nesting preserves the outer
   let large = large_string()
   let pool = FrozenArray::from_array([large])
   let failure = handle {
-    ast_binary_with_string_pool(pool, () -> Bytes with Exception {
+    ast_binary_with_string_pool(strings = pool, action = () -> Bytes with Exception {
       throw("encoder failed")
     })
     "accepted"
   } with { Exception::Throw(message) => message }
   inspect(failure, "encoder failed")
   assert(Bytes::length(encode_string(large)) > String::length(large))
-  let encoded = ast_binary_with_string_pool(pool, () -> Bytes with Exception {
+  let encoded = ast_binary_with_string_pool(strings = pool, action = () -> Bytes with Exception {
     let nested = handle {
-      ast_binary_with_string_pool(pool, () -> Bytes with Exception {
+      ast_binary_with_string_pool(strings = pool, action = () -> Bytes with Exception {
         encode_string(large)
       })
       "accepted"
@@ -142,19 +142,19 @@ test "pooled AST strings preserve call resolution and source offsets" {
   let pool = FrozenArray::from_array([large])
   let expr = ECall(EIdent("Array::length", 17), [EString(large, 21)], 16, builtin_callee_resolution("Array::length"))
   let ordinary = Bytes::new()
-  ast_binary_write_expr(ordinary, expr)
-  let encoded = ast_binary_with_string_pool(pool, () -> Bytes with Exception {
+  ast_binary_write_expr(buf = ordinary, e = expr)
+  let encoded = ast_binary_with_string_pool(strings = pool, action = () -> Bytes with Exception {
     let bytes = Bytes::new()
-    ast_binary_write_expr(bytes, expr)
+    ast_binary_write_expr(buf = bytes, e = expr)
     bytes
   })
   assert(Bytes::length(encoded) < 128)
-  let reader = ast_binary_reader_with_string_pool(ast_binary_reader_new(encoded), pool)
+  let reader = ast_binary_reader_with_string_pool(r = ast_binary_reader_new(encoded), strings = pool)
   let restored = ast_binary_read_expr(reader)
   assert_eq(ast_binary_reader_remaining(reader), 0)
   let after = Bytes::new()
-  ast_binary_write_expr(after, restored)
-  assert(equal_bytes(ordinary, after))
+  ast_binary_write_expr(buf = after, e = restored)
+  assert(equal_bytes(a = ordinary, b = after))
 }
 
 test "ordinary empty strings never require a pool" {
@@ -162,18 +162,18 @@ test "ordinary empty strings never require a pool" {
 }
 
 test "indexed pools deduplicate medium literals and refuse stale lookup aliases" {
-  let value = String::substring(large_string(), 0, 1024)
+  let value = String::substring(large_string(), start = 0, end = 1024)
   let other = String::concat(value, "other")
   let pool = FrozenArray::from_array([value, other])
   let encoded = ast_binary_with_indexed_string_pool(pool, (_) -> 0, () -> Bytes with Exception {
     encode_string(value)
   })
   assert(Bytes::length(encoded) < 32)
-  assert(ast_binary_read_string_checked(ast_binary_reader_with_string_pool(ast_binary_reader_new(encoded), pool)) == value)
+  assert(ast_binary_read_string_checked(ast_binary_reader_with_string_pool(r = ast_binary_reader_new(encoded), strings = pool)) == value)
   for index in [-1, 1, 999] {
     let ordinary = ast_binary_with_indexed_string_pool(pool, (_) -> index, () -> Bytes with Exception {
       encode_string(value)
     })
-    assert(equal_bytes(ordinary, encode_string(value)))
+    assert(equal_bytes(a = ordinary, b = encode_string(value)))
   }
 }

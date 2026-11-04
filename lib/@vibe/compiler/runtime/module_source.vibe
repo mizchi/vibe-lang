@@ -33,7 +33,7 @@ export let build_module_source_from_source: (String, String) -> String with Exce
   // on the way out (#2654).
   set_compiler_spelled_type_params(true)
   let (stmts, span_start, span_end, full_stmts) = handle {
-    let parsed = parse_program_spans(tokens, starts, ends)
+    let parsed = parse_program_spans(tokens = tokens, starts = starts, ends = ends)
     // Reachability over the full parse: `stmts` carries one bodyless `SImpl`
     // per impl (so the impl text is emitted once), which hides every call an
     // impl method makes. A helper only a method calls would otherwise be
@@ -45,15 +45,17 @@ export let build_module_source_from_source: (String, String) -> String with Exce
     set_compiler_spelled_type_params(false)
     throw(msg)
   } }
-  let keep = dce_keep_flags_via(stmts, full_stmts, [entry_name])
+  let keep = dce_keep_flags_via(stmts = stmts, reach_stmts = full_stmts, entry_names = [
+    entry_name
+  ])
   let buf = StringBuilder::new()
   let mut i = 0
   while i < Array::length(stmts) {
-    if Array::get(keep, i) {
-      let s = Array::get(span_start, i)
-      let e = Array::get(span_end, i)
+    if Array::get(keep, at = i) {
+      let s = Array::get(span_start, at = i)
+      let e = Array::get(span_end, at = i)
       if e > s {
-        let snippet = String::substring(source, s, e)
+        let snippet = String::substring(source, start = s, end = e)
         // The flat source this joins is compiled as authored text, whose
         // parser refuses the compiler's spelling with a "rename it" no author
         // can act on. A helper that kept it and is still reachable is refused
@@ -62,15 +64,15 @@ export let build_module_source_from_source: (String, String) -> String with Exce
         // binder list of the parsed statement, never on its text: this very
         // function's source spells the prefix inside a string literal and is
         // itself a kept statement of the merged compiler.
-        if binds_compiler_spelled_type_param(Array::get(stmts, i)) {
+        if binds_compiler_spelled_type_param(Array::get(stmts, at = i)) {
           throw(String::concat("module source for `", String::concat(entry_name, String::concat("`: a synthesized comparator whose type parameter keeps the compiler's `__Vfp_` spelling is reachable from the entry, and the flat source cannot carry it (its parser reads authored text): ", snippet_head(snippet)))))
         } else {
           ()
         }
-        StringBuilder::push(buf, snippet)
+        StringBuilder::push(buf, value = snippet)
         let n = String::length(snippet)
-        if n == 0 || String::char_code_at(snippet, n - 1) != '\n' {
-          StringBuilder::push(buf, "\n")
+        if n == 0 || String::char_code_at(snippet, at = n - 1) != '\n' {
+          StringBuilder::push(buf, value = "\n")
         }
       }
     }
@@ -84,7 +86,7 @@ export let build_module_source_from_source: (String, String) -> String with Exce
 /// `let` / `fn` bindings of a lambda, so those two shapes are the whole
 /// question; a nested lambda cannot carry the spelling (the parser refuses
 /// it in authored source, and the desugar synthesizes at the top level).
-fn binds_compiler_spelled_type_param(stmt: Stmt) -> Bool {
+fn binds_compiler_spelled_type_param(_ stmt: Stmt) -> Bool {
   match stmt {
     SLet(_, _, _, _, expr) => fn_has_compiler_spelled_type_param(expr),
     SFnDecl(_, _, expr, _, _) => fn_has_compiler_spelled_type_param(expr),
@@ -92,13 +94,13 @@ fn binds_compiler_spelled_type_param(stmt: Stmt) -> Bool {
   }
 }
 
-fn fn_has_compiler_spelled_type_param(expr: Expr) -> Bool {
+fn fn_has_compiler_spelled_type_param(_ expr: Expr) -> Bool {
   match expr {
     EFn(tps, _, _, _, _, _) => {
       let mut i = 0
       let mut found = false
       while i < Array::length(tps) {
-        if String::starts_with(Array::get(tps, i), "__Vfp_") {
+        if String::starts_with(Array::get(tps, at = i), prefix = "__Vfp_") {
           found = true
         } else {
           ()
@@ -112,14 +114,14 @@ fn fn_has_compiler_spelled_type_param(expr: Expr) -> Bool {
 }
 
 /// The first 96 bytes of a kept statement, for a message that names it.
-fn snippet_head(snippet: String) -> String {
+fn snippet_head(_ snippet: String) -> String {
   let n = String::length(snippet)
   let cut = if n > 96 {
     96
   } else {
     n
   }
-  String::substring(snippet, 0, cut)
+  String::substring(snippet, start = 0, end = cut)
 }
 
 /// debugger テーマ3 / M2: build a `.funcmap` sidecar text mapping each ENTRY-file
@@ -142,18 +144,18 @@ export let build_funcmap_from_source: (String) -> String with Exception = (sourc
   let tokens = lexed.0
   let starts = lexed.1
   let ends = lexed.2
-  let parsed = parse_program_spans(tokens, starts, ends)
+  let parsed = parse_program_spans(tokens = tokens, starts = starts, ends = ends)
   let stmts = parsed.0
   let span_start = parsed.1
   let buf = StringBuilder::new()
   let mut i = 0
   while i < Array::length(stmts) {
-    let stmt = Array::get(stmts, i)
+    let stmt = Array::get(stmts, at = i)
     let entry = match stmt {
       SLet(_, _, name, _, expr) => match expr {
         EFn(_, _, _, _, _, _) => {
-          let off = Array::get(span_start, i)
-          let lc = offset_to_line_col(source, off)
+          let off = Array::get(span_start, at = i)
+          let lc = offset_to_line_col(source = source, offset = off)
           let line = lc.0
           String::concat(name, String::concat("\t", String::concat(__to_string(line), "\n")))
         },
@@ -161,7 +163,7 @@ export let build_funcmap_from_source: (String) -> String with Exception = (sourc
       },
       _ => ""
     }
-    StringBuilder::push(buf, entry)
+    StringBuilder::push(buf, value = entry)
     i = i + 1
   }
   StringBuilder::freeze(buf)

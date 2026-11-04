@@ -145,49 +145,49 @@ fn comp_generate_async_trampoline_hostfuture() -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
   let tc = bytebuf_new()
-  bytebuf_push_vec_header(tc, 3)
-  emit_func_type_raw(tc, [126], [126])
-  emit_func_type_raw(tc, [127], array_empty())
-  emit_func_type_raw(tc, array_empty(), array_empty())
-  bytebuf_push_section(out, 1, tc)
+  bytebuf_push_vec_header(buf = tc, count = 3)
+  emit_func_type_raw(buf = tc, param_types = [126], result_types = [126])
+  emit_func_type_raw(buf = tc, param_types = [127], result_types = array_empty())
+  emit_func_type_raw(buf = tc, param_types = array_empty(), result_types = array_empty())
+  bytebuf_push_section(out = out, section_id = 1, content = tc)
   let ic = bytebuf_new()
-  bytebuf_push_vec_header(ic, 2)
-  emit_name(ic, "main")
-  emit_name(ic, "run")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 0)
-  emit_name(ic, "cm")
-  emit_name(ic, "task-return")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 1)
-  bytebuf_push_section(out, 2, ic)
-  emit_function_section(out, [2])
-  emit_export_section(out, "run", 2)
+  bytebuf_push_vec_header(buf = ic, count = 2)
+  emit_name(buf = ic, name = "main")
+  emit_name(buf = ic, name = "run")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 0)
+  emit_name(buf = ic, name = "cm")
+  emit_name(buf = ic, name = "task-return")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 1)
+  bytebuf_push_section(out = out, section_id = 2, content = ic)
+  emit_function_section(out = out, type_indices = [2])
+  emit_export_section(out = out, name = "run", func_idx = 2)
   let body = bytebuf_new()
-  emit_i64_const(body, 0)
-  emit_call(body, 0)
+  emit_i64_const(buf = body, value = 0)
+  emit_call(buf = body, func_idx = 0)
   emit_i32_wrap_i64(body)
-  emit_call(body, 1)
-  emit_code_section(out, [body])
+  emit_call(buf = body, func_idx = 1)
+  emit_code_section(out = out, bodies = [body])
   bytebuf_to_bytes(out)
 }
 
-fn comp_core_sig_is_p0_i64(sig: Array[Int]) -> Bool {
-  Array::length(sig) == 3 && Array::get(sig, 0) == 0 && Array::get(sig, 1) == 1 && Array::get(sig, 2) == 126
+fn comp_core_sig_is_p0_i64(_ sig: Array[Int]) -> Bool {
+  Array::length(sig) == 3 && Array::get(sig, at = 0) == 0 && Array::get(sig, at = 1) == 1 && Array::get(sig, at = 2) == 126
 }
 
-fn comp_core_sig_is_p1_i64_i64(sig: Array[Int]) -> Bool {
-  Array::length(sig) == 4 && Array::get(sig, 0) == 1 && Array::get(sig, 1) == 126 && Array::get(sig, 2) == 1 && Array::get(sig, 3) == 126
+fn comp_core_sig_is_p1_i64_i64(_ sig: Array[Int]) -> Bool {
+  Array::length(sig) == 4 && Array::get(sig, at = 0) == 1 && Array::get(sig, at = 1) == 126 && Array::get(sig, at = 2) == 1 && Array::get(sig, at = 3) == 126
 }
 
-fn comp_core_sig_is_fd_write(sig: Array[Int]) -> Bool {
-  Array::length(sig) == 7 && Array::get(sig, 0) == 4 && Array::get(sig, 1) == 127 && Array::get(sig, 2) == 127 && Array::get(sig, 3) == 127 && Array::get(sig, 4) == 127 && Array::get(sig, 5) == 1 && Array::get(sig, 6) == 127
+fn comp_core_sig_is_fd_write(_ sig: Array[Int]) -> Bool {
+  Array::length(sig) == 7 && Array::get(sig, at = 0) == 4 && Array::get(sig, at = 1) == 127 && Array::get(sig, at = 2) == 127 && Array::get(sig, at = 3) == 127 && Array::get(sig, at = 4) == 127 && Array::get(sig, at = 5) == 1 && Array::get(sig, at = 6) == 127
 }
 
 /// #1342 routing key: the compiled core imports the blocking host sleep, so
 /// it needs the adapter's sleep half and cannot be composed self-contained.
-export fn comp_core_imports_sleep(core_wasm: Bytes) -> Bool {
-  comp_core_imports_func(core_wasm, "vibe", "sleep")
+export fn comp_core_imports_sleep(_ core_wasm: Bytes) -> Bool {
+  comp_core_imports_func(core_wasm = core_wasm, module_name = "vibe", func_name = "sleep")
 }
 
 /// #1342: what the SELF-CONTAINED async wrap can actually satisfy.
@@ -200,12 +200,12 @@ export fn comp_core_imports_sleep(core_wasm: Bytes) -> Bool {
 /// The compiler used to write that artifact and exit 0, which is the worst
 /// available answer: a build that reports success and hands back a file the
 /// runtime rejects. Name the unsatisfiable import instead.
-export fn comp_reject_unsatisfiable_selfcontained_imports(core_wasm: Bytes) -> Unit with Exception {
+export fn comp_reject_unsatisfiable_selfcontained_imports(_ core_wasm: Bytes) -> Unit with Exception {
   let modules = array_empty()
   let names = array_empty()
   let type_indices = new_int_array()
   let type_sigs = array_empty()
-  let count = parse_core_imports(core_wasm, modules, names, type_indices, type_sigs)
+  let count = parse_core_imports(core_wasm = core_wasm, out_module_names = modules, out_func_names = names, out_type_indices = type_indices, out_type_sigs = type_sigs)
   // `process_exit` is satisfiable only as the exception boundary's exit, which
   // always comes with its stderr import (see the trampolined emitter). The
   // import section cannot tell that exit from one the program wrote beside its
@@ -213,15 +213,15 @@ export fn comp_reject_unsatisfiable_selfcontained_imports(core_wasm: Bytes) -> U
   let mut has_stderr = false
   let mut si = 0
   while si < count {
-    if Array::get(modules, si) == "vibe" && Array::get(names, si) == "stderr_write_stream" {
+    if Array::get(modules, at = si) == "vibe" && Array::get(names, at = si) == "stderr_write_stream" {
       has_stderr = true
     }
     si = si + 1
   }
   let mut i = 0
   while i < count {
-    let im = Array::get(modules, i)
-    let ifn = Array::get(names, i)
+    let im = Array::get(modules, at = i)
+    let ifn = Array::get(names, at = i)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
     } else if im == "vibe" && (ifn == "stderr_write_stream" || (ifn == "process_exit" && has_stderr)) {
@@ -233,7 +233,7 @@ export fn comp_reject_unsatisfiable_selfcontained_imports(core_wasm: Bytes) -> U
   }
 }
 
-fn comp_is_stdin_provider_import_name(name: String) -> Bool {
+fn comp_is_stdin_provider_import_name(_ name: String) -> Bool {
   name == "stdin_provider_acquire" || name == "stdin_provider_read" || name == "stdin_provider_close"
 }
 
@@ -255,9 +255,9 @@ fn comp_is_stdin_provider_import_name(name: String) -> Bool {
 export fn comp_emit_component_wasm_command(core_wasm: Bytes, target_func_name: String, export_name: String) -> Bytes with Exception {
   let params = ["args"]
   if comp_core_imports_vibe_host(core_wasm) {
-    comp_emit_component_wasm_string_handler_vfs_trapping(core_wasm, target_func_name, export_name, params)
+    comp_emit_component_wasm_string_handler_vfs_trapping(core_wasm = core_wasm, target_func_name = target_func_name, export_name = export_name, param_names = params)
   } else {
-    comp_emit_component_wasm_string_handler(core_wasm, target_func_name, export_name, params)
+    comp_emit_component_wasm_string_handler(core_wasm = core_wasm, target_func_name = target_func_name, export_name = export_name, param_names = params)
   }
 }
 
@@ -271,16 +271,16 @@ export fn comp_emit_component_wasm_command(core_wasm: Bytes, target_func_name: S
 /// component imports and whose remaining `vibe.*` imports become traps.
 /// Choosing from the core's own import section rather than from a flag is
 /// what keeps the two answers from disagreeing.
-export fn comp_core_imports_vibe_host(core_wasm: Bytes) -> Bool {
+export fn comp_core_imports_vibe_host(_ core_wasm: Bytes) -> Bool {
   let modules = array_empty()
   let names = array_empty()
   let indices = new_int_array()
   let sigs = array_empty()
-  let count = parse_core_imports(core_wasm, modules, names, indices, sigs)
+  let count = parse_core_imports(core_wasm = core_wasm, out_module_names = modules, out_func_names = names, out_type_indices = indices, out_type_sigs = sigs)
   let mut found = false
   let mut i = 0
   while i < count {
-    if Array::get(modules, i) == "vibe" {
+    if Array::get(modules, at = i) == "vibe" {
       found = true
     } else {
       ()
@@ -293,16 +293,16 @@ export fn comp_core_imports_vibe_host(core_wasm: Bytes) -> Bool {
 /// #1539 exact parsed-import routing key. A malformed exact provider import
 /// still returns true so the stdin composer, rather than an unrelated wrapper,
 /// produces the actionable signature diagnostic.
-export fn comp_core_imports_stdin_provider(core_wasm: Bytes) -> Bool {
+export fn comp_core_imports_stdin_provider(_ core_wasm: Bytes) -> Bool {
   let modules = array_empty()
   let names = array_empty()
   let indices = new_int_array()
   let sigs = array_empty()
-  let count = parse_core_imports(core_wasm, modules, names, indices, sigs)
+  let count = parse_core_imports(core_wasm = core_wasm, out_module_names = modules, out_func_names = names, out_type_indices = indices, out_type_sigs = sigs)
   let mut found = false
   let mut i = 0
   while i < count {
-    if Array::get(modules, i) == "vibe" && comp_is_stdin_provider_import_name(Array::get(names, i)) {
+    if Array::get(modules, at = i) == "vibe" && comp_is_stdin_provider_import_name(Array::get(names, at = i)) {
       found = true
     } else {
       ()
@@ -319,13 +319,13 @@ export fn comp_emit_component_wasm_async_stdin_provider(main_core_wasm: Bytes, e
   let export_names = array_empty()
   let export_func_indices = new_int_array()
   let export_sigs = array_empty()
-  let _ = parse_core_exports(main_core_wasm, export_names, export_func_indices, export_sigs)
+  let _ = parse_core_exports(core_wasm = main_core_wasm, out_names = export_names, out_func_indices = export_func_indices, out_type_sigs = export_sigs)
   let mut run_ok = false
   let mut ei = 0
   while ei < Array::length(export_names) {
-    if Array::get(export_names, ei) == "run" {
-      let sig = Array::get(export_sigs, ei)
-      run_ok = Array::length(sig) == 4 && Array::get(sig, 0) == 1 && Array::get(sig, 1) == 126 && Array::get(sig, 2) == 1 && Array::get(sig, 3) == 126
+    if Array::get(export_names, at = ei) == "run" {
+      let sig = Array::get(export_sigs, at = ei)
+      run_ok = Array::length(sig) == 4 && Array::get(sig, at = 0) == 1 && Array::get(sig, at = 1) == 126 && Array::get(sig, at = 2) == 1 && Array::get(sig, at = 3) == 126
     } else {
       ()
     }
@@ -340,7 +340,7 @@ export fn comp_emit_component_wasm_async_stdin_provider(main_core_wasm: Bytes, e
   let names = array_empty()
   let indices = new_int_array()
   let sigs = array_empty()
-  let count = parse_core_imports(main_core_wasm, modules, names, indices, sigs)
+  let count = parse_core_imports(core_wasm = main_core_wasm, out_module_names = modules, out_func_names = names, out_type_indices = indices, out_type_sigs = sigs)
   // Diagnose the bounded-slice composition conflict before the allowlist walk:
   // linked_compile emits the shared stream/future operations before some
   // per-name getters, so waiting for declaration order could produce a generic
@@ -355,15 +355,15 @@ export fn comp_emit_component_wasm_async_stdin_provider(main_core_wasm: Bytes, e
   let mut close_count = 0
   let mut i = 0
   while i < count {
-    let module_name = Array::get(modules, i)
-    let name = Array::get(names, i)
-    let type_idx = Array::get(indices, i)
+    let module_name = Array::get(modules, at = i)
+    let name = Array::get(names, at = i)
+    let type_idx = Array::get(indices, at = i)
     if type_idx < 0 || type_idx >= Array::length(sigs) {
       throw("component(async-stdin-provider): import '\{module_name}.\{name}' has an invalid core type index")
     } else {
       ()
     }
-    let sig = Array::get(sigs, type_idx)
+    let sig = Array::get(sigs, at = type_idx)
     if module_name == "wasi_snapshot_preview1" && name == "fd_write" {
       if !comp_core_sig_is_fd_write(sig) {
         throw("component(async-stdin-provider): wasi_snapshot_preview1.fd_write must have signature (i32, i32, i32, i32) -> i32")
@@ -411,34 +411,38 @@ export fn comp_emit_component_wasm_async_stdin_provider(main_core_wasm: Bytes, e
   emit_comp_wasi_cli_stdin_import_prefix(buf)
   // modules: 0 main, 1 lifecycle shadow, 2 tagged bridge, 3 trampoline,
   // 4 fd_write stub, 5 memhost.
-  emit_core_module_section(buf, main_core_wasm)
-  emit_core_module_section(buf, comp_generate_stdin_provider_adapter_core_module())
-  emit_core_module_section(buf, comp_generate_stdin_provider_tagged_bridge_core_module())
-  emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
-  emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
-  emit_core_module_section(buf, comp_generate_memhost_module())
+  emit_core_module_section(buf = buf, core_wasm = main_core_wasm)
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_stdin_provider_adapter_core_module())
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_stdin_provider_tagged_bridge_core_module())
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_async_trampoline_hostfuture())
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_wasi_fd_write_stub())
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_memhost_module())
   let memhost_inst = 0
-  emit_core_instance_instantiate_section(buf, 5, array_empty())
+  emit_core_instance_instantiate_section(buf = buf, module_index = 5, module_names = array_empty())
   let mem_alias_idx = 0
-  emit_alias_section(buf, memhost_inst, ["memory"], [core_sort_mem])
+  emit_alias_section(buf = buf, core_instance_idx = memhost_inst, names = [
+    "memory"
+  ], sorts = [core_sort_mem])
   let stream_type_idx = 3
   let completion_result_type_idx = 4
   let completion_future_type_idx = 5
-  emit_comp_stream_type_section(buf, comp_valtype_u8)
-  emit_comp_result_error_type_section(buf, 1)
-  emit_comp_future_type_section(buf, completion_result_type_idx)
-  emit_canon_lower_memory_section(buf, 0, mem_alias_idx)
-  emit_canon_stream_read(buf, stream_type_idx, mem_alias_idx)
-  emit_canon_stream_drop_readable(buf, stream_type_idx)
-  emit_canon_future_read(buf, completion_future_type_idx, mem_alias_idx)
-  emit_canon_future_drop_readable(buf, completion_future_type_idx)
+  emit_comp_stream_type_section(buf = buf, elem_valtype = comp_valtype_u8)
+  emit_comp_result_error_type_section(buf = buf, error_type_idx = 1)
+  emit_comp_future_type_section(buf = buf, elem_valtype = completion_result_type_idx)
+  emit_canon_lower_memory_section(buf = buf, comp_func_idx = 0, memory_core_idx = mem_alias_idx)
+  emit_canon_stream_read(buf = buf, type_idx = stream_type_idx, memory_core_idx = mem_alias_idx)
+  emit_canon_stream_drop_readable(buf = buf, type_idx = stream_type_idx)
+  emit_canon_future_read(buf = buf, type_idx = completion_future_type_idx, memory_core_idx = mem_alias_idx)
+  emit_canon_future_drop_readable(buf = buf, type_idx = completion_future_type_idx)
   emit_canon_waitable_set_new(buf)
   emit_canon_waitable_join(buf)
-  emit_canon_waitable_set_wait(buf, mem_alias_idx)
+  emit_canon_waitable_set_wait(buf = buf, memory_core_idx = mem_alias_idx)
   emit_canon_waitable_set_drop(buf)
-  emit_canon_task_return(buf, comp_valtype_u32)
+  emit_canon_task_return(buf = buf, result_valtype = comp_valtype_u32)
   let root_inst = 1
-  emit_core_instance_from_exports(buf, 1, [9], [
+  emit_core_instance_from_exports(buf = buf, num_modules = 1, module_binding_counts = [
+    9
+  ], binding_func_names = [
     "read-via-stream",
     "[async-lower][stream-read-0]read-via-stream",
     "[stream-drop-readable-0]read-via-stream",
@@ -448,62 +452,74 @@ export fn comp_emit_component_wasm_async_stdin_provider(main_core_wasm: Bytes, e
     "[waitable-join]",
     "[waitable-set-wait]",
     "[waitable-set-drop]"
-  ], [0, 1, 2, 3, 4, 5, 6, 7, 8])
+  ], binding_func_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8])
   // The scenario imports exist only because the proven lifecycle module is
   // reused byte-for-byte. They all bind the same unreachable-from-production
   // task-return function and are never passed to the main guest.
   let export_root_inst = 2
-  emit_core_instance_from_exports(buf, 1, [6], [
+  emit_core_instance_from_exports(buf = buf, num_modules = 1, module_binding_counts = [
+    6
+  ], binding_func_names = [
     "[task-return]drain",
     "[task-return]early-close",
     "[task-return]forced-completion-tag-control",
     "[task-return]foreign-provider-control",
     "[task-return]wrong-byte-cleanup-control",
     "[task-return]extra-byte-cleanup-control"
-  ], [9, 9, 9, 9, 9, 9])
+  ], binding_func_indices = [9, 9, 9, 9, 9, 9])
   let env_inst = 3
-  emit_core_instance_from_exports_sorted(buf, ["memory"], [core_sort_mem], [
-    mem_alias_idx
-  ])
+  emit_core_instance_from_exports_sorted(buf = buf, names = ["memory"], sorts = [
+    core_sort_mem
+  ], indices = [mem_alias_idx])
   let shadow_inst = 4
-  emit_core_instance_instantiate_args(buf, 1, ["$root", "[export]$root", "env"], [
-    root_inst,
-    export_root_inst,
-    env_inst
-  ])
+  emit_core_instance_instantiate_args(buf = buf, module_index = 1, arg_names = [
+    "$root",
+    "[export]$root",
+    "env"
+  ], arg_instance_indices = [root_inst, export_root_inst, env_inst])
   let bridge_inst = 5
-  emit_core_instance_instantiate_args(buf, 2, ["shadow"], [shadow_inst])
+  emit_core_instance_instantiate_args(buf = buf, module_index = 2, arg_names = [
+    "shadow"
+  ], arg_instance_indices = [shadow_inst])
   let stub_inst = 6
-  emit_core_instance_instantiate_section(buf, 4, array_empty())
+  emit_core_instance_instantiate_section(buf = buf, module_index = 4, module_names = array_empty())
   let main_inst = 7
-  emit_core_instance_instantiate_args(buf, 0, ["wasi_snapshot_preview1", "vibe"], [
-    stub_inst,
-    bridge_inst
-  ])
+  emit_core_instance_instantiate_args(buf = buf, module_index = 0, arg_names = [
+    "wasi_snapshot_preview1",
+    "vibe"
+  ], arg_instance_indices = [stub_inst, bridge_inst])
   let main_run_func_idx = 10
-  emit_alias_section(buf, main_inst, ["run"], [core_sort_func])
-  let main_arg_inst = 8
-  emit_core_instance_from_exports(buf, 1, [1], ["run"], [main_run_func_idx])
-  let cm_arg_inst = 9
-  emit_core_instance_from_exports(buf, 1, [1], ["task-return"], [9])
-  let tramp_inst = 10
-  emit_core_instance_instantiate_args(buf, 3, ["main", "cm"], [
-    main_arg_inst,
-    cm_arg_inst
+  emit_alias_section(buf = buf, core_instance_idx = main_inst, names = ["run"], sorts = [
+    core_sort_func
   ])
+  let main_arg_inst = 8
+  emit_core_instance_from_exports(buf = buf, num_modules = 1, module_binding_counts = [
+    1
+  ], binding_func_names = ["run"], binding_func_indices = [main_run_func_idx])
+  let cm_arg_inst = 9
+  emit_core_instance_from_exports(buf = buf, num_modules = 1, module_binding_counts = [
+    1
+  ], binding_func_names = ["task-return"], binding_func_indices = [9])
+  let tramp_inst = 10
+  emit_core_instance_instantiate_args(buf = buf, module_index = 3, arg_names = [
+    "main",
+    "cm"
+  ], arg_instance_indices = [main_arg_inst, cm_arg_inst])
   let async_type_idx = 6
-  emit_comp_async_functype_section(buf, comp_valtype_u32)
+  emit_comp_async_functype_section(buf = buf, result_valtype = comp_valtype_u32)
   let tramp_run_func_idx = 11
-  emit_alias_section(buf, tramp_inst, ["run"], [core_sort_func])
-  emit_canon_lift_async_section(buf, tramp_run_func_idx, async_type_idx)
-  emit_comp_export_section(buf, export_name, 1)
+  emit_alias_section(buf = buf, core_instance_idx = tramp_inst, names = ["run"], sorts = [
+    core_sort_func
+  ])
+  emit_canon_lift_async_section(buf = buf, core_func_idx = tramp_run_func_idx, type_idx = async_type_idx)
+  emit_comp_export_section(buf = buf, name = export_name, func_idx = 1)
   bytebuf_to_bytes(buf)
 }
 
 /// Internal runtime-gate fixture: 0=drain (42), 1=early close (43), and
 /// 2/3/4=odd/out-of-u32/high-bit malformed tagged-wire trap controls.
-export fn comp_emit_component_wasm_async_stdin_provider_fixture(mode: Int) -> Bytes with Exception {
-  comp_emit_component_wasm_async_stdin_provider(comp_generate_stdin_provider_synthetic_core(mode), "run")
+export fn comp_emit_component_wasm_async_stdin_provider_fixture(_ mode: Int) -> Bytes with Exception {
+  comp_emit_component_wasm_async_stdin_provider(main_core_wasm = comp_generate_stdin_provider_synthetic_core(mode), export_name = "run")
 }
 
 /// ADR-0089 step 4 (#1218): wrap a REAL compiled core module -- one whose
@@ -539,7 +555,8 @@ export fn comp_emit_component_wasm_async_stdin_provider_fixture(mode: Int) -> By
 /// 2=env(memory), 3=adapter, 4=wasi-stub, 5=main, 6=main-arg, 7=cm-arg,
 /// 8=trampoline.
 export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, export_name: String) -> Bytes with Exception {
-  comp_emit_async_host_composition(main_core_wasm, export_name, "", [])
+  comp_emit_async_host_composition(main_core_wasm = main_core_wasm, export_name = export_name, handler_target = "", handler_params = [
+  ])
 }
 
 /// #2066: the `wasi:http/service` shape -- a serve handler that is ALSO a
@@ -555,12 +572,12 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
 /// plain i64 values (the serve lane's convention), which the adapter follows
 /// through `vibe.tagmode`.
 export fn comp_emit_component_wasm_service_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
-  comp_emit_async_host_composition(core_wasm, export_name, target_func_name, param_names)
+  comp_emit_async_host_composition(main_core_wasm = core_wasm, export_name = export_name, handler_target = target_func_name, handler_params = param_names)
 }
 
 /// Whether a serve core awaits a host future or response, which routes it to
 /// the service composer: the plain stream lane has no provider for either.
-fn comp_core_awaits_host_future(core_wasm: Bytes) -> Bool with Exception {
+fn comp_core_awaits_host_future(_ core_wasm: Bytes) -> Bool with Exception {
   Array::length(comp_core_host_future_names(core_wasm)) > 0
 }
 
@@ -570,8 +587,8 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   let handler_mode = handler_target != ""
   let handler_string_count = Array::length(handler_params) - 1
   if handler_mode {
-    comp_require_tag_mode(main_core_wasm, 0, "component(service-handler)")
-    comp_check_stream_handler_target(main_core_wasm, handler_target, handler_string_count)
+    comp_require_tag_mode(core_wasm = main_core_wasm, expected = 0, context = "component(service-handler)")
+    comp_check_stream_handler_target(core_wasm = main_core_wasm, target_func_name = handler_target, string_param_count = handler_string_count)
   } else {
     ()
   }
@@ -580,14 +597,14 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   let export_names = array_empty()
   let export_func_indices = new_int_array()
   let export_type_sigs = array_empty()
-  let _ = parse_core_exports(main_core_wasm, export_names, export_func_indices, export_type_sigs)
+  let _ = parse_core_exports(core_wasm = main_core_wasm, out_names = export_names, out_func_indices = export_func_indices, out_type_sigs = export_type_sigs)
   let mut run_ok = false
   let mut ei = 0
   while ei < Array::length(export_names) {
-    if Array::get(export_names, ei) == "run" {
-      let sig = Array::get(export_type_sigs, ei)
+    if Array::get(export_names, at = ei) == "run" {
+      let sig = Array::get(export_type_sigs, at = ei)
       if Array::length(sig) == 4 {
-        run_ok = Array::get(sig, 0) == 1 && Array::get(sig, 1) == 126 && Array::get(sig, 2) == 1 && Array::get(sig, 3) == 126
+        run_ok = Array::get(sig, at = 0) == 1 && Array::get(sig, at = 1) == 126 && Array::get(sig, at = 2) == 1 && Array::get(sig, at = 3) == 126
       } else {
         ()
       }
@@ -609,14 +626,14 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   let imp_names = array_empty()
   let imp_type_indices = new_int_array()
   let imp_type_sigs = array_empty()
-  let import_count = parse_core_imports(main_core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let import_count = parse_core_imports(core_wasm = main_core_wasm, out_module_names = imp_modules, out_func_names = imp_names, out_type_indices = imp_type_indices, out_type_sigs = imp_type_sigs)
   let mut ii = 0
   while ii < import_count {
-    let im = Array::get(imp_modules, ii)
-    let ifn = Array::get(imp_names, ii)
+    let im = Array::get(imp_modules, at = ii)
+    let ifn = Array::get(imp_names, at = ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || ifn == "host_stream_arm" || ifn == "host_sleep_arm" || ifn == "host_future_cancel" || ifn == "host_stream_cancel" || ifn == "host_arg_push" || ifn == "host_sleep_cancel" || ifn == "host_stream_claim" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream"))) {
+    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || ifn == "host_future_arm" || ifn == "host_future_wait_any" || ifn == "host_stream_arm" || ifn == "host_sleep_arm" || ifn == "host_future_cancel" || ifn == "host_stream_cancel" || ifn == "host_arg_push" || ifn == "host_sleep_cancel" || ifn == "host_stream_claim" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep" || ifn == "stderr_write_stream" || (ifn == "process_exit" && comp_core_imports_func(core_wasm = main_core_wasm, module_name = "vibe", func_name = "stderr_write_stream"))) {
       ()
     } else {
       throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write, sleep and the host-future/host-stream imports are satisfiable in this composition)")
@@ -628,7 +645,7 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   let mut nwit = 0
   let mut wit_i = 0
   while wit_i < nhf {
-    if comp_is_wit_future_get_import(Array::get(hf_names, wit_i)) {
+    if comp_is_wit_future_get_import(Array::get(hf_names, at = wit_i)) {
       nwit = nwit + 1
     } else {
       ()
@@ -653,7 +670,7 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   let mut nresp = 0
   let mut resp_i = 0
   while resp_i < nhf {
-    if comp_is_wit_response_get_import(Array::get(hf_names, resp_i)) {
+    if comp_is_wit_response_get_import(Array::get(hf_names, at = resp_i)) {
       nresp = nresp + 1
     } else {
       ()
@@ -669,7 +686,7 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   if mixed {
     let mut rk_i = 0
     while rk_i < nhf {
-      Array::push(response_kinds, comp_is_wit_response_get_import(Array::get(hf_names, rk_i)))
+      Array::push(response_kinds, value = comp_is_wit_response_get_import(Array::get(hf_names, at = rk_i)))
       rk_i = rk_i + 1
     }
   } else {
@@ -723,34 +740,34 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   }
   let fut_functype_idx = 1
   if response_mode {
-    let api_interface = Array::get(wit_interfaces, 0)
-    emit_comp_wit_payload_types_instance_type_named(buf, comp_wit_response_payload_descriptor(), comp_wit_response_type_name())
-    emit_comp_instance_import_section(buf, comp_wit_types_interface_id(api_interface), 0)
-    emit_comp_instance_export_alias_section(buf, 0, comp_wit_response_type_name(), 3)
-    bytebuf_push(buf, section_type)
+    let api_interface = Array::get(wit_interfaces, at = 0)
+    emit_comp_wit_payload_types_instance_type_named(buf = buf, payload = comp_wit_response_payload_descriptor(), type_name = comp_wit_response_type_name())
+    emit_comp_instance_import_section(buf = buf, import_name = comp_wit_types_interface_id(api_interface), instance_type_idx = 0)
+    emit_comp_instance_export_alias_section(buf = buf, instance_idx = 0, export_name = comp_wit_response_type_name(), sort = 3)
+    bytebuf_push(buf = buf, byte = section_type)
     let fut_content = bytebuf_new()
-    leb128_encode_u32(fut_content, 1)
-    bytebuf_push(fut_content, 101)
-    bytebuf_push(fut_content, 1)
-    leb128_encode_u32(fut_content, 1)
-    emit_raw_content(buf, fut_content)
+    leb128_encode_u32(buf = fut_content, value = 1)
+    bytebuf_push(buf = fut_content, byte = 101)
+    bytebuf_push(buf = fut_content, byte = 1)
+    leb128_encode_u32(buf = fut_content, value = 1)
+    emit_raw_content(buf = buf, content = fut_content)
     if comp_any_wit_response_arg(hf_names) {
-      emit_comp_wit_async_api_type_general(buf, hf_names)
+      emit_comp_wit_async_api_type_general(buf = buf, core_names = hf_names)
     } else if mixed {
-      emit_comp_wit_async_mixed_api_type(buf, comp_wit_future_funcs_of_kind(hf_names, api_interface, true), comp_wit_future_funcs_of_kind(hf_names, api_interface, false))
+      emit_comp_wit_async_mixed_api_type(buf = buf, response_funcs = comp_wit_future_funcs_of_kind(core_names = hf_names, interface_id = api_interface, want = true), scalar_funcs = comp_wit_future_funcs_of_kind(core_names = hf_names, interface_id = api_interface, want = false))
     } else {
-      emit_comp_wit_async_response_api_type(buf, comp_wit_future_funcs(hf_names, api_interface))
+      emit_comp_wit_async_response_api_type(buf = buf, func_names = comp_wit_future_funcs(core_names = hf_names, interface_id = api_interface))
     }
-    emit_comp_stream_type_section(buf, comp_valtype_u8)
-    emit_comp_instance_import_section(buf, api_interface, 3)
+    emit_comp_stream_type_section(buf = buf, elem_valtype = comp_valtype_u8)
+    emit_comp_instance_import_section(buf = buf, import_name = api_interface, instance_type_idx = 3)
     if mixed {
       // 5 = future<s64>, the scalar functions' canon read/drop type
-      emit_comp_future_type_section(buf, comp_valtype_s64)
+      emit_comp_future_type_section(buf = buf, elem_valtype = comp_valtype_s64)
     } else {
       ()
     }
   } else if nhf > 0 {
-    emit_comp_future_type_section(buf, if future_s64 {
+    emit_comp_future_type_section(buf = buf, elem_valtype = if future_s64 {
       comp_valtype_s64
     } else {
       comp_valtype_u32
@@ -758,12 +775,12 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
     if future_s64 {
       let mut wit_ty_i = 0
       while wit_ty_i < nwit_interfaces {
-        let interface_id = Array::get(wit_interfaces, wit_ty_i)
-        emit_comp_wit_async_future_instance_type(buf, comp_wit_future_funcs(hf_names, interface_id))
+        let interface_id = Array::get(wit_interfaces, at = wit_ty_i)
+        emit_comp_wit_async_future_instance_type(buf = buf, func_names = comp_wit_future_funcs(core_names = hf_names, interface_id = interface_id))
         wit_ty_i = wit_ty_i + 1
       }
     } else {
-      emit_comp_async_functype_section_result_type(buf, future_type_idx)
+      emit_comp_async_functype_section_result_type(buf = buf, result_type_idx = future_type_idx)
     }
   } else {
     ()
@@ -804,9 +821,9 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
     if response_mode {
       ()
     } else {
-      emit_comp_stream_type_section(buf, comp_valtype_u8)
+      emit_comp_stream_type_section(buf = buf, elem_valtype = comp_valtype_u8)
     }
-    emit_comp_async_functype_section_result_type(buf, stream_type_idx)
+    emit_comp_async_functype_section_result_type(buf = buf, result_type_idx = stream_type_idx)
   } else {
     ()
   }
@@ -816,7 +833,9 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   // absent, so count the emitted types rather than assuming a fixed offset.
   let sleep_functype_idx = future_type_count + stream_type_slots
   if want_sleep {
-    emit_comp_async_functype_params(buf, ["ms"], [comp_valtype_u32], comp_valtype_u32)
+    emit_comp_async_functype_params(buf = buf, param_names = ["ms"], param_valtypes = [
+      comp_valtype_u32
+    ], result_valtype = comp_valtype_u32)
   } else {
     ()
   }
@@ -834,24 +853,24 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   } else if future_s64 {
     let mut wi = 0
     while wi < nwit_interfaces {
-      emit_comp_instance_import_section(buf, Array::get(wit_interfaces, wi), 1 + wi)
+      emit_comp_instance_import_section(buf = buf, import_name = Array::get(wit_interfaces, at = wi), instance_type_idx = 1 + wi)
       wi = wi + 1
     }
   } else {
     let mut himp_i = 0
     while himp_i < nhf {
-      let core_name = Array::get(hf_names, himp_i)
-      emit_comp_import_section_typed(buf, comp_hostfuture_import_label(core_name), fut_functype_idx)
+      let core_name = Array::get(hf_names, at = himp_i)
+      emit_comp_import_section_typed(buf = buf, import_name = comp_hostfuture_import_label(core_name), functype_idx = fut_functype_idx)
       himp_i = himp_i + 1
     }
   }
   let mut simp_i = 0
   while simp_i < nhs {
-    emit_comp_import_section_typed(buf, comp_hoststream_import_label(Array::get(hs_names, simp_i)), stream_functype_idx)
+    emit_comp_import_section_typed(buf = buf, import_name = comp_hoststream_import_label(Array::get(hs_names, at = simp_i)), functype_idx = stream_functype_idx)
     simp_i = simp_i + 1
   }
   if want_sleep {
-    emit_comp_import_section_typed(buf, "sleep-for", sleep_functype_idx)
+    emit_comp_import_section_typed(buf = buf, import_name = "sleep-for", functype_idx = sleep_functype_idx)
   } else {
     ()
   }
@@ -860,21 +879,21 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   } else {
     nt
   }
-  emit_core_module_section(buf, main_core_wasm)
-  emit_core_module_section(buf, comp_generate_memhost_module())
+  emit_core_module_section(buf = buf, core_wasm = main_core_wasm)
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_memhost_module())
   // #1537: tasks awaiting host futures wait on them together.
-  let want_wait_any = comp_core_imports_vibe_name(main_core_wasm, "host_future_arm") || comp_core_imports_vibe_name(main_core_wasm, "host_future_wait_any")
-  let want_stream_arm = comp_core_imports_vibe_name(main_core_wasm, "host_stream_arm")
-  let want_sleep_arm = comp_core_imports_vibe_name(main_core_wasm, "host_sleep_arm")
-  let want_cancel = comp_core_imports_vibe_name(main_core_wasm, "host_future_cancel")
+  let want_wait_any = comp_core_imports_vibe_name(core_wasm = main_core_wasm, name = "host_future_arm") || comp_core_imports_vibe_name(core_wasm = main_core_wasm, name = "host_future_wait_any")
+  let want_stream_arm = comp_core_imports_vibe_name(core_wasm = main_core_wasm, name = "host_stream_arm")
+  let want_sleep_arm = comp_core_imports_vibe_name(core_wasm = main_core_wasm, name = "host_sleep_arm")
+  let want_cancel = comp_core_imports_vibe_name(core_wasm = main_core_wasm, name = "host_future_cancel")
   if want_cancel && nhf == 0 {
     throw("component(async-hostfuture): core module imports vibe.host_future_cancel without a host future")
   } else {
     ()
   }
-  let want_stream_cancel = comp_core_imports_vibe_name(main_core_wasm, "host_stream_cancel")
-  let want_arg_push = comp_core_imports_vibe_name(main_core_wasm, "host_arg_push")
-  let want_timer_cancel = comp_core_imports_vibe_name(main_core_wasm, "host_sleep_cancel")
+  let want_stream_cancel = comp_core_imports_vibe_name(core_wasm = main_core_wasm, name = "host_stream_cancel")
+  let want_arg_push = comp_core_imports_vibe_name(core_wasm = main_core_wasm, name = "host_arg_push")
+  let want_timer_cancel = comp_core_imports_vibe_name(core_wasm = main_core_wasm, name = "host_sleep_cancel")
   if want_sleep_arm && !want_sleep {
     throw("component(async-hostfuture): core module imports vibe.host_sleep_arm without vibe.sleep; the timer arm lowers through the sleep half")
   } else {
@@ -885,45 +904,47 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   // trapping stubs, as the p1 wrap does (#2976). A program's own
   // process_exit without the boundary's stderr import was refused above.
   let exit_stubs: Array[String] = []
-  if comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream") {
-    Array::push(exit_stubs, "stderr_write_stream")
+  if comp_core_imports_func(core_wasm = main_core_wasm, module_name = "vibe", func_name = "stderr_write_stream") {
+    Array::push(exit_stubs, value = "stderr_write_stream")
   } else {
     ()
   }
-  if comp_core_imports_func(main_core_wasm, "vibe", "process_exit") {
-    Array::push(exit_stubs, "process_exit")
+  if comp_core_imports_func(core_wasm = main_core_wasm, module_name = "vibe", func_name = "process_exit") {
+    Array::push(exit_stubs, value = "process_exit")
   } else {
     ()
   }
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64, response_mode, want_wait_any, want_stream_arm, want_sleep_arm, want_cancel, want_stream_cancel, response_kinds, want_arg_push, want_timer_cancel, exit_stubs, comp_core_imports_vibe_name(main_core_wasm, "host_stream_claim")))
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_hostfuture_adapter_core_module(core_names = hf_names, stream_core_names = hs_names, want_stream_close = hs_wants_close, want_sleep = want_sleep, tag_mode = tag_mode, future_s64 = future_s64, response_payload = response_mode, want_wait_any = want_wait_any, want_stream_arm = want_stream_arm, want_sleep_arm = want_sleep_arm, want_cancel = want_cancel, want_stream_cancel = want_stream_cancel, response_kinds = response_kinds, want_arg_push = want_arg_push, want_timer_cancel = want_timer_cancel, exit_stubs = exit_stubs, want_claim = comp_core_imports_vibe_name(core_wasm = main_core_wasm, name = "host_stream_claim")))
   if handler_mode {
-    emit_core_module_section(buf, comp_generate_string_trampoline_packed_async_opt(handler_string_count, export_name, true))
+    emit_core_module_section(buf = buf, core_wasm = comp_generate_string_trampoline_packed_async_opt(string_param_count = handler_string_count, export_name = export_name, stream_param = true))
   } else {
-    emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
+    emit_core_module_section(buf = buf, core_wasm = comp_generate_async_trampoline_hostfuture())
   }
-  emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_wasi_fd_write_stub())
   // A component-instance export alias must follow embedded core-module
   // sections. Root function imports need no alias; the WIT instance route does.
   if future_s64 {
     let mut wai = 0
     while wai < nhf {
-      let core_name = Array::get(hf_names, wai)
+      let core_name = Array::get(hf_names, at = wai)
       let interface_id = comp_wit_future_interface(core_name)
       let instance_idx = if response_mode {
         1
       } else {
-        comp_string_array_index(wit_interfaces, interface_id)
+        comp_string_array_index(items = wit_interfaces, needle = interface_id)
       }
-      emit_comp_instance_export_alias_section(buf, instance_idx, comp_wit_future_func(core_name), comp_extern_func)
+      emit_comp_instance_export_alias_section(buf = buf, instance_idx = instance_idx, export_name = comp_wit_future_func(core_name), sort = comp_extern_func)
       wai = wai + 1
     }
   } else {
     ()
   }
   let memhost_inst = 0
-  emit_core_instance_instantiate_section(buf, 1, array_empty())
+  emit_core_instance_instantiate_section(buf = buf, module_index = 1, module_names = array_empty())
   let mem_alias_idx = 0
-  emit_alias_section(buf, memhost_inst, ["memory"], [core_sort_mem])
+  emit_alias_section(buf = buf, core_instance_idx = memhost_inst, names = [
+    "memory"
+  ], sorts = [core_sort_mem])
   // Core func indices 0..K+L-1: the lowered imports, emitted in the same
   // order (futures then streams; the root instance exports map them by
   // name for the adapter).
@@ -952,7 +973,7 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
     } else {
       hlow_i - nhf
     }
-    emit_canon_lower_async_section(buf, comp_func, mem_alias_idx)
+    emit_canon_lower_async_section(buf = buf, comp_func_idx = comp_func, memory_core_idx = mem_alias_idx)
     hlow_i = hlow_i + 1
   }
   let fut_extra = if mixed {
@@ -963,14 +984,14 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
     0
   }
   if nhf > 0 {
-    emit_canon_future_read(buf, future_type_idx, mem_alias_idx)
-    emit_canon_future_drop_readable(buf, future_type_idx)
+    emit_canon_future_read(buf = buf, type_idx = future_type_idx, memory_core_idx = mem_alias_idx)
+    emit_canon_future_drop_readable(buf = buf, type_idx = future_type_idx)
   } else {
     ()
   }
   if mixed {
-    emit_canon_future_read(buf, 5, mem_alias_idx)
-    emit_canon_future_drop_readable(buf, 5)
+    emit_canon_future_read(buf = buf, type_idx = 5, memory_core_idx = mem_alias_idx)
+    emit_canon_future_drop_readable(buf = buf, type_idx = 5)
   } else {
     ()
   }
@@ -979,18 +1000,18 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   // L > 0), then the two aliases below. K-only reproduces the pre-stream
   // indices exactly (task-return = K+2, quartet K+3..K+6, run K+7/K+8).
   let task_return_core_idx = nt + fut_extra
-  emit_canon_task_return(buf, comp_valtype_u32)
+  emit_canon_task_return(buf = buf, result_valtype = comp_valtype_u32)
   emit_canon_waitable_set_new(buf)
   emit_canon_waitable_join(buf)
-  emit_canon_waitable_set_wait(buf, mem_alias_idx)
+  emit_canon_waitable_set_wait(buf = buf, memory_core_idx = mem_alias_idx)
   emit_canon_waitable_set_drop(buf)
   let stream_read_core_idx = task_return_core_idx + 5
   // #2066: a response body is a stream too, so response mode needs the
   // stream canon pair even with no named stream.
   let stream_half = nhs > 0 || response_mode
   if stream_half {
-    emit_canon_stream_read(buf, stream_type_idx, mem_alias_idx)
-    emit_canon_stream_drop_readable(buf, stream_type_idx)
+    emit_canon_stream_read(buf = buf, type_idx = stream_type_idx, memory_core_idx = mem_alias_idx)
+    emit_canon_stream_drop_readable(buf = buf, type_idx = stream_type_idx)
   } else {
     ()
   }
@@ -1002,11 +1023,11 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
     task_return_core_idx + 5
   }
   if want_sleep {
-    emit_canon_lower_async_section(buf, if future_s64 {
+    emit_canon_lower_async_section(buf = buf, comp_func_idx = if future_s64 {
       nhs
     } else {
       nt
-    }, mem_alias_idx)
+    }, memory_core_idx = mem_alias_idx)
     emit_canon_subtask_drop(buf)
   } else {
     ()
@@ -1018,9 +1039,9 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
     sleep_lower_core_idx
   }
   if want_cancel {
-    emit_canon_future_cancel_read(buf, future_type_idx)
+    emit_canon_future_cancel_read(buf = buf, type_idx = future_type_idx)
     if mixed {
-      emit_canon_future_cancel_read(buf, 5)
+      emit_canon_future_cancel_read(buf = buf, type_idx = 5)
     } else {
       ()
     }
@@ -1042,7 +1063,7 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
     } else {
       ()
     }
-    emit_canon_stream_cancel_read(buf, stream_type_idx)
+    emit_canon_stream_cancel_read(buf = buf, type_idx = stream_type_idx)
   } else {
     ()
   }
@@ -1079,69 +1100,69 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
   let root_export_indices = new_int_array()
   let mut rex_i = 0
   while rex_i < nhf {
-    Array::push(root_export_names, String::concat("[async-lower]", comp_hostfuture_import_label(Array::get(hf_names, rex_i))))
-    Array::push(root_export_indices, rex_i)
+    Array::push(root_export_names, value = String::concat("[async-lower]", comp_hostfuture_import_label(Array::get(hf_names, at = rex_i))))
+    Array::push(root_export_indices, value = rex_i)
     rex_i = rex_i + 1
   }
   if nhf > 0 {
-    let hf_first_label = comp_hostfuture_import_label(Array::get(hf_names, 0))
-    Array::push(root_export_names, String::concat("[async-lower][future-read-0]", hf_first_label))
-    Array::push(root_export_indices, nt)
-    Array::push(root_export_names, String::concat("[future-drop-readable-0]", hf_first_label))
-    Array::push(root_export_indices, nt + 1)
+    let hf_first_label = comp_hostfuture_import_label(Array::get(hf_names, at = 0))
+    Array::push(root_export_names, value = String::concat("[async-lower][future-read-0]", hf_first_label))
+    Array::push(root_export_indices, value = nt)
+    Array::push(root_export_names, value = String::concat("[future-drop-readable-0]", hf_first_label))
+    Array::push(root_export_indices, value = nt + 1)
     if mixed {
-      let hf_scalar_label = comp_hostfuture_import_label(Array::get(hf_names, comp_first_kind_index(response_kinds, false)))
-      Array::push(root_export_names, String::concat("[async-lower][future-read-1]", hf_scalar_label))
-      Array::push(root_export_indices, nt + 2)
-      Array::push(root_export_names, String::concat("[future-drop-readable-1]", hf_scalar_label))
-      Array::push(root_export_indices, nt + 3)
+      let hf_scalar_label = comp_hostfuture_import_label(Array::get(hf_names, at = comp_first_kind_index(kinds = response_kinds, want = false)))
+      Array::push(root_export_names, value = String::concat("[async-lower][future-read-1]", hf_scalar_label))
+      Array::push(root_export_indices, value = nt + 2)
+      Array::push(root_export_names, value = String::concat("[future-drop-readable-1]", hf_scalar_label))
+      Array::push(root_export_indices, value = nt + 3)
     } else {
       ()
     }
   } else {
     ()
   }
-  Array::push(root_export_names, "[waitable-set-new]")
-  Array::push(root_export_indices, task_return_core_idx + 1)
-  Array::push(root_export_names, "[waitable-join]")
-  Array::push(root_export_indices, task_return_core_idx + 2)
-  Array::push(root_export_names, "[waitable-set-wait]")
-  Array::push(root_export_indices, task_return_core_idx + 3)
-  Array::push(root_export_names, "[waitable-set-drop]")
-  Array::push(root_export_indices, task_return_core_idx + 4)
+  Array::push(root_export_names, value = "[waitable-set-new]")
+  Array::push(root_export_indices, value = task_return_core_idx + 1)
+  Array::push(root_export_names, value = "[waitable-join]")
+  Array::push(root_export_indices, value = task_return_core_idx + 2)
+  Array::push(root_export_names, value = "[waitable-set-wait]")
+  Array::push(root_export_indices, value = task_return_core_idx + 3)
+  Array::push(root_export_names, value = "[waitable-set-drop]")
+  Array::push(root_export_indices, value = task_return_core_idx + 4)
   let mut srex_i = 0
   while srex_i < nhs {
-    Array::push(root_export_names, String::concat("[async-lower]", comp_hoststream_import_label(Array::get(hs_names, srex_i))))
-    Array::push(root_export_indices, nhf + srex_i)
+    Array::push(root_export_names, value = String::concat("[async-lower]", comp_hoststream_import_label(Array::get(hs_names, at = srex_i))))
+    Array::push(root_export_indices, value = nhf + srex_i)
     srex_i = srex_i + 1
   }
   if stream_half {
     let hs_first_label = if nhs > 0 {
-      comp_hoststream_import_label(Array::get(hs_names, 0))
+      comp_hoststream_import_label(Array::get(hs_names, at = 0))
     } else {
       comp_response_stream_label()
     }
-    Array::push(root_export_names, String::concat("[async-lower][stream-read-0]", hs_first_label))
-    Array::push(root_export_indices, stream_read_core_idx)
-    Array::push(root_export_names, String::concat("[stream-drop-readable-0]", hs_first_label))
-    Array::push(root_export_indices, stream_read_core_idx + 1)
+    Array::push(root_export_names, value = String::concat("[async-lower][stream-read-0]", hs_first_label))
+    Array::push(root_export_indices, value = stream_read_core_idx)
+    Array::push(root_export_names, value = String::concat("[stream-drop-readable-0]", hs_first_label))
+    Array::push(root_export_indices, value = stream_read_core_idx + 1)
   } else {
     ()
   }
   if want_sleep {
-    Array::push(root_export_names, "[async-lower]sleep-for")
-    Array::push(root_export_indices, sleep_lower_core_idx)
-    Array::push(root_export_names, "[subtask-drop]")
-    Array::push(root_export_indices, sleep_lower_core_idx + 1)
+    Array::push(root_export_names, value = "[async-lower]sleep-for")
+    Array::push(root_export_indices, value = sleep_lower_core_idx)
+    Array::push(root_export_names, value = "[subtask-drop]")
+    Array::push(root_export_indices, value = sleep_lower_core_idx + 1)
   } else {
     ()
   }
   if want_cancel {
-    Array::push(root_export_names, String::concat("[future-cancel-read-0]", comp_hostfuture_import_label(Array::get(hf_names, 0))))
-    Array::push(root_export_indices, cancel_read_core_idx)
+    Array::push(root_export_names, value = String::concat("[future-cancel-read-0]", comp_hostfuture_import_label(Array::get(hf_names, at = 0))))
+    Array::push(root_export_indices, value = cancel_read_core_idx)
     if mixed {
-      Array::push(root_export_names, String::concat("[future-cancel-read-1]", comp_hostfuture_import_label(Array::get(hf_names, comp_first_kind_index(response_kinds, false)))))
-      Array::push(root_export_indices, cancel_read_core_idx + 1)
+      Array::push(root_export_names, value = String::concat("[future-cancel-read-1]", comp_hostfuture_import_label(Array::get(hf_names, at = comp_first_kind_index(kinds = response_kinds, want = false)))))
+      Array::push(root_export_indices, value = cancel_read_core_idx + 1)
     } else {
       ()
     }
@@ -1149,71 +1170,81 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
     ()
   }
   if want_stream_cancel {
-    Array::push(root_export_names, String::concat("[stream-cancel-read-0]", if nhs > 0 {
-      comp_hoststream_import_label(Array::get(hs_names, 0))
+    Array::push(root_export_names, value = String::concat("[stream-cancel-read-0]", if nhs > 0 {
+      comp_hoststream_import_label(Array::get(hs_names, at = 0))
     } else {
       comp_response_stream_label()
     }))
-    Array::push(root_export_indices, scancel_read_core_idx)
+    Array::push(root_export_indices, value = scancel_read_core_idx)
   } else {
     ()
   }
   if want_timer_cancel {
-    Array::push(root_export_names, "[subtask-cancel]")
-    Array::push(root_export_indices, subtask_cancel_core_idx)
+    Array::push(root_export_names, value = "[subtask-cancel]")
+    Array::push(root_export_indices, value = subtask_cancel_core_idx)
   } else {
     ()
   }
   if future_s64 {
-    Array::push(root_export_names, "[subtask-drop-wit]")
-    Array::push(root_export_indices, wit_subtask_core_idx)
-    Array::push(root_export_names, "[subtask-cancel-wit]")
-    Array::push(root_export_indices, wit_subtask_core_idx + 1)
+    Array::push(root_export_names, value = "[subtask-drop-wit]")
+    Array::push(root_export_indices, value = wit_subtask_core_idx)
+    Array::push(root_export_names, value = "[subtask-cancel-wit]")
+    Array::push(root_export_indices, value = wit_subtask_core_idx + 1)
   } else {
     ()
   }
-  emit_core_instance_from_exports(buf, 1, [Array::length(root_export_names)], root_export_names, root_export_indices)
+  emit_core_instance_from_exports(buf = buf, num_modules = 1, module_binding_counts = [
+    Array::length(root_export_names)
+  ], binding_func_names = root_export_names, binding_func_indices = root_export_indices)
   let env_inst = 2
-  emit_core_instance_from_exports_sorted(buf, ["memory"], [core_sort_mem], [
-    mem_alias_idx
-  ])
+  emit_core_instance_from_exports_sorted(buf = buf, names = ["memory"], sorts = [
+    core_sort_mem
+  ], indices = [mem_alias_idx])
   let adapter_inst = 3
-  emit_core_instance_instantiate_args(buf, 2, ["$root", "env"], [
-    root_inst,
-    env_inst
-  ])
+  emit_core_instance_instantiate_args(buf = buf, module_index = 2, arg_names = [
+    "$root",
+    "env"
+  ], arg_instance_indices = [root_inst, env_inst])
   let stub_inst = 4
-  emit_core_instance_instantiate_section(buf, 4, array_empty())
+  emit_core_instance_instantiate_section(buf = buf, module_index = 4, module_names = array_empty())
   let main_inst = 5
-  emit_core_instance_instantiate_args(buf, 0, ["wasi_snapshot_preview1", "vibe"], [
-    stub_inst,
-    adapter_inst
-  ])
+  emit_core_instance_instantiate_args(buf = buf, module_index = 0, arg_names = [
+    "wasi_snapshot_preview1",
+    "vibe"
+  ], arg_instance_indices = [stub_inst, adapter_inst])
   let main_run_func_idx = if future_s64 {
     wit_subtask_core_idx + 2
   } else {
     wit_subtask_core_idx
   }
   if handler_mode {
-    comp_emit_service_handler_export(buf, main_inst, main_run_func_idx, handler_target, export_name, handler_params, stream_type_idx, export_functype_idx, nimports)
+    comp_emit_service_handler_export(buf = buf, main_inst = main_inst, next_func = main_run_func_idx, target_func_name = handler_target, export_name = export_name, param_names = handler_params, stream_type_idx = stream_type_idx, functype_idx = export_functype_idx, comp_func_count = nimports)
   } else {
-    emit_alias_section(buf, main_inst, ["run"], [core_sort_func])
+    emit_alias_section(buf = buf, core_instance_idx = main_inst, names = ["run"], sorts = [
+      core_sort_func
+    ])
     let main_arg_inst = 6
-    emit_core_instance_from_exports(buf, 1, [1], ["run"], [main_run_func_idx])
+    emit_core_instance_from_exports(buf = buf, num_modules = 1, module_binding_counts = [
+      1
+    ], binding_func_names = ["run"], binding_func_indices = [main_run_func_idx])
     let cm_arg_inst = 7
-    emit_core_instance_from_exports(buf, 1, [1], ["task-return"], [
+    emit_core_instance_from_exports(buf = buf, num_modules = 1, module_binding_counts = [
+      1
+    ], binding_func_names = ["task-return"], binding_func_indices = [
       task_return_core_idx
     ])
     let tramp_inst = 8
-    emit_core_instance_instantiate_args(buf, 3, ["main", "cm"], [
-      main_arg_inst,
-      cm_arg_inst
-    ])
-    emit_comp_async_functype_section(buf, comp_valtype_u32)
+    emit_core_instance_instantiate_args(buf = buf, module_index = 3, arg_names = [
+      "main",
+      "cm"
+    ], arg_instance_indices = [main_arg_inst, cm_arg_inst])
+    emit_comp_async_functype_section(buf = buf, result_valtype = comp_valtype_u32)
     let tramp_run_func_idx = main_run_func_idx + 1
-    emit_alias_section(buf, tramp_inst, ["run"], [core_sort_func])
-    emit_canon_lift_async_section(buf, tramp_run_func_idx, export_functype_idx)
-    emit_comp_export_section(buf, export_name, nimports)
+    emit_alias_section(buf = buf, core_instance_idx = tramp_inst, names = [
+      "run"
+    ], sorts = [core_sort_func])
+    emit_canon_lift_async_section(buf = buf, core_func_idx = tramp_run_func_idx, type_idx = export_functype_idx)
+    emit_comp_export_section(buf = buf, name = export_name, func_idx = nimports)
   }
   bytebuf_to_bytes(buf)
 }
@@ -1223,77 +1254,79 @@ fn comp_emit_async_host_composition(main_core_wasm: Bytes, export_name: String, 
 /// eventually derive from parsed WIT, then the production composer turns it
 /// into a versioned interface instance import and the s64 future adapter.
 export fn comp_emit_component_wasm_async_wit_future_fixture() -> Bytes with Exception {
-  comp_emit_component_wasm_async_hostfuture(comp_generate_async_wit_future_fixture_core(false), "run")
+  comp_emit_component_wasm_async_hostfuture(main_core_wasm = comp_generate_async_wit_future_fixture_core(false), export_name = "run")
 }
 
 /// Negative fixture: the payload widths differ, so mixed root/WIT futures must
 /// fail with the composer's migration diagnostic before any component is emit.
 export fn comp_emit_component_wasm_async_wit_future_mixed_fixture() -> Bytes with Exception {
-  comp_emit_component_wasm_async_hostfuture(comp_generate_async_wit_future_fixture_core(true), "run")
+  comp_emit_component_wasm_async_hostfuture(main_core_wasm = comp_generate_async_wit_future_fixture_core(true), export_name = "run")
 }
 
-fn comp_generate_async_wit_future_fixture_core(include_root: Bool) -> Bytes {
+fn comp_generate_async_wit_future_fixture_core(_ include_root: Bool) -> Bytes {
   let core = bytebuf_new()
   emit_header(core)
   let tc = bytebuf_new()
-  bytebuf_push_vec_header(tc, 3)
-  emit_func_type_raw(tc, [127, 127, 127, 127], [127])
-  emit_func_type_raw(tc, [126], [126])
-  emit_func_type_raw(tc, array_empty(), [126])
-  bytebuf_push_section(core, 1, tc)
+  bytebuf_push_vec_header(buf = tc, count = 3)
+  emit_func_type_raw(buf = tc, param_types = [127, 127, 127, 127], result_types = [
+    127
+  ])
+  emit_func_type_raw(buf = tc, param_types = [126], result_types = [126])
+  emit_func_type_raw(buf = tc, param_types = array_empty(), result_types = [126])
+  bytebuf_push_section(out = core, section_id = 1, content = tc)
   let ic = bytebuf_new()
-  bytebuf_push_vec_header(ic, if include_root {
+  bytebuf_push_vec_header(buf = ic, count = if include_root {
     6
   } else {
     5
   })
-  emit_name(ic, "wasi_snapshot_preview1")
-  emit_name(ic, "fd_write")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 0)
-  emit_name(ic, "vibe")
-  emit_name(ic, "host_future_wait")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 1)
-  emit_name(ic, "vibe")
-  emit_name(ic, "wit_future_get$example:prices/api@1.0.0#get-price")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 2)
-  emit_name(ic, "vibe")
-  emit_name(ic, "wit_future_get$example:prices/api@1.0.0#get-tax")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 2)
-  emit_name(ic, "vibe")
-  emit_name(ic, "wit_future_get$example:inventory/api@2.1.0#get-stock")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 2)
+  emit_name(buf = ic, name = "wasi_snapshot_preview1")
+  emit_name(buf = ic, name = "fd_write")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 0)
+  emit_name(buf = ic, name = "vibe")
+  emit_name(buf = ic, name = "host_future_wait")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 1)
+  emit_name(buf = ic, name = "vibe")
+  emit_name(buf = ic, name = "wit_future_get$example:prices/api@1.0.0#get-price")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 2)
+  emit_name(buf = ic, name = "vibe")
+  emit_name(buf = ic, name = "wit_future_get$example:prices/api@1.0.0#get-tax")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 2)
+  emit_name(buf = ic, name = "vibe")
+  emit_name(buf = ic, name = "wit_future_get$example:inventory/api@2.1.0#get-stock")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 2)
   if include_root {
-    emit_name(ic, "vibe")
-    emit_name(ic, "host_future_get$legacy")
-    bytebuf_push(ic, 0)
-    bytebuf_push(ic, 2)
+    emit_name(buf = ic, name = "vibe")
+    emit_name(buf = ic, name = "host_future_get$legacy")
+    bytebuf_push(buf = ic, byte = 0)
+    bytebuf_push(buf = ic, byte = 2)
   } else {
     ()
   }
-  bytebuf_push_section(core, 2, ic)
-  emit_function_section(core, [1])
-  emit_export_section(core, "run", if include_root {
+  bytebuf_push_section(out = core, section_id = 2, content = ic)
+  emit_function_section(out = core, type_indices = [1])
+  emit_export_section(out = core, name = "run", func_idx = if include_root {
     6
   } else {
     5
   })
   let body = bytebuf_new()
-  emit_i64_const(body, 42)
-  emit_code_section(core, [body])
+  emit_i64_const(buf = body, value = 42)
+  emit_code_section(out = core, bodies = [body])
   let tagged = bytebuf_new()
-  bytebuf_push_buf(tagged, core)
+  bytebuf_push_buf(dst = tagged, src = core)
   let metadata = bytebuf_new()
-  emit_name(metadata, "vibe.tagmode")
-  bytebuf_push(metadata, 1)
-  bytebuf_push(metadata, 0)
-  bytebuf_push(metadata, 0)
-  bytebuf_push(metadata, 0)
-  bytebuf_push_section(tagged, 0, metadata)
+  emit_name(buf = metadata, name = "vibe.tagmode")
+  bytebuf_push(buf = metadata, byte = 1)
+  bytebuf_push(buf = metadata, byte = 0)
+  bytebuf_push(buf = metadata, byte = 0)
+  bytebuf_push(buf = metadata, byte = 0)
+  bytebuf_push_section(out = tagged, section_id = 0, content = metadata)
   bytebuf_to_bytes(tagged)
 }
 
@@ -1330,97 +1363,121 @@ fn comp_generate_async_wit_future_fixture_core(include_root: Bool) -> Bytes {
 ///   component type 0 = stream u8, 1 = the async functype
 export fn comp_emit_component_wasm_stream_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
   if comp_core_awaits_host_future(core_wasm) {
-    comp_emit_component_wasm_service_handler(core_wasm, target_func_name, export_name, param_names)
+    comp_emit_component_wasm_service_handler(core_wasm = core_wasm, target_func_name = target_func_name, export_name = export_name, param_names = param_names)
   } else {
-    comp_emit_component_wasm_stream_handler_plain(core_wasm, target_func_name, export_name, param_names)
+    comp_emit_component_wasm_stream_handler_plain(core_wasm = core_wasm, target_func_name = target_func_name, export_name = export_name, param_names = param_names)
   }
 }
 
 fn comp_emit_component_wasm_stream_handler_plain(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
-  comp_require_tag_mode(core_wasm, 0, "component(async-stream-handler)")
+  comp_require_tag_mode(core_wasm = core_wasm, expected = 0, context = "component(async-stream-handler)")
   comp_check_stream_handler_vibe_imports(core_wasm)
   let string_param_count = Array::length(param_names) - 1
-  comp_check_stream_handler_target(core_wasm, target_func_name, string_param_count)
+  comp_check_stream_handler_target(core_wasm = core_wasm, target_func_name = target_func_name, string_param_count = string_param_count)
   let buf = bytebuf_new()
   emit_component_header(buf)
-  emit_core_module_section(buf, core_wasm)
-  emit_core_module_section(buf, comp_generate_string_trampoline_packed_async_opt(string_param_count, export_name, true))
-  emit_core_module_section(buf, comp_generate_host_stub_module(array_empty(), array_empty()))
-  emit_core_module_section(buf, comp_generate_serve_stream_adapter_module())
-  emit_core_module_section(buf, comp_generate_memhost_module())
-  emit_core_instance_instantiate_section(buf, 4, array_empty())
-  emit_alias_section(buf, 0, ["memory"], [core_sort_mem])
-  emit_comp_stream_type_section(buf, comp_valtype_u8)
-  emit_canon_stream_read(buf, 0, 0)
-  emit_canon_stream_drop_readable(buf, 0)
+  emit_core_module_section(buf = buf, core_wasm = core_wasm)
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_string_trampoline_packed_async_opt(string_param_count = string_param_count, export_name = export_name, stream_param = true))
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_host_stub_module(vibe_names = array_empty(), vibe_sigs = array_empty()))
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_serve_stream_adapter_module())
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_memhost_module())
+  emit_core_instance_instantiate_section(buf = buf, module_index = 4, module_names = array_empty())
+  emit_alias_section(buf = buf, core_instance_idx = 0, names = ["memory"], sorts = [
+    core_sort_mem
+  ])
+  emit_comp_stream_type_section(buf = buf, elem_valtype = comp_valtype_u8)
+  emit_canon_stream_read(buf = buf, type_idx = 0, memory_core_idx = 0)
+  emit_canon_stream_drop_readable(buf = buf, type_idx = 0)
   emit_canon_waitable_set_new(buf)
   emit_canon_waitable_join(buf)
-  emit_canon_waitable_set_wait(buf, 0)
+  emit_canon_waitable_set_wait(buf = buf, memory_core_idx = 0)
   emit_canon_waitable_set_drop(buf)
-  emit_core_instance_from_exports_sorted(buf, [
+  emit_core_instance_from_exports_sorted(buf = buf, names = [
     "[async-lower][stream-read-0]body",
     "[stream-drop-readable-0]body",
     "[waitable-set-new]",
     "[waitable-join]",
     "[waitable-set-wait]",
     "[waitable-set-drop]"
-  ], [
+  ], sorts = [
     core_sort_func,
     core_sort_func,
     core_sort_func,
     core_sort_func,
     core_sort_func,
     core_sort_func
-  ], [0, 1, 2, 3, 4, 5])
-  emit_core_instance_from_exports_sorted(buf, ["memory"], [core_sort_mem], [0])
-  emit_core_instance_instantiate_args(buf, 3, ["$root", "env"], [1, 2])
-  emit_core_instance_instantiate_section(buf, 2, array_empty())
-  emit_alias_section(buf, 3, ["host_stream_read", "host_stream_close"], [
-    core_sort_func,
-    core_sort_func
-  ])
+  ], indices = [0, 1, 2, 3, 4, 5])
+  emit_core_instance_from_exports_sorted(buf = buf, names = ["memory"], sorts = [
+    core_sort_mem
+  ], indices = [0])
+  emit_core_instance_instantiate_args(buf = buf, module_index = 3, arg_names = [
+    "$root",
+    "env"
+  ], arg_instance_indices = [1, 2])
+  emit_core_instance_instantiate_section(buf = buf, module_index = 2, module_names = array_empty())
+  emit_alias_section(buf = buf, core_instance_idx = 3, names = [
+    "host_stream_read",
+    "host_stream_close"
+  ], sorts = [core_sort_func, core_sort_func])
   // BOTH halves in the `vibe` instance. A handler that stops reading early
   // lowers `host_stream_close` to a core import of that name, and a core
   // instance cannot be given fewer bindings than it imports -- so leaving the
   // close half out would make "read four bytes and hang up" a shape this lane
   // refuses to compose. Handing over a binding the core never imports is free.
-  emit_core_instance_from_exports(buf, 1, [2], [
-    "host_stream_read",
-    "host_stream_close"
-  ], [6, 7])
-  emit_core_instance_instantiate_args(buf, 0, ["wasi_snapshot_preview1", "vibe"], [
-    4,
-    5
+  emit_core_instance_from_exports(buf = buf, num_modules = 1, module_binding_counts = [
+    2
+  ], binding_func_names = ["host_stream_read", "host_stream_close"], binding_func_indices = [
+    6,
+    7
   ])
-  emit_alias_section(buf, 6, [target_func_name], [core_sort_func])
-  emit_alias_section(buf, 6, ["memory"], [core_sort_mem])
-  emit_alias_section(buf, 6, ["__heap_ptr"], [core_sort_global])
+  emit_core_instance_instantiate_args(buf = buf, module_index = 0, arg_names = [
+    "wasi_snapshot_preview1",
+    "vibe"
+  ], arg_instance_indices = [4, 5])
+  emit_alias_section(buf = buf, core_instance_idx = 6, names = [
+    target_func_name
+  ], sorts = [core_sort_func])
+  emit_alias_section(buf = buf, core_instance_idx = 6, names = ["memory"], sorts = [
+    core_sort_mem
+  ])
+  emit_alias_section(buf = buf, core_instance_idx = 6, names = ["__heap_ptr"], sorts = [
+    core_sort_global
+  ])
   // Memory 1 is main's: the result string the lift reads lives in the vibe
   // heap, not in the memhost page the canons use.
-  emit_canon_task_return_opts(buf, comp_valtype_string, 1, true)
-  emit_core_instance_from_exports_sorted(buf, [
+  emit_canon_task_return_opts(buf = buf, result_valtype = comp_valtype_string, mem_idx = 1, utf8 = true)
+  emit_core_instance_from_exports_sorted(buf = buf, names = [
     "target_func",
     "__heap_ptr",
     "memory"
-  ], [core_sort_func, core_sort_global, core_sort_mem], [8, 0, 1])
-  emit_core_instance_from_exports(buf, 1, [1], [
-    String::concat("[task-return]", export_name)
-  ], [9])
-  emit_core_instance_instantiate_args(buf, 1, ["env", "[export]$root"], [7, 8])
-  emit_alias_section(buf, 9, ["canon_func", "cabi_realloc"], [
-    core_sort_func,
-    core_sort_func
+  ], sorts = [core_sort_func, core_sort_global, core_sort_mem], indices = [
+    8,
+    0,
+    1
   ])
+  emit_core_instance_from_exports(buf = buf, num_modules = 1, module_binding_counts = [
+    1
+  ], binding_func_names = [String::concat("[task-return]", export_name)], binding_func_indices = [
+    9
+  ])
+  emit_core_instance_instantiate_args(buf = buf, module_index = 1, arg_names = [
+    "env",
+    "[export]$root"
+  ], arg_instance_indices = [7, 8])
+  emit_alias_section(buf = buf, core_instance_idx = 9, names = [
+    "canon_func",
+    "cabi_realloc"
+  ], sorts = [core_sort_func, core_sort_func])
   let comp_param_valtypes = new_int_array()
   let mut pt = 0
   while pt < string_param_count {
-    Array::push(comp_param_valtypes, comp_valtype_string)
+    Array::push(comp_param_valtypes, value = comp_valtype_string)
     pt = pt + 1
   }
   // The body param's valtype is the stream TYPE INDEX (0), not a primitive.
-  Array::push(comp_param_valtypes, 0)
-  emit_comp_async_functype_params(buf, param_names, comp_param_valtypes, comp_valtype_string)
-  emit_canon_lift_async_opts(buf, 10, 1, 1, 11, true)
-  emit_comp_export_section(buf, export_name, 0)
+  Array::push(comp_param_valtypes, value = 0)
+  emit_comp_async_functype_params(buf = buf, param_names = param_names, param_valtypes = comp_param_valtypes, result_valtype = comp_valtype_string)
+  emit_canon_lift_async_opts(buf = buf, core_func_idx = 10, type_idx = 1, mem_idx = 1, realloc_idx = 11, utf8 = true)
+  emit_comp_export_section(buf = buf, name = export_name, func_idx = 0)
   bytebuf_to_bytes(buf)
 }

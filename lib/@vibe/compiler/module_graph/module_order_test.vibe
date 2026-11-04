@@ -17,22 +17,22 @@ fn rotate_edges(edges: Array[(String, Array[String])], shift: Int) -> Array[(Str
   let out: Array[(String, Array[String])] = []
   let mut i = 0
   while i < n {
-    let e = Array::get(edges, (i + shift) % n)
+    let e = Array::get(edges, at = (i + shift) % n)
     let deps = e.1
     let dn = Array::length(deps)
     let rotated: Array[String] = []
     let mut j = 0
     while j < dn {
-      Array::push(rotated, Array::get(deps, (j + shift) % dn))
+      Array::push(rotated, value = Array::get(deps, at = (j + shift) % dn))
       j = j + 1
     }
-    Array::push(out, (e.0, rotated))
+    Array::push(out, value = (e.0, rotated))
     i = i + 1
   }
   out
 }
 
-fn join_paths(paths: Array[String]) -> String {
+fn join_paths(_ paths: Array[String]) -> String {
   let mut out = ""
   let mut i = 0
   while i < Array::length(paths) {
@@ -41,13 +41,13 @@ fn join_paths(paths: Array[String]) -> String {
     } else {
       ()
     }
-    out = String::concat(out, Array::get(paths, i))
+    out = String::concat(out, Array::get(paths, at = i))
     i = i + 1
   }
   out
 }
 
-fn join_ranks(ranks: Array[Int]) -> String {
+fn join_ranks(_ ranks: Array[Int]) -> String {
   let mut out = ""
   let mut i = 0
   while i < Array::length(ranks) {
@@ -56,7 +56,7 @@ fn join_ranks(ranks: Array[Int]) -> String {
     } else {
       ()
     }
-    out = String::concat(out, Int::to_string(Array::get(ranks, i)))
+    out = String::concat(out, Int::to_string(Array::get(ranks, at = i)))
     i = i + 1
   }
   out
@@ -70,7 +70,7 @@ fn diamond() -> Array[(String, Array[String])] {
 }
 
 test "plan_module_order ranks a diamond and orders it canonically" {
-  let (paths, ranks) = plan_module_order(diamond(), "app")
+  let (paths, ranks) = plan_module_order(edges = diamond(), root = "app")
   assert(join_paths(paths) == "base,left,right,app")
   assert(join_ranks(ranks) == "0,1,1,2")
 }
@@ -87,7 +87,7 @@ test "plan_module_order takes the longest path, not the shortest" {
     ("mid1", ["base"]),
     ("base", []),
   ]
-  let (paths, ranks) = plan_module_order(edges, "top")
+  let (paths, ranks) = plan_module_order(edges = edges, root = "top")
   assert(join_paths(paths) == "base,mid1,mid2,top")
   assert(join_ranks(ranks) == "0,1,2,3")
 }
@@ -97,16 +97,16 @@ test "plan_module_order takes the longest path, not the shortest" {
 /// This is what lets a coordinator dispatch a whole rank concurrently.
 test "plan_module_order puts every dependency in a strictly lower rank" {
   let edges = diamond()
-  let (paths, ranks) = plan_module_order(edges, "app")
+  let (paths, ranks) = plan_module_order(edges = edges, root = "app")
   let mut ei = 0
   let mut ok = true
   while ei < Array::length(edges) {
-    let e = Array::get(edges, ei)
+    let e = Array::get(edges, at = ei)
     let mut mi = 0
     let mut mrank = -1
     while mi < Array::length(paths) {
-      if Array::get(paths, mi) == e.0 {
-        mrank = Array::get(ranks, mi)
+      if Array::get(paths, at = mi) == e.0 {
+        mrank = Array::get(ranks, at = mi)
       } else {
         ()
       }
@@ -117,8 +117,8 @@ test "plan_module_order puts every dependency in a strictly lower rank" {
     while di < Array::length(deps) {
       let mut pi = 0
       while pi < Array::length(paths) {
-        if Array::get(paths, pi) == Array::get(deps, di) {
-          if Array::get(ranks, pi) >= mrank {
+        if Array::get(paths, at = pi) == Array::get(deps, at = di) {
+          if Array::get(ranks, at = pi) >= mrank {
             ok = false
           } else {
             ()
@@ -139,13 +139,13 @@ test "plan_module_order puts every dependency in a strictly lower rank" {
 /// before any parallelism exists: permuting traversal order cannot move a
 /// module or change a rank.
 test "plan_module_order is invariant under dependency visit order" {
-  let (base_paths, base_ranks) = plan_module_order(diamond(), "app")
+  let (base_paths, base_ranks) = plan_module_order(edges = diamond(), root = "app")
   let expect_paths = join_paths(base_paths)
   let expect_ranks = join_ranks(base_ranks)
   let mut shift = 1
   let mut stable = true
   while shift < 4 {
-    let (paths, ranks) = plan_module_order(rotate_edges(diamond(), shift), "app")
+    let (paths, ranks) = plan_module_order(edges = rotate_edges(edges = diamond(), shift = shift), root = "app")
     if join_paths(paths) != expect_paths || join_ranks(ranks) != expect_ranks {
       stable = false
     } else {
@@ -162,14 +162,14 @@ test "plan_module_order is invariant under dependency visit order" {
 /// fingerprint for an unresolvable path instead of aborting the walk.
 test "plan_module_order treats an unknown import as a rank-0 leaf" {
   let edges: Array[(String, Array[String])] = [("app", ["ghost"]),]
-  let (paths, ranks) = plan_module_order(edges, "app")
+  let (paths, ranks) = plan_module_order(edges = edges, root = "app")
   assert(join_paths(paths) == "ghost,app")
   assert(join_ranks(ranks) == "0,1")
 }
 
 test "plan_module_order handles a root with no dependencies" {
   let edges: Array[(String, Array[String])] = [("solo", []),]
-  let (paths, ranks) = plan_module_order(edges, "solo")
+  let (paths, ranks) = plan_module_order(edges = edges, root = "solo")
   assert(join_paths(paths) == "solo")
   assert(join_ranks(ranks) == "0")
 }
@@ -182,14 +182,14 @@ test "plan_module_order only plans modules reachable from the root" {
     ("base", []),
     ("orphan", ["base"]),
   ]
-  let (paths, _ranks) = plan_module_order(edges, "app")
+  let (paths, _ranks) = plan_module_order(edges = edges, root = "app")
   assert(join_paths(paths) == "base,app")
 }
 
 test "plan_module_order rejects a direct import cycle" {
   let edges: Array[(String, Array[String])] = [("a", ["b"]), ("b", ["a"]),]
   let caught = handle {
-    let (paths, _r) = plan_module_order(edges, "a")
+    let (paths, _r) = plan_module_order(edges = edges, root = "a")
     join_paths(paths)
   } with { Exception::Throw(msg) => msg }
   inspect(caught, content = "break this import cycle -- move what these modules share into a module that imports none of them: a imports b imports a (import cycle)")
@@ -198,7 +198,7 @@ test "plan_module_order rejects a direct import cycle" {
 test "plan_module_order rejects a self import" {
   let edges: Array[(String, Array[String])] = [("solo", ["solo"]),]
   let caught = handle {
-    let (paths, _r) = plan_module_order(edges, "solo")
+    let (paths, _r) = plan_module_order(edges = edges, root = "solo")
     join_paths(paths)
   } with { Exception::Throw(msg) => msg }
   inspect(caught, content = "break this import cycle -- move what these modules share into a module that imports none of them: solo imports solo (import cycle)")
@@ -215,7 +215,7 @@ test "plan_module_order distinguishes a revisited node from a cycle" {
     ("base", []),
   ]
   let caught = handle {
-    let (paths, _r) = plan_module_order(edges, "app")
+    let (paths, _r) = plan_module_order(edges = edges, root = "app")
     join_paths(paths)
   } with { Exception::Throw(msg) => msg }
   inspect(caught, content = "break this import cycle -- move what these modules share into a module that imports none of them: x imports y imports x (import cycle)")
@@ -230,7 +230,7 @@ test "plan_module_order accepts a repeatedly shared dependency" {
     ("x", ["base"]),
     ("base", []),
   ]
-  let (paths, ranks) = plan_module_order(edges, "app")
+  let (paths, ranks) = plan_module_order(edges = edges, root = "app")
   assert(join_paths(paths) == "base,x,app")
   assert(join_ranks(ranks) == "0,1,2")
 }

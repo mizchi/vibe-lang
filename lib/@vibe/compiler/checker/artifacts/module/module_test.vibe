@@ -74,7 +74,7 @@ test "module wire has fixed checksums and directly framed program fields" {
     0
   ])
   inspect(encode_checked_module_artifact(artifact) == wire, content = "true")
-  match decode_checked_module_artifact(wire, identity) {
+  match decode_checked_module_artifact(bytes = wire, input_identity = identity) {
     Some(decoded) => {
       let offsets: Array[Int] = decoded.lowering_offsets
       inspect(offsets, content = "[-1, 0, 130]")
@@ -86,7 +86,7 @@ test "module wire has fixed checksums and directly framed program fields" {
 fn sample_module() -> CheckedModuleArtifact with Exception {
   let source = "export fn answer() -> Double { 42.5 }"
   let (tokens, offsets, _) = lex_with_offsets(source)
-  let parsed_stmts = parse_program_located(tokens, offsets, source)
+  let parsed_stmts = parse_program_located(tokens = tokens, starts = offsets, source = source)
   CheckedModuleArtifact::{
     input_identity: Bytes::from_array([0, 128, 255, 7]),
     parsed_stmts,
@@ -100,10 +100,10 @@ fn sample_module() -> CheckedModuleArtifact with Exception {
 test "module artifact joins checker result parser input and lowering tables" {
   let original = sample_module()
   let bytes = encode_checked_module_artifact(original)
-  match decode_checked_module_artifact(bytes, original.input_identity) {
+  match decode_checked_module_artifact(bytes = bytes, input_identity = original.input_identity) {
     Some(decoded) => {
       inspect(encode_checked_module_artifact(decoded) == bytes, content = "true")
-      inspect(env_lookup(decoded.checked_program.final_env, "answer") is Some(CtFn(_, CtDouble, _)), content = "true")
+      inspect(env_lookup(env = decoded.checked_program.final_env, name = "answer") is Some(CtFn(_, CtDouble, _)), content = "true")
       let offsets: Array[Int] = decoded.lowering_offsets
       inspect(offsets, content = "[7, 18]")
       let eq_offsets: Array[Int] = decoded.eq_offsets
@@ -118,20 +118,20 @@ test "module artifact joins checker result parser input and lowering tables" {
 test "module artifact rejects foreign inputs and damaged payloads" {
   let original = sample_module()
   let bytes = encode_checked_module_artifact(original)
-  inspect(decode_checked_module_artifact(bytes, Bytes::from_array([
+  inspect(decode_checked_module_artifact(bytes = bytes, input_identity = Bytes::from_array([
     0,
     128,
     255,
     8
   ])) is None, content = "true")
-  let changed = Bytes::slice(bytes, 0, Bytes::length(bytes))
+  let changed = Bytes::slice(bytes, start = 0, end = Bytes::length(bytes))
   let last = Bytes::length(changed) - 1
-  Bytes::set(changed, last, Bytes::get(changed, last)^1)
-  inspect(decode_checked_module_artifact(changed, original.input_identity) is None, content = "true")
-  inspect(decode_checked_module_artifact(Bytes::slice(bytes, 0, last), original.input_identity) is None, content = "true")
-  let trailing = Bytes::slice(bytes, 0, Bytes::length(bytes))
-  Bytes::push(trailing, 0)
-  inspect(decode_checked_module_artifact(trailing, original.input_identity) is None, content = "true")
+  Bytes::set(changed, at = last, value = Bytes::get(changed, at = last)^1)
+  inspect(decode_checked_module_artifact(bytes = changed, input_identity = original.input_identity) is None, content = "true")
+  inspect(decode_checked_module_artifact(bytes = Bytes::slice(bytes, start = 0, end = last), input_identity = original.input_identity) is None, content = "true")
+  let trailing = Bytes::slice(bytes, start = 0, end = Bytes::length(bytes))
+  Bytes::push(trailing, value = 0)
+  inspect(decode_checked_module_artifact(bytes = trailing, input_identity = original.input_identity) is None, content = "true")
 }
 
 test "module artifact refuses incomplete equality rows" {
@@ -144,5 +144,5 @@ test "module artifact refuses incomplete equality rows" {
     eq_offsets: [23, 24],
     eq_keys: ["Int"]
   }
-  inspect(decode_checked_module_artifact(encode_checked_module_artifact(malformed), original.input_identity) is None, content = "true")
+  inspect(decode_checked_module_artifact(bytes = encode_checked_module_artifact(malformed), input_identity = original.input_identity) is None, content = "true")
 }

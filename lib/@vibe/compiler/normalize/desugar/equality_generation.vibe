@@ -54,31 +54,32 @@ import ./typed_equality.vibe {
 export fn gen_arr_equals_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
   let len_a = ECall(builtin_ref("Array::length"), Array::slice([
     EIdent("a", -1)
-  ], 0, 1), -1, [])
+  ], start = 0, end = 1), -1, [])
   let len_b = ECall(builtin_ref("Array::length"), Array::slice([
     EIdent("b", -1)
-  ], 0, 1), -1, [])
+  ], start = 0, end = 1), -1, [])
   let elem_a = ECall(builtin_ref("Array::get"), Array::slice([
     EIdent("a", -1),
     EIdent("__ae_i", -1)
-  ], 0, 2), -1, [])
+  ], start = 0, end = 2), -1, [])
   let elem_b = ECall(builtin_ref("Array::get"), Array::slice([
     EIdent("b", -1),
     EIdent("__ae_i", -1)
-  ], 0, 2), -1, [])
-  let elem_eq = eq_for_typed(elem_ty, elem_a, elem_b, known_types)
-  let not_eq = ECall(EIdent("not", -1), Array::slice([elem_eq], 0, 1), -1, [])
+  ], start = 0, end = 2), -1, [])
+  let elem_eq = eq_for_typed(fty0 = elem_ty, lhs = elem_a, rhs = elem_b, known_types = known_types)
+  let not_eq = ECall(EIdent("not", -1), Array::slice([elem_eq], start = 0, end = 1), -1, [
+  ])
   let set_false = EIf(not_eq, EAssign("__ae_ok", EBool(false), EUnit, -1), EUnit)
   let incr = EAssign("__ae_i", EBinOp("+", EIdent("__ae_i", -1), EInt(1), -1), EUnit, -1)
   let loop_body = ESeq(set_false, incr)
   let while_loop = EWhile(EBinOp("<", EIdent("__ae_i", -1), ECall(builtin_ref("Array::length"), Array::slice([
     EIdent("a", -1)
-  ], 0, 1), -1, []), -1), loop_body)
+  ], start = 0, end = 1), -1, []), -1), loop_body)
   let body_eq = ELetMut("__ae_i", EInt(0), ELetMut("__ae_ok", EBool(true), ESeq(while_loop, EIdent("__ae_ok", -1)), -1), -1)
   // review-lint: allow-fixed-synthetic-name
   let body = EIf(EBinOp("!=", len_a, len_b, -1), EBool(false), body_eq)
-  let arr_ty = TyApp("Array", Array::slice([elem_ty], 0, 1))
-  let params = Array::slice([("a", Some(arr_ty)), ("b", Some(arr_ty))], 0, 2)
+  let arr_ty = TyApp("Array", Array::slice([elem_ty], start = 0, end = 1))
+  let params = Array::slice([("a", Some(arr_ty)), ("b", Some(arr_ty))], start = 0, end = 2)
   let tparams = arr_helper_tparams(elem_ty)
   let no_tb = array_empty()
   SLet(false, false, arr_equals_name(elem_ty), None, EFn(tparams, no_tb, params, Some(TyName("Bool")), None, body))
@@ -88,7 +89,7 @@ export fn gen_arr_equals_fn(elem_ty: TypeExpr, known_types: Array[String]) -> St
 /// direct `FieldType::equals(a.f, b.f)` for aggregate (declared struct/enum)
 /// fields so nested/recursive structs compare structurally. (#672 recursion.)
 fn field_eq_expr(fname: String, fty: TypeExpr, known_types: Array[String]) -> Expr {
-  eq_for_typed(fty, EDot(EIdent("a", -1), fname, -1, -1), EDot(EIdent("b", -1), fname, -1, -1), known_types)
+  eq_for_typed(fty0 = fty, lhs = EDot(EIdent("a", -1), fname, -1, -1), rhs = EDot(EIdent("b", -1), fname, -1, -1), known_types = known_types)
 }
 
 /// `let P::equals = (a: P, b: P) -> Bool { a.x == b.x && a.y == b.y && ... }`
@@ -98,35 +99,35 @@ export fn gen_eq_fn(tname: String, fields: Array[(String, TypeExpr)], known_type
   let mut body = EBool(true)
   let mut i = Array::length(fields) - 1
   while i >= 0 {
-    let (fname, fty) = Array::get(fields, i)
-    body = EBinOp("&&", field_eq_expr(fname, fty, known_types), body, -1)
+    let (fname, fty) = Array::get(fields, at = i)
+    body = EBinOp("&&", field_eq_expr(fname = fname, fty = fty, known_types = known_types), body, -1)
     i = i - 1
   }
   let params = Array::slice([
     ("a", Some(TyName(tname))),
     ("b", Some(TyName(tname)))
-  ], 0, 2)
+  ], start = 0, end = 2)
   let no_tp = array_empty()
   let no_tb = array_empty()
-  SLet(false, false, qualified_name(tname, "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body))
+  SLet(false, false, qualified_name(tname = tname, method = "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body))
 }
 
 fn gen_specialized_eq_fn(head: String, args: Array[TypeExpr], params0: Array[String], fields0: Array[(String, TypeExpr)], known_types: Array[String]) -> Stmt {
   let fields = for field in fields0 {
-    (field.0, eq_expand_alias_ty(eq_subst_ty(field.1, params0, args)))
+    (field.0, eq_expand_alias_ty(eq_subst_ty(ty = field.1, params = params0, args = args)))
   }
-  Array::push(dtd_eq_specialization_stack, TyApp(head, args))
+  Array::push(dtd_eq_specialization_stack, value = TyApp(head, args))
   let mut body = EBool(true)
   let mut i = Array::length(fields) - 1
   while i >= 0 {
-    let field = Array::get(fields, i)
-    body = EBinOp("&&", field_eq_expr(field.0, field.1, known_types), body, -1)
+    let field = Array::get(fields, at = i)
+    body = EBinOp("&&", field_eq_expr(fname = field.0, fty = field.1, known_types = known_types), body, -1)
     i = i - 1
   }
   let inst = TyApp(head, args)
-  let ps = Array::slice([("a", Some(inst)), ("b", Some(inst))], 0, 2)
-  let stmt = SLet(false, false, generic_eq_name(head, args), None, EFn(array_empty(), array_empty(), ps, Some(TyName("Bool")), None, body))
-  Array::truncate(dtd_eq_specialization_stack, Array::length(dtd_eq_specialization_stack) - 1)
+  let ps = Array::slice([("a", Some(inst)), ("b", Some(inst))], start = 0, end = 2)
+  let stmt = SLet(false, false, generic_eq_name(head = head, args = args), None, EFn(array_empty(), array_empty(), ps, Some(TyName("Bool")), None, body))
+  Array::truncate(dtd_eq_specialization_stack, length = Array::length(dtd_eq_specialization_stack) - 1)
   stmt
 }
 
@@ -136,67 +137,67 @@ fn gen_specialized_eq_fn(head: String, args: Array[TypeExpr], params0: Array[Str
 /// every payload (before alias expansion, round 8), so each payload takes the
 /// exact comparator `eq_for_typed` gives its concrete type.
 fn gen_specialized_enum_eq_fn(head: String, args: Array[TypeExpr], formals: Array[String], variants: Array[(String, Array[TypeExpr])], known_types: Array[String]) -> Stmt {
-  Array::push(dtd_eq_specialization_stack, TyApp(head, args))
+  Array::push(dtd_eq_specialization_stack, value = TyApp(head, args))
   let outer_arms = array_empty()
   let mut vi = 0
   while vi < Array::length(variants) {
-    let (vname, ftypes0) = Array::get(variants, vi)
+    let (vname, ftypes0) = Array::get(variants, at = vi)
     let ftypes = for t in ftypes0 {
-      eq_expand_alias_ty(eq_subst_ty(t, formals, args))
+      eq_expand_alias_ty(eq_subst_ty(ty = t, params = formals, args = args))
     }
     let nf = Array::length(ftypes)
     let abinds = array_empty()
     let bbinds = array_empty()
     let mut fi = 0
     while fi < nf {
-      Array::push(abinds, PBind(String::concat("__a", idx_str(fi))))
-      Array::push(bbinds, PBind(String::concat("__b", idx_str(fi))))
+      Array::push(abinds, value = PBind(String::concat("__a", idx_str(fi))))
+      Array::push(bbinds, value = PBind(String::concat("__b", idx_str(fi))))
       fi = fi + 1
     }
     let mut body = EBool(true)
     let mut bi = nf - 1
     while bi >= 0 {
-      let cmp = eq_for_typed(Array::get(ftypes, bi), EIdent(String::concat("__a", idx_str(bi)), -1), EIdent(String::concat("__b", idx_str(bi)), -1), known_types)
+      let cmp = eq_for_typed(fty0 = Array::get(ftypes, at = bi), lhs = EIdent(String::concat("__a", idx_str(bi)), -1), rhs = EIdent(String::concat("__b", idx_str(bi)), -1), known_types = known_types)
       body = EBinOp("&&", cmp, body, -1)
       bi = bi - 1
     }
     let inner_arms = Array::slice([
       (PCtor(vname, bbinds), body),
       (PWild, EBool(false))
-    ], 0, 2)
+    ], start = 0, end = 2)
     let inner = EMatch(EIdent("b", -1), inner_arms)
-    Array::push(outer_arms, (PCtor(vname, abinds), inner))
+    Array::push(outer_arms, value = (PCtor(vname, abinds), inner))
     vi = vi + 1
   }
   let inst = TyApp(head, args)
-  let ps = Array::slice([("a", Some(inst)), ("b", Some(inst))], 0, 2)
-  let stmt = SLet(false, false, generic_eq_name(head, args), None, EFn(array_empty(), array_empty(), ps, Some(TyName("Bool")), None, EMatch(EIdent("a", -1), outer_arms)))
-  Array::truncate(dtd_eq_specialization_stack, Array::length(dtd_eq_specialization_stack) - 1)
+  let ps = Array::slice([("a", Some(inst)), ("b", Some(inst))], start = 0, end = 2)
+  let stmt = SLet(false, false, generic_eq_name(head = head, args = args), None, EFn(array_empty(), array_empty(), ps, Some(TyName("Bool")), None, EMatch(EIdent("a", -1), outer_arms)))
+  Array::truncate(dtd_eq_specialization_stack, length = Array::length(dtd_eq_specialization_stack) - 1)
   stmt
 }
 
-export fn emit_recorded_generic_eq(stmts: Array[Stmt]) -> Unit {
+export fn emit_recorded_generic_eq(_ stmts: Array[Stmt]) -> Unit {
   let known = collect_decl_type_names(stmts)
   let mut i = 0
   // Generation can record nested generic instantiations, so re-read length.
   while i < Array::length(dtd_eq_specializations) {
-    match Array::get(dtd_eq_specializations, i) {
+    match Array::get(dtd_eq_specializations, at = i) {
       TyApp(head, args) => {
         let mut j = 0
         while j < Array::length(dtd_eq_generic_structs) {
-          let decl = Array::get(dtd_eq_generic_structs, j)
-          if decl.0 == head && !top_level_fn_exists(stmts, generic_eq_name(head, args)) {
-            Array::truncate(dtd_eq_specialization_stack, 0)
+          let decl = Array::get(dtd_eq_generic_structs, at = j)
+          if decl.0 == head && !top_level_fn_exists(stmts = stmts, fname = generic_eq_name(head = head, args = args)) {
+            Array::truncate(dtd_eq_specialization_stack, length = 0)
             if i < Array::length(dtd_eq_specialization_ancestries) {
-              for ancestor in Array::get(dtd_eq_specialization_ancestries, i) {
-                Array::push(dtd_eq_specialization_stack, ancestor)
+              for ancestor in Array::get(dtd_eq_specialization_ancestries, at = i) {
+                Array::push(dtd_eq_specialization_stack, value = ancestor)
               }
             } else {
               ()
             }
             dtd_fresh_reset_for_decl()
-            Array::push(stmts, gen_specialized_eq_fn(head, args, decl.1, decl.2, known))
-            Array::truncate(dtd_eq_specialization_stack, 0)
+            Array::push(stmts, value = gen_specialized_eq_fn(head = head, args = args, params0 = decl.1, fields0 = decl.2, known_types = known))
+            Array::truncate(dtd_eq_specialization_stack, length = 0)
           } else {
             ()
           }
@@ -206,19 +207,19 @@ export fn emit_recorded_generic_eq(stmts: Array[Stmt]) -> Unit {
         // eq_for_typed_nonstandard_enum, is emitted the same way.
         let mut k = 0
         while k < Array::length(dtd_eq_enum_decls) {
-          let edecl = Array::get(dtd_eq_enum_decls, k)
-          if edecl.0 == head && Array::length(edecl.1) > 0 && !top_level_fn_exists(stmts, generic_eq_name(head, args)) {
-            Array::truncate(dtd_eq_specialization_stack, 0)
+          let edecl = Array::get(dtd_eq_enum_decls, at = k)
+          if edecl.0 == head && Array::length(edecl.1) > 0 && !top_level_fn_exists(stmts = stmts, fname = generic_eq_name(head = head, args = args)) {
+            Array::truncate(dtd_eq_specialization_stack, length = 0)
             if i < Array::length(dtd_eq_specialization_ancestries) {
-              for ancestor in Array::get(dtd_eq_specialization_ancestries, i) {
-                Array::push(dtd_eq_specialization_stack, ancestor)
+              for ancestor in Array::get(dtd_eq_specialization_ancestries, at = i) {
+                Array::push(dtd_eq_specialization_stack, value = ancestor)
               }
             } else {
               ()
             }
             dtd_fresh_reset_for_decl()
-            Array::push(stmts, gen_specialized_enum_eq_fn(head, args, edecl.1, edecl.2, known))
-            Array::truncate(dtd_eq_specialization_stack, 0)
+            Array::push(stmts, value = gen_specialized_enum_eq_fn(head = head, args = args, formals = edecl.1, variants = edecl.2, known_types = known))
+            Array::truncate(dtd_eq_specialization_stack, length = 0)
           } else {
             ()
           }

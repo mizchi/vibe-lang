@@ -11,10 +11,10 @@ import @vibe/compiler/lowering/effects/evidence {
 fn top(name: String, value: Expr) -> Stmt {
   SLet(false, false, name, None, value)
 }
-fn lambda(body: Expr) -> Expr {
+fn lambda(_ body: Expr) -> Expr {
   EFn([], [], [], None, None, body)
 }
-fn call(name: String) -> Expr {
+fn call(_ name: String) -> Expr {
   ECall(EIdent(name, -1), [], -1, [])
 }
 
@@ -28,7 +28,7 @@ test "binder membership covers nested bindings and resets between programs" {
     ("x", PBind("field"))
   ]))
   edp_argcond_note_binders([
-    top("global", body),
+    top(name = "global", value = body),
     SLetPat(pattern, EIdent("mention", -1))
   ])
   let found: Array[Bool] = []
@@ -47,7 +47,7 @@ test "binder membership covers nested bindings and resets between programs" {
     "global",
     "mention"
   ] {
-    Array::push(found, edp_is_program_binder(name))
+    Array::push(found, value = edp_is_program_binder(name))
   }
   inspect(found, content = "[true, true, true, true, true, true, true, true, true, true, true, false, false]")
   edp_argcond_note_binders([SExpr(ELet("fresh", EInt(0), EUnit, -1))])
@@ -60,11 +60,13 @@ test "binder membership covers nested bindings and resets between programs" {
 test "binder collection preserves a caller's scratch window" {
   let mark = expr_children_push(ECall(EIdent("pending", -1), [EInt(7)], -1, []))
   let end = expr_children_top()
-  edp_argcond_note_binders([top("f", ELet("x", EInt(1), lambda(EUnit), -1))])
+  edp_argcond_note_binders([
+    top(name = "f", value = ELet("x", EInt(1), lambda(EUnit), -1))
+  ])
   let pure: Array[String] = []
-  edp_append_visible_pure_lambda_names([
-    top("f", lambda(ELet("x", EInt(1), EUnit, -1)))
-  ], pure)
+  edp_append_visible_pure_lambda_names(stmts = [
+    top(name = "f", value = lambda(ELet("x", EInt(1), EUnit, -1)))
+  ], pure_fns = pure)
   inspect(pure, content = "[f]")
   assert(edp_is_program_binder("x"))
   assert(expr_children_top() == end)
@@ -82,23 +84,23 @@ test "binder collection preserves a caller's scratch window" {
 
 test "pure lambda dependencies grow in the original fixpoint order" {
   let pure = ["anchor", "anchor"]
-  edp_append_visible_pure_lambda_names([
-    top("c", lambda(call("b"))),
-    top("b", lambda(call("a"))),
-    top("a", lambda(EInt(1)))
-  ], pure)
+  edp_append_visible_pure_lambda_names(stmts = [
+    top(name = "c", value = lambda(call("b"))),
+    top(name = "b", value = lambda(call("a"))),
+    top(name = "a", value = lambda(EInt(1)))
+  ], pure_fns = pure)
   inspect(pure, content = "[anchor, anchor, a, b, c]")
 }
 
 test "same-spelled effectful and non-lambda bindings remain opaque" {
   let pure = ["anchor"]
-  edp_append_visible_pure_lambda_names([
-    top("mixed", lambda(EInt(1))),
-    top("mixed", lambda(call("opaque"))),
-    top("blocked", lambda(EInt(2))),
-    top("blocked", EInt(3)),
-    top("a", lambda(EInt(4))),
-    top("safe", EFn([], [], [("a", None)], None, None, EInt(5)))
-  ], pure)
+  edp_append_visible_pure_lambda_names(stmts = [
+    top(name = "mixed", value = lambda(EInt(1))),
+    top(name = "mixed", value = lambda(call("opaque"))),
+    top(name = "blocked", value = lambda(EInt(2))),
+    top(name = "blocked", value = EInt(3)),
+    top(name = "a", value = lambda(EInt(4))),
+    top(name = "safe", value = EFn([], [], [("a", None)], None, None, EInt(5)))
+  ], pure_fns = pure)
   inspect(pure, content = "[anchor, safe]")
 }

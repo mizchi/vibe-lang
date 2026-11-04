@@ -73,7 +73,7 @@ export enum NestedBinding {
   NestedUnknown
 }
 
-fn is_none[A](o: Option[A]) -> Bool {
+fn is_none[A](_ o: Option[A]) -> Bool {
   match o {
     Some(_) => false,
     None => true
@@ -88,15 +88,15 @@ fn unknown_marker() -> String {
   "?EqUnknown"
 }
 
-fn unmark_formal(n: String) -> String {
+fn unmark_formal(_ n: String) -> String {
   if is_marked_formal_name(n) {
-    String::substring(n, String::length(scope_formal_mark_prefix), String::length(n))
+    String::substring(n, start = String::length(scope_formal_mark_prefix), end = String::length(n))
   } else {
     n
   }
 }
 
-fn unmark_formals(t: TypeExpr) -> TypeExpr {
+fn unmark_formals(_ t: TypeExpr) -> TypeExpr {
   match t {
     TyName(n) => TyName(unmark_formal(n)),
     TyApp(h, args) => TyApp(unmark_formal(h), for a in args {
@@ -120,7 +120,7 @@ fn ty_mentions_name(t: TypeExpr, name: String) -> Bool {
     } else {
       let mut found = false
       for a in args {
-        if ty_mentions_name(a, name) {
+        if ty_mentions_name(t = a, name = name) {
           found = true
         } else {
           ()
@@ -131,7 +131,7 @@ fn ty_mentions_name(t: TypeExpr, name: String) -> Bool {
     TyTuple(items) => {
       let mut found = false
       for x in items {
-        if ty_mentions_name(x, name) {
+        if ty_mentions_name(t = x, name = name) {
           found = true
         } else {
           ()
@@ -140,9 +140,9 @@ fn ty_mentions_name(t: TypeExpr, name: String) -> Bool {
       found
     },
     TyFn(ps, r, _) => {
-      let mut found = ty_mentions_name(r, name)
+      let mut found = ty_mentions_name(t = r, name = name)
       for p in ps {
-        if ty_mentions_name(p, name) {
+        if ty_mentions_name(t = p, name = name) {
           found = true
         } else {
           ()
@@ -156,7 +156,7 @@ fn ty_mentions_name(t: TypeExpr, name: String) -> Bool {
 
 /// The declared generic enum a constructor spelling belongs to, as
 /// (enum, formals, payload types of that variant).
-fn generic_variant_of(cname: String) -> Option[(String, Array[String], Array[TypeExpr])] {
+fn generic_variant_of(_ cname: String) -> Option[(String, Array[String], Array[TypeExpr])] {
   let variant = match split_qualified(cname) {
     Some(parts) => parts.1,
     None => cname
@@ -214,12 +214,12 @@ fn constructor_literal_type(arg: Expr, struct_sets: Array[(String, Array[String]
             let mut bound = TyName(unknown_marker())
             let mut pi = 0
             while pi < Array::length(payloads) {
-              let pty = Array::get(payloads, pi)
-              if ty_mentions_name(pty, f) {
+              let pty = Array::get(payloads, at = pi)
+              if ty_mentions_name(t = pty, name = f) {
                 carried = true
                 match pty {
                   TyName(pn) => if pn == f {
-                    match first_known_type(Array::get(cargs, pi), struct_sets, var_types, fn_returns) {
+                    match first_known_type(arg = Array::get(cargs, at = pi), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
                       Some(t) => {
                         bound = t
                       },
@@ -235,7 +235,7 @@ fn constructor_literal_type(arg: Expr, struct_sets: Array[(String, Array[String]
               }
               pi = pi + 1
             }
-            Array::push(args, if carried {
+            Array::push(args, value = if carried {
               bound
             } else {
               TyName(absent_marker())
@@ -252,8 +252,8 @@ fn constructor_literal_type(arg: Expr, struct_sets: Array[(String, Array[String]
 
 fn first_known_type(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
   let mut result = None
-  for t in candidate_arg_types(arg, struct_sets, var_types, fn_returns) {
-    if is_none(result) && !ty_contains_eq_unknown(t) && !ty_mentions_name(t, absent_marker()) {
+  for t in candidate_arg_types(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+    if is_none(result) && !ty_contains_eq_unknown(t) && !ty_mentions_name(t = t, name = absent_marker()) {
       result = Some(t)
     } else {
       ()
@@ -267,14 +267,14 @@ fn first_known_type(arg: Expr, struct_sets: Array[(String, Array[String])], var_
 /// substituted; `Array::get(xs, i)` is `xs`'s element type.
 fn projected_arg_type(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
   match arg {
-    EDot(obj, field, _, _) => match receiver_type(obj, struct_sets, var_types, fn_returns) {
-      Some(rt) => declared_field_type(rt, field),
+    EDot(obj, field, _, _) => match receiver_type(e = obj, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+      Some(rt) => declared_field_type(rt = rt, field = field),
       None => None
     },
     ECall(EIdent(fname, _), cargs, _, _) => if fname == "Array::get" && Array::length(cargs) == 2 {
-      match receiver_type(Array::get(cargs, 0), struct_sets, var_types, fn_returns) {
+      match receiver_type(e = Array::get(cargs, at = 0), struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
         Some(TyApp(head, elems)) => if head == "Array" && Array::length(elems) == 1 {
-          Some(Array::get(elems, 0))
+          Some(Array::get(elems, at = 0))
         } else {
           None
         },
@@ -288,16 +288,16 @@ fn projected_arg_type(arg: Expr, struct_sets: Array[(String, Array[String])], va
 }
 
 fn receiver_type(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
-  match infer_impl_target_expr(e, struct_sets, var_types, fn_returns) {
+  match infer_impl_target_expr(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
     Some(t) => Some(unmark_formals(t)),
-    None => projected_arg_type(e, struct_sets, var_types, fn_returns)
+    None => projected_arg_type(arg = e, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
   }
 }
 
 fn mentions_any_formal(t: TypeExpr, formals: Array[String]) -> Bool {
   let mut found = false
   for f in formals {
-    if ty_mentions_name(t, type_param_name(f)) {
+    if ty_mentions_name(t = t, name = type_param_name(f)) {
       found = true
     } else {
       ()
@@ -319,8 +319,8 @@ fn declared_field_type(rt: TypeExpr, field: String) -> Option[TypeExpr] {
       for f in fields {
         if f.0 == field && is_none(result) {
           result = if Array::length(formals) > 0 && Array::length(formals) == Array::length(args) {
-            Some(eq_subst_ty(f.1, formals, args))
-          } else if mentions_any_formal(f.1, formals) {
+            Some(eq_subst_ty(ty = f.1, params = formals, args = args))
+          } else if mentions_any_formal(t = f.1, formals = formals) {
             // #3613: the declaration's own parameter is not the field's type
             // at this receiver, whose arguments are not readable here.
             None
@@ -343,21 +343,21 @@ fn declared_field_type(rt: TypeExpr, field: String) -> Option[TypeExpr] {
 /// use, then the recorded equality shape.
 fn candidate_arg_types(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[TypeExpr] {
   let out = array_empty()
-  match constructor_literal_type(arg, struct_sets, var_types, fn_returns) {
-    Some(t) => Array::push(out, t),
+  match constructor_literal_type(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+    Some(t) => Array::push(out, value = t),
     None => ()
   }
-  match infer_impl_target_expr(arg, struct_sets, var_types, fn_returns) {
-    Some(t) => Array::push(out, unmark_formals(t)),
+  match infer_impl_target_expr(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+    Some(t) => Array::push(out, value = unmark_formals(t)),
     None => ()
   }
-  match projected_arg_type(arg, struct_sets, var_types, fn_returns) {
-    Some(t) => Array::push(out, unmark_formals(t)),
+  match projected_arg_type(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
+    Some(t) => Array::push(out, value = unmark_formals(t)),
     None => ()
   }
-  let sh = infer_eq_shape(arg, struct_sets, var_types, fn_returns)
+  let sh = infer_eq_shape(e = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns)
   if String::length(sh) > 0 {
-    Array::push(out, unmark_formals(shape_to_eq_ty(sh)))
+    Array::push(out, value = unmark_formals(shape_to_eq_ty(sh)))
   } else {
     ()
   }
@@ -365,17 +365,17 @@ fn candidate_arg_types(arg: Expr, struct_sets: Array[(String, Array[String])], v
   // forwarded to `same_opt(a, b)`): the formal shape it recorded.
   match arg {
     EIdent(n, _) => {
-      let fsh = eq_formal_shape_of_name(var_types, n)
+      let fsh = eq_formal_shape_of_name(var_types = var_types, n = n)
       if String::length(fsh) > 0 {
-        Array::push(out, unmark_formals(shape_to_eq_ty(fsh)))
+        Array::push(out, value = unmark_formals(shape_to_eq_ty(fsh)))
       } else {
         ()
       }
     },
     _ => ()
   }
-  match function_arg_type(arg, var_types, fn_returns) {
-    Some(t) => Array::push(out, unmark_formals(t)),
+  match function_arg_type(arg = arg, var_types = var_types, fn_returns = fn_returns) {
+    Some(t) => Array::push(out, value = unmark_formals(t)),
     None => ()
   }
   out
@@ -390,17 +390,17 @@ fn candidate_arg_types(arg: Expr, struct_sets: Array[(String, Array[String])], v
 fn function_arg_type(arg: Expr, var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
   match arg {
     EFn(_, _, _, Some(ret), _, _) => Some(TyFn([], ret, None)),
-    EIdent(n, _) => match eq_fn_result_of_name(var_types, n) {
+    EIdent(n, _) => match eq_fn_result_of_name(var_types = var_types, n = n) {
       Some(ret) => Some(TyFn([], ret, None)),
-      None => if constructor_binding_is_masked(var_types, n) {
+      None => if constructor_binding_is_masked(var_types = var_types, name = n) {
         None
       } else {
         // The declared return type, kept whole (`-> Pt`, `-> Option[Double]`)
         // whenever it does not mention the function's own formals (Codex on
         // #3302: a nominal result was refused although it says what `T` is).
-        match declared_return_type(n, fn_returns) {
+        match declared_return_type(n = n, fn_returns = fn_returns) {
           Some(t) => Some(TyFn([], t, None)),
-          None => match fn_return_type(fn_returns, fn_eq_shape_key(n)) {
+          None => match fn_return_type(fn_returns = fn_returns, fname = fn_eq_shape_key(n)) {
             Some(sh) => {
               let t = shape_to_eq_ty(sh)
               if ty_contains_eq_unknown(t) {
@@ -409,7 +409,7 @@ fn function_arg_type(arg: Expr, var_types: Array[(String, String)], fn_returns: 
                 Some(TyFn([], t, None))
               }
             },
-            None => match fn_return_type(fn_returns, n) {
+            None => match fn_return_type(fn_returns = fn_returns, fname = n) {
               // Only a scalar head is a complete type: a declared name here
               // may be a generic head whose arguments `fn_returns` does not
               // keep.
@@ -429,7 +429,7 @@ fn function_arg_type(arg: Expr, var_types: Array[(String, String)], fn_returns: 
 }
 
 fn declared_return_type(n: String, fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
-  match fn_return_type(fn_returns, impl_target_fn_key(n)) {
+  match fn_return_type(fn_returns = fn_returns, fname = impl_target_fn_key(n)) {
     Some(key) => impl_target_from_key(key),
     None => None
   }
@@ -440,7 +440,7 @@ fn declared_return_type(n: String, fn_returns: Array[(String, String)]) -> Optio
 fn collect_formal_positions(ann: TypeExpr, actual: TypeExpr, formal: String, out: Array[TypeExpr]) -> Unit {
   match ann {
     TyName(n) => if n == formal {
-      Array::push(out, actual)
+      Array::push(out, value = actual)
     } else {
       ()
     },
@@ -448,40 +448,40 @@ fn collect_formal_positions(ann: TypeExpr, actual: TypeExpr, formal: String, out
       TyApp(h2, bs) => if h == h2 && Array::length(as_) == Array::length(bs) {
         let mut i = 0
         while i < Array::length(as_) {
-          collect_formal_positions(Array::get(as_, i), Array::get(bs, i), formal, out)
+          collect_formal_positions(ann = Array::get(as_, at = i), actual = Array::get(bs, at = i), formal = formal, out = out)
           i = i + 1
         }
       } else {
-        collect_unknown_positions(ann, formal, out)
+        collect_unknown_positions(ann = ann, formal = formal, out = out)
       },
-      _ => collect_unknown_positions(ann, formal, out)
+      _ => collect_unknown_positions(ann = ann, formal = formal, out = out)
     },
     TyTuple(xs) => match actual {
       TyTuple(ys) => if Array::length(xs) == Array::length(ys) {
         let mut i = 0
         while i < Array::length(xs) {
-          collect_formal_positions(Array::get(xs, i), Array::get(ys, i), formal, out)
+          collect_formal_positions(ann = Array::get(xs, at = i), actual = Array::get(ys, at = i), formal = formal, out = out)
           i = i + 1
         }
       } else {
-        collect_unknown_positions(ann, formal, out)
+        collect_unknown_positions(ann = ann, formal = formal, out = out)
       },
-      _ => collect_unknown_positions(ann, formal, out)
+      _ => collect_unknown_positions(ann = ann, formal = formal, out = out)
     },
     // A function's RESULT is read; its parameters carry no value of the
     // formal into the callee (`find_nested_recv_indices`). A function
     // argument is never absent: it can always be called.
     TyFn(_, aret, _) => match actual {
-      TyFn(_, bret, _) => collect_formal_positions(aret, bret, formal, out),
-      _ => collect_unknown_positions(aret, formal, out)
+      TyFn(_, bret, _) => collect_formal_positions(ann = aret, actual = bret, formal = formal, out = out),
+      _ => collect_unknown_positions(ann = aret, formal = formal, out = out)
     },
     _ => ()
   }
 }
 
 fn collect_unknown_positions(ann: TypeExpr, formal: String, out: Array[TypeExpr]) -> Unit {
-  if ty_mentions_name(ann, formal) {
-    Array::push(out, TyName(unknown_marker()))
+  if ty_mentions_name(t = ann, name = formal) {
+    Array::push(out, value = TyName(unknown_marker()))
   } else {
     ()
   }
@@ -498,14 +498,14 @@ export fn nested_recv_binding(formal: String, nested_recvs: Array[(String, Int, 
     let (f, idx, ann0) = recv
     if f == formal && idx >= 0 && idx < Array::length(orig_args) && is_none(found) {
       let ann = eq_expand_alias_ty(ann0)
-      let arg = Array::get(orig_args, idx)
+      let arg = Array::get(orig_args, at = idx)
       let mut arg_absent = false
       let mut arg_positions = 0
-      for actual0 in candidate_arg_types(arg, struct_sets, var_types, fn_returns) {
+      for actual0 in candidate_arg_types(arg = arg, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns) {
         if is_none(found) {
           let actual = eq_expand_alias_ty(actual0)
           let positions = array_empty()
-          collect_formal_positions(ann, actual, formal, positions)
+          collect_formal_positions(ann = ann, actual = actual, formal = formal, out = positions)
           let mut every_absent = Array::length(positions) > 0
           for p in positions {
             match p {
@@ -519,7 +519,7 @@ export fn nested_recv_binding(formal: String, nested_recvs: Array[(String, Int, 
               },
               _ => {
                 every_absent = false
-                if !ty_contains_eq_unknown(p) && !ty_mentions_name(p, absent_marker()) && is_none(found) {
+                if !ty_contains_eq_unknown(p) && !ty_mentions_name(t = p, name = absent_marker()) && is_none(found) {
                   found = Some(p)
                 } else {
                   ()

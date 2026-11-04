@@ -17,7 +17,9 @@ if (process.argv[2] === "--publish-child") {
 }
 
 const root = path.resolve(__dirname, "..");
-const read = (file) => execFileSync("python3", [path.join(root, "scripts/source_files.py"), path.join(root, file)], { encoding: "utf8" });
+// A flattened source group can exceed execFileSync's 1 MiB default buffer
+// (linked_compile.vibe is over it once its calls carry argument labels).
+const read = (file) => execFileSync("python3", [path.join(root, "scripts/source_files.py"), path.join(root, file)], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 const includes = (file, text) =>
   assert.ok(read(file).includes(text), `${file} must contain ${text}`);
 
@@ -27,7 +29,7 @@ includes(
 );
 includes(
   "lib/@vibe/compiler/core/builtin_registry.vibe",
-  '("Fs::publish_immutable_text", CtFn(reg_p2(CtString, CtString), CtBool, Some("Fs")), true, false, true, false, false, false, false)',
+  '("Fs::publish_immutable_text", CtFn(reg_p2(a = CtString, b = CtString), CtBool, Some("Fs")), true, false, true, false, false, false, false)',
 );
 includes(
   "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe",
@@ -35,7 +37,7 @@ includes(
 );
 includes(
   "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe",
-  'emit_name(import_content, "fs_publish_immutable_text")',
+  'emit_name(buf = import_content, name = "fs_publish_immutable_text")',
 );
 includes(
   "lib/@vibe/compiler/codegen/gc/backend_body.vibe",

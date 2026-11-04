@@ -30,24 +30,24 @@ import ./codegen_gc_test_support.vibe {
 
 fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
   let path = String::concat("/tmp/_double_runtime_", String::concat(label, ".wasm"))
-  Fs::write_bytes(path, bytes)
+  Fs::write_bytes(path, bytes = bytes)
   // Plain `wasmtime run` has no `vibe::stdout_write_stream` import, so a
   // program here RETURNS its answer from `main` (the runner prints the Int)
   // rather than printing it; the trailing `0` is the hidden env parameter
   // (see codegen_heap_e2e_test.vibe).
   let out = sh_lines(String::concat("wasmtime run -W exceptions=y,gc=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
   if Array::length(out) > 0 {
-    Array::get(out, 0)
+    Array::get(out, at = 0)
   } else {
     "<no output>"
   }
 }
 
 fn assert_lanes_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Console {
-  inspect(run_value(compile_wasi(src, "main"), String::concat(label, "_bump")), content = expected)
-  inspect(run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc")), content = expected)
-  inspect(run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow")), content = expected)
-  inspect(run_value(compile_wasi_gc(src, "main"), String::concat(label, "_gc")), content = expected)
+  inspect(run_value(bytes = compile_wasi(source = src, entry = "main"), label = String::concat(label, "_bump")), content = expected)
+  inspect(run_value(bytes = compile_wasi_rc(source = src, entry = "main"), label = String::concat(label, "_rc")), content = expected)
+  inspect(run_value(bytes = compile_wasi_rc_shadow(source = src, entry = "main"), label = String::concat(label, "_shadow")), content = expected)
+  inspect(run_value(bytes = compile_wasi_gc(source = src, entry = "main"), label = String::concat(label, "_gc")), content = expected)
   0
 }
 
@@ -60,7 +60,7 @@ fn score_program(prelude: String, checks: Array[(String, String)]) -> String {
   let mut i = 0
   let mut bit = 1
   while i < Array::length(checks) {
-    let (printed, expected) = Array::get(checks, i)
+    let (printed, expected) = Array::get(checks, at = i)
     body = String::concat(body, String::concat("  if String::equals(", String::concat(printed, String::concat(", \"", String::concat(expected, String::concat("\") {\n    ok = ok + ", String::concat(Int::to_string(bit), "\n  } else {\n    ()\n  }\n")))))))
     bit = bit * 2
     i = i + 1
@@ -69,7 +69,7 @@ fn score_program(prelude: String, checks: Array[(String, String)]) -> String {
 }
 
 /// The mask `score_program` answers when every one of `n` checks matches.
-fn all_bits(n: Int) -> String {
+fn all_bits(_ n: Int) -> String {
   let mut mask = 0
   let mut bit = 1
   let mut i = 0
@@ -89,7 +89,7 @@ test "the prelude source parses on its own and names both entry points" {
   let mut has_parse = false
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, _, _) => {
         if name == "__vibe_double_to_string" {
           has_to_string = true
@@ -154,7 +154,7 @@ test "#2652 the values the issue measured print the same on every lane" {
     ("Double::to_string(pow10(300) * pow10(300))", "Infinity"),
     ("Double::to_string(0.0 / 0.0)", "NaN")
   ]
-  assert_lanes_agree(score_program(prelude, checks), "issue_values", all_bits(13))
+  assert_lanes_agree(src = score_program(prelude = prelude, checks = checks), label = "issue_values", expected = all_bits(13))
 }
 
 test "#2652 __to_string of a Double takes the prelude" {
@@ -165,7 +165,7 @@ test "#2652 __to_string of a Double takes the prelude" {
     ("__to_string(0.1 * 3.0)", "0.30000000000000004"),
     ("__to_string(1.0 / 3.0)", "0.3333333333333333")
   ]
-  assert_lanes_agree(score_program(prelude, checks), "to_string", all_bits(4))
+  assert_lanes_agree(src = score_program(prelude = prelude, checks = checks), label = "to_string", expected = all_bits(4))
 }
 
 test "#2652 Double::parse reads exponents, specials, and the old spellings" {
@@ -186,7 +186,7 @@ test "#2652 Double::parse reads exponents, specials, and the old spellings" {
     ("show(\"1e\")", "None"),
     ("show(\"\")", "None")
   ]
-  assert_lanes_agree(score_program(prelude, checks), "parse", all_bits(14))
+  assert_lanes_agree(src = score_program(prelude = prelude, checks = checks), label = "parse", expected = all_bits(14))
 }
 
 test "#2652 parse(to_string(d)) is exact at the edges of the format" {
@@ -202,7 +202,7 @@ test "#2652 parse(to_string(d)) is exact at the edges of the format" {
     ("rt(858993460, 1070805811)", "0.30000000000000004 ok"),
     ("rt(2281731484, 2117592124)", "1e+300 ok")
   ]
-  assert_lanes_agree(score_program(prelude, checks), "roundtrip", all_bits(6))
+  assert_lanes_agree(src = score_program(prelude = prelude, checks = checks), label = "roundtrip", expected = all_bits(6))
 }
 
 test "#2708 review: a Double that arrives through a type annotation is a Double source" {
@@ -218,7 +218,7 @@ test "#2708 review: a Double that arrives through a type annotation is a Double 
   ]
   let mut i = 0
   while i < Array::length(shapes) {
-    let src = Array::get(shapes, i)
+    let src = Array::get(shapes, at = i)
     inspect(program_mentions_double(parse_program(lex(src))), content = "true")
     inspect(program_needs_double_runtime(parse_program(lex(src))), content = "true")
     i = i + 1
@@ -235,12 +235,12 @@ test "#2708 review: a render of a Double parameter compiles and links the prelud
   // valid program: `render` is exported, so it is compiled, and its hole
   // lowers to the prelude.
   let src = "export fn render(x: Double) -> String {\n  \"\\{x}\"\n}\n\nfn main() -> Int {\n  1\n}\n"
-  assert_lanes_agree(src, "typed_param", "1")
+  assert_lanes_agree(src = src, label = "typed_param", expected = "1")
 }
 
 test "#2708 review: a program's own fn Double::to_string is that program's function on every lane" {
   // the same guard the String length views got: the arm is off when the
   // program defines the name, at the top level and inside a closure
   let src = "fn Double::to_string(d: Double) -> String {\n  \"shadow\"\n}\n\nfn main() -> Int {\n  let inside = Array::map([1.5], (x) -> Double::to_string(x))\n  String::length(Double::to_string(2.5)) * 10 + String::length(Array::get(inside, 0))\n}\n"
-  assert_lanes_agree(src, "shadow", "66")
+  assert_lanes_agree(src = src, label = "shadow", expected = "66")
 }

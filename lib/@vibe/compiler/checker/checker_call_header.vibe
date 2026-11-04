@@ -12,15 +12,15 @@ import @vibe/compiler/core {
 /// header built meanwhile spells each `_` slot `"_ " + name`. The space is
 /// what no identifier holds, so only code that reads a header -- call
 /// placement, the label sites -- ever sees the marker.
-let positional_rows: Array[(String, Array[Int])] = Array::slice([("", [0])], 0, 0)
+let positional_rows: Array[(String, Array[Int])] = Array::slice([("", [0])], start = 0, end = 0)
 
 /// The `_` slots written in `stmts`, empty when none.
-export fn checker_positional_rows_of(stmts: Array[Stmt]) -> Array[(String, Array[Int])] {
+export fn checker_positional_rows_of(_ stmts: Array[Stmt]) -> Array[(String, Array[Int])] {
   let out: Array[(String, Array[Int])] = []
   for stmt in stmts {
     match stmt {
       SPositionalParams(rows) => for row in rows {
-        Array::push(out, row)
+        Array::push(out, value = row)
       },
       _ => ()
     }
@@ -29,31 +29,31 @@ export fn checker_positional_rows_of(stmts: Array[Stmt]) -> Array[(String, Array
 }
 
 /// Publish `rows` and return the ones they replace, for the caller to restore.
-export fn checker_swap_positional_rows(rows: Array[(String, Array[Int])]) -> Array[(String, Array[Int])] {
-  let saved = Array::slice(positional_rows, 0, Array::length(positional_rows))
-  Array::truncate(positional_rows, 0)
+export fn checker_swap_positional_rows(_ rows: Array[(String, Array[Int])]) -> Array[(String, Array[Int])] {
+  let saved = Array::slice(positional_rows, start = 0, end = Array::length(positional_rows))
+  Array::truncate(positional_rows, length = 0)
   for row in rows {
-    Array::push(positional_rows, row)
+    Array::push(positional_rows, value = row)
   }
   saved
 }
 
 /// Is header name `raw` a `_` slot?
-export fn checker_header_name_is_positional(raw: String) -> Bool {
-  String::starts_with(raw, "_ ")
+export fn checker_header_name_is_positional(_ raw: String) -> Bool {
+  String::starts_with(raw, prefix = "_ ")
 }
 
 fn positional_header_names(name: String, raw: Array[String]) -> Array[String] {
   if Array::length(positional_rows) == 0 {
     raw
   } else {
-    let names = Array::slice(raw, 0, Array::length(raw))
+    let names = Array::slice(raw, start = 0, end = Array::length(raw))
     for row in positional_rows {
       let (decl, slots) = row
       if decl == name {
         for slot in slots {
-          if slot >= 0 && slot < Array::length(names) && !checker_header_name_is_positional(Array::get(names, slot)) {
-            Array::set(names, slot, "_ " + Array::get(names, slot))
+          if slot >= 0 && slot < Array::length(names) && !checker_header_name_is_positional(Array::get(names, at = slot)) {
+            Array::set(names, at = slot, value = "_ " + Array::get(names, at = slot))
           } else {
             ()
           }
@@ -70,13 +70,13 @@ fn positional_header_names(name: String, raw: Array[String]) -> Array[String] {
 /// Later calls can request labels, so every declaration retains its names.
 /// A local `let` lambda comes here too, and has no `_` slots of its own.
 export fn checker_bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr) -> TypeEnv {
-  bind_call_header(env, name, ty, value, false)
+  bind_call_header(env = env, name = name, ty = ty, value = value, declaration = false)
 }
 
 /// The same, for a declaration in a program or module statement list, whose
 /// `_` slots the published rows name.
 export fn checker_bind_declaration_call_header(env: TypeEnv, name: String, ty: Type, value: Expr) -> TypeEnv {
-  bind_call_header(env, name, ty, value, true)
+  bind_call_header(env = env, name = name, ty = ty, value = value, declaration = true)
 }
 
 fn bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr, declaration: Bool) -> TypeEnv {
@@ -87,7 +87,7 @@ fn bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr, declarati
         raw
       }
       let names = if declaration {
-        positional_header_names(name, raw_names)
+        positional_header_names(name = name, raw = raw_names)
       } else {
         raw_names
       }
@@ -95,17 +95,17 @@ fn bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr, declarati
         Some(flags) => BindingOriginDefaultedFunctionHeader(names, flags),
         None => BindingOriginFunctionHeader(names)
       }
-      env_bind_with_origin(env, name, ty, origin)
+      env_bind_with_origin(env = env, name = name, ty = ty, origin = origin)
     },
-    _ => env_bind(env, name, ty)
+    _ => env_bind(env = env, name = name, ty = ty)
   }
 }
 
-fn header_names_have_optional(names: Array[String]) -> Bool {
+fn header_names_have_optional(_ names: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(names) && !found {
-    found = String::ends_with(Array::get(names, i), "?")
+    found = String::ends_with(Array::get(names, at = i), suffix = "?")
     i = i + 1
   }
   found
@@ -114,22 +114,22 @@ fn header_names_have_optional(names: Array[String]) -> Bool {
 /// Ordinary positional calls need only optional-slot demand. Inspect the
 /// selected binding without copying an imported header's field names.
 export fn checker_call_header_has_optional(env: TypeEnv, name: String) -> Bool {
-  match env_lookup_binding(env, name) {
+  match env_lookup_binding(env = env, name = name) {
     Some(binding) => match binding.origin {
       BindingOriginFunctionHeader(names) => header_names_have_optional(names),
       BindingOriginModuleFunctionHeader(_, _, names, _) => header_names_have_optional(names),
       BindingOriginDefaultedFunctionHeader(names, _) => header_names_have_optional(names),
       BindingOriginMutableFunctionHeader(box) => {
-        let (kind, names, _) = Array::get(box, 0)
+        let (kind, names, _) = Array::get(box, at = 0)
         kind == 1 && header_names_have_optional(names)
       },
-      BindingOriginModuleExport(_, _) => match env_lookup(env, String::concat(param_names_prefix, name)) {
+      BindingOriginModuleExport(_, _) => match env_lookup(env = env, name = String::concat(param_names_prefix, name)) {
         Some(CtRecord(fields)) => {
           let mut i = 0
           let mut found = false
           while i < Array::length(fields) && !found {
-            let (raw, _) = Array::get(fields, i)
-            found = String::ends_with(raw, "?")
+            let (raw, _) = Array::get(fields, at = i)
+            found = String::ends_with(raw, suffix = "?")
             i = i + 1
           }
           found
@@ -146,20 +146,20 @@ export fn checker_call_header_has_optional(env: TypeEnv, name: String) -> Bool {
 /// a same-typed outer function's labels. Imported declarations retain names
 /// on their value binding; legacy module headers use a companion marker.
 export fn checker_call_header_names(env: TypeEnv, name: String) -> Option[Array[String]] {
-  match env_lookup_binding(env, name) {
+  match env_lookup_binding(env = env, name = name) {
     Some(binding) => match binding.origin {
       BindingOriginFunctionHeader(names) => Some(names),
       BindingOriginModuleFunctionHeader(_, _, names, _) => Some(names),
       BindingOriginDefaultedFunctionHeader(names, _) => Some(names),
       BindingOriginMutableFunctionHeader(box) => {
-        let (kind, names, _) = Array::get(box, 0)
+        let (kind, names, _) = Array::get(box, at = 0)
         if kind == 1 {
           Some(names)
         } else {
           None
         }
       },
-      BindingOriginModuleExport(_, _) => match env_lookup(env, String::concat(param_names_prefix, name)) {
+      BindingOriginModuleExport(_, _) => match env_lookup(env = env, name = String::concat(param_names_prefix, name)) {
         Some(CtRecord(fields)) => Some(for field in fields {
           let (raw, _) = field
           raw
@@ -179,9 +179,9 @@ export fn checker_seed_import_call_headers(env: TypeEnv, imported: Array[(String
   let mut out = env
   for row in imported {
     let (name, names) = row
-    match env_lookup_binding(env, name) {
+    match env_lookup_binding(env = env, name = name) {
       Some(binding) => match binding.origin {
-        BindingOriginUnavailable => out = env_bind_with_origin(out, name, binding.ty, BindingOriginFunctionHeader(names)),
+        BindingOriginUnavailable => out = env_bind_with_origin(env = out, name = name, ty = binding.ty, origin = BindingOriginFunctionHeader(names)),
         _ => ()
       },
       None => ()
@@ -192,7 +192,7 @@ export fn checker_seed_import_call_headers(env: TypeEnv, imported: Array[(String
 
 /// Only the binding selected by typing can contribute parameter defaults.
 export fn checker_call_header_defaults(env: TypeEnv, name: String) -> Option[Array[Bool]] {
-  match env_lookup_binding(env, name) {
+  match env_lookup_binding(env = env, name = name) {
     Some(binding) => match binding.origin {
       BindingOriginDefaultedFunctionHeader(_, flags) => Some(flags),
       // #3440: an imported declaration carries its bits on the header.

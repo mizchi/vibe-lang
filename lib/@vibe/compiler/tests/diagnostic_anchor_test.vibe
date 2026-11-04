@@ -28,18 +28,18 @@ import @vibe/compiler/runtime {
 
 //# Misc
 
-fn first_diag(src: String) -> String with Exception {
+fn first_diag(_ src: String) -> String with Exception {
   let d = collect_all_diagnostics(src)
   if Array::length(d) == 0 {
     ""
   } else {
-    Array::get(d, 0)
+    Array::get(d, at = 0)
   }
 }
 
 /// `true` when the first diagnostic carries exactly `line <line>:<col>`.
 fn anchored_at(src: String, line: Int, col: Int) -> Bool with Exception {
-  String::contains(first_diag(src), "line \{line}:\{col}")
+  String::contains(first_diag(src), needle = "line \{line}:\{col}")
 }
 
 //# Tests
@@ -48,28 +48,28 @@ test "an if condition that is not Bool points at the condition" {
   //     1234567
   //   `  if n {` -- `n` is column 6.
   let src = "fn f() -> Int {\n  let n = 1\n  if n { 2 } else { 3 }\n}\n"
-  assert(String::contains(first_diag(src), "if condition must be Bool"))
-  assert(anchored_at(src, 3, 6))
+  assert(String::contains(first_diag(src), needle = "if condition must be Bool"))
+  assert(anchored_at(src = src, line = 3, col = 6))
 }
 
 test "an if condition that is not Bool names the actual type" {
   // #2200: "must be Bool" alone reads as agreeing with the reader who
   // believes the condition IS a Bool (`flag?: Bool` arrives as Option[Bool]).
   let src = "fn f() -> Int {\n  let n = 1\n  if n { 2 } else { 3 }\n}\n"
-  assert(String::contains(first_diag(src), "if condition must be Bool, got Int"))
+  assert(String::contains(first_diag(src), needle = "if condition must be Bool, got Int"))
   let opt_src = "fn f(flag?: Bool) -> Int {\n  if flag { 1 } else { 0 }\n}\n"
-  assert(String::contains(first_diag(opt_src), "if condition must be Bool, got Option[Bool]"))
-  assert(String::contains(first_diag(opt_src), "match it, or pass a Bool"))
+  assert(String::contains(first_diag(opt_src), needle = "if condition must be Bool, got Option[Bool]"))
+  assert(String::contains(first_diag(opt_src), needle = "match it, or pass a Bool"))
   // `  if flag` -- `flag` is column 6.
-  assert(anchored_at(opt_src, 2, 6))
+  assert(anchored_at(src = opt_src, line = 2, col = 6))
 }
 
 test "mismatched if branches point at the else branch" {
   // The `then` type is the expectation and `else` is checked against it, so
   // the else arm is the operand that disagrees.
   let src = "fn f() -> Bool {\n  let n = 1\n  let s = \"x\"\n  if true { n } else { s }\n}\n"
-  assert(String::contains(first_diag(src), "if branches have incompatible types"))
-  assert(anchored_at(src, 4, 24))
+  assert(String::contains(first_diag(src), needle = "if branches have incompatible types"))
+  assert(anchored_at(src = src, line = 4, col = 24))
 }
 
 test "mismatched if branches with a literal else still anchor on the if" {
@@ -78,8 +78,8 @@ test "mismatched if branches with a literal else still anchor on the if" {
   // (`s`, column 13) -- coarser than the disagreeing operand, but on the
   // right expression.
   let src = "fn f() -> Bool {\n  let s = \"x\"\n  if true { s } else { 1 }\n}\n"
-  assert(String::contains(first_diag(src), "if branches have incompatible types"))
-  assert(anchored_at(src, 3, 13))
+  assert(String::contains(first_diag(src), needle = "if branches have incompatible types"))
+  assert(anchored_at(src = src, line = 3, col = 13))
 }
 
 test "all-literal if branches with a string slice the string (#2831)" {
@@ -89,8 +89,8 @@ test "all-literal if branches with a string slice the string (#2831)" {
   //    123456789012345678901
   //  `  let v = if true { "` -- the opening quote is column 21.
   let src = "fn f() -> Bool {\n  let v = if true { \"yes\" } else { 0 }\n  true\n}\n"
-  assert(String::contains(first_diag(src), "if branches have incompatible types"))
-  assert(anchored_at(src, 2, 21))
+  assert(String::contains(first_diag(src), needle = "if branches have incompatible types"))
+  assert(anchored_at(src = src, line = 2, col = 21))
 }
 
 test "an argument type mismatch points at the ARGUMENT, not the callee (#2831)" {
@@ -102,8 +102,8 @@ test "an argument type mismatch points at the ARGUMENT, not the callee (#2831)" 
   //    1234567890123456789012
   //  `  let b = takes("nope")` -- `takes` is column 11, the literal column 17.
   let src = "fn takes(n: Int) -> Int { n }\nfn f() -> Int {\n  let b = takes(\"nope\")\n  b\n}\n"
-  assert(String::contains(first_diag(src), "argument type mismatch for takes"))
-  assert(String::contains(first_diag(src), "line 3:17-23"))
+  assert(String::contains(first_diag(src), needle = "argument type mismatch for takes"))
+  assert(String::contains(first_diag(src), needle = "line 3:17-23"))
 }
 
 test "the argument anchor picks the argument that actually disagrees (#2831)" {
@@ -113,8 +113,8 @@ test "the argument anchor picks the argument that actually disagrees (#2831)" {
   //    1234567890123456
   //  `  two(1, "wrong")` -- the bad literal starts at column 10.
   let src = "fn two(a: Int, b: Int) -> Int { a + b }\nfn f() -> Int {\n  two(1, \"wrong\")\n}\n"
-  assert(String::contains(first_diag(src), "argument type mismatch for two"))
-  assert(String::contains(first_diag(src), "line 3:10-17"))
+  assert(String::contains(first_diag(src), needle = "argument type mismatch for two"))
+  assert(String::contains(first_diag(src), needle = "line 3:10-17"))
 }
 
 test "a method call anchors its argument through the prepended receiver (#2831)" {
@@ -127,8 +127,8 @@ test "a method call anchors its argument through the prepended receiver (#2831)"
   //    123456789012345678
   //  `  b.scale("nope")` -- the literal starts at column 11.
   let src = "struct Box { v: Int }\nfn Box::scale(self: Box, by: Int) -> Int { self.v * by }\nfn f() -> Int {\n  let b = Box::{ v: 3 }\n  b.scale(\"nope\")\n}\n"
-  assert(String::contains(first_diag(src), "argument type mismatch for Box::scale"))
-  assert(String::contains(first_diag(src), "line 5:11-17"))
+  assert(String::contains(first_diag(src), needle = "argument type mismatch for Box::scale"))
+  assert(String::contains(first_diag(src), needle = "line 5:11-17"))
 }
 
 test "an offset-less literal argument is read back from the call's tokens (#3348)" {
@@ -139,23 +139,23 @@ test "an offset-less literal argument is read back from the call's tokens (#3348
   //    123456789
   //  `  takes(42)` -- `takes` is column 3, `42` columns 9-10.
   let src = "fn takes(s: String) -> Int { String::length(s) }\nfn f() -> Int {\n  takes(42)\n}\n"
-  assert(String::contains(first_diag(src), "argument type mismatch for takes"))
-  assert(String::contains(first_diag(src), "line 3:9-11"))
+  assert(String::contains(first_diag(src), needle = "argument type mismatch for takes"))
+  assert(String::contains(first_diag(src), needle = "line 3:9-11"))
   // An array of scalars has no located element either.
   //    12345678901234
   //  `  sum([1, 2])` -- the literal is columns 7-12.
   let arr = "fn sum(xs: Array[String]) -> Int { 0 }\nfn f() -> Int {\n  sum([1, 2])\n}\n"
-  assert(String::contains(first_diag(arr), "line 3:7-13"))
+  assert(String::contains(first_diag(arr), needle = "line 3:7-13"))
   // The second argument, after a nested one.
   //    1234567890123456789
   //  `  two([1, 2], 1.5)` -- `1.5` is columns 15-17.
   let second = "fn two(a: Array[Int], b: Int) -> Int { b }\nfn f() -> Int {\n  two([1, 2], 1.5)\n}\n"
-  assert(String::contains(first_diag(second), "line 3:15-18"))
+  assert(String::contains(first_diag(second), needle = "line 3:15-18"))
   // A tuple, a qualified callee and a bool.
   //    123456789012345678
   //  `  M::pair((1, 2))` -- the tuple is columns 11-16.
   let tup = "fn M::pair(t: (String, Int)) -> Int { 0 }\nfn f() -> Int {\n  M::pair((1, 2))\n}\n"
-  assert(String::contains(first_diag(tup), "line 3:11-17"))
+  assert(String::contains(first_diag(tup), needle = "line 3:11-17"))
 }
 
 test "an offset-less literal argument the call's tokens do not show keeps the callee anchor (#3348)" {
@@ -163,13 +163,13 @@ test "an offset-less literal argument the call's tokens do not show keeps the ca
   //    1234567890123
   //  `  1 |> two(true)` -- `two` is column 8.
   let piped = "fn two(a: Int, b: Int) -> Int { a + b }\nfn f() -> Int {\n  1 |> two(true)\n}\n"
-  assert(String::contains(first_diag(piped), "argument type mismatch for two"))
-  assert(anchored_at(piped, 3, 8))
+  assert(String::contains(first_diag(piped), needle = "argument type mismatch for two"))
+  assert(anchored_at(src = piped, line = 3, col = 8))
   // A negative literal is two tokens: no range is guessed for it.
   //    1234567
   //  `  takes(-1)` -- `takes` is column 3.
   let neg = "fn takes(s: String) -> Int { 0 }\nfn f() -> Int {\n  takes(-1)\n}\n"
-  assert(anchored_at(neg, 3, 3))
+  assert(anchored_at(src = neg, line = 3, col = 3))
 }
 
 test "a literal spanning several lines is reported as a range (#3348)" {
@@ -178,10 +178,10 @@ test "a literal spanning several lines is reported as a range (#3348)" {
   //    123456789012345678901234
   //  `  let xs: Array[Int] = [` -- the `[` is column 24, the `]` on line 5 column 3.
   let src = "fn f() -> Int {\n  let xs: Array[Int] = [\n    \"a\",\n    \"b\"\n  ]\n  0\n}\n"
-  assert(String::contains(first_diag(src), "line 2:24-5:4: "))
+  assert(String::contains(first_diag(src), needle = "line 2:24-5:4: "))
   // An offset-less literal, recovered from the binding's tokens.
   let ints = "fn f() -> Int {\n  let xs: Array[String] = [\n    1,\n    2\n  ]\n  0\n}\n"
-  assert(String::contains(first_diag(ints), "line 2:27-5:4: "))
+  assert(String::contains(first_diag(ints), needle = "line 2:27-5:4: "))
 }
 
 test "a malformed require directive is located on its own line" {
@@ -194,8 +194,8 @@ test "a malformed require directive is located on its own line" {
   // line kind locates without a second copy of the header grammar.
   let src = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\nrequire @vibe/extra 9.9.9 = #pkg:sha1:zzz\n\nfn f() -> Int {\n  1\n}\n"
   let d = first_diag(src)
-  assert(String::contains(d, "require pin must be"))
-  assert(String::contains(d, "line 2:1:"))
+  assert(String::contains(d, needle = "require pin must be"))
+  assert(String::contains(d, needle = "line 2:1:"))
   // A clean pin head stays clean.
   let ok = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
   assert(first_diag(ok) == "")
@@ -203,26 +203,26 @@ test "a malformed require directive is located on its own line" {
   // (plain `: <offender>` tail) locates too.
   let scoped = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\nrequire bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
   let d2 = first_diag(scoped)
-  assert(String::contains(d2, "must start with '@'"))
-  assert(String::contains(d2, "line 2:1:"))
+  assert(String::contains(d2, needle = "must start with '@'"))
+  assert(String::contains(d2, needle = "line 2:1:"))
   // #2253 review round 4: the header grammar continues across comments and
   // the other directives, so a malformed require AFTER one of those must
   // locate too (the previous locator classified only require/blank lines
   // as header and gave up at the comment).
   let after_comment = "// header comment\nrequire bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
   let d3 = first_diag(after_comment)
-  assert(String::contains(d3, "must start with '@'"))
-  assert(String::contains(d3, "line 2:1:"))
+  assert(String::contains(d3, needle = "must start with '@'"))
+  assert(String::contains(d3, needle = "line 2:1:"))
   let after_version = "version = 1.2.3\nrequire bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
   let d4 = first_diag(after_version)
-  assert(String::contains(d4, "must start with '@'"))
-  assert(String::contains(d4, "line 2:1:"))
+  assert(String::contains(d4, needle = "must start with '@'"))
+  assert(String::contains(d4, needle = "line 2:1:"))
   // An unterminated `deps = {` swallows the first code line as a deps
   // entry; the probe anchors on that line -- where the scanner stopped.
   let open_deps = "deps = {\n  @vibe/core : 0.2.0\n\nfn f() -> Int {\n  1\n}\n"
   let d5 = first_diag(open_deps)
-  assert(String::contains(d5, "malformed deps entry"))
-  assert(String::contains(d5, "line 4:1:"))
+  assert(String::contains(d5, needle = "malformed deps entry"))
+  assert(String::contains(d5, needle = "line 4:1:"))
   // #2253 review round 6: the probe binary-searches the prefix boundary, so
   // there is no length cap -- an offending directive past line 256 still
   // locates (the previous linear probe gave up there).
@@ -234,8 +234,8 @@ test "a malformed require directive is located on its own line" {
   }
   let long_src = long_head + "require bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
   let d6 = first_diag(long_src)
-  assert(String::contains(d6, "must start with '@'"))
-  assert(String::contains(d6, "line 301:1:"))
+  assert(String::contains(d6, needle = "must start with '@'"))
+  assert(String::contains(d6, needle = "line 301:1:"))
 }
 
 test "a comment spelling the binder does not capture the anchor" {
@@ -244,8 +244,8 @@ test "a comment spelling the binder does not capture the anchor" {
   // comment. The scan now skips comments and strings, so the anchor lands
   // on the real binding (line 3, column 7).
   let src = "fn f() -> Bool {\n  // let v used to be an Int\n  let v = if true { 1 } else { true }\n  true\n}\n"
-  assert(String::contains(first_diag(src), "if branches have incompatible types"))
-  assert(anchored_at(src, 3, 7))
+  assert(String::contains(first_diag(src), needle = "if branches have incompatible types"))
+  assert(anchored_at(src = src, line = 3, col = 7))
 }
 
 test "a same-named fn and let fail closed to no position" {
@@ -255,9 +255,9 @@ test "a same-named fn and let fail closed to no position" {
   // and the diagnostic pointed at the unrelated top-level function.
   let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let v = if true { 1 } else { true }\n  true\n}\n"
   let d = first_diag(src)
-  assert(String::contains(d, "if branches have incompatible types"))
-  assert(!String::contains(d, "line "))
-  assert(!String::contains(d, " [@"))
+  assert(String::contains(d, needle = "if branches have incompatible types"))
+  assert(!String::contains(d, needle = "line "))
+  assert(!String::contains(d, needle = " [@"))
 }
 
 test "a shadowed binder fails closed to no position" {
@@ -267,9 +267,9 @@ test "a shadowed binder fails closed to no position" {
   // keeps its text and carries no line, rather than a confidently wrong one.
   let src = "fn f() -> Bool {\n  let v = 1\n  let v = if true { 1 } else { true }\n  true\n}\n"
   let d = first_diag(src)
-  assert(String::contains(d, "if branches have incompatible types"))
-  assert(!String::contains(d, "line "))
-  assert(!String::contains(d, " [@"))
+  assert(String::contains(d, needle = "if branches have incompatible types"))
+  assert(!String::contains(d, needle = "line "))
+  assert(!String::contains(d, needle = " [@"))
 }
 
 test "a raw-identifier binder counts as a declaration" {
@@ -279,8 +279,8 @@ test "a raw-identifier binder counts as a declaration" {
   //    12345678
   //  `  let r#v` -- `v` is column 9.
   let src = "fn f() -> Bool {\n  let r#v = if true { 1 } else { true }\n  true\n}\n"
-  assert(String::contains(first_diag(src), "if branches have incompatible types"))
-  assert(anchored_at(src, 2, 9))
+  assert(String::contains(first_diag(src), needle = "if branches have incompatible types"))
+  assert(anchored_at(src = src, line = 2, col = 9))
 }
 
 test "a raw-identifier binder colliding with a plain fn fails closed" {
@@ -290,9 +290,9 @@ test "a raw-identifier binder colliding with a plain fn fails closed" {
   // the message carries no position.
   let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let r#v = if true { 1 } else { true }\n  true\n}\n"
   let d = first_diag(src)
-  assert(String::contains(d, "if branches have incompatible types"))
-  assert(!String::contains(d, "line "))
-  assert(!String::contains(d, " [@"))
+  assert(String::contains(d, needle = "if branches have incompatible types"))
+  assert(!String::contains(d, needle = "line "))
+  assert(!String::contains(d, needle = " [@"))
 }
 
 test "a let rec binder counts as a declaration" {
@@ -302,14 +302,14 @@ test "a let rec binder counts as a declaration" {
   // fails closed; alone it anchors at the binder.
   let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let rec v = if true { 1 } else { true }\n  true\n}\n"
   let d = first_diag(src)
-  assert(String::contains(d, "if branches have incompatible types"))
-  assert(!String::contains(d, "line "))
-  assert(!String::contains(d, " [@"))
+  assert(String::contains(d, needle = "if branches have incompatible types"))
+  assert(!String::contains(d, needle = "line "))
+  assert(!String::contains(d, needle = " [@"))
   //    1234567890
   //  `  let rec v` -- `v` is column 11.
   let alone = "fn f() -> Bool {\n  let rec v = if true { 1 } else { true }\n  true\n}\n"
-  assert(String::contains(first_diag(alone), "if branches have incompatible types"))
-  assert(anchored_at(alone, 2, 11))
+  assert(String::contains(first_diag(alone), needle = "if branches have incompatible types"))
+  assert(anchored_at(src = alone, line = 2, col = 11))
 }
 
 test "a char literal quote does not swallow later declarations" {
@@ -321,12 +321,12 @@ test "a char literal quote does not swallow later declarations" {
   // scan_interp_end counts raw bytes the same way this scan does.)
   let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let q = '\"'\n  let v = if true { 1 } else { true }\n  q == 34 && v == \"\"\n}\n"
   let d = first_diag(src)
-  assert(String::contains(d, "if branches have incompatible types"))
-  assert(!String::contains(d, "line "))
-  assert(!String::contains(d, " [@"))
+  assert(String::contains(d, needle = "if branches have incompatible types"))
+  assert(!String::contains(d, needle = "line "))
+  assert(!String::contains(d, needle = " [@"))
   let alone = "fn f() -> Bool {\n  let q = '\"'\n  let v = if true { 1 } else { true }\n  q == 34 && v == \"\"\n}\n"
-  assert(String::contains(first_diag(alone), "if branches have incompatible types"))
-  assert(anchored_at(alone, 3, 7))
+  assert(String::contains(first_diag(alone), needle = "if branches have incompatible types"))
+  assert(anchored_at(src = alone, line = 3, col = 7))
 }
 
 test "a raw string's trailing backslash does not swallow later declarations" {
@@ -339,12 +339,12 @@ test "a raw string's trailing backslash does not swallow later declarations" {
   // column 7).
   let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let q = r\"\\\"\n  let v = if true { 1 } else { true }\n  String::length(q) == 1 && v == \"\"\n}\n"
   let d = first_diag(src)
-  assert(String::contains(d, "if branches have incompatible types"))
-  assert(!String::contains(d, "line "))
-  assert(!String::contains(d, " [@"))
+  assert(String::contains(d, needle = "if branches have incompatible types"))
+  assert(!String::contains(d, needle = "line "))
+  assert(!String::contains(d, needle = " [@"))
   let alone = "fn f() -> Bool {\n  let q = r\"\\\"\n  let v = if true { 1 } else { true }\n  String::length(q) == 1 && v == \"\"\n}\n"
-  assert(String::contains(first_diag(alone), "if branches have incompatible types"))
-  assert(anchored_at(alone, 3, 7))
+  assert(String::contains(first_diag(alone), needle = "if branches have incompatible types"))
+  assert(anchored_at(src = alone, line = 3, col = 7))
 }
 
 test "hash-pipe raw text neither declares nor swallows" {
@@ -355,13 +355,13 @@ test "hash-pipe raw text neither declares nor swallows" {
   // the real binder anchors normally (line 3, column 7); with an
   // outside same-named fn the cross-kind rule fails closed.
   let alone = "fn f() -> Bool {\n  let s = #|fn v \"\n  let v = if true { 1 } else { true }\n  String::length(s) > 0 && v == \"\"\n}\n"
-  assert(String::contains(first_diag(alone), "if branches have incompatible types"))
-  assert(anchored_at(alone, 3, 7))
+  assert(String::contains(first_diag(alone), needle = "if branches have incompatible types"))
+  assert(anchored_at(src = alone, line = 3, col = 7))
   let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let s = #|fn v \"\n  let v = if true { 1 } else { true }\n  String::length(s) > 0 && v == \"\"\n}\n"
   let d = first_diag(src)
-  assert(String::contains(d, "if branches have incompatible types"))
-  assert(!String::contains(d, "line "))
-  assert(!String::contains(d, " [@"))
+  assert(String::contains(d, needle = "if branches have incompatible types"))
+  assert(!String::contains(d, needle = "line "))
+  assert(!String::contains(d, needle = " [@"))
 }
 
 test "a binder declared inside an interpolation fragment counts" {
@@ -369,8 +369,8 @@ test "a binder declared inside an interpolation fragment counts" {
   // declared inside one must be visible to the scan. Alone it anchors at
   // the fragment declaration; the exact columns are pinned by measurement.
   let src = "fn f() -> String {\n  \"x = \\{ { let v = if true { 1 } else { true }\n  v } }\"\n}\n"
-  assert(String::contains(first_diag(src), "if branches have incompatible types"))
-  assert(anchored_at(src, 2, 17))
+  assert(String::contains(first_diag(src), needle = "if branches have incompatible types"))
+  assert(anchored_at(src = src, line = 2, col = 17))
 }
 
 test "a fragment binder colliding with an outside fn fails closed" {
@@ -380,9 +380,9 @@ test "a fragment binder colliding with an outside fn fails closed" {
   // ambiguity rule reports without a position.
   let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> String {\n  \"x = \\{ { let v = if true { 1 } else { true }\n  v } }\"\n}\n"
   let d = first_diag(src)
-  assert(String::contains(d, "if branches have incompatible types"))
-  assert(!String::contains(d, "line "))
-  assert(!String::contains(d, " [@"))
+  assert(String::contains(d, needle = "if branches have incompatible types"))
+  assert(!String::contains(d, needle = "line "))
+  assert(!String::contains(d, needle = " [@"))
 }
 
 test "interpolating a Show-less struct anchors on the interpolation" {
@@ -391,21 +391,21 @@ test "interpolating a Show-less struct anchors on the interpolation" {
   // sharing it collides with that argument in the typed-lowering key space.
   // Anchoring `fn main` names the enclosing binding, which is not the hole.
   let src = "struct Point {\n  x: Int\n}\n\nfn main() -> Unit {\n  let p = Point::{ x: 3 }\n  let s = \"\\{p}\"\n  ()\n}\n"
-  assert(String::contains(first_diag(src), "cannot interpolate a value of type `Point`"))
-  assert(anchored_at(src, 7, 12))
-  assert(!String::contains(first_diag(src), "line 5:"))
+  assert(String::contains(first_diag(src), needle = "cannot interpolate a value of type `Point`"))
+  assert(anchored_at(src = src, line = 7, col = 12))
+  assert(!String::contains(first_diag(src), needle = "line 5:"))
 }
 
 test "an incompatible array element points at that element" {
   let src = "fn f() -> Int {\n  let s = \"x\"\n  let a = [1, s]\n  1\n}\n"
-  assert(String::contains(first_diag(src), "array elements have incompatible types"))
-  assert(anchored_at(src, 3, 15))
+  assert(String::contains(first_diag(src), needle = "array elements have incompatible types"))
+  assert(anchored_at(src = src, line = 3, col = 15))
 }
 
 test "an incompatible map value points at that value" {
   let src = "fn f() -> Int {\n  let s = \"x\"\n  let m = Map::from_pairs([(\"a\", 1), (\"b\", s)])\n  1\n}\n"
-  assert(String::contains(first_diag(src), "map literal values have incompatible types"))
-  assert(anchored_at(src, 3, 44))
+  assert(String::contains(first_diag(src), needle = "map literal values have incompatible types"))
+  assert(anchored_at(src = src, line = 3, col = 44))
 }
 
 test "a literal operand still reports without a position, and says nothing false" {
@@ -415,42 +415,42 @@ test "a literal operand still reports without a position, and says nothing false
   // and the comment at the top of this file needs rewriting.
   let src = "fn f() -> Int {\n  if 1 { 2 } else { 3 }\n}\n"
   let d = first_diag(src)
-  assert(String::contains(d, "if condition must be Bool"))
-  assert(!String::contains(d, "line "))
+  assert(String::contains(d, needle = "if condition must be Bool"))
+  assert(!String::contains(d, needle = "line "))
 }
 
 test "an incompatible struct field value points at that value" {
   //   `  let p = P::{ x: s }` -- `s` is column 19.
   let src = "struct P { x: Int }\n\nfn f() -> Int {\n  let s = \"a\"\n  let p = P::{ x: s }\n  1\n}\n"
-  assert(String::contains(first_diag(src), "struct field type mismatch for x"))
-  assert(anchored_at(src, 5, 19))
+  assert(String::contains(first_diag(src), needle = "struct field type mismatch for x"))
+  assert(anchored_at(src = src, line = 5, col = 19))
 }
 
 test "Array::push and Array::set point at the pushed/stored value" {
   // Not at the array and not at the call: the array is fine, the value is
   // what has the wrong type.
   let push_src = "fn f() -> Int {\n  let a = [1]\n  let s = \"a\"\n  Array::push(a, s)\n  1\n}\n"
-  assert(String::contains(first_diag(push_src), "Array::push value type mismatch"))
-  assert(anchored_at(push_src, 4, 18))
+  assert(String::contains(first_diag(push_src), needle = "Array::push value type mismatch"))
+  assert(anchored_at(src = push_src, line = 4, col = 18))
   let set_src = "fn f() -> Int {\n  let a = [1]\n  let s = \"a\"\n  Array::set(a, 0, s)\n  1\n}\n"
-  assert(String::contains(first_diag(set_src), "Array::set value type mismatch"))
-  assert(anchored_at(set_src, 4, 20))
+  assert(String::contains(first_diag(set_src), needle = "Array::set value type mismatch"))
+  assert(anchored_at(src = set_src, line = 4, col = 20))
 }
 
 test "mismatched match arms point at the arm body that disagrees" {
   // Same shape as the `if` branches above: the first arm's type is the
   // expectation, so the anchor belongs on the arm being checked against it.
   let src = "fn f(n: Int) -> Int {\n  let s = \"a\"\n  match n {\n    0 => 1,\n    _ => s\n  }\n}\n"
-  assert(String::contains(first_diag(src), "match arms have incompatible types"))
-  assert(anchored_at(src, 5, 10))
+  assert(String::contains(first_diag(src), needle = "match arms have incompatible types"))
+  assert(anchored_at(src = src, line = 5, col = 10))
 }
 
 test "an assignment of the wrong type points at the value, not the variable" {
   // The `region escapes its scope` diagnostic one line above in the same
   // EAssign arm already anchored this way; this one had been left at -1.
   let src = "fn f() -> Int {\n  let mut n = 1\n  let s = \"a\"\n  n = s\n  n\n}\n"
-  assert(String::contains(first_diag(src), "assignment type mismatch for n"))
-  assert(anchored_at(src, 4, 7))
+  assert(String::contains(first_diag(src), needle = "assignment type mismatch for n"))
+  assert(anchored_at(src = src, line = 4, col = 7))
 }
 
 //# Non-exhaustive matches anchor on the scrutinee (#2198)
@@ -460,20 +460,20 @@ test "a non-exhaustive enum match points at the scrutinee" {
   // every match that now has a hole" -- without a line the error names the
   // hole but does not point at it. `s` is column 9 of the match line.
   let src = "enum Shape {\n  Circle(Int);\n  Rect(Int, Int);\n  Triangle(Int, Int)\n}\n\nfn area(s: Shape) -> Int {\n  match s {\n    Circle(r) => 3 * r * r,\n    Rect(w, h) => w * h\n  }\n}\n"
-  assert(String::contains(first_diag(src), "variant `Triangle` of enum Shape is not handled"))
-  assert(anchored_at(src, 8, 9))
+  assert(String::contains(first_diag(src), needle = "variant `Triangle` of enum Shape is not handled"))
+  assert(anchored_at(src = src, line = 8, col = 9))
 }
 
 test "a non-exhaustive Option match points at the scrutinee" {
   let src = "fn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => v,\n    Some(_) => 0\n  }\n}\n"
-  assert(String::contains(first_diag(src), "variant `None` of Option is not handled"))
-  assert(anchored_at(src, 2, 9))
+  assert(String::contains(first_diag(src), needle = "variant `None` of Option is not handled"))
+  assert(anchored_at(src = src, line = 2, col = 9))
 }
 
 test "a non-exhaustive Bool match points at the scrutinee" {
   let src = "fn f(b: Bool) -> Int {\n  match b {\n    true => 1,\n    true => 2\n  }\n}\n"
-  assert(String::contains(first_diag(src), "`false` is not handled for a Bool scrutinee"))
-  assert(anchored_at(src, 2, 9))
+  assert(String::contains(first_diag(src), needle = "`false` is not handled for a Bool scrutinee"))
+  assert(anchored_at(src = src, line = 2, col = 9))
 }
 
 //# A bare `_` outside a pipe names its two roles (#2201)
@@ -483,11 +483,11 @@ test "a bare underscore argument explains pipe slot and lambda section" {
   // existed -- "unknown name: _" answered the wrong question.
   let src = "fn f() -> Int {\n  let xs = [1, 2, 3]\n  let ys = Array::map(_, 9)\n  0\n}\n"
   let d = first_diag(src)
-  assert(String::contains(d, "`_` is not a value here"))
-  assert(String::contains(d, "pipe slot"))
-  assert(String::contains(d, "lambda section"))
-  assert(!String::contains(d, "unknown name: _"))
-  assert(anchored_at(src, 3, 23))
+  assert(String::contains(d, needle = "`_` is not a value here"))
+  assert(String::contains(d, needle = "pipe slot"))
+  assert(String::contains(d, needle = "lambda section"))
+  assert(!String::contains(d, needle = "unknown name: _"))
+  assert(anchored_at(src = src, line = 3, col = 23))
 }
 
 //# Effect-shaped sites (#1941, third slice)
@@ -495,29 +495,29 @@ test "a bare underscore argument explains pipe slot and lambda section" {
 /// `handle { f() } with { Ask::Get => <arm> }` where `f` performs `Ask::Get`.
 /// The three cases below differ only in the arm, so a column difference is
 /// the arm's, not the scaffolding's.
-fn handled(arm: String) -> String {
+fn handled(_ arm: String) -> String {
   "effect Ask {\n  Get -> Int\n}\n\nfn f() -> Int with Ask::Get {\n  perform Ask::Get\n}\n\nfn g() -> Int {\n  let s = \"a\"\n  handle {\n    f()\n  } with {\n    Ask::Get => \{arm}\n  }\n}\n"
 }
 
 test "a resumed value of the wrong type points at the resume argument" {
   //   `    Ask::Get => resume(s)` -- `s` is column 24.
   let src = handled("resume(s)")
-  assert(String::contains(first_diag(src), "resume value type mismatch"))
-  assert(anchored_at(src, 14, 24))
+  assert(String::contains(first_diag(src), needle = "resume value type mismatch"))
+  assert(anchored_at(src = src, line = 14, col = 24))
 }
 
 test "a handler arm's bare tail value points at the arm body" {
   // Not at `Ask::Get` and not at the `handle`: the arm's tail VALUE is what
   // has to be wrapped in resume(...) (#2969).
   let src = handled("s")
-  assert(String::contains(first_diag(src), "must pass its value back with resume(...)"))
-  assert(anchored_at(src, 14, 17))
+  assert(String::contains(first_diag(src), needle = "must pass its value back with resume(...)"))
+  assert(anchored_at(src = src, line = 14, col = 17))
 }
 
 test "writing a struct field points at the written value" {
   let src = "struct P { mut x: Int }\n\nfn f(p: P) -> Int {\n  let s = \"a\"\n  p.x = s\n  1\n}\n"
-  assert(String::contains(first_diag(src), "type mismatch writing field `x`"))
-  assert(anchored_at(src, 5, 9))
+  assert(String::contains(first_diag(src), needle = "type mismatch writing field `x`"))
+  assert(anchored_at(src = src, line = 5, col = 9))
 }
 
 test "Array::fold points at the initial accumulator, not the callback" {
@@ -525,13 +525,13 @@ test "Array::fold points at the initial accumulator, not the callback" {
   // init's type)`, so `init` is the operand under test -- same rule as every
   // other case in this file, and it is the argument a reader would change.
   let src = "fn f() -> Int {\n  let a = [1]\n  let n = 0\n  Array::fold(a, n, (acc: String, x: Int) -> acc)\n  1\n}\n"
-  assert(String::contains(first_diag(src), "Array::fold accumulator type mismatch"))
-  assert(anchored_at(src, 4, 18))
+  assert(String::contains(first_diag(src), needle = "Array::fold accumulator type mismatch"))
+  assert(anchored_at(src = src, line = 4, col = 18))
 }
 
 /// Formal-order unification must name the literal in written source order,
 /// skipping its label instead of anchoring on the callee or another argument.
 test "a reordered labeled literal keeps its written diagnostic column" {
   let src = "fn f(x: Int, y: String) -> Int { x }\nfn main() -> Int {\n  f(y = 3, x = 10)\n}\n"
-  assert(anchored_at(src, 3, 9))
+  assert(anchored_at(src = src, line = 3, col = 9))
 }

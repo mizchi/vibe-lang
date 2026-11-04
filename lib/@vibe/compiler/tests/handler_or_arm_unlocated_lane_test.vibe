@@ -28,19 +28,19 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 
 //# Functions
 
-fn string_to_bytes(s: String) -> Bytes {
+fn string_to_bytes(_ s: String) -> Bytes {
   let out = array_empty()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Array::push(out, String::byte_at(s, i))
+    Array::push(out, value = String::byte_at(s, at = i))
     i = i + 1
   }
   Bytes::from_array(out)
 }
 
-fn is_wasm(bytes: Bytes) -> Bool {
-  Bytes::length(bytes) > 4 && Bytes::get(bytes, 0) == 0 && Bytes::get(bytes, 1) == 97 && Bytes::get(bytes, 2) == 115 && Bytes::get(bytes, 3) == 109
+fn is_wasm(_ bytes: Bytes) -> Bool {
+  Bytes::length(bytes) > 4 && Bytes::get(bytes, at = 0) == 0 && Bytes::get(bytes, at = 1) == 97 && Bytes::get(bytes, at = 2) == 115 && Bytes::get(bytes, at = 3) == 109
 }
 
 fn generic_effect() -> String {
@@ -59,19 +59,19 @@ fn disagreeing_dep() -> String {
 
 /// A refusal's message without the checker's trailing source-position
 /// marker (` [@off=N:M]`), which the located library lane carries.
-fn without_marker(message: String) -> String {
-  let at = String::index_of(message, " [@off=")
+fn without_marker(_ message: String) -> String {
+  let at = String::index_of(message, needle = " [@off=")
   if at < 0 {
     message
   } else {
-    String::substring(message, 0, at)
+    String::substring(message, start = 0, end = at)
   }
 }
 
 fn library_lane(dir: String, source: String) -> String with Env + Fs {
   let path = String::concat(dir, "/dep.vibe")
   Fs::mkdir_p(dir)
-  Fs::write_bytes(path, string_to_bytes(source))
+  Fs::write_bytes(path, bytes = string_to_bytes(source))
   handle {
     if is_wasm(compile_file_wasi_library(path)) {
       "wasm"
@@ -82,7 +82,7 @@ fn library_lane(dir: String, source: String) -> String with Env + Fs {
 }
 
 /// The same program checked from an UNLOCATED parse: every node at offset -1.
-fn unlocated_check(source: String) -> String {
+fn unlocated_check(_ source: String) -> String {
   handle {
     let _ = check_program(parse_program(lex(source)))
     "ok"
@@ -107,27 +107,27 @@ fn written_apart_dep() -> String {
 //# Misc
 
 test "the library lane accepts an or-pattern arm its handle instantiates alike" {
-  inspect(library_lane("/tmp/vibe_or_arm_unlocated_agree", agreeing_dep()), content = "wasm")
+  inspect(library_lane(dir = "/tmp/vibe_or_arm_unlocated_agree", source = agreeing_dep()), content = "wasm")
 }
 
 test "the library lane refuses one its handle instantiates apart" {
-  inspect(library_lane("/tmp/vibe_or_arm_unlocated_differ", disagreeing_dep()), content = "write `E::X => ..` and `E::Y => ..` as separate arms: `resume` here would take Int for `E::X` but String for `E::Y`, and an or-pattern arm has one `resume`")
+  inspect(library_lane(dir = "/tmp/vibe_or_arm_unlocated_differ", source = disagreeing_dep()), content = "write `E::X => ..` and `E::Y => ..` as separate arms: `resume` here would take Int for `E::X` but String for `E::Y`, and an or-pattern arm has one `resume`")
 }
 
 test "the merged entry lane compiles an entry calling it" {
   let dir = "/tmp/vibe_or_arm_unlocated_entry"
   Fs::mkdir_p(dir)
-  Fs::write_bytes(String::concat(dir, "/dep.vibe"), string_to_bytes(agreeing_dep()))
-  Fs::write_bytes(String::concat(dir, "/main.vibe"), string_to_bytes("import ./dep.vibe { both_int }\nexport fn answer() -> Int { both_int() }\n"))
-  inspect(is_wasm(compile_file_wasi_only(String::concat(dir, "/main.vibe"), "answer")), content = "true")
+  Fs::write_bytes(String::concat(dir, "/dep.vibe"), bytes = string_to_bytes(agreeing_dep()))
+  Fs::write_bytes(String::concat(dir, "/main.vibe"), bytes = string_to_bytes("import ./dep.vibe { both_int }\nexport fn answer() -> Int { both_int() }\n"))
+  inspect(is_wasm(compile_file_wasi_only(entry_path = String::concat(dir, "/main.vibe"), entry_name = "answer")), content = "true")
 }
 
 test "the library lane takes or-pattern arms sharing a prefix as two arms" {
-  inspect(library_lane("/tmp/vibe_or_arm_unlocated_prefix", prefix_dep()), content = "wasm")
+  inspect(library_lane(dir = "/tmp/vibe_or_arm_unlocated_prefix", source = prefix_dep()), content = "wasm")
 }
 
 test "the library lane never compares arms written apart" {
-  inspect(library_lane("/tmp/vibe_or_arm_unlocated_apart", written_apart_dep()), content = "wasm")
+  inspect(library_lane(dir = "/tmp/vibe_or_arm_unlocated_apart", source = written_apart_dep()), content = "wasm")
 }
 
 test "an unlocated parse answers the or-pattern arm rule the same way" {

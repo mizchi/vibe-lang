@@ -51,21 +51,21 @@ import ../type_db.vibe {
 
 //# Functions
 
-fn int_params(n: Int) -> Array[Type] {
+fn int_params(_ n: Int) -> Array[Type] {
   let out: Array[Type] = []
   let mut i = 0
   while i < n {
-    Array::push(out, CtInt)
+    Array::push(out, value = CtInt)
     i = i + 1
   }
   out
 }
 
-fn int_args(n: Int) -> Array[Expr] {
+fn int_args(_ n: Int) -> Array[Expr] {
   let out: Array[Expr] = []
   let mut i = 0
   while i < n {
-    Array::push(out, EInt(i))
+    Array::push(out, value = EInt(i))
     i = i + 1
   }
   out
@@ -74,19 +74,19 @@ fn int_args(n: Int) -> Array[Expr] {
 /// An environment in which the program declares `name` as
 /// `(Int, ..) -> String`: a result no builtin arm gives Int arguments.
 fn program_declares(name: String, argc: Int) -> TypeEnv {
-  env_bind(EnvEmpty, name, CtFn(int_params(argc), CtString, None))
+  env_bind(env = EnvEmpty, name = name, ty = CtFn(int_params(argc), CtString, None))
 }
 
 /// What the checker answers for `name(0, 1, ..)` whose callee carries
 /// `callee_off`: the call's type, or the first diagnostic when there is one.
 fn call_answer(env: TypeEnv, name: String, argc: Int, callee_off: Int) -> String {
   let errors: Array[String] = []
-  let (ty, s, _) = check_expr(ECall(EIdent(name, callee_off), int_args(argc), 0, [
-  ]), env, array_empty(), SubstEmpty, 0, errors, array_empty())
+  let (ty, s, _) = check_expr(expr = ECall(EIdent(name, callee_off), int_args(argc), 0, [
+  ]), env = env, defs = array_empty(), s = SubstEmpty, c = 0, errors = errors, tytab = array_empty())
   if Array::length(errors) > 0 {
-    String::concat("error: ", Array::get(errors, 0))
+    String::concat("error: ", Array::get(errors, at = 0))
   } else {
-    type_to_string(subst_apply(s, ty))
+    type_to_string(subst_apply(s = s, ty = ty))
   }
 }
 
@@ -97,11 +97,11 @@ fn rows_answering_wrong(callee_off: Int, expect_declared: Bool, skip: Array[Stri
   let wrong: Array[String] = []
   for row in builtin_call_arms() {
     let (name, argc) = row
-    let skipped = Array::any(skip, (s) -> s == name)
+    let skipped = Array::any(skip, f = (s) -> s == name)
     if !skipped {
-      let answer = call_answer(program_declares(name, argc), name, argc, callee_off)
+      let answer = call_answer(env = program_declares(name = name, argc = argc), name = name, argc = argc, callee_off = callee_off)
       if (answer == "String") != expect_declared {
-        Array::push(wrong, String::concat(name, String::concat(" => ", answer)))
+        Array::push(wrong, value = String::concat(name, String::concat(" => ", answer)))
       } else {
         ()
       }
@@ -109,14 +109,15 @@ fn rows_answering_wrong(callee_off: Int, expect_declared: Bool, skip: Array[Stri
       ()
     }
   }
-  String::join(wrong, "; ")
+  String::join(wrong, sep = "; ")
 }
 
 /// The diagnostic the per-module lane gives `main.vibe`, or "" when it checks
 /// clean.
-fn diag_of(src: String) -> String with Env {
+fn diag_of(_ src: String) -> String with Env {
   handle {
-    let _ = prepare_modules_cached(db_new(), "main.vibe", src, [])
+    let _ = prepare_modules_cached(db = db_new(), main_path = "main.vibe", main_source = src, sources = [
+    ])
     ""
   } with { Exception::Throw(msg) => msg }
 }
@@ -140,7 +141,7 @@ test "#3185 every arm types the program's own direct call from its declaration" 
   // Before #3185 eighteen rows kept the builtin's typing (`Array::map`,
   // `Map::set`, `FixedArray::make`, `__slice`, `MutList::empty`, ...); red
   // on that checker: this answered their builtin types.
-  inspect(rows_answering_wrong(5, true, []), content = "")
+  inspect(rows_answering_wrong(callee_off = 5, expect_declared = true, skip = []), content = "")
 }
 
 test "#3185 every arm's spelling is moved aside when the program defines it" {
@@ -152,13 +153,13 @@ test "#3185 every arm's spelling is moved aside when the program defines it" {
   let unlisted: Array[String] = []
   for row in builtin_call_arms() {
     let (name, _) = row
-    if !builtin_shadow_renames_name(name) && !String::starts_with(name, "TaskGroup::") {
-      Array::push(unlisted, name)
+    if !builtin_shadow_renames_name(name) && !String::starts_with(name, prefix = "TaskGroup::") {
+      Array::push(unlisted, value = name)
     } else {
       ()
     }
   }
-  inspect(String::join(unlisted, "; "), content = "")
+  inspect(String::join(unlisted, sep = "; "), content = "")
 }
 
 test "#3179 a compiler-synthesized call still takes the builtin arm" {
@@ -166,7 +167,7 @@ test "#3179 a compiler-synthesized call still takes the builtin arm" {
   // declares. `TaskGroup::spawn` / `spawn_suspend` are library functions the
   // arm types from the callee's own scheme (#3125), so a synthesized call has
   // no builtin to mean and answers the declaration either way.
-  inspect(rows_answering_wrong(builtin_ref_offset(), false, [
+  inspect(rows_answering_wrong(callee_off = builtin_ref_offset(), expect_declared = false, skip = [
     "TaskGroup::spawn",
     "TaskGroup::spawn_suspend"
   ]), content = "")
@@ -175,12 +176,12 @@ test "#3179 a compiler-synthesized call still takes the builtin arm" {
 test "#3179 an unshadowed spelling still takes its builtin arm" {
   // With no binding of the program, `Array::get(0, 1)` is the builtin's call
   // and its receiver is refused, as before.
-  assert(String::starts_with(call_answer(EnvEmpty, "Array::get", 2, 5), "error: argument type mismatch for Array::get"))
+  assert(String::starts_with(call_answer(env = EnvEmpty, name = "Array::get", argc = 2, callee_off = 5), prefix = "error: argument type mismatch for Array::get"))
 }
 
 test "#3179 the issue's program: the program's Array::get is typed String on the per-module lane" {
   let bad = String::concat(own_array_get(), "fn f() -> Int {\n  let v = Array::get([1, 2], 0)\n  v + 1\n}\n")
-  assert(String::contains(diag_of(bad), "type mismatch in '+'"))
+  assert(String::contains(diag_of(bad), needle = "type mismatch in '+'"))
   let ok = String::concat(own_array_get(), "fn f() -> String {\n  Array::get([1, 2], 0)\n}\n")
   inspect(diag_of(ok), content = "")
 }
@@ -189,7 +190,7 @@ test "#3179 the program's own Array::get charges its own row, not the builtin's"
   // The effect pass already reads a program definition's row (#2107); the
   // call it charges is the same one the checker now types from that definition.
   let src = "fn Array::get(xs: Array[Int], i: Int) -> String with Console {\n  println(\"own\")\n  let _ = xs\n  let _ = i\n  \"own\"\n}\n\nfn f() -> String {\n  Array::get([1, 2], 0)\n}\n"
-  assert(String::contains(diag_of(src), "missing { Console }"))
+  assert(String::contains(diag_of(src), needle = "missing { Console }"))
 }
 
 test "#3179 index sugar still reads the builtin under the program's Array::get and __index" {
@@ -211,7 +212,7 @@ test "#3185 the field-write sugar keeps the builtin under the program's own __se
   let src = "struct C {\n  mut v: Int\n}\n\nfn __set_field(a: Int, b: Int, c: Int) -> String {\n  let _ = a\n  let _ = b\n  let _ = c\n  \"own\"\n}\n\nfn f() -> Int {\n  let c = C::{ v: 1 }\n  c.v = 5\n  c.v\n}\n\nfn g() -> String {\n  __set_field(1, 2, 3)\n}\n"
   inspect(diag_of(src), content = "")
   let immutable = "struct D {\n  v: Int\n}\n\nfn __set_field(a: Int, b: Int, c: Int) -> String {\n  let _ = a\n  let _ = b\n  let _ = c\n  \"own\"\n}\n\nfn f() -> Int {\n  let d = D::{ v: 1 }\n  d.v = 5\n  d.v\n}\n"
-  assert(String::contains(diag_of(immutable), "mut"))
+  assert(String::contains(diag_of(immutable), needle = "mut"))
 }
 
 test "#3185 the region sugar keeps the builtin under the program's own __region_run" {

@@ -17,13 +17,13 @@ export fn inline_wasm_marker_name() -> String {
 /// (inline_wat.vibe's tokenizer ends a word at any of these). `;` matters:
 /// `(call $helper;; why` is valid WAT whose callee is `helper`, and a scan
 /// that stopped only at whitespace read `helper;;` and matched nothing.
-fn wat_is_delim(c: Int) -> Bool {
+fn wat_is_delim(_ c: Int) -> Bool {
   c == 32 || c == 9 || c == 10 || c == 13 || c == 40 || c == 41 || c == 59
 }
 
 fn wat_token_end(wat: String, start: Int, len: Int) -> Int {
   let mut i = start
-  while i < len && !wat_is_delim(String::char_code_at(wat, i)) {
+  while i < len && !wat_is_delim(String::char_code_at(wat, at = i)) {
     i = i + 1
   }
   i
@@ -39,21 +39,21 @@ fn wat_skip_delims(wat: String, start: Int, len: Int) -> Int {
   while moving {
     if i >= len {
       moving = false
-    } else if wat_is_delim(String::char_code_at(wat, i)) {
+    } else if wat_is_delim(String::char_code_at(wat, at = i)) {
       // `;;` runs to the end of the line; a lone `;` is just a terminator.
-      if String::char_code_at(wat, i) == 59 && i + 1 < len && String::char_code_at(wat, i + 1) == 59 {
+      if String::char_code_at(wat, at = i) == 59 && i + 1 < len && String::char_code_at(wat, at = i + 1) == 59 {
         let mut j = i + 2
-        while j < len && String::char_code_at(wat, j) != 10 {
+        while j < len && String::char_code_at(wat, at = j) != 10 {
           j = j + 1
         }
         i = j
-      } else if String::char_code_at(wat, i) == 40 && i + 1 < len && String::char_code_at(wat, i + 1) == 59 {
+      } else if String::char_code_at(wat, at = i) == 40 && i + 1 < len && String::char_code_at(wat, at = i + 1) == 59 {
         // `(; ... ;)`. An unterminated one is the assembler's error to
         // report, not this scan's: treat the rest of the text as comment.
         let mut j = i + 2
         let mut closed = false
         while j + 1 < len && !closed {
-          if String::char_code_at(wat, j) == 59 && String::char_code_at(wat, j + 1) == 41 {
+          if String::char_code_at(wat, at = j) == 59 && String::char_code_at(wat, at = j + 1) == 41 {
             closed = true
             j = j + 2
           } else {
@@ -80,7 +80,7 @@ fn wat_name_index(names: Array[String], name: String) -> Int {
   let mut i = 0
   let mut found = 0 - 1
   while i < n {
-    if Array::get(names, i) == name {
+    if Array::get(names, at = i) == name {
       found = i
       i = n
     } else {
@@ -112,22 +112,22 @@ fn wat_name_index(names: Array[String], name: String) -> Int {
 /// already spelled right. The other direction is not safe: a MISSED name is a
 /// function DCE drops out from under a live call, or a callee the merge leaves
 /// dangling.
-export fn wat_callee_names(wat: String) -> Array[String] {
+export fn wat_callee_names(_ wat: String) -> Array[String] {
   let out = array_empty()
   let len = String::length(wat)
   let mut i = 0
   while i < len {
-    let start = wat_skip_delims(wat, i, len)
+    let start = wat_skip_delims(wat = wat, start = i, len = len)
     if start >= len {
       i = len
     } else {
-      let stop = wat_token_end(wat, start, len)
-      if String::substring(wat, start, stop) == "call" {
-        let name_start = wat_skip_delims(wat, stop, len)
-        if name_start < len && String::char_code_at(wat, name_start) == 36 {
-          let name_stop = wat_token_end(wat, name_start, len)
+      let stop = wat_token_end(wat = wat, start = start, len = len)
+      if String::substring(wat, start = start, end = stop) == "call" {
+        let name_start = wat_skip_delims(wat = wat, start = stop, len = len)
+        if name_start < len && String::char_code_at(wat, at = name_start) == 36 {
+          let name_stop = wat_token_end(wat = wat, start = name_start, len = len)
           if name_stop > name_start + 1 {
-            Array::push(out, String::substring(wat, name_start + 1, name_stop))
+            Array::push(out, value = String::substring(wat, start = name_start + 1, end = name_stop))
           } else {
             ()
           }
@@ -156,19 +156,19 @@ export fn wat_rewrite_callees(wat: String, from: Array[String], to: Array[String
     let mut copied = 0
     let mut i = 0
     while i < len {
-      let start = wat_skip_delims(wat, i, len)
+      let start = wat_skip_delims(wat = wat, start = i, len = len)
       if start >= len {
         i = len
       } else {
-        let stop = wat_token_end(wat, start, len)
-        if String::substring(wat, start, stop) == "call" {
-          let name_start = wat_skip_delims(wat, stop, len)
-          if name_start < len && String::char_code_at(wat, name_start) == 36 {
-            let name_stop = wat_token_end(wat, name_start, len)
-            let slot = wat_name_index(from, String::substring(wat, name_start + 1, name_stop))
+        let stop = wat_token_end(wat = wat, start = start, len = len)
+        if String::substring(wat, start = start, end = stop) == "call" {
+          let name_start = wat_skip_delims(wat = wat, start = stop, len = len)
+          if name_start < len && String::char_code_at(wat, at = name_start) == 36 {
+            let name_stop = wat_token_end(wat = wat, start = name_start, len = len)
+            let slot = wat_name_index(names = from, name = String::substring(wat, start = name_start + 1, end = name_stop))
             if slot >= 0 {
-              out = String::concat(out, String::substring(wat, copied, name_start + 1))
-              out = String::concat(out, Array::get(to, slot))
+              out = String::concat(out, String::substring(wat, start = copied, end = name_start + 1))
+              out = String::concat(out, Array::get(to, at = slot))
               copied = name_stop
             } else {
               ()
@@ -182,7 +182,7 @@ export fn wat_rewrite_callees(wat: String, from: Array[String], to: Array[String
         }
       }
     }
-    String::concat(out, String::substring(wat, copied, len))
+    String::concat(out, String::substring(wat, start = copied, end = len))
   }
 }
 

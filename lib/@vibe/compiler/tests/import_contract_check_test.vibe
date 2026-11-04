@@ -27,18 +27,18 @@ import @vibe/compiler/loader {
 
 //# Functions
 
-fn string_to_bytes(s: String) -> Bytes {
+fn string_to_bytes(_ s: String) -> Bytes {
   let out = array_empty()
   let len = String::length(s)
   let mut i = 0
   while i < len {
-    Array::push(out, String::char_code_at(s, i))
+    Array::push(out, value = String::char_code_at(s, at = i))
     i = i + 1
   }
   Bytes::from_array(out)
 }
 
-fn remove_file_if_exists(path: String) -> Unit with Fs {
+fn remove_file_if_exists(_ path: String) -> Unit with Fs {
   if Fs::exists(path) {
     Fs::remove(path)
   } else {
@@ -50,25 +50,25 @@ fn remove_file_if_exists(path: String) -> Unit with Fs {
 /// load_or_parse_module_header_fs takes the COLD lane (the only lane that
 /// re-runs import-name validation; warm replays are content-keyed).
 fn write_cold(path: String, source: String) -> Unit with Env + Exception + Fs {
-  Fs::write_bytes(path, string_to_bytes(source))
-  remove_file_if_exists(persistent_module_header_cache_path(path, compact_string_fingerprint(source)))
+  Fs::write_bytes(path, bytes = string_to_bytes(source))
+  remove_file_if_exists(persistent_module_header_cache_path(path = path, source_fingerprint = compact_string_fingerprint(source)))
 }
 
 /// A .vpkg fixture package: `pub_fn` is contract surface, `priv_fn` exists
 /// ONLY in the implementation file (the #943 "is_ws" shape).
-fn setup_vpkg_fixture(base_dir: String) -> String with Env + Exception + Fs {
+fn setup_vpkg_fixture(_ base_dir: String) -> String with Env + Exception + Fs {
   let pkg_dir = String::concat(base_dir, "/pkg")
   Fs::mkdir_p(pkg_dir)
   let contract_path = String::concat(pkg_dir, "/index.vpkg")
   let impl_path = String::concat(pkg_dir, "/impl.vibe")
-  write_cold(contract_path, "version 0.0.1\n\nimport ./impl.vibe {}\n\nfn pub_fn(x: Int) -> Int\n")
-  write_cold(impl_path, "fn priv_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn pub_fn(x: Int) -> Int {\n  priv_fn(x)\n}\n")
+  write_cold(path = contract_path, source = "version 0.0.1\n\nimport ./impl.vibe {}\n\nfn pub_fn(x: Int) -> Int\n")
+  write_cold(path = impl_path, source = "fn priv_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn pub_fn(x: Int) -> Int {\n  priv_fn(x)\n}\n")
   pkg_dir
 }
 
 fn header_error_for(main_path: String, main_source: String) -> String with Env + Fs {
   handle {
-    let _ = load_or_parse_module_header_fs(main_path, main_source, 0)
+    let _ = load_or_parse_module_header_fs(path = main_path, source = main_source, parse_count = 0)
     ""
   } with { Exception::Throw(msg) => msg }
 }
@@ -80,12 +80,12 @@ test "vpkg import: nonexistent name is rejected with a located error (#943 case 
   let _ = setup_vpkg_fixture(base_dir)
   let main_path = String::concat(base_dir, "/main.vibe")
   let main_source = "import ./pkg { totally_not_a_real_name }\nexport fn run() -> Int {\n  1\n}\n"
-  write_cold(main_path, main_source)
-  let msg = header_error_for(main_path, main_source)
+  write_cold(path = main_path, source = main_source)
+  let msg = header_error_for(main_path = main_path, main_source = main_source)
   // Located at the import statement's path token (line 1, col 8), quoting
   // the bad name — even though the import is never used.
-  assert(String::contains(msg, "line 1:8"))
-  assert(String::contains(msg, "\"totally_not_a_real_name\" is not exported by"))
+  assert(String::contains(msg, needle = "line 1:8"))
+  assert(String::contains(msg, needle = "\"totally_not_a_real_name\" is not exported by"))
 }
 
 test "vpkg import: private (impl-only) name is rejected at the import site (#943 case 2)" {
@@ -93,10 +93,10 @@ test "vpkg import: private (impl-only) name is rejected at the import site (#943
   let _ = setup_vpkg_fixture(base_dir)
   let main_path = String::concat(base_dir, "/main.vibe")
   let main_source = "import ./pkg { priv_fn }\nexport fn run() -> Int {\n  priv_fn(1)\n}\n"
-  write_cold(main_path, main_source)
-  let msg = header_error_for(main_path, main_source)
-  assert(String::contains(msg, "line 1:8"))
-  assert(String::contains(msg, "\"priv_fn\" is not exported by"))
+  write_cold(path = main_path, source = main_source)
+  let msg = header_error_for(main_path = main_path, main_source = main_source)
+  assert(String::contains(msg, needle = "line 1:8"))
+  assert(String::contains(msg, needle = "\"priv_fn\" is not exported by"))
 }
 
 test "vpkg import: contract-declared names and non-value shapes are accepted" {
@@ -105,14 +105,14 @@ test "vpkg import: contract-declared names and non-value shapes are accepted" {
   Fs::mkdir_p(pkg_dir)
   let contract_path = String::concat(pkg_dir, "/index.vpkg")
   let impl_path = String::concat(pkg_dir, "/impl.vibe")
-  write_cold(contract_path, "version 0.0.1\n\nimport ./impl.vibe {}\n\nopaque type Thing\n\nfn pub_fn(x: Int) -> Int\nfn Thing::size(t: Thing) -> Int\nlet answer: Int\n")
-  write_cold(impl_path, "export enum Thing {\n  MkThing(Int)\n}\n\nexport fn pub_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn Thing::size(t: Thing) -> Int {\n  match t {\n    MkThing(n) => n\n  }\n}\n\nexport let answer: Int = 42\n")
+  write_cold(path = contract_path, source = "version 0.0.1\n\nimport ./impl.vibe {}\n\nopaque type Thing\n\nfn pub_fn(x: Int) -> Int\nfn Thing::size(t: Thing) -> Int\nlet answer: Int\n")
+  write_cold(path = impl_path, source = "export enum Thing {\n  MkThing(Int)\n}\n\nexport fn pub_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn Thing::size(t: Thing) -> Int {\n  match t {\n    MkThing(n) => n\n  }\n}\n\nexport let answer: Int = 42\n")
   let main_path = String::concat(base_dir, "/main.vibe")
   // A fn decl, a bodyless let, an exact enum name, and a
   // (qualified, unvalidated) Type::member — all must pass.
   let main_source = "import ./pkg { pub_fn, answer, enum Thing, Thing::size }\nexport fn run() -> Int {\n  pub_fn(answer)\n}\n"
-  write_cold(main_path, main_source)
-  let msg = header_error_for(main_path, main_source)
+  write_cold(path = main_path, source = main_source)
+  let msg = header_error_for(main_path = main_path, main_source = main_source)
   assert(msg == "")
 }
 
@@ -120,14 +120,14 @@ test "plain-file import stays unvalidated (non-boundary shape)" {
   let base_dir = "/tmp/vibe_compiler_import_contract_943_plainfile"
   Fs::mkdir_p(base_dir)
   let helper_path = String::concat(base_dir, "/helper.vibe")
-  write_cold(helper_path, "fn hidden(x: Int) -> Int {\n  x\n}\n\nexport fn shown(x: Int) -> Int {\n  hidden(x)\n}\n")
+  write_cold(path = helper_path, source = "fn hidden(x: Int) -> Int {\n  x\n}\n\nexport fn shown(x: Int) -> Int {\n  hidden(x)\n}\n")
   let main_path = String::concat(base_dir, "/main.vibe")
   // Direct-file imports within a package are deliberately NOT name-checked
   // by the boundary rule (#943 scope note): the header lane must not throw
   // here even for a name the target does not export.
   let main_source = "import ./helper.vibe { hidden }\nexport fn run() -> Int {\n  hidden(1)\n}\n"
-  write_cold(main_path, main_source)
-  let msg = header_error_for(main_path, main_source)
+  write_cold(path = main_path, source = main_source)
+  let msg = header_error_for(main_path = main_path, main_source = main_source)
   assert(msg == "")
 }
 
@@ -138,22 +138,22 @@ test "re-exported opaque types retain constructor kinds during conformance (#233
   Fs::mkdir_p(source_dir)
   Fs::mkdir_p(parent_dir)
   let source_contract_path = String::concat(source_dir, "/index.vpkg")
-  write_cold(source_contract_path, "opaque type Container[F[_]]\n")
-  write_cold(String::concat(source_dir, "/impl.vibe"), "export type Container[F[_]] = F[Int]\n")
-  write_cold(String::concat(parent_dir, "/index.vpkg"), "opaque type Container[F[_]]\n")
-  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../source { Container }\n")
+  write_cold(path = source_contract_path, source = "opaque type Container[F[_]]\n")
+  write_cold(path = String::concat(source_dir, "/impl.vibe"), source = "export type Container[F[_]] = F[Int]\n")
+  write_cold(path = String::concat(parent_dir, "/index.vpkg"), source = "opaque type Container[F[_]]\n")
+  write_cold(path = String::concat(parent_dir, "/mid.vibe"), source = "export ../source { Container }\n")
   let contract_path = String::concat(parent_dir, "/index.vpkg")
   let initial_msg = handle {
-    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    let _ = ingest_source_text_fs(path = contract_path, raw = Fs::read_file(contract_path))
     ""
   } with { Exception::Throw(error) => error }
   inspect(initial_msg, content = "")
-  write_cold(source_contract_path, "opaque type Container[F]\n")
+  write_cold(path = source_contract_path, source = "opaque type Container[F]\n")
   let msg = handle {
-    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    let _ = ingest_source_text_fs(path = contract_path, raw = Fs::read_file(contract_path))
     ""
   } with { Exception::Throw(error) => error }
-  inspect(String::contains(msg, "kind mismatch"), content = "true")
+  inspect(String::contains(msg, needle = "kind mismatch"), content = "true")
 }
 
 test "re-exported opaque kinds resolve through facade chains (#2338)" {
@@ -165,23 +165,23 @@ test "re-exported opaque kinds resolve through facade chains (#2338)" {
   Fs::mkdir_p(facade_dir)
   Fs::mkdir_p(parent_dir)
   let source_contract_path = String::concat(source_dir, "/index.vpkg")
-  write_cold(source_contract_path, "opaque type Container[F[_]]\n")
-  write_cold(String::concat(source_dir, "/impl.vibe"), "export type Container[F[_]] = F[Int]\n")
-  write_cold(String::concat(facade_dir, "/index.vibe"), "export ../source { Container as InternalContainer }\nexport ../source { Container }\n")
-  write_cold(String::concat(parent_dir, "/index.vpkg"), "opaque type Container[F[_]]\n")
-  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../facade { Container }\n")
+  write_cold(path = source_contract_path, source = "opaque type Container[F[_]]\n")
+  write_cold(path = String::concat(source_dir, "/impl.vibe"), source = "export type Container[F[_]] = F[Int]\n")
+  write_cold(path = String::concat(facade_dir, "/index.vibe"), source = "export ../source { Container as InternalContainer }\nexport ../source { Container }\n")
+  write_cold(path = String::concat(parent_dir, "/index.vpkg"), source = "opaque type Container[F[_]]\n")
+  write_cold(path = String::concat(parent_dir, "/mid.vibe"), source = "export ../facade { Container }\n")
   let contract_path = String::concat(parent_dir, "/index.vpkg")
   let initial_msg = handle {
-    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    let _ = ingest_source_text_fs(path = contract_path, raw = Fs::read_file(contract_path))
     ""
   } with { Exception::Throw(error) => error }
   inspect(initial_msg, content = "")
-  write_cold(source_contract_path, "opaque type Container[F]\n")
+  write_cold(path = source_contract_path, source = "opaque type Container[F]\n")
   let msg = handle {
-    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    let _ = ingest_source_text_fs(path = contract_path, raw = Fs::read_file(contract_path))
     ""
   } with { Exception::Throw(error) => error }
-  inspect(String::contains(msg, "kind mismatch"), content = "true")
+  inspect(String::contains(msg, needle = "kind mismatch"), content = "true")
 }
 
 test "imported boundaries do not participate in local kind conformance (#2338)" {
@@ -190,13 +190,13 @@ test "imported boundaries do not participate in local kind conformance (#2338)" 
   let parent_dir = String::concat(base_dir, "/parent")
   Fs::mkdir_p(foreign_dir)
   Fs::mkdir_p(parent_dir)
-  write_cold(String::concat(foreign_dir, "/index.vpkg"), "opaque type Container[F]\n")
-  write_cold(String::concat(foreign_dir, "/impl.vibe"), "export type Container[F] = F\n")
-  write_cold(String::concat(parent_dir, "/index.vpkg"), "import ../foreign { Container }\nopaque type Container[F[_]]\n")
-  write_cold(String::concat(parent_dir, "/impl.vibe"), "export type Container[F[_]] = F[Int]\n")
+  write_cold(path = String::concat(foreign_dir, "/index.vpkg"), source = "opaque type Container[F]\n")
+  write_cold(path = String::concat(foreign_dir, "/impl.vibe"), source = "export type Container[F] = F\n")
+  write_cold(path = String::concat(parent_dir, "/index.vpkg"), source = "import ../foreign { Container }\nopaque type Container[F[_]]\n")
+  write_cold(path = String::concat(parent_dir, "/impl.vibe"), source = "export type Container[F[_]] = F[Int]\n")
   let contract_path = String::concat(parent_dir, "/index.vpkg")
   let msg = handle {
-    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    let _ = ingest_source_text_fs(path = contract_path, raw = Fs::read_file(contract_path))
     ""
   } with { Exception::Throw(error) => error }
   inspect(msg, content = "")
@@ -210,16 +210,16 @@ test "cyclic re-export chains fail closed without recursing forever (#2338)" {
   Fs::mkdir_p(left_dir)
   Fs::mkdir_p(right_dir)
   Fs::mkdir_p(parent_dir)
-  write_cold(String::concat(left_dir, "/index.vibe"), "export ../right { Container }\n")
-  write_cold(String::concat(right_dir, "/index.vibe"), "export ../left { Container }\n")
-  write_cold(String::concat(parent_dir, "/index.vpkg"), "opaque type Container[F[_]]\n")
-  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../left { Container }\n")
+  write_cold(path = String::concat(left_dir, "/index.vibe"), source = "export ../right { Container }\n")
+  write_cold(path = String::concat(right_dir, "/index.vibe"), source = "export ../left { Container }\n")
+  write_cold(path = String::concat(parent_dir, "/index.vpkg"), source = "opaque type Container[F[_]]\n")
+  write_cold(path = String::concat(parent_dir, "/mid.vibe"), source = "export ../left { Container }\n")
   let contract_path = String::concat(parent_dir, "/index.vpkg")
   let msg = handle {
-    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    let _ = ingest_source_text_fs(path = contract_path, raw = Fs::read_file(contract_path))
     ""
   } with { Exception::Throw(error) => error }
-  inspect(String::contains(msg, "has no implementation"), content = "true")
+  inspect(String::contains(msg, needle = "has no implementation"), content = "true")
 }
 
 test "re-exported traits retain constructor kinds during conformance (#2338)" {
@@ -228,21 +228,21 @@ test "re-exported traits retain constructor kinds during conformance (#2338)" {
   Fs::mkdir_p(base_dir)
   Fs::mkdir_p(parent_dir)
   let source_path = String::concat(base_dir, "/source.vibe")
-  write_cold(source_path, "export trait Mappable[F[_]] {}\n")
-  write_cold(String::concat(parent_dir, "/index.vpkg"), "opaque type Mappable[F[_]]\n")
-  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../source.vibe { Mappable }\n")
+  write_cold(path = source_path, source = "export trait Mappable[F[_]] {}\n")
+  write_cold(path = String::concat(parent_dir, "/index.vpkg"), source = "opaque type Mappable[F[_]]\n")
+  write_cold(path = String::concat(parent_dir, "/mid.vibe"), source = "export ../source.vibe { Mappable }\n")
   let contract_path = String::concat(parent_dir, "/index.vpkg")
   let initial_msg = handle {
-    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    let _ = ingest_source_text_fs(path = contract_path, raw = Fs::read_file(contract_path))
     ""
   } with { Exception::Throw(error) => error }
   inspect(initial_msg, content = "")
-  write_cold(source_path, "export trait Mappable[F] {}\n")
+  write_cold(path = source_path, source = "export trait Mappable[F] {}\n")
   let msg = handle {
-    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    let _ = ingest_source_text_fs(path = contract_path, raw = Fs::read_file(contract_path))
     ""
   } with { Exception::Throw(error) => error }
-  inspect(String::contains(msg, "kind mismatch"), content = "true")
+  inspect(String::contains(msg, needle = "kind mismatch"), content = "true")
 }
 
 test "index.vibe facade stays unvalidated (leaky legacy shape, #716)" {
@@ -257,16 +257,16 @@ test "index.vibe facade stays unvalidated (leaky legacy shape, #716)" {
   Fs::mkdir_p(pkg_dir)
   let facade_path = String::concat(pkg_dir, "/index.vibe")
   let impl_path = String::concat(pkg_dir, "/impl.vibe")
-  write_cold(impl_path, "export fn facade_fn(x: Int) -> Int {\n  x * 2\n}\n")
-  write_cold(facade_path, "export ./impl.vibe {\n  facade_fn\n}\n")
+  write_cold(path = impl_path, source = "export fn facade_fn(x: Int) -> Int {\n  x * 2\n}\n")
+  write_cold(path = facade_path, source = "export ./impl.vibe {\n  facade_fn\n}\n")
   let main_ok_path = String::concat(base_dir, "/main_ok.vibe")
   let main_ok_source = "import ./pkg { facade_fn }\nexport fn run() -> Int {\n  facade_fn(21)\n}\n"
-  write_cold(main_ok_path, main_ok_source)
-  let ok_msg = header_error_for(main_ok_path, main_ok_source)
+  write_cold(path = main_ok_path, source = main_ok_source)
+  let ok_msg = header_error_for(main_path = main_ok_path, main_source = main_ok_source)
   assert(ok_msg == "")
   let main_unlisted_path = String::concat(base_dir, "/main_unlisted.vibe")
   let main_unlisted_source = "import ./pkg { not_in_facade }\nexport fn run() -> Int {\n  1\n}\n"
-  write_cold(main_unlisted_path, main_unlisted_source)
-  let unlisted_msg = header_error_for(main_unlisted_path, main_unlisted_source)
+  write_cold(path = main_unlisted_path, source = main_unlisted_source)
+  let unlisted_msg = header_error_for(main_path = main_unlisted_path, main_source = main_unlisted_source)
   assert(unlisted_msg == "")
 }

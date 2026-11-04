@@ -121,7 +121,7 @@ export fn linked_unit_in(sources: Array[(String, String)], path: String, start: 
       ()
     }
   }
-  linked_unit(path, found, start, end)
+  linked_unit(path = path, source = found, start = start, end = end)
 }
 
 /// Who binds an impl method name: the unit, what declared it (`impl Name for
@@ -137,7 +137,7 @@ struct ImplBinder {
 /// `None`. `units` are in merge order and do not overlap.
 export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit]) -> Option[String] {
   let traits = linked_traits(merged)
-  let membership = impl_membership(merged, units, traits)
+  let membership = impl_membership(merged = merged, units = units, traits = traits)
   let in_impl = membership.flags
   // Every name a plain definition (one no impl made) binds: a derive gives
   // way to it, as `dtd_source_op_defined` makes the derive pass do.
@@ -145,9 +145,9 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
   for unit in units {
     let mut k = unit.start
     while k < unit.end {
-      let name = definition_name(Array::get(merged, k))
-      if name != "" && !Array::get(in_impl, k) {
-        MutMap::set(plain, name, true)
+      let name = definition_name(Array::get(merged, at = k))
+      if name != "" && !Array::get(in_impl, at = k) {
+        MutMap::set(plain, k = name, v = true)
       } else {
         ()
       }
@@ -158,44 +158,44 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
   let mut found: Option[String] = None
   let mut u = 0
   while u < Array::length(units) && found is None {
-    let unit = Array::get(units, u)
-    let impl_lines = line_starts_with_keyword(unit_located_text(unit), "impl")
+    let unit = Array::get(units, at = u)
+    let impl_lines = line_starts_with_keyword(source = unit_located_text(unit), word = "impl")
     let mut impl_ordinal = 0
     let mut k = unit.start
     while k < unit.end && found is None {
-      match Array::get(merged, k) {
+      match Array::get(merged, at = k) {
         SImpl(tparams, _, trait_key, target) => {
-          let (line, col) = nth_position(impl_lines, impl_ordinal)
+          let (line, col) = nth_position(positions = impl_lines, k = impl_ordinal)
           impl_ordinal = impl_ordinal + 1
-          let what = impl_what(tparams, trait_key, target)
-          let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
-          let run_end = impl_run_end(merged, k, unit.end, traits.names)
+          let what = impl_what(tparams = tparams, trait_key = trait_key, target = target)
+          let prefix = String::concat(impl_method_owner(tparams = tparams, trait_name = trait_key, target = target), "::")
+          let run_end = impl_run_end(merged = merged, k = k, end = unit.end, traits = traits.names)
           let mut j = k + 1
           while j < run_end && found is None {
-            let name = definition_name(Array::get(merged, j))
+            let name = definition_name(Array::get(merged, at = j))
             // A fallback another impl dispatches to is bound as that impl's
             // method, at that impl (below).
-            if Array::get(membership.fallback_of, j) < 0 && String::length(name) > String::length(prefix) && String::starts_with(name, prefix) {
-              let binder = if Array::get(in_impl, j) {
+            if Array::get(membership.fallback_of, at = j) < 0 && String::length(name) > String::length(prefix) && String::starts_with(name, prefix = prefix) {
+              let binder = if Array::get(in_impl, at = j) {
                 ImplBinder::{ unit: u, what: what, line: line, col: col }
               } else {
                 // In the run but no method the trait dispatches: a plain
                 // definition (`plain` above), still the one binding its name
                 // may have.
-                let (dl, dc) = definition_position(unit_located_text(unit), name)
+                let (dl, dc) = definition_position(source = unit_located_text(unit), name = name)
                 ImplBinder::{ unit: u, what: "a definition", line: dl, col: dc }
               }
-              found = bind_or_refuse(binders, units, name, binder)
+              found = bind_or_refuse(binders = binders, units = units, name = name, binder = binder)
             } else {
               ()
             }
             j = j + 1
           }
           // The `P::m` this impl dispatches to from elsewhere in the unit.
-          match MutMap::get(membership.fallbacks, k) {
+          match MutMap::get(membership.fallbacks, k = k) {
             Some(list) => for at in list {
               if found is None {
-                found = bind_or_refuse(binders, units, definition_name(Array::get(merged, at)), ImplBinder::{
+                found = bind_or_refuse(binders = binders, units = units, name = definition_name(Array::get(merged, at = at)), binder = ImplBinder::{
                   unit: u,
                   what: what,
                   line: line,
@@ -210,11 +210,11 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
           k = run_end
         },
         SStruct(_, name, _, derives, _, _) => {
-          found = bind_derives(binders, plain, units, u, name, derives, "struct")
+          found = bind_derives(binders = binders, plain = plain, units = units, u = u, name = name, derives = derives, keyword = "struct")
           k = k + 1
         },
         SEnum(_, name, _, _, derives) => {
-          found = bind_derives(binders, plain, units, u, name, derives, "enum")
+          found = bind_derives(binders = binders, plain = plain, units = units, u = u, name = name, derives = derives, keyword = "enum")
           k = k + 1
         },
         _ => {
@@ -228,19 +228,19 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
   // the same collapse (`fn Int::name` next to an imported `impl .. for Int`).
   let mut v = 0
   while v < Array::length(units) && found is None {
-    let unit = Array::get(units, v)
+    let unit = Array::get(units, at = v)
     let mut k = unit.start
     while k < unit.end && found is None {
-      let name = definition_name(Array::get(merged, k))
-      match MutMap::get(binders, name) {
-        Some(binder) => if binder.unit != v && !Array::get(in_impl, k) {
-          let (line, col) = definition_position(unit_located_text(unit), name)
-          found = Some(overlap_message(name, binder, Array::get(units, binder.unit), ImplBinder::{
+      let name = definition_name(Array::get(merged, at = k))
+      match MutMap::get(binders, k = name) {
+        Some(binder) => if binder.unit != v && !Array::get(in_impl, at = k) {
+          let (line, col) = definition_position(source = unit_located_text(unit), name = name)
+          found = Some(overlap_message(name = name, first = binder, first_unit = Array::get(units, at = binder.unit), second = ImplBinder::{
             unit: v,
             what: "a definition",
             line: line,
             col: col
-          }, unit))
+          }, second_unit = unit))
         } else {
           ()
         },
@@ -252,17 +252,17 @@ export fn linked_impl_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit
   }
   // Heads whose instance sets meet, whatever their methods are named.
   let supers: Array[SuperMethodHead] = []
-  let heads = linked_impl_heads(merged, units, linked_type_decls(merged), traits, supers)
+  let heads = linked_impl_heads(merged = merged, units = units, decls = linked_type_decls(merged), traits = traits, supers = supers)
   let head_found = if found is None {
-    match head_overlap_error(heads, units) {
+    match head_overlap_error(heads = heads, units = units) {
       Some(msg) => Some(msg),
-      None => super_method_overlap_error(heads, supers, units)
+      None => super_method_overlap_error(heads = heads, supers = supers, units = units)
     }
   } else {
     found
   }
   if head_found is None {
-    plain_definition_overlap_error(merged, units, in_impl, traits.names)
+    plain_definition_overlap_error(merged = merged, units = units, in_impl = in_impl, trait_names = traits.names)
   } else {
     head_found
   }
@@ -285,18 +285,18 @@ fn plain_definition_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit],
   let mut found: Option[String] = None
   let mut u = 0
   while u < Array::length(units) && found is None {
-    let unit = Array::get(units, u)
+    let unit = Array::get(units, at = u)
     let mut k = unit.start
     while k < unit.end && found is None {
-      let name = definition_name(Array::get(merged, k))
-      if String::index_of(name, "::") > 0 && !Array::get(in_impl, k) && !names_trait_binding(name, trait_names) {
-        match MutMap::get(first_unit, name) {
+      let name = definition_name(Array::get(merged, at = k))
+      if String::index_of(name, needle = "::") > 0 && !Array::get(in_impl, at = k) && !names_trait_binding(name = name, traits = trait_names) {
+        match MutMap::get(first_unit, k = name) {
           Some(prev) => if prev != u {
-            found = Some(plain_overlap_message(name, Array::get(units, prev), unit))
+            found = Some(plain_overlap_message(name = name, first_unit = Array::get(units, at = prev), second_unit = unit))
           } else {
             ()
           },
-          None => MutMap::set(first_unit, name, u)
+          None => MutMap::set(first_unit, k = name, v = u)
         }
       } else {
         ()
@@ -310,11 +310,11 @@ fn plain_definition_overlap_error(merged: Array[Stmt], units: Array[LinkedUnit],
 
 fn plain_overlap_message(name: String, first_unit: LinkedUnit, second_unit: LinkedUnit) -> String {
   let shown = namespace_rename_original(name)
-  let (fl, fc) = definition_position(unit_located_text(first_unit), shown)
-  let (sl, sc) = definition_position(unit_located_text(second_unit), shown)
-  let here = position_text(second_unit.path, sl, sc)
-  let there = position_text(first_unit.path, fl, fc)
-  let member = String::substring(shown, String::index_of(shown, "::") + 2, String::length(shown))
+  let (fl, fc) = definition_position(source = unit_located_text(first_unit), name = shown)
+  let (sl, sc) = definition_position(source = unit_located_text(second_unit), name = shown)
+  let here = position_text(path = second_unit.path, line = sl, col = sc)
+  let there = position_text(path = first_unit.path, line = fl, col = fc)
+  let member = String::substring(shown, start = String::index_of(shown, needle = "::") + 2, end = String::length(shown))
   String::concat(here, String::concat(": rename `", String::concat(shown, String::concat("` here or in ", String::concat(there, String::concat(", or make one of them a plain function (`fn ", String::concat(member, String::concat("`), which stays private to its module -- both modules define `", String::concat(shown, "`, and a type-qualified function is one name across the linked program even when it is not exported, so the program keeps only one of them, chosen by import order, and every caller, in either module, would silently run that one")))))))))
 }
 
@@ -344,14 +344,14 @@ struct LinkedTypeDecls {
   aliases: MutMap[String, (Array[String], TypeExpr)]
 }
 
-fn linked_type_decls(merged: Array[Stmt]) -> LinkedTypeDecls {
+fn linked_type_decls(_ merged: Array[Stmt]) -> LinkedTypeDecls {
   let nominal: MutMap[String, Bool] = MutMap::new_string()
   let aliases: MutMap[String, (Array[String], TypeExpr)] = MutMap::new_string()
   for stmt in merged {
     match stmt {
-      SStruct(_, name, _, _, _, _) => MutMap::set(nominal, name, true),
-      SEnum(_, name, _, _, _) => MutMap::set(nominal, name, false),
-      STypeAlias(_, name, formals, body) => MutMap::set(aliases, name, (formals, body)),
+      SStruct(_, name, _, _, _, _) => MutMap::set(nominal, k = name, v = true),
+      SEnum(_, name, _, _, _) => MutMap::set(nominal, k = name, v = false),
+      STypeAlias(_, name, formals, body) => MutMap::set(aliases, k = name, v = (formals, body)),
       _ => ()
     }
   }
@@ -378,12 +378,12 @@ fn names_formal(params: Array[String], name: String) -> Bool {
 /// every application of it), and `Array` / `Option` are structural.
 fn head_type(te: TypeExpr, params: Array[String], decls: LinkedTypeDecls, depth: Int) -> Type {
   match te {
-    TyName(n) => if names_formal(params, n) {
+    TyName(n) => if names_formal(params = params, name = n) {
       CtNamed(n, [])
     } else {
-      match expand_alias(decls, n, [], depth) {
-        Some(body) => head_type(body, params, decls, depth + 1),
-        None => match MutMap::get(decls.nominal, n) {
+      match expand_alias(decls = decls, name = n, args = [], depth = depth) {
+        Some(body) => head_type(te = body, params = params, decls = decls, depth = depth + 1),
+        None => match MutMap::get(decls.nominal, k = n) {
           Some(is_struct) => if is_struct {
             CtStruct(n)
           } else {
@@ -396,27 +396,27 @@ fn head_type(te: TypeExpr, params: Array[String], decls: LinkedTypeDecls, depth:
         }
       }
     },
-    TyApp(n, args) => match expand_alias(decls, n, args, depth) {
-      Some(body) => head_type(body, params, decls, depth + 1),
+    TyApp(n, args) => match expand_alias(decls = decls, name = n, args = args, depth = depth) {
+      Some(body) => head_type(te = body, params = params, decls = decls, depth = depth + 1),
       None => {
         let resolved: Array[Type] = for arg in args {
-          head_type(arg, params, decls, depth)
+          head_type(te = arg, params = params, decls = decls, depth = depth)
         }
         if n == "Array" && Array::length(resolved) == 1 {
-          CtArray(Array::get(resolved, 0))
+          CtArray(Array::get(resolved, at = 0))
         } else if n == "Option" && Array::length(resolved) == 1 {
-          CtOption(Array::get(resolved, 0))
+          CtOption(Array::get(resolved, at = 0))
         } else {
           CtNamed(n, resolved)
         }
       }
     },
     TyTuple(items) => CtTuple(for item in items {
-      head_type(item, params, decls, depth)
+      head_type(te = item, params = params, decls = decls, depth = depth)
     }),
     TyFn(ps, ret, effect) => CtFn(for p in ps {
-      head_type(p, params, decls, depth)
-    }, head_type(ret, params, decls, depth), effect),
+      head_type(te = p, params = params, decls = decls, depth = depth)
+    }, head_type(te = ret, params = params, decls = decls, depth = depth), effect),
     TyUnit => CtUnit
   }
 }
@@ -428,11 +428,11 @@ fn expand_alias(decls: LinkedTypeDecls, name: String, args: Array[TypeExpr], dep
   if depth > 32 {
     None
   } else {
-    match MutMap::get(decls.aliases, name) {
+    match MutMap::get(decls.aliases, k = name) {
       Some(alias) => {
         let (formals, body) = alias
         if Array::length(formals) == Array::length(args) {
-          Some(subst_type_expr(body, formals, args))
+          Some(subst_type_expr(te = body, formals = formals, args = args))
         } else {
           None
         }
@@ -448,8 +448,8 @@ fn subst_type_expr(te: TypeExpr, formals: Array[String], args: Array[TypeExpr]) 
       let mut out = te
       let mut i = 0
       while i < Array::length(formals) {
-        if type_param_name(Array::get(formals, i)) == n {
-          out = Array::get(args, i)
+        if type_param_name(Array::get(formals, at = i)) == n {
+          out = Array::get(args, at = i)
         } else {
           ()
         }
@@ -458,14 +458,14 @@ fn subst_type_expr(te: TypeExpr, formals: Array[String], args: Array[TypeExpr]) 
       out
     },
     TyApp(n, xs) => TyApp(n, for x in xs {
-      subst_type_expr(x, formals, args)
+      subst_type_expr(te = x, formals = formals, args = args)
     }),
     TyTuple(xs) => TyTuple(for x in xs {
-      subst_type_expr(x, formals, args)
+      subst_type_expr(te = x, formals = formals, args = args)
     }),
     TyFn(ps, ret, effect) => TyFn(for p in ps {
-      subst_type_expr(p, formals, args)
-    }, subst_type_expr(ret, formals, args), effect),
+      subst_type_expr(te = p, formals = formals, args = args)
+    }, subst_type_expr(te = ret, formals = formals, args = args), effect),
     TyUnit => TyUnit
   }
 }
@@ -477,7 +477,7 @@ fn subst_type_expr(te: TypeExpr, formals: Array[String], args: Array[TypeExpr]) 
 /// the check is not quadratic in a program's derives.
 fn head_key(target: Type, params: Array[String]) -> String {
   match target {
-    CtNamed(n, _) => if names_formal(params, n) {
+    CtNamed(n, _) => if names_formal(params = params, name = n) {
       "*"
     } else {
       n
@@ -501,7 +501,7 @@ fn head_key(target: Type, params: Array[String]) -> String {
 }
 
 /// The traits a derive registers an impl of, as the checker registers them.
-fn derive_registers_impl(which: String) -> Bool {
+fn derive_registers_impl(_ which: String) -> Bool {
   which == "Show" || which == "Eq" || which == "Hash" || which == "Default"
 }
 
@@ -516,11 +516,11 @@ fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: Linke
   let declares: MutMap[String, Bool] = MutMap::new_string()
   let mut u = 0
   while u < Array::length(units) {
-    let unit = Array::get(units, u)
+    let unit = Array::get(units, at = u)
     let mut k = unit.start
     while k < unit.end {
-      match Array::get(merged, k) {
-        STrait(_, name, _, _, _, _) => MutMap::set(declares, decl_key(u, name), true),
+      match Array::get(merged, at = k) {
+        STrait(_, name, _, _, _, _) => MutMap::set(declares, k = decl_key(unit = u, trait_name = name), v = true),
         _ => ()
       }
       k = k + 1
@@ -530,22 +530,22 @@ fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: Linke
   let heads: Array[ImplHead] = []
   let mut v = 0
   while v < Array::length(units) {
-    let unit = Array::get(units, v)
+    let unit = Array::get(units, at = v)
     let text = unit_located_text(unit)
-    let impl_lines = line_starts_with_keyword(text, "impl")
+    let impl_lines = line_starts_with_keyword(source = text, word = "impl")
     let mut ordinal = 0
     let mut k = unit.start
     while k < unit.end {
-      match Array::get(merged, k) {
+      match Array::get(merged, at = k) {
         SImpl(tparams, _, trait_key, target) => {
-          let (line, col) = nth_position(impl_lines, ordinal)
+          let (line, col) = nth_position(positions = impl_lines, k = ordinal)
           ordinal = ordinal + 1
           let name = trait_ref_name(trait_key)
-          let resolved = head_type(target, tparams, decls, 0)
-          let what = impl_what(tparams, trait_key, target)
-          Array::push(heads, ImplHead::{
+          let resolved = head_type(te = target, params = tparams, decls = decls, depth = 0)
+          let what = impl_what(tparams = tparams, trait_key = trait_key, target = target)
+          Array::push(heads, value = ImplHead::{
             unit: v,
-            decl: if MutMap::has(declares, decl_key(v, name)) {
+            decl: if MutMap::has(declares, k = decl_key(unit = v, trait_name = name)) {
               v
             } else {
               -1
@@ -554,29 +554,29 @@ fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: Linke
             trait_name: name,
             params: tparams,
             target: resolved,
-            head: head_key(resolved, tparams),
+            head: head_key(target = resolved, params = tparams),
             what: what,
             line: line,
             col: col
           })
           // #3587: each supertrait method this block writes is an impl of
           // that supertrait for the target.
-          let owner = impl_method_owner(tparams, trait_key, target)
-          if String::contains(owner, "$impl$") {
+          let owner = impl_method_owner(tparams = tparams, trait_name = trait_key, target = target)
+          if String::contains(owner, needle = "$impl$") {
             let prefix = String::concat(owner, "::")
-            let run_end = impl_run_end(merged, k, unit.end, traits.names)
+            let run_end = impl_run_end(merged = merged, k = k, end = unit.end, traits = traits.names)
             let mut j = k + 1
             while j < run_end {
-              let written = definition_name(Array::get(merged, j))
-              if String::length(written) > String::length(prefix) && String::starts_with(written, prefix) {
-                let method = String::substring(written, String::length(prefix), String::length(written))
-                if !trait_declares_method(traits, name, method) {
+              let written = definition_name(Array::get(merged, at = j))
+              if String::length(written) > String::length(prefix) && String::starts_with(written, prefix = prefix) {
+                let method = String::substring(written, start = String::length(prefix), end = String::length(written))
+                if !trait_declares_method(traits = traits, trait_name = name, method = method) {
                   let seen = [name]
-                  match linked_super_declaring(traits, string_list_or_empty(traits.supers, name), method, seen) {
-                    Some(declaring) => Array::push(supers, SuperMethodHead::{
+                  match linked_super_declaring(traits = traits, supers = string_list_or_empty(m = traits.supers, key = name), method = method, seen = seen) {
+                    Some(declaring) => Array::push(supers, value = SuperMethodHead::{
                       at: ImplHead::{
                         unit: v,
-                        decl: if MutMap::has(declares, decl_key(v, declaring)) {
+                        decl: if MutMap::has(declares, k = decl_key(unit = v, trait_name = declaring)) {
                           v
                         } else {
                           -1
@@ -585,7 +585,7 @@ fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: Linke
                         trait_name: declaring,
                         params: tparams,
                         target: resolved,
-                        head: head_key(resolved, tparams),
+                        head: head_key(target = resolved, params = tparams),
                         what: what,
                         line: line,
                         col: col
@@ -607,8 +607,8 @@ fn linked_impl_heads(merged: Array[Stmt], units: Array[LinkedUnit], decls: Linke
             ()
           }
         },
-        SStruct(_, name, _, derives, _, _) => push_derive_heads(heads, declares, text, v, name, derives, "struct", CtStruct(name)),
-        SEnum(_, name, _, _, derives) => push_derive_heads(heads, declares, text, v, name, derives, "enum", CtEnum(name)),
+        SStruct(_, name, _, derives, _, _) => push_derive_heads(heads = heads, declares = declares, text = text, u = v, name = name, derives = derives, keyword = "struct", target = CtStruct(name)),
+        SEnum(_, name, _, _, derives) => push_derive_heads(heads = heads, declares = declares, text = text, u = v, name = name, derives = derives, keyword = "enum", target = CtEnum(name)),
         _ => ()
       }
       k = k + 1
@@ -628,12 +628,12 @@ fn decl_key(unit: Int, trait_name: String) -> String {
 fn push_derive_heads(heads: Array[ImplHead], declares: MutMap[String, Bool], text: String, u: Int, name: String, derives: Array[String], keyword: String, target: Type) -> Unit {
   if Array::length(derives) > 0 {
     let shown = namespace_rename_original(name)
-    let (line, col) = type_decl_position(text, keyword, shown)
+    let (line, col) = type_decl_position(source = text, keyword = keyword, name = shown)
     for listed in derives {
       if derive_registers_impl(listed) {
-        Array::push(heads, ImplHead::{
+        Array::push(heads, value = ImplHead::{
           unit: u,
-          decl: if MutMap::has(declares, decl_key(u, listed)) {
+          decl: if MutMap::has(declares, k = decl_key(unit = u, trait_name = listed)) {
             u
           } else {
             -1
@@ -666,17 +666,17 @@ fn head_overlap_error(heads: Array[ImplHead], units: Array[LinkedUnit]) -> Optio
   let mut found: Option[String] = None
   let mut j = 0
   while j < Array::length(heads) && found is None {
-    let later = Array::get(heads, j)
+    let later = Array::get(heads, at = j)
     let candidates = if later.head == "*" {
-      int_list_at(by_trait, later.trait_name)
+      int_list_at(m = by_trait, key = later.trait_name)
     } else {
-      Array::concat(int_list_at(by_key, head_bucket(later.trait_name, later.head)), int_list_at(by_key, head_bucket(later.trait_name, "*")))
+      Array::concat(int_list_at(m = by_key, key = head_bucket(trait_name = later.trait_name, head = later.head)), int_list_at(m = by_key, key = head_bucket(trait_name = later.trait_name, head = "*")))
     }
     for i in candidates {
       if found is None {
-        let earlier = Array::get(heads, i)
-        if earlier.unit != later.unit && (earlier.decl == later.decl || earlier.decl < 0 || later.decl < 0) && impl_trait_and_target_patterns_overlap(earlier.trait_key, earlier.params, earlier.target, later.trait_key, later.params, later.target) {
-          found = Some(head_overlap_message(earlier, Array::get(units, earlier.unit), later, Array::get(units, later.unit)))
+        let earlier = Array::get(heads, at = i)
+        if earlier.unit != later.unit && (earlier.decl == later.decl || earlier.decl < 0 || later.decl < 0) && impl_trait_and_target_patterns_overlap(left_trait = earlier.trait_key, left_params = earlier.params, left_target = earlier.target, right_trait = later.trait_key, right_params = later.params, right_target = later.target) {
+          found = Some(head_overlap_message(first = earlier, first_unit = Array::get(units, at = earlier.unit), second = later, second_unit = Array::get(units, at = later.unit)))
         } else {
           ()
         }
@@ -684,8 +684,8 @@ fn head_overlap_error(heads: Array[ImplHead], units: Array[LinkedUnit]) -> Optio
         ()
       }
     }
-    Array::push(int_list_at(by_key, head_bucket(later.trait_name, later.head)), j)
-    Array::push(int_list_at(by_trait, later.trait_name), j)
+    Array::push(int_list_at(m = by_key, key = head_bucket(trait_name = later.trait_name, head = later.head)), value = j)
+    Array::push(int_list_at(m = by_trait, key = later.trait_name), value = j)
     j = j + 1
   }
   found
@@ -707,7 +707,7 @@ struct SuperMethodHead {
 /// `equals`, so an `equals` in an impl of a subtrait of it is that impl's own
 /// method, as the single-module checker reads it (Codex review on #3587).
 fn trait_declares_method(traits: LinkedTraits, trait_name: String, method: String) -> Bool {
-  let methods = match MutMap::get(traits.methods, trait_name) {
+  let methods = match MutMap::get(traits.methods, k = trait_name) {
     Some(declared) => declared,
     None => derive_methods(trait_name)
   }
@@ -723,7 +723,7 @@ fn trait_declares_method(traits: LinkedTraits, trait_name: String, method: Strin
 }
 
 fn string_list_or_empty(m: MutMap[String, Array[String]], key: String) -> Array[String] {
-  match MutMap::get(m, key) {
+  match MutMap::get(m, k = key) {
     Some(list) => list,
     None => []
   }
@@ -735,13 +735,13 @@ fn string_list_or_empty(m: MutMap[String, Array[String]], key: String) -> Array[
 fn linked_super_declaring(traits: LinkedTraits, supers: Array[String], method: String, seen: Array[String]) -> Option[String] {
   let mut found: Option[String] = None
   for sup in supers {
-    let fresh = !string_list_contains(seen, sup) && found is None
+    let fresh = !string_list_contains(list = seen, s = sup) && found is None
     if fresh {
-      Array::push(seen, sup)
-      found = if trait_declares_method(traits, sup, method) {
+      Array::push(seen, value = sup)
+      found = if trait_declares_method(traits = traits, trait_name = sup, method = method) {
         Some(sup)
       } else {
-        linked_super_declaring(traits, string_list_or_empty(traits.supers, sup), method, seen)
+        linked_super_declaring(traits = traits, supers = string_list_or_empty(m = traits.supers, key = sup), method = method, seen = seen)
       }
     } else {
       ()
@@ -778,19 +778,19 @@ fn super_method_overlap_error(heads: Array[ImplHead], supers: Array[SuperMethodH
   let mut found: Option[String] = None
   let mut i = 0
   while i < Array::length(supers) && found is None {
-    let sup = Array::get(supers, i)
+    let sup = Array::get(supers, at = i)
     for other in heads {
-      if other.trait_name == sup.at.trait_name && heads_meet(sup.at, other) && found is None {
-        found = Some(super_method_overlap_message(sup, other, None, units))
+      if other.trait_name == sup.at.trait_name && heads_meet(a = sup.at, b = other) && found is None {
+        found = Some(super_method_overlap_message(sup = sup, other = other, other_sup = None, units = units))
       } else {
         ()
       }
     }
     let mut j = 0
     while j < i && found is None {
-      let earlier = Array::get(supers, j)
-      if earlier.method == sup.method && earlier.at.trait_name == sup.at.trait_name && heads_meet(sup.at, earlier.at) {
-        found = Some(super_method_overlap_message(sup, earlier.at, Some(earlier), units))
+      let earlier = Array::get(supers, at = j)
+      if earlier.method == sup.method && earlier.at.trait_name == sup.at.trait_name && heads_meet(a = sup.at, b = earlier.at) {
+        found = Some(super_method_overlap_message(sup = sup, other = earlier.at, other_sup = Some(earlier), units = units))
       } else {
         ()
       }
@@ -804,7 +804,7 @@ fn super_method_overlap_error(heads: Array[ImplHead], supers: Array[SuperMethodH
 /// Two heads of different units, of one trait instance scope, whose targets
 /// share a type.
 fn heads_meet(a: ImplHead, b: ImplHead) -> Bool {
-  a.unit != b.unit && (a.decl == b.decl || a.decl < 0 || b.decl < 0) && impl_trait_and_target_patterns_overlap(a.trait_key, a.params, a.target, b.trait_key, b.params, b.target)
+  a.unit != b.unit && (a.decl == b.decl || a.decl < 0 || b.decl < 0) && impl_trait_and_target_patterns_overlap(left_trait = a.trait_key, left_params = a.params, left_target = a.target, right_trait = b.trait_key, right_params = b.params, right_target = b.target)
 }
 
 /// The refusal for `sup` beside `other` (an impl or derive of the supertrait,
@@ -813,13 +813,13 @@ fn heads_meet(a: ImplHead, b: ImplHead) -> Bool {
 /// at the later unit's position, which the message calls "here".
 fn super_method_overlap_message(sup: SuperMethodHead, other: ImplHead, other_sup: Option[SuperMethodHead], units: Array[LinkedUnit]) -> String {
   let sup_here = sup.at.unit > other.unit
-  let sup_where = head_where(sup.at, sup_here, units)
-  let other_where = head_where(other, !sup_here, units)
+  let sup_where = head_where(head = sup.at, here = sup_here, units = units)
+  let other_where = head_where(head = other, here = !sup_here, units = units)
   let shown_trait = namespace_rename_original(sup.at.trait_name)
   let remove_sup = String::concat("remove `", String::concat(sup.method, String::concat("` from `", String::concat(sup.at.what, String::concat("` ", sup_where)))))
   let edit = match other_sup {
     Some(_) => String::concat(remove_sup, String::concat(" or from `", String::concat(other.what, String::concat("` ", other_where)))),
-    None => if String::starts_with(other.what, "derive (") {
+    None => if String::starts_with(other.what, prefix = "derive (") {
       String::concat("drop `", String::concat(shown_trait, String::concat("` from the `derive` of `", String::concat(sup.owner, String::concat("` ", String::concat(other_where, String::concat(", or ", remove_sup)))))))
     } else {
       String::concat(remove_sup, String::concat(", or remove `", String::concat(other.what, String::concat("` ", other_where))))
@@ -830,8 +830,8 @@ fn super_method_overlap_message(sup: SuperMethodHead, other: ImplHead, other_sup
   } else {
     other
   }
-  let here_unit = Array::get(units, here.unit)
-  String::concat(position_text(here_unit.path, here.line, here.col), String::concat(": ", String::concat(edit, String::concat(": both implement `", String::concat(shown_trait, String::concat("::", String::concat(sup.method, String::concat("` for `", String::concat(sup.owner, String::concat("`, and callers through different bounds would run different `", String::concat(sup.method, "` on the same value")))))))))))
+  let here_unit = Array::get(units, at = here.unit)
+  String::concat(position_text(path = here_unit.path, line = here.line, col = here.col), String::concat(": ", String::concat(edit, String::concat(": both implement `", String::concat(shown_trait, String::concat("::", String::concat(sup.method, String::concat("` for `", String::concat(sup.owner, String::concat("`, and callers through different bounds would run different `", String::concat(sup.method, "` on the same value")))))))))))
 }
 
 /// `here`, or `in <path>: line L:C` for the head's position.
@@ -839,8 +839,8 @@ fn head_where(head: ImplHead, here: Bool, units: Array[LinkedUnit]) -> String {
   if here {
     "here"
   } else {
-    let unit = Array::get(units, head.unit)
-    String::concat("in ", position_text(unit.path, head.line, head.col))
+    let unit = Array::get(units, at = head.unit)
+    String::concat("in ", position_text(path = unit.path, line = head.line, col = head.col))
   }
 }
 
@@ -850,19 +850,19 @@ fn head_bucket(trait_name: String, head: String) -> String {
 
 /// The list `m` holds at `key`, made empty there first when it holds none.
 fn int_list_at(m: MutMap[String, Array[Int]], key: String) -> Array[Int] {
-  match MutMap::get(m, key) {
+  match MutMap::get(m, k = key) {
     Some(list) => list,
     None => {
       let fresh: Array[Int] = []
-      MutMap::set(m, key, fresh)
+      MutMap::set(m, k = key, v = fresh)
       fresh
     }
   }
 }
 
 fn head_overlap_message(first: ImplHead, first_unit: LinkedUnit, second: ImplHead, second_unit: LinkedUnit) -> String {
-  let here = position_text(second_unit.path, second.line, second.col)
-  let there = position_text(first_unit.path, first.line, first.col)
+  let here = position_text(path = second_unit.path, line = second.line, col = second.col)
+  let there = position_text(path = first_unit.path, line = first.line, col = first.col)
   String::concat(here, String::concat(": remove one of these, or narrow one so their targets no longer overlap: `", String::concat(second.what, String::concat("` here and `", String::concat(first.what, String::concat("` in ", String::concat(there, String::concat(" both implement `", String::concat(namespace_rename_original(second.trait_name), "` for the same types -- a linked program dispatches each such type to only one of them, so a caller in either module would silently run the other module's impl")))))))))
 }
 
@@ -878,7 +878,7 @@ fn impl_what(tparams: Array[String], trait_key: String, target: TypeExpr) -> Str
       } else {
         ()
       }
-      binder = String::concat(binder, type_param_name(Array::get(tparams, i)))
+      binder = String::concat(binder, type_param_name(Array::get(tparams, at = i)))
       i = i + 1
     }
     binder = String::concat(binder, "] ")
@@ -899,10 +899,10 @@ fn impl_what(tparams: Array[String], trait_key: String, target: TypeExpr) -> Str
 /// that opens with a loader marker line but carries no complete block -- a
 /// generated facade or types module, or a module that merely opens with such
 /// a comment -- loses its line, never its check.
-fn unit_located_text(unit: LinkedUnit) -> String {
+fn unit_located_text(_ unit: LinkedUnit) -> String {
   if loader_prepended_prefix_bytes(unit.source) > 0 {
     loader_physical_text(unit.source)
-  } else if String::starts_with(unit.source, "// vibe: contract facade (desugared from .vibei)\n") || String::starts_with(unit.source, "// vibe: vpkg directory-shared imports (#897)\n") || String::starts_with(unit.source, "// vibe: vpkg contract types module (#1840)\n") {
+  } else if String::starts_with(unit.source, prefix = "// vibe: contract facade (desugared from .vibei)\n") || String::starts_with(unit.source, prefix = "// vibe: vpkg directory-shared imports (#897)\n") || String::starts_with(unit.source, prefix = "// vibe: vpkg contract types module (#1840)\n") {
     ""
   } else {
     unit.source
@@ -921,7 +921,7 @@ struct LinkedTraits {
   supers: MutMap[String, Array[String]]
 }
 
-fn linked_traits(merged: Array[Stmt]) -> LinkedTraits {
+fn linked_traits(_ merged: Array[Stmt]) -> LinkedTraits {
   let names: MutMap[String, Bool] = MutMap::new_string()
   for builtin in [
     "Eq",
@@ -936,22 +936,22 @@ fn linked_traits(merged: Array[Stmt]) -> LinkedTraits {
     "Default",
     "Signed"
   ] {
-    MutMap::set(names, builtin, true)
+    MutMap::set(names, k = builtin, v = true)
   }
   let methods: MutMap[String, Array[String]] = MutMap::new_string()
   let supers: MutMap[String, Array[String]] = MutMap::new_string()
   for stmt in merged {
     match stmt {
       STrait(_, name, sups, sigs, _, _) => {
-        MutMap::set(names, name, true)
-        let own = string_list_at(methods, name)
+        MutMap::set(names, k = name, v = true)
+        let own = string_list_at(m = methods, key = name)
         for sig in sigs {
           let (m, _, _) = sig
-          Array::push(own, m)
+          Array::push(own, value = m)
         }
-        let up = string_list_at(supers, name)
+        let up = string_list_at(m = supers, key = name)
         for sup in sups {
-          Array::push(up, trait_ref_name(sup))
+          Array::push(up, value = trait_ref_name(sup))
         }
       },
       _ => ()
@@ -962,11 +962,11 @@ fn linked_traits(merged: Array[Stmt]) -> LinkedTraits {
 
 /// The list `m` holds at `key`, made empty there first when it holds none.
 fn string_list_at(m: MutMap[String, Array[String]], key: String) -> Array[String] {
-  match MutMap::get(m, key) {
+  match MutMap::get(m, k = key) {
     Some(list) => list,
     None => {
       let fresh: Array[String] = []
-      MutMap::set(m, key, fresh)
+      MutMap::set(m, k = key, v = fresh)
       fresh
     }
   }
@@ -985,31 +985,31 @@ fn impl_dispatched_methods(traits: LinkedTraits, trait_key: String) -> Option[Mu
   let mut known = true
   let mut i = 0
   while i < Array::length(pending) && known {
-    let name = Array::get(pending, i)
-    if MutMap::has(seen, name) {
+    let name = Array::get(pending, at = i)
+    if MutMap::has(seen, k = name) {
       ()
     } else {
-      MutMap::set(seen, name, true)
-      let declared = match MutMap::get(traits.methods, name) {
+      MutMap::set(seen, k = name, v = true)
+      let declared = match MutMap::get(traits.methods, k = name) {
         Some(list) => list,
         None => {
-          known = name != "" && MutMap::has(traits.names, name)
+          known = name != "" && MutMap::has(traits.names, k = name)
           []
         }
       }
       for m in declared {
-        MutMap::set(out, m, true)
+        MutMap::set(out, k = m, v = true)
       }
       if Array::length(declared) == 0 {
         for m in derive_methods(name) {
-          MutMap::set(out, m, true)
+          MutMap::set(out, k = m, v = true)
         }
       } else {
         ()
       }
-      match MutMap::get(traits.supers, name) {
+      match MutMap::get(traits.supers, k = name) {
         Some(list) => for sup in list {
-          Array::push(pending, sup)
+          Array::push(pending, value = sup)
         },
         None => ()
       }
@@ -1025,12 +1025,12 @@ fn impl_dispatched_methods(traits: LinkedTraits, trait_key: String) -> Option[Mu
 
 /// Is `name` a binding in a trait's namespace (`Base::get`)?
 fn names_trait_binding(name: String, traits: MutMap[String, Bool]) -> Bool {
-  let sep = String::index_of(name, "::")
-  sep > 0 && MutMap::has(traits, String::substring(name, 0, sep))
+  let sep = String::index_of(name, needle = "::")
+  sep > 0 && MutMap::has(traits, k = String::substring(name, start = 0, end = sep))
 }
 
 /// The name a definition statement binds, or `""`.
-fn definition_name(stmt: Stmt) -> String {
+fn definition_name(_ stmt: Stmt) -> String {
   match stmt {
     SLet(_, _, n, _, _) => n,
     SFnDecl(_, n, _, _, _) => n,
@@ -1046,19 +1046,19 @@ fn definition_name(stmt: Stmt) -> String {
 /// `Int::get` after it escaped the check; `collect_impl_method_origins` skips
 /// the same bindings.
 fn impl_run_end(merged: Array[Stmt], k: Int, end: Int, traits: MutMap[String, Bool]) -> Int {
-  match Array::get(merged, k) {
+  match Array::get(merged, at = k) {
     SImpl(tparams, _, trait_key, target) => {
-      let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
+      let prefix = String::concat(impl_method_owner(tparams = tparams, trait_name = trait_key, target = target), "::")
       let trait_prefix = String::concat(trait_ref_name(trait_key), "::")
       let mut j = k + 1
       let mut more = true
       while more && j < end {
-        let name = definition_name(Array::get(merged, j))
-        if String::length(name) > String::length(prefix) && String::starts_with(name, prefix) {
+        let name = definition_name(Array::get(merged, at = j))
+        if String::length(name) > String::length(prefix) && String::starts_with(name, prefix = prefix) {
           j = j + 1
-        } else if String::length(name) > 0 && String::starts_with(name, trait_prefix) {
+        } else if String::length(name) > 0 && String::starts_with(name, prefix = trait_prefix) {
           j = j + 1
-        } else if names_trait_binding(name, traits) {
+        } else if names_trait_binding(name = name, traits = traits) {
           j = j + 1
         } else {
           more = false
@@ -1102,31 +1102,31 @@ fn impl_membership(merged: Array[Stmt], units: Array[LinkedUnit], traits: Linked
   let fallback_of: Array[Int] = []
   let mut i = 0
   while i < Array::length(merged) {
-    Array::push(flags, false)
-    Array::push(fallback_of, -1)
+    Array::push(flags, value = false)
+    Array::push(fallback_of, value = -1)
     i = i + 1
   }
   let fallbacks: MutMap[Int, Array[Int]] = MutMap::new_int()
   for unit in units {
     let mut k = unit.start
     while k < unit.end {
-      match Array::get(merged, k) {
+      match Array::get(merged, at = k) {
         SImpl(tparams, _, trait_key, target) => {
-          let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
-          let dispatched = impl_dispatched_methods(traits, trait_key)
-          let run_end = impl_run_end(merged, k, unit.end, traits.names)
+          let prefix = String::concat(impl_method_owner(tparams = tparams, trait_name = trait_key, target = target), "::")
+          let dispatched = impl_dispatched_methods(traits = traits, trait_key = trait_key)
+          let run_end = impl_run_end(merged = merged, k = k, end = unit.end, traits = traits.names)
           let mut j = k + 1
           while j < run_end {
-            let name = definition_name(Array::get(merged, j))
-            let member = if String::length(name) > String::length(prefix) && String::starts_with(name, prefix) {
+            let name = definition_name(Array::get(merged, at = j))
+            let member = if String::length(name) > String::length(prefix) && String::starts_with(name, prefix = prefix) {
               match dispatched {
-                Some(methods) => MutMap::has(methods, String::substring(name, String::length(prefix), String::length(name))),
+                Some(methods) => MutMap::has(methods, k = String::substring(name, start = String::length(prefix), end = String::length(name))),
                 None => true
               }
             } else {
               true
             }
-            Array::set(flags, j, member)
+            Array::set(flags, at = j, value = member)
             j = j + 1
           }
           k = run_end
@@ -1141,9 +1141,9 @@ fn impl_membership(merged: Array[Stmt], units: Array[LinkedUnit], traits: Linked
     let defs: MutMap[String, Int] = MutMap::new_string()
     let mut d = unit.start
     while d < unit.end {
-      let name = definition_name(Array::get(merged, d))
-      if name != "" && !MutMap::has(defs, name) {
-        MutMap::set(defs, name, d)
+      let name = definition_name(Array::get(merged, at = d))
+      if name != "" && !MutMap::has(defs, k = name) {
+        MutMap::set(defs, k = name, v = d)
       } else {
         ()
       }
@@ -1151,18 +1151,18 @@ fn impl_membership(merged: Array[Stmt], units: Array[LinkedUnit], traits: Linked
     }
     let mut m = unit.start
     while m < unit.end {
-      match Array::get(merged, m) {
-        SImpl(tparams, _, trait_key, target) => match impl_dispatched_methods(traits, trait_key) {
+      match Array::get(merged, at = m) {
+        SImpl(tparams, _, trait_key, target) => match impl_dispatched_methods(traits = traits, trait_key = trait_key) {
           Some(methods) => {
-            let prefix = String::concat(impl_method_owner(tparams, trait_key, target), "::")
+            let prefix = String::concat(impl_method_owner(tparams = tparams, trait_name = trait_key, target = target), "::")
             for method in MutMap::keys(methods) {
-              match MutMap::get(defs, String::concat(prefix, method)) {
-                Some(at) => if !Array::get(flags, at) && Array::get(fallback_of, at) < 0 {
-                  Array::set(flags, at, true)
-                  Array::set(fallback_of, at, m)
-                  match MutMap::get(fallbacks, m) {
-                    Some(list) => Array::push(list, at),
-                    None => MutMap::set(fallbacks, m, [at])
+              match MutMap::get(defs, k = String::concat(prefix, method)) {
+                Some(at) => if !Array::get(flags, at = at) && Array::get(fallback_of, at = at) < 0 {
+                  Array::set(flags, at = at, value = true)
+                  Array::set(fallback_of, at = at, value = m)
+                  match MutMap::get(fallbacks, k = m) {
+                    Some(list) => Array::push(list, value = at),
+                    None => MutMap::set(fallbacks, k = m, v = [at])
                   }
                 } else {
                   ()
@@ -1186,21 +1186,21 @@ fn impl_membership(merged: Array[Stmt], units: Array[LinkedUnit], traits: Linked
 }
 
 export fn refuse_linked_impl_overlaps(merged: Array[Stmt], units: Array[LinkedUnit]) -> Unit with Exception {
-  match linked_impl_overlap_error(merged, units) {
+  match linked_impl_overlap_error(merged = merged, units = units) {
     Some(msg) => throw(msg),
     None => ()
   }
 }
 
 fn bind_or_refuse(binders: MutMap[String, ImplBinder], units: Array[LinkedUnit], name: String, binder: ImplBinder) -> Option[String] {
-  match MutMap::get(binders, name) {
+  match MutMap::get(binders, k = name) {
     Some(prev) => if prev.unit != binder.unit {
-      Some(overlap_message(name, prev, Array::get(units, prev.unit), binder, Array::get(units, binder.unit)))
+      Some(overlap_message(name = name, first = prev, first_unit = Array::get(units, at = prev.unit), second = binder, second_unit = Array::get(units, at = binder.unit)))
     } else {
       None
     },
     None => {
-      MutMap::set(binders, name, binder)
+      MutMap::set(binders, k = name, v = binder)
       None
     }
   }
@@ -1208,7 +1208,7 @@ fn bind_or_refuse(binders: MutMap[String, ImplBinder], units: Array[LinkedUnit],
 
 /// The methods a derive binds under its type -- the ones `derive_pass`
 /// generates and skips when the program already defines them.
-fn derive_methods(which: String) -> Array[String] {
+fn derive_methods(_ which: String) -> Array[String] {
   if which == "Show" {
     ["to_string"]
   } else if which == "Hash" {
@@ -1230,18 +1230,18 @@ fn derive_methods(which: String) -> Array[String] {
 fn bind_derives(binders: MutMap[String, ImplBinder], plain: MutMap[String, Bool], units: Array[LinkedUnit], u: Int, name: String, derives: Array[String], keyword: String) -> Option[String] {
   let mut found: Option[String] = None
   if Array::length(derives) > 0 {
-    let unit = Array::get(units, u)
+    let unit = Array::get(units, at = u)
     let shown = namespace_rename_original(name)
-    let (line, col) = type_decl_position(unit_located_text(unit), keyword, shown)
+    let (line, col) = type_decl_position(source = unit_located_text(unit), keyword = keyword, name = shown)
     for listed in derives {
       for method in derive_methods(listed) {
-        let overridden = match MutMap::get(plain, String::concat(name, String::concat("::", method))) {
+        let overridden = match MutMap::get(plain, k = String::concat(name, String::concat("::", method))) {
           Some(_) => true,
           None => false
         }
         if !overridden && found is None {
           let what = String::concat("derive (", String::concat(listed, String::concat(") on ", shown)))
-          found = bind_or_refuse(binders, units, String::concat(name, String::concat("::", method)), ImplBinder::{
+          found = bind_or_refuse(binders = binders, units = units, name = String::concat(name, String::concat("::", method)), binder = ImplBinder::{
             unit: u,
             what: what,
             line: line,
@@ -1259,12 +1259,12 @@ fn bind_derives(binders: MutMap[String, ImplBinder], plain: MutMap[String, Bool]
 }
 
 fn overlap_message(name: String, first: ImplBinder, first_unit: LinkedUnit, second: ImplBinder, second_unit: LinkedUnit) -> String {
-  let here = position_text(second_unit.path, second.line, second.col)
-  let there = position_text(first_unit.path, first.line, first.col)
+  let here = position_text(path = second_unit.path, line = second.line, col = second.col)
+  let there = position_text(path = first_unit.path, line = first.line, col = first.col)
   let shown = namespace_rename_original(name)
   // A derive generates nothing next to an explicit definition, so the impl
   // always wins; it is still the overlap one module may not hold either.
-  let why = if String::starts_with(first.what, "derive (") || String::starts_with(second.what, "derive (") {
+  let why = if String::starts_with(first.what, prefix = "derive (") || String::starts_with(second.what, prefix = "derive (") {
     "` -- the derive gives way to the impl, so the deriving module, and every caller of the method, would silently run the impl; one module may not hold both either"
   } else {
     "` -- a linked program keeps only one of them, chosen by import order, so every caller, in either module, would silently run that one"
@@ -1280,7 +1280,7 @@ fn position_text(path: String, line: Int, col: Int) -> String {
   }
 }
 
-fn target_display(t: TypeExpr) -> String {
+fn target_display(_ t: TypeExpr) -> String {
   match t {
     TyName(n) => namespace_rename_original(n),
     TyApp(h, args) => {
@@ -1292,7 +1292,7 @@ fn target_display(t: TypeExpr) -> String {
         } else {
           ()
         }
-        out = String::concat(out, target_display(Array::get(args, i)))
+        out = String::concat(out, target_display(Array::get(args, at = i)))
         i = i + 1
       }
       String::concat(out, "]")
@@ -1306,7 +1306,7 @@ fn target_display(t: TypeExpr) -> String {
         } else {
           ()
         }
-        out = String::concat(out, target_display(Array::get(ts, i)))
+        out = String::concat(out, target_display(Array::get(ts, at = i)))
         i = i + 1
       }
       String::concat(out, ")")
@@ -1327,20 +1327,20 @@ fn line_starts_with_keyword(source: String, word: String) -> Array[(Int, Int)] {
   while i < n {
     // `i` is at the start of a line.
     let mut j = i
-    while j < n && (String::byte_at(source, j) == 32 || String::byte_at(source, j) == 9) {
+    while j < n && (String::byte_at(source, at = j) == 32 || String::byte_at(source, at = j) == 9) {
       j = j + 1
     }
-    if j + wn < n && String::substring(source, j, j + wn) == word {
-      let next = String::byte_at(source, j + wn)
+    if j + wn < n && String::substring(source, start = j, end = j + wn) == word {
+      let next = String::byte_at(source, at = j + wn)
       if next == 32 || next == 91 || next == 9 {
-        Array::push(out, (line, j - i + 1))
+        Array::push(out, value = (line, j - i + 1))
       } else {
         ()
       }
     } else {
       ()
     }
-    while j < n && String::byte_at(source, j) != 10 {
+    while j < n && String::byte_at(source, at = j) != 10 {
       j = j + 1
     }
     i = j + 1
@@ -1351,7 +1351,7 @@ fn line_starts_with_keyword(source: String, word: String) -> Array[(Int, Int)] {
 
 fn nth_position(positions: Array[(Int, Int)], k: Int) -> (Int, Int) {
   if k < Array::length(positions) {
-    Array::get(positions, k)
+    Array::get(positions, at = k)
   } else {
     (0, 0)
   }
@@ -1360,18 +1360,18 @@ fn nth_position(positions: Array[(Int, Int)], k: Int) -> (Int, Int) {
 /// The first line that declares `<keyword> <name>` (after any `export`).
 fn type_decl_position(source: String, keyword: String, name: String) -> (Int, Int) {
   let needle = String::concat(keyword, String::concat(" ", name))
-  first_line_containing(source, needle)
+  first_line_containing(source = source, needle = needle)
 }
 
 /// The first line that defines `name` as `fn name` or `let name` (after any
 /// `export`) -- at the start of the line, so a comment that quotes the
 /// definition is not taken for it.
 fn definition_position(source: String, name: String) -> (Int, Int) {
-  let (fl, fc) = first_line_declaring(source, String::concat("fn ", name))
+  let (fl, fc) = first_line_declaring(source = source, needle = String::concat("fn ", name))
   if fl > 0 {
     (fl, fc)
   } else {
-    first_line_declaring(source, String::concat("let ", name))
+    first_line_declaring(source = source, needle = String::concat("let ", name))
   }
 }
 
@@ -1387,18 +1387,18 @@ fn first_line_declaring(source: String, needle: String) -> (Int, Int) {
   let mut fc = 0
   while i < n && fl == 0 {
     let mut j = i
-    while j < n && (String::byte_at(source, j) == 32 || String::byte_at(source, j) == 9) {
+    while j < n && (String::byte_at(source, at = j) == 32 || String::byte_at(source, at = j) == 9) {
       j = j + 1
     }
-    if j + 7 <= n && String::substring(source, j, j + 7) == "export " {
+    if j + 7 <= n && String::substring(source, start = j, end = j + 7) == "export " {
       j = j + 7
     } else {
       ()
     }
     let col = j - i + 1
-    if j + nn <= n && String::substring(source, j, j + nn) == needle {
+    if j + nn <= n && String::substring(source, start = j, end = j + nn) == needle {
       let next = if j + nn < n {
-        String::byte_at(source, j + nn)
+        String::byte_at(source, at = j + nn)
       } else {
         10
       }
@@ -1412,7 +1412,7 @@ fn first_line_declaring(source: String, needle: String) -> (Int, Int) {
     } else {
       ()
     }
-    while j < n && String::byte_at(source, j) != 10 {
+    while j < n && String::byte_at(source, at = j) != 10 {
       j = j + 1
     }
     i = j + 1
@@ -1422,7 +1422,7 @@ fn first_line_declaring(source: String, needle: String) -> (Int, Int) {
 }
 
 fn first_line_containing(source: String, needle: String) -> (Int, Int) {
-  let at = String::index_of(source, needle)
+  let at = String::index_of(source, needle = needle)
   if at < 0 {
     (0, 0)
   } else {
@@ -1430,7 +1430,7 @@ fn first_line_containing(source: String, needle: String) -> (Int, Int) {
     let mut line_start = 0
     let mut i = 0
     while i < at {
-      if String::byte_at(source, i) == 10 {
+      if String::byte_at(source, at = i) == 10 {
         line = line + 1
         line_start = i + 1
       } else {

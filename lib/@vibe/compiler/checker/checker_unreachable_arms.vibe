@@ -40,7 +40,7 @@ import @vibe/parser {
 /// The unreachable arms of every written `match` in `source`, one message
 /// each, carrying the `[@off=..]` marker of the arm's pattern. A source the
 /// tooling parse cannot read answers no rows (its errors are the check's).
-export fn detect_unreachable_match_arms(source: String) -> Array[String] {
+export fn detect_unreachable_match_arms(_ source: String) -> Array[String] {
   let out: Array[String] = []
   let stmts = handle {
     parse_source_with_ranges(source)
@@ -48,23 +48,23 @@ export fn detect_unreachable_match_arms(source: String) -> Array[String] {
     let none: Array[Stmt] = []
     none
   } }
-  ua_walk_stmts(out, source, stmts)
+  ua_walk_stmts(out = out, source = source, stmts = stmts)
   out
 }
 
 fn ua_walk_stmts(out: Array[String], source: String, stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, body) => ua_walk_expr(out, source, body),
-      SLetMut(_, _, body) => ua_walk_expr(out, source, body),
-      SLetPat(_, body) => ua_walk_expr(out, source, body),
-      SExpr(body) => ua_walk_expr(out, source, body),
-      STest(_, body) => ua_walk_expr(out, source, body),
-      SBench(_, body) => ua_walk_expr(out, source, body),
-      SExample(_, body) => ua_walk_expr(out, source, body),
-      SFnDecl(_, _, body, _, _) => ua_walk_expr(out, source, body),
-      SModule(_, _, body) => ua_walk_stmts(out, source, body),
+    match Array::get(stmts, at = i) {
+      SLet(_, _, _, _, body) => ua_walk_expr(out = out, source = source, expr = body),
+      SLetMut(_, _, body) => ua_walk_expr(out = out, source = source, expr = body),
+      SLetPat(_, body) => ua_walk_expr(out = out, source = source, expr = body),
+      SExpr(body) => ua_walk_expr(out = out, source = source, expr = body),
+      STest(_, body) => ua_walk_expr(out = out, source = source, expr = body),
+      SBench(_, body) => ua_walk_expr(out = out, source = source, expr = body),
+      SExample(_, body) => ua_walk_expr(out = out, source = source, expr = body),
+      SFnDecl(_, _, body, _, _) => ua_walk_expr(out = out, source = source, expr = body),
+      SModule(_, _, body) => ua_walk_stmts(out = out, source = source, stmts = body),
       _ => ()
     }
     i = i + 1
@@ -74,33 +74,33 @@ fn ua_walk_stmts(out: Array[String], source: String, stmts: Array[Stmt]) -> Unit
 fn ua_walk_expr(out: Array[String], source: String, expr: Expr) -> Unit {
   let (start, _) = source_expr_range(expr)
   let node = source_expr(expr)
-  let written = start >= 0 && ua_text_at(source, start, "match")
+  let written = start >= 0 && ua_text_at(source = source, start = start, text = "match")
   match node {
     EMatch(scrutinee, arms) => {
       if written {
-        ua_check_arms(out, source, arms)
+        ua_check_arms(out = out, source = source, arms = arms)
       } else {
         ()
       }
-      ua_walk_expr(out, source, scrutinee)
-      ua_walk_arm_bodies(out, source, arms)
+      ua_walk_expr(out = out, source = source, expr = scrutinee)
+      ua_walk_arm_bodies(out = out, source = source, arms = arms)
     },
     // A guarded match binds its scrutinee to the match temporary first.
     ELet(name, value, body, _) => match source_expr(body) {
       EMatch(EIdent(temp, _), arms) => if name == match_scrutinee_temp() && temp == name {
         if written {
-          ua_check_arms(out, source, arms)
+          ua_check_arms(out = out, source = source, arms = arms)
         } else {
           ()
         }
-        ua_walk_expr(out, source, value)
-        ua_walk_arm_bodies(out, source, arms)
+        ua_walk_expr(out = out, source = source, expr = value)
+        ua_walk_arm_bodies(out = out, source = source, arms = arms)
       } else {
-        ua_walk_children(out, source, node)
+        ua_walk_children(out = out, source = source, node = node)
       },
-      _ => ua_walk_children(out, source, node)
+      _ => ua_walk_children(out = out, source = source, node = node)
     },
-    _ => ua_walk_children(out, source, node)
+    _ => ua_walk_children(out = out, source = source, node = node)
   }
 }
 
@@ -108,7 +108,7 @@ fn ua_walk_children(out: Array[String], source: String, node: Expr) -> Unit {
   let kids = expr_children(node)
   let mut i = 0
   while i < Array::length(kids) {
-    ua_walk_expr(out, source, Array::get(kids, i))
+    ua_walk_expr(out = out, source = source, expr = Array::get(kids, at = i))
     i = i + 1
   }
 }
@@ -119,13 +119,13 @@ fn ua_walk_children(out: Array[String], source: String, node: Expr) -> Unit {
 fn ua_walk_arm_bodies(out: Array[String], source: String, arms: Array[(Pat, Expr)]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    let (_, body) = Array::get(arms, i)
+    let (_, body) = Array::get(arms, at = i)
     match ua_guard_parts(body) {
       Some((cond, taken)) => {
-        ua_walk_expr(out, source, cond)
-        ua_walk_expr(out, source, taken)
+        ua_walk_expr(out = out, source = source, expr = cond)
+        ua_walk_expr(out = out, source = source, expr = taken)
       },
-      None => ua_walk_expr(out, source, body)
+      None => ua_walk_expr(out = out, source = source, expr = body)
     }
     i = i + 1
   }
@@ -134,7 +134,7 @@ fn ua_walk_arm_bodies(out: Array[String], source: String, arms: Array[(Pat, Expr
 /// `p if c => b` desugars to the arm `p => if c { b } else { match <temp>
 /// { .. } }`; a source name can never be the temporary, so the shape is the
 /// parser's alone.
-fn ua_guard_parts(body: Expr) -> Option[(Expr, Expr)] {
+fn ua_guard_parts(_ body: Expr) -> Option[(Expr, Expr)] {
   match source_expr(body) {
     EIf(cond, taken, rest) => match source_expr(rest) {
       EMatch(EIdent(temp, _), _) => if temp == match_scrutinee_temp() {
@@ -151,21 +151,21 @@ fn ua_guard_parts(body: Expr) -> Option[(Expr, Expr)] {
 fn ua_check_arms(out: Array[String], source: String, arms: Array[(Pat, Expr)]) -> Unit {
   let mut j = 1
   while j < Array::length(arms) {
-    let (later, _) = Array::get(arms, j)
+    let (later, _) = Array::get(arms, at = j)
     let (ls, le) = source_pat_range(later)
     if ls >= 0 && le > ls {
       let mut i = 0
       let mut found = false
       while i < j && !found {
-        let (earlier, body) = Array::get(arms, i)
+        let (earlier, body) = Array::get(arms, at = i)
         let (es, ee) = source_pat_range(earlier)
         let guarded = match ua_guard_parts(body) {
           Some(_) => true,
           None => false
         }
-        if es >= 0 && ee > es && !guarded && ua_covers(earlier, later) {
+        if es >= 0 && ee > es && !guarded && ua_covers(p = earlier, q = later) {
           found = true
-          Array::push(out, String::concat("remove this unreachable `match` arm: the earlier arm `", String::concat(ua_one_line(String::substring(source, es, ee)), String::concat("` already matches every value this arm matches, and arms are tried in order", off_marker_len(ls, le - ls)))))
+          Array::push(out, value = String::concat("remove this unreachable `match` arm: the earlier arm `", String::concat(ua_one_line(String::substring(source, start = es, end = ee)), String::concat("` already matches every value this arm matches, and arms are tried in order", off_marker_len(off = ls, len = le - ls)))))
         } else {
           ()
         }
@@ -186,16 +186,16 @@ fn ua_covers(p: Pat, q: Pat) -> Bool {
   if ua_irrefutable(p0) {
     true
   } else {
-    ua_covers_refutable(p, p0, q0)
+    ua_covers_refutable(p = p, p0 = p0, q0 = q0)
   }
 }
 
 fn ua_covers_refutable(p: Pat, p0: Pat, q0: Pat) -> Bool {
   match p0 {
-    POr(a, b) => ua_covers(a, q0) || ua_covers(b, q0) || ua_covers_or_parts(p, q0),
+    POr(a, b) => ua_covers(p = a, q = q0) || ua_covers(p = b, q = q0) || ua_covers_or_parts(p = p, q0 = q0),
     _ => match q0 {
-      POr(c, d) => ua_covers(p, c) && ua_covers(p, d),
-      _ => ua_covers_same_shape(p0, q0)
+      POr(c, d) => ua_covers(p = p, q = c) && ua_covers(p = p, q = d),
+      _ => ua_covers_same_shape(p0 = p0, q0 = q0)
     }
   }
 }
@@ -203,7 +203,7 @@ fn ua_covers_refutable(p: Pat, p0: Pat, q0: Pat) -> Bool {
 /// A pattern that matches every value of its type: a name, `_`, or a tuple or
 /// struct pattern made only of those. The later arm is of the same type, so
 /// such an arm covers it.
-fn ua_irrefutable(p0: Pat) -> Bool {
+fn ua_irrefutable(_ p0: Pat) -> Bool {
   match p0 {
     PWild => true,
     PBind(_) => true,
@@ -211,7 +211,7 @@ fn ua_irrefutable(p0: Pat) -> Bool {
       let mut ok = true
       let mut i = 0
       while i < Array::length(items) && ok {
-        ok = ua_irrefutable(source_pat(Array::get(items, i)))
+        ok = ua_irrefutable(source_pat(Array::get(items, at = i)))
         i = i + 1
       }
       ok
@@ -223,7 +223,7 @@ fn ua_irrefutable(p0: Pat) -> Bool {
 
 fn ua_covers_or_parts(p: Pat, q0: Pat) -> Bool {
   match q0 {
-    POr(c, d) => ua_covers(p, c) && ua_covers(p, d),
+    POr(c, d) => ua_covers(p = p, q = c) && ua_covers(p = p, q = d),
     _ => false
   }
 }
@@ -233,8 +233,8 @@ fn ua_covers_same_shape(p0: Pat, q0: Pat) -> Bool {
     (PInt(a), PInt(b)) => a == b,
     (PString(a), PString(b)) => a == b,
     (PBool(a), PBool(b)) => a == b,
-    (PCtor(n, ps), PCtor(m, qs)) => n == m && ua_covers_all(ps, qs),
-    (PTuple(ps), PTuple(qs)) => ua_covers_all(ps, qs),
+    (PCtor(n, ps), PCtor(m, qs)) => n == m && ua_covers_all(ps = ps, qs = qs),
+    (PTuple(ps), PTuple(qs)) => ua_covers_all(ps = ps, qs = qs),
     _ => false
   }
 }
@@ -246,18 +246,18 @@ fn ua_covers_all(ps: Array[Pat], qs: Array[Pat]) -> Bool {
     let mut ok = true
     let mut i = 0
     while i < Array::length(ps) && ok {
-      ok = ua_covers(Array::get(ps, i), Array::get(qs, i))
+      ok = ua_covers(p = Array::get(ps, at = i), q = Array::get(qs, at = i))
       i = i + 1
     }
     ok
   }
 }
 
-fn ua_fields_irrefutable(fields: Array[(String, Pat)]) -> Bool {
+fn ua_fields_irrefutable(_ fields: Array[(String, Pat)]) -> Bool {
   let mut ok = true
   let mut i = 0
   while i < Array::length(fields) && ok {
-    let (_, fp) = Array::get(fields, i)
+    let (_, fp) = Array::get(fields, at = i)
     ok = ua_irrefutable(source_pat(fp))
     i = i + 1
   }
@@ -266,19 +266,19 @@ fn ua_fields_irrefutable(fields: Array[(String, Pat)]) -> Bool {
 
 fn ua_text_at(source: String, start: Int, text: String) -> Bool {
   let n = String::length(text)
-  start + n <= String::length(source) && String::substring(source, start, start + n) == text
+  start + n <= String::length(source) && String::substring(source, start = start, end = start + n) == text
 }
 
 /// A pattern's text on one line, shortened past 40 bytes.
-fn ua_one_line(text: String) -> String {
-  let nl = String::index_of(text, "\n")
+fn ua_one_line(_ text: String) -> String {
+  let nl = String::index_of(text, needle = "\n")
   let line = if nl >= 0 {
-    String::concat(String::substring(text, 0, nl), " ..")
+    String::concat(String::substring(text, start = 0, end = nl), " ..")
   } else {
     text
   }
   if String::length(line) > 40 {
-    String::concat(String::substring(line, 0, 40), " ..")
+    String::concat(String::substring(line, start = 0, end = 40), " ..")
   } else {
     line
   }

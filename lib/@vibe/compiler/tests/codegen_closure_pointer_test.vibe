@@ -32,78 +32,78 @@ fn closure_pointer_probe(address: Int, tagged: Int) -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
   let types = bytebuf_new()
-  bytebuf_push_vec_header(types, 1)
-  emit_func_type_raw(types, [], [126])
-  bytebuf_push_section(out, 1, types)
-  emit_function_section(out, [0])
-  emit_memory_section(out, 1)
-  emit_export_section(out, "probe", 0)
+  bytebuf_push_vec_header(buf = types, count = 1)
+  emit_func_type_raw(buf = types, param_types = [], result_types = [126])
+  bytebuf_push_section(out = out, section_id = 1, content = types)
+  emit_function_section(out = out, type_indices = [0])
+  emit_memory_section(out = out, min_pages = 1)
+  emit_export_section(out = out, name = "probe", func_idx = 0)
   let body = bytebuf_new()
-  emit_i32_const(body, address)
-  emit_i32_const(body, 17)
-  emit_i32_store(body, 0, 0)
-  emit_i64_const(body, tagged)
-  emit_local_set(body, 0)
-  emit_closure_resolve(body, 0, 1, 2)
-  emit_local_get(body, 1)
-  emit_i64_const(body, 10000)
+  emit_i32_const(buf = body, value = address)
+  emit_i32_const(buf = body, value = 17)
+  emit_i32_store(buf = body, align = 0, offset = 0)
+  emit_i64_const(buf = body, value = tagged)
+  emit_local_set(buf = body, idx = 0)
+  emit_closure_resolve(buf = body, fn_val_local = 0, slot_local = 1, env_local = 2)
+  emit_local_get(buf = body, idx = 1)
+  emit_i64_const(buf = body, value = 10000)
   emit_i64_mul(body)
-  emit_local_get(body, 2)
+  emit_local_get(buf = body, idx = 2)
   emit_i64_add(body)
-  emit_code_section_with_locals(out, [body], [3])
+  emit_code_section_with_locals(out = out, bodies = [body], local_counts = [3])
   out
 }
 
 fn check_closure_pointer(address: Int, tagged: Int, expected: String) -> Unit with Fs + Process {
   let path = "/tmp/_closure_pointer_\{tagged}.wasm"
-  Fs::write_bytes(path, closure_pointer_probe(address, tagged))
+  Fs::write_bytes(path, bytes = closure_pointer_probe(address = address, tagged = tagged))
   let output = sh_lines("wasmtime run --invoke probe \{path} 2>/dev/null")
   assert(Array::length(output) == 1)
-  assert(String::equals(Array::get(output, 0), expected))
+  assert(String::equals(Array::get(output, at = 0), expected))
 }
 
 test "closure resolution preserves every even heap address" {
-  check_closure_pointer(1024, 1025, "171024")
-  check_closure_pointer(1026, 1027, "171026")
-  check_closure_pointer(1028, 1029, "171028")
-  check_closure_pointer(1030, 1031, "171030")
+  check_closure_pointer(address = 1024, tagged = 1025, expected = "171024")
+  check_closure_pointer(address = 1026, tagged = 1027, expected = "171026")
+  check_closure_pointer(address = 1028, tagged = 1029, expected = "171028")
+  check_closure_pointer(address = 1030, tagged = 1031, expected = "171030")
 }
 
 test "bare function values still resolve without a closure environment" {
-  check_closure_pointer(1024, 2, "0")
-  check_closure_pointer(1024, 70, "170000")
+  check_closure_pointer(address = 1024, tagged = 2, expected = "0")
+  check_closure_pointer(address = 1024, tagged = 70, expected = "170000")
 }
 
-fn rc_allocator_probe(frontier: Int) -> Bytes {
+fn rc_allocator_probe(_ frontier: Int) -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
   let types = bytebuf_new()
-  bytebuf_push_vec_header(types, 1)
-  emit_func_type_raw(types, [126], [126])
-  bytebuf_push_section(out, 1, types)
-  emit_function_section(out, [0])
-  emit_memory_section(out, 1)
+  bytebuf_push_vec_header(buf = types, count = 1)
+  emit_func_type_raw(buf = types, param_types = [126], result_types = [126])
+  bytebuf_push_section(out = out, section_id = 1, content = types)
+  emit_function_section(out = out, type_indices = [0])
+  emit_memory_section(out = out, min_pages = 1)
   let globals = bytebuf_new()
-  bytebuf_push_vec_header(globals, 3)
+  bytebuf_push_vec_header(buf = globals, count = 3)
   for initial in [frontier, 0, 0] {
-    bytebuf_push(globals, 127)
-    bytebuf_push(globals, 1)
-    emit_i32_const(globals, initial)
-    bytebuf_push(globals, 11)
+    bytebuf_push(buf = globals, byte = 127)
+    bytebuf_push(buf = globals, byte = 1)
+    emit_i32_const(buf = globals, value = initial)
+    bytebuf_push(buf = globals, byte = 11)
   }
-  bytebuf_push_section(out, 6, globals)
-  emit_export_section(out, "allocate", 0)
+  bytebuf_push_section(out = out, section_id = 6, content = globals)
+  emit_export_section(out = out, name = "allocate", func_idx = 0)
   let body = bytebuf_new()
-  bytebuf_push_vec_header(body, 1)
-  leb128_encode_u32(body, 5)
-  bytebuf_push(body, 127)
-  bytebuf_push_buf(body, gen_rc_alloc_body(false, 1024))
-  bytebuf_push(body, 11)
+  bytebuf_push_vec_header(buf = body, count = 1)
+  leb128_encode_u32(buf = body, value = 5)
+  bytebuf_push(buf = body, byte = 127)
+  bytebuf_push_buf(dst = body, src = gen_rc_alloc_body(rc_shadow = false, bins_base = 1024))
+  bytebuf_push(buf = body, byte = 11)
   let code = bytebuf_new()
-  bytebuf_push_vec_header(code, 1)
-  leb128_encode_u32(code, Bytes::length(body))
-  bytebuf_push_buf(code, body)
-  bytebuf_push_section(out, 10, code)
+  bytebuf_push_vec_header(buf = code, count = 1)
+  leb128_encode_u32(buf = code, value = Bytes::length(body))
+  bytebuf_push_buf(dst = code, src = body)
+  bytebuf_push_section(out = out, section_id = 10, content = code)
   out
 }
 
@@ -111,10 +111,10 @@ test "RC allocation aligns a frontier left at any byte offset" {
   let mut offset = 0
   while offset < 8 {
     let path = "/tmp/_rc_allocator_alignment_\{offset}.wasm"
-    Fs::write_bytes(path, rc_allocator_probe(4096 + offset))
+    Fs::write_bytes(path, bytes = rc_allocator_probe(4096 + offset))
     let output = sh_lines("wasmtime run --invoke allocate \{path} 24 2>/dev/null")
     assert(Array::length(output) == 1)
-    assert(String::equals(Array::get(output, 0), if offset == 0 {
+    assert(String::equals(Array::get(output, at = 0), if offset == 0 {
       "4096"
     } else {
       "4104"
@@ -129,9 +129,9 @@ test "RC allocation refuses alignment and end-address overflow" {
   let check = "const fs=require('node:fs'); const module=new WebAssembly.Module(fs.readFileSync(process.argv[1])); const instance=new WebAssembly.Instance(module); let trapped=false; try { instance.exports.allocate(24n); } catch (e) { if (!(e instanceof WebAssembly.RuntimeError) || !e.message.includes('unreachable')) throw e; trapped=true; } if (!trapped) throw new Error('allocation did not trap'); console.log('trapped');"
   for frontier in [-1, -8] {
     let path = "/tmp/_rc_allocator_overflow_\{frontier}.wasm"
-    Fs::write_bytes(path, rc_allocator_probe(frontier))
+    Fs::write_bytes(path, bytes = rc_allocator_probe(frontier))
     let output = sh_lines("node -e \"\{check}\" \{path}")
     assert(Array::length(output) == 1)
-    assert(String::equals(Array::get(output, 0), "trapped"))
+    assert(String::equals(Array::get(output, at = 0), "trapped"))
   }
 }

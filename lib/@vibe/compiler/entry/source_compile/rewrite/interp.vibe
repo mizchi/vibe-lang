@@ -19,29 +19,30 @@ import @vibe/compiler/syntax {
 // leaves each hole as source text (`EStringInterp` alternates literal parts
 // and hole sources), so each hole is lexed and parsed here.
 
-fn parse_interp_expr(tokens: Array[Token]) -> Expr with Exception {
-  let (stmt, _) = parse_stmt(tokens, [], 0)
+fn parse_interp_expr(_ tokens: Array[Token]) -> Expr with Exception {
+  let (stmt, _) = parse_stmt(tokens = tokens, starts = [], pos = 0)
   match stmt {
     SExpr(expr) => expr,
     _ => throw("expected interpolation expression")
   }
 }
 
-fn collect_interp_exprs(parts: Array[String]) -> Array[Expr] with Exception {
+fn collect_interp_exprs(_ parts: Array[String]) -> Array[Expr] with Exception {
   let plen = Array::length(parts)
   let exprs = ArrayBuilder::new()
   let mut i = 0
   while i < plen {
-    let lit = Array::get(parts, i)
+    let lit = Array::get(parts, at = i)
     if String::length(lit) > 0 {
-      ArrayBuilder::push(exprs, EString(lit, -1))
+      ArrayBuilder::push(exprs, value = EString(lit, -1))
     }
     if i + 1 < plen {
-      let expr_src = Array::get(parts, i + 1)
+      let expr_src = Array::get(parts, at = i + 1)
       let part_tokens = lex(expr_src)
       let part_expr = parse_interp_expr(part_tokens)
-      ArrayBuilder::push(exprs, ECall(builtin_ref("__to_string"), [part_expr], -1, [
-      ]))
+      ArrayBuilder::push(exprs, value = ECall(builtin_ref("__to_string"), [
+        part_expr
+      ], -1, []))
     }
     i = i + 2
   }
@@ -50,32 +51,32 @@ fn collect_interp_exprs(parts: Array[String]) -> Array[Expr] with Exception {
 
 fn concat_exprs(lhs: Expr, rhs: Expr) -> Expr {
   let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, lhs)
-  ArrayBuilder::push(b, rhs)
+  ArrayBuilder::push(b, value = lhs)
+  ArrayBuilder::push(b, value = rhs)
   let args = ArrayBuilder::freeze(b)
   ECall(builtin_ref("String::concat"), args, -1, [])
 }
 
-fn fold_interp_exprs(result_arr: Array[Expr]) -> Expr {
+fn fold_interp_exprs(_ result_arr: Array[Expr]) -> Expr {
   let result_len = Array::length(result_arr)
   if result_len == 0 {
     EString("", -1)
   } else {
-    let mut result = Array::get(result_arr, 0)
+    let mut result = Array::get(result_arr, at = 0)
     let mut j = 1
     while j < result_len {
-      result = concat_exprs(result, Array::get(result_arr, j))
+      result = concat_exprs(lhs = result, rhs = Array::get(result_arr, at = j))
       j = j + 1
     }
     result
   }
 }
 
-fn rewrite_interp_string(parts: Array[String]) -> Expr with Exception {
+fn rewrite_interp_string(_ parts: Array[String]) -> Expr with Exception {
   fold_interp_exprs(collect_interp_exprs(parts))
 }
 
-fn rewrite_interp(e: Expr) -> Expr with Exception {
+fn rewrite_interp(_ e: Expr) -> Expr with Exception {
   match e {
     EStringInterp(parts) => rewrite_interp_string(parts),
     ELet(name, val, body, soff) => ELet(name, rewrite_interp(val), rewrite_interp(body), soff),
@@ -99,13 +100,13 @@ fn rewrite_interp(e: Expr) -> Expr with Exception {
 /// checks the program must expand interpolation first (the render-offset
 /// tables are keyed on the `__to_string` calls the expansion writes), then
 /// check, and only then desugar (#3069, #3098).
-export fn expand_interp_only(stmts: Array[Stmt]) -> Unit with Exception {
+export fn expand_interp_only(_ stmts: Array[Stmt]) -> Unit with Exception {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(exp, is_rec, name, ann, expr) => Array::set(stmts, i, SLet(exp, is_rec, name, ann, rewrite_interp(expr))),
-      STest(name, expr) => Array::set(stmts, i, STest(name, rewrite_interp(expr))),
-      SBench(name, expr) => Array::set(stmts, i, SBench(name, rewrite_interp(expr))),
+    match Array::get(stmts, at = i) {
+      SLet(exp, is_rec, name, ann, expr) => Array::set(stmts, at = i, value = SLet(exp, is_rec, name, ann, rewrite_interp(expr))),
+      STest(name, expr) => Array::set(stmts, at = i, value = STest(name, rewrite_interp(expr))),
+      SBench(name, expr) => Array::set(stmts, at = i, value = SBench(name, rewrite_interp(expr))),
       _ => ()
     }
     i = i + 1

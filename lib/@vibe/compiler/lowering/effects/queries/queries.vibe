@@ -34,11 +34,11 @@ import @vibe/compiler/lowering/effects/direct {
 /// first, side effects included, and the arm was thrown its RESULT). Only
 /// a perform with NO handle anywhere compiles to the direct builtin call
 /// (see compile_call.vibe's op_is_builtin branch).
-export fn edp_user_perform_effect_of(expr: Expr) -> String {
+export fn edp_user_perform_effect_of(_ expr: Expr) -> String {
   match expr {
     ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
-        let q = match Array::get(args, 0) {
+        let q = match Array::get(args, at = 0) {
           ECall(inner, _, _, _) => match inner {
             EIdent(qn, _) => qn,
             _ => ""
@@ -100,7 +100,7 @@ export enum EdpReadQuery {
   RQContainsForIn
 }
 
-fn edp_rq_is_count(q: EdpReadQuery) -> Bool {
+fn edp_rq_is_count(_ q: EdpReadQuery) -> Bool {
   match q {
     RQIdentUses(_) => true,
     RQSafeClosureBindings(_, _, _, _, _, _) => true,
@@ -109,7 +109,7 @@ fn edp_rq_is_count(q: EdpReadQuery) -> Bool {
   }
 }
 
-fn edp_rq_stops_array_on_hit(q: EdpReadQuery) -> Bool {
+fn edp_rq_stops_array_on_hit(_ q: EdpReadQuery) -> Bool {
   match q {
     RQPerformsUserEffect(_) => true,
     RQOpaqueCall(_, _) => true,
@@ -133,20 +133,20 @@ fn edp_rq_merge(q: EdpReadQuery, a: Int, b: Int) -> Int {
 }
 
 fn edp_rq_two(q: EdpReadQuery, a: Expr, b: Expr) -> Int {
-  let av = edp_rq_fold(q, a)
+  let av = edp_rq_fold(q = q, e = a)
   if !edp_rq_is_count(q) && av > 0 {
     1
   } else {
-    edp_rq_merge(q, av, edp_rq_fold(q, b))
+    edp_rq_merge(q = q, a = av, b = edp_rq_fold(q = q, e = b))
   }
 }
 
 fn edp_rq_three(q: EdpReadQuery, a: Expr, b: Expr, c: Expr) -> Int {
-  let ab = edp_rq_two(q, a, b)
+  let ab = edp_rq_two(q = q, a = a, b = b)
   if !edp_rq_is_count(q) && ab > 0 {
     1
   } else {
-    edp_rq_merge(q, ab, edp_rq_fold(q, c))
+    edp_rq_merge(q = q, a = ab, b = edp_rq_fold(q = q, e = c))
   }
 }
 
@@ -154,7 +154,7 @@ export fn edp_rq_exprs(q: EdpReadQuery, es: Array[Expr]) -> Int {
   let mut total = 0
   let mut i = 0
   while i < Array::length(es) && !(edp_rq_stops_array_on_hit(q) && total > 0) {
-    total = edp_rq_merge(q, total, edp_rq_fold(q, Array::get(es, i)))
+    total = edp_rq_merge(q = q, a = total, b = edp_rq_fold(q = q, e = Array::get(es, at = i)))
     i = i + 1
   }
   total
@@ -180,7 +180,7 @@ fn edp_rq_params(q: EdpReadQuery, params: Array[(String, Option[TypeExpr])]) -> 
   let mut hit = 0
   let mut i = 0
   while i < Array::length(params) && !(edp_rq_stops_array_on_hit(q) && hit > 0) {
-    let (name, _) = Array::get(params, i)
+    let (name, _) = Array::get(params, at = i)
     let local = match q {
       RQEdpBindsName(x) => if edp_strip_tilde(name) == x {
         1
@@ -194,7 +194,7 @@ fn edp_rq_params(q: EdpReadQuery, params: Array[(String, Option[TypeExpr])]) -> 
       },
       _ => 0
     }
-    hit = edp_rq_merge(q, hit, local)
+    hit = edp_rq_merge(q = q, a = hit, b = local)
     i = i + 1
   }
   hit
@@ -202,12 +202,12 @@ fn edp_rq_params(q: EdpReadQuery, params: Array[(String, Option[TypeExpr])]) -> 
 
 fn edp_rq_pat(q: EdpReadQuery, p: Pat) -> Int {
   match q {
-    RQEdpBindsName(x) => if scps_pat_binds_name(p, x) {
+    RQEdpBindsName(x) => if scps_pat_binds_name(p = p, x = x) {
       1
     } else {
       0
     },
-    RQScpsBindsName(x) => if scps_pat_binds_name(p, x) {
+    RQScpsBindsName(x) => if scps_pat_binds_name(p = p, x = x) {
       1
     } else {
       0
@@ -220,18 +220,18 @@ fn edp_rq_pairs(q: EdpReadQuery, pairs: Array[(String, Expr)], names_bind: Bool)
   let mut total = 0
   let mut i = 0
   while i < Array::length(pairs) && !(edp_rq_stops_array_on_hit(q) && total > 0) {
-    let (name, value) = Array::get(pairs, i)
+    let (name, value) = Array::get(pairs, at = i)
     let local = if names_bind {
-      edp_rq_plain_binder(q, name)
+      edp_rq_plain_binder(q = q, name = name)
     } else {
       0
     }
     let item = if !edp_rq_is_count(q) && local > 0 {
       1
     } else {
-      edp_rq_merge(q, local, edp_rq_fold(q, value))
+      edp_rq_merge(q = q, a = local, b = edp_rq_fold(q = q, e = value))
     }
-    total = edp_rq_merge(q, total, item)
+    total = edp_rq_merge(q = q, a = total, b = item)
     i = i + 1
   }
   total
@@ -241,44 +241,44 @@ export fn edp_rq_arms(q: EdpReadQuery, arms: Array[(Pat, Expr)], is_handle: Bool
   let mut total = 0
   let mut i = 0
   while i < Array::length(arms) && !(edp_rq_stops_array_on_hit(q) && total > 0) {
-    let (pat, body) = Array::get(arms, i)
+    let (pat, body) = Array::get(arms, at = i)
     let local = match q {
       // #3064: an arm that leaves the function with `return` may need the
       // suspend driver too (scps_arm_return_needs_driver decides precisely);
       // this pre-scan only has to be conservative.
       // #3540: so may an arm that can throw (scps_arm_throw_needs_driver).
-      RQTrigger => if is_handle && (scps_arm_refs_resume_value(body, scps_pat_binds_resume(pat)) || edp_rq_fold(RQBodyReturn, body) > 0 || (!is_exception_throw_handler_name(edp_pat_qname(pat)) && scps_arm_may_throw_syntactic(body))) {
+      RQTrigger => if is_handle && (scps_arm_refs_resume_value(e = body, sh = scps_pat_binds_resume(pat)) || edp_rq_fold(q = RQBodyReturn, e = body) > 0 || (!is_exception_throw_handler_name(edp_pat_qname(pat)) && scps_arm_may_throw_syntactic(body))) {
         1
       } else {
         0
       },
-      _ => edp_rq_pat(q, pat)
+      _ => edp_rq_pat(q = q, p = pat)
     }
     let item = if !edp_rq_is_count(q) && local > 0 {
       1
     } else {
-      edp_rq_merge(q, local, edp_rq_fold(q, body))
+      edp_rq_merge(q = q, a = local, b = edp_rq_fold(q = q, e = body))
     }
-    total = edp_rq_merge(q, total, item)
+    total = edp_rq_merge(q = q, a = total, b = item)
     i = i + 1
   }
   total
 }
 
 fn edp_rq_after_exprs(q: EdpReadQuery, first: Expr, rest: Array[Expr]) -> Int {
-  let a = edp_rq_fold(q, first)
+  let a = edp_rq_fold(q = q, e = first)
   if a > 0 && !edp_rq_is_count(q) && match q {
     RQTrigger => false,
     _ => true
   } {
     1
   } else {
-    edp_rq_merge(q, a, edp_rq_exprs(q, rest))
+    edp_rq_merge(q = q, a = a, b = edp_rq_exprs(q = q, es = rest))
   }
 }
 
 fn edp_rq_after_arms(q: EdpReadQuery, first: Expr, arms: Array[(Pat, Expr)], is_handle: Bool) -> Int {
-  let a = edp_rq_fold(q, first)
+  let a = edp_rq_fold(q = q, e = first)
   if a > 0 && !edp_rq_is_count(q) && match q {
     RQMentionsStep(_, _, _) => false,
     RQLiteralNeeds(_) => false,
@@ -287,25 +287,25 @@ fn edp_rq_after_arms(q: EdpReadQuery, first: Expr, arms: Array[(Pat, Expr)], is_
   } {
     1
   } else {
-    edp_rq_merge(q, a, edp_rq_arms(q, arms, is_handle))
+    edp_rq_merge(q = q, a = a, b = edp_rq_arms(q = q, arms = arms, is_handle = is_handle))
   }
 }
 
 fn edp_rq_loop(q: EdpReadQuery, pairs: Array[(String, Expr)], body: Expr, names_bind: Bool, body_first: Bool, always_scan: Bool) -> Int {
   let a = if body_first {
-    edp_rq_fold(q, body)
+    edp_rq_fold(q = q, e = body)
   } else {
-    edp_rq_pairs(q, pairs, names_bind)
+    edp_rq_pairs(q = q, pairs = pairs, names_bind = names_bind)
   }
   if a > 0 && !always_scan && !edp_rq_is_count(q) {
     1
   } else {
     let b = if body_first {
-      edp_rq_pairs(q, pairs, names_bind)
+      edp_rq_pairs(q = q, pairs = pairs, names_bind = names_bind)
     } else {
-      edp_rq_fold(q, body)
+      edp_rq_fold(q = q, e = body)
     }
-    edp_rq_merge(q, a, b)
+    edp_rq_merge(q = q, a = a, b = b)
   }
 }
 
@@ -317,7 +317,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       0
     },
     RQOpaqueCall(inert, fn_names) => match e {
-      ECall(EIdent(name, _), _, _, _) => if edp_callee_is_resolvable(name, inert, fn_names) {
+      ECall(EIdent(name, _), _, _, _) => if edp_callee_is_resolvable(nm = name, inert = inert, fn_names = fn_names) {
         0
       } else {
         1
@@ -326,7 +326,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       _ => 0
     },
     RQCallsAny(names) => match e {
-      ECall(EIdent(name, _), _, _, _) => if MutSet::has(names, name) {
+      ECall(EIdent(name, _), _, _, _) => if MutSet::has(names, x = name) {
         1
       } else {
         0
@@ -337,11 +337,11 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       1
     } else {
       match e {
-        ECall(EIdent(name, _), _, _, _) => if !edp_callee_is_resolvable(name, inert, fn_names) {
+        ECall(EIdent(name, _), _, _, _) => if !edp_callee_is_resolvable(nm = name, inert = inert, fn_names = fn_names) {
           1
         } else {
-          if MutSet::has(fn_names, name) {
-            Array::push(calls, name)
+          if MutSet::has(fn_names, x = name) {
+            Array::push(calls, value = name)
           }
           0
         },
@@ -351,31 +351,31 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
     },
     RQPerformFacts(inert, fn_names, calls, effects, opaque) => {
       let performed = edp_user_perform_effect_of(e)
-      if String::length(performed) > 0 && !edp_str_array_contains(effects, performed) {
-        Array::push(effects, performed)
+      if String::length(performed) > 0 && !edp_str_array_contains(arr = effects, v = performed) {
+        Array::push(effects, value = performed)
       }
       match e {
-        ECall(EIdent(name, _), _, _, _) => if !edp_callee_is_resolvable(name, inert, fn_names) {
-          Array::set(opaque, 0, true)
-        } else if MutSet::has(fn_names, name) {
-          Array::push(calls, name)
+        ECall(EIdent(name, _), _, _, _) => if !edp_callee_is_resolvable(nm = name, inert = inert, fn_names = fn_names) {
+          Array::set(opaque, at = 0, value = true)
+        } else if MutSet::has(fn_names, x = name) {
+          Array::push(calls, value = name)
         } else {
           ()
         },
-        ECall(_, _, _, _) => Array::set(opaque, 0, true),
+        ECall(_, _, _, _) => Array::set(opaque, at = 0, value = true),
         _ => ()
       }
       0
     },
     RQEdpBindsName(_)|RQScpsBindsName(_) => match e {
-      ELet(name, _, _, _) => edp_rq_plain_binder(q, name),
-      ELetMut(name, _, _, _) => edp_rq_plain_binder(q, name),
-      ELetRec(name, _, _) => edp_rq_plain_binder(q, name),
-      EForIn(name, index, _, _) => edp_rq_merge(q, edp_rq_plain_binder(q, name), match index {
-        Some(i) => edp_rq_plain_binder(q, i),
+      ELet(name, _, _, _) => edp_rq_plain_binder(q = q, name = name),
+      ELetMut(name, _, _, _) => edp_rq_plain_binder(q = q, name = name),
+      ELetRec(name, _, _) => edp_rq_plain_binder(q = q, name = name),
+      EForIn(name, index, _, _) => edp_rq_merge(q = q, a = edp_rq_plain_binder(q = q, name = name), b = match index {
+        Some(i) => edp_rq_plain_binder(q = q, name = i),
         None => 0
       }),
-      EFn(_, _, params, _, _, _) => edp_rq_params(q, params),
+      EFn(_, _, params, _, _, _) => edp_rq_params(q = q, params = params),
       _ => 0
     },
     RQIdentUses(name) => match e {
@@ -387,12 +387,12 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       _ => 0
     },
     RQSafeClosureBindings(xname, ename, needing, pure_fns, es_names, es_members_list) => match e {
-      ELet(name, value, _, _) => if name == xname && edp_efn_eligible_for_migration(value, ename, needing, pure_fns, es_names, es_members_list) {
+      ELet(name, value, _, _) => if name == xname && edp_efn_eligible_for_migration(expr = value, ename = ename, needing = needing, pure_fns = pure_fns, es_names = es_names, es_members_list = es_members_list) {
         1
       } else {
         0
       },
-      ELetRec(name, value, _) => if name == xname && edp_efn_eligible_for_migration(value, ename, needing, pure_fns, es_names, es_members_list) {
+      ELetRec(name, value, _) => if name == xname && edp_efn_eligible_for_migration(expr = value, ename = ename, needing = needing, pure_fns = pure_fns, es_names = es_names, es_members_list = es_members_list) {
         1
       } else {
         0
@@ -408,7 +408,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       _ => 0
     },
     RQMentionsStep(done, prefix, bubble) => match e {
-      EIdent(name, _) => if name == done || name == bubble || String::starts_with(name, prefix) {
+      EIdent(name, _) => if name == done || name == bubble || String::starts_with(name, prefix = prefix) {
         1
       } else {
         0
@@ -417,7 +417,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
     },
     RQContainsSusp(sctx) => {
       let (_, ops, _, _, _) = sctx
-      if scps_as_target_perform(e, ops) >= 0 || scps_as_needing_call(e, sctx) != "" || scps_as_cps_local_call(e, sctx) != "" {
+      if scps_as_target_perform(e = e, ops = ops) >= 0 || scps_as_needing_call(e = e, sctx = sctx) != "" || scps_as_cps_local_call(e = e, sctx = sctx) != "" {
         1
       } else {
         0
@@ -453,7 +453,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
     },
     RQLiteralNeeds(sctx) => {
       let (_, ops, _, _, _) = sctx
-      if scps_as_target_perform(e, ops) >= 0 || scps_as_needing_call(e, sctx) != "" {
+      if scps_as_target_perform(e = e, ops = ops) >= 0 || scps_as_needing_call(e = e, sctx = sctx) != "" {
         1
       } else {
         0
@@ -461,7 +461,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
     },
     RQTrigger => 0,
     RQHandlesEffect(ename) => match e {
-      EHandle(_, arms) => if edp_handle_matches_effect(arms, ename) {
+      EHandle(_, arms) => if edp_handle_matches_effect(arms = arms, ename = ename) {
         1
       } else {
         0
@@ -476,12 +476,12 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       // The eta-wrap walk also peels annotated aliases. An unannotated local
       // alias can precede that ascription, so keep the whole statement in the
       // walk when its source name is a needing function.
-      ELet(_, EIdent(source, _), _, _) => if edp_str_array_contains(names, source) {
+      ELet(_, EIdent(source, _), _, _) => if edp_str_array_contains(arr = names, v = source) {
         1
       } else {
         0
       },
-      ELetRec(_, EIdent(source, _), _) => if edp_str_array_contains(names, source) {
+      ELetRec(_, EIdent(source, _), _) => if edp_str_array_contains(arr = names, v = source) {
         1
       } else {
         0
@@ -490,8 +490,8 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
         let mut ai = 0
         let mut hit = 0
         while ai < Array::length(args) && hit == 0 {
-          match Array::get(args, ai) {
-            EIdent(an, _) => if edp_str_array_contains(names, an) {
+          match Array::get(args, at = ai) {
+            EIdent(an, _) => if edp_str_array_contains(arr = names, v = an) {
               hit = 1
             } else {
               ()
@@ -511,14 +511,14 @@ fn edp_rq_handle_discharges(q: EdpReadQuery, arms: Array[(Pat, Expr)]) -> Bool {
   match q {
     RQLiteralNeeds(sctx) => {
       let (_, ops, _, _, _) = sctx
-      scps_arms_discharge_ops(arms, ops)
+      scps_arms_discharge_ops(arms = arms, ops = ops)
     },
     _ => false
   }
 }
 
 export fn edp_rq_fold(q: EdpReadQuery, e: Expr) -> Int {
-  let local = edp_rq_local(q, e)
+  let local = edp_rq_local(q = q, e = e)
   if !edp_rq_is_count(q) && local > 0 {
     1
   } else {
@@ -528,64 +528,64 @@ export fn edp_rq_fold(q: EdpReadQuery, e: Expr) -> Int {
       EString(_, _) => 0,
       EBool(_) => 0,
       EIdent(_, _) => 0,
-      ETuple(items) => edp_rq_exprs(q, items),
-      EArray(items) => edp_rq_exprs(q, items),
-      ERecord(_, fields, _) => edp_rq_pairs(q, fields, false),
-      EIf(c, t, other) => edp_rq_three(q, c, t, other),
-      ELet(_, value, body, _) => edp_rq_two(q, value, body),
-      ELetRec(_, value, body) => edp_rq_two(q, value, body),
-      ELetMut(_, value, body, _) => edp_rq_two(q, value, body),
-      EAssign(_, value, body, _) => edp_rq_two(q, value, body),
-      EAssignOp(_, _, value, body, _) => edp_rq_two(q, value, body),
-      ESeq(a, b) => edp_rq_two(q, a, b),
-      EMatch(subject, arms) => edp_rq_after_arms(q, subject, arms, false),
-      EHandle(body, arms) => if edp_rq_handle_discharges(q, arms) {
-        edp_rq_arms(q, arms, true)
+      ETuple(items) => edp_rq_exprs(q = q, es = items),
+      EArray(items) => edp_rq_exprs(q = q, es = items),
+      ERecord(_, fields, _) => edp_rq_pairs(q = q, pairs = fields, names_bind = false),
+      EIf(c, t, other) => edp_rq_three(q = q, a = c, b = t, c = other),
+      ELet(_, value, body, _) => edp_rq_two(q = q, a = value, b = body),
+      ELetRec(_, value, body) => edp_rq_two(q = q, a = value, b = body),
+      ELetMut(_, value, body, _) => edp_rq_two(q = q, a = value, b = body),
+      EAssign(_, value, body, _) => edp_rq_two(q = q, a = value, b = body),
+      EAssignOp(_, _, value, body, _) => edp_rq_two(q = q, a = value, b = body),
+      ESeq(a, b) => edp_rq_two(q = q, a = a, b = b),
+      EMatch(subject, arms) => edp_rq_after_arms(q = q, first = subject, arms = arms, is_handle = false),
+      EHandle(body, arms) => if edp_rq_handle_discharges(q = q, arms = arms) {
+        edp_rq_arms(q = q, arms = arms, is_handle = true)
       } else {
-        edp_rq_after_arms(q, body, arms, true)
+        edp_rq_after_arms(q = q, first = body, arms = arms, is_handle = true)
       },
-      EWhile(cond, body) => edp_rq_two(q, cond, body),
+      EWhile(cond, body) => edp_rq_two(q = q, a = cond, b = body),
       ELoop(pairs, body) => match q {
-        RQBodyReturn => edp_rq_fold(q, body),
-        RQPerformsUserEffect(_) => edp_rq_loop(q, pairs, body, false, true, false),
-        RQMentionsStep(_, _, _) => edp_rq_loop(q, pairs, body, false, true, true),
-        RQScpsBindsName(_) => edp_rq_loop(q, pairs, body, true, true, true),
-        RQRefsName(_) => edp_rq_loop(q, pairs, body, false, true, true),
-        RQLiteralNeeds(_) => edp_rq_loop(q, pairs, body, false, true, true),
-        RQTrigger => edp_rq_loop(q, pairs, body, false, true, true),
-        RQEdpBindsName(_) => edp_rq_loop(q, pairs, body, true, false, false),
-        _ => edp_rq_loop(q, pairs, body, false, false, false)
+        RQBodyReturn => edp_rq_fold(q = q, e = body),
+        RQPerformsUserEffect(_) => edp_rq_loop(q = q, pairs = pairs, body = body, names_bind = false, body_first = true, always_scan = false),
+        RQMentionsStep(_, _, _) => edp_rq_loop(q = q, pairs = pairs, body = body, names_bind = false, body_first = true, always_scan = true),
+        RQScpsBindsName(_) => edp_rq_loop(q = q, pairs = pairs, body = body, names_bind = true, body_first = true, always_scan = true),
+        RQRefsName(_) => edp_rq_loop(q = q, pairs = pairs, body = body, names_bind = false, body_first = true, always_scan = true),
+        RQLiteralNeeds(_) => edp_rq_loop(q = q, pairs = pairs, body = body, names_bind = false, body_first = true, always_scan = true),
+        RQTrigger => edp_rq_loop(q = q, pairs = pairs, body = body, names_bind = false, body_first = true, always_scan = true),
+        RQEdpBindsName(_) => edp_rq_loop(q = q, pairs = pairs, body = body, names_bind = true, body_first = false, always_scan = false),
+        _ => edp_rq_loop(q = q, pairs = pairs, body = body, names_bind = false, body_first = false, always_scan = false)
       },
-      EForIn(_, _, iter, body) => edp_rq_two(q, iter, body),
+      EForIn(_, _, iter, body) => edp_rq_two(q = q, a = iter, b = body),
       ECall(callee, args, _, _) => match q {
-        RQOpaqueCall(_, _) => edp_rq_exprs(q, args),
+        RQOpaqueCall(_, _) => edp_rq_exprs(q = q, es = args),
         RQDirectCalls(_) => match callee {
-          EIdent(_, _) => edp_rq_exprs(q, args),
-          _ => edp_rq_after_exprs(q, callee, args)
+          EIdent(_, _) => edp_rq_exprs(q = q, es = args),
+          _ => edp_rq_after_exprs(q = q, first = callee, rest = args)
         },
-        _ => edp_rq_after_exprs(q, callee, args)
+        _ => edp_rq_after_exprs(q = q, first = callee, rest = args)
       },
-      EBinOp(_, left, right, _) => edp_rq_two(q, left, right),
-      EUnaryOp(_, value) => edp_rq_fold(q, value),
+      EBinOp(_, left, right, _) => edp_rq_two(q = q, a = left, b = right),
+      EUnaryOp(_, value) => edp_rq_fold(q = q, e = value),
       EFn(_, _, _, _, _, body) => match q {
         RQLoopControl => 0,
         RQBodyReturn => 0,
-        _ => edp_rq_fold(q, body)
+        _ => edp_rq_fold(q = q, e = body)
       },
-      EDot(owner, _, _, _) => edp_rq_fold(q, owner),
-      ELabeledArg(_, _, value) => edp_rq_fold(q, value),
-      EReturn(value) => edp_rq_fold(q, value),
+      EDot(owner, _, _, _) => edp_rq_fold(q = q, e = owner),
+      ELabeledArg(_, _, value) => edp_rq_fold(q = q, e = value),
+      EReturn(value) => edp_rq_fold(q = q, e = value),
       EBreak(value) => match value {
-        Some(v) => edp_rq_fold(q, v),
+        Some(v) => edp_rq_fold(q = q, e = v),
         None => 0
       },
-      EContinue(args) => edp_rq_exprs(q, args),
-      EMap(fields) => edp_rq_pairs(q, fields, false),
-      ESpread(value) => edp_rq_fold(q, value),
+      EContinue(args) => edp_rq_exprs(q = q, es = args),
+      EMap(fields) => edp_rq_pairs(q = q, pairs = fields, names_bind = false),
+      ESpread(value) => edp_rq_fold(q = q, e = value),
       EStringInterp(_) => 0,
       EUnit => 0
     }
-    edp_rq_merge(q, local, children)
+    edp_rq_merge(q = q, a = local, b = children)
   }
 }
 
@@ -593,7 +593,7 @@ export fn edp_rq_fold(q: EdpReadQuery, e: Expr) -> Int {
 /// (an opaque closure parameter, a local binding, an indirect callee) can
 /// reach arbitrary code, performs included.
 export fn edp_callee_is_resolvable(nm: String, inert: MutSet[String], fn_names: MutSet[String]) -> Bool {
-  nm == "perform" || nm == "resume" || edp_is_pure_builtin_call(nm) || edp_name_is_host_raw_shape(nm) || MutSet::has(inert, nm) || MutSet::has(fn_names, nm)
+  nm == "perform" || nm == "resume" || edp_is_pure_builtin_call(nm) || edp_name_is_host_raw_shape(nm) || MutSet::has(inert, x = nm) || MutSet::has(fn_names, x = nm)
 }
 
 /// Function-level conservative effect reachability. Each body is visited once
@@ -613,19 +613,19 @@ export fn edp_performing_names(names: Array[String], bodies: Array[Option[Expr]]
   let query = RQPerformSummary(effect, inert, fn_names, calls)
   let mut i = 0
   while i < Array::length(names) {
-    let name = Array::get(names, i)
-    if !MutSet::has(member, name) {
-      match Array::get(bodies, i) {
+    let name = Array::get(names, at = i)
+    if !MutSet::has(member, x = name) {
+      match Array::get(bodies, at = i) {
         Some(body) => {
-          Array::truncate(calls, 0)
-          if edp_rq_fold(query, body) > 0 {
-            MutSet::add(member, name)
-            Array::push(out, name)
+          Array::truncate(calls, length = 0)
+          if edp_rq_fold(q = query, e = body) > 0 {
+            MutSet::add(member, x = name)
+            Array::push(out, value = name)
           } else {
             for callee in calls {
-              match MutMap::get(callers, callee) {
-                Some(entries) => Array::push(entries, name),
-                None => MutMap::set(callers, callee, [name])
+              match MutMap::get(callers, k = callee) {
+                Some(entries) => Array::push(entries, value = name),
+                None => MutMap::set(callers, k = callee, v = [name])
               }
             }
           }
@@ -637,11 +637,11 @@ export fn edp_performing_names(names: Array[String], bodies: Array[Option[Expr]]
   }
   let mut head = 0
   while head < Array::length(out) {
-    match MutMap::get(callers, Array::get(out, head)) {
+    match MutMap::get(callers, k = Array::get(out, at = head)) {
       Some(entries) => for name in entries {
-        if !MutSet::has(member, name) {
-          MutSet::add(member, name)
-          Array::push(out, name)
+        if !MutSet::has(member, x = name) {
+          MutSet::add(member, x = name)
+          Array::push(out, value = name)
         }
       },
       None => ()
@@ -662,8 +662,8 @@ export fn edp_perform_facts(e: Expr, inert: MutSet[String], fn_names: MutSet[Str
   let calls: Array[String] = []
   let effects: Array[String] = []
   let opaque = [false]
-  edp_rq_fold(RQPerformFacts(inert, fn_names, calls, effects, opaque), e)
-  (Array::get(opaque, 0), effects, calls)
+  edp_rq_fold(q = RQPerformFacts(inert, fn_names, calls, effects, opaque), e = e)
+  (Array::get(opaque, at = 0), effects, calls)
 }
 
 /// Would RQPerformSummary(effect) or RQPerformsUserEffect(effect) hit the
@@ -671,13 +671,13 @@ export fn edp_perform_facts(e: Expr, inert: MutSet[String], fn_names: MutSet[Str
 /// non-perform node, and every tree holds one, so both hit any tree for it.
 export fn edp_perform_facts_hit(facts: (Bool, Array[String], Array[String]), effect: String) -> Bool {
   let (opaque, effects, _) = facts
-  String::length(effect) == 0 || opaque || edp_str_array_contains(effects, effect)
+  String::length(effect) == 0 || opaque || edp_str_array_contains(arr = effects, v = effect)
 }
 
 /// Does the tree perform `effect` directly (RQPerformsUserEffect)?
 export fn edp_perform_facts_performs(facts: (Bool, Array[String], Array[String]), effect: String) -> Bool {
   let (_, effects, _) = facts
-  String::length(effect) == 0 || edp_str_array_contains(effects, effect)
+  String::length(effect) == 0 || edp_str_array_contains(arr = effects, v = effect)
 }
 
 /// edp_performing_names over precomputed edp_perform_facts of the bodies,
@@ -689,18 +689,18 @@ export fn edp_performing_names_from_facts(names: Array[String], facts: Array[Opt
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(names) {
-    let name = Array::get(names, i)
-    if !MutSet::has(member, name) {
-      match Array::get(facts, i) {
-        Some(fact) => if edp_perform_facts_hit(fact, effect) {
-          MutSet::add(member, name)
-          Array::push(out, name)
+    let name = Array::get(names, at = i)
+    if !MutSet::has(member, x = name) {
+      match Array::get(facts, at = i) {
+        Some(fact) => if edp_perform_facts_hit(facts = fact, effect = effect) {
+          MutSet::add(member, x = name)
+          Array::push(out, value = name)
         } else {
           let (_, _, calls) = fact
           for callee in calls {
-            match MutMap::get(callers, callee) {
-              Some(entries) => Array::push(entries, name),
-              None => MutMap::set(callers, callee, [name])
+            match MutMap::get(callers, k = callee) {
+              Some(entries) => Array::push(entries, value = name),
+              None => MutMap::set(callers, k = callee, v = [name])
             }
           }
         },
@@ -711,11 +711,11 @@ export fn edp_performing_names_from_facts(names: Array[String], facts: Array[Opt
   }
   let mut head = 0
   while head < Array::length(out) {
-    match MutMap::get(callers, Array::get(out, head)) {
+    match MutMap::get(callers, k = Array::get(out, at = head)) {
       Some(entries) => for name in entries {
-        if !MutSet::has(member, name) {
-          MutSet::add(member, name)
-          Array::push(out, name)
+        if !MutSet::has(member, x = name) {
+          MutSet::add(member, x = name)
+          Array::push(out, value = name)
         }
       },
       None => ()
@@ -728,7 +728,7 @@ export fn edp_performing_names_from_facts(names: Array[String], facts: Array[Opt
 /// Local copy of dlh_strip_tilde (desugar_trait_dict.vibe) -- see
 /// edp_pat_binds' own doc comment just below for why this file keeps local
 /// copies rather than adding new cross-file callers.
-export fn edp_strip_tilde(n: String) -> String {
+export fn edp_strip_tilde(_ n: String) -> String {
   let ln = String::length(n)
   if ln > 0 && n[ln - 1: ln] == "~" {
     n[0: ln - 1]
@@ -745,30 +745,30 @@ export fn edp_strip_tilde(n: String) -> String {
 /// merge/flatten tool).
 export fn edp_pat_binds(p: Pat, out: Array[String]) -> Unit {
   match p {
-    PBind(n) => Array::push(out, n),
+    PBind(n) => Array::push(out, value = n),
     PCtor(_, args) => {
       let mut i = 0
       while i < Array::length(args) {
-        edp_pat_binds(Array::get(args, i), out)
+        edp_pat_binds(p = Array::get(args, at = i), out = out)
         i = i + 1
       }
     },
     PTuple(ps) => {
       let mut i = 0
       while i < Array::length(ps) {
-        edp_pat_binds(Array::get(ps, i), out)
+        edp_pat_binds(p = Array::get(ps, at = i), out = out)
         i = i + 1
       }
     },
     POr(a, b) => {
-      edp_pat_binds(a, out)
-      edp_pat_binds(b, out)
+      edp_pat_binds(p = a, out = out)
+      edp_pat_binds(p = b, out = out)
     },
     PStruct(_, fields) => {
       let mut i = 0
       while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
-        edp_pat_binds(fp, out)
+        let (_, fp) = Array::get(fields, at = i)
+        edp_pat_binds(p = fp, out = out)
         i = i + 1
       }
     },
@@ -777,25 +777,25 @@ export fn edp_pat_binds(p: Pat, out: Array[String]) -> Unit {
 }
 
 fn edp_es_expand_into(es_names: Array[String], es_members_list: Array[Array[String]], name: String, path: Array[String], out: Array[String]) -> Unit {
-  if edp_str_array_contains(path, name) {
+  if edp_str_array_contains(arr = path, v = name) {
     ()
   } else {
-    let idx = edp_str_array_index_of(es_names, name)
+    let idx = edp_str_array_index_of(arr = es_names, v = name)
     if idx < 0 {
-      if edp_str_array_contains(out, name) {
+      if edp_str_array_contains(arr = out, v = name) {
         ()
       } else {
-        Array::push(out, name)
+        Array::push(out, value = name)
       }
     } else {
-      Array::push(path, name)
-      let members = Array::get(es_members_list, idx)
+      Array::push(path, value = name)
+      let members = Array::get(es_members_list, at = idx)
       let mut mi = 0
       while mi < Array::length(members) {
-        edp_es_expand_into(es_names, es_members_list, Array::get(members, mi), path, out)
+        edp_es_expand_into(es_names = es_names, es_members_list = es_members_list, name = Array::get(members, at = mi), path = path, out = out)
         mi = mi + 1
       }
-      Array::truncate(path, Array::length(path) - 1)
+      Array::truncate(path, length = Array::length(path) - 1)
     }
   }
 }
@@ -808,16 +808,16 @@ fn edp_es_expand_into(es_names: Array[String], es_members_list: Array[Array[Stri
 /// NAME at runtime; the instantiation is type-level only, so every row
 /// consumer in this pass (migration eligibility, CPS row scans) must see
 /// `State`, not `State[Int]`.
-export fn edp_effect_name_of(label: String) -> String {
-  let bidx = String::index_of(label, "[")
+export fn edp_effect_name_of(_ label: String) -> String {
+  let bidx = String::index_of(label, needle = "[")
   let base = if bidx > 0 {
-    String::substring(label, 0, bidx)
+    String::substring(label, start = 0, end = bidx)
   } else {
     label
   }
-  let idx = String::index_of(base, "::")
+  let idx = String::index_of(base, needle = "::")
   if idx > 0 {
-    String::substring(base, 0, idx)
+    String::substring(base, start = 0, end = idx)
   } else {
     base
   }
@@ -828,25 +828,25 @@ export fn edp_effect_name_of(label: String) -> String {
 /// expanded leaf's effect prefix), or just push its own effect prefix
 /// directly otherwise. Appends into `out` (deduped by the caller).
 export fn edp_resolve_effect_names_into(label: String, es_names: Array[String], es_members_list: Array[Array[String]], out: Array[String]) -> Unit {
-  if edp_str_array_contains(es_names, label) {
+  if edp_str_array_contains(arr = es_names, v = label) {
     let leaves = array_empty()
-    edp_es_expand_into(es_names, es_members_list, label, array_empty(), leaves)
+    edp_es_expand_into(es_names = es_names, es_members_list = es_members_list, name = label, path = array_empty(), out = leaves)
     let mut li = 0
     while li < Array::length(leaves) {
-      let ename = edp_effect_name_of(Array::get(leaves, li))
-      if edp_str_array_contains(out, ename) {
+      let ename = edp_effect_name_of(Array::get(leaves, at = li))
+      if edp_str_array_contains(arr = out, v = ename) {
         ()
       } else {
-        Array::push(out, ename)
+        Array::push(out, value = ename)
       }
       li = li + 1
     }
   } else {
     let ename = edp_effect_name_of(label)
-    if edp_str_array_contains(out, ename) {
+    if edp_str_array_contains(arr = out, v = ename) {
       ()
     } else {
-      Array::push(out, ename)
+      Array::push(out, value = ename)
     }
   }
 }
@@ -855,7 +855,7 @@ fn edp_str_array_index_of(arr: Array[String], v: String) -> Int {
   let mut i = 0
   let mut found = -1
   while i < Array::length(arr) {
-    if Array::get(arr, i) == v {
+    if Array::get(arr, at = i) == v {
       found = i
     } else {
       ()
@@ -940,14 +940,14 @@ export fn edp_row_is_exactly(row: String, ename: String, es_names: Array[String]
   if row == ename {
     true
   } else {
-    let parts = String::split(row, ",")
+    let parts = String::split(row, sep = ",")
     let mut i = 0
     let mut found = false
     while i < Array::length(parts) {
-      let label = String::trim(Array::get(parts, i))
+      let label = String::trim(Array::get(parts, at = i))
       let resolved = array_empty()
-      edp_resolve_effect_names_into(label, es_names, es_members_list, resolved)
-      if edp_str_array_contains(resolved, ename) {
+      edp_resolve_effect_names_into(label = label, es_names = es_names, es_members_list = es_members_list, out = resolved)
+      if edp_str_array_contains(arr = resolved, v = ename) {
         found = true
       } else {
         ()
@@ -965,7 +965,7 @@ export fn edp_str_array_contains(arr: Array[String], v: String) -> Bool {
   // array. Free on a miss, which is the case that dominates, but a hit paid
   // the whole array for an answer it already had.
   while i < Array::length(arr) && !found {
-    if Array::get(arr, i) == v {
+    if Array::get(arr, at = i) == v {
       found = true
     } else {
       ()
@@ -1085,7 +1085,7 @@ fn empty_str_array() -> Array[String] {
 /// V2), which is why the scope tracking arrived in the same change that
 /// deleted replay.
 export fn edp_has_unsafe_construct(expr: Expr, needing: Array[String], ename: String, pure_fns: Array[String]) -> Bool {
-  edp_has_unsafe_construct_sc(expr, needing, ename, pure_fns, empty_str_array(), edp_empty_bool_array())
+  edp_has_unsafe_construct_sc(expr = expr, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = empty_str_array(), ls_flags = edp_empty_bool_array())
 }
 
 export fn edp_empty_bool_array() -> Array[Bool] {
@@ -1093,7 +1093,7 @@ export fn edp_empty_bool_array() -> Array[Bool] {
   out
 }
 
-fn edp_expr_is_fn_literal(e: Expr) -> Bool {
+fn edp_expr_is_fn_literal(_ e: Expr) -> Bool {
   match e {
     EFn(_, _, _, _, _, _) => true,
     _ => false
@@ -1106,8 +1106,8 @@ fn edp_local_safe_lookup(ls_names: Array[String], ls_flags: Array[Bool], name: S
   let mut i = Array::length(ls_names) - 1
   let mut out = -1
   while i >= 0 && out < 0 {
-    if Array::get(ls_names, i) == name {
-      out = if Array::get(ls_flags, i) {
+    if Array::get(ls_names, at = i) == name {
+      out = if Array::get(ls_flags, at = i) {
         1
       } else {
         0
@@ -1122,11 +1122,11 @@ fn edp_local_safe_lookup(ls_names: Array[String], ls_flags: Array[Bool], name: S
 
 fn edp_ls_push_pat(p: Pat, ls_names: Array[String], ls_flags: Array[Bool]) -> Unit {
   let names = array_empty()
-  edp_pat_binds(p, names)
+  edp_pat_binds(p = p, out = names)
   let mut i = 0
   while i < Array::length(names) {
-    Array::push(ls_names, Array::get(names, i))
-    Array::push(ls_flags, false)
+    Array::push(ls_names, value = Array::get(names, at = i))
+    Array::push(ls_flags, value = false)
     i = i + 1
   }
 }
@@ -1138,8 +1138,8 @@ export fn edp_is_identity_ascription(params: Array[(String, Option[TypeExpr])], 
   if Array::length(params) != 1 {
     false
   } else {
-    let (pname, _) = Array::get(params, 0)
-    let is_asc = pname == "__asc" || (String::starts_with(pname, "__shadow_") && String::ends_with(pname, "___asc"))
+    let (pname, _) = Array::get(params, at = 0)
+    let is_asc = pname == "__asc" || (String::starts_with(pname, prefix = "__shadow_") && String::ends_with(pname, suffix = "___asc"))
     is_asc && match body {
       EIdent(bname, _) => bname == pname,
       _ => false
@@ -1153,18 +1153,18 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
       let base = Array::length(ls_names)
       let mut pi = 0
       while pi < Array::length(params) {
-        let (pn, ty) = Array::get(params, pi)
-        Array::push(ls_names, edp_strip_tilde(pn))
+        let (pn, ty) = Array::get(params, at = pi)
+        Array::push(ls_names, value = edp_strip_tilde(pn))
         // A checked row-free function parameter cannot perform the effect.
-        Array::push(ls_flags, match ty {
+        Array::push(ls_flags, value = match ty {
           Some(TyFn(_, _, None)) => true,
           _ => false
         })
         pi = pi + 1
       }
-      let r = edp_has_unsafe_construct_sc(body, needing, ename, pure_fns, ls_names, ls_flags)
-      Array::truncate(ls_names, base)
-      Array::truncate(ls_flags, base)
+      let r = edp_has_unsafe_construct_sc(expr = body, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
+      Array::truncate(ls_names, length = base)
+      Array::truncate(ls_flags, length = base)
       r
     },
     // #2500 item 2: a nested handle for `ename` ITSELF is no longer an
@@ -1176,84 +1176,84 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
     // handle's coverage). Scanning body and arms the same way as a foreign
     // handle is therefore the honest question here too. The two rewriters and
     // this scan must keep agreeing -- 追記 10.
-    EHandle(body, arms) => edp_has_unsafe_construct_sc(body, needing, ename, pure_fns, ls_names, ls_flags) || edp_arms_have_unsafe_construct(arms, needing, ename, pure_fns, ls_names, ls_flags),
-    EIf(c, t, e) => edp_has_unsafe_construct_sc(c, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(t, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(e, needing, ename, pure_fns, ls_names, ls_flags),
-    EMatch(s, arms) => edp_has_unsafe_construct_sc(s, needing, ename, pure_fns, ls_names, ls_flags) || edp_arms_have_unsafe_construct(arms, needing, ename, pure_fns, ls_names, ls_flags),
-    EWhile(c, b) => edp_has_unsafe_construct_sc(c, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(b, needing, ename, pure_fns, ls_names, ls_flags),
+    EHandle(body, arms) => edp_has_unsafe_construct_sc(expr = body, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_arms_have_unsafe_construct(arms = arms, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    EIf(c, t, e) => edp_has_unsafe_construct_sc(expr = c, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = t, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = e, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    EMatch(s, arms) => edp_has_unsafe_construct_sc(expr = s, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_arms_have_unsafe_construct(arms = arms, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    EWhile(c, b) => edp_has_unsafe_construct_sc(expr = c, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = b, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
     EForIn(n, idx, it, b) => {
-      if edp_has_unsafe_construct_sc(it, needing, ename, pure_fns, ls_names, ls_flags) {
+      if edp_has_unsafe_construct_sc(expr = it, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) {
         true
       } else {
         let base = Array::length(ls_names)
-        Array::push(ls_names, n)
-        Array::push(ls_flags, false)
+        Array::push(ls_names, value = n)
+        Array::push(ls_flags, value = false)
         match idx {
           Some(iname) => {
-            Array::push(ls_names, iname)
-            Array::push(ls_flags, false)
+            Array::push(ls_names, value = iname)
+            Array::push(ls_flags, value = false)
           },
           None => ()
         }
-        let r = edp_has_unsafe_construct_sc(b, needing, ename, pure_fns, ls_names, ls_flags)
-        Array::truncate(ls_names, base)
-        Array::truncate(ls_flags, base)
+        let r = edp_has_unsafe_construct_sc(expr = b, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
+        Array::truncate(ls_names, length = base)
+        Array::truncate(ls_flags, length = base)
         r
       }
     },
     ELoop(pairs, b) => {
-      if edp_pairs_have_unsafe_construct(pairs, needing, ename, pure_fns, ls_names, ls_flags) {
+      if edp_pairs_have_unsafe_construct(pairs = pairs, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) {
         true
       } else {
         let base = Array::length(ls_names)
         let mut li = 0
         while li < Array::length(pairs) {
-          let (ln, _) = Array::get(pairs, li)
-          Array::push(ls_names, ln)
-          Array::push(ls_flags, false)
+          let (ln, _) = Array::get(pairs, at = li)
+          Array::push(ls_names, value = ln)
+          Array::push(ls_flags, value = false)
           li = li + 1
         }
-        let r = edp_has_unsafe_construct_sc(b, needing, ename, pure_fns, ls_names, ls_flags)
-        Array::truncate(ls_names, base)
-        Array::truncate(ls_flags, base)
+        let r = edp_has_unsafe_construct_sc(expr = b, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
+        Array::truncate(ls_names, length = base)
+        Array::truncate(ls_flags, length = base)
         r
       }
     },
     ELet(n, v, b, _) => {
-      if edp_has_unsafe_construct_sc(v, needing, ename, pure_fns, ls_names, ls_flags) {
+      if edp_has_unsafe_construct_sc(expr = v, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) {
         true
       } else {
         let base = Array::length(ls_names)
-        Array::push(ls_names, n)
-        Array::push(ls_flags, edp_expr_is_fn_literal(v))
-        let r = edp_has_unsafe_construct_sc(b, needing, ename, pure_fns, ls_names, ls_flags)
-        Array::truncate(ls_names, base)
-        Array::truncate(ls_flags, base)
+        Array::push(ls_names, value = n)
+        Array::push(ls_flags, value = edp_expr_is_fn_literal(v))
+        let r = edp_has_unsafe_construct_sc(expr = b, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
+        Array::truncate(ls_names, length = base)
+        Array::truncate(ls_flags, length = base)
         r
       }
     },
     ELetMut(n, v, b, _) => {
-      if edp_has_unsafe_construct_sc(v, needing, ename, pure_fns, ls_names, ls_flags) {
+      if edp_has_unsafe_construct_sc(expr = v, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) {
         true
       } else {
         let base = Array::length(ls_names)
-        Array::push(ls_names, n)
-        Array::push(ls_flags, false)
-        let r = edp_has_unsafe_construct_sc(b, needing, ename, pure_fns, ls_names, ls_flags)
-        Array::truncate(ls_names, base)
-        Array::truncate(ls_flags, base)
+        Array::push(ls_names, value = n)
+        Array::push(ls_flags, value = false)
+        let r = edp_has_unsafe_construct_sc(expr = b, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
+        Array::truncate(ls_names, length = base)
+        Array::truncate(ls_flags, length = base)
         r
       }
     },
     ELetRec(n, v, b) => {
       let base = Array::length(ls_names)
-      Array::push(ls_names, n)
-      Array::push(ls_flags, edp_expr_is_fn_literal(v))
-      let r = edp_has_unsafe_construct_sc(v, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(b, needing, ename, pure_fns, ls_names, ls_flags)
-      Array::truncate(ls_names, base)
-      Array::truncate(ls_flags, base)
+      Array::push(ls_names, value = n)
+      Array::push(ls_flags, value = edp_expr_is_fn_literal(v))
+      let r = edp_has_unsafe_construct_sc(expr = v, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = b, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
+      Array::truncate(ls_names, length = base)
+      Array::truncate(ls_flags, length = base)
       r
     },
-    ESeq(a, b) => edp_has_unsafe_construct_sc(a, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(b, needing, ename, pure_fns, ls_names, ls_flags),
+    ESeq(a, b) => edp_has_unsafe_construct_sc(expr = a, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = b, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
     ECall(callee, args, _, _) => match callee {
       // A type ascription -- how an annotated `let x: T = v` reaches this
       // pass, `((__asc: T) -> __asc)(v)` -- is an identity closure applied on
@@ -1263,59 +1263,59 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
       // handle of the same effect -- including the entry provider around a
       // test that records into `let seen: Array[String] = []` from a mock
       // arm (#1962).
-      EFn(_, _, aparams, _, _, abody) => if edp_is_identity_ascription(aparams, abody) && Array::length(args) == 1 {
-        edp_has_unsafe_construct_sc(Array::get(args, 0), needing, ename, pure_fns, ls_names, ls_flags)
+      EFn(_, _, aparams, _, _, abody) => if edp_is_identity_ascription(params = aparams, body = abody) && Array::length(args) == 1 {
+        edp_has_unsafe_construct_sc(expr = Array::get(args, at = 0), needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
       } else {
         true
       },
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
-        edp_perform_operand_has_unsafe_construct(Array::get(args, 0), needing, ename, pure_fns, ls_names, ls_flags)
+        edp_perform_operand_has_unsafe_construct(operand = Array::get(args, at = 0), needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
       } else if nm == "resume" {
-        edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
+        edp_exprs_have_unsafe_construct(exprs = args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
       } else {
-        let local = edp_local_safe_lookup(ls_names, ls_flags, nm)
+        let local = edp_local_safe_lookup(ls_names = ls_names, ls_flags = ls_flags, name = nm)
         if local == 1 {
-          edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
+          edp_exprs_have_unsafe_construct(exprs = args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
         } else if local == 0 {
           true
         } else if edp_is_pure_builtin_call(nm) {
-          edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
+          edp_exprs_have_unsafe_construct(exprs = args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
         } else if edp_builtin_is_first_order(nm) {
           // #2109: effectful, but it cannot run a user closure, so it cannot
           // hide a perform of `ename` from this handle.
-          edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
-        } else if edp_str_array_contains(needing, nm) {
-          edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
-        } else if edp_str_array_contains(pure_fns, nm) {
-          edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
-        } else if edp_argcond_admits(nm, args, ename, needing, pure_fns) {
+          edp_exprs_have_unsafe_construct(exprs = args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
+        } else if edp_str_array_contains(arr = needing, v = nm) {
+          edp_exprs_have_unsafe_construct(exprs = args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
+        } else if edp_str_array_contains(arr = pure_fns, v = nm) {
+          edp_exprs_have_unsafe_construct(exprs = args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
+        } else if edp_argcond_admits(nm = nm, args = args, ename = ename, needing = needing, pure_fns = pure_fns) {
           // #2065: a higher-order row-variable callee, every one of whose
           // function-typed parameters receives a literal that cannot perform
           // `ename` here -- see edp_argcond_admits.
-          edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
+          edp_exprs_have_unsafe_construct(exprs = args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags)
         } else {
           true
         }
       },
       _ => true
     },
-    EBinOp(_, l, r, _) => edp_has_unsafe_construct_sc(l, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(r, needing, ename, pure_fns, ls_names, ls_flags),
-    EUnaryOp(_, e2) => edp_has_unsafe_construct_sc(e2, needing, ename, pure_fns, ls_names, ls_flags),
-    EAssign(_, v, c, _) => edp_has_unsafe_construct_sc(v, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(c, needing, ename, pure_fns, ls_names, ls_flags),
-    EAssignOp(_, _, v, c, _) => edp_has_unsafe_construct_sc(v, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(c, needing, ename, pure_fns, ls_names, ls_flags),
-    EDot(o, _, _, _) => edp_has_unsafe_construct_sc(o, needing, ename, pure_fns, ls_names, ls_flags),
-    ELabeledArg(_, _, v) => edp_has_unsafe_construct_sc(v, needing, ename, pure_fns, ls_names, ls_flags),
-    EReturn(e2) => edp_has_unsafe_construct_sc(e2, needing, ename, pure_fns, ls_names, ls_flags),
+    EBinOp(_, l, r, _) => edp_has_unsafe_construct_sc(expr = l, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = r, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    EUnaryOp(_, e2) => edp_has_unsafe_construct_sc(expr = e2, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    EAssign(_, v, c, _) => edp_has_unsafe_construct_sc(expr = v, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = c, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    EAssignOp(_, _, v, c, _) => edp_has_unsafe_construct_sc(expr = v, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) || edp_has_unsafe_construct_sc(expr = c, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    EDot(o, _, _, _) => edp_has_unsafe_construct_sc(expr = o, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    ELabeledArg(_, _, v) => edp_has_unsafe_construct_sc(expr = v, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    EReturn(e2) => edp_has_unsafe_construct_sc(expr = e2, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
     EBreak(opt) => match opt {
-      Some(e2) => edp_has_unsafe_construct_sc(e2, needing, ename, pure_fns, ls_names, ls_flags),
+      Some(e2) => edp_has_unsafe_construct_sc(expr = e2, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
       None => false
     },
-    EContinue(args) => edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags),
-    ETuple(elems) => edp_exprs_have_unsafe_construct(elems, needing, ename, pure_fns, ls_names, ls_flags),
-    EArray(elems) => edp_exprs_have_unsafe_construct(elems, needing, ename, pure_fns, ls_names, ls_flags),
-    ERecord(_, fields, _) => edp_fields_have_unsafe_construct(fields, needing, ename, pure_fns, ls_names, ls_flags),
-    EMap(fields) => edp_fields_have_unsafe_construct(fields, needing, ename, pure_fns, ls_names, ls_flags),
-    ESpread(e2) => edp_has_unsafe_construct_sc(e2, needing, ename, pure_fns, ls_names, ls_flags),
+    EContinue(args) => edp_exprs_have_unsafe_construct(exprs = args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    ETuple(elems) => edp_exprs_have_unsafe_construct(exprs = elems, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    EArray(elems) => edp_exprs_have_unsafe_construct(exprs = elems, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    ERecord(_, fields, _) => edp_fields_have_unsafe_construct(fields = fields, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    EMap(fields) => edp_fields_have_unsafe_construct(fields = fields, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
+    ESpread(e2) => edp_has_unsafe_construct_sc(expr = e2, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
     // `_ => false` also covers `EStringInterp` -- verified (2026-07-23), not
     // an oversight: `expand_interp_stmts` (entry/source_compile/wasi_only/
     // preprocess_interp.vibe) always fully rewrites every `EStringInterp`
@@ -1374,16 +1374,16 @@ let edp_argcond_masks: Array[Array[Bool]] = []
 let edp_argcond_binders: Array[MutSet[String]] = [MutSet::new_string()]
 
 /// Record every locally bound name in `stmts` for `edp_expr_reaches_effect`.
-export fn edp_argcond_note_binders(stmts: Array[Stmt]) -> Unit {
+export fn edp_argcond_note_binders(_ stmts: Array[Stmt]) -> Unit {
   edp_argcond_use_binders(edp_collect_program_binders(stmts))
 }
 
 /// Collect one read-only name census for an unchanged statement list.
-export fn edp_collect_program_binders(stmts: Array[Stmt]) -> MutSet[String] {
+export fn edp_collect_program_binders(_ stmts: Array[Stmt]) -> MutSet[String] {
   let out = MutSet::new_string()
   let mut i = 0
   while i < Array::length(stmts) {
-    edp_collect_statement_binders(Array::get(stmts, i), out)
+    edp_collect_statement_binders(stmt = Array::get(stmts, at = i), out = out)
     i = i + 1
   }
   out
@@ -1391,14 +1391,14 @@ export fn edp_collect_program_binders(stmts: Array[Stmt]) -> MutSet[String] {
 
 fn edp_collect_statement_binders(stmt: Stmt, out: MutSet[String]) -> Unit {
   match stmt {
-    SLet(_, _, _, _, e) => edp_collect_binders(e, out),
-    SLetMut(_, _, e) => edp_collect_binders(e, out),
-    STest(_, e) => edp_collect_binders(e, out),
-    SBench(_, e) => edp_collect_binders(e, out),
-    SExpr(e) => edp_collect_binders(e, out),
+    SLet(_, _, _, _, e) => edp_collect_binders(e = e, out = out),
+    SLetMut(_, _, e) => edp_collect_binders(e = e, out = out),
+    STest(_, e) => edp_collect_binders(e = e, out = out),
+    SBench(_, e) => edp_collect_binders(e = e, out = out),
+    SExpr(e) => edp_collect_binders(e = e, out = out),
     SLetPat(p, e) => {
-      edp_note_pat_binders(p, out)
-      edp_collect_binders(e, out)
+      edp_note_pat_binders(p = p, out = out)
+      edp_collect_binders(e = e, out = out)
     },
     _ => ()
   }
@@ -1411,57 +1411,57 @@ let edp_binder_log_sink: MutSet[String] = MutSet::new_string()
 /// The binders edp_collect_program_binders would insert for this one
 /// statement, in visit order and with repeats: inserting them into a set gives
 /// that statement's share of the census, without a set per statement.
-export fn edp_statement_binder_log(stmt: Stmt) -> Array[String] {
+export fn edp_statement_binder_log(_ stmt: Stmt) -> Array[String] {
   let log: Array[String] = []
-  Array::push(edp_binder_logs, log)
-  edp_collect_statement_binders(stmt, edp_binder_log_sink)
-  Array::truncate(edp_binder_logs, Array::length(edp_binder_logs) - 1)
+  Array::push(edp_binder_logs, value = log)
+  edp_collect_statement_binders(stmt = stmt, out = edp_binder_log_sink)
+  Array::truncate(edp_binder_logs, length = Array::length(edp_binder_logs) - 1)
   log
 }
 
 /// Select a census already collected from the tree this query will read.
-export fn edp_argcond_use_binders(binders: MutSet[String]) -> Unit {
-  Array::set(edp_argcond_binders, 0, binders)
+export fn edp_argcond_use_binders(_ binders: MutSet[String]) -> Unit {
+  Array::set(edp_argcond_binders, at = 0, value = binders)
 }
 
 /// Does some local binding in the program last passed to
 /// `edp_argcond_note_binders` have this spelling?
-export fn edp_is_program_binder(name: String) -> Bool {
-  MutSet::has(Array::get(edp_argcond_binders, 0), name)
+export fn edp_is_program_binder(_ name: String) -> Bool {
+  MutSet::has(Array::get(edp_argcond_binders, at = 0), x = name)
 }
 
 fn edp_note_binder(name: String, out: MutSet[String]) -> Unit {
   let logs = Array::length(edp_binder_logs)
   if logs > 0 {
-    Array::push(Array::get(edp_binder_logs, logs - 1), name)
+    Array::push(Array::get(edp_binder_logs, at = logs - 1), value = name)
   } else {
-    MutSet::insert(out, name)
+    MutSet::insert(out, x = name)
   }
   ()
 }
 
 fn edp_note_pat_binders(p: Pat, out: MutSet[String]) -> Unit {
   match p {
-    PBind(n) => edp_note_binder(n, out),
+    PBind(n) => edp_note_binder(name = n, out = out),
     PCtor(_, ps) => {
       for q in ps {
-        edp_note_pat_binders(q, out)
+        edp_note_pat_binders(p = q, out = out)
       }
       ()
     },
     PTuple(ps) => {
       for q in ps {
-        edp_note_pat_binders(q, out)
+        edp_note_pat_binders(p = q, out = out)
       }
       ()
     },
     POr(a, b) => {
-      edp_note_pat_binders(a, out)
-      edp_note_pat_binders(b, out)
+      edp_note_pat_binders(p = a, out = out)
+      edp_note_pat_binders(p = b, out = out)
     },
     PStruct(_, fields) => {
       for f in fields {
-        edp_note_pat_binders(f.1, out)
+        edp_note_pat_binders(p = f.1, out = out)
       }
       ()
     },
@@ -1473,37 +1473,37 @@ fn edp_collect_binders(e: Expr, out: MutSet[String]) -> Unit {
   match e {
     EFn(_, _, params, _, _, _) => {
       for param in params {
-        edp_note_binder(param.0, out)
+        edp_note_binder(name = param.0, out = out)
       }
       ()
     },
-    ELet(nm, _, _, _) => edp_note_binder(nm, out),
-    ELetMut(nm, _, _, _) => edp_note_binder(nm, out),
-    ELetRec(nm, _, _) => edp_note_binder(nm, out),
+    ELet(nm, _, _, _) => edp_note_binder(name = nm, out = out),
+    ELetMut(nm, _, _, _) => edp_note_binder(name = nm, out = out),
+    ELetRec(nm, _, _) => edp_note_binder(name = nm, out = out),
     // Loop-state names (`loop (h = f) { .. }`) are bindings too (Codex on
     // #3059).
     ELoop(states, _) => {
       for state in states {
-        edp_note_binder(state.0, out)
+        edp_note_binder(name = state.0, out = out)
       }
       ()
     },
     EForIn(nm, idx, _, _) => {
-      edp_note_binder(nm, out)
+      edp_note_binder(name = nm, out = out)
       match idx {
-        Some(n) => edp_note_binder(n, out),
+        Some(n) => edp_note_binder(name = n, out = out),
         None => ()
       }
     },
     EMatch(_, arms) => {
       for arm in arms {
-        edp_note_pat_binders(arm.0, out)
+        edp_note_pat_binders(p = arm.0, out = out)
       }
       ()
     },
     EHandle(_, arms) => {
       for arm in arms {
-        edp_note_pat_binders(arm.0, out)
+        edp_note_pat_binders(p = arm.0, out = out)
       }
       ()
     },
@@ -1513,36 +1513,36 @@ fn edp_collect_binders(e: Expr, out: MutSet[String]) -> Unit {
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    edp_collect_binders(expr_child_at(i), out)
+    edp_collect_binders(e = expr_child_at(i), out = out)
     i = i + 1
   }
   expr_children_pop(mark)
 }
 
-export fn edp_argcond_reset(ename: String) -> Unit {
-  Array::set(edp_argcond_effect, 0, ename)
-  Array::truncate(edp_argcond_names, 0)
-  Array::truncate(edp_argcond_masks, 0)
+export fn edp_argcond_reset(_ ename: String) -> Unit {
+  Array::set(edp_argcond_effect, at = 0, value = ename)
+  Array::truncate(edp_argcond_names, length = 0)
+  Array::truncate(edp_argcond_masks, length = 0)
 }
 
 /// `fn_params[i]` is true when parameter `i` is function-typed.
 export fn edp_argcond_note(ename: String, name: String, fn_params: Array[Bool]) -> Unit {
-  if Array::get(edp_argcond_effect, 0) == ename && !edp_str_array_contains(edp_argcond_names, name) {
-    Array::push(edp_argcond_names, name)
-    Array::push(edp_argcond_masks, fn_params)
+  if Array::get(edp_argcond_effect, at = 0) == ename && !edp_str_array_contains(arr = edp_argcond_names, v = name) {
+    Array::push(edp_argcond_names, value = name)
+    Array::push(edp_argcond_masks, value = fn_params)
   } else {
     ()
   }
 }
 
 fn edp_argcond_admits(nm: String, args: Array[Expr], ename: String, needing: Array[String], pure_fns: Array[String]) -> Bool {
-  if Array::get(edp_argcond_effect, 0) != ename {
+  if Array::get(edp_argcond_effect, at = 0) != ename {
     false
   } else {
     let mut slot = -1
     let mut i = 0
     while i < Array::length(edp_argcond_names) {
-      if slot < 0 && Array::get(edp_argcond_names, i) == nm {
+      if slot < 0 && Array::get(edp_argcond_names, at = i) == nm {
         slot = i
       } else {
         ()
@@ -1552,11 +1552,11 @@ fn edp_argcond_admits(nm: String, args: Array[Expr], ename: String, needing: Arr
     if slot < 0 {
       false
     } else {
-      let mask = Array::get(edp_argcond_masks, slot)
+      let mask = Array::get(edp_argcond_masks, at = slot)
       let mut ok = Array::length(args) >= Array::length(mask)
       let mut p = 0
       while ok && p < Array::length(mask) {
-        if Array::get(mask, p) && !edp_literal_cannot_perform(Array::get(args, p), ename, needing, pure_fns) {
+        if Array::get(mask, at = p) && !edp_literal_cannot_perform(arg = Array::get(args, at = p), ename = ename, needing = needing, pure_fns = pure_fns) {
           ok = false
         } else {
           ()
@@ -1573,13 +1573,13 @@ fn edp_literal_cannot_perform(arg: Expr, ename: String, needing: Array[String], 
     EFn(_, _, _, _, eff, body) => {
       let row_ok = match eff {
         Some(row) => {
-          let parts = String::split(row, ",")
+          let parts = String::split(row, sep = ",")
           let mut clean = true
           let mut i = 0
           while i < Array::length(parts) {
-            let label = String::trim(Array::get(parts, i))
+            let label = String::trim(Array::get(parts, at = i))
             let first = if String::length(label) > 0 {
-              String::char_code_at(label, 0)
+              String::char_code_at(label, at = 0)
             } else {
               0
             }
@@ -1594,7 +1594,7 @@ fn edp_literal_cannot_perform(arg: Expr, ename: String, needing: Array[String], 
         },
         None => true
       }
-      row_ok && !edp_expr_reaches_effect(body, ename, needing, pure_fns)
+      row_ok && !edp_expr_reaches_effect(e = body, ename = ename, needing = needing, pure_fns = pure_fns)
     },
     _ => false
   }
@@ -1619,13 +1619,13 @@ fn edp_expr_reaches_effect(e: Expr, ename: String, needing: Array[String], pure_
         // program has it: `not: (Bool) -> Bool with Async` captured by the
         // literal makes `not(true)` perform (Codex on #3059).
         let unshadowed = !edp_is_program_binder(nm)
-        let callee_ok = nm == "perform" || nm == "resume" || (unshadowed && (edp_is_pure_builtin_call(nm) || edp_builtin_is_first_order(nm) || (edp_str_array_contains(pure_fns, nm) && !edp_str_array_contains(needing, nm))))
-        !callee_ok || edp_exprs_reach_effect(args, ename, needing, pure_fns)
+        let callee_ok = nm == "perform" || nm == "resume" || (unshadowed && (edp_is_pure_builtin_call(nm) || edp_builtin_is_first_order(nm) || (edp_str_array_contains(arr = pure_fns, v = nm) && !edp_str_array_contains(arr = needing, v = nm))))
+        !callee_ok || edp_exprs_reach_effect(es = args, ename = ename, needing = needing, pure_fns = pure_fns)
       },
       ECall(_, _, _, _) => true,
-      EHandle(body, arms) => edp_expr_reaches_effect(body, ename, needing, pure_fns) || edp_arm_bodies_reach_effect(arms, ename, needing, pure_fns),
-      EMatch(scrut, arms) => edp_expr_reaches_effect(scrut, ename, needing, pure_fns) || edp_arm_bodies_reach_effect(arms, ename, needing, pure_fns),
-      _ => edp_exprs_reach_effect(expr_children(e), ename, needing, pure_fns)
+      EHandle(body, arms) => edp_expr_reaches_effect(e = body, ename = ename, needing = needing, pure_fns = pure_fns) || edp_arm_bodies_reach_effect(arms = arms, ename = ename, needing = needing, pure_fns = pure_fns),
+      EMatch(scrut, arms) => edp_expr_reaches_effect(e = scrut, ename = ename, needing = needing, pure_fns = pure_fns) || edp_arm_bodies_reach_effect(arms = arms, ename = ename, needing = needing, pure_fns = pure_fns),
+      _ => edp_exprs_reach_effect(es = expr_children(e), ename = ename, needing = needing, pure_fns = pure_fns)
     }
   }
 }
@@ -1634,7 +1634,7 @@ fn edp_exprs_reach_effect(es: Array[Expr], ename: String, needing: Array[String]
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(es) {
-    found = edp_expr_reaches_effect(Array::get(es, i), ename, needing, pure_fns)
+    found = edp_expr_reaches_effect(e = Array::get(es, at = i), ename = ename, needing = needing, pure_fns = pure_fns)
     i = i + 1
   }
   found
@@ -1644,7 +1644,7 @@ fn edp_arm_bodies_reach_effect(arms: Array[(Pat, Expr)], ename: String, needing:
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(arms) {
-    found = edp_expr_reaches_effect(Array::get(arms, i).1, ename, needing, pure_fns)
+    found = edp_expr_reaches_effect(e = Array::get(arms, at = i).1, ename = ename, needing = needing, pure_fns = pure_fns)
     i = i + 1
   }
   found
@@ -1666,7 +1666,7 @@ fn edp_arm_bodies_reach_effect(arms: Array[(Pat, Expr)], ename: String, needing:
 /// "perform directly, call a named top-level `fn`, or call a closure literal
 /// that carries an effect row annotation" -- three forms, none of which
 /// describes a print.
-fn edp_type_has_fn(t: Type) -> Bool {
+fn edp_type_has_fn(_ t: Type) -> Bool {
   match t {
     CtFn(_, _, _) => true,
     CtArray(e) => edp_type_has_fn(e),
@@ -1678,11 +1678,11 @@ fn edp_type_has_fn(t: Type) -> Bool {
   }
 }
 
-fn edp_types_have_fn(ts: Array[Type]) -> Bool {
+fn edp_types_have_fn(_ ts: Array[Type]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(ts) {
-    if edp_type_has_fn(Array::get(ts, i)) {
+    if edp_type_has_fn(Array::get(ts, at = i)) {
       found = true
     } else {
       ()
@@ -1692,7 +1692,7 @@ fn edp_types_have_fn(ts: Array[Type]) -> Bool {
   found
 }
 
-fn edp_builtin_is_first_order(nm: String) -> Bool {
+fn edp_builtin_is_first_order(_ nm: String) -> Bool {
   match lookup_registry_builtin(nm) {
     Some(ty) => match ty {
       CtFn(params, _, _) => !edp_types_have_fn(params),
@@ -1722,7 +1722,7 @@ fn edp_builtin_is_first_order(nm: String) -> Bool {
 // edp_has_unsafe_construct_sc), so rebuilding the ~100-entry table per probe
 // was ~17MB of allocation for one analyzed effect's performing-fns fixpoint
 // alone.
-export fn edp_is_pure_builtin_call(nm: String) -> Bool {
+export fn edp_is_pure_builtin_call(_ nm: String) -> Bool {
   idp_is_pure_builtin_call(nm)
 }
 
@@ -1738,15 +1738,15 @@ export fn edp_is_pure_builtin_call(nm: String) -> Bool {
 /// same-named top-level VALUE stays conservatively unsafe). Collected
 /// callees are appended into the `pure_fns` ("inert callee") set the
 /// safety scans already thread everywhere.
-export fn edp_name_is_host_raw_shape(nm: String) -> Bool {
-  String::starts_with(nm, "vibe_") && String::ends_with(nm, "_raw")
+export fn edp_name_is_host_raw_shape(_ nm: String) -> Bool {
+  String::starts_with(nm, prefix = "vibe_") && String::ends_with(nm, suffix = "_raw")
 }
 
 fn edp_perform_operand_has_unsafe_construct(operand: Expr, needing: Array[String], ename: String, pure_fns: Array[String], ls_names: Array[String], ls_flags: Array[Bool]) -> Bool {
   match operand {
     EIdent(_, _) => false,
     ECall(op_callee, op_args, _, _) => match op_callee {
-      EIdent(_, _) => edp_exprs_have_unsafe_construct(op_args, needing, ename, pure_fns, ls_names, ls_flags),
+      EIdent(_, _) => edp_exprs_have_unsafe_construct(exprs = op_args, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags),
       _ => true
     },
     _ => true
@@ -1757,7 +1757,7 @@ fn edp_exprs_have_unsafe_construct(exprs: Array[Expr], needing: Array[String], e
   let mut i = 0
   let mut found = false
   while i < Array::length(exprs) {
-    if edp_has_unsafe_construct_sc(Array::get(exprs, i), needing, ename, pure_fns, ls_names, ls_flags) {
+    if edp_has_unsafe_construct_sc(expr = Array::get(exprs, at = i), needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) {
       found = true
     } else {
       ()
@@ -1771,8 +1771,8 @@ fn edp_fields_have_unsafe_construct(fields: Array[(String, Expr)], needing: Arra
   let mut i = 0
   let mut found = false
   while i < Array::length(fields) {
-    let (_, v) = Array::get(fields, i)
-    if edp_has_unsafe_construct_sc(v, needing, ename, pure_fns, ls_names, ls_flags) {
+    let (_, v) = Array::get(fields, at = i)
+    if edp_has_unsafe_construct_sc(expr = v, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) {
       found = true
     } else {
       ()
@@ -1786,8 +1786,8 @@ fn edp_pairs_have_unsafe_construct(pairs: Array[(String, Expr)], needing: Array[
   let mut i = 0
   let mut found = false
   while i < Array::length(pairs) {
-    let (_, v) = Array::get(pairs, i)
-    if edp_has_unsafe_construct_sc(v, needing, ename, pure_fns, ls_names, ls_flags) {
+    let (_, v) = Array::get(pairs, at = i)
+    if edp_has_unsafe_construct_sc(expr = v, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) {
       found = true
     } else {
       ()
@@ -1804,22 +1804,22 @@ fn edp_arms_have_unsafe_construct(arms: Array[(Pat, Expr)], needing: Array[Strin
   let mut i = 0
   let mut found = false
   while i < Array::length(arms) {
-    let (p, ex) = Array::get(arms, i)
+    let (p, ex) = Array::get(arms, at = i)
     let base = Array::length(ls_names)
-    edp_ls_push_pat(p, ls_names, ls_flags)
-    if edp_has_unsafe_construct_sc(ex, needing, ename, pure_fns, ls_names, ls_flags) {
+    edp_ls_push_pat(p = p, ls_names = ls_names, ls_flags = ls_flags)
+    if edp_has_unsafe_construct_sc(expr = ex, needing = needing, ename = ename, pure_fns = pure_fns, ls_names = ls_names, ls_flags = ls_flags) {
       found = true
     } else {
       ()
     }
-    Array::truncate(ls_names, base)
-    Array::truncate(ls_flags, base)
+    Array::truncate(ls_names, length = base)
+    Array::truncate(ls_flags, length = base)
     i = i + 1
   }
   found
 }
 
-export fn edp_pat_qname(pat: Pat) -> String {
+export fn edp_pat_qname(_ pat: Pat) -> String {
   match pat {
     PCtor(name, _) => name,
     _ => ""
@@ -1829,7 +1829,7 @@ export fn edp_pat_qname(pat: Pat) -> String {
 export fn edp_handle_matches_effect(arms: Array[(Pat, Expr)], ename: String) -> Bool {
   let mut i = 0
   while i < Array::length(arms) {
-    let (p, _) = Array::get(arms, i)
+    let (p, _) = Array::get(arms, at = i)
     let (effect, _) = edp_split_qualified(edp_pat_qname(p))
     let matches = match effect {
       Some(name) => name == ename,
@@ -1843,10 +1843,10 @@ export fn edp_handle_matches_effect(arms: Array[(Pat, Expr)], ename: String) -> 
   false
 }
 
-export fn edp_split_qualified(name: String) -> (Option[String], String) {
-  let idx = String::index_of(name, "::")
+export fn edp_split_qualified(_ name: String) -> (Option[String], String) {
+  let idx = String::index_of(name, needle = "::")
   if idx > 0 {
-    (Some(String::substring(name, 0, idx)), String::substring(name, idx + 2, String::length(name)))
+    (Some(String::substring(name, start = 0, end = idx)), String::substring(name, start = idx + 2, end = String::length(name)))
   } else {
     (None, name)
   }
@@ -1859,7 +1859,7 @@ export fn edp_efn_eligible_for_migration(expr: Expr, ename: String, needing: Arr
         Some(s) => s,
         None => ""
       }
-      edp_row_is_exactly(row, ename, es_names, es_members_list) && !edp_has_unsafe_construct(body, needing, ename, pure_fns)
+      edp_row_is_exactly(row = row, ename = ename, es_names = es_names, es_members_list = es_members_list) && !edp_has_unsafe_construct(expr = body, needing = needing, ename = ename, pure_fns = pure_fns)
     },
     _ => false
   }
@@ -1875,7 +1875,7 @@ export fn edp_efn_eligible_for_migration(expr: Expr, ename: String, needing: Arr
 /// `edp_callee_first_order` (#2065 wall 1) ask the same question of a
 /// callee's annotations, and a second copy would be a second thing to keep
 /// in step.
-export fn scps_ty_has_fn(t: TypeExpr) -> Bool {
+export fn scps_ty_has_fn(_ t: TypeExpr) -> Bool {
   match t {
     TyFn(_, _, _) => true,
     TyApp(_, args) => scps_ty_list_has_fn(args),
@@ -1884,11 +1884,11 @@ export fn scps_ty_has_fn(t: TypeExpr) -> Bool {
   }
 }
 
-export fn scps_ty_list_has_fn(ts: Array[TypeExpr]) -> Bool {
+export fn scps_ty_list_has_fn(_ ts: Array[TypeExpr]) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(ts) {
-    if scps_ty_has_fn(Array::get(ts, i)) {
+    if scps_ty_has_fn(Array::get(ts, at = i)) {
       hit = true
     } else {
       ()
@@ -1903,7 +1903,7 @@ export fn scps_ty_list_has_fn(ts: Array[TypeExpr]) -> Bool {
 // checker.vibe's check_arm_resume_tail: any enclosing binder named
 // `resume` turns references into ordinary variable uses.
 
-export fn scps_pat_binds_resume(p: Pat) -> Bool {
+export fn scps_pat_binds_resume(_ p: Pat) -> Bool {
   match p {
     PBind(n) => n == "resume",
     PCtor(_, ps) => scps_pats_bind_resume(ps),
@@ -1913,7 +1913,7 @@ export fn scps_pat_binds_resume(p: Pat) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
+        let (_, fp) = Array::get(fields, at = i)
         if scps_pat_binds_resume(fp) {
           found = true
         } else {
@@ -1927,11 +1927,11 @@ export fn scps_pat_binds_resume(p: Pat) -> Bool {
   }
 }
 
-fn scps_pats_bind_resume(ps: Array[Pat]) -> Bool {
+fn scps_pats_bind_resume(_ ps: Array[Pat]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(ps) {
-    if scps_pat_binds_resume(Array::get(ps, i)) {
+    if scps_pat_binds_resume(Array::get(ps, at = i)) {
       found = true
     } else {
       ()
@@ -1941,11 +1941,11 @@ fn scps_pats_bind_resume(ps: Array[Pat]) -> Bool {
   found
 }
 
-fn scps_fn_params_bind_resume(params: Array[(String, Option[TypeExpr])]) -> Bool {
+fn scps_fn_params_bind_resume(_ params: Array[(String, Option[TypeExpr])]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(params) {
-    let (pn, _) = Array::get(params, i)
+    let (pn, _) = Array::get(params, at = i)
     let ln = String::length(pn)
     // A labeled (`~`) OR optional (`?`) parameter keeps its marker in the raw
     // AST name; strip either, the way the checker's param_base_name does, so
@@ -1971,7 +1971,7 @@ fn scps_fn_params_bind_resume(params: Array[(String, Option[TypeExpr])]) -> Bool
 /// -- may this handler arm throw? Syntax only, so it answers true for any call
 /// it cannot classify without the program's rows (a user function, a local
 /// closure, a computed callee); the suspend pass decides precisely.
-fn scps_arm_may_throw_syntactic(e: Expr) -> Bool {
+fn scps_arm_may_throw_syntactic(_ e: Expr) -> Bool {
   match e {
     ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if nm == "throw" {
@@ -1994,9 +1994,9 @@ fn scps_arm_may_throw_syntactic(e: Expr) -> Bool {
 
 /// The arguments of a `perform`'s operation: the operation itself is not a
 /// call to classify.
-fn scps_syntactic_perform_operands(args: Array[Expr]) -> Array[Expr] {
+fn scps_syntactic_perform_operands(_ args: Array[Expr]) -> Array[Expr] {
   if Array::length(args) == 1 {
-    match Array::get(args, 0) {
+    match Array::get(args, at = 0) {
       ECall(EIdent(_, _), oargs, _, _) => oargs,
       EIdent(_, _) => [],
       other => [other]
@@ -2006,18 +2006,18 @@ fn scps_syntactic_perform_operands(args: Array[Expr]) -> Array[Expr] {
   }
 }
 
-fn scps_any_may_throw_syntactic(es: Array[Expr]) -> Bool {
+fn scps_any_may_throw_syntactic(_ es: Array[Expr]) -> Bool {
   let mut hit = false
   let mut i = 0
   while i < Array::length(es) && !hit {
-    hit = scps_arm_may_throw_syntactic(Array::get(es, i))
+    hit = scps_arm_may_throw_syntactic(Array::get(es, at = i))
     i = i + 1
   }
   hit
 }
 
 export fn scps_arm_refs_resume_value(e: Expr, sh: Bool) -> Bool {
-  scps_arm_refs_resume_value_at(e, sh, false)
+  scps_arm_refs_resume_value_at(e = e, sh = sh, in_fn = false)
 }
 
 /// The walk itself. `in_fn` = inside a nested lambda literal: there even the
@@ -2034,21 +2034,21 @@ fn scps_arm_refs_resume_value_at(e: Expr, sh: Bool, in_fn: Bool) -> Bool {
       // call -- including a computed callee -- is walked normally.
       let callee_hit = match callee {
         EIdent(cn, _) => in_fn && cn == "resume" && !sh,
-        _ => scps_arm_refs_resume_value_at(callee, sh, in_fn)
+        _ => scps_arm_refs_resume_value_at(e = callee, sh = sh, in_fn = in_fn)
       }
-      callee_hit || scps_exprs_ref_resume_value(args, sh, in_fn)
+      callee_hit || scps_exprs_ref_resume_value(es = args, sh = sh, in_fn = in_fn)
     },
-    ELet(n, v, b, _) => scps_arm_refs_resume_value_at(v, sh, in_fn) || scps_arm_refs_resume_value_at(b, sh || n == "resume", in_fn),
-    ELetMut(n, v, b, _) => scps_arm_refs_resume_value_at(v, sh, in_fn) || scps_arm_refs_resume_value_at(b, sh || n == "resume", in_fn),
-    ELetRec(n, v, b) => scps_arm_refs_resume_value_at(v, sh || n == "resume", in_fn) || scps_arm_refs_resume_value_at(b, sh || n == "resume", in_fn),
-    ESeq(a, b) => scps_arm_refs_resume_value_at(a, sh, in_fn) || scps_arm_refs_resume_value_at(b, sh, in_fn),
-    EIf(c, t, el) => scps_arm_refs_resume_value_at(c, sh, in_fn) || scps_arm_refs_resume_value_at(t, sh, in_fn) || scps_arm_refs_resume_value_at(el, sh, in_fn),
+    ELet(n, v, b, _) => scps_arm_refs_resume_value_at(e = v, sh = sh, in_fn = in_fn) || scps_arm_refs_resume_value_at(e = b, sh = sh || n == "resume", in_fn = in_fn),
+    ELetMut(n, v, b, _) => scps_arm_refs_resume_value_at(e = v, sh = sh, in_fn = in_fn) || scps_arm_refs_resume_value_at(e = b, sh = sh || n == "resume", in_fn = in_fn),
+    ELetRec(n, v, b) => scps_arm_refs_resume_value_at(e = v, sh = sh || n == "resume", in_fn = in_fn) || scps_arm_refs_resume_value_at(e = b, sh = sh || n == "resume", in_fn = in_fn),
+    ESeq(a, b) => scps_arm_refs_resume_value_at(e = a, sh = sh, in_fn = in_fn) || scps_arm_refs_resume_value_at(e = b, sh = sh, in_fn = in_fn),
+    EIf(c, t, el) => scps_arm_refs_resume_value_at(e = c, sh = sh, in_fn = in_fn) || scps_arm_refs_resume_value_at(e = t, sh = sh, in_fn = in_fn) || scps_arm_refs_resume_value_at(e = el, sh = sh, in_fn = in_fn),
     EMatch(s, arms) => {
-      let mut hit = scps_arm_refs_resume_value_at(s, sh, in_fn)
+      let mut hit = scps_arm_refs_resume_value_at(e = s, sh = sh, in_fn = in_fn)
       let mut i = 0
       while i < Array::length(arms) {
-        let (p, ex) = Array::get(arms, i)
-        if scps_arm_refs_resume_value_at(ex, sh || scps_pat_binds_resume(p), in_fn) {
+        let (p, ex) = Array::get(arms, at = i)
+        if scps_arm_refs_resume_value_at(e = ex, sh = sh || scps_pat_binds_resume(p), in_fn = in_fn) {
           hit = true
         } else {
           ()
@@ -2058,14 +2058,14 @@ fn scps_arm_refs_resume_value_at(e: Expr, sh: Bool, in_fn: Bool) -> Bool {
       hit
     },
     EHandle(b, arms) => {
-      let mut hit = scps_arm_refs_resume_value_at(b, sh, in_fn)
+      let mut hit = scps_arm_refs_resume_value_at(e = b, sh = sh, in_fn = in_fn)
       let mut i = 0
       while i < Array::length(arms) {
-        let (_, ex) = Array::get(arms, i)
+        let (_, ex) = Array::get(arms, at = i)
         // A nested handle's arms rebind `resume` for THEMSELVES (their
         // value references belong to the inner site, detected when the
         // rewrite reaches that inner EHandle) -- shadowed here.
-        if scps_arm_refs_resume_value_at(ex, true, in_fn) {
+        if scps_arm_refs_resume_value_at(e = ex, sh = true, in_fn = in_fn) {
           hit = true
         } else {
           ()
@@ -2074,52 +2074,52 @@ fn scps_arm_refs_resume_value_at(e: Expr, sh: Bool, in_fn: Bool) -> Bool {
       }
       hit
     },
-    EFn(_, _, params, _, _, b) => scps_arm_refs_resume_value_at(b, sh || scps_fn_params_bind_resume(params), true),
-    EWhile(c, b) => scps_arm_refs_resume_value_at(c, sh, in_fn) || scps_arm_refs_resume_value_at(b, sh, in_fn),
+    EFn(_, _, params, _, _, b) => scps_arm_refs_resume_value_at(e = b, sh = sh || scps_fn_params_bind_resume(params), in_fn = true),
+    EWhile(c, b) => scps_arm_refs_resume_value_at(e = c, sh = sh, in_fn = in_fn) || scps_arm_refs_resume_value_at(e = b, sh = sh, in_fn = in_fn),
     EForIn(v1, v2, it, b) => {
       let for_sh = v1 == "resume" || (match v2 {
         Some(v2n) => v2n == "resume",
         None => false
       })
-      scps_arm_refs_resume_value_at(it, sh, in_fn) || scps_arm_refs_resume_value_at(b, sh || for_sh, in_fn)
+      scps_arm_refs_resume_value_at(e = it, sh = sh, in_fn = in_fn) || scps_arm_refs_resume_value_at(e = b, sh = sh || for_sh, in_fn = in_fn)
     },
     ELoop(pairs, b) => {
       let mut hit = false
       let mut loop_sh = sh
       let mut i = 0
       while i < Array::length(pairs) {
-        let (n, v) = Array::get(pairs, i)
+        let (n, v) = Array::get(pairs, at = i)
         if n == "resume" {
           loop_sh = true
         } else {
           ()
         }
-        if scps_arm_refs_resume_value_at(v, sh, in_fn) {
+        if scps_arm_refs_resume_value_at(e = v, sh = sh, in_fn = in_fn) {
           hit = true
         } else {
           ()
         }
         i = i + 1
       }
-      hit || scps_arm_refs_resume_value_at(b, loop_sh, in_fn)
+      hit || scps_arm_refs_resume_value_at(e = b, sh = loop_sh, in_fn = in_fn)
     },
-    EBinOp(_, l, r, _) => scps_arm_refs_resume_value_at(l, sh, in_fn) || scps_arm_refs_resume_value_at(r, sh, in_fn),
-    EUnaryOp(_, e2) => scps_arm_refs_resume_value_at(e2, sh, in_fn),
-    EAssign(_, v, c, _) => scps_arm_refs_resume_value_at(v, sh, in_fn) || scps_arm_refs_resume_value_at(c, sh, in_fn),
-    EAssignOp(_, _, v, c, _) => scps_arm_refs_resume_value_at(v, sh, in_fn) || scps_arm_refs_resume_value_at(c, sh, in_fn),
-    EReturn(e2) => scps_arm_refs_resume_value_at(e2, sh, in_fn),
-    EDot(o, _, _, _) => scps_arm_refs_resume_value_at(o, sh, in_fn),
-    ELabeledArg(_, _, v) => scps_arm_refs_resume_value_at(v, sh, in_fn),
+    EBinOp(_, l, r, _) => scps_arm_refs_resume_value_at(e = l, sh = sh, in_fn = in_fn) || scps_arm_refs_resume_value_at(e = r, sh = sh, in_fn = in_fn),
+    EUnaryOp(_, e2) => scps_arm_refs_resume_value_at(e = e2, sh = sh, in_fn = in_fn),
+    EAssign(_, v, c, _) => scps_arm_refs_resume_value_at(e = v, sh = sh, in_fn = in_fn) || scps_arm_refs_resume_value_at(e = c, sh = sh, in_fn = in_fn),
+    EAssignOp(_, _, v, c, _) => scps_arm_refs_resume_value_at(e = v, sh = sh, in_fn = in_fn) || scps_arm_refs_resume_value_at(e = c, sh = sh, in_fn = in_fn),
+    EReturn(e2) => scps_arm_refs_resume_value_at(e = e2, sh = sh, in_fn = in_fn),
+    EDot(o, _, _, _) => scps_arm_refs_resume_value_at(e = o, sh = sh, in_fn = in_fn),
+    ELabeledArg(_, _, v) => scps_arm_refs_resume_value_at(e = v, sh = sh, in_fn = in_fn),
     EBreak(opt) => match opt {
-      Some(e2) => scps_arm_refs_resume_value_at(e2, sh, in_fn),
+      Some(e2) => scps_arm_refs_resume_value_at(e = e2, sh = sh, in_fn = in_fn),
       None => false
     },
-    EContinue(args) => scps_exprs_ref_resume_value(args, sh, in_fn),
-    ETuple(elems) => scps_exprs_ref_resume_value(elems, sh, in_fn),
-    EArray(elems) => scps_exprs_ref_resume_value(elems, sh, in_fn),
-    ERecord(_, fields, _) => scps_fields_ref_resume_value(fields, sh, in_fn),
-    EMap(fields) => scps_fields_ref_resume_value(fields, sh, in_fn),
-    ESpread(e2) => scps_arm_refs_resume_value_at(e2, sh, in_fn),
+    EContinue(args) => scps_exprs_ref_resume_value(es = args, sh = sh, in_fn = in_fn),
+    ETuple(elems) => scps_exprs_ref_resume_value(es = elems, sh = sh, in_fn = in_fn),
+    EArray(elems) => scps_exprs_ref_resume_value(es = elems, sh = sh, in_fn = in_fn),
+    ERecord(_, fields, _) => scps_fields_ref_resume_value(fields = fields, sh = sh, in_fn = in_fn),
+    EMap(fields) => scps_fields_ref_resume_value(fields = fields, sh = sh, in_fn = in_fn),
+    ESpread(e2) => scps_arm_refs_resume_value_at(e = e2, sh = sh, in_fn = in_fn),
     _ => false
   }
 }
@@ -2128,7 +2128,7 @@ fn scps_exprs_ref_resume_value(es: Array[Expr], sh: Bool, in_fn: Bool) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(es) {
-    if scps_arm_refs_resume_value_at(Array::get(es, i), sh, in_fn) {
+    if scps_arm_refs_resume_value_at(e = Array::get(es, at = i), sh = sh, in_fn = in_fn) {
       hit = true
     } else {
       ()
@@ -2142,8 +2142,8 @@ fn scps_fields_ref_resume_value(fields: Array[(String, Expr)], sh: Bool, in_fn: 
   let mut i = 0
   let mut hit = false
   while i < Array::length(fields) {
-    let (_, v) = Array::get(fields, i)
-    if scps_arm_refs_resume_value_at(v, sh, in_fn) {
+    let (_, v) = Array::get(fields, at = i)
+    if scps_arm_refs_resume_value_at(e = v, sh = sh, in_fn = in_fn) {
       hit = true
     } else {
       ()
@@ -2161,7 +2161,7 @@ fn scps_op_index(ops: Array[String], q: String) -> Int {
   let mut i = 0
   let mut found = -1
   while i < Array::length(ops) {
-    if Array::get(ops, i) == q {
+    if Array::get(ops, at = i) == q {
       found = i
     } else {
       ()
@@ -2177,10 +2177,10 @@ export fn scps_as_target_perform(e: Expr, ops: Array[String]) -> Int {
   match e {
     ECall(callee, pargs, _, _) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(pargs) == 1 {
-        match Array::get(pargs, 0) {
-          EIdent(q, _) => scps_op_index(ops, q),
+        match Array::get(pargs, at = 0) {
+          EIdent(q, _) => scps_op_index(ops = ops, q = q),
           ECall(opc, _, _, _) => match opc {
-            EIdent(q, _) => scps_op_index(ops, q),
+            EIdent(q, _) => scps_op_index(ops = ops, q = q),
             _ => -1
           },
           _ => -1
@@ -2200,7 +2200,7 @@ export fn scps_as_needing_call(e: Expr, sctx: (String, Array[String], Array[Stri
   let (_, _, needing, _, _) = sctx
   match e {
     ECall(callee, _, _, _) => match callee {
-      EIdent(nm, _) => if nm != "perform" && edp_str_array_contains(needing, nm) {
+      EIdent(nm, _) => if nm != "perform" && edp_str_array_contains(arr = needing, v = nm) {
         nm
       } else {
         ""
@@ -2221,7 +2221,7 @@ export fn scps_as_cps_local_call(e: Expr, sctx: (String, Array[String], Array[St
   let (_, _, _, _, cps_locals) = sctx
   match e {
     ECall(callee, _, _, _) => match callee {
-      EIdent(nm, _) => if edp_str_array_contains(cps_locals, nm) {
+      EIdent(nm, _) => if edp_str_array_contains(arr = cps_locals, v = nm) {
         nm
       } else {
         ""
@@ -2236,15 +2236,15 @@ export fn scps_as_cps_local_call(e: Expr, sctx: (String, Array[String], Array[St
 export fn scps_pat_binds_name(p: Pat, x: String) -> Bool {
   match p {
     PBind(n) => n == x,
-    PCtor(_, ps) => scps_pats_bind_name(ps, x),
-    PTuple(ps) => scps_pats_bind_name(ps, x),
-    POr(a, b) => scps_pat_binds_name(a, x) || scps_pat_binds_name(b, x),
+    PCtor(_, ps) => scps_pats_bind_name(ps = ps, x = x),
+    PTuple(ps) => scps_pats_bind_name(ps = ps, x = x),
+    POr(a, b) => scps_pat_binds_name(p = a, x = x) || scps_pat_binds_name(p = b, x = x),
     PStruct(_, fields) => {
       let mut i = 0
       let mut hit = false
       while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
-        if scps_pat_binds_name(fp, x) {
+        let (_, fp) = Array::get(fields, at = i)
+        if scps_pat_binds_name(p = fp, x = x) {
           hit = true
         } else {
           ()
@@ -2261,7 +2261,7 @@ fn scps_pats_bind_name(ps: Array[Pat], x: String) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(ps) {
-    if scps_pat_binds_name(Array::get(ps, i), x) {
+    if scps_pat_binds_name(p = Array::get(ps, at = i), x = x) {
       hit = true
     } else {
       ()
@@ -2280,7 +2280,7 @@ export fn scps_arms_discharge_ops(arms: Array[(Pat, Expr)], ops: Array[String]) 
   for op in ops {
     let (effect, _) = edp_split_qualified(op)
     let handled = match effect {
-      Some(name) => edp_handle_matches_effect(arms, name),
+      Some(name) => edp_handle_matches_effect(arms = arms, ename = name),
       None => false
     }
     if !handled {
@@ -2301,8 +2301,8 @@ let edp_mf_dirty: Array[Int] = []
 
 /// Replace a statement, marking it for the evidence pass's statement facts.
 export fn edp_mf_set_stmt(stmts: Array[Stmt], i: Int, stmt: Stmt) -> Unit {
-  Array::set(stmts, i, stmt)
-  Array::push(edp_mf_dirty, i)
+  Array::set(stmts, at = i, value = stmt)
+  Array::push(edp_mf_dirty, value = i)
 }
 
 /// Statements replaced since the last edp_mf_dirty_reset, in write order.
@@ -2311,5 +2311,5 @@ export fn edp_mf_dirty_indices() -> Array[Int] {
 }
 
 export fn edp_mf_dirty_reset() -> Unit {
-  Array::truncate(edp_mf_dirty, 0)
+  Array::truncate(edp_mf_dirty, length = 0)
 }

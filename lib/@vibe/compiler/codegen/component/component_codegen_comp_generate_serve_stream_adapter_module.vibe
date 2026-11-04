@@ -78,14 +78,16 @@ export fn comp_generate_wasi_fd_write_stub() -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
   let tc = bytebuf_new()
-  bytebuf_push_vec_header(tc, 1)
-  emit_func_type_raw(tc, [127, 127, 127, 127], [127])
-  bytebuf_push_section(out, 1, tc)
-  emit_function_section(out, [0])
-  emit_export_section(out, "fd_write", 0)
+  bytebuf_push_vec_header(buf = tc, count = 1)
+  emit_func_type_raw(buf = tc, param_types = [127, 127, 127, 127], result_types = [
+    127
+  ])
+  bytebuf_push_section(out = out, section_id = 1, content = tc)
+  emit_function_section(out = out, type_indices = [0])
+  emit_export_section(out = out, name = "fd_write", func_idx = 0)
   let body = bytebuf_new()
-  emit_i32_const(body, 0)
-  emit_code_section(out, [body])
+  emit_i32_const(buf = body, value = 0)
+  emit_code_section(out = out, bodies = [body])
   bytebuf_to_bytes(out)
 }
 
@@ -96,7 +98,7 @@ export fn comp_generate_wasi_fd_write_stub() -> Bytes {
 /// core instances: 0=wasi-stub, 1=main(+wasi), 2=cm(task-return), 3=env(run),
 /// 4=trampoline. core funcs: 0=task.return, 1=main.run, 2=trampoline.run.
 export fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, export_name: String, comp_result_valtype: Int) -> Bytes {
-  let needs_stderr = comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream")
+  let needs_stderr = comp_core_imports_func(core_wasm = main_core_wasm, module_name = "vibe", func_name = "stderr_write_stream")
   // #2976: the exception boundary exits through `vibe.process_exit` after
   // writing its diagnosis, so the trapping stub serves it there -- the trap
   // IS the boundary's non-zero outcome. An exit the program wrote itself is
@@ -104,12 +106,12 @@ export fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, e
   // when no stderr import accompanies it, and by the source lane's provenance
   // check (`maybe_wrap_async_component`) when one does -- because a trapping
   // stub would turn `exit(0)` into a failure.
-  let needs_exit = needs_stderr && comp_core_imports_func(main_core_wasm, "vibe", "process_exit")
+  let needs_exit = needs_stderr && comp_core_imports_func(core_wasm = main_core_wasm, module_name = "vibe", func_name = "process_exit")
   let needs_vibe = needs_stderr
   let buf = bytebuf_new()
   emit_component_header(buf)
-  emit_core_module_section(buf, main_core_wasm)
-  emit_core_module_section(buf, comp_generate_async_trampoline(comp_valtype_to_core(comp_result_valtype)))
+  emit_core_module_section(buf = buf, core_wasm = main_core_wasm)
+  emit_core_module_section(buf = buf, core_wasm = comp_generate_async_trampoline(comp_valtype_to_core(comp_result_valtype)))
   if needs_vibe {
     // The exception boundary only needs these imports on its failing path. A
     // local trapping stub keeps the self-contained component valid and
@@ -118,35 +120,48 @@ export fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, e
     let stub_names = array_empty()
     let stub_sigs = array_empty()
     if needs_stderr {
-      Array::push(stub_names, "stderr_write_stream")
-      Array::push(stub_sigs, [1, 126, 0])
+      Array::push(stub_names, value = "stderr_write_stream")
+      Array::push(stub_sigs, value = [1, 126, 0])
     }
     if needs_exit {
-      Array::push(stub_names, "process_exit")
-      Array::push(stub_sigs, [1, 126, 0])
+      Array::push(stub_names, value = "process_exit")
+      Array::push(stub_sigs, value = [1, 126, 0])
     }
-    emit_core_module_section(buf, comp_generate_host_stub_module(stub_names, stub_sigs))
+    emit_core_module_section(buf = buf, core_wasm = comp_generate_host_stub_module(vibe_names = stub_names, vibe_sigs = stub_sigs))
   } else {
-    emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
+    emit_core_module_section(buf = buf, core_wasm = comp_generate_wasi_fd_write_stub())
   }
-  emit_core_instance_instantiate_section(buf, 2, array_empty())
+  emit_core_instance_instantiate_section(buf = buf, module_index = 2, module_names = array_empty())
   if needs_vibe {
-    emit_core_instance_instantiate_args(buf, 0, [
+    emit_core_instance_instantiate_args(buf = buf, module_index = 0, arg_names = [
       "wasi_snapshot_preview1",
       "vibe"
-    ], [0, 0])
+    ], arg_instance_indices = [0, 0])
   } else {
-    emit_core_instance_instantiate_args(buf, 0, ["wasi_snapshot_preview1"], [0])
+    emit_core_instance_instantiate_args(buf = buf, module_index = 0, arg_names = [
+      "wasi_snapshot_preview1"
+    ], arg_instance_indices = [0])
   }
-  emit_canon_task_return(buf, comp_result_valtype)
-  emit_core_instance_from_exports(buf, 1, [1], ["task-return"], [0])
-  emit_alias_section(buf, 1, ["run"], [core_sort_func])
-  emit_core_instance_from_exports(buf, 1, [1], ["run"], [1])
-  emit_core_instance_instantiate_args(buf, 1, ["main", "cm"], [3, 2])
-  emit_comp_async_functype_section(buf, comp_result_valtype)
-  emit_alias_section(buf, 4, ["run"], [core_sort_func])
-  emit_canon_lift_async_section(buf, 2, 0)
-  emit_comp_export_section(buf, export_name, 0)
+  emit_canon_task_return(buf = buf, result_valtype = comp_result_valtype)
+  emit_core_instance_from_exports(buf = buf, num_modules = 1, module_binding_counts = [
+    1
+  ], binding_func_names = ["task-return"], binding_func_indices = [0])
+  emit_alias_section(buf = buf, core_instance_idx = 1, names = ["run"], sorts = [
+    core_sort_func
+  ])
+  emit_core_instance_from_exports(buf = buf, num_modules = 1, module_binding_counts = [
+    1
+  ], binding_func_names = ["run"], binding_func_indices = [1])
+  emit_core_instance_instantiate_args(buf = buf, module_index = 1, arg_names = [
+    "main",
+    "cm"
+  ], arg_instance_indices = [3, 2])
+  emit_comp_async_functype_section(buf = buf, result_valtype = comp_result_valtype)
+  emit_alias_section(buf = buf, core_instance_idx = 4, names = ["run"], sorts = [
+    core_sort_func
+  ])
+  emit_canon_lift_async_section(buf = buf, core_func_idx = 2, type_idx = 0)
+  emit_comp_export_section(buf = buf, name = export_name, func_idx = 0)
   bytebuf_to_bytes(buf)
 }
 
@@ -155,11 +170,11 @@ export fn comp_core_imports_func(core_wasm: Bytes, module_name: String, func_nam
   let names = array_empty()
   let type_indices = new_int_array()
   let type_sigs = array_empty()
-  let count = parse_core_imports(core_wasm, modules, names, type_indices, type_sigs)
+  let count = parse_core_imports(core_wasm = core_wasm, out_module_names = modules, out_func_names = names, out_type_indices = type_indices, out_type_sigs = type_sigs)
   let mut found = false
   let mut i = 0
   while i < count {
-    if Array::get(modules, i) == module_name && Array::get(names, i) == func_name {
+    if Array::get(modules, at = i) == module_name && Array::get(names, at = i) == func_name {
       found = true
     }
     i = i + 1
@@ -180,79 +195,79 @@ export let comp_valtype_u32: Int = 121
 /// <memidx>` -- opcode=lower(1), reserved byte(0), funcidx, canonopt-count=2,
 /// async tag(6), memory tag(3)+core-memory-idx.
 export fn emit_canon_lower_async_section(buf: Bytes, comp_func_idx: Int, memory_core_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 1)
-  bytebuf_push(content, 0)
-  leb128_encode_u32(content, comp_func_idx)
-  leb128_encode_u32(content, 2)
-  bytebuf_push(content, 6)
-  bytebuf_push(content, 3)
-  leb128_encode_u32(content, memory_core_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 1)
+  bytebuf_push(buf = content, byte = 0)
+  leb128_encode_u32(buf = content, value = comp_func_idx)
+  leb128_encode_u32(buf = content, value = 2)
+  bytebuf_push(buf = content, byte = 6)
+  bytebuf_push(buf = content, byte = 3)
+  leb128_encode_u32(buf = content, value = memory_core_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// #1230 M1b-3c-1b: canon waitable-set.new -- single-byte opcode 0x1f (31),
 /// verified via wasm-tools dump against spawned_future/component.wat.
-export fn emit_canon_waitable_set_new(buf: Bytes) -> Unit {
-  bytebuf_push(buf, section_canon)
+export fn emit_canon_waitable_set_new(_ buf: Bytes) -> Unit {
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 31)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 31)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// #1230 M1b-3c-1b: canon waitable.join -- single-byte opcode 0x23 (35).
-export fn emit_canon_waitable_join(buf: Bytes) -> Unit {
-  bytebuf_push(buf, section_canon)
+export fn emit_canon_waitable_join(_ buf: Bytes) -> Unit {
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 35)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 35)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// #1230 M1b-3c-1b: canon waitable-set.wait (memory M) -- opcode 0x20 (32),
 /// a cancellable flag byte (0 = not cancellable, matching the probe), then
 /// the memory core index.
 export fn emit_canon_waitable_set_wait(buf: Bytes, memory_core_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 32)
-  bytebuf_push(content, 0)
-  leb128_encode_u32(content, memory_core_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 32)
+  bytebuf_push(buf = content, byte = 0)
+  leb128_encode_u32(buf = content, value = memory_core_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// #1230 M1b-3c-1b: canon waitable-set.drop -- single-byte opcode 0x22 (34).
-export fn emit_canon_waitable_set_drop(buf: Bytes) -> Unit {
-  bytebuf_push(buf, section_canon)
+export fn emit_canon_waitable_set_drop(_ buf: Bytes) -> Unit {
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 34)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 34)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// #1230 M1b-3c-1b: canon subtask.drop -- single-byte opcode 0x0d (13).
-export fn emit_canon_subtask_drop(buf: Bytes) -> Unit {
-  bytebuf_push(buf, section_canon)
+export fn emit_canon_subtask_drop(_ buf: Bytes) -> Unit {
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 13)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 13)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// #1537: canon subtask.cancel (synchronous) -- opcode 0x06 then the
 /// async? flag 0x00, byte shape recovered with `wasm-tools parse` of
 /// `(canon subtask.cancel)`. `(i32 subtask) -> (i32 status)`.
-export fn emit_canon_subtask_cancel(buf: Bytes) -> Unit {
-  bytebuf_push(buf, section_canon)
+export fn emit_canon_subtask_cancel(_ buf: Bytes) -> Unit {
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 6)
-  bytebuf_push(content, 0)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 6)
+  bytebuf_push(buf = content, byte = 0)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2 (#1218): component type section defining `(future <T>)`.
@@ -264,13 +279,13 @@ export fn emit_canon_subtask_cancel(buf: Bytes) -> Unit {
 /// (shared with the async functypes), and every future.* canon below
 /// references it by that index.
 export fn emit_comp_future_type_section(buf: Bytes, elem_valtype: Int) -> Unit {
-  bytebuf_push(buf, section_type)
+  bytebuf_push(buf = buf, byte = section_type)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 101)
-  bytebuf_push(content, 1)
-  bytebuf_push(content, elem_valtype)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 101)
+  bytebuf_push(buf = content, byte = 1)
+  bytebuf_push(buf = content, byte = elem_valtype)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2: canon future.new <ty> -- opcode 0x15 (21) + the
@@ -279,12 +294,12 @@ export fn emit_comp_future_type_section(buf: Bytes, elem_valtype: Int) -> Unit {
 /// end in the LOW 32 bits (pinned by the probe: swapping them makes
 /// future.read trap with a wrong-handle-kind error).
 export fn emit_canon_future_new(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 21)
-  leb128_encode_u32(content, type_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 21)
+  leb128_encode_u32(buf = content, value = type_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2: canon future.read <ty> async (memory M) -- opcode 0x16
@@ -294,16 +309,16 @@ export fn emit_canon_future_new(buf: Bytes, type_idx: Int) -> Unit {
 /// read with no pending writer returns BLOCKED (0xffffffff) and parks the
 /// readable end as a waitable instead of parking the fiber.
 export fn emit_canon_future_read(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 22)
-  leb128_encode_u32(content, type_idx)
-  leb128_encode_u32(content, 2)
-  bytebuf_push(content, 6)
-  bytebuf_push(content, 3)
-  leb128_encode_u32(content, memory_core_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 22)
+  leb128_encode_u32(buf = content, value = type_idx)
+  leb128_encode_u32(buf = content, value = 2)
+  bytebuf_push(buf = content, byte = 6)
+  bytebuf_push(buf = content, byte = 3)
+  leb128_encode_u32(buf = content, value = memory_core_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2: canon future.write <ty> async (memory M) -- opcode 0x17
@@ -312,64 +327,64 @@ export fn emit_canon_future_read(buf: Bytes, type_idx: Int, memory_core_idx: Int
 /// performs the copy immediately and returns COMPLETED (not BLOCKED) --
 /// the rendezvous the future-value guest module relies on.
 export fn emit_canon_future_write(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 23)
-  leb128_encode_u32(content, type_idx)
-  leb128_encode_u32(content, 2)
-  bytebuf_push(content, 6)
-  bytebuf_push(content, 3)
-  leb128_encode_u32(content, memory_core_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 23)
+  leb128_encode_u32(buf = content, value = type_idx)
+  leb128_encode_u32(buf = content, value = 2)
+  bytebuf_push(buf = content, byte = 6)
+  bytebuf_push(buf = content, byte = 3)
+  leb128_encode_u32(buf = content, value = memory_core_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// #1537: canon future.cancel-read <ty> (synchronous) -- opcode 0x18 (24),
 /// type index, then the async flag (0). Core signature `[handle] ->
 /// [status]` (measured with wasm-tools 1.253: `18 00 00`).
 export fn emit_canon_future_cancel_read(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 24)
-  leb128_encode_u32(content, type_idx)
-  bytebuf_push(content, 0)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 24)
+  leb128_encode_u32(buf = content, value = type_idx)
+  bytebuf_push(buf = content, byte = 0)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// #1537: canon stream.cancel-read <ty> (synchronous) -- opcode 0x11 (17),
 /// type index, then the async flag (0). Core signature `[handle] ->
 /// [status]` (measured with wasm-tools 1.253: `11 00 00`).
 export fn emit_canon_stream_cancel_read(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 17)
-  leb128_encode_u32(content, type_idx)
-  bytebuf_push(content, 0)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 17)
+  leb128_encode_u32(buf = content, value = type_idx)
+  bytebuf_push(buf = content, byte = 0)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2: canon future.drop-readable <ty> -- opcode 0x1a (26) +
 /// type index. Core signature `[handle] -> []`.
 export fn emit_canon_future_drop_readable(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 26)
-  leb128_encode_u32(content, type_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 26)
+  leb128_encode_u32(buf = content, value = type_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2: canon future.drop-writable <ty> -- opcode 0x1b (27) +
 /// type index. Core signature `[handle] -> []`.
 export fn emit_canon_future_drop_writable(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 27)
-  leb128_encode_u32(content, type_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 27)
+  leb128_encode_u32(buf = content, value = type_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2: component valtype u8 (0x7d) -- the element type of
@@ -381,13 +396,13 @@ export let comp_valtype_u8: Int = 125
 /// defvaltype stream = 0x66 (102), then option tag 0x01 + the element's
 /// component valtype -- same layout as the future type, one opcode apart.
 export fn emit_comp_stream_type_section(buf: Bytes, elem_valtype: Int) -> Unit {
-  bytebuf_push(buf, section_type)
+  bytebuf_push(buf = buf, byte = section_type)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 102)
-  bytebuf_push(content, 1)
-  bytebuf_push(content, elem_valtype)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 102)
+  bytebuf_push(buf = content, byte = 1)
+  bytebuf_push(buf = content, byte = elem_valtype)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2: canon stream.new <ty> -- opcode 0x0e (14) + the
@@ -395,12 +410,12 @@ export fn emit_comp_stream_type_section(buf: Bytes, elem_valtype: Int) -> Unit {
 /// `[] -> [i64]`, packed exactly like future.new: readable end in the LOW
 /// 32 bits, writable in the high.
 export fn emit_canon_stream_new(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 14)
-  leb128_encode_u32(content, type_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 14)
+  leb128_encode_u32(buf = content, value = type_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2: canon stream.read <ty> async (memory M) -- opcode 0x0f
@@ -410,16 +425,16 @@ export fn emit_canon_stream_new(buf: Bytes, type_idx: Int) -> Unit {
 /// pending writer returns BLOCKED (0xffffffff) and parks the readable end
 /// as a waitable; a completed copy packs `(amount << 4) | code`.
 export fn emit_canon_stream_read(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 15)
-  leb128_encode_u32(content, type_idx)
-  leb128_encode_u32(content, 2)
-  bytebuf_push(content, 6)
-  bytebuf_push(content, 3)
-  leb128_encode_u32(content, memory_core_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 15)
+  leb128_encode_u32(buf = content, value = type_idx)
+  leb128_encode_u32(buf = content, value = 2)
+  bytebuf_push(buf = content, byte = 6)
+  bytebuf_push(buf = content, byte = 3)
+  leb128_encode_u32(buf = content, value = memory_core_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2: canon stream.write <ty> async (memory M) -- opcode 0x10
@@ -427,44 +442,44 @@ export fn emit_canon_stream_read(buf: Bytes, type_idx: Int, memory_core_idx: Int
 /// read copies min(counts) elements inside the call and returns the packed
 /// completed status, not BLOCKED.
 export fn emit_canon_stream_write(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 16)
-  leb128_encode_u32(content, type_idx)
-  leb128_encode_u32(content, 2)
-  bytebuf_push(content, 6)
-  bytebuf_push(content, 3)
-  leb128_encode_u32(content, memory_core_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 16)
+  leb128_encode_u32(buf = content, value = type_idx)
+  leb128_encode_u32(buf = content, value = 2)
+  bytebuf_push(buf = content, byte = 6)
+  bytebuf_push(buf = content, byte = 3)
+  leb128_encode_u32(buf = content, value = memory_core_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2: canon stream.drop-readable <ty> -- opcode 0x13 (19) +
 /// type index. Core signature `[handle] -> []`.
 export fn emit_canon_stream_drop_readable(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 19)
-  leb128_encode_u32(content, type_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 19)
+  leb128_encode_u32(buf = content, value = type_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 step 2: canon stream.drop-writable <ty> -- opcode 0x14 (20) +
 /// type index. Core signature `[handle] -> []`.
 export fn emit_canon_stream_drop_writable(buf: Bytes, type_idx: Int) -> Unit {
-  bytebuf_push(buf, section_canon)
+  bytebuf_push(buf = buf, byte = section_canon)
   let content = bytebuf_new()
-  leb128_encode_u32(content, 1)
-  bytebuf_push(content, 20)
-  leb128_encode_u32(content, type_idx)
-  emit_raw_content(buf, content)
+  leb128_encode_u32(buf = content, value = 1)
+  bytebuf_push(buf = content, byte = 20)
+  leb128_encode_u32(buf = content, value = type_idx)
+  emit_raw_content(buf = buf, content = content)
 }
 
 /// ADR-0089 Decision 3 (#1218): is `nm` a host-stream GET core import?
 /// (There is no anonymous host stream -- the surface is named-only.)
-export fn comp_is_host_stream_get_import(nm: String) -> Bool {
-  String::starts_with(nm, "host_stream_get$")
+export fn comp_is_host_stream_get_import(_ nm: String) -> Bool {
+  String::starts_with(nm, prefix = "host_stream_get$")
 }
 
 /// ADR-0089 Decision 3 follow-up (#1218): does the module import the shared
@@ -473,16 +488,16 @@ export fn comp_is_host_stream_get_import(nm: String) -> Bool {
 /// exactly "this program drops readable ends early". The adapter appends
 /// its close func only then, which is what keeps every already-pinned
 /// stream composition byte-identical.
-export fn comp_core_imports_host_stream_close(core_wasm: Bytes) -> Bool {
+export fn comp_core_imports_host_stream_close(_ core_wasm: Bytes) -> Bool {
   let imp_modules = array_empty()
   let imp_names = array_empty()
   let imp_type_indices = new_int_array()
   let imp_type_sigs = array_empty()
-  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let import_count = parse_core_imports(core_wasm = core_wasm, out_module_names = imp_modules, out_func_names = imp_names, out_type_indices = imp_type_indices, out_type_sigs = imp_type_sigs)
   let mut i = 0
   let mut found = false
   while i < import_count {
-    if Array::get(imp_modules, i) == "vibe" && Array::get(imp_names, i) == "host_stream_close" {
+    if Array::get(imp_modules, at = i) == "vibe" && Array::get(imp_names, at = i) == "host_stream_close" {
       found = true
     } else {
       ()
@@ -497,18 +512,18 @@ export fn comp_core_imports_host_stream_close(core_wasm: Bytes) -> Bool {
 /// sorted). Same single-source-of-truth role as
 /// comp_core_host_future_names: the adapter's func layout and the
 /// component's stream import order both derive from this list.
-export fn comp_core_host_stream_names(core_wasm: Bytes) -> Array[String] {
+export fn comp_core_host_stream_names(_ core_wasm: Bytes) -> Array[String] {
   let imp_modules = array_empty()
   let imp_names = array_empty()
   let imp_type_indices = new_int_array()
   let imp_type_sigs = array_empty()
-  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let import_count = parse_core_imports(core_wasm = core_wasm, out_module_names = imp_modules, out_func_names = imp_names, out_type_indices = imp_type_indices, out_type_sigs = imp_type_sigs)
   let out = array_empty()
   let mut i = 0
   while i < import_count {
-    let nm = Array::get(imp_names, i)
-    if Array::get(imp_modules, i) == "vibe" && comp_is_host_stream_get_import(nm) {
-      Array::push(out, nm)
+    let nm = Array::get(imp_names, at = i)
+    if Array::get(imp_modules, at = i) == "vibe" && comp_is_host_stream_get_import(nm) {
+      Array::push(out, value = nm)
     } else {
       ()
     }
@@ -519,41 +534,41 @@ export fn comp_core_host_stream_names(core_wasm: Bytes) -> Array[String] {
 
 /// The COMPONENT-level import name a host-stream GET core import asks for:
 /// exactly its `$` suffix, validated as a component label by compile_call.
-export fn comp_hoststream_import_label(core_name: String) -> String {
-  String::substring(core_name, String::length("host_stream_get$"), String::length(core_name))
+export fn comp_hoststream_import_label(_ core_name: String) -> String {
+  String::substring(core_name, start = String::length("host_stream_get$"), end = String::length(core_name))
 }
 
 /// ADR-0089 (c) (#1218): is `nm` a host-future GET core import -- the
 /// anonymous `host_future_get` or a named `host_future_get$<label>`?
-export fn comp_is_host_future_get_import(nm: String) -> Bool {
-  nm == "host_future_get" || String::starts_with(nm, "host_future_get$") || comp_is_wit_future_get_import(nm)
+export fn comp_is_host_future_get_import(_ nm: String) -> Bool {
+  nm == "host_future_get" || String::starts_with(nm, prefix = "host_future_get$") || comp_is_wit_future_get_import(nm)
 }
 
 /// A WIT-addressed future: `wit_future_get$` (`future<s64>`, #2064) or
 /// `wit_response_get$` (`future<record{status: s32, body: stream<u8>}>`,
 /// #2066). Both name `<versioned-interface>#<func>` after the prefix.
-export fn comp_is_wit_future_get_import(nm: String) -> Bool {
-  String::starts_with(nm, "wit_future_get$") || comp_is_wit_response_get_import(nm)
+export fn comp_is_wit_future_get_import(_ nm: String) -> Bool {
+  String::starts_with(nm, prefix = "wit_future_get$") || comp_is_wit_response_get_import(nm)
 }
 
-export fn comp_is_wit_response_get_import(nm: String) -> Bool {
-  String::starts_with(nm, "wit_response_get$") || comp_is_wit_response_arg_import(nm)
+export fn comp_is_wit_response_get_import(_ nm: String) -> Bool {
+  String::starts_with(nm, prefix = "wit_response_get$") || comp_is_wit_response_arg_import(nm)
 }
 
 /// #2066: a response whose function takes one `string`
 /// (`wit_response_arg_get$<interface>#<func>?<label>`); its argument arrives
 /// through `vibe.host_arg_push`.
-export fn comp_is_wit_response_arg_import(nm: String) -> Bool {
-  String::starts_with(nm, "wit_response_arg_get$")
+export fn comp_is_wit_response_arg_import(_ nm: String) -> Bool {
+  String::starts_with(nm, prefix = "wit_response_arg_get$")
 }
 
 /// The WIT label of an argument response's one parameter.
-export fn comp_wit_response_arg_label(core_name: String) -> String {
-  let q = String::index_of(core_name, "?")
-  String::substring(core_name, q + 1, String::length(core_name))
+export fn comp_wit_response_arg_label(_ core_name: String) -> String {
+  let q = String::index_of(core_name, needle = "?")
+  String::substring(core_name, start = q + 1, end = String::length(core_name))
 }
 
-fn comp_wit_future_prefix_length(core_name: String) -> Int {
+fn comp_wit_future_prefix_length(_ core_name: String) -> Int {
   if comp_is_wit_response_arg_import(core_name) {
     String::length("wit_response_arg_get$")
   } else if comp_is_wit_response_get_import(core_name) {
@@ -563,41 +578,41 @@ fn comp_wit_future_prefix_length(core_name: String) -> Int {
   }
 }
 
-fn comp_wit_future_separator(core_name: String) -> Int with Exception {
-  let suffix = String::substring(core_name, comp_wit_future_prefix_length(core_name), String::length(core_name))
-  let sep = String::index_of(suffix, "#")
+fn comp_wit_future_separator(_ core_name: String) -> Int with Exception {
+  let suffix = String::substring(core_name, start = comp_wit_future_prefix_length(core_name), end = String::length(core_name))
+  let sep = String::index_of(suffix, needle = "#")
   if sep <= 0 || sep + 1 >= String::length(suffix) {
     throw("component(wit-async-import): malformed core metadata '\{core_name}'; expected wit_future_get$<versioned-interface>#<func>")
   }
   sep
 }
 
-export fn comp_wit_future_interface(core_name: String) -> String with Exception {
+export fn comp_wit_future_interface(_ core_name: String) -> String with Exception {
   let start = comp_wit_future_prefix_length(core_name)
-  let interface_id = String::substring(core_name, start, start + comp_wit_future_separator(core_name))
-  if !String::contains(interface_id, ":") || !String::contains(interface_id, "/") || !String::contains(interface_id, "@") {
+  let interface_id = String::substring(core_name, start = start, end = start + comp_wit_future_separator(core_name))
+  if !String::contains(interface_id, needle = ":") || !String::contains(interface_id, needle = "/") || !String::contains(interface_id, needle = "@") {
     throw("component(wit-async-import): interface id in '\{core_name}' must be versioned (`namespace:package/interface@version`)")
   }
   interface_id
 }
 
-export fn comp_wit_future_func(core_name: String) -> String with Exception {
+export fn comp_wit_future_func(_ core_name: String) -> String with Exception {
   let start = comp_wit_future_prefix_length(core_name)
   let sep = comp_wit_future_separator(core_name)
   // An argument response's name ends at its `?<label>`.
   let end = if comp_is_wit_response_arg_import(core_name) {
-    String::index_of(core_name, "?")
+    String::index_of(core_name, needle = "?")
   } else {
     String::length(core_name)
   }
-  String::substring(core_name, start + sep + 1, end)
+  String::substring(core_name, start = start + sep + 1, end = end)
 }
 
 export fn comp_string_array_index(items: Array[String], needle: String) -> Int {
   let mut i = 0
   let mut found = -1
   while i < Array::length(items) && found < 0 {
-    if Array::get(items, i) == needle {
+    if Array::get(items, at = i) == needle {
       found = i
     } else {
       ()
@@ -609,15 +624,15 @@ export fn comp_string_array_index(items: Array[String], needle: String) -> Int {
 
 /// Unique WIT interfaces in first core-declaration order. This is the
 /// canonical component instance-import order.
-export fn comp_wit_future_interfaces(core_names: Array[String]) -> Array[String] with Exception {
+export fn comp_wit_future_interfaces(_ core_names: Array[String]) -> Array[String] with Exception {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(core_names) {
-    let core_name = Array::get(core_names, i)
+    let core_name = Array::get(core_names, at = i)
     if comp_is_wit_future_get_import(core_name) {
       let interface_id = comp_wit_future_interface(core_name)
-      if comp_string_array_index(out, interface_id) < 0 {
-        Array::push(out, interface_id)
+      if comp_string_array_index(items = out, needle = interface_id) < 0 {
+        Array::push(out, value = interface_id)
       } else {
         ()
       }
@@ -630,11 +645,11 @@ export fn comp_wit_future_interfaces(core_names: Array[String]) -> Array[String]
 }
 
 /// Functions owned by one interface, preserving core-declaration order.
-export fn comp_any_wit_response_arg(core_names: Array[String]) -> Bool {
+export fn comp_any_wit_response_arg(_ core_names: Array[String]) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(core_names) {
-    if comp_is_wit_response_arg_import(Array::get(core_names, i)) {
+    if comp_is_wit_response_arg_import(Array::get(core_names, at = i)) {
       found = true
     } else {
       ()
@@ -650,28 +665,28 @@ export fn comp_wit_future_funcs_of_kind(core_names: Array[String], interface_id:
   let picked: Array[String] = []
   let mut i = 0
   while i < Array::length(core_names) {
-    let nm = Array::get(core_names, i)
+    let nm = Array::get(core_names, at = i)
     if comp_is_wit_response_get_import(nm) == want {
-      Array::push(picked, nm)
+      Array::push(picked, value = nm)
     } else {
       ()
     }
     i = i + 1
   }
-  comp_wit_future_funcs(picked, interface_id)
+  comp_wit_future_funcs(core_names = picked, interface_id = interface_id)
 }
 
 export fn comp_wit_future_funcs(core_names: Array[String], interface_id: String) -> Array[String] with Exception {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(core_names) {
-    let core_name = Array::get(core_names, i)
+    let core_name = Array::get(core_names, at = i)
     if comp_is_wit_future_get_import(core_name) && comp_wit_future_interface(core_name) == interface_id {
       let func_name = comp_wit_future_func(core_name)
-      if comp_string_array_index(out, func_name) >= 0 {
+      if comp_string_array_index(items = out, needle = func_name) >= 0 {
         throw("component(wit-async-import): duplicate function '\{func_name}' in interface '\{interface_id}'")
       }
-      Array::push(out, func_name)
+      Array::push(out, value = func_name)
     } else {
       ()
     }
@@ -701,10 +716,10 @@ fn comp_hf_kind_base() -> Int {
 
 /// Push `comp_hf_kind_base() + fut * 4`, `fut` in local `fut_local`.
 export fn comp_emit_hf_kind_addr(buf: Bytes, fut_local: Int) -> Unit {
-  emit_local_get(buf, fut_local)
-  emit_i32_const(buf, 2)
+  emit_local_get(buf = buf, idx = fut_local)
+  emit_i32_const(buf = buf, value = 2)
   emit_i32_shl(buf)
-  emit_i32_const(buf, comp_hf_kind_base())
+  emit_i32_const(buf = buf, value = comp_hf_kind_base())
   emit_i32_add(buf)
 }
 
@@ -712,18 +727,18 @@ export fn comp_emit_hf_kind_addr(buf: Bytes, fut_local: Int) -> Unit {
 /// kind's type (only one type unless `mixed`).
 export fn comp_emit_drop_by_kind(buf: Bytes, mixed: Bool, fut_local: Int, response_drop: Int, scalar_drop: Int) -> Unit {
   if mixed {
-    comp_emit_hf_kind_addr(buf, fut_local)
-    emit_i32_load(buf, 2, 0)
+    comp_emit_hf_kind_addr(buf = buf, fut_local = fut_local)
+    emit_i32_load(buf = buf, align = 2, offset = 0)
     emit_if_void(buf)
-    emit_local_get(buf, fut_local)
-    emit_call(buf, response_drop)
+    emit_local_get(buf = buf, idx = fut_local)
+    emit_call(buf = buf, func_idx = response_drop)
     emit_else(buf)
-    emit_local_get(buf, fut_local)
-    emit_call(buf, scalar_drop)
+    emit_local_get(buf = buf, idx = fut_local)
+    emit_call(buf = buf, func_idx = scalar_drop)
     emit_end(buf)
   } else {
-    emit_local_get(buf, fut_local)
-    emit_call(buf, response_drop)
+    emit_local_get(buf = buf, idx = fut_local)
+    emit_call(buf = buf, func_idx = response_drop)
   }
 }
 
@@ -732,7 +747,7 @@ export fn comp_first_kind_index(kinds: Array[Bool], want: Bool) -> Int {
   let mut found = 0 - 1
   let mut i = 0
   while i < Array::length(kinds) {
-    if found < 0 && Array::get(kinds, i) == want {
+    if found < 0 && Array::get(kinds, at = i) == want {
       found = i
     } else {
       ()
@@ -789,13 +804,13 @@ export fn comp_response_stream_label() -> String {
   "response-body"
 }
 
-export fn comp_hostfuture_import_label(core_name: String) -> String with Exception {
+export fn comp_hostfuture_import_label(_ core_name: String) -> String with Exception {
   if comp_is_wit_future_get_import(core_name) {
     comp_wit_future_func(core_name)
   } else if core_name == "host_future_get" {
     "get-future"
   } else {
-    String::substring(core_name, String::length("host_future_get$"), String::length(core_name))
+    String::substring(core_name, start = String::length("host_future_get$"), end = String::length(core_name))
   }
 }
 
@@ -846,7 +861,7 @@ export fn comp_hostfuture_import_label(core_name: String) -> String with Excepti
 /// spelling a subtly different value convention.
 export fn comp_emit_encode_i64_value(buf: Bytes, tag_mode: Int) -> Unit {
   if tag_mode == 1 {
-    emit_i64_const(buf, 1)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_shl(buf)
   } else {
     ()
@@ -855,7 +870,7 @@ export fn comp_emit_encode_i64_value(buf: Bytes, tag_mode: Int) -> Unit {
 
 export fn comp_emit_decode_i64_value(buf: Bytes, tag_mode: Int) -> Unit {
   if tag_mode == 1 {
-    emit_i64_const(buf, 1)
+    emit_i64_const(buf = buf, value = 1)
     emit_i64_shr_s(buf)
   } else {
     ()
@@ -868,7 +883,7 @@ export fn comp_repeat_valtype(valtype: Int, count: Int) -> Array[Int] {
   let out = new_int_array()
   let mut i = 0
   while i < count {
-    Array::push(out, valtype)
+    Array::push(out, value = valtype)
     i = i + 1
   }
   out
@@ -883,21 +898,21 @@ export fn comp_repeat_valtype(valtype: Int, count: Int) -> Array[Int] {
 /// string params never reallocates, so old_ptr / old_size are ignored.
 export fn comp_generate_bump_realloc_body() -> Bytes {
   let realloc_body = bytebuf_new()
-  leb128_encode_u32(realloc_body, 1)
-  leb128_encode_u32(realloc_body, 1)
-  bytebuf_push(realloc_body, 127)
+  leb128_encode_u32(buf = realloc_body, value = 1)
+  leb128_encode_u32(buf = realloc_body, value = 1)
+  bytebuf_push(buf = realloc_body, byte = 127)
   // p = (heap + align - 1) & (0 - align)
-  bytebuf_push(realloc_body, 35)
-  leb128_encode_u32(realloc_body, 0)
-  emit_local_get(realloc_body, 2)
+  bytebuf_push(buf = realloc_body, byte = 35)
+  leb128_encode_u32(buf = realloc_body, value = 0)
+  emit_local_get(buf = realloc_body, idx = 2)
   emit_i32_add(realloc_body)
-  emit_i32_const(realloc_body, 1)
-  bytebuf_push(realloc_body, 107)
-  emit_i32_const(realloc_body, 0)
-  emit_local_get(realloc_body, 2)
-  bytebuf_push(realloc_body, 107)
-  bytebuf_push(realloc_body, 113)
-  emit_local_set(realloc_body, 4)
+  emit_i32_const(buf = realloc_body, value = 1)
+  bytebuf_push(buf = realloc_body, byte = 107)
+  emit_i32_const(buf = realloc_body, value = 0)
+  emit_local_get(buf = realloc_body, idx = 2)
+  bytebuf_push(buf = realloc_body, byte = 107)
+  bytebuf_push(buf = realloc_body, byte = 113)
+  emit_local_set(buf = realloc_body, idx = 4)
   // __heap_ptr = p + new_size, ROUNDED UP TO 8.
   //
   // The rounding is the whole point, not tidiness. This allocator hands out
@@ -917,43 +932,43 @@ export fn comp_generate_bump_realloc_body() -> Bytes {
   // looked like a bug about suspending stream reads (#1924) because a chunked
   // upload and a buffered one send different `content-length` /
   // `transfer-encoding` headers -- different lengths, different parity.
-  emit_local_get(realloc_body, 4)
-  emit_local_get(realloc_body, 3)
+  emit_local_get(buf = realloc_body, idx = 4)
+  emit_local_get(buf = realloc_body, idx = 3)
   emit_i32_add(realloc_body)
-  emit_i32_const(realloc_body, 7)
+  emit_i32_const(buf = realloc_body, value = 7)
   emit_i32_add(realloc_body)
-  emit_i32_const(realloc_body, 0 - 8)
-  bytebuf_push(realloc_body, 113)
-  bytebuf_push(realloc_body, 36)
-  leb128_encode_u32(realloc_body, 0)
+  emit_i32_const(buf = realloc_body, value = 0 - 8)
+  bytebuf_push(buf = realloc_body, byte = 113)
+  bytebuf_push(buf = realloc_body, byte = 36)
+  leb128_encode_u32(buf = realloc_body, value = 0)
   // if (__heap_ptr > memory.size << 16) memory.grow(pages needed)
-  bytebuf_push(realloc_body, 35)
-  leb128_encode_u32(realloc_body, 0)
-  bytebuf_push(realloc_body, 63)
-  bytebuf_push(realloc_body, 0)
-  emit_i32_const(realloc_body, 16)
-  bytebuf_push(realloc_body, 116)
-  bytebuf_push(realloc_body, 75)
-  bytebuf_push(realloc_body, 4)
-  bytebuf_push(realloc_body, 64)
-  bytebuf_push(realloc_body, 35)
-  leb128_encode_u32(realloc_body, 0)
-  emit_i32_const(realloc_body, 65535)
+  bytebuf_push(buf = realloc_body, byte = 35)
+  leb128_encode_u32(buf = realloc_body, value = 0)
+  bytebuf_push(buf = realloc_body, byte = 63)
+  bytebuf_push(buf = realloc_body, byte = 0)
+  emit_i32_const(buf = realloc_body, value = 16)
+  bytebuf_push(buf = realloc_body, byte = 116)
+  bytebuf_push(buf = realloc_body, byte = 75)
+  bytebuf_push(buf = realloc_body, byte = 4)
+  bytebuf_push(buf = realloc_body, byte = 64)
+  bytebuf_push(buf = realloc_body, byte = 35)
+  leb128_encode_u32(buf = realloc_body, value = 0)
+  emit_i32_const(buf = realloc_body, value = 65535)
   emit_i32_add(realloc_body)
-  emit_i32_const(realloc_body, 16)
-  bytebuf_push(realloc_body, 118)
-  bytebuf_push(realloc_body, 63)
-  bytebuf_push(realloc_body, 0)
-  bytebuf_push(realloc_body, 107)
-  bytebuf_push(realloc_body, 64)
-  bytebuf_push(realloc_body, 0)
-  bytebuf_push(realloc_body, 26)
-  bytebuf_push(realloc_body, 11)
-  emit_local_get(realloc_body, 4)
-  bytebuf_push(realloc_body, 11)
+  emit_i32_const(buf = realloc_body, value = 16)
+  bytebuf_push(buf = realloc_body, byte = 118)
+  bytebuf_push(buf = realloc_body, byte = 63)
+  bytebuf_push(buf = realloc_body, byte = 0)
+  bytebuf_push(buf = realloc_body, byte = 107)
+  bytebuf_push(buf = realloc_body, byte = 64)
+  bytebuf_push(buf = realloc_body, byte = 0)
+  bytebuf_push(buf = realloc_body, byte = 26)
+  bytebuf_push(buf = realloc_body, byte = 11)
+  emit_local_get(buf = realloc_body, idx = 4)
+  bytebuf_push(buf = realloc_body, byte = 11)
   let out = bytebuf_new()
-  leb128_encode_u32(out, Bytes::length(realloc_body))
-  bytebuf_push_buf(out, realloc_body)
+  leb128_encode_u32(buf = out, value = Bytes::length(realloc_body))
+  bytebuf_push_buf(dst = out, src = realloc_body)
   bytebuf_to_bytes(out)
 }
 
@@ -980,130 +995,130 @@ export fn comp_generate_bump_realloc_body() -> Bytes {
 ///     pairs in, retptr out. Packs each pair into a vibe string value, calls
 ///     target_func, unpacks the returned value into an 8-byte (ptr,len)
 ///     return area allocated via cabi_realloc.
-export fn comp_generate_string_trampoline_packed(string_param_count: Int) -> Bytes {
+export fn comp_generate_string_trampoline_packed(_ string_param_count: Int) -> Bytes {
   let buf = bytebuf_new()
   emit_header(buf)
   // types: 0 = target_func (i64 x N) -> i64; 1 = canon_func (i32 x 2N) -> i32;
   // 2 = cabi_realloc (i32,i32,i32,i32) -> i32
   let type_sec = bytebuf_new()
-  bytebuf_push_vec_header(type_sec, 3)
-  bytebuf_push(type_sec, 96)
+  bytebuf_push_vec_header(buf = type_sec, count = 3)
+  bytebuf_push(buf = type_sec, byte = 96)
   // +1: top-level vibe functions carry a trailing closure-env i64 param
   // (callers pass 0); see linked_compile's entry invocation.
-  leb128_encode_u32(type_sec, string_param_count + 1)
+  leb128_encode_u32(buf = type_sec, value = string_param_count + 1)
   let mut ti = 0
   while ti < (string_param_count + 1) {
-    bytebuf_push(type_sec, 126)
+    bytebuf_push(buf = type_sec, byte = 126)
     ti = ti + 1
   }
-  bytebuf_push(type_sec, 1)
-  bytebuf_push(type_sec, 126)
-  bytebuf_push(type_sec, 96)
-  leb128_encode_u32(type_sec, string_param_count * 2)
+  bytebuf_push(buf = type_sec, byte = 1)
+  bytebuf_push(buf = type_sec, byte = 126)
+  bytebuf_push(buf = type_sec, byte = 96)
+  leb128_encode_u32(buf = type_sec, value = string_param_count * 2)
   let mut ci = 0
   while ci < (string_param_count * 2) {
-    bytebuf_push(type_sec, 127)
+    bytebuf_push(buf = type_sec, byte = 127)
     ci = ci + 1
   }
-  bytebuf_push(type_sec, 1)
-  bytebuf_push(type_sec, 127)
-  bytebuf_push(type_sec, 96)
-  leb128_encode_u32(type_sec, 4)
-  bytebuf_push(type_sec, 127)
-  bytebuf_push(type_sec, 127)
-  bytebuf_push(type_sec, 127)
-  bytebuf_push(type_sec, 127)
-  bytebuf_push(type_sec, 1)
-  bytebuf_push(type_sec, 127)
-  bytebuf_push_section(buf, 1, type_sec)
+  bytebuf_push(buf = type_sec, byte = 1)
+  bytebuf_push(buf = type_sec, byte = 127)
+  bytebuf_push(buf = type_sec, byte = 96)
+  leb128_encode_u32(buf = type_sec, value = 4)
+  bytebuf_push(buf = type_sec, byte = 127)
+  bytebuf_push(buf = type_sec, byte = 127)
+  bytebuf_push(buf = type_sec, byte = 127)
+  bytebuf_push(buf = type_sec, byte = 127)
+  bytebuf_push(buf = type_sec, byte = 1)
+  bytebuf_push(buf = type_sec, byte = 127)
+  bytebuf_push_section(out = buf, section_id = 1, content = type_sec)
   // imports: env.target_func (func 0), env.__heap_ptr (mut i32 global), env.memory
   let import_sec = bytebuf_new()
-  leb128_encode_u32(import_sec, 3)
-  emit_name(import_sec, "env")
-  emit_name(import_sec, "target_func")
-  bytebuf_push(import_sec, 0)
-  leb128_encode_u32(import_sec, 0)
-  emit_name(import_sec, "env")
-  emit_name(import_sec, "__heap_ptr")
-  bytebuf_push(import_sec, 3)
-  bytebuf_push(import_sec, 127)
-  bytebuf_push(import_sec, 1)
-  emit_name(import_sec, "env")
-  emit_name(import_sec, "memory")
-  bytebuf_push(import_sec, 2)
-  bytebuf_push(import_sec, 0)
-  leb128_encode_u32(import_sec, 0)
-  bytebuf_push_section(buf, 2, import_sec)
+  leb128_encode_u32(buf = import_sec, value = 3)
+  emit_name(buf = import_sec, name = "env")
+  emit_name(buf = import_sec, name = "target_func")
+  bytebuf_push(buf = import_sec, byte = 0)
+  leb128_encode_u32(buf = import_sec, value = 0)
+  emit_name(buf = import_sec, name = "env")
+  emit_name(buf = import_sec, name = "__heap_ptr")
+  bytebuf_push(buf = import_sec, byte = 3)
+  bytebuf_push(buf = import_sec, byte = 127)
+  bytebuf_push(buf = import_sec, byte = 1)
+  emit_name(buf = import_sec, name = "env")
+  emit_name(buf = import_sec, name = "memory")
+  bytebuf_push(buf = import_sec, byte = 2)
+  bytebuf_push(buf = import_sec, byte = 0)
+  leb128_encode_u32(buf = import_sec, value = 0)
+  bytebuf_push_section(out = buf, section_id = 2, content = import_sec)
   // funcs: 1 = canon_func (type 1), 2 = cabi_realloc (type 2)
   let func_sec = bytebuf_new()
-  leb128_encode_u32(func_sec, 2)
-  leb128_encode_u32(func_sec, 1)
-  leb128_encode_u32(func_sec, 2)
-  bytebuf_push_section(buf, 3, func_sec)
+  leb128_encode_u32(buf = func_sec, value = 2)
+  leb128_encode_u32(buf = func_sec, value = 1)
+  leb128_encode_u32(buf = func_sec, value = 2)
+  bytebuf_push_section(out = buf, section_id = 3, content = func_sec)
   let export_sec = bytebuf_new()
-  leb128_encode_u32(export_sec, 2)
-  emit_name(export_sec, "canon_func")
-  bytebuf_push(export_sec, 0)
-  leb128_encode_u32(export_sec, 1)
-  emit_name(export_sec, "cabi_realloc")
-  bytebuf_push(export_sec, 0)
-  leb128_encode_u32(export_sec, 2)
-  bytebuf_push_section(buf, 7, export_sec)
+  leb128_encode_u32(buf = export_sec, value = 2)
+  emit_name(buf = export_sec, name = "canon_func")
+  bytebuf_push(buf = export_sec, byte = 0)
+  leb128_encode_u32(buf = export_sec, value = 1)
+  emit_name(buf = export_sec, name = "cabi_realloc")
+  bytebuf_push(buf = export_sec, byte = 0)
+  leb128_encode_u32(buf = export_sec, value = 2)
+  bytebuf_push_section(out = buf, section_id = 7, content = export_sec)
   let code_sec = bytebuf_new()
-  leb128_encode_u32(code_sec, 2)
+  leb128_encode_u32(buf = code_sec, value = 2)
   // canon_func body. locals: params 0..2N-1 (i32); 2N = result i64; 2N+1 = retptr i32
   let canon_body = bytebuf_new()
-  leb128_encode_u32(canon_body, 2)
-  leb128_encode_u32(canon_body, 1)
-  bytebuf_push(canon_body, 126)
-  leb128_encode_u32(canon_body, 1)
-  bytebuf_push(canon_body, 127)
+  leb128_encode_u32(buf = canon_body, value = 2)
+  leb128_encode_u32(buf = canon_body, value = 1)
+  bytebuf_push(buf = canon_body, byte = 126)
+  leb128_encode_u32(buf = canon_body, value = 1)
+  bytebuf_push(buf = canon_body, byte = 127)
   let result_local = string_param_count * 2
   let retptr_local = result_local + 1
   let mut si = 0
   while si < string_param_count {
     // (extend_u(ptr) << 32) | extend_u(len)
-    emit_local_get(canon_body, si * 2)
-    bytebuf_push(canon_body, 173)
-    emit_i64_const(canon_body, 32)
-    bytebuf_push(canon_body, 134)
-    emit_local_get(canon_body, (si * 2) + 1)
-    bytebuf_push(canon_body, 173)
-    bytebuf_push(canon_body, 132)
+    emit_local_get(buf = canon_body, idx = si * 2)
+    bytebuf_push(buf = canon_body, byte = 173)
+    emit_i64_const(buf = canon_body, value = 32)
+    bytebuf_push(buf = canon_body, byte = 134)
+    emit_local_get(buf = canon_body, idx = (si * 2) + 1)
+    bytebuf_push(buf = canon_body, byte = 173)
+    bytebuf_push(buf = canon_body, byte = 132)
     si = si + 1
   }
   // Trailing closure-env argument (0 for a top-level function).
-  emit_i64_const(canon_body, 0)
-  bytebuf_push(canon_body, 16)
-  leb128_encode_u32(canon_body, 0)
-  emit_local_set(canon_body, result_local)
+  emit_i64_const(buf = canon_body, value = 0)
+  bytebuf_push(buf = canon_body, byte = 16)
+  leb128_encode_u32(buf = canon_body, value = 0)
+  emit_local_set(buf = canon_body, idx = result_local)
   // retptr = cabi_realloc(0, 0, 4, 8)
-  emit_i32_const(canon_body, 0)
-  emit_i32_const(canon_body, 0)
-  emit_i32_const(canon_body, 4)
-  emit_i32_const(canon_body, 8)
-  bytebuf_push(canon_body, 16)
-  leb128_encode_u32(canon_body, 2)
-  emit_local_set(canon_body, retptr_local)
+  emit_i32_const(buf = canon_body, value = 0)
+  emit_i32_const(buf = canon_body, value = 0)
+  emit_i32_const(buf = canon_body, value = 4)
+  emit_i32_const(buf = canon_body, value = 8)
+  bytebuf_push(buf = canon_body, byte = 16)
+  leb128_encode_u32(buf = canon_body, value = 2)
+  emit_local_set(buf = canon_body, idx = retptr_local)
   // [retptr] = wrap(result >> 32); [retptr+4] = wrap(result & 0xFFFFFFFF)
-  emit_local_get(canon_body, retptr_local)
-  emit_local_get(canon_body, result_local)
-  emit_i64_const(canon_body, 32)
-  bytebuf_push(canon_body, 136)
-  bytebuf_push(canon_body, 167)
-  emit_i32_store(canon_body, 2, 0)
-  emit_local_get(canon_body, retptr_local)
-  emit_local_get(canon_body, result_local)
-  bytebuf_push(canon_body, 167)
-  emit_i32_store(canon_body, 2, 4)
-  emit_local_get(canon_body, retptr_local)
-  bytebuf_push(canon_body, 11)
-  leb128_encode_u32(code_sec, Bytes::length(canon_body))
-  bytebuf_push_buf(code_sec, canon_body)
+  emit_local_get(buf = canon_body, idx = retptr_local)
+  emit_local_get(buf = canon_body, idx = result_local)
+  emit_i64_const(buf = canon_body, value = 32)
+  bytebuf_push(buf = canon_body, byte = 136)
+  bytebuf_push(buf = canon_body, byte = 167)
+  emit_i32_store(buf = canon_body, align = 2, offset = 0)
+  emit_local_get(buf = canon_body, idx = retptr_local)
+  emit_local_get(buf = canon_body, idx = result_local)
+  bytebuf_push(buf = canon_body, byte = 167)
+  emit_i32_store(buf = canon_body, align = 2, offset = 4)
+  emit_local_get(buf = canon_body, idx = retptr_local)
+  bytebuf_push(buf = canon_body, byte = 11)
+  leb128_encode_u32(buf = code_sec, value = Bytes::length(canon_body))
+  bytebuf_push_buf(dst = code_sec, src = canon_body)
   // The allocator the canonical ABI lowers through, shared with the async
   // trampoline so the two lanes cannot drift apart.
-  bytebuf_push_buf(code_sec, comp_generate_bump_realloc_body())
-  bytebuf_push_section(buf, 10, code_sec)
+  bytebuf_push_buf(dst = code_sec, src = comp_generate_bump_realloc_body())
+  bytebuf_push_section(out = buf, section_id = 10, content = code_sec)
   bytebuf_to_bytes(buf)
 }
 
@@ -1111,7 +1126,7 @@ export fn comp_generate_string_trampoline_packed(string_param_count: Int) -> Byt
 /// each requested `vibe.*` import (see comp_emit_component_wasm_string_handler_stubbed).
 /// With empty inputs it degenerates to the fd_write-only stub.
 export fn comp_generate_host_stub_module(vibe_names: Array[String], vibe_sigs: Array[Array[Int]]) -> Bytes {
-  comp_generate_host_stub_module_with_policy(vibe_names, vibe_sigs, true)
+  comp_generate_host_stub_module_with_policy(vibe_names = vibe_names, vibe_sigs = vibe_sigs, zero_stub_benign = true)
 }
 
 /// `zero_stub_benign` picks which of the two answers the four benign-stubbable
@@ -1123,56 +1138,58 @@ export fn comp_generate_host_stub_module_with_policy(vibe_names: Array[String], 
   emit_header(out)
   let n = Array::length(vibe_names)
   let tc = bytebuf_new()
-  bytebuf_push_vec_header(tc, n + 1)
-  emit_func_type_raw(tc, [127, 127, 127, 127], [127])
+  bytebuf_push_vec_header(buf = tc, count = n + 1)
+  emit_func_type_raw(buf = tc, param_types = [127, 127, 127, 127], result_types = [
+    127
+  ])
   let mut ti = 0
   while ti < n {
-    let sig = Array::get(vibe_sigs, ti)
-    let pc = Array::get(sig, 0)
+    let sig = Array::get(vibe_sigs, at = ti)
+    let pc = Array::get(sig, at = 0)
     let params = new_int_array()
     let mut pi = 0
     while pi < pc {
-      Array::push(params, Array::get(sig, 1 + pi))
+      Array::push(params, value = Array::get(sig, at = 1 + pi))
       pi = pi + 1
     }
-    let rc = Array::get(sig, 1 + pc)
+    let rc = Array::get(sig, at = 1 + pc)
     let results = new_int_array()
     let mut ri = 0
     while ri < rc {
-      Array::push(results, Array::get(sig, 2 + pc + ri))
+      Array::push(results, value = Array::get(sig, at = 2 + pc + ri))
       ri = ri + 1
     }
-    emit_func_type_raw(tc, params, results)
+    emit_func_type_raw(buf = tc, param_types = params, result_types = results)
     ti = ti + 1
   }
-  bytebuf_push_section(out, 1, tc)
+  bytebuf_push_section(out = out, section_id = 1, content = tc)
   let ftypes = new_int_array()
-  Array::push(ftypes, 0)
+  Array::push(ftypes, value = 0)
   let mut fsi = 0
   while fsi < n {
-    Array::push(ftypes, fsi + 1)
+    Array::push(ftypes, value = fsi + 1)
     fsi = fsi + 1
   }
-  emit_function_section(out, ftypes)
+  emit_function_section(out = out, type_indices = ftypes)
   let exp_names = array_empty()
   let exp_idxs = new_int_array()
-  Array::push(exp_names, "fd_write")
-  Array::push(exp_idxs, 0)
+  Array::push(exp_names, value = "fd_write")
+  Array::push(exp_idxs, value = 0)
   let mut ei = 0
   while ei < n {
-    Array::push(exp_names, Array::get(vibe_names, ei))
-    Array::push(exp_idxs, ei + 1)
+    Array::push(exp_names, value = Array::get(vibe_names, at = ei))
+    Array::push(exp_idxs, value = ei + 1)
     ei = ei + 1
   }
-  emit_export_section_multi(out, exp_names, exp_idxs)
-  let bodies = Array::slice([(bytebuf_new())], 0, 0)
+  emit_export_section_multi(out = out, names = exp_names, func_indices = exp_idxs)
+  let bodies = Array::slice([(bytebuf_new())], start = 0, end = 0)
   let fd_body = bytebuf_new()
-  emit_i32_const(fd_body, 0)
-  Array::push(bodies, fd_body)
+  emit_i32_const(buf = fd_body, value = 0)
+  Array::push(bodies, value = fd_body)
   let mut bi = 0
   while bi < n {
     let body = bytebuf_new()
-    let sn = Array::get(vibe_names, bi)
+    let sn = Array::get(vibe_names, at = bi)
     // Zero-stubs: env-get -> raw-ABI empty string ("unset"); the fs WRITE
     // pair -> silently dropped (the only writer on the compile path is the
     // persistent header/artifact cache, and dropping a cache write is
@@ -1191,25 +1208,25 @@ export fn comp_generate_host_stub_module_with_policy(vibe_names: Array[String], 
     if zero_stub_benign && (sn == "env-get" || sn == "fs_write_file" || sn == "fs_write_bytes" || sn == "profile-now-us") {
       // Match the import's declared result shape: nothing for void, a typed
       // zero otherwise (i64 for the raw ABI, i32 defensively).
-      let sig = Array::get(vibe_sigs, bi)
-      let pc = Array::get(sig, 0)
-      let rc = Array::get(sig, 1 + pc)
+      let sig = Array::get(vibe_sigs, at = bi)
+      let pc = Array::get(sig, at = 0)
+      let rc = Array::get(sig, at = 1 + pc)
       if rc >= 1 {
-        if Array::get(sig, 2 + pc) == 127 {
-          emit_i32_const(body, 0)
+        if Array::get(sig, at = 2 + pc) == 127 {
+          emit_i32_const(buf = body, value = 0)
         } else {
-          emit_i64_const(body, 0)
+          emit_i64_const(buf = body, value = 0)
         }
       } else {
         ()
       }
     } else {
-      bytebuf_push(body, 0)
+      bytebuf_push(buf = body, byte = 0)
     }
-    Array::push(bodies, body)
+    Array::push(bodies, value = body)
     bi = bi + 1
   }
-  emit_code_section(out, bodies)
+  emit_code_section(out = out, bodies = bodies)
   bytebuf_to_bytes(out)
 }
 
@@ -1290,47 +1307,51 @@ export fn comp_generate_serve_stream_adapter_module() -> Bytes {
   // waitable.join; 4 = (set, ptr) -> event; 5 = (i64) -> i64, the shape BOTH
   // halves of the vibe-side surface share.
   let tc = bytebuf_new()
-  bytebuf_push_vec_header(tc, 6)
-  emit_func_type_raw(tc, comp_repeat_valtype(127, 3), [127])
-  emit_func_type_raw(tc, comp_repeat_valtype(127, 1), array_empty())
-  emit_func_type_raw(tc, array_empty(), [127])
-  emit_func_type_raw(tc, comp_repeat_valtype(127, 2), array_empty())
-  emit_func_type_raw(tc, comp_repeat_valtype(127, 2), [127])
-  emit_func_type_raw(tc, [126], [126])
-  bytebuf_push_section(out, 1, tc)
+  bytebuf_push_vec_header(buf = tc, count = 6)
+  emit_func_type_raw(buf = tc, param_types = comp_repeat_valtype(valtype = 127, count = 3), result_types = [
+    127
+  ])
+  emit_func_type_raw(buf = tc, param_types = comp_repeat_valtype(valtype = 127, count = 1), result_types = array_empty())
+  emit_func_type_raw(buf = tc, param_types = array_empty(), result_types = [127])
+  emit_func_type_raw(buf = tc, param_types = comp_repeat_valtype(valtype = 127, count = 2), result_types = array_empty())
+  emit_func_type_raw(buf = tc, param_types = comp_repeat_valtype(valtype = 127, count = 2), result_types = [
+    127
+  ])
+  emit_func_type_raw(buf = tc, param_types = [126], result_types = [126])
+  bytebuf_push_section(out = out, section_id = 1, content = tc)
   let ic = bytebuf_new()
-  bytebuf_push_vec_header(ic, 7)
-  emit_name(ic, "$root")
-  emit_name(ic, "[async-lower][stream-read-0]body")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 0)
-  emit_name(ic, "$root")
-  emit_name(ic, "[stream-drop-readable-0]body")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 1)
-  emit_name(ic, "$root")
-  emit_name(ic, "[waitable-set-new]")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 2)
-  emit_name(ic, "$root")
-  emit_name(ic, "[waitable-join]")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 3)
-  emit_name(ic, "$root")
-  emit_name(ic, "[waitable-set-wait]")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 4)
-  emit_name(ic, "$root")
-  emit_name(ic, "[waitable-set-drop]")
-  bytebuf_push(ic, 0)
-  bytebuf_push(ic, 1)
-  emit_name(ic, "env")
-  emit_name(ic, "memory")
-  bytebuf_push(ic, 2)
-  bytebuf_push(ic, 0)
-  leb128_encode_u32(ic, 1)
-  bytebuf_push_section(out, 2, ic)
-  emit_function_section(out, [5, 5])
+  bytebuf_push_vec_header(buf = ic, count = 7)
+  emit_name(buf = ic, name = "$root")
+  emit_name(buf = ic, name = "[async-lower][stream-read-0]body")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 0)
+  emit_name(buf = ic, name = "$root")
+  emit_name(buf = ic, name = "[stream-drop-readable-0]body")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 1)
+  emit_name(buf = ic, name = "$root")
+  emit_name(buf = ic, name = "[waitable-set-new]")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 2)
+  emit_name(buf = ic, name = "$root")
+  emit_name(buf = ic, name = "[waitable-join]")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 3)
+  emit_name(buf = ic, name = "$root")
+  emit_name(buf = ic, name = "[waitable-set-wait]")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 4)
+  emit_name(buf = ic, name = "$root")
+  emit_name(buf = ic, name = "[waitable-set-drop]")
+  bytebuf_push(buf = ic, byte = 0)
+  bytebuf_push(buf = ic, byte = 1)
+  emit_name(buf = ic, name = "env")
+  emit_name(buf = ic, name = "memory")
+  bytebuf_push(buf = ic, byte = 2)
+  bytebuf_push(buf = ic, byte = 0)
+  leb128_encode_u32(buf = ic, value = 1)
+  bytebuf_push_section(out = out, section_id = 2, content = ic)
+  emit_function_section(out = out, type_indices = [5, 5])
   // Both halves of the surface, ALWAYS. `host_stream_close` is what a handler
   // that stops reading early lowers to (`__hs_close` -> `vibe.host_stream_close`,
   // spec §3.18.1), and a core that imports it cannot be instantiated against an
@@ -1338,137 +1359,137 @@ export fn comp_generate_serve_stream_adapter_module() -> Bytes {
   // bytes in the components that never call it and keeps "take the first four
   // bytes and hang up" from being a shape `vibe serve` refuses to compose.
   let export_sec = bytebuf_new()
-  leb128_encode_u32(export_sec, 2)
-  emit_name(export_sec, "host_stream_read")
-  bytebuf_push(export_sec, 0)
-  leb128_encode_u32(export_sec, 6)
-  emit_name(export_sec, "host_stream_close")
-  bytebuf_push(export_sec, 0)
-  leb128_encode_u32(export_sec, 7)
-  bytebuf_push_section(out, 7, export_sec)
+  leb128_encode_u32(buf = export_sec, value = 2)
+  emit_name(buf = export_sec, name = "host_stream_read")
+  bytebuf_push(buf = export_sec, byte = 0)
+  leb128_encode_u32(buf = export_sec, value = 6)
+  emit_name(buf = export_sec, name = "host_stream_close")
+  bytebuf_push(buf = export_sec, byte = 0)
+  leb128_encode_u32(buf = export_sec, value = 7)
+  bytebuf_push_section(out = out, section_id = 7, content = export_sec)
   // param 0 = the handle (i64, untagged); locals (i32) 1 = handle, 2 = status,
   // 3 = waitable set, 4 = event, 5 = the latch address, 6 = the read slot.
   let b = bytebuf_new()
-  emit_local_get(b, 0)
+  emit_local_get(buf = b, idx = 0)
   emit_i32_wrap_i64(b)
-  emit_local_set(b, 1)
+  emit_local_set(buf = b, idx = 1)
   // Same cap the named adapter enforces, for the same reason: the latch band
   // is `handle * 4 + comp_ss_closed_base` in a ONE-page memory, so an
   // unbounded handle would silently walk past the page instead of saying so.
   // Trapping here names the limit; growing past it is a change to the band,
   // not something to discover as an out-of-bounds store.
-  emit_local_get(b, 1)
-  emit_i32_const(b, comp_hf_max_handles())
+  emit_local_get(buf = b, idx = 1)
+  emit_i32_const(buf = b, value = comp_hf_max_handles())
   emit_i32_gt_u(b)
   emit_if_void(b)
-  bytebuf_push(b, 0)
+  bytebuf_push(buf = b, byte = 0)
   emit_end(b)
-  emit_local_get(b, 1)
-  emit_i32_const(b, 2)
+  emit_local_get(buf = b, idx = 1)
+  emit_i32_const(buf = b, value = 2)
   emit_i32_shl(b)
-  emit_i32_const(b, comp_ss_closed_base)
+  emit_i32_const(buf = b, value = comp_ss_closed_base)
   emit_i32_add(b)
-  emit_local_set(b, 5)
-  emit_local_get(b, 1)
-  emit_i32_const(b, 2)
+  emit_local_set(buf = b, idx = 5)
+  emit_local_get(buf = b, idx = 1)
+  emit_i32_const(buf = b, value = 2)
   emit_i32_shl(b)
-  emit_i32_const(b, comp_ss_scratch_base)
+  emit_i32_const(buf = b, value = comp_ss_scratch_base)
   emit_i32_add(b)
-  emit_local_set(b, 6)
+  emit_local_set(buf = b, idx = 6)
   // A latch set by a previous inline close: this call is the settle it was
   // waiting for. Drop the readable end now and report the end of the stream.
-  emit_local_get(b, 5)
-  emit_i32_load(b, 2, 0)
+  emit_local_get(buf = b, idx = 5)
+  emit_i32_load(buf = b, align = 2, offset = 0)
   emit_if_void(b)
-  emit_local_get(b, 5)
-  emit_i32_const(b, 0)
-  emit_i32_store(b, 2, 0)
-  emit_local_get(b, 1)
-  emit_call(b, 1)
-  emit_i64_const(b, 0 - 1)
+  emit_local_get(buf = b, idx = 5)
+  emit_i32_const(buf = b, value = 0)
+  emit_i32_store(buf = b, align = 2, offset = 0)
+  emit_local_get(buf = b, idx = 1)
+  emit_call(buf = b, func_idx = 1)
+  emit_i64_const(buf = b, value = 0 - 1)
   emit_return(b)
   emit_end(b)
   // One byte per call: the current host-stream read shape, and the worst case
   // for status handling.
-  emit_local_get(b, 1)
-  emit_local_get(b, 6)
-  emit_i32_const(b, 1)
-  emit_call(b, 0)
-  emit_local_set(b, 2)
-  emit_local_get(b, 2)
-  emit_i32_const(b, -1)
+  emit_local_get(buf = b, idx = 1)
+  emit_local_get(buf = b, idx = 6)
+  emit_i32_const(buf = b, value = 1)
+  emit_call(buf = b, func_idx = 0)
+  emit_local_set(buf = b, idx = 2)
+  emit_local_get(buf = b, idx = 2)
+  emit_i32_const(buf = b, value = -1)
   emit_i32_eq(b)
   emit_if_void(b)
   // BLOCKED: park until the producer delivers, then UNJOIN before dropping
   // the set -- dropping one that still has members traps.
-  emit_call(b, 2)
-  emit_local_set(b, 3)
-  emit_local_get(b, 1)
-  emit_local_get(b, 3)
-  emit_call(b, 3)
-  emit_local_get(b, 3)
-  emit_local_get(b, 1)
-  emit_i32_const(b, 3)
+  emit_call(buf = b, func_idx = 2)
+  emit_local_set(buf = b, idx = 3)
+  emit_local_get(buf = b, idx = 1)
+  emit_local_get(buf = b, idx = 3)
+  emit_call(buf = b, func_idx = 3)
+  emit_local_get(buf = b, idx = 3)
+  emit_local_get(buf = b, idx = 1)
+  emit_i32_const(buf = b, value = 3)
   emit_i32_shl(b)
-  emit_i32_const(b, comp_ss_payload_base)
+  emit_i32_const(buf = b, value = comp_ss_payload_base)
   emit_i32_add(b)
-  emit_call(b, 4)
-  emit_local_set(b, 4)
-  emit_local_get(b, 1)
-  emit_i32_const(b, 0)
-  emit_call(b, 3)
-  emit_local_get(b, 3)
-  emit_call(b, 5)
-  emit_local_get(b, 4)
-  emit_i32_const(b, 2)
+  emit_call(buf = b, func_idx = 4)
+  emit_local_set(buf = b, idx = 4)
+  emit_local_get(buf = b, idx = 1)
+  emit_i32_const(buf = b, value = 0)
+  emit_call(buf = b, func_idx = 3)
+  emit_local_get(buf = b, idx = 3)
+  emit_call(buf = b, func_idx = 5)
+  emit_local_get(buf = b, idx = 4)
+  emit_i32_const(buf = b, value = 2)
   emit_i32_ne(b)
   emit_if_void(b)
-  bytebuf_push(b, 0)
+  bytebuf_push(buf = b, byte = 0)
   emit_end(b)
-  emit_local_get(b, 1)
-  emit_i32_const(b, 3)
+  emit_local_get(buf = b, idx = 1)
+  emit_i32_const(buf = b, value = 3)
   emit_i32_shl(b)
-  emit_i32_const(b, comp_ss_payload_base + 4)
+  emit_i32_const(buf = b, value = comp_ss_payload_base + 4)
   emit_i32_add(b)
-  emit_i32_load(b, 2, 0)
-  emit_local_set(b, 2)
+  emit_i32_load(buf = b, align = 2, offset = 0)
+  emit_local_set(buf = b, idx = 2)
   emit_end(b)
   // Nothing transferred = the end of the stream. Any zero-transfer code other
   // than the measured CLOSED (1) is an assumption that moved: trap rather than
   // report an end that may not be one.
-  emit_local_get(b, 2)
-  emit_i32_const(b, 4)
+  emit_local_get(buf = b, idx = 2)
+  emit_i32_const(buf = b, value = 4)
   emit_i32_shr_u(b)
   emit_i32_eqz(b)
   emit_if_void(b)
-  emit_local_get(b, 2)
-  emit_i32_const(b, 15)
+  emit_local_get(buf = b, idx = 2)
+  emit_i32_const(buf = b, value = 15)
   emit_i32_and(b)
-  emit_i32_const(b, 1)
+  emit_i32_const(buf = b, value = 1)
   emit_i32_ne(b)
   emit_if_void(b)
-  bytebuf_push(b, 0)
+  bytebuf_push(buf = b, byte = 0)
   emit_end(b)
-  emit_local_get(b, 1)
-  emit_call(b, 1)
-  emit_i64_const(b, 0 - 1)
+  emit_local_get(buf = b, idx = 1)
+  emit_call(buf = b, func_idx = 1)
+  emit_i64_const(buf = b, value = 0 - 1)
   emit_return(b)
   emit_end(b)
   // A byte landed. If the end came WITH it, latch that: reading again after
   // the notification traps, so the drop happens on the next call instead.
-  emit_local_get(b, 2)
-  emit_i32_const(b, 15)
+  emit_local_get(buf = b, idx = 2)
+  emit_i32_const(buf = b, value = 15)
   emit_i32_and(b)
-  emit_i32_const(b, 1)
+  emit_i32_const(buf = b, value = 1)
   emit_i32_eq(b)
   emit_if_void(b)
-  emit_local_get(b, 5)
-  emit_i32_const(b, 1)
-  emit_i32_store(b, 2, 0)
+  emit_local_get(buf = b, idx = 5)
+  emit_i32_const(buf = b, value = 1)
+  emit_i32_store(buf = b, align = 2, offset = 0)
   emit_end(b)
-  emit_local_get(b, 6)
-  emit_i32_load8_u(b, 0, 0)
-  bytebuf_push(b, 173)
+  emit_local_get(buf = b, idx = 6)
+  emit_i32_load8_u(buf = b, align = 0, offset = 0)
+  bytebuf_push(buf = b, byte = 173)
   // host_stream_close: release a readable end the handler stopped reading.
   // No `stream.read` and no park -- dropping is synchronous. The guest's cell
   // state gates the ONE call (`__hs_close` drops only from state 3 and closes
@@ -1479,43 +1500,43 @@ export fn comp_generate_serve_stream_adapter_module() -> Bytes {
   // Returns 0: the surface is `-> Unit`, but the raw ABI is uniformly
   // `(i64) -> i64`, so the injected wrapper discards this.
   let cb = bytebuf_new()
-  emit_local_get(cb, 0)
+  emit_local_get(buf = cb, idx = 0)
   emit_i32_wrap_i64(cb)
-  emit_local_set(cb, 1)
-  emit_local_get(cb, 1)
-  emit_i32_const(cb, comp_hf_max_handles())
+  emit_local_set(buf = cb, idx = 1)
+  emit_local_get(buf = cb, idx = 1)
+  emit_i32_const(buf = cb, value = comp_hf_max_handles())
   emit_i32_gt_u(cb)
   emit_if_void(cb)
-  bytebuf_push(cb, 0)
+  bytebuf_push(buf = cb, byte = 0)
   emit_end(cb)
-  emit_local_get(cb, 1)
-  emit_i32_const(cb, 2)
+  emit_local_get(buf = cb, idx = 1)
+  emit_i32_const(buf = cb, value = 2)
   emit_i32_shl(cb)
-  emit_i32_const(cb, comp_ss_closed_base)
+  emit_i32_const(buf = cb, value = comp_ss_closed_base)
   emit_i32_add(cb)
-  emit_i32_const(cb, 0)
-  emit_i32_store(cb, 2, 0)
-  emit_local_get(cb, 1)
-  emit_call(cb, 1)
-  emit_i64_const(cb, 0)
+  emit_i32_const(buf = cb, value = 0)
+  emit_i32_store(buf = cb, align = 2, offset = 0)
+  emit_local_get(buf = cb, idx = 1)
+  emit_call(buf = cb, func_idx = 1)
+  emit_i64_const(buf = cb, value = 0)
   let code_sec = bytebuf_new()
-  leb128_encode_u32(code_sec, 2)
+  leb128_encode_u32(buf = code_sec, value = 2)
   let fb = bytebuf_new()
-  leb128_encode_u32(fb, 1)
-  leb128_encode_u32(fb, 7)
-  bytebuf_push(fb, 127)
-  bytebuf_push_buf(fb, b)
-  bytebuf_push(fb, 11)
-  leb128_encode_u32(code_sec, bytebuf_length(fb))
-  bytebuf_push_buf(code_sec, fb)
+  leb128_encode_u32(buf = fb, value = 1)
+  leb128_encode_u32(buf = fb, value = 7)
+  bytebuf_push(buf = fb, byte = 127)
+  bytebuf_push_buf(dst = fb, src = b)
+  bytebuf_push(buf = fb, byte = 11)
+  leb128_encode_u32(buf = code_sec, value = bytebuf_length(fb))
+  bytebuf_push_buf(dst = code_sec, src = fb)
   let cfb = bytebuf_new()
-  leb128_encode_u32(cfb, 1)
-  leb128_encode_u32(cfb, 1)
-  bytebuf_push(cfb, 127)
-  bytebuf_push_buf(cfb, cb)
-  bytebuf_push(cfb, 11)
-  leb128_encode_u32(code_sec, bytebuf_length(cfb))
-  bytebuf_push_buf(code_sec, cfb)
-  bytebuf_push_section(out, 10, code_sec)
+  leb128_encode_u32(buf = cfb, value = 1)
+  leb128_encode_u32(buf = cfb, value = 1)
+  bytebuf_push(buf = cfb, byte = 127)
+  bytebuf_push_buf(dst = cfb, src = cb)
+  bytebuf_push(buf = cfb, byte = 11)
+  leb128_encode_u32(buf = code_sec, value = bytebuf_length(cfb))
+  bytebuf_push_buf(dst = code_sec, src = cfb)
+  bytebuf_push_section(out = out, section_id = 10, content = code_sec)
   bytebuf_to_bytes(out)
 }

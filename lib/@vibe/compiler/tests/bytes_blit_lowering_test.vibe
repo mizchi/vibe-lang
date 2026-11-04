@@ -12,7 +12,7 @@ import @vibex/wasm_runtime {
 }
 
 test "linear blit calls a range helper instead of emitting a byte loop" {
-  let wasm = compile_wasi("export fn copy() -> Unit { let dst = Bytes::new(); let src = Bytes::from_array([10, 20, 30]); Bytes::blit(dst, src, 1, 3) }", "copy")
+  let wasm = compile_wasi(source = "export fn copy() -> Unit { let dst = Bytes::new(); let src = Bytes::from_array([10, 20, 30]); Bytes::blit(dst, src, 1, 3) }", entry = "copy")
   let mut imports = 0
   for imp in module_imports(wasm) {
     let (_, _, kind, _) = imp
@@ -28,31 +28,34 @@ test "linear blit calls a range helper instead of emitting a byte loop" {
     }
   }
   assert(index >= imports)
-  let (offset, size, _) = Array::get(module_code(wasm), index - imports)
-  let (start, end) = get_code_body_range(wasm, offset, size)
-  for instruction in disassemble(wasm, start, end) {
-    assert(!String::starts_with(instruction, "??"))
-    assert(!String::starts_with(instruction, "loop"))
+  let (offset, size, _) = Array::get(module_code(wasm), at = index - imports)
+  let (start, end) = get_code_body_range(bytes = wasm, body_offset = offset, body_size = size)
+  for instruction in disassemble(code = wasm, start = start, end_pos = end) {
+    assert(!String::starts_with(instruction, prefix = "??"))
+    assert(!String::starts_with(instruction, prefix = "loop"))
   }
 }
 
 fn assert_blit_bounds(source: String, label: String, expected: String) -> Unit with Exception + Fs + Process {
-  let modules = [compile_wasi(source, "main"), compile_wasi_rc(source, "main")]
+  let modules = [
+    compile_wasi(source = source, entry = "main"),
+    compile_wasi_rc(source = source, entry = "main")
+  ]
   let mut i = 0
   for wasm in modules {
     let path = "/tmp/_bytes_blit_bounds_" + label + "_" + Int::to_string(i) + ".wasm"
-    Fs::write_bytes(path, wasm)
+    Fs::write_bytes(path, bytes = wasm)
     let output = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0 2>&1 || true")
-    assert(String::contains(String::join(output, "\n"), expected))
+    assert(String::contains(String::join(output, sep = "\n"), needle = expected))
     i = i + 1
   }
   ()
 }
 
 test "linear blit keeps negative and past-end source diagnostics" {
-  assert_blit_bounds("export fn main() -> Int { let src = Bytes::from_array([1, 2]); Bytes::blit(Bytes::new(), src, -1, 1); 0 }", "negative", "Bytes::get: index -1 out of bounds for length 2")
-  assert_blit_bounds("export fn main() -> Int { let src = Bytes::from_array([1, 2]); Bytes::blit(Bytes::new(), src, 1, 3); 0 }", "end", "Bytes::get: index 2 out of bounds for length 2")
-  assert_blit_bounds("export fn main() -> Int { let src = Bytes::from_array([1, 2]); Bytes::blit(Bytes::new(), src, (1 << 40) - 1, (1 << 40) + 1); 0 }", "wide", "Bytes::get: index 1099511627775 out of bounds for length 2")
+  assert_blit_bounds(source = "export fn main() -> Int { let src = Bytes::from_array([1, 2]); Bytes::blit(Bytes::new(), src, -1, 1); 0 }", label = "negative", expected = "Bytes::get: index -1 out of bounds for length 2")
+  assert_blit_bounds(source = "export fn main() -> Int { let src = Bytes::from_array([1, 2]); Bytes::blit(Bytes::new(), src, 1, 3); 0 }", label = "end", expected = "Bytes::get: index 2 out of bounds for length 2")
+  assert_blit_bounds(source = "export fn main() -> Int { let src = Bytes::from_array([1, 2]); Bytes::blit(Bytes::new(), src, (1 << 40) - 1, (1 << 40) + 1); 0 }", label = "wide", expected = "Bytes::get: index 1099511627775 out of bounds for length 2")
 }
 
 // Read the documented linear Bytes header to pin allocation policy, separately
@@ -63,13 +66,16 @@ test "bulk blit keeps the capacity of repeated push" {
   let body = "export fn main() -> Int { let src = Bytes::new(500); let dst = Bytes::new(); Bytes::blit(dst, src, 0, 500); Bytes::blit(dst, src, 0, 500); Bytes::blit(dst, src, 0, 1); capacity(dst) }"
   let plain = "fn capacity(b: Bytes) -> Int = wasm \"" + capacity + "\"\n" + body
   let tagged = "fn capacity(b: Bytes) -> Int = wasm \"(i64.shl " + capacity + " (i64.const 1))\"\n" + body
-  let modules = [compile_wasi(plain, "main"), compile_wasi_rc(tagged, "main")]
+  let modules = [
+    compile_wasi(source = plain, entry = "main"),
+    compile_wasi_rc(source = tagged, entry = "main")
+  ]
   let mut i = 0
   for wasm in modules {
     let path = "/tmp/_bytes_blit_capacity_" + Int::to_string(i) + ".wasm"
-    Fs::write_bytes(path, wasm)
+    Fs::write_bytes(path, bytes = wasm)
     let output = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0 2>/dev/null")
-    assert(String::join(output, "") == "1024")
+    assert(String::join(output, sep = "") == "1024")
     i = i + 1
   }
 }
@@ -77,10 +83,10 @@ test "bulk blit keeps the capacity of repeated push" {
 test "linear range helpers contain bulk memory copies on both allocation routes" {
   for rc in [false, true] {
     for arena in [-1, 65536] {
-      let body = gen_bytes_blit_linear_body(rc, 100, 101, arena, 66000, 131072)
+      let body = gen_bytes_blit_linear_body(enable_rc = rc, bytes_get_idx = 100, bytes_push_idx = 101, arena_ptr_addr = arena, arena_data_base = 66000, arena_limit = 131072)
       let mut copies = 0
-      for instruction in disassemble(body, 0, Bytes::length(body)) {
-        assert(!String::starts_with(instruction, "??"))
+      for instruction in disassemble(code = body, start = 0, end_pos = Bytes::length(body)) {
+        assert(!String::starts_with(instruction, prefix = "??"))
         if instruction == "memory.copy" {
           copies = copies + 1
         }

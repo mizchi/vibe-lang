@@ -222,7 +222,7 @@ import ./compile_match.vibe {
 
 export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   if Array::length(arms) > 0 {
-    let (catch_pat, fallback_expr) = Array::get(arms, 0)
+    let (catch_pat, fallback_expr) = Array::get(arms, at = 0)
     let is_error = is_pctor(catch_pat) && is_exception_throw_handler_name(get_pctor_name(catch_pat))
     // ADR-0076 追記34 V2: the replay frontier is gone, so this function
     // lowers ONLY `with Exception` handles. Every reachable non-Error handle
@@ -234,19 +234,19 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
     // expression position via stack polymorphism, and by construction
     // never executed).
     if !is_error {
-      bytebuf_push(buf, 0)
+      bytebuf_push(buf = buf, byte = 0)
       next_local
     } else {
       let catch_tag = 2
       emit_block_i64(buf)
       emit_loop_void(buf)
       emit_block_i64(buf)
-      bytebuf_push(buf, 31)
-      bytebuf_push(buf, 126)
-      bytebuf_push(buf, 1)
-      bytebuf_push(buf, 0)
-      bytebuf_push(buf, catch_tag)
-      bytebuf_push(buf, 0)
+      bytebuf_push(buf = buf, byte = 31)
+      bytebuf_push(buf = buf, byte = 126)
+      bytebuf_push(buf = buf, byte = 1)
+      bytebuf_push(buf = buf, byte = 0)
+      bytebuf_push(buf = buf, byte = catch_tag)
+      bytebuf_push(buf = buf, byte = 0)
       // #965: names the handled BODY binds must not stay resolvable while the
       // HANDLER arms compile below. resolve_local matches last-wins, so a body
       // `let n = ...` shadowing an outer `n` made an arm's `n` read the body's
@@ -268,50 +268,50 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
       let body_ref_cells_start = Array::length(ctx.ref_cell_names)
       // #3141: a `throw` in the body leaves only what the body binds.
       let xmark = Array::length(ctx.rc_exit_stack_names)
-      rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, "", 101, 0 - 1, 0 - 1)
+      rc_exit_push(names = ctx.rc_exit_stack_names, info = ctx.rc_exit_stack_info, name = "", kind = 101, local = 0 - 1, flag = 0 - 1)
       let body_nl = compile_expr(buf, body, local_names, next_local, ctx, ld)
-      rc_exit_truncate(ctx, xmark)
+      rc_exit_truncate(ctx = ctx, mark = xmark)
       let mut mask_i = body_names_start
       while mask_i < Array::length(local_names) {
-        Array::set(local_names, mask_i, "")
+        Array::set(local_names, at = mask_i, value = "")
         mask_i = mask_i + 1
       }
-      Array::truncate(ctx.ref_cell_names, body_ref_cells_start)
+      Array::truncate(ctx.ref_cell_names, length = body_ref_cells_start)
       emit_end(buf)
-      emit_br(buf, 2)
+      emit_br(buf = buf, label = 2)
       emit_end(buf)
       if is_pctor(catch_pat) {
         let cargs = get_pctor_args(catch_pat)
-        let decl_arity = effect_op_declared_arity(ctx.effect_op_keys, ctx.effect_op_arities, get_pctor_name(catch_pat))
+        let decl_arity = effect_op_declared_arity(keys = ctx.effect_op_keys, arities = ctx.effect_op_arities, full = get_pctor_name(catch_pat))
         if decl_arity > 1 {
           let ptr_l = Array::length(local_names)
-          emit_local_set(buf, ptr_l)
-          Array::push(local_names, "__eff_payload")
+          emit_local_set(buf = buf, idx = ptr_l)
+          Array::push(local_names, value = "__eff_payload")
           let ncargs = Array::length(cargs)
           let mut ci = 0
           while ci < decl_arity {
             if ci < ncargs {
-              let cp = Array::get(cargs, ci)
+              let cp = Array::get(cargs, at = ci)
               if is_pbind(cp) {
                 let pname = get_pbind_name(cp)
                 let fl = Array::length(local_names)
-                emit_local_get(buf, ptr_l)
+                emit_local_get(buf = buf, idx = ptr_l)
                 if ctx.enable_rc {
-                  emit_i64_const(buf, -2)
+                  emit_i64_const(buf = buf, value = -2)
                   emit_i64_and(buf)
                 } else {
                   ()
                 }
                 emit_i32_wrap_i64(buf)
-                emit_i64_load(buf, 3, if ctx.enable_rc {
+                emit_i64_load(buf = buf, align = 3, offset = if ctx.enable_rc {
                   8 + ci * 8
                 } else {
                   ci * 8
                 })
-                emit_local_set(buf, fl)
-                Array::push(local_names, pname)
+                emit_local_set(buf = buf, idx = fl)
+                Array::push(local_names, value = pname)
                 if ctx.enable_rc {
-                  emit_rc_dup_guarded(buf, fl, ctx.rc_shadow, ctx.rc_dup_func_idx)
+                  emit_rc_dup_guarded(buf = buf, local_idx = fl, rc_shadow = ctx.rc_shadow, dup_fn_idx = ctx.rc_dup_func_idx)
                 } else {
                   ()
                 }
@@ -326,42 +326,42 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
             ci = ci + 1
           }
           if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
-            emit_local_get(buf, ptr_l)
-            emit_call(buf, ctx.rc_drop_func_idx)
+            emit_local_get(buf = buf, idx = ptr_l)
+            emit_call(buf = buf, func_idx = ctx.rc_drop_func_idx)
           } else {
             ()
           }
-        } else if Array::length(cargs) > 0 && is_pbind(Array::get(cargs, 0)) {
-          let pname = get_pbind_name(Array::get(cargs, 0))
+        } else if Array::length(cargs) > 0 && is_pbind(Array::get(cargs, at = 0)) {
+          let pname = get_pbind_name(Array::get(cargs, at = 0))
           let bl = Array::length(local_names)
-          emit_local_set(buf, bl)
-          Array::push(local_names, pname)
+          emit_local_set(buf = buf, idx = bl)
+          Array::push(local_names, value = pname)
         } else {
           emit_drop(buf)
         }
       } else if is_pbind(catch_pat) {
         let pname = get_pbind_name(catch_pat)
         let bl = Array::length(local_names)
-        emit_local_set(buf, bl)
-        Array::push(local_names, pname)
+        emit_local_set(buf = buf, idx = bl)
+        Array::push(local_names, value = pname)
       } else {
         emit_drop(buf)
       }
       emit_block_i64(buf)
-      bytebuf_push(buf, 31)
-      bytebuf_push(buf, 126)
-      bytebuf_push(buf, 1)
-      bytebuf_push(buf, 0)
-      bytebuf_push(buf, 1)
-      bytebuf_push(buf, 0)
+      bytebuf_push(buf = buf, byte = 31)
+      bytebuf_push(buf = buf, byte = 126)
+      bytebuf_push(buf = buf, byte = 1)
+      bytebuf_push(buf = buf, byte = 0)
+      bytebuf_push(buf = buf, byte = 1)
+      bytebuf_push(buf = buf, byte = 0)
       let nl2 = compile_expr(buf, fallback_expr, local_names, Array::length(local_names), ctx, ld)
       emit_end(buf)
-      emit_br(buf, 2)
+      emit_br(buf = buf, label = 2)
       emit_end(buf)
       emit_drop(buf)
-      emit_br(buf, 0)
+      emit_br(buf = buf, label = 0)
       emit_end(buf)
-      bytebuf_push(buf, 0)
+      bytebuf_push(buf = buf, byte = 0)
       emit_end(buf)
       // #965: retire everything this handle introduced (payload binds,
       // __eff_payload temps, arm-body lets) before compilation continues
@@ -369,10 +369,10 @@ export fn compile_expr_tail6(buf: Bytes, body: Expr, arms: Array[(Pat, Expr)], l
       // Indices stay allocated (no truncate, #665).
       let mut post_mask_i = body_names_start
       while post_mask_i < Array::length(local_names) {
-        Array::set(local_names, post_mask_i, "")
+        Array::set(local_names, at = post_mask_i, value = "")
         post_mask_i = post_mask_i + 1
       }
-      Array::truncate(ctx.ref_cell_names, body_ref_cells_start)
+      Array::truncate(ctx.ref_cell_names, length = body_ref_cells_start)
       if body_nl > nl2 {
         body_nl
       } else {

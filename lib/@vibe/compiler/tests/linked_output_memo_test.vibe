@@ -22,11 +22,11 @@ import @vibe/compiler/loader {
 
 //# Helpers
 
-fn lom_bytes(s: String) -> Bytes {
+fn lom_bytes(_ s: String) -> Bytes {
   let out = Bytes::new()
   let mut i = 0
   while i < String::length(s) {
-    Bytes::push(out, String::byte_at(s, i))
+    Bytes::push(out, value = String::byte_at(s, at = i))
     i = i + 1
   }
   out
@@ -40,7 +40,7 @@ fn lom_bytes_eq(a: Bytes, b: Bytes) -> Bool {
     let mut i = 0
     let mut same = true
     while same && i < n {
-      if Bytes::get(a, i) != Bytes::get(b, i) {
+      if Bytes::get(a, at = i) != Bytes::get(b, at = i) {
         same = false
       } else {
         i = i + 1
@@ -54,7 +54,7 @@ let lom_leaf_path: String = "/tmp/vibe_linked_output_memo_leaf.vibe"
 
 let lom_main_path: String = "/tmp/vibe_linked_output_memo_main.vibe"
 
-fn lom_leaf(k: Int) -> String {
+fn lom_leaf(_ k: Int) -> String {
   "export fn leaf_value(x: Int) -> Int {\n  x + \{k}\n}\n"
 }
 
@@ -62,17 +62,18 @@ fn lom_main() -> String {
   "import ./vibe_linked_output_memo_leaf.vibe {\n  leaf_value\n}\n\nfn main() -> Int {\n  leaf_value(41)\n}\n"
 }
 
-fn lom_write(k: Int) -> Unit with Fs {
-  Fs::write_bytes(lom_leaf_path, lom_bytes(lom_leaf(k)))
-  Fs::write_bytes(lom_main_path, lom_bytes(lom_main()))
+fn lom_write(_ k: Int) -> Unit with Fs {
+  Fs::write_bytes(lom_leaf_path, bytes = lom_bytes(lom_leaf(k)))
+  Fs::write_bytes(lom_main_path, bytes = lom_bytes(lom_main()))
 }
 
-fn lom_identity(grants: Array[(String, String)]) -> String with Env + Exception + Fs {
-  linked_output_memo_identity("rc", lom_main_path, "main", grants, collect_source_groups_fs(lom_main_path))
+fn lom_identity(_ grants: Array[(String, String)]) -> String with Env + Exception + Fs {
+  linked_output_memo_identity(lane = "rc", entry_path = lom_main_path, entry_name = "main", grants = grants, source_groups = collect_source_groups_fs(lom_main_path))
 }
 
-fn lom_compile(mode: String) -> Bytes with Env + Exception + Fs {
-  compile_file_fs_mode_rc_grants_memo(lom_main_path, "main", [], mode)
+fn lom_compile(_ mode: String) -> Bytes with Env + Exception + Fs {
+  compile_file_fs_mode_rc_grants_memo(entry_path = lom_main_path, entry_name = "main", grants = [
+  ], memo_mode = mode)
 }
 
 //# Tests
@@ -81,11 +82,12 @@ test "#2825: an identical rebuild replays the stored module, byte for byte" {
   lom_write(1)
   let fresh = lom_compile("off")
   let stored = lom_compile("on")
-  assert(lom_bytes_eq(stored, fresh))
+  assert(lom_bytes_eq(a = stored, b = fresh))
   // The slot now answers for this identity...
-  assert(linked_output_memo_lookup("rc", lom_main_path, "main", lom_identity([])) is Some(_))
+  assert(linked_output_memo_lookup(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = lom_identity([
+  ])) is Some(_))
   // ...and the rebuild returns those bytes.
-  assert(lom_bytes_eq(lom_compile("on"), fresh))
+  assert(lom_bytes_eq(a = lom_compile("on"), b = fresh))
 }
 
 test "#2825: an edited dependency misses and compiles what a fresh compile does" {
@@ -95,32 +97,34 @@ test "#2825: an edited dependency misses and compiles what a fresh compile does"
   lom_write(2)
   let after = lom_identity([])
   assert(before != after)
-  assert(linked_output_memo_lookup("rc", lom_main_path, "main", after) is None)
+  assert(linked_output_memo_lookup(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = after) is None)
   let fresh = lom_compile("off")
-  assert(lom_bytes_eq(lom_compile("on"), fresh))
+  assert(lom_bytes_eq(a = lom_compile("on"), b = fresh))
   // The edit is in the module, not only in the identity.
   lom_write(1)
-  assert(!lom_bytes_eq(lom_compile("off"), fresh))
+  assert(!lom_bytes_eq(a = lom_compile("off"), b = fresh))
 }
 
 test "#2825: grants, entry and lane are part of the identity" {
   lom_write(1)
   let groups = collect_source_groups_fs(lom_main_path)
-  let base = linked_output_memo_identity("rc", lom_main_path, "main", [], groups)
-  assert(base != linked_output_memo_identity("rc", lom_main_path, "main", [
+  let base = linked_output_memo_identity(lane = "rc", entry_path = lom_main_path, entry_name = "main", grants = [
+  ], source_groups = groups)
+  assert(base != linked_output_memo_identity(lane = "rc", entry_path = lom_main_path, entry_name = "main", grants = [
     ("Fs", "Granted")
-  ], groups))
-  assert(base != linked_output_memo_identity("rc", lom_main_path, "run", [], groups))
-  assert(base != linked_output_memo_identity("rc-body-cached", lom_main_path, "main", [
-  ], groups))
+  ], source_groups = groups))
+  assert(base != linked_output_memo_identity(lane = "rc", entry_path = lom_main_path, entry_name = "run", grants = [
+  ], source_groups = groups))
+  assert(base != linked_output_memo_identity(lane = "rc-body-cached", entry_path = lom_main_path, entry_name = "main", grants = [
+  ], source_groups = groups))
   // Length-prefixed fields: moving a separator between two values is a
   // different identity, not the same text.
-  let split_a = linked_output_memo_identity("rc", lom_main_path, "main", [
+  let split_a = linked_output_memo_identity(lane = "rc", entry_path = lom_main_path, entry_name = "main", grants = [
     ("a\ngrant b", "c")
-  ], groups)
-  let split_b = linked_output_memo_identity("rc", lom_main_path, "main", [
+  ], source_groups = groups)
+  let split_b = linked_output_memo_identity(lane = "rc", entry_path = lom_main_path, entry_name = "main", grants = [
     ("a", "b\ngrant c")
-  ], groups)
+  ], source_groups = groups)
   assert(split_a != split_b)
 }
 
@@ -130,8 +134,8 @@ test "#2825: every keyed variable is in the identity" {
   let names = linked_output_memo_env_names()
   let mut i = 0
   while i < Array::length(names) {
-    let name = Array::get(names, i)
-    assert(String::contains(identity, "env \{String::length(name)}:\{name}\n"))
+    let name = Array::get(names, at = i)
+    assert(String::contains(identity, needle = "env \{String::length(name)}:\{name}\n"))
     i = i + 1
   }
 }
@@ -141,31 +145,31 @@ test "#2825: a stored module for another identity of the same length is not repl
   let identity = lom_identity([])
   // Same length, one byte different: only a full comparison rejects it.
   let last = String::length(identity) - 2
-  let forged = String::concat(String::substring(identity, 0, last), String::concat("#", String::substring(identity, last + 1, String::length(identity))))
+  let forged = String::concat(String::substring(identity, start = 0, end = last), String::concat("#", String::substring(identity, start = last + 1, end = String::length(identity))))
   assert(String::length(forged) == String::length(identity))
-  linked_output_memo_store("rc", lom_main_path, "main", forged, lom_bytes("not a module"))
-  assert(linked_output_memo_lookup("rc", lom_main_path, "main", identity) is None)
+  linked_output_memo_store(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = forged, wasm = lom_bytes("not a module"))
+  assert(linked_output_memo_lookup(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = identity) is None)
   let fresh = lom_compile("off")
-  assert(lom_bytes_eq(lom_compile("on"), fresh))
+  assert(lom_bytes_eq(a = lom_compile("on"), b = fresh))
 }
 
 test "#2825: verify refuses a stored module that differs from a fresh compile" {
   lom_write(1)
   let identity = lom_identity([])
-  linked_output_memo_store("rc", lom_main_path, "main", identity, lom_bytes("not a module"))
+  linked_output_memo_store(lane = "rc", entry_path = lom_main_path, entry_name = "main", identity = identity, wasm = lom_bytes("not a module"))
   // `on` trusts the identity -- this is the replay the identity licenses...
-  assert(lom_bytes_eq(lom_compile("on"), lom_bytes("not a module")))
+  assert(lom_bytes_eq(a = lom_compile("on"), b = lom_bytes("not a module")))
   // ...and `verify` is what proves the licence wrong.
   let refused = handle {
     let _ = lom_compile("verify")
     false
-  } with { Exception::Throw(msg) => String::contains(msg, "linked-output memo verify") }
+  } with { Exception::Throw(msg) => String::contains(msg, needle = "linked-output memo verify") }
   assert(refused)
   // The refusal replaced the slot, so the next default build cannot replay
   // the module verify just rejected.
-  assert(lom_bytes_eq(lom_compile("on"), lom_compile("off")))
+  assert(lom_bytes_eq(a = lom_compile("on"), b = lom_compile("off")))
   // An honest slot verifies.
-  assert(lom_bytes_eq(lom_compile("verify"), lom_compile("off")))
+  assert(lom_bytes_eq(a = lom_compile("verify"), b = lom_compile("off")))
 }
 
 test "#2825: the mode switch defaults per caller and refuses a typo" {
