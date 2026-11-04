@@ -919,6 +919,27 @@ fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) 
     }
     push_obligation(ctx = ctx, kind = "overflow", label = print_expr(e), off = off, goal = guarded(pc = st.pc, goal = in_range(t)))
     with_value(st = st, value = t, sort = "Int")
+  } else if (op == "<<" || op == ">>") && ints {
+    // A shift by a constant count `k` in 0..62 is exact over the integers:
+    // `x << k` is `x * 2^k` (its wrap is the overflow obligation) and the
+    // arithmetic `x >> k` is the FLOORED quotient by `2^k`, which SMT-LIB
+    // `div` computes for a positive divisor. Any other count answers
+    // irregularly at run time (`1 << 63` is 0, so is `8 >> -1`) and is not
+    // encoded.
+    let k = shift_count(b.value)
+    if k < 0 {
+      unsupported(off = off, reason = "`\{op}` by a count that is not a constant from 0 to 62")
+      b
+    } else {
+      let pow = pow2_text(k)
+      if op == "<<" {
+        let t = "(* \{a.value} \{pow})"
+        push_obligation(ctx = ctx, kind = "overflow", label = print_expr(e), off = off, goal = guarded(pc = b.pc, goal = in_range(t)))
+        with_value(st = b, value = t, sort = "Int")
+      } else {
+        with_value(st = b, value = "(div \{a.value} \{pow})", sort = "Int")
+      }
+    }
   } else if (op == "<" || op == "<=" || op == ">" || op == ">=") && ints {
     with_value(st = b, value = "(\{op} \{a.value} \{b.value})", sort = "Bool")
   } else if (op == "==" || op == "!=") && a.sort == b.sort && a.sort != "Unit" && adt_has_custom_eq(adts = ctx.adts, sort = a.sort) {
@@ -935,6 +956,50 @@ fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) 
     unsupported(off = off, reason = "`\{op}` on `\{a.sort}` and `\{b.sort}` is outside the provable fragment")
     b
   }
+}
+
+/// The count of a shift when its SMT term is a decimal constant from 0 to
+/// 62, and -1 otherwise.
+fn shift_count(_ term: String) -> Int {
+  let n = String::length(term)
+  if n == 0 || n > 2 {
+    0 - 1
+  } else {
+    let mut k = 0
+    let mut ok = true
+    let mut i = 0
+    while i < n {
+      let c = String::byte_at(term, at = i)
+      if c >= '0' && c <= '9' {
+        k = k * 10 + (Char::to_int(c) - 48)
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    if ok && k <= 62 {
+      k
+    } else {
+      0 - 1
+    }
+  }
+}
+
+/// `2^k` as a decimal SMT literal. `2^62` is one past `Int`'s maximum, so it
+/// is spelled out rather than computed.
+fn pow2_text(_ k: Int) -> String {
+  if k == 62 {
+    return "4611686018427387904"
+  } else {
+    ()
+  }
+  let mut p = 1
+  let mut i = 0
+  while i < k {
+    p = p * 2
+    i = i + 1
+  }
+  "\{p}"
 }
 
 /// The quotient `a / b` truncated toward zero, as the runtime computes it.

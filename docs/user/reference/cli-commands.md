@@ -227,12 +227,15 @@ f.vibe:5:1: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
 Only an `unsat` answer proves, so `unknown`, a timeout and an unsupported
 construct fail (exit 1), never pass. The provable fragment is pure functions
 over `Int` and `Bool`: `let`, `if`, `return` (every exit checks `ensures`),
-`+ - * / %` and comparisons, `&&` / `||` / `!`, and calls to other functions
+`+ - * / % << >>` and comparisons, `&&` / `||` / `!`, and calls to other functions
 of the file with such signatures. `Int` is a mathematical integer plus one
 no-overflow obligation per operation, which is exact for the 63-bit `Int`.
 `/` and `%` truncate toward zero as the runtime does (`-7 / 2 == -3`,
 `-7 % 2 == -1`) and also owe a non-zero divisor, since a zero one aborts; the
-code after them assumes it was not zero. A
+code after them assumes it was not zero. `<<` and `>>` are admitted by a
+constant count from 0 to 62: `x << k` is `x * 2^k` with its overflow
+obligation, and `>>` is the arithmetic (floored) shift, so `-7 >> 2 == -2`.
+Any other count is unsupported. A
 call is modular: the callee's `requires` is owed at the call and its
 `ensures` assumed of the result, and the callee's own body is proved in the
 same run. A call to a function with no `where` contract is unsupported (it is
