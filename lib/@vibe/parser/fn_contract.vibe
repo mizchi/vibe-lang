@@ -8,13 +8,40 @@ import ./parser_base.vibe {
   _no_tb, _no_tp
 }
 
+import ./printer.vibe {
+  print_expr
+}
+
 //# Functions
 
 /// #3715: the name of the checker every exit of a function with an `ensures`
-/// goes through. `__vibe_` is the compiler's reserved prefix, so no program
-/// binding can shadow it.
-fn ensures_check_name() -> String {
-  "__vibe_ensures"
+/// goes through. It is bound inside the function, so a fixed spelling could
+/// capture a parameter or body binding of that name, or be shadowed by one at
+/// a rewritten `return` -- the `__vibe_` prefix is reserved only at top level.
+/// So it is `__vibe_ensures`, or `__vibe_ensures_N` for the first N, that
+/// occurs NOWHERE in the function's printed parameters, body and conditions:
+/// a name the text never uses changes no binding (the printer's own rule for
+/// its match temporary).
+fn ensures_check_name(body: Expr, ensures: Array[Expr], params: Array[(String, Option[TypeExpr])]) -> String {
+  let text = StringBuilder::new()
+  StringBuilder::push(text, value = print_expr(body))
+  for e in ensures {
+    StringBuilder::push(text, value = " ")
+    StringBuilder::push(text, value = print_expr(e))
+  }
+  for p in params {
+    let (pname, _) = p
+    StringBuilder::push(text, value = " ")
+    StringBuilder::push(text, value = pname)
+  }
+  let seen = StringBuilder::freeze(text)
+  let mut cand = "__vibe_ensures"
+  let mut n = 0
+  while String::contains(seen, needle = cand) {
+    n = n + 1
+    cand = "__vibe_ensures_\{n}"
+  }
+  cand
 }
 
 /// #3715 (ADR-0121 (6)): a function body whose every exit checks `ensures`.
@@ -26,8 +53,8 @@ fn ensures_check_name() -> String {
 /// the body runs, so a condition reads the function's parameters even where
 /// the body shadows one of their names. It carries the function's own effect
 /// row, so a condition may call what the body may.
-fn ensures_checked_body(body: Expr, ensures: Array[Expr], ret: Option[TypeExpr], eff: Option[String]) -> Expr {
-  let check = ensures_check_name()
+fn ensures_checked_body(body: Expr, ensures: Array[Expr], params: Array[(String, Option[TypeExpr])], ret: Option[TypeExpr], eff: Option[String]) -> Expr {
+  let check = ensures_check_name(body = body, ensures = ensures, params = params)
   let mut asserts = EIdent("result", 0 - 1)
   let mut ei = Array::length(ensures)
   while ei > 0 {
