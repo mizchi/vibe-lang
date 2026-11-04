@@ -18,14 +18,8 @@ rm -rf "$edphdir"; mkdir -p "$edphdir"
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
 # actual/expected and fails the run.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/effect_local_closure_handle_owner_param.vibe "$edphdir/out.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$edphdir/out.wasm" ]; then
-  echo "[compiler-gate] FAIL: effect_local_closure_handle_owner_param.vibe did not compile" >&2
-  cat "$edphdir/out.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+gate_fs_compile fixtures/effect_local_closure_handle_owner_param.vibe "$edphdir/out.wasm" __no_entry__
+gate_require_artifact "$edphdir/out.wasm" "effect_local_closure_handle_owner_param.vibe did not compile"
 if ! edph_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edphdir/out.wasm" 2>&1)"; then
   echo "[compiler-gate] FAIL: effect_local_closure_handle_owner_param.vibe got '$edph_out' (want 285) -- #1070 self-discharging-owner closure-param fix regressed" >&2
   echo "$edph_out" >&2
