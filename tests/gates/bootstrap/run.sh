@@ -18,10 +18,21 @@ echo "[compiler-gate] 3/3 selfbuild seed->stage1->stage2->stage3"
 VIBE_PREBUILT_MODULE_SOURCE="lib/@vibe/compiler/_cli_adapter_module_source.vibe" \
   bash scripts/generations.sh build --stage3
 
-# Assert the stage2==stage3 fixpoint from the freshest generation manifest.
-latest_gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
-if [ -z "$latest_gen" ] || [ ! -f "${latest_gen}generation.json" ]; then
-  echo "[compiler-gate] FAIL: no generation manifest produced" >&2
+# Assert the stage2==stage3 fixpoint from the manifest of the generation the
+# selfbuild above just wrote: the one named for HEAD, asked for strictly and
+# with no override, because this lane is what builds it (#3671). The newest
+# generation directory by mtime is a different question -- on a reused
+# workspace an unrelated generation can be newer, or a concurrent build can
+# touch one -- and its answer certified whatever that generation's manifest
+# said about itself.
+. "$ROOT_DIR/scripts/resolve_stage2.sh"
+if ! stage2_wasm="$(resolve_stage2_strict compiler-gate "")"; then
+  echo "[compiler-gate] FAIL: the selfbuild left no generation for HEAD ($(git rev-parse --short HEAD))" >&2
+  exit 1
+fi
+latest_gen="${stage2_wasm%/*}/"
+if [ ! -f "${latest_gen}generation.json" ]; then
+  echo "[compiler-gate] FAIL: no generation manifest produced in ${latest_gen}" >&2
   exit 1
 fi
 python3 - "${latest_gen}generation.json" <<'PY'
@@ -36,8 +47,6 @@ if s2 != s3:
     print(f"[compiler-gate] FAIL: stage2 != stage3 ({s2[:12]} != {s3[:12]})", file=sys.stderr); sys.exit(1)
 print(f"[compiler-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
-
-stage2_wasm="${latest_gen}stage2.wasm"
 
 VIBE_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
   bash scripts/test_rc_bootstrap.sh
