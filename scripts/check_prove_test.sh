@@ -40,4 +40,13 @@ fi
 if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
   echo "[prove-selftest] FAIL: the gate accepted a loop whose invariant no longer holds" >&2; exit 1
 fi
+# An array read whose guarantee is weakened: `last` may now be handed an
+# empty array, so `xs[length - 1]` can be out of bounds.
+sed 's/requires: Array::length(xs) > 0, ensures: true/requires: Array::length(xs) >= 0, ensures: true/' fixtures/prove/proved.vibe > "$work/proved.vibe"
+if cmp -s fixtures/prove/proved.vibe "$work/proved.vibe"; then
+  echo "[prove-selftest] FAIL: the array mutation did not apply" >&2; exit 1
+fi
+if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
+  echo "[prove-selftest] FAIL: the gate accepted an array read that can be out of bounds" >&2; exit 1
+fi
 echo "[prove-selftest] ok (a weakened implementation stops proving and the gate fails)"

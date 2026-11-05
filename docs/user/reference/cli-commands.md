@@ -242,7 +242,14 @@ are owed when the loop starts; one iteration from an arbitrary state where
 they hold owes the invariants again and a smaller, still non-negative
 measure; and the code after the loop knows the invariants and the negated
 condition. A `while` with no measure is unsupported, since it may not
-terminate, and so are `break`, `continue`, `for` and `loop`. A
+terminate, and so are `break`, `continue`, `for` and `loop`. An
+`Array[Int]` (a parameter, a result, a local or a non-empty literal) is read
+through `Array::length(xs)`, `Array::get(xs, at = i)` and `xs[i]`; a read owes
+`0 <= i < length`, since an index outside it aborts, and the element is an
+`Int` in range. The fragment does not write arrays (`Array::push`,
+`Array::set` and an index write are unsupported), so an array is a value no
+call can change, and `==` on arrays is unsupported, since their contents past
+the length are not modelled. A
 call is modular: the callee's `requires` is owed at the call and its
 `ensures` assumed of the result, and the callee's own body is proved in the
 same run. A call to a function with no `where` contract is unsupported (it is
