@@ -1,0 +1,67 @@
+import @vibe/compiler/config {
+  Config, target_cfg_ambient, target_cfg_capture, target_cfg_flags, target_cfg_from_csv, target_cfg_identity, target_cfg_namespace
+}
+import @vibe/compiler/cache {
+  set_persistent_cache_cfg_flags
+}
+import @vibe/parser {
+  cfg_ambient_flags_identity, cfg_flags_identity, lex, parse_program_with_cfg, set_cfg_ambient_flags
+}
+
+test "target snapshots normalize CSV and own their retained flag array" {
+  let cfg = target_cfg_from_csv(" alpha, beta, , ")
+  assert_eq(target_cfg_identity(cfg), "alpha,beta")
+  let flags = target_cfg_flags(cfg)
+  Array::truncate(flags, length = 0)
+  assert_eq(Array::length(target_cfg_flags(cfg)), 2)
+  let other = target_cfg_from_csv("alpha,beta")
+  assert_eq(target_cfg_namespace(cfg), target_cfg_namespace(other))
+}
+
+test "exact flag identities cannot confuse a literal comma with a separator" {
+  assert_eq(cfg_flags_identity([]), "")
+  assert_eq(cfg_flags_identity(["alpha", "beta"]), "alpha,beta")
+  assert(cfg_flags_identity(["alpha,beta"]) != cfg_flags_identity([
+    "alpha",
+    "beta"
+  ]))
+  assert(cfg_flags_identity(["a,b"]) != cfg_flags_identity(["", "3:a", "b"]))
+  assert(cfg_flags_identity([""]) != cfg_flags_identity([]))
+}
+
+test "a compatibility snapshot preserves raw flags and binds its own namespace" {
+  set_cfg_ambient_flags([" alpha ", "beta,alpha"])
+  assert_eq(cfg_ambient_flags_identity(), cfg_flags_identity([
+    " alpha ",
+    "beta,alpha"
+  ]))
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    let cfg = target_cfg_ambient()
+    set_cfg_ambient_flags(["alpha"])
+    assert_eq(cfg_ambient_flags_identity(), "alpha")
+    assert_eq(Array::length(parse_program_with_cfg(lex("#cfg(alpha)\nlet a = 1"), cfg_flags = target_cfg_flags(cfg))), 0)
+    let canonical = target_cfg_from_csv("alpha,beta")
+    assert(target_cfg_identity(cfg) != target_cfg_identity(canonical))
+    assert(target_cfg_namespace(cfg) != target_cfg_namespace(canonical))
+    let alpha = target_cfg_ambient()
+    assert_eq(target_cfg_namespace(alpha), target_cfg_namespace(target_cfg_from_csv("alpha")))
+    set_cfg_ambient_flags([])
+    set_persistent_cache_cfg_flags("")
+  } with { Exception::Throw(message) => {
+    set_cfg_ambient_flags([])
+    set_persistent_cache_cfg_flags("")
+    throw(message)
+  } }
+}
+
+test "captured target configuration survives a later nested handler" {
+  handle {
+    let outer = target_cfg_capture()
+    let inner = handle {
+      target_cfg_capture()
+    } with { Config::CfgFlags() => resume("beta") }
+    assert_eq(target_cfg_identity(inner), "beta")
+    assert_eq(target_cfg_identity(outer), "alpha")
+  } with { Config::CfgFlags() => resume("alpha") }
+}

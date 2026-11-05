@@ -1,0 +1,61 @@
+import ./config.vibe {
+  cfg_flags_from_csv
+}
+import ./invocation.vibe {
+  Config
+}
+import @vibe/parser {
+  cfg_ambient_flags_snapshot, cfg_flags_identity
+}
+import @vibe/compiler/cache {
+  persistent_cache_namespace_for_cfg
+}
+
+/// Target-program flags and their exact parser/cache identity. The package
+/// contract hides the constructor; accessors never expose the retained array.
+export enum TargetCfg {
+  TargetCfg(Array[String], String, String)
+}
+
+fn target_cfg_from_flags(_ flags: Array[String]) -> TargetCfg {
+  let identity = cfg_flags_identity(flags)
+  TargetCfg(flags, identity, persistent_cache_namespace_for_cfg(identity))
+}
+
+/// Normalize a caller's CSV exactly as the positional CLI does.
+export fn target_cfg_from_csv(_ csv: String) -> TargetCfg {
+  target_cfg_from_flags(cfg_flags_from_csv(csv))
+}
+
+/// Capture Config once before any filesystem provider can run another call.
+export fn target_cfg_capture() -> TargetCfg with Config {
+  target_cfg_from_csv(perform Config::CfgFlags())
+}
+
+/// Compatibility boundary: preserve the setter's exact array. Derive cache
+/// identity from that same snapshot, independently of the legacy cache cell.
+export fn target_cfg_ambient() -> TargetCfg {
+  let (flags, _) = cfg_ambient_flags_snapshot()
+  target_cfg_from_flags(flags)
+}
+
+/// A parser receives its own copy rather than authority to edit the snapshot.
+export fn target_cfg_flags(_ cfg: TargetCfg) -> Array[String] {
+  match cfg {
+    TargetCfg(flags, _, _) => Array::slice(flags, start = 0, end = Array::length(flags))
+  }
+}
+
+/// Exact identity for parse memos and persistent flag namespaces.
+export fn target_cfg_identity(_ cfg: TargetCfg) -> String {
+  match cfg {
+    TargetCfg(_, identity, _) => identity
+  }
+}
+
+/// The compiler/format/flag namespace captured with this invocation's flags.
+export fn target_cfg_namespace(_ cfg: TargetCfg) -> String {
+  match cfg {
+    TargetCfg(_, _, namespace) => namespace
+  }
+}
