@@ -1,3 +1,7 @@
+import ./checker_expr_capture_helpers.vibe {
+  assign_target_marker, erased_throw_binder_settle, match_temp_anchor_key
+}
+
 import ./checker_call_map.vibe {
   map_empty_literal_type
 }
@@ -203,6 +207,10 @@ import ./checker_map_literal.vibe {
   map_literal_ground, resume_continuation_marker, resume_is_continuation
 }
 
+import ./checker_int32.vibe {
+  int32_field_adapt, int32_join_branch
+}
+
 import ./checker_int32_rows.vibe {
   int32_assigned_type, int32_binop_operands, int32_compound_assign, int32_involved, int32_unary, record_int32_binop
 }
@@ -294,19 +302,6 @@ fn tab_dot_projection_ty(tytab: Array[(Int, Type)], dot_off: Int, ty: Type, capt
 
 fn tab_dot_field_name_ty(tytab: Array[(Int, Type)], field_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Unit {
   append_legacy_typed_occurrence(tytab = tytab, offset = field_off, ty = ty, capture = capture, role = "DotFieldName", lane = lane)
-}
-
-/// #3248: the marker an unknown assignment target carries. ` [@assign-target=N]`
-/// names the target token the parser recorded (`N` is its start byte, so the
-/// locator can read the token's own extent back, `r#name` included). A
-/// synthesized assignment has no token (`off < 0`) and gets the bare
-/// ` [@assign-target]`, which the locator strips without inventing a position.
-fn assign_target_marker(_ off: Int) -> String {
-  if off >= 0 {
-    String::concat(" [@assign-target=", String::concat(__to_string(off), "]"))
-  } else {
-    " [@assign-target]"
-  }
 }
 
 /// Iteratively check a sequence/let SPINE (`ESeq` and `ELet`/`ELetMut`/`ELetRec`
@@ -874,9 +869,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
       let header_fork = checker_call_header_snapshot()
-      let (tt, s2, c2) = check_expr_capture(expr = then_e, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (tt0, s2, c2) = check_expr_capture(expr = then_e, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
       checker_call_header_rewind(header_fork)
-      let (et, s3, c3) = check_expr_capture(expr = else_e, env = env, defs = defs, s = s2, c = c2, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      let (et0, s3, c3) = check_expr_capture(expr = else_e, env = env, defs = defs, s = s2, c = c2, errors = errors, tytab = tytab, capture = capture, lane = lane)
+      // #3730: a literal branch beside an `Int32` / `UInt32` branch takes its type.
+      let (tt, et) = int32_binop_operands(left = then_e, right = else_e, left_ty = subst_apply(s = s3, ty = tt0), right_ty = subst_apply(s = s3, ty = et0), s = s3, errors = errors, off = 0 - 1)
       checker_call_header_merge(header_fork)
       // The two branches must agree when both yield a real value (previously
       // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
@@ -1312,6 +1309,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else if !result_anchored {
             ()
           } else {
+            // #3730: a literal arm beside an `Int32` / `UInt32` arm takes its type.
+            let (result_adj, arm_ty) = int32_join_branch(count = ai, earlier_at = (k) -> {
+              let (_, b) = Array::get(arms, at = k)
+              b
+            }, e = body, joined = result_ty, actual = subst_apply(s = si, ty = arm_ty), s = si, errors = errors)
+            result_ty = result_adj
             if arm_tail_all_return(body) {
               ()
             } else {
@@ -2586,7 +2589,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     } else {
                       subst_apply(s = s1, ty = aty)
                     }
-                    s1 = check_assignable_for(expected = dty, actual = aty_checked, s = s1, errors = errors, what_head = "struct field type mismatch for ", what_tail = dn, off = lookup_field_expr_off(fields = fields, name = dn))
+                    s1 = check_assignable_for(expected = dty, actual = int32_field_adapt(fields = fields, name = dn, expected = dty, actual = aty_checked, s = s1, errors = errors), s = s1, errors = errors, what_head = "struct field type mismatch for ", what_tail = dn, off = lookup_field_expr_off(fields = fields, name = dn))
                     // Compare latent payloads before the struct's field type
                     // replaces the value's own instantiation evidence.
                     for field in fields {
@@ -2637,7 +2640,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // which unifies with everything, so `let n: String = Nope::{ v: 1 }`
           // checked clean and read the struct as a string.
           None => {
-            let s2f = check_record_fields(defs = defs, actual = field_tys, s = s1, errors = errors)
+            let s2f = check_record_fields(defs = defs, actual = field_tys, s = s1, errors = errors, exprs = fields)
             let rec_tyf = match resolve_record_struct_name(defs = defs, actual = field_tys) {
               Some(sname) => CtStruct(sname),
               None => {
@@ -2724,6 +2727,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           if ai == 0 {
             elem_ty = it
           } else {
+            // #3730: a literal element beside an `Int32` / `UInt32` takes its type.
+            let (elem_adj, it) = int32_join_branch(count = ai, earlier_at = (k) -> Array::get(items, at = k), e = Array::get(items, at = ai), joined = elem_ty, actual = subst_apply(s = s1, ty = it), s = s1, errors = errors)
+            elem_ty = elem_adj
             // #3598: an element wider in its function rows than the ones
             // before it becomes the element type, as for `if` branches.
             match branch_join_widens(anchor = elem_ty, later = subst_apply(s = s1, ty = it), s = s1) {
@@ -2965,36 +2971,4 @@ fn check_unmatched_call_args(args: Array[Expr], env: TypeEnv, defs: Array[TypeDe
     i = i + 1
   }
   (s1, c1)
-}
-
-/// #3541: settle the binder of an ERASED exception arm (`Exception::Throw(m)`)
-/// once its body is typed. `var` is the fresh variable `m` was bound to. A
-/// body that left it open used `m` only where any type is accepted, and it is
-/// pinned to `String`, the thrown message, so a later use outside the arm
-/// (the handle's result) is checked against that. A body that used it as
-/// `String` is accepted. Any other type is refused with the edit: only a
-/// kinded arm knows its payload's type.
-fn erased_throw_binder_settle(name: String, var: Type, s: Subst, errors: Array[String], off: Int) -> Subst {
-  let now = subst_apply(s = s, ty = var)
-  match now {
-    CtString => s,
-    CtVar(_) => match unify(a = now, b = CtString, s = s) {
-      Some(s2) => s2,
-      None => s
-    },
-    _ => {
-      let shown = type_to_string(now)
-      let edit = String::concat("write `Exception[", String::concat(shown, String::concat("]::Throw(", String::concat(name, String::concat(")` to catch a thrown `", String::concat(shown, "`"))))))
-      let why = String::concat(": the erased `Exception::Throw(", String::concat(name, String::concat(")` arm binds `", String::concat(name, String::concat("` as the thrown message, a `String`, and this arm uses it as `", String::concat(shown, "`"))))))
-      Array::push(errors, value = String::concat(edit, String::concat(why, off_marker(off))))
-      s
-    }
-  }
-}
-
-/// #3548: the environment key under which the guard desugar's match temp
-/// carries the offset of the scrutinee it was bound to. Spelled so no source
-/// name can collide with it.
-fn match_temp_anchor_key() -> String {
-  "__match_temp_anchor@"
 }

@@ -135,8 +135,11 @@ tagged immediate an `Int` is, and every value lies in its type's range:
 - **Literals take the type expected of them.** An integer literal is an
   `Int32` / `UInt32` beside an operand of that type (`x + 1`), under an
   annotation (`let x: Int32 = 5`, an array literal included), as an argument,
-  a return value or an assignment, and it is refused when it does not fit.
-  Elsewhere (a struct field, `Some(5)`), convert with `Int::wrap_int32`.
+  a return value or an assignment. The same holds inside a struct field
+  (`Pixel::{ x: 5 }`), `Some(5)` and a tuple (`(1, 2)` as `(Int32, Int32)`),
+  and in an `if` / `match` whose other branch or arm is sized (`if c { x }
+  else { 0 }`, also an array literal `[x, 0]`). A literal is refused when it
+  does not fit. Elsewhere, convert with `Int::wrap_int32`.
 - **Traits.** `Eq`, `Ord` and `Show` treat them as the scalars they are, and
   `Int32::to_string` / `UInt32::to_string` render them. `[T: Add]` refuses
   them, because a generic `+` would not wrap. `Default`, `Hash` (and with
@@ -150,6 +153,8 @@ test "exact 32-bit integers" {
   assert(UInt32::to_int(all + 1) == 0)
   assert(Int::to_int32(2147483648) == None)
   assert(Int32::to_int(Int::wrap_int32(4294967295)) == -1)
+  let pair: Option[(Int32, UInt32)] = Some((-1, 4294967295))
+  assert(pair == Some((Int::wrap_int32(-1), Int::wrap_uint32(-1))))
 }
 ```
 
