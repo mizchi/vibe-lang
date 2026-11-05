@@ -1,0 +1,51 @@
+// bench/exec scenario: Int32 / UInt32 wrap -- #3730 pinned the exact 32-bit
+// integers' arithmetic to wrap at 32 bits on every backend (ADR-0122 (5));
+// this scenario keeps the contract parity-guarded (linear vs gc stdout must
+// stay identical) and makes the wrap's cost visible in the fuel numbers.
+// Deterministic output; see bench/exec/README.md.
+
+fn opaque32(_ x: Int32) -> Int32 {
+  x + 0
+}
+
+fn opaqueu(_ x: UInt32) -> UInt32 {
+  x + 0
+}
+
+let main = () -> Int with Console {
+  let max = opaque32(2147483647)
+  let min = opaque32(-2147483648)
+  println(Int32::to_string(max + 1))
+  println(Int32::to_string(min - 1))
+  println(Int32::to_string(max * max))
+  println(Int32::to_string(min / -1))
+  println(Int32::to_string(-min))
+  println(Int32::to_string(opaque32(1) << 31))
+  println(Int32::to_string(min >> 31))
+  let umax = opaqueu(4294967295)
+  println(UInt32::to_string(umax + 1))
+  println(UInt32::to_string(opaqueu(0) - 1))
+  println(UInt32::to_string(umax * umax))
+  println(UInt32::to_string(~opaqueu(0)))
+  // A 32-bit LCG (Numerical Recipes constants) has its classic trajectory
+  // only when every step wraps at 32 bits: iterate it and fold it into a
+  // checksum every lane must agree on.
+  let mut h = opaqueu(12345)
+  let mut acc = 0
+  let mut i = 0
+  while i < 50000 {
+    h = h * 1664525 + 1013904223
+    acc = (acc + UInt32::to_int(h) % 1000003) % 1000000007
+    i = i + 1
+  }
+  println(UInt32::to_string(h))
+  println(Int::to_string(acc))
+  let mut s = opaque32(1)
+  let mut j = 0
+  while j < 100 {
+    s = s * 3 + opaque32(7)
+    j = j + 1
+  }
+  println(Int32::to_string(s))
+  0
+}

@@ -17,7 +17,7 @@ This is Deno's permission flags composed with Koka's effect system.
 ## Permission is part of the signature
 
 ```vibe run
-fn greet(name: String) -> Unit with Console {
+fn greet(_ name: String) -> Unit with Console {
   println("hi \{name}")
 }
 

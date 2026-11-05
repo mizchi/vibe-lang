@@ -38,8 +38,8 @@ y = 2
 含めて:
 
 ```vibe run
-fn grow(xs: Array[Int]) -> Unit {
-  Array::push(xs, 9)
+fn grow(_ xs: Array[Int]) -> Unit {
+  Array::push(xs, value = 9)
 }
 
 fn main allows Console {
@@ -75,7 +75,7 @@ struct Counter {
   mut n: Int
 } derive (Show)
 
-fn bump(c: Counter) -> Unit {
+fn bump(_ c: Counter) -> Unit {
   c.n = c.n + 1
 }
 

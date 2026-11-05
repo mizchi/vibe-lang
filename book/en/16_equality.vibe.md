@@ -77,14 +77,14 @@ fn main allows Console {
   let xs: Array[Int] = []
   let ys: Array[Int] = []
   println("empty and empty     = \{xs == ys}")
-  Array::push(xs, 1)
+  Array::push(xs, value = 1)
   println("after one push      = \{xs == ys}")
-  Array::push(ys, 1)
+  Array::push(ys, value = 1)
   println("after both          = \{xs == ys}")
   let us = []
   let vs = []
-  Array::push(us, 1)
-  Array::push(vs, 2)
+  Array::push(us, value = 1)
+  Array::push(vs, value = 2)
   println("no annotation       = \{us == vs}")
 }
 ```

@@ -36,51 +36,51 @@ let cap = 8192
 
 let empty_ctrl = 128
 
-fn mix(k: Int) -> Int {
+fn mix(_ k: Int) -> Int {
   (k * 2654435761) & 4294967295
 }
 
-fn h1_of(k: Int) -> Int {
+fn h1_of(_ k: Int) -> Int {
   ((mix(k) >> 16) & (cap - 1)) & (cap - 16)
 }
 
-fn h2_of(k: Int) -> Int {
+fn h2_of(_ k: Int) -> Int {
   mix(k) & 127
 }
 
 fn put_i32(b: Bytes, i: Int, v: Int) -> Unit {
-  Bytes::set(b, i * 4, v & 255)
-  Bytes::set(b, i * 4 + 1, (v >> 8) & 255)
-  Bytes::set(b, i * 4 + 2, (v >> 16) & 255)
-  Bytes::set(b, i * 4 + 3, (v >> 24) & 255)
+  Bytes::set(b, at = i * 4, value = v & 255)
+  Bytes::set(b, at = i * 4 + 1, value = (v >> 8) & 255)
+  Bytes::set(b, at = i * 4 + 2, value = (v >> 16) & 255)
+  Bytes::set(b, at = i * 4 + 3, value = (v >> 24) & 255)
 }
 
 fn zeros(n: Int, fill: Int) -> Bytes {
   let b = Bytes::new()
   let mut i = 0
   while i < n {
-    Bytes::push(b, fill)
+    Bytes::push(b, value = fill)
     i = i + 1
   }
   b
 }
 
 /// Build the frozen table: ctrl[cap] bytes, keys[cap] i32.
-fn build(keys: Array[Int]) -> (Bytes, Bytes) {
-  let ctrl = zeros(cap, empty_ctrl)
-  let kcol = zeros(cap * 4, 0)
+fn build(_ keys: Array[Int]) -> (Bytes, Bytes) {
+  let ctrl = zeros(n = cap, fill = empty_ctrl)
+  let kcol = zeros(n = cap * 4, fill = 0)
   let n = Array::length(keys)
   let mut i = 0
   while i < n {
-    let k = Array::get(keys, i)
+    let k = Array::get(keys, at = i)
     let mut g = h1_of(k)
     let mut placed = false
     while !placed {
       let mut j = 0
       while j < 16 && !placed {
-        if Bytes::get(ctrl, g + j) == empty_ctrl {
-          Bytes::set(ctrl, g + j, h2_of(k))
-          put_i32(kcol, g + j, k)
+        if Bytes::get(ctrl, at = g + j) == empty_ctrl {
+          Bytes::set(ctrl, at = g + j, value = h2_of(k))
+          put_i32(b = kcol, i = g + j, v = k)
           placed = true
         } else {
           j = j + 1
@@ -221,7 +221,7 @@ fn point_count_hits_packed(ctrl: Bytes, kcol: Bytes, qs: Bytes, nq: Int) -> Int 
   let mut i = 0
   let mut hits = 0
   while i < nq {
-    hits = hits + simd_has_at(ctrl, kcol, qs, i)
+    hits = hits + simd_has_at(ctrl = ctrl, kcol = kcol, qs = qs, i = i)
     i = i + 1
   }
   hits
@@ -232,49 +232,49 @@ fn point_count_hits(ctrl: Bytes, kcol: Bytes, qs: Array[Int]) -> Int {
   let mut i = 0
   let mut hits = 0
   while i < n {
-    hits = hits + simd_has(ctrl, kcol, Array::get(qs, i))
+    hits = hits + simd_has(ctrl = ctrl, kcol = kcol, k = Array::get(qs, at = i))
     i = i + 1
   }
   hits
 }
 
-fn mk_keys(n: Int) -> Array[Int] {
+fn mk_keys(_ n: Int) -> Array[Int] {
   let xs: Array[Int] = []
   let mut i = 0
   while i < n {
-    Array::push(xs, i * 7 + 3)
+    Array::push(xs, value = i * 7 + 3)
     i = i + 1
   }
   xs
 }
 
-fn mk_queries(n: Int) -> Array[Int] {
+fn mk_queries(_ n: Int) -> Array[Int] {
   let xs: Array[Int] = []
   let mut i = 0
   while i < n {
-    Array::push(xs, if i % 2 == 0 { i * 7 + 3 } else { i * 7 + 4 })
+    Array::push(xs, value = if i % 2 == 0 { i * 7 + 3 } else { i * 7 + 4 })
     i = i + 1
   }
   xs
 }
 
-fn qcol(xs: Array[Int]) -> Bytes {
+fn qcol(_ xs: Array[Int]) -> Bytes {
   let n = Array::length(xs)
-  let b = zeros(n * 4, 0)
+  let b = zeros(n = n * 4, fill = 0)
   let mut i = 0
   while i < n {
-    put_i32(b, i, Array::get(xs, i))
+    put_i32(b = b, i = i, v = Array::get(xs, at = i))
     i = i + 1
   }
   b
 }
 
-fn mutmap_of(keys: Array[Int]) -> MutMap[Int, Int] {
+fn mutmap_of(_ keys: Array[Int]) -> MutMap[Int, Int] {
   let m: MutMap[Int, Int] = MutMap::new_int()
   let n = Array::length(keys)
   let mut i = 0
   while i < n {
-    MutMap::set(m, Array::get(keys, i), 1)
+    MutMap::set(m, k = Array::get(keys, at = i), v = 1)
     i = i + 1
   }
   m
@@ -285,7 +285,7 @@ fn mutmap_count_hits(m: MutMap[Int, Int], qs: Array[Int]) -> Int {
   let mut i = 0
   let mut hits = 0
   while i < n {
-    if MutMap::has(m, Array::get(qs, i)) {
+    if MutMap::has(m, k = Array::get(qs, at = i)) {
       hits = hits + 1
     }
     i = i + 1
@@ -305,13 +305,13 @@ let sink = [
 ]
 
 test "both agree" {
-  assert_eq(simd_count_hits(ctrl, kcol, qbytes, 4000), 2000)
-  assert_eq(mutmap_count_hits(mm, queries), 2000)
-  assert_eq(point_count_hits(ctrl, kcol, queries), 2000)
-  assert_eq(point_count_hits_packed(ctrl, kcol, qbytes, 4000), 2000)
+  assert_eq(simd_count_hits(ctrl = ctrl, kcol = kcol, qs = qbytes, nq = 4000), 2000)
+  assert_eq(mutmap_count_hits(m = mm, qs = queries), 2000)
+  assert_eq(point_count_hits(ctrl = ctrl, kcol = kcol, qs = queries), 2000)
+  assert_eq(point_count_hits_packed(ctrl = ctrl, kcol = kcol, qs = qbytes, nq = 4000), 2000)
 }
 
-bench "lookup_4k_simd_frozen_set" { Array::set(sink, 0, simd_count_hits(ctrl, kcol, qbytes, 4000)) }
-bench "lookup_4k_stdlib_mutmap" { Array::set(sink, 0, mutmap_count_hits(mm, queries)) }
-bench "lookup_4k_simd_point_api" { Array::set(sink, 0, point_count_hits(ctrl, kcol, queries)) }
-bench "lookup_4k_simd_point_api_packed_queries" { Array::set(sink, 0, point_count_hits_packed(ctrl, kcol, qbytes, 4000)) }
+bench "lookup_4k_simd_frozen_set" { Array::set(sink, at = 0, value = simd_count_hits(ctrl = ctrl, kcol = kcol, qs = qbytes, nq = 4000)) }
+bench "lookup_4k_stdlib_mutmap" { Array::set(sink, at = 0, value = mutmap_count_hits(m = mm, qs = queries)) }
+bench "lookup_4k_simd_point_api" { Array::set(sink, at = 0, value = point_count_hits(ctrl = ctrl, kcol = kcol, qs = queries)) }
+bench "lookup_4k_simd_point_api_packed_queries" { Array::set(sink, at = 0, value = point_count_hits_packed(ctrl = ctrl, kcol = kcol, qs = qbytes, nq = 4000)) }

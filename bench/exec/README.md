@@ -40,6 +40,7 @@ questions with **deterministic, rule-based measurements**:
 | `sieve.vibe` | `Bytes` flag table, memory-heavy loops |
 | `records_pipeline.vibe` | struct construct/rebuild, `Option` lookup + match |
 | `int_wrap.vibe` | Int overflow wrap (#1877): 63-bit two's-complement, iterated LCG checksum |
+| `int32_wrap.vibe` | `Int32` / `UInt32` wrap (#3730): 32-bit two's-complement and unsigned, iterated 32-bit LCG checksum |
 
 ## Rules for scenarios
 

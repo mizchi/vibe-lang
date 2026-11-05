@@ -241,8 +241,33 @@ Any other count is unsupported. `let mut` locals and assignment (`=`, `+=`,
 are owed when the loop starts; one iteration from an arbitrary state where
 they hold owes the invariants again and a smaller, still non-negative
 measure; and the code after the loop knows the invariants and the negated
-condition. A `while` with no measure is unsupported, since it may not
-terminate, and so are `break`, `continue`, `for` and `loop`. A
+condition. Inside it, `continue` ends the iteration like the end of the
+body, and owes the same; `break` leaves without a checkpoint, so the code
+after the loop continues from the state it broke in. A `while` with no
+measure is unsupported, since it may not terminate, and so is a `break` /
+`continue` in a loop's condition. A `loop` is the contracted `while true`
+it desugars to, so it needs a measure too; `break v` and `continue(..)`
+assign its result and its parameters. A `for` over an `Array[Int]` is proved
+the same way, with its checkpoint on entry and after every iteration; it
+ends, so it needs no measure, and one it states is owed. Its clauses cannot
+name the element or the index, so an iteration starts from an arbitrary
+state where they hold, at some index below the length; without an
+`invariant`, nothing is known past the loop of what its body assigns. A
+`for` over anything else, or a contracted one whose iterand assigns, is
+unsupported, and so is the array a `for` collects. An
+`Array[Int]` (a parameter, a result, a local or a non-empty literal) is read
+through `Array::length(xs)`, `Array::get(xs, at = i)` and `xs[i]`; a read owes
+`0 <= i < length`, since an index outside it aborts, and the element is an
+`Int` in range. An array is written (`xs[i] = v`, `Array::set`, which owes
+the same index range, and `Array::push`) only when it is a local bound once,
+by `let`, to an array literal (`[]` included), and named nowhere but as the
+array of those reads and writes: the write then updates that one binding,
+and no other name or caller can hold the array. A write to a parameter, or
+to an array also used as a value (bound to another name, passed, reassigned,
+the iterand of a `for`), is unsupported, and so is a write in a loop's
+clause. A loop that writes an array knows of it, past the checkpoint, only
+what its invariants say. `==` on arrays is unsupported, since their
+contents past the length are not modelled. A
 call is modular: the callee's `requires` is owed at the call and its
 `ensures` assumed of the result, and the callee's own body is proved in the
 same run. A call to a function with no `where` contract is unsupported (it is

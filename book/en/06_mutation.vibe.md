@@ -39,8 +39,8 @@ appends in place, so every name for that array sees the new element —
 including a function you passed it to:
 
 ```vibe run
-fn grow(xs: Array[Int]) -> Unit {
-  Array::push(xs, 9)
+fn grow(_ xs: Array[Int]) -> Unit {
+  Array::push(xs, value = 9)
 }
 
 fn main allows Console {
@@ -77,7 +77,7 @@ struct Counter {
   mut n: Int
 } derive (Show)
 
-fn bump(c: Counter) -> Unit {
+fn bump(_ c: Counter) -> Unit {
   c.n = c.n + 1
 }
 

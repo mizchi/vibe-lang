@@ -103,7 +103,7 @@ canonical `Result` from `@vibe/wit_runtime`:
 ```vibe
 import @vibe/wit_runtime { Result }
 
-fn parse_port(s: String) -> Int with Exception[String] {
+fn parse_port(_ s: String) -> Int with Exception[String] {
   if String::length(s) == 0 {
     throw("empty port")
   }

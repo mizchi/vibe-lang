@@ -40,7 +40,7 @@ import @vibe/concurrent {
 
 fn main allows Console + Exception {
   let answer = TaskGroup::run((n) -> {
-    let h = TaskGroup::spawn(n, () -> {
+    let h = TaskGroup::spawn(n, f = () -> {
       21 * 2
     })
     TaskHandle::join(h)
@@ -82,11 +82,11 @@ import @vibe/concurrent {
 
 fn main allows Console + Exception {
   let total = TaskGroup::run((g) -> {
-    let a = TaskGroup::spawn(g, () -> {
+    let a = TaskGroup::spawn(g, f = () -> {
       println("task a")
       1
     })
-    let b = TaskGroup::spawn(g, () -> {
+    let b = TaskGroup::spawn(g, f = () -> {
       println("task b")
       2
     })
@@ -129,7 +129,7 @@ import @vibe/concurrent {
 fn main allows Console + Exception {
   let r = handle {
     TaskGroup::run((g) -> {
-      let a = TaskGroup::spawn(g, () -> {
+      let a = TaskGroup::spawn(g, f = () -> {
         throw("boom")
         1
       })
@@ -171,10 +171,10 @@ import @vibe/concurrent {
 
 fn main allows Console + Exception {
   let sum = TaskGroup::run((g) -> {
-    let (tx, rx) = Channel::bounded(g, 1)
-    let producer = TaskGroup::spawn(g, () -> {
+    let (tx, rx) = Channel::bounded(n = g, capacity = 1)
+    let producer = TaskGroup::spawn(g, f = () -> {
       for i in [1, 2, 3] {
-        Sender::send(tx, i)
+        Sender::send(tx, v = i)
       }
       Sender::release(tx)
     })
@@ -228,7 +228,7 @@ import @vibe/concurrent {
 
 fn main allows Console + Exception {
   let ys: Array[Int] = TaskGroup::run((g) -> {
-    Parallel::map(g, [3, 1, 2], (x) -> x * 10)
+    Parallel::map(n = g, xs = [3, 1, 2], f = (x) -> x * 10)
   })
   println("\{ys}")
 }
@@ -335,13 +335,13 @@ import @vibe/concurrent/experimental {
 
 fn main allows Console + Exception + Async {
   let total = TaskGroup::run((g) -> {
-    let a = TaskGroup::spawn_suspend(g, () -> {
+    let a = TaskGroup::spawn_suspend(g, f = () -> {
       println("a1")
       sleep_wait(10)
       println("a2")
       1
     })
-    let b = TaskGroup::spawn_suspend(g, () -> {
+    let b = TaskGroup::spawn_suspend(g, f = () -> {
       println("b1")
       let va = TaskHandle::result_wait(a)
       println("b2 saw a = \{va}")
@@ -416,7 +416,7 @@ impl Pull for Countdown {
   }
 }
 
-fn sum_down(n: Int) -> Int with Async {
+fn sum_down(_ n: Int) -> Int with Async {
   let mut acc = 0
   for x in Countdown::{ n: n } {
     acc = acc + x
@@ -433,7 +433,7 @@ fn tens() -> Array[Int] with Async {
 
 fn main allows Console + Async {
   let f = Future::pending()
-  Future::resolve(f, 41)
+  Future::resolve(f, value = 41)
   let v = await(f)
   println("v = \{v + 1}")
   println("sum = \{sum_down(4)}")

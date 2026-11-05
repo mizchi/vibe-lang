@@ -1,9 +1,9 @@
 import ./lexer.vibe {
-  lex
+  lex, lex_with_offsets
 }
 
 import ./parser.vibe {
-  parse_program, set_cfg_ambient_flags
+  parse_program, parse_program_located_with_cfg, set_cfg_ambient_flags
 }
 
 // #2513: the ambient flag set the CLI fills from VIBE_CFG is active for every
@@ -19,4 +19,23 @@ test "ambient #cfg flags select guarded statements in any parsed module" {
   set_cfg_ambient_flags([])
   inspect(Array::length(parse_program(lex(String::concat(src, "\n#cfg_enable(release)")))), "2")
   set_cfg_ambient_flags([])
+}
+
+test "explicit cfg flags ignore ambient flags and keep the caller array unchanged" {
+  let src = "#cfg(dev)\nlet a = 1\n#cfg(release)\nlet b = 2\n#cfg_enable(release)\nlet c = 3"
+  let (tokens, starts, _ends) = lex_with_offsets(src)
+  let flags: Array[String] = []
+  set_cfg_ambient_flags(["dev"])
+  handle {
+    let stmts = parse_program_located_with_cfg(tokens = tokens, starts = starts, source = src, cfg_flags = flags)
+    inspect(Array::length(stmts), content = "2")
+    inspect(Array::length(flags), content = "0")
+    // The compatibility parser still sees the ambient set; the explicit call
+    // must not clear it as a way to hide a shared-state dependency.
+    inspect(Array::length(parse_program(tokens)), content = "3")
+    set_cfg_ambient_flags([])
+  } with { Exception::Throw(msg) => {
+    set_cfg_ambient_flags([])
+    throw(msg)
+  } }
 }

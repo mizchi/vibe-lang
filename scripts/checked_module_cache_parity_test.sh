@@ -64,7 +64,7 @@ expect_red() {
 # 1. A "private body" edit that is really a public one. The consumer must now
 #    be rechecked, so the 1-rechecked/2-reused row is false.
 expect_red private-body-is-public "edit private_body decision shape" edits/private_body.vibe \
-'export fn leaf_value(v: Int) -> Int {
+'export fn leaf_value(_ v: Int) -> Int {
   v + 1
 }
 
@@ -77,7 +77,7 @@ export fn leaf_also_public() -> Int {
 #    public edit reaches the direct consumer and stops there is only a test
 #    while the edit really does change the leaf's public environment.
 expect_red additive-is-private "edit public_additive decision shape" edits/public_additive.vibe \
-'export fn leaf_value(v: Int) -> Int {
+'export fn leaf_value(_ v: Int) -> Int {
   (v + 2) - 1
 }
 '
@@ -86,7 +86,7 @@ expect_red additive-is-private "edit public_additive decision shape" edits/publi
 #    reuse shows up as a wasm where a clean build diagnoses -- is only a test
 #    while the edited tree really is ill-typed.
 expect_red breaking-is-valid "expected a diagnosed tree" edits/public_breaking.vibe \
-'export fn leaf_value(v: Int) -> Int {
+'export fn leaf_value(_ v: Int) -> Int {
   v + 1
 }
 '
@@ -94,7 +94,7 @@ expect_red breaking-is-valid "expected a diagnosed tree" edits/public_breaking.v
 # 4. A closure that is not three modules. The planned-count row is what keeps
 #    the reuse counts above being read against the graph they were measured on.
 expect_red closure-is-two "planned 2 of 3 modules" mid.vibe \
-'export fn mid_value(v: Int) -> Int {
+'export fn mid_value(_ v: Int) -> Int {
   v + 3
 }
 '

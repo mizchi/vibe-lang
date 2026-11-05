@@ -1,0 +1,57 @@
+// Pure helpers of `checker_expr_capture_impl.vibe`, split out to keep that
+// file under the source-size limit.
+
+import @vibe/compiler/core {
+  Subst, Type, subst_apply, type_to_string, unify
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+
+//# Functions
+
+/// #3548: the environment key under which the guard desugar's match temp
+/// carries the offset of the scrutinee it was bound to. Spelled so no source
+/// name can collide with it.
+export fn match_temp_anchor_key() -> String {
+  "__match_temp_anchor@"
+}
+
+/// #3248: the marker an unknown assignment target carries. ` [@assign-target=N]`
+/// names the target token the parser recorded (`N` is its start byte, so the
+/// locator can read the token's own extent back, `r#name` included). A
+/// synthesized assignment has no token (`off < 0`) and gets the bare
+/// ` [@assign-target]`, which the locator strips without inventing a position.
+export fn assign_target_marker(_ off: Int) -> String {
+  if off >= 0 {
+    String::concat(" [@assign-target=", String::concat(__to_string(off), "]"))
+  } else {
+    " [@assign-target]"
+  }
+}
+
+/// #3541: settle the binder of an ERASED exception arm (`Exception::Throw(m)`)
+/// once its body is typed. `var` is the fresh variable `m` was bound to. A
+/// body that left it open used `m` only where any type is accepted, and it is
+/// pinned to `String`, the thrown message, so a later use outside the arm
+/// (the handle's result) is checked against that. A body that used it as
+/// `String` is accepted. Any other type is refused with the edit: only a
+/// kinded arm knows its payload's type.
+export fn erased_throw_binder_settle(name: String, var: Type, s: Subst, errors: Array[String], off: Int) -> Subst {
+  let now = subst_apply(s = s, ty = var)
+  match now {
+    CtString => s,
+    CtVar(_) => match unify(a = now, b = CtString, s = s) {
+      Some(s2) => s2,
+      None => s
+    },
+    _ => {
+      let shown = type_to_string(now)
+      let edit = String::concat("write `Exception[", String::concat(shown, String::concat("]::Throw(", String::concat(name, String::concat(")` to catch a thrown `", String::concat(shown, "`"))))))
+      let why = String::concat(": the erased `Exception::Throw(", String::concat(name, String::concat(")` arm binds `", String::concat(name, String::concat("` as the thrown message, a `String`, and this arm uses it as `", String::concat(shown, "`"))))))
+      Array::push(errors, value = String::concat(edit, String::concat(why, off_marker(off))))
+      s
+    }
+  }
+}

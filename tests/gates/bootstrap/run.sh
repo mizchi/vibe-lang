@@ -13,15 +13,27 @@ if [ "${COMPILER_GATE_SKIP_PREFLIGHT:-0}" != "1" ]; then
 fi
 
 echo "[compiler-gate] 3/3 selfbuild seed->stage1->stage2->stage3"
+# The generation this lane certifies is the one this build writes: its
+# directory is named here, before the build, and handed to it (#3671). Asking
+# afterwards is a different question. The newest directory by mtime can be an
+# unrelated generation on a reused workspace, or one a concurrent build touched;
+# the first `*_<HEAD>` can be a generation built from another seed manifest for
+# the same HEAD. Either way the lane read stage2 == stage3 out of that
+# generation's manifest and handed its stage2 to every oracle below.
+gen_dir="$(bash scripts/generations.sh out-dir)" || {
+  echo "[compiler-gate] FAIL: could not name the selfbuild's output directory" >&2
+  exit 1
+}
 # ensure_generated just wrote the flat module source from the current tree, so
 # feed it to the selfbuild directly rather than paying a second generation.
 VIBE_PREBUILT_MODULE_SOURCE="lib/@vibe/compiler/_cli_adapter_module_source.vibe" \
-  bash scripts/generations.sh build --stage3
+  bash scripts/generations.sh build --stage3 --out-dir "$gen_dir"
 
-# Assert the stage2==stage3 fixpoint from the freshest generation manifest.
-latest_gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
-if [ -z "$latest_gen" ] || [ ! -f "${latest_gen}generation.json" ]; then
-  echo "[compiler-gate] FAIL: no generation manifest produced" >&2
+# Assert the stage2==stage3 fixpoint from that generation's manifest.
+latest_gen="$gen_dir/"
+stage2_wasm="${latest_gen}stage2.wasm"
+if [ ! -f "${latest_gen}generation.json" ] || [ ! -s "$stage2_wasm" ]; then
+  echo "[compiler-gate] FAIL: the selfbuild left no generation manifest and stage2 in ${latest_gen}" >&2
   exit 1
 fi
 python3 - "${latest_gen}generation.json" <<'PY'
@@ -36,8 +48,6 @@ if s2 != s3:
     print(f"[compiler-gate] FAIL: stage2 != stage3 ({s2[:12]} != {s3[:12]})", file=sys.stderr); sys.exit(1)
 print(f"[compiler-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
-
-stage2_wasm="${latest_gen}stage2.wasm"
 
 VIBE_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
   bash scripts/test_rc_bootstrap.sh

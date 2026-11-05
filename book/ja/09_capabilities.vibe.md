@@ -18,7 +18,7 @@ Deno のパーミッションフラグと Koka の effect system を合成した
 ## 権限はシグネチャの一部
 
 ```vibe run
-fn greet(name: String) -> Unit with Console {
+fn greet(_ name: String) -> Unit with Console {
   println("hi \{name}")
 }
 

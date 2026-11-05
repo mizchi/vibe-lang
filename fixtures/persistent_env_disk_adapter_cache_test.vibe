@@ -15,13 +15,13 @@ import @vibe/compiler/runtime {
 
 test "disk adapter loads complete records and refuses damaged records" {
   let fingerprint = "env-adapter-complete-record-test"
-  let env = env_bind(EnvEmpty, "answer", CtInt)
-  let text = persistent_module_cache_text(env, Some(([], [], [])))
+  let env = env_bind(env = EnvEmpty, name = "answer", ty = CtInt)
+  let text = persistent_module_cache_text(env = env, lowering = Some(([], [], [])))
   let path = persistent_type_env_cache_path(fingerprint)
-  Fs::write_file(path, text)
+  Fs::write_file(path, contents = text)
   match load_persistent_module_cache(fingerprint) {
     Some(record) => {
-      assert(persistent_module_cache_text(record.env, record.lowering) == text)
+      assert(persistent_module_cache_text(env = record.env, lowering = record.lowering) == text)
       match record.lowering {
         Some((offs, eq_offs, eq_keys)) => {
           assert(Array::length(offs) + Array::length(eq_offs) + Array::length(eq_keys) == 0)
@@ -37,12 +37,12 @@ test "disk adapter loads complete records and refuses damaged records" {
   }
   let damaged = String::concat(text, "unexpected\n")
   assert(damaged != text)
-  Fs::write_file(path, damaged)
+  Fs::write_file(path, contents = damaged)
   match load_persistent_module_cache(fingerprint) {
     None => (),
     Some(_) => assert(false)
   }
-  Fs::write_file(path, persistent_type_env_cache_text(env))
+  Fs::write_file(path, contents = persistent_type_env_cache_text(env))
   match load_persistent_module_cache(fingerprint) {
     None => (),
     Some(_) => assert(false)
@@ -52,17 +52,17 @@ test "disk adapter loads complete records and refuses damaged records" {
 test "disk adapter preserves dependency cache versions and repeated occurrences" {
   let path = "_build/env-adapter-logical-module.vibe"
   let source = "fn answer() -> Int { 42 }"
-  let cache_path = persistent_dep_list_cache_path(path, compact_source_fingerprint_memo(path, source))
+  let cache_path = persistent_dep_list_cache_path(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source))
   for deps in [[], ["a.vibe"], ["a.vibe", "a.vibe"]] {
-    Fs::write_file(cache_path, persistent_dep_list_text(deps))
-    match load_persistent_dep_list(path, source) {
+    Fs::write_file(cache_path, contents = persistent_dep_list_text(deps))
+    match load_persistent_dep_list(path = path, source = source) {
       Some(decoded) => assert(decoded == deps),
       None => assert(false)
     }
   }
-  Fs::write_file(cache_path, "version\t99\n")
+  Fs::write_file(cache_path, contents = "version\t99\n")
   let message = handle {
-    load_persistent_dep_list(path, source)
+    load_persistent_dep_list(path = path, source = source)
     "accepted"
   } with { Exception::Throw(message) => message }
   assert(message == String::concat("invalid persistent dep list header: ", cache_path))
@@ -71,11 +71,11 @@ test "disk adapter preserves dependency cache versions and repeated occurrences"
 test "disk adapter refuses stale resolved package index paths" {
   let path = "_build/env-adapter-stale-package-module.vibe"
   let source = "import @vibe/core { array_empty }"
-  let cache_path = persistent_dep_list_cache_path(path, compact_source_fingerprint_memo(path, source))
+  let cache_path = persistent_dep_list_cache_path(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source))
   let stale = "_build/stale-root/@vibe/core/index.vpkg"
   for deps in [[stale], [stale, "a.vibe"]] {
-    Fs::write_file(cache_path, persistent_dep_list_text(deps))
-    match load_persistent_dep_list(path, source) {
+    Fs::write_file(cache_path, contents = persistent_dep_list_text(deps))
+    match load_persistent_dep_list(path = path, source = source) {
       None => (),
       Some(_) => assert(false)
     }

@@ -11,18 +11,18 @@ fn sum_to(n: Int) -> Int where { requires: n >= 0, ensures: result >= 0 } {
   acc
 }
 
-fn first(xs: Array[Int]) -> Int where { ensures: result >= 0 } {
+fn first(xs: Array[Bool]) -> Int where { ensures: result >= 0 } {
   0
 }
 
 // Mutual recursion: each would assume the other's `ensures: false` and so
 // "prove" its own. Both are refused instead.
 fn ping(x: Int) -> Int where { ensures: false } {
-  pong(x)
+  pong(x = x)
 }
 
 fn pong(x: Int) -> Int where { ensures: false } {
-  ping(x)
+  ping(x = x)
 }
 
 // A callee without a contract is not assumed to return: this helper never
@@ -35,7 +35,7 @@ fn spin(x: Int) -> Int {
 }
 
 fn calls_helper(x: Int) -> Int where { ensures: result == 0 } {
-  let _ = spin(x)
+  let _ = spin(x = x)
   0
 }
 
@@ -80,4 +80,52 @@ fn leaves(x: Int) -> Bool where { ensures: !result } {
     ()
   }
   false
+}
+
+// Arrays are read, not compared: their contents past the length are not
+// modelled.
+fn same_arrays(a: Array[Int], b: Array[Int]) -> Bool where { ensures: true } {
+  a == b
+}
+
+// A program may define its own `Array::length`, and a direct call reaches it;
+// with no contract, the call cannot be checked modularly.
+fn Array::length(xs: Array[Int]) -> Int {
+  77
+}
+
+fn own_length() -> Int where { ensures: result == 1 } {
+  Array::length([0])
+}
+
+// #3717: a write is admitted only on a local array no other name holds. A
+// parameter's caller would see it.
+fn param_write(xs: Array[Int]) -> Int where { ensures: true } {
+  Array::push(xs, value = 1)
+  0
+}
+
+// `ys` is a second name for the array.
+fn aliased() -> Int where { ensures: result == 1 } {
+  let xs = [1]
+  let ys = xs
+  xs[0] = 2
+  ys[0]
+}
+
+// A `for` reads its iterand as the body writes it.
+fn iterated() -> Int where { ensures: true } {
+  let xs = [1]
+  for x in xs {
+    Array::push(xs, value = x)
+  }
+  0
+}
+
+// Two bindings of the name.
+fn rebound() -> Int where { ensures: true } {
+  let xs = [1]
+  let xs = [2]
+  xs[0] = 3
+  0
 }

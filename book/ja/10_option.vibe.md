@@ -12,7 +12,7 @@ English version: [10_option.vibe.md](../en/10_option.vibe.md)
 ## 型そのもの
 
 ```vibe run
-fn half(n: Int) -> Option[Int] {
+fn half(_ n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
   } else {
@@ -48,7 +48,7 @@ half(3)  = -1
 囲んでいる関数がその場で `None` を返します:
 
 ```vibe run
-fn half(n: Int) -> Option[Int] {
+fn half(_ n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
   } else {
@@ -82,7 +82,7 @@ sum_halves(4, 3) = None
 **ブロック**が `None` に評価されます。関数はそのブロックの後も続きます:
 
 ```vibe run
-fn half(n: Int) -> Option[Int] {
+fn half(_ n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
   } else {
@@ -126,7 +126,7 @@ halves_or_zero(4, 3) = 0
 必ず抜けなければなりません:
 
 ```vibe run
-fn double_or_zero(o: Option[Int]) -> Int {
+fn double_or_zero(_ o: Option[Int]) -> Int {
   guard o is Some(v) else {
     return 0
   }
@@ -157,7 +157,7 @@ double_or_zero(None) = 0
 知りたいだけなら `is` が `Bool` を返します:
 
 ```vibe run
-fn half(n: Int) -> Option[Int] {
+fn half(_ n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
   } else {
