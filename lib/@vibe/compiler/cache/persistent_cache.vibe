@@ -106,15 +106,15 @@ export fn set_persistent_cache_cfg_flags(_ flags_csv: String) -> Unit {
   Array::push(persistent_cache_cfg_flags_cell, value = flags_csv)
 }
 
-fn persistent_cache_cfg_segment() -> String {
-  if Array::length(persistent_cache_cfg_flags_cell) == 0 || Array::get(persistent_cache_cfg_flags_cell, at = 0) == "" {
+fn persistent_cache_cfg_csv() -> String {
+  if Array::length(persistent_cache_cfg_flags_cell) == 0 {
     ""
   } else {
-    String::concat("|cfg=", Array::get(persistent_cache_cfg_flags_cell, at = 0))
+    Array::get(persistent_cache_cfg_flags_cell, at = 0)
   }
 }
 
-fn persistent_cache_version_tag() -> String {
+fn persistent_cache_version_tag_with_cfg(_ cfg_csv: String) -> String {
   // v30 (#3440): an imported function header carries its parameter-default
   // bits. A v29 entry lacks them, and its importers would read a written
   // `None` for a defaulted parameter as the omitted argument.
@@ -169,7 +169,16 @@ fn persistent_cache_version_tag() -> String {
   // (`.bin`, via Fs::write_bytes / Fs::read_bytes) — a cache FORMAT change, so
   // the manual `vNN` knob is bumped. Old `.hex` entries are now unreferenced
   // (different key + suffix) and reclaimable via `pkf run cache-clean` (#631).
-  String::concat("v30|cg-", String::concat(codegen_fingerprint(), persistent_cache_cfg_segment()))
+  let cfg_segment = if cfg_csv == "" {
+    ""
+  } else {
+    String::concat("|cfg=", cfg_csv)
+  }
+  String::concat("v30|cg-", String::concat(codegen_fingerprint(), cfg_segment))
+}
+
+fn persistent_cache_version_tag() -> String {
+  persistent_cache_version_tag_with_cfg(persistent_cache_cfg_csv())
 }
 
 /// Read-only trace evidence for the exact existing persistent cache identity.
@@ -209,6 +218,22 @@ export fn store_persistent_artifact(kind: String, entry_name: String, fingerprin
 
 export fn load_persistent_artifact(kind: String, entry_name: String, fingerprint: String) -> Option[Bytes] with Env + Exception + Fs {
   cache_load_persistent_artifact(version_tag = persistent_cache_version_tag(), kind = kind, entry_name = entry_name, fingerprint = persistent_artifact_typing_fingerprint(fingerprint))
+}
+
+/// Artifact identity for a caller's captured flags, independent of the legacy
+/// process-wide namespace. The empty snapshot preserves the existing key.
+export fn persistent_artifact_cache_path_with_cfg(kind: String, entry_name: String, fingerprint: String, cfg_csv: String) -> String with Env {
+  cache_persistent_artifact_cache_path(version_tag = persistent_cache_version_tag_with_cfg(cfg_csv), kind = kind, entry_name = entry_name, fingerprint = persistent_artifact_typing_fingerprint(fingerprint))
+}
+
+/// Store with the same flag snapshot that produced the artifact.
+export fn store_persistent_artifact_with_cfg(kind: String, entry_name: String, fingerprint: String, bytes: Bytes, cfg_csv: String) -> Unit with Env + Exception + Fs {
+  cache_store_persistent_artifact(version_tag = persistent_cache_version_tag_with_cfg(cfg_csv), kind = kind, entry_name = entry_name, fingerprint = persistent_artifact_typing_fingerprint(fingerprint), bytes = bytes)
+}
+
+/// Load only within the caller's captured flag namespace.
+export fn load_persistent_artifact_with_cfg(kind: String, entry_name: String, fingerprint: String, cfg_csv: String) -> Option[Bytes] with Env + Exception + Fs {
+  cache_load_persistent_artifact(version_tag = persistent_cache_version_tag_with_cfg(cfg_csv), kind = kind, entry_name = entry_name, fingerprint = persistent_artifact_typing_fingerprint(fingerprint))
 }
 
 export fn persistent_dep_list_cache_path(path: String, source_fingerprint: String) -> String with Env {
