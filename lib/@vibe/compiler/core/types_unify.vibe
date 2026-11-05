@@ -2130,10 +2130,13 @@ export fn type_implements_trait(env: TypeEnv, s: Subst, ty: Type, trait_name: St
 /// #3730: an `Int32` / `UInt32` value is an `Int` once erased, so the
 /// witness a bound's dictionary reaches for it is `Int`'s. That is exact for a
 /// trait whose methods only READ `Self` (`Hash::hash_key(Self) -> String`
-/// hashes the same integer). A method whose result mentions `Self` could hand
-/// back an `Int` outside the 32-bit range, unwrapped, so such a trait
-/// (`Default`, `Add`) is not borrowed; nor is a marker trait, one with
-/// supertraits or one with header parameters, which this rule does not read.
+/// hashes the same integer), and only that shape is borrowed: every parameter
+/// is exactly `Self` or mentions no `Self`, and no result mentions it. Any
+/// other place a `Self` can sit lets `Int`'s impl produce one outside the
+/// 32-bit range, unwrapped: a result (`Default`, `Add`), a container it can
+/// write (`fill(Self, Array[Self])` pushing 2147483648), or a callback it can
+/// call. Nor is a marker trait, one with supertraits or one with header
+/// parameters borrowed, which this rule does not read.
 fn int32_borrows_int_impl(env: TypeEnv, trait_name: String) -> Bool {
   match trait_definition(env = env, name = trait_name) {
     Some((supers, methods, params, _)) => if Array::length(methods) == 0 || Array::length(supers) > 0 || Array::length(params) > 0 {
@@ -2141,11 +2144,22 @@ fn int32_borrows_int_impl(env: TypeEnv, trait_name: String) -> Bool {
     } else {
       let mut ok = true
       for m in methods {
-        let (_, _, ret) = m
+        let (_, params, ret) = m
         if type_expr_mentions_self(ret) {
           ok = false
         } else {
           ()
+        }
+        for p in params {
+          let bare_self = match p {
+            TyName(n) => n == "Self",
+            _ => false
+          }
+          if !bare_self && type_expr_mentions_self(p) {
+            ok = false
+          } else {
+            ()
+          }
         }
       }
       ok

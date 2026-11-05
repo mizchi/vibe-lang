@@ -142,8 +142,10 @@ tagged immediate an `Int` is, and every value lies in its type's range:
   them, because a generic `+` would not wrap. A trait whose methods only read
   `Self` is served by `Int`'s impl, which sees the same integer: `[T: Hash]`
   holds, so a `Set[Int32]` works, and they are builtin `Map` keys too. A
-  trait with a method returning `Self` is not (`Default`, whose `Int` impl
-  could return a value outside 32 bits). WIT `s32` / `u32` project to them
+  trait is borrowed only when each parameter is `Self` itself or mentions no
+  `Self`, and no result does: a result, a container or a callback of `Self`
+  would let `Int`'s impl produce a value outside 32 bits, so `Default` and
+  `fill(Self, Array[Self])` are not. WIT `s32` / `u32` project to them
   both ways, and a component's `s32` / `u32` import is typed with them (see
   "Importing a wasm module"). The core module's `i32` boundary is not there
   yet.
