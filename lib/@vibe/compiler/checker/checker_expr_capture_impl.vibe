@@ -872,8 +872,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let (tt0, s2, c2) = check_expr_capture(expr = then_e, env = env, defs = defs, s = s1, c = c1, errors = errors, tytab = tytab, capture = capture, lane = lane)
       checker_call_header_rewind(header_fork)
       let (et0, s3, c3) = check_expr_capture(expr = else_e, env = env, defs = defs, s = s2, c = c2, errors = errors, tytab = tytab, capture = capture, lane = lane)
-      // #3730: a literal branch beside an `Int32` / `UInt32` branch takes its type.
-      let (tt, et) = int32_binop_operands(left = then_e, right = else_e, left_ty = subst_apply(s = s3, ty = tt0), right_ty = subst_apply(s = s3, ty = et0), s = s3, errors = errors, off = 0 - 1)
+      // #3730: a literal branch beside an `Int32` / `UInt32` branch takes its
+      // type. A branch that only `return`s yields nothing to the `if`, so its
+      // operand's type must not size the other branch.
+      let (tt, et) = if arm_tail_all_return(then_e) || arm_tail_all_return(else_e) {
+        (tt0, et0)
+      } else {
+        int32_binop_operands(left = then_e, right = else_e, left_ty = subst_apply(s = s3, ty = tt0), right_ty = subst_apply(s = s3, ty = et0), s = s3, errors = errors, off = 0 - 1)
+      }
       checker_call_header_merge(header_fork)
       // The two branches must agree when both yield a real value (previously
       // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
@@ -1309,12 +1315,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else if !result_anchored {
             ()
           } else {
-            // #3730: a literal arm beside an `Int32` / `UInt32` arm takes its type.
-            let (result_adj, arm_ty) = int32_join_branch(count = ai, earlier_at = (k) -> {
-              let (_, b) = Array::get(arms, at = k)
-              b
-            }, e = body, joined = result_ty, actual = subst_apply(s = si, ty = arm_ty), s = si, errors = errors)
-            result_ty = result_adj
+            // #3730: a literal arm beside an `Int32` / `UInt32` arm takes its
+            // type. An arm that only `return`s yields nothing to the match.
+            let arm_ty = if arm_tail_all_return(body) {
+              arm_ty
+            } else {
+              let (result_adj, adapted) = int32_join_branch(count = ai, earlier_at = (k) -> {
+                let (_, b) = Array::get(arms, at = k)
+                b
+              }, e = body, joined = result_ty, actual = subst_apply(s = si, ty = arm_ty), s = si, errors = errors)
+              result_ty = result_adj
+              adapted
+            }
             if arm_tail_all_return(body) {
               ()
             } else {
