@@ -14,7 +14,7 @@ English version: [11_modules_packages.vibe.md](../en/11_modules_packages.vibe.md
 あります:
 
 ```vibe
-export fn triple(x: Int) -> Int {
+export fn triple(_ x: Int) -> Int {
   x * 3
 }
 ```

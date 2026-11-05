@@ -20,7 +20,7 @@ enum Expr {
   Div(Expr, Expr)
 }
 
-fn eval(e: Expr) -> Int with Exception {
+fn eval(_ e: Expr) -> Int with Exception {
   match e {
     Num(n) => n,
     Add(a, b) => eval(a) + eval(b),
@@ -36,7 +36,7 @@ fn eval(e: Expr) -> Int with Exception {
   }
 }
 
-fn show(e: Expr) -> String {
+fn show(_ e: Expr) -> String {
   match e {
     Num(n) => Int::to_string(n),
     Add(a, b) => "(\{show(a)} + \{show(b)})",
@@ -45,7 +45,7 @@ fn show(e: Expr) -> String {
   }
 }
 
-fn report(e: Expr) -> String {
+fn report(_ e: Expr) -> String {
   handle {
     "\{show(e)} = \{eval(e)}"
   } with {

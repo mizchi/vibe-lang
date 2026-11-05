@@ -16,7 +16,7 @@ vibe の関数は、型がそう言わない限り純粋です。計算以外に
 呼び出し側はその義務を引き継ぎます。
 
 ```vibe run
-fn risky(x: Int) -> Int with Exception {
+fn risky(_ x: Int) -> Int with Exception {
   if x == 0 {
     perform Exception::Throw("division by zero")
   }
@@ -75,7 +75,7 @@ effect Ask {
   Value(String) -> Int
 }
 
-fn answer_of(q: String) -> Int with Ask {
+fn answer_of(_ q: String) -> Int with Ask {
   perform Ask::Value(q) + 1
 }
 

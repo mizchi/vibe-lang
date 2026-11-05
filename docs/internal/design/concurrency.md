@@ -121,7 +121,7 @@ import @vibe/concurrent {
 
 fn main allows Console + Exception {
   let answer = TaskGroup::run((n) -> {
-    let h = TaskGroup::spawn(n, () -> {
+    let h = TaskGroup::spawn(n, f = () -> {
       21 * 2
     })
     TaskHandle::join(h)
@@ -899,7 +899,7 @@ import @vibe/concurrent/experimental {
 
 fn main() -> Int allows Async + Exception {
   TaskGroup::run((g) -> {
-    let h = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+    let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception {
       5
     })
     TaskGroup::pump_all(g)

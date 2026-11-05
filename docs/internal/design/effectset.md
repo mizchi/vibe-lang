@@ -44,12 +44,12 @@ effect Config {
 effectset Config::Read = { Config::Get, Config::Keys }
 
 // Name one operation directly ...
-fn lookup(key: String) -> String with Config::Get {
+fn lookup(_ key: String) -> String with Config::Get {
   perform Config::Get(key)
 }
 
 // ... or reuse a named set.
-fn describe(key: String) -> String with Config::Read {
+fn describe(_ key: String) -> String with Config::Read {
   lookup(key)
 }
 

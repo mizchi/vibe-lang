@@ -100,7 +100,7 @@ enum Shape {
   Rect(Int, Int)
 }
 
-fn area(s: Shape) -> Int {
+fn area(_ s: Shape) -> Int {
   match s {
     Circle(r) => 3 * r * r,
     Rect(w, h) => w * h
@@ -130,7 +130,7 @@ alternatives with `|`, add a condition with `if`, and catch the rest
 with `_`:
 
 ```vibe run
-fn classify(n: Int) -> String {
+fn classify(_ n: Int) -> String {
   match n {
     0 => "zero",
     1|2 => "small",

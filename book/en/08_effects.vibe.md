@@ -17,7 +17,7 @@ That is the whole mechanism. This chapter is what it looks like.
 and callers inherit the obligation:
 
 ```vibe run
-fn risky(x: Int) -> Int with Exception {
+fn risky(_ x: Int) -> Int with Exception {
   if x == 0 {
     perform Exception::Throw("division by zero")
   }
@@ -78,7 +78,7 @@ effect Ask {
   Value(String) -> Int
 }
 
-fn answer_of(q: String) -> Int with Ask {
+fn answer_of(_ q: String) -> Int with Ask {
   perform Ask::Value(q) + 1
 }
 
