@@ -90,6 +90,33 @@ status_empty="$(VIBE_PROJECT_ROOT="$TMP_ROOT" bash "$SCRIPT" status \
 echo "$status_empty" | grep -qE "^generation\.status=not-built$" || { echo "status missing not-built state" >&2; echo "$status_empty" >&2; exit 1; }
 
 echo "selfhost generations status self-test: ok"
+# out-dir names exactly the directory a build without --out-dir writes, and a
+# second seed manifest for the same HEAD names a different one -- so a caller
+# that passes it back as --out-dir consumes its own build, not whichever
+# generation for this HEAD sorts first.
+out_dir_rel="$(VIBE_PROJECT_ROOT="$TMP_ROOT" bash "$SCRIPT" out-dir --manifest "$TMP_ROOT/bootstrap/seed.json")"
+case "$out_dir_rel" in
+  _build/selfhost/generations/test-seed_*) ;;
+  *) echo "out-dir printed '$out_dir_rel' (want _build/selfhost/generations/test-seed_<head>)" >&2; exit 1 ;;
+esac
+VIBE_PROJECT_ROOT="$TMP_ROOT" \
+VIBE_GENERATION_RUNNER_SCRIPT="$TMP_ROOT/fake_cli_runner.sh" \
+VIBE_GENERATION_VALIDATE_WASM=0 \
+VIBE_GENERATION_VALIDATE_RUN=0 \
+  bash "$SCRIPT" build --manifest "$TMP_ROOT/bootstrap/seed.json" >/dev/null 2>&1
+test -s "$TMP_ROOT/$out_dir_rel/generation.json" \
+  || { echo "a build without --out-dir did not write $out_dir_rel" >&2; ls -R "$TMP_ROOT/_build/selfhost" >&2 || true; exit 1; }
+sed 's/"name": "test-seed"/"name": "other-seed"/' "$TMP_ROOT/bootstrap/seed.json" > "$TMP_ROOT/bootstrap/other-seed.json"
+other_out_dir="$(VIBE_PROJECT_ROOT="$TMP_ROOT" bash "$SCRIPT" out-dir --manifest "$TMP_ROOT/bootstrap/other-seed.json")"
+case "$other_out_dir" in
+  _build/selfhost/generations/other-seed_*) ;;
+  *) echo "out-dir for another seed printed '$other_out_dir'" >&2; exit 1 ;;
+esac
+if VIBE_PROJECT_ROOT="$TMP_ROOT" bash "$SCRIPT" out-dir --bogus >/dev/null 2>&1; then
+  echo "out-dir accepted an unknown argument" >&2; exit 1
+fi
+echo "selfhost generations out-dir self-test: ok"
+
 
 # The receipt must describe the input every stage read, not a later edit.
 cp "$TMP_ROOT/lib/@vibe/compiler/index.vibe" "$TMP_ROOT/original-entry.vibe"

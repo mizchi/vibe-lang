@@ -13,26 +13,27 @@ if [ "${COMPILER_GATE_SKIP_PREFLIGHT:-0}" != "1" ]; then
 fi
 
 echo "[compiler-gate] 3/3 selfbuild seed->stage1->stage2->stage3"
+# The generation this lane certifies is the one this build writes: its
+# directory is named here, before the build, and handed to it (#3671). Asking
+# afterwards is a different question. The newest directory by mtime can be an
+# unrelated generation on a reused workspace, or one a concurrent build touched;
+# the first `*_<HEAD>` can be a generation built from another seed manifest for
+# the same HEAD. Either way the lane read stage2 == stage3 out of that
+# generation's manifest and handed its stage2 to every oracle below.
+gen_dir="$(bash scripts/generations.sh out-dir)" || {
+  echo "[compiler-gate] FAIL: could not name the selfbuild's output directory" >&2
+  exit 1
+}
 # ensure_generated just wrote the flat module source from the current tree, so
 # feed it to the selfbuild directly rather than paying a second generation.
 VIBE_PREBUILT_MODULE_SOURCE="lib/@vibe/compiler/_cli_adapter_module_source.vibe" \
-  bash scripts/generations.sh build --stage3
+  bash scripts/generations.sh build --stage3 --out-dir "$gen_dir"
 
-# Assert the stage2==stage3 fixpoint from the manifest of the generation the
-# selfbuild above just wrote: the one named for HEAD, asked for strictly and
-# with no override, because this lane is what builds it (#3671). The newest
-# generation directory by mtime is a different question -- on a reused
-# workspace an unrelated generation can be newer, or a concurrent build can
-# touch one -- and its answer certified whatever that generation's manifest
-# said about itself.
-. "$ROOT_DIR/scripts/resolve_stage2.sh"
-if ! stage2_wasm="$(resolve_stage2_strict compiler-gate "")"; then
-  echo "[compiler-gate] FAIL: the selfbuild left no generation for HEAD ($(git rev-parse --short HEAD))" >&2
-  exit 1
-fi
-latest_gen="${stage2_wasm%/*}/"
-if [ ! -f "${latest_gen}generation.json" ]; then
-  echo "[compiler-gate] FAIL: no generation manifest produced in ${latest_gen}" >&2
+# Assert the stage2==stage3 fixpoint from that generation's manifest.
+latest_gen="$gen_dir/"
+stage2_wasm="${latest_gen}stage2.wasm"
+if [ ! -f "${latest_gen}generation.json" ] || [ ! -s "$stage2_wasm" ]; then
+  echo "[compiler-gate] FAIL: the selfbuild left no generation manifest and stage2 in ${latest_gen}" >&2
   exit 1
 fi
 python3 - "${latest_gen}generation.json" <<'PY'
