@@ -22,7 +22,7 @@ fn main allows Console {
   println("length = \{Array::length(xs)}")
   let doubled = Iterator::map(xs, _ * 2)
   println("doubled[2] = \{Array::get(doubled, 2)}")
-  Array::push(xs, 4)
+  Array::push(xs, value = 4)
   println("after push, length = \{Array::length(xs)}")
 }
 ```
@@ -54,8 +54,8 @@ strip する `vibe build` の成果物 — には位置が無く、そこでは�
 ```vibe run
 fn main allows Console {
   let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, 10)
-  ArrayBuilder::push(b, 20)
+  ArrayBuilder::push(b, value = 10)
+  ArrayBuilder::push(b, value = 20)
   let xs = ArrayBuilder::freeze(b)
   println("built length = \{Array::length(xs)}, [0] = \{xs[0]}")
 }
@@ -71,8 +71,8 @@ O(n²) になり、ビルダーなら線形で済む。
 ```vibe run
 fn main allows Console {
   let b = StringBuilder::new()
-  StringBuilder::push(b, "hello ")
-  StringBuilder::push(b, "vibe")
+  StringBuilder::push(b, value = "hello ")
+  StringBuilder::push(b, value = "vibe")
   println(StringBuilder::build(b))
 }
 ```
@@ -101,9 +101,9 @@ fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
 
 fn main allows Console {
   let m: MutMap[String, Int] = MutMap::new_string()
-  MutMap::set(m, "a", 1)
-  MutMap::set(m, "b", 2)
-  MutMap::set(m, "a", 7)
+  MutMap::set(m, k = "a", v = 1)
+  MutMap::set(m, k = "b", v = 2)
+  MutMap::set(m, k = "a", v = 7)
   println("size = \{MutMap::size(m)}")
   println("a = \{unwrap_or(MutMap::get(m, "a"), -1)}")
   println("z = \{unwrap_or(MutMap::get(m, "z"), -1)}")

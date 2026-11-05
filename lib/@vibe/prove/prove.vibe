@@ -513,6 +513,11 @@ fn prove_fn_body(ctx: Ctx, value: Expr) -> Unit with Exception {
           let outs = sym(ctx = ctx, e = body, st = start_state(env))
           for o in outs {
             let v_sort = o.sort
+            if is_loop_jump(o) {
+              unsupported(off = 0 - 1, reason = "`break` / `continue` outside a proved `while`")
+            } else {
+              ()
+            }
             if v_sort != ret_sort {
               unsupported(off = 0 - 1, reason = "a path ends with a `\{v_sort}` where `\{ret_sort}` is returned")
             } else {
@@ -830,13 +835,21 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
         []
       }
     },
-    EBreak(_) => {
-      unsupported(off = 0 - 1, reason = "`break` is outside the provable fragment")
-      []
+    // A `break` / `continue` leaves the rest of the iteration like a
+    // `return` leaves the function: a marked outcome every construct passes
+    // up, which the contracted `while` around it consumes (`sym_loop`).
+    EBreak(v) => match v {
+      Some(_) => {
+        unsupported(off = 0 - 1, reason = "`break` with a value, which only a `loop` takes")
+        []
+      },
+      None => [loop_jump(st = st, kind = loop_break())]
     },
-    EContinue(_) => {
-      unsupported(off = 0 - 1, reason = "`continue` is outside the provable fragment")
+    EContinue(args) => if Array::length(args) > 0 {
+      unsupported(off = 0 - 1, reason = "`continue` with arguments, which only a `loop` takes")
       []
+    } else {
+      [loop_jump(st = st, kind = loop_continue())]
     },
     ESeq(a, b) => {
       let out: Array[Outcome] = []
@@ -1314,16 +1327,39 @@ fn sym_loop(ctx: Ctx, lp: Loop, st: Outcome) -> Array[Outcome] with Exception {
   let m0 = single_int(ctx = ctx, e = lp.measure, st = h)
   Array::push(ctx.assumes, value = guarded(pc = st.pc, goal = "(>= \{m0} 0)"))
   for c in sym(ctx = ctx, e = lp.cond, st = h) {
-    if c.returned {
+    if is_loop_jump(c) {
+      unsupported(off = expr_off(lp.cond), reason = "a `break` / `continue` in a loop condition")
+    } else if c.returned {
       Array::push(out, value = c)
     } else if c.sort != "Bool" {
       unsupported(off = expr_off(lp.cond), reason = "a loop condition must be a `Bool`")
     } else {
       for b in sym(ctx = ctx, e = lp.body, st = with_pc(st = c, cond = c.value)) {
-        if b.returned {
+        if b.returned && b.sort == loop_break() {
+          // `break` leaves without a checkpoint: the path past the loop is
+          // the state it broke in, and owes nothing here.
+          let left = leave_scope(x = b, outer = h.env)
+          Array::push(out, value = Outcome::{
+            pc: left.pc,
+            value: "true",
+            sort: "Unit",
+            returned: false,
+            env: left.env
+          })
+        } else if b.returned && b.sort != loop_continue() {
           Array::push(out, value = b)
         } else {
-          let after = leave_scope(x = b, outer = h.env)
+          // The end of the body, or a `continue`: the condition runs again,
+          // and with it the checkpoint. A `continue` is consumed here, so the
+          // checkpoint starts from an ordinary, uninterrupted path.
+          let left = leave_scope(x = b, outer = h.env)
+          let after = Outcome::{
+            pc: left.pc,
+            value: "true",
+            sort: "Unit",
+            returned: false,
+            env: left.env
+          }
           for inv in lp.invariants {
             push_obligation(ctx = ctx, kind = "invariant", label = print_expr(inv), off = expr_off(inv), goal = clause_formula(ctx = ctx, clause = inv, state = after))
           }
@@ -1336,6 +1372,23 @@ fn sym_loop(ctx: Ctx, lp: Loop, st: Outcome) -> Array[Outcome] with Exception {
     }
   }
   out
+}
+
+fn loop_break() -> String {
+  "__break"
+}
+
+fn loop_continue() -> String {
+  "__continue"
+}
+
+/// A path that left the iteration by `break` / `continue` (`kind`).
+fn loop_jump(st: Outcome, kind: String) -> Outcome {
+  Outcome::{ pc: st.pc, value: "true", sort: kind, returned: true, env: st.env }
+}
+
+fn is_loop_jump(_ o: Outcome) -> Bool {
+  o.returned && (o.sort == loop_break() || o.sort == loop_continue())
 }
 
 /// The one value an `Int` clause has from `st`; a clause that forks the path

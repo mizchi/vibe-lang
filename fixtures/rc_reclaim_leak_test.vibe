@@ -31,7 +31,7 @@ struct Box {
 let sumt = (t: Tree) -> Int {
   match t {
     Leaf(v) => v,
-    Node(l, r) => sumt(l) + sumt(r)
+    Node(l, r) => sumt(t = l) + sumt(t = r)
   }
 }
 
@@ -53,14 +53,14 @@ let ignore_children = (t: Tree) -> Int {
 // the call site, unreachable afterward) — a per-call leak here scales
 // heap_used with N just like the earlier tuple/enum/closure guards above.
 let sumarr = (a: Array[Int]) -> Int {
-  Array::get(a, 0) + Array::get(a, 1) + Array::get(a, 2)
+  Array::get(a, at = 0) + Array::get(a, at = 1) + Array::get(a, at = 2)
 }
 
 let consume_in_loop = (a: Array[Int]) -> Int {
   let mut k = 0
   let mut s = 0
   while k < 3 {
-    s = s + sumarr(a)
+    s = s + sumarr(a = a)
     k = k + 1
   }
   s
@@ -77,7 +77,7 @@ let build_arr = (n: Int) -> Array[Int] {
   ]
   let mut j = 0
   while j < n {
-    Array::push(out, j)
+    Array::push(out, value = j)
     j = j + 1
   }
   out
@@ -94,7 +94,7 @@ let build_arr_if = (n: Int) -> Array[Int] {
   ]
   let mut j = 0
   while j < n {
-    Array::push(out, j)
+    Array::push(out, value = j)
     j = j + 1
   }
   if n >= 0 {
@@ -113,8 +113,8 @@ enum Tri {
 let sumtri = (t: Tri) -> Int {
   match t {
     L(v) => v,
-    N2(a, b) => sumtri(a) + sumtri(b),
-    N3(a, b, c) => sumtri(a) + sumtri(b) + sumtri(c)
+    N2(a, b) => sumtri(t = a) + sumtri(t = b),
+    N3(a, b, c) => sumtri(t = a) + sumtri(t = b) + sumtri(t = c)
   }
 }
 
@@ -151,8 +151,8 @@ let hold = (t: Tree) -> Tree {
   match t {
     Leaf(v) => Leaf(v),
     Node(l, r) => {
-      let s = sumt(l)
-      Node(l, Leaf(s + sumt(r)))
+      let s = sumt(t = l)
+      Node(l, Leaf(s + sumt(t = r)))
     }
   }
 }
@@ -201,12 +201,12 @@ let mk_pair = (i: Int) -> Tree {
 // drop too and leaks the node -- 80 B per iteration, the same rate as
 // `only_then` and `via_call`. Adds 0 to `total`.
 let via_move = (i: Int) -> Tree {
-  let x = mk_pair(i)
+  let x = mk_pair(i = i)
   let y = {
     let k = i
     x
   }
-  Leaf(sumt(y) * 0)
+  Leaf(sumt(t = y) * 0)
 }
 
 // #2733 review round 2 (Codex P1): the wrapper's binder starts BORROWED and
@@ -217,14 +217,14 @@ let via_move = (i: Int) -> Tree {
 // Adds 0 to `total`.
 let via_mut = (i: Int) -> Tree {
   let xs = [
-    mk_pair(i)
+    mk_pair(i = i)
   ]
   let y = {
-    let mut t = Array::get(xs, 0)
-    t = mk_pair(i + 1)
+    let mut t = Array::get(xs, at = 0)
+    t = mk_pair(i = i + 1)
     t
   }
-  Leaf(sumt(y) * 0)
+  Leaf(sumt(t = y) * 0)
 }
 
 // #2750 review round 4 (Codex P1): the wrapper returns a MUTABLE binding
@@ -235,32 +235,32 @@ let via_mut = (i: Int) -> Tree {
 // owner. 80 B per iteration. Adds 0 to `total`.
 let via_outer_mut = (i: Int) -> Tree {
   let xs = [
-    mk_pair(i)
+    mk_pair(i = i)
   ]
-  let mut t = Array::get(xs, 0)
-  t = mk_pair(i + 1)
+  let mut t = Array::get(xs, at = 0)
+  t = mk_pair(i = i + 1)
   let y = {
     let k = 0
     t
   }
-  Leaf(sumt(y) * 0)
+  Leaf(sumt(t = y) * 0)
 }
 
 let via_outer_mut_unassigned = (i: Int) -> Tree {
-  let xs = [mk_pair(i)]
-  let mut t = Array::get(xs, 0)
+  let xs = [mk_pair(i = i)]
+  let mut t = Array::get(xs, at = 0)
   let y = {
     let k = 0; t
   }
-  Leaf(sumt(y) * 0)
+  Leaf(sumt(t = y) * 0)
 }
 
 let via_outer_mut_reborrow = (i: Int) -> Tree {
-  let xs = [mk_pair(i)]
-  let mut t = Array::get(xs, 0)
-  t = Array::get(xs, 0)
+  let xs = [mk_pair(i = i)]
+  let mut t = Array::get(xs, at = 0)
+  t = Array::get(xs, at = 0)
   let y = { let k = 0; t }
-  Leaf(sumt(y) * 0)
+  Leaf(sumt(t = y) * 0)
 }
 
 // #2750 review: a local closure whose spelling shadows a top-level
@@ -269,59 +269,59 @@ let via_outer_mut_reborrow = (i: Int) -> Tree {
 // and on the assignment path that adds a retain nothing spends. 80 B per
 // iteration. Adds 0 to `total`.
 let shadowed_first = (xs: Array[Tree]) -> Tree {
-  Array::get(xs, 0)
+  Array::get(xs, at = 0)
 }
 
 let via_local_shadow = (i: Int) -> Tree {
   let xs = [
-    mk_pair(i)
+    mk_pair(i = i)
   ]
   let shadowed_first = (n: Int) -> Tree {
-    mk_pair(n)
+    mk_pair(i = n)
   }
-  let mut x = Array::get(xs, 0)
+  let mut x = Array::get(xs, at = 0)
   x = shadowed_first(i)
-  Leaf(sumt(x) * 0)
+  Leaf(sumt(t = x) * 0)
 }
 
 // The destination binder is not in scope in either initializer. Dropping
 // these unused slots must release their retains without freeing xs[0].
 let via_pending_global = (i: Int) -> Tree {
-  let xs = [mk_pair(i)]
+  let xs = [mk_pair(i = i)]
   let direct = {
-    let mut shadowed_first = shadowed_first(xs)
+    let mut shadowed_first = shadowed_first(xs = xs)
     Leaf(0)
   }
-  let filler = mk_pair(i + 10)
-  Leaf(sumt(Array::get(xs, 0)) - (i * 2 + 1) + sumt(filler) - (i * 2 + 21) + sumt(direct))
+  let filler = mk_pair(i = i + 10)
+  Leaf(sumt(t = Array::get(xs, at = 0)) - (i * 2 + 1) + sumt(t = filler) - (i * 2 + 21) + sumt(t = direct))
 }
 
 let via_pending_wrapped_global = (i: Int) -> Tree {
-  let xs = [mk_pair(i)]
+  let xs = [mk_pair(i = i)]
   let wrapped = {
-    let mut shadowed_first = { let k = 0; shadowed_first(xs) }
+    let mut shadowed_first = { let k = 0; shadowed_first(xs = xs) }
     Leaf(0)
   }
-  let filler = mk_pair(i + 10)
-  Leaf(sumt(Array::get(xs, 0)) - (i * 2 + 1) + sumt(filler) - (i * 2 + 21) + sumt(wrapped))
+  let filler = mk_pair(i = i + 10)
+  Leaf(sumt(t = Array::get(xs, at = 0)) - (i * 2 + 1) + sumt(t = filler) - (i * 2 + 21) + sumt(t = wrapped))
 }
 
 // Hiding the pending slot must preserve the existing local callee. Its fresh
 // results need no initialization retain; an extra retain leaks every call.
 let via_pending_local = (i: Int) -> Tree {
-  let shadowed_first = (n: Int) -> Tree { mk_pair(n) }
+  let shadowed_first = (n: Int) -> Tree { mk_pair(i = n) }
   let mut shadowed_first = shadowed_first(i)
   Leaf(0)
 }
 
 let via_pending_wrapped_local = (i: Int) -> Tree {
-  let shadowed_first = (n: Int) -> Tree { mk_pair(n) }
+  let shadowed_first = (n: Int) -> Tree { mk_pair(i = n) }
   let mut shadowed_first = { let k = i; shadowed_first(k) }
   Leaf(0)
 }
 
 let via_call = (c: Bool, i: Int) -> Tree {
-  let t = mk_pair(i)
+  let t = mk_pair(i = i)
   if c {
     t
   } else {
@@ -357,8 +357,8 @@ let incr_tree = (t: Tree) -> Tree {
   match t {
     Leaf(v) => Leaf(v + 1),
     Node(l, r) => {
-      let l2 = incr_tree(l)
-      let r2 = incr_tree(r)
+      let l2 = incr_tree(t = l)
+      let r2 = incr_tree(t = r)
       Node(l2, r2)
     }
   }
@@ -386,7 +386,7 @@ struct WrapperPair {
   b: Int
 }
 
-fn move_through_wrapper(i: Int) -> Int {
+fn move_through_wrapper(_ i: Int) -> Int {
   let x = WrapperPair::{ a: i, b: i + 1 }
   let y = {
     let k = 0
@@ -395,12 +395,12 @@ fn move_through_wrapper(i: Int) -> Int {
   y.a + y.b
 }
 
-fn allocate_wrapper_pair(i: Int) -> WrapperPair {
+fn allocate_wrapper_pair(_ i: Int) -> WrapperPair {
   WrapperPair::{ a: i, b: i + 1 }
 }
 
 // A field binding acquires a retained reference before the wrapper returns it.
-fn move_projection_through_wrapper(i: Int) -> Int {
+fn move_projection_through_wrapper(_ i: Int) -> Int {
   let x = (allocate_wrapper_pair(i), 0)
   let y = {
     let field = x.0
@@ -412,19 +412,19 @@ fn move_projection_through_wrapper(i: Int) -> Int {
 // A direct borrow-returning initializer is scalar-exempt in the planner:
 // returning its inner alias does not acquire a last-view-use retain. Pin
 // both read and ignored results so changing that contract cannot leak.
-fn borrow_inside_wrapper(i: Int) -> Int {
+fn borrow_inside_wrapper(_ i: Int) -> Int {
   let xs = [allocate_wrapper_pair(i)]
   let y = {
-    let t = Array::get(xs, 0); t
+    let t = Array::get(xs, at = 0); t
   }
   let ignored = {
-    let t = Array::get(xs, 0); t
+    let t = Array::get(xs, at = 0); t
   }
   y.a + y.b
 }
 
 // A consumed pattern payload also acquires a reference from its scrutinee.
-fn move_pattern_through_wrapper(i: Int) -> Int {
+fn move_pattern_through_wrapper(_ i: Int) -> Int {
   let x = (allocate_wrapper_pair(i), 0)
   let y = {
     let k = 0
@@ -465,16 +465,16 @@ let main = () -> Int {
         i + 2
       ]
     }
-    let first = Array::get(b.items, 0)
+    let first = Array::get(b.items, at = 0)
     // #703 unused-matched-field guard (drives `ignore_children`, which binds but
     // never references the heap children — see its definition above).
-    let ignored = ignore_children(Node(Leaf(i), Leaf(i + 1)))
+    let ignored = ignore_children(t = Node(Leaf(i), Leaf(i + 1)))
     // #703 follow-up: inline temporary match scrutinee. The matched-on `Node`
     // value is constructed in scrutinee position with no binding to drop it; the
     // RC scrutinee-lift must reclaim it each iteration (else heap scales with N).
     let inlined = match Node(Leaf(i), Leaf(i + 1)) {
       Leaf(_) => 0,
-      Node(l, r) => sumt(l) + sumt(r)
+      Node(l, r) => sumt(t = l) + sumt(t = r)
     }
     // #703-2 borrow-only matched-field guard: `xs` is bound and referenced, but
     // only as the borrowed arg0 of `Array::length` — never consumed. Its #702
@@ -489,22 +489,22 @@ let main = () -> Int {
     // #706 leak guard (see consume_in_loop above): a fresh array literal
     // consumed 3x inside consume_in_loop's own while loop, unreachable after
     // this call returns.
-    let looped = consume_in_loop([
+    let looped = consume_in_loop(a = [
       i,
       i + 1,
       i + 2
     ])
     // #1915 leak guard (see build_arr above): the returned builder array is
     // owned by `built` and must be reclaimed at scope end each iteration.
-    let built = build_arr(3)
+    let built = build_arr(n = 3)
     // #1915 mechanism 3 (see build_arr_if above): the if/else-tail builder's
     // result must also be reclaimed each iteration.
-    let built_if = build_arr_if(3)
+    let built_if = build_arr_if(n = 3)
     // ADR-0092 / #2389 (see widen0 / hold above): the branch that never
     // consumes the token, and a held bind, each reclaimed every iteration.
     // sumtri(w) = 2i + 1, sumt(h) = 3i + 1.
-    let w = widen0(N2(L(i), L(i + 1)), 0)
-    let h = hold(Node(Leaf(i), Leaf(i + 1)))
+    let w = widen0(t = N2(L(i), L(i + 1)), d = 0)
+    let h = hold(t = Node(Leaf(i), Leaf(i + 1)))
     // #2671 (see incr_tree / is_leaf / is_node above). `ta` stays live
     // across every call, so each lowering takes the SHARED path; the
     // map-of-map and the literal-fed filter take the UNIQUE path (elements
@@ -520,41 +520,41 @@ let main = () -> Int {
       Leaf(i),
       Node(Leaf(i), Leaf(i + 1))
     ]
-    let hm = Array::map(ta, incr_tree)
-    let hm2 = Array::map(hm, incr_tree)
-    let hf = Array::filter(ta, is_leaf)
+    let hm = Array::map(ta, f = incr_tree)
+    let hm2 = Array::map(hm, f = incr_tree)
+    let hf = Array::filter(ta, f = is_leaf)
     let hf2 = Array::filter([
       Leaf(i),
       Node(Leaf(i), Leaf(i + 1))
-    ], is_leaf)
-    let hfold = Array::fold(ta, 0, (acc: Int, t: Tree) -> Int {
-      acc + sumt(t)
+    ], f = is_leaf)
+    let hfold = Array::fold(ta, init = 0, f = (acc: Int, t: Tree) -> Int {
+      acc + sumt(t = t)
     })
-    let hfind = match Array::find(ta, is_node) {
-      Some(t) => sumt(t),
+    let hfind = match Array::find(ta, f = is_node) {
+      Some(t) => sumt(t = t),
       None => 0
     }
     let hrev = Array::reverse(ta)
     let hcat = Array::concat(ta, hrev)
-    let hany = if Array::any(ta, is_node) {
+    let hany = if Array::any(ta, f = is_node) {
       1
     } else {
       0
     }
-    let hall = if Array::all(ta, is_node) {
+    let hall = if Array::all(ta, f = is_node) {
       1
     } else {
       0
     }
-    let ta1 = Array::get(ta, 1)
-    let hm21 = Array::get(hm2, 1)
-    let hrev0 = Array::get(hrev, 0)
+    let ta1 = Array::get(ta, at = 1)
+    let hm21 = Array::get(hm2, at = 1)
+    let hrev0 = Array::get(hrev, at = 0)
     // #2682 guard: an OWNED temporary handed straight to a BORROWED position
     // (`Array::length` borrows its argument) was dropped by nobody -- 84 B
     // per call for the three-element array, the map result and its
     // elements with it. The lowering parks the temporary and releases it
     // after the call. 3 + 2 per iteration.
-    let tlen = Array::length(build_arr(3)) + Array::length(Array::map(ta, incr_tree))
+    let tlen = Array::length(build_arr(n = 3)) + Array::length(Array::map(ta, f = incr_tree))
     // #2683 guard: a MapBuilder (a class-9 handle over a class-0 storage
     // leaf), the Map it freezes and every Map that Map::set / Map::delete /
     // Map::new produce (class 6, with a class-0 side index once a map holds
@@ -563,28 +563,28 @@ let main = () -> Int {
     // on top -- scaling heap_used with N. The keys are string literals
     // (data-segment fat pointers, no allocation). 5i + 21 per iteration.
     let mb = MapBuilder::new()
-    MapBuilder::set(mb, "a", i)
-    MapBuilder::set(mb, "b", i + 1)
-    MapBuilder::set(mb, "a", i + 2)
+    MapBuilder::set(mb, key = "a", value = i)
+    MapBuilder::set(mb, key = "b", value = i + 1)
+    MapBuilder::set(mb, key = "a", value = i + 2)
     let fm = MapBuilder::freeze(mb)
-    let m1 = Map::set(Map::new(), "x", i)
-    let m2 = Map::set(m1, "y", i + 1)
-    let m3 = Map::delete(m2, "x")
+    let m1 = Map::set(Map::new(), key = "x", value = i)
+    let m2 = Map::set(m1, key = "y", value = i + 1)
+    let m3 = Map::delete(m2, key = "x")
     let mv = Map::values(m2)
     let mk = Map::keys(fm)
     let big = MapBuilder::new()
-    MapBuilder::set(big, "k0", i)
-    MapBuilder::set(big, "k1", i + 1)
-    MapBuilder::set(big, "k2", i + 2)
-    MapBuilder::set(big, "k3", i + 3)
-    MapBuilder::set(big, "k4", i + 4)
-    MapBuilder::set(big, "k5", i + 5)
-    MapBuilder::set(big, "k6", i + 6)
-    MapBuilder::set(big, "k7", i + 7)
-    MapBuilder::set(big, "k8", i + 8)
+    MapBuilder::set(big, key = "k0", value = i)
+    MapBuilder::set(big, key = "k1", value = i + 1)
+    MapBuilder::set(big, key = "k2", value = i + 2)
+    MapBuilder::set(big, key = "k3", value = i + 3)
+    MapBuilder::set(big, key = "k4", value = i + 4)
+    MapBuilder::set(big, key = "k5", value = i + 5)
+    MapBuilder::set(big, key = "k6", value = i + 6)
+    MapBuilder::set(big, key = "k7", value = i + 7)
+    MapBuilder::set(big, key = "k8", value = i + 8)
     let bm = MapBuilder::freeze(big)
-    let bm2 = Map::set(bm, "k9", i + 9)
-    let msum = Map::get(fm, "a") + Map::get(fm, "b") + Map::get(m3, "y") + Array::length(mv) + Array::length(mk) + Map::get(bm, "k4") + Map::get(bm2, "k9")
+    let bm2 = Map::set(bm, key = "k9", value = i + 9)
+    let msum = Map::get(fm, key = "a") + Map::get(fm, key = "b") + Map::get(m3, key = "y") + Array::length(mv) + Array::length(mk) + Map::get(bm, key = "k4") + Map::get(bm2, key = "k9")
     // ADR-0092 for maps: an accumulator `x = f(.., x, ..)` MOVES its current
     // value into the call (the planner used to retain it and the assignment
     // lowering drops nothing for a self-referential right-hand side, so
@@ -594,8 +594,8 @@ let main = () -> Int {
     let mut acc = Map::new()
     let mut aj = 0
     while aj < 10 {
-      acc = Map::set(acc, "a", i + aj)
-      acc = Map::set(acc, "b", aj)
+      acc = Map::set(acc, key = "a", value = i + aj)
+      acc = Map::set(acc, key = "b", value = aj)
       aj = aj + 1
     }
     let mut xs_acc: Array[Int] = [
@@ -606,18 +606,18 @@ let main = () -> Int {
     xs_acc = Array::concat(xs_acc, [
       i + 1
     ])
-    let asum = Map::get(acc, "a") + Map::get(acc, "b") + Map::size(acc) + Array::length(xs_acc) + Array::get(xs_acc, 1)
-    total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built) + Array::length(built_if) + sumtri(w) + sumt(h)
+    let asum = Map::get(acc, key = "a") + Map::get(acc, key = "b") + Map::size(acc) + Array::length(xs_acc) + Array::get(xs_acc, at = 1)
+    total = total + t.0 + t.1 + c + sumt(t = tr) + first + ignored + inlined + blen + looped + Array::length(built) + Array::length(built_if) + sumtri(t = w) + sumt(t = h)
     // #2389 (see only_then above): `i > 1000000` is false for every
     // iteration, but not a constant the folder can see.
-    total = total + sumt(only_then(i > 1000000, i)) + move_through_wrapper(i)
-    total = total + consume_callback_pair(allocate_wrapper_pair, i)
+    total = total + sumt(t = only_then(c = i > 1000000, i = i)) + move_through_wrapper(i)
+    total = total + consume_callback_pair(make = allocate_wrapper_pair, i = i)
     total = total + move_projection_through_wrapper(i) + move_pattern_through_wrapper(i)
-    total = total + borrow_inside_wrapper(i) + sumt(via_outer_mut(i)) + sumt(via_local_shadow(i)) + sumt(via_outer_mut_unassigned(i)) + sumt(via_outer_mut_reborrow(i))
-    total = total + sumt(via_pending_global(i)) + sumt(via_pending_local(i))
-    total = total + sumt(via_pending_wrapped_global(i)) + sumt(via_pending_wrapped_local(i))
-    total = total + sumt(via_call(i > 1000000, i)) + sumt(via_spine(i > 1000000, i)) + sumt(via_move(i)) + sumt(via_mut(i))
-    total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall + tlen + msum + asum
+    total = total + borrow_inside_wrapper(i) + sumt(t = via_outer_mut(i = i)) + sumt(t = via_local_shadow(i = i)) + sumt(t = via_outer_mut_unassigned(i = i)) + sumt(t = via_outer_mut_reborrow(i = i))
+    total = total + sumt(t = via_pending_global(i = i)) + sumt(t = via_pending_local(i = i))
+    total = total + sumt(t = via_pending_wrapped_global(i = i)) + sumt(t = via_pending_wrapped_local(i = i))
+    total = total + sumt(t = via_call(c = i > 1000000, i = i)) + sumt(t = via_spine(c = i > 1000000, i = i)) + sumt(t = via_move(i = i)) + sumt(t = via_mut(i = i))
+    total = total + sumt(t = ta1) + sumt(t = hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(t = hrev0) + Array::length(hcat) + hany + hall + tlen + msum + asum
     i = i + 1
   }
   total

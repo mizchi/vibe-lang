@@ -13,7 +13,7 @@ early when there is nothing*.
 ## The type
 
 ```vibe run
-fn half(n: Int) -> Option[Int] {
+fn half(_ n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
   } else {
@@ -49,7 +49,7 @@ Put `?` after an expression of type `Option[T]` and you get the `T`. If
 it was `None`, the enclosing function returns `None` immediately:
 
 ```vibe run
-fn half(n: Int) -> Option[Int] {
+fn half(_ n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
   } else {
@@ -84,7 +84,7 @@ your caller.
 it sits in evaluates to `None`. The function goes on after that block:
 
 ```vibe run
-fn half(n: Int) -> Option[Int] {
+fn half(_ n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
   } else {
@@ -129,7 +129,7 @@ it and carry on with an unwrapped value. `guard` binds for the **rest of
 the scope**, and its `else` must leave:
 
 ```vibe run
-fn double_or_zero(o: Option[Int]) -> Int {
+fn double_or_zero(_ o: Option[Int]) -> Int {
   guard o is Some(v) else {
     return 0
   }
@@ -160,7 +160,7 @@ use `if o is Some(v) { ... } else { ... }` instead.
 When you only want to know, `is` gives you a `Bool`:
 
 ```vibe run
-fn half(n: Int) -> Option[Int] {
+fn half(_ n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
   } else {

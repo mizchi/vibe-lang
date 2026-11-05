@@ -18,8 +18,8 @@ let lookup = (names, effs, name: String) -> {
   let mut found = None
   while i < Array::length(names) {
     match found {
-      None => if Array::get(names, i) == name {
-        found = Some(Array::get(effs, i))
+      None => if Array::get(names, at = i) == name {
+        found = Some(Array::get(effs, at = i))
       } else { () },
       Some(_) => ()
     }
@@ -34,13 +34,13 @@ let lookup = (names, effs, name: String) -> {
 let rec resolve_tp = (ty) -> {
   match ty {
     TFn(ps, ret) => {
-      let out = Array::slice([TInt], 0, 0)
+      let out = Array::slice([TInt], start = 0, end = 0)
       let mut i = 0
       while i < Array::length(ps) {
-        Array::push(out, resolve_tp(Array::get(ps, i)))
+        Array::push(out, value = resolve_tp(ty = Array::get(ps, at = i)))
         i = i + 1
       }
-      TFn(out, resolve_tp(ret))
+      TFn(out, resolve_tp(ty = ret))
     },
     _ => ty
   }
@@ -50,10 +50,10 @@ let use_ty = (t) -> match t { TFn(_, _) => 1, _ => 0 }
 
 let shape2 = (n) -> {
   let resolved = TFn([TInt], TInt)
-  let pt2 = resolve_tp(resolved)
+  let pt2 = resolve_tp(ty = resolved)
   let tup = (pt2, n, n + 1)
   let (pt, a, b) = tup
-  use_ty(pt) + use_ty(pt) + a + b
+  use_ty(t = pt) + use_ty(t = pt) + a + b
 }
 
 // Shape 3 (#715 / check_expr's four sibling `let resolved`): SIBLING scopes
@@ -62,22 +62,22 @@ let shape2 = (n) -> {
 let shape3 = (flag, n) -> {
   if flag {
     let resolved = TFn([TInt], TInt)
-    use_ty(resolved) + n
+    use_ty(t = resolved) + n
   } else {
     let resolved = TInt
-    use_ty(resolved) + n
+    use_ty(t = resolved) + n
   }
 }
 
 // Shape 4 (#704/#708/#715): borrowed views (projection / Array::get results /
 // borrow-bound idents) stored into tuple, array, and ctor literals.
 let shape4 = (xs) -> {
-  let head = Array::get(xs, 0)
-  let pair = (head, Array::get(xs, 1))
-  let arr2 = [head, Array::get(xs, 1)]
+  let head = Array::get(xs, at = 0)
+  let pair = (head, Array::get(xs, at = 1))
+  let arr2 = [head, Array::get(xs, at = 1)]
   let boxed = Some(head)
   let (h2, t2) = pair
-  use_ty(h2) + use_ty(t2) + Array::length(arr2) + (match boxed { Some(x) => use_ty(x), None => 0 })
+  use_ty(t = h2) + use_ty(t = t2) + Array::length(arr2) + (match boxed { Some(x) => use_ty(t = x), None => 0 })
 }
 
 // Shape 5 (#706/#715 EForIn): for-in consuming outer bindings + the loop
@@ -85,7 +85,7 @@ let shape4 = (xs) -> {
 let shape5 = (xs) -> {
   let mut total = 0
   for x in xs {
-    total = total + use_ty(x)
+    total = total + use_ty(t = x)
   }
   total
 }
@@ -120,12 +120,12 @@ let is_p6wild: (Pat6) -> Bool = (p) -> {
 let shape6 = (k) -> {
   let mut acc = 0
   let check: (Pat6) -> Unit = (sp) -> {
-    if is_p6bind(sp) {
+    if is_p6bind(p = sp) {
       acc = acc + 1
     } else {
       ()
     }
-    if is_p6wild(sp) {
+    if is_p6wild(p = sp) {
       acc = acc + 3
     } else {
       acc = acc + 2
@@ -146,15 +146,15 @@ let shape6 = (k) -> {
 // alive and reads the string out of each.
 let shape7 = () -> {
   let b = MapBuilder::new()
-  MapBuilder::set(b, "a", String::concat("hello", "-world"))
-  let got = MapBuilder::get(b, "a")
+  MapBuilder::set(b, key = "a", value = String::concat("hello", "-world"))
+  let got = MapBuilder::get(b, key = "a")
   let m = MapBuilder::freeze(b)
   let mut acc = 0
   match got {
     Some(s) => { acc = acc + String::length(s) },
     None => ()
   }
-  acc + String::length(Map::get(m, "a"))
+  acc + String::length(Map::get(m, key = "a"))
 }
 
 // Shape 8 (#1553): the common one-arm residual match must retain pattern
@@ -192,22 +192,22 @@ fn shape9_optional(x?: Array[Int]) -> Int {
 // consumed three or more times is released early (#2681, a separate,
 // pre-existing accounting bug this shape is not about).
 let shape10 = (tys: Array[Ty]) -> Int {
-  let kept = Array::filter(tys, (t) -> use_ty(t) == 1)
-  let folded = Array::fold(tys, 0, (acc, t) -> acc + use_ty(t))
-  let found = match Array::find(tys, (t) -> use_ty(t) == 1) {
-    Some(t) => use_ty(t) + 1,
+  let kept = Array::filter(tys, f = (t) -> use_ty(t = t) == 1)
+  let folded = Array::fold(tys, init = 0, f = (acc, t) -> acc + use_ty(t = t))
+  let found = match Array::find(tys, f = (t) -> use_ty(t = t) == 1) {
+    Some(t) => use_ty(t = t) + 1,
     None => 0
   }
   let rev = Array::reverse(tys)
-  let mapped = Array::map(tys, (t) -> match t {
+  let mapped = Array::map(tys, f = (t) -> match t {
     TFn(ps, r) => TFn(ps, r),
     _ => TInt
   })
   let cat = Array::concat(tys, rev)
-  let r1 = Array::get(rev, 1)
-  let m1 = Array::get(mapped, 1)
-  let t1 = Array::get(tys, 1)
-  Array::length(kept) + folded + found + use_ty(r1) + Array::length(mapped) + use_ty(m1) + Array::length(cat) + use_ty(t1)
+  let r1 = Array::get(rev, at = 1)
+  let m1 = Array::get(mapped, at = 1)
+  let t1 = Array::get(tys, at = 1)
+  Array::length(kept) + folded + found + use_ty(t = r1) + Array::length(mapped) + use_ty(t = m1) + Array::length(cat) + use_ty(t = t1)
 }
 
 let main = () -> Int {
@@ -217,7 +217,7 @@ let main = () -> Int {
   let mut acc = 0
   let mut k = 0
   while k < 5000 {
-    match lookup(names, effs, "b") {
+    match lookup(names = names, effs = effs, name = "b") {
       Some(arr) => { acc = acc + Array::length(arr) },
       None => ()
     }
@@ -225,18 +225,18 @@ let main = () -> Int {
     // without ever being reassigned -- this is the path that needs the
     // ELetMut DECLARATION dup (the found path above is provisioned by the
     // reassignment budget re-application instead; both must hold).
-    match lookup(names, effs, "zzz") {
+    match lookup(names = names, effs = effs, name = "zzz") {
       Some(_) => { acc = acc + 1000000 },
       None => { acc = acc + 1 }
     }
-    acc = acc + shape2(k % 7)
-    acc = acc + shape3(k % 2 == 0, k % 3)
-    acc = acc + shape4(tys)
-    acc = acc + shape5(tys)
-    acc = acc + shape6(k)
+    acc = acc + shape2(n = k % 7)
+    acc = acc + shape3(flag = k % 2 == 0, n = k % 3)
+    acc = acc + shape4(xs = tys)
+    acc = acc + shape5(xs = tys)
+    acc = acc + shape6(k = k)
     acc = acc + shape7()
-    acc = acc + shape8(k)
-    acc = acc + shape10(tys)
+    acc = acc + shape8(n = k)
+    acc = acc + shape10(tys = tys)
     let borrowed = [10, 20, 30, 40]
     acc = acc + shape9_labeled(x=borrowed)
     acc = acc + Array::length(borrowed)

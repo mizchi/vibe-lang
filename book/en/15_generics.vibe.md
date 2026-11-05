@@ -15,7 +15,7 @@ struct Box[T] {
   v: T
 }
 
-fn identity[T](x: T) -> T {
+fn identity[T](_ x: T) -> T {
   x
 }
 
@@ -84,7 +84,7 @@ impl [T] Measured for Array[T] {
   }
 }
 
-fn size_of[T: Measured](x: T) -> Int {
+fn size_of[T: Measured](_ x: T) -> Int {
   T::measure(x)
 }
 

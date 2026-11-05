@@ -17,7 +17,7 @@ import @vibe/builtin {
 
 fn main allows Console {
   let xs = [1, 2, 3, 4]
-  let evens = Iterator::filter(xs, (n) -> {
+  let evens = Iterator::filter(xs = xs, pred = (n) -> {
     n % 2 == 0
   })
   let sum = Iterator::fold(xs, 0, _ + _)

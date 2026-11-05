@@ -69,7 +69,8 @@ $dir/unproved.vibe:112:18: unproved: invariant ((0 <= i) && (i <= 10)) holds aga
 $dir/unproved.vibe:125:16: unproved: the measure n stays non-negative and drops on each iteration, in \`stuck\` -- counterexample: <model>
 $dir/unproved.vibe:134:1: unproved: ensures (result == 0) of \`cond_step\` -- counterexample: <model>
 $dir/unproved.vibe:150:5: unproved: the index of xs[1] is within the array, in \`second\` -- counterexample: <model>
-$dir/unproved.vibe:154:3: unproved: the index of Array::get(xs, at=i) is within the array, in \`get_at\` -- counterexample: <model>"
+$dir/unproved.vibe:154:3: unproved: the index of Array::get(xs, at=i) is within the array, in \`get_at\` -- counterexample: <model>
+$dir/unproved.vibe:162:16: unproved: the measure (n - i) stays non-negative and drops on each iteration, in \`stall\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:7:9: unsupported: a \`while\` without a \`where { decreases: .. }\` measure: termination is not proved, so the result would be partial correctness only (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, \`Array[Int]\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)

@@ -26,17 +26,17 @@ fn outer_writes() -> String with Exception {
     let mut i = 0
     while i < 3 {
       let k = i
-      Array::push(hs, TaskGroup::spawn(n, () -> { k * 10 }))
+      Array::push(hs, value = TaskGroup::spawn(n, f = () -> { k * 10 }))
       i = i + 1
     }
     let local_cell = Cell::{ v: None }
-    local_cell.v = Some(TaskGroup::spawn(n, () -> { 5 }))
+    local_cell.v = Some(TaskGroup::spawn(n, f = () -> { 5 }))
     let mut local_slot = None
-    local_slot = Some(TaskGroup::spawn(n, () -> { 6 }))
+    local_slot = Some(TaskGroup::spawn(n, f = () -> { 6 }))
     for h in hs {
       let v = TaskHandle::join(h)
-      Array::push(results, v)
-      Array::push(open_results, v + 1)
+      Array::push(results, value = v)
+      Array::push(open_results, value = v + 1)
       total = total + v
     }
     match local_cell.v {
@@ -47,9 +47,9 @@ fn outer_writes() -> String with Exception {
       Some(h) => last = Some(TaskHandle::join(h)),
       None => ()
     }
-    let (tx, rx) = Channel::bounded(n, 4)
-    let _p = TaskGroup::spawn(n, () -> {
-      Sender::send(tx, 7)
+    let (tx, rx) = Channel::bounded(n = n, capacity = 4)
+    let _p = TaskGroup::spawn(n, f = () -> {
+      Sender::send(tx, v = 7)
       Sender::release(tx)
       0
     })
@@ -59,10 +59,10 @@ fn outer_writes() -> String with Exception {
     }
     let outer_local = []
     let inner = TaskGroup::run((m) -> {
-      Array::push(outer_local, TaskGroup::spawn(n, () -> { 100 }))
-      TaskHandle::join(TaskGroup::spawn(m, () -> { 1 }))
+      Array::push(outer_local, value = TaskGroup::spawn(n, f = () -> { 100 }))
+      TaskHandle::join(TaskGroup::spawn(m, f = () -> { 1 }))
     })
-    let from_outer = TaskHandle::join(Array::get(outer_local, 0))
+    let from_outer = TaskHandle::join(Array::get(outer_local, at = 0))
     got + inner + from_outer
   })
   let cv = match c.v {
@@ -94,7 +94,7 @@ test "joined results and body-local handles stay legal around a task group" allo
 // hands the handle back keeps its region in the result type, and a struct
 // built from a JOINED value -- returned by a helper, or written directly --
 // carries no handle.
-fn peek(h: TaskHandle[Int]) -> Int with Exception {
+fn peek(_ h: TaskHandle[Int]) -> Int with Exception {
   TaskHandle::join(h)
 }
 
@@ -102,7 +102,7 @@ fn put[T](c: Cell[T], v: T) -> Unit {
   c.v = Some(v)
 }
 
-fn Cell::keep[T](self: Cell[T], v: T) -> Unit {
+fn Cell::keep[T](_ self: Cell[T], v: T) -> Unit {
   self.v = Some(v)
 }
 
@@ -118,7 +118,7 @@ fn apply_to[T, U](h: T, f: (T) -> U) -> U {
   f(h)
 }
 
-fn id[T](x: T) -> T {
+fn id[T](_ x: T) -> T {
   x
 }
 
@@ -126,18 +126,18 @@ struct Summary {
   total: Int
 }
 
-fn summarize(h: TaskHandle[Int]) -> Summary with Exception {
+fn summarize(_ h: TaskHandle[Int]) -> Summary with Exception {
   Summary::{ total: TaskHandle::join(h) }
 }
 
-fn summary_total(c: Cell[Summary]) -> Int {
+fn summary_total(_ c: Cell[Summary]) -> Int {
   match c.v {
     Some(sv) => sv.total,
     None => 0 - 1
   }
 }
 
-fn cell_value(c: Cell[Int]) -> Int {
+fn cell_value(_ c: Cell[Int]) -> Int {
   match c.v {
     Some(x) => x,
     None => 0 - 1
@@ -157,25 +157,25 @@ fn helper_calls() -> String with Exception {
   }
   let r = TaskGroup::run((n) -> {
     let local = Cell::{ v: None }
-    put(local, TaskGroup::spawn(n, () -> { 40 }))
+    put(c = local, v = TaskGroup::spawn(n, f = () -> { 40 }))
     let joined = match local.v {
       Some(lh) => peek(lh),
       None => 0
     }
-    put(a, joined + 1)
-    keep_joined(b, TaskGroup::spawn(n, () -> { 2 }))
-    keep_joined_generic(g, TaskGroup::spawn(n, () -> { 3 }))
+    put(c = a, v = joined + 1)
+    keep_joined(c = b, h = TaskGroup::spawn(n, f = () -> { 2 }))
+    keep_joined_generic(c = g, h = TaskGroup::spawn(n, f = () -> { 3 }))
     note(joined)
     let by_method = Cell::{ v: None }
-    by_method.keep(TaskGroup::spawn(n, () -> { 4 }))
+    by_method.keep(v = TaskGroup::spawn(n, f = () -> { 4 }))
     let stash_local = (x) -> {
       local.v = Some(x)
     }
-    stash_local(TaskGroup::spawn(n, () -> { 5 }))
+    stash_local(TaskGroup::spawn(n, f = () -> { 5 }))
     let outer_local = Cell::{ v: None }
     let inner = TaskGroup::run((m) -> {
-      put(outer_local, TaskGroup::spawn(n, () -> { 100 }))
-      TaskHandle::join(TaskGroup::spawn(m, () -> { 1 }))
+      put(c = outer_local, v = TaskGroup::spawn(n, f = () -> { 100 }))
+      TaskHandle::join(TaskGroup::spawn(m, f = () -> { 1 }))
     })
     let from_outer = match outer_local.v {
       Some(oh) => TaskHandle::join(oh),
@@ -189,22 +189,22 @@ fn helper_calls() -> String with Exception {
       Some(sh) => TaskHandle::join(sh),
       None => 0
     }
-    let via_callback = apply_to(TaskGroup::spawn(n, () -> { 6 }), (x) -> {
+    let via_callback = apply_to(h = TaskGroup::spawn(n, f = () -> { 6 }), f = (x) -> {
       TaskHandle::join(x)
     })
     let with_group = (f) -> {
-      f(TaskGroup::spawn(n, () -> { 8 }))
+      f(TaskGroup::spawn(n, f = () -> { 8 }))
     }
     let via_captured = with_group((x) -> {
       TaskHandle::join(x)
     })
-    let via_id = TaskHandle::join(id(TaskGroup::spawn(n, () -> { 9 })))
-    s1.v = Some(summarize(TaskGroup::spawn(n, () -> { 11 })))
-    s2.v = Some(Summary::{ total: TaskHandle::join(TaskGroup::spawn(n, () -> { 12 })) })
+    let via_id = TaskHandle::join(id(TaskGroup::spawn(n, f = () -> { 9 })))
+    s1.v = Some(summarize(TaskGroup::spawn(n, f = () -> { 11 })))
+    s2.v = Some(Summary::{ total: TaskHandle::join(TaskGroup::spawn(n, f = () -> { 12 })) })
     inner + from_outer + from_method + from_stash + via_callback + via_captured + via_id
   })
   let body = (n) -> {
-    let h = TaskGroup::spawn(n, () -> { 7 })
+    let h = TaskGroup::spawn(n, f = () -> { 7 })
     named.v = Some(TaskHandle::join(h))
     1
   }
@@ -236,10 +236,10 @@ enum Slot {
 }
 
 fn start(g: TaskGroup, k: Int) -> TaskHandle[Int] {
-  TaskGroup::spawn(g, () -> { k })
+  TaskGroup::spawn(g, f = () -> { k })
 }
 
-fn boxit(h: TaskHandle[Int]) -> Box {
+fn boxit(_ h: TaskHandle[Int]) -> Box {
   return Box::{ h: h }
 }
 
@@ -252,7 +252,7 @@ fn wrap(h: TaskHandle[Int], keep: Bool) -> Slot {
   Empty
 }
 
-fn unbox(b: Box) -> Int with Exception {
+fn unbox(_ b: Box) -> Int with Exception {
   TaskHandle::join(b.h)
 }
 
@@ -266,29 +266,29 @@ fn erased_in_body() -> String with Exception {
   let pre_fs: Cell[() -> Int] = Cell::{ v: None }
   let pre = () -> { 9 }
   let r = TaskGroup::run((n) -> {
-    let t = start(n, 1)
-    let b = boxit(TaskGroup::spawn(n, () -> { 2 }))
-    let s = match wrap(start(n, 3), true) {
+    let t = start(g = n, k = 1)
+    let b = boxit(TaskGroup::spawn(n, f = () -> { 2 }))
+    let s = match wrap(h = start(g = n, k = 3), keep = true) {
       Has(h) => TaskHandle::join(h),
       Empty => 0
     }
-    keep_unboxed(kept, Box::{ h: start(n, 4) })
+    keep_unboxed(c = kept, b = Box::{ h: start(g = n, k = 4) })
     let local_box = Cell::{ v: None }
-    local_box.v = Some(boxit(start(n, 5)))
+    local_box.v = Some(boxit(start(g = n, k = 5)))
     let from_local = match local_box.v {
       Some(lb) => unbox(lb),
       None => 0
     }
     let outer_local_box: Cell[Box] = Cell::{ v: None }
     let inner = TaskGroup::run((m) -> {
-      outer_local_box.v = Some(Box::{ h: TaskGroup::spawn(n, () -> { 6 }) })
-      TaskHandle::join(TaskGroup::spawn(m, () -> { 10 }))
+      outer_local_box.v = Some(Box::{ h: TaskGroup::spawn(n, f = () -> { 6 }) })
+      TaskHandle::join(TaskGroup::spawn(m, f = () -> { 10 }))
     })
     let from_outer = match outer_local_box.v {
       Some(ob) => unbox(ob),
       None => 0
     }
-    let j = TaskHandle::join(start(n, 7))
+    let j = TaskHandle::join(start(g = n, k = 7))
     fs.v = Some(() -> { j + 1 })
     pre_fs.v = Some(pre)
     TaskHandle::join(t) + unbox(b) + s + from_local + inner + from_outer
@@ -321,33 +321,33 @@ struct Wrapper {
   inner: Box
 }
 
-fn ignore(h: TaskHandle[Int]) -> Unit {
+fn ignore(_ h: TaskHandle[Int]) -> Unit {
   let _ = h
   ()
 }
 
 fn walk_cb(cb: (TaskHandle[Int]) -> Unit, h: TaskHandle[Int], first: Bool) -> Unit {
   if first {
-    walk_cb(cb, h, false)
+    walk_cb(cb = cb, h = h, first = false)
   } else {
     cb(h)
   }
 }
 
-fn nested_and_branches(flag: Bool) -> String with Exception {
+fn nested_and_branches(_ flag: Bool) -> String with Exception {
   let r = TaskGroup::run((n) -> {
     let picked = if flag {
-      Box::{ h: start(n, 1) }
+      Box::{ h: start(g = n, k = 1) }
     } else {
-      Box::{ h: start(n, 2) }
+      Box::{ h: start(g = n, k = 2) }
     }
     let matched = match Some(3) {
-      Some(k) => Box::{ h: start(n, k) },
-      None => Box::{ h: start(n, 0) }
+      Some(k) => Box::{ h: start(g = n, k = k) },
+      None => Box::{ h: start(g = n, k = 0) }
     }
-    let w = Wrapper::{ inner: Box::{ h: start(n, 4) } }
-    let h5 = start(n, 5)
-    walk_cb(ignore, h5, true)
+    let w = Wrapper::{ inner: Box::{ h: start(g = n, k = 4) } }
+    let h5 = start(g = n, k = 5)
+    walk_cb(cb = ignore, h = h5, first = true)
     unbox(picked) + unbox(matched) + unbox(w.inner) + TaskHandle::join(h5)
   })
   "r=\{r}"
@@ -371,7 +371,7 @@ fn fill_slot(s: HandleSlot, h: TaskHandle[Int]) -> Unit {
   s.h = Some(h)
 }
 
-fn slot_value(s: HandleSlot) -> Int with Exception {
+fn slot_value(_ s: HandleSlot) -> Int with Exception {
   match s.h {
     Some(h) => TaskHandle::join(h),
     None => 0
@@ -381,21 +381,21 @@ fn slot_value(s: HandleSlot) -> Int with Exception {
 fn local_writes() -> String with Exception {
   let fs = TaskGroup::run((n) -> {
     let s = HandleSlot::{ h: None }
-    s.h = Some(start(n, 1))
+    s.h = Some(start(g = n, k = 1))
     let filled = HandleSlot::{ h: None }
-    fill_slot(filled, start(n, 2))
+    fill_slot(s = filled, h = start(g = n, k = 2))
     let hs: Array[TaskHandle[Int]] = []
-    Array::push(hs, start(n, 3))
-    Array::set(hs, 0, start(n, 4))
+    Array::push(hs, value = start(g = n, k = 3))
+    Array::set(hs, at = 0, value = start(g = n, k = 4))
     let mut later = None
-    later = Some(start(n, 5))
+    later = Some(start(g = n, k = 5))
     let from_later = match later {
       Some(h) => TaskHandle::join(h),
       None => 0
     }
-    let total = slot_value(s) + slot_value(filled) + TaskHandle::join(Array::get(hs, 0)) + from_later
+    let total = slot_value(s) + slot_value(filled) + TaskHandle::join(Array::get(hs, at = 0)) + from_later
     let out = []
-    Array::push(out, () -> total)
+    Array::push(out, value = () -> total)
     out
   })
   "f=\{(Array::get(fs, 0))()}"
@@ -413,7 +413,7 @@ test "writes into a binding made in the body stay legal while it stays there" al
 // a cell of the outer body).
 fn keep_swapped(c: Cell[TaskHandle[Int]], a: TaskHandle[Int], b: TaskHandle[Int], again: Bool) -> Unit {
   if again {
-    keep_swapped(c, b, a, false)
+    keep_swapped(c = c, a = b, b = a, again = false)
   } else {
     c.v = Some(a)
   }
@@ -423,7 +423,7 @@ fn swapped_regions() -> String with Exception {
   let r = TaskGroup::run((n) -> {
     let inner = TaskGroup::run((m) -> {
       let c: Cell[TaskHandle[Int]] = Cell::{ v: None }
-      keep_swapped(c, TaskGroup::spawn(n, () -> { 1 }), TaskGroup::spawn(m, () -> { 41 }), true)
+      keep_swapped(c = c, a = TaskGroup::spawn(n, f = () -> { 1 }), b = TaskGroup::spawn(m, f = () -> { 41 }), again = true)
       match c.v {
         Some(h) => TaskHandle::join(h),
         None => 0 - 1
@@ -443,7 +443,7 @@ test "a recursion that swaps handles between groups stays legal while it stores 
 fn expression_result() -> Int with Exception {
   let outside: Cell[Cell[TaskHandle[Int]]] = Cell::{ v: None }
   let _ = TaskGroup::run((g) -> {
-    let h = TaskGroup::spawn(g, () -> 42)
+    let h = TaskGroup::spawn(g, f = () -> 42)
     outside.v = Some(((h: TaskHandle[Int]) -> Cell[TaskHandle[Int]] with Exception {
       TaskHandle::join(h)
       Cell::{ v: None }

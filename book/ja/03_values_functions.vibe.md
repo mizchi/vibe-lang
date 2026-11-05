@@ -99,7 +99,7 @@ fn add(x: Int, y: Int) -> Int {
   x + y
 }
 
-fn fact(n: Int) -> Int {
+fn fact(_ n: Int) -> Int {
   if n < 2 {
     1
   } else {
@@ -107,7 +107,7 @@ fn fact(n: Int) -> Int {
   }
 }
 
-fn identity[T](x: T) -> T {
+fn identity[T](_ x: T) -> T {
   x
 }
 
@@ -161,8 +161,8 @@ fn greet(name: String, times?: Int) -> String {
 }
 
 fn main allows Console {
-  println(greet("hi"))
-  println(greet("hi", 3))
+  println(greet(name = "hi"))
+  println(greet(name = "hi", times = 3))
 }
 ```
 

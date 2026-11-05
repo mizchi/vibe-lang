@@ -280,7 +280,7 @@ Int の範囲 (±2^61) を超える整数は `@vibe/core` の任意精度 `BigIn
 import ./lib/@vibe/core { BigInt::from_int, BigInt::pow, BigInt::to_string }
 
 let big_2_64: () -> String = () -> {
-  BigInt::to_string(BigInt::pow(BigInt::from_int(2), 64))   // "18446744073709551616" (Int では持てない)
+  BigInt::to_string(BigInt::pow(BigInt::from_int(2), exp = 64))   // "18446744073709551616" (Int では持てない)
 }
 ```
 
@@ -345,7 +345,7 @@ and aliases observe every push and truncation.
 ```vibe
 fn reserved_values() -> Array[Int] {
   let xs = Array::with_capacity(128)
-  Array::push(xs, 42)
+  Array::push(xs, value = 42)
   xs
 }
 ```
@@ -447,8 +447,8 @@ row の alias)。`ArrayBuilder::build` / `MapBuilder::build` は未実装。
 ```vibe
 fn greeting() -> String {
   let b = StringBuilder::new()
-  StringBuilder::push(b, "hello ")
-  StringBuilder::push(b, "world")
+  StringBuilder::push(b, value = "hello ")
+  StringBuilder::push(b, value = "world")
   StringBuilder::build(b)           // 終端 = build
 }
 ```
@@ -472,11 +472,11 @@ note above); reach for `ArrayBuilder` (build-then-freeze accumulation) or
 // Top-level named functions: `fn` (#727, ADR-0064). Full annotations
 // required (param types + return type); recursion needs no `rec`.
 fn add(x: Int, y: Int) -> Int { x + y }
-fn fact(n: Int) -> Int {
+fn fact(_ n: Int) -> Int {
   if n < 2 { 1 } else { n * fact(n - 1) }
 }
-fn identity[T](x: T) -> T { x }                // generic
-fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
+fn identity[T](_ x: T) -> T { x }                // generic
+fn show[T: Eq + Ord](_ x: T) -> T { x }          // trait bounds
 fn hello() -> Unit with Console { println("hi") }
 // #1429: the effect row has exactly one spelling, plus one for the empty row.
 //   with A + B      the row
@@ -490,7 +490,7 @@ fn hello() -> Unit with Console { println("hi") }
 // type nor a parameter, so the row ends unambiguously with no lookahead — and
 // it is already the "and another one" separator in trait bounds (`[T: A + B]`).
 // `with (A + B)` is rejected: `()` spells the empty row and nothing else.
-export fn doubled(x: Int) -> Int { x * 2 }
+export fn doubled(_ x: Int) -> Int { x * 2 }
 // where-contract (#731): requires asserts at entry; ensures binds the
 // function value as `result` and asserts at exit. Violations trap.
 fn checked_add(x: Int, y: Int) -> Int
@@ -552,7 +552,7 @@ type, and so does `fn main` once it has parens: `fn main() { .. }` is
 let add: (Int, Int) -> Int = (x, y) -> { x + y }
 let inc: (Int) -> Int = (x) -> { x + 1 }
 let rec fact: (Int) -> Int = (n) -> {     // recursive
-  if n < 2 { 1 } else { n * fact(n - 1) }
+  if n < 2 { 1 } else { n * fact(n = n - 1) }
 }
 let identity: [T](T) -> T = (x) -> { x }  // generic
 let show: [T: Eq + Ord](T) -> T = (x) -> { x } // trait bounds
@@ -576,7 +576,7 @@ the callee.
 
 ```vibe
 fn note(log: Array[String], s: String, v: Int) -> Int {
-  Array::push(log, s)
+  Array::push(log, value = s)
   v
 }
 
@@ -586,8 +586,8 @@ fn sub(x: Int, y: Int) -> Int {
 
 test "labeled arguments run in written order" {
   let log: Array[String] = []
-  let r = sub(y = note(log, "y", 1), x = note(log, "x", 10))
-  assert_eq(String::join(log, ","), "y,x")
+  let r = sub(y = note(log = log, s = "y", v = 1), x = note(log = log, s = "x", v = 10))
+  assert_eq(String::join(log, sep = ","), "y,x")
   assert_eq(r, 9)
 }
 ```
@@ -608,12 +608,12 @@ without a label, and the rest can still be named:
 
 ```vibe
 fn value_at(_ xs: Array[Int], at: Int) -> Int {
-  Array::get(xs, at)
+  Array::get(xs, at = at)
 }
 
 test "a `_` slot is filled by position" {
   assert_eq(value_at([1, 2], at = 1), 2)
-  assert_eq(value_at([3], 0), 3)
+  assert_eq(value_at([3], at = 0), 3)
 }
 ```
 
@@ -638,9 +638,9 @@ fn span(start: Int, end: Int = start + 10) -> Int {
   end - start
 }
 
-let a = greet("hi")        // => "hi x1"
-let b = greet("hi", 3)     // => "hi x3"
-let c = span(5)            // => 10
+let a = greet(name = "hi")        // => "hi x1"
+let b = greet(name = "hi", times = 3)     // => "hi x3"
+let c = span(start = 5)            // => 10
 ```
 
 `x?: T` is the form without a default: the body receives an `Option[T]` and
@@ -655,8 +655,8 @@ fn label(name: String, suffix?: String) -> String {
   }
 }
 
-let d = label("v")         // => "v"
-let e = label("v", "rc")   // => "v-rc"
+let d = label(name = "v")         // => "v"
+let e = label(name = "v", suffix = "rc")   // => "v-rc"
 ```
 
 - Only **trailing** arguments can be omitted. A required parameter after a
@@ -757,7 +757,7 @@ test "array equality is structural where the element type is known" {
   let b = [1, 2]
   assert([1, 2] == [1, 2])   // リテラル
   assert(a == b)             // let 束縛
-  assert(same([1, 2], [1, 2]))
+  assert(same(x = [1, 2], y = [1, 2]))
 }
 
 fn same(x: Array[Int], y: Array[Int]) -> Bool {
@@ -784,9 +784,9 @@ test "arrays inside tuples compare structurally too" {
 ```vibe
 test "Bytes equality is content equality" {
   let a = Bytes::new()
-  Bytes::push(a, 65)
+  Bytes::push(a, value = 65)
   let b = Bytes::new()
-  Bytes::push(b, 65)
+  Bytes::push(b, value = 65)
   assert(a == b)
 }
 ```
@@ -886,8 +886,8 @@ conditional whose branches agree:
 test "an unannotated empty binding answers by content after a push" {
   let xs = []
   let ys = []
-  Array::push(xs, 1)
-  Array::push(ys, 2)
+  Array::push(xs, value = 1)
+  Array::push(ys, value = 2)
   assert(xs != ys)
 }
 ```
@@ -1238,7 +1238,7 @@ let demo_arm_assign: (Int) -> Int = (n) -> {
     2 => xs[0] = 9,
     _ => total = n
   }
-  total + Array::get(xs, 0)
+  total + Array::get(xs, at = 0)
 }
 ```
 
@@ -1466,7 +1466,7 @@ impl [T] Measured for Array[T] {
   measure(self) -> Int { Array::length(self) }
 }
 
-fn keep[T: Measured](x: T) -> T { x }
+fn keep[T: Measured](_ x: T) -> T { x }
 let ok = keep([1, 2, 3])
 ```
 
@@ -1490,8 +1490,8 @@ fn pair[F[_], A, B](left: F[A], right: F[B]) -> (F[A], F[B]) {
   (left, right)
 }
 
-let arrays = pair([1], ["vibe"])
-let options = pair(Some(1), Some("vibe"))
+let arrays = pair(left = [1], right = ["vibe"])
+let options = pair(left = Some(1), right = Some("vibe"))
 
 type Apply[F[_], A] = F[A]
 let optional: Apply[Option, Int] = Some(42)
@@ -1585,13 +1585,13 @@ let mv = m["key"]
 // alone. Measured on the RC lane -- `Map::set(m, "b", 2)` as a statement is a
 // silent no-op (`Map::size(m)` stays 1, `Map::has_key(m, "b")` is false), and
 // nothing warns about the discarded result. Bind it.
-let m2 = Map::set(m, "b", 2)
+let m2 = Map::set(m, key = "b", value = 2)
 let sized: (StringMap[Int]) -> Int = (mm) -> { Map::size(mm) }
 
 // Builders (mutable construction)
 let arr2 = {
   let b = ArrayBuilder::new()
-  ArrayBuilder::push(b, 1)
+  ArrayBuilder::push(b, value = 1)
   ArrayBuilder::freeze(b)     // implemented terminal; `build` is the planned/StringBuilder verb
 }
 
@@ -1629,9 +1629,9 @@ let arr2 = {
 let bytes_len = {
   let e = Bytes::new()        // empty (length 0), grows via push/append
   let z = Bytes::new(4)       // length 4, zero-filled
-  Bytes::set(z, 0, 65)        // in-bounds write (OOB index traps, #811)
-  Bytes::push(z, 9)           // append -> length 5
-  let b0 = Bytes::get(z, 0)   // => 65
+  Bytes::set(z, at = 0, value = 65)        // in-bounds write (OOB index traps, #811)
+  Bytes::push(z, value = 9)           // append -> length 5
+  let b0 = Bytes::get(z, at = 0)   // => 65
   Bytes::length(z)            // => 5
 }
 ```
@@ -1644,9 +1644,9 @@ let bytes_len = {
 // full tagged Int per cell (no 32-bit truncation), so no separate i64-cell
 // object layout is needed the way the retired MoonBit host required.
 let w_check = {
-  let w = Int64Array::make(4, 0)   // length 4, default 0
-  Int64Array::set(w, 0, 0xffffffff)
-  let v0 = Int64Array::get(w, 0)   // => 4294967295 (no truncation)
+  let w = Int64Array::make(4, value = 0)   // length 4, default 0
+  Int64Array::set(w, at = 0, value = 0xffffffff)
+  let v0 = Int64Array::get(w, at = 0)   // => 4294967295 (no truncation)
   let len = Int64Array::length(w)  // => 4
   (v0, len)
 }
@@ -1995,7 +1995,7 @@ let risky: (Int) -> Int with Exception = (x) -> {
 }
 
 // handle catches the effect
-let safe = handle { risky(0) } with { Exception::Throw(msg) => -1 }
+let safe = handle { risky(x = 0) } with { Exception::Throw(msg) => -1 }
 ```
 
 `throw` is call-form only: `throw(NotFound("x"))`, not statement-form
@@ -2247,7 +2247,7 @@ let greet: (String) -> Unit with Logger = (name) -> {
 
 // the handler arm prints, so the executable entry carries Console
 fn main allows Console {
-  handle { greet("world") } with {
+  handle { greet(name = "world") } with {
     Logger::Log(msg) => {
       println(msg)
       resume(())         // continue where perform left off
@@ -2288,7 +2288,7 @@ effect Pick {
   P(Int) -> Int
 }
 
-fn pick(x: Int) -> Int {
+fn pick(_ x: Int) -> Int {
   handle { perform Pick::P(x) } with {
     // not `Pick::P(1) => ..`
     Pick::P(n) => if n == 1 { resume(100) } else { resume(5) }
@@ -2364,7 +2364,7 @@ let r = handle {
   a * 10
 } with {
   Async::Suspend(t) => {
-    Array::push(conts, resume)   // store it...
+    Array::push(conts, value = resume)   // store it...
     0 - t                        // ...and the arm's value "suspends" the handle
   }
 }
@@ -2504,7 +2504,7 @@ A row variable is filled at each call, wherever the signature writes it:
   enclosing function's (#3576).
 
 ```vibe
-fn call(f: () -> Int with Console + e) -> Int with Console + e {
+fn call(_ f: () -> Int with Console + e) -> Int with Console + e {
   f()
 }
 
@@ -2512,7 +2512,7 @@ struct Job[e] {
   run: () -> Int with e
 }
 
-fn go(j: Job[e]) -> Int with e {
+fn go(_ j: Job[e]) -> Int with e {
   (j.run)()
 }
 ```
@@ -3088,8 +3088,8 @@ the 63-bit range (and, for `checked_div`, when the divisor is zero), otherwise
 ```vibe
 import @vibe/builtin { Int::checked_add, max_value }
 
-fn next_id(n: Int) -> Int {
-  match Int::checked_add(n, 1) {
+fn next_id(_ n: Int) -> Int {
+  match Int::checked_add(n, b = 1) {
     Some(m) => m,
     None => 0
   }
@@ -3224,7 +3224,7 @@ let pipes: () -> Array[String] with Process = () -> {
 
 let count_txt: () -> Int with Process = () -> {
   sh_lines("ls /tmp")
-  |> Iterator::filter((s) -> { String::contains(s, ".txt") })
+  |> Iterator::filter((s) -> { String::contains(s, needle = ".txt") })
   |> Array::length
 }
 // Works because |> inserts value as first arg, matching collection-first order
@@ -3311,7 +3311,7 @@ allocation in that function or a transitively called function a compile error.
 
 ```vibe
 #zero_alloc
-fn add_one(x: Int) -> Int {
+fn add_one(_ x: Int) -> Int {
   x + 1
 }
 ```
@@ -3335,11 +3335,11 @@ passes, exit 0). This is the migration tool behind the ADR-0100/0101 renames
 
 ```vibe
 #deprecated("use fresh_thing")
-fn stale_thing(x: Int) -> Int {
+fn stale_thing(_ x: Int) -> Int {
   x + 1
 }
 
-fn caller(n: Int) -> Int {
+fn caller(_ n: Int) -> Int {
   stale_thing(n)   // vibe check: warning: 'stale_thing' is deprecated: use fresh_thing
 }
 ```
@@ -3586,7 +3586,7 @@ fn sub2(x: Int, y: Int) -> Int {
   x - y
 }
 
-fn pick(c: Bool) -> Int {
+fn pick(_ c: Bool) -> Int {
   (if c { add2 } else { sub2 })(10, 20)
 }
 ```
@@ -4011,7 +4011,7 @@ scope:
 ```vibe
 struct Pt { x: Int; y: Int }
 
-fn sum_xy(p: Pt) -> Int {
+fn sum_xy(_ p: Pt) -> Int {
   let Pt::{ x, y } = p
   x + y
 }
@@ -4147,13 +4147,13 @@ test "declared row widens the ambient one" allows Exception {
 }
 
 bench "http_get" allows Http {
-  let h = Http::request("GET", "http://127.0.0.1:18281/hello", "", "")
+  let h = Http::request("GET", url = "http://127.0.0.1:18281/hello", headers = "", body = "")
   let _ = Http::response_body(h)
   Http::close(h)
 }
 
 test "op-granular row" allows Http::request + Http::close {
-  let h = Http::request("GET", "http://127.0.0.1:18281/hello", "", "")
+  let h = Http::request("GET", url = "http://127.0.0.1:18281/hello", headers = "", body = "")
   Http::close(h)
   assert(true)
 }
