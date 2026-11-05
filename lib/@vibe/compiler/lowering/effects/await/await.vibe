@@ -3,12 +3,15 @@ import @vibe/ast {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_callee_resolution, expr_any_node
+  Expr, Pat, Stmt, TypeExpr, builtin_callee_resolution, expr_any_node, generated_owner_of, generated_owner_tag
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap
 }
+
+/// The tag of the top-level statement being expanded (#3829).
+let awp_owner: Array[String] = [""]
 
 fn array_empty_str() -> Array[String] {
   Array::slice([""], start = 0, end = 0)
@@ -95,7 +98,14 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
   // `await(C::next(..))` -- is `builtin_ref("await")` and always means the
   // builtin, whatever the program binds under that name.
   {
-    let ctr = [0]
+    // `ctr` is [expansions in the current owner, expansions in the program].
+    // #3829: a hoisted future's name is numbered within its owner -- the
+    // top-level statement it is in -- and carries the owner's tag
+    // (`awp_owner`), so it does not depend on the statements before it and
+    // stays unique across the program. Two statements can share an owner (two
+    // bare expressions), so the counts are kept per owner.
+    let ctr = [0, 0]
+    let owner_counts: MutMap[String, Int] = MutMap::new_string()
     let await_sh = if awp_program_defines_await(stmts) {
       awp_await_bound_bit()
     } else {
@@ -108,6 +118,12 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
     }
     let mut i = 0
     while i < Array::length(stmts) {
+      let owner = generated_owner_tag(generated_owner_of(Array::get(stmts, at = i)))
+      Array::set(awp_owner, at = 0, value = owner)
+      Array::set(ctr, at = 0, value = match MutMap::get(owner_counts, k = owner) {
+        Some(n) => n,
+        None => 0
+      })
       match Array::get(stmts, at = i) {
         SLet(ex, isrec, nm, ty, expr) => {
           Array::set(stmts, at = i, value = SLet(ex, isrec, nm, ty, awp_entry(e = expr, ctr = ctr, sh = sh)))
@@ -126,13 +142,14 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
         },
         _ => ()
       }
+      MutMap::set(owner_counts, k = owner, v = Array::get(ctr, at = 0))
       i = i + 1
     }
     // ADR-0089 D1 increment 4 (#1218): the poll loop lives in a synthesized
     // NAMED top-level fn, injected once per program iff some await actually
     // expanded (ctr counts expansions; the ready-future fast path leaves it
     // untouched). See awp_wrap for why the call-shape matters.
-    if Array::get(ctr, at = 0) > 0 {
+    if Array::get(ctr, at = 1) > 0 {
       Array::push(stmts, value = awp_poll_fn_def(host_future = host_future, waiter_hooks = waiter_hooks))
       if host_future {
         Array::push(stmts, value = awp_pay_fn_def(cell_note))
@@ -353,8 +370,10 @@ fn awp_lift(e: Expr, ctr: Array[Int], binds: Array[(String, Expr, String)], sh: 
           None => {
             let n = Array::get(ctr, at = 0)
             Array::set(ctr, at = 0, value = n + 1)
-            let fname = String::concat("__aw_f_", Int::to_string(n))
-            let vname = String::concat("__aw_v_", Int::to_string(n))
+            Array::set(ctr, at = 1, value = Array::get(ctr, at = 1) + 1)
+            let site = String::concat(String::concat(Int::to_string(n), "o"), Array::get(awp_owner, at = 0))
+            let fname = String::concat("__aw_f_", site)
+            let vname = String::concat("__aw_v_", site)
             Array::push(binds, value = (fname, inner, vname))
             EIdent(vname, -1)
           }

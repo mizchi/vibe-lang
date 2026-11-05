@@ -1,0 +1,62 @@
+//# Statement-local generated names (#3829 step 1)
+//
+// The effect-lowering prelude mints binder names (`__edpsh_*`, `__edpc*`,
+// `__scps_*`, `__aw_*`). They used to be numbered by counters shared across
+// the whole program, so one more effect site early in a program renumbered
+// every generated name after it, and an unchanged statement rendered
+// differently after an edit elsewhere. A per-statement reuse of the prelude's
+// work (#3829) needs a statement's output to be a function of that statement.
+//
+// Resetting the counters per statement is not enough on its own: the evidence
+// pass decides which closure literals take a dictionary by NAME, and drops a
+// name that two binders spell (`edp_filter_unpoisoned`, #3416), and the
+// shadowed-binder census counts `__edpsh_` binders program-wide. Generated
+// names must therefore stay unique across the program. So each counter counts
+// within one OWNER -- the top-level statement whose body the name is minted
+// in -- and the name carries the owner's tag.
+
+import ./ast.vibe {
+  Stmt
+}
+
+/// The top-level statement a generated name is scoped to, by its own name:
+/// a `let`'s name, a test's or a bench's label. A statement with no name of
+/// its own (a bare expression, a destructuring `let`) answers "", so those
+/// share one owner; the program-wide counters they used to share are the
+/// worst case for them, not a regression.
+export fn generated_owner_of(_ stmt: Stmt) -> String {
+  match stmt {
+    SLet(_, _, name, _, _) => name,
+    SLetMut(name, _, _) => name,
+    STest(name, _) => String::concat("test ", name),
+    SBench(name, _) => String::concat("bench ", name),
+    _ => ""
+  }
+}
+
+/// An identifier-safe tag for `owner` with no `_` in it, injective, so two
+/// owners never share a tag. Letters other than `z` and digits stand for
+/// themselves; `z` is `zz`, `_` is `zu`, and any other byte is `zx` and two
+/// hex digits. No underscore matters to `edp_unmangle_shadow_name`, which
+/// reads the source spelling after the first `_` that follows `__edpsh_`.
+export fn generated_owner_tag(_ owner: String) -> String {
+  let out = StringBuilder::new()
+  let hex = "0123456789abcdef"
+  let mut i = 0
+  while i < String::length(owner) {
+    let c = String::byte_at(owner, at = i)
+    if c == 122 {
+      StringBuilder::push(out, value = "zz")
+    } else if c == 95 {
+      StringBuilder::push(out, value = "zu")
+    } else if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 121) {
+      StringBuilder::push(out, value = String::from_byte(c))
+    } else {
+      StringBuilder::push(out, value = "zx")
+      StringBuilder::push(out, value = String::substring(hex, start = c / 16, end = c / 16 + 1))
+      StringBuilder::push(out, value = String::substring(hex, start = c % 16, end = c % 16 + 1))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}

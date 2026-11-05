@@ -13,6 +13,8 @@ import @vibe/compiler/core {
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  generated_owner_of,
+  generated_owner_tag,
   is_exception_effect_name,
   is_exception_throw_operation,
   lookup_registry_builtin
@@ -91,6 +93,7 @@ import ./evidence_handle_effect_names_expr.vibe {
 import ./evidence_poison_expr.vibe {
   edp_all_fn_names,
   edp_ar_expr,
+  edp_ar_set_owner,
   edp_collect_effect_defs,
   edp_collect_fn_defs,
   edp_collect_performing_fns_from_facts,
@@ -1172,6 +1175,7 @@ fn edp_alpha_rename_shadowed(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool
     false
   } else {
     let counter = [0]
+    let owner_counts: MutMap[String, Int] = MutMap::new_string()
     // #1119 Codex review (P2): never generate a name the program already
     // uses -- see edp_ar_fresh's doc comment. The same census doubles as
     // the user-authored-name record for the culprit diagnostic (doc above).
@@ -1198,7 +1202,16 @@ fn edp_alpha_rename_shadowed(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool
           if hits {
             let env_names = empty_str_array()
             let env_repl = empty_str_array()
+            // #3829: number within this statement's owner; the name carries
+            // the owner's tag. Two statements with one owner keep counting.
+            let tag = generated_owner_tag(generated_owner_of(Array::get(stmts, at = i)))
+            Array::set(counter, at = 0, value = match MutMap::get(owner_counts, k = tag) {
+              Some(n) => n,
+              None => 0
+            })
+            edp_ar_set_owner(tag)
             let new_expr = edp_ar_expr(expr = expr, seed = seed, env_names = env_names, env_repl = env_repl, counter = counter, taken = taken)
+            MutMap::set(owner_counts, k = tag, v = Array::get(counter, at = 0))
             match Array::get(stmts, at = i) {
               SLet(exported, is_rec, name, ty, _) => Array::set(stmts, at = i, value = SLet(exported, is_rec, name, ty, new_expr)),
               SLetMut(nm2, ty2, _) => Array::set(stmts, at = i, value = SLetMut(nm2, ty2, new_expr)),
