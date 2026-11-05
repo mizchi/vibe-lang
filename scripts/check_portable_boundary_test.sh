@@ -2206,6 +2206,8 @@ restore
 # file cannot see.
 for probe in \
   'effectset PortableEffects = { Exception, Async };PortableEffects;accept' \
+  'effectset PortableConfig = { Config, Exception };PortableConfig;accept' \
+  'effectset SneakyConfig = { Config, Fs };SneakyConfig;reject' \
   'effectset SneakyEffects = { Exception, Fs };SneakyEffects;reject' \
   'effectset Inner = { Fs } effectset Outer = { Inner, Async };Outer;reject' \
   ';ImportedElsewhere;reject'
@@ -2271,9 +2273,9 @@ restore
 # fails for a reason that has nothing to do with the property (that mistake
 # made an earlier probe "pass" while proving nothing).
 probe_gate="scripts/.portable_boundary_allowlist_probe.$$.sh"
-sed "s/^PORTABLE_ALLOWED_EFFECTS='Exception|Async'\$/PORTABLE_ALLOWED_EFFECTS='Exception|Async|SneakyEffects'/" \
+sed "s/^PORTABLE_ALLOWED_EFFECTS='Exception|Async|Config'\$/PORTABLE_ALLOWED_EFFECTS='Exception|Async|Config|SneakyEffects'/" \
   "$gate" > "$probe_gate"
-if grep -qF "PORTABLE_ALLOWED_EFFECTS='Exception|Async|SneakyEffects'" "$probe_gate"; then
+if grep -qF "PORTABLE_ALLOWED_EFFECTS='Exception|Async|Config|SneakyEffects'" "$probe_gate"; then
   printf '\neffectset SneakyEffects = { Exception, Fs }\n\nexport fn probe_set(x: Int) -> Int with SneakyEffects {\n  x + 1\n}\n' >> "$impl"
   # Capture, then grep. Piping the gate straight into grep looks equivalent
   # and is not: this harness runs under `set -o pipefail`, so the gate's own
@@ -2295,4 +2297,4 @@ if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 134 cases)"
+echo "portable-boundary-test: ok (control + 136 cases)"

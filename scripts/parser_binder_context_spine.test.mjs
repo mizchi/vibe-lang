@@ -483,11 +483,13 @@ test("B2 top-level helper bodies carry context and ordinary entries pass None", 
     "parse_stmt(tokens = tokens,",
   ]);
 
-  assertNoneWrapper(parserSource, "parse_program_located", "parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None).0");
-  assertContextual(parserSource, "parse_program_located_with_untrusted_binder_context", ["parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = context)"], ["ParserBinderContext::{"]);
+  // #1953: explicit flags do not grant binder authority or read ambient flags.
+  assertNoneWrapper(parserSource, "parse_program_located_with_cfg", "parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None, cfg_flags = cfg_flags).0");
+  assertNoneWrapper(parserSource, "parse_program_located", "parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None, cfg_flags = cfg_ambient_flags).0");
+  assertContextual(parserSource, "parse_program_located_with_untrusted_binder_context", ["parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = context, cfg_flags = cfg_ambient_flags)"], ["ParserBinderContext::{"]);
   // Compatibility entry remains authority-free; only the source-owning entry
   // may mint a context with exact start/end tables.
-  assertBody(parserSource, "parse_program_located_with_binder_context", ["parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None).0"], ["Some(ParserBinderContext::{", "binder_capture_context"]);
+  assertBody(parserSource, "parse_program_located_with_binder_context", ["parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None, cfg_flags = cfg_ambient_flags).0"], ["Some(ParserBinderContext::{", "binder_capture_context"]);
 });
 
 test("atomic binder authority is source-owned, validated, fail-closed, and bundled", () => {
@@ -539,7 +541,7 @@ test("atomic binder authority is source-owned, validated, fail-closed, and bundl
   assertBody(parserSource, "parse_source_with_ranges", [
     "lex_with_offsets(source)",
     "source_expr_context(starts = starts, ends = ends)",
-    "parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = Some(context)).0",
+    "parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = Some(context), cfg_flags = cfg_ambient_flags).0",
   ], ["LocatedProgramBinderAuthority", "build_program_binder_authority", "binder_capture_is_eligible"]);
   assert.equal((toolingBody.match(/lex_with_offsets\(source\)/g) ?? []).length, 1);
   assert.equal((parserSource.match(/lex_with_offsets\(source\)/g) ?? []).length, 1, "only the syntax-only tooling entry may lex source in the ordinary parser module");

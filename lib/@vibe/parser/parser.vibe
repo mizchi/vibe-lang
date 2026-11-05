@@ -971,11 +971,11 @@ fn cfg_scan_enabled(_ tokens: Array[Token]) -> Array[String] with Exception {
 /// at the directive's own `#` (Codex on #3047). A separate loop rather than a
 /// flag on the one above: that one runs on every tokens-only parse, and an
 /// extra argument there showed up in parser_bench's B/op.
-fn cfg_scan_enabled_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[String] with Exception {
+fn cfg_scan_enabled_located(tokens: Array[Token], starts: Array[Int], source: String, cfg_flags: Array[String]) -> Array[String] with Exception {
   let out = ArrayBuilder::freeze(ArrayBuilder::new())
   let mut a = 0
-  while a < Array::length(cfg_ambient_flags) {
-    Array::push(out, value = Array::get(cfg_ambient_flags, at = a))
+  while a < Array::length(cfg_flags) {
+    Array::push(out, value = Array::get(cfg_flags, at = a))
     a = a + 1
   }
   let mut i = 0
@@ -1203,7 +1203,7 @@ fn parse_program_preserving_impl(tokens: Array[Token], starts: Array[Int], sourc
     ()
   }
   let cfg_active = if located {
-    cfg_scan_enabled_located(tokens = tokens, starts = starts, source = source)
+    cfg_scan_enabled_located(tokens = tokens, starts = starts, source = source, cfg_flags = cfg_ambient_flags)
   } else {
     cfg_scan_enabled(tokens)
   }
@@ -1418,10 +1418,10 @@ fn locate_parse_error(msg: String, fallback_pos: Int, starts: Array[Int], source
   }
 }
 
-fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
+fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext], cfg_flags: Array[String]) -> (Array[Stmt], Int) with Exception {
   reset_pattern_refs()
   remember_parse_source(source)
-  let cfg_active = cfg_scan_enabled_located(tokens = tokens, starts = starts, source = source)
+  let cfg_active = cfg_scan_enabled_located(tokens = tokens, starts = starts, source = source, cfg_flags = cfg_flags)
   let b = ArrayBuilder::new()
   let mut pos = 0
   let mut done = false
@@ -1629,8 +1629,15 @@ fn recovery_skip_to_close(tokens: Array[Token], from: Int, depth: Int) -> Int {
 /// strings with String::concat (not `+`/interpolation) to avoid selfhost
 /// string-concat NUL fragility. Foundation: collect-all parse diagnostics (LSP).
 
+/// Parse with an explicit invocation's flags, without reading or writing the
+/// legacy ambient flag cells. The supplied array is read only; file-local
+/// #cfg_enable directives are added to a fresh scan result.
+export fn parse_program_located_with_cfg(tokens: Array[Token], starts: Array[Int], source: String, cfg_flags: Array[String]) -> Array[Stmt] with Exception {
+  parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None, cfg_flags = cfg_flags).0
+}
+
 export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
-  parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None).0
+  parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None, cfg_flags = cfg_ambient_flags).0
 }
 
 /// Explicit test/tooling seam for parser-context transport. The supplied
@@ -1638,13 +1645,13 @@ export fn parse_program_located(tokens: Array[Token], starts: Array[Int], source
 /// cannot authorize binder rows, semantic artifacts, reuse, or codegen. The
 /// returned token position proves successful parsing consumed through TEof.
 export fn parse_program_located_with_untrusted_binder_context(tokens: Array[Token], starts: Array[Int], source: String, context: Option[ParserBinderContext]) -> (Array[Stmt], Int) with Exception {
-  parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = context)
+  parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = context, cfg_flags = cfg_ambient_flags)
 }
 
 /// Compatibility API retained authority-free: caller-provided token arrays are
 /// never a source of binder authority.
 export fn parse_program_located_with_binder_context(tokens: Array[Token], starts: Array[Int], source: String) -> Array[Stmt] with Exception {
-  parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None).0
+  parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = None, cfg_flags = cfg_ambient_flags).0
 }
 
 export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], source: String) -> (Array[Stmt], Array[String]) with Exception {
@@ -1974,5 +1981,5 @@ export {
 export fn parse_source_with_ranges(_ source: String) -> Array[Stmt] with Exception {
   let (tokens, starts, ends) = lex_with_offsets(source)
   let context = source_expr_context(starts = starts, ends = ends)
-  parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = Some(context)).0
+  parse_program_located_with_context_impl(tokens = tokens, starts = starts, source = source, context = Some(context), cfg_flags = cfg_ambient_flags).0
 }

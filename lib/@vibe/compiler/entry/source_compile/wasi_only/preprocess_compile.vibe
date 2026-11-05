@@ -1,5 +1,12 @@
 //# Imports
 
+import @vibe/compiler/config {
+  Config, cfg_flags_from_csv
+}
+import @vibe/parser {
+  parse_program_located_with_cfg
+}
+
 import @vibe/compiler/checker {
   check_program_double_call_result_located_observation,
   checked_int_bool_and_unrenderable_render_offsets,
@@ -516,7 +523,7 @@ export fn compile_generated_source_wasi_only_coverage(source: String, entry_name
 /// selfbuild / bootstrap / e2e gates compile real programs (incl. the whole
 /// compiler) under RC via an env toggle in cli_main — the full-scale validity +
 /// correctness signal the memory-limited test probes cannot produce.
-fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
+fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_generated: Bool, cfg_flags: Option[Array[String]]) -> Bytes with Exception {
   // #3126 review: one source, no recorded files -- drop what a previous
   // FS compile in this process left, so no site is placed in its files.
   merged_offset_space_reset()
@@ -525,7 +532,10 @@ fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_
   // classifier alone would mean the two lanes rendered the same program's
   // Doubles differently.
   let (tokens, starts, _ends) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens = tokens, starts = starts, source = source)
+  let stmts = match cfg_flags {
+    Some(flags) => parse_program_located_with_cfg(tokens = tokens, starts = starts, source = source, cfg_flags = flags),
+    None => parse_program_located(tokens = tokens, starts = starts, source = source)
+  }
   // Before anything rewrites the statements: the exception boundary's own
   // exit is generated later and must not count as the program's (#3030).
   let user_exits = stmts_reach_process_exit(stmts)
@@ -540,11 +550,18 @@ fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_
 }
 
 export fn compile_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = false)
+  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = false, cfg_flags = None)
 }
 
 export fn compile_generated_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
-  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = true)
+  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = true, cfg_flags = None)
+}
+
+/// Invocation-scoped RC lane (#1953). Target flags are the only authority
+/// supplied by Config. Generated-source trust remains an explicit caller input.
+export fn compile_source_wasi_only_rc_configured(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Config + Exception {
+  let cfg_flags = cfg_flags_from_csv(perform Config::CfgFlags())
+  compile_source_wasi_only_rc_impl(source = source, entry_name = entry_name, trusted_generated = trusted_generated, cfg_flags = Some(cfg_flags))
 }
 
 /// #715 recurrence guard: same RC pipeline, but the produced module carries
@@ -589,4 +606,12 @@ export fn compile_generated_source_wasi_only_rc_shadow(source: String, entry_nam
 
 export {
   source_offsets
+}
+
+/// CLI boundary for one RC invocation. The immutable snapshot is scoped here
+/// so the dispatcher and unrelated compiler modes need no Config authority.
+export fn compile_source_wasi_only_rc_with_cfg(source: String, entry_name: String, trusted_generated: Bool, cfg_csv: String) -> Bytes with Exception {
+  handle {
+    compile_source_wasi_only_rc_configured(source = source, entry_name = entry_name, trusted_generated = trusted_generated)
+  } with { Config::CfgFlags() => resume(cfg_csv) }
 }
