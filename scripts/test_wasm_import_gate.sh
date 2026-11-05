@@ -148,12 +148,13 @@ for LANE_RC in 1 0; do
   [ "$out" = "$want" ] || fail "[viberun VIBE_RC=$LANE_RC] greeter_main printed $(printf '%q' "$out"), want $(printf '%q' "$want")"
 done
 LANE_RC=1
-# 7. An Int outside the WIT width is refused by the lowering, not truncated.
+# 7. A WIT `s32` is offered as `Int32` (#3730), so a value outside its
+#    width is refused at compile time, naming the range, instead of reaching
+#    the runner's lowering.
 status=0
-out="$(vibe "$VIBERUN" run "$FX/trap_component_s32.vibex" 2>"$WORK/err")" || status=$?
-[ "$status" != 0 ] || fail "[viberun] trap_component_s32 exited 0 (printed $(printf '%q' "$out"))"
-[ "$out" = "before" ] || fail "[viberun] trap_component_s32 printed $(printf '%q' "$out"); want only 'before'"
-grep -q "viberun: vibe wasm import: add: 2147483648 does not fit the component's S32 parameter" "$WORK/err" || { cat "$WORK/err" >&2; fail "[viberun] the s32 refusal does not say why"; }
+vibe "$NODE_RUNNER" check "$FX/err_component_s32_range.vibe" >"$WORK/out" 2>&1 || status=$?
+[ "$status" != 0 ] || fail "an s32 argument outside Int32 was accepted"
+grep -q 'integer literal 2147483648 does not fit `Int32` (-2147483648 .. 2147483647)' "$WORK/out" || { cat "$WORK/out" >&2; fail "the s32 refusal does not name the Int32 range"; }
 # 8. The node runner cannot instantiate a component, and says so instead of
 #    answering every call with its fallback stub.
 status=0
