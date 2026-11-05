@@ -53,3 +53,4 @@ VIBE_RC=0 \
   node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
 node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
 VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"
+node scripts/compile_typing_env_reuse_oracle.mjs "$stage2_wasm"

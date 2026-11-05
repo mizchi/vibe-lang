@@ -1583,35 +1583,56 @@ see: the cold one has no reuse hit to get wrong, and the edited one appends a
 COMMENT, so the program is semantically unchanged and a stale reused env would
 produce the same answer as a fresh one. **Neither exercises a reuse hit on a
 program whose meaning changed**, which is the case that could be silently
-wrong. So the flag stays as the instrument that produced this table, and stays
-OFF, on correctness grounds as much as cost.
+wrong.
 
 What this rules out is the shortcut, not the goal. Criterion 5 still needs the
 check phase bounded by the edited module, but reusing the check lane's
 transport as-is makes a compile worse, because a compile consumes more of a
 module's check than the public env carries (the typed-lowering offsets the
 reuse arm republishes, #2391) and pays the whole transport whether or not the
-read succeeds. The next measurement is the split named above — eligibility
-validation, key construction, miss-path lookup, publication — not another
-cache.
+read succeeds. #3783 and #3800 have since cut that publication cost; the
+wall-time comparison after them is in #3800.
 
-Enabling it needs an **oracle** too, and most edit shapes cannot be one. The
-input key is the module's verbatim source plus each dependency's exact env
-text (`typing_dependency_transport_input_key`), so editing the module under
-test changes its own key, and editing a dependency's *interface* changes every
-consumer's key — both **miss** and are freshly checked, and an oracle built
-from them passes whether or not the reuse arm is correct. The shape that
-**hits** is a dependency-body edit that changes meaning while leaving that
-dependency's public `TypeEnv` text identical: the consumer's key is unchanged,
-the hit happens, and the open question is whether the compile-only state it
-republishes (the typed-lowering offsets, #2391) is still right. The public env
-being equal is what makes the hit happen and is exactly why the public env
-cannot detect the problem. So the oracle is that edit shape, plus a check that
-the unchanged consumer really recorded a dependency-transport hit — without
-it the oracle is vacuous in the same way the comparisons above are — plus the
-wasm compared against reuse disabled. The per-file AST cache was built before it was measured and
-came back at exactly zero (#2668); this is the same mistake one step later,
-caught by measuring first. Filed as #2728.
+**The cold allocation is now within a percent of reuse off.** The rest of the
+cold cost was three strings, each as large as a module's source plus its
+dependencies' env texts, built once per module and never reclaimed on the bump
+lane: the reuse key, a copy of it hashed to name the alias path, and the
+witness text that embeds it. The key is now kept as its segments'
+payloads (`TypingReuseKey`), the alias path is named by a digest of those
+payloads, the witness is written piece by piece, and a stored key is compared
+against the payloads where it lies. Measured on the selfcompile KPI input
+(`scripts/selfcompile_kpi.sh`, cold), reuse on minus reuse off went from
++192.7 MB (+15.7%) to +12.0 MB (+1.0%); on the CLI closure (694 modules) the
+cold build went from +426 MB to +21 MB.
+
+**The correctness side is a gate now:
+`scripts/compile_typing_env_reuse_oracle.mjs`** (stage2-oracles, with
+`scripts/compile_typing_env_reuse_oracle_test.sh` as its red self-test). Most
+edit shapes cannot be an oracle. The input key is the module's verbatim source
+plus each dependency's exact env text (`typing_dependency_transport_input_key`),
+so editing the module under test changes its own key, and editing a
+dependency's *interface* changes every consumer's key. Both **miss** and are
+freshly checked, and an oracle built from them passes whether or not the reuse
+arm is correct. The shape that **hits** is a dependency-body edit that changes
+meaning while leaving that dependency's public `TypeEnv` text identical: the
+consumer's key is unchanged, the hit happens, and the open question is whether
+the compile-only state it republishes (the typed-lowering offsets, #2391) is
+still right. The public env being equal is what makes the hit happen, and is
+exactly why the public env cannot detect the problem. So the oracle does four
+things:
+
+- it makes that edit, with a consumer whose `==` resolves only through its
+  typed-lowering row;
+- it requires the unchanged consumers to record a dependency-transport hit,
+  because without one the oracle is vacuous in the same way the comparisons
+  above are;
+- it requires the program to have changed;
+- it compares the module against a fresh compile with reuse off.
+
+It also requires corrupted reuse records and an interface edit to miss, and to
+compile to the fresh bytes. The per-file AST cache was built before it was
+measured and came back at exactly zero (#2668); this is the same mistake one
+step later, caught by measuring first (#2728).
 
 #### And what it costs in ALLOCATION — the #2510 criterion-5 KPI (2026-09-11)
 

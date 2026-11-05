@@ -9,8 +9,7 @@
 #    strips — so the fixpoint above does not exercise it). Compile a 2-file
 #    program via the fresh stage2 (VIBE_FS_COMPILE) and assert it runs to 42.
 echo "[compiler-gate] 4/4 multi-file FS-compile regression"
-fsdir="_build/_gate_fscompile"
-rm -rf "$fsdir"; mkdir -p "$fsdir"
+gate_workdir fsdir "_build/_gate_fscompile"
 printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$fsdir/helper.vibe"
 printf 'import ./helper.vibe { add }\nexport let _start = () -> Int { add(40, 2) }\n' > "$fsdir/main.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -185,8 +184,7 @@ echo "[compiler-gate] deep-recursion effect resume ok (42)"
 #     gracefully with a located "cannot resolve import" diagnostic and never
 #     reaches the raw crash dump / host exception text.
 echo "[compiler-gate] 4c missing-import diagnostic regression (#831)"
-midir="_build/_gate_missing_import"
-rm -rf "$midir"; mkdir -p "$midir"
+gate_workdir midir "_build/_gate_missing_import"
 cat > "$midir/main.vibe" <<'VEOF'
 import ./does_not_exist.vibe { helper }
 
@@ -236,8 +234,7 @@ echo "[compiler-gate] missing-import diagnostic ok: $mi_diag"
 #     (both payload and nullary), while the generated fn's own name stays
 #     mangled.
 echo "[compiler-gate] 4d derive(Show) source-name rendering across merge rename (#2205)"
-dsdir="_build/_gate_derive_show_rename"
-rm -rf "$dsdir"; mkdir -p "$dsdir"
+gate_workdir dsdir "_build/_gate_derive_show_rename"
 cat > "$dsdir/dep.vibe" <<'VEOF'
 struct Point {
   x: Int;
@@ -281,8 +278,7 @@ echo "[compiler-gate] derive(Show) source-name rendering ok"
 #     it asks the lane users actually hit. wasm-gc Array OOB is the engine's
 #     native trap (no __rt_oob_abort, no production linemap).
 echo "[compiler-gate] 4e OOB abort names the operation, index, length, and path:line (#2199)"
-oobdir="_build/_gate_arr_oob"
-rm -rf "$oobdir"; mkdir -p "$oobdir"
+gate_workdir oobdir "_build/_gate_arr_oob"
 # Access is on line 4 of each file (1=fn, 2=let, 3=println before, 4=access).
 cat > "$oobdir/arr_get.vibe" <<'VEOF'
 fn main allows Console {
@@ -450,8 +446,7 @@ echo "[compiler-gate] OOB abort messages + path:line ok (five ops; stripped mapp
 #     `Bytes::slice` clamps its range like `Array::slice` instead of trapping
 #     past the length, so its 2^32 rows are answers too and live there.
 echo "[compiler-gate] 4e2 an index of 2^32 or more traps instead of wrapping into range (#3543)"
-u32dir="_build/_gate_index_u32"
-rm -rf "$u32dir"; mkdir -p "$u32dir"
+gate_workdir u32dir "_build/_gate_index_u32"
 # case|lanes|access statement|linear-lane message
 u32_cases=(
   "arr_get|linear gc|println(\"\\{Array::get(xs, id(4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
@@ -520,8 +515,7 @@ echo "[compiler-gate] index-of-2^32 traps ok (Array, String, Bytes; linear and g
 #     `timeout` reports 124 when it had to intervene, and that is the value
 #     this pins against.
 echo "[compiler-gate] 4f insert_raw's probe walk is bounded (#2362)"
-hmdir="_build/_gate_hashmap_bound"
-rm -rf "$hmdir"; mkdir -p "$hmdir"
+gate_workdir hmdir "_build/_gate_hashmap_bound"
 cat > "$hmdir/fill.vibe" <<'VEOF'
 import @vibe/core { struct MutMap }
 
@@ -625,8 +619,7 @@ echo "[compiler-gate] insert_raw bounded probe ok (terminated, rc=$hm_rc)"
 #     unreachable only when both forms say `unknown name: <n>`, and neither
 #     "not a value" nor an empty diagnostic is that string.
 echo "[compiler-gate] 4g the WASM-intrinsics block is codegen-internal, as it claims (#2343)"
-dcldir="_build/_gate_declarations_reach"
-rm -rf "$dcldir"; mkdir -p "$dcldir"
+gate_workdir dcldir "_build/_gate_declarations_reach"
 decl_src="lib/@vibe/compiler/builtins/declarations.vibe"
 # The block runs from its own banner to the next one. `name|T0,T1,...`.
 intrinsic_decls="$(awk '
@@ -749,8 +742,7 @@ echo "[compiler-gate] declarations.vibe reachability claim ok ($intrinsic_count 
 #    file exits clean and a failing assert traps. Guards the codegen fix that
 #    stopped exporting a nonexistent entry function (call/export index -1).
 echo "[compiler-gate] 5/5 test-block compile+run regression"
-tdir="_build/_gate_testblock"
-rm -rf "$tdir"; mkdir -p "$tdir"
+gate_workdir tdir "_build/_gate_testblock"
 printf 'test "ok" {\n  assert_eq(2 + 2, 4)\n}\n' > "$tdir/pass_test.vibe"
 printf 'test "bad" {\n  assert_eq(2 + 2, 5)\n}\n' > "$tdir/fail_test.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -778,8 +770,7 @@ echo "[compiler-gate] test-block regression ok"
 #    above does not exercise the normalize entry; assert it directly.
 #    (Module blocks were removed in #728; flatten coverage retired with them.)
 echo "[compiler-gate] 6/6 normalize compile+run regression"
-ndir="_build/_gate_normalize"
-rm -rf "$ndir"; mkdir -p "$ndir"
+gate_workdir ndir "_build/_gate_normalize"
 printf 'let dead: () -> Int = () -> { 0 }\nlet helper: () -> Int = () -> { 1 }\nexport let run: () -> Int = () -> { helper() }\n' > "$ndir/in.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -915,8 +906,7 @@ echo "[compiler-gate] generic-struct contract arity regression ok"
 #      and a field value conflicting with the pinned argument must both be
 #      rejected with their dedicated diagnostics (not a generic parse error).
 echo "[compiler-gate] 6b2b explicit struct type args (#886)"
-stdir="_build/_gate_struct_targs"
-rm -rf "$stdir"; mkdir -p "$stdir"
+gate_workdir stdir "_build/_gate_struct_targs"
 printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nstruct Bag[T] {\n  xs: Array[T]\n}\n\nexport let _start: () -> Unit with Console = () -> {\n  let p = Pair[Int]::{ a: 1, b: 2 }\n  assert_eq(p.a + p.b, 3)\n  let g = Bag[Int]::{ xs: [] }\n  Array::push(g.xs, 42)\n  assert_eq(Array::get(g.xs, 0), 42)\n  let n = Pair[Array[Int]]::{ a: [1, 2], b: [] }\n  assert_eq(Array::length(n.a), 2)\n}\n' > "$stdir/ok.vibe"
 gate_fs_compile "$stdir/ok.vibe" "$stdir/ok.wasm" _start
 gate_require_artifact "$stdir/ok.wasm" "explicit struct type args (#886) did not compile"
@@ -984,8 +974,7 @@ rm -rf ".vibe/store/@gate"; mkdir -p "$sdir"
 # constraint before pinning, and a versionless copy never fills (#2260).
 printf 'version 1.0.0\nimport ./impl.vibe {}\nfn triple(x: Int) -> Int\n' > "$sdir/index.vibei"
 printf 'export fn triple(x: Int) -> Int { x * 3 }\n' > "$sdir/impl.vibe"
-cdir2="_build/_gate_store"
-rm -rf "$cdir2"; mkdir -p "$cdir2"
+gate_workdir cdir2 "_build/_gate_store"
 VIBE_HASH=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$sdir/index.vibei" "$cdir2/hash.out" __no_entry__ >/dev/null 2>&1 || true
@@ -1067,8 +1056,7 @@ lpkg="lib/@gate751/greet"
 rm -rf "lib/@gate751"; mkdir -p "$lpkg"
 printf 'fn greet_n(x: Int) -> Int\n' > "$lpkg/index.vibei"
 printf 'export fn greet_n(x: Int) -> Int { x + 2 }\n' > "$lpkg/impl.vibe"
-ldir="_build/_gate_lib751"
-rm -rf "$ldir"; mkdir -p "$ldir"
+gate_workdir ldir "_build/_gate_lib751"
 printf 'import @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/ok.vibe"
 gate_fs_compile "$ldir/ok.vibe" "$ldir/ok.wasm" _start
 gate_require_artifact "$ldir/ok.wasm" "unpinned lib/ package import did not compile (#751)"
@@ -1306,8 +1294,7 @@ usrc="$uhome/src/@gate2829/upx"
 mkdir -p "$usrc"
 printf 'name = @gate2829/upx\nversion = 1.0.0\n\nfn twice(x: Int) -> Int\n' > "$usrc/index.vpkg"
 printf 'export fn twice(x: Int) -> Int { x * 2 }\n' > "$usrc/impl.vibe"
-udir="_build/_gate_pkg2829"
-rm -rf "$udir"; mkdir -p "$udir"
+gate_workdir udir "_build/_gate_pkg2829"
 if ! VIBE_HOME="$uhome" gate_vibe_pkg publish "$usrc" > "$udir/pub.log" 2>&1; then
   echo "[compiler-gate] FAIL: publish of @gate2829/upx@1.0.0 failed (#2829)" >&2
   cat "$udir/pub.log" >&2; exit 1
@@ -1356,8 +1343,7 @@ echo "[compiler-gate] update matches an installed SHA-1 identity ok"
 echo "[compiler-gate] 6k registry-less git resolution (#755 Phase 0)"
 khome="$(mktemp -d)"
 krepo="$(mktemp -d)"
-kdir="_build/_gate_pkg755"
-rm -rf "$kdir"; mkdir -p "$kdir"
+gate_workdir kdir "_build/_gate_pkg755"
 mkdir -p "$krepo/packages/@gate755/hex"
 printf 'name = @gate755/hex\nversion = 1.0.0\n\nfn hex_n(x: Int) -> Int\n' > "$krepo/packages/@gate755/hex/index.vpkg"
 printf 'export fn hex_n(x: Int) -> Int { x + 6 }\n' > "$krepo/packages/@gate755/hex/impl.vibe"
@@ -1474,8 +1460,7 @@ lsrc805="$lhome805/src/@gate805/logx"
 mkdir -p "$lsrc805"
 printf 'name = @gate805/logx\nversion = 1.0.0\n\nfn triple(x: Int) -> Int\n' > "$lsrc805/index.vpkg"
 printf 'export fn triple(x: Int) -> Int { x * 3 }\n' > "$lsrc805/impl.vibe"
-ldir805="_build/_gate_pkg805"
-rm -rf "$ldir805"; mkdir -p "$ldir805"
+gate_workdir ldir805 "_build/_gate_pkg805"
 # (1) publish appends a publish record and writes a merkle head
 if ! VIBE_HOME="$lhome805" gate_vibe_pkg publish "$lsrc805" > "$ldir805/pub1.log" 2>&1; then
   echo "[compiler-gate] FAIL: publish of @gate805/logx@1.0.0 failed (#805)" >&2
@@ -1588,8 +1573,7 @@ echo "[compiler-gate] registry transparency log + yank ok"
 #     requires clause traps at runtime; the publish semver gate accepts an
 #     honest bump and rejects a dishonest one.
 echo "[compiler-gate] 6d where-contract + publish gate regression (#731/#732)"
-edir="_build/_gate_ef"
-rm -rf "$edir"; mkdir -p "$edir"
+gate_workdir edir "_build/_gate_ef"
 # (a) satisfied contract: requires + ensures hold, the call returns 42.
 printf 'fn checked_add(x: Int, y: Int) -> Int where { requires: x >= 0, requires: y >= 0, ensures: result >= x } { x + y }\nexport let _start: () -> Int = () -> { checked_add(40, 2) }\n' > "$edir/ok.vibe"
 gate_fs_compile "$edir/ok.vibe" "$edir/ok.wasm" _start
@@ -1764,8 +1748,7 @@ echo "[compiler-gate] @vibe/core store-install E2E ok"
 #    constructor pattern must be tested, not just the tag — `I("x")` must not
 #    match `I("y")`, `I(1)` must not match `I(2)`. Guards the match-codegen fix.
 echo "[compiler-gate] 7/7 literal sub-pattern regression"
-pdir="_build/_gate_litpat"
-rm -rf "$pdir"; mkdir -p "$pdir"
+gate_workdir pdir "_build/_gate_litpat"
 cat > "$pdir/litpat.vibe" <<'EOF'
 enum E { I(Int); S(String); N }
 let classify: (E) -> Int = (e) -> {
@@ -1797,8 +1780,7 @@ echo "[compiler-gate] literal sub-pattern regression ok"
 #    with `String::concat`. With the root fix the interpolation form is correct,
 #    so this guards the root fix directly. The result must still compile + run.
 echo "[compiler-gate] 8/8 labeled-param round-trip regression"
-ldir="_build/_gate_labeled"
-rm -rf "$ldir"; mkdir -p "$ldir"
+gate_workdir ldir "_build/_gate_labeled"
 printf 'let sum: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }\nexport let run: () -> Int = () -> { sum(x=1, y=2) }\nexport { run }\n' > "$ldir/in.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -1827,8 +1809,7 @@ echo "[compiler-gate] labeled-param round-trip regression ok"
 #    literals. The folded value must replace the expression and the result must
 #    compile + run unchanged.
 echo "[compiler-gate] 9/9 constant-folding regression"
-fdir="_build/_gate_fold"
-rm -rf "$fdir"; mkdir -p "$fdir"
+gate_workdir fdir "_build/_gate_fold"
 printf 'let x = 40 + 2 * 10\nexport let run: () -> Int = () -> { x }\nexport { run }\n' > "$fdir/in.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -1857,8 +1838,7 @@ echo "[compiler-gate] constant-folding regression ok"
 #     using `x` in the arm body compiles instead of trapping codegen. Adjacent to
 #     #603 (literal sub-patterns); both live in the single-condition PCtor path.
 echo "[compiler-gate] 10/10 nested ctor sub-pattern regression"
-ndir="_build/_gate_nestedctor"
-rm -rf "$ndir"; mkdir -p "$ndir"
+gate_workdir ndir "_build/_gate_nestedctor"
 cat > "$ndir/nested.vibe" <<'EOF'
 enum Stmt { SL(Int, Option[Int], Int) }
 let classify: (Stmt) -> Int = (stmt) -> {
@@ -1886,8 +1866,7 @@ echo "[compiler-gate] nested ctor sub-pattern regression ok"
 #     top-level binding signatures, so this compiles instead of aborting with an
 #     opaque trap. A genuinely-undefined name must still error (no over-permit).
 echo "[compiler-gate] 11/11 forward-reference regression"
-wdir="_build/_gate_fwdref"
-rm -rf "$wdir"; mkdir -p "$wdir"
+gate_workdir wdir "_build/_gate_fwdref"
 cat > "$wdir/fwd.vibe" <<'EOF'
 let early: () -> Int = () -> { late() }
 let late: () -> Int = () -> { 41 }
@@ -1912,8 +1891,7 @@ echo "[compiler-gate] forward-reference regression ok"
 #     passthrough with an in-bounds pointer check). Assert an int interpolates to
 #     its digits and a string interpolates verbatim.
 echo "[compiler-gate] 12/12 string-interpolation conversion regression"
-idir="_build/_gate_interp"
-rm -rf "$idir"; mkdir -p "$idir"
+gate_workdir idir "_build/_gate_interp"
 cat > "$idir/interp.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let n = 42
@@ -1938,8 +1916,7 @@ echo "[compiler-gate] string-interpolation conversion regression ok"
 #     both functions hit and exactly one of the two branches taken — the signal
 #     that powers `vibe test --coverage`.
 echo "[compiler-gate] 13/13 coverage instrumentation regression"
-cdir="_build/_gate_cov"
-rm -rf "$cdir"; mkdir -p "$cdir"
+gate_workdir cdir "_build/_gate_cov"
 cat > "$cdir/cov_test.vibe" <<'EOF'
 let pick: (Int) -> Int = (n) -> {
   if n > 0 {
@@ -2000,8 +1977,7 @@ echo "[compiler-gate] coverage instrumentation regression ok"
 #      '1'(49) = 1049. Red-tested by reverting the entry to the unlocated
 #      parse: 1049.
 echo "[compiler-gate] 13b/13 instrumented build typed-lowering tables (#2469)"
-tldir="_build/_gate_typed_instrumented"
-rm -rf "$tldir"; mkdir -p "$tldir"
+gate_workdir tldir "_build/_gate_typed_instrumented"
 cat > "$tldir/bool_render.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let l = () -> Bool { 1 < 2 }
@@ -2030,8 +2006,7 @@ echo "[compiler-gate] instrumented build typed-lowering tables ok (#2469)"
 #     `scale`), literal and let-bound receivers, generic->generic dict
 #     forwarding, and supertrait method inheritance (flattened witness).
 echo "[compiler-gate] 14/14 method-bearing-trait dict-passing regression"
-mbtdir="_build/_gate_mbtrait"
-rm -rf "$mbtdir"; mkdir -p "$mbtdir"
+gate_workdir mbtdir "_build/_gate_mbtrait"
 cat > "$mbtdir/mbt.vibe" <<'EOF'
 trait Measurable { measure(Self) -> Int; scale(Self, Int) -> Self }
 trait Sized: Measurable { bump(Self) -> Int }
@@ -2071,8 +2046,7 @@ echo "[compiler-gate] method-bearing-trait dict-passing regression ok"
 #      must be resolved/threaded so the body's `X::show(arg)` dispatches to the
 #      concrete impl. Covers an Int and a String argument (witness per type).
 echo "[compiler-gate] 14b/14 rank-1 trait-method generics regression (#684)"
-mgdir="_build/_gate_methodgen"
-rm -rf "$mgdir"; mkdir -p "$mgdir"
+gate_workdir mgdir "_build/_gate_methodgen"
 cat > "$mgdir/mg.vibe" <<'EOF'
 trait Show { show(Self) -> String }
 trait Logger { write_object: [X: Show](Self, X) -> String }
@@ -2108,8 +2082,7 @@ echo "[compiler-gate] rank-1 trait-method generics regression ok"
 #      fixture's top-level `_start()` echo line and __DATA__ tail are stripped
 #      for the ADR-0069 entry-based compile.
 echo "[compiler-gate] 14c/14 UFCS-on-bounded-tparam dict dispatch (#931)"
-ufcsdir="_build/_gate_ufcs_tparam"
-rm -rf "$ufcsdir"; mkdir -p "$ufcsdir"
+gate_workdir ufcsdir "_build/_gate_ufcs_tparam"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -2132,8 +2105,7 @@ echo "[compiler-gate] UFCS-on-bounded-tparam dict dispatch ok (97097)"
 #     accepted as a no-op marker. Each comparison is its own decimal digit, so
 #     two wrong answers cannot cancel out.
 echo "[compiler-gate] 15/15 derive(Ord/Show) structural-generation regression"
-drvdir="_build/_gate_derive"
-rm -rf "$drvdir"; mkdir -p "$drvdir"
+gate_workdir drvdir "_build/_gate_derive"
 cat > "$drvdir/drv.vibe" <<'EOF'
 struct P { x: Int; y: Int } derive(Eq, Ord, Show)
 fn digit(o: Ordering) -> Int {

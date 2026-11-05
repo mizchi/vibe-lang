@@ -1,0 +1,107 @@
+//# #3724: a check starts from empty call cells
+//
+// A call's resolution cell is written by the checker and read by the lowering
+// of the same compile. The process-wide parse memo hands the same tree to the
+// next compile of the same text, so a long-lived compiler checked a module on
+// cells an earlier compile had left behind. A path that does not write the
+// cell (a call with no labels, a speculative probe) then kept the earlier
+// answer, and the second compile's checked module differed from the first.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeEnv, call_placement_is_refused, call_placement_refuse, expr_any_node
+}
+
+import @vibe/compiler/checker {
+  check_program_with_env_typed_lowering_located_observation
+}
+
+import @vibe/compiler/normalize {
+  lower_checked_call_placements
+}
+
+import @vibe/parser {
+  lex_with_offsets, parse_program_located
+}
+
+import @vibe/compiler/syntax {
+  print_program
+}
+
+//# Helpers
+
+fn parsed(_ source: String) -> Array[Stmt] with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  parse_program_located(tokens = tokens, starts = starts, source = source)
+}
+
+fn stmt_body(_ stmt: Stmt) -> Option[Expr] {
+  match stmt {
+    SLet(_, _, _, _, body) => Some(body),
+    SExpr(body) => Some(body),
+    _ => None
+  }
+}
+
+/// Apply `visit` to the cell of every call to `name`; how many there were.
+fn each_call_cell(stmts: Array[Stmt], name: String, visit: (Array[Int]) -> Unit) -> Int {
+  let mut count = 0
+  for stmt in stmts {
+    match stmt_body(stmt) {
+      Some(body) => {
+        let _ = expr_any_node(expr = body, pred = (e) -> {
+          match e {
+            ECall(EIdent(callee, _), _, _, cell) => if callee == name {
+              visit(cell)
+              count = count + 1
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          false
+        })
+      },
+      None => ()
+    }
+  }
+  count
+}
+
+fn check(_ stmts: Array[Stmt]) -> Unit with Exception {
+  let _ = check_program_with_env_typed_lowering_located_observation(stmts = stmts, initial_env = EnvEmpty)
+  ()
+}
+
+//# Tests
+
+/// The checker never writes the placement of a call with no labels, so a
+/// refusal an earlier compile left in its cell used to survive the check and
+/// make the lowering refuse a correct call.
+test "a check empties a cell an earlier compile left in the tree" {
+  let source = "fn f(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { f(1, 2) }"
+  let stmts = parsed(source)
+  let poisoned = each_call_cell(stmts = stmts, name = "f", visit = (cell) -> call_placement_refuse(cell = cell, invalid = true))
+  inspect(poisoned, content = "1")
+  check(stmts)
+  let refused = each_call_cell(stmts = stmts, name = "f", visit = (cell) -> assert(!call_placement_is_refused(cell)))
+  inspect(refused, content = "1")
+  lower_checked_call_placements(stmts = stmts, require_checked = true)
+  inspect(print_program(stmts) == print_program(parsed(source)), content = "true")
+}
+
+/// The shape a long-lived compiler produces: the tree is checked and lowered,
+/// and the next compile of the same text checks the same `Stmt` values again
+/// (through a fresh top-level array, as the memo hands it out).
+test "a second check of a checked and lowered tree places calls as the first did" {
+  let source = "fn f(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { f(b = 2, a = 9) + f(4, 1) }"
+  let shared = parsed(source)
+  let first = Array::slice(shared, start = 0, end = Array::length(shared))
+  check(first)
+  lower_checked_call_placements(stmts = first, require_checked = true)
+  let second = Array::slice(shared, start = 0, end = Array::length(shared))
+  check(second)
+  let pending = each_call_cell(stmts = second, name = "f", visit = (cell) -> assert(!call_placement_is_refused(cell)))
+  inspect(pending, content = "2")
+  lower_checked_call_placements(stmts = second, require_checked = true)
+  inspect(print_program(second) == print_program(first), content = "true")
+}

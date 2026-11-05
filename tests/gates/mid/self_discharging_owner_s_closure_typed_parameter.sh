@@ -12,8 +12,7 @@
 #       value references to the owner; every param use is a direct call
 #       inside the owner's own Ask-handle bodies).
 echo "[compiler-gate] 40ar/40 self-discharging owner's closure-typed parameter (#1070 general case, second slice)"
-edphdir="_build/_gate_edp_handle_owner_param"
-rm -rf "$edphdir"; mkdir -p "$edphdir"
+gate_workdir edphdir "_build/_gate_edp_handle_owner_param"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -125,8 +124,7 @@ if [ ! -s "$ROOT_DIR/$sc_cli" ] && [ ! -s "$sc_cli" ]; then
 fi
 if true; then
   case "$sc_cli" in /*) sc_abs="$sc_cli" ;; *) sc_abs="$ROOT_DIR/$sc_cli" ;; esac
-  scdir="_build/_gate_split_cli_unstable"
-  rm -rf "$scdir"; mkdir -p "$scdir"
+  gate_workdir scdir "_build/_gate_split_cli_unstable"
   cat > "$scdir/worker.vibe" <<'SCEOF'
 import @vibe/concurrent/experimental { TaskGroup }
 
@@ -207,8 +205,7 @@ fi
 # refused (the guarded `f` is then in neither arm), so the section also fails
 # if something starts enabling every flag.
 echo "[compiler-gate] 127/127 #cfg flags reach imported modules through the split CLI (#2513)"
-cfsdir="_build/_gate_split_cli_cfg"
-rm -rf "$cfsdir"; mkdir -p "$cfsdir"
+gate_workdir cfsdir "_build/_gate_split_cli_cfg"
 cat > "$cfsdir/dep.vibe" <<'SCEOF'
 #cfg(dev)
 export fn f(x: Int) -> Int { x + 100 }

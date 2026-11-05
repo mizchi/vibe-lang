@@ -604,7 +604,12 @@ fn clause_formula(ctx: Ctx, clause: Expr, state: Outcome) -> String with Excepti
   let outs = sym(ctx = ctx, e = clause, st = state)
   let parts: Array[String] = []
   for o in outs {
-    if o.sort != "Bool" {
+    // A clause is read as a formula, which has no way out of the function;
+    // a `return` inside one would leave it at run time with a value no
+    // `ensures` was checked against.
+    if o.returned {
+      unsupported(off = expr_off(clause), reason = "a contract clause that leaves the function with `return`")
+    } else if o.sort != "Bool" {
       unsupported(off = expr_off(clause), reason = "a contract clause must be a `Bool`")
     } else {
       ()
@@ -749,20 +754,35 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
             env: env_bind(env = o.env, name = name, term = o.value, sort = o.sort)
           }
           // The binding's scope ends with the `let`: what follows sees the
-          // enclosing names again.
+          // enclosing names again, with any assignment the body made to them.
           for x in sym(ctx = ctx, e = b, st = bound) {
-            Array::push(out, value = Outcome::{
-              pc: x.pc,
-              value: x.value,
-              sort: x.sort,
-              returned: x.returned,
-              env: o.env
-            })
+            Array::push(out, value = leave_scope(x = x, outer = o.env))
           }
           ()
         }
       }
       out
+    },
+    ELetMut(name, v, b, _) => match contracted_loop_cells(name = name, inner = b) {
+      Some(lp) => sym_loop(ctx = ctx, lp = lp, st = st),
+      None => sym(ctx = ctx, e = ELet(name, v, b, 0 - 1), st = st)
+    },
+    EAssign(name, v, c, off) => sym_assign(ctx = ctx, name = name, v = v, c = c, off = off, st = st),
+    EAssignOp(name, op, v, c, off) => sym_assign(ctx = ctx, name = name, v = EBinOp(op, EIdent(name, off), v, off), c = c, off = off, st = st),
+    EWhile(c, b) => match decode_while(cond = c, body = b) {
+      Some(lp) => sym_loop(ctx = ctx, lp = lp, st = st),
+      None => {
+        unsupported(off = expr_off(c), reason = "a `while` without a `where { decreases: .. }` measure: termination is not proved, so the result would be partial correctness only")
+        []
+      }
+    },
+    EBreak(_) => {
+      unsupported(off = 0 - 1, reason = "`break` is outside the provable fragment")
+      []
+    },
+    EContinue(_) => {
+      unsupported(off = 0 - 1, reason = "`continue` is outside the provable fragment")
+      []
     },
     ESeq(a, b) => {
       let out: Array[Outcome] = []
@@ -900,6 +920,46 @@ fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) 
     let t = "(\{op} \{a.value} \{b.value})"
     push_obligation(ctx = ctx, kind = "overflow", label = print_expr(e), off = off, goal = guarded(pc = b.pc, goal = in_range(t)))
     with_value(st = b, value = t, sort = "Int")
+  } else if (op == "/" || op == "%") && ints {
+    // Runtime `/` and `%` truncate toward zero (`-7 / 2 == -3`,
+    // `-7 % 2 == -1`), and a zero divisor aborts, so a path continues past
+    // the operator only where the divisor is not zero. SMT-LIB `div` is
+    // Euclidean: the quotient is taken on a non-negative dividend and
+    // negated back, and the remainder is what that quotient leaves.
+    // `MIN / -1` leaves the range, so the result carries the overflow
+    // obligation `+` / `-` / `*` do.
+    let nonzero = "(not (= \{b.value} 0))"
+    push_obligation(ctx = ctx, kind = "divisor", label = print_expr(e), off = off, goal = guarded(pc = b.pc, goal = nonzero))
+    let st = with_pc(st = b, cond = nonzero)
+    let q = trunc_div(a = a.value, b = b.value)
+    let t = if op == "/" {
+      q
+    } else {
+      "(- \{a.value} (* \{b.value} \{q}))"
+    }
+    push_obligation(ctx = ctx, kind = "overflow", label = print_expr(e), off = off, goal = guarded(pc = st.pc, goal = in_range(t)))
+    with_value(st = st, value = t, sort = "Int")
+  } else if (op == "<<" || op == ">>") && ints {
+    // A shift by a constant count `k` in 0..62 is exact over the integers:
+    // `x << k` is `x * 2^k` (its wrap is the overflow obligation) and the
+    // arithmetic `x >> k` is the FLOORED quotient by `2^k`, which SMT-LIB
+    // `div` computes for a positive divisor. Any other count answers
+    // irregularly at run time (`1 << 63` is 0, so is `8 >> -1`) and is not
+    // encoded.
+    let k = shift_count(b.value)
+    if k < 0 {
+      unsupported(off = off, reason = "`\{op}` by a count that is not a constant from 0 to 62")
+      b
+    } else {
+      let pow = pow2_text(k)
+      if op == "<<" {
+        let t = "(* \{a.value} \{pow})"
+        push_obligation(ctx = ctx, kind = "overflow", label = print_expr(e), off = off, goal = guarded(pc = b.pc, goal = in_range(t)))
+        with_value(st = b, value = t, sort = "Int")
+      } else {
+        with_value(st = b, value = "(div \{a.value} \{pow})", sort = "Int")
+      }
+    }
   } else if (op == "<" || op == "<=" || op == ">" || op == ">=") && ints {
     with_value(st = b, value = "(\{op} \{a.value} \{b.value})", sort = "Bool")
   } else if (op == "==" || op == "!=") && a.sort == b.sort && a.sort != "Unit" && adt_has_custom_eq(adts = ctx.adts, sort = a.sort) {
@@ -916,6 +976,331 @@ fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) 
     unsupported(off = off, reason = "`\{op}` on `\{a.sort}` and `\{b.sort}` is outside the provable fragment")
     b
   }
+}
+
+/// The count of a shift when its SMT term is a decimal constant from 0 to
+/// 62, and -1 otherwise.
+fn shift_count(_ term: String) -> Int {
+  let n = String::length(term)
+  if n == 0 || n > 2 {
+    0 - 1
+  } else {
+    let mut k = 0
+    let mut ok = true
+    let mut i = 0
+    while i < n {
+      let c = String::byte_at(term, at = i)
+      if c >= '0' && c <= '9' {
+        k = k * 10 + (Char::to_int(c) - 48)
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    if ok && k <= 62 {
+      k
+    } else {
+      0 - 1
+    }
+  }
+}
+
+/// `2^k` as a decimal SMT literal. `2^62` is one past `Int`'s maximum, so it
+/// is spelled out rather than computed.
+fn pow2_text(_ k: Int) -> String {
+  if k == 62 {
+    return "4611686018427387904"
+  } else {
+    ()
+  }
+  let mut p = 1
+  let mut i = 0
+  while i < k {
+    p = p * 2
+    i = i + 1
+  }
+  "\{p}"
+}
+
+/// `x` once a scope opened at `outer` closes: the names it bound are gone,
+/// and an assignment it made to an enclosing binding stays. Bindings are only
+/// appended inside a scope and assignments replace in place, so the enclosing
+/// names are exactly the first `outer` entries.
+fn leave_scope(x: Outcome, outer: Array[(String, String, String)]) -> Outcome {
+  Outcome::{
+    pc: x.pc,
+    value: x.value,
+    sort: x.sort,
+    returned: x.returned,
+    env: Array::slice(x.env, start = 0, end = min_int(a = Array::length(outer), b = Array::length(x.env)))
+  }
+}
+
+fn min_int(a: Int, b: Int) -> Int {
+  if a < b {
+    a
+  } else {
+    b
+  }
+}
+
+/// `env` with the innermost binding of `name` now holding `term`, or `None`
+/// when nothing in scope has that name.
+fn env_assign(env: Array[(String, String, String)], name: String, term: String, sort: String) -> Option[Array[(String, String, String)]] {
+  let mut i = Array::length(env)
+  let mut at = 0 - 1
+  while i > 0 && at < 0 {
+    i = i - 1
+    let (n, _, _) = Array::get(env, at = i)
+    if n == name {
+      at = i
+    } else {
+      ()
+    }
+  }
+  if at < 0 {
+    None
+  } else {
+    let out = Array::slice(env, start = 0, end = Array::length(env))
+    Array::set(out, at = at, value = (name, term, sort))
+    Some(out)
+  }
+}
+
+/// `name = v` followed by `c`: the assigned value replaces the binding, and
+/// the rest of the path reads it.
+fn sym_assign(ctx: Ctx, name: String, v: Expr, c: Expr, off: Int, st: Outcome) -> Array[Outcome] with Exception {
+  let out: Array[Outcome] = []
+  for o in sym(ctx = ctx, e = v, st = st) {
+    if o.returned {
+      Array::push(out, value = o)
+    } else {
+      match env_lookup(env = o.env, name = name) {
+        Some((_, sort)) => if sort != o.sort {
+          unsupported(off = off, reason = "`\{name}` is assigned a `\{o.sort}` where it holds a `\{sort}`")
+        } else {
+          ()
+        },
+        None => unsupported(off = off, reason = "`\{name}` is not a local of the provable fragment")
+      }
+      match env_assign(env = o.env, name = name, term = o.value, sort = o.sort) {
+        Some(env) => for x in sym(ctx = ctx, e = c, st = Outcome::{
+          pc: o.pc,
+          value: "",
+          sort: "Unit",
+          returned: false,
+          env: env
+        }) {
+          Array::push(out, value = x)
+        },
+        None => ()
+      }
+      ()
+    }
+  }
+  out
+}
+
+/// A contracted `while`, read back from the parser's lowering (#3716): the
+/// loop's condition and body, its `invariant` clauses and its one
+/// `decreases` measure.
+struct Loop {
+  cond: Expr;
+  body: Expr;
+  invariants: Array[Expr];
+  measure: Expr
+}
+
+/// The parser lowers `while c where { invariant: i.., decreases: m } { b }`
+/// (`attach_while_contract`) to
+/// `let mut S_dec_prev = 0; let mut S_dec_seen = false;
+/// while { assert(i1); ..; let S_dec_now = m; <measure checks> ; c } { b }`,
+/// each clause passed through an identity lambda over `__vibe_clause`. The
+/// two cells are what makes the runtime check the measure; the prover reads
+/// the clauses themselves, so the cells are not modelled.
+fn contracted_loop_cells(name: String, inner: Expr) -> Option[Loop] {
+  if String::starts_with(name, prefix = "__loop") && String::ends_with(name, suffix = "_dec_prev") {
+    match inner {
+      ELetMut(seen, EBool(false), EWhile(c, b), _) => if String::ends_with(seen, suffix = "_dec_seen") {
+        decode_while(cond = c, body = b)
+      } else {
+        None
+      },
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+fn decode_while(cond: Expr, body: Expr) -> Option[Loop] {
+  match cond {
+    ESeq(checkpoint, c) => {
+      let invariants: Array[Expr] = []
+      match decode_checkpoint(e = checkpoint, invariants = invariants) {
+        Some(m) => Some(Loop::{
+          cond: c,
+          body: body,
+          invariants: invariants,
+          measure: m
+        }),
+        None => None
+      }
+    },
+    _ => None
+  }
+}
+
+/// The invariants (collected into `invariants`) and the measure of a lowered
+/// checkpoint; `None` when there is no measure or the shape is not the
+/// lowering's.
+fn decode_checkpoint(e: Expr, invariants: Array[Expr]) -> Option[Expr] {
+  match e {
+    ESeq(ECall(EIdent("assert", _), args, _, _), rest) => if Array::length(args) == 1 {
+      match typed_clause_arg(Array::get(args, at = 0)) {
+        Some(inv) => {
+          Array::push(invariants, value = inv)
+          decode_checkpoint(e = rest, invariants = invariants)
+        },
+        None => None
+      }
+    } else {
+      None
+    },
+    ELet(now, v, _, _) => if String::ends_with(now, suffix = "_dec_now") {
+      typed_clause_arg(v)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// The clause inside `((__vibe_clause: T) -> __vibe_clause)(clause)`.
+fn typed_clause_arg(_ e: Expr) -> Option[Expr] {
+  match e {
+    ECall(EFn(_, _, params, _, _, EIdent("__vibe_clause", _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 {
+      Some(Array::get(args, at = 0))
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// A contracted loop, proved by induction. The invariants and the measure's
+/// `>= 0` are owed on entry. Then every binding the body assigns takes a
+/// fresh value, which stands for the state at an arbitrary checkpoint where
+/// the invariants hold and the measure `m0` is `>= 0`. One iteration from
+/// there, wherever it ends normally, owes the invariants again and a measure
+/// in `0 <= m < m0`, which is what bounds the iteration count. The path past
+/// the loop is that same arbitrary state with the condition false. A `return`
+/// inside the body leaves the function as it does anywhere.
+fn sym_loop(ctx: Ctx, lp: Loop, st: Outcome) -> Array[Outcome] with Exception {
+  let out: Array[Outcome] = []
+  // A clause is read as a formula, so an assignment inside one would be
+  // dropped while the runtime performs it.
+  let clause_writes: Array[String] = []
+  for inv in lp.invariants {
+    collect_assigned(e = inv, out = clause_writes)
+  }
+  collect_assigned(e = lp.measure, out = clause_writes)
+  if Array::length(clause_writes) > 0 {
+    unsupported(off = expr_off(lp.measure), reason = "a loop's `invariant` or `decreases` clause assigns `\{Array::get(clause_writes, at = 0)}`")
+  } else {
+    ()
+  }
+  for inv in lp.invariants {
+    push_obligation(ctx = ctx, kind = "invariant-entry", label = print_expr(inv), off = expr_off(inv), goal = clause_formula(ctx = ctx, clause = inv, state = st))
+  }
+  let m_entry = single_int(ctx = ctx, e = lp.measure, st = st)
+  push_obligation(ctx = ctx, kind = "measure-entry", label = print_expr(lp.measure), off = expr_off(lp.measure), goal = guarded(pc = st.pc, goal = "(>= \{m_entry} 0)"))
+  // The arbitrary checkpoint. The condition runs after it on every
+  // iteration, so what the condition assigns varies too.
+  let assigned: Array[String] = []
+  collect_assigned(e = lp.cond, out = assigned)
+  collect_assigned(e = lp.body, out = assigned)
+  let mut env = st.env
+  for name in assigned {
+    match env_lookup(env = env, name = name) {
+      Some((_, sort)) => {
+        let t = fresh(ctx = ctx, sort = sort)
+        assume_range(ctx = ctx, term = t, sort = sort, pc = st.pc)
+        match env_assign(env = env, name = name, term = t, sort = sort) {
+          Some(e2) => env = e2,
+          None => ()
+        }
+      },
+      None => ()
+    }
+  }
+  let h = Outcome::{
+    pc: st.pc,
+    value: "",
+    sort: "Unit",
+    returned: false,
+    env: env
+  }
+  for inv in lp.invariants {
+    Array::push(ctx.assumes, value = clause_formula(ctx = ctx, clause = inv, state = h))
+  }
+  let m0 = single_int(ctx = ctx, e = lp.measure, st = h)
+  Array::push(ctx.assumes, value = guarded(pc = st.pc, goal = "(>= \{m0} 0)"))
+  for c in sym(ctx = ctx, e = lp.cond, st = h) {
+    if c.returned {
+      Array::push(out, value = c)
+    } else if c.sort != "Bool" {
+      unsupported(off = expr_off(lp.cond), reason = "a loop condition must be a `Bool`")
+    } else {
+      for b in sym(ctx = ctx, e = lp.body, st = with_pc(st = c, cond = c.value)) {
+        if b.returned {
+          Array::push(out, value = b)
+        } else {
+          let after = leave_scope(x = b, outer = h.env)
+          for inv in lp.invariants {
+            push_obligation(ctx = ctx, kind = "invariant", label = print_expr(inv), off = expr_off(inv), goal = clause_formula(ctx = ctx, clause = inv, state = after))
+          }
+          let m1 = single_int(ctx = ctx, e = lp.measure, st = after)
+          push_obligation(ctx = ctx, kind = "measure", label = print_expr(lp.measure), off = expr_off(lp.measure), goal = guarded(pc = after.pc, goal = "(and (>= \{m1} 0) (< \{m1} \{m0}))"))
+        }
+      }
+      let exit = with_pc(st = c, cond = "(not \{c.value})")
+      Array::push(out, value = with_value(st = leave_scope(x = exit, outer = h.env), value = "true", sort = "Unit"))
+    }
+  }
+  out
+}
+
+/// The one value an `Int` clause has from `st`; a clause that forks the path
+/// or is not an `Int` is unsupported.
+fn single_int(ctx: Ctx, e: Expr, st: Outcome) -> String with Exception {
+  let outs = sym(ctx = ctx, e = e, st = st)
+  if Array::length(outs) != 1 || Array::get(outs, at = 0).sort != "Int" || Array::get(outs, at = 0).returned {
+    unsupported(off = expr_off(e), reason = "a `decreases` measure must be one `Int` expression without branches")
+    ""
+  } else {
+    Array::get(outs, at = 0).value
+  }
+}
+
+/// Every name `e` assigns (`x = ..`, `x += ..`), nested loops included. A
+/// name the body itself binds is havocked as well if an enclosing binding of
+/// that name exists, which only loses precision.
+fn collect_assigned(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    EAssign(n, _, _, _) => Array::push(out, value = n),
+    EAssignOp(n, _, _, _, _) => Array::push(out, value = n),
+    _ => ()
+  }
+  for k in expr_kids(e) {
+    collect_assigned(e = k, out = out)
+  }
+  ()
+}
+
+/// The quotient `a / b` truncated toward zero, as the runtime computes it.
+fn trunc_div(a: String, b: String) -> String {
+  "(ite (>= \{a} 0) (div \{a} \{b}) (- (div (- \{a}) \{b})))"
 }
 
 /// A call is modular: the callee's `requires` become obligations at the
@@ -1730,14 +2115,9 @@ fn sym_match(ctx: Ctx, scr: Expr, arms: Array[(Pat, Expr)], off: Int, st: Outcom
           env: env
         }
         for x in sym(ctx = ctx, e = body, st = bound) {
-          // The arm's bindings end with the arm.
-          Array::push(out, value = Outcome::{
-            pc: x.pc,
-            value: x.value,
-            sort: x.sort,
-            returned: x.returned,
-            env: o.env
-          })
+          // The arm's bindings end with the arm; an assignment it made to an
+          // enclosing binding does not.
+          Array::push(out, value = leave_scope(x = x, outer = o.env))
         }
         Array::push(earlier, value = cond)
       }

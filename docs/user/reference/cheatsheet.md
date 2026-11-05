@@ -142,8 +142,16 @@ tagged immediate an `Int` is, and every value lies in its type's range:
   does not fit. Elsewhere, convert with `Int::wrap_int32`.
 - **Traits.** `Eq`, `Ord` and `Show` treat them as the scalars they are, and
   `Int32::to_string` / `UInt32::to_string` render them. `[T: Add]` refuses
-  them, because a generic `+` would not wrap. `Default`, `Hash` (and with
-  it a `Map` key) and the WIT / `.wasm` boundary mappings are not there yet.
+  them, because a generic `+` would not wrap. A trait whose methods only read
+  `Self` is served by `Int`'s impl, which sees the same integer: `[T: Hash]`
+  holds, so a `Set[Int32]` works, and they are builtin `Map` keys too. A
+  trait is borrowed only when each parameter is `Self` itself or mentions no
+  `Self`, and no result does: a result, a container or a callback of `Self`
+  would let `Int`'s impl produce a value outside 32 bits, so `Default` and
+  `fill(Self, Array[Self])` are not. WIT `s32` / `u32` project to them
+  both ways, and a component's `s32` / `u32` import is typed with them (see
+  "Importing a wasm module"). The core module's `i32` boundary is not there
+  yet.
 
 ```vibe
 test "exact 32-bit integers" {
@@ -1565,7 +1573,8 @@ let nv = {                            // destructure also works in fn/block body
 }
 
 // Map (#960: the `map { ... }` literal was removed; use the Map:: API).
-// The builtin map takes a `String`, `Int`, `Char` or `Bool` key (#2334);
+// The builtin map takes a `String`, `Int`, `Int32`, `UInt32`, `Char` or
+// `Bool` key (#2334, #3730);
 // `StringMap[V]` is `Map[String, V]` (no import needed). Any other key is
 // rejected -- written or inferred. For another key type, use `MutMap[K, V]`
 // from `@vibe/core` (below).
@@ -3035,8 +3044,8 @@ codegen. Write `for x in xs { .. }`.
 `freeze(MapBuilder[String, V]) -> Map[String, V]` — a builder is String-keyed.
 A `for-in` comprehension desugars to these builder operations internally.
 
-**Map** — the builtin `Map[K, V]` takes a `String`, `Int`, `Char` or `Bool`
-key (#2334); `StringMap[V]` is `Map[String, V]` (no import needed; the
+**Map** — the builtin `Map[K, V]` takes a `String`, `Int`, `Int32`,
+`UInt32`, `Char` or `Bool` key (#2334, #3730); `StringMap[V]` is `Map[String, V]` (no import needed; the
 operations keep the `Map::` qualifier). A map literal and
 `Map::from_pairs([...])` take string-literal keys; a map with another key
 starts from `Map::new()`, and the first keyed call decides its key type:
@@ -3521,9 +3530,11 @@ The foreign memory is not the program's; the runner serves these, which is
 how a binding moves strings across (see `lib/@vibex/z3/cstring.vibe`).
 
 **Component types** (from the component's type section, i.e. its WIT): a
-world-level exported function with `s8`..`u64` (as `Int`) and `string`
-params and at most one such result. The runner range-checks each `Int`
-against its WIT width and refuses one that does not fit. Exported
+world-level exported function with integer and `string` params and at most
+one such result. `s32` / `u32` are `Int32` / `UInt32` (#3730), so their width
+is the type and a value that does not fit is a compile-time error; the other
+widths (`s8`..`u16`, `s64`, `u64`) are `Int`, which the runner range-checks
+against the WIT width, refusing one that does not fit. Exported
 interfaces, `bool`, `char`, floats, lists, records, variants and resources
 are not offered yet. A component whose type section declares component or
 instance types (what an imported interface looks like) is read up to that

@@ -73,6 +73,63 @@ fn placement_restore_stmts(stmts: Array[Stmt], packets: MutMap[Int, Array[Int]],
   ()
 }
 
+fn call_cells_clear_expr(_ expr: Expr) -> Unit {
+  match expr {
+    ECall(_, _, _, cell) => if Array::length(cell) > 0 {
+      Array::truncate(cell, length = 0)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    call_cells_clear_expr(expr_child_at(i))
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// #3724: return every call cell of `stmts` to its state before checking
+/// (empty: no resolution, no placement).
+///
+/// A cell is the checker's answer for one call, written into the tree. The
+/// tree is not owned by one check: the process-wide parse memo (#2386) hands
+/// the same `Stmt` values to every compile of the same text, so a long-lived
+/// compiler (`--daemon`, the unit-test batch daemons, `vibe lsp`) checked a
+/// module on cells its previous compile had written and lowered. A path that
+/// reads a cell before the check writes it (a probe, which does not capture)
+/// then typed the call differently, and the second compile's checked module
+/// carried two extra substitution bindings. A check begins here, so what it
+/// publishes depends on the source alone.
+export fn call_cells_reset(_ stmts: Array[Stmt]) -> Unit {
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, body) => call_cells_clear_expr(body),
+      SLetMut(_, _, body) => call_cells_clear_expr(body),
+      SLetPat(_, body) => call_cells_clear_expr(body),
+      SExpr(body) => call_cells_clear_expr(body),
+      STest(_, body) => call_cells_clear_expr(body),
+      SBench(_, body) => call_cells_clear_expr(body),
+      SExample(_, body) => call_cells_clear_expr(body),
+      SFnDecl(_, _, body, requires, ensures) => {
+        call_cells_clear_expr(body)
+        for e in requires {
+          call_cells_clear_expr(e)
+        }
+        for e in ensures {
+          call_cells_clear_expr(e)
+        }
+      },
+      SModule(_, _, children) => call_cells_reset(children),
+      _ => ()
+    }
+  }
+  ()
+}
+
 /// Restore only source-bound per-file rows, before files are renamed/merged.
 /// 13 declares a complete label channel; 14 explicitly records a declined
 /// located observation. A missing row in a complete channel is not rowless.

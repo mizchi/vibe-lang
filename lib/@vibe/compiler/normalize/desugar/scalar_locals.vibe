@@ -1,0 +1,572 @@
+// Scalar replacement consumes the checker's strict non-capture rows. The
+// separate use proof admits only field reads/writes: argument passing is not
+// a closure escape, but still requires an addressable shared object.
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+}
+import @vibe/ast {
+  is_builtin_ref_offset
+}
+import @vibe/core {
+  struct MutMap
+}
+import ./binding_names.vibe {
+  params_bind_name, pat_binds_name
+}
+import ./binding_shape_queries.vibe {
+  dtd_ascribed_type
+}
+
+struct ScalarWalk {
+  targets: MutMap[Int, Bool];
+  shapes: Array[(String, Array[String])];
+  name: String;
+  slots: Array[(String, String)];
+  // 0 finds bindings, 1 proves their uses, 2 rewrites their fields.
+  mode: Int;
+  mut changed: Int;
+  mut refused: Bool
+}
+
+fn sr_context(targets: MutMap[Int, Bool], shapes: Array[(String, Array[String])], name: String, slots: Array[(String, String)], mode: Int) -> ScalarWalk {
+  ScalarWalk::{
+    targets: targets,
+    shapes: shapes,
+    name: name,
+    slots: slots,
+    mode: mode,
+    changed: 0,
+    refused: false
+  }
+}
+
+fn sr_slot(c: ScalarWalk, field: String) -> String {
+  let mut result = ""
+  for row in c.slots {
+    if row.0 == field {
+      result = row.1
+    }
+  }
+  result
+}
+
+fn sr_items(items: Array[Expr], c: ScalarWalk, active: Bool) -> Array[Expr] {
+  let mut result = items
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(items) {
+    let mark = c.changed
+    let next = sr_expr(e = Array::get(items, at = i), c = c, active = active)
+    if c.mode != 1 && c.changed != mark {
+      if !copied {
+        result = Array::slice(items, start = 0, end = Array::length(items)); copied = true
+      }
+      Array::set(result, at = i, value = next)
+    }
+    i = i + 1
+  }
+  result
+}
+
+fn sr_fields(items: Array[(String, Expr)], c: ScalarWalk, active: Bool) -> Array[(String, Expr)] {
+  let mut result = items
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, value) = Array::get(items, at = i)
+    let mark = c.changed
+    let next = sr_expr(e = value, c = c, active = active)
+    if c.mode != 1 && c.changed != mark {
+      if !copied {
+        result = Array::slice(items, start = 0, end = Array::length(items)); copied = true
+      }
+      Array::set(result, at = i, value = (name, next))
+    }
+    i = i + 1
+  }
+  result
+}
+
+fn sr_arms(items: Array[(Pat, Expr)], c: ScalarWalk, active: Bool) -> Array[(Pat, Expr)] {
+  let mut result = items
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(items) {
+    let (pat, body) = Array::get(items, at = i)
+    let mark = c.changed
+    let scope = active && (c.mode == 0 || !pat_binds_name(p = pat, name = c.name))
+    let next = sr_expr(e = body, c = c, active = scope)
+    if c.mode != 1 && c.changed != mark {
+      if !copied {
+        result = Array::slice(items, start = 0, end = Array::length(items)); copied = true
+      }
+      Array::set(result, at = i, value = (pat, next))
+    }
+    i = i + 1
+  }
+  result
+}
+
+fn sr_record(_ value: Expr) -> Option[(String, Array[(String, Expr)])] {
+  match value {
+    ERecord(name, fields, _) => Some((name, fields)),
+    ECall(_, args, _, _) => if Array::length(args) == 1 && dtd_ascribed_type(value) is Some(_) {
+      sr_record(Array::get(args, at = 0))
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+// Constructor codegen evaluates fields in declaration order. Keep that
+// order even when the source literal writes the fields in another order.
+fn sr_ordered(value: Expr, c: ScalarWalk) -> Option[Array[(String, Expr)]] {
+  match sr_record(value) {
+    Some((name, fields)) => {
+      let mut order: Array[String] = []
+      for shape in c.shapes {
+        if shape.0 == name {
+          order = shape.1
+        }
+      }
+      if Array::length(order) != Array::length(fields) || Array::length(order) == 0 {
+        None
+      } else {
+        let result: Array[(String, Expr)] = []
+        for field in order {
+          for pair in fields {
+            if pair.0 == field {
+              Array::push(result, value = pair)
+            }
+          }
+        }
+        if Array::length(result) == Array::length(fields) {
+          Some(result)
+        } else {
+          None
+        }
+      }
+    },
+    None => None
+  }
+}
+
+fn sr_binding(original: Expr, name: String, value: Expr, body: Expr, off: Int, mutable: Bool, c: ScalarWalk, active: Bool) -> Expr {
+  let mark = c.changed
+  let v = sr_expr(e = value, c = c, active = active)
+  let b = sr_expr(e = body, c = c, active = active && (c.mode == 0 || name != c.name))
+  if c.mode == 0 && MutMap::has(c.targets, k = off) {
+    match sr_ordered(value = v, c = c) {
+      Some(fields) => {
+        let slots: Array[(String, String)] = []
+        let mut i = 0
+        for field in fields {
+          Array::push(slots, value = (field.0, "$scalar_local$\{off}$\{i}"))
+          i = i + 1
+        }
+        let proof = sr_context(targets = c.targets, shapes = c.shapes, name = name, slots = slots, mode = 1)
+        let _ = sr_expr(e = b, c = proof, active = true)
+        if !proof.refused {
+          let rewrite = sr_context(targets = c.targets, shapes = c.shapes, name = name, slots = slots, mode = 2)
+          let mut result = sr_expr(e = b, c = rewrite, active = true)
+          i = Array::length(fields)
+          while i > 0 {
+            i = i - 1
+            result = ELetMut(Array::get(slots, at = i).1, Array::get(fields, at = i).1, result, -1)
+          }
+          c.changed = c.changed + 1
+          result
+        } else if c.changed == mark {
+          original
+        } else if mutable {
+          ELetMut(name, v, b, off)
+        } else {
+          ELet(name, v, b, off)
+        }
+      },
+      None => if c.changed == mark {
+        original
+      } else if mutable {
+        ELetMut(name, v, b, off)
+      } else {
+        ELet(name, v, b, off)
+      }
+    }
+  } else if c.changed == mark || c.mode == 1 {
+    original
+  } else if mutable {
+    ELetMut(name, v, b, off)
+  } else {
+    ELet(name, v, b, off)
+  }
+}
+
+fn sr_expr(e: Expr, c: ScalarWalk, active: Bool) -> Expr {
+  if (c.mode != 0 && !active) || (c.mode == 1 && c.refused) {
+    e
+  } else {
+    let mark = c.changed
+    match e {
+      EIdent(name, _) => {
+        if c.mode != 0 && name == c.name {
+          c.refused = true
+        }
+        e
+      },
+      EDot(EIdent(name, _), field, _, field_off) => if c.mode != 0 && name == c.name {
+        let slot = sr_slot(c = c, field = field)
+        if slot == "" {
+          c.refused = true; e
+        } else if c.mode == 1 {
+          e
+        } else {
+          c.changed = c.changed + 1; EIdent(slot, field_off)
+        }
+      } else {
+        e
+      },
+      ECall(EIdent("__set_field", intrinsic_off), args, _, _) => if c.mode != 0 && is_builtin_ref_offset(intrinsic_off) && Array::length(args) == 3 && match Array::get(args, at = 0) {
+        EIdent(n, _) => n == c.name,
+        _ => false
+      } {
+        let field = match Array::get(args, at = 1) {
+          EString(n, _) => n,
+          _ => ""
+        }
+        let slot = sr_slot(c = c, field = field)
+        let v = sr_expr(e = Array::get(args, at = 2), c = c, active = active)
+        if slot == "" {
+          c.refused = true; e
+        } else if c.mode == 1 {
+          e
+        } else {
+          c.changed = c.changed + 1; EAssign(slot, v, EUnit, intrinsic_off)
+        }
+      } else {
+        let next = sr_items(items = args, c = c, active = active)
+        if c.changed == mark {
+          e
+        } else {
+          match e {
+            ECall(f, _, off, cell) => ECall(f, next, off, cell),
+            _ => e
+          }
+        }
+      },
+      ELet(n, v, b, off) => sr_binding(original = e, name = n, value = v, body = b, off = off, mutable = false, c = c, active = active),
+      ELetMut(n, v, b, off) => sr_binding(original = e, name = n, value = v, body = b, off = off, mutable = true, c = c, active = active),
+      ELetRec(n, v, b) => {
+        let scope = active && (c.mode == 0 || n != c.name)
+        let nv = sr_expr(e = v, c = c, active = scope); let nb = sr_expr(e = b, c = c, active = scope)
+        if c.changed == mark {
+          e
+        } else {
+          ELetRec(n, nv, nb)
+        }
+      },
+      EAssign(n, v, b, off) => {
+        if c.mode != 0 && n == c.name {
+          c.refused = true
+        }
+        let nv = sr_expr(e = v, c = c, active = active); let nb = sr_expr(e = b, c = c, active = active)
+        if c.changed == mark {
+          e
+        } else {
+          EAssign(n, nv, nb, off)
+        }
+      },
+      EAssignOp(n, op, v, b, off) => {
+        if c.mode != 0 && n == c.name {
+          c.refused = true
+        }
+        let nv = sr_expr(e = v, c = c, active = active); let nb = sr_expr(e = b, c = c, active = active)
+        if c.changed == mark {
+          e
+        } else {
+          EAssignOp(n, op, nv, nb, off)
+        }
+      },
+      EFn(tp, bounds, params, ret, row, b) => {
+        let nb = sr_expr(e = b, c = c, active = active && (c.mode == 0 || !params_bind_name(params = params, name = c.name)))
+        if c.changed == mark {
+          e
+        } else {
+          EFn(tp, bounds, params, ret, row, nb)
+        }
+      },
+      EForIn(n, idx, it, b) => {
+        let ni = sr_expr(e = it, c = c, active = active)
+        let scope = c.mode == 0 || (n != c.name && match idx {
+          Some(index_name) => index_name != c.name,
+          None => true
+        })
+        let nb = sr_expr(e = b, c = c, active = active && scope)
+        if c.changed == mark {
+          e
+        } else {
+          EForIn(n, idx, ni, nb)
+        }
+      },
+      ELoop(params, b) => {
+        let mut scope = active
+        let mut out = params
+        let mut copied = false
+        let mut i = 0
+        for pair in params {
+          let before = c.changed
+          let nv = sr_expr(e = pair.1, c = c, active = scope)
+          if c.changed != before && c.mode != 1 {
+            if !copied {
+              out = Array::slice(params, start = 0, end = Array::length(params)); copied = true
+            }
+            Array::set(out, at = i, value = (pair.0, nv))
+          }
+          if c.mode != 0 && pair.0 == c.name {
+            scope = false
+          }
+          i = i + 1
+        }
+        let nb = sr_expr(e = b, c = c, active = scope)
+        if c.changed == mark {
+          e
+        } else {
+          ELoop(out, nb)
+        }
+      },
+      EMatch(s, arms) => {
+        let ns = sr_expr(e = s, c = c, active = active); let na = sr_arms(items = arms, c = c, active = active)
+        if c.changed == mark {
+          e
+        } else {
+          EMatch(ns, na)
+        }
+      },
+      EHandle(s, arms) => {
+        let ns = sr_expr(e = s, c = c, active = active); let na = sr_arms(items = arms, c = c, active = active)
+        if c.changed == mark {
+          e
+        } else {
+          EHandle(ns, na)
+        }
+      },
+      ECall(f, args, off, cell) => {
+        let nf = sr_expr(e = f, c = c, active = active); let na = sr_items(items = args, c = c, active = active)
+        if c.changed == mark {
+          e
+        } else {
+          ECall(nf, na, off, cell)
+        }
+      },
+      EIf(a, b, d) => {
+        let na = sr_expr(e = a, c = c, active = active); let nb = sr_expr(e = b, c = c, active = active); let nd = sr_expr(e = d, c = c, active = active)
+        if c.changed == mark {
+          e
+        } else {
+          EIf(na, nb, nd)
+        }
+      },
+      EBinOp(op, a, b, off) => {
+        let na = sr_expr(e = a, c = c, active = active); let nb = sr_expr(e = b, c = c, active = active)
+        if c.changed == mark {
+          e
+        } else {
+          EBinOp(op, na, nb, off)
+        }
+      },
+      ESeq(a, b) => {
+        let na = sr_expr(e = a, c = c, active = active); let nb = sr_expr(e = b, c = c, active = active)
+        if c.changed == mark {
+          e
+        } else {
+          ESeq(na, nb)
+        }
+      },
+      EWhile(a, b) => {
+        let na = sr_expr(e = a, c = c, active = active); let nb = sr_expr(e = b, c = c, active = active)
+        if c.changed == mark {
+          e
+        } else {
+          EWhile(na, nb)
+        }
+      },
+      EDot(obj, field, off, field_off) => {
+        let obj2 = sr_expr(e = obj, c = c, active = active)
+        if c.changed == mark {
+          e
+        } else {
+          EDot(obj2, field, off, field_off)
+        }
+      },
+      ETuple(xs) => {
+        let ys = sr_items(items = xs, c = c, active = active); if c.changed == mark {
+          e
+        } else {
+          ETuple(ys)
+        }
+      },
+      EArray(xs) => {
+        let ys = sr_items(items = xs, c = c, active = active); if c.changed == mark {
+          e
+        } else {
+          EArray(ys)
+        }
+      },
+      ERecord(n, xs, ts) => {
+        let ys = sr_fields(items = xs, c = c, active = active); if c.changed == mark {
+          e
+        } else {
+          ERecord(n, ys, ts)
+        }
+      },
+      EMap(xs) => {
+        let ys = sr_fields(items = xs, c = c, active = active); if c.changed == mark {
+          e
+        } else {
+          EMap(ys)
+        }
+      },
+      EUnaryOp(op, x) => {
+        let y = sr_expr(e = x, c = c, active = active); if c.changed == mark {
+          e
+        } else {
+          EUnaryOp(op, y)
+        }
+      },
+      ELabeledArg(n, op, x) => {
+        let y = sr_expr(e = x, c = c, active = active); if c.changed == mark {
+          e
+        } else {
+          ELabeledArg(n, op, y)
+        }
+      },
+      EReturn(x) => {
+        let y = sr_expr(e = x, c = c, active = active); if c.changed == mark {
+          e
+        } else {
+          EReturn(y)
+        }
+      },
+      ESpread(x) => {
+        let y = sr_expr(e = x, c = c, active = active); if c.changed == mark {
+          e
+        } else {
+          ESpread(y)
+        }
+      },
+      EBreak(Some(x)) => {
+        let y = sr_expr(e = x, c = c, active = active); if c.changed == mark {
+          e
+        } else {
+          EBreak(Some(y))
+        }
+      },
+      EContinue(xs) => {
+        let ys = sr_items(items = xs, c = c, active = active); if c.changed == mark {
+          e
+        } else {
+          EContinue(ys)
+        }
+      },
+      EInt(_) => e,
+      EFloat(_) => e,
+      EString(_, _) => e,
+      EBool(_) => e,
+      EUnit => e,
+      EBreak(None) => e,
+      _ => {
+        if c.mode != 0 {
+          c.refused = true
+        }; e
+      }
+    }
+  }
+}
+
+fn sr_hits(e: Expr, targets: MutMap[Int, Bool]) -> Bool {
+  let mut cur = e
+  let mut found = false
+  let mut done = false
+  while !done && !found {
+    let here = match cur {
+      ELet(_, _, _, off) => MutMap::has(targets, k = off),
+      ELetMut(_, _, _, off) => MutMap::has(targets, k = off),
+      _ => false
+    }
+    if here {
+      found = true
+    } else {
+      let mark = expr_children_push(cur)
+      let end = expr_children_top()
+      let mut i = mark
+      while i + 1 < end && !found {
+        found = sr_hits(e = expr_child_at(i), targets = targets)
+        i = i + 1
+      }
+      // Reuse this frame for the final child: long let/sequence spines
+      // must not accumulate children in the shared traversal scratch.
+      if !found && end > mark {
+        cur = expr_child_at(end - 1)
+      } else {
+        done = true
+      }
+      expr_children_pop(mark)
+    }
+  }
+  found
+}
+
+fn sr_stmts(stmts: Array[Stmt], c: ScalarWalk) -> Unit {
+  // Reuse one leaf for non-expression statements. Wrapping every root in
+  // Some(expr) allocated even when that function contained no candidate.
+  let no_root = EUnit
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, at = i)
+    let root = match stmt {
+      SLet(_, _, _, _, e) => e,
+      SLetMut(_, _, e) => e,
+      SLetPat(_, e) => e,
+      SExpr(e) => e,
+      STest(_, e) => e,
+      SBench(_, e) => e,
+      SExample(_, e) => e,
+      SFnDecl(_, _, e, _, _) => e,
+      // The shared table describes flattened declarations. Unflattened
+      // containers keep their ordinary representation.
+      _ => no_root
+    }
+    if sr_hits(e = root, targets = c.targets) {
+      let before = c.changed
+      let next = sr_expr(e = root, c = c, active = true)
+      if c.changed != before {
+        let replacement = match stmt {
+          SLet(a, b, n, ty, _) => SLet(a, b, n, ty, next),
+          SLetMut(n, ty, _) => SLetMut(n, ty, next),
+          SLetPat(p, _) => SLetPat(p, next),
+          SExpr(_) => SExpr(next),
+          STest(n, _) => STest(n, next),
+          SBench(n, _) => SBench(n, next),
+          SExample(n, _) => SExample(n, next),
+          SFnDecl(p, n, _, req, ens) => SFnDecl(p, n, next, req, ens),
+          _ => stmt
+        }
+        Array::set(stmts, at = i, value = replacement)
+      }
+    }
+    i = i + 1
+  }
+}
+
+/// No typed row means the original heap representation. Neither a missing
+/// check nor a rowless compiler lane is evidence that a binding is local.
+export fn rewrite_scalar_local_stmts(stmts: Array[Stmt], offs: Array[Int], shapes: Array[(String, Array[String])]) -> Unit {
+  if Array::length(offs) > 0 {
+    let targets: MutMap[Int, Bool] = MutMap::new_int()
+    for off in offs {
+      MutMap::set(targets, k = off, v = true)
+    }
+    let c = sr_context(targets = targets, shapes = shapes, name = "", slots = [], mode = 0)
+    sr_stmts(stmts = stmts, c = c)
+  }
+}

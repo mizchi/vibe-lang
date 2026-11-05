@@ -10,8 +10,7 @@
 # rejected and NAMES the missing kind with a spelling that actually parses in a
 # row, and a kinded `handle` does not catch a foreign kind.
 echo "[compiler-gate] 85/85 typed Exception[E] rows (ADR-0085/#1344)"
-excdir="_build/_gate_1344"
-rm -rf "$excdir"; mkdir -p "$excdir"
+gate_workdir excdir "_build/_gate_1344"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -117,8 +116,7 @@ echo "[compiler-gate] 86/86 string interpolation renders derive(Show) structural
 # unconditional `__to_string(x)`, so it kept printing the pointer decimal after
 # interpolation was already fixed. They live in this fixture so a change that
 # fixes one spelling and breaks the other cannot pass.
-showdir="_build/_gate_interp_show"
-rm -rf "$showdir"; mkdir -p "$showdir"
+gate_workdir showdir "_build/_gate_interp_show"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -138,8 +136,7 @@ echo "[compiler-gate] interpolation Show rendering ok"
 # raw pointer. The positive fixture covers direct and let-bound results,
 # nesting under Option, plus nominal controls. The negative fixture locks the
 # fail-closed diagnostic for a nominal result without a renderer.
-retshowdir="_build/_gate_interp_function_return"
-rm -rf "$retshowdir"; mkdir -p "$retshowdir"
+gate_workdir retshowdir "_build/_gate_interp_function_return"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
   "$stage2_wasm" fixtures/interp_function_return_test.vibe "$retshowdir/show.wasm" __no_entry__ >/dev/null 2>&1 || true
@@ -172,8 +169,7 @@ echo "[compiler-gate] 87/87 uncaught throw reports the payload VALUE (#1374 / #1
 # that the third did NOT regress: a type with no structural renderer must keep
 # printing `<Kind>` rather than the pointer decimal a naive "trust any non-empty
 # render" reader would emit.
-exnmsgdir="_build/_gate_exn_msg"
-rm -rf "$exnmsgdir"; mkdir -p "$exnmsgdir"
+gate_workdir exnmsgdir "_build/_gate_exn_msg"
 cat > "$exnmsgdir/shown.vibe" <<'VIBEEOF'
 enum AppError {
   Failed(String);
@@ -276,8 +272,7 @@ echo "[compiler-gate] 88/88 a closure-captured let mut is always a HEADERED RC c
 # __rt_rc_drop (a post-hoc binary patch -- wasm code is outside linear memory,
 # so it cannot move the guest heap), and a headerless box reaching a drop
 # turns into `unreachable`. Verified to fire on the pre-fix codegen.
-refcelldir="_build/_gate_rc_ref_cell"
-rm -rf "$refcelldir"; mkdir -p "$refcelldir"
+gate_workdir refcelldir "_build/_gate_rc_ref_cell"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   VIBE_RC=1 VIBE_WASM_NAMES=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -361,8 +356,7 @@ echo "[compiler-gate] 90/90 the @vibe/wit_runtime Result reaches the WIT project
 # sees it. fixtures/wit_gen_result.vibe imports @vibe/wit_runtime rather than
 # declaring a local copy, and also pins the boundary idiom itself (row inside,
 # ONE `handle` in the export body producing Ok/Err).
-witresdir="_build/_gate_wit_result"
-rm -rf "$witresdir"; mkdir -p "$witresdir"
+gate_workdir witresdir "_build/_gate_wit_result"
 gate_fs_compile "fixtures/wit_gen_result.vibe" "$witresdir/fixture.wasm" __no_entry__
 gate_require_artifact "$witresdir/fixture.wasm" "fixtures/wit_gen_result.vibe did not FS-compile -- the @vibe/wit_runtime import does not resolve or does not type-check (#1324)"
 VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -387,8 +381,7 @@ echo "[compiler-gate] 91/91 resource declarations enforce logical identity (ADR-
 # resource of that kind would be aliasing the process under a second name --
 # ADR-0075's alias check exists to catch exactly that, and rejecting it at the
 # declaration is cheaper than detecting the alias at bind time.
-resdir="_build/_gate_resource_decl"
-rm -rf "$resdir"; mkdir -p "$resdir"
+gate_workdir resdir "_build/_gate_resource_decl"
 res_case() {
   # res_case <name> <expect: ok|err> <source> [substring the .diag must contain]
   local rname="$1" expect="$2" rsrc="$3" rneedle="${4:-}"
@@ -474,8 +467,7 @@ TYPECHECK_FIXTURES_STAGE2="$stage2_wasm" bash scripts/check_typecheck_fixtures.s
 # invoke. This is what gives merged builds (#819) per-block failure attribution
 # and a per-block timeout; scripts/unit_test_runner.sh uses it to name the
 # trapping block instead of reporting a bare file-level trap.
-pbdir="_build/_gate_per_block_test"
-rm -rf "$pbdir"; mkdir -p "$pbdir"
+gate_workdir pbdir "_build/_gate_per_block_test"
 cat > "$pbdir/pb_test.vibe" <<'PBEOF'
 test "alpha_ok" {
   let x = 1 + 1
@@ -578,8 +570,7 @@ echo "[compiler-gate] 93/93 an imported enum's variants reach the importing modu
 # Each case is a two-file program: `dep.vibe` declares the enums, `<name>.vibe`
 # imports them. One file would not exercise anything -- a same-file
 # declaration always registered its TDEnum.
-endir="_build/_gate_enum_import"
-rm -rf "$endir"; mkdir -p "$endir"
+gate_workdir endir "_build/_gate_enum_import"
 cat > "$endir/dep.vibe" <<'ENUMDEP'
 export enum Box {
   Mk(Int);
@@ -795,8 +786,7 @@ echo "[compiler-gate] 94/94 importing a name the dependency does not export is a
 # valid code (or while wired into a lane `vibe check` never runs), so every
 # shape that must stay clean is pinned right next to the shapes that must
 # fail.
-uidir="_build/_gate_unresolved_import"
-rm -rf "$uidir"; mkdir -p "$uidir"
+gate_workdir uidir "_build/_gate_unresolved_import"
 cat > "$uidir/dep.vibe" <<'UIDEP'
 export enum Hue {
   Crimson;
@@ -1033,8 +1023,7 @@ if ! grep -q 'internal compiler error' "$ROOT_DIR/lib/@vibe/compiler/codegen/com
 fi
 # And a normal program must NOT produce it -- the wording lock above is
 # worthless if the message fires on correct code.
-cgdir="_build/_gate_codegen_unresolved"
-rm -rf "$cgdir"; mkdir -p "$cgdir"
+gate_workdir cgdir "_build/_gate_codegen_unresolved"
 printf 'enum Color {\n  Red;\n  Green\n}\n\nexport let _start = () -> Int {\n  match Color::Red {\n    Red => 1\n    Green => 2\n  }\n}\n' > "$cgdir/ok.vibe"
 gate_fs_compile "$cgdir/ok.vibe" "$cgdir/ok.wasm" _start
 gate_require_artifact "$cgdir/ok.wasm" "a correct program hit the unresolved-name path"
@@ -1054,8 +1043,7 @@ echo "[compiler-gate] 97/97 desugar-emitted builtins resolve in BOTH compile lan
 # died there with `unknown name: <builtin>` while compiling fine with
 # VIBE_FS_COMPILE=1. Compiling every shape in the NON-FS lane specifically:
 # the FS lane never had the bug and would pass either way.
-dvdir="_build/_gate_desugar_builtins"
-rm -rf "$dvdir"; mkdir -p "$dvdir"
+gate_workdir dvdir "_build/_gate_desugar_builtins"
 printf 'export fn lt(a: String, b: String) -> Bool { a < b }\nexport fn main() -> Int { if lt("a","b") { 0 } else { 1 } }\n' > "$dvdir/str_lex_diff.vibe"
 printf 'fn g[T](a: T, b: T) -> Bool { a < b }\nexport fn main() -> Int { if g(1,2) { 0 } else { 1 } }\n' > "$dvdir/generic_rel_diff.vibe"
 printf 'fn ga[T](a: T, b: T) -> T { a + b }\nexport fn main() -> Int { ga(1,2) }\n' > "$dvdir/generic_add.vibe"
@@ -1079,8 +1067,7 @@ bash "$ROOT_DIR/scripts/test_vibe_rc_help.sh"
 # of the feature and it is the part that silently degrades -- seeding the module
 # sources wrong makes every import type as `CtUnknown`, at which point the
 # filters keep answering, just wrongly.
-gvdir="_build/_gate_vibe_grep"
-rm -rf "$gvdir"; mkdir -p "$gvdir"
+gate_workdir gvdir "_build/_gate_vibe_grep"
 cat > "$gvdir/dep.vibe" <<'VEOF'
 export fn helper(v: Int) -> Int {
   v + 1
@@ -1201,8 +1188,7 @@ echo "[compiler-gate] vibe grep typed filters ok"
 #     binders in #1622, PATTERN binders after that), which is what this step is
 #     for. Each case below fails DIFFERENTLY if the guard regresses.
 echo "[compiler-gate] 99/104 the inspect rewrite neither captures nor hijacks (#1571)"
-inspdir="_build/_gate_inspect_guard"
-rm -rf "$inspdir"; mkdir -p "$inspdir"
+gate_workdir inspdir "_build/_gate_inspect_guard"
 
 # (a) Hygiene: the temporaries the expansion introduces must not capture a name
 # the arguments already reference. With a fixed temp name this compared the
@@ -1295,8 +1281,7 @@ echo "[compiler-gate] inspect rewrite hygiene + shadow guard ok"
 #      broken statements cost three edit-and-rerun cycles. This pins the two
 #      surfaces together so they cannot drift apart again.
 echo "[compiler-gate] 100/104 check and diagnostics report the SAME parse errors (#1567)"
-chkdir="_build/_gate_check_diag_parity"
-rm -rf "$chkdir"; mkdir -p "$chkdir"
+gate_workdir chkdir "_build/_gate_check_diag_parity"
 # Three top-level statements, two independently broken, one good between them.
 # The good statement in the middle is what forces real resynchronization.
 printf 'export let a = = 1\nexport let ok = 1\nexport let b = = 2\n' > "$chkdir/multi.vibe"
@@ -1357,8 +1342,7 @@ node scripts/ingestion_pipeline_telemetry_integration.mjs "$ROOT_DIR" "$stage2_w
 # which tests to run from it), so the failure that matters is a list that is
 # quietly incomplete: a caller then skips tests and reports green. Every check
 # below is aimed at that, not at pretty output.
-depdir="_build/_gate_vibe_deps"
-rm -rf "$depdir"; mkdir -p "$depdir"
+gate_workdir depdir "_build/_gate_vibe_deps"
 dep_run() {
   # $1 = output basename, $2 = input path, $3.. = extra env assignments
   local dep_out="$depdir/$1"; local dep_in="$2"; shift 2
@@ -1437,8 +1421,7 @@ echo "[compiler-gate] vibe deps import-closure ok (#988)"
 #      `let mut` becoming a heap ref cell) really appear.
 echo "[compiler-gate] 104/104 vibe allocs reports heap sites, and nothing else (ADR-0091 / #1262)"
 bash "$ROOT_DIR/scripts/test_vibe_allocs_launcher.sh"
-alcdir="_build/_gate_allocs"
-rm -rf "$alcdir"; mkdir -p "$alcdir"
+gate_workdir alcdir "_build/_gate_allocs"
 cat > "$alcdir/in.vibe" <<'ALCA'
 fn pure_sum(a: Array[Int], n: Int) -> Int {
   let mut i = 0
@@ -1508,8 +1491,7 @@ rm -rf "$alcdir"
 echo "[compiler-gate] vibe allocs ok (ADR-0091 / #1262)"
 
 echo "[compiler-gate] 101/104 the two escape predicates differ only on shadowing (#1262)"
-escdir="_build/_gate_escapes"
-rm -rf "$escdir"; mkdir -p "$escdir"
+gate_workdir escdir "_build/_gate_escapes"
 
 esc_run() { # esc_run <out> <src> <strict>
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_ESCAPES=1 VIBE_ESCAPES_STRICT="$3" VIBE_IMPORT_ABI=raw \
@@ -1590,8 +1572,7 @@ echo "[compiler-gate] escape predicate two-lane split ok (#1262)"
 #      one in BOTH backends: a source-level alias that only the checker knows
 #      about would typecheck and then miscompile.
 echo "[compiler-gate] 102/104 StringBuilder::build reaches the same lowering as ::freeze (ADR-0101 (3) / #1262)"
-sbdir="_build/_gate_sb_build"
-rm -rf "$sbdir"; mkdir -p "$sbdir"
+gate_workdir sbdir "_build/_gate_sb_build"
 cat > "$sbdir/build.vibe" <<'SBB'
 fn joined() -> String {
   let b = StringBuilder::new()
@@ -1633,8 +1614,7 @@ echo "[compiler-gate] StringBuilder::build terminal-verb alias ok (#1262)"
 #      (every alias the ADR-0100 (3) collection rename shipped) was invisible
 #      and the migration warning the rename PROMISED never appeared.
 echo "[compiler-gate] 103/104 vibe check resolves @scope/pkg imports, and package deprecations warn (#1262)"
-chkpkgdir="_build/_gate_check_scoped_pkg"
-rm -rf "$chkpkgdir"; mkdir -p "$chkpkgdir"
+gate_workdir chkpkgdir "_build/_gate_check_scoped_pkg"
 cat > "$chkpkgdir/entry.vibe" <<'CHKPKG'
 import @vibe/core {
   MutMap, MutMap::size, HashMap::new_string
@@ -1708,8 +1688,7 @@ if ! VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   echo "[compiler-gate] FAIL: a generic transparent alias did not cross an index.vpkg boundary (#1700)" >&2
   exit 1
 fi
-aliasdir="_build/_gate_generic_alias_vpkg"
-rm -rf "$aliasdir"; mkdir -p "$aliasdir"
+gate_workdir aliasdir "_build/_gate_generic_alias_vpkg"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/generic_opaque_vpkg_mismatch.vibe "$aliasdir/opaque.wasm" __no_entry__ \
@@ -1735,8 +1714,7 @@ echo "[compiler-gate] generic transparent alias + opaque control ok (#1700)"
 #      single-source supply specifically, and is named without a `_test`
 #      suffix so the unit runner's glob does not route it to the other lane.
 echo "[compiler-gate] 105/105 checker Double call-result offsets on the linear source lane (#2158)"
-fcodir="_build/_gate_float_call_offsets"
-rm -rf "$fcodir"; mkdir -p "$fcodir"
+gate_workdir fcodir "_build/_gate_float_call_offsets"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/float_call_offset_source_lane.vibe "$fcodir/fco.wasm" __no_entry__ \
@@ -1757,8 +1735,7 @@ echo "[compiler-gate] linear source-lane Double call-result offsets ok (#2158)"
 # last-wins, so the call's result type would have overwritten it (#2248
 # review). The `(` of the argument list belongs to no other node, and this
 # pins that: an identifier in a call-rooted dot-call keeps its own type.
-tadir="_build/_gate_typeat_callsite"
-rm -rf "$tadir"; mkdir -p "$tadir"
+gate_workdir tadir "_build/_gate_typeat_callsite"
 cat > "$tadir/ta.vibe" <<'TAEOF'
 struct Box { get: () -> Float64 }
 fn mk_box() -> Box { Box::{ get: () -> { 2.5 } } }
@@ -1889,8 +1866,7 @@ BOOK_CONSOLE_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_book_console.sh
 #      are asserted: silence alone would also pass if the program stopped
 #      trapping, and the dump alone would pass if it were unconditional again.
 echo "[compiler-gate] 107/107 the host runner's crash dump is opt-in (#2199)"
-cdbg="_build/_gate_crash_debug"
-rm -rf "$cdbg"; mkdir -p "$cdbg"
+gate_workdir cdbg "_build/_gate_crash_debug"
 cat > "$cdbg/oob.vibe" <<'CDBGEOF'
 fn main() -> Int allows Console {
   let xs = [1, 2, 3]
@@ -1919,8 +1895,7 @@ if ! grep -qF '[crash debug]' "$cdbg/loud.log"; then
 fi
 rm -rf "$cdbg"
 echo "[compiler-gate] crash dump opt-in ok (#2199)"
-fmtdir="_build/_gate_vibe_fmt"
-rm -rf "$fmtdir"; mkdir -p "$fmtdir"
+gate_workdir fmtdir "_build/_gate_vibe_fmt"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FMT=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -1949,8 +1924,7 @@ echo "[compiler-gate] vibe fmt ok (#2149)"
 #      Verdict 2, the input written back byte-for-byte, and the parse error in
 #      the .diag sidecar; the messy file above already pins that a program
 #      which parses is still formatted with verdict 0.
-fmtdir="_build/_gate_vibe_fmt_parse"
-rm -rf "$fmtdir"; mkdir -p "$fmtdir"
+gate_workdir fmtdir "_build/_gate_vibe_fmt_parse"
 printf 'fn f(a: Int) -> String {\n  a==0?"z":"nz"\n}\n' > "$fmtdir/ternary.vibe"
 fmt_rc="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FMT=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \

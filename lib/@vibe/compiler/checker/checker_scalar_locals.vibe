@@ -1,0 +1,144 @@
+// Checker-owned eligibility for local mutable-record scalar replacement.
+// Closure capture is the strict judgment; passing/aliasing is separately
+// rejected by the lowering's local-use proof, not called "escape" here.
+import @vibe/compiler/core {
+  Expr, Type, TypeDef, TypeEnv, env_mut_escape, find_typedef, typed_scalar_local_row_head
+}
+import @vibe/ast {
+  TypeExpr, impl_target_key
+}
+import @vibe/core {
+  struct MutMap
+}
+import ./checker_escape.vibe {
+  mut_binding_escapes
+}
+import ./checker_builtin_arg_head_rest.vibe {
+  ascription_lambda_ann
+}
+
+let scalar_local_offsets: Array[Int] = []
+let scalar_local_verdicts: Array[Bool] = []
+
+export fn scalar_local_sites_reset() -> Unit {
+  Array::truncate(scalar_local_offsets, length = 0)
+  Array::truncate(scalar_local_verdicts, length = 0)
+}
+
+export fn scalar_local_sites_mark() -> Int {
+  Array::length(scalar_local_offsets)
+}
+
+export fn scalar_local_sites_rewind(_ mark: Int) -> Unit {
+  Array::truncate(scalar_local_offsets, length = mark)
+  Array::truncate(scalar_local_verdicts, length = mark)
+}
+
+fn scalar_local_fresh(_ value: Expr) -> Bool {
+  match value {
+    ERecord(_, _, _) => true,
+    ECall(callee, args, _, _) => if Array::length(args) == 1 {
+      // Ordinary unary calls are not ascriptions. Avoid an Option result
+      // on that hot rejection path.
+      match callee {
+        EFn(_, _, _, _, _, _) => match ascription_lambda_ann(callee) {
+          Some(_) => scalar_local_fresh(Array::get(args, at = 0)),
+          None => false
+        },
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+// Char/Unit rendering still depends on declared field syntax; keep those
+// records intact until the lowering carries every leaf type explicitly.
+fn scalar_local_immediate(_ ty: Type) -> Bool {
+  match ty {
+    CtInt => true,
+    CtBool => true,
+    _ => false
+  }
+}
+
+/// Record even a refused instance: a shared binding checked at different
+/// instantiations must not keep a permissive row from just one instance.
+export fn note_scalar_local(name: String, value: Expr, body: Expr, off: Int, ty: Type, defs: Array[TypeDef], env: TypeEnv, mutable: Bool, lane: String) -> Unit {
+  if off >= 0 && lane == "Primary" && scalar_local_fresh(value) {
+    let mut eligible = false
+    let head = match ty {
+      CtStruct(n) => n,
+      CtNamed(n, _) => n,
+      _ => ""
+    }
+    if head != "" {
+      match find_typedef(defs = defs, name = head) {
+        Some(TDStruct(_, fields, mut_fields, _)) => {
+          eligible = Array::length(fields) > 0 && Array::length(mut_fields) > 0
+          let mut i = 0
+          while i < Array::length(fields) && eligible {
+            eligible = scalar_local_immediate(Array::get(fields, at = i).1)
+            i = i + 1
+          }
+        },
+        _ => ()
+      }
+    }
+    // Do not scan every let body: only a fresh scalar mutable struct can
+    // benefit. Mutable bindings read the exact fact already stored in TypeEnv.
+    if eligible {
+      eligible = if mutable {
+        env_mut_escape(env = env, name = name) is Some(false)
+      } else {
+        !mut_binding_escapes(body = body, name = name)
+      }
+    }
+    Array::push(scalar_local_offsets, value = off)
+    Array::push(scalar_local_verdicts, value = eligible)
+  }
+}
+
+fn scalar_local_has_allowed() -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(scalar_local_verdicts) && !found {
+    found = Array::get(scalar_local_verdicts, at = i)
+    i = i + 1
+  }
+  found
+}
+
+// The observer owns these output arrays. With no admitted site this path
+// allocates nothing, rather than returning two empty arrays and a tuple.
+export fn append_scalar_local_rows(offs: Array[Int], keys: Array[String]) -> Unit {
+  if scalar_local_has_allowed() {
+    let offsets: Array[Int] = []
+    let verdicts: MutMap[Int, Bool] = MutMap::new_int()
+    let mut i = 0
+    while i < Array::length(scalar_local_offsets) {
+      let off = Array::get(scalar_local_offsets, at = i)
+      let allowed = Array::get(scalar_local_verdicts, at = i)
+      match MutMap::get(verdicts, k = off) {
+        Some(previous) => MutMap::set(verdicts, k = off, v = previous && allowed),
+        None => {
+          MutMap::set(verdicts, k = off, v = allowed)
+          Array::push(offsets, value = off)
+        }
+      }
+      i = i + 1
+    }
+    let key = impl_target_key(TyName(typed_scalar_local_row_head()))
+    i = 0
+    while i < Array::length(offsets) {
+      let off = Array::get(offsets, at = i)
+      if MutMap::get(verdicts, k = off) is Some(true) {
+        Array::push(offs, value = off)
+        Array::push(keys, value = key)
+      }
+      i = i + 1
+    }
+  }
+}

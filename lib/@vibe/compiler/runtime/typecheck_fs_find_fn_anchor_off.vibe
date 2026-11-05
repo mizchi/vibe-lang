@@ -33,6 +33,7 @@ import ./typecheck_fs_local_type_member_markers.vibe {
 
 import @vibe/compiler/cache {
   compact_source_fingerprint_memo,
+  compact_string_fingerprint,
   persistent_dep_list_cache_path,
   persistent_type_env_cache_path,
   persistent_typing_dependency_env_reuse_eligibility_path,
@@ -653,15 +654,6 @@ fn parse_typing_reuse_segment(text: String, pos: Int) -> Option[(String, Int)] {
   }
 }
 
-fn typing_dependency_reuse_binding_text(tag: String, input_key: String, target_fingerprint: String, target_text: String) -> String {
-  let out = StringBuilder::new()
-  StringBuilder::push(out, value = tag)
-  push_typing_reuse_segment(out = out, text = input_key)
-  push_typing_reuse_segment(out = out, text = target_fingerprint)
-  push_typing_reuse_segment(out = out, text = target_text)
-  StringBuilder::freeze(out)
-}
-
 fn typing_dependency_reuse_alias_text(_ target_fingerprint: String) -> String {
   let out = StringBuilder::new()
   StringBuilder::push(out, value = typing_dependency_env_reuse_alias_v11_tag)
@@ -685,25 +677,13 @@ fn parse_typing_dependency_reuse_alias(_ text: String) -> Option[String] {
   }
 }
 
-/// The alias path of the last input key asked for. A module's key is looked
-/// up before it is checked and published after, and the path hashes the whole
-/// key -- its verbatim source and its dependencies' env texts -- so the
-/// second hash is the first one's answer. One entry: the two calls are
-/// adjacent per module, and the equality test is a string compare.
-let typing_reuse_sidecar_path_memo_key: Array[String] = []
-let typing_reuse_sidecar_path_memo_path: Array[String] = []
-
-fn typing_reuse_sidecar_path(_ input_key: String) -> String with Env {
-  if Array::length(typing_reuse_sidecar_path_memo_key) == 1 && Array::get(typing_reuse_sidecar_path_memo_key, at = 0) == input_key {
-    Array::get(typing_reuse_sidecar_path_memo_path, at = 0)
-  } else {
-    let path = persistent_typing_dependency_env_reuse_sidecar_path(input_key)
-    Array::truncate(typing_reuse_sidecar_path_memo_key, length = 0)
-    Array::truncate(typing_reuse_sidecar_path_memo_path, length = 0)
-    Array::push(typing_reuse_sidecar_path_memo_key, value = input_key)
-    Array::push(typing_reuse_sidecar_path_memo_path, value = path)
-    path
-  }
+/// The alias path is named by the key's DIGEST, not by the key: the key is as
+/// large as the module's source plus its dependencies' env texts, and naming
+/// a path by it meant concatenating it first. A collision between two digests
+/// only costs a reuse, because the lookup requires the witness's verbatim key
+/// to equal this one.
+fn typing_reuse_sidecar_path(_ input_key: TypingReuseKey) -> String with Env {
+  persistent_typing_dependency_env_reuse_sidecar_path(input_key.digest)
 }
 
 fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(String, String, String)] {
@@ -770,29 +750,112 @@ export fn typing_dependency_transport_input_key(path: String, source: String, se
 /// the memo carries no lifetime of its own and is never reset.
 let typing_dependency_env_text_memo: MutMap[String, String] = MutMap::new_string()
 
-/// `typing_dependency_transport_input_key`, with each dependency's env text
-/// taken from `typing_dependency_env_text_memo` by its fingerprint in
-/// `dep_fps`. The key is byte-identical to the unmemoized one; a dependency
-/// with no fingerprint in `dep_fps` is encoded directly.
-export fn typing_dependency_transport_input_key_memo(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)], dep_fps: Array[(String, String)]) -> String with Env {
-  let out = StringBuilder::new()
-  StringBuilder::push(out, value = "vibe-typing-dependency-transport-env:v10")
-  push_typing_reuse_segment(out = out, text = normalize_path(path))
-  push_typing_reuse_segment(out = out, text = source)
-  push_typing_reuse_segment(out = out, text = semantics_seed)
-  push_typing_reuse_segment(out = out, text = resolution_env_seed())
-  push_typing_reuse_segment(out = out, text = __to_string(Array::length(dep_envs)))
+/// Each dependency env text's `compact_string_fingerprint`, by the same
+/// conservative fingerprint as `typing_dependency_env_text_memo`, so a widely
+/// imported module's env is hashed once rather than once per importer.
+let typing_dependency_env_digest_memo: MutMap[String, String] = MutMap::new_string()
+
+let typing_reuse_key_header: String = "vibe-typing-dependency-transport-env:v10"
+
+/// The reuse key of one module, kept as the payloads of its segments and never
+/// concatenated (#2728). Its text -- `typing_reuse_key_text` -- is the header
+/// followed by one `<byte length>:<payload>` segment per piece, which is
+/// byte-identical to `typing_dependency_transport_input_key`. That text is as
+/// large as the module's source plus its dependencies' env texts, and strings
+/// are never reclaimed on the bump lane, so building it cost a cold compile of
+/// the compiler's own closure 57 MB, a copy of it to name the alias path
+/// another 57 MB, and the witness text that embeds it 62 MB more. Now the
+/// alias path is named by `digest` (each piece's fingerprint, in order), the
+/// witness is written piece by piece, and a stored key is compared against the
+/// pieces where it lies.
+export struct TypingReuseKey {
+  pieces: Array[String];
+  digest: String
+}
+
+fn push_typing_reuse_key_piece(pieces: Array[String], digest: StringBuilder, piece: String, piece_digest: String) -> Unit {
+  Array::push(pieces, value = piece)
+  StringBuilder::push(digest, value = piece_digest)
+  StringBuilder::push(digest, value = "|")
+}
+
+/// `typing_dependency_transport_input_key` as a `TypingReuseKey`, with each
+/// dependency's env text and its digest taken from the memos by its
+/// fingerprint in `dep_fps`. A dependency with no fingerprint in `dep_fps` is
+/// encoded directly.
+export fn typing_dependency_transport_input_key_memo(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)], dep_fps: Array[(String, String)]) -> TypingReuseKey with Env {
+  let pieces: Array[String] = []
+  let digest = StringBuilder::new()
+  let owner = normalize_path(path)
+  push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = owner, piece_digest = compact_string_fingerprint(owner))
+  push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = source, piece_digest = compact_string_fingerprint(source))
+  push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = semantics_seed, piece_digest = compact_string_fingerprint(semantics_seed))
+  let resolution_seed = resolution_env_seed()
+  push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = resolution_seed, piece_digest = compact_string_fingerprint(resolution_seed))
+  let count = __to_string(Array::length(dep_envs))
+  push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = count, piece_digest = count)
   let mut i = 0
   while i < Array::length(dep_envs) {
     let (dep_path, dep_env) = Array::get(dep_envs, at = i)
-    push_typing_reuse_segment(out = out, text = dep_path)
-    push_typing_reuse_segment(out = out, text = typing_dependency_env_text(dep_path = dep_path, dep_env = dep_env, dep_fps = dep_fps))
+    push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = dep_path, piece_digest = compact_string_fingerprint(dep_path))
+    let (env_text, env_digest) = typing_dependency_env_text(dep_path = dep_path, dep_env = dep_env, dep_fps = dep_fps)
+    push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = env_text, piece_digest = env_digest)
+    i = i + 1
+  }
+  TypingReuseKey::{ pieces: pieces, digest: StringBuilder::freeze(digest) }
+}
+
+/// The key's text, materialized. Byte-identical to
+/// `typing_dependency_transport_input_key`; the lanes never call it.
+export fn typing_reuse_key_text(_ key: TypingReuseKey) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, value = typing_reuse_key_header)
+  let mut i = 0
+  while i < Array::length(key.pieces) {
+    push_typing_reuse_segment(out = out, text = Array::get(key.pieces, at = i))
     i = i + 1
   }
   StringBuilder::freeze(out)
 }
 
-fn typing_dependency_env_text(dep_path: String, dep_env: TypeEnv, dep_fps: Array[(String, String)]) -> String {
+/// Whether `text` is exactly this key's text, read in place: each piece is
+/// compared through a substring view, so nothing the size of the key is
+/// built.
+export fn typing_reuse_key_matches(text: String, key: TypingReuseKey) -> Bool {
+  let end = String::length(text)
+  let header = typing_reuse_key_header
+  let mut pos = String::length(header)
+  let mut ok = pos <= end && String::substring(text, start = 0, end = pos) == header
+  let mut i = 0
+  while ok && i < Array::length(key.pieces) {
+    let piece = Array::get(key.pieces, at = i)
+    let prefix = String::concat(__to_string(String::length(piece)), ":")
+    let piece_start = pos + String::length(prefix)
+    let piece_end = piece_start + String::length(piece)
+    if piece_end > end || String::substring(text, start = pos, end = piece_start) != prefix || String::substring(text, start = piece_start, end = piece_end) != piece {
+      ok = false
+    } else {
+      pos = piece_end
+    }
+    i = i + 1
+  }
+  ok && pos == end
+}
+
+/// The key text's byte length, without building it.
+fn typing_reuse_key_length(_ key: TypingReuseKey) -> Int {
+  let mut n = String::length(typing_reuse_key_header)
+  let mut i = 0
+  while i < Array::length(key.pieces) {
+    let len = String::length(Array::get(key.pieces, at = i))
+    n = n + String::length(__to_string(len)) + 1 + len
+    i = i + 1
+  }
+  n
+}
+
+/// A dependency's env text and its fingerprint.
+fn typing_dependency_env_text(dep_path: String, dep_env: TypeEnv, dep_fps: Array[(String, String)]) -> (String, String) {
   let mut fp = ""
   let mut j = 0
   while fp == "" && j < Array::length(dep_fps) {
@@ -804,9 +867,10 @@ fn typing_dependency_env_text(dep_path: String, dep_env: TypeEnv, dep_fps: Array
     }
   }
   if fp == "" {
-    persistent_type_env_cache_text(dep_env)
+    let text = persistent_type_env_cache_text(dep_env)
+    (text, compact_string_fingerprint(text))
   } else {
-    match MutMap::get(typing_dependency_env_text_memo, k = fp) {
+    let text = match MutMap::get(typing_dependency_env_text_memo, k = fp) {
       Some(text) => text,
       None => {
         let text = persistent_type_env_cache_text(dep_env)
@@ -814,6 +878,61 @@ fn typing_dependency_env_text(dep_path: String, dep_env: TypeEnv, dep_fps: Array
         text
       }
     }
+    match MutMap::get(typing_dependency_env_digest_memo, k = fp) {
+      Some(text_digest) => (text, text_digest),
+      None => {
+        let text_digest = compact_string_fingerprint(text)
+        MutMap::set(typing_dependency_env_digest_memo, k = fp, v = text_digest)
+        (text, text_digest)
+      }
+    }
+  }
+}
+
+/// Writes a TDRE10 binding -- `<tag><key segment><fingerprint segment><target
+/// segment>`, each segment `<byte length>:<text>` -- without building it. Small pieces are staged in a builder; a large one is
+/// flushed past it straight to the file. A write torn part-way leaves a
+/// segment whose stated length runs past the end of the file, which does not
+/// parse, so it misses like any other malformed witness.
+fn write_typing_reuse_binding(path: String, tag: String, input_key: TypingReuseKey, target_fingerprint: String, target_text: String) -> Unit with Fs {
+  let staged: Array[String] = []
+  let started: Array[Bool] = [false]
+  typing_reuse_put(path = path, staged = staged, started = started, text = tag)
+  typing_reuse_put(path = path, staged = staged, started = started, text = String::concat(__to_string(typing_reuse_key_length(input_key)), ":"))
+  typing_reuse_put(path = path, staged = staged, started = started, text = typing_reuse_key_header)
+  let mut i = 0
+  while i < Array::length(input_key.pieces) {
+    let piece = Array::get(input_key.pieces, at = i)
+    typing_reuse_put(path = path, staged = staged, started = started, text = String::concat(__to_string(String::length(piece)), ":"))
+    typing_reuse_put(path = path, staged = staged, started = started, text = piece)
+    i = i + 1
+  }
+  typing_reuse_put(path = path, staged = staged, started = started, text = String::concat(__to_string(String::length(target_fingerprint)), ":"))
+  typing_reuse_put(path = path, staged = staged, started = started, text = target_fingerprint)
+  typing_reuse_put(path = path, staged = staged, started = started, text = String::concat(__to_string(String::length(target_text)), ":"))
+  typing_reuse_put(path = path, staged = staged, started = started, text = target_text)
+  typing_reuse_flush(path = path, staged = staged, started = started)
+}
+
+/// Writes the staged pieces: the first write creates (truncates) the file and
+/// every later one appends.
+fn typing_reuse_flush(path: String, staged: Array[String], started: Array[Bool]) -> Unit with Fs {
+  let text = String::join(staged, sep = "")
+  Array::truncate(staged, length = 0)
+  if Array::get(started, at = 0) {
+    Fs::append(path, contents = text)
+  } else {
+    Fs::write_file(path, contents = text)
+    Array::set(started, at = 0, value = true)
+  }
+}
+
+fn typing_reuse_put(path: String, staged: Array[String], started: Array[Bool], text: String) -> Unit with Fs {
+  if String::length(text) >= 4096 {
+    typing_reuse_flush(path = path, staged = staged, started = started)
+    Fs::append(path, contents = text)
+  } else {
+    Array::push(staged, value = text)
   }
 }
 
@@ -941,9 +1060,8 @@ export fn typing_dependency_env_reuse_is_eligible(_ dep_fps: Array[(String, Stri
 /// validate it for the next dependent would re-read and re-encode a record
 /// whose text is the one just written. The memo still only admits the alias
 /// lookup, which validates the exact three-way binding itself.
-export fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fingerprint: String, target_text: String) -> Unit with Env + Fs {
-  let witness_text = typing_dependency_reuse_binding_text(tag = typing_dependency_env_reuse_witness_v10_tag, input_key = input_key, target_fingerprint = fingerprint, target_text = target_text)
-  Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), contents = witness_text)
+export fn publish_typing_dependency_env_reuse_eligibility(input_key: TypingReuseKey, fingerprint: String, target_text: String) -> Unit with Env + Fs {
+  write_typing_reuse_binding(path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), tag = typing_dependency_env_reuse_witness_v10_tag, input_key = input_key, target_fingerprint = fingerprint, target_text = target_text)
   if contains_str(arr = typing_dependency_env_reuse_valid_witness_memo, target = fingerprint) {
     ()
   } else {
@@ -951,7 +1069,7 @@ export fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fin
   }
 }
 
-export fn load_typing_dependency_env_reuse_target(path: String, input_key: String) -> Option[(String, String, TypeEnv)] with Env + Fs {
+export fn load_typing_dependency_env_reuse_target(path: String, input_key: TypingReuseKey) -> Option[(String, String, TypeEnv)] with Env + Fs {
   let sidecar_path = typing_reuse_sidecar_path(input_key)
   if !Fs::exists(sidecar_path) {
     None
@@ -961,7 +1079,7 @@ export fn load_typing_dependency_env_reuse_target(path: String, input_key: Strin
         // Only an exact binding reuses: the witness the alias names carries
         // this verbatim input key, and its target text is the raw record.
         match typing_dependency_env_reuse_witness_text(target_fingerprint) {
-          Some((witness_input_key, target_text)) => if witness_input_key != input_key {
+          Some((witness_input_key, target_text)) => if !typing_reuse_key_matches(text = witness_input_key, key = input_key) {
             None
           } else {
             match load_canonical_typing_dependency_env_reuse_target(target_fingerprint = target_fingerprint, expected_target_text = target_text) {
@@ -984,7 +1102,7 @@ export fn load_typing_dependency_env_reuse_target(path: String, input_key: Strin
   }
 }
 
-export fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String) -> Unit with Env + Fs {
+export fn write_typing_dependency_env_reuse_sidecar(input_key: TypingReuseKey, target_fingerprint: String) -> Unit with Env + Fs {
   Fs::write_file(typing_reuse_sidecar_path(input_key), contents = typing_dependency_reuse_alias_text(target_fingerprint))
 }
 

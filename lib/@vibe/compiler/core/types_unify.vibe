@@ -41,6 +41,7 @@ import ./types_env_cache.vibe {
   is_hkt_app,
   occurs_in,
   subst_bind_value,
+  trait_definition,
   trait_method_sig_binders,
   trait_supers,
   zonk_hkt
@@ -2111,6 +2112,9 @@ export fn type_implements_trait(env: TypeEnv, s: Subst, ty: Type, trait_name: St
   else if generic_impl_satisfies(scan = env, full = env, s = s, trait_name = trait_name, resolved = resolved) {
     true
   }
+  else if int32_type(resolved) && int32_borrows_int_impl(env = env, trait_name = trait_name) && type_implements_trait(env = env, s = s, ty = CtInt, trait_name = trait_name) {
+    true
+  }
   else {
     // #1503 follow-up: this used to bail out when the BOUND trait had no
     // supertraits of its own, which is the wrong question -- what satisfies a
@@ -2121,6 +2125,77 @@ export fn type_implements_trait(env: TypeEnv, s: Subst, ty: Type, trait_name: St
     // plain struct), i.e. supertrait-satisfied bounds never worked at all.
     type_implements_check_super(e2 = env, full_env = env, s = s, trait_name = trait_name, resolved = resolved)
   }
+}
+
+/// #3730: an `Int32` / `UInt32` value is an `Int` once erased, so the
+/// witness a bound's dictionary reaches for it is `Int`'s. That is exact for a
+/// trait whose methods only READ `Self` (`Hash::hash_key(Self) -> String`
+/// hashes the same integer), and only that shape is borrowed: every parameter
+/// is exactly `Self` or mentions no `Self`, and no result mentions it. Any
+/// other place a `Self` can sit lets `Int`'s impl produce one outside the
+/// 32-bit range, unwrapped: a result (`Default`, `Add`), a container it can
+/// write (`fill(Self, Array[Self])` pushing 2147483648), or a callback it can
+/// call. Nor is a marker trait, one with supertraits or one with header
+/// parameters borrowed, which this rule does not read.
+fn int32_borrows_int_impl(env: TypeEnv, trait_name: String) -> Bool {
+  match trait_definition(env = env, name = trait_name) {
+    Some((supers, methods, params, _)) => if Array::length(methods) == 0 || Array::length(supers) > 0 || Array::length(params) > 0 {
+      false
+    } else {
+      let mut ok = true
+      for m in methods {
+        let (_, params, ret) = m
+        if type_expr_mentions_self(ret) {
+          ok = false
+        } else {
+          ()
+        }
+        for p in params {
+          let bare_self = match p {
+            TyName(n) => n == "Self",
+            _ => false
+          }
+          if !bare_self && type_expr_mentions_self(p) {
+            ok = false
+          } else {
+            ()
+          }
+        }
+      }
+      ok
+    },
+    None => false
+  }
+}
+
+fn int32_type(_ t: Type) -> Bool {
+  match t {
+    CtInt32 => true,
+    CtUInt32 => true,
+    _ => false
+  }
+}
+
+fn type_expr_mentions_self(_ t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == "Self",
+    TyApp(n, args) => n == "Self" || type_exprs_mention_self(args),
+    TyFn(params, ret, _) => type_exprs_mention_self(params) || type_expr_mentions_self(ret),
+    TyTuple(items) => type_exprs_mention_self(items),
+    TyUnit => false
+  }
+}
+
+fn type_exprs_mention_self(_ ts: Array[TypeExpr]) -> Bool {
+  let mut found = false
+  for t in ts {
+    if type_expr_mentions_self(t) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
 }
 
 //# #3042: the prelude `Ordering`

@@ -61,8 +61,7 @@ VIBE_CLI_CORE_BASE_COMPILER="$stage2_wasm" VIBE_RC=1 \
 # CLI actually selects both marked helpers and emits their required codegen
 # boundaries without changing the normal production lane.
 echo "[compiler-gate] 3a/3 FS heap mark lane smoke"
-heapmarkdir="_build/_gate_fs_heap_marks"
-rm -rf "$heapmarkdir"; mkdir -p "$heapmarkdir"
+gate_workdir heapmarkdir "_build/_gate_fs_heap_marks"
 printf 'export let _start: () -> Int = () -> { 42 }\n' > "$heapmarkdir/input.vibe"
 for heap_backend in rc bump; do
   heap_rc=1
@@ -130,6 +129,13 @@ node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
 # output/diagnostic parity, and malformed-alias fallback.
 echo "[compiler-gate] 3ac/3 experimental typing dependency-env reuse oracle"
 VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"
+
+# 3acb. #2728: the same reuse on the COMPILE lane, on the one edit shape where
+# it hits -- a dependency-body edit that changes meaning but not the public
+# env. The reuse-on module must equal a fresh reuse-off compile, the hit must
+# be recorded (or the comparison is vacuous), and corrupted records must miss.
+echo "[compiler-gate] 3acb/3 compile-lane typing dependency-env reuse oracle"
+node scripts/compile_typing_env_reuse_oracle.mjs "$stage2_wasm"
 
 # 3ad. #2767: the per-file AST cache is written on every cold build and was
 # read on none -- the prefetch was hung on the module-header pass, which a warm

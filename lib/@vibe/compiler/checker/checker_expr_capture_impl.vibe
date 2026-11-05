@@ -2,6 +2,10 @@ import ./checker_expr_capture_helpers.vibe {
   assign_target_marker, erased_throw_binder_settle, match_temp_anchor_key
 }
 
+import ./checker_scalar_locals.vibe {
+  note_scalar_local
+}
+
 import ./checker_call_map.vibe {
   map_empty_literal_type
 }
@@ -389,6 +393,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         note_local_generic_binding(val = val, bound = gen, env = cenv)
         let def_env = cenv
         cenv = checker_bind_call_header(env = cenv, name = name, ty = gen, value = val)
+        note_scalar_local(name = name, value = val, body = body, off = let_off, ty = vt, defs = defs, env = cenv, mutable = false, lane = lane)
         // #3548: the guard desugar binds the scrutinee to the match temp, and
         // the fall-through match it reads that temp in has no offset; keep
         // the written scrutinee's, scoped like the temp, to locate a refusal.
@@ -444,12 +449,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // tuple/String errored "assignment type mismatch for __loop_result".
         // Bind the marker to a fresh var instead; the first assignment (break)
         // instantiates it via check_assignable's unify.
-        // #1262 / ADR-0100 (1): record the STRICT escape fact alongside the
-        // type. `body` is exactly the region where this binding is in scope,
-        // so `mut_binding_escapes` answers about THIS binding and not a
-        // same-named one outside it. Consumers read it back with
-        // `env_mut_escape` (checker_spawnable) instead of re-deriving
-        // mutability from the raw AST.
+        // ADR-0100: store strict closure capture; consumers use env_mut_escape.
         let escapes = mut_binding_escapes(body = body, name = name)
         let mut_def_env = cenv
         if name == "__loop_result" {
@@ -460,6 +460,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
           cenv = checker_bind_mut_call_header(env = cenv, name = name, ty = vt, value = val, escapes = escapes)
           c1 = nc
         }
+        note_scalar_local(name = name, value = val, body = body, off = let_off, ty = vt, defs = defs, env = cenv, mutable = true, lane = lane)
         // #3343 (Codex on #3359): what the binding may carry -- what it
         // starts with and what is written into it anywhere in its scope --
         // for a later walk of this body or write of the binding.

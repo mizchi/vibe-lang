@@ -108,8 +108,7 @@ run_test_block_fixtures "extended derive" fixtures/derive_*_test.vibe
 # Unknown-derive negative check: `derive(Foo)` for an unknown trait must error
 # (`unknown trait: Foo`, no wasm emitted), keeping genuinely-unknown derive names
 # rejected while Eq/Ord/Show/Hash/Default are accepted.
-undir="_build/_gate_derive_unknown"
-rm -rf "$undir"; mkdir -p "$undir"
+gate_workdir undir "_build/_gate_derive_unknown"
 cat > "$undir/u.vibe" <<'EOF'
 struct P { x: Int } derive(Foo)
 export let _start: () -> Int = () -> { P::{ x: 1 }.x }
@@ -133,8 +132,7 @@ echo "[compiler-gate] extended derive (enum Ord/Show, Default, Eq, Hash + Map ke
 # that must fail closed at runtime rather than silently falling back to
 # reference or length equality.
 echo "[compiler-gate] structural equality untyped-empty mutation fail-closed (#1681/#2157)"
-eqtrapdir="_build/_gate_eq_untyped_empty"
-rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
+gate_workdir eqtrapdir "_build/_gate_eq_untyped_empty"
 # `structural_eq_generic_enum_*_trap.vibe` joins the loop: a source-owned
 # generic ENUM compared directly. Since #2467 a concrete instantiation answers
 # through a specialized comparator; what still fails closed here is a
@@ -191,8 +189,7 @@ done
 # spellings that DO resolve, so a predicate that over-refused would fail here
 # rather than passing quietly by rejecting everything.
 echo "[compiler-gate] an unrenderable array is refused, not printed as an address (#2912)"
-amrdir="_build/_gate_array_map_render"
-rm -rf "$amrdir"; mkdir -p "$amrdir"
+gate_workdir amrdir "_build/_gate_array_map_render"
 amr_src="fixtures/err_array_map_render_refused.vibe"
 amr_wasm="$amrdir/refused.wasm"
 gate_fs_compile "$amr_src" "$amr_wasm" _start
@@ -233,8 +230,7 @@ echo "[compiler-gate] unrenderable array refusal ok (message names the edit; 4 r
 # itself, since nothing can ever render it. Asserted on the message and the
 # edit, with green controls that must still compile AND render by content.
 echo "[compiler-gate] an unrenderable render argument is refused, not printed as an address (#2987)"
-urdir="_build/_gate_unrenderable_render"
-rm -rf "$urdir"; mkdir -p "$urdir"
+gate_workdir urdir "_build/_gate_unrenderable_render"
 # An optional fourth argument `gc` compiles through the wasm-gc backend
 # (#3068: that lane printed the address where linear refused). The selector is
 # written inline in each command, never routed through a variable (#2248).
@@ -622,8 +618,7 @@ echo "[compiler-gate] unrenderable render refusal ok (message names the edit; 5 
 # The program prints the present key's value first, so a run that dies before
 # the lookup (or a build that fails) cannot satisfy this row.
 echo "[compiler-gate] Map::get on a missing key traps instead of answering zero (#2990)"
-mgdir="_build/_gate_map_get_miss"
-rm -rf "$mgdir"; mkdir -p "$mgdir"
+gate_workdir mgdir "_build/_gate_map_get_miss"
 for mg_backend in linear gc; do
   mg_wasm="$mgdir/miss_$mg_backend.wasm"
   if [ "$mg_backend" = gc ]; then
@@ -656,8 +651,7 @@ echo "[compiler-gate] Map::get missing-key trap ok (linear and gc)"
 # the site pass skips a `/` whose operand is a Double by its own syntax, and
 # must still place the Int division beside them.
 echo "[compiler-gate] Int / and % by zero name the operation and path:line:col (#3126)"
-dzdir="_build/_gate_div_zero"
-rm -rf "$dzdir"; mkdir -p "$dzdir"
+gate_workdir dzdir "_build/_gate_div_zero"
 for dz_case in "int_div_zero_trap|/|7|5" "int_rem_zero_trap|%|7|5" "int_div_assign_zero_trap|/|7|8" "int_div_zero_vibe_comment_trap|/|7|5" "int_div_zero_mixed_double_trap|/|14|5"; do
   IFS='|' read -r dz_name dz_op dz_line dz_col <<<"$dz_case"
   dz_src="fixtures/$dz_name.vibe"
@@ -696,8 +690,7 @@ echo "[compiler-gate] Int division-by-zero trap message ok (/, %, /=; linear and
 # mismatch still TRAPS. The nested fixture's failed arm sits in a closure whose
 # value is a String, which the gc lane does not represent as an Int.
 echo "[compiler-gate] a refutable let names its pattern and path:line:col when it does not match (#3626)"
-lrdir="_build/_gate_let_refuted"
-rm -rf "$lrdir"; mkdir -p "$lrdir"
+gate_workdir lrdir "_build/_gate_let_refuted"
 for lr_case in "let_refutable_mismatch_trap|Some(v)|7|7|before 2" "let_refutable_nested_lambda_trap|(Rect(w, _), n)|13|9|before w=2 n=1"; do
   IFS='|' read -r lr_name lr_pat lr_line lr_col lr_before <<<"$lr_case"
   lr_src="fixtures/$lr_name.vibe"
@@ -737,8 +730,7 @@ echo "[compiler-gate] refutable let mismatch message ok (linear and gc)"
 # the capacity allocator ahead of them: its `before` line must carry the right
 # generic answers, and the division must still report its location and trap.
 echo "[compiler-gate] Int / by zero and erased-generic + / < in one program (#3126 / #3158)"
-dgdir="_build/_gate_div_zero_generic"
-rm -rf "$dgdir"; mkdir -p "$dgdir"
+gate_workdir dgdir "_build/_gate_div_zero_generic"
 dg_src="fixtures/int_div_zero_generic_dispatch_trap.vibe"
 dg_before="before add=42 neg=-2 cat=abcd lt=true gt=false lts=false"
 dg_want="Int \`/\` by zero at $dg_src:31:5"
@@ -817,8 +809,7 @@ BODYLESS_IMPL_REFUSAL_STAGE2="$stage2_wasm" bash scripts/check_bodyless_impl_ref
 # resolution the lowering uses, while a real fn def does -- so an alias
 # re-exports the builtin and must stay silent.
 echo "[compiler-gate] a qualified fn definition of a builtin name is reported (#2378)"
-bsdir="_build/_gate_builtin_shadow_warn"
-rm -rf "$bsdir"; mkdir -p "$bsdir"
+gate_workdir bsdir "_build/_gate_builtin_shadow_warn"
 printf 'export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n' > "$bsdir/shadow_fn.vibe"
 printf 'fn my_index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\nexport let String::index_of = my_index_of\n' > "$bsdir/alias.vibe"
 printf 'export fn eq(a: Int, b: Int) -> Bool {\n  false\n}\n' > "$bsdir/bare.vibe"
@@ -902,8 +893,7 @@ echo "[compiler-gate] structural equality untyped-empty mutation fail-closed ok 
 # gate asserts the refusal AND its message (an unrelated compile failure must
 # not pass as this one).
 echo "[compiler-gate] untyped-empty equality on an unbounded formal is rejected at check time (#2474)"
-eqrejdir="_build/_gate_eq_unbounded_formal"
-rm -rf "$eqrejdir"; mkdir -p "$eqrejdir"
+gate_workdir eqrejdir "_build/_gate_eq_unbounded_formal"
 eqrej_src="fixtures/structural_eq_untyped_empty_lexical_formal_rejected.vibe"
 eqrej_wasm="$eqrejdir/lexical_formal_rejected.wasm"
 gate_fs_compile "$eqrej_src" "$eqrej_wasm" _start
@@ -925,8 +915,7 @@ echo "[compiler-gate] untyped-empty equality on an unbounded formal is rejected 
 # length-only answer would say true), so a wrong answer traps and a regression
 # to the old trap fails the same way.
 echo "[compiler-gate] untyped-empty equality answers through the typed channel (#2391)"
-eqtypeddir="_build/_gate_eq_untyped_empty_typed"
-rm -rf "$eqtypeddir"; mkdir -p "$eqtypeddir"
+gate_workdir eqtypeddir "_build/_gate_eq_untyped_empty_typed"
 # `structural_eq_generic_enum_*_typed.vibe` joins (#2467): a source-owned
 # generic enum compared directly now answers through a comparator specialized
 # per instantiation, exact for an `Int` payload and by content for an
@@ -953,8 +942,7 @@ echo "[compiler-gate] untyped-empty equality answers through the typed channel o
 # a real element slot (the #938 builder fix applied to `Array`), so the first
 # use binds it and the second must fail to unify.
 echo "[compiler-gate] empty-array heterogeneous use is rejected on the import lane (#2447)"
-heterodir="_build/_gate_empty_array_hetero"
-rm -rf "$heterodir"; mkdir -p "$heterodir"
+gate_workdir heterodir "_build/_gate_empty_array_hetero"
 for hetero_src in fixtures/empty_array_hetero_*_reject.vibe; do
   hetero_name="$(basename "${hetero_src%.vibe}")"
   hetero_wasm="$heterodir/$hetero_name.wasm"
@@ -973,8 +961,7 @@ echo "[compiler-gate] empty-array heterogeneous use rejected ok"
 # terminate and retain the fail-closed boundary instead of exhausting compiler
 # memory while growing an infinite specialization worklist.
 echo "[compiler-gate] non-regular generic equality specialization is bounded"
-nonregular_dir="_build/_gate_eq_nonregular_generic"
-rm -rf "$nonregular_dir"; mkdir -p "$nonregular_dir"
+gate_workdir nonregular_dir "_build/_gate_eq_nonregular_generic"
 nonregular_wasm="$nonregular_dir/out.wasm"
 gate_fs_compile fixtures/structural_eq_nonregular_generic_trap.vibe "$nonregular_wasm" _start
 gate_require_artifact "$nonregular_wasm" "non-regular generic equality did not compile"
@@ -992,8 +979,7 @@ echo "[compiler-gate] non-regular generic equality specialization is bounded ok"
 # if the fix were reverted. So assert the ANSWERS here too, in the same lane
 # that owns the fail-closed side.
 echo "[compiler-gate] untyped-empty equality answers after a push (#2157)"
-eqansdir="_build/_gate_eq_untyped_empty_answers"
-rm -rf "$eqansdir"; mkdir -p "$eqansdir"
+gate_workdir eqansdir "_build/_gate_eq_untyped_empty_answers"
 cat > "$eqansdir/a.vibe" <<'EOF'
 export fn _start() -> Int {
   let left = []
@@ -1158,8 +1144,7 @@ echo '[compiler-gate] trait dictionaries on the flat lane ok'
 #           `EqDict::equals` at arity 3). Build it, then run the entry with the
 #           library preloaded: 70 + 100 + 1 + 0 + 1.
 echo '[compiler-gate] 15b-3c2'"'"' trait dictionaries in a linked debug library (#3098)'
-lldir="_build/_gate_linked_library_trait_dict"
-rm -rf "$lldir"; mkdir -p "$lldir"
+gate_workdir lldir "_build/_gate_linked_library_trait_dict"
 ll_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   build --debug fixtures/linked_library_trait_dict/main.vibe -o "$lldir/main.wasm" --entry _start 2>&1 || true)"
@@ -1259,8 +1244,7 @@ rm -rf "$lldir"
 # answer is one check (fixtures/linked_library_float/main.vibe): 65535 on both
 # lanes, the same as the default build.
 echo "[compiler-gate] build --debug rounds Float arithmetic to f32 (#3625)"
-lfdir="_build/_gate_linked_library_float"
-rm -rf "$lfdir"; mkdir -p "$lfdir"
+gate_workdir lfdir "_build/_gate_linked_library_float"
 lf_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   build --debug fixtures/linked_library_float/main.vibe -o "$lfdir/main.wasm" --entry _start 2>&1 || true)"
@@ -1448,8 +1432,7 @@ run_test_block_fixtures "railway let*/?" fixtures/try_*_option_test.vibe
 # Mixed Result/Option in one `let*` chain must be a type error (NO implicit
 # conversion): a block returns one type, so a `Result` rest under an `Option`
 # `let*` (or vice-versa) fails the checker. The file must NOT compile.
-mixdir="_build/_gate_railway_mixed"
-rm -rf "$mixdir"; mkdir -p "$mixdir"
+gate_workdir mixdir "_build/_gate_railway_mixed"
 cat > "$mixdir/m.vibe" <<'EOF'
 enum Result[T, E] { Ok(T); Err(E) }
 let opt = (n: Int) -> Option[Int] { if n > 0 { Some(n) } else { None } }
@@ -1480,8 +1463,7 @@ echo "[compiler-gate] railway let*/? Option generalization ok"
 #     the witness dictionary — driving a stateful, functional iterator
 #     (`next(Self) -> Option[(T, Self)]`) to completion.
 echo "[compiler-gate] 16/16 trait-type-parameter / Iterator regression"
-itdir="_build/_gate_iter"
-rm -rf "$itdir"; mkdir -p "$itdir"
+gate_workdir itdir "_build/_gate_iter"
 cat > "$itdir/iter.vibe" <<'EOF'
 trait Iter[T] { next(Self) -> Option[(T, Self)] }
 trait Iterable[T] { iter(Self) -> Range }
@@ -1534,8 +1516,7 @@ echo "[compiler-gate] trait-type-parameter / Iterator regression ok"
 #     `() -> Option[T]` function iterator. All library code, no compiler support
 #     beyond the trait machinery.
 echo "[compiler-gate] 17/17 lazy iterator combinators regression"
-lcdir="_build/_gate_lazyiter"
-rm -rf "$lcdir"; mkdir -p "$lcdir"
+gate_workdir lcdir "_build/_gate_lazyiter"
 cat > "$lcdir/lc.vibe" <<'EOF'
 trait Iter[T] { next(Self) -> Option[(T, Self)] }
 struct Stream { pull: (Int) -> Option[(Int, Int)]; state: Int }
@@ -1600,8 +1581,7 @@ echo "[compiler-gate] lazy iterator combinators regression ok"
 #     independent value suffix. Guards import_alias_rewrite + the generic-struct
 #     `for`-iterator desugar across the import boundary.
 echo "[compiler-gate] 18/18 cross-import trait-iterator regression"
-xidir="_build/_gate_import_iter"
-rm -rf "$xidir"; mkdir -p "$xidir"
+gate_workdir xidir "_build/_gate_import_iter"
 cat > "$xidir/li.vibe" <<'EOF'
 export trait Iterator[T] { next(Self) -> Option[(T, Self)] }
 export struct LazyIter[T] { pull: (Int) -> Option[(T, Int)]; state: Int }
@@ -1647,8 +1627,7 @@ echo "[compiler-gate] cross-import trait-iterator regression ok"
 #     Guards that the async shapes still classify with no syntax marker and with
 #     no declared trait (the always-run desugar pass).
 echo "[compiler-gate] 19/19 async for-loop unification regression"
-fadir="_build/_gate_forawait"
-rm -rf "$fadir"; mkdir -p "$fadir"
+gate_workdir fadir "_build/_gate_forawait"
 cat > "$fadir/fa.vibe" <<'EOF'
 trait AsyncIterator[T] { next(Self) -> Future[Option[(T, Self)]] }
 struct AStream { pull: (Int) -> Option[(Int, Int)]; state: Int }
@@ -1694,8 +1673,7 @@ echo "[compiler-gate] async for-loop unification regression ok"
 #           checker — proving the element is typed `String`, not `CtUnknown`
 #           (which silently accepted any use and dropped element-type safety).
 echo "[compiler-gate] 20/20 cross-import trait-iterator element-type regression"
-eidir="_build/_gate_import_iter_elem"
-rm -rf "$eidir"; mkdir -p "$eidir"
+gate_workdir eidir "_build/_gate_import_iter_elem"
 cat > "$eidir/li.vibe" <<'EOF'
 export trait Iterator[T] { next(Self) -> Option[(T, Self)] }
 export struct LazyIter[T] { pull: (Int) -> Option[(T, Int)]; state: Int }
@@ -1779,8 +1757,7 @@ echo "[compiler-gate] prelude iterator combinator suites ok"
 #           Option[T]`, Eq has no methods) must STILL be rejected — matching it
 #           would let `==` (which is not structural on Option) silently misbehave.
 echo "[compiler-gate] 22/22 generic trait impl (Increment A)"
-gidir="_build/_gate_generic_impl"
-rm -rf "$gidir"; mkdir -p "$gidir"
+gate_workdir gidir "_build/_gate_generic_impl"
 cat > "$gidir/pos.vibe" <<'EOF'
 trait Len2[T] { len2(Self) -> Int }
 struct Box[T] { v: T }
@@ -1815,8 +1792,7 @@ echo "[compiler-gate] generic trait impl (Increment A) ok"
 #           the witness refuses to build, so the program fails to produce a
 #           runnable module (never returns a wrong number).
 echo "[compiler-gate] 23/23 generic trait impl (Increment B, dict-of-dict)"
-gjdir="_build/_gate_generic_impl_b"
-rm -rf "$gjdir"; mkdir -p "$gjdir"
+gate_workdir gjdir "_build/_gate_generic_impl_b"
 gj_prelude='trait Show2[T] { show2(Self) -> Int }
 struct Box[T] { v: T }
 impl Show2 for Box { show2(self) -> Int { self.v } }
@@ -1884,8 +1860,7 @@ fi
 #     the `false` arm (wrong result, not a trap). compile_match now emits the
 #     literal test recursively at every nesting level.
 echo "[compiler-gate] 25/25 nested literal sub-pattern discrimination"
-nldir="_build/_gate_nestedlit"
-rm -rf "$nldir"; mkdir -p "$nldir"
+gate_workdir nldir "_build/_gate_nestedlit"
 cat > "$nldir/nestedlit.vibe" <<'EOF'
 enum W { W(Bool) }
 enum N { N(W, Int) }
@@ -1951,8 +1926,7 @@ echo "[compiler-gate] nested literal sub-pattern discrimination ok"
 #     compile; undeclared variants must be REJECTED. (`Error`/`Async` are out of
 #     this slice; pure builtins like `Array::length` are never flagged.)
 echo "[compiler-gate] 26/26 effect-call discipline (perform + builtin)"
-pfdir="_build/_gate_perform"
-rm -rf "$pfdir"; mkdir -p "$pfdir"
+gate_workdir pfdir "_build/_gate_perform"
 cat > "$pfdir/good.vibe" <<'EOF'
 let emit: () -> Unit with Stdout = () -> {
   perform Stdout::WriteStream("hi")
@@ -2124,8 +2098,7 @@ echo "[compiler-gate] effect-call discipline ok"
 #     leaks and is a type error. The parser qualifies arm patterns as `E::Op`, so
 #     the discharged effect is recovered from the handler arms.
 echo "[compiler-gate] 27/27 handle effect discharge"
-hdir="_build/_gate_handle"
-rm -rf "$hdir"; mkdir -p "$hdir"
+gate_workdir hdir "_build/_gate_handle"
 cat > "$hdir/discharge.vibe" <<'EOF'
 effect Console { Print(String) -> Unit }
 let greet: () -> Int = () -> {
@@ -2205,8 +2178,7 @@ echo "[compiler-gate] handle effect discharge ok"
 #      payload types, and resume values are validated against the DECLARED
 #      effect's op signatures. Each was previously unchecked (silent garbage).
 echo "[compiler-gate] 27b/27 effect op signature checking (#813)"
-odir="_build/_gate_effopsig"
-rm -rf "$odir"; mkdir -p "$odir"
+gate_workdir odir "_build/_gate_effopsig"
 cat > "$odir/ok_op.vibe" <<'EOF'
 effect R { Take(Int) -> Int }
 export let _start: () -> Int = () -> {
@@ -2282,8 +2254,7 @@ echo "[compiler-gate] effect op signature checking ok"
 #      TRAP (unreachable) instead of silently reading/writing adjacent memory;
 #      in-bounds access is unchanged.
 echo "[compiler-gate] 27c/27 index bounds checks (#811)"
-bdir="_build/_gate_bounds"
-rm -rf "$bdir"; mkdir -p "$bdir"
+gate_workdir bdir "_build/_gate_bounds"
 cat > "$bdir/inbounds.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let a = [40, 2, 7]
