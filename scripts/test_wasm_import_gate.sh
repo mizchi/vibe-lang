@@ -11,9 +11,9 @@
 #   1. fixtures/wasm_import/counter_main.vibex prints `count=42` -- i32 and
 #      i64 values cross both ways and a void export mutates foreign state --
 #      and its artifact imports only the three functions it calls;
-#   2. an Int that fits no reading of 32 bits, passed as an i32, TRAPS
-#      (trap_i32_param.vibex) -- it must not reach the foreign function as a
-#      truncated value, so `r=` is never printed;
+#   2. an i32 is offered as `UInt32` (#3730), so an argument that fits no
+#      32-bit reading is refused at compile time, naming the range
+#      (err_core_i32_range.vibe; asserted once, below step 5);
 #   3. an i64 result that needs the 64th bit TRAPS (trap_i64_result.vibex);
 #  12. the memory accessors work over an exported SHARED memory
 #      (shared_memory_main.vibex; wasmtime hands it over as a different
@@ -111,8 +111,8 @@ for lane_and_runner in "1 $VIBERUN" "0 $VIBERUN" "1 $NODE_RUNNER" "0 $NODE_RUNNE
   # artifact's exports are stripped).
   got="$(foreign_imports "$WORK/build/run/counter_main.wasm" "vibe:wasm:$FX/counter.wasm")"
   [ "$got" = "Add_I32 bump count" ] || fail "[$label] counter_main imports '$got' from counter.wasm, want 'Add_I32 bump count'"
-  # 2. and 3.
-  for t in trap_i32_param trap_i64_result; do
+  # 3.
+  for t in trap_i64_result; do
     status=0
     out="$(vibe "$runner" run "$FX/$t.vibex" 2>"$WORK/err")" || status=$?
     [ "$status" != 0 ] || fail "[$label] $t exited 0 (printed $(printf '%q' "$out")); the binding must trap"
@@ -130,6 +130,12 @@ for lane_and_runner in "1 $VIBERUN" "0 $VIBERUN" "1 $NODE_RUNNER" "0 $NODE_RUNNE
   [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[$label] init_main exited $status"; }
   [ "$out" = "value=7 foo=42 init=2" ] || fail "[$label] init_main printed $(printf '%q' "$out"), want value=7 foo=42 init=2"
 done
+
+# 2. An i32 is a `UInt32`: an argument outside it is a compile-time error.
+status=0
+vibe "$NODE_RUNNER" check "$FX/err_core_i32_range.vibe" >"$WORK/out" 2>&1 || status=$?
+[ "$status" != 0 ] || fail "an i32 argument outside UInt32 was accepted"
+grep -q 'integer literal 4294967296 does not fit `UInt32` (0 .. 4294967295)' "$WORK/out" || { cat "$WORK/out" >&2; fail "the i32 refusal does not name the UInt32 range"; }
 
 # 5. Refusals are compile-time and name the import.
 status=0

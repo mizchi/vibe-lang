@@ -58,9 +58,9 @@ fresh; mutate counter_main.vibex "  bump(40)" "  let _ = is_all_ones(0)
 mutate counter_main.vibex "add_i32, bump, count" "add_i32, bump, count, is_all_ones"
 expect_fail "an extra import" "want 'Add_I32 bump count'"
 
-# 3. An in-range argument does not trap, so the trap row must notice.
-fresh; mutate trap_i32_param.vibex "add_i32(4294967296, 1)" "add_i32(4294967295, 1)"
-expect_fail "a range trap that does not fire" "trap_i32_param exited 0"
+# 3. An in-range argument is accepted, so the refusal row must notice.
+fresh; mutate err_core_i32_range.vibe "add_i32(4294967296, 1)" "add_i32(4294967295, 1)"
+expect_fail "an i32 refusal that does not fire" "an i32 argument outside UInt32 was accepted"
 
 # 4. A component answer that differs is caught.
 fresh; mutate greeter_main.vibex 'greet("vibe")' 'greet("vibes")'

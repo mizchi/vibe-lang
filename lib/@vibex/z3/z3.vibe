@@ -26,7 +26,7 @@ import ./cstring.vibe {
 /// A Z3 context: the owner of every term and solver made in it. Release it
 /// with `Context::close`.
 export struct Context {
-  raw: Int
+  raw: UInt32
 }
 
 //# Functions
@@ -48,13 +48,16 @@ export fn Context::close(ctx: Context) -> Unit {
 /// `"sat\n(\n  (define-fun x () Int\n    4)\n)\n"` for
 /// `(declare-const x Int)(assert (> x 3))(assert (< x 5))(check-sat)(get-model)`.
 export fn Context::eval_smtlib2(ctx: Context, script: String) -> String with Exception {
-  let p = write_cstring(script, malloc, wasm_memory_store_u8)
-  let r = z3_eval_smtlib2_string(ctx.raw, p)
-  free(p)
-  read_cstring(r, wasm_memory_load_u8)
+  // The binding offers z3.wasm's `i32` addresses as `UInt32` (#3730), and the
+  // memory accessors take `Int`; an address and an allocation size fit 32
+  // bits, so each conversion between them is exact.
+  let p = write_cstring(script, (n) -> UInt32::to_int(malloc(Int::wrap_uint32(n))), wasm_memory_store_u8)
+  let r = z3_eval_smtlib2_string(ctx.raw, Int::wrap_uint32(p))
+  free(Int::wrap_uint32(p))
+  read_cstring(UInt32::to_int(r), wasm_memory_load_u8)
 }
 
 /// Z3's full version string.
 export fn full_version() -> String with Exception {
-  read_cstring(z3_get_full_version(), wasm_memory_load_u8)
+  read_cstring(UInt32::to_int(z3_get_full_version()), wasm_memory_load_u8)
 }

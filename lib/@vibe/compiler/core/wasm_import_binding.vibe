@@ -35,11 +35,12 @@ import ./inline_wasm_marker.vibe {
 //
 // The admitted signatures, and why the rest are refused rather than guessed:
 //
-//   - `i32` param: an `Int` in -2^31 .. 2^32-1 (either the signed or the
-//     unsigned reading of the same 32 bits); anything else TRAPS rather than
-//     being truncated to a different value.
-//   - `i32` result: read as signed, so a value round-trips bit-exactly when
-//     passed back.
+//   - `i32` param and result: a `UInt32` (#3730), the unsigned reading of
+//     the 32 bits, so a value outside it is a compile-time error. A
+//     C-compiled module's `i32` mostly carries addresses, which stay
+//     non-negative; a signed argument is `Int::wrap_uint32(n)`. (The memory
+//     accessors below keep `Int`; the stub still traps an `Int` outside
+//     -2^31 .. 2^32-1 there.)
 //   - `i64` param: exact (a 63-bit `Int` sign-extends into 64 bits).
 //   - `i64` result: TRAPS when the value needs the 64th bit, since a 63-bit
 //     `Int` cannot hold it.
@@ -767,7 +768,8 @@ fn wib_body(callee: String, params: Array[Int], results: Array[Int]) -> String {
   if Array::length(results) == 0 {
     "\{checks}\{call} (i64.const 0)"
   } else if Array::get(results, at = 0) == 0x7F {
-    "\{checks}(vibe.int.tag (i64.extend_i32_s \{call}))"
+    // Read unsigned: the wrapper offers the result as `UInt32` (#3730).
+    "\{checks}(vibe.int.tag (i64.extend_i32_u \{call}))"
   } else {
     "(local $r i64) \{checks}(local.set $r \{call}) (if (i64.ne (i64.shr_s (i64.shl (local.get $r) (i64.const 1)) (i64.const 1)) (local.get $r)) (then unreachable)) (vibe.int.tag (local.get $r))"
   }
@@ -782,20 +784,6 @@ fn wib_param_list(_ n: Int) -> String {
     } else {
       ""
     }, "a\{i}: Int"))
-    i = i + 1
-  }
-  out
-}
-
-fn wib_arg_list(_ n: Int) -> String {
-  let mut out = ""
-  let mut i = 0
-  while i < n {
-    out = String::concat(out, String::concat(if i > 0 {
-      ", "
-    } else {
-      ""
-    }, "a\{i}"))
     i = i + 1
   }
   out
@@ -844,19 +832,41 @@ fn wib_private_prefix(_ public: Array[String]) -> String {
   prefix
 }
 
-fn wib_emit_fn(out: Array[String], raw: String, vibe_name: String, doc: String, callee: String, params: Array[Int], results: Array[Int]) -> Unit {
+/// #3730: a core `i32` is offered as `UInt32`, the unsigned reading of its
+/// 32 bits, so the width is the type: a value that does not fit is a
+/// compile-time error at the call, not the stub's trap. Addresses -- what most
+/// `i32` parameters of a C-compiled module carry -- stay non-negative; a
+/// signed argument is passed as `Int::wrap_uint32(n)`. An `i64` stays `Int`.
+/// The raw stub keeps `Int` for every value: the wrapper widens a `UInt32`
+/// argument exactly, and keeps the low 32 bits of a result the stub already
+/// read unsigned, which is exact. The runner-served memory accessors keep
+/// `Int` (`typed = false`): an address or a byte as a plain integer, the
+/// signature `lib/@vibex/z3/cstring.vibe` and the cheatsheet document.
+fn wib_emit_fn(out: Array[String], raw: String, vibe_name: String, doc: String, callee: String, params: Array[Int], results: Array[Int], typed: Bool) -> Unit {
   let n = Array::length(params)
-  let ret = if Array::length(results) == 0 {
-    "Unit"
-  } else {
-    "Int"
+  let wrap_params = wib_fresh_strings()
+  let wrap_args = wib_fresh_strings()
+  let mut i = 0
+  while i < n {
+    if typed && Array::get(params, at = i) == 0x7F {
+      Array::push(wrap_params, value = "a\{i}: UInt32")
+      Array::push(wrap_args, value = "UInt32::to_int(a\{i})")
+    } else {
+      Array::push(wrap_params, value = "a\{i}: Int")
+      Array::push(wrap_args, value = "a\{i}")
+    }
+    i = i + 1
   }
+  let call = "\{raw}\{vibe_name}(\{String::join(wrap_args, ", ")})"
+  let ps = String::join(wrap_params, ", ")
   Array::push(out, value = "/// \{doc}\n")
   Array::push(out, value = "fn \{raw}\{vibe_name}(\{wib_param_list(n)}) -> Int = wasm \"\{wib_body(callee, params, results)}\"\n")
   if Array::length(results) == 0 {
-    Array::push(out, value = "export fn \{vibe_name}(\{wib_param_list(n)}) -> \{ret} {\n  let _ = \{raw}\{vibe_name}(\{wib_arg_list(n)})\n  ()\n}\n\n")
+    Array::push(out, value = "export fn \{vibe_name}(\{ps}) -> Unit {\n  let _ = \{call}\n  ()\n}\n\n")
+  } else if typed && Array::get(results, at = 0) == 0x7F {
+    Array::push(out, value = "export fn \{vibe_name}(\{ps}) -> UInt32 {\n  Int::wrap_uint32(\{call})\n}\n\n")
   } else {
-    Array::push(out, value = "export fn \{vibe_name}(\{wib_param_list(n)}) -> \{ret} {\n  \{raw}\{vibe_name}(\{wib_arg_list(n)})\n}\n\n")
+    Array::push(out, value = "export fn \{vibe_name}(\{ps}) -> Int {\n  \{call}\n}\n\n")
   }
 }
 
@@ -935,21 +945,21 @@ fn wib_core_binding_source(path: String, bytes: Bytes) -> String with Exception 
     } else if !wib_sig_admitted(params = ps, results = rs) {
       Array::push(withheld, value = "`\{shown}` \{wib_sig_wat(ps, rs)}: only i32 / i64 params and at most one i32 / i64 result cross the boundary")
     } else {
-      wib_emit_fn(out = out, raw = raw, vibe_name = vn, doc = "`\{shown}` from \{wib_display_name(path)}: core wasm \{wib_sig_wat(ps, rs)}.", callee = wasm_import_callee(module_name = module_name, field = nm, params = ps, results = rs), params = ps, results = rs)
+      wib_emit_fn(out = out, raw = raw, vibe_name = vn, doc = "`\{shown}` from \{wib_display_name(path)}: core wasm \{wib_sig_wat(ps, rs)}.", callee = wasm_import_callee(module_name = module_name, field = nm, params = ps, results = rs), params = ps, results = rs, typed = true)
     }
     i = i + 1
   }
   if has_memory {
     wib_emit_fn(out = out, raw = raw, vibe_name = "wasm_memory_load_u8", doc = "The byte at `a0` in the module's memory (0..255).", callee = wasm_import_callee(module_name = wasm_memory_module_name(path), field = "vibe:memory.load8_u", params = [
       0x7F
-    ], results = [0x7F]), params = [0x7F], results = [0x7F])
+    ], results = [0x7F]), params = [0x7F], results = [0x7F], typed = false)
     wib_emit_fn(out = out, raw = raw, vibe_name = "wasm_memory_store_u8", doc = "Store the low 8 bits of `a1` at `a0` in the module's memory.", callee = wasm_import_callee(module_name = wasm_memory_module_name(path), field = "vibe:memory.store8", params = [
       0x7F,
       0x7F
-    ], results = wib_fresh_ints()), params = [0x7F, 0x7F], results = wib_fresh_ints())
+    ], results = wib_fresh_ints()), params = [0x7F, 0x7F], results = wib_fresh_ints(), typed = false)
     wib_emit_fn(out = out, raw = raw, vibe_name = "wasm_memory_size", doc = "The module's memory size in bytes.", callee = wasm_import_callee(module_name = wasm_memory_module_name(path), field = "vibe:memory.size", params = wib_fresh_ints(), results = [
       0x7E
-    ]), params = wib_fresh_ints(), results = [0x7E])
+    ]), params = wib_fresh_ints(), results = [0x7E], typed = false)
   } else {
     ()
   }
