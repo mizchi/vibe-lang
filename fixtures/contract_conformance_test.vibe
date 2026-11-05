@@ -25,15 +25,15 @@ import ../lib/@vibe/core {
 let no_opaques: () -> Array[(String, Array[String])] = () -> {
   Array::slice([
     ("", [])
-  ], 0, 0)
+  ], start = 0, end = 0)
 }
 
 let no_type_defs: () -> Array[Stmt] = () -> {
   Array::slice([
     SExport(Array::slice([
       ""
-    ], 0, 0))
-  ], 0, 0)
+    ], start = 0, end = 0))
+  ], start = 0, end = 0)
 }
 
 test "contract declarations parse and fingerprint (#729)" {
@@ -49,7 +49,7 @@ test "contract declarations parse and fingerprint (#729)" {
   // deliberately KEEPS the braced row (#1429) -- see ctr_expand_sig_row's
   // note in contract.vibe. The declaration above is written in the new
   // spelling; the rendered key is not.
-  assert(String::contains(s1, "with { Fs }"))
+  assert(String::contains(s1, needle = "with { Fs }"))
 }
 
 test "where clause in a declaration is skipped (#729)" {
@@ -64,31 +64,31 @@ test "conformant implementation passes (#729)" {
   let impls = parse_program(lex("export fn add(a: Int, b: Int) -> Int { a + b }\nexport let scale: (k~: Int, v~: Int) -> Int = (k~, v~) -> { k * v }\nexport fn pick[T](l: T, r: T) -> T { l }\nlet private_helper: (Int) -> Int = (x) -> { x }"))
   // fn-form, annotated-let-form (labeled + exported-and-declared), and a
   // generic all conform; the un-exported private helper is ignored.
-  let errors = check_contract(decls, no_opaques(), impls, no_type_defs())
+  let errors = check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = impls, contract_type_defs = no_type_defs())
   assert_eq(Array::length(errors), 0)
 }
 
 test "missing and mismatching implementations are reported (#729)" {
   let (decls, _, _) = parse_contract_program(lex("fn add(x: Int, y: Int) -> Int\nfn gone(x: Int) -> Int\nfn eff(x: Int) -> Int with Fs"))
   let impls = parse_program(lex("export fn add(a: Int, b: String) -> Int { a }\nexport fn eff(x: Int) -> Int { x }"))
-  let errors = check_contract(decls, no_opaques(), impls, no_type_defs())
+  let errors = check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = impls, contract_type_defs = no_type_defs())
   assert_eq(Array::length(errors), 3)
 }
 
 test "undeclared export is reported (#729)" {
   let (decls, _, _) = parse_contract_program(lex("fn run(x: Int) -> Int"))
   let impls = parse_program(lex("export fn run(x: Int) -> Int { x }\nexport let leak: (Int) -> Int = (x) -> { x }"))
-  let errors = check_contract(decls, no_opaques(), impls, no_type_defs())
+  let errors = check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = impls, contract_type_defs = no_type_defs())
   assert_eq(Array::length(errors), 1)
-  assert(String::contains(errors[0], "leak"))
+  assert(String::contains(errors[0], needle = "leak"))
 }
 
 test "declared but unexported implementation is reported (#729)" {
   let (decls, _, _) = parse_contract_program(lex("fn run(x: Int) -> Int"))
   let impls = parse_program(lex("fn run(x: Int) -> Int { x }"))
-  let errors = check_contract(decls, no_opaques(), impls, no_type_defs())
+  let errors = check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = impls, contract_type_defs = no_type_defs())
   assert_eq(Array::length(errors), 1)
-  assert(String::contains(errors[0], "not exported"))
+  assert(String::contains(errors[0], needle = "not exported"))
 }
 
 test "opaque type conformance (#729 C-4)" {
@@ -98,13 +98,13 @@ test "opaque type conformance (#729 C-4)" {
   assert(oname0 == "Counter")
   assert_eq(Array::length(oparams0), 0)
   let ok_impls = parse_program(lex("export struct Counter { n: Int }\nexport fn get(c: Counter) -> Int { c.n }"))
-  assert_eq(Array::length(check_contract(decls, opaques, ok_impls, no_type_defs())), 0)
+  assert_eq(Array::length(check_contract(decls = decls, opaque_names = opaques, impl_stmts = ok_impls, contract_type_defs = no_type_defs())), 0)
   let missing = parse_program(lex("export fn get(c: Counter) -> Int { 0 }"))
-  assert_eq(Array::length(check_contract(decls, opaques, missing, no_type_defs())), 1)
+  assert_eq(Array::length(check_contract(decls = decls, opaque_names = opaques, impl_stmts = missing, contract_type_defs = no_type_defs())), 1)
   let unexported = parse_program(lex("struct Counter { n: Int }\nexport fn get(c: Counter) -> Int { c.n }"))
-  let errs = check_contract(decls, opaques, unexported, no_type_defs())
+  let errs = check_contract(decls = decls, opaque_names = opaques, impl_stmts = unexported, contract_type_defs = no_type_defs())
   assert_eq(Array::length(errs), 1)
-  assert(String::contains(errs[0], "not exported"))
+  assert(String::contains(errs[0], needle = "not exported"))
 }
 
 test "bodyless type arity is tracked and enforced (#739)" {
@@ -118,28 +118,28 @@ test "bodyless type arity is tracked and enforced (#739)" {
   assert_eq(Array::length(pparams2), 2)
   // conformant: matching arities
   let ok_impls = parse_program(lex("export enum Box[T] { BoxOf(T) }\nexport enum Pair[A, B] { PairOf(A, B) }\nexport fn boxed[T](x: T) -> Box[T] { BoxOf(x) }"))
-  assert_eq(Array::length(check_contract(decls, opaques, ok_impls, no_type_defs())), 0)
+  assert_eq(Array::length(check_contract(decls = decls, opaque_names = opaques, impl_stmts = ok_impls, contract_type_defs = no_type_defs())), 0)
   // arity mismatch: nullary Box against declared Box[T]
   let bad_impls = parse_program(lex("export enum Box { BoxNone }\nexport enum Pair[A, B] { PairOf(A, B) }\nexport fn boxed[T](x: T) -> Box[T] { BoxNone }"))
-  let errs = check_contract(decls, opaques, bad_impls, no_type_defs())
+  let errs = check_contract(decls = decls, opaque_names = opaques, impl_stmts = bad_impls, contract_type_defs = no_type_defs())
   assert_eq(Array::length(errs), 1)
-  assert(String::contains(errs[0], "arity mismatch"))
+  assert(String::contains(errs[0], needle = "arity mismatch"))
   // surface lines carry the arity so Box -> Box[T] classifies as major
-  let l_box0 = contract_surface_lines(decls, [
+  let l_box0 = contract_surface_lines(fn_decls = decls, opaque_names = [
     ("Box", [])
-  ], no_type_defs())
-  let l_box1 = contract_surface_lines(decls, [
+  ], type_defs = no_type_defs())
+  let l_box1 = contract_surface_lines(fn_decls = decls, opaque_names = [
     ("Box", ["T"])
-  ], no_type_defs())
-  assert(classify_contract_change(l_box0, l_box1) == "major")
+  ], type_defs = no_type_defs())
+  assert(classify_contract_change(old_lines = l_box0, new_lines = l_box1) == "major")
 }
 
 test "undeclared exported type is reported (#729 C-4)" {
   let (decls, opaques, _) = parse_contract_program(lex("fn run(x: Int) -> Int"))
   let impls = parse_program(lex("export fn run(x: Int) -> Int { x }\nexport struct Leak { n: Int }"))
-  let errs = check_contract(decls, opaques, impls, no_type_defs())
+  let errs = check_contract(decls = decls, opaque_names = opaques, impl_stmts = impls, contract_type_defs = no_type_defs())
   assert_eq(Array::length(errs), 1)
-  assert(String::contains(errs[0], "Leak"))
+  assert(String::contains(errs[0], needle = "Leak"))
 }
 
 test "vendored sha1 known vectors (#730 D-1)" {
@@ -154,12 +154,12 @@ test "content-addressing hashes (#730 D-1)" {
   let (d2, o2, r2) = parse_contract_program(lex("opaque type Counter\nfn get(c: Counter) -> Int\nfn add(x: Int, y: Int) -> Int"))
   let _ = r1
   let _ = r2
-  let h1 = contract_hash(d1, o1, no_type_defs())
-  let h2 = contract_hash(d2, o2, no_type_defs())
+  let h1 = contract_hash(fn_decls = d1, opaque_names = o1, type_defs = no_type_defs())
+  let h2 = contract_hash(fn_decls = d2, opaque_names = o2, type_defs = no_type_defs())
   assert(h1 == h2)
-  assert(String::starts_with(h1, "ct:b3:"))
+  assert(String::starts_with(h1, prefix = "ct:b3:"))
   let (d3, o3, _) = parse_contract_program(lex("fn add(x: Int, y: Int) -> String\nopaque type Counter\nfn get(c: Counter) -> Int"))
-  assert(!(contract_hash(d3, o3, no_type_defs()) == h1))
+  assert(!(contract_hash(fn_decls = d3, opaque_names = o3, type_defs = no_type_defs()) == h1))
   // package_hash: path-order-insensitive, content-sensitive.
   let p1 = package_hash_from_sources([
     ("index.vibei", "fn a() -> Int"),
@@ -170,7 +170,7 @@ test "content-addressing hashes (#730 D-1)" {
     ("index.vibei", "fn a() -> Int")
   ])
   assert(p1 == p2)
-  assert(String::starts_with(p1, "pkg:b3:"))
+  assert(String::starts_with(p1, prefix = "pkg:b3:"))
   let p3 = package_hash_from_sources([
     ("index.vibei", "fn a() -> Int"),
     ("./impl.vibe", "export fn a() -> Int { 2 }")
@@ -194,11 +194,11 @@ test "require pin extraction and validation (#730 D-2)" {
   let (pname, pver, ppin) = pins[0]
   assert(pname == "@d2/pkg")
   assert(pver == "1.0.0")
-  assert(String::starts_with(ppin, "pkg:sha1:"))
+  assert(String::starts_with(ppin, prefix = "pkg:sha1:"))
   // blanking preserves byte length (offsets stay valid for diagnostics)
   assert_eq(String::length(blanked), String::length(src))
-  assert(!String::contains(blanked, "require"))
-  assert(String::contains(blanked, "import @d2/pkg { triple }"))
+  assert(!String::contains(blanked, needle = "require"))
+  assert(String::contains(blanked, needle = "import @d2/pkg { triple }"))
 }
 
 test "unpinned require lines are accepted for fmt (#730 D-3)" {
@@ -208,7 +208,7 @@ test "unpinned require lines are accepted for fmt (#730 D-3)" {
   assert(n == "@a/b")
   assert(v == "1.2.3")
   assert(h == "")
-  assert(String::contains(blanked, "let x = 1"))
+  assert(String::contains(blanked, needle = "let x = 1"))
 }
 
 test "malformed require lines are rejected (#730 D-2)" {
@@ -230,38 +230,38 @@ test "malformed require lines are rejected (#730 D-2)" {
 
 test "contract change classification (#732 Phase F)" {
   let (d1, o1, _) = parse_contract_program(lex("fn a(x: Int) -> Int\nopaque type T"))
-  let l1 = contract_surface_lines(d1, o1, no_type_defs())
+  let l1 = contract_surface_lines(fn_decls = d1, opaque_names = o1, type_defs = no_type_defs())
   // identical -> patch
-  assert(classify_contract_change(l1, l1) == "patch")
+  assert(classify_contract_change(old_lines = l1, new_lines = l1) == "patch")
   // addition only -> minor
   let (d2, o2, _) = parse_contract_program(lex("fn a(x: Int) -> Int\nfn b(x: Int) -> Int\nopaque type T"))
-  let l2 = contract_surface_lines(d2, o2, no_type_defs())
-  assert(classify_contract_change(l1, l2) == "minor")
+  let l2 = contract_surface_lines(fn_decls = d2, opaque_names = o2, type_defs = no_type_defs())
+  assert(classify_contract_change(old_lines = l1, new_lines = l2) == "minor")
   // signature change -> major
   let (d3, o3, _) = parse_contract_program(lex("fn a(x: String) -> Int\nopaque type T"))
-  let l3 = contract_surface_lines(d3, o3, no_type_defs())
-  assert(classify_contract_change(l1, l3) == "major")
+  let l3 = contract_surface_lines(fn_decls = d3, opaque_names = o3, type_defs = no_type_defs())
+  assert(classify_contract_change(old_lines = l1, new_lines = l3) == "major")
   // removal -> major
   let (d4, o4, _) = parse_contract_program(lex("opaque type T"))
-  assert(classify_contract_change(l1, contract_surface_lines(d4, o4, no_type_defs())) == "major")
+  assert(classify_contract_change(old_lines = l1, new_lines = contract_surface_lines(fn_decls = d4, opaque_names = o4, type_defs = no_type_defs())) == "major")
 }
 
 test "semver bump verification (#732 Phase F)" {
-  assert(semver_bump_kind("1.2.3", "1.2.4") is Some("patch"))
-  assert(semver_bump_kind("1.2.3", "1.3.0") is Some("minor"))
-  assert(semver_bump_kind("1.2.3", "2.0.0") is Some("major"))
-  assert(semver_bump_kind("1.2.3", "1.4.0") is None)
-  assert(semver_bump_kind("1.2.3", "1.2.3") is None)
+  assert(semver_bump_kind(prev = "1.2.3", next = "1.2.4") is Some("patch"))
+  assert(semver_bump_kind(prev = "1.2.3", next = "1.3.0") is Some("minor"))
+  assert(semver_bump_kind(prev = "1.2.3", next = "2.0.0") is Some("major"))
+  assert(semver_bump_kind(prev = "1.2.3", next = "1.4.0") is None)
+  assert(semver_bump_kind(prev = "1.2.3", next = "1.2.3") is None)
   let (d1, o1, _) = parse_contract_program(lex("fn a(x: Int) -> Int"))
-  let l1 = contract_surface_lines(d1, o1, no_type_defs())
+  let l1 = contract_surface_lines(fn_decls = d1, opaque_names = o1, type_defs = no_type_defs())
   let (d2, o2, _) = parse_contract_program(lex("fn a(x: Int) -> Int\nfn b(x: Int) -> Int"))
-  let l2 = contract_surface_lines(d2, o2, no_type_defs())
+  let l2 = contract_surface_lines(fn_decls = d2, opaque_names = o2, type_defs = no_type_defs())
   // honest minor bump for an addition
-  assert_eq(Array::length(verify_publish_bump("1.0.0", "1.1.0", l1, l2)), 0)
+  assert_eq(Array::length(verify_publish_bump(prev_version = "1.0.0", next_version = "1.1.0", old_lines = l1, new_lines = l2)), 0)
   // dishonest patch claim for an addition
-  let errs = verify_publish_bump("1.0.0", "1.0.1", l1, l2)
+  let errs = verify_publish_bump(prev_version = "1.0.0", next_version = "1.0.1", old_lines = l1, new_lines = l2)
   assert_eq(Array::length(errs), 1)
-  assert(String::contains(errs[0], "requires minor"))
+  assert(String::contains(errs[0], needle = "requires minor"))
 }
 
 test "contract declaration with a body is rejected (#729)" {
@@ -282,34 +282,34 @@ test "value decl count (#752)" {
 test "value decl parses with val fingerprint (#752)" {
   let (decls, _, _) = parse_contract_program(lex("let pi: Float64\nfn scale(x: Float64) -> Float64"))
   assert_eq(Array::length(decls), 2)
-  let (n0, s0) = Array::get(decls, 0)
+  let (n0, s0) = Array::get(decls, at = 0)
   // NOTE: `assert(a == b)`, not `assert_eq(a, b)` — assert_eq's lowering
   // falls back to a raw i64 compare for a tuple-destructured string operand
   // (pointer order, #746 residual class; filed separately). `==` takes the
   // desugar's string path and compares content.
   assert(n0 == "pi")
   assert(s0 == "val Float64")
-  let (n1, s1) = Array::get(decls, 1)
+  let (n1, s1) = Array::get(decls, at = 1)
   assert(n1 == "scale")
-  assert(String::starts_with(s1, "("))
+  assert(String::starts_with(s1, prefix = "("))
 }
 
 test "value decl conformance ok (#752)" {
   let (decls, _, _) = parse_contract_program(lex("let pi: Float64\nfn scale(x: Float64) -> Float64"))
   let ok_impls = parse_program(lex("export let pi: Float64 = 3.14\nexport let scale: (x: Float64) -> Float64 = (x) -> { x * 2.0 }"))
-  assert_eq(Array::length(check_contract(decls, no_opaques(), ok_impls, no_type_defs())), 0)
+  assert_eq(Array::length(check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = ok_impls, contract_type_defs = no_type_defs())), 0)
 }
 
 test "value decl type mismatch is an error (#752)" {
   let (decls, _, _) = parse_contract_program(lex("let pi: Float64\nfn scale(x: Float64) -> Float64"))
   let bad_impls = parse_program(lex("export let pi: Int = 3\nexport let scale: (x: Float64) -> Float64 = (x) -> { x * 2.0 }"))
-  assert_eq(Array::length(check_contract(decls, no_opaques(), bad_impls, no_type_defs())), 1)
+  assert_eq(Array::length(check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = bad_impls, contract_type_defs = no_type_defs())), 1)
 }
 
 test "undeclared exported value is rejected (#752)" {
   let (decls, _, _) = parse_contract_program(lex("let pi: Float64\nfn scale(x: Float64) -> Float64"))
   let extra_impls = parse_program(lex("export let pi: Float64 = 3.14\nexport let scale: (x: Float64) -> Float64 = (x) -> { x * 2.0 }\nexport let stray: Int = 1"))
-  assert_eq(Array::length(check_contract(decls, no_opaques(), extra_impls, no_type_defs())), 1)
+  assert_eq(Array::length(check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = extra_impls, contract_type_defs = no_type_defs())), 1)
 }
 
 test "contract value declaration with a definition is rejected (#752)" {
@@ -317,7 +317,7 @@ test "contract value declaration with a definition is rejected (#752)" {
     let (_, _, _) = parse_contract_program(lex("let pi: Float64 = 3.14"))
     "no-throw"
   } with {
-    Exception::Throw(msg) => if String::contains(msg, "must not have a definition") {
+    Exception::Throw(msg) => if String::contains(msg, needle = "must not have a definition") {
       "rejected"
     } else {
       "wrong-error"
@@ -333,8 +333,8 @@ test "version directive: extracted, blanked, offset-preserving (#754)" {
   assert_eq(Array::length(pins), 1)
   // both directive lines blank to spaces; lengths are preserved
   assert_eq(String::length(blanked), String::length(src))
-  assert(!String::contains(blanked, "version 1.2.3"))
-  assert(String::contains(blanked, "fn f(x: Int) -> Int"))
+  assert(!String::contains(blanked, needle = "version 1.2.3"))
+  assert(String::contains(blanked, needle = "fn f(x: Int) -> Int"))
 }
 
 test "version directive: absent -> empty; only the leading region counts (#754)" {
@@ -346,22 +346,22 @@ test "version directive: absent -> empty; only the leading region counts (#754)"
 test "re-exported symbol not declared in the contract is reported (#847)" {
   let (decls, _, _) = parse_contract_program(lex("fn run(x: Int) -> Int"))
   let impls = parse_program(lex("export fn run(x: Int) -> Int { x }\nexport ./other.vibe { leaked }"))
-  let errs = check_contract(decls, no_opaques(), impls, no_type_defs())
+  let errs = check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = impls, contract_type_defs = no_type_defs())
   assert_eq(Array::length(errs), 1)
-  assert(String::contains(errs[0], "leaked"))
+  assert(String::contains(errs[0], needle = "leaked"))
 }
 
 test "re-exported symbol matching a declared fn is not reported (#847)" {
   let (decls, _, _) = parse_contract_program(lex("fn run(x: Int) -> Int\nfn helper(x: Int) -> Int"))
   let impls = parse_program(lex("export fn run(x: Int) -> Int { x }\nexport ./other.vibe { helper }"))
-  let errs = check_contract(decls, no_opaques(), impls, no_type_defs())
+  let errs = check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = impls, contract_type_defs = no_type_defs())
   assert_eq(Array::length(errs), 0)
 }
 
 test "re-exported symbol matching a declared opaque type is not reported (#847)" {
   let (decls, opaques, _) = parse_contract_program(lex("opaque type Counter"))
   let impls = parse_program(lex("export ./other.vibe { Counter }"))
-  let errs = check_contract(decls, opaques, impls, no_type_defs())
+  let errs = check_contract(decls = decls, opaque_names = opaques, impl_stmts = impls, contract_type_defs = no_type_defs())
   assert_eq(Array::length(errs), 0)
 }
 
@@ -373,32 +373,32 @@ test "re-exported symbol matching a declared opaque type is not reported (#847)"
 test "facade generation allocates a declaration satisfied only by re-export (#847)" {
   let (decls, _, _) = parse_contract_program(lex("fn helper(x: Int) -> Int"))
   let unit_stmts = parse_program(lex("export ./other.vibe { helper }"))
-  let facade = contract_facade_source(decls, no_opaques(), no_type_defs(), [
+  let facade = contract_facade_source(decls = decls, opaque_names = no_opaques(), type_defs = no_type_defs(), impl_units = [
     ("./mid.vibe", unit_stmts)
-  ], "")
-  assert(String::contains(facade, "helper"))
+  ], types_path = "")
+  assert(String::contains(facade, needle = "helper"))
 }
 
 test "facade generation allocates a re-exported opaque type (#847)" {
   let (decls, opaques, _) = parse_contract_program(lex("opaque type Counter"))
   let unit_stmts = parse_program(lex("export ./other.vibe { Counter }"))
-  let facade = contract_facade_source(decls, opaques, no_type_defs(), [
+  let facade = contract_facade_source(decls = decls, opaque_names = opaques, type_defs = no_type_defs(), impl_units = [
     ("./mid.vibe", unit_stmts)
-  ], "")
-  assert(String::contains(facade, "Counter"))
+  ], types_path = "")
+  assert(String::contains(facade, needle = "Counter"))
 }
 
 test "re-exported symbol checks the alias name, not the source name (#847)" {
   let (decls, _, _) = parse_contract_program(lex("fn helper(x: Int) -> Int"))
   let ok_impls = parse_program(lex("export ./other.vibe { impl_name as helper }"))
-  assert_eq(Array::length(check_contract(decls, no_opaques(), ok_impls, no_type_defs())), 0)
+  assert_eq(Array::length(check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = ok_impls, contract_type_defs = no_type_defs())), 0)
   // aliasing the declared name AWAY (`helper as wrong_name`) is doubly wrong:
   // 'helper' itself now has no implementer, AND 'wrong_name' is undeclared.
   let bad_impls = parse_program(lex("export ./other.vibe { helper as wrong_name }"))
-  let bad_errs = check_contract(decls, no_opaques(), bad_impls, no_type_defs())
+  let bad_errs = check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = bad_impls, contract_type_defs = no_type_defs())
   assert_eq(Array::length(bad_errs), 2)
-  assert(String::contains(bad_errs[0], "helper"))
-  assert(String::contains(bad_errs[1], "wrong_name"))
+  assert(String::contains(bad_errs[0], needle = "helper"))
+  assert(String::contains(bad_errs[1], needle = "wrong_name"))
 }
 
 test "version directive: malformed forms are rejected (#754)" {
@@ -408,25 +408,25 @@ test "version directive: malformed forms are rejected (#754)" {
   } with {
     Exception::Throw(msg) => msg
   }
-  assert(String::contains(bad, "exact semver"))
+  assert(String::contains(bad, needle = "exact semver"))
   let dup = handle {
     let (_, _) = extract_require_pins("version 1.0.0\nversion 1.0.1\nfn f(x: Int) -> Int")
     ""
   } with {
     Exception::Throw(msg) => msg
   }
-  assert(String::contains(dup, "duplicate version directive"))
+  assert(String::contains(dup, needle = "duplicate version directive"))
 }
 
 test "sibling re-definition of a transparent contract type is rejected (#1879)" {
   let (decls, opaques, extra) = parse_contract_program(lex("enum Hue {\n  Crimson;\n  Teal(Int)\n}\nfn describe(h: Hue) -> Int"))
   let (_, type_defs) = classify_contract_stmts(extra)
   let impls = parse_program(lex("enum Hue {\n  Crimson;\n  Teal(Int)\n}\nexport fn describe(h: Hue) -> Int {\n  0\n}"))
-  let errors = check_contract(decls, opaques, impls, type_defs)
+  let errors = check_contract(decls = decls, opaque_names = opaques, impl_stmts = impls, contract_type_defs = type_defs)
   let mut found = false
   let mut i = 0
   while i < Array::length(errors) {
-    if String::contains(Array::get(errors, i), "transparent contract type 'Hue' is re-defined") {
+    if String::contains(Array::get(errors, at = i), needle = "transparent contract type 'Hue' is re-defined") {
       found = true
     }
     i = i + 1
@@ -438,7 +438,7 @@ test "an implementation that does NOT re-define the contract type passes (#1879)
   let (decls, opaques, extra) = parse_contract_program(lex("enum Hue {\n  Crimson;\n  Teal(Int)\n}\nfn describe(h: Hue) -> Int"))
   let (_, type_defs) = classify_contract_stmts(extra)
   let impls = parse_program(lex("export fn describe(h: Hue) -> Int {\n  0\n}"))
-  let errors = check_contract(decls, opaques, impls, type_defs)
+  let errors = check_contract(decls = decls, opaque_names = opaques, impl_stmts = impls, contract_type_defs = type_defs)
   assert_eq(Array::length(errors), 0)
 }
 
@@ -446,7 +446,7 @@ test "an opaque contract type MUST be defined by a sibling and stays accepted (#
   let (decls, opaques, extra) = parse_contract_program(lex("opaque type Counter\nfn counter_new(n: Int) -> Counter"))
   let (_, type_defs) = classify_contract_stmts(extra)
   let impls = parse_program(lex("export struct Counter {\n  v: Int\n}\nexport fn counter_new(n: Int) -> Counter {\n  Counter::{ v: n }\n}"))
-  let errors = check_contract(decls, opaques, impls, type_defs)
+  let errors = check_contract(decls = decls, opaque_names = opaques, impl_stmts = impls, contract_type_defs = type_defs)
   assert_eq(Array::length(errors), 0)
 }
 
@@ -460,9 +460,9 @@ test "contract type alias may carry #deprecated" {
   assert_eq(Array::length(decls), 1)
   assert_eq(Array::length(opaques), 0)
   assert_eq(Array::length(extra), 1)
-  let (dname, _) = Array::get(decls, 0)
+  let (dname, _) = Array::get(decls, at = 0)
   assert_eq(dname, "HashMap::new_string")
-  match Array::get(extra, 0) {
+  match Array::get(extra, at = 0) {
     STypeAlias(_, name, _, _) => assert_eq(name, "HashMap"),
     _ => assert(false)
   }
@@ -472,7 +472,7 @@ test "bare #deprecated in a contract is skipped the same way" {
   let src = "#deprecated\ntype HashSet[T] = MutSet[T]"
   let (_, _, extra) = parse_contract_program(lex(src))
   assert_eq(Array::length(extra), 1)
-  match Array::get(extra, 0) {
+  match Array::get(extra, at = 0) {
     STypeAlias(_, name, _, _) => assert_eq(name, "HashSet"),
     _ => assert(false)
   }
@@ -485,8 +485,8 @@ test "unknown # directive in a contract is rejected" {
   } with {
     Exception::Throw(m) => m
   }
-  assert(String::contains(msg, "unsupported # directive"))
-  assert(String::contains(msg, "nope"))
+  assert(String::contains(msg, needle = "unsupported # directive"))
+  assert(String::contains(msg, needle = "nope"))
 }
 
 test "an optional parameter's name is part of the contract (#3432)" {
@@ -495,9 +495,9 @@ test "an optional parameter's name is part of the contract (#3432)" {
   // agree with it (Codex on #3441).
   let (decls, _, _) = parse_contract_program(lex("fn f(count?: Int) -> Int"))
   let same = parse_program(lex("export fn f(count?: Int) -> Int { 0 }"))
-  assert_eq(Array::length(check_contract(decls, no_opaques(), same, no_type_defs())), 0)
+  assert_eq(Array::length(check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = same, contract_type_defs = no_type_defs())), 0)
   let renamed = parse_program(lex("export fn f(times?: Int) -> Int { 0 }"))
-  assert_eq(Array::length(check_contract(decls, no_opaques(), renamed, no_type_defs())), 1)
+  assert_eq(Array::length(check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = renamed, contract_type_defs = no_type_defs())), 1)
   let not_optional = parse_program(lex("export fn f(count: Option[Int]) -> Int { 0 }"))
-  assert_eq(Array::length(check_contract(decls, no_opaques(), not_optional, no_type_defs())), 1)
+  assert_eq(Array::length(check_contract(decls = decls, opaque_names = no_opaques(), impl_stmts = not_optional, contract_type_defs = no_type_defs())), 1)
 }

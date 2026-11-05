@@ -140,7 +140,7 @@ test "#2405 a slot reused by a sibling scope is not read stale" {
 // module holding BOTH has to resolve all three indices correctly -- and a
 // mis-derived index is a call into someone else's code, which builds fine and
 // only shows up here.
-fn region_len(n: Int) -> Int {
+fn region_len(_ n: Int) -> Int {
   region r {
     let xs = MutList::empty(r)
     let mut i = 0
@@ -155,7 +155,7 @@ fn region_len(n: Int) -> Int {
 /// #2422: a large Int reaching `__to_string` / `eq` through an annotated
 /// parameter rather than a literal. Both lanes classify an ident through a
 /// slot log, and both logs seeded Float and Bool params but not Int ones.
-fn via_param(n: Int) -> String {
+fn via_param(_ n: Int) -> String {
   __to_string(n)
 }
 
@@ -163,15 +163,15 @@ fn eq_params(a: Int, b: Int) -> Bool {
   eq(a, b)
 }
 
-fn via_string(s: String) -> String {
+fn via_string(_ s: String) -> String {
   __to_string(s)
 }
 
-fn via_bool(b: Bool) -> String {
+fn via_bool(_ b: Bool) -> String {
   __to_string(b)
 }
 
-fn via_double(d: Float64) -> String {
+fn via_double(_ d: Float64) -> String {
   __to_string(d)
 }
 
@@ -180,8 +180,8 @@ test "#2422 a large Int survives every binding form" {
   // lane or both, and rendered garbage or the empty string. Measured on the
   // committed seed: every one of them, so none is new here.
   assert(via_param(274877906944) == "274877906944")
-  assert(!eq_params(64<<32, 65<<32))
-  assert(eq_params(64<<32, 64<<32))
+  assert(!eq_params(a = 64<<32, b = 65<<32))
+  assert(eq_params(a = 64<<32, b = 64<<32))
   let mut m = 64<<32
   assert(__to_string(m) == "274877906944")
   m = m + 1
@@ -234,7 +234,7 @@ test "#2422 a large Int survives every binding form" {
 /// prelude's `to_string` has exactly this body, and desugar_trait_dict
 /// recognizes the SHAPE, so a call here takes the same type-directed rewrite
 /// `__to_string` does.
-fn show_any[T](x: T) -> String {
+fn show_any[T](_ x: T) -> String {
   __to_string(x)
 }
 
@@ -522,8 +522,8 @@ test "#2426 Double equality follows IEEE 754, not the bit pattern" {
   assert(!(a != b))
   // Through an annotated parameter, the binding form the slot log seeds
   // separately from a `let`.
-  assert(dbl_eq(0.0, -0.0))
-  assert(!dbl_ne(0.0, -0.0))
+  assert(dbl_eq(a = 0.0, b = -0.0))
+  assert(!dbl_ne(a = 0.0, b = -0.0))
   // `-0.0` arising from ARITHMETIC rather than from the literal, which is how
   // it turns up in real code (an underflowing negative product), and the
   // branch on it that used to be taken wrongly.
@@ -544,8 +544,8 @@ test "#2426 Double equality follows IEEE 754, not the bit pattern" {
   assert(!(1.5 + 2.5 == 4.5))
   assert(2.5 * 2.0 == 5.0)
   assert(1.5 != 2.5)
-  assert(dbl_eq(1.5, 1.5))
-  assert(!dbl_eq(1.5, 2.5))
+  assert(dbl_eq(a = 1.5, b = 1.5))
+  assert(!dbl_eq(a = 1.5, b = 2.5))
   // A `while` condition is a third call site into the same routing, next to
   // the plain expression and the `if` above.
   let mut n = 3.0
@@ -561,13 +561,13 @@ test "#2426 Double equality follows IEEE 754, not the bit pattern" {
   // answered true and `nan != nan` answered false -- while linear answered
   // both the IEEE way. `!=` gets this from the callers' `eqz` over the same
   // `f64.eq`, so it needs no arm of its own.
-  let nan = dz(0.0, 0.0)
+  let nan = dz(a = 0.0, b = 0.0)
   assert(!(nan == nan))
   assert(nan != nan)
   assert(!(nan == 1.5))
   assert(nan != 1.5)
-  assert(!dbl_eq(nan, nan))
-  assert(dbl_ne(nan, nan))
+  assert(!dbl_eq(a = nan, b = nan))
+  assert(dbl_ne(a = nan, b = nan))
   // The Int and String sides of the same routing are untouched: a float guard
   // that also swallowed these would trade one silent wrong answer for another.
   assert(0 == 0)
@@ -605,7 +605,7 @@ test "#2426 the eq builtin answers on Doubles, not on their bits" {
   assert(eq(0.0, -0.0))
   assert(eq(-0.0, 0.0))
   // NaN, the opposite direction: identical bits, and still not equal.
-  let nan2 = dz(0.0, 0.0)
+  let nan2 = dz(a = 0.0, b = 0.0)
   assert(!eq(nan2, nan2))
   assert(!eq(nan2, 1.5))
   // Ordinary equal Doubles, which must keep answering true.
@@ -619,9 +619,9 @@ test "#2426 the eq builtin answers on Doubles, not on their bits" {
   assert(!eq(dz1, 1.5))
   // Through annotated parameters, the binding form each lane seeds
   // separately from a `let`.
-  assert(eq_dbl(0.0, -0.0))
-  assert(!eq_dbl(0.0, 1.5))
-  assert(eq_dbl(1.5, 1.5))
+  assert(eq_dbl(a = 0.0, b = -0.0))
+  assert(!eq_dbl(a = 0.0, b = 1.5))
+  assert(eq_dbl(a = 1.5, b = 1.5))
   // The two spellings must agree, which is the property this test exists for.
   assert(eq(0.0, -0.0) == (0.0 == -0.0))
   assert(eq(0.0, 1.5) == (0.0 == 1.5))
@@ -650,11 +650,11 @@ test "#2426 the eq builtin answers on Doubles, not on their bits" {
 ///
 /// `jcond` keeps the condition out of reach of constant folding, so the join
 /// is a real one at run time.
-fn jcond(n: Int) -> Bool {
+fn jcond(_ n: Int) -> Bool {
   n > 0
 }
 
-fn jpick(n: Int) -> Int {
+fn jpick(_ n: Int) -> Int {
   n
 }
 
@@ -729,7 +729,7 @@ test "#2426 a Float64 keeps its type through a join" {
   // outer `let v = 1` read for an inner `v` of another type). #2424.
   // NaN through a join, the other direction: identical bits, not equal.
   let na = if jcond(1) {
-    dz(0.0, 0.0)
+    dz(a = 0.0, b = 0.0)
   } else {
     1.0
   }
@@ -822,11 +822,11 @@ test "#2424 a large Int survives the binding forms the slot log never seeded" {
   assert(f() == "274877906944")
   // A call result -- `Array::get` from the array's element type, a user
   // function from its declared return type.
-  assert(__to_string(Array::get(xs, 0)) == "274877906944")
+  assert(__to_string(Array::get(xs, at = 0)) == "274877906944")
   assert(__to_string(irc_ret_big()) == "274877906944")
   // Through `eq`, the other spelling that reads the same classifier.
-  assert(!eq(Array::get(xs, 0), 65<<32))
-  assert(eq(Array::get(xs, 0), 64<<32))
+  assert(!eq(Array::get(xs, at = 0), 65<<32))
+  assert(eq(Array::get(xs, at = 0), 64<<32))
   // BOTH operands call-shaped. The two lines above cannot reach this case:
   // the linear `eq` gate is a disjunction, so a literal `65<<32` operand
   // satisfies it on its own and the call-shaped one is never asked about.
@@ -835,8 +835,8 @@ test "#2424 a large Int survives the binding forms the slot log never seeded" {
   // Ints compared equal (measured: this assertion trapped on linear while gc,
   // whose classifier already read the checked offsets, answered correctly).
   let ys: Array[Int] = [65<<32]
-  assert(!eq(Array::get(xs, 0), Array::get(ys, 0)))
-  assert(eq(Array::get(xs, 0), irc_ret_big()))
+  assert(!eq(Array::get(xs, at = 0), Array::get(ys, at = 0)))
+  assert(eq(Array::get(xs, at = 0), irc_ret_big()))
   // The controls: the classifier must not start answering Int for everything.
   let s = "hi"
   assert(__to_string(s) == "hi")

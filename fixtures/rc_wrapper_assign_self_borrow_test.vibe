@@ -61,7 +61,7 @@ enum Node {
   Pair(Node, Node)
 }
 
-fn total(n: Node) -> Int {
+fn total(_ n: Node) -> Int {
   match n {
     Pair(a, b) => total(a) + total(b),
     Leaf(v) => v
@@ -72,53 +72,53 @@ fn total(n: Node) -> Int {
 // budgets a dup for the slot it is applied to. Measured, `vibe rc-plan` on this
 // file: `assign_self_borrow_then_consume x dup 1, x drop 1`, against a bare
 // `x drop 1` for the two shapes above.
-fn sink(a: Array[Node]) -> Int {
+fn sink(_ a: Array[Node]) -> Int {
   let b = [a]
   Array::length(b)
 }
 
 // The issue's repro, first half: the answer survives, the free list does not.
-fn assign_self_borrow_use(xss: Array[Array[Node]]) -> Int {
+fn assign_self_borrow_use(_ xss: Array[Array[Node]]) -> Int {
   let mut x = [Leaf(1)]
   x = {
     Array::length(x)
-    Array::get(xss, 0)
+    Array::get(xss, at = 0)
   }
-  let r = total(Array::get(x, 0))
+  let r = total(Array::get(x, at = 0))
   let filler = Pair(Leaf(7), Leaf(8))
-  r * 100 + total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
+  r * 100 + total(Array::get(Array::get(xss, at = 0), at = 0)) * 10 + total(filler) * 0
 }
 
 // The issue's repro, second half: no later read of the slot, so the damage the
 // first half did comes back as a trap in this one's allocation.
-fn assign_self_borrow_unused(xss: Array[Array[Node]]) -> Int {
+fn assign_self_borrow_unused(_ xss: Array[Array[Node]]) -> Int {
   let mut x = [Leaf(1)]
   x = {
     Array::length(x)
-    Array::get(xss, 0)
+    Array::get(xss, at = 0)
   }
   let filler = Pair(Leaf(7), Leaf(8))
-  total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
+  total(Array::get(Array::get(xss, at = 0), at = 0)) * 10 + total(filler) * 0
 }
 
 // A CONSUMING use of the slot after the store. The plan budgets a dup for it,
 // so the slot is in `rc_dup_names` here and is not in the two shapes above --
 // the retain is still required, because the budget's one dup is spent by
 // `sink(x)` and the scope-end drop is left with nothing.
-fn assign_self_borrow_then_consume(xss: Array[Array[Node]]) -> Int {
+fn assign_self_borrow_then_consume(_ xss: Array[Array[Node]]) -> Int {
   let mut x = [Leaf(1)]
   x = {
     Array::length(x)
-    Array::get(xss, 0)
+    Array::get(xss, at = 0)
   }
   let r = sink(x)
   let filler = Pair(Leaf(7), Leaf(8))
-  r * 1000 + total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
+  r * 1000 + total(Array::get(Array::get(xss, at = 0), at = 0)) * 10 + total(filler) * 0
 }
 
 // Twice, because once is green on a broken compiler: the reference the first
 // round releases is `xss`'s, and the second round is what reads it back.
-fn then_consume_twice(xss: Array[Array[Node]]) -> Int {
+fn then_consume_twice(_ xss: Array[Array[Node]]) -> Int {
   let mut acc = 0
   let mut i = 0
   while i < 2 {

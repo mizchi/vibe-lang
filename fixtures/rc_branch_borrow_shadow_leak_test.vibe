@@ -9,8 +9,8 @@
 // After a warmup the loop reuses freed blocks, so the extra allocation over
 // 2000 more executions stays far below one leaked array per execution.
 
-fn peek(xs: Array[Array[Int]]) -> Array[Int] {
-  Array::get(xs, 0)
+fn peek(_ xs: Array[Array[Int]]) -> Array[Int] {
+  Array::get(xs, at = 0)
 }
 
 fn step(xs: Array[Array[Int]], fresh: Bool) -> Int {
@@ -29,7 +29,7 @@ fn step(xs: Array[Array[Int]], fresh: Bool) -> Int {
 // and so leaks on its own (24 B per call, independent of this fix), so this
 // shape is measured against a control that differs only in the closure's
 // name: `grow` shadows nothing, `peek` shadows the borrow-returning `peek`.
-fn keep(a: Array[Int]) -> Int {
+fn keep(_ a: Array[Int]) -> Int {
   let b = a
   Array::length(b)
 }
@@ -70,7 +70,7 @@ fn run(xs: Array[Array[Int]], rounds: Int) -> Int {
   let mut total = 0
   let mut i = 0
   while i < rounds {
-    total = total + step(xs, true) + step(xs, false)
+    total = total + step(xs = xs, fresh = true) + step(xs = xs, fresh = false)
     i = i + 1
   }
   total
@@ -81,9 +81,9 @@ fn run_rec(xs: Array[Array[Int]], rounds: Int, shadowed: Bool) -> Int {
   let mut i = 0
   while i < rounds {
     total = total + if shadowed {
-      step_rec(xs, true)
+      step_rec(xs = xs, fresh = true)
     } else {
-      step_rec_control(xs, true)
+      step_rec_control(xs = xs, fresh = true)
     }
     i = i + 1
   }
@@ -92,9 +92,9 @@ fn run_rec(xs: Array[Array[Int]], rounds: Int, shadowed: Bool) -> Int {
 
 test "a branch-local shadow of a borrow-returning fn is not retained" {
   let xs = [[1, 2], [3, 4, 5]]
-  let warm = run(xs, 200)
+  let warm = run(xs = xs, rounds = 200)
   let before = Profiler::heap_bytes()
-  let total = run(xs, 2000)
+  let total = run(xs = xs, rounds = 2000)
   let grown = Profiler::heap_bytes() - before
   inspect(warm, content = "1000")
   inspect(total, content = "10000")
@@ -104,13 +104,13 @@ test "a branch-local shadow of a borrow-returning fn is not retained" {
 
 test "a let rec shadow passed to an owning callee leaks no more than its control" {
   let xs = [[1, 2], [3, 4, 5]]
-  let _ = run_rec(xs, 200, true)
-  let _ = run_rec(xs, 200, false)
+  let _ = run_rec(xs = xs, rounds = 200, shadowed = true)
+  let _ = run_rec(xs = xs, rounds = 200, shadowed = false)
   let before_ctl = Profiler::heap_bytes()
-  let ctl = run_rec(xs, 2000, false)
+  let ctl = run_rec(xs = xs, rounds = 2000, shadowed = false)
   let grown_ctl = Profiler::heap_bytes() - before_ctl
   let before = Profiler::heap_bytes()
-  let shadowed = run_rec(xs, 2000, true)
+  let shadowed = run_rec(xs = xs, rounds = 2000, shadowed = true)
   let grown = Profiler::heap_bytes() - before
   inspect(ctl, content = "2000")
   inspect(shadowed, content = "2000")
