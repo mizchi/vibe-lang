@@ -1766,7 +1766,20 @@ fn sym_array_read(ctx: Ctx, e: Expr, fname: String, args: Array[Expr], off: Int,
         } else if p.sort != "Int" {
           unsupported(off = off, reason = "an array index that is a `\{p.sort}`")
         } else {
-          let inside = "(and (<= 0 \{p.value}) (< \{p.value} \{arr_len(o.value)}))"
+          // The read sees the array as the index left it: an index that
+          // writes a local array has already done so (`writable_arrays`).
+          let arr = match strip_label(Array::get(args, at = 0)) {
+            EIdent(n, _) => if contains_name(xs = ctx.writable, x = n) {
+              match env_lookup(env = p.env, name = n) {
+                Some((t, _)) => t,
+                None => o.value
+              }
+            } else {
+              o.value
+            },
+            _ => o.value
+          }
+          let inside = "(and (<= 0 \{p.value}) (< \{p.value} \{arr_len(arr)}))"
           let label = if fname == "__index" {
             "\{print_expr(strip_label(Array::get(args, at = 0)))}[\{print_expr(strip_label(Array::get(args, at = 1)))}]"
           } else {
@@ -1774,7 +1787,7 @@ fn sym_array_read(ctx: Ctx, e: Expr, fname: String, args: Array[Expr], off: Int,
           }
           push_obligation(ctx = ctx, kind = "index", label = label, off = off, goal = guarded(pc = p.pc, goal = inside))
           let q = with_pc(st = p, cond = inside)
-          let v = "(select \{arr_data(o.value)} \{p.value})"
+          let v = "(select \{arr_data(arr)} \{p.value})"
           assume_range(ctx = ctx, term = v, sort = "Int", pc = q.pc)
           Array::push(out, value = with_value(st = q, value = v, sort = "Int"))
         }

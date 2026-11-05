@@ -80,7 +80,8 @@ $dir/unproved.vibe:213:57: unproved: the measure k is not negative when the loop
 $dir/unproved.vibe:225:5: unproved: the index of xs[2] is within the array, in \`past_end\` -- counterexample: <model>
 $dir/unproved.vibe:230:1: unproved: ensures (result == 1) of \`overwritten\` -- counterexample: <model>
 $dir/unproved.vibe:237:1: unproved: ensures (result == 0) of \`length_kept\` -- counterexample: <model>
-$dir/unproved.vibe:248:1: unproved: ensures (result == 0) of \`nested_write\` -- counterexample: <model>"
+$dir/unproved.vibe:248:1: unproved: ensures (result == 0) of \`nested_write\` -- counterexample: <model>
+$dir/unproved.vibe:258:1: unproved: ensures (result == 0) of \`read_after_index_write\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:7:9: unsupported: a \`while\` without a \`where { decreases: .. }\` measure: termination is not proved, so the result would be partial correctness only (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, \`Array[Int]\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
