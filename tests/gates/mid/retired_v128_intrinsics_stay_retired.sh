@@ -791,7 +791,7 @@ for bf_lane in shadow gc; do
       bash scripts/vibe_test.sh fixtures/builtin_shadow_region_collections_test.vibe fixtures/builtin_shadow_array_hof_test.vibe \
         fixtures/builtin_shadow_map_fixed_array_test.vibe fixtures/builtin_shadow_sugar_callee_test.vibe \
         fixtures/builtin_shadow_conversion_test.vibe fixtures/builtin_shadow_capability_test.vibe \
-        fixtures/builtin_shadow_entry_scope_test.vibe \
+        fixtures/builtin_shadow_entry_scope_test.vibe fixtures/builtin_shadow_labeled_dep_test.vibe \
         fixtures/resolved_mutlist_runtime_test.vibe fixtures/resolved_mutlist_import_test.vibe \
         fixtures/resolved_array_runtime_test.vibe fixtures/resolved_array_import_test.vibe \
         fixtures/resolved_mutbytes_runtime_test.vibe fixtures/resolved_mutbytes_import_test.vibe \
