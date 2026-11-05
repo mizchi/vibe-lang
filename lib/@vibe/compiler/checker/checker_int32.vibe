@@ -1,11 +1,15 @@
 // 32-bit integers in the checker (#3730).
 
 import @vibe/compiler/core {
-  Expr, Subst, Type, subst_apply, unify
+  Expr, Subst, Type, subst_apply, types_equal, unify
 }
 
 import @vibe/compiler/checker/diagnostics {
   off_marker
+}
+
+import @vibe/compiler/checker/resume {
+  arm_tail_all_return
 }
 
 import @vibe/compiler/checker/type_relations {
@@ -39,17 +43,136 @@ export fn int32_literal_value(_ e: Expr) -> Option[Int] {
 /// fit; so does an array literal of such literals where an `Array` of either
 /// is expected. Anything else keeps `actual`, so a mismatch is reported as
 /// usual.
+///
+/// The literal may sit inside the value, following `expected`'s shape: a
+/// tuple element (`(5, "a")` where `(Int32, String)` is wanted), a `Some(..)`
+/// payload, or the tail of both branches of an `if`. A part whose shape does
+/// not line up with `expected` keeps its inferred type.
 export fn int32_literal_adapt(e: Expr, expected: Type, actual: Type, s: Subst, errors: Array[String], off: Int) -> Type {
   let want = subst_apply(s = s, ty = expected)
-  match want {
-    CtInt32 => int32_literal_fit(e = e, want = want, actual = actual, s = s, errors = errors, off = off),
-    CtUInt32 => int32_literal_fit(e = e, want = want, actual = actual, s = s, errors = errors, off = off),
-    CtArray(inner) => match subst_apply(s = s, ty = inner) {
-      CtInt32 => int32_array_literal_fit(e = e, want = want, elem = CtInt32, actual = actual, s = s, errors = errors, off = off),
-      CtUInt32 => int32_array_literal_fit(e = e, want = want, elem = CtUInt32, actual = actual, s = s, errors = errors, off = off),
-      _ => actual
+  match e {
+    EIf(_, then_e, else_e) => {
+      let t = int32_literal_adapt(e = int32_tail(then_e), expected = want, actual = actual, s = s, errors = errors, off = off)
+      let f = int32_literal_adapt(e = int32_tail(else_e), expected = want, actual = actual, s = s, errors = errors, off = off)
+      if types_equal(a = t, b = f) {
+        t
+      } else {
+        actual
+      }
     },
-    _ => actual
+    _ => match want {
+      CtInt32 => int32_literal_fit(e = e, want = want, actual = actual, s = s, errors = errors, off = off),
+      CtUInt32 => int32_literal_fit(e = e, want = want, actual = actual, s = s, errors = errors, off = off),
+      CtArray(inner) => match subst_apply(s = s, ty = inner) {
+        CtInt32 => int32_array_literal_fit(e = e, want = want, elem = CtInt32, actual = actual, s = s, errors = errors, off = off),
+        CtUInt32 => int32_array_literal_fit(e = e, want = want, elem = CtUInt32, actual = actual, s = s, errors = errors, off = off),
+        _ => actual
+      },
+      CtTuple(wants) => match e {
+        ETuple(items) => match subst_apply(s = s, ty = actual) {
+          CtTuple(actuals) => if Array::length(items) == Array::length(wants) && Array::length(items) == Array::length(actuals) {
+            let out: Array[Type] = []
+            let mut i = 0
+            while i < Array::length(items) {
+              Array::push(out, value = int32_literal_adapt(e = Array::get(items, at = i), expected = Array::get(wants, at = i), actual = Array::get(actuals, at = i), s = s, errors = errors, off = off))
+              i = i + 1
+            }
+            CtTuple(out)
+          } else {
+            actual
+          },
+          _ => actual
+        },
+        _ => actual
+      },
+      CtOption(want_inner) => match e {
+        ECall(EIdent(ctor, _), args, _, _) => if ctor == "Some" && Array::length(args) == 1 {
+          match subst_apply(s = s, ty = actual) {
+            CtOption(inner) => CtOption(int32_literal_adapt(e = Array::get(args, at = 0), expected = want_inner, actual = inner, s = s, errors = errors, off = off)),
+            _ => actual
+          }
+        } else {
+          actual
+        },
+        _ => actual
+      },
+      _ => actual
+    }
+  }
+}
+
+/// The expression a block evaluates to: its tail past `;` and `let`s.
+export fn int32_tail(_ e: Expr) -> Expr {
+  match e {
+    ESeq(_, rest) => int32_tail(rest),
+    ELet(_, _, rest, _) => int32_tail(rest),
+    ELetRec(_, _, rest) => int32_tail(rest),
+    ELetMut(_, _, rest, _) => int32_tail(rest),
+    _ => e
+  }
+}
+
+/// #3730: a struct literal field's value type, an integer literal taking the
+/// field's declared `Int32` / `UInt32` type (`Pixel::{ x: 3 }`).
+export fn int32_field_adapt(fields: Array[(String, Expr)], name: String, expected: Type, actual: Type, s: Subst, errors: Array[String]) -> Type {
+  let mut value = EUnit
+  for f in fields {
+    let (n, v) = f
+    if n == name {
+      value = v
+    } else {
+      ()
+    }
+  }
+  int32_literal_adapt(e = value, expected = expected, actual = actual, s = s, errors = errors, off = 0 - 1)
+}
+
+/// #3730: one branch of a join -- an `if` branch, a `match` arm, an array
+/// element -- against the type joined so far: an integer literal beside an
+/// `Int32` / `UInt32` takes its type. `earlier` are the expressions already
+/// joined, `count` of them read through `earlier_at` only when a sized branch
+/// follows `Int` ones (so a long ordinary `match` costs nothing here); when a
+/// sized one follows nothing but literals, those literals take its type too
+/// and are range-checked here. Answers the joined type and this branch's
+/// type.
+export fn int32_join_branch(count: Int, earlier_at: (Int) -> Expr, e: Expr, joined: Type, actual: Type, s: Subst, errors: Array[String]) -> (Type, Type) {
+  let mine = int32_literal_adapt(e = int32_tail(e), expected = joined, actual = actual, s = s, errors = errors, off = 0 - 1)
+  let sized_now = match subst_apply(s = s, ty = mine) {
+    CtInt32 => true,
+    CtUInt32 => true,
+    _ => false
+  }
+  let joined_is_int = match subst_apply(s = s, ty = joined) {
+    CtInt => true,
+    _ => false
+  }
+  if sized_now && joined_is_int && count > 0 {
+    // An earlier entry that only `return`s yields nothing to the join, so it
+    // neither blocks the adaptation nor needs a range check.
+    let mut all = true
+    let mut i = 0
+    while i < count && all {
+      let prior = earlier_at(i)
+      if !arm_tail_all_return(prior) && int32_literal_value(int32_tail(prior)) is None {
+        all = false
+      }
+      i = i + 1
+    }
+    if all {
+      let mut j = 0
+      while j < count {
+        match int32_literal_value(int32_tail(earlier_at(j))) {
+          Some(n) => int32_literal_range_check(n = n, want = subst_apply(s = s, ty = mine), errors = errors, off = 0 - 1),
+          None => ()
+        }
+        j = j + 1
+      }
+      (mine, mine)
+    } else {
+      (joined, mine)
+    }
+  } else {
+    (joined, mine)
   }
 }
 
