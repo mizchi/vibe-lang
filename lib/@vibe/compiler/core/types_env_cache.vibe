@@ -430,6 +430,88 @@ export fn env_type_defs(_ env: TypeEnv) -> Array[TypeDef] {
   out
 }
 
+fn trait_definition_origin_marker(_ name: String) -> String {
+  String::concat("#trait-origin:", name)
+}
+
+/// #3824: the compiler-only entry a merged program's source boundary carries
+/// for the shipped `@vibe/core` file declaring trait `name`. The merge emits
+/// it (`build_grouped_merged_stmts_impl`), and the checker's `STrait` arm turns
+/// it into `env_bind_trait_definition_origin`, since a merged program has no
+/// import left to project through. The `:` keeps any source name from
+/// spelling it.
+export fn merged_trait_origin_marker(_ name: String) -> String {
+  String::concat("__vibe_internal_trait_origin:", name)
+}
+
+/// #3824: `env` with the origin of the trait `name` bound just above its
+/// definition: `path` is how the module that declares it was imported (its
+/// `import` spelling, `@vibe/core` for the shipped library). The marker is a
+/// binding no source program can name, like `type_definition_origin_marker`.
+export fn env_bind_trait_definition_origin(env: TypeEnv, name: String, path: String) -> TypeEnv {
+  EnvBind(trait_definition_origin_marker(name), env_value_binding_with_origin(ty = CtUnknown, origin = BindingOriginModuleExport(path, name)), env)
+}
+
+/// #3824: the import spelling the nearest definition of trait `name` came
+/// through, when the projection that put it in `env` recorded one. A trait
+/// the program declares itself, or one a lane projected without a marker,
+/// answers `None`: the walk stops at the first definition of `name`, so a
+/// nearer declaration never inherits an older one's origin.
+export fn env_trait_definition_origin(env: TypeEnv, name: String) -> Option[String] {
+  let marker = trait_definition_origin_marker(name)
+  let mut cur = env
+  let mut pending: Option[String] = None
+  let mut result: Option[String] = None
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(n, binding, rest) => {
+        if n == marker {
+          match binding.origin {
+            BindingOriginModuleExport(path, _) => pending = Some(path),
+            _ => ()
+          }
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      EnvTraitDef(tname, _, _, _, rest, _, _) => if tname == name {
+        result = pending
+        done = true
+      } else {
+        pending = None
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(_) => {
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  result
+}
+
 fn type_definition_origin_marker(_ name: String) -> String {
   String::concat("#typedef-origin:", name)
 }

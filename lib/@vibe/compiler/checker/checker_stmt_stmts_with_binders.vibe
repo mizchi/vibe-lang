@@ -51,12 +51,14 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   env_bind,
+  env_bind_trait_definition_origin,
   env_cache_complete,
   env_lookup,
   env_with_reexport_surface_blockers,
   find_typedef,
   generalize_except,
   instantiate,
+  merged_trait_origin_marker,
   overlapping_impl_target_for,
   prelude_ordering_stmt,
   stmts_declare_prelude_ordering_shape,
@@ -2486,7 +2488,16 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           mi = mi + 1
         }
         let is_open = false
-        (EnvTraitDef(name, supers, is_open, methods, env, tparams, method_gens), s, c)
+        let def = EnvTraitDef(name, supers, is_open, methods, env, tparams, method_gens)
+        // #3824: a merged program's shipped `@vibe/core` file says so on its
+        // source boundary; the definition keeps that origin, as a projected
+        // one does (`env_trait_definition_origin`).
+        let with_origin = if merged_region_marks_trait_origin(stmts = stmts, idx = idx, name = name) {
+          env_bind_trait_definition_origin(env = def, name = name, path = "@vibe/core")
+        } else {
+          def
+        }
+        (with_origin, s, c)
       },
       SImpl(tparams, tbounds, trait_name, target_expr) => {
         validate_trait_reference(env = env, key = trait_name, context = "impl head", errors = errors)
@@ -2836,4 +2847,28 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     None => ()
   }
   (final_env, cur_s, cur_c)
+}
+
+/// #3824: whether the merged-program source boundary nearest above `idx`
+/// marks the trait `name` as the shipped `@vibe/core` one
+/// (`merged_trait_origin_marker`, emitted by the merge). Outside a merged
+/// program there is no boundary, and the answer is `false`.
+fn merged_region_marks_trait_origin(stmts: Array[Stmt], idx: Int, name: String) -> Bool {
+  let marker = merged_trait_origin_marker(name)
+  let mut i = idx - 1
+  let mut answer = false
+  let mut done = false
+  while i >= 0 && !done {
+    match Array::get(stmts, at = i) {
+      SReExportSourceBoundary(locals, _) => {
+        for l in locals {
+          answer = answer || l == marker
+        }
+        done = true
+      },
+      _ => ()
+    }
+    i = i - 1
+  }
+  answer
 }

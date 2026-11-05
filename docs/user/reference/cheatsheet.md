@@ -147,8 +147,11 @@ tagged immediate an `Int` is, and every value lies in its type's range:
   holds, so a `Set[Int32]` works, and they are builtin `Map` keys too. A
   trait is borrowed only when each parameter is `Self` itself or mentions no
   `Self`, and no result does: a result, a container or a callback of `Self`
-  would let `Int`'s impl produce a value outside 32 bits, so `Default` and
-  `fill(Self, Array[Self])` are not. WIT `s32` / `u32` project to them
+  would let `Int`'s impl produce a value outside 32 bits, so
+  `fill(Self, Array[Self])` is not. The one exception is the shipped
+  `Default` (the builtin, or `@vibe/core`'s): its `Int` impl returns `0`, in
+  range for both, so `[T: Default]` holds and `T::default()` is `0`. A
+  program's own `trait Default` is not borrowed. WIT `s32` / `u32` project to them
   both ways, and a component's `s32` / `u32` import is typed with them (see
   "Importing a wasm module"), and so is a core module's `i32`, read as
   `UInt32`.
