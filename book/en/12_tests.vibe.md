@@ -8,7 +8,7 @@ A test is a `test "name" { ... }` block written in an ordinary source
 file. There is no framework to install and nothing to import.
 
 ```vibe
-fn double(n: Int) -> Int {
+fn double(_ n: Int) -> Int {
   n * 2
 }
 
@@ -68,7 +68,7 @@ format changes legitimately. `inspect` puts the expected rendering in
 the source, and the tool maintains it:
 
 ```vibe
-fn double(n: Int) -> Int {
+fn double(_ n: Int) -> Int {
   n * 2
 }
 
@@ -104,7 +104,7 @@ be named or the call does not compile:
 
 ```vibe
 test "hits the network" allows Http::request {
-  let _ = Http::request("GET", "http://127.0.0.1:9/", "", "")
+  let _ = Http::request("GET", url = "http://127.0.0.1:9/", headers = "", body = "")
   assert(true)
 }
 ```

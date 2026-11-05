@@ -19,7 +19,7 @@ let sum: (Array[Int]) -> Int = (arr) -> {
   let mut total = 0
   let mut i = 0
   while i < Array::length(arr) {
-    total = total + Array::get(arr, i)
+    total = total + Array::get(arr, at = i)
     i = i + 1
   }
   total
@@ -36,8 +36,8 @@ let join: (Array[String], String) -> String = (parts, sep) -> {
   let sb = StringBuilder::new()
   let mut first = true
   for part in parts {
-    if not(first) { StringBuilder::push(sb, sep) }
-    StringBuilder::push(sb, part)
+    if not(first) { StringBuilder::push(sb, value = sep) }
+    StringBuilder::push(sb, value = part)
     first = false
   }
   StringBuilder::build(sb)
@@ -54,7 +54,7 @@ let has_uppercase: (String) -> Bool = (s) -> {
   let mut found = false
   let mut i = 0
   while i < String::length(s) {
-    if String::byte_at(s, i) >= 65 && String::byte_at(s, i) <= 90 {
+    if String::byte_at(s, at = i) >= 65 && String::byte_at(s, at = i) <= 90 {
       found = true
     }
     i = i + 1
@@ -143,7 +143,7 @@ let process: (String) -> Int with Log = (data) -> {
 
 // in a test: discard the log
 let process_quietly: (String) -> Int = (data) -> {
-  handle { process(data) } with {
+  handle { process(data = data) } with {
     Log::Info(_msg) => resume(());
     Log::Warn(_msg) => resume(())
   }

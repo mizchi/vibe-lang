@@ -8,7 +8,7 @@ English version: [12_tests.vibe.md](../en/12_tests.vibe.md)
 入れるフレームワークも、import するものもありません。
 
 ```vibe
-fn double(n: Int) -> Int {
+fn double(_ n: Int) -> Int {
   n * 2
 }
 
@@ -65,7 +65,7 @@ FAIL demo_test.vibe
 期待される描画結果をソース中に置き、その保守をツールがやります:
 
 ```vibe
-fn double(n: Int) -> Int {
+fn double(_ n: Int) -> Int {
   n * 2
 }
 
@@ -100,7 +100,7 @@ vibe test --update demo_test.vibe
 
 ```vibe
 test "hits the network" allows Http::request {
-  let _ = Http::request("GET", "http://127.0.0.1:9/", "", "")
+  let _ = Http::request("GET", url = "http://127.0.0.1:9/", headers = "", body = "")
   assert(true)
 }
 ```

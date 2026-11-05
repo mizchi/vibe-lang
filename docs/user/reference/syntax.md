@@ -152,7 +152,7 @@ let total = {
   counter
 }
 let rec fact: (Int) -> Int = (n) -> {
-  if n < 2 { 1 } else { n * fact(n - 1) }
+  if n < 2 { 1 } else { n * fact(n = n - 1) }
 }
 let add: (Int, Int) -> Int = (x, y) -> { x + y }
 let id: [T](T) -> T = (x) -> { x }
@@ -165,11 +165,11 @@ same recursive `let` representation before checking and code generation:
 
 ```vibe
 fn add(x: Int, y: Int) -> Int { x + y }
-fn identity[T](x: T) -> T { x }
-fn log(message: String) -> Unit with Console {
+fn identity[T](_ x: T) -> T { x }
+fn log(_ message: String) -> Unit with Console {
   Console::write_stream(message)
 }
-export fn doubled(x: Int) -> Int { x * 2 }
+export fn doubled(_ x: Int) -> Int { x * 2 }
 ```
 
 `fn` is top-level only; use the typed `let` forms above for lambdas and local
@@ -236,8 +236,8 @@ fn greet(name: String, times: Int = 1) -> String {
   "\{name} x\{times}"
 }
 
-export let g1: () -> String = () -> { greet("hi") }
-export let g2: () -> String = () -> { greet("hi", 3) }
+export let g1: () -> String = () -> { greet(name = "hi") }
+export let g2: () -> String = () -> { greet(name = "hi", times = 3) }
 ```
 
 - It is lowered onto the optional parameter below: the parameter is declared
@@ -270,8 +270,8 @@ fn describe(x: Int, note?: String) -> String {
   }
 }
 
-export let a: () -> String = () -> { describe(1) }
-export let b: () -> String = () -> { describe(1, "hi") }
+export let a: () -> String = () -> { describe(x = 1) }
+export let b: () -> String = () -> { describe(x = 1, note = "hi") }
 ```
 
 Rules:

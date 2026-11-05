@@ -14,7 +14,7 @@ Here is a real one. [support/mathx.vibe](support/mathx.vibe) contains an
 exported function:
 
 ```vibe
-export fn triple(x: Int) -> Int {
+export fn triple(_ x: Int) -> Int {
   x * 3
 }
 ```

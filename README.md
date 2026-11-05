@@ -40,14 +40,14 @@ fn safe_div(a: Int, b: Int) -> Int with Exception[String] {
 // Structs and module-local helpers
 struct Point { x: Int; y: Int } derive(Eq, Show)
 
-fn Point::manhattan(p: Point) -> Int {
+fn Point::manhattan(_ p: Point) -> Int {
   p.x + p.y
 }
 
 fn main allows Console {
   // `handle` is where the row is discharged — no per-call unwrapping.
   let result = handle {
-    safe_div(10, 2) + Point::manhattan(Point::{ x: 3, y: 4 })
+    safe_div(a = 10, b = 2) + Point::manhattan(Point::{ x: 3, y: 4 })
   } with {
     Exception[String]::Throw(msg) => {
       println("failed: \{msg}")

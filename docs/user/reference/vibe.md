@@ -177,15 +177,15 @@ Pipe-first error-flow guideline:
 
 ```vibe
 // stubs so the guideline block is self-contained
-fn parse_id(raw: String) -> Int with Exception[String] { 1 }
-fn validate_id(id: Int) -> Int with Exception[String] { id }
-fn load_user_id(id: Int) -> Int with Exception[String] { id }
+fn parse_id(_ raw: String) -> Int with Exception[String] { 1 }
+fn validate_id(_ id: Int) -> Int with Exception[String] { id }
+fn load_user_id(_ id: Int) -> Int with Exception[String] { id }
 
-fn run_core(raw: String) -> Int with Exception[String] {
+fn run_core(_ raw: String) -> Int with Exception[String] {
   raw |> parse_id |> validate_id |> load_user_id
 }
 
-fn run_cli(raw: String) -> Int {
+fn run_cli(_ raw: String) -> Int {
   handle { run_core(raw) } with {
     Exception[String]::Throw(_) => 0 - 1
   }

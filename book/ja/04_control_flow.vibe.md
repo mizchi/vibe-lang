@@ -33,10 +33,10 @@ v = yes
 探索ではそれが欲しい挙動です:
 
 ```vibe run
-fn find_first_neg(arr: Array[Int]) -> Int {
+fn find_first_neg(_ arr: Array[Int]) -> Int {
   let mut i = 0
   while i < Array::length(arr) {
-    if Array::get(arr, i) < 0 {
+    if Array::get(arr, at = i) < 0 {
       return i
     }
     i = i + 1

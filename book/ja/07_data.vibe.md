@@ -97,7 +97,7 @@ enum Shape {
   Rect(Int, Int)
 }
 
-fn area(s: Shape) -> Int {
+fn area(_ s: Shape) -> Int {
   match s {
     Circle(r) => 3 * r * r,
     Rect(w, h) => w * h
@@ -125,7 +125,7 @@ area(Rect(6, 7)) = 42
 `if` で条件を足し、`_` で残りを受けられます:
 
 ```vibe run
-fn classify(n: Int) -> String {
+fn classify(_ n: Int) -> String {
   match n {
     0 => "zero",
     1|2 => "small",

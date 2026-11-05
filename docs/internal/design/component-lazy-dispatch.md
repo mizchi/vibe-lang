@@ -123,16 +123,16 @@ A command module exports exactly one function:
 ```vibe
 import @vibe/command { command_args, command_failed, command_ok }
 
-export fn vibe_command(args: String) -> String with Fs {
+export fn vibe_command(_ args: String) -> String with Fs {
   let argv = command_args(args)
   if Array::length(argv) < 2 {
-    command_failed(2, "usage: cat <file>\n")
+    command_failed(exit = 2, message = "usage: cat <file>\n")
   } else {
-    let path = Array::get(argv, 1)
+    let path = Array::get(argv, at = 1)
     if Fs::exists(path) {
       command_ok(Fs::read_file(path))
     } else {
-      command_failed(1, "cat: no such file: \{path}\n")
+      command_failed(exit = 1, message = "cat: no such file: \{path}\n")
     }
   }
 }
