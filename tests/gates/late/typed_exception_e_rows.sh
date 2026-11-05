@@ -1823,6 +1823,10 @@ bash "$ROOT_DIR/scripts/check_generated_stamp_report_test.sh"
 # under bench/perf/corpus/; this keeps it frozen and the benches pointed at it.
 bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/check_bench_corpus.vibex
 bash "$ROOT_DIR/scripts/check_bench_corpus_test.sh"
+# ...and a step that runs a compiler has to name it. Taking the newest
+# generation directory by mtime certifies whichever compiler was touched last,
+# which on a reused workspace need not be this run's (#3810, #3830).
+bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/check_generation_choice.vibex
 # ...and the fifth: work a lane does that nobody reads. A compile that passes a
 # fresh cache for BOTH body-cache parameters records a body, three meta counts,
 # three slices and one vibe.linemap row per function into an out-cache the
