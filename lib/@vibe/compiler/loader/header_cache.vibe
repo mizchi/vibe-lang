@@ -5,13 +5,20 @@ import @vibe/compiler/cache {
   cache_read_source_fs,
   compact_source_fingerprint_memo,
   fingerprint_file_fs,
-  load_persistent_ast,
+  load_persistent_ast_with_cfg,
   normalize_persistent_cache_text,
   package_index_deps_are_current,
   parse_persistent_module_header_text,
   persistent_module_header_cache_path,
   persistent_module_header_text,
-  store_persistent_ast
+  store_persistent_ast_with_cfg
+}
+
+import @vibe/compiler/config {
+  Config, cfg_flags_from_csv
+}
+import @vibe/parser {
+  cfg_ambient_flags_snapshot, parse_program_located_with_cfg
 }
 
 import @vibe/core {
@@ -47,7 +54,7 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import @vibe/compiler/syntax {
-  cfg_ambient_flags_csv, lex, lex_with_offsets, located_lex_message, offset_to_line_col, parse_program, parse_program_located
+  cfg_ambient_flags_csv, lex, lex_with_offsets, located_lex_message, offset_to_line_col, parse_program
 }
 import @vibe/compiler/contract {
   classify_contract_stmts, contract_facade_marker, extract_package_version, extract_require_pins, parse_contract_program
@@ -585,7 +592,7 @@ export fn merge_impl_raws_dedupe(explicit: Array[String], discovered: Array[Stri
 /// `parse_program_located` pair under the identical `<path>: <msg>` error
 /// wrapping, so one answer serves both.
 ///
-/// Keyed by path, and each path keeps every (source text, ambient `#cfg`
+/// Keyed by path, and each path keeps every (source text, supplied `#cfg`
 /// set) it was asked with:
 /// a same-path re-ingest with different text is a real shape (#897's vpkg
 /// shared-import prefix marker), and the text is compared in full -- a
@@ -743,14 +750,14 @@ fn located_parse_version_index(seen_sources: Array[String], seen_cfgs: Array[Str
 /// #708 (the RC-lane `unreachable` in `tk_name`) reproduces when
 /// lex_with_offsets/parse_program_located are compiled next to an Option
 /// match in the same function.
-fn located_parse_uncached(path: String, source: String) -> Array[Stmt] with Exception {
+fn located_parse_uncached(path: String, source: String, cfg_flags: Array[String]) -> Array[Stmt] with Exception {
   handle {
     let (tokens, starts, _ends) = lex_with_offsets(source)
-    parse_program_located(tokens = tokens, starts = starts, source = source)
+    parse_program_located_with_cfg(tokens = tokens, starts = starts, source = source, cfg_flags = cfg_flags)
   } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), loader_physical_located(source = source, located = located_lex_message(source = source, msg = msg)))) }
 }
 
-fn located_parse_record(path: String, source: String, parsed: Array[Stmt]) -> Unit {
+fn located_parse_record(path: String, source: String, parsed: Array[Stmt], cfg_csv: String) -> Unit {
   if Array::get(located_parse_memo_size, at = 0) >= 1024 {
     Array::set(located_parse_memo_sources, at = 0, value = MutMap::new_string())
     Array::set(located_parse_memo_cfgs, at = 0, value = MutMap::new_string())
@@ -773,16 +780,43 @@ fn located_parse_record(path: String, source: String, parsed: Array[Stmt]) -> Un
     MutMap::set(consumed_now, k = path, v = array_empty())
   }
   Array::push(located_parse_versions(memo = sources_now, path = path), value = source)
-  Array::push(located_parse_versions(memo = cfgs_now, path = path), value = cfg_ambient_flags_csv())
+  Array::push(located_parse_versions(memo = cfgs_now, path = path), value = cfg_csv)
   Array::push(located_parse_stmt_versions(memo = stmts_now, path = path), value = parsed)
   Array::push(located_parse_consumed_versions(memo = consumed_now, path = path), value = false)
   Array::set(located_parse_memo_size, at = 0, value = Array::get(located_parse_memo_size, at = 0) + 1)
 }
 
 export fn parse_program_located_shared(path: String, source: String) -> Array[Stmt] with Exception {
+  let (cfg_flags, cfg_csv) = cfg_ambient_flags_snapshot()
+  if located_parse_flags_cacheable(cfg_flags) {
+    located_parse_shared_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
+  } else {
+    located_parse_without_memo(path = path, source = source, cfg_flags = cfg_flags)
+  }
+}
+
+/// The compatibility setter accepts arbitrary strings. A literal comma cannot
+/// name a directive flag, and its CSV would alias several real flags. Parse
+/// that exact array without caching rather than publish an ambiguous identity.
+fn located_parse_flags_cacheable(_ flags: Array[String]) -> Bool {
+  let mut cacheable = true
+  let mut i = 0
+  while cacheable && i < Array::length(flags) {
+    cacheable = String::index_of(Array::get(flags, at = i), needle = ",") < 0
+    i = i + 1
+  }
+  cacheable
+}
+
+fn located_parse_without_memo(path: String, source: String, cfg_flags: Array[String]) -> Array[Stmt] with Exception {
+  Array::set(located_parse_memo_ran_parser, at = 0, value = true)
+  located_parse_uncached(path = path, source = source, cfg_flags = cfg_flags)
+}
+
+fn located_parse_shared_with_cfg(path: String, source: String, cfg_csv: String, cfg_flags: Array[String]) -> Array[Stmt] with Exception {
   let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
   let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
-  let hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv())
+  let hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_csv)
   if hit >= 0 {
     Array::set(located_parse_memo_ran_parser, at = 0, value = false)
     let cached = Array::get(located_parse_stmt_versions(memo = Array::get(located_parse_memo_stmts, at = 0), path = path), at = hit)
@@ -791,8 +825,8 @@ export fn parse_program_located_shared(path: String, source: String) -> Array[St
     // Set before the parse: a throwing parse ran the parser too, and the
     // exception leaves this function before anything after the call.
     Array::set(located_parse_memo_ran_parser, at = 0, value = true)
-    let parsed = located_parse_uncached(path = path, source = source)
-    located_parse_record(path = path, source = source, parsed = parsed)
+    let parsed = located_parse_uncached(path = path, source = source, cfg_flags = cfg_flags)
+    located_parse_record(path = path, source = source, parsed = parsed, cfg_csv = cfg_csv)
     Array::slice(parsed, start = 0, end = Array::length(parsed))
   }
 }
@@ -806,8 +840,8 @@ export fn parse_program_located_shared(path: String, source: String) -> Array[St
 /// cold lane in `load_or_parse_module_header_fs_impl` dispatches on a plain
 /// `mut` Bool too. The match lives here, where no parser call does, and the
 /// caller asks `Array::length`.
-fn ast_cache_slot_fs(path: String, source_fingerprint: String) -> Array[Array[Stmt]] with Env + Exception + Fs {
-  match load_persistent_ast(path = path, source_fingerprint = source_fingerprint) {
+fn ast_cache_slot_fs(path: String, source_fingerprint: String, cfg_csv: String) -> Array[Array[Stmt]] with Env + Exception + Fs {
+  match load_persistent_ast_with_cfg(path = path, source_fingerprint = source_fingerprint, cfg_csv = cfg_csv) {
     Some(stmts) => [stmts],
     None => array_empty()
   }
@@ -871,17 +905,26 @@ fn ast_cache_active() -> Bool with Env {
 }
 
 export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Env + Exception + Fs {
+  let (cfg_flags, cfg_csv) = cfg_ambient_flags_snapshot()
+  if located_parse_flags_cacheable(cfg_flags) {
+    ast_cache_prefetch_with_cfg(path = path, source = source, cfg_csv = cfg_csv)
+  } else {
+    false
+  }
+}
+
+fn ast_cache_prefetch_with_cfg(path: String, source: String, cfg_csv: String) -> Bool with Env + Exception + Fs {
   if !ast_cache_active() {
     false
   } else {
     let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
     let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
-    if located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv()) >= 0 {
+    if located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_csv) >= 0 {
       false
     } else {
-      let slot = ast_cache_slot_fs(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source))
+      let slot = ast_cache_slot_fs(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source), cfg_csv = cfg_csv)
       if Array::length(slot) == 1 {
-        located_parse_record(path = path, source = source, parsed = Array::get(slot, at = 0))
+        located_parse_record(path = path, source = source, parsed = Array::get(slot, at = 0), cfg_csv = cfg_csv)
         Array::set(ast_cache_prefetch_hits, at = 0, value = Array::get(ast_cache_prefetch_hits, at = 0) + 1)
         true
       } else {
@@ -910,25 +953,42 @@ export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Env +
 /// property `ast_binary_parse_equivalence_test.vibe` asserts against real
 /// compiler sources rather than against the codec itself.
 export fn parse_program_located_shared_fs(path: String, source: String) -> Array[Stmt] with Env + Exception + Fs {
+  let (cfg_flags, cfg_csv) = cfg_ambient_flags_snapshot()
+  if located_parse_flags_cacheable(cfg_flags) {
+    located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
+  } else {
+    located_parse_without_memo(path = path, source = source, cfg_flags = cfg_flags)
+  }
+}
+
+/// One invocation's target flags select both the parse and every cache it uses.
+/// Capture before any filesystem request can run another invocation.
+export fn parse_program_located_shared_fs_configured(path: String, source: String) -> Array[Stmt] with Config + Env + Exception + Fs {
+  let cfg_flags = cfg_flags_from_csv(perform Config::CfgFlags())
+  let cfg_csv = String::join(cfg_flags, sep = ",")
+  located_parse_shared_fs_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
+}
+
+fn located_parse_shared_fs_with_cfg(path: String, source: String, cfg_csv: String, cfg_flags: Array[String]) -> Array[Stmt] with Env + Exception + Fs {
   let seen_sources = located_parse_versions(memo = Array::get(located_parse_memo_sources, at = 0), path = path)
   let seen_cfgs = located_parse_versions(memo = Array::get(located_parse_memo_cfgs, at = 0), path = path)
-  let memo_hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_ambient_flags_csv()) >= 0
+  let memo_hit = located_parse_version_index(seen_sources = seen_sources, seen_cfgs = seen_cfgs, source = source, cfg = cfg_csv) >= 0
   if memo_hit || !ast_cache_active() {
-    parse_program_located_shared(path = path, source = source)
+    located_parse_shared_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
   } else {
     let fingerprint = compact_source_fingerprint_memo(path = path, source = source)
-    let slot = ast_cache_slot_fs(path = path, source_fingerprint = fingerprint)
+    let slot = ast_cache_slot_fs(path = path, source_fingerprint = fingerprint, cfg_csv = cfg_csv)
     if Array::length(slot) == 1 {
       let stmts = Array::get(slot, at = 0)
       // The parser did NOT run, and the telemetry has to say so: a warm
       // decode is the case this exists to create, and counting it as a parse
       // would hide exactly the number worth watching.
       Array::set(located_parse_memo_ran_parser, at = 0, value = false)
-      located_parse_record(path = path, source = source, parsed = stmts)
+      located_parse_record(path = path, source = source, parsed = stmts, cfg_csv = cfg_csv)
       Array::slice(stmts, start = 0, end = Array::length(stmts))
     } else {
-      let parsed = parse_program_located_shared(path = path, source = source)
-      store_persistent_ast(path = path, source_fingerprint = fingerprint, stmts = parsed)
+      let parsed = located_parse_shared_with_cfg(path = path, source = source, cfg_csv = cfg_csv, cfg_flags = cfg_flags)
+      store_persistent_ast_with_cfg(path = path, source_fingerprint = fingerprint, stmts = parsed, cfg_csv = cfg_csv)
       parsed
     }
   }

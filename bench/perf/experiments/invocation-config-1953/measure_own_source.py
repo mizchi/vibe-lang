@@ -8,17 +8,23 @@ parser.add_argument('candidate_root', type=Path)
 parser.add_argument('baseline_wasm', type=Path)
 parser.add_argument('candidate_wasm', type=Path)
 parser.add_argument('output', type=Path)
+parser.add_argument('--ast-cache', choices=('0', '1'), default='0')
+parser.add_argument('--same-source', action='store_true', help='Both compilers consume the candidate snapshot; require identical output across compilers too.')
 args = parser.parse_args()
 candidate = args.candidate_root.resolve()
 baseline = args.baseline_root.resolve()
 work = args.output.resolve()
 work.mkdir(exist_ok=False)
 active = work / 'active'
-sources = {'a': baseline, 'b': candidate}
+sources = {'a': candidate if args.same_source else baseline, 'b': candidate}
 snapshots = {}
 artifacts = {'a': args.baseline_wasm.resolve(), 'b': args.candidate_wasm.resolve()}
 generated = ('compiler_sources_bundle.vibe', 'cli_adapter_bundle.vibe', 'selfbuild_runtime_entry_bundle.vibe', '_cli_adapter_module_source.vibe', 'cache/codegen_fingerprint.vibe')
 receipt = {'protocol': 'Each compiler compiles its own checkout snapshot. Snapshots move through the SAME literal root, compiler, cache and output paths, avoiding path-length and path-content bias. Isolated caches per lane and round; cold then warm in fresh Node processes; AB/BA/AB order; RC=0; compiler/test runs isolated.', 'commits': {}, 'artifacts': {}, 'runs': []}
+receipt['ast_cache'] = args.ast_cache
+receipt['same_source'] = args.same_source
+if args.same_source:
+    receipt['protocol'] = receipt['protocol'].replace('Each compiler compiles its own checkout snapshot.', 'Both compilers compile the same candidate snapshot; outputs must be identical across compilers.')
 for lane, source in sources.items():
     subprocess.run(['git', 'diff', '--exit-code'], cwd=source, check=True, capture_output=True)
     receipt['commits'][lane] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
@@ -43,7 +49,7 @@ for corpus, entry in [('lib/@vibe/compiler/tests/codegen_lexer_test.vibe', '__no
                 cache = active / f'_build/cache-{tag}-{round_no}'
                 assert not cache.exists()
                 cache.mkdir()
-                env = dict({k: v for k, v in os.environ.items() if not k.startswith('VIBE_')}, VIBE_INTERNAL_TRUSTED_SOURCE='1', VIBE_FS_COMPILE='1', VIBE_RC='0', VIBE_IMPORT_ABI='raw', VIBE_PREOPEN_DIR=str(active), VIBE_BUILD_CACHE_DIR=str(cache), VIBE_WASM_MEMORY_STATS='1', PWD=str(active))
+                env = dict({k: v for k, v in os.environ.items() if not k.startswith('VIBE_')}, VIBE_INTERNAL_TRUSTED_SOURCE='1', VIBE_FS_COMPILE='1', VIBE_RC='0', VIBE_IMPORT_ABI='raw', VIBE_PREOPEN_DIR=str(active), VIBE_BUILD_CACHE_DIR=str(cache), VIBE_WASM_MEMORY_STATS='1', VIBE_EXPERIMENTAL_AST_CACHE=args.ast_cache, PWD=str(active))
                 for temperature in ('cold', 'warm'):
                     output = active / '_build/output.wasm'
                     output.unlink(missing_ok=True)
@@ -68,6 +74,8 @@ receipt['medians'] = {tag: {temp: {lane: {metric: statistics.median((x[metric] f
 for tag in ('kpi', 'cli'):
     for lane in ('a', 'b'):
         assert len({x['output_sha256'] for x in receipt['runs'] if x['corpus'] == tag and x['lane'] == lane}) == 1
+    if args.same_source:
+        assert len({x['output_sha256'] for x in receipt['runs'] if x['corpus'] == tag}) == 1
 (work / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
 print(json.dumps(receipt['medians']), flush=True)
 for snapshot in snapshots.values():
