@@ -1,0 +1,146 @@
+// `Int32` / `UInt32` as SMT 32-bit words (#3827, ADR-0122): the terms
+// prove.vibe builds for them. A value is a `(_ BitVec 32)`, so `+ - *`
+// wrap exactly as the runtime does; whether a comparison, a division or a
+// right shift reads the bits signed is decided by the type. Each encoding
+// below was checked against the runtime's answers (`1 << 33 == 2`,
+// `-7 / 2 == -3`, `-7 % 2 == -1`, `MIN / -1 == MIN`, a zero divisor
+// traps).
+
+//# Sorts
+
+/// Whether a prover sort is a 32-bit word.
+export fn is_word_sort(_ sort: String) -> Bool {
+  sort == "Int32" || sort == "UInt32"
+}
+
+/// The SMT spelling of a prover sort: a word is a `(_ BitVec 32)`, every
+/// other sort is spelled as it is.
+export fn smt_sort_text(_ sort: String) -> String {
+  if is_word_sort(sort) {
+    "(_ BitVec 32)"
+  } else {
+    sort
+  }
+}
+
+/// The `Int` range a word of `sort` reads as, inclusive, as SMT terms: a
+/// parameter of `sort` is declared as an `Int` in it (so a counterexample
+/// shows the number the program sees) and used through `word_of_int`.
+export fn word_int_range(_ sort: String) -> (String, String) {
+  if sort == "Int32" {
+    ("(- 2147483648)", "2147483647")
+  } else {
+    ("0", "4294967295")
+  }
+}
+
+//# Conversions
+
+/// The word holding the low 32 bits of an `Int` term: `Int::wrap_int32` /
+/// `Int::wrap_uint32`, and an in-range literal written where a word is
+/// expected.
+export fn word_of_int(_ t: String) -> String {
+  "((_ int2bv 32) \{t})"
+}
+
+/// The `Int` a word of `sort` reads as: signed for `Int32::to_int`,
+/// unsigned for `UInt32::to_int`.
+export fn word_to_int(sort: String, t: String) -> String {
+  if sort == "Int32" {
+    "(ite (bvslt \{t} #x00000000) (- (bv2nat \{t}) 4294967296) (bv2nat \{t}))"
+  } else {
+    "(bv2nat \{t})"
+  }
+}
+
+//# Operators
+
+/// The zero word, which a divisor is owed not to be.
+export fn word_zero() -> String {
+  "#x00000000"
+}
+
+/// `op` applied to a word term of `sort`: `-` and `~`; `""` for any other.
+export fn word_unary(op: String, t: String) -> String {
+  if op == "-" {
+    "(bvneg \{t})"
+  } else if op == "~" {
+    "(bvnot \{t})"
+  } else {
+    ""
+  }
+}
+
+/// `a op b` on two words of `sort`, and the sort of the answer: a word for
+/// arithmetic, bitwise and shift operators, `Bool` for comparisons;
+/// `("", "")` for an operator words do not take. A shift count is taken mod
+/// 32; `>>` is arithmetic on `Int32` and logical on `UInt32`; `/` and `%`
+/// truncate (`bvsdiv` / `bvsrem`) or are unsigned (`bvudiv` / `bvurem`), and
+/// the caller owes the divisor is not zero.
+export fn word_binop(op: String, sort: String, a: String, b: String) -> (String, String) {
+  let signed = sort == "Int32"
+  let count = "(bvand \{b} #x0000001f)"
+  if op == "+" {
+    ("(bvadd \{a} \{b})", sort)
+  } else if op == "-" {
+    ("(bvsub \{a} \{b})", sort)
+  } else if op == "*" {
+    ("(bvmul \{a} \{b})", sort)
+  } else if op == "&" {
+    ("(bvand \{a} \{b})", sort)
+  } else if op == "|" {
+    ("(bvor \{a} \{b})", sort)
+  } else if op == "^" {
+    ("(bvxor \{a} \{b})", sort)
+  } else if op == "<<" {
+    ("(bvshl \{a} \{count})", sort)
+  } else if op == ">>" {
+    (if signed {
+      "(bvashr \{a} \{count})"
+    } else {
+      "(bvlshr \{a} \{count})"
+    }, sort)
+  } else if op == "/" {
+    (if signed {
+      "(bvsdiv \{a} \{b})"
+    } else {
+      "(bvudiv \{a} \{b})"
+    }, sort)
+  } else if op == "%" {
+    (if signed {
+      "(bvsrem \{a} \{b})"
+    } else {
+      "(bvurem \{a} \{b})"
+    }, sort)
+  } else if op == "<" {
+    (if signed {
+      "(bvslt \{a} \{b})"
+    } else {
+      "(bvult \{a} \{b})"
+    }, "Bool")
+  } else if op == "<=" {
+    (if signed {
+      "(bvsle \{a} \{b})"
+    } else {
+      "(bvule \{a} \{b})"
+    }, "Bool")
+  } else if op == ">" {
+    (if signed {
+      "(bvsgt \{a} \{b})"
+    } else {
+      "(bvugt \{a} \{b})"
+    }, "Bool")
+  } else if op == ">=" {
+    (if signed {
+      "(bvsge \{a} \{b})"
+    } else {
+      "(bvuge \{a} \{b})"
+    }, "Bool")
+  } else if op == "==" {
+    ("(= \{a} \{b})", "Bool")
+  } else if op == "!=" {
+    ("(not (= \{a} \{b}))", "Bool")
+  } else {
+    ("", "")
+  }
+}

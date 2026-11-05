@@ -5,11 +5,19 @@ import @vibe/ast {
 }
 
 import @vibe/parser {
-  lex_with_offsets, parse_program_preserving_located, print_expr
+  lex_with_offsets, parse_program_preserving_located, print_expr, print_type_expr
 }
 
 import ./solver.vibe {
   smt_unquote
+}
+
+import ./walk.vibe {
+  call_graph, construct_name, contains_name, expr_kids, expr_off, reaches_cycle
+}
+
+import ./word.vibe {
+  is_word_sort, smt_sort_text, word_binop, word_int_range, word_of_int, word_to_int, word_unary, word_zero
 }
 
 //# Types
@@ -157,181 +165,6 @@ fn collect_sigs(stmts: Array[Stmt], adts: Array[Adt]) -> Array[FnSig] {
   out
 }
 
-//# Call graph
-
-/// Each function of the file and the names it calls, in its body and in its
-/// clauses (a clause may call a function too).
-fn call_graph(_ stmts: Array[Stmt]) -> Array[(String, Array[String])] {
-  let out: Array[(String, Array[String])] = []
-  for s in stmts {
-    match s {
-      SFnDecl(_, name, value, reqs, enss) => {
-        let calls: Array[String] = []
-        collect_calls(expr = value, out = calls)
-        for r in reqs {
-          collect_calls(expr = r, out = calls)
-        }
-        for e in enss {
-          collect_calls(expr = e, out = calls)
-        }
-        Array::push(out, value = (name, calls))
-      },
-      _ => ()
-    }
-  }
-  out
-}
-
-fn graph_callees(graph: Array[(String, Array[String])], name: String) -> Option[Array[String]] {
-  let mut found = None
-  for g in graph {
-    let (n, calls) = g
-    if n == name {
-      found = Some(calls)
-    } else {
-      ()
-    }
-  }
-  found
-}
-
-fn contains_name(xs: Array[String], x: String) -> Bool {
-  let mut found = false
-  for y in xs {
-    if y == x {
-      found = true
-    } else {
-      ()
-    }
-  }
-  found
-}
-
-/// Whether a cycle of the call graph is reachable from `node`, `node`
-/// itself included. `path` is the current DFS path; `done` holds nodes
-/// already shown to reach no cycle.
-fn reaches_cycle(graph: Array[(String, Array[String])], node: String, path: Array[String], done: Array[String]) -> Bool {
-  if contains_name(xs = path, x = node) {
-    true
-  } else if contains_name(xs = done, x = node) {
-    false
-  } else {
-    match graph_callees(graph = graph, name = node) {
-      None => false,
-      Some(calls) => {
-        let next = Array::slice(path, start = 0, end = Array::length(path))
-        Array::push(next, value = node)
-        let mut found = false
-        for c in calls {
-          if !found && reaches_cycle(graph = graph, node = c, path = next, done = done) {
-            found = true
-          } else {
-            ()
-          }
-        }
-        if !found {
-          Array::push(done, value = node)
-        } else {
-          ()
-        }
-        found
-      }
-    }
-  }
-}
-
-/// Every name `expr` calls directly (`f(..)`), anywhere inside it.
-fn collect_calls(expr: Expr, out: Array[String]) -> Unit {
-  match expr {
-    ECall(callee, _, _, _) => match callee {
-      EIdent(n, _) => Array::push(out, value = n),
-      _ => ()
-    },
-    _ => ()
-  }
-  for k in expr_kids(expr) {
-    collect_calls(expr = k, out = out)
-  }
-  ()
-}
-
-/// The direct sub-expressions of `e`. Every variant is listed, so a new one
-/// is a compile error here rather than a call edge the cycle check misses.
-fn expr_kids(_ e: Expr) -> Array[Expr] {
-  match e {
-    EInt(_) => [],
-    EFloat(_) => [],
-    EString(_, _) => [],
-    EBool(_) => [],
-    EIdent(_, _) => [],
-    EUnit => [],
-    EStringInterp(_) => [],
-    ETuple(items) => items,
-    EArray(items) => items,
-    ERecord(_, fields, _) => for f in fields {
-      let (_, v) = f
-      v
-    },
-    EMap(fields) => for f in fields {
-      let (_, v) = f
-      v
-    },
-    EIf(c, t, f) => [c, t, f],
-    ELet(_, v, b, _) => [v, b],
-    ELetRec(_, v, b) => [v, b],
-    ELetMut(_, v, b, _) => [v, b],
-    EAssign(_, v, c, _) => [v, c],
-    EAssignOp(_, _, v, c, _) => [v, c],
-    ESeq(a, b) => [a, b],
-    EMatch(sc, arms) => {
-      let out = [sc]
-      for a in arms {
-        let (_, x) = a
-        Array::push(out, value = x)
-      }
-      out
-    },
-    EHandle(b, arms) => {
-      let out = [b]
-      for a in arms {
-        let (_, x) = a
-        Array::push(out, value = x)
-      }
-      out
-    },
-    EWhile(c, b) => [c, b],
-    ELoop(params, b) => {
-      let out: Array[Expr] = []
-      for p in params {
-        let (_, v) = p
-        Array::push(out, value = v)
-      }
-      Array::push(out, value = b)
-      out
-    },
-    EForIn(_, _, it, b) => [it, b],
-    ECall(callee, args, _, _) => {
-      let out = [callee]
-      for a in args {
-        Array::push(out, value = a)
-      }
-      out
-    },
-    EBinOp(_, l, r, _) => [l, r],
-    EUnaryOp(_, x) => [x],
-    EFn(_, _, _, _, _, b) => [b],
-    EDot(obj, _, _, _) => [obj],
-    ELabeledArg(_, _, v) => [v],
-    EReturn(v) => [v],
-    EBreak(v) => match v {
-      Some(x) => [x],
-      None => []
-    },
-    EContinue(args) => args,
-    ESpread(v) => [v]
-  }
-}
-
 fn sort_of(adts: Array[Adt], ty: Option[TypeExpr]) -> String {
   match ty {
     Some(TyName(n)) => name_sort(adts = adts, name = n),
@@ -377,6 +210,9 @@ fn arr_datatype_decl() -> String {
 fn name_sort(adts: Array[Adt], name: String) -> String {
   if name == "Int" {
     "Int"
+  } else if name == "Int32" || name == "UInt32" {
+    // #3827: a 32-bit word (word.vibe).
+    name
   } else if name == "Bool" {
     "Bool"
   } else {
@@ -516,9 +352,19 @@ fn prove_fn_body(ctx: Ctx, value: Expr) -> Unit with Exception {
           ()
         }
         let smt = smt_symbol(pn)
-        Array::push(ctx.decls, value = (smt, sort))
-        assume_range(ctx = ctx, term = smt, sort = sort, pc = [])
-        Array::push(env, value = (pn, smt, sort))
+        if is_word_sort(sort) {
+          // #3827: declared as the `Int` it reads as, in range, so a
+          // counterexample shows the number the program sees; the body
+          // uses its word.
+          let (lo, hi) = word_int_range(sort)
+          Array::push(ctx.decls, value = (smt, "Int"))
+          Array::push(ctx.assumes, value = "(and (<= \{lo} \{smt}) (<= \{smt} \{hi}))")
+          Array::push(env, value = (pn, word_of_int(smt), sort))
+        } else {
+          Array::push(ctx.decls, value = (smt, sort))
+          assume_range(ctx = ctx, term = smt, sort = sort, pc = [])
+          Array::push(env, value = (pn, smt, sort))
+        }
       }
       for w in writable_arrays(ctx = ctx, params = params, body = body) {
         Array::push(ctx.writable, value = w)
@@ -633,7 +479,7 @@ fn build_query(ctx: Ctx, goal: String, upto: Int) -> String {
   }
   for d in ctx.decls {
     let (n, s) = d
-    Array::push(lines, value = "(declare-const \{n} \{s})")
+    Array::push(lines, value = "(declare-const \{n} \{smt_sort_text(s)})")
   }
   let mut i = 0
   while i < upto {
@@ -790,6 +636,8 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
           Array::push(out, value = o)
         } else if op == "!" && o.sort == "Bool" {
           Array::push(out, value = with_value(st = o, value = "(not \{o.value})", sort = "Bool"))
+        } else if is_word_sort(o.sort) && word_unary(op = op, t = o.value) != "" {
+          Array::push(out, value = with_value(st = o, value = word_unary(op = op, t = o.value), sort = o.sort))
         } else if op == "-" && o.sort == "Int" {
           let t = "(- \{o.value})"
           push_obligation(ctx = ctx, kind = "overflow", label = print_expr(e), off = expr_off(e), goal = guarded(pc = o.pc, goal = in_range(t)))
@@ -898,6 +746,18 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
       // `continue` itself makes `sym_for` owe the clauses.
       EIdent(fname, coff) => if Array::length(args) == 0 && contains_name(xs = ctx.checkpoints, x = fname) {
         [with_value(st = st, value = "true", sort = "Unit")]
+      } else if (fname == "Int::to_int32" || fname == "Int::to_uint32") && match find_sig(fns = ctx.fns, name = fname) {
+        Some(_) => false,
+        None => true
+      } {
+        unsupported(off = off, reason = "`\{fname}` answers an `Option`, which is not modelled; test the range and use `\{if fname == "Int::to_int32" {
+          "Int::wrap_int32"
+        } else {
+          "Int::wrap_uint32"
+        }}`")
+        []
+      } else if is_word_conversion(ctx = ctx, fname = fname, callee_off = coff) {
+        sym_word_conversion(ctx = ctx, fname = fname, args = args, off = off, st = st)
       } else if is_array_write_name(ctx = ctx, fname = fname, callee_off = coff) {
         let at = if index_site_offset(coff) >= 0 {
           index_site_offset(coff)
@@ -919,9 +779,17 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
           None => sym_call(ctx = ctx, fname = fname, args = args, off = off, st = st)
         }
       },
-      _ => {
-        unsupported(off = off, reason = "only a call to a named function is provable")
-        []
+      _ => match ascription_type(callee) {
+        Some(ty) => if Array::length(args) == 1 {
+          sym_ascription(ctx = ctx, ty = ty, arg = strip_label(Array::get(args, at = 0)), off = off, st = st)
+        } else {
+          unsupported(off = off, reason = "only a call to a named function is provable")
+          []
+        },
+        None => {
+          unsupported(off = off, reason = "only a call to a named function is provable")
+          []
+        }
       }
     },
     ERecord(rname, fields, _) => match find_adt(adts = ctx.adts, name = rname) {
@@ -1019,7 +887,9 @@ fn sym_binop(ctx: Ctx, e: Expr, op: String, l: Expr, r: Expr, off: Int, st: Outc
 
 fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) -> Outcome with Exception {
   let ints = a.sort == "Int" && b.sort == "Int"
-  if (op == "+" || op == "-" || op == "*") && ints {
+  if is_word_sort(a.sort) || is_word_sort(b.sort) {
+    word_binop_value(ctx = ctx, e = e, op = op, a = a, b = b, off = off)
+  } else if (op == "+" || op == "-" || op == "*") && ints {
     let t = "(\{op} \{a.value} \{b.value})"
     push_obligation(ctx = ctx, kind = "overflow", label = print_expr(e), off = off, goal = guarded(pc = b.pc, goal = in_range(t)))
     with_value(st = b, value = t, sort = "Int")
@@ -1082,6 +952,134 @@ fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) 
     unsupported(off = off, reason = "`\{op}` on `\{a.sort}` and `\{b.sort}` is outside the provable fragment")
     b
   }
+}
+
+/// #3827: `a op b` where an operand is a 32-bit word. The other operand is a
+/// word of the same type, or a literal written beside it, which the checker
+/// typed as that word and keeps in range; any other `Int` beside a word is
+/// refused rather than guessed. `/` and `%` owe a non-zero divisor, since
+/// one aborts, and continue past it only where it is not zero; everything
+/// else wraps as the runtime does, so no overflow is owed.
+fn word_binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) -> Outcome with Exception {
+  let (l, r) = match e {
+    EBinOp(_, l, r, _) => (l, r),
+    _ => (EUnit, EUnit)
+  }
+  let sort = if is_word_sort(a.sort) {
+    a.sort
+  } else {
+    b.sort
+  }
+  let av = word_operand(o = a, expr = l, sort = sort, op = op, off = off)
+  let bv = word_operand(o = b, expr = r, sort = sort, op = op, off = off)
+  let (t, rsort) = word_binop(op = op, sort = sort, a = av, b = bv)
+  if t == "" {
+    unsupported(off = off, reason = "`\{op}` on `\{sort}`")
+    b
+  } else if op == "/" || op == "%" {
+    let nonzero = "(not (= \{bv} \{word_zero()}))"
+    push_obligation(ctx = ctx, kind = "divisor", label = print_expr(e), off = off, goal = guarded(pc = b.pc, goal = nonzero))
+    with_value(st = with_pc(st = b, cond = nonzero), value = t, sort = rsort)
+  } else {
+    with_value(st = b, value = t, sort = rsort)
+  }
+}
+
+/// An operand of a word operator as a word of `sort`: itself, or a literal
+/// written beside one.
+fn word_operand(o: Outcome, expr: Expr, sort: String, op: String, off: Int) -> String with Exception {
+  if o.sort == sort {
+    o.value
+  } else if o.sort == "Int" && is_int_literal(expr) {
+    word_of_int(o.value)
+  } else {
+    unsupported(off = off, reason = "`\{op}` with a `\{sort}` and a `\{o.sort}` that is not a literal")
+    ""
+  }
+}
+
+/// A literal integer as written: `5`, `-5`.
+fn is_int_literal(_ e: Expr) -> Bool {
+  match e {
+    EInt(_) => true,
+    EUnaryOp("-", EInt(_)) => true,
+    _ => false
+  }
+}
+
+/// #3827: `Int32::to_int` / `UInt32::to_int` / `Int::wrap_int32` /
+/// `Int::wrap_uint32`, exact: a word read as the `Int` it holds, signed or
+/// not, and an `Int` cut to its low 32 bits. `Int::to_int32` /
+/// `Int::to_uint32` answer an `Option`, which is not modelled.
+fn is_word_conversion(ctx: Ctx, fname: String, callee_off: Int) -> Bool {
+  (fname == "Int32::to_int" || fname == "UInt32::to_int" || fname == "Int::wrap_int32" || fname == "Int::wrap_uint32") && (is_builtin_ref_offset(callee_off) || match find_sig(fns = ctx.fns, name = fname) {
+    Some(_) => false,
+    None => true
+  })
+}
+
+fn sym_word_conversion(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -> Array[Outcome] with Exception {
+  if Array::length(args) != 1 {
+    unsupported(off = off, reason = "`\{fname}` with \{Array::length(args)} argument(s)")
+  } else {
+    ()
+  }
+  let (from, to) = if fname == "Int32::to_int" {
+    ("Int32", "Int")
+  } else if fname == "UInt32::to_int" {
+    ("UInt32", "Int")
+  } else if fname == "Int::wrap_int32" {
+    ("Int", "Int32")
+  } else {
+    ("Int", "UInt32")
+  }
+  let out: Array[Outcome] = []
+  for o in sym(ctx = ctx, e = strip_label(Array::get(args, at = 0)), st = st) {
+    if o.returned {
+      Array::push(out, value = o)
+    } else if o.sort != from {
+      unsupported(off = off, reason = "`\{fname}` of a `\{o.sort}`")
+    } else if to == "Int" {
+      Array::push(out, value = with_value(st = o, value = word_to_int(sort = from, t = o.value), sort = "Int"))
+    } else {
+      Array::push(out, value = with_value(st = o, value = word_of_int(o.value), sort = to))
+    }
+  }
+  out
+}
+
+/// #3827: `((__asc: T) -> __asc)(e)`, the parser's spelling of `let x: T =
+/// e`, as `e` read at `T`: unchanged when the sorts agree, and a literal
+/// written where a word is expected as that word. Anything else is refused.
+fn ascription_type(_ callee: Expr) -> Option[TypeExpr] {
+  match callee {
+    EFn(tps, _, params, _, _, EIdent(body_name, _)) => if Array::length(tps) == 0 && Array::length(params) == 1 {
+      let (pn, pty) = Array::get(params, at = 0)
+      if pn == body_name && String::starts_with(pn, prefix = "__") {
+        pty
+      } else {
+        None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn sym_ascription(ctx: Ctx, ty: TypeExpr, arg: Expr, off: Int, st: Outcome) -> Array[Outcome] with Exception {
+  let want = sort_of(adts = ctx.adts, ty = Some(ty))
+  let out: Array[Outcome] = []
+  for o in sym(ctx = ctx, e = arg, st = st) {
+    if o.returned || o.sort == want {
+      Array::push(out, value = o)
+    } else if is_word_sort(want) && o.sort == "Int" && is_int_literal(arg) {
+      Array::push(out, value = with_value(st = o, value = word_of_int(o.value), sort = want))
+    } else {
+      unsupported(off = off, reason = "a `\{o.sort}` read as `\{print_type_expr(ty)}`")
+    }
+  }
+  out
 }
 
 /// The count of a shift when its SMT term is a decimal constant from 0 to
@@ -2227,7 +2225,7 @@ fn sym_call(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -
   // Arguments run left to right, in the order written; each path carries
   // the values so far. A labeled argument (`f(x = e)`) is matched to the
   // parameter of that name afterwards.
-  let mut states: Array[(Outcome, Array[String])] = [(st, [])]
+  let mut states: Array[(Outcome, Array[(String, String)])] = [(st, [])]
   let out: Array[Outcome] = []
   let slots: Array[Int] = []
   let mut pos = 0
@@ -2245,7 +2243,12 @@ fn sym_call(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -
       ELabeledArg(_, _, v) => v,
       _ => a0
     }
-    let next: Array[(Outcome, Array[String])] = []
+    let next: Array[(Outcome, Array[(String, String)])] = []
+    let literal = if is_int_literal(a) {
+      "literal"
+    } else {
+      ""
+    }
     for pair in states {
       let (s0, vals) = pair
       for o in sym(ctx = ctx, e = a, st = s0) {
@@ -2253,7 +2256,11 @@ fn sym_call(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -
           Array::push(out, value = o)
         } else {
           let vs = Array::slice(vals, start = 0, end = Array::length(vals))
-          Array::push(vs, value = o.value)
+          Array::push(vs, value = (o.value, String::concat(o.sort, if literal == "" {
+            ""
+          } else {
+            ":literal"
+          })))
           Array::push(next, value = (o, vs))
         }
       }
@@ -2271,7 +2278,17 @@ fn sym_call(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -
       let mut v = ""
       while j < Array::length(slots) {
         if Array::get(slots, at = j) == i {
-          v = Array::get(vals, at = j)
+          let (val, vsort) = Array::get(vals, at = j)
+          // #3827: a word parameter takes a word, or a literal written for
+          // it; an `Int` value there is a sort the checker would not admit.
+          v = if !is_word_sort(ps) || vsort == ps {
+            val
+          } else if vsort == "Int:literal" {
+            word_of_int(val)
+          } else {
+            unsupported(off = off, reason = "`\{fname}` passes a `\{vsort}` for its `\{ps}` parameter `\{pn}`")
+            val
+          }
         } else {
           ()
         }
@@ -2332,56 +2349,6 @@ fn param_index(sig: FnSig, name: String, off: Int) -> Int with Exception {
     ()
   }
   found
-}
-
-//# Source positions
-
-/// The smallest source offset recorded inside `e`, or -1.
-fn expr_off(_ e: Expr) -> Int {
-  match e {
-    EIdent(_, off) => off,
-    EBinOp(_, l, r, off) => min_off(a = min_off(a = off, b = expr_off(l)), b = expr_off(r)),
-    EUnaryOp(_, x) => expr_off(x),
-    ECall(callee, _, off, _) => min_off(a = off, b = expr_off(callee)),
-    EIf(c, _, _) => expr_off(c),
-    EString(_, off) => off,
-    _ => 0 - 1
-  }
-}
-
-fn min_off(a: Int, b: Int) -> Int {
-  if a < 0 {
-    b
-  } else if b < 0 || a < b {
-    a
-  } else {
-    b
-  }
-}
-
-fn construct_name(_ e: Expr) -> String {
-  match e {
-    ELetMut(_, _, _, _) => "let mut",
-    EAssign(_, _, _, _) => "assignment",
-    EAssignOp(_, _, _, _, _) => "assignment",
-    EWhile(_, _) => "while",
-    ELoop(_, _) => "loop",
-    EForIn(_, _, _, _) => "for",
-    EMatch(_, _) => "match",
-    EHandle(_, _) => "handle",
-    EFn(_, _, _, _, _, _) => "a lambda",
-    EString(_, _) => "a String",
-    EStringInterp(_) => "a String",
-    EFloat(_) => "a Float64",
-    EArray(_) => "an Array",
-    ETuple(_) => "a tuple",
-    ERecord(_, _, _) => "a struct",
-    EMap(_) => "a Map",
-    EDot(_, _, _, _) => "a field access",
-    EBreak(_) => "break",
-    EContinue(_) => "continue",
-    _ => "this expression"
-  }
 }
 
 //# Datatypes (#3719)
