@@ -241,27 +241,35 @@ export fn builtin_alias_marker(_ name: String) -> String {
 /// (Codex on #3839). It counts only while the binding `name` resolves to is
 /// still the import that bound it: an imported origin whose source is the
 /// builtin itself.
+///
+/// This runs for every call placement checks and every qualified value
+/// reference, so the binding is read first and the marker key is built and
+/// looked up only for a renamed import.
 export fn checker_builtin_alias_target(env: TypeEnv, name: String) -> Option[String] {
-  match env_lookup(env = env, name = builtin_alias_marker(name)) {
-    Some(CtRecord(fields)) => if Array::length(fields) == 1 {
-      let (canonical, _) = Array::get(fields, at = 0)
-      let source = match env_lookup_binding(env = env, name = name) {
-        Some(binding) => match binding.origin {
-          BindingOriginModuleExport(_, original) => original,
-          BindingOriginReExportSurface(_, original) => original,
-          _ => ""
-        },
-        None => ""
-      }
-      if canonical_builtin_name(source) == canonical {
-        Some(canonical)
+  let source = match env_lookup_binding(env = env, name = name) {
+    Some(binding) => match binding.origin {
+      BindingOriginModuleExport(_, original) => original,
+      BindingOriginReExportSurface(_, original) => original,
+      _ => name
+    },
+    None => name
+  }
+  if source == name {
+    None
+  } else {
+    match env_lookup(env = env, name = builtin_alias_marker(name)) {
+      Some(CtRecord(fields)) => if Array::length(fields) == 1 {
+        let (canonical, _) = Array::get(fields, at = 0)
+        if canonical_builtin_name(source) == canonical {
+          Some(canonical)
+        } else {
+          None
+        }
       } else {
         None
-      }
-    } else {
-      None
-    },
-    _ => None
+      },
+      _ => None
+    }
   }
 }
 
