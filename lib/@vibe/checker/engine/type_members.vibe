@@ -29,9 +29,14 @@ import @vibe/compiler/core {
   resolve_import_path,
   resolve_import_path_candidates
 }
+import @vibe/compiler/core {
+  Subst, generalize
+}
 import @vibe/compiler/checker {
+  is_explicit_builtin_declaration,
   is_param_names_marker,
   is_retention_summary_marker,
+  lookup_builtin_in_env,
   param_names_marker,
   param_names_marker_target,
   retention_summary_marker,
@@ -589,6 +594,36 @@ export fn env_flat_param_rows(_ bindings: Array[(String, Type)]) -> Array[(Strin
   }
 }
 
+/// #3758: what a companion renamed under a type alias is bound to, when the
+/// dependency published it as a builtin operation (`export { Float64::floor }`).
+///
+/// Publication carries a builtin as an authority marker typed `CtUnknown`
+/// (`engine_prepend_explicit_builtin_value_markers`): the importer types the
+/// canonical spelling from the builtin table, so the marker's type is never
+/// read. Renamed under `import @vibe/builtin { Float64 as D }`, the marker
+/// became `D::floor`, a name the builtin table does not know, and the
+/// `CtUnknown` was read as the answer: `D::floor(1.5)` checked against any
+/// argument and any result, and printed the raw representation (`340`).
+///
+/// The alias is bound with the builtin's own signature instead, generalized so
+/// every use instantiates it fresh. The import-alias rewrite later spells the
+/// call `Float64::floor`, so the type checked is the type of the code that
+/// runs. A builtin with no checker signature is not bound at all, so a use of
+/// it is an unknown name rather than an untyped one.
+fn engine_renamed_builtin_member_type(name: String, ty: Type) -> Option[Type] {
+  match ty {
+    CtUnknown => if is_explicit_builtin_declaration(name) {
+      match lookup_builtin_in_env(env = EnvEmpty, name = name) {
+        Some(sig) => Some(generalize(s = SubstEmpty, ty = sig)),
+        None => None
+      }
+    } else {
+      Some(ty)
+    },
+    _ => Some(ty)
+  }
+}
+
 export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], source_owner: String, local_owner: String, trait_mappings: Array[(String, String)], reexport_surface_only: Bool) -> TypeEnv {
   let qual_prefix = String::concat(source_owner, "::")
   let mut out = acc
@@ -650,7 +685,16 @@ export fn engine_bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv
           candidate_name
         }
         let origin = engine_selected_module_binding_origin(dep_env = dep_env, resolved = resolved, source_name = candidate_name, reexport_surface_only = reexport_surface_only)
-        out = env_bind_with_origin(env = out, name = local_name, ty = engine_trait_projection_map_type_bounds(ty = candidate_ty, mappings = trait_mappings), origin = origin)
+        let projected = engine_trait_projection_map_type_bounds(ty = candidate_ty, mappings = trait_mappings)
+        let renamed = local_name != candidate_name
+        match (if renamed {
+          engine_renamed_builtin_member_type(name = candidate_name, ty = projected)
+        } else {
+          Some(projected)
+        }) {
+          Some(bound_ty) => out = env_bind_with_origin(env = out, name = local_name, ty = bound_ty, origin = origin),
+          None => ()
+        }
         // A member marker follows its companion, renamed with it, so a
         // contract further down can tell an impl or derived method from a
         // free function under the same type (`local_type_member_markers`).
