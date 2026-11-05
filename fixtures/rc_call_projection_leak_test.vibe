@@ -67,23 +67,23 @@ struct Q2 {
   m: Int
 }
 
-fn mk(i: Int) -> P {
+fn mk(_ i: Int) -> P {
   P::{ x: i, y: 1 }
 }
 
-fn mkb(i: Int) -> B {
+fn mkb(_ i: Int) -> B {
   B::{ y: i, z: 2 }
 }
 
-fn mkq(i: Int) -> Q {
+fn mkq(_ i: Int) -> Q {
   Q::{ a: [i, i + 1, i + 2], n: i }
 }
 
-fn mkq2(i: Int) -> Q2 {
+fn mkq2(_ i: Int) -> Q2 {
   Q2::{ inner: mkq(i), m: 1 }
 }
 
-fn pair(i: Int) -> (Int, Int) {
+fn pair(_ i: Int) -> (Int, Int) {
   (i, 1)
 }
 
@@ -91,25 +91,25 @@ fn apply_p(f: (Int) -> P, v: Int) -> P {
   f(v)
 }
 
-fn user_call(i: Int) -> Int {
+fn user_call(_ i: Int) -> Int {
   (mk(i).y - 1) * 0
 }
 
-fn closure_call(i: Int) -> Int {
+fn closure_call(_ i: Int) -> Int {
   let get = (k: Int) -> P { P::{ x: k, y: i } }
   get(1).x * 0
 }
 
-fn higher_order_call(i: Int) -> Int {
+fn higher_order_call(_ i: Int) -> Int {
   let f = (k: Int) -> P { P::{ x: k, y: i } }
-  (apply_p(f, 1).y + apply_p(f, 2).x) * 0
+  (apply_p(f = f, v = 1).y + apply_p(f = f, v = 2).x) * 0
 }
 
-fn tuple_call(i: Int) -> Int {
+fn tuple_call(_ i: Int) -> Int {
   (pair(i).0 + pair(i).1) * 0
 }
 
-fn dispatched_slot(i: Int) -> Int {
+fn dispatched_slot(_ i: Int) -> Int {
   (mk(i).y + mkb(i).y) * 0
 }
 
@@ -117,50 +117,50 @@ fn dispatched_slot(i: Int) -> Int {
 // the reference the lowering took before releasing the temporary, so a
 // consumer that stores it takes that reference instead of retaining another
 // (cc_is_owned_projection), and a borrowing one releases it.
-fn heap_borrowed_arg(i: Int) -> Int {
+fn heap_borrowed_arg(_ i: Int) -> Int {
   (Array::length(mkq(i).a) - 3) * 0
 }
 
-fn heap_let(i: Int) -> Int {
+fn heap_let(_ i: Int) -> Int {
   let v = mkq(i).a
-  (Array::get(v, 1) - (i + 1)) * 0
+  (Array::get(v, at = 1) - (i + 1)) * 0
 }
 
-fn heap_record_field(i: Int) -> Int {
+fn heap_record_field(_ i: Int) -> Int {
   let h = H::{ inner: mkq(i).a }
-  (Array::get(h.inner, 2) - (i + 2)) * 0
+  (Array::get(h.inner, at = 2) - (i + 2)) * 0
 }
 
-fn heap_ctor_arg(i: Int) -> Int {
+fn heap_ctor_arg(_ i: Int) -> Int {
   let o = Some(mkq(i).a)
   match o {
-    Some(xs) => (Array::get(xs, 0) - i) * 0,
+    Some(xs) => (Array::get(xs, at = 0) - i) * 0,
     None => 1
   }
 }
 
-fn heap_tuple_elem(i: Int) -> Int {
+fn heap_tuple_elem(_ i: Int) -> Int {
   let t = (mkq(i).a, 1)
   (Array::length(t.0) - 3) * 0
 }
 
-fn geta(i: Int) -> Array[Int] {
+fn geta(_ i: Int) -> Array[Int] {
   mkq(i).a
 }
 
-fn heap_returned(i: Int) -> Int {
+fn heap_returned(_ i: Int) -> Int {
   (Array::length(geta(i)) - 3) * 0
 }
 
-fn heap_nested(i: Int) -> Int {
+fn heap_nested(_ i: Int) -> Int {
   let v = mkq2(i).inner.a
-  (Array::length(mkq2(i).inner.a) + Array::get(v, 1) - 3 - (i + 1)) * 0
+  (Array::length(mkq2(i).inner.a) + Array::get(v, at = 1) - 3 - (i + 1)) * 0
 }
 
-fn heap_assigned(i: Int) -> Int {
+fn heap_assigned(_ i: Int) -> Int {
   let mut cur: Array[Int] = []
   cur = mkq(i).a
-  (Array::get(cur, 0) - i) * 0
+  (Array::get(cur, at = 0) - i) * 0
 }
 
 // Controls: the heap field is kept past the loop, by an owning call, a push
@@ -168,17 +168,17 @@ fn heap_assigned(i: Int) -> Int {
 // array that keeps it (VIBE_RC=shadow traps on that). Each run keeps three
 // arrays alive, which is what the gate's bound allows for.
 fn keep(ks: Array[Array[Int]], xs: Array[Int]) -> Int {
-  Array::push(ks, xs)
+  Array::push(ks, value = xs)
   Array::length(ks)
 }
 
 fn heap_field_kept(ks: Array[Array[Int]], i: Int) -> Int {
-  let n = keep(ks, mkq(i).a)
-  Array::push(ks, mkq(i + 1).a)
+  let n = keep(ks = ks, xs = mkq(i).a)
+  Array::push(ks, value = mkq(i + 1).a)
   let v = mkq(i + 2).a
-  Array::push(ks, v)
-  let last = Array::get(ks, n + 1)
-  (Array::get(Array::get(ks, n - 1), 0) + Array::get(Array::get(ks, n), 0) + Array::get(last, 0) - 3 * i - 3) * 0
+  Array::push(ks, value = v)
+  let last = Array::get(ks, at = n + 1)
+  (Array::get(Array::get(ks, at = n - 1), at = 0) + Array::get(Array::get(ks, at = n), at = 0) + Array::get(last, at = 0) - 3 * i - 3) * 0
 }
 
 // The other direction: a read off a NAMED binding is a view, and every owning
@@ -188,10 +188,10 @@ fn borrowed_field_kept(ks: Array[Array[Int]], i: Int) -> Int {
   let q = mkq(i)
   let h = H::{ inner: q.a }
   let t = (q.a, 1)
-  Array::push(ks, q.a)
-  let n = keep(ks, h.inner)
-  Array::push(ks, t.0)
-  (Array::get(Array::get(ks, n - 2), 0) + Array::get(Array::get(ks, n - 1), 1) + Array::get(Array::get(ks, n), 2) + q.n - 4 * i - 3) * 0
+  Array::push(ks, value = q.a)
+  let n = keep(ks = ks, xs = h.inner)
+  Array::push(ks, value = t.0)
+  (Array::get(Array::get(ks, at = n - 2), at = 0) + Array::get(Array::get(ks, at = n - 1), at = 1) + Array::get(Array::get(ks, at = n), at = 2) + q.n - 4 * i - 3) * 0
 }
 
 fn main() -> Int {
@@ -203,5 +203,5 @@ fn main() -> Int {
     i = i + 1
   }
   let ks: Array[Array[Int]] = []
-  acc + heap_field_kept(ks, 7) + borrowed_field_kept(ks, 9)
+  acc + heap_field_kept(ks = ks, i = 7) + borrowed_field_kept(ks = ks, i = 9)
 }
