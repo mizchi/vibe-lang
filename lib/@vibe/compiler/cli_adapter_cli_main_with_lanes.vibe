@@ -532,97 +532,24 @@ fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
 /// switch (command selectors, VIBE_CFG, VIBE_UNSTABLE, the trusted-source
 /// boundary) behaves identically on both.
 fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String) -> (Bytes, String) with Exception + Fs + Env, ss_lanes: (cli_adapter_SsLane, String, String, Bool, String) -> Bytes with Exception) -> Int with Exception + Fs + Env + Profiler + Stdin + Console {
-  // Reset the process-wide TDRE8 cell before every invocation. Only the
-  // check-only branch may enable it after strict policy validation below;
-  // build/codegen lanes stay conservative, and a prior check in a long-lived
-  // instance cannot leak its policy into a later invocation.
+  // Typing-dependency env reuse (TDRE10) is the default on every lane, the
+  // compile lanes included (#2728). `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1`
+  // opts out, and an invalidation trace forces it off so the trace stays
+  // observation-only. The cell is process-wide, so it is reset here before
+  // every invocation: a long-lived instance cannot carry one invocation's
+  // policy into the next. The check-only and FS-compile branches then re-read
+  // the policy strictly (`configure_typing_dependency_env_reuse_policy`), so a
+  // malformed value is refused there with a message rather than read as on.
   //
-  // #2510 criterion 5, OPT-IN and off by default:
-  // `VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE=1` lets a COMPILE take the
-  // same reuse the check lane has as production default (TDRE10; TDRE8 is the
-  // retired protocol v23 replaced), so the reset below reads the opt-in rather
-  // than a bare `false`.
-  //
-  // The measurement that asks for it: with reuse on, a one-leaf edit to the
-  // compiler's own closure re-checks exactly ONE of 197 planned modules
-  // (`modules_rechecked: 1`, 130 reused through the dependency-transport env
-  // and 66 through the conservative fingerprint). With it off -- which is what
-  // every build does today -- the same edit costs the compile 331.4 MB in its
-  // check phase, MORE than a cold check's 269.2 MB, while an unchanged warm
-  // build spends 11.3 MB there (`scripts/compile_phase_memory.sh`). That one
-  // phase is the whole gap between a warm build and a cold one.
-  //
-  // MEASURED 2026-09-12, and it is a REGRESSION -- this stays off, and the
-  // reason is no longer "unproven". Same corpus, same heap-mark instrument,
-  // reproduced to the byte across two invocations
-  // (`scripts/compile_phase_memory.sh`), check phase:
-  //
-  //              off (default)      on
-  //   cold           270.9 MB   1647.1 MB
-  //   unchanged       11.4 MB     11.4 MB
-  //   leaf-edited    344.9 MB    812.7 MB
-  //
-  // 2.4x worse on the very edit it was meant to fix, 6.1x cold. The COLD row
-  // BOUNDS it: a cold compile can reuse nothing, so all of that 1.38 GB is the
-  // transport machinery running for a read that cannot succeed. The unchanged
-  // row is identical in both lanes, so the reuse arm is not even reached
-  // there; the conservative fingerprint short-circuits it.
-  //
-  // It does NOT say the cost is publication. On a miss the enabled lane pays
-  // in two places: `finish_typecheck_fs_impl` runs
-  // `typing_dependency_env_reuse_is_eligible`, builds
-  // `typing_dependency_transport_input_key` (verbatim source plus each
-  // dependency's exact env text) and calls
-  // `load_typing_dependency_env_reuse_target`, which misses for every module
-  // on a cold compile; then `commit_module_outcome` runs the eligibility walk
-  // again, builds the same large key AGAIN, and publishes the eligibility and
-  // sidecar. The eligibility walk is not a cheap predicate: per dependency it
-  // is `Fs::exists` + `Fs::read_file` + a binding parse +
-  // `load_canonical_typing_dependency_env_reuse_target`. Four terms, two of
-  // them paid twice per module, all inside that one number, and nothing
-  // measured here separates them.
-  //
-  // Nothing measured here shows it is WRONG, and nothing shows it is RIGHT
-  // either. With the body cache off so a replayed body cannot mask a
-  // difference, a compile's output is byte-identical with the flag on and off
-  // at both temperatures -- but the cold comparison has no reuse hit to get
-  // wrong, and the edited one appends a COMMENT, so the program's meaning is
-  // unchanged and a stale reused env answers the same as a fresh one. Neither
-  // exercises a reuse hit on a program whose meaning changed, which is the
-  // case that could be silently wrong. So this is kept as the instrument that
-  // produced the table, not as a switch anyone should flip.
-  //
-  // The deletion condition is therefore BOTH halves, and the correctness half
-  // is not discharged. It needs an oracle that actually reaches a reuse HIT,
-  // which most edit shapes cannot: the input key is the module's VERBATIM
-  // source plus each dependency's exact env text
-  // (`typing_dependency_transport_input_key`), so editing the module under
-  // test changes its own key and editing a dependency's INTERFACE changes
-  // every consumer's key -- both MISS and are freshly checked, and an oracle
-  // built from them passes whether or not the reuse arm is correct.
-  //
-  // The shape that hits is a dependency-body edit that changes MEANING while
-  // leaving the dependency's public `TypeEnv` text identical: the consumer's
-  // key is then unchanged, the hit happens, and the question is whether the
-  // compile-only state it republishes (the typed-lowering offsets, #2391) is
-  // still right. The public env being equal is exactly what makes the hit
-  // happen and exactly why the public env cannot detect the problem.
-  //
-  // So: that edit shape, a check that the unchanged consumer really recorded
-  // a dependency-transport hit (or the oracle is vacuous again), and the wasm
-  // compared against reuse disabled. AND the transport ceasing to cost more
-  // than the read saves, which needs the four-term split above measured
-  // first. A compile consumes more of a module's check than the public env
-  // carries (the typed-lowering offsets the reuse arm republishes, #2391),
-  // and "the check lane proves it" was a claim about the check lane. #2728.
-  //
-  // It is read in EXPRESSION position and named in `OBSERVATION_ONLY`
-  // (`scripts/check_selector_precedence.sh`) for the same reason
-  // `VIBE_UNSTABLE` is: it picks no verb, it modifies whichever lane was
-  // already selected, and a caller sets it deliberately -- entering
-  // `VIBE_SELECTOR_ORDER` would make `selector_clears_before` strip it on the
-  // compile lanes it exists for.
-  set_experimental_typing_dependency_env_reuse_enabled(Env::get("VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE") == "1")
+  // What licenses the compile lanes: `scripts/compile_typing_env_reuse_oracle.mjs`
+  // (stage2-oracles) compiles a dependency-body edit that changes meaning but
+  // not the public env -- the one shape whose consumers reuse -- requires the
+  // hit, and compares the module against a fresh compile with reuse off; its
+  // self-test strips the reused typed-lowering rows (#2391) and requires the
+  // build to be refused. The cold cost is about 1% of heap on the selfcompile
+  // KPI input since the key and witness stopped being materialized (#3808).
+  // `docs/internal/operations/incremental-build.md` has the measurements.
+  set_experimental_typing_dependency_env_reuse_enabled(Env::get("VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE") != "1" && Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT") == "")
   // #2513: the `#cfg` flag set, for every module this invocation parses and
   // for every cache key it touches. Set before ANY lane runs, like the
   // switches below.
@@ -1052,9 +979,8 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String) -> (Bytes,
   } else ()
   if Env::get("VIBE_CHECK_ONLY") == "1" {
     return handle {
-      // TDRE8 is production-default only for the proven check/edit-cycle lane.
-      // This call also resets policy on every check-only invocation, including
-      // strict opt-out and observation-only trace runs.
+      // The reuse policy, read strictly, including the opt-out and the
+      // observation-only trace runs.
       configure_typing_dependency_env_reuse_policy()
       // Telemetry remains opt-in even though TDRE8 reuse is now the default
       // for this check-only lane. The counters cover only the db_typecheck_fs walk
@@ -1232,6 +1158,9 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String) -> (Bytes,
     // cannot live there: publish LAST on the success path, and remove again on
     // any throw.
     return handle {
+      // The reuse policy, read strictly: a malformed opt-out is refused here
+      // rather than read as on (#2728).
+      configure_typing_dependency_env_reuse_policy()
       // Request validation and stale-sidecar deletion happened before every
       // CLI early return above. This branch now only consumes the validated
       // request while preserving the ordinary compile-path selection below.
