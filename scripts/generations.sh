@@ -58,6 +58,7 @@ usage() {
 usage:
   scripts/generations.sh seed-info [--manifest PATH]
   scripts/generations.sh status [--manifest PATH] [--out-dir DIR]
+  scripts/generations.sh out-dir [--manifest PATH]
   scripts/generations.sh build [--manifest PATH] [--out-dir DIR] [--entry PATH] [--entry-name NAME] [--stage3]
   scripts/generations.sh adopt --artifact PATH [--manifest PATH] [--name NAME] [--tag TAG] [--source-commit COMMIT]
 
@@ -68,6 +69,12 @@ The status command is read-only: it reports the pinned seed (with sha
 verification), the current source commit, and the latest generation manifest
 (stage shas + stage3==stage2) so the stage0 -> stage1 -> stage2 -> bump flow is
 traceable without rebuilding.
+
+The out-dir command prints the directory a build without --out-dir writes:
+the seed's name and HEAD's short sha. A caller that will consume the
+generation it builds reads this first and passes it as --out-dir, rather
+than rediscovering the result by HEAD alone, which a generation of another
+seed for the same HEAD also matches.
 USAGE
 }
 
@@ -709,6 +716,19 @@ default_generation_out_dir() {
   printf '%s\n' "$DEFAULT_OUT_ROOT/$(sanitize_name "$SEED_NAME")_$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo local)"
 }
 
+command_out_dir() {
+  local manifest="$DEFAULT_MANIFEST"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --manifest) manifest="$(abs_path "$2")"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown out-dir arg: $1" ;;
+    esac
+  done
+  load_seed "$manifest"
+  rel_path "$(default_generation_out_dir)"
+}
+
 command_status() {
   local manifest="$DEFAULT_MANIFEST"
   local out_dir=""
@@ -804,7 +824,7 @@ command_build() {
     entry="$(abs_path "$SEED_ENTRY")"
   fi
   if [ -z "$out_dir" ]; then
-    out_dir="$DEFAULT_OUT_ROOT/$(sanitize_name "$SEED_NAME")_$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo local)"
+    out_dir="$(default_generation_out_dir)"
   fi
   mkdir -p "$out_dir"
   local requested_entry="$entry"
@@ -941,6 +961,7 @@ main() {
   case "$command" in
     seed-info) shift; command_seed_info "$@" ;;
     status) shift; command_status "$@" ;;
+    out-dir) shift; command_out_dir "$@" ;;
     build) shift; command_build "$@" ;;
     adopt) shift; command_adopt "$@" ;;
     -h|--help|"") usage; exit 0 ;;
