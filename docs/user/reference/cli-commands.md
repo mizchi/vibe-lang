@@ -244,8 +244,17 @@ measure; and the code after the loop knows the invariants and the negated
 condition. Inside it, `continue` ends the iteration like the end of the
 body, and owes the same; `break` leaves without a checkpoint, so the code
 after the loop continues from the state it broke in. A `while` with no
-measure is unsupported, since it may not terminate, and so are `for`,
-`loop`, and a `break` / `continue` in a loop's condition. An
+measure is unsupported, since it may not terminate, and so is a `break` /
+`continue` in a loop's condition. A `loop` is the contracted `while true`
+it desugars to, so it needs a measure too; `break v` and `continue(..)`
+assign its result and its parameters. A `for` over an `Array[Int]` is proved
+the same way, with its checkpoint on entry and after every iteration; it
+ends, so it needs no measure, and one it states is owed. Its clauses cannot
+name the element or the index, so an iteration starts from an arbitrary
+state where they hold, at some index below the length; without an
+`invariant`, nothing is known past the loop of what its body assigns. A
+`for` over anything else, or a contracted one whose iterand assigns, is
+unsupported, and so is the array a `for` collects. An
 `Array[Int]` (a parameter, a result, a local or a non-empty literal) is read
 through `Array::length(xs)`, `Array::get(xs, at = i)` and `xs[i]`; a read owes
 `0 <= i < length`, since an index outside it aborts, and the element is an

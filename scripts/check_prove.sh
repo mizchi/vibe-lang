@@ -8,7 +8,8 @@
 #                     split, every obligation proved -> no output, exit 0
 #   unproved.vibe     a false ensures, an Int overflow, a callee's unmet
 #                     requires, a parameter the body shadows, a branch-local
-#                     `let` -> one line each with a counterexample, exit 1
+#                     `let`, `for` / `loop` contracts that do not hold ->
+#                     one line each with a counterexample, exit 1
 #   unsupported.vibe  constructs outside the fragment, a call to a function
 #                     with no contract, and a recursive
 #                     cycle, are reported, exit 1
@@ -70,7 +71,11 @@ $dir/unproved.vibe:125:16: unproved: the measure n stays non-negative and drops 
 $dir/unproved.vibe:134:1: unproved: ensures (result == 0) of \`cond_step\` -- counterexample: <model>
 $dir/unproved.vibe:150:5: unproved: the index of xs[1] is within the array, in \`second\` -- counterexample: <model>
 $dir/unproved.vibe:154:3: unproved: the index of Array::get(xs, at=i) is within the array, in \`get_at\` -- counterexample: <model>
-$dir/unproved.vibe:162:16: unproved: the measure (n - i) stays non-negative and drops on each iteration, in \`stall\` -- counterexample: <model>"
+$dir/unproved.vibe:162:16: unproved: the measure (n - i) stays non-negative and drops on each iteration, in \`stall\` -- counterexample: <model>
+$dir/unproved.vibe:177:34: unproved: invariant (last >= 0) holds again after each iteration, in \`last_of\` -- counterexample: <model>
+$dir/unproved.vibe:184:1: unproved: ensures (result == 0) of \`plain\` -- counterexample: <model>
+$dir/unproved.vibe:195:53: unproved: the measure f stays non-negative and drops on each iteration, in \`idle\` -- counterexample: <model>
+$dir/unproved.vibe:213:57: unproved: the measure k is not negative when the loop starts, in \`wander\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:7:9: unsupported: a \`while\` without a \`where { decreases: .. }\` measure: termination is not proved, so the result would be partial correctness only (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, \`Array[Int]\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)

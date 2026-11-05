@@ -41,7 +41,11 @@ struct Ctx {
   assumes: Array[String];
   pending: Array[(String, String, Int, String, Int)];
   fns: Array[FnSig];
-  counter: Array[Int]
+  counter: Array[Int];
+  /// The checkpoint closures of the contracted `for` loops being proved
+  /// (`attach_for_contract`). A call of one is the runtime check of the
+  /// loop's clauses, which `sym_for` owes as obligations instead.
+  checkpoints: Array[String]
 }
 
 /// #3719: a struct or enum of the file the prover reads as an SMT datatype:
@@ -422,7 +426,8 @@ fn prove_fn(name: String, value: Expr, fns: Array[FnSig], adts: Array[Adt], decl
     assumes: [],
     pending: [],
     fns: fns,
-    counter: [0]
+    counter: [0],
+    checkpoints: []
   }
   let result = handle {
     prove_fn_body(ctx = ctx, value = value)
@@ -799,33 +804,29 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
       }
       out
     },
-    ELet(name, v, b, _) => {
-      let out: Array[Outcome] = []
-      for o in sym(ctx = ctx, e = v, st = st) {
-        if o.returned {
-          Array::push(out, value = o)
-        } else {
-          let bound = Outcome::{
-            pc: o.pc,
-            value: "",
-            sort: "Unit",
-            returned: false,
-            env: env_bind(env = o.env, name = name, term = o.value, sort = o.sort)
-          }
-          // The binding's scope ends with the `let`: what follows sees the
-          // enclosing names again, with any assignment the body made to them.
-          for x in sym(ctx = ctx, e = b, st = bound) {
-            Array::push(out, value = leave_scope(x = x, outer = o.env))
-          }
-          ()
-        }
-      }
-      out
+    ELet(name, v, b, _) => match contracted_for(name = name, lam = v, inner = b) {
+      Some(fl) => sym_for(ctx = ctx, fl = fl, st = st),
+      None => sym_let(ctx = ctx, name = name, v = v, b = b, st = st)
     },
     ELetMut(name, v, b, _) => match contracted_loop_cells(name = name, inner = b) {
       Some(lp) => sym_loop(ctx = ctx, lp = lp, st = st),
-      None => sym(ctx = ctx, e = ELet(name, v, b, 0 - 1), st = st)
+      None => match contracted_for_cells(name = name, inner = b) {
+        Some(fl) => sym_for(ctx = ctx, fl = fl, st = st),
+        None => sym_let(ctx = ctx, name = name, v = v, b = b, st = st)
+      }
     },
+    // A `for` without a contract: an iteration over an array ends, so no
+    // measure is owed, and with no invariant nothing is known of what the
+    // body assigns.
+    EForIn(v, i, it, b) => sym_for(ctx = ctx, fl = ForLoop::{
+      value_name: v,
+      index_name: i,
+      iterable: it,
+      body: b,
+      check: "",
+      invariants: [],
+      measure: None
+    }, st = st),
     EAssign(name, v, c, off) => sym_assign(ctx = ctx, name = name, v = v, c = c, off = off, st = st),
     EAssignOp(name, op, v, c, off) => sym_assign(ctx = ctx, name = name, v = EBinOp(op, EIdent(name, off), v, off), c = c, off = off, st = st),
     EWhile(c, b) => match decode_while(cond = c, body = b) {
@@ -879,7 +880,11 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
       out
     },
     ECall(callee, args, off, _) => match callee {
-      EIdent(fname, coff) => if is_builtin_array_read(ctx = ctx, st = st, fname = fname, callee_off = coff) {
+      // The checkpoint call before a `continue` of a contracted `for`: the
+      // `continue` itself makes `sym_for` owe the clauses.
+      EIdent(fname, coff) => if Array::length(args) == 0 && contains_name(xs = ctx.checkpoints, x = fname) {
+        [with_value(st = st, value = "true", sort = "Unit")]
+      } else if is_builtin_array_read(ctx = ctx, st = st, fname = fname, callee_off = coff) {
         let at = if fname == "__index" {
           index_site_offset(coff)
         } else {
@@ -1149,6 +1154,30 @@ fn env_assign(env: Array[(String, String, String)], name: String, term: String, 
 
 /// `name = v` followed by `c`: the assigned value replaces the binding, and
 /// the rest of the path reads it.
+fn sym_let(ctx: Ctx, name: String, v: Expr, b: Expr, st: Outcome) -> Array[Outcome] with Exception {
+  let out: Array[Outcome] = []
+  for o in sym(ctx = ctx, e = v, st = st) {
+    if o.returned {
+      Array::push(out, value = o)
+    } else {
+      let bound = Outcome::{
+        pc: o.pc,
+        value: "",
+        sort: "Unit",
+        returned: false,
+        env: env_bind(env = o.env, name = name, term = o.value, sort = o.sort)
+      }
+      // The binding's scope ends with the `let`: what follows sees the
+      // enclosing names again, with any assignment the body made to them.
+      for x in sym(ctx = ctx, e = b, st = bound) {
+        Array::push(out, value = leave_scope(x = x, outer = o.env))
+      }
+      ()
+    }
+  }
+  out
+}
+
 fn sym_assign(ctx: Ctx, name: String, v: Expr, c: Expr, off: Int, st: Outcome) -> Array[Outcome] with Exception {
   let out: Array[Outcome] = []
   for o in sym(ctx = ctx, e = v, st = st) {
@@ -1235,12 +1264,22 @@ fn decode_while(cond: Expr, body: Expr) -> Option[Loop] {
 /// checkpoint; `None` when there is no measure or the shape is not the
 /// lowering's.
 fn decode_checkpoint(e: Expr, invariants: Array[Expr]) -> Option[Expr] {
+  match decode_clauses(e = e, invariants = invariants) {
+    Some(Some(m)) => Some(m),
+    _ => None
+  }
+}
+
+/// A lowered checkpoint (`contract_checkpoint`): `Some(measure)` once the
+/// invariants are collected into `invariants`, the measure `None` when the
+/// loop has none; `None` when the shape is not the lowering's.
+fn decode_clauses(e: Expr, invariants: Array[Expr]) -> Option[Option[Expr]] {
   match e {
     ESeq(ECall(EIdent("assert", _), args, _, _), rest) => if Array::length(args) == 1 {
       match typed_clause_arg(Array::get(args, at = 0)) {
         Some(inv) => {
           Array::push(invariants, value = inv)
-          decode_checkpoint(e = rest, invariants = invariants)
+          decode_clauses(e = rest, invariants = invariants)
         },
         None => None
       }
@@ -1248,10 +1287,14 @@ fn decode_checkpoint(e: Expr, invariants: Array[Expr]) -> Option[Expr] {
       None
     },
     ELet(now, v, _, _) => if String::ends_with(now, suffix = "_dec_now") {
-      typed_clause_arg(v)
+      match typed_clause_arg(v) {
+        Some(m) => Some(Some(m)),
+        None => None
+      }
     } else {
       None
     },
+    EUnit => Some(None),
     _ => None
   }
 }
@@ -1300,26 +1343,12 @@ fn sym_loop(ctx: Ctx, lp: Loop, st: Outcome) -> Array[Outcome] with Exception {
   let assigned: Array[String] = []
   collect_assigned(e = lp.cond, out = assigned)
   collect_assigned(e = lp.body, out = assigned)
-  let mut env = st.env
-  for name in assigned {
-    match env_lookup(env = env, name = name) {
-      Some((_, sort)) => {
-        let t = fresh(ctx = ctx, sort = sort)
-        assume_range(ctx = ctx, term = t, sort = sort, pc = st.pc)
-        match env_assign(env = env, name = name, term = t, sort = sort) {
-          Some(e2) => env = e2,
-          None => ()
-        }
-      },
-      None => ()
-    }
-  }
   let h = Outcome::{
     pc: st.pc,
     value: "",
     sort: "Unit",
     returned: false,
-    env: env
+    env: havoc_assigned(ctx = ctx, names = assigned, st = st)
   }
   for inv in lp.invariants {
     Array::push(ctx.assumes, value = clause_formula(ctx = ctx, clause = inv, state = h))
@@ -1389,6 +1418,227 @@ fn loop_jump(st: Outcome, kind: String) -> Outcome {
 
 fn is_loop_jump(_ o: Outcome) -> Bool {
   o.returned && (o.sort == loop_break() || o.sort == loop_continue())
+}
+
+/// `st`'s bindings with each of `names` given a fresh value of its sort: the
+/// state at an arbitrary checkpoint of a loop that assigns them.
+fn havoc_assigned(ctx: Ctx, names: Array[String], st: Outcome) -> Array[(String, String, String)] {
+  let mut env = st.env
+  for name in names {
+    match env_lookup(env = env, name = name) {
+      Some((_, sort)) => {
+        let t = fresh(ctx = ctx, sort = sort)
+        assume_range(ctx = ctx, term = t, sort = sort, pc = st.pc)
+        match env_assign(env = env, name = name, term = t, sort = sort) {
+          Some(e2) => env = e2,
+          None => ()
+        }
+      },
+      None => ()
+    }
+  }
+  env
+}
+
+/// A `for` over an `Array[Int]`, with the clauses of its contract
+/// (`invariants` empty and `measure` `None` without one). `check` names the
+/// lowering's checkpoint closure, `""` for a `for` without a contract.
+struct ForLoop {
+  value_name: String;
+  index_name: Option[String];
+  iterable: Expr;
+  body: Expr;
+  check: String;
+  invariants: Array[Expr];
+  measure: Option[Expr]
+}
+
+/// The parser lowers `for x in xs where { .. } { b }` (`attach_for_contract`)
+/// to `let S_check = () -> <checkpoint>; S_check();
+/// for x in xs { let S_body = b'; S_check(); S_body }`, where `b'` is `b`
+/// with `S_check()` before each `continue` of this loop; with a `decreases`
+/// clause, inside the two measure cells `contracted_loop_cells` names.
+fn contracted_for(name: String, lam: Expr, inner: Expr) -> Option[ForLoop] {
+  if String::starts_with(name, prefix = "__loop") && String::ends_with(name, suffix = "_check") {
+    match (lam, inner) {
+      (EFn(_, _, params, _, _, checkpoint), ESeq(ECall(EIdent(c1, _), a1, _, _), EForIn(v, i, it, ELet(bv, body, ESeq(ECall(EIdent(c2, _), a2, _, _), EIdent(bv2, _)), _)))) => if Array::length(params) == 0 && c1 == name && c2 == name && bv2 == bv && Array::length(a1) == 0 && Array::length(a2) == 0 {
+        let invariants: Array[Expr] = []
+        match decode_clauses(e = checkpoint, invariants = invariants) {
+          Some(measure) => Some(ForLoop::{
+            value_name: v,
+            index_name: i,
+            iterable: it,
+            body: body,
+            check: name,
+            invariants: invariants,
+            measure: measure
+          }),
+          None => None
+        }
+      } else {
+        None
+      },
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+/// A contracted `for` with a `decreases` measure, inside its measure cells.
+fn contracted_for_cells(name: String, inner: Expr) -> Option[ForLoop] {
+  if String::starts_with(name, prefix = "__loop") && String::ends_with(name, suffix = "_dec_prev") {
+    match inner {
+      ELetMut(seen, EBool(false), ELet(check, lam, b, _), _) => if String::ends_with(seen, suffix = "_dec_seen") {
+        contracted_for(name = check, lam = lam, inner = b)
+      } else {
+        None
+      },
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+/// A `for` over an `Array[Int]`, proved by induction like a `while`
+/// (`sym_loop`). The checkpoint runs before the iterand is evaluated, then
+/// after every iteration, one ended by `continue` included. The arbitrary
+/// checkpoint is a state where every binding the body assigns has a fresh
+/// value, the invariants hold, and the measure is `>= 0`; an iteration from
+/// there reads the element at some index `0 <= k < length`, and wherever it
+/// ends normally owes the invariants and a smaller measure. The clauses
+/// cannot name the element or the index (they are read in the loop's scope),
+/// so `k` is otherwise free. The path past the loop is that arbitrary state.
+/// The value of the `for` is `Unit`: an array a `for` collects is not
+/// modelled, and nothing reads a `Unit` as one.
+fn sym_for(ctx: Ctx, fl: ForLoop, st: Outcome) -> Array[Outcome] with Exception {
+  let out: Array[Outcome] = []
+  let clause_writes: Array[String] = []
+  for inv in fl.invariants {
+    collect_assigned(e = inv, out = clause_writes)
+  }
+  match fl.measure {
+    Some(m) => collect_assigned(e = m, out = clause_writes),
+    None => ()
+  }
+  if Array::length(clause_writes) > 0 {
+    unsupported(off = expr_off(fl.iterable), reason = "a loop's `invariant` or `decreases` clause assigns `\{Array::get(clause_writes, at = 0)}`")
+  } else {
+    ()
+  }
+  let contracted = Array::length(fl.invariants) > 0 || match fl.measure {
+    Some(_) => true,
+    None => false
+  }
+  if contracted {
+    // The entry checkpoint runs before the iterand, so the first iteration
+    // starts from the state the iterand leaves.
+    let iterand_writes: Array[String] = []
+    collect_assigned(e = fl.iterable, out = iterand_writes)
+    if Array::length(iterand_writes) > 0 {
+      unsupported(off = expr_off(fl.iterable), reason = "the iterand of a contracted `for` assigns `\{Array::get(iterand_writes, at = 0)}`")
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  if fl.check != "" {
+    Array::push(ctx.checkpoints, value = fl.check)
+  } else {
+    ()
+  }
+  for inv in fl.invariants {
+    push_obligation(ctx = ctx, kind = "invariant-entry", label = print_expr(inv), off = expr_off(inv), goal = clause_formula(ctx = ctx, clause = inv, state = st))
+  }
+  match fl.measure {
+    Some(m) => {
+      let m_entry = single_int(ctx = ctx, e = m, st = st)
+      push_obligation(ctx = ctx, kind = "measure-entry", label = print_expr(m), off = expr_off(m), goal = guarded(pc = st.pc, goal = "(>= \{m_entry} 0)"))
+    },
+    None => ()
+  }
+  for o in sym(ctx = ctx, e = fl.iterable, st = st) {
+    if o.returned {
+      // A `return`, or a `break` / `continue` of an enclosing loop.
+      Array::push(out, value = o)
+    } else if o.sort != arr_sort() {
+      unsupported(off = expr_off(fl.iterable), reason = "a `for` over a `\{smt_unquote(o.sort)}`: only an `Array[Int]` iterand is modelled")
+    } else {
+      let assigned: Array[String] = []
+      collect_assigned(e = fl.body, out = assigned)
+      let h = Outcome::{
+        pc: o.pc,
+        value: "",
+        sort: "Unit",
+        returned: false,
+        env: havoc_assigned(ctx = ctx, names = assigned, st = o)
+      }
+      for inv in fl.invariants {
+        Array::push(ctx.assumes, value = clause_formula(ctx = ctx, clause = inv, state = h))
+      }
+      let m0 = match fl.measure {
+        Some(m) => {
+          let t = single_int(ctx = ctx, e = m, st = h)
+          Array::push(ctx.assumes, value = guarded(pc = h.pc, goal = "(>= \{t} 0)"))
+          t
+        },
+        None => ""
+      }
+      let k = fresh(ctx = ctx, sort = "Int")
+      let iter = with_pc(st = h, cond = "(and (<= 0 \{k}) (< \{k} \{arr_len(o.value)}))")
+      let elem = "(select \{arr_data(o.value)} \{k})"
+      assume_range(ctx = ctx, term = elem, sort = "Int", pc = iter.pc)
+      let with_elem = env_bind(env = iter.env, name = fl.value_name, term = elem, sort = "Int")
+      let body_env = match fl.index_name {
+        Some(i) => env_bind(env = with_elem, name = i, term = k, sort = "Int"),
+        None => with_elem
+      }
+      let entered = Outcome::{
+        pc: iter.pc,
+        value: "",
+        sort: "Unit",
+        returned: false,
+        env: body_env
+      }
+      for b in sym(ctx = ctx, e = fl.body, st = entered) {
+        if b.returned && b.sort == loop_break() {
+          let left = leave_scope(x = b, outer = h.env)
+          Array::push(out, value = Outcome::{
+            pc: left.pc,
+            value: "true",
+            sort: "Unit",
+            returned: false,
+            env: left.env
+          })
+        } else if b.returned && b.sort != loop_continue() {
+          Array::push(out, value = b)
+        } else {
+          let left = leave_scope(x = b, outer = h.env)
+          let after = Outcome::{
+            pc: left.pc,
+            value: "true",
+            sort: "Unit",
+            returned: false,
+            env: left.env
+          }
+          for inv in fl.invariants {
+            push_obligation(ctx = ctx, kind = "invariant", label = print_expr(inv), off = expr_off(inv), goal = clause_formula(ctx = ctx, clause = inv, state = after))
+          }
+          match fl.measure {
+            Some(m) => {
+              let m1 = single_int(ctx = ctx, e = m, st = after)
+              push_obligation(ctx = ctx, kind = "measure", label = print_expr(m), off = expr_off(m), goal = guarded(pc = after.pc, goal = "(and (>= \{m1} 0) (< \{m1} \{m0}))"))
+            },
+            None => ()
+          }
+        }
+      }
+      Array::push(out, value = with_value(st = h, value = "true", sort = "Unit"))
+    }
+  }
+  out
 }
 
 /// The one value an `Int` clause has from `st`; a clause that forks the path
