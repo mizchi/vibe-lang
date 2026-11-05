@@ -8,22 +8,22 @@ import @vibe/compiler/cache {
 // A private borrowed view, valid only while bytes is alive and unchanged.
 // It never escapes copy_string_span: concat allocates the owned result using
 // the existing string allocator and memory-growth checks on either RC lane.
-fn bytes_string_view(bytes: Bytes) -> String = wasm
+fn bytes_string_view(_ bytes: Bytes) -> String = wasm
 "local.get $bytes i32.wrap_i64 i32.load offset=8 i64.extend_i32_u i64.const 32 i64.shl"
 "local.get $bytes i32.wrap_i64 i32.load offset=4 i64.extend_i32_u i64.or"
 
 fn copy_string_span(bytes: Bytes, at: Int, length: Int) -> String {
-  String::concat(String::substring(bytes_string_view(bytes), at, at + length), "")
+  String::concat(String::substring(bytes_string_view(bytes), start = at, end = at + length), "")
 }
 
 /// Linear-only transport reader; all untrusted span and UTF-8 checks stay in cache.
-export fn linear_string_reader(bytes: Bytes) -> AstBinaryReader {
-  ast_binary_reader_with_string_copy(bytes, copy_string_span)
+export fn linear_string_reader(_ bytes: Bytes) -> AstBinaryReader {
+  ast_binary_reader_with_string_copy(bytes = bytes, copy = copy_string_span)
 }
 
 /// Linear-only VBC6 reader with owned bulk strings and unchanged wire checks.
 /// VBC6 preserves raw bytes; unlike the AST reader it does not validate UTF-8.
-export fn linear_body_cache_from_bytes(bytes: Bytes) -> Option[CodegenBodyCache] {
+export fn linear_body_cache_from_bytes(_ bytes: Bytes) -> Option[CodegenBodyCache] {
   codegen_body_cache_from_bytes(bytes)
 }
 
@@ -52,13 +52,13 @@ export fn linear_write_string(bytes: Bytes, value: String) -> Unit with Exceptio
     prefix = prefix + 1
     size = size>>7
   }
-  if string_write_spare(bytes, 1) < n + prefix {
+  if string_write_spare(bytes = bytes, one = 1) < n + prefix {
     throw("linear string writer: insufficient reserved capacity")
   } else ()
-  ast_binary_write_varint(bytes, n)
+  ast_binary_write_varint(buf = bytes, v = n)
   let mut i = 0
   while i < n {
-    Bytes::push(bytes, String::char_code_at(value, i))
+    Bytes::push(bytes, value = String::char_code_at(value, at = i))
     i = i + 1
   }
 }
@@ -77,9 +77,9 @@ export fn linear_write_string_index(bytes: Bytes, index: Int) -> Unit with Excep
     value = value>>7
   }
   // 2^60 occupies nine unsigned LEB128 bytes.
-  if string_write_spare(bytes, 1) < 9 + size {
+  if string_write_spare(bytes = bytes, one = 1) < 9 + size {
     throw("linear string writer: insufficient reserved capacity")
   } else ()
-  ast_binary_write_varint(bytes, 1152921504606846976)
-  ast_binary_write_varint(bytes, index)
+  ast_binary_write_varint(buf = bytes, v = 1152921504606846976)
+  ast_binary_write_varint(buf = bytes, v = index)
 }
