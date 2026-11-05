@@ -144,18 +144,18 @@ import @vibe/builtin {
   trait Iterator
 }
 
-fn pair(a: Int, b: Int) -> Int {
+fn pair(_ a: Int, b: Int) -> Int {
   a * 10 + b
 }
 
 fn main allows Console {
   let trimmed_len = "  hi  " |> String::trim |> String::length
   let arr_len = [1, 2, 3] |> Array::length
-  let mapped = [1, 2, 3] |> Iterator::map(_, _ * 2)
-  let repeated = 7 |> pair(_, _)
+  let mapped = [1, 2, 3] |> Iterator::map(_, f = _ * 2)
+  let repeated = 7 |> pair(_, b = _)
   println("trimmed_len = \{trimmed_len}")
   println("arr_len = \{arr_len}")
-  println("mapped = [\{Array::get(mapped, 0)}, \{Array::get(mapped, 1)}, \{Array::get(mapped, 2)}]")
+  println("mapped = [\{Array::get(mapped, at = 0)}, \{Array::get(mapped, at = 1)}, \{Array::get(mapped, at = 2)}]")
   println("repeated = \{repeated}")
 }
 ```
@@ -169,10 +169,10 @@ repeated = 77
 
 By default the piped value becomes the first argument. To put it
 somewhere else, mark the position with a bare `_`: `x |> f(a, _)` is
-`f(a, x)`, and a slot may repeat, so `7 |> pair(_, _)` is `pair(7, 7)`.
+`f(a, x)`, and a slot may repeat, so `7 |> pair(_, b = _)` is `pair(7, b = 7)`.
 
 A `_` inside a larger expression is a different thing — the lambda
-shorthand from the last chapter. That is why `Iterator::map(_, _ * 2)` has
+shorthand from the last chapter. That is why `Iterator::map(_, f = _ * 2)` has
 two of them doing unrelated jobs: the first is the pipe slot, the second
 is `(v) -> v * 2`. Syntax alone tells them apart, and this is the whole
 rule: a bare `_` that is an argument of the call right after `|>` is the

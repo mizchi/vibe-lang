@@ -17,10 +17,10 @@ import @vibe/builtin {
 
 fn main allows Console {
   let xs = [1, 2, 3, 4]
-  let evens = Iterator::filter(xs = xs, pred = (n) -> {
+  let evens = Iterator::filter(xs, pred = (n) -> {
     n % 2 == 0
   })
-  let sum = Iterator::fold(xs, 0, _ + _)
+  let sum = Iterator::fold(xs, init = 0, f = _ + _)
   let doubled = for x in xs {
     x * 2
   }
@@ -60,9 +60,9 @@ import @vibe/builtin {
 fn main allows Console {
   let n = "  vibe  " |> String::trim |> String::length
   let xs = [1, 2, 3]
-  let ys = xs |> Iterator::map(_, _ * 10)
+  let ys = xs |> Iterator::map(f = _, _ * 10)
   println("trimmed length = \{n}")
-  println("ys[1] = \{Array::get(ys, 1)}")
+  println("ys[1] = \{Array::get(ys, at = 1)}")
 }
 ```
 

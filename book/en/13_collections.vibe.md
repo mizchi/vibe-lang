@@ -21,8 +21,8 @@ fn main allows Console {
   let xs = [1, 2, 3]
   println("xs[0] = \{xs[0]}")
   println("length = \{Array::length(xs)}")
-  let doubled = Iterator::map(xs, _ * 2)
-  println("doubled[2] = \{Array::get(doubled, 2)}")
+  let doubled = Iterator::map(xs, f = _ * 2)
+  println("doubled[2] = \{Array::get(doubled, at = 2)}")
   Array::push(xs, value = 4)
   println("after push, length = \{Array::length(xs)}")
 }
@@ -109,8 +109,8 @@ fn main allows Console {
   MutMap::set(m, k = "b", v = 2)
   MutMap::set(m, k = "a", v = 7)
   println("size = \{MutMap::size(m)}")
-  println("a = \{unwrap_or(MutMap::get(m, "a"), -1)}")
-  println("z = \{unwrap_or(MutMap::get(m, "z"), -1)}")
+  println("a = \{unwrap_or(o = MutMap::get(m, k = "a"), fallback = -1)}")
+  println("z = \{unwrap_or(o = MutMap::get(m, k = "z"), fallback = -1)}")
 }
 ```
 

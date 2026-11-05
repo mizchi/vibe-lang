@@ -178,7 +178,12 @@ export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset
     ()
   } else {
     match required_label_names(env = env, name = name, ident_offset = ident_offset, method_call = method_call) {
-      Some(names) => {
+      // More arguments than parameters is an arity error, and a declaration's
+      // call that labels some arguments and not others is reported as mixing:
+      // either says what to fix first.
+      Some(names) => if Array::length(args) > Array::length(names) || (!(lookup_builtin(name) is Some(_)) && checker_args_mix_labels(args)) {
+        ()
+      } else {
         let missing: Array[String] = []
         let mut i = 0
         while i < Array::length(args) && i < Array::length(names) {
@@ -203,4 +208,16 @@ export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset
       None => ()
     }
   }
+}
+
+fn checker_args_mix_labels(_ args: Array[Expr]) -> Bool {
+  let mut labeled = false
+  let mut plain = false
+  for arg in args {
+    match arg {
+      ELabeledArg(_, _, _) => labeled = true,
+      _ => plain = true
+    }
+  }
+  labeled && plain
 }

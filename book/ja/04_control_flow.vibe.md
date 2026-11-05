@@ -139,18 +139,18 @@ import @vibe/builtin {
   trait Iterator
 }
 
-fn pair(a: Int, b: Int) -> Int {
+fn pair(_ a: Int, b: Int) -> Int {
   a * 10 + b
 }
 
 fn main allows Console {
   let trimmed_len = "  hi  " |> String::trim |> String::length
   let arr_len = [1, 2, 3] |> Array::length
-  let mapped = [1, 2, 3] |> Iterator::map(_, _ * 2)
-  let repeated = 7 |> pair(_, _)
+  let mapped = [1, 2, 3] |> Iterator::map(_, f = _ * 2)
+  let repeated = 7 |> pair(_, b = _)
   println("trimmed_len = \{trimmed_len}")
   println("arr_len = \{arr_len}")
-  println("mapped = [\{Array::get(mapped, 0)}, \{Array::get(mapped, 1)}, \{Array::get(mapped, 2)}]")
+  println("mapped = [\{Array::get(mapped, at = 0)}, \{Array::get(mapped, at = 1)}, \{Array::get(mapped, at = 2)}]")
   println("repeated = \{repeated}")
 }
 ```
@@ -164,10 +164,10 @@ repeated = 77
 
 既定では、渡された値は第1引数になります。別の位置に入れたいときは裸の `_` で
 場所を指定します — `x |> f(a, _)` は `f(a, x)` で、スロットは繰り返せるので
-`7 |> pair(_, _)` は `pair(7, 7)` です。
+`7 |> pair(_, b = _)` は `pair(7, b = 7)` です。
 
 もっと大きな式の中の `_` は別物で、前章のラムダ略記です。だから
-`Iterator::map(_, _ * 2)` には無関係な仕事をする `_` が2つあります — 最初が
+`Iterator::map(_, f = _ * 2)` には無関係な仕事をする `_` が2つあります — 最初が
 パイプのスロット、次が `(v) -> v * 2` です。見分け方は構文だけで決まり、
 これが規則のすべてです: `|>` の直後の呼び出しの引数そのものである裸の `_`
 はスロット、演算子のオペランドである `_` はセクション。それ以外の場所の

@@ -35,6 +35,8 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   array_receiver_reads,
+  call_arg_value,
+  call_arg_values,
   canonical_builtin_name,
   collect_tvars,
   compiler_owned_type_arity,
@@ -468,6 +470,7 @@ export fn retaining_write_region_check(name: String, args: Array[Expr], env: Typ
 /// call or an assignment. A target or parameter that a binder inside the
 /// literal shadows is not the outer one, so it is not asked.
 export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type], s: Subst, env: TypeEnv, errors: Array[String]) -> Unit {
+  let args = call_arg_values(args)
   if env_has_active_region(env) {
     let mut ai = 0
     while ai < Array::length(args) && ai < Array::length(param_tys) {
@@ -521,6 +524,7 @@ export fn lambda_arg_param_write_check(args: Array[Expr], param_tys: Array[Type]
 /// `lambda_arg_param_write_check` cannot read it. Their parameter at `pidx`
 /// receives each element, so its writes are checked with the element type.
 export fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Subst, env: TypeEnv, errors: Array[String]) -> Unit {
+  let arg = call_arg_value(arg)
   if env_has_active_region(env) {
     match subst_apply(s = s, ty = recv_ty) {
       CtArray(elem) => {
@@ -559,6 +563,7 @@ export fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Su
 /// local `let` binds the name passed, read where it was written (#3360: `let
 /// stash = (c) -> { .. }; Array::map(cells, stash)` was not rechecked).
 fn lapw_callback_literal(arg: Expr, env: TypeEnv) -> Option[(Expr, TypeEnv)] {
+  let arg = call_arg_value(arg)
   match arg {
     EFn(_, _, _, _, _, _) => Some((arg, env)),
     EIdent(n, _) => retention_local_closure_literal(env = env, name = n),
@@ -572,6 +577,7 @@ fn lapw_callback_literal(arg: Expr, env: TypeEnv) -> Option[(Expr, TypeEnv)] {
 /// the edit at a parameter whose type carries an active region, rather than
 /// passed unchecked.
 fn lapw_refuse_mut_callback(arg: Expr, env: TypeEnv, errors: Array[String]) -> Unit {
+  let arg = call_arg_value(arg)
   match arg {
     EIdent(n, _) => {
       let untraced = match env_mut_escape(env = env, name = n) {
@@ -767,6 +773,7 @@ fn lapw_report(message: String, value: Expr, errors: Array[String]) -> Unit {
 fn lapw_stores_param(value: Expr, pname: String) -> Bool {
   match value {
     EIdent(n, _) => n == pname,
+    ELabeledArg(_, _, v) => lapw_stores_param(value = v, pname = pname),
     EIf(_, t, el) => lapw_stores_param(value = t, pname = pname) || lapw_stores_param(value = el, pname = pname),
     EMatch(_, arms) => {
       let mut found = false
@@ -2257,6 +2264,7 @@ fn lambda_seed_type_lowers(_ t: Type) -> Bool {
 /// is a non-generic lambda literal with exactly `expected.length` parameters.
 /// Only the expectations `lambda_seed_type_lowers` admits are kept.
 export fn seed_lambda_params(arg: Expr, expected: Array[Type], s: Subst) -> Unit {
+  let arg = call_arg_value(arg)
   Array::truncate(lambda_param_seed_cell, length = 0)
   match arg {
     EFn(tparams, _, params, _, _, _) => if Array::length(tparams) == 0 && Array::length(params) == Array::length(expected) {
@@ -2291,6 +2299,7 @@ export fn seed_lambda_params(arg: Expr, expected: Array[Type], s: Subst) -> Unit
 /// left with their parameters in a scratch substitution (the call's own
 /// unification does the same, later).
 export fn seed_lambda_arg_from_call(arg: Expr, param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Unit {
+  let arg = call_arg_value(arg)
   Array::truncate(lambda_param_seed_cell, length = 0)
   let ai = Array::length(arg_tys)
   if ai < Array::length(param_tys) && (arg is EFn(_, _, _, _, _, _)) {
