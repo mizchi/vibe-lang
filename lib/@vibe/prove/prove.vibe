@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, Stmt, TypeExpr
+  Expr, Stmt, TypeExpr, index_site_offset
 }
 
 import @vibe/parser {
@@ -322,8 +322,40 @@ fn expr_kids(_ e: Expr) -> Array[Expr] {
 fn sort_of(adts: Array[Adt], ty: Option[TypeExpr]) -> String {
   match ty {
     Some(TyName(n)) => name_sort(adts = adts, name = n),
+    Some(TyApp("Array", args)) => if Array::length(args) == 1 && match Array::get(args, at = 0) {
+      TyName("Int") => true,
+      _ => false
+    } {
+      arr_sort()
+    } else {
+      ""
+    },
     _ => ""
   }
+}
+
+//# `Array[Int]` (#3717)
+
+/// An `Array[Int]` is one SMT datatype: its contents as an SMT array and its
+/// length. The fragment only reads arrays -- `Array::push`, `Array::set` and
+/// an index write are calls to no contracted function of the file, so they
+/// are unsupported -- which keeps an array a value: no call can change one a
+/// caller still holds. The contents past the length are unconstrained, so
+/// `==` on arrays is not encoded (SMT `=` would compare them too).
+fn arr_sort() -> String {
+  "|Array[Int]|"
+}
+
+fn arr_len(_ t: String) -> String {
+  "(|Array[Int].len| \{t})"
+}
+
+fn arr_data(_ t: String) -> String {
+  "(|Array[Int].data| \{t})"
+}
+
+fn arr_datatype_decl() -> String {
+  "(declare-datatypes ((|Array[Int]| 0)) (((|Array[Int]::mk| (|Array[Int].data| (Array Int Int)) (|Array[Int].len| Int)))))"
 }
 
 /// The SMT sort of a type spelled `n`: `Int`, `Bool`, a datatype of the
@@ -463,7 +495,7 @@ fn prove_fn_body(ctx: Ctx, value: Expr) -> Unit with Exception {
         let (pn, pty) = p
         let sort = sort_of(adts = ctx.adts, ty = pty)
         if sort == "" {
-          unsupported(off = 0 - 1, reason = "parameter `\{pn}` is not `Int`, `Bool`, or a struct / enum of this file (non-generic, every field `Int`, `Bool` or such a type)")
+          unsupported(off = 0 - 1, reason = "parameter `\{pn}` is not `Int`, `Bool`, `Array[Int]`, or a struct / enum of this file (non-generic, every field `Int`, `Bool` or such a type)")
         } else {
           ()
         }
@@ -517,7 +549,23 @@ fn start_state(_ env: Array[(String, String, String)]) -> Outcome {
 //# Obligations and queries
 
 fn push_obligation(ctx: Ctx, kind: String, label: String, off: Int, goal: String) -> Unit {
-  Array::push(ctx.pending, value = (kind, label, off, goal, Array::length(ctx.assumes)))
+  // The printer spells an index read by its builtin `__index`; a report
+  // names it the way a program can (`Array::get(xs, i)`).
+  Array::push(ctx.pending, value = (kind, shown_index_reads(label), off, goal, Array::length(ctx.assumes)))
+}
+
+/// `label` with every `__index(` spelled `Array::get(`.
+fn shown_index_reads(_ label: String) -> String {
+  let needle = "__index("
+  let mut rest = label
+  let mut out = ""
+  let mut at = String::index_of(rest, needle = needle)
+  while at >= 0 {
+    out = "\{out}\{String::substring(rest, start = 0, end = at)}Array::get("
+    rest = String::substring(rest, start = at + String::length(needle), end = String::length(rest))
+    at = String::index_of(rest, needle = needle)
+  }
+  "\{out}\{rest}"
 }
 
 /// An `Int` term holds a 63-bit value, so it may be assumed in range -- but
@@ -527,6 +575,9 @@ fn push_obligation(ctx: Ctx, kind: String, label: String, off: Int, goal: String
 fn assume_range(ctx: Ctx, term: String, sort: String, pc: Array[String]) -> Unit {
   if sort == "Int" {
     Array::push(ctx.assumes, value = guarded(pc = pc, goal = in_range(term)))
+  } else if sort == arr_sort() {
+    // A length is a non-negative `Int`.
+    Array::push(ctx.assumes, value = guarded(pc = pc, goal = "(and (<= 0 \{arr_len(term)}) \{in_range(arr_len(term))})"))
   } else {
     ()
   }
@@ -547,7 +598,10 @@ fn guarded(pc: Array[String], goal: String) -> String {
 /// The SMT-LIB query that `goal` holds under the function's first `upto`
 /// assumptions: `unsat` proves it, a model is a counterexample.
 fn build_query(ctx: Ctx, goal: String, upto: Int) -> String {
-  let lines: Array[String] = ["(set-option :produce-models true)"]
+  let lines: Array[String] = [
+    "(set-option :produce-models true)",
+    arr_datatype_decl()
+  ]
   if Array::length(ctx.adts) > 0 {
     Array::push(lines, value = datatypes_decl(ctx.adts))
   } else {
@@ -812,10 +866,19 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
       out
     },
     ECall(callee, args, off, _) => match callee {
-      EIdent(fname, _) => match resolve_ctor(adts = ctx.adts, name = fname) {
-        Some((adt, ctor)) => sym_construct(ctx = ctx, adt = adt, ctor = ctor, named = [
-        ], args = args, off = off, st = st),
-        None => sym_call(ctx = ctx, fname = fname, args = args, off = off, st = st)
+      EIdent(fname, coff) => if fname == "Array::length" || fname == "Array::get" || fname == "__index" {
+        let at = if fname == "__index" {
+          index_site_offset(coff)
+        } else {
+          off
+        }
+        sym_array_read(ctx = ctx, e = e, fname = fname, args = args, off = at, st = st)
+      } else {
+        match resolve_ctor(adts = ctx.adts, name = fname) {
+          Some((adt, ctor)) => sym_construct(ctx = ctx, adt = adt, ctor = ctor, named = [
+          ], args = args, off = off, st = st),
+          None => sym_call(ctx = ctx, fname = fname, args = args, off = off, st = st)
+        }
       },
       _ => {
         unsupported(off = off, reason = "only a call to a named function is provable")
@@ -870,6 +933,7 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
       }
       out
     },
+    EArray(items) => sym_array_literal(ctx = ctx, items = items, off = expr_off(e), st = st),
     EMatch(scr, arms) => sym_match(ctx = ctx, scr = scr, arms = arms, off = expr_off(scr), st = st),
     _ => {
       unsupported(off = expr_off(e), reason = "`\{construct_name(e)}` is outside the provable fragment")
@@ -962,6 +1026,9 @@ fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) 
     }
   } else if (op == "<" || op == "<=" || op == ">" || op == ">=") && ints {
     with_value(st = b, value = "(\{op} \{a.value} \{b.value})", sort = "Bool")
+  } else if (op == "==" || op == "!=") && a.sort == arr_sort() {
+    unsupported(off = off, reason = "`\{op}` on arrays: their contents past the length are not modelled, so equality is not encoded")
+    b
   } else if (op == "==" || op == "!=") && a.sort == b.sort && a.sort != "Unit" && adt_has_custom_eq(adts = ctx.adts, sort = a.sort) {
     unsupported(off = off, reason = "`\{op}` on `\{smt_unquote(a.sort)}` calls a program-written `equals` (on that type or one it contains), which the prover does not read")
     b
@@ -1296,6 +1363,99 @@ fn collect_assigned(e: Expr, out: Array[String]) -> Unit {
     collect_assigned(e = k, out = out)
   }
   ()
+}
+
+/// `Array::length(xs)`, and `Array::get(xs, at = i)` / `xs[i]`: a read owes
+/// `0 <= i < length`, since an index outside it aborts, and the path past it
+/// assumes that; the element read is an `Int` in range.
+fn sym_array_read(ctx: Ctx, e: Expr, fname: String, args: Array[Expr], off: Int, st: Outcome) -> Array[Outcome] with Exception {
+  let want = if fname == "Array::length" {
+    1
+  } else {
+    2
+  }
+  if Array::length(args) != want {
+    unsupported(off = off, reason = "`\{fname}` with \{Array::length(args)} argument(s)")
+  } else {
+    ()
+  }
+  let out: Array[Outcome] = []
+  for o in sym(ctx = ctx, e = strip_label(Array::get(args, at = 0)), st = st) {
+    if o.returned {
+      Array::push(out, value = o)
+    } else if o.sort != arr_sort() {
+      unsupported(off = off, reason = "`\{fname}` on a `\{o.sort}`: only `Array[Int]` is modelled")
+    } else if want == 1 {
+      Array::push(out, value = with_value(st = o, value = arr_len(o.value), sort = "Int"))
+    } else {
+      for p in sym(ctx = ctx, e = strip_label(Array::get(args, at = 1)), st = o) {
+        if p.returned {
+          Array::push(out, value = p)
+        } else if p.sort != "Int" {
+          unsupported(off = off, reason = "an array index that is a `\{p.sort}`")
+        } else {
+          let inside = "(and (<= 0 \{p.value}) (< \{p.value} \{arr_len(o.value)}))"
+          let label = if fname == "__index" {
+            "\{print_expr(strip_label(Array::get(args, at = 0)))}[\{print_expr(strip_label(Array::get(args, at = 1)))}]"
+          } else {
+            print_expr(e)
+          }
+          push_obligation(ctx = ctx, kind = "index", label = label, off = off, goal = guarded(pc = p.pc, goal = inside))
+          let q = with_pc(st = p, cond = inside)
+          let v = "(select \{arr_data(o.value)} \{p.value})"
+          assume_range(ctx = ctx, term = v, sort = "Int", pc = q.pc)
+          Array::push(out, value = with_value(st = q, value = v, sort = "Int"))
+        }
+      }
+      ()
+    }
+  }
+  out
+}
+
+fn strip_label(_ a: Expr) -> Expr {
+  match a {
+    ELabeledArg(_, _, v) => v,
+    _ => a
+  }
+}
+
+/// `[a, b, ..]` of `Int`s: its items in order, as written. An empty literal
+/// is unsupported: nothing in it says its element type.
+fn sym_array_literal(ctx: Ctx, items: Array[Expr], off: Int, st: Outcome) -> Array[Outcome] with Exception {
+  if Array::length(items) == 0 {
+    unsupported(off = off, reason = "an empty array literal, whose element type the prover does not read")
+  } else {
+    ()
+  }
+  let mut states: Array[(Outcome, String)] = [
+    (st, "((as const (Array Int Int)) 0)")
+  ]
+  let out: Array[Outcome] = []
+  let mut k = 0
+  for item in items {
+    let next: Array[(Outcome, String)] = []
+    for pair in states {
+      let (s0, data) = pair
+      for o in sym(ctx = ctx, e = item, st = s0) {
+        if o.returned {
+          Array::push(out, value = o)
+        } else if o.sort != "Int" {
+          unsupported(off = off, reason = "an array literal of `\{o.sort}`: only `Array[Int]` is modelled")
+        } else {
+          Array::push(next, value = (o, "(store \{data} \{k} \{o.value})"))
+        }
+      }
+      ()
+    }
+    states = next
+    k = k + 1
+  }
+  for pair in states {
+    let (s1, data) = pair
+    Array::push(out, value = with_value(st = s1, value = "(|Array[Int]::mk| \{data} \{k})", sort = arr_sort()))
+  }
+  out
 }
 
 /// The quotient `a / b` truncated toward zero, as the runtime computes it.
