@@ -2181,8 +2181,8 @@ fn hce_arg_bound_label(arg: Expr, producers_before: Int, st: HceWalk, env: TypeE
 /// Any other callee -- a local, a closure declared before the handle, an
 /// imported function, a method, a computed callee, `perform` -- may.
 fn hce_callee_may_keep(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, label: String, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Bool {
-  let arg = call_arg_value(arg)
-  let takes_row = match hce_param_type(callee = callee, off = off, arg = arg, ai = ai, nargs = nargs, st = st, env = env, s = s) {
+  let written = arg
+  let takes_row = match hce_param_type(callee = callee, off = off, arg = written, ai = ai, nargs = nargs, st = st, env = env, s = s) {
     Some(pt) => !hce_holds_fn(ty = pt, defs = defs, seen = array_empty()) || hce_set_untaken(set = label, pt = pt) == "",
     None => false
   }
@@ -2200,9 +2200,12 @@ fn hce_callee_may_keep(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, l
           None => retention_decl_value(name)
         }
         match lit {
-          Some(EFn(_, _, fparams, _, _, fbody)) => match arg {
-            ELabeledArg(_, _, _) => true,
-            _ => if ai < Array::length(fparams) {
+          // A labeled argument is read at its written index only when the
+          // call writes every parameter (`hce_param_type`).
+          Some(EFn(_, _, fparams, _, _, fbody)) => if (written is ELabeledArg(_, _, _)) && Array::length(fparams) != nargs {
+            true
+          } else {
+            if ai < Array::length(fparams) {
               let (pname, _) = Array::get(fparams, at = ai)
               !hce_only_called(name = hce_param_base(pname), e = fbody)
             } else {
@@ -2223,7 +2226,6 @@ fn hce_callee_may_keep(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, l
 /// recorded type may lead with its receiver. None when it is not known, or
 /// the argument is labeled.
 fn hce_param_type(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, st: HceWalk, env: TypeEnv, s: Subst) -> Option[Type] {
-  let arg = call_arg_value(arg)
   let ty = match callee {
     EIdent(name, _) => if hce_lookup(st = st, name = name) == 0 {
       match env_lookup(env = env, name = name) {
@@ -2235,26 +2237,30 @@ fn hce_param_type(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, st: Hc
     },
     _ => hce_recorded_type(off = off, spelling = call_callee_spelling(callee))
   }
-  match arg {
-    ELabeledArg(_, _, _) => None,
-    _ => match ty {
-      Some(t) => match hce_fn_params(hce_late(subst_apply(s = s, ty = t))) {
-        Some(params) => {
-          let at = if Array::length(params) == nargs + 1 {
-            ai + 1
-          } else {
-            ai
-          }
-          if at < Array::length(params) {
-            Some(Array::get(params, at = at))
-          } else {
-            None
-          }
-        },
-        None => None
+  // A labeled argument's written index is its formal slot only when the call
+  // writes every parameter: labels never reorder (an out-of-order label is
+  // refused), but an omitted optional parameter shifts every later argument.
+  let labeled = arg is ELabeledArg(_, _, _)
+  match ty {
+    Some(t) => match hce_fn_params(hce_late(subst_apply(s = s, ty = t))) {
+      Some(params) => {
+        let receiver = Array::length(params) == nargs + 1
+        let at = if receiver {
+          ai + 1
+        } else {
+          ai
+        }
+        if labeled && !(receiver || Array::length(params) == nargs) {
+          None
+        } else if at < Array::length(params) {
+          Some(Array::get(params, at = at))
+        } else {
+          None
+        }
       },
       None => None
-    }
+    },
+    None => None
   }
 }
 

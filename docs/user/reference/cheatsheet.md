@@ -1037,8 +1037,8 @@ import @vibe/builtin {
 }
 
 let arrays = [1, 2]
-  |> Iterator::map((x) -> { x + 1 })
-  |> Iterator::map((x) -> { x * 2 })
+  |> Iterator::map(f = (x) -> { x + 1 })
+  |> Iterator::map(f = (x) -> { x * 2 })
 ```
 
 `Iterator::map` and `filter` return arrays; `fold`, `find`, `any`, and `all`
@@ -1062,8 +1062,8 @@ import @vibe/builtin {
 fn evens_times_ten() -> Array[Int] with Async {
   [1, 2, 3, 4]
     |> Array::iter
-    |> AsyncIter::filter((x: Int) -> Bool { x % 2 == 0 })
-    |> AsyncIter::map((x) -> { x * 10 })
+    |> AsyncIter::filter(pred = (x: Int) -> Bool { x % 2 == 0 })
+    |> AsyncIter::map(f = (x) -> { x * 10 })
     |> AsyncIter::collect
 }
 ```
@@ -1558,7 +1558,7 @@ import @vibe/builtin {
 let a = [1, 2, 3]
 let first = a[0]              // index
 let len = Array::length(a)
-let doubled = Iterator::map(a, _ * 2)
+let doubled = Iterator::map(a, f = _ * 2)
 
 // Tuple
 let t = (1, "two", true)
@@ -3224,7 +3224,7 @@ let pipes: () -> Array[String] with Process = () -> {
 
 let count_txt: () -> Int with Process = () -> {
   sh_lines("ls /tmp")
-  |> Iterator::filter((s) -> { String::contains(s, needle = ".txt") })
+  |> Iterator::filter(pred = (s) -> { String::contains(s, needle = ".txt") })
   |> Array::length
 }
 // Works because |> inserts value as first arg, matching collection-first order
