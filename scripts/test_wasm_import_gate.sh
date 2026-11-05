@@ -33,7 +33,11 @@
 #      against (the compile runs in the project root, the program does not);
 #  10. `vibe bench` links the foreign module into each block's fresh store;
 #  11. a component whose WIT signature changed after the build is refused at
-#      link time rather than converted by its new types.
+#      link time rather than converted by its new types;
+#  14. a component's WIT `u8` / `s16` are offered as `UInt32` / `Int32`
+#      (#3826): an in-range call answers exactly (narrow_main.vibex), and an
+#      argument outside the narrow range is refused at the call, naming the
+#      range, rather than truncated (trap_component_u8_range.vibex).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -212,4 +216,20 @@ status=0
 grep -q "'counter' is now (->s64) but the program was compiled against (->u64); rebuild the program" "$WORK/err" \
   || { cat "$WORK/err" >&2; fail "[viberun] the signature-drift refusal does not say why"; }
 
-echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, _initialize, refusals; component: viberun, WIT range refusal, node refusal)"
+# 14. Narrow WIT widths (#3826): offered as `UInt32` / `Int32`, exact in
+#     range on both lanes, and an argument outside the narrow range refused at
+#     the call by the runner, which names the range.
+want="$(printf 'inc8=255\nneg16=32767\nneg16=-300')"
+for LANE_RC in 1 0; do
+  status=0
+  out="$(vibe "$VIBERUN" run "$FX/narrow_main.vibex" 2>"$WORK/err")" || status=$?
+  [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun VIBE_RC=$LANE_RC] narrow_main exited $status"; }
+  [ "$out" = "$want" ] || fail "[viberun VIBE_RC=$LANE_RC] narrow_main printed $(printf '%q' "$out"), want $(printf '%q' "$want")"
+done
+LANE_RC=1
+status=0
+out="$(vibe "$VIBERUN" run "$FX/trap_component_u8_range.vibex" 2>"$WORK/err")" || status=$?
+[ "$status" != 0 ] || fail "[viberun] a u8 argument outside 0 .. 255 was accepted (printed $(printf '%q' "$out"))"
+grep -q '300 does not fit the component.s `u8` parameter (0 .. 255)' "$WORK/err" || { cat "$WORK/err" >&2; fail "[viberun] the u8 refusal does not name the range"; }
+
+echo "[wasm-import] ok (core: viberun + node, range traps, shared memory, _initialize, refusals; component: viberun, WIT range refusal, narrow widths, node refusal)"

@@ -77,4 +77,12 @@ fresh
 python3 -c 'import sys; p=sys.argv[1]; b=open(p,"rb").read(); assert b.count(b"\x42\x07")==1, "patch target not unique"; open(p,"wb").write(b.replace(b"\x42\x07", b"\x42\x08"))' "$SCRATCH/fx/reactor.wasm" || fail "could not patch reactor.wasm"
 expect_fail "a different initializer effect" "init_main printed value=8\\ foo=42"
 
-echo "[wasm-import-gate-test] ok (7 cases)"
+# 7. A narrow-width answer that differs is caught (#3826).
+fresh; mutate narrow_main.vibex "inc8(254)" "inc8(253)"
+expect_fail "a different narrow-width answer" "narrow_main printed"
+
+# 8. An in-range u8 argument runs, so the range-refusal row must notice.
+fresh; mutate trap_component_u8_range.vibex "inc8(300)" "inc8(200)"
+expect_fail "a u8 refusal that does not fire" "a u8 argument outside 0 .. 255 was accepted"
+
+echo "[wasm-import-gate-test] ok (9 cases)"

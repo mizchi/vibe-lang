@@ -152,7 +152,8 @@ tagged immediate an `Int` is, and every value lies in its type's range:
   `Default` (the builtin, or `@vibe/core`'s): its `Int` impl returns `0`, in
   range for both, so `[T: Default]` holds and `T::default()` is `0`. A
   program's own `trait Default` is not borrowed. WIT `s32` / `u32` project to them
-  both ways, and a component's `s32` / `u32` import is typed with them (see
+  both ways, and a component's `s32` / `u32` import is typed with them, as
+  are its `s8` / `s16` and `u8` / `u16` (see
   "Importing a wasm module"), and so is a core module's `i32`, read as
   `UInt32`.
 
@@ -3534,10 +3535,16 @@ how a binding moves strings across (see `lib/@vibex/z3/cstring.vibe`).
 
 **Component types** (from the component's type section, i.e. its WIT): a
 world-level exported function with integer and `string` params and at most
-one such result. `s32` / `u32` are `Int32` / `UInt32` (#3730), so their width
-is the type and a value that does not fit is a compile-time error; the other
-widths (`s8`..`u16`, `s64`, `u64`) are `Int`, which the runner range-checks
-against the WIT width, refusing one that does not fit. Exported
+one such result. `s8` / `s16` / `s32` are `Int32` and `u8` / `u16` / `u32`
+are `UInt32` (#3730, #3826). For `s32` / `u32` the width is the type, so a
+value that does not fit is a compile-time error. A narrow width's values all
+fit in its 32-bit type, so a result is exact, but an argument can be a valid
+`Int32` / `UInt32` outside the narrow range: the runner refuses that call,
+naming the range (`300 does not fit the component's \`u8\` parameter
+(0 .. 255)`), and never truncates it. `s64` / `u64` are `Int`, range-checked
+by the runner the same way. A contract derived from WIT text (`vibe add`)
+still refuses the narrow widths, because the canonical ABI would truncate an
+out-of-range argument there with nothing checking it. Exported
 interfaces, `bool`, `char`, floats, lists, records, variants and resources
 are not offered yet. A component whose type section declares component or
 instance types (what an imported interface looks like) is read up to that

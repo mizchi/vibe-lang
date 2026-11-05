@@ -260,9 +260,27 @@ fn component_sig_text(params: &[CType], results: &[CType]) -> String {
     format!("{}->{}", ps.join(","), rs.join(","))
 }
 
+/// The values a WIT integer width holds, as a refusal names them (#3826).
+fn wit_int_range(ty: &CType) -> &'static str {
+    match ty {
+        CType::S8 => "-128 .. 127",
+        CType::U8 => "0 .. 255",
+        CType::S16 => "-32768 .. 32767",
+        CType::U16 => "0 .. 65535",
+        CType::S32 => "-2147483648 .. 2147483647",
+        CType::U32 => "0 .. 4294967295",
+        CType::U64 => "0 .. 18446744073709551615",
+        _ => "",
+    }
+}
+
 fn int_to_cval(field: &str, ty: &CType, v: i64) -> Result<CVal> {
     let out_of_range = || {
-        format_err!("{FOREIGN_CALL_PREFIX}{field}: {v} does not fit the component's {ty:?} parameter")
+        format_err!(
+            "{FOREIGN_CALL_PREFIX}{field}: {v} does not fit the component's `{}` parameter ({})",
+            wit_type_name(ty),
+            wit_int_range(ty)
+        )
     };
     Ok(match ty {
         CType::S8 => CVal::S8(i8::try_from(v).map_err(|_| out_of_range())?),
