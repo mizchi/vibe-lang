@@ -1094,6 +1094,68 @@ export fn gen_compact_fingerprint_hash_body(_ enable_rc: Bool) -> Bytes {
   b
 }
 
+/// __rt_hash_string31(s: String) -> Int  [type 3: (i64) -> i64]
+/// Direct byte scanner for @vibe/core::hash_string, which every
+/// `MutMap::new_string` table calls on each probe: h = 5381, then
+/// h = h * 31 + byte per byte, reduced to 53 bits. The source loop masks after
+/// every step; reducing modulo 2^53 commutes with i64 wraparound (2^53 divides
+/// 2^64), so masking once at the end yields the same value, and MutMap's slot
+/// order -- which its iteration order is -- does not move.
+/// local0 = s (param). Extra i32: local1=base_ptr, local2=len, local3=cur.
+/// Extra i64: local4=h. meta=(3,1).
+export fn gen_hash_string31_body(_ enable_rc: Bool) -> Bytes {
+  let b = bytebuf_new()
+  let base_l = 1
+  let len_l = 2
+  let cur_l = 3
+  let h_l = 4
+  emit_local_get(buf = b, idx = 0)
+  emit_i64_const(buf = b, value = 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(buf = b, idx = base_l)
+  emit_local_get(buf = b, idx = 0)
+  emit_i64_const(buf = b, value = 4294967295)
+  emit_i64_and(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(buf = b, idx = len_l)
+  emit_i32_const(buf = b, value = 0)
+  emit_local_set(buf = b, idx = cur_l)
+  emit_i64_const(buf = b, value = 5381)
+  emit_local_set(buf = b, idx = h_l)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(buf = b, idx = cur_l)
+  emit_local_get(buf = b, idx = len_l)
+  emit_i32_ge_u(b)
+  emit_br_if(buf = b, label = 1)
+  emit_local_get(buf = b, idx = h_l)
+  emit_i64_const(buf = b, value = 31)
+  emit_i64_mul(b)
+  emit_local_get(buf = b, idx = base_l)
+  emit_local_get(buf = b, idx = cur_l)
+  emit_i32_add(b)
+  emit_i32_load8_u(buf = b, align = 0, offset = 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_add(b)
+  emit_local_set(buf = b, idx = h_l)
+  emit_local_get(buf = b, idx = cur_l)
+  emit_i32_const(buf = b, value = 1)
+  emit_i32_add(b)
+  emit_local_set(buf = b, idx = cur_l)
+  emit_br(buf = b, label = 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(buf = b, idx = h_l)
+  emit_i64_const(buf = b, value = 9007199254740991)
+  emit_i64_and(b)
+  if enable_rc {
+    emit_i64_const(buf = b, value = 1)
+    emit_i64_shl(b)
+  }
+  b
+}
+
 /// __rt_map_cap_for(count: Int) -> Int  [type 3: (i64) -> i64]
 /// capacity = next_pow2(max(8, count*2)) -- keeps the index table at <=50%
 /// load factor (same policy as moonbitlang/core's default_init_capacity=8 /
