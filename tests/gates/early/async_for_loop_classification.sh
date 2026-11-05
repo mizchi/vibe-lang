@@ -11,8 +11,7 @@
 #      diagnostic: BOTH the annotated and the unannotated param must compile
 #      and run to 42.
 echo "[compiler-gate] 27d/27 async for-loop classification (#827/#1350)"
-fadir="_build/_gate_forawait"
-rm -rf "$fadir"; mkdir -p "$fadir"
+gate_workdir fadir "_build/_gate_forawait"
 cat > "$fadir/ok_annot.vibe" <<'EOF'
 let consume: (ByteStream) -> Int = (s) -> {
   let mut sum = 0
@@ -95,8 +94,7 @@ echo "[compiler-gate] async for-loop classification ok"
 #      Error is non-resumable, so resume(...) inside a with-Error arm is a
 #      compile error (the arm's value IS the handle result).
 echo "[compiler-gate] 27e/27 Error-as-perform equivalence + non-resumability (#640)"
-edir="_build/_gate_error_perform"
-rm -rf "$edir"; mkdir -p "$edir"
+gate_workdir edir "_build/_gate_error_perform"
 cat > "$edir/via_perform.vibe" <<'EOF'
 let safe = () -> Int with Exception {
   perform Error::Throw("fail")
@@ -172,8 +170,7 @@ echo "[compiler-gate] Error-as-perform equivalence ok (4, byte-identical)"
 #      print exact text; write_char must print the untagged byte; a source-
 #      provided println (shadow) must still win over the builtin lowering.
 echo "[compiler-gate] 27f/27 print primitives on the FS lane (#929/#930)"
-ppdir="_build/_gate_print_prims"
-rm -rf "$ppdir"; mkdir -p "$ppdir"
+gate_workdir ppdir "_build/_gate_print_prims"
 cat > "$ppdir/prints.vibe" <<'EOF'
 fn main() -> Unit allows Console {
   println("hello gate")
@@ -249,8 +246,7 @@ echo "[compiler-gate] print primitives ok"
 #      generic path already passed 1000, so the RC=0 row is the control that
 #      proves the expectation is not simply "whatever the compiler emits".
 echo "[compiler-gate] 27g/27 raw-ABI shim covers sleep_blocking (#2903)"
-sbdir="_build/_gate_sleep_raw_abi"
-rm -rf "$sbdir"; mkdir -p "$sbdir"
+gate_workdir sbdir "_build/_gate_sleep_raw_abi"
 cat > "$sbdir/sleepb.vibe" <<'EOF'
 fn main() -> Int {
   sleep_blocking(1000)
@@ -322,8 +318,7 @@ echo "[compiler-gate] raw-ABI shim covers sleep_blocking ok (1000 on both lanes,
 #      agree, and VIBE_RC=0 (no tag to add) must already agree -- so the
 #      expectation is not "whatever the compiler emits".
 echo "[compiler-gate] 27h/27 Console::read_char returns the host byte (#2905)"
-crdir="_build/_gate_console_read_char"
-rm -rf "$crdir"; mkdir -p "$crdir"
+gate_workdir crdir "_build/_gate_console_read_char"
 cat > "$crdir/console.vibe" <<'EOF'
 fn main() -> Int allows Console {
   Console::read_char()
@@ -380,8 +375,7 @@ echo "[compiler-gate] Console::read_char ok (host byte returned intact on both l
 
 
 echo "[compiler-gate] 28/28 argument type checking"
-adir="_build/_gate_argcheck"
-rm -rf "$adir"; mkdir -p "$adir"
+gate_workdir adir "_build/_gate_argcheck"
 cat > "$adir/wrong.vibe" <<'EOF'
 let f: (Int) -> Int = (x) -> { x + 1 }
 export let _start: () -> Int = () -> { f("hello") }
@@ -419,8 +413,7 @@ echo "[compiler-gate] argument type checking ok"
 #     check_expr spine — check_seq_spine — gives the stack headroom for these
 #     extra checks during self-compile.)
 echo "[compiler-gate] 29/29 assignment / binding / if-branch / struct-field / local-let type checking"
-tdir="_build/_gate_typecheck"
-rm -rf "$tdir"; mkdir -p "$tdir"
+gate_workdir tdir "_build/_gate_typecheck"
 cat > "$tdir/ok.vibe" <<'EOF'
 export let x: Int = 5
 export let _start: () -> Int = () -> {
@@ -611,8 +604,7 @@ echo "[compiler-gate] assignment / binding / if-branch / struct-field / local-le
 #     declared `mut` in its struct. A write to a non-`mut` field must be
 #     REJECTED; a write to a `mut` field (and a same-typed value) must compile.
 echo "[compiler-gate] 30/30 mut-field write escape analysis"
-mdir="_build/_gate_mutfield"
-rm -rf "$mdir"; mkdir -p "$mdir"
+gate_workdir mdir "_build/_gate_mutfield"
 cat > "$mdir/ok_mut.vibe" <<'EOF'
 struct Cell { mut n: Int }
 export let _start: () -> Int = () -> {
@@ -652,8 +644,7 @@ echo "[compiler-gate] mut-field write escape analysis ok"
 #     must all be rejected. A `CtUnit` arm (statement-position match) and the
 #     well-typed positives must still compile.
 echo "[compiler-gate] 31/31 match-arm / array / non-fn-call / unary-not / for-iterable type checking"
-cdir="_build/_gate_consistency"
-rm -rf "$cdir"; mkdir -p "$cdir"
+gate_workdir cdir "_build/_gate_consistency"
 cat > "$cdir/ok.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let a = [1, 2, 3]
@@ -698,8 +689,7 @@ echo "[compiler-gate] match-arm / array / non-fn-call / unary-not / for-iterable
 #     a `let mut` binding, an accumulator updated in a loop, and a closure-local
 #     `let mut` must still compile.
 echo "[compiler-gate] 32/32 mutability discipline (immutable let reassignment)"
-mudir="_build/_gate_mutability"
-rm -rf "$mudir"; mkdir -p "$mudir"
+gate_workdir mudir "_build/_gate_mutability"
 cat > "$mudir/ok.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let mut x = 1
@@ -725,8 +715,7 @@ echo "[compiler-gate] mutability discipline ok"
 #      previously dropped these Expr forms to `_ => errors`, missing the violation).
 #      A `let mut` reassignment inside the same form must still compile (no over-reject).
 echo "[compiler-gate] 32b/32 mutability discipline completeness (nested forms)"
-mu2dir="_build/_gate_mutability_nested"
-rm -rf "$mu2dir"; mkdir -p "$mu2dir"
+gate_workdir mu2dir "_build/_gate_mutability_nested"
 cat > "$mu2dir/ok.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let mut x = 1
@@ -752,8 +741,7 @@ echo "[compiler-gate] mutability discipline completeness ok"
 #     payload arity, and cannot match a scalar scrutinee. Binding the right
 #     arity, a nullary variant, and the builtin Option ctors must still compile.
 echo "[compiler-gate] 33/33 constructor-pattern arity / scrutinee type checking"
-pdir="_build/_gate_patsound"
-rm -rf "$pdir"; mkdir -p "$pdir"
+gate_workdir pdir "_build/_gate_patsound"
 cat > "$pdir/ok.vibe" <<'EOF'
 enum E { Pair(Int, Int) }
 export let _start: () -> Int = () -> {
@@ -783,8 +771,7 @@ echo "[compiler-gate] constructor-pattern arity / scrutinee type checking ok"
 #     and `t.N` past a tuple's arity must be rejected; indexing an Array/String
 #     and an in-range tuple projection must still compile.
 echo "[compiler-gate] 34/34 indexing / tuple-projection type checking"
-idir="_build/_gate_index"
-rm -rf "$idir"; mkdir -p "$idir"
+gate_workdir idir "_build/_gate_index"
 cat > "$idir/ok.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let a = [10, 20, 30]
@@ -860,8 +847,7 @@ echo "[compiler-gate] indexing / tuple-projection type checking ok"
 #     re-binding in the fall-through arm) stay in scope for the guard. Verify
 #     the runtime answer, not just that it compiles.
 echo "[compiler-gate] 34b/35 match-arm guard dispatch (#666)"
-gdir="_build/_gate_guard"
-rm -rf "$gdir"; mkdir -p "$gdir"
+gate_workdir gdir "_build/_gate_guard"
 cat > "$gdir/guard.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let miss = match 5 { n if n > 100 => 999, _ => 7 }
@@ -886,8 +872,7 @@ echo "[compiler-gate] match-arm guard dispatch ok (122)"
 #     variant or carry a catch-all; a non-exhaustive match must be rejected.
 #     Wildcard, full-coverage, and or-pattern coverage must still compile.
 echo "[compiler-gate] 35/35 match exhaustiveness (enum variant coverage)"
-xdir="_build/_gate_exhaust"
-rm -rf "$xdir"; mkdir -p "$xdir"
+gate_workdir xdir "_build/_gate_exhaust"
 cat > "$xdir/ok.vibe" <<'EOF'
 enum Color { Red; Green; Blue }
 export let _start: () -> Int = () -> {
@@ -913,8 +898,7 @@ echo "[compiler-gate] match exhaustiveness ok"
 #     nested `Some(true)` over `Option[Int]` must be rejected; matching literals
 #     of the right type (incl. nested) must compile.
 echo "[compiler-gate] 36/36 literal-pattern type checking"
-ldir="_build/_gate_litpat"
-rm -rf "$ldir"; mkdir -p "$ldir"
+gate_workdir ldir "_build/_gate_litpat"
 cat > "$ldir/ok.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let a = match 5 { 0 => 1, 5 => 2, _ => 0 }
@@ -941,8 +925,7 @@ echo "[compiler-gate] literal-pattern type checking ok"
 # 37. unary `-` on a non-number and `break`/`continue` outside a loop must be
 #     rejected; numeric negation and in-loop break/continue must compile.
 echo "[compiler-gate] 37/37 unary-minus / break-outside-loop checking"
-bdir="_build/_gate_breakneg"
-rm -rf "$bdir"; mkdir -p "$bdir"
+gate_workdir bdir "_build/_gate_breakneg"
 cat > "$bdir/ok.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let mut i = 0
@@ -973,8 +956,7 @@ echo "[compiler-gate] unary-minus / break-outside-loop checking ok"
 #     non-tuple (`let (a, b) = 5`) must be rejected, while a genuine tuple
 #     destructure must still compile.
 echo "[compiler-gate] 38/38 tuple-pattern destructuring type checking"
-tdir="_build/_gate_tupledestr"
-rm -rf "$tdir"; mkdir -p "$tdir"
+gate_workdir tdir "_build/_gate_tupledestr"
 cat > "$tdir/ok.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let (a, b) = (1, 2); a + b }
 EOF
@@ -995,8 +977,7 @@ echo "[compiler-gate] tuple-pattern destructuring type checking ok"
 #     operation effect dispatch (#665), a match guard inside a handler arm
 #     (#666), and the effect-call discipline (#626) in one program.
 echo "[compiler-gate] 39/39 multi-feature end-to-end smoke"
-sdir="_build/_gate_smoke"
-rm -rf "$sdir"; mkdir -p "$sdir"
+gate_workdir sdir "_build/_gate_smoke"
 cat > "$sdir/clos.vibe" <<'EOF'
 let rec fold: (Array[Int], Int, (Int, Int) -> Int) -> Int = (a, acc, f) -> {
   if Array::length(a) == 0 { acc }

@@ -154,8 +154,7 @@ echo "[compiler-gate] an unknown derive is refused by both lanes and anchored on
 # growing prefixes each produced a non-monotone predicate that binary search
 # could resolve to VALID code, which is why searching is not used here.
 echo "[compiler-gate] 120/120 an unsupported contract statement is anchored on that statement (#2317)"
-clsdir="_build/_gate_contract_classify"
-rm -rf "$clsdir"; mkdir -p "$clsdir"
+gate_workdir clsdir "_build/_gate_contract_classify"
 cls_header='name = @gate/contractcls
 version = 0.0.1
 description =
@@ -389,8 +388,7 @@ fi
 # tests/gates/lib.sh, which sets it to `_build/_gate_lane_gen/stage2.wasm`).
 # Only the `types_fake/` subdirectory is created and removed; the real generated
 # stubs alongside it are untouched.
-nesteddir=".vibe/build/vpkg_types/types_fake"
-rm -rf "$nesteddir"; mkdir -p "$nesteddir"
+gate_workdir nesteddir ".vibe/build/vpkg_types/types_fake"
 cat > "$nesteddir/source.vibe" <<'DPVEOF'
 // vibe: vpkg contract types module (#1840)
 // vibe: generated from lib/@gate/NOT_THIS_FILE/index.vpkg
@@ -438,8 +436,7 @@ echo "[compiler-gate] a type diagnostic on a materialized contract names the con
 # the build, and a check counting raw declarations would refuse a contract the
 # build takes. Measured both ways.
 echo "[compiler-gate] 122/122 a duplicated contract declaration is refused by both lanes, and named (#2317)"
-dupdir="_build/_gate_contract_dup"
-rm -rf "$dupdir"; mkdir -p "$dupdir"
+gate_workdir dupdir "_build/_gate_contract_dup"
 dup_header='name = @gate/contractdup
 version = 0.0.1
 description =

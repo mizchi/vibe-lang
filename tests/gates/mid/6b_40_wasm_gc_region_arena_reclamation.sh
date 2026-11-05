@@ -16,8 +16,7 @@
 #         would silently force the linear lane -- see
 #         docs/internal/reports/code-size-linear-vs-gc.md).
 echo "[compiler-gate] 40h-6b/40 wasm-gc region arena reclamation (#1262)"
-gcardir="_build/_gate_gc_arena"
-rm -rf "$gcardir"; mkdir -p "$gcardir"
+gate_workdir gcardir "_build/_gate_gc_arena"
 env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/region_arena_bounded.vibe" "$gcardir/bounded.wasm" __no_entry__ >/dev/null 2>&1 || true
@@ -71,8 +70,7 @@ echo "[compiler-gate] wasm-gc region arena ok (reclamation measured: Array ${gca
 #         without the wrap leaked 574708 B; with it the residual is the
 #         per-call region-lambda closure on the main heap.
 echo "[compiler-gate] 40h-6c/40 wasm-gc region exception-unwind restore (#1937)"
-gcarudir="_build/_gate_gc_arena_unwind"
-rm -rf "$gcarudir"; mkdir -p "$gcarudir"
+gate_workdir gcarudir "_build/_gate_gc_arena_unwind"
 # Entry is `main`, not `__no_entry__`: this file also pins nested-handle
 # rethrow, and that shape is a pre-existing gc EHandle hole (handler throw
 # is not seen by an outer handle, with or without a region). `main` is the
@@ -107,8 +105,7 @@ echo "[compiler-gate] wasm-gc region exception-unwind ok (reclamation measured: 
 #        Expected values live in the fixture as `inspect(..)` snapshots (see
 #        40h-6 for why). This section runs that same block on both lanes.
 echo "[compiler-gate] 40h-8/40 wasm-gc Map::delete (#1262)"
-gcmddir="_build/_gate_gc_map_delete"
-rm -rf "$gcmddir"; mkdir -p "$gcmddir"
+gate_workdir gcmddir "_build/_gate_gc_map_delete"
 gcmd_out=""
 for gcmd_be in linear gc; do
   env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcmd_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -150,8 +147,7 @@ echo "[compiler-gate] wasm-gc Map::delete ok (linear + gc snapshots; middle-entr
 #        (they need no stdin); the stdin half needs a fed run, which a snapshot
 #        cannot express, so that part is compared lane-to-lane here.
 echo "[compiler-gate] 40h-7/40 wasm-gc stdin + Int::parse (#1262)"
-gcsidir="_build/_gate_gc_stdin"
-rm -rf "$gcsidir"; mkdir -p "$gcsidir"
+gate_workdir gcsidir "_build/_gate_gc_stdin"
 gcsi_out=""
 for gcsi_be in linear gc; do
   env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcsi_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -191,8 +187,7 @@ echo "[compiler-gate] wasm-gc stdin + Int::parse ok (linear + gc, real input via
 #        happens. 7 is picked because nothing else produces it: a trap exits
 #        134, an uncaught throw exits 1, a clean fallthrough exits 0.
 echo "[compiler-gate] 40h-9/40 wasm-gc process exit (#1262)"
-gcpedir="_build/_gate_gc_process_exit"
-rm -rf "$gcpedir"; mkdir -p "$gcpedir"
+gate_workdir gcpedir "_build/_gate_gc_process_exit"
 for gcpe_be in linear gc; do
   env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcpe_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -229,8 +224,7 @@ echo "[compiler-gate] wasm-gc process exit ok (linear + gc, exit status 7)"
 #               is invisible in a size comparison because the two lanes'
 #               fixed preludes differ by more than the regression does.
 echo "[compiler-gate] 40h-10/40 wasm-gc sibling slot reuse (#1985)"
-gcssdir="_build/_gate_gc_slot_reuse"
-rm -rf "$gcssdir"; mkdir -p "$gcssdir"
+gate_workdir gcssdir "_build/_gate_gc_slot_reuse"
 for gcss_be in linear gc; do
   env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcss_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -262,8 +256,7 @@ echo "[compiler-gate] wasm-gc sibling slot reuse ok (mixed fixture 105 on both l
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"
-gcstrdir="_build/_gate_gc_string_forin"
-rm -rf "$gcstrdir"; mkdir -p "$gcstrdir"
+gate_workdir gcstrdir "_build/_gate_gc_string_forin"
 VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/gc_for_in_string_test.vibe" "$gcstrdir/out.wasm" main >/dev/null 2>&1 || true
@@ -282,8 +275,7 @@ echo "[compiler-gate] wasm-gc String for-in ok (1666)"
 #       fixture failed with "GC codegen: unsupported perform (no builtin
 #       mapping)" before this change.
 echo "[compiler-gate] 40h2/40 wasm-gc backend evidence-dict user-defined effect support (ADR-0076 step 6)"
-gcedir="_build/_gate_gc_evidence_dict"
-rm -rf "$gcedir"; mkdir -p "$gcedir"
+gate_workdir gcedir "_build/_gate_gc_evidence_dict"
 VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/gc_backend_effect_evidence_dict.vibe" "$gcedir/out.wasm" main >/dev/null 2>&1 || true
@@ -309,8 +301,7 @@ echo "[compiler-gate] wasm-gc backend evidence-dict user-defined effect support 
 #       confirmed via direct A/B testing that it failed under
 #       VIBE_BACKEND=gc with "only `with Error`..." before this change.
 echo "[compiler-gate] 40h3/40 wasm-gc backend: dead needing function no longer blocks effect migration (ADR-0076 gc follow-up)"
-gcdeaddir="_build/_gate_gc_dead_needing"
-rm -rf "$gcdeaddir"; mkdir -p "$gcdeaddir"
+gate_workdir gcdeaddir "_build/_gate_gc_dead_needing"
 # #1571: the fixture is an inspect() test-block suite now, compiled AS-IS --
 # no `__DATA__` tail to `sed` off, no temp copy, and the expected 105 is in
 # the fixture instead of in this comparison. It still goes through the
@@ -352,8 +343,7 @@ echo "[compiler-gate] 40h4/40 wasm-gc backend: self-discharging needing function
 # which additionally locks #1595 on the gc lane: the CALL to a
 # self-discharging fn must be inert (edp_append_self_discharging_row_fns),
 # not just the fn itself dropped from `needing`.
-gcselfdir="_build/_gate_gc_self_discharge"
-rm -rf "$gcselfdir"; mkdir -p "$gcselfdir"
+gate_workdir gcselfdir "_build/_gate_gc_self_discharge"
 VIBE_BACKEND=gc gate_fs_compile fixtures/effect_effectset_expansion.vibe "$gcselfdir/out.wasm" __no_entry__
 gate_require_artifact "$gcselfdir/out.wasm" "effect_effectset_expansion.vibe did not compile under VIBE_BACKEND=gc (self-discharging drop or #1595 call-inertness regressed)"
 if ! gcself_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gcselfdir/out.wasm" 2>&1)"; then
@@ -381,8 +371,7 @@ echo "[compiler-gate] wasm-gc backend self-discharging needing function filterin
 #        the diagnostic must name the callee + the arm re-perform (#1591:
 #        the old enumeration listed only forms this program satisfies).
 echo "[compiler-gate] 40h4b/40 self-discharging callee call-inertness (#1595) + dirty-arm rejection (#1591)"
-sdcdir="_build/_gate_self_discharge_callee"
-rm -rf "$sdcdir"; mkdir -p "$sdcdir"
+gate_workdir sdcdir "_build/_gate_self_discharge_callee"
 for sdc_backend in "" gc; do
   rm -f "$sdcdir/out.wasm" "$sdcdir/out.wasm.diag"
   env ${sdc_backend:+VIBE_BACKEND="$sdc_backend"} VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -407,8 +396,7 @@ echo "[compiler-gate] self-discharging callee call-inertness ok (#1595/#1591)"
 # still has its plain call convention, so passing it directly used to compile
 # and trap at the indirect call. The explicit closure is a working edit.
 echo "[compiler-gate] 40h4c/40 nested-handler function value refuses before an arity trap (#3195)"
-nhvdir="_build/_gate_nested_handle_value"
-rm -rf "$nhvdir"; mkdir -p "$nhvdir"
+gate_workdir nhvdir "_build/_gate_nested_handle_value"
 gate_fs_compile fixtures/err_fnvalue_nested_handle.vibe "$nhvdir/rej.wasm" main
 gate_require_refused "$nhvdir/rej.wasm" "named self-discharging function value compiled and can trap at an indirect call (#3195)"
 gate_require_diag_has "$nhvdir/rej.wasm.diag" 'pass an explicitly row-annotated closure that calls `inner_handled`' \
@@ -531,8 +519,7 @@ echo "[compiler-gate] nested-handler function value refusal and inline closure o
 #       perform" failure (found via direct testing after landing fix (1)
 #       alone still didn't fix this fixture under gc).
 echo "[compiler-gate] 40h5/40 wasm-gc backend: unannotated hoisted closure literal row backfill (ADR-0076 gc follow-up)"
-gcclosdir="_build/_gate_gc_closure_literal_row"
-rm -rf "$gcclosdir"; mkdir -p "$gcclosdir"
+gate_workdir gcclosdir "_build/_gate_gc_closure_literal_row"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -559,8 +546,7 @@ echo "[compiler-gate] wasm-gc backend closure literal row backfill ok (6)"
 #       allowlist. Harmless on linear (replay fallback); a hard
 #       "unsupported perform" error on gc, which has none.
 echo "[compiler-gate] 40h6/40 wasm-gc backend: __index/length pure-builtin allowlist gap (ADR-0076 gc follow-up)"
-gcidxdir="_build/_gate_gc_pure_builtin_index"
-rm -rf "$gcidxdir"; mkdir -p "$gcidxdir"
+gate_workdir gcidxdir "_build/_gate_gc_pure_builtin_index"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -585,8 +571,7 @@ echo "[compiler-gate] wasm-gc backend pure-builtin allowlist ok (3)"
 #       constructor or function" hard error. Mirrors linked_compile.vibe's
 #       SSuberror handling exactly.
 echo "[compiler-gate] 40h7/40 wasm-gc backend: suberror constructor registration (gc follow-up)"
-gcsuberrdir="_build/_gate_gc_suberror_ctor"
-rm -rf "$gcsuberrdir"; mkdir -p "$gcsuberrdir"
+gate_workdir gcsuberrdir "_build/_gate_gc_suberror_ctor"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -694,8 +679,7 @@ echo "[compiler-gate] builtin lane parity ok (gc + linear agree)"
 # would swallow the genuine unresolved-name class (#1502/#1510/#1521) that
 # message exists for.
 echo "[compiler-gate] 40h8c/40 wasm-gc direct diagnostic + public import resolution (#1976/#2376)"
-gcimpdir="_build/_gate_gc_import_diag"
-rm -rf "$gcimpdir"; mkdir -p "$gcimpdir"
+gate_workdir gcimpdir "_build/_gate_gc_import_diag"
 VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/gc_import_diag_use.vibe "$gcimpdir/out.wasm" main >/dev/null 2>&1 || true
@@ -736,8 +720,7 @@ echo "[compiler-gate] wasm-gc import contract ok (direct mode diagnoses; public 
 #      declared effect -> inline interface import, host-capability effect ->
 #      comment marker, exported fns -> world exports, type mapping.
 echo "[compiler-gate] 40i/40 effect->WIT golden (#537)"
-witdir="_build/_gate_wit"
-rm -rf "$witdir"; mkdir -p "$witdir"
+gate_workdir witdir "_build/_gate_wit"
 VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/wit_gen_http.vibe" "$witdir/out.wit" main >/dev/null 2>&1 || true
@@ -757,8 +740,7 @@ echo "[compiler-gate] effect->WIT golden ok"
 #      wasmtime when available (the same auth check the full HTTP gate curls);
 #      otherwise only the emission is asserted.
 echo "[compiler-gate] 40j/40 serve handler componentization (#537)"
-svdir="_build/_gate_serve"
-rm -rf "$svdir"; mkdir -p "$svdir"
+gate_workdir svdir "_build/_gate_serve"
 VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="$svdir/handler.wit" \
   gate_flat_compile "fixtures/serve_handler_smoke.vibe" "$svdir/handler.component.wasm" main
 gate_require_artifact "$svdir/handler.component.wasm" "VIBE_SERVE_COMPONENT produced no component"
@@ -810,8 +792,7 @@ rm -rf "$svdir"
 #     LATENT BUG noted but not fixed there); now slot-indexed and pruned
 #     the same way.
 echo "[compiler-gate] 40k/40 gc-lane call/to_string regressions (#1015, #2160)"
-gcbdir="_build/_gate_gc_to_string_bool"
-rm -rf "$gcbdir"; mkdir -p "$gcbdir"
+gate_workdir gcbdir "_build/_gate_gc_to_string_bool"
 # gc_scratch_name_collision.vibe intentionally stays out of the linear unit
 # lane because it guards GC-backend scratch naming specifically.
 for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_bool_scope_gc_test to_string_float_scope_gc_test gc_local_top_level_shadow_test gc_scratch_name_collision; do
@@ -842,8 +823,7 @@ echo "[compiler-gate] gc-lane call/to_string regressions ok"
 #      replay. This gate now pins the FIXED output (3013 == 1000*3 +
 #      (5+5+3)) as a regression lock for this effect-wrapper lowering path.
 echo "[compiler-gate] 40l/40 handle-replay side-effect corruption regression guard (M2/#817)"
-m2dir="_build/_gate_effect_replay_m2"
-rm -rf "$m2dir"; mkdir -p "$m2dir"
+gate_workdir m2dir "_build/_gate_effect_replay_m2"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -873,8 +853,7 @@ echo "[compiler-gate] 40m/40 effect row operation-item grammar (ADR-0071 step 1/
 # from fixtures/); the test-block wrapper also locks #1595's shape (calling
 # the self-discharging `run_operation_row` from under another `handle` for the same
 # effect).
-a71dir="_build/_gate_effectset_row_item"
-rm -rf "$a71dir"; mkdir -p "$a71dir"
+gate_workdir a71dir "_build/_gate_effectset_row_item"
 gate_fs_compile fixtures/effect_row_operation_item.vibe "$a71dir/out.wasm" __no_entry__
 gate_require_artifact "$a71dir/out.wasm" "effect_row_operation_item.vibe did not compile (with Effect::op row-item grammar regressed, or #1595 self-discharging call-inertness regressed)"
 if ! a71_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$a71dir/out.wasm" 2>&1)"; then
@@ -902,8 +881,7 @@ echo "[compiler-gate] effect row operation-item grammar ok"
 echo "[compiler-gate] 40n/40 effectset row expansion authorizes a transitive call (ADR-0071 step 3/#755)"
 # #1571: fixture is an inspect() test-block suite now, compiled AS-IS (no
 # `sed` strip; its import resolves from fixtures/). See gate 40m's note.
-a71bdir="_build/_gate_effectset_expand"
-rm -rf "$a71bdir"; mkdir -p "$a71bdir"
+gate_workdir a71bdir "_build/_gate_effectset_expand"
 gate_fs_compile fixtures/effect_effectset_expansion.vibe "$a71bdir/out.wasm" __no_entry__
 gate_require_artifact "$a71bdir/out.wasm" "effect_effectset_expansion.vibe did not compile -- effectset row expansion regressed"
 if ! a71b_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$a71bdir/out.wasm" 2>&1)"; then
@@ -925,8 +903,7 @@ echo "[compiler-gate] effectset row expansion ok"
 #      always failing, this gate is what now proves an INVALID one still
 #      doesn't silently slip through to acceptance.
 echo "[compiler-gate] 40o/40 effectset cycle + operation-collision detection (ADR-0071 step 2/#755)"
-a71cdir="_build/_gate_effectset_resolver"
-rm -rf "$a71cdir"; mkdir -p "$a71cdir"
+gate_workdir a71cdir "_build/_gate_effectset_resolver"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
@@ -960,8 +937,7 @@ echo "[compiler-gate] effectset cycle + operation-collision detection ok"
 echo "[compiler-gate] 40p/40 effectset parameter-type row expansion (ADR-0071 step 3/#755)"
 # #1571: fixture is an inspect() test-block suite now, compiled AS-IS (no
 # `sed` strip; its import resolves from fixtures/). See gate 40m's note.
-a71ddir="_build/_gate_effectset_param_expand"
-rm -rf "$a71ddir"; mkdir -p "$a71ddir"
+gate_workdir a71ddir "_build/_gate_effectset_param_expand"
 gate_fs_compile fixtures/effect_effectset_param_expansion.vibe "$a71ddir/out.wasm" __no_entry__
 gate_require_artifact "$a71ddir/out.wasm" "effect_effectset_param_expansion.vibe did not compile -- parameter-type effectset expansion regressed"
 if ! a71d_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$a71ddir/out.wasm" 2>&1)"; then
@@ -985,8 +961,7 @@ echo "[compiler-gate] effectset parameter-type row expansion ok"
 #      fixtures/effect_handle_operation_level_discharge.vibe, which has
 #      exactly that shape and NO with-clause of its own on main.
 echo "[compiler-gate] 40q/40 handler operation-level discharge (ADR-0071 step 4/#755)"
-a71edir="_build/_gate_effectset_handle_discharge"
-rm -rf "$a71edir"; mkdir -p "$a71edir"
+gate_workdir a71edir "_build/_gate_effectset_handle_discharge"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1014,8 +989,7 @@ echo "[compiler-gate] handler operation-level discharge ok"
 #      the declaration survives the contract facade end to end, not just
 #      that it parses in isolation.
 echo "[compiler-gate] 40r/40 effectset contract passthrough (ADR-0071 step 5/#755)"
-a71fdir="_build/_gate_effectset_contract"
-rm -rf "$a71fdir"; mkdir -p "$a71fdir"
+gate_workdir a71fdir "_build/_gate_effectset_contract"
 gate_fs_compile "fixtures/contract_effectset_vpkg_main.vibe" "$a71fdir/out.wasm" main
 gate_require_artifact "$a71fdir/out.wasm" "contract_effectset_vpkg_main.vibe did not compile -- effectset contract passthrough regressed"
 gate_run a71f_out last "$a71fdir/out.wasm"
@@ -1036,8 +1010,7 @@ echo "[compiler-gate] effectset contract passthrough ok"
 #      fixtures/contract_effectset_signature_alias_main.vibe, which imports
 #      fixtures/contract_effectset_signature_alias/ -- exactly that shape.
 echo "[compiler-gate] 40s/40 effectset contract signature-matching (ADR-0071 step 5/#755)"
-a71gdir="_build/_gate_effectset_sig_alias"
-rm -rf "$a71gdir"; mkdir -p "$a71gdir"
+gate_workdir a71gdir "_build/_gate_effectset_sig_alias"
 gate_fs_compile "fixtures/contract_effectset_signature_alias_main.vibe" "$a71gdir/out.wasm" main
 gate_require_artifact "$a71gdir/out.wasm" "contract_effectset_signature_alias_main.vibe did not compile -- effectset-aware contract signature matching regressed"
 gate_run a71g_out last "$a71gdir/out.wasm"
@@ -1059,8 +1032,7 @@ echo "[compiler-gate] effectset contract signature-matching ok"
 #      export using the effectset alias, one using the bare qualified item)
 #      via `vibe compile --wit` and diffs against the golden.
 echo "[compiler-gate] 40t/40 effect->WIT effectset/qualified resolution (ADR-0071 step 5/#755)"
-witesdir="_build/_gate_wit_effectset"
-rm -rf "$witesdir"; mkdir -p "$witesdir"
+gate_workdir witesdir "_build/_gate_wit_effectset"
 VIBE_EMIT_WIT=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/wit_gen_effectset.vibe" "$witesdir/out.wit" main >/dev/null 2>&1 || true
@@ -1083,8 +1055,7 @@ echo "[compiler-gate] effect->WIT effectset/qualified resolution ok"
 #      reproduced the SAME 6016 corruption pre-fix. This gate pins the
 #      FIXED output (3013, same math as gate 40l) as a regression lock.
 echo "[compiler-gate] 40u/40 evidence-dict threading through a helper-function call (ADR-0076 Phase 3/#817)"
-edpdir="_build/_gate_evidence_dict_call"
-rm -rf "$edpdir"; mkdir -p "$edpdir"
+gate_workdir edpdir "_build/_gate_evidence_dict_call"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1117,8 +1088,7 @@ echo "[compiler-gate] evidence-dict threading through a helper-function call ok"
 #      CORRECTLY (a single evidence-dict call, no replay-style duplicate
 #      execution) rather than merely not crashing.
 echo "[compiler-gate] 40v/40 evidence-dict pass: branching handle body runs correctly via the evidence dict (ADR-0076 Phase 3/#817)"
-edpbdir="_build/_gate_evidence_dict_branch"
-rm -rf "$edpbdir"; mkdir -p "$edpbdir"
+gate_workdir edpbdir "_build/_gate_evidence_dict_branch"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1147,8 +1117,7 @@ echo "[compiler-gate] evidence-dict pass branching handle body ok"
 #      handle site, so its mere presence was enough to trigger the bug at
 #      compile time regardless of whether it ever runs.
 echo "[compiler-gate] 40w/40 evidence-dict pass: Error::Throw mixed into a needing function's body compiles (ADR-0076 Phase 3/#817)"
-edpemdir="_build/_gate_evidence_dict_error_mix"
-rm -rf "$edpemdir"; mkdir -p "$edpemdir"
+gate_workdir edpemdir "_build/_gate_evidence_dict_error_mix"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1182,8 +1151,7 @@ echo "[compiler-gate] evidence-dict pass Error::Throw mixing ok"
 #      fallback value (3018) an earlier, less complete version of this
 #      pass used to produce for the same program.
 echo "[compiler-gate] 40x/40 evidence-dict pass: multi-effect row migrates both effects through a nested handle pair (ADR-0076 Phase 3/#817)"
-edpmedir="_build/_gate_evidence_dict_multi_effect"
-rm -rf "$edpmedir"; mkdir -p "$edpmedir"
+gate_workdir edpmedir "_build/_gate_evidence_dict_multi_effect"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1207,8 +1175,7 @@ echo "[compiler-gate] evidence-dict pass multi-effect row nested-handle migratio
 #      probe during development) that BOTH `A` and `B` genuinely migrate to
 #      evidence-dict; this gate pins the resulting value (7 == 3 + 4).
 echo "[compiler-gate] 40z/40 evidence-dict pass: minimal directly-nested handle pair, both effects migrate (ADR-0076 Phase 3/#817)"
-edpnhdir="_build/_gate_evidence_dict_nested_handles"
-rm -rf "$edpnhdir"; mkdir -p "$edpnhdir"
+gate_workdir edpnhdir "_build/_gate_evidence_dict_nested_handles"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1247,8 +1214,7 @@ echo "[compiler-gate] evidence-dict pass directly-nested handle pair migration o
 #      traversals structurally mirror edp_has_unsafe_construct's coverage
 #      exactly.
 echo "[compiler-gate] 40y/40 evidence-dict pass: perform bound via let inside a needing function's own body (ADR-0076 Phase 3/#817)"
-edpletdir="_build/_gate_evidence_dict_let_bound"
-rm -rf "$edpletdir"; mkdir -p "$edpletdir"
+gate_workdir edpletdir "_build/_gate_evidence_dict_let_bound"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1276,8 +1242,7 @@ echo "[compiler-gate] evidence-dict pass let-bound perform ok"
 #       development) that `Ask` genuinely migrates here, not merely
 #       "produces the right answer via replay by coincidence".
 echo "[compiler-gate] 40aa/40 evidence-dict pass: call to a plain user-defined pure helper function (ADR-0076 Phase 3/#817)"
-edppurdir="_build/_gate_evidence_dict_pure_helper"
-rm -rf "$edppurdir"; mkdir -p "$edppurdir"
+gate_workdir edppurdir "_build/_gate_evidence_dict_pure_helper"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1303,8 +1268,7 @@ echo "[compiler-gate] evidence-dict pass pure-helper call ok"
 #       a temporary migration-plan probe during development) that `Ask`
 #       genuinely migrates here.
 echo "[compiler-gate] 40ab/40 evidence-dict pass: struct field read via EDot (ADR-0076 Phase 3/#817)"
-edpdotdir="_build/_gate_evidence_dict_struct_field"
-rm -rf "$edpdotdir"; mkdir -p "$edpdotdir"
+gate_workdir edpdotdir "_build/_gate_evidence_dict_struct_field"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1331,8 +1295,7 @@ echo "[compiler-gate] evidence-dict pass struct field read ok"
 #       migrates and the rewrite of the closure's body (dict capture)
 #       produces valid wasm even though the closure is unreachable.
 echo "[compiler-gate] 40ac/40 evidence-dict pass: closure literal defining a perform (ADR-0076 Phase 3/#817)"
-edpclodir="_build/_gate_evidence_dict_closure_literal"
-rm -rf "$edpclodir"; mkdir -p "$edpclodir"
+gate_workdir edpclodir "_build/_gate_evidence_dict_closure_literal"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1365,8 +1328,7 @@ echo "[compiler-gate] evidence-dict pass closure literal ok"
 #       migration genuinely happened, not merely that the answer still
 #       looks plausible via the pre-existing fallback.
 echo "[compiler-gate] 40ad/40 evidence-dict pass: needing function's row spelled via an effectset alias (ADR-0076 Phase 3/#817)"
-edpesdir="_build/_gate_evidence_dict_effectset_alias"
-rm -rf "$edpesdir"; mkdir -p "$edpesdir"
+gate_workdir edpesdir "_build/_gate_evidence_dict_effectset_alias"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1388,8 +1350,7 @@ echo "[compiler-gate] evidence-dict pass effectset alias ok"
 #       effectset-table expansion (gate 40ad's own code path). Completeness
 #       check written alongside the effectset-alias fix.
 echo "[compiler-gate] 40ae/40 evidence-dict pass: needing function's row is a directly-qualified operation (ADR-0076 Phase 3/#817)"
-edpqodir="_build/_gate_evidence_dict_qualified_op"
-rm -rf "$edpqodir"; mkdir -p "$edpqodir"
+gate_workdir edpqodir "_build/_gate_evidence_dict_qualified_op"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1413,8 +1374,7 @@ echo "[compiler-gate] evidence-dict pass qualified-operation row ok"
 #       row-variable token never matches a real declared effect name and
 #       is therefore inert to this pass's own matching logic.
 echo "[compiler-gate] 40af/40 evidence-dict pass: row combines a concrete effect with an open row-variable tail (ADR-0076 Phase 3/#817)"
-edprvdir="_build/_gate_evidence_dict_row_variable_tail"
-rm -rf "$edprvdir"; mkdir -p "$edprvdir"
+gate_workdir edprvdir "_build/_gate_evidence_dict_row_variable_tail"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1440,8 +1400,7 @@ echo "[compiler-gate] evidence-dict pass row-variable-tail row ok"
 #       of evidence_dict_pass entirely -- #1069, a pre-existing closure-
 #       codegen bug #786's landed fix explicitly declined to touch.)
 echo "[compiler-gate] 40ag/40 evidence-dict pass: needing function calls a capture-free local closure (ADR-0076 Phase 3/#817, #786)"
-edplccfdir="_build/_gate_evidence_dict_local_closure_capture_free"
-rm -rf "$edplccfdir"; mkdir -p "$edplccfdir"
+gate_workdir edplccfdir "_build/_gate_evidence_dict_local_closure_capture_free"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1467,8 +1426,7 @@ echo "[compiler-gate] evidence-dict pass capture-free local closure call ok"
 #       is now ALSO lambda-lifted, with captures threaded through as extra
 #       leading parameters.
 echo "[compiler-gate] 40ah/40 local effectful closure capturing an enclosing local now compiles and runs (#1069)"
-lcccdir="_build/_gate_local_closure_capture_conversion"
-rm -rf "$lcccdir"; mkdir -p "$lcccdir"
+gate_workdir lcccdir "_build/_gate_local_closure_capture_conversion"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1495,8 +1453,7 @@ echo "[compiler-gate] local effectful closure capture conversion ok (#1069)"
 #       sound (identity-wrapper inlining changes no observable behavior),
 #       leaving `apply`'s own definition untouched for any other use.
 echo "[compiler-gate] 40ai/40 capturing effectful closure passed by value through a trivial wrapper (#1070 narrow slice)"
-lcbvwdir="_build/_gate_local_closure_by_value_wrapper"
-rm -rf "$lcbvwdir"; mkdir -p "$lcbvwdir"
+gate_workdir lcbvwdir "_build/_gate_local_closure_by_value_wrapper"
 # #1571: inspect() test block in the fixture, compiled as-is (see the gc site
 # for this same fixture above).
 gate_fs_compile fixtures/effect_local_closure_by_value_wrapper.vibe "$lcbvwdir/out.wasm" __no_entry__
@@ -1516,8 +1473,7 @@ echo "[compiler-gate] local effectful closure passed through trivial wrapper ok 
 #       via apply's own untouched top-level definition, unaffected by the
 #       inlining pass.
 echo "[compiler-gate] 40aj/40 trivial-wrapper inlining leaves wrapper-as-value references correct (#1070 narrow slice)"
-lcwrvdir="_build/_gate_local_closure_wrapper_referenced_as_value"
-rm -rf "$lcwrvdir"; mkdir -p "$lcwrvdir"
+gate_workdir lcwrvdir "_build/_gate_local_closure_wrapper_referenced_as_value"
 # #1571 (first slice): this fixture carries its expectation as an
 # `inspect(main(), "30")` test block rather than a `__DATA__` tail, so it is
 # compiled AS-IS -- no `sed` strip, no temp copy (its `import ../lib/@vibe/core`
@@ -1543,8 +1499,7 @@ echo "[compiler-gate] trivial-wrapper inlining wrapper-as-value reference ok (#1
 #       the call's argument (the exact class of bug caught in
 #       dtpw_inline_expr's first draft before it shipped).
 echo "[compiler-gate] 40ak/40 trivial-wrapper inlining does not misfire on wrong-arity wrapper bodies (#1070 narrow slice)"
-lcwadir="_build/_gate_local_closure_wrapper_wrong_arity"
-rm -rf "$lcwadir"; mkdir -p "$lcwadir"
+gate_workdir lcwadir "_build/_gate_local_closure_wrapper_wrong_arity"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1574,8 +1529,7 @@ echo "[compiler-gate] trivial-wrapper inlining wrong-arity non-match ok (#1070 n
 #       (a capturing literal passed as a HOF argument still hits #1070's
 #       already-known general case -- see the fixture's own doc comment).
 echo "[compiler-gate] 40al/40 inline effectful lambda literal (IIFE / HOF argument, capture-free) no longer crashes"
-illhadir="_build/_gate_inline_lambda_literal_hof_arg"
-rm -rf "$illhadir"; mkdir -p "$illhadir"
+gate_workdir illhadir "_build/_gate_inline_lambda_literal_hof_arg"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1597,8 +1551,7 @@ echo "[compiler-gate] inline effectful lambda literal IIFE/HOF-arg fix ok (10)"
 #       matched a BARE EFn argument. Fixed by recursing one layer into
 #       ELabeledArg in both helpers.
 echo "[compiler-gate] 40am/40 inline effectful lambda literal as a LABELED call argument no longer crashes"
-illladir="_build/_gate_inline_lambda_literal_labeled_arg"
-rm -rf "$illladir"; mkdir -p "$illladir"
+gate_workdir illladir "_build/_gate_inline_lambda_literal_labeled_arg"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1621,8 +1574,7 @@ echo "[compiler-gate] inline effectful lambda literal labeled-arg fix ok (5)"
 #       by dropping a wrapper name entirely if it's ever shadowed anywhere
 #       in the program (dtpw_collect_wrappers).
 echo "[compiler-gate] 40an/40 trivial-wrapper inlining respects lexical shadowing (#1074 review)"
-dtpwsdir="_build/_gate_dtpw_wrapper_shadowed"
-rm -rf "$dtpwsdir"; mkdir -p "$dtpwsdir"
+gate_workdir dtpwsdir "_build/_gate_dtpw_wrapper_shadowed"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1647,8 +1599,7 @@ echo "[compiler-gate] trivial-wrapper inlining shadowing fix ok (99)"
 #       edp_drop_shadowed_needing, applied unconditionally alongside the
 #       existing self-discharging-needing filter.
 echo "[compiler-gate] 40ao/40 evidence-dict needing-forwarding respects lexical shadowing (#1074 review)"
-edpsdir="_build/_gate_edp_needing_shadowed"
-rm -rf "$edpsdir"; mkdir -p "$edpsdir"
+gate_workdir edpsdir "_build/_gate_edp_needing_shadowed"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1680,8 +1631,7 @@ echo "[compiler-gate] evidence-dict needing-forwarding shadowing fix ok (47)"
 #       (`apply_twice`) and the callee value (`inner`) are migrated
 #       together, never just one side.
 echo "[compiler-gate] 40ap/40 evidence-dict forwarding through an own closure-typed HOF parameter (#1070 general case)"
-edpgdir="_build/_gate_edp_closure_hof_general"
-rm -rf "$edpgdir"; mkdir -p "$edpgdir"
+gate_workdir edpgdir "_build/_gate_edp_closure_hof_general"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1707,8 +1657,7 @@ echo "[compiler-gate] evidence-dict forwarding through own closure-typed HOF par
 #       the other (which would be a wrong-arity miscompile, not just a
 #       missed optimization).
 echo "[compiler-gate] 40aq/40 closure-typed HOF parameter safety boundary: multi-use closure stays unmigrated (#1070 general case)"
-edpedir="_build/_gate_edp_closure_hof_escaping"
-rm -rf "$edpedir"; mkdir -p "$edpedir"
+gate_workdir edpedir "_build/_gate_edp_closure_hof_escaping"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1728,8 +1677,7 @@ echo "[compiler-gate] closure-typed HOF parameter safety boundary ok (206)"
 # workaround avoided it (@vibe/concurrent Nursery::spawn was the canary).
 # Now fixed; pin BOTH RC lanes -- the corruption was RC bookkeeping, so the
 # bump lane alone cannot see a regression.
-cbvsdir="_build/_gate_closure_by_value_store"
-rm -rf "$cbvsdir"; mkdir -p "$cbvsdir"
+gate_workdir cbvsdir "_build/_gate_closure_by_value_store"
 for cbvs_rc in 1 0; do
   VIBE_RC="$cbvs_rc" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \

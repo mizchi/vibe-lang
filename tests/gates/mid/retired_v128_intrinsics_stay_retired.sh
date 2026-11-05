@@ -21,8 +21,7 @@ export VIBE_UNSTABLE=1
 #     type-checked and looked like the supported way to write SIMD -- so assert
 #     the name does NOT resolve, and fails the way the CLI promises.
 echo "[compiler-gate] 40/40 retired V128 intrinsics stay retired"
-vdir="_build/_gate_v128"
-rm -rf "$vdir"; mkdir -p "$vdir"
+gate_workdir vdir "_build/_gate_v128"
 cat > "$vdir/retired_v128.vibe" <<'RETIREDEOF'
 fn probe(b: Bytes) -> Int {
   let _ = v128_load(b, 0)
@@ -47,8 +46,7 @@ echo "[compiler-gate] retired V128 intrinsics stay retired ok"
 #      asserts the result equals the scalar first-non-whitespace index across the
 #      tail-only, single-chunk bitmask/ctz, multi-chunk, and non-zero-start paths.
 echo "[compiler-gate] 40b/40 fused SIMD whitespace skip (simd_skip_ws)"
-swdir="_build/_gate_simd_skip_ws"
-rm -rf "$swdir"; mkdir -p "$swdir"
+gate_workdir swdir "_build/_gate_simd_skip_ws"
 gate_fs_compile "fixtures/simd_skip_ws_test.vibe" "$swdir/sw.wasm" __no_entry__
 gate_require_artifact "$swdir/sw.wasm" "simd_skip_ws test did not compile"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
@@ -62,8 +60,7 @@ echo "[compiler-gate] fused SIMD whitespace skip ok"
 # in the fixture so quote/backslash/control detection, byte offsets, UTF-8,
 # chunk boundaries, and the scalar tail stay identical.
 echo "[compiler-gate] 40b2/40 fused SIMD string-special scan"
-sssdir="_build/_gate_simd_string_special"
-rm -rf "$sssdir"; mkdir -p "$sssdir"
+gate_workdir sssdir "_build/_gate_simd_string_special"
 gate_fs_compile "fixtures/simd_scan_string_special_test.vibe" "$sssdir/sss.wasm" __no_entry__
 gate_require_artifact "$sssdir/sss.wasm" "SIMD string-special test did not compile"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
@@ -77,8 +74,7 @@ echo "[compiler-gate] fused SIMD string-special scan ok"
 # short tails, exact chunk boundaries, UTF-8 byte offsets, non-zero starts,
 # LF, and EOF before the lexer adopts the builtin.
 echo "[compiler-gate] 40b3/40 fused SIMD line-end scan"
-sledir="_build/_gate_simd_line_end"
-rm -rf "$sledir"; mkdir -p "$sledir"
+gate_workdir sledir "_build/_gate_simd_line_end"
 gate_fs_compile "fixtures/simd_scan_line_end_test.vibe" "$sledir/sle.wasm" __no_entry__
 gate_require_artifact "$sledir/sle.wasm" "SIMD line-end test did not compile"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
@@ -94,8 +90,7 @@ echo "[compiler-gate] fused SIMD line-end scan ok"
 #      The fixture asserts the read closure sees the writer's mutations and the
 #      outer cell is updated; it traps under the pre-fix by-value snapshot bug.
 echo "[compiler-gate] 40c/40 region capture (mut captured inside struct literal etc.)"
-rcdir="_build/_gate_region_capture"
-rm -rf "$rcdir"; mkdir -p "$rcdir"
+gate_workdir rcdir "_build/_gate_region_capture"
 gate_fs_compile "fixtures/region_capture_test.vibe" "$rcdir/rc.wasm" __no_entry__
 gate_require_artifact "$rcdir/rc.wasm" "region_capture test did not compile"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
@@ -129,8 +124,7 @@ echo "[compiler-gate] region capture ok"
 # catches that class.
 if command -v wasm-tools >/dev/null 2>&1; then
   echo "[compiler-gate] 40c3/40 memhost-with-realloc is a valid core module (#1540)"
-  mhdir="_build/_gate_memhost_realloc"
-  rm -rf "$mhdir"; mkdir -p "$mhdir"
+  gate_workdir mhdir "_build/_gate_memhost_realloc"
   cat > "$mhdir/emit.vibe" <<'MHEOF'
 import @vibe/compiler/codegen/component {
   comp_emit_memhost_realloc_fixture
@@ -173,8 +167,7 @@ gate_wasmtime_bin="$(bash scripts/wasmtime_bin.sh 2>/dev/null || command -v wasm
 if command -v wasm-tools >/dev/null 2>&1 && [ -n "$gate_wasmtime_bin" ] \
    && "$gate_wasmtime_bin" --version >/dev/null 2>&1; then
   echo "[compiler-gate] 40c4/40 emitted async string component runs (#1540)"
-  asdir="_build/_gate_async_string_component"
-  rm -rf "$asdir"; mkdir -p "$asdir"
+  gate_workdir asdir "_build/_gate_async_string_component"
   cat > "$asdir/emit.vibe" <<'ASEOF'
 import @vibe/compiler/codegen/component {
   comp_emit_async_string_component
@@ -254,8 +247,7 @@ fi
 # PARAMETER: `vibe.host_stream_read` present, and NO `host_stream_get$<name>`,
 # which is the named-import lane #1540 ruled out as a composition cycle.
 echo "[compiler-gate] 40c5/40 HostStream parameter on the component surface (#1540)"
-hsdir="_build/_gate_hoststream_param"
-rm -rf "$hsdir"; mkdir -p "$hsdir"
+gate_workdir hsdir "_build/_gate_hoststream_param"
 cat > "$hsdir/handler.vibe" <<'HSEOF'
 export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {
   let mut total = 0
@@ -304,8 +296,7 @@ echo "[compiler-gate] two exported Async functions still refuse to guess a bound
 # `.wasm` existing is NOT the same as a `.wasm` loading, which is exactly how
 # this stayed invisible.
 echo "[compiler-gate] 40c2/40 RC user-shadowed builtin name (#1746)"
-shdir="_build/_gate_rc_shadow_sleep"
-rm -rf "$shdir"; mkdir -p "$shdir"
+gate_workdir shdir "_build/_gate_rc_shadow_sleep"
 VIBE_RC=1 gate_fs_compile "fixtures/rc_user_shadowed_sleep_test.vibe" "$shdir/sh.wasm" main
 gate_require_artifact "$shdir/sh.wasm" "rc_user_shadowed_sleep fixture did not compile under VIBE_RC"
 if command -v wasm-tools >/dev/null 2>&1; then
@@ -321,8 +312,7 @@ gate_run sh_out last --invoke main "$shdir/sh.wasm"
 gate_require_eq "$sh_out" "42" "rc_user_shadowed_sleep got '$sh_out' (want 42 -- the USER's sleep must be called)"
 echo "[compiler-gate] RC user-shadowed builtin name ok (#1746)"
 echo "[compiler-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume+builder-return)"
-lkdir="_build/_gate_rc_leak"
-rm -rf "$lkdir"; mkdir -p "$lkdir"
+gate_workdir lkdir "_build/_gate_rc_leak"
 VIBE_RC=1 gate_fs_compile "fixtures/rc_reclaim_leak_test.vibe" "$lkdir/rc.wasm" main
 gate_require_artifact "$lkdir/rc.wasm" "rc_reclaim_leak fixture did not compile under VIBE_RC"
 lk_json="$(node scripts/measure_heap.mjs "$lkdir/rc.wasm" main 2>/dev/null)"
@@ -356,8 +346,7 @@ echo "[compiler-gate] RC reclamation leak guard ok (heap_used=$lk_used B at N=20
 # SCALES), both arms 348 B (constant in N). The bound below separates the
 # middle row from the other two by three orders of magnitude.
 echo "[compiler-gate] 40e/40 RC mutable-initializer projection leak guard (#2760)"
-pjdir="_build/_gate_rc_proj_leak"
-rm -rf "$pjdir"; mkdir -p "$pjdir"
+gate_workdir pjdir "_build/_gate_rc_proj_leak"
 VIBE_RC=1 gate_fs_compile "fixtures/rc_mut_init_proj_leak_test.vibe" "$pjdir/rc.wasm" main
 gate_require_artifact "$pjdir/rc.wasm" "rc_mut_init_proj_leak fixture did not compile under VIBE_RC"
 pj_json="$(node scripts/measure_heap.mjs "$pjdir/rc.wasm" main 2>/dev/null)"
@@ -383,8 +372,7 @@ echo "[compiler-gate] RC mutable-initializer projection leak guard ok (heap_used
 # md_view_consume_count_pre and 88 B after; its controls keep the dup for a
 # view the body really consumes.
 echo "[compiler-gate] 40e4/40 RC view-projection leak guard"
-vpdir="_build/_gate_rc_view_proj_leak"
-rm -rf "$vpdir"; mkdir -p "$vpdir"
+gate_workdir vpdir "_build/_gate_rc_view_proj_leak"
 VIBE_RC=1 gate_fs_compile "fixtures/rc_view_projection_leak_test.vibe" "$vpdir/rc.wasm" main
 gate_require_artifact "$vpdir/rc.wasm" "rc_view_projection_leak fixture did not compile under VIBE_RC"
 vp_json="$(node scripts/measure_heap.mjs "$vpdir/rc.wasm" main 2>/dev/null)"
@@ -413,8 +401,7 @@ echo "[compiler-gate] RC view-projection leak guard ok (heap_used=$vp_used B at 
 # binding, which stay views -- so the shadow run is what proves no read lost a
 # reference in either direction.
 echo "[compiler-gate] 40e5/40 RC call-projection leak guard"
-cpdir="_build/_gate_rc_call_proj_leak"
-rm -rf "$cpdir"; mkdir -p "$cpdir"
+gate_workdir cpdir "_build/_gate_rc_call_proj_leak"
 for cp_mode in 1 shadow; do
   VIBE_RC="$cp_mode" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -453,8 +440,7 @@ echo "[compiler-gate] RC call-projection leak guard ok (heap_used=$cp_used B at 
 # the loop, so the shadow run is what proves no path released a value it
 # still held.
 echo "[compiler-gate] 40e6/40 RC branch-dup and for-iterable leak guard"
-bddir="_build/_gate_rc_branch_dup_leak"
-rm -rf "$bddir"; mkdir -p "$bddir"
+gate_workdir bddir "_build/_gate_rc_branch_dup_leak"
 for bd_mode in 1 shadow; do
   VIBE_RC="$bd_mode" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -501,8 +487,7 @@ echo "[compiler-gate] RC branch-dup and for-iterable leak guard ok (heap_used=$b
 # their owners, so the shadow run is what proves no path released a value it
 # still held.
 echo "[compiler-gate] 40e7/40 RC parameter-branch, field-arm and truncate-tally guard"
-psdir="_build/_gate_rc_param_spine_truncate"
-rm -rf "$psdir"; mkdir -p "$psdir"
+gate_workdir psdir "_build/_gate_rc_param_spine_truncate"
 for ps_mode in 1 shadow; do
   VIBE_RC="$ps_mode" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -554,8 +539,7 @@ echo "[compiler-gate] RC parameter-branch, field-arm and truncate-tally guard ok
 # correct value but uses 8,000,328 B at N=20000; the fixed compiler uses 408 B
 # at both N=20000 and N=40000.
 echo "[compiler-gate] 40e2/40 RC wrapper-assign double-retain guard (#2760/#2786/#2803)"
-drdir="_build/_gate_rc_double_retain"
-rm -rf "$drdir"; mkdir -p "$drdir"
+gate_workdir drdir "_build/_gate_rc_double_retain"
 VIBE_RC=1 gate_fs_compile "fixtures/rc_wrapper_assign_double_retain_test.vibe" "$drdir/rc.wasm" main
 gate_require_artifact "$drdir/rc.wasm" "rc_wrapper_assign_double_retain fixture did not compile under VIBE_RC"
 dr_json="$(node scripts/measure_heap.mjs "$drdir/rc.wasm" main 2>/dev/null)"
@@ -581,8 +565,7 @@ echo "[compiler-gate] RC wrapper-assign double-retain guard ok (heap_used=$dr_us
 # the same loop written `let ys = for x in xs { x }` measured 504,252 B at 2000
 # iterations. Five discard positions run per iteration (see the fixture).
 echo "[compiler-gate] 40e3/40 discarded for-in allocates no result array (#3043)"
-fddir="_build/_gate_for_discard"
-rm -rf "$fddir"; mkdir -p "$fddir"
+gate_workdir fddir "_build/_gate_for_discard"
 VIBE_RC=0 gate_fs_compile "fixtures/for_discard_no_alloc_test.vibe" "$fddir/bump.wasm" main
 gate_require_artifact "$fddir/bump.wasm" "for_discard_no_alloc fixture did not compile on the bump lane"
 fd_json="$(node scripts/measure_heap.mjs "$fddir/bump.wasm" main 2>/dev/null)"
@@ -626,8 +609,7 @@ echo "[compiler-gate] discarded for-in no-allocation guard ok (heap_used=$fd_use
 #      This is the shape corpus only. Branch-heavy checker paths (the first
 #      cut of #1964) need the 40f2 checked-artifact smoke.
 echo "[compiler-gate] 40f/40 RC shadow-liveness regression guard (#715 shapes)"
-shdir="_build/_gate_rc_shadow"
-rm -rf "$shdir"; mkdir -p "$shdir"
+gate_workdir shdir "_build/_gate_rc_shadow"
 VIBE_RC=shadow gate_fs_compile "fixtures/rc_shadow_regression_test.vibe" "$shdir/shadow.wasm" main
 gate_require_artifact "$shdir/shadow.wasm" "rc_shadow_regression fixture did not compile under VIBE_RC=shadow"
 gate_run sh_out last "$shdir/shadow.wasm"
@@ -644,8 +626,7 @@ echo "[compiler-gate] RC shadow-liveness regression guard ok (25377489)"
 #        without a trap: the freed element was reused and read as garbage.
 #        Six shapes at distinct decimal places (see the fixture header).
 echo "[compiler-gate] 40f-b/40 branch-tail borrow let retain (#3103)"
-bbdir="_build/_gate_rc_branch_borrow_let"
-rm -rf "$bbdir"; mkdir -p "$bbdir"
+gate_workdir bbdir "_build/_gate_rc_branch_borrow_let"
 for bb_lane in rc shadow; do
   gate_fs_compile_on "$bb_lane" "fixtures/rc_branch_borrow_let_test.vibe" "$bbdir/bb.wasm" main
   gate_require_artifact "$bbdir/bb.wasm" "rc_branch_borrow_let fixture did not compile on the $bb_lane lane (#3103)"
@@ -838,8 +819,7 @@ echo "[compiler-gate] intercepted builtin spellings ok: the program's own functi
 # the host: it must load, and it must import no capability. Before the fix the
 # linear lane took the call into the host-import shim, which here emitted a
 # module that did not validate.
-capdir="_build/_gate_builtin_shadow_capability"
-rm -rf "$capdir"; mkdir -p "$capdir"
+gate_workdir capdir "_build/_gate_builtin_shadow_capability"
 cat > "$capdir/own_fs.vibe" <<'CAPEOF'
 fn Fs::exists(path: String) -> Bool {
   String::length(path) == 3
@@ -907,8 +887,7 @@ echo "[compiler-gate] Int wrap and erased-generic + / < ok on wasm-gc"
 # #3132 review: `--entry` naming the program's own function spelled like a
 # builtin (renamed aside to `StringBuilder::new$user`) still resolves, and the
 # module exports it under the name the program wrote -- on linear and wasm-gc.
-bedir="_build/_gate_builtin_shadow_entry"
-rm -rf "$bedir"; mkdir -p "$bedir"
+gate_workdir bedir "_build/_gate_builtin_shadow_entry"
 for be_lane in linear gc; do
   rm -f "$bedir/e.wasm" "$bedir/e.wasm.diag"
   case "$be_lane" in
@@ -949,8 +928,7 @@ echo "[compiler-gate] builtin-named trait impl method dispatch ok (linear + shad
 # one in the source spelling admitted a program's own `Array::length` --
 # measured as one native `array.new_default` literal where the same program
 # under any other name emits none. Count them: 0.
-gadir="_build/_gate_builtin_shadow_gc_abi"
-rm -rf "$gadir"; mkdir -p "$gadir"
+gate_workdir gadir "_build/_gate_builtin_shadow_gc_abi"
 for ga_fx in fixtures/builtin_shadow_gc_direct_abi_generic_test.vibe fixtures/builtin_shadow_gc_direct_abi_export_test.vibe; do
   ga_out="$gadir/$(basename "$ga_fx" .vibe).wasm"
   env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" "$ga_fx" "$ga_out" __no_entry__ >/dev/null 2>&1 || true
@@ -974,8 +952,7 @@ echo "[compiler-gate] builtin-named gc direct-ABI tables ok (generic + export bl
 #       occurrence, so a future reclamation change fails loudly here instead
 #       of handing back a freed block at an unrelated location.
 echo "[compiler-gate] 40f0/40 truncate does not invalidate a saved element view (#2837)"
-svdir="_build/_gate_truncate_saved_view"
-rm -rf "$svdir"; mkdir -p "$svdir"
+gate_workdir svdir "_build/_gate_truncate_saved_view"
 for sv_lane in bump rc shadow gc; do
   gate_fs_compile_on "$sv_lane" "fixtures/rc_truncate_saved_view_test.vibe" "$svdir/sv.wasm" main
   gate_require_artifact "$svdir/sv.wasm" "rc_truncate_saved_view fixture did not compile on the $sv_lane lane (#2837)"
@@ -996,8 +973,7 @@ echo "[compiler-gate] truncate saved-view guard ok (2122312 on bump/rc/shadow/gc
 #        read its own element) is checked on bump, rc, shadow and gc, and the
 #        shadow lane traps on the first drop of a freed block.
 echo "[compiler-gate] 40f0b/40 truncate releases removed owned elements (#2837)"
-trdir="_build/_gate_truncate_reclaim"
-rm -rf "$trdir"; mkdir -p "$trdir"
+gate_workdir trdir "_build/_gate_truncate_reclaim"
 for tr_lane in bump rc shadow gc; do
   gate_fs_compile_on "$tr_lane" "fixtures/rc_truncate_reclaim_bounded_test.vibe" "$trdir/tr.wasm" main
   gate_require_artifact "$trdir/tr.wasm" "rc_truncate_reclaim_bounded fixture did not compile on the $tr_lane lane (#2837)"
@@ -1045,8 +1021,7 @@ echo "[compiler-gate] alias of a pinned view across a released truncate ok on sh
 #        Above them, nine shapes whose source hands the view back through a
 #        block, a `let` chain, or an `if` / `match` / `handle` (#3114 review).
 echo "[compiler-gate] 40f0c/40 alias of a borrowed view is not released twice (#3114)"
-vadir="_build/_gate_rc_view_alias"
-rm -rf "$vadir"; mkdir -p "$vadir"
+gate_workdir vadir "_build/_gate_rc_view_alias"
 for va_lane in bump rc shadow gc; do
   gate_fs_compile_on "$va_lane" "fixtures/rc_view_alias_drop_test.vibe" "$vadir/va.wasm" main
   gate_require_artifact "$vadir/va.wasm" "rc_view_alias_drop fixture did not compile on the $va_lane lane (#3114)"
@@ -1065,8 +1040,7 @@ echo "[compiler-gate] borrowed-view alias guard ok (126354332566498532 on bump/r
 #        twice), on all four lanes; the release side is the unit-lane
 #        rc_loop_carried_alias_release_test.vibe.
 echo "[compiler-gate] 40f0d/40 alias of a loop-carried binding is retained per iteration (#3134)"
-lcdir="_build/_gate_rc_loop_carried_alias"
-rm -rf "$lcdir"; mkdir -p "$lcdir"
+gate_workdir lcdir "_build/_gate_rc_loop_carried_alias"
 for lc_lane in bump rc shadow gc; do
   gate_fs_compile_on "$lc_lane" "fixtures/rc_loop_carried_alias_test.vibe" "$lcdir/lc.wasm" main
   gate_require_artifact "$lcdir/lc.wasm" "rc_loop_carried_alias fixture did not compile on the $lc_lane lane (#3134)"
@@ -1082,8 +1056,7 @@ echo "[compiler-gate] loop-carried alias guard ok (362412181109361818 on bump/rc
 #        iteration (RC: memory access out of bounds; shadow: trap).
 #        Four shapes at distinct decimal places, on all four lanes.
 echo "[compiler-gate] 40f0e/40 alias of a Double literal inside a loop keeps the box alive (#3135)"
-dldir="_build/_gate_rc_double_literal_alias"
-rm -rf "$dldir"; mkdir -p "$dldir"
+gate_workdir dldir "_build/_gate_rc_double_literal_alias"
 for dl_lane in bump rc shadow gc; do
   gate_fs_compile_on "$dl_lane" "fixtures/rc_double_literal_alias_test.vibe" "$dldir/dl.wasm" main
   gate_require_artifact "$dldir/dl.wasm" "rc_double_literal_alias fixture did not compile on the $dl_lane lane (#3135)"
@@ -1108,8 +1081,7 @@ echo "[compiler-gate] Double-literal alias guard ok (6333 on bump/rc/shadow/gc)"
 #        those three shapes added the fixture grew __heap_ptr by 672,172 B on
 #        the pre-#3162 compiler; fixed, it stays under the same bound.
 echo "[compiler-gate] 40f0f/40 discarded for, handle and while bodies release their heap binding (#3137, #3162)"
-fddir="_build/_gate_rc_forin_discard"
-rm -rf "$fddir"; mkdir -p "$fddir"
+gate_workdir fddir "_build/_gate_rc_forin_discard"
 for fd_lane in bump rc shadow gc; do
   gate_fs_compile_on "$fd_lane" "fixtures/rc_forin_discard_bounded_test.vibe" "$fddir/fd.wasm" main
   gate_require_artifact "$fddir/fd.wasm" "rc_forin_discard_bounded fixture did not compile on the $fd_lane lane (#3137)"
@@ -1152,8 +1124,7 @@ echo "[compiler-gate] discarded for, handle and while body guard ok (2007000 on 
 #        value read before the store, one the caller holds, an iteration over
 #        the field, a match on it, a captured or aliased struct.
 echo "[compiler-gate] 40f0g/40 a field assignment releases the value it overwrites (#3140)"
-sfdir="_build/_gate_rc_set_field"
-rm -rf "$sfdir"; mkdir -p "$sfdir"
+gate_workdir sfdir "_build/_gate_rc_set_field"
 for sf_lane in bump rc shadow gc; do
   gate_fs_compile_on "$sf_lane" "fixtures/rc_set_field_bounded_test.vibe" "$sfdir/sf.wasm" main
   gate_require_artifact "$sfdir/sf.wasm" "rc_set_field_bounded fixture did not compile on the $sf_lane lane (#3140)"
@@ -1213,8 +1184,7 @@ echo "[compiler-gate] field assignment release guard ok (2019000 on bump/rc/shad
 #        a81ffcb2e (loop_borrow's element is released twice); without
 #        loop_borrow it grows __heap_ptr by 1,120,244 B there. Fixed, 472 B.
 echo "[compiler-gate] 40f0h/40 an early exit releases the scopes it leaves (#3141, #3168, #3175)"
-exdir="_build/_gate_rc_early_exit"
-rm -rf "$exdir"; mkdir -p "$exdir"
+gate_workdir exdir "_build/_gate_rc_early_exit"
 for ex_lane in bump rc shadow gc; do
   gate_fs_compile_on "$ex_lane" "fixtures/rc_early_exit_bounded_test.vibe" "$exdir/ex.wasm" main
   gate_require_artifact "$exdir/ex.wasm" "rc_early_exit_bounded fixture did not compile on the $ex_lane lane (#3141)"
@@ -1262,8 +1232,7 @@ echo "[compiler-gate] early exit release guard ok (2049000 on bump/rc/shadow/gc,
 #        are each released again; rc_mut_store_view_test.vibe then checks, on
 #        rc and shadow, that what each slot holds is alive where it is read.
 echo "[compiler-gate] 40f0i/40 a let mut owns the view or loop-carried binding it stores (#3184)"
-msdir="_build/_gate_rc_mut_store_view"
-rm -rf "$msdir"; mkdir -p "$msdir"
+gate_workdir msdir "_build/_gate_rc_mut_store_view"
 for ms_lane in bump rc shadow gc; do
   gate_fs_compile_on "$ms_lane" "fixtures/rc_mut_store_view_bounded_test.vibe" "$msdir/ms.wasm" main
   gate_require_artifact "$msdir/ms.wasm" "rc_mut_store_view_bounded fixture did not compile on the $ms_lane lane (#3184)"
@@ -1297,8 +1266,7 @@ echo "[compiler-gate] let mut store ownership guard ok (88000 on bump/rc/shadow/
 # per round. Check both the answer and the RC heap so a compensating retain
 # cannot conceal a leak behind a correct result.
 echo "[compiler-gate] 40f0i/41 loop reference reclamation (#3191)"
-lrdir="_build/_gate_rc_loop_reclaim"
-rm -rf "$lrdir"; mkdir -p "$lrdir"
+gate_workdir lrdir "_build/_gate_rc_loop_reclaim"
 for lr_case in for_named_array loop_owning_call match_binder_nested_loop; do
   case "$lr_case" in
     for_named_array) lr_want=12000 ;;
@@ -1341,8 +1309,7 @@ rm -rf "$lrdir"
 # 40f0i/42. #3219: a mutable slot's planned dups belong to the actual
 # owning uses, and a collected `for` owns the values stored in its result.
 echo "[compiler-gate] 40f0i/42 remaining loop reference reclamation (#3219)"
-rl_dir="_build/_gate_rc_remaining_loops"
-rm -rf "$rl_dir"; mkdir -p "$rl_dir"
+gate_workdir rl_dir "_build/_gate_rc_remaining_loops"
 for rl_case in mut_restore_loop mut_shadowed_use for_collect_named_array; do
   case "$rl_case" in
     mut_restore_loop) rl_want=8002000 ;;
@@ -1402,8 +1369,7 @@ rm -rf "$rl_dir"
 #        checks, on rc and shadow, that every box an operator, a builtin or a
 #        callee reads is still alive afterwards.
 echo "[compiler-gate] 40f0j/40 a Double an operator or a parameter reads is released (#3135)"
-dbdir="_build/_gate_rc_double_release"
-rm -rf "$dbdir"; mkdir -p "$dbdir"
+gate_workdir dbdir "_build/_gate_rc_double_release"
 for db_lane in bump rc shadow gc; do
   gate_fs_compile_on "$db_lane" "fixtures/rc_double_release_bounded_test.vibe" "$dbdir/db.wasm" main
   gate_require_artifact "$dbdir/db.wasm" "rc_double_release_bounded fixture did not compile on the $db_lane lane (#3135)"
@@ -1445,8 +1411,7 @@ echo "[compiler-gate] Double release guard ok (29007002 on bump/rc/shadow/gc, rc
 #        then checks, on rc and shadow, that a callee performing from a loop,
 #        a forwarded dictionary and an arm's captured locals stay alive.
 echo "[compiler-gate] 40f0k/40 a user-effect handle releases its evidence dictionary (#3169)"
-ehdir="_build/_gate_rc_user_effect_handle"
-rm -rf "$ehdir"; mkdir -p "$ehdir"
+gate_workdir ehdir "_build/_gate_rc_user_effect_handle"
 for eh_lane in bump rc shadow gc; do
   gate_fs_compile_on "$eh_lane" "fixtures/rc_user_effect_handle_bounded_test.vibe" "$ehdir/eh.wasm" main
   gate_require_artifact "$ehdir/eh.wasm" "rc_user_effect_handle_bounded fixture did not compile on the $eh_lane lane (#3169)"
@@ -1481,8 +1446,7 @@ echo "[compiler-gate] user-effect handle guard ok (10005000 on bump/rc/shadow/gc
 # reassignment can release the old slot after constructing a fresh array of
 # immediate elements. Before these fixes the 2000 rounds leaked 704,108 B.
 echo "[compiler-gate] 40f0l/40 RC local capture and self-reading array release (#3203)"
-cldir="_build/_gate_rc_local_closure_capture"
-rm -rf "$cldir"; mkdir -p "$cldir"
+gate_workdir cldir "_build/_gate_rc_local_closure_capture"
 for cl_lane in bump rc shadow gc; do
   rm -f "$cldir/cl.wasm" "$cldir/cl.wasm.diag"
   case "$cl_lane" in
@@ -1527,8 +1491,7 @@ echo "[compiler-gate] RC local capture and self-reading array release ok (600300
 # #3199: a discarded call result owns its freshly returned enum and array.
 # A wasm drop left 112 B per call live before the RC release (223996 B here).
 echo "[compiler-gate] 132/132 RC discarded sequence result release (#3199)"
-sqdir="_build/_gate_rc_seq_discard"
-rm -rf "$sqdir"; mkdir -p "$sqdir"
+gate_workdir sqdir "_build/_gate_rc_seq_discard"
 for sq_lane in bump rc shadow gc; do
   rm -f "$sqdir/sq.wasm" "$sqdir/sq.wasm.diag"
   case "$sq_lane" in
@@ -1594,8 +1557,7 @@ echo "[compiler-gate] RC discarded sequence result ok (4000 + 52000 on all lanes
 #        to cross the old table address and belongs in this gate, not in every
 #        unit run.
 echo "[compiler-gate] 40f1a/40 RC shadow table / heap overlap (#2427)"
-lhdir="_build/_gate_rc_shadow_large_heap"
-rm -rf "$lhdir"; mkdir -p "$lhdir"
+gate_workdir lhdir "_build/_gate_rc_shadow_large_heap"
 VIBE_RC=shadow gate_fs_compile "fixtures/rc_shadow_large_heap.vibe" "$lhdir/shadow.wasm" main
 gate_require_artifact "$lhdir/shadow.wasm" "rc_shadow_large_heap did not compile under VIBE_RC=shadow (#2427)"
 lh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_WASM_PRE_GROW_PAGES=40000 \
@@ -1624,8 +1586,7 @@ echo "[compiler-gate] RC shadow table / heap overlap ok (418804)"
 #        is the whole mechanism. "true" -> 4*1000 + 't'(116) = 4116;
 #        "1" -> 1*1000 + '1'(49) = 1049 is the pre-fix answer.
 echo "[compiler-gate] 40f1b/40 shadow build typed-lowering tables (#2469)"
-tlsdir="_build/_gate_typed_shadow"
-rm -rf "$tlsdir"; mkdir -p "$tlsdir"
+gate_workdir tlsdir "_build/_gate_typed_shadow"
 cat > "$tlsdir/bool_render.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let l = () -> Bool { 1 < 2 }
@@ -1657,8 +1618,7 @@ echo "[compiler-gate] shadow build typed-lowering tables ok (#2469)"
 #      inventory. Perceus / RC codegen still needs the full unit_test_runner
 #      before push (see docs/internal/operations/operation-gate.md).
 echo "[compiler-gate] 40f2/40 RC shadow checked-artifact smoke (#1986)"
-cadir="_build/_gate_rc_shadow_checked"
-rm -rf "$cadir"; mkdir -p "$cadir"
+gate_workdir cadir "_build/_gate_rc_shadow_checked"
 for ca in \
   lib/@vibe/compiler/tests/checked_effective_effect_row_artifact_test.vibe \
   lib/@vibe/compiler/tests/checked_statement_root_type_artifact_test.vibe \
@@ -1683,8 +1643,7 @@ echo "[compiler-gate] RC shadow checked-artifact smoke ok (#1986)"
 #      guarded statements entirely (compiles, dev symbols absent -> different
 #      program), flag-on builds must select the matching statements.
 echo "[compiler-gate] 40g/40 #cfg conditional compilation"
-cfdir="_build/_gate_cfg"
-rm -rf "$cfdir"; mkdir -p "$cfdir"
+gate_workdir cfdir "_build/_gate_cfg"
 VIBE_CFG=dev VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/cfg_flag_test.vibe" "$cfdir/dev.wasm" main >/dev/null 2>&1
@@ -1736,8 +1695,7 @@ echo "[compiler-gate] #cfg conditional compilation ok (dev=102 release=2; FS lan
 #      lambda distribution on the gc path. See fixtures/gc_backend_smoke_test.vibe
 #      for the covered subset and the known gc-lane gaps.
 echo "[compiler-gate] 40h/40 wasm-gc backend smoke"
-gcdir="_build/_gate_gc"
-rm -rf "$gcdir"; mkdir -p "$gcdir"
+gate_workdir gcdir "_build/_gate_gc"
 VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "fixtures/gc_backend_smoke_test.vibe" "$gcdir/smoke.wasm" main >/dev/null 2>&1 || true
@@ -1760,8 +1718,7 @@ echo "[compiler-gate] wasm-gc backend smoke ok (101556)"
 #        worse than the ICE. Runs on BOTH lanes: the bug is gc-only, so linear
 #        is the control that proves the fixture is not vacuous.
 echo "[compiler-gate] 40h-2/40 wasm-gc closure builtin capture"
-gccapdir="_build/_gate_gc_closure_capture"
-rm -rf "$gccapdir"; mkdir -p "$gccapdir"
+gate_workdir gccapdir "_build/_gate_gc_closure_capture"
 for gccap_lane in linear-rc0 linear-rc1 gc; do
   case "$gccap_lane" in
     linear-rc0) gccap_be=linear; gccap_rc=0 ;;
@@ -1789,8 +1746,7 @@ echo "[compiler-gate] closure builtin capture ok (linear rc0/rc1 + gc)"
 #        Runs on BOTH lanes. Linear used to emit an invalid module while
 #        reporting a successful compile (#1811).
 echo "[compiler-gate] 40h-3/40 wasm-gc closure builtin alias capture"
-gcaliasdir="_build/_gate_gc_closure_alias"
-rm -rf "$gcaliasdir"; mkdir -p "$gcaliasdir"
+gate_workdir gcaliasdir "_build/_gate_gc_closure_alias"
 for gcalias_lane in linear-rc0 linear-rc1 gc; do
   case "$gcalias_lane" in
     linear-rc0) gcalias_be=linear; gcalias_rc=0 ;;
@@ -1821,8 +1777,7 @@ echo "[compiler-gate] closure builtin alias capture ok (linear rc0/rc1 + gc)"
 #        point is that the module says so itself. Forcing the env var here
 #        would make the gate pass with the section absent.
 echo "[compiler-gate] 40h-4/40 wasm-gc host ABI declaration (#1814)"
-gcabidir="_build/_gate_gc_host_abi"
-rm -rf "$gcabidir"; mkdir -p "$gcabidir"
+gate_workdir gcabidir "_build/_gate_gc_host_abi"
 rm -rf _build/gc_host_abi_probe; mkdir -p _build/gc_host_abi_probe
 printf 'hello\n' > _build/gc_host_abi_probe/a.txt
 gcabi_out=""
@@ -1892,8 +1847,7 @@ bash scripts/check_async_band_contract.sh
 #        disagreed on the negative one, so a one-sided fixture stayed green
 #        through the whole bug.
 echo "[compiler-gate] 40h-5/40 wasm-gc host builtins (#1262)"
-gchbdir="_build/_gate_gc_host_builtins"
-rm -rf "$gchbdir"; mkdir -p "$gchbdir"
+gate_workdir gchbdir "_build/_gate_gc_host_builtins"
 gchb_out=""
 for gchb_be in linear gc; do
   rm -rf _build/gc_host_builtins_probe
@@ -1977,8 +1931,7 @@ echo "[compiler-gate] wasm-gc host builtins ok (linear + gc, =$gchb_want; readdi
 #        itself a lambda) -- are the ones that pass a top-level-only or
 #        identity-cast implementation. See the fixture header.
 echo "[compiler-gate] 40h-6/40 wasm-gc region (arena-free tier, #1262)"
-gcrgdir="_build/_gate_gc_region"
-rm -rf "$gcrgdir"; mkdir -p "$gcrgdir"
+gate_workdir gcrgdir "_build/_gate_gc_region"
 for gcrg_be in linear gc; do
   env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcrg_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \

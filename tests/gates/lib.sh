@@ -309,3 +309,32 @@ gate_require_eq() {
     exit 1
   fi
 }
+
+# --- scratch directories (#3671) ----------------------------------------------
+
+# gate_workdir <var> <dir>
+#
+# Make <dir> an empty directory and assign its path to <var>: what every lane
+# spelled `x="_build/_gate_..."` then `rm -rf "$x"; mkdir -p "$x"`. The lane
+# still removes it when its section passes, and leaves it behind when the
+# section fails, for whoever reads the failure.
+#
+# <dir> must be a relative path under _build/ or .vibe/ with no `..` segment,
+# because the first thing this does is `rm -rf` it. Anything else FAILS the
+# lane rather than deleting it.
+gate_workdir() {
+  case "$2" in
+    _build/?*|.vibe/?*) ;;
+    *)
+      echo "[compiler-gate] FAIL: gate_workdir: '$2' is not under _build/ or .vibe/" >&2
+      exit 1 ;;
+  esac
+  case "/$2/" in
+    */../*)
+      echo "[compiler-gate] FAIL: gate_workdir: '$2' has a '..' segment" >&2
+      exit 1 ;;
+  esac
+  rm -rf "$2"
+  mkdir -p "$2"
+  printf -v "$1" '%s' "$2"
+}

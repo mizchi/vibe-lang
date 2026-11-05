@@ -61,8 +61,7 @@ VIBE_CLI_CORE_BASE_COMPILER="$stage2_wasm" VIBE_RC=1 \
 # CLI actually selects both marked helpers and emits their required codegen
 # boundaries without changing the normal production lane.
 echo "[compiler-gate] 3a/3 FS heap mark lane smoke"
-heapmarkdir="_build/_gate_fs_heap_marks"
-rm -rf "$heapmarkdir"; mkdir -p "$heapmarkdir"
+gate_workdir heapmarkdir "_build/_gate_fs_heap_marks"
 printf 'export let _start: () -> Int = () -> { 42 }\n' > "$heapmarkdir/input.vibe"
 for heap_backend in rc bump; do
   heap_rc=1
