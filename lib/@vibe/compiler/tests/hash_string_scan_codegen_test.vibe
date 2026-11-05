@@ -1,0 +1,32 @@
+// `@vibe/core::hash_string` calls a private loop, `hash_string_scan`, that the
+// linked lane bridges to the byte-scanning builtin `__rt_hash_string31` by its
+// package-mangled name. Each program below defines that name with a body that
+// answers 0, so every assertion that holds proves the builtin replaced it, and
+// the reference is the source recurrence the builtin must reproduce exactly:
+// MutMap's slot order, and so its iteration order, is a function of it.
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc
+}
+
+fn assert_hash_program(source: String, label: String) -> Unit with Exception + Fs + Process {
+  let bump_path = "/tmp/vibe_hash_string_scan_" + label + "_bump.wasm"
+  let rc_path = "/tmp/vibe_hash_string_scan_" + label + "_rc.wasm"
+  Fs::write_bytes(bump_path, bytes = compile_wasi(source = source, entry = "main"))
+  Fs::write_bytes(rc_path, bytes = compile_wasi_rc(source = source, entry = "main"))
+  let bump = sh_lines("wasmtime run -W exceptions=y --invoke main " + bump_path + " 0")
+  let rc = sh_lines("wasmtime run -W exceptions=y --invoke main " + rc_path + " 0")
+  assert(Array::length(bump) == 1 && Array::get(bump, at = 0) == "42")
+  assert(Array::length(rc) == 1 && Array::get(rc, at = 0) == "42")
+}
+
+test "the emitted string hash answers the source recurrence for every length and slice" {
+  let source = "fn hash_string_scan_dep_lib__vibe_core_key_vibe(_s: String) -> Int { 0 }\nfn reference(s: String) -> Int {\n  let mut h = 5381\n  let mut i = 0\n  while i < String::length(s) {\n    h = ((h * 31) + String::byte_at(s, i)) & 9007199254740991\n    i = i + 1\n  }\n  h\n}\nfn verify(s: String) -> Unit {\n  assert(hash_string_scan_dep_lib__vibe_core_key_vibe(s) == reference(s))\n}\nfn main() -> Int {\n  verify(\"\")\n  verify(\"a\")\n  let mut s: String = \"\"\n  let mut i = 0\n  while i < 144 {\n    s = String::concat(s, String::from_byte((i * 197 + 131) % 256))\n    i = i + 1\n  }\n  let mut offset = 0\n  while offset < 16 {\n    let mut len = 0\n    while len < 129 {\n      verify(String::substring(s, offset, offset + len))\n      len = len + 1\n    }\n    offset = offset + 1\n  }\n  i = 0\n  while i < 9 {\n    s = String::concat(s, s)\n    i = i + 1\n  }\n  verify(s)\n  42\n}"
+  assert_hash_program(source = source, label = "slices")
+}
+
+test "the emitted string hash answers a known value" {
+  // 5381 * 31 + 97 = 166908, then * 31 + 98 = 5174246: the recurrence by
+  // hand for "ab", independent of any reference loop.
+  let source = "fn hash_string_scan_dep_lib__vibe_core_key_vibe(_s: String) -> Int { 0 }\nfn main() -> Int {\n  assert(hash_string_scan_dep_lib__vibe_core_key_vibe(\"ab\") == 5174246)\n  42\n}"
+  assert_hash_program(source = source, label = "known")
+}
