@@ -16,7 +16,9 @@ import @vibe/compiler/runtime {
   persistent_module_cache_text,
   persistent_type_env_cache_text,
   typing_dependency_transport_input_key,
-  typing_dependency_transport_input_key_memo
+  typing_dependency_transport_input_key_memo,
+  typing_reuse_key_matches,
+  typing_reuse_key_text
 }
 
 fn show_transport_env() -> TypeEnv {
@@ -190,8 +192,34 @@ test "the memoized reuse key is byte-identical to the reference key" {
   let after_reference = typing_dependency_transport_input_key(path = "/user.vibe", source = source, semantics_seed = "semantics", dep_envs = [
     ("/dep.vibe", after)
   ])
-  assert(memoized == reference)
-  assert(again == reference)
-  assert(other_fp == after_reference)
-  assert(unkeyed == after_reference)
+  assert(typing_reuse_key_text(memoized) == reference)
+  assert(typing_reuse_key_text(again) == reference)
+  assert(typing_reuse_key_text(other_fp) == after_reference)
+  assert(typing_reuse_key_text(unkeyed) == after_reference)
+}
+
+test "a stored key matches its own text in place, and nothing that differs" {
+  // The lookup compares a witness's stored key against the key's pieces
+  // without building the key, so the in-place reading has to agree with the
+  // materialized one byte for byte: a changed byte, a missing tail and a
+  // trailing extra byte each refuse.
+  let binding = env_bind(env = EnvEmpty, name = "show", ty = CtFn([CtBool], CtString, None))
+  let env = env_with_show_wrapper_facts(env = binding, wrappers = ["show"], unknown = [
+  ])
+  let source = "import ./dep.vibe { show }\nlet value = show(true)"
+  let key = typing_dependency_transport_input_key_memo(path = "/user.vibe", source = source, semantics_seed = "semantics", dep_envs = [
+    ("/dep.vibe", env)
+  ], dep_fps = [("/dep.vibe", "match-test-fp")])
+  let text = typing_reuse_key_text(key)
+  let n = String::length(text)
+  let flipped = String::concat(String::substring(text, start = 0, end = n - 1), if String::substring(text, start = n - 1, end = n) == "x" {
+    "y"
+  } else {
+    "x"
+  })
+  assert(typing_reuse_key_matches(text = text, key = key))
+  assert(!typing_reuse_key_matches(text = flipped, key = key))
+  assert(!typing_reuse_key_matches(text = String::substring(text, start = 0, end = n - 1), key = key))
+  assert(!typing_reuse_key_matches(text = String::concat(text, "x"), key = key))
+  assert(!typing_reuse_key_matches(text = "", key = key))
 }
