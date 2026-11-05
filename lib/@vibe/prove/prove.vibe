@@ -17,7 +17,7 @@ import ./walk.vibe {
 }
 
 import ./word.vibe {
-  is_word_sort, smt_sort_text, word_binop, word_int_range, word_of_int, word_to_int, word_unary, word_zero
+  adapt_word, is_word_sort, smt_sort_text, word_binop, word_int_range, word_of_int, word_to_int, word_unary, word_zero
 }
 
 //# Types
@@ -376,7 +376,14 @@ fn prove_fn_body(ctx: Ctx, value: Expr) -> Unit with Exception {
             Array::push(ctx.assumes, value = f)
           }
           let outs = sym(ctx = ctx, e = body, st = start_state(env))
-          for o in outs {
+          for o0 in outs {
+            // #3827: a literal returned where a word is declared is that word.
+            let adapted = adapt_word(value = o0.value, sort = o0.sort, want = ret_sort)
+            let o = if adapted != "" && adapted != o0.value {
+              with_value(st = o0, value = adapted, sort = ret_sort)
+            } else {
+              o0
+            }
             let v_sort = o.sort
             if is_loop_jump(o) {
               unsupported(off = 0 - 1, reason = "`break` / `continue` outside a proved `while`")
@@ -961,17 +968,13 @@ fn binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) 
 /// one aborts, and continue past it only where it is not zero; everything
 /// else wraps as the runtime does, so no overflow is owed.
 fn word_binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: Int) -> Outcome with Exception {
-  let (l, r) = match e {
-    EBinOp(_, l, r, _) => (l, r),
-    _ => (EUnit, EUnit)
-  }
   let sort = if is_word_sort(a.sort) {
     a.sort
   } else {
     b.sort
   }
-  let av = word_operand(o = a, expr = l, sort = sort, op = op, off = off)
-  let bv = word_operand(o = b, expr = r, sort = sort, op = op, off = off)
+  let av = word_operand(o = a, sort = sort, op = op, off = off)
+  let bv = word_operand(o = b, sort = sort, op = op, off = off)
   let (t, rsort) = word_binop(op = op, sort = sort, a = av, b = bv)
   if t == "" {
     unsupported(off = off, reason = "`\{op}` on `\{sort}`")
@@ -987,24 +990,14 @@ fn word_binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: 
 
 /// An operand of a word operator as a word of `sort`: itself, or a literal
 /// written beside one.
-fn word_operand(o: Outcome, expr: Expr, sort: String, op: String, off: Int) -> String with Exception {
-  if o.sort == sort {
-    o.value
-  } else if o.sort == "Int" && is_int_literal(expr) {
-    word_of_int(o.value)
-  } else {
+fn word_operand(o: Outcome, sort: String, op: String, off: Int) -> String with Exception {
+  let w = adapt_word(value = o.value, sort = o.sort, want = sort)
+  if w == "" {
     unsupported(off = off, reason = "`\{op}` with a `\{sort}` and a `\{o.sort}` that is not a literal")
-    ""
+  } else {
+    ()
   }
-}
-
-/// A literal integer as written: `5`, `-5`.
-fn is_int_literal(_ e: Expr) -> Bool {
-  match e {
-    EInt(_) => true,
-    EUnaryOp("-", EInt(_)) => true,
-    _ => false
-  }
+  w
 }
 
 /// #3827: `Int32::to_int` / `UInt32::to_int` / `Int::wrap_int32` /
@@ -1037,13 +1030,7 @@ fn sym_word_conversion(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st:
   let arg = strip_label(Array::get(args, at = 0))
   for o in sym(ctx = ctx, e = arg, st = st) {
     // A literal written as the word a conversion takes is that word.
-    let word = if o.sort == from {
-      o.value
-    } else if is_word_sort(from) && o.sort == "Int" && is_int_literal(arg) {
-      word_of_int(o.value)
-    } else {
-      ""
-    }
+    let word = adapt_word(value = o.value, sort = o.sort, want = from)
     if o.returned {
       Array::push(out, value = o)
     } else if word == "" {
@@ -1080,10 +1067,11 @@ fn sym_ascription(ctx: Ctx, ty: TypeExpr, arg: Expr, off: Int, st: Outcome) -> A
   let want = sort_of(adts = ctx.adts, ty = Some(ty))
   let out: Array[Outcome] = []
   for o in sym(ctx = ctx, e = arg, st = st) {
-    if o.returned || o.sort == want {
+    let w = adapt_word(value = o.value, sort = o.sort, want = want)
+    if o.returned {
       Array::push(out, value = o)
-    } else if is_word_sort(want) && o.sort == "Int" && is_int_literal(arg) {
-      Array::push(out, value = with_value(st = o, value = word_of_int(o.value), sort = want))
+    } else if w != "" {
+      Array::push(out, value = with_value(st = o, value = w, sort = want))
     } else {
       unsupported(off = off, reason = "a `\{o.sort}` read as `\{print_type_expr(ty)}`")
     }
@@ -1226,15 +1214,23 @@ fn sym_assign(ctx: Ctx, name: String, v: Expr, c: Expr, off: Int, st: Outcome) -
     if o.returned {
       Array::push(out, value = o)
     } else {
-      match env_lookup(env = o.env, name = name) {
-        Some((_, sort)) => if sort != o.sort {
-          unsupported(off = off, reason = "`\{name}` is assigned a `\{o.sort}` where it holds a `\{sort}`")
-        } else {
-          ()
+      // #3827: a literal assigned to a word is that word.
+      let (term, tsort) = match env_lookup(env = o.env, name = name) {
+        Some((_, sort)) => {
+          let w = adapt_word(value = o.value, sort = o.sort, want = sort)
+          if w == "" {
+            unsupported(off = off, reason = "`\{name}` is assigned a `\{o.sort}` where it holds a `\{sort}`")
+            (o.value, o.sort)
+          } else {
+            (w, sort)
+          }
         },
-        None => unsupported(off = off, reason = "`\{name}` is not a local of the provable fragment")
+        None => {
+          unsupported(off = off, reason = "`\{name}` is not a local of the provable fragment")
+          (o.value, o.sort)
+        }
       }
-      match env_assign(env = o.env, name = name, term = o.value, sort = o.sort) {
+      match env_assign(env = o.env, name = name, term = term, sort = tsort) {
         Some(env) => for x in sym(ctx = ctx, e = c, st = Outcome::{
           pc: o.pc,
           value: "",
@@ -2253,11 +2249,6 @@ fn sym_call(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -
       _ => a0
     }
     let next: Array[(Outcome, Array[(String, String)])] = []
-    let literal = if is_int_literal(a) {
-      "literal"
-    } else {
-      ""
-    }
     for pair in states {
       let (s0, vals) = pair
       for o in sym(ctx = ctx, e = a, st = s0) {
@@ -2265,11 +2256,7 @@ fn sym_call(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -
           Array::push(out, value = o)
         } else {
           let vs = Array::slice(vals, start = 0, end = Array::length(vals))
-          Array::push(vs, value = (o.value, String::concat(o.sort, if literal == "" {
-            ""
-          } else {
-            ":literal"
-          })))
+          Array::push(vs, value = (o.value, o.sort))
           Array::push(next, value = (o, vs))
         }
       }
@@ -2290,10 +2277,11 @@ fn sym_call(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -
           let (val, vsort) = Array::get(vals, at = j)
           // #3827: a word parameter takes a word, or a literal written for
           // it; an `Int` value there is a sort the checker would not admit.
-          v = if !is_word_sort(ps) || vsort == ps {
+          let w = adapt_word(value = val, sort = vsort, want = ps)
+          v = if !is_word_sort(ps) {
             val
-          } else if vsort == "Int:literal" {
-            word_of_int(val)
+          } else if w != "" {
+            w
           } else {
             unsupported(off = off, reason = "`\{fname}` passes a `\{vsort}` for its `\{ps}` parameter `\{pn}`")
             val
