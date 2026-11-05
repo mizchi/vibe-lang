@@ -16,8 +16,9 @@ import @vibe/compiler/core {
   builtin_callee_resolution,
   builtin_frame_jump,
   expr_children,
+  generated_owner_current,
+  generated_owner_enter,
   generated_owner_of,
-  generated_owner_tag,
   lookup_registry_builtin,
   resolved_callee_operation
 }
@@ -87,32 +88,32 @@ export fn scps_ctr_box() -> Array[Int] {
 // The counts are per owner rather than reset per statement because phases 2
 // and 3 both mint names for one statement, and two statements can share an
 // owner (two bare expressions).
-let scps_owner: Array[String] = [""]
+let scps_owner: Array[String] = ["", "", "", "1"]
 let scps_owner_sites: Array[MutMap[String, Int]] = []
 
 /// Start a run of the pass: no owner has a site yet.
 export fn scps_owner_reset() -> Unit {
   Array::truncate(scps_owner_sites, length = 0)
   Array::push(scps_owner_sites, value = MutMap::new_string())
-  Array::set(scps_owner, at = 0, value = "")
+  generated_owner_enter(cell = scps_owner, source = "", suffix = "")
 }
 
 /// Mint the sites that follow for the top-level statement `stmt`.
 export fn scps_set_owner_stmt(_ stmt: Stmt) -> Unit {
-  Array::set(scps_owner, at = 0, value = generated_owner_tag(generated_owner_of(stmt)))
+  generated_owner_enter(cell = scps_owner, source = generated_owner_of(stmt), suffix = "")
 }
 
 /// Mint the sites that follow for the `eff` clone of `fname`. `zc` never
 /// occurs in a tag (`z` is always followed by `z`, `u` or `x`), so a clone's
 /// owner never spells a statement's.
 export fn scps_set_owner_clone(eff: String, fname: String) -> Unit {
-  Array::set(scps_owner, at = 0, value = String::concat(generated_owner_tag(String::concat(String::concat(eff, "|"), fname)), "zc"))
+  generated_owner_enter(cell = scps_owner, source = String::concat(String::concat(eff, "|"), fname), suffix = "zc")
 }
 
 export fn scps_next_site(_ st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> Int {
   if Array::length(scps_owner_sites) > 0 {
     let sites = Array::get(scps_owner_sites, at = 0)
-    let owner = Array::get(scps_owner, at = 0)
+    let owner = generated_owner_current(scps_owner)
     let site = match MutMap::get(sites, k = owner) {
       Some(n) => n,
       None => 0
@@ -224,7 +225,7 @@ export fn scps_clone_name(eff: String, fname: String) -> String {
 }
 
 export fn scps_local(prefix: String, site: Int) -> String {
-  String::concat(String::concat(String::concat(prefix, Int::to_string(site)), "o"), Array::get(scps_owner, at = 0))
+  String::concat(String::concat(String::concat(prefix, Int::to_string(site)), "o"), generated_owner_current(scps_owner))
 }
 
 export fn scps_op_suffix(_ qname: String) -> String {
