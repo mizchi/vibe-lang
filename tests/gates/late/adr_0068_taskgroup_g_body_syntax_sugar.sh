@@ -10,8 +10,7 @@
 # escape check (hardcoded by name on `TaskGroup::run`, unchanged by this
 # sugar) still rejects a leaked `TaskHandle`.
 echo "[compiler-gate] 62/67 ADR-0068 taskgroup { g => body } syntax sugar (#1081 step 4)"
-taskgroupdir="_build/_gate_taskgroup_sugar"
-rm -rf "$taskgroupdir"; mkdir -p "$taskgroupdir"
+gate_workdir taskgroupdir "_build/_gate_taskgroup_sugar"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
@@ -53,8 +52,7 @@ echo "[compiler-gate] taskgroup { g => body } syntax sugar ok"
 # type_send_ok), where the same capture of a plain Array[Int] is rejected
 # (fixtures/err_spawnable_capture_array.vibe, gate 61 above, unaffected).
 echo "[compiler-gate] 63/67 FrozenArray[T] Send-eligible immutable container (#906)"
-frozenarrdir="_build/_gate_frozen_array"
-rm -rf "$frozenarrdir"; mkdir -p "$frozenarrdir"
+gate_workdir frozenarrdir "_build/_gate_frozen_array"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -106,8 +104,7 @@ echo "[compiler-gate] FrozenArray[T] Send-eligible immutable container ok"
 #        "over-declared with () is itself a hard error" reading was
 #        deliberately NOT implemented.
 echo "[compiler-gate] 64/67 effect-row mismatch diagnostic snapshots (#639)"
-eff639dir="_build/_gate_eff639"
-rm -rf "$eff639dir"; mkdir -p "$eff639dir"
+gate_workdir eff639dir "_build/_gate_eff639"
 cp fixtures/err_effect_missing_annotation.vibe "$eff639dir/no_with.vibe"
 gate_fs_compile "$eff639dir/no_with.vibe" "$eff639dir/no_with.wasm" __no_entry__
 gate_require_refused "$eff639dir/no_with.wasm" "err_effect_missing_annotation.vibe compiled successfully -- must be rejected"
@@ -126,8 +123,7 @@ echo "[compiler-gate] effect-row mismatch diagnostic snapshots ok"
 #        #1157 for the repro). Pin that it is now rejected with the same
 #        message as the parenthesized form.
 echo "[compiler-gate] 65/67 zero-arg perform (no parens) effect-row check (#1157)"
-eff1157dir="_build/_gate_eff1157"
-rm -rf "$eff1157dir"; mkdir -p "$eff1157dir"
+gate_workdir eff1157dir "_build/_gate_eff1157"
 cp fixtures/err_effect_zero_arg_perform_no_parens.vibe "$eff1157dir/x.vibe"
 gate_fs_compile "$eff1157dir/x.vibe" "$eff1157dir/x.wasm" __no_entry__
 gate_require_refused "$eff1157dir/x.wasm" "err_effect_zero_arg_perform_no_parens.vibe compiled successfully -- must be rejected"
@@ -144,8 +140,7 @@ echo "[compiler-gate] zero-arg perform effect-row check ok"
 #        the caller's capability surface (docs/internal/design/effectset.md's operation-
 #        level diagnostic contract).
 echo "[compiler-gate] 66/67 operation-level fix-it precision for partial rows (#1161)"
-eff1161dir="_build/_gate_eff1161"
-rm -rf "$eff1161dir"; mkdir -p "$eff1161dir"
+gate_workdir eff1161dir "_build/_gate_eff1161"
 cp fixtures/err_effect_op_level_partial_row_bare_perform.vibe "$eff1161dir/x.vibe"
 gate_fs_compile "$eff1161dir/x.vibe" "$eff1161dir/x.wasm" __no_entry__
 gate_require_refused "$eff1161dir/x.wasm" "err_effect_op_level_partial_row_bare_perform.vibe compiled successfully -- must be rejected"
@@ -183,8 +178,7 @@ if ! LANG_REVIEW_STAGE2="$stage2_wasm" bash eval/lang-review/run_repair.sh; then
   echo "[compiler-gate] FAIL: eval/lang-review/run_repair.sh -- the diagnostics the repair_convergence score was measured against changed; re-score in eval/lang-review/repair/README.md" >&2
   exit 1
 fi
-ctxpackdir="_build/_gate_ctxpack"
-rm -rf "$ctxpackdir"; mkdir -p "$ctxpackdir"
+gate_workdir ctxpackdir "_build/_gate_ctxpack"
 bash scripts/gen_context_pack.sh "$ROOT_DIR" > "$ctxpackdir/a.md"
 bash scripts/gen_context_pack.sh "$ROOT_DIR" > "$ctxpackdir/b.md"
 if ! cmp -s "$ctxpackdir/a.md" "$ctxpackdir/b.md"; then
@@ -318,8 +312,7 @@ echo "[compiler-gate] 70/70 inspect() snapshot auto-update mode (#1061 follow-up
 # an already-correct file's inspect() calls round-trip unchanged (P2's
 # trailing-newline handling: a snapshot ending in "\n" survives one patch
 # pass byte-identical to the true actual value).
-inspupddir="_build/_gate_inspect_update"
-rm -rf "$inspupddir"; mkdir -p "$inspupddir"
+gate_workdir inspupddir "_build/_gate_inspect_update"
 cat > "$inspupddir/demo.vibe" <<'VEOF'
 import ../../lib/@vibe/core { inspect }
 
@@ -507,8 +500,7 @@ echo "[compiler-gate] VIBE_MODULE_PLAN agrees with per-file discovery ok"
 #        checksum is position-weighted, so a copy landing at the wrong offset
 #        or with the wrong length changes it -- a plain sum would not.
 echo "[compiler-gate] 73/73 wasm-gc backend runs Bytes::append (grow + self-alias)"
-bagdir="_build/_gate_bytes_append_gc"
-rm -rf "$bagdir"; mkdir -p "$bagdir"
+gate_workdir bagdir "_build/_gate_bytes_append_gc"
 for bag_be in gc linear; do
   bag_env=""
   [ "$bag_be" = "gc" ] && bag_env="VIBE_BACKEND=gc"
@@ -628,8 +620,7 @@ echo "[compiler-gate] cross-module diagnostic collection ok (1 fail-fast, 2 coll
 # the result-TYPE scan structurally cannot see (types do not record
 # captures) -- both a negative and a false-positive guard, at the end.
 echo "[compiler-gate] 75/75 ADR-0090 region + MutList/MutBytes vertical slice (#1262 / #1770)"
-r90dir="_build/_gate_region90"
-rm -rf "$r90dir"; mkdir -p "$r90dir"
+gate_workdir r90dir "_build/_gate_region90"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -957,8 +948,7 @@ echo "[compiler-gate] ADR-0090 region + MutList/MutBytes vertical slice ok"
 # 42 (zero_alloc_ok.vibe). Negative: a #zero_alloc fn constructing an enum
 # value is a STATIC error naming the site (err_zero_alloc_ctor.vibe).
 echo "[compiler-gate] 76/76 ADR-0091 #zero_alloc allocation check (#1262)"
-za91dir="_build/_gate_zero_alloc91"
-rm -rf "$za91dir"; mkdir -p "$za91dir"
+gate_workdir za91dir "_build/_gate_zero_alloc91"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1005,8 +995,7 @@ rm -rf "$za91dir"
 # not free, so "total == 0" is unachievable and any fixed bound is arbitrary.
 # Two iteration counts with the SAME delta means the per-iteration cost is
 # exactly zero.
-za91mdir="_build/_gate_zero_alloc91_measured"
-rm -rf "$za91mdir"; mkdir -p "$za91mdir"
+gate_workdir za91mdir "_build/_gate_zero_alloc91_measured"
 for za_n in 200 800; do
   sed -e "s/while k < 200 {/while k < $za_n {/" \
       -e "s/inspect(main(), \"22400\")/inspect(main(), \"$((za_n * 112))\")/" \
@@ -1046,8 +1035,7 @@ echo "[compiler-gate] ADR-0091 #zero_alloc allocation check ok"
 # (test_named_hostfutures_component_gate.sh / test_named_hoststreams_component_gate.sh
 # run them).
 echo "[compiler-gate] spawn_suspend refuses a named plain task closure (#3194)"
-ssldir="_build/_gate_spawn_suspend_local"
-rm -rf "$ssldir"; mkdir -p "$ssldir"
+gate_workdir ssldir "_build/_gate_spawn_suspend_local"
 cat > "$ssldir/reject.vibe" <<'VIBE'
 import @vibe/concurrent/experimental { TaskGroup, TaskHandle }
 fn main() -> Int allows Async + Exception {
@@ -1225,8 +1213,7 @@ fi
 rm -rf "$ssldir"
 
 echo "[compiler-gate] 77/77 ADR-0089 D1 async sleep boundary (#1218)"
-asb89dir="_build/_gate_async_sleep89"
-rm -rf "$asb89dir"; mkdir -p "$asb89dir"
+gate_workdir asb89dir "_build/_gate_async_sleep89"
 cp fixtures/async_sleep_boundary_test.vibe "$asb89dir/pos.vibe"
 gate_fs_compile "$asb89dir/pos.vibe" "$asb89dir/pos.wasm" main
 gate_require_artifact "$asb89dir/pos.wasm" "async_sleep_boundary_test.vibe did not compile -- ADR-0089 D1 sleep boundary regressed"
@@ -1334,8 +1321,7 @@ echo "[compiler-gate] 128/128 evidence pass admits a first-order row-variable ca
 # The pair is what makes this checkable. The positive alone would also pass
 # if the port admitted EVERYTHING; the negative alone would also pass if the
 # port admitted nothing.
-fo65dir="_build/_gate_first_order_rowvar"
-rm -rf "$fo65dir"; mkdir -p "$fo65dir"
+gate_workdir fo65dir "_build/_gate_first_order_rowvar"
 cp fixtures/async_first_order_rowvar_boundary_test.vibe "$fo65dir/pos.vibe"
 gate_fs_compile "$fo65dir/pos.vibe" "$fo65dir/pos.wasm" main
 gate_require_artifact "$fo65dir/pos.wasm" "async_first_order_rowvar_boundary_test.vibe did not compile -- the #2065 first-order row-variable admission regressed"
@@ -1375,8 +1361,7 @@ gate_require_diag_has "$fo65dir/neg.wasm.diag" "type-directed evidence" \
   "err_async_rowvar_higher_order_refused.vibe did not produce the V1 guard diagnostic"
 
 echo "[compiler-gate] 78/78 named host future collector: total + shadow-aware (#1337)"
-nhf37dir="_build/_gate_1337"
-rm -rf "$nhf37dir"; mkdir -p "$nhf37dir"
+gate_workdir nhf37dir "_build/_gate_1337"
 # The record literal lives in a row-free NAMED fn, not in the handled body:
 # ADR-0076's evidence-migration eligibility independently rejects a container
 # literal on the handled spine, and that rejection (a clear diagnostic) is not
@@ -1434,8 +1419,7 @@ echo "[compiler-gate] named host future collector ok"
 # silently) is rejected with an arity diagnostic, and a bracketed row item
 # naming a NON-generic effect is rejected by geff_validate_row_targs.
 echo "[compiler-gate] 79/79 generic effect instantiation registration + rows (ADR-0071/#1340)"
-g1340dir="_build/_gate_1340"
-rm -rf "$g1340dir"; mkdir -p "$g1340dir"
+gate_workdir g1340dir "_build/_gate_1340"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1478,8 +1462,7 @@ echo "[compiler-gate] generic effect instantiation ok"
 # RESTRICTS a sibling operation (naming the missing OPERATION, not the effect),
 # and the bare effect keeps granting everything (every existing row).
 echo "[compiler-gate] 80/80 operation-level rows authorize builtin calls (ADR-0071/#1343)"
-opb="_build/_gate_1343_op_rows"
-rm -rf "$opb"; mkdir -p "$opb"
+gate_workdir opb "_build/_gate_1343_op_rows"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
@@ -1527,8 +1510,7 @@ echo "[compiler-gate] operation-level builtin rows ok"
 # row still compiles AND runs (the await lowering is unchanged), and the
 # undeclared one is rejected naming `<T>::next`.
 echo "[compiler-gate] 81/81 async for-loop requires the Async row (#1358)"
-afdir="_build/_gate_1358"
-rm -rf "$afdir"; mkdir -p "$afdir"
+gate_workdir afdir "_build/_gate_1358"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
@@ -1630,8 +1612,7 @@ echo "[compiler-gate] async for-loop Async requirement ok"
 # of the fix: 499/499 test files and 27/27 doctest ```vibe run blocks keep their
 # cache judgment, so nothing was de-cached to buy this.
 echo "[compiler-gate] 82/82 local closure rows leak at the call site (#1361)"
-lcdir="_build/_gate_1361"
-rm -rf "$lcdir"; mkdir -p "$lcdir"
+gate_workdir lcdir "_build/_gate_1361"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
@@ -1676,8 +1657,7 @@ echo "[compiler-gate] local closure row leak ok"
 # direction that actually bit during implementation -- a body whose only callee
 # is a row-carrying PARAMETER or annotated local still compiles.
 echo "[compiler-gate] 83/83 a handle that can never fire is rejected (#1347)"
-hsdir="_build/_gate_1347_switch"
-rm -rf "$hsdir"; mkdir -p "$hsdir"
+gate_workdir hsdir "_build/_gate_1347_switch"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
@@ -1742,8 +1722,7 @@ echo "[compiler-gate] dead-handle rejection ok"
 # now names the operation. The PURE-block form must keep working (that is the
 # supported half, pinned by fixtures/effect_talk_tracing_span_test.vibe).
 echo "[compiler-gate] 84/84 higher-order effectful block names the operation (#1347)"
-hodir="_build/_gate_1347_ho"
-rm -rf "$hodir"; mkdir -p "$hodir"
+gate_workdir hodir "_build/_gate_1347_ho"
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.

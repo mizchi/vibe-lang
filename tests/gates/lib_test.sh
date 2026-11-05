@@ -372,6 +372,34 @@ for got_ in "4" "420" ""; do
   fi
 done
 
+# --- gate_workdir (#3671) ------------------------------------------------------
+# 17. it empties an existing directory and names it.
+wd_path="_build/_gate_lib_test_workdir.$$"
+mkdir -p "$wd_path/stale"; printf 'old' > "$wd_path/stale/f"
+if ( gate_workdir wd "$wd_path"; [ "$wd" = "$wd_path" ] && [ -d "$wd" ] && [ -z "$(ls -A "$wd")" ] ) >"$WORK/req.out" 2>&1; then
+  ok "gate_workdir empties the directory and assigns its path"
+else
+  bad "gate_workdir did not leave an empty, named directory: $(cat "$WORK/req.out")"
+fi
+rm -rf "$wd_path"
+
+# 18. it refuses, without deleting anything, a path it must not rm -rf.
+mkdir -p "$WORK/keep"; printf 'x' > "$WORK/keep/f"
+for wd_bad in "$WORK/keep" "" "_build" "_build/" "_build/../tests" "lib/@vibe" ".vibe"; do
+  if ( gate_workdir wd "$wd_bad" ) >"$WORK/req.out" 2>&1; then
+    bad "gate_workdir accepted '$wd_bad'"
+  elif grep -qF "gate_workdir: '$wd_bad'" "$WORK/req.out"; then
+    ok "gate_workdir refuses '$wd_bad' by name"
+  else
+    bad "gate_workdir refused '$wd_bad' without naming it: $(cat "$WORK/req.out")"
+  fi
+done
+if [ -s "$WORK/keep/f" ] && [ -d tests ] && [ -d lib/@vibe ]; then
+  ok "a refused path is left in place"
+else
+  bad "gate_workdir deleted a path it refused"
+fi
+
 echo "----"
 echo "passed: $passed, failed: $failed"
 [ "$failed" -eq 0 ]

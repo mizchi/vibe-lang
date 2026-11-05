@@ -15,8 +15,7 @@
 #      also pass if the opt-in did nothing, and both would pass if it rejected
 #      every file.
 echo "[compiler-gate] 108/108 the ADR-0068 concurrency surface is opt-in, in check AND build (#2248)"
-uwdir="_build/_gate_unstable_warn"
-rm -rf "$uwdir"; mkdir -p "$uwdir"
+gate_workdir uwdir "_build/_gate_unstable_warn"
 cat > "$uwdir/uses.vibe" <<'UWEOF'
 import @vibe/concurrent/experimental { TaskGroup }
 
@@ -488,8 +487,7 @@ gate_require_artifact "$uwdir/srv/plain.wasm" "the serve closure gate refused an
 
 rm -rf "$uwdir"
 echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + single-source + closure + repeated-import + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
-fmtdir="_build/_gate_vibe_fmt"
-rm -rf "$fmtdir"; mkdir -p "$fmtdir"
+gate_workdir fmtdir "_build/_gate_vibe_fmt"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FMT=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -524,8 +522,7 @@ echo "[compiler-gate] vibe fmt ok (#2149)"
 # report -- that the SHAPE formats, on the stage2 lane -- so the issue's claim
 # is a regression test in both directions.
 echo "[compiler-gate] 109/109 a multiline closure in a non-final argument slot formats to a fixpoint (#2271)"
-nfdir="_build/_gate_nonfinal_closure"
-rm -rf "$nfdir"; mkdir -p "$nfdir"
+gate_workdir nfdir "_build/_gate_nonfinal_closure"
 cat > "$nfdir/in.vibe" <<'NFIN'
 fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
   ()
@@ -595,8 +592,7 @@ echo "[compiler-gate] non-final closure argument fixpoint ok (#2271)"
 # these three spellings (#1095 removed `prefer_bound_call`, and the half of it
 # that was wrong is `local_idx_hint`, not `fn_idx_in_list`).
 echo "[compiler-gate] 110/110 a user's own assert_eq is the function that runs, top-level or local, on BOTH lanes (#2283, #2285, #2300)"
-asdir="_build/_gate_assert_shadow"
-rm -rf "$asdir"; mkdir -p "$asdir"
+gate_workdir asdir "_build/_gate_assert_shadow"
 cat > "$asdir/shadow.vibe" <<'ASEOF'
 fn assert_eq(a: Int, b: Int) -> String {
   Int::to_string(a + b)
@@ -858,8 +854,7 @@ echo "[compiler-gate] user-defined assert_eq wins (top-level and local, linear a
 # than removing the disjunct: `fn_idx_in_list` stays exactly as it was, and
 # only `local_idx_hint` -- a lexical binding in this very closure -- wins.
 echo "[compiler-gate] 111/111 a binding named eq is the function that runs (#2309)"
-eqdir="_build/_gate_eq_shadow"
-rm -rf "$eqdir"; mkdir -p "$eqdir"
+gate_workdir eqdir "_build/_gate_eq_shadow"
 cat > "$eqdir/eq.vibe" <<'EQEOF'
 fn main() -> Unit allows Console {
   let eq = (a: Int, b: Int) -> Int { a + b }
@@ -1017,8 +1012,7 @@ echo "[compiler-gate] a binding named eq wins on Int and Double, local and top-l
 # every run. That message is not merely unhelpful, it asserts something untrue
 # about the file, which is the failure mode this repo ranks first.
 echo "[compiler-gate] 112/112 vibe check answers about a .vpkg contract (#2280)"
-vpdir="_build/_gate_vpkg_check"
-rm -rf "$vpdir"; mkdir -p "$vpdir"
+gate_workdir vpdir "_build/_gate_vpkg_check"
 # A real tree package, not a synthetic one: the point is that `check` agrees
 # with the loader about files the build already consumes.
 for contract in lib/@vibe/random/index.vpkg; do
@@ -1247,8 +1241,7 @@ echo "[compiler-gate] inherited and physical unstable imports are each reported,
 # Both directions, because a fix that always appends the diagnostic would pass
 # the first assertion and break the opt-in.
 echo "[compiler-gate] 115/115 vibe lsp publishDiagnostics reports the ADR-0068 opt-in (#2297)"
-lspudir="_build/_gate_lsp_unstable"
-rm -rf "$lspudir"; mkdir -p "$lspudir"
+gate_workdir lspudir "_build/_gate_lsp_unstable"
 python3 - "$lspudir/input.bin" <<'PYEOF'
 import json, sys
 
@@ -1438,8 +1431,7 @@ echo "[compiler-gate] vibe lsp reports the ADR-0068 opt-in, the opt-in suppresse
 # program may legitimately declare its own `StoreDict`, and relabelling on the
 # `+ "Dict"` name convention reports a real user struct as a trait signature.
 echo "[compiler-gate] 116/116 a trait-method diagnostic names the trait, not the synthesized dict struct (#2286)"
-tdlabdir="_build/_gate_trait_dict_label"
-rm -rf "$tdlabdir"; mkdir -p "$tdlabdir"
+gate_workdir tdlabdir "_build/_gate_trait_dict_label"
 cat > "$tdlabdir/trait.vibe" <<'TDEOF'
 trait Store {
   lookup(Self, Map[Float64, String]) -> String
@@ -1561,8 +1553,7 @@ echo "[compiler-gate] trait-method diagnostics name the DECLARING trait, inherit
 # `expected { but got fn` about a valid contract -- a diagnostic that asserts
 # something untrue about a file the build consumes on every run.
 echo "[compiler-gate] 117/117 a .vpkg buffer is read as a contract on the single-buffer lanes (#2314)"
-vpbufdir="_build/_gate_vpkg_buffer"
-rm -rf "$vpbufdir"; mkdir -p "$vpbufdir"
+gate_workdir vpbufdir "_build/_gate_vpkg_buffer"
 # A real tree contract, so a failure cannot be blamed on a synthetic fixture.
 # `lib/@vibe/random/index.vpkg` is the file #2280 named.
 real_contract="lib/@vibe/random/index.vpkg"
@@ -2051,8 +2042,7 @@ echo "[compiler-gate] a .vpkg buffer reads as a contract, still rejects a malfor
 # must not depend on where the definition sits. So every probe is run BOTH ways
 # and the two verdicts compared, rather than asserting one message.
 echo "[compiler-gate] 118/118 a call is checked the same above its callee's definition as below (#2318)"
-fwddir="_build/_gate_fwd_check"
-rm -rf "$fwddir"; mkdir -p "$fwddir"
+gate_workdir fwddir "_build/_gate_fwd_check"
 # name|bad call|definition -- each is checked with the definition first and
 # with the call first; the two must agree.
 fwd_cases='argtype|takes(1, "s")|fn takes(a: Int, b: Int) -> Int { a + b }

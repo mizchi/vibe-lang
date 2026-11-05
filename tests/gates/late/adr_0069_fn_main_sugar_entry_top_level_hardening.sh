@@ -23,8 +23,7 @@ export VIBE_UNSTABLE=1
 #     (c) bad_toplevel_expr / bad_toplevel_mut: top level is declarations only —
 #         a top-level expression statement / `let mut` is rejected by the checker.
 echo "[compiler-gate] 41/41 ADR-0069 fn main sugar + entry/top-level hardening"
-a69dir="_build/_gate_adr69"
-rm -rf "$a69dir"; mkdir -p "$a69dir"
+gate_workdir a69dir "_build/_gate_adr69"
 cat > "$a69dir/ok_fnmain.vibe" <<'EOF'
 fn main allows Stdout {
   Stdout::write_stream("42\n")
@@ -85,8 +84,7 @@ echo "[compiler-gate] ADR-0069 fn main sugar + entry/top-level hardening ok"
 # block-level desugar reads them too), so `record { name: n, ver: v }` binds
 # slot 0 to `n` and slot 1 to `v`.
 echo "[compiler-gate] 42/42 top-level record-pattern let (#830 / #1281)"
-g830dir="_build/_gate_830"
-rm -rf "$g830dir"; mkdir -p "$g830dir"
+gate_workdir g830dir "_build/_gate_830"
 cat > "$g830dir/toplevel_record_destr.vibe" <<'EOF'
 let r = record { name: "vibe", ver: 7 }
 let record { name: n, ver: v } = r
@@ -143,8 +141,7 @@ echo "[compiler-gate] top-level record-pattern let (#830 / #1281) ok"
 #     one pass, and the latter is exactly what sections 18/20 above exist to
 #     protect).
 echo "[compiler-gate] 43/43 generic-struct annotation re-narrowing regression (#844)"
-g844dir="_build/_gate_844"
-rm -rf "$g844dir"; mkdir -p "$g844dir"
+gate_workdir g844dir "_build/_gate_844"
 cat > "$g844dir/toplevel_narrow.vibe" <<'EOF'
 struct Box[T] { v: T }
 let x: Box = Box::{ v: 1 }
@@ -214,8 +211,7 @@ echo "[compiler-gate] generic-struct annotation re-narrowing regression (#844) o
 #      when signatures matched). Unrelated packages meet in one unit via
 #      the merge/flatten lane, which is how #1078 was originally hit.
 echo "[compiler-gate] 43b/43 enum constructor name collision rejection (#1078)"
-g1078dir="_build/_gate_1078"
-rm -rf "$g1078dir"; mkdir -p "$g1078dir"
+gate_workdir g1078dir "_build/_gate_1078"
 cat > "$g1078dir/ctor_collision.vibe" <<'EOF'
 enum AEnum {
   Mk(Int)
@@ -243,8 +239,7 @@ rm -rf "$g1078dir"
 echo "[compiler-gate] enum constructor name collision rejection ok (#1078)"
 
 echo "[compiler-gate] 44/44 top-level irrefutable pattern let (#1281)"
-g859dir="_build/_gate_859"
-rm -rf "$g859dir"; mkdir -p "$g859dir"
+gate_workdir g859dir "_build/_gate_859"
 # #1281 (was #859): a top-level irrefutable pattern `let` now compiles and
 # runs. The parser expands it into a hidden binding holding the value plus one
 # projection binding per name, so codegen still needs no top-level `SLetPat`
@@ -345,8 +340,7 @@ echo "[compiler-gate] top-level irrefutable pattern let (#1281) ok"
 #      caller that discharges via `handle .. with Error` compiles and
 #      runs under the default.
 echo "[compiler-gate] 44b/44 checked-Error row discipline default-on (#944 stage B)"
-g944dir="_build/_gate_944"
-rm -rf "$g944dir"; mkdir -p "$g944dir"
+gate_workdir g944dir "_build/_gate_944"
 cat > "$g944dir/leak.vibe" <<'EOF'
 fn boom(x: Int) -> Int with Exception {
   if x == 0 {
@@ -402,8 +396,7 @@ echo "[compiler-gate] opt-in checked-Error row discipline ok (#944 stage A)"
 #      a non-zero shell status, including through the result-less `_start`
 #      launcher ABI.
 echo "[compiler-gate] 44c/44 entry-boundary Error handler (#944 stage C)"
-g944cdir="_build/_gate_944c"
-rm -rf "$g944cdir"; mkdir -p "$g944cdir"
+gate_workdir g944cdir "_build/_gate_944c"
 # #1571: the entry-boundary behaviour (stderr diagnostic + process status) is
 # asserted below, so the fixture carries no `__DATA__` tail any more and is
 # compiled AS-IS -- no `sed` strip, no temp copy.
@@ -482,8 +475,7 @@ echo "[compiler-gate] host runner exit paths ok (#3109)"
 #      semantics), running the arm but discarding its value; Error arms are
 #      now excluded from that pass (idp_arms_discharge_error).
 echo "[compiler-gate] 44d/44 with-Error non-tail throw abort (#1087)"
-g1087dir="_build/_gate_1087"
-rm -rf "$g1087dir"; mkdir -p "$g1087dir"
+gate_workdir g1087dir "_build/_gate_1087"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. Entry is `__no_entry__`, which synthesizes
@@ -510,8 +502,7 @@ echo "[compiler-gate] with-Error non-tail throw abort ok (#1087)"
 #      ~4-5KB error offset (lsp_server.vibe was undiagnosable). The prelude
 #      scanners are iterative now; this pins that.
 echo "[compiler-gate] 44e/44 diagnostics on multi-KB source with a late error (#1092)"
-g1092dir="_build/_gate_1092"
-rm -rf "$g1092dir"; mkdir -p "$g1092dir"
+gate_workdir g1092dir "_build/_gate_1092"
 {
   i=0
   while [ $i -lt 300 ]; do
@@ -537,8 +528,7 @@ rm -rf "$g1092dir"
 echo "[compiler-gate] diagnostics on multi-KB source ok (#1092)"
 
 echo "[compiler-gate] 45/45 missing index.vpkg scan (#897 Phase 4)"
-vpkgdir="_build/_gate_vpkg_scan"
-rm -rf "$vpkgdir"; mkdir -p "$vpkgdir"
+gate_workdir vpkgdir "_build/_gate_vpkg_scan"
 VIBE_MISSING_VPKG_SCAN=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ROOT_DIR" "$vpkgdir/scan.out" __no_entry__ >/dev/null 2>&1 || true
@@ -575,8 +565,7 @@ echo "[compiler-gate] missing index.vpkg scan (#897 Phase 4) ok"
 #        original #1062 repro under VIBE_RC=1 -- the OOB-trap-specific
 #        manifestation the issue was filed for.
 echo "[compiler-gate] 46/46 ctor Double-field match binding under RC (#1062)"
-c1062dir="_build/_gate_ctor_double_field_rc"
-rm -rf "$c1062dir"; mkdir -p "$c1062dir"
+gate_workdir c1062dir "_build/_gate_ctor_double_field_rc"
 VIBE_RC=1 gate_fs_compile "fixtures/rc_ctor_double_field_match_test.vibe" "$c1062dir/c1062.wasm" __no_entry__
 gate_require_artifact "$c1062dir/c1062.wasm" "ctor Double-field match fixture did not compile under RC"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
@@ -605,8 +594,7 @@ echo "[compiler-gate] ctor Double-field match binding under RC (#1062) ok"
 #        but trapped ("indirect call type mismatch") under real wasmtime,
 #        the still-open GENERAL case issue #1070 describes).
 echo "[compiler-gate] 47/47 self-hosted vibe lsp: initialize/didOpen/hover/shutdown/exit round trip"
-lspgatedir="_build/_gate_lsp_selfhost"
-rm -rf "$lspgatedir"; mkdir -p "$lspgatedir"
+gate_workdir lspgatedir "_build/_gate_lsp_selfhost"
 python3 - "$lspgatedir/input.bin" <<'PYEOF'
 import json, sys
 
@@ -695,8 +683,7 @@ echo "[compiler-gate] self-hosted vibe lsp round trip ok (incl. completion/signa
 #        type_send_ok in checker/traits/checker_trait.vibe, wired into
 #        check_program_bounds (checker_stmt.vibe).
 echo "[compiler-gate] 48/48 ADR-0068 Send marker (structural judgment + rejections)"
-senddir="_build/_gate_send_marker"
-rm -rf "$senddir"; mkdir -p "$senddir"
+gate_workdir senddir "_build/_gate_send_marker"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -907,8 +894,7 @@ echo "[compiler-gate] ADR-0068 Send marker ok"
 #        checks both the struct shape (silent corruption) and the closure
 #        shape (call_indirect trap): want 123123.
 echo "[compiler-gate] 49/49 RC branch+loop mixed-consume over-drop (#1085)"
-rc1085dir="_build/_gate_rc_branch_loop"
-rm -rf "$rc1085dir"; mkdir -p "$rc1085dir"
+gate_workdir rc1085dir "_build/_gate_rc_branch_loop"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -944,8 +930,7 @@ echo "[compiler-gate] RC branch+loop mixed-consume over-drop (#1085) ok"
 #        break/continue/return are HARD compile errors, never a silent
 #        replay fallback.
 echo "[compiler-gate] 50/50 ADR-0076 Phase 3a first-class resume (suspend CPS)"
-scpsdir="_build/_gate_scps"
-rm -rf "$scpsdir"; mkdir -p "$scpsdir"
+gate_workdir scpsdir "_build/_gate_scps"
 # #1571: fixtures that own their expectation as an `inspect` test block
 # compile AS-IS -- no `__DATA__` strip, no temp copy, and no expected value
 # in shell. Entry is `__no_entry__`, which synthesizes the test-block
@@ -1299,8 +1284,7 @@ echo "[compiler-gate] ADR-0076 Phase 3a first-class resume ok"
 #        (r's + resumed values + the log digits — silent-corruption pin,
 #        not just no-trap).
 echo "[compiler-gate] 51/51 RC match-payload closure capture (#1097)"
-rc1097dir="_build/_gate_rc_payload_capture"
-rm -rf "$rc1097dir"; mkdir -p "$rc1097dir"
+gate_workdir rc1097dir "_build/_gate_rc_payload_capture"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1321,8 +1305,7 @@ echo "[compiler-gate] RC match-payload closure capture (#1097) ok"
 #        count as an escaping projection, so both shapes in the fixture
 #        returned pointers into freed memory (silent until a later allocation
 #        reused the cell: the two shapes summed to 12 and 207, not 45 and 300).
-rc1272dir="_build/_gate_rc_local_elem_escape"
-rm -rf "$rc1272dir"; mkdir -p "$rc1272dir"
+gate_workdir rc1272dir "_build/_gate_rc_local_elem_escape"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1344,8 +1327,7 @@ echo "[compiler-gate] RC local-container element escape (#1272) ok"
 #        instead of hoisting put an `ELet` in a `let` VALUE, which no source
 #        program can write and which sent the compiler itself into unbounded
 #        recursion once two appeared in one function.
-awmdir="_build/_gate_await_multi"
-rm -rf "$awmdir"; mkdir -p "$awmdir"
+gate_workdir awmdir "_build/_gate_await_multi"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
@@ -1363,8 +1345,7 @@ echo "[compiler-gate] multi-position await hoist (#1230) ok"
 #        futures are resolved before they are awaited, so this pins the
 #        representation and the two builtins rather than the scheduling (a
 #        still-pending await needs a driver parking the continuation).
-fpdir="_build/_gate_future_pending"
-rm -rf "$fpdir"; mkdir -p "$fpdir"
+gate_workdir fpdir "_build/_gate_future_pending"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
@@ -1386,8 +1367,7 @@ echo "[compiler-gate] pending future producer (#1230) ok"
 #        freed element block was reused by churn() and the escaped closure
 #        read the reused contents (got 50067, silent corruption).
 echo "[compiler-gate] 52/52 RC owned-captures escape (ADR-0076 追記31)"
-rcocdir="_build/_gate_rc_owned_capture"
-rm -rf "$rcocdir"; mkdir -p "$rcocdir"
+gate_workdir rcocdir "_build/_gate_rc_owned_capture"
 VIBE_RC=1 gate_fs_compile fixtures/rc_closure_owned_capture_escape.vibe "$rcocdir/esc.wasm" _start
 gate_require_artifact "$rcocdir/esc.wasm" "rc_closure_owned_capture_escape fixture did not compile"
 gate_run rcoc_out stdout-last --invoke _start "$rcocdir/esc.wasm"
@@ -1403,8 +1383,7 @@ echo "[compiler-gate] RC owned-captures escape ok"
 #        the v1 convention guard (an untriggered handle for a
 #        step-compiled effect is a hard error).
 echo "[compiler-gate] 53/53 closure-CPS param suspend (ADR-0076 追記31)"
-ccpsdir="_build/_gate_closure_cps"
-rm -rf "$ccpsdir"; mkdir -p "$ccpsdir"
+gate_workdir ccpsdir "_build/_gate_closure_cps"
 gate_fs_compile fixtures/effect_closure_cps_param.vibe "$ccpsdir/param.wasm" _start
 gate_require_artifact "$ccpsdir/param.wasm" "effect_closure_cps_param fixture did not compile"
 gate_run ccps_out stdout-last --invoke _start "$ccpsdir/param.wasm"
@@ -1435,8 +1414,7 @@ echo "[compiler-gate] closure-CPS param suspend ok"
 #        guard makes an ineligible closure-value program a hard error
 #        instead of a silent replay fallback.
 echo "[compiler-gate] 54/54 type-directed closure evidence (ADR-0076 追記34)"
-tdevdir="_build/_gate_td_evidence"
-rm -rf "$tdevdir"; mkdir -p "$tdevdir"
+gate_workdir tdevdir "_build/_gate_td_evidence"
 gate_fs_compile fixtures/effect_closure_value_evidence_m2.vibe "$tdevdir/m2.wasm" _start
 gate_require_artifact "$tdevdir/m2.wasm" "effect_closure_value_evidence_m2 fixture did not compile"
 gate_run tdev_out stdout-last --invoke _start "$tdevdir/m2.wasm"
@@ -1471,8 +1449,7 @@ echo "[compiler-gate] type-directed closure evidence ok"
 #        local-literal call safety instead of parking on replay -- its pin
 #        already asserts the value; this section pins the two new behaviors.
 echo "[compiler-gate] 55/55 replay frontier removal (ADR-0076 追記34 V2)"
-v2dir="_build/_gate_replay_removed"
-rm -rf "$v2dir"; mkdir -p "$v2dir"
+gate_workdir v2dir "_build/_gate_replay_removed"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1502,8 +1479,7 @@ echo "[compiler-gate] replay frontier removal ok"
 #        top-level fn table, so a parameter named `not`/`mul`/... was never
 #        captured and the call silently produced the BUILTIN's value.
 echo "[compiler-gate] 56/56 closure captures enclosing-scope shadow of an inlined builtin (#1114)"
-csibdir="_build/_gate_closure_shadow_builtin"
-rm -rf "$csibdir"; mkdir -p "$csibdir"
+gate_workdir csibdir "_build/_gate_closure_shadow_builtin"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block), so this compiles it AS-IS -- no `__DATA__` strip, no temp copy,
 # and no expected value in shell. A mismatch prints inspect's own
@@ -1618,8 +1594,7 @@ fi
 # (taskgroup_escape_*) and the remaining routes are in concurrency.md
 # "Known gaps".
 echo "[compiler-gate] 59/59 ADR-0068 region generativity (#1081 step 3)"
-regiondir="_build/_gate_region"
-rm -rf "$regiondir"; mkdir -p "$regiondir"
+gate_workdir regiondir "_build/_gate_region"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
@@ -1641,8 +1616,7 @@ rm -rf "$regiondir"
 echo "[compiler-gate] ADR-0068 region generativity ok"
 
 echo "[compiler-gate] 60/60 deps missing-for-imports scan (#1145 follow-up 2)"
-depsdir="_build/_gate_deps_scan"
-rm -rf "$depsdir"; mkdir -p "$depsdir"
+gate_workdir depsdir "_build/_gate_deps_scan"
 VIBE_DEPS_MISSING_SCAN=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ROOT_DIR" "$depsdir/scan.out" __no_entry__ >/dev/null 2>&1 || true
@@ -1673,8 +1647,7 @@ echo "[compiler-gate] deps missing-for-imports scan (#1145 follow-up 2) ok"
 # (err_spawnable_capture_letmut_outer_scope.vibe, Codex review PR #1151
 # P1) are all STATIC errors.
 echo "[compiler-gate] 61/61 ADR-0068 Spawnable[r] capture check (#1081 step 3 Phase B)"
-spawnabledir="_build/_gate_spawnable"
-rm -rf "$spawnabledir"; mkdir -p "$spawnabledir"
+gate_workdir spawnabledir "_build/_gate_spawnable"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
