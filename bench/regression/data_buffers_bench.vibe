@@ -11,18 +11,18 @@ import @vibe/compiler/core {
 fn growing_data_section(out: Bytes, offsets: Array[Int], datas: Array[Bytes]) -> Unit {
   let count = Array::length(offsets)
   let content = Bytes::new()
-  bytebuf_push_vec_header(content, count)
+  bytebuf_push_vec_header(buf = content, count = count)
   let mut i = 0
   while i < count {
-    bytebuf_push(content, 0)
-    emit_i32_const(content, Array::get(offsets, i))
+    bytebuf_push(buf = content, byte = 0)
+    emit_i32_const(buf = content, value = Array::get(offsets, at = i))
     emit_end(content)
-    let data = Array::get(datas, i)
-    leb128_encode_u32(content, Bytes::length(data))
-    bytebuf_push_buf(content, data)
+    let data = Array::get(datas, at = i)
+    leb128_encode_u32(buf = content, value = Bytes::length(data))
+    bytebuf_push_buf(dst = content, src = data)
     i = i + 1
   }
-  bytebuf_push_section(out, 11, content)
+  bytebuf_push_section(out = out, section_id = 11, content = content)
 }
 
 fn large_text() -> String {
@@ -39,8 +39,8 @@ let small_source = "0123456789abcdef0123456789abcdef"
 let large_source = large_text()
 let small_data = string_to_data(small_source)
 let large_data = string_to_data(large_source)
-let medium_data = string_to_data(String::substring(large_source, 0, 256))
-let page_data = string_to_data(String::substring(large_source, 0, 2048))
+let medium_data = string_to_data(String::substring(large_source, start = 0, end = 256))
+let page_data = string_to_data(String::substring(large_source, start = 0, end = 2048))
 let offsets = [0, 32768, 65536, 98304]
 let small_segments = [small_data, small_data, small_data, small_data]
 let large_segments = [large_data, large_data, large_data, large_data]
@@ -64,54 +64,54 @@ fn section_batch(segments: Array[Bytes], count: Int, reserve: Bool) -> Unit {
   while i < count {
     let out = Bytes::new()
     if reserve {
-      emit_data_section_multi(out, offsets, segments)
+      emit_data_section_multi(out = out, offsets = offsets, datas = segments)
     } else {
-      growing_data_section(out, offsets, segments)
+      growing_data_section(out = out, offsets = offsets, datas = segments)
     }
     total = total + Bytes::length(out)
     i = i + 1
   }
-  assert(total > Bytes::length(Array::get(segments, 0)) * 4 * count)
+  assert(total > Bytes::length(Array::get(segments, at = 0)) * 4 * count)
 }
 
 bench "string_32_bytes_batch_1000" {
-  convert_batch(small_source, 1000)
+  convert_batch(source = small_source, count = 1000)
 }
 
 bench "string_32_kib_batch_8" {
-  convert_batch(large_source, 8)
+  convert_batch(source = large_source, count = 8)
 }
 
 bench "data_4x32_bytes_batch_1000" {
-  section_batch(small_segments, 1000, true)
+  section_batch(segments = small_segments, count = 1000, reserve = true)
 }
 
 bench "data_4x32_kib_batch_8" {
-  section_batch(large_segments, 8, true)
+  section_batch(segments = large_segments, count = 8, reserve = true)
 }
 
 bench "growing_data_4x32_bytes_batch_1000" {
-  section_batch(small_segments, 1000, false)
+  section_batch(segments = small_segments, count = 1000, reserve = false)
 }
 
 bench "growing_data_4x32_kib_batch_8" {
-  section_batch(large_segments, 8, false)
+  section_batch(segments = large_segments, count = 8, reserve = false)
 }
 
 bench "data_4x256_bytes_batch_64" {
-  section_batch(medium_segments, 64, true)
+  section_batch(segments = medium_segments, count = 64, reserve = true)
 }
 
 bench "growing_data_4x256_bytes_batch_64" {
-  section_batch(medium_segments, 64, false)
+  section_batch(segments = medium_segments, count = 64, reserve = false)
 }
 
 bench "data_4x2_kib_batch_32" {
-  section_batch(page_segments, 32, true)
+  section_batch(segments = page_segments, count = 32, reserve = true)
 }
 
 bench "growing_data_4x2_kib_batch_32" {
-  section_batch(page_segments, 32, false)
+  section_batch(segments = page_segments, count = 32, reserve = false)
 }
 
 bench "data_section_reference_parity" {
@@ -123,8 +123,8 @@ bench "data_section_reference_parity" {
   ] {
     let growing = Bytes::new()
     let reserved = Bytes::new()
-    growing_data_section(growing, offsets, segments)
-    emit_data_section_multi(reserved, offsets, segments)
+    growing_data_section(out = growing, offsets = offsets, datas = segments)
+    emit_data_section_multi(out = reserved, offsets = offsets, datas = segments)
     assert(Bytes::compare(growing, reserved) == 0)
   }
 }
