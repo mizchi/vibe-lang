@@ -37,7 +37,7 @@ test "a call assumes the callee's ensures and owes its requires" {
 
 test "outside the fragment is unsupported, never skipped" {
   inspect(kinds("fn f(xs: Array[Int]) -> Int where { ensures: result >= 0 } {\n  0\n}\n"), content = "f:unsupported:parameter `xs` is not `Int`, `Bool`, or a struct / enum of this file (non-generic, every field `Int`, `Bool` or such a type)")
-  inspect(kinds("fn g(x: Int) -> Int where { ensures: result >= 0 } {\n  let mut y = x\n  y\n}\n"), content = "g:unsupported:`let mut` is outside the provable fragment")
+  inspect(kinds("fn g(x: Int) -> Int where { ensures: result >= 0 } {\n  while false {\n    ()\n  }\n  0\n}\n"), content = "g:unsupported:a `while` without a `where { decreases: .. }` measure: termination is not proved, so the result would be partial correctness only")
   inspect(kinds("fn h(x: Int) -> Int where { ensures: result >= 0 } {\n  h(x)\n}\n"), content = "h:unsupported:`h` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only")
 }
 
@@ -90,4 +90,9 @@ test "only unsat proves" {
   inspect(prove_verdict("unknown\n"), content = "(unknown, z3 returned unknown)")
   inspect(prove_verdict("timeout\n"), content = "(unknown, z3 timed out)")
   inspect(prove_verdict(""), content = "(unknown, z3 did not answer: )")
+}
+
+test "#3717: a contracted while owes its invariants and measure on entry and after an iteration" {
+  let src = "fn c(n: Int) -> Int where { requires: n >= 0, ensures: result == n } {\n  let mut i = 0\n  while i < n where {\n    invariant: 0 <= i && i <= n,\n    decreases: n - i,\n  } {\n    i = i + 1\n  }\n  i\n}\n"
+  inspect(kinds(src), content = "c:invariant-entry:((0 <= i) && (i <= n)) | c:overflow:(n - i) | c:measure-entry:(n - i) | c:overflow:(n - i) | c:overflow:(i + 1) | c:invariant:((0 <= i) && (i <= n)) | c:overflow:(n - i) | c:measure:(n - i) | c:ensures:(result == n)")
 }

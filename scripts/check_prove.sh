@@ -60,16 +60,53 @@ $dir/unproved.vibe:26:1: unproved: ensures (result == x) of \`shadowed\` -- coun
 $dir/unproved.vibe:33:1: unproved: ensures (result == 0) of \`branch_scope\` -- counterexample: <model>
 $dir/unproved.vibe:49:1: unproved: ensures (result > 0) of \`coin_value\` -- counterexample: <model>
 $dir/unproved.vibe:59:9: unproved: a \`match\` on x covers every value, in \`uncovered\` -- counterexample: <model>
-$dir/unproved.vibe:71:1: unproved: ensures (result == 0) of \`field_branch\` -- counterexample: <model>
-$dir/unproved.vibe:87:1: unproved: ensures (result == 0) of \`pattern_branch\` -- counterexample: <model>"
-run_case unsupported 1 "$dir/unsupported.vibe:4:1: unsupported: \`let mut\` is outside the provable fragment (in \`sum_to\`)
+$dir/unproved.vibe:67:5: unproved: the divisor of (x / d) is not zero, in \`ratio\` -- counterexample: <model>
+$dir/unproved.vibe:67:5: unproved: overflow in (x / d) in \`ratio\` -- counterexample: <model>
+$dir/unproved.vibe:77:1: unproved: ensures (result == 0) of \`field_branch\` -- counterexample: <model>
+$dir/unproved.vibe:93:1: unproved: ensures (result == 0) of \`pattern_branch\` -- counterexample: <model>
+$dir/unproved.vibe:105:5: unproved: overflow in (x << 1) in \`doubled\` -- counterexample: <model>
+$dir/unproved.vibe:112:18: unproved: invariant ((0 <= i) && (i <= 10)) holds again after each iteration, in \`count_up\` -- counterexample: <model>
+$dir/unproved.vibe:125:16: unproved: the measure n stays non-negative and drops on each iteration, in \`stuck\` -- counterexample: <model>
+$dir/unproved.vibe:134:1: unproved: ensures (result == 0) of \`cond_step\` -- counterexample: <model>"
+run_case unsupported 1 "$dir/unsupported.vibe:7:9: unsupported: a \`while\` without a \`where { decreases: .. }\` measure: termination is not proved, so the result would be partial correctness only (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
 $dir/unsupported.vibe:24:1: unsupported: \`pong\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`pong\`)
 $dir/unsupported.vibe:38:11: unsupported: \`spin\` has no \`where\` contract, so the call cannot be checked modularly; give it one (\`ensures: true\` at least), and its body is proved too (in \`calls_helper\`)
 $dir/unsupported.vibe:47:1: unsupported: parameter \`h\` is not \`Int\`, \`Bool\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`held\`)
-$dir/unsupported.vibe:62:5: unsupported: \`==\` on \`Odd\` calls a program-written \`equals\` (on that type or one it contains), which the prover does not read (in \`same\`)"
+$dir/unsupported.vibe:62:5: unsupported: \`==\` on \`Odd\` calls a program-written \`equals\` (on that type or one it contains), which the prover does not read (in \`same\`)
+$dir/unsupported.vibe:68:5: unsupported: \`<<\` by a count that is not a constant from 0 to 62 (in \`shift_by\`)
+$dir/unsupported.vibe:73:1: unsupported: a contract clause that leaves the function with \`return\` (in \`leaves\`)"
 run_case unknown 1 "$dir/unknown.vibe:5:1: unknown: ensures result of \`fermat3\` -- z3 timed out (5000 ms limit)"
 
+# `--json` reports the same diagnostics as the text: one LSP Diagnostic per
+# line, at that line's position, with that line's message, and `[]` for a
+# file that proves.
+json_case() {
+  local name="$1"
+  local text json
+  set +e
+  text="$(VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check --prove "$dir/$name.vibe" 2>&1)"
+  json="$(VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check --prove --json "$dir/$name.vibe" 2>&1)"
+  set -e
+  if ! node -e '
+    const [path, text, json] = process.argv.slice(1);
+    const want = text === "" ? [] : text.split("\n").map((l) => {
+      const m = l.slice(path.length + 1).match(/^(\d+):(\d+): (.*)$/);
+      return { line: Number(m[1]) - 1, character: Number(m[2]) - 1, message: m[3] };
+    });
+    const got = JSON.parse(json).map((d) => ({ line: d.range.start.line, character: d.range.start.character, message: d.message }));
+    const norm = (xs) => JSON.stringify(xs.map((x) => ({ ...x, message: x.message.replace(/-- counterexample: .*/, "-- counterexample: <model>") })));
+    if (norm(want) !== norm(got)) { console.error("text: " + norm(want) + "\njson: " + norm(got)); process.exit(1); }
+  ' "$dir/$name.vibe" "$text" "$json"; then
+    echo "[prove] FAIL: $name.vibe: --json does not carry the text report's diagnostics" >&2
+    fail=1
+  fi
+}
+
+json_case proved
+json_case unproved
+json_case unsupported
+
 [ "$fail" = 0 ] || exit 1
-echo "[prove] ok (proved silent, unproved with counterexamples, unsupported reported, an unknown answer fails)"
+echo "[prove] ok (proved silent, unproved with counterexamples, unsupported reported, an unknown answer fails, --json carries the same diagnostics)"

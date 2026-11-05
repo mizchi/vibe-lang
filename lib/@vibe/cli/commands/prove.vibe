@@ -4,6 +4,14 @@ import @vibe/prove {
   Obligation, prove_obligations, prove_verdict
 }
 
+import @vibe/lsp {
+  lsp_diagnostics_json_of_messages_for
+}
+
+import ./plans.vibe {
+  line_terminated
+}
+
 //# Functions
 
 /// #3717 (ADR-0121): `vibe check --prove <file>...`. Each obligation of each
@@ -13,7 +21,11 @@ import @vibe/prove {
 /// line per obligation that is not proved, empty output when every one is,
 /// exit 1 otherwise. Only `unsat` proves; `unknown`, a timeout and a
 /// construct outside the provable fragment are failures, never skipped.
-export fn selfhost_cli_user_check_prove(_ paths: Array[String]) -> Int with Exception + Fs + Process + Console {
+///
+/// With `json`, each file's report is the LSP Diagnostic array `vibe check
+/// --json` prints, one array per file and `[]` when every obligation is
+/// proved, built from the same lines through the same writer.
+export fn selfhost_cli_user_check_prove(paths: Array[String], json: Bool) -> Int with Exception + Fs + Process + Console {
   if !z3_available() {
     throw("check --prove: `z3` is not on PATH; install it (for example `nix shell nixpkgs#z3`, `apt install z3` or `brew install z3`) and run again")
   } else {
@@ -22,27 +34,44 @@ export fn selfhost_cli_user_check_prove(_ paths: Array[String]) -> Int with Exce
   let mut code = 0
   for path in paths {
     let source = Fs::read_file(path)
-    for o in prove_obligations(source) {
-      let at = "\{path}:\{line_col(source = source, off = o.off)}"
-      if o.kind == "unsupported" {
-        println("\{at}: unsupported: \{o.label} (in `\{o.fn_name}`)")
-        code = 1
-      } else {
-        let (verdict, detail) = prove_verdict(run_z3(o.query))
-        if verdict == "unproved" {
-          println("\{at}: unproved: \{obligation_text(o)} -- counterexample: \{detail}")
-          code = 1
-        } else if verdict != "proved" {
-          println("\{at}: unknown: \{obligation_text(o)} -- \{detail} (5000 ms limit)")
-          code = 1
-        } else {
-          ()
-        }
-      }
+    let lines = prove_report(source)
+    if Array::length(lines) > 0 {
+      code = 1
+    } else {
+      ()
     }
-    ()
+    if json {
+      let msgs = Array::map(lines, (l) -> "line \{line_col(source = source, off = l.0)}: \{l.1}")
+      print(line_terminated(lsp_diagnostics_json_of_messages_for(path = path, source = source, msgs = msgs)))
+    } else {
+      for l in lines {
+        println("\{path}:\{line_col(source = source, off = l.0)}: \{l.1}")
+      }
+      ()
+    }
   }
   code
+}
+
+/// One `(offset, message)` per obligation of `source` that is not proved, in
+/// obligation order.
+fn prove_report(_ source: String) -> Array[(Int, String)] with Exception + Process {
+  let out: Array[(Int, String)] = []
+  for o in prove_obligations(source) {
+    if o.kind == "unsupported" {
+      Array::push(out, value = (o.off, "unsupported: \{o.label} (in `\{o.fn_name}`)"))
+    } else {
+      let (verdict, detail) = prove_verdict(run_z3(o.query))
+      if verdict == "unproved" {
+        Array::push(out, value = (o.off, "unproved: \{obligation_text(o)} -- counterexample: \{detail}"))
+      } else if verdict != "proved" {
+        Array::push(out, value = (o.off, "unknown: \{obligation_text(o)} -- \{detail} (5000 ms limit)"))
+      } else {
+        ()
+      }
+    }
+  }
+  out
 }
 
 fn obligation_text(_ o: Obligation) -> String {
@@ -50,6 +79,16 @@ fn obligation_text(_ o: Obligation) -> String {
     "ensures \{o.label} of `\{o.fn_name}`"
   } else if o.kind == "requires" {
     "requires of \{o.label}, called in `\{o.fn_name}`"
+  } else if o.kind == "invariant-entry" {
+    "invariant \{o.label} holds when the loop starts, in `\{o.fn_name}`"
+  } else if o.kind == "invariant" {
+    "invariant \{o.label} holds again after each iteration, in `\{o.fn_name}`"
+  } else if o.kind == "measure-entry" {
+    "the measure \{o.label} is not negative when the loop starts, in `\{o.fn_name}`"
+  } else if o.kind == "measure" {
+    "the measure \{o.label} stays non-negative and drops on each iteration, in `\{o.fn_name}`"
+  } else if o.kind == "divisor" {
+    "the divisor of \{o.label} is not zero, in `\{o.fn_name}`"
   } else if o.kind == "coverage" {
     "a `match` on \{o.label} covers every value, in `\{o.fn_name}`"
   } else {

@@ -220,22 +220,50 @@ proved**, and each line names one that is not:
 f.vibe:5:1: unproved: ensures (result > x) of `dec` -- counterexample: x = 1
 f.vibe:12:5: unproved: overflow in (x + 1) in `inc` -- counterexample: x = 4611686018427387903
 f.vibe:21:3: unproved: requires of half: (x >= 0), called in `call_half` -- counterexample: y = -4611686018427387904
-f.vibe:4:1: unsupported: `let mut` is outside the provable fragment (in `sum_to`)
+f.vibe:7:9: unsupported: a `while` without a `where { decreases: .. }` measure: termination is not proved, so the result would be partial correctness only (in `sum_to`)
 f.vibe:5:1: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
 ```
 
 Only an `unsat` answer proves, so `unknown`, a timeout and an unsupported
 construct fail (exit 1), never pass. The provable fragment is pure functions
 over `Int` and `Bool`: `let`, `if`, `return` (every exit checks `ensures`),
-`+ - *` and comparisons, `&&` / `||` / `!`, and calls to other functions of the
-file with such signatures. `Int` is a mathematical integer plus one
-no-overflow obligation per operation, which is exact for the 63-bit `Int`. A
+`+ - * / % << >>` and comparisons, `&&` / `||` / `!`, and calls to other functions
+of the file with such signatures. `Int` is a mathematical integer plus one
+no-overflow obligation per operation, which is exact for the 63-bit `Int`.
+`/` and `%` truncate toward zero as the runtime does (`-7 / 2 == -3`,
+`-7 % 2 == -1`) and also owe a non-zero divisor, since a zero one aborts; the
+code after them assumes it was not zero. `<<` and `>>` are admitted by a
+constant count from 0 to 62: `x << k` is `x * 2^k` with its overflow
+obligation, and `>>` is the arithmetic (floored) shift, so `-7 >> 2 == -2`.
+Any other count is unsupported. `let mut` locals and assignment (`=`, `+=`,
+`-=`, `*=`) are read along each path. A `while` is proved when its `where` block gives a
+`decreases` measure (#3716), by induction: its invariants and `measure >= 0`
+are owed when the loop starts; one iteration from an arbitrary state where
+they hold owes the invariants again and a smaller, still non-negative
+measure; and the code after the loop knows the invariants and the negated
+condition. A `while` with no measure is unsupported, since it may not
+terminate, and so are `break`, `continue`, `for` and `loop`. A
 call is modular: the callee's `requires` is owed at the call and its
 `ensures` assumed of the result, and the callee's own body is proved in the
 same run. A call to a function with no `where` contract is unsupported (it is
 not assumed to return), and so is a recursive call (termination is not
 proved). `z3` must be on `PATH`; without it the command refuses with the
-edit. `--json` and `--single-file` are refused with `--prove` for now.
+edit. With `--json`, each file's report is the LSP Diagnostic array `vibe
+check --json` prints (one array per file, `[]` when every obligation is
+proved), carrying the same messages. `--single-file` is refused: the prover
+already reads each file on its own.
+
+A struct or enum of the file is an SMT datatype (#3719) when it is not
+generic, has no `mut` field, and every field is `Int`, `Bool` or another such
+type. Its values can be parameters and results; the fragment reads a struct
+literal (`Point::{ x: 1, y: 2 }`), a field (`p.x`), a variant (`Circle(r)`,
+`Shape::Empty`), `==` on them (structural), and `match`. A `match` is a case
+split, and each arm's path assumes its own pattern holds and every earlier
+arm's does not, as the first matching arm runs. The patterns it reads are
+constructors (nested too), struct patterns, literals, names, `_`, and
+or-patterns that bind nothing. A counterexample is printed the way the
+program spells the value (`s = Shape::Rect(2, 3)`). A generic type, or one
+with a field outside the fragment, leaves its functions unsupported.
 
 A struct or enum of the file is an SMT datatype (#3719) when it is not
 generic, has no `mut` field, and every field is `Int`, `Bool` or another such
