@@ -163,6 +163,89 @@ open(path, "wb").write(bytes(data))
 MUTRUNNER
 chmod +x "$WORK/mutating_runner.sh"
 
+# Strips every typed-equality row from the reused records before the meaning
+# edit's reuse-on build, and rebinds each witness to the stripped record so the
+# reuse is still taken: a reuse that stopped republishing the typed-lowering
+# rows. The oracle must refuse it. Like the flip above, the strip must APPLY.
+cat > "$WORK/strip_eq.py" <<'STRIPPY'
+import os, sys
+
+def fp(data):
+    h1, h2 = 17, 29
+    for i, c in enumerate(data):
+        h1 = (h1 * 131 + c + 1) % 2147483647
+        h2 = (h2 * 65599 + c + i + 1) % 2147483629
+    return b"%d:%d:%d" % (len(data), h1, h2)
+
+def strip(record):
+    head = b"module_typed_lowering_offsets\tv8\n"
+    start = record.find(head)
+    if start < 0:
+        return record
+    lines = record[start + len(head):].split(b"\n")
+    offsets, rest = [], []
+    i = 0
+    while not lines[i].startswith(b"module_typed_lowering_offsets\t"):
+        offsets.append(lines[i]); i += 1
+    count = lines[i]; i += 1
+    eqrows = []
+    while lines[i].startswith(b"module_typed_lowering_offsets\teqrow\t"):
+        eqrows.append(lines[i]); i += 1
+    if not eqrows:
+        return record
+    body = b"\n".join(offsets)
+    tail = b"module_typed_lowering_offsets\teqcount\t0\nmodule_typed_lowering_offsets\tdigest\t" + fp(body) + b"\nmodule_typed_lowering_offsets\tend\n"
+    return record[:start] + head + b"".join(o + b"\n" for o in offsets) + count + b"\n" + tail
+
+def segment(data, pos):
+    colon = data.index(b":", pos)
+    n = int(data[pos:colon])
+    return data[colon + 1:colon + 1 + n], colon + 1 + n
+
+cache = sys.argv[1]
+names = os.listdir(cache)
+changed = {}
+for name in names:
+    if name.startswith("vibe_selfhost_type_env"):
+        path = os.path.join(cache, name)
+        old = open(path, "rb").read()
+        new = strip(old)
+        if new != old:
+            changed[old] = new
+            open(path, "wb").write(new)
+if not changed:
+    raise SystemExit("strip_eq: no record carried a typed equality row")
+rebound = 0
+for name in names:
+    if name.startswith("vibe_selfhost_typing_dependency_env_reuse_eligibility"):
+        path = os.path.join(cache, name)
+        data = open(path, "rb").read()
+        tag = b"TDRE10W"
+        if not data.startswith(tag):
+            continue
+        key, p = segment(data, len(tag))
+        fpv, p = segment(data, p)
+        target, p = segment(data, p)
+        if target in changed:
+            t = changed[target]
+            open(path, "wb").write(tag + b"%d:" % len(key) + key + b"%d:" % len(fpv) + fpv + b"%d:" % len(t) + t)
+            rebound += 1
+if rebound == 0:
+    raise SystemExit("strip_eq: no witness bound a stripped record")
+print("strip_eq: %d records, %d witnesses" % (len(changed), rebound), file=sys.stderr)
+STRIPPY
+cat > "$WORK/strip_runner.sh" <<'STRIPRUNNER'
+#!/usr/bin/env bash
+set -uo pipefail
+out=""
+for arg in "$@"; do case "$arg" in *.wasm) out="$arg" ;; esac; done
+if [ "$(basename "$out" .wasm)" = "edit-on" ]; then
+  python3 "$COMPILE_REUSE_ORACLE_STRIP_PY" "$VIBE_BUILD_CACHE_DIR" || exit 9
+fi
+exec bash "$COMPILE_REUSE_ORACLE_REAL_RUNNER" "$@"
+STRIPRUNNER
+chmod +x "$WORK/strip_runner.sh"
+
 # ---- the real compiler ----------------------------------------------------
 STAGE2="$(resolve_stage2 compile-typing-env-reuse-oracle-test "${COMPILE_REUSE_ORACLE_STAGE2:-${VIBE_STAGE2_WASM:-}}")" || {
   echo "FAIL no compiler to run the real cases against" >&2; exit 1; }
@@ -185,8 +268,23 @@ else
   echo "FAIL real-module mutation failed on the wrong assertion"; sed -n '1,8p' "$WORK/err"; fails=$((fails + 1))
 fi
 
+# The fixture's `==` must depend on the reused typed rows: with them stripped,
+# the reuse-on build is refused at the comparison. Before this case existed
+# the fixture compared against a literal, which carries its own element type,
+# and the oracle passed with the rows stripped (Codex on #3804).
+if COMPILE_REUSE_ORACLE_REAL_RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
+   COMPILE_REUSE_ORACLE_STRIP_PY="$WORK/strip_eq.py" \
+   VIBE_COMPILE_TYPING_REUSE_ORACLE_RUNNER="$WORK/strip_runner.sh" \
+   node scripts/compile_typing_env_reuse_oracle.mjs "$STAGE2_ABS" >"$WORK/out" 2>"$WORK/err"; then
+  echo "FAIL the oracle PASSED with the typed-equality rows stripped from the reused records"; fails=$((fails + 1))
+elif grep -qF "edit-on failed" "$WORK/err" && grep -qF "structural \`==\` cannot be decided" "$WORK/err"; then
+  echo "ok   a reuse that drops the typed-equality rows is refused"
+else
+  echo "FAIL stripping the typed rows failed on the wrong assertion"; sed -n '1,8p' "$WORK/err"; fails=$((fails + 1))
+fi
+
 if [ "$fails" -eq 0 ]; then
-  echo "compile-typing-env-reuse-oracle self-test: ok (1 green + 8 red scripted, 1 green + 1 red against $STAGE2)"
+  echo "compile-typing-env-reuse-oracle self-test: ok (1 green + 8 red scripted, 1 green + 2 red against $STAGE2)"
 else
   echo "compile-typing-env-reuse-oracle self-test: $fails case(s) failed" >&2
   exit 1

@@ -28,7 +28,7 @@
 //
 // The body cache and the checked-module cache are OFF in every build: either
 // could replay a stale body and make the comparison pass for another reason.
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -51,15 +51,18 @@ const runnerScript = process.env.VIBE_COMPILE_TYPING_REUSE_ORACLE_RUNNER
   || join(root, "scripts/run_wasm_vibe_host_runner.sh");
 
 // `dep` is imported by `mid` and `app`, and `mid` by `app`, so a dependency
-// edit leaves two consumers to reuse. `mid` compares an unannotated array
-// whose element is a call result: that `==` resolves only through the typed
-// lowering row the checker records (#2391), which is the compile-only state a
-// reuse hit republishes. `app` compares a `derive(Eq)` struct declared in
-// `dep`.
+// edit leaves two consumers to reuse. `mid` compares two unannotated arrays
+// whose elements are both call results, so neither side gives the element
+// type syntactically: that `==` resolves only through the typed-lowering row
+// the checker records (#2391), which is the compile-only state a reuse hit
+// republishes. The self-test strips those rows from the reused records and
+// requires this oracle to fail. `app` compares a `derive(Eq)` struct declared
+// in `dep`.
 function depSource(k, name, extra = "") {
   return [
     `export fn tdre_k() -> Int { ${k} }`,
     `export fn tdre_name() -> String { "${name}" }`,
+    "export fn tdre_two() -> Int { 2 }",
     "export struct TdrePt { x: Int; y: Int } derive(Eq)",
     "export fn tdre_pt(n: Int) -> TdrePt { TdrePt::{ x: n, y: tdre_k() } }",
     extra,
@@ -70,11 +73,13 @@ function makeProject(project) {
   mkdirSync(project, { recursive: true });
   writeFileSync(join(project, "dep.vibe"), depSource(1, "a"));
   writeFileSync(join(project, "mid.vibe"), [
-    "import ./dep.vibe { tdre_k, tdre_name }",
+    "import ./dep.vibe { tdre_k, tdre_name, tdre_two }",
     "export fn tdre_mid(n: Int) -> Int {",
     "  let xs = []",
     "  Array::push(xs, value = tdre_k())",
-    "  let same = if xs == [2] { 1000 } else { 0 }",
+    "  let ys = []",
+    "  Array::push(ys, value = tdre_two())",
+    "  let same = if xs == ys { 1000 } else { 0 }",
     "  n + tdre_k() + String::length(tdre_name()) + same",
     "}",
   ].join("\n"));
@@ -133,7 +138,11 @@ function build(stage2, project, cache, reuse, name) {
       VIBE_INCREMENTAL_TELEMETRY_OUT: telemetryOut,
     },
   });
-  if (result.status !== 0) fail(`${name} failed: ${(result.stderr || result.stdout).trim()}`);
+  if (result.status !== 0) {
+    const diagPath = join(project, `${out}.diag`);
+    const diag = existsSync(diagPath) ? readFileSync(diagPath, "utf8") : "";
+    fail(`${name} failed: ${[result.stderr, result.stdout, diag].map((text) => (text || "").trim()).filter(Boolean).join("\n")}`);
+  }
   return { bytes: readFileSync(join(project, out)), telemetry: telemetry(join(project, telemetryOut)) };
 }
 
