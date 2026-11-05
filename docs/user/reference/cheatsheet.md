@@ -150,8 +150,8 @@ tagged immediate an `Int` is, and every value lies in its type's range:
   would let `Int`'s impl produce a value outside 32 bits, so `Default` and
   `fill(Self, Array[Self])` are not. WIT `s32` / `u32` project to them
   both ways, and a component's `s32` / `u32` import is typed with them (see
-  "Importing a wasm module"). The core module's `i32` boundary is not there
-  yet.
+  "Importing a wasm module"), and so is a core module's `i32`, read as
+  `UInt32`.
 
 ```vibe
 test "exact 32-bit integers" {
@@ -3501,7 +3501,7 @@ import ./counter.wasm {
 
 fn main() -> Unit allows Console {
   bump(40)
-  bump(add_i32(1, 1))
+  bump(UInt32::to_int(add_i32(1, 1)))
   println("count=\{count()}")
 }
 ```
@@ -3516,8 +3516,8 @@ same name are **both** withheld.
 
 | core | vibe | at the boundary |
 |---|---|---|
-| `i32` param | `Int` | -2^31 .. 2^32-1 is accepted (the signed and the unsigned reading of the same bits); anything else **traps** instead of truncating |
-| `i32` result | `Int` | read as signed, so it round-trips bit-exactly when passed back |
+| `i32` param | `UInt32` | the unsigned reading of the 32 bits (#3730): a value outside 0 .. 2^32-1 is a compile-time error; a signed argument is `Int::wrap_uint32(n)` |
+| `i32` result | `UInt32` | read unsigned, so an address stays non-negative and round-trips bit-exactly when passed back |
 | `i64` param | `Int` | exact |
 | `i64` result | `Int` | **traps** when it needs the 64th bit (a 63-bit `Int` cannot hold it) |
 | no result | `Unit` | |
