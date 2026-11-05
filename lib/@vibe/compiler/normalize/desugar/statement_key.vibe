@@ -1,0 +1,186 @@
+//# Position-independent statement keys (#3829 step 2)
+//
+// The effect-lowering prelude rewrites each top-level statement against the
+// statement itself and whole-program tables. Reusing that work after an edit
+// needs a key for "this statement, as the passes see it" that does not move
+// when only the text BEFORE it changed.
+//
+// Two things the passes read carry absolute merged-source offsets: the
+// statement's own located AST slots (the merge shifts every file into a
+// disjoint range), and the typed-lowering rows the checker hands over (`==`,
+// render, index, Float, Int32, map-key rows), keyed by those same offsets.
+// An edit early in the closure shifts both for every later statement, so
+// measured on the CLI closure only 244 of 16,320 rows kept their offset
+// although none changed content.
+//
+// The key rebases both onto the statement's own first located offset (its
+// ANCHOR). A row belongs to a statement when its offset is one of that
+// statement's located offsets, the slots a pass looks a row up by. Whole-program
+// tables are not part of this key; a reuse must digest them separately.
+
+import @vibe/compiler/core {
+  Expr, Stmt, expr_children_into, sorted_names_of
+}
+
+import @vibe/core {
+  struct MutMap
+}
+
+import @vibe/parser {
+  print_stmt, stmt_located_offsets
+}
+
+/// The key of every statement in `stmts` (`PreludeStmtKey`, declared in the
+/// contract), given the typed-lowering rows the prelude receives as parallel
+/// `row_offsets` / `row_keys`. `anchor` is the statement's lowest located
+/// offset (-1 when it has none). `text` is its rendering and its rows, each
+/// row as `offset=key` relative to `anchor`, sorted. `ints` holds what the
+/// printer does not render, flat so it costs no allocation per element: the
+/// located offsets relative to `anchor`, a -1, then each call's resolution
+/// cell as its length followed by its values.
+export fn prelude_statement_keys(stmts: Array[Stmt], row_offsets: Array[Int], row_keys: Array[String]) -> Array[PreludeStmtKey] {
+  let anchors: Array[Int] = []
+  let located: Array[Array[Int]] = []
+  let owners: MutMap[Int, Array[Int]] = MutMap::new_int()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    let offs = stmt_located_offsets(Array::get(stmts, at = si))
+    let mut anchor = -1
+    for off in offs {
+      if anchor < 0 || off < anchor {
+        anchor = off
+      } else {
+        ()
+      }
+      match MutMap::get(owners, k = off) {
+        Some(list) => if Array::get(list, at = Array::length(list) - 1) != si {
+          Array::push(list, value = si)
+        } else {
+          ()
+        },
+        None => MutMap::set(owners, k = off, v = [si])
+      }
+    }
+    Array::push(anchors, value = anchor)
+    Array::push(located, value = offs)
+    si = si + 1
+  }
+  let rows: Array[Array[String]] = []
+  for _ in stmts {
+    let none: Array[String] = []
+    Array::push(rows, value = none)
+  }
+  let mut ri = 0
+  while ri < Array::length(row_offsets) {
+    let off = Array::get(row_offsets, at = ri)
+    match MutMap::get(owners, k = off) {
+      Some(list) => {
+        for owner in list {
+          let rel = off - Array::get(anchors, at = owner)
+          Array::push(Array::get(rows, at = owner), value = "\{rel}=\{Array::get(row_keys, at = ri)}")
+        }
+        ()
+      },
+      None => ()
+    }
+    ri = ri + 1
+  }
+  let out: Array[PreludeStmtKey] = []
+  si = 0
+  while si < Array::length(stmts) {
+    let anchor = Array::get(anchors, at = si)
+    let stmt = Array::get(stmts, at = si)
+    let text = StringBuilder::new()
+    StringBuilder::push(text, value = print_stmt(stmt))
+    for row in sorted_names_of(Array::get(rows, at = si)) {
+      StringBuilder::push(text, value = "\n=")
+      StringBuilder::push(text, value = row)
+    }
+    let ints: Array[Int] = []
+    for off in Array::get(located, at = si) {
+      Array::push(ints, value = off - anchor)
+    }
+    Array::push(ints, value = -1)
+    for root in stmt_key_roots(stmt) {
+      stmt_key_push_resolutions(ints = ints, e = root)
+    }
+    Array::push(out, value = PreludeStmtKey::{
+      anchor: anchor,
+      text: StringBuilder::freeze(text),
+      ints: ints
+    })
+    si = si + 1
+  }
+  out
+}
+
+/// Do two keys name the same statement as the prelude sees it?
+export fn prelude_statement_key_equal(a: PreludeStmtKey, b: PreludeStmtKey) -> Bool {
+  if a.text != b.text || Array::length(a.ints) != Array::length(b.ints) {
+    false
+  } else {
+    let mut same = true
+    let mut i = 0
+    while same && i < Array::length(a.ints) {
+      same = Array::get(a.ints, at = i) == Array::get(b.ints, at = i)
+      i = i + 1
+    }
+    same
+  }
+}
+
+/// The expressions a statement holds.
+fn stmt_key_roots(_ stmt: Stmt) -> Array[Expr] {
+  match stmt {
+    SLet(_, _, _, _, e) => [e],
+    SLetMut(_, _, e) => [e],
+    STest(_, e) => [e],
+    SBench(_, e) => [e],
+    SExample(_, e) => [e],
+    SExpr(e) => [e],
+    SLetPat(_, e) => [e],
+    SFnDecl(_, _, e, requires, ensures) => {
+      let roots: Array[Expr] = [e]
+      for r in requires {
+        Array::push(roots, value = r)
+      }
+      for r in ensures {
+        Array::push(roots, value = r)
+      }
+      roots
+    },
+    SModule(_, _, inner) => {
+      let roots: Array[Expr] = []
+      for st in inner {
+        for r in stmt_key_roots(st) {
+          Array::push(roots, value = r)
+        }
+        ()
+      }
+      roots
+    },
+    _ => []
+  }
+}
+
+/// Every call's resolution cell under `e`, in a fixed walk order, as its
+/// length followed by its values. The printer does not render a cell, and a
+/// pass reads it (the checked call placement).
+fn stmt_key_push_resolutions(ints: Array[Int], e: Expr) -> Unit {
+  let stack: Array[Expr] = [e]
+  while Array::length(stack) > 0 {
+    let cur = Array::get(stack, at = Array::length(stack) - 1)
+    Array::truncate(stack, length = Array::length(stack) - 1)
+    match cur {
+      ECall(_, _, _, cell) => {
+        Array::push(ints, value = Array::length(cell))
+        for v in cell {
+          Array::push(ints, value = v)
+        }
+        ()
+      },
+      _ => ()
+    }
+    expr_children_into(expr = cur, out = stack)
+  }
+}
