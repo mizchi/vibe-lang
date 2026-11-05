@@ -10,7 +10,11 @@
 // per call.
 
 import ./checker_call_header.vibe {
-  checker_call_header_names
+  checker_call_header_is_declaration, checker_call_header_names, checker_header_name_is_positional
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker_len
 }
 
 import ./checker_call_header_flow.vibe {
@@ -18,7 +22,7 @@ import ./checker_call_header_flow.vibe {
 }
 
 import @vibe/compiler/core {
-  Expr, TypeEnv, builtin_param_labels, env_lookup_binding
+  Expr, TypeEnv, __to_string, builtin_param_labels, canonical_builtin_name, env_lookup_binding
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -125,6 +129,76 @@ export fn checker_note_label_site(env: TypeEnv, name: String, ident_offset: Int,
           labeled: labeled,
           method_call: method_call
         })
+      },
+      None => ()
+    }
+  }
+}
+
+//# Required labels (ADR-0120 Phase 4)
+
+fn missing_label_name(_ raw: String) -> String {
+  let size = String::length(raw)
+  if String::ends_with(raw, suffix = "~") || String::ends_with(raw, suffix = "?") {
+    raw[0: size - 1]
+  } else {
+    raw
+  }
+}
+
+/// The parameter names the written arguments of a call to `name` bind to,
+/// when every one of them must be labeled unless it is declared `_`: a
+/// builtin, or a declaration (`checker_call_header_is_declaration`). A local
+/// lambda or a value answers None: those calls stay positional.
+fn required_label_names(env: TypeEnv, name: String, ident_offset: Int, method_call: Bool) -> Option[Array[String]] {
+  if builtin_resolves_at(env = env, name = name, ident_off = ident_offset) && (lookup_builtin(name) is Some(_)) {
+    if canonical_builtin_name(name) == "sh_lines" {
+      None
+    } else {
+      builtin_param_labels(name)
+    }
+  } else if checker_call_header_is_declaration(env = env, name = name) {
+    match checker_call_header_names(env = env, name = name) {
+      Some(all_names) => Some(if method_call && Array::length(all_names) > 0 {
+        Array::slice(all_names, start = 1, end = Array::length(all_names))
+      } else {
+        all_names
+      }),
+      None => None
+    }
+  } else {
+    None
+  }
+}
+
+/// ADR-0120 Phase 4: an argument to a parameter that is not declared `_` names
+/// it. The message lists every label the call is missing, in written order.
+export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset: Int, offset: Int, args: Array[Expr], method_call: Bool, errors: Array[String]) -> Unit {
+  if checker_call_header_is_probe() || offset < 0 || ident_offset < 0 {
+    ()
+  } else {
+    match required_label_names(env = env, name = name, ident_offset = ident_offset, method_call = method_call) {
+      Some(names) => {
+        let missing: Array[String] = []
+        let mut i = 0
+        while i < Array::length(args) && i < Array::length(names) {
+          let positional = match Array::get(args, at = i) {
+            ELabeledArg(_, _, _) => false,
+            _ => true
+          }
+          let raw = Array::get(names, at = i)
+          if positional && raw != "_" && !checker_header_name_is_positional(raw) {
+            Array::push(missing, value = "`" + missing_label_name(raw) + " = ` before argument " + __to_string(i + 1))
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        if Array::length(missing) > 0 {
+          Array::push(errors, value = "label the arguments of " + name + ": write " + String::join(missing, sep = ", ") + off_marker_len(off = ident_offset, len = String::length(name)))
+        } else {
+          ()
+        }
       },
       None => ()
     }

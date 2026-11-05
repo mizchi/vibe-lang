@@ -10,7 +10,7 @@ import @vibex/argparse { arg, flag }
 import @vibex/tasks { die, expect }
 
 fn byte_at(s: String, i: Int) -> Int {
-  String::char_code_at(s, i)
+  String::char_code_at(s, at = i)
 }
 
 fn is_ws(c: Int) -> Bool {
@@ -24,7 +24,7 @@ fn is_slug_char(c: Int) -> Bool {
 fn skip_ws(text: String, i: Int) -> Int {
   let n = String::length(text)
   let mut j = i
-  while j < n && is_ws(byte_at(text, j)) {
+  while j < n && is_ws(c = byte_at(s = text, i = j)) {
     j = j + 1
   }
   j
@@ -39,7 +39,7 @@ fn starts_at(text: String, i: Int, lit: String) -> Bool {
     let mut k = 0
     let mut ok = true
     while ok && k < m {
-      if byte_at(text, i + k) != byte_at(lit, k) {
+      if byte_at(s = text, i = i + k) != byte_at(s = lit, i = k) {
         ok = false
       } else {
         k = k + 1
@@ -62,8 +62,8 @@ fn slug(pid: String) -> String {
   let mut out = ""
   let mut i = 0
   while i < n {
-    let c = byte_at(pid, i)
-    if is_slug_char(c) {
+    let c = byte_at(s = pid, i = i)
+    if is_slug_char(c = c) {
       out = out + String::from_char_code(c)
     } else {
       out = out + "_"
@@ -81,34 +81,34 @@ fn extract(text: String, work: String) -> String with Fs + Console {
   let mut found = 0
   let mut err = ""
   while err == "" && i >= 0 {
-    let hit = String::index_of_from(text, "id:", i)
+    let hit = String::index_of_from(text, sub = "id:", start = i)
     if hit < 0 {
       i = -1
     } else {
-      let mut p = skip_ws(text, hit + 3)
+      let mut p = skip_ws(text = text, i = hit + 3)
       let mut consumed = false
-      if p < n && byte_at(text, p) == 34 {
-        let close = String::index_of_from(text, "\"", p + 1)
+      if p < n && byte_at(s = text, i = p) == 34 {
+        let close = String::index_of_from(text, sub = "\"", start = p + 1)
         if close < 0 {
           err = "[playground-presets] unterminated id string"
         } else {
-          let pid = String::substring(text, p + 1, close)
-          p = skip_ws(text, close + 1)
-          if p < n && byte_at(text, p) == 44 && starts_at(text, skip_ws(text, p + 1), "source:") {
-            p = skip_ws(text, skip_ws(text, p + 1) + 7)
-            if p < n && byte_at(text, p) == 96 {
+          let pid = String::substring(text, start = p + 1, end = close)
+          p = skip_ws(text = text, i = close + 1)
+          if p < n && byte_at(s = text, i = p) == 44 && starts_at(text = text, i = skip_ws(text = text, i = p + 1), lit = "source:") {
+            p = skip_ws(text = text, i = skip_ws(text = text, i = p + 1) + 7)
+            if p < n && byte_at(s = text, i = p) == 96 {
               let buf = StringBuilder::new()
               let mut j = p + 1
               let mut closed = false
               while !closed && j < n {
-                let c = byte_at(text, j)
+                let c = byte_at(s = text, i = j)
                 if c == 92 && j + 1 < n {
-                  StringBuilder::push(buf, String::substring(text, j, j + 2))
+                  StringBuilder::push(buf, value = String::substring(text, start = j, end = j + 2))
                   j = j + 2
                 } else if c == 96 {
                   closed = true
                 } else {
-                  StringBuilder::push(buf, String::from_char_code(c))
+                  StringBuilder::push(buf, value = String::from_char_code(c))
                   j = j + 1
                 }
               }
@@ -116,12 +116,12 @@ fn extract(text: String, work: String) -> String with Fs + Console {
                 err = "[playground-presets] unterminated template literal for preset '" + pid + "'"
               } else {
                 let body = StringBuilder::freeze(buf)
-                if String::contains(body, "${") {
+                if String::contains(body, needle = "${") {
                   err = "[playground-presets] preset '" + pid + "' interpolates TypeScript (${...}); this extractor emits source verbatim and cannot resolve it"
                 } else {
                   found = found + 1
-                  let path = work + "/preset_" + pad2(found) + "_" + slug(pid) + ".vibe"
-                  Fs::write_file(path, body + "\n")
+                  let path = work + "/preset_" + pad2(n = found) + "_" + slug(pid = pid) + ".vibe"
+                  Fs::write_file(path, contents = body + "\n")
                   println(path + "\t" + pid)
                   i = j + 1
                   consumed = true
@@ -162,17 +162,17 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process {
   Fs::mkdir_p(ok_dir)
   let tick = String::from_char_code(92) + String::from_char_code(96)
   let ok_src = "const PRESETS = [\n  { id: \"one\", source: `let x = 1\n" + tick + "tick" + tick + "\n` },\n  { id: \"two-b\", source: `fn main() { 2 }\n` },\n]\n"
-  let err = extract(ok_src, ok_dir)
-  expect(err == "", "happy path failed: " + err)
+  let err = extract(text = ok_src, work = ok_dir)
+  expect(cond = err == "", message = "happy path failed: " + err)
   let first = Fs::read_file(ok_dir + "/preset_01_one.vibe")
   let second = Fs::read_file(ok_dir + "/preset_02_two_b.vibe")
-  expect(String::contains(first, tick + "tick" + tick), "escaped backtick was unescaped or truncated: " + first)
-  expect(String::starts_with(second, "fn main() { 2 }"), "second preset mismatch: " + second)
-  let bad = extract("const PRESETS = [{ id: \"z\", source: `hello " + String::from_char_code(36) + "{name}` }]\n", base + "/bad")
-  expect(String::contains(bad, "interpolates"), "interpolation was accepted: " + bad)
+  expect(cond = String::contains(first, needle = tick + "tick" + tick), message = "escaped backtick was unescaped or truncated: " + first)
+  expect(cond = String::starts_with(second, prefix = "fn main() { 2 }"), message = "second preset mismatch: " + second)
+  let bad = extract(text = "const PRESETS = [{ id: \"z\", source: `hello " + String::from_char_code(36) + "{name}` }]\n", work = base + "/bad")
+  expect(cond = String::contains(bad, needle = "interpolates"), message = "interpolation was accepted: " + bad)
   Fs::mkdir_p(base + "/empty")
-  let none = extract("const PRESETS = []\n", base + "/empty")
-  expect(String::contains(none, "no presets matched"), "empty input was accepted: " + none)
+  let none = extract(text = "const PRESETS = []\n", work = base + "/empty")
+  expect(cond = String::contains(none, needle = "no presets matched"), message = "empty input was accepted: " + none)
   if Fs::exists(base) {
     Fs::remove_tree(base)
   } else {
@@ -189,7 +189,7 @@ fn main() -> Unit allows Env + Fs + Console + Process {
   } else {
     let src = arg(0)
     let work = arg(1)
-    let err = extract(Fs::read_file(src), work)
+    let err = extract(text = Fs::read_file(src), work = work)
     if err != "" {
       die(err)
     } else {

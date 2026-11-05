@@ -16,11 +16,11 @@ fn line_is_data_tail(line: String) -> Bool {
 }
 
 fn has_data_tail(source: String) -> Bool {
-  let lines = String::split(source, "\n")
+  let lines = String::split(source, sep = "\n")
   let mut i = 0
   let mut found = false
   while i < Array::length(lines) {
-    if line_is_data_tail(Array::get(lines, i)) {
+    if line_is_data_tail(line = Array::get(lines, at = i)) {
       found = true
     } else {
       ()
@@ -36,13 +36,13 @@ fn collect(root: String) -> Array[String] with Fs {
     let entries = find(root)
     let mut i = 0
     while i < Array::length(entries) {
-      let entry = Array::get(entries, i)
+      let entry = Array::get(entries, at = i)
       if entry.is_dir {
         ()
-      } else if String::ends_with(entry.name, ".diag") {
-        Array::push(failures, entry.path + ": move the expected diagnostic into an inspect test")
-      } else if String::ends_with(entry.name, ".vibe") && has_data_tail(Fs::read_file(entry.path)) {
-        Array::push(failures, entry.path + ": replace the __DATA__ tail with an executable inspect test")
+      } else if String::ends_with(entry.name, suffix = ".diag") {
+        Array::push(failures, value = entry.path + ": move the expected diagnostic into an inspect test")
+      } else if String::ends_with(entry.name, suffix = ".vibe") && has_data_tail(source = Fs::read_file(entry.path)) {
+        Array::push(failures, value = entry.path + ": replace the __DATA__ tail with an executable inspect test")
       } else {
         ()
       }
@@ -52,7 +52,7 @@ fn collect(root: String) -> Array[String] with Fs {
     // A root that is not a directory was not scanned, and an unscanned corpus
     // is not a clean one. The Node original failed here (readdirSync threw);
     // returning no failures certified a deleted or mis-mounted tree as clean.
-    Array::push(failures, root + ": not a directory, so no fixture was checked; run from the repository root")
+    Array::push(failures, value = root + ": not a directory, so no fixture was checked; run from the repository root")
   }
   sort_str(failures)
 }
@@ -63,7 +63,7 @@ fn report(failures: Array[String]) -> Unit with Stderr + Process {
   } else {
     let mut i = 0
     while i < Array::length(failures) {
-      eprintln(Array::get(failures, i))
+      eprintln(Array::get(failures, at = i))
       i = i + 1
     }
     exit(1)
@@ -74,17 +74,17 @@ fn joined(failures: Array[String]) -> String {
   let mut out = ""
   let mut i = 0
   while i < Array::length(failures) {
-    out = out + Array::get(failures, i) + "\n"
+    out = out + Array::get(failures, at = i) + "\n"
     i = i + 1
   }
   out
 }
 
 fn expect_clean(root: String, label: String) -> Unit with Fs + Stderr + Process {
-  let failures = collect(root)
+  let failures = collect(root = root)
   if Array::length(failures) != 0 {
     eprintln("fixture-snapshots: " + label + " should be clean")
-    eprintln(joined(failures))
+    eprintln(joined(failures = failures))
     exit(1)
   } else {
     ()
@@ -92,8 +92,8 @@ fn expect_clean(root: String, label: String) -> Unit with Fs + Stderr + Process 
 }
 
 fn expect_hit(root: String, needle: String) -> Unit with Fs + Stderr + Process {
-  let text = joined(collect(root))
-  if !String::contains(text, needle) || !String::contains(text, "inspect") {
+  let text = joined(failures = collect(root = root))
+  if !String::contains(text, needle = needle) || !String::contains(text, needle = "inspect") {
     eprintln("fixture-snapshots: expected a failure naming " + needle)
     eprintln(text)
     exit(1)
@@ -113,13 +113,13 @@ fn remove_if(path: String) -> Unit with Fs {
 fn self_test() -> Unit with Fs + Console + Stderr + Process {
   let base = "_build/fixture-snapshot-selftest"
   let root = base + "/fixtures"
-  remove_if(base)
+  remove_if(path = base)
   Fs::mkdir_p(root + "/nested")
   Fs::mkdir_p(root + "/warnings")
-  Fs::write_file(root + "/value_test.vibe", "test { inspect(42, \"42\") }\n")
-  Fs::write_file(root + "/marker_test.vibe", "test { inspect(\"__DATA__\", \"__DATA__\") }\n")
-  Fs::write_file(root + "/helper.vibe", "// __DATA__ is not a tail inside a comment.\n")
-  expect_clean(root, "ordinary inspect fixtures")
+  Fs::write_file(root + "/value_test.vibe", contents = "test { inspect(42, \"42\") }\n")
+  Fs::write_file(root + "/marker_test.vibe", contents = "test { inspect(\"__DATA__\", \"__DATA__\") }\n")
+  Fs::write_file(root + "/helper.vibe", contents = "// __DATA__ is not a tail inside a comment.\n")
+  expect_clean(root = root, label = "ordinary inspect fixtures")
 
   let tails = [
     "runtime.vibe",
@@ -131,40 +131,40 @@ fn self_test() -> Unit with Fs + Console + Stderr + Process {
   ]
   let mut i = 0
   while i < Array::length(tails) {
-    let name = Array::get(tails, i)
-    let source = Array::get(tails, i + 1)
+    let name = Array::get(tails, at = i)
+    let source = Array::get(tails, at = i + 1)
     let path = root + "/nested/" + name
-    Fs::write_file(path, source)
-    if !String::contains(Fs::read_file(path), "__DATA__") {
+    Fs::write_file(path, contents = source)
+    if !String::contains(Fs::read_file(path), needle = "__DATA__") {
       eprintln("fixture-snapshots: the tail fixture was not written")
       exit(1)
     } else {
       ()
     }
-    expect_hit(root, "fixtures/nested/" + name)
+    expect_hit(root = root, needle = "fixtures/nested/" + name)
     Fs::remove(path)
-    expect_clean(root, "after removing " + name)
+    expect_clean(root = root, label = "after removing " + name)
     i = i + 2
   }
 
   let diag = root + "/warnings/unused.diag"
-  Fs::write_file(diag, "warning: unused variable\n")
-  expect_hit(root, "fixtures/warnings/unused.diag")
+  Fs::write_file(diag, contents = "warning: unused variable\n")
+  expect_hit(root = root, needle = "fixtures/warnings/unused.diag")
   Fs::remove(diag)
   let empty = root + "/warnings/clean.diag"
-  Fs::write_file(empty, "")
-  expect_hit(root, "fixtures/warnings/clean.diag")
+  Fs::write_file(empty, contents = "")
+  expect_hit(root = root, needle = "fixtures/warnings/clean.diag")
   Fs::remove(empty)
-  expect_clean(root, "after removing diag files")
+  expect_clean(root = root, label = "after removing diag files")
   // An absent root fails closed instead of reading as an empty, clean tree.
-  let absent = collect(base + "/no-such-fixtures")
-  if Array::length(absent) != 1 || !String::contains(joined(absent), "not a directory") {
-    eprintln("fixture-snapshots: a missing root must fail, got: " + joined(absent))
+  let absent = collect(root = base + "/no-such-fixtures")
+  if Array::length(absent) != 1 || !String::contains(joined(failures = absent), needle = "not a directory") {
+    eprintln("fixture-snapshots: a missing root must fail, got: " + joined(failures = absent))
     exit(1)
   } else {
     ()
   }
-  remove_if(base)
+  remove_if(path = base)
   println("fixture snapshot guard: ok")
 }
 
@@ -172,6 +172,6 @@ fn main() -> Unit allows Env + Fs + Console + Process {
   if flag("--self-test") {
     self_test()
   } else {
-    report(collect("fixtures"))
+    report(failures = collect(root = "fixtures"))
   }
 }

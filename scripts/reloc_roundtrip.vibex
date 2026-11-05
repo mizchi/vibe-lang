@@ -30,7 +30,7 @@ fn read_sleb(b: Bytes, pos: Int) -> (Int, Int) {
   let mut done = false
   let mut last = 0
   while !done {
-    let byte = Bytes::get(b, p)
+    let byte = Bytes::get(b, at = p)
     last = byte
     result = result | ((byte & 127) << shift)
     shift = shift + 7
@@ -47,7 +47,7 @@ fn read_uleb(b: Bytes, pos: Int) -> (Int, Int) {
   let mut p = pos
   let mut done = false
   while !done {
-    let byte = Bytes::get(b, p)
+    let byte = Bytes::get(b, at = p)
     result = result | ((byte & 127) << shift)
     shift = shift + 7
     p = p + 1
@@ -67,10 +67,10 @@ fn read_uleb(b: Bytes, pos: Int) -> (Int, Int) {
 /// review, and it means this oracle's gc-lane result before the fix was not
 /// evidence of anything.
 fn skip_valtype(b: Bytes, pos: Int) -> Int {
-  let t = Bytes::get(b, pos)
+  let t = Bytes::get(b, at = pos)
   if t == 0x63 || t == 0x64 {
     // ref null <heaptype> / ref <heaptype>: an s33 follows
-    let (_, p) = read_sleb(b, pos + 1)
+    let (_, p) = read_sleb(b = b, pos = pos + 1)
     p
   } else {
     // numeric (0x7F..0x7C), v128 (0x7B), and the abstract reference
@@ -80,12 +80,12 @@ fn skip_valtype(b: Bytes, pos: Int) -> Int {
 }
 
 fn skip_locals(b: Bytes, pos: Int) -> Int {
-  let (groups, p0) = read_uleb(b, pos)
+  let (groups, p0) = read_uleb(b = b, pos = pos)
   let mut p = p0
   let mut i = 0
   while i < groups {
-    let (_, pn) = read_uleb(b, p)
-    p = skip_valtype(b, pn)
+    let (_, pn) = read_uleb(b = b, pos = p)
+    p = skip_valtype(b = b, pos = pn)
     i = i + 1
   }
   p
@@ -98,7 +98,7 @@ fn bytes_equal_span(a: Bytes, a_start: Int, a_end: Int, other: Bytes) -> Bool {
     let mut i = 0
     let mut same = true
     while i < a_end - a_start {
-      if Bytes::get(a, a_start + i) != Bytes::get(other, i) { same = false } else { () }
+      if Bytes::get(a, at = a_start + i) != Bytes::get(other, at = i) { same = false } else { () }
       i = i + 1
     }
     same
@@ -120,8 +120,8 @@ fn main() -> Unit allows Exception + Fs::read_bytes + Console + Env::args_get + 
   let mut code_start = -1
   let mut code_end = -1
   while p < len {
-    let sid = Bytes::get(b, p)
-    let (size, p1) = read_uleb(b, p + 1)
+    let sid = Bytes::get(b, at = p)
+    let (size, p1) = read_uleb(b = b, pos = p + 1)
     if sid == 10 {
       code_start = p1
       code_end = p1 + size
@@ -135,7 +135,7 @@ fn main() -> Unit allows Exception + Fs::read_bytes + Console + Env::args_get + 
   } else {
     ()
   }
-  let (body_count, after_count) = read_uleb(b, code_start)
+  let (body_count, after_count) = read_uleb(b = b, pos = code_start)
   let mut q = after_count
   let mut scanned = 0
   let mut sites = 0
@@ -151,10 +151,10 @@ fn main() -> Unit allows Exception + Fs::read_bytes + Console + Env::args_get + 
   let mut identity_mismatch = 0
   let mut perturb_unchanged = 0
   while scanned < body_count {
-    let (body_size, body_start) = read_uleb(b, q)
-    let instr_start = skip_locals(b, body_start)
+    let (body_size, body_start) = read_uleb(b = b, pos = q)
+    let instr_start = skip_locals(b = b, pos = body_start)
     let instr_end = body_start + body_size
-    let r = scan_body_relocs(b, instr_start, instr_end)
+    let r = scan_body_relocs(body = b, start = instr_start, end_pos = instr_end)
     let n = Array::length(r.offsets)
     sites = sites + n
     // Per-kind counts, so the output says WHICH reference classes a module
@@ -162,7 +162,7 @@ fn main() -> Unit allows Exception + Fs::read_bytes + Console + Env::args_get + 
     // input exercised, which is worth seeing rather than assuming.
     let mut ki = 0
     while ki < n {
-      let k = Array::get(r.kinds, ki)
+      let k = Array::get(r.kinds, at = ki)
       if k == reloc_kind_func { n_func = n_func + 1 }
       else if k == reloc_kind_type { n_type = n_type + 1 }
       else if k == reloc_kind_global { n_global = n_global + 1 }
@@ -176,8 +176,8 @@ fn main() -> Unit allows Exception + Fs::read_bytes + Console + Env::args_get + 
       ki = ki + 1
     }
     // 1. identity: rebuild with the values that are already there.
-    let same = rebuild_body_relocs(b, instr_start, instr_end, r, r.values)
-    if !bytes_equal_span(b, instr_start, instr_end, same) {
+    let same = rebuild_body_relocs(body = b, start = instr_start, end_pos = instr_end, r = r, new_values = r.values)
+    if !bytes_equal_span(a = b, a_start = instr_start, a_end = instr_end, other = same) {
       identity_mismatch = identity_mismatch + 1
     } else {
       ()
@@ -187,12 +187,12 @@ fn main() -> Unit allows Exception + Fs::read_bytes + Console + Env::args_get + 
       let bumped = []
       let mut i = 0
       while i < n {
-        let v = Array::get(r.values, i)
-        Array::push(bumped, if i == 0 { v + 1 } else { v })
+        let v = Array::get(r.values, at = i)
+        Array::push(bumped, value = if i == 0 { v + 1 } else { v })
         i = i + 1
       }
-      let other = rebuild_body_relocs(b, instr_start, instr_end, r, bumped)
-      if bytes_equal_span(b, instr_start, instr_end, other) {
+      let other = rebuild_body_relocs(body = b, start = instr_start, end_pos = instr_end, r = r, new_values = bumped)
+      if bytes_equal_span(a = b, a_start = instr_start, a_end = instr_end, other = other) {
         perturb_unchanged = perturb_unchanged + 1
       } else {
         ()
@@ -204,34 +204,34 @@ fn main() -> Unit allows Exception + Fs::read_bytes + Console + Env::args_get + 
     scanned = scanned + 1
   }
   let out = StringBuilder::new()
-  StringBuilder::push(out, "reloc-roundtrip path=")
-  StringBuilder::push(out, path)
-  StringBuilder::push(out, " bodies=")
-  StringBuilder::push(out, __to_string(scanned))
-  StringBuilder::push(out, " sites=")
-  StringBuilder::push(out, __to_string(sites))
-  StringBuilder::push(out, " func=")
-  StringBuilder::push(out, __to_string(n_func))
-  StringBuilder::push(out, " type=")
-  StringBuilder::push(out, __to_string(n_type))
-  StringBuilder::push(out, " global=")
-  StringBuilder::push(out, __to_string(n_global))
-  StringBuilder::push(out, " table=")
-  StringBuilder::push(out, __to_string(n_table))
-  StringBuilder::push(out, " tag=")
-  StringBuilder::push(out, __to_string(n_tag))
-  StringBuilder::push(out, " blocktype=")
-  StringBuilder::push(out, __to_string(n_blocktype))
-  StringBuilder::push(out, " heaptype=")
-  StringBuilder::push(out, __to_string(n_heaptype))
-  StringBuilder::push(out, " data=")
-  StringBuilder::push(out, __to_string(n_data))
-  StringBuilder::push(out, " elem=")
-  StringBuilder::push(out, __to_string(n_elem))
-  StringBuilder::push(out, " identity_mismatch=")
-  StringBuilder::push(out, __to_string(identity_mismatch))
-  StringBuilder::push(out, " perturb_unchanged=")
-  StringBuilder::push(out, __to_string(perturb_unchanged))
+  StringBuilder::push(out, value = "reloc-roundtrip path=")
+  StringBuilder::push(out, value = path)
+  StringBuilder::push(out, value = " bodies=")
+  StringBuilder::push(out, value = __to_string(scanned))
+  StringBuilder::push(out, value = " sites=")
+  StringBuilder::push(out, value = __to_string(sites))
+  StringBuilder::push(out, value = " func=")
+  StringBuilder::push(out, value = __to_string(n_func))
+  StringBuilder::push(out, value = " type=")
+  StringBuilder::push(out, value = __to_string(n_type))
+  StringBuilder::push(out, value = " global=")
+  StringBuilder::push(out, value = __to_string(n_global))
+  StringBuilder::push(out, value = " table=")
+  StringBuilder::push(out, value = __to_string(n_table))
+  StringBuilder::push(out, value = " tag=")
+  StringBuilder::push(out, value = __to_string(n_tag))
+  StringBuilder::push(out, value = " blocktype=")
+  StringBuilder::push(out, value = __to_string(n_blocktype))
+  StringBuilder::push(out, value = " heaptype=")
+  StringBuilder::push(out, value = __to_string(n_heaptype))
+  StringBuilder::push(out, value = " data=")
+  StringBuilder::push(out, value = __to_string(n_data))
+  StringBuilder::push(out, value = " elem=")
+  StringBuilder::push(out, value = __to_string(n_elem))
+  StringBuilder::push(out, value = " identity_mismatch=")
+  StringBuilder::push(out, value = __to_string(identity_mismatch))
+  StringBuilder::push(out, value = " perturb_unchanged=")
+  StringBuilder::push(out, value = __to_string(perturb_unchanged))
   println(StringBuilder::freeze(out))
   if identity_mismatch > 0 || perturb_unchanged > 0 || sites == 0 {
     throw("reloc-roundtrip: FAILED")

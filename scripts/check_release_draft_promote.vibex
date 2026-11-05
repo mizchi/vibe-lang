@@ -57,29 +57,29 @@ fn option(name: String, fallback: String) -> String with Env {
 }
 
 fn contains(s: String, part: String) -> Bool {
-  String::index_of_from(s, part, 0) >= 0
+  String::index_of_from(s, sub = part, start = 0) >= 0
 }
 
 /// `^ +draft: true`: one or more spaces, then `draft: true`.
 fn stages_draft(line: String) -> Bool {
   let mut i = 0
-  while i < String::length(line) && String::byte_at(line, i) == ' ' {
+  while i < String::length(line) && String::byte_at(line, at = i) == ' ' {
     i = i + 1
   }
-  i > 0 && String::starts_with(String::substring(line, i, String::length(line)), "draft: true")
+  i > 0 && String::starts_with(String::substring(line, start = i, end = String::length(line)), prefix = "draft: true")
 }
 
 /// `gh release edit .*--draft=false`.
 fn promotes_draft(line: String) -> Bool {
-  let at = String::index_of_from(line, "gh release edit ", 0)
-  at >= 0 && String::index_of_from(line, "--draft=false", at + 16) >= 0
+  let at = String::index_of_from(line, sub = "gh release edit ", start = 0)
+  at >= 0 && String::index_of_from(line, sub = "--draft=false", start = at + 16) >= 0
 }
 
 fn any_line(lines: Array[String], pred: (String) -> Bool) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(lines) && !found {
-    if pred(Array::get(lines, i)) {
+    if pred(Array::get(lines, at = i)) {
       found = true
     } else {
       ()
@@ -90,21 +90,21 @@ fn any_line(lines: Array[String], pred: (String) -> Bool) -> Bool {
 }
 
 fn main allows Env + Fs::is_file + Fs::read_file + Console::write_stream + Stderr::write_stream + Process {
-  let wf = option("--workflow", ".github/workflows/release.yml")
+  let wf = option(name = "--workflow", fallback = ".github/workflows/release.yml")
   if !Fs::is_file(wf) {
     Stderr::write_stream("release-draft-promote: no workflow at \{wf}\n")
     exit(2)
   } else {
     let text = Fs::read_file(wf)
-    let lines = String::split(text, "\n")
+    let lines = String::split(text, sep = "\n")
     let mut fail = false
-    if any_line(lines, stages_draft) {
+    if any_line(lines = lines, pred = stages_draft) {
       Console::write_stream("  ok   the publish step stages a draft\n")
     } else {
       Console::write_stream("  FAIL no 'draft: true' -- assets would upload to an already-published immutable release\n")
       fail = true
     }
-    if any_line(lines, promotes_draft) {
+    if any_line(lines = lines, pred = promotes_draft) {
       Console::write_stream("  ok   a later step promotes the draft\n")
     } else {
       Console::write_stream("  FAIL nothing promotes the draft -- the release would never publish\n")
@@ -112,7 +112,7 @@ fn main allows Env + Fs::is_file + Fs::read_file + Console::write_stream + Stder
     }
     // The promotion must read the published state back: the comparison must
     // exist, not merely a mention of `gh release view`.
-    if contains(text, "assets=$want_assets") && contains(text, "prerelease=$want_pre") {
+    if contains(s = text, part = "assets=$want_assets") && contains(s = text, part = "prerelease=$want_pre") {
       Console::write_stream("  ok   the promotion verifies draft/prerelease/asset-count after publishing\n")
     } else {
       Console::write_stream("  FAIL the promotion does not check what it published -- an empty release would pass\n")

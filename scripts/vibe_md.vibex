@@ -115,7 +115,7 @@ fn is_space_or_tab(c: Int) -> Bool {
 fn count_leading_backticks(line: String) -> Int {
   let len = String::length(line)
   let mut i = 0
-  while i < len && String::char_code_at(line, i) == 96 {
+  while i < len && String::char_code_at(line, at = i) == 96 {
     i = i + 1
   }
   i
@@ -125,7 +125,7 @@ fn count_leading_backticks(line: String) -> Int {
 // as many backticks as the opening one (a longer run still closes it), not
 // an exact-length match, and nothing but trailing whitespace may follow.
 fn is_closing_fence(line: String, min_backticks: Int) -> Bool {
-  let n = count_leading_backticks(line)
+  let n = count_leading_backticks(line = line)
   if n < min_backticks {
     false
   } else {
@@ -133,7 +133,7 @@ fn is_closing_fence(line: String, min_backticks: Int) -> Bool {
     let mut i = n
     let mut ok = true
     while i < len {
-      if !is_space_or_tab(String::char_code_at(line, i)) {
+      if !is_space_or_tab(c = String::char_code_at(line, at = i)) {
         ok = false
       }
       i = i + 1
@@ -145,7 +145,7 @@ fn is_closing_fence(line: String, min_backticks: Int) -> Bool {
 fn skip_ws(s: String, from: Int) -> Int {
   let len = String::length(s)
   let mut i = from
-  while i < len && is_space_or_tab(String::char_code_at(s, i)) {
+  while i < len && is_space_or_tab(c = String::char_code_at(s, at = i)) {
     i = i + 1
   }
   i
@@ -154,7 +154,7 @@ fn skip_ws(s: String, from: Int) -> Int {
 fn read_token_end(s: String, from: Int) -> Int {
   let len = String::length(s)
   let mut i = from
-  while i < len && !is_space_or_tab(String::char_code_at(s, i)) {
+  while i < len && !is_space_or_tab(c = String::char_code_at(s, at = i)) {
     i = i + 1
   }
   i
@@ -163,11 +163,11 @@ fn read_token_end(s: String, from: Int) -> Int {
 // Splits the text after an opening fence's backticks into (lang, arg),
 // mirroring scripts/vibe_md.py's `^(`{3,})\s*(\S*)\s*(.*)$`.
 fn parse_fence_info(rest: String) -> (String, String) {
-  let start = skip_ws(rest, 0)
-  let lang_end = read_token_end(rest, start)
-  let lang = String::substring(rest, start, lang_end)
-  let arg_start = skip_ws(rest, lang_end)
-  let arg = String::trim(String::substring(rest, arg_start, String::length(rest)))
+  let start = skip_ws(s = rest, from = 0)
+  let lang_end = read_token_end(s = rest, from = start)
+  let lang = String::substring(rest, start = start, end = lang_end)
+  let arg_start = skip_ws(s = rest, from = lang_end)
+  let arg = String::trim(String::substring(rest, start = arg_start, end = String::length(rest)))
   (lang, arg)
 }
 
@@ -193,9 +193,9 @@ struct Block {
 
 fn new_block(lang: String, arg: String, start_line: Int, code_lines: Array[String], open_line: String, close_line: String) -> Block {
   let mode = if lang == "vibe" {
-    if String::starts_with(arg, "run") {
+    if String::starts_with(arg, prefix = "run") {
       "run"
-    } else if String::starts_with(arg, "skip") {
+    } else if String::starts_with(arg, prefix = "skip") {
       "skip"
     } else {
       "check"
@@ -237,29 +237,29 @@ fn array_empty[T]() -> Array[T] {
 // than a custom effect -- distinct from a block that compiled/ran and
 // failed verification, but no new effect vocabulary is needed for it.
 fn parse_blocks(text: String) -> Array[Token] with Exception {
-  let lines = splitlines_like(text)
+  let lines = splitlines_like(s = text)
   let n = Array::length(lines)
   let tokens = ArrayBuilder::new()
   let mut i = 0
   while i < n {
-    let line = Array::get(lines, i)
-    let backticks = count_leading_backticks(line)
+    let line = Array::get(lines, at = i)
+    let backticks = count_leading_backticks(line = line)
     if backticks < 3 {
-      ArrayBuilder::push(tokens, TText(line))
+      ArrayBuilder::push(tokens, value = TText(line))
       i = i + 1
     } else {
-      let rest = String::substring(line, backticks, String::length(line))
-      let (lang, arg) = parse_fence_info(rest)
+      let rest = String::substring(line, start = backticks, end = String::length(line))
+      let (lang, arg) = parse_fence_info(rest = rest)
       let start_line = i + 2
       // 1-based line number of the first code line
       let body = ArrayBuilder::new()
       let mut j = i + 1
       let mut closed = false
       while j < n && !closed {
-        if is_closing_fence(Array::get(lines, j), backticks) {
+        if is_closing_fence(line = Array::get(lines, at = j), min_backticks = backticks) {
           closed = true
         } else {
-          ArrayBuilder::push(body, Array::get(lines, j))
+          ArrayBuilder::push(body, value = Array::get(lines, at = j))
           j = j + 1
         }
       }
@@ -271,9 +271,9 @@ fn parse_blocks(text: String) -> Array[Token] with Exception {
       } else {
         ()
       }
-      let close_line = Array::get(lines, j)
-      let blk = new_block(lang, arg, start_line, ArrayBuilder::freeze(body), line, close_line)
-      ArrayBuilder::push(tokens, TBlock(blk))
+      let close_line = Array::get(lines, at = j)
+      let blk = new_block(lang = lang, arg = arg, start_line = start_line, code_lines = ArrayBuilder::freeze(body), open_line = line, close_line = close_line)
+      ArrayBuilder::push(tokens, value = TBlock(blk))
       i = j + 1
     }
   }
@@ -293,15 +293,15 @@ fn link_run_output_pairs(tokens: Array[Token]) -> Unit {
   let mut consumed_arr = array_empty()
   let mut idx = 0
   while idx < n {
-    match Array::get(tokens, idx) {
+    match Array::get(tokens, at = idx) {
       TBlock(blk) => {
         if blk.mode == "run" {
           let mut j = idx + 1
           let mut scanning = true
           while j < n && scanning {
-            match Array::get(tokens, j) {
+            match Array::get(tokens, at = j) {
               TText(t) => {
-                if is_blank(t) {
+                if is_blank(s = t) {
                   j = j + 1
                 } else {
                   scanning = false
@@ -313,11 +313,11 @@ fn link_run_output_pairs(tokens: Array[Token]) -> Unit {
             }
           }
           if j < n {
-            match Array::get(tokens, j) {
+            match Array::get(tokens, at = j) {
               TBlock(ob) => {
-                if ob.mode == "output" && !array_contains_int(consumed_arr, j) {
+                if ob.mode == "output" && !array_contains_int(arr = consumed_arr, v = j) {
                   blk.paired_output = j
-                  ArrayBuilder::push(consumed, j)
+                  ArrayBuilder::push(consumed, value = j)
                   consumed_arr = ArrayBuilder::freeze(consumed)
                 } else {
                   ()
@@ -342,7 +342,7 @@ fn array_contains_int(arr: Array[Int], v: Int) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(arr) {
-    if Array::get(arr, i) == v {
+    if Array::get(arr, at = i) == v {
       found = true
     }
     i = i + 1
@@ -355,7 +355,7 @@ fn join_lines(lines: Array[String]) -> String {
   if n == 0 {
     ""
   } else {
-    String::concat(String::join(lines, "\n"), "\n")
+    String::concat(String::join(lines, sep = "\n"), "\n")
   }
 }
 
@@ -369,7 +369,7 @@ fn normalize_trailing_newline(s: String) -> String {
   let len = String::length(s)
   if len == 0 {
     s
-  } else if String::char_code_at(s, len - 1) == 10 {
+  } else if String::char_code_at(s, at = len - 1) == 10 {
     s
   } else {
     String::concat(s, "\n")
@@ -385,10 +385,10 @@ fn splitlines_like(s: String) -> Array[String] {
   if s == "" {
     array_empty()
   } else {
-    let parts = String::split(s, "\n")
+    let parts = String::split(s, sep = "\n")
     let n = Array::length(parts)
-    if n > 0 && Array::get(parts, n - 1) == "" {
-      Array::slice(parts, 0, n - 1)
+    if n > 0 && Array::get(parts, at = n - 1) == "" {
+      Array::slice(parts, start = 0, end = n - 1)
     } else {
       parts
     }
@@ -425,15 +425,15 @@ fn resolve_stage2() -> String with Process + Env + Fs {
     env_val
   } else {
     let r = sh_capture("ls -dt _build/selfhost/generations/*/ 2>/dev/null")
-    let dirs = splitlines_like(r.stdout)
+    let dirs = splitlines_like(s = r.stdout)
     let n = Array::length(dirs)
     let mut i = 0
     let mut found = ""
     while i < n && found == "" {
-      let dir = String::trim(Array::get(dirs, i))
+      let dir = String::trim(Array::get(dirs, at = i))
       if dir != "" {
         let candidate = String::concat(dir, "stage2.wasm")
-        if file_nonempty(candidate) {
+        if file_nonempty(path = candidate) {
           found = candidate
         } else {
           ()
@@ -460,12 +460,12 @@ fn file_nonempty(path: String) -> Bool with Fs {
 }
 
 fn first_nonblank_line(s: String) -> String {
-  let lines = String::split(s, "\n")
+  let lines = String::split(s, sep = "\n")
   let n = Array::length(lines)
   let mut i = 0
   let mut out = ""
   while i < n && out == "" {
-    let l = String::trim(Array::get(lines, i))
+    let l = String::trim(Array::get(lines, at = i))
     if l != "" {
       out = l
     }
@@ -494,8 +494,8 @@ struct BlockResult {
 fn block_imports_unstable(blk: Block) -> Bool {
   let mut i = 0
   while i < Array::length(blk.code_lines) {
-    let line = Array::get(blk.code_lines, i)
-    if String::index_of(line, "@vibe/concurrent/experimental") >= 0 && String::index_of(line, "import") >= 0 {
+    let line = Array::get(blk.code_lines, at = i)
+    if String::index_of(line, needle = "@vibe/concurrent/experimental") >= 0 && String::index_of(line, needle = "import") >= 0 {
       return true
     } else {
       ()
@@ -536,7 +536,7 @@ fn sha256_file(path: String) -> String with Process {
   // Probe by RUNNING it, not by `command -v`: a nix-shim `sha256sum` that is
   // on PATH but dies on a glibc mismatch passes an existence check and then
   // fails every call, so the fallback never engages.
-  let cmd = "if sha256sum </dev/null >/dev/null 2>&1; then sha256sum \{shq(path)} | cut -d' ' -f1; else shasum -a 256 \{shq(path)} | awk '{print $1}'; fi"
+  let cmd = "if sha256sum </dev/null >/dev/null 2>&1; then sha256sum \{shq(s = path)} | cut -d' ' -f1; else shasum -a 256 \{shq(s = path)} | awk '{print $1}'; fi"
   let r = sh_capture(cmd)
   String::trim(r.stdout)
 }
@@ -544,14 +544,14 @@ fn sha256_file(path: String) -> String with Process {
 /// A token unique to THIS process, memoized (module-level `let` = initialized
 /// once). Used to name the cache's temp file; `$$` in the `sh -c` is that
 /// shell's pid, which is unique per invocation of this tool.
-let doctest_tmp_tag_cell = Array::slice([""], 0, 0)
+let doctest_tmp_tag_cell = Array::slice([""], start = 0, end = 0)
 
 fn doctest_tmp_tag() -> String with Process {
   if Array::length(doctest_tmp_tag_cell) > 0 {
-    Array::get(doctest_tmp_tag_cell, 0)
+    Array::get(doctest_tmp_tag_cell, at = 0)
   } else {
     let t = String::trim(sh_capture("echo $$").stdout)
-    Array::push(doctest_tmp_tag_cell, t)
+    Array::push(doctest_tmp_tag_cell, value = t)
     t
   }
 }
@@ -569,11 +569,11 @@ fn doctest_tmp_tag() -> String with Process {
 /// directory is atomic, so a reader sees either the old entry or a complete
 /// new one.
 fn write_doctest_cache(cache_path: String, content: String) -> Unit with Fs + Process {
-  let dir = dirname(cache_path)
-  let _ = sh_capture("mkdir -p \{shq(dir)}")
+  let dir = dirname(path = cache_path)
+  let _ = sh_capture("mkdir -p \{shq(s = dir)}")
   let tmp = "\{cache_path}.tmp\{doctest_tmp_tag()}"
-  Fs::write_file(tmp, content)
-  Fs::rename(tmp, cache_path)
+  Fs::write_file(tmp, contents = content)
+  Fs::rename(tmp, to = cache_path)
 }
 
 fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String, scratch_name: String, blk: Block, mode: String) -> BlockResult with Fs + Process + Env {
@@ -585,7 +585,7 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
     let out = "\{md_dir}/\{scratch_name}.wasm"
     let diag = "\{out}.diag"
     let entry_meta = "\{out}.entrymeta"
-    Fs::write_file(src, join_lines(blk.code_lines))
+    Fs::write_file(src, contents = join_lines(lines = blk.code_lines))
     let entry = if blk.mode == "run" {
       "main"
     } else {
@@ -596,7 +596,7 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
     // Async (see run_one_block's use of entry_meta below for why this is
     // required, not just the compiled wasm's own hash).
     let meta_env = if blk.mode == "run" {
-      "VIBE_ENTRY_TESTMETA_OUT=\{shq(entry_meta)} "
+      "VIBE_ENTRY_TESTMETA_OUT=\{shq(s = entry_meta)} "
     } else {
       ""
     }
@@ -607,36 +607,36 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
     // boundary for every other chapter instead of a blanket env var this
     // harness sets for the whole book. Enforcement itself is pinned by the
     // late gate (section 108), not here.
-    let unstable_env = if block_imports_unstable(blk) {
+    let unstable_env = if block_imports_unstable(blk = blk) {
       "VIBE_UNSTABLE=1 "
     } else {
       ""
     }
-    let compile_cmd = "bash scripts/run_bounded.sh \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(cwd)} VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \{unstable_env}\{meta_env}bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \{shq(compiler)} \{shq(src)} \{shq(out)} \{shq(entry)}"
+    let compile_cmd = "bash scripts/run_bounded.sh \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(s = cwd)} VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \{unstable_env}\{meta_env}bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \{shq(s = compiler)} \{shq(s = src)} \{shq(s = out)} \{shq(s = entry)}"
     let cr = sh_capture(compile_cmd)
-    let compiled = cr.exit_code == 0 && file_nonempty(out)
+    let compiled = cr.exit_code == 0 && file_nonempty(path = out)
     if !compiled {
       let reason = if cr.exit_code == 124 {
         "timed out after \{timeout_secs}s"
       } else if Fs::exists(diag) {
-        first_nonblank_line(Fs::read_file(diag))
+        first_nonblank_line(s = Fs::read_file(diag))
       } else {
         let combined = String::concat(cr.stdout, cr.stderr)
-        first_nonblank_line(combined)
+        first_nonblank_line(s = combined)
       }
       let shown = if reason == "" {
         "compile failure"
       } else {
         reason
       }
-      cleanup_one(src, out, diag)
+      cleanup_one(src = src, out = out, diag = diag)
       BlockResult::{
         label: label,
         status: "FAIL",
         reason: "[compile] \{shown}"
       }
     } else if blk.mode == "check" {
-      cleanup_one(src, out, diag)
+      cleanup_one(src = src, out = out, diag = diag)
       BlockResult::{ label: label, status: "PASS", reason: "" }
     } else {
       // #819 (Codex review, PR #1214): the compiled wasm's bytes alone are
@@ -655,7 +655,7 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
       let entry_cacheable = Fs::exists(entry_meta) && String::trim(Fs::read_file(entry_meta)) == "1"
       let use_cache = !doctest_no_cache() && entry_cacheable
       let key = if use_cache {
-        sha256_file(out)
+        sha256_file(path = out)
       } else {
         ""
       }
@@ -671,7 +671,7 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
       }
       match cached {
         Some(actual) => {
-          cleanup_one(src, out, diag)
+          cleanup_one(src = src, out = out, diag = diag)
           blk.has_actual_stdout = true
           blk.actual_stdout = actual
           if mode == "write" {
@@ -685,14 +685,14 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
           }
         },
         None => {
-          let run_cmd = "bash scripts/run_bounded.sh \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(cwd)} bash scripts/run_wasm_vibe_host_runner.sh --invoke _start \{shq(out)}"
+          let run_cmd = "bash scripts/run_bounded.sh \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(s = cwd)} bash scripts/run_wasm_vibe_host_runner.sh --invoke _start \{shq(s = out)}"
           let rr = sh_capture(run_cmd)
-          cleanup_one(src, out, diag)
+          cleanup_one(src = src, out = out, diag = diag)
           if rr.exit_code != 0 {
             let reason = if rr.exit_code == 124 {
               "timed out after \{timeout_secs}s"
             } else {
-              first_nonblank_line(rr.stderr)
+              first_nonblank_line(s = rr.stderr)
             }
             let shown = if reason == "" {
               "runtime failure"
@@ -705,11 +705,11 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
               reason: "[run] \{shown}"
             }
           } else {
-            let actual = normalize_trailing_newline(rr.stdout)
+            let actual = normalize_trailing_newline(s = rr.stdout)
             blk.has_actual_stdout = true
             blk.actual_stdout = actual
             if cache_path != "" {
-              write_doctest_cache(cache_path, actual)
+              write_doctest_cache(cache_path = cache_path, content = actual)
             } else {
               ()
             }
@@ -738,10 +738,10 @@ fn run_one_block(cwd: String, compiler: String, md_path: String, md_dir: String,
 fn run_fmt_block(md_path: String, md_dir: String, scratch_name: String, blk: Block, mode: String) -> BlockResult with Fs + Process + Env {
   let label = "\{md_path}:\{blk.start_line}"
   let src = "\{md_dir}/\{scratch_name}.vibe"
-  let original = join_lines(blk.code_lines)
-  Fs::write_file(src, original)
+  let original = join_lines(lines = blk.code_lines)
+  Fs::write_file(src, contents = original)
   let timeout_secs = md_timeout_secs()
-  let fmt_cmd = "bash scripts/run_bounded.sh \{timeout_secs} bash scripts/vibe_fmt.sh --stdout \{shq(src)}"
+  let fmt_cmd = "bash scripts/run_bounded.sh \{timeout_secs} bash scripts/vibe_fmt.sh --stdout \{shq(s = src)}"
   let r = sh_capture(fmt_cmd)
   if Fs::exists(src) {
     Fs::remove(src)
@@ -752,7 +752,7 @@ fn run_fmt_block(md_path: String, md_dir: String, scratch_name: String, blk: Blo
     let reason = if r.exit_code == 124 {
       "timed out after \{timeout_secs}s"
     } else {
-      first_nonblank_line(String::concat(r.stdout, r.stderr))
+      first_nonblank_line(s = String::concat(r.stdout, r.stderr))
     }
     let shown = if reason == "" {
       "fmt failure"
@@ -766,7 +766,7 @@ fn run_fmt_block(md_path: String, md_dir: String, scratch_name: String, blk: Blo
       BlockResult::{ label: label, status: "PASS", reason: "" }
     } else if mode == "fmt" {
       blk.has_fmt_replacement = true
-      blk.fmt_lines = splitlines_like(formatted)
+      blk.fmt_lines = splitlines_like(s = formatted)
       BlockResult::{ label: label, status: "WROTE", reason: "" }
     } else {
       BlockResult::{
@@ -813,12 +813,12 @@ fn sanitize_base(name: String) -> String {
   let mut i = 0
   let sb = StringBuilder::new()
   while i < len {
-    let c = String::char_code_at(name, i)
+    let c = String::char_code_at(name, at = i)
     let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
     if ok {
-      StringBuilder::push(sb, String::from_char_code(c))
+      StringBuilder::push(sb, value = String::from_char_code(c))
     } else {
-      StringBuilder::push(sb, "_")
+      StringBuilder::push(sb, value = "_")
     }
     i = i + 1
   }
@@ -885,13 +885,13 @@ fn merge_disabled() -> Bool with Env {
 /// while the merged `test {}` wrapper would drop it, so those blocks stay on
 /// the standalone path rather than silently losing a line of output.
 fn is_unit_main_head(line: String) -> Bool {
-  if !String::starts_with(line, "fn main") {
+  if !String::starts_with(line, prefix = "fn main") {
     false
-  } else if String::contains(line, "->") {
+  } else if String::contains(line, needle = "->") {
     false
   } else {
-    let rest = String::trim(String::substring(line, 7, String::length(line)))
-    String::starts_with(rest, "{") || String::starts_with(rest, "with")
+    let rest = String::trim(String::substring(line, start = 7, end = String::length(line)))
+    String::starts_with(rest, prefix = "{") || String::starts_with(rest, prefix = "with")
   }
 }
 
@@ -901,7 +901,7 @@ fn block_unit_main_line(blk: Block) -> Int {
   let mut i = 0
   let mut found = 0 - 1
   while i < n {
-    if found < 0 && is_unit_main_head(Array::get(blk.code_lines, i)) {
+    if found < 0 && is_unit_main_head(line = Array::get(blk.code_lines, at = i)) {
       found = i
     } else {
       ()
@@ -912,34 +912,34 @@ fn block_unit_main_line(blk: Block) -> Int {
 }
 
 fn block_mergeable(blk: Block) -> Bool {
-  blk.mode == "run" && !String::contains(blk.open_line, "standalone") && block_unit_main_line(blk) >= 0
+  blk.mode == "run" && !String::contains(blk.open_line, needle = "standalone") && block_unit_main_line(blk = blk) >= 0
 }
 
 /// The block's own source with its `main` exported, so the merged driver can
 /// import it. Nothing else about the block is rewritten.
 fn block_source_exported(blk: Block) -> String {
-  let idx = block_unit_main_line(blk)
+  let idx = block_unit_main_line(blk = blk)
   let n = Array::length(blk.code_lines)
   let b = ArrayBuilder::new()
   let mut i = 0
   while i < n {
-    let line = Array::get(blk.code_lines, i)
+    let line = Array::get(blk.code_lines, at = i)
     if i == idx {
-      ArrayBuilder::push(b, "export \{line}")
+      ArrayBuilder::push(b, value = "export \{line}")
     } else {
-      ArrayBuilder::push(b, line)
+      ArrayBuilder::push(b, value = line)
     }
     i = i + 1
   }
-  join_lines(ArrayBuilder::freeze(b))
+  join_lines(lines = ArrayBuilder::freeze(b))
 }
 
 fn merge_test_name(block_no: Int) -> String {
-  "b\{pad2(block_no)}"
+  "b\{pad2(n = block_no)}"
 }
 
 fn merge_src_path(md_dir: String, base: String, block_no: Int) -> String {
-  "\{md_dir}/.vibe_md_merge_\{base}_\{merge_test_name(block_no)}.vibe"
+  "\{md_dir}/.vibe_md_merge_\{base}_\{merge_test_name(block_no = block_no)}.vibe"
 }
 
 fn merge_driver_path(md_dir: String, base: String) -> String {
@@ -958,20 +958,20 @@ fn write_merged_sources(md_dir: String, base: String, blocks: Array[Block], nos:
   let sb = StringBuilder::new()
   let mut i = 0
   while i < k {
-    let no = Array::get(nos, i)
-    let name = merge_test_name(no)
-    Fs::write_file(merge_src_path(md_dir, base, no), block_source_exported(Array::get(blocks, i)))
-    StringBuilder::push(sb, "import ./.vibe_md_merge_\{base}_\{name}.vibe {\n  main as \{name}_main\n}\n")
+    let no = Array::get(nos, at = i)
+    let name = merge_test_name(block_no = no)
+    Fs::write_file(merge_src_path(md_dir = md_dir, base = base, block_no = no), contents = block_source_exported(blk = Array::get(blocks, at = i)))
+    StringBuilder::push(sb, value = "import ./.vibe_md_merge_\{base}_\{name}.vibe {\n  main as \{name}_main\n}\n")
     i = i + 1
   }
-  StringBuilder::push(sb, "\n")
+  StringBuilder::push(sb, value = "\n")
   let mut j = 0
   while j < k {
-    let name = merge_test_name(Array::get(nos, j))
-    StringBuilder::push(sb, "test \"\{name}\" {\n  \{name}_main()\n}\n\n")
+    let name = merge_test_name(block_no = Array::get(nos, at = j))
+    StringBuilder::push(sb, value = "test \"\{name}\" {\n  \{name}_main()\n}\n\n")
     j = j + 1
   }
-  Fs::write_file(merge_driver_path(md_dir, base), StringBuilder::freeze(sb))
+  Fs::write_file(merge_driver_path(md_dir = md_dir, base = base), contents = StringBuilder::freeze(sb))
 }
 
 /// One compile for the whole file. Returns false on any failure, in which
@@ -979,21 +979,21 @@ fn write_merged_sources(md_dir: String, base: String, blocks: Array[Block], nos:
 /// compile error names the merged driver, not the offending block, so the
 /// fallback is also how a real error gets attributed.
 fn compile_merged(cwd: String, compiler: String, md_dir: String, base: String) -> Bool with Process + Env + Fs {
-  let src = merge_driver_path(md_dir, base)
-  let out = merge_wasm_path(md_dir, base)
+  let src = merge_driver_path(md_dir = md_dir, base = base)
+  let out = merge_wasm_path(md_dir = md_dir, base = base)
   let timeout_secs = md_timeout_secs()
   // Same ADR-0068 opt-in the per-block path grants, decided from the merged
   // driver's own text. Without it the merged compile of the concurrency
   // chapter fails and every block falls back to a standalone compile -- the
   // right answer, reached the slow way.
-  let unstable_env = if String::index_of(Fs::read_file(src), "@vibe/concurrent/experimental") >= 0 {
+  let unstable_env = if String::index_of(Fs::read_file(src), needle = "@vibe/concurrent/experimental") >= 0 {
     "VIBE_UNSTABLE=1 "
   } else {
     ""
   }
-  let cmd = "bash scripts/run_bounded.sh \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(cwd)} VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \{unstable_env}bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \{shq(compiler)} \{shq(src)} \{shq(out)} '__no_entry__'"
+  let cmd = "bash scripts/run_bounded.sh \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(s = cwd)} VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \{unstable_env}bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \{shq(s = compiler)} \{shq(s = src)} \{shq(s = out)} '__no_entry__'"
   let cr = sh_capture(cmd)
-  cr.exit_code == 0 && file_nonempty(out)
+  cr.exit_code == 0 && file_nonempty(path = out)
 }
 
 /// Run one merged block, in its OWN runner process.
@@ -1019,14 +1019,14 @@ fn compile_merged(cwd: String, compiler: String, md_dir: String, base: String) -
 fn run_merged_block(cwd: String, md_path: String, md_dir: String, base: String, blk: Block, block_no: Int, mode: String) -> BlockResult with Fs + Process + Env {
   let label = "\{md_path}:\{blk.start_line}"
   let timeout_secs = md_timeout_secs()
-  let target = "__test_\{merge_test_name(block_no)}"
-  let run_cmd = "bash scripts/run_bounded.sh \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(cwd)} bash scripts/run_wasm_vibe_host_runner.sh --invoke \{shq(target)} \{shq(merge_wasm_path(md_dir, base))}"
+  let target = "__test_\{merge_test_name(block_no = block_no)}"
+  let run_cmd = "bash scripts/run_bounded.sh \{timeout_secs} env VIBE_PREOPEN_DIR=\{shq(s = cwd)} bash scripts/run_wasm_vibe_host_runner.sh --invoke \{shq(s = target)} \{shq(s = merge_wasm_path(md_dir = md_dir, base = base))}"
   let rr = sh_capture(run_cmd)
   if rr.exit_code != 0 {
     let reason = if rr.exit_code == 124 {
       "timed out after \{timeout_secs}s"
     } else {
-      first_nonblank_line(rr.stderr)
+      first_nonblank_line(s = rr.stderr)
     }
     let shown = if reason == "" {
       "runtime failure"
@@ -1036,7 +1036,7 @@ fn run_merged_block(cwd: String, md_path: String, md_dir: String, base: String, 
     BlockResult::{ label: label, status: "FAIL", reason: "[run] \{shown}" }
   } else {
     blk.has_actual_stdout = true
-    blk.actual_stdout = normalize_trailing_newline(rr.stdout)
+    blk.actual_stdout = normalize_trailing_newline(s = rr.stdout)
     if mode == "write" {
       BlockResult::{ label: label, status: "WROTE", reason: "" }
     } else {
@@ -1049,7 +1049,7 @@ fn cleanup_merged(md_dir: String, base: String, nos: Array[Int]) -> Unit with Fs
   let k = Array::length(nos)
   let mut i = 0
   while i < k {
-    let p = merge_src_path(md_dir, base, Array::get(nos, i))
+    let p = merge_src_path(md_dir = md_dir, base = base, block_no = Array::get(nos, at = i))
     if Fs::exists(p) {
       Fs::remove(p)
     } else {
@@ -1057,8 +1057,8 @@ fn cleanup_merged(md_dir: String, base: String, nos: Array[Int]) -> Unit with Fs
     }
     i = i + 1
   }
-  let out = merge_wasm_path(md_dir, base)
-  cleanup_one(merge_driver_path(md_dir, base), out, "\{out}.diag")
+  let out = merge_wasm_path(md_dir = md_dir, base = base)
+  cleanup_one(src = merge_driver_path(md_dir = md_dir, base = base), out = out, diag = "\{out}.diag")
 }
 
 // ---------- top-level per-file processing ----------
@@ -1069,35 +1069,35 @@ struct FileOutcome {
 }
 
 fn dirname(path: String) -> String {
-  let idx = String::last_index_of(path, "/")
+  let idx = String::last_index_of(path, needle = "/")
   if idx < 0 {
     "."
   } else {
-    String::substring(path, 0, idx)
+    String::substring(path, start = 0, end = idx)
   }
 }
 
 fn basename_no_ext(path: String) -> String {
-  let slash = String::last_index_of(path, "/")
+  let slash = String::last_index_of(path, needle = "/")
   let name = if slash < 0 {
     path
   } else {
-    String::substring(path, slash + 1, String::length(path))
+    String::substring(path, start = slash + 1, end = String::length(path))
   }
-  let dot = String::last_index_of(name, ".")
+  let dot = String::last_index_of(name, needle = ".")
   if dot < 0 {
     name
   } else {
-    String::substring(name, 0, dot)
+    String::substring(name, start = 0, end = dot)
   }
 }
 
 fn process_file(md_path: String, cwd: String, compiler: String, mode: String) -> FileOutcome with Fs + Process + Exception + Env {
   let text = Fs::read_file(md_path)
-  let tokens = parse_blocks(text)
-  link_run_output_pairs(tokens)
-  let md_dir = dirname(md_path)
-  let base = sanitize_base(basename_no_ext(md_path))
+  let tokens = parse_blocks(text = text)
+  link_run_output_pairs(tokens = tokens)
+  let md_dir = dirname(path = md_path)
+  let base = sanitize_base(name = basename_no_ext(path = md_path))
   let results = ArrayBuilder::new()
   let n = Array::length(tokens)
   // #819 pass 1: which blocks join the merged module. Two or more, otherwise
@@ -1107,12 +1107,12 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
   let mut p1 = 0
   let mut p1_no = 0
   while p1 < n {
-    match Array::get(tokens, p1) {
+    match Array::get(tokens, at = p1) {
       TBlock(blk) => if blk.mode == "check" || blk.mode == "run" || blk.mode == "skip" {
         p1_no = p1_no + 1
-        if block_mergeable(blk) {
-          ArrayBuilder::push(mb, blk)
-          ArrayBuilder::push(mn, p1_no)
+        if block_mergeable(blk = blk) {
+          ArrayBuilder::push(mb, value = blk)
+          ArrayBuilder::push(mn, value = p1_no)
         } else {
           ()
         }
@@ -1126,48 +1126,48 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
   let merged_blocks = ArrayBuilder::freeze(mb)
   let merged_nos = ArrayBuilder::freeze(mn)
   let merged_ok = if Array::length(merged_nos) >= 2 && !merge_disabled() {
-    write_merged_sources(md_dir, base, merged_blocks, merged_nos)
-    compile_merged(cwd, compiler, md_dir, base)
+    write_merged_sources(md_dir = md_dir, base = base, blocks = merged_blocks, nos = merged_nos)
+    compile_merged(cwd = cwd, compiler = compiler, md_dir = md_dir, base = base)
   } else {
     false
   }
   let mut i = 0
   let mut block_no = 0
   while i < n {
-    match Array::get(tokens, i) {
+    match Array::get(tokens, at = i) {
       TBlock(blk) => {
         if blk.mode == "check" || blk.mode == "run" || blk.mode == "skip" {
           block_no = block_no + 1
-          let scratch_name = ".vibe_md_scratch_\{base}_b\{pad2(block_no)}_L\{blk.start_line}"
-          let r = if merged_ok && array_contains_int(merged_nos, block_no) {
-            run_merged_block(cwd, md_path, md_dir, base, blk, block_no, mode)
+          let scratch_name = ".vibe_md_scratch_\{base}_b\{pad2(n = block_no)}_L\{blk.start_line}"
+          let r = if merged_ok && array_contains_int(arr = merged_nos, v = block_no) {
+            run_merged_block(cwd = cwd, md_path = md_path, md_dir = md_dir, base = base, blk = blk, block_no = block_no, mode = mode)
           } else {
-            run_one_block(cwd, compiler, md_path, md_dir, scratch_name, blk, mode)
+            run_one_block(cwd = cwd, compiler = compiler, md_path = md_path, md_dir = md_dir, scratch_name = scratch_name, blk = blk, mode = mode)
           }
           if r.status == "PENDING_OUTPUT_CHECK" {
             let expected_opt = if blk.paired_output >= 0 {
-              match Array::get(tokens, blk.paired_output) {
-                TBlock(ob) => Some(join_lines(ob.code_lines)),
+              match Array::get(tokens, at = blk.paired_output) {
+                TBlock(ob) => Some(join_lines(lines = ob.code_lines)),
                 TText(_) => None
               }
             } else {
               None
             }
             match expected_opt {
-              None => ArrayBuilder::push(results, BlockResult::{
+              None => ArrayBuilder::push(results, value = BlockResult::{
                 label: r.label,
                 status: "FAIL",
                 reason: "[output] missing ```output block after ```vibe run (run `write` mode to generate it)"
               }),
               Some(expected) => {
                 if expected == blk.actual_stdout {
-                  ArrayBuilder::push(results, BlockResult::{
+                  ArrayBuilder::push(results, value = BlockResult::{
                     label: r.label,
                     status: "PASS",
                     reason: r.reason
                   })
                 } else {
-                  ArrayBuilder::push(results, BlockResult::{
+                  ArrayBuilder::push(results, value = BlockResult::{
                     label: r.label,
                     status: "FAIL",
                     reason: "[output] embedded output is stale\n--- expected (```output) ---\n\{expected}--- actual (stdout) ---\n\{blk.actual_stdout}"
@@ -1176,7 +1176,7 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
               }
             }
           } else {
-            ArrayBuilder::push(results, r)
+            ArrayBuilder::push(results, value = r)
           }
         } else {
           ()
@@ -1186,7 +1186,7 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
     }
     i = i + 1
   }
-  cleanup_merged(md_dir, base, merged_nos)
+  cleanup_merged(md_dir = md_dir, base = base, nos = merged_nos)
   FileOutcome::{ tokens: tokens, results: ArrayBuilder::freeze(results) }
 }
 
@@ -1195,21 +1195,21 @@ fn process_file(md_path: String, cwd: String, compiler: String, mode: String) ->
 // (check/run/skip) through run_fmt_block.
 fn process_file_fmt(md_path: String, mode: String) -> FileOutcome with Fs + Process + Exception + Env {
   let text = Fs::read_file(md_path)
-  let tokens = parse_blocks(text)
-  let md_dir = dirname(md_path)
-  let base = sanitize_base(basename_no_ext(md_path))
+  let tokens = parse_blocks(text = text)
+  let md_dir = dirname(path = md_path)
+  let base = sanitize_base(name = basename_no_ext(path = md_path))
   let results = ArrayBuilder::new()
   let n = Array::length(tokens)
   let mut i = 0
   let mut block_no = 0
   while i < n {
-    match Array::get(tokens, i) {
+    match Array::get(tokens, at = i) {
       TBlock(blk) => {
         if blk.mode == "check" || blk.mode == "run" || blk.mode == "skip" {
           block_no = block_no + 1
-          let scratch_name = ".vibe_md_scratch_\{base}_b\{pad2(block_no)}_L\{blk.start_line}"
-          let r = run_fmt_block(md_path, md_dir, scratch_name, blk, mode)
-          ArrayBuilder::push(results, r)
+          let scratch_name = ".vibe_md_scratch_\{base}_b\{pad2(n = block_no)}_L\{blk.start_line}"
+          let r = run_fmt_block(md_path = md_path, md_dir = md_dir, scratch_name = scratch_name, blk = blk, mode = mode)
+          ArrayBuilder::push(results, value = r)
         } else {
           ()
         }
@@ -1233,14 +1233,14 @@ fn stage_replacements(tokens: Array[Token]) -> Unit {
   let n = Array::length(tokens)
   let mut i = 0
   while i < n {
-    match Array::get(tokens, i) {
+    match Array::get(tokens, at = i) {
       TBlock(blk) => {
         if blk.mode == "run" && blk.has_actual_stdout {
           if blk.paired_output >= 0 {
-            match Array::get(tokens, blk.paired_output) {
+            match Array::get(tokens, at = blk.paired_output) {
               TBlock(ob) => {
                 ob.has_replacement = true
-                ob.replacement_lines = splitlines_like(blk.actual_stdout)
+                ob.replacement_lines = splitlines_like(s = blk.actual_stdout)
               },
               TText(_) => ()
             }
@@ -1258,32 +1258,32 @@ fn stage_replacements(tokens: Array[Token]) -> Unit {
 }
 
 fn rewrite_text(tokens: Array[Token]) -> String {
-  stage_replacements(tokens)
+  stage_replacements(tokens = tokens)
   let out = ArrayBuilder::new()
   let n = Array::length(tokens)
   let mut i = 0
   while i < n {
-    match Array::get(tokens, i) {
-      TText(l) => ArrayBuilder::push(out, l),
+    match Array::get(tokens, at = i) {
+      TText(l) => ArrayBuilder::push(out, value = l),
       TBlock(blk) => {
         if blk.mode == "output" && blk.has_replacement {
-          ArrayBuilder::push(out, blk.open_line)
-          push_all(out, blk.replacement_lines)
-          ArrayBuilder::push(out, blk.close_line)
+          ArrayBuilder::push(out, value = blk.open_line)
+          push_all(b = out, items = blk.replacement_lines)
+          ArrayBuilder::push(out, value = blk.close_line)
         } else {
           let code_out = if blk.has_fmt_replacement {
             blk.fmt_lines
           } else {
             blk.code_lines
           }
-          ArrayBuilder::push(out, blk.open_line)
-          push_all(out, code_out)
-          ArrayBuilder::push(out, blk.close_line)
+          ArrayBuilder::push(out, value = blk.open_line)
+          push_all(b = out, items = code_out)
+          ArrayBuilder::push(out, value = blk.close_line)
           if blk.mode == "run" && blk.has_actual_stdout && blk.paired_output < 0 {
-            ArrayBuilder::push(out, "")
-            ArrayBuilder::push(out, "```output")
-            push_all(out, splitlines_like(blk.actual_stdout))
-            ArrayBuilder::push(out, "```")
+            ArrayBuilder::push(out, value = "")
+            ArrayBuilder::push(out, value = "```output")
+            push_all(b = out, items = splitlines_like(s = blk.actual_stdout))
+            ArrayBuilder::push(out, value = "```")
           } else {
             ()
           }
@@ -1292,14 +1292,14 @@ fn rewrite_text(tokens: Array[Token]) -> String {
     }
     i = i + 1
   }
-  String::concat(String::join(ArrayBuilder::freeze(out), "\n"), "\n")
+  String::concat(String::join(ArrayBuilder::freeze(out), sep = "\n"), "\n")
 }
 
 fn push_all[T](b: ArrayBuilder[T], items: Array[T]) -> Unit {
   let n = Array::length(items)
   let mut i = 0
   while i < n {
-    ArrayBuilder::push(b, Array::get(items, i))
+    ArrayBuilder::push(b, value = Array::get(items, at = i))
     i = i + 1
   }
 }
@@ -1312,7 +1312,7 @@ fn report(results: Array[BlockResult], mode: String) -> Int with Console {
   let mut fail = 0
   let mut skip = 0
   while i < n {
-    let r = Array::get(results, i)
+    let r = Array::get(results, at = i)
     if r.status == "SKIP" {
       skip = skip + 1
       Console::write_stream("SKIP  \{r.label}\n")
@@ -1343,19 +1343,19 @@ fn run_mode_fmt(mode: String, files: Array[String]) -> Int with Fs + Env + Proce
   let mut i = 0
   let mut hard_fail = -1
   while i < Array::length(files) && hard_fail < 0 {
-    let md_path = Array::get(files, i)
+    let md_path = Array::get(files, at = i)
     if !Fs::exists(md_path) {
       Stderr::write_stream("vibe_md: no such file: \{md_path}\n")
       hard_fail = 2
     } else {
       handle {
-        let outcome = process_file_fmt(md_path, mode)
+        let outcome = process_file_fmt(md_path = md_path, mode = mode)
         if mode == "fmt" {
-          Fs::write_file(md_path, rewrite_text(outcome.tokens))
+          Fs::write_file(md_path, contents = rewrite_text(tokens = outcome.tokens))
         } else {
           ()
         }
-        push_all(all_results, outcome.results)
+        push_all(b = all_results, items = outcome.results)
       } with { Exception::Throw(msg) => {
         Stderr::write_stream("vibe_md: \{md_path}: \{msg}\n")
         hard_fail = 2
@@ -1366,7 +1366,7 @@ fn run_mode_fmt(mode: String, files: Array[String]) -> Int with Fs + Env + Proce
   if hard_fail >= 0 {
     hard_fail
   } else {
-    let fail_count = report(ArrayBuilder::freeze(all_results), mode)
+    let fail_count = report(results = ArrayBuilder::freeze(all_results), mode = mode)
     if fail_count > 0 {
       1
     } else {
@@ -1378,7 +1378,7 @@ fn run_mode_fmt(mode: String, files: Array[String]) -> Int with Fs + Env + Proce
 fn run_mode(mode: String, files: Array[String]) -> Int with Fs + Env + Process + Console + Stderr {
   let cwd = Fs::getcwd()
   let compiler = resolve_stage2()
-  if !file_nonempty(compiler) {
+  if !file_nonempty(path = compiler) {
     Stderr::write_stream("vibe_md: compiler wasm not found: \{compiler}\n")
     2
   } else {
@@ -1387,19 +1387,19 @@ fn run_mode(mode: String, files: Array[String]) -> Int with Fs + Env + Process +
     let mut i = 0
     let mut hard_fail = -1
     while i < Array::length(files) && hard_fail < 0 {
-      let md_path = Array::get(files, i)
+      let md_path = Array::get(files, at = i)
       if !Fs::exists(md_path) {
         Stderr::write_stream("vibe_md: no such file: \{md_path}\n")
         hard_fail = 2
       } else {
         handle {
-          let outcome = process_file(md_path, cwd, compiler, mode)
+          let outcome = process_file(md_path = md_path, cwd = cwd, compiler = compiler, mode = mode)
           if mode == "write" {
-            Fs::write_file(md_path, rewrite_text(outcome.tokens))
+            Fs::write_file(md_path, contents = rewrite_text(tokens = outcome.tokens))
           } else {
             ()
           }
-          push_all(all_results, outcome.results)
+          push_all(b = all_results, items = outcome.results)
         } with { Exception::Throw(msg) => {
           Stderr::write_stream("vibe_md: \{md_path}: \{msg}\n")
           hard_fail = 2
@@ -1410,7 +1410,7 @@ fn run_mode(mode: String, files: Array[String]) -> Int with Fs + Env + Process +
     if hard_fail >= 0 {
       hard_fail
     } else {
-      let fail_count = report(ArrayBuilder::freeze(all_results), mode)
+      let fail_count = report(results = ArrayBuilder::freeze(all_results), mode = mode)
       if fail_count > 0 {
         1
       } else {
@@ -1435,20 +1435,20 @@ fn main allows Fs + Env + Process + Console {
     2
   } else {
     let mode = Env::args_get(0)
-    if !is_known_mode(mode) {
+    if !is_known_mode(mode = mode) {
       Stderr::write_stream(usage())
       2
     } else {
       let files = ArrayBuilder::new()
       let mut i = 1
       while i < argc {
-        ArrayBuilder::push(files, Env::args_get(i))
+        ArrayBuilder::push(files, value = Env::args_get(i))
         i = i + 1
       }
       if mode == "fmt" || mode == "fmt-check" {
-        run_mode_fmt(mode, ArrayBuilder::freeze(files))
+        run_mode_fmt(mode = mode, files = ArrayBuilder::freeze(files))
       } else {
-        run_mode(mode, ArrayBuilder::freeze(files))
+        run_mode(mode = mode, files = ArrayBuilder::freeze(files))
       }
     }
   }
