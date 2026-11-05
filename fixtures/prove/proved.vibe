@@ -160,3 +160,125 @@ fn count_odd(n: Int) -> Int where { requires: n >= 0 && n <= 1000, ensures: resu
   }
   c
 }
+
+// #3717: a contracted `for` over an `Array[Int]` is proved like a `while`:
+// the checkpoint holds on entry and after every iteration, one ended by
+// `continue` included. Its clauses are read in the loop's scope, so they
+// speak of the bindings around the loop, never the element.
+fn best_of(xs: Array[Int]) -> Int where { ensures: result >= 0 } {
+  let mut best = 0
+  for x in xs where { invariant: best >= 0 } {
+    if x > best {
+      best = x
+    } else {
+      ()
+    }
+  }
+  best
+}
+
+fn best_at_even(xs: Array[Int]) -> Int where { ensures: result >= 0 } {
+  let mut best = 0
+  for i, x in xs where { invariant: best >= 0 } {
+    if i % 2 == 1 {
+      continue
+    } else {
+      ()
+    }
+    if x > best {
+      best = x
+    } else {
+      ()
+    }
+  }
+  best
+}
+
+// A `for` measure drops on each iteration; `break` leaves without a check.
+fn burn(xs: Array[Int], fuel: Int) -> Int where { requires: fuel >= 0, ensures: result >= 0 } {
+  let mut f = fuel
+  for x in xs where { invariant: f >= 0, decreases: f } {
+    if f == 0 {
+      break
+    } else {
+      ()
+    }
+    f = f - 1
+  }
+  f
+}
+
+// A `for` without a contract ends, and its index is below the length.
+fn reread(xs: Array[Int]) -> Int where { ensures: result == 0 } {
+  for i, x in xs {
+    let y = xs[i]
+    ()
+  }
+  0
+}
+
+// `loop` is a contracted `while true`; `break v` and `continue(..)` assign
+// its result and its parameters.
+fn countdown(n: Int) -> Int where { requires: n >= 0 && n <= 1000, ensures: result == 0 } {
+  loop (k = n) where { invariant: k >= 0, decreases: k } {
+    if k == 0 {
+      break k
+    } else {
+      continue(k - 1)
+    }
+  }
+}
+
+// #3717: a local array no other name holds is written in place: an index
+// write owes an index below the length and replaces that element, and
+// `Array::push` appends one.
+fn patched() -> Int where { ensures: result == 9 } {
+  let xs = [1, 2, 3]
+  xs[1] = 7
+  Array::set(xs, at = 2, value = 2)
+  xs[1] + xs[2]
+}
+
+fn grown(n: Int) -> Int where { requires: n >= 0 && n <= 1000, ensures: result == n } {
+  let out = []
+  let mut i = 0
+  while i < n where {
+    invariant: 0 <= i && i <= n && Array::length(out) == i,
+    decreases: n - i,
+  } {
+    Array::push(out, value = i)
+    i = i + 1
+  }
+  Array::length(out)
+}
+
+fn filled(xs: Array[Int]) -> Int where { ensures: result >= 0 } {
+  let ys = [0, 0]
+  for x in xs where { invariant: Array::length(ys) == 2 && ys[0] >= 0 } {
+    if x > ys[0] {
+      ys[0] = x
+    } else {
+      ()
+    }
+  }
+  ys[0]
+}
+
+// A push whose value pushes too lands after it, as at runtime: `[0, 5, 2]`.
+fn nested_push() -> Int where { ensures: result == 3 } {
+  let xs = [0]
+  Array::push(xs, value = {
+    Array::push(xs, value = 5)
+    2
+  })
+  Array::length(xs)
+}
+
+// A read sees the array as its index left it: the push makes index 1 exist.
+fn index_grows() -> Int where { ensures: result == 5 } {
+  let xs = [0]
+  xs[{
+    Array::push(xs, value = 5)
+    1
+  }]
+}
