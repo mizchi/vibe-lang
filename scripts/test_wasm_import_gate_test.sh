@@ -78,8 +78,8 @@ python3 -c 'import sys; p=sys.argv[1]; b=open(p,"rb").read(); assert b.count(b"\
 expect_fail "a different initializer effect" "init_main printed value=8\\ foo=42"
 
 # 7. A narrow-width answer that differs is caught (#3826).
-fresh; mutate narrow_main.vibex "inc8(254)" "inc8(253)"
-expect_fail "a different narrow-width answer" "narrow_main printed"
+fresh; mutate narrow_import_test.vibe 'inspect(inc8(254), content = "255")' 'inspect(inc8(254), content = "254")'
+expect_fail "a different narrow-width answer" "narrow_import_test failed"
 
 # 8. An in-range u8 argument runs, so the range-refusal row must notice.
 fresh; mutate trap_component_u8_range.vibex "inc8(300)" "inc8(200)"

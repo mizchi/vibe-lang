@@ -35,7 +35,8 @@
 #  11. a component whose WIT signature changed after the build is refused at
 #      link time rather than converted by its new types;
 #  14. a component's WIT `u8` / `s16` are offered as `UInt32` / `Int32`
-#      (#3826): an in-range call answers exactly (narrow_main.vibex), and an
+#      (#3826): an in-range call answers exactly (narrow_import_test.vibe,
+#      whose `inspect` rows `vibe test` checks on viberun), and an
 #      argument outside the narrow range is refused at the call, naming the
 #      range, rather than truncated (trap_component_u8_range.vibex).
 set -euo pipefail
@@ -219,12 +220,12 @@ grep -q "'counter' is now (->s64) but the program was compiled against (->u64); 
 # 14. Narrow WIT widths (#3826): offered as `UInt32` / `Int32`, exact in
 #     range on both lanes, and an argument outside the narrow range refused at
 #     the call by the runner, which names the range.
-want="$(printf 'inc8=255\nneg16=32767\nneg16=-300')"
+# The expectations are the test file's own `inspect` rows; the unit runner
+# runs on node, which cannot instantiate a component, so it is run here.
 for LANE_RC in 1 0; do
   status=0
-  out="$(vibe "$VIBERUN" run "$FX/narrow_main.vibex" 2>"$WORK/err")" || status=$?
-  [ "$status" = 0 ] || { cat "$WORK/err" >&2; fail "[viberun VIBE_RC=$LANE_RC] narrow_main exited $status"; }
-  [ "$out" = "$want" ] || fail "[viberun VIBE_RC=$LANE_RC] narrow_main printed $(printf '%q' "$out"), want $(printf '%q' "$want")"
+  vibe "$VIBERUN" test "$FX/narrow_import_test.vibe" >"$WORK/out" 2>&1 || status=$?
+  [ "$status" = 0 ] || { cat "$WORK/out" >&2; fail "[viberun VIBE_RC=$LANE_RC] narrow_import_test failed"; }
 done
 LANE_RC=1
 status=0
