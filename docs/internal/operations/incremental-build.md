@@ -1593,6 +1593,18 @@ reuse arm republishes, #2391) and pays the whole transport whether or not the
 read succeeds. #3783 and #3800 have since cut that publication cost; the
 wall-time comparison after them is in #3800.
 
+**The cold allocation is now within a percent of reuse off.** The rest of the
+cold cost was three strings, each as large as a module's source plus its
+dependencies' env texts, built once per module and never reclaimed on the bump
+lane: the reuse key, a copy of it hashed to name the alias path, and the
+witness text that embeds it. The key is now kept as its segments'
+payloads (`TypingReuseKey`), the alias path is named by a digest of those
+payloads, the witness is written piece by piece, and a stored key is compared
+against the payloads where it lies. Measured on the selfcompile KPI input
+(`scripts/selfcompile_kpi.sh`, cold), reuse on minus reuse off went from
++192.7 MB (+15.7%) to +12.0 MB (+1.0%); on the CLI closure (694 modules) the
+cold build went from +426 MB to +21 MB.
+
 **The correctness side is a gate now:
 `scripts/compile_typing_env_reuse_oracle.mjs`** (stage2-oracles, with
 `scripts/compile_typing_env_reuse_oracle_test.sh` as its red self-test). Most

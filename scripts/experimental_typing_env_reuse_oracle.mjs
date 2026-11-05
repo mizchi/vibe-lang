@@ -304,6 +304,17 @@ function parseLogicalInput(input) {
   return { owner: fields[0], source: fields[1], typingSemantics: fields[2], resolutionSeed: fields[3], rows };
 }
 
+// The alias path is named by the key's digest rather than the key itself:
+// each segment payload's compact fingerprint followed by `|`, except the
+// dependency count, which is its own digest (#2728).
+function aliasDigest(input) {
+  const { owner, source, typingSemantics, resolutionSeed, rows } = parseLogicalInput(input);
+  const parts = [compactFingerprint(owner), compactFingerprint(source), compactFingerprint(typingSemantics),
+    compactFingerprint(resolutionSeed), String(rows.length)];
+  for (const [path, text] of rows) parts.push(compactFingerprint(path), compactFingerprint(text));
+  return parts.map((part) => `${part}|`).join("");
+}
+
 function logicalInputText({ owner, source, typingSemantics, resolutionSeed, rows }) {
   return `${logicalInputTag}${segment(owner)}${segment(source)}${segment(typingSemantics)}${segment(resolutionSeed)}${segment(String(rows.length))}${rows.map(([path, text]) => `${segment(path)}${segment(text)}`).join("")}`;
 }
@@ -408,9 +419,15 @@ function expectV22Isolation(stage2, work) {
   check(stage2, project, currentCache, true, "v22-source-cold");
   mkdirSync(oldCache, { recursive: true });
   const oldVersion = `v22|cg-${stageCodegenFingerprint(stage2)}`;
+  const currentVersion = `${stageCacheMajor(stage2)}|cg-${stageCodegenFingerprint(stage2)}`;
   for (const binding of bindings(currentCache)) {
     const text = readFileSync(binding.path, "utf8");
-    writeFileSync(stableCachePath(oldCache, oldVersion, "selfhost_typing_dependency_env_reuse_v10", binding.input, ".txt"), text);
+    // The old-namespace aliases below are placed by this derivation, so it
+    // must name the path the compiler itself used, or the isolation is vacuous.
+    if (stableCachePath(currentCache, currentVersion, "selfhost_typing_dependency_env_reuse_v10", aliasDigest(binding.input), ".txt") !== binding.path) {
+      fail("the oracle's alias path derivation does not name the alias the compiler wrote");
+    }
+    writeFileSync(stableCachePath(oldCache, oldVersion, "selfhost_typing_dependency_env_reuse_v10", aliasDigest(binding.input), ".txt"), text);
     writeFileSync(typeEnvPath(stage2, oldCache, binding.target, "v22"), readFileSync(typeEnvPath(stage2, currentCache, binding.target), "utf8"));
   }
   for (const path of bindingFiles(currentCache, "selfhost_typing_dependency_env_reuse_eligibility_v10")) {
