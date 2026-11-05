@@ -97,6 +97,8 @@ import @vibe/compiler/core {
   Type,
   TypeDef,
   TypeEnv,
+  call_arg_value,
+  call_arg_values,
   canonical_exception_effect_name,
   env_bind,
   env_lookup,
@@ -1285,6 +1287,7 @@ fn hce_names(e: Expr, name: String) -> Bool {
 /// lives on in that binding and goes wherever it goes (2). A binding outside
 /// the body is a write route of its own.
 fn hce_beside_local(reach: Int, args: Array[Expr], ai: Int, st: HceWalk, env: TypeEnv) -> Int {
+  let args = call_arg_values(args)
   if reach != 1 {
     reach
   } else {
@@ -1358,6 +1361,7 @@ fn hce_arg_reach(callee: Expr, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], 
 /// argument rooted at a binding declared outside the body that can store a
 /// function is a write out of the handle.
 fn hce_note_call(callee: Expr, args: Array[Expr], off: Int, pos: Int, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Unit {
+  let args = call_arg_values(args)
   match callee {
     EIdent(name, noff) => {
       let local = hce_lookup(st = st, name = name)
@@ -2132,6 +2136,7 @@ fn hce_decl_bound_facts(name: String, env: TypeEnv, defs: Array[TypeDef], s: Sub
 /// the closures written in it that can leave it, and the handle-bound
 /// locals it does not merely call. "" when it hands none.
 fn hce_arg_bound_label(arg: Expr, producers_before: Int, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> String {
+  let arg = call_arg_value(arg)
   let mut found = ""
   let mut pi = producers_before
   while pi < Array::length(st.producers) {
@@ -2176,6 +2181,7 @@ fn hce_arg_bound_label(arg: Expr, producers_before: Int, st: HceWalk, env: TypeE
 /// Any other callee -- a local, a closure declared before the handle, an
 /// imported function, a method, a computed callee, `perform` -- may.
 fn hce_callee_may_keep(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, label: String, st: HceWalk, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Bool {
+  let arg = call_arg_value(arg)
   let takes_row = match hce_param_type(callee = callee, off = off, arg = arg, ai = ai, nargs = nargs, st = st, env = env, s = s) {
     Some(pt) => !hce_holds_fn(ty = pt, defs = defs, seen = array_empty()) || hce_set_untaken(set = label, pt = pt) == "",
     None => false
@@ -2217,6 +2223,7 @@ fn hce_callee_may_keep(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, l
 /// recorded type may lead with its receiver. None when it is not known, or
 /// the argument is labeled.
 fn hce_param_type(callee: Expr, off: Int, arg: Expr, ai: Int, nargs: Int, st: HceWalk, env: TypeEnv, s: Subst) -> Option[Type] {
+  let arg = call_arg_value(arg)
   let ty = match callee {
     EIdent(name, _) => if hce_lookup(st = st, name = name) == 0 {
       match env_lookup(env = env, name = name) {
