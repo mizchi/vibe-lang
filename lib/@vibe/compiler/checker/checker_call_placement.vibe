@@ -37,8 +37,17 @@ import ./checker_builtin_arg_head_rest.vibe {
   lookup_builtin_in_env
 }
 
+import ./checker_closure_capture_row.vibe {
+  builtin_ident_is_value, call_only_builtin_ident_error
+}
+
 import ./checker_call_header.vibe {
-  checker_call_header_defaults, checker_call_header_has_optional, checker_call_header_names, checker_header_name_is_positional
+  checker_builtin_alias_target,
+  checker_builtin_call_name,
+  checker_call_header_defaults,
+  checker_call_header_has_optional,
+  checker_call_header_names,
+  checker_header_name_is_positional
 }
 
 fn placement_param_name(_ raw: String) -> String {
@@ -200,14 +209,17 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
         // The inspect expander owns its fixed two-value layout. Its labels
         // were decorative before Phase1c, including the content spelling;
         // this macro snapshot must not be treated as an ordinary builtin.
+        // #3832: a builtin reached through an import alias is placed by the
+        // builtin's own labels, as its canonical spelling is.
+        let bname = checker_builtin_call_name(env = env, name = name)
         if macro_call && name == "inspect" {
           call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 0, slots = placement_identity(Array::length(args)), errors = errors)
-        } else if builtin_resolves_at(env = env, name = name, ident_off = ident_offset) && (lookup_builtin(name) is Some(_)) {
-          placement_check_builtin(name = name, offset = ident_offset, args = args, errors = errors)
+        } else if builtin_resolves_at(env = env, name = bname, ident_off = ident_offset) && (lookup_builtin(bname) is Some(_)) {
+          placement_check_builtin(name = bname, offset = ident_offset, args = args, errors = errors)
           if Array::length(errors) == before {
-            match builtin_param_labels(name) {
+            match builtin_param_labels(bname) {
               Some(_) => {
-                let mode = if canonical_builtin_name(name) == "sh_lines" {
+                let mode = if canonical_builtin_name(bname) == "sh_lines" {
                   1
                 } else {
                   0
@@ -555,6 +567,32 @@ export fn checker_check_defaulted_value(env: TypeEnv, name: String, offset: Int,
       Some(_) => Array::push(errors, value = name + " has parameter defaults, which apply only to a direct call, so it cannot be used as a value; wrap it in a lambda that calls it, e.g. `(a) -> " + name + "(a)`" + off_marker_len(off = offset, len = String::length(name))),
       None => ()
     }
+    checker_check_aliased_builtin_value(env = env, name = name, offset = offset, errors = errors)
+  }
+}
+
+/// #3833: a call-only builtin reached through an import alias (`let g =
+/// D::floor` after `import @vibe/builtin { Float64 as D }`) is refused as a
+/// value exactly as its canonical spelling is. The alias is an ordinary
+/// binding, so the builtin branch that refuses `let g = Float64::floor` never
+/// saw it, and the value reached code generation as an internal error. Only
+/// a qualified name is looked up: an item alias is a bare name, and a lookup
+/// per bare identifier would cost every variable read.
+fn checker_check_aliased_builtin_value(env: TypeEnv, name: String, offset: Int, errors: Array[String]) -> Unit {
+  if String::index_of(name, needle = "::") > 0 {
+    match checker_builtin_alias_target(env = env, name = name) {
+      Some(canonical) => match lookup_builtin(canonical) {
+        Some(t) => if builtin_ident_is_value(name = canonical, t = t) {
+          ()
+        } else {
+          Array::push(errors, value = call_only_builtin_ident_error(name = canonical, ty = t, ident_off = 0 - 1) + off_marker_len(off = offset, len = String::length(name)))
+        },
+        None => ()
+      },
+      None => ()
+    }
+  } else {
+    ()
   }
 }
 

@@ -211,3 +211,37 @@ export fn checker_call_header_defaults(env: TypeEnv, name: String) -> Option[Arr
     None => None
   }
 }
+
+/// #3832: the binding that records which builtin an imported alias stands for.
+/// `import @vibe/builtin { String as S }` binds `S::starts_with` with the
+/// builtin's signature (#3758); this marker, bound beside it to a one-field
+/// record naming `String::starts_with`, lets call placement and the label
+/// sites check `S::starts_with("ab", prefix = "a")` by the builtin's own
+/// labels, the way the canonical spelling is checked. The import-alias rewrite
+/// spells the call canonically before code generation, so the labels checked
+/// are the labels the lowering reads. No source identifier can spell it.
+export fn builtin_alias_marker(_ name: String) -> String {
+  String::concat("#builtin-alias:", name)
+}
+
+/// The builtin `name` stands for when an import aliased it, else `None`.
+export fn checker_builtin_alias_target(env: TypeEnv, name: String) -> Option[String] {
+  match env_lookup(env = env, name = builtin_alias_marker(name)) {
+    Some(CtRecord(fields)) => if Array::length(fields) == 1 {
+      let (canonical, _) = Array::get(fields, at = 0)
+      Some(canonical)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// The spelling to check a call to `name` as: the builtin an import aliased
+/// it to, or `name` itself.
+export fn checker_builtin_call_name(env: TypeEnv, name: String) -> String {
+  match checker_builtin_alias_target(env = env, name = name) {
+    Some(canonical) => canonical,
+    None => name
+  }
+}
