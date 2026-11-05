@@ -222,9 +222,13 @@ grep -q "'counter' is now (->s64) but the program was compiled against (->u64); 
 #     the call by the runner, which names the range.
 # The expectations are the test file's own `inspect` rows; the unit runner
 # runs on node, which cannot instantiate a component, so it is run here.
+# `vibe test` records a pass under $VIBE_HOME/cache/test, which defaults to
+# the checkout when the launcher is run from it: point it at the scratch
+# directory, so the gate leaves the tree as it found it (#2899) and a cached
+# pass from an earlier run can never stand in for this one.
 for LANE_RC in 1 0; do
   status=0
-  vibe "$VIBERUN" test "$FX/narrow_import_test.vibe" >"$WORK/out" 2>&1 || status=$?
+  VIBE_HOME="$WORK/home" vibe "$VIBERUN" test "$FX/narrow_import_test.vibe" >"$WORK/out" 2>&1 || status=$?
   [ "$status" = 0 ] || { cat "$WORK/out" >&2; fail "[viberun VIBE_RC=$LANE_RC] narrow_import_test failed"; }
 done
 LANE_RC=1
