@@ -1,0 +1,61 @@
+// #3719: structs and enums of the file are SMT datatypes, and `match` is a
+// case split, so these contracts are proved.
+
+enum Shape {
+  Circle(Int);
+  Rect(Int, Int);
+  Empty
+}
+
+struct Point {
+  x: Int;
+  y: Int
+}
+
+// Every variant is covered, each payload is clamped before it is squared.
+fn area(s: Shape) -> Int where { ensures: result >= 0 } {
+  match s {
+    Circle(r) => if r >= 0 && r <= 1000 {
+      r * r
+    } else {
+      0
+    },
+    Rect(w, h) => if w >= 0 && h >= 0 && w <= 1000 && h <= 1000 {
+      w * h
+    } else {
+      0
+    },
+    Empty => 0
+  }
+}
+
+// A struct literal and field reads.
+fn swap(p: Point) -> Point where { ensures: result.x == p.y && result.y == p.x } {
+  Point::{ x: p.y, y: p.x }
+}
+
+// Constructing a variant and matching it back.
+fn wrap(r: Int) -> Shape where { ensures: result == Shape::Circle(r) } {
+  Circle(r)
+}
+
+// The first matching arm runs: `Empty` is never the wildcard's case.
+fn is_empty(s: Shape) -> Bool where { ensures: result == (s == Shape::Empty) } {
+  match s {
+    Empty => true,
+    _ => false
+  }
+}
+
+// An uninhabited type -- an empty enum, a struct that only contains itself,
+// or one that only wraps either -- is not declared to z3, so it does not
+// spoil the proofs above.
+enum Never {}
+
+struct Loop {
+  next: Loop
+}
+
+enum OnlyNever {
+  Stuck(Never)
+}

@@ -36,7 +36,7 @@ test "a call assumes the callee's ensures and owes its requires" {
 }
 
 test "outside the fragment is unsupported, never skipped" {
-  inspect(kinds("fn f(xs: Array[Int]) -> Int where { ensures: result >= 0 } {\n  0\n}\n"), content = "f:unsupported:parameter `xs` is not `Int` or `Bool`")
+  inspect(kinds("fn f(xs: Array[Int]) -> Int where { ensures: result >= 0 } {\n  0\n}\n"), content = "f:unsupported:parameter `xs` is not `Int`, `Bool`, or a struct / enum of this file (non-generic, every field `Int`, `Bool` or such a type)")
   inspect(kinds("fn g(x: Int) -> Int where { ensures: result >= 0 } {\n  let mut y = x\n  y\n}\n"), content = "g:unsupported:`let mut` is outside the provable fragment")
   inspect(kinds("fn h(x: Int) -> Int where { ensures: result >= 0 } {\n  h(x)\n}\n"), content = "h:unsupported:`h` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only")
 }
@@ -49,6 +49,39 @@ test "a recursive cycle is unsupported, not assumed" {
 test "a call to an uncontracted function is unsupported, not assumed to return" {
   let src = "fn spin(x: Int) -> Int {\n  x\n}\nfn uses(x: Int) -> Int where { ensures: result == 0 } {\n  let _ = spin(x)\n  0\n}\n"
   inspect(kinds(src), content = "uses:unsupported:`spin` has no `where` contract, so the call cannot be checked modularly; give it one (`ensures: true` at least), and its body is proved too")
+}
+
+test "#3719: structs and enums of the file are datatypes; match is a case split" {
+  let src = "enum Shape {\n  Circle(Int);\n  Empty\n}\nstruct Point {\n  x: Int;\n  y: Int\n}\nfn radius(s: Shape) -> Int where { ensures: result >= 0 } {\n  match s {\n    Circle(r) => if r >= 0 { r } else { 0 },\n    Empty => 0\n  }\n}\nfn swap(p: Point) -> Point where { ensures: result.x == p.y } {\n  Point::{ x: p.y, y: p.x }\n}\n"
+  inspect(kinds(src), content = "radius:coverage:s | radius:ensures:(result >= 0) | radius:ensures:(result >= 0) | radius:ensures:(result >= 0) | swap:ensures:(result.x == p.y)")
+}
+
+test "#3719: a generic enum, or one with a field outside the fragment, is unsupported" {
+  let src = "enum Box[T] {\n  Full(T)\n}\nenum Named {\n  Tag(String)\n}\nfn f(b: Box[Int]) -> Int where { ensures: true } {\n  0\n}\nfn g(n: Named) -> Int where { ensures: true } {\n  0\n}\n"
+  inspect(kinds(src), content = "f:unsupported:parameter `b` is not `Int`, `Bool`, or a struct / enum of this file (non-generic, every field `Int`, `Bool` or such a type) | g:unsupported:parameter `n` is not `Int`, `Bool`, or a struct / enum of this file (non-generic, every field `Int`, `Bool` or such a type)")
+}
+
+test "#3719: a counterexample is shown as the program spells it" {
+  inspect(prove_verdict("sat\n((|s| (|Shape::Circle| (- 3))) (|p| (|Point::{}| 1 2)) (|e| |Shape::Empty|))\n"), content = "(unproved, s = Shape::Circle(-3), p = Point::{ 1, 2 }, e = Shape::Empty)")
+}
+
+test "#3719: an uninhabited type is not declared, so it cannot spoil another proof" {
+  let src = "enum Never {}\nstruct Loop {\n  next: Loop\n}\nenum Wrap {\n  W(Never)\n}\nstruct Point {\n  x: Int\n}\nfn inc(x: Int) -> Int where { requires: x >= 0 && x < 100, ensures: result > x } {\n  x + 1\n}\n"
+  let mut mentions = 0
+  let mut declared = 0
+  for o in prove_obligations(src) {
+    if String::contains(o.query, needle = "|Never|") || String::contains(o.query, needle = "|Loop|") || String::contains(o.query, needle = "|Wrap|") {
+      mentions = mentions + 1
+    } else {
+      ()
+    }
+    if String::contains(o.query, needle = "(|Point| 0)") {
+      declared = declared + 1
+    } else {
+      ()
+    }
+  }
+  inspect((mentions, declared > 0), content = "(0, true)")
 }
 
 test "only unsat proves" {
