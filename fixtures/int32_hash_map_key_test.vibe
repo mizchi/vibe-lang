@@ -1,0 +1,33 @@
+// #3730: `Int32` / `UInt32` erase to `Int`, so a trait whose methods only
+// read `Self` is served by `Int`'s impl -- `Hash` hashes the same integer --
+// and the builtin map compares their keys as the same raw values. The
+// default (linear) lane only: a scalar-keyed builtin map does not run on
+// wasm-gc yet (#2334).
+import @vibe/core {
+  Hash, Set, map_key_to_string
+}
+
+fn key_text[T: Hash](_ x: T) -> String {
+  map_key_to_string(x)
+}
+
+test "an Int32 / UInt32 key in the builtin map" {
+  let k: Int32 = -7
+  let m: Map[Int32, String] = Map::set(Map::new(), key = k, value = "minus seven")
+  inspect(Map::get(m, key = k), content = "minus seven")
+  let other: Int32 = 7
+  inspect(Map::has_key(m, key = other), content = "false")
+  let big: UInt32 = 4294967295
+  let u: Map[UInt32, Int] = Map::set(Map::new(), key = big, value = 1)
+  inspect(Map::has_key(u, key = big), content = "true")
+}
+
+test "Hash is Int's, so a Set of Int32 works" {
+  let a: Int32 = 2147483647
+  inspect(key_text(a) == key_text(2147483647), content = "true")
+  let b: Int32 = 1
+  let s = Set::add(Set::add(Set::new(), value = a), value = b)
+  inspect(Set::contains(s, value = a), content = "true")
+  let c: Int32 = 3
+  inspect(Set::contains(s, value = c), content = "false")
+}

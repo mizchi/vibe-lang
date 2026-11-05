@@ -1,6 +1,7 @@
 //# The builtin map's call arms (#2334).
 //
-// `Map[K, V]` takes a `String`, `Int`, `Char` or `Bool` key. Every arm here
+// `Map[K, V]` takes a `String`, `Int` (`Int32` / `UInt32` included, #3730),
+// `Char` or `Bool` key. Every arm here
 // checks a key against the RECEIVER's key slot, so a map literal, `Map::new()`
 // and an annotation all decide the key type the same way, and a receiver whose
 // type is not known yet keeps the historical `String` expectation.
@@ -74,6 +75,10 @@ export fn map_key_site_record(call_off: Int, key: Type) -> Unit {
 fn map_key_resolves_scalar(s: Subst, key: Type) -> Int {
   match subst_apply(s = s, ty = key) {
     CtInt => 1,
+    // #3730: erased to `Int` before the map calls are lowered, so the same
+    // raw i64 comparison answers them.
+    CtInt32 => 1,
+    CtUInt32 => 1,
     CtChar => 1,
     CtBool => 1,
     _ => 0
@@ -81,7 +86,8 @@ fn map_key_resolves_scalar(s: Subst, key: Type) -> Int {
 }
 
 /// #2334: the typed-`==` channel rows for the keyed map calls whose key the
-/// final substitution resolves to `Int`, `Char` or `Bool`, as parallel
+/// final substitution resolves to `Int`, `Int32`, `UInt32`, `Char` or `Bool`,
+/// as parallel
 /// (offset, key) arrays. An offset recorded twice with different answers --
 /// one shared body checked under two instantiations -- files no row; the
 /// codegen backstop then traps rather than guess.
@@ -333,7 +339,7 @@ fn map_formal_key_unsupported_refusal(name: String, key: String, off: Int) -> St
     name,
     "` uses a type parameter as a `Map` key, so it cannot be called with `",
     key,
-    "` keys: the builtin map takes `String`, `Int`, `Char` or `Bool` keys -- use `MutMap[K, V]` from `@vibe/core` for other keys (#2334)",
+    "` keys: the builtin map takes `String`, `Int`, `Int32`, `UInt32`, `Char` or `Bool` keys -- use `MutMap[K, V]` from `@vibe/core` for other keys (#2334)",
     off_marker_len(off = off, len = String::length(name))
   ]
   String::join(parts, sep = "")
@@ -344,6 +350,8 @@ fn map_formal_key_unsupported_refusal(name: String, key: String, off: Int) -> St
 fn map_formal_key_instance_refusal(s: Subst, ty: Type, name: String, off: Int) -> String {
   match subst_apply(s = s, ty = ty) {
     CtInt => map_formal_key_refusal(name = name, scalar = "Int", off = off),
+    CtInt32 => map_formal_key_refusal(name = name, scalar = "Int32", off = off),
+    CtUInt32 => map_formal_key_refusal(name = name, scalar = "UInt32", off = off),
     CtChar => map_formal_key_refusal(name = name, scalar = "Char", off = off),
     CtBool => map_formal_key_refusal(name = name, scalar = "Bool", off = off),
     CtString => "",
@@ -567,6 +575,8 @@ fn check_map_key_site_kinds(s: Subst, errors: Array[String]) -> Unit {
     let supported = match key {
       CtString => true,
       CtInt => true,
+      CtInt32 => true,
+      CtUInt32 => true,
       CtChar => true,
       CtBool => true,
       CtVar(_) => true,
@@ -576,7 +586,7 @@ fn check_map_key_site_kinds(s: Subst, errors: Array[String]) -> Unit {
     if !supported && !MutMap::has(reported, k = off) {
       MutMap::set(reported, k = off, v = 1)
       let parts = [
-        "the builtin map takes `String`, `Int`, `Char` or `Bool` keys, so a `",
+        "the builtin map takes `String`, `Int`, `Int32`, `UInt32`, `Char` or `Bool` keys, so a `",
         type_to_string(key),
         "` key has no implementation -- key the map by one of those, or use `MutMap[K, V]` from `@vibe/core` for other keys",
         off_marker(off)

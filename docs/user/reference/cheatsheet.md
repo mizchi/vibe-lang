@@ -139,10 +139,14 @@ tagged immediate an `Int` is, and every value lies in its type's range:
   Elsewhere (a struct field, `Some(5)`), convert with `Int::wrap_int32`.
 - **Traits.** `Eq`, `Ord` and `Show` treat them as the scalars they are, and
   `Int32::to_string` / `UInt32::to_string` render them. `[T: Add]` refuses
-  them, because a generic `+` would not wrap. WIT `s32` / `u32` project to
-  them both ways, and a component's `s32` / `u32` import is typed with them
-  (see "Importing a wasm module"). `Default`, `Hash` (and with it a `Map`
-  key) and the core module's `i32` boundary are not there yet.
+  them, because a generic `+` would not wrap. A trait whose methods only read
+  `Self` is served by `Int`'s impl, which sees the same integer: `[T: Hash]`
+  holds, so a `Set[Int32]` works, and they are builtin `Map` keys too. A
+  trait with a method returning `Self` is not (`Default`, whose `Int` impl
+  could return a value outside 32 bits). WIT `s32` / `u32` project to them
+  both ways, and a component's `s32` / `u32` import is typed with them (see
+  "Importing a wasm module"). The core module's `i32` boundary is not there
+  yet.
 
 ```vibe
 test "exact 32-bit integers" {
@@ -1562,7 +1566,8 @@ let nv = {                            // destructure also works in fn/block body
 }
 
 // Map (#960: the `map { ... }` literal was removed; use the Map:: API).
-// The builtin map takes a `String`, `Int`, `Char` or `Bool` key (#2334);
+// The builtin map takes a `String`, `Int`, `Int32`, `UInt32`, `Char` or
+// `Bool` key (#2334, #3730);
 // `StringMap[V]` is `Map[String, V]` (no import needed). Any other key is
 // rejected -- written or inferred. For another key type, use `MutMap[K, V]`
 // from `@vibe/core` (below).
@@ -3032,8 +3037,8 @@ codegen. Write `for x in xs { .. }`.
 `freeze(MapBuilder[String, V]) -> Map[String, V]` — a builder is String-keyed.
 A `for-in` comprehension desugars to these builder operations internally.
 
-**Map** — the builtin `Map[K, V]` takes a `String`, `Int`, `Char` or `Bool`
-key (#2334); `StringMap[V]` is `Map[String, V]` (no import needed; the
+**Map** — the builtin `Map[K, V]` takes a `String`, `Int`, `Int32`,
+`UInt32`, `Char` or `Bool` key (#2334, #3730); `StringMap[V]` is `Map[String, V]` (no import needed; the
 operations keep the `Map::` qualifier). A map literal and
 `Map::from_pairs([...])` take string-literal keys; a map with another key
 starts from `Map::new()`, and the first keyed call decides its key type:
