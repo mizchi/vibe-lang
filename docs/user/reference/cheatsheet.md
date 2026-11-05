@@ -139,8 +139,10 @@ tagged immediate an `Int` is, and every value lies in its type's range:
   Elsewhere (a struct field, `Some(5)`), convert with `Int::wrap_int32`.
 - **Traits.** `Eq`, `Ord` and `Show` treat them as the scalars they are, and
   `Int32::to_string` / `UInt32::to_string` render them. `[T: Add]` refuses
-  them, because a generic `+` would not wrap. `Default`, `Hash` (and with
-  it a `Map` key) and the WIT / `.wasm` boundary mappings are not there yet.
+  them, because a generic `+` would not wrap. WIT `s32` / `u32` project to
+  them both ways, and a component's `s32` / `u32` import is typed with them
+  (see "Importing a wasm module"). `Default`, `Hash` (and with it a `Map`
+  key) and the core module's `i32` boundary are not there yet.
 
 ```vibe
 test "exact 32-bit integers" {
@@ -3516,9 +3518,11 @@ The foreign memory is not the program's; the runner serves these, which is
 how a binding moves strings across (see `lib/@vibex/z3/cstring.vibe`).
 
 **Component types** (from the component's type section, i.e. its WIT): a
-world-level exported function with `s8`..`u64` (as `Int`) and `string`
-params and at most one such result. The runner range-checks each `Int`
-against its WIT width and refuses one that does not fit. Exported
+world-level exported function with integer and `string` params and at most
+one such result. `s32` / `u32` are `Int32` / `UInt32` (#3730), so their width
+is the type and a value that does not fit is a compile-time error; the other
+widths (`s8`..`u16`, `s64`, `u64`) are `Int`, which the runner range-checks
+against the WIT width, refusing one that does not fit. Exported
 interfaces, `bool`, `char`, floats, lists, records, variants and resources
 are not offered yet. A component whose type section declares component or
 instance types (what an imported interface looks like) is read up to that
