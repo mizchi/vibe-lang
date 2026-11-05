@@ -1,0 +1,232 @@
+// #1934: scalar replacement may remove only an unaliased local record.
+struct Counter { mut value: Int; flag: Bool }
+struct Aggregate { mut values: Array[String]; flag: Bool }
+
+fn compute(_ n: Int) -> Int {
+  let p = Counter::{ value: n, flag: true }
+  p.value = p.value + 7
+  if p.flag {
+    p.value * 3 - n
+  } else {
+    0 - 1000
+  }
+}
+
+fn annotated(_ n: Int) -> Int {
+  let mut p: Counter = Counter::{ value: n, flag: true }
+  p.value = p.value + 2
+  p.value
+}
+
+fn bump(_ p: Counter) -> Unit {
+  p.value = p.value + 1
+}
+
+fn captured(_ n: Int) -> Int {
+  let p = Counter::{ value: n, flag: true }
+  let f = () -> {
+    p.value = p.value + 1; p.value
+  }
+  let a = f()
+  let b = f()
+  a + b + p.value
+}
+
+fn reordered(_ trace: Array[Int]) -> Int {
+  let p = Counter::{
+    flag: {
+      Array::push(trace, value = 2); true
+    },
+    value: {
+      Array::push(trace, value = 1); 7
+    }
+  }
+  p.value = p.value + 2
+  if p.flag {
+    p.value
+  } else {
+    0
+  }
+}
+
+test "local field reads and writes preserve values" {
+  inspect(compute(10), content = "41")
+  inspect(annotated(10), content = "12")
+}
+
+test "a shadowing initializer reads the outer record" {
+  let p = Counter::{ value: 8, flag: true }
+  p.value = 9
+  let result = {
+    let p = p.value; p + 1
+  }
+  inspect(result + p.value, content = "19")
+}
+
+test "pattern and closure parameter binders shadow the record" {
+  let p = Counter::{ value: 6, flag: true }
+  let from_pattern = match (3, 4) {
+    (p, q) => p + q
+  }
+  let f = (p: Int) -> {
+    p + 2
+  }
+  inspect(from_pattern + f(p = 5) + p.value, content = "20")
+}
+
+test "constructor effects keep declaration order" {
+  let trace: Array[Int] = []
+  inspect(reordered(trace), content = "9")
+  inspect(trace, content = "[1, 2]")
+}
+
+test "aliases and passed records remain shared" {
+  let p = Counter::{ value: 5, flag: true }
+  let q = p
+  bump(q)
+  q.value = q.value + 3
+  inspect(p.value, content = "9")
+}
+
+test "captured records remain shared" {
+  inspect(captured(5), content = "20")
+}
+
+test "whole-binding replacement retains the heap representation" {
+  let mut p = Counter::{ value: 1, flag: true }
+  p = Counter::{ value: 9, flag: false }
+  inspect(p.value, content = "9")
+}
+
+test "aggregate fields keep ownership and aliasing" {
+  let p = Aggregate::{ values: [String::concat("a", "b")], flag: true }
+  let old = p.values
+  p.values = [String::concat("c", "d")]
+  inspect(Array::get(old, at = 0), content = "ab")
+  inspect(Array::get(p.values, at = 0), content = "cd")
+}
+
+test "an iteration binder shadows only after its iterator" {
+  let p = Counter::{ value: 4, flag: true }
+  let mut total = 0
+  for p in [p.value, p.value + 1] {
+    total = total + p
+  }
+  inspect(total + p.value, content = "13")
+}
+
+test "a loop binder initializer reads the outer record" {
+  let p = Counter::{ value: 4, flag: true }
+  let result = loop (p = p.value) {
+    if p == 6 {
+      break p
+    }; continue (p + 1)
+  }
+  inspect(result + p.value, content = "10")
+}
+
+struct ScalarTags { mut c: Char; flag: Bool; u: Unit }
+
+test "unsupported Char and Unit fields keep their rendering facts" {
+  let p = ScalarTags::{ c: 'a', flag: true, u: () }
+  p.c = Char::from_int(233)
+  inspect("\{p.c} \{p.flag} \{p.u}", content = "é true ()")
+}
+
+test "a non-escaping scalar struct allocates no heap block" {
+  let before = Profiler::heap_bytes()
+  let mut sum = 0
+  let mut i = 0
+  while i < 10000 {
+    sum = sum + compute(i)
+    i = i + 1
+  }
+  let allocated = Profiler::heap_bytes() - before
+  inspect(sum, content = "100200000")
+  inspect(allocated, content = "0")
+}
+
+test "an annotated mutable scalar struct allocates no heap block" {
+  let before = Profiler::heap_bytes()
+  let mut sum = 0
+  let mut i = 0
+  while i < 10000 {
+    sum = sum + annotated(i)
+    i = i + 1
+  }
+  let allocated = Profiler::heap_bytes() - before
+  inspect(sum, content = "50015000")
+  inspect(allocated, content = "0")
+}
+
+struct Flag { mut value: Bool; n: Int }
+
+let positive = (_ n: Int) -> {
+  n > 0
+}
+
+test "Bool returned without an annotation keeps its render type" {
+  let p = Flag::{ value: positive(2), n: 2 }
+  p.value = positive(0)
+  inspect("\{p.value} \{p.n}", content = "false 2")
+}
+
+struct NarrowCounter { mut word: UInt32; flag: Bool }
+
+test "UInt32 fields keep their wrap semantics on the heap path" {
+  let p = NarrowCounter::{ word: Int::wrap_uint32(-1), flag: true }
+  p.word = p.word + 1
+  inspect(UInt32::to_int(p.word), content = "0")
+}
+
+fn looped(_ n: Int) -> Int {
+  let mut p = Counter::{ value: 0, flag: true }
+  while p.value < n {
+    p.value = p.value + 1
+  }
+  if p.flag {
+    return p.value
+  }
+  0
+}
+
+test "field locals survive a loop and an early return" {
+  let before = Profiler::heap_bytes()
+  let value = looped(10000)
+  let allocated = Profiler::heap_bytes() - before
+  inspect(value, content = "10000")
+  inspect(allocated, content = "0")
+}
+
+struct GenericCell[T] { mut value: T; flag: Bool }
+
+fn generic_cell[T](_ value: T) -> T {
+  let p = GenericCell::{ value: value, flag: true }
+  p.value = value
+  p.value
+}
+
+test "a generic field keeps its own representation at every instantiation" {
+  inspect(generic_cell(7), content = "7")
+  let input = String::concat("o", "k")
+  inspect(generic_cell(input), content = "ok")
+  inspect(input, content = "ok")
+}
+
+fn branch_counter(_ n: Int) -> Int {
+  if n < 0 {
+    n
+  } else {
+    let p = Counter::{ value: n, flag: true }
+    p.value = p.value + 1
+    p.value
+  }
+}
+
+test "a record in the last branch is still scalar replaced" {
+  let before = Profiler::heap_bytes()
+  let value = branch_counter(-2) + branch_counter(2)
+  let allocated = Profiler::heap_bytes() - before
+  inspect(value, content = "1")
+  inspect(allocated, content = "0")
+}

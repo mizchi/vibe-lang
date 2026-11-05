@@ -1,3 +1,6 @@
+import ./scalar_locals.vibe {
+  rewrite_scalar_local_stmts
+}
 import ./map_scalar_keys.vibe {
   refuse_rowless_scalar_map_program, rewrite_map_scalar_key_stmts
 }
@@ -37,7 +40,8 @@ import @vibe/compiler/core {
   typed_int32_row_head,
   typed_map_key_row_head,
   typed_map_scalar_key_verdict,
-  typed_render_row_head
+  typed_render_row_head,
+  typed_scalar_local_row_head
 }
 
 import @vibe/ast {
@@ -546,6 +550,8 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   let u32_assign_offs: Array[Int] = []
   let i32_neg_offs: Array[Int] = []
   let u32_not_offs: Array[Int] = []
+  let scalar_local_key = impl_target_key(TyName(typed_scalar_local_row_head()))
+  let scalar_local_offs: Array[Int] = []
   let mut teq_i = 0
   while teq_i < Array::length(typed_eq_offsets) {
     let tkey = Array::get(typed_eq_keys, at = teq_i)
@@ -573,6 +579,8 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
       Array::push(i32_neg_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == u32_not_key {
       Array::push(u32_not_offs, value = Array::get(typed_eq_offsets, at = teq_i))
+    } else if tkey == scalar_local_key {
+      Array::push(scalar_local_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == map_scalar_key {
       Array::push(map_scalar_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == forin_map_key {
@@ -730,6 +738,7 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // sees the `X` binding and can resolve `X::method` in the impl body.
   inject_trait_method_generics_with(stmts = stmts, traits = traits)
   let struct_sets = collect_struct_field_sets(stmts)
+  rewrite_scalar_local_stmts(stmts = stmts, offs = scalar_local_offs, shapes = struct_sets)
   let fn_returns = collect_fn_returns(stmts)
   add_context_renderer_returns(fn_returns)
   let gimpl_infos = collect_impl_infos(stmts)
