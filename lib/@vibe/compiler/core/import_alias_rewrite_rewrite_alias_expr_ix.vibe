@@ -16,6 +16,10 @@ import ./resolved_callee.vibe {
   builtin_callee_resolution
 }
 
+import ./call_placement.vibe {
+  call_placement_cell_prefix
+}
+
 import ./pattern_ctor_name.vibe {
   pattern_ctor_base_name
 }
@@ -502,11 +506,29 @@ fn builtin_shadow_renamed_ident(name: String, renamed: String, off: Int) -> Expr
 // The unit-owner rename resolves references outside a private definition's
 // unit to explicit builtin references. Its synthesized calls need the same
 // identity as any other builtin factory, even after a whole-program check.
+//
+// #3816: only slot zero is the callee's identity. After a check, the slots
+// behind it carry the argument placement the checker chose, and the lowering
+// refuses a labeled call without one -- so a dependency's
+// `Array::get(xs, at = 0)` beside the entry's own `fn Array::get` failed to
+// build while the positional spelling built. Replace the identity and keep the
+// placement.
 fn builtin_shadow_call_resolution(callee: Expr, resolution: Array[Int], am: AliasIdx) -> Array[Int] {
   if am.user_refs_only {
     match callee {
       EIdent(name, off) => if is_builtin_ref_offset(off) {
-        builtin_callee_resolution(name)
+        let builtin = builtin_callee_resolution(name)
+        if call_placement_cell_prefix(cell = resolution, start = 0) {
+          let kept = Array::slice(resolution, start = 0, end = Array::length(resolution))
+          if Array::length(builtin) > 0 {
+            Array::set(kept, at = 0, value = Array::get(builtin, at = 0))
+          } else {
+            ()
+          }
+          kept
+        } else {
+          builtin
+        }
       } else {
         resolution
       },
