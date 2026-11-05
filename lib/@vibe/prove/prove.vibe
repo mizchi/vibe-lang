@@ -16,6 +16,10 @@ import ./walk.vibe {
   call_graph, construct_name, contains_name, expr_kids, expr_off, reaches_cycle
 }
 
+import ./int_terms.vibe {
+  pow2_text, shift_count, trunc_div
+}
+
 import ./word.vibe {
   adapt_word, is_word_sort, smt_sort_text, word_binop, word_int_range, word_of_int, word_to_int, word_unary, word_zero
 }
@@ -671,7 +675,7 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
           ()
         }
       }
-      out
+      join_word_outcomes(outs = out, off = expr_off(c))
     },
     ELet(name, v, b, _) => match contracted_for(name = name, lam = v, inner = b) {
       Some(fl) => sym_for(ctx = ctx, fl = fl, st = st),
@@ -848,7 +852,7 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
       out
     },
     EArray(items) => sym_array_literal(ctx = ctx, items = items, off = expr_off(e), st = st),
-    EMatch(scr, arms) => sym_match(ctx = ctx, scr = scr, arms = arms, off = expr_off(scr), st = st),
+    EMatch(scr, arms) => join_word_outcomes(outs = sym_match(ctx = ctx, scr = scr, arms = arms, off = expr_off(scr), st = st), off = expr_off(scr)),
     _ => {
       unsupported(off = expr_off(e), reason = "`\{construct_name(e)}` is outside the provable fragment")
       []
@@ -988,6 +992,49 @@ fn word_binop_value(ctx: Ctx, e: Expr, op: String, a: Outcome, b: Outcome, off: 
   }
 }
 
+/// #3827: the paths of one `if` / `match` carry one type, which the checker
+/// joins over its branches: `if c { x } else { 2147483647 }` is an `Int32`
+/// when `x` is. A path's own sort says `Int` for the literal branch, so the
+/// paths are re-read at the word one of them gives, as `adapt_word` reads a
+/// literal; an `Int` there that is not a literal means the paths disagree
+/// with the checker's type, which is refused rather than computed as an
+/// unbounded `Int`.
+fn join_word_outcomes(outs: Array[Outcome], off: Int) -> Array[Outcome] with Exception {
+  let mut word = ""
+  for o in outs {
+    if !o.returned && is_word_sort(o.sort) {
+      if word == "" {
+        word = o.sort
+      } else if word != o.sort {
+        unsupported(off = off, reason = "branches that give both `\{word}` and `\{o.sort}`")
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  if word == "" {
+    outs
+  } else {
+    let joined: Array[Outcome] = []
+    for o in outs {
+      if !o.returned && o.sort == "Int" {
+        let w = adapt_word(value = o.value, sort = o.sort, want = word)
+        if w == "" {
+          unsupported(off = off, reason = "branches that give a `\{word}` and an `Int` that is not a literal")
+        } else {
+          ()
+        }
+        Array::push(joined, value = with_value(st = o, value = w, sort = word))
+      } else {
+        Array::push(joined, value = o)
+      }
+    }
+    joined
+  }
+}
+
 /// An operand of a word operator as a word of `sort`: itself, or a literal
 /// written beside one.
 fn word_operand(o: Outcome, sort: String, op: String, off: Int) -> String with Exception {
@@ -1077,50 +1124,6 @@ fn sym_ascription(ctx: Ctx, ty: TypeExpr, arg: Expr, off: Int, st: Outcome) -> A
     }
   }
   out
-}
-
-/// The count of a shift when its SMT term is a decimal constant from 0 to
-/// 62, and -1 otherwise.
-fn shift_count(_ term: String) -> Int {
-  let n = String::length(term)
-  if n == 0 || n > 2 {
-    0 - 1
-  } else {
-    let mut k = 0
-    let mut ok = true
-    let mut i = 0
-    while i < n {
-      let c = String::byte_at(term, at = i)
-      if c >= '0' && c <= '9' {
-        k = k * 10 + (Char::to_int(c) - 48)
-      } else {
-        ok = false
-      }
-      i = i + 1
-    }
-    if ok && k <= 62 {
-      k
-    } else {
-      0 - 1
-    }
-  }
-}
-
-/// `2^k` as a decimal SMT literal. `2^62` is one past `Int`'s maximum, so it
-/// is spelled out rather than computed.
-fn pow2_text(_ k: Int) -> String {
-  if k == 62 {
-    return "4611686018427387904"
-  } else {
-    ()
-  }
-  let mut p = 1
-  let mut i = 0
-  while i < k {
-    p = p * 2
-    i = i + 1
-  }
-  "\{p}"
 }
 
 /// `x` once a scope opened at `outer` closes: the names it bound are gone,
@@ -2184,11 +2187,6 @@ fn sym_array_literal(ctx: Ctx, items: Array[Expr], off: Int, st: Outcome) -> Arr
     Array::push(out, value = with_value(st = s1, value = "(|Array[Int]::mk| \{data} \{k})", sort = arr_sort()))
   }
   out
-}
-
-/// The quotient `a / b` truncated toward zero, as the runtime computes it.
-fn trunc_div(a: String, b: String) -> String {
-  "(ite (>= \{a} 0) (div \{a} \{b}) (- (div (- \{a}) \{b})))"
 }
 
 /// A call is modular: the callee's `requires` become obligations at the

@@ -85,7 +85,8 @@ $dir/unproved.vibe:258:1: unproved: ensures (result == 0) of \`read_after_index_
 $dir/unproved.vibe:267:1: unproved: ensures (result > x) of \`word_next\` -- counterexample: <model>
 $dir/unproved.vibe:272:1: unproved: ensures (result > 0) of \`word_local_wraps\` -- counterexample: <model>
 $dir/unproved.vibe:278:5: unproved: the divisor of (x / d) is not zero, in \`word_udiv\` -- counterexample: <model>
-$dir/unproved.vibe:282:1: unproved: ensures result of \`word_unsigned_low\` -- counterexample: <model>"
+$dir/unproved.vibe:282:1: unproved: ensures result of \`word_unsigned_low\` -- counterexample: <model>
+$dir/unproved.vibe:288:1: unproved: ensures result of \`word_join\` -- counterexample: <model>"
 run_case unsupported 1 "$dir/unsupported.vibe:7:9: unsupported: a \`while\` without a \`where { decreases: .. }\` measure: termination is not proved, so the result would be partial correctness only (in \`sum_to\`)
 $dir/unsupported.vibe:14:1: unsupported: parameter \`xs\` is not \`Int\`, \`Bool\`, \`Array[Int]\`, or a struct / enum of this file (non-generic, every field \`Int\`, \`Bool\` or such a type) (in \`first\`)
 $dir/unsupported.vibe:20:1: unsupported: \`ping\` is part of, or calls into, a recursive cycle: termination is not proved, so the result would be partial correctness only (in \`ping\`)
