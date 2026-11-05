@@ -205,6 +205,17 @@ function parseSegment(text, start) {
   return [text.slice(colon + 1, end), end];
 }
 
+// The alias (TDRE11A) names only the target fingerprint; its path is a hash
+// of the input key. The input key and target text live in the witness
+// (TDRE10W), keyed by the target fingerprint.
+function parseAlias(text) {
+  const tag = "TDRE11A";
+  if (!text.startsWith(tag)) fail(`invalid ${tag} alias marker`);
+  const [target, end] = parseSegment(text, tag.length);
+  if (end !== text.length || !target) fail(`${tag} alias has trailing or empty data`);
+  return target;
+}
+
 function parseBinding(text, tag) {
   if (!text.startsWith(tag)) fail(`invalid ${tag} binding marker`);
   const [input, afterInput] = parseSegment(text, tag.length);
@@ -220,22 +231,37 @@ function bindingFiles(cache, namespace) {
     .map((name) => join(cache, name));
 }
 
-function appSidecar(cache, appSource) {
-  const candidates = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v10");
-  const path = candidates.find((candidate) => {
-    const text = readFileSync(candidate, "utf8");
-    return text.startsWith("TDRE10A") && text.includes(appSource);
+function witnesses(cache) {
+  return bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v10")
+    .map((path) => ({ witnessPath: path, ...parseBinding(readFileSync(path, "utf8"), "TDRE10W") }));
+}
+
+function aliases(cache) {
+  return bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v10")
+    .map((path) => ({ path, target: parseAlias(readFileSync(path, "utf8")) }));
+}
+
+// An alias joined with the witness it names: { path, witnessPath, input,
+// target, targetText }. An alias whose target has no witness is not a binding.
+function bindings(cache) {
+  const byTarget = new Map(witnesses(cache).map((witness) => [witness.target, witness]));
+  return aliases(cache).flatMap(({ path, target }) => {
+    const witness = byTarget.get(target);
+    return witness ? [{ path, ...witness }] : [];
   });
-  if (!path) fail(`non-vacuous TDRE10 app sidecar missing in ${basename(cache)}`);
-  return { path, ...parseBinding(readFileSync(path, "utf8"), "TDRE10A") };
+}
+
+function appSidecar(cache, appSource) {
+  const found = bindings(cache).filter((binding) => parseLogicalInput(binding.input).source === appSource);
+  if (found.length === 0) fail(`non-vacuous TDRE10 app sidecar missing in ${basename(cache)}`);
+  if (found.length > 1) fail(`ambiguous TDRE10 app sidecar in ${basename(cache)}`);
+  return found[0];
 }
 
 function otherSidecar(cache, target) {
-  for (const path of bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v10")) {
-    const binding = parseBinding(readFileSync(path, "utf8"), "TDRE10A");
-    if (binding.target !== target) return { path, ...binding };
-  }
-  fail("second valid TDRE10 target missing");
+  const binding = bindings(cache).find((candidate) => candidate.target !== target);
+  if (!binding) fail("second valid TDRE10 target missing");
+  return binding;
 }
 
 function targetWitness(cache, target) {
@@ -246,8 +272,8 @@ function targetWitness(cache, target) {
   fail(`bound TDRE10 witness missing for ${target}`);
 }
 
-function aliasText(input, target, targetText) {
-  return `TDRE10A${segment(input)}${segment(target)}${segment(targetText)}`;
+function aliasText(target) {
+  return `TDRE11A${segment(target)}`;
 }
 
 function witnessText(input, target, targetText) {
@@ -382,9 +408,8 @@ function expectV22Isolation(stage2, work) {
   check(stage2, project, currentCache, true, "v22-source-cold");
   mkdirSync(oldCache, { recursive: true });
   const oldVersion = `v22|cg-${stageCodegenFingerprint(stage2)}`;
-  for (const path of bindingFiles(currentCache, "selfhost_typing_dependency_env_reuse_v10")) {
-    const text = readFileSync(path, "utf8");
-    const binding = parseBinding(text, "TDRE10A");
+  for (const binding of bindings(currentCache)) {
+    const text = readFileSync(binding.path, "utf8");
     writeFileSync(stableCachePath(oldCache, oldVersion, "selfhost_typing_dependency_env_reuse_v10", binding.input, ".txt"), text);
     writeFileSync(typeEnvPath(stage2, oldCache, binding.target, "v22"), readFileSync(typeEnvPath(stage2, currentCache, binding.target), "utf8"));
   }
@@ -439,7 +464,7 @@ function run(stage2) {
     if (checkedCold.status === 0 || !checkedCold.output.includes("missing { Exception }")) fail("cold checked mode did not reject row-less caller");
     const uncheckedAfterChecked = check(stage2, checkedFirstProject, checkedFirstCache, true, "row-unchecked-after-checked", false, { VIBE_CHECK_ERROR_ROW: "0" });
     expectCounts("unchecked after checked mode isolation", uncheckedAfterChecked.telemetry, 2, 0);
-    const modeSeeds = bindingFiles(uncheckedFirstCache, "selfhost_typing_dependency_env_reuse_v10").map((path) => parseLogicalInput(parseBinding(readFileSync(path, "utf8"), "TDRE10A").input).typingSemantics);
+    const modeSeeds = bindings(uncheckedFirstCache).map((binding) => parseLogicalInput(binding.input).typingSemantics);
     if (!modeSeeds.includes("checked") || !modeSeeds.includes("unchecked")) fail("TDRE10 aliases did not retain disjoint typing semantics seeds");
     commentEdit(onProject);
     const commentOn = check(stage2, onProject, onCache, true, "comment-on");
@@ -537,7 +562,7 @@ function run(stage2) {
     makeProject(staleProject);
     check(stage2, staleProject, staleCache, true, "stale-target-cold");
     const staleSidecar = appSidecar(staleCache, readFileSync(join(staleProject, "app.vibe"), "utf8"));
-    writeFileSync(staleSidecar.path, aliasText(staleSidecar.input, "stale-conservative-target", staleSidecar.targetText));
+    writeFileSync(staleSidecar.path, aliasText("stale-conservative-target"));
     privateEdit(staleProject);
     const staleTargetFallback = check(stage2, staleProject, staleCache, true, "stale-target-fallback");
     expectCounts("stale referenced target fallback", staleTargetFallback.telemetry, 2, 0);
@@ -561,7 +586,7 @@ function run(stage2) {
     // All target bytes are independently valid, but the other target's witness
     // is bound to another logical input. A target-only eligibility marker would
     // incorrectly accept this coherent-looking wrong-target alias.
-    writeFileSync(validWrongApp.path, aliasText(validWrongApp.input, validWrongOther.target, validWrongOther.targetText));
+    writeFileSync(validWrongApp.path, aliasText(validWrongOther.target));
     privateEdit(validWrongProject);
     const validWrongFallback = check(stage2, validWrongProject, validWrongCache, true, "valid-wrong-target-fallback");
     expectCounts("valid wrong target fallback", validWrongFallback.telemetry, 2, 0);
@@ -661,7 +686,9 @@ function run(stage2) {
       ...parsedRowInput,
       rows: [[`${parsedRowInput.rows[0][0]}.changed`, parsedRowInput.rows[0][1]]],
     });
-    writeFileSync(rowApp.path, aliasText(changedRowInput, rowApp.target, rowApp.targetText));
+    // The alias carries no input key, so the binding's input lives in the
+    // witness: a witness bound to a different row must not satisfy the alias.
+    writeFileSync(rowApp.witnessPath, witnessText(changedRowInput, rowApp.target, rowApp.targetText));
     privateEdit(rowProject);
     const rowFallback = check(stage2, rowProject, rowCache, true, "row-change-fallback");
     expectCounts("direct dep_env row fallback", rowFallback.telemetry, 2, 0);
@@ -681,10 +708,10 @@ function run(stage2) {
       ...parsedOrderInput,
       rows: [parsedOrderInput.rows[1], parsedOrderInput.rows[0]],
     });
-    // Keep the sidecar at the correct key path but cross-splice a binding whose
-    // two valid same-spelling dependency rows are reversed. Order-blind parsing
-    // would accept the wrong witness/alias relationship.
-    writeFileSync(orderApp.path, aliasText(swappedOrderInput, orderApp.target, orderApp.targetText));
+    // Keep the alias at the correct key path but bind its witness to an input
+    // whose two valid same-spelling dependency rows are reversed. Order-blind
+    // parsing would accept the wrong witness/alias relationship.
+    writeFileSync(orderApp.witnessPath, witnessText(swappedOrderInput, orderApp.target, orderApp.targetText));
     privateOrderEdit(orderProject);
     const orderFallback = check(stage2, orderProject, orderCache, true, "order-change-fallback");
     expectCounts("dep_env order/shadow fallback", orderFallback.telemetry, 2, 1, 3);

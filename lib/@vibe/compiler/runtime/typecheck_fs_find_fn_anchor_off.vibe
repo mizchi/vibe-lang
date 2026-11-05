@@ -600,7 +600,15 @@ export fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String
 // and worker transport continue to use TypeEnv v10 independently of storage.
 // The target text is intentionally not replaced by a compact fingerprint:
 // cache corruption must not turn a fingerprint collision into checker reuse.
-let typing_dependency_env_reuse_alias_v10_tag: String = "TDRE10A"
+//
+// The alias carries only the target fingerprint (TDRE11A). Its path is a hash
+// of the input key, and the key and the target text it used to repeat are
+// already in the witness the lookup requires: the lookup checks the witness's
+// key against its own verbatim key and the witness's target text against the
+// raw record. So a path-hash collision lands on a witness whose key differs
+// and misses, and the binding is still exact. An alias in an older shape
+// does not parse and misses.
+let typing_dependency_env_reuse_alias_v11_tag: String = "TDRE11A"
 let typing_dependency_env_reuse_witness_v10_tag: String = "TDRE10W"
 
 /// One `<byte length>:<text>` segment, pushed into a builder as its pieces
@@ -652,6 +660,50 @@ fn typing_dependency_reuse_binding_text(tag: String, input_key: String, target_f
   push_typing_reuse_segment(out = out, text = target_fingerprint)
   push_typing_reuse_segment(out = out, text = target_text)
   StringBuilder::freeze(out)
+}
+
+fn typing_dependency_reuse_alias_text(_ target_fingerprint: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, value = typing_dependency_env_reuse_alias_v11_tag)
+  push_typing_reuse_segment(out = out, text = target_fingerprint)
+  StringBuilder::freeze(out)
+}
+
+fn parse_typing_dependency_reuse_alias(_ text: String) -> Option[String] {
+  let tag = typing_dependency_env_reuse_alias_v11_tag
+  if !String::starts_with(text, prefix = tag) {
+    None
+  } else {
+    match parse_typing_reuse_segment(text = text, pos = String::length(tag)) {
+      Some((target_fingerprint, end)) => if end == String::length(text) && String::length(target_fingerprint) > 0 {
+        Some(target_fingerprint)
+      } else {
+        None
+      },
+      None => None
+    }
+  }
+}
+
+/// The alias path of the last input key asked for. A module's key is looked
+/// up before it is checked and published after, and the path hashes the whole
+/// key -- its verbatim source and its dependencies' env texts -- so the
+/// second hash is the first one's answer. One entry: the two calls are
+/// adjacent per module, and the equality test is a string compare.
+let typing_reuse_sidecar_path_memo_key: Array[String] = []
+let typing_reuse_sidecar_path_memo_path: Array[String] = []
+
+fn typing_reuse_sidecar_path(_ input_key: String) -> String with Env {
+  if Array::length(typing_reuse_sidecar_path_memo_key) == 1 && Array::get(typing_reuse_sidecar_path_memo_key, at = 0) == input_key {
+    Array::get(typing_reuse_sidecar_path_memo_path, at = 0)
+  } else {
+    let path = persistent_typing_dependency_env_reuse_sidecar_path(input_key)
+    Array::truncate(typing_reuse_sidecar_path_memo_key, length = 0)
+    Array::truncate(typing_reuse_sidecar_path_memo_path, length = 0)
+    Array::push(typing_reuse_sidecar_path_memo_key, value = input_key)
+    Array::push(typing_reuse_sidecar_path_memo_path, value = path)
+    path
+  }
 }
 
 fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(String, String, String)] {
@@ -900,37 +952,29 @@ export fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fin
 }
 
 export fn load_typing_dependency_env_reuse_target(path: String, input_key: String) -> Option[(String, String, TypeEnv)] with Env + Fs {
-  let sidecar_path = persistent_typing_dependency_env_reuse_sidecar_path(input_key)
+  let sidecar_path = typing_reuse_sidecar_path(input_key)
   if !Fs::exists(sidecar_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(text = Fs::read_file(sidecar_path), tag = typing_dependency_env_reuse_alias_v10_tag) {
-      Some((alias_input_key, target_fingerprint, target_text)) =>
-      if alias_input_key != input_key {
-        None
-      } else {
-        // Validate the raw target before consulting the separately published
-        // witness. Only an exact three-way alias/witness/target binding reuses.
-        match load_canonical_typing_dependency_env_reuse_target(target_fingerprint = target_fingerprint, expected_target_text = target_text) {
-          // The target was just validated against `target_text`, and the
-          // witness must name that same text, so the witness's own target
-          // validation would re-read and re-encode the same record to the same
-          // answer: it is skipped here, and only here.
-          Some(record) =>
-          match typing_dependency_env_reuse_witness_text(target_fingerprint) {
-            Some((witness_input_key, witness_target_text)) =>
-            if witness_input_key == input_key && witness_target_text == target_text {
+    match parse_typing_dependency_reuse_alias(Fs::read_file(sidecar_path)) {
+      Some(target_fingerprint) => {
+        // Only an exact binding reuses: the witness the alias names carries
+        // this verbatim input key, and its target text is the raw record.
+        match typing_dependency_env_reuse_witness_text(target_fingerprint) {
+          Some((witness_input_key, target_text)) => if witness_input_key != input_key {
+            None
+          } else {
+            match load_canonical_typing_dependency_env_reuse_target(target_fingerprint = target_fingerprint, expected_target_text = target_text) {
+              Some(record) =>
               match record.lowering {
                 Some((offsets, eq_offs, eq_keys)) => {
                   module_typed_lowering_memo_put(path = path, fingerprint = target_fingerprint, offsets = offsets, eq_offs = eq_offs, eq_keys = eq_keys)
                   Some((target_fingerprint, target_text, record.env))
                 },
                 None => None
-              }
-            } else {
-              None
-            },
-            None => None
+              },
+              None => None
+            }
           },
           None => None
         }
@@ -940,9 +984,8 @@ export fn load_typing_dependency_env_reuse_target(path: String, input_key: Strin
   }
 }
 
-export fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String, target_text: String) -> Unit with Env + Fs {
-  let alias_text = typing_dependency_reuse_binding_text(tag = typing_dependency_env_reuse_alias_v10_tag, input_key = input_key, target_fingerprint = target_fingerprint, target_text = target_text)
-  Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), contents = alias_text)
+export fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String) -> Unit with Env + Fs {
+  Fs::write_file(typing_reuse_sidecar_path(input_key), contents = typing_dependency_reuse_alias_text(target_fingerprint))
 }
 
 export fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Array[String]) -> Unit with Env + Fs {
