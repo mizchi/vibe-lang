@@ -1,0 +1,141 @@
+// #3829 step 1: the names the effect-lowering prelude generates inside one
+// top-level statement must not depend on the statements before it.
+//
+// After a one-file edit, 99.99% of the prelude's output statements are
+// byte-identical to the previous build's (#3829), so the prelude's work could
+// be reused per statement -- but only if a statement's output is a function of
+// that statement (and whole-program facts that did not change). A counter
+// shared across the whole program breaks that: one more effect site early in
+// the program renumbers every generated name after it.
+//
+// Each case below compiles a program twice: once as written, and once with a
+// copy of the target statement's shape inserted BEFORE it under another name.
+// The copy uses the same feature, so with a program-wide counter it takes the
+// first numbers and the target's renders differently. Each case also requires
+// the generated prefix to appear in the target's output, or the comparison
+// would be vacuous.
+import @vibe/compiler/codegen/wasi {
+  effect_lowering_prelude
+}
+
+import @vibe/compiler/core {
+  Stmt, generated_owner_tag
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+fn no_ints() -> Array[Int] {
+  []
+}
+
+fn no_keys() -> Array[String] {
+  []
+}
+
+fn no_links() -> Array[(String, String, Int, Int)] {
+  []
+}
+
+/// The program's statements after the whole-program prelude, rendered.
+fn prelude_rendered(src: String, entry: String) -> Array[String] with Exception {
+  let stmts: Array[Stmt] = parse_program(lex(src))
+  let errs = effect_lowering_prelude(stmts = stmts, entry_name = entry, linked_imports = no_links(), iw_names = no_keys(), iw_wats = no_keys(), checker_eq_offsets = no_ints(), checker_eq_type_keys = no_keys())
+  if Array::length(errs) > 0 {
+    throw(Array::get(errs, at = 0))
+  } else {
+    ()
+  }
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::push(out, value = print_stmt(Array::get(stmts, at = i)))
+    i = i + 1
+  }
+  out
+}
+
+/// The rendered top-level `let` named `name`, or "" when there is none.
+fn rendered_let(rendered: Array[String], name: String) -> String {
+  let heads = [
+    String::concat("let ", String::concat(name, " ")),
+    String::concat("let rec ", String::concat(name, " ")),
+    String::concat("export let ", String::concat(name, " ")),
+    String::concat("export let rec ", String::concat(name, " "))
+  ]
+  let mut found = ""
+  let mut i = 0
+  while found == "" && i < Array::length(rendered) {
+    let r = Array::get(rendered, at = i)
+    let mut h = 0
+    while found == "" && h < Array::length(heads) {
+      if String::starts_with(r, prefix = Array::get(heads, at = h)) {
+        found = r
+      } else {
+        ()
+      }
+      h = h + 1
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// `target`'s output with and without `extra` inserted at `marker`, which
+/// must start the target's declaration. Answers `same` when they agree,
+/// `vacuous` when the target never shows `prefix`, and `differs` otherwise.
+fn statement_local(base: String, marker: String, extra: String, target: String, prefix: String, entry: String) -> String with Exception {
+  let at = String::index_of(base, needle = marker)
+  if at < 0 {
+    throw(String::concat("marker not found: ", marker))
+  } else {
+    ()
+  }
+  let variant = String::concat(String::substring(base, start = 0, end = at), String::concat(extra, String::substring(base, start = at, end = String::length(base))))
+  let alone = rendered_let(prelude_rendered(src = base, entry = entry), target)
+  let after = rendered_let(prelude_rendered(src = variant, entry = entry), target)
+  if !String::contains(alone, needle = prefix) {
+    "vacuous"
+  } else if alone == after {
+    "same"
+  } else {
+    "differs"
+  }
+}
+
+test "an earlier shadowing binder does not renumber a later one (__edpsh_)" {
+  let base = "effect Ask {\n  Get -> Int\n}\n\nlet helper = () -> Int with Ask {\n  perform Ask::Get\n}\n\nlet via = () -> Int with Ask {\n  let helper = () -> Int { 42 }\n  helper()\n}\n\nexport let main = () -> Int {\n  handle {\n    via() + helper()\n  } with {\n    Ask::Get => resume(5)\n  }\n}\n"
+  let extra = "let via_first = () -> Int with Ask {\n  let helper = () -> Int { 7 }\n  helper()\n}\n\n"
+  inspect(statement_local(base = base, marker = "let via = ", extra = extra, target = "via", prefix = "__edpsh_", entry = "main"), content = "same")
+}
+
+test "an earlier suspend site does not renumber a later one (__scps_)" {
+  let base = "effect Ask {\n  Get(Int) -> Int\n}\n\nlet twice = () -> Int {\n  handle {\n    let value = perform Ask::Get(3)\n    value * 10\n  } with {\n    Ask::Get(n) => {\n      let k = resume\n      k(n + 1)\n    }\n  }\n}\n\nexport let main = () -> Int {\n  twice()\n}\n"
+  let extra = "let twice_first = () -> Int {\n  handle {\n    let value = perform Ask::Get(4)\n    value * 20\n  } with {\n    Ask::Get(n) => {\n      let k = resume\n      k(n + 2)\n    }\n  }\n}\n\n"
+  inspect(statement_local(base = base, marker = "let twice = ", extra = extra, target = "twice", prefix = "__scps_", entry = "main"), content = "same")
+}
+
+test "an earlier await does not renumber a later one (__aw_)" {
+  // A pending future: `await(Future::ready(..))` folds to its payload and
+  // never reaches the hoist.
+  let base = "let pair = (f: Future[Int]) -> Int with Async {\n  let a = await(f)\n  a + await(f)\n}\n\nexport let main = () -> Int with Async {\n  pair(Future::ready(1))\n}\n"
+  let extra = "let pair_first = (g: Future[Int]) -> Int with Async {\n  let b = await(g)\n  b\n}\n\n"
+  inspect(statement_local(base = base, marker = "let pair = ", extra = extra, target = "pair", prefix = "__aw_", entry = "main"), content = "same")
+}
+
+test "an earlier closure snapshot does not renumber a later one (__edpc)" {
+  let base = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_str(_ f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n\nfn rebound() -> Int {\n  let k = 1\n  let helper = () -> k\n  let k = 2\n  run_str(() -> helper() * 10 + k)\n}\n\nexport fn main() -> Int {\n  rebound()\n}\n"
+  let extra = "fn rebound_first() -> Int {\n  let k = 3\n  let helper = () -> k\n  let k = 4\n  run_str(() -> helper() * 10 + k)\n}\n\n"
+  inspect(statement_local(base = base, marker = "fn rebound() ", extra = extra, target = "rebound", prefix = "__edpc", entry = "main"), content = "same")
+}
+
+test "owner tags are distinct, identifier-safe and free of underscores" {
+  // `_` and `z` are escaped, so `a_b` and `azub` cannot share a tag, and the
+  // tag never holds the `_` that ends a generated name's prefix.
+  inspect(generated_owner_tag("a_b"), content = "azub")
+  inspect(generated_owner_tag("azub"), content = "azzub")
+  inspect(generated_owner_tag("test x"), content = "testzx20x")
+  inspect(generated_owner_tag("Abc9"), content = "Abc9")
+  inspect(generated_owner_tag(""), content = "")
+}

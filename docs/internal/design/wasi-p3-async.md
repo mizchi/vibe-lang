@@ -672,6 +672,10 @@ let __aw_v_N = Array::get(__aw_f_N, 1)
 <await があった式（await は __aw_v_N に置換）>
 ```
 
+`N` is `<n>o<tag>`: `n` counts the expansions within the top-level statement
+and `tag` is that statement's tag (`generated_owner_tag`, #3829), so the names
+in one statement do not depend on the statements before it.
+
 `1` は poll wait（`concurrent.vibe` の payload 規約: 0 = yield / 1 = poll /
 負 = sleep debt）。producer が future を解決するときは slot 1 を書いて slot 0 を
 クリアする。`await(Future::ready(x))` は `x` へ潰す peephole 付き。
