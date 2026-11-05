@@ -845,17 +845,17 @@ Option[T]
 
 Rules:
 
-- `Float64` and `Float32` are the width-named spellings of `Double` and
-  `Float`, in type positions and as a namespace (`Float64::to_string`)
-  (ADR-0122). `f32` and `f64` are aliases for `Float` and `Double` in type
-  positions; they and the old names retire in favour of the width names.
+- The float types are `Float64` and `Float32`, in type positions and as a
+  namespace (`Float64::to_string`) (ADR-0122). The old spellings `Double`,
+  `Float`, `f64` and `f32` are refused, with the width name to write (#3729).
 - There is no `i32`: vibe's integer type is `Int`, which is 63-bit. `i32`
   used to be accepted as an alias of `Int`, so code that declared 32 bits got
   63-bit arithmetic (`2147483647 + 1` was `2147483648`); it is now an unknown
-  type whose message names `Int` (#3727). The same hint follows the other
-  fixed-width spellings vibe does not define (`i8`, `i128`, `u128`, `isize`,
-  `usize`). `i64`, `u8`..`u64`, `i16` and `v128` are separate builtin types,
-  not spellings of `Int`.
+  type whose message names `Int` (#3727). `i64`, `i16` and `u8`..`u64` are
+  refused the same way (#3793): they were builtin types whose arithmetic was
+  `Int`'s, so `u8` 255 + 255 was 510. The same hint follows the fixed-width
+  spellings vibe never defined (`i8`, `i128`, `u128`, `isize`, `usize`).
+  `v128` is a separate builtin type.
 - Function effects appear after return type: `-> T with Effect`.
 - A type-constructor parameter may declare its arity with underscore slots:
   `F[_]` has one input and `F[_, _]` has two, and those forms are

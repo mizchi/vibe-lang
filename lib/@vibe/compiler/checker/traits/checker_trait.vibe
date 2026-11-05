@@ -329,6 +329,8 @@ export fn send_subst_vars(ty: Type, vids: Array[Int], args: Array[Type]) -> Type
 fn send_ok_rec(env: TypeEnv, s: Subst, defs: Array[TypeDef], ty: Type, seen: Array[String]) -> Bool {
   match subst_apply(s = s, ty = ty) {
     CtInt => true,
+    CtInt32 => true,
+    CtUInt32 => true,
     CtDouble => true,
     CtFloat => true,
     CtBool => true,
@@ -427,12 +429,6 @@ fn seed_withheld(withheld: Array[String], trait_name: String) -> Bool {
 export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> TypeEnv {
   let no_supers = empty_strings()
   let eq_supers = one_super("Eq")
-  let i64_type = CtNamed("i64", no_type_args())
-  let u8_type = CtNamed("u8", no_type_args())
-  let u16_type = CtNamed("u16", no_type_args())
-  let u32_type = CtNamed("u32", no_type_args())
-  let u64_type = CtNamed("u64", no_type_args())
-  let i16_type = CtNamed("i16", no_type_args())
   let nm = no_trait_methods()
   // #2523 / ADR-0097: `Eq` is METHOD-BEARING, and this registration is the one
   // that decides it. `@vibe/builtin/builtin_traits.vibe` declares the same
@@ -457,7 +453,7 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   // and the other arithmetic bodies retain their concrete Int restriction.
   // The prelude declares the same impls (builtin_trait_seed_parity_test).
   let env_show = if !seed_withheld(withheld = withheld, trait_name = "Show") {
-    EnvTraitImpl("Show", CtFloat, EnvTraitImpl("Show", CtString, EnvTraitImpl("Show", CtChar, EnvTraitImpl("Show", CtBool, EnvTraitImpl("Show", CtDouble, EnvTraitImpl("Show", CtInt, env))))))
+    EnvTraitImpl("Show", CtUInt32, EnvTraitImpl("Show", CtInt32, EnvTraitImpl("Show", CtFloat, EnvTraitImpl("Show", CtString, EnvTraitImpl("Show", CtChar, EnvTraitImpl("Show", CtBool, EnvTraitImpl("Show", CtDouble, EnvTraitImpl("Show", CtInt, env))))))))
   } else {
     env
   }
@@ -477,7 +473,12 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   // #3187: the prelude declares `impl Eq for Char` too. Its witness is the
   // annotated `a == b` desugar_trait_dict synthesizes for each scalar.
   let e10c = EnvTraitImpl("Eq", CtChar, e10)
-  let e11 = EnvTraitImpl("Ord", CtInt, e10c)
+  // #3730: `Int32` / `UInt32` compare, order and render as the `Int` they are
+  // held as. No arithmetic trait is seeded: an erased `+` would not wrap, so
+  // `[T: Add]` stays refused at them. `Default` and `Hash` follow once the
+  // seed reads the types (their impls are library source).
+  let e10i = EnvTraitImpl("Eq", CtUInt32, EnvTraitImpl("Eq", CtInt32, e10c))
+  let e11 = EnvTraitImpl("Ord", CtUInt32, EnvTraitImpl("Ord", CtInt32, EnvTraitImpl("Ord", CtInt, e10i)))
   let e12 = EnvTraitImpl("Ord", CtFloat, EnvTraitImpl("Ord", CtDouble, e11))
   let e13 = EnvTraitImpl("Ord", CtString, e12)
   let e14 = EnvTraitImpl("Add", CtInt, e13)
@@ -493,53 +494,17 @@ export fn register_builtin_traits_for(env: TypeEnv, withheld: Array[String]) -> 
   let e19 = EnvTraitImpl("Mul", CtFloat, EnvTraitImpl("Mul", CtDouble, e18))
   let e20 = EnvTraitImpl("Div", CtInt, e19)
   let e21 = EnvTraitImpl("Div", CtFloat, EnvTraitImpl("Div", CtDouble, e20))
-  let e22 = EnvTraitImpl("Eq", i64_type, e21)
-  let e23 = EnvTraitImpl("Eq", u8_type, e22)
-  let e24 = EnvTraitImpl("Eq", u16_type, e23)
-  let e25 = EnvTraitImpl("Eq", u32_type, e24)
-  let e26 = EnvTraitImpl("Eq", u64_type, e25)
-  let e27 = EnvTraitImpl("Eq", i16_type, e26)
-  let e28 = EnvTraitImpl("Ord", i64_type, e27)
-  let e29 = EnvTraitImpl("Ord", u8_type, e28)
-  let e30 = EnvTraitImpl("Ord", u16_type, e29)
-  let e31 = EnvTraitImpl("Ord", u32_type, e30)
-  let e32 = EnvTraitImpl("Ord", u64_type, e31)
-  let e33 = EnvTraitImpl("Ord", i16_type, e32)
-  let e34 = EnvTraitImpl("Add", i64_type, e33)
-  let e35 = EnvTraitImpl("Add", u8_type, e34)
-  let e36 = EnvTraitImpl("Add", u16_type, e35)
-  let e37 = EnvTraitImpl("Add", u32_type, e36)
-  let e38 = EnvTraitImpl("Add", u64_type, e37)
-  let e39 = EnvTraitImpl("Add", i16_type, e38)
-  let e40 = EnvTraitImpl("Sub", i64_type, e39)
-  let e41 = EnvTraitImpl("Sub", u8_type, e40)
-  let e42 = EnvTraitImpl("Sub", u16_type, e41)
-  let e43 = EnvTraitImpl("Sub", u32_type, e42)
-  let e44 = EnvTraitImpl("Sub", u64_type, e43)
-  let e45 = EnvTraitImpl("Sub", i16_type, e44)
-  let e46 = EnvTraitImpl("Mul", i64_type, e45)
-  let e47 = EnvTraitImpl("Mul", u8_type, e46)
-  let e48 = EnvTraitImpl("Mul", u16_type, e47)
-  let e49 = EnvTraitImpl("Mul", u32_type, e48)
-  let e50 = EnvTraitImpl("Mul", u64_type, e49)
-  let e51 = EnvTraitImpl("Mul", i16_type, e50)
-  let e52 = EnvTraitImpl("Div", i64_type, e51)
-  let e53 = EnvTraitImpl("Div", u8_type, e52)
-  let e54 = EnvTraitImpl("Div", u16_type, e53)
-  let e55 = EnvTraitImpl("Div", u32_type, e54)
-  let e56 = EnvTraitImpl("Div", u64_type, e55)
-  let e57 = EnvTraitImpl("Div", i16_type, e56)
   // ADR-0068 `Send`: register the trait def (so `[T: Send]` bounds are
   // known) plus nominal impls for the sendable primitives, which keeps
   // the non-structural resolution paths (generic-impl bounds, UFCS
   // helpers) working for primitive instantiations. Composite structural
   // judgment lives in type_send_ok; user `impl Send` is rejected in the
   // SImpl handler.
-  let e58 = EnvTraitDef("Send", no_supers, false, nm, e57, empty_strings(), no_trait_method_gens())
+  let e58 = EnvTraitDef("Send", no_supers, false, nm, e21, empty_strings(), no_trait_method_gens())
   let e59 = EnvTraitImpl("Send", CtInt, e58)
   // #3625: Float has distinct Eq / Show / Add witnesses after the seed bump.
   let e60 = EnvTraitImpl("Send", CtFloat, EnvTraitImpl("Send", CtDouble, e59))
-  let e61 = EnvTraitImpl("Send", CtString, e60)
+  let e61 = EnvTraitImpl("Send", CtUInt32, EnvTraitImpl("Send", CtInt32, EnvTraitImpl("Send", CtString, e60)))
   let e62 = EnvTraitImpl("Send", CtBool, e61)
   let e63 = EnvTraitImpl("Send", CtUnit, e62)
   let e64 = EnvTraitImpl("Send", CtChar, e63)

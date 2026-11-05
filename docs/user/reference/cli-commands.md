@@ -265,6 +265,18 @@ or-patterns that bind nothing. A counterexample is printed the way the
 program spells the value (`s = Shape::Rect(2, 3)`). A generic type, or one
 with a field outside the fragment, leaves its functions unsupported.
 
+A struct or enum of the file is an SMT datatype (#3719) when it is not
+generic, has no `mut` field, and every field is `Int`, `Bool` or another such
+type. Its values can be parameters and results; the fragment reads a struct
+literal (`Point::{ x: 1, y: 2 }`), a field (`p.x`), a variant (`Circle(r)`,
+`Shape::Empty`), `==` on them (structural), and `match`. A `match` is a case
+split, and each arm's path assumes its own pattern holds and every earlier
+arm's does not, as the first matching arm runs. The patterns it reads are
+constructors (nested too), struct patterns, literals, names, `_`, and
+or-patterns that bind nothing. A counterexample is printed the way the
+program spells the value (`s = Shape::Rect(2, 3)`). A generic type, or one
+with a field outside the fragment, leaves its functions unsupported.
+
 `--warn-missing-labels` adds one warning per argument that will need its
 parameter's label once labels are required (ADR-0120):
 ``line 5:7-9: warning: label this argument: write `y = 3` ``. The warnings are exactly the

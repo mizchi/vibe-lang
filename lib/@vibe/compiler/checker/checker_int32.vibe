@@ -1,0 +1,196 @@
+// 32-bit integers in the checker (#3730).
+
+import @vibe/compiler/core {
+  Expr, Subst, Type, subst_apply, unify
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+
+import @vibe/compiler/checker/type_relations {
+  float_mix_hint
+}
+
+//# Functions
+
+/// #3730: the value of an integer literal operand -- `5`, or a negated one
+/// (`-5`), or a block that ends in one -- or None for any other expression.
+/// Only a literal takes its type from the context it sits in; a name or a
+/// call has the type it was given.
+export fn int32_literal_value(_ e: Expr) -> Option[Int] {
+  match e {
+    EInt(n) => Some(n),
+    ELet(_, _, body, _) => int32_literal_value(body),
+    ELetMut(_, _, body, _) => int32_literal_value(body),
+    ESeq(_, body) => int32_literal_value(body),
+    EUnaryOp(op, EInt(n)) => if op == "-" {
+      Some(0 - n)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// #3730: the type an integer literal `e` takes where a value of type
+/// `expected` is wanted. A literal checks as `Int32` / `UInt32` where that
+/// type is expected, and is refused (naming the range) when it does not
+/// fit; so does an array literal of such literals where an `Array` of either
+/// is expected. Anything else keeps `actual`, so a mismatch is reported as
+/// usual.
+export fn int32_literal_adapt(e: Expr, expected: Type, actual: Type, s: Subst, errors: Array[String], off: Int) -> Type {
+  let want = subst_apply(s = s, ty = expected)
+  match want {
+    CtInt32 => int32_literal_fit(e = e, want = want, actual = actual, s = s, errors = errors, off = off),
+    CtUInt32 => int32_literal_fit(e = e, want = want, actual = actual, s = s, errors = errors, off = off),
+    CtArray(inner) => match subst_apply(s = s, ty = inner) {
+      CtInt32 => int32_array_literal_fit(e = e, want = want, elem = CtInt32, actual = actual, s = s, errors = errors, off = off),
+      CtUInt32 => int32_array_literal_fit(e = e, want = want, elem = CtUInt32, actual = actual, s = s, errors = errors, off = off),
+      _ => actual
+    },
+    _ => actual
+  }
+}
+
+fn int32_literal_fit(e: Expr, want: Type, actual: Type, s: Subst, errors: Array[String], off: Int) -> Type {
+  match int32_literal_value(e) {
+    Some(n) => match subst_apply(s = s, ty = actual) {
+      CtInt => {
+        int32_literal_range_check(n = n, want = want, errors = errors, off = off)
+        want
+      },
+      _ => actual
+    },
+    None => actual
+  }
+}
+
+fn int32_array_literal_fit(e: Expr, want: Type, elem: Type, actual: Type, s: Subst, errors: Array[String], off: Int) -> Type {
+  let actual_is_int_array = match subst_apply(s = s, ty = actual) {
+    CtArray(a) => match subst_apply(s = s, ty = a) {
+      CtInt => true,
+      _ => false
+    },
+    _ => false
+  }
+  match e {
+    EArray(items) => if actual_is_int_array && Array::length(items) > 0 {
+      let mut all = true
+      for it in items {
+        if int32_literal_value(it) is None {
+          all = false
+        }
+      }
+      if all {
+        for it in items {
+          match int32_literal_value(it) {
+            Some(n) => int32_literal_range_check(n = n, want = elem, errors = errors, off = off),
+            None => ()
+          }
+        }
+        want
+      } else {
+        actual
+      }
+    } else {
+      actual
+    },
+    _ => actual
+  }
+}
+
+fn int32_literal_range_check(n: Int, want: Type, errors: Array[String], off: Int) -> Unit {
+  match want {
+    CtInt32 => if n < 0 - 2147483648 || n > 2147483647 {
+      Array::push(errors, value = "integer literal \{n} does not fit `Int32` (-2147483648 .. 2147483647): use an `Int`, or write a value in range\{off_marker(off)}")
+    } else {
+      ()
+    },
+    CtUInt32 => if n < 0 || n > 4294967295 {
+      Array::push(errors, value = "integer literal \{n} does not fit `UInt32` (0 .. 4294967295): use an `Int`, or write a value in range\{off_marker(off)}")
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// #3730: whether an operation whose result is an `Int32` / `UInt32` can
+/// leave that type's range, so its result needs wrapping. `&`, `|`, `^` and
+/// `%` of two in-range values are in range; a shift is filed too, because
+/// its count is masked to 0 .. 31 (wasm's `i32` shift).
+export fn int32_op_wraps(_ op: String) -> Bool {
+  op == "+" || op == "-" || op == "*" || op == "/" || op == "<<" || op == ">>"
+}
+
+/// #3730: the operands of a binop over `Int32` / `UInt32` must have that one
+/// type; an `Int` operand is never converted implicitly. Answers None unless
+/// an operand is already one of the two.
+export fn int32_binop_candidate(left_ty: Type, right_ty: Type, s: Subst) -> Option[(Type, Subst)] {
+  let target = match subst_apply(s = s, ty = left_ty) {
+    CtInt32 => Some(CtInt32),
+    CtUInt32 => Some(CtUInt32),
+    _ => match subst_apply(s = s, ty = right_ty) {
+      CtInt32 => Some(CtInt32),
+      CtUInt32 => Some(CtUInt32),
+      _ => None
+    }
+  }
+  match target {
+    Some(t) => match unify(a = left_ty, b = t, s = s) {
+      Some(s1) => match unify(a = right_ty, b = t, s = s1) {
+        Some(s2) => Some((t, s2)),
+        None => None
+      },
+      None => None
+    },
+    None => None
+  }
+}
+
+/// The integer-only operators `%`, `&`, `|`, `^`, `<<` and `>>`: both
+/// operands `Int`, or both one of the 32-bit integers (#3730), which keeps
+/// its type.
+export fn infer_integer_binop(op: String, left_ty: Type, right_ty: Type, s: Subst, errors: Array[String], off: Int) -> (Type, Subst) {
+  if op == "%" {
+    match int32_binop_candidate(left_ty = left_ty, right_ty = right_ty, s = s) {
+      Some((t, s1)) => (t, s1),
+      None => match int_binop_unify(left_ty = left_ty, right_ty = right_ty, s = s) {
+        Some(s1) => (CtInt, s1),
+        None => {
+          Array::push(errors, value = binop_mismatch_msg(op = "%", tail = float_mix_hint(left_ty = left_ty, right_ty = right_ty, s = s, base = "': operands must be Int"), off = off))
+          (CtUnknown, s)
+        }
+      }
+    }
+  }
+  else {
+    match int32_binop_candidate(left_ty = left_ty, right_ty = right_ty, s = s) {
+      Some((t, s1)) => (t, s1),
+      None => match int_binop_unify(left_ty = left_ty, right_ty = right_ty, s = s) {
+        Some(s1) => (CtInt, s1),
+        None => {
+          Array::push(errors, value = binop_mismatch_msg(op = op, tail = float_mix_hint(left_ty = left_ty, right_ty = right_ty, s = s, base = "': operands must be Int"), off = off))
+          (CtUnknown, s)
+        }
+      }
+    }
+  }
+}
+
+fn int_binop_unify(left_ty: Type, right_ty: Type, s: Subst) -> Option[Subst] {
+  match unify(a = left_ty, b = CtInt, s = s) {
+    Some(s1) => unify(a = right_ty, b = CtInt, s = s1),
+    None => None
+  }
+}
+
+/// `type mismatch in '<op>': <tail>`, carrying the operand anchor as the
+/// strippable `[@off=N]` marker. Every binop mismatch in `infer_binop_type`
+/// goes through here so none of them can silently go back to being unlocated:
+/// the offset is a parameter of the message, not an afterthought at one site.
+/// String::concat only (`+`/interpolation mis-codegen to NUL here).
+export fn binop_mismatch_msg(op: String, tail: String, off: Int) -> String {
+  String::concat(String::concat("type mismatch in '", String::concat(op, tail)), off_marker(off))
+}

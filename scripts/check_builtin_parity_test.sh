@@ -89,6 +89,33 @@ run_case shape   shape   "9-tuple"
 # name that row as a dead neither-lane entry.
 run_case neither neither "NEITHER lane"
 
+# --- the checker-only rows (#3730) -----------------------------------------
+#
+# The 32-bit integer conversions claim neither lane because
+# `rewrite_int32_stmts` removes every use before code generation. The
+# exemption reads that pass, so a rewrite that stops spelling a name must
+# fail the gate naming it.
+INT32_REAL="lib/@vibe/compiler/normalize/desugar/int32.vibe"
+INT32_COPY="$WORK/int32_rewrite.vibe"
+# Only the dispatch arm is renamed: the name stays spelled in
+# i32_is_conversion and i32_qualified, which must not satisfy the gate.
+sed 's/} else if name == "Int::wrap_uint32" {/} else if name == "Int::wrap_uint32_gone" {/' "$INT32_REAL" > "$INT32_COPY"
+if ! grep -q '"Int::wrap_uint32"' "$INT32_COPY"; then
+  fail "mutation 'int32-rewrite' removed every spelling, so it would not tell an arm check from a name check"
+fi
+if diff -q "$INT32_REAL" "$INT32_COPY" >/dev/null 2>&1; then
+  fail "mutation 'int32-rewrite' did not change the copy"
+fi
+if gate --int32-rewrite "$INT32_COPY" >"$WORK/int32.log" 2>&1; then
+  cat "$WORK/int32.log" >&2
+  fail "the gate PASSED although the Int32 rewrite no longer has an Int::wrap_uint32 arm"
+fi
+if ! grep -q "no longer rewritten.*Int::wrap_uint32" "$WORK/int32.log"; then
+  cat "$WORK/int32.log" >&2
+  fail "mutation 'int32-rewrite' failed, but not for its own reason"
+fi
+echo "builtin-parity-selftest:   red ok: int32-rewrite"
+
 # --- the call-site exemption (#2397) ----------------------------------------
 #
 # `abort` claims neither lane HONESTLY: both lanes lower it at the call site
