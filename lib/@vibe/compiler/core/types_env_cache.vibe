@@ -446,22 +446,25 @@ export fn merged_trait_origin_marker(_ name: String) -> String {
 
 /// #3824: `env` with the origin of the trait `name` bound just above its
 /// definition: `path` is how the module that declares it was imported (its
-/// `import` spelling, `@vibe/core` for the shipped library). The marker is a
-/// binding no source program can name, like `type_definition_origin_marker`.
-export fn env_bind_trait_definition_origin(env: TypeEnv, name: String, path: String) -> TypeEnv {
-  EnvBind(trait_definition_origin_marker(name), env_value_binding_with_origin(ty = CtUnknown, origin = BindingOriginModuleExport(path, name)), env)
+/// `import` spelling, `@vibe/core` for the shipped library) and `source` the
+/// name it is declared under there, which an `as` alias does not change. The
+/// marker is a binding no source program can name, like
+/// `type_definition_origin_marker`.
+export fn env_bind_trait_definition_origin(env: TypeEnv, name: String, path: String, source: String) -> TypeEnv {
+  EnvBind(trait_definition_origin_marker(name), env_value_binding_with_origin(ty = CtUnknown, origin = BindingOriginModuleExport(path, source)), env)
 }
 
 /// #3824: the import spelling the nearest definition of trait `name` came
-/// through, when the projection that put it in `env` recorded one. A trait
+/// through and the name it is declared under there, when the projection
+/// that put it in `env` recorded them. A trait
 /// the program declares itself, or one a lane projected without a marker,
 /// answers `None`: the walk stops at the first definition of `name`, so a
 /// nearer declaration never inherits an older one's origin.
-export fn env_trait_definition_origin(env: TypeEnv, name: String) -> Option[String] {
+export fn env_trait_definition_origin(env: TypeEnv, name: String) -> Option[(String, String)] {
   let marker = trait_definition_origin_marker(name)
   let mut cur = env
-  let mut pending: Option[String] = None
-  let mut result: Option[String] = None
+  let mut pending: Option[(String, String)] = None
+  let mut result: Option[(String, String)] = None
   let mut done = false
   while !done {
     match cur {
@@ -471,7 +474,7 @@ export fn env_trait_definition_origin(env: TypeEnv, name: String) -> Option[Stri
       EnvBind(n, binding, rest) => {
         if n == marker {
           match binding.origin {
-            BindingOriginModuleExport(path, _) => pending = Some(path),
+            BindingOriginModuleExport(path, source) => pending = Some((path, source)),
             _ => ()
           }
         } else {

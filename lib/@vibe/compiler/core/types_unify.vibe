@@ -2142,25 +2142,26 @@ export fn type_implements_trait(env: TypeEnv, s: Subst, ty: Type, trait_name: St
 /// #3824: the one `Self` result borrowed is the shipped `Default`'s, whose
 /// `Int` impl returns `0`, in range for both types. "Shipped" is decided by
 /// where the definition came from, not by its shape: the seed's rows (no
-/// definition at all), or a `trait Default` projected through an import
-/// spelled `@vibe/core` (`env_trait_definition_origin`). A program's own
+/// definition at all), or a trait declared as `Default` in a module reached
+/// through an import spelled `@vibe/core`, under whatever local name an `as`
+/// gives it (`env_trait_definition_origin`). A program's own
 /// `trait Default`, or one reached any other way, keeps the rule above, so an
 /// `impl Default for Int` returning 4294967296 is not borrowed.
 fn int32_borrows_int_impl(env: TypeEnv, trait_name: String) -> Bool {
-  if trait_ref_name(trait_name) == "Default" && int32_borrows_shipped_default(env) {
+  if int32_borrows_shipped_default(env = env, trait_name = trait_ref_name(trait_name)) {
     true
   } else {
     int32_borrows_reading_impl(env = env, trait_name = trait_name)
   }
 }
 
-fn int32_borrows_shipped_default(_ env: TypeEnv) -> Bool {
-  match trait_definition(env = env, name = "Default") {
-    None => true,
+fn int32_borrows_shipped_default(env: TypeEnv, trait_name: String) -> Bool {
+  match trait_definition(env = env, name = trait_name) {
+    None => trait_name == "Default",
     Some((supers, methods, params, _)) => Array::length(supers) == 0 && Array::length(params) == 0 && Array::length(methods) == 1 && match Array::get(methods, at = 0) {
       (mname, mparams, TyName(ret)) => mname == "default" && Array::length(mparams) == 0 && ret == "Self",
       _ => false
-    } && env_trait_definition_origin(env = env, name = "Default") == Some("@vibe/core")
+    } && env_trait_definition_origin(env = env, name = trait_name) == Some(("@vibe/core", "Default"))
   }
 }
 
