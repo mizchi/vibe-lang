@@ -182,7 +182,11 @@ native_effect_pattern='with[[:space:]]*\{[^}]*(Fs|Process|Socket|Net)|perform[[:
 # already used here (2 rows in preprocess_compile.vibe) and grants no host
 # access by itself -- it is a scheduling effect, not a capability. Adding to
 # this list is a deliberate act; that is the property being enforced.
-PORTABLE_ALLOWED_EFFECTS='Exception|Async'
+# #1953: Config is the compiler-private algebraic lookup of immutable target
+# flags. Its handler supplies a String, without host access or an authority
+# grant. Effectset aliases are still expanded BEFORE this allow-list, so a
+# row that includes Config cannot hide an Fs member.
+PORTABLE_ALLOWED_EFFECTS='Exception|Async|Config'
 
 # The normalized view both boundary scanners read: string literals removed,
 # comments removed to end of line, newlines flattened.

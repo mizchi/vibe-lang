@@ -1,0 +1,118 @@
+import @vibe/compiler/config {
+  Config
+}
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_source_wasi_only_rc_configured
+}
+import @vibe/parser {
+  set_cfg_ambient_flags
+}
+
+fn configured_flags() -> String with Config {
+  perform Config::CfgFlags()
+}
+
+fn configured_probe() -> Bytes with Config + Exception {
+  // If a compile reads the ambient cells, poison adds an invalid declaration.
+  // Each invocation must select exactly one definition of chosen.
+  let source = "#cfg(alpha)\nfn chosen() -> Int { 11 }\n#cfg(beta)\nfn chosen() -> Int { 22 }\n#cfg(poison)\nlet invalid = missing_name\nfn main() -> Int { chosen() }"
+  compile_source_wasi_only_rc_configured(source = source, entry_name = "main", trusted_generated = false)
+}
+
+fn same_configured_bytes(a: Bytes, b: Bytes) -> Bool {
+  if Bytes::length(a) != Bytes::length(b) {
+    false
+  } else {
+    let mut same = true
+    let mut i = 0
+    while same && i < Bytes::length(a) {
+      same = Bytes::get(a, at = i) == Bytes::get(b, at = i)
+      i = i + 1
+    }
+    same
+  }
+}
+
+test "nested Config handlers preserve the enclosing snapshot" {
+  handle {
+    inspect(configured_flags(), content = "alpha")
+    let inner = handle {
+      configured_flags()
+    } with { Config::CfgFlags() => resume("beta") }
+    inspect(inner, content = "beta")
+    inspect(configured_flags(), content = "alpha")
+  } with { Config::CfgFlags() => resume("alpha") }
+}
+
+test "a throwing invocation leaves the enclosing Config intact" {
+  handle {
+    let message = handle {
+      handle {
+        inspect(configured_flags(), content = "beta")
+        throw("inner compile failed")
+      } with { Config::CfgFlags() => resume("beta") }
+      "unreachable"
+    } with { Exception::Throw(msg) => msg }
+    inspect(message, content = "inner compile failed")
+    inspect(configured_flags(), content = "alpha")
+  } with { Config::CfgFlags() => resume("alpha") }
+}
+
+test "RC compiles isolate flags from nested invocations and ambient cells" {
+  set_cfg_ambient_flags(["poison"])
+  // Always restore the compatibility API even if this oracle fails.
+  handle {
+    handle {
+      let before = configured_probe()
+      let inner = handle {
+        configured_probe()
+      } with { Config::CfgFlags() => resume(" beta, ") }
+      assert(!same_configured_bytes(a = before, b = inner))
+      let after = configured_probe()
+      assert(same_configured_bytes(a = before, b = after))
+    } with { Config::CfgFlags() => resume("alpha") }
+    set_cfg_ambient_flags([])
+  } with { Exception::Throw(msg) => {
+    set_cfg_ambient_flags([])
+    throw(msg)
+  } }
+}
+
+test "a failed RC compile cannot authorize the next invocation's flags" {
+  handle {
+    let before = configured_probe()
+    let refused = handle {
+      handle {
+        let _ = configured_probe()
+        false
+      } with { Config::CfgFlags() => resume("") }
+    } with { Exception::Throw(_) => true }
+    assert(refused)
+    assert(same_configured_bytes(a = before, b = configured_probe()))
+  } with { Config::CfgFlags() => resume("alpha") }
+}
+
+test "an outer compile resumes after nested compiles in its Config handler" {
+  let expected = handle {
+    configured_probe()
+  } with { Config::CfgFlags() => resume("alpha") }
+  let actual = handle {
+    // This compiler invocation is already running when its handler starts
+    // the inner invocations, rather than merely compiling after a scope ends.
+    configured_probe()
+  } with { Config::CfgFlags() => {
+    let inner = handle {
+      configured_probe()
+    } with { Config::CfgFlags() => resume("beta") }
+    assert(!same_configured_bytes(a = expected, b = inner))
+    let refused = handle {
+      handle {
+        let _ = configured_probe()
+        false
+      } with { Config::CfgFlags() => resume("") }
+    } with { Exception::Throw(_) => true }
+    assert(refused)
+    resume("alpha")
+  } }
+  assert(same_configured_bytes(a = expected, b = actual))
+}

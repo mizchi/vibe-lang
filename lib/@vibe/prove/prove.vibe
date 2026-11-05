@@ -1,11 +1,15 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, Stmt, TypeExpr, index_site_offset
+  Expr, Pat, Stmt, TypeExpr, index_site_offset, is_builtin_ref_offset
 }
 
 import @vibe/parser {
   lex_with_offsets, parse_program_preserving_located, print_expr
+}
+
+import ./solver.vibe {
+  smt_unquote
 }
 
 //# Types
@@ -45,7 +49,12 @@ struct Ctx {
   /// The checkpoint closures of the contracted `for` loops being proved
   /// (`attach_for_contract`). A call of one is the runtime check of the
   /// loop's clauses, which `sym_for` owes as obligations instead.
-  checkpoints: Array[String]
+  checkpoints: Array[String];
+  /// The local arrays the function writes (`writable_arrays`): each bound
+  /// once to an array literal and named only as the array of a builtin read
+  /// or write, so no other name holds it and a write is an update of its
+  /// one binding.
+  writable: Array[String]
 }
 
 /// #3719: a struct or enum of the file the prover reads as an SMT datatype:
@@ -341,11 +350,12 @@ fn sort_of(adts: Array[Adt], ty: Option[TypeExpr]) -> String {
 //# `Array[Int]` (#3717)
 
 /// An `Array[Int]` is one SMT datatype: its contents as an SMT array and its
-/// length. The fragment only reads arrays -- `Array::push`, `Array::set` and
-/// an index write are calls to no contracted function of the file, so they
-/// are unsupported -- which keeps an array a value: no call can change one a
-/// caller still holds. The contents past the length are unconstrained, so
-/// `==` on arrays is not encoded (SMT `=` would compare them too).
+/// length. An array stays a value: `Array::set`, an index write and
+/// `Array::push` are admitted only on a local no other name holds
+/// (`writable_arrays`), where a write replaces that binding's value, and a
+/// parameter is never written, so no call changes an array a caller holds.
+/// The contents past the length are unconstrained, so `==` on arrays is not
+/// encoded (SMT `=` would compare them too).
 fn arr_sort() -> String {
   "|Array[Int]|"
 }
@@ -427,7 +437,8 @@ fn prove_fn(name: String, value: Expr, fns: Array[FnSig], adts: Array[Adt], decl
     pending: [],
     fns: fns,
     counter: [0],
-    checkpoints: []
+    checkpoints: [],
+    writable: []
   }
   let result = handle {
     prove_fn_body(ctx = ctx, value = value)
@@ -508,6 +519,9 @@ fn prove_fn_body(ctx: Ctx, value: Expr) -> Unit with Exception {
         Array::push(ctx.decls, value = (smt, sort))
         assume_range(ctx = ctx, term = smt, sort = sort, pc = [])
         Array::push(env, value = (pn, smt, sort))
+      }
+      for w in writable_arrays(ctx = ctx, params = params, body = body) {
+        Array::push(ctx.writable, value = w)
       }
       match find_sig(fns = ctx.fns, name = ctx.fn_name) {
         Some(sig) => {
@@ -884,6 +898,13 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
       // `continue` itself makes `sym_for` owe the clauses.
       EIdent(fname, coff) => if Array::length(args) == 0 && contains_name(xs = ctx.checkpoints, x = fname) {
         [with_value(st = st, value = "true", sort = "Unit")]
+      } else if is_array_write_name(ctx = ctx, fname = fname, callee_off = coff) {
+        let at = if index_site_offset(coff) >= 0 {
+          index_site_offset(coff)
+        } else {
+          off
+        }
+        sym_array_write(ctx = ctx, e = e, fname = fname, args = args, off = at, indexed = index_site_offset(coff) >= 0, st = st)
       } else if is_builtin_array_read(ctx = ctx, st = st, fname = fname, callee_off = coff) {
         let at = if fname == "__index" {
           index_site_offset(coff)
@@ -1156,7 +1177,21 @@ fn env_assign(env: Array[(String, String, String)], name: String, term: String, 
 /// the rest of the path reads it.
 fn sym_let(ctx: Ctx, name: String, v: Expr, b: Expr, st: Outcome) -> Array[Outcome] with Exception {
   let out: Array[Outcome] = []
-  for o in sym(ctx = ctx, e = v, st = st) {
+  // `let xs = []` for an array the function writes: empty, whatever its
+  // element type. Its elements only come from `Array::push`, which takes an
+  // `Int` (an index write needs an index below the length), so reading it as
+  // an `Array[Int]` cannot say anything false about another element type.
+  let init = match v {
+    EArray(items) => if Array::length(items) == 0 && contains_name(xs = ctx.writable, x = name) {
+      [
+        with_value(st = st, value = "(|Array[Int]::mk| ((as const (Array Int Int)) 0) 0)", sort = arr_sort())
+      ]
+    } else {
+      sym(ctx = ctx, e = v, st = st)
+    },
+    _ => sym(ctx = ctx, e = v, st = st)
+  }
+  for o in init {
     if o.returned {
       Array::push(out, value = o)
     } else {
@@ -1660,6 +1695,16 @@ fn collect_assigned(e: Expr, out: Array[String]) -> Unit {
   match e {
     EAssign(n, _, _, _) => Array::push(out, value = n),
     EAssignOp(n, _, _, _, _) => Array::push(out, value = n),
+    // A write to an array changes its binding's value, so a loop that
+    // writes one varies it like an assignment.
+    ECall(EIdent(f, _), args, _, _) => if (f == "Array::set" || f == "Array::push") && Array::length(args) > 0 {
+      match strip_label(Array::get(args, at = 0)) {
+        EIdent(n, _) => Array::push(out, value = n),
+        _ => ()
+      }
+    } else {
+      ()
+    },
     _ => ()
   }
   for k in expr_kids(e) {
@@ -1721,7 +1766,20 @@ fn sym_array_read(ctx: Ctx, e: Expr, fname: String, args: Array[Expr], off: Int,
         } else if p.sort != "Int" {
           unsupported(off = off, reason = "an array index that is a `\{p.sort}`")
         } else {
-          let inside = "(and (<= 0 \{p.value}) (< \{p.value} \{arr_len(o.value)}))"
+          // The read sees the array as the index left it: an index that
+          // writes a local array has already done so (`writable_arrays`).
+          let arr = match strip_label(Array::get(args, at = 0)) {
+            EIdent(n, _) => if contains_name(xs = ctx.writable, x = n) {
+              match env_lookup(env = p.env, name = n) {
+                Some((t, _)) => t,
+                None => o.value
+              }
+            } else {
+              o.value
+            },
+            _ => o.value
+          }
+          let inside = "(and (<= 0 \{p.value}) (< \{p.value} \{arr_len(arr)}))"
           let label = if fname == "__index" {
             "\{print_expr(strip_label(Array::get(args, at = 0)))}[\{print_expr(strip_label(Array::get(args, at = 1)))}]"
           } else {
@@ -1729,7 +1787,7 @@ fn sym_array_read(ctx: Ctx, e: Expr, fname: String, args: Array[Expr], off: Int,
           }
           push_obligation(ctx = ctx, kind = "index", label = label, off = off, goal = guarded(pc = p.pc, goal = inside))
           let q = with_pc(st = p, cond = inside)
-          let v = "(select \{arr_data(o.value)} \{p.value})"
+          let v = "(select \{arr_data(arr)} \{p.value})"
           assume_range(ctx = ctx, term = v, sort = "Int", pc = q.pc)
           Array::push(out, value = with_value(st = q, value = v, sort = "Int"))
         }
@@ -1745,6 +1803,346 @@ fn strip_label(_ a: Expr) -> Expr {
     ELabeledArg(_, _, v) => v,
     _ => a
   }
+}
+
+//# Array writes
+
+/// Whether a call of `fname` is the builtin `Array::set` / `Array::push`:
+/// an index write (`xs[i] = v`) always is, and a written call is unless the
+/// program declares a function of that name.
+fn is_array_write_name(ctx: Ctx, fname: String, callee_off: Int) -> Bool {
+  (fname == "Array::set" || fname == "Array::push") && (is_builtin_ref_offset(callee_off) || match find_sig(fns = ctx.fns, name = fname) {
+    Some(_) => false,
+    None => true
+  })
+}
+
+/// Whether a call of `fname` is a builtin array read or write, judged
+/// without the environment (a local cannot be named `Array::..`).
+fn is_array_op_name(ctx: Ctx, fname: String, callee_off: Int) -> Bool {
+  if fname == "__index" {
+    index_site_offset(callee_off) >= 0
+  } else {
+    (fname == "Array::get" || fname == "Array::length" || fname == "Array::set" || fname == "Array::push") && (is_builtin_ref_offset(callee_off) || match find_sig(fns = ctx.fns, name = fname) {
+      Some(_) => false,
+      None => true
+    })
+  }
+}
+
+/// The arrays `body` writes, each checked to be one the prover can update
+/// in place: a local bound once, by `let` or `let mut`, to an array literal,
+/// and otherwise named only as the array a builtin read or write takes. A
+/// second name for it (`let ys = xs`, a reassignment, an argument, the
+/// iterand of a `for`) would see the write while the prover updates one
+/// binding, and a parameter's caller would see it too, so each is
+/// unsupported.
+fn writable_arrays(ctx: Ctx, params: Array[(String, Option[TypeExpr])], body: Expr) -> Array[String] with Exception {
+  let targets: Array[String] = []
+  array_write_targets(ctx = ctx, e = body, out = targets)
+  for n in targets {
+    for p in params {
+      let (pn, _) = p
+      if pn == n {
+        unsupported(off = 0 - 1, reason = "a write to the parameter `\{n}`, which its caller holds: only a local array is written")
+      } else {
+        ()
+      }
+    }
+    let inits: Array[Option[Expr]] = []
+    binder_inits(e = body, name = n, out = inits)
+    let literal = Array::length(inits) == 1 && match Array::get(inits, at = 0) {
+      Some(EArray(_)) => true,
+      _ => false
+    }
+    if !literal {
+      unsupported(off = 0 - 1, reason = "a write to `\{n}`, which is not bound exactly once, by `let`, to an array literal")
+    } else {
+      ()
+    }
+    match array_use_violation(ctx = ctx, e = body, name = n) {
+      Some(why) => unsupported(off = 0 - 1, reason = "`\{n}` is written, and \{why}: a written array is named only as the array of `Array::get`, `Array::length`, `xs[i]`, `Array::set` or `Array::push`"),
+      None => ()
+    }
+  }
+  targets
+}
+
+fn array_write_targets(ctx: Ctx, e: Expr, out: Array[String]) -> Unit with Exception {
+  match e {
+    ECall(EIdent(f, coff), args, off, _) => if is_array_write_name(ctx = ctx, fname = f, callee_off = coff) {
+      let target = if Array::length(args) > 0 {
+        strip_label(Array::get(args, at = 0))
+      } else {
+        EUnit
+      }
+      match target {
+        EIdent(n, _) => if contains_name(xs = out, x = n) {
+          ()
+        } else {
+          Array::push(out, value = n)
+        },
+        _ => unsupported(off = off, reason = "`\{f}` on an array that is not named by a local")
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+  for k in expr_kids(e) {
+    array_write_targets(ctx = ctx, e = k, out = out)
+  }
+  ()
+}
+
+/// Every binder of `name` in `e`: `Some(initializer)` for a `let` /
+/// `let mut`, `None` for any other (a `let rec`, a `for` variable, a lambda
+/// parameter, a pattern).
+fn binder_inits(e: Expr, name: String, out: Array[Option[Expr]]) -> Unit {
+  match e {
+    ELet(m, v, _, _) => if m == name {
+      Array::push(out, value = Some(v))
+    } else {
+      ()
+    },
+    ELetMut(m, v, _, _) => if m == name {
+      Array::push(out, value = Some(v))
+    } else {
+      ()
+    },
+    ELetRec(m, _, _) => if m == name {
+      Array::push(out, value = None)
+    } else {
+      ()
+    },
+    EForIn(v, i, _, _) => if v == name || match i {
+      Some(x) => x == name,
+      None => false
+    } {
+      Array::push(out, value = None)
+    } else {
+      ()
+    },
+    EFn(_, _, params, _, _, _) => for p in params {
+      let (pn, _) = p
+      if pn == name {
+        Array::push(out, value = None)
+      } else {
+        ()
+      }
+    },
+    EMatch(_, arms) => for a in arms {
+      let (p, _) = a
+      if pat_binds(p = p, name = name) {
+        Array::push(out, value = None)
+      } else {
+        ()
+      }
+    },
+    EHandle(_, arms) => for a in arms {
+      let (p, _) = a
+      if pat_binds(p = p, name = name) {
+        Array::push(out, value = None)
+      } else {
+        ()
+      }
+    },
+    _ => ()
+  }
+  for k in expr_kids(e) {
+    binder_inits(e = k, name = name, out = out)
+  }
+  ()
+}
+
+/// Whether `p` may bind `name`; a struct pattern's field names count, since
+/// a field written alone binds its own name.
+fn pat_binds(p: Pat, name: String) -> Bool {
+  match p {
+    PBind(n) => n == name,
+    PCtor(_, items) => {
+      let mut found = false
+      for x in items {
+        found = found || pat_binds(p = x, name = name)
+      }
+      found
+    },
+    PTuple(items) => {
+      let mut found = false
+      for x in items {
+        found = found || pat_binds(p = x, name = name)
+      }
+      found
+    },
+    POr(l, r) => pat_binds(p = l, name = name) || pat_binds(p = r, name = name),
+    PStruct(_, fields) => {
+      let mut found = false
+      for f in fields {
+        let (fname, x) = f
+        found = found || fname == name || pat_binds(p = x, name = name)
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// The first use of `name` in `e` other than as the array of a builtin read
+/// or write, described for the diagnostic.
+fn array_use_violation(ctx: Ctx, e: Expr, name: String) -> Option[String] {
+  match e {
+    EIdent(m, _) => if m == name {
+      Some("is also used as a value")
+    } else {
+      None
+    },
+    EAssign(m, _, _, _) => if m == name {
+      Some("is also reassigned")
+    } else {
+      first_use_violation(ctx = ctx, es = expr_kids(e), name = name)
+    },
+    EAssignOp(m, _, _, _, _) => if m == name {
+      Some("is also reassigned")
+    } else {
+      first_use_violation(ctx = ctx, es = expr_kids(e), name = name)
+    },
+    ECall(EIdent(f, coff), args, _, _) => if is_array_op_name(ctx = ctx, fname = f, callee_off = coff) && Array::length(args) > 0 && match strip_label(Array::get(args, at = 0)) {
+      EIdent(m, _) => m == name,
+      _ => false
+    } {
+      first_use_violation(ctx = ctx, es = Array::slice(args, start = 1, end = Array::length(args)), name = name)
+    } else {
+      first_use_violation(ctx = ctx, es = expr_kids(e), name = name)
+    },
+    _ => first_use_violation(ctx = ctx, es = expr_kids(e), name = name)
+  }
+}
+
+fn first_use_violation(ctx: Ctx, es: Array[Expr], name: String) -> Option[String] {
+  let mut found: Option[String] = None
+  for x in es {
+    match found {
+      Some(_) => (),
+      None => found = array_use_violation(ctx = ctx, e = x, name = name)
+    }
+  }
+  found
+}
+
+/// `Array::set(xs, at = i, value = v)` / `xs[i] = v` owes `0 <= i < length`,
+/// as an index outside it aborts, and `Array::push(xs, value = v)` appends;
+/// either replaces the one binding of `xs` (`writable_arrays`). The
+/// arguments are evaluated in the order written, which is the order the
+/// labels take here (a reordering one is unsupported).
+fn sym_array_write(ctx: Ctx, e: Expr, fname: String, args: Array[Expr], off: Int, indexed: Bool, st: Outcome) -> Array[Outcome] with Exception {
+  let labels = if fname == "Array::set" {
+    ["at", "value"]
+  } else {
+    ["value"]
+  }
+  if Array::length(args) != Array::length(labels) + 1 {
+    unsupported(off = off, reason = "`\{fname}` with \{Array::length(args)} argument(s)")
+  } else {
+    ()
+  }
+  let mut k = 0
+  for want in labels {
+    k = k + 1
+    match Array::get(args, at = k) {
+      ELabeledArg(l, _, _) => if l != want {
+        unsupported(off = off, reason = "`\{fname}` with its arguments in another order than `\{String::join(labels, sep = ", ")}`")
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  let name = match strip_label(Array::get(args, at = 0)) {
+    EIdent(n, _) => n,
+    _ => ""
+  }
+  if !contains_name(xs = ctx.writable, x = name) {
+    unsupported(off = off, reason = "`\{fname}` on an array that is not a written local")
+  } else {
+    ()
+  }
+  let out: Array[Outcome] = []
+  for a in sym(ctx = ctx, e = strip_label(Array::get(args, at = 0)), st = st) {
+    if a.returned {
+      Array::push(out, value = a)
+    } else if a.sort != arr_sort() {
+      unsupported(off = off, reason = "`\{fname}` on a `\{smt_unquote(a.sort)}`: only `Array[Int]` is modelled")
+    } else {
+      // The index (for `Array::set`), then the value.
+      let idx_states: Array[Outcome] = if fname == "Array::set" {
+        sym(ctx = ctx, e = strip_label(Array::get(args, at = 1)), st = a)
+      } else {
+        [with_value(st = a, value = "", sort = "Int")]
+      }
+      for p in idx_states {
+        if p.returned {
+          Array::push(out, value = p)
+        } else if p.sort != "Int" {
+          unsupported(off = off, reason = "an array index that is a `\{p.sort}`")
+        } else {
+          let index = p.value
+          for q in sym(ctx = ctx, e = strip_label(Array::get(args, at = Array::length(args) - 1)), st = p) {
+            if q.returned {
+              Array::push(out, value = q)
+            } else if q.sort != "Int" {
+              unsupported(off = off, reason = "`\{fname}` of a `\{q.sort}` into an `Array[Int]`")
+            } else {
+              // The write lands on the array as the arguments left it: an
+              // index or value that writes it too has already done so.
+              let current = match env_lookup(env = q.env, name = name) {
+                Some((t, _)) => t,
+                None => a.value
+              }
+              let len = arr_len(current)
+              let index = if fname == "Array::set" {
+                index
+              } else {
+                len
+              }
+              let state = if fname == "Array::set" {
+                let inside = "(and (<= 0 \{index}) (< \{index} \{len}))"
+                let label = if indexed {
+                  "\{print_expr(strip_label(Array::get(args, at = 0)))}[\{print_expr(strip_label(Array::get(args, at = 1)))}]"
+                } else {
+                  print_expr(e)
+                }
+                push_obligation(ctx = ctx, kind = "index", label = label, off = off, goal = guarded(pc = q.pc, goal = inside))
+                with_pc(st = q, cond = inside)
+              } else {
+                q
+              }
+              let new_len = if fname == "Array::set" {
+                len
+              } else {
+                "(+ \{len} 1)"
+              }
+              let updated = "(|Array[Int]::mk| (store \{arr_data(current)} \{index} \{q.value}) \{new_len})"
+              // A length is bounded by memory far below the `Int` range.
+              assume_range(ctx = ctx, term = updated, sort = arr_sort(), pc = state.pc)
+              match env_assign(env = state.env, name = name, term = updated, sort = arr_sort()) {
+                Some(env2) => Array::push(out, value = Outcome::{
+                  pc: state.pc,
+                  value: "true",
+                  sort: "Unit",
+                  returned: false,
+                  env: env2
+                }),
+                None => unsupported(off = off, reason = "`\{name}` is not a local of the provable fragment")
+              }
+            }
+          }
+          ()
+        }
+      }
+      ()
+    }
+  }
+  out
 }
 
 /// `[a, b, ..]` of `Int`s: its items in order, as written. An empty literal
@@ -1983,163 +2381,6 @@ fn construct_name(_ e: Expr) -> String {
     EBreak(_) => "break",
     EContinue(_) => "continue",
     _ => "this expression"
-  }
-}
-
-//# Solver output
-
-/// What z3 answered for one query: `proved` on `unsat`; `unproved` with the
-/// model's parameter values on `sat`; `unknown` with the reason otherwise
-/// (`unknown`, a timeout, or a solver error). Only `unsat` proves.
-export fn prove_verdict(_ z3_out: String) -> (String, String) {
-  let lines = String::split(z3_out, sep = "\n")
-  let first = if Array::length(lines) > 0 {
-    String::trim(Array::get(lines, at = 0))
-  } else {
-    ""
-  }
-  if first == "unsat" {
-    ("proved", "")
-  } else if first == "sat" {
-    let rest = String::join(Array::slice(lines, start = 1, end = Array::length(lines)), sep = " ")
-    ("unproved", model_text(rest))
-  } else if first == "timeout" {
-    ("unknown", "z3 timed out")
-  } else if first == "unknown" {
-    ("unknown", "z3 returned unknown")
-  } else {
-    ("unknown", "z3 did not answer: \{String::trim(z3_out)}")
-  }
-}
-
-/// `((|x| (- 1)) (|y| 0))` as `x = -1, y = 0`.
-fn model_text(_ text: String) -> String {
-  let parts: Array[String] = []
-  let mut i = 0
-  let n = String::length(text)
-  while i < n {
-    if String::byte_at(text, at = i) == '|' {
-      let close = find_byte(text = text, byte = '|', from = i + 1)
-      let name = String::substring(text, start = i + 1, end = close)
-      let mut j = close + 1
-      let mut depth = 0
-      let start = j
-      let mut done = false
-      while j < n && !done {
-        let c = String::byte_at(text, at = j)
-        if c == '(' {
-          depth = depth + 1
-        } else if c == ')' {
-          if depth == 0 {
-            done = true
-          } else {
-            depth = depth - 1
-          }
-        } else {
-          ()
-        }
-        if !done {
-          j = j + 1
-        } else {
-          ()
-        }
-      }
-      Array::push(parts, value = "\{name} = \{smt_value_text(String::trim(String::substring(text, start = start, end = j)))}")
-      i = j
-    } else {
-      i = i + 1
-    }
-  }
-  String::join(parts, sep = ", ")
-}
-
-fn find_byte(text: String, byte: Int, from: Int) -> Int {
-  let mut i = from
-  while i < String::length(text) && String::byte_at(text, at = i) != byte {
-    i = i + 1
-  }
-  i
-}
-
-/// A model value as the program would spell it: `-5` for `(- 5)`,
-/// `Shape::Circle(3)` for `(|Shape::Circle| 3)`, `Point::{ 1, 2 }` for a
-/// struct (fields in declaration order). Anything else is shown as z3 gave it.
-fn smt_value_text(_ v: String) -> String {
-  let toks = smt_tokens(v)
-  let pos = [0]
-  let out = smt_render(toks = toks, pos = pos)
-  if Array::get(pos, at = 0) == Array::length(toks) {
-    out
-  } else {
-    v
-  }
-}
-
-fn smt_tokens(_ v: String) -> Array[String] {
-  let out: Array[String] = []
-  let n = String::length(v)
-  let mut i = 0
-  while i < n {
-    let c = String::byte_at(v, at = i)
-    if c == '(' || c == ')' {
-      Array::push(out, value = String::substring(v, start = i, end = i + 1))
-      i = i + 1
-    } else if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
-      i = i + 1
-    } else if c == '|' {
-      let close = find_byte(text = v, byte = '|', from = i + 1)
-      Array::push(out, value = String::substring(v, start = i, end = close + 1))
-      i = close + 1
-    } else {
-      let mut j = i
-      while j < n && !(String::byte_at(v, at = j) == '(' || String::byte_at(v, at = j) == ')' || String::byte_at(v, at = j) == ' ' || String::byte_at(v, at = j) == '\n') {
-        j = j + 1
-      }
-      Array::push(out, value = String::substring(v, start = i, end = j))
-      i = j
-    }
-  }
-  out
-}
-
-fn smt_unquote(_ t: String) -> String {
-  if String::starts_with(t, prefix = "|") && String::ends_with(t, suffix = "|") && String::length(t) >= 2 {
-    String::substring(t, start = 1, end = String::length(t) - 1)
-  } else {
-    t
-  }
-}
-
-fn smt_render(toks: Array[String], pos: Array[Int]) -> String {
-  let i = Array::get(pos, at = 0)
-  if i >= Array::length(toks) {
-    ""
-  } else {
-    let t = Array::get(toks, at = i)
-    Array::set(pos, at = 0, value = i + 1)
-    if t != "(" {
-      smt_unquote(t)
-    } else {
-      let head = if Array::get(pos, at = 0) < Array::length(toks) {
-        Array::get(toks, at = Array::get(pos, at = 0))
-      } else {
-        ""
-      }
-      Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
-      let args: Array[String] = []
-      while Array::get(pos, at = 0) < Array::length(toks) && Array::get(toks, at = Array::get(pos, at = 0)) != ")" {
-        Array::push(args, value = smt_render(toks = toks, pos = pos))
-      }
-      Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
-      let name = smt_unquote(head)
-      if head == "-" && Array::length(args) == 1 {
-        "-\{Array::get(args, at = 0)}"
-      } else if String::ends_with(name, suffix = "::{}") {
-        "\{String::substring(name, start = 0, end = String::length(name) - 4)}::{ \{String::join(args, sep = ", ")} }"
-      } else {
-        "\{name}(\{String::join(args, sep = ", ")})"
-      }
-    }
   }
 }
 

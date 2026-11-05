@@ -1,0 +1,167 @@
+// What the solver's answer means for one query (#3717, ADR-0121): only
+// `unsat` proves, and a model is read back as the parameter values that
+// break the obligation. Split from prove.vibe, which builds the queries.
+
+//# Solver output
+
+/// What z3 answered for one query: `proved` on `unsat`; `unproved` with the
+/// model's parameter values on `sat`; `unknown` with the reason otherwise
+/// (`unknown`, a timeout, or a solver error). Only `unsat` proves.
+export fn prove_verdict(_ z3_out: String) -> (String, String) {
+  let lines = String::split(z3_out, sep = "\n")
+  let first = if Array::length(lines) > 0 {
+    String::trim(Array::get(lines, at = 0))
+  } else {
+    ""
+  }
+  if first == "unsat" {
+    ("proved", "")
+  } else if first == "sat" {
+    let rest = String::join(Array::slice(lines, start = 1, end = Array::length(lines)), sep = " ")
+    // A function without parameters has no input to show: the obligation
+    // fails on every run.
+    let model = model_text(rest)
+    ("unproved", if model == "" {
+      "none needed, the function has no inputs and fails on every run"
+    } else {
+      model
+    })
+  } else if first == "timeout" {
+    ("unknown", "z3 timed out")
+  } else if first == "unknown" {
+    ("unknown", "z3 returned unknown")
+  } else {
+    ("unknown", "z3 did not answer: \{String::trim(z3_out)}")
+  }
+}
+
+/// `((|x| (- 1)) (|y| 0))` as `x = -1, y = 0`.
+fn model_text(_ text: String) -> String {
+  let parts: Array[String] = []
+  let mut i = 0
+  let n = String::length(text)
+  while i < n {
+    if String::byte_at(text, at = i) == '|' {
+      let close = find_byte(text = text, byte = '|', from = i + 1)
+      let name = String::substring(text, start = i + 1, end = close)
+      let mut j = close + 1
+      let mut depth = 0
+      let start = j
+      let mut done = false
+      while j < n && !done {
+        let c = String::byte_at(text, at = j)
+        if c == '(' {
+          depth = depth + 1
+        } else if c == ')' {
+          if depth == 0 {
+            done = true
+          } else {
+            depth = depth - 1
+          }
+        } else {
+          ()
+        }
+        if !done {
+          j = j + 1
+        } else {
+          ()
+        }
+      }
+      Array::push(parts, value = "\{name} = \{smt_value_text(String::trim(String::substring(text, start = start, end = j)))}")
+      i = j
+    } else {
+      i = i + 1
+    }
+  }
+  String::join(parts, sep = ", ")
+}
+
+fn find_byte(text: String, byte: Int, from: Int) -> Int {
+  let mut i = from
+  while i < String::length(text) && String::byte_at(text, at = i) != byte {
+    i = i + 1
+  }
+  i
+}
+
+/// A model value as the program would spell it: `-5` for `(- 5)`,
+/// `Shape::Circle(3)` for `(|Shape::Circle| 3)`, `Point::{ 1, 2 }` for a
+/// struct (fields in declaration order). Anything else is shown as z3 gave it.
+fn smt_value_text(_ v: String) -> String {
+  let toks = smt_tokens(v)
+  let pos = [0]
+  let out = smt_render(toks = toks, pos = pos)
+  if Array::get(pos, at = 0) == Array::length(toks) {
+    out
+  } else {
+    v
+  }
+}
+
+fn smt_tokens(_ v: String) -> Array[String] {
+  let out: Array[String] = []
+  let n = String::length(v)
+  let mut i = 0
+  while i < n {
+    let c = String::byte_at(v, at = i)
+    if c == '(' || c == ')' {
+      Array::push(out, value = String::substring(v, start = i, end = i + 1))
+      i = i + 1
+    } else if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
+      i = i + 1
+    } else if c == '|' {
+      let close = find_byte(text = v, byte = '|', from = i + 1)
+      Array::push(out, value = String::substring(v, start = i, end = close + 1))
+      i = close + 1
+    } else {
+      let mut j = i
+      while j < n && !(String::byte_at(v, at = j) == '(' || String::byte_at(v, at = j) == ')' || String::byte_at(v, at = j) == ' ' || String::byte_at(v, at = j) == '\n') {
+        j = j + 1
+      }
+      Array::push(out, value = String::substring(v, start = i, end = j))
+      i = j
+    }
+  }
+  out
+}
+
+export fn smt_unquote(_ t: String) -> String {
+  if String::starts_with(t, prefix = "|") && String::ends_with(t, suffix = "|") && String::length(t) >= 2 {
+    String::substring(t, start = 1, end = String::length(t) - 1)
+  } else {
+    t
+  }
+}
+
+fn smt_render(toks: Array[String], pos: Array[Int]) -> String {
+  let i = Array::get(pos, at = 0)
+  if i >= Array::length(toks) {
+    ""
+  } else {
+    let t = Array::get(toks, at = i)
+    Array::set(pos, at = 0, value = i + 1)
+    if t != "(" {
+      smt_unquote(t)
+    } else {
+      let head = if Array::get(pos, at = 0) < Array::length(toks) {
+        Array::get(toks, at = Array::get(pos, at = 0))
+      } else {
+        ""
+      }
+      Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+      let args: Array[String] = []
+      while Array::get(pos, at = 0) < Array::length(toks) && Array::get(toks, at = Array::get(pos, at = 0)) != ")" {
+        Array::push(args, value = smt_render(toks = toks, pos = pos))
+      }
+      Array::set(pos, at = 0, value = Array::get(pos, at = 0) + 1)
+      let name = smt_unquote(head)
+      if head == "-" && Array::length(args) == 1 {
+        "-\{Array::get(args, at = 0)}"
+      } else if String::ends_with(name, suffix = "::{}") {
+        "\{String::substring(name, start = 0, end = String::length(name) - 4)}::{ \{String::join(args, sep = ", ")} }"
+      } else {
+        "\{name}(\{String::join(args, sep = ", ")})"
+      }
+    }
+  }
+}
