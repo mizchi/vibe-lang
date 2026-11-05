@@ -79,7 +79,8 @@ $dir/unsupported.vibe:47:1: unsupported: parameter \`h\` is not \`Int\`, \`Bool\
 $dir/unsupported.vibe:62:5: unsupported: \`==\` on \`Odd\` calls a program-written \`equals\` (on that type or one it contains), which the prover does not read (in \`same\`)
 $dir/unsupported.vibe:68:5: unsupported: \`<<\` by a count that is not a constant from 0 to 62 (in \`shift_by\`)
 $dir/unsupported.vibe:73:1: unsupported: a contract clause that leaves the function with \`return\` (in \`leaves\`)
-$dir/unsupported.vibe:88:5: unsupported: \`==\` on arrays: their contents past the length are not modelled, so equality is not encoded (in \`same_arrays\`)"
+$dir/unsupported.vibe:88:5: unsupported: \`==\` on arrays: their contents past the length are not modelled, so equality is not encoded (in \`same_arrays\`)
+$dir/unsupported.vibe:98:3: unsupported: \`Array::length\` has no \`where\` contract, so the call cannot be checked modularly; give it one (\`ensures: true\` at least), and its body is proved too (in \`own_length\`)"
 run_case unknown 1 "$dir/unknown.vibe:5:1: unknown: ensures result of \`fermat3\` -- z3 timed out (5000 ms limit)"
 
 # `--json` reports the same diagnostics as the text: one LSP Diagnostic per

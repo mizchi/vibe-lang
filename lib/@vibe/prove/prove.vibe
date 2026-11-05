@@ -866,7 +866,7 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
       out
     },
     ECall(callee, args, off, _) => match callee {
-      EIdent(fname, coff) => if fname == "Array::length" || fname == "Array::get" || fname == "__index" {
+      EIdent(fname, coff) => if is_builtin_array_read(ctx = ctx, st = st, fname = fname, callee_off = coff) {
         let at = if fname == "__index" {
           index_site_offset(coff)
         } else {
@@ -1363,6 +1363,30 @@ fn collect_assigned(e: Expr, out: Array[String]) -> Unit {
     collect_assigned(e = k, out = out)
   }
   ()
+}
+
+/// Whether a call of `fname` is the builtin array read. These names can be
+/// shadowed: a program's own `fn Array::length` (or a local of the name) is
+/// what a direct call reaches, so it goes through `sym_call` like any other
+/// function. `xs[i]` is the parser's `__index` with a bracket key
+/// (`index_site_key`), which stays the builtin read whatever the program
+/// declares; a written `__index(..)` is an ordinary call.
+fn is_builtin_array_read(ctx: Ctx, st: Outcome, fname: String, callee_off: Int) -> Bool {
+  let builtin_name = fname == "Array::length" || fname == "Array::get" || fname == "__index"
+  let shadowed = match find_sig(fns = ctx.fns, name = fname) {
+    Some(_) => true,
+    None => match env_lookup(env = st.env, name = fname) {
+      Some(_) => true,
+      None => false
+    }
+  }
+  if !builtin_name {
+    false
+  } else if fname == "__index" {
+    index_site_offset(callee_off) >= 0
+  } else {
+    !shadowed
+  }
 }
 
 /// `Array::length(xs)`, and `Array::get(xs, at = i)` / `xs[i]`: a read owes
