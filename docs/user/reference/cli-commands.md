@@ -241,8 +241,11 @@ Any other count is unsupported. `let mut` locals and assignment (`=`, `+=`,
 are owed when the loop starts; one iteration from an arbitrary state where
 they hold owes the invariants again and a smaller, still non-negative
 measure; and the code after the loop knows the invariants and the negated
-condition. A `while` with no measure is unsupported, since it may not
-terminate, and so are `break`, `continue`, `for` and `loop`. An
+condition. Inside it, `continue` ends the iteration like the end of the
+body, and owes the same; `break` leaves without a checkpoint, so the code
+after the loop continues from the state it broke in. A `while` with no
+measure is unsupported, since it may not terminate, and so are `for`,
+`loop`, and a `break` / `continue` in a loop's condition. An
 `Array[Int]` (a parameter, a result, a local or a non-empty literal) is read
 through `Array::length(xs)`, `Array::get(xs, at = i)` and `xs[i]`; a read owes
 `0 <= i < length`, since an index outside it aborts, and the element is an
