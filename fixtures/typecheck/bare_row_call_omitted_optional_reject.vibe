@@ -1,0 +1,26 @@
+// ADR-0120 (Codex on #3844): an omitted optional parameter shifts every
+// labeled argument after it. `f = mk` fills `pass`'s second parameter; read
+// at its written index it was routed to `unused`, so `pass`'s call of `f`
+// never reached `mk`, `mid` did not require `mk`'s `Box[Int]`, and a
+// `Box[String]` caller read the `Int` payload as a `String`.
+effect Box[T] {
+  Put(T) -> Int
+}
+fn mk() -> Int with Box {
+  perform Box::Put(12345)
+}
+fn pass(unused?: Int, f: () -> Int with Box) -> Int with Box {
+  let _ = unused
+  f()
+}
+fn mid() -> Int with Box {
+  pass(f = mk)
+}
+fn caller() -> Int with Box[String] {
+  mid()
+}
+fn main() -> Int {
+  handle {
+    caller()
+  } with { Box::Put(s) => resume(String::length(s)) }
+}
