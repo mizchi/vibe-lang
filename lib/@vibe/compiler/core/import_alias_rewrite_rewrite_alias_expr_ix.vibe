@@ -598,10 +598,22 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       ERecord(rn, fields, targs) => {
         let m = alias_marks()
         let out = rewrite_alias_named_exprs_ix(fields = fields, am = am)
-        if alias_marks() == m {
-          expr
+        // #3837: `Q::{ .. }` after `import ./a.vibe { B as Q }` names `B`.
+        // Lowering finds a literal's struct by that name; a name it does not
+        // know falls back to the first struct with the same field set, so an
+        // unrenamed `Q` printed and dispatched as another same-shaped struct.
+        let renamed = if String::length(rn) == 0 {
+          None
         } else {
-          ERecord(rn, out, targs)
+          record_alias_name(am = am, name = rn)
+        }
+        match renamed {
+          Some(original) => ERecord(original, out, targs),
+          None => if alias_marks() == m {
+            expr
+          } else {
+            ERecord(rn, out, targs)
+          }
         }
       },
       EIf(cond, then_expr, else_expr) => {
@@ -891,6 +903,65 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       },
       _ => expr
     }
+  }
+}
+
+fn record_alias_key(_ name: String) -> String {
+  String::concat("record ", name)
+}
+
+/// The name a transparent alias stands for when a struct literal is written
+/// through it: `type M = L` names `L`, and `type B[T] = Box[T]` names `Box`.
+/// An alias that fixes or reorders the arguments (`type IB = Box[Int]`) is
+/// not one; the checker refuses a literal through it (#3837).
+export fn record_alias_target(params: Array[String], target: TypeExpr) -> Option[String] {
+  match target {
+    TyName(t) => Some(t),
+    TyApp(t, args) => if Array::length(args) == Array::length(params) {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(args) && ok {
+        ok = match Array::get(args, at = i) {
+          TyName(n) => n == type_param_name(Array::get(params, at = i)),
+          _ => false
+        }
+        i = i + 1
+      }
+      if ok {
+        Some(t)
+      } else {
+        None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// The struct a literal's name denotes once local transparent aliases and
+/// import aliases are followed, or `None` when it names itself.
+fn record_alias_name(am: AliasIdx, name: String) -> Option[String] {
+  let mut cur = name
+  let mut fuel = 16
+  while fuel > 0 {
+    fuel = fuel - 1
+    match MutMap::get(am.idx, k = record_alias_key(cur)) {
+      Some(next) => cur = next,
+      None => fuel = 0
+    }
+  }
+  let resolved = match aliasidx_get(am = am, name = cur) {
+    Some(original) => original,
+    None => cur
+  }
+  if resolved == name {
+    None
+  } else {
+    // A parent keeps its original node unless the marks moved below it
+    // (#2386), and a local alias row is read without `aliasidx_get`.
+    Array::set(alias_rewrite_marks, at = 0, value = Array::get(alias_rewrite_marks, at = 0) + 1)
+    Some(resolved)
   }
 }
 
@@ -1254,6 +1325,33 @@ export fn rewrite_import_alias_stmts_with_pattern_ctors(stmts: Array[Stmt], alia
       ()
     }
     bi = bi + 1
+  }
+  // #3837: a struct literal through a local transparent alias names the
+  // struct it aliases. These rows live under a key no identifier can spell,
+  // so only the `ERecord` arm reads them.
+  //
+  // An `as` import is recorded here too, beside its ordinary row. A value
+  // binder that spells the alias (`fn f(BQ: Int)`) removes the ordinary row
+  // for its body, and rightly so for a value, but `BQ::{ .. }` there still
+  // names the type -- the checker resolves it through the type definitions.
+  // Without a row the binder cannot remove, the literal reached lowering as
+  // `BQ` and was laid out by its field set alone (Codex on #3855).
+  for entry in aliases {
+    let (alias, original) = entry
+    if String::index_of(alias, needle = "::") < 0 && String::index_of(alias, needle = ".") < 0 {
+      Array::push(combined, value = (record_alias_key(alias), original))
+    } else {
+      ()
+    }
+  }
+  for stmt in stmts {
+    match stmt {
+      STypeAlias(_, aname, aparams, target) => match record_alias_target(params = aparams, target = target) {
+        Some(t) => Array::push(combined, value = (record_alias_key(aname), t)),
+        None => ()
+      },
+      _ => ()
+    }
   }
   let am = aliasidx_with_pattern_ctors(am = aliasidx_build(namespace_aliases_without_top_level_values(aliases = combined, stmts = stmts)), pattern_ctors = pattern_ctors)
   let imported = for stmt in stmts {
