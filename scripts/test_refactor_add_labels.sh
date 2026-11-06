@@ -58,4 +58,20 @@ if invoke refactor add-labels --write "$rel/broken.vibe" > "$work/broken.out" 2>
 fi
 cmp "$rel/broken.vibe" "$work/broken.before"
 grep -q 'not checked, left alone' "$work/broken.out"
+
+# The codemod types with missing labels suspended, its import walk included.
+# What that walk caches must not let an ordinary check pass a dependency that
+# is missing labels (Codex on #3881): the same cache directory serves both.
+mkdir -p "$rel/cached"
+printf 'export fn twice(n: Int) -> Int {\n  n * 2\n}\n\nexport fn quad(n: Int) -> Int {\n  twice(twice(n))\n}\n' > "$rel/cached/dep.vibe"
+printf 'import ./dep.vibe { quad }\n\nexport fn main() -> Int {\n  quad(n = 1)\n}\n' > "$rel/cached/main.vibe"
+export VIBE_BUILD_CACHE_DIR="$work/build-cache"
+invoke refactor add-labels "$rel/cached/main.vibe" > "$work/cached.out" 2>&1 || true
+if invoke check "$rel/cached/main.vibe" > "$work/cached-check.out" 2>&1; then
+  echo 'add-labels: a check after the codemod passed a dependency missing labels' >&2
+  cat "$work/cached-check.out" >&2
+  exit 1
+fi
+grep -q 'label the arguments of twice' "$work/cached-check.out"
+unset VIBE_BUILD_CACHE_DIR
 echo 'add-labels: report, write, execution, idempotence and refusal checks passed'

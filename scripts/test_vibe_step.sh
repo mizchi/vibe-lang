@@ -53,8 +53,8 @@ proj="$WORK/proj"; mkdir -p "$proj"
 # mid=42, main=42.
 cat > "$proj/prog.vibex" <<'EOF'
 let leaf = (x: Int) -> Int { x + 1 }
-let mid = (x: Int) -> Int { leaf(x) + 1 }
-fn main allows Stdout { Stdout::write_stream("\{mid(40)}\n") }
+let mid = (x: Int) -> Int { leaf(x = x) + 1 }
+fn main allows Stdout { Stdout::write_stream("\{mid(x = 40)}\n") }
 EOF
 
 # 1. Plain `vibe run` is unaffected: prints 42, emits NO debugger output.

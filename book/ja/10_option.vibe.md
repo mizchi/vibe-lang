@@ -63,8 +63,8 @@ fn sum_halves(a: Int, b: Int) -> Option[Int] {
 }
 
 fn main allows Console {
-  println("sum_halves(4, 6) = \{sum_halves(4, 6)}")
-  println("sum_halves(4, 3) = \{sum_halves(4, 3)}")
+  println("sum_halves(4, 6) = \{sum_halves(a = 4, b = 6)}")
+  println("sum_halves(4, 3) = \{sum_halves(a = 4, b = 3)}")
 }
 ```
 
@@ -103,8 +103,8 @@ fn halves_or_zero(a: Int, b: Int) -> Int {
 }
 
 fn main allows Console {
-  println("halves_or_zero(4, 6) = \{halves_or_zero(4, 6)}")
-  println("halves_or_zero(4, 3) = \{halves_or_zero(4, 3)}")
+  println("halves_or_zero(4, 6) = \{halves_or_zero(a = 4, b = 6)}")
+  println("halves_or_zero(4, 3) = \{halves_or_zero(a = 4, b = 3)}")
 }
 ```
 

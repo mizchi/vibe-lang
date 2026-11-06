@@ -223,9 +223,12 @@ let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
 export let two: () -> Int = () -> { f(x = 1, y = 2) }
 ```
 
-`x~` is a required labeled parameter. A call site is either ALL positional or
-ALL labeled; mixing them is rejected ("call to f mixes positional and labeled
-arguments"). A labeled parameter cannot carry a default yet.
+`x~` is a required labeled parameter. A call to a declaration labels every
+argument whose parameter is not `_` (ADR-0120 Phase 4): `f(1, 2)` is refused
+with the labels to write ("label the arguments of f: write `x = ` before
+argument 1, `y = ` before argument 2"). A call through a function value
+stays positional, and mixing positional and labeled arguments there is
+rejected. A labeled parameter cannot carry a default yet.
 
 A typed `fn` parameter may carry a **default** (#3120). The body sees the
 declared type, and an omitted trailing argument evaluates the default in the
@@ -280,14 +283,14 @@ Rules:
   omitted argument has to produce a value, and `None` is that value.
 - A function TYPE spells it the same way, and means the same thing:
   `(Int, note?: String) -> String` is `(Int, Option[String]) -> String`.
-- The call site writes the payload, not the `Option`: `describe(1, "hi")`,
-  not `describe(1, Some("hi"))`. `desugar_optional_args` wraps supplied
+- The call site writes the payload, not the `Option`: `describe(x = 1, note = "hi")`,
+  not `describe(x = 1, note = Some("hi"))`. `desugar_optional_args` wraps supplied
   arguments in `Some` and fills omitted trailing ones with `None` before
   checking, so the ordinary arity check sees a full argument list.
 - Only TRAILING optional parameters may be omitted. A call that is short by a
   required parameter is still an arity error, and still reports the real count.
-- Labeled and positional supply both work, under the usual all-positional or
-  all-labeled rule: `describe(x = 1, note = "hi")` and `describe(x = 1)`.
+- A call to a declaration labels what it supplies (ADR-0120 Phase 4):
+  `describe(x = 1, note = "hi")` and `describe(x = 1)`.
 
 ### Type Aliases
 

@@ -65,7 +65,7 @@ test "compile_file_wasi_linked_artifacts: returns direct linked deps for library
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(helper_path, bytes = string_to_bytes("export let add: (Int, Int) -> Int = (a, b) -> { a + b }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./lib.vibe { add }\nlet _start: () -> Int = () -> { add(1, 2) }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./lib.vibe { add }\nlet _start: () -> Int = () -> { add(a = 1, b = 2) }\n"))
   let (entry_bytes, linked_imports, linked_dep_specs) = compile_file_wasi_linked_artifacts(entry_path = main_path, entry_name = "_start")
   assert_wasm_magic(entry_bytes)
   assert(Array::length(linked_imports) == 1)
@@ -88,7 +88,7 @@ test "collect_linked_compile_inputs: captures linked dep metadata for debug/rele
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(helper_path, bytes = string_to_bytes("export let add: (Int, Int) -> Int = (a, b) -> { a + b }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./lib.vibe { add }\nlet _start: () -> Int = () -> { add(1, 2) }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./lib.vibe { add }\nlet _start: () -> Int = () -> { add(a = 1, b = 2) }\n"))
   let (entry_stmts, resolved_type_stmts, linked_imports, linked_dep_specs) = collect_linked_compile_inputs(main_path)
   assert(Array::length(entry_stmts) == 2)
   assert(Array::length(resolved_type_stmts) == 0)
@@ -118,7 +118,7 @@ test "collect_linked_compile_inputs: does not register a dep's unimported export
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(helper_path, bytes = string_to_bytes("export let add: (Int, Int) -> Int = (a, b) -> { a + b }\nexport let eq: (Int, Int) -> Bool = (a, b) -> { a == b }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./lib.vibe { add }\nlet _start: () -> Int = () -> { add(1, 2) }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./lib.vibe { add }\nlet _start: () -> Int = () -> { add(a = 1, b = 2) }\n"))
   let (_, _, linked_imports, _) = collect_linked_compile_inputs(main_path)
   assert(Array::length(linked_imports) == 1)
   let (_, func_name, _, _) = Array::get(linked_imports, at = 0)
@@ -138,7 +138,7 @@ test "collect_linked_compile_inputs: resolves an aliased re-export the entry imp
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(inner_path, bytes = string_to_bytes("export let foo: (Int, Int) -> Int = (a, b) -> { a + b }\n"))
   Fs::write_bytes(lib_path, bytes = string_to_bytes("export ./inner.vibe { foo as bar }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./lib.vibe { bar }\nlet _start: () -> Int = () -> { bar(1, 2) }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./lib.vibe { bar }\nlet _start: () -> Int = () -> { bar(a = 1, b = 2) }\n"))
   let (_, _, linked_imports, _) = collect_linked_compile_inputs(main_path)
   assert(Array::length(linked_imports) == 1)
   let (module_name, func_name, _, _) = Array::get(linked_imports, at = 0)
@@ -154,7 +154,7 @@ test "re-export aliases in a dependency do not suppress entry builtins" {
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(inner_path, bytes = string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\nexport fn view(a: Int, b: Int) -> Int { a + b }\n"))
   Fs::write_bytes(facade_path, bytes = string_to_bytes("export ./inner.vibe { cmp as assert_eq, view as inspect }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./facade.vibe { assert_eq as forwarded_assert, inspect as forwarded_inspect }\nexport let answer: () -> Int with Console = () -> {\n  let _ = forwarded_assert(1, 2)\n  let _ = forwarded_inspect(1, 2)\n  inspect(1, \"1\")\n  assert_eq(1, 2)\n  0\n}\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./facade.vibe { assert_eq as forwarded_assert, inspect as forwarded_inspect }\nexport let answer: () -> Int with Console = () -> {\n  let _ = forwarded_assert(a = 1, b = 2)\n  let _ = forwarded_inspect(a = 1, b = 2)\n  inspect(1, \"1\")\n  assert_eq(1, 2)\n  0\n}\n"))
   let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
   assert_wasm_magic(bytes)
   assert(bytes_contains_ascii(bytes = bytes, needle = "assert_eq failed"))
@@ -166,7 +166,7 @@ test "same-source imported assert_eq is not lowered as the builtin through FS me
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn assert_eq(a: Int, b: Int) -> Int { a + b }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { assert_eq }\nexport fn answer() -> Int { assert_eq(1, 2) }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { assert_eq }\nexport fn answer() -> Int { assert_eq(a = 1, b = 2) }\n"))
   let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes = bytes, needle = "assert_eq failed"), content = "false")
@@ -181,7 +181,7 @@ test "same-source import aliased as assert_eq is not lowered as the builtin thro
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { cmp as assert_eq }\nexport fn answer() -> Int { assert_eq(1, 2) }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { cmp as assert_eq }\nexport fn answer() -> Int { assert_eq(a = 1, b = 2) }\n"))
   let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes = bytes, needle = "assert_eq failed"), content = "false")
@@ -193,7 +193,7 @@ test "same-source imported inspect is not lowered as the builtin through FS merg
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn inspect(a: Int, _expected: String) -> Int { a + 1 }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { inspect }\nexport fn answer() -> Int { inspect(1, \"ignored\") }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { inspect }\nexport fn answer() -> Int { inspect(a = 1, _expected = \"ignored\") }\n"))
   let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
   assert_wasm_magic(bytes)
 }
@@ -204,7 +204,7 @@ test "same-source import aliased as inspect is not lowered as the builtin throug
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn view(a: Int, _expected: String) -> Int { a + 1 }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { view as inspect }\nexport fn answer() -> Int { inspect(1, \"ignored\") }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./dep.vibe { view as inspect }\nexport fn answer() -> Int { inspect(a = 1, _expected = \"ignored\") }\n"))
   let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
   assert_wasm_magic(bytes)
 }
@@ -241,7 +241,7 @@ test "merged source keeps a dependency re-export from suppressing an entry built
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(inner_path, bytes = string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
   Fs::write_bytes(facade_path, bytes = string_to_bytes("export ./inner.vibe { cmp as assert_eq }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./facade.vibe { assert_eq as forwarded_assert }\nexport fn answer() -> Int with Console {\n  let _ = forwarded_assert(1, 2)\n  assert_eq(1, 2)\n  0\n}\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("import ./facade.vibe { assert_eq as forwarded_assert }\nexport fn answer() -> Int with Console {\n  let _ = forwarded_assert(a = 1, b = 2)\n  assert_eq(1, 2)\n  0\n}\n"))
   let bytes = compile_generated_source_wasi_only(source = merged_program_source_fs(main_path), entry_name = "answer")
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes = bytes, needle = "assert_eq failed"), content = "true")
@@ -405,7 +405,7 @@ test "same-source plain assert_eq re-export remains callable through FS merge" {
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn assert_eq(a: Int, b: Int) -> Int { a + b }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("export ./dep.vibe { assert_eq }\nexport fn answer() -> Int { assert_eq(1, 2) }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("export ./dep.vibe { assert_eq }\nexport fn answer() -> Int { assert_eq(a = 1, b = 2) }\n"))
   let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes = bytes, needle = "assert_eq failed"), content = "false")
@@ -420,7 +420,7 @@ test "same-source plain inspect re-export remains callable through FS merge" {
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, bytes = string_to_bytes("export fn inspect(a: Int, _expected: String) -> Int { a + 1 }\n"))
-  Fs::write_bytes(main_path, bytes = string_to_bytes("export ./dep.vibe { inspect }\nexport fn answer() -> Int { inspect(1, \"ignored\") }\n"))
+  Fs::write_bytes(main_path, bytes = string_to_bytes("export ./dep.vibe { inspect }\nexport fn answer() -> Int { inspect(a = 1, _expected = \"ignored\") }\n"))
   let bytes = compile_file_wasi_only(entry_path = main_path, entry_name = "answer")
   assert_wasm_magic(bytes)
 }
@@ -561,7 +561,7 @@ test "#2808 compile_file_wasi_only refuses a bogus aggregate export in a dep" {
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   write_source(path = dep_path, text = "export {\n  MissingFromDep\n}\n\nexport fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n")
-  write_source(path = main_path, text = "import ./dep.vibe { add }\n\nexport fn main() -> Int {\n  add(1, 2)\n}\n")
+  write_source(path = main_path, text = "import ./dep.vibe { add }\n\nexport fn main() -> Int {\n  add(a = 1, b = 2)\n}\n")
   inspect(wasi_only_outcome(label = "only-dep", entry_path = main_path), "only-dep: declare or import MissingFromDep in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import (in /tmp/vibe_2808_only_dep/dep.vibe)")
 }
 
@@ -579,7 +579,7 @@ test "#2808 compile_file_wasi_linked_artifacts refuses a bogus aggregate export 
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   write_source(path = helper_path, text = "export let add: (Int, Int) -> Int = (a, b) -> {\n  a + b\n}\n")
-  write_source(path = main_path, text = "import ./lib.vibe { add }\nexport {\n  MissingFromLinkedEntry\n}\nlet _start: () -> Int = () -> {\n  add(1, 2)\n}\n")
+  write_source(path = main_path, text = "import ./lib.vibe { add }\nexport {\n  MissingFromLinkedEntry\n}\nlet _start: () -> Int = () -> {\n  add(a = 1, b = 2)\n}\n")
   inspect(linked_outcome(label = "linked-entry", entry_path = main_path), "linked-entry: declare or import MissingFromLinkedEntry in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import (in /tmp/vibe_2808_linked_entry/main.vibe)")
 }
 
@@ -589,7 +589,7 @@ test "#2808 compile_file_wasi_linked_artifacts refuses a bogus aggregate export 
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   write_source(path = helper_path, text = "export {\n  MissingFromLinkedDep\n}\nexport let add: (Int, Int) -> Int = (a, b) -> {\n  a + b\n}\n")
-  write_source(path = main_path, text = "import ./lib.vibe { add }\nlet _start: () -> Int = () -> {\n  add(1, 2)\n}\n")
+  write_source(path = main_path, text = "import ./lib.vibe { add }\nlet _start: () -> Int = () -> {\n  add(a = 1, b = 2)\n}\n")
   inspect(linked_outcome(label = "linked-dep", entry_path = main_path), "linked-dep: declare or import MissingFromLinkedDep in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import (in /tmp/vibe_2808_linked_dep/lib.vibe)")
 }
 
@@ -629,7 +629,7 @@ test "#2808 compile_file_wasi_only accepts a dep republishing an imported name" 
   Fs::mkdir_p(base_dir)
   write_source(path = inner_path, text = "export fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n")
   write_source(path = dep_path, text = "import ./inner.vibe { add }\n\nexport {\n  add\n}\n")
-  write_source(path = main_path, text = "import ./dep.vibe { add }\n\nexport fn main() -> Int {\n  add(1, 2)\n}\n")
+  write_source(path = main_path, text = "import ./dep.vibe { add }\n\nexport fn main() -> Int {\n  add(a = 1, b = 2)\n}\n")
   inspect(wasi_only_outcome(label = "ok-imported", entry_path = main_path), "ok-imported: accepted")
 }
 
@@ -638,8 +638,8 @@ test "#2808 compile_file_wasi_linked_artifacts accepts a clean entry and dep" {
   let helper_path = String::concat(base_dir, "/lib.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  write_source(path = helper_path, text = "export {\n  scale\n}\nfn scale(a: Int) -> Int {\n  a * 2\n}\nexport let add: (Int, Int) -> Int = (a, b) -> {\n  scale(a) + b\n}\n")
-  write_source(path = main_path, text = "import ./lib.vibe { add }\nlet _start: () -> Int = () -> {\n  add(1, 2)\n}\n")
+  write_source(path = helper_path, text = "export {\n  scale\n}\nfn scale(a: Int) -> Int {\n  a * 2\n}\nexport let add: (Int, Int) -> Int = (a, b) -> {\n  scale(a = a) + b\n}\n")
+  write_source(path = main_path, text = "import ./lib.vibe { add }\nlet _start: () -> Int = () -> {\n  add(a = 1, b = 2)\n}\n")
   inspect(linked_outcome(label = "ok-linked", entry_path = main_path), "ok-linked: accepted")
 }
 
@@ -665,6 +665,6 @@ test "linked witness refusal follows a re-export alias to its generic binding" {
   Fs::mkdir_p(base)
   write_source(path = base + "/lib.vibe", text = "export fn sum[T: Add](a: T, b: T) -> T { a + b }\n")
   write_source(path = base + "/facade.vibe", text = "export ./lib.vibe { sum as plus }\n")
-  write_source(path = base + "/main.vibe", text = "import ./facade.vibe { plus }\nlet _start: () -> Int = () -> { plus(20, 22) }\n")
+  write_source(path = base + "/main.vibe", text = "import ./facade.vibe { plus }\nlet _start: () -> Int = () -> { plus(a = 20, b = 22) }\n")
   inspect(String::contains(linked_outcome(label = "reexport", entry_path = base + "/main.vibe"), needle = "export a concrete wrapper"), content = "true")
 }

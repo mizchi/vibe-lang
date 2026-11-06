@@ -54,10 +54,10 @@ def assert_packet_integrity(repo, artifacts, runner, env, project):
     root.mkdir()
     names = [f"receipt_worker_function_{i}" for i in range(96)]
     functions = [f"fn {names[0]}(n: Int) -> Int {{ n + 1 }}"]
-    functions += [f"fn {name}(n: Int) -> Int {{ {names[i - 1]}(n) + 1 }}"
+    functions += [f"fn {name}(n: Int) -> Int {{ {names[i - 1]}(n = n) + 1 }}"
                   for i, name in enumerate(names) if i]
     (root / "main.vibe").write_text("\n".join(functions)
-                                    + f"\nfn main() -> Int {{ {names[-1]}(1) }}\n")
+                                    + f"\nfn main() -> Int {{ {names[-1]}(n = 1) }}\n")
     ordinary = root / "ordinary.wasm"
     subprocess.run(["bash", str(repo / "runtime/vibe"), "build", "main.vibe", "-o", str(ordinary)],
                    cwd=root, env=dict(env, VIBE_BUILD_CACHE_DIR=str(root / "ordinary-cache")),
@@ -155,7 +155,7 @@ def assert_finisher_recompile_refused(repo, compiler, artifacts, runner, env, pr
     target = repo / "lib/@vibe/function_build/phases/entry.vibe"
     source = target.read_text()
     before = "finish_function_assembly(state = assembly, products = merged)"
-    after = 'compile_file_fs_mode_rc_body_cached(Env::get("VIBE_LOWERING_INPUT"), Env::get("VIBE_LOWERING_ENTRY"), "off")'
+    after = 'compile_file_fs_mode_rc_body_cached(entry_path = Env::get("VIBE_LOWERING_INPUT"), entry_name = Env::get("VIBE_LOWERING_ENTRY"), cache_mode = "off")'
     assert source.count(before) == 1
     overlay = private / "serial-finisher.vibe"
     overlay.write_text(source.replace(before, after))
@@ -190,9 +190,9 @@ def assert_original_phase_receipt_bound(repo, compiler, artifacts, runner, env, 
     source = target.read_text()
     marker = '  Fs::write_bytes(directory + "/function.assembly", bytes = packet)\n'
     assert source.count(marker) == 1
-    rewrite = '''  Array::push(assembly.replay.guard_layout, 9)
-  let changed_packet = write_function_assembly(assembly, context_digest)
-  Fs::write_bytes(directory + "/function.assembly", changed_packet)
+    rewrite = '''  Array::push(assembly.replay.guard_layout, value = 9)
+  let changed_packet = write_function_assembly(state = assembly, context_digest = context_digest)
+  Fs::write_bytes(directory + "/function.assembly", bytes = changed_packet)
 '''
     for bound in (True, False):
         private = project / ("receipt-bound" if bound else "receipt-stale")
@@ -334,12 +334,12 @@ def main():
         project = Path(directory)
         long_name = "worker_identifier_" + "q" * 300
         cases = [
-            ("long-identifier", f"fn {long_name}(a: Int) -> Int {{ a - 3 }}\nfn main() -> Int {{ {long_name}(11) }}", "8"),
-            ("subtract", "fn sub(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { sub(43, 4) }", "39"),
-            ("builtin-shadow", "fn compiler_lowering_run(n: Int) -> Int { n - 3 }\nfn main() -> Int { compiler_lowering_run(11) }", "8"),
-            ("division", "fn quotient(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { quotient(43, 4) }", "10"),
-            ("closures", "fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nlet xs: Array[Int] = [9, 4]\nfn main() -> Int { let f = make(2); f(Array::get(xs, 0)) }", "7"),
-            ("branch-closures", "fn choose(n: Int) -> (Int) -> Int { if n > 0 { (x) -> x - 2 } else { (x) -> x + 100 } }\nfn main() -> Int { let f = choose(1); f(9) }", "7"),
+            ("long-identifier", f"fn {long_name}(a: Int) -> Int {{ a - 3 }}\nfn main() -> Int {{ {long_name}(a = 11) }}", "8"),
+            ("subtract", "fn sub(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { sub(a = 43, b = 4) }", "39"),
+            ("builtin-shadow", "fn compiler_lowering_run(n: Int) -> Int { n - 3 }\nfn main() -> Int { compiler_lowering_run(n = 11) }", "8"),
+            ("division", "fn quotient(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { quotient(a = 43, b = 4) }", "10"),
+            ("closures", "fn make(n: Int) -> (Int) -> Int { (x) -> { let inner = (y) -> y - n; inner(x) } }\nlet xs: Array[Int] = [9, 4]\nfn main() -> Int { let f = make(n = 2); f(Array::get(xs, at = 0)) }", "7"),
+            ("branch-closures", "fn choose(n: Int) -> (Int) -> Int { if n > 0 { (x) -> x - 2 } else { (x) -> x + 100 } }\nfn main() -> Int { let f = choose(n = 1); f(9) }", "7"),
             ("exception", 'fn fail() -> Int with Exception { throw("expected") }\nfn main() -> Int { handle { fail() } with { Exception::Throw(_) => 17 } }', "17"),
             ("large-string", 'let value: String = "' + "z" * 131072 + 'é🍣"\nfn main() -> Int { String::length(value) }', "131078"),
         ]

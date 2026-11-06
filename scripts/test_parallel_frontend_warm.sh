@@ -163,19 +163,19 @@ export fn typed_main() -> Int {
   let b = () -> Bool { 1 < 2 }
   let d = () -> Float64 { 2.5 }
   let a = () -> Array[Bool] { [1 < 2, 2 < 1] }
-  assert(show(b()) == "true")
-  assert(show(d()) == "2.5")
-  assert(show(a()) == "[true, false]")
-  assert(mono(b()) == "true")
-  assert(take(d()) == 3.0)
+  assert(show(value = b()) == "true")
+  assert(show(value = d()) == "2.5")
+  assert(show(value = a()) == "[true, false]")
+  assert(mono(value = b()) == "true")
+  assert(take(value = d()) == 3.0)
   let v = [1, 2]
   let w = [1, 3]
   let left = []
   let right = []
   let other = []
-  Array::push(left, v)
-  Array::push(right, v)
-  Array::push(other, w)
+  Array::push(left, value = v)
+  Array::push(right, value = v)
+  Array::push(other, value = w)
   assert(left == right)
   assert(left != other)
   0

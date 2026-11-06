@@ -40,7 +40,7 @@ pass=0; fail=0
 # 1-based column 12. `binding-at f 1 12` lands on the definition name and must
 # return >=3 spans (the definition + both uses).
 f="$WORK/helper.vibe"
-printf 'export let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(21) + helper(1) }\n' > "$f"
+printf 'export let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(x = 21) + helper(x = 1) }\n' > "$f"
 
 src="$(cat "$f")"
 

@@ -268,22 +268,22 @@ PY
 # #3348: a literal argument with no offset of its own (`EInt`) is read back
 # from the call's tokens on both lanes: `takes(42)` slices `42` (line 5,
 # characters 8-10), not the callee `takes` at character 2.
-printf 'fn takes(s: String) -> Int {\n  0\n}\nfn f() -> Int {\n  takes(42)\n}\n' > "$WORK/literal_arg.vibe"
+printf 'fn takes(s: String) -> Int {\n  0\n}\nfn f() -> Int {\n  takes(s = 42)\n}\n' > "$WORK/literal_arg.vibe"
 probe literal_arg 1
 python3 - "$WORK/literal_arg.fs.json" <<'PY' || bad "literal_arg: expected the literal argument's range at line 5"
 import json, sys
 rows = json.load(open(sys.argv[1]))
 assert len(rows) == 1, rows
 assert 'argument type mismatch for takes' in rows[0]['message'], rows[0]
-assert rows[0]['range']['start'] == {'line': 4, 'character': 8}, rows[0]
-assert rows[0]['range']['end'] == {'line': 4, 'character': 10}, rows[0]
+assert rows[0]['range']['start'] == {'line': 4, 'character': 12}, rows[0]
+assert rows[0]['range']['end'] == {'line': 4, 'character': 14}, rows[0]
 PY
 
 # #3369: a file with an import reports every diagnostic on the FS lane, as one
 # without does. The import-resolving checker threw only the first one. The
 # single-file lane cannot resolve the import, so only the FS lane is asked.
 printf 'export struct Pt {\n  x: Int\n}\n' > "$WORK/imported_dep.vibe"
-printf 'import ./imported_dep.vibe { Pt }\n\nfn total(n: Int) -> Int {\n  n\n}\n\nfn main() -> Unit {\n  let p: Pt = 1\n  let t = total("s")\n}\n' > "$WORK/imported_two.vibe"
+printf 'import ./imported_dep.vibe { Pt }\n\nfn total(n: Int) -> Int {\n  n\n}\n\nfn main() -> Unit {\n  let p: Pt = 1\n  let t = total(n = "s")\n}\n' > "$WORK/imported_two.vibe"
 SRC_REL="_build/_check_json_parity/imported_two.vibe"
 imported_exit="$(run_lane "$WORK/imported_two.fs.json")"
 if [ "$imported_exit" != 1 ]; then

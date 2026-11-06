@@ -11,7 +11,7 @@
 echo "[compiler-gate] 4/4 multi-file FS-compile regression"
 gate_workdir fsdir "_build/_gate_fscompile"
 printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$fsdir/helper.vibe"
-printf 'import ./helper.vibe { add }\nexport let _start = () -> Int { add(40, 2) }\n' > "$fsdir/main.vibe"
+printf 'import ./helper.vibe { add }\nexport let _start = () -> Int { add(a = 40, b = 2) }\n' > "$fsdir/main.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$fsdir/main.vibe" "$fsdir/main.wasm" _start || true
@@ -148,15 +148,15 @@ let rec walk = (path: String, depth: Int) -> String with FileIo {
   if depth <= 0 {
     source
   } else {
-    let s1 = walk("_build/_gate_deepresume/d/b.txt", depth - 1)
-    let s2 = walk("_build/_gate_deepresume/d/c.txt", depth - 1)
+    let s1 = walk(path = "_build/_gate_deepresume/d/b.txt", depth = depth - 1)
+    let s2 = walk(path = "_build/_gate_deepresume/d/c.txt", depth = depth - 1)
     "\{source}|\{s1}|\{s2}"
   }
 }
 
 export let _start: () -> Int with Fs = () -> {
   let out = handle {
-    walk("_build/_gate_deepresume/a.txt", 1)
+    walk(path = "_build/_gate_deepresume/a.txt", depth = 1)
   } with {
     FileIo::ReadFile(p) => resume(Fs::read_file(p))
   }
@@ -284,35 +284,35 @@ cat > "$oobdir/arr_get.vibe" <<'VEOF'
 fn main allows Console {
   let xs = [1, 2, 3]
   println("before")
-  println("\{Array::get(xs, 10)}")
+  println("\{Array::get(xs, at = 10)}")
 }
 VEOF
 cat > "$oobdir/arr_set.vibe" <<'VEOF'
 fn main allows Console {
   let xs = [1, 2, 3]
   println("before")
-  Array::set(xs, 10, 0)
+  Array::set(xs, at = 10, value = 0)
 }
 VEOF
 cat > "$oobdir/bytes_get.vibe" <<'VEOF'
 fn main allows Console {
   let b = Bytes::from_array([1, 2, 3])
   println("before")
-  println("\{Bytes::get(b, 9)}")
+  println("\{Bytes::get(b, at = 9)}")
 }
 VEOF
 cat > "$oobdir/bytes_set.vibe" <<'VEOF'
 fn main allows Console {
   let b = Bytes::from_array([1, 2, 3])
   println("before")
-  Bytes::set(b, 9, 0)
+  Bytes::set(b, at = 9, value = 0)
 }
 VEOF
 cat > "$oobdir/str_byte_at.vibe" <<'VEOF'
 fn main allows Console {
   let s = "abc"
   println("before")
-  println("\{String::byte_at(s, 5)}")
+  println("\{String::byte_at(s, at = 5)}")
 }
 VEOF
 # #3547: `m[k]` on a missing key trapped with only a backtrace.
@@ -449,26 +449,26 @@ echo "[compiler-gate] 4e2 an index of 2^32 or more traps instead of wrapping int
 gate_workdir u32dir "_build/_gate_index_u32"
 # case|lanes|access statement|linear-lane message
 u32_cases=(
-  "arr_get|linear gc|println(\"\\{Array::get(xs, id(4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
-  "arr_get_neg|linear gc|println(\"\\{Array::get(xs, id(-4294967296))}\")|Array::get: index -4294967296 out of bounds for length 3"
-  "arr_index|linear gc|println(\"\\{xs[id(4294967296)]}\")|Array::get: index 4294967296 out of bounds for length 3"
-  "arr_set|linear gc|Array::set(xs, id(4294967296), 5)|Array::set: index 4294967296 out of bounds for length 3"
-  "byte_at|linear gc|println(\"\\{String::byte_at(s, id(4294967296))}\")|String::byte_at: index 4294967296 out of bounds for length 3"
-  "bytes_get|linear gc|println(\"\\{Bytes::get(b, id(4294967296))}\")|Bytes::get: index 4294967296 out of bounds for length 3"
-  "bytes_set|linear gc|Bytes::set(b, id(4294967296), 65)|Bytes::set: index 4294967296 out of bounds for length 3"
-  "bytes_blit|linear gc|Bytes::blit(Bytes::new(), b, id(4294967296), id(4294967298))|Bytes::get: index 4294967296 out of bounds for length 3"
-  "native_get|linear gc|println(\"\\{local_get(id(4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
-  "native_set|linear gc|println(\"\\{local_set(id(4294967296))}\")|Array::set: index 4294967296 out of bounds for length 3"
-  "split_get|gc|println(\"\\{Array::get(String::split(\"a,b\", \",\"), id(5))}\")|"
-  "byte_at_small|gc|println(\"\\{String::byte_at(s, id(5))}\")|"
+  "arr_get|linear gc|println(\"\\{Array::get(xs, at = id(x = 4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
+  "arr_get_neg|linear gc|println(\"\\{Array::get(xs, at = id(x = -4294967296))}\")|Array::get: index -4294967296 out of bounds for length 3"
+  "arr_index|linear gc|println(\"\\{xs[id(x = 4294967296)]}\")|Array::get: index 4294967296 out of bounds for length 3"
+  "arr_set|linear gc|Array::set(xs, at = id(x = 4294967296), value = 5)|Array::set: index 4294967296 out of bounds for length 3"
+  "byte_at|linear gc|println(\"\\{String::byte_at(s, at = id(x = 4294967296))}\")|String::byte_at: index 4294967296 out of bounds for length 3"
+  "bytes_get|linear gc|println(\"\\{Bytes::get(b, at = id(x = 4294967296))}\")|Bytes::get: index 4294967296 out of bounds for length 3"
+  "bytes_set|linear gc|Bytes::set(b, at = id(x = 4294967296), value = 65)|Bytes::set: index 4294967296 out of bounds for length 3"
+  "bytes_blit|linear gc|Bytes::blit(Bytes::new(), src = b, start = id(x = 4294967296), end = id(x = 4294967298))|Bytes::get: index 4294967296 out of bounds for length 3"
+  "native_get|linear gc|println(\"\\{local_get(i = id(x = 4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
+  "native_set|linear gc|println(\"\\{local_set(i = id(x = 4294967296))}\")|Array::set: index 4294967296 out of bounds for length 3"
+  "split_get|gc|println(\"\\{Array::get(String::split(\"a,b\", sep = \",\"), at = id(x = 5))}\")|"
+  "byte_at_small|gc|println(\"\\{String::byte_at(s, at = id(x = 5))}\")|"
 )
 for u32_case in "${u32_cases[@]}"; do
   IFS='|' read -r u32_name u32_lanes u32_access u32_msg <<<"$u32_case"
   u32_src="$u32dir/$u32_name.vibe"
   printf '%s\n' \
     'fn id(x: Int) -> Int {' '  x' '}' '' \
-    'fn local_get(i: Int) -> Int {' '  let a = [1, 2, 3]' '  Array::get(a, i)' '}' '' \
-    'fn local_set(i: Int) -> Int {' '  let a = [1, 2, 3]' '  Array::set(a, i, 9)' '  Array::get(a, 0)' '}' '' \
+    'fn local_get(i: Int) -> Int {' '  let a = [1, 2, 3]' '  Array::get(a, at = i)' '}' '' \
+    'fn local_set(i: Int) -> Int {' '  let a = [1, 2, 3]' '  Array::set(a, at = i, value = 9)' '  Array::get(a, at = 0)' '}' '' \
     'fn main allows Console {' \
     '  let xs = [10, 20, 30]' '  let s = "abc"' '  let b = Bytes::from_array([97, 98, 99])' \
     '  println("before")' "  $u32_access" '  println("after")' '}' >"$u32_src"
@@ -525,8 +525,8 @@ fn main allows Console {
   let mut i = 0
   while i < 40 {
     let k = "k\{i}"
-    MutMap::set(m, k, i)
-    let _ = MutMap::delete(m, k)
+    MutMap::set(m, k = k, v = i)
+    let _ = MutMap::delete(m, k = k)
     m.tombs = m.tombs - 1
     i = i + 1
   }
@@ -794,7 +794,7 @@ fi
 # fn round-trip (ADR-0064 #727): normalize must KEEP `fn` declarations —
 # including the `where` contract — in fn form (SFnDecl + printer support),
 # not rewrite them to `let rec` + inlined asserts; and stay idempotent.
-printf 'fn checked_inc(x: Int) -> Int where { requires: x >= 0, ensures: result > x } { x + 1 }\nexport fn run() -> Int { checked_inc(41) }\nexport { run }\n' > "$ndir/keep_fn.vibe"
+printf 'fn checked_inc(x: Int) -> Int where { requires: x >= 0, ensures: result > x } { x + 1 }\nexport fn run() -> Int { checked_inc(x = 41) }\nexport { run }\n' > "$ndir/keep_fn.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ndir/keep_fn.vibe" "$ndir/keep_fn.out.vibe" >/dev/null 2>&1 || true
@@ -842,7 +842,7 @@ cdir="_build/_gate_contract"
 rm -rf "$cdir"; mkdir -p "$cdir/pkg"
 printf 'import ./impl.vibe {}\nfn add(x: Int, y: Int) -> Int\n' > "$cdir/pkg/index.vpkg"
 printf 'export fn add(x: Int, y: Int) -> Int { x + y }\n' > "$cdir/pkg/impl.vibe"
-printf 'import ./pkg { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/ok.vibe"
+printf 'import ./pkg { add }\nexport let _start: () -> Int = () -> { add(x = 40, y = 2) }\n' > "$cdir/ok.vibe"
 # #749 canary: run this compile with a COLD persistent cache. The runner's
 # module-init _start executes the same pipeline once before the real cli_main
 # invoke; a first-pass failure is masked in the exit code but leaves a .diag
@@ -855,7 +855,7 @@ if [ -s "$cdir/ok.wasm.diag" ]; then
   echo "[compiler-gate] FAIL: cold contract compile left a stale .diag beside a valid wasm (#749 first-pass ingestion failure)" >&2
   cat "$cdir/ok.wasm.diag" >&2; exit 1
 fi
-printf 'import ./pkg/impl.vibe { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/bad.vibe"
+printf 'import ./pkg/impl.vibe { add }\nexport let _start: () -> Int = () -> { add(x = 40, y = 2) }\n' > "$cdir/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/bad.vibe" "$cdir/bad.wasm" _start >/dev/null 2>&1 \
@@ -907,7 +907,7 @@ echo "[compiler-gate] generic-struct contract arity regression ok"
 #      rejected with their dedicated diagnostics (not a generic parse error).
 echo "[compiler-gate] 6b2b explicit struct type args (#886)"
 gate_workdir stdir "_build/_gate_struct_targs"
-printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nstruct Bag[T] {\n  xs: Array[T]\n}\n\nexport let _start: () -> Unit with Console = () -> {\n  let p = Pair[Int]::{ a: 1, b: 2 }\n  assert_eq(p.a + p.b, 3)\n  let g = Bag[Int]::{ xs: [] }\n  Array::push(g.xs, 42)\n  assert_eq(Array::get(g.xs, 0), 42)\n  let n = Pair[Array[Int]]::{ a: [1, 2], b: [] }\n  assert_eq(Array::length(n.a), 2)\n}\n' > "$stdir/ok.vibe"
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nstruct Bag[T] {\n  xs: Array[T]\n}\n\nexport let _start: () -> Unit with Console = () -> {\n  let p = Pair[Int]::{ a: 1, b: 2 }\n  assert_eq(p.a + p.b, 3)\n  let g = Bag[Int]::{ xs: [] }\n  Array::push(g.xs, value = 42)\n  assert_eq(Array::get(g.xs, at = 0), 42)\n  let n = Pair[Array[Int]]::{ a: [1, 2], b: [] }\n  assert_eq(Array::length(n.a), 2)\n}\n' > "$stdir/ok.vibe"
 gate_fs_compile "$stdir/ok.vibe" "$stdir/ok.wasm" _start
 gate_require_artifact "$stdir/ok.wasm" "explicit struct type args (#886) did not compile"
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$stdir/ok.wasm" >/dev/null 2>&1; then
@@ -954,8 +954,8 @@ rm -rf "$xpdir"; mkdir -p "$xpdir/pkgb" "$xpdir/pkga"
 printf 'import ./impl.vibe {}\nopaque type X\nfn make(v: Int) -> X\nfn value(x: X) -> Int\n' > "$xpdir/pkgb/index.vibei"
 printf 'export struct X {\n  v: Int\n}\n\nexport fn make(v: Int) -> X {\n  X::{ v: v }\n}\n\nexport fn value(x: X) -> Int {\n  x.v\n}\n' > "$xpdir/pkgb/impl.vibe"
 printf 'import ./impl.vibe {}\nimport ../pkgb { type X }\nfn wrap(v: Int) -> X\n' > "$xpdir/pkga/index.vibei"
-printf 'import ../pkgb { X, make }\nexport fn wrap(v: Int) -> X {\n  make(v)\n}\n' > "$xpdir/pkga/impl.vibe"
-printf 'import ./pkga { wrap }\nimport ./pkgb { value }\nexport let _start: () -> Int = () -> { value(wrap(42)) }\n' > "$xpdir/ok.vibe"
+printf 'import ../pkgb { X, make }\nexport fn wrap(v: Int) -> X {\n  make(v = v)\n}\n' > "$xpdir/pkga/impl.vibe"
+printf 'import ./pkga { wrap }\nimport ./pkgb { value }\nexport let _start: () -> Int = () -> { value(x = wrap(v = 42)) }\n' > "$xpdir/ok.vibe"
 gate_fs_compile "$xpdir/ok.vibe" "$xpdir/ok.wasm" _start
 gate_require_artifact "$xpdir/ok.wasm" ".vibei contract's cross-package directory import (../pkgb) did not resolve (#842)"
 gate_run xpres digits --invoke _start "$xpdir/ok.wasm"
@@ -987,7 +987,7 @@ if ! printf '%s' "$pin" | grep -qE '^#pkg:b3:[0-9a-f]{64}$'; then
   echo "[compiler-gate] FAIL: vibe hash new write is not #pkg:b3:<64hex> (#2829)" >&2
   echo "$pin" >&2; exit 1
 fi
-printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' "$pin" > "$cdir2/ok.vibe"
+printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(x = 14) }\n' "$pin" > "$cdir2/ok.vibe"
 gate_fs_compile "$cdir2/ok.vibe" "$cdir2/ok.wasm" _start
 gate_require_artifact "$cdir2/ok.wasm" "pinned store import did not compile (#730)"
 # #2227: check must agree with the build lane it just exercised -- the same
@@ -1003,10 +1003,10 @@ if [ -s "$cdir2/ok.checkout.diag" ]; then
 fi
 # #2227: same pin head in a .vibex -- the script-head directive scan used to
 # read the pin's #pkg:sha1: as an unknown # directive before pin extraction.
-printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\n\nfn main allows () {\n  let _ = triple(14)\n}\n' "$pin" > "$cdir2/ok_pin.vibex"
+printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\n\nfn main allows () {\n  let _ = triple(x = 14)\n}\n' "$pin" > "$cdir2/ok_pin.vibex"
 gate_fs_compile "$cdir2/ok_pin.vibex" "$cdir2/ok_pin.wasm" main
 gate_require_artifact "$cdir2/ok_pin.wasm" "a .vibex with a require-pin head did not compile (#2227)"
-printf 'require @gate/d2pkg 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/bad.vibe"
+printf 'require @gate/d2pkg 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(x = 14) }\n' > "$cdir2/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/bad.vibe" "$cdir2/bad.wasm" _start >/dev/null 2>&1 \
@@ -1019,7 +1019,7 @@ if ! grep -q "pin mismatch" "$cdir2/bad.wasm.diag" 2>/dev/null; then
 fi
 # D-3: an unpinned require refuses to build; VIBE_FILL_PINS completes it
 # offline from the store; the filled source builds; the fill is idempotent.
-printf 'require @gate/d2pkg 1.0.0\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/unpinned.vibe"
+printf 'require @gate/d2pkg 1.0.0\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(x = 14) }\n' > "$cdir2/unpinned.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/unpinned.vibe" "$cdir2/unpinned.wasm" _start >/dev/null 2>&1 \
@@ -1057,10 +1057,10 @@ rm -rf "lib/@gate751"; mkdir -p "$lpkg"
 printf 'fn greet_n(x: Int) -> Int\n' > "$lpkg/index.vibei"
 printf 'export fn greet_n(x: Int) -> Int { x + 2 }\n' > "$lpkg/impl.vibe"
 gate_workdir ldir "_build/_gate_lib751"
-printf 'import @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/ok.vibe"
+printf 'import @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(x = 40) }\n' > "$ldir/ok.vibe"
 gate_fs_compile "$ldir/ok.vibe" "$ldir/ok.wasm" _start
 gate_require_artifact "$ldir/ok.wasm" "unpinned lib/ package import did not compile (#751)"
-printf 'require @gate751/greet 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/bad.vibe"
+printf 'require @gate751/greet 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(x = 40) }\n' > "$ldir/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/bad.vibe" "$ldir/bad.wasm" _start >/dev/null 2>&1 \
@@ -1092,7 +1092,7 @@ printf 'export fn echo_n(x: Int) -> Int { x + 2 }\n' > "$xpkg/impl.vibe"
 xdir="_build/_gate_lib751x"
 rm -rf "$xdir" "lib/@gate751x"; mkdir -p "$xdir"
 # (1) without a usable root the name must NOT resolve
-printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) }\n' > "$xdir/miss.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(x = 40) }\n' > "$xdir/miss.vibe"
 if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/miss.vibe" "$xdir/miss.wasm" _start >/dev/null 2>&1 \
@@ -1101,7 +1101,7 @@ if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE
 fi
 # (2) a ":"-separated VIBE_LIB resolves through the first root that has the
 #     package (missing roots skipped); the compiled program runs.
-printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 }\n' > "$xdir/ext.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(x = 40) + 0 }\n' > "$xdir/ext.vibe"
 VIBE_LIB="$xroot/does-not-exist:$xroot" gate_fs_compile "$xdir/ext.vibe" "$xdir/ext.wasm" _start
 gate_require_artifact "$xdir/ext.wasm" "VIBE_LIB root resolution did not compile (#751)"
 gate_run ext_out stdout-last --invoke _start "$xdir/ext.wasm"
@@ -1112,7 +1112,7 @@ fi
 mkdir -p "lib/@gate751x/echo"
 printf 'fn echo_n(x: Int) -> Int\n' > "lib/@gate751x/echo/index.vibei"
 printf 'export fn echo_n(x: Int) -> Int { x + 3 }\n' > "lib/@gate751x/echo/impl.vibe"
-printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 }\n' > "$xdir/ws.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(x = 40) + 0 + 0 }\n' > "$xdir/ws.vibe"
 VIBE_LIB="$xroot/does-not-exist:$xroot" gate_fs_compile "$xdir/ws.vibe" "$xdir/ws.wasm" _start
 gate_require_artifact "$xdir/ws.wasm" "workspace-precedence consumer did not compile (#751)"
 gate_run ws_out stdout-last --invoke _start "$xdir/ws.wasm"
@@ -1120,7 +1120,7 @@ if [ "$ws_out" != "43" ]; then
   echo "[compiler-gate] FAIL: workspace lib/ did not win over VIBE_LIB root (got '$ws_out', want 43) (#751)" >&2; exit 1
 fi
 # (4) freeze: VIBE_REQUIRE_PINS=1 demands a pin for any dev-mode lib lane
-printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 + 0 }\n' > "$xdir/frz.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(x = 40) + 0 + 0 + 0 }\n' > "$xdir/frz.vibe"
 if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/frz.vibe" "$xdir/frz.wasm" _start >/dev/null 2>&1 \
@@ -1138,7 +1138,7 @@ fi
 #     replayed under VIBE_REQUIRE_PINS=1, and a removed VIBE_LIB root kept
 #     resolving).
 rm -rf "lib/@gate751x"
-printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(38) }\n' > "$xdir/replay.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(x = 38) }\n' > "$xdir/replay.vibe"
 VIBE_LIB="$xroot" gate_fs_compile "$xdir/replay.vibe" "$xdir/replay1.wasm" _start
 gate_require_artifact "$xdir/replay1.wasm" "replay warm-up compile failed (#758)"
 if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -1244,7 +1244,7 @@ if ! VIBE_HOME="$jhome" gate_vibe_pkg install "@gate754/mathx@1.0.0" > "$jdir/in
   echo "[compiler-gate] FAIL: install/materialize into VIBE_HOME/lib failed (#754)" >&2
   cat "$jdir/inst1.log" >&2; exit 1
 fi
-printf 'import @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) }\n' > "$jdir/use.vibe"
+printf 'import @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(x = 11) }\n' > "$jdir/use.vibe"
 VIBE_HOME="$jhome" gate_fs_compile "$jdir/use.vibe" "$jdir/use.wasm" _start
 gate_require_artifact "$jdir/use.wasm" "materialized package did not resolve via VIBE_HOME default root (#754)"
 gate_run juse_out stdout-last --invoke _start "$jdir/use.wasm"
@@ -1257,7 +1257,7 @@ if ! VIBE_HOME="$jhome" gate_vibe_pkg install "@gate754/mathx@1.0.0" --store > "
   cat "$jdir/inst2.log" >&2; exit 1
 fi
 jhash="$(awk -F'\t' '$1 == "@gate754/mathx@1.0.0" { print $2 }' "$jhome/cache/versions.tsv")"
-printf 'require @gate754/mathx 1.0.0 = #%s\n\nimport @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) + 0 }\n' "$jhash" > "$jdir/pinned.vibe"
+printf 'require @gate754/mathx 1.0.0 = #%s\n\nimport @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(x = 11) + 0 }\n' "$jhash" > "$jdir/pinned.vibe"
 VIBE_REQUIRE_PINS=1 VIBE_HOME="$jhome" gate_fs_compile "$jdir/pinned.vibe" "$jdir/pinned.wasm" _start
 gate_require_artifact "$jdir/pinned.wasm" "pinned store build under VIBE_REQUIRE_PINS=1 failed (#754)"
 # same-version republish with different content must be rejected
@@ -1368,7 +1368,7 @@ fi
 if ! grep -q "@gate755/hex@1.0.0" "$khome/cache/provenance.tsv" 2>/dev/null; then
   echo "[compiler-gate] FAIL: git add did not record provenance (#755)" >&2; exit 1
 fi
-printf 'import @gate755/hex { hex_n }\nexport let _start: () -> Int = () -> { hex_n(36) }\n' > "$kdir/use.vibe"
+printf 'import @gate755/hex { hex_n }\nexport let _start: () -> Int = () -> { hex_n(x = 36) }\n' > "$kdir/use.vibe"
 VIBE_HOME="$khome" gate_fs_compile "$kdir/use.vibe" "$kdir/use.wasm" _start
 gate_run kuse_out stdout-last --invoke _start "$kdir/use.wasm"
 if [ "$kuse_out" != "42" ]; then
@@ -1575,7 +1575,7 @@ echo "[compiler-gate] registry transparency log + yank ok"
 echo "[compiler-gate] 6d where-contract + publish gate regression (#731/#732)"
 gate_workdir edir "_build/_gate_ef"
 # (a) satisfied contract: requires + ensures hold, the call returns 42.
-printf 'fn checked_add(x: Int, y: Int) -> Int where { requires: x >= 0, requires: y >= 0, ensures: result >= x } { x + y }\nexport let _start: () -> Int = () -> { checked_add(40, 2) }\n' > "$edir/ok.vibe"
+printf 'fn checked_add(x: Int, y: Int) -> Int where { requires: x >= 0, requires: y >= 0, ensures: result >= x } { x + y }\nexport let _start: () -> Int = () -> { checked_add(x = 40, y = 2) }\n' > "$edir/ok.vibe"
 gate_fs_compile "$edir/ok.vibe" "$edir/ok.wasm" _start
 gate_require_artifact "$edir/ok.wasm" "satisfied where-contract program did not compile (#731)"
 gate_run ok_out stdout-last --invoke _start "$edir/ok.wasm"
@@ -1583,7 +1583,7 @@ if [ "$ok_out" != "42" ]; then
   echo "[compiler-gate] FAIL: satisfied where-contract returned '$ok_out' (want 42) (#731)" >&2; exit 1
 fi
 # (b) violated requires: entry assert traps.
-printf 'fn half_pos(x: Int) -> Int where { requires: x > 0 } { x / 2 }\nexport let _start: () -> Int = () -> { half_pos(0 - 4) }\n' > "$edir/viol.vibe"
+printf 'fn half_pos(x: Int) -> Int where { requires: x > 0 } { x / 2 }\nexport let _start: () -> Int = () -> { half_pos(x = 0 - 4) }\n' > "$edir/viol.vibe"
 gate_fs_compile "$edir/viol.vibe" "$edir/viol.wasm" _start
 gate_require_artifact "$edir/viol.wasm" "where-contract program did not compile (#731)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol.wasm" >/dev/null 2>&1; then
@@ -1592,13 +1592,13 @@ fi
 # (b2) #3715: every exit checks `ensures`, an early `return` included -- one
 #      nested in a loop as well as one at the top of the body. A satisfying
 #      early return still returns its value.
-printf 'fn f(x: Int) -> Int where { ensures: result > 0 } {\n  if x < 0 {\n    return x\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { f(0 - 5) }\n' > "$edir/viol_ret.vibe"
+printf 'fn f(x: Int) -> Int where { ensures: result > 0 } {\n  if x < 0 {\n    return x\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { f(x = 0 - 5) }\n' > "$edir/viol_ret.vibe"
 gate_fs_compile "$edir/viol_ret.vibe" "$edir/viol_ret.wasm" _start
 gate_require_artifact "$edir/viol_ret.wasm" "early-return ensures program did not compile (#3715)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: an early return that violates ensures did not trap (#3715)" >&2; exit 1
 fi
-printf 'fn g(n: Int) -> Int where { ensures: result >= 10 } {\n  let mut i = 0\n  while i < n {\n    if i == 2 {\n      return i\n    } else {\n      ()\n    }\n    i = i + 1\n  }\n  10\n}\nexport let _start: () -> Int = () -> { g(5) }\n' > "$edir/viol_ret_loop.vibe"
+printf 'fn g(n: Int) -> Int where { ensures: result >= 10 } {\n  let mut i = 0\n  while i < n {\n    if i == 2 {\n      return i\n    } else {\n      ()\n    }\n    i = i + 1\n  }\n  10\n}\nexport let _start: () -> Int = () -> { g(n = 5) }\n' > "$edir/viol_ret_loop.vibe"
 gate_fs_compile "$edir/viol_ret_loop.vibe" "$edir/viol_ret_loop.wasm" _start
 gate_require_artifact "$edir/viol_ret_loop.wasm" "early-return-in-loop ensures program did not compile (#3715)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret_loop.wasm" >/dev/null 2>&1; then
@@ -1606,7 +1606,7 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invo
 fi
 # A body closure spelled like the generated checker does not replace it at
 # a rewritten `return`: the checker's name is fresh for each function.
-printf 'fn s(x: Int) -> Int where { ensures: result > 0 } {\n  let __vibe_ensures = (v: Int) -> Int { v }\n  if x < 0 {\n    return x\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { s(0 - 5) }\n' > "$edir/viol_ret_shadow.vibe"
+printf 'fn s(x: Int) -> Int where { ensures: result > 0 } {\n  let __vibe_ensures = (v: Int) -> Int { v }\n  if x < 0 {\n    return x\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { s(x = 0 - 5) }\n' > "$edir/viol_ret_shadow.vibe"
 gate_fs_compile "$edir/viol_ret_shadow.vibe" "$edir/viol_ret_shadow.wasm" _start
 gate_require_artifact "$edir/viol_ret_shadow.wasm" "early-return ensures program with a checker-named local did not compile (#3715)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret_shadow.wasm" >/dev/null 2>&1; then
@@ -1614,13 +1614,13 @@ if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invo
 fi
 # The same through a struct pattern's field binder, which the printer
 # abbreviates to `W::{...}`: the fresh-name check reads the AST's binders.
-printf 'fn s(x: Int, w: W) -> Int where { ensures: result > 0 } {\n  match w {\n    W::{ __vibe_ensures } => if x < 0 {\n      return x\n    } else {\n      ()\n    }\n  }\n  x + 1\n}\n\nstruct W { __vibe_ensures: (Int) -> Int }\n\nexport let _start: () -> Int = () -> { s(0 - 5, W::{ __vibe_ensures: (v: Int) -> Int { v } }) }\n' > "$edir/viol_ret_pattern.vibe"
+printf 'fn s(x: Int, w: W) -> Int where { ensures: result > 0 } {\n  match w {\n    W::{ __vibe_ensures } => if x < 0 {\n      return x\n    } else {\n      ()\n    }\n  }\n  x + 1\n}\n\nstruct W { __vibe_ensures: (Int) -> Int }\n\nexport let _start: () -> Int = () -> { s(x = 0 - 5, w = W::{ __vibe_ensures: (v: Int) -> Int { v } }) }\n' > "$edir/viol_ret_pattern.vibe"
 gate_fs_compile "$edir/viol_ret_pattern.vibe" "$edir/viol_ret_pattern.wasm" _start
 gate_require_artifact "$edir/viol_ret_pattern.wasm" "early-return ensures program with a checker-named field did not compile (#3715)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ret_pattern.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: a struct field named like the ensures checker let an early return skip it (#3715)" >&2; exit 1
 fi
-printf 'fn h(x: Int) -> Int where { ensures: result > 0 } {\n  if x > 100 {\n    return 100\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { h(500) }\n' > "$edir/ok_ret.vibe"
+printf 'fn h(x: Int) -> Int where { ensures: result > 0 } {\n  if x > 100 {\n    return 100\n  } else {\n    ()\n  }\n  x + 1\n}\nexport let _start: () -> Int = () -> { h(x = 500) }\n' > "$edir/ok_ret.vibe"
 gate_fs_compile "$edir/ok_ret.vibe" "$edir/ok_ret.wasm" _start
 gate_require_artifact "$edir/ok_ret.wasm" "satisfied early-return ensures program did not compile (#3715)"
 gate_run ok_ret_out stdout-last --invoke _start "$edir/ok_ret.wasm"
@@ -1628,7 +1628,7 @@ if [ "$ok_ret_out" != "100" ]; then
   echo "[compiler-gate] FAIL: a satisfying early return returned '$ok_ret_out' (want 100) (#3715)" >&2; exit 1
 fi
 # (c) violated ensures: exit assert (over the `result` binding) traps.
-printf 'fn bad_dec(x: Int) -> Int where { ensures: result > x } { x - 1 }\nexport let _start: () -> Int = () -> { bad_dec(7) }\n' > "$edir/viol_ens.vibe"
+printf 'fn bad_dec(x: Int) -> Int where { ensures: result > x } { x - 1 }\nexport let _start: () -> Int = () -> { bad_dec(x = 7) }\n' > "$edir/viol_ens.vibe"
 gate_fs_compile "$edir/viol_ens.vibe" "$edir/viol_ens.wasm" _start
 gate_require_artifact "$edir/viol_ens.wasm" "ensures-contract program did not compile (#731)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/viol_ens.wasm" >/dev/null 2>&1; then
@@ -1671,7 +1671,7 @@ done
 # (`__loop_17_check`, 17 being the `for`'s token position) does not replace
 # it: the printer abbreviates the pattern to `S::{...}`, so the fresh-name
 # check reads binders from the AST rather than from printed text.
-printf 'fn run(s: S) -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    n = n + 1\n    match s {\n      S::{ __loop_17_check } => {\n        continue\n      }\n    }\n  }\n  n\n}\n\nstruct S { __loop_17_check: () -> Unit }\n\nexport let _start: () -> Int = () -> { run(S::{ __loop_17_check: () -> () }) }\n' > "$edir/loop_pattern_capture.vibe"
+printf 'fn run(s: S) -> Int {\n  let mut n = 0\n  for x in [1, 2] where { invariant: n == 0 } {\n    n = n + 1\n    match s {\n      S::{ __loop_17_check } => {\n        continue\n      }\n    }\n  }\n  n\n}\n\nstruct S { __loop_17_check: () -> Unit }\n\nexport let _start: () -> Int = () -> { run(s = S::{ __loop_17_check: () -> () }) }\n' > "$edir/loop_pattern_capture.vibe"
 gate_fs_compile "$edir/loop_pattern_capture.vibe" "$edir/loop_pattern_capture.wasm" _start
 gate_require_artifact "$edir/loop_pattern_capture.wasm" "loop contract case 'pattern_capture' did not compile (#3716)"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$edir/loop_pattern_capture.wasm" >/dev/null 2>&1; then
@@ -1727,12 +1727,12 @@ import @vibe/core {
 export let _start: () -> Int = () -> {
   assert(sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d")
   let buf = encode_uleb128(624485)
-  let (v, _) = read_uleb128(buf, 0)
+  let (v, _) = read_uleb128(buf = buf, offset = 0)
   assert(eq(v, 624485))
-  assert(eq(List::sum(List::of3(1, 2, 3)), 6))
+  assert(eq(List::sum(List::of3(a = 1, b = 2, c = 3)), 6))
   let s = from_array(["a", "b"])
-  assert(contains(s, "a"))
-  assert(not(contains(s, "z")))
+  assert(contains(s = s, value = "a"))
+  assert(not(contains(s = s, value = "z")))
   0
 }
 EOF
@@ -1761,7 +1761,7 @@ let classify: (E) -> Int = (e) -> {
   }
 }
 export let _start: () -> Int = () -> {
-  classify(I(5)) + classify(S("foo")) + classify(I(7)) + classify(S("perform"))
+  classify(e = I(5)) + classify(e = S("foo")) + classify(e = I(7)) + classify(e = S("perform"))
 }
 EOF
 # Expected: 11 + 21 + 10 + 20 = 62
@@ -1849,7 +1849,7 @@ let classify: (Stmt) -> Int = (stmt) -> {
   }
 }
 export let _start: () -> Int = () -> {
-  classify(SL(4, None, 6)) + classify(SL(4, Some(7), 6))
+  classify(stmt = SL(4, None, 6)) + classify(stmt = SL(4, Some(7), 6))
 }
 EOF
 # Expected: (4+6) + (4+7+6) = 10 + 17 = 27.
@@ -1899,7 +1899,7 @@ export let _start: () -> Int = () -> {
   let name = "ab"
   let t = "\{name}!"
   // s = "v42" (length 3, s[1]='4'=52), t = "ab!" (length 3, t[0]='a'=97).
-  String::length(s) * 1000 + String::char_code_at(s, 1) * 100 + String::length(t) * 10 + (String::char_code_at(t, 0) - 97)
+  String::length(s) * 1000 + String::char_code_at(s, at = 1) * 100 + String::length(t) * 10 + (String::char_code_at(t, at = 0) - 97)
 }
 EOF
 # 3*1000 + 52*100 + 3*10 + 0 = 3000 + 5200 + 30 = 8230
@@ -1926,7 +1926,7 @@ let pick: (Int) -> Int = (n) -> {
   }
 }
 test "pos" {
-  assert(pick(5) == 1)
+  assert(pick(n = 5) == 1)
 }
 EOF
 VIBE_COVERAGE=1 gate_fs_compile "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __no_entry__
@@ -1982,7 +1982,7 @@ cat > "$tldir/bool_render.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let l = () -> Bool { 1 < 2 }
   let s = __to_string(l())
-  String::length(s) * 1000 + String::char_code_at(s, 0)
+  String::length(s) * 1000 + String::char_code_at(s, at = 0)
 }
 EOF
 VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -2023,12 +2023,12 @@ impl Sized for Int { bump(self) -> Int { self + 1 } }
 impl Sized for Point { bump(self) -> Int { self.x + self.y + 1 } }
 let measure_one = [T: Measurable](x: T) -> Int { T::measure(x) }
 let twice = [T: Measurable](x: T) -> Int { T::measure(T::scale(x, 2)) }
-let forward = [T: Measurable](x: T) -> Int { measure_one(x) + twice(x) }
+let forward = [T: Measurable](x: T) -> Int { measure_one(x = x) + twice(x = x) }
 let sized_sum = [T: Sized](x: T) -> Int { T::measure(x) + T::bump(x) }
 export let _start: () -> Int = () -> {
   let p = Point::{ x: 40, y: 2 }
-  measure_one(42) + twice(21) + measure_one(p) + twice(p)
-  + forward(10) + sized_sum(7) + sized_sum(p)
+  measure_one(x = 42) + twice(x = 21) + measure_one(x = p) + twice(x = p)
+  + forward(x = 10) + sized_sum(x = 7) + sized_sum(x = p)
 }
 EOF
 # Expected: 42 + 42 + 42 + 84 + (10+20) + (7+8) + (42+43) = 340
@@ -2058,9 +2058,9 @@ impl Logger for SB {
 }
 export let _start: () -> Int = () -> {
   let sb = SB::{ prefix: "n=" }
-  let a = SB::write_object(sb, 42)
+  let a = SB::write_object(self = sb, x = 42)
   let sb2 = SB::{ prefix: "s=" }
-  let b = SB::write_object(sb2, "hi")
+  let b = SB::write_object(self = sb2, x = "hi")
   if a == "n=42" && b == "s=hi" { 84 } else { 0 }
 }
 EOF
@@ -2116,9 +2116,9 @@ fn digit(o: Ordering) -> Int {
   }
 }
 export let _start: () -> Int = () -> {
-  digit(P::compare(P::{ x: 1, y: 1 }, P::{ x: 1, y: 2 })) * 100000
-  + digit(P::compare(P::{ x: 2, y: 0 }, P::{ x: 1, y: 9 })) * 10000
-  + digit(P::compare(P::{ x: 5, y: 5 }, P::{ x: 5, y: 5 })) * 1000
+  digit(o = P::compare(P::{ x: 1, y: 1 }, P::{ x: 1, y: 2 })) * 100000
+  + digit(o = P::compare(P::{ x: 2, y: 0 }, P::{ x: 1, y: 9 })) * 10000
+  + digit(o = P::compare(P::{ x: 5, y: 5 }, P::{ x: 5, y: 5 })) * 1000
   + String::length(P::to_string(P::{ x: 7, y: 9 }))
 }
 EOF

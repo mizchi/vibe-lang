@@ -126,7 +126,7 @@ test "two performs of one generic effect at conflicting types are rejected" {
 // accept a fn value whose row drops `Fs` entirely.
 
 test "a row instantiated twice does not match a row carrying an extra effect" {
-  let src = "effect State[S] {\n  Get() -> S\n}\n\nfn needs_two(f: () -> Int with State[Int] + State[String]) -> Int {\n  f()\n}\n\nfn both() -> Int with State + Fs {\n  42\n}\n\nlet main = () -> Int {\n  needs_two(both)\n}\n"
+  let src = "effect State[S] {\n  Get() -> S\n}\n\nfn needs_two(f: () -> Int with State[Int] + State[String]) -> Int {\n  f()\n}\n\nfn both() -> Int with State + Fs {\n  42\n}\n\nlet main = () -> Int {\n  needs_two(f = both)\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) > 0)
 }
@@ -184,7 +184,7 @@ test "a repeated identical row label keeps the instantiation" {
 test "an unannotated callback lambda is not pinned by the enclosing row" {
   // Codex on #3304: the lambda's performs belong to the callback parameter's
   // `Box[String]` row, which `run_cb` handles, not to `producer`'s `Box[Int]`.
-  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n\nfn producer() -> Int with Box[Int] {\n  run_cb(() -> {\n    perform Box::Put(\"x\")\n  }) + perform Box::Put(1)\n}\n\nlet main = () -> Int {\n  42\n}\n"
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n\nfn producer() -> Int with Box[Int] {\n  run_cb(f = () -> {\n    perform Box::Put(\"x\")\n  }) + perform Box::Put(1)\n}\n\nlet main = () -> Int {\n  42\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 0))
 }
@@ -318,10 +318,10 @@ test "a kinded formal in the row fixes the payload at the formal" {
 let callback_decls = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n\nfn run2[T: Eq](x: T, f: () -> Int with Box[T]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(v) => resume(if v == x {\n      1\n    } else {\n      0\n    })\n  }\n}\n\nfn run3[T](f: () -> Int with Box[T]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(_) => resume(0)\n  }\n}\n\n"
 
 test "a callback lambda performs at its parameter row's instantiation" {
-  let diags = collect_all_diagnostics(String::concat(callback_decls, "fn producer() -> Int with Box {\n  run_cb(() -> {\n    perform Box::Put(1)\n  })\n}\n"))
+  let diags = collect_all_diagnostics(String::concat(callback_decls, "fn producer() -> Int with Box {\n  run_cb(f = () -> {\n    perform Box::Put(1)\n  })\n}\n"))
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, at = 0), needle = "perform argument type mismatch for Box::Put: expected String, got Int"))
-  let ok = collect_all_diagnostics(String::concat(callback_decls, "fn producer() -> Int with Box {\n  run_cb(() -> {\n    perform Box::Put(\"x\")\n  })\n}\n"))
+  let ok = collect_all_diagnostics(String::concat(callback_decls, "fn producer() -> Int with Box {\n  run_cb(f = () -> {\n    perform Box::Put(\"x\")\n  })\n}\n"))
   assert(eq(Array::length(ok), 0))
 }
 
@@ -329,17 +329,17 @@ test "a callback lambda performs at its parameter row's instantiation" {
 // never a formal of the caller spelled the same, and the arguments to the
 // lambda's left fix it before the lambda is checked.
 test "a callback row naming the callee's formal takes this call's type" {
-  let bad = collect_all_diagnostics(String::concat(callback_decls, "fn producer[T](y: T) -> Int with Box {\n  run2(\"s\", () -> {\n    perform Box::Put(1)\n  })\n}\n"))
+  let bad = collect_all_diagnostics(String::concat(callback_decls, "fn producer[T](y: T) -> Int with Box {\n  run2(x = \"s\", f = () -> {\n    perform Box::Put(1)\n  })\n}\n"))
   assert(eq(Array::length(bad), 1))
   assert(String::contains(Array::get(bad, at = 0), needle = "perform argument type mismatch for Box::Put: expected String, got Int"))
-  let ok = collect_all_diagnostics(String::concat(callback_decls, "fn producer[T](y: T) -> Int with Box {\n  run2(\"s\", () -> {\n    perform Box::Put(\"t\")\n  }) + run2(5, () -> {\n    perform Box::Put(6)\n  })\n}\n"))
+  let ok = collect_all_diagnostics(String::concat(callback_decls, "fn producer[T](y: T) -> Int with Box {\n  run2(x = \"s\", f = () -> {\n    perform Box::Put(\"t\")\n  }) + run2(x = 5, f = () -> {\n    perform Box::Put(6)\n  })\n}\n"))
   assert(eq(Array::length(ok), 0))
 }
 
 // A formal only the callback row names is not fixed by the call, so the
 // lambda's perform is left open, as before.
 test "a callback row formal the call does not fix leaves the perform open" {
-  let src = String::concat(callback_decls, "fn producer() -> Int with Box {\n  run3(() -> {\n    perform Box::Put(1)\n  }) + run3(() -> {\n    perform Box::Put(\"x\")\n  })\n}\n")
+  let src = String::concat(callback_decls, "fn producer() -> Int with Box {\n  run3(f = () -> {\n    perform Box::Put(1)\n  }) + run3(f = () -> {\n    perform Box::Put(\"x\")\n  })\n}\n")
   assert(eq(Array::length(collect_all_diagnostics(src)), 0))
 }
 
@@ -347,7 +347,7 @@ test "a callback row formal the call does not fix leaves the perform open" {
 // enclosing handle's instantiation, which a forwarding callee passes the
 // perform to. A fresh instantiation would have accepted the `String`.
 test "a bare callback row keeps the enclosing handle's instantiation" {
-  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn pass(f: () -> Int with Box) -> Int with Box {\n  f()\n}\n\nfn main_like() -> Int {\n  handle {\n    pass(() -> {\n      perform Box::Put(\"x\")\n    })\n  } with {\n    Box::Put(n) => resume(n + 1)\n  }\n}\n"
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn pass(f: () -> Int with Box) -> Int with Box {\n  f()\n}\n\nfn main_like() -> Int {\n  handle {\n    pass(f = () -> {\n      perform Box::Put(\"x\")\n    })\n  } with {\n    Box::Put(n) => resume(n + 1)\n  }\n}\n"
   assert(Array::length(collect_all_diagnostics(src)) > 0)
 }
 
@@ -393,7 +393,7 @@ test "a row formal the body keeps generic is accepted" {
 test "a named lambda passed to a callback performs at the parameter's row" {
   // #3341: checked at its `let` with a fresh instantiation, the lambda's
   // perform reached the callee's `String` handler with an `Int`.
-  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int with Box[String] {\n  f()\n}\n\nfn named_passed() -> Int with Box[String] {\n  let g = () -> Int { perform Box::Put(1) }\n  run_cb(g)\n}\n"
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int with Box[String] {\n  f()\n}\n\nfn named_passed() -> Int with Box[String] {\n  let g = () -> Int { perform Box::Put(1) }\n  run_cb(f = g)\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, at = 0), needle = "make the function passed to `run_cb` perform `Box` at `String`: it performs `Box` at `Int`"))
@@ -407,14 +407,14 @@ test "a lambda called directly performs at the instantiation in scope" {
 }
 
 test "a lambda's own row is compared with the parameter's row" {
-  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int with Box[String] {\n  f()\n}\n\nfn own_row_mismatch() -> Int with Box[String] {\n  run_cb(() -> Int with Box[Int] { perform Box::Put(3) })\n}\n"
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int with Box[String] {\n  f()\n}\n\nfn own_row_mismatch() -> Int with Box[String] {\n  run_cb(f = () -> Int with Box[Int] { perform Box::Put(3) })\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, at = 0), needle = "it performs `Box` at `Int`, but the parameter's row is `Box[String]`"))
 }
 
 test "a named lambda passed to a callee that handles its own row is accepted" {
-  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_int(f: () -> Int with Box[Int]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(n) => resume(n + 1)\n  }\n}\n\nfn other_row() -> Int with Box[String] {\n  let g = () -> Int { perform Box::Put(41) }\n  run_int(g) + perform Box::Put(\"s\")\n}\n"
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_int(f: () -> Int with Box[Int]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(n) => resume(n + 1)\n  }\n}\n\nfn other_row() -> Int with Box[String] {\n  let g = () -> Int { perform Box::Put(41) }\n  run_int(f = g) + perform Box::Put(\"s\")\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 0))
 }

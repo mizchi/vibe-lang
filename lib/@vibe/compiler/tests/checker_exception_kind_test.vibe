@@ -154,7 +154,7 @@ test "a row naming no exception label reports the RESOLVED kind (#2982)" {
 }
 
 test "an effectset union of exception kinds authorizes both" {
-  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\neffectset ConfigExc = {\n  Exception[IoError],\n  Exception[ParseError]\n}\n\nlet boom = (b: Bool) -> Int with ConfigExc {\n  if b {\n    throw(NotFound(\"x\"))\n  } else {\n    throw(Eof)\n  }\n}\n\nlet main = () -> Int {\n  handle {\n    boom(true)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\neffectset ConfigExc = {\n  Exception[IoError],\n  Exception[ParseError]\n}\n\nlet boom = (b: Bool) -> Int with ConfigExc {\n  if b {\n    throw(NotFound(\"x\"))\n  } else {\n    throw(Eof)\n  }\n}\n\nlet main = () -> Int {\n  handle {\n    boom(b = true)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   assert(eq(Array::length(checked_diags(src)), 0))
 }
 
@@ -189,23 +189,23 @@ test "a kinded arm may not run an open row variable (#3540)" {
 }
 
 test "a kinded exception row cannot be laundered through a mismatched fn slot" {
-  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception[ParseError]) -> Int with Exception[ParseError] {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception[ParseError]) -> Int with Exception[ParseError] {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(f = boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, at = 0), needle = "effect would be dropped"))
 }
 
 test "an erased slot refuses a kinded value, and a kinded slot refuses an erased one" {
-  let into_erased = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception) -> Int with Exception {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  let into_erased = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception) -> Int with Exception {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(f = boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   // #3601: an erased function-type row raises only messages to its callers,
   // so `boom`'s `IoError` would reach an erased arm typed as a `String`.
   let erased_diags = checked_diags(into_erased)
   assert(eq(Array::length(erased_diags), 1))
   assert(String::contains(Array::get(erased_diags, at = 0), needle = "write `with Exception[IoError]` in the expected type () -> Int with Exception"))
   // Naming the kind beside the erased label is the edit, and it checks.
-  let into_both = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception + Exception[IoError]) -> Int with Exception + Exception[IoError] {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  let into_both = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with Exception[IoError] {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception + Exception[IoError]) -> Int with Exception + Exception[IoError] {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(f = boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   assert(eq(Array::length(checked_diags(into_both)), 0))
-  let into_kinded = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with Exception {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception[IoError]) -> Int with Exception[IoError] {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  let into_kinded = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = () -> Int with Exception {\n  throw(NotFound(\"x\"))\n}\n\nlet take = (f: () -> Int with Exception[IoError]) -> Int with Exception[IoError] {\n  f()\n}\n\nlet main = () -> Int {\n  handle {\n    take(f = boom)\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   // The mirror of #3015: `boom` may raise any kind, and `take`'s row -- which
   // its callers trust -- promises only `IoError`, so the narrowing is refused.
   let diags = checked_diags(into_kinded)
@@ -219,14 +219,14 @@ test "a pattern binder's payload kind is its inferred type under a kinded row (#
   // promised `Exception[ParseError]` and threw a String. #3017: the checker
   // hands the effects pass the payload's inferred type, so the refusal names
   // the kind actually thrown.
-  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = (r: IoError) -> Int with Exception[ParseError] {\n  match r {\n    NotFound(m) => throw(m)\n  }\n}\n\nlet main = () -> Int {\n  handle {\n    boom(NotFound(\"x\"))\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = (r: IoError) -> Int with Exception[ParseError] {\n  match r {\n    NotFound(m) => throw(m)\n  }\n}\n\nlet main = () -> Int {\n  handle {\n    boom(r = NotFound(\"x\"))\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[String] }"))
 }
 
 test "an unresolved payload kind stays gradual under the erased row" {
-  let src = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = (r: IoError) -> Int with Exception {\n  match r {\n    NotFound(m) => throw(m)\n  }\n}\n\nlet main = () -> Int {\n  handle {\n    boom(NotFound(\"x\"))\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nlet boom = (r: IoError) -> Int with Exception {\n  match r {\n    NotFound(m) => throw(m)\n  }\n}\n\nlet main = () -> Int {\n  handle {\n    boom(r = NotFound(\"x\"))\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   assert(eq(Array::length(checked_diags(src)), 0))
 }
 
@@ -250,14 +250,14 @@ test "a local binder's payload kind comes from its initializer" {
 test "a local binder resolves through the module table too" {
   // `let e = make_err(..)` -- the initializer is itself resolved by the same
   // rules, so the local inherits the callee's RESULT kind.
-  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet make_err = (m: String) -> IoError {\n  NotFound(m)\n}\n\nlet boom = () -> Int with Exception[ParseError] {\n  let e = make_err(\"x\")\n  throw(e)\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet make_err = (m: String) -> IoError {\n  NotFound(m)\n}\n\nlet boom = () -> Int with Exception[ParseError] {\n  let e = make_err(m = \"x\")\n  throw(e)\n}\n\nlet main = () -> Int {\n  handle {\n    boom()\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[IoError] }"))
 }
 
 test "an annotated parameter's payload kind comes from its annotation" {
-  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = (e: IoError) -> Int with Exception[ParseError] {\n  throw(e)\n}\n\nlet main = () -> Int {\n  handle {\n    boom(NotFound(\"x\"))\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nenum ParseError {\n  Eof\n}\n\nlet boom = (e: IoError) -> Int with Exception[ParseError] {\n  throw(e)\n}\n\nlet main = () -> Int {\n  handle {\n    boom(e = NotFound(\"x\"))\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, at = 0), needle = "missing { Exception[IoError] }"))
@@ -301,7 +301,7 @@ test "a for-loop binder shadows a same-named top-level binding" {
   // The binder must not resolve to the top-level `x` (an IoError). It throws a
   // String under `Exception[ParseError]`, so since #2964 it is refused as an
   // unresolved kind rather than admitted.
-  let src = "enum IoError {\n  NotFound(String)\n}\n\nlet x = NotFound(\"top\")\n\nlet boom = (xs: Array[String]) -> Int with Exception[ParseError] {\n  for x in xs {\n    throw(x)\n  }\n  0\n}\n\nenum ParseError {\n  Eof\n}\n\nlet main = () -> Int {\n  handle {\n    boom([\n      \"a\"\n    ])\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
+  let src = "enum IoError {\n  NotFound(String)\n}\n\nlet x = NotFound(\"top\")\n\nlet boom = (xs: Array[String]) -> Int with Exception[ParseError] {\n  for x in xs {\n    throw(x)\n  }\n  0\n}\n\nenum ParseError {\n  Eof\n}\n\nlet main = () -> Int {\n  handle {\n    boom(xs = [\n      \"a\"\n    ])\n  } with {\n    Exception::Throw(_e) => 42\n  }\n}\n"
   let diags = checked_diags(src)
   assert(eq(Array::length(diags), 1))
   assert(!String::contains(Array::get(diags, at = 0), needle = "IoError"))

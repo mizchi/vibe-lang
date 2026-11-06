@@ -20,7 +20,7 @@ mkdirSync(cache, { recursive: true });
 const entry = join(project, "entry.vibe");
 const dep = join(project, "dep.vibe");
 writeFileSync(dep, "export fn value(x: Int) -> Int { x + 1 }\n");
-writeFileSync(entry, 'import ./dep.vibe { value }\nexport let answer = value(41)\n');
+writeFileSync(entry, 'import ./dep.vibe { value }\nexport let answer = value(x = 41)\n');
 
 function walkFiles(dir) {
   const out = [];
@@ -208,7 +208,7 @@ try {
 
   writeFileSync(entry, "export let broken =\n");
   run("failed-check", { expectSuccess: false, stale: true });
-  writeFileSync(entry, 'import ./dep.vibe { value }\nexport let answer = value(41)\n');
+  writeFileSync(entry, 'import ./dep.vibe { value }\nexport let answer = value(x = 41)\n');
   run("unsupported-mode", { checkOnly: false, expectSuccess: false, stale: true });
 
   console.log("ingestion-pipeline telemetry integration: ok");

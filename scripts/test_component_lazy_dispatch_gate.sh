@@ -129,7 +129,7 @@ import @vibe/command { command_args, command_ok }
 
 export fn vibe_command(args: String) -> String {
   let argv = command_args(args)
-  command_ok("hello from \{Array::get(argv, 0)}, \{Array::length(argv) - 1} arg(s)\n")
+  command_ok("hello from \{Array::get(argv, at = 0)}, \{Array::length(argv) - 1} arg(s)\n")
 }
 VIBE
   cat > "$WORK/cmd/cat.vibe" <<'VIBE'
@@ -138,13 +138,13 @@ import @vibe/command { command_args, command_failed, command_ok }
 export fn vibe_command(args: String) -> String with Fs {
   let argv = command_args(args)
   if Array::length(argv) < 2 {
-    command_failed(2, "usage: cat <file>\n")
+    command_failed(exit = 2, message = "usage: cat <file>\n")
   } else {
-    let path = Array::get(argv, 1)
+    let path = Array::get(argv, at = 1)
     if Fs::exists(path) {
       command_ok(Fs::read_file(path))
     } else {
-      command_failed(1, "cat: no such file: \{path}\n")
+      command_failed(exit = 1, message = "cat: no such file: \{path}\n")
     }
   }
 }
@@ -163,7 +163,7 @@ import @vibe/command { command_args, command_ok }
 
 export fn vibe_command(args: String) -> String {
   let argv = command_args(args)
-  command_ok("hello from \{Array::get(argv, 0)}, 3 arg(s)\n")
+  command_ok("hello from \{Array::get(argv, at = 0)}, 3 arg(s)\n")
 }
 VIBE
 
@@ -177,8 +177,8 @@ import @vibe/command { command_args, command_ok }
 
 export fn vibe_command(args: String) -> String with Fs {
   let argv = command_args(args)
-  Fs::write_file(Array::get(argv, 1), "written by a command component\n")
-  command_ok("wrote \{Array::get(argv, 1)}\n")
+  Fs::write_file(Array::get(argv, at = 1), contents = "written by a command component\n")
+  command_ok("wrote \{Array::get(argv, at = 1)}\n")
 }
 VIBE
 
@@ -193,7 +193,7 @@ import @vibe/compiler/fmt { format_script }
 
 export fn vibe_command(args: String) -> String with Fs {
   let argv = command_args(args)
-  command_ok(format_script(Fs::read_file(Array::get(argv, 1))))
+  command_ok(format_script(Fs::read_file(Array::get(argv, at = 1))))
 }
 VIBE
   cat > "$WORK/cmd/avoids.vibe" <<'VIBE'

@@ -74,8 +74,8 @@ import @vibe/compiler/codegen/component {
 }
 
 fn main() -> Unit allows Exception + Fs {
-  let bytes = comp_emit_component_wasm_future_value("run", 121)
-  Fs::write_bytes("_build/bench/selfhost_future_value_component/generated.component.wasm", bytes)
+  let bytes = comp_emit_component_wasm_future_value(export_name = "run", comp_result_valtype = 121)
+  Fs::write_bytes("_build/bench/selfhost_future_value_component/generated.component.wasm", bytes = bytes)
 }
 EOF
 

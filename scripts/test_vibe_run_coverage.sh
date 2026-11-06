@@ -33,7 +33,7 @@ fn unused(n: Int) -> Int {
 }
 
 fn main() -> Unit allows Console {
-  println("\{pick(5)}")
+  println("\{pick(n = 5)}")
 }
 EOF
 

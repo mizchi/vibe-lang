@@ -20,7 +20,7 @@ let consume: (ByteStream) -> Int = (s) -> {
   }
   sum
 }
-export let _start: () -> Int = () -> { consume(String::to_bytes("*")) }
+export let _start: () -> Int = () -> { consume(s = String::to_bytes("*")) }
 EOF
 cat > "$fadir/ok_unannot.vibe" <<'EOF'
 let consume = (s) -> Int {
@@ -30,7 +30,7 @@ let consume = (s) -> Int {
   }
   sum
 }
-export let _start: () -> Int = () -> { consume(String::to_bytes("*")) }
+export let _start: () -> Int = () -> { consume(s = String::to_bytes("*")) }
 EOF
 # #1350 (Codex P1): the pull-closure loop must fire only when the source
 # POSITIVELY returns a function. A call to a function whose return annotation
@@ -178,7 +178,7 @@ fn main() -> Unit allows Console {
   print("two")
   println("")
   println("\{40 + 2}")
-  Stdout::write_char(String::char_code_at("A", 0))
+  Stdout::write_char(String::char_code_at("A", at = 0))
   Stdout::write_char(10)
 }
 EOF
@@ -208,7 +208,7 @@ fn println(s: String) -> Unit with Console {
 }
 
 fn main() -> Unit allows Console {
-  println("ignored")
+  println(s = "ignored")
 }
 EOF
 gate_fs_compile "$ppdir/shadow.vibe" "$ppdir/shadow.wasm" main
@@ -378,11 +378,11 @@ echo "[compiler-gate] 28/28 argument type checking"
 gate_workdir adir "_build/_gate_argcheck"
 cat > "$adir/wrong.vibe" <<'EOF'
 let f: (Int) -> Int = (x) -> { x + 1 }
-export let _start: () -> Int = () -> { f("hello") }
+export let _start: () -> Int = () -> { f(x = "hello") }
 EOF
 cat > "$adir/right.vibe" <<'EOF'
 let f: (Int) -> Int = (x) -> { x + 1 }
-export let _start: () -> Int = () -> { f(41) + 1 }
+export let _start: () -> Int = () -> { f(x = 41) + 1 }
 EOF
 # Field-stored-function call `b.f(args)`: when no method `T::f` exists but the
 # struct field `f` holds a function, the args must be checked against the
@@ -477,7 +477,7 @@ export let _start: () -> Int = () -> {
 EOF
 cat > "$tdir/bad_genhead.vibe" <<'EOF'
 let f = [T](a: Array[T]) -> Int { 0 }
-export let _start: () -> Int = () -> { f(5) }
+export let _start: () -> Int = () -> { f(a = 5) }
 EOF
 cat > "$tdir/bad_builtinarg.vibe" <<'EOF'
 export let _start: () -> Int = () -> { Array::length(5) }
@@ -500,7 +500,7 @@ cat > "$tdir/bad_concatarg0.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let s = String::concat(1, "a"); 0 }
 EOF
 cat > "$tdir/bad_substrarg.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let s = String::substring("abc", "x", 2); 0 }
+export let _start: () -> Int = () -> { let s = String::substring("abc", start = "x", end = 2); 0 }
 EOF
 cat > "$tdir/bad_unknownfield.vibe" <<'EOF'
 struct P { x: Int; y: Int }
@@ -521,13 +521,13 @@ cat > "$tdir/bad_mutann.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let mut x: Bool = 5; 0 }
 EOF
 cat > "$tdir/bad_agrecv.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::get("str", 0) }
+export let _start: () -> Int = () -> { Array::get("str", at = 0) }
 EOF
 cat > "$tdir/bad_agidx.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::get([1, 2, 3], "x") }
+export let _start: () -> Int = () -> { Array::get([1, 2, 3], at = "x") }
 EOF
 cat > "$tdir/bad_asrecv.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::set("str", 0, 1); 0 }
+export let _start: () -> Int = () -> { Array::set("str", at = 0, value = 1); 0 }
 EOF
 cat > "$tdir/bad_arity_bytesnew.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let b = Bytes::new(1, 2); Bytes::length(b) }
@@ -538,10 +538,10 @@ cat > "$tdir/bad_streamlen.vibe" <<'EOF'
 export let _start: () -> Int = () -> { Array::length(String::to_bytes("*")) }
 EOF
 cat > "$tdir/bad_streamget.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::get(String::to_bytes("*"), 0) }
+export let _start: () -> Int = () -> { Array::get(String::to_bytes("*"), at = 0) }
 EOF
 cat > "$tdir/bad_streamset.vibe" <<'EOF'
-export let _start: () -> Int = () -> { Array::set(String::to_bytes("*"), 0, 1); 0 }
+export let _start: () -> Int = () -> { Array::set(String::to_bytes("*"), at = 0, value = 1); 0 }
 EOF
 # #805 (0.3.0 redundant-syntax removal): the `\(expr)` string-interpolation
 # spelling was removed — only `\{expr}` remains. A source using the old form
@@ -585,7 +585,7 @@ fn unbox[T](b: Box[T]) -> T { b.v }
 export let _start: () -> Int = () -> {
   let b = Box::{ v: 41 }
   let s = Box::{ v: "x" }
-  b.v + String::length(s.v) + unbox(b)
+  b.v + String::length(s.v) + unbox(b = b)
 }
 EOF
 gate_fs_compile "$tdir/ok.vibe" "$tdir/ok.wasm" _start
@@ -795,40 +795,40 @@ cat > "$idir/bad_stridx.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let s: String = "abc"[0]; 0 }
 EOF
 cat > "$idir/bad_arrget.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let a = [1, 2]; let s: String = Array::get(a, 0); 0 }
+export let _start: () -> Int = () -> { let a = [1, 2]; let s: String = Array::get(a, at = 0); 0 }
 EOF
 cat > "$idir/bad_arrpush.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let a = [1, 2]; Array::push(a, "x"); 0 }
+export let _start: () -> Int = () -> { let a = [1, 2]; Array::push(a, value = "x"); 0 }
 EOF
 cat > "$idir/bad_arrset.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let a = [1, 2]; Array::set(a, 0, "x"); 0 }
+export let _start: () -> Int = () -> { let a = [1, 2]; Array::set(a, at = 0, value = "x"); 0 }
 EOF
 cat > "$idir/bad_arrmap.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let a = [1, 2]; let b = Array::map(a, (x) -> { x + 1 }); let s: String = Array::get(b, 0); 0 }
+export let _start: () -> Int = () -> { let a = [1, 2]; let b = Array::map(a, f = (x) -> { x + 1 }); let s: String = Array::get(b, at = 0); 0 }
 EOF
 cat > "$idir/bad_arrfold.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let a = [1, 2]; let s: String = Array::fold(a, 0, (acc, x) -> { acc + x }); 0 }
+export let _start: () -> Int = () -> { let a = [1, 2]; let s: String = Array::fold(a, init = 0, f = (acc, x) -> { acc + x }); 0 }
 EOF
 cat > "$idir/bad_mapparam.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let b = Array::map([1, 2], (s: String) -> { s }); 0 }
+export let _start: () -> Int = () -> { let b = Array::map([1, 2], f = (s: String) -> { s }); 0 }
 EOF
 cat > "$idir/bad_foldparam.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let r = Array::fold([1, 2], 0, (acc: String, x) -> { acc }); 0 }
+export let _start: () -> Int = () -> { let r = Array::fold([1, 2], init = 0, f = (acc: String, x) -> { acc }); 0 }
 EOF
 cat > "$idir/bad_arrslice.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let a = [1, 2, 3]; let b = Array::slice(a, 0, 2); let s: String = Array::get(b, 0); 0 }
+export let _start: () -> Int = () -> { let a = [1, 2, 3]; let b = Array::slice(a, start = 0, end = 2); let s: String = Array::get(b, at = 0); 0 }
 EOF
 cat > "$idir/bad_arrconcat.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let c = Array::concat([1, 2], [3, 4]); let s: String = Array::get(c, 0); 0 }
+export let _start: () -> Int = () -> { let c = Array::concat([1, 2], [3, 4]); let s: String = Array::get(c, at = 0); 0 }
 EOF
 cat > "$idir/bad_arrconcatmix.vibe" <<'EOF'
 export let _start: () -> Int = () -> { let c = Array::concat([1, 2], ["x"]); 0 }
 EOF
 cat > "$idir/bad_arrpushallmix.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let a = [1, 2]; Array::push_all(a, ["x"]); 0 }
+export let _start: () -> Int = () -> { let a = [1, 2]; Array::push_all(a, values = ["x"]); 0 }
 EOF
 cat > "$idir/bad_arrrev.vibe" <<'EOF'
-export let _start: () -> Int = () -> { let b = Array::reverse([1, 2]); let s: String = Array::get(b, 0); 0 }
+export let _start: () -> Int = () -> { let b = Array::reverse([1, 2]); let s: String = Array::get(b, at = 0); 0 }
 EOF
 gate_fs_compile "$idir/ok.vibe" "$idir/ok.wasm" _start
 gate_require_artifact "$idir/ok.wasm" "well-typed index/tuple did not compile (over-rejects)"
@@ -981,9 +981,9 @@ gate_workdir sdir "_build/_gate_smoke"
 cat > "$sdir/clos.vibe" <<'EOF'
 let rec fold: (Array[Int], Int, (Int, Int) -> Int) -> Int = (a, acc, f) -> {
   if Array::length(a) == 0 { acc }
-  else { let h = Array::get(a, 0); fold(Array::slice(a, 1, Array::length(a)), f(acc, h), f) }
+  else { let h = Array::get(a, at = 0); fold(a = Array::slice(a, start = 1, end = Array::length(a)), acc = f(acc, h), f = f) }
 }
-export let _start: () -> Int = () -> { let add = (x: Int, y: Int) -> { x + y }; fold([1, 2, 3, 4], 0, add) }
+export let _start: () -> Int = () -> { let add = (x: Int, y: Int) -> { x + y }; fold(a = [1, 2, 3, 4], acc = 0, f = add) }
 EOF
 cat > "$sdir/eff.vibe" <<'EOF'
 effect Calc { Add(Int) -> Int; Mul(Int) -> Int }
@@ -1000,8 +1000,8 @@ export let _start: () -> Int = () -> {
 EOF
 cat > "$sdir/gen.vibe" <<'EOF'
 enum Tree { Leaf(Int); Node(Tree, Tree) }
-let rec sum: (Tree) -> Int = (t) -> { match t { Leaf(n) => n, Node(l, r) => sum(l) + sum(r) } }
-export let _start: () -> Int = () -> { sum(Node(Node(Leaf(1), Leaf(2)), Leaf(3))) }
+let rec sum: (Tree) -> Int = (t) -> { match t { Leaf(n) => n, Node(l, r) => sum(t = l) + sum(t = r) } }
+export let _start: () -> Int = () -> { sum(t = Node(Node(Leaf(1), Leaf(2)), Leaf(3))) }
 EOF
 cat > "$sdir/teq.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
@@ -1223,7 +1223,7 @@ export let _start: () -> Int = () -> {
   let a = 2
   let p = P::{ x: 7 }
   let v1 = if "\{a + 3}" == "5" { 1 } else { 0 }
-  let v2 = if "\{inc(a)}" == "3" { 20 } else { 0 }
+  let v2 = if "\{inc(n = a)}" == "3" { 20 } else { 0 }
   let v3 = if "\{p.x}" == "7" { 300 } else { 0 }
   let v4 = if "\{a}-\{p.x}" == "2-7" { 4000 } else { 0 }
   v1 + v2 + v3 + v4
@@ -1237,7 +1237,7 @@ let hof: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }
 let tup1: ((Int, Int)) -> Int = (p) -> { let (a, b) = p; a + b }
 let mix: ((Int, Int), Int) -> Int = (p, c) -> { let (a, b) = p; a + b + c }
 export let _start: () -> Int = () -> {
-  two(3, 4) + one(9) + zero() + hof((n) -> { n * 2 }, 10) + tup1((1, 2)) + mix((1, 2), 100)
+  two(a = 3, b = 4) + one(x = 9) + zero() + hof(f = (n) -> { n * 2 }, x = 10) + tup1(p = (1, 2)) + mix(p = (1, 2), c = 100)
 }
 EOF
 smoke_check() {
@@ -1281,7 +1281,3 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash "$ROOT_DIR/scripts/test_extract_function.
 # The label codemod edits only files that check, and its edit is a fixpoint (#3679).
 echo "[compiler-gate] label codemod (#3679)"
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash "$ROOT_DIR/scripts/test_refactor_add_labels.sh"
-
-# The missing-label warnings are the codemod's own edits (#3680).
-echo "[compiler-gate] missing-label warnings (#3680)"
-VIBE_TEST_CLI_WASM="$stage2_wasm" bash "$ROOT_DIR/scripts/test_check_warn_missing_labels.sh"

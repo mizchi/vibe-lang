@@ -21,7 +21,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cat > "$work/prog.vibe" <<'EOF'
 export let helper = (x: Int) -> Int { x * 2 }
-export let main = () -> Int { helper(21) }
+export let main = () -> Int { helper(x = 21) }
 EOF
 
 VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \

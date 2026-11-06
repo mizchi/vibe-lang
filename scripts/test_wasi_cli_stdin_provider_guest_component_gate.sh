@@ -52,11 +52,11 @@ import @vibe/compiler/codegen/component {
 }
 
 fn main() -> Unit allows Exception + Fs {
-  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/drain.component.wasm", comp_emit_component_wasm_async_stdin_provider_fixture(0))
-  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/early-close.component.wasm", comp_emit_component_wasm_async_stdin_provider_fixture(1))
-  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/odd-wire.component.wasm", comp_emit_component_wasm_async_stdin_provider_fixture(2))
-  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/out-of-u32-wire.component.wasm", comp_emit_component_wasm_async_stdin_provider_fixture(3))
-  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/high-bit-wire.component.wasm", comp_emit_component_wasm_async_stdin_provider_fixture(4))
+  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/drain.component.wasm", bytes = comp_emit_component_wasm_async_stdin_provider_fixture(0))
+  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/early-close.component.wasm", bytes = comp_emit_component_wasm_async_stdin_provider_fixture(1))
+  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/odd-wire.component.wasm", bytes = comp_emit_component_wasm_async_stdin_provider_fixture(2))
+  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/out-of-u32-wire.component.wasm", bytes = comp_emit_component_wasm_async_stdin_provider_fixture(3))
+  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/high-bit-wire.component.wasm", bytes = comp_emit_component_wasm_async_stdin_provider_fixture(4))
 }
 EOF
 rm -f "$HARNESS_WASM" "$HARNESS_WASM.diag" "$DRAIN" "$EARLY" "$ODD_WIRE" "$OUT_OF_U32_WIRE" "$HIGH_BIT_WIRE"

@@ -75,7 +75,7 @@ fn call_it[T: Greet](x: T) -> Int {
 }
 
 export fn main() -> Int {
-  call_it(7)
+  call_it(x = 7)
 }
 VIBE
 if run_gate "$WORK/r1/*.vibe"; then

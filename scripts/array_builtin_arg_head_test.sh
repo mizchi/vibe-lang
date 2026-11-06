@@ -101,13 +101,13 @@ fn add1(x: Int) -> Int {
 
 fn main allows Console {
   let xs = [1, 2, 3]
-  let m = Array::map(xs, (x) -> { x * 2 })
-  let f = Array::filter(xs, (x) -> { x > 1 })
-  let a = Array::any(xs, (x) -> { x > 2 })
-  let l = Array::all(xs, (x) -> { x > 0 })
-  let d = Array::fold(xs, 0, (acc, x) -> { acc + x })
-  let n = Array::map(xs, add1)
-  println("map=\{Array::get(m, 0)} filter=\{Array::length(f)} any=\{a} all=\{l} fold=\{d} named=\{Array::get(n, 2)}")
+  let m = Array::map(xs, f = (x) -> { x * 2 })
+  let f = Array::filter(xs, f = (x) -> { x > 1 })
+  let a = Array::any(xs, f = (x) -> { x > 2 })
+  let l = Array::all(xs, f = (x) -> { x > 0 })
+  let d = Array::fold(xs, init = 0, f = (acc, x) -> { acc + x })
+  let n = Array::map(xs, f = add1)
+  println("map=\{Array::get(m, at = 0)} filter=\{Array::length(f)} any=\{a} all=\{l} fold=\{d} named=\{Array::get(n, at = 2)}")
 }
 V
 chk="$(VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 400 bash runtime/vibe check "$WORK/pos.vibex" 2>&1)"

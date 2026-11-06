@@ -87,8 +87,8 @@ function makeProject(project) {
     "import ./mid.vibe { tdre_mid }",
     "import ./dep.vibe { TdrePt, tdre_k, tdre_pt }",
     "fn main() -> Int {",
-    "  let eq = if tdre_pt(1) == TdrePt::{ x: 1, y: 2 } { 7 } else { 0 }",
-    "  tdre_mid(10) * 100 + tdre_k() + eq",
+    "  let eq = if tdre_pt(n = 1) == TdrePt::{ x: 1, y: 2 } { 7 } else { 0 }",
+    "  tdre_mid(n = 10) * 100 + tdre_k() + eq",
     "}",
   ].join("\n"));
 }
