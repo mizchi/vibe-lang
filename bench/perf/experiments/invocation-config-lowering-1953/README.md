@@ -37,7 +37,7 @@ The standard compiler KPI and CLI corpora each have cold/warm samples from three
 
 All 24 same-source outputs are byte-identical across compilers. Own-source outputs are stable within each revision; CLI images can differ because the compiler source changed. Heap pointer includes the static heap base and cumulative bump allocation, not live heap, RSS or the CI selfcompile peak-memory metric. Timing is advisory and no speed improvement is claimed. The filesystem paths exercise the common compatibility pipeline, while the regional workload directly measures the new capture/owned API.
 
-Compiler artifact: 5,672,386 → 5,676,714 bytes. Candidate stage2 and stage3 are identical (`c272331a0509275b4710d9bb986227ad76085776cc25a505ecc917a1e3c6a982`); both validate as Wasm. Raw receipts, compiler/image hashes, measured index trees and all 54 process samples are in [results.json](results.json). Report-only changes after measurement leave the production-input fingerprint unchanged.
+Compiler artifact: 5,672,386 → 5,676,714 bytes. Candidate stage2 and stage3 are identical (`c272331a0509275b4710d9bb986227ad76085776cc25a505ecc917a1e3c6a982`); both validate as Wasm. Raw receipts, compiler/image hashes, measured index trees and all 54 process samples are in [results.json](results.json). Report and test-only changes after measurement leave the production-input fingerprint unchanged.
 
 ## Correctness
 
@@ -60,3 +60,5 @@ python3 bench/perf/experiments/invocation-config-1953/measure_own_source.py \
 ```
 
 Stage inputs before using the filesystem driver; output directories must not exist. Regenerate each checkout’s SDK, pass explicit stage2 artifacts and keep runs serial. See the [regional driver](measure_lowering.py) and [filesystem driver](../invocation-config-1953/measure_own_source.py).
+
+The test helper declares its positional receiver, and the embedded `Array::push` fixture uses an explicit positional receiver plus the required `value` label for both builtin and program bindings. The corrected test compiles, validates and runs with the CI-produced compiler on its exact merged source tree; the original helper spelling is independently refused at compile time. Production fingerprint and measured compiler remain unchanged.
