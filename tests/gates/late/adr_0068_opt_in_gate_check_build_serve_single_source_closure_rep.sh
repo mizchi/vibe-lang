@@ -21,7 +21,7 @@ import @vibe/concurrent/experimental { TaskGroup }
 
 fn main() -> Int allows Exception {
   TaskGroup::run((n) -> {
-    let _t = TaskGroup::spawn(n, () -> { 7 })
+    let _t = TaskGroup::spawn(n, f = () -> { 7 })
     0
   })
 }
