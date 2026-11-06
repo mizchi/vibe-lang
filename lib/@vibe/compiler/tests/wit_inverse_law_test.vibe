@@ -75,6 +75,29 @@ test "every admitted WIT type survives from_wit then to_wit unchanged" {
   inspect(disagree, content = "")
 }
 
+/// `round_trip`, or the refusal it threw.
+fn round_trip_or_refusal(_ wit_ty: String) -> String {
+  handle {
+    round_trip(wit_ty)
+  } with { Exception::Throw(msg) => "REFUSED: \{msg}" }
+}
+
+// #3826: the narrow integer widths are outside the admitted subset, so the
+// law makes no claim about them, and they are refused rather than read as a
+// wider type the round trip would turn into `s32` / `u32`. A component
+// `.wasm` import does offer them, as `Int32` / `UInt32` with the runner
+// refusing an argument outside the narrow range; a contract derived here is
+// lowered by the canonical ABI, which would truncate one with nothing
+// checking it.
+test "narrow WIT integers stay outside the inverse law" {
+  inspect([
+    round_trip_or_refusal("s8"),
+    round_trip_or_refusal("u8"),
+    round_trip_or_refusal("s16"),
+    round_trip_or_refusal("u16")
+  ], content = "[REFUSED: wit: `s8` has no vibe mapping, REFUSED: wit: `u8 outside list<u8>` has no vibe mapping, REFUSED: wit: `s16` has no vibe mapping, REFUSED: wit: `u16` has no vibe mapping]")
+}
+
 /// How many statements the vibe text derived from the type definition `def`
 /// parses to -- "PARSE ERROR: .." when it does not parse.
 fn parsed_decls(_ def: String) -> String {
