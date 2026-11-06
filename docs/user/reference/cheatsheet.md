@@ -3588,6 +3588,10 @@ it needs — nothing provides another module's host imports yet. That is why
 `lib/@vibex/z3` (the npm z3-solver build, an emscripten module that imports
 its JS runtime) type-checks and builds against the real `z3.wasm` but does
 not run: `scripts/test_z3_binding_gate.sh` asserts exactly that.
+`lib/@vibex/z3_wasi` binds z3 built for WASI with no imports
+(`scripts/build_z3_wasi.sh`: single-threaded, wasm exceptions, the WASI calls
+answered inside the module), and that one links and runs: it is the solver
+of `vibe check --prove --solver=wasm` (#3719).
 
 **Tree shaking.** A `vibe build` / `vibe run` artifact imports only the
 foreign functions the program reaches: the late DCE drops the unused binding

@@ -1,0 +1,99 @@
+//# Imports
+
+// z3_wasi.wasm is z3 built for WASI by scripts/build_z3_wasi.sh: single
+// threaded, wasm exceptions, and no imports, so a vibe runner links it (the
+// npm build @vibex/z3 binds imports its emscripten runtime and cannot be
+// linked). It is not committed (.gitignore). Every name below is typed from
+// that binary's own exports; see docs/user/reference/cheatsheet.md
+// "Importing a wasm module".
+import ./z3_wasi.wasm {
+  free,
+  malloc,
+  wasm_memory_load_u8,
+  wasm_memory_store_u8,
+  z3_del_config,
+  z3_del_context,
+  z3_eval_smtlib2_string,
+  z3_get_full_version,
+  z3_mk_config,
+  z3_mk_context,
+  z3_set_error_handler
+}
+
+//# Functions
+
+/// Run the SMT-LIB2 commands `script` in a fresh Z3 context and return
+/// everything Z3 printed, as `z3 -in` would for the same text: one context
+/// per call, so nothing one script declares or asserts reaches another.
+///
+/// The context has no error handler: z3's default one would `exit` the
+/// module, so a command z3 rejects is answered by its `(error ...)` line in
+/// the text instead.
+export fn eval_smtlib2_fresh(_ script: String) -> String with Exception {
+  let cfg = z3_mk_config()
+  let ctx = z3_mk_context(cfg)
+  z3_del_config(cfg)
+  z3_set_error_handler(ctx, Int::wrap_uint32(0))
+  // The binding offers z3_wasi.wasm's `i32` addresses as `UInt32` (#3730),
+  // and the memory accessors take `Int`; an address and an allocation size
+  // fit 32 bits, so each conversion between them is exact.
+  let p = write_cstring(script)
+  let r = z3_eval_smtlib2_string(ctx, Int::wrap_uint32(p))
+  free(Int::wrap_uint32(p))
+  // The answer is owned by the context, so it is read before the context goes.
+  let out = read_cstring(UInt32::to_int(r))
+  z3_del_context(ctx)
+  out
+}
+
+/// Z3's full version string.
+export fn z3_wasi_version() -> String with Exception {
+  read_cstring(UInt32::to_int(z3_get_full_version()))
+}
+
+// `script` as a NUL-terminated C string in a block of z3_wasi.wasm's memory.
+// A NUL byte inside it is refused: C would read it as the end of the string
+// and silently drop the rest.
+fn write_cstring(_ s: String) -> Int with Exception {
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    if String::byte_at(s, at = i) == 0 {
+      throw("z3_wasi: byte \{i} of the script is NUL, which a C string cannot hold")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let p = UInt32::to_int(malloc(Int::wrap_uint32(n + 1)))
+  if p == 0 {
+    throw("z3_wasi: allocating \{n + 1} bytes failed")
+  } else {
+    ()
+  }
+  let mut j = 0
+  while j < n {
+    wasm_memory_store_u8(p + j, String::byte_at(s, at = j))
+    j = j + 1
+  }
+  wasm_memory_store_u8(p + n, 0)
+  p
+}
+
+// The bytes of z3_wasi.wasm's memory at `p` up to the first NUL.
+fn read_cstring(_ p: Int) -> String with Exception {
+  if p == 0 {
+    throw("z3_wasi: z3 answered a null string")
+  } else {
+    ()
+  }
+  let parts: Array[String] = []
+  let mut q = p
+  let mut b = wasm_memory_load_u8(q)
+  while b != 0 {
+    Array::push(parts, value = String::from_byte(b))
+    q = q + 1
+    b = wasm_memory_load_u8(q)
+  }
+  String::join(parts, sep = "")
+}

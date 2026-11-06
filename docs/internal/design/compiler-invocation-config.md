@@ -1,7 +1,7 @@
 # Compiler invocation configuration (#1953)
 
 Target `#cfg` flags have scoped entries for the flat-source RC compiler,
-shared FS parsing, source collection, filesystem and in-memory typechecking. These are migration slices,
+shared FS parsing, source collection, filesystem and in-memory typechecking, and source merging. These are migration slices,
 not completion of #1953 or a claim that the compiler as a whole is reentrant.
 
 ## Boundary and authority
@@ -139,7 +139,7 @@ keep their constant-time ambient identity getter. Cache mode and checked-row
 policy are separate remaining configuration; mutable contents still need
 ownership or synchronization before arbitrary concurrent compiler calls.
 
-Merge/codegen, final-artifact orchestration, worker/tooling boundaries and CLI
+Typed merge/codegen, final-artifact orchestration, worker/tooling boundaries and CLI
 integration remain later slices. Existing CLI entries retain compatibility
 behavior rather than granting the whole compiler reentrancy.
 
@@ -176,11 +176,41 @@ or temporarily replace another invocation's configuration. Other policies and
 mutable cache contents remain separate work; this does not make the complete
 compiler safe for arbitrary concurrent calls.
 
+## Source merging
+
+`build_grouped_merged_source_configured` captures `Config` once and returns the
+linked source text. Its statement-data counterpart,
+`build_grouped_merged_stmts_with_config`, receives the snapshot directly. The
+shared merger parses every source with the configured engine parser; the same
+selected statements drive the whole-program export plan, import aliases and
+collision fallback. Legacy merge variants capture flags once before calling
+that shared kernel, preserving their location/provenance/count observations.
+
+`db_merged_source_with_config` and `db_grouped_merged_source_with_config` pass
+one snapshot through all parses, including collision-provider reparses. They
+validate the DB's configuration before looking up resident products. The whole-program merge
+fingerprints bind the exact non-empty flag identity, including empty grouped
+inputs, so a downstream caller cannot mistake identical source bytes under
+different target flags for the same product. Empty flags retain the legacy
+fingerprint bytes. Group products retain their input-only recipe inside the
+configuration-validated DB, avoiding a repeated flag hash for every group. Warm group hits still replay rename metadata and retain the
+whole-program overlap check and staged group reuse.
+
+The plain shared merge needs only `Exception`; its capturing boundary adds
+`Config`. DB merges retain `Env` and `Exception`, without `Fs`. Neither boundary temporarily
+replaces the compatibility cells. Opaque DBs stay on the data side; the effect
+boundary returns text. The compiler's mutable rename/location and typed-lowering
+metadata remain owned by their existing phases. This slice does not make those
+states reentrant: typed merge wrappers, codegen, module/artifact orchestration,
+CLI and workers still need matching configuration and owned products passed
+through their complete invocation. No configured typed-codegen entry is exposed
+before that transport exists.
+
 ## Remaining inventory
 
 | Configuration | Current owner / boundary | Remaining migration |
 | --- | --- | --- |
-| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection, FS and in-memory checking use explicit `TargetCfg`; merge/codegen, CLI orchestration, tooling and workers still need that snapshot passed through. Legacy parser entries retain compatibility reads. |
+| Target `VIBE_CFG` | `parser/parser.vibe`: `cfg_ambient_flags`, `cfg_ambient_flags_csv_cell`; `compiler/config/config.vibe`: `configure_compiler_cfg_flags` | Collection, FS and in-memory checking use explicit `TargetCfg`; source merge entries accept it; typed lowering/codegen, CLI orchestration, tooling and workers still need that snapshot passed through. Legacy parser entries retain compatibility reads. |
 | Persistent-cache flag namespace | `compiler/cache/persistent_cache.vibe`: `persistent_cache_cfg_flags_cell` | Collection, AST, typing and checked-module storage use captured identities in the scoped lane. Final-artifact and content-only fingerprint/stamp adapters remain; the latter values are independent of target flags. Cache-only compatibility APIs retain the legacy cell. |
 | In-process parse/header memo identity | `compiler/loader/header_cache.vibe`, `loader_contract_source_fs.vibe` | Collection and checking use scoped identities for parse, semantic use, import-name, re-export and generated-type reuse. Other merge/tooling entries retain compatibility APIs. |
 | Unstable-package authority | `compiler/cli_adapter_cli_main_with_lanes.vibe`, `cli/dispatch.vibe`: `VIBE_UNSTABLE`; runtime diagnostics already receive explicit `allow_unstable` | Snapshot at each invocation boundary and grant only the import-checking lane access. Do not fold this into build-time compiler feature flags. |
@@ -240,3 +270,11 @@ when derived results are forgotten.
 Next, carry the snapshot into CLI orchestration, merge/codegen and final
 artifacts, then migrate remaining authority reads and checker policies. Only
 after every supported entry and artifact uses scoped configuration can #1953 close.
+
+`invocation_config_merge_test.vibe` checks the plain shared merger and the
+ordinary/grouped DB mergers under poisoned ambient flags, one Config read with
+successful/failing inner merges, Alpha→Beta→Alpha resident reuse, discarded
+checker/artifact products, collision-provider reparsing and failure recovery.
+Flag identities differ even for identical selected text or empty groups; empty
+flags retain the legacy fingerprint representation. Compatibility entries also
+observe flag changes before consulting their resident caches.
