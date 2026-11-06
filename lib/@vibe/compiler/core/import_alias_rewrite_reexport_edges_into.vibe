@@ -28,6 +28,10 @@ import ./import_alias_rewrite_rewrite_alias_expr_ix.vibe {
   collect_import_refs, sanitize_namespace_path
 }
 
+import ./types_types_equal.vibe {
+  resolve_builtin
+}
+
 //# #716 export-name visibility
 
 // The merge flattens every file's top-level statements into one program, so a
@@ -364,4 +368,86 @@ export fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_pa
     }
     si = si + 1
   }
+}
+
+/// Follow the last published edge at each facade until it reaches a declared
+/// enum, or an exported struct. A missing edge or a cycle supplies no rewrite.
+///
+/// A struct counts because a facade re-exporting `{ P as R }` publishes `R`
+/// under a spelling nothing declares, so the importer's `R::get(r)` reached
+/// lowering as `R` (#3837); an exported struct keeps its bare name. Reached
+/// through a declared `export type R = P` it gives no row: that alias may own
+/// companions (`fn R::tag`), which `R -> P` sent to `P::tag` (Codex, #3877).
+///
+/// A non-generic builtin type reached through an `@vibe/builtin` import
+/// (`builtin_paths`) counts the same way: a facade re-exporting
+/// `{ Float64 as D }` gives the importer `D -> Float64`, without which
+/// `D::floor(x)` and `x: D` reached lowering as `D` (#3837).
+export fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int], enum_defs: MutMap[String, Bool], struct_defs: MutMap[String, Bool], builtin_paths: MutMap[String, Bool], enum_type_aliases: MutMap[String, String], published_aliases: MutMap[String, Bool], local_type_heads: MutMap[String, Bool], enum_import_paths: MutMap[String, String], enum_import_names: MutMap[String, String]) -> Option[(String, String, String, Bool)] {
+  let mut cur_path = path
+  let mut cur_name = name
+  let mut depth = 0
+  let mut done = false
+  let mut origin: Option[(String, String, String, Bool)] = None
+  let mut published_alias: Option[String] = None
+  let mut via_type_alias = false
+  while depth <= Array::length(edge_tpath) + MutMap::size(enum_type_aliases) + MutMap::size(enum_import_paths) && !done {
+    let key = plan_rename_key(path = cur_path, name = cur_name)
+    if MutMap::has(builtin_paths, k = cur_path) {
+      origin = if !via_type_alias && (resolve_builtin(cur_name) is Some(_)) {
+        Some((cur_name, cur_path, cur_name, true))
+      } else {
+        None
+      }
+      done = true
+    } else if MutMap::has(enum_defs, k = key) {
+      origin = match MutMap::get(enum_defs, k = key) {
+        Some(true) => Some((cur_name, cur_path, cur_name, true)),
+        _ => match published_alias {
+          Some(alias) => Some((alias, cur_path, cur_name, false)),
+          None => None
+        }
+      }
+      done = true
+    } else if MutMap::has(struct_defs, k = key) {
+      origin = match MutMap::get(struct_defs, k = key) {
+        Some(true) => if via_type_alias {
+          None
+        } else {
+          Some((cur_name, cur_path, cur_name, true))
+        },
+        _ => None
+      }
+      done = true
+    } else if MutMap::has(enum_type_aliases, k = key) {
+      via_type_alias = true
+      if published_alias == None && MutMap::has(published_aliases, k = key) {
+        published_alias = Some(cur_name)
+      }
+      match MutMap::get(enum_type_aliases, k = key) {
+        Some(next_name) => cur_name = next_name,
+        None => done = true
+      }
+    } else if MutMap::has(local_type_heads, k = key) {
+      done = true
+    } else if MutMap::has(enum_import_paths, k = key) {
+      match (MutMap::get(enum_import_paths, k = key), MutMap::get(enum_import_names, k = key)) {
+        (Some(next_path), Some(next_name)) => {
+          cur_path = next_path
+          cur_name = next_name
+        },
+        _ => done = true
+      }
+    } else {
+      match MutMap::get(edge_last_idx, k = key) {
+        Some(next) => {
+          cur_path = Array::get(edge_tpath, at = next)
+          cur_name = Array::get(edge_tname, at = next)
+        },
+        None => done = true
+      }
+    }
+    depth = depth + 1
+  }
+  origin
 }
