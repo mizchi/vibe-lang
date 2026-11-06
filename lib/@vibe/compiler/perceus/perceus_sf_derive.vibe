@@ -73,6 +73,7 @@ import ./perceus_pctx.vibe {
   pe_int_array_has,
   pe_push_for,
   pf_exit_owner,
+  pf_let,
   pf_mark_bad,
   pf_param,
   pf_split,
@@ -1187,6 +1188,55 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
   // resets) its own actions array, while callers hold the returned plan
   // across subsequent plan builds.
   Array::slice(ctx.actions, start = 0, end = Array::length(ctx.actions))
+}
+
+/// #3718: the planner's own classification of every binding the LAST plan
+/// built declared, in declaration order: its name, and a bit set -- 1 scalar
+/// (no reference to account for), 2 a view-call `let`, 4 a borrowed view, 8 a
+/// plain immutable `let` holding its own reference, 16 a parameter. Read off
+/// the cached planning context, so it answers for the plan built just before
+/// it and must be asked before another plan is built. `vibe rc-validate`
+/// shares exactly this classification with the planner and checks everything
+/// else against the source independently.
+export fn perceus_last_plan_classes(out_names: Array[String], out_bits: Array[Int]) -> Unit {
+  if Array::length(pctx_cache) > 0 {
+    let ctx = Array::get(pctx_cache, at = 0)
+    let n = Array::length(ctx.decl_names)
+    let mut i = 0
+    while i < n {
+      let mut bits = 0
+      if i < Array::length(ctx.scalar) && Array::get(ctx.scalar, at = i) {
+        bits = bits|1
+      } else {
+        ()
+      }
+      if i < Array::length(ctx.view_call_let) && Array::get(ctx.view_call_let, at = i) {
+        bits = bits|2
+      } else {
+        ()
+      }
+      if i < Array::length(ctx.borrowed_view) && Array::get(ctx.borrowed_view, at = i) {
+        bits = bits|4
+      } else {
+        ()
+      }
+      if pe_flag_has(ctx = ctx, id = i, bit = pf_let) {
+        bits = bits|8
+      } else {
+        ()
+      }
+      if pe_flag_has(ctx = ctx, id = i, bit = pf_param) {
+        bits = bits|16
+      } else {
+        ()
+      }
+      Array::push(out_names, value = Array::get(ctx.decl_names, at = i))
+      Array::push(out_bits, value = bits)
+      i = i + 1
+    }
+  } else {
+    ()
+  }
 }
 
 /// The plan without the param-drop split index, for callers that do not

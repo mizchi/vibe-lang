@@ -99,6 +99,7 @@ check "vibe symbols"     syms  VIBE_SYMBOLS=1
 check "vibe escapes"     esc   VIBE_ESCAPES=1
 check "vibe deps"        deps  VIBE_DEPS=1
 check "vibe rc-plan"     plan  VIBE_RC_PLAN=1 VIBE_RC_PLAN_FN=
+check "vibe rc-validate" rcv   VIBE_RC_VALIDATE=1 VIBE_RC_VALIDATE_FN=
 check "vibe rc-classify" cls   VIBE_RC_CLASSIFY=1
 check "vibe binding-at"  bind  VIBE_BINDING_AT=1 VIBE_TYPE_LINE=16 VIBE_TYPE_COL=11
 check "vibe type-at"     tat   VIBE_TYPE_AT=1 VIBE_TYPE_LINE=16 VIBE_TYPE_COL=11
