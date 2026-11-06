@@ -72,5 +72,6 @@ run_help rc-validate --help
 need rc-validate 'FN BINDING PATH'
 run_help rc-validate -h
 need rc-validate 'not caught in general'
+need rc-validate 'mutate drop-dups: self-test seam only'
 
 echo "[vibe-rc-help] ok"

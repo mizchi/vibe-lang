@@ -524,7 +524,7 @@ There is no `vibe init`; scaffolding is `vibe new`.
 | `symbols [--legend] <file>` | Declaration outline (`NAME KIND START END [DOC]` per line) |
 | `rc-classify <file>` | RC classifier sets (`NAME SET[,SET...]`; empty = none) |
 | `rc-plan [--fn NAME] <file>` | Perceus plan (`FN BINDING ACTION COUNT`; empty = no actions) |
-| `rc-validate [--fn NAME] <file>` | Each Perceus plan checked against the linear ownership discipline (`FN BINDING PATH: MESSAGE` per violation or skipped binding; empty = every checked binding balances on every path). The file is checked alone, the build's `elaborate_heap_params` / `return_control_annotate_calls` rewrites do not run, and a heap value the planner classified as scalar is not caught in general |
+| `rc-validate [--fn NAME] [--mutate drop-dups] <file>` | Each Perceus plan checked against the linear ownership discipline (`FN BINDING PATH: MESSAGE` per violation or skipped binding; empty = every checked binding balances on every path). The file is checked alone, the build's `elaborate_heap_params` / `return_control_annotate_calls` rewrites do not run, and a heap value the planner classified as scalar is not caught in general. `--mutate drop-dups` is a self-test seam: it validates each plan with every dup row deleted, so `scripts/check_rc_validate_corpus_test.sh` can show the corpus gate fails on a wrong plan |
 | `deps [--direct] <file>` | Resolved import closure, dependency first |
 | `grep --pattern '<pat>' [paths]` | AST pattern search, with checker-backed filters |
 | `hash [--write] <pkg_dir>` | Package content hash |
