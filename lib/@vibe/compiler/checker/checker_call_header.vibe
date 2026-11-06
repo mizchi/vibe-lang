@@ -177,10 +177,17 @@ let declared_headers: Array[MutMap[String, Array[String]]] = [
 /// marker lookup.
 let locally_shadowed: Array[MutMap[String, Bool]] = [MutMap::new_string()]
 
+/// The names this check bound to a local lambda's header (ADR-0120 Phase
+/// 4b). A header neither registered as a declaration nor bound here came in
+/// through the supplied environment -- a declaration whose caller did not
+/// register it -- so its call names its arguments; one bound here is a value.
+let local_headers: Array[MutMap[String, Bool]] = [MutMap::new_string()]
+
 /// Forget the declarations of an earlier check.
 export fn checker_declared_headers_reset() -> Unit {
   Array::set(declared_headers, at = 0, value = MutMap::new_string())
   Array::set(locally_shadowed, at = 0, value = MutMap::new_string())
+  Array::set(local_headers, at = 0, value = MutMap::new_string())
 }
 
 fn local_shadow_marker(_ name: String) -> String {
@@ -200,7 +207,7 @@ fn declared_header_is(env: TypeEnv, name: String, names: Array[String]) -> Bool 
         None => true
       }
     },
-    None => false
+    None => !MutMap::has(Array::get(local_headers, at = 0), k = name)
   }
 }
 
@@ -256,6 +263,7 @@ fn bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr, declarati
         MutMap::set(Array::get(declared_headers, at = 0), k = name, v = names)
         env
       } else {
+        MutMap::set(Array::get(local_headers, at = 0), k = name, v = true)
         match MutMap::get(Array::get(declared_headers, at = 0), k = name) {
           Some(_) => {
             MutMap::set(Array::get(locally_shadowed, at = 0), k = name, v = true)

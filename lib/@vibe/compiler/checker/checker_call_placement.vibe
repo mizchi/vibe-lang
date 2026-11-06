@@ -17,6 +17,7 @@ import ./checker_call_header_flow.vibe {
 import @vibe/compiler/core {
   BindingOrigin,
   Expr,
+  Type,
   TypeEnv,
   __to_string,
   builtin_param_labels,
@@ -187,13 +188,25 @@ fn placement_for_header(args: Array[Expr], names: Array[String]) -> Option[Array
 /// they said (`f(y = 3, x = 10)` through `f: (Int, Int) -> Int` passed `3`
 /// first).
 export fn checker_record_opaque_call_placement(cell: Array[Int], errors: Array[String]) -> Unit {
+  record_opaque_call_placement(cell = cell, value = true, errors = errors)
+}
+
+/// `value` is false for a callee not known to be a value: a declaration
+/// whose header did not reach this check, or a name with no type -- an import
+/// whose dependency environment was not supplied. Its labels are not refused;
+/// with no names to place them by, only a mixed call is.
+fn record_opaque_call_placement(cell: Array[Int], value: Bool, errors: Array[String]) -> Unit {
   if checker_call_header_is_probe() {
     ()
   } else {
     match call_placement_raw(cell) {
       Some((callee, args, _, offset)) => {
         let before = Array::length(errors)
-        placement_refuse_value_labels(name = placement_source_name(callee), offset = offset, args = args, errors = errors)
+        if value {
+          placement_refuse_value_labels(name = placement_source_name(callee), offset = offset, args = args, errors = errors)
+        } else {
+          placement_check_mixed(name = placement_source_name(callee), offset = offset, args = args, errors = errors)
+        }
         if Array::length(errors) == before {
           call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 2, slots = placement_identity(Array::length(args)), errors = errors)
         } else {
@@ -264,7 +277,7 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
                 ()
               }
             },
-            None => checker_record_opaque_call_placement(cell = cell, errors = errors)
+            None => record_opaque_call_placement(cell = cell, value = placement_known_value(env = env, name = name), errors = errors)
           }
         }
       },
@@ -491,6 +504,18 @@ fn placement_check_mixed(name: String, offset: Int, args: Array[Expr], errors: A
     Array::push(errors, value = "call to " + name + " mixes positional and labeled arguments — use either all positional or all labeled arguments" + off_marker_len(off = offset, len = String::length(name)))
   } else {
     ()
+  }
+}
+
+/// A named callee is a value when typing bound it to something other than a
+/// declaration: a parameter, a local, a destructured name.
+fn placement_known_value(env: TypeEnv, name: String) -> Bool {
+  match env_lookup_binding(env = env, name = name) {
+    Some(binding) => match binding.ty {
+      CtUnknown => false,
+      _ => !checker_call_header_is_declaration(env = env, name = name)
+    },
+    None => false
   }
 }
 
