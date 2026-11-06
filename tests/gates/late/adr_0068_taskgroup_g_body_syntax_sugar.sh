@@ -1099,7 +1099,7 @@ cat > "$ssldir/inline.vibe" <<'VIBE'
 import @vibe/concurrent/experimental { TaskGroup, TaskHandle }
 fn main() -> Int allows Async + Exception {
   TaskGroup::run((g) -> {
-    let h = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception { 5 })
+    let h = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception { 5 })
     TaskGroup::pump_all(g)
     TaskHandle::join(h) + 1
   })

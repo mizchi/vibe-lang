@@ -99,7 +99,7 @@ import @vibe/concurrent { TaskGroup::run, struct TaskGroup }
 
 fn main() -> Int allows Exception {
   TaskGroup::run((g) -> {
-    let _t = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception { 7 })
+    let _t = TaskGroup::spawn_suspend(g, f = () -> Int with Async + Exception { 7 })
     0
   })
 }

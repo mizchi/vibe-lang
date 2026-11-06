@@ -449,26 +449,26 @@ echo "[compiler-gate] 4e2 an index of 2^32 or more traps instead of wrapping int
 gate_workdir u32dir "_build/_gate_index_u32"
 # case|lanes|access statement|linear-lane message
 u32_cases=(
-  "arr_get|linear gc|println(\"\\{Array::get(xs, id(4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
-  "arr_get_neg|linear gc|println(\"\\{Array::get(xs, id(-4294967296))}\")|Array::get: index -4294967296 out of bounds for length 3"
-  "arr_index|linear gc|println(\"\\{xs[id(4294967296)]}\")|Array::get: index 4294967296 out of bounds for length 3"
-  "arr_set|linear gc|Array::set(xs, id(4294967296), 5)|Array::set: index 4294967296 out of bounds for length 3"
-  "byte_at|linear gc|println(\"\\{String::byte_at(s, id(4294967296))}\")|String::byte_at: index 4294967296 out of bounds for length 3"
-  "bytes_get|linear gc|println(\"\\{Bytes::get(b, id(4294967296))}\")|Bytes::get: index 4294967296 out of bounds for length 3"
-  "bytes_set|linear gc|Bytes::set(b, id(4294967296), 65)|Bytes::set: index 4294967296 out of bounds for length 3"
-  "bytes_blit|linear gc|Bytes::blit(Bytes::new(), b, id(4294967296), id(4294967298))|Bytes::get: index 4294967296 out of bounds for length 3"
-  "native_get|linear gc|println(\"\\{local_get(id(4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
-  "native_set|linear gc|println(\"\\{local_set(id(4294967296))}\")|Array::set: index 4294967296 out of bounds for length 3"
-  "split_get|gc|println(\"\\{Array::get(String::split(\"a,b\", \",\"), id(5))}\")|"
-  "byte_at_small|gc|println(\"\\{String::byte_at(s, id(5))}\")|"
+  "arr_get|linear gc|println(\"\\{Array::get(xs, at = id(x = 4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
+  "arr_get_neg|linear gc|println(\"\\{Array::get(xs, at = id(x = -4294967296))}\")|Array::get: index -4294967296 out of bounds for length 3"
+  "arr_index|linear gc|println(\"\\{xs[id(x = 4294967296)]}\")|Array::get: index 4294967296 out of bounds for length 3"
+  "arr_set|linear gc|Array::set(xs, at = id(x = 4294967296), value = 5)|Array::set: index 4294967296 out of bounds for length 3"
+  "byte_at|linear gc|println(\"\\{String::byte_at(s, at = id(x = 4294967296))}\")|String::byte_at: index 4294967296 out of bounds for length 3"
+  "bytes_get|linear gc|println(\"\\{Bytes::get(b, at = id(x = 4294967296))}\")|Bytes::get: index 4294967296 out of bounds for length 3"
+  "bytes_set|linear gc|Bytes::set(b, at = id(x = 4294967296), value = 65)|Bytes::set: index 4294967296 out of bounds for length 3"
+  "bytes_blit|linear gc|Bytes::blit(Bytes::new(), src = b, start = id(x = 4294967296), end = id(x = 4294967298))|Bytes::get: index 4294967296 out of bounds for length 3"
+  "native_get|linear gc|println(\"\\{local_get(i = id(x = 4294967296))}\")|Array::get: index 4294967296 out of bounds for length 3"
+  "native_set|linear gc|println(\"\\{local_set(i = id(x = 4294967296))}\")|Array::set: index 4294967296 out of bounds for length 3"
+  "split_get|gc|println(\"\\{Array::get(String::split(\"a,b\", sep = \",\"), at = id(x = 5))}\")|"
+  "byte_at_small|gc|println(\"\\{String::byte_at(s, at = id(x = 5))}\")|"
 )
 for u32_case in "${u32_cases[@]}"; do
   IFS='|' read -r u32_name u32_lanes u32_access u32_msg <<<"$u32_case"
   u32_src="$u32dir/$u32_name.vibe"
   printf '%s\n' \
     'fn id(x: Int) -> Int {' '  x' '}' '' \
-    'fn local_get(i: Int) -> Int {' '  let a = [1, 2, 3]' '  Array::get(a, i)' '}' '' \
-    'fn local_set(i: Int) -> Int {' '  let a = [1, 2, 3]' '  Array::set(a, i, 9)' '  Array::get(a, 0)' '}' '' \
+    'fn local_get(i: Int) -> Int {' '  let a = [1, 2, 3]' '  Array::get(a, at = i)' '}' '' \
+    'fn local_set(i: Int) -> Int {' '  let a = [1, 2, 3]' '  Array::set(a, at = i, value = 9)' '  Array::get(a, at = 0)' '}' '' \
     'fn main allows Console {' \
     '  let xs = [10, 20, 30]' '  let s = "abc"' '  let b = Bytes::from_array([97, 98, 99])' \
     '  println("before")' "  $u32_access" '  println("after")' '}' >"$u32_src"
