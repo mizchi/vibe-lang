@@ -13,7 +13,7 @@ import ./solver.vibe {
 }
 
 import ./walk.vibe {
-  call_graph, construct_name, contains_name, expr_kids, expr_off, reaches_cycle
+  binder_inits, call_graph, collect_assigned, construct_name, contains_name, expr_kids, expr_off, reaches_cycle, strip_label
 }
 
 import ./int_terms.vibe {
@@ -776,6 +776,8 @@ fn sym(ctx: Ctx, e: Expr, st: Outcome) -> Array[Outcome] with Exception {
           off
         }
         sym_array_write(ctx = ctx, e = e, fname = fname, args = args, off = at, indexed = index_site_offset(coff) >= 0, st = st)
+      } else if is_quantifier_call(ctx = ctx, st = st, fname = fname) {
+        sym_quantifier(ctx = ctx, fname = fname, args = args, off = off, st = st)
       } else if is_builtin_array_read(ctx = ctx, st = st, fname = fname, callee_off = coff) {
         let at = if fname == "__index" {
           index_site_offset(coff)
@@ -1694,31 +1696,6 @@ fn single_int(ctx: Ctx, e: Expr, st: Outcome) -> String with Exception {
   }
 }
 
-/// Every name `e` assigns (`x = ..`, `x += ..`), nested loops included. A
-/// name the body itself binds is havocked as well if an enclosing binding of
-/// that name exists, which only loses precision.
-fn collect_assigned(e: Expr, out: Array[String]) -> Unit {
-  match e {
-    EAssign(n, _, _, _) => Array::push(out, value = n),
-    EAssignOp(n, _, _, _, _) => Array::push(out, value = n),
-    // A write to an array changes its binding's value, so a loop that
-    // writes one varies it like an assignment.
-    ECall(EIdent(f, _), args, _, _) => if (f == "Array::set" || f == "Array::push") && Array::length(args) > 0 {
-      match strip_label(Array::get(args, at = 0)) {
-        EIdent(n, _) => Array::push(out, value = n),
-        _ => ()
-      }
-    } else {
-      ()
-    },
-    _ => ()
-  }
-  for k in expr_kids(e) {
-    collect_assigned(e = k, out = out)
-  }
-  ()
-}
-
 /// Whether a call of `fname` is the builtin array read. These names can be
 /// shadowed: a program's own `fn Array::length` (or a local of the name) is
 /// what a direct call reaches, so it goes through `sym_call` like any other
@@ -1804,10 +1781,137 @@ fn sym_array_read(ctx: Ctx, e: Expr, fname: String, args: Array[Expr], off: Int,
   out
 }
 
-fn strip_label(_ a: Expr) -> Expr {
-  match a {
-    ELabeledArg(_, _, v) => v,
-    _ => a
+//# Quantifiers (#3719)
+
+/// Whether a call of `fname` is the builtin `Array::all` / `Array::any`,
+/// unless the file declares a function of the name or binds a local to it.
+fn is_quantifier_call(ctx: Ctx, st: Outcome, fname: String) -> Bool {
+  (fname == "Array::all" || fname == "Array::any") && match find_sig(fns = ctx.fns, name = fname) {
+    Some(_) => false,
+    None => match env_lookup(env = st.env, name = fname) {
+      Some(_) => false,
+      None => true
+    }
+  }
+}
+
+/// `Array::all(xs, f = (x) -> p)` as `(forall ((q Int)) (=> (and (<= 0 q)
+/// (< q len)) p[x := xs[q]]))`, and `Array::any` as the `exists`, so a
+/// contract states a property of every element without a new spelling: at
+/// run time the call is the same function. The predicate is a one-parameter
+/// lambda written at the call; one that returns, assigns, writes an array or
+/// calls a function (whose fresh result would be one value for every
+/// element) is refused. What its body owes or assumes is quantified the
+/// same way: owing it for an element the call stops before is stronger than
+/// the runtime needs, never weaker.
+fn sym_quantifier(ctx: Ctx, fname: String, args: Array[Expr], off: Int, st: Outcome) -> Array[Outcome] with Exception {
+  if Array::length(args) != 2 {
+    unsupported(off = off, reason = "`\{fname}` with \{Array::length(args)} argument(s)")
+  } else {
+    ()
+  }
+  let (pname, body) = match strip_label(Array::get(args, at = 1)) {
+    EFn(tps, _, params, _, _, b) => if Array::length(tps) == 0 && Array::length(params) == 1 {
+      let (pn, pty) = Array::get(params, at = 0)
+      match pty {
+        None => (),
+        Some(_) => if sort_of(adts = ctx.adts, ty = pty) != "Int" {
+          unsupported(off = off, reason = "`\{fname}`'s predicate takes an `Int`, the element of an `Array[Int]`")
+        } else {
+          ()
+        }
+      }
+      (pn, b)
+    } else {
+      unsupported(off = off, reason = "`\{fname}`'s predicate must take one parameter")
+      ("", b)
+    },
+    _ => {
+      unsupported(off = off, reason = "`\{fname}`'s predicate must be a lambda written at the call")
+      ("", EBool(true))
+    }
+  }
+  let assigned: Array[String] = []
+  collect_assigned(e = body, out = assigned)
+  array_write_targets(ctx = ctx, e = body, out = assigned)
+  if Array::length(assigned) > 0 {
+    unsupported(off = off, reason = "`\{fname}`'s predicate assigns `\{Array::get(assigned, at = 0)}`")
+  } else {
+    ()
+  }
+  let out: Array[Outcome] = []
+  for o in sym(ctx = ctx, e = strip_label(Array::get(args, at = 0)), st = st) {
+    if o.returned {
+      Array::push(out, value = o)
+    } else if o.sort != arr_sort() {
+      unsupported(off = off, reason = "`\{fname}` on a `\{o.sort}`: only `Array[Int]` is modelled")
+    } else {
+      Array::push(out, value = with_value(st = o, value = quantified(ctx = ctx, fname = fname, pname = pname, body = body, off = off, o = o), sort = "Bool"))
+    }
+  }
+  out
+}
+
+/// The quantified formula of one call, for the array `o` holds.
+fn quantified(ctx: Ctx, fname: String, pname: String, body: Expr, off: Int, o: Outcome) -> String with Exception {
+  let k = Array::get(ctx.counter, at = 0)
+  Array::set(ctx.counter, at = 0, value = k + 1)
+  let q = "|q!\{k}|"
+  let range = "(and (<= 0 \{q}) (< \{q} \{arr_len(o.value)}))"
+  let n_decls = Array::length(ctx.decls)
+  let n_pending = Array::length(ctx.pending)
+  let n_assumes = Array::length(ctx.assumes)
+  let elem = "(select \{arr_data(o.value)} \{q})"
+  assume_range(ctx = ctx, term = elem, sort = "Int", pc = o.pc)
+  let inner = Outcome::{
+    pc: o.pc,
+    value: "true",
+    sort: "Unit",
+    returned: false,
+    env: env_bind(env = o.env, name = pname, term = elem, sort = "Int")
+  }
+  let parts: Array[String] = []
+  for b in sym(ctx = ctx, e = body, st = inner) {
+    if b.returned {
+      unsupported(off = off, reason = "a `return` inside `\{fname}`'s predicate")
+    } else if b.sort != "Bool" {
+      unsupported(off = off, reason = "`\{fname}`'s predicate must be a `Bool`")
+    } else {
+      // The conditions the predicate's own branches added: its paths
+      // partition the state the call started from.
+      let conds = Array::slice(b.pc, start = Array::length(o.pc), end = Array::length(b.pc))
+      Array::push(parts, value = if Array::length(conds) == 0 {
+        b.value
+      } else {
+        "(and \{String::join(conds, sep = " ")} \{b.value})"
+      })
+    }
+  }
+  if Array::length(ctx.decls) != n_decls {
+    unsupported(off = off, reason = "a call inside `\{fname}`'s predicate: its result would be one value for every element")
+  } else {
+    ()
+  }
+  let mut i = n_pending
+  while i < Array::length(ctx.pending) {
+    let (pk, pl, po, pg, pn) = Array::get(ctx.pending, at = i)
+    Array::set(ctx.pending, at = i, value = (pk, pl, po, "(forall ((\{q} Int)) (=> \{range} \{pg}))", pn))
+    i = i + 1
+  }
+  let mut j = n_assumes
+  while j < Array::length(ctx.assumes) {
+    Array::set(ctx.assumes, at = j, value = "(forall ((\{q} Int)) (=> \{range} \{Array::get(ctx.assumes, at = j)}))")
+    j = j + 1
+  }
+  let p = if Array::length(parts) == 1 {
+    Array::get(parts, at = 0)
+  } else {
+    "(or false \{String::join(parts, sep = " ")})"
+  }
+  if fname == "Array::all" {
+    "(forall ((\{q} Int)) (=> \{range} \{p}))"
+  } else {
+    "(exists ((\{q} Int)) (and \{range} \{p}))"
   }
 }
 
@@ -1899,98 +2003,6 @@ fn array_write_targets(ctx: Ctx, e: Expr, out: Array[String]) -> Unit with Excep
     array_write_targets(ctx = ctx, e = k, out = out)
   }
   ()
-}
-
-/// Every binder of `name` in `e`: `Some(initializer)` for a `let` /
-/// `let mut`, `None` for any other (a `let rec`, a `for` variable, a lambda
-/// parameter, a pattern).
-fn binder_inits(e: Expr, name: String, out: Array[Option[Expr]]) -> Unit {
-  match e {
-    ELet(m, v, _, _) => if m == name {
-      Array::push(out, value = Some(v))
-    } else {
-      ()
-    },
-    ELetMut(m, v, _, _) => if m == name {
-      Array::push(out, value = Some(v))
-    } else {
-      ()
-    },
-    ELetRec(m, _, _) => if m == name {
-      Array::push(out, value = None)
-    } else {
-      ()
-    },
-    EForIn(v, i, _, _) => if v == name || match i {
-      Some(x) => x == name,
-      None => false
-    } {
-      Array::push(out, value = None)
-    } else {
-      ()
-    },
-    EFn(_, _, params, _, _, _) => for p in params {
-      let (pn, _) = p
-      if pn == name {
-        Array::push(out, value = None)
-      } else {
-        ()
-      }
-    },
-    EMatch(_, arms) => for a in arms {
-      let (p, _) = a
-      if pat_binds(p = p, name = name) {
-        Array::push(out, value = None)
-      } else {
-        ()
-      }
-    },
-    EHandle(_, arms) => for a in arms {
-      let (p, _) = a
-      if pat_binds(p = p, name = name) {
-        Array::push(out, value = None)
-      } else {
-        ()
-      }
-    },
-    _ => ()
-  }
-  for k in expr_kids(e) {
-    binder_inits(e = k, name = name, out = out)
-  }
-  ()
-}
-
-/// Whether `p` may bind `name`; a struct pattern's field names count, since
-/// a field written alone binds its own name.
-fn pat_binds(p: Pat, name: String) -> Bool {
-  match p {
-    PBind(n) => n == name,
-    PCtor(_, items) => {
-      let mut found = false
-      for x in items {
-        found = found || pat_binds(p = x, name = name)
-      }
-      found
-    },
-    PTuple(items) => {
-      let mut found = false
-      for x in items {
-        found = found || pat_binds(p = x, name = name)
-      }
-      found
-    },
-    POr(l, r) => pat_binds(p = l, name = name) || pat_binds(p = r, name = name),
-    PStruct(_, fields) => {
-      let mut found = false
-      for f in fields {
-        let (fname, x) = f
-        found = found || fname == name || pat_binds(p = x, name = name)
-      }
-      found
-    },
-    _ => false
-  }
 }
 
 /// The first use of `name` in `e` other than as the array of a builtin read

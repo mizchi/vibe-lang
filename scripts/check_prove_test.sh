@@ -60,6 +60,15 @@ fi
 if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
   echo "[prove-selftest] FAIL: the gate accepted a word sum that no longer wraps" >&2; exit 1
 fi
+# #3719: `Array::any` is not `Array::all`: with some element non-negative,
+# `first_nonneg`'s first element need not be, so its `ensures` fails.
+sed 's/requires: Array::length(xs) > 0 \&\& Array::all(xs, f = (x) -> x >= 0),/requires: Array::length(xs) > 0 \&\& Array::any(xs, f = (x) -> x >= 0),/' fixtures/prove/proved.vibe > "$work/proved.vibe"
+if cmp -s fixtures/prove/proved.vibe "$work/proved.vibe"; then
+  echo "[prove-selftest] FAIL: the quantifier mutation did not apply" >&2; exit 1
+fi
+if VIBE_PROVE_FIXTURES="$work" bash scripts/check_prove.sh "$cli" >/dev/null 2>&1; then
+  echo "[prove-selftest] FAIL: the gate accepted a requires weakened from Array::all to Array::any" >&2; exit 1
+fi
 # A loop that no longer breaks: `find_negative` records the index and goes
 # on, so `found == -1` does not hold at the next checkpoint.
 python3 -c 'import sys; s=open(sys.argv[1]).read(); open(sys.argv[2],"w").write(s.replace("      found = i\n      break\n", "      found = i\n", 1))' fixtures/prove/proved.vibe "$work/proved.vibe"

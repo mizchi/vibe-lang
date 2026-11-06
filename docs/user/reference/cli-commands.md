@@ -279,7 +279,16 @@ to an array also used as a value (bound to another name, passed, reassigned,
 the iterand of a `for`), is unsupported, and so is a write in a loop's
 clause. A loop that writes an array knows of it, past the checkpoint, only
 what its invariants say. `==` on arrays is unsupported, since their
-contents past the length are not modelled. A
+contents past the length are not modelled. `Array::all(xs, f = (x) -> p)`
+and `Array::any(xs, f = (x) -> p)` are quantifiers over the indices (#3719):
+`p` holds of the element at every / some `0 <= i < length`, so a contract
+states a property of every element in the call the runtime already
+evaluates. The predicate is a one-parameter lambda written at the call; one
+that returns, assigns, writes an array or calls a function is unsupported.
+What the predicate owes (an overflow, an index) is owed for every element,
+which is stronger than the runtime needs when the call stops early, never
+weaker, and a quantified query the solver cannot settle in time is
+`unknown`, a failure. A
 call is modular: the callee's `requires` is owed at the call and its
 `ensures` assumed of the result, and the callee's own body is proved in the
 same run. A call to a function with no `where` contract is unsupported (it is
