@@ -392,11 +392,11 @@ fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
 }
 
 fn caller(shadow: Array[String], out: Array[String]) -> Unit {
-  collect_by((head) -> {
+  collect_by(is_formal = (head) -> {
     let mut pi = 0
     let mut found = false
     while pi < Array::length(shadow) {
-      if Array::get(shadow, pi) == head {
+      if Array::get(shadow, at = pi) == head {
         found = true
       } else {
         ()
@@ -404,7 +404,7 @@ fn caller(shadow: Array[String], out: Array[String]) -> Unit {
       pi = pi + 1
     }
     found
-  }, out)
+  }, out = out)
 }
 VIBE
 if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$closure_nf" >/dev/null 2>&1; then

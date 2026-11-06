@@ -81,7 +81,7 @@ fn bif_main(before: String, after: String, use: String) -> String {
     before,
     "let run: () -> Int = () -> {",
     "  let xs = [1, 2, 3]",
-    "  String::length(bif_render()) + bif_cap(3) + bif_peek(xs) + (if bif_eq() { 1 } else { 0 })\{use}",
+    "  String::length(bif_render()) + bif_cap(k = 3) + bif_peek(xs = xs) + (if bif_eq() { 1 } else { 0 })\{use}",
     "}",
     after
   ], sep = "\n")
@@ -99,7 +99,7 @@ fn bif_probe(label: String, before: String, after: String, use: String) -> Strin
   let cold_counts: Array[Int] = []
   let _cold = compile_file_fs_mode_rc_body_cached_counted(entry_path = bif_main_path, entry_name = "run", cache_mode = "on", counts_out = cold_counts)
   if Array::get(cold_counts, at = 0) != 0 || Array::get(cold_counts, at = 1) <= 0 {
-    throw("insert-function fixture: the cold run for \{label} offered \{Array::get(cold_counts, 0)} and compiled \{Array::get(cold_counts, 1)}")
+    throw("insert-function fixture: the cold run for \{label} offered \{Array::get(cold_counts, at = 0)} and compiled \{Array::get(cold_counts, at = 1)}")
   } else {
     ()
   }
@@ -108,7 +108,7 @@ fn bif_probe(label: String, before: String, after: String, use: String) -> Strin
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bif_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bif_main_path, entry_name = "run")
   let replayed = Array::get(warm_counts, at = 1) < Array::get(cold_counts, at = 1)
-  "\{label} replayed=\{replayed} equal=\{bif_bytes_eq(warm, fresh)}"
+  "\{label} replayed=\{replayed} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
 /// Two more warm builds on top of the first. If the artifact the insertion
@@ -123,19 +123,19 @@ fn bif_probe_twice(label: String, after: String, use: String) -> String with Env
   let third_counts: Array[Int] = []
   let _third = compile_file_fs_mode_rc_body_cached_counted(entry_path = bif_main_path, entry_name = "run", cache_mode = "on", counts_out = third_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bif_main_path, entry_name = "run")
-  "\{first} stable=\{Array::get(second_counts, 1) == Array::get(third_counts, 1)} again_equal=\{bif_bytes_eq(second, fresh)}"
+  "\{first} stable=\{Array::get(second_counts, at = 1) == Array::get(third_counts, at = 1)} again_equal=\{bif_bytes_eq(a = second, b = fresh)}"
 }
 
 test "a function added downstream keeps the upstream bodies" {
   // A helper appended to the edited file: every upstream body sits below it
   // and none spells its name.
-  inspect(bif_probe(label = "append", before = "", after = "let helper: (Int) -> Int = (n) -> { n * 2 }", use = " + helper(1)"), content = "append replayed=true equal=true")
+  inspect(bif_probe(label = "append", before = "", after = "let helper: (Int) -> Int = (n) -> { n * 2 }", use = " + helper(n = 1)"), content = "append replayed=true equal=true")
   // The same helper placed BEFORE the file's existing function: the added
   // index is lower, but still above every upstream body.
-  inspect(bif_probe(label = "prepend", before = "let helper: (Int) -> Int = (n) -> { n * 2 }", after = "", use = " + helper(1)"), content = "prepend replayed=true equal=true")
+  inspect(bif_probe(label = "prepend", before = "let helper: (Int) -> Int = (n) -> { n * 2 }", after = "", use = " + helper(n = 1)"), content = "prepend replayed=true equal=true")
   // An added function with a closure of its own shifts the lambda plan of
   // everything after it; nothing upstream is after it.
-  inspect(bif_probe(label = "with-lambda", before = "", after = "let helper: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(1) }", use = " + helper(1)"), content = "with-lambda replayed=true equal=true")
+  inspect(bif_probe(label = "with-lambda", before = "", after = "let helper: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(1) }", use = " + helper(n = 1)"), content = "with-lambda replayed=true equal=true")
 }
 
 test "an added function recompiles exactly what it changes" {
@@ -150,7 +150,7 @@ test "an added function recompiles exactly what it changes" {
 }
 
 test "the refreshed artifact keeps what the insertion lane replayed" {
-  inspect(bif_probe_twice(label = "append-twice", after = "let helper: (Int) -> Int = (n) -> { n * 2 }", use = " + helper(1)"), content = "append-twice replayed=true equal=true stable=true again_equal=true")
+  inspect(bif_probe_twice(label = "append-twice", after = "let helper: (Int) -> Int = (n) -> { n * 2 }", use = " + helper(n = 1)"), content = "append-twice replayed=true equal=true stable=true again_equal=true")
 }
 
 //# The edit in a MIDDLE file: the unchanged file after it calls into the
@@ -177,7 +177,7 @@ fn bim_b(top: String, extra: String) -> String {
     "import ./vibe_body_cache_bim_a.vibe { bim_eq, bim_one }",
     top,
     "export let bim_two: (Int) -> Int = (n) -> { n + bim_one()\{extra} }",
-    "export let bim_three: (Int) -> Int = (n) -> { bim_two(n) * 3 + (if bim_eq() { 1 } else { 0 }) }"
+    "export let bim_three: (Int) -> Int = (n) -> { bim_two(n = n) * 3 + (if bim_eq() { 1 } else { 0 }) }"
   ], sep = "\n")
 }
 
@@ -189,7 +189,7 @@ fn bim_main() -> String {
     "  let k = 5",
     "  let add_k = (x) -> x + k",
     "  let twice = (x) -> x * 2",
-    "  apply(bim_two, 1) + apply(add_k, 2) + apply(twice, 3) + bim_three(4)",
+    "  apply(f = bim_two, x = 1) + apply(f = add_k, x = 2) + apply(f = twice, x = 3) + bim_three(n = 4)",
     "}"
   ], sep = "\n")
 }
@@ -214,7 +214,7 @@ fn bim_probe(label: String, top: String, extra: String) -> String with Env + Exc
   let warm_counts: Array[Int] = []
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
-  "\{label} offered=\{Array::get(warm_counts, 0)} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+  "\{label} offered=\{Array::get(warm_counts, at = 0)} saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
 test "a function added in a middle file keeps the files after it" {
@@ -224,10 +224,10 @@ test "a function added in a middle file keeps the files after it" {
   // nothing in the count. Reusing only the upstream file saves 2; reusing
   // both saves 4. The helper sits at the TOP of the edited file, so every
   // function the downstream body calls or takes as a value moved.
-  inspect(bim_probe(label = "helper-at-top", top = "let bim_helper: (Int) -> Int = (n) -> { n + 7 }", extra = " + bim_helper(0)"), content = "helper-at-top offered=4 saved=4 equal=true")
+  inspect(bim_probe(label = "helper-at-top", top = "let bim_helper: (Int) -> Int = (n) -> { n + 7 }", extra = " + bim_helper(n = 0)"), content = "helper-at-top offered=4 saved=4 equal=true")
   // A helper with a closure moves every lambda after it too, so the
   // downstream closures' table slots are rewritten as well.
-  inspect(bim_probe(label = "helper-with-lambda", top = "let bim_helper: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(1) }", extra = " + bim_helper(0)"), content = "helper-with-lambda offered=4 saved=4 equal=true")
+  inspect(bim_probe(label = "helper-with-lambda", top = "let bim_helper: (Int) -> Int = (n) -> { let g = (m) -> m + n\n g(1) }", extra = " + bim_helper(n = 0)"), content = "helper-with-lambda offered=4 saved=4 equal=true")
 }
 
 //# Width bands. A cached body is rebuilt, not patched, because a moved index
@@ -250,7 +250,7 @@ fn biw_b(_ top: String) -> String {
   let mut k = 0
   while k < 200 {
     let tail = if k == 0 && top != "" {
-      " + biw_h2(0)"
+      " + biw_h2(n = 0)"
     } else {
       ""
     }
@@ -267,18 +267,18 @@ fn biw_main() -> String {
   let mut k = 0
   while k < 200 {
     Array::push(names, value = "biw_\{k}")
-    Array::push(terms, value = "biw_\{k}(1)")
+    Array::push(terms, value = "biw_\{k}(n = 1)")
     if k < 40 {
-      Array::push(terms, value = "apply(biw_\{k}, 2)")
+      Array::push(terms, value = "apply(f = biw_\{k}, x = 2)")
     } else {
       ()
     }
     k = k + 1
   }
   String::join([
-    "import ./vibe_body_cache_biw_b.vibe { \{String::join(names, ", ")} }",
+    "import ./vibe_body_cache_biw_b.vibe { \{String::join(names, sep = ", ")} }",
     "let apply: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }",
-    "let run: () -> Int = () -> { \{String::join(terms, " + ")} + (if biw_eq() { 1 } else { 0 }) }"
+    "let run: () -> Int = () -> { \{String::join(terms, sep = " + ")} + (if biw_eq() { 1 } else { 0 }) }"
   ], sep = "\n")
 }
 
@@ -298,7 +298,7 @@ fn biw_probe(label: String, top: String) -> String with Env + Exception + Fs {
   let warm_counts: Array[Int] = []
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = biw_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = biw_main_path, entry_name = "run")
-  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+  "\{label} saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
 test "moved indices that cross a LEB width band are rebuilt" {
@@ -308,7 +308,7 @@ test "moved indices that cross a LEB width band are rebuilt" {
   // edit whose encoding changes width skipped instead of applied, this row
   // -- and no other in this file -- fails, the build refusing a function-value
   // record that no longer sits on its constant.
-  inspect(biw_probe(label = "width-band", top = "let biw_h1: (Int) -> Int = (n) -> { n }\nlet biw_h2: (Int) -> Int = (n) -> { biw_h1(n) }"), content = "width-band saved=4 equal=true")
+  inspect(biw_probe(label = "width-band", top = "let biw_h1: (Int) -> Int = (n) -> { n }\nlet biw_h2: (Int) -> Int = (n) -> { biw_h1(n = n) }"), content = "width-band saved=4 equal=true")
 }
 
 //# Removals, renames, reorders and closures in the middle file. Each is a
@@ -334,18 +334,18 @@ fn bim_probe_defs(label: String, base_defs: String, defs: String) -> String with
   let warm_counts: Array[Int] = []
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
-  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+  "\{label} saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
 let bim_two_line: String = "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() }"
 
-let bim_three_line: String = "export let bim_three: (Int) -> Int = (n) -> { bim_two(n) * 3 + (if bim_eq() { 1 } else { 0 }) }"
+let bim_three_line: String = "export let bim_three: (Int) -> Int = (n) -> { bim_two(n = n) * 3 + (if bim_eq() { 1 } else { 0 }) }"
 
 test "a function removed, renamed or moved in a middle file keeps the files after it" {
   let helper = "let bim_helper: (Int) -> Int = (n) -> { n + 7 }"
   let with_helper = String::join([
     helper,
-    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_helper(0) }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_helper(n = 0) }",
     bim_three_line
   ], sep = "\n")
   let plain = String::join([bim_two_line, bim_three_line], sep = "\n")
@@ -353,12 +353,12 @@ test "a function removed, renamed or moved in a middle file keeps the files afte
   inspect(bim_probe_defs(label = "remove", base_defs = with_helper, defs = plain), content = "remove saved=4 equal=true")
   let renamed = String::join([
     "let bim_aid: (Int) -> Int = (n) -> { n + 7 }",
-    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_aid(0) }",
+    "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_aid(n = 0) }",
     bim_three_line
   ], sep = "\n")
   let r1 = bim_probe_defs(label = "rename", base_defs = with_helper, defs = renamed)
   // The same functions in another order: every index in the file moves.
-  let two_calls = "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_helper(0) }"
+  let two_calls = "export let bim_two: (Int) -> Int = (n) -> { n + bim_one() + bim_helper(n = 0) }"
   let r2 = bim_probe_defs(label = "reorder", base_defs = String::join([
     helper,
     two_calls,
@@ -394,7 +394,7 @@ fn bim_main_typed(_ with_type: Bool) -> String {
     "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }",
     decl,
     "let apply: ((Int) -> Int, Int) -> Int = (f, x) -> { f(x) }",
-    "let run: () -> Int = () -> { apply(bim_two, 1) + bim_three(4)\{use} }"
+    "let run: () -> Int = () -> { apply(f = bim_two, x = 1) + bim_three(n = 4)\{use} }"
   ], sep = "\n")
 }
 
@@ -424,7 +424,7 @@ fn bim_probe_type(label: String, downstream_type: Bool) -> String with Env + Exc
   let warm_counts: Array[Int] = []
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
-  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+  "\{label} saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
 test "a type added in a middle file relocates the tags it moves" {
@@ -472,13 +472,13 @@ fn bim_probe_new_module(label: String, import_first: Bool) -> String with Env + 
     "let run: () -> Int = () -> {",
     "  let k = 5",
     "  let add_k = (x) -> x + k",
-    "  apply(bim_two, 1) + apply(add_k, 2) + bim_three(4) + bim_four(1)",
+    "  apply(f = bim_two, x = 1) + apply(f = add_k, x = 2) + bim_three(n = 4) + bim_four(n = 1)",
     "}"
   ], sep = "\n")))
   let warm_counts: Array[Int] = []
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
-  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+  "\{label} saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
 test "a newly imported module keeps the unchanged files' bodies" {
@@ -546,7 +546,7 @@ fn bie_main(_ ahead: Bool) -> String {
     imports,
     "import ./vibe_body_cache_bie_b.vibe { bie_two }",
     "let logged: () -> Int = () -> { handle { bie_noted() } with { BieLog::Note(x) => resume(x + 10) } }",
-    "let run: () -> Int = () -> { logged() + bie_two(1)\{use} }"
+    "let run: () -> Int = () -> { logged() + bie_two(n = 1)\{use} }"
   ], sep = "\n")
 }
 
@@ -580,7 +580,7 @@ fn bie_probe(label: String, ahead: Bool) -> String with Env + Exception + Fs {
   let warm_counts: Array[Int] = []
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bie_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bie_main_path, entry_name = "run")
-  "\{label} saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+  "\{label} saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
 test "an added effect relocates the tags it moves" {
@@ -651,7 +651,7 @@ test "a thunk added ahead of a cached one moves its memo globals with it" {
   let main = String::join([
     "import ./vibe_body_cache_bim_b.vibe { bim_three, bim_two }",
     "let bim_m_tbl: Array[Int] = [5, 6]",
-    "let run: () -> Int = () -> { bim_two(1) + bim_three(4) + Array::length(bim_m_tbl) }"
+    "let run: () -> Int = () -> { bim_two(n = 1) + bim_three(n = 4) + Array::length(bim_m_tbl) }"
   ], sep = "\n")
   Fs::write_bytes(bim_a_path, bytes = bif_bytes(bim_a()))
   Fs::write_bytes(bim_b_path, bytes = bif_bytes(String::concat(head, base)))
@@ -662,7 +662,7 @@ test "a thunk added ahead of a cached one moves its memo globals with it" {
   let warm_counts: Array[Int] = []
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
-  inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=4 equal=true")
+  inspect("saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}", content = "saved=4 equal=true")
 }
 
 //# Every tag-bearing form, downstream of a type inserted ahead: every tag
@@ -685,7 +685,7 @@ fn bit_main() -> String {
     "let bit_opt: (Option[Int]) -> Int = (o) -> { match o { Some(v) => v, None => 0 } }",
     "let run: () -> Int = () -> {",
     "  let BitIn(inner) = BitIn(BitLine(3))",
-    "  bit_area(BitBox(2, 3)) + bit_area(inner) + bit_nested(BitIn(BitBox(4, 1))) + bit_is(BitDot) + bit_y(BitP::{ x: 1, y: 2 }, BitQ::{ y: 3, z: 4 }) + bit_record() + bit_opt(Some(5)) + bim_two(1) + bim_three(2)",
+    "  bit_area(s = BitBox(2, 3)) + bit_area(s = inner) + bit_nested(w = BitIn(BitBox(4, 1))) + bit_is(s = BitDot) + bit_y(p = BitP::{ x: 1, y: 2 }, q = BitQ::{ y: 3, z: 4 }) + bit_record() + bit_opt(o = Some(5)) + bim_two(n = 1) + bim_three(n = 2)",
     "}"
   ], sep = "\n")
 }
@@ -715,7 +715,7 @@ test "every tag-bearing form is relocated across a type inserted ahead" {
   let warm_counts: Array[Int] = []
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
-  inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=9 equal=true")
+  inspect("saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}", content = "saved=9 equal=true")
 }
 
 test "a type removed from a middle file relocates the tags it moved" {
@@ -744,7 +744,7 @@ test "a type removed from a middle file relocates the tags it moved" {
   let warm_counts: Array[Int] = []
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bim_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bim_main_path, entry_name = "run")
-  inspect("saved=\{Array::get(cold_counts, 1) - Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}", content = "saved=9 equal=true")
+  inspect("saved=\{Array::get(cold_counts, at = 1) - Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}", content = "saved=9 equal=true")
 }
 
 //# The pin capacity. Source functions sit in `[0, src_n)` padded to a
@@ -765,10 +765,10 @@ fn bic_b(_ n: Int) -> String {
   ]
   let mut k = 1
   while k < n {
-    Array::push(lines, value = "let bic_\{k}: (Int) -> Int = (x) -> { bic_\{k - 1}(x) + 1 }")
+    Array::push(lines, value = "let bic_\{k}: (Int) -> Int = (x) -> { bic_\{k - 1}(x = x) + 1 }")
     k = k + 1
   }
-  Array::push(lines, value = "export let bic_top: (Int) -> Int = (x) -> { bic_\{n - 1}(x) + (if bim_eq() { 1 } else { 0 }) }")
+  Array::push(lines, value = "export let bic_top: (Int) -> Int = (x) -> { bic_\{n - 1}(x = x) + (if bim_eq() { 1 } else { 0 }) }")
   String::join(lines, sep = "\n")
 }
 
@@ -780,7 +780,7 @@ fn bic_main() -> String {
     "let run: () -> Int = () -> {",
     "  let k = 2",
     "  let add_k = (x) -> x + k",
-    "  apply(bic_top, 1) + apply(add_k, 3) + (match BicLine(4) { BicDot => 0, BicLine(n) => n }) + (if [1, 2] == [1, 2] { 1 } else { 0 })",
+    "  apply(f = bic_top, x = 1) + apply(f = add_k, x = 3) + (match BicLine(4) { BicDot => 0, BicLine(n) => n }) + (if [1, 2] == [1, 2] { 1 } else { 0 })",
     "}"
   ], sep = "\n")
 }
@@ -801,7 +801,7 @@ fn bic_probe(before: Int, after: Int) -> String with Env + Exception + Fs {
   let warm_counts: Array[Int] = []
   let warm = compile_file_fs_mode_rc_body_cached_counted(entry_path = bic_main_path, entry_name = "run", cache_mode = "on", counts_out = warm_counts)
   let fresh = compile_file_fs_mode_rc(entry_path = bic_main_path, entry_name = "run")
-  "cold=\{Array::get(cold_counts, 1)} warm=\{Array::get(warm_counts, 1)} equal=\{bif_bytes_eq(warm, fresh)}"
+  "cold=\{Array::get(cold_counts, at = 1)} warm=\{Array::get(warm_counts, at = 1)} equal=\{bif_bytes_eq(a = warm, b = fresh)}"
 }
 
 test "a source region that crosses a pin-capacity boundary is relocated" {

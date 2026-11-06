@@ -100,7 +100,7 @@ LEAK_SRC="$TMP/leak.vibe"
   printf 'fn main() -> Int {\n  let mut acc = compile_file_fs_mode_gc()\n'
   i=0
   while [ "$i" -lt 60 ]; do
-    echo "  acc = helper_$i(acc)"
+    echo "  acc = helper_$i(x = acc)"
     i=$((i + 1))
   done
   printf '  acc\n}\n'

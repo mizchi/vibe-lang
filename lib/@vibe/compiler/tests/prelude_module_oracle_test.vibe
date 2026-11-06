@@ -100,7 +100,7 @@ test "every pre-codegen pass agrees between whole-program and per-file runs on a
   let helper_path = "/tmp/vibe_prelude_oracle_helper.vibe"
   let main_path = "/tmp/vibe_prelude_oracle_main.vibe"
   Fs::write_file(helper_path, contents = "export fn twice(x: Int) -> Int {\n  x + x\n}\n")
-  Fs::write_file(main_path, contents = "import ./vibe_prelude_oracle_helper.vibe { twice }\n\nfn run() -> Int {\n  twice(21)\n}\n\ntest \"twice\" {\n  inspect(run(), content = \"42\")\n}\n")
+  Fs::write_file(main_path, contents = "import ./vibe_prelude_oracle_helper.vibe { twice }\n\nfn run() -> Int {\n  twice(x = 21)\n}\n\ntest \"twice\" {\n  inspect(run(), content = \"42\")\n}\n")
   let report = prelude_module_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__", pass_limit = 15)
   let lines = oracle_lines(report)
   inspect(Array::length(lines), content = "16")
@@ -632,12 +632,12 @@ test "a validator that fires is reported by both lanes, and a clean program by n
   // allocates. Whole-program the validator walks it; per module, only that
   // module's own run does -- so agreement here is the claim, not the default.
   Fs::write_file(dep, contents = "enum Box {\n  MkBox(Int)\n}\n\n#zero_alloc\nexport fn hot(n: Int) -> Int {\n  let b = MkBox(n)\n  match b {\n    MkBox(v) => v + 1\n  }\n}\n")
-  Fs::write_file(main_path, contents = "import ./vibe_diag_arm_dep.vibe {\n  hot\n}\n\ntest \"t\" {\n  inspect(hot(1), content = \"2\")\n}\n")
+  Fs::write_file(main_path, contents = "import ./vibe_diag_arm_dep.vibe {\n  hot\n}\n\ntest \"t\" {\n  inspect(hot(n = 1), content = \"2\")\n}\n")
   inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__"))), content = "DIAGS prelude=1")
   // The control: the same two-file shape with nothing to report. Without it,
   // a comparison that always answered `1` would pass the case above.
   Fs::write_file(dep, contents = "export fn calm(n: Int) -> Int {\n  n + 1\n}\n")
-  Fs::write_file(main_path, contents = "import ./vibe_diag_arm_dep.vibe {\n  calm\n}\n\ntest \"t\" {\n  inspect(calm(1), content = \"2\")\n}\n")
+  Fs::write_file(main_path, contents = "import ./vibe_diag_arm_dep.vibe {\n  calm\n}\n\ntest \"t\" {\n  inspect(calm(n = 1), content = \"2\")\n}\n")
   inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__"))), content = "DIAGS prelude=0")
 }
 
@@ -706,8 +706,8 @@ test "the ordinary compile lane carries one module id per merged statement" {
 test "the may_return and borrow analyses do not decompose per module, in both directions" {
   let helper_path = "/tmp/vibe_analysis_oracle_helper.vibe"
   let main_path = "/tmp/vibe_analysis_oracle_main.vibe"
-  Fs::write_file(helper_path, contents = "export fn head_of(xs: Array[Int]) -> Int {\n  Array::get(xs, 0)\n}\n\nexport fn pick(xs: Array[String]) -> String {\n  Array::get(xs, 0)\n}\n")
-  Fs::write_file(main_path, contents = "import ./vibe_analysis_oracle_helper.vibe {\n  head_of,\n  pick\n}\n\nfn build() -> Array[Int] {\n  [1, 2, 3]\n}\n\nfn via(xs: Array[String]) -> String {\n  pick(xs)\n}\n\ntest \"t\" {\n  let ss = [\"a\"]\n  inspect(String::concat(Int::to_string(head_of(build())), via(ss)), content = \"1a\")\n}\n")
+  Fs::write_file(helper_path, contents = "export fn head_of(xs: Array[Int]) -> Int {\n  Array::get(xs, at = 0)\n}\n\nexport fn pick(xs: Array[String]) -> String {\n  Array::get(xs, at = 0)\n}\n")
+  Fs::write_file(main_path, contents = "import ./vibe_analysis_oracle_helper.vibe {\n  head_of,\n  pick\n}\n\nfn build() -> Array[Int] {\n  [1, 2, 3]\n}\n\nfn via(xs: Array[String]) -> String {\n  pick(xs = xs)\n}\n\ntest \"t\" {\n  let ss = [\"a\"]\n  inspect(String::concat(Int::to_string(head_of(xs = build())), via(xs = ss)), content = \"1a\")\n}\n")
   let report = prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "__no_entry__")
   // `<whole>/<union>:-<missing count>:<first>+<extra count>:<first>`, and a
   // bare count when the two sets agree. The export-rename suffix on
@@ -757,8 +757,8 @@ test "the may_return and borrow analyses do not decompose per module, in both di
 test "the analyses refuse to answer where production would have run late DCE first" {
   let helper_path = "/tmp/vibe_dce_gate_helper.vibe"
   let main_path = "/tmp/vibe_dce_gate_main.vibe"
-  Fs::write_file(helper_path, contents = "export fn head_of(xs: Array[Int]) -> Int {\n  Array::get(xs, 0)\n}\n")
-  Fs::write_file(main_path, contents = "import ./vibe_dce_gate_helper.vibe {\n  head_of\n}\n\nfn main() -> Int {\n  head_of([1, 2, 3])\n}\n")
+  Fs::write_file(helper_path, contents = "export fn head_of(xs: Array[Int]) -> Int {\n  Array::get(xs, at = 0)\n}\n")
+  Fs::write_file(main_path, contents = "import ./vibe_dce_gate_helper.vibe {\n  head_of\n}\n\nfn main() -> Int {\n  head_of(xs = [1, 2, 3])\n}\n")
   inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(entry_path = main_path, entry_name = "main"))), content = "ANALYSIS dce_entry=1 borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured link_bret=unmeasured link_bret_occ=unmeasured link_bret_self=unmeasured link_bret_asm=unmeasured link_bret_seed=unmeasured link_bret_cat=unmeasured link_view=unmeasured link_view_self=unmeasured link_view_asm=unmeasured link_bret_trial=unmeasured link_view_trial=unmeasured")
   // The control. `__no_entry__` is a name no program defines, so production
   // would not have run either transform and the sample point is its own. The
@@ -806,8 +806,8 @@ test "a report's deferrals are its own, not the previous report's" {
   // test silently stopped having a deferral to check the reset of. A private
   // chain is the shape that defers for a reason the closure cannot remove --
   // and it reproduces the SAME line, so the expectation below is unchanged.
-  Fs::write_file(c, contents = "import ./vibe_defer_reset_b.vibe {\n  Box, make_box\n}\n\nexport fn mk(n: Int) -> Box[Int] {\n  make_box(n)\n}\n")
-  Fs::write_file(a, contents = "import ./vibe_defer_reset_c.vibe {\n  mk\n}\n\ntest \"t\" {\n  let p = mk(1)\n  let q = mk(1)\n  inspect(p == q, content = \"true\")\n}\n")
+  Fs::write_file(c, contents = "import ./vibe_defer_reset_b.vibe {\n  Box, make_box\n}\n\nexport fn mk(n: Int) -> Box[Int] {\n  make_box(n = n)\n}\n")
+  Fs::write_file(a, contents = "import ./vibe_defer_reset_c.vibe {\n  mk\n}\n\ntest \"t\" {\n  let p = mk(n = 1)\n  let q = mk(n = 1)\n  inspect(p == q, content = \"true\")\n}\n")
   // The deferring program, and the line that says so: one request the whole
   // program makes and the split does not, one row the typed channel refused,
   // and the link minting the helper from the deferral.
@@ -817,7 +817,7 @@ test "a report's deferrals are its own, not the previous report's" {
   let dep2 = "/tmp/vibe_defer_reset_dep2.vibe"
   let main2 = "/tmp/vibe_defer_reset_main2.vibe"
   Fs::write_file(dep2, contents = "export fn twice(n: Int) -> Int {\n  n * 2\n}\n")
-  Fs::write_file(main2, contents = "import ./vibe_defer_reset_dep2.vibe {\n  twice\n}\n\ntest \"t\" {\n  inspect(twice(2), content = \"4\")\n}\n")
+  Fs::write_file(main2, contents = "import ./vibe_defer_reset_dep2.vibe {\n  twice\n}\n\ntest \"t\" {\n  inspect(twice(n = 2), content = \"4\")\n}\n")
   inspect(String::trim(synth_line_of(prelude_module_full_oracle_report_fs(entry_path = main2, entry_name = "__no_entry__"))), content = "SYNTH requests=0 typed_refused=0 deferred=0 minted=0 indirect=0")
 }
 
@@ -828,7 +828,7 @@ test "a type declaration counts as declaring its own name, and an enum its const
   // enum whose constructors are used BOTH by its own module and across the
   // boundary, a private enum used only at home, an exported struct, and a type
   // alias naming the enum.
-  Fs::write_file(dep, contents = "export enum Hue {\n  Crimson;\n  Azure\n}\n\nexport type Shade = Hue\n\nexport struct Paint {\n  hue: Hue\n}\n\nenum Secret {\n  Hidden(Int)\n}\n\nfn make_secret(n: Int) -> Secret {\n  Hidden(n)\n}\n\nfn secret_of(n: Int) -> Int {\n  let s = make_secret(n)\n  match s {\n    Hidden(v) => v\n  }\n}\n\nexport fn default_paint() -> Paint {\n  Paint::{ hue: Crimson }\n}\n\nexport fn home_use() -> Int {\n  let s: Shade = Azure\n  match s {\n    Crimson => secret_of(1)\n    Azure => secret_of(2)\n  }\n}\n")
+  Fs::write_file(dep, contents = "export enum Hue {\n  Crimson;\n  Azure\n}\n\nexport type Shade = Hue\n\nexport struct Paint {\n  hue: Hue\n}\n\nenum Secret {\n  Hidden(Int)\n}\n\nfn make_secret(n: Int) -> Secret {\n  Hidden(n)\n}\n\nfn secret_of(n: Int) -> Int {\n  let s = make_secret(n = n)\n  match s {\n    Hidden(v) => v\n  }\n}\n\nexport fn default_paint() -> Paint {\n  Paint::{ hue: Crimson }\n}\n\nexport fn home_use() -> Int {\n  let s: Shade = Azure\n  match s {\n    Crimson => secret_of(n = 1)\n    Azure => secret_of(n = 2)\n  }\n}\n")
   Fs::write_file(main, contents = "import ./vibe_ctx_typedecl_dep.vibe {\n  Hue, Paint, Crimson, Azure, default_paint, home_use\n}\n\nfn away_use() -> Int {\n  let p: Paint = default_paint()\n  match p.hue {\n    Crimson => 10\n    Azure => 20\n  }\n}\n\ntest \"t\" {\n  inspect(away_use() + home_use(), content = \"12\")\n}\n")
   let report = prelude_module_full_oracle_report_fs(entry_path = main, entry_name = "__no_entry__")
   // The control for the CTX line: `seen=4` says the scan had four

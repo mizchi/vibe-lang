@@ -30,7 +30,7 @@ expect_refusal() {
 
 expect_refusal ready 'fn main() -> Int { let _ = Future::ready(42); 0 }' 'Future::ready'
 expect_refusal pending 'fn main() -> Int { let _: Future[Int] = Future::pending(); 0 }' 'Future::pending'
-expect_refusal resolve 'fn complete(f: Future[Int]) -> Int { Future::resolve(f, 42); 0 }
+expect_refusal resolve 'fn complete(f: Future[Int]) -> Int { Future::resolve(f, value = 42); 0 }
 fn main() -> Int { 0 }' 'Future::resolve'
 expect_refusal await 'fn take(f: Future[Int]) -> Int with Async { await(f) }
 fn main() -> Int { 0 }' 'await'
@@ -54,7 +54,7 @@ fn through_match() -> Int {
 }
 fn main() -> Int {
   let await = (x: Int) -> x + 1
-  through_match() + await(Future::ready(39))
+  through_match() + await(Future::ready(x = 39))
 }
 VIBE
 compile_gc "$src" "$out"

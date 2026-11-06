@@ -335,7 +335,7 @@ EOF
 
 cat >"$DEBUG_MAIN_SOURCE" <<'EOF'
 import ./core_debug_lib.vibe { helper }
-let answer = () -> Int { helper(19, 23) }
+let answer = () -> Int { helper(a = 19, b = 23) }
 EOF
 
 run_stage "stage1 core artifact -> linked debug wasm compile" \

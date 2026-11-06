@@ -34,7 +34,7 @@ VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$compiler" \
 VIBE_RUNNER=/nonexistent runtime/vibe refactor --help > "$work/help.out"
 grep -q '^usage: vibe refactor extract-function' "$work/help.out"
 cmp "$source_path" "$work/original.vibe"
-grep -Fq 'calculate(x)' "$work/preview.vibe"
+grep -Fq 'calculate(x = x)' "$work/preview.vibe"
 grep -Fq 'let calculate = (x: Int)' "$work/preview.vibe"
 invoke refactor extract-function "$source_path" "$start" "$end" calculate --write > "$work/write.out"
 cmp "$source_path" "$work/preview.vibe"

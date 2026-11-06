@@ -263,7 +263,7 @@ async function e2e() {
   const prog = path.join(work, "prog.vibe");
   fs.writeFileSync(
     prog,
-    "export let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(20) + helper(1) }\n",
+    "export let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(x = 20) + helper(x = 1) }\n",
   );
 
   const events = [];

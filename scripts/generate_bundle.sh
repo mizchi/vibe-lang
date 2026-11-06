@@ -838,7 +838,7 @@ write_adapter_bundle() {
   echo "//# CLI adapter bundle"
   echo ""
   echo "let cli_adapter_empty_grouped_sources = () -> Array[(String, Array[(String, String)])] {"
-  echo "  Array::slice([(\"\", Array::slice([(\"\", \"\")], 0, 0))], 0, 0)"
+  echo "  Array::slice([(\"\", Array::slice([(\"\", \"\")], start = 0, end = 0))], start = 0, end = 0)"
   echo "}"
   echo ""
   echo "let cli_adapter_push_grouped_source_pair = (groups: Array[(String, Array[(String, String)])], group_name: String, pair: (String, String)) -> Unit {"
@@ -846,9 +846,9 @@ write_adapter_bundle() {
   echo "  let mut i = 0"
   echo "  let mut found = false"
   echo "  while i < Array::length(groups) {"
-  echo "    let (name, sources) = Array::get(groups, i)"
+  echo "    let (name, sources) = Array::get(groups, at = i)"
   echo "    if String::equals(name, group_name) {"
-  echo "      Array::push(sources, (path, source))"
+  echo "      Array::push(sources, value = (path, source))"
   echo "      found = true"
   echo "      i = Array::length(groups)"
   echo "    } else {"
@@ -856,9 +856,9 @@ write_adapter_bundle() {
   echo "    }"
   echo "  }"
   echo "  if !found {"
-  echo "    let sources = Array::slice([(\"\", \"\")], 0, 0)"
-  echo "    Array::push(sources, (path, source))"
-  echo "    Array::push(groups, (group_name, sources))"
+  echo "    let sources = Array::slice([(\"\", \"\")], start = 0, end = 0)"
+  echo "    Array::push(sources, value = (path, source))"
+  echo "    Array::push(groups, value = (group_name, sources))"
   echo "  }"
   echo "}"
   echo ""
@@ -881,10 +881,10 @@ write_adapter_bundle() {
   write_source_functions raw "${source_records[@]}"
 
   echo "export let cli_adapter_sources = () -> Array[(String, String)] {"
-  echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
+  echo "  let sources = Array::slice([(\"\", \"\")], start = 0, end = 0)"
   adapter_local_idx=0
   for _idx in "${CLI_ADAPTER_INDEXES[@]}"; do
-    echo "  Array::push(sources, cli_adapter_source_$adapter_local_idx())"
+    echo "  Array::push(sources, value = cli_adapter_source_$adapter_local_idx())"
     adapter_local_idx=$((adapter_local_idx + 1))
   done
   echo "  sources"
@@ -895,17 +895,17 @@ write_adapter_bundle() {
   adapter_local_idx=0
   for idx in "${CLI_ADAPTER_INDEXES[@]}"; do
     group="${MANIFEST_GROUPS[$idx]}"
-    echo "  cli_adapter_push_grouped_source_pair(groups, \"$group\", cli_adapter_source_$adapter_local_idx())"
+    echo "  cli_adapter_push_grouped_source_pair(groups = groups, group_name = \"$group\", pair = cli_adapter_source_$adapter_local_idx())"
     adapter_local_idx=$((adapter_local_idx + 1))
   done
   echo "  groups"
   echo "}"
   echo ""
   echo "export let cli_adapter_ordered_sources = () -> Array[(String, String)] {"
-  echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
+  echo "  let sources = Array::slice([(\"\", \"\")], start = 0, end = 0)"
   for idx in "${CLI_ADAPTER_ORDERED_INDEXES[@]}"; do
     adapter_local_idx="$(find_adapter_local_index "$idx")"
-    echo "  Array::push(sources, cli_adapter_source_$adapter_local_idx())"
+    echo "  Array::push(sources, value = cli_adapter_source_$adapter_local_idx())"
   done
   echo "  sources"
   echo "}"
@@ -1283,7 +1283,7 @@ trace_begin "compiler sources bundle"; BUNDLE_TOK="$TRACE_TOKEN"
   echo "// All compiler source files bundled as (path, source) pairs."
   echo "// Used by selfbuild_compile_stage2 to avoid filesystem access."
   echo "let empty_grouped_sources = () -> Array[(String, Array[(String, String)])] {"
-  echo "  Array::slice([(\"\", Array::slice([(\"\", \"\")], 0, 0))], 0, 0)"
+  echo "  Array::slice([(\"\", Array::slice([(\"\", \"\")], start = 0, end = 0))], start = 0, end = 0)"
   echo "}"
   echo ""
   echo "let push_grouped_source_pair = (groups: Array[(String, Array[(String, String)])], group_name: String, pair: (String, String)) -> Unit {"
@@ -1291,9 +1291,9 @@ trace_begin "compiler sources bundle"; BUNDLE_TOK="$TRACE_TOKEN"
   echo "  let mut i = 0"
   echo "  let mut found = false"
   echo "  while i < Array::length(groups) {"
-  echo "    let (name, sources) = Array::get(groups, i)"
+  echo "    let (name, sources) = Array::get(groups, at = i)"
   echo "    if String::equals(name, group_name) {"
-  echo "      Array::push(sources, (path, source))"
+  echo "      Array::push(sources, value = (path, source))"
   echo "      found = true"
   echo "      i = Array::length(groups)"
   echo "    } else {"
@@ -1301,9 +1301,9 @@ trace_begin "compiler sources bundle"; BUNDLE_TOK="$TRACE_TOKEN"
   echo "    }"
   echo "  }"
   echo "  if !found {"
-  echo "    let sources = Array::slice([(\"\", \"\")], 0, 0)"
-  echo "    Array::push(sources, (path, source))"
-  echo "    Array::push(groups, (group_name, sources))"
+  echo "    let sources = Array::slice([(\"\", \"\")], start = 0, end = 0)"
+  echo "    Array::push(sources, value = (path, source))"
+  echo "    Array::push(groups, value = (group_name, sources))"
   echo "  }"
   echo "}"
   echo ""
@@ -1344,12 +1344,12 @@ trace_begin "compiler sources bundle"; BUNDLE_TOK="$TRACE_TOKEN"
   write_source_functions filtered "${BUNDLE_SOURCE_RECORDS[@]}"
 
   echo "export let compiler_sources = () -> Array[(String, String)] {"
-  echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
+  echo "  let sources = Array::slice([(\"\", \"\")], start = 0, end = 0)"
   echo ""
 
   for pair in "${BUNDLE_SOURCE_INDEXES[@]}"; do
     local_idx="${pair#*:}"
-    echo "  Array::push(sources, source_$local_idx())"
+    echo "  Array::push(sources, value = source_$local_idx())"
   done
 
   echo "  sources"
@@ -1363,7 +1363,7 @@ trace_begin "compiler sources bundle"; BUNDLE_TOK="$TRACE_TOKEN"
     manifest_idx="${pair%%:*}"
     local_idx="${pair#*:}"
     group="${MANIFEST_GROUPS[$manifest_idx]}"
-    echo "  push_grouped_source_pair(groups, \"$group\", source_$local_idx())"
+    echo "  push_grouped_source_pair(groups = groups, group_name = \"$group\", pair = source_$local_idx())"
   done
 
   echo ""
@@ -1371,10 +1371,10 @@ trace_begin "compiler sources bundle"; BUNDLE_TOK="$TRACE_TOKEN"
   echo "}"
   echo ""
   echo "export let compiler_ordered_sources = () -> Array[(String, String)] {"
-  echo "  let sources = Array::slice([(\"\", \"\")], 0, 0)"
+  echo "  let sources = Array::slice([(\"\", \"\")], start = 0, end = 0)"
   for idx in "${MAIN_ORDERED_INDEXES[@]}"; do
     if local_idx="$(find_bundle_local_index "$idx")"; then
-      echo "  Array::push(sources, source_$local_idx())"
+      echo "  Array::push(sources, value = source_$local_idx())"
     fi
   done
   echo "  sources"
@@ -1387,7 +1387,7 @@ trace_begin "compiler sources bundle"; BUNDLE_TOK="$TRACE_TOKEN"
     local_idx="${pair#*:}"
     if is_main_ordered "$manifest_idx"; then
       group="${MANIFEST_GROUPS[$manifest_idx]}"
-      echo "  push_grouped_source_pair(groups, \"$group\", source_$local_idx())"
+      echo "  push_grouped_source_pair(groups = groups, group_name = \"$group\", pair = source_$local_idx())"
     fi
   done
   echo "  groups"

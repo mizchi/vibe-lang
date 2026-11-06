@@ -70,7 +70,7 @@ import @vibe/compiler/codegen/component {
 }
 
 fn main() -> Unit allows Exception + Fs {
-  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_shadow/generated.component.wasm", comp_emit_component_wasm_stdin_provider_shadow())
+  Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_shadow/generated.component.wasm", bytes = comp_emit_component_wasm_stdin_provider_shadow())
 }
 EOF
 rm -f "$HARNESS_WASM" "$HARNESS_WASM.diag" "$COMPONENT"

@@ -63,7 +63,7 @@ fn name_in(arr: Array[String], s: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(arr) {
-    if Array::get(arr, i) == s {
+    if Array::get(arr, at = i) == s {
       found = true
     } else {
       ()
@@ -77,30 +77,30 @@ fn name_in(arr: Array[String], s: String) -> Bool {
 /// made at the site, which is what the guarded drop needs the value to be.
 fn pat_bound_names(p: Pat, out: Array[String]) -> Unit {
   match p {
-    PBind(n) => Array::push(out, n),
+    PBind(n) => Array::push(out, value = n),
     PCtor(_, ps) => {
       let mut i = 0
       while i < Array::length(ps) {
-        pat_bound_names(Array::get(ps, i), out)
+        pat_bound_names(p = Array::get(ps, at = i), out = out)
         i = i + 1
       }
     },
     PTuple(ps) => {
       let mut i = 0
       while i < Array::length(ps) {
-        pat_bound_names(Array::get(ps, i), out)
+        pat_bound_names(p = Array::get(ps, at = i), out = out)
         i = i + 1
       }
     },
     POr(a, b) => {
-      pat_bound_names(a, out)
-      pat_bound_names(b, out)
+      pat_bound_names(p = a, out = out)
+      pat_bound_names(p = b, out = out)
     },
     PStruct(_, fs) => {
       let mut i = 0
       while i < Array::length(fs) {
-        let (_, fp) = Array::get(fs, i)
-        pat_bound_names(fp, out)
+        let (_, fp) = Array::get(fs, at = i)
+        pat_bound_names(p = fp, out = out)
         i = i + 1
       }
     },
@@ -114,9 +114,9 @@ fn leaf_kind(e: Expr, ctors: Array[String], bound: Array[String], borrow_ret: Ar
     ERecord(_, _, _) => "record",
     EArray(_) => "array",
     ECall(callee, _, _, _) => match callee {
-      EIdent(f, _) => if name_in(ctors, f) {
+      EIdent(f, _) => if name_in(arr = ctors, s = f) {
         "ctor"
-      } else if !name_in(bound, f) && name_in(heap_ret, f) && !is_borrow_ret_builtin(f) && !name_in(borrow_ret, f) && !name_in(view_ret, f) {
+      } else if !name_in(arr = bound, s = f) && name_in(arr = heap_ret, s = f) && !is_borrow_ret_builtin(f) && !name_in(arr = borrow_ret, s = f) && !name_in(arr = view_ret, s = f) {
         "call_heap_ret"
       } else {
         "call"
@@ -165,15 +165,15 @@ fn leaf_callee(e: Expr) -> String {
 fn call_contract(e: Expr, bound: Array[String], borrow_ret: Array[String], view_ret: Array[String], scalar_ret: Array[String], heap_ret: Array[String]) -> String {
   match e {
     ECall(callee, _, _, _) => match callee {
-      EIdent(f, _) => if name_in(bound, f) {
+      EIdent(f, _) => if name_in(arr = bound, s = f) {
         "local"
-      } else if is_borrow_ret_builtin(f) || name_in(borrow_ret, f) {
+      } else if is_borrow_ret_builtin(f) || name_in(arr = borrow_ret, s = f) {
         "borrow_ret"
-      } else if name_in(view_ret, f) {
+      } else if name_in(arr = view_ret, s = f) {
         "view_ret"
-      } else if name_in(scalar_ret, f) {
+      } else if name_in(arr = scalar_ret, s = f) {
         "scalar_ret"
-      } else if name_in(heap_ret, f) {
+      } else if name_in(arr = heap_ret, s = f) {
         "heap_ret"
       } else {
         "unresolved"
@@ -199,49 +199,49 @@ fn owned_leaf(k: String) -> Bool {
 fn spine_walk(e: Expr, scope: Array[String], ctors: Array[String], borrow_ret: Array[String], view_ret: Array[String], scalar_ret: Array[String], heap_ret: Array[String], out_kinds: Array[String], out_callees: Array[String], out_contracts: Array[String]) -> Unit {
   match e {
     EIf(_, t, el) => {
-      spine_walk(t, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
-      spine_walk(el, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
+      spine_walk(e = t, scope = scope, ctors = ctors, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret, out_kinds = out_kinds, out_callees = out_callees, out_contracts = out_contracts)
+      spine_walk(e = el, scope = scope, ctors = ctors, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret, out_kinds = out_kinds, out_callees = out_callees, out_contracts = out_contracts)
     },
     EMatch(_, arms) => if Array::length(arms) == 0 {
-      Array::push(out_kinds, "unit")
-      Array::push(out_callees, "-")
-      Array::push(out_contracts, "-")
+      Array::push(out_kinds, value = "unit")
+      Array::push(out_callees, value = "-")
+      Array::push(out_contracts, value = "-")
     } else {
       let mut i = 0
       while i < Array::length(arms) {
-        let (ap, ab) = Array::get(arms, i)
+        let (ap, ab) = Array::get(arms, at = i)
         let mark = Array::length(scope)
-        pat_bound_names(ap, scope)
-        spine_walk(ab, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
-        Array::truncate(scope, mark)
+        pat_bound_names(p = ap, out = scope)
+        spine_walk(e = ab, scope = scope, ctors = ctors, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret, out_kinds = out_kinds, out_callees = out_callees, out_contracts = out_contracts)
+        Array::truncate(scope, length = mark)
         i = i + 1
       }
     },
     ELet(n, _, b, _) => {
       let mark = Array::length(scope)
-      Array::push(scope, n)
-      spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
-      Array::truncate(scope, mark)
+      Array::push(scope, value = n)
+      spine_walk(e = b, scope = scope, ctors = ctors, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret, out_kinds = out_kinds, out_callees = out_callees, out_contracts = out_contracts)
+      Array::truncate(scope, length = mark)
     },
     ELetMut(n, _, b, _) => {
       let mark = Array::length(scope)
-      Array::push(scope, n)
-      spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
-      Array::truncate(scope, mark)
+      Array::push(scope, value = n)
+      spine_walk(e = b, scope = scope, ctors = ctors, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret, out_kinds = out_kinds, out_callees = out_callees, out_contracts = out_contracts)
+      Array::truncate(scope, length = mark)
     },
     ELetRec(n, _, b) => {
       let mark = Array::length(scope)
-      Array::push(scope, n)
-      spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
-      Array::truncate(scope, mark)
+      Array::push(scope, value = n)
+      spine_walk(e = b, scope = scope, ctors = ctors, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret, out_kinds = out_kinds, out_callees = out_callees, out_contracts = out_contracts)
+      Array::truncate(scope, length = mark)
     },
-    ESeq(_, b) => spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts),
-    EAssign(_, _, b, _) => spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts),
-    EAssignOp(_, _, _, b, _) => spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts),
+    ESeq(_, b) => spine_walk(e = b, scope = scope, ctors = ctors, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret, out_kinds = out_kinds, out_callees = out_callees, out_contracts = out_contracts),
+    EAssign(_, _, b, _) => spine_walk(e = b, scope = scope, ctors = ctors, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret, out_kinds = out_kinds, out_callees = out_callees, out_contracts = out_contracts),
+    EAssignOp(_, _, _, b, _) => spine_walk(e = b, scope = scope, ctors = ctors, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret, out_kinds = out_kinds, out_callees = out_callees, out_contracts = out_contracts),
     _ => {
-      Array::push(out_kinds, leaf_kind(e, ctors, scope, borrow_ret, view_ret, heap_ret))
-      Array::push(out_callees, leaf_callee(e))
-      Array::push(out_contracts, call_contract(e, scope, borrow_ret, view_ret, scalar_ret, heap_ret))
+      Array::push(out_kinds, value = leaf_kind(e = e, ctors = ctors, bound = scope, borrow_ret = borrow_ret, view_ret = view_ret, heap_ret = heap_ret))
+      Array::push(out_callees, value = leaf_callee(e = e))
+      Array::push(out_contracts, value = call_contract(e = e, bound = scope, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret))
     }
   }
 }
@@ -256,7 +256,7 @@ fn top_kind(e: Expr, ctors: Array[String], bound: Array[String], borrow_ret: Arr
     ESeq(_, _) => "seq",
     EAssign(_, _, _, _) => "assign",
     EAssignOp(_, _, _, _, _) => "assignop",
-    _ => leaf_kind(e, ctors, bound, borrow_ret, view_ret, heap_ret)
+    _ => leaf_kind(e = e, ctors = ctors, bound = bound, borrow_ret = borrow_ret, view_ret = view_ret, heap_ret = heap_ret)
   }
 }
 
@@ -277,64 +277,64 @@ fn find_let_value(e: Expr, name: String, scope: Array[String], out: Array[Expr],
     EFn(_, _, _, _, _, _) => (),
     ELet(n, v, b, _) => {
       // The value is compiled before its own binder is in scope.
-      find_let_value(v, name, scope, out, out_scope)
+      find_let_value(e = v, name = name, scope = scope, out = out, out_scope = out_scope)
       if n == name {
-        Array::push(out, v)
+        Array::push(out, value = v)
         let mut si = 0
         while si < Array::length(scope) {
-          Array::push(out_scope, Array::get(scope, si))
+          Array::push(out_scope, value = Array::get(scope, at = si))
           si = si + 1
         }
       } else {
         ()
       }
       let mark = Array::length(scope)
-      Array::push(scope, n)
-      find_let_value(b, name, scope, out, out_scope)
-      Array::truncate(scope, mark)
+      Array::push(scope, value = n)
+      find_let_value(e = b, name = name, scope = scope, out = out, out_scope = out_scope)
+      Array::truncate(scope, length = mark)
     },
     ELetMut(n, v, b, _) => {
-      find_let_value(v, name, scope, out, out_scope)
+      find_let_value(e = v, name = name, scope = scope, out = out, out_scope = out_scope)
       let mark = Array::length(scope)
-      Array::push(scope, n)
-      find_let_value(b, name, scope, out, out_scope)
-      Array::truncate(scope, mark)
+      Array::push(scope, value = n)
+      find_let_value(e = b, name = name, scope = scope, out = out, out_scope = out_scope)
+      Array::truncate(scope, length = mark)
     },
     ELetRec(n, v, b) => {
       let mark = Array::length(scope)
-      Array::push(scope, n)
-      find_let_value(v, name, scope, out, out_scope)
-      find_let_value(b, name, scope, out, out_scope)
-      Array::truncate(scope, mark)
+      Array::push(scope, value = n)
+      find_let_value(e = v, name = name, scope = scope, out = out, out_scope = out_scope)
+      find_let_value(e = b, name = name, scope = scope, out = out, out_scope = out_scope)
+      Array::truncate(scope, length = mark)
     },
     EMatch(sc, arms) => {
-      find_let_value(sc, name, scope, out, out_scope)
+      find_let_value(e = sc, name = name, scope = scope, out = out, out_scope = out_scope)
       let mut i = 0
       while i < Array::length(arms) {
-        let (ap, ab) = Array::get(arms, i)
+        let (ap, ab) = Array::get(arms, at = i)
         let mark = Array::length(scope)
-        pat_bound_names(ap, scope)
-        find_let_value(ab, name, scope, out, out_scope)
-        Array::truncate(scope, mark)
+        pat_bound_names(p = ap, out = scope)
+        find_let_value(e = ab, name = name, scope = scope, out = out, out_scope = out_scope)
+        Array::truncate(scope, length = mark)
         i = i + 1
       }
     },
     EForIn(n, io, seq, body) => {
-      find_let_value(seq, name, scope, out, out_scope)
+      find_let_value(e = seq, name = name, scope = scope, out = out, out_scope = out_scope)
       let mark = Array::length(scope)
-      Array::push(scope, n)
+      Array::push(scope, value = n)
       match io {
-        Some(i2) => Array::push(scope, i2),
+        Some(i2) => Array::push(scope, value = i2),
         None => ()
       }
-      find_let_value(body, name, scope, out, out_scope)
-      Array::truncate(scope, mark)
+      find_let_value(e = body, name = name, scope = scope, out = out, out_scope = out_scope)
+      Array::truncate(scope, length = mark)
     },
     _ => {
       let kids = expr_children(e)
       let mut i = 0
       while i < Array::length(kids) {
-        find_let_value(Array::get(kids, i), name, scope, out, out_scope)
+        find_let_value(e = Array::get(kids, at = i), name = name, scope = scope, out = out, out_scope = out_scope)
         i = i + 1
       }
     }
@@ -353,11 +353,11 @@ fn uniq_sorted(xs: Array[String]) -> String {
   let seen: Array[String] = []
   let mut i = 0
   while i < Array::length(xs) {
-    let x = Array::get(xs, i)
-    if name_in(seen, x) {
+    let x = Array::get(xs, at = i)
+    if name_in(arr = seen, s = x) {
       ()
     } else {
-      Array::push(seen, x)
+      Array::push(seen, value = x)
     }
     i = i + 1
   }
@@ -366,11 +366,11 @@ fn uniq_sorted(xs: Array[String]) -> String {
   let mut j = 0
   while j < Array::length(s) {
     if j > 0 {
-      StringBuilder::push(sb, ",")
+      StringBuilder::push(sb, value = ",")
     } else {
       ()
     }
-    StringBuilder::push(sb, Array::get(s, j))
+    StringBuilder::push(sb, value = Array::get(s, at = j))
     j = j + 1
   }
   StringBuilder::freeze(sb)
@@ -380,15 +380,15 @@ fn report(fname: String, name: String, value: Expr, ctors: Array[String], row_sc
   let kinds: Array[String] = []
   let callees: Array[String] = []
   let contracts: Array[String] = []
-  spine_walk(value, row_scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, kinds, callees, contracts)
-  let flat = owned_leaf(leaf_kind(value, ctors, row_scope, borrow_ret, view_ret, heap_ret))
+  spine_walk(e = value, scope = row_scope, ctors = ctors, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret, out_kinds = kinds, out_callees = callees, out_contracts = contracts)
+  let flat = owned_leaf(k = leaf_kind(e = value, ctors = ctors, bound = row_scope, borrow_ret = borrow_ret, view_ret = view_ret, heap_ret = heap_ret))
   let mut all_site = Array::length(kinds) > 0
   let mut first_bad = ""
   let mut bad_at = 0 - 1
   let mut i = 0
   while i < Array::length(kinds) {
-    let k = Array::get(kinds, i)
-    if owned_leaf(k) {
+    let k = Array::get(kinds, at = i)
+    if owned_leaf(k = k) {
       ()
     } else {
       all_site = false
@@ -415,60 +415,60 @@ fn report(fname: String, name: String, value: Expr, ctors: Array[String], row_sc
   // an `ELet` and would report "-", which would drop exactly the wrapped-call
   // population the spine read exists to look at.
   let callee = if bad_at >= 0 {
-    Array::get(callees, bad_at)
+    Array::get(callees, at = bad_at)
   } else {
-    leaf_callee(value)
+    leaf_callee(e = value)
   }
   let contract = if bad_at >= 0 {
-    Array::get(contracts, bad_at)
+    Array::get(contracts, at = bad_at)
   } else {
-    call_contract(value, row_scope, borrow_ret, view_ret, scalar_ret, heap_ret)
+    call_contract(e = value, bound = row_scope, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret)
   }
   let line = StringBuilder::new()
-  StringBuilder::push(line, fname)
-  StringBuilder::push(line, "\t")
-  StringBuilder::push(line, name)
-  StringBuilder::push(line, "\ttop=")
-  StringBuilder::push(line, top_kind(value, ctors, row_scope, borrow_ret, view_ret, heap_ret))
-  StringBuilder::push(line, "\tflat=")
-  StringBuilder::push(line, yn(flat))
-  StringBuilder::push(line, "\tspine=")
-  StringBuilder::push(line, yn(all_site))
-  StringBuilder::push(line, "\tnleaves=")
-  StringBuilder::push(line, __to_string(Array::length(kinds)))
-  StringBuilder::push(line, "\tkinds=")
-  StringBuilder::push(line, uniq_sorted(kinds))
-  StringBuilder::push(line, "\tverdict=")
-  StringBuilder::push(line, verdict)
-  StringBuilder::push(line, "\tcallee=")
-  StringBuilder::push(line, callee)
-  StringBuilder::push(line, "\tcontract=")
-  StringBuilder::push(line, contract)
+  StringBuilder::push(line, value = fname)
+  StringBuilder::push(line, value = "\t")
+  StringBuilder::push(line, value = name)
+  StringBuilder::push(line, value = "\ttop=")
+  StringBuilder::push(line, value = top_kind(e = value, ctors = ctors, bound = row_scope, borrow_ret = borrow_ret, view_ret = view_ret, heap_ret = heap_ret))
+  StringBuilder::push(line, value = "\tflat=")
+  StringBuilder::push(line, value = yn(b = flat))
+  StringBuilder::push(line, value = "\tspine=")
+  StringBuilder::push(line, value = yn(b = all_site))
+  StringBuilder::push(line, value = "\tnleaves=")
+  StringBuilder::push(line, value = __to_string(Array::length(kinds)))
+  StringBuilder::push(line, value = "\tkinds=")
+  StringBuilder::push(line, value = uniq_sorted(xs = kinds))
+  StringBuilder::push(line, value = "\tverdict=")
+  StringBuilder::push(line, value = verdict)
+  StringBuilder::push(line, value = "\tcallee=")
+  StringBuilder::push(line, value = callee)
+  StringBuilder::push(line, value = "\tcontract=")
+  StringBuilder::push(line, value = contract)
   println(StringBuilder::freeze(line))
 }
 
 fn collect_ctor_names(stmts: Array[Stmt], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SEnum(_, _, _, variants, _) => {
         let mut v = 0
         while v < Array::length(variants) {
-          let (vn, _) = Array::get(variants, v)
-          Array::push(out, vn)
+          let (vn, _) = Array::get(variants, at = v)
+          Array::push(out, value = vn)
           v = v + 1
         }
       },
       SSuberror(_, _, variants) => {
         let mut v = 0
         while v < Array::length(variants) {
-          let (vn, _) = Array::get(variants, v)
-          Array::push(out, vn)
+          let (vn, _) = Array::get(variants, at = v)
+          Array::push(out, value = vn)
           v = v + 1
         }
       },
-      SStruct(_, sname, _, _, _, _) => Array::push(out, sname),
-      SModule(_, _, inner) => collect_ctor_names(inner, out),
+      SStruct(_, sname, _, _, _, _) => Array::push(out, value = sname),
+      SModule(_, _, inner) => collect_ctor_names(stmts = inner, out = out),
       _ => ()
     }
     i = i + 1
@@ -477,22 +477,22 @@ fn collect_ctor_names(stmts: Array[Stmt], out: Array[String]) -> Unit {
 
 fn census(source: String) -> Unit with Exception + Console {
   let (toks, starts, _ends) = lex_with_offsets(source)
-  let stmts = parse_program_located(toks, starts, source)
+  let stmts = parse_program_located(tokens = toks, starts = starts, source = source)
   let linked: Array[(String, String, Int, Int)] = []
   let iw_names: Array[String] = []
   let iw_wats: Array[String] = []
-  let errs = effect_lowering_prelude(stmts, "main", linked, iw_names, iw_wats, array_empty(), array_empty())
+  let errs = effect_lowering_prelude(stmts = stmts, entry_name = "main", linked_imports = linked, iw_names = iw_names, iw_wats = iw_wats, checker_eq_offsets = array_empty(), checker_eq_type_keys = array_empty())
   if Array::length(errs) > 0 {
-    throw(Array::get(errs, 0))
+    throw(Array::get(errs, at = 0))
   } else {
     ()
   }
   let ctors: Array[String] = []
-  collect_ctor_names(stmts, ctors)
+  collect_ctor_names(stmts = stmts, out = ctors)
   let borrow_ret = sorted_names_of(compute_borrow_returning_names(stmts))
   let masks: Array[Int] = []
   let exclude = ["main", "_start", "cli_main"]
-  let borrow_param = compute_borrow_param_user_fns(stmts, exclude, masks)
+  let borrow_param = compute_borrow_param_user_fns(stmts = stmts, exclude = exclude, out_masks = masks)
   let view_ret = sorted_names_of(compute_may_return_view_fns(stmts))
   let scalar_ret = sorted_names_of(compute_scalar_returning_names(stmts))
   let heap_ret = sorted_names_of(compute_heap_returning(stmts))
@@ -500,14 +500,14 @@ fn census(source: String) -> Unit with Exception + Console {
   let m_scrut_counter = [0]
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    match Array::get(stmts, at = i) {
       SLet(_, _, name, _, value) => match value {
         EFn(_, _, _, _, _, _) => {
           let seen: Array[String] = []
-          let norm = lift_match_scrutinees(uniquify_shadowed_bindings_fresh(value, uq_shadow_counter, seen), m_scrut_counter)
+          let norm = lift_match_scrutinees(expr = uniquify_shadowed_bindings_fresh(expr = value, counter = uq_shadow_counter, seen = seen), counter = m_scrut_counter)
           match norm {
             EFn(_, _, nparams, _, _, nbody) => {
-              let plan = build_perceus_plan_with_params(nparams, nbody, borrow_ret, borrow_param, masks, view_ret)
+              let plan = build_perceus_plan_with_params(params = nparams, body = nbody, borrow_ret_names = borrow_ret, borrow_param_fns = borrow_param, borrow_param_masks = masks, view_ret_fns = view_ret)
               // This function's own parameters. Everything else in scope at a
               // row is accumulated per site by find_let_value, because
               // compile_match and for-in truncate `local_names` at their
@@ -516,25 +516,25 @@ fn census(source: String) -> Unit with Exception + Console {
               let params0: Array[String] = []
               let mut pi = 0
               while pi < Array::length(nparams) {
-                let (pn, _) = Array::get(nparams, pi)
-                Array::push(params0, pn)
+                let (pn, _) = Array::get(nparams, at = pi)
+                Array::push(params0, value = pn)
                 pi = pi + 1
               }
               let mut k = 0
               while k < Array::length(plan) {
-                let a = Array::get(plan, k)
+                let a = Array::get(plan, at = k)
                 if pa_is_path_drop(a) {
                   let found: Array[Expr] = []
                   let row_scope: Array[String] = []
                   let seed: Array[String] = []
                   let mut si = 0
                   while si < Array::length(params0) {
-                    Array::push(seed, Array::get(params0, si))
+                    Array::push(seed, value = Array::get(params0, at = si))
                     si = si + 1
                   }
-                  find_let_value(nbody, a.name, seed, found, row_scope)
+                  find_let_value(e = nbody, name = a.name, scope = seed, out = found, out_scope = row_scope)
                   if Array::length(found) == 1 {
-                    report(name, a.name, Array::get(found, 0), ctors, row_scope, borrow_ret, view_ret, scalar_ret, heap_ret)
+                    report(fname = name, name = a.name, value = Array::get(found, at = 0), ctors = ctors, row_scope = row_scope, borrow_ret = borrow_ret, view_ret = view_ret, scalar_ret = scalar_ret, heap_ret = heap_ret)
                   } else {
                     // Not a `let` in this body (a pattern bind or a parameter),
                     // or -- never observed -- an ambiguous name.
@@ -560,5 +560,5 @@ fn census(source: String) -> Unit with Exception + Console {
 test "path release census" {
   // scripts/path_release_census.sh stages the input here.
   let src = Fs::read_file("_build/path_release_census/input.vibe")
-  census(src)
+  census(source = src)
 }

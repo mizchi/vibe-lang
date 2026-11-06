@@ -35,12 +35,12 @@ run_gate || { cat "$SCRATCH.out" >&2; fail "the gate fails on an unmutated copy"
 echo "ok: unmutated copy passes"
 
 # 1. A Z3 function the program no longer calls leaves the import set.
-fresh; mutate "  Context::close(ctx)
+fresh; mutate "  Context::close(ctx = ctx)
 " ""
 expect_fail "a dropped call" "it calls: "
 
 # 2. A program that does not type-check against z3.wasm is caught.
-fresh; mutate "Context::eval_smtlib2(ctx, " "Context::eval_smtlib2(ctx, 1, "
+fresh; mutate "Context::eval_smtlib2(ctx = ctx, " "Context::eval_smtlib2(ctx = ctx, extra = 1, "
 expect_fail "an ill-typed call" "vibe check"
 
 echo "[z3-binding-gate-test] ok (3 cases)"

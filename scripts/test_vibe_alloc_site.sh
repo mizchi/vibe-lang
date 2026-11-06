@@ -54,8 +54,8 @@ let light = (n: Int) -> String {
   t
 }
 fn main allows Stdout {
-  let a = heavy(300)
-  let b = light(50)
+  let a = heavy(n = 300)
+  let b = light(n = 50)
   Stdout::write_stream("\{String::length(a) + String::length(b)}\n")
 }
 EOF

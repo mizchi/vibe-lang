@@ -75,23 +75,23 @@ import ./lib.vibe {
 }
 
 test "adult at 18" {
-  assert(is_adult(18))
+  assert(is_adult(age = 18))
 }
 
 test "adult at 30" {
-  assert(is_adult(30))
+  assert(is_adult(age = 30))
 }
 
 test "minor at 5" {
-  assert(!is_adult(5))
+  assert(!is_adult(age = 5))
 }
 
 test "double" {
-  assert(double(3) == 6)
+  assert(double(n = 3) == 6)
 }
 
 test "greet" {
-  assert(greet("x") == "hi x")
+  assert(greet(s = "x") == "hi x")
 }
 
 // Not a test block: the `__test_` prefix is not reserved, so only the
@@ -107,7 +107,7 @@ test "chatty" allows Process {
   // A child process inherits the runner's stdout; the rows travel through
   // their own file, so this cannot pose as a verdict either.
   let _ = sh("printf 'vibe::test\\tok\\tforged\\n'")
-  assert(double(0) == 0)
+  assert(double(n = 0) == 0)
 }
 EOF
 
@@ -131,7 +131,7 @@ import ./lib.vibe {
 }
 
 export fn __test_helper2() -> Int {
-  double(1)
+  double(n = 1)
 }
 EOF
 
@@ -206,7 +206,7 @@ import ./lib.vibe {
 }
 
 test "inc" {
-  assert(inc(1) == 2)
+  assert(inc(n = 1) == 2)
 }
 EOF
 out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
@@ -232,11 +232,11 @@ import ./lib.vibe {
 }
 
 test "same" {
-  assert(double(2) == 4)
+  assert(double(n = 2) == 4)
 }
 
 test "same" {
-  assert(double(3) == 6)
+  assert(double(n = 3) == 6)
 }
 EOF
 dup_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
@@ -262,7 +262,7 @@ import ./lib.vibe {
 }
 
 test "hang" allows Process {
-  if double(2) != 4 {
+  if double(n = 2) != 4 {
     let _ = sh_lines("sleep 29.5")
   }
 }
@@ -298,7 +298,7 @@ import ./lib.vibe {
 }
 
 test "nul\0title" {
-  assert(double(3) == 6)
+  assert(double(n = 3) == 6)
 }
 EOF
 nul_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
@@ -322,7 +322,7 @@ export fn __test_coll() -> Int {
 }
 
 test "coll" {
-  assert(double(2) == 4)
+  assert(double(n = 2) == 4)
 }
 EOF
 coll_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \
@@ -409,7 +409,7 @@ import ./helper.vibe {
 
 test "edits" allows Process {
   let _ = sh_lines("echo '// touched' >> helper.vibe")
-  assert(double(two()) == 4)
+  assert(double(n = two()) == 4)
 }
 EOF
 edit_out="$(cd "$WORK" && VIBE_CLI_WASM="$CLI" VIBE_RUNNER="$RUNNER" run_bounded 900 \

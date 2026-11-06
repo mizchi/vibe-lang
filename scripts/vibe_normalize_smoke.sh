@@ -88,7 +88,7 @@ EOF
 # moved into the let annotation, stripped from the lambda).
 cat > "$WORK/hoist.in.vibe" <<'EOF'
 let id = (x: Int) -> Int { x }
-export let run = () -> Int { id(1) }
+export let run = () -> Int { id(x = 1) }
 export { run }
 EOF
 cat > "$WORK/hoist.expected.vibe" <<'EOF'
@@ -96,7 +96,7 @@ cat > "$WORK/hoist.expected.vibe" <<'EOF'
 
 let id: (Int) -> Int = (x) -> { x }
 
-export let run: () -> Int = () -> { id(1) }
+export let run: () -> Int = () -> { id(x=1) }
 EOF
 
 # Generic lambda must NOT be hoisted: its `[T]` type params scope the lambda,

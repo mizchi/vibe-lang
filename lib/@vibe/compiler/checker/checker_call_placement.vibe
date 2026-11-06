@@ -7,7 +7,7 @@ import @vibe/compiler/checker/diagnostics {
 }
 
 import ./checker_label_sites.vibe {
-  checker_note_label_site
+  checker_check_required_labels, checker_note_label_site, checker_required_labels_message
 }
 
 import ./checker_call_header_flow.vibe {
@@ -48,6 +48,7 @@ import ./checker_call_header.vibe {
   checker_builtin_call_name,
   checker_call_header_defaults,
   checker_call_header_has_optional,
+  checker_call_header_is_declaration,
   checker_call_header_names,
   checker_header_defaults_of,
   checker_header_name_is_positional
@@ -243,7 +244,7 @@ export fn checker_record_resolved_call_placement(cell: Array[Int], env: TypeEnv,
                 all_names
               }
               let slots = placement_for_header(args = args, names = names)
-              placement_check_declared(name = name, offset = ident_offset, args = args, names = names, slots = slots, defaults = checker_call_header_defaults(env = env, name = name), errors = errors)
+              placement_check_declared(name = name, offset = ident_offset, args = args, names = names, slots = slots, defaults = checker_call_header_defaults(env = env, name = name), declaration = checker_call_header_is_declaration(env = env, name = name), errors = errors)
               if Array::length(errors) == before {
                 match slots {
                   Some(found) => call_placement_publish(callee = callee, offset = offset, cell = cell, written = Array::length(args), mode = 0, slots = found, errors = errors),
@@ -297,6 +298,22 @@ export fn checker_finish_method_retry_placement(cell: Array[Int], env: TypeEnv, 
       placement_check_mixed(name = qualified, offset = ident_offset, args = args, errors = errors)
     },
     None => ()
+  }
+  // The retry checked the call as a dot call, whose implicit receiver needs
+  // no label. Here the receiver was written (`value(m)`, `m |> value`), so it
+  // is checked against the declaration's first parameter (Codex on #3881).
+  if Array::length(errors) == before && Array::length(args) > 0 {
+    let separator = String::last_index_of(qualified, needle = "::")
+    let written_len = if separator >= 0 {
+      String::length(qualified) - separator - 2
+    } else {
+      String::length(qualified)
+    }
+    checker_check_required_labels(env = env, name = qualified, ident_offset = ident_offset, ident_len = written_len, offset = ident_offset, args = [
+      Array::get(args, at = 0)
+    ], method_call = false, errors = errors)
+  } else {
+    ()
   }
   if Array::length(errors) == before {
     call_placement_prepend_receiver(cell = cell, explicit = Array::length(args) - 1)
@@ -354,7 +371,10 @@ fn placement_record_call(expr: Expr, env: TypeEnv, errors: Array[String], defer_
 
 fn placement_note_and_resolve(callee: Expr, offset: Int, cell: Array[Int], args: Array[Expr], env: TypeEnv, errors: Array[String]) -> Unit {
   match callee {
-    EIdent(name, ident_offset) => checker_note_label_site(env = env, name = name, ident_offset = ident_offset, offset = offset, args = args, method_call = false),
+    EIdent(name, ident_offset) => {
+      checker_note_label_site(env = env, name = name, ident_offset = ident_offset, offset = offset, args = args, method_call = false)
+      checker_check_required_labels(env = env, name = name, ident_offset = ident_offset, ident_len = String::length(name), offset = offset, args = args, method_call = false, errors = errors)
+    },
     _ => ()
   }
   match call_placement_raw(cell) {
@@ -443,6 +463,18 @@ fn placement_has_labels(_ args: Array[Expr]) -> Bool {
   found
 }
 
+fn placement_args_mixed(_ args: Array[Expr]) -> Bool {
+  let mut labeled = false
+  let mut plain = false
+  for arg in args {
+    match arg {
+      ELabeledArg(_, _, _) => labeled = true,
+      _ => plain = true
+    }
+  }
+  labeled && plain
+}
+
 fn placement_check_mixed(name: String, offset: Int, args: Array[Expr], errors: Array[String]) -> Unit {
   let mut labeled = false
   let mut plain = false
@@ -490,9 +522,19 @@ fn placement_check_builtin(name: String, written_len: Int, offset: Int, args: Ar
   }
 }
 
-fn placement_check_declared(name: String, offset: Int, args: Array[Expr], names: Array[String], slots: Option[Array[Int]], defaults: Option[Array[Bool]], errors: Array[String]) -> Unit {
+fn placement_check_declared(name: String, offset: Int, args: Array[Expr], names: Array[String], slots: Option[Array[Int]], defaults: Option[Array[Bool]], declaration: Bool, errors: Array[String]) -> Unit {
   if placement_plain_at_positional_slots(args = args, names = names) {
     ()
+  } else if declaration && placement_args_mixed(args) {
+    // ADR-0120 Phase 4: a declaration's arguments are labeled, so the edit
+    // for a mixed call is the labels it is missing, not "all positional".
+    // An all-positional call is the required-label check's to report.
+    let message = checker_required_labels_message(name = name, args = args, names = names)
+    if message != "" {
+      Array::push(errors, value = message + off_marker_len(off = offset, len = String::length(name)))
+    } else {
+      placement_check_mixed(name = name, offset = offset, args = args, errors = errors)
+    }
   } else {
     placement_check_mixed(name = name, offset = offset, args = args, errors = errors)
   }

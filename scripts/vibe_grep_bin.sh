@@ -395,7 +395,7 @@ fn probe(x: Int) -> Int {
 }
 
 fn run() -> Int {
-  probe(1)
+  probe(x = 1)
 }
 EOF
   # A real pattern against a tiny file: --help only proves the shell parsed.

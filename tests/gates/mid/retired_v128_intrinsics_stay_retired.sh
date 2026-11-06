@@ -132,7 +132,7 @@ import @vibe/compiler/codegen/component {
 
 fn main() -> Int allows Fs {
   let m = comp_emit_memhost_realloc_fixture()
-  Fs::write_bytes("_build/_gate_memhost_realloc/memhost.wasm", m)
+  Fs::write_bytes("_build/_gate_memhost_realloc/memhost.wasm", bytes = m)
   Bytes::length(m)
 }
 MHEOF
@@ -177,17 +177,17 @@ fn repeat(piece: String, count: Int) -> String {
   let out = StringBuilder::new()
   let mut i = 0
   while i < count {
-    StringBuilder::push(out, piece)
+    StringBuilder::push(out, value = piece)
     i = i + 1
   }
   StringBuilder::freeze(out)
 }
 
 fn main() -> Int allows Fs {
-  let m = comp_emit_async_string_component("greet", "name", "hi")
-  Fs::write_bytes("_build/_gate_async_string_component/component.wasm", m)
-  let large = comp_emit_async_string_component("greet", "name", repeat("x", 1100))
-  Fs::write_bytes("_build/_gate_async_string_component/component-large.wasm", large)
+  let m = comp_emit_async_string_component(export_name = "greet", param_name = "name", reply = "hi")
+  Fs::write_bytes("_build/_gate_async_string_component/component.wasm", bytes = m)
+  let large = comp_emit_async_string_component(export_name = "greet", param_name = "name", reply = repeat(piece = "x", count = 1100))
+  Fs::write_bytes("_build/_gate_async_string_component/component-large.wasm", bytes = large)
   Bytes::length(m)
 }
 ASEOF
@@ -834,7 +834,7 @@ fn Stdin::read_char() -> Int {
 }
 
 export fn probe() -> Int {
-  if Fs::exists("abc") {
+  if Fs::exists(path = "abc") {
     Env::args_len() + Stdin::read_char()
   } else {
     0
@@ -1591,7 +1591,7 @@ cat > "$tlsdir/bool_render.vibe" <<'EOF'
 export let _start: () -> Int = () -> {
   let l = () -> Bool { 1 < 2 }
   let s = __to_string(l())
-  String::length(s) * 1000 + String::char_code_at(s, 0)
+  String::length(s) * 1000 + String::char_code_at(s, at = 0)
 }
 EOF
 VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -1671,7 +1671,7 @@ VIBE
 cat > "$cfdir/main.vibe" <<'VIBE'
 import ./dep.vibe { f }
 
-fn main() -> Int { f(1) }
+fn main() -> Int { f(x = 1) }
 VIBE
 cf_fs_got=""
 for cf_flag in dev release dev; do

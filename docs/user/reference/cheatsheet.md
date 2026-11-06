@@ -622,6 +622,26 @@ test "a `_` slot is filled by position" {
 }
 ```
 
+A call to a declaration -- a top-level `fn` or `let`-bound lambda, a `T::f`,
+an imported function, or a builtin -- labels every argument whose parameter
+is not `_` (ADR-0120 Phase 4). An unlabeled one is a build error that lists
+the labels to write, in argument order:
+
+```vibe skip
+// doctest-skip: shows the refused call and the edit the diagnostic names
+fn sub(a: Int, b: Int) -> Int { a - b }
+sub(5, 3)          // error: label the arguments of sub: write `a = ` before argument 1, `b = ` before argument 2
+sub(a = 5, b = 3)  // ok
+```
+
+A call through a function value -- a parameter, a local lambda, a field --
+is not checked this way: its arguments stay positional.
+
+Argument sugar works under a label: an arrow lambda
+(`Array::map(xs, f = x -> x + 1)`), an operator section
+(`Array::fold(xs, init = 0, f = _ + _)`), and a pipe hole, which takes the
+piped value under its slot's label (`3 |> pair(1, b = _)`).
+
 A label on a `_` slot is a build error naming the edit
 (``remove `xs = ` ``). `_` is accepted in a `fn` declaration (`T::f` and
 `.vpkg` declarations included) and on the lambda a top-level `let` is bound to;
@@ -1042,8 +1062,8 @@ import @vibe/builtin {
 }
 
 let arrays = [1, 2]
-  |> Iterator::map((x) -> { x + 1 })
-  |> Iterator::map((x) -> { x * 2 })
+  |> Iterator::map(f = (x) -> { x + 1 })
+  |> Iterator::map(f = (x) -> { x * 2 })
 ```
 
 `Iterator::map` and `filter` return arrays; `fold`, `find`, `any`, and `all`
@@ -1067,8 +1087,8 @@ import @vibe/builtin {
 fn evens_times_ten() -> Array[Int] with Async {
   [1, 2, 3, 4]
     |> Array::iter
-    |> AsyncIter::filter((x: Int) -> Bool { x % 2 == 0 })
-    |> AsyncIter::map((x) -> { x * 10 })
+    |> AsyncIter::filter(pred = (x: Int) -> Bool { x % 2 == 0 })
+    |> AsyncIter::map(f = (x) -> { x * 10 })
     |> AsyncIter::collect
 }
 ```
@@ -1521,7 +1541,7 @@ trait LocalFunctor[F[_]] {
 
 impl LocalFunctor[Array] for Array {
   map(xs: Array[A], f: (A) -> B) -> Array[B] {
-    Array::map(xs, f)
+    Array::map(xs, f = f)
   }
 }
 
@@ -1563,7 +1583,7 @@ import @vibe/builtin {
 let a = [1, 2, 3]
 let first = a[0]              // index
 let len = Array::length(a)
-let doubled = Iterator::map(a, _ * 2)
+let doubled = Iterator::map(a, f = _ * 2)
 
 // Tuple
 let t = (1, "two", true)
@@ -3233,7 +3253,7 @@ let pipes: () -> Array[String] with Process = () -> {
 
 let count_txt: () -> Int with Process = () -> {
   sh_lines("ls /tmp")
-  |> Iterator::filter((s) -> { String::contains(s, needle = ".txt") })
+  |> Iterator::filter(pred = (s) -> { String::contains(s, needle = ".txt") })
   |> Array::length
 }
 // Works because |> inserts value as first arg, matching collection-first order
@@ -4187,13 +4207,15 @@ runnable example: `bench/http_bench.vibe`, which needs `python3
 tests/http_echo_server.py 18281`). The server side (`Http::listen` /
 `accept` / `respond`) still needs a handler.
 
-### 引数
+### Arguments
 
 ```vibe skip
-// doctest-skip: call fragments, including the rejected positional/labeled mix
-f(x = 1, y = 2)     // ok  — 全部 labeled
-f(1, 2)             // ok  — 全部 positional
-f(1, y = 2)         // NG: mixes positional and labeled arguments
+// doctest-skip: call fragments, including the refused spellings
+f(x = 1, y = 2)     // ok: every argument labeled
+f(1, 2)             // a declared `f`: refused, write `x = ` and `y = `
+                    // a function value `f`: ok, its arguments are positional
+f(1, y = 2)         // a declared `f`: refused, write `x = ` before argument 1
+                    // a function value `f`: refused, mixes positional and labeled
 ```
 
 `x?` (optional) は **top-level function への直接呼び出しでは semantics まで

@@ -36,7 +36,7 @@ fn main allows Console {
     2
   ]
   println("lets = \{a == b}")
-  println("fn   = \{same_ints(a, b)}")
+  println("fn   = \{same_ints(a = a, b = b)}")
   println("tuple = \{([1, 2], 0) == ([1, 2], 0)}")
   println("struct = \{Point::{ x: 1, y: 2 } == Point::{ x: 1, y: 2 }}")
 }
@@ -138,8 +138,8 @@ fn eq2[T: Eq](a: T, b: T) -> Bool {
 }
 
 fn main allows Console {
-  println("Int    same = \{eq2(1, 1)}, differ = \{eq2(1, 2)}")
-  println("String same = \{eq2("x", "x")}, differ = \{eq2("x", "y")}")
+  println("Int    same = \{eq2(a = 1, b = 1)}, differ = \{eq2(a = 1, b = 2)}")
+  println("String same = \{eq2(a = "x", b = "x")}, differ = \{eq2(a = "x", b = "y")}")
 }
 ```
 

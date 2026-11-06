@@ -92,7 +92,7 @@ VIBE
 }
 
 # 1. Fs::remove on a FILE: both runners must remove it.
-emit_probe remove_file '  Fs::write_file("'"$WORK"'/f1", "z")
+emit_probe remove_file '  Fs::write_file("'"$WORK"'/f1", contents = "z")
   Fs::remove("'"$WORK"'/f1")
   if Fs::exists("'"$WORK"'/f1") {
     1

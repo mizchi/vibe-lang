@@ -10,30 +10,30 @@ fn callback_declarations() -> String {
 }
 
 fn bare_callback_source(_ payload: String) -> String {
-  String::concat(callback_declarations(), "fn g() -> Int with Box { perform Box::Put(\{payload}) }\nfn main_like() -> Int with Box { run_str(g) }\n")
+  String::concat(callback_declarations(), "fn g() -> Int with Box { perform Box::Put(\{payload}) }\nfn main_like() -> Int with Box { run_str(f = g) }\n")
 }
 
 fn tuple_callback_source(_ payload: String) -> String {
-  String::concat(callback_declarations(), "fn main_like() -> Int with Box {\n  let p: (() -> Int with Box[String], Int) = (() -> { perform Box::Put(\{payload}) }, 0)\n  run_str(p.0)\n}\n")
+  String::concat(callback_declarations(), "fn main_like() -> Int with Box {\n  let p: (() -> Int with Box[String], Int) = (() -> { perform Box::Put(\{payload}) }, 0)\n  run_str(f = p.0)\n}\n")
 }
 
 fn mixed_callback_source(_ payload: String) -> String {
-  "effect Box[T] { Put(T) -> Int }\neffect Other[T] { Put(T) -> Int }\nfn pass(f: () -> Int with Box[String] + Other) -> Int with Box[String] + Other { f() }\nfn forward() -> Int with Other[String] {\n  handle {\n    pass(() -> { perform Box::Put(\"abc\"); perform Other::Put(\{payload}) })\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\nfn main_like() -> Int {\n  handle { forward() } with { Other::Put(s) => resume(String::length(s)) }\n}\n"
+  "effect Box[T] { Put(T) -> Int }\neffect Other[T] { Put(T) -> Int }\nfn pass(f: () -> Int with Box[String] + Other) -> Int with Box[String] + Other { f() }\nfn forward() -> Int with Other[String] {\n  handle {\n    pass(f = () -> { perform Box::Put(\"abc\"); perform Other::Put(\{payload}) })\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\nfn main_like() -> Int {\n  handle { forward() } with { Other::Put(s) => resume(String::length(s)) }\n}\n"
 }
 
 fn aggregate_callback_source(kind: String, payload: String) -> String {
   let lambda = "() -> { perform Box::Put(\{payload}) }"
   let body = match kind {
-    "array" => "let p: Array[() -> Int with Box[String]] = [\{lambda}]\n  run_str(Array::get(p, 0))",
-    "option" => "let p: Option[() -> Int with Box[String]] = Some(\{lambda})\n  match p { Some(f) => run_str(f), None => 0 }",
-    "record" => "let p = Holder::{ f: \{lambda} }\n  run_str(p.f)",
-    _ => "let p = GenericHolder[String]::{ f: \{lambda} }\n  run_str(p.f)"
+    "array" => "let p: Array[() -> Int with Box[String]] = [\{lambda}]\n  run_str(f = Array::get(p, at = 0))",
+    "option" => "let p: Option[() -> Int with Box[String]] = Some(\{lambda})\n  match p { Some(f) => run_str(f = f), None => 0 }",
+    "record" => "let p = Holder::{ f: \{lambda} }\n  run_str(f = p.f)",
+    _ => "let p = GenericHolder[String]::{ f: \{lambda} }\n  run_str(f = p.f)"
   }
   String::concat(callback_declarations(), "struct Holder { f: () -> Int with Box[String] }\nstruct GenericHolder[T] { f: () -> Int with Box[T] }\nfn main_like() -> Int with Box {\n  \{body}\n}\n")
 }
 
 fn top_annotation_source(_ payload: String) -> String {
-  String::concat(callback_declarations(), "let g: () -> Int with Box[String] = () -> Int with Box { perform Box::Put(\{payload}) }\nfn producer() -> Int with Box { run_str(g) }\n")
+  String::concat(callback_declarations(), "let g: () -> Int with Box[String] = () -> Int with Box { perform Box::Put(\{payload}) }\nfn producer() -> Int with Box { run_str(f = g) }\n")
 }
 
 test "a bare top-level callback cannot supply Int to a String handler" {
@@ -107,17 +107,17 @@ test "a generic record preserves a compatible callback" {
 }
 
 test "a bare callback handled inside the callee does not use the caller's row" {
-  let src = "effect Box[T] { Put(T) -> Int }\neffect Other[T] { Put(T) -> Int }\nfn local(f: () -> Int with Box[String] + Other) -> Int with Box[String] {\n  handle { f() } with { Other::Put(n) => resume(n + 1) }\n}\nfn forward() -> Int with Other[String] {\n  handle { local(() -> { perform Box::Put(\"abc\"); perform Other::Put(1) }) } with { Box::Put(s) => resume(String::length(s)) }\n}\n"
+  let src = "effect Box[T] { Put(T) -> Int }\neffect Other[T] { Put(T) -> Int }\nfn local(f: () -> Int with Box[String] + Other) -> Int with Box[String] {\n  handle { f() } with { Other::Put(n) => resume(n + 1) }\n}\nfn forward() -> Int with Other[String] {\n  handle { local(f = () -> { perform Box::Put(\"abc\"); perform Other::Put(1) }) } with { Box::Put(s) => resume(String::length(s)) }\n}\n"
   assert_eq(Array::length(collect_all_diagnostics(src)), 0)
 }
 
 test "a forward declaration's bare contract cannot satisfy a concrete callback" {
-  let src = String::concat(callback_declarations(), "fn main_like() -> Int with Box { run_str(g) }\nfn g() -> Int with Box { perform Box::Put(1) }\n")
+  let src = String::concat(callback_declarations(), "fn main_like() -> Int with Box { run_str(f = g) }\nfn g() -> Int with Box { perform Box::Put(1) }\n")
   assert(Array::length(collect_all_diagnostics(src)) > 0)
 }
 
 test "a forward declaration with an explicit compatible row remains valid" {
-  let src = String::concat(callback_declarations(), "fn main_like() -> Int with Box { run_str(g) }\nfn g() -> Int with Box[String] { perform Box::Put(\"abc\") }\n")
+  let src = String::concat(callback_declarations(), "fn main_like() -> Int with Box { run_str(f = g) }\nfn g() -> Int with Box[String] { perform Box::Put(\"abc\") }\n")
   assert_eq(Array::length(collect_all_diagnostics(src)), 0)
 }
 
@@ -130,7 +130,7 @@ test "a top-level annotation preserves a compatible callback" {
 }
 
 fn forwarded_concrete_source(_ payload: String) -> String {
-  "effect Box[T] { Put(T) -> Int }\nfn pass(f: () -> Int with Box) -> Int with Box[String] { f() }\nfn caller() -> Int with Box[String] { pass(() -> { perform Box::Put(\{payload}) }) }\n"
+  "effect Box[T] { Put(T) -> Int }\nfn pass(f: () -> Int with Box) -> Int with Box[String] { f() }\nfn caller() -> Int with Box[String] { pass(f = () -> { perform Box::Put(\{payload}) }) }\n"
 }
 
 fn inferred_top_source(_ payload: String) -> String {
@@ -150,11 +150,11 @@ fn joined_callback_source(kind: String, payload: String) -> String {
     _ => "[\{first}, \{other}]"
   }
   let body = if kind == "array" || kind == "named array" || kind == "mixed array" {
-    "let values: Array[() -> Int with Box[String]] = \{value}\n  run_str(Array::get(values, 1))"
+    "let values: Array[() -> Int with Box[String]] = \{value}\n  run_str(f = Array::get(values, at = 1))"
   } else if kind == "bound if" {
-    "let selected = \{value}\n  run_str(selected)"
+    "let selected = \{value}\n  run_str(f = selected)"
   } else {
-    "run_str(\{value})"
+    "run_str(f = \{value})"
   }
   let declarations = String::concat(callback_declarations(), "fn first() -> Int with Box { perform Box::Put(\"abc\") }\nfn other() -> Int with Box { perform Box::Put(\{payload}) }\n")
   String::concat(declarations, "fn caller(c: Bool) -> Int with Box {\n  \{body}\n}\n")
@@ -243,17 +243,17 @@ test "mixed array preserves compatible callback payloads" {
 }
 
 test "a generic callback row keeps an enclosing formal" {
-  let source = "effect Box[A] { Put(A) -> Int }\nstruct Token { value: Int }\nfn consume[A](x: A, f: () -> Int with Box[A]) -> Int {\n  handle { f() } with { Box::Put(_) => resume(42) }\n}\nfn outer[T](x: T) -> Int {\n  consume(x, () -> Int with Box[T] { perform Box::Put(x) })\n}\n"
+  let source = "effect Box[A] { Put(A) -> Int }\nstruct Token { value: Int }\nfn consume[A](x: A, f: () -> Int with Box[A]) -> Int {\n  handle { f() } with { Box::Put(_) => resume(42) }\n}\nfn outer[T](x: T) -> Int {\n  consume(x = x, f = () -> Int with Box[T] { perform Box::Put(x) })\n}\n"
   assert_eq(Array::length(collect_all_diagnostics(source)), 0)
 }
 
 fn generic_field_projection_source(style: String, payload: String, arg_ty: String) -> String {
   let literal = "GenericHolder[\{arg_ty}]::{ f: () -> { perform Box::Put(\{payload}) } }"
   let use = match style {
-    "literal" => "run_str(\{literal}.f)",
-    "call" => "run_str(make_holder().f)",
-    "alias" => "let cb = make_holder().f; run_str(cb)",
-    _ => "run_str((if true { make_holder() } else { make_holder() }).f)"
+    "literal" => "run_str(f = \{literal}.f)",
+    "call" => "run_str(f = make_holder().f)",
+    "alias" => "let cb = make_holder().f; run_str(f = cb)",
+    _ => "run_str(f = (if true { make_holder() } else { make_holder() }).f)"
   }
   String::concat(callback_declarations(), "struct GenericHolder[T] { f: () -> Int with Box[T] }\nfn make_holder() -> GenericHolder[\{arg_ty}] { \{literal} }\nfn main_like() -> Int with Box { \{use} }\n")
 }
@@ -276,16 +276,16 @@ test "a generic field refuses the actual payload mismatch through any receiver" 
 }
 
 test "a generic field's compound payload remains linked to its enclosing formal" {
-  let source = "effect Box[T] { Put(T) -> Int }\nstruct Holder[T] { f: () -> Int with Box[Array[T]] }\nfn pass[T](f: () -> Int with Box[Array[T]], x: T) -> Int with Box[Array[T]] { f() }\nfn forward[T](h: Holder[T], x: T) -> Int with Box[Array[T]] { let cb = h.f; pass(cb, x) }\n"
+  let source = "effect Box[T] { Put(T) -> Int }\nstruct Holder[T] { f: () -> Int with Box[Array[T]] }\nfn pass[T](f: () -> Int with Box[Array[T]], x: T) -> Int with Box[Array[T]] { f() }\nfn forward[T](h: Holder[T], x: T) -> Int with Box[Array[T]] { let cb = h.f; pass(f = cb, x = x) }\n"
   assert_eq(String::join(collect_all_diagnostics(source), sep = "\n"), "")
 }
 
 test "a specialized field consumer refuses a different payload at its call site" {
-  let source = String::concat(callback_declarations(), "struct Holder[T] { f: () -> Int with Box[T] }\nfn bad[T](h: Holder[T]) -> Int with Box { let cb = h.f; run_str(cb) }\nfn main_like() -> Int with Box { let h = Holder[Int]::{ f: () -> { perform Box::Put(1) } }; bad(h) }\n")
+  let source = String::concat(callback_declarations(), "struct Holder[T] { f: () -> Int with Box[T] }\nfn bad[T](h: Holder[T]) -> Int with Box { let cb = h.f; run_str(f = cb) }\nfn main_like() -> Int with Box { let h = Holder[Int]::{ f: () -> { perform Box::Put(1) } }; bad(h = h) }\n")
   assert(Array::length(collect_all_diagnostics(source)) > 0)
 }
 
 test "a projected callback keeps a tuple payload through publication" {
-  let source = "effect Box[T] { Put(T) -> Int }\ntype Pair = (Int, Int)\nstruct Holder[T] { f: () -> Int with Box[T] }\nfn get() -> Holder[Pair] { Holder[Pair]::{ f: () -> { perform Box::Put((1, 2)) } } }\nfn consume(f: () -> Int with Box[Pair]) -> Int with Box[Pair] { f() }\nfn main_like() -> Int with Box[Pair] { let cb = get().f; consume(cb) }\n"
+  let source = "effect Box[T] { Put(T) -> Int }\ntype Pair = (Int, Int)\nstruct Holder[T] { f: () -> Int with Box[T] }\nfn get() -> Holder[Pair] { Holder[Pair]::{ f: () -> { perform Box::Put((1, 2)) } } }\nfn consume(f: () -> Int with Box[Pair]) -> Int with Box[Pair] { f() }\nfn main_like() -> Int with Box[Pair] { let cb = get().f; consume(f = cb) }\n"
   assert_eq(String::join(collect_all_diagnostics(source), sep = "\n"), "")
 }

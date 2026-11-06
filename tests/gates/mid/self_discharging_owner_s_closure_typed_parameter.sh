@@ -217,7 +217,7 @@ cat > "$cfsdir/main.vibex" <<'SCEOF'
 import ./dep.vibe { f }
 
 fn main() -> Unit allows Console {
-  println(Int::to_string(f(1)))
+  println(Int::to_string(f(x = 1)))
 }
 SCEOF
 cfs_got=""

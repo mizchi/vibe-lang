@@ -48,7 +48,7 @@ export fn good(x: Int) -> Int {
 }
 
 export fn caller() -> Int {
-  good(41)
+  good(x = 41)
 }
 V
 # A lexer error, not a parse error: the cheapest thing that cannot be read.
@@ -64,7 +64,7 @@ export fn good(x: Int) -> Int {
 }
 
 export fn caller2() -> Int {
-  good(40)
+  good(x = 40)
 }
 V
 

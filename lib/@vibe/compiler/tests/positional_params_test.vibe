@@ -4,7 +4,7 @@
 // them into the call header.
 
 import @vibe/compiler/checker {
-  check_program, label_sites_begin, label_sites_end
+  check_program, checker_required_labels_suspend, label_sites_begin, label_sites_end
 }
 
 import @vibe/compiler/refactor {
@@ -62,7 +62,7 @@ fn parse_error(_ source: String) -> String {
 }
 
 fn get_decl() -> String {
-  "fn get(_ xs: Array[Int], at: Int) -> Int {\n  Array::get(xs, at)\n}\n"
+  "fn get(_ xs: Array[Int], at: Int) -> Int {\n  Array::get(xs, at = at)\n}\n"
 }
 
 test "each declaration form records its `_` slots" {
@@ -85,7 +85,7 @@ test "`_` on a lambda that is not a declaration is refused" {
 }
 
 test "a `_` slot is filled by position, beside labels" {
-  let ok = get_decl() + "fn main() -> Int {\n  get([1, 2], at = 1) + get([3], 0)\n}\n"
+  let ok = get_decl() + "fn main() -> Int {\n  get([1, 2], at = 1) + get([3], at = 0)\n}\n"
   inspect(first_error(ok), content = "")
 }
 
@@ -95,8 +95,9 @@ test "a label on a `_` slot names the edit" {
 }
 
 test "a call that mixes forms off the `_` slots is still refused" {
+  // ADR-0120 Phase 4: the refusal names the label the call is missing.
   let source = "fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\nfn main() -> Int {\n  sub(10, y = 3)\n}\n"
-  inspect(String::contains(first_error(source), needle = "mixes positional and labeled arguments"), content = "true")
+  inspect(String::contains(first_error(source), needle = "label the arguments of sub: write `x = ` before argument 1"), content = "true")
 }
 
 test "the printer writes `_` back" {
@@ -108,9 +109,13 @@ test "the printer writes `_` back" {
 
 test "the codemod leaves a declared `_` positional under every policy" {
   let source = get_decl() + "fn main() -> Int {\n  get([1, 2], 1)\n}\n"
+  // The codemod types the program it labels with the required-label check
+  // suspended (ADR-0120 Phase 4); so does this test.
+  checker_required_labels_suspend(true)
   label_sites_begin()
   let _ = check_program(parsed(source))
   let sites = label_sites_end()
+  checker_required_labels_suspend(false)
   let result = add_labels(path = "t.vibe", source = source, offset_delta = 0, sites = sites, policy = add_labels_positional_none)
   inspect(String::contains(result.source, needle = "get([1, 2], at = 1)"), content = "true")
   inspect(result.deferred_calls, content = "0")
@@ -194,4 +199,14 @@ test "a printed program's `_` slots do not outlive it" {
   let other = parsed("fn f(x: Int) -> Int {\n  x\n}\n")
   let shown = print_stmt(Array::get(other, at = 0))
   inspect(String::contains(shown, needle = "_ x"), content = "false")
+}
+
+test "a method call's missing-label span is the written method name" {
+  // Codex on #3881: the span was sized by the resolved `P::bump`, so it ran
+  // past `bump` into the arguments.
+  let source = "struct P {\n  v: Int\n}\nfn P::bump(self: P, n: Int) -> Int {\n  self.v + n\n}\nfn main() -> Int {\n  let p = P::{ v: 1 }\n  p.bump(1)\n}\n"
+  let start = String::index_of(source, needle = "p.bump(1)") + 2
+  let message = first_error(source)
+  inspect(String::contains(message, needle = "label the arguments of P::bump: write `n = ` before argument 1"), content = "true")
+  inspect(String::contains(message, needle = "[@off=\{start}:\{start + 4}]"), content = "true")
 }

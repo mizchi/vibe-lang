@@ -81,7 +81,7 @@ import @vibe/lsp {
 }
 
 import ./refactor.vibe {
-  selfhost_cli_user_refactor_args, user_check_missing_label_rows_single
+  selfhost_cli_user_refactor_args
 }
 
 //# Helpers
@@ -772,10 +772,6 @@ export fn parse_user_check_args(_ args: Array[String]) -> (String, Bool, Bool) w
       } else if arg == "--deps-missing" {
         deps_missing = true
         ()
-      } else if arg == "--warn-missing-labels" {
-        // Read by `user_check_warn_missing_labels`; validated here so the
-        // flag is not an unknown option.
-        ()
       } else if arg == "--profile" || arg == "--profile-tsv" || arg == "--profile-callstack" {
         i = i + 1
         let _ = need_value(args = args, index = i, command = "check", flag = arg)
@@ -794,7 +790,7 @@ export fn parse_user_check_args(_ args: Array[String]) -> (String, Bool, Bool) w
       i = i + 1
     }
     if src == "" {
-      throw("usage: vibe check [--jobs N] [--single-file] [--json] [--warn-missing-labels] <file.vibe>...")
+      throw("usage: vibe check [--jobs N] [--single-file] [--json] <file.vibe>...")
     } else {
       (src, single, json)
     }
@@ -830,18 +826,7 @@ export fn user_check_scan(root: String, missing_vpkg: Bool) -> Int with Env + Ex
   }
 }
 
-/// `vibe check --warn-missing-labels` (ADR-0120 Phase 2b, #3680): report
-/// each argument the label codemod would label, as a warning that leaves the
-/// exit status alone.
-export fn user_check_warn_missing_labels(_ args: Array[String]) -> Bool {
-  let mut found = false
-  for arg in args {
-    found = found || arg == "--warn-missing-labels"
-  }
-  found
-}
-
-export fn user_check_single(src: String, json: Bool, warn_labels: Bool) -> Int with Exception + Fs + Env + Console + Stderr {
+export fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs + Env + Console + Stderr {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
@@ -869,21 +854,8 @@ export fn user_check_single(src: String, json: Bool, warn_labels: Bool) -> Int w
       failed
     } }
     let diags: Array[String] = []
-    let mut collected_error = false
     for d in collected {
       Array::push(diags, value = d)
-      collected_error = collected_error || !is_warning_line(d)
-    }
-    // A file with errors reports its errors only, as on the import-resolving
-    // lane. The label pass types the buffer on its own, and some errors (an
-    // inline-Wasm operand, say) come from passes after typing, so its own
-    // success says nothing about them.
-    if warn_labels && !collected_error {
-      for row in user_check_missing_label_rows_single(path = src, source = text) {
-        Array::push(diags, value = row)
-      }
-    } else {
-      ()
     }
     if json {
       print(line_terminated(lsp_diagnostics_json_of_messages(source = text, msgs = diags)))
