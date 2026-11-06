@@ -217,15 +217,16 @@ hold; it never changes what a build produces (ADR-0121). The report keeps
 proved**, and each line names one that is not:
 
 ```
-f.vibe:5:1: unproved: ensures (result > x) of `dec` -- counterexample: x = 1
+f.vibe:5:57: unproved: ensures (result > x) of `dec` -- counterexample: x = 1
 f.vibe:12:5: unproved: overflow in (x + 1) in `inc` -- counterexample: x = 4611686018427387903
 f.vibe:21:3: unproved: requires of half: (x >= 0), called in `call_half` -- counterexample: y = -4611686018427387904
 f.vibe:7:9: unsupported: a `while` without a `where { decreases: .. }` measure: termination is not proved, so the result would be partial correctness only (in `sum_to`)
-f.vibe:5:1: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
+f.vibe:7:12: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
 ```
 
 Only an `unsat` answer proves, so `unknown`, a timeout and an unsupported
-construct fail (exit 1), never pass. The provable fragment is pure functions
+construct fail (exit 1), never pass. An `ensures` line points at the clause
+that is not proved. The provable fragment is pure functions
 over `Int` and `Bool`: `let`, `if`, `return` (every exit checks `ensures`),
 `+ - * / % << >>` and comparisons, `&&` / `||` / `!`, and calls to other functions
 of the file with such signatures. `Int` is a mathematical integer plus one
