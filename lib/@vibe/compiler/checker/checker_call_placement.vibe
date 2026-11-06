@@ -26,7 +26,8 @@ import @vibe/compiler/core {
   call_placement_raw,
   canonical_builtin_name,
   env_lookup,
-  env_lookup_binding
+  env_lookup_binding,
+  is_stdin_provider_import_value
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -591,7 +592,11 @@ export fn checker_check_defaulted_value(env: TypeEnv, name: String, offset: Int,
 /// up only for a binding renamed from another source name.
 fn checker_check_aliased_builtin_value(env: TypeEnv, name: String, origin: BindingOrigin, offset: Int, errors: Array[String]) -> Unit {
   match checker_builtin_alias_of(env = env, name = name, origin = origin) {
-    Some(canonical) => match lookup_builtin(canonical) {
+    // The stdin provider operations have a refusal of their own, which names
+    // the edit for them: wrap the call in an explicitly effectful function.
+    Some(canonical) => if is_stdin_provider_import_value(canonical) {
+      ()
+    } else match lookup_builtin(canonical) {
       Some(t) => if builtin_ident_is_value(name = canonical, t = t) {
         ()
       } else {
