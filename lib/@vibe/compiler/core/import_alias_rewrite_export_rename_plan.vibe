@@ -63,6 +63,7 @@ import ./import_alias_rewrite_reexport_edges_into.vibe {
   namespace_exported_def_name,
   namespace_exported_name,
   plan_rename_key,
+  reexport_enum_origin,
   resolve_known_import_path
 }
 
@@ -548,76 +549,6 @@ fn namespace_private_stmt_after_renames(stmt: Stmt, exports: AliasIdx, privates:
     SModule(exported, name, stmts) => SModule(exported, name, namespace_private_value_stmts(path = name, stmts = stmts)),
     _ => stmt
   }
-}
-
-/// Follow the last published edge at each facade until it reaches a declared
-/// enum, or an exported struct. A missing edge or a cycle supplies no rewrite.
-///
-/// A struct counts because a facade re-exporting `{ P as R }` publishes `R`
-/// under a spelling nothing declares, so the importer's `R::get(r)` reached
-/// lowering as `R` (#3837); an exported struct keeps its bare name. Reached
-/// through a declared `export type R = P` it gives no row: that alias may own
-/// companions (`fn R::tag`), which `R -> P` sent to `P::tag` (Codex, #3877).
-fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int], enum_defs: MutMap[String, Bool], struct_defs: MutMap[String, Bool], enum_type_aliases: MutMap[String, String], published_aliases: MutMap[String, Bool], local_type_heads: MutMap[String, Bool], enum_import_paths: MutMap[String, String], enum_import_names: MutMap[String, String]) -> Option[(String, String, String, Bool)] {
-  let mut cur_path = path
-  let mut cur_name = name
-  let mut depth = 0
-  let mut done = false
-  let mut origin: Option[(String, String, String, Bool)] = None
-  let mut published_alias: Option[String] = None
-  let mut via_type_alias = false
-  while depth <= Array::length(edge_tpath) + MutMap::size(enum_type_aliases) + MutMap::size(enum_import_paths) && !done {
-    let key = plan_rename_key(path = cur_path, name = cur_name)
-    if MutMap::has(enum_defs, k = key) {
-      origin = match MutMap::get(enum_defs, k = key) {
-        Some(true) => Some((cur_name, cur_path, cur_name, true)),
-        _ => match published_alias {
-          Some(alias) => Some((alias, cur_path, cur_name, false)),
-          None => None
-        }
-      }
-      done = true
-    } else if MutMap::has(struct_defs, k = key) {
-      origin = match MutMap::get(struct_defs, k = key) {
-        Some(true) => if via_type_alias {
-          None
-        } else {
-          Some((cur_name, cur_path, cur_name, true))
-        },
-        _ => None
-      }
-      done = true
-    } else if MutMap::has(enum_type_aliases, k = key) {
-      via_type_alias = true
-      if published_alias == None && MutMap::has(published_aliases, k = key) {
-        published_alias = Some(cur_name)
-      }
-      match MutMap::get(enum_type_aliases, k = key) {
-        Some(next_name) => cur_name = next_name,
-        None => done = true
-      }
-    } else if MutMap::has(local_type_heads, k = key) {
-      done = true
-    } else if MutMap::has(enum_import_paths, k = key) {
-      match (MutMap::get(enum_import_paths, k = key), MutMap::get(enum_import_names, k = key)) {
-        (Some(next_path), Some(next_name)) => {
-          cur_path = next_path
-          cur_name = next_name
-        },
-        _ => done = true
-      }
-    } else {
-      match MutMap::get(edge_last_idx, k = key) {
-        Some(next) => {
-          cur_path = Array::get(edge_tpath, at = next)
-          cur_name = Array::get(edge_tname, at = next)
-        },
-        None => done = true
-      }
-    }
-    depth = depth + 1
-  }
-  origin
 }
 
 /// #3448: the struct, enum or error type a dependency's `stmt` publishes into
@@ -1430,6 +1361,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let enum_type_aliases: MutMap[String, String] = MutMap::new_string()
   let published_aliases: MutMap[String, Bool] = MutMap::new_string()
   let struct_defs: MutMap[String, Bool] = MutMap::new_string()
+  let builtin_paths: MutMap[String, Bool] = MutMap::new_string()
   // Local non-enum heads stop provenance before an earlier import of the
   // same spelling. Eligible type aliases are followed first below.
   let local_type_heads: MutMap[String, Bool] = MutMap::new_string()
@@ -1484,8 +1416,14 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
         STrait(_, name, _, _, _, _) => MutMap::set(local_type_heads, k = plan_rename_key(path = path, name = name), v = true),
         SSuberror(_, name, _) => MutMap::set(local_type_heads, k = plan_rename_key(path = path, name = name), v = true),
         SEffectDef(_, name, _, _) => MutMap::set(local_type_heads, k = plan_rename_key(path = path, name = name), v = true),
+        SReExport(raw_path, _) => if raw_path == "@vibe/builtin" {
+          MutMap::set(builtin_paths, k = resolve_known_import_path(known_paths = paths, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path), v = true)
+        },
         SImport(raw_path, items) => {
           let resolved = resolve_known_import_path(known_paths = paths, base_dir = dir_of_path(path), raw_path = raw_path, self_path = path)
+          if raw_path == "@vibe/builtin" {
+            MutMap::set(builtin_paths, k = resolved, v = true)
+          }
           let mut imi = 0
           while imi < Array::length(items) {
             let item = Array::get(items, at = imi)
@@ -1525,7 +1463,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
       // This lookup asks which edge won, not whether any edge has this key.
       Some(last) => {
         if last == eai {
-          match reexport_enum_origin(path = Array::get(edge_tpath, at = eai), name = Array::get(edge_tname, at = eai), edge_tpath = edge_tpath, edge_tname = edge_tname, edge_last_idx = edge_last_idx, enum_defs = enum_defs, struct_defs = struct_defs, enum_type_aliases = enum_type_aliases, published_aliases = published_aliases, local_type_heads = local_type_heads, enum_import_paths = enum_import_paths, enum_import_names = enum_import_names) {
+          match reexport_enum_origin(path = Array::get(edge_tpath, at = eai), name = Array::get(edge_tname, at = eai), edge_tpath = edge_tpath, edge_tname = edge_tname, edge_last_idx = edge_last_idx, enum_defs = enum_defs, struct_defs = struct_defs, builtin_paths = builtin_paths, enum_type_aliases = enum_type_aliases, published_aliases = published_aliases, local_type_heads = local_type_heads, enum_import_paths = enum_import_paths, enum_import_names = enum_import_names) {
             Some((origin, origin_path, enum_name, is_public)) => if origin != Array::get(edge_pub, at = eai) || !is_public {
               MutMap::set(enum_alias_idx, k = key, v = origin)
               if !is_public {
