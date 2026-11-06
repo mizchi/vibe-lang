@@ -553,12 +553,11 @@ fn namespace_private_stmt_after_renames(stmt: Stmt, exports: AliasIdx, privates:
 /// Follow the last published edge at each facade until it reaches a declared
 /// enum, or an exported struct. A missing edge or a cycle supplies no rewrite.
 ///
-/// A struct counts because a facade that re-exports `{ P as R }` publishes
-/// `R` under a spelling no declaration has: the importer's `R::get(r)` and
-/// `r: R` check against `P`, but without a row naming `P` they reached
-/// lowering as `R`, which nothing defines (#3837). An exported struct keeps
-/// its bare name, so its row is the struct's own name and needs no private
-/// constructor rows.
+/// A struct counts because a facade re-exporting `{ P as R }` publishes `R`
+/// under a spelling nothing declares, so the importer's `R::get(r)` reached
+/// lowering as `R` (#3837); an exported struct keeps its bare name. Reached
+/// through a declared `export type R = P` it gives no row: that alias may own
+/// companions (`fn R::tag`), which `R -> P` sent to `P::tag` (Codex, #3877).
 fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], edge_tname: Array[String], edge_last_idx: MutMap[String, Int], enum_defs: MutMap[String, Bool], struct_defs: MutMap[String, Bool], enum_type_aliases: MutMap[String, String], published_aliases: MutMap[String, Bool], local_type_heads: MutMap[String, Bool], enum_import_paths: MutMap[String, String], enum_import_names: MutMap[String, String]) -> Option[(String, String, String, Bool)] {
   let mut cur_path = path
   let mut cur_name = name
@@ -566,6 +565,7 @@ fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], e
   let mut done = false
   let mut origin: Option[(String, String, String, Bool)] = None
   let mut published_alias: Option[String] = None
+  let mut via_type_alias = false
   while depth <= Array::length(edge_tpath) + MutMap::size(enum_type_aliases) + MutMap::size(enum_import_paths) && !done {
     let key = plan_rename_key(path = cur_path, name = cur_name)
     if MutMap::has(enum_defs, k = key) {
@@ -579,11 +579,16 @@ fn reexport_enum_origin(path: String, name: String, edge_tpath: Array[String], e
       done = true
     } else if MutMap::has(struct_defs, k = key) {
       origin = match MutMap::get(struct_defs, k = key) {
-        Some(true) => Some((cur_name, cur_path, cur_name, true)),
+        Some(true) => if via_type_alias {
+          None
+        } else {
+          Some((cur_name, cur_path, cur_name, true))
+        },
         _ => None
       }
       done = true
     } else if MutMap::has(enum_type_aliases, k = key) {
+      via_type_alias = true
       if published_alias == None && MutMap::has(published_aliases, k = key) {
         published_alias = Some(cur_name)
       }
