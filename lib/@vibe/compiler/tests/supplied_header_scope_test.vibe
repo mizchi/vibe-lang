@@ -1,0 +1,42 @@
+import @vibe/compiler/core {
+  BindingOrigin, Stmt, Type, TypeEnv, env_bind_with_origin
+}
+import @vibe/compiler/checker {
+  check_program_with_env_result
+}
+import @vibe/parser {
+  lex_with_offsets, parse_program_located
+}
+
+fn parsed(_ source: String) -> Array[Stmt] with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  parse_program_located(tokens = tokens, starts = starts, source = source)
+}
+
+fn supplied_env() -> TypeEnv {
+  env_bind_with_origin(env = EnvEmpty, name = "f", ty = CtFn([CtInt], CtInt, None), origin = BindingOriginFunctionHeader([
+    "x"
+  ]))
+}
+
+fn check_message(_ source: String) -> String with Exception {
+  handle {
+    let _ = check_program_with_env_result(stmts = parsed(source), initial_env = supplied_env())
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+/// ADR-0120 Phase 4b (Codex on #3899): a local lambda that shadows a header
+/// the supplied environment declares is a value only inside its own scope.
+/// Once that scope ends, the name is the supplied declaration again, and a
+/// labeled call to it is accepted.
+test "a shadowing local lambda does not outlive its scope" {
+  let source = "fn g() -> Int {\n  let f = (y: Int) -> Int { y }\n  f(1)\n}\n\nfn main() -> Int { f(x = 1) }"
+  inspect(check_message(source), content = "")
+}
+
+/// ...and inside that scope, the local is still a value.
+test "inside its scope the shadowing local lambda refuses a label" {
+  let source = "fn g() -> Int {\n  let f = (y: Int) -> Int { y }\n  f(y = 1)\n}"
+  assert(String::contains(check_message(source), needle = "a call through the function value `f` passes its arguments by position: remove `y = `"))
+}
