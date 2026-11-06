@@ -1,0 +1,38 @@
+// #3825: `[T: Add]` holds at `Int32` / `UInt32`, and the generic `+` wraps at
+// 32 bits as the concrete one does. A generic body is lowered once, so its
+// `+` dispatches through the `Add` witness, and the witness for a 32-bit type
+// adds the `Int`s it is held as and wraps the sum. Before, the bound was
+// refused (``no impl `Add` for `Int32` ``), because the erased 63-bit `+`
+// would have answered 2147483648. Run on linear (bump and RC) and gc by
+// tests/gates/early/extended_derive.sh.
+
+fn add[T: Add](a: T, b: T) -> T {
+  a + b
+}
+
+fn twice[T: Add](x: T) -> T {
+  add(x, x)
+}
+
+test "a generic + wraps at Int32" {
+  let top: Int32 = 2147483647
+  let one: Int32 = 1
+  inspect(Int32::to_int(add(top, one)), content = "-2147483648")
+  inspect(Int32::to_int(add(top, one)) == Int32::to_int(top + one), content = "true")
+  let low: Int32 = -2147483648
+  let minus: Int32 = -1
+  inspect(Int32::to_int(add(low, minus)), content = "2147483647")
+  inspect(Int32::to_int(twice(one)), content = "2")
+}
+
+test "a generic + wraps at UInt32" {
+  let top: UInt32 = 4294967295
+  let one: UInt32 = 1
+  inspect(UInt32::to_int(add(top, one)), content = "0")
+  inspect(UInt32::to_int(add(top, top)), content = "4294967294")
+  inspect(UInt32::to_int(twice(one)), content = "2")
+}
+
+test "Int keeps its 63-bit +" {
+  inspect(add(2147483647, 1), content = "2147483648")
+}

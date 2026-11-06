@@ -83,6 +83,10 @@ import ./state.vibe {
   dtd_eq_derived_generic, dtd_eq_known_types
 }
 
+import ./add32_rows.vibe {
+  dtd_add32_forced
+}
+
 import ./trait_bounds.vibe {
   decode_array_elem_recv_index,
   decode_constructor_recv_index,
@@ -242,7 +246,7 @@ fn build_concrete_dict_for_target(raw_target: TypeExpr, trait_name: String, trai
         // by `<Type>::<method>`, which any trait with an `equals` for that
         // type can occupy. Skipping `fn_exists` drops through to the builtin
         // and scalar arms below, where the right answer is.
-        let owner = if cname == "Int" || cname == "String" || cname == "Bool" || cname == "Char" || cname == "Float32" || cname == "f32" || cname == "Float64" {
+        let owner = if cname == "Int" || cname == "String" || cname == "Bool" || cname == "Char" || cname == "Float32" || cname == "f32" || cname == "Float64" || cname == "Int32" || cname == "UInt32" {
           trait_method_declaring_owner(trait_name = trait_name, method = m)
         } else {
           ""
@@ -732,6 +736,17 @@ export fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String
       // already in `dict_binds` under the outer spelling, not inferred from
       // this call's arguments.
       match dict_for_trait_in_scope(dict_binds = dict_binds, traits = traits, tparam = type_param, trait_name = trait_name) {
+        Some(dict) => Array::push(dicts, value = dict),
+        None => {
+          ok = false
+        }
+      }
+    } else if ok && recv_idx >= 0 && recv_idx < Array::length(orig_args) && !is_constructor_recv && !is_elem_recv && dtd_add32_forced(trait_name) != "" {
+      // #3825: the checker resolved this call's `Add`-bounded formal to
+      // `Int32` / `UInt32`, which the arguments no longer spell: the `Int32`
+      // pass has erased both to `Int`. Its witness is that type's, so the
+      // generic `+` wraps.
+      match build_concrete_dict_for_target(raw_target = TyName(dtd_add32_forced(trait_name)), trait_name = trait_name, traits = traits, gens = gens, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns, arg_expr = Some(Array::get(orig_args, at = recv_idx))) {
         Some(dict) => Array::push(dicts, value = dict),
         None => {
           ok = false

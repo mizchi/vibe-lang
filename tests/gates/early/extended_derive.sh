@@ -1050,6 +1050,16 @@ run_test_block_fixtures_gc "gc-lane scalar parity (gc)" fixtures/gc_lane_scalar_
 run_test_block_fixtures_rc "gc-lane scalar parity (linear, RC)" fixtures/gc_lane_scalar_parity_test.vibe
 echo '[compiler-gate] gc-lane scalar parity ok'
 
+# #3825: `[T: Add]` at `Int32` / `UInt32` wraps through its witness on every
+# lane: the erased 63-bit `+` would answer 2147483648 for `add(2147483647, 1)`.
+echo '[compiler-gate] 32-bit generic add (#3825)'
+run_test_block_fixtures "32-bit generic add (linear, bump)" fixtures/int32_add_bound_test.vibe
+run_test_block_fixtures_gc "32-bit generic add (gc)" fixtures/int32_add_bound_test.vibe
+run_test_block_fixtures_rc "32-bit generic add (linear, RC)" fixtures/int32_add_bound_test.vibe
+ur_refused fixtures/err_add32_mixed_refused.vibe 'one `Add`-bounded type parameter at `Int32` / `UInt32` and another at a different type' 'call it with every `Add` argument the same 32-bit type' linear
+ur_refused fixtures/err_add32_mixed_refused.vibe 'one `Add`-bounded type parameter at `Int32` / `UInt32` and another at a different type' 'call it with every `Add` argument the same 32-bit type' gc
+echo '[compiler-gate] 32-bit generic add ok'
+
 # #3389: match record fields by content on every layout. GC records carry a
 # tagged pointer and a header, while its tuples have neither. The nested and
 # literal-pattern cases exercise both field binding and arm discrimination.

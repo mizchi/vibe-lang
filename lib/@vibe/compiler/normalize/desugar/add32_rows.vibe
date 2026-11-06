@@ -1,0 +1,79 @@
+// #3825: the rows that tell a generic call's `Add` witness its sum wraps.
+
+import ./trait_bounds.vibe {
+  dtd_trait_entails
+}
+
+//# Rows
+
+/// The callee offsets of the generic calls whose `Add`-bounded formals the
+/// checker resolved to `Int32` / `UInt32` (`#add32[..]` rows), the type each
+/// names (`Int32`, `UInt32`, or `mixed`), and whether a call consumed it.
+let dtd_add32_offs: Array[Int] = []
+let dtd_add32_types: Array[String] = []
+let dtd_add32_used: Array[Bool] = []
+
+/// The row of the call whose dictionaries are being built, or "".
+let dtd_add32_current: Array[String] = [""]
+
+/// Clear the rows for a new program.
+export fn dtd_add32_reset() -> Unit {
+  Array::truncate(dtd_add32_offs, length = 0)
+  Array::truncate(dtd_add32_types, length = 0)
+  Array::truncate(dtd_add32_used, length = 0)
+  Array::set(dtd_add32_current, at = 0, value = "")
+}
+
+/// Record the row at `off` naming `ty`.
+export fn dtd_add32_insert(off: Int, ty: String) -> Unit {
+  Array::push(dtd_add32_offs, value = off)
+  Array::push(dtd_add32_types, value = ty)
+  Array::push(dtd_add32_used, value = false)
+}
+
+/// Make the row at the callee offset `off`, if any, the current call's, and
+/// mark it consumed. -1 clears it.
+export fn dtd_add32_enter(_ off: Int) -> Unit {
+  let mut ty = ""
+  let mut i = 0
+  while i < Array::length(dtd_add32_offs) {
+    if off >= 0 && Array::get(dtd_add32_offs, at = i) == off {
+      ty = Array::get(dtd_add32_types, at = i)
+      Array::set(dtd_add32_used, at = i, value = true)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::set(dtd_add32_current, at = 0, value = ty)
+}
+
+/// The 32-bit type the current call's witness for `trait_name` is built at:
+/// `Int32` / `UInt32` when the trait entails `Add` and the checker filed a
+/// row for the call, "" otherwise. A call whose `Add`-bounded formals are not
+/// all one 32-bit type is refused, since its witnesses could not tell which
+/// sum wraps.
+export fn dtd_add32_forced(_ trait_name: String) -> String with Exception {
+  let ty = Array::get(dtd_add32_current, at = 0)
+  if ty == "" || !dtd_trait_entails(sub = trait_name, super_name = "Add") {
+    ""
+  } else if ty == "mixed" {
+    throw("a generic call instantiates one `Add`-bounded type parameter at `Int32` / `UInt32` and another at a different type; the wrapping sum cannot be told apart from the other: call it with every `Add` argument the same 32-bit type, or convert with `Int32::to_int` first")
+  } else {
+    ty
+  }
+}
+
+/// Refuse a row no call consumed: its call was not lowered through a path
+/// that reads the row, so its `+` would not wrap.
+export fn dtd_add32_report() -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(dtd_add32_offs) {
+    if !Array::get(dtd_add32_used, at = i) {
+      throw("this generic call instantiates an `Add`-bounded type parameter at `\{Array::get(dtd_add32_types, at = i)}` through a form whose witness is not built at that type (a method call, or a function taken as a value), so its `+` would not wrap at 32 bits: call the generic function by name at #\{Array::get(dtd_add32_offs, at = i)}")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
