@@ -9,6 +9,9 @@
 #                           `--solver=wasm` (lib/@vibex/z3_wasi, built by
 #                           scripts/build_z3_wasi.sh), bounded by `rlimit`.
 #
+# CI runs the z3 lane in `compiler-examples` and the wasm lane in `prove-wasm`
+# (.github/workflows/ci.yml), which builds z3_wasi.wasm or restores it.
+#
 # The two lanes pin the SAME report for every fixture except unknown.vibe,
 # whose line names the bound the solver ran under: both lanes print through
 # one `prove_report_line`, and must agree on every verdict.

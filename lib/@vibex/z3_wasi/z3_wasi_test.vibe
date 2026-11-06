@@ -1,0 +1,110 @@
+// @vibex/z3_wasi against the real z3_wasi.wasm (scripts/build_z3_wasi.sh):
+// the binding and the in-process prover, run for real. The binary is built,
+// not committed, so scripts/unit_test_runner.sh excludes this file; the CI
+// job `prove-wasm`, which builds the binary (or restores it from its cache),
+// runs it with `vibe test`.
+
+//# Imports
+
+import ./z3_wasi.vibe {
+  eval_smtlib2_fresh, z3_wasi_version
+}
+
+import ./prove_in_process.vibe {
+  prove_files_in_process, prove_rlimit, prove_source_in_process
+}
+
+//# Helpers
+
+fn first_line(_ s: String) -> String {
+  Array::get(String::split(s, sep = "\n"), at = 0)
+}
+
+fn thrown(_ f: () -> Int with Exception) -> String {
+  handle {
+    let n = f()
+    "returned \{n}"
+  } with { Exception::Throw(m) => m }
+}
+
+//# The binding
+
+test "the module is the pinned z3" {
+  inspect(z3_wasi_version(), content = "4.15.8.0")
+}
+
+test "sat answers with a model" {
+  inspect(eval_smtlib2_fresh("(declare-const x Int)(assert (> x 3))(assert (< x 5))(check-sat)(get-value (x))"), content = "sat\n((x 4))\n")
+}
+
+test "unsat answers unsat" {
+  inspect(eval_smtlib2_fresh("(declare-const x Int)(assert (> x 3))(assert (< x 2))(check-sat)"), content = "unsat\n")
+}
+
+test "an exhausted rlimit answers unknown" {
+  let q = "(set-option :rlimit 1000)(declare-const a Int)(declare-const b Int)(declare-const c Int)(assert (> a 0))(assert (> b 0))(assert (> c 0))(assert (= (+ (* a a a) (* b b b)) (* c c c)))(check-sat)"
+  inspect(first_line(eval_smtlib2_fresh(q)), content = "unknown")
+}
+
+test "each call is a fresh context" {
+  inspect(eval_smtlib2_fresh("(declare-const y Int)(check-sat)"), content = "sat\n")
+  inspect(eval_smtlib2_fresh("(assert (> y 0))(check-sat)"), content = "(error \"line 1 column 12: unknown constant y\")\nsat\n")
+}
+
+test "a command z3 rejects is answered as text, not an exit" {
+  inspect(eval_smtlib2_fresh("(declare-const x Int)(assert (> x 3)"), content = "(error \"line 1 column 37: invalid assert command, ')' expected\")\n")
+}
+
+test "a NUL byte in the script is refused" {
+  let script = String::concat("(check-sat)", String::concat(String::from_byte(0), "(exit)"))
+  inspect(thrown(() -> {
+    let _ = eval_smtlib2_fresh(script)
+    0
+  }), content = "z3_wasi: byte 11 of the script is NUL, which a C string cannot hold")
+}
+
+//# The in-process prover
+
+test "a true contract proves, silently" {
+  let src = "fn inc(x: Int) -> Int where { requires: x >= 0 && x < 100, ensures: result > x } {\n  x + 1\n}\n"
+  inspect(prove_source_in_process(src), content = "[]")
+}
+
+test "a false ensures is reported with its counterexample" {
+  let src = "fn dec(x: Int) -> Int where { requires: x > 0, ensures: result > x } {\n  x - 1\n}\n"
+  inspect(prove_source_in_process(src), content = "[(56, unproved: ensures (result > x) of `dec` -- counterexample: x = 1)]")
+}
+
+test "an unbounded Int operation owes its overflow" {
+  let src = "fn inc(x: Int) -> Int where { requires: x >= 0, ensures: result > x } {\n  x + 1\n}\n"
+  inspect(prove_source_in_process(src), content = "[(76, unproved: overflow in (x + 1) in `inc` -- counterexample: x = 4611686018427387903)]")
+}
+
+test "a construct outside the fragment is reported, not skipped" {
+  let src = "fn first(xs: Array[String]) -> Int where { ensures: true } {\n  0\n}\n"
+  inspect(Array::length(prove_source_in_process(src)), content = "1")
+}
+
+test "the prover's own rlimit leaves room for the fixtures' proofs" {
+  // fixtures/prove/proved.vibe's heaviest query uses about 2 * 10^5.
+  inspect(prove_rlimit >= 1000000, content = "true")
+}
+
+test "a fixture proves, and a broken one fails, by exit code" {
+  inspect(prove_files_in_process(paths = ["fixtures/prove/proved.vibe"], json = false, root = ""), content = "0")
+  inspect(prove_files_in_process(paths = ["fixtures/prove/datatypes.vibe"], json = false, root = ""), content = "0")
+  inspect(prove_files_in_process(paths = ["fixtures/prove/ranges.vibe"], json = false, root = ""), content = "1")
+}
+
+test "a relative path is read under the root" {
+  inspect(prove_files_in_process(paths = ["prove/proved.vibe"], json = false, root = "fixtures"), content = "0")
+  inspect(prove_files_in_process(paths = ["prove/ranges.vibe"], json = true, root = "fixtures"), content = "1")
+}
+
+test "a file that is not there fails, it does not prove" {
+  let r = handle {
+    let n = prove_files_in_process(paths = ["prove/no_such_file.vibe"], json = false, root = "fixtures")
+    "returned \{n}"
+  } with { Exception::Throw(m) => m }
+  inspect(String::starts_with(r, prefix = "returned"), content = "false")
+}

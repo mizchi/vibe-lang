@@ -23,6 +23,8 @@ on:
 #   - unit-tests 0..3         weight-balanced shards of the unit battery
 #   - coverage-suite          main-only, its own job
 #   - wasi-p3-gate            needs compiler-gate's stage2 artifact
+#   - prove-wasm              `check --prove --solver=wasm` with z3_wasi.wasm
+#                             built (or restored from its cache) in-job
 #   - perf-metrics            advisory perf report; needs compiler-gate's
 #                             stage2 + generated artifacts (was perf.yml)
 # All jobs start at t=0; nothing on the required path serializes behind
@@ -2059,10 +2061,108 @@ jobs:
             _build/selfhost_build_metrics.json
             _build/selfhost-build-metrics.*/logs/*.log
 
+  # #3719: `vibe check --prove --solver=wasm` -- z3 built for WASI and linked
+  # into the prover's own process (lib/@vibex/z3_wasi). z3_wasi.wasm is built,
+  # not committed, and the build takes about 25 minutes, so it is cached on
+  # everything that determines its bytes: the build script and its patches /
+  # stubs (which pin z3, LLVM and binaryen), and the candidate versions of the
+  # apt toolchain it compiles with. A miss rebuilds it here. The native `z3`
+  # is NOT installed in this job, and a step asserts it is absent, so the
+  # in-process lane is what answers.
+  prove-wasm:
+    needs: [compiler-build]
+    name: prove (in-process z3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - uses: ./.github/actions/setup-vibe
+        with:
+          node-version: 24
+          wasmtime: 'true'
+          pkfire: 'true'
+          pkfire-cache: 'true'
+      - name: Toolchain identity for the viberun cache key
+        # Same key as compiler-examples: the ensure_viberun.sh stamp includes
+        # rustc, so the key must too.
+        id: rustc
+        run: echo "id=$(rustc --version | tr -c '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
+      - name: Cache viberun build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/viberun/target
+          key: viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
+          restore-keys: |
+            viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
+      - name: Ensure viberun matches the current sources
+        run: bash scripts/ensure_viberun.sh
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
+      - name: z3 WASI toolchain identity
+        # The apt packages scripts/build_z3_wasi.sh compiles with. The
+        # compiler is the versioned clang-18 because the wasm32 libc++ /
+        # compiler-rt packages are 18's: on a runner whose plain `clang` is
+        # newer (21 on the first run), it cannot find them and the link
+        # check fails. Their
+        # candidate versions go into the cache key, so a toolchain update
+        # rebuilds rather than restoring bytes another toolchain made. A
+        # package the archive does not offer fails here, by name.
+        id: z3wasi
+        run: |
+          sudo apt-get update -qq
+          ident=""
+          for pkg in clang-18 lld-18 llvm-18 cmake ninja-build wasi-libc libc++-18-dev-wasm32 libc++abi-18-dev-wasm32 libclang-rt-18-dev-wasm32; do
+            ver="$(apt-cache policy "$pkg" | sed -n 's/^  Candidate: //p')"
+            if [ -z "$ver" ] || [ "$ver" = "(none)" ]; then
+              echo "::error::apt package $pkg (needed by scripts/build_z3_wasi.sh) is not available on this runner"
+              exit 1
+            fi
+            ident="$ident$pkg=$ver;"
+          done
+          echo "toolchain: $ident"
+          echo "packages=$(printf '%s' "$ident" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "pkgs=clang-18 lld-18 llvm-18 cmake ninja-build wasi-libc libc++-18-dev-wasm32 libc++abi-18-dev-wasm32 libclang-rt-18-dev-wasm32" >> "$GITHUB_OUTPUT"
+      - name: Cache z3_wasi.wasm
+        id: z3wasi-cache
+        uses: actions/cache@v4
+        with:
+          path: lib/@vibex/z3_wasi/z3_wasi.wasm
+          key: z3-wasi-v1-${{ runner.os }}-${{ hashFiles('scripts/build_z3_wasi.sh', 'scripts/z3_wasi/**') }}-${{ steps.z3wasi.outputs.packages }}
+      - name: Build z3_wasi.wasm (cache miss)
+        if: steps.z3wasi-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y --no-install-recommends ${{ steps.z3wasi.outputs.pkgs }}
+          bash scripts/build_z3_wasi.sh
+      - name: The native z3 is not on PATH
+        run: |
+          if command -v z3 >/dev/null 2>&1; then
+            echo "::error::z3 is on PATH ($(command -v z3)); this job proves the in-process lane, which must not depend on it"
+            exit 1
+          fi
+      - name: vibe check --prove gate, in-process lane (#3719)
+        run: |
+          VIBE_PROVE_SOLVER=wasm bash scripts/check_prove.sh "$PWD/_build/_ci_shard_gen/stage2.wasm"
+          VIBE_PROVE_SOLVER=wasm bash scripts/check_prove_test.sh "$PWD/_build/_ci_shard_gen/stage2.wasm"
+      - name: "@vibex/z3_wasi package tests"
+        # Excluded from the unit battery (scripts/unit_test_runner.sh), which
+        # has no z3_wasi.wasm; they run here, where it is built.
+        run: |
+          VIBE_TEST_CLI_WASM="$PWD/_build/_ci_shard_gen/stage2.wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+            bash scripts/vibe_test.sh lib/@vibex/z3_wasi/z3_wasi_test.vibe
+
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-build, compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-contracts, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint, wasi-p3-gate]
+    needs: [compiler-build, compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-contracts, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint, wasi-p3-gate, prove-wasm]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -2122,6 +2222,10 @@ jobs:
           fi
           if [ "${{ needs.structural-lint.result }}" != "success" ]; then
             echo "::error::structural-lint did not succeed (${{ needs.structural-lint.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.prove-wasm.result }}" != "success" ]; then
+            echo "::error::prove-wasm did not succeed (${{ needs.prove-wasm.result }})"
             exit 1
           fi
           # The async component / wasi:http p3 contract. Folded in deliberately:
