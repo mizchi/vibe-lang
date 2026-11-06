@@ -25,6 +25,26 @@ import ./z3_wasi.vibe {
 /// anything z3 reports are the query's own, as on the external lane.
 export let prove_rlimit = 20000000
 
+/// The report of `source`: one `(offset, message)` per obligation that is
+/// not proved, in obligation order, each query answered by z3_wasi.wasm in a
+/// fresh context under `prove_rlimit`. Empty when every obligation is proved.
+export fn prove_source_in_process(_ source: String) -> Array[(Int, String)] with Exception {
+  let limit = "rlimit \{prove_rlimit}"
+  let lines: Array[(Int, String)] = []
+  for o in prove_obligations(source) {
+    let answer = if o.kind == "unsupported" {
+      ""
+    } else {
+      eval_smtlib2_fresh("(set-option :rlimit \{prove_rlimit})\{o.query}")
+    }
+    match Obligation::report_line(o, answer = answer, limit = limit) {
+      Some(l) => Array::push(lines, value = l),
+      None => ()
+    }
+  }
+  lines
+}
+
 /// #3719 (ADR-0121): `vibe check --prove --solver=wasm <file>...`. The same
 /// obligations as the external lane (`prove_obligations`), each answered by
 /// z3_wasi.wasm in a fresh context in this process, and reported through
@@ -37,25 +57,13 @@ export let prove_rlimit = 20000000
 /// lines.
 export fn prove_files_in_process(paths: Array[String], json: Bool, root: String) -> Int with Exception + Fs + Console {
   let mut code = 0
-  let limit = "rlimit \{prove_rlimit}"
   for path in paths {
     let source = Fs::read_file(if root == "" || String::starts_with(path, prefix = "/") {
       path
     } else {
       "\{root}/\{path}"
     })
-    let lines: Array[(Int, String)] = []
-    for o in prove_obligations(source) {
-      let answer = if o.kind == "unsupported" {
-        ""
-      } else {
-        eval_smtlib2_fresh("(set-option :rlimit \{prove_rlimit})\{o.query}")
-      }
-      match Obligation::report_line(o, answer = answer, limit = limit) {
-        Some(l) => Array::push(lines, value = l),
-        None => ()
-      }
-    }
+    let lines = prove_source_in_process(source)
     if Array::length(lines) > 0 {
       code = 1
     } else {
