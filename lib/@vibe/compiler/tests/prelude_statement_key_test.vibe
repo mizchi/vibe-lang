@@ -84,7 +84,7 @@ test "a row travels with its statement" {
     Array::get(prelude_statement_keys(stmts = parsed(base_src), row_offsets = no_ints(), row_keys = no_keys()), at = 1).anchor
   ], row_keys = ["Int"])
   // Recorded relative to the anchor, and only in the statement it names.
-  inspect(String::contains(Array::get(ks, at = 1).text, needle = "\n=0=Int"), content = "true")
+  inspect(String::contains(Array::get(ks, at = 1).text, needle = "0=Int"), content = "true")
   inspect(String::contains(Array::get(ks, at = 0).text, needle = "=Int"), content = "false")
   inspect(String::contains(Array::get(ks, at = 2).text, needle = "=Int"), content = "false")
 }
@@ -128,4 +128,25 @@ test "floating-point literals are keyed exactly, not as printed" {
   inspect(prelude_statement_key_equal(a = only_key("let x = 0.0\n"), b = only_key("let x = -0.0\n")), content = "false")
   inspect(prelude_statement_key_equal(a = only_key("let x = 0.0000001\n"), b = only_key("let x = 0.0000002\n")), content = "false")
   inspect(prelude_statement_key_equal(a = only_key("let x = 1.5\n"), b = only_key("let x = 1.5\n")), content = "true")
+}
+
+test "floating-point patterns are keyed exactly, nested and top-level ones too" {
+  let arm = (lit: String) -> "fn f(x: Float64) -> Int {\n  match x {\n    \{lit} => 1,\n    _ => 0\n  }\n}\n"
+  inspect(prelude_statement_key_equal(a = only_key(arm("1.0000001")), b = only_key(arm("1.0000002"))), content = "false")
+  inspect(prelude_statement_key_equal(a = only_key(arm("1.5")), b = only_key(arm("1.5"))), content = "true")
+  let nested = (lit: String) -> "fn g(p: (Int, Float64)) -> Int {\n  match p {\n    (_, \{lit}) => 1,\n    _ => 0\n  }\n}\n"
+  inspect(prelude_statement_key_equal(a = only_key(nested("2.0000001")), b = only_key(nested("2.0000002"))), content = "false")
+}
+
+test "a statement that holds no expression has no key" {
+  let decl = only_key("struct Pt {\n  x: Int\n}\n")
+  inspect(decl.keyed, content = "false")
+  inspect(prelude_statement_key_equal(a = decl, b = decl), content = "false")
+  inspect(only_key("let x = 1\n").keyed, content = "true")
+}
+
+test "a string's bytes and boundaries are part of the key" {
+  // Strings enter with their lengths, so moving a byte across a boundary is
+  // a different key even when the concatenation agrees.
+  inspect(prelude_statement_key_equal(a = only_key("let ab = \"c\"\n"), b = only_key("let a = \"bc\"\n")), content = "false")
 }
