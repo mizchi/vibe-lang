@@ -93,7 +93,7 @@ note "=== 2. CONTROL: a swept directory still answers for the rest (#1943) ==="
 grep_run "$WORK/corpus" 'good($(a:args))'
 if [ "$RC" = 0 ]; then note "  ok   exit: 0"
 else note "  FAIL exit: got $RC, want 0 -- the fix broke sweeping"; printf '%s\n' "$OUT" | sed 's/^/      /' | head -3; fail=1; fi
-if printf '%s' "$OUT" | grep -qF "ok.vibe:6:3: good(41)"; then note "  ok   the clean file's match is still printed"
+if printf '%s' "$OUT" | grep -qF "ok.vibe:6:3: good(x=41)"; then note "  ok   the clean file's match is still printed"
 else note "  FAIL the clean file's match was lost"; printf '%s\n' "$OUT" | sed 's/^/      /' | head -3; fail=1; fi
 if printf '%s' "$OUT" | grep -qF "skipped"; then note "  ok   and the skip is still warned about"
 else note "  FAIL the skip is no longer reported"; fail=1; fi
