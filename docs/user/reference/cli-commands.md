@@ -207,11 +207,12 @@ vibe check --single-file <file>          # this buffer only, imports not followe
 vibe check --json <file>                 # LSP Diagnostic array (`[]` when nothing is reported)
 vibe check --profile-tsv timing.tsv <file...>
 vibe check --warn-missing-labels <file...>   # also warn where an argument label will be required
-vibe check --prove <file...>             # prove `where` contracts with an external z3 (#3717)
+vibe check --prove <file...>             # prove `where` contracts with z3 (#3717)
+vibe check --prove --solver=wasm <file...>   # ... with z3 in-process, no native z3 needed (#3719)
 ```
 
 `--prove` turns each contracted function's `requires` / `ensures` into
-verification conditions and asks an external `z3` (5 s per query) whether they
+verification conditions and asks z3 whether they
 hold; it never changes what a build produces (ADR-0121). The report keeps
 `vibe check`'s shape: **empty output and exit 0 mean every obligation is
 proved**, and each line names one that is not:
@@ -298,11 +299,22 @@ call is modular: the callee's `requires` is owed at the call and its
 `ensures` assumed of the result, and the callee's own body is proved in the
 same run. A call to a function with no `where` contract is unsupported (it is
 not assumed to return), and so is a recursive call (termination is not
-proved). `z3` must be on `PATH`; without it the command refuses with the
-edit. With `--json`, each file's report is the LSP Diagnostic array `vibe
+proved). With `--json`, each file's report is the LSP Diagnostic array `vibe
 check --json` prints (one array per file, `[]` when every obligation is
 proved), carrying the same messages. `--single-file` is refused: the prover
 already reads each file on its own.
+
+`--solver` picks who answers (#3719). `--solver=z3` runs an external `z3` on
+`PATH`, 5 s per query. `--solver=wasm` runs z3 built for WASI in the same
+process as the prover, linked through the typed `.wasm` import
+(`lib/@vibex/z3_wasi`): no native z3 is needed, but `z3_wasi.wasm` is not
+distributed yet and `bash scripts/build_z3_wasi.sh` builds it (about 25
+minutes). That module has no clock, so a query is bounded by z3's `rlimit`
+(work, the same on every machine) and an exhausted bound reads
+`-- z3 returned unknown (rlimit 20000000)`, a failure like the timeout above.
+The two lanes print through the same report and agree on every verdict;
+`--solver=auto`, the default, uses `z3` when it is on `PATH` and the
+in-process solver otherwise, and refuses with the edit when neither is there.
 
 A struct or enum of the file is an SMT datatype (#3719) when it is not
 generic, has no `mut` field, and every field is `Int`, `Bool` or another such

@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
-# `vibe check --prove` gate (#3717, ADR-0121). Runs the prover over the
-# fixtures in fixtures/prove/ against the given compiler and an external z3,
-# and compares each report with the one pinned below:
+# `vibe check --prove` gate (#3717, #3719, ADR-0121). Runs the prover over
+# the fixtures in fixtures/prove/ against the given compiler and one solver
+# lane, and compares each report with the one pinned below:
+#
+#   VIBE_PROVE_SOLVER=z3    (the default) an external `z3` on PATH,
+#                           `--solver=z3`, 5 s per query;
+#   VIBE_PROVE_SOLVER=wasm  z3_wasi.wasm in the prover's own process,
+#                           `--solver=wasm` (lib/@vibex/z3_wasi, built by
+#                           scripts/build_z3_wasi.sh), bounded by `rlimit`.
+#
+# The two lanes pin the SAME report for every fixture except unknown.vibe,
+# whose line names the bound the solver ran under: both lanes print through
+# one `prove_report_line`, and must agree on every verdict.
 #
 #   proved.vibe       every obligation proved -> no output, exit 0
 #   datatypes.vibe    structs / enums as SMT datatypes and `match` as a case
@@ -24,10 +34,11 @@
 # Counterexample VALUES are masked: they are whatever model the solver picks,
 # and a different z3 may pick another. That one exists is still checked.
 #
-# Usage: bash scripts/check_prove.sh <stage2.wasm>
+# Usage: [VIBE_PROVE_SOLVER=z3|wasm] bash scripts/check_prove.sh <stage2.wasm>
 # VIBE_PROVE_FIXTURES overrides the fixture directory (the self-test runs the
-# gate over mutated copies). z3 must be on PATH: a missing solver FAILS the
-# gate rather than skipping it, because an unrun prover proves nothing.
+# gate over mutated copies). The lane's solver must be present -- z3 on PATH,
+# or lib/@vibex/z3_wasi/z3_wasi.wasm built: a missing solver FAILS the gate
+# rather than skipping it, because an unrun prover proves nothing.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -37,7 +48,16 @@ cli="${1:-${VIBE_STAGE2_WASM:-}}"
 [ -n "$cli" ] && [ -s "$cli" ] || { echo "usage: check_prove.sh <stage2.wasm> (or set VIBE_STAGE2_WASM)" >&2; exit 2; }
 runner="${VIBE_PROVE_RUNNER:-$ROOT_DIR/runtime/viberun/target/release/viberun}"
 [ -x "$runner" ] || { echo "[prove] FAIL: native runner not built: $runner (bash scripts/ensure_viberun.sh)" >&2; exit 2; }
-command -v z3 >/dev/null 2>&1 || { echo "[prove] FAIL: z3 is not on PATH; this gate runs the solver and does not skip without it" >&2; exit 2; }
+solver="${VIBE_PROVE_SOLVER:-z3}"
+case "$solver" in
+  z3)
+    command -v z3 >/dev/null 2>&1 || { echo "[prove] FAIL: z3 is not on PATH; this gate runs the solver and does not skip without it" >&2; exit 2; }
+    unknown_detail="z3 timed out (5000 ms limit)" ;;
+  wasm)
+    [ -s lib/@vibex/z3_wasi/z3_wasi.wasm ] || { echo "[prove] FAIL: lib/@vibex/z3_wasi/z3_wasi.wasm is not built (bash scripts/build_z3_wasi.sh); this gate runs the solver and does not skip without it" >&2; exit 2; }
+    unknown_detail="z3 returned unknown (rlimit 20000000)" ;;
+  *) echo "usage: VIBE_PROVE_SOLVER must be z3 or wasm, not '$solver'" >&2; exit 2 ;;
+esac
 dir="${VIBE_PROVE_FIXTURES:-fixtures/prove}"
 
 fail=0
@@ -45,13 +65,13 @@ run_case() {
   local name="$1" want_code="$2" want="$3"
   local out code
   set +e
-  out="$(VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check --prove "$dir/$name.vibe" 2>&1)"
+  out="$(VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check --prove --solver="$solver" "$dir/$name.vibe" 2>&1)"
   code=$?
   set -e
   local got
   got="$(printf '%s\n' "$out" | sed -E 's/-- counterexample: .*/-- counterexample: <model>/')"
   if [ "$code" != "$want_code" ] || [ "$got" != "$want" ]; then
-    echo "[prove] FAIL: $name.vibe: exit $code (want $want_code)" >&2
+    echo "[prove] FAIL ($solver): $name.vibe: exit $code (want $want_code)" >&2
     diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") >&2 || true
     fail=1
   fi
@@ -115,7 +135,7 @@ $dir/unsupported.vibe:135:9: unsupported: \`Int::to_int32\` answers an \`Option\
 $dir/unsupported.vibe:147:3: unsupported: \`Array::all\`'s predicate must be a lambda written at the call (in \`named_pred\`)
 $dir/unsupported.vibe:152:3: unsupported: a call inside \`Array::all\`'s predicate: its result would be one value for every element (in \`called_pred\`)
 $dir/unsupported.vibe:158:11: unsupported: \`Array::all\`'s predicate assigns \`n\` (in \`counting_pred\`)"
-run_case unknown 1 "$dir/unknown.vibe:7:12: unknown: ensures result of \`fermat3\` -- z3 timed out (5000 ms limit)"
+run_case unknown 1 "$dir/unknown.vibe:7:12: unknown: ensures result of \`fermat3\` -- $unknown_detail"
 
 # `--json` reports the same diagnostics as the text: one LSP Diagnostic per
 # line, at that line's position, with that line's message, and `[]` for a
@@ -124,8 +144,8 @@ json_case() {
   local name="$1"
   local text json
   set +e
-  text="$(VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check --prove "$dir/$name.vibe" 2>&1)"
-  json="$(VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check --prove --json "$dir/$name.vibe" 2>&1)"
+  text="$(VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check --prove --solver="$solver" "$dir/$name.vibe" 2>&1)"
+  json="$(VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check --prove --solver="$solver" --json "$dir/$name.vibe" 2>&1)"
   set -e
   if ! node -e '
     const [path, text, json] = process.argv.slice(1);
@@ -146,5 +166,23 @@ json_case proved
 json_case unproved
 json_case unsupported
 
+# A solver the CLI does not know, and `--solver` without `--prove`, are
+# refused with the edit, never read as a path or ignored.
+refusal_case() {
+  local want="$1"; shift
+  local out code
+  set +e
+  out="$(VIBE_RUNNER="$runner" VIBE_CLI_WASM="$cli" bash runtime/vibe check "$@" 2>&1)"
+  code=$?
+  set -e
+  if [ "$code" = 0 ] || ! printf '%s\n' "$out" | grep -qF -- "$want"; then
+    echo "[prove] FAIL: \`vibe check $*\` exited $code without saying: $want" >&2
+    printf '%s\n' "$out" >&2
+    fail=1
+  fi
+}
+refusal_case "is not a solver; use \`--solver=z3\`" --prove --solver=cvc5 "$dir/proved.vibe"
+refusal_case "\`--solver\` chooses the solver of \`--prove\`" --solver="$solver" "$dir/proved.vibe"
+
 [ "$fail" = 0 ] || exit 1
-echo "[prove] ok (proved silent, unproved with counterexamples, unsupported reported, an unknown answer fails, --json carries the same diagnostics)"
+echo "[prove] ok ($solver: proved silent, unproved with counterexamples, unsupported reported, an unknown answer fails, --json carries the same diagnostics, a bad --solver is refused)"

@@ -1,0 +1,73 @@
+//# Imports
+
+import @vibe/prove {
+  prove_line_col, prove_obligations, prove_report_line
+}
+
+import @vibe/lsp {
+  lsp_diagnostics_json_of_messages_for
+}
+
+import ./z3_wasi.vibe {
+  eval_smtlib2_fresh
+}
+
+//# Functions
+
+/// The work bound of one query on the in-process solver. z3_wasi.wasm has no
+/// clock (it imports nothing), so a wall-clock timeout cannot fire; z3's
+/// `rlimit` counts work instead, the same on every machine. A query that
+/// exhausts it is answered `unknown`, which fails like the external solver's
+/// timeout does. The fixtures' heaviest proved query uses about 2 * 10^5;
+/// fixtures/prove/unknown.vibe exhausts this bound in about 5 s.
+///
+/// The option is written on the query's first line, so the line numbers in
+/// anything z3 reports are the query's own, as on the external lane.
+export let prove_rlimit = 20000000
+
+/// #3719 (ADR-0121): `vibe check --prove --solver=wasm <file>...`. The same
+/// obligations as the external lane (`prove_obligations`), each answered by
+/// z3_wasi.wasm in a fresh context in this process, and reported through
+/// the same `prove_report_line`: one line per obligation that is not proved,
+/// nothing when every one is; the result is 1 when anything was reported.
+/// With `json`, each file's report is the LSP Diagnostic array `vibe check
+/// --json` prints, as on the external lane.
+export fn prove_files_in_process(paths: Array[String], json: Bool) -> Int with Exception + Fs + Console {
+  let mut code = 0
+  let limit = "rlimit \{prove_rlimit}"
+  for path in paths {
+    let source = Fs::read_file(path)
+    let lines: Array[(Int, String)] = []
+    for o in prove_obligations(source) {
+      let answer = if o.kind == "unsupported" {
+        ""
+      } else {
+        eval_smtlib2_fresh("(set-option :rlimit \{prove_rlimit})\{o.query}")
+      }
+      match prove_report_line(o, answer = answer, limit = limit) {
+        Some(l) => Array::push(lines, value = l),
+        None => ()
+      }
+    }
+    if Array::length(lines) > 0 {
+      code = 1
+    } else {
+      ()
+    }
+    if json {
+      let msgs = Array::map(lines, (l) -> "line \{prove_line_col(source = source, off = l.0)}: \{l.1}")
+      let text = lsp_diagnostics_json_of_messages_for(path = path, source = source, msgs = msgs)
+      if String::ends_with(text, suffix = "\n") {
+        print(text)
+      } else {
+        println(text)
+      }
+    } else {
+      for l in lines {
+        println("\{path}:\{prove_line_col(source = source, off = l.0)}: \{l.1}")
+      }
+      ()
+    }
+  }
+  code
+}

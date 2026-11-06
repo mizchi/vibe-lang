@@ -1,7 +1,11 @@
 //# Imports
 
 import @vibe/prove {
-  Obligation, prove_obligations, prove_verdict
+  prove_line_col, prove_obligations, prove_report_line
+}
+
+import @vibe/compiler/core {
+  external_lib_roots
 }
 
 import @vibe/lsp {
@@ -9,43 +13,79 @@ import @vibe/lsp {
 }
 
 import ./plans.vibe {
-  line_terminated
+  line_terminated, selfhost_cli_run_plan_args
 }
 
 //# Functions
 
 /// #3717 (ADR-0121): `vibe check --prove <file>...`. Each obligation of each
-/// contracted function becomes one SMT-LIB query, answered by an external
-/// `z3` with a 5 s limit, fed on standard input so no query file is shared
-/// with another run. The report follows `vibe check`'s contract: one
-/// line per obligation that is not proved, empty output when every one is,
-/// exit 1 otherwise. Only `unsat` proves; `unknown`, a timeout and a
-/// construct outside the provable fragment are failures, never skipped.
+/// contracted function becomes one SMT-LIB query. The report follows `vibe
+/// check`'s contract: one line per obligation that is not proved, empty
+/// output when every one is, exit 1 otherwise. Only `unsat` proves;
+/// `unknown`, an exhausted bound and a construct outside the provable
+/// fragment are failures, never skipped.
+///
+/// `solver` picks who answers (#3719):
+///   - `z3`: an external `z3` on PATH, with a 5 s limit, fed on standard input
+///     so no query file is shared with another run;
+///   - `wasm`: z3_wasi.wasm in the same process as the prover (@vibex/z3_wasi,
+///     built by scripts/build_z3_wasi.sh), bounded by `rlimit` because that
+///     module has no clock. This writes a run plan for its entry, which the
+///     launcher runs;
+///   - `auto` (the default): `z3` when it is on PATH, else `wasm` when
+///     @vibex/z3_wasi is installed, else an error naming both.
+/// Both lanes report through `prove_report_line`, so they print the same
+/// lines; an `unknown` line names the bound the solver ran under.
 ///
 /// With `json`, each file's report is the LSP Diagnostic array `vibe check
 /// --json` prints, one array per file and `[]` when every obligation is
 /// proved, built from the same lines through the same writer.
-export fn selfhost_cli_user_check_prove(paths: Array[String], json: Bool) -> Int with Exception + Fs + Process + Console {
-  if !z3_available() {
-    throw("check --prove: `z3` is not on PATH; install it (for example `nix shell nixpkgs#z3`, `apt install z3` or `brew install z3`) and run again")
+export fn selfhost_cli_user_check_prove(paths: Array[String], json: Bool, solver: String) -> Int with Exception + Fs + Env + Process + Console {
+  if solver != "auto" && solver != "z3" && solver != "wasm" {
+    throw("check --prove: `--solver=\{solver}` is not a solver; use `--solver=z3` (an external z3 on PATH), `--solver=wasm` (z3_wasi.wasm in-process) or `--solver=auto`")
   } else {
     ()
   }
+  let external = solver != "wasm" && z3_available()
+  if solver == "z3" && !external {
+    throw("check --prove: `z3` is not on PATH; install it (for example `nix shell nixpkgs#z3`, `apt install z3` or `brew install z3`) and run again, or run the solver in-process with `--solver=wasm`")
+  } else {
+    ()
+  }
+  if external {
+    prove_with_external_z3(paths = paths, json = json)
+  } else {
+    prove_in_process(paths = paths, json = json, asked = solver == "wasm")
+  }
+}
+
+fn prove_with_external_z3(paths: Array[String], json: Bool) -> Int with Exception + Fs + Process + Console {
   let mut code = 0
   for path in paths {
     let source = Fs::read_file(path)
-    let lines = prove_report(source)
+    let lines: Array[(Int, String)] = []
+    for o in prove_obligations(source) {
+      let answer = if o.kind == "unsupported" {
+        ""
+      } else {
+        run_z3(o.query)
+      }
+      match prove_report_line(o, answer = answer, limit = "5000 ms limit") {
+        Some(l) => Array::push(lines, value = l),
+        None => ()
+      }
+    }
     if Array::length(lines) > 0 {
       code = 1
     } else {
       ()
     }
     if json {
-      let msgs = Array::map(lines, (l) -> "line \{line_col(source = source, off = l.0)}: \{l.1}")
+      let msgs = Array::map(lines, (l) -> "line \{prove_line_col(source = source, off = l.0)}: \{l.1}")
       print(line_terminated(lsp_diagnostics_json_of_messages_for(path = path, source = source, msgs = msgs)))
     } else {
       for l in lines {
-        println("\{path}:\{line_col(source = source, off = l.0)}: \{l.1}")
+        println("\{path}:\{prove_line_col(source = source, off = l.0)}: \{l.1}")
       }
       ()
     }
@@ -53,49 +93,52 @@ export fn selfhost_cli_user_check_prove(paths: Array[String], json: Bool) -> Int
   code
 }
 
-/// One `(offset, message)` per obligation of `source` that is not proved, in
-/// obligation order.
-fn prove_report(_ source: String) -> Array[(Int, String)] with Exception + Process {
-  let out: Array[(Int, String)] = []
-  for o in prove_obligations(source) {
-    if o.kind == "unsupported" {
-      Array::push(out, value = (o.off, "unsupported: \{o.label} (in `\{o.fn_name}`)"))
-    } else {
-      let (verdict, detail) = prove_verdict(run_z3(o.query))
-      if verdict == "unproved" {
-        Array::push(out, value = (o.off, "unproved: \{obligation_text(o)} -- counterexample: \{detail}"))
-      } else if verdict != "proved" {
-        Array::push(out, value = (o.off, "unknown: \{obligation_text(o)} -- \{detail} (5000 ms limit)"))
-      } else {
-        ()
-      }
-    }
+/// The in-process lane: a run plan for @vibex/z3_wasi's `prove_main.vibex`
+/// with `[--json] <file>...`, which the launcher runs; its exit status is
+/// the command's. `asked` is whether `--solver=wasm` was given, which only
+/// changes the wording when the module cannot be found.
+fn prove_in_process(paths: Array[String], json: Bool, asked: Bool) -> Int with Exception + Fs + Env {
+  let dir = z3_wasi_package_dir()
+  let why = if asked {
+    "check --prove --solver=wasm"
+  } else {
+    "check --prove: `z3` is not on PATH, and for the in-process solver"
   }
-  out
+  if dir == "" {
+    throw("\{why}: @vibex/z3_wasi was not found in the workspace `lib/` or in VIBE_LIB; install `z3` on PATH (for example `nix shell nixpkgs#z3`, `apt install z3` or `brew install z3`) and run again")
+  } else if !Fs::exists("\{dir}/z3_wasi.wasm") {
+    throw("\{why}: \{dir}/z3_wasi.wasm is not built; run `bash scripts/build_z3_wasi.sh`, or install `z3` on PATH and run again")
+  } else {
+    ()
+  }
+  let args: Array[String] = ["run", "\{dir}/prove_main.vibex", "--"]
+  if json {
+    Array::push(args, value = "--json")
+  } else {
+    ()
+  }
+  for p in paths {
+    Array::push(args, value = p)
+  }
+  selfhost_cli_run_plan_args(args = args, action_path = Env::get("VIBE_HOST_ACTION_OUT"))
 }
 
-fn obligation_text(_ o: Obligation) -> String {
-  if o.kind == "ensures" {
-    "ensures \{o.label} of `\{o.fn_name}`"
-  } else if o.kind == "requires" {
-    "requires of \{o.label}, called in `\{o.fn_name}`"
-  } else if o.kind == "invariant-entry" {
-    "invariant \{o.label} holds when the loop starts, in `\{o.fn_name}`"
-  } else if o.kind == "invariant" {
-    "invariant \{o.label} holds again after each iteration, in `\{o.fn_name}`"
-  } else if o.kind == "measure-entry" {
-    "the measure \{o.label} is not negative when the loop starts, in `\{o.fn_name}`"
-  } else if o.kind == "measure" {
-    "the measure \{o.label} stays non-negative and drops on each iteration, in `\{o.fn_name}`"
-  } else if o.kind == "index" {
-    "the index of \{o.label} is within the array, in `\{o.fn_name}`"
-  } else if o.kind == "divisor" {
-    "the divisor of \{o.label} is not zero, in `\{o.fn_name}`"
-  } else if o.kind == "coverage" {
-    "a `match` on \{o.label} covers every value, in `\{o.fn_name}`"
-  } else {
-    "\{o.kind} in \{o.label} in `\{o.fn_name}`"
+/// Where `import @vibex/z3_wasi` resolves from the project root: the
+/// workspace `lib/`, then each VIBE_LIB root; "" when none holds it.
+fn z3_wasi_package_dir() -> String with Fs + Env {
+  let roots: Array[String] = ["lib"]
+  for r in external_lib_roots() {
+    Array::push(roots, value = r)
   }
+  let mut found = ""
+  for r in roots {
+    if found == "" && Fs::exists("\{r}/@vibex/z3_wasi/prove_main.vibex") {
+      found = "\{r}/@vibex/z3_wasi"
+    } else {
+      ()
+    }
+  }
+  found
 }
 
 fn z3_available() -> Bool with Process {
@@ -113,26 +156,4 @@ fn run_z3(_ query: String) -> String with Process {
   let out = vibe_sh_capture_stdout_raw(h)
   vibe_sh_capture_close_raw(h)
   out
-}
-
-/// `L:C`, 1-based, with C a byte column (ADR-0108); `1:1` when the offset is
-/// unknown.
-fn line_col(source: String, off: Int) -> String {
-  if off < 0 {
-    "1:1"
-  } else {
-    let mut line = 1
-    let mut col = 1
-    let mut i = 0
-    while i < off && i < String::length(source) {
-      if String::byte_at(source, at = i) == '\n' {
-        line = line + 1
-        col = 1
-      } else {
-        col = col + 1
-      }
-      i = i + 1
-    }
-    "\{line}:\{col}"
-  }
 }
