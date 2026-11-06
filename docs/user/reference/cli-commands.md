@@ -288,7 +288,12 @@ that returns, assigns, writes an array or calls a function is unsupported.
 What the predicate owes (an overflow, an index) is owed for every element,
 which is stronger than the runtime needs when the call stops early, never
 weaker, and a quantified query the solver cannot settle in time is
-`unknown`, a failure. A
+`unknown`, a failure. `Int::range_all(lo, hi, f = (i) -> p)` and
+`Int::range_any`, imported from `@vibe/builtin`, quantify the index itself
+over `lo <= i < hi`, so a contract states what each index owes the next:
+`Int::range_all(0, Array::length(xs) - 1, f = (i) -> xs[i] <= xs[i + 1])`
+says `xs` is sorted. Imported under another name, or from anywhere else,
+they are ordinary calls. A
 call is modular: the callee's `requires` is owed at the call and its
 `ensures` assumed of the result, and the callee's own body is proved in the
 same run. A call to a function with no `where` contract is unsupported (it is

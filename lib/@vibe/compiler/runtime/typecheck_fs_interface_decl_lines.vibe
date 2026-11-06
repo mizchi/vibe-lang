@@ -1,9 +1,15 @@
+import @vibe/compiler/config {
+  Config, TargetCfg, target_cfg_ambient, target_cfg_capture, target_cfg_flags, target_cfg_identity, target_cfg_namespace
+}
+
 import @vibe/checker/engine {
   engine_checked_module_public_env_for_path,
   engine_checked_module_public_env_publishing,
   engine_incremental_checked_env_identity,
   engine_incremental_implementation_identity,
+  engine_incremental_implementation_identity_with_config,
   engine_incremental_interface_identity,
+  engine_incremental_interface_identity_with_config,
   engine_incremental_persistent_type_env_transport_identity,
   engine_interface_bracketed,
   engine_interface_canonical_type_expr,
@@ -52,7 +58,7 @@ import @vibe/compiler/checker/artifacts/module {
 }
 
 import @vibe/compiler/runtime/checked_module_cache {
-  checked_module_artifact_stmts
+  checked_module_artifact_stmts, checked_module_artifact_stmts_in_namespace
 }
 
 import @vibe/compiler/core {
@@ -89,7 +95,7 @@ import @vibe/compiler/contract {
 }
 
 import @vibe/compiler/loader {
-  ingest_source_text_fs, load_or_parse_module_header_fs
+  ingest_source_text_fs, ingest_source_text_fs_with_config, load_or_parse_module_header_fs, load_or_parse_module_header_fs_with_config
 }
 
 import @vibe/compiler/incremental {
@@ -101,7 +107,7 @@ import @vibe/compiler/module_graph {
 }
 
 import @vibe/compiler/syntax {
-  Token, lex_with_offsets, parse_program_located, token_to_string
+  Token, lex_with_offsets, parse_program_located, parse_program_located_with_cfg, token_to_string
 }
 
 import @vibe/compiler/runtime/eval_loader {
@@ -263,7 +269,12 @@ fn interface_identity_version() -> String {
 }
 
 export fn incremental_interface_identity(source: String, env: TypeEnv) -> String with Env + Exception {
-  engine_incremental_interface_identity(source = source, env = env)
+  incremental_interface_identity_with_config(source = source, env = env, cfg = target_cfg_ambient())
+}
+
+/// Use this invocation's target flags for parsing and cache identity.
+export fn incremental_interface_identity_with_config(source: String, env: TypeEnv, cfg: TargetCfg) -> String with Env + Exception {
+  engine_incremental_interface_identity_with_config(source = source, env = env, cfg = cfg)
 }
 
 /// #2510 (criterion 5, option C part 2): the canonical line for ONE `impl`.
@@ -550,7 +561,12 @@ export fn incremental_persistent_type_env_transport_identity(_ env: TypeEnv) -> 
 }
 
 export fn incremental_trace_observe_checked_env(path: String, source: String, env: TypeEnv) -> Unit with Env + Exception {
-  incremental_interface_trace_observe(path = path, interface_identity = incremental_interface_identity(source = source, env = env), checked_env_identity = incremental_checked_env_identity(env), persistent_type_env_transport_identity = incremental_persistent_type_env_transport_identity(env))
+  incremental_trace_observe_checked_env_with_config(path = path, source = source, env = env, cfg = target_cfg_ambient())
+}
+
+/// Use this invocation's target flags for parsing and cache identity.
+export fn incremental_trace_observe_checked_env_with_config(path: String, source: String, env: TypeEnv, cfg: TargetCfg) -> Unit with Env + Exception {
+  incremental_interface_trace_observe(path = path, interface_identity = incremental_interface_identity_with_config(source = source, env = env, cfg = cfg), checked_env_identity = incremental_checked_env_identity(env), persistent_type_env_transport_identity = incremental_persistent_type_env_transport_identity(env))
 }
 
 fn incremental_trace_hex_digit(_ value: Int) -> String {
@@ -711,6 +727,11 @@ fn module_plan_index_of(items: Array[String], p: String) -> Int {
 /// from one and handing back the other is #1168's exact bug, so both come
 /// off the same `ingested` string here.
 export fn module_plan_data_fs(_ entry_path: String) -> (Array[String], Array[Int], Array[Array[String]], Array[String]) with Env + Exception + Fs {
+  module_plan_data_fs_with_config(entry_path, cfg = target_cfg_ambient())
+}
+
+/// Use this invocation's target flags for parsing and cache identity.
+export fn module_plan_data_fs_with_config(_ entry_path: String, cfg: TargetCfg) -> (Array[String], Array[Int], Array[Array[String]], Array[String]) with Env + Exception + Fs {
   // `paths` doubles as the BFS queue: discovery pushes to it, `qi` walks it.
   let paths: Array[String] = []
   let deps_of: Array[Array[String]] = []
@@ -725,8 +746,8 @@ export fn module_plan_data_fs(_ entry_path: String) -> (Array[String], Array[Int
     } else {
       ()
     }
-    let ingested = ingest_source_text_fs(path = p, raw = cache_read_source_fs(p))
-    let (deps, _exports, _parse_count) = load_or_parse_module_header_fs(path = p, source = ingested, parse_count = 0)
+    let ingested = ingest_source_text_fs_with_config(path = p, raw = cache_read_source_fs(p), cfg = cfg)
+    let (deps, _exports, _parse_count) = load_or_parse_module_header_fs_with_config(path = p, source = ingested, parse_count = 0, cfg = cfg)
     Array::push(sources, value = ingested)
     Array::push(deps_of, value = deps)
     let dlen = Array::length(deps)
@@ -758,4 +779,10 @@ export fn module_plan_data_fs(_ entry_path: String) -> (Array[String], Array[Int
     k = k + 1
   }
   (order, ranks, ordered_deps, ordered_sources)
+}
+
+/// Plan one import closure using the caller's target flags throughout ingestion.
+export fn module_plan_data_fs_configured(_ entry_path: String) -> (Array[String], Array[Int], Array[Array[String]], Array[String]) with Config + Env + Exception + Fs {
+  let cfg = target_cfg_capture()
+  module_plan_data_fs_with_config(entry_path, cfg = cfg)
 }

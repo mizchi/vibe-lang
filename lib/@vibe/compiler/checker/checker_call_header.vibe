@@ -272,22 +272,28 @@ export fn checker_seed_import_call_headers(env: TypeEnv, imported: Array[(String
 /// Only the binding selected by typing can contribute parameter defaults.
 export fn checker_call_header_defaults(env: TypeEnv, name: String) -> Option[Array[Bool]] {
   match env_lookup_binding(env = env, name = name) {
-    Some(binding) => match binding.origin {
-      BindingOriginDefaultedFunctionHeader(_, flags) => Some(flags),
-      // #3440: an imported declaration carries its bits on the header.
-      BindingOriginModuleFunctionHeader(_, _, _, flags) => if Array::length(flags) > 0 {
-        Some(flags)
-      } else {
-        None
-      },
-      BindingOriginReExportFunctionHeader(_, _, _, flags) => if Array::length(flags) > 0 {
-        Some(flags)
-      } else {
-        None
-      },
-      _ => None
-    },
+    Some(binding) => checker_header_defaults_of(binding.origin),
     None => None
+  }
+}
+
+/// The parameter defaults a binding's origin carries, for a caller that has
+/// already looked the binding up.
+export fn checker_header_defaults_of(_ origin: BindingOrigin) -> Option[Array[Bool]] {
+  match origin {
+    BindingOriginDefaultedFunctionHeader(_, flags) => Some(flags),
+    // #3440: an imported declaration carries its bits on the header.
+    BindingOriginModuleFunctionHeader(_, _, _, flags) => if Array::length(flags) > 0 {
+      Some(flags)
+    } else {
+      None
+    },
+    BindingOriginReExportFunctionHeader(_, _, _, flags) => if Array::length(flags) > 0 {
+      Some(flags)
+    } else {
+      None
+    },
+    _ => None
   }
 }
 
@@ -315,13 +321,20 @@ export fn builtin_alias_marker(_ name: String) -> String {
 /// reference, so the binding is read first and the marker key is built and
 /// looked up only for a renamed import.
 export fn checker_builtin_alias_target(env: TypeEnv, name: String) -> Option[String] {
-  let source = match env_lookup_binding(env = env, name = name) {
-    Some(binding) => match binding.origin {
-      BindingOriginModuleExport(_, original) => original,
-      BindingOriginReExportSurface(_, original) => original,
-      _ => name
-    },
-    None => name
+  match env_lookup_binding(env = env, name = name) {
+    Some(binding) => checker_builtin_alias_of(env = env, name = name, origin = binding.origin),
+    None => None
+  }
+}
+
+/// `checker_builtin_alias_target` for a caller that has already looked up
+/// the binding of `name`: the marker key is built and looked up only when the
+/// origin is an import renamed from another source name.
+export fn checker_builtin_alias_of(env: TypeEnv, name: String, origin: BindingOrigin) -> Option[String] {
+  let source = match origin {
+    BindingOriginModuleExport(_, original) => original,
+    BindingOriginReExportSurface(_, original) => original,
+    _ => name
   }
   if source == name {
     None

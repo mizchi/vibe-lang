@@ -1,3 +1,10 @@
+import @vibe/compiler/config {
+  Config, target_cfg_capture
+}
+import @vibe/compiler/config {
+  TargetCfg, target_cfg_ambient, target_cfg_flags, target_cfg_identity, target_cfg_namespace
+}
+
 import @vibe/checker/engine {
   DependencyInterfaceSet
 }
@@ -48,7 +55,7 @@ import @vibe/compiler/checker/artifacts/module {
 }
 
 import @vibe/compiler/runtime/checked_module_cache {
-  checked_module_cache_reset
+  checked_module_cache_reset, checked_module_cache_reset_in_namespace
 }
 
 import @vibe/compiler/core {
@@ -122,6 +129,7 @@ import ./typecheck_fs_find_fn_anchor_off.vibe {
   dep_visit_order,
   diag_already_located,
   ensure_env_cache_for_path,
+  ensure_env_cache_for_path_with_config,
   incremental_typecheck_telemetry_add,
   incremental_typecheck_telemetry_decide,
   offset_line_col_prefix,
@@ -132,11 +140,17 @@ import ./typecheck_fs_find_fn_anchor_off.vibe {
 }
 
 import ./typecheck_fs_finish_typecheck_fs_impl.vibe {
-  locate_type_error, locate_type_error_lines, plan_deps_of, plan_import_graph_fs, step_module_fs_using_interfaces
+  locate_type_error,
+  locate_type_error_lines,
+  plan_deps_of,
+  plan_import_graph_fs,
+  plan_import_graph_fs_with_config,
+  step_module_fs_using_interfaces,
+  step_module_fs_using_interfaces_with_config
 }
 
 import ./typecheck_fs_interface_decl_lines.vibe {
-  module_plan_data_fs
+  module_plan_data_fs, module_plan_data_fs_with_config
 }
 
 import ./typecheck_fs_local_type_member_markers.vibe {
@@ -180,7 +194,12 @@ export fn artifact_input_trace_dependency_plan_evidence_fs(_ entry_path: String)
 }
 
 export fn module_plan_manifest_fs(_ entry_path: String) -> (String, Array[String]) with Env + Exception + Fs {
-  let (order, ranks, ordered_deps, ordered_sources) = module_plan_data_fs(entry_path)
+  module_plan_manifest_fs_with_config(entry_path, cfg = target_cfg_ambient())
+}
+
+/// Keep planned sources and dependencies in one invocation configuration.
+export fn module_plan_manifest_fs_with_config(_ entry_path: String, cfg: TargetCfg) -> (String, Array[String]) with Env + Exception + Fs {
+  let (order, ranks, ordered_deps, ordered_sources) = module_plan_data_fs_with_config(entry_path, cfg = cfg)
   let buf = StringBuilder::new()
   StringBuilder::push(buf, value = "version\t1\n")
   let n = Array::length(order)
@@ -276,12 +295,17 @@ fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Arra
 /// differently from run to run, and scripts/dep_order_oracle.sh asserts the
 /// compiled output is byte-identical across seeds regardless.
 export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  ensure_fingerprint_fs_impl_with_config(rdb = rdb, env_cache = env_cache, dep_source_cache = dep_source_cache, parse_count = parse_count, path = path, cfg = target_cfg_ambient())
+}
+
+/// Use this invocation's target flags for parsing and cache identity.
+export fn ensure_fingerprint_fs_impl_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, cfg: TargetCfg) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
   let interfaces = dependency_interface_set_new()
   module_typed_lowering_memo_reset()
   typing_dependency_env_reuse_valid_witness_memo_reset()
-  checked_module_cache_reset()
+  checked_module_cache_reset_in_namespace(namespace = target_cfg_namespace(cfg))
   compact_source_fingerprint_memo_reset()
-  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs(rdb = rdb, dep_source_cache = dep_source_cache, parse_count = parse_count, root = path)
+  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs_with_config(rdb = rdb, dep_source_cache = dep_source_cache, parse_count = parse_count, root = path, cfg = cfg)
   let trace_path = scheduler_trace_path()
   let tracing = String::length(trace_path) > 0
   let trace = StringBuilder::new()
@@ -300,7 +324,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
       scheduler_trace_project(buf = trace, order = order, ranks = ranks, plan_edges = edges)
     } else ()
     resume(())
-  }; ModuleWalk::Visit(n) => resume(dep_visit_order(n)); ModuleWalk::Step(fps, current, module_path) => resume(fs_walk_step_answer(leaf_fps = plan_leaf_fps, edges = plan_edges, fps = fps, state = current, path = module_path, interfaces = interfaces)); ModuleWalk::Published(module_path, fp, next, previous_parse_count) => {
+  }; ModuleWalk::Visit(n) => resume(dep_visit_order(n)); ModuleWalk::Step(fps, current, module_path) => resume(fs_walk_step_answer_with_config(leaf_fps = plan_leaf_fps, edges = plan_edges, fps = fps, state = current, path = module_path, interfaces = interfaces, cfg = cfg)); ModuleWalk::Published(module_path, fp, next, previous_parse_count) => {
     fs_walk_published(path = module_path, fp = fp, state = next, previous_parse_count = previous_parse_count, interfaces = interfaces, trace = trace, tracing = tracing)
     resume(())
   }; ModuleWalk::Failed(_) => {
@@ -312,7 +336,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
     } else ()
     resume(())
   }; ModuleWalk::Finish(current, root) => {
-    let (finished, error) = fs_walk_finish_answer(state = current, path = root, starting_parse_count = parse_count)
+    let (finished, error) = fs_walk_finish_answer_with_config(state = current, path = root, starting_parse_count = parse_count, cfg = cfg)
     Array::set(result_state, at = 0, value = finished)
     resume(error)
   } }
@@ -323,8 +347,13 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
 // Exception is handled in the provider helper, not raised from an effect arm:
 // throwing arms force the handler onto the suspend-CPS driver (#3693).
 fn fs_walk_step_answer(leaf_fps: Array[(String, String)], edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, path: String, interfaces: DependencyInterfaceSet) -> (String, ModuleWalkState, Option[String]) with Env + Fs {
+  fs_walk_step_answer_with_config(leaf_fps = leaf_fps, edges = edges, fps = fps, state = state, path = path, interfaces = interfaces, cfg = target_cfg_ambient())
+}
+
+/// Use this invocation's target flags for parsing and cache identity.
+fn fs_walk_step_answer_with_config(leaf_fps: Array[(String, String)], edges: Array[(String, Array[String])], fps: Array[(String, String)], state: ModuleWalkState, path: String, interfaces: DependencyInterfaceSet, cfg: TargetCfg) -> (String, ModuleWalkState, Option[String]) with Env + Fs {
   handle {
-    let (fp, rdb, env_cache, dep_sources, parse_count) = step_module_fs_using_interfaces(plan_leaf_fps = leaf_fps, plan_edges = edges, fps = fps, rdb = state.rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = state.parse_count, path = path, interfaces = interfaces)
+    let (fp, rdb, env_cache, dep_sources, parse_count) = step_module_fs_using_interfaces_with_config(plan_leaf_fps = leaf_fps, plan_edges = edges, fps = fps, rdb = state.rdb, env_cache = state.env_cache, dep_source_cache = state.dep_sources, parse_count = state.parse_count, path = path, interfaces = interfaces, cfg = cfg)
     (fp, ModuleWalkState::{ rdb, env_cache, dep_sources, parse_count }, None)
   } with { Exception::Throw(message) => (String::concat("diagnosed:", path), state, Some(message)) }
 }
@@ -357,8 +386,13 @@ fn fs_walk_published(path: String, fp: String, state: ModuleWalkState, previous_
 }
 
 fn fs_walk_finish_answer(state: ModuleWalkState, path: String, starting_parse_count: Int) -> (ModuleWalkState, Option[String]) with Env + Fs {
+  fs_walk_finish_answer_with_config(state = state, path = path, starting_parse_count = starting_parse_count, cfg = target_cfg_ambient())
+}
+
+/// Use this invocation's target flags for parsing and cache identity.
+fn fs_walk_finish_answer_with_config(state: ModuleWalkState, path: String, starting_parse_count: Int, cfg: TargetCfg) -> (ModuleWalkState, Option[String]) with Env + Fs {
   handle {
-    let env_cache = ensure_env_cache_for_path(rdb = state.rdb, env_cache = state.env_cache, path = path)
+    let env_cache = ensure_env_cache_for_path_with_config(rdb = state.rdb, env_cache = state.env_cache, path = path, cfg = cfg)
     incremental_typecheck_telemetry_add(index = 3, amount = state.parse_count - starting_parse_count)
     (ModuleWalkState::{
       rdb: state.rdb,
@@ -1693,4 +1727,10 @@ export fn unstable_import_diagnostics(input_path: String, detected: String, loca
 
 import ./typecheck_fs_bind_import_names_from_cache_collecting.vibe {
   dependency_interface_set_new, dependency_interface_set_publish
+}
+
+/// Capture the target flags once for an independently requested module plan.
+export fn module_plan_manifest_fs_configured(_ entry_path: String) -> (String, Array[String]) with Config + Env + Exception + Fs {
+  let cfg = target_cfg_capture()
+  module_plan_manifest_fs_with_config(entry_path, cfg = cfg)
 }

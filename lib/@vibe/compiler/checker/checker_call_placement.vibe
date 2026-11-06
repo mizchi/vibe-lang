@@ -26,7 +26,8 @@ import @vibe/compiler/core {
   call_placement_raw,
   canonical_builtin_name,
   env_lookup,
-  env_lookup_binding
+  env_lookup_binding,
+  is_stdin_provider_import_value
 }
 
 import @vibe/compiler/checker/builtin_sigs {
@@ -42,11 +43,13 @@ import ./checker_closure_capture_row.vibe {
 }
 
 import ./checker_call_header.vibe {
+  checker_builtin_alias_of,
   checker_builtin_alias_target,
   checker_builtin_call_name,
   checker_call_header_defaults,
   checker_call_header_has_optional,
   checker_call_header_names,
+  checker_header_defaults_of,
   checker_header_name_is_positional
 }
 
@@ -566,36 +569,42 @@ export fn checker_check_defaulted_value(env: TypeEnv, name: String, offset: Int,
   if checker_call_header_is_probe() {
     ()
   } else {
-    match checker_call_header_defaults(env = env, name = name) {
-      Some(_) => Array::push(errors, value = name + " has parameter defaults, which apply only to a direct call, so it cannot be used as a value; wrap it in a lambda that calls it, e.g. `(a) -> " + name + "(a)`" + off_marker_len(off = offset, len = String::length(name))),
-      None => ()
-    }
-    checker_check_aliased_builtin_value(env = env, name = name, offset = offset, errors = errors)
-  }
-}
-
-/// #3833: a call-only builtin reached through an import alias (`let g =
-/// D::floor` after `import @vibe/builtin { Float64 as D }`) is refused as a
-/// value exactly as its canonical spelling is. The alias is an ordinary
-/// binding, so the builtin branch that refuses `let g = Float64::floor` never
-/// saw it, and the value reached code generation as an internal error. Only
-/// a qualified name is looked up: an item alias is a bare name, and a lookup
-/// per bare identifier would cost every variable read.
-fn checker_check_aliased_builtin_value(env: TypeEnv, name: String, offset: Int, errors: Array[String]) -> Unit {
-  if String::index_of(name, needle = "::") > 0 {
-    match checker_builtin_alias_target(env = env, name = name) {
-      Some(canonical) => match lookup_builtin(canonical) {
-        Some(t) => if builtin_ident_is_value(name = canonical, t = t) {
-          ()
-        } else {
-          Array::push(errors, value = call_only_builtin_ident_error(name = canonical, ty = t, ident_off = 0 - 1) + off_marker_len(off = offset, len = String::length(name)))
-        },
-        None => ()
+    // One lookup serves both checks: this runs for every value reference.
+    match env_lookup_binding(env = env, name = name) {
+      Some(binding) => {
+        match checker_header_defaults_of(binding.origin) {
+          Some(_) => Array::push(errors, value = name + " has parameter defaults, which apply only to a direct call, so it cannot be used as a value; wrap it in a lambda that calls it, e.g. `(a) -> " + name + "(a)`" + off_marker_len(off = offset, len = String::length(name))),
+          None => ()
+        }
+        checker_check_aliased_builtin_value(env = env, name = name, origin = binding.origin, offset = offset, errors = errors)
       },
       None => ()
     }
-  } else {
-    ()
+  }
+}
+
+/// #3833: a call-only builtin reached through an import alias is refused as a
+/// value exactly as its canonical spelling is: `let g = D::floor` after
+/// `import @vibe/builtin { Float64 as D }`, and `let g = fl` after
+/// `{ Float64::floor as fl }`. The alias is an ordinary binding, so the
+/// builtin branch that refuses `let g = Float64::floor` never saw it, and the
+/// value reached code generation as an internal error. The marker is looked
+/// up only for a binding renamed from another source name.
+fn checker_check_aliased_builtin_value(env: TypeEnv, name: String, origin: BindingOrigin, offset: Int, errors: Array[String]) -> Unit {
+  match checker_builtin_alias_of(env = env, name = name, origin = origin) {
+    // The stdin provider operations have a refusal of their own, which names
+    // the edit for them: wrap the call in an explicitly effectful function.
+    Some(canonical) => if is_stdin_provider_import_value(canonical) {
+      ()
+    } else match lookup_builtin(canonical) {
+      Some(t) => if builtin_ident_is_value(name = canonical, t = t) {
+        ()
+      } else {
+        Array::push(errors, value = call_only_builtin_ident_error(name = canonical, ty = t, ident_off = 0 - 1) + off_marker_len(off = offset, len = String::length(name)))
+      },
+      None => ()
+    },
+    None => ()
   }
 }
 

@@ -1,0 +1,317 @@
+import @vibe/compiler/checker {
+  typing_semantics_seed
+}
+import @vibe/compiler/checker/artifacts/module {
+  checked_module_input_fingerprint
+}
+import @vibe/compiler/config {
+  Config, target_cfg_from_csv, target_cfg_namespace
+}
+import @vibe/compiler/cache {
+  compact_source_fingerprint_memo,
+  load_persistent_artifact_with_cfg,
+  persistent_dep_list_cache_path_in_namespace,
+  set_persistent_cache_cfg_flags,
+  store_persistent_artifact_with_cfg
+}
+import @vibe/compiler/runtime {
+  TypeDb,
+  check_file_fs_configured,
+  db_check_env,
+  db_new,
+  db_parse_count,
+  db_set_source,
+  db_typecheck,
+  db_typecheck_count,
+  db_typecheck_fs_with_config,
+  module_plan_manifest_fs_configured,
+  persistent_type_env_cache_text,
+  typecheck_fs_build_fingerprint,
+  typecheck_fs_build_fingerprint_with_config,
+  typing_dependency_transport_input_key,
+  typing_dependency_transport_input_key_memo,
+  typing_dependency_transport_input_key_memo_with_config,
+  typing_dependency_transport_input_key_with_config,
+  typing_reuse_key_text
+}
+import @vibe/compiler/runtime/checked_module_cache {
+  checked_module_cache_input_identity_in_namespace, checked_module_cache_stats, set_checked_module_cache_mode
+}
+import @vibe/compiler/loader {
+  parse_program_located_shared_semantic_pending_with_config
+}
+import @vibe/parser {
+  set_cfg_ambient_flags
+}
+
+fn typecheck_cfg_reset() -> Unit with Env + Exception {
+  set_cfg_ambient_flags([])
+  set_persistent_cache_cfg_flags("")
+  set_checked_module_cache_mode("off")
+}
+
+fn typecheck_cfg_files(_ root: String) -> (String, String, TypeDb) with Fs {
+  Fs::mkdir_p(root)
+  let a = "\{root}/alpha.vibe"
+  let b = "\{root}/beta.vibe"
+  let path = "\{root}/main.vibe"
+  let source = "#cfg(alpha)\nimport ./alpha.vibe { selected }\n#cfg(beta)\nimport ./beta.vibe { selected }\n#cfg(poison)\nimport ./missing.vibe {}\n#cfg(alpha)\nexport fn result() -> Int { selected() }\n#cfg(beta)\nexport fn result() -> Bool { selected() }\n"
+  let sa = "export fn selected() -> Int { 11 }\n"
+  let sb = "export fn selected() -> Bool { true }\n"
+  Fs::write_file(a, contents = sa)
+  Fs::write_file(b, contents = sb)
+  Fs::write_file(path, contents = source)
+  let db = db_set_source(db = db_new(), path = a, source = sa)
+  let db = db_set_source(db = db, path = b, source = sb)
+  (path, source, db_set_source(db = db, path = path, source = source))
+}
+
+fn typecheck_cfg_run(db: TypeDb, path: String, flags: String) -> TypeDb with Env + Exception + Fs {
+  // Keep the handler around the flag read. The opaque DB remains outside
+  // that scope and receives immutable data rather than handler authority.
+  let captured = handle {
+    perform Config::CfgFlags()
+  } with { Config::CfgFlags() => resume(flags) }
+  db_typecheck_fs_with_config(db = db, path = path, cfg = target_cfg_from_csv(captured))
+}
+
+fn typecheck_cfg_env(db: TypeDb, path: String) -> String with Exception {
+  match db_check_env(db = db, path = path) {
+    Some(env) => persistent_type_env_cache_text(env),
+    None => throw("configured check did not publish an environment")
+  }
+}
+
+fn typecheck_cfg_error(db: TypeDb, path: String, flags: String) -> String with Env + Fs {
+  handle {
+    let _ = typecheck_cfg_run(db = db, path = path, flags = flags)
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+test "resident dependency edges and environments follow flag switches" {
+  let (path, _, db) = typecheck_cfg_files("_build/config_typecheck_resident_\{Profiler::now_us()}")
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    let alpha = typecheck_cfg_run(db = db, path = path, flags = " alpha, ")
+    let a = typecheck_cfg_env(db = alpha, path = path)
+    let beta = typecheck_cfg_run(db = alpha, path = path, flags = "beta")
+    let b = typecheck_cfg_env(db = beta, path = path)
+    assert(a != b)
+    assert(db_typecheck_count(beta) > db_typecheck_count(alpha))
+    let count = db_typecheck_count(beta)
+    let beta_warm = typecheck_cfg_run(db = beta, path = path, flags = "beta")
+    assert_eq(db_typecheck_count(beta_warm), count)
+    assert_eq(typecheck_cfg_env(db = beta_warm, path = path), b)
+    let alpha_again = typecheck_cfg_run(db = beta_warm, path = path, flags = "alpha")
+    assert_eq(typecheck_cfg_env(db = alpha_again, path = path), a)
+    assert(db_typecheck_count(alpha_again) > count)
+    typecheck_cfg_reset()
+  } with { Exception::Throw(message) => {
+    typecheck_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "planning and dependency-list disk entries use the captured namespace" {
+  let (path, source, db) = typecheck_cfg_files("_build/config_typecheck_plan_\{Profiler::now_us()}")
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    let (plan_a, _) = handle {
+      module_plan_manifest_fs_configured(path)
+    } with { Config::CfgFlags() => resume("alpha") }
+    let (plan_b, _) = handle {
+      module_plan_manifest_fs_configured(path)
+    } with { Config::CfgFlags() => resume("beta") }
+    assert(String::contains(plan_a, needle = "/alpha.vibe"))
+    assert(!String::contains(plan_a, needle = "/beta.vibe"))
+    assert(String::contains(plan_b, needle = "/beta.vibe"))
+    assert(!String::contains(plan_b, needle = "/alpha.vibe"))
+    let alpha = typecheck_cfg_run(db = db, path = path, flags = "alpha")
+    let _ = typecheck_cfg_run(db = alpha, path = path, flags = "beta")
+    let fp = compact_source_fingerprint_memo(path = path, source = source)
+    let pa = persistent_dep_list_cache_path_in_namespace(path = path, source_fingerprint = fp, namespace = target_cfg_namespace(target_cfg_from_csv("alpha")))
+    let pb = persistent_dep_list_cache_path_in_namespace(path = path, source_fingerprint = fp, namespace = target_cfg_namespace(target_cfg_from_csv("beta")))
+    assert(pa != pb)
+    assert(Fs::exists(pa))
+    assert(Fs::exists(pb))
+    typecheck_cfg_reset()
+  } with { Exception::Throw(message) => {
+    typecheck_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "checked-module disk reuse and first semantic use remain configuration-specific" {
+  let (path, source, db) = typecheck_cfg_files("_build/config_typecheck_artifact_\{Profiler::now_us()}")
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  set_checked_module_cache_mode("on")
+  handle {
+    let alpha = typecheck_cfg_run(db = db, path = path, flags = "alpha")
+    let a = typecheck_cfg_env(db = alpha, path = path)
+    assert(!parse_program_located_shared_semantic_pending_with_config(path = path, source = source, cfg = target_cfg_from_csv("alpha")))
+    assert(parse_program_located_shared_semantic_pending_with_config(path = path, source = source, cfg = target_cfg_from_csv("beta")))
+    let beta = typecheck_cfg_run(db = alpha, path = path, flags = "beta")
+    assert(typecheck_cfg_env(db = beta, path = path) != a)
+    assert(!parse_program_located_shared_semantic_pending_with_config(path = path, source = source, cfg = target_cfg_from_csv("beta")))
+    let alpha_warm = typecheck_cfg_run(db = beta, path = path, flags = "alpha")
+    let (reused, fresh, _) = checked_module_cache_stats()
+    assert(reused > 0)
+    assert_eq(fresh, 0)
+    assert_eq(typecheck_cfg_env(db = alpha_warm, path = path), a)
+    typecheck_cfg_reset()
+  } with { Exception::Throw(message) => {
+    typecheck_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "successful and failing nested checks leave the outer configuration available" {
+  let (path, _, db) = typecheck_cfg_files("_build/config_typecheck_nested_\{Profiler::now_us()}")
+  let (inner_path, _, inner) = typecheck_cfg_files("_build/config_typecheck_inner_\{Profiler::now_us()}")
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  handle {
+    let expected = typecheck_cfg_run(db = db, path = path, flags = "alpha")
+    let calls = [0]
+    handle {
+      check_file_fs_configured(path)
+    } with { Config::CfgFlags() => {
+      Array::set(calls, at = 0, value = Array::get(calls, at = 0) + 1)
+      let inner_checked = typecheck_cfg_run(db = inner, path = inner_path, flags = "beta")
+      assert(typecheck_cfg_error(db = inner_checked, path = inner_path, flags = "poison") != "")
+      resume("alpha")
+    } }
+    let actual = typecheck_cfg_run(db = expected, path = path, flags = "alpha")
+    assert_eq(typecheck_cfg_env(db = actual, path = path), typecheck_cfg_env(db = expected, path = path))
+    assert_eq(Array::get(calls, at = 0), 1)
+    typecheck_cfg_reset()
+  } with { Exception::Throw(message) => {
+    typecheck_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "conservative fingerprints and transported alias keys bind exact target flags" {
+  let source = "#cfg(alpha)\nexport fn result() -> Int { 1 }\n#cfg(beta)\nexport fn result() -> Bool { true }\n"
+  let alpha = target_cfg_from_csv("alpha")
+  let beta = target_cfg_from_csv("beta")
+  let semantics = typing_semantics_seed()
+  let a = typecheck_fs_build_fingerprint_with_config(path = "scoped.vibe", source = source, dep_fps = [
+  ], semantics_seed = semantics, cfg = alpha)
+  let b = typecheck_fs_build_fingerprint_with_config(path = "scoped.vibe", source = source, dep_fps = [
+  ], semantics_seed = semantics, cfg = beta)
+  assert(a != b)
+  let ka = typing_dependency_transport_input_key_with_config(path = "scoped.vibe", source = source, semantics_seed = semantics, dep_envs = [
+  ], cfg = alpha)
+  let kb = typing_dependency_transport_input_key_with_config(path = "scoped.vibe", source = source, semantics_seed = semantics, dep_envs = [
+  ], cfg = beta)
+  assert(ka != kb)
+  assert_eq(typing_reuse_key_text(typing_dependency_transport_input_key_memo_with_config(path = "scoped.vibe", source = source, semantics_seed = semantics, dep_envs = [
+  ], dep_fps = [], cfg = alpha)), ka)
+  assert_eq(typing_reuse_key_text(typing_dependency_transport_input_key_memo_with_config(path = "scoped.vibe", source = source, semantics_seed = semantics, dep_envs = [
+  ], dep_fps = [], cfg = beta)), kb)
+}
+
+test "a checked-module payload moved across flag namespaces is rejected and repaired" {
+  let root = "_build/config_typecheck_moved_\{Profiler::now_us()}"
+  Fs::mkdir_p(root)
+  let path = "\{root}/main.vibe"
+  let source = "#cfg(alpha)\nexport fn result() -> Int { 1 }\n#cfg(beta)\nexport fn result() -> Bool { true }\n"
+  Fs::write_file(path, contents = source)
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  set_checked_module_cache_mode("on")
+  handle {
+    let db = db_set_source(db = db_new(), path = path, source = source)
+    let alpha = typecheck_cfg_run(db = db, path = path, flags = "alpha")
+    let a = typecheck_cfg_env(db = alpha, path = path)
+    let beta = typecheck_cfg_run(db = alpha, path = path, flags = "beta")
+    let b = typecheck_cfg_env(db = beta, path = path)
+    assert(a != b)
+    let ia = checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = typing_semantics_seed(), deps = [
+    ], namespace = target_cfg_namespace(target_cfg_from_csv("alpha")))
+    let ib = checked_module_cache_input_identity_in_namespace(path = path, source = source, semantics_seed = typing_semantics_seed(), deps = [
+    ], namespace = target_cfg_namespace(target_cfg_from_csv("beta")))
+    let fa = checked_module_input_fingerprint(ia)
+    let fb = checked_module_input_fingerprint(ib)
+    let payload = match load_persistent_artifact_with_cfg(kind = "checked-module-v1", entry_name = path, fingerprint = fa, cfg_csv = "alpha") {
+      Some(bytes) => bytes,
+      None => throw("the alpha check did not publish its checked-module payload")
+    }
+    // Re-encode the valid outer storage envelope for beta. The inner product
+    // must still refuse alpha's exact inputs rather than trust its filename.
+    store_persistent_artifact_with_cfg(kind = "checked-module-v1", entry_name = path, fingerprint = fb, bytes = payload, cfg_csv = "beta")
+    let fresh = db_set_source(db = db_new(), path = path, source = source)
+    let repaired = typecheck_cfg_run(db = fresh, path = path, flags = "beta")
+    let (reused, checked, _) = checked_module_cache_stats()
+    assert_eq(reused, 0)
+    assert_eq(checked, 1)
+    assert_eq(typecheck_cfg_env(db = repaired, path = path), b)
+    let fresh_again = db_set_source(db = db_new(), path = path, source = source)
+    let warm = typecheck_cfg_run(db = fresh_again, path = path, flags = "beta")
+    let (reused_again, checked_again, _) = checked_module_cache_stats()
+    assert_eq(reused_again, 1)
+    assert_eq(checked_again, 0)
+    assert_eq(typecheck_cfg_env(db = warm, path = path), b)
+    typecheck_cfg_reset()
+  } with { Exception::Throw(message) => {
+    typecheck_cfg_reset()
+    throw(message)
+  } }
+}
+
+test "compatibility logical keys retain input-only behavior under ambient flag changes" {
+  set_cfg_ambient_flags([])
+  set_persistent_cache_cfg_flags("")
+  let fp = typecheck_fs_build_fingerprint(path = "pure.vibe", source = "source", dep_fps = [
+  ], semantics_seed = "strict")
+  let key = typing_dependency_transport_input_key(path = "pure.vibe", source = "source", semantics_seed = "strict", dep_envs = [
+  ])
+  let memo = typing_reuse_key_text(typing_dependency_transport_input_key_memo(path = "pure.vibe", source = "source", semantics_seed = "strict", dep_envs = [
+  ], dep_fps = []))
+  set_cfg_ambient_flags(["poison"])
+  set_persistent_cache_cfg_flags("poison")
+  let other_fp = typecheck_fs_build_fingerprint(path = "pure.vibe", source = "source", dep_fps = [
+  ], semantics_seed = "strict")
+  let other_key = typing_dependency_transport_input_key(path = "pure.vibe", source = "source", semantics_seed = "strict", dep_envs = [
+  ])
+  let other_memo = typing_reuse_key_text(typing_dependency_transport_input_key_memo(path = "pure.vibe", source = "source", semantics_seed = "strict", dep_envs = [
+  ], dep_fps = []))
+  typecheck_cfg_reset()
+  assert_eq(other_fp, fp)
+  assert_eq(other_key, key)
+  assert_eq(other_memo, memo)
+}
+
+test "legacy in-memory flag checks retain warm reuse and invalidate flag changes" {
+  let path = "config_memory/main.vibe"
+  let source = "#cfg(alpha)\nexport fn result() -> Int { 1 }\n#cfg(beta)\nexport fn result() -> Bool { true }\n"
+  let db = db_set_source(db = db_new(), path = path, source = source)
+  set_cfg_ambient_flags(["alpha"])
+  set_persistent_cache_cfg_flags("alpha")
+  handle {
+    let alpha = db_typecheck(db = db, path = path)
+    let a = typecheck_cfg_env(db = alpha, path = path)
+    let warm = db_typecheck(db = alpha, path = path)
+    assert_eq(db_parse_count(warm), db_parse_count(alpha))
+    assert_eq(db_typecheck_count(warm), db_typecheck_count(alpha))
+    assert_eq(typecheck_cfg_env(db = warm, path = path), a)
+    set_cfg_ambient_flags(["beta"])
+    set_persistent_cache_cfg_flags("beta")
+    let beta = db_typecheck(db = warm, path = path)
+    let b = typecheck_cfg_env(db = beta, path = path)
+    assert(a != b)
+    assert(db_typecheck_count(beta) > db_typecheck_count(warm))
+    let beta_warm = db_typecheck(db = beta, path = path)
+    assert_eq(db_parse_count(beta_warm), db_parse_count(beta))
+    assert_eq(db_typecheck_count(beta_warm), db_typecheck_count(beta))
+    typecheck_cfg_reset()
+  } with { Exception::Throw(message) => {
+    typecheck_cfg_reset()
+    throw(message)
+  } }
+}
