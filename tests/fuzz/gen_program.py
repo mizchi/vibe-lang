@@ -293,7 +293,7 @@ class ExtGen:
         tail = " + ".join(f"{a} * {c}" for a, c in zip(asks, coefs))
         body.append(f"(({tail} + n) & {MASK})")
         txt = "\n".join("  " + l for l in body)
-        self.decls.append(f"export fn {name}(n: Int) -> Int with {eff} {{\n{txt}\n}}")
+        self.decls.append(f"export fn {name}(_ n: Int) -> Int with {eff} {{\n{txt}\n}}")
         self.exports.append(name)
         self.efuncs[name] = {"kind": "eff", "eff": eff, "steps": steps, "coefs": coefs}
         self.rows[name] = frozenset([eff])
@@ -309,7 +309,7 @@ class ExtGen:
         k = r.randint(0, 30)
         payload = f"(((n + {c}) & {MASK}))" if arity else ""
         self.decls.append(
-            f"export fn {name}(n: Int) -> Int with Exception[{kname}] {{\n"
+            f"export fn {name}(_ n: Int) -> Int with Exception[{kname}] {{\n"
             f"  if n > {thresh} {{ throw({cname}{payload}) }}\n"
             f"  ((n * {m} + {k}) & {MASK})\n}}")
         self.exports.append(name)
@@ -335,7 +335,7 @@ class ExtGen:
             spelled = " + ".join(labels)
         mask_k = r.choice([7, 15])
         self.decls.append(
-            f"export fn {name}(n: Int) -> Int with {spelled} {{\n"
+            f"export fn {name}(_ n: Int) -> Int with {spelled} {{\n"
             f"  let a = {ef}(n)\n"
             f"  let b = {th}((a & {mask_k}))\n"
             f"  ((a + b * 3) & {MASK})\n}}")
@@ -356,7 +356,7 @@ class ExtGen:
 
     def gen_generic_id(self):
         name = self.fresh("gid")
-        self.decls.append(f"export fn {name}[T](x: T) -> T {{ x }}")
+        self.decls.append(f"export fn {name}[T](_ x: T) -> T {{ x }}")
         self.exports.append(name)
         self.gid = name
         self.rows[name] = frozenset()
@@ -376,10 +376,10 @@ class ExtGen:
         g1 = self.fresh("gm")
         ufcs = r.random() < 0.5
         call = "v.mz()" if ufcs else f"T::mz(v)"
-        self.decls.append(f"export fn {g1}[T: {tr}](v: T) -> Int {{ {call} }}")
+        self.decls.append(f"export fn {g1}[T: {tr}](_ v: T) -> Int {{ {call} }}")
         g2 = self.fresh("gm")
         self.decls.append(
-            f"export fn {g2}[T: {tr}](a: T, b: T) -> Int {{ ((T::mz(a) * 2 - T::mz(b)) & {MASK}) }}")
+            f"export fn {g2}[T: {tr}](_ a: T, _ b: T) -> Int {{ ((T::mz(a) * 2 - T::mz(b)) & {MASK}) }}")
         self.exports += [tr, st, g1, g2]
         self.trait_info = (tr, st, g1, g2, m1, k1, m2, k2)
         for n in (g1, g2):
@@ -621,7 +621,7 @@ class ExtGen:
             idx = r.randrange(len(elems))
             mv = self.fresh("mo")
             lines.append(
-                f"let {mv} = match Array::get({name}, {idx}) {{ Some(x) => ((x + {c}) & {MASK}), "
+                f"let {mv} = match Array::get({name}, at = {idx}) {{ Some(x) => ((x + {c}) & {MASK}), "
                 f"None => {k1} }}")
             e = elems[idx]
             exp = k1 if e[0] == "none" else (e[1][1] + c) & MASK
@@ -648,16 +648,16 @@ class ExtGen:
                 exps.append(a + b)
             elif pick == 3:
                 i, j = r.randint(-1, 6), r.randint(-1, 6)
-                parts.append(f'\\{{String::substring("{a}", {i}, {j})}}')
+                parts.append(f'\\{{String::substring("{a}", start = {i}, end = {j})}}')
                 exps.append(ext_substring(a, i, j))
             elif pick == 4:
-                parts.append(f'\\{{String::contains("{a}", "{b}")}}')
+                parts.append(f'\\{{String::contains("{a}", needle = "{b}")}}')
                 exps.append("true" if b in a else "false")
             elif pick == 5:
-                parts.append(f'\\{{String::starts_with("{a}", "{b}")}}')
+                parts.append(f'\\{{String::starts_with("{a}", prefix = "{b}")}}')
                 exps.append("true" if a.startswith(b) else "false")
             else:
-                parts.append(f'\\{{String::ends_with("{a}", "{b}")}}')
+                parts.append(f'\\{{String::ends_with("{a}", suffix = "{b}")}}')
                 exps.append("true" if a.endswith(b) else "false")
         self.emit(lines, "R", ",".join(parts), ",".join(exps))
 
@@ -746,7 +746,7 @@ class ExtGen:
                     return lv.value
                 raise AssertionError("eff helper never asked")
         self.decls.append(
-            f"export fn {w}(n: Int) -> Int {{\n"
+            f"export fn {w}(_ n: Int) -> Int {{\n"
             f"  let r = handle {{ {body} }} with {{\n"
             f"    {eff}::Ask(x) => return ((x + {k}) & {MASK})\n"
             f"    {eff}::Tell(y) => resume(())\n"
@@ -1451,7 +1451,9 @@ class Gen:
         out = []
         for name, params, ret, body in self.helpers:
             sig_params = ", ".join(t for _, t in params)
-            arg_names = ", ".join(n for n, _ in params)
+            # ADR-0120 Phase 4: a generated helper's call sites stay
+            # positional, so its parameters are declared `_`.
+            arg_names = ", ".join("_ " + n for n, _ in params)
             body_txt = "\n".join("  " + l for l in body)
             out.append(
                 f"export let {name}: ({sig_params}) -> {ret} = "
@@ -1465,7 +1467,7 @@ class Gen:
         out = []
         for rname, sname, base in self.recursors:
             out.append(
-                f"export fn {rname}(n: Int, carried: {sname}) -> Int {{\n"
+                f"export fn {rname}(_ n: Int, _ carried: {sname}) -> Int {{\n"
                 f"  if n <= 0 {{ {base} }} else {{ {rname}(n - 1, carried) }}\n"
                 f"}}")
         return "\n\n".join(out)

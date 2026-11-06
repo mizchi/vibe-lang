@@ -170,14 +170,36 @@ let declared_headers: Array[MutMap[String, Array[String]]] = [
   MutMap::new_string()
 ]
 
+/// The declaration names a local lambda has shadowed in this check (Codex on
+/// #3881). Equal parameter names cannot tell the two headers apart, so such a
+/// local also binds `local_shadow_marker(name)` beside itself; the marker is
+/// in scope exactly where the local is. Only a name listed here pays for the
+/// marker lookup.
+let locally_shadowed: Array[MutMap[String, Bool]] = [MutMap::new_string()]
+
 /// Forget the declarations of an earlier check.
 export fn checker_declared_headers_reset() -> Unit {
   Array::set(declared_headers, at = 0, value = MutMap::new_string())
+  Array::set(locally_shadowed, at = 0, value = MutMap::new_string())
 }
 
-fn declared_header_is(name: String, names: Array[String]) -> Bool {
+fn local_shadow_marker(_ name: String) -> String {
+  String::concat("#local_call_header:", name)
+}
+
+fn declared_header_is(env: TypeEnv, name: String, names: Array[String]) -> Bool {
   match MutMap::get(Array::get(declared_headers, at = 0), k = name) {
-    Some(found) => found == names,
+    Some(found) => if found != names {
+      false
+    } else {
+      match MutMap::get(Array::get(locally_shadowed, at = 0), k = name) {
+        Some(_) => match env_lookup_binding(env = env, name = local_shadow_marker(name)) {
+          Some(_) => false,
+          None => true
+        },
+        None => true
+      }
+    },
     None => false
   }
 }
@@ -191,8 +213,8 @@ export fn checker_call_header_is_declaration(env: TypeEnv, name: String) -> Bool
       BindingOriginModuleFunctionHeader(_, _, _, _) => true,
       BindingOriginReExportFunctionHeader(_, _, _, _) => true,
       BindingOriginModuleExport(_, _) => true,
-      BindingOriginFunctionHeader(names) => declared_header_is(name = name, names = names),
-      BindingOriginDefaultedFunctionHeader(names, _) => declared_header_is(name = name, names = names),
+      BindingOriginFunctionHeader(names) => declared_header_is(env = env, name = name, names = names),
+      BindingOriginDefaultedFunctionHeader(names, _) => declared_header_is(env = env, name = name, names = names),
       _ => false
     },
     None => false
@@ -229,16 +251,24 @@ fn bind_call_header(env: TypeEnv, name: String, ty: Type, value: Expr, declarati
       } else {
         raw_names
       }
-      if declaration {
+      // A local that shadows a declaration carries a marker in its scope.
+      let scoped = if declaration {
         MutMap::set(Array::get(declared_headers, at = 0), k = name, v = names)
+        env
       } else {
-        ()
+        match MutMap::get(Array::get(declared_headers, at = 0), k = name) {
+          Some(_) => {
+            MutMap::set(Array::get(locally_shadowed, at = 0), k = name, v = true)
+            env_bind(env = env, name = local_shadow_marker(name), ty = ty)
+          },
+          None => env
+        }
       }
       let origin = match checker_parameter_defaults(value) {
         Some(flags) => BindingOriginDefaultedFunctionHeader(names, flags),
         None => BindingOriginFunctionHeader(names)
       }
-      env_bind_with_origin(env = env, name = name, ty = ty, origin = origin)
+      env_bind_with_origin(env = scoped, name = name, ty = ty, origin = origin)
     },
     _ => env_bind(env = env, name = name, ty = ty)
   }

@@ -54,10 +54,10 @@ def assert_packet_integrity(repo, artifacts, runner, env, project):
     root.mkdir()
     names = [f"receipt_worker_function_{i}" for i in range(96)]
     functions = [f"fn {names[0]}(n: Int) -> Int {{ n + 1 }}"]
-    functions += [f"fn {name}(n: Int) -> Int {{ {names[i - 1]}(n) + 1 }}"
+    functions += [f"fn {name}(n: Int) -> Int {{ {names[i - 1]}(n = n) + 1 }}"
                   for i, name in enumerate(names) if i]
     (root / "main.vibe").write_text("\n".join(functions)
-                                    + f"\nfn main() -> Int {{ {names[-1]}(1) }}\n")
+                                    + f"\nfn main() -> Int {{ {names[-1]}(n = 1) }}\n")
     ordinary = root / "ordinary.wasm"
     subprocess.run(["bash", str(repo / "runtime/vibe"), "build", "main.vibe", "-o", str(ordinary)],
                    cwd=root, env=dict(env, VIBE_BUILD_CACHE_DIR=str(root / "ordinary-cache")),
@@ -334,7 +334,7 @@ def main():
         project = Path(directory)
         long_name = "worker_identifier_" + "q" * 300
         cases = [
-            ("long-identifier", f"fn {long_name}(a: Int) -> Int {{ a - 3 }}\nfn main() -> Int {{ {long_name}(11) }}", "8"),
+            ("long-identifier", f"fn {long_name}(a: Int) -> Int {{ a - 3 }}\nfn main() -> Int {{ {long_name}(a = 11) }}", "8"),
             ("subtract", "fn sub(a: Int, b: Int) -> Int { a - b }\nfn main() -> Int { sub(a = 43, b = 4) }", "39"),
             ("builtin-shadow", "fn compiler_lowering_run(n: Int) -> Int { n - 3 }\nfn main() -> Int { compiler_lowering_run(n = 11) }", "8"),
             ("division", "fn quotient(a: Int, b: Int) -> Int { a / b }\nfn main() -> Int { quotient(a = 43, b = 4) }", "10"),

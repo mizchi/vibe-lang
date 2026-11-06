@@ -25,6 +25,10 @@ import @vibe/parser {
 import @vibe/compiler/core {
   TypeEnv
 }
+
+import @vibe/compiler/cache {
+  set_persistent_cache_scope
+}
 import @vibe/compiler/query/project_context {
   QueryProjectEdit, QueryProjectState, query_project_context_fs, query_project_state_new
 }
@@ -57,13 +61,14 @@ fn label_sites_failed(path: String, source: String, message: String) -> LabelSit
 /// when a dependency walk throws. The replacement is never written to disk.
 fn label_sites_file(path: String, source: String, replacement: Option[String], state: QueryProjectState) -> (LabelSiteFile, QueryProjectState) with Env + Fs {
   // ADR-0120 Phase 4: the labels the codemod writes are not errors while it
-  // types the program, its import walk included. A dependency the walk
-  // publishes to the persistent cache meanwhile is stored without its
-  // missing-label errors; they cost no wrong answer (a positional argument is
-  // placed by position), and checking that dependency itself reports them.
+  // types the program, its import walk included. What that walk publishes
+  // was checked without them, so it goes to a cache namespace of its own: an
+  // ordinary check never reads it back as clean (Codex on #3881).
+  set_persistent_cache_scope("labels-suspended")
   checker_required_labels_suspend(true)
   let answer = label_sites_file_typed(path = path, source = source, replacement = replacement, state = state)
   checker_required_labels_suspend(false)
+  set_persistent_cache_scope("")
   answer
 }
 

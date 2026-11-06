@@ -80,7 +80,7 @@ proj="$WORK/proj"
 mkdir -p "$proj"
 printf 'fn main allows Stdout { Stdout::write_stream("42\\n") }\n' > "$proj/hello.vibex"
 printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$proj/lib.vibe"
-printf 'import ./lib.vibe { add }\nfn main allows Stdout { Stdout::write_stream("\\{add(20, 22)}\\n") }\n' > "$proj/app.vibex"
+printf 'import ./lib.vibe { add }\nfn main allows Stdout { Stdout::write_stream("\\{add(a = 20, b = 22)}\\n") }\n' > "$proj/app.vibex"
 printf 'fn main allows () { let _ = nope + 1; () }\n' > "$proj/bad.vibex"
 printf 'test "ok" {\n  assert_eq(2 + 2, 4)\n}\n' > "$proj/pass_test.vibe"
 printf 'test "bad" {\n  assert_eq(2 + 2, 5)\n}\n' > "$proj/fail_test.vibe"
@@ -103,7 +103,7 @@ printf 'import @vibe/console {\n  println\n}\nfn main allows Console {\n  printl
 # Book chapter 17's first example: `@vibe/concurrent` is stable and needs no
 # opt-in, so an installed toolchain must resolve it (and the nested
 # @vibe/concurrent/experimental it re-exports) with no repo lib/.
-printf 'import @vibe/concurrent {\n  TaskGroup, TaskHandle\n}\nfn main allows Console + Exception {\n  let answer = TaskGroup::run((n) -> {\n    let h = TaskGroup::spawn(n, () -> {\n      21 * 2\n    })\n    TaskHandle::join(h)\n  })\n  println("\\{answer}")\n}\n' > "$proj/concurrent_hello.vibex"
+printf 'import @vibe/concurrent {\n  TaskGroup, TaskHandle\n}\nfn main allows Console + Exception {\n  let answer = TaskGroup::run((n) -> {\n    let h = TaskGroup::spawn(n, f = () -> {\n      21 * 2\n    })\n    TaskHandle::join(h)\n  })\n  println("\\{answer}")\n}\n' > "$proj/concurrent_hello.vibex"
 (
   cd "$proj"
   unset VIBE_LIB || true
@@ -134,7 +134,7 @@ check "vibe check good exit" "0" "$rc"
 check "vibe check bad exit" "1" "$rc"
 
 # normalize (#882): --check flags an unnormalized file, in-place write fixes it
-printf 'fn nrm_helper(x: Int) -> Int {\n  x + 1\n}\n\nexport fn nrm_entry(n: Int) -> Int {\n  nrm_helper(n)\n}\n' > "$proj/nrm.vibe"
+printf 'fn nrm_helper(x: Int) -> Int {\n  x + 1\n}\n\nexport fn nrm_entry(n: Int) -> Int {\n  nrm_helper(x = n)\n}\n' > "$proj/nrm.vibe"
 "$VIBE" normalize --check "$proj/nrm.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe normalize --check flags unnormalized" "1" "$rc"
 "$VIBE" normalize "$proj/nrm.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
@@ -247,9 +247,9 @@ check "vibe test fail exit" "1" "$rc"
 shell_err="$WORK/shell.err"
 shell_out="$(printf '%s\n' \
   'fn double(x: Int) -> Int { x * 2 }' \
-  'double(21)' \
+  'double(x = 21)' \
   'this is not vibe !!!' \
-  'double(10) + 1' \
+  'double(x = 10) + 1' \
   ':quit' \
   | "$VIBE" shell 2>"$shell_err" || true)"
 check "vibe shell declares + evaluates" "42" "$(printf '%s\n' "$shell_out" | sed -n 1p)"
@@ -281,7 +281,7 @@ if command -v git >/dev/null 2>&1; then
 
   dproj="$WORK/dproj"
   "$VIBE" new "$dproj" >/dev/null 2>&1
-  printf 'import @acme/mathx { triple }\nfn main allows Stdout { Stdout::write_stream("\\{triple(14)}\\n") }\n' > "$dproj/main.vibex"
+  printf 'import @acme/mathx { triple }\nfn main allows Stdout { Stdout::write_stream("\\{triple(x = 14)}\\n") }\n' > "$dproj/main.vibex"
   ( cd "$dproj" && "$VIBE" add "$dep_spec" ) > "$WORK/add.log" 2>&1 && rc=0 || rc=$?
   check "vibe add exit" "0" "$rc"
   check "vibe add installs into .vibe/store" "yes" "$([ -s "$dproj/.vibe/store/@acme/mathx/index.vpkg" ] && echo yes || echo no)"
@@ -381,7 +381,7 @@ if command -v git >/dev/null 2>&1; then
   mid_repo="$WORK/mid_repo"
   mkdir -p "$mid_repo/packages/@acme/mid"
   printf 'name = @acme/mid\nversion = 1.0.0\ndescription =\n  #|fixture\ndeps = {}\n\ngenerated_hash =\n\nfn mid(x: Int) -> Int\n' > "$mid_repo/packages/@acme/mid/index.vpkg"
-  printf 'import @acme/base { base }\n\nexport fn mid(x: Int) -> Int {\n  base(x) + 2\n}\n' > "$mid_repo/packages/@acme/mid/impl.vibe"
+  printf 'import @acme/base { base }\n\nexport fn mid(x: Int) -> Int {\n  base(x = x) + 2\n}\n' > "$mid_repo/packages/@acme/mid/impl.vibe"
   ( cd "$mid_repo/packages/@acme/mid" && "$VIBE" add "git:file://$base_repo@v1.0.0#packages/@acme/base" ) > "$WORK/add_base.log" 2>&1 && rc=0 || rc=$?
   check "vibe add inside a package checkout pins in that package's index.vpkg" "yes" "$([ "$rc" = 0 ] && grep -qE '^require @acme/base 1.0.0 = #pkg:b3:[0-9a-f]{64}' "$mid_repo/packages/@acme/mid/index.vpkg" && echo yes || echo no)"
   rm -rf "$mid_repo/packages/@acme/mid/.vibe"
@@ -389,7 +389,7 @@ if command -v git >/dev/null 2>&1; then
   git_commit_all "$mid_repo" mid
   tproj="$WORK/tproj"
   "$VIBE" new "$tproj" >/dev/null 2>&1
-  printf 'import @acme/mid { mid }\nfn main allows Stdout { Stdout::write_stream("\\{mid(4)}\\n") }\n' > "$tproj/main.vibex"
+  printf 'import @acme/mid { mid }\nfn main allows Stdout { Stdout::write_stream("\\{mid(x = 4)}\\n") }\n' > "$tproj/main.vibex"
   ( cd "$tproj" && "$VIBE" add "git:file://$mid_repo@HEAD#packages/@acme/mid" ) > "$WORK/add_mid.log" 2>&1 && rc=0 || rc=$?
   check "vibe add of a package with its own pin exit" "0" "$rc"
   check "vibe add follows the added package's pins" "yes" "$([ -s "$tproj/.vibe/store/@acme/base/index.vpkg" ] && echo yes || echo no)"

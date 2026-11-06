@@ -155,11 +155,12 @@ fn missing_label_name(_ raw: String) -> String {
   }
 }
 
-/// The parameter names the written arguments of a call to `name` bind to,
-/// when every one of them must be labeled unless it is declared `_`: a
-/// builtin, or a declaration (`checker_call_header_is_declaration`). A local
-/// lambda or a value answers None: those calls stay positional.
-fn required_label_names(env: TypeEnv, name: String, ident_offset: Int, method_call: Bool) -> Option[Array[String]] {
+/// The parameter names of a call to `name`, when every argument must be
+/// labeled unless its parameter is declared `_`: a builtin, or a declaration
+/// (`checker_call_header_is_declaration`). A local lambda or a value answers
+/// None: those calls stay positional. A method call's receiver fills the
+/// first name, so its written arguments start one slot in (`skip`).
+fn required_label_names(env: TypeEnv, name: String, ident_offset: Int) -> Option[Array[String]] {
   // #3832: a builtin reached through an import alias takes the builtin's labels.
   let bname = checker_builtin_call_name(env = env, name = name)
   if builtin_resolves_at(env = env, name = bname, ident_off = ident_offset) && (lookup_builtin(bname) is Some(_)) {
@@ -169,37 +170,52 @@ fn required_label_names(env: TypeEnv, name: String, ident_offset: Int, method_ca
       builtin_param_labels(bname)
     }
   } else if checker_call_header_is_declaration(env = env, name = name) {
-    match checker_call_header_names(env = env, name = name) {
-      Some(all_names) => Some(if method_call && Array::length(all_names) > 0 {
-        Array::slice(all_names, start = 1, end = Array::length(all_names))
-      } else {
-        all_names
-      }),
-      None => None
-    }
+    checker_call_header_names(env = env, name = name)
   } else {
     None
   }
 }
 
+/// Whether any written argument is positional. A call whose arguments are
+/// all labeled is missing none, so most calls stop here, before any lookup.
+fn args_have_positional(_ args: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(args) {
+    found = match Array::get(args, at = i) {
+      ELabeledArg(_, _, _) => false,
+      _ => true
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// ADR-0120 Phase 4: an argument to a parameter that is not declared `_` names
 /// it. The message lists every label the call is missing, in written order.
 export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset: Int, offset: Int, args: Array[Expr], method_call: Bool, errors: Array[String]) -> Unit {
-  if Array::get(required_labels_suspended, at = 0) || checker_call_header_is_probe() || offset < 0 || ident_offset < 0 {
+  if Array::get(required_labels_suspended, at = 0) || offset < 0 || ident_offset < 0 || !args_have_positional(args) || checker_call_header_is_probe() {
     ()
   } else {
-    match required_label_names(env = env, name = name, ident_offset = ident_offset, method_call = method_call) {
+    match required_label_names(env = env, name = name, ident_offset = ident_offset) {
       // More arguments than parameters is an arity error, and a declaration's
       // call that labels some arguments and not others is reported as mixing:
       // either says what to fix first.
-      Some(names) => if Array::length(args) > Array::length(names) || (!(lookup_builtin(checker_builtin_call_name(env = env, name = name)) is Some(_)) && checker_args_mix_labels(args)) {
-        ()
-      } else {
-        let message = checker_required_labels_message(name = name, args = args, names = names)
-        if message != "" {
-          Array::push(errors, value = message + off_marker_len(off = ident_offset, len = String::length(name)))
+      Some(names) => {
+        let skip = if method_call && Array::length(names) > 0 {
+          1
         } else {
+          0
+        }
+        if Array::length(args) > Array::length(names) - skip || (!(lookup_builtin(checker_builtin_call_name(env = env, name = name)) is Some(_)) && checker_args_mix_labels(args)) {
           ()
+        } else {
+          let message = required_labels_message_from(name = name, args = args, names = names, skip = skip)
+          if message != "" {
+            Array::push(errors, value = message + off_marker_len(off = ident_offset, len = String::length(name)))
+          } else {
+            ()
+          }
         }
       },
       None => ()
@@ -211,36 +227,47 @@ export fn checker_check_required_labels(env: TypeEnv, name: String, ident_offset
 /// are `names`: "label the arguments of NAME: write `a = ` before argument
 /// 1, ...", or "" when every argument that needs a label has one.
 export fn checker_required_labels_message(name: String, args: Array[Expr], names: Array[String]) -> String {
-  let missing: Array[String] = []
+  required_labels_message_from(name = name, args = args, names = names, skip = 0)
+}
+
+/// The same, with the written arguments starting at parameter `skip`. Nothing
+/// is allocated for a call that is missing no label.
+fn required_labels_message_from(name: String, args: Array[Expr], names: Array[String], skip: Int) -> String {
+  let mut missing: Option[Array[String]] = None
   let mut i = 0
-  while i < Array::length(args) && i < Array::length(names) {
+  while i < Array::length(args) && i + skip < Array::length(names) {
     let positional = match Array::get(args, at = i) {
       ELabeledArg(_, _, _) => false,
       _ => true
     }
-    let raw = Array::get(names, at = i)
+    let raw = Array::get(names, at = i + skip)
     if positional && raw != "_" && !checker_header_name_is_positional(raw) {
-      Array::push(missing, value = "`" + missing_label_name(raw) + " = ` before argument " + __to_string(i + 1))
+      let item = "`" + missing_label_name(raw) + " = ` before argument " + __to_string(i + 1)
+      match missing {
+        Some(items) => Array::push(items, value = item),
+        None => missing = Some([item])
+      }
     } else {
       ()
     }
     i = i + 1
   }
-  if Array::length(missing) > 0 {
-    "label the arguments of " + name + ": write " + String::join(missing, sep = ", ")
-  } else {
-    ""
+  match missing {
+    Some(items) => "label the arguments of " + name + ": write " + String::join(items, sep = ", "),
+    None => ""
   }
 }
 
 fn checker_args_mix_labels(_ args: Array[Expr]) -> Bool {
   let mut labeled = false
   let mut plain = false
-  for arg in args {
-    match arg {
+  let mut i = 0
+  while i < Array::length(args) {
+    match Array::get(args, at = i) {
       ELabeledArg(_, _, _) => labeled = true,
       _ => plain = true
     }
+    i = i + 1
   }
   labeled && plain
 }

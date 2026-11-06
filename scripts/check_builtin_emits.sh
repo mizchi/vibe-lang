@@ -103,18 +103,40 @@ probe_diag() { # <sig> <name> <args> <row>
   cat "$WORK/p.out.diag" 2>/dev/null || true
 }
 
-# The declared parameter types, with bare type formals made concrete.
-probe_sig_args() { # <params> -> sets SIG and ARGS
+# ADR-0120 Phase 4: a call names every argument whose parameter is not `_`.
+# The labels live in the builtin label table, one `("NAME", [..])` row each;
+# a builtin with no row is probed positionally, which the checker reports.
+LABELS_TABLE="$ROOT_DIR/lib/@vibe/compiler/core/builtin_param_labels.vibe"
+sed -n 's/^  ("\([^"]*\)", \[\(.*\)\]),\{0,1\}$/\1	\2/p' "$LABELS_TABLE" \
+  | sed 's/"//g; s/, /,/g' >"$WORK/labels.tsv"
+# A spelling the checker canonicalizes (`String::byte_at` is
+# `String::char_code_at`) takes its canonical name's labels.
+sed -n 's/^    "\([^"]*\)" => "\([^"]*\)",$/\1	\2/p' "$ROOT_DIR/lib/@vibe/compiler/core/builtin_name.vibe" \
+  >"$WORK/canonical.tsv"
+if [ "$(grep -c . "$WORK/labels.tsv")" -lt 100 ]; then
+  echo "builtin-emits: FAIL: read only $(grep -c . "$WORK/labels.tsv") rows from $LABELS_TABLE; the label scan broke." >&2
+  exit 1
+fi
+
+# The declared parameter types, with bare type formals made concrete, and the
+# call's arguments labeled as the label table says.
+probe_sig_args() { # <params> <name> -> sets SIG and ARGS
   SIG=""; ARGS=""
   [ -n "$1" ] || return 0
+  s_canonical="$(awk -F'\t' -v n="$2" '$1 == n { print $2; exit }' "$WORK/canonical.tsv")"
+  s_labels="$(awk -F'\t' -v n="${s_canonical:-$2}" '$1 == n { print $2; exit }' "$WORK/labels.tsv")"
   s_saved="$IFS"
   IFS=','
   s_n=0
   for s_ty in $1; do
     s_ty="$(printf '%s' "$s_ty" | sed 's/\bT\b/Int/g; s/\bU\b/Int/g; s/\bV\b/Int/g; s/\bK\b/Int/g')"
+    s_label="$(printf '%s' "$s_labels" | cut -d, -f$((s_n + 1)) | sed 's/[?~]$//')"
     if [ -n "$SIG" ]; then SIG="$SIG, "; ARGS="$ARGS, "; fi
     SIG="${SIG}a${s_n}: ${s_ty}"
-    ARGS="${ARGS}a${s_n}"
+    case "$s_label" in
+      ''|_) ARGS="${ARGS}a${s_n}" ;;
+      *) ARGS="${ARGS}${s_label} = a${s_n}" ;;
+    esac
     s_n=$((s_n + 1))
   done
   IFS="$s_saved"
@@ -122,7 +144,7 @@ probe_sig_args() { # <params> -> sets SIG and ARGS
 
 classify() { # <name> <params> -> echoes "ICE|UNKNOWN|CLEAN|OTHER<tab>detail"
   c_name="$1"
-  probe_sig_args "$2"
+  probe_sig_args "$2" "$1"
   c_diag="$(probe_diag "$SIG" "$c_name" "$ARGS" "")"
   case "$c_diag" in
     *"no 'with' clause, requires {"*)

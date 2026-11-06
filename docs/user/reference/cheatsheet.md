@@ -1541,7 +1541,7 @@ trait LocalFunctor[F[_]] {
 
 impl LocalFunctor[Array] for Array {
   map(xs: Array[A], f: (A) -> B) -> Array[B] {
-    Array::map(xs, f)
+    Array::map(xs, f = f)
   }
 }
 
