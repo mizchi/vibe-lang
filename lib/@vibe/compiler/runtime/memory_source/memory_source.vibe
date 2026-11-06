@@ -5,7 +5,10 @@ import @vibe/compiler/incremental {
   RippleDb, ripple_get_source, ripple_source_paths
 }
 import @vibe/compiler/loader {
-  ModuleParse, module_header_source, parse_program_located_shared
+  ModuleParse, module_header_source_with_config, parse_program_located_shared_with_config
+}
+import @vibe/compiler/config {
+  TargetCfg, target_cfg_ambient
 }
 import @vibe/core {
   MutMap, sorted_names_of
@@ -64,18 +67,23 @@ fn memory_list(sources: MemorySources, path: String) -> Array[String] {
   }
 }
 
-fn memory_parse(path: String, source: String) -> (Array[Stmt], Option[String]) {
+fn memory_parse(path: String, source: String, cfg: TargetCfg) -> (Array[Stmt], Option[String]) {
   handle {
-    (parse_program_located_shared(path = path, source = source), None)
+    (parse_program_located_shared_with_config(path = path, source = source, cfg = cfg), None)
   } with { Exception::Throw(message) => ([], Some(message)) }
 }
 
 /// Header policy belongs to the loader. Every entry here is a regular virtual
 /// file, so its metadata token is a non-symlink hint, never a cache identity.
 export fn memory_module_header(sources: MemorySources, path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception {
+  memory_module_header_with_config(sources = sources, path = path, source = source, parse_count = parse_count, cfg = target_cfg_ambient())
+}
+
+/// Resolve virtual dependencies with the same immutable flags as their checker.
+export fn memory_module_header_with_config(sources: MemorySources, path: String, source: String, parse_count: Int, cfg: TargetCfg) -> (Array[String], Array[String], Int) with Env + Exception {
   handle {
-    module_header_source(path = path, source = source, parse_count = parse_count)
-  } with { ModuleParse::Parse(p, text) => resume(memory_parse(path = p, source = text)); Source::Read(p) => resume(memory_read(sources = sources, path = p)); Source::Exists(p) => resume(memory_exists(sources = sources, path = p)); Source::List(p) => resume(memory_list(sources = sources, path = p)); Source::StatToken(_) => resume(7) }
+    module_header_source_with_config(path = path, source = source, parse_count = parse_count, cfg = cfg)
+  } with { ModuleParse::Parse(p, text) => resume(memory_parse(path = p, source = text, cfg = cfg)); Source::Read(p) => resume(memory_read(sources = sources, path = p)); Source::Exists(p) => resume(memory_exists(sources = sources, path = p)); Source::List(p) => resume(memory_list(sources = sources, path = p)); Source::StatToken(_) => resume(7) }
 }
 
 /// Resolve the shipped owned-head declarations against the same virtual files.
