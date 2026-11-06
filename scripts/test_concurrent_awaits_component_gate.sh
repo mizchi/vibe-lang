@@ -113,8 +113,8 @@ import @vibe/compiler/codegen/component {
 }
 
 fn main() -> Unit allows Exception + Fs {
-  let bytes = comp_emit_component_wasm_async_concurrent_awaits("run", 121)
-  Fs::write_bytes("_build/bench/selfhost_concurrent_awaits_component/generated.component.wasm", bytes)
+  let bytes = comp_emit_component_wasm_async_concurrent_awaits(export_name = "run", comp_result_valtype = 121)
+  Fs::write_bytes("_build/bench/selfhost_concurrent_awaits_component/generated.component.wasm", bytes = bytes)
 }
 EOF
 

@@ -1044,9 +1044,9 @@ echo "[compiler-gate] 97/97 desugar-emitted builtins resolve in BOTH compile lan
 # VIBE_FS_COMPILE=1. Compiling every shape in the NON-FS lane specifically:
 # the FS lane never had the bug and would pass either way.
 gate_workdir dvdir "_build/_gate_desugar_builtins"
-printf 'export fn lt(a: String, b: String) -> Bool { a < b }\nexport fn main() -> Int { if lt("a","b") { 0 } else { 1 } }\n' > "$dvdir/str_lex_diff.vibe"
-printf 'fn g[T](a: T, b: T) -> Bool { a < b }\nexport fn main() -> Int { if g(1,2) { 0 } else { 1 } }\n' > "$dvdir/generic_rel_diff.vibe"
-printf 'fn ga[T](a: T, b: T) -> T { a + b }\nexport fn main() -> Int { ga(1,2) }\n' > "$dvdir/generic_add.vibe"
+printf 'export fn lt(a: String, b: String) -> Bool { a < b }\nexport fn main() -> Int { if lt(a = "a",b = "b") { 0 } else { 1 } }\n' > "$dvdir/str_lex_diff.vibe"
+printf 'fn g[T](a: T, b: T) -> Bool { a < b }\nexport fn main() -> Int { if g(a = 1,b = 2) { 0 } else { 1 } }\n' > "$dvdir/generic_rel_diff.vibe"
+printf 'fn ga[T](a: T, b: T) -> T { a + b }\nexport fn main() -> Int { ga(a = 1,b = 2) }\n' > "$dvdir/generic_add.vibe"
 for dvsrc in "$dvdir"/*.vibe; do
   dvname="$(basename "$dvsrc" .vibe)"
   VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \

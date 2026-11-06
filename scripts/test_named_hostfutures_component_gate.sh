@@ -274,7 +274,7 @@ fn host_response_named(s: String) -> Int {
 }
 
 let run: () -> Int with Async = () -> {
-  host_response_named("example:p/api#fetch") + await(host_future_named("price"))
+  host_response_named(s = "example:p/api#fetch") + await(host_future_named("price"))
 }
 EOF
 RSHADOW_OUT="$OUT_DIR/shadowed_response.wasm"

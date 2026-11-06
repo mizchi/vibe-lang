@@ -126,7 +126,7 @@ measure() { # <label> <src>
 gen_scaled() { # <n> <out>
   local n="$1" out="$2" k body=""
   {
-    echo 'fn fib(n: Int) -> Int { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }'
+    echo 'fn fib(n: Int) -> Int { if n < 2 { n } else { fib(n = n - 1) + fib(n = n - 2) } }'
     for ((k = 0; k < n; k++)); do
       cat <<EOF
 struct P$k { x: Int; y: Int }

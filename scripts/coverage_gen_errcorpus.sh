@@ -59,7 +59,7 @@ export let main: () -> Int = () -> { let s: String = id(1); 0 }'
 emit t_ret_unit      'export let main: () -> Int = () -> { () }'
 emit t_option_mis    'export let main: () -> Int = () -> { let x: Option[Int] = Some("s"); 0 }'
 emit t_result_mis    'export let main: () -> Int = () -> { let x: Result[Int, String] = Ok("s"); 0 }'
-emit t_index_nonarr  'export let main: () -> Int = () -> { let x = 1; Array::get(x, 0) }'
+emit t_index_nonarr  'export let main: () -> Int = () -> { let x = 1; Array::get(x, at = 0) }'
 emit t_let_annot     'export let main: () -> Int = () -> { let x: Foo = 1; 0 }'
 emit t_dup_let       'export let main: () -> Int = () -> { let x = 1; let x = 2; x }'
 

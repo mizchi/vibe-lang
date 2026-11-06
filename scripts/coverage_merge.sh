@@ -72,7 +72,7 @@ let describe: (Int) -> String = (n) -> {
   if n > 100 { "big" } else if n > 0 { "small" } else { "none" }
 }
 export let run: () -> Int = () -> {
-  let xs = [area(Circle(2)), area(Rect(3, 4)), area(Dot)]
+  let xs = [area(s = Circle(2)), area(s = Rect(3, 4)), area(s = Dot)]
   let mut total = 0
   for x in xs { total = total + x }
   total

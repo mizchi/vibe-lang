@@ -121,7 +121,7 @@ fi
 #    a block label is not a declaration -- / Method 6 named after the impl
 #    target).
 tb="$WORK/testbench.vibe"
-printf 'fn add(a: Int, b: Int) -> Int { a + b }\ntest "adds" { let _ = add(1, 2) }\nbench "once" { let _ = add(1, 1) }\ntrait Show { }\nstruct Point { x: Int }\nimpl Show for Point { }\n' > "$tb"
+printf 'fn add(a: Int, b: Int) -> Int { a + b }\ntest "adds" { let _ = add(a = 1, b = 2) }\nbench "once" { let _ = add(a = 1, b = 1) }\ntrait Show { }\nstruct Point { x: Int }\nimpl Show for Point { }\n' > "$tb"
 out_tb="$("$VIBE" symbols "$tb" 2>/dev/null || true)"
 if has_sym "$out_tb" add 12 && has_sym "$out_tb" adds 27 && has_sym "$out_tb" once 28 \
    && has_sym "$out_tb" Show 11 && has_sym "$out_tb" Point 23 && has_sym "$out_tb" Point 6; then

@@ -135,7 +135,7 @@ fi
 # used to report clean because it only ever ran the type checker, never the
 # inline-wasm assembler that actually catches this class of bug.
 badlane="$WORK/badlane.vibe"
-printf 'fn bad_lane(a: Int) -> Int = wasm "(i8x16.extract_lane_s 16 (local.get $a))"\n\nexport fn main() -> Int {\n  bad_lane(1)\n}\n' > "$badlane"
+printf 'fn bad_lane(a: Int) -> Int = wasm "(i8x16.extract_lane_s 16 (local.get $a))"\n\nexport fn main() -> Int {\n  bad_lane(a = 1)\n}\n' > "$badlane"
 out_badlane="$("$VIBE" diagnostics "$badlane" 2>/dev/null || true)"
 if printf '%s\n' "$out_badlane" | grep -q 'line 1:' && printf '%s\n' "$out_badlane" | grep -q 'lane index 16 is out of range'; then
   echo "ok: inline-wasm lane error -> located diagnostic"; pass=$((pass + 1))
@@ -227,11 +227,11 @@ fi
 deepcli="$WORK/deep_cli.vibe"
 cat >"$deepcli" <<'EOF'
 fn deep(n: Int) -> Int {
-  if n == 0 { 0 } else { 1 + deep(n - 1) }
+  if n == 0 { 0 } else { 1 + deep(n = n - 1) }
 }
 
 let cli_main: () -> Int = () -> {
-  deep(100000000)
+  deep(n = 100000000)
 }
 EOF
 "$VIBE" compile "$deepcli" -o "$WORK/deep_cli.wasm" --entry cli_main >/dev/null 2>&1 || true

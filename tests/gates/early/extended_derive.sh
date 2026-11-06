@@ -209,10 +209,10 @@ fi
 # correct program, which is the failure a refusal-only assertion cannot see.
 amr_i=0
 for amr_ok in \
-  'let xs = [1, 2, 3]; __to_string(Array::map(xs, (v: Int) -> Int { v * 2 }))' \
-  'let xs = [1, 2, 3]; __to_string(Array::filter(xs, (v) -> v > 1))' \
-  'let xs: Array[Int] = [1, 2, 3]; let ys: Array[Int] = Array::map(xs, (v) -> v * 2); __to_string(ys)' \
-  'let xs = [1, 2, 3]; __to_string(Array::map(xs, (v) -> v * 2))'; do
+  'let xs = [1, 2, 3]; __to_string(Array::map(xs, f = (v: Int) -> Int { v * 2 }))' \
+  'let xs = [1, 2, 3]; __to_string(Array::filter(xs, f = (v) -> v > 1))' \
+  'let xs: Array[Int] = [1, 2, 3]; let ys: Array[Int] = Array::map(xs, f = (v) -> v * 2); __to_string(ys)' \
+  'let xs = [1, 2, 3]; __to_string(Array::map(xs, f = (v) -> v * 2))'; do
   amr_i=$((amr_i + 1))
   printf 'export let _start: () -> Int = () -> {\n  %s\n  0\n}\n' "$amr_ok" > "$amrdir/ok$amr_i.vibe"
   rm -f "$amrdir/ok$amr_i.wasm"
