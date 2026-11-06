@@ -71,6 +71,36 @@ test "an enclosing formal keeps its witness inside a nested call" {
   inspect(outer(2147483647), content = "4294967294")
 }
 
+// a dot-method call reaches the 32-bit witness too (Codex review on #3857):
+// the checker files the row at the method name, where the method path of the
+// desugar consumes it.
+struct Acc {
+  base: Int
+}
+
+fn Acc::sum[T: Add](self: Acc, a: T, b: T) -> T {
+  a + b
+}
+
+test "a generic method + wraps at Int32 and UInt32" {
+  let acc = Acc::{ base: 0 }
+  let top: Int32 = 2147483647
+  let one: Int32 = 1
+  inspect(Int32::to_int(acc.sum(top, one)), content = "-2147483648")
+  let utop: UInt32 = 4294967295
+  let uone: UInt32 = 1
+  inspect(UInt32::to_int(acc.sum(utop, uone)), content = "0")
+  inspect(acc.sum(2147483647, 1), content = "2147483648")
+}
+
+// the row's capture kind is its own: negating a generic call's integer result
+// is integer negation, not the float negation another kind marks.
+test "negating a generic call result stays integer negation" {
+  inspect(-add(1, 2), content = "-3")
+  let one: Int32 = 1
+  inspect(Int32::to_int(-add(one, one)), content = "-2")
+}
+
 test "Int keeps its 63-bit +" {
   inspect(add(2147483647, 1), content = "2147483648")
 }
