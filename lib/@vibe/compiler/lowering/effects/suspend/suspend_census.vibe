@@ -1,0 +1,50 @@
+//# The binder census the suspend pass reads, kept until the program changes
+//
+// Several questions of this pass need every name the program binds locally
+// (`edp_collect_program_binders`): whether a callee spelled like a pure
+// top-level function may be a local instead (`edp_argcond_*`), and whether a
+// needing function is shadowed (`scps_needing_for`). Each used to walk the
+// whole program again, about a tenth of a second on the compiler's own
+// sources, though most of them read the same statement list: the census
+// after alias inlining, the one for every clone the worklist emits, and the
+// ones a handle transform asks while its statement is being rewritten (#3856).
+//
+// The census is kept here and walked again only after the statement list was
+// written. Every write the pass makes to that list is followed by
+// `scps_census_drop`, and both entry points drop it first, since each lowers
+// a list of its own.
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/core {
+  struct MutSet
+}
+
+import @vibe/compiler/lowering/effects/queries {
+  edp_argcond_use_binders, edp_collect_program_binders
+}
+
+let scps_census_memo: Array[MutSet[String]] = []
+
+/// Forget the kept census: the statement list was just written, or another
+/// one is about to be lowered.
+export fn scps_census_drop() -> Unit {
+  Array::truncate(scps_census_memo, length = 0)
+}
+
+/// `edp_collect_program_binders(stmts)`, walked only when nothing was kept
+/// since the last `scps_census_drop`. Read it, do not add to it: every reader
+/// of the kept census shares the one set.
+export fn scps_census(_ stmts: Array[Stmt]) -> MutSet[String] {
+  if Array::length(scps_census_memo) == 0 {
+    Array::push(scps_census_memo, value = edp_collect_program_binders(stmts))
+  } else ()
+  Array::get(scps_census_memo, at = 0)
+}
+
+/// `edp_argcond_note_binders(stmts)`, from the kept census.
+export fn scps_census_note(_ stmts: Array[Stmt]) -> Unit {
+  edp_argcond_use_binders(scps_census(stmts))
+}
