@@ -81,6 +81,10 @@ import ./checker_escape.vibe {
   diag_report_into, expr_free_in
 }
 
+import ./checker_region_retention_arms.vibe {
+  retention_pat_names_into
+}
+
 import ./checker_merge_capture_provenance.vibe {
   checker_string_array_has,
   direct_result_field_param_index,
@@ -841,9 +845,57 @@ fn result_enum_payload_params(body: Expr, params: Array[(String, Option[TypeExpr
       result_enum_payload_params(body = rest, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found)
       unbind_let_alias(name = name, hidden = hidden, mark = alias_mark, alias_names = alias_names, alias_indices = alias_indices)
     },
+    // A `let mut` may be assigned anything in its scope, so it may hold every
+    // parameter free there.
+    ELetMut(name, _, rest, _) => {
+      let alias_mark = Array::length(alias_names)
+      let held: Array[Int] = []
+      free_held_params(e = body, params = params, alias_names = alias_names, alias_indices = alias_indices, found = held)
+      let hidden = bind_let_alias(name = name, held = held, alias_names = alias_names, alias_indices = alias_indices)
+      result_enum_payload_params(body = rest, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found)
+      unbind_let_alias(name = name, hidden = hidden, mark = alias_mark, alias_names = alias_names, alias_indices = alias_indices)
+    },
+    // An assignment carries the rest of its block; the `let mut` it writes
+    // already holds whatever its scope mentions.
+    EAssign(_, _, rest, _) => result_enum_payload_params(body = rest, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found),
+    EAssignOp(_, _, _, rest, _) => result_enum_payload_params(body = rest, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found),
     EIf(_, then_expr, else_expr) => {
       result_enum_payload_params(body = then_expr, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found)
       result_enum_payload_params(body = else_expr, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found)
+    },
+    // Each arm is a tail, and its binders hold what the scrutinee holds.
+    EMatch(scrut, arms) => {
+      let scrut_held: Array[Int] = []
+      value_held_params(e = scrut, params = params, alias_names = alias_names, alias_indices = alias_indices, found = scrut_held)
+      for arm in arms {
+        let (pat, arm_body) = arm
+        let names: Array[String] = []
+        retention_pat_names_into(p = pat, out = names)
+        let alias_mark = Array::length(alias_names)
+        let hidden: Array[Int] = []
+        let hidden_names: Array[String] = []
+        for bound in names {
+          for k in bind_let_alias(name = bound, held = scrut_held, alias_names = alias_names, alias_indices = alias_indices) {
+            if k < alias_mark {
+              Array::push(hidden, value = k)
+              Array::push(hidden_names, value = bound)
+            } else {
+              ()
+            }
+          }
+          ()
+        }
+        result_enum_payload_params(body = arm_body, params = params, defs = defs, alias_names = alias_names, alias_indices = alias_indices, found = found)
+        Array::truncate(alias_names, length = alias_mark)
+        Array::truncate(alias_indices, length = alias_mark)
+        let mut h = 0
+        while h < Array::length(hidden) {
+          Array::set(alias_names, at = Array::get(hidden, at = h), value = Array::get(hidden_names, at = h))
+          h = h + 1
+        }
+        ()
+      }
+      ()
     },
     _ => ()
   }
