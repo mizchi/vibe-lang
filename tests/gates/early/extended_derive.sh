@@ -590,7 +590,7 @@ for ur_ok in \
   '|let v: Option[Int] = Int::parse("42"); println("\{v}")|Some(42)' \
   '|let xs = [1, 2, 3]; let o: Option[Int] = Some(3); println("\{xs} \{o} \{Array::length(xs)}")|[1, 2, 3] Some(3) 3' \
   'fn k2(b?: Int) -> String { "o=\{b}" }|println("\{k2(b = 1)} \{k2()}")|o=Some(1) o=None' \
-  'fn f(t: (Int, String)) -> String { "\{t}" }|println(f((1, "a")))|(1, a)'; do
+  'fn f(t: (Int, String)) -> String { "\{t}" }|println(f(t = (1, "a")))|(1, a)'; do
   ur_i=$((ur_i + 1))
   ur_decl="${ur_ok%%|*}"; ur_rest="${ur_ok#*|}"
   ur_body="${ur_rest%%|*}"; ur_want="${ur_rest#*|}"
