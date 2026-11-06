@@ -526,7 +526,7 @@ function run(stage2) {
     // observable without involving repository sources or an ambient cache.
     mkdirSync(project, { recursive: true });
     writeFileSync(join(project, "base.vibe"), "export fn base_value(x: Int) -> Int { x + 1 }\n");
-    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport let library_value = base_value(40)\nfn private_offset() -> Int { 1 }\n");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport let library_value = base_value(x = 40)\nfn private_offset() -> Int { 1 }\n");
     writeFileSync(join(project, "app.vibe"), "import ./library.vibe { library_value }\nfn main() -> Int { let _ = library_value\n0 }\n");
     const runSnapshot = (name, { entry, nonce, cacheDir, suffix }) => {
       const traceName = `${name}.${suffix}.trace.json`;
@@ -578,14 +578,14 @@ function run(stage2) {
     if (noOp.aggregate_telemetry.modules_rechecked !== 0) fail("no-op was not reused by the current cache");
     runPlannerCase("no_op", baseline, noOp);
 
-    writeFileSync(join(project, "library.vibe"), "// observation-only comment\nimport ./base.vibe { base_value }\nexport let library_value = base_value(40)\nfn private_offset() -> Int { 1 }\n");
+    writeFileSync(join(project, "library.vibe"), "// observation-only comment\nimport ./base.vibe { base_value }\nexport let library_value = base_value(x = 40)\nfn private_offset() -> Int { 1 }\n");
     const commentEdit = check("comment_edit");
     if (sourceOwnersChanged(noOp, commentEdit).join(",") !== "library") fail("comment edit source delta drift");
     if (implementationOwnersChanged(noOp, commentEdit).length !== 0) fail("comment edit changed token-stream implementation identity");
     if (interfaceOwnersChanged(noOp, commentEdit).length !== 0) fail("comment edit changed an interface identity");
     runPlannerCase("comment_only_edit", noOp, commentEdit);
 
-    writeFileSync(join(project, "library.vibe"), "// observation-only comment\nimport ./base.vibe { base_value }\nexport let library_value = base_value(40)\nfn private_offset() -> Int { 2 }\n");
+    writeFileSync(join(project, "library.vibe"), "// observation-only comment\nimport ./base.vibe { base_value }\nexport let library_value = base_value(x = 40)\nfn private_offset() -> Int { 2 }\n");
     const privateEdit = check("private_body_edit");
     if (sourceOwnersChanged(commentEdit, privateEdit).join(",") !== "library") fail("private edit source delta drift");
     if (implementationOwnersChanged(commentEdit, privateEdit).join(",") !== "library") fail("private edit implementation delta drift");
@@ -714,7 +714,7 @@ function run(stage2) {
       fail("unselected Eq impl-target edit changed the selected persistent TypeEnv transport identity")
     }
 
-    writeFileSync(join(project, "app.vibe"), "import ./base.vibe { base_value }\nimport ./library.vibe { library_value }\nfn main() -> Int { let _ = library_value\nbase_value(0) }\n");
+    writeFileSync(join(project, "app.vibe"), "import ./base.vibe { base_value }\nimport ./library.vibe { library_value }\nfn main() -> Int { let _ = library_value\nbase_value(x = 0) }\n");
     const planEdit = check("dependency_plan_edit");
     if (sourceOwnersChanged(implTargetArray, planEdit).join(",") !== "app") fail("dependency-plan edit source delta drift");
     if (implementationOwnersChanged(implTargetArray, planEdit).join(",") !== "app") fail("dependency-plan edit implementation delta drift");

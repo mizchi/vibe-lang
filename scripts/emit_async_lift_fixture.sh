@@ -45,7 +45,7 @@ let build_core = () -> Bytes {
 }
 export let main = () -> Int with Fs {
   let comp = comp_emit_component_wasm_async_trampolined_p1(build_core(), "run", 120)
-  Fs::write_bytes("fixtures/async_lift_run42.component.wasm", comp)
+  Fs::write_bytes("fixtures/async_lift_run42.component.wasm", bytes = comp)
   Bytes::length(comp)
 }
 EOF

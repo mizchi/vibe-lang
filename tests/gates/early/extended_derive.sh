@@ -844,7 +844,7 @@ fi
 # scanning the entry alone left `vibe check main.vibe` saying `ok` while
 # `main.vibe` was the program getting the wrong builtin (#2628 review).
 printf 'export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\nexport fn unrelated_helper(n: Int) -> Int {\n  n + 1\n}\n' > "$bsdir/xdep.vibe"
-printf 'import ./xdep.vibe { unrelated_helper }\n\nexport fn run() -> Int {\n  unrelated_helper(1) + String::index_of("hello world", "world")\n}\n' > "$bsdir/xmain.vibe"
+printf 'import ./xdep.vibe { unrelated_helper }\n\nexport fn run() -> Int {\n  unrelated_helper(n = 1) + String::index_of("hello world", needle = "world")\n}\n' > "$bsdir/xmain.vibe"
 # Since the importer-side rule landed, the cross-file case is a REFUSAL, not a
 # warning: the module that links the dependency is the one surprised, so it is
 # the one refused, and it must never come back `ok`. The definer's own file

@@ -161,7 +161,7 @@ test("a dependency's interface crosses the worker boundary", async () => {
 test("repeated dependency occurrences fold into the fingerprint multiple times", async () => {
   const execution = { kind: "selfhost-check", compilerWasm };
   const depModule = { id: DEP_ID, dependencies: [], source: "export fn dep_value(n: Int) -> Int {\n  n + 41\n}\n" };
-  const mainSource = "import ./dep.vibe {\n  dep_value\n}\n\nexport fn answer() -> Int {\n  dep_value(1)\n}\n";
+  const mainSource = "import ./dep.vibe {\n  dep_value\n}\n\nexport fn answer() -> Int {\n  dep_value(n = 1)\n}\n";
 
   const once = await runParallelProject(
     [depModule, { id: MAIN_ID, dependencies: [DEP_ID], dependencyOccurrences: [DEP_ID], source: mainSource }],

@@ -194,7 +194,7 @@ mkfile mod_alias/lib.vibe 'export enum Status { Active; Idle(Int) }
 export let make: (Int) -> Status = (n) -> { if n > 0 { Idle(n) } else { Active } }
 export let label: (Status) -> Int = (s) -> { match s { Active => 0, Idle(n) => n } }'
 mkfile mod_alias/main.vibe 'import ./lib.vibe { Status as St, make as mk, label as lbl }
-export let main: () -> Int = () -> { lbl(mk(7)) + match mk(0) { Active => 100, Idle(_) => 0 } }'
+export let main: () -> Int = () -> { lbl(s = mk(n = 7)) + match mk(n = 0) { Active => 100, Idle(_) => 0 } }'
 
 # Set 3: re-export facade (export ./mod { ... }) + shared private helpers.
 mkfile mod_reexport/core.vibe 'export enum Tok { TNum(Int); TStr(String) }
@@ -203,7 +203,7 @@ export let tval: (Tok) -> Int = (t) -> { match t { TNum(n) => n, TStr(s) => Stri
 mkfile mod_reexport/facade.vibe 'export ./core { Tok, tnum, tval }
 export { Tok, tnum, tval }'
 mkfile mod_reexport/main.vibe 'import ./facade.vibe { Tok, tnum, tval }
-export let main: () -> Int = () -> { tval(tnum(42)) + tval(TStr("hi")) }'
+export let main: () -> Int = () -> { tval(t = tnum(n = 42)) + tval(t = TStr("hi")) }'
 
 # Set 4: private nested module + private lets used by exported function.
 mkfile mod_nested/lib.vibe 'module Helpers {
@@ -214,16 +214,16 @@ let secret: Int = 41
 let derive: (Int) -> Int = (n) -> { n + secret }
 export let go: (Int) -> Int = (n) -> { Helpers::twice(derive(n)) }'
 mkfile mod_nested/main.vibe 'import ./lib.vibe { go }
-export let main: () -> Int = () -> { go(0) }'
+export let main: () -> Int = () -> { go(n = 0) }'
 
 # Set 5: diamond imports (two modules importing a shared base) + struct fields.
 mkfile mod_diamond/base.vibe 'export struct Cfg { width: Int; height: Int }
 export let area: (Cfg) -> Int = (c) -> { c.width * c.height }
 export let mkcfg: (Int, Int) -> Cfg = (w, h) -> { Cfg::{ width: w, height: h } }'
 mkfile mod_diamond/left.vibe 'import ./base.vibe { Cfg, area, mkcfg }
-export let wide: () -> Int = () -> { area(mkcfg(100, 2)) }'
+export let wide: () -> Int = () -> { area(c = mkcfg(w = 100, h = 2)) }'
 mkfile mod_diamond/right.vibe 'import ./base.vibe { Cfg, area, mkcfg }
-export let tall: () -> Int = () -> { area(mkcfg(2, 100)) }'
+export let tall: () -> Int = () -> { area(c = mkcfg(w = 2, h = 100)) }'
 mkfile mod_diamond/main.vibe 'import ./left.vibe { wide }
 import ./right.vibe { tall }
 export let main: () -> Int = () -> { wide() + tall() }'

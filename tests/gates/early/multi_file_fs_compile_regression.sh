@@ -855,7 +855,7 @@ if [ -s "$cdir/ok.wasm.diag" ]; then
   echo "[compiler-gate] FAIL: cold contract compile left a stale .diag beside a valid wasm (#749 first-pass ingestion failure)" >&2
   cat "$cdir/ok.wasm.diag" >&2; exit 1
 fi
-printf 'import ./pkg/impl.vibe { add }\nexport let _start: () -> Int = () -> { add(40, 2) }\n' > "$cdir/bad.vibe"
+printf 'import ./pkg/impl.vibe { add }\nexport let _start: () -> Int = () -> { add(x = 40, y = 2) }\n' > "$cdir/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir/bad.vibe" "$cdir/bad.wasm" _start >/dev/null 2>&1 \
@@ -954,8 +954,8 @@ rm -rf "$xpdir"; mkdir -p "$xpdir/pkgb" "$xpdir/pkga"
 printf 'import ./impl.vibe {}\nopaque type X\nfn make(v: Int) -> X\nfn value(x: X) -> Int\n' > "$xpdir/pkgb/index.vibei"
 printf 'export struct X {\n  v: Int\n}\n\nexport fn make(v: Int) -> X {\n  X::{ v: v }\n}\n\nexport fn value(x: X) -> Int {\n  x.v\n}\n' > "$xpdir/pkgb/impl.vibe"
 printf 'import ./impl.vibe {}\nimport ../pkgb { type X }\nfn wrap(v: Int) -> X\n' > "$xpdir/pkga/index.vibei"
-printf 'import ../pkgb { X, make }\nexport fn wrap(v: Int) -> X {\n  make(v)\n}\n' > "$xpdir/pkga/impl.vibe"
-printf 'import ./pkga { wrap }\nimport ./pkgb { value }\nexport let _start: () -> Int = () -> { value(wrap(42)) }\n' > "$xpdir/ok.vibe"
+printf 'import ../pkgb { X, make }\nexport fn wrap(v: Int) -> X {\n  make(v = v)\n}\n' > "$xpdir/pkga/impl.vibe"
+printf 'import ./pkga { wrap }\nimport ./pkgb { value }\nexport let _start: () -> Int = () -> { value(x = wrap(v = 42)) }\n' > "$xpdir/ok.vibe"
 gate_fs_compile "$xpdir/ok.vibe" "$xpdir/ok.wasm" _start
 gate_require_artifact "$xpdir/ok.wasm" ".vibei contract's cross-package directory import (../pkgb) did not resolve (#842)"
 gate_run xpres digits --invoke _start "$xpdir/ok.wasm"
@@ -987,7 +987,7 @@ if ! printf '%s' "$pin" | grep -qE '^#pkg:b3:[0-9a-f]{64}$'; then
   echo "[compiler-gate] FAIL: vibe hash new write is not #pkg:b3:<64hex> (#2829)" >&2
   echo "$pin" >&2; exit 1
 fi
-printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' "$pin" > "$cdir2/ok.vibe"
+printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(x = 14) }\n' "$pin" > "$cdir2/ok.vibe"
 gate_fs_compile "$cdir2/ok.vibe" "$cdir2/ok.wasm" _start
 gate_require_artifact "$cdir2/ok.wasm" "pinned store import did not compile (#730)"
 # #2227: check must agree with the build lane it just exercised -- the same
@@ -1003,10 +1003,10 @@ if [ -s "$cdir2/ok.checkout.diag" ]; then
 fi
 # #2227: same pin head in a .vibex -- the script-head directive scan used to
 # read the pin's #pkg:sha1: as an unknown # directive before pin extraction.
-printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\n\nfn main allows () {\n  let _ = triple(14)\n}\n' "$pin" > "$cdir2/ok_pin.vibex"
+printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\n\nfn main allows () {\n  let _ = triple(x = 14)\n}\n' "$pin" > "$cdir2/ok_pin.vibex"
 gate_fs_compile "$cdir2/ok_pin.vibex" "$cdir2/ok_pin.wasm" main
 gate_require_artifact "$cdir2/ok_pin.wasm" "a .vibex with a require-pin head did not compile (#2227)"
-printf 'require @gate/d2pkg 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/bad.vibe"
+printf 'require @gate/d2pkg 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(x = 14) }\n' > "$cdir2/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/bad.vibe" "$cdir2/bad.wasm" _start >/dev/null 2>&1 \
@@ -1019,7 +1019,7 @@ if ! grep -q "pin mismatch" "$cdir2/bad.wasm.diag" 2>/dev/null; then
 fi
 # D-3: an unpinned require refuses to build; VIBE_FILL_PINS completes it
 # offline from the store; the filled source builds; the fill is idempotent.
-printf 'require @gate/d2pkg 1.0.0\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/unpinned.vibe"
+printf 'require @gate/d2pkg 1.0.0\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(x = 14) }\n' > "$cdir2/unpinned.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/unpinned.vibe" "$cdir2/unpinned.wasm" _start >/dev/null 2>&1 \
@@ -1057,10 +1057,10 @@ rm -rf "lib/@gate751"; mkdir -p "$lpkg"
 printf 'fn greet_n(x: Int) -> Int\n' > "$lpkg/index.vibei"
 printf 'export fn greet_n(x: Int) -> Int { x + 2 }\n' > "$lpkg/impl.vibe"
 gate_workdir ldir "_build/_gate_lib751"
-printf 'import @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/ok.vibe"
+printf 'import @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(x = 40) }\n' > "$ldir/ok.vibe"
 gate_fs_compile "$ldir/ok.vibe" "$ldir/ok.wasm" _start
 gate_require_artifact "$ldir/ok.wasm" "unpinned lib/ package import did not compile (#751)"
-printf 'require @gate751/greet 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(40) }\n' > "$ldir/bad.vibe"
+printf 'require @gate751/greet 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate751/greet { greet_n }\nexport let _start: () -> Int = () -> { greet_n(x = 40) }\n' > "$ldir/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ldir/bad.vibe" "$ldir/bad.wasm" _start >/dev/null 2>&1 \
@@ -1092,7 +1092,7 @@ printf 'export fn echo_n(x: Int) -> Int { x + 2 }\n' > "$xpkg/impl.vibe"
 xdir="_build/_gate_lib751x"
 rm -rf "$xdir" "lib/@gate751x"; mkdir -p "$xdir"
 # (1) without a usable root the name must NOT resolve
-printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) }\n' > "$xdir/miss.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(x = 40) }\n' > "$xdir/miss.vibe"
 if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/miss.vibe" "$xdir/miss.wasm" _start >/dev/null 2>&1 \
@@ -1101,7 +1101,7 @@ if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE
 fi
 # (2) a ":"-separated VIBE_LIB resolves through the first root that has the
 #     package (missing roots skipped); the compiled program runs.
-printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 }\n' > "$xdir/ext.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(x = 40) + 0 }\n' > "$xdir/ext.vibe"
 VIBE_LIB="$xroot/does-not-exist:$xroot" gate_fs_compile "$xdir/ext.vibe" "$xdir/ext.wasm" _start
 gate_require_artifact "$xdir/ext.wasm" "VIBE_LIB root resolution did not compile (#751)"
 gate_run ext_out stdout-last --invoke _start "$xdir/ext.wasm"
@@ -1112,7 +1112,7 @@ fi
 mkdir -p "lib/@gate751x/echo"
 printf 'fn echo_n(x: Int) -> Int\n' > "lib/@gate751x/echo/index.vibei"
 printf 'export fn echo_n(x: Int) -> Int { x + 3 }\n' > "lib/@gate751x/echo/impl.vibe"
-printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 }\n' > "$xdir/ws.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(x = 40) + 0 + 0 }\n' > "$xdir/ws.vibe"
 VIBE_LIB="$xroot/does-not-exist:$xroot" gate_fs_compile "$xdir/ws.vibe" "$xdir/ws.wasm" _start
 gate_require_artifact "$xdir/ws.wasm" "workspace-precedence consumer did not compile (#751)"
 gate_run ws_out stdout-last --invoke _start "$xdir/ws.wasm"
@@ -1120,7 +1120,7 @@ if [ "$ws_out" != "43" ]; then
   echo "[compiler-gate] FAIL: workspace lib/ did not win over VIBE_LIB root (got '$ws_out', want 43) (#751)" >&2; exit 1
 fi
 # (4) freeze: VIBE_REQUIRE_PINS=1 demands a pin for any dev-mode lib lane
-printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(40) + 0 + 0 + 0 }\n' > "$xdir/frz.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(x = 40) + 0 + 0 + 0 }\n' > "$xdir/frz.vibe"
 if VIBE_REQUIRE_PINS=1 VIBE_LIB="$xroot" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$xdir/frz.vibe" "$xdir/frz.wasm" _start >/dev/null 2>&1 \
@@ -1138,7 +1138,7 @@ fi
 #     replayed under VIBE_REQUIRE_PINS=1, and a removed VIBE_LIB root kept
 #     resolving).
 rm -rf "lib/@gate751x"
-printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(38) }\n' > "$xdir/replay.vibe"
+printf 'import @gate751x/echo { echo_n }\nexport let _start: () -> Int = () -> { echo_n(x = 38) }\n' > "$xdir/replay.vibe"
 VIBE_LIB="$xroot" gate_fs_compile "$xdir/replay.vibe" "$xdir/replay1.wasm" _start
 gate_require_artifact "$xdir/replay1.wasm" "replay warm-up compile failed (#758)"
 if VIBE_LIB="$xroot/does-not-exist" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -1244,7 +1244,7 @@ if ! VIBE_HOME="$jhome" gate_vibe_pkg install "@gate754/mathx@1.0.0" > "$jdir/in
   echo "[compiler-gate] FAIL: install/materialize into VIBE_HOME/lib failed (#754)" >&2
   cat "$jdir/inst1.log" >&2; exit 1
 fi
-printf 'import @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) }\n' > "$jdir/use.vibe"
+printf 'import @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(x = 11) }\n' > "$jdir/use.vibe"
 VIBE_HOME="$jhome" gate_fs_compile "$jdir/use.vibe" "$jdir/use.wasm" _start
 gate_require_artifact "$jdir/use.wasm" "materialized package did not resolve via VIBE_HOME default root (#754)"
 gate_run juse_out stdout-last --invoke _start "$jdir/use.wasm"
@@ -1257,7 +1257,7 @@ if ! VIBE_HOME="$jhome" gate_vibe_pkg install "@gate754/mathx@1.0.0" --store > "
   cat "$jdir/inst2.log" >&2; exit 1
 fi
 jhash="$(awk -F'\t' '$1 == "@gate754/mathx@1.0.0" { print $2 }' "$jhome/cache/versions.tsv")"
-printf 'require @gate754/mathx 1.0.0 = #%s\n\nimport @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(11) + 0 }\n' "$jhash" > "$jdir/pinned.vibe"
+printf 'require @gate754/mathx 1.0.0 = #%s\n\nimport @gate754/mathx { quad }\nexport let _start: () -> Int = () -> { quad(x = 11) + 0 }\n' "$jhash" > "$jdir/pinned.vibe"
 VIBE_REQUIRE_PINS=1 VIBE_HOME="$jhome" gate_fs_compile "$jdir/pinned.vibe" "$jdir/pinned.wasm" _start
 gate_require_artifact "$jdir/pinned.wasm" "pinned store build under VIBE_REQUIRE_PINS=1 failed (#754)"
 # same-version republish with different content must be rejected
@@ -1368,7 +1368,7 @@ fi
 if ! grep -q "@gate755/hex@1.0.0" "$khome/cache/provenance.tsv" 2>/dev/null; then
   echo "[compiler-gate] FAIL: git add did not record provenance (#755)" >&2; exit 1
 fi
-printf 'import @gate755/hex { hex_n }\nexport let _start: () -> Int = () -> { hex_n(36) }\n' > "$kdir/use.vibe"
+printf 'import @gate755/hex { hex_n }\nexport let _start: () -> Int = () -> { hex_n(x = 36) }\n' > "$kdir/use.vibe"
 VIBE_HOME="$khome" gate_fs_compile "$kdir/use.vibe" "$kdir/use.wasm" _start
 gate_run kuse_out stdout-last --invoke _start "$kdir/use.wasm"
 if [ "$kuse_out" != "42" ]; then

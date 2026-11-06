@@ -840,13 +840,13 @@ export let _start = () -> Int { f(1) }
 #      the same through aliases, and constructors imported on their own.
 ui_case good_plain ok 'import ./dep.vibe { hue_rank, Hue, Crimson }
 
-export let _start = () -> Int { hue_rank(Crimson) }
+export let _start = () -> Int { hue_rank(h = Crimson) }
 '
 ui_case good_aliased ok 'import ./dep.vibe { hue_rank as r, Hue as T, Crimson }
 
 fn pick() -> T { T::Crimson }
 
-export let _start = () -> Int { r(pick()) }
+export let _start = () -> Int { r(h = pick()) }
 '
 ui_case good_ctors ok 'import ./dep.vibe { Hue, Crimson, Cerulean }
 
@@ -896,7 +896,7 @@ ui_case private_type_alias_reported err 'import ./upper.vibe { HiddenAlias }
 
 fn take(x: HiddenAlias) -> Int { x }
 
-export let _start = () -> Int { take(1) }
+export let _start = () -> Int { take(x = 1) }
 '
 # ...and the exported pair from that same module stays clean, so the two
 # cases above are not passing because `upper.vibe` is broken.
@@ -906,7 +906,7 @@ fn take(x: ShownAlias) -> Int { x }
 
 export let _start = () -> Int {
   let s = Shown::{ x: 1 }
-  take(s.x)
+  take(x = s.x)
 }
 '
 # 8. A dependency that binds NO values is still a checked dependency. Deriving
@@ -939,13 +939,13 @@ export fn public_fn(x: Int) -> Int {
 UIPRIV
 ui_case private_import_reported err 'import ./privates.vibe { private_fn }
 
-export let _start = () -> Int { private_fn(1) }
+export let _start = () -> Int { private_fn(x = 1) }
 '
 # 10. ...and the public name from that same module still imports cleanly, so
 #     case 9 is not passing because the module is broken.
 ui_case public_from_mixed_module ok 'import ./privates.vibe { public_fn }
 
-export let _start = () -> Int { public_fn(1) }
+export let _start = () -> Int { public_fn(x = 1) }
 '
 # 11-12. The same rule for PASS-THROUGH names (#1533's other face): a name the
 #     dependency merely imported sits in its checked environment (the import
@@ -956,19 +956,19 @@ cat > "$uidir/middleman.vibe" <<'UIMID'
 import ./dep.vibe { hue_rank, Hue, Crimson }
 
 export fn middleman_rank() -> Int {
-  hue_rank(Crimson)
+  hue_rank(h = Crimson)
 }
 UIMID
 ui_case passthrough_import_reported err 'import ./middleman.vibe { hue_rank }
 
-export let _start = () -> Int { hue_rank(1) }
+export let _start = () -> Int { hue_rank(h = 1) }
 '
 cat > "$uidir/reexporter.vibe" <<'UIREX'
 export ./dep.vibe { hue_rank, Hue, Crimson }
 UIREX
 ui_case reexported_name_ok ok 'import ./reexporter.vibe { hue_rank, Hue, Crimson }
 
-export let _start = () -> Int { hue_rank(Crimson) }
+export let _start = () -> Int { hue_rank(h = Crimson) }
 '
 rm -rf "$uidir"
 echo "[compiler-gate] unresolved import names ok"
@@ -1069,7 +1069,7 @@ bash "$ROOT_DIR/scripts/test_vibe_rc_help.sh"
 # filters keep answering, just wrongly.
 gate_workdir gvdir "_build/_gate_vibe_grep"
 cat > "$gvdir/dep.vibe" <<'VEOF'
-export fn helper(v: Int) -> Int {
+export fn helper(_ v: Int) -> Int {
   v + 1
 }
 VEOF
@@ -1078,11 +1078,11 @@ import ./dep.vibe {
   helper as h
 }
 
-fn readit(p: String) -> String with Fs {
+fn readit(_ p: String) -> String with Fs {
   Fs::read_file(p)
 }
 
-fn plain(p: String) -> String {
+fn plain(_ p: String) -> String {
   p
 }
 
