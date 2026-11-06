@@ -1844,9 +1844,24 @@ echo "[compiler-gate] generic trait impl (Increment B, dict-of-dict) ok"
 #     the async runtime path is proven to EXECUTE on wasmtime 45 (no wasmtime 46
 #     needed). SKIPs cleanly when wasmtime / the async flags are unavailable.
 #     Regenerate the fixture with: scripts/emit_async_lift_fixture.sh
+#     That script is run here too, into _build/, and must reproduce the
+#     committed bytes: it once stopped compiling for weeks (its imports named
+#     files #3528 had moved) while this step kept passing on the old fixture
+#     (#3873). This half needs no wasmtime, so it runs before the SKIPs below.
 echo "[compiler-gate] 24/24 async-lifted component execution (wasmtime)"
 WT_BIN="$(command -v wasmtime || "$ROOT_DIR/scripts/wasmtime_bin.sh" 2>/dev/null || true)"
 ac_fixture="$ROOT_DIR/fixtures/async_lift_run42.component.wasm"
+ac_regen="$ROOT_DIR/_build/async_lift_regen/run42.component.wasm"
+mkdir -p "$(dirname "$ac_regen")"
+if ! EMIT_ASYNC_FIXTURE_STAGE2="$stage2_wasm" bash scripts/emit_async_lift_fixture.sh "$ac_regen" >/dev/null 2>"$ac_regen.err"; then
+  cat "$ac_regen.err" >&2
+  echo "[compiler-gate] FAIL: scripts/emit_async_lift_fixture.sh no longer regenerates the async-lift fixture" >&2; exit 1
+fi
+if ! cmp -s "$ac_regen" "$ac_fixture"; then
+  echo "[compiler-gate] FAIL: fixtures/async_lift_run42.component.wasm no longer matches what the codegen emits." >&2
+  echo "  Regenerate it with: bash scripts/emit_async_lift_fixture.sh" >&2; exit 1
+fi
+echo "[compiler-gate] async-lift fixture reproduces from scripts/emit_async_lift_fixture.sh ($(wc -c < "$ac_regen") bytes)"
 if [ -z "${WT_BIN:-}" ] || ! "$WT_BIN" --version >/dev/null 2>&1; then
   echo "[compiler-gate] SKIP: wasmtime not available"
 elif ! "$WT_BIN" -W help 2>&1 | grep -q "component-model-async-stackful"; then
