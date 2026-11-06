@@ -39,24 +39,78 @@ export fn generated_owner_of(_ stmt: Stmt) -> String {
 /// themselves; `z` is `zz`, `_` is `zu`, and any other byte is `zx` and two
 /// hex digits. No underscore matters to `edp_unmangle_shadow_name`, which
 /// reads the source spelling after the first `_` that follows `__edpsh_`.
+/// An owner that needs no escape is its own tag and costs no allocation.
 export fn generated_owner_tag(_ owner: String) -> String {
-  let out = StringBuilder::new()
-  let hex = "0123456789abcdef"
-  let mut i = 0
-  while i < String::length(owner) {
-    let c = String::byte_at(owner, at = i)
-    if c == 122 {
-      StringBuilder::push(out, value = "zz")
-    } else if c == 95 {
-      StringBuilder::push(out, value = "zu")
-    } else if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 121) {
-      StringBuilder::push(out, value = String::from_byte(c))
-    } else {
-      StringBuilder::push(out, value = "zx")
-      StringBuilder::push(out, value = String::substring(hex, start = c / 16, end = c / 16 + 1))
-      StringBuilder::push(out, value = String::substring(hex, start = c % 16, end = c % 16 + 1))
-    }
-    i = i + 1
+  let n = String::length(owner)
+  let mut first = 0
+  while first < n && generated_owner_plain(String::byte_at(owner, at = first)) {
+    first = first + 1
   }
-  StringBuilder::freeze(out)
+  if first == n {
+    owner
+  } else {
+    let out = StringBuilder::new()
+    let hex = "0123456789abcdef"
+    let mut run = 0
+    let mut i = first
+    while i < n {
+      let c = String::byte_at(owner, at = i)
+      if !generated_owner_plain(c) {
+        if run < i {
+          StringBuilder::push(out, value = String::substring(owner, start = run, end = i))
+        } else {
+          ()
+        }
+        if c == 122 {
+          StringBuilder::push(out, value = "zz")
+        } else if c == 95 {
+          StringBuilder::push(out, value = "zu")
+        } else {
+          StringBuilder::push(out, value = "zx")
+          StringBuilder::push(out, value = String::substring(hex, start = c / 16, end = c / 16 + 1))
+          StringBuilder::push(out, value = String::substring(hex, start = c % 16, end = c % 16 + 1))
+        }
+        run = i + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if run < n {
+      StringBuilder::push(out, value = String::substring(owner, start = run, end = n))
+    } else {
+      ()
+    }
+    StringBuilder::freeze(out)
+  }
+}
+
+/// A byte that stands for itself in a tag: a digit, or a letter other than `z`.
+fn generated_owner_plain(_ c: Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 121)
+}
+
+/// A pass's current owner, as a cell `[source, suffix, tag, ready]` it keeps in
+/// a module-level `let` initialised to `["", "", "", "1"]`. Most statements
+/// mint no name at all, so the tag is computed the first time one is asked
+/// for (`generated_owner_current`), not when the owner is entered.
+export fn generated_owner_enter(cell: Array[String], source: String, suffix: String) -> Unit {
+  if Array::get(cell, at = 0) != source || Array::get(cell, at = 1) != suffix {
+    Array::set(cell, at = 0, value = source)
+    Array::set(cell, at = 1, value = suffix)
+    Array::set(cell, at = 3, value = "")
+  } else {
+    ()
+  }
+}
+
+/// The current owner's tag: `generated_owner_tag(source)` followed by `suffix`.
+export fn generated_owner_current(_ cell: Array[String]) -> String {
+  if Array::get(cell, at = 3) == "" {
+    Array::set(cell, at = 2, value = String::concat(generated_owner_tag(Array::get(cell, at = 0)), Array::get(cell, at = 1)))
+    Array::set(cell, at = 3, value = "1")
+  } else {
+    ()
+  }
+  Array::get(cell, at = 2)
 }

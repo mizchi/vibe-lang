@@ -3,15 +3,16 @@ import @vibe/ast {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_callee_resolution, expr_any_node, generated_owner_of, generated_owner_tag
+  Expr, Pat, Stmt, TypeExpr, builtin_callee_resolution, expr_any_node, generated_owner_current, generated_owner_enter, generated_owner_of
 }
 
 import @vibe/core {
   array_empty, struct MutMap
 }
 
-/// The tag of the top-level statement being expanded (#3829).
-let awp_owner: Array[String] = [""]
+/// The top-level statement being expanded, as a `generated_owner_enter` cell
+/// (#3829).
+let awp_owner: Array[String] = ["", "", "", "1"]
 
 fn array_empty_str() -> Array[String] {
   Array::slice([""], start = 0, end = 0)
@@ -118,12 +119,13 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
     }
     let mut i = 0
     while i < Array::length(stmts) {
-      let owner = generated_owner_tag(generated_owner_of(Array::get(stmts, at = i)))
-      Array::set(awp_owner, at = 0, value = owner)
-      Array::set(ctr, at = 0, value = match MutMap::get(owner_counts, k = owner) {
+      let owner = generated_owner_of(Array::get(stmts, at = i))
+      generated_owner_enter(cell = awp_owner, source = owner, suffix = "")
+      let owner_before = match MutMap::get(owner_counts, k = owner) {
         Some(n) => n,
         None => 0
-      })
+      }
+      Array::set(ctr, at = 0, value = owner_before)
       match Array::get(stmts, at = i) {
         SLet(ex, isrec, nm, ty, expr) => {
           Array::set(stmts, at = i, value = SLet(ex, isrec, nm, ty, awp_entry(e = expr, ctr = ctr, sh = sh)))
@@ -142,7 +144,11 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
         },
         _ => ()
       }
-      MutMap::set(owner_counts, k = owner, v = Array::get(ctr, at = 0))
+      if Array::get(ctr, at = 0) != owner_before {
+        MutMap::set(owner_counts, k = owner, v = Array::get(ctr, at = 0))
+      } else {
+        ()
+      }
       i = i + 1
     }
     // ADR-0089 D1 increment 4 (#1218): the poll loop lives in a synthesized
@@ -371,7 +377,7 @@ fn awp_lift(e: Expr, ctr: Array[Int], binds: Array[(String, Expr, String)], sh: 
             let n = Array::get(ctr, at = 0)
             Array::set(ctr, at = 0, value = n + 1)
             Array::set(ctr, at = 1, value = Array::get(ctr, at = 1) + 1)
-            let site = String::concat(String::concat(Int::to_string(n), "o"), Array::get(awp_owner, at = 0))
+            let site = String::concat(String::concat(Int::to_string(n), "o"), generated_owner_current(awp_owner))
             let fname = String::concat("__aw_f_", site)
             let vname = String::concat("__aw_v_", site)
             Array::push(binds, value = (fname, inner, vname))
