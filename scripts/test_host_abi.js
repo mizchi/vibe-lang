@@ -74,7 +74,7 @@ process.on("exit", () => { try { fs.rmSync(work, { recursive: true, force: true 
 
 try {
   // --- Tier 0: pure / compute -------------------------------------------
-  const pure = build("pure", "let add = (a: Int, b: Int) -> Int { a + b }\nlet main = () -> Int { add(2, 3) }\n");
+  const pure = build("pure", "let add = (a: Int, b: Int) -> Int { a + b }\nlet main = () -> Int { add(a = 2, b = 3) }\n");
   ok("pure: imports exactly { wasi_snapshot_preview1::fd_write }",
     JSON.stringify([...pure.imports].sort()) === JSON.stringify(["wasi_snapshot_preview1::fd_write"]),
     JSON.stringify(pure.imports));

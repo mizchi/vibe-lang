@@ -114,7 +114,7 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
 
   // good document -> expect empty diagnostics
   const goodUri = "file:///tmp/vibe-lsp-test-good.vibe";
-  const goodText = "export enum Color { Red; Green }\nexport let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(21) }\n";
+  const goodText = "export enum Color { Red; Green }\nexport let helper = (x: Int) -> Int { x * 2 }\nexport let main = () -> Int { helper(x = 21) }\n";
   send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: goodUri, languageId: "vibe", version: 1, text: goodText } } });
   const goodDiag = await waitFor(isDiag(goodUri));
   check("good doc yields 0 diagnostics", goodDiag.params.diagnostics.length === 0);

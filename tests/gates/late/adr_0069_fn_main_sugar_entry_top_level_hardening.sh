@@ -603,7 +603,7 @@ def frame(obj):
     b = body.encode("utf-8")
     return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
 
-sample_source = "let add = (a: Int, b: Int) -> Int { a + b }\n\nexport let main = () -> Int { add(1, 2) }\n"
+sample_source = "let add = (a: Int, b: Int) -> Int { a + b }\n\nexport let main = () -> Int { add(a = 1, b = 2) }\n"
 msgs = [
     frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
     frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),

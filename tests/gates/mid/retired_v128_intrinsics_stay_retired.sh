@@ -1671,7 +1671,7 @@ VIBE
 cat > "$cfdir/main.vibe" <<'VIBE'
 import ./dep.vibe { f }
 
-fn main() -> Int { f(1) }
+fn main() -> Int { f(x = 1) }
 VIBE
 cf_fs_got=""
 for cf_flag in dev release dev; do

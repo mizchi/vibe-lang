@@ -636,6 +636,11 @@ sub(a = 5, b = 3)  // ok
 A call through a function value -- a parameter, a local lambda, a field --
 is not checked this way: its arguments stay positional.
 
+Argument sugar works under a label: an arrow lambda
+(`Array::map(xs, f = x -> x + 1)`), an operator section
+(`Array::fold(xs, init = 0, f = _ + _)`), and a pipe hole, which takes the
+piped value under its slot's label (`3 |> pair(1, b = _)`).
+
 A label on a `_` slot is a build error naming the edit
 (``remove `xs = ` ``). `_` is accepted in a `fn` declaration (`T::f` and
 `.vpkg` declarations included) and on the lambda a top-level `let` is bound to;

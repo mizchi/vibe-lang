@@ -96,7 +96,7 @@ cat > "$WORK/hoist.expected.vibe" <<'EOF'
 
 let id: (Int) -> Int = (x) -> { x }
 
-export let run: () -> Int = () -> { id(x = 1) }
+export let run: () -> Int = () -> { id(x=1) }
 EOF
 
 # Generic lambda must NOT be hoisted: its `[T]` type params scope the lambda,
