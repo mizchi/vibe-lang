@@ -1,0 +1,72 @@
+import @vibe/compiler/runtime {
+  TypeDb, db_check_env, db_new, db_parse_count, db_set_source, db_typecheck, db_typecheck_count, persistent_type_env_cache_text
+}
+import @vibe/compiler/config {
+  cfg_flags_from_csv
+}
+import @vibe/compiler/cache {
+  compact_string_fingerprint, set_persistent_cache_cfg_flags
+}
+import @vibe/parser {
+  set_cfg_ambient_flags
+}
+
+// Use the common compatibility API so the same workload builds before and
+// after the scoped memory API exists. Each image contains its own runtime.
+fn memory_graph(_ modules: Int) -> TypeDb {
+  let mut db = db_new()
+  let mut i = 0
+  while i < modules {
+    let path = "memory_perf/node_\{i}.vibe"
+    let source = if i == 0 {
+      "export fn step() -> Int { 1 }\n"
+    } else {
+      "import ./node_\{i - 1}.vibe { step as previous }\nexport fn step() -> Int { previous() + 1 }\n"
+    }
+    db = db_set_source(db = db, path = path, source = source)
+    i = i + 1
+  }
+  db
+}
+
+fn main allows Env + Exception + Console + Profiler {
+  let modules = 128
+  let repetitions = 128
+  let flags = Env::get("MEMORY_CFG_BENCH_FLAGS")
+  set_cfg_ambient_flags(cfg_flags_from_csv(flags))
+  set_persistent_cache_cfg_flags(flags)
+  let db = memory_graph(modules)
+  let root = "memory_perf/node_\{modules - 1}.vibe"
+  let cold_heap_start = Profiler::heap_bytes()
+  let cold_start = Profiler::now_us()
+  let cold = db_typecheck(db = db, path = root)
+  let cold_us = Profiler::now_us() - cold_start
+  let cold_bytes = Profiler::heap_bytes() - cold_heap_start
+  let parsed = db_parse_count(cold)
+  assert_eq(db_typecheck_count(cold), modules)
+  assert_eq(parsed, modules * 2)
+  let expected_env = match db_check_env(db = cold, path = root) {
+    Some(env) => persistent_type_env_cache_text(env),
+    None => throw("the cold memory check did not publish its root environment")
+  }
+  let mut warm = cold
+  let mut i = 0
+  let warm_heap_start = Profiler::heap_bytes()
+  let warm_start = Profiler::now_us()
+  while i < repetitions {
+    warm = db_typecheck(db = warm, path = root)
+    // Fingerprint counters alone cannot detect repeated checks of the same
+    // fingerprint. A warm sample must also prove that no parse work ran.
+    assert_eq(db_parse_count(warm), parsed)
+    i = i + 1
+  }
+  let warm_us = Profiler::now_us() - warm_start
+  let warm_bytes = Profiler::heap_bytes() - warm_heap_start
+  assert_eq(db_typecheck_count(warm), modules)
+  match db_check_env(db = warm, path = root) {
+    Some(env) => assert_eq(persistent_type_env_cache_text(env), expected_env),
+    None => throw("the warm memory check lost its root environment")
+  }
+  let identity = compact_string_fingerprint(expected_env)
+  println("memory-check\t\{flags}\t\{modules}\t\{repetitions}\t\{cold_us}\t\{cold_bytes}\t\{warm_us}\t\{warm_bytes}\t\{identity}")
+}
