@@ -1,7 +1,7 @@
 //# Imports
 
 import .{
-  Obligation, prove_obligations, prove_verdict
+  Obligation, Obligation::report_line, prove_line_col, prove_obligations, prove_verdict
 }
 
 //# Helpers
@@ -91,6 +91,29 @@ test "only unsat proves" {
   inspect(prove_verdict("unknown\n"), content = "(unknown, z3 returned unknown)")
   inspect(prove_verdict("timeout\n"), content = "(unknown, z3 timed out)")
   inspect(prove_verdict(""), content = "(unknown, z3 did not answer: )")
+}
+
+test "#3719: one report wording for every solver; only unsat is silent" {
+  let o = Obligation::{
+    fn_name: "dec",
+    kind: "ensures",
+    label: "(result > x)",
+    off: 7,
+    query: ""
+  }
+  inspect(Obligation::report_line(o, answer = "unsat\n", limit = "rlimit 9"), content = "None")
+  inspect(Obligation::report_line(o, answer = "sat\n((|x| 1))\n", limit = "rlimit 9"), content = "Some((7, unproved: ensures (result > x) of `dec` -- counterexample: x = 1))")
+  inspect(Obligation::report_line(o, answer = "unknown\n", limit = "rlimit 9"), content = "Some((7, unknown: ensures (result > x) of `dec` -- z3 returned unknown (rlimit 9)))")
+  inspect(Obligation::report_line(o, answer = "(error \"bad\")\n", limit = "5000 ms limit"), content = "Some((7, unknown: ensures (result > x) of `dec` -- z3 did not answer: (error \"bad\") (5000 ms limit)))")
+  let u = Obligation::{
+    fn_name: "f",
+    kind: "unsupported",
+    label: "a reason",
+    off: -1,
+    query: ""
+  }
+  inspect(Obligation::report_line(u, answer = "unsat\n", limit = "rlimit 9"), content = "Some((-1, unsupported: a reason (in `f`)))")
+  inspect((prove_line_col(source = "ab\ncd", off = 4), prove_line_col(source = "ab", off = -1)), content = "(2:2, 1:1)")
 }
 
 test "#3717: a contracted while owes its invariants and measure on entry and after an iteration" {

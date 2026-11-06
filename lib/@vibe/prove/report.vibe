@@ -1,0 +1,80 @@
+// What `vibe check --prove` prints for one obligation (#3717, ADR-0121),
+// whichever solver answered it: the external `z3` (lib/@vibe/cli) or the
+// in-process WASI z3 (@vibex/z3_wasi, #3719). Both lanes print through this
+// file, so they differ only in what the solver said and in the bound it ran
+// under.
+
+//# Imports
+
+import ./solver.vibe {
+  prove_verdict
+}
+
+//# Report
+
+/// The report for obligation `o`, or `None` when it is proved: an
+/// `unsupported` obligation as its reason, otherwise `answer` -- what the
+/// solver printed for `o.query` -- read by `prove_verdict`. `limit` names the
+/// bound the solver ran under (`5000 ms limit`), shown on an `unknown` line.
+/// Only `unsat` proves, so an answer that is neither `unsat` nor `sat` is
+/// reported, never dropped.
+export fn Obligation::report_line(_ o: Obligation, answer: String, limit: String) -> Option[(Int, String)] {
+  if o.kind == "unsupported" {
+    Some((o.off, "unsupported: \{o.label} (in `\{o.fn_name}`)"))
+  } else {
+    let (verdict, detail) = prove_verdict(answer)
+    if verdict == "unproved" {
+      Some((o.off, "unproved: \{obligation_text(o)} -- counterexample: \{detail}"))
+    } else if verdict != "proved" {
+      Some((o.off, "unknown: \{obligation_text(o)} -- \{detail} (\{limit})"))
+    } else {
+      None
+    }
+  }
+}
+
+fn obligation_text(_ o: Obligation) -> String {
+  if o.kind == "ensures" {
+    "ensures \{o.label} of `\{o.fn_name}`"
+  } else if o.kind == "requires" {
+    "requires of \{o.label}, called in `\{o.fn_name}`"
+  } else if o.kind == "invariant-entry" {
+    "invariant \{o.label} holds when the loop starts, in `\{o.fn_name}`"
+  } else if o.kind == "invariant" {
+    "invariant \{o.label} holds again after each iteration, in `\{o.fn_name}`"
+  } else if o.kind == "measure-entry" {
+    "the measure \{o.label} is not negative when the loop starts, in `\{o.fn_name}`"
+  } else if o.kind == "measure" {
+    "the measure \{o.label} stays non-negative and drops on each iteration, in `\{o.fn_name}`"
+  } else if o.kind == "index" {
+    "the index of \{o.label} is within the array, in `\{o.fn_name}`"
+  } else if o.kind == "divisor" {
+    "the divisor of \{o.label} is not zero, in `\{o.fn_name}`"
+  } else if o.kind == "coverage" {
+    "a `match` on \{o.label} covers every value, in `\{o.fn_name}`"
+  } else {
+    "\{o.kind} in \{o.label} in `\{o.fn_name}`"
+  }
+}
+
+/// `L:C` of byte offset `off` in `source`, 1-based, with C a byte column
+/// (ADR-0108); `1:1` when the offset is unknown.
+export fn prove_line_col(source: String, off: Int) -> String {
+  if off < 0 {
+    "1:1"
+  } else {
+    let mut line = 1
+    let mut col = 1
+    let mut i = 0
+    while i < off && i < String::length(source) {
+      if String::byte_at(source, at = i) == '\n' {
+        line = line + 1
+        col = 1
+      } else {
+        col = col + 1
+      }
+      i = i + 1
+    }
+    "\{line}:\{col}"
+  }
+}

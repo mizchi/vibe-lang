@@ -4,6 +4,10 @@
 # fixtures/prove/ -- `add_small`'s `a + b` becomes `a - b`, so its
 # `ensures: result >= a` is false -- and asserts the gate refuses it, after
 # first asserting the mutation actually landed.
+#
+# It runs on the lane VIBE_PROVE_SOLVER selects (z3, the default, or wasm,
+# #3719): `VIBE_PROVE_SOLVER=wasm bash scripts/check_prove_test.sh <stage2>`
+# proves the in-process lane can fail too.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
