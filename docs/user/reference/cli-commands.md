@@ -217,15 +217,16 @@ hold; it never changes what a build produces (ADR-0121). The report keeps
 proved**, and each line names one that is not:
 
 ```
-f.vibe:5:1: unproved: ensures (result > x) of `dec` -- counterexample: x = 1
+f.vibe:5:57: unproved: ensures (result > x) of `dec` -- counterexample: x = 1
 f.vibe:12:5: unproved: overflow in (x + 1) in `inc` -- counterexample: x = 4611686018427387903
 f.vibe:21:3: unproved: requires of half: (x >= 0), called in `call_half` -- counterexample: y = -4611686018427387904
 f.vibe:7:9: unsupported: a `while` without a `where { decreases: .. }` measure: termination is not proved, so the result would be partial correctness only (in `sum_to`)
-f.vibe:5:1: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
+f.vibe:7:12: unknown: ensures result of `fermat3` -- z3 timed out (5000 ms limit)
 ```
 
 Only an `unsat` answer proves, so `unknown`, a timeout and an unsupported
-construct fail (exit 1), never pass. The provable fragment is pure functions
+construct fail (exit 1), never pass. An `ensures` line points at the clause
+that is not proved. The provable fragment is pure functions
 over `Int` and `Bool`: `let`, `if`, `return` (every exit checks `ensures`),
 `+ - * / % << >>` and comparisons, `&&` / `||` / `!`, and calls to other functions
 of the file with such signatures. `Int` is a mathematical integer plus one
@@ -278,7 +279,16 @@ to an array also used as a value (bound to another name, passed, reassigned,
 the iterand of a `for`), is unsupported, and so is a write in a loop's
 clause. A loop that writes an array knows of it, past the checkpoint, only
 what its invariants say. `==` on arrays is unsupported, since their
-contents past the length are not modelled. A
+contents past the length are not modelled. `Array::all(xs, f = (x) -> p)`
+and `Array::any(xs, f = (x) -> p)` are quantifiers over the indices (#3719):
+`p` holds of the element at every / some `0 <= i < length`, so a contract
+states a property of every element in the call the runtime already
+evaluates. The predicate is a one-parameter lambda written at the call; one
+that returns, assigns, writes an array or calls a function is unsupported.
+What the predicate owes (an overflow, an index) is owed for every element,
+which is stronger than the runtime needs when the call stops early, never
+weaker, and a quantified query the solver cannot settle in time is
+`unknown`, a failure. A
 call is modular: the callee's `requires` is owed at the call and its
 `ensures` assumed of the result, and the callee's own body is proved in the
 same run. A call to a function with no `where` contract is unsupported (it is

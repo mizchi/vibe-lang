@@ -1,0 +1,644 @@
+//# Position-independent statement keys (#3829 step 2)
+//
+// The effect-lowering prelude rewrites each top-level statement against the
+// statement itself and whole-program tables. Reusing that work after an edit
+// needs a key for "this statement, as the passes see it" that does not move
+// when only the text BEFORE it changed.
+//
+// Two things the passes read carry absolute merged-source offsets: the
+// statement's own located AST slots (the merge shifts every file into a
+// disjoint range), and the typed-lowering rows the checker hands over (`==`,
+// render, index, Float, Int32, map-key rows), keyed by those same offsets.
+// An edit early in the closure shifts both for every later statement, so
+// measured on the CLI closure only 244 of 16,320 rows kept their offset
+// although none changed content.
+//
+// The key rebases both onto the statement's own first located offset (its
+// ANCHOR). A row belongs to a statement when its offset is one of that
+// statement's located offsets, the slots a pass looks a row up by. Whole-program
+// tables are not part of this key; a reuse must digest them separately.
+//
+// The statement itself is ENCODED, not printed. The printer is not lossless --
+// it rounds a floating-point literal or pattern to six decimal places, drops a
+// labeled argument's modifier and an empty handle -- and a key that two
+// different statements share would let a reuse replay the wrong output. The
+// encoder matches every `Expr`, `Pat` and `TypeExpr` variant without a
+// wildcard, so a new variant is a compile error here rather than a field the
+// key silently ignores.
+
+import @vibe/ast {
+  index_site_offset
+}
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, sorted_names_of
+}
+
+import @vibe/core {
+  struct MutMap
+}
+
+import @vibe/parser {
+  stmt_located_offsets
+}
+
+/// The key of every statement in `stmts` (`PreludeStmtKey`, declared in the
+/// contract), given the typed-lowering rows the prelude receives as parallel
+/// `row_offsets` / `row_keys`. `anchor` is the statement's lowest located
+/// offset (-1 when it has none). `keyed` is false for a statement that holds
+/// no expression (a type, struct, trait or import declaration and the like):
+/// its key equals no other, so a reuse never takes one. Otherwise `ints` is
+/// the statement's structure -- variant tags, counts, booleans, integers,
+/// floating-point values as exact parts, offsets relative to `anchor`, call
+/// resolution cells, string lengths -- and `text` is its strings in the same
+/// order, followed by its rows as `offset=key`, relative to `anchor` and
+/// sorted. Together the two decode back to the statement, so two statements
+/// share a key only if they are equal up to where they start.
+export fn prelude_statement_keys(stmts: Array[Stmt], row_offsets: Array[Int], row_keys: Array[String]) -> Array[PreludeStmtKey] {
+  let anchors: Array[Int] = []
+  let owners: MutMap[Int, Array[Int]] = MutMap::new_int()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    let offs = stmt_located_offsets(Array::get(stmts, at = si))
+    let mut anchor = -1
+    for off in offs {
+      if anchor < 0 || off < anchor {
+        anchor = off
+      } else {
+        ()
+      }
+      match MutMap::get(owners, k = off) {
+        Some(list) => if Array::get(list, at = Array::length(list) - 1) != si {
+          Array::push(list, value = si)
+        } else {
+          ()
+        },
+        None => MutMap::set(owners, k = off, v = [si])
+      }
+    }
+    Array::push(anchors, value = anchor)
+    si = si + 1
+  }
+  let rows: Array[Array[String]] = []
+  for _ in stmts {
+    let none: Array[String] = []
+    Array::push(rows, value = none)
+  }
+  let mut ri = 0
+  while ri < Array::length(row_offsets) {
+    let off = Array::get(row_offsets, at = ri)
+    match MutMap::get(owners, k = off) {
+      Some(list) => {
+        for owner in list {
+          let rel = off - Array::get(anchors, at = owner)
+          Array::push(Array::get(rows, at = owner), value = "\{rel}=\{Array::get(row_keys, at = ri)}")
+        }
+        ()
+      },
+      None => ()
+    }
+    ri = ri + 1
+  }
+  let out: Array[PreludeStmtKey] = []
+  si = 0
+  while si < Array::length(stmts) {
+    let anchor = Array::get(anchors, at = si)
+    let ints: Array[Int] = []
+    let text = StringBuilder::new()
+    let keyed = sk_stmt(ints = ints, text = text, anchor = anchor, s = Array::get(stmts, at = si))
+    let sorted = sorted_names_of(Array::get(rows, at = si))
+    Array::push(ints, value = Array::length(sorted))
+    for row in sorted {
+      sk_str(ints = ints, text = text, s = row)
+    }
+    Array::push(out, value = PreludeStmtKey::{
+      anchor: anchor,
+      keyed: keyed,
+      text: StringBuilder::freeze(text),
+      ints: ints
+    })
+    si = si + 1
+  }
+  out
+}
+
+/// Do two keys name the same statement as the prelude sees it? Never for a
+/// statement with no key.
+export fn prelude_statement_key_equal(a: PreludeStmtKey, b: PreludeStmtKey) -> Bool {
+  if !a.keyed || !b.keyed || a.text != b.text || Array::length(a.ints) != Array::length(b.ints) {
+    false
+  } else {
+    let mut same = true
+    let mut i = 0
+    while same && i < Array::length(a.ints) {
+      same = Array::get(a.ints, at = i) == Array::get(b.ints, at = i)
+      i = i + 1
+    }
+    same
+  }
+}
+
+//# The encoder. Every value goes to `ints`, every string to `text` with its
+//# length in `ints`, so the pair decodes back to what was encoded.
+
+/// The statements a reuse may take: those that hold expressions. Answers false
+/// for the rest, which get no key.
+fn sk_stmt(ints: Array[Int], text: StringBuilder, anchor: Int, s: Stmt) -> Bool {
+  match s {
+    SLet(exported, recursive, name, ty, e) => {
+      Array::push(ints, value = 1)
+      sk_bool(ints = ints, b = exported)
+      sk_bool(ints = ints, b = recursive)
+      sk_str(ints = ints, text = text, s = name)
+      sk_opt_ty(ints = ints, text = text, t = ty)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = e)
+      true
+    },
+    SLetMut(name, ty, e) => {
+      Array::push(ints, value = 2)
+      sk_str(ints = ints, text = text, s = name)
+      sk_opt_ty(ints = ints, text = text, t = ty)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = e)
+      true
+    },
+    STest(name, e) => {
+      Array::push(ints, value = 3)
+      sk_str(ints = ints, text = text, s = name)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = e)
+      true
+    },
+    SBench(name, e) => {
+      Array::push(ints, value = 4)
+      sk_str(ints = ints, text = text, s = name)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = e)
+      true
+    },
+    SExample(name, e) => {
+      Array::push(ints, value = 5)
+      sk_str(ints = ints, text = text, s = name)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = e)
+      true
+    },
+    SExpr(e) => {
+      Array::push(ints, value = 6)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = e)
+      true
+    },
+    SLetPat(p, e) => {
+      Array::push(ints, value = 7)
+      sk_pat(ints = ints, text = text, p = p)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = e)
+      true
+    },
+    SFnDecl(exported, name, e, requires, ensures) => {
+      Array::push(ints, value = 8)
+      sk_bool(ints = ints, b = exported)
+      sk_str(ints = ints, text = text, s = name)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = e)
+      sk_exprs(ints = ints, text = text, anchor = anchor, es = requires)
+      sk_exprs(ints = ints, text = text, anchor = anchor, es = ensures)
+      true
+    },
+    SModule(exported, name, inner) => {
+      Array::push(ints, value = 9)
+      sk_bool(ints = ints, b = exported)
+      sk_str(ints = ints, text = text, s = name)
+      Array::push(ints, value = Array::length(inner))
+      let mut keyed = true
+      for st in inner {
+        if !sk_stmt(ints = ints, text = text, anchor = anchor, s = st) {
+          keyed = false
+        } else {
+          ()
+        }
+      }
+      keyed
+    },
+    _ => false
+  }
+}
+
+fn sk_bool(ints: Array[Int], b: Bool) -> Unit {
+  Array::push(ints, value = if b {
+    1
+  } else {
+    0
+  })
+}
+
+fn sk_str(ints: Array[Int], text: StringBuilder, s: String) -> Unit {
+  Array::push(ints, value = String::length(s))
+  StringBuilder::push(text, value = s)
+}
+
+fn sk_opt_str(ints: Array[Int], text: StringBuilder, s: Option[String]) -> Unit {
+  match s {
+    Some(v) => {
+      Array::push(ints, value = 1)
+      sk_str(ints = ints, text = text, s = v)
+    },
+    None => Array::push(ints, value = 0)
+  }
+}
+
+fn sk_strs(ints: Array[Int], text: StringBuilder, ss: Array[String]) -> Unit {
+  Array::push(ints, value = Array::length(ss))
+  for s in ss {
+    sk_str(ints = ints, text = text, s = s)
+  }
+  ()
+}
+
+/// A located slot relative to `anchor`; an unlocated one (-1, a builtin
+/// reference) as itself, under its own tag.
+fn sk_off(ints: Array[Int], anchor: Int, off: Int) -> Unit {
+  if off >= 0 {
+    Array::push(ints, value = 0)
+    Array::push(ints, value = off - anchor)
+  } else {
+    Array::push(ints, value = 1)
+    Array::push(ints, value = off)
+  }
+}
+
+/// An identifier's slot, which may hold an index site key: its `[` offset is
+/// a location like any other.
+fn sk_ident_off(ints: Array[Int], anchor: Int, off: Int) -> Unit {
+  let bracket = index_site_offset(off)
+  if bracket >= 0 {
+    Array::push(ints, value = 2)
+    Array::push(ints, value = bracket - anchor)
+  } else {
+    sk_off(ints = ints, anchor = anchor, off = off)
+  }
+}
+
+fn sk_ty(ints: Array[Int], text: StringBuilder, t: TypeExpr) -> Unit {
+  match t {
+    TyName(n) => {
+      Array::push(ints, value = 1)
+      sk_str(ints = ints, text = text, s = n)
+    },
+    TyApp(n, args) => {
+      Array::push(ints, value = 2)
+      sk_str(ints = ints, text = text, s = n)
+      sk_tys(ints = ints, text = text, ts = args)
+    },
+    TyFn(args, ret, eff) => {
+      Array::push(ints, value = 3)
+      sk_tys(ints = ints, text = text, ts = args)
+      sk_ty(ints = ints, text = text, t = ret)
+      sk_opt_str(ints = ints, text = text, s = eff)
+    },
+    TyTuple(items) => {
+      Array::push(ints, value = 4)
+      sk_tys(ints = ints, text = text, ts = items)
+    },
+    TyUnit => Array::push(ints, value = 5)
+  }
+}
+
+fn sk_tys(ints: Array[Int], text: StringBuilder, ts: Array[TypeExpr]) -> Unit {
+  Array::push(ints, value = Array::length(ts))
+  for t in ts {
+    sk_ty(ints = ints, text = text, t = t)
+  }
+  ()
+}
+
+fn sk_opt_ty(ints: Array[Int], text: StringBuilder, t: Option[TypeExpr]) -> Unit {
+  match t {
+    Some(v) => {
+      Array::push(ints, value = 1)
+      sk_ty(ints = ints, text = text, t = v)
+    },
+    None => Array::push(ints, value = 0)
+  }
+}
+
+fn sk_pat(ints: Array[Int], text: StringBuilder, p: Pat) -> Unit {
+  match p {
+    PWild => Array::push(ints, value = 1),
+    PBind(n) => {
+      Array::push(ints, value = 2)
+      sk_str(ints = ints, text = text, s = n)
+    },
+    PInt(n) => {
+      Array::push(ints, value = 3)
+      Array::push(ints, value = n)
+    },
+    PFloat(d) => {
+      Array::push(ints, value = 4)
+      sk_float(ints = ints, d = d)
+    },
+    PString(s) => {
+      Array::push(ints, value = 5)
+      sk_str(ints = ints, text = text, s = s)
+    },
+    PBool(b) => {
+      Array::push(ints, value = 6)
+      sk_bool(ints = ints, b = b)
+    },
+    PCtor(n, items) => {
+      Array::push(ints, value = 7)
+      sk_str(ints = ints, text = text, s = n)
+      Array::push(ints, value = Array::length(items))
+      for q in items {
+        sk_pat(ints = ints, text = text, p = q)
+      }
+      ()
+    },
+    PTuple(items) => {
+      Array::push(ints, value = 8)
+      Array::push(ints, value = Array::length(items))
+      for q in items {
+        sk_pat(ints = ints, text = text, p = q)
+      }
+      ()
+    },
+    POr(a, b) => {
+      Array::push(ints, value = 9)
+      sk_pat(ints = ints, text = text, p = a)
+      sk_pat(ints = ints, text = text, p = b)
+    },
+    PStruct(n, fields) => {
+      Array::push(ints, value = 10)
+      sk_str(ints = ints, text = text, s = n)
+      Array::push(ints, value = Array::length(fields))
+      for fld in fields {
+        let (fname, q) = fld
+        sk_str(ints = ints, text = text, s = fname)
+        sk_pat(ints = ints, text = text, p = q)
+      }
+      ()
+    }
+  }
+}
+
+fn sk_exprs(ints: Array[Int], text: StringBuilder, anchor: Int, es: Array[Expr]) -> Unit {
+  Array::push(ints, value = Array::length(es))
+  for e in es {
+    sk_expr(ints = ints, text = text, anchor = anchor, e = e)
+  }
+  ()
+}
+
+fn sk_named(ints: Array[Int], text: StringBuilder, anchor: Int, fields: Array[(String, Expr)]) -> Unit {
+  Array::push(ints, value = Array::length(fields))
+  for fld in fields {
+    let (n, v) = fld
+    sk_str(ints = ints, text = text, s = n)
+    sk_expr(ints = ints, text = text, anchor = anchor, e = v)
+  }
+  ()
+}
+
+fn sk_arms(ints: Array[Int], text: StringBuilder, anchor: Int, arms: Array[(Pat, Expr)]) -> Unit {
+  Array::push(ints, value = Array::length(arms))
+  for arm in arms {
+    let (p, e) = arm
+    sk_pat(ints = ints, text = text, p = p)
+    sk_expr(ints = ints, text = text, anchor = anchor, e = e)
+  }
+  ()
+}
+
+fn sk_expr(ints: Array[Int], text: StringBuilder, anchor: Int, e: Expr) -> Unit {
+  match e {
+    EInt(n) => {
+      Array::push(ints, value = 1)
+      Array::push(ints, value = n)
+    },
+    EFloat(d) => {
+      Array::push(ints, value = 2)
+      sk_float(ints = ints, d = d)
+    },
+    EString(s, off) => {
+      Array::push(ints, value = 3)
+      sk_str(ints = ints, text = text, s = s)
+      sk_off(ints = ints, anchor = anchor, off = off)
+    },
+    EBool(b) => {
+      Array::push(ints, value = 4)
+      sk_bool(ints = ints, b = b)
+    },
+    EIdent(n, off) => {
+      Array::push(ints, value = 5)
+      sk_str(ints = ints, text = text, s = n)
+      sk_ident_off(ints = ints, anchor = anchor, off = off)
+    },
+    ETuple(items) => {
+      Array::push(ints, value = 6)
+      sk_exprs(ints = ints, text = text, anchor = anchor, es = items)
+    },
+    EArray(items) => {
+      Array::push(ints, value = 7)
+      sk_exprs(ints = ints, text = text, anchor = anchor, es = items)
+    },
+    ERecord(n, fields, targs) => {
+      Array::push(ints, value = 8)
+      sk_str(ints = ints, text = text, s = n)
+      sk_named(ints = ints, text = text, anchor = anchor, fields = fields)
+      sk_tys(ints = ints, text = text, ts = targs)
+    },
+    EIf(c, t, f) => {
+      Array::push(ints, value = 9)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = c)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = t)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = f)
+    },
+    ELet(n, v, b, off) => {
+      Array::push(ints, value = 10)
+      sk_str(ints = ints, text = text, s = n)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = v)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = b)
+      sk_off(ints = ints, anchor = anchor, off = off)
+    },
+    ELetRec(n, v, b) => {
+      Array::push(ints, value = 11)
+      sk_str(ints = ints, text = text, s = n)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = v)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = b)
+    },
+    ELetMut(n, v, b, off) => {
+      Array::push(ints, value = 12)
+      sk_str(ints = ints, text = text, s = n)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = v)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = b)
+      sk_off(ints = ints, anchor = anchor, off = off)
+    },
+    EAssign(n, v, b, off) => {
+      Array::push(ints, value = 13)
+      sk_str(ints = ints, text = text, s = n)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = v)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = b)
+      sk_off(ints = ints, anchor = anchor, off = off)
+    },
+    EAssignOp(n, op, v, b, off) => {
+      Array::push(ints, value = 14)
+      sk_str(ints = ints, text = text, s = n)
+      sk_str(ints = ints, text = text, s = op)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = v)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = b)
+      sk_off(ints = ints, anchor = anchor, off = off)
+    },
+    ESeq(a, b) => {
+      Array::push(ints, value = 15)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = a)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = b)
+    },
+    EMatch(sc, arms) => {
+      Array::push(ints, value = 16)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = sc)
+      sk_arms(ints = ints, text = text, anchor = anchor, arms = arms)
+    },
+    EHandle(body, arms) => {
+      Array::push(ints, value = 17)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = body)
+      sk_arms(ints = ints, text = text, anchor = anchor, arms = arms)
+    },
+    EWhile(c, b) => {
+      Array::push(ints, value = 18)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = c)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = b)
+    },
+    ELoop(params, b) => {
+      Array::push(ints, value = 19)
+      sk_named(ints = ints, text = text, anchor = anchor, fields = params)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = b)
+    },
+    EForIn(n, idx, it, b) => {
+      Array::push(ints, value = 20)
+      sk_str(ints = ints, text = text, s = n)
+      sk_opt_str(ints = ints, text = text, s = idx)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = it)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = b)
+    },
+    ECall(callee, args, off, cell) => {
+      Array::push(ints, value = 21)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = callee)
+      sk_exprs(ints = ints, text = text, anchor = anchor, es = args)
+      sk_off(ints = ints, anchor = anchor, off = off)
+      Array::push(ints, value = Array::length(cell))
+      for v in cell {
+        Array::push(ints, value = v)
+      }
+      ()
+    },
+    EBinOp(op, l, r, off) => {
+      Array::push(ints, value = 22)
+      sk_str(ints = ints, text = text, s = op)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = l)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = r)
+      sk_off(ints = ints, anchor = anchor, off = off)
+    },
+    EUnaryOp(op, x) => {
+      Array::push(ints, value = 23)
+      sk_str(ints = ints, text = text, s = op)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = x)
+    },
+    EFn(tparams, bounds, params, ret, eff, body) => {
+      Array::push(ints, value = 24)
+      sk_strs(ints = ints, text = text, ss = tparams)
+      Array::push(ints, value = Array::length(bounds))
+      for bound in bounds {
+        let (formal, traits) = bound
+        sk_str(ints = ints, text = text, s = formal)
+        sk_strs(ints = ints, text = text, ss = traits)
+      }
+      Array::push(ints, value = Array::length(params))
+      for prm in params {
+        let (pname, pty) = prm
+        sk_str(ints = ints, text = text, s = pname)
+        sk_opt_ty(ints = ints, text = text, t = pty)
+      }
+      sk_opt_ty(ints = ints, text = text, t = ret)
+      sk_opt_str(ints = ints, text = text, s = eff)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = body)
+    },
+    EDot(x, field, off, field_off) => {
+      Array::push(ints, value = 25)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = x)
+      sk_str(ints = ints, text = text, s = field)
+      sk_off(ints = ints, anchor = anchor, off = off)
+      sk_off(ints = ints, anchor = anchor, off = field_off)
+    },
+    ELabeledArg(label, modifier, v) => {
+      Array::push(ints, value = 26)
+      sk_str(ints = ints, text = text, s = label)
+      sk_str(ints = ints, text = text, s = modifier)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = v)
+    },
+    EReturn(x) => {
+      Array::push(ints, value = 27)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = x)
+    },
+    EBreak(opt) => match opt {
+      Some(v) => {
+        Array::push(ints, value = 28)
+        sk_expr(ints = ints, text = text, anchor = anchor, e = v)
+      },
+      None => Array::push(ints, value = 29)
+    },
+    EContinue(args) => {
+      Array::push(ints, value = 30)
+      sk_exprs(ints = ints, text = text, anchor = anchor, es = args)
+    },
+    EMap(fields) => {
+      Array::push(ints, value = 31)
+      sk_named(ints = ints, text = text, anchor = anchor, fields = fields)
+    },
+    ESpread(x) => {
+      Array::push(ints, value = 32)
+      sk_expr(ints = ints, text = text, anchor = anchor, e = x)
+    },
+    EStringInterp(parts) => {
+      Array::push(ints, value = 33)
+      sk_strs(ints = ints, text = text, ss = parts)
+    },
+    EUnit => Array::push(ints, value = 34)
+  }
+}
+
+/// `d` exactly, as three integers: a sign (1 for a negative value, `-0.0`
+/// included), a binary exponent and an integer mantissa in [2^52, 2^53).
+/// Doubling and halving a binary float are exact away from overflow and
+/// underflow, which the two loops stay clear of, so equal parts mean equal
+/// values. Zero, an infinity and a NaN get exponents no finite nonzero
+/// value has.
+fn sk_float(ints: Array[Int], d: Float64) -> Unit {
+  if d != d {
+    Array::push(ints, value = 0)
+    Array::push(ints, value = 99999)
+    Array::push(ints, value = 1)
+  } else {
+    let neg = d < 0.0 || (d == 0.0 && 1.0 / d < 0.0)
+    let mut m = if d < 0.0 {
+      0.0 - d
+    } else {
+      d
+    }
+    sk_bool(ints = ints, b = neg)
+    if m == 0.0 {
+      Array::push(ints, value = -99999)
+      Array::push(ints, value = 0)
+    } else if m * 0.5 == m {
+      Array::push(ints, value = 99999)
+      Array::push(ints, value = 0)
+    } else {
+      let low = 4503599627370496.0
+      let high = 9007199254740992.0
+      let mut e = 0
+      while m < low {
+        m = m * 2.0
+        e = e - 1
+      }
+      while m >= high {
+        m = m * 0.5
+        e = e + 1
+      }
+      Array::push(ints, value = e)
+      Array::push(ints, value = Float64::to_int(m))
+    }
+  }
+}
