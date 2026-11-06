@@ -2,7 +2,18 @@
 // file under the source-size limit.
 
 import @vibe/compiler/core {
-  Subst, Type, TypeDef, find_struct_typedef, find_typedef, subst_apply, type_to_string, unify
+  BindingOrigin,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  env_lookup,
+  env_lookup_binding,
+  find_struct_typedef,
+  find_typedef,
+  subst_apply,
+  type_to_string,
+  unify
 }
 
 import ./checker_call_header.vibe {
@@ -154,5 +165,55 @@ fn pinned_struct_literal_refusal(defs: Array[TypeDef], name: String, target: Typ
       "`" + name + "` is not a struct (struct literal)"
     },
     _ => "`" + name + "` is not a struct (struct literal)"
+  }
+}
+
+/// #3890: the function a dot-call `x.m()` on a value of `type_prefix` names.
+/// It is `type_prefix::m`, unless that is unbound here and an import alias of
+/// the type carries the type's own `m`: after `import ./dep.vibe { SB as BQ }`
+/// the companion is bound as `BQ::get` (its origin still names `SB::get`), so
+/// `b.get()` answered "no method `get` on `SB`: declare a top-level `fn
+/// SB::get(...)`" for a method that exists. Only a binding whose origin is the
+/// type's own companion qualifies, so a local alias's own `fn M::tag` is never
+/// reached from a value of the aliased type.
+export fn dot_call_qualified_name(env: TypeEnv, defs: Array[TypeDef], type_prefix: String, method: String) -> String {
+  let qualified = String::concat(type_prefix, String::concat("::", method))
+  if type_prefix == "" || (env_lookup(env = env, name = qualified) is Some(_)) {
+    qualified
+  } else {
+    let mut found = qualified
+    for def in defs {
+      match def {
+        TDAlias(alias, _, target) => if found == qualified && alias != type_prefix && dot_call_alias_head(target) == type_prefix {
+          let candidate = String::concat(alias, String::concat("::", method))
+          match env_lookup_binding(env = env, name = candidate) {
+            Some(binding) => if binding_origin_source_is(origin = binding.origin, name = qualified) {
+              found = candidate
+            },
+            None => ()
+          }
+        },
+        _ => ()
+      }
+    }
+    found
+  }
+}
+
+fn dot_call_alias_head(_ target: Type) -> String {
+  match target {
+    CtNamed(head, _) => head,
+    CtStruct(head) => head,
+    _ => ""
+  }
+}
+
+fn binding_origin_source_is(origin: BindingOrigin, name: String) -> Bool {
+  match origin {
+    BindingOriginModuleFunctionHeader(_, source, _, _) => source == name,
+    BindingOriginReExportFunctionHeader(_, source, _, _) => source == name,
+    BindingOriginModuleExport(_, source) => source == name,
+    BindingOriginReExportSurface(_, source) => source == name,
+    _ => false
   }
 }
