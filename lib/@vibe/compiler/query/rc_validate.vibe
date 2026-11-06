@@ -40,7 +40,49 @@ fn rcv_drop_dups(_fname: String, plan: Array[PerceusAction]) -> Array[PerceusAct
   out
 }
 
-fn rcv_run(source: String, fn_filter: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction], borrow_fn: String, borrow_mask: Int) -> String with Exception {
+/// The plan the validator is given, and its parameter-drop boundary. An edit
+/// that may delete rows on both sides of the boundary (`split_edit`, which
+/// `--mutate drop-dups` is) runs on each side separately, and the boundary
+/// moves to the edited prefix's length: a deleted dup row before the suffix
+/// would otherwise shift a parameter's scope-end drop below `start`, where
+/// the validator does not count it, and an over-release would read as
+/// balanced (Codex review on #3859). A whole-plan edit (the test seam) keeps
+/// `start`; it edits by position and must keep the boundary itself.
+fn rcv_edit_plan(fname: String, plan: Array[PerceusAction], start: Int, edit: (String, Array[PerceusAction]) -> Array[PerceusAction], split_edit: Bool) -> (Array[PerceusAction], Int) {
+  if !split_edit {
+    (edit(fname, plan), start)
+  } else {
+    let cut = if start < 0 {
+      0
+    } else if start > Array::length(plan) {
+      Array::length(plan)
+    } else {
+      start
+    }
+    let head: Array[PerceusAction] = []
+    let tail: Array[PerceusAction] = []
+    let mut i = 0
+    while i < Array::length(plan) {
+      if i < cut {
+        Array::push(head, value = Array::get(plan, at = i))
+      } else {
+        Array::push(tail, value = Array::get(plan, at = i))
+      }
+      i = i + 1
+    }
+    let new_head = edit(fname, head)
+    let out: Array[PerceusAction] = []
+    for a in new_head {
+      Array::push(out, value = a)
+    }
+    for a in edit(fname, tail) {
+      Array::push(out, value = a)
+    }
+    (out, Array::length(new_head))
+  }
+}
+
+fn rcv_run(source: String, fn_filter: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction], split_edit: Bool, borrow_fn: String, borrow_mask: Int) -> String with Exception {
   let names: Array[String] = []
   let fns: Array[Expr] = []
   let tables: Array[Array[String]] = []
@@ -67,7 +109,8 @@ fn rcv_run(source: String, fn_filter: String, edit: (String, Array[PerceusAction
           0
         }
         let (vfns, vmasks) = rcv_masks(fname = fname, borrow_param = borrow_param, masks = masks, borrow_fn = borrow_fn, borrow_mask = borrow_mask)
-        let lines = perceus_validate_fn(fname = fname, params = params, body = body, plan = edit(fname, plan), param_drop_start = start, class_names = class_names, class_bits = class_bits, borrow_param_fns = vfns, masks = vmasks)
+        let (vplan, vstart) = rcv_edit_plan(fname = fname, plan = plan, start = start, edit = edit, split_edit = split_edit)
+        let lines = perceus_validate_fn(fname = fname, params = params, body = body, plan = vplan, param_drop_start = vstart, class_names = class_names, class_bits = class_bits, borrow_param_fns = vfns, masks = vmasks)
         let mut j = 0
         while j < Array::length(lines) {
           if first {
@@ -126,21 +169,21 @@ fn rcv_masks(fname: String, borrow_param: Array[String], masks: Array[Int], borr
 /// empty when every checked binding balances. `fn_filter` empty validates
 /// every user function; a filter naming no function throws.
 export fn rc_validate_source(source: String, fn_filter: String) -> String with Exception {
-  rcv_run(source = source, fn_filter = fn_filter, edit = rcv_identity, borrow_fn = "", borrow_mask = 0)
+  rcv_run(source = source, fn_filter = fn_filter, edit = rcv_identity, split_edit = false, borrow_fn = "", borrow_mask = 0)
 }
 
 /// Test seam: validate the plan `edit` returns for each function instead of
 /// the planner's own, so a test can delete, duplicate or move a row and pin
 /// the line the validator gives for it.
 export fn rc_validate_source_edited(source: String, fn_filter: String, edit: (String, Array[PerceusAction]) -> Array[PerceusAction]) -> String with Exception {
-  rcv_run(source = source, fn_filter = fn_filter, edit = edit, borrow_fn = "", borrow_mask = 0)
+  rcv_run(source = source, fn_filter = fn_filter, edit = edit, split_edit = false, borrow_fn = "", borrow_mask = 0)
 }
 
 /// Test seam: validate as if `borrow_fn`'s parameters arrived under
 /// `borrow_mask` (bit i: parameter i is borrowed), while the plan stays the
 /// one built for the real masks.
 export fn rc_validate_source_borrowing(source: String, fn_filter: String, borrow_fn: String, borrow_mask: Int) -> String with Exception {
-  rcv_run(source = source, fn_filter = fn_filter, edit = rcv_identity, borrow_fn = borrow_fn, borrow_mask = borrow_mask)
+  rcv_run(source = source, fn_filter = fn_filter, edit = rcv_identity, split_edit = false, borrow_fn = borrow_fn, borrow_mask = borrow_mask)
 }
 
 /// Self-test seam behind `vibe rc-validate --mutate MUTATION`: validate a
@@ -151,7 +194,7 @@ export fn rc_validate_source_borrowing(source: String, fn_filter: String, borrow
 /// never builds.
 export fn rc_validate_source_mutated(source: String, fn_filter: String, mutation: String) -> String with Exception {
   if mutation == "drop-dups" {
-    rcv_run(source = source, fn_filter = fn_filter, edit = rcv_drop_dups, borrow_fn = "", borrow_mask = 0)
+    rcv_run(source = source, fn_filter = fn_filter, edit = rcv_drop_dups, split_edit = true, borrow_fn = "", borrow_mask = 0)
   } else {
     throw("rc-validate: unknown --mutate value: " + mutation + " (expected drop-dups)")
   }

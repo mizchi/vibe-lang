@@ -80,6 +80,25 @@ fi
 grep -qF 'found a plan that releases more than it holds' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 1 failed for the wrong reason"; }
 
+# RED 1b: the same mutation on a heap PARAMETER whose dup sits before the
+# parameter-drop suffix and whose scope-end drop sits in it (Codex review on
+# #3859). Deleting the dup shifts the suffix; if the seam kept the old
+# boundary, the drop went uncounted and the over-release read as balanced.
+PARAM_FIXTURE="fixtures/rc_validate_param_dup_drop_test.vibe"
+[ -f "$PARAM_FIXTURE" ] || fail "the parameter red fixture $PARAM_FIXTURE is gone"
+run_verb "$WORK/pplain.txt" "$PARAM_FIXTURE" || { cat "$WORK/pplain.txt.err" >&2; fail "RED 1b: the unmutated verb call failed"; }
+if grep -qE 'more than held$' "$WORK/pplain.txt"; then
+  fail "RED 1b: the unmutated parameter fixture already reports an over-release; it is not a control"
+fi
+run_verb "$WORK/pmutated.txt" --mutate drop-dups "$PARAM_FIXTURE" \
+  || { cat "$WORK/pmutated.txt.err" >&2; fail "RED 1b: the mutated verb call failed"; }
+grep -qE '^f xs -: owned value released [0-9]+ more than held$' "$WORK/pmutated.txt" \
+  || { cat "$WORK/pmutated.txt" >&2; fail "RED 1b mutation did not land (no over-release line for parameter f xs under --mutate drop-dups)"; }
+if run_gate "$GATE" "$PARAM_FIXTURE" --mutate drop-dups; then
+  cat "$WORK/out" >&2
+  fail "RED 1b: the gate passed a parameter plan that releases more than it holds"
+fi
+
 # RED 2: the case above must depend on the gate's own failure check. A copy of
 # the gate with that check disconnected must PASS the mutated corpus -- if it
 # still failed, RED 1 would be proving something other than the check.
@@ -109,4 +128,4 @@ fi
 grep -qF 'no fixtures matched' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 4 failed for the wrong reason"; }
 
-echo "[rc-validate-corpus-test] ok (green control + 4 red cases, each mutation verified to land)"
+echo "[rc-validate-corpus-test] ok (green control + 5 red cases, each mutation verified to land)"
