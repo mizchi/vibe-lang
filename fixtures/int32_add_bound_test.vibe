@@ -1,0 +1,106 @@
+// #3825: `[T: Add]` holds at `Int32` / `UInt32`, and the generic `+` wraps at
+// 32 bits as the concrete one does. A generic body is lowered once, so its
+// `+` dispatches through the `Add` witness, and the witness for a 32-bit type
+// adds the `Int`s it is held as and wraps the sum. Before, the bound was
+// refused (``no impl `Add` for `Int32` ``), because the erased 63-bit `+`
+// would have answered 2147483648. Run on linear (bump and RC) and gc by
+// tests/gates/early/extended_derive.sh.
+
+fn add[T: Add](a: T, b: T) -> T {
+  a + b
+}
+
+fn twice[T: Add](x: T) -> T {
+  add(x, x)
+}
+
+test "a generic + wraps at Int32" {
+  let top: Int32 = 2147483647
+  let one: Int32 = 1
+  inspect(Int32::to_int(add(top, one)), content = "-2147483648")
+  inspect(Int32::to_int(add(top, one)) == Int32::to_int(top + one), content = "true")
+  let low: Int32 = -2147483648
+  let minus: Int32 = -1
+  inspect(Int32::to_int(add(low, minus)), content = "2147483647")
+  inspect(Int32::to_int(twice(one)), content = "2")
+}
+
+test "a generic + wraps at UInt32" {
+  let top: UInt32 = 4294967295
+  let one: UInt32 = 1
+  inspect(UInt32::to_int(add(top, one)), content = "0")
+  inspect(UInt32::to_int(add(top, top)), content = "4294967294")
+  inspect(UInt32::to_int(twice(one)), content = "2")
+}
+
+// The formal reached through an `Array[T]` element or a nested `Option[T]`
+// takes the same witness (Codex review on #3857).
+fn first_two[T: Add](xs: Array[T]) -> T {
+  Array::get(xs, at = 0) + Array::get(xs, at = 1)
+}
+
+fn both[T: Add](a: Option[T], b: T) -> T {
+  match a {
+    Some(x) => x + b,
+    None => b
+  }
+}
+
+test "a generic + wraps through an array element and an Option" {
+  let xs: Array[Int32] = [2147483647, 1]
+  inspect(Int32::to_int(first_two(xs)), content = "-2147483648")
+  let top: Int32 = 2147483647
+  let one: Int32 = 1
+  inspect(Int32::to_int(both(Some(top), one)), content = "-2147483648")
+  let us: Array[UInt32] = [4294967295, 1]
+  inspect(UInt32::to_int(first_two(us)), content = "0")
+}
+
+// A nested generic lambda called at `Int32` takes the wrapping witness for its
+// own formal only: the enclosing `T` keeps the dictionary it was given
+// (Codex review on #3857).
+fn outer[T: Add](x: T) -> T {
+  let inner = [U: Add](u: U) -> T {
+    x + x
+  }
+  let y: Int32 = 1
+  inner(y)
+}
+
+test "an enclosing formal keeps its witness inside a nested call" {
+  inspect(outer(2147483647), content = "4294967294")
+}
+
+// a dot-method call reaches the 32-bit witness too (Codex review on #3857):
+// the checker files the row at the method name, where the method path of the
+// desugar consumes it.
+struct Acc {
+  base: Int
+}
+
+fn Acc::sum[T: Add](self: Acc, a: T, b: T) -> T {
+  a + b
+}
+
+test "a generic method + wraps at Int32 and UInt32" {
+  let acc = Acc::{ base: 0 }
+  let top: Int32 = 2147483647
+  let one: Int32 = 1
+  inspect(Int32::to_int(acc.sum(top, one)), content = "-2147483648")
+  let utop: UInt32 = 4294967295
+  let uone: UInt32 = 1
+  inspect(UInt32::to_int(acc.sum(utop, uone)), content = "0")
+  inspect(acc.sum(2147483647, 1), content = "2147483648")
+}
+
+// the row's capture kind is its own: negating a generic call's integer result
+// is integer negation, not the float negation another kind marks.
+test "negating a generic call result stays integer negation" {
+  inspect(-add(1, 2), content = "-3")
+  let one: Int32 = 1
+  inspect(Int32::to_int(-add(one, one)), content = "-2")
+}
+
+test "Int keeps its 63-bit +" {
+  inspect(add(2147483647, 1), content = "2147483648")
+}

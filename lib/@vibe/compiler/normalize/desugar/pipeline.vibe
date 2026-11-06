@@ -28,6 +28,7 @@ import @vibe/compiler/core {
   stmts_declare_prelude_ordering_shape,
   stmts_shadow_prelude_ordering,
   stmts_use_prelude_ordering,
+  typed_add32_call_row_head,
   typed_f32_assign_verdict,
   typed_f32_binop_verdict,
   typed_f32_negation_verdict,
@@ -134,6 +135,10 @@ import ./renderer_scope.vibe {
 
 import ./rewrite.vibe {
   merged_source_boundary_local_names, rewrite_stmt, user_assert_eq_reset, user_assert_eq_set_merged_source
+}
+
+import ./add32_rows.vibe {
+  dtd_add32_insert, dtd_add32_report, dtd_add32_reset
 }
 
 import ./state.vibe {
@@ -551,11 +556,21 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   let i32_neg_offs: Array[Int] = []
   let u32_not_offs: Array[Int] = []
   let scalar_local_key = impl_target_key(TyName(typed_scalar_local_row_head()))
+  dtd_add32_reset()
+  let add32_keys = [
+    impl_target_key(TyApp(typed_add32_call_row_head(), [TyName("Int32")])),
+    impl_target_key(TyApp(typed_add32_call_row_head(), [TyName("UInt32")])),
+    impl_target_key(TyApp(typed_add32_call_row_head(), [TyName("mixed")]))
+  ]
+  let add32_types = ["Int32", "UInt32", "mixed"]
   let scalar_local_offs: Array[Int] = []
   let mut teq_i = 0
   while teq_i < Array::length(typed_eq_offsets) {
     let tkey = Array::get(typed_eq_keys, at = teq_i)
-    if tkey == f32_binop_key {
+    let add32_at = add32_key_index(keys = add32_keys, key = tkey)
+    if add32_at >= 0 {
+      dtd_add32_insert(off = Array::get(typed_eq_offsets, at = teq_i), ty = Array::get(add32_types, at = add32_at))
+    } else if tkey == f32_binop_key {
       Array::push(f32_binop_offs, value = Array::get(typed_eq_offsets, at = teq_i))
     } else if tkey == f32_assign_key {
       Array::push(f32_assign_offs, value = Array::get(typed_eq_offsets, at = teq_i))
@@ -864,6 +879,22 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   eq_refusals_report()
   show_refusals_report()
   index_refusals_report()
+  dtd_add32_report()
+}
+
+/// #3825: which `#add32[..]` row `key` is, or -1.
+fn add32_key_index(keys: Array[String], key: String) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(keys) {
+    if found < 0 && Array::get(keys, at = i) == key {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// #2475: a structural-equality refusal is a COMPILE error, not a runtime trap.

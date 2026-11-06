@@ -141,8 +141,9 @@ tagged immediate an `Int` is, and every value lies in its type's range:
   else { 0 }`, also an array literal `[x, 0]`). A literal is refused when it
   does not fit. Elsewhere, convert with `Int::wrap_int32`.
 - **Traits.** `Eq`, `Ord` and `Show` treat them as the scalars they are, and
-  `Int32::to_string` / `UInt32::to_string` render them. `[T: Add]` refuses
-  them, because a generic `+` would not wrap. A trait whose methods only read
+  `Int32::to_string` / `UInt32::to_string` render them. `[T: Add]` holds, and
+  a generic `+` wraps as the concrete one does (`add(2147483647, 1)` is
+  `-2147483648` at `Int32`). A trait whose methods only read
   `Self` is served by `Int`'s impl, which sees the same integer: `[T: Hash]`
   holds, so a `Set[Int32]` works, and they are builtin `Map` keys too. A
   trait is borrowed only when each parameter is `Self` itself or mentions no

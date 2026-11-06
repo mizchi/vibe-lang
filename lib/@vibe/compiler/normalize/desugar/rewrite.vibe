@@ -307,6 +307,10 @@ import ./witness_generation.vibe {
   dict_binds_trait, method_witness_call_dicts, synth_dicts
 }
 
+import ./synth_dicts_call.vibe {
+  synth_dicts_if
+}
+
 import ./method_witnesses.vibe {
   trait_method_witness_slots
 }
@@ -1696,7 +1700,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                 None => match as_method {
                   Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), concat_expr_arrays(a = method_witness_call_dicts(dict_binds = dict_binds, dict_pname = dict_pname, member = member_of(name), orig_args = args, traits = traits, struct_sets = struct_sets, var_types = var_types, fn_returns = fn_returns, gens = gens), b = rwargs), off, callee_resolution),
                   None => match lookup_gen_entry(gens = gens, name = name) {
-                    Some(gen) => match synth_dicts_if(prepend = gen_prepends_dicts(gen), callee_type_params = gen.type_params, threaded = gen.threaded, constructor_recvs = gen.constructor_recvs, nested_recvs = gen.nested_recvs, param_types = gen.param_types, args = args, traits = traits, struct_sets = struct_sets, var_types = var_types, dict_binds = dict_binds, fn_returns = fn_returns, gens = gens) {
+                    Some(gen) => match synth_dicts_if(prepend = gen_prepends_dicts(gen), call_off = coff, callee_type_params = gen.type_params, threaded = gen.threaded, constructor_recvs = gen.constructor_recvs, nested_recvs = gen.nested_recvs, param_types = gen.param_types, args = args, traits = traits, struct_sets = struct_sets, var_types = var_types, dict_binds = dict_binds, fn_returns = fn_returns, gens = gens) {
                       Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(a = dicts, b = rwargs), off, callee_resolution),
                       None => ECall(EIdent(name, coff), rwargs, off, callee_resolution)
                     },
@@ -1781,7 +1785,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                   // falling back to the un-dicted call (same as the EIdent
                   // arm's own fallback) when synth_dicts can't resolve one.
                   Some(qual) => match lookup_gen_entry(gens = gens, name = qual) {
-                    Some(gen) => match synth_dicts_if(prepend = gen_prepends_dicts(gen), callee_type_params = gen.type_params, threaded = gen.threaded, constructor_recvs = gen.constructor_recvs, nested_recvs = gen.nested_recvs, param_types = gen.param_types, args = prepend_expr(head = obj, rest = args), traits = traits, struct_sets = struct_sets, var_types = var_types, dict_binds = dict_binds, fn_returns = fn_returns, gens = gens) {
+                    Some(gen) => match synth_dicts_if(prepend = gen_prepends_dicts(gen), call_off = fdoff, callee_type_params = gen.type_params, threaded = gen.threaded, constructor_recvs = gen.constructor_recvs, nested_recvs = gen.nested_recvs, param_types = gen.param_types, args = prepend_expr(head = obj, rest = args), traits = traits, struct_sets = struct_sets, var_types = var_types, dict_binds = dict_binds, fn_returns = fn_returns, gens = gens) {
                       Some(dicts) => ECall(EIdent(qual, doff), concat_expr_arrays(a = dicts, b = prepend_expr(head = robj, rest = rwargs)), off, callee_resolution),
                       None => ECall(EIdent(qual, doff), prepend_expr(head = robj, rest = rwargs), off, callee_resolution)
                     },
@@ -2523,16 +2527,6 @@ fn concat_threaded(a: Array[(String, String, Int)], b: Array[(String, String, In
     j = j + 1
   }
   out
-}
-
-/// `synth_dicts` when the callee actually declares dict parameters, None when
-/// it does not -- see gen_prepends_dicts.
-fn synth_dicts_if(prepend: Bool, callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], nested_recvs: Array[(String, Int, TypeExpr)], param_types: Array[Option[TypeExpr]], args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception {
-  if prepend {
-    synth_dicts(callee_type_params = callee_type_params, threaded = threaded, constructor_recvs = constructor_recvs, nested_recvs = nested_recvs, param_types = param_types, orig_args = args, traits = traits, struct_sets = struct_sets, var_types = var_types, dict_binds = dict_binds, fn_returns = fn_returns, gens = gens)
-  } else {
-    None
-  }
 }
 
 /// Whether a resolved gen's dictionaries are PASSED at its call sites.
