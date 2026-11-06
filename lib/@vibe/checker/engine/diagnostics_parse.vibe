@@ -1,3 +1,7 @@
+import @vibe/compiler/config {
+  TargetCfg, target_cfg_ambient, target_cfg_flags, target_cfg_identity, target_cfg_namespace
+}
+
 import @vibe/ast {
   TypeExpr
 }
@@ -18,11 +22,14 @@ import @vibe/compiler/loader {
   ingestion_pipeline_telemetry_add,
   parse_program_located_shared,
   parse_program_located_shared_mark_semantic,
+  parse_program_located_shared_mark_semantic_with_config,
   parse_program_located_shared_ran_parser,
-  parse_program_located_shared_semantic_pending
+  parse_program_located_shared_semantic_pending,
+  parse_program_located_shared_semantic_pending_with_config,
+  parse_program_located_shared_with_config
 }
 import @vibe/compiler/runtime/checked_module_cache {
-  checked_module_artifact_stmts
+  checked_module_artifact_stmts, checked_module_artifact_stmts_in_namespace
 }
 import @vibe/compiler/syntax {
   offset_to_line_col
@@ -260,16 +267,21 @@ export fn engine_interface_effect_set_with_vars(effect_name: Option[String], ids
 /// before the parse and marked after a successful one, as before: a
 /// throwing parse counts and is asked again.
 export fn engine_parse_program_with_path_impl(path: String, source: String, observe_current_source_parse: Bool) -> Array[Stmt] with Exception {
-  let first_use = observe_current_source_parse && parse_program_located_shared_semantic_pending(path = path, source = source)
+  engine_parse_program_with_path_impl_with_config(path = path, source = source, observe_current_source_parse = observe_current_source_parse, cfg = target_cfg_ambient())
+}
+
+/// Use this invocation's target flags for parsing and cache identity.
+export fn engine_parse_program_with_path_impl_with_config(path: String, source: String, observe_current_source_parse: Bool, cfg: TargetCfg) -> Array[Stmt] with Exception {
+  let first_use = observe_current_source_parse && parse_program_located_shared_semantic_pending_with_config(path = path, source = source, cfg = cfg)
   if first_use {
     engine_incremental_typecheck_telemetry_add(index = 5, amount = 1)
     ingestion_pipeline_telemetry_add(index = 15, amount = 1)
   } else {
     ()
   }
-  let stmts = parse_program_located_shared(path = path, source = source)
+  let stmts = parse_program_located_shared_with_config(path = path, source = source, cfg = cfg)
   if first_use {
-    parse_program_located_shared_mark_semantic(path = path, source = source)
+    parse_program_located_shared_mark_semantic_with_config(path = path, source = source, cfg = cfg)
   } else {
     ()
   }
@@ -287,10 +299,15 @@ export fn engine_parse_program_with_path_impl(path: String, source: String, obse
 /// lane parsed every source in the closure. The counter that was 0 is still
 /// 0 and still means what it says; the work it never covered now has its own.
 export fn engine_parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
-  let result = match checked_module_artifact_stmts(path = path, source = source) {
+  engine_parse_program_with_path_with_config(path = path, source = source, cfg = target_cfg_ambient())
+}
+
+/// Use this invocation's target flags for parsing and cache identity.
+export fn engine_parse_program_with_path_with_config(path: String, source: String, cfg: TargetCfg) -> Array[Stmt] with Exception {
+  let result = match checked_module_artifact_stmts_in_namespace(path = path, source = source, namespace = target_cfg_namespace(cfg)) {
     Some(stmts) => stmts,
     None => {
-      let stmts = engine_parse_program_with_path_impl(path = path, source = source, observe_current_source_parse = false)
+      let stmts = engine_parse_program_with_path_impl_with_config(path = path, source = source, observe_current_source_parse = false, cfg = cfg)
       // Asked AFTER the call and of the memo, not of this function: the point
       // is whether the PARSER ran, so a memo or AST-cache hand-out must not
       // count. A throwing parse does not reach here, the same way the walk's

@@ -1,3 +1,10 @@
+import @vibe/compiler/cache {
+  persistent_cache_namespace_current
+}
+import @vibe/compiler/config {
+  TargetCfg, target_cfg_ambient, target_cfg_flags, target_cfg_identity, target_cfg_namespace
+}
+
 import @vibe/checker/engine {
   engine_diag_already_located,
   engine_find_fn_anchor_off,
@@ -20,6 +27,8 @@ import @vibe/checker/engine {
   engine_parse_offset_digits,
   engine_parse_program_with_path,
   engine_parse_program_with_path_impl,
+  engine_parse_program_with_path_impl_with_config,
+  engine_parse_program_with_path_with_config,
   engine_set_incremental_interface_trace_enabled,
   engine_set_incremental_typecheck_telemetry_enabled,
   engine_typecheck_fs_lookup_string_pair,
@@ -35,9 +44,13 @@ import @vibe/compiler/cache {
   compact_source_fingerprint_memo,
   compact_string_fingerprint,
   persistent_dep_list_cache_path,
+  persistent_dep_list_cache_path_in_namespace,
   persistent_type_env_cache_path,
+  persistent_type_env_cache_path_in_namespace,
   persistent_typing_dependency_env_reuse_eligibility_path,
-  persistent_typing_dependency_env_reuse_sidecar_path
+  persistent_typing_dependency_env_reuse_eligibility_path_in_namespace,
+  persistent_typing_dependency_env_reuse_sidecar_path,
+  persistent_typing_dependency_env_reuse_sidecar_path_in_namespace
 }
 
 import @vibe/core {
@@ -65,7 +78,7 @@ import @vibe/compiler/checker/artifacts/module {
 }
 
 import @vibe/compiler/runtime/checked_module_cache {
-  checked_module_artifact_stmts, checked_module_cache_mode
+  checked_module_artifact_stmts, checked_module_artifact_stmts_in_namespace, checked_module_cache_mode
 }
 
 import @vibe/compiler/core {
@@ -99,11 +112,15 @@ import @vibe/compiler/loader {
   ast_cache_prefetch_count,
   ast_cache_prefetch_count_reset,
   ast_cache_prefetch_fs,
+  ast_cache_prefetch_fs_with_config,
   ingestion_pipeline_telemetry_add,
   parse_program_located_shared,
   parse_program_located_shared_mark_semantic,
+  parse_program_located_shared_mark_semantic_with_config,
   parse_program_located_shared_ran_parser,
-  parse_program_located_shared_semantic_pending
+  parse_program_located_shared_semantic_pending,
+  parse_program_located_shared_semantic_pending_with_config,
+  parse_program_located_shared_with_config
 }
 
 import @vibe/compiler/incremental {
@@ -125,6 +142,7 @@ import @vibe/compiler/runtime/eval_loader {
 import ./persistent_env_codec.vibe {
   PersistentModuleCache,
   load_persistent_type_env,
+  load_persistent_type_env_in_namespace,
   parse_persistent_module_cache,
   persistent_dep_list_text,
   persistent_module_cache_text,
@@ -159,12 +177,17 @@ export fn typecheck_fs_upsert_env_cache(cache: Array[(String, TypeEnv)], path: S
 }
 
 export fn ensure_env_cache_for_path(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], path: String) -> Array[(String, TypeEnv)] with Env + Exception + Fs {
+  ensure_env_cache_for_path_with_config(rdb = rdb, env_cache = env_cache, path = path, cfg = target_cfg_ambient())
+}
+
+/// Use this invocation's target flags for parsing and cache identity.
+export fn ensure_env_cache_for_path_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], path: String, cfg: TargetCfg) -> Array[(String, TypeEnv)] with Env + Exception + Fs {
   match typecheck_fs_lookup_env_cache(cache = env_cache, path = path) {
     Some(_) => env_cache,
     None =>
     match ripple_get_fingerprint(db = rdb, path = path) {
       Some(fingerprint) =>
-      match load_persistent_type_env(fingerprint) {
+      match load_persistent_type_env_in_namespace(fingerprint, namespace = target_cfg_namespace(cfg)) {
         Some(cached_env) => typecheck_fs_upsert_env_cache(cache = env_cache, path = path, env = cached_env),
         None => env_cache
       },
@@ -174,10 +197,15 @@ export fn ensure_env_cache_for_path(rdb: RippleDb, env_cache: Array[(String, Typ
 }
 
 export fn ensure_env_cache_for_paths(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], paths: Array[String]) -> Array[(String, TypeEnv)] with Env + Exception + Fs {
+  ensure_env_cache_for_paths_with_config(rdb = rdb, env_cache = env_cache, paths = paths, cfg = target_cfg_ambient())
+}
+
+/// Use this invocation's target flags for parsing and cache identity.
+export fn ensure_env_cache_for_paths_with_config(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], paths: Array[String], cfg: TargetCfg) -> Array[(String, TypeEnv)] with Env + Exception + Fs {
   let mut cache = env_cache
   let mut i = 0
   while i < Array::length(paths) {
-    cache = ensure_env_cache_for_path(rdb = rdb, env_cache = cache, path = Array::get(paths, at = i))
+    cache = ensure_env_cache_for_path_with_config(rdb = rdb, env_cache = cache, path = Array::get(paths, at = i), cfg = cfg)
     i = i + 1
   }
   cache
@@ -592,8 +620,13 @@ export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] w
 }
 
 export fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with Env + Exception + Fs {
+  store_persistent_type_env_in_namespace(fingerprint = fingerprint, env = env, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+export fn store_persistent_type_env_in_namespace(fingerprint: String, env: TypeEnv, namespace: String) -> String with Env + Exception + Fs {
   let text = persistent_module_cache_text(env = env, lowering = module_typed_lowering_memo_get_by_fp(fingerprint))
-  Fs::write_file(persistent_type_env_cache_path(fingerprint), contents = text)
+  Fs::write_file(persistent_type_env_cache_path_in_namespace(fingerprint, namespace = namespace), contents = text)
   text
 }
 
@@ -684,7 +717,12 @@ fn parse_typing_dependency_reuse_alias(_ text: String) -> Option[String] {
 /// only costs a reuse, because the lookup requires the witness's verbatim key
 /// to equal this one.
 fn typing_reuse_sidecar_path(_ input_key: TypingReuseKey) -> String with Env {
-  persistent_typing_dependency_env_reuse_sidecar_path(input_key.digest)
+  typing_reuse_sidecar_path_in_namespace(input_key, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+fn typing_reuse_sidecar_path_in_namespace(_ input_key: TypingReuseKey, namespace: String) -> String with Env {
+  persistent_typing_dependency_env_reuse_sidecar_path_in_namespace(input_key.digest, namespace = namespace)
 }
 
 fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(String, String, String)] {
@@ -718,8 +756,22 @@ fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(S
 /// to both check_module and TDRE10 lookup/publication, so ambient coordinator
 /// cache rows are neither checker-visible nor part of this canonical text.
 export fn typing_dependency_transport_input_key(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)]) -> String with Env {
+  typing_dependency_transport_input_key_for_cfg_identity(path = path, source = source, semantics_seed = semantics_seed, dep_envs = dep_envs, cfg_identity = "")
+}
+
+/// Bind exact target flags inside the transported alias key.
+export fn typing_dependency_transport_input_key_with_config(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)], cfg: TargetCfg) -> String with Env {
+  typing_dependency_transport_input_key_for_cfg_identity(path = path, source = source, semantics_seed = semantics_seed, dep_envs = dep_envs, cfg_identity = target_cfg_identity(cfg))
+}
+
+// The compatibility entry supplies no target flags; the scoped entry supplies
+// an exact identity. Both retain the same framing and environment inputs.
+fn typing_dependency_transport_input_key_for_cfg_identity(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)], cfg_identity: String) -> String with Env {
   let out = StringBuilder::new()
   StringBuilder::push(out, value = "vibe-typing-dependency-transport-env:v10")
+  if cfg_identity != "" {
+    push_typing_reuse_segment(out = out, text = cfg_identity)
+  } else ()
   push_typing_reuse_segment(out = out, text = normalize_path(path))
   push_typing_reuse_segment(out = out, text = source)
   push_typing_reuse_segment(out = out, text = semantics_seed)
@@ -785,8 +837,22 @@ fn push_typing_reuse_key_piece(pieces: Array[String], digest: StringBuilder, pie
 /// fingerprint in `dep_fps`. A dependency with no fingerprint in `dep_fps` is
 /// encoded directly.
 export fn typing_dependency_transport_input_key_memo(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)], dep_fps: Array[(String, String)]) -> TypingReuseKey with Env {
+  typing_dependency_transport_input_key_memo_for_cfg_identity(path = path, source = source, semantics_seed = semantics_seed, dep_envs = dep_envs, dep_fps = dep_fps, cfg_identity = "")
+}
+
+/// Use this invocation's target flags for parsing and cache identity.
+export fn typing_dependency_transport_input_key_memo_with_config(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)], dep_fps: Array[(String, String)], cfg: TargetCfg) -> TypingReuseKey with Env {
+  typing_dependency_transport_input_key_memo_for_cfg_identity(path = path, source = source, semantics_seed = semantics_seed, dep_envs = dep_envs, dep_fps = dep_fps, cfg_identity = target_cfg_identity(cfg))
+}
+
+// The compatibility entry supplies no target flags; the scoped entry supplies
+// an exact identity. Both retain the same framing and environment inputs.
+fn typing_dependency_transport_input_key_memo_for_cfg_identity(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)], dep_fps: Array[(String, String)], cfg_identity: String) -> TypingReuseKey with Env {
   let pieces: Array[String] = []
   let digest = StringBuilder::new()
+  if cfg_identity != "" {
+    push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = cfg_identity, piece_digest = compact_string_fingerprint(cfg_identity))
+  } else ()
   let owner = normalize_path(path)
   push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = owner, piece_digest = compact_string_fingerprint(owner))
   push_typing_reuse_key_piece(pieces = pieces, digest = digest, piece = source, piece_digest = compact_string_fingerprint(source))
@@ -941,7 +1007,12 @@ fn typing_reuse_put(path: String, staged: Array[String], started: Array[Bool], t
 /// the raw file and the exact witness/alias text. Ordinary cache loading may
 /// normalize a legacy host prefix; reuse bindings require byte equality.
 fn load_canonical_typing_dependency_env_reuse_target(target_fingerprint: String, expected_target_text: String) -> Option[PersistentModuleCache] with Env + Fs {
-  let target_path = persistent_type_env_cache_path(target_fingerprint)
+  load_canonical_typing_dependency_env_reuse_target_in_namespace(target_fingerprint = target_fingerprint, expected_target_text = expected_target_text, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+fn load_canonical_typing_dependency_env_reuse_target_in_namespace(target_fingerprint: String, expected_target_text: String, namespace: String) -> Option[PersistentModuleCache] with Env + Fs {
+  let target_path = persistent_type_env_cache_path_in_namespace(target_fingerprint, namespace = namespace)
   if !Fs::exists(target_path) {
     None
   } else {
@@ -966,7 +1037,12 @@ fn load_canonical_typing_dependency_env_reuse_target(target_fingerprint: String,
 /// target NOT re-validated: `(input key, target text)`. Callers that have not
 /// validated that target themselves use `typing_dependency_env_reuse_witness_binding`.
 fn typing_dependency_env_reuse_witness_text(_ fingerprint: String) -> Option[(String, String)] with Env + Fs {
-  let witness_path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint)
+  typing_dependency_env_reuse_witness_text_in_namespace(fingerprint, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+fn typing_dependency_env_reuse_witness_text_in_namespace(_ fingerprint: String, namespace: String) -> Option[(String, String)] with Env + Fs {
+  let witness_path = persistent_typing_dependency_env_reuse_eligibility_path_in_namespace(fingerprint, namespace = namespace)
   if !Fs::exists(witness_path) {
     None
   } else {
@@ -982,7 +1058,12 @@ fn typing_dependency_env_reuse_witness_text(_ fingerprint: String) -> Option[(St
 }
 
 fn typing_dependency_env_reuse_witness_binding(_ fingerprint: String) -> Option[(String, String)] with Env + Fs {
-  let witness_path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint)
+  typing_dependency_env_reuse_witness_binding_in_namespace(fingerprint, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+fn typing_dependency_env_reuse_witness_binding_in_namespace(_ fingerprint: String, namespace: String) -> Option[(String, String)] with Env + Fs {
+  let witness_path = persistent_typing_dependency_env_reuse_eligibility_path_in_namespace(fingerprint, namespace = namespace)
   if !Fs::exists(witness_path) {
     None
   } else {
@@ -991,7 +1072,7 @@ fn typing_dependency_env_reuse_witness_binding(_ fingerprint: String) -> Option[
       if target_fingerprint != fingerprint {
         None
       } else {
-        match load_canonical_typing_dependency_env_reuse_target(target_fingerprint = target_fingerprint, expected_target_text = target_text) {
+        match load_canonical_typing_dependency_env_reuse_target_in_namespace(target_fingerprint = target_fingerprint, expected_target_text = target_text, namespace = namespace) {
           Some(_) => Some((input_key, target_text)),
           None => None
         }
@@ -1025,10 +1106,15 @@ export fn typing_dependency_env_reuse_valid_witness_memo_reset() -> Unit {
 }
 
 fn typing_dependency_env_reuse_eligibility_is_valid(_ fingerprint: String) -> Bool with Env + Fs {
+  typing_dependency_env_reuse_eligibility_is_valid_in_namespace(fingerprint, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+fn typing_dependency_env_reuse_eligibility_is_valid_in_namespace(_ fingerprint: String, namespace: String) -> Bool with Env + Fs {
   if contains_str(arr = typing_dependency_env_reuse_valid_witness_memo, target = fingerprint) {
     true
   } else {
-    match typing_dependency_env_reuse_witness_binding(fingerprint) {
+    match typing_dependency_env_reuse_witness_binding_in_namespace(fingerprint, namespace = namespace) {
       Some(_) => {
         Array::push(typing_dependency_env_reuse_valid_witness_memo, value = fingerprint)
         true
@@ -1042,11 +1128,16 @@ fn typing_dependency_env_reuse_eligibility_is_valid(_ fingerprint: String) -> Bo
 /// commits. Missing, malformed, stale, torn, or cross-spliced witnesses fail
 /// closed before the alias lookup.
 export fn typing_dependency_env_reuse_is_eligible(_ dep_fps: Array[(String, String)]) -> Bool with Env + Fs {
+  typing_dependency_env_reuse_is_eligible_in_namespace(dep_fps, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+export fn typing_dependency_env_reuse_is_eligible_in_namespace(_ dep_fps: Array[(String, String)], namespace: String) -> Bool with Env + Fs {
   let mut i = 0
   let mut deps_eligible = true
   while deps_eligible && i < Array::length(dep_fps) {
     let (_dep_path, dep_fingerprint) = Array::get(dep_fps, at = i)
-    if typing_dependency_env_reuse_eligibility_is_valid(dep_fingerprint) {
+    if typing_dependency_env_reuse_eligibility_is_valid_in_namespace(dep_fingerprint, namespace = namespace) {
       ()
     } else {
       deps_eligible = false
@@ -1062,7 +1153,12 @@ export fn typing_dependency_env_reuse_is_eligible(_ dep_fps: Array[(String, Stri
 /// whose text is the one just written. The memo still only admits the alias
 /// lookup, which validates the exact three-way binding itself.
 export fn publish_typing_dependency_env_reuse_eligibility(input_key: TypingReuseKey, fingerprint: String, target_text: String) -> Unit with Env + Fs {
-  write_typing_reuse_binding(path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), tag = typing_dependency_env_reuse_witness_v10_tag, input_key = input_key, target_fingerprint = fingerprint, target_text = target_text)
+  publish_typing_dependency_env_reuse_eligibility_in_namespace(input_key = input_key, fingerprint = fingerprint, target_text = target_text, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+export fn publish_typing_dependency_env_reuse_eligibility_in_namespace(input_key: TypingReuseKey, fingerprint: String, target_text: String, namespace: String) -> Unit with Env + Fs {
+  write_typing_reuse_binding(path = persistent_typing_dependency_env_reuse_eligibility_path_in_namespace(fingerprint, namespace = namespace), tag = typing_dependency_env_reuse_witness_v10_tag, input_key = input_key, target_fingerprint = fingerprint, target_text = target_text)
   if contains_str(arr = typing_dependency_env_reuse_valid_witness_memo, target = fingerprint) {
     ()
   } else {
@@ -1071,7 +1167,12 @@ export fn publish_typing_dependency_env_reuse_eligibility(input_key: TypingReuse
 }
 
 export fn load_typing_dependency_env_reuse_target(path: String, input_key: TypingReuseKey) -> Option[(String, String, TypeEnv)] with Env + Fs {
-  let sidecar_path = typing_reuse_sidecar_path(input_key)
+  load_typing_dependency_env_reuse_target_in_namespace(path = path, input_key = input_key, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+export fn load_typing_dependency_env_reuse_target_in_namespace(path: String, input_key: TypingReuseKey, namespace: String) -> Option[(String, String, TypeEnv)] with Env + Fs {
+  let sidecar_path = typing_reuse_sidecar_path_in_namespace(input_key, namespace = namespace)
   if !Fs::exists(sidecar_path) {
     None
   } else {
@@ -1079,11 +1180,11 @@ export fn load_typing_dependency_env_reuse_target(path: String, input_key: Typin
       Some(target_fingerprint) => {
         // Only an exact binding reuses: the witness the alias names carries
         // this verbatim input key, and its target text is the raw record.
-        match typing_dependency_env_reuse_witness_text(target_fingerprint) {
+        match typing_dependency_env_reuse_witness_text_in_namespace(target_fingerprint, namespace = namespace) {
           Some((witness_input_key, target_text)) => if !typing_reuse_key_matches(text = witness_input_key, key = input_key) {
             None
           } else {
-            match load_canonical_typing_dependency_env_reuse_target(target_fingerprint = target_fingerprint, expected_target_text = target_text) {
+            match load_canonical_typing_dependency_env_reuse_target_in_namespace(target_fingerprint = target_fingerprint, expected_target_text = target_text, namespace = namespace) {
               Some(record) =>
               match record.lowering {
                 Some((offsets, eq_offs, eq_keys)) => {
@@ -1104,11 +1205,21 @@ export fn load_typing_dependency_env_reuse_target(path: String, input_key: Typin
 }
 
 export fn write_typing_dependency_env_reuse_sidecar(input_key: TypingReuseKey, target_fingerprint: String) -> Unit with Env + Fs {
-  Fs::write_file(typing_reuse_sidecar_path(input_key), contents = typing_dependency_reuse_alias_text(target_fingerprint))
+  write_typing_dependency_env_reuse_sidecar_in_namespace(input_key = input_key, target_fingerprint = target_fingerprint, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+export fn write_typing_dependency_env_reuse_sidecar_in_namespace(input_key: TypingReuseKey, target_fingerprint: String, namespace: String) -> Unit with Env + Fs {
+  Fs::write_file(typing_reuse_sidecar_path_in_namespace(input_key, namespace = namespace), contents = typing_dependency_reuse_alias_text(target_fingerprint))
 }
 
 export fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Array[String]) -> Unit with Env + Fs {
-  let dep_cache_path = persistent_dep_list_cache_path(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source))
+  write_persistent_dep_list_if_missing_in_namespace(path = path, source = source, deps = deps, namespace = persistent_cache_namespace_current())
+}
+
+/// Use the caller's captured cache namespace.
+export fn write_persistent_dep_list_if_missing_in_namespace(path: String, source: String, deps: Array[String], namespace: String) -> Unit with Env + Fs {
+  let dep_cache_path = persistent_dep_list_cache_path_in_namespace(path = path, source_fingerprint = compact_source_fingerprint_memo(path = path, source = source), namespace = namespace)
   if !(Fs::exists(dep_cache_path)) {
     Fs::write_file(dep_cache_path, contents = persistent_dep_list_text(deps))
   } else {
