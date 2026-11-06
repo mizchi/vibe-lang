@@ -1752,7 +1752,11 @@ fn gicr_bound_refusal(full: TypeEnv, s: Subst, tparams: Array[String], bounds: A
           CtUnknown => (),
           CtVar(_) => (),
           arg => {
-            let refused = erased_cmp_bound_refusal(env = full, bound = bt, resolved = arg)
+            let refused = if impl_param_add32_refused(env = full, bound = bt, resolved = arg) {
+              impl_param_add32_marker()
+            } else {
+              erased_cmp_bound_refusal(env = full, bound = bt, resolved = arg)
+            }
             if refused != "" {
               found = Some((bt, refused, arg))
               have = true
@@ -1769,6 +1773,54 @@ fn gicr_bound_refusal(full: TypeEnv, s: Subst, tparams: Array[String], bounds: A
     bi = bi + 1
   }
   found
+}
+
+/// #3825 (Codex on #3857): a generic impl's parameter bound that entails
+/// `Add`, at an `Int32` / `UInt32` argument, does not hold. The impl's body
+/// adds through the parameter's `Add` witness, and that dictionary is built
+/// after the `Int32` pass has erased the argument to `Int`, so
+/// `impl [T: Add] Twice for Box[T]` at `Box[Int32]` doubled `2147483647` to
+/// `4294967294`. A generic call's own `[T: Add]` wraps (its witness is chosen
+/// from the checker's row at the call); an impl's parameter has no call site
+/// of its own to carry that row, so it is refused instead.
+fn impl_param_add32_refused(env: TypeEnv, bound: String, resolved: Type) -> Bool {
+  let is32 = match resolved {
+    CtInt32 => true,
+    CtUInt32 => true,
+    _ => false
+  }
+  if !is32 {
+    false
+  } else {
+    let pending: Array[String] = [bound]
+    let seen: Array[String] = []
+    let mut found = false
+    while !found && Array::length(pending) > 0 {
+      let cur = Array::get(pending, at = Array::length(pending) - 1)
+      Array::truncate(pending, length = Array::length(pending) - 1)
+      let name = trait_ref_name(cur)
+      if ecb_seen(seen = seen, name = name) {
+        ()
+      } else if name == "Add" {
+        found = true
+      } else {
+        Array::push(seen, value = name)
+        let supers = trait_supers(env = env, name = name)
+        let mut i = 0
+        while i < Array::length(supers) {
+          Array::push(pending, value = Array::get(supers, at = i))
+          i = i + 1
+        }
+      }
+    }
+    found
+  }
+}
+
+/// The trait `generic_impl_cmp_refusal` names for `impl_param_add32_refused`.
+/// `#` cannot start a trait name, so it is told apart from a real one.
+export fn impl_param_add32_marker() -> String {
+  "#add32"
 }
 
 //# Comparison bounds that reach no witness (#2523, #3327, #3350)
@@ -2089,7 +2141,7 @@ fn generic_bounds_hold(full: TypeEnv, s: Subst, tparams: Array[String], bounds: 
           } else {
             ()
           },
-          arg => if not(type_implements_trait(env = full, s = s, ty = arg, trait_name = bt)) || erased_cmp_bound_refusal(env = full, bound = bt, resolved = arg) != "" {
+          arg => if not(type_implements_trait(env = full, s = s, ty = arg, trait_name = bt)) || erased_cmp_bound_refusal(env = full, bound = bt, resolved = arg) != "" || impl_param_add32_refused(env = full, bound = bt, resolved = arg) {
             ok = false
           } else {
             ()
