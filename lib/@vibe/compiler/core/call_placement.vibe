@@ -513,6 +513,34 @@ export fn call_arg_value(_ arg: Expr) -> Expr {
   }
 }
 
+/// ADR-0120: the formal parameter that written argument `source` fills, or
+/// -1 when that is not known. Labels never reorder, but an omitted optional
+/// parameter shifts every labeled argument after it, so an analysis that
+/// pairs an unwrapped argument with a parameter asks here rather than using
+/// the written index. A checked placement answers for itself; without one,
+/// the written index is the formal one only while no label precedes it.
+export fn call_arg_formal(args: Array[Expr], cell: Array[Int], source: Int) -> Int {
+  let written = Array::length(args)
+  let role = placement_role(cell)
+  if role == 1 && Array::length(cell) >= 5 && Array::get(cell, at = 3) == written {
+    call_placement_source_slot(cell = cell, source = source, written = written) / 2 - 1
+  } else if role == 4 {
+    source
+  } else {
+    let mut plain = true
+    let mut i = 0
+    while plain && i <= source && i < written {
+      plain = !(Array::get(args, at = i) is ELabeledArg(_, _, _))
+      i = i + 1
+    }
+    if plain {
+      source
+    } else {
+      -1
+    }
+  }
+}
+
 /// `call_arg_value` of each written argument.
 export fn call_arg_values(_ args: Array[Expr]) -> Array[Expr] {
   for arg in args {

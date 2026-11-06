@@ -9,6 +9,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  call_arg_formal,
   call_arg_value,
   canonical_builtin_name,
   entry_cache_safe_effects,
@@ -967,7 +968,7 @@ fn erased_flow_walk_expect(fn_name: String, root: Expr, root_expect: Option[Type
           push_expect(t, scope, expect)
           push_expect(f, scope, expect)
         },
-        ECall(callee, args, _, _) => match erased_flow_ascription(e) {
+        ECall(callee, args, _, cell) => match erased_flow_ascription(e) {
           Some((v, te)) => erased_flow_typed(fn_name = fn_name, v = v, te0 = te, scope = scope, leaky = leaky, errors = errors),
           None => match callee {
             // A constructor's payloads are its declared types (#3609).
@@ -992,8 +993,12 @@ fn erased_flow_walk_expect(fn_name: String, root: Expr, root_expect: Option[Type
                   EIdent(a, aoff) => {
                     // A callee whose own row lets no exception out handles
                     // what the value raises (`callee_lets_erased_out`).
-                    let row = if known {
-                      match callee_param_row(callee = cname, index = ai) {
+                    // The parameter is the formal slot the argument fills, not
+                    // its written index (`call_arg_formal`); an unknown slot
+                    // reads no row, and so refuses.
+                    let formal = call_arg_formal(args = args, cell = cell, source = ai)
+                    let row = if known && formal >= 0 {
+                      match callee_param_row(callee = cname, index = formal) {
                         Some(r) => if callee_lets_erased_out(cname) {
                           Some(r)
                         } else {
