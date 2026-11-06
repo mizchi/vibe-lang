@@ -301,6 +301,15 @@ test "a loop-carried value stored into a tuple leaks" {
   inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  while k < 2 {\n    let t = (d, 1)\n    k = k + t.1\n  }\n  k\n}"), content = "run d -: owned value not consumed")
 }
 
+test "an outer binding in a for iterable is retained there, so it leaks" {
+  // A true positive (#3879): codegen compiles the iterable with the enclosing
+  // locals already loop-borrowed, so `[d]` retains `d` while the plan counts
+  // the item as `d`'s consume and gives it no drop. Measured under VIBE_RC=1,
+  // 2000 calls of this shape keep 176,084 B. The iterable used to be walked
+  // outside the loop's retain context and `d` read as balanced.
+  inspect(validate("let run: (Bool) -> Int = (c) -> {\n  let d = A([1])\n  let mut k = 0\n  for x in [d] {\n    k = k + len(x)\n  }\n  k\n}"), content = "run d -: owned value not consumed\nrun x -: not checked: loop binder (a for element or a loop parameter)")
+}
+
 test "a parameter retained in a loop with no planned drop is not checked" {
   let src = String::concat(prologue, "let sink: (D) -> Int = (d) -> {\n  let mut k = 0\n  while k < 2 {\n    k = k + keep(d)\n  }\n  k\n}\nlet main: () -> Int = () -> {\n  sink(A([1]))\n}")
   inspect(rc_validate_source(source = src, fn_filter = "sink"), content = "")
