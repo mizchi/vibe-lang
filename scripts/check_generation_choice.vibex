@@ -58,13 +58,13 @@ fn under(root: String, rel: String) -> String {
 /// The files directly in `rel` whose name ends in `suffix`, as `rel/name`.
 fn files_in(root: String, rel: String, suffix: String) -> Array[String] with Fs {
   let out: Array[String] = []
-  if Fs::is_dir(under(root, rel)) {
-    let entries = ls(under(root, rel))
+  if Fs::is_dir(under(root = root, rel = rel)) {
+    let entries = ls(under(root = root, rel = rel))
     let mut i = 0
     while i < Array::length(entries) {
-      let entry = Array::get(entries, i)
-      if !entry.is_dir && String::ends_with(entry.name, suffix) {
-        Array::push(out, "\{rel}/\{entry.name}")
+      let entry = Array::get(entries, at = i)
+      if !entry.is_dir && String::ends_with(entry.name, suffix = suffix) {
+        Array::push(out, value = "\{rel}/\{entry.name}")
       } else {
         ()
       }
@@ -78,17 +78,17 @@ fn files_in(root: String, rel: String, suffix: String) -> Array[String] with Fs 
 
 /// `rel/*.sh` and `rel/*/*.sh`.
 fn lane_sources(root: String, rel: String) -> Array[String] with Fs {
-  let out = files_in(root, rel, ".sh")
-  if Fs::is_dir(under(root, rel)) {
-    let entries = ls(under(root, rel))
+  let out = files_in(root = root, rel = rel, suffix = ".sh")
+  if Fs::is_dir(under(root = root, rel = rel)) {
+    let entries = ls(under(root = root, rel = rel))
     let mut i = 0
     while i < Array::length(entries) {
-      let entry = Array::get(entries, i)
+      let entry = Array::get(entries, at = i)
       if entry.is_dir {
-        let inner = files_in(root, "\{rel}/\{entry.name}", ".sh")
+        let inner = files_in(root = root, rel = "\{rel}/\{entry.name}", suffix = ".sh")
         let mut j = 0
         while j < Array::length(inner) {
-          Array::push(out, Array::get(inner, j))
+          Array::push(out, value = Array::get(inner, at = j))
           j = j + 1
         }
       } else {
@@ -103,7 +103,7 @@ fn lane_sources(root: String, rel: String) -> Array[String] with Fs {
 }
 
 fn is_comment(line: String) -> Bool {
-  String::starts_with(String::trim(line), "#")
+  String::starts_with(String::trim(line), prefix = "#")
 }
 
 /// Does the option word starting at `at` (just after `ls -`) carry both `d` and `t`?
@@ -113,7 +113,7 @@ fn mtime_dir_flags(line: String, at: Int) -> Bool {
   let mut i = at
   let mut going = true
   while going && i < String::length(line) {
-    let c = String::substring(line, i, i + 1)
+    let c = String::substring(line, start = i, end = i + 1)
     if c == "d" {
       d = true
       i = i + 1
@@ -132,24 +132,24 @@ fn mtime_dir_flags(line: String, at: Int) -> Bool {
 /// An `ls -<flags>` with both `d` and `t`, on a line that names the
 /// generations directory.
 fn picks_newest_generation(line: String) -> Bool {
-  if is_comment(line) || String::index_of_from(line, "selfhost/generations", 0) < 0 {
+  if is_comment(line = line) || String::index_of_from(line, sub = "selfhost/generations", start = 0) < 0 {
     false
   } else {
     let mut found = false
     let mut from = 0
     let mut going = true
     while going && !found {
-      let at = String::index_of_from(line, "ls -", from)
+      let at = String::index_of_from(line, sub = "ls -", start = from)
       if at < 0 {
         going = false
       } else {
         let prev = if at == 0 {
           " "
         } else {
-          String::substring(line, at - 1, at)
+          String::substring(line, start = at - 1, end = at)
         }
         let starts_word = prev == " " || prev == "(" || prev == "\t" || prev == "`"
-        if starts_word && mtime_dir_flags(line, at + 4) {
+        if starts_word && mtime_dir_flags(line = line, at = at + 4) {
           found = true
         } else {
           from = at + 1
@@ -161,9 +161,9 @@ fn picks_newest_generation(line: String) -> Bool {
 }
 
 fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process::exit {
-  let root = option("--root", ".")
-  let workflows = sort_str(files_in(root, ".github/workflows", ".yml"))
-  let lanes = sort_str(lane_sources(root, "tests/gates"))
+  let root = option(name = "--root", fallback = ".")
+  let workflows = sort_str(files_in(root = root, rel = ".github/workflows", suffix = ".yml"))
+  let lanes = sort_str(lane_sources(root = root, rel = "tests/gates"))
   let mut bad = 0
   if Array::length(workflows) == 0 {
     Stderr::write_stream("[generation-choice] FAIL: no .github/workflows/*.yml found under \{root} -- nothing checked is not clean\n")
@@ -180,22 +180,22 @@ fn main allows Env + Fs + Console::write_stream + Stderr::write_stream + Process
   let files: Array[String] = []
   let mut w = 0
   while w < Array::length(workflows) {
-    Array::push(files, Array::get(workflows, w))
+    Array::push(files, value = Array::get(workflows, at = w))
     w = w + 1
   }
   let mut l = 0
   while l < Array::length(lanes) {
-    Array::push(files, Array::get(lanes, l))
+    Array::push(files, value = Array::get(lanes, at = l))
     l = l + 1
   }
   let mut f = 0
   while f < Array::length(files) {
-    let path = Array::get(files, f)
-    let lines = String::split(Fs::read_file(under(root, path)), "\n")
+    let path = Array::get(files, at = f)
+    let lines = String::split(Fs::read_file(under(root = root, rel = path)), sep = "\n")
     let mut n = 0
     while n < Array::length(lines) {
-      let line = Array::get(lines, n)
-      if picks_newest_generation(line) {
+      let line = Array::get(lines, at = n)
+      if picks_newest_generation(line = line) {
         Stderr::write_stream("[generation-choice] FAIL: \{path}:\{n + 1}: picks the newest generation by mtime: \{String::trim(line)}\n")
         bad = bad + 1
       } else {
